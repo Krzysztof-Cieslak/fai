@@ -1,0 +1,16 @@
+# Rust build artifacts
+/target
+**/*.rs.bk
+
+# Fai build outputs (native binaries / object files produced by the compiler)
+/out
+*.o
+
+# OS / editor cruft
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# NOTE: Cargo.lock IS committed — Fai ships binaries (compiler + CLI), so the
+# lockfile is part of the reproducible build.
