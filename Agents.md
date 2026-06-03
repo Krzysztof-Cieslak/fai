@@ -79,7 +79,8 @@ table **and** the decision log in `Plan.md`).
 | Memory | **Perceus-style reference counting** (pure + strict ⇒ acyclic heaps ⇒ no cycle collector); reuse analysis enables in-place updates incl. `{ r with ... }` |
 | Representation | Uniform 64-bit boxed/immediate values; canonical record field layout; **offset-evidence passing** for polymorphic field access; dictionaries for interfaces/generics |
 | Determinism | Clock / random / env / IO are reachable only via capabilities |
-| Tooling | `fai build/run/check/fmt/test/lsp`; global `--message-format=json`; stable error codes `FAInnnn` |
+| Compilation model | **Demand-driven (salsa) query engine**; per-workspace **daemon** holds the DB hot, thin CLI client; **content-addressed on-disk cache**; **JIT** for `run`/`test`, **AOT** for `build`; incremental at definition/SCC granularity |
+| Tooling | `fai build/run/check/fmt/test/lsp` + read-only `fai query …` (code intelligence); per-workspace daemon (MessagePack JSON-RPC); global `--message-format=json`; stable error codes `FAInnnn`. Full reference: **`cli.md`** |
 
 ## 4. Language at a glance
 
@@ -117,24 +118,32 @@ fai/
 ├── Agents.md            # this file
 ├── Plan.md              # milestones, acceptance criteria, risks, decisions
 ├── Samples.md           # language by example
+├── cli.md               # CLI + daemon-protocol reference
 ├── Cargo.toml           # workspace manifest                         (M0)
 ├── crates/
-│   ├── fai-cli/         # binary: build/run/check/fmt/test/lsp       (M0)
+│   ├── fai-cli/         # thin client binary: build/run/check/fmt/test/lsp + query (M0)
 │   ├── fai-span/        # source files, byte spans, source maps      (M0)
 │   ├── fai-diagnostics/ # diagnostic model + human & JSON renderers  (M0)
-│   ├── fai-syntax/      # lexer, parser (recursive descent + Pratt), AST (M1)
+│   ├── fai-db/          # salsa database: inputs, interning, queries, durability (M0)
+│   ├── fai-syntax/      # lexer, parser (recursive descent + Pratt), item tree + AST (M1)
 │   ├── fai-fmt/         # canonical formatter (AST → pretty)         (M1)
 │   ├── fai-resolve/     # module graph, name resolution, visibility  (M1/M2)
 │   ├── fai-types/       # HM inference, rows, dictionaries, exhaustiveness (M2/M4)
+│   ├── fai-ide/         # code intelligence (powers `fai query` + LSP) (M2/M8)
 │   ├── fai-core/        # typed, desugared Core IR                   (M3)
 │   ├── fai-rc/          # Perceus dup/drop + reuse analysis on Core  (M3/M6)
-│   ├── fai-codegen/     # Core IR → Cranelift IR → object files      (M3)
+│   ├── fai-codegen/     # Core IR → Cranelift IR → objects (AOT) + JIT (M3)
 │   ├── fai-runtime/     # Rust static lib: RC, allocator, builtins, capability hosts (M3)
 │   ├── fai-contracts/   # example/forall checking + generators       (M7)
-│   ├── fai-driver/      # pipeline orchestration + caching           (M3)
-│   └── fai-lsp/         # language server                            (M8)
+│   ├── fai-server/      # per-workspace daemon (MessagePack JSON-RPC) (M3+)
+│   ├── fai-driver/      # query orchestration + content-addressed cache + link (M3)
+│   └── fai-lsp/         # language server (reuses fai-ide)           (M8)
 └── tests/               # end-to-end & golden/snapshot tests         (M0)
 ```
+
+Each phase crate (`fai-syntax`, `fai-resolve`, `fai-types`, `fai-core`,
+`fai-rc`, `fai-codegen`) defines its phase as **salsa query groups** plugged into
+`fai-db`; see §9.
 
 ## 6. Compiler pipeline
 
@@ -155,6 +164,10 @@ source (.fai)
 `fai check` stops after typecheck. `fai fmt` needs only lex+parse. `fai test`
 runs through contract checking. `fai build`/`run` run the whole pipeline.
 
+This pipeline is **not** a batch of passes pushing data forward: each phase is a
+set of **memoized salsa queries** that pull on demand (§9). `fai run`/`fai test`
+take the **JIT** path (no link); `fai build` takes the **AOT** path.
+
 ## 7. Building, running, testing
 
 **The compiler (this repo):**
@@ -167,17 +180,25 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo fmt --all
 ```
 
-**Fai programs (the CLI we are building):**
+**Fai programs (the CLI we are building) — summary; full reference in `cli.md`:**
 
 ```sh
-fai build path/to/Main.fai        # → native executable
-fai run   path/to/Main.fai        # build + run
-fai check path/to/Main.fai        # typecheck only (fast)
+fai build path/to/Main.fai        # → native executable (AOT)
+fai run   path/to/Main.fai        # build + run (JIT)
+fai check [path]                  # typecheck only (fast, incremental)
 fai fmt   [path]                  # canonical-format in place (idempotent)
-fai test  [path]                  # run example/forall contracts
+fai test  [path]                  # run example/forall contracts (JIT)
 fai lsp                           # start language server (stdio)
-# global: --message-format=json   # structured diagnostics for agents/tools
+fai query <q> …                   # read-only code intelligence (refs/type/api/caps/…)
+fai daemon <status|stop|…>        # manage the per-workspace daemon
+# global: --message-format=json   # structured diagnostics/output for agents/tools
 ```
+
+The CLI is a **thin client** to a per-workspace **daemon** that keeps the
+incremental query database hot. `fai query` is a **read-only** introspection
+surface for agents (definitions, usages, types, module APIs, capability
+footprints, type search). See **`cli.md`** for every command, all flags, the JSON
+output schemas, and the daemon (MessagePack JSON-RPC) protocol.
 
 ## 8. Rust coding conventions
 
@@ -199,23 +220,65 @@ fai lsp                           # start language server (stdio)
   speed and `BTreeMap`/sorted vecs where ordering is observable.
 - Public items get doc comments; modules start with a `//!` summary.
 
-## 9. Performance guidelines
+## 9. Performance & incremental compilation
 
-Compile throughput is a feature. When in doubt, measure (`cargo bench`, golden
-timing tests on large inputs).
+Compile throughput is *the* feature: the goal is sub-second edit→diagnostic and
+edit→test loops for AI agents. Incrementality is **foundational, not deferred** —
+the architecture is demand-driven from the front-end milestones. When in doubt,
+measure (`cargo bench`, golden timing tests, and the tracked `edit→diagnostic` /
+`edit→test` latency benchmarks).
 
+**Query spine (salsa).** Every phase is a set of **memoized queries** (pure
+`input → output`) in `fai-db`; the engine re-runs only what transitively changed.
+Two properties carry the wins:
+
+- **Early cutoff / firewalling** — if a re-run query yields the same result, its
+  dependents don't re-run. A reformat or comment edit changes the file but not
+  the parsed item → zero downstream work.
+- **Definition/SCC granularity** — the cache unit is a definition (or an SCC of
+  mutually-recursive defs), effectively per-function.
+
+**Position independence (the enabler).** `parse` produces a stable **item tree**
+keyed by position-independent `ItemId`s, with **spans in a side-table**. Semantic
+queries depend on position-independent content; spans are resolved late, only for
+diagnostics. Keep semantic query inputs free of absolute offsets, or
+incrementality collapses (there's an edit-churn test that asserts "add a comment
+→ near-zero recompute").
+
+**Firewalls our design already gives us.** Required public signatures make a
+module's `module_exports` cheap and stable, so editing a *private* body never
+invalidates other modules, and public bodies typecheck independently (needing
+only callees' signatures). Determinism makes content-addressing sound. The
+uniform (non-monomorphized) representation means each generic is compiled once,
+so a new call site elsewhere doesn't invalidate its code.
+
+**Caching layers.** (1) in-memory salsa (hot, in the daemon); (2) on-disk
+**content-addressed artifact cache** — `object_code(Def)` keyed by
+`hash(rc(Def)) + target + compiler-version`, so cold runs reuse backend output;
+(3) shared/remote cache later (portable by construction).
+
+**Runtime topology.** A per-workspace **daemon** (`fai-server`) holds the live DB
+and serves a thin CLI client over MessagePack JSON-RPC (see `cli.md`), with
+request cancellation on input change and LRU eviction to bound memory. `fai-ide`
+exposes code-intelligence queries to both the CLI (`fai query`) and the LSP.
+
+**Execution.** `fai check` runs front-end queries only (no codegen/link); JIT
+serves the `run`/`test` inner loop (no link); AOT (`fai build`) uses the object
+cache plus a fast linker (mold/lld).
+
+**Lower-level practices.**
 - Hand-written lexer and parser; avoid regex on the hot path.
-- Single-pass where practical; reuse allocations; prefer `&str`/`Symbol` over
-  `String` clones.
-- `FxHashMap`/`FxHashSet` (rustc-hash) for internal maps.
-- Parallelize across independent modules with `rayon` once the module graph
-  exists (M8/M9).
-- Keep the value representation uniform (no monomorphization) so codegen stays
-  proportional to source size; opt-in monomorphization for hot paths is an M9
-  optimization, never a correctness requirement.
-- Incremental recompilation (salsa or equivalent) is introduced for the LSP in
-  M8/M9 — design query boundaries with this in mind, but do not prematurely
-  add it.
+- Reuse allocations; prefer `&str`/`Symbol` over `String` clones; **intern**
+  identifiers/labels/paths.
+- `FxHashMap`/`FxHashSet` (rustc-hash) internally; deterministic ordering where
+  observable.
+- Parallelize across independent defs/modules with `rayon` (Cranelift codegen is
+  embarrassingly parallel per function).
+- Opt-in monomorphization for hot paths is an M9 optimization, never a
+  correctness requirement — and the one feature that *hurts* incrementality, so
+  it stays opt-in.
+- An **incremental verifier** (compare incremental vs from-scratch) runs in CI;
+  cache keys include compiler version + flags.
 
 ## 10. Diagnostics & error codes
 
@@ -225,6 +288,9 @@ timing tests on large inputs).
 - Two renderers from one model: a human renderer (carets/labels, colors) and a
   **JSON** renderer behind `--message-format=json`. The JSON schema is stable
   and versioned; agents and the LSP consume it.
+- All structured CLI output — diagnostics **and** `fai query` results — carries a
+  `schemaVersion` and is a stable, versioned API. The schemas and the daemon
+  protocol are specified in **`cli.md`**.
 - **Error codes are an API.** Allocate codes by phase and document each in the
   error-code catalog (M8): `FAI1xxx` lex/parse, `FAI2xxx` resolve/visibility,
   `FAI3xxx` types/rows, `FAI4xxx` exhaustiveness/patterns, `FAI5xxx`
