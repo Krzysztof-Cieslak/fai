@@ -40,11 +40,34 @@ jobs:
       - name: Build
         run: cargo build --workspace --all-targets --locked
 
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
       - name: Test
-        # Run the property tests at a higher case count than proptest's local
-        # default (256) for deeper fuzzing in CI, while keeping the developer
-        # inner loop fast. Saved counterexamples live in each crate's committed
-        # `proptest-regressions/` directory and are always replayed first.
+        # nextest prints a clean, scannable per-test summary and a tidy final
+        # tally instead of the default run's wall of output. The raised case
+        # count fuzzes the property tests harder than the local default (256);
+        # committed `proptest-regressions/` seeds always replay first. The `ci`
+        # profile (.config/nextest.toml) writes the JUnit report rendered below.
         env:
           PROPTEST_CASES: "2048"
-        run: cargo test --workspace --locked
+        run: cargo nextest run --workspace --locked --profile ci
+
+      - name: Doctests
+        # nextest does not run doctests yet, so cover them separately.
+        run: cargo test --workspace --locked --doc
+
+      - name: Test summary
+        # Render the JUnit report into the run's job summary, even on failure.
+        if: always()
+        run: python3 scripts/junit-summary.py target/nextest/ci/junit.xml
+
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-report
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: ignore
