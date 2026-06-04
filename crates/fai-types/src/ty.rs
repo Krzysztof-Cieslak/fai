@@ -239,9 +239,16 @@ fn canonical_name(n: usize) -> String {
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Prec {
+    /// Top level (no surrounding context).
     Top,
+    /// Right of an arrow, or an arrow's parameter (loosest that still allows a
+    /// bare tuple `a * b` without parentheses).
     Arrow,
+    /// Tuple-element context: an arrow here must parenthesize, a tuple need not.
+    Product,
+    /// Application argument: tuples and arrows must parenthesize.
     App,
+    /// Atomic position.
     Atom,
 }
 
@@ -272,11 +279,14 @@ fn write_ty(out: &mut String, ty: &Ty, names: &VarNames, prec: Prec) {
             }
         }
         Ty::Arrow(from, to) => {
-            let parenthesize = prec > Prec::Arrow;
+            // An arrow must be parenthesized when it appears inside a tuple
+            // element or an application argument, but not at the top level or to
+            // the right of another arrow (arrows are right-associative).
+            let parenthesize = prec >= Prec::Product;
             if parenthesize {
                 let _ = out.write_char('(');
             }
-            write_ty(out, from, names, Prec::App);
+            write_ty(out, from, names, Prec::Product);
             let _ = out.write_str(" -> ");
             write_ty(out, to, names, Prec::Arrow);
             if parenthesize {
@@ -284,7 +294,11 @@ fn write_ty(out: &mut String, ty: &Ty, names: &VarNames, prec: Prec) {
             }
         }
         Ty::Tuple(elems) => {
-            let parenthesize = prec > Prec::Atom;
+            // A tuple binds looser than application; in an argument position (App
+            // or Atom) — including nested directly inside another tuple — it must
+            // be parenthesized, but as an arrow parameter (`a * b -> c`) it need
+            // not be.
+            let parenthesize = prec >= Prec::App;
             if parenthesize {
                 let _ = out.write_char('(');
             }

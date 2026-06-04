@@ -292,14 +292,44 @@ impl InferCtx {
     /// Instantiates a scheme with fresh variables (no constraints recorded; M2
     /// schemes carry no constraints).
     pub fn instantiate(&mut self, scheme: &Scheme) -> SolveTy {
+        self.instantiate_tracked(scheme).0
+    }
+
+    /// Like [`instantiate`](InferCtx::instantiate), but also returns the fresh
+    /// variable id introduced for each of the scheme's quantified variables (in
+    /// `scheme.vars` order). Used to check a signature is not *more general* than
+    /// the body: if a fresh var ends up bound to a concrete type or shared with
+    /// another, the signature over-generalized.
+    pub fn instantiate_tracked(&mut self, scheme: &Scheme) -> (SolveTy, Vec<TyVarId>) {
         let mut mapping = rustc_hash::FxHashMap::default();
+        let mut fresh_vars = Vec::with_capacity(scheme.vars.len());
         for &v in &scheme.vars {
             let fresh = self.fresh();
             if let SolveTy::Var(id) = fresh {
                 mapping.insert(v, id);
+                fresh_vars.push(id);
             }
         }
-        instantiate_ty(&scheme.ty, &mapping)
+        (instantiate_ty(&scheme.ty, &mapping), fresh_vars)
+    }
+
+    /// Whether each id in `vars` still resolves to a *distinct* free variable.
+    /// If two collapse to the same var, or any resolves to a concrete type, the
+    /// scheme they came from was more general than the unified type.
+    #[must_use]
+    pub fn all_distinct_free(&self, vars: &[TyVarId]) -> bool {
+        let mut seen = rustc_hash::FxHashSet::default();
+        for &v in vars {
+            match self.resolve_shallow(&SolveTy::Var(v)) {
+                SolveTy::Var(r) => {
+                    if !seen.insert(r) {
+                        return false;
+                    }
+                }
+                _ => return false,
+            }
+        }
+        true
     }
 }
 

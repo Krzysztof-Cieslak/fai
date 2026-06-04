@@ -8,6 +8,8 @@
 //! Skeleton: the representation and queries land incrementally across M2.
 
 mod contracts;
+#[cfg(test)]
+mod edge_tests;
 mod infer;
 mod lower;
 pub mod prelude;
