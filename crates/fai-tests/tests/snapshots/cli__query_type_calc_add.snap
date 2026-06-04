@@ -1,0 +1,31 @@
+---
+source: crates/fai-tests/tests/cli.rs
+expression: out
+---
+{
+  "schemaVersion": 1,
+  "target": {
+    "path": "Calc.add",
+    "name": "add",
+    "kind": "function",
+    "module": "Calc",
+    "visibility": "public",
+    "signature": "Int -> Int -> Int",
+    "span": {
+      "file": "Calc.fai",
+      "start": {
+        "line": 4,
+        "column": 1
+      },
+      "end": {
+        "line": 4,
+        "column": 20
+      },
+      "byteStart": 44,
+      "byteEnd": 63
+    }
+  },
+  "type": {
+    "display": "Int -> Int -> Int"
+  }
+}
