@@ -6,10 +6,26 @@ use fai_syntax::ast::{
 };
 use fai_syntax::{ItemTree, TokenKind, build_item_tree, parse_module};
 use proptest::prelude::*;
+use proptest::test_runner::FileFailurePersistence;
 
 fn fmt(src: &str) -> String {
     let parsed = parse_module(SourceId::new(0), src);
     fai_fmt::format(&parsed.module, &parsed.comments, src)
+}
+
+/// Persist proptest counterexamples in a committed, crate-local
+/// `proptest-regressions/` directory. proptest's source-parallel default cannot
+/// locate a crate root for integration tests, so it would otherwise drop the
+/// seeds beside the source file under an awkward name; pinning the path keeps the
+/// saved cases tidy and in source control (cargo runs the test with the package
+/// root as the working directory).
+fn regression_config() -> ProptestConfig {
+    ProptestConfig {
+        failure_persistence: Some(Box::new(FileFailurePersistence::Direct(
+            "proptest-regressions/format.txt",
+        ))),
+        ..ProptestConfig::default()
+    }
 }
 
 /// Formatting an already-formatted program is a no-op.
@@ -93,6 +109,8 @@ fn messy_input_is_canonicalized() {
 }
 
 proptest! {
+    #![proptest_config(regression_config())]
+
     /// Formatting arbitrary input never panics.
     #[test]
     fn format_never_panics(input in any::<String>()) {
@@ -262,6 +280,8 @@ fn equivalent_inputs_format_identically() {
 }
 
 proptest! {
+    #![proptest_config(regression_config())]
+
     /// fmt output of a generated program reparses cleanly and is idempotent.
     #[test]
     fn generated_program_is_canonical(name in "[a-z][a-zA-Z0-9_]*", a in 0u32..1000, b in 0u32..1000) {
@@ -481,6 +501,8 @@ fn arb_program() -> impl Strategy<Value = String> {
 }
 
 proptest! {
+    #![proptest_config(regression_config())]
+
     /// Formatting preserves a program's structure: the span-free shape of the
     /// tree is identical before and after a format round-trip, the output
     /// reparses cleanly, and formatting is idempotent.
