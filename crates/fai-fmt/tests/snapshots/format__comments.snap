@@ -1,0 +1,10 @@
+---
+source: crates/fai-fmt/tests/format.rs
+expression: fmt(src)
+---
+module Comments
+
+// a standalone note
+/// Doc for answer.
+public answer : Int
+let answer = 42 // the trailing answer

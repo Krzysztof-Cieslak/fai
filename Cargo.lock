@@ -310,6 +310,12 @@ dependencies = [
 [[package]]
 name = "fai-fmt"
 version = "0.1.0"
+dependencies = [
+ "fai-span",
+ "fai-syntax",
+ "insta",
+ "proptest",
+]
 
 [[package]]
 name = "fai-resolve"
@@ -332,6 +338,7 @@ dependencies = [
  "insta",
  "lasso",
  "proptest",
+ "rustc-hash",
  "salsa",
 ]
 

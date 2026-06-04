@@ -1,0 +1,16 @@
+---
+source: crates/fai-fmt/tests/format.rs
+expression: fmt(src)
+---
+module Tuples
+
+public divMod : Int -> Int -> Int * Int
+let divMod a b = (a / b, a % b)
+example: divMod 7 3 = (2, 1)
+
+let xs = [1, 2, 3]
+
+public swap : 'a * 'b -> 'b * 'a
+let swap pair =
+  let (x, y) = pair
+  (y, x)

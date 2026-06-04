@@ -1,0 +1,8 @@
+---
+source: crates/fai-fmt/tests/format.rs
+expression: fmt(src)
+---
+module Locals
+
+public classify : Int -> String
+let classify n = if n < 0 then "negative" else if n = 0 then "zero" else "positive"

@@ -82,6 +82,20 @@ impl LineIndex {
         ByteOffset::from_usize(self.line_starts.len()).raw()
     }
 
+    /// Maps a byte offset to its 1-based line number (no text needed; columns
+    /// require [`line_col`](LineIndex::line_col)).
+    ///
+    /// An `offset` past the end of the text is clamped to the last line.
+    #[must_use]
+    pub fn line(&self, offset: ByteOffset) -> u32 {
+        let offset = offset.raw().min(self.len);
+        let line = match self.line_starts.binary_search(&offset) {
+            Ok(exact) => exact,
+            Err(insertion) => insertion - 1,
+        };
+        ByteOffset::from_usize(line).raw() + 1
+    }
+
     /// Maps a byte offset to a 1-based [`LineCol`].
     ///
     /// `text` must be the same text used to build this index. An `offset` past
