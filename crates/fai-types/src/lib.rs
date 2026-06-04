@@ -8,16 +8,19 @@
 //! Skeleton: the representation and queries land incrementally across M2.
 
 mod contracts;
-#[cfg(test)]
-mod edge_tests;
 mod infer;
 mod lower;
 pub mod prelude;
 #[allow(unsafe_code)]
 mod query;
+mod ty;
+
+#[cfg(test)]
+mod edge_tests;
+#[cfg(test)]
+mod prop_tests;
 #[cfg(test)]
 mod tests;
-mod ty;
 
 pub use contracts::check_contracts;
 pub use infer::{
