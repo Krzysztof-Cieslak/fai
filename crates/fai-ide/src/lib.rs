@@ -6,3 +6,13 @@
 //! its own, so it owns no `FAInnnn` codes.
 //!
 //! Skeleton: the query implementations land incrementally across M2.
+
+pub mod query;
+pub mod repr;
+pub mod target;
+
+pub use query::{
+    ApiResult, DefResult, DependentsResult, DocsResult, ListOpts, OutlineResult, RefsResult,
+    SymbolsResult, TypeResult, api, def, dependents, docs, outline, refs, symbols, type_at,
+};
+pub use target::{ResolvedTarget, resolve_target};

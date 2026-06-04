@@ -1,0 +1,57 @@
+---
+source: crates/fai-ide/tests/queries.rs
+expression: json(&r)
+---
+{
+  "schemaVersion": 1,
+  "outline": [
+    {
+      "symbol": {
+        "path": "A.inc",
+        "name": "inc",
+        "kind": "function",
+        "module": "A",
+        "visibility": "public",
+        "signature": "Int -> Int",
+        "span": {
+          "file": "A.fai",
+          "start": {
+            "line": 4,
+            "column": 1
+          },
+          "end": {
+            "line": 4,
+            "column": 18
+          },
+          "byteStart": 34,
+          "byteEnd": 51
+        }
+      },
+      "children": []
+    },
+    {
+      "symbol": {
+        "path": "A.twice",
+        "name": "twice",
+        "kind": "function",
+        "module": "A",
+        "visibility": "public",
+        "signature": "('a -> 'a) -> 'a -> 'a",
+        "span": {
+          "file": "A.fai",
+          "start": {
+            "line": 7,
+            "column": 1
+          },
+          "end": {
+            "line": 7,
+            "column": 21
+          },
+          "byteStart": 91,
+          "byteEnd": 111
+        }
+      },
+      "children": []
+    }
+  ]
+}
