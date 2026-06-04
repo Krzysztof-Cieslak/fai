@@ -121,3 +121,64 @@ pub fn attach_comments(
 fn push(map: &mut FxHashMap<NodeId, Vec<CommentId>>, node: NodeId, id: CommentId) {
     map.entry(node).or_default().push(id);
 }
+
+#[cfg(test)]
+mod tests {
+    use fai_span::{LineIndex, SourceId};
+
+    use super::{CommentMap, NodeId, attach_comments};
+    use crate::ast::ItemId;
+    use crate::parse_module;
+
+    fn attach(src: &str) -> CommentMap {
+        let parsed = parse_module(SourceId::new(0), src);
+        let line_index = LineIndex::new(src);
+        attach_comments(&parsed.module, &parsed.comments, &line_index)
+    }
+
+    fn item(index: usize) -> NodeId {
+        NodeId::Item(ItemId::from_index(index))
+    }
+
+    #[test]
+    fn own_line_comment_leads_the_following_item() {
+        let map = attach("module M\n// note\nlet x = 1");
+        assert_eq!(map.leading(item(0)), &[0]);
+        assert!(map.trailing(item(0)).is_empty());
+    }
+
+    #[test]
+    fn doc_comment_always_leads() {
+        let map = attach("module M\n/// doc\nlet x = 1");
+        assert_eq!(map.leading(item(0)), &[0]);
+    }
+
+    #[test]
+    fn same_line_comment_trails_the_preceding_item() {
+        let map = attach("module M\nlet x = 1 // tail");
+        assert_eq!(map.trailing(item(0)), &[0]);
+        assert!(map.leading(item(0)).is_empty());
+    }
+
+    #[test]
+    fn multiple_leading_comments_keep_source_order() {
+        let map = attach("module M\n// one\n// two\nlet x = 1");
+        assert_eq!(map.leading(item(0)), &[0, 1]);
+    }
+
+    #[test]
+    fn comment_with_no_node_is_dangling() {
+        let map = attach("module M\n// lonely");
+        assert_eq!(map.dangling(), &[0]);
+    }
+
+    #[test]
+    fn trailing_on_a_local_let_attaches_to_an_expression() {
+        // The comment trails the local binding's value, which is an expression
+        // (the enclosing block does not end there), so it is not on any item.
+        let map = attach("module M\nlet f =\n  let a = 1 // keep\n  a");
+        assert!(map.leading(item(0)).is_empty());
+        assert!(map.trailing(item(0)).is_empty());
+        assert!(map.dangling().is_empty());
+    }
+}

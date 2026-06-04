@@ -44,6 +44,18 @@ mod tests {
     }
 
     #[test]
+    fn line_index_line_number() {
+        let text = "abc\ndef\nghi";
+        let idx = LineIndex::new(text);
+        assert_eq!(idx.line(ByteOffset::new(0)), 1);
+        assert_eq!(idx.line(ByteOffset::new(2)), 1);
+        assert_eq!(idx.line(ByteOffset::new(3)), 1); // the newline ends line 1
+        assert_eq!(idx.line(ByteOffset::new(4)), 2); // start of line 2
+        assert_eq!(idx.line(ByteOffset::new(8)), 3);
+        assert_eq!(idx.line(ByteOffset::new(99)), 3); // clamped past the end
+    }
+
+    #[test]
     fn line_index_newline_position() {
         // The '\n' byte itself reports as the end of its line.
         let text = "ab\ncd";
