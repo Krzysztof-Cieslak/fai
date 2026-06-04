@@ -8,6 +8,28 @@
 //!
 //! Skeleton: the queries land incrementally across M2.
 
+mod ids;
+// salsa's `tracked` macro emits `unsafe impl`s; these modules are the only place
+// in the crate that carries them (we write no `unsafe` by hand), mirroring
+// `fai-db`/`fai-syntax`.
+#[allow(unsafe_code)]
+mod bodies;
+#[allow(unsafe_code)]
+mod module;
+pub mod prelude;
+#[allow(unsafe_code)]
+mod scc;
+#[cfg(test)]
+mod tests;
+
+pub use bodies::{ResolvedBodies, resolve};
+pub use ids::{DefId, LocalId, Res, is_upper};
+pub use module::{
+    DefInfo, Export, ModuleDefs, ModuleInterface, ModuleName, duplicate_module_files,
+    emit_duplicate_module_errors, module_defs, module_file, module_interface, module_name,
+};
+pub use scc::{ModuleSccs, Scc, def_deps, module_sccs};
+
 use fai_diagnostics::{CodeInfo, DiagnosticCode, Severity};
 
 /// A name could not be resolved to any binding, parameter, or builtin.
