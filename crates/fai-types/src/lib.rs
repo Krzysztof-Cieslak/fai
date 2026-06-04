@@ -7,10 +7,23 @@
 //!
 //! Skeleton: the representation and queries land incrementally across M2.
 
+mod contracts;
+mod infer;
 mod lower;
+mod prelude;
+#[allow(unsafe_code)]
+mod query;
+#[cfg(test)]
+mod tests;
 mod ty;
 
+pub use contracts::check_contracts;
+pub use infer::{
+    Constraint, Env, InferCtx, SccEnv, SccInference, SolveTy, UnifyResult, Walker, contract_env,
+    declared_scheme, error_scheme, generalize, infer_scc,
+};
 pub use lower::{LowerVars, lower_signature, lower_type};
+pub use query::{SccTypes, check_file, def_type, infer_scc_query};
 pub use ty::{Con, Scheme, Ty, TyVarId, VarNames, render, render_scheme};
 
 use fai_diagnostics::{CodeInfo, DiagnosticCode, Severity};
