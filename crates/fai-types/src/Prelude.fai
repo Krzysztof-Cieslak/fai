@@ -1,0 +1,13 @@
+module Prelude
+
+/// The identity function.
+public identity : 'a -> 'a
+let identity x = x
+
+/// A constant function: ignores its second argument.
+public const : 'a -> 'b -> 'a
+let const x y = x
+
+/// Boolean negation of equality on integers (a small derived helper).
+public notEqual : Int -> Int -> Bool
+let notEqual a b = not (a = b)

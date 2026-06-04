@@ -161,6 +161,23 @@ fn good_contract_is_clean() {
 }
 
 #[test]
+fn embedded_prelude_typechecks() {
+    let mut db = FaiDatabase::new();
+    let id = crate::prelude::load_prelude(&mut db);
+    let file = db.source_file(id).unwrap();
+    assert!(check_codes(&db, file).is_empty(), "prelude has errors: {:?}", check_codes(&db, file));
+    assert_eq!(type_of(&db, file, "identity"), "'a -> 'a");
+    assert_eq!(type_of(&db, file, "const"), "'a -> 'b -> 'a");
+}
+
+#[test]
+fn user_can_use_prelude_function() {
+    let (db, f) = db_with(&[("M.fai", "module M\n\nlet n = length [1, 2, 3]\n")]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+    assert_eq!(type_of(&db, f[0], "n"), "Int");
+}
+
+#[test]
 fn mutual_recursion_typechecks() {
     let (db, f) = db_with(&[(
         "M.fai",
