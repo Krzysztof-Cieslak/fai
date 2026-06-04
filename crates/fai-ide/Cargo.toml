@@ -1,6 +1,6 @@
 [package]
-name = "fai-resolve"
-description = "Name resolution, module graph, and visibility for Fai."
+name = "fai-ide"
+description = "Code intelligence powering `fai query` and the LSP for Fai."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,13 +12,13 @@ fai-span.workspace = true
 fai-diagnostics.workspace = true
 fai-db.workspace = true
 fai-syntax.workspace = true
-# salsa's `tracked`/`Update` macros resolve `salsa::` from the crate root, so a
-# query-defining crate needs salsa as a direct dependency (see `docs/PLAN.md`).
-salsa.workspace = true
-rustc-hash.workspace = true
+fai-resolve.workspace = true
+fai-types.workspace = true
+serde = { workspace = true }
 
 [dev-dependencies]
 insta.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

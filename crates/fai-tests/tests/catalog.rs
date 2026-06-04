@@ -12,6 +12,8 @@ fn all_codes() -> Vec<CodeInfo> {
     codes.extend_from_slice(fai_diagnostics::CODES);
     codes.extend_from_slice(fai_driver::CODES);
     codes.extend_from_slice(fai_syntax::CODES);
+    codes.extend_from_slice(fai_resolve::CODES);
+    codes.extend_from_slice(fai_types::CODES);
     codes
 }
 

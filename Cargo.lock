@@ -303,8 +303,11 @@ dependencies = [
  "fai-db",
  "fai-diagnostics",
  "fai-fmt",
+ "fai-ide",
+ "fai-resolve",
  "fai-span",
  "fai-syntax",
+ "fai-types",
  "serde",
  "thiserror",
 ]
@@ -320,8 +323,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "fai-ide"
+version = "0.1.0"
+dependencies = [
+ "fai-db",
+ "fai-diagnostics",
+ "fai-resolve",
+ "fai-span",
+ "fai-syntax",
+ "fai-types",
+ "insta",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "fai-resolve"
 version = "0.1.0"
+dependencies = [
+ "fai-db",
+ "fai-diagnostics",
+ "fai-span",
+ "fai-syntax",
+ "insta",
+ "rustc-hash",
+ "salsa",
+]
 
 [[package]]
 name = "fai-span"
@@ -354,10 +381,27 @@ dependencies = [
  "fai-diagnostics",
  "fai-driver",
  "fai-fmt",
+ "fai-ide",
+ "fai-resolve",
+ "fai-span",
+ "fai-syntax",
+ "fai-types",
+ "insta",
+ "serde_json",
+]
+
+[[package]]
+name = "fai-types"
+version = "0.1.0"
+dependencies = [
+ "fai-db",
+ "fai-diagnostics",
+ "fai-resolve",
  "fai-span",
  "fai-syntax",
  "insta",
- "serde_json",
+ "rustc-hash",
+ "salsa",
 ]
 
 [[package]]
