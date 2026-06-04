@@ -40,3 +40,25 @@ fn tooling_codes_are_in_the_fai0xxx_range() {
         );
     }
 }
+
+#[test]
+fn resolve_codes_are_in_the_fai2xxx_range() {
+    for info in fai_resolve::CODES {
+        assert!(
+            info.code.as_str().starts_with("FAI2"),
+            "resolve code {} should be in the FAI2xxx range",
+            info.code
+        );
+    }
+}
+
+#[test]
+fn type_codes_are_in_the_fai3xxx_range() {
+    for info in fai_types::CODES {
+        assert!(
+            info.code.as_str().starts_with("FAI3"),
+            "type code {} should be in the FAI3xxx range",
+            info.code
+        );
+    }
+}

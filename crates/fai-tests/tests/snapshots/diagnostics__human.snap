@@ -2,11 +2,11 @@
 source: crates/fai-tests/tests/diagnostics.rs
 expression: "render_human(&diagnostics, &map, false)"
 ---
+error[FAI2001]: cannot find `bad` in scope
+  --> src/Main.fai:2:3
+
 error[FAI3001]: type mismatch
   --> src/Main.fai:2:3
   note: in this binding
    --> src/Main.fai:1:1
   = help: expected `Int`
-
-warning[FAI2001]: unused binding `y`
-  --> src/Main.fai:3:5

@@ -9,11 +9,17 @@ fn fixture() -> (SourceMap, Vec<Diagnostic>) {
     let span = |start: u32, end: u32| {
         Span::new(id, TextRange::new(ByteOffset::new(start), ByteOffset::new(end)))
     };
+    // Real M2 codes: FAI3001 (type mismatch, fai-types) and FAI2001 (unbound
+    // name, fai-resolve). The fixture exercises the renderers, not the phases.
     let diagnostics = vec![
         Diagnostic::error(DiagnosticCode::new("FAI3001"), "type mismatch", span(10, 13))
             .with_help("expected `Int`")
             .with_label(Label::new(span(0, 3), "in this binding")),
-        Diagnostic::warning(DiagnosticCode::new("FAI2001"), "unused binding `y`", span(22, 23)),
+        Diagnostic::error(
+            DiagnosticCode::new("FAI2001"),
+            "cannot find `bad` in scope",
+            span(10, 13),
+        ),
     ];
     (map, diagnostics)
 }
