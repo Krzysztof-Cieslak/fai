@@ -90,8 +90,8 @@ impl From<u32> for ByteOffset {
 
 /// A file-relative half-open byte range `[start, end)`.
 ///
-/// Invariant: `start <= end`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Invariant: `start <= end`. The default is the empty range at offset 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct TextRange {
     start: ByteOffset,
     end: ByteOffset,

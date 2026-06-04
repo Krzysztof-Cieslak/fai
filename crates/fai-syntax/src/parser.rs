@@ -1,0 +1,1208 @@
+//! The recursive-descent parser with a Pratt expression sub-parser.
+//!
+//! [`parse_module`] runs the whole front end (lex → layout → parse) and returns
+//! the [`ast::Module`] plus comment trivia and diagnostics. Parsing is **total**:
+//! every malformed fragment becomes an `Error` node and one run reports many
+//! diagnostics (it synchronizes on the layout `Sep`/`Close` tokens and item
+//! keywords). The binding `=` is consumed by the declaration parsers, so `=` in
+//! expression position is always equality.
+
+use fai_diagnostics::{Diagnostic, DiagnosticCode};
+use fai_span::{ByteOffset, SourceId, Span, TextRange};
+
+use crate::ast::{
+    BinOp, Expr, ExprId, ExprKind, Item, ItemKind, LetStmt, Module, Pat, PatId, PatKind, Type,
+    TypeId, TypeKind, UnOp, Visibility,
+};
+use crate::token::{Token, TokenKind};
+use crate::{Comment, MODULE_HEADER, SYNTAX_ERROR, Symbol, UNSUPPORTED, layout, lex};
+
+/// The result of parsing one source file.
+#[derive(Debug)]
+pub struct Parsed {
+    /// The parsed module.
+    pub module: Module,
+    /// Comment trivia, in source order (attached to the tree in a later stage).
+    pub comments: Vec<Comment>,
+    /// All diagnostics from lexing, layout, and parsing.
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Lexes, applies layout, and parses `text` into a [`Parsed`] module.
+#[must_use]
+pub fn parse_module(source: SourceId, text: &str) -> Parsed {
+    let lexed = lex(source, text);
+    let laid = layout(source, text, &lexed.tokens);
+    let mut diagnostics = lexed.diagnostics;
+    diagnostics.extend(laid.diagnostics);
+
+    let mut parser = Parser {
+        source,
+        text,
+        tokens: &laid.tokens,
+        pos: 0,
+        last_end: ByteOffset::ZERO,
+        module: Module::default(),
+        diagnostics,
+    };
+    parser.parse_top_level();
+    Parsed { module: parser.module, comments: lexed.comments, diagnostics: parser.diagnostics }
+}
+
+struct Parser<'a> {
+    source: SourceId,
+    text: &'a str,
+    tokens: &'a [Token],
+    pos: usize,
+    last_end: ByteOffset,
+    module: Module,
+    diagnostics: Vec<Diagnostic>,
+}
+
+impl Parser<'_> {
+    // --- cursor -----------------------------------------------------------
+
+    fn peek(&self) -> TokenKind {
+        self.tokens[self.pos].kind
+    }
+
+    fn cur(&self) -> Token {
+        self.tokens[self.pos]
+    }
+
+    fn at(&self, kind: TokenKind) -> bool {
+        self.peek() == kind
+    }
+
+    fn at_eof(&self) -> bool {
+        self.at(TokenKind::Eof)
+    }
+
+    /// `true` at a token that terminates an item or block item.
+    fn at_terminator(&self) -> bool {
+        matches!(self.peek(), TokenKind::LayoutSep | TokenKind::LayoutClose | TokenKind::Eof)
+    }
+
+    fn bump(&mut self) -> Token {
+        let token = self.tokens[self.pos];
+        if token.kind != TokenKind::Eof {
+            self.pos += 1;
+        }
+        self.last_end = token.range.end();
+        token
+    }
+
+    fn eat(&mut self, kind: TokenKind) -> bool {
+        if self.at(kind) {
+            self.bump();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn expect(&mut self, kind: TokenKind, what: &str) {
+        if !self.eat(kind) {
+            let span = self.cur().range;
+            self.error(SYNTAX_ERROR, span, format!("expected {what}"));
+        }
+    }
+
+    fn start(&self) -> ByteOffset {
+        self.cur().range.start()
+    }
+
+    fn span_from(&self, start: ByteOffset) -> TextRange {
+        let end = if self.last_end.raw() >= start.raw() { self.last_end } else { start };
+        TextRange::new(start, end)
+    }
+
+    fn lexeme(&self, token: Token) -> &str {
+        &self.text[token.range.start().to_usize()..token.range.end().to_usize()]
+    }
+
+    fn symbol(&self, token: Token) -> Symbol {
+        Symbol::intern(self.lexeme(token))
+    }
+
+    /// Consumes the current token and interns its lexeme.
+    fn bump_symbol(&mut self) -> Symbol {
+        let token = self.bump();
+        self.symbol(token)
+    }
+
+    fn error(&mut self, code: DiagnosticCode, span: TextRange, message: impl Into<String>) {
+        self.diagnostics.push(Diagnostic::error(code, message, Span::new(self.source, span)));
+    }
+
+    fn alloc_expr(&mut self, kind: ExprKind, span: TextRange) -> ExprId {
+        let id = ExprId::from_index(self.module.exprs.len());
+        self.module.exprs.push(Expr { kind, span });
+        id
+    }
+
+    fn alloc_pat(&mut self, kind: PatKind, span: TextRange) -> PatId {
+        let id = PatId::from_index(self.module.pats.len());
+        self.module.pats.push(Pat { kind, span });
+        id
+    }
+
+    fn alloc_ty(&mut self, kind: TypeKind, span: TextRange) -> TypeId {
+        let id = TypeId::from_index(self.module.types.len());
+        self.module.types.push(Type { kind, span });
+        id
+    }
+
+    // --- top level --------------------------------------------------------
+
+    fn parse_top_level(&mut self) {
+        self.parse_header();
+        loop {
+            while self.eat(TokenKind::LayoutSep) {}
+            if self.at_eof() {
+                break;
+            }
+            let before = self.pos;
+            let item = self.parse_item();
+            self.module.items.push(item);
+            self.resync(0);
+            if self.pos == before {
+                self.bump(); // guarantee forward progress
+            }
+        }
+    }
+
+    fn parse_header(&mut self) {
+        let start = self.start();
+        if self.eat(TokenKind::Module) {
+            if self.at(TokenKind::UpperIdent) {
+                let token = self.bump();
+                self.module.name = Some(self.symbol(token));
+            } else {
+                let span = self.cur().range;
+                self.error(MODULE_HEADER, span, "expected a module name after `module`");
+            }
+        } else {
+            let span = self.cur().range;
+            self.error(
+                MODULE_HEADER,
+                span,
+                "expected a module header (`module Name`) at the start of the file",
+            );
+        }
+        self.module.header = self.span_from(start);
+    }
+
+    /// Skips tokens until the next item separator at `target_depth`, balancing
+    /// nested layout blocks so a whole malformed construct is discarded.
+    fn resync(&mut self, target_depth: i32) {
+        let mut depth = 0i32;
+        loop {
+            match self.peek() {
+                TokenKind::Eof => break,
+                TokenKind::LayoutSep if depth == target_depth => break,
+                TokenKind::LayoutClose if depth == target_depth => break,
+                TokenKind::LayoutOpen => {
+                    depth += 1;
+                    self.bump();
+                }
+                TokenKind::LayoutClose => {
+                    depth -= 1;
+                    self.bump();
+                }
+                _ => {
+                    self.bump();
+                }
+            }
+        }
+    }
+
+    // --- items ------------------------------------------------------------
+
+    fn parse_item(&mut self) -> Item {
+        let start = self.start();
+        let kind = match self.peek() {
+            TokenKind::Public => self.parse_public_item(),
+            TokenKind::Let => self.parse_binding(Visibility::Private),
+            TokenKind::LowerIdent => self.parse_signature(Visibility::Private),
+            TokenKind::Example => self.parse_example(),
+            TokenKind::Forall => self.parse_forall(),
+            TokenKind::Type => self.unsupported("type declarations"),
+            TokenKind::Interface => self.unsupported("interface declarations"),
+            TokenKind::Module => self.unsupported("nested modules"),
+            _ => {
+                let span = self.cur().range;
+                self.error(SYNTAX_ERROR, span, "expected a declaration");
+                self.bump();
+                ItemKind::Error
+            }
+        };
+        Item { kind, span: self.span_from(start) }
+    }
+
+    fn parse_public_item(&mut self) -> ItemKind {
+        self.bump(); // `public`
+        match self.peek() {
+            TokenKind::Let => self.parse_binding(Visibility::Public),
+            TokenKind::LowerIdent => self.parse_signature(Visibility::Public),
+            _ => {
+                let span = self.cur().range;
+                self.error(SYNTAX_ERROR, span, "expected `let` or a signature after `public`");
+                ItemKind::Error
+            }
+        }
+    }
+
+    fn unsupported(&mut self, what: &str) -> ItemKind {
+        let token = self.bump(); // the keyword, so its span anchors the diagnostic
+        self.error(UNSUPPORTED, token.range, format!("{what} are not supported yet"));
+        ItemKind::Error
+    }
+
+    fn parse_signature(&mut self, visibility: Visibility) -> ItemKind {
+        let name = self.bump_symbol(); // LowerIdent
+        self.expect(TokenKind::Colon, "`:` in the signature");
+        let ty = self.parse_type();
+        ItemKind::Signature { visibility, name, ty }
+    }
+
+    fn parse_binding(&mut self, visibility: Visibility) -> ItemKind {
+        self.bump(); // `let`
+        let name = if self.at(TokenKind::LowerIdent) {
+            Some(self.bump_symbol())
+        } else {
+            let span = self.cur().range;
+            self.error(SYNTAX_ERROR, span, "expected a binding name after `let`");
+            None
+        };
+        let mut params = Vec::new();
+        while !self.at(TokenKind::Equals) && !self.at_terminator() {
+            params.push(self.parse_pattern());
+        }
+        self.expect(TokenKind::Equals, "`=` in the binding");
+        let body = self.parse_expr();
+        match name {
+            Some(name) => ItemKind::Binding { visibility, name, params, body },
+            None => ItemKind::Error,
+        }
+    }
+
+    fn parse_example(&mut self) -> ItemKind {
+        self.bump(); // `example`
+        self.expect(TokenKind::Colon, "`:` after `example`");
+        let body = self.parse_expr();
+        ItemKind::Example { body }
+    }
+
+    fn parse_forall(&mut self) -> ItemKind {
+        self.bump(); // `forall`
+        let mut binders = Vec::new();
+        while self.at(TokenKind::LowerIdent) {
+            binders.push(self.bump_symbol());
+        }
+        if binders.is_empty() {
+            let span = self.cur().range;
+            self.error(SYNTAX_ERROR, span, "expected at least one binder after `forall`");
+        }
+        self.expect(TokenKind::Colon, "`:` after the `forall` binders");
+        let body = self.parse_expr();
+        ItemKind::Forall { binders, body }
+    }
+
+    // --- expressions (Pratt) ---------------------------------------------
+
+    fn parse_expr(&mut self) -> ExprId {
+        self.parse_expr_bp(0)
+    }
+
+    fn parse_expr_bp(&mut self, min_bp: u8) -> ExprId {
+        let start = self.start();
+        let mut lhs = self.parse_unary();
+        while let Some(op) = binop(self.peek()) {
+            let (left_bp, right_bp) = binding_power(op);
+            if left_bp < min_bp {
+                break;
+            }
+            self.bump(); // operator
+            let rhs = self.parse_expr_bp(right_bp);
+            lhs = self.alloc_expr(ExprKind::Binary { op, lhs, rhs }, self.span_from(start));
+        }
+        lhs
+    }
+
+    fn parse_unary(&mut self) -> ExprId {
+        if self.at(TokenKind::Minus) {
+            let start = self.start();
+            self.bump();
+            let operand = self.parse_unary();
+            self.alloc_expr(ExprKind::Unary { op: UnOp::Neg, operand }, self.span_from(start))
+        } else {
+            self.parse_app()
+        }
+    }
+
+    fn parse_app(&mut self) -> ExprId {
+        let start = self.start();
+        let mut func = self.parse_postfix();
+        while can_start_arg(self.peek()) {
+            let arg = self.parse_postfix();
+            func = self.alloc_expr(ExprKind::App { func, arg }, self.span_from(start));
+        }
+        func
+    }
+
+    fn parse_postfix(&mut self) -> ExprId {
+        let start = self.start();
+        let mut base = self.parse_atom();
+        while self.at(TokenKind::Dot) {
+            self.bump();
+            let field = if self.at(TokenKind::LowerIdent) {
+                self.bump_symbol()
+            } else {
+                let span = self.cur().range;
+                self.error(SYNTAX_ERROR, span, "expected a field name after `.`");
+                Symbol::intern("")
+            };
+            base = self.alloc_expr(ExprKind::Field { base, field }, self.span_from(start));
+        }
+        base
+    }
+
+    fn parse_atom(&mut self) -> ExprId {
+        let start = self.start();
+        let kind = match self.peek() {
+            TokenKind::Int => ExprKind::Int(self.bump_symbol()),
+            TokenKind::Float => ExprKind::Float(self.bump_symbol()),
+            TokenKind::String => ExprKind::String(self.bump_symbol()),
+            TokenKind::Char => ExprKind::Char(self.bump_symbol()),
+            TokenKind::LowerIdent | TokenKind::UpperIdent => ExprKind::Var(self.bump_symbol()),
+            TokenKind::LParen => return self.parse_paren(start),
+            TokenKind::LBracket => return self.parse_list(start),
+            TokenKind::Fun => return self.parse_lambda(start),
+            TokenKind::If => return self.parse_if(start),
+            TokenKind::LayoutOpen => return self.parse_block(start),
+            TokenKind::Match => {
+                let span = self.cur().range;
+                self.error(UNSUPPORTED, span, "match expressions are not supported yet");
+                self.resync_expr();
+                ExprKind::Error
+            }
+            TokenKind::LBrace => {
+                let span = self.cur().range;
+                self.error(UNSUPPORTED, span, "records are not supported yet");
+                self.resync_brace();
+                ExprKind::Error
+            }
+            _ => {
+                let span = self.cur().range;
+                self.error(SYNTAX_ERROR, span, "expected an expression");
+                if !self.at_terminator() {
+                    self.bump();
+                }
+                ExprKind::Error
+            }
+        };
+        self.alloc_expr(kind, self.span_from(start))
+    }
+
+    fn parse_paren(&mut self, start: ByteOffset) -> ExprId {
+        self.bump(); // `(`
+        if self.eat(TokenKind::RParen) {
+            return self.alloc_expr(ExprKind::Unit, self.span_from(start));
+        }
+        let first = self.parse_expr();
+        if self.at(TokenKind::Comma) {
+            let mut elems = vec![first];
+            while self.eat(TokenKind::Comma) {
+                elems.push(self.parse_expr());
+            }
+            self.expect(TokenKind::RParen, "`)` to close the tuple");
+            self.alloc_expr(ExprKind::Tuple(elems), self.span_from(start))
+        } else {
+            self.expect(TokenKind::RParen, "`)`");
+            self.alloc_expr(ExprKind::Paren(first), self.span_from(start))
+        }
+    }
+
+    fn parse_list(&mut self, start: ByteOffset) -> ExprId {
+        self.bump(); // `[`
+        let mut elems = Vec::new();
+        if !self.at(TokenKind::RBracket) {
+            elems.push(self.parse_expr());
+            while self.eat(TokenKind::Comma) {
+                elems.push(self.parse_expr());
+            }
+        }
+        self.expect(TokenKind::RBracket, "`]` to close the list");
+        self.alloc_expr(ExprKind::List(elems), self.span_from(start))
+    }
+
+    fn parse_lambda(&mut self, start: ByteOffset) -> ExprId {
+        self.bump(); // `fun`
+        let mut params = Vec::new();
+        while !self.at(TokenKind::Arrow) && !self.at_terminator() {
+            params.push(self.parse_pattern());
+        }
+        if params.is_empty() {
+            let span = self.cur().range;
+            self.error(SYNTAX_ERROR, span, "expected a parameter after `fun`");
+        }
+        self.expect(TokenKind::Arrow, "`->` after the lambda parameters");
+        let body = self.parse_expr();
+        self.alloc_expr(ExprKind::Lambda { params, body }, self.span_from(start))
+    }
+
+    fn parse_if(&mut self, start: ByteOffset) -> ExprId {
+        self.bump(); // `if`
+        let cond = self.parse_expr();
+        self.expect(TokenKind::Then, "`then`");
+        let then_branch = self.parse_expr();
+        self.expect(TokenKind::Else, "`else`");
+        let else_branch = self.parse_expr();
+        self.alloc_expr(ExprKind::If { cond, then_branch, else_branch }, self.span_from(start))
+    }
+
+    fn parse_block(&mut self, start: ByteOffset) -> ExprId {
+        self.bump(); // LayoutOpen
+        let mut stmts = Vec::new();
+        let mut tail = None;
+        loop {
+            while self.eat(TokenKind::LayoutSep) {}
+            if self.at(TokenKind::LayoutClose) || self.at_eof() {
+                break;
+            }
+            if self.at(TokenKind::Let) {
+                let stmt = self.parse_let_stmt();
+                stmts.push(stmt);
+            } else {
+                tail = Some(self.parse_expr());
+                while self.eat(TokenKind::LayoutSep) {}
+                if !self.at(TokenKind::LayoutClose) && !self.at_eof() {
+                    let span = self.cur().range;
+                    self.error(SYNTAX_ERROR, span, "expected the end of the block");
+                    self.resync(0);
+                }
+                break;
+            }
+        }
+        self.expect(TokenKind::LayoutClose, "the end of the block");
+        let tail = tail.unwrap_or_else(|| {
+            let span = self.span_from(start);
+            self.error(SYNTAX_ERROR, span, "a block must end in an expression");
+            self.alloc_expr(ExprKind::Error, span)
+        });
+        self.alloc_expr(ExprKind::Block { stmts, tail }, self.span_from(start))
+    }
+
+    fn parse_let_stmt(&mut self) -> LetStmt {
+        let start = self.start();
+        self.bump(); // `let`
+        let pat = self.parse_pattern();
+        let mut params = Vec::new();
+        while !self.at(TokenKind::Equals) && !self.at_terminator() {
+            params.push(self.parse_pattern());
+        }
+        self.expect(TokenKind::Equals, "`=` in the let binding");
+        let value = self.parse_expr();
+        LetStmt { pat, params, value, span: self.span_from(start) }
+    }
+
+    /// Skips a malformed expression up to the enclosing block boundary.
+    fn resync_expr(&mut self) {
+        self.resync(0);
+    }
+
+    /// Skips a balanced `{ … }` (used to recover from record syntax).
+    fn resync_brace(&mut self) {
+        let mut depth = 0i32;
+        loop {
+            match self.peek() {
+                TokenKind::Eof => break,
+                TokenKind::LBrace => {
+                    depth += 1;
+                    self.bump();
+                }
+                TokenKind::RBrace => {
+                    depth -= 1;
+                    self.bump();
+                    if depth <= 0 {
+                        break;
+                    }
+                }
+                TokenKind::LayoutClose if depth == 0 => break,
+                _ => {
+                    self.bump();
+                }
+            }
+        }
+    }
+
+    // --- patterns ---------------------------------------------------------
+
+    fn parse_pattern(&mut self) -> PatId {
+        let start = self.start();
+        let kind = match self.peek() {
+            TokenKind::LowerIdent => PatKind::Var(self.bump_symbol()),
+            TokenKind::Underscore => {
+                self.bump();
+                PatKind::Wildcard
+            }
+            TokenKind::LParen => return self.parse_pattern_paren(start),
+            _ => {
+                let span = self.cur().range;
+                self.error(SYNTAX_ERROR, span, "expected a pattern");
+                if !self.at_terminator() && !self.at(TokenKind::Equals) {
+                    self.bump();
+                }
+                PatKind::Error
+            }
+        };
+        self.alloc_pat(kind, self.span_from(start))
+    }
+
+    fn parse_pattern_paren(&mut self, start: ByteOffset) -> PatId {
+        self.bump(); // `(`
+        if self.eat(TokenKind::RParen) {
+            return self.alloc_pat(PatKind::Unit, self.span_from(start));
+        }
+        let first = self.parse_pattern();
+        if self.at(TokenKind::Comma) {
+            let mut elems = vec![first];
+            while self.eat(TokenKind::Comma) {
+                elems.push(self.parse_pattern());
+            }
+            self.expect(TokenKind::RParen, "`)` to close the tuple pattern");
+            self.alloc_pat(PatKind::Tuple(elems), self.span_from(start))
+        } else {
+            self.expect(TokenKind::RParen, "`)`");
+            self.alloc_pat(PatKind::Paren(first), self.span_from(start))
+        }
+    }
+
+    // --- types ------------------------------------------------------------
+
+    fn parse_type(&mut self) -> TypeId {
+        self.parse_type_arrow()
+    }
+
+    fn parse_type_arrow(&mut self) -> TypeId {
+        let start = self.start();
+        let from = self.parse_type_tuple();
+        if self.eat(TokenKind::Arrow) {
+            let to = self.parse_type_arrow(); // right-associative
+            self.alloc_ty(TypeKind::Arrow { from, to }, self.span_from(start))
+        } else {
+            from
+        }
+    }
+
+    fn parse_type_tuple(&mut self) -> TypeId {
+        let start = self.start();
+        let first = self.parse_type_app();
+        if self.at(TokenKind::Star) {
+            let mut elems = vec![first];
+            while self.eat(TokenKind::Star) {
+                elems.push(self.parse_type_app());
+            }
+            self.alloc_ty(TypeKind::Tuple(elems), self.span_from(start))
+        } else {
+            first
+        }
+    }
+
+    fn parse_type_app(&mut self) -> TypeId {
+        let start = self.start();
+        let mut func = self.parse_type_atom();
+        while can_start_type_atom(self.peek()) {
+            let arg = self.parse_type_atom();
+            func = self.alloc_ty(TypeKind::App { func, arg }, self.span_from(start));
+        }
+        func
+    }
+
+    fn parse_type_atom(&mut self) -> TypeId {
+        let start = self.start();
+        let kind = match self.peek() {
+            TokenKind::TypeVar => TypeKind::Var(self.bump_symbol()),
+            TokenKind::UpperIdent => TypeKind::Con(self.bump_symbol()),
+            TokenKind::LParen => {
+                self.bump();
+                if self.eat(TokenKind::RParen) {
+                    TypeKind::Unit
+                } else {
+                    let inner = self.parse_type();
+                    self.expect(TokenKind::RParen, "`)`");
+                    TypeKind::Paren(inner)
+                }
+            }
+            TokenKind::LBrace => {
+                let span = self.cur().range;
+                self.error(UNSUPPORTED, span, "record types are not supported yet");
+                self.resync_brace();
+                TypeKind::Error
+            }
+            _ => {
+                let span = self.cur().range;
+                self.error(SYNTAX_ERROR, span, "expected a type");
+                if !self.at_terminator()
+                    && !matches!(
+                        self.peek(),
+                        TokenKind::Arrow | TokenKind::Star | TokenKind::Equals
+                    )
+                {
+                    self.bump();
+                }
+                TypeKind::Error
+            }
+        };
+        self.alloc_ty(kind, self.span_from(start))
+    }
+}
+
+/// Maps an operator token to its [`BinOp`], if it is a binary operator.
+fn binop(kind: TokenKind) -> Option<BinOp> {
+    Some(match kind {
+        TokenKind::Plus => BinOp::Add,
+        TokenKind::Minus => BinOp::Sub,
+        TokenKind::Star => BinOp::Mul,
+        TokenKind::Slash => BinOp::Div,
+        TokenKind::Percent => BinOp::Rem,
+        TokenKind::PlusPlus => BinOp::Concat,
+        TokenKind::ColonColon => BinOp::Cons,
+        TokenKind::PipeGreater => BinOp::Pipe,
+        TokenKind::GreaterGreater => BinOp::Compose,
+        TokenKind::AmpAmp => BinOp::And,
+        TokenKind::PipePipe => BinOp::Or,
+        TokenKind::Equals => BinOp::Eq,
+        TokenKind::NotEq => BinOp::Ne,
+        TokenKind::Less => BinOp::Lt,
+        TokenKind::LessEq => BinOp::Le,
+        TokenKind::Greater => BinOp::Gt,
+        TokenKind::GreaterEq => BinOp::Ge,
+        _ => return None,
+    })
+}
+
+/// The left/right binding powers for `op` (higher binds tighter). Left-associative
+/// operators use `(2n, 2n+1)`; the right-associative `::`/`++` use `(2n+1, 2n)`.
+fn binding_power(op: BinOp) -> (u8, u8) {
+    match op {
+        BinOp::Pipe => (2, 3),
+        BinOp::Compose => (4, 5),
+        BinOp::Or => (6, 7),
+        BinOp::And => (8, 9),
+        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => (10, 11),
+        BinOp::Cons | BinOp::Concat => (13, 12),
+        BinOp::Add | BinOp::Sub => (14, 15),
+        BinOp::Mul | BinOp::Div | BinOp::Rem => (16, 17),
+    }
+}
+
+/// Whether `kind` can begin a function-application argument (a simple atom).
+fn can_start_arg(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Int
+            | TokenKind::Float
+            | TokenKind::String
+            | TokenKind::Char
+            | TokenKind::LowerIdent
+            | TokenKind::UpperIdent
+            | TokenKind::LParen
+            | TokenKind::LBracket
+    )
+}
+
+/// Whether `kind` can begin a type-application argument atom.
+fn can_start_type_atom(kind: TokenKind) -> bool {
+    matches!(kind, TokenKind::TypeVar | TokenKind::UpperIdent | TokenKind::LParen)
+}
+
+#[cfg(test)]
+mod tests {
+    use fai_span::SourceId;
+
+    use super::{Parsed, parse_module};
+    use crate::ast::{
+        ExprId, ExprKind, ItemKind, LetStmt, Module, PatId, PatKind, TypeId, TypeKind,
+    };
+
+    fn parse(src: &str) -> Parsed {
+        parse_module(SourceId::new(0), src)
+    }
+
+    fn dump_expr(m: &Module, id: ExprId) -> String {
+        match &m.expr(id).kind {
+            ExprKind::Int(s) => format!("(int {})", s.as_str()),
+            ExprKind::Float(s) => format!("(float {})", s.as_str()),
+            ExprKind::String(s) => format!("(string {})", s.as_str()),
+            ExprKind::Char(s) => format!("(char {})", s.as_str()),
+            ExprKind::Var(s) => format!("(var {})", s.as_str()),
+            ExprKind::Unit => "(unit)".to_owned(),
+            ExprKind::App { func, arg } => {
+                format!("(app {} {})", dump_expr(m, *func), dump_expr(m, *arg))
+            }
+            ExprKind::Binary { op, lhs, rhs } => {
+                format!("({op:?} {} {})", dump_expr(m, *lhs), dump_expr(m, *rhs))
+            }
+            ExprKind::Unary { op, operand } => format!("({op:?} {})", dump_expr(m, *operand)),
+            ExprKind::If { cond, then_branch, else_branch } => format!(
+                "(if {} {} {})",
+                dump_expr(m, *cond),
+                dump_expr(m, *then_branch),
+                dump_expr(m, *else_branch)
+            ),
+            ExprKind::Lambda { params, body } => {
+                format!("(fun [{}] {})", dump_pats(m, params), dump_expr(m, *body))
+            }
+            ExprKind::Block { stmts, tail } => {
+                let stmts = stmts.iter().map(|s| dump_stmt(m, s)).collect::<Vec<_>>().join(" ");
+                format!("(block [{}] {})", stmts, dump_expr(m, *tail))
+            }
+            ExprKind::Field { base, field } => {
+                format!("(field {} {})", dump_expr(m, *base), field.as_str())
+            }
+            ExprKind::Paren(inner) => format!("(paren {})", dump_expr(m, *inner)),
+            ExprKind::Tuple(xs) => format!("(tuple {})", dump_exprs(m, xs)),
+            ExprKind::List(xs) => format!("(list {})", dump_exprs(m, xs)),
+            ExprKind::Error => "(expr-error)".to_owned(),
+        }
+    }
+
+    fn dump_exprs(m: &Module, ids: &[ExprId]) -> String {
+        ids.iter().map(|id| dump_expr(m, *id)).collect::<Vec<_>>().join(" ")
+    }
+
+    fn dump_stmt(m: &Module, stmt: &LetStmt) -> String {
+        format!(
+            "(let {} [{}] {})",
+            dump_pat(m, stmt.pat),
+            dump_pats(m, &stmt.params),
+            dump_expr(m, stmt.value)
+        )
+    }
+
+    fn dump_pat(m: &Module, id: PatId) -> String {
+        match &m.pat(id).kind {
+            PatKind::Var(s) => format!("(pvar {})", s.as_str()),
+            PatKind::Wildcard => "(pwild)".to_owned(),
+            PatKind::Unit => "(punit)".to_owned(),
+            PatKind::Tuple(xs) => {
+                format!(
+                    "(ptuple {})",
+                    xs.iter().map(|p| dump_pat(m, *p)).collect::<Vec<_>>().join(" ")
+                )
+            }
+            PatKind::Paren(inner) => format!("(pparen {})", dump_pat(m, *inner)),
+            PatKind::Error => "(pat-error)".to_owned(),
+        }
+    }
+
+    fn dump_pats(m: &Module, ids: &[PatId]) -> String {
+        ids.iter().map(|id| dump_pat(m, *id)).collect::<Vec<_>>().join(" ")
+    }
+
+    fn dump_type(m: &Module, id: TypeId) -> String {
+        match &m.ty(id).kind {
+            TypeKind::Var(s) => format!("(tvar {})", s.as_str()),
+            TypeKind::Con(s) => format!("(tcon {})", s.as_str()),
+            TypeKind::App { func, arg } => {
+                format!("(tapp {} {})", dump_type(m, *func), dump_type(m, *arg))
+            }
+            TypeKind::Arrow { from, to } => {
+                format!("(arrow {} {})", dump_type(m, *from), dump_type(m, *to))
+            }
+            TypeKind::Tuple(xs) => format!(
+                "(ttuple {})",
+                xs.iter().map(|t| dump_type(m, *t)).collect::<Vec<_>>().join(" ")
+            ),
+            TypeKind::Unit => "(tunit)".to_owned(),
+            TypeKind::Paren(inner) => format!("(tparen {})", dump_type(m, *inner)),
+            TypeKind::Error => "(type-error)".to_owned(),
+        }
+    }
+
+    fn dump_module(m: &Module) -> String {
+        let mut out = format!("module {}\n", m.name.map_or("<none>", |s| s.as_str()));
+        for item in &m.items {
+            let line = match &item.kind {
+                ItemKind::Signature { visibility, name, ty } => {
+                    format!("(sig {visibility:?} {} {})", name.as_str(), dump_type(m, *ty))
+                }
+                ItemKind::Binding { visibility, name, params, body } => format!(
+                    "(let {visibility:?} {} [{}] {})",
+                    name.as_str(),
+                    dump_pats(m, params),
+                    dump_expr(m, *body)
+                ),
+                ItemKind::Example { body } => format!("(example {})", dump_expr(m, *body)),
+                ItemKind::Forall { binders, body } => {
+                    let bs = binders.iter().map(|b| b.as_str()).collect::<Vec<_>>().join(" ");
+                    format!("(forall [{}] {})", bs, dump_expr(m, *body))
+                }
+                ItemKind::Error => "(item-error)".to_owned(),
+            };
+            out.push_str(&line);
+            out.push('\n');
+        }
+        out
+    }
+
+    fn dump(src: &str) -> String {
+        let parsed = parse(src);
+        let mut out = dump_module(&parsed.module);
+        for diag in &parsed.diagnostics {
+            out.push_str(&format!("diag {} {}\n", diag.code, diag.message));
+        }
+        out
+    }
+
+    /// Returns the S-expression for the first binding's body.
+    fn body(src: &str) -> String {
+        let parsed = parse(src);
+        for item in &parsed.module.items {
+            if let ItemKind::Binding { body, .. } = &item.kind {
+                return dump_expr(&parsed.module, *body);
+            }
+        }
+        panic!("no binding found in: {src}");
+    }
+
+    /// Wraps an expression as the body of a binding for focused expr tests.
+    fn expr(src: &str) -> String {
+        body(&format!("module M\nlet it = {src}"))
+    }
+
+    #[test]
+    fn module_header_and_simple_binding() {
+        let parsed = parse("module Main\nlet x = 1");
+        assert_eq!(parsed.module.name.unwrap().as_str(), "Main");
+        assert!(parsed.diagnostics.is_empty());
+        assert_eq!(dump_module(&parsed.module), "module Main\n(let Private x [] (int 1))\n");
+    }
+
+    #[test]
+    fn precedence_arithmetic() {
+        assert_eq!(expr("a + b * c"), "(Add (var a) (Mul (var b) (var c)))");
+        assert_eq!(expr("a * b + c"), "(Add (Mul (var a) (var b)) (var c))");
+    }
+
+    #[test]
+    fn left_and_right_associativity() {
+        assert_eq!(expr("a - b - c"), "(Sub (Sub (var a) (var b)) (var c))");
+        assert_eq!(expr("a :: b :: c"), "(Cons (var a) (Cons (var b) (var c)))");
+    }
+
+    #[test]
+    fn application_is_left_nested_and_tighter_than_operators() {
+        assert_eq!(expr("f a b"), "(app (app (var f) (var a)) (var b))");
+        assert_eq!(expr("f a + g b"), "(Add (app (var f) (var a)) (app (var g) (var b)))");
+    }
+
+    #[test]
+    fn unary_minus_binds_tighter_than_multiply_but_looser_than_application() {
+        assert_eq!(expr("-a * b"), "(Mul (Neg (var a)) (var b))");
+        assert_eq!(expr("-f x"), "(Neg (app (var f) (var x)))");
+        assert_eq!(expr("abs (-3)"), "(app (var abs) (paren (Neg (int 3))))");
+    }
+
+    #[test]
+    fn pipe_is_loosest_and_left_associative() {
+        assert_eq!(expr("a |> f |> g"), "(Pipe (Pipe (var a) (var f)) (var g))");
+    }
+
+    #[test]
+    fn comparison_tighter_than_boolean_and_equality_is_an_operator() {
+        assert_eq!(expr("a < b && c"), "(And (Lt (var a) (var b)) (var c))");
+        assert_eq!(expr("count % 2 = 0"), "(Eq (Rem (var count) (int 2)) (int 0))");
+    }
+
+    #[test]
+    fn field_access_chains_tightest() {
+        assert_eq!(expr("r.x.y"), "(field (field (var r) x) y)");
+        assert_eq!(expr("a.b c"), "(app (field (var a) b) (var c))");
+    }
+
+    #[test]
+    fn if_then_else_and_else_if_chain() {
+        assert_eq!(expr("if c then a else b"), "(if (var c) (var a) (var b))");
+        assert_eq!(
+            expr("if a then b else if c then d else e"),
+            "(if (var a) (var b) (if (var c) (var d) (var e)))"
+        );
+    }
+
+    #[test]
+    fn lambda_tuple_list_unit_paren() {
+        assert_eq!(expr("fun x y -> x"), "(fun [(pvar x) (pvar y)] (var x))");
+        assert_eq!(expr("(a, b)"), "(tuple (var a) (var b))");
+        assert_eq!(expr("[1, 2, 3]"), "(list (int 1) (int 2) (int 3))");
+        assert_eq!(expr("[]"), "(list )");
+        assert_eq!(expr("()"), "(unit)");
+        assert_eq!(expr("(a)"), "(paren (var a))");
+    }
+
+    #[test]
+    fn literals_keep_their_raw_lexemes() {
+        assert_eq!(expr("0xFF"), "(int 0xFF)");
+        assert_eq!(expr("1_000"), "(int 1_000)");
+        assert_eq!(expr("3.0"), "(float 3.0)");
+        assert_eq!(expr("\"hi\""), "(string \"hi\")");
+        assert_eq!(expr("'a'"), "(char 'a')");
+    }
+
+    #[test]
+    fn local_let_block_with_destructuring() {
+        let src = "module M\nlet swap p =\n  let (x, y) = p\n  (y, x)";
+        assert_eq!(
+            body(src),
+            "(block [(let (ptuple (pvar x) (pvar y)) [] (var p))] (tuple (var y) (var x)))"
+        );
+    }
+
+    #[test]
+    fn signature_types_arrow_tuple_and_application() {
+        let parsed = parse("module M\npublic divMod : Int -> Int -> Int * Int");
+        assert!(parsed.diagnostics.is_empty());
+        assert_eq!(
+            dump_module(&parsed.module),
+            "module M\n(sig Public divMod (arrow (tcon Int) (arrow (tcon Int) (ttuple (tcon Int) (tcon Int)))))\n"
+        );
+        assert_eq!(
+            dump("module M\npublic map : ('a -> 'b) -> List 'a -> List 'b").lines().nth(1).unwrap(),
+            "(sig Public map (arrow (tparen (arrow (tvar 'a) (tvar 'b))) (arrow (tapp (tcon List) (tvar 'a)) (tapp (tcon List) (tvar 'b)))))"
+        );
+    }
+
+    #[test]
+    fn example_and_forall_items() {
+        assert_eq!(
+            dump("module M\nexample: f 1 = 2").lines().nth(1).unwrap(),
+            "(example (Eq (app (var f) (int 1)) (int 2)))"
+        );
+        assert_eq!(
+            dump("module M\nforall xs ys: f xs = g ys").lines().nth(1).unwrap(),
+            "(forall [xs ys] (Eq (app (var f) (var xs)) (app (var g) (var ys))))"
+        );
+    }
+
+    #[test]
+    fn binding_equals_is_consumed_so_inner_equals_is_equality() {
+        // The first `=` binds; the second is the equality operator.
+        let parsed = parse("module M\nlet isEven = count % 2 = 0");
+        assert!(parsed.diagnostics.is_empty());
+        assert_eq!(
+            body("module M\nlet isEven = count % 2 = 0"),
+            "(Eq (Rem (var count) (int 2)) (int 0))"
+        );
+    }
+
+    // --- error recovery ---------------------------------------------------
+
+    #[test]
+    fn missing_module_header_is_reported_but_items_still_parse() {
+        let parsed = parse("let x = 1\nlet y = 2");
+        assert!(parsed.diagnostics.iter().any(|d| d.code == crate::MODULE_HEADER));
+        // Both bindings still parsed.
+        assert_eq!(parsed.module.items.len(), 2);
+    }
+
+    #[test]
+    fn unsupported_constructs_report_fai1030_and_recover() {
+        for src in [
+            "module M\ntype T = T",
+            "module M\ninterface I =\n  m : Int",
+            "module M\nlet a = match x with\n  | _ -> 1",
+            "module M\nlet r = { x = 1 }",
+            "module M\npublic f : { x : Int }",
+        ] {
+            let parsed = parse(src);
+            assert!(
+                parsed.diagnostics.iter().any(|d| d.code == crate::UNSUPPORTED),
+                "expected FAI1030 for: {src}",
+            );
+        }
+    }
+
+    #[test]
+    fn one_bad_item_does_not_hide_the_next() {
+        // A garbage item (a stray `)`) between two good ones: the parser reports
+        // it and still parses both bindings.
+        let parsed = parse("module M\nlet a = 1\n)\nlet b = 2");
+        let bindings = parsed
+            .module
+            .items
+            .iter()
+            .filter(|i| matches!(i.kind, ItemKind::Binding { .. }))
+            .count();
+        assert_eq!(bindings, 2);
+        assert!(parsed.diagnostics.iter().any(|d| d.code == crate::SYNTAX_ERROR));
+    }
+
+    #[test]
+    fn unclosed_paren_recovers_with_an_error() {
+        let parsed = parse("module M\nlet x = (a + b");
+        assert!(parsed.diagnostics.iter().any(|d| d.code == crate::SYNTAX_ERROR));
+        // Still produced a binding for `x`.
+        assert!(parsed.module.items.iter().any(|i| matches!(i.kind, ItemKind::Binding { .. })));
+    }
+
+    #[test]
+    fn block_must_end_in_an_expression() {
+        let parsed = parse("module M\nlet f =\n  let a = 1");
+        assert!(parsed.diagnostics.iter().any(|d| d.code == crate::SYNTAX_ERROR));
+    }
+
+    // --- snapshots --------------------------------------------------------
+
+    #[test]
+    fn snapshot_function_with_pipes() {
+        insta::assert_snapshot!(
+            "function_with_pipes",
+            dump(
+                "module Funcs\npublic describe : Int -> String\nlet describe n =\n  n\n  |> inc\n  |> intToString"
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_local_bindings() {
+        insta::assert_snapshot!(
+            "local_bindings",
+            dump(
+                "module Locals\nlet hypotenuse a b =\n  let a2 = a * a\n  let b2 = b * b\n  sqrt (a2 + b2)"
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_if_else_chain() {
+        insta::assert_snapshot!(
+            "if_else_chain",
+            dump(
+                "module Math\nlet classify n =\n  if n < 0 then \"neg\"\n  else if n = 0 then \"zero\"\n  else \"pos\""
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_contract_group() {
+        insta::assert_snapshot!(
+            "contract_group",
+            dump(
+                "module Math\npublic abs : Int -> Int\nlet abs n =\n  if n < 0 then 0 - n else n\nexample: abs (-3) = 3\nforall n: abs n >= 0"
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_recovery() {
+        insta::assert_snapshot!("recovery", dump("module M\nlet a = 1\ntype Bad = X\nlet b = 2"));
+    }
+}
+
+#[cfg(test)]
+mod proptests {
+    use fai_span::SourceId;
+    use proptest::prelude::*;
+
+    use super::parse_module;
+    use crate::ast::{ExprId, ExprKind, ItemKind, Module, PatId, TypeId};
+    use crate::token::TokenKind;
+
+    // Walks every node via its id; panics (failing the test) if any id dangles.
+    fn walk_expr(m: &Module, id: ExprId) {
+        match &m.expr(id).kind {
+            ExprKind::App { func, arg } => {
+                walk_expr(m, *func);
+                walk_expr(m, *arg);
+            }
+            ExprKind::Binary { lhs, rhs, .. } => {
+                walk_expr(m, *lhs);
+                walk_expr(m, *rhs);
+            }
+            ExprKind::Unary { operand, .. } | ExprKind::Paren(operand) => walk_expr(m, *operand),
+            ExprKind::If { cond, then_branch, else_branch } => {
+                walk_expr(m, *cond);
+                walk_expr(m, *then_branch);
+                walk_expr(m, *else_branch);
+            }
+            ExprKind::Lambda { params, body } => {
+                params.iter().for_each(|p| walk_pat(m, *p));
+                walk_expr(m, *body);
+            }
+            ExprKind::Block { stmts, tail } => {
+                for stmt in stmts {
+                    walk_pat(m, stmt.pat);
+                    stmt.params.iter().for_each(|p| walk_pat(m, *p));
+                    walk_expr(m, stmt.value);
+                }
+                walk_expr(m, *tail);
+            }
+            ExprKind::Field { base, .. } => walk_expr(m, *base),
+            ExprKind::Tuple(xs) | ExprKind::List(xs) => xs.iter().for_each(|x| walk_expr(m, *x)),
+            _ => {}
+        }
+    }
+
+    fn walk_pat(m: &Module, id: PatId) {
+        match &m.pat(id).kind {
+            crate::ast::PatKind::Tuple(xs) => xs.iter().for_each(|p| walk_pat(m, *p)),
+            crate::ast::PatKind::Paren(inner) => walk_pat(m, *inner),
+            _ => {}
+        }
+    }
+
+    fn walk_type(m: &Module, id: TypeId) {
+        match &m.ty(id).kind {
+            crate::ast::TypeKind::App { func, arg } => {
+                walk_type(m, *func);
+                walk_type(m, *arg);
+            }
+            crate::ast::TypeKind::Arrow { from, to } => {
+                walk_type(m, *from);
+                walk_type(m, *to);
+            }
+            crate::ast::TypeKind::Tuple(xs) => xs.iter().for_each(|t| walk_type(m, *t)),
+            crate::ast::TypeKind::Paren(inner) => walk_type(m, *inner),
+            _ => {}
+        }
+    }
+
+    proptest! {
+        /// Parsing arbitrary input never panics, and the resulting tree has no
+        /// dangling node ids.
+        #[test]
+        fn parsing_is_total(input in any::<String>()) {
+            let parsed = parse_module(SourceId::new(0), &input);
+            for item in &parsed.module.items {
+                match &item.kind {
+                    ItemKind::Signature { ty, .. } => walk_type(&parsed.module, *ty),
+                    ItemKind::Binding { params, body, .. } => {
+                        params.iter().for_each(|p| walk_pat(&parsed.module, *p));
+                        walk_expr(&parsed.module, *body);
+                    }
+                    ItemKind::Example { body } => walk_expr(&parsed.module, *body),
+                    ItemKind::Forall { body, .. } => walk_expr(&parsed.module, *body),
+                    ItemKind::Error => {}
+                }
+            }
+            // Each item consumes at least one token, so item count is bounded.
+            prop_assert!(parsed.module.items.len() <= input.len() + 1);
+        }
+
+        /// A minimal generated binding parses cleanly to exactly one binding.
+        #[test]
+        fn simple_binding_parses_clean(name in "[a-z][a-zA-Z0-9_]*") {
+            prop_assume!(TokenKind::keyword(&name).is_none());
+            let src = format!("module M\nlet {name} = 1");
+            let parsed = parse_module(SourceId::new(0), &src);
+            prop_assert!(parsed.diagnostics.is_empty());
+            prop_assert_eq!(parsed.module.items.len(), 1);
+            match &parsed.module.items[0].kind {
+                ItemKind::Binding { name: bound, .. } => prop_assert_eq!(bound.as_str(), name.as_str()),
+                other => prop_assert!(false, "expected a binding, got {:?}", other),
+            }
+        }
+    }
+}
