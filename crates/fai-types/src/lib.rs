@@ -7,6 +7,12 @@
 //!
 //! Skeleton: the representation and queries land incrementally across M2.
 
+mod lower;
+mod ty;
+
+pub use lower::{LowerVars, lower_signature, lower_type};
+pub use ty::{Con, Scheme, Ty, TyVarId, VarNames, render, render_scheme};
+
 use fai_diagnostics::{CodeInfo, DiagnosticCode, Severity};
 
 /// Two types could not be unified.
