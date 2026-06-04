@@ -506,4 +506,52 @@ mod tests {
             render("module M\nlet xs =\n  [ 1\n  , 2\n  , 3 ]")
         );
     }
+
+    #[test]
+    fn comments_between_items_do_not_add_separators() {
+        // Comments are trivia, so a comment-only line must not produce a Sep.
+        let src = "module M\nlet a = 1\n// note\nlet b = 2";
+        assert_eq!(count(src, TokenKind::LayoutSep), 2);
+    }
+
+    #[test]
+    fn trailing_newline_is_harmless() {
+        let kinds_of = |layout: Layout| layout.tokens.iter().map(|t| t.kind).collect::<Vec<_>>();
+        assert_eq!(kinds_of(run("module M\nlet a = 1\n")), kinds_of(run("module M\nlet a = 1")));
+    }
+
+    #[test]
+    fn opener_at_eof_neither_opens_nor_panics() {
+        let src = "module M\nlet f =";
+        assert_eq!(count(src, TokenKind::LayoutOpen), 0);
+        assert_eq!(run(src).tokens.last().unwrap().kind, TokenKind::Eof);
+    }
+
+    #[test]
+    fn unclosed_bracket_at_eof_does_not_panic() {
+        let result = run("module M\nlet x = (a");
+        assert_eq!(result.tokens.last().unwrap().kind, TokenKind::Eof);
+    }
+
+    #[test]
+    fn sibling_after_nested_block_separates_at_enclosing_level() {
+        let src = "module M\nlet outer =\n  let a =\n    deep\n  tail";
+        assert_eq!(count(src, TokenKind::LayoutOpen), 2);
+        assert_eq!(count(src, TokenKind::LayoutClose), 2);
+        // header -> binding, plus the `tail` sibling separator inside `outer`.
+        assert_eq!(count(src, TokenKind::LayoutSep), 2);
+    }
+
+    #[test]
+    fn unindented_then_branch_is_a_layout_error() {
+        let src = "module M\nlet f x =\n  if c then\n  a";
+        assert!(run(src).diagnostics.iter().any(|d| d.code == crate::LAYOUT_ERROR));
+    }
+
+    #[test]
+    fn deeply_nested_blocks_balance() {
+        let src = "module M\nlet f =\n  let g =\n    let h =\n      deep\n    h\n  g";
+        assert_eq!(count(src, TokenKind::LayoutOpen), 3);
+        assert_eq!(count(src, TokenKind::LayoutOpen), count(src, TokenKind::LayoutClose));
+    }
 }
