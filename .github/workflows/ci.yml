@@ -41,4 +41,10 @@ jobs:
         run: cargo build --workspace --all-targets --locked
 
       - name: Test
+        # Run the property tests at a higher case count than proptest's local
+        # default (256) for deeper fuzzing in CI, while keeping the developer
+        # inner loop fast. Saved counterexamples live in each crate's committed
+        # `proptest-regressions/` directory and are always replayed first.
+        env:
+          PROPTEST_CASES: "2048"
         run: cargo test --workspace --locked
