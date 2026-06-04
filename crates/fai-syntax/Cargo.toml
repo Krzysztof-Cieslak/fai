@@ -10,6 +10,10 @@ license.workspace = true
 [dependencies]
 fai-span.workspace = true
 fai-diagnostics.workspace = true
+fai-db.workspace = true
+# salsa's `tracked`/`Update` macros resolve `salsa::` from the crate root, so a
+# query-defining crate needs salsa as a direct dependency (see `docs/PLAN.md`).
+salsa.workspace = true
 lasso.workspace = true
 
 [dev-dependencies]

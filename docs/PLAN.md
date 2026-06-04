@@ -507,8 +507,10 @@ must honor):
   Canonical formatting pinned via `rustfmt.toml` (`use_small_heuristics = "Max"`).
 - **D20 Lints:** denied workspace-wide in `[workspace.lints]` — `warnings`,
   `unsafe_code`, `clippy::all`. `unsafe_code` is `deny` (not `forbid`) so `fai-db`
-  can carry salsa's macro-generated `unsafe impl`s via a scoped crate allow; it is
-  the only crate that does so. `missing_docs` is **not** denied (it fights
+  can carry salsa's macro-generated `unsafe impl`s via a scoped crate allow; the
+  query-defining phase crates (e.g. `fai-syntax`) scope the same allow for salsa's
+  `tracked`/`Update` macros (still no hand-written unsafe). `missing_docs` is
+  **not** denied (it fights
   macro-generated public items); docs on public items stay a convention.
 - **D21 Tooling error codes:** the **`FAI0xxx`** range is owned by the
   tooling/driver layer (`fai-driver`): `FAI0001` not-implemented, `FAI0002`
@@ -526,8 +528,9 @@ must honor):
   `(file, byteStart, code)`.
 - **D24 Database shape:** a single `#[salsa::db]` trait `Db` plus the concrete
   `FaiDatabase`, both in `fai-db`; downstream phases add tracked *functions* over
-  `&dyn fai_db::Db` rather than new DB traits. Only `fai-db` depends on `salsa`
-  directly; downstream uses it via `fai-db`'s re-exports. Identifier interning
+  `&dyn fai_db::Db` rather than new DB traits. `fai-db` and the query-defining
+  phase crates depend on `salsa` directly (its macros resolve `salsa::` from the
+  crate root); other crates use `fai-db`'s re-exports. Identifier interning
   will use a separate non-salsa `Symbol`; salsa interning is reserved for derived
   keys.
 - **D25 Client seam:** driver command entry points take `&dyn Db` and return a

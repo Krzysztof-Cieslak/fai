@@ -54,7 +54,7 @@ arena_id!(
 );
 
 /// A parsed module: its header plus the node arenas.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct Module {
     /// The declared module name, or `None` if the header was missing/malformed.
     pub name: Option<Symbol>,
@@ -100,7 +100,7 @@ pub enum Visibility {
 }
 
 /// A top-level declaration.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Item {
     /// What the item declares.
     pub kind: ItemKind,
@@ -109,7 +109,7 @@ pub struct Item {
 }
 
 /// The kind of a top-level [`Item`].
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum ItemKind {
     /// A type signature: `[public] name : ty`.
     Signature { visibility: Visibility, name: Symbol, ty: TypeId },
@@ -124,7 +124,7 @@ pub enum ItemKind {
 }
 
 /// An expression.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Expr {
     /// What the expression is.
     pub kind: ExprKind,
@@ -133,7 +133,7 @@ pub struct Expr {
 }
 
 /// The kind of an [`Expr`]. Literals store their raw (interned) lexeme.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum ExprKind {
     /// Integer literal (raw lexeme, e.g. `0xFF`, `1_000`).
     Int(Symbol),
@@ -172,7 +172,7 @@ pub enum ExprKind {
 }
 
 /// A local `let` statement inside a [`ExprKind::Block`].
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct LetStmt {
     /// The bound pattern.
     pub pat: PatId,
@@ -231,7 +231,7 @@ pub enum UnOp {
 }
 
 /// A pattern.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Pat {
     /// What the pattern is.
     pub kind: PatKind,
@@ -240,7 +240,7 @@ pub struct Pat {
 }
 
 /// The kind of a [`Pat`].
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum PatKind {
     /// A variable binding.
     Var(Symbol),
@@ -257,7 +257,7 @@ pub enum PatKind {
 }
 
 /// A type expression.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Type {
     /// What the type is.
     pub kind: TypeKind,
@@ -266,7 +266,7 @@ pub struct Type {
 }
 
 /// The kind of a [`Type`].
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum TypeKind {
     /// A type variable `'a`.
     Var(Symbol),
