@@ -840,4 +840,81 @@ mod tests {
         assert_eq!(text, "// c");
         assert_eq!(result.tokens[0].kind, TokenKind::LowerIdent);
     }
+
+    #[test]
+    fn comment_markers_inside_strings_are_content() {
+        // `//` and `(*` inside a string must not start a comment.
+        let result = lexed("\"a // b\"");
+        assert_eq!(result.tokens[0].kind, TokenKind::String);
+        assert!(result.comments.is_empty());
+        assert!(result.diagnostics.is_empty());
+
+        let block = lexed("\"a (* b *)\"");
+        assert_eq!(block.tokens[0].kind, TokenKind::String);
+        assert!(block.comments.is_empty());
+    }
+
+    #[test]
+    fn quotes_inside_comments_are_content() {
+        // A `"` inside a comment must not start a string literal.
+        let line = lexed("// \"unclosed");
+        assert_eq!(line.comments.len(), 1);
+        assert_eq!(line.comments[0].kind, crate::CommentKind::Line);
+        assert!(line.diagnostics.is_empty());
+
+        let block = lexed("(* \"x\" // *)");
+        assert_eq!(block.comments.len(), 1);
+        assert_eq!(block.comments[0].kind, crate::CommentKind::Block);
+        assert!(block.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn empty_string_is_valid() {
+        let result = lexed("\"\"");
+        assert_eq!(result.tokens[0].kind, TokenKind::String);
+        assert_eq!(lexeme("\"\"", &result.tokens[0]), "\"\"");
+        assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn quote_character_literals() {
+        assert_eq!(kinds("'\"'"), vec![TokenKind::Char, TokenKind::Eof]); // '"'
+        assert_eq!(kinds("'('"), vec![TokenKind::Char, TokenKind::Eof]); // '('
+        assert_eq!(kinds("' '"), vec![TokenKind::Char, TokenKind::Eof]); // a space
+    }
+
+    #[test]
+    fn non_ascii_outside_strings_is_unexpected() {
+        // Identifiers are ASCII in v1; a stray multi-byte char is reported and
+        // skipped wholesale, leaving following tokens at valid offsets.
+        let result = lexed("é x");
+        assert_eq!(result.diagnostics.len(), 1);
+        assert_eq!(result.diagnostics[0].code, crate::UNEXPECTED_CHAR);
+        assert_eq!(kinds("é x"), vec![TokenKind::LowerIdent, TokenKind::Eof]);
+    }
+
+    #[test]
+    fn lone_backslash_is_unexpected() {
+        let result = lexed("\\");
+        assert_eq!(result.diagnostics.len(), 1);
+        assert_eq!(result.diagnostics[0].code, crate::UNEXPECTED_CHAR);
+    }
+
+    #[test]
+    fn operators_split_greedily_left_to_right() {
+        // `||>` is `||` then `>`, and `>>=` is `>>` then `=`.
+        assert_eq!(kinds("||>"), vec![TokenKind::PipePipe, TokenKind::Greater, TokenKind::Eof,]);
+        assert_eq!(
+            kinds(">>="),
+            vec![TokenKind::GreaterGreater, TokenKind::Equals, TokenKind::Eof,]
+        );
+    }
+
+    #[test]
+    fn double_dot_is_two_dots_not_a_float() {
+        assert_eq!(
+            kinds("1..2"),
+            vec![TokenKind::Int, TokenKind::Dot, TokenKind::Dot, TokenKind::Int, TokenKind::Eof,]
+        );
+    }
 }
