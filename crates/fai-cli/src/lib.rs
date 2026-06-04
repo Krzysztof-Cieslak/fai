@@ -13,10 +13,10 @@ use std::io::{IsTerminal, Write};
 use camino::Utf8PathBuf;
 use clap::Parser;
 use clap::error::ErrorKind;
-use fai_driver::{CommandResult, DriverError, Session};
+use fai_driver::{CommandResult, DriverError, QueryRequest, Session};
 use fai_span::{SourceMap, SpanResolver};
 
-use crate::cli::{Cli, ColorChoice, Command, FmtArgs, MessageFormat};
+use crate::cli::{Cli, ColorChoice, Command, FmtArgs, MessageFormat, QueryCommand};
 
 /// Success: no errors.
 const EXIT_OK: i32 = 0;
@@ -78,7 +78,7 @@ fn dispatch(parsed: Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
         Command::Run(_) => fai_driver::run(db),
         Command::Test(_) => fai_driver::test(db),
         Command::Lsp => fai_driver::lsp(db),
-        Command::Query { sub } => fai_driver::query(db, sub.name()),
+        Command::Query { sub } => return run_query(&session, sub, format, out, err),
         Command::Daemon { sub } => fai_driver::daemon(db, sub.name()),
     };
 
@@ -136,6 +136,50 @@ fn run_fmt(
     } else {
         EXIT_OK
     }
+}
+
+/// Maps a clap `QueryCommand` to the driver's `QueryRequest`. Commands outside
+/// M2's scope map to `Unsupported`.
+fn to_request(sub: &QueryCommand) -> QueryRequest {
+    match sub {
+        QueryCommand::Symbols => QueryRequest::Symbols { module: None, limit: None },
+        QueryCommand::Def { target } => QueryRequest::Def { target: target.clone() },
+        QueryCommand::Refs { target } => QueryRequest::Refs { target: target.clone(), limit: None },
+        QueryCommand::Type { target } => QueryRequest::Type { target: target.clone() },
+        QueryCommand::Docs { target } => QueryRequest::Docs { target: target.clone() },
+        QueryCommand::Outline { target } => QueryRequest::Outline { target: target.clone() },
+        QueryCommand::Api { module } => QueryRequest::Api { module: module.clone() },
+        QueryCommand::Dependents { target } => {
+            QueryRequest::Dependents { target: target.clone(), limit: None }
+        }
+        QueryCommand::Callers { .. }
+        | QueryCommand::Callees { .. }
+        | QueryCommand::Search { .. }
+        | QueryCommand::Caps { .. } => QueryRequest::Unsupported { name: sub.name().to_owned() },
+    }
+}
+
+/// Runs `fai query`: dispatches to the IDE engine and writes JSON (or, with
+/// `--human`, the readable rendering).
+fn run_query(
+    session: &Session,
+    sub: &QueryCommand,
+    format: MessageFormat,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> i32 {
+    let request = to_request(sub);
+    let result = fai_driver::run_query(session, &request);
+    let _ = err;
+    match format {
+        MessageFormat::Json => {
+            let _ = writeln!(out, "{}", result.json);
+        }
+        MessageFormat::Human => {
+            let _ = writeln!(out, "{}", result.human);
+        }
+    }
+    if result.ok { EXIT_OK } else { EXIT_FAILURES }
 }
 
 /// Writes `result` in the chosen format. Returns `Some(exit)` only on an
