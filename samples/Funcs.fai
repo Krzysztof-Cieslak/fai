@@ -5,14 +5,11 @@ public add : Int -> Int -> Int
 let add x y = x + y
 
 public inc : Int -> Int
-let inc = add 1                       // partial application
+let inc = add 1 // partial application
 
 // `|>` pipes a value into a function; `>>` composes left-to-right.
 public describe : Int -> String
-let describe n =
-  n
-  |> inc
-  |> intToString
+let describe n = n |> inc |> intToString
 
 public twice : ('a -> 'a) -> 'a -> 'a
-let twice f = f >> f                  // composition
+let twice f = f >> f // composition

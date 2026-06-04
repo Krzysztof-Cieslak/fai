@@ -24,7 +24,7 @@ fn empty_workspace() -> Utf8PathBuf {
 fn check_json_output() {
     let dir = empty_workspace();
     let (code, out, err) = run(&["fai", "check", "-C", dir.as_str(), "--message-format=json"]);
-    assert_eq!(code, 1, "stderr: {err}");
+    assert_eq!(code, 0, "stderr: {err}");
     insta::assert_snapshot!("check_json", out);
 }
 
@@ -32,6 +32,6 @@ fn check_json_output() {
 fn check_human_output() {
     let dir = empty_workspace();
     let (code, out, err) = run(&["fai", "check", "-C", dir.as_str(), "--color=never"]);
-    assert_eq!(code, 1, "stderr: {err}");
+    assert_eq!(code, 0, "stderr: {err}");
     insta::assert_snapshot!("check_human", out);
 }

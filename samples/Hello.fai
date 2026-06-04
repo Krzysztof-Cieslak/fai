@@ -1,5 +1,4 @@
 module Hello
 
 public main : Runtime -> Unit
-let main runtime =
-  runtime.console.writeLine "Hello, Fai!"
+let main runtime = runtime.console.writeLine "Hello, Fai!"

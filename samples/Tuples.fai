@@ -7,5 +7,5 @@ example: divMod 7 3 = (2, 1)
 
 public swap : 'a * 'b -> 'b * 'a
 let swap pair =
-  let (x, y) = pair          // destructuring
+  let (x, y) = pair // destructuring
   (y, x)

@@ -16,7 +16,7 @@ use clap::error::ErrorKind;
 use fai_driver::{CommandResult, DriverError, Session};
 use fai_span::{SourceMap, SpanResolver};
 
-use crate::cli::{Cli, ColorChoice, Command, MessageFormat};
+use crate::cli::{Cli, ColorChoice, Command, FmtArgs, MessageFormat};
 
 /// Success: no errors.
 const EXIT_OK: i32 = 0;
@@ -72,11 +72,11 @@ fn dispatch(parsed: Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
 
     let db = session.db();
     let result = match &parsed.command {
+        Command::Check(args) => fai_driver::check(db, &session.select_files(args.path.as_deref())),
+        Command::Fmt(args) => return run_fmt(&session, args, format, color, out, err),
         Command::Build(_) => fai_driver::build(db),
         Command::Run(_) => fai_driver::run(db),
-        Command::Check(_) => fai_driver::check(db),
         Command::Test(_) => fai_driver::test(db),
-        Command::Fmt(_) => fai_driver::fmt(db),
         Command::Lsp => fai_driver::lsp(db),
         Command::Query { sub } => fai_driver::query(db, sub.name()),
         Command::Daemon { sub } => fai_driver::daemon(db, sub.name()),
@@ -87,6 +87,54 @@ fn dispatch(parsed: Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
         Some(code) => code,
         None if result.ok => EXIT_OK,
         None => EXIT_FAILURES,
+    }
+}
+
+/// Runs `fai fmt`: formats the selected files, writes changed ones (unless
+/// `--check`), and reports the result.
+fn run_fmt(
+    session: &Session,
+    args: &FmtArgs,
+    format: MessageFormat,
+    color: bool,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> i32 {
+    let files = session.select_files(args.path.as_deref());
+    let result = fai_driver::fmt(session.db(), &files);
+
+    if !args.check {
+        for file in &result.files {
+            if file.changed {
+                let path = session.root().join(&file.path);
+                if let Err(error) = std::fs::write(&path, &file.formatted) {
+                    let _ = writeln!(err, "error: failed to write {path}: {error}");
+                    return EXIT_WORKSPACE;
+                }
+            }
+        }
+    }
+
+    let resolver = session.resolver();
+    match format {
+        MessageFormat::Json => match serde_json::to_string_pretty(&result.to_output(&resolver)) {
+            Ok(json) => {
+                let _ = writeln!(out, "{json}");
+            }
+            Err(error) => {
+                let _ = writeln!(err, "internal error: failed to serialize output: {error}");
+                return EXIT_INTERNAL;
+            }
+        },
+        MessageFormat::Human => {
+            let _ = write!(out, "{}", result.render_human(&resolver, color, args.check));
+        }
+    }
+
+    if result.has_errors() || (args.check && result.has_changes()) {
+        EXIT_FAILURES
+    } else {
+        EXIT_OK
     }
 }
 
@@ -225,22 +273,58 @@ mod tests {
         assert!(err.contains("Usage"));
     }
 
-    #[test]
-    fn check_json_is_well_formed_not_implemented() {
-        let (code, out, _err) = run_capture(&["fai", "check", "--message-format=json"]);
-        assert_eq!(code, EXIT_FAILURES);
-        let value: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
-        assert_eq!(value["schemaVersion"], 1);
-        assert_eq!(value["ok"], false);
-        assert_eq!(value["diagnostics"][0]["code"], "FAI0001");
-        assert_eq!(value["diagnostics"][0]["severity"], "error");
+    fn workspace_with(name: &str, file: &str, contents: &str) -> String {
+        let dir = std::env::temp_dir().join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(file), contents).unwrap();
+        dir.to_str().unwrap().to_owned()
     }
 
     #[test]
-    fn check_human_is_not_implemented() {
-        let (code, out, _err) = run_capture(&["fai", "check", "--color=never"]);
+    fn check_clean_workspace_succeeds() {
+        let dir = workspace_with("fai-cli-check-clean", "Ok.fai", "module Ok\nlet x = 1");
+        let (code, out, _err) = run_capture(&["fai", "check", "-C", &dir, "--message-format=json"]);
+        assert_eq!(code, EXIT_OK);
+        let value: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+        assert_eq!(value["schemaVersion"], 1);
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["diagnostics"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn check_reports_syntax_errors() {
+        let dir = workspace_with("fai-cli-check-bad", "Bad.fai", "module");
+        let (code, out, _err) = run_capture(&["fai", "check", "-C", &dir, "--message-format=json"]);
         assert_eq!(code, EXIT_FAILURES);
-        assert!(out.contains("error[FAI0001]"));
-        assert!(out.contains("not implemented"));
+        let value: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["diagnostics"][0]["code"], "FAI1022");
+    }
+
+    #[test]
+    fn fmt_check_reports_drift() {
+        let dir = workspace_with("fai-cli-fmt-check", "Drift.fai", "module Drift\nlet   x=1");
+        let (code, out, _err) =
+            run_capture(&["fai", "fmt", "-C", &dir, "--check", "--message-format=json"]);
+        assert_eq!(code, EXIT_FAILURES);
+        let value: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+        assert_eq!(value["changed"][0], "Drift.fai");
+        // `--check` must not rewrite the file.
+        let on_disk = std::fs::read_to_string(
+            std::env::temp_dir().join("fai-cli-fmt-check").join("Drift.fai"),
+        )
+        .unwrap();
+        assert_eq!(on_disk, "module Drift\nlet   x=1");
+    }
+
+    #[test]
+    fn fmt_rewrites_files_in_place() {
+        let dir = workspace_with("fai-cli-fmt-write", "W.fai", "module W\nlet   x=1");
+        let (code, _out, _err) = run_capture(&["fai", "fmt", "-C", &dir, "--message-format=json"]);
+        assert_eq!(code, EXIT_OK);
+        let on_disk =
+            std::fs::read_to_string(std::env::temp_dir().join("fai-cli-fmt-write").join("W.fai"))
+                .unwrap();
+        assert_eq!(on_disk, "module W\n\nlet x = 1\n");
     }
 }
