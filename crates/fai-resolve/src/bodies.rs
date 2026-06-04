@@ -130,9 +130,11 @@ pub fn resolve(db: &dyn Db, file: SourceFile) -> Arc<ResolvedBodies> {
         pat_locals: FxHashMap::default(),
     };
 
-    // Warn when a top-level binding shadows a prelude name.
+    // Warn when a top-level binding shadows a prelude name — except inside the
+    // prelude module itself, whose bindings *define* those names.
+    let is_prelude_module = module.name.is_some_and(|n| n.as_str() == prelude::PRELUDE_MODULE);
     for d in &defs.defs {
-        if prelude::is_prelude_name(d.name) {
+        if !is_prelude_module && prelude::is_prelude_name(d.name) {
             let span = module.items[d.binding.index()].span;
             emit(
                 db,

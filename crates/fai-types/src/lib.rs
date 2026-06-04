@@ -10,7 +10,7 @@
 mod contracts;
 mod infer;
 mod lower;
-mod prelude;
+pub mod prelude;
 #[allow(unsafe_code)]
 mod query;
 #[cfg(test)]

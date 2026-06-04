@@ -7,6 +7,10 @@
 
 use fai_syntax::Symbol;
 
+/// The reserved prelude module name. The module that declares this name is the
+/// prelude itself and is exempt from shadow-prelude warnings.
+pub const PRELUDE_MODULE: &str = "Prelude";
+
 /// The built-in prelude value names (primitives + derived helpers).
 ///
 /// Operators are handled directly by inference and are not listed here. This set
@@ -21,6 +25,10 @@ pub const PRELUDE_NAMES: &[&str] = &[
     "append",
     "reverse",
     "pi",
+    // Derived `.fai` prelude exports.
+    "identity",
+    "const",
+    "notEqual",
 ];
 
 /// Returns whether `name` is a prelude name.

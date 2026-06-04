@@ -26,6 +26,9 @@ impl Session {
             return Err(DriverError::NotADirectory(root));
         }
         let mut db = FaiDatabase::new();
+        // The embedded prelude is loaded first as a high-durability synthetic
+        // file, so its module name is reserved and rarely-changing.
+        fai_types::prelude::load_prelude(&mut db);
         let mut sources = Vec::new();
         collect_fai_files(&root, &mut sources)?;
         sources.sort();
@@ -36,6 +39,16 @@ impl Session {
             db.add_source(relative, text);
         }
         Ok(Self { db, root })
+    }
+
+    /// The user-facing source files (excluding the synthetic prelude).
+    #[must_use]
+    pub fn user_files(&self) -> Vec<SourceFile> {
+        self.db
+            .all_source_files()
+            .into_iter()
+            .filter(|f| !fai_types::prelude::is_prelude_path(f.path(&self.db)))
+            .collect()
     }
 
     /// The session's database as a trait object.
@@ -61,7 +74,8 @@ impl Session {
     #[must_use]
     pub fn select_files(&self, path: Option<&Utf8Path>) -> Vec<SourceFile> {
         let db = self.db();
-        let files = db.all_source_files();
+        // Never select the synthetic prelude: it is a dependency, not user code.
+        let files = self.user_files();
         let Some(path) = path else {
             return files;
         };

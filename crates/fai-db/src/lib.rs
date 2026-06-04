@@ -180,6 +180,22 @@ impl FaiDatabase {
         id
     }
 
+    /// Registers `path` at a given [`Durability`]. Use [`Durability::HIGH`] for
+    /// rarely-changing inputs (e.g. the embedded prelude) so dependents are not
+    /// needlessly revalidated.
+    pub fn add_source_with_durability(
+        &mut self,
+        path: Utf8PathBuf,
+        text: String,
+        durability: Durability,
+    ) -> SourceId {
+        let id = self.add_source(path, text);
+        let file = self.files[id.index()];
+        let current = file.text(self).clone();
+        file.set_text(self).with_durability(durability).to(current);
+        id
+    }
+
     /// Enables recording of query-execution events (used by tests and tooling).
     pub fn enable_event_log(&self) {
         if let Ok(mut guard) = self.events.lock()
