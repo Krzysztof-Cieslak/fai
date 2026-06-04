@@ -1,0 +1,19 @@
+[package]
+name = "fai-driver"
+description = "Command orchestration: sessions, result envelopes, and the command entry points."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+fai-span.workspace = true
+fai-diagnostics.workspace = true
+fai-db.workspace = true
+serde = { workspace = true }
+thiserror.workspace = true
+camino.workspace = true
+
+[lints]
+workspace = true

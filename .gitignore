@@ -12,5 +12,8 @@
 .idea/
 .vscode/
 
+# insta: pending snapshots (accept into *.snap instead of committing)
+*.snap.new
+
 # NOTE: Cargo.lock IS committed — Fai ships binaries (compiler + CLI), so the
 # lockfile is part of the reproducible build.

@@ -1,0 +1,25 @@
+[package]
+name = "fai-tests"
+description = "End-to-end tests, golden snapshots, and the incremental verifier."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+license.workspace = true
+
+# The library target carries the reusable incremental-verifier harness; the
+# golden/e2e tests live under `tests/`.
+[dependencies]
+fai-span.workspace = true
+fai-db.workspace = true
+camino.workspace = true
+
+[dev-dependencies]
+fai-cli.workspace = true
+fai-diagnostics.workspace = true
+fai-driver.workspace = true
+insta.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

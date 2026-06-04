@@ -1,0 +1,18 @@
+[package]
+name = "fai-db"
+description = "The salsa query-database skeleton: inputs, interning, accumulators, and the Db trait."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+fai-span.workspace = true
+fai-diagnostics.workspace = true
+salsa.workspace = true
+rustc-hash.workspace = true
+camino.workspace = true
+
+[lints]
+workspace = true

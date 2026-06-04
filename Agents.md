@@ -119,12 +119,19 @@ fai/
 ├── Plan.md              # milestones, acceptance criteria, risks, decisions
 ├── Samples.md           # language by example
 ├── cli.md               # CLI + daemon-protocol reference
-├── Cargo.toml           # workspace manifest                         (M0)
+├── Cargo.toml           # workspace manifest + shared deps/lints      (M0)
+├── Cargo.lock           # committed (reproducible builds)             (M0)
+├── rust-toolchain.toml  # pinned toolchain (edition 2024)            (M0)
+├── rustfmt.toml         # canonical Rust formatting                   (M0)
+├── scripts/check.sh     # local mirror of the CI gates               (M0)
+├── .github/workflows/   # CI: build, clippy -D, fmt --check, test     (M0)
 ├── crates/
-│   ├── fai-cli/         # thin client binary: build/run/check/fmt/test/lsp + query (M0)
-│   ├── fai-span/        # source files, byte spans, source maps      (M0)
+│   ├── fai-cli/         # thin client binary `fai`: build/run/check/fmt/test/lsp + query (M0)
+│   ├── fai-span/        # source ids, byte spans, line index, span resolver (M0)
 │   ├── fai-diagnostics/ # diagnostic model + human & JSON renderers  (M0)
 │   ├── fai-db/          # salsa database: inputs, interning, queries, durability (M0)
+│   ├── fai-driver/      # command orchestration (cache + link land in M3) (M0)
+│   ├── fai-tests/       # end-to-end & golden/snapshot tests + incremental verifier (M0)
 │   ├── fai-syntax/      # lexer, parser (recursive descent + Pratt), item tree + AST (M1)
 │   ├── fai-fmt/         # canonical formatter (AST → pretty)         (M1)
 │   ├── fai-resolve/     # module graph, name resolution, visibility  (M1/M2)
@@ -136,9 +143,7 @@ fai/
 │   ├── fai-runtime/     # Rust static lib: RC, allocator, builtins, capability hosts (M3)
 │   ├── fai-contracts/   # example/forall checking + generators       (M7)
 │   ├── fai-server/      # per-workspace daemon (MessagePack JSON-RPC) (M3+)
-│   ├── fai-driver/      # query orchestration + content-addressed cache + link (M3)
 │   └── fai-lsp/         # language server (reuses fai-ide)           (M8)
-└── tests/               # end-to-end & golden/snapshot tests         (M0)
 ```
 
 Each phase crate (`fai-syntax`, `fai-resolve`, `fai-types`, `fai-core`,
@@ -202,8 +207,11 @@ output schemas, and the daemon (MessagePack JSON-RPC) protocol.
 
 ## 8. Rust coding conventions
 
-- **Edition / toolchain:** Rust 2021+, pinned via `rust-toolchain.toml` (M0).
-  Builds must be warning-clean under `clippy -D warnings`.
+- **Edition / toolchain:** Rust **edition 2024**, toolchain pinned (currently
+  `1.96.0`) via `rust-toolchain.toml`; canonical Rust formatting pinned via
+  `rustfmt.toml` (`use_small_heuristics = "Max"`). Lints are denied workspace-wide
+  in `[workspace.lints]` (`warnings`, `unsafe_code`, `clippy::all`) and builds
+  must also be clean under `clippy -D warnings`.
 - **No `unsafe`** outside `fai-runtime` and `fai-codegen` memory primitives, and
   only with a `// SAFETY:` comment justifying each block.
 - **Errors:** library crates return `Result` with typed errors; never `panic!`
@@ -219,6 +227,12 @@ output schemas, and the daemon (MessagePack JSON-RPC) protocol.
 - **Determinism.** No `HashMap` iteration order in output; use `FxHashMap` for
   speed and `BTreeMap`/sorted vecs where ordering is observable.
 - Public items get doc comments; modules start with a `//!` summary.
+- **Comments and commits explain the code, not the process.** Code comments, doc
+  comments, and Git commit messages must be self-contained; never reference
+  planning/process artifacts — milestone names (`M0`, `M3.5`), decision-log
+  identifiers (`Q7`, `D14`), or `Plan.md`. Pointers to the durable specs
+  (`cli.md`, `Agents.md`) are fine when they document a real contract (e.g. a
+  wire schema or a naming convention).
 
 ## 9. Performance & incremental compilation
 
@@ -292,9 +306,12 @@ cache plus a fast linker (mold/lld).
   `schemaVersion` and is a stable, versioned API. The schemas and the daemon
   protocol are specified in **`cli.md`**.
 - **Error codes are an API.** Allocate codes by phase and document each in the
-  error-code catalog (M8): `FAI1xxx` lex/parse, `FAI2xxx` resolve/visibility,
-  `FAI3xxx` types/rows, `FAI4xxx` exhaustiveness/patterns, `FAI5xxx`
-  capabilities, `FAI6xxx` contracts. Never renumber a shipped code.
+  error-code catalog (M8): `FAI0xxx` tooling/CLI/driver, `FAI1xxx` lex/parse,
+  `FAI2xxx` resolve/visibility, `FAI3xxx` types/rows, `FAI4xxx`
+  exhaustiveness/patterns, `FAI5xxx` capabilities, `FAI6xxx` contracts. Each
+  phase crate owns its codes as a `pub const CODES: &[CodeInfo]` slice, which the
+  `fai-tests` catalog test aggregates to enforce format and uniqueness. Never
+  renumber a shipped code.
 - Parsing **recovers** and reports multiple errors per run; one mistake should
   not hide the rest.
 
