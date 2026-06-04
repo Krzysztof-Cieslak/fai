@@ -135,7 +135,7 @@ impl Lexer<'_> {
         // `///` is a doc comment, but `////`+ is an ordinary line comment.
         let doc = self.starts_with("///") && !self.starts_with("////");
         while let Some(c) = self.peek() {
-            if c == '\n' {
+            if c == '\n' || c == '\r' {
                 break;
             }
             self.pos += c.len_utf8();
@@ -455,13 +455,17 @@ fn is_ident_continue(c: char) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use fai_span::SourceId;
+    use fai_span::{ByteOffset, SourceId, TextRange};
 
     use super::{Lexed, lex};
     use crate::token::{Token, TokenKind};
 
     fn lexed(src: &str) -> Lexed {
         lex(SourceId::new(0), src)
+    }
+
+    fn range(start: u32, end: u32) -> TextRange {
+        TextRange::new(ByteOffset::new(start), ByteOffset::new(end))
     }
 
     fn kinds(src: &str) -> Vec<TokenKind> {
@@ -717,5 +721,123 @@ mod tests {
             "trivia_and_literals",
             render("/// doc\nlet name = \"Fai\" // trailing\nlet c = 'F'"),
         );
+    }
+
+    #[test]
+    fn token_ranges_are_exact() {
+        let result = lexed("let x");
+        assert_eq!(result.tokens[0].range, range(0, 3)); // `let`
+        assert_eq!(result.tokens[1].range, range(4, 5)); // `x`
+        assert_eq!(result.tokens[2].range, range(5, 5)); // EOF (zero-width at end)
+    }
+
+    #[test]
+    fn tokens_need_no_whitespace() {
+        assert_eq!(
+            kinds("x+y"),
+            vec![TokenKind::LowerIdent, TokenKind::Plus, TokenKind::LowerIdent, TokenKind::Eof,]
+        );
+        assert_eq!(
+            kinds("a->b"),
+            vec![TokenKind::LowerIdent, TokenKind::Arrow, TokenKind::LowerIdent, TokenKind::Eof,]
+        );
+        assert_eq!(
+            kinds("(a,b)"),
+            vec![
+                TokenKind::LParen,
+                TokenKind::LowerIdent,
+                TokenKind::Comma,
+                TokenKind::LowerIdent,
+                TokenKind::RParen,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn identifiers_that_start_with_keywords() {
+        // A keyword is only a keyword when it is the whole identifier.
+        assert_eq!(
+            kinds("lets ifx forallx letter"),
+            vec![
+                TokenKind::LowerIdent,
+                TokenKind::LowerIdent,
+                TokenKind::LowerIdent,
+                TokenKind::LowerIdent,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn multibyte_content_keeps_byte_offsets() {
+        // `é` is two UTF-8 bytes; the token after the string must still slice
+        // correctly, which only holds if byte offsets are tracked properly.
+        let src = "\"café\" x";
+        let result = lexed(src);
+        assert!(result.diagnostics.is_empty());
+        assert_eq!(result.tokens[0].kind, TokenKind::String);
+        assert_eq!(lexeme(src, &result.tokens[0]), "\"café\"");
+        assert_eq!(result.tokens[1].kind, TokenKind::LowerIdent);
+        assert_eq!(lexeme(src, &result.tokens[1]), "x");
+    }
+
+    #[test]
+    fn diagnostic_points_at_the_offending_span() {
+        let result = lexed("x @ y");
+        assert_eq!(result.diagnostics.len(), 1);
+        let diag = &result.diagnostics[0];
+        assert_eq!(diag.code, crate::UNEXPECTED_CHAR);
+        assert_eq!(diag.primary.source(), SourceId::new(0));
+        assert_eq!(diag.primary.start().to_usize(), 2); // the `@`
+        assert_eq!(diag.primary.end().to_usize(), 3);
+        // Lexing recovers and continues on both sides of the bad character.
+        assert_eq!(
+            kinds("x @ y"),
+            vec![TokenKind::LowerIdent, TokenKind::LowerIdent, TokenKind::Eof,]
+        );
+    }
+
+    #[test]
+    fn multiple_errors_are_all_reported() {
+        let result = lexed("@ #");
+        assert_eq!(result.diagnostics.len(), 2);
+        assert!(result.diagnostics.iter().all(|d| d.code == crate::UNEXPECTED_CHAR));
+    }
+
+    #[test]
+    fn valid_escapes_have_no_diagnostics() {
+        assert!(lexed("\"a\\nb\"").diagnostics.is_empty());
+        assert!(lexed("\"tab\\there\"").diagnostics.is_empty());
+        assert!(lexed("\"q\\\"q\"").diagnostics.is_empty());
+        assert!(lexed("'\\n'").diagnostics.is_empty());
+    }
+
+    #[test]
+    fn unicode_escapes() {
+        // Well-formed `\u{...}`.
+        let ok = lexed("\"\\u{1F600}\"");
+        assert!(ok.diagnostics.is_empty());
+        assert_eq!(ok.tokens[0].kind, TokenKind::String);
+        // Missing braces, empty braces, and non-hex digits are all errors.
+        assert_eq!(lexed("\"\\u1234\"").diagnostics[0].code, crate::INVALID_ESCAPE);
+        assert_eq!(lexed("\"\\u{}\"").diagnostics[0].code, crate::INVALID_ESCAPE);
+        assert_eq!(lexed("\"\\u{zz}\"").diagnostics[0].code, crate::INVALID_ESCAPE);
+    }
+
+    #[test]
+    fn whitespace_only_is_just_eof() {
+        assert_eq!(kinds("  \n\t "), vec![TokenKind::Eof]);
+    }
+
+    #[test]
+    fn line_comment_excludes_carriage_return() {
+        // On CRLF input the trailing `\r` is not part of the comment text.
+        let result = lexed("// c\r\nx");
+        assert_eq!(result.comments.len(), 1);
+        let c = result.comments[0];
+        let text = &"// c\r\nx"[c.range.start().to_usize()..c.range.end().to_usize()];
+        assert_eq!(text, "// c");
+        assert_eq!(result.tokens[0].kind, TokenKind::LowerIdent);
     }
 }
