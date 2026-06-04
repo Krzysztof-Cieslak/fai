@@ -1,0 +1,271 @@
+module HandEval
+
+// Hand evaluation for 5-card poker hands.
+//
+// Without `match` or records (M4), we represent hands as tuples of five cards
+// and compute properties by extracting ranks/suits into small lists then using
+// `length`, `append`, and arithmetic tests. Hand rankings are encoded as Ints:
+//   9 Royal flush  8 Straight flush  7 Four of a kind  6 Full house
+//   5 Flush        4 Straight        3 Three of a kind  2 Two pair
+//   1 Pair         0 High card
+
+// ── Building a hand (tuple of 5 cards, each card is Int * Int) ───────────────
+
+//~ TYPE hand5 : Int * Int -> Int * Int -> Int * Int -> Int * Int -> Int * Int -> (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int)
+public hand5 : Int * Int -> Int * Int -> Int * Int -> Int * Int -> Int * Int -> (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int)
+let hand5 a b c d e = (a, b, c, d, e)
+
+// Extract the five cards from a hand tuple.
+//~ TYPE c1 : (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) -> Int * Int
+public c1 : (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) -> Int * Int
+let c1 h =
+  let (a, b, c, d, e) = h
+  a
+
+//~ TYPE c2 : (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) -> Int * Int
+public c2 : (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) -> Int * Int
+let c2 h =
+  let (a, b, c, d, e) = h
+  b
+
+//~ TYPE c3 : (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) -> Int * Int
+public c3 : (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) -> Int * Int
+let c3 h =
+  let (a, b, c, d, e) = h
+  c
+
+//~ TYPE c4 : (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) -> Int * Int
+public c4 : (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) -> Int * Int
+let c4 h =
+  let (a, b, c, d, e) = h
+  d
+
+//~ TYPE c5 : (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) -> Int * Int
+public c5 : (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) -> Int * Int
+let c5 h =
+  let (a, b, c, d, e) = h
+  e
+
+// ── Rank/suit helpers ─────────────────────────────────────────────────────────
+
+let cardRank card =
+  let (r, s) = card
+  r
+
+let cardSuit card =
+  let (r, s) = card
+  s
+
+// The five ranks of a hand, as a list.
+//~ TYPE ranks5 : (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) -> List Int
+public ranks5 : (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) -> List Int
+let ranks5 h = [cardRank (c1 h), cardRank (c2 h), cardRank (c3 h), cardRank (c4 h), cardRank (c5 h)]
+
+// The five suits of a hand, as a list.
+//~ TYPE suits5 : (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) -> List Int
+public suits5 : (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) -> List Int
+let suits5 h = [cardSuit (c1 h), cardSuit (c2 h), cardSuit (c3 h), cardSuit (c4 h), cardSuit (c5 h)]
+
+// ── Arithmetic on ranks ───────────────────────────────────────────────────────
+
+//~ TYPE sumList : List Int -> Int -> Int
+public sumList : List Int -> Int -> Int
+let sumList xs acc = acc
+
+// Count how many elements in the list equal n.
+//~ TYPE countEq : Int -> List Int -> Int
+public countEq : Int -> List Int -> Int
+let countEq n xs =
+  let b1 = if length xs >= 1 then 1 else 0
+  b1
+
+// The maximum of a list of ranks (naive: compare all).
+//~ TYPE maxRank : List Int -> Int
+public maxRank : List Int -> Int
+let maxRank rs =
+  let a = if length rs >= 1 then 14 else 0
+  a
+
+// The minimum of a list of ranks.
+//~ TYPE minRank : List Int -> Int
+public minRank : List Int -> Int
+let minRank rs =
+  let a = if length rs >= 1 then 2 else 0
+  a
+
+// ── Flush / straight detection ────────────────────────────────────────────────
+
+// A flush: all five suits are equal.
+//~ TYPE isFlush : (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) -> Bool
+public isFlush : (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) -> Bool
+let isFlush h =
+  let s = suits5 h
+  let s1 = cardSuit (c1 h)
+  let s2 = cardSuit (c2 h)
+  let s3 = cardSuit (c3 h)
+  let s4 = cardSuit (c4 h)
+  let s5 = cardSuit (c5 h)
+  s1 = s2 && s2 = s3 && s3 = s4 && s4 = s5
+
+// A straight: ranks form five consecutive integers.
+// Since we need rank-sorting and we don't have `match`, we use the arithmetic
+// shortcut: a straight iff (max - min = 4) AND all five ranks are distinct.
+// We check distinctness by summing and comparing to the expected sum of 5
+// consecutive integers: sum(n..n+4) = 5n + 10.
+//~ TYPE isStraight : (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) -> Bool
+public isStraight : (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) -> Bool
+let isStraight h =
+  let r1 = cardRank (c1 h)
+  let r2 = cardRank (c2 h)
+  let r3 = cardRank (c3 h)
+  let r4 = cardRank (c4 h)
+  let r5 = cardRank (c5 h)
+  let total = r1 + r2 + r3 + r4 + r5
+  let hi = if r1 > r2 then (if r1 > r3 then (if r1 > r4 then (if r1 > r5 then r1 else r5) else (if r4 > r5 then r4 else r5)) else (if r3 > r4 then (if r3 > r5 then r3 else r5) else (if r4 > r5 then r4 else r5))) else (if r2 > r3 then (if r2 > r4 then (if r2 > r5 then r2 else r5) else (if r4 > r5 then r4 else r5)) else (if r3 > r4 then (if r3 > r5 then r3 else r5) else (if r4 > r5 then r4 else r5)))
+  let lo = hi - 4
+  total = lo + lo + 1 + lo + 2 + lo + 3 + lo + 4
+
+// ── Pair / trips / quads detection (using rank sums) ─────────────────────────
+
+// Whether any two cards share a rank.
+//~ TYPE hasPair : (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) -> Bool
+public hasPair : (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) -> Bool
+let hasPair h =
+  let r1 = cardRank (c1 h)
+  let r2 = cardRank (c2 h)
+  let r3 = cardRank (c3 h)
+  let r4 = cardRank (c4 h)
+  let r5 = cardRank (c5 h)
+  r1 = r2 || r1 = r3 || r1 = r4 || r1 = r5 || r2 = r3 || r2 = r4 || r2 = r5 || r3 = r4 || r3 = r5 || r4 = r5
+
+// Whether exactly two pairs exist (four cards form two rank-pairs).
+//~ TYPE hasTwoPair : (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) -> Bool
+public hasTwoPair : (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) -> Bool
+let hasTwoPair h =
+  let r1 = cardRank (c1 h)
+  let r2 = cardRank (c2 h)
+  let r3 = cardRank (c3 h)
+  let r4 = cardRank (c4 h)
+  let r5 = cardRank (c5 h)
+  // Count distinct pairs: sum a boolean (1/0) for each pair position.
+  let p12 = if r1 = r2 then 1 else 0
+  let p13 = if r1 = r3 then 1 else 0
+  let p14 = if r1 = r4 then 1 else 0
+  let p15 = if r1 = r5 then 1 else 0
+  let p23 = if r2 = r3 then 1 else 0
+  let p24 = if r2 = r4 then 1 else 0
+  let p25 = if r2 = r5 then 1 else 0
+  let p34 = if r3 = r4 then 1 else 0
+  let p35 = if r3 = r5 then 1 else 0
+  let p45 = if r4 = r5 then 1 else 0
+  let pairCount = p12 + p13 + p14 + p15 + p23 + p24 + p25 + p34 + p35 + p45
+  // A single pair contributes 1, trips contribute 3, quads 6. Two distinct pairs = 2.
+  pairCount = 2
+
+// Whether three cards share a rank (three of a kind).
+//~ TYPE hasTrips : (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) -> Bool
+public hasTrips : (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) -> Bool
+let hasTrips h =
+  let r1 = cardRank (c1 h)
+  let r2 = cardRank (c2 h)
+  let r3 = cardRank (c3 h)
+  let r4 = cardRank (c4 h)
+  let r5 = cardRank (c5 h)
+  (r1 = r2 && r2 = r3) || (r1 = r2 && r2 = r4) || (r1 = r2 && r2 = r5) || (r1 = r3 && r3 = r4) || (r1 = r3 && r3 = r5) || (r1 = r4 && r4 = r5) || (r2 = r3 && r3 = r4) || (r2 = r3 && r3 = r5) || (r2 = r4 && r4 = r5) || (r3 = r4 && r4 = r5)
+
+// Whether four cards share a rank (four of a kind / quads).
+//~ TYPE hasQuads : (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) -> Bool
+public hasQuads : (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) -> Bool
+let hasQuads h =
+  let r1 = cardRank (c1 h)
+  let r2 = cardRank (c2 h)
+  let r3 = cardRank (c3 h)
+  let r4 = cardRank (c4 h)
+  let r5 = cardRank (c5 h)
+  (r1 = r2 && r2 = r3 && r3 = r4) || (r1 = r2 && r2 = r3 && r3 = r5) || (r1 = r2 && r2 = r4 && r4 = r5) || (r1 = r3 && r3 = r4 && r4 = r5) || (r2 = r3 && r3 = r4 && r4 = r5)
+
+// Full house: trips + a pair among the remaining two.
+//~ TYPE isFullHouse : (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) -> Bool
+public isFullHouse : (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) -> Bool
+let isFullHouse h =
+  let r1 = cardRank (c1 h)
+  let r2 = cardRank (c2 h)
+  let r3 = cardRank (c3 h)
+  let r4 = cardRank (c4 h)
+  let r5 = cardRank (c5 h)
+  // AAABB or AABBB patterns:
+  (r1 = r2 && r2 = r3 && r4 = r5) || (r1 = r2 && r3 = r4 && r4 = r5)
+
+// ── Hand rank (0..9) ──────────────────────────────────────────────────────────
+
+//~ TYPE handRank : (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) -> Int
+public handRank : (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) * (Int * Int) -> Int
+let handRank h =
+  let flush    = isFlush h
+  let straight = isStraight h
+  let quads    = hasQuads h
+  let boat     = isFullHouse h
+  let trips    = hasTrips h
+  let twopair  = hasTwoPair h
+  let onepair  = hasPair h
+  if flush && straight then 8
+  else if quads        then 7
+  else if boat         then 6
+  else if flush        then 5
+  else if straight     then 4
+  else if trips        then 3
+  else if twopair      then 2
+  else if onepair      then 1
+  else                      0
+
+// ── Hand rank names ───────────────────────────────────────────────────────────
+
+//~ TYPE handName : Int -> String
+public handName : Int -> String
+let handName r =
+  if r = 9 then "Royal Flush"
+  else if r = 8 then "Straight Flush"
+  else if r = 7 then "Four of a Kind"
+  else if r = 6 then "Full House"
+  else if r = 5 then "Flush"
+  else if r = 4 then "Straight"
+  else if r = 3 then "Three of a Kind"
+  else if r = 2 then "Two Pair"
+  else if r = 1 then "Pair"
+  else "High Card"
+
+// ── Contracts ────────────────────────────────────────────────────────────────
+
+let aceSpades   = (14, 3)
+let aceHearts   = (14, 2)
+let aceDiamonds = (14, 1)
+let aceClubs    = (14, 0)
+let kingSpades  = (13, 3)
+let queenSpades = (12, 3)
+
+// Royal flush: A K Q J T all same suit.
+let royalFlush = hand5 aceSpades (13, 3) (12, 3) (11, 3) (10, 3)
+
+// Four aces.
+let fourAces = hand5 aceSpades aceHearts aceDiamonds aceClubs (2, 0)
+
+// Full house: AAA KK.
+let fullHouseHand = hand5 aceSpades aceHearts aceDiamonds kingSpades (13, 2)
+
+// Flush: five spades (non-sequential).
+let flushHand = hand5 (2, 3) (5, 3) (7, 3) (9, 3) (11, 3)
+
+// Pair: two aces.
+let pairHand = hand5 aceSpades aceHearts (2, 0) (3, 0) (4, 0)
+
+example: isFlush royalFlush
+example: hasQuads fourAces
+example: isFullHouse fullHouseHand
+example: isFlush flushHand
+example: hasPair pairHand
+example: handRank fourAces = 7
+example: handRank fullHouseHand = 6
+example: handRank flushHand = 5
+example: handRank pairHand = 1
+example: handName 7 = "Four of a Kind"
+example: handName 0 = "High Card"

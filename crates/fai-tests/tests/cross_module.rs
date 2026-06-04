@@ -117,3 +117,49 @@ fn private_binding_is_not_an_export() {
     );
     assert!(!outcome.has_errors(), "got {:?}", outcome.codes());
 }
+
+// ── Poker module chain ────────────────────────────────────────────────────────
+// Three modules: Card → Eval → Score. Tests qualified refs across two hops.
+
+const CARD_SRC: &str = "module Card\n\npublic makeCard : Int -> Int -> Int * Int\nlet makeCard rank suit = (rank, suit)\n\npublic rank : Int * Int -> Int\nlet rank card =\n  let (r, s) = card\n  r\n\npublic suit : Int * Int -> Int\nlet suit card =\n  let (r, s) = card\n  s\n\npublic ace : Int\nlet ace = 14\n\npublic validCard : Int * Int -> Bool\nlet validCard card =\n  let r = rank card\n  let s = suit card\n  r >= 2 && r <= 14 && s >= 0 && s <= 3\n";
+
+const EVAL_SRC: &str = "module Eval\n\npublic isFlush5 : Int -> Int -> Int -> Int -> Int -> Bool\nlet isFlush5 s1 s2 s3 s4 s5 = s1 = s2 && s2 = s3 && s3 = s4 && s4 = s5\n\npublic hasPairInRanks : Int -> Int -> Int -> Int -> Int -> Bool\nlet hasPairInRanks r1 r2 r3 r4 r5 = r1 = r2 || r1 = r3 || r1 = r4 || r1 = r5 || r2 = r3 || r2 = r4 || r2 = r5 || r3 = r4 || r3 = r5 || r4 = r5\n\npublic handCategory : Bool -> Bool -> Int\nlet handCategory isF isPair = if isF then 5 else if isPair then 1 else 0\n";
+
+const SCORE_SRC: &str = "module Score\n\npublic scoreHand : Int * Int -> Int * Int -> Int * Int -> Int * Int -> Int * Int -> Int\nlet scoreHand c1 c2 c3 c4 c5 =\n  let r1 = Card.rank c1\n  let r2 = Card.rank c2\n  let r3 = Card.rank c3\n  let r4 = Card.rank c4\n  let r5 = Card.rank c5\n  let s1 = Card.suit c1\n  let s2 = Card.suit c2\n  let s3 = Card.suit c3\n  let s4 = Card.suit c4\n  let s5 = Card.suit c5\n  let flush = Eval.isFlush5 s1 s2 s3 s4 s5\n  let pair = Eval.hasPairInRanks r1 r2 r3 r4 r5\n  Eval.handCategory flush pair\n\npublic isAce : Int * Int -> Bool\nlet isAce card = Card.rank card = Card.ace\n\npublic validHand : Int * Int -> Int * Int -> Int * Int -> Int * Int -> Int * Int -> Bool\nlet validHand c1 c2 c3 c4 c5 = Card.validCard c1 && Card.validCard c2 && Card.validCard c3 && Card.validCard c4 && Card.validCard c5\n";
+
+#[test]
+fn three_module_poker_chain_typechecks() {
+    let outcome = check_named(
+        "Score.fai",
+        &[("Card.fai", CARD_SRC), ("Eval.fai", EVAL_SRC), ("Score.fai", SCORE_SRC)],
+    );
+    assert!(!outcome.has_errors(), "Score: {:?}", outcome.codes());
+    assert_eq!(
+        outcome.types.get("scoreHand").map(String::as_str),
+        Some("Int * Int -> Int * Int -> Int * Int -> Int * Int -> Int * Int -> Int"),
+        "scoreHand type: {:?}",
+        outcome.types.get("scoreHand")
+    );
+}
+
+#[test]
+fn card_and_eval_typecheck_independently() {
+    for (name, _src) in [("Card.fai", CARD_SRC), ("Eval.fai", EVAL_SRC)] {
+        let outcome = check_named(
+            name,
+            &[("Card.fai", CARD_SRC), ("Eval.fai", EVAL_SRC), ("Score.fai", SCORE_SRC)],
+        );
+        assert!(!outcome.has_errors(), "{name}: {:?}", outcome.codes());
+    }
+}
+
+#[test]
+fn passing_wrong_type_to_card_rank_errors() {
+    let bad = "\
+module Bad\n\
+\n\
+public bad : String -> Int\n\
+let bad s = Card.rank s\n";
+    let cs = codes("Bad.fai", &[("Card.fai", CARD_SRC), ("Eval.fai", EVAL_SRC), ("Bad.fai", bad)]);
+    assert!(cs.iter().any(|c| c.starts_with("FAI3")), "expected a type error, got {cs:?}");
+}
