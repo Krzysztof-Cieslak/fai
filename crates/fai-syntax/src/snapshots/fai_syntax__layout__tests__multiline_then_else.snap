@@ -1,0 +1,24 @@
+---
+source: crates/fai-syntax/src/layout.rs
+expression: "render(\"module M\\nlet f x =\\n  if c then\\n    a\\n  else\\n    b\")"
+---
+module
+M
+;
+let
+f
+x
+=
+{
+  if
+  c
+  then
+  {
+    a
+  }
+  else
+  {
+    b
+  }
+}
+<eof>
