@@ -41,6 +41,8 @@ linting clean, and green.
 ## Milestones
 
 ### M0 — Workspace scaffolding & toolchain
+**Status:** complete — all deliverables landed and the acceptance gates pass.
+
 **Goal:** an empty but coherent Cargo workspace with the diagnostics/span
 foundation and a test harness, so every later milestone plugs in cleanly.
 
@@ -73,6 +75,12 @@ foundation and a test harness, so every later milestone plugs in cleanly.
 ---
 
 ### M1 — Lexer, parser, AST, formatter (no types)
+**Status:** complete — lexer, offside layout, recursive-descent/Pratt parser with
+error recovery, the position-independent item tree, the `parse`/`item_tree` salsa
+queries (early cutoff proven), and the idempotent canonical formatter are all
+implemented; `fai check` and `fai fmt` run end to end. Every acceptance bullet
+below is covered by tests.
+
 **Goal:** parse the core surface syntax with error recovery and format it
 canonically.
 

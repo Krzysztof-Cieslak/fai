@@ -1,9 +1,10 @@
 # Fai — CLI Reference
 
-> **Status:** Pre-implementation. This file specifies the *intended* command-line
-> interface and daemon protocol — the contract the implementation builds toward.
-> See `Agents.md` for project conventions, `docs/PLAN.md` for milestones, and
-> the `samples/` directory for the language itself.
+> **Status:** `fai check` and `fai fmt` are implemented (front end only — syntax
+> diagnostics and canonical formatting); the remaining commands and the daemon
+> protocol specified here are the *intended* contract the implementation builds
+> toward. See `Agents.md` for project conventions, `docs/PLAN.md` for milestones,
+> and the `samples/` directory for the language itself.
 
 ---
 

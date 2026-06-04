@@ -1,9 +1,10 @@
 # Fai — Agent & Contributor Guide
 
-> **Status:** Pre-implementation. The design is locked (see the decision table
-> below); the Rust workspace is **not scaffolded yet** (that is milestone **M0**
-> in `docs/PLAN.md`). Commands described here define the *intended* interface and
-> conventions; treat them as the contract we build toward.
+> **Status:** Implemented through milestone **M1**. The compiler front end —
+> lexer, layout, parser/AST, the incremental `parse`/`item_tree` queries, and the
+> canonical formatter — is built, and `fai check` / `fai fmt` work on the M1
+> surface. Later milestones (types, codegen, the daemon, …) define the *intended*
+> interface we build toward. The design is locked (see the decision table below).
 
 This document is the orientation guide for anyone — human or AI agent — working
 on the Fai compiler. Read it first. For the staged build plan see `docs/PLAN.md`; for
