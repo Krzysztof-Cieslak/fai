@@ -1,0 +1,13 @@
+module Locals
+
+public hypotenuse : Float -> Float -> Float
+let hypotenuse a b =
+  let a2 = a * a
+  let b2 = b * b
+  sqrt (a2 + b2)
+
+public classify : Int -> String
+let classify n =
+  if n < 0 then "negative"
+  else if n = 0 then "zero"
+  else "positive"

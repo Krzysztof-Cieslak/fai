@@ -1,0 +1,15 @@
+module Geometry
+
+// Used structurally — no declaration needed.
+public length : { x : Float, y : Float } -> Float
+let length v = sqrt (v.x * v.x + v.y * v.y)
+
+// A transparent alias: `Vec2` and `{ x : Float, y : Float }` are interchangeable.
+type Vec2 = { x : Float, y : Float }
+
+public origin : Vec2
+let origin = { x = 0.0, y = 0.0 }
+
+// Immutable copy-and-update with `{ r with ... }` (Perceus may do it in place).
+public scale : Float -> Vec2 -> Vec2
+let scale k v = { v with x = v.x * k, y = v.y * k }

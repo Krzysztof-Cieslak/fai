@@ -1,0 +1,9 @@
+module Anon
+
+// Private: type fully inferred, no signature needed.
+let center = { x = 0, y = 0 }            // : { x : Int, y : Int }
+let pair a b = { x = a, y = b }          // : 'a -> 'b -> { x : 'a, y : 'b }
+
+// Public: inference still works, but the signature is required (and checked).
+public makePoint : Int -> Int -> { x : Int, y : Int }
+let makePoint x y = { x = x, y = y }

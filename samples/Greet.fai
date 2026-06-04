@@ -1,0 +1,10 @@
+module Greet
+
+// Needs ONLY a console; accepts any runtime that has at least one.
+public greet : { console : Console | _ } -> String -> Unit
+let greet env name =
+  env.console.writeLine ("Hello, " ++ name ++ "!")
+
+public main : Runtime -> Unit
+let main runtime =
+  greet runtime "Fai"          // a full Runtime satisfies { console : Console | _ }

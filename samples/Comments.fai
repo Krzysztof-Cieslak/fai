@@ -1,0 +1,12 @@
+module Comments
+
+// line comment
+
+(* block comment,
+   spans multiple lines *)
+
+/// Doc comment — human prose only. Attached to the binding below and surfaced to
+/// the LSP and to `--message-format=json`. (Checked examples/laws are separate
+/// first-class declarations, never comment text.)
+public answer : Int
+let answer = 42

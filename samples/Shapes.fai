@@ -1,0 +1,11 @@
+module Shapes
+
+type Shape =
+  | Circle Float
+  | Rect Float Float
+
+public area : Shape -> Float
+let area shape =
+  match shape with
+  | Circle r -> 3.14159 * r * r
+  | Rect w h -> w * h

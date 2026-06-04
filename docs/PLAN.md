@@ -2,8 +2,8 @@
 
 This is the tactical build plan: milestones with concrete deliverables and
 acceptance criteria, the sequencing rationale, a risk register, and the decision
-log. For project conventions see `Agents.md`; for the language itself see
-`Samples.md`.
+log. For project conventions see `Agents.md`; for the language itself see the
+`samples/` directory.
 
 ---
 
@@ -30,7 +30,7 @@ log. For project conventions see `Agents.md`; for the language itself see
 5. **Optimize only once it runs and is correct.** Perceus reuse (M6) and the
    parallel/remote-cache/monomorphization work (M9) come after correctness — the
    *incremental architecture* is foundational, but *performance tuning* is not.
-6. **Docs are tested.** Every `.fai` snippet in `Samples.md` is checked by the
+6. **Docs are tested.** Every `.fai` file in `samples/` is checked by the
    test suite from M1 onward, so documentation cannot drift.
 
 Milestones are vertical where possible: each should leave `main` building,
@@ -99,7 +99,7 @@ canonically.
 **Acceptance**
 - Parser snapshot tests for valid + invalid inputs (recovery produces ≥N errors).
 - `fai fmt` is idempotent: `fmt(fmt(x)) == fmt(x)` on a corpus.
-- All non-type-dependent snippets in `Samples.md` parse and round-trip through
+- All non-type-dependent files in `samples/` parse and round-trip through
   `fai fmt` unchanged.
 - **Edit-churn test:** inserting a comment / reformatting re-runs `parse` but the
   item tree is unchanged → near-zero downstream recompute (early cutoff proven).
@@ -145,7 +145,7 @@ an explicit signature.
 **Acceptance**
 - Golden type tests (expected type or expected diagnostic) over a corpus.
 - `fai check` reports precise, well-located type errors in both formats.
-- Every public function in `Samples.md` typechecks against its written signature.
+- Every public function in `samples/` typechecks against its written signature.
 - **Firewall test (incremental verifier):** editing a private body invalidates
   only that def's chain; editing a public signature invalidates its dependents
   and nothing more.
@@ -327,7 +327,7 @@ feature (row-polymorphic structural records).
 - `fai test` runs all contracts and reports pass/fail with codes + JSON.
 
 **Acceptance**
-- `fai test` passes for all contracts in `Samples.md`; a deliberately wrong
+- `fai test` passes for all contracts in `samples/`; a deliberately wrong
   `example`/`forall` fails with a precise, located diagnostic (+ shrunk
   counterexample for properties).
 
@@ -397,7 +397,7 @@ and content-addressed cache landed in M0–M3.5; this milestone is *tuning*.)
 | R6 | Exhaustiveness checking bugs (rows/literals) | Med | Med | Implement a known algorithm (Maranget-style); golden tests for false pos/neg. |
 | R7 | `'a'` char vs `'a` type-var lexing | Low | Med | Single documented lexer rule; dedicated tests (`Agents.md` §11). |
 | R8 | Scope creep from "AI-first" features | Med | Med | Effect rows, extension/restriction, package manager are explicitly **v2**. |
-| R9 | Docs drifting from implementation | Med | Low | Self-hosted check: `Samples.md` snippets are part of the test suite (DoD #6). |
+| R9 | Docs drifting from implementation | Med | Low | Self-hosted check: `samples/` files are part of the test suite (DoD #6). |
 | R10 | Overloaded arithmetic adds inference complexity / "ambiguous numeric type" noise | Low | Med | Restrict overloading to the built-in numeric set (`+ - * /`) with a simple `Int`-defaulting rule; clear help text steering to annotation or `intToFloat`/`floatToInt`. |
 | R11 | salsa API churn / version instability | Med | Med | Pin a version; wrap behind `fai-db` so the engine is swappable; keep query definitions framework-agnostic. |
 | R12 | Incremental-cache correctness (stale results → wrong diagnostics) | Med | High | Incremental-vs-clean **verifier** in CI; content-addressed keys stamped with compiler version + flags; determinism is a locked invariant. |
@@ -536,6 +536,93 @@ must honor):
   `fai_cli::run(args, out, err) -> exit_code`. Tests/e2e + the incremental
   verifier live in the `fai-tests` crate (the literal top-level `tests/` from the
   original layout became `crates/fai-tests`).
+
+Resolved while planning the syntax front end (lexer, parser, AST, incremental
+queries, and formatter):
+
+- **D26 Identifier interning:** a non-salsa `Symbol` wrapping `lasso::Spur`,
+  resolved through a process-global `LazyLock<ThreadedRodeo>`, homed in
+  `fai-syntax` (`lasso` added to `[workspace.dependencies]`). Keeps `Symbol` a
+  `Copy` value with no `'db` lifetime, so the item tree is a plain `Eq` value and
+  early cutoff stays sound within a process. Rejected: a db-scoped interner
+  (forces `'db` through the lexer/parser) and hand-rolling (lasso is mature).
+- **D27 Syntax tree & firewall:** per-category **arena AST** (`Expr`/`Pat`/
+  `Type`/`Item` with newtyped ids) carrying **inline file-relative spans**. The
+  incremental firewall is the **span-free item tree** (the value semantic queries
+  depend on) plus `ItemId` = arena index as the stable id; the "AstId map" is
+  `parse` output indexed by `ItemId`. Inline spans cost nothing incrementally
+  because the firewall is the item tree, not the syntax tree. Per-body
+  local-arena lowering (for body-level cutoff) is deferred to M2.
+- **D28 Lexer:** emits **significant tokens** (`{ kind, range }`) plus a side
+  `Vec<Comment>` (`Line`/`Block`/`Doc`); no whitespace/newline tokens (layout
+  derives line/column from `LineIndex`). Character-literal vs type-variable is
+  decided by **try-char-then-backtrack** (the documented "char when it closes,
+  else type var" rule). Numeric grammar is full: decimal/`0x`/`0o`/`0b` integers
+  with `_` separators and floats with optional fraction/exponent (a trailing
+  identifier char is an invalid-suffix error). Escapes (string & char):
+  `\n \t \r \0 \\ \" \' \u{…}`. Block comments **nest**; `///` is a distinct
+  doc-comment kind.
+- **D29 Layout:** a restricted **offside pre-pass** turns indentation into
+  virtual `LayoutOpen`/`LayoutSep`/`LayoutClose` tokens so the parser stays
+  layout-agnostic. A new line at the block's reference column starts a new item
+  unless its first token is a **continuation token** (an infix operator, `else`,
+  `then`, or `|`); greater indent continues, lesser closes. Blocks open after the
+  module header, `=`, `->`, `then`, and `else` (when the next token begins a new
+  line); a block body must indent strictly past its enclosing block (`FAI1021`).
+  Tabs count as one column (quiet) and are normalized by `fai fmt`. Not the full
+  Haskell layout algorithm — the canonical formatter normalizes input.
+- **D30 Parser & AST shapes:** Pratt expression parsing, precedence tight→loose
+  `.` > application > unary `-` > `* / %` > `+ -` > `:: ++` (right) >
+  comparison/equality (left) > `&&` > `||` > `>>` > `|>`. Curried `App`; flat
+  `Block { stmts, tail }` (sequential, non-recursive local `let`s); explicit
+  `Paren` nodes; literals stored as their raw lexeme; `else` required; patterns
+  limited to var/`_`/tuple/paren; types are var/con/app/arrow/tuple (record types
+  deferred to M4). The binding `=` is consumed by the declaration parser, so `=`
+  in expressions is always equality. **Error nodes in every category** with
+  multi-level recovery (synchronize on layout `Sep`/`Close` and item keywords).
+  `public` is accepted on signature and binding items; sig↔binding association and
+  the "public needs a signature" rule are M2. A reserved-but-unimplemented
+  construct (`type`, records, `match`, `interface`, nested `module … =`) emits
+  **`FAI1030` "not yet supported"** and recovers, going dormant as M4/M5/M8 land.
+  The module header is required, first, and the single top-level module
+  (`FAI1022`).
+- **D31 Comments:** attached **fine-grained to all nodes** via a per-category
+  side-table keyed by node id (no node-struct bloat), placed Prettier-style
+  (enclosing node → preceding/following sibling → same-line ⇒ trailing, own-line
+  ⇒ leading, none ⇒ dangling). In the canonical formatter an **own-line comment
+  forces its surrounding group to break**, so a commented construct never
+  collapses. Doc is *derived* from leading `///` entries.
+- **D32 Formatter:** `fai-fmt` is a **pure crate** (`format_module(&ParsedModule)
+  -> String`) lowering the AST to a Wadler/Prettier **document IR** printed at
+  **width 100**. It is **fully canonical** — input line breaks are ignored and
+  the AST carries no layout hints — collapsing anything that fits and using fixed
+  broken shapes otherwise (blocks always multi-line; branches via `then`/`else`
+  blocks; leading-comma lists; signature + binding + contracts grouped with
+  exactly one blank line between groups; trailing newline). Explicit parens and
+  literal spellings are preserved verbatim.
+- **D33 Front-end queries:** pure cores (`lex`/`layout`/`parse_module`/
+  `build_item_tree`) wrapped by thin `#[salsa::tracked]` functions in
+  `fai-syntax`. `parse(db, file) -> Arc<ParsedModule>` (AST + attached comments +
+  a `has_errors` flag) emits parse diagnostics via the `Diag` accumulator.
+  `item_tree(db, file)` is span-free and `Eq`/`Update` (names/kinds/visibility/
+  order; `Error` items as anonymous entries) — the early-cutoff firewall;
+  signature types are added in M2. `fai-db` gains `Db::all_source_files` and
+  re-exports `salsa::Update`.
+- **D34 `check`/`fmt` wiring:** the driver computes, the CLI does I/O.
+  `check(db, files)` parses the filtered files and reports `Diag` (`ok` = no
+  error-severity diagnostics). `fmt(db, files)` returns per-file results; the CLI
+  writes changed files unless `--check`; the JSON envelope is `FmtOutput
+  { schemaVersion, changed, diagnostics }` (the additive `diagnostics` reports
+  files skipped for parse errors). The optional `[path]` argument is resolved to a
+  `SourceFile` set by the CLI. The front end is one-shot in-process (the daemon is
+  M3.5).
+- **D35 Samples as files:** the language tour lives as canonical `.fai` files in
+  **`samples/`** (one self-contained module per file), replacing the former
+  `Samples.md`. The test suite buckets each file by parse result: zero diagnostics
+  ⇒ must round-trip under `fai fmt` and be idempotent; ≥1 `FAI1030` ⇒
+  future-surface, skipped; any diagnostic without `FAI1030` ⇒ failure (a real
+  syntax bug). A known-module guard asserts the implemented-surface modules stay
+  clean; files auto-promote to the round-trip set as later milestones land.
 
 To change a locked decision: update this log **and** the table in `Agents.md`,
 and note the migration in the affected milestones.

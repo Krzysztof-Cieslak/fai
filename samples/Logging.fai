@@ -1,0 +1,16 @@
+module Logging
+
+interface Logger =
+  log : String -> Unit
+
+// Build a Logger from another Logger by prefixing every message.
+public withPrefix : String -> Logger -> Logger
+let withPrefix prefix inner =
+  { Logger with
+      log msg = inner.log (prefix ++ msg) }
+
+// Adapt a Console capability into a Logger.
+public consoleLogger : Console -> Logger
+let consoleLogger console =
+  { Logger with
+      log msg = console.writeLine msg }
