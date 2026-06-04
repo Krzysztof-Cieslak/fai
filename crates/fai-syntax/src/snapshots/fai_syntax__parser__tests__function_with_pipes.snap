@@ -1,0 +1,7 @@
+---
+source: crates/fai-syntax/src/parser.rs
+expression: "dump(\"module Funcs\\npublic describe : Int -> String\\nlet describe n =\\n  n\\n  |> inc\\n  |> intToString\")"
+---
+module Funcs
+(sig Public describe (arrow (tcon Int) (tcon String)))
+(let Private describe [(pvar n)] (block [] (Pipe (Pipe (var n) (var inc)) (var intToString))))
