@@ -1,0 +1,4 @@
+module Algebra
+
+forall xs ys: length (append xs ys) = length xs + length ys
+forall xs: reverse (reverse xs) = xs

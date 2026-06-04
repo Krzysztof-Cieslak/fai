@@ -7,7 +7,7 @@
 
 This document is the orientation guide for anyone — human or AI agent — working
 on the Fai compiler. Read it first. For the staged build plan see `docs/PLAN.md`; for
-the language by example see `Samples.md`.
+the language by example see the `samples/` directory.
 
 ---
 
@@ -105,8 +105,9 @@ example: map (fun x -> x + 1) [1, 2, 3] = [2, 3, 4]
 forall xs: map (fun x -> x) xs = xs
 ```
 
-See `Samples.md` for the full tour (ADTs, structural/row-polymorphic records,
-interfaces + instances, capabilities, contracts, nested modules).
+See the `samples/` directory for the full tour (ADTs, structural/row-polymorphic
+records, interfaces + instances, capabilities, contracts, nested modules). Each
+`.fai` file there is one self-contained module, verified by the test suite.
 
 ## 5. Repository layout
 
@@ -116,7 +117,7 @@ appear as the milestones that need them land — see `docs/PLAN.md`.)
 ```
 fai/
 ├── Agents.md            # this file
-├── Samples.md           # language by example
+├── samples/             # language by example (canonical, tested .fai tour)
 ├── docs/
 │   ├── PLAN.md          # milestones, acceptance criteria, risks, decisions
 │   └── CLI.md           # CLI + daemon-protocol reference
@@ -354,7 +355,7 @@ A change is done when:
 3. `cargo test` passes, including golden/snapshot and e2e tests.
 4. New behavior has tests; new diagnostics have codes + catalog entries.
 5. Any surface-language change is reflected in `Agents.md`, `docs/PLAN.md`, and
-   `Samples.md`.
-6. Self-hosted check: every `.fai` example in `Samples.md` is verified by the
-   test suite (parsed/checked, and run where applicable) so the docs cannot
-   drift from the implementation.
+   the `samples/` directory.
+6. Self-hosted check: every `.fai` file in `samples/` is verified by the test
+   suite (parsed/formatted, and typechecked/run where applicable) so the docs
+   cannot drift from the implementation.

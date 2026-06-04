@@ -1,0 +1,15 @@
+module Basics
+
+// Private bindings may omit signatures (types are inferred).
+let count = 3                  // Int (64-bit)
+let ratio = 3.0 / 2.0          // Float (64-bit); + - * / work on Float too
+let name = "Fai"               // String (UTF-8)
+let initial = 'F'              // Char  (note: 'F' is a char; 'a is a type var)
+let yes = true                 // Bool
+let nothing = ()               // Unit
+
+// Operators: arithmetic (+ - * /) overloaded over Int and Float,
+// compare (< <= > >=), equality (= <>), boolean (&& || not),
+// string/list concat (++), pipe (|>), and composition (>>).
+let shouted = "go" ++ "!"      // "go!"
+let isEven = count % 2 = 0     // here `=` is the equality operator

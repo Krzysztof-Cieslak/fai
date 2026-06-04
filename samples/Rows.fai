@@ -1,0 +1,13 @@
+module Rows
+
+// Accepts any record that has at least an `x` field (others ignored).
+public getX : { x : 'a | _ } -> 'a
+let getX r = r.x
+
+// Works on Vec2, Vec3, or any record with an x:
+//   getX { x = 1.0, y = 2.0 }        = 1.0
+//   getX { x = 7, y = 0, z = 9 }     = 7
+
+// A NAMED tail is needed only to thread the other fields into the result:
+public setX : 'a -> { x : 'b | 'r } -> { x : 'a | 'r }
+let setX v r = { r with x = v }

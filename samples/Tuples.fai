@@ -1,0 +1,11 @@
+module Tuples
+
+/// Integer quotient and remainder.
+public divMod : Int -> Int -> Int * Int
+let divMod a b = (a / b, a % b)
+example: divMod 7 3 = (2, 1)
+
+public swap : 'a * 'b -> 'b * 'a
+let swap pair =
+  let (x, y) = pair          // destructuring
+  (y, x)

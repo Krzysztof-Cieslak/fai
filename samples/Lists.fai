@@ -1,0 +1,22 @@
+module Lists
+
+/// Apply f to every element, preserving order.
+public map : ('a -> 'b) -> List 'a -> List 'b
+let map f xs =
+  match xs with
+  | [] -> []
+  | x :: rest -> f x :: map f rest
+example: map (fun x -> x + 1) [1, 2, 3] = [2, 3, 4]
+forall xs: map (fun x -> x) xs = xs
+
+public foldl : ('acc -> 'a -> 'acc) -> 'acc -> List 'a -> 'acc
+let foldl f acc xs =
+  match xs with
+  | [] -> acc
+  | x :: rest -> foldl f (f acc x) rest
+
+// `reverse` can refer to `foldl` above freely (mutual recursion, no `rec`).
+public reverse : List 'a -> List 'a
+let reverse xs =
+  foldl (fun acc x -> x :: acc) [] xs
+forall xs: reverse (reverse xs) = xs

@@ -1,0 +1,18 @@
+module Math
+
+/// Absolute value.
+public abs : Int -> Int
+let abs n =
+  if n < 0 then 0 - n else n
+example: abs (-3) = 3
+example: abs 3 = 3
+forall n: abs n >= 0
+
+/// `clamp lo hi x` constrains x to the range [lo, hi].
+public clamp : Int -> Int -> Int -> Int
+let clamp lo hi x =
+  if x < lo then lo
+  else if x > hi then hi
+  else x
+example: clamp 0 10 15 = 10
+forall lo x: clamp lo (lo + 100) x >= lo

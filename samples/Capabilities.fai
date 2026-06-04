@@ -1,0 +1,20 @@
+module Capabilities
+
+interface Console =
+  writeLine : String -> Unit
+
+interface Clock =
+  now : Unit -> Int            // milliseconds since epoch (a capability, so it is
+                               // honestly effectful, not ambient)
+
+interface Random =
+  nextInt : Int -> Int         // pseudo-random in [0, n)
+
+// `Runtime` is the transparent alias bundling the host capabilities supplied to
+// `main`. A function should request only the fields it needs (see Greet).
+type Runtime =
+  { console : Console
+  , clock   : Clock
+  , random  : Random
+  , fs      : FileSystem
+  , env     : Env }
