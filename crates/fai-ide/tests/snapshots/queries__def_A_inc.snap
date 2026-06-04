@@ -1,0 +1,45 @@
+---
+source: crates/fai-ide/tests/queries.rs
+expression: json(&r)
+---
+{
+  "schemaVersion": 1,
+  "target": {
+    "path": "A.inc",
+    "name": "inc",
+    "kind": "function",
+    "module": "A",
+    "visibility": "public",
+    "signature": "Int -> Int",
+    "span": {
+      "file": "A.fai",
+      "start": {
+        "line": 4,
+        "column": 1
+      },
+      "end": {
+        "line": 4,
+        "column": 18
+      },
+      "byteStart": 34,
+      "byteEnd": 51
+    }
+  },
+  "definitions": [
+    {
+      "span": {
+        "file": "A.fai",
+        "start": {
+          "line": 4,
+          "column": 1
+        },
+        "end": {
+          "line": 4,
+          "column": 18
+        },
+        "byteStart": 34,
+        "byteEnd": 51
+      }
+    }
+  ]
+}
