@@ -42,6 +42,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Snapshot testing.
 insta = "1"
+# Property-based (generative) testing.
+proptest = "1"
 
 # Internal crates (path deps, versions inherited from the workspace).
 fai-span = { path = "crates/fai-span" }

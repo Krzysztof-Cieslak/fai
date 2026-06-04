@@ -918,3 +918,51 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use fai_span::SourceId;
+    use proptest::prelude::*;
+
+    use super::lex;
+    use crate::token::TokenKind;
+
+    proptest! {
+        /// Arbitrary input never panics or hangs, and always ends with `Eof`.
+        #[test]
+        fn lexing_is_total(input in any::<String>()) {
+            let result = lex(SourceId::new(0), &input);
+            prop_assert_eq!(result.tokens.last().map(|t| t.kind), Some(TokenKind::Eof));
+        }
+
+        /// Token ranges are ordered, within bounds, and on `char` boundaries —
+        /// so slicing the source by any token range is always valid.
+        #[test]
+        fn token_ranges_are_well_formed(input in any::<String>()) {
+            let result = lex(SourceId::new(0), &input);
+            let len = input.len();
+            let mut prev_end = 0usize;
+            for token in &result.tokens {
+                let start = token.range.start().to_usize();
+                let end = token.range.end().to_usize();
+                prop_assert!(start <= end, "start after end");
+                prop_assert!(end <= len, "range past end of input");
+                prop_assert!(start >= prev_end, "ranges overlap or go backwards");
+                prop_assert!(input.get(start..end).is_some(), "range not on a char boundary");
+                prev_end = end;
+            }
+        }
+
+        /// A generated identifier lexes back to exactly itself.
+        #[test]
+        fn identifiers_round_trip(name in "[a-z][a-zA-Z0-9_]*") {
+            prop_assume!(TokenKind::keyword(&name).is_none());
+            let result = lex(SourceId::new(0), &name);
+            prop_assert_eq!(result.tokens.len(), 2); // identifier + Eof
+            prop_assert_eq!(result.tokens[0].kind, TokenKind::LowerIdent);
+            let token = result.tokens[0];
+            let lexeme = &name[token.range.start().to_usize()..token.range.end().to_usize()];
+            prop_assert_eq!(lexeme, name.as_str());
+        }
+    }
+}
