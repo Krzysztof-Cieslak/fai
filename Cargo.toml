@@ -4,6 +4,9 @@ members = [
     "crates/fai-span",
     "crates/fai-diagnostics",
     "crates/fai-db",
+    "crates/fai-syntax",
+    "crates/fai-fmt",
+    "crates/fai-resolve",
     "crates/fai-driver",
     "crates/fai-cli",
     "crates/fai-tests",
@@ -28,6 +31,8 @@ serde_json = "1"
 clap = { version = "4", features = ["derive"] }
 # Deterministic, fast hashing for internal maps (Agents.md §8).
 rustc-hash = "2"
+# String interning for identifiers (the non-salsa `Symbol`).
+lasso = { version = "0.7", features = ["multi-threaded"] }
 # UTF-8 paths (clean JSON, no lossy conversion).
 camino = "1"
 # Typed library errors.
@@ -42,6 +47,9 @@ insta = "1"
 fai-span = { path = "crates/fai-span" }
 fai-diagnostics = { path = "crates/fai-diagnostics" }
 fai-db = { path = "crates/fai-db" }
+fai-syntax = { path = "crates/fai-syntax" }
+fai-fmt = { path = "crates/fai-fmt" }
+fai-resolve = { path = "crates/fai-resolve" }
 fai-driver = { path = "crates/fai-driver" }
 fai-cli = { path = "crates/fai-cli" }
 
