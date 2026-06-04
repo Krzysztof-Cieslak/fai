@@ -1,0 +1,15 @@
+---
+source: crates/fai-syntax/src/lexer.rs
+expression: "render(\"/// doc\\nlet name = \\\"Fai\\\" // trailing\\nlet c = 'F'\")"
+---
+Let "let"
+LowerIdent "name"
+Equals "="
+String "\"Fai\""
+Let "let"
+LowerIdent "c"
+Equals "="
+Char "'F'"
+Eof ""
+comment Doc "/// doc"
+comment Line "// trailing"

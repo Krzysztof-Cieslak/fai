@@ -11,6 +11,7 @@ fn all_codes() -> Vec<CodeInfo> {
     let mut codes = Vec::new();
     codes.extend_from_slice(fai_diagnostics::CODES);
     codes.extend_from_slice(fai_driver::CODES);
+    codes.extend_from_slice(fai_syntax::CODES);
     codes
 }
 

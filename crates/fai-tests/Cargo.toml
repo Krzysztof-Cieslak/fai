@@ -18,6 +18,7 @@ camino.workspace = true
 fai-cli.workspace = true
 fai-diagnostics.workspace = true
 fai-driver.workspace = true
+fai-syntax.workspace = true
 insta.workspace = true
 serde_json.workspace = true
 

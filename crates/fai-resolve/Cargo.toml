@@ -1,0 +1,11 @@
+[package]
+name = "fai-resolve"
+description = "Name resolution, module graph, and visibility for Fai."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true

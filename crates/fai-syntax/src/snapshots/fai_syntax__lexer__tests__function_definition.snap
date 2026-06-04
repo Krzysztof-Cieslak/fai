@@ -1,0 +1,13 @@
+---
+source: crates/fai-syntax/src/lexer.rs
+expression: "render(\"let add x y = x + y\")"
+---
+Let "let"
+LowerIdent "add"
+LowerIdent "x"
+LowerIdent "y"
+Equals "="
+LowerIdent "x"
+Plus "+"
+LowerIdent "y"
+Eof ""
