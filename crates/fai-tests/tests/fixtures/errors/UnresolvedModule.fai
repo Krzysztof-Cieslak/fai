@@ -1,0 +1,6 @@
+module UnresolvedModule
+
+// There is no module named `Nope` in the workspace.
+//~ ERROR FAI2008
+public use : Int -> Int
+let use n = Nope.thing n

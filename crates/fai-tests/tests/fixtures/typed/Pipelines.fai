@@ -1,0 +1,25 @@
+module Pipelines
+
+// Pipe (|>) and composition (>>) operators threaded through real expressions.
+
+//~ TYPE inc : Int -> Int
+public inc : Int -> Int
+let inc x = x + 1
+
+//~ TYPE double : Int -> Int
+public double : Int -> Int
+let double x = x * 2
+
+//~ TYPE incThenDouble : Int -> Int
+public incThenDouble : Int -> Int
+let incThenDouble n = n |> inc |> double
+
+//~ TYPE pipeline : Int -> Int
+public pipeline : Int -> Int
+let pipeline = inc >> double >> inc
+
+//~ TYPE describe : Int -> String
+public describe : Int -> String
+let describe n = n |> inc |> intToString
+
+example: incThenDouble 3 = 8

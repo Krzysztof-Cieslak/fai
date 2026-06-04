@@ -1,0 +1,5 @@
+module Unbound
+
+// `missing` is not defined anywhere.
+//~ ERROR FAI2001
+let uses = missing 3

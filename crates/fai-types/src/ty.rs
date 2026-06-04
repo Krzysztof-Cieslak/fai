@@ -136,13 +136,30 @@ pub struct Scheme {
     pub vars: Vec<TyVarId>,
     /// The body type.
     pub ty: Ty,
+    /// Preferred display spelling for each variable, parallel to `vars` (e.g. the
+    /// letters written in a signature). Empty when the scheme is inferred, in
+    /// which case rendering falls back to canonical names.
+    pub names: Vec<String>,
 }
 
 impl Scheme {
     /// A monomorphic scheme over `ty`.
     #[must_use]
     pub fn mono(ty: Ty) -> Self {
-        Self { vars: Vec::new(), ty }
+        Self { vars: Vec::new(), ty, names: Vec::new() }
+    }
+
+    /// A scheme with explicit quantified variables (canonical naming).
+    #[must_use]
+    pub fn new(vars: Vec<TyVarId>, ty: Ty) -> Self {
+        Self { vars, ty, names: Vec::new() }
+    }
+
+    /// Attaches preferred variable spellings (parallel to `vars`).
+    #[must_use]
+    pub fn with_names(mut self, names: Vec<String>) -> Self {
+        self.names = names;
+        self
     }
 }
 
@@ -178,13 +195,22 @@ impl VarNames {
         Self::default()
     }
 
-    /// Assigns canonical names ('a, 'b, …) to a scheme's quantified variables in
-    /// ascending id order.
+    /// Assigns names to a scheme's quantified variables.
+    ///
+    /// If the scheme carries preferred spellings (e.g. from a written signature),
+    /// those are used; otherwise variables are named canonically (`'a`, `'b`, …)
+    /// in ascending id order.
     #[must_use]
     pub fn canonical(scheme: &Scheme) -> Self {
+        let mut names = rustc_hash::FxHashMap::default();
+        if scheme.names.len() == scheme.vars.len() && !scheme.names.is_empty() {
+            for (v, name) in scheme.vars.iter().zip(&scheme.names) {
+                names.insert(*v, name.clone());
+            }
+            return Self { names };
+        }
         let mut vars = scheme.vars.clone();
         vars.sort();
-        let mut names = rustc_hash::FxHashMap::default();
         for (i, v) in vars.into_iter().enumerate() {
             names.insert(v, canonical_name(i));
         }
@@ -292,10 +318,10 @@ mod tests {
     #[test]
     fn renders_arrow_and_app() {
         // ('a -> 'b) -> List 'a -> List 'b
-        let scheme = Scheme {
-            vars: vec![TyVarId(0), TyVarId(1)],
-            ty: Ty::arrows([Ty::arrow(v(0), v(1)), Ty::list(v(0))], Ty::list(v(1))),
-        };
+        let scheme = Scheme::new(
+            vec![TyVarId(0), TyVarId(1)],
+            Ty::arrows([Ty::arrow(v(0), v(1)), Ty::list(v(0))], Ty::list(v(1))),
+        );
         assert_eq!(render_scheme(&scheme), "('a -> 'b) -> List 'a -> List 'b");
     }
 

@@ -1,0 +1,5 @@
+module OccursCheck
+
+// Applying a value to itself forces an infinite type.
+//~ ERROR FAI3002
+let omega x = x x

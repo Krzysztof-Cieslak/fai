@@ -12,19 +12,20 @@ license.workspace = true
 [dependencies]
 fai-span.workspace = true
 fai-db.workspace = true
+fai-diagnostics.workspace = true
+fai-resolve.workspace = true
+fai-syntax.workspace = true
+fai-types.workspace = true
 camino.workspace = true
 
 [dev-dependencies]
 fai-cli.workspace = true
-fai-diagnostics.workspace = true
 fai-driver.workspace = true
 fai-fmt.workspace = true
 fai-ide.workspace = true
-fai-resolve.workspace = true
-fai-syntax.workspace = true
-fai-types.workspace = true
 insta.workspace = true
 serde_json.workspace = true
+proptest.workspace = true
 
 [lints]
 workspace = true

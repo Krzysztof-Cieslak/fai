@@ -1,0 +1,9 @@
+module TypeMismatch
+
+// Adding a Bool to an Int: arithmetic requires a Numeric operand.
+//~ ERROR FAI3001
+let bad = 1 + true
+
+// Using a String where an Int is expected.
+//~ ERROR FAI3001
+let alsoBad = "x" * 2

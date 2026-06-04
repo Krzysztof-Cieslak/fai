@@ -34,11 +34,13 @@ impl LowerVars {
         id
     }
 
-    /// The ids assigned so far, in ascending order (a scheme's quantified set).
-    fn assigned(&self) -> Vec<TyVarId> {
-        let mut vars: Vec<TyVarId> = self.by_name.values().copied().collect();
-        vars.sort();
-        vars
+    /// The `(var, source-name)` pairs, ordered by var id. Names keep the written
+    /// `'a` spelling.
+    fn named(&self) -> Vec<(TyVarId, String)> {
+        let mut pairs: Vec<(TyVarId, String)> =
+            self.by_name.iter().map(|(name, id)| (*id, name.as_str().to_owned())).collect();
+        pairs.sort_by_key(|(id, _)| *id);
+        pairs
     }
 }
 
@@ -93,7 +95,10 @@ pub fn lower_type(
 pub fn lower_signature(db: &dyn Db, file: SourceFile, module: &Module, ty: TypeId) -> Scheme {
     let mut vars = LowerVars::default();
     let body = lower_type(db, file, module, ty, &mut vars);
-    Scheme { vars: vars.assigned(), ty: body }
+    let named = vars.named();
+    let ids: Vec<TyVarId> = named.iter().map(|(id, _)| *id).collect();
+    let names: Vec<String> = named.into_iter().map(|(_, n)| n).collect();
+    Scheme { vars: ids, ty: body, names }
 }
 
 #[cfg(test)]

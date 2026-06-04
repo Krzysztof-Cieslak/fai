@@ -1,0 +1,27 @@
+module Recursion
+
+// Self- and mutual recursion with signatures (monomorphic recursion).
+
+//~ TYPE factorial : Int -> Int
+public factorial : Int -> Int
+let factorial n = if n <= 1 then 1 else n * factorial (n - 1)
+
+//~ TYPE fib : Int -> Int
+public fib : Int -> Int
+let fib n = if n < 2 then n else fib (n - 1) + fib (n - 2)
+
+//~ TYPE isEven : Int -> Bool
+public isEven : Int -> Bool
+let isEven n = if n = 0 then true else isOdd (n - 1)
+
+//~ TYPE isOdd : Int -> Bool
+public isOdd : Int -> Bool
+let isOdd n = if n = 0 then false else isEven (n - 1)
+
+//~ TYPE sumTo : Int -> Int
+public sumTo : Int -> Int
+let sumTo n = if n <= 0 then 0 else n + sumTo (n - 1)
+
+example: factorial 5 = 120
+example: isEven 10
+forall n: factorial n >= 1

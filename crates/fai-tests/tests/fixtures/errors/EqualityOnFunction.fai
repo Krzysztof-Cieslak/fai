@@ -1,0 +1,8 @@
+module EqualityOnFunction
+
+public f : Int -> Int
+let f x = x
+
+// Comparing two functions for equality is a type error.
+//~ ERROR FAI3006
+let bad = f = f

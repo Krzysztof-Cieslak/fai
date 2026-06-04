@@ -1,0 +1,24 @@
+module Floats
+
+// Float arithmetic stays Float; no implicit Int/Float coercion is needed here.
+
+//~ TYPE half : Float -> Float
+public half : Float -> Float
+let half x = x / 2.0
+
+//~ TYPE hypotenuse : Float -> Float -> Float
+public hypotenuse : Float -> Float -> Float
+let hypotenuse a b =
+  let a2 = a * a
+  let b2 = b * b
+  sqrt (a2 + b2)
+
+//~ TYPE scale : Float -> Float -> Float
+public scale : Float -> Float -> Float
+let scale factor x = factor * x
+
+//~ TYPE circleArea : Float -> Float
+public circleArea : Float -> Float
+let circleArea r = pi * r * r
+
+example: half 4.0 = 2.0

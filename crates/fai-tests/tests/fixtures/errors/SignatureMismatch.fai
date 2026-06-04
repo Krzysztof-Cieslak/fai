@@ -1,0 +1,6 @@
+module SignatureMismatch
+
+// The body returns an Int, but the signature claims Bool.
+//~ ERROR FAI3004
+public f : Int -> Bool
+let f x = x + 1

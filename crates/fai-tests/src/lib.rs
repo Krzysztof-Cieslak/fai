@@ -7,6 +7,10 @@
 //! so this guards the correctness of early cutoff and invalidation as later
 //! phases add real queries.
 
+mod checker;
+
+pub use checker::{CheckOutcome, check_named, check_source, run_annotated, sym, type_of};
+
 use std::fmt::Debug;
 
 use camino::Utf8PathBuf;

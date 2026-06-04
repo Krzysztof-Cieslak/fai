@@ -1,0 +1,21 @@
+module Strings
+
+// String construction with `++` (String-only) and conversion via the prelude.
+
+//~ TYPE greet : String -> String
+public greet : String -> String
+let greet name = "Hello, " ++ name ++ "!"
+
+//~ TYPE shout : String -> String
+public shout : String -> String
+let shout s = s ++ "!"
+
+//~ TYPE label : Int -> String
+public label : Int -> String
+let label n = "n = " ++ intToString n
+
+//~ TYPE describe : Int -> String
+public describe : Int -> String
+let describe n = if n < 0 then "negative" else label n
+
+example: greet "Fai" = "Hello, Fai!"

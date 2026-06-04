@@ -1,0 +1,35 @@
+module Arithmetic
+
+// A small numeric library exercising arithmetic, comparisons, and defaulting.
+
+//~ TYPE square : Int -> Int
+public square : Int -> Int
+let square n = n * n
+
+//~ TYPE cube : Int -> Int
+public cube : Int -> Int
+let cube n = n * square n
+
+//~ TYPE max : Int -> Int -> Int
+public max : Int -> Int -> Int
+let max a b = if a > b then a else b
+
+//~ TYPE min : Int -> Int -> Int
+public min : Int -> Int -> Int
+let min a b = if a < b then a else b
+
+//~ TYPE clamp : Int -> Int -> Int -> Int
+public clamp : Int -> Int -> Int -> Int
+let clamp lo hi x = max lo (min hi x)
+
+//~ TYPE average : Int -> Int -> Int
+public average : Int -> Int -> Int
+let average a b = (a + b) / 2
+
+// A signature-less private helper whose type is fully determined.
+//~ TYPE ten : Int
+let ten = square 3 + 1
+
+example: square 4 = 16
+example: clamp 0 10 15 = 10
+forall n: square n >= 0

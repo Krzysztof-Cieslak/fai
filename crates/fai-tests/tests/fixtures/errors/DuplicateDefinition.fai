@@ -1,0 +1,6 @@
+module DuplicateDefinition
+
+// `f` is defined twice.
+//~ ERROR FAI2004
+let f = 1
+let f = 2

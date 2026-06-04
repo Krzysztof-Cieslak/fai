@@ -1,0 +1,38 @@
+module Polymorphism
+
+// Higher-order and polymorphic functions exercise generalization and
+// instantiation at multiple types.
+
+//~ TYPE identity : 'a -> 'a
+public identity : 'a -> 'a
+let identity x = x
+
+//~ TYPE constant : 'a -> 'b -> 'a
+public constant : 'a -> 'b -> 'a
+let constant x y = x
+
+//~ TYPE apply : ('a -> 'b) -> 'a -> 'b
+public apply : ('a -> 'b) -> 'a -> 'b
+let apply f x = f x
+
+//~ TYPE twice : ('a -> 'a) -> 'a -> 'a
+public twice : ('a -> 'a) -> 'a -> 'a
+let twice f x = f (f x)
+
+//~ TYPE compose : ('b -> 'c) -> ('a -> 'b) -> 'a -> 'c
+public compose : ('b -> 'c) -> ('a -> 'b) -> 'a -> 'c
+let compose f g x = f (g x)
+
+//~ TYPE flip : ('a -> 'b -> 'c) -> 'b -> 'a -> 'c
+public flip : ('a -> 'b -> 'c) -> 'b -> 'a -> 'c
+let flip f a b = f b a
+
+//~ TYPE swap : 'a * 'b -> 'b * 'a
+public swap : 'a * 'b -> 'b * 'a
+let swap p =
+  let (x, y) = p
+  (y, x)
+
+// A signature-less polymorphic helper generalizes.
+//~ TYPE pair : 'a -> 'b -> 'a * 'b
+let pair a b = (a, b)

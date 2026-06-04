@@ -1,0 +1,8 @@
+module ContractNotBool
+
+public n : Int
+let n = 3
+
+// A contract body must have type Bool; this is an Int.
+//~ ERROR FAI3007
+example: n + 1
