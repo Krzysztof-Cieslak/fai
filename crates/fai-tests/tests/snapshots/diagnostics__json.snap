@@ -1,0 +1,64 @@
+---
+source: crates/fai-tests/tests/diagnostics.rs
+expression: json
+---
+[
+  {
+    "code": "FAI3001",
+    "severity": "error",
+    "message": "type mismatch",
+    "primary": {
+      "file": "src/Main.fai",
+      "start": {
+        "line": 2,
+        "column": 3
+      },
+      "end": {
+        "line": 2,
+        "column": 6
+      },
+      "byteStart": 10,
+      "byteEnd": 13
+    },
+    "secondary": [
+      {
+        "span": {
+          "file": "src/Main.fai",
+          "start": {
+            "line": 1,
+            "column": 1
+          },
+          "end": {
+            "line": 1,
+            "column": 4
+          },
+          "byteStart": 0,
+          "byteEnd": 3
+        },
+        "label": "in this binding"
+      }
+    ],
+    "help": "expected `Int`",
+    "suggestions": []
+  },
+  {
+    "code": "FAI2001",
+    "severity": "warning",
+    "message": "unused binding `y`",
+    "primary": {
+      "file": "src/Main.fai",
+      "start": {
+        "line": 3,
+        "column": 5
+      },
+      "end": {
+        "line": 3,
+        "column": 6
+      },
+      "byteStart": 22,
+      "byteEnd": 23
+    },
+    "secondary": [],
+    "suggestions": []
+  }
+]

@@ -499,6 +499,44 @@ Resolved during planning (see the locked table in `Agents.md` §3):
   commands** (no `rename`/`fix`) — agents perform edits themselves. Full command
   reference in `cli.md`.
 
+Resolved while implementing **M0** (cross-cutting conventions later milestones
+must honor):
+
+- **D19 Edition & toolchain:** Rust **edition 2024**, toolchain pinned to
+  `1.96.0` (`rust-toolchain.toml`); `resolver = "3"`; `Cargo.lock` committed.
+  Canonical formatting pinned via `rustfmt.toml` (`use_small_heuristics = "Max"`).
+- **D20 Lints:** denied workspace-wide in `[workspace.lints]` — `warnings`,
+  `unsafe_code`, `clippy::all`. `unsafe_code` is `deny` (not `forbid`) so `fai-db`
+  can carry salsa's macro-generated `unsafe impl`s via a scoped crate allow; it is
+  the only crate that does so. `missing_docs` is **not** denied (it fights
+  macro-generated public items); docs on public items stay a convention.
+- **D21 Tooling error codes:** the **`FAI0xxx`** range is owned by the
+  tooling/driver layer (`fai-driver`): `FAI0001` not-implemented, `FAI0002`
+  workspace/I/O. Codes live as per-crate `CODES` slices; `fai-tests` aggregates
+  them for the format/uniqueness catalog test.
+- **D22 Span model & source authority:** `fai-span` is engine-agnostic
+  (`SourceId`, `ByteOffset`, file-relative `TextRange`, file-qualified `Span`,
+  `LineIndex` with 1-based **character** columns). The salsa `SourceFile` input is
+  the **authoritative** source text; rendering resolves spans through the
+  `SpanResolver` trait (impls: `SourceMap` for tests/one-shot, `DbSpanResolver`
+  backed by the database). Machine output uses **workspace-relative** paths.
+- **D23 Diagnostics flow:** deeper phases emit into the salsa **accumulator**
+  `Diag`; callers collect at the boundary. One model, two renderers (human +
+  JSON wire schema, `schemaVersion = 1`); output is ordered deterministically by
+  `(file, byteStart, code)`.
+- **D24 Database shape:** a single `#[salsa::db]` trait `Db` plus the concrete
+  `FaiDatabase`, both in `fai-db`; downstream phases add tracked *functions* over
+  `&dyn fai_db::Db` rather than new DB traits. Only `fai-db` depends on `salsa`
+  directly; downstream uses it via `fai-db`'s re-exports. Identifier interning
+  will use a separate non-salsa `Symbol`; salsa interning is reserved for derived
+  keys.
+- **D25 Client seam:** driver command entry points take `&dyn Db` and return a
+  `CommandResult` the CLI (and, later, the daemon) renders; envelope schema types
+  live in `fai-driver`. The CLI is in-process-testable via
+  `fai_cli::run(args, out, err) -> exit_code`. Tests/e2e + the incremental
+  verifier live in the `fai-tests` crate (the literal top-level `tests/` from the
+  original layout became `crates/fai-tests`).
+
 To change a locked decision: update this log **and** the table in `Agents.md`,
 and note the migration in the affected milestones.
 

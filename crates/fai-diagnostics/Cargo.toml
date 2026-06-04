@@ -1,0 +1,15 @@
+[package]
+name = "fai-diagnostics"
+description = "Diagnostic model, stable error codes, and human/JSON renderers for Fai."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+fai-span.workspace = true
+serde = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,6 @@
+# Pinned toolchain for reproducible builds (Plan.md M0 / decision Q2).
+# Bumping this is a deliberate, reviewable change.
+[toolchain]
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

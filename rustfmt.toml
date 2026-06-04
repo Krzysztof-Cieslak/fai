@@ -1,0 +1,7 @@
+# Canonical Rust formatting for the Fai compiler, pinned for determinism
+# (mirrors Fai's own `fai fmt` "one canonical layout" philosophy).
+#
+# `Max` keeps short constructs (struct literals, calls, arrays) on one line up
+# to `max_width` instead of rustfmt's verbose default expansion.
+edition = "2024"
+use_small_heuristics = "Max"
