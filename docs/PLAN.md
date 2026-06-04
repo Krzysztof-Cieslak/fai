@@ -124,6 +124,16 @@ let-generalization, the required-signature rule, contract typing), and `fai-ide`
 cross-module firewall is proven by the incremental verifier. See decisions
 **D36–D44** for the choices made while implementing it.
 
+> **TODO (update when M4 lands):** The integration test fixtures under
+> `crates/fai-tests/tests/fixtures/typed/` (including the poker-game model in
+> `Card.fai`, `HandEval.fai`, `Poker.fai`) encode card ranks, suits, and game
+> state as `Int`/`Bool`/tuples because records, ADTs, and `match` are not
+> available yet. When M4 lands, rewrite these fixtures using `type` declarations,
+> record literals, and `match` expressions — both to dogfood M4 and to give the
+> type-checker a richer real-world corpus. Also promote `Hello.fai` and any other
+> capability-using samples from the future-surface bucket into the typecheck-clean
+> set once M3/M5 land.
+
 **Goal:** type the pure functional core; enforce that every `public` binding has
 an explicit signature.
 
@@ -235,6 +245,12 @@ numbers unchanged.)
 ---
 
 ### M4 — Data: ADTs, pattern matching, structural records with rows
+> **TODO (update when M4 lands):** See the note in M2's status above. The
+> integration test fixtures and the poker-game model should be rewritten using
+> `type`, record literals, and `match` when M4 is complete. Update the
+> `TYPECHECK_CLEAN` set in `crates/fai-tests/tests/samples.rs` and the fixture
+> runner accordingly.
+
 **Goal:** the full data layer, including the project's largest type-system
 feature (row-polymorphic structural records).
 

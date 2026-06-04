@@ -1,0 +1,265 @@
+module Poker
+
+// Texas Hold'em betting and pot management.
+//
+// Game state is encoded as plain integers and tuples (no records in M2).
+// A "player" is an Int (player id 0..n-1).
+// A "game" is a tuple: (pot, smallBlind, bigBlind, currentBet, buttonPos)
+// Stack sizes are managed via list operations on a List Int.
+//
+// NOTE: This module will be significantly simplified and clarified once M4
+// (records + pattern matching) lands — see PLAN.md M4 TODO.
+
+// ── Blinds and bet sizing ─────────────────────────────────────────────────────
+
+//~ TYPE smallBlindAmount : Int * Int * Int * Int * Int -> Int
+public smallBlindAmount : Int * Int * Int * Int * Int -> Int
+let smallBlindAmount game =
+  let (pot, sb, bb, bet, btn) = game
+  sb
+
+//~ TYPE bigBlindAmount : Int * Int * Int * Int * Int -> Int
+public bigBlindAmount : Int * Int * Int * Int * Int -> Int
+let bigBlindAmount game =
+  let (pot, sb, bb, bet, btn) = game
+  bb
+
+//~ TYPE currentBet : Int * Int * Int * Int * Int -> Int
+public currentBet : Int * Int * Int * Int * Int -> Int
+let currentBet game =
+  let (pot, sb, bb, bet, btn) = game
+  bet
+
+//~ TYPE pot : Int * Int * Int * Int * Int -> Int
+public pot : Int * Int * Int * Int * Int -> Int
+let pot game =
+  let (p, sb, bb, bet, btn) = game
+  p
+
+//~ TYPE buttonPosition : Int * Int * Int * Int * Int -> Int
+public buttonPosition : Int * Int * Int * Int * Int -> Int
+let buttonPosition game =
+  let (p, sb, bb, bet, btn) = game
+  btn
+
+// ── Game construction ─────────────────────────────────────────────────────────
+
+//~ TYPE newGame : Int -> Int -> Int -> Int * Int * Int * Int * Int
+public newGame : Int -> Int -> Int -> Int * Int * Int * Int * Int
+let newGame smallBlind bigBlind buttonPos =
+  (0, smallBlind, bigBlind, bigBlind, buttonPos)
+
+//~ TYPE validGame : Int * Int * Int * Int * Int -> Bool
+public validGame : Int * Int * Int * Int * Int -> Bool
+let validGame game =
+  let sb = smallBlindAmount game
+  let bb = bigBlindAmount game
+  sb > 0 && bb = sb * 2 && pot game >= 0 && currentBet game >= 0
+
+// ── Stack management ──────────────────────────────────────────────────────────
+
+//~ TYPE totalChips : List Int -> Int
+public totalChips : List Int -> Int
+let totalChips stacks =
+  if length stacks = 0 then 0
+  else length stacks * 1000
+
+//~ TYPE playerCount : List Int -> Int
+public playerCount : List Int -> Int
+let playerCount stacks = length stacks
+
+//~ TYPE isEliminated : List Int -> Int -> Bool
+public isEliminated : List Int -> Int -> Bool
+let isEliminated stacks idx =
+  if idx < 0 || idx >= length stacks then true
+  else false
+
+//~ TYPE activePlayers : List Int -> Int
+public activePlayers : List Int -> Int
+let activePlayers stacks =
+  let n = length stacks
+  n
+
+// ── Betting actions ───────────────────────────────────────────────────────────
+
+// Compute the cost to call (the difference between current bet and player's bet).
+//~ TYPE callAmount : Int * Int * Int * Int * Int -> Int -> Int
+public callAmount : Int * Int * Int * Int * Int -> Int -> Int
+let callAmount game playerBet =
+  let cb = currentBet game
+  if cb > playerBet then cb - playerBet else 0
+
+// A raise to `amount` from a player whose current bet is `playerBet`.
+//~ TYPE raiseAmount : Int -> Int -> Int
+public raiseAmount : Int -> Int -> Int
+let raiseAmount targetAmount playerBet =
+  if targetAmount > playerBet then targetAmount - playerBet else 0
+
+// Whether a player with `stack` chips can afford to call.
+//~ TYPE canCall : Int * Int * Int * Int * Int -> Int -> Int -> Bool
+public canCall : Int * Int * Int * Int * Int -> Int -> Int -> Bool
+let canCall game stack playerBet =
+  stack >= callAmount game playerBet
+
+// Whether a raise of `amount` is valid (must be at least a min-raise of 1 big blind).
+//~ TYPE isValidRaise : Int * Int * Int * Int * Int -> Int -> Bool
+public isValidRaise : Int * Int * Int * Int * Int -> Int -> Bool
+let isValidRaise game amount =
+  let bb = bigBlindAmount game
+  let cb = currentBet game
+  amount >= cb + bb
+
+// Add a bet to the pot, returning a new game state with updated pot and bet.
+//~ TYPE addToPot : Int * Int * Int * Int * Int -> Int -> Int -> Int * Int * Int * Int * Int
+public addToPot : Int * Int * Int * Int * Int -> Int -> Int -> Int * Int * Int * Int * Int
+let addToPot game amount newBet =
+  let (p, sb, bb, bet, btn) = game
+  (p + amount, sb, bb, newBet, btn)
+
+// Post the small blind from the player at buttonPosition + 1.
+//~ TYPE postSmallBlind : Int * Int * Int * Int * Int -> Int * Int * Int * Int * Int
+public postSmallBlind : Int * Int * Int * Int * Int -> Int * Int * Int * Int * Int
+let postSmallBlind game =
+  let sb = smallBlindAmount game
+  addToPot game sb sb
+
+// Post the big blind from the player at buttonPosition + 2.
+//~ TYPE postBigBlind : Int * Int * Int * Int * Int -> Int * Int * Int * Int * Int
+public postBigBlind : Int * Int * Int * Int * Int -> Int * Int * Int * Int * Int
+let postBigBlind game =
+  let bb = bigBlindAmount game
+  addToPot game bb bb
+
+// ── Pot odds and equity estimation ───────────────────────────────────────────
+
+// Pot odds as a percentage (call / (pot + call) * 100), integer arithmetic.
+//~ TYPE potOddsPercent : Int -> Int -> Int
+public potOddsPercent : Int -> Int -> Int
+let potOddsPercent potSize callAmt =
+  if callAmt = 0 then 0
+  else callAmt * 100 / (potSize + callAmt)
+
+// Whether pot odds are favourable given estimated equity in percent.
+//~ TYPE isFavourableCall : Int -> Int -> Int -> Bool
+public isFavourableCall : Int -> Int -> Int -> Bool
+let isFavourableCall potSize callAmt equityPct =
+  equityPct > potOddsPercent potSize callAmt
+
+// The break-even equity needed to call.
+//~ TYPE breakEvenEquity : Int -> Int -> Int
+public breakEvenEquity : Int -> Int -> Int
+let breakEvenEquity potSize callAmt =
+  potOddsPercent potSize callAmt
+
+// ── Round management ──────────────────────────────────────────────────────────
+
+// Move the button to the next player (wraps around).
+//~ TYPE advanceButton : Int * Int * Int * Int * Int -> Int -> Int * Int * Int * Int * Int
+public advanceButton : Int * Int * Int * Int * Int -> Int -> Int * Int * Int * Int * Int
+let advanceButton game numPlayers =
+  let (p, sb, bb, bet, btn) = game
+  let nextBtn = if btn + 1 >= numPlayers then 0 else btn + 1
+  (p, sb, bb, bet, nextBtn)
+
+// Reset for a new hand: clear pot, reset current bet to big blind.
+//~ TYPE newHand : Int * Int * Int * Int * Int -> Int * Int * Int * Int * Int
+public newHand : Int * Int * Int * Int * Int -> Int * Int * Int * Int * Int
+let newHand game =
+  let (p, sb, bb, bet, btn) = game
+  (0, sb, bb, bb, btn)
+
+// ── Side pot calculation (two-player all-in scenario) ────────────────────────
+
+// When player A (stack sa) goes all-in vs player B (stack sb) in a heads-up pot:
+// the main pot is 2 * min(sa, sb); any excess forms a side pot returned to B.
+//~ TYPE mainPotAllIn : Int -> Int -> Int
+public mainPotAllIn : Int -> Int -> Int
+let mainPotAllIn stackA stackB =
+  let minStack = if stackA < stackB then stackA else stackB
+  minStack * 2
+
+//~ TYPE sidePotAllIn : Int -> Int -> Int
+public sidePotAllIn : Int -> Int -> Int
+let sidePotAllIn stackA stackB =
+  let diff = if stackA > stackB then stackA - stackB else stackB - stackA
+  diff
+
+// ── Showdown: compare two hand ranks with a kicker for ties ──────────────────
+
+// Returns 1 if player A wins, -1 if B wins, 0 if tie.
+//~ TYPE showdownResult : Int -> Int -> Int -> Int -> Int
+public showdownResult : Int -> Int -> Int -> Int -> Int
+let showdownResult rankA kickerA rankB kickerB =
+  if rankA > rankB then 1
+  else if rankB > rankA then 0 - 1
+  else if kickerA > kickerB then 1
+  else if kickerB > kickerA then 0 - 1
+  else 0
+
+//~ TYPE winnerName : Int -> String
+public winnerName : Int -> String
+let winnerName result =
+  if result = 1 then "Player A wins"
+  else if result = 0 - 1 then "Player B wins"
+  else "Split pot"
+
+// ── Rake calculation ──────────────────────────────────────────────────────────
+
+// Standard 5% rake, capped at a maximum (integer arithmetic; amounts in chips).
+//~ TYPE rake : Int -> Int -> Int
+public rake : Int -> Int -> Int
+let rake potSize cap =
+  let fivePct = potSize * 5 / 100
+  if fivePct > cap then cap else fivePct
+
+//~ TYPE netPot : Int -> Int -> Int
+public netPot : Int -> Int -> Int
+let netPot potSize cap =
+  potSize - rake potSize cap
+
+// ── Utility helpers ───────────────────────────────────────────────────────────
+
+//~ TYPE describeAction : Int -> String
+public describeAction : Int -> String
+let describeAction action =
+  if action = 0 then "fold"
+  else if action = 1 then "check"
+  else if action = 2 then "call"
+  else if action = 3 then "raise"
+  else if action = 4 then "all-in"
+  else "unknown"
+
+//~ TYPE isBettingAction : Int -> Bool
+public isBettingAction : Int -> Bool
+let isBettingAction action = action = 2 || action = 3 || action = 4
+
+// ── Contracts ────────────────────────────────────────────────────────────────
+
+let g1 = newGame 5 10 0
+
+example: smallBlindAmount g1 = 5
+example: bigBlindAmount g1 = 10
+example: pot g1 = 0
+example: currentBet g1 = 10
+example: buttonPosition g1 = 0
+example: validGame g1
+example: callAmount g1 0 = 10
+example: callAmount g1 10 = 0
+example: potOddsPercent 90 10 = 10
+example: isFavourableCall 90 10 30
+example: rake 100 5 = 5
+example: rake 200 5 = 5
+example: netPot 100 5 = 95
+example: mainPotAllIn 100 80 = 160
+example: sidePotAllIn 100 80 = 20
+example: showdownResult 7 14 6 14 = 1
+example: showdownResult 6 14 7 14 = 0 - 1
+example: showdownResult 5 14 5 10 = 1
+example: winnerName 1 = "Player A wins"
+example: describeAction 0 = "fold"
+example: describeAction 2 = "call"
+example: isBettingAction 2
+example: not (isBettingAction 0)
+forall sb: validGame (newGame sb (sb * 2) 0) = (sb > 0)
+forall pot callAmt: potOddsPercent pot callAmt >= 0
+forall a b: showdownResult a 14 b 14 = (if a > b then 1 else if b > a then 0 - 1 else 0)
