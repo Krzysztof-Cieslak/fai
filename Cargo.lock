@@ -402,6 +402,7 @@ dependencies = [
  "fai-span",
  "fai-syntax",
  "insta",
+ "proptest",
  "rustc-hash",
  "salsa",
 ]
