@@ -351,6 +351,116 @@ mod tests {
     }
 
     #[test]
+    fn virtual_tokens_are_positioned_correctly() {
+        // `module M\nlet f x =\n  body`
+        //  0          9          21
+        let result = run("module M\nlet f x =\n  body");
+        let find =
+            |kind: TokenKind| result.tokens.iter().find(|t| t.kind == kind).copied().unwrap();
+        let sep = find(TokenKind::LayoutSep);
+        let open = find(TokenKind::LayoutOpen);
+        let close = find(TokenKind::LayoutClose);
+        assert_eq!(sep.range.start().to_usize(), 9); // start of `let`
+        assert_eq!(open.range.start().to_usize(), 21); // start of `body`
+        assert_eq!(close.range.start().to_usize(), 25); // end of file
+        // Virtual tokens are zero-width.
+        assert!(sep.range.is_empty() && open.range.is_empty() && close.range.is_empty());
+    }
+
+    #[test]
+    fn layout_error_span_points_at_the_body() {
+        // `module M\nlet f x =\nbody` — `body` begins at offset 19.
+        let result = run("module M\nlet f x =\nbody");
+        assert_eq!(result.diagnostics.len(), 1);
+        let primary = result.diagnostics[0].primary;
+        assert_eq!(primary.start().to_usize(), 19);
+        assert_eq!(primary.end().to_usize(), 23);
+    }
+
+    #[test]
+    fn tab_indentation_opens_a_block() {
+        // A tab counts as one column, so a tab-indented body is still indented
+        // past the top level and opens a block (no diagnostic).
+        let src = "module M\nlet f x =\n\tbody";
+        assert_eq!(count(src, TokenKind::LayoutOpen), 1);
+        assert_eq!(count(src, TokenKind::LayoutClose), 1);
+        assert!(run(src).diagnostics.is_empty());
+    }
+
+    #[test]
+    fn dedent_closes_multiple_blocks_at_once() {
+        let src = "module M\nlet f =\n  let g =\n    deep\nlet top = 1";
+        assert_eq!(count(src, TokenKind::LayoutOpen), 2);
+        assert_eq!(count(src, TokenKind::LayoutClose), 2);
+        // Returning to the top level closes both nested blocks back to back.
+        let kinds: Vec<_> = run(src).tokens.iter().map(|t| t.kind).collect();
+        assert!(
+            kinds.windows(2).any(|w| matches!(w, [TokenKind::LayoutClose, TokenKind::LayoutClose])),
+            "expected two consecutive closes",
+        );
+    }
+
+    #[test]
+    fn nested_brackets_are_not_split() {
+        let src = "module M\nlet xs =\n  [ [ 1 ]\n  , [ 2 ] ]";
+        assert_eq!(count(src, TokenKind::LayoutSep), 1); // only header -> binding
+        assert_eq!(count(src, TokenKind::LayoutOpen), 1);
+        assert_eq!(count(src, TokenKind::LayoutClose), 1);
+    }
+
+    #[test]
+    fn opener_inside_brackets_does_not_open_a_block() {
+        // The `->` here is inside parentheses, so it must not open a layout block.
+        let src = "module M\nlet f =\n  (a ->\n   b)";
+        assert_eq!(count(src, TokenKind::LayoutOpen), 1); // only the `=` body block
+        assert_eq!(count(src, TokenKind::LayoutClose), 1);
+    }
+
+    #[test]
+    fn unbalanced_closing_bracket_does_not_panic() {
+        // Extra closing brackets must not underflow the depth counter.
+        let result = run("module M\nlet x = ] )");
+        assert_eq!(result.tokens.last().unwrap().kind, TokenKind::Eof);
+    }
+
+    #[test]
+    fn blank_lines_between_items_collapse_to_one_sep() {
+        let src = "module M\n\n\nlet a = 1\n\n\n\nlet b = 2";
+        assert_eq!(count(src, TokenKind::LayoutSep), 2);
+    }
+
+    #[test]
+    fn inline_if_opens_no_block() {
+        let src = "module M\nlet f = if c then a else b";
+        assert_eq!(count(src, TokenKind::LayoutOpen), 0);
+        assert_eq!(count(src, TokenKind::LayoutClose), 0);
+    }
+
+    #[test]
+    fn multiline_lambda_body_opens_a_block() {
+        // Exercises the `->` opener path.
+        let src = "module M\nlet f =\n  fun x ->\n    body";
+        assert_eq!(count(src, TokenKind::LayoutOpen), 2); // `=` body + lambda body
+        assert_eq!(count(src, TokenKind::LayoutClose), 2);
+    }
+
+    #[test]
+    fn signature_arrows_do_not_open_blocks() {
+        // Mid-line `->` followed by same-line tokens never opens a block.
+        let src = "module M\npublic f : Int -> Int -> Int\nlet f x = x";
+        assert_eq!(count(src, TokenKind::LayoutOpen), 0);
+        assert_eq!(count(src, TokenKind::LayoutSep), 2); // header -> signature -> binding
+    }
+
+    #[test]
+    fn crlf_indentation_behaves_like_lf() {
+        let src = "module M\r\nlet f x =\r\n  body";
+        assert_eq!(count(src, TokenKind::LayoutOpen), 1);
+        assert_eq!(count(src, TokenKind::LayoutSep), 1);
+        assert!(run(src).diagnostics.is_empty());
+    }
+
+    #[test]
     fn snapshot_binding_block() {
         insta::assert_snapshot!("binding_block", render("module M\nlet f x =\n  body"));
     }
