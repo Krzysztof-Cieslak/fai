@@ -1,4 +1,4 @@
-//! The stable JSON wire schema for diagnostics (`cli.md` §4).
+//! The stable JSON wire schema for diagnostics (`docs/CLI.md` §4).
 //!
 //! These serializable types are a versioned public API (see
 //! [`crate::SCHEMA_VERSION`]). They are produced from the in-memory
@@ -59,7 +59,7 @@ pub struct SuggestionWire {
     pub replacement: String,
 }
 
-/// A diagnostic in the wire schema (`cli.md` §4).
+/// A diagnostic in the wire schema (`docs/CLI.md` §4).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DiagnosticWire {
     /// Stable `FAInnnn` code.

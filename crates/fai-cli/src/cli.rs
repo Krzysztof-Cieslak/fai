@@ -1,6 +1,6 @@
 //! The command-line surface, modelled with clap's derive API.
 //!
-//! The full surface from `cli.md` is enumerated here, including every `query`
+//! The full surface from `docs/CLI.md` is enumerated here, including every `query`
 //! and `daemon` subcommand, so `fai --help` is complete and the interface is
 //! locked even though command behavior is not implemented yet.
 

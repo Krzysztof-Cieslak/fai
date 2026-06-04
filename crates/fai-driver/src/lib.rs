@@ -90,7 +90,7 @@ impl CommandResult {
     }
 }
 
-/// The JSON envelope shared by command results (`cli.md` §5).
+/// The JSON envelope shared by command results (`docs/CLI.md` §5).
 ///
 /// This is the stable shape `fai check --message-format=json` emits; the same
 /// type is reused by the not-yet-implemented commands until they gain richer

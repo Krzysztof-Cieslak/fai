@@ -22,7 +22,7 @@ pub use diagnostic::{Diagnostic, Label, Suggestion};
 pub use render::render_human;
 pub use severity::Severity;
 
-/// Version of the JSON output schema (`cli.md` §3). Bumped only on breaking
+/// Version of the JSON output schema (`docs/CLI.md` §3). Bumped only on breaking
 /// changes; additive fields stay within a major version.
 pub const SCHEMA_VERSION: u32 = 1;
 

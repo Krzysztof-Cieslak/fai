@@ -2,11 +2,11 @@
 
 > **Status:** Pre-implementation. The design is locked (see the decision table
 > below); the Rust workspace is **not scaffolded yet** (that is milestone **M0**
-> in `Plan.md`). Commands described here define the *intended* interface and
+> in `docs/PLAN.md`). Commands described here define the *intended* interface and
 > conventions; treat them as the contract we build toward.
 
 This document is the orientation guide for anyone — human or AI agent — working
-on the Fai compiler. Read it first. For the staged build plan see `Plan.md`; for
+on the Fai compiler. Read it first. For the staged build plan see `docs/PLAN.md`; for
 the language by example see `Samples.md`.
 
 ---
@@ -52,7 +52,7 @@ with high confidence**. Every design choice serves one of these goals:
 ## 3. Locked design decisions
 
 These are settled. Changing one is a deliberate, documented event (update this
-table **and** the decision log in `Plan.md`).
+table **and** the decision log in `docs/PLAN.md`).
 
 | Area | Decision |
 |---|---|
@@ -80,7 +80,7 @@ table **and** the decision log in `Plan.md`).
 | Representation | Uniform 64-bit boxed/immediate values; canonical record field layout; **offset-evidence passing** for polymorphic field access; dictionaries for interfaces/generics |
 | Determinism | Clock / random / env / IO are reachable only via capabilities |
 | Compilation model | **Demand-driven (salsa) query engine**; per-workspace **daemon** holds the DB hot, thin CLI client; **content-addressed on-disk cache**; **JIT** for `run`/`test`, **AOT** for `build`; incremental at definition/SCC granularity |
-| Tooling | `fai build/run/check/fmt/test/lsp` + read-only `fai query …` (code intelligence); per-workspace daemon (MessagePack JSON-RPC); global `--message-format=json`; stable error codes `FAInnnn`. Full reference: **`cli.md`** |
+| Tooling | `fai build/run/check/fmt/test/lsp` + read-only `fai query …` (code intelligence); per-workspace daemon (MessagePack JSON-RPC); global `--message-format=json`; stable error codes `FAInnnn`. Full reference: **`docs/CLI.md`** |
 
 ## 4. Language at a glance
 
@@ -111,14 +111,15 @@ interfaces + instances, capabilities, contracts, nested modules).
 ## 5. Repository layout
 
 A single Cargo workspace. Each crate owns one compiler phase or tool. (Crates
-appear as the milestones that need them land — see `Plan.md`.)
+appear as the milestones that need them land — see `docs/PLAN.md`.)
 
 ```
 fai/
 ├── Agents.md            # this file
-├── Plan.md              # milestones, acceptance criteria, risks, decisions
 ├── Samples.md           # language by example
-├── cli.md               # CLI + daemon-protocol reference
+├── docs/
+│   ├── PLAN.md          # milestones, acceptance criteria, risks, decisions
+│   └── CLI.md           # CLI + daemon-protocol reference
 ├── Cargo.toml           # workspace manifest + shared deps/lints      (M0)
 ├── Cargo.lock           # committed (reproducible builds)             (M0)
 ├── rust-toolchain.toml  # pinned toolchain (edition 2024)            (M0)
@@ -185,7 +186,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo fmt --all
 ```
 
-**Fai programs (the CLI we are building) — summary; full reference in `cli.md`:**
+**Fai programs (the CLI we are building) — summary; full reference in `docs/CLI.md`:**
 
 ```sh
 fai build path/to/Main.fai        # → native executable (AOT)
@@ -202,7 +203,7 @@ fai daemon <status|stop|…>        # manage the per-workspace daemon
 The CLI is a **thin client** to a per-workspace **daemon** that keeps the
 incremental query database hot. `fai query` is a **read-only** introspection
 surface for agents (definitions, usages, types, module APIs, capability
-footprints, type search). See **`cli.md`** for every command, all flags, the JSON
+footprints, type search). See **`docs/CLI.md`** for every command, all flags, the JSON
 output schemas, and the daemon (MessagePack JSON-RPC) protocol.
 
 ## 8. Rust coding conventions
@@ -230,8 +231,8 @@ output schemas, and the daemon (MessagePack JSON-RPC) protocol.
 - **Comments and commits explain the code, not the process.** Code comments, doc
   comments, and Git commit messages must be self-contained; never reference
   planning/process artifacts — milestone names (`M0`, `M3.5`), decision-log
-  identifiers (`Q7`, `D14`), or `Plan.md`. Pointers to the durable specs
-  (`cli.md`, `Agents.md`) are fine when they document a real contract (e.g. a
+  identifiers (`Q7`, `D14`), or `docs/PLAN.md`. Pointers to the durable specs
+  (`docs/CLI.md`, `Agents.md`) are fine when they document a real contract (e.g. a
   wire schema or a naming convention).
 
 ## 9. Performance & incremental compilation
@@ -272,7 +273,7 @@ so a new call site elsewhere doesn't invalidate its code.
 (3) shared/remote cache later (portable by construction).
 
 **Runtime topology.** A per-workspace **daemon** (`fai-server`) holds the live DB
-and serves a thin CLI client over MessagePack JSON-RPC (see `cli.md`), with
+and serves a thin CLI client over MessagePack JSON-RPC (see `docs/CLI.md`), with
 request cancellation on input change and LRU eviction to bound memory. `fai-ide`
 exposes code-intelligence queries to both the CLI (`fai query`) and the LSP.
 
@@ -304,7 +305,7 @@ cache plus a fast linker (mold/lld).
   and versioned; agents and the LSP consume it.
 - All structured CLI output — diagnostics **and** `fai query` results — carries a
   `schemaVersion` and is a stable, versioned API. The schemas and the daemon
-  protocol are specified in **`cli.md`**.
+  protocol are specified in **`docs/CLI.md`**.
 - **Error codes are an API.** Allocate codes by phase and document each in the
   error-code catalog (M8): `FAI0xxx` tooling/CLI/driver, `FAI1xxx` lex/parse,
   `FAI2xxx` resolve/visibility, `FAI3xxx` types/rows, `FAI4xxx`
@@ -352,7 +353,7 @@ A change is done when:
 2. `cargo fmt --all -- --check` passes (Rust side).
 3. `cargo test` passes, including golden/snapshot and e2e tests.
 4. New behavior has tests; new diagnostics have codes + catalog entries.
-5. Any surface-language change is reflected in `Agents.md`, `Plan.md`, and
+5. Any surface-language change is reflected in `Agents.md`, `docs/PLAN.md`, and
    `Samples.md`.
 6. Self-hosted check: every `.fai` example in `Samples.md` is verified by the
    test suite (parsed/checked, and run where applicable) so the docs cannot

@@ -4,7 +4,7 @@ A tour of the whole language. These snippets are the source of truth for the
 surface syntax; the test suite checks them (parse/typecheck, and run where
 applicable), so they cannot drift from the implementation.
 
-> **Status:** the compiler is not built yet (see `Plan.md`). This file specifies
+> **Status:** the compiler is not built yet (see `docs/PLAN.md`). This file specifies
 > the intended language. Built-in names like `sqrt`, `intToString`,
 > `floatToString`, `Console`, and `Runtime` denote the standard prelude and
 > capability set that the runtime provides.

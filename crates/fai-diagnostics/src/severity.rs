@@ -5,7 +5,7 @@ use serde::Serialize;
 /// How serious a diagnostic is.
 ///
 /// Serializes to the lowercase strings `"error"`, `"warning"`, `"info"` for the
-/// JSON wire schema (`cli.md` §4).
+/// JSON wire schema (`docs/CLI.md` §4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {

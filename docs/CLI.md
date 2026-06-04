@@ -2,7 +2,7 @@
 
 > **Status:** Pre-implementation. This file specifies the *intended* command-line
 > interface and daemon protocol — the contract the implementation builds toward.
-> See `Agents.md` for project conventions, `Plan.md` for milestones, and
+> See `Agents.md` for project conventions, `docs/PLAN.md` for milestones, and
 > `Samples.md` for the language itself.
 
 ---

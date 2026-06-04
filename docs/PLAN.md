@@ -140,7 +140,7 @@ an explicit signature.
   stable code, human + JSON.
 - `fai-ide` + the **core `fai query` commands** (`symbols`, `def`, `refs`,
   `type`, `docs`, `outline`, `api`, `dependents`) built on these queries, with
-  JSON output per `cli.md`. The same `fai-ide` layer powers the LSP (M8).
+  JSON output per `docs/CLI.md`. The same `fai-ide` layer powers the LSP (M8).
 
 **Acceptance**
 - Golden type tests (expected type or expected diagnostic) over a corpus.
@@ -198,7 +198,7 @@ numbers unchanged.)
 **Deliverables**
 - `fai-server`: per-workspace **daemon** holding the live salsa `Database`;
   **MessagePack JSON-RPC** over a unix socket / named pipe (full spec in
-  `cli.md` §7) — `initialize` handshake + version negotiation, request
+  `docs/CLI.md` §7) — `initialize` handshake + version negotiation, request
   cancellation on input change, `$/progress`/`$/diagnostic`/`$/output` streaming.
 - `fai-cli` becomes a **thin client**: auto-spawn/connect, `--no-daemon`
   fallback, `fai daemon status|start|stop|restart|tap`.
@@ -346,7 +346,7 @@ feature (row-polymorphic structural records).
 - **Advanced `fai query`:** `callers`/`callees` (call hierarchy), `dependents`
   (transitive), `caps` (capability footprint), and `search` (Hoogle-style type
   search; needs a type-normalized index).
-- **Error-code catalog** documenting every `FAInnnn`, plus the **`cli.md` JSON
+- **Error-code catalog** documenting every `FAInnnn`, plus the **`docs/CLI.md` JSON
   output schemas** (a public, versioned API).
 
 **Acceptance**
@@ -481,7 +481,7 @@ Resolved during planning (see the locked table in `Agents.md` §3):
   (length-prefixed; unix socket / named pipe; `0600`; version-stamped path). LSP
   stays standard JSON. Stateless requests; cancellation on input change;
   **file-state sync** by incremental disk scan + optional client dirty-set;
-  hypothetical overlays deferred. Full spec in `cli.md` §7. Rejected: text
+  hypothetical overlays deferred. Full spec in `docs/CLI.md` §7. Rejected: text
   JSON-RPC on this link (binary is more compact for large dumps; a JSON tap keeps
   debuggability), stateless-CLI-only (no warm DB), and FS-watch (race-prone with
   agents).
@@ -497,7 +497,7 @@ Resolved during planning (see the locked table in `Agents.md` §3):
   sharing the `fai-ide` engine with the LSP; addressing by name path or
   `file:line:col`; JSON by default; best-effort under errors. **No write/refactor
   commands** (no `rename`/`fix`) — agents perform edits themselves. Full command
-  reference in `cli.md`.
+  reference in `docs/CLI.md`.
 
 Resolved while implementing **M0** (cross-cutting conventions later milestones
 must honor):
