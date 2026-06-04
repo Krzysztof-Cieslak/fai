@@ -555,3 +555,50 @@ mod tests {
         assert_eq!(count(src, TokenKind::LayoutOpen), count(src, TokenKind::LayoutClose));
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use fai_span::SourceId;
+    use proptest::prelude::*;
+
+    use super::layout;
+    use crate::lex;
+    use crate::token::{Token, TokenKind};
+
+    fn is_virtual(kind: TokenKind) -> bool {
+        matches!(kind, TokenKind::LayoutOpen | TokenKind::LayoutSep | TokenKind::LayoutClose)
+    }
+
+    proptest! {
+        /// Layout only *inserts* virtual tokens: dropping them recovers the lexer
+        /// output exactly (same kinds and ranges, in order).
+        #[test]
+        fn significant_tokens_are_preserved(input in any::<String>()) {
+            let lexed = lex(SourceId::new(0), &input);
+            let laid = layout(SourceId::new(0), &input, &lexed.tokens);
+            let real: Vec<Token> =
+                laid.tokens.iter().copied().filter(|t| !is_virtual(t.kind)).collect();
+            prop_assert_eq!(real, lexed.tokens);
+        }
+
+        /// Opens and closes are properly nested: depth never goes negative and
+        /// returns to zero.
+        #[test]
+        fn blocks_are_balanced(input in any::<String>()) {
+            let lexed = lex(SourceId::new(0), &input);
+            let laid = layout(SourceId::new(0), &input, &lexed.tokens);
+            let mut depth: i32 = 0;
+            for token in &laid.tokens {
+                match token.kind {
+                    TokenKind::LayoutOpen => depth += 1,
+                    TokenKind::LayoutClose => {
+                        depth -= 1;
+                        prop_assert!(depth >= 0, "close without a matching open");
+                    }
+                    _ => {}
+                }
+            }
+            prop_assert_eq!(depth, 0);
+        }
+    }
+}

@@ -395,9 +395,15 @@ test; under-testing a phase is a defect, not a shortcut.
 - **Negative tests matter as much as positive ones.** A compiler is judged by its
   behavior on wrong programs; exercise the failure paths deliberately and pin the
   recovery behavior.
-- **Properties and laws, not only examples.** Use property/round-trip tests for
-  invariants (`fmt` idempotence, `parse → print → parse`, `lex → render`,
-  reference-count balance, `fmt(fmt x) == fmt x`), and run the language's own
+- **Reach for property-based tests whenever an invariant exists.** Prefer
+  generative property tests (`proptest`) over hand-picked examples for any law
+  that should hold across *all* inputs, and add them as often as the property
+  allows — generated, shrunk cases routinely find the edge cases examples miss.
+  Typical invariants: the front end is **total** (never panics or hangs and
+  always terminates) on arbitrary input; token/AST ranges stay in bounds and on
+  `char` boundaries; layout preserves the significant tokens and balances its
+  blocks; `fmt` idempotence and the `parse → print → parse` / `lex → render`
+  round-trips; reference-count balance. Also run the language's own
   `example`/`forall` contracts over `samples/`.
 - **Incrementality is tested, not assumed.** Whenever a query is added or changed,
   cover it with the incremental-vs-clean **verifier** and an edit-churn
