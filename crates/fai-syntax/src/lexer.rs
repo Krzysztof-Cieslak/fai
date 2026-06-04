@@ -917,6 +917,56 @@ mod tests {
             vec![TokenKind::Int, TokenKind::Dot, TokenKind::Dot, TokenKind::Int, TokenKind::Eof,]
         );
     }
+
+    #[test]
+    fn exponent_without_digits_is_invalid() {
+        // `1e` has no exponent digits, so the `e` is an invalid numeric suffix.
+        let result = lexed("1e");
+        assert_eq!(result.diagnostics.len(), 1);
+        assert_eq!(result.diagnostics[0].code, crate::INVALID_NUMBER);
+        assert_eq!(result.tokens[0].kind, TokenKind::Int);
+    }
+
+    #[test]
+    fn signed_exponents_are_floats() {
+        assert_eq!(kinds("1e+5"), vec![TokenKind::Float, TokenKind::Eof]);
+        assert_eq!(kinds("1.5e-3"), vec![TokenKind::Float, TokenKind::Eof]);
+        assert_eq!(kinds("2E10"), vec![TokenKind::Float, TokenKind::Eof]);
+        assert!(lexed("1e+5").diagnostics.is_empty());
+    }
+
+    #[test]
+    fn underscores_are_allowed_in_every_base() {
+        for src in ["1_000", "0xFF_FF", "0o1_7", "0b1010_1010"] {
+            assert!(lexed(src).diagnostics.is_empty(), "unexpected diagnostic for {src}");
+            assert_eq!(lexed(src).tokens[0].kind, TokenKind::Int, "{src}");
+        }
+    }
+
+    #[test]
+    fn bare_or_wrong_digit_base_prefixes_are_invalid() {
+        // A base prefix with no valid digits, or digits outside the base.
+        for src in ["0x", "0o", "0b", "0b2", "0o9"] {
+            assert_eq!(lexed(src).diagnostics[0].code, crate::INVALID_NUMBER, "{src}");
+        }
+    }
+
+    #[test]
+    fn float_then_field_access() {
+        // `1.0.foo` is a float followed by a field access, not a malformed number.
+        assert_eq!(
+            kinds("1.0.foo"),
+            vec![TokenKind::Float, TokenKind::Dot, TokenKind::LowerIdent, TokenKind::Eof,]
+        );
+    }
+
+    #[test]
+    fn type_var_without_a_name_is_an_error() {
+        // A lone tick that neither closes a char nor starts an identifier.
+        let result = lexed("' ");
+        assert_eq!(result.diagnostics.len(), 1);
+        assert_eq!(result.diagnostics[0].code, crate::INVALID_CHAR_LITERAL);
+    }
 }
 
 #[cfg(test)]
@@ -926,6 +976,55 @@ mod proptests {
 
     use super::lex;
     use crate::token::TokenKind;
+
+    /// Operator and punctuation lexemes paired with the single token they form.
+    const OPERATORS: &[(&str, TokenKind)] = &[
+        ("+", TokenKind::Plus),
+        ("-", TokenKind::Minus),
+        ("*", TokenKind::Star),
+        ("/", TokenKind::Slash),
+        ("%", TokenKind::Percent),
+        ("++", TokenKind::PlusPlus),
+        ("::", TokenKind::ColonColon),
+        ("|>", TokenKind::PipeGreater),
+        (">>", TokenKind::GreaterGreater),
+        ("&&", TokenKind::AmpAmp),
+        ("||", TokenKind::PipePipe),
+        ("=", TokenKind::Equals),
+        ("<>", TokenKind::NotEq),
+        ("<", TokenKind::Less),
+        ("<=", TokenKind::LessEq),
+        (">", TokenKind::Greater),
+        (">=", TokenKind::GreaterEq),
+        ("->", TokenKind::Arrow),
+        ("|", TokenKind::Pipe),
+        (":", TokenKind::Colon),
+        (".", TokenKind::Dot),
+        (",", TokenKind::Comma),
+        ("(", TokenKind::LParen),
+        (")", TokenKind::RParen),
+        ("[", TokenKind::LBracket),
+        ("]", TokenKind::RBracket),
+        ("{", TokenKind::LBrace),
+        ("}", TokenKind::RBrace),
+    ];
+
+    /// Every reserved keyword lexeme.
+    const KEYWORDS: &[&str] = &[
+        "module",
+        "let",
+        "type",
+        "interface",
+        "match",
+        "with",
+        "if",
+        "then",
+        "else",
+        "fun",
+        "public",
+        "example",
+        "forall",
+    ];
 
     proptest! {
         /// Arbitrary input never panics or hangs, and always ends with `Eof`.
@@ -963,6 +1062,94 @@ mod proptests {
             let token = result.tokens[0];
             let lexeme = &name[token.range.start().to_usize()..token.range.end().to_usize()];
             prop_assert_eq!(lexeme, name.as_str());
+        }
+
+        /// Every diagnostic's primary span is ordered, in bounds, and on a `char`
+        /// boundary — diagnostics are an API, so their locations must be sliceable.
+        #[test]
+        fn diagnostic_spans_are_well_formed(input in any::<String>()) {
+            let result = lex(SourceId::new(0), &input);
+            for diag in &result.diagnostics {
+                let start = diag.primary.start().to_usize();
+                let end = diag.primary.end().to_usize();
+                prop_assert!(start <= end, "diagnostic start after end");
+                prop_assert!(end <= input.len(), "diagnostic span past end of input");
+                prop_assert!(input.get(start..end).is_some(), "diagnostic span off a char boundary");
+            }
+        }
+
+        /// Comment trivia ranges are ordered, in bounds, and on `char` boundaries.
+        #[test]
+        fn comment_ranges_are_well_formed(input in any::<String>()) {
+            let result = lex(SourceId::new(0), &input);
+            let mut prev_end = 0usize;
+            for comment in &result.comments {
+                let start = comment.range.start().to_usize();
+                let end = comment.range.end().to_usize();
+                prop_assert!(start <= end, "comment start after end");
+                prop_assert!(end <= input.len(), "comment range past end of input");
+                prop_assert!(start >= prev_end, "comment ranges overlap or go backwards");
+                prop_assert!(input.get(start..end).is_some(), "comment range off a char boundary");
+                prev_end = end;
+            }
+        }
+
+        /// A decimal integer lexes to exactly one `Int` token with no diagnostics.
+        #[test]
+        fn decimal_integers_round_trip(n in any::<u64>()) {
+            let src = n.to_string();
+            let result = lex(SourceId::new(0), &src);
+            prop_assert!(result.diagnostics.is_empty());
+            prop_assert_eq!(
+                result.tokens.iter().map(|t| t.kind).collect::<Vec<_>>(),
+                vec![TokenKind::Int, TokenKind::Eof],
+            );
+        }
+
+        /// A decimal float lexes to exactly one `Float` token with no diagnostics.
+        #[test]
+        fn decimal_floats_round_trip(whole in any::<u32>(), frac in any::<u32>()) {
+            let src = format!("{whole}.{frac}");
+            let result = lex(SourceId::new(0), &src);
+            prop_assert!(result.diagnostics.is_empty());
+            prop_assert_eq!(
+                result.tokens.iter().map(|t| t.kind).collect::<Vec<_>>(),
+                vec![TokenKind::Float, TokenKind::Eof],
+            );
+        }
+
+        /// A string of escape-free, quote-free, newline-free characters lexes to
+        /// one `String` token whose lexeme is the whole literal.
+        #[test]
+        fn simple_strings_round_trip(body in "[a-zA-Z0-9 !?.,;:()]*") {
+            let src = format!("\"{body}\"");
+            let result = lex(SourceId::new(0), &src);
+            prop_assert!(result.diagnostics.is_empty());
+            prop_assert_eq!(result.tokens.len(), 2);
+            prop_assert_eq!(result.tokens[0].kind, TokenKind::String);
+            let token = result.tokens[0];
+            let lexeme = &src[token.range.start().to_usize()..token.range.end().to_usize()];
+            prop_assert_eq!(lexeme, src.as_str());
+        }
+
+        /// Each operator/punctuation lexeme produces exactly its one token.
+        #[test]
+        fn operators_lex_to_their_kind(pair in proptest::sample::select(OPERATORS.to_vec())) {
+            let (lexeme, kind) = pair;
+            let result = lex(SourceId::new(0), lexeme);
+            prop_assert!(result.diagnostics.is_empty());
+            prop_assert_eq!(
+                result.tokens.iter().map(|t| t.kind).collect::<Vec<_>>(),
+                vec![kind, TokenKind::Eof],
+            );
+        }
+
+        /// Each reserved word lexes as its keyword token (and nothing else).
+        #[test]
+        fn keywords_lex_as_keywords(kw in proptest::sample::select(KEYWORDS.to_vec())) {
+            let result = lex(SourceId::new(0), kw);
+            prop_assert_eq!(result.tokens.len(), 2);
+            prop_assert_eq!(result.tokens[0].kind, TokenKind::keyword(kw).unwrap());
         }
     }
 }

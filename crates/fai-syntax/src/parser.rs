@@ -1169,6 +1169,54 @@ mod proptests {
         }
     }
 
+    /// Binary operator lexemes used by the expression generator.
+    const OPS: &[&str] = &[
+        "+", "-", "*", "/", "%", "++", "::", "|>", ">>", "&&", "||", "=", "<>", "<", "<=", ">",
+        ">=",
+    ];
+
+    fn arb_ident() -> impl Strategy<Value = String> {
+        "[a-z][a-z0-9]*".prop_filter("reserved keyword", |s| TokenKind::keyword(s).is_none())
+    }
+
+    /// Generates well-formed, fully self-delimiting expressions: every produced
+    /// value is a single atom (a literal/name or a bracketed form), so any
+    /// composition of them parses cleanly. This lets us assert that genuinely
+    /// valid programs never trigger error recovery.
+    fn arb_expr() -> impl Strategy<Value = String> {
+        let leaf = prop_oneof![
+            arb_ident(),
+            any::<u32>().prop_map(|n| n.to_string()),
+            Just("()".to_owned()),
+            "[a-z ]*".prop_map(|s| format!("\"{s}\"")),
+        ];
+        leaf.prop_recursive(4, 48, 3, |inner| {
+            let op = proptest::sample::select(OPS.to_vec());
+            prop_oneof![
+                (inner.clone(), inner.clone()).prop_map(|(f, a)| format!("({f} {a})")),
+                (inner.clone(), op, inner.clone()).prop_map(|(a, o, b)| format!("({a} {o} {b})")),
+                (inner.clone(), inner.clone(), inner.clone())
+                    .prop_map(|(c, t, e)| format!("(if {c} then {t} else {e})")),
+                inner.clone().prop_map(|e| format!("({e})")),
+                (inner.clone(), inner.clone()).prop_map(|(a, b)| format!("({a}, {b})")),
+                (inner.clone(), inner.clone()).prop_map(|(a, b)| format!("[{a}, {b}]")),
+                inner.clone().prop_map(|e| format!("(fun x -> {e})")),
+                inner.prop_map(|e| format!("(-{e})")),
+            ]
+        })
+    }
+
+    /// A module of one or more plain bindings with generated bodies.
+    fn arb_program() -> impl Strategy<Value = String> {
+        proptest::collection::vec((arb_ident(), arb_expr()), 1..5).prop_map(|binds| {
+            let mut src = "module M".to_owned();
+            for (name, body) in binds {
+                src.push_str(&format!("\nlet {name} = {body}"));
+            }
+            src
+        })
+    }
+
     proptest! {
         /// Parsing arbitrary input never panics, and the resulting tree has no
         /// dangling node ids.
@@ -1203,6 +1251,48 @@ mod proptests {
                 ItemKind::Binding { name: bound, .. } => prop_assert_eq!(bound.as_str(), name.as_str()),
                 other => prop_assert!(false, "expected a binding, got {:?}", other),
             }
+        }
+
+        /// Every node span (across all arenas and items) is ordered, in bounds,
+        /// and on a `char` boundary. Spans are the foundation of every later
+        /// phase and every diagnostic, so they must always be sliceable.
+        #[test]
+        fn node_spans_are_well_formed(input in any::<String>()) {
+            let parsed = parse_module(SourceId::new(0), &input);
+            let m = &parsed.module;
+            let spans = m
+                .exprs
+                .iter()
+                .map(|e| e.span)
+                .chain(m.pats.iter().map(|p| p.span))
+                .chain(m.types.iter().map(|t| t.span))
+                .chain(m.items.iter().map(|i| i.span));
+            for span in spans {
+                let start = span.start().to_usize();
+                let end = span.end().to_usize();
+                prop_assert!(start <= end, "span start after end");
+                prop_assert!(end <= input.len(), "span past end of input");
+                prop_assert!(input.get(start..end).is_some(), "span off a char boundary");
+            }
+        }
+
+        /// A generated valid program parses with no diagnostics and contains no
+        /// recovery (`Error`) nodes in any arena — sound recovery never fires on
+        /// well-formed input.
+        #[test]
+        fn valid_programs_parse_without_errors(src in arb_program()) {
+            let parsed = parse_module(SourceId::new(0), &src);
+            prop_assert!(
+                parsed.diagnostics.is_empty(),
+                "unexpected diagnostics for:\n{}\n{:?}",
+                src,
+                parsed.diagnostics,
+            );
+            let m = &parsed.module;
+            prop_assert!(m.exprs.iter().all(|e| !matches!(e.kind, ExprKind::Error)));
+            prop_assert!(m.pats.iter().all(|p| !matches!(p.kind, crate::ast::PatKind::Error)));
+            prop_assert!(m.types.iter().all(|t| !matches!(t.kind, crate::ast::TypeKind::Error)));
+            prop_assert!(m.items.iter().all(|i| !matches!(i.kind, ItemKind::Error)));
         }
     }
 }

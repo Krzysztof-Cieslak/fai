@@ -600,5 +600,52 @@ mod proptests {
             }
             prop_assert_eq!(depth, 0);
         }
+
+        /// Opens and closes occur in equal numbers over the whole stream.
+        #[test]
+        fn opens_equal_closes(input in any::<String>()) {
+            let lexed = lex(SourceId::new(0), &input);
+            let laid = layout(SourceId::new(0), &input, &lexed.tokens);
+            let count = |kind| laid.tokens.iter().filter(|t| t.kind == kind).count();
+            prop_assert_eq!(count(TokenKind::LayoutOpen), count(TokenKind::LayoutClose));
+        }
+
+        /// Inserted virtual tokens are zero-width: they carry no source text, so
+        /// they cannot disturb byte offsets or be sliced out of the source.
+        #[test]
+        fn virtual_tokens_are_zero_width(input in any::<String>()) {
+            let lexed = lex(SourceId::new(0), &input);
+            let laid = layout(SourceId::new(0), &input, &lexed.tokens);
+            for token in &laid.tokens {
+                if is_virtual(token.kind) {
+                    prop_assert!(token.range.is_empty(), "virtual token has a non-empty range");
+                }
+            }
+        }
+
+        /// Every emitted range (real or virtual) stays in bounds and on a `char`
+        /// boundary, so the layout stream is always safe to slice.
+        #[test]
+        fn all_ranges_are_well_formed(input in any::<String>()) {
+            let lexed = lex(SourceId::new(0), &input);
+            let laid = layout(SourceId::new(0), &input, &lexed.tokens);
+            for token in &laid.tokens {
+                let start = token.range.start().to_usize();
+                let end = token.range.end().to_usize();
+                prop_assert!(start <= end);
+                prop_assert!(end <= input.len());
+                prop_assert!(input.get(start..end).is_some(), "range off a char boundary");
+            }
+        }
+
+        /// The stream always terminates with exactly one `Eof`.
+        #[test]
+        fn ends_with_a_single_eof(input in any::<String>()) {
+            let lexed = lex(SourceId::new(0), &input);
+            let laid = layout(SourceId::new(0), &input, &lexed.tokens);
+            prop_assert_eq!(laid.tokens.last().map(|t| t.kind), Some(TokenKind::Eof));
+            let eofs = laid.tokens.iter().filter(|t| t.kind == TokenKind::Eof).count();
+            prop_assert_eq!(eofs, 1);
+        }
     }
 }
