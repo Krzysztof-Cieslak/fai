@@ -1,0 +1,6 @@
+module UnknownType
+
+// `Widget` is not a known type constructor.
+//~ ERROR FAI3008
+public make : Int -> Widget
+let make n = n

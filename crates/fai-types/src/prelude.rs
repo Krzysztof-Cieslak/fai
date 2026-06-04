@@ -42,11 +42,10 @@ pub fn builtin_scheme(name: Symbol) -> Option<Scheme> {
         "true" | "false" => Scheme::mono(Ty::bool()),
         // Derived `.fai` prelude exports (their bodies live in Prelude.fai; the
         // schemes here mirror their written signatures).
-        "identity" => Scheme { vars: vec![TyVarId(0)], ty: Ty::arrow(a(), a()) },
-        "const" => Scheme {
-            vars: vec![TyVarId(0), TyVarId(1)],
-            ty: Ty::arrows([a(), Ty::Var(TyVarId(1))], a()),
-        },
+        "identity" => Scheme::new(vec![TyVarId(0)], Ty::arrow(a(), a())),
+        "const" => {
+            Scheme::new(vec![TyVarId(0), TyVarId(1)], Ty::arrows([a(), Ty::Var(TyVarId(1))], a()))
+        }
         "notEqual" => Scheme::mono(Ty::arrows([Ty::int(), Ty::int()], Ty::bool())),
         "intToString" => Scheme::mono(Ty::arrow(Ty::int(), Ty::Con(Con::String))),
         "floatToString" => Scheme::mono(Ty::arrow(Ty::Con(Con::Float), Ty::Con(Con::String))),
@@ -54,14 +53,13 @@ pub fn builtin_scheme(name: Symbol) -> Option<Scheme> {
         "not" => Scheme::mono(Ty::arrow(Ty::bool(), Ty::bool())),
         "pi" => Scheme::mono(Ty::Con(Con::Float)),
         // length : List 'a -> Int
-        "length" => Scheme { vars: vec![TyVarId(0)], ty: Ty::arrow(Ty::list(a()), Ty::int()) },
+        "length" => Scheme::new(vec![TyVarId(0)], Ty::arrow(Ty::list(a()), Ty::int())),
         // append : List 'a -> List 'a -> List 'a
-        "append" => Scheme {
-            vars: vec![TyVarId(0)],
-            ty: Ty::arrows([Ty::list(a()), Ty::list(a())], Ty::list(a())),
-        },
+        "append" => {
+            Scheme::new(vec![TyVarId(0)], Ty::arrows([Ty::list(a()), Ty::list(a())], Ty::list(a())))
+        }
         // reverse : List 'a -> List 'a
-        "reverse" => Scheme { vars: vec![TyVarId(0)], ty: Ty::arrow(Ty::list(a()), Ty::list(a())) },
+        "reverse" => Scheme::new(vec![TyVarId(0)], Ty::arrow(Ty::list(a()), Ty::list(a()))),
         _ => return None,
     })
 }

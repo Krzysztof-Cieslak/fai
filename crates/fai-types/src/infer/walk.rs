@@ -239,11 +239,17 @@ impl<E: Env> Walker<'_, E> {
                 SolveTy::bool()
             }
             BinOp::Eq | BinOp::Ne => {
-                let eq = self.cx.fresh_constrained(Some(Constraint::Eq));
-                self.unify_at(span, &lt, &eq, "an equality operand");
-                self.unify_at(span, &rt, &eq, "an equality operand");
-                // If the operand resolved to a function type, that's an error.
-                if matches!(self.cx.resolve_shallow(&eq), SolveTy::Arrow(_, _)) {
+                // Equality requires the operands to share a type and that type to
+                // be non-function. If either operand is already known to be a
+                // function, report the dedicated diagnostic rather than a generic
+                // constraint mismatch.
+                let lhs_fn = matches!(self.cx.resolve_shallow(&lt), SolveTy::Arrow(_, _));
+                let rhs_fn = matches!(self.cx.resolve_shallow(&rt), SolveTy::Arrow(_, _));
+                if lhs_fn || rhs_fn {
+                    // Still unify the two sides so the rest of the body stays
+                    // coherent, but don't impose the Eq constraint (which would
+                    // double-report as a mismatch).
+                    self.unify_at(span, &lt, &rt, "the operands of `=`");
                     emit(
                         self.db,
                         Diagnostic::error(
@@ -252,6 +258,21 @@ impl<E: Env> Walker<'_, E> {
                             self.span(span),
                         ),
                     );
+                } else {
+                    let eq = self.cx.fresh_constrained(Some(Constraint::Eq));
+                    self.unify_at(span, &lt, &eq, "an equality operand");
+                    self.unify_at(span, &rt, &eq, "an equality operand");
+                    // A var that only later resolves to a function is caught here.
+                    if matches!(self.cx.resolve_shallow(&eq), SolveTy::Arrow(_, _)) {
+                        emit(
+                            self.db,
+                            Diagnostic::error(
+                                EQUALITY_ON_FUNCTION,
+                                "equality is not defined on function types",
+                                self.span(span),
+                            ),
+                        );
+                    }
                 }
                 SolveTy::bool()
             }

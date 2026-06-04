@@ -1,0 +1,45 @@
+module Bank
+
+// A larger worked example: a tiny account-balance calculator built only from
+// the M2 surface (Int/Bool/tuples/functions/locals/contracts).
+
+//~ TYPE deposit : Int -> Int -> Int
+public deposit : Int -> Int -> Int
+let deposit balance amount = balance + amount
+
+//~ TYPE withdraw : Int -> Int -> Int
+public withdraw : Int -> Int -> Int
+let withdraw balance amount =
+  if amount > balance then balance else balance - amount
+
+//~ TYPE canWithdraw : Int -> Int -> Bool
+public canWithdraw : Int -> Int -> Bool
+let canWithdraw balance amount = amount <= balance && amount > 0
+
+//~ TYPE applyFee : Int -> Int
+public applyFee : Int -> Int
+let applyFee balance =
+  let fee = 5
+  if balance > 0 then balance - fee else balance
+
+// Returns the new balance and whether the transaction succeeded.
+//~ TYPE transact : Int -> Int -> Int * Bool
+public transact : Int -> Int -> Int * Bool
+let transact balance amount =
+  if canWithdraw balance amount
+  then (withdraw balance amount, true)
+  else (balance, false)
+
+//~ TYPE interest : Int -> Int
+public interest : Int -> Int
+let interest balance = balance / 100
+
+//~ TYPE summary : Int -> String
+public summary : Int -> String
+let summary balance = "balance: " ++ intToString balance
+
+example: deposit 100 50 = 150
+example: withdraw 100 30 = 70
+example: withdraw 100 200 = 100
+example: canWithdraw 100 50
+forall balance: deposit balance 0 = balance

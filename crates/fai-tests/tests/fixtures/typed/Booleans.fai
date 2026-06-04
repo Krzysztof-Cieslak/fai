@@ -1,0 +1,27 @@
+module Booleans
+
+// Boolean logic, equality, and ordering.
+
+//~ TYPE and3 : Bool -> Bool -> Bool -> Bool
+public and3 : Bool -> Bool -> Bool -> Bool
+let and3 a b c = a && b && c
+
+//~ TYPE implies : Bool -> Bool -> Bool
+public implies : Bool -> Bool -> Bool
+let implies a b = not a || b
+
+//~ TYPE isZero : Int -> Bool
+public isZero : Int -> Bool
+let isZero n = n = 0
+
+//~ TYPE between : Int -> Int -> Int -> Bool
+public between : Int -> Int -> Int -> Bool
+let between lo hi x = x >= lo && x <= hi
+
+// Polymorphic equality generalizes (Eq is lenient).
+//~ TYPE same : 'a -> 'a -> Bool
+let same a b = a = b
+
+example: isZero 0
+example: implies false true
+forall a: implies a a

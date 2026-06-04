@@ -1,0 +1,5 @@
+module MissingSignature
+
+// A public binding without a signature is an error.
+//~ ERROR FAI3003
+public let exported x = x + 1

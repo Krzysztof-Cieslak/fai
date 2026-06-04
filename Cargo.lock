@@ -388,6 +388,7 @@ dependencies = [
  "fai-syntax",
  "fai-types",
  "insta",
+ "proptest",
  "serde_json",
 ]
 

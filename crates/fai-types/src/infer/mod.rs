@@ -28,7 +28,7 @@ use crate::ty::{Scheme, Ty};
 /// generalization for Numeric/Ord).
 pub fn generalize(cx: &InferCtx, ty: &SolveTy) -> Scheme {
     let (reified, vars) = cx.reify_with_vars(ty);
-    Scheme { vars, ty: reified }
+    Scheme::new(vars, reified)
 }
 
 /// Looks up the declared signature scheme of a definition in `file`, if it has

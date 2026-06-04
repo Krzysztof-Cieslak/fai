@@ -1,0 +1,16 @@
+module Mixed
+
+// A program with several independent errors that must all be reported (cascade
+// suppression keeps each root error to a single diagnostic).
+
+//~ ERROR FAI2001
+let a = unknownName
+
+//~ ERROR FAI3001
+let b = 1 + false
+
+//~ ERROR FAI3003
+public let c = 5
+
+//~ COUNT ERROR 3
+let ok = 1 + 2
