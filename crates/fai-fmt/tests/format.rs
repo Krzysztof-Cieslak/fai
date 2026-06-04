@@ -1,6 +1,9 @@
 //! Formatter golden snapshots, idempotence, and property tests.
 
 use fai_span::SourceId;
+use fai_syntax::ast::{
+    ExprId, ExprKind, Item, ItemKind, LetStmt, Module, PatId, PatKind, TypeId, TypeKind,
+};
 use fai_syntax::{ItemTree, TokenKind, build_item_tree, parse_module};
 use proptest::prelude::*;
 
@@ -269,5 +272,253 @@ proptest! {
         prop_assert!(reparsed.diagnostics.is_empty());
         prop_assert_eq!(fmt(&once), once);
         prop_assert_eq!(item_tree_of(&src), build_item_tree(&reparsed.module));
+    }
+}
+
+// --- structural round-trip (span-free shape) --------------------------------
+//
+// `item_tree_of` only captures top-level names/kinds; it cannot see whether a
+// *body* survives formatting. `shape` renders the entire tree to a span-free
+// S-expression, so comparing `shape(parse(src))` with `shape(parse(fmt(src)))`
+// proves the formatter preserves every node, nesting, operator, and literal.
+//
+// A `Block` whose only content is its tail is semantically that tail: the
+// formatter collapses `let f =\n  x` to `let f = x` and re-expands a body when
+// it must break, so tail-only blocks are normalized away on both sides of the
+// comparison (they are the one intended, sound shape change).
+
+fn shape(m: &Module) -> String {
+    let mut out = format!("module {:?}", m.name.map(|s| s.as_str()));
+    for item in &m.items {
+        out.push('\n');
+        out.push_str(&shape_item(m, item));
+    }
+    out
+}
+
+fn shape_item(m: &Module, item: &Item) -> String {
+    match &item.kind {
+        ItemKind::Signature { visibility, name, ty } => {
+            format!("(sig {visibility:?} {} {})", name.as_str(), shape_type(m, *ty))
+        }
+        ItemKind::Binding { visibility, name, params, body } => format!(
+            "(let {visibility:?} {} [{}] {})",
+            name.as_str(),
+            shape_pats(m, params),
+            shape_expr(m, *body),
+        ),
+        ItemKind::Example { body } => format!("(example {})", shape_expr(m, *body)),
+        ItemKind::Forall { binders, body } => format!(
+            "(forall [{}] {})",
+            binders.iter().map(|b| b.as_str()).collect::<Vec<_>>().join(" "),
+            shape_expr(m, *body),
+        ),
+        ItemKind::Error => "(item-error)".to_owned(),
+    }
+}
+
+fn shape_expr(m: &Module, id: ExprId) -> String {
+    match &m.expr(id).kind {
+        ExprKind::Int(s) => format!("(int {})", s.as_str()),
+        ExprKind::Float(s) => format!("(float {})", s.as_str()),
+        ExprKind::String(s) => format!("(string {})", s.as_str()),
+        ExprKind::Char(s) => format!("(char {})", s.as_str()),
+        ExprKind::Var(s) => format!("(var {})", s.as_str()),
+        ExprKind::Unit => "(unit)".to_owned(),
+        ExprKind::App { func, arg } => {
+            format!("(app {} {})", shape_expr(m, *func), shape_expr(m, *arg))
+        }
+        ExprKind::Binary { op, lhs, rhs } => {
+            format!("({op:?} {} {})", shape_expr(m, *lhs), shape_expr(m, *rhs))
+        }
+        ExprKind::Unary { op, operand } => format!("({op:?} {})", shape_expr(m, *operand)),
+        ExprKind::If { cond, then_branch, else_branch } => format!(
+            "(if {} {} {})",
+            shape_expr(m, *cond),
+            shape_expr(m, *then_branch),
+            shape_expr(m, *else_branch),
+        ),
+        ExprKind::Lambda { params, body } => {
+            format!("(fun [{}] {})", shape_pats(m, params), shape_expr(m, *body))
+        }
+        ExprKind::Block { stmts, tail } if stmts.is_empty() => shape_expr(m, *tail),
+        ExprKind::Block { stmts, tail } => format!(
+            "(block [{}] {})",
+            stmts.iter().map(|s| shape_stmt(m, s)).collect::<Vec<_>>().join(" "),
+            shape_expr(m, *tail),
+        ),
+        ExprKind::Field { base, field } => {
+            format!("(field {} {})", shape_expr(m, *base), field.as_str())
+        }
+        ExprKind::Paren(inner) => format!("(paren {})", shape_expr(m, *inner)),
+        ExprKind::Tuple(xs) => format!("(tuple {})", shape_exprs(m, xs)),
+        ExprKind::List(xs) => format!("(list {})", shape_exprs(m, xs)),
+        ExprKind::Error => "(expr-error)".to_owned(),
+    }
+}
+
+fn shape_exprs(m: &Module, ids: &[ExprId]) -> String {
+    ids.iter().map(|id| shape_expr(m, *id)).collect::<Vec<_>>().join(" ")
+}
+
+fn shape_stmt(m: &Module, stmt: &LetStmt) -> String {
+    format!(
+        "(let {} [{}] {})",
+        shape_pat(m, stmt.pat),
+        shape_pats(m, &stmt.params),
+        shape_expr(m, stmt.value),
+    )
+}
+
+fn shape_pat(m: &Module, id: PatId) -> String {
+    match &m.pat(id).kind {
+        PatKind::Var(s) => format!("(pvar {})", s.as_str()),
+        PatKind::Wildcard => "(pwild)".to_owned(),
+        PatKind::Unit => "(punit)".to_owned(),
+        PatKind::Tuple(xs) => {
+            format!(
+                "(ptuple {})",
+                xs.iter().map(|p| shape_pat(m, *p)).collect::<Vec<_>>().join(" ")
+            )
+        }
+        PatKind::Paren(inner) => format!("(pparen {})", shape_pat(m, *inner)),
+        PatKind::Error => "(pat-error)".to_owned(),
+    }
+}
+
+fn shape_pats(m: &Module, ids: &[PatId]) -> String {
+    ids.iter().map(|id| shape_pat(m, *id)).collect::<Vec<_>>().join(" ")
+}
+
+fn shape_type(m: &Module, id: TypeId) -> String {
+    match &m.ty(id).kind {
+        TypeKind::Var(s) => format!("(tvar {})", s.as_str()),
+        TypeKind::Con(s) => format!("(tcon {})", s.as_str()),
+        TypeKind::App { func, arg } => {
+            format!("(tapp {} {})", shape_type(m, *func), shape_type(m, *arg))
+        }
+        TypeKind::Arrow { from, to } => {
+            format!("(tarrow {} {})", shape_type(m, *from), shape_type(m, *to))
+        }
+        TypeKind::Tuple(xs) => format!(
+            "(ttuple {})",
+            xs.iter().map(|t| shape_type(m, *t)).collect::<Vec<_>>().join(" "),
+        ),
+        TypeKind::Unit => "(tunit)".to_owned(),
+        TypeKind::Paren(inner) => format!("(tparen {})", shape_type(m, *inner)),
+        TypeKind::Error => "(type-error)".to_owned(),
+    }
+}
+
+#[test]
+fn fmt_preserves_structure_examples() {
+    // Cases that specifically exercise the block-collapse normalization and the
+    // if-break path; the structural shape must survive a format round-trip.
+    for src in [
+        "module M\nlet f =\n  x",
+        "module M\nlet g x = if c then a else b",
+        "module M\nlet h x =\n  if someLongCondition then theFirstResult else theSecondResult",
+        "module M\nlet a = w - x * y / z % p",
+        "module M\nlet b = f (g x) (h y)",
+        "module M\nlet t = ((a, b), [c, d])",
+        "module M\nlet n = -a - -b",
+        "module M\nlet p = a :: b :: c ++ d",
+        "module M\npublic q : ('a -> 'b) -> List 'a -> List 'b\nlet q f = f",
+    ] {
+        let before = parse_module(SourceId::new(0), src);
+        assert!(before.diagnostics.is_empty(), "sample did not parse: {src}");
+        let out = fmt(src);
+        let after = parse_module(SourceId::new(0), &out);
+        assert!(after.diagnostics.is_empty(), "reformatted output did not parse:\n{out}");
+        assert_eq!(shape(&before.module), shape(&after.module), "src: {src}\nout:\n{out}");
+    }
+}
+
+fn arb_ident() -> impl Strategy<Value = String> {
+    "[a-z][a-z0-9]*".prop_filter("reserved keyword", |s| TokenKind::keyword(s).is_none())
+}
+
+fn arb_atom() -> impl Strategy<Value = String> {
+    prop_oneof![arb_ident(), any::<u32>().prop_map(|n| n.to_string())]
+}
+
+const OPS: &[&str] =
+    &["+", "-", "*", "/", "%", "++", "::", "|>", ">>", "&&", "||", "=", "<>", "<", "<=", ">", ">="];
+
+/// Fully self-delimiting expressions (see the parser's generator): every value
+/// is a single atom, so any composition parses cleanly.
+fn arb_expr() -> impl Strategy<Value = String> {
+    let leaf = prop_oneof![
+        arb_ident(),
+        any::<u32>().prop_map(|n| n.to_string()),
+        Just("()".to_owned()),
+        "[a-z ]*".prop_map(|s| format!("\"{s}\"")),
+    ];
+    leaf.prop_recursive(4, 48, 3, |inner| {
+        let op = proptest::sample::select(OPS.to_vec());
+        prop_oneof![
+            (inner.clone(), inner.clone()).prop_map(|(f, a)| format!("({f} {a})")),
+            (inner.clone(), op, inner.clone()).prop_map(|(a, o, b)| format!("({a} {o} {b})")),
+            (inner.clone(), inner.clone(), inner.clone())
+                .prop_map(|(c, t, e)| format!("(if {c} then {t} else {e})")),
+            inner.clone().prop_map(|e| format!("({e})")),
+            (inner.clone(), inner.clone()).prop_map(|(a, b)| format!("({a}, {b})")),
+            (inner.clone(), inner.clone()).prop_map(|(a, b)| format!("[{a}, {b}]")),
+            inner.clone().prop_map(|e| format!("(fun x -> {e})")),
+            inner.prop_map(|e| format!("(-{e})")),
+        ]
+    })
+}
+
+fn arb_program() -> impl Strategy<Value = String> {
+    proptest::collection::vec((arb_ident(), arb_expr()), 1..5).prop_map(|binds| {
+        let mut src = "module M".to_owned();
+        for (name, body) in binds {
+            src.push_str(&format!("\nlet {name} = {body}"));
+        }
+        src
+    })
+}
+
+proptest! {
+    /// Formatting preserves a program's structure: the span-free shape of the
+    /// tree is identical before and after a format round-trip, the output
+    /// reparses cleanly, and formatting is idempotent.
+    #[test]
+    fn fmt_preserves_structure(src in arb_program()) {
+        let before = parse_module(SourceId::new(0), &src);
+        prop_assume!(before.diagnostics.is_empty());
+        let once = fai_fmt::format(&before.module, &before.comments, &src);
+        let after = parse_module(SourceId::new(0), &once);
+        prop_assert!(after.diagnostics.is_empty(), "output did not reparse:\n{}", once);
+        prop_assert_eq!(
+            shape(&before.module),
+            shape(&after.module),
+            "fmt changed structure:\nsrc:\n{}\nout:\n{}", src, once,
+        );
+        let twice = fai_fmt::format(&after.module, &after.comments, &once);
+        prop_assert_eq!(&twice, &once, "fmt is not idempotent:\n{}", once);
+    }
+
+    /// Unparenthesized operator chains keep their parse (precedence and
+    /// associativity) across a format round-trip: the formatter emits exactly
+    /// the parentheses the tree carries — no more, no fewer.
+    #[test]
+    fn operator_chains_round_trip(
+        atoms in proptest::collection::vec(arb_atom(), 2..6),
+        ops in proptest::collection::vec(proptest::sample::select(OPS.to_vec()), 1..6),
+    ) {
+        let n = atoms.len().min(ops.len() + 1);
+        let mut expr = atoms[0].clone();
+        for i in 1..n {
+            expr.push_str(&format!(" {} {}", ops[i - 1], atoms[i]));
+        }
+        let src = format!("module M\nlet it = {expr}");
+        let before = parse_module(SourceId::new(0), &src);
+        prop_assume!(before.diagnostics.is_empty());
+        let once = fai_fmt::format(&before.module, &before.comments, &src);
+        let after = parse_module(SourceId::new(0), &once);
+        prop_assert!(after.diagnostics.is_empty(), "output did not reparse:\n{}", once);
+        prop_assert_eq!(shape(&before.module), shape(&after.module), "src: {}\nout: {}", src, once);
     }
 }
