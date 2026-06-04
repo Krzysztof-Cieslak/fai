@@ -7,6 +7,8 @@ members = [
     "crates/fai-syntax",
     "crates/fai-fmt",
     "crates/fai-resolve",
+    "crates/fai-types",
+    "crates/fai-ide",
     "crates/fai-driver",
     "crates/fai-cli",
     "crates/fai-tests",
@@ -52,6 +54,8 @@ fai-db = { path = "crates/fai-db" }
 fai-syntax = { path = "crates/fai-syntax" }
 fai-fmt = { path = "crates/fai-fmt" }
 fai-resolve = { path = "crates/fai-resolve" }
+fai-types = { path = "crates/fai-types" }
+fai-ide = { path = "crates/fai-ide" }
 fai-driver = { path = "crates/fai-driver" }
 fai-cli = { path = "crates/fai-cli" }
 

@@ -19,7 +19,10 @@ fai-cli.workspace = true
 fai-diagnostics.workspace = true
 fai-driver.workspace = true
 fai-fmt.workspace = true
+fai-ide.workspace = true
+fai-resolve.workspace = true
 fai-syntax.workspace = true
+fai-types.workspace = true
 insta.workspace = true
 serde_json.workspace = true
 
