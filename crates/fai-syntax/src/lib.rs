@@ -9,6 +9,7 @@
 //! Diagnostics use the `FAI1xxx` range; every code is catalogued in [`CODES`].
 
 pub mod ast;
+mod attach;
 mod layout;
 mod lexer;
 mod parser;
@@ -20,6 +21,7 @@ mod query;
 mod symbol;
 mod token;
 
+pub use attach::{CommentId, CommentMap, NodeId, attach_comments};
 pub use layout::{Layout, layout};
 pub use lexer::{Lexed, lex};
 pub use parser::{Parsed, parse_module};

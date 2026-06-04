@@ -7,5 +7,13 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 
+[dependencies]
+fai-span.workspace = true
+fai-syntax.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+proptest.workspace = true
+
 [lints]
 workspace = true

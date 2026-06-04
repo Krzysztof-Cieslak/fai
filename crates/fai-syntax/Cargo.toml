@@ -15,6 +15,7 @@ fai-db.workspace = true
 # query-defining crate needs salsa as a direct dependency (see `docs/PLAN.md`).
 salsa.workspace = true
 lasso.workspace = true
+rustc-hash.workspace = true
 
 [dev-dependencies]
 insta.workspace = true

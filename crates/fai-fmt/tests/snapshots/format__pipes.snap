@@ -1,0 +1,8 @@
+---
+source: crates/fai-fmt/tests/format.rs
+expression: fmt(src)
+---
+module Funcs
+
+public describe : Int -> String
+let describe n = n |> inc |> intToString

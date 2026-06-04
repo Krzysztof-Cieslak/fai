@@ -1,0 +1,8 @@
+---
+source: crates/fai-fmt/tests/format.rs
+expression: fmt(src)
+---
+module Hello
+
+public main : Runtime -> Unit
+let main runtime = runtime.console.writeLine "Hello, Fai!"

@@ -1,0 +1,12 @@
+---
+source: crates/fai-fmt/tests/format.rs
+expression: fmt(src)
+---
+module Basics
+
+public add : Int -> Int -> Int
+let add x y = x + y
+
+let ratio = 3.0 / 2.0
+
+let isEven = count % 2 = 0
