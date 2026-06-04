@@ -141,10 +141,12 @@ pub fn infer_scc(
     // against the signature and recursive calls use the declared type).
     let mut scc_types: FxHashMap<DefId, SolveTy> = FxHashMap::default();
     let mut declared: FxHashMap<DefId, Scheme> = FxHashMap::default();
+    let mut declared_vars: FxHashMap<DefId, Vec<crate::ty::TyVarId>> = FxHashMap::default();
     for m in members {
         if let Some(scheme) = declared_scheme(db, file, m.name) {
-            let mono = cx.instantiate(&scheme);
+            let (mono, vars) = cx.instantiate_tracked(&scheme);
             scc_types.insert(*m, mono);
+            declared_vars.insert(*m, vars);
             declared.insert(*m, scheme);
         } else {
             scc_types.insert(*m, cx.fresh());
@@ -160,15 +162,7 @@ pub fn infer_scc(
 
         let env_scc = scc_types.clone();
         let mut env = SccEnv { db, scc_types: &env_scc, def_schemes, builtins };
-        let mut walker = Walker {
-            db,
-            file,
-            module,
-            resolved,
-            cx: &mut cx,
-            env: &mut env,
-            locals: FxHashMap::default(),
-        };
+        let mut walker = Walker::new(db, file, module, resolved, &mut cx, &mut env);
 
         // Parameters introduce fresh local types; the body's type is the result.
         let param_tys: Vec<SolveTy> = params.iter().map(|&p| walker.bind_param(p)).collect();
@@ -176,16 +170,35 @@ pub fn infer_scc(
         let fn_ty = SolveTy::arrows_solver(param_tys, body_ty);
 
         let unify = cx.unify(&fn_ty, &member_ty);
+        // A failed unification (the body conflicts with the signature) is an
+        // immediate mismatch.
         if declared.contains_key(m) && unify != UnifyResult::Ok {
             mismatches.push(*m);
         }
     }
 
-    // Default unresolved numeric variables and generalize.
-    let mut result = FxHashMap::default();
+    // Default unresolved numeric variables, then check signature generality and
+    // generalize. Defaulting must happen first so that, e.g., `f : 'a -> 'a` with
+    // body `x + 1` is seen as `Int -> Int` (the quantified var was forced to Int).
     for m in members {
         let ty = scc_types[m].clone();
         default_numerics(&mut cx, &ty);
+    }
+
+    // An over-general signature is one whose quantified variables the body forced
+    // to concrete types or collapsed together.
+    for m in members {
+        if declared.contains_key(m) && !mismatches.contains(m) {
+            let over_general = declared_vars.get(m).is_some_and(|vars| !cx.all_distinct_free(vars));
+            if over_general {
+                mismatches.push(*m);
+            }
+        }
+    }
+
+    let mut result = FxHashMap::default();
+    for m in members {
+        let ty = scc_types[m].clone();
         let scheme = if let Some(decl) = declared.get(m) {
             // The exported type is the declared signature (firewall): use it
             // verbatim. The body was checked against it above.

@@ -76,15 +76,7 @@ fn check_contract_body(
     let scc_types: FxHashMap<DefId, SolveTy> = FxHashMap::default();
     let mut env = contract_env(db, &scc_types, &def_schemes, &builtins);
 
-    let mut walker = Walker {
-        db,
-        file,
-        module,
-        resolved,
-        cx: &mut cx,
-        env: &mut env,
-        locals: FxHashMap::default(),
-    };
+    let mut walker = Walker::new(db, file, module, resolved, &mut cx, &mut env);
     let body_ty = walker.infer_expr(body);
     if cx.unify(&body_ty, &SolveTy::bool()) != crate::infer::UnifyResult::Ok {
         let rendered = crate::ty::render(&cx.reify(&body_ty), &crate::ty::VarNames::new());

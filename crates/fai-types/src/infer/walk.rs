@@ -30,6 +30,14 @@ pub trait Env {
     fn builtin_scheme(&mut self, name: Symbol) -> Option<Scheme>;
 }
 
+/// A local binding's type: monomorphic (parameters, lambda binders, tuple
+/// destructuring) or a generalized local scheme (a simple `let v = value`).
+#[derive(Clone)]
+enum LocalBinding {
+    Mono(SolveTy),
+    Poly { vars: Vec<crate::ty::TyVarId>, ty: SolveTy },
+}
+
 /// The per-body inference walker.
 pub struct Walker<'a, E: Env> {
     pub db: &'a dyn Db,
@@ -38,8 +46,22 @@ pub struct Walker<'a, E: Env> {
     pub resolved: &'a ResolvedBodies,
     pub cx: &'a mut InferCtx,
     pub env: &'a mut E,
-    /// Monomorphic types of locals bound so far in the current body.
-    pub locals: FxHashMap<LocalId, SolveTy>,
+    /// Types of locals bound so far in the current body.
+    locals: FxHashMap<LocalId, LocalBinding>,
+}
+
+impl<'a, E: Env> Walker<'a, E> {
+    /// Builds a walker over `module`'s body with an empty local scope.
+    pub fn new(
+        db: &'a dyn Db,
+        file: SourceFile,
+        module: &'a Module,
+        resolved: &'a ResolvedBodies,
+        cx: &'a mut InferCtx,
+        env: &'a mut E,
+    ) -> Self {
+        Self { db, file, module, resolved, cx, env, locals: FxHashMap::default() }
+    }
 }
 
 impl<E: Env> Walker<'_, E> {
@@ -124,7 +146,17 @@ impl<E: Env> Walker<'_, E> {
             }
             ExprKind::Block { stmts, tail } => {
                 for stmt in stmts {
-                    // A local function binding: build an arrow over its params.
+                    // Generalize only a simple `let v = value` whose right-hand
+                    // side is a *syntactic value* (the value restriction). This is
+                    // both standard and avoids generalizing expressions like
+                    // `a + 1` whose type is fixed by the environment.
+                    let is_simple_var = stmt.params.is_empty()
+                        && matches!(self.module.pat(stmt.pat).kind, PatKind::Var(_))
+                        && is_syntactic_value(self.module, stmt.value);
+                    // The vars already fixed by the enclosing environment must not
+                    // be generalized; snapshot them before inferring the value.
+                    let env_vars = self.env_free_vars();
+
                     let value_ty = if stmt.params.is_empty() {
                         self.infer_expr(stmt.value)
                     } else {
@@ -133,12 +165,25 @@ impl<E: Env> Walker<'_, E> {
                         let v = self.infer_expr(stmt.value);
                         SolveTy::arrows_solver(param_tys, v)
                     };
-                    // Bind the pattern to the value type (monomorphic for tuple
-                    // patterns; var patterns are also bound monomorphically here —
-                    // local let-generalization is applied for simple var lets by
-                    // re-instantiation is out of M2 scope for blocks; treat as
-                    // monomorphic to keep inference predictable).
-                    self.bind_pattern_to(stmt.pat, &value_ty);
+
+                    if is_simple_var {
+                        // Generalize a simple `let v = value`: quantify the value
+                        // type's free variables that are not fixed by the
+                        // environment (standard let-polymorphism; sound because M2
+                        // has no mutable references).
+                        let vars = self.generalizable_vars(&value_ty, &env_vars);
+                        if let Some(slot) = self.resolved.local_of(stmt.pat) {
+                            let binding = if vars.is_empty() {
+                                LocalBinding::Mono(value_ty)
+                            } else {
+                                LocalBinding::Poly { vars, ty: value_ty }
+                            };
+                            self.locals.insert(slot, binding);
+                        }
+                    } else {
+                        // Function and tuple-pattern lets bind monomorphically.
+                        self.bind_pattern_to(stmt.pat, &value_ty);
+                    }
                 }
                 self.infer_expr(*tail)
             }
@@ -160,7 +205,11 @@ impl<E: Env> Walker<'_, E> {
 
     fn infer_ref(&mut self, expr: ExprId, name: Symbol, span: fai_span::TextRange) -> SolveTy {
         match self.resolved.get(expr) {
-            Some(Res::Local(local)) => self.locals.get(&local).cloned().unwrap_or(SolveTy::Error),
+            Some(Res::Local(local)) => match self.locals.get(&local).cloned() {
+                Some(LocalBinding::Mono(t)) => t,
+                Some(LocalBinding::Poly { vars, ty }) => self.instantiate_local(&vars, &ty),
+                None => SolveTy::Error,
+            },
             Some(Res::Def(def)) => self.instantiate_def(def),
             Some(Res::Builtin(b)) => match self.env.builtin_scheme(b) {
                 Some(scheme) => self.cx.instantiate(&scheme),
@@ -335,7 +384,7 @@ impl<E: Env> Walker<'_, E> {
         match &self.module.pat(pat).kind {
             PatKind::Var(_) | PatKind::Wildcard => {
                 if let Some(slot) = self.resolved.local_of(pat) {
-                    self.locals.insert(slot, ty.clone());
+                    self.locals.insert(slot, LocalBinding::Mono(ty.clone()));
                 }
             }
             PatKind::Tuple(elems) => {
@@ -359,5 +408,116 @@ impl<E: Env> Walker<'_, E> {
             PatKind::Paren(inner) => self.bind_pattern_to(*inner, ty),
             PatKind::Unit | PatKind::Error => {}
         }
+    }
+
+    /// The solver variables currently fixed by the environment (all in-scope
+    /// locals), which must not be generalized by a nested `let`.
+    fn env_free_vars(&self) -> rustc_hash::FxHashSet<crate::ty::TyVarId> {
+        let mut set = rustc_hash::FxHashSet::default();
+        for binding in self.locals.values() {
+            match binding {
+                LocalBinding::Mono(t) => self.collect_free_vars(t, &mut set),
+                // A poly local's quantified vars are bound, not free; only its
+                // free (non-quantified) vars constrain generalization.
+                LocalBinding::Poly { vars, ty } => {
+                    let mut local = rustc_hash::FxHashSet::default();
+                    self.collect_free_vars(ty, &mut local);
+                    for v in vars {
+                        local.remove(v);
+                    }
+                    set.extend(local);
+                }
+            }
+        }
+        set
+    }
+
+    /// The free variables of `ty` that may be generalized: those not fixed by the
+    /// environment.
+    fn generalizable_vars(
+        &self,
+        ty: &SolveTy,
+        env_vars: &rustc_hash::FxHashSet<crate::ty::TyVarId>,
+    ) -> Vec<crate::ty::TyVarId> {
+        let mut free = rustc_hash::FxHashSet::default();
+        self.collect_free_vars(ty, &mut free);
+        let mut vars: Vec<crate::ty::TyVarId> =
+            free.into_iter().filter(|v| !env_vars.contains(v)).collect();
+        vars.sort();
+        vars
+    }
+
+    /// Collects the free (unbound) solver variables of `ty`, following the
+    /// current substitution.
+    fn collect_free_vars(&self, ty: &SolveTy, out: &mut rustc_hash::FxHashSet<crate::ty::TyVarId>) {
+        match self.cx.resolve_shallow(ty) {
+            SolveTy::Var(v) => {
+                out.insert(v);
+            }
+            SolveTy::App(f, a) | SolveTy::Arrow(f, a) => {
+                self.collect_free_vars(&f, out);
+                self.collect_free_vars(&a, out);
+            }
+            SolveTy::Tuple(elems) => {
+                for e in &elems {
+                    self.collect_free_vars(e, out);
+                }
+            }
+            SolveTy::Con(_) | SolveTy::Unit | SolveTy::Error => {}
+        }
+    }
+
+    /// Instantiates a local scheme with fresh variables for each quantified var.
+    fn instantiate_local(&mut self, vars: &[crate::ty::TyVarId], ty: &SolveTy) -> SolveTy {
+        let mut mapping = FxHashMap::default();
+        for &v in vars {
+            if let SolveTy::Var(fresh) = self.cx.fresh() {
+                mapping.insert(v, fresh);
+            }
+        }
+        subst(self.cx, ty, &mapping)
+    }
+}
+
+/// Whether `expr` is a syntactic value (safe to generalize under the value
+/// restriction): a lambda, a variable, a literal, or a tuple/list/paren of
+/// values. Function *applications* and other computations are not values.
+fn is_syntactic_value(module: &Module, expr: ExprId) -> bool {
+    match &module.expr(expr).kind {
+        ExprKind::Lambda { .. }
+        | ExprKind::Var(_)
+        | ExprKind::Int(_)
+        | ExprKind::Float(_)
+        | ExprKind::String(_)
+        | ExprKind::Char(_)
+        | ExprKind::Unit => true,
+        ExprKind::Paren(inner) => is_syntactic_value(module, *inner),
+        ExprKind::Tuple(elems) | ExprKind::List(elems) => {
+            elems.iter().all(|&e| is_syntactic_value(module, e))
+        }
+        _ => false,
+    }
+}
+
+/// Substitutes solver variables in `ty` according to `mapping`, following the
+/// current substitution for variables not in the map.
+fn subst(
+    cx: &InferCtx,
+    ty: &SolveTy,
+    mapping: &FxHashMap<crate::ty::TyVarId, crate::ty::TyVarId>,
+) -> SolveTy {
+    match cx.resolve_shallow(ty) {
+        SolveTy::Var(v) => match mapping.get(&v) {
+            Some(&fresh) => SolveTy::Var(fresh),
+            None => SolveTy::Var(v),
+        },
+        SolveTy::App(f, a) => {
+            SolveTy::App(Box::new(subst(cx, &f, mapping)), Box::new(subst(cx, &a, mapping)))
+        }
+        SolveTy::Arrow(f, a) => SolveTy::arrow(subst(cx, &f, mapping), subst(cx, &a, mapping)),
+        SolveTy::Tuple(elems) => {
+            SolveTy::Tuple(elems.iter().map(|e| subst(cx, e, mapping)).collect())
+        }
+        other @ (SolveTy::Con(_) | SolveTy::Unit | SolveTy::Error) => other,
     }
 }
