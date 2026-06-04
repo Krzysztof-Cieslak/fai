@@ -1,10 +1,12 @@
 # Fai — Agent & Contributor Guide
 
-> **Status:** Implemented through milestone **M1**. The compiler front end —
+> **Status:** Implemented through milestone **M2**. The compiler front end —
 > lexer, layout, parser/AST, the incremental `parse`/`item_tree` queries, and the
-> canonical formatter — is built, and `fai check` / `fai fmt` work on the M1
-> surface. Later milestones (types, codegen, the daemon, …) define the *intended*
-> interface we build toward. The design is locked (see the decision table below).
+> canonical formatter (M1) — plus name resolution, the module graph, and
+> Hindley–Milner inference for the functional core (M2) are built. `fai check`
+> type-checks, and the `fai query` code-intelligence commands work. Later
+> milestones (codegen, the daemon, …) define the *intended* interface we build
+> toward. The design is locked (see the decision table below).
 
 This document is the orientation guide for anyone — human or AI agent — working
 on the Fai compiler. Read it first. For the staged build plan see `docs/PLAN.md`; for

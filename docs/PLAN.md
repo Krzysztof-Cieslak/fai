@@ -117,6 +117,13 @@ canonically.
 ---
 
 ### M2 — Hindley–Milner inference for the functional core
+**Status:** complete — `fai-resolve` (name resolution, the module graph,
+visibility, per-module SCCs), `fai-types` (HM representation, unification,
+let-generalization, the required-signature rule, contract typing), and `fai-ide`
+(the eight `fai query` commands) are implemented; `fai check` type-checks and the
+cross-module firewall is proven by the incremental verifier. See decisions
+**D36–D44** for the choices made while implementing it.
+
 **Goal:** type the pure functional core; enforce that every `public` binding has
 an explicit signature.
 
@@ -634,6 +641,66 @@ queries, and formatter):
   future-surface, skipped; any diagnostic without `FAI1030` ⇒ failure (a real
   syntax bug). A known-module guard asserts the implemented-surface modules stay
   clean; files auto-promote to the round-trip set as later milestones land.
+
+Resolved while implementing **M2** (the type-system layer):
+
+- **D36 Cross-module access:** **qualified only**, no imports and no implicit
+  workspace scope. A bare name resolves local → this-module top-level → prelude,
+  never to another module. Another module's public binding is reached *only* as
+  `Module.name`, which already parses as `Field { base: Var(Upper), field }` and
+  is reinterpreted at resolution (depth-1; the `Upper`/lower casing convention
+  decides module-ref vs record-field-access). No grammar change. Rejected:
+  implicit workspace scope (ambiguous), `import` declarations (deferred; not
+  needed for an agent-first language where terseness matters less).
+- **D37 Module identity & uniqueness:** a module **is** its file (`SourceId` is
+  the identity, stable under reformatting); the header name is a validated-unique
+  display/addressing label. Two files with the same module name is an error
+  (`FAI2007`) on **each** colliding file; their bindings still resolve locally
+  but the duplicated name is excluded from cross-module lookup. The `Prelude`
+  module name is reserved.
+- **D38 Required signatures & visibility:** visibility lives on the **signature**
+  (a marker on a binding that has a signature is `FAI2009`). A `public` binding
+  without a signature is `FAI3003`; a signature that disagrees with the inferred
+  body is `FAI3004` (the signature is checked, not trusted). One signature pairs
+  with one binding (orphan/duplicate signatures and duplicate bindings are
+  `FAI2005`/`FAI2006`/`FAI2004`).
+- **D39 The firewall:** `module_exports`/inference of a binding depends on its
+  callees' **declared signatures**, never their bodies. Cross-module signature
+  lookup goes through a tracked `signature_scheme` query whose body-edit-stable
+  value gives early cutoff, so editing a private body never re-checks another
+  module. Proven by the incremental verifier + event-log tests.
+- **D40 SCC granularity:** within a module, a signature **cuts** a dependency
+  edge, so only signature-less bindings can form a cycle; such cycles are always
+  intra-module, so SCCs are computed **per file** (`module_sccs`). An SCC is the
+  inference cache unit; recursion inside a signature-less SCC is monomorphic,
+  then generalized.
+- **D41 Type representation:** an immutable, structural, span-free `Ty` (`Arc`
+  tree) reified after solving; the mutable union-find solver is local to one
+  inference call. Constrained type-variable flavors **Numeric** (Int/Float),
+  **Eq** (non-function), and **Ord** (Int/Float/String/Char) stand in for type
+  classes (deferred). Numeric defaults to `Int`; `=`/`<>` on a function type is
+  `FAI3006`; no implicit Int/Float coercion (`FAI3001`).
+- **D42 Operators:** `++` is **String-only** (lists use the prelude `append`);
+  `::` is cons; `|>`/`>>` are pipe/compose; comparison is `Ord`, equality is
+  `Eq`, arithmetic is `Numeric`. Constraint generalization is **lenient for Eq**
+  (generalizes to `'a`, function misuse caught at concrete sites) and **strict
+  for Numeric/Ord** (a constrained var that would generalize without a signature
+  is ambiguous) — because M2 has no constrained schemes to carry the constraint.
+  *Deviation (to revisit):* the current build *defaults* an escaping Numeric var
+  to `Int` rather than reporting the strict ambiguity; sound and predictable, to
+  be tightened when constrained schemes land.
+- **D43 Prelude:** **hybrid, type-only in M2** — primitives are a Rust
+  `name → Scheme` table (no bodies; codegen is M3), and a derived `.fai` prelude
+  is embedded (`include_str!`) and loaded as a synthetic high-durability
+  `SourceFile`; it is reachable unqualified everywhere (the one exception),
+  excluded from default `symbols`/`check`, and shadowing a prelude name warns
+  (`FAI2010`).
+- **D44 Code intelligence:** `fai-ide` returns typed serde envelopes (one per
+  command) with `schemaVersion`; targets address by `Module.name`, bare-unique
+  name, or `file:line:col`. `refs`/`dependents` assemble reverse indices on
+  demand from each file's cached resolution, keyed by `ExprId` with spans
+  resolved late (firewall-safe). Results are deterministically sorted and
+  best-effort under errors.
 
 To change a locked decision: update this log **and** the table in `Agents.md`,
 and note the migration in the affected milestones.
