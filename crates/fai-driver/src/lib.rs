@@ -8,6 +8,7 @@
 //! diagnostic. The signatures already take `&dyn Db` so the warm-database daemon
 //! can call the very same functions once the commands gain real behavior.
 
+mod query;
 mod session;
 
 use std::fmt::Write as _;
@@ -21,6 +22,7 @@ use fai_diagnostics::{
 use fai_span::{ByteOffset, SourceId, Span, SpanResolver, TextRange};
 use serde::Serialize;
 
+pub use query::{QueryRequest, QueryResult, run_query};
 pub use session::Session;
 
 /// A command is not implemented yet.
@@ -141,13 +143,69 @@ fn file_diagnostics(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
         .collect()
 }
 
-/// `fai check` — parse `files` and report syntax diagnostics (M1: no types yet).
+/// Collects the resolution + type diagnostics that belong to `file`.
+///
+/// Accumulators are transitive (a query collects everything emitted by the
+/// queries it calls), and workspace-level queries (e.g. duplicate-module
+/// detection) touch every file. So we filter to diagnostics whose primary span
+/// is in `file`, ensuring only the checked file's own diagnostics are reported.
+fn semantic_diagnostics(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
+    let source = file.source(db);
+    let mut out = Vec::new();
+    out.extend(
+        fai_resolve::resolve::accumulated::<fai_db::Diag>(db, file)
+            .into_iter()
+            .map(|d| d.0.clone()),
+    );
+    out.extend(
+        fai_types::check_file::accumulated::<fai_db::Diag>(db, file)
+            .into_iter()
+            .map(|d| d.0.clone()),
+    );
+    out.retain(|d| d.primary.source() == source);
+    dedup_diagnostics(&mut out);
+    out
+}
+
+/// Removes exact-duplicate diagnostics (transitive accumulation can surface the
+/// same diagnostic via more than one path).
+fn dedup_diagnostics(diagnostics: &mut Vec<Diagnostic>) {
+    let mut seen = std::collections::HashSet::new();
+    diagnostics.retain(|d| {
+        seen.insert((
+            d.code.as_str(),
+            d.primary.start().raw(),
+            d.primary.end().raw(),
+            d.message.clone(),
+        ))
+    });
+}
+
+/// Sorts diagnostics deterministically by (byte start, code).
+fn sort_diagnostics(diagnostics: &mut [Diagnostic]) {
+    diagnostics.sort_by(|a, b| {
+        (a.primary.start().raw(), a.code.as_str()).cmp(&(b.primary.start().raw(), b.code.as_str()))
+    });
+}
+
+/// `fai check` — parse, resolve, and type-check `files`, reporting diagnostics.
+///
+/// Resolution and inference run against the whole workspace held by `db` (so
+/// cross-module references resolve), but only the selected `files`' diagnostics
+/// are reported. A file that does not parse skips its semantic passes (so a parse
+/// error does not cascade into spurious resolution/type errors).
 #[must_use]
 pub fn check(db: &dyn Db, files: &[SourceFile]) -> CommandResult {
     let mut diagnostics = Vec::new();
     for &file in files {
-        diagnostics.extend(file_diagnostics(db, file));
+        let parse_diags = file_diagnostics(db, file);
+        let has_parse_error = parse_diags.iter().any(|d| d.severity == Severity::Error);
+        diagnostics.extend(parse_diags);
+        if !has_parse_error {
+            diagnostics.extend(semantic_diagnostics(db, file));
+        }
     }
+    sort_diagnostics(&mut diagnostics);
     let ok = !diagnostics.iter().any(|diag| diag.severity == Severity::Error);
     CommandResult { diagnostics, ok }
 }
@@ -273,12 +331,6 @@ pub fn fmt(db: &dyn Db, files: &[SourceFile]) -> FmtResult {
 #[must_use]
 pub fn lsp(db: &dyn Db) -> CommandResult {
     not_implemented(db, "lsp")
-}
-
-/// `fai query <name>` — read-only code intelligence.
-#[must_use]
-pub fn query(db: &dyn Db, name: &str) -> CommandResult {
-    not_implemented(db, &format!("query {name}"))
 }
 
 /// `fai daemon <name>` — daemon lifecycle management.

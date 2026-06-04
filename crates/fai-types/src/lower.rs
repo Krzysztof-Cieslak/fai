@@ -13,7 +13,7 @@ use fai_syntax::ast::{Module, Type, TypeId, TypeKind};
 use rustc_hash::FxHashMap;
 
 use crate::UNKNOWN_TYPE_CONSTRUCTOR;
-use crate::ty::{Con, Scheme, Ty, TyVarId};
+use crate::ty::{Scheme, Ty, TyVarId};
 
 /// A scratch map from surface type-variable names to assigned ids during one
 /// lowering, plus a fresh-id counter local to that lowering.
@@ -55,8 +55,8 @@ pub fn lower_type(
     let Type { kind, span } = module.ty(ty);
     match kind {
         TypeKind::Var(name) => Ty::Var(vars.var(*name)),
-        TypeKind::Con(name) => match Con::from_name(name.as_str()) {
-            Some(con) => Ty::Con(con),
+        TypeKind::Con(name) => match crate::ty::con_or_unit(name.as_str()) {
+            Some(ty) => ty,
             None => {
                 emit(
                     db,

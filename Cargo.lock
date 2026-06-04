@@ -309,6 +309,7 @@ dependencies = [
  "fai-syntax",
  "fai-types",
  "serde",
+ "serde_json",
  "thiserror",
 ]
 

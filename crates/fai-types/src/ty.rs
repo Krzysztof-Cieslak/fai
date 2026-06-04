@@ -85,6 +85,13 @@ impl Con {
     }
 }
 
+/// Lowers a type-constructor name to a [`Ty`], handling `Unit` (which has its own
+/// [`Ty::Unit`] form rather than a [`Con`]). Returns `None` for unknown names.
+#[must_use]
+pub fn con_or_unit(name: &str) -> Option<Ty> {
+    if name == "Unit" { Some(Ty::Unit) } else { Con::from_name(name).map(Ty::Con) }
+}
+
 impl Ty {
     /// The `Bool` type.
     #[must_use]
