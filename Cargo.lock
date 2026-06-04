@@ -302,7 +302,9 @@ dependencies = [
  "camino",
  "fai-db",
  "fai-diagnostics",
+ "fai-fmt",
  "fai-span",
+ "fai-syntax",
  "serde",
  "thiserror",
 ]
@@ -351,6 +353,7 @@ dependencies = [
  "fai-db",
  "fai-diagnostics",
  "fai-driver",
+ "fai-fmt",
  "fai-span",
  "fai-syntax",
  "insta",

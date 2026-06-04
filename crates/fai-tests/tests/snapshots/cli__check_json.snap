@@ -4,28 +4,6 @@ expression: out
 ---
 {
   "schemaVersion": 1,
-  "diagnostics": [
-    {
-      "code": "FAI0001",
-      "severity": "error",
-      "message": "`fai check` is not implemented yet",
-      "primary": {
-        "file": "<unknown>",
-        "start": {
-          "line": 0,
-          "column": 0
-        },
-        "end": {
-          "line": 0,
-          "column": 0
-        },
-        "byteStart": 0,
-        "byteEnd": 0
-      },
-      "secondary": [],
-      "help": "this command has no behavior in the current build",
-      "suggestions": []
-    }
-  ],
-  "ok": false
+  "diagnostics": [],
+  "ok": true
 }

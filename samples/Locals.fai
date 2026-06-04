@@ -7,7 +7,4 @@ let hypotenuse a b =
   sqrt (a2 + b2)
 
 public classify : Int -> String
-let classify n =
-  if n < 0 then "negative"
-  else if n = 0 then "zero"
-  else "positive"
+let classify n = if n < 0 then "negative" else if n = 0 then "zero" else "positive"

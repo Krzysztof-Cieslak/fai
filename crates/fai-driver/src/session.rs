@@ -6,7 +6,7 @@
 //! warm across requests instead of rebuilding it.
 
 use camino::{Utf8Path, Utf8PathBuf};
-use fai_db::{Db, DbSpanResolver, FaiDatabase};
+use fai_db::{Db, DbSpanResolver, FaiDatabase, SourceFile};
 
 use crate::DriverError;
 
@@ -54,6 +54,25 @@ impl Session {
     #[must_use]
     pub fn resolver(&self) -> DbSpanResolver<'_> {
         DbSpanResolver::new(&self.db)
+    }
+
+    /// Selects the loaded source files under `path` (a file or directory,
+    /// workspace-relative or absolute), or every file when `path` is `None`.
+    #[must_use]
+    pub fn select_files(&self, path: Option<&Utf8Path>) -> Vec<SourceFile> {
+        let db = self.db();
+        let files = db.all_source_files();
+        let Some(path) = path else {
+            return files;
+        };
+        let target = path.strip_prefix(&self.root).unwrap_or(path).as_str().trim_end_matches('/');
+        files
+            .into_iter()
+            .filter(|file| {
+                let rel = file.path(db).as_str();
+                rel == target || rel.strip_prefix(target).is_some_and(|rest| rest.starts_with('/'))
+            })
+            .collect()
     }
 }
 

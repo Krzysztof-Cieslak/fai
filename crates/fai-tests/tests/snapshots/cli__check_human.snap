@@ -2,6 +2,4 @@
 source: crates/fai-tests/tests/cli.rs
 expression: out
 ---
-error[FAI0001]: `fai check` is not implemented yet
-  --> <unknown>
-  = help: this command has no behavior in the current build
+

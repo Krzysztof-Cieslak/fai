@@ -11,6 +11,8 @@ license.workspace = true
 fai-span.workspace = true
 fai-diagnostics.workspace = true
 fai-db.workspace = true
+fai-syntax.workspace = true
+fai-fmt.workspace = true
 serde = { workspace = true }
 thiserror.workspace = true
 camino.workspace = true
