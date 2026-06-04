@@ -353,9 +353,56 @@ A change is done when:
 1. `cargo build` is clean and `cargo clippy --all-targets -- -D warnings` passes.
 2. `cargo fmt --all -- --check` passes (Rust side).
 3. `cargo test` passes, including golden/snapshot and e2e tests.
-4. New behavior has tests; new diagnostics have codes + catalog entries.
+4. New behavior has tests at the appropriate levels (see §13); new diagnostics
+   have codes + catalog entries.
 5. Any surface-language change is reflected in `Agents.md`, `docs/PLAN.md`, and
    the `samples/` directory.
 6. Self-hosted check: every `.fai` file in `samples/` is verified by the test
    suite (parsed/formatted, and typechecked/run where applicable) so the docs
    cannot drift from the implementation.
+
+## 13. Testing standards
+
+Fai is a compiler: correctness *is* the product, so **test coverage is a
+first-class deliverable, not an afterthought.** Aim for coverage that is both
+**wide** (every construct, on every path) and **deep** (edge cases, error
+recovery, and exact locations — not just happy paths). When in doubt, write the
+test; under-testing a phase is a defect, not a shortcut.
+
+- **Test every phase at its own level.** Each phase crate (`fai-syntax`,
+  `fai-resolve`, `fai-types`, `fai-core`, `fai-rc`, `fai-codegen`, …) carries
+  fast unit tests for its logic plus golden/snapshot tests (`insta`) for its
+  observable output (tokens, parse trees, diagnostics, formatted text, types,
+  lowered IR). Cross-cutting end-to-end and incremental tests live in
+  `fai-tests`.
+- **Cover the whole matrix for each construct.** For every surface form, test:
+  valid inputs; **malformed inputs** (which must yield a `Diagnostic`, never a
+  panic or hang); error **recovery** (one run reports *many* diagnostics, and a
+  single mistake never hides the rest); and edge cases — empty input, boundary
+  values, deep nesting, large inputs, and **UTF-8 / multibyte** content with
+  correct byte offsets.
+- **Assert locations, not just outcomes.** Diagnostics are an API: assert the
+  **code, the span (byte offsets), and the message** wherever the message is
+  stable. Tokens, AST/IR nodes, and diagnostics all carry spans — test that those
+  spans are *exact*, since everything downstream relies on them.
+- **Negative tests matter as much as positive ones.** A compiler is judged by its
+  behavior on wrong programs; exercise the failure paths deliberately and pin the
+  recovery behavior.
+- **Properties and laws, not only examples.** Use property/round-trip tests for
+  invariants (`fmt` idempotence, `parse → print → parse`, `lex → render`,
+  reference-count balance, `fmt(fmt x) == fmt x`), and run the language's own
+  `example`/`forall` contracts over `samples/`.
+- **Incrementality is tested, not assumed.** Whenever a query is added or changed,
+  cover it with the incremental-vs-clean **verifier** and an edit-churn
+  (early-cutoff) test.
+- **Every bug fix ships with a regression test** that fails before the fix and
+  passes after.
+- **Tests are deterministic and reviewed.** No reliance on `HashMap` iteration
+  order, wall-clock, or environment; review every snapshot diff by hand — never
+  blanket-accept generated snapshots.
+- **Keep the inner loop fast.** Prefer in-process tests (e.g. `fai_cli::run` with
+  captured buffers, pure-function phase entry points) over spawning processes, so
+  the suite stays quick enough to run constantly.
+
+A change is not done until its tests make both the new behavior **and its failure
+modes** hard to break unknowingly.
