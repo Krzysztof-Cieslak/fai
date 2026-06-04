@@ -369,6 +369,13 @@ first-class deliverable, not an afterthought.** Aim for coverage that is both
 recovery, and exact locations — not just happy paths). When in doubt, write the
 test; under-testing a phase is a defect, not a shortcut.
 
+- **Enumerate and test every edge case, every time.** Before a phase is "done",
+  list its boundary conditions and write a test for each — empty and maximal
+  inputs, off-by-one boundaries, deep nesting, adjacency without whitespace, and
+  especially **interactions between sub-components** (e.g. comment markers inside
+  strings, brackets that span block boundaries, multibyte text shifting offsets).
+  Edge cases are where compiler bugs hide; hunting them down is part of the work,
+  not an optional extra. A construct is not covered until its weird inputs are.
 - **Test every phase at its own level.** Each phase crate (`fai-syntax`,
   `fai-resolve`, `fai-types`, `fai-core`, `fai-rc`, `fai-codegen`, …) carries
   fast unit tests for its logic plus golden/snapshot tests (`insta`) for its
