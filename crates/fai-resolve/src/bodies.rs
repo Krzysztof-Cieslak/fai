@@ -41,6 +41,9 @@ pub struct ResolvedBodies {
     /// Contracts' references are not attributed to any def (they are checked
     /// per-file), so they appear only in `deps`.
     pub deps_by_def: FxHashMap<DefId, Vec<DefId>>,
+    /// The local slot bound by each variable/wildcard pattern, so inference can
+    /// type locals by the same `LocalId` resolution assigned to their uses.
+    pub pat_locals: FxHashMap<PatId, LocalId>,
 }
 
 impl ResolvedBodies {
@@ -54,6 +57,12 @@ impl ResolvedBodies {
     #[must_use]
     pub fn deps_of(&self, def: DefId) -> &[DefId] {
         self.deps_by_def.get(&def).map_or(&[], Vec::as_slice)
+    }
+
+    /// The local slot bound by a variable/wildcard pattern, if any.
+    #[must_use]
+    pub fn local_of(&self, pat: PatId) -> Option<LocalId> {
+        self.pat_locals.get(&pat).copied()
     }
 }
 
@@ -79,6 +88,13 @@ impl Scope {
         if let Some(frame) = self.frames.last_mut() {
             frame.insert(name, id);
         }
+        id
+    }
+
+    /// Allocates a slot with no name (a wildcard binding).
+    fn bind_anonymous(&mut self) -> LocalId {
+        let id = LocalId::from_index(self.next_slot);
+        self.next_slot += 1;
         id
     }
 
@@ -111,6 +127,7 @@ pub fn resolve(db: &dyn Db, file: SourceFile) -> Arc<ResolvedBodies> {
         dep_seen: FxHashMap::default(),
         current_def: None,
         deps_by_def: FxHashMap::default(),
+        pat_locals: FxHashMap::default(),
     };
 
     // Warn when a top-level binding shadows a prelude name.
@@ -157,7 +174,12 @@ pub fn resolve(db: &dyn Db, file: SourceFile) -> Arc<ResolvedBodies> {
         }
     }
 
-    Arc::new(ResolvedBodies { by_expr: cx.by_expr, deps: cx.deps, deps_by_def: cx.deps_by_def })
+    Arc::new(ResolvedBodies {
+        by_expr: cx.by_expr,
+        deps: cx.deps,
+        deps_by_def: cx.deps_by_def,
+        pat_locals: cx.pat_locals,
+    })
 }
 
 /// The per-file resolution walker.
@@ -172,6 +194,7 @@ struct Resolver<'a> {
     dep_seen: FxHashMap<DefId, ()>,
     current_def: Option<DefId>,
     deps_by_def: FxHashMap<DefId, Vec<DefId>>,
+    pat_locals: FxHashMap<PatId, LocalId>,
 }
 
 impl Resolver<'_> {
@@ -195,7 +218,12 @@ impl Resolver<'_> {
         let Pat { kind, .. } = self.module.pat(pat);
         match kind {
             PatKind::Var(name) => {
-                self.scope.bind(*name);
+                let slot = self.scope.bind(*name);
+                self.pat_locals.insert(pat, slot);
+            }
+            PatKind::Wildcard => {
+                let slot = self.scope.bind_anonymous();
+                self.pat_locals.insert(pat, slot);
             }
             PatKind::Tuple(elems) => {
                 for &e in elems {
@@ -203,7 +231,7 @@ impl Resolver<'_> {
                 }
             }
             PatKind::Paren(inner) => self.bind_pattern(*inner),
-            PatKind::Wildcard | PatKind::Unit | PatKind::Error => {}
+            PatKind::Unit | PatKind::Error => {}
         }
     }
 
@@ -283,9 +311,13 @@ impl Resolver<'_> {
         }
     }
 
-    /// Resolves a bare name: local scope, then this module's top level, then the
-    /// prelude.
+    /// Resolves a bare name: literals (`true`/`false`), local scope, this
+    /// module's top level, then the prelude.
     fn resolve_name(&self, name: Symbol) -> Res {
+        // `true`/`false` are keyword-like boolean literals parsed as `Var`.
+        if matches!(name.as_str(), "true" | "false") {
+            return Res::Builtin(name);
+        }
         if let Some(local) = self.scope.lookup(name) {
             return Res::Local(local);
         }
