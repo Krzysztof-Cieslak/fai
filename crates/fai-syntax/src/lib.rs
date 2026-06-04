@@ -12,12 +12,21 @@ pub mod ast;
 mod layout;
 mod lexer;
 mod parser;
+// salsa's `tracked`/`Update` macros emit `unsafe impl`s; this module is the only
+// place in the crate that carries them (we write no `unsafe` by hand). The scoped
+// allow mirrors the one on `fai-db`.
+#[allow(unsafe_code)]
+mod query;
 mod symbol;
 mod token;
 
 pub use layout::{Layout, layout};
 pub use lexer::{Lexed, lex};
 pub use parser::{Parsed, parse_module};
+pub use query::{
+    ItemSummary, ItemTree, ItemTreeKind, ParsedModule, build_item_tree, item_tree, parse,
+    public_item_count,
+};
 pub use symbol::Symbol;
 pub use token::{Comment, CommentKind, Token, TokenKind};
 

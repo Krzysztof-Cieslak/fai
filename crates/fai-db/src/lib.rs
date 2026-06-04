@@ -32,12 +32,12 @@ pub use salsa;
 
 /// Curated re-exports downstream crates use instead of depending on `salsa`.
 pub mod prelude {
-    pub use salsa::{Accumulator, Database, Durability, Setter};
+    pub use salsa::{Accumulator, Database, Durability, Setter, Update};
 
     pub use crate::{Db, Diag, FaiDatabase, SourceFile};
 }
 
-pub use salsa::{Accumulator, Durability, Setter};
+pub use salsa::{Accumulator, Durability, Setter, Update};
 
 /// The database trait every query operates over.
 ///
@@ -47,6 +47,9 @@ pub use salsa::{Accumulator, Durability, Setter};
 pub trait Db: salsa::Database {
     /// Looks up a registered source file by its [`SourceId`], if any.
     fn source_file(&self, id: SourceId) -> Option<SourceFile>;
+
+    /// Returns every registered source file, in [`SourceId`] order.
+    fn all_source_files(&self) -> Vec<SourceFile>;
 }
 
 /// The authoritative source-text input.
@@ -56,6 +59,9 @@ pub trait Db: salsa::Database {
 /// because the engine's change-tracking is defined for `String`.
 #[salsa::input(debug)]
 pub struct SourceFile {
+    /// The file's stable identifier (its index in the source registry), so
+    /// queries can build file-qualified [`Span`]s for diagnostics.
+    pub source: SourceId,
     /// The file's path (UTF-8).
     #[returns(ref)]
     pub path: String,
@@ -126,6 +132,10 @@ impl Db for FaiDatabase {
     fn source_file(&self, id: SourceId) -> Option<SourceFile> {
         self.files.get(id.index()).copied()
     }
+
+    fn all_source_files(&self) -> Vec<SourceFile> {
+        self.files.clone()
+    }
 }
 
 impl Default for FaiDatabase {
@@ -164,7 +174,7 @@ impl FaiDatabase {
             return id;
         }
         let id = SourceId::new(u32::try_from(self.files.len()).expect("too many source files"));
-        let file = SourceFile::new(&*self, path.as_str().to_owned(), text);
+        let file = SourceFile::new(&*self, id, path.as_str().to_owned(), text);
         self.files.push(file);
         self.ids_by_path.insert(path, id);
         id

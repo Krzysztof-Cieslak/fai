@@ -326,11 +326,13 @@ dependencies = [
 name = "fai-syntax"
 version = "0.1.0"
 dependencies = [
+ "fai-db",
  "fai-diagnostics",
  "fai-span",
  "insta",
  "lasso",
  "proptest",
+ "salsa",
 ]
 
 [[package]]

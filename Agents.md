@@ -214,8 +214,10 @@ output schemas, and the daemon (MessagePack JSON-RPC) protocol.
   `rustfmt.toml` (`use_small_heuristics = "Max"`). Lints are denied workspace-wide
   in `[workspace.lints]` (`warnings`, `unsafe_code`, `clippy::all`) and builds
   must also be clean under `clippy -D warnings`.
-- **No `unsafe`** outside `fai-runtime` and `fai-codegen` memory primitives, and
-  only with a `// SAFETY:` comment justifying each block.
+- **No hand-written `unsafe`** outside `fai-runtime` and `fai-codegen` memory
+  primitives, and only with a `// SAFETY:` comment justifying each block. Crates
+  that define salsa queries (`fai-db` and the phase crates such as `fai-syntax`)
+  carry only salsa's macro-generated `unsafe` via a scoped `#![allow(unsafe_code)]`.
 - **Errors:** library crates return `Result` with typed errors; never `panic!`
   on user-reachable input. Reserve `panic!`/`unwrap` for compiler invariants
   that are genuinely impossible to violate, and prefer `debug_assert!`.
