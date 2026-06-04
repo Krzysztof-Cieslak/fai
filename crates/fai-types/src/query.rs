@@ -62,6 +62,16 @@ impl SccTypes {
     }
 }
 
+/// The lowered scheme of a definition's *declared signature*, if it has one.
+///
+/// This is a tracked query so its (body-edit-stable) value enables early cutoff:
+/// editing a private body re-runs this query but yields the same scheme, so
+/// dependents (other modules' inference) are cut off — the firewall.
+#[salsa::tracked]
+pub fn signature_scheme(db: &dyn Db, file: SourceFile, name: Symbol) -> Option<Scheme> {
+    declared_scheme(db, file, name)
+}
+
 /// The type scheme of a single definition.
 #[salsa::tracked]
 pub fn def_type(db: &dyn Db, file: SourceFile, name: Symbol) -> Scheme {
@@ -78,7 +88,7 @@ pub fn def_type(db: &dyn Db, file: SourceFile, name: Symbol) -> Scheme {
 /// callee's inferred type.
 fn declared_or_inferred_scheme(db: &dyn Db, def: DefId) -> Option<Scheme> {
     let file = db.source_file(def.file)?;
-    if let Some(scheme) = declared_scheme(db, file, def.name) {
+    if let Some(scheme) = signature_scheme(db, file, def.name) {
         return Some(scheme);
     }
     // Signature-less: reach the inferred type. (For a *cross-module* callee this
