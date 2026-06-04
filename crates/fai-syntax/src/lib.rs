@@ -1,16 +1,19 @@
 //! The Fai surface syntax: interning, lexer, and tokens.
 //!
 //! This crate owns the compiler front end. It currently provides string
-//! interning ([`Symbol`]) and the hand-written [`lex`]er producing [`Token`]s and
-//! [`Comment`] trivia; the layout pass, parser, AST, and incremental queries land
-//! in later stages.
+//! interning ([`Symbol`]), the hand-written [`lex`]er producing [`Token`]s and
+//! [`Comment`] trivia, and the [`layout`] pass that turns indentation into
+//! explicit block tokens; the parser, AST, and incremental queries land in later
+//! stages.
 //!
 //! Diagnostics use the `FAI1xxx` range; every code is catalogued in [`CODES`].
 
+mod layout;
 mod lexer;
 mod symbol;
 mod token;
 
+pub use layout::{Layout, layout};
 pub use lexer::{Lexed, lex};
 pub use symbol::Symbol;
 pub use token::{Comment, CommentKind, Token, TokenKind};
@@ -29,6 +32,8 @@ pub const INVALID_CHAR_LITERAL: DiagnosticCode = DiagnosticCode::new("FAI1004");
 pub const INVALID_NUMBER: DiagnosticCode = DiagnosticCode::new("FAI1005");
 /// An unrecognized escape sequence in a string or character literal.
 pub const INVALID_ESCAPE: DiagnosticCode = DiagnosticCode::new("FAI1006");
+/// Indentation that does not fit the offside rule (e.g. an un-indented block body).
+pub const LAYOUT_ERROR: DiagnosticCode = DiagnosticCode::new("FAI1021");
 
 /// Diagnostic codes owned by the lexer/parser layer (the `FAI1xxx` range).
 pub const CODES: &[CodeInfo] = &[
@@ -60,6 +65,11 @@ pub const CODES: &[CodeInfo] = &[
     CodeInfo {
         code: INVALID_ESCAPE,
         title: "invalid escape sequence",
+        default_severity: Severity::Error,
+    },
+    CodeInfo {
+        code: LAYOUT_ERROR,
+        title: "layout/indentation error",
         default_severity: Severity::Error,
     },
 ];

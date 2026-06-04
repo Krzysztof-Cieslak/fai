@@ -1,0 +1,35 @@
+---
+source: crates/fai-syntax/src/layout.rs
+expression: "render(\"module M\\nlet hyp a b =\\n  let a2 = a * a\\n  let b2 = b * b\\n  sqrt (a2 + b2)\")"
+---
+module
+M
+;
+let
+hyp
+a
+b
+=
+{
+  let
+  a2
+  =
+  a
+  *
+  a
+  ;
+  let
+  b2
+  =
+  b
+  *
+  b
+  ;
+  sqrt
+  (
+  a2
+  +
+  b2
+  )
+}
+<eof>

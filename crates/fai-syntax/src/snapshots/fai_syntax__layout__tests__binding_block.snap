@@ -1,0 +1,15 @@
+---
+source: crates/fai-syntax/src/layout.rs
+expression: "render(\"module M\\nlet f x =\\n  body\")"
+---
+module
+M
+;
+let
+f
+x
+=
+{
+  body
+}
+<eof>

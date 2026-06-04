@@ -1,0 +1,19 @@
+---
+source: crates/fai-syntax/src/layout.rs
+expression: "render(\"module M\\nlet describe n =\\n  n\\n  |> inc\\n  |> intToString\")"
+---
+module
+M
+;
+let
+describe
+n
+=
+{
+  n
+  |>
+  inc
+  |>
+  intToString
+}
+<eof>

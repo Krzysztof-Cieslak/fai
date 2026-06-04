@@ -90,6 +90,12 @@ pub enum TokenKind {
     GreaterEq,
     NotEq,
 
+    // Virtual layout tokens, inserted by the layout pass (never produced by the
+    // lexer). They delimit indentation-derived blocks for the parser.
+    LayoutOpen,
+    LayoutSep,
+    LayoutClose,
+
     // End of input.
     Eof,
 }

@@ -1,0 +1,20 @@
+---
+source: crates/fai-syntax/src/layout.rs
+expression: "render(\"module M\\nlet xs =\\n  [ 1\\n  , 2\\n  , 3 ]\")"
+---
+module
+M
+;
+let
+xs
+=
+{
+  [
+  1
+  ,
+  2
+  ,
+  3
+  ]
+}
+<eof>
