@@ -73,6 +73,15 @@ fn comments_doc_leading_and_trailing() {
 }
 
 #[test]
+fn trailing_comment_on_local_let_survives() {
+    // Exercises the expression-trailing attachment path end to end.
+    let src = "module M\nlet f =\n  let a = 1 // keep me\n  a";
+    let out = fmt(src);
+    assert!(out.contains("let a = 1 // keep me"), "comment dropped:\n{out}");
+    assert_idempotent(src);
+}
+
+#[test]
 fn messy_input_is_canonicalized() {
     // Extra blank lines and odd spacing collapse to the canonical layout.
     let src = "module M\n\n\n\nlet    x=1\n\n\n\nlet y   =   2";
