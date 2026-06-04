@@ -6,6 +6,8 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use camino::Utf8PathBuf;
+use fai_db::{Db, Diag, FaiDatabase};
 use fai_span::SourceId;
 use fai_syntax::parse_module;
 
@@ -64,5 +66,57 @@ fn samples_round_trip_or_are_future_surface() {
         "Tuples.fai",
     ] {
         assert!(clean.contains(expected), "{expected} should parse cleanly and round-trip");
+    }
+}
+
+/// The files that must additionally *typecheck* in M2 with zero errors.
+///
+/// This is the parse-clean set minus files that need future surface:
+/// `Hello.fai` uses a capability type (`Runtime`) and record field access (M3/M5),
+/// and `Comments.fai` is documentation-only with no bindings. Files auto-promote
+/// here as later milestones land.
+const TYPECHECK_CLEAN: &[&str] =
+    &["Algebra.fai", "Basics.fai", "Funcs.fai", "Locals.fai", "Math.fai", "Tuples.fai"];
+
+#[test]
+fn typecheck_clean_samples_have_no_errors() {
+    // Load every sample into one workspace (so cross-file refs would resolve),
+    // plus the embedded prelude.
+    let mut db = FaiDatabase::new();
+    fai_types::prelude::load_prelude(&mut db);
+
+    let mut files: Vec<PathBuf> = std::fs::read_dir(samples_dir())
+        .expect("samples/ directory exists")
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("fai"))
+        .collect();
+    files.sort();
+
+    let mut handles = std::collections::BTreeMap::new();
+    for path in &files {
+        let name = path.file_name().unwrap().to_str().unwrap().to_owned();
+        let src = std::fs::read_to_string(path).unwrap();
+        let id = db.add_source(Utf8PathBuf::from(name.clone()), src);
+        handles.insert(name, id);
+    }
+
+    for &name in TYPECHECK_CLEAN {
+        let id = handles.get(name).unwrap_or_else(|| panic!("{name} loaded"));
+        let file = db.source_file(*id).unwrap();
+        let source = file.source(&db);
+
+        // Resolution + type diagnostics belonging to this file.
+        let mut codes: Vec<String> = Vec::new();
+        for d in fai_resolve::resolve::accumulated::<Diag>(&db, file) {
+            if d.0.primary.source() == source && d.0.severity == fai_diagnostics::Severity::Error {
+                codes.push(d.0.code.as_str().to_owned());
+            }
+        }
+        for d in fai_types::check_file::accumulated::<Diag>(&db, file) {
+            if d.0.primary.source() == source && d.0.severity == fai_diagnostics::Severity::Error {
+                codes.push(d.0.code.as_str().to_owned());
+            }
+        }
+        assert!(codes.is_empty(), "{name} should typecheck with no errors, got {codes:?}");
     }
 }
