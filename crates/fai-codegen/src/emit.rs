@@ -259,6 +259,12 @@ impl<M: Module> Translator<'_, M> {
                 self.expr(body)
             }
             ExprKind::MakeClosure { func, captures } => self.make_closure(*func, captures),
+            ExprKind::MakeData { tag, args } => self.make_data(*tag, args),
+            ExprKind::DataTag(base) => {
+                let v = self.expr(base);
+                self.call1("fai_data_tag", v)
+            }
+            ExprKind::DataField { base, index } => self.data_field(base, *index),
             ExprKind::Dup { local, body } => {
                 let v = self.use_var(*local);
                 let _ = self.call1("fai_dup", v);
@@ -289,9 +295,39 @@ impl<M: Module> Translator<'_, M> {
                 let v = if *b { 3 } else { 1 };
                 self.builder.ins().iconst(types::I64, v)
             }
+            Lit::Float(bits) => {
+                let raw = self.builder.ins().iconst(types::I64, *bits as i64);
+                self.call1("fai_box_float", raw)
+            }
             Lit::Unit => self.builder.ins().iconst(types::I64, rt::FAI_UNIT),
             Lit::Str(bytes) => self.string_literal(bytes),
         }
+    }
+
+    /// Builds a data value: a nullary constructor is an immediate carrying its
+    /// tag; an n-ary one allocates `{ tag, fields… }` via the runtime.
+    fn make_data(&mut self, tag: u32, args: &[CExpr]) -> Value {
+        if args.is_empty() {
+            let imm = (i64::from(tag) << 1) | 1;
+            return self.builder.ins().iconst(types::I64, imm);
+        }
+        let vals: Vec<Value> = args.iter().map(|a| self.expr(a)).collect();
+        let count = vals.len();
+        let ptr = self.spill(&vals);
+        let tag_v = self.builder.ins().iconst(types::I64, i64::from(tag));
+        let n_v = self.builder.ins().iconst(types::I64, count as i64);
+        let f = self.runtime("fai_make_data", 3, true);
+        let call = self.builder.ins().call(f, &[tag_v, n_v, ptr]);
+        self.builder.inst_results(call)[0]
+    }
+
+    /// Projects field `index` of a data value (consuming `base`).
+    fn data_field(&mut self, base: &CExpr, index: u32) -> Value {
+        let v = self.expr(base);
+        let idx = self.builder.ins().iconst(types::I64, i64::from(index));
+        let f = self.runtime("fai_data_field", 2, true);
+        let call = self.builder.ins().call(f, &[v, idx]);
+        self.builder.inst_results(call)[0]
     }
 
     /// Emits an immortal static `String` object and yields its address.

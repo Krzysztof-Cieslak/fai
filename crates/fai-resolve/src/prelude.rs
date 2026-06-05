@@ -1,9 +1,11 @@
-//! The built-in prelude names visible unqualified everywhere.
+//! The built-in prelude.
 //!
-//! M2 resolves prelude *names* here; their *types* (the primitive `name ->
-//! Scheme` table) and the derived `.fai` prelude module live in `fai-types`
-//! (Phase 2.5). Keeping the name set here lets resolution fall back to the
-//! prelude without depending on the type machinery.
+//! The prelude is a real module (`Prelude`) whose public values, types, and
+//! constructors are visible unqualified everywhere — the one exception to the
+//! qualified-only cross-module rule. Resolution discovers those through the
+//! prelude file's interface; this module only names the reserved module and the
+//! handful of **intrinsics** implemented in Rust (not in Fai), whose types come
+//! from `fai-types` and whose code is a primitive or a runtime call.
 
 use fai_syntax::Symbol;
 
@@ -11,28 +13,17 @@ use fai_syntax::Symbol;
 /// prelude itself and is exempt from shadow-prelude warnings.
 pub const PRELUDE_MODULE: &str = "Prelude";
 
-/// The built-in prelude value names (primitives + derived helpers).
+/// Built-in intrinsics implemented in Rust rather than in Fai.
 ///
-/// Operators are handled directly by inference and are not listed here. This set
-/// is the resolution fallback after local scope and the current module.
-pub const PRELUDE_NAMES: &[&str] = &[
-    // Type-only primitives (bodies/codegen land in M3).
-    "intToString",
-    "floatToString",
-    "sqrt",
-    "not",
-    "length",
-    "append",
-    "reverse",
-    "pi",
-    // Derived `.fai` prelude exports.
-    "identity",
-    "const",
-    "notEqual",
-];
+/// These resolve to [`Res::Builtin`](crate::Res::Builtin); their types come from
+/// the `fai-types` builtin table and their code is a primitive or runtime call.
+/// Everything else the prelude offers is an ordinary definition in the prelude
+/// file (resolved as a `Def`/`Ctor`).
+pub const INTRINSICS: &[&str] =
+    &["intToString", "floatToString", "intToFloat", "floatToInt", "sqrt", "not"];
 
-/// Returns whether `name` is a prelude name.
+/// Returns whether `name` is a built-in intrinsic.
 #[must_use]
-pub fn is_prelude_name(name: Symbol) -> bool {
-    PRELUDE_NAMES.contains(&name.as_str())
+pub fn is_intrinsic(name: Symbol) -> bool {
+    INTRINSICS.contains(&name.as_str())
 }

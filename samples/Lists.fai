@@ -17,6 +17,5 @@ let foldl f acc xs =
 
 // `reverse` can refer to `foldl` above freely (mutual recursion, no `rec`).
 public reverse : List 'a -> List 'a
-let reverse xs =
-  foldl (fun acc x -> x :: acc) [] xs
+let reverse xs = foldl (fun acc x -> x :: acc) [] xs
 forall xs: reverse (reverse xs) = xs

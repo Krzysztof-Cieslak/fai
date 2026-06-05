@@ -115,12 +115,34 @@ pub enum ItemKind {
     Signature { visibility: Visibility, name: Symbol, ty: TypeId },
     /// A value binding: `[public] let name params… = body`.
     Binding { visibility: Visibility, name: Symbol, params: Vec<PatId>, body: ExprId },
+    /// A type declaration: `[public] type Name 'p… = <definition>`.
+    Type { visibility: Visibility, name: Symbol, params: Vec<Symbol>, def: TypeDef },
     /// An `example: body` contract.
     Example { body: ExprId },
     /// A `forall binders…: body` contract.
     Forall { binders: Vec<Symbol>, body: ExprId },
     /// An unparseable item (recovered).
     Error,
+}
+
+/// The body of a [`ItemKind::Type`] declaration.
+#[derive(Debug, PartialEq, Eq)]
+pub enum TypeDef {
+    /// A discriminated union: `| A | B 'a` (nominal; may be recursive).
+    Union(Vec<Variant>),
+    /// A transparent alias to a type expression (must be acyclic).
+    Alias(TypeId),
+}
+
+/// One variant of a discriminated union: a constructor name and its field types.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Variant {
+    /// The constructor name (an upper-case identifier).
+    pub name: Symbol,
+    /// The constructor's field types, in order (empty for a nullary constructor).
+    pub fields: Vec<TypeId>,
+    /// The variant's source range.
+    pub span: TextRange,
 }
 
 /// An expression.
@@ -157,6 +179,8 @@ pub enum ExprKind {
     If { cond: ExprId, then_branch: ExprId, else_branch: ExprId },
     /// `fun params… -> body`.
     Lambda { params: Vec<PatId>, body: ExprId },
+    /// `match scrutinee with | pat -> body …`.
+    Match { scrutinee: ExprId, arms: Vec<MatchArm> },
     /// A layout block: local `let`s followed by a tail expression.
     Block { stmts: Vec<LetStmt>, tail: ExprId },
     /// Record field access `base.field`.
@@ -169,6 +193,17 @@ pub enum ExprKind {
     List(Vec<ExprId>),
     /// An unparseable expression (recovered).
     Error,
+}
+
+/// One arm of a [`ExprKind::Match`]: `| pat -> body`.
+#[derive(Debug, PartialEq, Eq)]
+pub struct MatchArm {
+    /// The arm pattern (an [`PatKind::Or`] when the arm lists alternatives).
+    pub pat: PatId,
+    /// The arm body.
+    pub body: ExprId,
+    /// The arm's source range.
+    pub span: TextRange,
 }
 
 /// A local `let` statement inside a [`ExprKind::Block`].
@@ -252,6 +287,24 @@ pub enum PatKind {
     Tuple(Vec<PatId>),
     /// A parenthesized pattern.
     Paren(PatId),
+    /// A constructor pattern `Name p…` (nullary when `args` is empty).
+    Constructor { name: Symbol, args: Vec<PatId> },
+    /// An integer literal pattern (raw lexeme).
+    Int(Symbol),
+    /// A float literal pattern (raw lexeme).
+    Float(Symbol),
+    /// A string literal pattern (raw lexeme).
+    String(Symbol),
+    /// A character literal pattern (raw lexeme).
+    Char(Symbol),
+    /// A boolean literal pattern.
+    Bool(bool),
+    /// A list pattern `[a, b, …]`.
+    List(Vec<PatId>),
+    /// A cons pattern `head :: tail`.
+    Cons { head: PatId, tail: PatId },
+    /// An or-pattern `a | b | …` (alternatives must bind the same variables).
+    Or(Vec<PatId>),
     /// An unparseable pattern (recovered).
     Error,
 }

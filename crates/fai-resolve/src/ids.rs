@@ -30,6 +30,44 @@ impl DefId {
     }
 }
 
+/// A type constructor (a `type` declaration), keyed by its file and name.
+///
+/// Lives in the type-level namespace, distinct from value [`DefId`]s and data
+/// [`CtorRef`]s, so a type and a same-named constructor (`type Pair = Pair …`)
+/// never collide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AdtRef {
+    /// The declaring file.
+    pub file: SourceId,
+    /// The type's name (an upper-case identifier).
+    pub name: Symbol,
+}
+
+impl AdtRef {
+    /// Builds an `AdtRef` for `name` declared in `file`.
+    #[must_use]
+    pub fn new(file: SourceId, name: Symbol) -> Self {
+        Self { file, name }
+    }
+}
+
+/// A data constructor of a discriminated union, keyed by its file and name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CtorRef {
+    /// The file declaring the constructor's type.
+    pub file: SourceId,
+    /// The constructor's name (an upper-case identifier).
+    pub name: Symbol,
+}
+
+impl CtorRef {
+    /// Builds a `CtorRef` for `name` declared in `file`.
+    #[must_use]
+    pub fn new(file: SourceId, name: Symbol) -> Self {
+        Self { file, name }
+    }
+}
+
 /// A local binding slot (a `let`/lambda/parameter variable) within one body.
 ///
 /// Allocated densely per body during resolution; meaningful only relative to the
@@ -62,6 +100,8 @@ pub enum Res {
     Local(LocalId),
     /// A top-level definition (this module's, or another module's public one).
     Def(DefId),
+    /// A data constructor (this module's, or another module's public one).
+    Ctor(CtorRef),
     /// A built-in prelude name (primitive or `.fai`-prelude export).
     Builtin(Symbol),
     /// Resolution failed; bound to the error sentinel.

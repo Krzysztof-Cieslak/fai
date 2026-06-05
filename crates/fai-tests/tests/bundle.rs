@@ -110,8 +110,8 @@ fn no_main_reports_no_entry_point_and_no_bundle() {
 
 #[test]
 fn reachable_unsupported_construct_blocks_the_bundle() {
-    // A reachable `Float` is outside the native subset (FAI7001): no bundle.
-    let src = "module Main\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (intToString (floatToInt 1.5))\n";
+    // A reachable `Char` is outside the native subset (FAI7001): no bundle.
+    let src = "module Main\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (intToString (if 'a' = 'b' then 0 else 1))\n";
     let dir = workspace(&[("Main.fai", src)]);
     let session = Session::open(dir).unwrap();
     let result = build_run_bundle(session.db(), entry(&session, "Main.fai"));

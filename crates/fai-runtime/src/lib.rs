@@ -48,6 +48,14 @@ pub const HEADER_SIZE: usize = 24;
 /// Byte offset of a boxed `Int`'s value.
 pub const INT_VALUE_OFFSET: usize = HEADER_SIZE;
 
+/// Byte offset of a boxed `Float`'s IEEE-754 bits.
+pub const FLOAT_VALUE_OFFSET: usize = HEADER_SIZE;
+
+/// Byte offset of a data value's constructor tag.
+pub const DATA_TAG_OFFSET: usize = HEADER_SIZE;
+/// Byte offset of a data value's first field.
+pub const DATA_FIELDS_OFFSET: usize = HEADER_SIZE + 8;
+
 /// Byte offset of a `String`'s byte length.
 pub const STRING_LEN_OFFSET: usize = HEADER_SIZE;
 /// Byte offset of a `String`'s first content byte.
@@ -118,6 +126,16 @@ pub static FAI_CLOSURE_DESC: Descriptor = Descriptor { name: "Closure", scan: So
 /// Descriptor for partial applications (children: the target plus stored args).
 #[unsafe(no_mangle)]
 pub static FAI_PAP_DESC: Descriptor = Descriptor { name: "Pap", scan: Some(pap_scan) };
+
+/// Descriptor for boxed `Float` objects (leaf).
+#[unsafe(no_mangle)]
+pub static FAI_FLOAT_DESC: Descriptor = Descriptor { name: "Float", scan: None };
+
+/// Descriptor for data values — constructors, records, and tuples (children: all
+/// fields). A single descriptor serves every shape; the field count is derived
+/// from the object's size.
+#[unsafe(no_mangle)]
+pub static FAI_DATA_DESC: Descriptor = Descriptor { name: "Data", scan: Some(data_scan) };
 
 // ---------------------------------------------------------------------------
 // Tagging helpers.
@@ -308,6 +326,75 @@ unsafe extern "C" fn pap_scan(p: *mut u8) {
     }
 }
 
+/// Releases a data value's fields (the field count is derived from its size).
+unsafe extern "C" fn data_scan(p: *mut u8) {
+    // SAFETY: `p` is a live data object.
+    unsafe {
+        let size = read_u64(p, SIZE_OFFSET) as usize;
+        let nfields = (size - DATA_FIELDS_OFFSET) / 8;
+        for i in 0..nfields {
+            fai_drop(read_i64(p, DATA_FIELDS_OFFSET + i * 8));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Data values (constructors, records, tuples).
+// ---------------------------------------------------------------------------
+
+/// Allocates a data value `{ tag, fields… }` (rc = 1), copying `nfields` owned
+/// values from `fields` (ownership transfers in). Nullary constructors never
+/// reach here — codegen represents them as tagged immediates.
+///
+/// # Safety
+/// `fields` must point to `nfields` owned values.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fai_make_data(tag: i64, nfields: i64, fields: *const i64) -> Value {
+    let n = nfields as usize;
+    let size = DATA_FIELDS_OFFSET + n * 8;
+    let p = alloc_obj(size, &FAI_DATA_DESC);
+    // SAFETY: `p` has room for the tag and `n` fields; `fields` points to `n`.
+    unsafe {
+        write_u64(p, DATA_TAG_OFFSET, tag as u64);
+        for i in 0..n {
+            write_i64(p, DATA_FIELDS_OFFSET + i * 8, *fields.add(i));
+        }
+    }
+    from_obj(p)
+}
+
+/// The number of fields in a boxed data value.
+unsafe fn data_field_count(v: Value) -> usize {
+    // SAFETY: `v` is a boxed data value.
+    let size = unsafe { read_u64(as_obj(v), SIZE_OFFSET) } as usize;
+    (size - DATA_FIELDS_OFFSET) / 8
+}
+
+/// Reads a data value's constructor tag (consuming `v`), as an immediate `Int`.
+/// A nullary constructor is an immediate whose payload is its tag.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_data_tag(v: Value) -> Value {
+    let tag = if is_boxed(v) {
+        // SAFETY: a boxed data value stores its tag at `DATA_TAG_OFFSET`.
+        unsafe { read_u64(as_obj(v), DATA_TAG_OFFSET) as i64 }
+    } else {
+        v >> 1
+    };
+    fai_drop(v);
+    imm_int(tag)
+}
+
+/// Projects field `index` of a data value, returning an owned reference to it and
+/// consuming `v`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_data_field(v: Value, index: i64) -> Value {
+    // SAFETY: `v` is a boxed data value with at least `index + 1` fields.
+    let field = unsafe { read_i64(as_obj(v), DATA_FIELDS_OFFSET + index as usize * 8) };
+    fai_dup(field);
+    fai_drop(v);
+    field
+}
+
 // ---------------------------------------------------------------------------
 // Integers.
 // ---------------------------------------------------------------------------
@@ -410,6 +497,96 @@ int_cmp!(fai_int_lt, <);
 int_cmp!(fai_int_le, <=);
 int_cmp!(fai_int_gt, >);
 int_cmp!(fai_int_ge, >=);
+
+// ---------------------------------------------------------------------------
+// Floats (always boxed, since immediates are reserved for `Int`/`Bool`/`Unit`).
+// ---------------------------------------------------------------------------
+
+/// Boxes an `f64` (given by its IEEE-754 bit pattern) as a Fai `Float` value.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_box_float(bits: i64) -> Value {
+    let p = alloc_obj(HEADER_SIZE + 8, &FAI_FLOAT_DESC);
+    // SAFETY: `p` has room for the value field.
+    unsafe { write_i64(p, FLOAT_VALUE_OFFSET, bits) };
+    from_obj(p)
+}
+
+/// Reads a boxed `Float`'s value.
+fn unbox_float(v: Value) -> f64 {
+    // SAFETY: `v` is a boxed `Float`.
+    unsafe { f64::from_bits(read_u64(as_obj(v), FLOAT_VALUE_OFFSET)) }
+}
+
+macro_rules! float_binop {
+    ($name:ident, $op:expr) => {
+        /// Float arithmetic primitive (operands consumed).
+        #[unsafe(no_mangle)]
+        pub extern "C" fn $name(a: Value, b: Value) -> Value {
+            let f: fn(f64, f64) -> f64 = $op;
+            let r = f(unbox_float(a), unbox_float(b));
+            fai_drop(a);
+            fai_drop(b);
+            fai_box_float(r.to_bits() as i64)
+        }
+    };
+}
+
+float_binop!(fai_float_add, |a, b| a + b);
+float_binop!(fai_float_sub, |a, b| a - b);
+float_binop!(fai_float_mul, |a, b| a * b);
+float_binop!(fai_float_div, |a, b| a / b);
+
+macro_rules! float_cmp {
+    ($name:ident, $op:tt) => {
+        /// Float comparison primitive, returning a `Bool` (operands consumed).
+        #[unsafe(no_mangle)]
+        pub extern "C" fn $name(a: Value, b: Value) -> Value {
+            let r = unbox_float(a) $op unbox_float(b);
+            fai_drop(a);
+            fai_drop(b);
+            from_bool(r)
+        }
+    };
+}
+
+float_cmp!(fai_float_lt, <);
+float_cmp!(fai_float_le, <=);
+float_cmp!(fai_float_gt, >);
+float_cmp!(fai_float_ge, >=);
+
+/// Square root (operand consumed).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_sqrt(v: Value) -> Value {
+    let r = unbox_float(v).sqrt();
+    fai_drop(v);
+    fai_box_float(r.to_bits() as i64)
+}
+
+/// Converts an `Int` to a `Float` (operand consumed).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_int_to_float(n: Value) -> Value {
+    #[allow(clippy::cast_precision_loss)]
+    let r = unbox_int(n) as f64;
+    fai_drop(n);
+    fai_box_float(r.to_bits() as i64)
+}
+
+/// Converts a `Float` to an `Int` by truncation (operand consumed).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_float_to_int(f: Value) -> Value {
+    #[allow(clippy::cast_possible_truncation)]
+    let r = unbox_float(f) as i64;
+    fai_drop(f);
+    fai_box_int(r)
+}
+
+/// Renders a `Float` as a `String` (operand consumed).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_float_to_string(f: Value) -> Value {
+    let result = make_string(format!("{:?}", unbox_float(f)).as_bytes());
+    fai_drop(f);
+    result
+}
 
 // ---------------------------------------------------------------------------
 // Strings.
@@ -604,17 +781,120 @@ fn values_equal(a: Value, b: Value) -> bool {
             unsafe {
                 let da = read_ptr(as_obj(a), DESC_OFFSET).cast::<Descriptor>();
                 let db = read_ptr(as_obj(b), DESC_OFFSET).cast::<Descriptor>();
-                if std::ptr::eq(da, &FAI_STRING_DESC) && std::ptr::eq(db, &FAI_STRING_DESC) {
+                if !std::ptr::eq(da, db) {
+                    return false;
+                }
+                if std::ptr::eq(da, &FAI_STRING_DESC) {
                     string_bytes(a) == string_bytes(b)
-                } else if std::ptr::eq(da, &FAI_INT_DESC) && std::ptr::eq(db, &FAI_INT_DESC) {
+                } else if std::ptr::eq(da, &FAI_INT_DESC) {
                     read_i64(as_obj(a), INT_VALUE_OFFSET) == read_i64(as_obj(b), INT_VALUE_OFFSET)
+                } else if std::ptr::eq(da, &FAI_FLOAT_DESC) {
+                    read_u64(as_obj(a), FLOAT_VALUE_OFFSET)
+                        == read_u64(as_obj(b), FLOAT_VALUE_OFFSET)
+                } else if std::ptr::eq(da, &FAI_DATA_DESC) {
+                    data_equal(a, b)
                 } else {
                     false
                 }
             }
         }
-        // A small immediate Int can never equal a boxed (overflowed) one.
+        // A small immediate Int can never equal a boxed (overflowed) one, and a
+        // nullary constructor (immediate) never equals a non-nullary one (boxed).
         _ => false,
+    }
+}
+
+/// Structural equality of two boxed data values (same tag and equal fields).
+unsafe fn data_equal(a: Value, b: Value) -> bool {
+    // SAFETY: `a` and `b` are boxed data values.
+    unsafe {
+        if read_u64(as_obj(a), DATA_TAG_OFFSET) != read_u64(as_obj(b), DATA_TAG_OFFSET) {
+            return false;
+        }
+        let n = data_field_count(a);
+        if n != data_field_count(b) {
+            return false;
+        }
+        for i in 0..n {
+            let fa = read_i64(as_obj(a), DATA_FIELDS_OFFSET + i * 8);
+            let fb = read_i64(as_obj(b), DATA_FIELDS_OFFSET + i * 8);
+            if !values_equal(fa, fb) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// Structural ordering of two values, returning `-1`/`0`/`1` as an immediate
+/// `Int` (operands consumed). Undefined on functions (rejected by the type
+/// checker). Backs `< <= > >=` on non-numeric types.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_compare(a: Value, b: Value) -> Value {
+    let ord = values_compare(a, b);
+    fai_drop(a);
+    fai_drop(b);
+    imm_int(match ord {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    })
+}
+
+fn values_compare(a: Value, b: Value) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    // Both immediates: compare payloads (Int values, Bool, or nullary tags).
+    if !is_boxed(a) && !is_boxed(b) {
+        return (a >> 1).cmp(&(b >> 1));
+    }
+    // Otherwise identify the kind from a boxed operand (both share a type).
+    let boxed = if is_boxed(a) { a } else { b };
+    // SAFETY: `boxed` is a boxed value.
+    let desc = unsafe { read_ptr(as_obj(boxed), DESC_OFFSET).cast::<Descriptor>() };
+    if std::ptr::eq(desc, &FAI_FLOAT_DESC) {
+        return unbox_float(a).total_cmp(&unbox_float(b));
+    }
+    if std::ptr::eq(desc, &FAI_STRING_DESC) {
+        // SAFETY: both are boxed `String`s.
+        return unsafe { string_bytes(a).cmp(string_bytes(b)) };
+    }
+    if std::ptr::eq(desc, &FAI_DATA_DESC) {
+        let ta = data_tag(a) >> 1;
+        let tb = data_tag(b) >> 1;
+        match ta.cmp(&tb) {
+            Ordering::Equal => {
+                // Same constructor (both boxed): compare fields lexicographically.
+                if is_boxed(a) && is_boxed(b) {
+                    // SAFETY: both are boxed data values with equal field counts.
+                    unsafe {
+                        let n = data_field_count(a);
+                        for i in 0..n {
+                            let fa = read_i64(as_obj(a), DATA_FIELDS_OFFSET + i * 8);
+                            let fb = read_i64(as_obj(b), DATA_FIELDS_OFFSET + i * 8);
+                            match values_compare(fa, fb) {
+                                Ordering::Equal => {}
+                                other => return other,
+                            }
+                        }
+                    }
+                }
+                Ordering::Equal
+            }
+            other => other,
+        }
+    } else {
+        // Boxed `Int` (possibly versus an immediate `Int`).
+        unbox_int(a).cmp(&unbox_int(b))
+    }
+}
+
+/// Reads a data value's tag as an immediate `Int`, without consuming it.
+fn data_tag(v: Value) -> Value {
+    if is_boxed(v) {
+        // SAFETY: a boxed data value stores its tag at `DATA_TAG_OFFSET`.
+        imm_int(unsafe { read_u64(as_obj(v), DATA_TAG_OFFSET) as i64 })
+    } else {
+        v
     }
 }
 

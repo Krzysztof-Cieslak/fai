@@ -327,6 +327,29 @@ fn shape_item(m: &Module, item: &Item) -> String {
             shape_pats(m, params),
             shape_expr(m, *body),
         ),
+        ItemKind::Type { visibility, name, params, def } => {
+            let ps = params.iter().map(|p| p.as_str()).collect::<Vec<_>>().join(" ");
+            let body = match def {
+                fai_syntax::ast::TypeDef::Alias(ty) => format!("(alias {})", shape_type(m, *ty)),
+                fai_syntax::ast::TypeDef::Union(variants) => {
+                    let vs = variants
+                        .iter()
+                        .map(|v| {
+                            let fs = v
+                                .fields
+                                .iter()
+                                .map(|f| shape_type(m, *f))
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            format!("(variant {} [{}])", v.name.as_str(), fs)
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    format!("(union {vs})")
+                }
+            };
+            format!("(type {visibility:?} {} [{}] {})", name.as_str(), ps, body)
+        }
         ItemKind::Example { body } => format!("(example {})", shape_expr(m, *body)),
         ItemKind::Forall { binders, body } => format!(
             "(forall [{}] {})",
@@ -373,6 +396,14 @@ fn shape_expr(m: &Module, id: ExprId) -> String {
         ExprKind::Paren(inner) => format!("(paren {})", shape_expr(m, *inner)),
         ExprKind::Tuple(xs) => format!("(tuple {})", shape_exprs(m, xs)),
         ExprKind::List(xs) => format!("(list {})", shape_exprs(m, xs)),
+        ExprKind::Match { scrutinee, arms } => {
+            let arms = arms
+                .iter()
+                .map(|a| format!("({} -> {})", shape_pat(m, a.pat), shape_expr(m, a.body)))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("(match {} [{}])", shape_expr(m, *scrutinee), arms)
+        }
         ExprKind::Error => "(expr-error)".to_owned(),
     }
 }
@@ -402,6 +433,19 @@ fn shape_pat(m: &Module, id: PatId) -> String {
             )
         }
         PatKind::Paren(inner) => format!("(pparen {})", shape_pat(m, *inner)),
+        PatKind::Constructor { name, args } => {
+            format!("(pctor {} [{}])", name.as_str(), shape_pats(m, args))
+        }
+        PatKind::Int(s) => format!("(pint {})", s.as_str()),
+        PatKind::Float(s) => format!("(pfloat {})", s.as_str()),
+        PatKind::String(s) => format!("(pstring {})", s.as_str()),
+        PatKind::Char(s) => format!("(pchar {})", s.as_str()),
+        PatKind::Bool(b) => format!("(pbool {b})"),
+        PatKind::List(xs) => format!("(plist {})", shape_pats(m, xs)),
+        PatKind::Cons { head, tail } => {
+            format!("(pcons {} {})", shape_pat(m, *head), shape_pat(m, *tail))
+        }
+        PatKind::Or(alts) => format!("(por {})", shape_pats(m, alts)),
         PatKind::Error => "(pat-error)".to_owned(),
     }
 }

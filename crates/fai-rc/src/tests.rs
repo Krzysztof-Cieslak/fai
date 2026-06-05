@@ -85,6 +85,9 @@ fn tally(expr: &CExpr, c: &mut Counts) {
         ExprKind::Lit(_) | ExprKind::Global(_) | ExprKind::MakeClosure { .. } | ExprKind::Error => {
         }
         ExprKind::Prim { args, .. } => args.iter().for_each(|a| tally(a, c)),
+        ExprKind::MakeData { args, .. } => args.iter().for_each(|a| tally(a, c)),
+        ExprKind::DataTag(base) => tally(base, c),
+        ExprKind::DataField { base, .. } => tally(base, c),
         ExprKind::App { func, args } => {
             tally(func, c);
             args.iter().for_each(|a| tally(a, c));

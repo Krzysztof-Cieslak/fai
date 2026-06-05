@@ -17,13 +17,19 @@ use fai_db::{Db, SourceFile, emit};
 use fai_diagnostics::Diagnostic;
 use fai_span::Span;
 use fai_syntax::Symbol;
-use fai_syntax::ast::{ExprId, ExprKind, ItemKind, Module, Pat, PatId, PatKind, Visibility};
+use fai_syntax::ast::{ExprId, ExprKind, ItemKind, Module, PatId, PatKind, Visibility};
 use rustc_hash::FxHashMap;
 
-use crate::ids::{DefId, LocalId, Res, is_upper};
-use crate::module::{ModuleName, emit_duplicate_module_errors, module_defs, module_file};
+use crate::decls::type_decls;
+use crate::ids::{CtorRef, DefId, LocalId, Res, is_upper};
+use crate::module::{
+    ModuleName, emit_duplicate_module_errors, module_defs, module_file, module_interface,
+    prelude_file,
+};
 use crate::prelude;
-use crate::{PRIVATE_REFERENCE, SHADOWS_PRELUDE, UNBOUND_NAME, UNRESOLVED_MODULE};
+use crate::{
+    PRIVATE_REFERENCE, SHADOWS_PRELUDE, UNBOUND_CONSTRUCTOR, UNBOUND_NAME, UNRESOLVED_MODULE,
+};
 
 /// The resolved references of one file's bodies.
 ///
@@ -35,6 +41,8 @@ use crate::{PRIVATE_REFERENCE, SHADOWS_PRELUDE, UNBOUND_NAME, UNRESOLVED_MODULE}
 pub struct ResolvedBodies {
     /// Resolution of each referencing expression, keyed by `ExprId`.
     pub by_expr: FxHashMap<ExprId, Res>,
+    /// Resolution of each constructor pattern's head, keyed by `PatId`.
+    pub by_pat: FxHashMap<PatId, Res>,
     /// Distinct outbound definition references, in first-seen order (whole file).
     pub deps: Vec<DefId>,
     /// Distinct outbound definition references, per owning top-level definition.
@@ -63,6 +71,12 @@ impl ResolvedBodies {
     #[must_use]
     pub fn local_of(&self, pat: PatId) -> Option<LocalId> {
         self.pat_locals.get(&pat).copied()
+    }
+
+    /// The resolution recorded for a constructor pattern, if any.
+    #[must_use]
+    pub fn pat_res(&self, pat: PatId) -> Option<Res> {
+        self.by_pat.get(&pat).copied()
     }
 }
 
@@ -111,18 +125,43 @@ pub fn resolve(db: &dyn Db, file: SourceFile) -> Arc<ResolvedBodies> {
     let parsed = fai_syntax::parse(db, file);
     let module = &parsed.module;
     let defs = module_defs(db, file);
+    let source = file.source(db);
 
     // Names defined at this module's top level (binding present).
     let top_level: FxHashMap<Symbol, DefId> =
-        defs.defs.iter().map(|d| (d.name, DefId::new(file.source(db), d.name))).collect();
+        defs.defs.iter().map(|d| (d.name, DefId::new(source, d.name))).collect();
+
+    // Constructors declared in this module.
+    let local_ctors: FxHashMap<Symbol, CtorRef> =
+        type_decls(db, file).ctors.keys().map(|&name| (name, CtorRef::new(source, name))).collect();
+
+    // The prelude module's public values and constructors, visible unqualified.
+    // (Skipped while resolving the prelude itself — its defs are already local.)
+    let mut prelude_values: FxHashMap<Symbol, DefId> = FxHashMap::default();
+    let mut prelude_ctors: FxHashMap<Symbol, CtorRef> = FxHashMap::default();
+    if let Some(pf) = prelude_file(db)
+        && pf != file
+    {
+        let pf_source = pf.source(db);
+        for export in &module_interface(db, pf).exports {
+            prelude_values.insert(export.name, DefId::new(pf_source, export.name));
+        }
+        for &ctor in &module_interface(db, pf).ctors {
+            prelude_ctors.insert(ctor, CtorRef::new(pf_source, ctor));
+        }
+    }
 
     let mut cx = Resolver {
         db,
-        file,
         module,
+        source,
         top_level: &top_level,
+        local_ctors: &local_ctors,
+        prelude_values: &prelude_values,
+        prelude_ctors: &prelude_ctors,
         scope: Scope::default(),
         by_expr: FxHashMap::default(),
+        by_pat: FxHashMap::default(),
         deps: Vec::new(),
         dep_seen: FxHashMap::default(),
         current_def: None,
@@ -134,14 +173,17 @@ pub fn resolve(db: &dyn Db, file: SourceFile) -> Arc<ResolvedBodies> {
     // prelude module itself, whose bindings *define* those names.
     let is_prelude_module = module.name.is_some_and(|n| n.as_str() == prelude::PRELUDE_MODULE);
     for d in &defs.defs {
-        if !is_prelude_module && prelude::is_prelude_name(d.name) {
+        let shadows = prelude::is_intrinsic(d.name)
+            || prelude_values.contains_key(&d.name)
+            || prelude_ctors.contains_key(&d.name);
+        if !is_prelude_module && shadows {
             let span = module.items[d.binding.index()].span;
             emit(
                 db,
                 Diagnostic::warning(
                     SHADOWS_PRELUDE,
                     format!("`{}` shadows a prelude name", d.name),
-                    Span::new(file.source(db), span),
+                    Span::new(source, span),
                 ),
             );
         }
@@ -172,12 +214,16 @@ pub fn resolve(db: &dyn Db, file: SourceFile) -> Arc<ResolvedBodies> {
                 cx.resolve_expr(*body);
                 cx.scope.pop();
             }
-            ItemKind::Signature { .. } | ItemKind::Error => {}
+            // Type declarations introduce constructors (handled via `type_decls`)
+            // and reference type names (resolved in the types phase); they have no
+            // value body to resolve here.
+            ItemKind::Type { .. } | ItemKind::Signature { .. } | ItemKind::Error => {}
         }
     }
 
     Arc::new(ResolvedBodies {
         by_expr: cx.by_expr,
+        by_pat: cx.by_pat,
         deps: cx.deps,
         deps_by_def: cx.deps_by_def,
         pat_locals: cx.pat_locals,
@@ -187,11 +233,15 @@ pub fn resolve(db: &dyn Db, file: SourceFile) -> Arc<ResolvedBodies> {
 /// The per-file resolution walker.
 struct Resolver<'a> {
     db: &'a dyn Db,
-    file: SourceFile,
     module: &'a Module,
+    source: fai_span::SourceId,
     top_level: &'a FxHashMap<Symbol, DefId>,
+    local_ctors: &'a FxHashMap<Symbol, CtorRef>,
+    prelude_values: &'a FxHashMap<Symbol, DefId>,
+    prelude_ctors: &'a FxHashMap<Symbol, CtorRef>,
     scope: Scope,
     by_expr: FxHashMap<ExprId, Res>,
+    by_pat: FxHashMap<PatId, Res>,
     deps: Vec<DefId>,
     dep_seen: FxHashMap<DefId, ()>,
     current_def: Option<DefId>,
@@ -201,7 +251,7 @@ struct Resolver<'a> {
 
 impl Resolver<'_> {
     fn span(&self, range: fai_span::TextRange) -> Span {
-        Span::new(self.file.source(self.db), range)
+        Span::new(self.source, range)
     }
 
     fn record_dep(&mut self, def: DefId) {
@@ -217,8 +267,8 @@ impl Resolver<'_> {
     }
 
     fn bind_pattern(&mut self, pat: PatId) {
-        let Pat { kind, .. } = self.module.pat(pat);
-        match kind {
+        let node = self.module.pat(pat);
+        match &node.kind {
             PatKind::Var(name) => {
                 let slot = self.scope.bind(*name);
                 self.pat_locals.insert(pat, slot);
@@ -227,13 +277,48 @@ impl Resolver<'_> {
                 let slot = self.scope.bind_anonymous();
                 self.pat_locals.insert(pat, slot);
             }
-            PatKind::Tuple(elems) => {
+            PatKind::Tuple(elems) | PatKind::List(elems) => {
                 for &e in elems {
                     self.bind_pattern(e);
                 }
             }
+            PatKind::Cons { head, tail } => {
+                self.bind_pattern(*head);
+                self.bind_pattern(*tail);
+            }
+            PatKind::Constructor { name, args } => {
+                // Resolve the constructor head (a reference), then bind its args.
+                let res = self.resolve_ctor(*name);
+                if matches!(res, Res::Error) {
+                    emit(
+                        self.db,
+                        Diagnostic::error(
+                            UNBOUND_CONSTRUCTOR,
+                            format!("cannot find constructor `{name}` in scope"),
+                            self.span(node.span),
+                        ),
+                    );
+                }
+                self.by_pat.insert(pat, res);
+                for &a in args {
+                    self.bind_pattern(a);
+                }
+            }
+            PatKind::Or(alts) => {
+                // Each alternative must bind the same variables; the types phase
+                // checks that. Bind each so its variables are in scope.
+                for &a in alts {
+                    self.bind_pattern(a);
+                }
+            }
             PatKind::Paren(inner) => self.bind_pattern(*inner),
-            PatKind::Unit | PatKind::Error => {}
+            PatKind::Int(_)
+            | PatKind::Float(_)
+            | PatKind::String(_)
+            | PatKind::Char(_)
+            | PatKind::Bool(_)
+            | PatKind::Unit
+            | PatKind::Error => {}
         }
     }
 
@@ -246,14 +331,12 @@ impl Resolver<'_> {
                     self.record_dep(def);
                 }
                 if matches!(res, Res::Error) {
-                    emit(
-                        self.db,
-                        Diagnostic::error(
-                            UNBOUND_NAME,
-                            format!("cannot find `{name}` in scope"),
-                            self.span(node.span),
-                        ),
-                    );
+                    let (code, msg) = if is_upper(*name) {
+                        (UNBOUND_CONSTRUCTOR, format!("cannot find constructor `{name}` in scope"))
+                    } else {
+                        (UNBOUND_NAME, format!("cannot find `{name}` in scope"))
+                    };
+                    emit(self.db, Diagnostic::error(code, msg, self.span(node.span)));
                 }
                 self.by_expr.insert(expr, res);
             }
@@ -281,6 +364,15 @@ impl Resolver<'_> {
                 }
                 self.resolve_expr(*body);
                 self.scope.pop();
+            }
+            ExprKind::Match { scrutinee, arms } => {
+                self.resolve_expr(*scrutinee);
+                for arm in arms {
+                    self.scope.push();
+                    self.bind_pattern(arm.pat);
+                    self.resolve_expr(arm.body);
+                    self.scope.pop();
+                }
             }
             ExprKind::Block { stmts, tail } => {
                 self.scope.push();
@@ -313,8 +405,9 @@ impl Resolver<'_> {
         }
     }
 
-    /// Resolves a bare name: literals (`true`/`false`), local scope, this
-    /// module's top level, then the prelude.
+    /// Resolves a bare name. Upper-case names are constructors (this module, then
+    /// the prelude); lower-case names are `true`/`false`, then local scope, this
+    /// module's top level, the prelude module's values, then intrinsics.
     fn resolve_name(&self, name: Symbol) -> Res {
         // `true`/`false` are keyword-like boolean literals parsed as `Var`.
         if matches!(name.as_str(), "true" | "false") {
@@ -323,11 +416,29 @@ impl Resolver<'_> {
         if let Some(local) = self.scope.lookup(name) {
             return Res::Local(local);
         }
+        if is_upper(name) {
+            return self.resolve_ctor(name);
+        }
         if let Some(def) = self.top_level.get(&name) {
             return Res::Def(*def);
         }
-        if prelude::is_prelude_name(name) {
+        if let Some(def) = self.prelude_values.get(&name) {
+            return Res::Def(*def);
+        }
+        if prelude::is_intrinsic(name) {
             return Res::Builtin(name);
+        }
+        Res::Error
+    }
+
+    /// Resolves an upper-case constructor name: this module's constructors, then
+    /// the prelude module's.
+    fn resolve_ctor(&self, name: Symbol) -> Res {
+        if let Some(ctor) = self.local_ctors.get(&name) {
+            return Res::Ctor(*ctor);
+        }
+        if let Some(ctor) = self.prelude_ctors.get(&name) {
+            return Res::Ctor(*ctor);
         }
         Res::Error
     }
@@ -380,10 +491,11 @@ impl Resolver<'_> {
             );
             return Res::Error;
         };
+        let target_source = target_file.source(self.db);
         let defs = module_defs(self.db, target_file);
         match defs.get(field) {
             Some(def) if def.visibility == Visibility::Public => {
-                Res::Def(DefId::new(target_file.source(self.db), field))
+                return Res::Def(DefId::new(target_source, field));
             }
             Some(_) => {
                 emit(
@@ -394,19 +506,35 @@ impl Resolver<'_> {
                         self.span(whole_span),
                     ),
                 );
-                Res::Error
+                return Res::Error;
             }
-            None => {
-                emit(
-                    self.db,
-                    Diagnostic::error(
-                        UNBOUND_NAME,
-                        format!("module `{module_sym}` has no member `{field}`"),
-                        self.span(whole_span),
-                    ),
-                );
-                Res::Error
-            }
+            None => {}
         }
+        // Not a value: try a constructor of the target module.
+        if module_interface(self.db, target_file).has_ctor(field) {
+            return Res::Ctor(CtorRef::new(target_source, field));
+        }
+        if let Some(info) = type_decls(self.db, target_file).ctor(field) {
+            // The constructor exists but its type is private.
+            let _ = info;
+            emit(
+                self.db,
+                Diagnostic::error(
+                    PRIVATE_REFERENCE,
+                    format!("constructor `{field}` is private to module `{module_sym}`"),
+                    self.span(whole_span),
+                ),
+            );
+            return Res::Error;
+        }
+        emit(
+            self.db,
+            Diagnostic::error(
+                UNBOUND_NAME,
+                format!("module `{module_sym}` has no member `{field}`"),
+                self.span(whole_span),
+            ),
+        );
+        Res::Error
     }
 }

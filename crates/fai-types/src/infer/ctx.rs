@@ -6,6 +6,8 @@
 //! [`Ty`]. The context is local to one inference call (one def or SCC); nothing
 //! here is cached by salsa.
 
+use fai_resolve::AdtRef;
+
 use crate::ty::{Con, Scheme, Ty, TyVarId};
 
 /// A constraint a type variable must satisfy.
@@ -36,6 +38,8 @@ pub enum SolveTy {
     Var(TyVarId),
     /// A nullary constructor.
     Con(Con),
+    /// A user-declared nominal type constructor (applied via [`SolveTy::App`]).
+    Adt(AdtRef),
     /// Application.
     App(Box<SolveTy>, Box<SolveTy>),
     /// Function type.
@@ -68,6 +72,15 @@ impl SolveTy {
     /// A `List t`.
     pub fn list(elem: SolveTy) -> SolveTy {
         SolveTy::App(Box::new(SolveTy::Con(Con::List)), Box::new(elem))
+    }
+
+    /// A nominal ADT head applied to `args` (e.g. `Option a`).
+    pub fn adt(adt: AdtRef, args: Vec<SolveTy>) -> SolveTy {
+        let mut ty = SolveTy::Adt(adt);
+        for a in args {
+            ty = SolveTy::App(Box::new(ty), Box::new(a));
+        }
+        ty
     }
 
     /// Builds a curried arrow `p0 -> p1 -> ... -> result`.
@@ -153,6 +166,7 @@ impl InferCtx {
             (SolveTy::Var(x), _) => self.bind(*x, &b),
             (_, SolveTy::Var(y)) => self.bind(*y, &a),
             (SolveTy::Con(x), SolveTy::Con(y)) if x == y => UnifyResult::Ok,
+            (SolveTy::Adt(x), SolveTy::Adt(y)) if x == y => UnifyResult::Ok,
             (SolveTy::Unit, SolveTy::Unit) => UnifyResult::Ok,
             (SolveTy::App(f1, a1), SolveTy::App(f2, a2)) => match self.unify(f1, f2) {
                 UnifyResult::Ok => self.unify(a1, a2),
@@ -214,17 +228,9 @@ impl InferCtx {
                     | SolveTy::Con(Con::Int)
                     | SolveTy::Con(Con::Float)
             ),
-            Constraint::Ord => matches!(
-                ty,
-                SolveTy::Var(_)
-                    | SolveTy::Error
-                    | SolveTy::Con(Con::Int)
-                    | SolveTy::Con(Con::Float)
-                    | SolveTy::Con(Con::String)
-                    | SolveTy::Con(Con::Char)
-            ),
-            // Eq admits any non-function type.
-            Constraint::Eq => !matches!(ty, SolveTy::Arrow(_, _)),
+            // Ordering is structural (`fai_compare`), so like `Eq` it admits any
+            // non-function type.
+            Constraint::Ord | Constraint::Eq => !matches!(ty, SolveTy::Arrow(_, _)),
         }
     }
 
@@ -234,7 +240,7 @@ impl InferCtx {
             SolveTy::Var(other) => other == id,
             SolveTy::App(f, a) | SolveTy::Arrow(f, a) => self.occurs(id, &f) || self.occurs(id, &a),
             SolveTy::Tuple(elems) => elems.iter().any(|e| self.occurs(id, e)),
-            SolveTy::Con(_) | SolveTy::Unit | SolveTy::Error => false,
+            SolveTy::Con(_) | SolveTy::Adt(_) | SolveTy::Unit | SolveTy::Error => false,
         }
     }
 
@@ -271,7 +277,7 @@ impl InferCtx {
                     self.default_numerics_deep(e);
                 }
             }
-            SolveTy::Con(_) | SolveTy::Unit | SolveTy::Error => {}
+            SolveTy::Con(_) | SolveTy::Adt(_) | SolveTy::Unit | SolveTy::Error => {}
         }
     }
 
@@ -302,6 +308,7 @@ impl InferCtx {
         match self.resolve_shallow(ty) {
             SolveTy::Var(id) => Ty::Var(renumber.map(id)),
             SolveTy::Con(c) => Ty::Con(c),
+            SolveTy::Adt(adt) => Ty::Adt(adt),
             SolveTy::Unit => Ty::Unit,
             SolveTy::Error => Ty::Error,
             SolveTy::App(f, a) => Ty::App(
@@ -384,6 +391,7 @@ fn instantiate_ty(ty: &Ty, mapping: &rustc_hash::FxHashMap<TyVarId, TyVarId>) ->
     match ty {
         Ty::Var(v) => SolveTy::Var(*mapping.get(v).unwrap_or(v)),
         Ty::Con(c) => SolveTy::Con(*c),
+        Ty::Adt(adt) => SolveTy::Adt(*adt),
         Ty::Unit => SolveTy::Unit,
         Ty::Error => SolveTy::Error,
         Ty::App(f, a) => {

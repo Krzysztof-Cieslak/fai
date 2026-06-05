@@ -8,7 +8,7 @@
 
 use fai_db::{Db, SourceFile, emit};
 use fai_diagnostics::Diagnostic;
-use fai_resolve::{DefId, LocalId, Res, ResolvedBodies};
+use fai_resolve::{CtorRef, DefId, LocalId, Res, ResolvedBodies};
 use fai_span::Span;
 use fai_syntax::Symbol;
 use fai_syntax::ast::{BinOp, ExprId, ExprKind, Module, PatId, PatKind, UnOp};
@@ -28,6 +28,8 @@ pub trait Env {
     fn scc_type(&mut self, def: DefId) -> Option<SolveTy>;
     /// The scheme of a builtin/prelude name.
     fn builtin_scheme(&mut self, name: Symbol) -> Option<Scheme>;
+    /// The scheme of a data constructor (`Some : 'a -> Option 'a`).
+    fn ctor_scheme(&mut self, ctor: CtorRef) -> Option<Scheme>;
 }
 
 /// A local binding's type: monomorphic (parameters, lambda binders, tuple
@@ -216,6 +218,21 @@ impl<E: Env> Walker<'_, E> {
                 let body_ty = self.infer_expr(*body);
                 SolveTy::arrows_solver(param_tys, body_ty)
             }
+            ExprKind::Match { scrutinee, arms } => {
+                let scrutinee_ty = self.infer_expr(*scrutinee);
+                let result = self.cx.fresh();
+                for arm in arms {
+                    self.check_pattern(arm.pat, &scrutinee_ty);
+                    let body_ty = self.infer_expr(arm.body);
+                    self.unify_at(
+                        self.module.expr(arm.body).span,
+                        &result,
+                        &body_ty,
+                        "the arms of a `match`",
+                    );
+                }
+                result
+            }
             ExprKind::Block { stmts, tail } => {
                 for stmt in stmts {
                     // Generalize only a simple `let v = value` whose right-hand
@@ -253,8 +270,8 @@ impl<E: Env> Walker<'_, E> {
                             self.locals.insert(slot, binding);
                         }
                     } else {
-                        // Function and tuple-pattern lets bind monomorphically.
-                        self.bind_pattern_to(stmt.pat, &value_ty);
+                        // Function and destructuring lets bind monomorphically.
+                        self.check_pattern(stmt.pat, &value_ty);
                     }
                 }
                 self.infer_expr(*tail)
@@ -283,6 +300,10 @@ impl<E: Env> Walker<'_, E> {
                 None => SolveTy::Error,
             },
             Some(Res::Def(def)) => self.instantiate_def(def),
+            Some(Res::Ctor(ctor)) => match self.env.ctor_scheme(ctor) {
+                Some(scheme) => self.cx.instantiate(&scheme),
+                None => SolveTy::Error,
+            },
             Some(Res::Builtin(b)) => match self.env.builtin_scheme(b) {
                 Some(scheme) => self.cx.instantiate(&scheme),
                 None => SolveTy::Error,
@@ -310,6 +331,10 @@ impl<E: Env> Walker<'_, E> {
         // it. Otherwise it's record field access, unsupported in M2.
         match self.resolved.get(expr) {
             Some(Res::Def(def)) => self.instantiate_def(def),
+            Some(Res::Ctor(ctor)) => match self.env.ctor_scheme(ctor) {
+                Some(scheme) => self.cx.instantiate(&scheme),
+                None => SolveTy::Error,
+            },
             Some(Res::Builtin(b)) => match self.env.builtin_scheme(b) {
                 Some(scheme) => self.cx.instantiate(&scheme),
                 None => SolveTy::Error,
@@ -431,54 +456,128 @@ impl<E: Env> Walker<'_, E> {
         }
     }
 
-    // Pattern binding that records local slot types. Resolution assigns LocalIds
-    // in the same left-to-right order we traverse here, so we mirror that order
-    // with a shared counter via `next_local`.
+    /// Binds an (irrefutable) parameter/lambda pattern, returning its fresh type.
     fn bind_pattern_into(&mut self, pat: PatId) -> SolveTy {
-        let ty = self.fresh_pattern_type(pat);
-        self.bind_pattern_to(pat, &ty);
+        let ty = self.cx.fresh();
+        self.check_pattern(pat, &ty);
         ty
     }
 
-    fn fresh_pattern_type(&mut self, pat: PatId) -> SolveTy {
-        match &self.module.pat(pat).kind {
-            PatKind::Tuple(elems) => {
-                SolveTy::Tuple(elems.iter().map(|&e| self.fresh_pattern_type(e)).collect())
-            }
-            PatKind::Paren(inner) => self.fresh_pattern_type(*inner),
-            PatKind::Unit => SolveTy::Unit,
-            PatKind::Error => SolveTy::Error,
-            PatKind::Var(_) | PatKind::Wildcard => self.cx.fresh(),
-        }
-    }
-
-    fn bind_pattern_to(&mut self, pat: PatId, ty: &SolveTy) {
+    /// Checks a pattern against the `expected` scrutinee type, unifying the
+    /// pattern's structure with it and binding its variables. Records the slot
+    /// type of every bound variable so later uses resolve to it.
+    fn check_pattern(&mut self, pat: PatId, expected: &SolveTy) {
+        let span = self.module.pat(pat).span;
         match &self.module.pat(pat).kind {
             PatKind::Var(_) | PatKind::Wildcard => {
                 if let Some(slot) = self.resolved.local_of(pat) {
-                    self.locals.insert(slot, LocalBinding::Mono(ty.clone()));
+                    self.locals.insert(slot, LocalBinding::Mono(expected.clone()));
                 }
             }
+            PatKind::Unit => self.unify_at(span, expected, &SolveTy::Unit, "a `()` pattern"),
+            PatKind::Int(_) => self.unify_at(span, expected, &SolveTy::int(), "an integer pattern"),
+            PatKind::Float(_) => self.unify_at(
+                span,
+                expected,
+                &SolveTy::Con(crate::ty::Con::Float),
+                "a float pattern",
+            ),
+            PatKind::String(_) => {
+                self.unify_at(span, expected, &SolveTy::string(), "a string pattern");
+            }
+            PatKind::Char(_) => {
+                self.unify_at(
+                    span,
+                    expected,
+                    &SolveTy::Con(crate::ty::Con::Char),
+                    "a char pattern",
+                );
+            }
+            PatKind::Bool(_) => {
+                self.unify_at(span, expected, &SolveTy::bool(), "a boolean pattern")
+            }
+            PatKind::Paren(inner) => self.check_pattern(*inner, expected),
             PatKind::Tuple(elems) => {
-                let resolved = self.cx.resolve_shallow(ty);
-                if let SolveTy::Tuple(parts) = resolved
-                    && parts.len() == elems.len()
-                {
-                    for (&e, p) in elems.iter().zip(parts) {
-                        self.bind_pattern_to(e, &p);
-                    }
-                    return;
-                }
-                // Shape unknown/mismatched: bind each to a fresh type and unify.
                 let part_tys: Vec<SolveTy> = elems.iter().map(|_| self.cx.fresh()).collect();
-                let tuple = SolveTy::Tuple(part_tys.clone());
-                let _ = self.cx.unify(ty, &tuple);
+                self.unify_at(span, expected, &SolveTy::Tuple(part_tys.clone()), "a tuple pattern");
                 for (&e, p) in elems.iter().zip(part_tys) {
-                    self.bind_pattern_to(e, &p);
+                    self.check_pattern(e, &p);
                 }
             }
-            PatKind::Paren(inner) => self.bind_pattern_to(*inner, ty),
-            PatKind::Unit | PatKind::Error => {}
+            PatKind::List(elems) => {
+                let elem_ty = self.cx.fresh();
+                self.unify_at(span, expected, &SolveTy::list(elem_ty.clone()), "a list pattern");
+                for &e in elems {
+                    self.check_pattern(e, &elem_ty);
+                }
+            }
+            PatKind::Cons { head, tail } => {
+                let elem_ty = self.cx.fresh();
+                let list = SolveTy::list(elem_ty.clone());
+                self.unify_at(span, expected, &list, "a `::` pattern");
+                self.check_pattern(*head, &elem_ty);
+                self.check_pattern(*tail, &list);
+            }
+            PatKind::Or(alts) => {
+                for &alt in alts {
+                    self.check_pattern(alt, expected);
+                }
+            }
+            PatKind::Constructor { args, .. } => self.check_ctor_pattern(pat, args, expected, span),
+            PatKind::Error => {}
+        }
+    }
+
+    fn check_ctor_pattern(
+        &mut self,
+        pat: PatId,
+        args: &[PatId],
+        expected: &SolveTy,
+        span: fai_span::TextRange,
+    ) {
+        let ctor_ty = match self.resolved.pat_res(pat) {
+            Some(Res::Ctor(ctor)) => match self.env.ctor_scheme(ctor) {
+                Some(scheme) => self.cx.instantiate(&scheme),
+                None => SolveTy::Error,
+            },
+            _ => SolveTy::Error,
+        };
+        if matches!(ctor_ty, SolveTy::Error) {
+            // Still check sub-patterns so their variables bind.
+            for &a in args {
+                self.check_pattern(a, &SolveTy::Error);
+            }
+            return;
+        }
+        // Peel one arrow per argument: the parameter types, then the result.
+        let mut cur = ctor_ty;
+        let mut arity_ok = true;
+        for &a in args {
+            match self.cx.resolve_shallow(&cur) {
+                SolveTy::Arrow(from, to) => {
+                    self.check_pattern(a, &from);
+                    cur = *to;
+                }
+                _ => {
+                    arity_ok = false;
+                    self.check_pattern(a, &SolveTy::Error);
+                }
+            }
+        }
+        if matches!(self.cx.resolve_shallow(&cur), SolveTy::Arrow(_, _)) {
+            arity_ok = false; // too few arguments
+        }
+        if arity_ok {
+            self.unify_at(span, expected, &cur, "a constructor pattern");
+        } else {
+            emit(
+                self.db,
+                Diagnostic::error(
+                    crate::CONSTRUCTOR_ARITY,
+                    "constructor pattern has the wrong number of arguments",
+                    self.span(span),
+                ),
+            );
         }
     }
 
@@ -543,7 +642,7 @@ impl<E: Env> Walker<'_, E> {
                     self.collect_free_vars(e, out);
                 }
             }
-            SolveTy::Con(_) | SolveTy::Unit | SolveTy::Error => {}
+            SolveTy::Con(_) | SolveTy::Adt(_) | SolveTy::Unit | SolveTy::Error => {}
         }
     }
 
@@ -598,6 +697,6 @@ fn subst(
         SolveTy::Tuple(elems) => {
             SolveTy::Tuple(elems.iter().map(|e| subst(cx, e, mapping)).collect())
         }
-        other @ (SolveTy::Con(_) | SolveTy::Unit | SolveTy::Error) => other,
+        other @ (SolveTy::Con(_) | SolveTy::Adt(_) | SolveTy::Unit | SolveTy::Error) => other,
     }
 }

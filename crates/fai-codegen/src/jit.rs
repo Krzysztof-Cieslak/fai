@@ -33,7 +33,24 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_int_le", rt::fai_int_le);
     sym!("fai_int_gt", rt::fai_int_gt);
     sym!("fai_int_ge", rt::fai_int_ge);
+    sym!("fai_box_float", rt::fai_box_float);
+    sym!("fai_float_add", rt::fai_float_add);
+    sym!("fai_float_sub", rt::fai_float_sub);
+    sym!("fai_float_mul", rt::fai_float_mul);
+    sym!("fai_float_div", rt::fai_float_div);
+    sym!("fai_float_lt", rt::fai_float_lt);
+    sym!("fai_float_le", rt::fai_float_le);
+    sym!("fai_float_gt", rt::fai_float_gt);
+    sym!("fai_float_ge", rt::fai_float_ge);
+    sym!("fai_sqrt", rt::fai_sqrt);
+    sym!("fai_int_to_float", rt::fai_int_to_float);
+    sym!("fai_float_to_int", rt::fai_float_to_int);
+    sym!("fai_float_to_string", rt::fai_float_to_string);
+    sym!("fai_compare", rt::fai_compare);
     sym!("fai_equal", rt::fai_equal);
+    sym!("fai_make_data", rt::fai_make_data);
+    sym!("fai_data_tag", rt::fai_data_tag);
+    sym!("fai_data_field", rt::fai_data_field);
     sym!("fai_string_concat", rt::fai_string_concat);
     sym!("fai_int_to_string", rt::fai_int_to_string);
     sym!("fai_not", rt::fai_not);
@@ -45,6 +62,8 @@ fn register_runtime(builder: &mut JITBuilder) {
     builder.symbol("FAI_INT_DESC", (&raw const rt::FAI_INT_DESC).cast());
     builder.symbol("FAI_CLOSURE_DESC", (&raw const rt::FAI_CLOSURE_DESC).cast());
     builder.symbol("FAI_PAP_DESC", (&raw const rt::FAI_PAP_DESC).cast());
+    builder.symbol("FAI_FLOAT_DESC", (&raw const rt::FAI_FLOAT_DESC).cast());
+    builder.symbol("FAI_DATA_DESC", (&raw const rt::FAI_DATA_DESC).cast());
 }
 
 fn jit_module() -> JITModule {

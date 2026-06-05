@@ -33,9 +33,22 @@ fn prim_name(op: Prim) -> &'static str {
         Prim::IntLe => "<=",
         Prim::IntGt => ">",
         Prim::IntGe => ">=",
+        Prim::FloatAdd => "+.",
+        Prim::FloatSub => "-.",
+        Prim::FloatMul => "*.",
+        Prim::FloatDiv => "/.",
+        Prim::FloatLt => "<.",
+        Prim::FloatLe => "<=.",
+        Prim::FloatGt => ">.",
+        Prim::FloatGe => ">=.",
+        Prim::Compare => "compare",
         Prim::Eq => "=",
         Prim::StrConcat => "++",
         Prim::IntToString => "intToString",
+        Prim::FloatToString => "floatToString",
+        Prim::IntToFloat => "intToFloat",
+        Prim::FloatToInt => "floatToInt",
+        Prim::Sqrt => "sqrt",
         Prim::Not => "not",
         Prim::ConsoleWriteLine => "writeLine",
     }
@@ -45,6 +58,9 @@ fn write_expr(out: &mut String, e: &CExpr) {
     match &e.kind {
         ExprKind::Lit(Lit::Int(n)) => {
             let _ = write!(out, "{n}");
+        }
+        ExprKind::Lit(Lit::Float(bits)) => {
+            let _ = write!(out, "{}", f64::from_bits(*bits));
         }
         ExprKind::Lit(Lit::Bool(b)) => {
             let _ = write!(out, "{b}");
@@ -89,6 +105,21 @@ fn write_expr(out: &mut String, e: &CExpr) {
         ExprKind::MakeClosure { func, captures } => {
             let caps: Vec<String> = captures.iter().map(|c| format!("%{}", c.index())).collect();
             let _ = write!(out, "(closure fn{} [{}])", func.index(), caps.join(", "));
+        }
+        ExprKind::MakeData { tag, args } => {
+            let _ = write!(out, "(data {tag}");
+            write_args(out, args);
+            out.push(')');
+        }
+        ExprKind::DataTag(base) => {
+            out.push_str("(tag ");
+            write_expr(out, base);
+            out.push(')');
+        }
+        ExprKind::DataField { base, index } => {
+            let _ = write!(out, "(field {index} ");
+            write_expr(out, base);
+            out.push(')');
         }
         ExprKind::Dup { local, body } => {
             let _ = write!(out, "(dup %{}; ", local.index());

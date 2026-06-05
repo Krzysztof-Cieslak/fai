@@ -1,0 +1,117 @@
+//! Type and constructor declarations: a per-file index of `type` declarations.
+//!
+//! [`type_decls`] is a `salsa` query keyed on a file. Its value, [`TypeDecls`],
+//! is span-free (only names, visibility, arities, tags, and arena [`ItemId`]s),
+//! so it travels safely inside cached values. The types phase reads the AST via
+//! the stored `item` to recover field types and alias bodies.
+
+use std::sync::Arc;
+
+use fai_db::{Db, SourceFile};
+use fai_syntax::Symbol;
+use fai_syntax::ast::{ItemId, ItemKind, TypeDef, Visibility};
+use rustc_hash::FxHashMap;
+
+/// A `type` declaration's position-independent summary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeDeclInfo {
+    /// The type's name.
+    pub name: Symbol,
+    /// The type's visibility (constructors inherit it).
+    pub visibility: Visibility,
+    /// The declared type parameters, in order (e.g. `'a 'b`).
+    pub params: Vec<Symbol>,
+    /// The declaring item (to fetch field types / alias bodies from the AST).
+    pub item: ItemId,
+    /// `true` for a transparent alias, `false` for a discriminated union.
+    pub is_alias: bool,
+    /// The constructor names of a union, in declaration order (empty for alias).
+    pub ctors: Vec<Symbol>,
+}
+
+/// A data constructor's position-independent summary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CtorInfo {
+    /// The constructor's name.
+    pub name: Symbol,
+    /// The owning type's name.
+    pub adt: Symbol,
+    /// The runtime tag (declaration order within the union).
+    pub tag: u32,
+    /// The number of fields the constructor takes.
+    pub arity: usize,
+    /// The constructor's index among its union's variants.
+    pub variant_index: usize,
+    /// The constructor's visibility (inherited from its type).
+    pub visibility: Visibility,
+}
+
+/// A file's declared types and constructors.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TypeDecls {
+    /// Declared types, by name.
+    pub types: FxHashMap<Symbol, TypeDeclInfo>,
+    /// Declared data constructors, by name.
+    pub ctors: FxHashMap<Symbol, CtorInfo>,
+}
+
+impl TypeDecls {
+    /// The declaration of type `name`, if any.
+    #[must_use]
+    pub fn type_named(&self, name: Symbol) -> Option<&TypeDeclInfo> {
+        self.types.get(&name)
+    }
+
+    /// The constructor `name`, if any.
+    #[must_use]
+    pub fn ctor(&self, name: Symbol) -> Option<&CtorInfo> {
+        self.ctors.get(&name)
+    }
+}
+
+/// Indexes the `type` declarations of `file` (pure; no diagnostics).
+///
+/// Duplicate type or constructor names keep the first declaration (later
+/// duplicates are reported by the types phase, which has spans).
+#[salsa::tracked]
+pub fn type_decls(db: &dyn Db, file: SourceFile) -> Arc<TypeDecls> {
+    let parsed = fai_syntax::parse(db, file);
+    let module = &parsed.module;
+    let mut decls = TypeDecls::default();
+
+    for (index, item) in module.items.iter().enumerate() {
+        let ItemKind::Type { visibility, name, params, def } = &item.kind else {
+            continue;
+        };
+        let item_id = ItemId::from_index(index);
+        let (is_alias, ctor_names) = match def {
+            TypeDef::Alias(_) => (true, Vec::new()),
+            TypeDef::Union(variants) => {
+                let mut names = Vec::with_capacity(variants.len());
+                for (variant_index, variant) in variants.iter().enumerate() {
+                    names.push(variant.name);
+                    let tag = u32::try_from(variant_index).unwrap_or(u32::MAX);
+                    decls.ctors.entry(variant.name).or_insert(CtorInfo {
+                        name: variant.name,
+                        adt: *name,
+                        tag,
+                        arity: variant.fields.len(),
+                        variant_index,
+                        visibility: *visibility,
+                    });
+                }
+                (false, names)
+            }
+        };
+        decls.types.entry(*name).or_insert(TypeDeclInfo {
+            name: *name,
+            visibility: *visibility,
+            params: params.clone(),
+            item: item_id,
+            is_alias,
+            ctors: ctor_names,
+        });
+    }
+
+    Arc::new(decls)
+}

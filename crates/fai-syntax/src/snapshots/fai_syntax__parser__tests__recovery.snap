@@ -1,9 +1,9 @@
 ---
 source: crates/fai-syntax/src/parser.rs
-expression: "dump(\"module M\\nlet a = 1\\ntype Bad = X\\nlet b = 2\")"
+expression: "dump(\"module M\\nlet a = 1\\n)\\nlet b = 2\")"
 ---
 module M
 (let Private a [] (int 1))
 (item-error)
 (let Private b [] (int 2))
-diag FAI1030 type declarations are not supported yet
+diag FAI1020 expected a declaration

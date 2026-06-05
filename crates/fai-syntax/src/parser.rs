@@ -11,8 +11,8 @@ use fai_diagnostics::{Diagnostic, DiagnosticCode};
 use fai_span::{ByteOffset, SourceId, Span, TextRange};
 
 use crate::ast::{
-    BinOp, Expr, ExprId, ExprKind, Item, ItemKind, LetStmt, Module, Pat, PatId, PatKind, Type,
-    TypeId, TypeKind, UnOp, Visibility,
+    BinOp, Expr, ExprId, ExprKind, Item, ItemKind, LetStmt, MatchArm, Module, Pat, PatId, PatKind,
+    Type, TypeDef, TypeId, TypeKind, UnOp, Variant, Visibility,
 };
 use crate::token::{Token, TokenKind};
 use crate::{Comment, MODULE_HEADER, SYNTAX_ERROR, Symbol, UNSUPPORTED, layout, lex};
@@ -227,7 +227,7 @@ impl Parser<'_> {
             TokenKind::LowerIdent => self.parse_signature(Visibility::Private),
             TokenKind::Example => self.parse_example(),
             TokenKind::Forall => self.parse_forall(),
-            TokenKind::Type => self.unsupported("type declarations"),
+            TokenKind::Type => self.parse_type_decl(Visibility::Private),
             TokenKind::Interface => self.unsupported("interface declarations"),
             TokenKind::Module => self.unsupported("nested modules"),
             _ => {
@@ -245,9 +245,14 @@ impl Parser<'_> {
         match self.peek() {
             TokenKind::Let => self.parse_binding(Visibility::Public),
             TokenKind::LowerIdent => self.parse_signature(Visibility::Public),
+            TokenKind::Type => self.parse_type_decl(Visibility::Public),
             _ => {
                 let span = self.cur().range;
-                self.error(SYNTAX_ERROR, span, "expected `let` or a signature after `public`");
+                self.error(
+                    SYNTAX_ERROR,
+                    span,
+                    "expected `let`, a signature, or `type` after `public`",
+                );
                 ItemKind::Error
             }
         }
@@ -307,6 +312,68 @@ impl Parser<'_> {
         self.expect(TokenKind::Colon, "`:` after the `forall` binders");
         let body = self.parse_expr();
         ItemKind::Forall { binders, body }
+    }
+
+    fn parse_type_decl(&mut self, visibility: Visibility) -> ItemKind {
+        self.bump(); // `type`
+        let name = if self.at(TokenKind::UpperIdent) {
+            Some(self.bump_symbol())
+        } else {
+            let span = self.cur().range;
+            self.error(SYNTAX_ERROR, span, "expected an upper-case type name after `type`");
+            None
+        };
+        let mut params = Vec::new();
+        while self.at(TokenKind::TypeVar) {
+            params.push(self.bump_symbol());
+        }
+        self.expect(TokenKind::Equals, "`=` in the type declaration");
+        // The `=` opens a layout block when the body starts on a new line.
+        let opened = self.eat(TokenKind::LayoutOpen);
+        while self.eat(TokenKind::LayoutSep) {}
+        // A leading `|` marks a discriminated union; anything else is a
+        // transparent alias to a type expression.
+        let def = if self.at(TokenKind::Pipe) {
+            self.parse_union()
+        } else {
+            TypeDef::Alias(self.parse_type())
+        };
+        if opened {
+            while self.eat(TokenKind::LayoutSep) {}
+            self.expect(TokenKind::LayoutClose, "the end of the type declaration");
+        }
+        match name {
+            Some(name) => ItemKind::Type { visibility, name, params, def },
+            None => ItemKind::Error,
+        }
+    }
+
+    /// Parses the `| A | B 'a …` variants of a discriminated union (the cursor is
+    /// at the leading `|`).
+    fn parse_union(&mut self) -> TypeDef {
+        let mut variants = Vec::new();
+        while self.eat(TokenKind::Pipe) {
+            let start = self.start();
+            let Some(name) = (if self.at(TokenKind::UpperIdent) {
+                Some(self.bump_symbol())
+            } else {
+                let span = self.cur().range;
+                self.error(SYNTAX_ERROR, span, "expected an upper-case constructor name");
+                None
+            }) else {
+                // Skip to the next `|` or the block end so recovery continues.
+                while !self.at(TokenKind::Pipe) && !self.at_terminator() && !self.at_eof() {
+                    self.bump();
+                }
+                continue;
+            };
+            let mut fields = Vec::new();
+            while can_start_type_atom(self.peek()) {
+                fields.push(self.parse_type_atom());
+            }
+            variants.push(Variant { name, fields, span: self.span_from(start) });
+        }
+        TypeDef::Union(variants)
     }
 
     // --- expressions (Pratt) ---------------------------------------------
@@ -381,12 +448,7 @@ impl Parser<'_> {
             TokenKind::Fun => return self.parse_lambda(start),
             TokenKind::If => return self.parse_if(start),
             TokenKind::LayoutOpen => return self.parse_block(start),
-            TokenKind::Match => {
-                let span = self.cur().range;
-                self.error(UNSUPPORTED, span, "match expressions are not supported yet");
-                self.resync_expr();
-                ExprKind::Error
-            }
+            TokenKind::Match => return self.parse_match(start),
             TokenKind::LBrace => {
                 let span = self.cur().range;
                 self.error(UNSUPPORTED, span, "records are not supported yet");
@@ -452,6 +514,39 @@ impl Parser<'_> {
         self.alloc_expr(ExprKind::Lambda { params, body }, self.span_from(start))
     }
 
+    fn parse_match(&mut self, start: ByteOffset) -> ExprId {
+        self.bump(); // `match`
+        let scrutinee = self.parse_expr();
+        self.expect(TokenKind::With, "`with` after the match scrutinee");
+        let mut arms = Vec::new();
+        while self.at(TokenKind::Pipe) {
+            let arm_start = self.start();
+            self.bump(); // `|`
+            let pat = self.parse_pattern();
+            self.expect(TokenKind::Arrow, "`->` in the match arm");
+            if self.at(TokenKind::Match) {
+                // A bare nested match here would greedily swallow the outer arms.
+                let span = self.cur().range;
+                self.error(
+                    SYNTAX_ERROR,
+                    span,
+                    "start a nested match on a new indented line, or parenthesize it",
+                );
+            }
+            let body = self.parse_expr();
+            arms.push(MatchArm { pat, body, span: self.span_from(arm_start) });
+        }
+        if arms.is_empty() {
+            let span = self.span_from(start);
+            self.error(
+                SYNTAX_ERROR,
+                span,
+                "a match expression needs at least one `| pattern -> body` arm",
+            );
+        }
+        self.alloc_expr(ExprKind::Match { scrutinee, arms }, self.span_from(start))
+    }
+
     fn parse_if(&mut self, start: ByteOffset) -> ExprId {
         self.bump(); // `if`
         let cond = self.parse_expr();
@@ -507,11 +602,6 @@ impl Parser<'_> {
         LetStmt { pat, params, value, span: self.span_from(start) }
     }
 
-    /// Skips a malformed expression up to the enclosing block boundary.
-    fn resync_expr(&mut self) {
-        self.resync(0);
-    }
-
     /// Skips a balanced `{ … }` (used to recover from record syntax).
     fn resync_brace(&mut self) {
         let mut depth = 0i32;
@@ -540,24 +630,129 @@ impl Parser<'_> {
     // --- patterns ---------------------------------------------------------
 
     fn parse_pattern(&mut self) -> PatId {
+        self.parse_pattern_or()
+    }
+
+    /// `p | p | …` — or-pattern alternatives (must bind the same variables). The
+    /// loop stops at `->`, so an `|` inside a match arm is gathered here while the
+    /// next-arm `|` is left for the arm loop.
+    fn parse_pattern_or(&mut self) -> PatId {
+        let start = self.start();
+        let first = self.parse_pattern_cons();
+        if self.at(TokenKind::Pipe) {
+            let mut alts = vec![first];
+            while self.eat(TokenKind::Pipe) {
+                alts.push(self.parse_pattern_cons());
+            }
+            self.alloc_pat(PatKind::Or(alts), self.span_from(start))
+        } else {
+            first
+        }
+    }
+
+    /// `head :: tail` — right-associative cons.
+    fn parse_pattern_cons(&mut self) -> PatId {
+        let start = self.start();
+        let head = self.parse_pattern_app();
+        if self.eat(TokenKind::ColonColon) {
+            let tail = self.parse_pattern_cons();
+            self.alloc_pat(PatKind::Cons { head, tail }, self.span_from(start))
+        } else {
+            head
+        }
+    }
+
+    /// `Ctor arg…` — constructor applied to atom patterns (juxtaposition), or a
+    /// bare atom when the head is not a constructor name.
+    fn parse_pattern_app(&mut self) -> PatId {
+        if self.at(TokenKind::UpperIdent) {
+            let start = self.start();
+            let name = self.bump_symbol();
+            let mut args = Vec::new();
+            while can_start_pattern_atom(self.peek()) {
+                args.push(self.parse_pattern_atom());
+            }
+            self.alloc_pat(PatKind::Constructor { name, args }, self.span_from(start))
+        } else {
+            self.parse_pattern_atom()
+        }
+    }
+
+    fn parse_pattern_atom(&mut self) -> PatId {
         let start = self.start();
         let kind = match self.peek() {
-            TokenKind::LowerIdent => PatKind::Var(self.bump_symbol()),
+            TokenKind::LowerIdent => {
+                let sym = self.bump_symbol();
+                match sym.as_str() {
+                    "true" => PatKind::Bool(true),
+                    "false" => PatKind::Bool(false),
+                    _ => PatKind::Var(sym),
+                }
+            }
             TokenKind::Underscore => {
                 self.bump();
                 PatKind::Wildcard
             }
+            TokenKind::UpperIdent => {
+                PatKind::Constructor { name: self.bump_symbol(), args: Vec::new() }
+            }
+            TokenKind::Int => PatKind::Int(self.bump_symbol()),
+            TokenKind::Float => PatKind::Float(self.bump_symbol()),
+            TokenKind::String => PatKind::String(self.bump_symbol()),
+            TokenKind::Char => PatKind::Char(self.bump_symbol()),
+            TokenKind::Minus => {
+                self.bump(); // `-`
+                let token = self.cur();
+                match self.peek() {
+                    TokenKind::Int => {
+                        self.bump();
+                        PatKind::Int(Symbol::intern(&format!("-{}", self.lexeme(token))))
+                    }
+                    TokenKind::Float => {
+                        self.bump();
+                        PatKind::Float(Symbol::intern(&format!("-{}", self.lexeme(token))))
+                    }
+                    _ => {
+                        let span = self.cur().range;
+                        self.error(SYNTAX_ERROR, span, "expected a number after `-` in a pattern");
+                        PatKind::Error
+                    }
+                }
+            }
             TokenKind::LParen => return self.parse_pattern_paren(start),
+            TokenKind::LBracket => return self.parse_pattern_list(start),
+            TokenKind::LBrace => {
+                let span = self.cur().range;
+                self.error(UNSUPPORTED, span, "record patterns are not supported yet");
+                self.resync_brace();
+                PatKind::Error
+            }
             _ => {
                 let span = self.cur().range;
                 self.error(SYNTAX_ERROR, span, "expected a pattern");
-                if !self.at_terminator() && !self.at(TokenKind::Equals) {
+                if !self.at_terminator()
+                    && !self.at(TokenKind::Equals)
+                    && !self.at(TokenKind::Arrow)
+                {
                     self.bump();
                 }
                 PatKind::Error
             }
         };
         self.alloc_pat(kind, self.span_from(start))
+    }
+
+    fn parse_pattern_list(&mut self, start: ByteOffset) -> PatId {
+        self.bump(); // `[`
+        let mut elems = Vec::new();
+        if !self.at(TokenKind::RBracket) {
+            elems.push(self.parse_pattern());
+            while self.eat(TokenKind::Comma) {
+                elems.push(self.parse_pattern());
+            }
+        }
+        self.expect(TokenKind::RBracket, "`]` to close the list pattern");
+        self.alloc_pat(PatKind::List(elems), self.span_from(start))
     }
 
     fn parse_pattern_paren(&mut self, start: ByteOffset) -> PatId {
@@ -713,6 +908,22 @@ fn can_start_arg(kind: TokenKind) -> bool {
     )
 }
 
+/// Whether `kind` can begin a constructor-argument pattern atom.
+fn can_start_pattern_atom(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::LowerIdent
+            | TokenKind::Underscore
+            | TokenKind::UpperIdent
+            | TokenKind::Int
+            | TokenKind::Float
+            | TokenKind::String
+            | TokenKind::Char
+            | TokenKind::LParen
+            | TokenKind::LBracket
+    )
+}
+
 /// Whether `kind` can begin a type-application argument atom.
 fn can_start_type_atom(kind: TokenKind) -> bool {
     matches!(kind, TokenKind::TypeVar | TokenKind::UpperIdent | TokenKind::LParen)
@@ -755,6 +966,14 @@ mod tests {
             ExprKind::Lambda { params, body } => {
                 format!("(fun [{}] {})", dump_pats(m, params), dump_expr(m, *body))
             }
+            ExprKind::Match { scrutinee, arms } => {
+                let arms = arms
+                    .iter()
+                    .map(|a| format!("({} -> {})", dump_pat(m, a.pat), dump_expr(m, a.body)))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!("(match {} [{}])", dump_expr(m, *scrutinee), arms)
+            }
             ExprKind::Block { stmts, tail } => {
                 let stmts = stmts.iter().map(|s| dump_stmt(m, s)).collect::<Vec<_>>().join(" ");
                 format!("(block [{}] {})", stmts, dump_expr(m, *tail))
@@ -794,6 +1013,19 @@ mod tests {
                 )
             }
             PatKind::Paren(inner) => format!("(pparen {})", dump_pat(m, *inner)),
+            PatKind::Constructor { name, args } => {
+                format!("(pctor {} [{}])", name.as_str(), dump_pats(m, args))
+            }
+            PatKind::Int(s) => format!("(pint {})", s.as_str()),
+            PatKind::Float(s) => format!("(pfloat {})", s.as_str()),
+            PatKind::String(s) => format!("(pstring {})", s.as_str()),
+            PatKind::Char(s) => format!("(pchar {})", s.as_str()),
+            PatKind::Bool(b) => format!("(pbool {b})"),
+            PatKind::List(xs) => format!("(plist {})", dump_pats(m, xs)),
+            PatKind::Cons { head, tail } => {
+                format!("(pcons {} {})", dump_pat(m, *head), dump_pat(m, *tail))
+            }
+            PatKind::Or(alts) => format!("(por {})", dump_pats(m, alts)),
             PatKind::Error => "(pat-error)".to_owned(),
         }
     }
@@ -835,6 +1067,29 @@ mod tests {
                     dump_pats(m, params),
                     dump_expr(m, *body)
                 ),
+                ItemKind::Type { visibility, name, params, def } => {
+                    let ps = params.iter().map(|p| p.as_str()).collect::<Vec<_>>().join(" ");
+                    let body = match def {
+                        crate::ast::TypeDef::Alias(ty) => format!("= {}", dump_type(m, *ty)),
+                        crate::ast::TypeDef::Union(variants) => {
+                            let vs = variants
+                                .iter()
+                                .map(|v| {
+                                    let fs = v
+                                        .fields
+                                        .iter()
+                                        .map(|f| dump_type(m, *f))
+                                        .collect::<Vec<_>>()
+                                        .join(" ");
+                                    format!("(| {} [{}])", v.name.as_str(), fs)
+                                })
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            format!("= {vs}")
+                        }
+                    };
+                    format!("(type {visibility:?} {} [{}] {})", name.as_str(), ps, body)
+                }
                 ItemKind::Example { body } => format!("(example {})", dump_expr(m, *body)),
                 ItemKind::Forall { binders, body } => {
                     let bs = binders.iter().map(|b| b.as_str()).collect::<Vec<_>>().join(" ");
@@ -1009,10 +1264,10 @@ mod tests {
 
     #[test]
     fn unsupported_constructs_report_fai1030_and_recover() {
+        // `interface` and records remain unimplemented; `type`/`match` no longer do.
         for src in [
-            "module M\ntype T = T",
             "module M\ninterface I =\n  m : Int",
-            "module M\nlet a = match x with\n  | _ -> 1",
+            "module M\nmodule Inner =\n  let x = 1",
             "module M\nlet r = { x = 1 }",
             "module M\npublic f : { x : Int }",
         ] {
@@ -1020,6 +1275,22 @@ mod tests {
             assert!(
                 parsed.diagnostics.iter().any(|d| d.code == crate::UNSUPPORTED),
                 "expected FAI1030 for: {src}",
+            );
+        }
+    }
+
+    #[test]
+    fn type_and_match_now_parse_cleanly() {
+        for src in [
+            "module M\n\ntype T =\n  | A\n  | B Int\n",
+            "module M\n\nlet f x =\n  match x with\n  | A -> 1\n  | _ -> 2\n",
+            "module M\n\ntype Celsius = Float\n",
+        ] {
+            let parsed = parse(src);
+            assert!(
+                parsed.diagnostics.is_empty(),
+                "expected clean parse for {src}: {:?}",
+                parsed.diagnostics
             );
         }
     }
@@ -1097,7 +1368,7 @@ mod tests {
 
     #[test]
     fn snapshot_recovery() {
-        insta::assert_snapshot!("recovery", dump("module M\nlet a = 1\ntype Bad = X\nlet b = 2"));
+        insta::assert_snapshot!("recovery", dump("module M\nlet a = 1\n)\nlet b = 2"));
     }
 }
 
@@ -1141,14 +1412,27 @@ mod proptests {
             }
             ExprKind::Field { base, .. } => walk_expr(m, *base),
             ExprKind::Tuple(xs) | ExprKind::List(xs) => xs.iter().for_each(|x| walk_expr(m, *x)),
+            ExprKind::Match { scrutinee, arms } => {
+                walk_expr(m, *scrutinee);
+                for arm in arms {
+                    walk_pat(m, arm.pat);
+                    walk_expr(m, arm.body);
+                }
+            }
             _ => {}
         }
     }
 
     fn walk_pat(m: &Module, id: PatId) {
+        use crate::ast::PatKind as P;
         match &m.pat(id).kind {
-            crate::ast::PatKind::Tuple(xs) => xs.iter().for_each(|p| walk_pat(m, *p)),
-            crate::ast::PatKind::Paren(inner) => walk_pat(m, *inner),
+            P::Tuple(xs) | P::List(xs) | P::Or(xs) => xs.iter().for_each(|p| walk_pat(m, *p)),
+            P::Paren(inner) => walk_pat(m, *inner),
+            P::Constructor { args, .. } => args.iter().for_each(|p| walk_pat(m, *p)),
+            P::Cons { head, tail } => {
+                walk_pat(m, *head);
+                walk_pat(m, *tail);
+            }
             _ => {}
         }
     }
@@ -1230,6 +1514,14 @@ mod proptests {
                         params.iter().for_each(|p| walk_pat(&parsed.module, *p));
                         walk_expr(&parsed.module, *body);
                     }
+                    ItemKind::Type { def, .. } => match def {
+                        crate::ast::TypeDef::Alias(ty) => walk_type(&parsed.module, *ty),
+                        crate::ast::TypeDef::Union(variants) => {
+                            for v in variants {
+                                v.fields.iter().for_each(|f| walk_type(&parsed.module, *f));
+                            }
+                        }
+                    },
                     ItemKind::Example { body } => walk_expr(&parsed.module, *body),
                     ItemKind::Forall { body, .. } => walk_expr(&parsed.module, *body),
                     ItemKind::Error => {}

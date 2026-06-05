@@ -12,8 +12,8 @@ mod doc;
 use doc::{Doc, concat, group, nest, print, text};
 use fai_span::LineIndex;
 use fai_syntax::ast::{
-    BinOp, ExprId, ExprKind, Item, ItemId, ItemKind, LetStmt, Module, PatId, PatKind, TypeId,
-    TypeKind, Visibility,
+    BinOp, ExprId, ExprKind, Item, ItemId, ItemKind, LetStmt, Module, PatId, PatKind, TypeDef,
+    TypeId, TypeKind, Visibility,
 };
 use fai_syntax::{Comment, CommentMap, NodeId, attach_comments};
 
@@ -94,12 +94,51 @@ impl Printer<'_> {
                 parts.push(self.body_doc(*body));
                 concat(parts)
             }
+            ItemKind::Type { visibility, name, params, def } => {
+                self.type_decl_doc(*visibility, *name, params, def)
+            }
             ItemKind::Example { body } => concat(vec![text("example: "), self.expr_doc(*body)]),
             ItemKind::Forall { binders, body } => {
                 let bound = binders.iter().map(|b| b.as_str()).collect::<Vec<_>>().join(" ");
                 concat(vec![text(format!("forall {bound}: ")), self.expr_doc(*body)])
             }
             ItemKind::Error => text(self.span_src(item.span)),
+        }
+    }
+
+    fn type_decl_doc(
+        &self,
+        visibility: Visibility,
+        name: fai_syntax::Symbol,
+        params: &[fai_syntax::Symbol],
+        def: &TypeDef,
+    ) -> Doc {
+        let mut header = String::from(visibility_prefix(visibility));
+        header.push_str("type ");
+        header.push_str(name.as_str());
+        for p in params {
+            header.push(' ');
+            header.push_str(p.as_str());
+        }
+        match def {
+            TypeDef::Alias(ty) => concat(vec![text(header), text(" = "), self.type_doc(*ty)]),
+            TypeDef::Union(variants) => {
+                let mut parts = vec![text(header), text(" =")];
+                let mut arms = vec![Doc::Hardline];
+                for (index, variant) in variants.iter().enumerate() {
+                    if index > 0 {
+                        arms.push(Doc::Hardline);
+                    }
+                    let mut arm = vec![text("| "), text(variant.name.as_str())];
+                    for &field in &variant.fields {
+                        arm.push(text(" "));
+                        arm.push(self.type_doc(field));
+                    }
+                    arms.push(concat(arm));
+                }
+                parts.push(nest(2, concat(arms)));
+                concat(parts)
+            }
         }
     }
 
@@ -199,6 +238,7 @@ impl Printer<'_> {
                 parts.push(self.body_doc(*body));
                 concat(parts)
             }
+            ExprKind::Match { .. } => self.match_doc(id),
             ExprKind::Block { .. } => self.body_doc(id),
             ExprKind::Field { base, field } => {
                 concat(vec![self.expr_doc(*base), text("."), text(field.as_str())])
@@ -228,6 +268,25 @@ impl Printer<'_> {
             text("else"),
             else_tail,
         ]))
+    }
+
+    fn match_doc(&self, id: ExprId) -> Doc {
+        let ExprKind::Match { scrutinee, arms } = &self.module.expr(id).kind else {
+            unreachable!("match_doc on a non-match expression");
+        };
+        // Arms align with `match` (no extra indent); each body collapses or breaks
+        // independently via `body_doc`.
+        let mut parts = vec![text("match "), self.expr_doc(*scrutinee), text(" with")];
+        for arm in arms {
+            parts.push(Doc::Hardline);
+            parts.push(concat(vec![
+                text("| "),
+                self.pat_doc(arm.pat),
+                text(" ->"),
+                self.body_doc(arm.body),
+            ]));
+        }
+        concat(parts)
     }
 
     fn delimited(&self, open: &str, close: &str, xs: &[ExprId]) -> Doc {
@@ -263,6 +322,42 @@ impl Printer<'_> {
                 concat(parts)
             }
             PatKind::Paren(inner) => concat(vec![text("("), self.pat_doc(*inner), text(")")]),
+            PatKind::Constructor { name, args } => {
+                let mut parts = vec![text(name.as_str())];
+                for &arg in args {
+                    parts.push(text(" "));
+                    parts.push(self.pat_doc(arg));
+                }
+                concat(parts)
+            }
+            PatKind::Int(s) | PatKind::Float(s) | PatKind::String(s) | PatKind::Char(s) => {
+                text(s.as_str())
+            }
+            PatKind::Bool(b) => text(if *b { "true" } else { "false" }),
+            PatKind::List(xs) => {
+                let mut parts = vec![text("[")];
+                for (index, &x) in xs.iter().enumerate() {
+                    if index > 0 {
+                        parts.push(text(", "));
+                    }
+                    parts.push(self.pat_doc(x));
+                }
+                parts.push(text("]"));
+                concat(parts)
+            }
+            PatKind::Cons { head, tail } => {
+                concat(vec![self.pat_doc(*head), text(" :: "), self.pat_doc(*tail)])
+            }
+            PatKind::Or(alts) => {
+                let mut parts = Vec::new();
+                for (index, &alt) in alts.iter().enumerate() {
+                    if index > 0 {
+                        parts.push(text(" | "));
+                    }
+                    parts.push(self.pat_doc(alt));
+                }
+                concat(parts)
+            }
             PatKind::Error => text(self.span_src(pat.span)),
         }
     }

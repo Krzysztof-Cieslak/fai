@@ -179,3 +179,119 @@ fn inequality_on_strings() {
     assert_eq!(code, 0);
     assert_eq!(out, "diff\n");
 }
+
+// ── M4: data types, pattern matching, lists, Float ────────────────────────────
+
+#[test]
+fn adt_constructor_and_match() {
+    let src = "module M\n\n\
+        type Shape =\n  | Circle Int\n  | Rect Int Int\n\n\
+        public area : Shape -> Int\n\
+        let area s =\n  match s with\n  | Circle r -> 3 * r * r\n  | Rect w h -> w * h\n\n\
+        public main : Runtime -> Unit\n\
+        let main r = Console.writeLine r (intToString (area (Rect 3 4)))\n";
+    let (code, out) = run(src);
+    assert_eq!(code, 0, "clean exit");
+    assert_eq!(out, "12\n");
+}
+
+#[test]
+fn nullary_constructor_match() {
+    let src = "module M\n\n\
+        public describe : Option Int -> String\n\
+        let describe opt =\n  match opt with\n  | None -> \"none\"\n  | Some n -> intToString n\n\n\
+        public main : Runtime -> Unit\n\
+        let main r = Console.writeLine r (describe None)\n";
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "none\n");
+}
+
+#[test]
+fn list_map_and_fold() {
+    let src = "module M\n\n\
+        public main : Runtime -> Unit\n\
+        let main r =\n  \
+          let xs = [1, 2, 3, 4]\n  \
+          let ys = map (fun x -> x * x) xs\n  \
+          Console.writeLine r (intToString (foldl (fun acc x -> acc + x) 0 ys))\n";
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "30\n");
+}
+
+#[test]
+fn cons_and_recursive_length() {
+    let src = "module M\n\n\
+        public main : Runtime -> Unit\n\
+        let main r = Console.writeLine r (intToString (length (1 :: 2 :: 3 :: [])))\n";
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "3\n");
+}
+
+#[test]
+fn list_pattern_match() {
+    let src = "module M\n\n\
+        public firstOr : Int -> List Int -> Int\n\
+        let firstOr d xs =\n  match xs with\n  | [] -> d\n  | x :: _ -> x\n\n\
+        public main : Runtime -> Unit\n\
+        let main r = Console.writeLine r (intToString (firstOr 0 [7, 8, 9]))\n";
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "7\n");
+}
+
+#[test]
+fn option_combinators_from_prelude() {
+    let (code, out) =
+        run(&main_printing("intToString (withDefault 0 (mapOption (fun x -> x + 1) (Some 41)))"));
+    assert_eq!(code, 0);
+    assert_eq!(out, "42\n");
+}
+
+#[test]
+fn float_arithmetic_and_to_string() {
+    let (code, out) = run(&main_printing("floatToString (1.5 + 2.5)"));
+    assert_eq!(code, 0);
+    assert_eq!(out, "4.0\n");
+}
+
+#[test]
+fn float_conversions_and_sqrt() {
+    let (code, out) = run(&main_printing("floatToString (sqrt (intToFloat 16))"));
+    assert_eq!(code, 0);
+    assert_eq!(out, "4.0\n");
+}
+
+#[test]
+fn structural_equality_on_data() {
+    let (code, out) = run(&main_printing("if [1, 2, 3] = [1, 2, 3] then \"eq\" else \"ne\""));
+    assert_eq!(code, 0);
+    assert_eq!(out, "eq\n");
+}
+
+#[test]
+fn tuple_construction_and_destructuring() {
+    let src = "module M\n\n\
+        public main : Runtime -> Unit\n\
+        let main r =\n  \
+          let pair = (40, 2)\n  \
+          let (a, b) = pair\n  \
+          Console.writeLine r (intToString (a + b))\n";
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "42\n");
+}
+
+#[test]
+fn nested_match_and_or_patterns() {
+    let src = "module M\n\n\
+        public classify : Int -> String\n\
+        let classify n =\n  match n with\n  | 0 | 1 -> \"small\"\n  | _ -> \"big\"\n\n\
+        public main : Runtime -> Unit\n\
+        let main r = Console.writeLine r (classify 1)\n";
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "small\n");
+}

@@ -152,11 +152,24 @@ fn signatured_def_is_singleton_scc() {
 
 #[test]
 fn shadowing_prelude_warns() {
-    let (db, files) = db_with(&[("M.fai", "module M\n\nlet length x = x\n")]);
-    let diags = resolve_diags(&db, files[0]);
+    // Shadow a prelude export: the warning needs the prelude module present so its
+    // exports are known.
+    let (db, files) = db_with(&[
+        ("Prelude.fai", "module Prelude\n\npublic length : List 'a -> Int\nlet length xs = 0\n"),
+        ("M.fai", "module M\n\nlet length x = x\n"),
+    ]);
+    let diags = resolve_diags(&db, files[1]);
     let warn = diags.iter().find(|d| d.code.as_str() == "FAI2010");
     assert!(warn.is_some(), "expected shadow warning, got {:?}", codes(&diags));
     assert_eq!(warn.unwrap().severity, Severity::Warning);
+}
+
+#[test]
+fn shadowing_intrinsic_warns() {
+    // Intrinsics are known without loading the prelude module.
+    let (db, files) = db_with(&[("M.fai", "module M\n\nlet not x = x\n")]);
+    let diags = resolve_diags(&db, files[0]);
+    assert!(diags.iter().any(|d| d.code.as_str() == "FAI2010"), "got {:?}", codes(&diags));
 }
 
 #[test]

@@ -67,6 +67,13 @@ fn collect_globals(expr: &CExpr, out: &mut Vec<DefId>) {
                 collect_globals(a, out);
             }
         }
+        ExprKind::MakeData { args, .. } => {
+            for a in args {
+                collect_globals(a, out);
+            }
+        }
+        ExprKind::DataTag(base) => collect_globals(base, out),
+        ExprKind::DataField { base, .. } => collect_globals(base, out),
         ExprKind::App { func, args } => {
             collect_globals(func, out);
             for a in args {
@@ -103,6 +110,8 @@ pub struct CoreFn {
 pub enum Lit {
     /// A 64-bit integer (decoded from its lexeme).
     Int(i64),
+    /// A 64-bit float, stored as its IEEE-754 bit pattern (so `Eq`/`Hash` hold).
+    Float(u64),
     /// A boolean.
     Bool(bool),
     /// A string's decoded UTF-8 bytes.
@@ -133,12 +142,38 @@ pub enum Prim {
     IntGt,
     /// `>=`
     IntGe,
+    /// `+` on `Float`
+    FloatAdd,
+    /// `-` on `Float`
+    FloatSub,
+    /// `*` on `Float`
+    FloatMul,
+    /// `/` on `Float`
+    FloatDiv,
+    /// `<` on `Float`
+    FloatLt,
+    /// `<=` on `Float`
+    FloatLe,
+    /// `>` on `Float`
+    FloatGt,
+    /// `>=` on `Float`
+    FloatGe,
+    /// Structural ordering: returns `-1`/`0`/`1` (used for non-numeric `< <= > >=`).
+    Compare,
     /// `=` (structural equality)
     Eq,
     /// `++` (string concatenation)
     StrConcat,
     /// `intToString`
     IntToString,
+    /// `floatToString`
+    FloatToString,
+    /// `intToFloat`
+    IntToFloat,
+    /// `floatToInt`
+    FloatToInt,
+    /// `sqrt`
+    Sqrt,
     /// `not`
     Not,
     /// `Console.writeLine`
@@ -159,9 +194,22 @@ impl Prim {
             Prim::IntLe => "fai_int_le",
             Prim::IntGt => "fai_int_gt",
             Prim::IntGe => "fai_int_ge",
+            Prim::FloatAdd => "fai_float_add",
+            Prim::FloatSub => "fai_float_sub",
+            Prim::FloatMul => "fai_float_mul",
+            Prim::FloatDiv => "fai_float_div",
+            Prim::FloatLt => "fai_float_lt",
+            Prim::FloatLe => "fai_float_le",
+            Prim::FloatGt => "fai_float_gt",
+            Prim::FloatGe => "fai_float_ge",
+            Prim::Compare => "fai_compare",
             Prim::Eq => "fai_equal",
             Prim::StrConcat => "fai_string_concat",
             Prim::IntToString => "fai_int_to_string",
+            Prim::FloatToString => "fai_float_to_string",
+            Prim::IntToFloat => "fai_int_to_float",
+            Prim::FloatToInt => "fai_float_to_int",
+            Prim::Sqrt => "fai_sqrt",
             Prim::Not => "fai_not",
             Prim::ConsoleWriteLine => "fai_console_write_line",
         }
@@ -171,7 +219,12 @@ impl Prim {
     #[must_use]
     pub fn arity(self) -> usize {
         match self {
-            Prim::IntToString | Prim::Not => 1,
+            Prim::IntToString
+            | Prim::FloatToString
+            | Prim::IntToFloat
+            | Prim::FloatToInt
+            | Prim::Sqrt
+            | Prim::Not => 1,
             _ => 2,
         }
     }
@@ -182,6 +235,10 @@ impl Prim {
     pub fn from_builtin(name: &str) -> Option<Prim> {
         Some(match name {
             "intToString" => Prim::IntToString,
+            "floatToString" => Prim::FloatToString,
+            "intToFloat" => Prim::IntToFloat,
+            "floatToInt" => Prim::FloatToInt,
+            "sqrt" => Prim::Sqrt,
             "not" => Prim::Not,
             "writeLine" => Prim::ConsoleWriteLine,
             _ => return None,
@@ -254,6 +311,24 @@ pub enum ExprKind {
         func: FnId,
         /// The captured slots, in the lifted function's `captures` order.
         captures: Vec<LocalId>,
+    },
+    /// Constructs a data value (constructor, record, or tuple): a tag plus its
+    /// fields. A nullary constructor (no fields) is an immediate carrying its tag.
+    MakeData {
+        /// The constructor's tag (variant index; 0 for records/tuples).
+        tag: u32,
+        /// The field values, consumed into the new object.
+        args: Vec<CExpr>,
+    },
+    /// Reads the tag of a data value (consuming `base`), as an immediate `Int`.
+    DataTag(Box<CExpr>),
+    /// Projects field `index` of a data value, consuming `base` and yielding an
+    /// owned reference to the field.
+    DataField {
+        /// The data value (consumed).
+        base: Box<CExpr>,
+        /// The field index.
+        index: u32,
     },
     /// Increment a variable's reference count, then evaluate `body` (inserted by
     /// `fai-rc`).
