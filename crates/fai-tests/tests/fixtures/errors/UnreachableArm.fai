@@ -1,0 +1,24 @@
+module UnreachableArm
+
+type Color =
+  | Red
+  | Green
+  | Blue
+
+// The second `Red` arm can never be reached.
+//~ ERROR FAI4002
+public duplicateArm : Color -> Int
+let duplicateArm c =
+  match c with
+  | Red -> 1
+  | Red -> 2
+  | Green -> 3
+  | Blue -> 4
+
+// Anything after a wildcard is dead code.
+//~ ERROR FAI4002
+public afterWildcard : Color -> Int
+let afterWildcard c =
+  match c with
+  | _ -> 0
+  | Red -> 1

@@ -347,3 +347,166 @@ fn deeply_curried_closure_releases_cleanly() {
     fai_drop(clos);
     assert_eq!(live_count(), base, "all captures released with the closure");
 }
+
+// --- Float -----------------------------------------------------------------
+
+/// A `Float` value from an `f64`.
+fn flt(x: f64) -> Value {
+    fai_box_float(x.to_bits() as i64)
+}
+
+/// Reads (and consumes) a `Float` result.
+fn float_val(v: Value) -> f64 {
+    let f = unbox_float(v);
+    fai_drop(v);
+    f
+}
+
+#[test]
+fn float_arithmetic_and_comparison() {
+    let _g = lock();
+    let base = live_count();
+    assert!((float_val(fai_float_add(flt(1.5), flt(2.5))) - 4.0).abs() < 1e-9);
+    assert!((float_val(fai_float_sub(flt(5.0), flt(1.5))) - 3.5).abs() < 1e-9);
+    assert!((float_val(fai_float_mul(flt(2.0), flt(3.0))) - 6.0).abs() < 1e-9);
+    assert!((float_val(fai_float_div(flt(9.0), flt(2.0))) - 4.5).abs() < 1e-9);
+    assert_eq!(fai_float_lt(flt(2.0), flt(3.0)), TRUE);
+    assert_eq!(fai_float_gt(flt(2.0), flt(3.0)), FALSE);
+    assert_eq!(fai_float_le(flt(3.0), flt(3.0)), TRUE);
+    assert_eq!(fai_float_ge(flt(2.0), flt(3.0)), FALSE);
+    assert!((float_val(fai_sqrt(flt(16.0))) - 4.0).abs() < 1e-9);
+    assert_eq!(live_count(), base, "every Float operand and result was freed");
+}
+
+#[test]
+fn float_conversions_and_rendering() {
+    let _g = lock();
+    let base = live_count();
+    assert!((float_val(fai_int_to_float(imm_int(16))) - 16.0).abs() < 1e-9);
+    assert!(int_eq(fai_float_to_int(flt(3.9)), 3)); // truncation toward zero
+    let rendered = fai_float_to_string(flt(4.0));
+    assert_eq!(unsafe { string_str(rendered) }, "4.0");
+    fai_drop(rendered);
+    assert_eq!(live_count(), base);
+}
+
+// --- Structural comparison -------------------------------------------------
+
+/// The three-way `compare` result as a plain `i64` (consumes both operands).
+fn cmp3(a: Value, b: Value) -> i64 {
+    fai_compare(a, b) >> 1
+}
+
+/// A boxed two-field record/tuple (tag 0) of immediate `Int`s.
+fn pair(x: i64, y: i64) -> Value {
+    let fields = [imm_int(x), imm_int(y)];
+    // SAFETY: `fields` holds two owned immediate values.
+    unsafe { fai_make_data(0, 2, fields.as_ptr()) }
+}
+
+#[test]
+fn compare_orders_ints_strings_floats_and_data() {
+    let _g = lock();
+    let base = live_count();
+    // Immediates (Ints / nullary tags).
+    assert_eq!(cmp3(imm_int(1), imm_int(2)), -1);
+    assert_eq!(cmp3(imm_int(2), imm_int(2)), 0);
+    assert_eq!(cmp3(imm_int(5), imm_int(2)), 1);
+    // Strings order lexicographically.
+    assert_eq!(cmp3(make_string(b"abc"), make_string(b"abd")), -1);
+    assert_eq!(cmp3(make_string(b"b"), make_string(b"a")), 1);
+    // Floats.
+    assert_eq!(cmp3(flt(1.0), flt(2.0)), -1);
+    assert_eq!(cmp3(flt(2.5), flt(2.5)), 0);
+    // Same constructor: fields compared left to right.
+    assert_eq!(cmp3(pair(1, 2), pair(1, 3)), -1);
+    assert_eq!(cmp3(pair(1, 2), pair(1, 2)), 0);
+    // Different constructors order by tag.
+    let t0 = {
+        let f = [imm_int(9)];
+        // SAFETY: one owned field.
+        unsafe { fai_make_data(0, 1, f.as_ptr()) }
+    };
+    let t1 = {
+        let f = [imm_int(0)];
+        // SAFETY: one owned field.
+        unsafe { fai_make_data(1, 1, f.as_ptr()) }
+    };
+    assert_eq!(cmp3(t0, t1), -1);
+    assert_eq!(live_count(), base, "compare consumed every operand");
+}
+
+// --- Composite construction and projection ---------------------------------
+
+#[test]
+fn make_data_tag_and_field_projection() {
+    let _g = lock();
+    let base = live_count();
+    let big = fai_box_int(BIG);
+    let fields = [imm_int(10), big];
+    // SAFETY: two owned fields move into the data value.
+    let d = unsafe { fai_make_data(1, 2, fields.as_ptr()) };
+    assert_eq!(live_count(), base + 2, "the data object plus its boxed field are live");
+
+    // The tag (dup `d` so it survives the consuming read).
+    assert_eq!(fai_data_tag(fai_dup(d)), imm_int(1));
+    // Field 0 is the immediate `10`.
+    assert!(int_eq(fai_data_field(fai_dup(d), 0), 10));
+    // Field 1 is the boxed Int; this consumes the last reference to `d`.
+    assert!(int_eq(fai_data_field(d, 1), BIG));
+    assert_eq!(live_count(), base, "data object and its capture released");
+}
+
+#[test]
+fn structural_equality_over_composites() {
+    let _g = lock();
+    let base = live_count();
+    assert_eq!(fai_equal(pair(1, 2), pair(1, 2)), TRUE);
+    assert_eq!(fai_equal(pair(1, 2), pair(1, 9)), FALSE);
+    // Equality recurses through boxed fields and frees both trees cleanly.
+    let a = {
+        let f = [fai_box_int(BIG), imm_int(0)];
+        // SAFETY: two owned fields.
+        unsafe { fai_make_data(0, 2, f.as_ptr()) }
+    };
+    let b = {
+        let f = [fai_box_int(BIG), imm_int(0)];
+        // SAFETY: two owned fields.
+        unsafe { fai_make_data(0, 2, f.as_ptr()) }
+    };
+    assert_eq!(fai_equal(a, b), TRUE);
+    assert_eq!(live_count(), base);
+}
+
+// --- String intrinsics -----------------------------------------------------
+
+#[test]
+fn string_case_trim_and_length() {
+    let _g = lock();
+    let base = live_count();
+    let upper = fai_to_upper(make_string(b"abc"));
+    assert_eq!(unsafe { string_str(upper) }, "ABC");
+    fai_drop(upper);
+    let lower = fai_to_lower(make_string(b"AbC"));
+    assert_eq!(unsafe { string_str(lower) }, "abc");
+    fai_drop(lower);
+    let trimmed = fai_trim(make_string(b"  hi  "));
+    assert_eq!(unsafe { string_str(trimmed) }, "hi");
+    fai_drop(trimmed);
+    assert!(int_eq(fai_string_length(make_string(b"hello")), 5));
+    assert_eq!(live_count(), base);
+}
+
+#[test]
+fn string_contains_split_and_join() {
+    let _g = lock();
+    let base = live_count();
+    assert_eq!(fai_string_contains(make_string(b"hello"), make_string(b"ell")), TRUE);
+    assert_eq!(fai_string_contains(make_string(b"hello"), make_string(b"xyz")), FALSE);
+    // Split on spaces, then join with commas, round-tripping through List String.
+    let parts = fai_string_split(make_string(b" "), make_string(b"a b c"));
+    let joined = fai_string_join(make_string(b","), parts);
+    assert_eq!(unsafe { string_str(joined) }, "a,b,c");
+    fai_drop(joined);
+    assert_eq!(live_count(), base);
+}

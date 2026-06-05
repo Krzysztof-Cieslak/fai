@@ -441,3 +441,187 @@ fn record_pattern_match_typechecks() {
     let (db, f) = db_with(&[("M.fai", src)]);
     assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
 }
+
+#[test]
+fn open_record_pattern_is_row_polymorphic_and_exhaustive() {
+    // A `{ x | _ }` pattern is irrefutable, so the single-arm match is clean,
+    // and the inferred parameter is an open row.
+    let src = "module M\n\nlet getX r =\n  match r with\n  | { x | _ } -> x\n";
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+    assert_eq!(type_of(&db, f[0], "getX"), "{ x : 'a | _ } -> 'a");
+}
+
+#[test]
+fn closed_record_pattern_missing_a_field_is_an_error() {
+    // The scrutinee is a two-field record; a *closed* pattern that names only
+    // `x` cannot unify with it (the fix is to write `{ x | _ }`).
+    let src = "module M\n\nlet f =\n  let p = { x = 1, y = 2 }\n  match p with\n  | { x } -> x\n";
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert!(
+        check_codes(&db, f[0]).contains(&"FAI3001".to_owned()),
+        "got {:?}",
+        check_codes(&db, f[0])
+    );
+}
+
+#[test]
+fn nested_record_field_access_chains() {
+    let src = "module M\n\ntype Seg = { from : { x : Int, y : Int }, to : { x : Int, y : Int } }\n\npublic startX : Seg -> Int\nlet startX s = s.from.x\n";
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+    assert_eq!(
+        type_of(&db, f[0], "startX"),
+        "{ from : { x : Int, y : Int }, to : { x : Int, y : Int } } -> Int"
+    );
+}
+
+#[test]
+fn record_in_constructor_field() {
+    // A union constructor whose field is a (named) structural record.
+    let src = "module M\n\ntype Pt = { x : Int, y : Int }\n\ntype Shape =\n  | Dot Pt\n  | Blank\n\npublic originDot : Shape\nlet originDot = Dot { x = 0, y = 0 }\n";
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+    assert_eq!(type_of(&db, f[0], "originDot"), "Shape");
+}
+
+// ── Parametric ADTs and constructors as functions ────────────────────────────
+//
+// These define their own parametric union (the `db_with` here does not load the
+// prelude), so they test the ADT machinery directly rather than `Option`.
+
+const OPT: &str = "type Opt 'a =\n  | Nothing\n  | Just 'a\n\n";
+
+#[test]
+fn constructor_application_infers_parametric_type() {
+    let (db, f) = db_with(&[("M.fai", &format!("module M\n\n{OPT}let wrapped = Just 1\n"))]);
+    assert_eq!(type_of(&db, f[0], "wrapped"), "Opt Int");
+}
+
+#[test]
+fn nullary_constructor_generalizes() {
+    let (db, f) = db_with(&[("M.fai", &format!("module M\n\n{OPT}let nothing = Nothing\n"))]);
+    assert_eq!(type_of(&db, f[0], "nothing"), "Opt 'a");
+}
+
+#[test]
+fn constructor_used_as_a_function() {
+    // `Just` partially applied is a function `'a -> Opt 'a`.
+    let (db, f) = db_with(&[("M.fai", &format!("module M\n\n{OPT}let wrap x = Just x\n"))]);
+    assert_eq!(type_of(&db, f[0], "wrap"), "'a -> Opt 'a");
+}
+
+#[test]
+fn user_parametric_union_with_two_params() {
+    let src = "module M\n\ntype Pair 'a 'b =\n  | Pair 'a 'b\n\npublic mk : 'a -> 'b -> Pair 'a 'b\nlet mk a b = Pair a b\n";
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+    assert_eq!(type_of(&db, f[0], "mk"), "'a -> 'b -> Pair 'a 'b");
+}
+
+#[test]
+fn type_constructor_arity_mismatch_in_signature() {
+    // `Box` takes one type argument; giving two is an error.
+    let src =
+        "module M\n\ntype Box 'a =\n  | Box 'a\n\npublic f : Box Int Int -> Int\nlet f b = 0\n";
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert!(
+        check_codes(&db, f[0]).contains(&"FAI3012".to_owned()),
+        "got {:?}",
+        check_codes(&db, f[0])
+    );
+}
+
+// ── Float and the no-coercion rule ───────────────────────────────────────────
+
+#[test]
+fn float_literal_is_float() {
+    let (db, f) = db_with(&[("M.fai", "module M\n\nlet x = 3.14\n")]);
+    assert_eq!(type_of(&db, f[0], "x"), "Float");
+}
+
+#[test]
+fn numeric_literal_flexes_to_float_in_context() {
+    // The bare `1` unifies with the `Float` operand — overloading, not coercion.
+    let (db, f) = db_with(&[("M.fai", "module M\n\nlet x = 1 + 2.0\n")]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+    assert_eq!(type_of(&db, f[0], "x"), "Float");
+}
+
+#[test]
+fn mixing_fixed_int_and_float_is_rejected() {
+    // `floatToInt 1.0` is a fixed `Int`; adding a `Float` literal cannot coerce.
+    let (db, f) = db_with(&[("M.fai", "module M\n\nlet bad = floatToInt 1.0 + 2.0\n")]);
+    assert!(
+        check_codes(&db, f[0]).contains(&"FAI3001".to_owned()),
+        "got {:?}",
+        check_codes(&db, f[0])
+    );
+}
+
+#[test]
+fn conversion_intrinsics_have_expected_types() {
+    let (db, f) =
+        db_with(&[("M.fai", "module M\n\nlet toF = intToFloat\n\nlet toI = floatToInt\n")]);
+    assert_eq!(type_of(&db, f[0], "toF"), "Int -> Float");
+    assert_eq!(type_of(&db, f[0], "toI"), "Float -> Int");
+}
+
+// ── Structural ordering ──────────────────────────────────────────────────────
+
+#[test]
+fn ordering_generalizes_like_equality() {
+    // `<` is admitted on any type and generalizes to `'a -> 'a -> Bool`.
+    let (db, f) = db_with(&[("M.fai", "module M\n\nlet lt a b = a < b\n")]);
+    assert_eq!(type_of(&db, f[0], "lt"), "'a -> 'a -> Bool");
+}
+
+#[test]
+fn prelude_compare_is_polymorphic() {
+    let mut db = FaiDatabase::new();
+    crate::prelude::load_prelude(&mut db);
+    let id = db.add_source("M.fai".into(), "module M\n\nlet cmp a b = compare a b\n".to_owned());
+    let file = db.source_file(id).unwrap();
+    assert!(check_codes(&db, file).is_empty(), "got {:?}", check_codes(&db, file));
+    assert_eq!(type_of(&db, file, "cmp"), "'a -> 'a -> Int");
+}
+
+// ── More exhaustiveness shapes ───────────────────────────────────────────────
+
+#[test]
+fn bool_match_is_exhaustive_with_both_cases() {
+    let src = "module M\n\nlet f b =\n  match b with\n  | true -> 1\n  | false -> 0\n";
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+}
+
+#[test]
+fn bool_match_missing_a_case_is_non_exhaustive() {
+    let src = "module M\n\nlet f b =\n  match b with\n  | true -> 1\n";
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert!(
+        check_codes(&db, f[0]).contains(&"FAI4001".to_owned()),
+        "got {:?}",
+        check_codes(&db, f[0])
+    );
+}
+
+#[test]
+fn redundant_literal_arm_is_unreachable() {
+    let src = "module M\n\nlet f n =\n  match n with\n  | 0 -> 1\n  | 0 -> 2\n  | _ -> 3\n";
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert!(
+        check_codes(&db, f[0]).contains(&"FAI4002".to_owned()),
+        "got {:?}",
+        check_codes(&db, f[0])
+    );
+}
+
+#[test]
+fn or_pattern_binds_consistently_across_alternatives() {
+    // `n` is bound in both alternatives, so the arm body can use it.
+    let src = "module M\n\ntype T =\n  | A Int\n  | B Int\n\npublic unwrap : T -> Int\nlet unwrap t =\n  match t with\n  | A n | B n -> n\n";
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+    assert_eq!(type_of(&db, f[0], "unwrap"), "T -> Int");
+}

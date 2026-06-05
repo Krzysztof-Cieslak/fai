@@ -1,0 +1,9 @@
+---
+source: crates/fai-syntax/src/parser.rs
+expression: "dump(\"module Cards\\ntype Suit =\\n  | Red\\n  | Black\\ntype Card = { rank : Int, suit : Suit }\\npublic describe : Card -> String\\nlet describe c =\\n  match c with\\n  | { rank = 1 | _ } -> \\\"ace\\\"\\n  | { rank, suit } -> intToString rank\")"
+---
+module Cards
+(type Private Suit [] = (| Red []) (| Black []))
+(type Private Card [] = (trecord [rank : (tcon Int), suit : (tcon Suit)]))
+(sig Public describe (arrow (tcon Card) (tcon String)))
+(let Private describe [(pvar c)] (block [] (match (var c) [((precord [rank = (pint 1)] open=true) -> (string "ace")) ((precord [rank, suit] open=false) -> (app (var intToString) (var rank)))])))

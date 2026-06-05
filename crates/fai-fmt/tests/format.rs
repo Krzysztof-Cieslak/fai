@@ -539,6 +539,21 @@ fn fmt_preserves_structure_examples() {
         "module M\nlet n = -a - -b",
         "module M\nlet p = a :: b :: c ++ d",
         "module M\npublic q : ('a -> 'b) -> List 'a -> List 'b\nlet q f = f",
+        // Data types, match, and records.
+        "module M\ntype Color =\n  | Red\n  | Green\n  | Blue",
+        "module M\ntype Shape =\n  | Circle Float\n  | Rect Float Float",
+        "module M\ntype Opt 'a =\n  | None\n  | Some 'a",
+        "module M\ntype Celsius = Int",
+        "module M\ntype Vec2 = { x : Float, y : Float }",
+        "module M\npublic getX : { x : 'a | _ } -> 'a\nlet getX r = r.x",
+        "module M\npublic setX : { x : 'a | 'r } -> { x : 'a | 'r }\nlet setX r = r",
+        "module M\nlet p = { x = 1, y = 2 }",
+        "module M\nlet q = { r with x = 1, y = 2 }",
+        "module M\nlet g r = r.x.y",
+        "module M\nlet f x =\n  match x with\n  | Some n -> n\n  | None -> 0",
+        "module M\nlet f xs =\n  match xs with\n  | [] -> 0\n  | x :: rest -> x",
+        "module M\nlet f n =\n  match n with\n  | 0 | 1 -> 1\n  | _ -> 2",
+        "module M\nlet f r =\n  match r with\n  | { x = 0 | _ } -> 0\n  | { x, y } -> x",
     ] {
         let before = parse_module(SourceId::new(0), src);
         assert!(before.diagnostics.is_empty(), "sample did not parse: {src}");
@@ -547,6 +562,67 @@ fn fmt_preserves_structure_examples() {
         assert!(after.diagnostics.is_empty(), "reformatted output did not parse:\n{out}");
         assert_eq!(shape(&before.module), shape(&after.module), "src: {src}\nout:\n{out}");
     }
+}
+
+#[test]
+fn record_expressions_format() {
+    assert!(assert_canonical("module M\nlet p = { x = 1, y = 2 }").contains("{ x = 1, y = 2 }"));
+    assert!(assert_canonical("module M\nlet q = { r with x = 1 }").contains("{ r with x = 1 }"));
+    assert!(assert_canonical("module M\nlet v = r.x.y").contains("r.x.y"));
+}
+
+#[test]
+fn record_types_in_signatures_format() {
+    assert!(
+        assert_canonical("module M\npublic mk : Int -> { x : Int, y : Int }\nlet mk n = n")
+            .contains("{ x : Int, y : Int }")
+    );
+    assert!(
+        assert_canonical("module M\npublic getX : { x : 'a | _ } -> 'a\nlet getX r = r")
+            .contains("{ x : 'a | _ }")
+    );
+    assert!(
+        assert_canonical(
+            "module M\npublic setX : { x : 'a | 'r } -> { x : 'a | 'r }\nlet setX r = r"
+        )
+        .contains("{ x : 'a | 'r }")
+    );
+}
+
+#[test]
+fn union_type_declaration_formats() {
+    let out = assert_canonical("module M\ntype Shape =\n  | Circle Float\n  | Rect Float Float");
+    assert!(out.contains("type Shape =\n  | Circle Float\n  | Rect Float Float"), "out:\n{out}");
+}
+
+#[test]
+fn alias_and_record_type_declarations_format() {
+    assert!(assert_canonical("module M\ntype Celsius = Int").contains("type Celsius = Int"));
+    let out = assert_canonical("module M\ntype Vec2 = { x : Float, y : Float }");
+    assert!(out.contains("type Vec2 = { x : Float, y : Float }"), "out:\n{out}");
+}
+
+#[test]
+fn match_expression_formats_and_round_trips() {
+    let src = "module M\npublic describe : Option Int -> String\nlet describe o =\n  match o with\n  | None -> \"none\"\n  | Some n -> intToString n";
+    let out = assert_canonical(src);
+    assert!(out.contains("match o with"), "out:\n{out}");
+    assert!(out.contains("| None -> \"none\""), "out:\n{out}");
+    assert!(out.contains("| Some n -> intToString n"), "out:\n{out}");
+}
+
+#[test]
+fn snapshot_union_and_match() {
+    let src = "module Shapes\ntype Shape =\n  | Circle Float\n  | Rect Float Float\npublic area : Shape -> Float\nlet area s =\n  match s with\n  | Circle r -> 3.14 * r * r\n  | Rect w h -> w * h";
+    insta::assert_snapshot!("union_and_match", fmt(src));
+    assert_idempotent(src);
+}
+
+#[test]
+fn snapshot_records() {
+    let src = "module Geo\ntype Vec2 = { x : Float, y : Float }\npublic scale : Float -> Vec2 -> Vec2\nlet scale k v = { v with x = v.x * k, y = v.y * k }";
+    insta::assert_snapshot!("records", fmt(src));
+    assert_idempotent(src);
 }
 
 fn arb_ident() -> impl Strategy<Value = String> {

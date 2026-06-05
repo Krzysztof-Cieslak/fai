@@ -1,0 +1,15 @@
+---
+source: crates/fai-fmt/tests/format.rs
+expression: fmt(src)
+---
+module Shapes
+
+type Shape =
+  | Circle Float
+  | Rect Float Float
+
+public area : Shape -> Float
+let area s =
+  match s with
+  | Circle r -> 3.14 * r * r
+  | Rect w h -> w * h

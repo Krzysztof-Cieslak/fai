@@ -129,6 +129,43 @@ fn expr_strategy() -> impl Strategy<Value = Expr> {
     ]
 }
 
+/// A generated, well-typed `Float` expression.
+#[derive(Debug, Clone)]
+enum FloatExpr {
+    Lit(u32),
+    Add(Box<FloatExpr>, Box<FloatExpr>),
+    Sub(Box<FloatExpr>, Box<FloatExpr>),
+    Mul(Box<FloatExpr>, Box<FloatExpr>),
+    Div(Box<FloatExpr>, Box<FloatExpr>),
+}
+
+fn render_float(e: &FloatExpr) -> String {
+    match e {
+        // Always emit a decimal point so the literal lexes as a `Float`.
+        FloatExpr::Lit(n) => format!("{n}.0"),
+        FloatExpr::Add(a, b) => format!("({} + {})", render_float(a), render_float(b)),
+        FloatExpr::Sub(a, b) => format!("({} - {})", render_float(a), render_float(b)),
+        FloatExpr::Mul(a, b) => format!("({} * {})", render_float(a), render_float(b)),
+        FloatExpr::Div(a, b) => format!("({} / {})", render_float(a), render_float(b)),
+    }
+}
+
+fn float_strategy() -> impl Strategy<Value = FloatExpr> {
+    let leaf = (0u32..1000).prop_map(FloatExpr::Lit);
+    leaf.prop_recursive(5, 40, 4, |inner| {
+        prop_oneof![
+            (inner.clone(), inner.clone())
+                .prop_map(|(a, b)| FloatExpr::Add(Box::new(a), Box::new(b))),
+            (inner.clone(), inner.clone())
+                .prop_map(|(a, b)| FloatExpr::Sub(Box::new(a), Box::new(b))),
+            (inner.clone(), inner.clone())
+                .prop_map(|(a, b)| FloatExpr::Mul(Box::new(a), Box::new(b))),
+            (inner.clone(), inner.clone())
+                .prop_map(|(a, b)| FloatExpr::Div(Box::new(a), Box::new(b))),
+        ]
+    })
+}
+
 proptest! {
     // A well-typed Int expression typechecks clean and infers to `Int`.
     #[test]
@@ -212,5 +249,45 @@ proptest! {
         let outcome = check_source(&src);
         prop_assert!(!outcome.has_errors(), "errors {:?} for {src}", outcome.codes());
         prop_assert_eq!(outcome.types.get("result").map(String::as_str), Some("Bool"));
+    }
+
+    // A well-typed Float expression typechecks clean and infers to `Float` — the
+    // overloaded operators resolve to the Float type with no Int defaulting.
+    #[test]
+    fn well_typed_float_expressions_infer_float(e in float_strategy()) {
+        let src = format!("module P\n\nlet result = {}\n", render_float(&e));
+        let outcome = check_source(&src);
+        prop_assert!(!outcome.has_errors(), "errors {:?} for {src}", outcome.codes());
+        prop_assert_eq!(outcome.types.get("result").map(String::as_str), Some("Float"));
+    }
+
+    // A record of distinct `Int` fields infers a closed record whose labels are
+    // rendered in sorted order, and accessing any field yields its `Int` type.
+    #[test]
+    fn record_field_access_infers_sorted_closed_record(
+        labels in prop::collection::hash_set("[a-z]{1,4}", 1..5),
+    ) {
+        prop_assume!(labels.iter().all(|l| !is_reserved(l)));
+        let mut sorted: Vec<String> = labels.into_iter().collect();
+        sorted.sort();
+
+        let lits = sorted
+            .iter()
+            .enumerate()
+            .map(|(i, l)| format!("{l} = {i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let first = &sorted[0];
+        let src = format!("module P\n\nlet rec0 = {{ {lits} }}\n\nlet got = rec0.{first}\n");
+
+        let outcome = check_source(&src);
+        prop_assert!(!outcome.has_errors(), "errors {:?} for {src}", outcome.codes());
+        prop_assert_eq!(outcome.types.get("got").map(String::as_str), Some("Int"));
+
+        let expected = format!(
+            "{{ {} }}",
+            sorted.iter().map(|l| format!("{l} : Int")).collect::<Vec<_>>().join(", ")
+        );
+        prop_assert_eq!(outcome.types.get("rec0"), Some(&expected));
     }
 }

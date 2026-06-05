@@ -1,0 +1,18 @@
+module ConstructorArity
+
+type Pair =
+  | Pair Int Int
+
+// `Pair` takes two fields, but the pattern binds only one.
+//~ ERROR FAI3011
+public firstOf : Pair -> Int
+let firstOf p =
+  match p with
+  | Pair x -> x
+
+// And here the pattern binds one too many.
+//~ ERROR FAI3011
+public sumOf : Pair -> Int
+let sumOf p =
+  match p with
+  | Pair x y z -> x + y

@@ -1,0 +1,11 @@
+module TypeConstructorArity
+
+// `Option` takes exactly one type argument; here it is given two.
+//~ ERROR FAI3012
+public bad : Option Int Int -> Int
+let bad o = 0
+
+// And here it is given none where one is required.
+//~ ERROR FAI3012
+public alsoBad : Option -> Int
+let alsoBad o = 0
