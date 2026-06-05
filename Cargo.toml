@@ -37,6 +37,8 @@ serde_json = "1"
 clap = { version = "4", features = ["derive"] }
 # Deterministic, fast hashing for internal maps (AGENTS.md §8).
 rustc-hash = "2"
+# Content hashing for the on-disk artifact cache and file-state sync.
+blake3 = "1"
 # String interning for identifiers (the non-salsa `Symbol`).
 lasso = { version = "0.7", features = ["multi-threaded"] }
 # UTF-8 paths (clean JSON, no lossy conversion).

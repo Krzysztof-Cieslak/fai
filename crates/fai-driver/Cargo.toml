@@ -25,6 +25,8 @@ serde = { workspace = true }
 serde_json.workspace = true
 thiserror.workspace = true
 camino.workspace = true
+blake3.workspace = true
+target-lexicon.workspace = true
 
 [lints]
 workspace = true
