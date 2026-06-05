@@ -385,6 +385,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "fai-rc"
+version = "0.1.0"
+dependencies = [
+ "fai-core",
+ "fai-db",
+ "fai-resolve",
+ "fai-syntax",
+ "fai-types",
+ "salsa",
+]
+
+[[package]]
 name = "fai-resolve"
 version = "0.1.0"
 dependencies = [

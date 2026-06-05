@@ -10,6 +10,7 @@ members = [
     "crates/fai-types",
     "crates/fai-ide",
     "crates/fai-core",
+    "crates/fai-rc",
     "crates/fai-runtime",
     "crates/fai-driver",
     "crates/fai-cli",
@@ -61,6 +62,10 @@ fai-fmt = { path = "crates/fai-fmt" }
 fai-resolve = { path = "crates/fai-resolve" }
 fai-types = { path = "crates/fai-types" }
 fai-ide = { path = "crates/fai-ide" }
+fai-core = { path = "crates/fai-core" }
+fai-rc = { path = "crates/fai-rc" }
+fai-codegen = { path = "crates/fai-codegen" }
+fai-runtime = { path = "crates/fai-runtime" }
 fai-driver = { path = "crates/fai-driver" }
 fai-cli = { path = "crates/fai-cli" }
 
