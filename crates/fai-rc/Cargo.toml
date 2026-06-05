@@ -15,5 +15,8 @@ fai-types.workspace = true
 fai-core.workspace = true
 salsa.workspace = true
 
+[dev-dependencies]
+proptest.workspace = true
+
 [lints]
 workspace = true

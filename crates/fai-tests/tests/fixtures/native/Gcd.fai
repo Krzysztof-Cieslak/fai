@@ -1,0 +1,15 @@
+module Gcd
+
+let gcd a b = if b = 0 then a else gcd b (a % b)
+
+let lcm a b = a / gcd a b * b
+
+public main : Runtime -> Unit
+let main runtime =
+  let a = Console.writeLine runtime (intToString (gcd 48 36))
+  let b = Console.writeLine runtime (intToString (gcd 17 5))
+  Console.writeLine runtime (intToString (lcm 4 6))
+
+//~ OUTPUT 12
+//~ OUTPUT 1
+//~ OUTPUT 12

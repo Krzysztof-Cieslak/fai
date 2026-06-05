@@ -1,0 +1,15 @@
+module Banking
+
+// Integer-cents balance growing 10% per year (truncating division).
+let grow balance years =
+  if years = 0 then balance else grow (balance + balance / 10) (years - 1)
+
+public main : Runtime -> Unit
+let main runtime =
+  let a = Console.writeLine runtime (intToString (grow 1000 0))
+  let b = Console.writeLine runtime (intToString (grow 1000 1))
+  Console.writeLine runtime (intToString (grow 1000 3))
+
+//~ OUTPUT 1000
+//~ OUTPUT 1100
+//~ OUTPUT 1331

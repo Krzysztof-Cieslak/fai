@@ -1,0 +1,18 @@
+module Parity
+
+// Mutual recursion.
+let isEven n = if n = 0 then true else isOdd (n - 1)
+
+let isOdd n = if n = 0 then false else isEven (n - 1)
+
+let parity n = if isEven n then "even" else "odd"
+
+public main : Runtime -> Unit
+let main runtime =
+  let a = Console.writeLine runtime (parity 10)
+  let b = Console.writeLine runtime (parity 7)
+  Console.writeLine runtime (parity 0)
+
+//~ OUTPUT even
+//~ OUTPUT odd
+//~ OUTPUT even

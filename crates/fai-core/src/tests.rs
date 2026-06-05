@@ -124,3 +124,83 @@ fn integer_literals_are_decoded() {
     let src = "module M\n\nlet x = 0xFF + 1_000\n";
     assert_eq!(lower(src, "x"), "fn0() = (+ 255 1000)\n");
 }
+
+#[test]
+fn char_literal_is_unsupported() {
+    let src = "module M\n\nlet c = 'a'\n";
+    assert!(codes(src, "c").contains(&"FAI7001".to_owned()));
+}
+
+#[test]
+fn list_literal_is_unsupported() {
+    let src = "module M\n\nlet xs = [1, 2, 3]\n";
+    assert!(codes(src, "xs").contains(&"FAI7001".to_owned()));
+}
+
+#[test]
+fn cons_is_unsupported() {
+    let src = "module M\n\nlet f x = x :: []\n";
+    assert!(codes(src, "f").contains(&"FAI7001".to_owned()));
+}
+
+#[test]
+fn float_in_argument_position_is_unsupported() {
+    let src = "module M\n\nlet f = intToString 3.0\n";
+    assert!(codes(src, "f").contains(&"FAI7001".to_owned()));
+}
+
+#[test]
+fn list_prelude_helpers_are_unsupported() {
+    // `length` is a list primitive with no native lowering.
+    let src = "module M\n\nlet n = length [1]\n";
+    assert!(codes(src, "n").contains(&"FAI7001".to_owned()));
+}
+
+#[test]
+fn tuple_let_binding_is_unsupported() {
+    let src = "module M\n\nlet f p =\n  let (x, y) = p\n  x\n";
+    assert!(codes(src, "f").contains(&"FAI7001".to_owned()));
+}
+
+#[test]
+fn lowering_invariants_hold_across_programs() {
+    use fai_syntax::ast::ItemKind;
+
+    let programs: &[(&str, &str)] = &[
+        ("module M\n\nlet add x y = x + y\n", "add"),
+        ("module M\n\nlet twice f = f >> f\n", "twice"),
+        ("module M\n\nlet adder x = fun y -> x + y\n", "adder"),
+        (
+            "module M\n\nlet helper x = x + 1\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (intToString (helper 1))\n",
+            "main",
+        ),
+    ];
+    for (src, name) in programs {
+        let (db, file) = db_with(src);
+        let lowered = core(&db, file, fai_syntax::Symbol::intern(name));
+
+        // The entry function's arity matches the binding's parameter count.
+        let params = fai_syntax::parse(&db, file)
+            .module
+            .items
+            .iter()
+            .find_map(|it| match &it.kind {
+                ItemKind::Binding { name: n, params, .. } if n.as_str() == *name => {
+                    Some(params.len())
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(lowered.entry().params.len(), params, "{name}: entry arity");
+
+        // Every referenced global resolves to a real binding somewhere.
+        for def in lowered.referenced_globals() {
+            let target = db.source_file(def.file).expect("global's file is registered");
+            assert!(
+                fai_resolve::module_defs(&db, target).get(def.name).is_some(),
+                "{name}: dangling global {}",
+                def.name
+            );
+        }
+    }
+}

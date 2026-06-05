@@ -70,6 +70,63 @@ fn unsupported_construct_blocks_the_build() {
 }
 
 #[test]
+fn type_error_blocks_the_build() {
+    let src = "module M\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (1 + 2)\n";
+    let (db, files) = db_with(&[("M.fai", src)]);
+    let exe = temp_exe();
+    let outcome = build_native(&db, files[0], &exe);
+    assert!(!outcome.ok);
+    assert!(
+        outcome.diagnostics.iter().any(|d| d.code.as_str().starts_with("FAI3")),
+        "expected a type error, got {:?}",
+        outcome.diagnostics.iter().map(|d| d.code.as_str()).collect::<Vec<_>>()
+    );
+    assert!(!exe.as_std_path().exists(), "no artifact on a failed build");
+}
+
+#[test]
+fn division_by_zero_aborts_at_runtime() {
+    let src = "module M\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (intToString (10 / 0))\n";
+    let (db, files) = db_with(&[("M.fai", src)]);
+    let exe = temp_exe();
+    let outcome = build_native(&db, files[0], &exe);
+    assert!(outcome.ok, "division by zero is a runtime fault, not a compile error");
+
+    let output = std::process::Command::new(exe.as_std_path()).output().expect("run");
+    assert!(!output.status.success(), "the program should fault");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("division by zero"),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn object_code_is_deterministic() {
+    let src = "module M\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (intToString (1 + 2))\n";
+    let object = |contents: &str| {
+        let (db, files) = db_with(&[("M.fai", contents)]);
+        (*object_code(&db, files[0], fai_syntax::Symbol::intern("main"))).clone()
+    };
+    assert_eq!(object(src), object(src), "the same source must produce identical object bytes");
+}
+
+#[test]
+fn editing_a_definition_recompiles_its_object() {
+    use fai_db::Setter;
+    let v1 = "module M\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (intToString 1)\n";
+    let v2 = "module M\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (intToString 2)\n";
+    let (mut db, files) = db_with(&[("M.fai", v1)]);
+    let file = files[0];
+    let _ = object_code(&db, file, fai_syntax::Symbol::intern("main"));
+
+    db.enable_event_log();
+    file.set_text(&mut db).to(v2.to_owned());
+    let _ = object_code(&db, file, fai_syntax::Symbol::intern("main"));
+    assert_eq!(count(&db.take_events(), "object_code"), 1, "an edited definition is recompiled");
+}
+
+#[test]
 fn editing_one_module_reuses_cached_objects_for_the_others() {
     // Main calls Helper.helper. Editing Helper's *body* must re-run only
     // Helper.helper's object_code; Main.main's stays cached (the cross-module

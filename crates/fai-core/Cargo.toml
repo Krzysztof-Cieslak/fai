@@ -17,5 +17,8 @@ fai-types.workspace = true
 salsa.workspace = true
 rustc-hash.workspace = true
 
+[dev-dependencies]
+proptest.workspace = true
+
 [lints]
 workspace = true

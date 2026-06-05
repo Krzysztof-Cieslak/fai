@@ -1,0 +1,23 @@
+module HigherOrder
+
+let inc x = x + 1
+
+let double x = x * 2
+
+// Polymorphic higher-order functions, compiled once and used at Int.
+let apply f x = f x
+
+let twice f x = f (f x)
+
+// A zero-argument binding holding a composed function (forced on reference).
+let addThenDouble = inc >> double
+
+public main : Runtime -> Unit
+let main runtime =
+  let a = Console.writeLine runtime (intToString (apply inc 41))
+  let b = Console.writeLine runtime (intToString (twice double 3))
+  Console.writeLine runtime (intToString (addThenDouble 20))
+
+//~ OUTPUT 42
+//~ OUTPUT 12
+//~ OUTPUT 42

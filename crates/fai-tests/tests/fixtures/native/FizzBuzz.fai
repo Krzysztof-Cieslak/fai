@@ -1,0 +1,33 @@
+module FizzBuzz
+
+let classify n =
+  if n % 15 = 0 then "FizzBuzz"
+  else if n % 3 = 0 then "Fizz"
+  else if n % 5 = 0 then "Buzz"
+  else intToString n
+
+// A recursive print loop threading the runtime capability.
+let loop runtime i n =
+  if i > n then ()
+  else
+    let printed = Console.writeLine runtime (classify i)
+    loop runtime (i + 1) n
+
+public main : Runtime -> Unit
+let main runtime = loop runtime 1 15
+
+//~ OUTPUT 1
+//~ OUTPUT 2
+//~ OUTPUT Fizz
+//~ OUTPUT 4
+//~ OUTPUT Buzz
+//~ OUTPUT Fizz
+//~ OUTPUT 7
+//~ OUTPUT 8
+//~ OUTPUT Fizz
+//~ OUTPUT Buzz
+//~ OUTPUT 11
+//~ OUTPUT Fizz
+//~ OUTPUT 13
+//~ OUTPUT 14
+//~ OUTPUT FizzBuzz

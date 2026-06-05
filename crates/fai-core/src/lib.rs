@@ -16,6 +16,8 @@ mod lower;
 pub mod pretty;
 
 #[cfg(test)]
+mod proptests;
+#[cfg(test)]
 mod tests;
 
 pub use ir::{CExpr, CoreFn, ExprKind, FnId, Lit, LoweredDef, Prim};

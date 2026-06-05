@@ -1,0 +1,15 @@
+module Strings
+
+let repeat s n = if n <= 0 then "" else s ++ repeat s (n - 1)
+
+let greet name = "Hello, " ++ name ++ "!"
+
+public main : Runtime -> Unit
+let main runtime =
+  let a = Console.writeLine runtime (repeat "ab" 3)
+  let b = Console.writeLine runtime (greet "Fai")
+  Console.writeLine runtime (repeat "-" 5)
+
+//~ OUTPUT ababab
+//~ OUTPUT Hello, Fai!
+//~ OUTPUT -----

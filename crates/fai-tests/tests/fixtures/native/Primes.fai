@@ -1,0 +1,27 @@
+module Primes
+
+// Trial division up to sqrt n (via d*d > n), all by recursion.
+let hasFactorFrom d n =
+  if d * d > n then false
+  else if n % d = 0 then true
+  else hasFactorFrom (d + 1) n
+
+let isPrime n = if n < 2 then false else not (hasFactorFrom 2 n)
+
+let countPrimesUpTo i n =
+  if i > n then 0
+  else if isPrime i then 1 + countPrimesUpTo (i + 1) n
+  else countPrimesUpTo (i + 1) n
+
+let describe n =
+  if isPrime n then intToString n ++ " is prime" else intToString n ++ " is not prime"
+
+public main : Runtime -> Unit
+let main runtime =
+  let a = Console.writeLine runtime (describe 7)
+  let b = Console.writeLine runtime (describe 12)
+  Console.writeLine runtime (intToString (countPrimesUpTo 1 30))
+
+//~ OUTPUT 7 is prime
+//~ OUTPUT 12 is not prime
+//~ OUTPUT 10
