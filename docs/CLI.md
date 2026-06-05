@@ -6,7 +6,7 @@
 > `fai build` produces a native executable and `fai run` executes it in an
 > isolated worker process. The daemon protocol and the remaining commands
 > specified here are the *intended* contract the implementation builds toward. See
-> `Agents.md` for project conventions, `docs/PLAN.md` for milestones, and the
+> `AGENTS.md` for project conventions, `docs/PLAN.md` for milestones, and the
 > `samples/` directory for the language itself.
 
 ---
@@ -32,7 +32,7 @@ Key properties:
 - **`query` commands default to JSON**; build/dev commands default to
   human-readable text. Both honor `--message-format`.
 - All structured output is **versioned** (`schemaVersion`) and **stable** — it is
-  an API. Diagnostics carry stable `FAInnnn` codes (see `Agents.md` §10).
+  an API. Diagnostics carry stable `FAInnnn` codes (see `AGENTS.md` §10).
 - Results are **best-effort under errors**: a workspace that doesn't fully
   typecheck still answers queries with partial results.
 
@@ -113,7 +113,7 @@ offsets** for exact machine use:
 
 Every JSON document includes `"schemaVersion"` (integer). The schema is stable
 and versioned; fields are only added in compatible ways within a major version.
-Diagnostics follow the model in `Agents.md` §10 (stable `FAInnnn` codes).
+Diagnostics follow the model in `AGENTS.md` §10 (stable `FAInnnn` codes).
 
 ---
 
@@ -156,7 +156,7 @@ Capability = { "name": string,         // e.g. "console"
                "origin": "parameter" | "transitive",
                "via": [string] }       // call path for transitive caps
 
-// Diagnostic — see Agents.md §10.
+// Diagnostic — see AGENTS.md §10.
 Diagnostic = { "code": string, "severity": "error"|"warning"|"info",
                "message": string, "primary": Span,
                "secondary": [{ "span": Span, "label": string }],
@@ -468,7 +468,7 @@ $ fai query caps App.greetUser
 These are treated as **public, versioned APIs**:
 
 - The **JSON output schemas** (`schemaVersion`).
-- The **diagnostic codes** `FAInnnn` (never renumbered; see `Agents.md` §10).
+- The **diagnostic codes** `FAInnnn` (never renumbered; see `AGENTS.md` §10).
 - The **daemon protocol** (`protocolVersion`) and **query method names**.
 
 Within a major version, changes are additive and backward-compatible. Breaking

@@ -1,7 +1,7 @@
 //! Deterministic diagnostic ordering.
 //!
 //! Output order must be stable regardless of how diagnostics were collected
-//! (`Agents.md` §8). Both renderers sort by `(file, byte_start, code)`.
+//! (`AGENTS.md` §8). Both renderers sort by `(file, byte_start, code)`.
 
 use fai_span::SpanResolver;
 

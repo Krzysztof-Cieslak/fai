@@ -2,7 +2,7 @@
 
 This is the tactical build plan: milestones with concrete deliverables and
 acceptance criteria, the sequencing rationale, a risk register, and the decision
-log. For project conventions see `Agents.md`; for the language itself see the
+log. For project conventions see `AGENTS.md`; for the language itself see the
 `samples/` directory.
 
 ---
@@ -455,7 +455,7 @@ and content-addressed cache landed in M0–M3.5; this milestone is *tuning*.)
 | R4 | Offset-evidence codegen for polymorphic field access | Med | Med | Reuse the dictionary-passing mechanism already needed for interfaces/generics; monomorphic access stays constant-offset. |
 | R5 | Offside-rule parsing ambiguities / poor recovery | Med | Med | Well-specified layout algorithm; the canonical formatter pins one layout; snapshot tests for tricky indentation. |
 | R6 | Exhaustiveness checking bugs (rows/literals) | Med | Med | Implement a known algorithm (Maranget-style); golden tests for false pos/neg. |
-| R7 | `'a'` char vs `'a` type-var lexing | Low | Med | Single documented lexer rule; dedicated tests (`Agents.md` §11). |
+| R7 | `'a'` char vs `'a` type-var lexing | Low | Med | Single documented lexer rule; dedicated tests (`AGENTS.md` §11). |
 | R8 | Scope creep from "AI-first" features | Med | Med | Effect rows, extension/restriction, package manager are explicitly **v2**. |
 | R9 | Docs drifting from implementation | Med | Low | Self-hosted check: `samples/` files are part of the test suite (DoD #6). |
 | R10 | Overloaded arithmetic adds inference complexity / "ambiguous numeric type" noise | Low | Med | Restrict overloading to the built-in numeric set (`+ - * /`) with a simple `Int`-defaulting rule; clear help text steering to annotation or `intToFloat`/`floatToInt`. |
@@ -471,7 +471,7 @@ and content-addressed cache landed in M0–M3.5; this milestone is *tuning*.)
 
 ## Decision log
 
-Resolved during planning (see the locked table in `Agents.md` §3):
+Resolved during planning (see the locked table in `AGENTS.md` §3):
 
 - **D1 Backend:** Cranelift native codegen (over interpreter / bytecode VM / LLVM
   / transpile). Rationale: native speed with fast compiles; avoids LLVM build cost.
@@ -801,7 +801,7 @@ Resolved while implementing **M3** (the native thin slice):
   `fn(env, args) -> i64` calling convention, the `fai_*` symbols) is the contract
   shared by codegen and the runtime.
 
-To change a locked decision: update this log **and** the table in `Agents.md`,
+To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected milestones.
 
 ---
