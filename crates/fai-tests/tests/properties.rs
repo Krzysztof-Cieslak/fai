@@ -5,7 +5,7 @@
 //! clean check and the expected inferred type. Plus general invariants:
 //! inference is deterministic and never panics on arbitrary (parseable) input.
 
-use fai_tests::check_source;
+use fai_tests::{check_source, local_type};
 use proptest::prelude::*;
 
 /// A generated, well-typed expression of a known type.
@@ -117,6 +117,18 @@ proptest! {
         let outcome = check_source(&src);
         prop_assert!(!outcome.has_errors(), "errors {:?} for {src}", outcome.codes());
         prop_assert_eq!(outcome.types.get("result").map(String::as_str), Some("Int"));
+    }
+
+    // A well-typed Int expression bound to a *local* infers to `Int`, and the
+    // local that returns it does too — exercises local inference, not just the
+    // public signature.
+    #[test]
+    fn local_binding_of_int_expr_infers_int(e in int_strategy()) {
+        let src = format!(
+            "module P\n\nlet f =\n  let value = {}\n  value\n",
+            render_int(&e)
+        );
+        prop_assert_eq!(local_type(&src, "f", "value"), "Int");
     }
 
     // A well-typed Bool expression typechecks clean and infers to `Bool`.

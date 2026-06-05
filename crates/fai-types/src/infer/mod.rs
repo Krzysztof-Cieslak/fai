@@ -213,22 +213,62 @@ pub fn infer_scc(
 
 /// Recursively defaults still-free Numeric variables in a solver type to `Int`.
 fn default_numerics(cx: &mut InferCtx, ty: &SolveTy) {
-    let resolved = cx.resolve_shallow(ty);
-    match resolved {
-        SolveTy::Var(_) => {
-            cx.default_numeric(ty);
+    cx.default_numerics_deep(ty);
+}
+
+/// Introspection for tests: the inferred type of each *local* binding in
+/// `name`'s body.
+///
+/// Unlike [`infer_scc`]/`def_type`, which return the *declared* scheme for a
+/// signatured binding, this exposes the types inference actually computed for
+/// parameters, `let`-bound locals, and lambda binders. Returns
+/// `(variable-name, generalized-scheme)` pairs in local-allocation order; the
+/// closures resolve out-of-body and prelude references (mirroring the real
+/// inference environment). Self-recursion uses the def's own (declared-or-fresh)
+/// type.
+pub fn infer_local_types(
+    db: &dyn Db,
+    file: SourceFile,
+    name: Symbol,
+    def_schemes: &dyn Fn(&dyn Db, DefId) -> Option<Scheme>,
+    builtins: &dyn Fn(Symbol) -> Option<Scheme>,
+) -> Vec<(Symbol, Ty)> {
+    let parsed = fai_syntax::parse(db, file);
+    let module = &parsed.module;
+    let resolved = fai_resolve::resolve(db, file);
+
+    let Some((params, body)) = binding_body(module, name) else {
+        return Vec::new();
+    };
+    let params: Vec<fai_syntax::ast::PatId> = params.to_vec();
+
+    let mut cx = InferCtx::new();
+    let member_ty = match declared_scheme(db, file, name) {
+        Some(scheme) => cx.instantiate(&scheme),
+        None => cx.fresh(),
+    };
+    let mut scc_types: FxHashMap<DefId, SolveTy> = FxHashMap::default();
+    scc_types.insert(DefId::new(file.source(db), name), member_ty.clone());
+
+    // Map each local slot to its source variable name (for var/wildcard patterns).
+    let mut local_names: FxHashMap<fai_resolve::LocalId, Symbol> = FxHashMap::default();
+    for (pat, local) in &resolved.pat_locals {
+        if let fai_syntax::ast::PatKind::Var(sym) = &module.pat(*pat).kind {
+            local_names.insert(*local, *sym);
         }
-        SolveTy::App(f, a) | SolveTy::Arrow(f, a) => {
-            default_numerics(cx, &f);
-            default_numerics(cx, &a);
-        }
-        SolveTy::Tuple(elems) => {
-            for e in &elems {
-                default_numerics(cx, e);
-            }
-        }
-        SolveTy::Con(_) | SolveTy::Unit | SolveTy::Error => {}
     }
+
+    let locals = {
+        let mut env = SccEnv::new(db, &scc_types, def_schemes, builtins);
+        let mut walker = Walker::new(db, file, module, &resolved, &mut cx, &mut env);
+        let param_tys: Vec<SolveTy> = params.iter().map(|&p| walker.bind_param(p)).collect();
+        let body_ty = walker.infer_expr(body);
+        let fn_ty = SolveTy::arrows_solver(param_tys, body_ty);
+        let _ = walker.cx.unify(&fn_ty, &member_ty);
+        walker.collect_local_types()
+    };
+
+    locals.into_iter().filter_map(|(id, ty)| local_names.get(&id).map(|name| (*name, ty))).collect()
 }
 
 /// The error scheme (monomorphic error type).
