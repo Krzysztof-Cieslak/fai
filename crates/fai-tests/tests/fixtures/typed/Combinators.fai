@@ -92,11 +92,47 @@ let applyToFive f =
   let apply = fun g -> g 5
   apply f
 
+// ── data-aware combinators (recursive parametric ADT + match) ────────────────
+
+// A binary tree — the classic carrier for polymorphic folds.
+type Tree 'a =
+  | Leaf
+  | Node (Tree 'a) 'a (Tree 'a)
+
+// `mapTree` is `map` over the tree shape: a polymorphic combinator on data.
+//~ TYPE mapTree : ('a -> 'b) -> Tree 'a -> Tree 'b
+public mapTree : ('a -> 'b) -> Tree 'a -> Tree 'b
+let mapTree f t =
+  match t with
+  | Leaf -> Leaf
+  | Node l x r -> Node (mapTree f l) (f x) (mapTree f r)
+
+// `foldTree` collapses a tree with a node combiner and a leaf seed. Written with
+// the accumulator first so the canonical render names it `'a`.
+//~ TYPE foldTree : ('a -> 'b -> 'a -> 'a) -> 'a -> Tree 'b -> 'a
+public foldTree : ('a -> 'b -> 'a -> 'a) -> 'a -> Tree 'b -> 'a
+let foldTree f seed t =
+  match t with
+  | Leaf -> seed
+  | Node l x r -> f (foldTree f seed l) x (foldTree f seed r)
+
+// A local that maps then folds — combinators composed over data.
+//~ TYPE sumDoubled : Tree Int -> Int
+//~ LOCAL sumDoubled.doubled : Tree Int
+public sumDoubled : Tree Int -> Int
+let sumDoubled t =
+  let doubled = mapTree (fun x -> x * 2) t
+  foldTree (fun l x r -> l + x + r) 0 doubled
+
 // ── Contracts ────────────────────────────────────────────────────────────────
 
 example: applyTwice 10 = 12
 example: useGenericLocal 1 true = (1, true)
 example: addThree 4 = 7
 example: pipeline 3 = 8
+example: sumDoubled Leaf = 0
+example: sumDoubled (Node Leaf 5 Leaf) = 10
+example: sumDoubled (Node (Node Leaf 1 Leaf) 2 Leaf) = 6
 forall x: identity x = x
 forall x: applyTwice x = x + 2
+forall t: mapTree (fun x -> x) t = t

@@ -1,21 +1,26 @@
 # Fai — Agent & Contributor Guide
 
-> **Status:** Implemented through milestone **M3.5**. The compiler front end —
+> **Status:** Implemented through the **data layer** (M4). The compiler front end —
 > lexer, layout, parser/AST, the incremental `parse`/`item_tree` queries, and the
 > canonical formatter (M1) — plus name resolution, the module graph, and
 > Hindley–Milner inference for the functional core (M2) are built. `fai check`
 > type-checks, and the `fai query` code-intelligence commands work. The native
-> backend thin slice (M3) is built too: a typed Core IR (`fai-core`), plain
-> reference counting (`fai-rc`), Cranelift code generation with both AOT and JIT
-> (`fai-codegen`), and the runtime (`fai-runtime`) — so `fai build` produces a
-> native executable and `fai run` executes it (subset: `Int`/`Bool`/`String`,
-> functions, `let`, `if`, arithmetic, and `Console.writeLine` via `main`). The
-> daemon layer (M3.5) is built: a per-workspace `fai-server` holds the warm query
-> database and serves a thin CLI client over MessagePack JSON-RPC (`check`,
-> `query`, `fmt`, `build` warm; `run` under daemon supervision, streamed and
-> reaped), backed by an on-disk content-addressed object cache; `--no-daemon` runs
-> in-process. Later milestones (data types, …) define the *intended* interface we
-> build toward. The design is locked (see the decision table below).
+> backend (M3) is built: a typed Core IR (`fai-core`), reference counting
+> (`fai-rc`), Cranelift code generation with both AOT and JIT (`fai-codegen`), and
+> the runtime (`fai-runtime`) — so `fai build` produces a native executable and
+> `fai run` executes it. The daemon layer (M3.5) is built: a per-workspace
+> `fai-server` holds the warm query database and serves a thin CLI client over
+> MessagePack JSON-RPC, backed by an on-disk content-addressed object cache;
+> `--no-daemon` runs in-process. The data layer (M4) is built: **discriminated
+> unions and transparent type aliases, `match` with exhaustiveness/redundancy
+> checking, structural records with row polymorphism, a native `Float`, and
+> structural ordering** — all compiling to native code (monomorphic records use
+> constant-offset projections; a *row-polymorphic* field access/update reachable
+> from `main` reports `FAI7002`, pending the M5 offset-evidence work). The
+> standard library (`Option`/`Result`, list combinators, `sort`, `Dict`/`Set`,
+> string ops) ships as a real prelude module. Later milestones (interfaces &
+> capabilities, …) define the *intended* interface we build toward. The design is
+> locked (see the decision table below).
 
 This document is the orientation guide for anyone — human or AI agent — working
 on the Fai compiler. Read it first. For the staged build plan see `docs/PLAN.md`; for
@@ -76,10 +81,11 @@ table **and** the decision log in `docs/PLAN.md`).
 | Layout | **Indentation-significant** (offside rule); `fai fmt` pins exactly one canonical layout (2-space indent, no tabs) |
 | Type variables | F#-style leading tick: `'a`, `'k 'v` |
 | Equality | `=` (equal) / `<>` (not equal), structural; undefined on function-typed values |
+| Ordering | `< <= > >=` are **structural** over any non-function type (a runtime `compare`; constructor tags order by declaration, records by sorted label); undefined on functions. Generalizes like equality |
 | Arithmetic | `+ - * /` **overloaded over `Int`/`Float`** (F#-style); unconstrained numeric type **defaults to `Int`**; **no implicit `Int`/`Float` coercion** (use `intToFloat`/`floatToInt`) |
 | Comments | `//` line, `(* ... *)` block, `///` doc |
 | Misc syntax | `[1, 2, 3]` lists, `::` cons, `List 'a`; `\|>`, `>>`, `++`; `true`/`false`; `if/then/else`; 64-bit `Int`/`Float` |
-| Algebraic types | Discriminated unions (`type T = \| A \| B 'a`) |
+| Algebraic types | Discriminated unions (`type T = \| A \| B 'a`); transparent type aliases (`type Id = …`, acyclic) |
 | Tuples | **Structural**; values `(a, b)`, type `'a * 'b` (`*` binds tighter than `->`) |
 | Records | **Structural with row polymorphism**; no duplicate labels (lacks constraints); `{ x = 1.0, y = 2.0 }`; dot access; `{ r with ... }` update; field punning in patterns; `type Point = { ... }` is a **transparent alias**; **closed by default** `{ x : T }`, anonymous-open `{ x : T \| _ }`, named-open `{ x : T \| 'r }` (named only to thread the tail to the result); **patterns mirror this** — `{ ... }` closed (names all fields), `{ ... \| _ }` open (ignore rest; required for row-poly scrutinees); extension/restriction (incl. binding a pattern tail) deferred to v2 |
 | Inference | Hindley–Milner + let-generalization + **rows / row unification / lacks constraints**; exhaustiveness checking for `match` |
@@ -89,7 +95,7 @@ table **and** the decision log in `docs/PLAN.md`).
 | Contracts | **First-class `example` / `forall` declarations** (`example: e` / `forall xs: e`; peers of `let`/`type`), resolved in module scope, type-checked to `Bool`, run by `fai test`; `///` is human prose only |
 | Backend | **Cranelift** native code generation |
 | Memory | **Perceus-style reference counting** (pure + strict ⇒ acyclic heaps ⇒ no cycle collector); reuse analysis enables in-place updates incl. `{ r with ... }` |
-| Representation | Uniform 64-bit boxed/immediate values; canonical record field layout; **offset-evidence passing** for polymorphic field access; dictionaries for interfaces/generics |
+| Representation | Uniform 64-bit boxed/immediate values; canonical record field layout (sorted by label text); monomorphic field access is a **constant offset**; **offset-evidence passing** for *row-polymorphic* field access is staged with the M5 dictionary work (reachable row-poly access reports `FAI7002` for now); dictionaries for interfaces/generics |
 | Determinism | Clock / random / env / IO are reachable only via capabilities |
 | Compilation model | **Demand-driven (salsa) query engine**; per-workspace **daemon** holds the DB hot, thin CLI client; **content-addressed on-disk cache**; **JIT** for `run`/`test`, **AOT** for `build`; incremental at definition/SCC granularity |
 | Tooling | `fai build/run/check/fmt/test/lsp` + read-only `fai query …` (code intelligence); per-workspace daemon (MessagePack JSON-RPC); global `--message-format=json`; stable error codes `FAInnnn`. Full reference: **`docs/CLI.md`** |

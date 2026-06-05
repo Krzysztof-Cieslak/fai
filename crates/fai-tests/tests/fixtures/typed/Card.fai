@@ -1,178 +1,137 @@
 module Card
 
-// A playing card is encoded as a pair (rank, suit) where:
-//   rank: 2..14  (2=Two, 11=Jack, 12=Queen, 13=King, 14=Ace)
-//   suit: 0..3   (0=Clubs, 1=Diamonds, 2=Hearts, 3=Spades)
-// We use plain Int arithmetic so everything stays in the M2 surface.
+// A playing card modeled with algebraic data types: `Rank` and `Suit` are
+// enumerations and a `Card` is a record pairing them. The ranks are declared in
+// ascending order, so the *structural* ordering (`<`, `>`) compares them
+// correctly — `Ace` is the highest rank with no arithmetic at all. `Card` is a
+// transparent alias, so public signatures render as the structural record it
+// stands for.
 
-// ── Card constructors ────────────────────────────────────────────────────────
+type Suit =
+  | Clubs
+  | Diamonds
+  | Hearts
+  | Spades
 
-//~ TYPE makeCard : Int -> Int -> Int * Int
-public makeCard : Int -> Int -> Int * Int
-let makeCard rank suit = (rank, suit)
+type Rank =
+  | Two
+  | Three
+  | Four
+  | Five
+  | Six
+  | Seven
+  | Eight
+  | Nine
+  | Ten
+  | Jack
+  | Queen
+  | King
+  | Ace
 
-//~ TYPE rank : Int * Int -> Int
-public rank : Int * Int -> Int
-let rank card =
-  let (r, s) = card
-  r
+type Card = { rank : Rank, suit : Suit }
 
-//~ TYPE suit : Int * Int -> Int
-public suit : Int * Int -> Int
-let suit card =
-  let (r, s) = card
-  s
+// ── Construction & accessors ─────────────────────────────────────────────────
 
-// ── Rank names as integers (named constants) ─────────────────────────────────
+//~ TYPE makeCard : Rank -> Suit -> { rank : Rank, suit : Suit }
+public makeCard : Rank -> Suit -> Card
+let makeCard rank suit = { rank = rank, suit = suit }
 
-//~ TYPE two : Int
-public two : Int
-let two = 2
+//~ TYPE rank : { rank : Rank, suit : Suit } -> Rank
+public rank : Card -> Rank
+let rank card = card.rank
 
-//~ TYPE three : Int
-public three : Int
-let three = 3
+//~ TYPE suit : { rank : Rank, suit : Suit } -> Suit
+public suit : Card -> Suit
+let suit card = card.suit
 
-//~ TYPE four : Int
-public four : Int
-let four = 4
+// ── Numeric values (for deck indexing and display) ───────────────────────────
 
-//~ TYPE five : Int
-public five : Int
-let five = 5
+//~ TYPE rankValue : Rank -> Int
+public rankValue : Rank -> Int
+let rankValue r =
+  match r with
+  | Two -> 2
+  | Three -> 3
+  | Four -> 4
+  | Five -> 5
+  | Six -> 6
+  | Seven -> 7
+  | Eight -> 8
+  | Nine -> 9
+  | Ten -> 10
+  | Jack -> 11
+  | Queen -> 12
+  | King -> 13
+  | Ace -> 14
 
-//~ TYPE six : Int
-public six : Int
-let six = 6
+//~ TYPE suitValue : Suit -> Int
+public suitValue : Suit -> Int
+let suitValue s =
+  match s with
+  | Clubs -> 0
+  | Diamonds -> 1
+  | Hearts -> 2
+  | Spades -> 3
 
-//~ TYPE seven : Int
-public seven : Int
-let seven = 7
+// ── Comparison helpers (structural equality and ordering on the enums) ───────
 
-//~ TYPE eight : Int
-public eight : Int
-let eight = 8
+//~ TYPE sameRank : { rank : Rank, suit : Suit } -> { rank : Rank, suit : Suit } -> Bool
+public sameRank : Card -> Card -> Bool
+let sameRank a b = a.rank = b.rank
 
-//~ TYPE nine : Int
-public nine : Int
-let nine = 9
+//~ TYPE sameSuit : { rank : Rank, suit : Suit } -> { rank : Rank, suit : Suit } -> Bool
+public sameSuit : Card -> Card -> Bool
+let sameSuit a b = a.suit = b.suit
 
-//~ TYPE ten : Int
-public ten : Int
-let ten = 10
+//~ TYPE rankHigher : { rank : Rank, suit : Suit } -> { rank : Rank, suit : Suit } -> Bool
+public rankHigher : Card -> Card -> Bool
+let rankHigher a b = a.rank > b.rank
 
-//~ TYPE jack : Int
-public jack : Int
-let jack = 11
+// ── Display helpers ──────────────────────────────────────────────────────────
 
-//~ TYPE queen : Int
-public queen : Int
-let queen = 12
-
-//~ TYPE king : Int
-public king : Int
-let king = 13
-
-//~ TYPE ace : Int
-public ace : Int
-let ace = 14
-
-// ── Suit names as integers ────────────────────────────────────────────────────
-
-//~ TYPE clubs : Int
-public clubs : Int
-let clubs = 0
-
-//~ TYPE diamonds : Int
-public diamonds : Int
-let diamonds = 1
-
-//~ TYPE hearts : Int
-public hearts : Int
-let hearts = 2
-
-//~ TYPE spades : Int
-public spades : Int
-let spades = 3
-
-// ── Validity predicates ───────────────────────────────────────────────────────
-
-//~ TYPE validRank : Int -> Bool
-public validRank : Int -> Bool
-let validRank r = r >= 2 && r <= 14
-
-//~ TYPE validSuit : Int -> Bool
-public validSuit : Int -> Bool
-let validSuit s = s >= 0 && s <= 3
-
-//~ TYPE validCard : Int * Int -> Bool
-public validCard : Int * Int -> Bool
-let validCard card = validRank (rank card) && validSuit (suit card)
-
-// ── Comparison helpers ────────────────────────────────────────────────────────
-
-//~ TYPE sameRank : Int * Int -> Int * Int -> Bool
-public sameRank : Int * Int -> Int * Int -> Bool
-let sameRank a b = rank a = rank b
-
-//~ TYPE sameSuit : Int * Int -> Int * Int -> Bool
-public sameSuit : Int * Int -> Int * Int -> Bool
-let sameSuit a b = suit a = suit b
-
-//~ TYPE rankHigher : Int * Int -> Int * Int -> Bool
-public rankHigher : Int * Int -> Int * Int -> Bool
-let rankHigher a b = rank a > rank b
-
-// ── Display helpers (render as Int strings for now) ───────────────────────────
-
-//~ TYPE rankName : Int -> String
-public rankName : Int -> String
+//~ TYPE rankName : Rank -> String
+public rankName : Rank -> String
 let rankName r =
-  if r = 11 then "J"
-  else if r = 12 then "Q"
-  else if r = 13 then "K"
-  else if r = 14 then "A"
-  else intToString r
+  match r with
+  | Jack -> "J"
+  | Queen -> "Q"
+  | King -> "K"
+  | Ace -> "A"
+  | other -> intToString (rankValue other)
 
-//~ TYPE suitName : Int -> String
-public suitName : Int -> String
+//~ TYPE suitName : Suit -> String
+public suitName : Suit -> String
 let suitName s =
-  if s = 0 then "C"
-  else if s = 1 then "D"
-  else if s = 2 then "H"
-  else "S"
+  match s with
+  | Clubs -> "C"
+  | Diamonds -> "D"
+  | Hearts -> "H"
+  | Spades -> "S"
 
-//~ TYPE cardName : Int * Int -> String
-public cardName : Int * Int -> String
-let cardName card = rankName (rank card) ++ suitName (suit card)
+//~ TYPE cardName : { rank : Rank, suit : Suit } -> String
+public cardName : Card -> String
+let cardName card = rankName card.rank ++ suitName card.suit
 
 // ── Deck encoding: a card's unique index in a 52-card deck ───────────────────
 
-//~ TYPE cardIndex : Int * Int -> Int
-public cardIndex : Int * Int -> Int
-let cardIndex card = (rank card - 2) * 4 + suit card
-
-//~ TYPE indexToRank : Int -> Int
-public indexToRank : Int -> Int
-let indexToRank idx = idx / 4 + 2
-
-//~ TYPE indexToSuit : Int -> Int
-public indexToSuit : Int -> Int
-let indexToSuit idx = idx % 4
+//~ TYPE cardIndex : { rank : Rank, suit : Suit } -> Int
+public cardIndex : Card -> Int
+let cardIndex card = (rankValue card.rank - 2) * 4 + suitValue card.suit
 
 // ── Contracts ────────────────────────────────────────────────────────────────
 
-example: validRank ace
-example: validRank two
-example: validSuit clubs
-example: validSuit spades
-example: cardName (makeCard ace spades) = "AS"
-example: cardName (makeCard two clubs) = "2C"
-example: sameRank (makeCard ace spades) (makeCard ace hearts)
-example: sameSuit (makeCard ace hearts) (makeCard two hearts)
-example: rankHigher (makeCard ace spades) (makeCard king hearts)
-example: cardIndex (makeCard two clubs) = 0
-example: cardIndex (makeCard ace spades) = 51
-forall r: validRank r = (r >= 2 && r <= 14)
-forall s: validSuit s = (s >= 0 && s <= 3)
-forall r s: validCard (makeCard r s) = (validRank r && validSuit s)
+example: rankValue Ace = 14
+example: rankValue Two = 2
+example: suitValue Clubs = 0
+example: suitValue Spades = 3
+example: Ace > King
+example: Two < Three
+example: rankHigher (makeCard Ace Spades) (makeCard King Hearts)
+example: cardName (makeCard Ace Spades) = "AS"
+example: cardName (makeCard Two Clubs) = "2C"
+example: cardName (makeCard Ten Diamonds) = "10D"
+example: sameRank (makeCard Ace Spades) (makeCard Ace Hearts)
+example: sameSuit (makeCard Ace Hearts) (makeCard Two Hearts)
+example: cardIndex (makeCard Two Clubs) = 0
+example: cardIndex (makeCard Ace Spades) = 51
+forall r: rankValue r >= 2 && rankValue r <= 14
