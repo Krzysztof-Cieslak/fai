@@ -625,6 +625,7 @@ dependencies = [
  "rustc-hash",
  "salsa",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -739,6 +740,7 @@ dependencies = [
  "fai-driver",
  "interprocess",
  "nix",
+ "proptest",
  "rmp-serde",
  "serde",
  "serde_json",
@@ -785,6 +787,7 @@ dependencies = [
  "fai-rc",
  "fai-resolve",
  "fai-runtime",
+ "fai-server",
  "fai-span",
  "fai-syntax",
  "fai-types",

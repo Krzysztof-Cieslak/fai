@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::Session;
 
 /// A read-only code-intelligence request (CLI.md §8).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum QueryRequest {
     /// List/search symbols (optionally within a module).
     Symbols { module: Option<String>, limit: Option<usize> },

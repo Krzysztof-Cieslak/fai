@@ -79,6 +79,14 @@ fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
+/// Parses the pid from `daemon status` output, or `None` if no daemon is running.
+fn status_pid(daemon: &Daemon) -> Option<u32> {
+    let text = stdout(&daemon.run(&["daemon", "status"], &[]));
+    let after = text.split("pid ").nth(1)?;
+    let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
 #[test]
 fn warm_check_matches_no_daemon() {
     let daemon = Daemon::new("parity", &[("Ok.fai", "module Ok\n\nlet x = 1\n")]);
@@ -161,6 +169,60 @@ fn run_timeout_is_reaped_and_daemon_survives() {
     // The daemon survived the reaped worker: a later command still works.
     let check = daemon.run(&["check"], &["--message-format=json"]);
     assert!(check.status.success(), "daemon must survive a reaped run worker");
+}
+
+#[test]
+fn query_via_daemon_matches_no_daemon() {
+    let daemon = Daemon::new(
+        "query",
+        &[("Calc.fai", "module Calc\n\npublic add : Int -> Int -> Int\nlet add x y = x + y\n")],
+    );
+    let warm = daemon.run(&["query", "type", "Calc.add"], &[]);
+    assert!(warm.status.success(), "stderr: {}", String::from_utf8_lossy(&warm.stderr));
+    let cold = daemon.run(&["query", "type", "Calc.add", "--no-daemon"], &[]);
+    assert_eq!(stdout(&warm), stdout(&cold), "warm query must match --no-daemon");
+}
+
+#[test]
+fn fmt_via_daemon_writes_the_file() {
+    let daemon = Daemon::new("fmt", &[("W.fai", "module W\nlet   x=1\n")]);
+    let out = daemon.run(&["fmt", "--message-format=json"], &[]);
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    // The daemon (not the client) performed the rewrite on disk.
+    let on_disk = std::fs::read_to_string(daemon.workspace.join("W.fai")).unwrap();
+    assert_eq!(on_disk, "module W\n\nlet x = 1\n");
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).expect("valid JSON");
+    assert_eq!(value["changed"][0], "W.fai");
+}
+
+#[test]
+fn restart_replaces_the_daemon() {
+    let daemon = Daemon::new("restart", &[("Ok.fai", "module Ok\n\nlet x = 1\n")]);
+    let _ = daemon.run(&["check"], &[]); // spawn
+    let pid1 = status_pid(&daemon).expect("a daemon should be running");
+
+    let restart = daemon.run(&["daemon", "restart"], &[]);
+    assert!(stdout(&restart).contains("restarted"), "got: {}", stdout(&restart));
+
+    let pid2 = status_pid(&daemon).expect("a daemon should be running after restart");
+    assert_ne!(pid1, pid2, "restart must replace the daemon process");
+}
+
+#[test]
+fn run_compile_error_exits_four_via_daemon() {
+    // `writeLine` expects a String; passing an Int is a type error, so the bundle
+    // never builds: the daemon streams the diagnostic and the run exits 4.
+    let bad =
+        "module Main\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (1 + 2)\n";
+    let daemon = Daemon::new("runbad", &[("Main.fai", bad)]);
+    let out = daemon.run(&["run"], &["Main.fai"]);
+    assert_eq!(out.status.code(), Some(4), "a compile error exits 4");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("FAI3"),
+        "expected a type diagnostic; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]

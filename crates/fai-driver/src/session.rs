@@ -166,6 +166,18 @@ impl Session {
         DbSpanResolver::new(&self.db)
     }
 
+    /// Enables query-execution event recording on the underlying database (for
+    /// diagnostics and the incremental guards).
+    pub fn enable_event_log(&self) {
+        self.db.enable_event_log();
+    }
+
+    /// Drains and returns the recorded query-execution events.
+    #[must_use]
+    pub fn take_events(&self) -> Vec<String> {
+        self.db.take_events()
+    }
+
     /// Selects the loaded source files under `path` (a file or directory,
     /// workspace-relative or absolute), or every file when `path` is `None`.
     #[must_use]

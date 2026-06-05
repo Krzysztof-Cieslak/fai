@@ -22,5 +22,8 @@ wait-timeout.workspace = true
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true }
 
+[dev-dependencies]
+proptest.workspace = true
+
 [lints]
 workspace = true

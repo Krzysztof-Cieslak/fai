@@ -8,6 +8,26 @@
 use fai_tests::{check_source, local_type};
 use proptest::prelude::*;
 
+/// Whether `name` is a reserved keyword (so it cannot be a binding name).
+fn is_reserved(name: &str) -> bool {
+    matches!(
+        name,
+        "module"
+            | "let"
+            | "type"
+            | "interface"
+            | "match"
+            | "with"
+            | "if"
+            | "then"
+            | "else"
+            | "fun"
+            | "public"
+            | "example"
+            | "forall"
+    )
+}
+
 /// A generated, well-typed expression of a known type.
 #[derive(Debug, Clone)]
 enum Expr {
@@ -170,10 +190,13 @@ proptest! {
     // The checker never panics on arbitrary identifier-shaped programs (it may
     // report errors, but must terminate cleanly).
     #[test]
-    fn never_panics_on_arbitrary_bindings(name in "[a-z][a-z0-9]{0,8}", n in 0i64..100) {
+    fn never_panics_on_arbitrary_bindings(
+        name in "[a-z][a-z0-9]{0,8}".prop_filter("reserved keyword", |s| !is_reserved(s)),
+        n in 0i64..100,
+    ) {
         let src = format!("module P\n\nlet {name} = {n}\n");
         let outcome = check_source(&src);
-        // A lone integer binding is always clean and `Int`.
+        // A lone integer binding (with a non-keyword name) is always clean `Int`.
         prop_assert!(!outcome.has_errors(), "{:?}", outcome.codes());
     }
 

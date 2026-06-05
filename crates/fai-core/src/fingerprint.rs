@@ -162,9 +162,66 @@ mod tests {
     }
 
     #[test]
-    fn stable_for_identical_bodies() {
+    fn distinguishes_literal_kinds() {
+        let int = fingerprint("module M\n\nlet f x = 1\n", "f");
+        let string = fingerprint("module M\n\nlet f x = \"1\"\n", "f");
+        let boolean = fingerprint("module M\n\nlet f x = true\n", "f");
+        assert_ne!(int, string);
+        assert_ne!(int, boolean);
+        assert_ne!(string, boolean);
+    }
+
+    #[test]
+    fn stable_for_identical_bodies_across_databases() {
+        // Two independent databases (fresh interners, fresh file ids) must yield
+        // identical fingerprints — nothing process-local leaks into the key.
         let a = fingerprint("module M\n\nlet f x = x + 1\n", "f");
         let b = fingerprint("module M\n\nlet f x = x + 1\n", "f");
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn type_distinguishes_structurally_identical_defs() {
+        // Same name and structure (`f x = x`), different types: the annotated
+        // `Int -> Int` and the inferred `'a -> 'a` must hash differently, because
+        // every node carries its canonical type.
+        let inferred = fingerprint("module M\n\nlet f x = x\n", "f");
+        let annotated = fingerprint("module M\n\npublic f : Int -> Int\nlet f x = x\n", "f");
+        assert_ne!(inferred, annotated);
+    }
+
+    /// Lowers a def that references another (so its body holds a `Global`).
+    fn caller() -> (FaiDatabase, LoweredDef) {
+        let mut db = FaiDatabase::new();
+        fai_types::prelude::load_prelude(&mut db);
+        let id = db.add_source(
+            "M.fai".into(),
+            "module M\n\nlet helper x = x + 1\n\nlet g x = helper x\n".into(),
+        );
+        let file = db.source_file(id).unwrap();
+        let lowered = (*core(&db, file, Symbol::intern("g"))).clone();
+        (db, lowered)
+    }
+
+    #[test]
+    fn module_naming_is_part_of_the_key() {
+        // The same lowered def fingerprinted under two different module namings
+        // differs, because every `Global` (and the def id) is rendered via the
+        // namer — this is what `pretty_def` drops and the fingerprint must not.
+        let (_db, g) = caller();
+        let under_a = fingerprint_def(&g, &|d| format!("fai_A_{}", d.name), &|_| 1);
+        let under_b = fingerprint_def(&g, &|d| format!("fai_B_{}", d.name), &|_| 1);
+        assert_ne!(under_a, under_b);
+    }
+
+    #[test]
+    fn callee_arity_is_part_of_the_key() {
+        // A reference's arity decides whether codegen forces a value or passes a
+        // closure, so it must be in the key.
+        let (_db, g) = caller();
+        let namer = |d: DefId| format!("fai_M_{}", d.name);
+        let arity_one = fingerprint_def(&g, &namer, &|_| 1);
+        let arity_two = fingerprint_def(&g, &namer, &|_| 2);
+        assert_ne!(arity_one, arity_two);
     }
 }

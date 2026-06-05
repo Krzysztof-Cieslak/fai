@@ -19,7 +19,7 @@ pub const PROTOCOL_VERSION: u32 = 1;
 const MAX_FRAME: usize = 64 * 1024 * 1024;
 
 /// A client→server request.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Request {
     /// The handshake; must be the first request on a connection.
     Initialize(InitParams),
@@ -36,7 +36,7 @@ pub enum Request {
 }
 
 /// Handshake parameters.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InitParams {
     /// The client's protocol version.
     pub protocol_version: u32,
@@ -47,7 +47,7 @@ pub struct InitParams {
 }
 
 /// The handshake result.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InitResult {
     /// The daemon's protocol version.
     pub protocol_version: u32,
@@ -56,7 +56,7 @@ pub struct InitResult {
 }
 
 /// A command invocation plus the client's render options and dirty-set.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommandRequest {
     /// The command to run.
     pub spec: CommandSpec,
@@ -68,7 +68,7 @@ pub struct CommandRequest {
 }
 
 /// A `run` invocation: an entry file, program arguments, and a dirty-set.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunRequest {
     /// The entry file (workspace-relative or absolute).
     pub path: String,
@@ -80,7 +80,7 @@ pub struct RunRequest {
 }
 
 /// A server→client message: streamed output, then a final result.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ServerMessage {
     /// A chunk of a supervised program's output (`$/output`).
     Output {
@@ -103,7 +103,7 @@ pub enum OutputStream {
 }
 
 /// A terminal response.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Response {
     /// Handshake accepted.
     Initialized(InitResult),
@@ -120,7 +120,7 @@ pub enum Response {
 }
 
 /// Daemon status, reported by [`Request::Status`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatusInfo {
     /// The daemon process id.
     pub pid: u32,
@@ -164,38 +164,130 @@ pub fn frame_to_json<T: Serialize>(message: &T) -> String {
 
 #[cfg(test)]
 mod tests {
-    use fai_driver::{CommandSpec, OutputFormat, RenderOpts};
+    use fai_driver::{CommandSpec, DirtyFile, OutputFormat, QueryRequest, RenderOpts, Rendered};
 
     use super::*;
 
-    #[test]
-    fn request_frame_round_trips() {
-        let request = Request::Command(CommandRequest {
-            spec: CommandSpec::Check { path: None },
-            opts: RenderOpts { format: OutputFormat::Json, color: false },
-            dirty: Vec::new(),
-        });
+    /// Encodes then decodes a value through a frame, asserting it survives.
+    fn round_trip<T: Serialize + DeserializeOwned + PartialEq + std::fmt::Debug>(value: &T) {
         let mut buf = Vec::new();
-        write_frame(&mut buf, &request).unwrap();
+        write_frame(&mut buf, value).unwrap();
         let mut cursor = std::io::Cursor::new(buf);
-        let decoded: Request = read_frame(&mut cursor).unwrap();
-        match decoded {
-            Request::Command(c) => {
-                assert!(matches!(c.spec, CommandSpec::Check { path: None }));
-                assert_eq!(c.opts.format, OutputFormat::Json);
-            }
-            other => panic!("unexpected: {other:?}"),
-        }
+        let decoded: T = read_frame(&mut cursor).unwrap();
+        assert_eq!(&decoded, value);
+    }
+
+    fn opts() -> RenderOpts {
+        RenderOpts { format: OutputFormat::Json, color: true }
     }
 
     #[test]
-    fn server_message_round_trips() {
-        let msg = ServerMessage::Result(Response::RunExit(7));
+    fn every_request_variant_round_trips() {
+        round_trip(&Request::Initialize(InitParams {
+            protocol_version: PROTOCOL_VERSION,
+            compiler_version: "0.1.0".to_owned(),
+            workspace_root: "/ws".to_owned(),
+        }));
+        round_trip(&Request::Command(CommandRequest {
+            spec: CommandSpec::Check { path: None },
+            opts: opts(),
+            dirty: vec![DirtyFile {
+                path: "A.fai".to_owned(),
+                hash: Some("blake3:abc".to_owned()),
+                content: Some("module A\n".to_owned()),
+            }],
+        }));
+        round_trip(&Request::Command(CommandRequest {
+            spec: CommandSpec::Query(QueryRequest::Def { target: "M.f".to_owned() }),
+            opts: opts(),
+            dirty: Vec::new(),
+        }));
+        round_trip(&Request::Run(RunRequest {
+            path: "Main.fai".to_owned(),
+            args: vec!["--".to_owned(), "x".to_owned()],
+            dirty: Vec::new(),
+        }));
+        round_trip(&Request::Status);
+        round_trip(&Request::Shutdown);
+        round_trip(&Request::Exit);
+    }
+
+    #[test]
+    fn every_server_message_variant_round_trips() {
+        round_trip(&ServerMessage::Output {
+            stream: OutputStream::Stdout,
+            chunk: b"hello\n".to_vec(),
+        });
+        round_trip(&ServerMessage::Output { stream: OutputStream::Stderr, chunk: Vec::new() });
+        round_trip(&ServerMessage::Result(Response::Initialized(InitResult {
+            protocol_version: PROTOCOL_VERSION,
+            compiler_version: "0.1.0".to_owned(),
+        })));
+        round_trip(&ServerMessage::Result(Response::Command(Rendered {
+            stdout: "ok\n".to_owned(),
+            stderr: String::new(),
+            exit: 0,
+        })));
+        round_trip(&ServerMessage::Result(Response::Status(StatusInfo {
+            pid: 42,
+            compiler_version: "0.1.0".to_owned(),
+            protocol_version: PROTOCOL_VERSION,
+            uptime_secs: 12,
+        })));
+        round_trip(&ServerMessage::Result(Response::RunExit(124)));
+        round_trip(&ServerMessage::Result(Response::Ok));
+        round_trip(&ServerMessage::Result(Response::Error("boom".to_owned())));
+    }
+
+    #[test]
+    fn several_frames_decode_in_sequence() {
+        // A streamed `run`: two output frames, then a terminal result, all on one
+        // buffer — the reader must split them on the length prefixes.
         let mut buf = Vec::new();
-        write_frame(&mut buf, &msg).unwrap();
+        write_frame(
+            &mut buf,
+            &ServerMessage::Output { stream: OutputStream::Stdout, chunk: b"a".to_vec() },
+        )
+        .unwrap();
+        write_frame(
+            &mut buf,
+            &ServerMessage::Output { stream: OutputStream::Stderr, chunk: b"b".to_vec() },
+        )
+        .unwrap();
+        write_frame(&mut buf, &ServerMessage::Result(Response::RunExit(0))).unwrap();
+
         let mut cursor = std::io::Cursor::new(buf);
-        let decoded: ServerMessage = read_frame(&mut cursor).unwrap();
-        assert!(matches!(decoded, ServerMessage::Result(Response::RunExit(7))));
+        let m1: ServerMessage = read_frame(&mut cursor).unwrap();
+        let m2: ServerMessage = read_frame(&mut cursor).unwrap();
+        let m3: ServerMessage = read_frame(&mut cursor).unwrap();
+        assert!(matches!(m1, ServerMessage::Output { stream: OutputStream::Stdout, .. }));
+        assert!(matches!(m2, ServerMessage::Output { stream: OutputStream::Stderr, .. }));
+        assert!(matches!(m3, ServerMessage::Result(Response::RunExit(0))));
+        // Nothing left to read.
+        let trailing: io::Result<ServerMessage> = read_frame(&mut cursor);
+        assert!(trailing.is_err());
+    }
+
+    #[test]
+    fn truncated_body_is_an_error_not_a_panic() {
+        let mut buf = Vec::new();
+        write_frame(&mut buf, &Request::Status).unwrap();
+        buf.truncate(buf.len() - 1); // drop the last body byte
+        let mut cursor = std::io::Cursor::new(buf);
+        assert!(read_frame::<_, Request>(&mut cursor).is_err());
+    }
+
+    #[test]
+    fn truncated_length_prefix_is_an_error() {
+        let cursor = std::io::Cursor::new(vec![0u8, 0u8]); // < 4 length bytes
+        let mut cursor = cursor;
+        assert!(read_frame::<_, Request>(&mut cursor).is_err());
+    }
+
+    #[test]
+    fn empty_input_is_an_error() {
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        assert!(read_frame::<_, Request>(&mut cursor).is_err());
     }
 
     #[test]
@@ -205,5 +297,11 @@ mod tests {
         let mut cursor = std::io::Cursor::new(buf);
         let result: io::Result<Request> = read_frame(&mut cursor);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn frame_to_json_is_valid_json() {
+        let json = frame_to_json(&Request::Status);
+        let _: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
     }
 }

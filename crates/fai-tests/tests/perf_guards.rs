@@ -9,8 +9,11 @@
 //! The headline property: the work to re-check after a localized edit is
 //! independent of total workspace size (the cross-module firewall).
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use camino::Utf8PathBuf;
 use fai_db::{Db, FaiDatabase, Setter, SourceFile};
-use fai_driver::object_code;
+use fai_driver::{Session, check, object_code};
 use fai_syntax::Symbol;
 use fai_tests::corpus::{self, CorpusSpec};
 use fai_types::check_file;
@@ -189,6 +192,65 @@ fn codegen_firewall_is_independent_of_workspace_size() {
     let large = object_code_runs_after_helper_edit(50);
     assert_eq!(small, large, "codegen firewall: re-codegen must not grow with workspace size");
     assert_eq!(small, 1, "only the edited module's object is recompiled");
+}
+
+/// A temp workspace seeded with two clean modules; returns its directory.
+fn sync_workspace() -> Utf8PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let dir = Utf8PathBuf::from_path_buf(std::env::temp_dir()).unwrap().join(format!(
+        "fai-sync-guard-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("A.fai"), "module A\n\npublic a : Int -> Int\nlet a x = x + 1\n")
+        .unwrap();
+    std::fs::write(dir.join("B.fai"), "module B\n\npublic b : Int -> Int\nlet b x = x + 2\n")
+        .unwrap();
+    dir
+}
+
+#[test]
+fn content_preserving_resync_reinfers_nothing() {
+    // Rewriting a file with byte-identical content bumps its mtime but not its
+    // hash, so the stat-gated, hash-confirmed sync must not touch the salsa input
+    // — a subsequent check re-infers nothing (the early-cutoff firewall over the
+    // daemon's file-state sync).
+    let dir = sync_workspace();
+    let mut session = Session::open(dir.clone()).unwrap();
+    let _ = check(session.db(), &session.select_files(None)); // warm
+
+    session.enable_event_log();
+    // Identical bytes, fresh mtime.
+    std::fs::write(dir.join("A.fai"), "module A\n\npublic a : Int -> Int\nlet a x = x + 1\n")
+        .unwrap();
+    session.sync_from_disk().unwrap();
+    let _ = check(session.db(), &session.select_files(None));
+
+    assert_eq!(
+        count(&session.take_events(), "infer_scc_query"),
+        0,
+        "a content-preserving resync must re-infer nothing"
+    );
+}
+
+#[test]
+fn editing_content_reinfers_the_changed_module() {
+    // The contrast: a genuine content change must be picked up and re-inferred.
+    let dir = sync_workspace();
+    let mut session = Session::open(dir.clone()).unwrap();
+    let _ = check(session.db(), &session.select_files(None)); // warm
+
+    session.enable_event_log();
+    std::fs::write(dir.join("A.fai"), "module A\n\npublic a : Int -> Int\nlet a x = x + 999\n")
+        .unwrap();
+    session.sync_from_disk().unwrap();
+    let _ = check(session.db(), &session.select_files(None));
+
+    assert!(
+        count(&session.take_events(), "infer_scc_query") >= 1,
+        "a real edit must re-infer the changed module"
+    );
 }
 
 #[test]

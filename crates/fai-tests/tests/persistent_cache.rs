@@ -10,10 +10,15 @@
 
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use fai_driver::{Session, build_native, cache_stats, reset_stats, set_cache_dir};
+
+/// The cache directory override and hit/miss tallies are process-global, so the
+/// tests in this binary must not run their cache sections concurrently.
+static CACHE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 const SRC: &str = "module Main\n\nlet double x = x + x\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (intToString (double 21))\n";
 
@@ -41,6 +46,7 @@ fn build_and_run(root: &Utf8Path, out: &Utf8Path) -> String {
 
 #[test]
 fn second_cold_build_reuses_cached_objects() {
+    let _guard = CACHE_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let workspace = Utf8PathBuf::from_path_buf(unique_dir("ws")).unwrap();
     std::fs::create_dir_all(&workspace).unwrap();
     std::fs::write(workspace.join("Main.fai"), SRC).unwrap();
@@ -67,6 +73,34 @@ fn second_cold_build_reuses_cached_objects() {
     let (hits2, misses2) = cache_stats();
     assert!(hits2 > 0, "second build should hit the disk cache, got {hits2} hits");
     assert_eq!(misses2, 0, "second build should regenerate nothing, got {misses2} misses");
+
+    set_cache_dir(None);
+}
+
+/// A different program (→ 99) whose `main` lives in the same module/symbol as
+/// `SRC` (→ 42): a symbol-keyed cache would wrongly reuse the 42 object.
+const SRC_99: &str = "module Main\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (intToString (33 + 66))\n";
+
+#[test]
+fn changed_source_is_not_served_a_stale_object() {
+    let _guard = CACHE_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let workspace = Utf8PathBuf::from_path_buf(unique_dir("stale-ws")).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+    let cache = unique_dir("stale-cache");
+    set_cache_dir(Some(cache));
+
+    // Populate the cache with the first program (same module + `main` symbol).
+    std::fs::write(workspace.join("Main.fai"), SRC).unwrap();
+    assert_eq!(build_and_run(&workspace, &workspace.join("p1")), "42\n");
+
+    // Replace it with a different body and build cold again: the content-addressed
+    // key must miss the stale object and produce the new result.
+    std::fs::write(workspace.join("Main.fai"), SRC_99).unwrap();
+    assert_eq!(
+        build_and_run(&workspace, &workspace.join("p2")),
+        "99\n",
+        "a changed program must not be served the previous cached object"
+    );
 
     set_cache_dir(None);
 }
