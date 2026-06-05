@@ -84,6 +84,55 @@ fn expr() -> impl Strategy<Value = E> {
     })
 }
 
+/// A `Bool`-typed expression over `x` (comparisons combined with `&&`/`||`/`not`).
+#[derive(Debug, Clone)]
+enum B {
+    Cmp(&'static str, Box<E>, Box<E>),
+    And(Box<B>, Box<B>),
+    Or(Box<B>, Box<B>),
+    Not(Box<B>),
+}
+
+fn eval_b(b: &B, x: i64) -> bool {
+    match b {
+        B::Cmp(cmp, l, r) => {
+            let (l, r) = (eval(l, x), eval(r, x));
+            match *cmp {
+                "<" => l < r,
+                "<=" => l <= r,
+                ">" => l > r,
+                ">=" => l >= r,
+                "=" => l == r,
+                _ => l != r,
+            }
+        }
+        B::And(a, b) => eval_b(a, x) && eval_b(b, x),
+        B::Or(a, b) => eval_b(a, x) || eval_b(b, x),
+        B::Not(a) => !eval_b(a, x),
+    }
+}
+
+fn render_b(b: &B) -> String {
+    match b {
+        B::Cmp(cmp, l, r) => format!("({} {cmp} {})", render(l), render(r)),
+        B::And(a, b) => format!("({} && {})", render_b(a), render_b(b)),
+        B::Or(a, b) => format!("({} || {})", render_b(a), render_b(b)),
+        B::Not(a) => format!("(not {})", render_b(a)),
+    }
+}
+
+fn bool_expr() -> impl Strategy<Value = B> {
+    let cmp = prop_oneof![Just("<"), Just("<="), Just(">"), Just(">="), Just("="), Just("<>"),];
+    let leaf = (cmp, expr(), expr()).prop_map(|(c, l, r)| B::Cmp(c, Box::new(l), Box::new(r)));
+    leaf.prop_recursive(3, 16, 2, |inner| {
+        prop_oneof![
+            (inner.clone(), inner.clone()).prop_map(|(a, b)| B::And(Box::new(a), Box::new(b))),
+            (inner.clone(), inner.clone()).prop_map(|(a, b)| B::Or(Box::new(a), Box::new(b))),
+            inner.prop_map(|a| B::Not(Box::new(a))),
+        ]
+    })
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 48, ..ProptestConfig::default() })]
 
@@ -96,6 +145,23 @@ proptest! {
         let src = format!(
             "module M\n\nlet f x = {}\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (intToString (f {}))\n",
             render(&e),
+            render_arg(x),
+        );
+        let (code, out) = run(&src);
+        prop_assert_eq!(code, 0, "program leaked or failed: {}", out);
+        let got: i64 = out.trim().parse().expect("integer output");
+        prop_assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn jit_matches_reference_boolean_evaluator(
+        b in bool_expr(),
+        x in any::<i64>().prop_filter("avoid i64::MIN rendering", |v| *v != i64::MIN),
+    ) {
+        let expected = if eval_b(&b, x) { 1 } else { 0 };
+        let src = format!(
+            "module M\n\nlet f x = if {} then 1 else 0\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (intToString (f {}))\n",
+            render_b(&b),
             render_arg(x),
         );
         let (code, out) = run(&src);
