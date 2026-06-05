@@ -98,6 +98,28 @@ fn declared_or_inferred_scheme(db: &dyn Db, def: DefId) -> Option<Scheme> {
     Some(def_type(db, file, def.name))
 }
 
+/// Test/introspection helper: the inferred types of the *local* bindings in
+/// `name`'s body, as `(variable-name, type)` pairs.
+///
+/// This exercises inference directly (parameters, `let` locals, lambda binders),
+/// independent of any declared signature — useful for testing local type
+/// inference rather than just public-signature rendering. The returned [`Ty`]s
+/// share one variable numbering, so a variable shared between locals (e.g.
+/// tuple-destructuring components) renders consistently.
+#[must_use]
+pub fn def_local_types(
+    db: &dyn Db,
+    file: SourceFile,
+    name: Symbol,
+) -> Vec<(String, crate::ty::Ty)> {
+    let def_schemes = |db: &dyn Db, def: DefId| declared_or_inferred_scheme(db, def);
+    let builtins = |n: Symbol| prelude::builtin_scheme(n);
+    crate::infer::infer_local_types(db, file, name, &def_schemes, &builtins)
+        .into_iter()
+        .map(|(sym, ty)| (sym.as_str().to_owned(), ty))
+        .collect()
+}
+
 /// Type-checks every definition and contract in `file`, emitting diagnostics.
 #[salsa::tracked]
 pub fn check_file(db: &dyn Db, file: SourceFile) {

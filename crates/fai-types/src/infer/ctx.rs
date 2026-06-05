@@ -255,6 +255,26 @@ impl InferCtx {
         false
     }
 
+    /// Recursively defaults every still-free Numeric variable reachable from `ty`
+    /// to `Int` (the structural version of [`default_numeric`]).
+    pub fn default_numerics_deep(&mut self, ty: &SolveTy) {
+        match self.resolve_shallow(ty) {
+            SolveTy::Var(_) => {
+                self.default_numeric(ty);
+            }
+            SolveTy::App(f, a) | SolveTy::Arrow(f, a) => {
+                self.default_numerics_deep(&f);
+                self.default_numerics_deep(&a);
+            }
+            SolveTy::Tuple(elems) => {
+                for e in &elems {
+                    self.default_numerics_deep(e);
+                }
+            }
+            SolveTy::Con(_) | SolveTy::Unit | SolveTy::Error => {}
+        }
+    }
+
     /// Reifies a solver type into an immutable [`Ty`], renumbering the remaining
     /// free variables compactly starting at 0 (so schemes are canonical).
     pub fn reify(&self, ty: &SolveTy) -> Ty {
@@ -268,6 +288,14 @@ impl InferCtx {
         let mut renumber = Renumber::default();
         let reified = self.reify_inner(ty, &mut renumber);
         (reified, renumber.order)
+    }
+
+    /// Reifies several solver types against a *shared* renumbering, so a variable
+    /// shared between them gets the same id (and hence the same display name) in
+    /// each. First-appearance order across the whole slice determines the ids.
+    pub fn reify_many(&self, tys: &[SolveTy]) -> Vec<Ty> {
+        let mut renumber = Renumber::default();
+        tys.iter().map(|ty| self.reify_inner(ty, &mut renumber)).collect()
     }
 
     fn reify_inner(&self, ty: &SolveTy, renumber: &mut Renumber) -> Ty {

@@ -142,6 +142,50 @@ pub fn type_of(source: &str, name: &str) -> String {
         .unwrap_or_else(|| panic!("no binding `{name}` (have {:?})", outcome.types.keys()))
 }
 
+/// The inferred types of the *local* bindings in `fn_name`'s body, keyed by
+/// variable name. Exercises local inference directly (parameters, `let` locals,
+/// lambda binders), independent of any declared signature.
+///
+/// The rendered types share **one** variable numbering, so a variable shared
+/// between locals (e.g. tuple-destructuring components, `p : 'a * 'b` with
+/// `a : 'a` and `b : 'b`) renders consistently. To read a single local's type in
+/// isolation (with canonical `'a`-first naming) use [`local_type`].
+///
+/// Loads `source` as a single module alongside the prelude. If a local name is
+/// shadowed, the last binding with that name wins; tests should use distinct
+/// names to inspect each.
+#[must_use]
+pub fn local_types(source: &str, fn_name: &str) -> std::collections::BTreeMap<String, String> {
+    raw_local_types(source, fn_name)
+        .into_iter()
+        .map(|(name, ty)| (name, fai_types::render(&ty, &fai_types::VarNames::new())))
+        .collect()
+}
+
+/// The inferred type of one local variable in `fn_name`'s body, rendered with
+/// canonical names in isolation (panics if absent).
+#[must_use]
+pub fn local_type(source: &str, fn_name: &str, local: &str) -> String {
+    let locals = raw_local_types(source, fn_name);
+    locals
+        .iter()
+        .find(|(name, _)| name == local)
+        .map(|(_, ty)| fai_types::render_canonical(ty))
+        .unwrap_or_else(|| {
+            let names: Vec<&str> = locals.iter().map(|(n, _)| n.as_str()).collect();
+            panic!("no local `{local}` in `{fn_name}` (have {names:?})")
+        })
+}
+
+/// The raw `(name, Ty)` locals for `fn_name`, sharing one variable numbering.
+fn raw_local_types(source: &str, fn_name: &str) -> Vec<(String, fai_types::Ty)> {
+    let mut db = FaiDatabase::new();
+    fai_types::prelude::load_prelude(&mut db);
+    let id = db.add_source("Test.fai".into(), source.to_owned());
+    let file = db.source_file(id).unwrap();
+    fai_types::def_local_types(&db, file, Symbol::intern(fn_name))
+}
+
 /// A parsed expectation annotation.
 #[derive(Debug, PartialEq, Eq)]
 enum Expect {

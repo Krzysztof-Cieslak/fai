@@ -9,7 +9,9 @@
 
 mod checker;
 
-pub use checker::{CheckOutcome, check_named, check_source, run_annotated, sym, type_of};
+pub use checker::{
+    CheckOutcome, check_named, check_source, local_type, local_types, run_annotated, sym, type_of,
+};
 
 use std::fmt::Debug;
 

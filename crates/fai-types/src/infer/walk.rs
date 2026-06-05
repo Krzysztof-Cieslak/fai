@@ -65,6 +65,35 @@ impl<'a, E: Env> Walker<'a, E> {
 }
 
 impl<E: Env> Walker<'_, E> {
+    /// The inferred type of every local bound so far in the current body, keyed
+    /// by its [`LocalId`], in allocation order. Defaults still-free numeric
+    /// variables to `Int` and reifies all locals against a *shared* renumbering,
+    /// so a type variable shared between locals (e.g. tuple-destructuring
+    /// components) renders with the same name. Call this *after* inferring the
+    /// body. Used by test introspection to assert on local inference directly.
+    pub fn collect_local_types(&mut self) -> Vec<(LocalId, crate::ty::Ty)> {
+        // Snapshot (id, solver type) in allocation order.
+        let mut entries: Vec<(LocalId, SolveTy)> = self
+            .locals
+            .iter()
+            .map(|(id, binding)| {
+                let solve = match binding {
+                    LocalBinding::Mono(t) => t.clone(),
+                    LocalBinding::Poly { ty, .. } => ty.clone(),
+                };
+                (*id, solve)
+            })
+            .collect();
+        entries.sort_by_key(|(id, _)| id.index());
+
+        for (_, solve) in &entries {
+            self.cx.default_numerics_deep(solve);
+        }
+        let solves: Vec<SolveTy> = entries.iter().map(|(_, s)| s.clone()).collect();
+        let reified = self.cx.reify_many(&solves);
+        entries.iter().map(|(id, _)| *id).zip(reified).collect()
+    }
+
     fn span(&self, range: fai_span::TextRange) -> Span {
         Span::new(self.file.source(self.db), range)
     }
@@ -433,7 +462,12 @@ impl<E: Env> Walker<'_, E> {
     }
 
     /// The free variables of `ty` that may be generalized: those not fixed by the
-    /// environment.
+    /// environment and not still carrying a constraint.
+    ///
+    /// A *constrained* variable (Numeric/Eq/Ord) is left ungeneralized so it can
+    /// be resolved or defaulted later — e.g. `let inc = fun a -> a + 1` keeps its
+    /// numeric variable monomorphic so it defaults to `Int` (giving
+    /// `Int -> Int`), rather than generalizing to `'a -> 'a`.
     fn generalizable_vars(
         &self,
         ty: &SolveTy,
@@ -441,8 +475,11 @@ impl<E: Env> Walker<'_, E> {
     ) -> Vec<crate::ty::TyVarId> {
         let mut free = rustc_hash::FxHashSet::default();
         self.collect_free_vars(ty, &mut free);
-        let mut vars: Vec<crate::ty::TyVarId> =
-            free.into_iter().filter(|v| !env_vars.contains(v)).collect();
+        let mut vars: Vec<crate::ty::TyVarId> = free
+            .into_iter()
+            .filter(|v| !env_vars.contains(v))
+            .filter(|v| self.cx.pending_constraint(&SolveTy::Var(*v)).is_none())
+            .collect();
         vars.sort();
         vars
     }

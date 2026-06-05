@@ -182,6 +182,40 @@ pub fn render_scheme(scheme: &Scheme) -> String {
     render(&scheme.ty, &VarNames::canonical(scheme))
 }
 
+/// Renders a standalone type with canonical variable names (`'a`, `'b`, … in
+/// first-appearance order), independent of any other type's variable numbering.
+#[must_use]
+pub fn render_canonical(ty: &Ty) -> String {
+    let mut names = VarNames::new();
+    let mut order: Vec<TyVarId> = Vec::new();
+    collect_vars(ty, &mut order);
+    for (i, v) in order.into_iter().enumerate() {
+        names.set(v, canonical_name(i));
+    }
+    render(ty, &names)
+}
+
+/// Collects a type's variables in first-appearance order (no duplicates).
+fn collect_vars(ty: &Ty, out: &mut Vec<TyVarId>) {
+    match ty {
+        Ty::Var(v) => {
+            if !out.contains(v) {
+                out.push(*v);
+            }
+        }
+        Ty::App(f, a) | Ty::Arrow(f, a) => {
+            collect_vars(f, out);
+            collect_vars(a, out);
+        }
+        Ty::Tuple(elems) => {
+            for e in elems {
+                collect_vars(e, out);
+            }
+        }
+        Ty::Con(_) | Ty::Unit | Ty::Error => {}
+    }
+}
+
 /// A mapping from type variables to their display spellings.
 #[derive(Debug, Default, Clone)]
 pub struct VarNames {
