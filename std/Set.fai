@@ -6,6 +6,7 @@ module Set
 /// The empty set.
 public empty : Set 'a
 let empty = SetEmpty
+example: size empty = 0
 
 /// Add an element.
 public insert : 'a -> Set 'a -> Set 'a
@@ -14,6 +15,8 @@ let insert x s =
   | SetEmpty -> SetNode SetEmpty x SetEmpty
   | SetNode l y r ->
     if x < y then SetNode (insert x l) y r else if x > y then SetNode l y (insert x r) else s
+example: member 2 (insert 2 empty)
+example: size (insert 1 (insert 1 empty)) = 1
 
 /// Whether an element is present.
 public member : 'a -> Set 'a -> Bool
@@ -21,6 +24,8 @@ let member x s =
   match s with
   | SetEmpty -> false
   | SetNode l y r -> if x < y then member x l else if x > y then member x r else true
+example: member 2 (insert 2 (insert 1 empty))
+forall x: member x empty = false
 
 /// The number of elements.
 public size : Set 'a -> Int
@@ -28,6 +33,8 @@ let size s =
   match s with
   | SetEmpty -> 0
   | SetNode l _ r -> 1 + size l + size r
+example: size (insert 1 (insert 2 empty)) = 2
+forall s: size s >= 0
 
 /// The elements in ascending order.
 public toList : Set 'a -> List 'a
@@ -35,3 +42,4 @@ let toList s =
   match s with
   | SetEmpty -> []
   | SetNode l x r -> List.append (toList l) (x :: toList r)
+example: toList (insert 2 (insert 1 empty)) = [1, 2]
