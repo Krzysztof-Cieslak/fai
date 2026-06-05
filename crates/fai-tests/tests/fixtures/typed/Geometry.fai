@@ -1,155 +1,158 @@
 module Geometry
 
-// 2D and 3D vector math. Vectors are tuples of Floats:
-//   Vec2 = Float * Float
-//   Vec3 = Float * Float * Float
-// This module leans on tuple destructuring inside bodies, so the LOCAL
-// assertions below pin the inferred types of the destructured components — the
-// part of inference a public signature alone does not exercise.
+// 2D and 3D vector math. Vectors are records of Floats:
+//   Vec2 = { x : Float, y : Float }
+//   Vec3 = { x : Float, y : Float, z : Float }
+// This module mixes record field access with record-pattern destructuring inside
+// bodies, so the LOCAL assertions below pin the inferred types of the bound
+// components — the part of inference a public signature alone does not exercise.
+// `Vec2`/`Vec3` are transparent aliases, so public signatures render as the
+// structural record they stand for.
+
+type Vec2 = { x : Float, y : Float }
+
+type Vec3 = { x : Float, y : Float, z : Float }
 
 // ── Vec2 construction & accessors ────────────────────────────────────────────
 
-//~ TYPE vec2 : Float -> Float -> Float * Float
-public vec2 : Float -> Float -> Float * Float
-let vec2 x y = (x, y)
+//~ TYPE vec2 : Float -> Float -> { x : Float, y : Float }
+public vec2 : Float -> Float -> Vec2
+let vec2 x y = { x = x, y = y }
 
-//~ TYPE vec2x : Float * Float -> Float
-//~ LOCAL vec2x.x : Float
-//~ LOCAL vec2x.y : Float
-public vec2x : Float * Float -> Float
-let vec2x v =
-  let (x, y) = v
-  x
+//~ TYPE vec2x : { x : Float, y : Float } -> Float
+//~ LOCAL vec2x.v : { x : Float, y : Float }
+public vec2x : Vec2 -> Float
+let vec2x v = v.x
 
-//~ TYPE vec2y : Float * Float -> Float
-public vec2y : Float * Float -> Float
-let vec2y v =
-  let (x, y) = v
-  y
+//~ TYPE vec2y : { x : Float, y : Float } -> Float
+public vec2y : Vec2 -> Float
+let vec2y v = v.y
 
 // ── Vec2 arithmetic ──────────────────────────────────────────────────────────
 
-//~ TYPE add2 : Float * Float -> Float * Float -> Float * Float
+//~ TYPE add2 : { x : Float, y : Float } -> { x : Float, y : Float } -> { x : Float, y : Float }
 //~ LOCAL add2.ax : Float
 //~ LOCAL add2.ay : Float
 //~ LOCAL add2.bx : Float
 //~ LOCAL add2.by : Float
-public add2 : Float * Float -> Float * Float -> Float * Float
+public add2 : Vec2 -> Vec2 -> Vec2
 let add2 a b =
-  let (ax, ay) = a
-  let (bx, by) = b
-  (ax + bx, ay + by)
+  let { x = ax, y = ay } = a
+  let { x = bx, y = by } = b
+  { x = ax + bx, y = ay + by }
 
-//~ TYPE sub2 : Float * Float -> Float * Float -> Float * Float
-public sub2 : Float * Float -> Float * Float -> Float * Float
+//~ TYPE sub2 : { x : Float, y : Float } -> { x : Float, y : Float } -> { x : Float, y : Float }
+public sub2 : Vec2 -> Vec2 -> Vec2
 let sub2 a b =
-  let (ax, ay) = a
-  let (bx, by) = b
-  (ax - bx, ay - by)
+  let { x = ax, y = ay } = a
+  let { x = bx, y = by } = b
+  { x = ax - bx, y = ay - by }
 
-//~ TYPE scale2 : Float -> Float * Float -> Float * Float
+//~ TYPE scale2 : Float -> { x : Float, y : Float } -> { x : Float, y : Float }
 //~ LOCAL scale2.x : Float
 //~ LOCAL scale2.y : Float
-public scale2 : Float -> Float * Float -> Float * Float
+public scale2 : Float -> Vec2 -> Vec2
 let scale2 k v =
-  let (x, y) = v
-  (k * x, k * y)
+  let { x, y } = v
+  { x = k * x, y = k * y }
 
-// Dot product: the result is a Float built from destructured Float components.
-//~ TYPE dot2 : Float * Float -> Float * Float -> Float
+// Dot product: the result is a Float built from the destructured Float fields.
+//~ TYPE dot2 : { x : Float, y : Float } -> { x : Float, y : Float } -> Float
 //~ LOCAL dot2.ax : Float
 //~ LOCAL dot2.by : Float
-public dot2 : Float * Float -> Float * Float -> Float
+public dot2 : Vec2 -> Vec2 -> Float
 let dot2 a b =
-  let (ax, ay) = a
-  let (bx, by) = b
+  let { x = ax, y = ay } = a
+  let { x = bx, y = by } = b
   ax * bx + ay * by
 
 // Squared magnitude avoids sqrt; magnitude uses the prelude `sqrt`.
-//~ TYPE magnitudeSquared2 : Float * Float -> Float
-public magnitudeSquared2 : Float * Float -> Float
+//~ TYPE magnitudeSquared2 : { x : Float, y : Float } -> Float
+public magnitudeSquared2 : Vec2 -> Float
 let magnitudeSquared2 v = dot2 v v
 
-//~ TYPE magnitude2 : Float * Float -> Float
+//~ TYPE magnitude2 : { x : Float, y : Float } -> Float
 //~ LOCAL magnitude2.m2 : Float
-public magnitude2 : Float * Float -> Float
+public magnitude2 : Vec2 -> Float
 let magnitude2 v =
   let m2 = magnitudeSquared2 v
   sqrt m2
 
-//~ TYPE distance2 : Float * Float -> Float * Float -> Float
-//~ LOCAL distance2.diff : Float * Float
-public distance2 : Float * Float -> Float * Float -> Float
+//~ TYPE distance2 : { x : Float, y : Float } -> { x : Float, y : Float } -> Float
+//~ LOCAL distance2.diff : { x : Float, y : Float }
+public distance2 : Vec2 -> Vec2 -> Float
 let distance2 a b =
   let diff = sub2 a b
   magnitude2 diff
 
-//~ TYPE midpoint2 : Float * Float -> Float * Float -> Float * Float
-//~ LOCAL midpoint2.sum : Float * Float
-public midpoint2 : Float * Float -> Float * Float -> Float * Float
+//~ TYPE midpoint2 : { x : Float, y : Float } -> { x : Float, y : Float } -> { x : Float, y : Float }
+//~ LOCAL midpoint2.sum : { x : Float, y : Float }
+public midpoint2 : Vec2 -> Vec2 -> Vec2
 let midpoint2 a b =
   let sum = add2 a b
   scale2 0.5 sum
 
 // ── Vec3 ─────────────────────────────────────────────────────────────────────
 
-//~ TYPE vec3 : Float -> Float -> Float -> Float * Float * Float
-public vec3 : Float -> Float -> Float -> Float * Float * Float
-let vec3 x y z = (x, y, z)
+//~ TYPE vec3 : Float -> Float -> Float -> { x : Float, y : Float, z : Float }
+public vec3 : Float -> Float -> Float -> Vec3
+let vec3 x y z = { x = x, y = y, z = z }
 
-//~ TYPE dot3 : Float * Float * Float -> Float * Float * Float -> Float
+//~ TYPE dot3 : { x : Float, y : Float, z : Float } -> { x : Float, y : Float, z : Float } -> Float
 //~ LOCAL dot3.ax : Float
 //~ LOCAL dot3.az : Float
-public dot3 : Float * Float * Float -> Float * Float * Float -> Float
+public dot3 : Vec3 -> Vec3 -> Float
 let dot3 a b =
-  let (ax, ay, az) = a
-  let (bx, by, bz) = b
+  let { x = ax, y = ay, z = az } = a
+  let { x = bx, y = by, z = bz } = b
   ax * bx + ay * by + az * bz
 
-// Cross product returns a Vec3 built from destructured components.
-//~ TYPE cross3 : Float * Float * Float -> Float * Float * Float -> Float * Float * Float
+// Cross product returns a Vec3 built from the destructured components.
+//~ TYPE cross3 : { x : Float, y : Float, z : Float } -> { x : Float, y : Float, z : Float } -> { x : Float, y : Float, z : Float }
 //~ LOCAL cross3.cx : Float
 //~ LOCAL cross3.cy : Float
 //~ LOCAL cross3.cz : Float
-public cross3 : Float * Float * Float -> Float * Float * Float -> Float * Float * Float
+public cross3 : Vec3 -> Vec3 -> Vec3
 let cross3 a b =
-  let (ax, ay, az) = a
-  let (bx, by, bz) = b
+  let { x = ax, y = ay, z = az } = a
+  let { x = bx, y = by, z = bz } = b
   let cx = ay * bz - az * by
   let cy = az * bx - ax * bz
   let cz = ax * by - ay * bx
-  (cx, cy, cz)
+  { x = cx, y = cy, z = cz }
 
-//~ TYPE magnitude3 : Float * Float * Float -> Float
+//~ TYPE magnitude3 : { x : Float, y : Float, z : Float } -> Float
 //~ LOCAL magnitude3.m2 : Float
-public magnitude3 : Float * Float * Float -> Float
+public magnitude3 : Vec3 -> Float
 let magnitude3 v =
   let m2 = dot3 v v
   sqrt m2
 
 // ── A small projectile-motion step (Float physics) ───────────────────────────
-// State is (position, velocity), each a Vec2.
+// State is a body with a position and a velocity, each a Vec2.
 
-//~ TYPE step : (Float * Float) * (Float * Float) -> Float -> (Float * Float) * (Float * Float)
-//~ LOCAL step.pos : Float * Float
-//~ LOCAL step.vel : Float * Float
-//~ LOCAL step.gravity : Float * Float
-//~ LOCAL step.newVel : Float * Float
-//~ LOCAL step.newPos : Float * Float
-public step : (Float * Float) * (Float * Float) -> Float -> (Float * Float) * (Float * Float)
+type Body = { pos : Vec2, vel : Vec2 }
+
+//~ TYPE step : { pos : { x : Float, y : Float }, vel : { x : Float, y : Float } } -> Float -> { pos : { x : Float, y : Float }, vel : { x : Float, y : Float } }
+//~ LOCAL step.pos : { x : Float, y : Float }
+//~ LOCAL step.vel : { x : Float, y : Float }
+//~ LOCAL step.gravity : { x : Float, y : Float }
+//~ LOCAL step.newVel : { x : Float, y : Float }
+//~ LOCAL step.newPos : { x : Float, y : Float }
+public step : Body -> Float -> Body
 let step state dt =
-  let (pos, vel) = state
-  let gravity = (0.0, 0.0 - 9.8)
+  let { pos, vel } = state
+  let gravity = { x = 0.0, y = 0.0 - 9.8 }
   let newVel = add2 vel (scale2 dt gravity)
   let newPos = add2 pos (scale2 dt newVel)
-  (newPos, newVel)
+  { pos = newPos, vel = newVel }
 
 // ── Contracts ────────────────────────────────────────────────────────────────
 
-example: dot2 (1.0, 0.0) (0.0, 1.0) = 0.0
-example: dot2 (2.0, 3.0) (4.0, 5.0) = 23.0
-example: add2 (1.0, 2.0) (3.0, 4.0) = (4.0, 6.0)
-example: scale2 2.0 (3.0, 4.0) = (6.0, 8.0)
-example: magnitudeSquared2 (3.0, 4.0) = 25.0
-example: dot3 (1.0, 0.0, 0.0) (0.0, 1.0, 0.0) = 0.0
-forall x y: dot2 (x, y) (0.0, 0.0) = 0.0
+example: dot2 { x = 1.0, y = 0.0 } { x = 0.0, y = 1.0 } = 0.0
+example: dot2 { x = 2.0, y = 3.0 } { x = 4.0, y = 5.0 } = 23.0
+example: add2 { x = 1.0, y = 2.0 } { x = 3.0, y = 4.0 } = { x = 4.0, y = 6.0 }
+example: scale2 2.0 { x = 3.0, y = 4.0 } = { x = 6.0, y = 8.0 }
+example: magnitudeSquared2 { x = 3.0, y = 4.0 } = 25.0
+example: dot3 { x = 1.0, y = 0.0, z = 0.0 } { x = 0.0, y = 1.0, z = 0.0 } = 0.0
+forall x y: dot2 { x = x, y = y } { x = 0.0, y = 0.0 } = 0.0

@@ -20,20 +20,20 @@ fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
     pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
 }
 
-// ── Geometry: tuple components share the Vec2/Vec3 structure consistently ────
+// ── Geometry: record components share the Vec2/Vec3 structure consistently ───
 
 #[test]
 fn geometry_add2_locals_are_all_float() {
     let src = fixture("Geometry.fai");
     let locals = local_types(&src, "add2");
-    // Every destructured component is a Float; the params are Float * Float.
+    // Every destructured field is a Float; the params are Vec2 records.
     assert_eq!(
         locals,
         map(&[
-            ("a", "Float * Float"),
+            ("a", "{ x : Float, y : Float }"),
             ("ax", "Float"),
             ("ay", "Float"),
-            ("b", "Float * Float"),
+            ("b", "{ x : Float, y : Float }"),
             ("bx", "Float"),
             ("by", "Float"),
         ])
@@ -47,16 +47,20 @@ fn geometry_cross3_all_components_float() {
     for name in ["ax", "ay", "az", "bx", "by", "bz", "cx", "cy", "cz"] {
         assert_eq!(locals.get(name).map(String::as_str), Some("Float"), "{name}");
     }
-    assert_eq!(locals.get("a").map(String::as_str), Some("Float * Float * Float"));
+    assert_eq!(locals.get("a").map(String::as_str), Some("{ x : Float, y : Float, z : Float }"));
 }
 
 #[test]
 fn geometry_step_threads_vec2_through_locals() {
     let src = fixture("Geometry.fai");
     let locals = local_types(&src, "step");
-    // The physics step keeps everything as Vec2 (Float * Float).
+    // The physics step keeps every vector as a Vec2 record.
     for name in ["pos", "vel", "gravity", "newVel", "newPos"] {
-        assert_eq!(locals.get(name).map(String::as_str), Some("Float * Float"), "{name}");
+        assert_eq!(
+            locals.get(name).map(String::as_str),
+            Some("{ x : Float, y : Float }"),
+            "{name}"
+        );
     }
 }
 
@@ -69,10 +73,10 @@ fn rational_add_r_all_ints() {
     assert_eq!(
         locals,
         map(&[
-            ("a", "Int * Int"),
+            ("a", "{ den : Int, num : Int }"),
             ("ad", "Int"),
             ("an", "Int"),
-            ("b", "Int * Int"),
+            ("b", "{ den : Int, num : Int }"),
             ("bd", "Int"),
             ("bn", "Int"),
             ("den", "Int"),

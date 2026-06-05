@@ -1,118 +1,124 @@
 module Matrix2
 
-// 2x2 matrices over Float, stored row-major as a 4-tuple:
-//   (a, b,
-//    c, d)
-// Every operation destructures the 4-tuple, giving rich Float local inference.
+// 2x2 matrices over Float, stored row-major as a record:
+//   { a, b,
+//     c, d }
+// Every operation destructures the record, giving rich Float local inference.
+// `Mat2`/`Vec2` are transparent aliases, so public signatures render as the
+// structural records they stand for.
 
-//~ TYPE matrix : Float -> Float -> Float -> Float -> Float * Float * Float * Float
-public matrix : Float -> Float -> Float -> Float -> Float * Float * Float * Float
-let matrix a b c d = (a, b, c, d)
+type Mat2 = { a : Float, b : Float, c : Float, d : Float }
 
-//~ TYPE identity : Float * Float * Float * Float
-public identity : Float * Float * Float * Float
-let identity = (1.0, 0.0, 0.0, 1.0)
+type Vec2 = { x : Float, y : Float }
 
-//~ TYPE zero : Float * Float * Float * Float
-public zero : Float * Float * Float * Float
-let zero = (0.0, 0.0, 0.0, 0.0)
+//~ TYPE matrix : Float -> Float -> Float -> Float -> { a : Float, b : Float, c : Float, d : Float }
+public matrix : Float -> Float -> Float -> Float -> Mat2
+let matrix a b c d = { a = a, b = b, c = c, d = d }
+
+//~ TYPE identity : { a : Float, b : Float, c : Float, d : Float }
+public identity : Mat2
+let identity = { a = 1.0, b = 0.0, c = 0.0, d = 1.0 }
+
+//~ TYPE zero : { a : Float, b : Float, c : Float, d : Float }
+public zero : Mat2
+let zero = { a = 0.0, b = 0.0, c = 0.0, d = 0.0 }
 
 // ── element-wise ─────────────────────────────────────────────────────────────
 
-//~ TYPE addM : Float * Float * Float * Float -> Float * Float * Float * Float -> Float * Float * Float * Float
+//~ TYPE addM : { a : Float, b : Float, c : Float, d : Float } -> { a : Float, b : Float, c : Float, d : Float } -> { a : Float, b : Float, c : Float, d : Float }
 //~ LOCAL addM.a1 : Float
 //~ LOCAL addM.d2 : Float
-public addM : Float * Float * Float * Float -> Float * Float * Float * Float -> Float * Float * Float * Float
+public addM : Mat2 -> Mat2 -> Mat2
 let addM m n =
-  let (a1, b1, c1, d1) = m
-  let (a2, b2, c2, d2) = n
-  (a1 + a2, b1 + b2, c1 + c2, d1 + d2)
+  let { a = a1, b = b1, c = c1, d = d1 } = m
+  let { a = a2, b = b2, c = c2, d = d2 } = n
+  { a = a1 + a2, b = b1 + b2, c = c1 + c2, d = d1 + d2 }
 
-//~ TYPE scaleM : Float -> Float * Float * Float * Float -> Float * Float * Float * Float
+//~ TYPE scaleM : Float -> { a : Float, b : Float, c : Float, d : Float } -> { a : Float, b : Float, c : Float, d : Float }
 //~ LOCAL scaleM.a : Float
 //~ LOCAL scaleM.d : Float
-public scaleM : Float -> Float * Float * Float * Float -> Float * Float * Float * Float
+public scaleM : Float -> Mat2 -> Mat2
 let scaleM k m =
-  let (a, b, c, d) = m
-  (k * a, k * b, k * c, k * d)
+  let { a, b, c, d } = m
+  { a = k * a, b = k * b, c = k * c, d = k * d }
 
 // ── matrix multiply ──────────────────────────────────────────────────────────
 
-//~ TYPE mulM : Float * Float * Float * Float -> Float * Float * Float * Float -> Float * Float * Float * Float
+//~ TYPE mulM : { a : Float, b : Float, c : Float, d : Float } -> { a : Float, b : Float, c : Float, d : Float } -> { a : Float, b : Float, c : Float, d : Float }
 //~ LOCAL mulM.a1 : Float
 //~ LOCAL mulM.b2 : Float
 //~ LOCAL mulM.r11 : Float
 //~ LOCAL mulM.r12 : Float
 //~ LOCAL mulM.r21 : Float
 //~ LOCAL mulM.r22 : Float
-public mulM : Float * Float * Float * Float -> Float * Float * Float * Float -> Float * Float * Float * Float
+public mulM : Mat2 -> Mat2 -> Mat2
 let mulM m n =
-  let (a1, b1, c1, d1) = m
-  let (a2, b2, c2, d2) = n
+  let { a = a1, b = b1, c = c1, d = d1 } = m
+  let { a = a2, b = b2, c = c2, d = d2 } = n
   let r11 = a1 * a2 + b1 * c2
   let r12 = a1 * b2 + b1 * d2
   let r21 = c1 * a2 + d1 * c2
   let r22 = c1 * b2 + d1 * d2
-  (r11, r12, r21, r22)
+  { a = r11, b = r12, c = r21, d = r22 }
 
 // ── determinant / trace / transpose ──────────────────────────────────────────
 
-//~ TYPE determinant : Float * Float * Float * Float -> Float
+//~ TYPE determinant : { a : Float, b : Float, c : Float, d : Float } -> Float
 //~ LOCAL determinant.a : Float
 //~ LOCAL determinant.b : Float
 //~ LOCAL determinant.c : Float
 //~ LOCAL determinant.d : Float
-public determinant : Float * Float * Float * Float -> Float
+public determinant : Mat2 -> Float
 let determinant m =
-  let (a, b, c, d) = m
+  let { a, b, c, d } = m
   a * d - b * c
 
-//~ TYPE trace : Float * Float * Float * Float -> Float
-public trace : Float * Float * Float * Float -> Float
+//~ TYPE trace : { a : Float, b : Float, c : Float, d : Float } -> Float
+public trace : Mat2 -> Float
 let trace m =
-  let (a, b, c, d) = m
+  let { a, b, c, d } = m
   a + d
 
-//~ TYPE transpose : Float * Float * Float * Float -> Float * Float * Float * Float
-public transpose : Float * Float * Float * Float -> Float * Float * Float * Float
+//~ TYPE transpose : { a : Float, b : Float, c : Float, d : Float } -> { a : Float, b : Float, c : Float, d : Float }
+public transpose : Mat2 -> Mat2
 let transpose m =
-  let (a, b, c, d) = m
-  (a, c, b, d)
+  let { a, b, c, d } = m
+  { a = a, b = c, c = b, d = d }
 
 // ── inverse (returns the zero matrix when singular) ──────────────────────────
 
-//~ TYPE inverse : Float * Float * Float * Float -> Float * Float * Float * Float
+//~ TYPE inverse : { a : Float, b : Float, c : Float, d : Float } -> { a : Float, b : Float, c : Float, d : Float }
 //~ LOCAL inverse.det : Float
 //~ LOCAL inverse.a : Float
 //~ LOCAL inverse.invDet : Float
-public inverse : Float * Float * Float * Float -> Float * Float * Float * Float
+public inverse : Mat2 -> Mat2
 let inverse m =
-  let (a, b, c, d) = m
+  let { a, b, c, d } = m
   let det = determinant m
   if det = 0.0 then zero
   else
     let invDet = 1.0 / det
-    (d * invDet, (0.0 - b) * invDet, (0.0 - c) * invDet, a * invDet)
+    { a = d * invDet, b = (0.0 - b) * invDet, c = (0.0 - c) * invDet, d = a * invDet }
 
-// ── matrix-vector product (Vec2 = Float * Float) ─────────────────────────────
+// ── matrix-vector product (Vec2 = { x : Float, y : Float }) ───────────────────
 
-//~ TYPE apply : Float * Float * Float * Float -> Float * Float -> Float * Float
+//~ TYPE apply : { a : Float, b : Float, c : Float, d : Float } -> { x : Float, y : Float } -> { x : Float, y : Float }
 //~ LOCAL apply.x : Float
 //~ LOCAL apply.y : Float
 //~ LOCAL apply.a : Float
-public apply : Float * Float * Float * Float -> Float * Float -> Float * Float
+public apply : Mat2 -> Vec2 -> Vec2
 let apply m v =
-  let (a, b, c, d) = m
-  let (x, y) = v
-  (a * x + b * y, c * x + d * y)
+  let { a, b, c, d } = m
+  let { x, y } = v
+  { x = a * x + b * y, y = c * x + d * y }
 
 // ── Contracts ────────────────────────────────────────────────────────────────
 
 example: determinant identity = 1.0
-example: determinant (2.0, 0.0, 0.0, 3.0) = 6.0
+example: determinant { a = 2.0, b = 0.0, c = 0.0, d = 3.0 } = 6.0
 example: trace identity = 2.0
-example: transpose (1.0, 2.0, 3.0, 4.0) = (1.0, 3.0, 2.0, 4.0)
+example: transpose { a = 1.0, b = 2.0, c = 3.0, d = 4.0 } = { a = 1.0, b = 3.0, c = 2.0, d = 4.0 }
 example: mulM identity identity = identity
-example: apply identity (5.0, 7.0) = (5.0, 7.0)
+example: apply identity { x = 5.0, y = 7.0 } = { x = 5.0, y = 7.0 }
 example: addM identity zero = identity
-forall a b c d: trace (a, b, c, d) = a + d
+forall a b c d: trace { a = a, b = b, c = c, d = d } = a + d

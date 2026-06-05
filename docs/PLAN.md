@@ -124,17 +124,17 @@ let-generalization, the required-signature rule, contract typing), and `fai-ide`
 cross-module firewall is proven by the incremental verifier. See decisions
 **D36–D44** for the choices made while implementing it.
 
-> **TODO (update when M4 lands):** The real-world integration test fixtures under
+> **Test-corpus note:** the real-world integration fixtures under
 > `crates/fai-tests/tests/fixtures/typed/` (the poker model in `Card.fai`,
 > `HandEval.fai`, `Poker.fai`, plus `Geometry.fai`, `Rational.fai`, `Matrix2.fai`,
-> `Combinators.fai`) encode domain data as `Int`/`Float`/`Bool`/tuples because
-> records, ADTs, and `match` are not available yet (e.g. vectors and matrices are
-> bare tuples, hands are 5-tuples). When M4 lands, rewrite them using `type`
-> declarations, record literals, and `match` — both to dogfood M4 and to give the
-> checker a richer real-world corpus — and revisit the `//~ LOCAL` assertions in
-> `crates/fai-tests/tests/real_world_locals.rs`. Also promote `Hello.fai` and any
-> other capability-using samples from the future-surface bucket into the
-> typecheck-clean set once M3/M5 land.
+> `Combinators.fai`) still encode domain data as `Int`/`Float`/`Bool`/tuples
+> (vectors and matrices are bare tuples, hands are 5-tuples). They remain valid
+> programs and typecheck clean; rewriting them to dogfood records/ADTs/`match`
+> (and revisiting the tuple-shaped `//~ LOCAL` assertions in
+> `crates/fai-tests/tests/real_world_locals.rs`) is tracked as enrichment work in
+> the data-layer milestone below. Capability-using samples such as `Hello.fai`
+> stay in the future-surface bucket until the interfaces milestone lands the
+> `Runtime`/`console` capability surface.
 
 **Goal:** type the pure functional core; enforce that every `public` binding has
 an explicit signature.
@@ -273,11 +273,25 @@ numbers unchanged.)
 ---
 
 ### M4 — Data: ADTs, pattern matching, structural records with rows
-> **TODO (update when M4 lands):** See the note in M2's status above. The
-> integration test fixtures and the poker-game model should be rewritten using
-> `type`, record literals, and `match` when M4 is complete. Update the
-> `TYPECHECK_CLEAN` set in `crates/fai-tests/tests/samples.rs` and the fixture
-> runner accordingly.
+**Status:** complete — discriminated unions and transparent aliases, `match`
+with Maranget exhaustiveness/redundancy checking, structural records with row
+polymorphism (parallel row union-find, lacks constraints, row-var
+generalization), a native boxed `Float`, and a single structural `compare` all
+typecheck and compile to native code. Monomorphic records use constant-offset
+projection; a *row-polymorphic* field access/update reachable from `main` reports
+`FAI7002`, pending the offset-evidence work tracked with the interfaces
+milestone. The standard library (`Option`/`Result`, list combinators,
+`compare`/`sort`/`sortBy`, `Dict`/`Set`, string ops) ships as a real prelude
+module. See decisions **D66–D72** for the choices made while implementing it.
+
+> **Test-corpus follow-up:** the `samples/` tour is promoted to the
+> typecheck-clean set and exercised end-to-end. The larger real-world *fixtures*
+> under `crates/fai-tests/tests/fixtures/typed/` (the poker model in `Card.fai`,
+> `HandEval.fai`, `Poker.fai`, plus `Geometry.fai`, `Rational.fai`, `Matrix2.fai`)
+> still encode their domain data as tuples — they remain valid programs and
+> typecheck clean, but do not yet dogfood records/ADTs. Rewriting them (and the
+> tuple-shaped `//~ LOCAL` assertions in `real_world_locals.rs`) is enrichment
+> work, not a correctness gap.
 
 **Goal:** the full data layer, including the project's largest type-system
 feature (row-polymorphic structural records).
@@ -901,6 +915,55 @@ Resolved while implementing **M3.5** (the daemon, persistence, and protocol):
   (`FAI_RUN_AS_BYTES`) is opt-in because a low cap can break compilation. Windows
   Job-Object limits are future work. No hand-written unsafe (the safe `nix`
   wrappers), and limits apply only under daemon supervision.
+
+- **D66 ADT type & value representation:** a declared union is a nullary type
+  head `Ty::Adt(AdtRef)` applied to its arguments through the existing `App`
+  machinery (so `Option 'a` reuses ordinary type application); `List` keeps its
+  dedicated `Con::List`. At runtime a **nullary constructor is an immediate**
+  `(tag << 1) | 1` (no allocation); a constructor with fields is a boxed
+  composite `{ rc, descriptor, size, tag, fields… }` sharing the tuple/record
+  runtime. Constructors are ordinary functions (curried) typed by a
+  `constructor_scheme` query.
+- **D67 Resolution identity:** constructors, ADTs, and value defs get distinct
+  newtyped ids (`CtorRef`, `AdtRef`, `DefId`); name resolution adds `Res::Ctor`
+  so a capitalized head in an expression or pattern resolves to a constructor,
+  with `FAI2012` for an unbound one and `FAI3011` for constructor arity misuse.
+- **D68 Rows via a parallel union-find:** `InferCtx` carries a second union-find
+  for **row variables** alongside the type one. A record type is
+  `Ty::Record(RecordRow { fields, tail })` where `fields` are **sorted by label
+  text** and `tail` is `Closed` or `Open(RowVarId)`; `Scheme` gained `row_vars`
+  (and `row_names` for rendering). Sorting fields by label text **everywhere**
+  (inference, layout, fingerprint) is what makes the monomorphic memory layout
+  and the content-addressed cache key sound. Duplicate labels are `FAI3010`.
+- **D69 Match & records lower to four Core primitives:** desugaring introduces
+  `MakeData`/`DataTag`/`DataField` (plus a `Lit::Float`); `match` becomes a
+  decision tree emitted as `DataTag` tests in `if`-chains with `DataField`
+  projections, and records reuse the same nodes with **tag 0**. `DataTag` and
+  `DataField` **consume** their base operand, which keeps them reference-count
+  correct under the existing dup-at-use discipline.
+- **D70 Structural ordering is lenient, like equality (amends D42):** `<`, `<=`,
+  `>`, `>=` are admitted on **any non-function type** and lowered to a single
+  runtime `fai_compare` (constructor tags order by declaration order, records by
+  sorted label, recursively). Because ordering needs no dictionary, the generic
+  `compare`/`sort`/`sortBy` and the `Dict`/`Set` BSTs are plain prelude code.
+- **D71 The prelude is a real compiled module, not magic:** `Option`/`Result`,
+  the `List` combinators, `compare`/`sort`, `Dict`/`Set`, and the string helpers
+  live in an embedded `Prelude.fai` whose public values, types, and constructors
+  are visible unqualified in every module. Only genuinely primitive operations
+  stay in Rust as a small `INTRINSICS` set. `Float` is always boxed; the
+  arithmetic/comparison primitive is selected from the operand type during Core
+  lowering.
+- **D72 Row-polymorphic field-access codegen is staged with M5:** a **monomorphic
+  closed** record compiles field access/update to a **constant offset**; a field
+  access or `{ r with … }` on a **row-polymorphic** record that is *reachable
+  from `main`* reports `FAI7002` ("row-polymorphic field access needs runtime
+  offset evidence"), pending the offset-evidence/dictionary work in the
+  interfaces milestone — the type system already infers the fully general
+  signatures (e.g. `getX : { x : 'a | _ } -> 'a`). New M4 diagnostics:
+  `FAI3012` (type-constructor arity), `FAI3013` (recursive alias),
+  `FAI4001`/`FAI4002` (non-exhaustive / unreachable `match`). The unused
+  `FAI3009` is retired (the catalog test allows the `FAI4xxx` range in
+  `fai-types`).
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected milestones.
