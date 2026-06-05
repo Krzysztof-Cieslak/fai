@@ -309,24 +309,82 @@ mod tests {
     use crate::core;
     use crate::pretty::pretty_def;
 
+    /// Lowers `name` from `src`, wires it to a one-def bundle and back, and
+    /// returns the original and rebuilt pretty renderings (which must be equal).
+    fn wire_and_back(src: &str, name: &str) -> (String, String, Rebuilt) {
+        let mut db = FaiDatabase::new();
+        fai_types::prelude::load_prelude(&mut db);
+        let id = db.add_source("M.fai".into(), src.to_owned());
+        let file = db.source_file(id).unwrap();
+        let lowered = core(&db, file, Symbol::intern(name));
+
+        let module_of = |_d: DefId| "M".to_owned();
+        let wire = def_to_wire(&lowered, &module_of, lowered.entry().params.len());
+        let bundle = WireBundle { entry: wire.id.clone(), defs: vec![wire] };
+        let rebuilt = from_wire(&bundle);
+        (pretty_def(&lowered), pretty_def(&rebuilt.defs[0]), rebuilt)
+    }
+
     #[test]
     fn round_trip_preserves_structure() {
+        let (original, rebuilt, info) = wire_and_back("module M\n\nlet f x = x + 1\n", "f");
+        assert_eq!(rebuilt, original);
+        assert_eq!(info.arities[&info.entry], 1);
+        assert_eq!(info.module_labels[&info.entry.file], "M");
+    }
+
+    #[test]
+    fn round_trip_control_flow_and_strings() {
+        let (original, rebuilt, _) =
+            wire_and_back("module M\n\nlet f x = if x < 1 then \"a\" else \"b\" ++ \"c\"\n", "f");
+        assert_eq!(rebuilt, original);
+        assert!(original.contains("(if"), "expected an if in {original}");
+    }
+
+    #[test]
+    fn round_trip_closure_with_captures() {
+        // A lifted lambda capturing `x` exercises MakeClosure + captures.
+        let (original, rebuilt, _) =
+            wire_and_back("module M\n\nlet adder x = fun y -> x + y\n", "adder");
+        assert_eq!(rebuilt, original);
+        assert!(original.contains("closure"), "expected a closure in {original}");
+    }
+
+    #[test]
+    fn bundle_survives_json_round_trip() {
+        // The run worker reads the bundle as JSON from a temp file.
         let mut db = FaiDatabase::new();
         fai_types::prelude::load_prelude(&mut db);
         let id = db.add_source("M.fai".into(), "module M\n\nlet f x = x + 1\n".to_owned());
         let file = db.source_file(id).unwrap();
         let lowered = core(&db, file, Symbol::intern("f"));
-
-        let module_of = |_d: DefId| "M".to_owned();
-        let wire = def_to_wire(&lowered, &module_of, 1);
+        let wire = def_to_wire(&lowered, &|_| "M".to_owned(), 1);
         let bundle = WireBundle { entry: wire.id.clone(), defs: vec![wire] };
 
-        let rebuilt = from_wire(&bundle);
-        assert_eq!(rebuilt.defs.len(), 1);
-        // The reconstructed IR prints identically to the original (types aside,
-        // which the pretty printer omits).
+        let json = serde_json::to_string(&bundle).unwrap();
+        let decoded: WireBundle = serde_json::from_str(&json).unwrap();
+        let rebuilt = from_wire(&decoded);
         assert_eq!(pretty_def(&rebuilt.defs[0]), pretty_def(&lowered));
-        assert_eq!(rebuilt.arities[&rebuilt.entry], 1);
-        assert_eq!(rebuilt.module_labels[&rebuilt.entry.file], "M");
+    }
+
+    #[test]
+    fn distinct_module_labels_get_distinct_source_ids() {
+        // Two defs in different modules must reconstruct to different source ids,
+        // so their backend symbols never collide.
+        let a = WireDef {
+            id: WireDefId { module: "A".to_owned(), name: "f".to_owned() },
+            arity: 0,
+            fns: vec![WireFn { params: vec![], captures: vec![], body: WireExpr::Lit(Lit::Unit) }],
+        };
+        let b = WireDef {
+            id: WireDefId { module: "B".to_owned(), name: "f".to_owned() },
+            arity: 0,
+            fns: vec![WireFn { params: vec![], captures: vec![], body: WireExpr::Lit(Lit::Unit) }],
+        };
+        let bundle = WireBundle { entry: a.id.clone(), defs: vec![a, b] };
+        let rebuilt = from_wire(&bundle);
+        assert_eq!(rebuilt.defs.len(), 2);
+        assert_ne!(rebuilt.defs[0].def.file, rebuilt.defs[1].def.file);
+        assert_eq!(rebuilt.module_labels.len(), 2);
     }
 }

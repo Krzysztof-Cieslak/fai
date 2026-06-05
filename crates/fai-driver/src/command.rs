@@ -31,7 +31,7 @@ pub const EXIT_INTERNAL: i32 = 4;
 /// `content`, when present, is the authoritative already-written text (the daemon
 /// uses it directly); otherwise the daemon re-reads `path` from disk. `hash` is
 /// advisory. The CLI does not populate this; it exists for editor/LSP clients.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DirtyFile {
     /// Workspace-relative path.
     pub path: String,
@@ -51,7 +51,7 @@ pub enum OutputFormat {
 }
 
 /// Rendering options carried from the client (it knows its own terminal).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RenderOpts {
     /// The output format.
     pub format: OutputFormat,
@@ -64,7 +64,7 @@ pub struct RenderOpts {
 /// Paths are workspace-relative or absolute; the build output path is resolved by
 /// the client before it is placed here (so the daemon writes to the right place
 /// regardless of its working directory).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CommandSpec {
     /// Typecheck the selection (or the whole workspace).
     Check {
@@ -92,7 +92,7 @@ pub enum CommandSpec {
 }
 
 /// The bytes a command produced, plus its process exit code.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rendered {
     /// Bytes for the client's stdout.
     pub stdout: String,
