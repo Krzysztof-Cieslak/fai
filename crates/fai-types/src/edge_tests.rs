@@ -352,8 +352,9 @@ fn unknown_type_constructor_errors() {
 }
 
 #[test]
-fn record_field_access_unsupported() {
-    assert!(codes("let f r = r.field").contains(&"FAI3009".to_owned()));
+fn record_field_access_infers_open_row() {
+    assert_eq!(ty("let f r = r.field", "f"), "{ field : 'a | _ } -> 'a");
+    assert!(codes("let f r = r.field").is_empty());
 }
 
 // ---- contracts -------------------------------------------------------------

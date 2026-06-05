@@ -382,3 +382,62 @@ fn recursive_alias_is_an_error() {
         check_codes(&db, f[0])
     );
 }
+
+// ── Records and row polymorphism ─────────────────────────────────────────────
+
+#[test]
+fn record_literal_infers_closed() {
+    let (db, f) = db_with(&[("M.fai", "module M\n\nlet p = { y = 2, x = 1 }\n")]);
+    // Fields are rendered in canonical (sorted) order.
+    assert_eq!(type_of(&db, f[0], "p"), "{ x : Int, y : Int }");
+}
+
+#[test]
+fn field_access_is_row_polymorphic() {
+    let (db, f) = db_with(&[("M.fai", "module M\n\nlet getX r = r.x\n")]);
+    assert_eq!(type_of(&db, f[0], "getX"), "{ x : 'a | _ } -> 'a");
+}
+
+#[test]
+fn record_update_threads_the_named_tail() {
+    let src = "module M\n\npublic setX : 'a -> { x : 'b | 'r } -> { x : 'a | 'r }\nlet setX v r = { r with x = v }\n";
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+    assert_eq!(type_of(&db, f[0], "setX"), "'a -> { x : 'b | 'r } -> { x : 'a | 'r }");
+}
+
+#[test]
+fn record_alias_is_transparent() {
+    let src = "module M\n\ntype Vec2 = { x : Float, y : Float }\n\npublic origin : Vec2\nlet origin = { x = 0.0, y = 0.0 }\n";
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+}
+
+#[test]
+fn duplicate_record_field_is_an_error() {
+    let (db, f) = db_with(&[("M.fai", "module M\n\nlet p = { x = 1, x = 2 }\n")]);
+    assert!(
+        check_codes(&db, f[0]).contains(&"FAI3010".to_owned()),
+        "got {:?}",
+        check_codes(&db, f[0])
+    );
+}
+
+#[test]
+fn record_field_type_mismatch() {
+    let src = "module M\n\npublic f : { x : Int } -> Bool\nlet f r = r.x\n";
+    let (db, f) = db_with(&[("M.fai", src)]);
+    // `r.x : Int`, but the signature says the body is `Bool`.
+    assert!(
+        check_codes(&db, f[0]).contains(&"FAI3004".to_owned()),
+        "got {:?}",
+        check_codes(&db, f[0])
+    );
+}
+
+#[test]
+fn record_pattern_match_typechecks() {
+    let src = "module M\n\ntype Point = { x : Int, y : Int }\n\npublic sum : Point -> Int\nlet sum p =\n  match p with\n  | { x, y } -> x + y\n";
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+}

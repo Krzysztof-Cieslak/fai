@@ -1,24 +1,17 @@
 module Cart
 
-type Item =
-  { name : String, price : Float, qty : Int }
+type Item = { name : String, price : Float, qty : Int }
 
 /// Line-item total (price × quantity).
 public subtotal : Item -> Float
-let subtotal item =
-  item.price * intToFloat item.qty
+let subtotal item = item.price * intToFloat item.qty
 example: subtotal { name = "pen", price = 1.5, qty = 2 } = 3.0
 
 public total : List Item -> Float
-let total items =
-  items
-  |> map subtotal
-  |> foldl (fun acc x -> acc + x) 0.0
+let total items = items |> map subtotal |> foldl (fun acc x -> acc + x) 0.0
 
 public main : Runtime -> Unit
 let main runtime =
-  let cart =
-    [ { name = "pen", price = 1.5, qty = 2 }
-    , { name = "pad", price = 3.0, qty = 1 } ]
+  let cart = [{ name = "pen", price = 1.5, qty = 2 }, { name = "pad", price = 3.0, qty = 1 }]
   let due = total cart
   runtime.console.writeLine ("Total: " ++ floatToString due)

@@ -7,8 +7,9 @@
 //! here is cached by salsa.
 
 use fai_resolve::AdtRef;
+use fai_syntax::Symbol;
 
-use crate::ty::{Con, Scheme, Ty, TyVarId};
+use crate::ty::{Con, RecordRow, RowEnd, RowVarId, Scheme, Ty, TyVarId};
 
 /// A constraint a type variable must satisfy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +31,33 @@ enum VarState {
     Bound(SolveTy),
 }
 
+/// A solver record row: present fields plus a tail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SolveRow {
+    /// The present fields (unordered during solving).
+    pub fields: Vec<(Symbol, SolveTy)>,
+    /// The row's tail.
+    pub tail: RowTail,
+}
+
+/// The tail of a solver record row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RowTail {
+    /// Exactly the listed fields.
+    Closed,
+    /// The listed fields plus an open row variable.
+    Open(RowVarId),
+}
+
+/// The binding of a solver row variable.
+#[derive(Debug, Clone)]
+enum RowState {
+    /// Unbound; the labels it must not contain (no duplicates).
+    Free(Vec<Symbol>),
+    /// Bound to extra fields plus a further tail.
+    Bound(SolveRow),
+}
+
 /// A solver-level type: like [`Ty`] but variables are solver ids and there is no
 /// `Arc` sharing requirement (it is transient).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +74,8 @@ pub enum SolveTy {
     Arrow(Box<SolveTy>, Box<SolveTy>),
     /// Tuple type.
     Tuple(Vec<SolveTy>),
+    /// A structural record.
+    Record(SolveRow),
     /// Unit.
     Unit,
     /// Error (unifies with anything).
@@ -109,6 +139,7 @@ pub enum UnifyResult {
 /// The mutable inference solver.
 pub struct InferCtx {
     vars: Vec<VarState>,
+    rows: Vec<RowState>,
 }
 
 impl Default for InferCtx {
@@ -121,7 +152,144 @@ impl InferCtx {
     /// Creates an empty context.
     #[must_use]
     pub fn new() -> Self {
-        Self { vars: Vec::new() }
+        Self { vars: Vec::new(), rows: Vec::new() }
+    }
+
+    /// Allocates a fresh row variable forbidden from containing `lacks`.
+    pub fn fresh_row(&mut self, lacks: Vec<Symbol>) -> RowVarId {
+        let id = RowVarId(u32::try_from(self.rows.len()).expect("row var overflow"));
+        self.rows.push(RowState::Free(lacks));
+        id
+    }
+
+    /// A fresh open record `{ fields | ρ }` with a fresh tail variable.
+    pub fn fresh_open_record(&mut self, fields: Vec<(Symbol, SolveTy)>) -> SolveTy {
+        let labels: Vec<Symbol> = fields.iter().map(|(l, _)| *l).collect();
+        let tail = self.fresh_row(labels);
+        SolveTy::Record(SolveRow { fields, tail: RowTail::Open(tail) })
+    }
+
+    /// Flattens a row, following bound tail variables and merging their fields.
+    /// The result's tail is `Closed` or `Open` of a *free* row variable.
+    fn expand_row(&self, row: &SolveRow) -> SolveRow {
+        let mut fields = row.fields.clone();
+        let mut tail = row.tail.clone();
+        while let RowTail::Open(v) = tail {
+            match &self.rows[v.0 as usize] {
+                RowState::Bound(more) => {
+                    fields.extend(more.fields.iter().cloned());
+                    tail = more.tail.clone();
+                }
+                RowState::Free(_) => break,
+            }
+        }
+        SolveRow { fields, tail }
+    }
+
+    fn row_lacks(&self, v: RowVarId) -> Vec<Symbol> {
+        match &self.rows[v.0 as usize] {
+            RowState::Free(l) => l.clone(),
+            RowState::Bound(_) => Vec::new(),
+        }
+    }
+
+    /// Binds a free row variable to `row`, checking the lacks constraint.
+    fn bind_row(&mut self, v: RowVarId, row: SolveRow) -> UnifyResult {
+        let lacks = self.row_lacks(v);
+        for (label, _) in &row.fields {
+            if lacks.contains(label) {
+                return UnifyResult::Mismatch; // a duplicate label
+            }
+        }
+        // Carry the lacks set onto the new tail (it inherits the forbidden labels
+        // plus the ones just added).
+        if let RowTail::Open(next) = row.tail
+            && let RowState::Free(next_lacks) = &mut self.rows[next.0 as usize]
+        {
+            for l in &lacks {
+                if !next_lacks.contains(l) {
+                    next_lacks.push(*l);
+                }
+            }
+            for (l, _) in &row.fields {
+                if !next_lacks.contains(l) {
+                    next_lacks.push(*l);
+                }
+            }
+        }
+        self.rows[v.0 as usize] = RowState::Bound(row);
+        UnifyResult::Ok
+    }
+
+    /// Unifies two records by row unification.
+    fn unify_rows(&mut self, r1: &SolveRow, r2: &SolveRow) -> UnifyResult {
+        let r1 = self.expand_row(r1);
+        let r2 = self.expand_row(r2);
+
+        // Unify the types of common fields.
+        for (label, t1) in &r1.fields {
+            if let Some((_, t2)) = r2.fields.iter().find(|(l, _)| l == label) {
+                match self.unify(t1, t2) {
+                    UnifyResult::Ok => {}
+                    other => return other,
+                }
+            }
+        }
+        let only1: Vec<(Symbol, SolveTy)> = r1
+            .fields
+            .iter()
+            .filter(|(l, _)| !r2.fields.iter().any(|(m, _)| m == l))
+            .cloned()
+            .collect();
+        let only2: Vec<(Symbol, SolveTy)> = r2
+            .fields
+            .iter()
+            .filter(|(l, _)| !r1.fields.iter().any(|(m, _)| m == l))
+            .cloned()
+            .collect();
+
+        match (r1.tail, r2.tail) {
+            (RowTail::Closed, RowTail::Closed) => {
+                if only1.is_empty() && only2.is_empty() {
+                    UnifyResult::Ok
+                } else {
+                    UnifyResult::Mismatch
+                }
+            }
+            (RowTail::Closed, RowTail::Open(v2)) => {
+                if !only2.is_empty() {
+                    return UnifyResult::Mismatch;
+                }
+                self.bind_row(v2, SolveRow { fields: only1, tail: RowTail::Closed })
+            }
+            (RowTail::Open(v1), RowTail::Closed) => {
+                if !only1.is_empty() {
+                    return UnifyResult::Mismatch;
+                }
+                self.bind_row(v1, SolveRow { fields: only2, tail: RowTail::Closed })
+            }
+            (RowTail::Open(v1), RowTail::Open(v2)) => {
+                if v1 == v2 {
+                    return if only1.is_empty() && only2.is_empty() {
+                        UnifyResult::Ok
+                    } else {
+                        UnifyResult::Mismatch
+                    };
+                }
+                let mut lacks: Vec<Symbol> = self.row_lacks(v1);
+                for l in self.row_lacks(v2) {
+                    if !lacks.contains(&l) {
+                        lacks.push(l);
+                    }
+                }
+                let fresh = self.fresh_row(lacks);
+                match self.bind_row(v1, SolveRow { fields: only2, tail: RowTail::Open(fresh) }) {
+                    UnifyResult::Ok => {}
+                    other => return other,
+                }
+                self.bind_row(v2, SolveRow { fields: only1, tail: RowTail::Open(fresh) })
+            }
+        }
     }
 
     /// Allocates a fresh, unconstrained variable.
@@ -185,6 +353,10 @@ impl InferCtx {
                 }
                 UnifyResult::Ok
             }
+            (SolveTy::Record(r1), SolveTy::Record(r2)) => {
+                let (r1, r2) = (r1.clone(), r2.clone());
+                self.unify_rows(&r1, &r2)
+            }
             _ => UnifyResult::Mismatch,
         }
     }
@@ -229,7 +401,8 @@ impl InferCtx {
                     | SolveTy::Con(Con::Float)
             ),
             // Ordering is structural (`fai_compare`), so like `Eq` it admits any
-            // non-function type.
+            // non-function type. (A record may contain a function field, but that
+            // is caught when the field type is compared.)
             Constraint::Ord | Constraint::Eq => !matches!(ty, SolveTy::Arrow(_, _)),
         }
     }
@@ -240,6 +413,10 @@ impl InferCtx {
             SolveTy::Var(other) => other == id,
             SolveTy::App(f, a) | SolveTy::Arrow(f, a) => self.occurs(id, &f) || self.occurs(id, &a),
             SolveTy::Tuple(elems) => elems.iter().any(|e| self.occurs(id, e)),
+            SolveTy::Record(row) => {
+                let row = self.expand_row(&row);
+                row.fields.iter().any(|(_, t)| self.occurs(id, t))
+            }
             SolveTy::Con(_) | SolveTy::Adt(_) | SolveTy::Unit | SolveTy::Error => false,
         }
     }
@@ -277,6 +454,12 @@ impl InferCtx {
                     self.default_numerics_deep(e);
                 }
             }
+            SolveTy::Record(row) => {
+                let row = self.expand_row(&row);
+                for (_, t) in &row.fields {
+                    self.default_numerics_deep(t);
+                }
+            }
             SolveTy::Con(_) | SolveTy::Adt(_) | SolveTy::Unit | SolveTy::Error => {}
         }
     }
@@ -288,12 +471,12 @@ impl InferCtx {
         self.reify_inner(ty, &mut renumber)
     }
 
-    /// Reifies into a [`Ty`] and reports the free variables it contains (for
-    /// generalization), each renumbered compactly.
-    pub fn reify_with_vars(&self, ty: &SolveTy) -> (Ty, Vec<TyVarId>) {
+    /// Reifies into a [`Ty`] and reports the free type and row variables it
+    /// contains (for generalization), each renumbered compactly.
+    pub fn reify_with_vars(&self, ty: &SolveTy) -> (Ty, Vec<TyVarId>, Vec<RowVarId>) {
         let mut renumber = Renumber::default();
         let reified = self.reify_inner(ty, &mut renumber);
-        (reified, renumber.order)
+        (reified, renumber.order, renumber.row_order)
     }
 
     /// Reifies several solver types against a *shared* renumbering, so a variable
@@ -321,6 +504,17 @@ impl InferCtx {
             SolveTy::Tuple(elems) => {
                 Ty::Tuple(elems.iter().map(|e| self.reify_inner(e, renumber)).collect())
             }
+            SolveTy::Record(row) => {
+                let row = self.expand_row(&row);
+                let mut fields: Vec<(Symbol, Ty)> =
+                    row.fields.iter().map(|(l, t)| (*l, self.reify_inner(t, renumber))).collect();
+                fields.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+                let tail = match row.tail {
+                    RowTail::Closed => RowEnd::Closed,
+                    RowTail::Open(v) => RowEnd::Open(renumber.map_row(v)),
+                };
+                Ty::Record(RecordRow { fields, tail })
+            }
         }
     }
 
@@ -336,16 +530,59 @@ impl InferCtx {
     /// the body: if a fresh var ends up bound to a concrete type or shared with
     /// another, the signature over-generalized.
     pub fn instantiate_tracked(&mut self, scheme: &Scheme) -> (SolveTy, Vec<TyVarId>) {
-        let mut mapping = rustc_hash::FxHashMap::default();
+        let mut map = InstMap::default();
         let mut fresh_vars = Vec::with_capacity(scheme.vars.len());
         for &v in &scheme.vars {
-            let fresh = self.fresh();
-            if let SolveTy::Var(id) = fresh {
-                mapping.insert(v, id);
+            if let SolveTy::Var(id) = self.fresh() {
+                map.types.insert(v, id);
                 fresh_vars.push(id);
             }
         }
-        (instantiate_ty(&scheme.ty, &mapping), fresh_vars)
+        let solved = self.instantiate_solve(&scheme.ty, &mut map);
+        (solved, fresh_vars)
+    }
+
+    /// Builds a solver type from a scheme body, mapping quantified type variables
+    /// via `map` and lazily creating fresh row variables (each forbidden from
+    /// duplicating the labels already present in its record).
+    fn instantiate_solve(&mut self, ty: &Ty, map: &mut InstMap) -> SolveTy {
+        match ty {
+            Ty::Var(v) => SolveTy::Var(*map.types.get(v).unwrap_or(v)),
+            Ty::Con(c) => SolveTy::Con(*c),
+            Ty::Adt(adt) => SolveTy::Adt(*adt),
+            Ty::Unit => SolveTy::Unit,
+            Ty::Error => SolveTy::Error,
+            Ty::App(f, a) => SolveTy::App(
+                Box::new(self.instantiate_solve(f, map)),
+                Box::new(self.instantiate_solve(a, map)),
+            ),
+            Ty::Arrow(f, t) => {
+                SolveTy::arrow(self.instantiate_solve(f, map), self.instantiate_solve(t, map))
+            }
+            Ty::Tuple(elems) => {
+                SolveTy::Tuple(elems.iter().map(|e| self.instantiate_solve(e, map)).collect())
+            }
+            Ty::Record(row) => {
+                let labels: Vec<Symbol> = row.fields.iter().map(|(l, _)| *l).collect();
+                let fields: Vec<(Symbol, SolveTy)> =
+                    row.fields.iter().map(|(l, t)| (*l, self.instantiate_solve(t, map))).collect();
+                let tail = match row.tail {
+                    RowEnd::Closed => RowTail::Closed,
+                    RowEnd::Open(v) => {
+                        let fresh = match map.rows.get(&v) {
+                            Some(f) => *f,
+                            None => {
+                                let f = self.fresh_row(labels);
+                                map.rows.insert(v, f);
+                                f
+                            }
+                        };
+                        RowTail::Open(fresh)
+                    }
+                };
+                SolveTy::Record(SolveRow { fields, tail })
+            }
+        }
     }
 
     /// Whether each id in `vars` still resolves to a *distinct* free variable.
@@ -373,6 +610,8 @@ impl InferCtx {
 struct Renumber {
     map: rustc_hash::FxHashMap<TyVarId, TyVarId>,
     order: Vec<TyVarId>,
+    row_map: rustc_hash::FxHashMap<RowVarId, RowVarId>,
+    row_order: Vec<RowVarId>,
 }
 
 impl Renumber {
@@ -385,23 +624,23 @@ impl Renumber {
         self.order.push(next);
         next
     }
+
+    fn map_row(&mut self, id: RowVarId) -> RowVarId {
+        if let Some(m) = self.row_map.get(&id) {
+            return *m;
+        }
+        let next = RowVarId(u32::try_from(self.row_order.len()).expect("row var overflow"));
+        self.row_map.insert(id, next);
+        self.row_order.push(next);
+        next
+    }
 }
 
-fn instantiate_ty(ty: &Ty, mapping: &rustc_hash::FxHashMap<TyVarId, TyVarId>) -> SolveTy {
-    match ty {
-        Ty::Var(v) => SolveTy::Var(*mapping.get(v).unwrap_or(v)),
-        Ty::Con(c) => SolveTy::Con(*c),
-        Ty::Adt(adt) => SolveTy::Adt(*adt),
-        Ty::Unit => SolveTy::Unit,
-        Ty::Error => SolveTy::Error,
-        Ty::App(f, a) => {
-            SolveTy::App(Box::new(instantiate_ty(f, mapping)), Box::new(instantiate_ty(a, mapping)))
-        }
-        Ty::Arrow(f, t) => SolveTy::arrow(instantiate_ty(f, mapping), instantiate_ty(t, mapping)),
-        Ty::Tuple(elems) => {
-            SolveTy::Tuple(elems.iter().map(|e| instantiate_ty(e, mapping)).collect())
-        }
-    }
+/// The mappings applied when instantiating a scheme's quantified variables.
+#[derive(Default)]
+struct InstMap {
+    types: rustc_hash::FxHashMap<TyVarId, TyVarId>,
+    rows: rustc_hash::FxHashMap<RowVarId, RowVarId>,
 }
 
 /// Picks the stronger of two constraints when a variable accrues both. Ord

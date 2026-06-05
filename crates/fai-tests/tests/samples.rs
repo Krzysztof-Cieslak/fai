@@ -57,15 +57,20 @@ fn samples_round_trip_or_are_future_surface() {
     // later milestones add their modules here as features land.
     for expected in [
         "Algebra.fai",
+        "Anon.fai",
         "Basics.fai",
         "Comments.fai",
         "Funcs.fai",
+        "Geometry.fai",
         "Hello.fai",
         "Lists.fai",
         "Locals.fai",
         "Math.fai",
         "Optional.fai",
+        "RecordMatch.fai",
+        "Rows.fai",
         "Shapes.fai",
+        "Status.fai",
         "Tuples.fai",
     ] {
         assert!(clean.contains(expected), "{expected} should parse cleanly and round-trip");
@@ -80,14 +85,19 @@ fn samples_round_trip_or_are_future_surface() {
 /// Files auto-promote here as later milestones land.
 const TYPECHECK_CLEAN: &[&str] = &[
     "Algebra.fai",
+    "Anon.fai",
     "Basics.fai",
     "Funcs.fai",
+    "Geometry.fai",
     "Hello.fai",
     "Lists.fai",
     "Locals.fai",
     "Math.fai",
     "Optional.fai",
+    "RecordMatch.fai",
+    "Rows.fai",
     "Shapes.fai",
+    "Status.fai",
     "Tuples.fai",
 ];
 

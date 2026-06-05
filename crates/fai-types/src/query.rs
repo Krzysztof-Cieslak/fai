@@ -141,6 +141,8 @@ pub fn def_local_types(
 pub struct BodyTypes {
     /// Each expression's reified type, keyed by `ExprId`.
     pub types: FxHashMap<ExprId, Ty>,
+    /// Each pattern's reified type, keyed by `PatId`.
+    pub pat_types: FxHashMap<fai_syntax::ast::PatId, Ty>,
 }
 
 impl BodyTypes {
@@ -149,15 +151,25 @@ impl BodyTypes {
     pub fn get(&self, expr: ExprId) -> Option<&Ty> {
         self.types.get(&expr)
     }
+
+    /// The type recorded for a pattern, if any.
+    #[must_use]
+    pub fn pat_type(&self, pat: fai_syntax::ast::PatId) -> Option<&Ty> {
+        self.pat_types.get(&pat)
+    }
 }
 
-/// The per-expression types of `name`'s body (the input to Core lowering).
+/// The per-expression and per-pattern types of `name`'s body (the input to Core
+/// lowering).
 #[salsa::tracked]
 pub fn body_types(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<BodyTypes> {
     let def_schemes = |db: &dyn Db, def: DefId| declared_or_inferred_scheme(db, def);
     let builtins = |n: Symbol| prelude::builtin_scheme(n);
-    let pairs = crate::infer::infer_body_types(db, file, name, &def_schemes, &builtins);
-    Arc::new(BodyTypes { types: pairs.into_iter().collect() })
+    let (exprs, pats) = crate::infer::infer_body_types(db, file, name, &def_schemes, &builtins);
+    Arc::new(BodyTypes {
+        types: exprs.into_iter().collect(),
+        pat_types: pats.into_iter().collect(),
+    })
 }
 
 /// Type-checks every definition and contract in `file`, emitting diagnostics.

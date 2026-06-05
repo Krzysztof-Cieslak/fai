@@ -166,6 +166,22 @@ fn tuple_let_binding_destructures() {
 }
 
 #[test]
+fn monomorphic_record_access_lowers_to_a_projection() {
+    let src = "module M\n\npublic dist : { x : Int, y : Int } -> Int\nlet dist v = v.x + v.y\n";
+    // `x` is field 0, `y` is field 1 in canonical (sorted) order.
+    assert_eq!(lower(src, "dist"), "fn0(%0) = (+ (field 0 %0) (field 1 %0))\n");
+    assert!(codes(src, "dist").is_empty());
+}
+
+#[test]
+fn row_polymorphic_field_access_is_deferred() {
+    // A reachable field access through a row variable cannot pick a constant
+    // offset yet; it defers to the offset-evidence work with FAI7002.
+    let src = "module M\n\nlet getX r = r.x\n";
+    assert!(codes(src, "getX").contains(&"FAI7002".to_owned()));
+}
+
+#[test]
 fn lowering_invariants_hold_across_programs() {
     use fai_syntax::ast::ItemKind;
 

@@ -12,8 +12,8 @@ mod doc;
 use doc::{Doc, concat, group, nest, print, text};
 use fai_span::LineIndex;
 use fai_syntax::ast::{
-    BinOp, ExprId, ExprKind, Item, ItemId, ItemKind, LetStmt, Module, PatId, PatKind, TypeDef,
-    TypeId, TypeKind, Visibility,
+    BinOp, ExprId, ExprKind, FieldInit, FieldPat, FieldType, Item, ItemId, ItemKind, LetStmt,
+    Module, PatId, PatKind, RowTail, TypeDef, TypeId, TypeKind, Visibility,
 };
 use fai_syntax::{Comment, CommentMap, NodeId, attach_comments};
 
@@ -243,6 +243,8 @@ impl Printer<'_> {
             ExprKind::Field { base, field } => {
                 concat(vec![self.expr_doc(*base), text("."), text(field.as_str())])
             }
+            ExprKind::Record(fields) => self.record_literal_doc(None, fields),
+            ExprKind::RecordUpdate { base, fields } => self.record_literal_doc(Some(*base), fields),
             ExprKind::Paren(inner) => concat(vec![text("("), self.expr_doc(*inner), text(")")]),
             ExprKind::Tuple(xs) => self.delimited("(", ")", xs),
             ExprKind::List(xs) => self.delimited("[", "]", xs),
@@ -286,6 +288,30 @@ impl Printer<'_> {
                 self.body_doc(arm.body),
             ]));
         }
+        concat(parts)
+    }
+
+    /// Renders a record literal `{ x = a, … }` or update `{ base with x = a, … }`.
+    /// Fields are sorted by label (canonical, low-entropy).
+    fn record_literal_doc(&self, base: Option<ExprId>, fields: &[FieldInit]) -> Doc {
+        let mut order: Vec<&FieldInit> = fields.iter().collect();
+        order.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+        let mut parts = vec![text("{")];
+        if let Some(base) = base {
+            parts.push(text(" "));
+            parts.push(self.expr_doc(base));
+            parts.push(text(" with"));
+        }
+        for (index, field) in order.iter().enumerate() {
+            parts.push(text(if index == 0 { " " } else { ", " }));
+            parts.push(text(field.name.as_str()));
+            parts.push(text(" = "));
+            parts.push(self.expr_doc(field.value));
+        }
+        if base.is_none() && order.is_empty() {
+            return text("{}");
+        }
+        parts.push(text(" }"));
         concat(parts)
     }
 
@@ -358,8 +384,32 @@ impl Printer<'_> {
                 }
                 concat(parts)
             }
+            PatKind::Record { fields, open } => self.record_pat_doc(fields, *open),
             PatKind::Error => text(self.span_src(pat.span)),
         }
+    }
+
+    /// Renders a record pattern `{ x = p, y }` (fields sorted), open with `| _`.
+    fn record_pat_doc(&self, fields: &[FieldPat], open: bool) -> Doc {
+        let mut order: Vec<&FieldPat> = fields.iter().collect();
+        order.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+        let mut parts = vec![text("{")];
+        for (index, field) in order.iter().enumerate() {
+            parts.push(text(if index == 0 { " " } else { ", " }));
+            parts.push(text(field.name.as_str()));
+            if !field.punned {
+                parts.push(text(" = "));
+                parts.push(self.pat_doc(field.pat));
+            }
+        }
+        if open {
+            parts.push(text(" | _"));
+        }
+        if order.is_empty() && !open {
+            return text("{}");
+        }
+        parts.push(text(" }"));
+        concat(parts)
     }
 
     fn type_doc(&self, id: TypeId) -> Doc {
@@ -382,10 +432,31 @@ impl Printer<'_> {
                 }
                 concat(parts)
             }
+            TypeKind::Record { fields, tail } => self.record_type_doc(fields, *tail),
             TypeKind::Unit => text("()"),
             TypeKind::Paren(inner) => concat(vec![text("("), self.type_doc(*inner), text(")")]),
             TypeKind::Error => text(self.span_src(ty.span)),
         }
+    }
+
+    /// Renders a record type `{ x : T, … }` (fields sorted) with its tail.
+    fn record_type_doc(&self, fields: &[FieldType], tail: RowTail) -> Doc {
+        let mut order: Vec<&FieldType> = fields.iter().collect();
+        order.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+        let mut parts = vec![text("{")];
+        for (index, field) in order.iter().enumerate() {
+            parts.push(text(if index == 0 { " " } else { ", " }));
+            parts.push(text(field.name.as_str()));
+            parts.push(text(" : "));
+            parts.push(self.type_doc(field.ty));
+        }
+        match tail {
+            RowTail::Closed => {}
+            RowTail::Open => parts.push(text(" | _")),
+            RowTail::Named(r) => parts.push(text(format!(" | {}", r.as_str()))),
+        }
+        parts.push(text(" }"));
+        concat(parts)
     }
 
     fn leading_docs(&self, node: NodeId) -> Vec<Doc> {

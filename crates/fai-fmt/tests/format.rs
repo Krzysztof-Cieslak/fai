@@ -2,7 +2,7 @@
 
 use fai_span::SourceId;
 use fai_syntax::ast::{
-    ExprId, ExprKind, Item, ItemKind, LetStmt, Module, PatId, PatKind, TypeId, TypeKind,
+    ExprId, ExprKind, Item, ItemKind, LetStmt, Module, PatId, PatKind, RowTail, TypeId, TypeKind,
 };
 use fai_syntax::{ItemTree, TokenKind, build_item_tree, parse_module};
 use proptest::prelude::*;
@@ -404,6 +404,26 @@ fn shape_expr(m: &Module, id: ExprId) -> String {
                 .join(" ");
             format!("(match {} [{}])", shape_expr(m, *scrutinee), arms)
         }
+        ExprKind::Record(fields) => {
+            let mut order: Vec<_> = fields.iter().collect();
+            order.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+            let fs = order
+                .iter()
+                .map(|f| format!("{} = {}", f.name.as_str(), shape_expr(m, f.value)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("(record [{fs}])")
+        }
+        ExprKind::RecordUpdate { base, fields } => {
+            let mut order: Vec<_> = fields.iter().collect();
+            order.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+            let fs = order
+                .iter()
+                .map(|f| format!("{} = {}", f.name.as_str(), shape_expr(m, f.value)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("(update {} [{fs}])", shape_expr(m, *base))
+        }
         ExprKind::Error => "(expr-error)".to_owned(),
     }
 }
@@ -446,6 +466,22 @@ fn shape_pat(m: &Module, id: PatId) -> String {
             format!("(pcons {} {})", shape_pat(m, *head), shape_pat(m, *tail))
         }
         PatKind::Or(alts) => format!("(por {})", shape_pats(m, alts)),
+        PatKind::Record { fields, open } => {
+            let mut order: Vec<_> = fields.iter().collect();
+            order.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+            let fs = order
+                .iter()
+                .map(|f| {
+                    if f.punned {
+                        f.name.as_str().to_owned()
+                    } else {
+                        format!("{} = {}", f.name.as_str(), shape_pat(m, f.pat))
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("(precord [{fs}] open={open})")
+        }
         PatKind::Error => "(pat-error)".to_owned(),
     }
 }
@@ -468,6 +504,21 @@ fn shape_type(m: &Module, id: TypeId) -> String {
             "(ttuple {})",
             xs.iter().map(|t| shape_type(m, *t)).collect::<Vec<_>>().join(" "),
         ),
+        TypeKind::Record { fields, tail } => {
+            let mut order: Vec<_> = fields.iter().collect();
+            order.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+            let fs = order
+                .iter()
+                .map(|f| format!("{} : {}", f.name.as_str(), shape_type(m, f.ty)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let t = match tail {
+                RowTail::Closed => String::new(),
+                RowTail::Open => " | _".to_owned(),
+                RowTail::Named(r) => format!(" | {}", r.as_str()),
+            };
+            format!("(trecord [{fs}]{t})")
+        }
         TypeKind::Unit => "(tunit)".to_owned(),
         TypeKind::Paren(inner) => format!("(tparen {})", shape_type(m, *inner)),
         TypeKind::Error => "(type-error)".to_owned(),
