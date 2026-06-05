@@ -1,10 +1,13 @@
 # Fai — CLI Reference
 
-> **Status:** `fai check` and `fai fmt` are implemented (front end only — syntax
-> diagnostics and canonical formatting); the remaining commands and the daemon
-> protocol specified here are the *intended* contract the implementation builds
-> toward. See `Agents.md` for project conventions, `docs/PLAN.md` for milestones,
-> and the `samples/` directory for the language itself.
+> **Status:** `fai check`, `fai fmt`, and the `fai query` family are implemented,
+> as are `fai build` and `fai run` for the M3 native subset (`Int`/`Bool`/`String`,
+> functions, `let`, `if`, arithmetic, and `Console.writeLine` via `main`):
+> `fai build` produces a native executable and `fai run` executes it in an
+> isolated worker process. The daemon protocol and the remaining commands
+> specified here are the *intended* contract the implementation builds toward. See
+> `Agents.md` for project conventions, `docs/PLAN.md` for milestones, and the
+> `samples/` directory for the language itself.
 
 ---
 

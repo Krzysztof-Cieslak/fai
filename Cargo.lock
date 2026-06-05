@@ -681,6 +681,7 @@ dependencies = [
  "camino",
  "divan",
  "fai-cli",
+ "fai-core",
  "fai-db",
  "fai-diagnostics",
  "fai-driver",

@@ -1,11 +1,16 @@
 # Fai — Agent & Contributor Guide
 
-> **Status:** Implemented through milestone **M2**. The compiler front end —
+> **Status:** Implemented through milestone **M3**. The compiler front end —
 > lexer, layout, parser/AST, the incremental `parse`/`item_tree` queries, and the
 > canonical formatter (M1) — plus name resolution, the module graph, and
 > Hindley–Milner inference for the functional core (M2) are built. `fai check`
-> type-checks, and the `fai query` code-intelligence commands work. Later
-> milestones (codegen, the daemon, …) define the *intended* interface we build
+> type-checks, and the `fai query` code-intelligence commands work. The native
+> backend thin slice (M3) is built too: a typed Core IR (`fai-core`), plain
+> reference counting (`fai-rc`), Cranelift code generation with both AOT and JIT
+> (`fai-codegen`), and the runtime (`fai-runtime`) — so `fai build` produces a
+> native executable and `fai run` executes it (subset: `Int`/`Bool`/`String`,
+> functions, `let`, `if`, arithmetic, and `Console.writeLine` via `main`). Later
+> milestones (the daemon, data types, …) define the *intended* interface we build
 > toward. The design is locked (see the decision table below).
 
 This document is the orientation guide for anyone — human or AI agent — working
@@ -342,10 +347,10 @@ binding (O(n²) on long application chains / exponential type growth);
 - **Error codes are an API.** Allocate codes by phase and document each in the
   error-code catalog (M8): `FAI0xxx` tooling/CLI/driver, `FAI1xxx` lex/parse,
   `FAI2xxx` resolve/visibility, `FAI3xxx` types/rows, `FAI4xxx`
-  exhaustiveness/patterns, `FAI5xxx` capabilities, `FAI6xxx` contracts. Each
-  phase crate owns its codes as a `pub const CODES: &[CodeInfo]` slice, which the
-  `fai-tests` catalog test aggregates to enforce format and uniqueness. Never
-  renumber a shipped code.
+  exhaustiveness/patterns, `FAI5xxx` capabilities, `FAI6xxx` contracts, `FAI7xxx`
+  backend (Core lowering / codegen / runtime). Each phase crate owns its codes as
+  a `pub const CODES: &[CodeInfo]` slice, which the `fai-tests` catalog test
+  aggregates to enforce format and uniqueness. Never renumber a shipped code.
 - Parsing **recovers** and reports multiple errors per run; one mistake should
   not hide the rest.
 
