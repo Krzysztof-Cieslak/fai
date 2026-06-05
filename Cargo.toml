@@ -35,7 +35,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # CLI argument parsing.
 clap = { version = "4", features = ["derive"] }
-# Deterministic, fast hashing for internal maps (Agents.md §8).
+# Deterministic, fast hashing for internal maps (AGENTS.md §8).
 rustc-hash = "2"
 # String interning for identifiers (the non-salsa `Symbol`).
 lasso = { version = "0.7", features = ["multi-threaded"] }

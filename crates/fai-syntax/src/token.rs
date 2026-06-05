@@ -28,7 +28,7 @@ impl Token {
 ///
 /// `true`/`false` are intentionally **not** keywords: they lex as
 /// [`TokenKind::LowerIdent`] and resolve to prelude values later, matching the
-/// reserved-keyword set in `Agents.md` §11.
+/// reserved-keyword set in `AGENTS.md` §11.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TokenKind {
     // Identifiers & names.

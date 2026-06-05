@@ -124,7 +124,7 @@ appear as the milestones that need them land — see `docs/PLAN.md`.)
 
 ```
 fai/
-├── Agents.md            # this file
+├── AGENTS.md            # this file
 ├── samples/             # language by example (canonical, tested .fai tour)
 ├── docs/
 │   ├── PLAN.md          # milestones, acceptance criteria, risks, decisions
@@ -239,14 +239,27 @@ output schemas, and the daemon (MessagePack JSON-RPC) protocol.
 - **Determinism.** No `HashMap` iteration order in output; use `FxHashMap` for
   speed and `BTreeMap`/sorted vecs where ordering is observable.
 - Public items get doc comments; modules start with a `//!` summary.
-- **Comments and commits explain the code, not the process.** Code comments, doc
-  comments, and Git commit messages must be self-contained; never reference
-  planning/process artifacts — milestone names (`M0`, `M3.5`), build-plan
-  **phases** (`Phase 2a`), decision-log identifiers (`Q7`, `D14`), or
-  `docs/PLAN.md` (write "noted as future work", not "see the plan"). Pointers to
-  the durable specs (`docs/CLI.md`, `Agents.md`) are fine when they document a
-  real contract (e.g. a wire schema or a naming convention). Describe *what
-  changed and why*, not the step in a roadmap that produced it.
+- **Comments and commits explain the code, not the process — this is a hard
+  rule, enforced.** Code comments, doc comments, and Git commit messages (subject
+  *and* body) must be self-contained and make sense to a reader who has never seen
+  the roadmap. **Never** name a planning/process artifact:
+  - **milestone names** — `M0`, `M2`, `M3`, `M3.5`, … (and never "this milestone");
+  - **build-plan phases** — `Phase 2a`, "Phase 2.5", …;
+  - **decision-log identifiers** — `Q7`, `D14`, `D45`, …;
+  - **`docs/PLAN.md`** — write "noted as future work", not "see the plan".
+
+  This holds **even when the change implements a milestone or a logged
+  decision**: describe the behavior, not the roadmap step that produced it. So:
+  - write "Add the native runtime", **not** "Implement the M3 runtime";
+  - write "no reuse analysis yet", **not** "reuse is deferred to M6";
+  - write "record the design decisions in the build plan", **not** "see D45–D55 in
+    `docs/PLAN.md`".
+
+  Pointers to the durable specs (`docs/CLI.md`, `AGENTS.md`) are fine when they
+  document a real contract (e.g. a wire schema or a naming convention). A commit
+  whose subject or body names a milestone, phase, or decision id **must be
+  reworded before it merges** (reword local history with `git rebase`). Describe
+  *what changed and why*, not the step in a roadmap that produced it.
 
 ## 9. Performance & incremental compilation
 
@@ -392,7 +405,7 @@ A change is done when:
 3. `cargo test` passes, including golden/snapshot and e2e tests.
 4. New behavior has tests at the appropriate levels (see §13); new diagnostics
    have codes + catalog entries.
-5. Any surface-language change is reflected in `Agents.md`, `docs/PLAN.md`, and
+5. Any surface-language change is reflected in `AGENTS.md`, `docs/PLAN.md`, and
    the `samples/` directory.
 6. Self-hosted check: every `.fai` file in `samples/` is verified by the test
    suite (parsed/formatted, and typechecked/run where applicable) so the docs

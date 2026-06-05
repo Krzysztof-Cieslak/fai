@@ -1,6 +1,6 @@
 //! Stable diagnostic codes (`FAInnnn`).
 //!
-//! Codes are an API: never renumbered, allocated by phase (`Agents.md` §10).
+//! Codes are an API: never renumbered, allocated by phase (`AGENTS.md` §10).
 //! The representation is a thin `&'static str` newtype; each phase crate owns
 //! its codes as a `pub const CODES: &[CodeInfo]` slice, and the
 //! `fai-tests` crate aggregates them to assert format and global uniqueness.

@@ -1,7 +1,7 @@
 //! Source identifiers and byte-offset spans.
 //!
 //! Spans are split into two types, mirroring the "spans in a side-table" design
-//! (`Agents.md` §9):
+//! (`AGENTS.md` §9):
 //!
 //! * [`TextRange`] is **file-relative** — a `[start, end)` byte range with no
 //!   notion of which file it belongs to. AST/IR side-tables store these, since
