@@ -10,13 +10,15 @@ mod cli;
 use std::ffi::OsString;
 use std::io::{IsTerminal, Write};
 
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use clap::Parser;
 use clap::error::ErrorKind;
 use fai_driver::{CommandResult, DriverError, QueryRequest, Session};
 use fai_span::{SourceMap, SpanResolver};
 
-use crate::cli::{Cli, ColorChoice, Command, FmtArgs, MessageFormat, QueryCommand};
+use crate::cli::{
+    BuildArgs, Cli, ColorChoice, Command, FmtArgs, GlobalArgs, MessageFormat, QueryCommand, RunArgs,
+};
 
 /// Success: no errors.
 const EXIT_OK: i32 = 0;
@@ -28,6 +30,8 @@ const EXIT_USAGE: i32 = 2;
 const EXIT_WORKSPACE: i32 = 3;
 /// Internal error (should not happen).
 const EXIT_INTERNAL: i32 = 4;
+/// A run worker terminated abnormally (e.g. by a signal).
+const EXIT_CRASH: i32 = 134;
 
 /// Parses `args`, runs the requested command, and returns a process exit code.
 ///
@@ -61,7 +65,7 @@ fn dispatch(parsed: Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     let format = parsed.global.message_format.unwrap_or_else(|| default_format(&parsed.command));
     let color = use_color(parsed.global.color);
 
-    let root = match workspace_root(parsed.global.project) {
+    let root = match workspace_root(parsed.global.project.clone()) {
         Ok(root) => root,
         Err(error) => return emit_error(&error, format, color, out, err),
     };
@@ -74,8 +78,9 @@ fn dispatch(parsed: Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     let result = match &parsed.command {
         Command::Check(args) => fai_driver::check(db, &session.select_files(args.path.as_deref())),
         Command::Fmt(args) => return run_fmt(&session, args, format, color, out, err),
-        Command::Build(_) => fai_driver::build(db),
-        Command::Run(_) => fai_driver::run(db),
+        Command::Build(args) => return run_build(&session, args, format, color, out, err),
+        Command::Run(args) => return run_program(&parsed.global, args, err),
+        Command::RunWorker(args) => return run_worker(&session, &args.path, err),
         Command::Test(_) => fai_driver::test(db),
         Command::Lsp => fai_driver::lsp(db),
         Command::Query { sub } => return run_query(&session, sub, format, out, err),
@@ -136,6 +141,86 @@ fn run_fmt(
     } else {
         EXIT_OK
     }
+}
+
+/// Runs `fai build`: compiles the entry file to a native executable.
+fn run_build(
+    session: &Session,
+    args: &BuildArgs,
+    format: MessageFormat,
+    color: bool,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> i32 {
+    let files = session.select_files(Some(&args.path));
+    let Some(entry) = files.first().copied() else {
+        let _ = writeln!(err, "error: no such file in workspace: {}", args.path);
+        return EXIT_WORKSPACE;
+    };
+
+    let stem = Utf8Path::new(entry.path(session.db())).file_stem().unwrap_or("a.out").to_owned();
+    let requested = args.out.clone().unwrap_or_else(|| Utf8PathBuf::from(stem));
+    let artifact = if requested.is_absolute() { requested } else { session.root().join(requested) };
+
+    let outcome = fai_driver::build_native(session.db(), entry, &artifact);
+    let resolver = session.resolver();
+    match format {
+        MessageFormat::Json => match serde_json::to_string_pretty(&outcome.to_output(&resolver)) {
+            Ok(json) => {
+                let _ = writeln!(out, "{json}");
+            }
+            Err(error) => {
+                let _ = writeln!(err, "internal error: failed to serialize output: {error}");
+                return EXIT_INTERNAL;
+            }
+        },
+        MessageFormat::Human => {
+            let _ = write!(out, "{}", outcome.render_human(&resolver, color));
+        }
+    }
+    if outcome.ok { EXIT_OK } else { EXIT_FAILURES }
+}
+
+/// Runs `fai run`: spawns an isolated worker process that JIT-compiles and runs
+/// the program, returning the program's exit code.
+fn run_program(global: &GlobalArgs, args: &RunArgs, err: &mut dyn Write) -> i32 {
+    let exe = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(error) => {
+            let _ = writeln!(err, "error: cannot locate the fai executable: {error}");
+            return EXIT_WORKSPACE;
+        }
+    };
+    let mut command = std::process::Command::new(exe);
+    command.arg("__run-worker");
+    if let Some(project) = &global.project {
+        command.arg("--project").arg(project.as_str());
+    }
+    command.arg(args.path.as_str());
+    // stdin/stdout/stderr are inherited so the program streams directly.
+    match command.status() {
+        Ok(status) => status.code().unwrap_or(EXIT_CRASH),
+        Err(error) => {
+            let _ = writeln!(err, "error: failed to start the run worker: {error}");
+            EXIT_WORKSPACE
+        }
+    }
+}
+
+/// The worker side of `fai run`: JIT-compiles and runs the entry file in this
+/// process, returning the program's exit code.
+fn run_worker(session: &Session, path: &Utf8Path, err: &mut dyn Write) -> i32 {
+    let files = session.select_files(Some(path));
+    let Some(entry) = files.first().copied() else {
+        let _ = writeln!(err, "error: no such file in workspace: {path}");
+        return EXIT_WORKSPACE;
+    };
+    let outcome = fai_driver::jit_run_program(session.db(), entry);
+    if !outcome.diagnostics.is_empty() {
+        let resolver = session.resolver();
+        let _ = write!(err, "{}", outcome.render_human(&resolver, false));
+    }
+    outcome.exit_code
 }
 
 /// Maps a clap `QueryCommand` to the driver's `QueryRequest`. Commands outside
