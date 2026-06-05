@@ -141,8 +141,8 @@ pub struct BuildArgs {
 /// Arguments for the hidden `__run-worker` subcommand.
 #[derive(Debug, Args)]
 pub struct RunWorkerArgs {
-    /// The entry file to JIT and run.
-    pub path: Utf8PathBuf,
+    /// Path to the serialized run bundle to JIT and execute.
+    pub bundle: Utf8PathBuf,
 }
 
 /// Arguments for `fai run`.

@@ -230,15 +230,19 @@ single built-in capability (`Console.writeLine`) reached via `main`.
 ---
 
 ### M3.5 — Daemon, persistence & protocol
-**Status:** in progress. The on-disk content-addressed object cache (`fai-core`'s
-portable `fingerprint_def` + the driver's disk layer around `object_code`) and the
-per-workspace daemon (`fai-server`: MessagePack JSON-RPC over `interprocess` local
-sockets, `initialize` handshake, file-state sync, idle shutdown) are built; the CLI
-is a thin client that routes `check`/`query`/`fmt`/`build` through the warm daemon
-(falling back to in-process when it is unreachable) and manages it via
-`fai daemon status|start|stop|restart`. Still to land: the supervised `run` worker
-(streamed output, timeout, resource limits) and `fai daemon tap`. See decisions
-**D56–D62**.
+**Status:** complete (one deferral). The on-disk content-addressed object cache
+(`fai-core`'s portable `fingerprint_def` + the driver's disk layer around
+`object_code`) and the per-workspace daemon (`fai-server`: MessagePack JSON-RPC
+over `interprocess` local sockets, `initialize` handshake, stat-gated/hash-confirmed
+file-state sync, idle shutdown) are built. The CLI is a thin client that routes
+`check`/`query`/`fmt`/`build` through the warm daemon and runs `run` under daemon
+supervision — the warm front end ships a portable IR bundle (`fai-core`'s `wire`)
+to an isolated worker that JITs and executes it, with streamed `$/output`, a
+wall-clock timeout, and a self-imposed `RLIMIT_CPU`; an unreachable daemon falls
+back to in-process. `fai daemon status|start|stop|restart` manage it. **Deferred:**
+`fai daemon tap` (cross-connection traffic broadcast) and a Windows CI (the
+`interprocess`/named-pipe path compiles but is untested). Concurrent reads and
+cancellation remain performance-milestone work. See decisions **D56–D65**.
 
 **Goal:** make the warm-database speedups available to the CLI *across*
 invocations — the heart of the agent feedback loop. (Inserted milestone; later
@@ -872,6 +876,31 @@ Resolved while implementing **M3.5** (the daemon, persistence, and protocol):
   path). When the daemon is unreachable, the client warns (`FAI0005`) and runs
   in-process, so a daemon problem never breaks a command. New tooling codes:
   `FAI0005` daemon-unavailable (warning), `FAI0006` run-timeout.
+- **D63 `run` via a warm IR bundle:** rather than re-deriving in a cold worker or
+  shipping a JIT image (impossible across processes), the warm daemon front end
+  lowers the closure reachable from `main`, serializes it as a portable
+  **`WireBundle`** (`fai-core`'s `wire`), and hands it to the worker, which
+  reconstructs `LoweredDef`s and JITs them with **no database** — so the warm DB
+  accelerates `run`, not just `check`/`query`. The wire form drops node **types**
+  (codegen ignores them) and renders every `Global` as a module-qualified
+  `{module, name}` (the worker re-mangles via the same pure `mangle` the backend
+  uses, assigning a synthetic `SourceId` per module label). The bundle travels via
+  a temp file; the worker is unified — both the daemon and the `--no-daemon` path
+  build a bundle and spawn the same `__run-worker`. (Transferring the warm bundle
+  is the realistic best-latency option; the alternatives — cold re-derive, or AOT
+  re-link per edit — are slower or contradict JIT-for-run.)
+- **D64 Run supervision:** the daemon spawns the worker with piped stdio, streams
+  it back as `$/output`, and enforces a wall-clock timeout (`FAI_RUN_TIMEOUT_MS`,
+  default 300s) via a `wait-timeout` waiter that kills the worker on expiry
+  (exit `124`); a crashing/runaway worker is a separate process, so the daemon
+  always survives. The `--no-daemon` path runs the same worker with inherited
+  stdio and no limits.
+- **D65 Worker resource limits:** the worker self-imposes `RLIMIT_CPU` (seconds,
+  from `FAI_RUN_CPU_SECS` set by the daemon) at startup via `nix` — robust
+  runaway-CPU protection that doesn't interfere with JIT; `RLIMIT_AS`
+  (`FAI_RUN_AS_BYTES`) is opt-in because a low cap can break compilation. Windows
+  Job-Object limits are future work. No hand-written unsafe (the safe `nix`
+  wrappers), and limits apply only under daemon supervision.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected milestones.

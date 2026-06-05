@@ -13,6 +13,7 @@ pub mod protocol;
 mod server;
 mod transport;
 
+use std::io::Write;
 use std::path::PathBuf;
 
 use camino::Utf8Path;
@@ -33,6 +34,20 @@ pub fn run_command(
 ) -> Result<Rendered, DaemonError> {
     let mut client = connect_or_spawn(root, log)?;
     client.command(spec, opts, dirty)
+}
+
+/// Runs a program under daemon supervision (spawning the daemon if needed),
+/// streaming the worker's output to `out`/`err`, and returns its exit code.
+pub fn run(
+    root: &Utf8Path,
+    path: &str,
+    args: &[String],
+    log: Option<PathBuf>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<i32, DaemonError> {
+    let mut client = connect_or_spawn(root, log)?;
+    client.stream_run(path, args, out, err)
 }
 
 /// Returns the daemon's status, or `None` if no daemon is running for `root`.

@@ -77,7 +77,7 @@ fn dispatch(parsed: Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
 
     // Subcommands that always run in this process, never through the daemon.
     match &parsed.command {
-        Command::RunWorker(args) => return run_worker(&parsed.global, &args.path, err),
+        Command::RunWorker(args) => return run_worker(&args.bundle, err),
         Command::DaemonServe => return run_daemon_serve(&parsed.global, err),
         _ => {}
     }
@@ -104,7 +104,7 @@ fn dispatch(parsed: Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
             let spec = CommandSpec::Query(to_request(sub));
             route(&parsed.global, &root, spec, format, color, log, out, err)
         }
-        Command::Run(args) => run_program(&parsed.global, args, err),
+        Command::Run(args) => run_program(&parsed.global, &root, args, log, out, err),
         Command::Test(_) => run_in_process_result(&root, fai_driver::test, format, color, out, err),
         Command::Lsp => run_in_process_result(&root, fai_driver::lsp, format, color, out, err),
         Command::Daemon { sub } => run_daemon_command(&root, sub, log, out, err),
@@ -274,43 +274,45 @@ fn daemon_error(err: &mut dyn Write, error: &fai_server::DaemonError) -> i32 {
     EXIT_WORKSPACE
 }
 
-/// Runs `fai run`: spawns an isolated worker process that JIT-compiles and runs
-/// the program, returning the program's exit code.
-fn run_program(global: &GlobalArgs, args: &RunArgs, err: &mut dyn Write) -> i32 {
-    let exe = match std::env::current_exe() {
-        Ok(path) => path,
-        Err(error) => {
-            let _ = writeln!(err, "error: cannot locate the fai executable: {error}");
-            return EXIT_WORKSPACE;
-        }
-    };
-    let mut command = std::process::Command::new(exe);
-    command.arg("__run-worker");
-    if let Some(project) = &global.project {
-        command.arg("--project").arg(project.as_str());
+/// Exit code for a program that failed to compile.
+const EXIT_COMPILE_ERROR: i32 = 4;
+
+/// Runs `fai run`: through the daemon (which supervises an isolated worker and
+/// streams its output) by default, or in-process under `--no-daemon` / as a
+/// fallback when the daemon is unreachable.
+fn run_program(
+    global: &GlobalArgs,
+    root: &Utf8Path,
+    args: &RunArgs,
+    log: Option<PathBuf>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> i32 {
+    if global.no_daemon {
+        return run_in_process_worker(root, &args.path, &args.args, err);
     }
-    command.arg(args.path.as_str());
-    // stdin/stdout/stderr are inherited so the program streams directly.
-    match command.status() {
-        Ok(status) => status.code().unwrap_or(EXIT_CRASH),
-        Err(error) => {
-            let _ = writeln!(err, "error: failed to start the run worker: {error}");
-            EXIT_WORKSPACE
+    match fai_server::run(root, args.path.as_str(), &args.args, log, out, err) {
+        Ok(exit) => exit,
+        Err(daemon_error) => {
+            let _ = writeln!(
+                err,
+                "warning [{}]: daemon unavailable ({daemon_error}); running in-process",
+                fai_driver::DAEMON_UNAVAILABLE
+            );
+            run_in_process_worker(root, &args.path, &args.args, err)
         }
     }
 }
 
-/// The worker side of `fai run`: JIT-compiles and runs the entry file in this
-/// process, returning the program's exit code.
-fn run_worker(global: &GlobalArgs, path: &Utf8Path, err: &mut dyn Write) -> i32 {
-    let root = match workspace_root(global.project.clone()) {
-        Ok(root) => root,
-        Err(error) => {
-            let _ = writeln!(err, "error: {error}");
-            return EXIT_WORKSPACE;
-        }
-    };
-    let session = match Session::open(root) {
+/// Builds the run bundle in this process and runs it in an isolated worker with
+/// inherited stdio (the `--no-daemon` / fallback path).
+fn run_in_process_worker(
+    root: &Utf8Path,
+    path: &Utf8Path,
+    program_args: &[String],
+    err: &mut dyn Write,
+) -> i32 {
+    let session = match Session::open(root.to_owned()) {
         Ok(session) => session,
         Err(error) => {
             let _ = writeln!(err, "error: {error}");
@@ -322,12 +324,83 @@ fn run_worker(global: &GlobalArgs, path: &Utf8Path, err: &mut dyn Write) -> i32 
         let _ = writeln!(err, "error: no such file in workspace: {path}");
         return EXIT_WORKSPACE;
     };
-    let outcome = fai_driver::jit_run_program(session.db(), entry);
-    if !outcome.diagnostics.is_empty() {
+
+    let result = fai_driver::build_run_bundle(session.db(), entry);
+    let Some(bundle) = result.bundle else {
         let resolver = session.resolver();
-        let _ = write!(err, "{}", outcome.render_human(&resolver, false));
+        let _ = write!(err, "{}", fai_driver::render_diagnostics(&result.diagnostics, &resolver));
+        return EXIT_COMPILE_ERROR;
+    };
+
+    let bundle_path = match write_bundle_file(&bundle) {
+        Ok(path) => path,
+        Err(error) => {
+            let _ = writeln!(err, "error: {error}");
+            return EXIT_WORKSPACE;
+        }
+    };
+    let exit = spawn_worker(&bundle_path, &[], err);
+    let _ = std::fs::remove_file(&bundle_path);
+    let _ = program_args; // program arguments are accepted but unused in this subset
+    exit
+}
+
+/// Spawns the `__run-worker` subprocess on `bundle_path` with inherited stdio,
+/// applying any `env` (e.g. resource limits). Returns the program's exit code.
+fn spawn_worker(bundle_path: &std::path::Path, env: &[(&str, String)], err: &mut dyn Write) -> i32 {
+    let exe = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(error) => {
+            let _ = writeln!(err, "error: cannot locate the fai executable: {error}");
+            return EXIT_WORKSPACE;
+        }
+    };
+    let mut command = std::process::Command::new(exe);
+    command.arg("__run-worker").arg(bundle_path);
+    for (key, value) in env {
+        command.env(key, value);
     }
-    outcome.exit_code
+    match command.status() {
+        Ok(status) => status.code().unwrap_or(EXIT_CRASH),
+        Err(error) => {
+            let _ = writeln!(err, "error: failed to start the run worker: {error}");
+            EXIT_WORKSPACE
+        }
+    }
+}
+
+/// Serializes a run bundle to a unique temp file (JSON), returning its path.
+fn write_bundle_file(bundle: &fai_driver::WireBundle) -> Result<PathBuf, String> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let path = std::env::temp_dir().join(format!(
+        "fai-run-bundle-{}-{}.json",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    let json = serde_json::to_vec(bundle).map_err(|e| format!("serializing run bundle: {e}"))?;
+    std::fs::write(&path, json).map_err(|e| format!("writing run bundle: {e}"))?;
+    Ok(path)
+}
+
+/// The worker side of `fai run`: reads a serialized bundle, JIT-compiles it, and
+/// runs it in this process, returning the program's exit code.
+fn run_worker(bundle_path: &Utf8Path, err: &mut dyn Write) -> i32 {
+    let bytes = match std::fs::read(bundle_path) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            let _ = writeln!(err, "error: failed to read run bundle {bundle_path}: {error}");
+            return EXIT_WORKSPACE;
+        }
+    };
+    let bundle: fai_driver::WireBundle = match serde_json::from_slice(&bytes) {
+        Ok(bundle) => bundle,
+        Err(error) => {
+            let _ = writeln!(err, "error: malformed run bundle: {error}");
+            return EXIT_WORKSPACE;
+        }
+    };
+    fai_driver::jit_run_bundle(&bundle)
 }
 
 /// Maps a clap `QueryCommand` to the driver's `QueryRequest`. Commands outside

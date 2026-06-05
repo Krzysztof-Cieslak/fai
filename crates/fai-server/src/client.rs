@@ -17,8 +17,8 @@ use fai_driver::{CommandSpec, DirtyFile, RenderOpts, Rendered};
 use interprocess::local_socket::Stream;
 
 use crate::protocol::{
-    CommandRequest, InitParams, PROTOCOL_VERSION, Request, Response, ServerMessage, StatusInfo,
-    frame_to_json, read_frame, write_frame,
+    CommandRequest, InitParams, OutputStream, PROTOCOL_VERSION, Request, Response, RunRequest,
+    ServerMessage, StatusInfo, frame_to_json, read_frame, write_frame,
 };
 use crate::transport;
 
@@ -97,6 +97,41 @@ impl Client {
             Response::Command(rendered) => Ok(rendered),
             Response::Error(message) => Err(DaemonError::Protocol(message)),
             other => Err(DaemonError::Protocol(format!("unexpected response: {other:?}"))),
+        }
+    }
+
+    /// Runs a program under daemon supervision, streaming the worker's output to
+    /// `out`/`err`, and returns its exit code.
+    pub fn stream_run(
+        &mut self,
+        path: &str,
+        args: &[String],
+        out: &mut dyn Write,
+        err: &mut dyn Write,
+    ) -> Result<i32, DaemonError> {
+        self.send(&Request::Run(RunRequest {
+            path: path.to_owned(),
+            args: args.to_vec(),
+            dirty: Vec::new(),
+        }))?;
+        loop {
+            match self.next_message()? {
+                ServerMessage::Output { stream: OutputStream::Stdout, chunk } => {
+                    let _ = out.write_all(&chunk);
+                    let _ = out.flush();
+                }
+                ServerMessage::Output { stream: OutputStream::Stderr, chunk } => {
+                    let _ = err.write_all(&chunk);
+                    let _ = err.flush();
+                }
+                ServerMessage::Result(Response::RunExit(code)) => return Ok(code),
+                ServerMessage::Result(Response::Error(message)) => {
+                    return Err(DaemonError::Protocol(message));
+                }
+                ServerMessage::Result(other) => {
+                    return Err(DaemonError::Protocol(format!("unexpected response: {other:?}")));
+                }
+            }
         }
     }
 

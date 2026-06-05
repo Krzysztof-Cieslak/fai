@@ -22,7 +22,7 @@ const HELLO: &str = "module Hello\n\npublic main : Runtime -> Unit\nlet main run
 #[test]
 fn run_prints_via_console_capability() {
     let dir = workspace("run", &[("Hello.fai", HELLO)]);
-    let out = fai().args(["run", "-C"]).arg(&dir).arg("Hello.fai").output().unwrap();
+    let out = fai().args(["run", "--no-daemon", "-C"]).arg(&dir).arg("Hello.fai").output().unwrap();
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),
         "hi from run\n",
@@ -56,7 +56,7 @@ fn build_produces_a_runnable_binary() {
 #[test]
 fn run_without_main_reports_no_entry_point() {
     let dir = workspace("nomain", &[("M.fai", "module M\n\nlet x = 1\n")]);
-    let out = fai().args(["run", "-C"]).arg(&dir).arg("M.fai").output().unwrap();
+    let out = fai().args(["run", "--no-daemon", "-C"]).arg(&dir).arg("M.fai").output().unwrap();
     assert_eq!(out.status.code(), Some(4), "a compile failure exits 4");
     assert!(
         String::from_utf8_lossy(&out.stderr).contains("entry point"),
@@ -114,7 +114,7 @@ fn run_resolves_calls_across_modules() {
     let main = "module Main\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (Lib.shout \"hi\")\n";
     let lib = "module Lib\n\npublic shout : String -> String\nlet shout s = s ++ \"!\"\n";
     let dir = workspace("multi", &[("Main.fai", main), ("Lib.fai", lib)]);
-    let out = fai().args(["run", "-C"]).arg(&dir).arg("Main.fai").output().unwrap();
+    let out = fai().args(["run", "--no-daemon", "-C"]).arg(&dir).arg("Main.fai").output().unwrap();
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),
         "hi!\n",
