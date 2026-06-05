@@ -714,4 +714,48 @@ proptest! {
         prop_assert!(after.diagnostics.is_empty(), "output did not reparse:\n{}", once);
         prop_assert_eq!(shape(&before.module), shape(&after.module), "src: {}\nout: {}", src, once);
     }
+
+    /// A record literal of distinct labels survives a format round-trip: it
+    /// reparses cleanly, the span-free shape is preserved (the formatter sorts
+    /// nothing and drops nothing), and formatting is idempotent.
+    #[test]
+    fn record_literals_round_trip(
+        labels in proptest::collection::hash_set("[a-z][a-z0-9]{0,3}", 1..6),
+    ) {
+        prop_assume!(labels.iter().all(|l| TokenKind::keyword(l).is_none()));
+        let fields = labels
+            .iter()
+            .enumerate()
+            .map(|(i, l)| format!("{l} = {i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let src = format!("module M\nlet r = {{ {fields} }}");
+        let before = parse_module(SourceId::new(0), &src);
+        prop_assume!(before.diagnostics.is_empty());
+        let once = fai_fmt::format(&before.module, &before.comments, &src);
+        let after = parse_module(SourceId::new(0), &once);
+        prop_assert!(after.diagnostics.is_empty(), "output did not reparse:\n{}", once);
+        prop_assert_eq!(shape(&before.module), shape(&after.module), "src: {}\nout: {}", src, once);
+        let twice = fai_fmt::format(&after.module, &after.comments, &once);
+        prop_assert_eq!(&twice, &once, "fmt is not idempotent:\n{}", once);
+    }
+
+    /// A union declaration of any width and a `match` covering its constructors
+    /// round-trip through the formatter with their structure intact.
+    #[test]
+    fn union_and_match_round_trip(n in 1usize..6) {
+        let variants = (0..n).map(|i| format!("  | C{i} Int")).collect::<Vec<_>>().join("\n");
+        let arms = (0..n).map(|i| format!("  | C{i} x -> x + {i}")).collect::<Vec<_>>().join("\n");
+        let src = format!(
+            "module M\ntype T =\n{variants}\npublic eval : T -> Int\nlet eval t =\n  match t with\n{arms}"
+        );
+        let before = parse_module(SourceId::new(0), &src);
+        prop_assume!(before.diagnostics.is_empty());
+        let once = fai_fmt::format(&before.module, &before.comments, &src);
+        let after = parse_module(SourceId::new(0), &once);
+        prop_assert!(after.diagnostics.is_empty(), "output did not reparse:\n{}", once);
+        prop_assert_eq!(shape(&before.module), shape(&after.module), "src:\n{}\nout:\n{}", src, once);
+        let twice = fai_fmt::format(&after.module, &after.comments, &once);
+        prop_assert_eq!(&twice, &once, "fmt is not idempotent:\n{}", once);
+    }
 }

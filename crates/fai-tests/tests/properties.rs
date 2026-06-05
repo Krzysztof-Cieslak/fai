@@ -290,4 +290,29 @@ proptest! {
         );
         prop_assert_eq!(outcome.types.get("rec0"), Some(&expected));
     }
+
+    // For a union of any size: a `match` covering every constructor is clean,
+    // and dropping one arm is reported as a non-exhaustive match (FAI4001).
+    #[test]
+    fn union_match_exhaustiveness_tracks_constructor_count(n in 1usize..6) {
+        let variants = (0..n).map(|i| format!("  | C{i}")).collect::<Vec<_>>().join("\n");
+        let arms = |count: usize| {
+            (0..count).map(|i| format!("  | C{i} -> {i}")).collect::<Vec<_>>().join("\n")
+        };
+        let header = format!("module P\n\ntype T =\n{variants}\n\npublic f : T -> Int\nlet f t =\n  match t with\n");
+
+        // Covering all `n` constructors is exhaustive and clean.
+        let complete = check_source(&format!("{header}{}\n", arms(n)));
+        prop_assert!(!complete.has_errors(), "complete match errored: {:?}", complete.codes());
+
+        // Dropping the last arm makes it non-exhaustive (with at least one arm left).
+        if n > 1 {
+            let partial = check_source(&format!("{header}{}\n", arms(n - 1)));
+            prop_assert!(
+                partial.codes().contains(&"FAI4001".to_owned()),
+                "missing arm should be non-exhaustive: {:?}",
+                partial.codes()
+            );
+        }
+    }
 }
