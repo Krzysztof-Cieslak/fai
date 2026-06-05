@@ -84,9 +84,10 @@ table **and** the decision log in `docs/PLAN.md`).
 | Recursion | Module-level bindings are **mutually recursive** (no `rec` keyword) |
 | Layout | **Indentation-significant** (offside rule); `fai fmt` pins exactly one canonical layout (2-space indent, no tabs) |
 | Type variables | F#-style leading tick: `'a`, `'k 'v` |
-| Equality | `=` (equal) / `<>` (not equal), structural; undefined on function-typed values |
-| Ordering | `< <= > >=` are **structural** over any non-function type (a runtime `compare`; constructor tags order by declaration, records by sorted label); undefined on functions. Generalizes like equality |
-| Arithmetic | `+ - * /` **overloaded over `Int`/`Float`** (F#-style); unconstrained numeric type **defaults to `Int`**; **no implicit `Int`/`Float` coercion** (use `Int.toFloat`/`Float.toInt`) |
+| Equality | `=` (equal) / `<>` (not equal), structural; undefined on function-typed values (→ an `Eq` operator method at M5; see Operators) |
+| Ordering | `< <= > >=` are **structural** over any non-function type (a runtime `compare`; constructor tags order by declaration, records by sorted label); undefined on functions. Generalizes like equality (→ an `Ord` operator method at M5; see Operators) |
+| Arithmetic | `+ - * /` **overloaded over `Int`/`Float`** (F#-style); unconstrained numeric type **defaults to `Int`**; **no implicit `Int`/`Float` coercion** (use `Int.toFloat`/`Float.toInt`) (→ `Num` operator methods at M5; see Operators) |
+| Operators | **Symbolic identifiers** with **F#-style precedence** (derived from the operator's symbols; no fixity declarations); written infix, named as `(op)`. Built-in operators are **std interface methods** — `Num` (`+ - * / %`), `Eq` (`= <>`), `Ord` (`< <= > >=`) — defined in `Prelude`; **user-defined operators** resolve like names (module-local + `Prelude`). `&&`/`\|\|` stay short-circuit sugar; `::` is the built-in `List` constructor. *(Built at M5.)* |
 | Comments | `//` line, `(* ... *)` block, `///` doc |
 | Misc syntax | `[1, 2, 3]` lists, `::` cons, `List 'a`; `\|>`, `>>`, `++`; `true`/`false`; `if/then/else`; 64-bit `Int`/`Float` |
 | Algebraic types | Discriminated unions (`type T = \| A \| B 'a`); transparent type aliases (`type Id = …`, acyclic) |

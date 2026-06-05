@@ -357,6 +357,15 @@ feature (row-polymorphic structural records).
 - **Least authority via rows:** a function may request `{ console : Console | _ }`
   and accept any larger runtime.
 - `fai-runtime`: host implementations for each capability.
+- **Operators as interface methods + user-defined operators (D75):** a generic
+  operator-character lexer and **F#-style precedence** (derived from the
+  operator's symbols, no fixity declarations); the overloaded operators become
+  std interface methods — `Num` (`+ - * / %`), `Eq` (`= <>`), `Ord`
+  (`< <= > >=`) — defined in `Prelude`, with the M2 constraint flavors replaced by
+  these interface constraints (monomorphic uses still lower to the direct
+  primitive); user-defined operators resolve like names (module-local +
+  `Prelude`); formatter support for arbitrary operators. `&&`/`||` stay
+  short-circuit sugar and `::` stays the `List` constructor.
 
 **Acceptance**
 - e2e: a program that takes only the capabilities it needs, builds a derived
@@ -536,7 +545,8 @@ Resolved during planning (see the locked table in `AGENTS.md` §3):
   OCaml-style `+.`); unconstrained numerics default to `Int`; no implicit
   `Int`/`Float` coercion. Rationale: "similar to F#", one operator set; the
   built-in overload set is small and bounded (we already special-case `=`/
-  comparison).
+  comparison). *(Amended by D75: `+ - * / %` become methods of a std `Num`
+  interface at M5.)*
 - **D12 Contracts:** **first-class `example`/`forall` declarations** (peers of
   `let`), placed immediately after the binding they describe, *not* a doc-comment
   extension. Rationale: symbols inside contracts resolve via normal name
@@ -761,7 +771,9 @@ Resolved while implementing **M2** (the type-system layer):
   is ambiguous) — because M2 has no constrained schemes to carry the constraint.
   *Deviation (to revisit):* the current build *defaults* an escaping Numeric var
   to `Int` rather than reporting the strict ambiguity; sound and predictable, to
-  be tightened when constrained schemes land.
+  be tightened when constrained schemes land. *(Amended by D75: operators become
+  symbolic identifiers with F#-style precedence; the overloaded ones become std
+  `Num`/`Eq`/`Ord` interface methods at M5.)*
 - **D43 Prelude:** **hybrid, type-only in M2** — primitives are a Rust
   `name → Scheme` table (no bodies; codegen is M3), and a derived `.fai` prelude
   is embedded (`include_str!`) and loaded as a synthetic high-durability
@@ -947,6 +959,8 @@ Resolved while implementing **M3.5** (the daemon, persistence, and protocol):
   runtime `fai_compare` (constructor tags order by declaration order, records by
   sorted label, recursively). Because ordering needs no dictionary, the generic
   `compare`/`sort`/`sortBy` and the `Dict`/`Set` BSTs are plain prelude code.
+  *(Amended by D75: `< <= > >=`/`= <>` become `Ord`/`Eq` interface methods at
+  M5 that specialize to this single runtime compare/equal on concrete types.)*
 - **D71 The prelude is a real compiled module, not magic:** `Option`/`Result`,
   the `List` combinators, `compare`/`sort`, `Dict`/`Set`, and the string helpers
   live in an embedded `Prelude.fai` whose public values, types, and constructors
@@ -1003,6 +1017,39 @@ Resolved while implementing **M3.5** (the daemon, persistence, and protocol):
   outside `std/`). The `INTRINSICS` name list moves to `fai_resolve::intrinsics`;
   the loader and built-in `Scheme` table move to `fai_types::std_lib`
   (`load_std`/`builtin_scheme`).
+- **D75 Operators are symbolic identifiers with F#-style precedence; the
+  overloaded ones are std interface methods; user-defined operators are allowed
+  (amends D11, D42, D70; delivered with M5):**
+  - An operator is a **symbolic identifier** (a maximal run of operator
+    characters), written infix and named in value position as `(op)` — e.g.
+    `let (+++) a b = …`, `List.foldl (+++) z xs`. The lexer becomes a generic
+    operator-character lexer (maximal munch); the symbols that are *syntax* rather
+    than operators stay reserved (`=` binder, `|`, `->`, `.`, and the list-cons
+    `::`).
+  - **Precedence/associativity are F#-style — a pure function of the operator's
+    leading symbol(s)** (a fixed symbol-class → precedence/associativity table
+    seeded by today's `binding_power`). **No fixity declarations**, so `parse`
+    stays self-contained (precedence needs no name resolution or imports) and the
+    incremental firewall is preserved.
+  - **Resolution:** an operator resolves like any value name — local →
+    this-module top-level → auto-imported `Prelude`. Built-in operators live in
+    `Prelude`. A user operator is usable infix **within its defining module**;
+    there is no qualified-infix form, so cross-module sharing means defining it in
+    `Prelude` or accepting module scope (consistent with D36).
+  - **Overloading via interfaces (M5):** `+ - * / %` become methods of a std
+    **`Num`**, `= <>` of **`Eq`**, `< <= > >=` of **`Ord`**, with `Int`/`Float`/
+    structural instances in `std/`. The M2 constraint flavors
+    (`Numeric`/`Eq`/`Ord`) are replaced by these interface constraints; `Num`
+    keeps the `Int`-defaulting rule. **Monomorphic uses still lower to the direct
+    primitive** (e.g. `IntAdd`), so concrete-type operators pay no dictionary
+    cost.
+  - **Stays built-in regardless:** `&&`/`||` remain short-circuit sugar over `if`
+    (a strict function cannot short-circuit); `::` stays the built-in `List`
+    constructor. `|>`/`>>` may be redefined as ordinary `Prelude` operators (they
+    are plain higher-order functions), inlined when monomorphic.
+  - **Sequencing:** the lexer/precedence/user-operator half may precede M5 but
+    lands unified with the interfaces work so built-in and user operators share
+    one mechanism (no throwaway hybrid).
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected milestones.
