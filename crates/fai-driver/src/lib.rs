@@ -8,6 +8,10 @@
 //! diagnostic. The signatures already take `&dyn Db` so the warm-database daemon
 //! can call the very same functions once the commands gain real behavior.
 
+#[allow(unsafe_code)]
+mod backend;
+#[cfg(test)]
+mod build_tests;
 mod query;
 mod session;
 
@@ -22,6 +26,9 @@ use fai_diagnostics::{
 use fai_span::{ByteOffset, SourceId, Span, SpanResolver, TextRange};
 use serde::Serialize;
 
+pub use backend::{
+    BuildOutcome, RunOutcome, build_native, jit_run_program, object_code, reachable_defs,
+};
 pub use query::{QueryRequest, QueryResult, run_query};
 pub use session::Session;
 
@@ -29,6 +36,10 @@ pub use session::Session;
 pub const NOT_IMPLEMENTED: DiagnosticCode = DiagnosticCode::new("FAI0001");
 /// A workspace or I/O error prevented the command from running.
 pub const WORKSPACE_ERROR: DiagnosticCode = DiagnosticCode::new("FAI0002");
+/// The linker failed while producing a native executable.
+pub const LINK_FAILED: DiagnosticCode = DiagnosticCode::new("FAI0003");
+/// The entry file has no `main` to build or run.
+pub const NO_ENTRY_POINT: DiagnosticCode = DiagnosticCode::new("FAI0004");
 
 /// Diagnostic codes owned by the tooling/driver layer (the `FAI0xxx` range).
 pub const CODES: &[CodeInfo] = &[
@@ -42,6 +53,8 @@ pub const CODES: &[CodeInfo] = &[
         title: "workspace or I/O error",
         default_severity: Severity::Error,
     },
+    CodeInfo { code: LINK_FAILED, title: "linker failed", default_severity: Severity::Error },
+    CodeInfo { code: NO_ENTRY_POINT, title: "no entry point", default_severity: Severity::Error },
 ];
 
 /// A workspace or I/O failure that prevents a command from running.
@@ -113,7 +126,7 @@ pub struct CommandOutput {
 
 /// A span used by tooling-level diagnostics that have no source location. It
 /// refers to no registered file, so resolvers report it as `<unknown>`.
-fn tooling_span() -> Span {
+pub(crate) fn tooling_span() -> Span {
     Span::new(SourceId::new(u32::MAX), TextRange::empty(ByteOffset::ZERO))
 }
 
@@ -149,7 +162,7 @@ fn file_diagnostics(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
 /// queries it calls), and workspace-level queries (e.g. duplicate-module
 /// detection) touch every file. So we filter to diagnostics whose primary span
 /// is in `file`, ensuring only the checked file's own diagnostics are reported.
-fn semantic_diagnostics(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
+pub(crate) fn semantic_diagnostics(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
     let source = file.source(db);
     let mut out = Vec::new();
     out.extend(
