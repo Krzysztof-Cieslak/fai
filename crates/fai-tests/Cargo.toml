@@ -26,6 +26,15 @@ fai-ide.workspace = true
 insta.workspace = true
 serde_json.workspace = true
 proptest.workspace = true
+divan.workspace = true
+
+[[bench]]
+name = "inference"
+harness = false
+
+[[bench]]
+name = "micro"
+harness = false
 
 [lints]
 workspace = true

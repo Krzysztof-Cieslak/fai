@@ -8,6 +8,7 @@
 //! phases add real queries.
 
 mod checker;
+pub mod corpus;
 
 pub use checker::{
     CheckOutcome, check_named, check_source, local_type, local_types, run_annotated, sym, type_of,
@@ -16,8 +17,34 @@ pub use checker::{
 use std::fmt::Debug;
 
 use camino::Utf8PathBuf;
-use fai_db::FaiDatabase;
+use fai_db::{Db, Diag, FaiDatabase, SourceFile};
+use fai_diagnostics::Diagnostic;
 use fai_span::SourceId;
+
+/// Collects the resolution + type diagnostics belonging to `file` (filtering out
+/// diagnostics from other files that transitive accumulation surfaces). Shared by
+/// the corpus self-check and the performance guards.
+#[must_use]
+pub fn check_source_diagnostics(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
+    let source = file.source(db);
+    let mut out = Vec::new();
+    for diag in fai_syntax::parse::accumulated::<Diag>(db, file) {
+        if diag.0.primary.source() == source {
+            out.push(diag.0.clone());
+        }
+    }
+    for diag in fai_resolve::resolve::accumulated::<Diag>(db, file) {
+        if diag.0.primary.source() == source {
+            out.push(diag.0.clone());
+        }
+    }
+    for diag in fai_types::check_file::accumulated::<Diag>(db, file) {
+        if diag.0.primary.source() == source {
+            out.push(diag.0.clone());
+        }
+    }
+    out
+}
 
 /// One workspace revision: the full set of `(path, text)` files at that point.
 pub type Revision<'a> = &'a [(&'a str, &'a str)];

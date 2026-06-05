@@ -301,6 +301,26 @@ cache plus a fast linker (mold/lld).
 - An **incremental verifier** (compare incremental vs from-scratch) runs in CI;
   cache keys include compiler version + flags.
 
+**Benchmarking.** Performance is guarded two ways:
+
+- **Deterministic guards** (`crates/fai-tests/tests/perf_guards.rs`) assert
+  incrementality properties via the query-execution **event log** (a count of
+  which salsa queries re-ran), not wall-clock — so they gate in CI without
+  flakiness. The headline guard: a localized edit's recompute is **independent of
+  workspace size** (the cross-module firewall).
+- **Wall-clock benches** (`crates/fai-tests/benches/`, [divan]) are for local
+  profiling: `cargo bench -p fai-tests`. `inference.rs` covers cold check vs warm
+  incremental edits over a synthetic corpus; `micro.rs` covers unification,
+  instantiation, rendering, deep bodies, and large SCCs. They are **not** a CI
+  gate (shared runners are noisy); CI only compiles them (`build --all-targets`)
+  to prevent bitrot. The deterministic [`corpus`](crates/fai-tests/src/corpus.rs)
+  generator backs both.
+
+Known super-linear hot spots surfaced by `micro.rs` (M9 tuning targets, not
+correctness issues): deep per-block `let`-chains (local-let generalization
+recomputes environment free-variables per binding) and unification of very deep
+types (repeated `resolve_shallow`/occurs walks without path compression).
+
 ## 10. Diagnostics & error codes
 
 - Every diagnostic has: a stable **code** (`FAInnnn`), a **severity**, a
