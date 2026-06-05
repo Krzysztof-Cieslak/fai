@@ -1,0 +1,102 @@
+module Combinators
+
+// Generic higher-order combinators. These are the strongest exercise of
+// *polymorphic* local inference: locals that are functions, partially applied,
+// composed, and instantiated at multiple types within one body. The LOCAL
+// assertions pin the inferred polymorphic types of those locals.
+
+// ── classic combinators (signature-less so the type is inferred) ─────────────
+
+//~ TYPE identity : 'a -> 'a
+let identity x = x
+
+// Inferred canonical form (first-appearance variable order).
+//~ TYPE compose : ('a -> 'b) -> ('c -> 'a) -> 'c -> 'b
+let compose f g x = f (g x)
+
+//~ TYPE flip : ('a -> 'b -> 'c) -> 'b -> 'a -> 'c
+let flip f a b = f b a
+
+//~ TYPE constant : 'a -> 'b -> 'a
+let constant x y = x
+
+//~ TYPE onPair : ('a -> 'b) -> 'a * 'a -> 'b * 'b
+//~ LOCAL onPair.a : 'a
+//~ LOCAL onPair.b : 'a
+public onPair : ('a -> 'b) -> 'a * 'a -> 'b * 'b
+let onPair f p =
+  let (a, b) = p
+  (f a, f b)
+
+// ── locals that are functions ────────────────────────────────────────────────
+
+// A local `twice` built by self-composition; applied to an Int argument here.
+//~ TYPE applyTwice : Int -> Int
+//~ LOCAL applyTwice.bump : Int -> Int
+//~ LOCAL applyTwice.twice : Int -> Int
+public applyTwice : Int -> Int
+let applyTwice n =
+  let bump = fun x -> x + 1
+  let twice = compose bump bump
+  twice n
+
+// A local polymorphic identity used at two different types in one body.
+//~ TYPE useGenericLocal : Int -> Bool -> Int * Bool
+//~ LOCAL useGenericLocal.id : 'a -> 'a
+//~ LOCAL useGenericLocal.i : Int
+//~ LOCAL useGenericLocal.b : Bool
+public useGenericLocal : Int -> Bool -> Int * Bool
+let useGenericLocal n flag =
+  let id = fun x -> x
+  let i = id n
+  let b = id flag
+  (i, b)
+
+// A local `pair` constructor used polymorphically.
+//~ TYPE buildPairs : Int -> String -> (Int * Int) * (String * String)
+//~ LOCAL buildPairs.dup : 'a -> 'a * 'a
+public buildPairs : Int -> String -> (Int * Int) * (String * String)
+let buildPairs n s =
+  let dup = fun x -> (x, x)
+  (dup n, dup s)
+
+// Partial application produces a function-typed local.
+//~ TYPE addThree : Int -> Int
+//~ LOCAL addThree.add : Int -> Int -> Int
+//~ LOCAL addThree.addThreeFn : Int -> Int
+public addThree : Int -> Int
+let addThree n =
+  let add = fun a b -> a + b
+  let addThreeFn = add 3
+  addThreeFn n
+
+// Compose used as a local with `>>`-style chaining via the combinator.
+//~ TYPE pipeline : Int -> Int
+//~ LOCAL pipeline.inc : Int -> Int
+//~ LOCAL pipeline.double : Int -> Int
+//~ LOCAL pipeline.step : Int -> Int
+public pipeline : Int -> Int
+let pipeline n =
+  let inc = fun x -> x + 1
+  let double = fun x -> x * 2
+  let step = compose double inc
+  step n
+
+// Higher-order local applied to a local function. `apply` is a generalized
+// local (its right-hand side is a lambda), so its inferred type is polymorphic
+// in the result even though the enclosing function fixes it to Int.
+//~ TYPE applyToFive : (Int -> Int) -> Int
+//~ LOCAL applyToFive.apply : (Int -> 'a) -> 'a
+public applyToFive : (Int -> Int) -> Int
+let applyToFive f =
+  let apply = fun g -> g 5
+  apply f
+
+// ── Contracts ────────────────────────────────────────────────────────────────
+
+example: applyTwice 10 = 12
+example: useGenericLocal 1 true = (1, true)
+example: addThree 4 = 7
+example: pipeline 3 = 8
+forall x: identity x = x
+forall x: applyTwice x = x + 2
