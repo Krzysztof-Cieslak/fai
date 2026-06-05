@@ -236,10 +236,12 @@ output schemas, and the daemon (MessagePack JSON-RPC) protocol.
 - Public items get doc comments; modules start with a `//!` summary.
 - **Comments and commits explain the code, not the process.** Code comments, doc
   comments, and Git commit messages must be self-contained; never reference
-  planning/process artifacts — milestone names (`M0`, `M3.5`), decision-log
-  identifiers (`Q7`, `D14`), or `docs/PLAN.md`. Pointers to the durable specs
-  (`docs/CLI.md`, `Agents.md`) are fine when they document a real contract (e.g. a
-  wire schema or a naming convention).
+  planning/process artifacts — milestone names (`M0`, `M3.5`), build-plan
+  **phases** (`Phase 2a`), decision-log identifiers (`Q7`, `D14`), or
+  `docs/PLAN.md` (write "noted as future work", not "see the plan"). Pointers to
+  the durable specs (`docs/CLI.md`, `Agents.md`) are fine when they document a
+  real contract (e.g. a wire schema or a naming convention). Describe *what
+  changed and why*, not the step in a roadmap that produced it.
 
 ## 9. Performance & incremental compilation
 
