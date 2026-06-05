@@ -406,7 +406,16 @@ and content-addressed cache landed in M0–M3.5; this milestone is *tuning*.)
   correctness requirement, and the one feature that *hurts* incrementality, so it
   stays opt-in).
 - Compile-throughput + `edit→diagnostic` / `edit→test` benchmarks with CI
-  regression guards.
+  regression guards. (Foundation landed early during M2: a deterministic
+  query-count guard suite — `crates/fai-tests/tests/perf_guards.rs`, proving the
+  firewall makes a localized edit's recompute independent of workspace size — and
+  wall-clock divan benches in `crates/fai-tests/benches/` over a synthetic
+  `corpus` generator. M9 extends these to codegen/`edit→test` and adds trend
+  tracking.)
+- **Inference tuning targets** surfaced by the M2 microbenchmarks: deep per-block
+  `let`-chains (local-let generalization recomputes environment free-variables
+  per binding → O(n²) in block size) and unification of very deep types (repeated
+  `resolve_shallow`/occurs walks; add path compression). Correctness-neutral.
 
 **Acceptance**
 - Documented throughput + latency targets on a large synthetic corpus; no

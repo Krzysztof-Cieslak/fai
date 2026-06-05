@@ -46,6 +46,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 insta = "1"
 # Property-based (generative) testing.
 proptest = "1"
+# Microbenchmark harness (lean; throughput counters). Wall-clock benches are for
+# local profiling — CI gates performance via the deterministic guard tests.
+divan = "0.1"
 
 # Internal crates (path deps, versions inherited from the workspace).
 fai-span = { path = "crates/fai-span" }
