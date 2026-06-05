@@ -19,8 +19,21 @@ pub const PRELUDE_MODULE: &str = "Prelude";
 /// the `fai-types` builtin table and their code is a primitive or runtime call.
 /// Everything else the prelude offers is an ordinary definition in the prelude
 /// file (resolved as a `Def`/`Ctor`).
-pub const INTRINSICS: &[&str] =
-    &["intToString", "floatToString", "intToFloat", "floatToInt", "sqrt", "not"];
+pub const INTRINSICS: &[&str] = &[
+    "intToString",
+    "floatToString",
+    "intToFloat",
+    "floatToInt",
+    "sqrt",
+    "not",
+    "stringLength",
+    "toUpper",
+    "toLower",
+    "trim",
+    "stringContains",
+    "split",
+    "join",
+];
 
 /// Returns whether `name` is a built-in intrinsic.
 #[must_use]

@@ -285,6 +285,40 @@ fn tuple_construction_and_destructuring() {
 }
 
 #[test]
+fn dict_runs() {
+    let src = "module M\n\n\
+        public main : Runtime -> Unit\n\
+        let main r =\n  \
+          let d = insert 1 10 (insert 3 30 (insert 2 20 emptyDict))\n  \
+          Console.writeLine r (intToString (withDefault 0 (get 2 d) + dictSize d))\n";
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "23\n");
+}
+
+#[test]
+fn string_ops_run() {
+    let src = "module M\n\n\
+        public main : Runtime -> Unit\n\
+        let main r = Console.writeLine r (join \"-\" (map toUpper (split \" \" \"hi there world\")))\n";
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "HI-THERE-WORLD\n");
+}
+
+#[test]
+fn sort_runs() {
+    let src = "module M\n\n\
+        public main : Runtime -> Unit\n\
+        let main r =\n  \
+          let xs = sort [3, 1, 2]\n  \
+          Console.writeLine r (intToString (foldl (fun acc x -> acc * 10 + x) 0 xs))\n";
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "123\n");
+}
+
+#[test]
 fn record_literal_and_field_access() {
     let src = "module M\n\n\
         public main : Runtime -> Unit\n\

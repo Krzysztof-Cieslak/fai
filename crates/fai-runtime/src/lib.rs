@@ -640,6 +640,123 @@ pub extern "C" fn fai_int_to_string(n: Value) -> Value {
     result
 }
 
+/// Borrows a boxed `String` as a `&str` (the bytes are valid UTF-8 by typing).
+unsafe fn string_str<'a>(v: Value) -> &'a str {
+    // SAFETY: `v` is a boxed `String` of valid UTF-8.
+    unsafe { std::str::from_utf8_unchecked(string_bytes(v)) }
+}
+
+/// The number of Unicode scalar values in a `String` (operand consumed).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_string_length(s: Value) -> Value {
+    // SAFETY: `s` is a boxed `String`.
+    let n = unsafe { string_str(s) }.chars().count();
+    fai_drop(s);
+    imm_int(i64::try_from(n).unwrap_or(i64::MAX))
+}
+
+/// Uppercases a `String` (operand consumed).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_to_upper(s: Value) -> Value {
+    // SAFETY: `s` is a boxed `String`.
+    let out = unsafe { string_str(s) }.to_uppercase();
+    fai_drop(s);
+    make_string(out.as_bytes())
+}
+
+/// Lowercases a `String` (operand consumed).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_to_lower(s: Value) -> Value {
+    // SAFETY: `s` is a boxed `String`.
+    let out = unsafe { string_str(s) }.to_lowercase();
+    fai_drop(s);
+    make_string(out.as_bytes())
+}
+
+/// Trims leading and trailing ASCII whitespace from a `String` (consumed).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_trim(s: Value) -> Value {
+    // SAFETY: `s` is a boxed `String`.
+    let out = unsafe { string_str(s) }.trim().to_owned();
+    fai_drop(s);
+    make_string(out.as_bytes())
+}
+
+/// Whether `s` contains `needle` as a substring (both consumed) — a `Bool`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_string_contains(s: Value, needle: Value) -> Value {
+    // SAFETY: both are boxed `String`s.
+    let found = unsafe { string_str(s).contains(string_str(needle)) };
+    fai_drop(s);
+    fai_drop(needle);
+    from_bool(found)
+}
+
+/// Builds a Fai `List` value from owned string pieces (Nil is the immediate tag).
+fn list_of_strings(pieces: &[Value]) -> Value {
+    let mut list = imm_int(NIL_TAG);
+    for &piece in pieces.iter().rev() {
+        let p = alloc_obj(DATA_FIELDS_OFFSET + 16, &FAI_DATA_DESC);
+        // SAFETY: `p` has room for the tag and two fields.
+        unsafe {
+            write_u64(p, DATA_TAG_OFFSET, CONS_TAG as u64);
+            write_i64(p, DATA_FIELDS_OFFSET, piece);
+            write_i64(p, DATA_FIELDS_OFFSET + 8, list);
+        }
+        list = from_obj(p);
+    }
+    list
+}
+
+/// Splits `s` on the separator `sep` into a `List String` (both consumed).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_string_split(sep: Value, s: Value) -> Value {
+    // SAFETY: both are boxed `String`s.
+    let pieces: Vec<Value> = unsafe {
+        let (sep_s, src) = (string_str(sep), string_str(s));
+        if sep_s.is_empty() {
+            src.chars().map(|c| make_string(c.to_string().as_bytes())).collect()
+        } else {
+            src.split(sep_s).map(|piece| make_string(piece.as_bytes())).collect()
+        }
+    };
+    let list = list_of_strings(&pieces);
+    fai_drop(sep);
+    fai_drop(s);
+    list
+}
+
+/// Joins a `List String` with the separator `sep` (both consumed).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_string_join(sep: Value, list: Value) -> Value {
+    // SAFETY: `sep` is a `String`; `list` is a `List String`.
+    let out = unsafe {
+        let sep_s = string_str(sep);
+        let mut out = String::new();
+        let mut cur = list;
+        let mut first = true;
+        while is_boxed(cur) {
+            let p = as_obj(cur);
+            let head = read_i64(p, DATA_FIELDS_OFFSET);
+            if !first {
+                out.push_str(sep_s);
+            }
+            first = false;
+            out.push_str(string_str(head));
+            cur = read_i64(p, DATA_FIELDS_OFFSET + 8);
+        }
+        out
+    };
+    let result = make_string(out.as_bytes());
+    fai_drop(sep);
+    fai_drop(list);
+    result
+}
+
+/// The constructor tags of the built-in `List` (shared with codegen lowering).
+const NIL_TAG: i64 = 0;
+const CONS_TAG: i64 = 1;
+
 // ---------------------------------------------------------------------------
 // Closures & application.
 // ---------------------------------------------------------------------------
