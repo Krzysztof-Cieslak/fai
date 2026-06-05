@@ -36,5 +36,9 @@ harness = false
 name = "micro"
 harness = false
 
+[[bench]]
+name = "stress"
+harness = false
+
 [lints]
 workspace = true

@@ -412,10 +412,16 @@ and content-addressed cache landed in M0–M3.5; this milestone is *tuning*.)
   wall-clock divan benches in `crates/fai-tests/benches/` over a synthetic
   `corpus` generator. M9 extends these to codegen/`edit→test` and adds trend
   tracking.)
-- **Inference tuning targets** surfaced by the M2 microbenchmarks: deep per-block
-  `let`-chains (local-let generalization recomputes environment free-variables
-  per binding → O(n²) in block size) and unification of very deep types (repeated
-  `resolve_shallow`/occurs walks; add path compression). Correctness-neutral.
+- **Inference tuning targets** surfaced by the M2 micro/stress benchmarks
+  (`crates/fai-tests/benches/{micro,stress}.rs`), all correctness-neutral:
+  - the **occurs check** re-walks the whole (growing) type on every variable
+    binding → O(n²) on long curried-application chains and exponential type
+    growth (defer/skip occurs via union-find ranks, or rank-based path
+    compression);
+  - **local-`let` generalization** recomputes environment free-variables per
+    binding → O(n²) in block size for long `let`-chains (cache the env var set);
+  - **unification of very deep types** repeats `resolve_shallow` walks (add path
+    compression to the union-find).
 
 **Acceptance**
 - Documented throughput + latency targets on a large synthetic corpus; no
