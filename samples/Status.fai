@@ -4,4 +4,4 @@ public classify : { status : Int | _ } -> String
 let classify r =
   match r with
   | { status = 0 | _ } -> "ok"
-  | { status | _ } -> "error " ++ intToString status   // irrefutable → exhaustive
+  | { status | _ } -> "error " ++ intToString status // irrefutable → exhaustive

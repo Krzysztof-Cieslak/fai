@@ -185,6 +185,10 @@ pub enum ExprKind {
     Block { stmts: Vec<LetStmt>, tail: ExprId },
     /// Record field access `base.field`.
     Field { base: ExprId, field: Symbol },
+    /// A record literal `{ x = a, y = b }` (closed).
+    Record(Vec<FieldInit>),
+    /// A record update `{ base with x = a, … }`.
+    RecordUpdate { base: ExprId, fields: Vec<FieldInit> },
     /// A parenthesized expression (kept so the formatter is faithful).
     Paren(ExprId),
     /// A tuple `(a, b, …)` (two or more elements).
@@ -203,6 +207,17 @@ pub struct MatchArm {
     /// The arm body.
     pub body: ExprId,
     /// The arm's source range.
+    pub span: TextRange,
+}
+
+/// One field of a record literal or update: `name = value`.
+#[derive(Debug, PartialEq, Eq)]
+pub struct FieldInit {
+    /// The field label.
+    pub name: Symbol,
+    /// The field's value.
+    pub value: ExprId,
+    /// The field's source range.
     pub span: TextRange,
 }
 
@@ -305,8 +320,25 @@ pub enum PatKind {
     Cons { head: PatId, tail: PatId },
     /// An or-pattern `a | b | …` (alternatives must bind the same variables).
     Or(Vec<PatId>),
+    /// A record pattern `{ x = p, y }` (closed) or `{ x = p | _ }` (open).
+    Record { fields: Vec<FieldPat>, open: bool },
     /// An unparseable pattern (recovered).
     Error,
+}
+
+/// One field of a record pattern: `name = pat`, or `name` (field punning, which
+/// binds a variable of the field's name). Punning carries a synthesized
+/// `Var(name)` sub-pattern so later phases treat all fields uniformly.
+#[derive(Debug, PartialEq, Eq)]
+pub struct FieldPat {
+    /// The field label.
+    pub name: Symbol,
+    /// The sub-pattern (`Var(name)` when punned).
+    pub pat: PatId,
+    /// Whether this field used punning (`{ x }`), for faithful formatting.
+    pub punned: bool,
+    /// The field's source range.
+    pub span: TextRange,
 }
 
 /// A type expression.
@@ -331,10 +363,35 @@ pub enum TypeKind {
     Arrow { from: TypeId, to: TypeId },
     /// A tuple type `a * b * …`.
     Tuple(Vec<TypeId>),
+    /// A record type `{ x : T, … }` with a closed, anonymous-open, or named-open
+    /// tail.
+    Record { fields: Vec<FieldType>, tail: RowTail },
     /// The unit type `()`.
     Unit,
     /// A parenthesized type.
     Paren(TypeId),
     /// An unparseable type (recovered).
     Error,
+}
+
+/// One field of a record type: `name : ty`.
+#[derive(Debug, PartialEq, Eq)]
+pub struct FieldType {
+    /// The field label.
+    pub name: Symbol,
+    /// The field's type.
+    pub ty: TypeId,
+    /// The field's source range.
+    pub span: TextRange,
+}
+
+/// The tail of a written record type, governing its openness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowTail {
+    /// `{ x : T }` — exactly these fields.
+    Closed,
+    /// `{ x : T | _ }` — these fields and any others (a fresh anonymous row).
+    Open,
+    /// `{ x : T | 'r }` — these fields plus the named tail `'r`.
+    Named(Symbol),
 }

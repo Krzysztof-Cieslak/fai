@@ -227,6 +227,28 @@ impl MatchChecker<'_> {
                 IPat::Con { key: ConKey::Tag(i64::from(tag)), args: sub }
             }
             PatKind::Or(alts) => IPat::Or(alts.iter().map(|&a| self.lower_pat(a)).collect()),
+            // Records are single-constructor: an irrefutable record pattern (all
+            // sub-patterns irrefutable) acts as a wildcard; a refutable one is
+            // treated as a distinct value (sound — it under-claims coverage).
+            PatKind::Record { .. } => {
+                if self.is_irrefutable(pat) {
+                    IPat::Wild
+                } else {
+                    IPat::Lit(format!("@record{}", pat.index()))
+                }
+            }
+        }
+    }
+
+    /// Whether a pattern always matches (binds without testing).
+    fn is_irrefutable(&self, pat: PatId) -> bool {
+        match &self.module.pat(pat).kind {
+            PatKind::Var(_) | PatKind::Wildcard | PatKind::Unit | PatKind::Error => true,
+            PatKind::Paren(inner) => self.is_irrefutable(*inner),
+            PatKind::Tuple(elems) => elems.iter().all(|&e| self.is_irrefutable(e)),
+            PatKind::Record { fields, .. } => fields.iter().all(|f| self.is_irrefutable(f.pat)),
+            PatKind::Or(alts) => alts.iter().any(|&a| self.is_irrefutable(a)),
+            _ => false,
         }
     }
 
@@ -547,6 +569,7 @@ fn collect_ty_vars(ty: &Ty, out: &mut Vec<TyVarId>) {
             collect_ty_vars(a, out);
         }
         Ty::Tuple(elems) => elems.iter().for_each(|e| collect_ty_vars(e, out)),
+        Ty::Record(row) => row.fields.iter().for_each(|(_, t)| collect_ty_vars(t, out)),
         Ty::Con(_) | Ty::Adt(_) | Ty::Unit | Ty::Error => {}
     }
 }

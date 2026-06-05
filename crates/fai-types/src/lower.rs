@@ -14,10 +14,10 @@ use fai_diagnostics::Diagnostic;
 use fai_resolve::{AdtRef, TypeDeclInfo, prelude_file, type_decls};
 use fai_span::{Span, TextRange};
 use fai_syntax::Symbol;
-use fai_syntax::ast::{ItemKind, Module, TypeDef, TypeId, TypeKind};
+use fai_syntax::ast::{ItemKind, Module, RowTail, TypeDef, TypeId, TypeKind};
 use rustc_hash::FxHashMap;
 
-use crate::ty::{Scheme, Ty, TyVarId};
+use crate::ty::{RecordRow, RowEnd, RowVarId, Scheme, Ty, TyVarId};
 use crate::{RECURSIVE_ALIAS, TYPE_ARITY, UNKNOWN_TYPE_CONSTRUCTOR};
 
 /// A scratch map from surface type-variable names to assigned ids during one
@@ -26,6 +26,10 @@ use crate::{RECURSIVE_ALIAS, TYPE_ARITY, UNKNOWN_TYPE_CONSTRUCTOR};
 pub struct LowerVars {
     by_name: FxHashMap<Symbol, TyVarId>,
     next: u32,
+    rows_by_name: FxHashMap<Symbol, RowVarId>,
+    row_next: u32,
+    /// Row variables in allocation order, with their spellings (`_` anonymous).
+    row_order: Vec<(RowVarId, String)>,
 }
 
 impl LowerVars {
@@ -39,6 +43,26 @@ impl LowerVars {
         id
     }
 
+    /// A named open tail `'r` (shared by name, so `setX`'s tail threads through).
+    fn row_named(&mut self, name: Symbol) -> RowVarId {
+        if let Some(id) = self.rows_by_name.get(&name) {
+            return *id;
+        }
+        let id = RowVarId(self.row_next);
+        self.row_next += 1;
+        self.rows_by_name.insert(name, id);
+        self.row_order.push((id, name.as_str().to_owned()));
+        id
+    }
+
+    /// A fresh anonymous open tail `_` (never shared).
+    fn row_anon(&mut self) -> RowVarId {
+        let id = RowVarId(self.row_next);
+        self.row_next += 1;
+        self.row_order.push((id, "_".to_owned()));
+        id
+    }
+
     /// The `(var, source-name)` pairs, ordered by var id. Names keep the written
     /// `'a` spelling.
     fn named(&self) -> Vec<(TyVarId, String)> {
@@ -46,6 +70,11 @@ impl LowerVars {
             self.by_name.iter().map(|(name, id)| (*id, name.as_str().to_owned())).collect();
         pairs.sort_by_key(|(id, _)| *id);
         pairs
+    }
+
+    /// The row variables in allocation order, with their spellings.
+    fn rows(&self) -> Vec<(RowVarId, String)> {
+        self.row_order.clone()
     }
 }
 
@@ -85,6 +114,17 @@ impl Lowerer<'_> {
             }
             TypeKind::Tuple(elems) => {
                 Ty::Tuple(elems.iter().map(|&e| self.lower(e, vars)).collect())
+            }
+            TypeKind::Record { fields, tail } => {
+                let mut row: Vec<(Symbol, Ty)> =
+                    fields.iter().map(|f| (f.name, self.lower(f.ty, vars))).collect();
+                row.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+                let row_tail = match tail {
+                    RowTail::Closed => RowEnd::Closed,
+                    RowTail::Open => RowEnd::Open(vars.row_anon()),
+                    RowTail::Named(name) => RowEnd::Open(vars.row_named(*name)),
+                };
+                Ty::Record(RecordRow { fields: row, tail: row_tail })
             }
             TypeKind::Unit => Ty::Unit,
             TypeKind::Paren(inner) => self.lower(*inner, vars),
@@ -240,6 +280,10 @@ fn subst_ty(ty: &Ty, map: &FxHashMap<TyVarId, Ty>) -> Ty {
         Ty::App(f, a) => Ty::App(Arc::new(subst_ty(f, map)), Arc::new(subst_ty(a, map))),
         Ty::Arrow(f, a) => Ty::arrow(subst_ty(f, map), subst_ty(a, map)),
         Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(|e| subst_ty(e, map)).collect()),
+        Ty::Record(row) => Ty::Record(RecordRow {
+            fields: row.fields.iter().map(|(l, t)| (*l, subst_ty(t, map))).collect(),
+            tail: row.tail,
+        }),
         Ty::Con(_) | Ty::Adt(_) | Ty::Unit | Ty::Error => ty.clone(),
     }
 }
@@ -263,10 +307,22 @@ pub fn lower_type(
 pub fn lower_signature(db: &dyn Db, file: SourceFile, module: &Module, ty: TypeId) -> Scheme {
     let mut vars = LowerVars::default();
     let body = lower_type(db, file, module, ty, &mut vars);
-    let named = vars.named();
-    let ids: Vec<TyVarId> = named.iter().map(|(id, _)| *id).collect();
-    let names: Vec<String> = named.into_iter().map(|(_, n)| n).collect();
-    Scheme { vars: ids, ty: body, names }
+    Scheme::new(type_vars(&vars), body)
+        .with_names(type_names(&vars))
+        .with_rows(row_vars(&vars), row_names(&vars))
+}
+
+fn type_vars(vars: &LowerVars) -> Vec<TyVarId> {
+    vars.named().into_iter().map(|(id, _)| id).collect()
+}
+fn type_names(vars: &LowerVars) -> Vec<String> {
+    vars.named().into_iter().map(|(_, n)| n).collect()
+}
+fn row_vars(vars: &LowerVars) -> Vec<RowVarId> {
+    vars.rows().into_iter().map(|(id, _)| id).collect()
+}
+fn row_names(vars: &LowerVars) -> Vec<String> {
+    vars.rows().into_iter().map(|(_, n)| n).collect()
 }
 
 /// Builds the scheme of a data constructor `name` declared in `file`, e.g.
@@ -295,10 +351,11 @@ pub fn build_constructor_scheme(db: &dyn Db, file: SourceFile, name: Symbol) -> 
     }
     let body = Ty::arrows(field_tys, result);
 
-    let named = vars.named();
-    let ids: Vec<TyVarId> = named.iter().map(|(id, _)| *id).collect();
-    let names: Vec<String> = named.into_iter().map(|(_, n)| n).collect();
-    Some(Scheme { vars: ids, ty: body, names })
+    Some(
+        Scheme::new(type_vars(&vars), body)
+            .with_names(type_names(&vars))
+            .with_rows(row_vars(&vars), row_names(&vars)),
+    )
 }
 
 #[cfg(test)]

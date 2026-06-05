@@ -14,9 +14,9 @@ use fai_syntax::Symbol;
 use fai_syntax::ast::{BinOp, ExprId, ExprKind, Module, PatId, PatKind, UnOp};
 use rustc_hash::FxHashMap;
 
-use crate::infer::ctx::{Constraint, InferCtx, SolveTy, UnifyResult};
+use crate::infer::ctx::{Constraint, InferCtx, RowTail, SolveRow, SolveTy, UnifyResult};
 use crate::ty::Scheme;
-use crate::{EQUALITY_ON_FUNCTION, OCCURS_CHECK, TYPE_MISMATCH, UNSUPPORTED_FIELD_ACCESS};
+use crate::{EQUALITY_ON_FUNCTION, OCCURS_CHECK, TYPE_MISMATCH};
 
 /// Supplies the scheme for a referenced definition or builtin, and signals
 /// whether a same-SCC definition should be treated monomorphically.
@@ -54,6 +54,8 @@ pub struct Walker<'a, E: Env> {
     record_types: bool,
     /// Per-expression solver types (populated only when `record_types` is set).
     expr_types: FxHashMap<ExprId, SolveTy>,
+    /// Per-pattern solver types (populated only when `record_types` is set).
+    pat_types: FxHashMap<PatId, SolveTy>,
 }
 
 impl<'a, E: Env> Walker<'a, E> {
@@ -76,6 +78,7 @@ impl<'a, E: Env> Walker<'a, E> {
             locals: FxHashMap::default(),
             record_types: false,
             expr_types: FxHashMap::default(),
+            pat_types: FxHashMap::default(),
         }
     }
 }
@@ -164,6 +167,20 @@ impl<E: Env> Walker<'_, E> {
         entries.iter().map(|(id, _)| *id).zip(reified).collect()
     }
 
+    /// The recorded per-pattern types, defaulted and reified. Requires
+    /// [`Self::enable_type_recording`]; call after inferring the body.
+    pub fn collect_pat_types(&mut self) -> Vec<(PatId, crate::ty::Ty)> {
+        let mut entries: Vec<(PatId, SolveTy)> =
+            self.pat_types.iter().map(|(id, ty)| (*id, ty.clone())).collect();
+        entries.sort_by_key(|(id, _)| id.index());
+        for (_, solve) in &entries {
+            self.cx.default_numerics_deep(solve);
+        }
+        let solves: Vec<SolveTy> = entries.iter().map(|(_, s)| s.clone()).collect();
+        let reified = self.cx.reify_many(&solves);
+        entries.iter().map(|(id, _)| *id).zip(reified).collect()
+    }
+
     /// Infers the type of an expression, recording it when enabled.
     pub fn infer_expr(&mut self, expr: ExprId) -> SolveTy {
         let ty = self.infer_expr_inner(expr);
@@ -183,7 +200,28 @@ impl<E: Env> Walker<'_, E> {
             ExprKind::Char(_) => SolveTy::Con(crate::ty::Con::Char),
             ExprKind::Unit => SolveTy::Unit,
             ExprKind::Var(name) => self.infer_ref(expr, *name, node.span),
-            ExprKind::Field { .. } => self.infer_field(expr, node.span),
+            ExprKind::Field { base, field } => self.infer_field(expr, *base, *field, node.span),
+            ExprKind::Record(fields) => {
+                self.check_no_duplicate_labels(fields.iter().map(|f| (f.name, f.span)), node.span);
+                let row: Vec<(Symbol, SolveTy)> =
+                    fields.iter().map(|f| (f.name, self.infer_expr(f.value))).collect();
+                SolveTy::Record(SolveRow { fields: row, tail: RowTail::Closed })
+            }
+            ExprKind::RecordUpdate { base, fields } => {
+                let base_ty = self.infer_expr(*base);
+                let updated: Vec<(Symbol, SolveTy)> =
+                    fields.iter().map(|f| (f.name, self.infer_expr(f.value))).collect();
+                let labels: Vec<Symbol> = updated.iter().map(|(l, _)| *l).collect();
+                // The base is `{ labels : old | ρ }`; the result reuses ρ with the
+                // updated field types — `{ r with x = v } : { x : typeof v | ρ }`.
+                let rho = self.cx.fresh_row(labels.clone());
+                let old: Vec<(Symbol, SolveTy)> =
+                    labels.iter().map(|&l| (l, self.cx.fresh())).collect();
+                let base_shape =
+                    SolveTy::Record(SolveRow { fields: old, tail: RowTail::Open(rho) });
+                self.unify_at(node.span, &base_ty, &base_shape, "a record update");
+                SolveTy::Record(SolveRow { fields: updated, tail: RowTail::Open(rho) })
+            }
             ExprKind::App { func, arg } => {
                 let func_ty = self.infer_expr(*func);
                 let arg_ty = self.infer_expr(*arg);
@@ -326,30 +364,59 @@ impl<E: Env> Walker<'_, E> {
         }
     }
 
-    fn infer_field(&mut self, expr: ExprId, span: fai_span::TextRange) -> SolveTy {
-        // A qualified Foo.bar resolved to a Def/Builtin in resolution; if so, use
-        // it. Otherwise it's record field access, unsupported in M2.
+    fn infer_field(
+        &mut self,
+        expr: ExprId,
+        base: ExprId,
+        field: Symbol,
+        span: fai_span::TextRange,
+    ) -> SolveTy {
+        // A qualified `Foo.bar` resolved to a Def/Ctor/Builtin in resolution.
         match self.resolved.get(expr) {
-            Some(Res::Def(def)) => self.instantiate_def(def),
-            Some(Res::Ctor(ctor)) => match self.env.ctor_scheme(ctor) {
-                Some(scheme) => self.cx.instantiate(&scheme),
-                None => SolveTy::Error,
-            },
-            Some(Res::Builtin(b)) => match self.env.builtin_scheme(b) {
-                Some(scheme) => self.cx.instantiate(&scheme),
-                None => SolveTy::Error,
-            },
-            Some(Res::Error) => SolveTy::Error,
-            _ => {
+            Some(Res::Def(def)) => return self.instantiate_def(def),
+            Some(Res::Ctor(ctor)) => {
+                return match self.env.ctor_scheme(ctor) {
+                    Some(scheme) => self.cx.instantiate(&scheme),
+                    None => SolveTy::Error,
+                };
+            }
+            Some(Res::Builtin(b)) => {
+                return match self.env.builtin_scheme(b) {
+                    Some(scheme) => self.cx.instantiate(&scheme),
+                    None => SolveTy::Error,
+                };
+            }
+            Some(Res::Error) => return SolveTy::Error,
+            // Not a qualified reference: ordinary record field access.
+            Some(Res::Local(_)) | None => {}
+        }
+        // `r.x` requires `r` to be a record with at least field `x` (open row).
+        let base_ty = self.infer_expr(base);
+        let field_ty = self.cx.fresh();
+        let shape = self.cx.fresh_open_record(vec![(field, field_ty.clone())]);
+        self.unify_at(span, &base_ty, &shape, "a record field access");
+        field_ty
+    }
+
+    /// Emits [`crate::DUPLICATE_FIELD`] for any repeated label among `fields`.
+    fn check_no_duplicate_labels(
+        &mut self,
+        fields: impl Iterator<Item = (Symbol, fai_span::TextRange)>,
+        whole: fai_span::TextRange,
+    ) {
+        let mut seen: Vec<Symbol> = Vec::new();
+        for (name, _) in fields {
+            if seen.contains(&name) {
                 emit(
                     self.db,
                     Diagnostic::error(
-                        UNSUPPORTED_FIELD_ACCESS,
-                        "record field access is not supported yet (records land in M4)",
-                        self.span(span),
+                        crate::DUPLICATE_FIELD,
+                        format!("record field `{name}` is given more than once"),
+                        self.span(whole),
                     ),
                 );
-                SolveTy::Error
+            } else {
+                seen.push(name);
             }
         }
     }
@@ -467,6 +534,9 @@ impl<E: Env> Walker<'_, E> {
     /// pattern's structure with it and binding its variables. Records the slot
     /// type of every bound variable so later uses resolve to it.
     fn check_pattern(&mut self, pat: PatId, expected: &SolveTy) {
+        if self.record_types {
+            self.pat_types.insert(pat, expected.clone());
+        }
         let span = self.module.pat(pat).span;
         match &self.module.pat(pat).kind {
             PatKind::Var(_) | PatKind::Wildcard => {
@@ -524,6 +594,26 @@ impl<E: Env> Walker<'_, E> {
                 }
             }
             PatKind::Constructor { args, .. } => self.check_ctor_pattern(pat, args, expected, span),
+            PatKind::Record { fields, open } => {
+                // Each named field's sub-pattern is checked against a fresh field
+                // type; the record is open iff the pattern is.
+                let field_tys: Vec<(Symbol, SolveTy)> =
+                    fields.iter().map(|f| (f.name, self.cx.fresh())).collect();
+                let shape = if *open {
+                    let labels = field_tys.iter().map(|(l, _)| *l).collect();
+                    let tail = self.cx.fresh_row(labels);
+                    SolveTy::Record(SolveRow {
+                        fields: field_tys.clone(),
+                        tail: RowTail::Open(tail),
+                    })
+                } else {
+                    SolveTy::Record(SolveRow { fields: field_tys.clone(), tail: RowTail::Closed })
+                };
+                self.unify_at(span, expected, &shape, "a record pattern");
+                for (field, (_, ty)) in fields.iter().zip(field_tys) {
+                    self.check_pattern(field.pat, &ty);
+                }
+            }
             PatKind::Error => {}
         }
     }
@@ -642,6 +732,11 @@ impl<E: Env> Walker<'_, E> {
                     self.collect_free_vars(e, out);
                 }
             }
+            SolveTy::Record(row) => {
+                for (_, t) in &row.fields {
+                    self.collect_free_vars(t, out);
+                }
+            }
             SolveTy::Con(_) | SolveTy::Adt(_) | SolveTy::Unit | SolveTy::Error => {}
         }
     }
@@ -697,6 +792,10 @@ fn subst(
         SolveTy::Tuple(elems) => {
             SolveTy::Tuple(elems.iter().map(|e| subst(cx, e, mapping)).collect())
         }
+        SolveTy::Record(row) => SolveTy::Record(SolveRow {
+            fields: row.fields.iter().map(|(l, t)| (*l, subst(cx, t, mapping))).collect(),
+            tail: row.tail,
+        }),
         other @ (SolveTy::Con(_) | SolveTy::Adt(_) | SolveTy::Unit | SolveTy::Error) => other,
     }
 }

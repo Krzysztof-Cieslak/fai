@@ -33,7 +33,10 @@ pub use query::{
     BodyTypes, SccTypes, body_types, check_file, constructor_scheme, def_local_types, def_type,
     infer_scc_query,
 };
-pub use ty::{Con, Scheme, Ty, TyVarId, VarNames, render, render_canonical, render_scheme};
+pub use ty::{
+    Con, RecordRow, RowEnd, RowVarId, Scheme, Ty, TyVarId, VarNames, render, render_canonical,
+    render_scheme,
+};
 
 use fai_diagnostics::{CodeInfo, DiagnosticCode, Severity};
 
@@ -56,6 +59,8 @@ pub const UNKNOWN_TYPE_CONSTRUCTOR: DiagnosticCode = DiagnosticCode::new("FAI300
 /// Record field access is used, but records are not supported yet (records land
 /// with structural records).
 pub const UNSUPPORTED_FIELD_ACCESS: DiagnosticCode = DiagnosticCode::new("FAI3009");
+/// A record literal or type repeats a field label (the lacks constraint).
+pub const DUPLICATE_FIELD: DiagnosticCode = DiagnosticCode::new("FAI3010");
 /// A constructor pattern or application has the wrong number of arguments.
 pub const CONSTRUCTOR_ARITY: DiagnosticCode = DiagnosticCode::new("FAI3011");
 /// A type constructor is applied to the wrong number of arguments (a kind error).
@@ -104,6 +109,11 @@ pub const CODES: &[CodeInfo] = &[
     CodeInfo {
         code: UNSUPPORTED_FIELD_ACCESS,
         title: "record field access not supported yet",
+        default_severity: Severity::Error,
+    },
+    CodeInfo {
+        code: DUPLICATE_FIELD,
+        title: "duplicate record field label",
         default_severity: Severity::Error,
     },
     CodeInfo {

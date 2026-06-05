@@ -24,19 +24,29 @@ mod tests;
 
 pub use fingerprint::fingerprint_def;
 pub use ir::{CExpr, CoreFn, ExprKind, FnId, Lit, LoweredDef, Prim};
-pub use lit::{decode_int, decode_string};
+pub use lit::{decode_float, decode_int, decode_string};
 pub use lower::core;
 pub use pretty::pretty_def;
 pub use wire::{Rebuilt, WireBundle, WireDef, WireDefId, from_wire};
 
 use fai_diagnostics::{CodeInfo, DiagnosticCode, Severity};
 
-/// A construct is not supported by the native backend yet (the M3 subset).
+/// A construct is not supported by the native backend yet.
 pub const UNSUPPORTED_NATIVE: DiagnosticCode = DiagnosticCode::new("FAI7001");
+/// Row-polymorphic record access is not yet compiled (offset evidence is future
+/// work); monomorphic record access uses constant offsets.
+pub const ROW_POLY_UNSUPPORTED: DiagnosticCode = DiagnosticCode::new("FAI7002");
 
 /// Diagnostic codes owned by the backend lowering layer (the `FAI7xxx` range).
-pub const CODES: &[CodeInfo] = &[CodeInfo {
-    code: UNSUPPORTED_NATIVE,
-    title: "construct not supported by the native backend yet",
-    default_severity: Severity::Error,
-}];
+pub const CODES: &[CodeInfo] = &[
+    CodeInfo {
+        code: UNSUPPORTED_NATIVE,
+        title: "construct not supported by the native backend yet",
+        default_severity: Severity::Error,
+    },
+    CodeInfo {
+        code: ROW_POLY_UNSUPPORTED,
+        title: "row-polymorphic record access not yet supported by the native backend",
+        default_severity: Severity::Error,
+    },
+];

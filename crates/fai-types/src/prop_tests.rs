@@ -41,6 +41,11 @@ fn to_solve(ty: &Ty) -> SolveTy {
         Ty::App(f, a) => SolveTy::App(Box::new(to_solve(f)), Box::new(to_solve(a))),
         Ty::Arrow(f, a) => SolveTy::arrow(to_solve(f), to_solve(a)),
         Ty::Tuple(elems) => SolveTy::Tuple(elems.iter().map(to_solve).collect()),
+        // The generator never produces records; convert structurally for totality.
+        Ty::Record(row) => SolveTy::Record(crate::infer::ctx::SolveRow {
+            fields: row.fields.iter().map(|(l, t)| (*l, to_solve(t))).collect(),
+            tail: crate::infer::ctx::RowTail::Closed,
+        }),
     }
 }
 

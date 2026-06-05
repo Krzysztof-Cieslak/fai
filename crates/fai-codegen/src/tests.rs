@@ -285,6 +285,59 @@ fn tuple_construction_and_destructuring() {
 }
 
 #[test]
+fn record_literal_and_field_access() {
+    let src = "module M\n\n\
+        public main : Runtime -> Unit\n\
+        let main r =\n  \
+          let p = { x = 1, y = 2 }\n  \
+          Console.writeLine r (intToString (p.x + p.y))\n";
+    let (code, out) = run(src);
+    assert_eq!(code, 0, "clean exit");
+    assert_eq!(out, "3\n");
+}
+
+#[test]
+fn record_update_runs() {
+    let src = "module M\n\n\
+        type P = { a : Int, b : Int }\n\n\
+        public shift : P -> P\n\
+        let shift p = { p with a = p.a + 10 }\n\n\
+        public main : Runtime -> Unit\n\
+        let main r =\n  \
+          let q = shift { a = 1, b = 2 }\n  \
+          Console.writeLine r (intToString (q.a + q.b))\n";
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "13\n");
+}
+
+#[test]
+fn record_pattern_and_punning() {
+    let src = "module M\n\n\
+        type Point = { x : Int, y : Int }\n\n\
+        public describe : Point -> Int\n\
+        let describe pt =\n  match pt with\n  | { x = 0, y } -> y\n  | { x, y } -> x + y\n\n\
+        public main : Runtime -> Unit\n\
+        let main r = Console.writeLine r (intToString (describe { x = 0, y = 5 }))\n";
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "5\n");
+}
+
+#[test]
+fn record_destructuring_let() {
+    let src = "module M\n\n\
+        public main : Runtime -> Unit\n\
+        let main r =\n  \
+          let p = { a = 40, b = 2 }\n  \
+          let { a, b } = p\n  \
+          Console.writeLine r (intToString (a + b))\n";
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "42\n");
+}
+
+#[test]
 fn nested_match_and_or_patterns() {
     let src = "module M\n\n\
         public classify : Int -> String\n\

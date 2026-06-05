@@ -5,7 +5,7 @@
 //! is monomorphic), and references *outside* go through declared/inferred
 //! schemes — never bodies. After solving, each member is generalized.
 
-mod ctx;
+pub(crate) mod ctx;
 mod walk;
 
 pub use ctx::{Constraint, InferCtx, SolveTy, UnifyResult};
@@ -27,8 +27,9 @@ use crate::ty::{Scheme, Ty};
 /// generalize is the caller's concern (it is reported as ambiguous before
 /// generalization for Numeric/Ord).
 pub fn generalize(cx: &InferCtx, ty: &SolveTy) -> Scheme {
-    let (reified, vars) = cx.reify_with_vars(ty);
-    Scheme::new(vars, reified)
+    let (reified, vars, row_vars) = cx.reify_with_vars(ty);
+    let row_names = row_vars.iter().map(|_| "_".to_owned()).collect();
+    Scheme::new(vars, reified).with_rows(row_vars, row_names)
 }
 
 /// Looks up the declared signature scheme of a definition in `file`, if it has
@@ -283,19 +284,20 @@ pub fn infer_local_types(
 /// [`infer_local_types`], it re-runs a walk over the body (independent of the
 /// SCC cache) with self-recursion bound to the def's declared-or-fresh type, and
 /// reifies the recorded solver types after defaulting.
+#[allow(clippy::type_complexity)]
 pub fn infer_body_types(
     db: &dyn Db,
     file: SourceFile,
     name: Symbol,
     def_schemes: &dyn Fn(&dyn Db, DefId) -> Option<Scheme>,
     builtins: &dyn Fn(Symbol) -> Option<Scheme>,
-) -> Vec<(fai_syntax::ast::ExprId, Ty)> {
+) -> (Vec<(fai_syntax::ast::ExprId, Ty)>, Vec<(fai_syntax::ast::PatId, Ty)>) {
     let parsed = fai_syntax::parse(db, file);
     let module = &parsed.module;
     let resolved = fai_resolve::resolve(db, file);
 
     let Some((params, body)) = binding_body(module, name) else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
     let params: Vec<fai_syntax::ast::PatId> = params.to_vec();
 
@@ -314,7 +316,9 @@ pub fn infer_body_types(
     let body_ty = walker.infer_expr(body);
     let fn_ty = SolveTy::arrows_solver(param_tys, body_ty);
     let _ = walker.cx.unify(&fn_ty, &member_ty);
-    walker.collect_expr_types()
+    let exprs = walker.collect_expr_types();
+    let pats = walker.collect_pat_types();
+    (exprs, pats)
 }
 
 /// The error scheme (monomorphic error type).

@@ -311,6 +311,13 @@ impl Resolver<'_> {
                     self.bind_pattern(a);
                 }
             }
+            PatKind::Record { fields, .. } => {
+                // Each field's sub-pattern binds (punning's is a `Var(name)`).
+                let pats: Vec<PatId> = fields.iter().map(|f| f.pat).collect();
+                for p in pats {
+                    self.bind_pattern(p);
+                }
+            }
             PatKind::Paren(inner) => self.bind_pattern(*inner),
             PatKind::Int(_)
             | PatKind::Float(_)
@@ -394,6 +401,17 @@ impl Resolver<'_> {
             ExprKind::Tuple(elems) | ExprKind::List(elems) => {
                 for &e in elems {
                     self.resolve_expr(e);
+                }
+            }
+            ExprKind::Record(fields) => {
+                for f in fields {
+                    self.resolve_expr(f.value);
+                }
+            }
+            ExprKind::RecordUpdate { base, fields } => {
+                self.resolve_expr(*base);
+                for f in fields {
+                    self.resolve_expr(f.value);
                 }
             }
             ExprKind::Int(_)

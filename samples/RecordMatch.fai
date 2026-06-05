@@ -5,6 +5,6 @@ type Vec2 = { x : Float, y : Float }
 public describe : Vec2 -> String
 let describe v =
   match v with
-  | { x = 0.0, y = 0.0 } -> "origin"      // closed: names every field
-  | { x = 0.0 | _ } -> "on the y-axis"    // open: ignore the rest explicitly
+  | { x = 0.0, y = 0.0 } -> "origin" // closed: names every field
+  | { x = 0.0 | _ } -> "on the y-axis" // open: ignore the rest explicitly
   | { x, y } -> floatToString x ++ ", " ++ floatToString y

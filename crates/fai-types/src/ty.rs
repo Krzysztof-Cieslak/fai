@@ -11,6 +11,7 @@ use std::fmt::{self, Write as _};
 use std::sync::Arc;
 
 use fai_resolve::AdtRef;
+use fai_syntax::Symbol;
 
 /// A type-variable identifier (a slot in the solver's union-find).
 ///
@@ -18,6 +19,31 @@ use fai_resolve::AdtRef;
 /// where it ranges over the scheme's quantified variables.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TyVarId(pub u32);
+
+/// A row-variable identifier (a slot in the solver's parallel row union-find).
+///
+/// Like [`TyVarId`], in a *reified* type it appears only inside a [`Scheme`],
+/// where it ranges over the scheme's quantified row variables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct RowVarId(pub u32);
+
+/// A reified record row: its fields (sorted by label text) and a tail.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RecordRow {
+    /// The present fields, sorted by label text (canonical for layout/cache).
+    pub fields: Vec<(Symbol, Ty)>,
+    /// The row's tail.
+    pub tail: RowEnd,
+}
+
+/// The tail of a reified record row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RowEnd {
+    /// Exactly the listed fields.
+    Closed,
+    /// The listed fields plus an open (quantified) tail.
+    Open(RowVarId),
+}
 
 /// A type.
 ///
@@ -38,6 +64,8 @@ pub enum Ty {
     Arrow(Arc<Ty>, Arc<Ty>),
     /// A tuple type (two or more elements).
     Tuple(Vec<Ty>),
+    /// A structural record type with a row tail.
+    Record(RecordRow),
     /// The unit type `()`.
     Unit,
     /// The error type: unifies with anything, suppresses cascades.
@@ -151,25 +179,44 @@ pub struct Scheme {
     /// letters written in a signature). Empty when the scheme is inferred, in
     /// which case rendering falls back to canonical names.
     pub names: Vec<String>,
+    /// The quantified row variables (for row-polymorphic records).
+    pub row_vars: Vec<RowVarId>,
+    /// Preferred spelling for each row variable, parallel to `row_vars` (`_` for
+    /// an anonymous open tail, `'r` for a named one).
+    pub row_names: Vec<String>,
 }
 
 impl Scheme {
     /// A monomorphic scheme over `ty`.
     #[must_use]
     pub fn mono(ty: Ty) -> Self {
-        Self { vars: Vec::new(), ty, names: Vec::new() }
+        Self {
+            vars: Vec::new(),
+            ty,
+            names: Vec::new(),
+            row_vars: Vec::new(),
+            row_names: Vec::new(),
+        }
     }
 
     /// A scheme with explicit quantified variables (canonical naming).
     #[must_use]
     pub fn new(vars: Vec<TyVarId>, ty: Ty) -> Self {
-        Self { vars, ty, names: Vec::new() }
+        Self { vars, ty, names: Vec::new(), row_vars: Vec::new(), row_names: Vec::new() }
     }
 
     /// Attaches preferred variable spellings (parallel to `vars`).
     #[must_use]
     pub fn with_names(mut self, names: Vec<String>) -> Self {
         self.names = names;
+        self
+    }
+
+    /// Attaches quantified row variables with their spellings.
+    #[must_use]
+    pub fn with_rows(mut self, row_vars: Vec<RowVarId>, row_names: Vec<String>) -> Self {
+        self.row_vars = row_vars;
+        self.row_names = row_names;
         self
     }
 }
@@ -223,14 +270,20 @@ fn collect_vars(ty: &Ty, out: &mut Vec<TyVarId>) {
                 collect_vars(e, out);
             }
         }
+        Ty::Record(row) => {
+            for (_, t) in &row.fields {
+                collect_vars(t, out);
+            }
+        }
         Ty::Con(_) | Ty::Adt(_) | Ty::Unit | Ty::Error => {}
     }
 }
 
-/// A mapping from type variables to their display spellings.
+/// A mapping from type and row variables to their display spellings.
 #[derive(Debug, Default, Clone)]
 pub struct VarNames {
     names: rustc_hash::FxHashMap<TyVarId, String>,
+    row_names: rustc_hash::FxHashMap<RowVarId, String>,
 }
 
 impl VarNames {
@@ -240,7 +293,7 @@ impl VarNames {
         Self::default()
     }
 
-    /// Assigns names to a scheme's quantified variables.
+    /// Assigns names to a scheme's quantified type and row variables.
     ///
     /// If the scheme carries preferred spellings (e.g. from a written signature),
     /// those are used; otherwise variables are named canonically (`'a`, `'b`, …)
@@ -252,14 +305,20 @@ impl VarNames {
             for (v, name) in scheme.vars.iter().zip(&scheme.names) {
                 names.insert(*v, name.clone());
             }
-            return Self { names };
+        } else {
+            let mut vars = scheme.vars.clone();
+            vars.sort();
+            for (i, v) in vars.into_iter().enumerate() {
+                names.insert(v, canonical_name(i));
+            }
         }
-        let mut vars = scheme.vars.clone();
-        vars.sort();
-        for (i, v) in vars.into_iter().enumerate() {
-            names.insert(v, canonical_name(i));
+        let mut row_names = rustc_hash::FxHashMap::default();
+        if scheme.row_names.len() == scheme.row_vars.len() {
+            for (v, name) in scheme.row_vars.iter().zip(&scheme.row_names) {
+                row_names.insert(*v, name.clone());
+            }
         }
-        Self { names }
+        Self { names, row_names }
     }
 
     /// Records a preferred spelling for a variable.
@@ -267,11 +326,21 @@ impl VarNames {
         self.names.insert(var, name);
     }
 
+    /// Records a preferred spelling for a row variable.
+    pub fn set_row(&mut self, var: RowVarId, name: String) {
+        self.row_names.insert(var, name);
+    }
+
     fn get(&self, var: TyVarId) -> String {
         self.names.get(&var).cloned().unwrap_or_else(|| {
             // Stable fallback for unnamed vars: derive from the id.
             canonical_name(var.0 as usize)
         })
+    }
+
+    /// The spelling of a row variable's open tail (`_` when anonymous).
+    fn get_row(&self, var: RowVarId) -> String {
+        self.row_names.get(&var).cloned().unwrap_or_else(|| "_".to_owned())
     }
 }
 
@@ -359,6 +428,23 @@ fn write_ty(out: &mut String, ty: &Ty, names: &VarNames, prec: Prec) {
             if parenthesize {
                 let _ = out.write_char(')');
             }
+        }
+        Ty::Record(row) => {
+            // Records are self-delimiting (`{ … }`), so they never parenthesize.
+            let _ = out.write_char('{');
+            for (i, (label, t)) in row.fields.iter().enumerate() {
+                let _ = out.write_str(if i == 0 { " " } else { ", " });
+                let _ = out.write_str(label.as_str());
+                let _ = out.write_str(" : ");
+                write_ty(out, t, names, Prec::Top);
+            }
+            match row.tail {
+                RowEnd::Closed => {}
+                RowEnd::Open(rv) => {
+                    let _ = write!(out, " | {}", names.get_row(rv));
+                }
+            }
+            let _ = out.write_str(" }");
         }
     }
 }

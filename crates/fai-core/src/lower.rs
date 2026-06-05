@@ -15,12 +15,12 @@ use fai_diagnostics::Diagnostic;
 use fai_resolve::{CtorRef, DefId, LocalId, Res, ResolvedBodies, resolve, type_decls};
 use fai_span::{Span, TextRange};
 use fai_syntax::Symbol;
-use fai_syntax::ast::{BinOp, ExprId, ExprKind, MatchArm, Module, PatId, PatKind, UnOp};
-use fai_types::{BodyTypes, Con, Ty, body_types};
+use fai_syntax::ast::{BinOp, ExprId, ExprKind, FieldInit, MatchArm, Module, PatId, PatKind, UnOp};
+use fai_types::{BodyTypes, Con, RowEnd, Ty, body_types};
 use rustc_hash::FxHashSet;
 
-use crate::UNSUPPORTED_NATIVE;
 use crate::ir::{CExpr, CoreFn, ExprKind as K, FnId, Lit, LoweredDef, Prim};
+use crate::{ROW_POLY_UNSUPPORTED, UNSUPPORTED_NATIVE};
 
 /// The built-in `List` constructor tags: `[]` is `Nil`, `x :: xs` is `Cons`.
 const NIL_TAG: u32 = 0;
@@ -163,7 +163,18 @@ impl Lowerer<'_> {
             ExprKind::Float(raw) => K::Lit(Lit::Float(crate::lit::decode_float(raw.as_str()))),
             ExprKind::Char(_) => return self.unsupported(node.span, "the Char type"),
             ExprKind::Var(_) => return self.lower_ref(expr),
-            ExprKind::Field { .. } => return self.lower_ref(expr),
+            ExprKind::Field { base, field } => {
+                // A qualified `Module.x` is recorded in resolution; otherwise it
+                // is ordinary record field access.
+                if self.resolved.get(expr).is_some() {
+                    return self.lower_ref(expr);
+                }
+                return self.lower_field_access(*base, *field, node.span, ty);
+            }
+            ExprKind::Record(fields) => return self.lower_record(fields, &ty, node.span),
+            ExprKind::RecordUpdate { base, fields } => {
+                return self.lower_record_update(*base, fields, &ty, node.span);
+            }
             ExprKind::App { .. } => {
                 let (head, args) = self.app_spine(expr);
                 return self.lower_application(head, &args, ty);
@@ -236,6 +247,80 @@ impl Lowerer<'_> {
         let body = CExpr::new(K::MakeData { tag, args }, Ty::Error);
         let fn_id = self.push_fn(CoreFn { params, captures: Vec::new(), body });
         CExpr::new(K::MakeClosure { func: fn_id, captures: Vec::new() }, ty)
+    }
+
+    /// Reports a row-polymorphic record operation (deferred to a later milestone)
+    /// and yields an error placeholder.
+    fn unsupported_row_poly(&self, range: TextRange, feature: &str) -> CExpr {
+        emit(
+            self.db,
+            Diagnostic::error(
+                ROW_POLY_UNSUPPORTED,
+                format!("{feature} is not supported by the native backend yet"),
+                self.span(range),
+            )
+            .with_help("give the value a closed record type so the field offsets are known"),
+        );
+        error_expr()
+    }
+
+    /// Lowers `r.x` to a constant-offset projection for a monomorphic record.
+    fn lower_field_access(
+        &mut self,
+        base: ExprId,
+        field: Symbol,
+        span: TextRange,
+        ty: Ty,
+    ) -> CExpr {
+        let base_ty = self.ty_of(base);
+        match record_field_index(&base_ty, field) {
+            Some(index) => {
+                let b = self.lower_expr(base);
+                CExpr::new(K::DataField { base: Box::new(b), index }, ty)
+            }
+            None => self.unsupported_row_poly(span, "row-polymorphic record field access"),
+        }
+    }
+
+    /// Lowers a record literal to a tagless composite, fields in canonical
+    /// (sorted-label) order so projections line up.
+    fn lower_record(&mut self, fields: &[FieldInit], ty: &Ty, _span: TextRange) -> CExpr {
+        let mut sorted: Vec<&FieldInit> = fields.iter().collect();
+        sorted.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+        let args = sorted.iter().map(|f| self.lower_expr(f.value)).collect();
+        CExpr::new(K::MakeData { tag: 0, args }, ty.clone())
+    }
+
+    /// Lowers `{ base with x = v, … }` to a fresh record copying the unchanged
+    /// fields (monomorphic only; a row-polymorphic update is deferred).
+    fn lower_record_update(
+        &mut self,
+        base: ExprId,
+        fields: &[FieldInit],
+        ty: &Ty,
+        span: TextRange,
+    ) -> CExpr {
+        let Ty::Record(row) = ty else {
+            return self.unsupported_row_poly(span, "record update");
+        };
+        if row.tail != RowEnd::Closed {
+            return self.unsupported_row_poly(span, "row-polymorphic record update");
+        }
+        let s = self.fresh_local();
+        let base_c = self.lower_expr(base);
+        let row_fields = row.fields.clone();
+        let mut args = Vec::with_capacity(row_fields.len());
+        for (index, (label, _)) in row_fields.iter().enumerate() {
+            if let Some(f) = fields.iter().find(|f| f.name == *label) {
+                args.push(self.lower_expr(f.value));
+            } else {
+                let i = u32::try_from(index).unwrap_or(0);
+                let base = Box::new(CExpr::new(K::Local(s), Ty::Error));
+                args.push(CExpr::new(K::DataField { base, index: i }, Ty::Error));
+            }
+        }
+        let make = CExpr::new(K::MakeData { tag: 0, args }, ty.clone());
+        CExpr::new(K::Let { local: s, value: Box::new(base_c), body: Box::new(make) }, ty.clone())
     }
 
     /// Lowers a list literal `[a, b, …]` to nested `Cons`/`Nil` data.
@@ -532,7 +617,66 @@ impl Lowerer<'_> {
                 }
                 chain
             }
+            PatKind::Record { fields, .. } => {
+                let fields: Vec<(Symbol, PatId)> = fields.iter().map(|f| (f.name, f.pat)).collect();
+                self.compile_record_pattern(value_local, pat, &fields, success, fail)
+            }
         }
+    }
+
+    /// Compiles a record pattern: project each named field at its constant offset
+    /// (its index in the record type's sorted fields) and match the sub-pattern.
+    /// Records are single-shape, so there is no tag test.
+    fn compile_record_pattern(
+        &mut self,
+        value_local: LocalId,
+        pat: PatId,
+        fields: &[(Symbol, PatId)],
+        success: CExpr,
+        fail: CExpr,
+    ) -> CExpr {
+        let Some(Ty::Record(row)) = self.types.pat_type(pat).cloned() else {
+            return self.unsupported_row_poly(self.module.pat(pat).span, "record pattern");
+        };
+        if row.tail != RowEnd::Closed {
+            return self
+                .unsupported_row_poly(self.module.pat(pat).span, "row-polymorphic record pattern");
+        }
+        let mut inner = success;
+        for &(name, fpat) in fields.iter().rev() {
+            let Some(index) = row.fields.iter().position(|(l, _)| *l == name) else {
+                continue;
+            };
+            let index = u32::try_from(index).unwrap_or(0);
+            let projection = || {
+                CExpr::new(
+                    K::DataField {
+                        base: Box::new(CExpr::new(K::Local(value_local), Ty::Error)),
+                        index,
+                    },
+                    Ty::Error,
+                )
+            };
+            match &self.module.pat(fpat).kind {
+                PatKind::Wildcard => {}
+                PatKind::Var(_) => {
+                    let local = self.resolved.local_of(fpat).unwrap_or_else(|| self.fresh_local());
+                    inner = CExpr::new(
+                        K::Let { local, value: Box::new(projection()), body: Box::new(inner) },
+                        Ty::Error,
+                    );
+                }
+                _ => {
+                    let f = self.fresh_local();
+                    let matched = self.compile_pattern(f, fpat, inner, fail.clone());
+                    inner = CExpr::new(
+                        K::Let { local: f, value: Box::new(projection()), body: Box::new(matched) },
+                        Ty::Error,
+                    );
+                }
+            }
+        }
+        inner
     }
 
     /// `if <value> = <lit> then success else fail`.
@@ -679,6 +823,21 @@ fn is_simple_binder(module: &Module, pat: PatId) -> bool {
         PatKind::Paren(inner) => is_simple_binder(module, *inner),
         _ => false,
     }
+}
+
+/// The constant field offset (index) of `field` in a *monomorphic* (closed)
+/// record type, or `None` for a row-polymorphic record (offset unknown).
+fn record_field_index(ty: &Ty, field: Symbol) -> Option<u32> {
+    if let Ty::Record(row) = ty
+        && row.tail == RowEnd::Closed
+    {
+        return row
+            .fields
+            .iter()
+            .position(|(l, _)| *l == field)
+            .map(|i| u32::try_from(i).unwrap_or(0));
+    }
+    None
 }
 
 /// The captured variables of a lifted function: the free locals of its body that

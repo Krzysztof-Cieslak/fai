@@ -11,8 +11,9 @@ use fai_diagnostics::{Diagnostic, DiagnosticCode};
 use fai_span::{ByteOffset, SourceId, Span, TextRange};
 
 use crate::ast::{
-    BinOp, Expr, ExprId, ExprKind, Item, ItemKind, LetStmt, MatchArm, Module, Pat, PatId, PatKind,
-    Type, TypeDef, TypeId, TypeKind, UnOp, Variant, Visibility,
+    BinOp, Expr, ExprId, ExprKind, FieldInit, FieldPat, FieldType, Item, ItemKind, LetStmt,
+    MatchArm, Module, Pat, PatId, PatKind, RowTail, Type, TypeDef, TypeId, TypeKind, UnOp, Variant,
+    Visibility,
 };
 use crate::token::{Token, TokenKind};
 use crate::{Comment, MODULE_HEADER, SYNTAX_ERROR, Symbol, UNSUPPORTED, layout, lex};
@@ -64,6 +65,11 @@ impl Parser<'_> {
 
     fn peek(&self) -> TokenKind {
         self.tokens[self.pos].kind
+    }
+
+    /// The kind of the token `n` positions ahead (clamped to `Eof`).
+    fn peek_at(&self, n: usize) -> TokenKind {
+        self.tokens.get(self.pos + n).map_or(TokenKind::Eof, |t| t.kind)
     }
 
     fn cur(&self) -> Token {
@@ -449,12 +455,7 @@ impl Parser<'_> {
             TokenKind::If => return self.parse_if(start),
             TokenKind::LayoutOpen => return self.parse_block(start),
             TokenKind::Match => return self.parse_match(start),
-            TokenKind::LBrace => {
-                let span = self.cur().range;
-                self.error(UNSUPPORTED, span, "records are not supported yet");
-                self.resync_brace();
-                ExprKind::Error
-            }
+            TokenKind::LBrace => return self.parse_record_expr(start),
             _ => {
                 let span = self.cur().range;
                 self.error(SYNTAX_ERROR, span, "expected an expression");
@@ -497,6 +498,50 @@ impl Parser<'_> {
         }
         self.expect(TokenKind::RBracket, "`]` to close the list");
         self.alloc_expr(ExprKind::List(elems), self.span_from(start))
+    }
+
+    /// Parses a record literal `{ x = a, … }` or update `{ base with x = a, … }`.
+    fn parse_record_expr(&mut self, start: ByteOffset) -> ExprId {
+        self.bump(); // `{`
+        if self.eat(TokenKind::RBrace) {
+            return self.alloc_expr(ExprKind::Record(Vec::new()), self.span_from(start));
+        }
+        // `{ ident = … }` is a literal; anything else is `{ expr with … }`.
+        if self.at(TokenKind::LowerIdent) && self.peek_at(1) == TokenKind::Equals {
+            let fields = self.parse_field_inits();
+            self.expect(TokenKind::RBrace, "`}` to close the record");
+            self.alloc_expr(ExprKind::Record(fields), self.span_from(start))
+        } else {
+            let base = self.parse_expr();
+            self.expect(TokenKind::With, "`with` in the record update");
+            let fields = self.parse_field_inits();
+            self.expect(TokenKind::RBrace, "`}` to close the record update");
+            self.alloc_expr(ExprKind::RecordUpdate { base, fields }, self.span_from(start))
+        }
+    }
+
+    fn parse_field_inits(&mut self) -> Vec<FieldInit> {
+        let mut fields = Vec::new();
+        loop {
+            if self.at(TokenKind::RBrace) || self.at_eof() {
+                break;
+            }
+            let start = self.start();
+            let name = if self.at(TokenKind::LowerIdent) {
+                self.bump_symbol()
+            } else {
+                let span = self.cur().range;
+                self.error(SYNTAX_ERROR, span, "expected a field name");
+                Symbol::intern("")
+            };
+            self.expect(TokenKind::Equals, "`=` after the field name");
+            let value = self.parse_expr();
+            fields.push(FieldInit { name, value, span: self.span_from(start) });
+            if !self.eat(TokenKind::Comma) {
+                break;
+            }
+        }
+        fields
     }
 
     fn parse_lambda(&mut self, start: ByteOffset) -> ExprId {
@@ -602,31 +647,6 @@ impl Parser<'_> {
         LetStmt { pat, params, value, span: self.span_from(start) }
     }
 
-    /// Skips a balanced `{ … }` (used to recover from record syntax).
-    fn resync_brace(&mut self) {
-        let mut depth = 0i32;
-        loop {
-            match self.peek() {
-                TokenKind::Eof => break,
-                TokenKind::LBrace => {
-                    depth += 1;
-                    self.bump();
-                }
-                TokenKind::RBrace => {
-                    depth -= 1;
-                    self.bump();
-                    if depth <= 0 {
-                        break;
-                    }
-                }
-                TokenKind::LayoutClose if depth == 0 => break,
-                _ => {
-                    self.bump();
-                }
-            }
-        }
-    }
-
     // --- patterns ---------------------------------------------------------
 
     fn parse_pattern(&mut self) -> PatId {
@@ -721,12 +741,7 @@ impl Parser<'_> {
             }
             TokenKind::LParen => return self.parse_pattern_paren(start),
             TokenKind::LBracket => return self.parse_pattern_list(start),
-            TokenKind::LBrace => {
-                let span = self.cur().range;
-                self.error(UNSUPPORTED, span, "record patterns are not supported yet");
-                self.resync_brace();
-                PatKind::Error
-            }
+            TokenKind::LBrace => return self.parse_record_pattern(start),
             _ => {
                 let span = self.cur().range;
                 self.error(SYNTAX_ERROR, span, "expected a pattern");
@@ -740,6 +755,44 @@ impl Parser<'_> {
             }
         };
         self.alloc_pat(kind, self.span_from(start))
+    }
+
+    /// Parses a record pattern `{ x = p, y }` (closed) or `{ x = p | _ }` (open).
+    /// Field values bind below the or-level, so a top-level `|` is the open tail.
+    fn parse_record_pattern(&mut self, start: ByteOffset) -> PatId {
+        self.bump(); // `{`
+        let mut fields = Vec::new();
+        while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Pipe) && !self.at_eof() {
+            let fstart = self.start();
+            let name = if self.at(TokenKind::LowerIdent) {
+                self.bump_symbol()
+            } else {
+                let span = self.cur().range;
+                self.error(SYNTAX_ERROR, span, "expected a field name in the record pattern");
+                Symbol::intern("")
+            };
+            let (pat, punned) = if self.eat(TokenKind::Equals) {
+                (self.parse_pattern_cons(), false)
+            } else {
+                // Field punning: `{ x }` binds a variable `x`.
+                (self.alloc_pat(PatKind::Var(name), self.span_from(fstart)), true)
+            };
+            fields.push(FieldPat { name, pat, punned, span: self.span_from(fstart) });
+            if !self.eat(TokenKind::Comma) {
+                break;
+            }
+        }
+        let mut open = false;
+        if self.eat(TokenKind::Pipe) {
+            if self.eat(TokenKind::Underscore) {
+                open = true;
+            } else {
+                let span = self.cur().range;
+                self.error(SYNTAX_ERROR, span, "expected `_` after `|` in the record pattern");
+            }
+        }
+        self.expect(TokenKind::RBrace, "`}` to close the record pattern");
+        self.alloc_pat(PatKind::Record { fields, open }, self.span_from(start))
     }
 
     fn parse_pattern_list(&mut self, start: ByteOffset) -> PatId {
@@ -815,6 +868,43 @@ impl Parser<'_> {
         func
     }
 
+    /// Parses a record type `{ x : T, … }` with a closed, `| _`, or `| 'r` tail.
+    fn parse_record_type(&mut self, start: ByteOffset) -> TypeId {
+        self.bump(); // `{`
+        let mut fields = Vec::new();
+        while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Pipe) && !self.at_eof() {
+            let fstart = self.start();
+            let name = if self.at(TokenKind::LowerIdent) {
+                self.bump_symbol()
+            } else {
+                let span = self.cur().range;
+                self.error(SYNTAX_ERROR, span, "expected a field name in the record type");
+                Symbol::intern("")
+            };
+            self.expect(TokenKind::Colon, "`:` after the field name");
+            let ty = self.parse_type();
+            fields.push(FieldType { name, ty, span: self.span_from(fstart) });
+            if !self.eat(TokenKind::Comma) {
+                break;
+            }
+        }
+        let tail = if self.eat(TokenKind::Pipe) {
+            if self.eat(TokenKind::Underscore) {
+                RowTail::Open
+            } else if self.at(TokenKind::TypeVar) {
+                RowTail::Named(self.bump_symbol())
+            } else {
+                let span = self.cur().range;
+                self.error(SYNTAX_ERROR, span, "expected `_` or a row variable after `|`");
+                RowTail::Closed
+            }
+        } else {
+            RowTail::Closed
+        };
+        self.expect(TokenKind::RBrace, "`}` to close the record type");
+        self.alloc_ty(TypeKind::Record { fields, tail }, self.span_from(start))
+    }
+
     fn parse_type_atom(&mut self) -> TypeId {
         let start = self.start();
         let kind = match self.peek() {
@@ -830,12 +920,7 @@ impl Parser<'_> {
                     TypeKind::Paren(inner)
                 }
             }
-            TokenKind::LBrace => {
-                let span = self.cur().range;
-                self.error(UNSUPPORTED, span, "record types are not supported yet");
-                self.resync_brace();
-                TypeKind::Error
-            }
+            TokenKind::LBrace => return self.parse_record_type(start),
             _ => {
                 let span = self.cur().range;
                 self.error(SYNTAX_ERROR, span, "expected a type");
@@ -905,6 +990,7 @@ fn can_start_arg(kind: TokenKind) -> bool {
             | TokenKind::UpperIdent
             | TokenKind::LParen
             | TokenKind::LBracket
+            | TokenKind::LBrace
     )
 }
 
@@ -921,6 +1007,7 @@ fn can_start_pattern_atom(kind: TokenKind) -> bool {
             | TokenKind::Char
             | TokenKind::LParen
             | TokenKind::LBracket
+            | TokenKind::LBrace
     )
 }
 
@@ -981,6 +1068,22 @@ mod tests {
             ExprKind::Field { base, field } => {
                 format!("(field {} {})", dump_expr(m, *base), field.as_str())
             }
+            ExprKind::Record(fields) => {
+                let fs = fields
+                    .iter()
+                    .map(|f| format!("{} = {}", f.name.as_str(), dump_expr(m, f.value)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("(record [{fs}])")
+            }
+            ExprKind::RecordUpdate { base, fields } => {
+                let fs = fields
+                    .iter()
+                    .map(|f| format!("{} = {}", f.name.as_str(), dump_expr(m, f.value)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("(update {} [{fs}])", dump_expr(m, *base))
+            }
             ExprKind::Paren(inner) => format!("(paren {})", dump_expr(m, *inner)),
             ExprKind::Tuple(xs) => format!("(tuple {})", dump_exprs(m, xs)),
             ExprKind::List(xs) => format!("(list {})", dump_exprs(m, xs)),
@@ -1026,6 +1129,20 @@ mod tests {
                 format!("(pcons {} {})", dump_pat(m, *head), dump_pat(m, *tail))
             }
             PatKind::Or(alts) => format!("(por {})", dump_pats(m, alts)),
+            PatKind::Record { fields, open } => {
+                let fs = fields
+                    .iter()
+                    .map(|f| {
+                        if f.punned {
+                            f.name.as_str().to_owned()
+                        } else {
+                            format!("{} = {}", f.name.as_str(), dump_pat(m, f.pat))
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("(precord [{fs}] open={open})")
+            }
             PatKind::Error => "(pat-error)".to_owned(),
         }
     }
@@ -1048,6 +1165,19 @@ mod tests {
                 "(ttuple {})",
                 xs.iter().map(|t| dump_type(m, *t)).collect::<Vec<_>>().join(" ")
             ),
+            TypeKind::Record { fields, tail } => {
+                let fs = fields
+                    .iter()
+                    .map(|f| format!("{} : {}", f.name.as_str(), dump_type(m, f.ty)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let t = match tail {
+                    crate::ast::RowTail::Closed => String::new(),
+                    crate::ast::RowTail::Open => " | _".to_owned(),
+                    crate::ast::RowTail::Named(r) => format!(" | {}", r.as_str()),
+                };
+                format!("(trecord [{fs}]{t})")
+            }
             TypeKind::Unit => "(tunit)".to_owned(),
             TypeKind::Paren(inner) => format!("(tparen {})", dump_type(m, *inner)),
             TypeKind::Error => "(type-error)".to_owned(),
@@ -1264,17 +1394,33 @@ mod tests {
 
     #[test]
     fn unsupported_constructs_report_fai1030_and_recover() {
-        // `interface` and records remain unimplemented; `type`/`match` no longer do.
-        for src in [
-            "module M\ninterface I =\n  m : Int",
-            "module M\nmodule Inner =\n  let x = 1",
-            "module M\nlet r = { x = 1 }",
-            "module M\npublic f : { x : Int }",
-        ] {
+        // `interface` and nested modules remain unimplemented; `type`/`match`/
+        // records no longer do.
+        for src in ["module M\ninterface I =\n  m : Int", "module M\nmodule Inner =\n  let x = 1"] {
             let parsed = parse(src);
             assert!(
                 parsed.diagnostics.iter().any(|d| d.code == crate::UNSUPPORTED),
                 "expected FAI1030 for: {src}",
+            );
+        }
+    }
+
+    #[test]
+    fn type_match_and_records_now_parse_cleanly() {
+        for src in [
+            "module M\n\ntype T =\n  | A\n  | B Int\n",
+            "module M\n\nlet f x =\n  match x with\n  | A -> 1\n  | _ -> 2\n",
+            "module M\n\ntype Celsius = Float\n",
+            "module M\n\ntype Vec2 = { x : Float, y : Float }\n",
+            "module M\n\nlet origin = { x = 0, y = 0 }\n",
+            "module M\n\nlet f r = { r with x = 1 }\n",
+            "module M\n\nlet f v =\n  match v with\n  | { x = 0 | _ } -> 1\n  | { x, y } -> x\n",
+        ] {
+            let parsed = parse(src);
+            assert!(
+                parsed.diagnostics.is_empty(),
+                "expected clean parse for {src}: {:?}",
+                parsed.diagnostics
             );
         }
     }
