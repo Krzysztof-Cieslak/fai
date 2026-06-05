@@ -55,10 +55,12 @@ pub struct ItemTree {
 pub struct ItemSummary {
     /// What the item is.
     pub kind: ItemTreeKind,
-    /// The item's name (signatures and bindings only).
+    /// The item's name (signatures, bindings, and types).
     pub name: Option<crate::Symbol>,
     /// The item's visibility.
     pub visibility: Visibility,
+    /// Constructor names declared by a `type` union (empty otherwise), in order.
+    pub ctors: Vec<crate::Symbol>,
 }
 
 /// The kind of an [`ItemSummary`].
@@ -68,6 +70,8 @@ pub enum ItemTreeKind {
     Signature,
     /// A value binding.
     Binding,
+    /// A `type` declaration.
+    Type,
     /// An `example` contract.
     Example,
     /// A `forall` contract.
@@ -83,6 +87,7 @@ pub fn build_item_tree(module: &Module) -> ItemTree {
         .items
         .iter()
         .map(|item| {
+            let mut ctors = Vec::new();
             let (kind, name, visibility) = match &item.kind {
                 ItemKind::Signature { visibility, name, .. } => {
                     (ItemTreeKind::Signature, Some(*name), *visibility)
@@ -90,11 +95,17 @@ pub fn build_item_tree(module: &Module) -> ItemTree {
                 ItemKind::Binding { visibility, name, .. } => {
                     (ItemTreeKind::Binding, Some(*name), *visibility)
                 }
+                ItemKind::Type { visibility, name, def, .. } => {
+                    if let crate::ast::TypeDef::Union(variants) = def {
+                        ctors = variants.iter().map(|v| v.name).collect();
+                    }
+                    (ItemTreeKind::Type, Some(*name), *visibility)
+                }
                 ItemKind::Example { .. } => (ItemTreeKind::Example, None, Visibility::Private),
                 ItemKind::Forall { .. } => (ItemTreeKind::Forall, None, Visibility::Private),
                 ItemKind::Error => (ItemTreeKind::Error, None, Visibility::Private),
             };
-            ItemSummary { kind, name, visibility }
+            ItemSummary { kind, name, visibility, ctors }
         })
         .collect();
     ItemTree { module_name: module.name, items }

@@ -71,18 +71,35 @@ pub struct Export {
 
 /// A module's public interface — the cross-module firewall value.
 ///
-/// Derived from declared signatures only, sorted by name, span-free and `Eq`.
+/// Derived from declared signatures and public `type` declarations only, sorted
+/// by name, span-free and `Eq`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ModuleInterface {
-    /// Public exports, sorted by name text.
+    /// Public value exports, sorted by name text.
     pub exports: Vec<Export>,
+    /// Public type names, sorted by name text.
+    pub types: Vec<Symbol>,
+    /// Public data-constructor names, sorted by name text.
+    pub ctors: Vec<Symbol>,
 }
 
 impl ModuleInterface {
-    /// Looks up a public export by name.
+    /// Looks up a public value export by name.
     #[must_use]
     pub fn get(&self, name: Symbol) -> Option<&Export> {
         self.exports.iter().find(|e| e.name == name)
+    }
+
+    /// Whether `name` is a public type of this module.
+    #[must_use]
+    pub fn has_type(&self, name: Symbol) -> bool {
+        self.types.binary_search_by(|t| t.as_str().cmp(name.as_str())).is_ok()
+    }
+
+    /// Whether `name` is a public constructor of this module.
+    #[must_use]
+    pub fn has_ctor(&self, name: Symbol) -> bool {
+        self.ctors.binary_search_by(|c| c.as_str().cmp(name.as_str())).is_ok()
     }
 }
 
@@ -147,7 +164,10 @@ pub fn module_defs(db: &dyn Db, file: SourceFile) -> ModuleDefs {
                     }
                 }
             }
-            ItemKind::Example { .. } | ItemKind::Forall { .. } | ItemKind::Error => {}
+            ItemKind::Type { .. }
+            | ItemKind::Example { .. }
+            | ItemKind::Forall { .. }
+            | ItemKind::Error => {}
         }
     }
 
@@ -209,7 +229,23 @@ pub fn module_interface(db: &dyn Db, file: SourceFile) -> ModuleInterface {
         .map(|d| Export { name: d.name, signature: d.signature })
         .collect();
     exports.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
-    ModuleInterface { exports }
+
+    // Public `type` declarations export their type name and (for unions) every
+    // constructor. Derived from `type_decls` filtered to public declarations, so
+    // a private type's edits never change this firewall value.
+    let decls = crate::decls::type_decls(db, file);
+    let mut types: Vec<Symbol> = Vec::new();
+    let mut ctors: Vec<Symbol> = Vec::new();
+    for info in decls.types.values() {
+        if info.visibility == Visibility::Public {
+            types.push(info.name);
+            ctors.extend(info.ctors.iter().copied());
+        }
+    }
+    types.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    ctors.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+
+    ModuleInterface { exports, types, ctors }
 }
 
 /// The module's declared header name, if it has one.
@@ -257,6 +293,16 @@ pub fn module_file(db: &dyn Db, name: ModuleName) -> Option<SourceFile> {
         }
     }
     found
+}
+
+/// The embedded prelude file, if it has been loaded into the workspace.
+///
+/// The prelude is the module named `Prelude`; its public values, types, and
+/// constructors are visible unqualified everywhere (the one exception to the
+/// qualified-only cross-module rule).
+#[must_use]
+pub fn prelude_file(db: &dyn Db) -> Option<SourceFile> {
+    module_file(db, ModuleName(Symbol::intern(crate::prelude::PRELUDE_MODULE)))
 }
 
 /// Emits a duplicate-module error for `file` if its header name collides.

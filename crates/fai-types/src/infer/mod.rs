@@ -92,6 +92,11 @@ impl Env for SccEnv<'_> {
     fn builtin_scheme(&mut self, name: Symbol) -> Option<Scheme> {
         (self.builtins)(name)
     }
+
+    fn ctor_scheme(&mut self, ctor: fai_resolve::CtorRef) -> Option<Scheme> {
+        let file = self.db.source_file(ctor.file)?;
+        crate::query::constructor_scheme(self.db, file, ctor.name)
+    }
 }
 
 /// The body item (params + body expr) of a definition, located in `module`.

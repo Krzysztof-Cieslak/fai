@@ -107,6 +107,22 @@ pub enum WireExpr {
         /// The captured slots.
         captures: Vec<u32>,
     },
+    /// A data construction (constructor/record/tuple).
+    MakeData {
+        /// The constructor tag.
+        tag: u32,
+        /// The field values.
+        args: Vec<WireExpr>,
+    },
+    /// Read a data value's tag.
+    DataTag(Box<WireExpr>),
+    /// Project a data value's field.
+    DataField {
+        /// The data value.
+        base: Box<WireExpr>,
+        /// The field index.
+        index: u32,
+    },
     /// Increment a slot's refcount.
     Dup {
         /// The slot.
@@ -184,6 +200,14 @@ fn expr_to_wire(e: &CExpr, module_of: &dyn Fn(DefId) -> String) -> WireExpr {
             func: func.0,
             captures: captures.iter().map(|c| slot(*c)).collect(),
         },
+        ExprKind::MakeData { tag, args } => WireExpr::MakeData {
+            tag: *tag,
+            args: args.iter().map(|a| expr_to_wire(a, module_of)).collect(),
+        },
+        ExprKind::DataTag(base) => WireExpr::DataTag(Box::new(expr_to_wire(base, module_of))),
+        ExprKind::DataField { base, index } => {
+            WireExpr::DataField { base: Box::new(expr_to_wire(base, module_of)), index: *index }
+        }
         ExprKind::Dup { local, body } => {
             WireExpr::Dup { local: slot(*local), body: Box::new(expr_to_wire(body, module_of)) }
         }
@@ -288,6 +312,14 @@ fn expr_from_wire(e: &WireExpr, sources: &mut SourceAssigner) -> CExpr {
             func: FnId(*func),
             captures: captures.iter().map(|&i| LocalId::from_index(i as usize)).collect(),
         },
+        WireExpr::MakeData { tag, args } => ExprKind::MakeData {
+            tag: *tag,
+            args: args.iter().map(|a| expr_from_wire(a, sources)).collect(),
+        },
+        WireExpr::DataTag(base) => ExprKind::DataTag(Box::new(expr_from_wire(base, sources))),
+        WireExpr::DataField { base, index } => {
+            ExprKind::DataField { base: Box::new(expr_from_wire(base, sources)), index: *index }
+        }
         WireExpr::Dup { local, body } => ExprKind::Dup {
             local: LocalId::from_index(*local as usize),
             body: Box::new(expr_from_wire(body, sources)),

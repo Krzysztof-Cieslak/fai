@@ -35,6 +35,7 @@ fn to_solve(ty: &Ty) -> SolveTy {
     match ty {
         Ty::Var(v) => SolveTy::Var(*v),
         Ty::Con(c) => SolveTy::Con(*c),
+        Ty::Adt(adt) => SolveTy::Adt(*adt),
         Ty::Unit => SolveTy::Unit,
         Ty::Error => SolveTy::Error,
         Ty::App(f, a) => SolveTy::App(Box::new(to_solve(f)), Box::new(to_solve(a))),

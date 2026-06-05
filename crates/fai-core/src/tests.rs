@@ -107,16 +107,17 @@ fn references_prelude_helper_as_global() {
 }
 
 #[test]
-fn float_is_unsupported() {
+fn float_lowers_to_a_boxed_literal() {
     let src = "module M\n\nlet x = 3.0\n";
-    assert_eq!(lower(src, "x"), "fn0() = <error>\n");
-    assert!(codes(src, "x").contains(&"FAI7001".to_owned()));
+    assert_eq!(lower(src, "x"), "fn0() = 3\n");
+    assert!(codes(src, "x").is_empty());
 }
 
 #[test]
-fn tuples_are_unsupported() {
+fn tuples_lower_to_data() {
     let src = "module M\n\nlet pair a b = (a, b)\n";
-    assert!(codes(src, "pair").contains(&"FAI7001".to_owned()));
+    assert_eq!(lower(src, "pair"), "fn0(%0, %1) = (data 0 %0 %1)\n");
+    assert!(codes(src, "pair").is_empty());
 }
 
 #[test]
@@ -132,34 +133,36 @@ fn char_literal_is_unsupported() {
 }
 
 #[test]
-fn list_literal_is_unsupported() {
+fn list_literal_lowers_to_cons_and_nil() {
     let src = "module M\n\nlet xs = [1, 2, 3]\n";
-    assert!(codes(src, "xs").contains(&"FAI7001".to_owned()));
+    assert_eq!(lower(src, "xs"), "fn0() = (data 1 1 (data 1 2 (data 1 3 (data 0))))\n");
+    assert!(codes(src, "xs").is_empty());
 }
 
 #[test]
-fn cons_is_unsupported() {
+fn cons_lowers_to_data() {
     let src = "module M\n\nlet f x = x :: []\n";
-    assert!(codes(src, "f").contains(&"FAI7001".to_owned()));
+    assert_eq!(lower(src, "f"), "fn0(%0) = (data 1 %0 (data 0))\n");
+    assert!(codes(src, "f").is_empty());
 }
 
 #[test]
-fn float_in_argument_position_is_unsupported() {
-    let src = "module M\n\nlet f = intToString 3.0\n";
-    assert!(codes(src, "f").contains(&"FAI7001".to_owned()));
+fn float_in_argument_position_lowers() {
+    let src = "module M\n\nlet f = floatToString 3.0\n";
+    assert!(codes(src, "f").is_empty());
 }
 
 #[test]
-fn list_prelude_helpers_are_unsupported() {
-    // `length` is a list primitive with no native lowering.
+fn list_prelude_helper_lowers_to_a_global() {
+    // `length` is now an ordinary prelude definition, reached as a global.
     let src = "module M\n\nlet n = length [1]\n";
-    assert!(codes(src, "n").contains(&"FAI7001".to_owned()));
+    assert!(codes(src, "n").is_empty());
 }
 
 #[test]
-fn tuple_let_binding_is_unsupported() {
+fn tuple_let_binding_destructures() {
     let src = "module M\n\nlet f p =\n  let (x, y) = p\n  x\n";
-    assert!(codes(src, "f").contains(&"FAI7001".to_owned()));
+    assert!(codes(src, "f").is_empty());
 }
 
 #[test]

@@ -15,6 +15,8 @@ mod ids;
 #[allow(unsafe_code)]
 mod bodies;
 #[allow(unsafe_code)]
+mod decls;
+#[allow(unsafe_code)]
 mod module;
 pub mod prelude;
 #[allow(unsafe_code)]
@@ -23,10 +25,12 @@ mod scc;
 mod tests;
 
 pub use bodies::{ResolvedBodies, resolve};
-pub use ids::{DefId, LocalId, Res, is_upper};
+pub use decls::{CtorInfo, TypeDeclInfo, TypeDecls, type_decls};
+pub use ids::{AdtRef, CtorRef, DefId, LocalId, Res, is_upper};
 pub use module::{
     DefInfo, Export, ModuleDefs, ModuleInterface, ModuleName, duplicate_module_files,
     emit_duplicate_module_errors, module_defs, module_file, module_interface, module_name,
+    prelude_file,
 };
 pub use scc::{ModuleSccs, Scc, def_deps, module_sccs};
 
@@ -54,6 +58,8 @@ pub const BINDING_VISIBILITY_MARKER: DiagnosticCode = DiagnosticCode::new("FAI20
 pub const SHADOWS_PRELUDE: DiagnosticCode = DiagnosticCode::new("FAI2010");
 /// A `forall` repeats a binder name.
 pub const DUPLICATE_BINDER: DiagnosticCode = DiagnosticCode::new("FAI2011");
+/// An upper-case name is not a known data constructor.
+pub const UNBOUND_CONSTRUCTOR: DiagnosticCode = DiagnosticCode::new("FAI2012");
 
 /// Diagnostic codes owned by name resolution/visibility (the `FAI2xxx` range).
 pub const CODES: &[CodeInfo] = &[
@@ -102,6 +108,11 @@ pub const CODES: &[CodeInfo] = &[
     CodeInfo {
         code: DUPLICATE_BINDER,
         title: "duplicate forall binder",
+        default_severity: Severity::Error,
+    },
+    CodeInfo {
+        code: UNBOUND_CONSTRUCTOR,
+        title: "unbound constructor",
         default_severity: Severity::Error,
     },
 ];

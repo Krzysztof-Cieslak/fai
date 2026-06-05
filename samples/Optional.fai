@@ -1,0 +1,11 @@
+module Optional
+
+// `Option`, `Some`, `None`, and `mapOption` come from the prelude, visible
+// unqualified everywhere.
+/// Safe division: `None` when the divisor is zero.
+public safeDivide : Int -> Int -> Option Int
+let safeDivide a b = if b = 0 then None else Some (a / b)
+
+/// Double the value inside an `Option`, if present.
+public doubled : Option Int -> Option Int
+let doubled opt = mapOption (fun x -> x * 2) opt

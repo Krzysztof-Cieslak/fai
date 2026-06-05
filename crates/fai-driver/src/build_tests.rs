@@ -56,8 +56,8 @@ fn missing_main_is_an_error() {
 
 #[test]
 fn unsupported_construct_blocks_the_build() {
-    // A reachable definition using a tuple (outside the native subset) fails.
-    let src = "module M\n\nlet pair = (1, 2)\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (intToString pair)\n";
+    // A reachable definition using a `Char` (outside the native subset) fails.
+    let src = "module M\n\nlet flag = if 'a' = 'b' then 0 else 1\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (intToString flag)\n";
     let (db, files) = db_with(&[("M.fai", src)]);
     let exe = temp_exe();
     let outcome = build_native(&db, files[0], &exe);

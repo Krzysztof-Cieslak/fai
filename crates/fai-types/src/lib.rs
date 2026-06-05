@@ -8,6 +8,7 @@
 //! Skeleton: the representation and queries land incrementally across M2.
 
 mod contracts;
+mod exhaustive;
 mod infer;
 mod lower;
 pub mod prelude;
@@ -29,7 +30,8 @@ pub use infer::{
 };
 pub use lower::{LowerVars, lower_signature, lower_type};
 pub use query::{
-    BodyTypes, SccTypes, body_types, check_file, def_local_types, def_type, infer_scc_query,
+    BodyTypes, SccTypes, body_types, check_file, constructor_scheme, def_local_types, def_type,
+    infer_scc_query,
 };
 pub use ty::{Con, Scheme, Ty, TyVarId, VarNames, render, render_canonical, render_scheme};
 
@@ -51,8 +53,19 @@ pub const EQUALITY_ON_FUNCTION: DiagnosticCode = DiagnosticCode::new("FAI3006");
 pub const CONTRACT_NOT_BOOL: DiagnosticCode = DiagnosticCode::new("FAI3007");
 /// A signature names an unknown type constructor.
 pub const UNKNOWN_TYPE_CONSTRUCTOR: DiagnosticCode = DiagnosticCode::new("FAI3008");
-/// Record field access is used, but records are not supported yet (M4).
+/// Record field access is used, but records are not supported yet (records land
+/// with structural records).
 pub const UNSUPPORTED_FIELD_ACCESS: DiagnosticCode = DiagnosticCode::new("FAI3009");
+/// A constructor pattern or application has the wrong number of arguments.
+pub const CONSTRUCTOR_ARITY: DiagnosticCode = DiagnosticCode::new("FAI3011");
+/// A type constructor is applied to the wrong number of arguments (a kind error).
+pub const TYPE_ARITY: DiagnosticCode = DiagnosticCode::new("FAI3012");
+/// A transparent type alias refers to itself (directly or transitively).
+pub const RECURSIVE_ALIAS: DiagnosticCode = DiagnosticCode::new("FAI3013");
+/// A `match` does not cover every possible value.
+pub const NON_EXHAUSTIVE_MATCH: DiagnosticCode = DiagnosticCode::new("FAI4001");
+/// A `match` arm can never be reached (an earlier arm already covers it).
+pub const UNREACHABLE_ARM: DiagnosticCode = DiagnosticCode::new("FAI4002");
 
 /// Diagnostic codes owned by the type system (the `FAI3xxx` range).
 pub const CODES: &[CodeInfo] = &[
@@ -91,6 +104,31 @@ pub const CODES: &[CodeInfo] = &[
     CodeInfo {
         code: UNSUPPORTED_FIELD_ACCESS,
         title: "record field access not supported yet",
+        default_severity: Severity::Error,
+    },
+    CodeInfo {
+        code: CONSTRUCTOR_ARITY,
+        title: "wrong number of constructor arguments",
+        default_severity: Severity::Error,
+    },
+    CodeInfo {
+        code: TYPE_ARITY,
+        title: "wrong number of type arguments",
+        default_severity: Severity::Error,
+    },
+    CodeInfo {
+        code: RECURSIVE_ALIAS,
+        title: "recursive type alias",
+        default_severity: Severity::Error,
+    },
+    CodeInfo {
+        code: NON_EXHAUSTIVE_MATCH,
+        title: "non-exhaustive match",
+        default_severity: Severity::Error,
+    },
+    CodeInfo {
+        code: UNREACHABLE_ARM,
+        title: "unreachable match arm",
         default_severity: Severity::Error,
     },
 ];

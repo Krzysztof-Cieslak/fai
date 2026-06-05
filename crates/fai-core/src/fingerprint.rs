@@ -49,6 +49,9 @@ fn write_expr(
         ExprKind::Lit(Lit::Int(n)) => {
             let _ = write!(out, "i{n}");
         }
+        ExprKind::Lit(Lit::Float(bits)) => {
+            let _ = write!(out, "f{bits}");
+        }
         ExprKind::Lit(Lit::Bool(b)) => {
             let _ = write!(out, "b{b}");
         }
@@ -100,6 +103,24 @@ fn write_expr(
         ExprKind::MakeClosure { func, captures } => {
             let caps: Vec<String> = captures.iter().map(|c| format!("%{}", c.index())).collect();
             let _ = write!(out, "(clo fn{} [{}])", func.index(), caps.join(","));
+        }
+        ExprKind::MakeData { tag, args } => {
+            let _ = write!(out, "(data {tag}");
+            for a in args {
+                out.push(' ');
+                write_expr(out, a, namer, arity_of);
+            }
+            out.push(')');
+        }
+        ExprKind::DataTag(base) => {
+            out.push_str("(tag ");
+            write_expr(out, base, namer, arity_of);
+            out.push(')');
+        }
+        ExprKind::DataField { base, index } => {
+            let _ = write!(out, "(field {index} ");
+            write_expr(out, base, namer, arity_of);
+            out.push(')');
         }
         ExprKind::Dup { local, body } => {
             let _ = write!(out, "(dup %{} ", local.index());

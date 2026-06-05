@@ -76,6 +76,14 @@ pub fn signature_scheme(db: &dyn Db, file: SourceFile, name: Symbol) -> Option<S
     declared_scheme(db, file, name)
 }
 
+/// The scheme of a data constructor declared in `file` (e.g. `Some : 'a ->
+/// Option 'a`). Tracked so it is computed once and stays a body-edit-stable part
+/// of the module's public interface.
+#[salsa::tracked]
+pub fn constructor_scheme(db: &dyn Db, file: SourceFile, name: Symbol) -> Option<Scheme> {
+    crate::lower::build_constructor_scheme(db, file, name)
+}
+
 /// The type scheme of a single definition.
 #[salsa::tracked]
 pub fn def_type(db: &dyn Db, file: SourceFile, name: Symbol) -> Scheme {
@@ -159,6 +167,25 @@ pub fn check_file(db: &dyn Db, file: SourceFile) {
     let parsed = fai_syntax::parse(db, file);
     let module = &parsed.module;
 
+    // Validate `type` declarations: lower each alias body (surfacing recursive
+    // aliases and unknown constructors) and each union's constructor schemes.
+    for item in &module.items {
+        if let fai_syntax::ast::ItemKind::Type { name, def, .. } = &item.kind {
+            match def {
+                fai_syntax::ast::TypeDef::Alias(ty) => {
+                    let mut vars = crate::lower::LowerVars::default();
+                    let _ = crate::lower::lower_type(db, file, module, *ty, &mut vars);
+                }
+                fai_syntax::ast::TypeDef::Union(variants) => {
+                    for v in variants {
+                        let _ = constructor_scheme(db, file, v.name);
+                    }
+                }
+            }
+            let _ = name;
+        }
+    }
+
     for d in &defs.defs {
         let def = DefId::new(file.source(db), d.name);
         let inferred = def_type(db, file, d.name);
@@ -214,5 +241,6 @@ pub fn check_file(db: &dyn Db, file: SourceFile) {
         }
     }
 
+    crate::exhaustive::check_matches(db, file);
     crate::contracts::check_contracts(db, file);
 }

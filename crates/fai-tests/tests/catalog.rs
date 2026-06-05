@@ -54,11 +54,14 @@ fn resolve_codes_are_in_the_fai2xxx_range() {
 }
 
 #[test]
-fn type_codes_are_in_the_fai3xxx_range() {
+fn type_codes_are_in_the_type_or_pattern_ranges() {
+    // The type system owns types/rows (FAI3xxx) and exhaustiveness/patterns
+    // (FAI4xxx).
     for info in fai_types::CODES {
+        let code = info.code.as_str();
         assert!(
-            info.code.as_str().starts_with("FAI3"),
-            "type code {} should be in the FAI3xxx range",
+            code.starts_with("FAI3") || code.starts_with("FAI4"),
+            "type code {} should be in the FAI3xxx or FAI4xxx range",
             info.code
         );
     }

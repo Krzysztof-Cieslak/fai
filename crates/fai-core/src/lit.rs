@@ -23,6 +23,13 @@ pub fn decode_int(raw: &str) -> Option<i64> {
     u64::from_str_radix(digits, radix).ok().map(|u| u as i64)
 }
 
+/// Decodes a float lexeme (`3.14`, `1_000.0`, `1e9`) into its IEEE-754 bits.
+#[must_use]
+pub fn decode_float(raw: &str) -> u64 {
+    let cleaned: String = raw.chars().filter(|&c| c != '_').collect();
+    cleaned.parse::<f64>().unwrap_or(0.0).to_bits()
+}
+
 fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
     let lower = s.get(..prefix.len())?.to_ascii_lowercase();
     if lower == prefix { s.get(prefix.len()..) } else { None }

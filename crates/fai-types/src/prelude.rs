@@ -11,7 +11,7 @@ use fai_db::{Durability, FaiDatabase};
 use fai_span::SourceId;
 use fai_syntax::Symbol;
 
-use crate::ty::{Con, Scheme, Ty, TyVarId};
+use crate::ty::{Con, Scheme, Ty};
 
 /// The synthetic path of the embedded prelude (outside any user workspace).
 pub const PRELUDE_PATH: &str = "<prelude>/Prelude.fai";
@@ -34,10 +34,13 @@ pub fn is_prelude_path(path: &str) -> bool {
     path == PRELUDE_PATH
 }
 
-/// The scheme of a prelude name, if known.
+/// The scheme of a built-in intrinsic, if known.
+///
+/// Only Rust-implemented intrinsics live here; everything else the prelude offers
+/// is an ordinary definition in `Prelude.fai`, resolved as a `Def`/`Ctor` and
+/// typed through normal inference.
 #[must_use]
 pub fn builtin_scheme(name: Symbol) -> Option<Scheme> {
-    let a = || Ty::Var(TyVarId(0));
     Some(match name.as_str() {
         "true" | "false" => Scheme::mono(Ty::bool()),
         // The Console capability's sole member, reached as `Console.writeLine`
@@ -46,26 +49,12 @@ pub fn builtin_scheme(name: Symbol) -> Option<Scheme> {
         "writeLine" => {
             Scheme::mono(Ty::arrows([Ty::Con(Con::Runtime), Ty::Con(Con::String)], Ty::Unit))
         }
-        // Derived `.fai` prelude exports (their bodies live in Prelude.fai; the
-        // schemes here mirror their written signatures).
-        "identity" => Scheme::new(vec![TyVarId(0)], Ty::arrow(a(), a())),
-        "const" => {
-            Scheme::new(vec![TyVarId(0), TyVarId(1)], Ty::arrows([a(), Ty::Var(TyVarId(1))], a()))
-        }
-        "notEqual" => Scheme::mono(Ty::arrows([Ty::int(), Ty::int()], Ty::bool())),
         "intToString" => Scheme::mono(Ty::arrow(Ty::int(), Ty::Con(Con::String))),
         "floatToString" => Scheme::mono(Ty::arrow(Ty::Con(Con::Float), Ty::Con(Con::String))),
+        "intToFloat" => Scheme::mono(Ty::arrow(Ty::int(), Ty::Con(Con::Float))),
+        "floatToInt" => Scheme::mono(Ty::arrow(Ty::Con(Con::Float), Ty::int())),
         "sqrt" => Scheme::mono(Ty::arrow(Ty::Con(Con::Float), Ty::Con(Con::Float))),
         "not" => Scheme::mono(Ty::arrow(Ty::bool(), Ty::bool())),
-        "pi" => Scheme::mono(Ty::Con(Con::Float)),
-        // length : List 'a -> Int
-        "length" => Scheme::new(vec![TyVarId(0)], Ty::arrow(Ty::list(a()), Ty::int())),
-        // append : List 'a -> List 'a -> List 'a
-        "append" => {
-            Scheme::new(vec![TyVarId(0)], Ty::arrows([Ty::list(a()), Ty::list(a())], Ty::list(a())))
-        }
-        // reverse : List 'a -> List 'a
-        "reverse" => Scheme::new(vec![TyVarId(0)], Ty::arrow(Ty::list(a()), Ty::list(a()))),
         _ => return None,
     })
 }

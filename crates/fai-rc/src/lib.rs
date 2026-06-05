@@ -53,6 +53,13 @@ fn insert_dups(expr: CExpr) -> CExpr {
         K::Prim { op, args } => {
             CExpr::new(K::Prim { op, args: args.into_iter().map(insert_dups).collect() }, ty)
         }
+        K::MakeData { tag, args } => {
+            CExpr::new(K::MakeData { tag, args: args.into_iter().map(insert_dups).collect() }, ty)
+        }
+        K::DataTag(base) => CExpr::new(K::DataTag(Box::new(insert_dups(*base))), ty),
+        K::DataField { base, index } => {
+            CExpr::new(K::DataField { base: Box::new(insert_dups(*base)), index }, ty)
+        }
         K::App { func, args } => CExpr::new(
             K::App {
                 func: Box::new(insert_dups(*func)),

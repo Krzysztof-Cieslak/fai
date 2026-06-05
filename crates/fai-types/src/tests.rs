@@ -172,9 +172,12 @@ fn embedded_prelude_typechecks() {
 
 #[test]
 fn user_can_use_prelude_function() {
-    let (db, f) = db_with(&[("M.fai", "module M\n\nlet n = length [1, 2, 3]\n")]);
-    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
-    assert_eq!(type_of(&db, f[0], "n"), "Int");
+    let mut db = FaiDatabase::new();
+    crate::prelude::load_prelude(&mut db);
+    let id = db.add_source("M.fai".into(), "module M\n\nlet n = length [1, 2, 3]\n".to_owned());
+    let file = db.source_file(id).unwrap();
+    assert!(check_codes(&db, file).is_empty(), "got {:?}", check_codes(&db, file));
+    assert_eq!(type_of(&db, file, "n"), "Int");
 }
 
 #[test]
@@ -220,4 +223,162 @@ fn body_types_records_every_expression() {
     };
     assert_eq!(crate::render_canonical(types.get(*lhs).unwrap()), "Int");
     assert_eq!(crate::render_canonical(types.get(*rhs).unwrap()), "Int");
+}
+
+// ── ADTs, constructors, and exhaustiveness ───────────────────────────────────
+
+#[test]
+fn constructor_scheme_and_match_type() {
+    let (db, f) = db_with(&[(
+        "M.fai",
+        "module M\n\ntype Shape =\n  | Circle Float\n  | Rect Float Float\n\npublic area : Shape -> Float\nlet area s =\n  match s with\n  | Circle r -> 3.0 * r * r\n  | Rect w h -> w * h\n",
+    )]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+    assert_eq!(type_of(&db, f[0], "area"), "Shape -> Float");
+}
+
+#[test]
+fn non_exhaustive_union_is_an_error() {
+    let (db, f) = db_with(&[(
+        "M.fai",
+        "module M\n\ntype T =\n  | A\n  | B\n\npublic f : T -> Int\nlet f t =\n  match t with\n  | A -> 1\n",
+    )]);
+    assert!(
+        check_codes(&db, f[0]).contains(&"FAI4001".to_owned()),
+        "got {:?}",
+        check_codes(&db, f[0])
+    );
+}
+
+#[test]
+fn exhaustive_union_is_clean() {
+    let (db, f) = db_with(&[(
+        "M.fai",
+        "module M\n\ntype T =\n  | A\n  | B\n\npublic f : T -> Int\nlet f t =\n  match t with\n  | A -> 1\n  | B -> 2\n",
+    )]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+}
+
+#[test]
+fn wildcard_makes_match_exhaustive() {
+    let (db, f) = db_with(&[(
+        "M.fai",
+        "module M\n\ntype T =\n  | A\n  | B\n  | C\n\npublic f : T -> Int\nlet f t =\n  match t with\n  | A -> 1\n  | _ -> 2\n",
+    )]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+}
+
+#[test]
+fn redundant_arm_is_an_error() {
+    let (db, f) = db_with(&[(
+        "M.fai",
+        "module M\n\ntype T =\n  | A\n  | B\n\npublic f : T -> Int\nlet f t =\n  match t with\n  | A -> 1\n  | A -> 9\n  | B -> 2\n",
+    )]);
+    assert!(
+        check_codes(&db, f[0]).contains(&"FAI4002".to_owned()),
+        "got {:?}",
+        check_codes(&db, f[0])
+    );
+}
+
+#[test]
+fn arm_after_wildcard_is_unreachable() {
+    let (db, f) = db_with(&[(
+        "M.fai",
+        "module M\n\ntype T =\n  | A\n  | B\n\npublic f : T -> Int\nlet f t =\n  match t with\n  | _ -> 1\n  | A -> 2\n",
+    )]);
+    assert!(
+        check_codes(&db, f[0]).contains(&"FAI4002".to_owned()),
+        "got {:?}",
+        check_codes(&db, f[0])
+    );
+}
+
+#[test]
+fn non_exhaustive_list_match() {
+    let (db, f) = db_with(&[(
+        "M.fai",
+        "module M\n\npublic f : List Int -> Int\nlet f xs =\n  match xs with\n  | [] -> 0\n",
+    )]);
+    assert!(
+        check_codes(&db, f[0]).contains(&"FAI4001".to_owned()),
+        "got {:?}",
+        check_codes(&db, f[0])
+    );
+}
+
+#[test]
+fn exhaustive_list_match_is_clean() {
+    let (db, f) = db_with(&[(
+        "M.fai",
+        "module M\n\npublic f : List Int -> Int\nlet f xs =\n  match xs with\n  | [] -> 0\n  | x :: rest -> x\n",
+    )]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+}
+
+#[test]
+fn nested_pattern_non_exhaustive() {
+    // `A true` is handled but `A false` is not.
+    let (db, f) = db_with(&[(
+        "M.fai",
+        "module M\n\ntype T =\n  | A Bool\n\npublic f : T -> Int\nlet f t =\n  match t with\n  | A true -> 1\n",
+    )]);
+    assert!(
+        check_codes(&db, f[0]).contains(&"FAI4001".to_owned()),
+        "got {:?}",
+        check_codes(&db, f[0])
+    );
+}
+
+#[test]
+fn or_pattern_covers_alternatives() {
+    let (db, f) = db_with(&[(
+        "M.fai",
+        "module M\n\ntype T =\n  | A\n  | B\n  | C\n\npublic f : T -> Int\nlet f t =\n  match t with\n  | A | B -> 1\n  | C -> 2\n",
+    )]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+}
+
+#[test]
+fn constructor_arity_mismatch_in_pattern() {
+    let (db, f) = db_with(&[(
+        "M.fai",
+        "module M\n\ntype T =\n  | Pair Int Int\n\npublic f : T -> Int\nlet f t =\n  match t with\n  | Pair x -> x\n",
+    )]);
+    assert!(
+        check_codes(&db, f[0]).contains(&"FAI3011".to_owned()),
+        "got {:?}",
+        check_codes(&db, f[0])
+    );
+}
+
+#[test]
+fn unknown_constructor_in_expression() {
+    let (db, f) = db_with(&[("M.fai", "module M\n\nlet x = Nope 1\n")]);
+    assert!(
+        check_codes(&db, f[0]).contains(&"FAI2012".to_owned()),
+        "got {:?}",
+        check_codes(&db, f[0])
+    );
+}
+
+#[test]
+fn transparent_alias_expands() {
+    let (db, f) = db_with(&[(
+        "M.fai",
+        "module M\n\ntype Celsius = Int\n\npublic freezing : Celsius\nlet freezing = 0\n",
+    )]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+    assert_eq!(type_of(&db, f[0], "freezing"), "Int");
+}
+
+#[test]
+fn recursive_alias_is_an_error() {
+    let (db, f) = db_with(&[("M.fai", "module M\n\ntype Loop = Loop\n")]);
+    // `Loop` as an alias body refers to the alias `Loop` itself.
+    assert!(
+        check_codes(&db, f[0]).contains(&"FAI3013".to_owned()),
+        "got {:?}",
+        check_codes(&db, f[0])
+    );
 }

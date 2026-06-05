@@ -10,6 +10,8 @@
 use std::fmt::{self, Write as _};
 use std::sync::Arc;
 
+use fai_resolve::AdtRef;
+
 /// A type-variable identifier (a slot in the solver's union-find).
 ///
 /// In a *reified* type, a `TyVarId` only appears inside a [`Scheme`]'s body,
@@ -27,6 +29,9 @@ pub enum Ty {
     Var(TyVarId),
     /// A nullary type constructor: `Int`, `Float`, `Bool`, `String`, `Char`.
     Con(Con),
+    /// A user-declared nominal type constructor (a `type` union), applied via
+    /// [`Ty::App`]: `Option a` is `App(Adt(Option), a)`.
+    Adt(AdtRef),
     /// Type application, e.g. `List a` is `App(List, a)`.
     App(Arc<Ty>, Arc<Ty>),
     /// A function type `from -> to`.
@@ -218,7 +223,7 @@ fn collect_vars(ty: &Ty, out: &mut Vec<TyVarId>) {
                 collect_vars(e, out);
             }
         }
-        Ty::Con(_) | Ty::Unit | Ty::Error => {}
+        Ty::Con(_) | Ty::Adt(_) | Ty::Unit | Ty::Error => {}
     }
 }
 
@@ -299,6 +304,9 @@ fn write_ty(out: &mut String, ty: &Ty, names: &VarNames, prec: Prec) {
         }
         Ty::Con(c) => {
             let _ = out.write_str(c.name());
+        }
+        Ty::Adt(adt) => {
+            let _ = out.write_str(adt.name.as_str());
         }
         Ty::Unit => {
             let _ = out.write_str("()");

@@ -1,5 +1,13 @@
 module Prelude
 
+public type Option 'a =
+  | None
+  | Some 'a
+
+public type Result 'ok 'err =
+  | Ok 'ok
+  | Err 'err
+
 /// The identity function.
 public identity : 'a -> 'a
 let identity x = x
@@ -8,6 +16,203 @@ let identity x = x
 public const : 'a -> 'b -> 'a
 let const x y = x
 
-/// Boolean negation of equality on integers (a small derived helper).
-public notEqual : Int -> Int -> Bool
+/// Structural inequality.
+public notEqual : 'a -> 'a -> Bool
 let notEqual a b = not (a = b)
+
+/// The ratio of a circle's circumference to its diameter.
+public pi : Float
+let pi = 3.141592653589793
+
+// ── Lists ─────────────────────────────────────────────────────────────────────
+
+/// The number of elements in a list.
+public length : List 'a -> Int
+let length xs =
+  match xs with
+  | [] -> 0
+  | _ :: rest -> 1 + length rest
+
+/// Whether a list has no elements.
+public isEmpty : List 'a -> Bool
+let isEmpty xs =
+  match xs with
+  | [] -> true
+  | _ :: _ -> false
+
+/// The first element, if any.
+public head : List 'a -> Option 'a
+let head xs =
+  match xs with
+  | [] -> None
+  | x :: _ -> Some x
+
+/// Everything after the first element (`[]` for the empty list).
+public tail : List 'a -> List 'a
+let tail xs =
+  match xs with
+  | [] -> []
+  | _ :: rest -> rest
+
+/// Concatenate two lists.
+public append : List 'a -> List 'a -> List 'a
+let append xs ys =
+  match xs with
+  | [] -> ys
+  | x :: rest -> x :: append rest ys
+
+/// Apply `f` to every element, preserving order.
+public map : ('a -> 'b) -> List 'a -> List 'b
+let map f xs =
+  match xs with
+  | [] -> []
+  | x :: rest -> f x :: map f rest
+
+/// Keep the elements satisfying `keep`.
+public filter : ('a -> Bool) -> List 'a -> List 'a
+let filter keep xs =
+  match xs with
+  | [] -> []
+  | x :: rest -> if keep x then x :: filter keep rest else filter keep rest
+
+/// Left fold: `foldl f acc [a, b] = f (f acc a) b`.
+public foldl : ('acc -> 'a -> 'acc) -> 'acc -> List 'a -> 'acc
+let foldl f acc xs =
+  match xs with
+  | [] -> acc
+  | x :: rest -> foldl f (f acc x) rest
+
+/// Right fold: `foldr f acc [a, b] = f a (f b acc)`.
+public foldr : ('a -> 'acc -> 'acc) -> 'acc -> List 'a -> 'acc
+let foldr f acc xs =
+  match xs with
+  | [] -> acc
+  | x :: rest -> f x (foldr f acc rest)
+
+/// Reverse a list.
+public reverse : List 'a -> List 'a
+let reverse xs = foldl (fun acc x -> x :: acc) [] xs
+
+/// Flatten a list of lists.
+public concat : List (List 'a) -> List 'a
+let concat xss = foldr append [] xss
+
+/// Sum a list of integers.
+public sum : List Int -> Int
+let sum xs = foldl (fun acc x -> acc + x) 0 xs
+
+/// Whether every element satisfies `pred`.
+public all : ('a -> Bool) -> List 'a -> Bool
+let all pred xs =
+  match xs with
+  | [] -> true
+  | x :: rest -> if pred x then all pred rest else false
+
+/// Whether any element satisfies `pred`.
+public any : ('a -> Bool) -> List 'a -> Bool
+let any pred xs =
+  match xs with
+  | [] -> false
+  | x :: rest -> if pred x then true else any pred rest
+
+/// Whether `target` is an element of the list.
+public member : 'a -> List 'a -> Bool
+let member target xs =
+  match xs with
+  | [] -> false
+  | x :: rest -> if x = target then true else member target rest
+
+/// The first `n` elements (fewer if the list is shorter).
+public take : Int -> List 'a -> List 'a
+let take n xs =
+  match xs with
+  | [] -> []
+  | x :: rest -> if n <= 0 then [] else x :: take (n - 1) rest
+
+/// All but the first `n` elements.
+public drop : Int -> List 'a -> List 'a
+let drop n xs =
+  match xs with
+  | [] -> []
+  | x :: rest -> if n <= 0 then x :: rest else drop (n - 1) rest
+
+/// The integers `[lo, lo+1, …, hi-1]`.
+public range : Int -> Int -> List Int
+let range lo hi = if lo >= hi then [] else lo :: range (lo + 1) hi
+
+/// Pair up corresponding elements (truncating to the shorter list).
+public zip : List 'a -> List 'b -> List ('a * 'b)
+let zip xs ys =
+  match xs with
+  | [] -> []
+  | x :: xrest ->
+    match ys with
+    | [] -> []
+    | y :: yrest -> (x, y) :: zip xrest yrest
+
+// ── Option ──────────────────────────────────────────────────────────────────
+
+/// Map over the value inside an `Option`.
+public mapOption : ('a -> 'b) -> Option 'a -> Option 'b
+let mapOption f opt =
+  match opt with
+  | None -> None
+  | Some x -> Some (f x)
+
+/// The contained value, or `fallback` for `None`.
+public withDefault : 'a -> Option 'a -> 'a
+let withDefault fallback opt =
+  match opt with
+  | None -> fallback
+  | Some x -> x
+
+/// Whether an `Option` holds a value.
+public isSome : Option 'a -> Bool
+let isSome opt =
+  match opt with
+  | None -> false
+  | Some _ -> true
+
+/// Whether an `Option` is empty.
+public isNone : Option 'a -> Bool
+let isNone opt =
+  match opt with
+  | None -> true
+  | Some _ -> false
+
+/// Chain a fallible computation over an `Option`.
+public andThen : ('a -> Option 'b) -> Option 'a -> Option 'b
+let andThen f opt =
+  match opt with
+  | None -> None
+  | Some x -> f x
+
+// ── Result ──────────────────────────────────────────────────────────────────
+
+/// Map over the success value of a `Result`.
+public mapResult : ('a -> 'b) -> Result 'a 'err -> Result 'b 'err
+let mapResult f result =
+  match result with
+  | Ok x -> Ok (f x)
+  | Err e -> Err e
+
+/// Map over the error value of a `Result`.
+public mapError : ('a -> 'b) -> Result 'ok 'a -> Result 'ok 'b
+let mapError f result =
+  match result with
+  | Ok x -> Ok x
+  | Err e -> Err (f e)
+
+/// Whether a `Result` is `Ok`.
+public isOk : Result 'ok 'err -> Bool
+let isOk result =
+  match result with
+  | Ok _ -> true
+  | Err _ -> false
+
+/// Whether a `Result` is `Err`.
+public isErr : Result 'ok 'err -> Bool
+let isErr result =
+  match result with
+  | Ok _ -> false
+  | Err _ -> true
