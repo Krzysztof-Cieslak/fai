@@ -21,4 +21,6 @@ pub use emit::{closure_symbol, code_symbol};
 pub use jit::jit_run;
 
 #[cfg(test)]
+mod proptests;
+#[cfg(test)]
 mod tests;

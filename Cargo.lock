@@ -539,6 +539,7 @@ dependencies = [
  "fai-span",
  "fai-syntax",
  "fai-types",
+ "proptest",
  "rustc-hash",
  "target-lexicon",
 ]
@@ -553,6 +554,7 @@ dependencies = [
  "fai-span",
  "fai-syntax",
  "fai-types",
+ "proptest",
  "rustc-hash",
  "salsa",
 ]
@@ -633,6 +635,7 @@ dependencies = [
  "fai-resolve",
  "fai-syntax",
  "fai-types",
+ "proptest",
  "salsa",
 ]
 
@@ -652,6 +655,9 @@ dependencies = [
 [[package]]
 name = "fai-runtime"
 version = "0.1.0"
+dependencies = [
+ "proptest",
+]
 
 [[package]]
 name = "fai-span"
@@ -681,13 +687,16 @@ dependencies = [
  "camino",
  "divan",
  "fai-cli",
+ "fai-codegen",
  "fai-core",
  "fai-db",
  "fai-diagnostics",
  "fai-driver",
  "fai-fmt",
  "fai-ide",
+ "fai-rc",
  "fai-resolve",
+ "fai-runtime",
  "fai-span",
  "fai-syntax",
  "fai-types",

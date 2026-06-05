@@ -24,6 +24,9 @@ fai-driver.workspace = true
 fai-fmt.workspace = true
 fai-ide.workspace = true
 fai-core.workspace = true
+fai-rc.workspace = true
+fai-codegen.workspace = true
+fai-runtime.workspace = true
 insta.workspace = true
 serde_json.workspace = true
 proptest.workspace = true
@@ -39,6 +42,10 @@ harness = false
 
 [[bench]]
 name = "stress"
+harness = false
+
+[[bench]]
+name = "codegen"
 harness = false
 
 [lints]

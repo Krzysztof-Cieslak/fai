@@ -1,0 +1,20 @@
+module Numerics
+
+// Largest i with i*i <= n.
+let isqrtFrom n i = if i * i > n then i - 1 else isqrtFrom n (i + 1)
+
+let isqrt n = isqrtFrom n 1
+
+let digitSum n = if n < 10 then n else n % 10 + digitSum (n / 10)
+
+let numDigits n = if n < 10 then 1 else 1 + numDigits (n / 10)
+
+public main : Runtime -> Unit
+let main runtime =
+  let a = Console.writeLine runtime (intToString (isqrt 144))
+  let b = Console.writeLine runtime (intToString (digitSum 9999))
+  Console.writeLine runtime (intToString (numDigits 1000000))
+
+//~ OUTPUT 12
+//~ OUTPUT 36
+//~ OUTPUT 7

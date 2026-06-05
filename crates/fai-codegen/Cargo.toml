@@ -28,6 +28,7 @@ rustc-hash.workspace = true
 fai-db.workspace = true
 fai-rc.workspace = true
 fai-span.workspace = true
+proptest.workspace = true
 
 [lints]
 workspace = true

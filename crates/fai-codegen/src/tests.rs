@@ -23,7 +23,7 @@ fn lock() -> MutexGuard<'static, ()> {
 
 /// Lowers every definition (user modules + prelude) and runs the entry file's
 /// `main` through the JIT, returning `(exit_code, captured_output)`.
-fn run(src: &str) -> (i32, String) {
+pub(crate) fn run(src: &str) -> (i32, String) {
     let mut db = FaiDatabase::new();
     fai_types::prelude::load_prelude(&mut db);
     let id = db.add_source("M.fai".into(), src.to_owned());
@@ -138,4 +138,44 @@ fn boxed_overflow_integer_round_trips() {
     let (code, out) = run(&main_printing("intToString (4611686018427387904 + 0)"));
     assert_eq!(code, 0);
     assert_eq!(out, "4611686018427387904\n");
+}
+
+#[test]
+fn short_circuit_and_or() {
+    let (code, out) = run(&main_printing("if (1 < 2) && (3 < 4) then \"both\" else \"no\""));
+    assert_eq!(code, 0);
+    assert_eq!(out, "both\n");
+    let (code, out) = run(&main_printing("if (5 < 2) || (3 < 4) then \"some\" else \"no\""));
+    assert_eq!(code, 0);
+    assert_eq!(out, "some\n");
+}
+
+#[test]
+fn unary_negation() {
+    let (code, out) = run(&main_printing("intToString (0 - (-5))"));
+    assert_eq!(code, 0);
+    assert_eq!(out, "5\n");
+}
+
+#[test]
+fn nested_conditionals() {
+    let src = "module M\n\nlet sign n = if n < 0 then \"neg\" else if n = 0 then \"zero\" else \"pos\"\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (sign (0 - 3))\n";
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "neg\n");
+}
+
+#[test]
+fn let_block_in_body() {
+    let src = "module M\n\nlet compute n =\n  let doubled = n + n\n  let plus1 = doubled + 1\n  plus1 * 2\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (intToString (compute 10))\n";
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "42\n");
+}
+
+#[test]
+fn inequality_on_strings() {
+    let (code, out) = run(&main_printing("if \"a\" <> \"b\" then \"diff\" else \"same\""));
+    assert_eq!(code, 0);
+    assert_eq!(out, "diff\n");
 }

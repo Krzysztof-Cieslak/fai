@@ -14,5 +14,10 @@ license.workspace = true
 [lib]
 crate-type = ["staticlib", "rlib"]
 
+# Dev-only; not part of the staticlib/rlib, so the runtime stays dependency-free
+# for the single-`$RUSTC` archive build.
+[dev-dependencies]
+proptest.workspace = true
+
 [lints]
 workspace = true

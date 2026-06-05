@@ -1,0 +1,19 @@
+module Power
+
+let square x = x * x
+
+// Exponentiation by squaring.
+let pow base exp =
+  if exp = 0 then 1
+  else if exp % 2 = 0 then square (pow base (exp / 2))
+  else base * pow base (exp - 1)
+
+public main : Runtime -> Unit
+let main runtime =
+  let a = Console.writeLine runtime (intToString (pow 2 10))
+  let b = Console.writeLine runtime (intToString (pow 3 4))
+  Console.writeLine runtime (intToString (pow 2 62))
+
+//~ OUTPUT 1024
+//~ OUTPUT 81
+//~ OUTPUT 4611686018427387904
