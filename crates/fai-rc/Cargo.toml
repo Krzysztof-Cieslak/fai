@@ -1,0 +1,19 @@
+[package]
+name = "fai-rc"
+description = "Reference-count insertion (plain dup/drop) over the Core IR."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+license.workspace = true
+
+[dependencies]
+fai-db.workspace = true
+fai-syntax.workspace = true
+fai-resolve.workspace = true
+fai-types.workspace = true
+fai-core.workspace = true
+salsa.workspace = true
+
+[lints]
+workspace = true
