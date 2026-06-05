@@ -43,6 +43,47 @@ impl LoweredDef {
     pub fn entry(&self) -> &CoreFn {
         &self.fns[0]
     }
+
+    /// The top-level definitions referenced as values anywhere in this lowering
+    /// (for reachability). Includes prelude helpers reached as `Global`, which
+    /// resolution records as builtins rather than dependencies.
+    #[must_use]
+    pub fn referenced_globals(&self) -> Vec<DefId> {
+        let mut out = Vec::new();
+        for f in &self.fns {
+            collect_globals(&f.body, &mut out);
+        }
+        out
+    }
+}
+
+/// Collects `Global` references in `expr`, in first-seen order (with duplicates).
+fn collect_globals(expr: &CExpr, out: &mut Vec<DefId>) {
+    match &expr.kind {
+        ExprKind::Global(def) => out.push(*def),
+        ExprKind::Lit(_) | ExprKind::Local(_) | ExprKind::MakeClosure { .. } | ExprKind::Error => {}
+        ExprKind::Prim { args, .. } => {
+            for a in args {
+                collect_globals(a, out);
+            }
+        }
+        ExprKind::App { func, args } => {
+            collect_globals(func, out);
+            for a in args {
+                collect_globals(a, out);
+            }
+        }
+        ExprKind::If { cond, then, els } => {
+            collect_globals(cond, out);
+            collect_globals(then, out);
+            collect_globals(els, out);
+        }
+        ExprKind::Let { value, body, .. } => {
+            collect_globals(value, out);
+            collect_globals(body, out);
+        }
+        ExprKind::Dup { body, .. } | ExprKind::Drop { body, .. } => collect_globals(body, out),
+    }
 }
 
 /// One compiled function: parameters, captured environment, and a body.
