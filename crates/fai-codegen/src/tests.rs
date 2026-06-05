@@ -522,7 +522,7 @@ fn nested_constructor_patterns() {
 
 #[test]
 fn string_trim_and_lowercase() {
-    let (code, out) = run(&main_printing("toLower (trim \"  Hello WORLD  \")"));
+    let (code, out) = run(&main_printing("String.toLower (String.trim \"  Hello WORLD  \")"));
     assert_eq!(code, 0);
     assert_eq!(out, "hello world\n");
 }
