@@ -87,9 +87,12 @@ impl std::fmt::Display for ColorChoice {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Compile to a native executable (AOT).
-    Build(PathArgs),
+    Build(BuildArgs),
     /// Build and run via the JIT.
     Run(RunArgs),
+    /// Internal: JIT-run an entry file in this (worker) process. Hidden.
+    #[command(name = "__run-worker", hide = true)]
+    RunWorker(RunWorkerArgs),
     /// Typecheck only (fast inner loop).
     Check(PathArgs),
     /// Run example/forall contracts.
@@ -117,6 +120,26 @@ pub enum Command {
 pub struct PathArgs {
     /// A file or directory; defaults to the whole workspace.
     pub path: Option<Utf8PathBuf>,
+}
+
+/// Arguments for `fai build`.
+#[derive(Debug, Args)]
+pub struct BuildArgs {
+    /// The entry file (defines `main`).
+    pub path: Utf8PathBuf,
+    /// Output executable path (defaults to the entry file's stem).
+    #[arg(long, value_name = "FILE")]
+    pub out: Option<Utf8PathBuf>,
+    /// Optimize the build (accepted; no effect in this milestone).
+    #[arg(long)]
+    pub release: bool,
+}
+
+/// Arguments for the hidden `__run-worker` subcommand.
+#[derive(Debug, Args)]
+pub struct RunWorkerArgs {
+    /// The entry file to JIT and run.
+    pub path: Utf8PathBuf,
 }
 
 /// Arguments for `fai run`.

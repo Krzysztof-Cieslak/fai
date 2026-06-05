@@ -16,12 +16,15 @@ use fai_codegen::{main_object, object_for_def};
 use fai_core::core;
 use fai_core::ir::LoweredDef;
 use fai_db::{Db, Diag, SourceFile};
-use fai_diagnostics::{Diagnostic, Severity};
+use fai_diagnostics::wire::{DiagnosticWire, to_wire};
+use fai_diagnostics::{Diagnostic, SCHEMA_VERSION, Severity, render_human};
 use fai_rc::rc;
 use fai_resolve::{DefId, ModuleName, module_defs, module_name};
+use fai_span::SpanResolver;
 use fai_syntax::Symbol;
 use fai_syntax::ast::ItemKind;
 use rustc_hash::FxHashSet;
+use serde::Serialize;
 
 use crate::{LINK_FAILED, NO_ENTRY_POINT, semantic_diagnostics, tooling_span};
 
@@ -143,6 +146,44 @@ pub struct BuildOutcome {
     pub ok: bool,
 }
 
+/// The JSON envelope for `fai build`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildOutput {
+    /// Output schema version.
+    pub schema_version: u32,
+    /// The produced executable's path, if any.
+    pub artifact: Option<String>,
+    /// The build's diagnostics, in wire form.
+    pub diagnostics: Vec<DiagnosticWire>,
+    /// Whether the build succeeded.
+    pub ok: bool,
+}
+
+impl BuildOutcome {
+    /// Builds the JSON wire envelope.
+    #[must_use]
+    pub fn to_output(&self, resolver: &dyn SpanResolver) -> BuildOutput {
+        BuildOutput {
+            schema_version: SCHEMA_VERSION,
+            artifact: self.artifact.as_ref().map(ToString::to_string),
+            diagnostics: to_wire(&self.diagnostics, resolver),
+            ok: self.ok,
+        }
+    }
+
+    /// Renders the outcome for humans (diagnostics, then the artifact path).
+    #[must_use]
+    pub fn render_human(&self, resolver: &dyn SpanResolver, color: bool) -> String {
+        use std::fmt::Write as _;
+        let mut out = render_human(&self.diagnostics, resolver, color);
+        if let Some(artifact) = &self.artifact {
+            let _ = writeln!(out, "built {artifact}");
+        }
+        out
+    }
+}
+
 /// Compiles the closure reachable from `file`'s `main` to a native executable at
 /// `out`, reusing cached `object_code` for unchanged definitions.
 #[must_use]
@@ -182,6 +223,14 @@ pub struct RunOutcome {
     pub exit_code: i32,
     /// Compile diagnostics, if any.
     pub diagnostics: Vec<Diagnostic>,
+}
+
+impl RunOutcome {
+    /// Renders any compile diagnostics for humans.
+    #[must_use]
+    pub fn render_human(&self, resolver: &dyn SpanResolver, color: bool) -> String {
+        render_human(&self.diagnostics, resolver, color)
+    }
 }
 
 /// Exit code for a program that failed to compile.

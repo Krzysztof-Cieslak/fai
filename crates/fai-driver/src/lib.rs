@@ -27,7 +27,8 @@ use fai_span::{ByteOffset, SourceId, Span, SpanResolver, TextRange};
 use serde::Serialize;
 
 pub use backend::{
-    BuildOutcome, RunOutcome, build_native, jit_run_program, object_code, reachable_defs,
+    BuildOutcome, BuildOutput, RunOutcome, build_native, jit_run_program, object_code,
+    reachable_defs,
 };
 pub use query::{QueryRequest, QueryResult, run_query};
 pub use session::Session;
@@ -223,18 +224,6 @@ pub fn check(db: &dyn Db, files: &[SourceFile]) -> CommandResult {
     CommandResult { diagnostics, ok }
 }
 
-/// `fai build` — compile to a native executable.
-#[must_use]
-pub fn build(db: &dyn Db) -> CommandResult {
-    not_implemented(db, "build")
-}
-
-/// `fai run` — build and run via the JIT.
-#[must_use]
-pub fn run(db: &dyn Db) -> CommandResult {
-    not_implemented(db, "run")
-}
-
 /// `fai test` — run example/forall contracts.
 #[must_use]
 pub fn test(db: &dyn Db) -> CommandResult {
@@ -361,17 +350,17 @@ mod tests {
     #[test]
     fn not_implemented_reports_fai0001() {
         let db = FaiDatabase::new();
-        let result = build(&db); // `build` is still a stub
+        let result = test(&db); // `test` is still a stub
         assert!(!result.ok);
         assert_eq!(result.diagnostics.len(), 1);
         assert_eq!(result.diagnostics[0].code, NOT_IMPLEMENTED);
-        assert!(result.diagnostics[0].message.contains("build"));
+        assert!(result.diagnostics[0].message.contains("test"));
     }
 
     #[test]
     fn output_envelope_shape() {
         let db = FaiDatabase::new();
-        let result = build(&db);
+        let result = test(&db);
         let resolver = fai_db::DbSpanResolver::new(&db);
         let output = result.to_output(&resolver);
         assert_eq!(output.schema_version, 1);
