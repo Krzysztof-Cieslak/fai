@@ -9,7 +9,9 @@
 //! The headline property: the work to re-check after a localized edit is
 //! independent of total workspace size (the cross-module firewall).
 
-use fai_db::{FaiDatabase, SourceFile};
+use fai_db::{Db, FaiDatabase, Setter, SourceFile};
+use fai_driver::object_code;
+use fai_syntax::Symbol;
 use fai_tests::corpus::{self, CorpusSpec};
 use fai_types::check_file;
 
@@ -137,6 +139,56 @@ fn cold_check_is_linear_in_workspace_size() {
         ratio < def_ratio * 2.0,
         "cold inference should scale ~linearly: query ratio {ratio:.1} vs def ratio {def_ratio:.1}"
     );
+}
+
+/// Builds `Main` (calling `Helper.helper`), `Helper`, and `fillers` independent
+/// modules; warms every definition's `object_code`; edits `Helper`'s body; then
+/// recompiles everything and returns how many objects were re-emitted.
+fn object_code_runs_after_helper_edit(fillers: usize) -> usize {
+    let mut db = FaiDatabase::new();
+    fai_types::prelude::load_prelude(&mut db);
+    let helper_id = db.add_source(
+        "Helper.fai".into(),
+        "module Helper\n\npublic helper : Int -> Int\nlet helper x = x + 1\n".to_owned(),
+    );
+    let main_id = db.add_source(
+        "Main.fai".into(),
+        "module Main\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (intToString (Helper.helper 1))\n".to_owned(),
+    );
+    let mut filler: Vec<(SourceFile, Symbol)> = Vec::new();
+    for i in 0..fillers {
+        let src = format!("module F{i}\n\npublic g{i} : Int -> Int\nlet g{i} x = x + {i}\n");
+        let id = db.add_source(format!("F{i}.fai").into(), src);
+        filler.push((db.source_file(id).unwrap(), Symbol::intern(&format!("g{i}"))));
+    }
+
+    let main = db.source_file(main_id).unwrap();
+    let helper = db.source_file(helper_id).unwrap();
+    let warm = |db: &FaiDatabase| {
+        object_code(db, main, Symbol::intern("main"));
+        object_code(db, helper, Symbol::intern("helper"));
+        for (f, g) in &filler {
+            object_code(db, *f, *g);
+        }
+    };
+    warm(&db);
+
+    db.enable_event_log();
+    helper
+        .set_text(&mut db)
+        .to("module Helper\n\npublic helper : Int -> Int\nlet helper x = x + 2\n".to_owned());
+    warm(&db);
+    count(&db.take_events(), "object_code")
+}
+
+#[test]
+fn codegen_firewall_is_independent_of_workspace_size() {
+    // Editing one module's body re-emits only that module's object — the same
+    // amount of work whether the rest of the workspace has 5 modules or 50.
+    let small = object_code_runs_after_helper_edit(5);
+    let large = object_code_runs_after_helper_edit(50);
+    assert_eq!(small, large, "codegen firewall: re-codegen must not grow with workspace size");
+    assert_eq!(small, 1, "only the edited module's object is recompiled");
 }
 
 #[test]

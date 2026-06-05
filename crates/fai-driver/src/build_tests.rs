@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use camino::Utf8PathBuf;
 use fai_db::{Db, FaiDatabase, Setter, SourceFile};
 
-use crate::{build_native, object_code};
+use crate::{build_native, object_code, reachable_defs};
 
 fn db_with(files: &[(&str, &str)]) -> (FaiDatabase, Vec<SourceFile>) {
     let mut db = FaiDatabase::new();
@@ -66,6 +66,56 @@ fn unsupported_construct_blocks_the_build() {
         outcome.diagnostics.iter().any(|d| d.code.as_str() == "FAI7001"),
         "expected FAI7001, got {:?}",
         outcome.diagnostics.iter().map(|d| d.code.as_str()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn reachability_includes_used_definitions_and_excludes_unused() {
+    let src = "module M\n\nlet used x = x + 1\n\nlet unused x = x + 2\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (intToString (used 1))\n";
+    let (db, files) = db_with(&[("M.fai", src)]);
+    let names: Vec<String> =
+        reachable_defs(&db, files[0]).iter().map(|d| d.name.as_str().to_owned()).collect();
+    assert!(names.contains(&"main".to_owned()));
+    assert!(names.contains(&"used".to_owned()));
+    assert!(!names.contains(&"unused".to_owned()), "unused defs are not reachable");
+}
+
+#[test]
+fn builds_and_runs_a_cross_module_program() {
+    let main = "module Main\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (intToString (Helper.triple 14))\n";
+    let helper = "module Helper\n\npublic triple : Int -> Int\nlet triple x = x * 3\n";
+    let (db, files) = db_with(&[("Main.fai", main), ("Helper.fai", helper)]);
+    let exe = temp_exe();
+    let outcome = build_native(&db, files[0], &exe);
+    assert!(outcome.ok, "build failed: {:?}", outcome.diagnostics);
+
+    let output = std::process::Command::new(exe.as_std_path()).output().expect("run");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
+    assert_eq!(output.status.code(), Some(0));
+}
+
+#[test]
+fn comment_edit_recompiles_no_objects() {
+    use fai_db::Setter;
+    // Core IR is position-independent (no spans/comments), so a trivia edit
+    // re-lowers the edited definition but produces an identical LoweredDef, which
+    // cuts off before codegen: neither the edited module's object nor its
+    // dependents' objects are re-emitted.
+    let main = "module Main\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (intToString (Helper.helper 1))\n";
+    let helper_v1 = "module Helper\n\npublic helper : Int -> Int\nlet helper x = x + 1\n";
+    let helper_v2 = "module Helper\n\n// an added comment shifts offsets only\npublic helper : Int -> Int\nlet helper x = x + 1\n";
+    let (mut db, files) = db_with(&[("Main.fai", main), ("Helper.fai", helper_v1)]);
+    let _ = object_code(&db, files[0], fai_syntax::Symbol::intern("main"));
+    let _ = object_code(&db, files[1], fai_syntax::Symbol::intern("helper"));
+
+    db.enable_event_log();
+    files[1].set_text(&mut db).to(helper_v2.to_owned());
+    let _ = object_code(&db, files[0], fai_syntax::Symbol::intern("main"));
+    let _ = object_code(&db, files[1], fai_syntax::Symbol::intern("helper"));
+    assert_eq!(
+        count(&db.take_events(), "object_code"),
+        0,
+        "a comment edit must not re-emit any object code"
     );
 }
 

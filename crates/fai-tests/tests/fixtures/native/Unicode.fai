@@ -1,0 +1,15 @@
+module Unicode
+
+// Multibyte UTF-8 (and an escape) round-tripping through the lexer, the static
+// string data, the runtime, and stdout.
+let banner = "héllo, 世界 \u{1F600}"
+
+let line s = "<< " ++ s ++ " >>"
+
+public main : Runtime -> Unit
+let main runtime =
+  let a = Console.writeLine runtime banner
+  Console.writeLine runtime (line "café")
+
+//~ OUTPUT héllo, 世界 😀
+//~ OUTPUT << café >>

@@ -69,6 +69,20 @@ unsafe extern "C" fn code_make_adder(_env: *const i64, args: *const i64) -> Valu
     }
 }
 
+unsafe extern "C" fn code_add3(_env: *const i64, args: *const i64) -> Value {
+    // SAFETY: three owned arguments, summed (each `fai_int_add` consumes two).
+    unsafe {
+        let s = fai_int_add(*args, *args.add(1));
+        fai_int_add(s, *args.add(2))
+    }
+}
+
+unsafe extern "C" fn code_apply_env(env: *const i64, args: *const i64) -> Value {
+    // SAFETY: env[0] is a borrowed closure (dup before the consuming apply);
+    // args[0] is an owned argument passed through.
+    unsafe { fai_apply_n(fai_dup(*env), 1, args) }
+}
+
 fn closure(code: unsafe extern "C" fn(*const i64, *const i64) -> Value, arity: u64) -> Value {
     // SAFETY: no captures, so the null env pointer is never read.
     unsafe { fai_make_closure(code as *const u8, arity, 0, std::ptr::null()) }
@@ -274,6 +288,51 @@ fn min_int_division_does_not_panic() {
     // i64::MIN / -1 overflows in two's complement; wrapping semantics apply.
     let q = fai_int_div(fai_box_int(i64::MIN), fai_box_int(-1));
     assert!(int_eq(q, i64::MIN.wrapping_div(-1)));
+}
+
+#[test]
+fn arity_three_application_splits_are_equivalent() {
+    let _g = lock();
+    let base = live_count();
+    // Apply a 3-ary closure as one call, or split across several, always 6.
+    let splits: &[&[usize]] = &[&[3], &[1, 2], &[2, 1], &[1, 1, 1]];
+    for split in splits {
+        let mut callee = closure(code_add3, 3);
+        let mut next = 1i64;
+        for (k, &count) in split.iter().enumerate() {
+            let args: Vec<Value> = (0..count)
+                .map(|_| {
+                    let v = imm_int(next);
+                    next += 1;
+                    v
+                })
+                .collect();
+            let is_last = k + 1 == split.len();
+            // SAFETY: applying `count` owned arguments to the current callee.
+            callee = unsafe { fai_apply_n(callee, count as u64, args.as_ptr()) };
+            if is_last {
+                assert!(int_eq(callee, 6), "split {split:?} should total 6");
+            }
+        }
+    }
+    assert_eq!(live_count(), base);
+}
+
+#[test]
+fn closure_capturing_a_closure_releases_both() {
+    let _g = lock();
+    let base = live_count();
+    let inner = closure(code_id, 1); // heap closure, rc 1
+    let env = [inner];
+    // SAFETY: the inner closure's ownership moves into the outer closure's env.
+    let outer = unsafe { fai_make_closure(code_apply_env as *const u8, 1, 1, env.as_ptr()) };
+    assert_eq!(live_count(), base + 2, "inner + outer closures are live");
+
+    let args = [imm_int(99)];
+    // SAFETY: applying the outer closure (which applies its captured inner one).
+    let result = unsafe { fai_apply_n(outer, 1, args.as_ptr()) };
+    assert!(int_eq(result, 99));
+    assert_eq!(live_count(), base, "both closures released");
 }
 
 #[test]
