@@ -123,7 +123,7 @@ fn list_literal_is_polymorphic() {
 
 #[test]
 fn unknown_type_in_signature_errors() {
-    let (db, f) = db_with(&[("M.fai", "module M\n\npublic f : Runtime -> Unit\nlet f r = ()\n")]);
+    let (db, f) = db_with(&[("M.fai", "module M\n\npublic f : Widget -> Unit\nlet f r = ()\n")]);
     assert!(
         check_codes(&db, f[0]).contains(&"FAI3008".to_owned()),
         "got {:?}",
@@ -184,4 +184,40 @@ fn mutual_recursion_typechecks() {
         "module M\n\npublic isEven : Int -> Bool\nlet isEven n = if n = 0 then true else isOdd (n - 1)\n\npublic isOdd : Int -> Bool\nlet isOdd n = if n = 0 then false else isEven (n - 1)\n",
     )]);
     assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+}
+
+#[test]
+fn console_writeline_via_runtime_typechecks() {
+    let src = "module Hello\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime \"Hi\"\n";
+    let (db, f) = db_with(&[("Hello.fai", src)]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+    assert_eq!(type_of(&db, f[0], "main"), "Runtime -> ()");
+}
+
+#[test]
+fn body_types_records_every_expression() {
+    use fai_syntax::Symbol;
+    use fai_syntax::ast::{ExprKind, ItemKind};
+
+    let (db, f) = db_with(&[("M.fai", "module M\n\nlet f x = x + 1\n")]);
+    let file = f[0];
+    let types = crate::body_types(&db, file, Symbol::intern("f"));
+    let parsed = fai_syntax::parse(&db, file);
+    let body = parsed
+        .module
+        .items
+        .iter()
+        .find_map(|it| match &it.kind {
+            ItemKind::Binding { name, body, .. } if name.as_str() == "f" => Some(*body),
+            _ => None,
+        })
+        .unwrap();
+
+    // The body `x + 1` and both operands are all `Int`.
+    assert_eq!(crate::render_canonical(types.get(body).unwrap()), "Int");
+    let ExprKind::Binary { lhs, rhs, .. } = &parsed.module.expr(body).kind else {
+        panic!("expected a binary expression");
+    };
+    assert_eq!(crate::render_canonical(types.get(*lhs).unwrap()), "Int");
+    assert_eq!(crate::render_canonical(types.get(*rhs).unwrap()), "Int");
 }

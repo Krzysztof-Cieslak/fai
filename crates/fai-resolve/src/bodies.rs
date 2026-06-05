@@ -363,6 +363,12 @@ impl Resolver<'_> {
         base_span: fai_span::TextRange,
         whole_span: fai_span::TextRange,
     ) -> Res {
+        // Built-in capability modules (M3): `Console.writeLine` resolves to a
+        // qualified builtin. A placeholder until interfaces/records (M5) make
+        // capabilities ordinary values reached through a `Runtime` record.
+        if module_sym.as_str() == "Console" && field.as_str() == "writeLine" {
+            return Res::Builtin(field);
+        }
         let Some(target_file) = module_file(self.db, ModuleName(module_sym)) else {
             emit(
                 self.db,

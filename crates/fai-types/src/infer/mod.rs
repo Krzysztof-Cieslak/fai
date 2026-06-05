@@ -271,6 +271,47 @@ pub fn infer_local_types(
     locals.into_iter().filter_map(|(id, ty)| local_names.get(&id).map(|name| (*name, ty))).collect()
 }
 
+/// Infers the type of every expression in `name`'s body, as `(ExprId, Ty)`
+/// pairs sharing one variable numbering.
+///
+/// This backs the `body_types` query consumed by Core lowering. Like
+/// [`infer_local_types`], it re-runs a walk over the body (independent of the
+/// SCC cache) with self-recursion bound to the def's declared-or-fresh type, and
+/// reifies the recorded solver types after defaulting.
+pub fn infer_body_types(
+    db: &dyn Db,
+    file: SourceFile,
+    name: Symbol,
+    def_schemes: &dyn Fn(&dyn Db, DefId) -> Option<Scheme>,
+    builtins: &dyn Fn(Symbol) -> Option<Scheme>,
+) -> Vec<(fai_syntax::ast::ExprId, Ty)> {
+    let parsed = fai_syntax::parse(db, file);
+    let module = &parsed.module;
+    let resolved = fai_resolve::resolve(db, file);
+
+    let Some((params, body)) = binding_body(module, name) else {
+        return Vec::new();
+    };
+    let params: Vec<fai_syntax::ast::PatId> = params.to_vec();
+
+    let mut cx = InferCtx::new();
+    let member_ty = match declared_scheme(db, file, name) {
+        Some(scheme) => cx.instantiate(&scheme),
+        None => cx.fresh(),
+    };
+    let mut scc_types: FxHashMap<DefId, SolveTy> = FxHashMap::default();
+    scc_types.insert(DefId::new(file.source(db), name), member_ty.clone());
+
+    let mut env = SccEnv::new(db, &scc_types, def_schemes, builtins);
+    let mut walker = Walker::new(db, file, module, &resolved, &mut cx, &mut env);
+    walker.enable_type_recording();
+    let param_tys: Vec<SolveTy> = params.iter().map(|&p| walker.bind_param(p)).collect();
+    let body_ty = walker.infer_expr(body);
+    let fn_ty = SolveTy::arrows_solver(param_tys, body_ty);
+    let _ = walker.cx.unify(&fn_ty, &member_ty);
+    walker.collect_expr_types()
+}
+
 /// The error scheme (monomorphic error type).
 #[must_use]
 pub fn error_scheme() -> Scheme {

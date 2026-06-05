@@ -14,6 +14,10 @@ use fai_diagnostics::{Diagnostic, Label};
 use fai_resolve::{DefId, module_defs, module_sccs, resolve};
 use fai_span::Span;
 use fai_syntax::Symbol;
+use fai_syntax::ast::ExprId;
+use rustc_hash::FxHashMap;
+
+use crate::ty::Ty;
 
 use crate::infer::{declared_scheme, error_scheme, infer_scc};
 use crate::prelude;
@@ -118,6 +122,34 @@ pub fn def_local_types(
         .into_iter()
         .map(|(sym, ty)| (sym.as_str().to_owned(), ty))
         .collect()
+}
+
+/// The inferred type of every expression in a definition's body.
+///
+/// A salsa value (so Core lowering depends on it for early cutoff). Mirrors the
+/// firewall of [`def_type`]: out-of-SCC references resolve through
+/// declared-or-inferred schemes, never bodies.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BodyTypes {
+    /// Each expression's reified type, keyed by `ExprId`.
+    pub types: FxHashMap<ExprId, Ty>,
+}
+
+impl BodyTypes {
+    /// The type recorded for `expr`, if any.
+    #[must_use]
+    pub fn get(&self, expr: ExprId) -> Option<&Ty> {
+        self.types.get(&expr)
+    }
+}
+
+/// The per-expression types of `name`'s body (the input to Core lowering).
+#[salsa::tracked]
+pub fn body_types(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<BodyTypes> {
+    let def_schemes = |db: &dyn Db, def: DefId| declared_or_inferred_scheme(db, def);
+    let builtins = |n: Symbol| prelude::builtin_scheme(n);
+    let pairs = crate::infer::infer_body_types(db, file, name, &def_schemes, &builtins);
+    Arc::new(BodyTypes { types: pairs.into_iter().collect() })
 }
 
 /// Type-checks every definition and contract in `file`, emitting diagnostics.

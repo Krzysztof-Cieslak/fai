@@ -28,7 +28,9 @@ pub use infer::{
     declared_scheme, error_scheme, generalize, infer_scc,
 };
 pub use lower::{LowerVars, lower_signature, lower_type};
-pub use query::{SccTypes, check_file, def_local_types, def_type, infer_scc_query};
+pub use query::{
+    BodyTypes, SccTypes, body_types, check_file, def_local_types, def_type, infer_scc_query,
+};
 pub use ty::{Con, Scheme, Ty, TyVarId, VarNames, render, render_canonical, render_scheme};
 
 use fai_diagnostics::{CodeInfo, DiagnosticCode, Severity};

@@ -1,0 +1,21 @@
+[package]
+name = "fai-core"
+description = "The typed, desugared Core IR and lowering from the surface AST."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+license.workspace = true
+
+[dependencies]
+fai-span.workspace = true
+fai-diagnostics.workspace = true
+fai-db.workspace = true
+fai-syntax.workspace = true
+fai-resolve.workspace = true
+fai-types.workspace = true
+salsa.workspace = true
+rustc-hash.workspace = true
+
+[lints]
+workspace = true

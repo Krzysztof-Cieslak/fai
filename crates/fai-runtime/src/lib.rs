@@ -337,11 +337,14 @@ fn unbox_int(v: Value) -> i64 {
 
 macro_rules! int_binop {
     ($name:ident, $op:expr) => {
-        /// Integer arithmetic primitive (operands borrowed).
+        /// Integer arithmetic primitive (operands consumed).
         #[unsafe(no_mangle)]
         pub extern "C" fn $name(a: Value, b: Value) -> Value {
             let f: fn(i64, i64) -> i64 = $op;
-            fai_box_int(f(unbox_int(a), unbox_int(b)))
+            let r = f(unbox_int(a), unbox_int(b));
+            fai_drop(a);
+            fai_drop(b);
+            fai_box_int(r)
         }
     };
 }
@@ -350,24 +353,30 @@ int_binop!(fai_int_add, |a, b| a.wrapping_add(b));
 int_binop!(fai_int_sub, |a, b| a.wrapping_sub(b));
 int_binop!(fai_int_mul, |a, b| a.wrapping_mul(b));
 
-/// Integer division (operands borrowed); aborts on division by zero.
+/// Integer division (operands consumed); aborts on division by zero.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_int_div(a: Value, b: Value) -> Value {
     let d = unbox_int(b);
     if d == 0 {
         fai_panic("integer division by zero");
     }
-    fai_box_int(unbox_int(a).wrapping_div(d))
+    let r = unbox_int(a).wrapping_div(d);
+    fai_drop(a);
+    fai_drop(b);
+    fai_box_int(r)
 }
 
-/// Integer remainder (operands borrowed); aborts on division by zero.
+/// Integer remainder (operands consumed); aborts on division by zero.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_int_rem(a: Value, b: Value) -> Value {
     let d = unbox_int(b);
     if d == 0 {
         fai_panic("integer remainder by zero");
     }
-    fai_box_int(unbox_int(a).wrapping_rem(d))
+    let r = unbox_int(a).wrapping_rem(d);
+    fai_drop(a);
+    fai_drop(b);
+    fai_box_int(r)
 }
 
 /// Encodes a Rust `bool` as a Fai `Bool` immediate.
@@ -376,12 +385,23 @@ fn from_bool(b: bool) -> Value {
     imm_int(i64::from(b))
 }
 
+/// Boolean negation (operand consumed). `not true = false`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_not(b: Value) -> Value {
+    let r = b == imm_int(0);
+    fai_drop(b);
+    from_bool(r)
+}
+
 macro_rules! int_cmp {
     ($name:ident, $op:tt) => {
-        /// Integer comparison primitive, returning a `Bool` (operands borrowed).
+        /// Integer comparison primitive, returning a `Bool` (operands consumed).
         #[unsafe(no_mangle)]
         pub extern "C" fn $name(a: Value, b: Value) -> Value {
-            from_bool(unbox_int(a) $op unbox_int(b))
+            let r = unbox_int(a) $op unbox_int(b);
+            fai_drop(a);
+            fai_drop(b);
+            from_bool(r)
         }
     };
 }
@@ -418,21 +438,29 @@ unsafe fn string_bytes<'a>(v: Value) -> &'a [u8] {
     }
 }
 
-/// Concatenates two `String`s into a fresh one (operands borrowed).
+/// Concatenates two `String`s into a fresh one (operands consumed).
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_string_concat(a: Value, b: Value) -> Value {
     // SAFETY: `a` and `b` are boxed `String`s (guaranteed by typing).
-    let (ab, bb) = unsafe { (string_bytes(a), string_bytes(b)) };
-    let mut out = Vec::with_capacity(ab.len() + bb.len());
-    out.extend_from_slice(ab);
-    out.extend_from_slice(bb);
-    make_string(&out)
+    let out = unsafe {
+        let (ab, bb) = (string_bytes(a), string_bytes(b));
+        let mut out = Vec::with_capacity(ab.len() + bb.len());
+        out.extend_from_slice(ab);
+        out.extend_from_slice(bb);
+        out
+    };
+    let result = make_string(&out);
+    fai_drop(a);
+    fai_drop(b);
+    result
 }
 
-/// Renders an `Int` as a `String` (operand borrowed).
+/// Renders an `Int` as a `String` (operand consumed).
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_int_to_string(n: Value) -> Value {
-    make_string(unbox_int(n).to_string().as_bytes())
+    let result = make_string(unbox_int(n).to_string().as_bytes());
+    fai_drop(n);
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -558,11 +586,14 @@ pub unsafe extern "C" fn fai_apply_n(callee: Value, argc: u64, args: *const i64)
 // ---------------------------------------------------------------------------
 
 /// Structural equality over non-function values, returning a `Bool` (operands
-/// borrowed). Function equality is rejected by the type checker, so closures are
+/// consumed). Function equality is rejected by the type checker, so closures are
 /// never compared here.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_equal(a: Value, b: Value) -> Value {
-    from_bool(values_equal(a, b))
+    let r = values_equal(a, b);
+    fai_drop(a);
+    fai_drop(b);
+    from_bool(r)
 }
 
 fn values_equal(a: Value, b: Value) -> bool {
@@ -617,26 +648,31 @@ pub fn capture_take() -> String {
 }
 
 /// `Console.writeLine`: writes a `String` followed by a newline to the sink. The
-/// `Runtime` capability argument is ignored in this build; the string is
-/// borrowed.
+/// `Runtime` capability argument is ignored in this build; both arguments are
+/// consumed. Returns `Unit`.
 #[unsafe(no_mangle)]
-pub extern "C" fn fai_console_write_line(_runtime: Value, s: Value) {
-    // SAFETY: `s` is a boxed `String`.
-    let bytes = unsafe { string_bytes(s) };
-    let mut guard = SINK.lock().expect("sink");
-    match &mut *guard {
-        Sink::Stdout => {
-            use std::io::Write as _;
-            let stdout = std::io::stdout();
-            let mut lock = stdout.lock();
-            let _ = lock.write_all(bytes);
-            let _ = lock.write_all(b"\n");
-        }
-        Sink::Capture(buf) => {
-            buf.extend_from_slice(bytes);
-            buf.push(b'\n');
+pub extern "C" fn fai_console_write_line(runtime: Value, s: Value) -> Value {
+    {
+        // SAFETY: `s` is a boxed `String`.
+        let bytes = unsafe { string_bytes(s) };
+        let mut guard = SINK.lock().expect("sink");
+        match &mut *guard {
+            Sink::Stdout => {
+                use std::io::Write as _;
+                let stdout = std::io::stdout();
+                let mut lock = stdout.lock();
+                let _ = lock.write_all(bytes);
+                let _ = lock.write_all(b"\n");
+            }
+            Sink::Capture(buf) => {
+                buf.extend_from_slice(bytes);
+                buf.push(b'\n');
+            }
         }
     }
+    fai_drop(runtime);
+    fai_drop(s);
+    FAI_UNIT
 }
 
 // ---------------------------------------------------------------------------
