@@ -624,6 +624,7 @@ dependencies = [
  "proptest",
  "rustc-hash",
  "salsa",
+ "serde",
 ]
 
 [[package]]
@@ -662,6 +663,7 @@ dependencies = [
  "fai-span",
  "fai-syntax",
  "fai-types",
+ "nix",
  "rustc-hash",
  "salsa",
  "serde",
@@ -742,6 +744,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tracing",
+ "wait-timeout",
 ]
 
 [[package]]

@@ -30,14 +30,15 @@ use fai_span::{ByteOffset, SourceId, Span, SpanResolver, TextRange};
 use serde::Serialize;
 
 pub use backend::{
-    BuildOutcome, BuildOutput, RunOutcome, build_native, jit_run_program, object_code,
-    reachable_defs,
+    BuildOutcome, BuildOutput, RunBundleResult, RunOutcome, build_native, build_run_bundle,
+    jit_run_bundle, jit_run_program, object_code, reachable_defs,
 };
 pub use cache::{cache_stats, reset_stats, set_cache_dir};
 pub use command::{
     CommandSpec, DirtyFile, EXIT_FAILURES, EXIT_INTERNAL, EXIT_OK, EXIT_WORKSPACE, OutputFormat,
     RenderOpts, Rendered, run_command,
 };
+pub use fai_core::WireBundle;
 pub use query::{QueryRequest, QueryResult, run_query};
 pub use session::Session;
 
@@ -158,6 +159,13 @@ fn not_implemented(_db: &dyn Db, command: &str) -> CommandResult {
     )
     .with_help("this command has no behavior in the current build");
     CommandResult { diagnostics: vec![diagnostic], ok: false }
+}
+
+/// Renders diagnostics to a human-readable string, for paths that report errors
+/// outside the normal result envelope (e.g. a failed `run` bundle).
+#[must_use]
+pub fn render_diagnostics(diagnostics: &[Diagnostic], resolver: &dyn SpanResolver) -> String {
+    render_human(diagnostics, resolver, false)
 }
 
 /// Builds a result describing a hard driver error (rendered as `FAI0002`).

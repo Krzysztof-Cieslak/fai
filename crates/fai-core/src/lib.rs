@@ -15,6 +15,7 @@ mod lit;
 #[allow(unsafe_code)]
 mod lower;
 pub mod pretty;
+pub mod wire;
 
 #[cfg(test)]
 mod proptests;
@@ -26,6 +27,7 @@ pub use ir::{CExpr, CoreFn, ExprKind, FnId, Lit, LoweredDef, Prim};
 pub use lit::{decode_int, decode_string};
 pub use lower::core;
 pub use pretty::pretty_def;
+pub use wire::{Rebuilt, WireBundle, WireDef, WireDefId, from_wire};
 
 use fai_diagnostics::{CodeInfo, DiagnosticCode, Severity};
 

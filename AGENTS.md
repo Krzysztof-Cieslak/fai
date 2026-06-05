@@ -1,6 +1,6 @@
 # Fai — Agent & Contributor Guide
 
-> **Status:** Implemented through milestone **M3**. The compiler front end —
+> **Status:** Implemented through milestone **M3.5**. The compiler front end —
 > lexer, layout, parser/AST, the incremental `parse`/`item_tree` queries, and the
 > canonical formatter (M1) — plus name resolution, the module graph, and
 > Hindley–Milner inference for the functional core (M2) are built. `fai check`
@@ -9,9 +9,13 @@
 > reference counting (`fai-rc`), Cranelift code generation with both AOT and JIT
 > (`fai-codegen`), and the runtime (`fai-runtime`) — so `fai build` produces a
 > native executable and `fai run` executes it (subset: `Int`/`Bool`/`String`,
-> functions, `let`, `if`, arithmetic, and `Console.writeLine` via `main`). Later
-> milestones (the daemon, data types, …) define the *intended* interface we build
-> toward. The design is locked (see the decision table below).
+> functions, `let`, `if`, arithmetic, and `Console.writeLine` via `main`). The
+> daemon layer (M3.5) is built: a per-workspace `fai-server` holds the warm query
+> database and serves a thin CLI client over MessagePack JSON-RPC (`check`,
+> `query`, `fmt`, `build` warm; `run` under daemon supervision, streamed and
+> reaped), backed by an on-disk content-addressed object cache; `--no-daemon` runs
+> in-process. Later milestones (data types, …) define the *intended* interface we
+> build toward. The design is locked (see the decision table below).
 
 This document is the orientation guide for anyone — human or AI agent — working
 on the Fai compiler. Read it first. For the staged build plan see `docs/PLAN.md`; for

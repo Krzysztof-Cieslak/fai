@@ -23,6 +23,7 @@ struct Daemon {
     workspace: PathBuf,
     runtime_dir: PathBuf,
     cache_dir: PathBuf,
+    run_timeout_ms: Option<u64>,
 }
 
 impl Daemon {
@@ -36,7 +37,14 @@ impl Daemon {
             workspace,
             runtime_dir: unique(&format!("{name}-rt")),
             cache_dir: unique(&format!("{name}-cache")),
+            run_timeout_ms: None,
         }
+    }
+
+    /// Sets the supervised-run wall-clock timeout (inherited by the daemon).
+    fn with_run_timeout(mut self, ms: u64) -> Self {
+        self.run_timeout_ms = Some(ms);
+        self
     }
 
     /// A `fai` command with this workspace's isolated environment.
@@ -46,6 +54,9 @@ impl Daemon {
             .env("FAI_RUNTIME_DIR", &self.runtime_dir)
             .env("FAI_CACHE_DIR", &self.cache_dir)
             .env("FAI_DAEMON_IDLE_TIMEOUT", "60");
+        if let Some(ms) = self.run_timeout_ms {
+            command.env("FAI_RUN_TIMEOUT_MS", ms.to_string());
+        }
         command
     }
 
@@ -120,6 +131,36 @@ fn warm_check_reflects_an_edit() {
     let dirty = daemon.run(&["check"], &["--message-format=json"]);
     assert_eq!(dirty.status.code(), Some(1), "expected a type error after the edit");
     assert!(stdout(&dirty).contains("FAI3004"), "got: {}", stdout(&dirty));
+}
+
+const HELLO: &str = "module Hello\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime \"hi from run\"\n";
+
+#[test]
+fn run_streams_output_via_daemon() {
+    let daemon = Daemon::new("runstream", &[("Hello.fai", HELLO)]);
+    let out = daemon.run(&["run"], &["Hello.fai"]);
+    assert_eq!(stdout(&out), "hi from run\n", "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(out.status.code(), Some(0));
+}
+
+#[test]
+fn run_timeout_is_reaped_and_daemon_survives() {
+    // Naive fib is exponential-time but shallow-stack, so it runs well past the
+    // timeout without crashing — the daemon must reap it (exit 124) and live on.
+    let fib = "module Main\n\nlet fib n = if n < 2 then n else fib (n - 1) + fib (n - 2)\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (intToString (fib 40))\n";
+    let daemon = Daemon::new("timeout", &[("Main.fai", fib)]).with_run_timeout(500);
+
+    let run = daemon.run(&["run"], &["Main.fai"]);
+    assert_eq!(
+        run.status.code(),
+        Some(124),
+        "expected a timeout exit; stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    // The daemon survived the reaped worker: a later command still works.
+    let check = daemon.run(&["check"], &["--message-format=json"]);
+    assert!(check.status.success(), "daemon must survive a reaped run worker");
 }
 
 #[test]

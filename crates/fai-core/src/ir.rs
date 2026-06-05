@@ -99,7 +99,7 @@ pub struct CoreFn {
 }
 
 /// A decoded literal value.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Lit {
     /// A 64-bit integer (decoded from its lexeme).
     Int(i64),
@@ -113,7 +113,7 @@ pub enum Lit {
 
 /// A primitive operation, lowered to a runtime call. Every primitive consumes
 /// its operands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Prim {
     /// `+`
     IntAdd,

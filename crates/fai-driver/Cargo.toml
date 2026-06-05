@@ -28,5 +28,8 @@ camino.workspace = true
 blake3.workspace = true
 target-lexicon.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true }
+
 [lints]
 workspace = true

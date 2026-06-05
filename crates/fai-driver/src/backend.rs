@@ -15,6 +15,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use fai_codegen::{main_object, object_for_def};
 use fai_core::core;
 use fai_core::ir::LoweredDef;
+use fai_core::wire::{WireBundle, WireDef, WireDefId, def_to_wire, from_wire};
 use fai_db::{Db, Diag, SourceFile};
 use fai_diagnostics::wire::{DiagnosticWire, to_wire};
 use fai_diagnostics::{Diagnostic, SCHEMA_VERSION, Severity, render_human};
@@ -37,15 +38,24 @@ const ENTRY: &str = "main";
 /// The mangled symbol base for a definition: `fai_<module>_<name>`.
 #[must_use]
 pub fn symbol_base(db: &dyn Db, def: DefId) -> String {
-    let label = db
-        .source_file(def.file)
+    mangle(&module_label(db, def), def.name.as_str())
+}
+
+/// A definition's module display label (or a fallback), used for mangling.
+pub(crate) fn module_label(db: &dyn Db, def: DefId) -> String {
+    db.source_file(def.file)
         .and_then(|f| module_name(db, f))
-        .map_or_else(|| "M".to_owned(), |ModuleName(s)| s.as_str().to_owned());
-    let sanitized: String = label
+        .map_or_else(|| "M".to_owned(), |ModuleName(s)| s.as_str().to_owned())
+}
+
+/// Builds the backend symbol base from a module label and a binding name. Pure,
+/// so a database-free worker reconstructs identical names from the wire bundle.
+pub(crate) fn mangle(module_label: &str, name: &str) -> String {
+    let sanitized: String = module_label
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
         .collect();
-    format!("fai_{sanitized}_{}", def.name)
+    format!("fai_{sanitized}_{name}")
 }
 
 /// A definition's parameter count, read from its binding (body-edit-stable, so it
@@ -267,6 +277,83 @@ fn no_entry_point() -> Diagnostic {
         tooling_span(),
     )
 }
+
+/// The outcome of building a run bundle: the portable program (if it compiled
+/// cleanly) and any diagnostics that must be reported first.
+#[derive(Debug, Clone)]
+pub struct RunBundleResult {
+    /// The serializable program, or `None` if there is no `main` or a reachable
+    /// definition failed to compile.
+    pub bundle: Option<WireBundle>,
+    /// Diagnostics produced while preparing the bundle.
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Builds a portable [`WireBundle`] for the closure reachable from `file`'s
+/// `main`, ready to ship to an isolated worker. The front end runs here (warm in
+/// the daemon); the worker only reconstructs and JITs.
+#[must_use]
+pub fn build_run_bundle(db: &dyn Db, file: SourceFile) -> RunBundleResult {
+    if !has_main(db, file) {
+        return RunBundleResult { bundle: None, diagnostics: vec![no_entry_point()] };
+    }
+    let reachable = reachable_defs(db, file);
+    let diagnostics = precompile_diagnostics(db, &reachable);
+    if diagnostics.iter().any(|d| d.severity == Severity::Error) {
+        return RunBundleResult { bundle: None, diagnostics };
+    }
+
+    let module_of = |d: DefId| module_label(db, d);
+    let defs: Vec<WireDef> = reachable
+        .iter()
+        .filter_map(|d| {
+            let def_file = db.source_file(d.file)?;
+            let lowered = rc(db, def_file, d.name);
+            Some(def_to_wire(&lowered, &module_of, arity_of(db, *d)))
+        })
+        .collect();
+    let entry = DefId::new(file.source(db), Symbol::intern(ENTRY));
+    let bundle = WireBundle {
+        entry: WireDefId { module: module_label(db, entry), name: ENTRY.to_owned() },
+        defs,
+    };
+    RunBundleResult { bundle: Some(bundle), diagnostics }
+}
+
+/// Reconstructs a [`WireBundle`] and JIT-runs its entry, returning the exit code.
+/// Runs in the (database-free) worker process; applies any requested resource
+/// limits first.
+#[must_use]
+pub fn jit_run_bundle(bundle: &WireBundle) -> i32 {
+    apply_run_limits();
+    let rebuilt = from_wire(bundle);
+    let labels = rebuilt.module_labels;
+    let arities = rebuilt.arities;
+    let namer = |d: DefId| mangle(labels.get(&d.file).map_or("M", String::as_str), d.name.as_str());
+    let arity = |d: DefId| arities.get(&d).copied().unwrap_or(0);
+    fai_codegen::jit_run(&rebuilt.defs, rebuilt.entry, &namer, &arity)
+}
+
+/// Applies self-imposed resource limits from the environment (set by the daemon
+/// when supervising a run). `RLIMIT_CPU` (seconds) is the default guard;
+/// `RLIMIT_AS` (bytes) is opt-in. A no-op off Unix.
+#[cfg(unix)]
+fn apply_run_limits() {
+    use nix::sys::resource::{Resource, setrlimit};
+    if let Ok(secs) = std::env::var("FAI_RUN_CPU_SECS").map(|v| v.parse::<u64>())
+        && let Ok(secs) = secs
+    {
+        let _ = setrlimit(Resource::RLIMIT_CPU, secs, secs);
+    }
+    if let Ok(bytes) = std::env::var("FAI_RUN_AS_BYTES").map(|v| v.parse::<u64>())
+        && let Ok(bytes) = bytes
+    {
+        let _ = setrlimit(Resource::RLIMIT_AS, bytes, bytes);
+    }
+}
+
+#[cfg(not(unix))]
+fn apply_run_limits() {}
 
 /// Writes the objects and the runtime archive to a temporary directory and links
 /// them into `out` with the system C compiler.
