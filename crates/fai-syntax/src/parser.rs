@@ -1844,5 +1844,37 @@ mod proptests {
             prop_assert!(m.types.iter().all(|t| !matches!(t.kind, crate::ast::TypeKind::Error)));
             prop_assert!(m.items.iter().all(|i| !matches!(i.kind, ItemKind::Error)));
         }
+
+        /// A union declaration of any width plus a `match` covering every
+        /// constructor is valid data-layer syntax, so it parses with no
+        /// diagnostics and no recovery nodes.
+        #[test]
+        fn valid_union_and_match_parses_clean(n in 1usize..8) {
+            let variants =
+                (0..n).map(|i| format!("  | C{i} Int")).collect::<Vec<_>>().join("\n");
+            let arms =
+                (0..n).map(|i| format!("  | C{i} v -> v + {i}")).collect::<Vec<_>>().join("\n");
+            let src =
+                format!("module M\ntype T =\n{variants}\nlet eval t =\n  match t with\n{arms}\n");
+            let parsed = parse_module(SourceId::new(0), &src);
+            prop_assert!(parsed.diagnostics.is_empty(), "diagnostics: {:?}\n{}", parsed.diagnostics, src);
+            let m = &parsed.module;
+            prop_assert!(m.exprs.iter().all(|e| !matches!(e.kind, ExprKind::Error)));
+            prop_assert!(m.pats.iter().all(|p| !matches!(p.kind, crate::ast::PatKind::Error)));
+            prop_assert!(m.types.iter().all(|t| !matches!(t.kind, crate::ast::TypeKind::Error)));
+            prop_assert!(m.items.iter().all(|i| !matches!(i.kind, ItemKind::Error)));
+        }
+
+        /// A record literal of indexed labels (always distinct, never a keyword)
+        /// parses cleanly with no recovery nodes.
+        #[test]
+        fn valid_record_literal_parses_clean(n in 1usize..8) {
+            let fields = (0..n).map(|i| format!("l{i} = {i}")).collect::<Vec<_>>().join(", ");
+            let src = format!("module M\nlet r = {{ {fields} }}\n");
+            let parsed = parse_module(SourceId::new(0), &src);
+            prop_assert!(parsed.diagnostics.is_empty(), "diagnostics: {:?}", parsed.diagnostics);
+            let m = &parsed.module;
+            prop_assert!(m.exprs.iter().all(|e| !matches!(e.kind, ExprKind::Error)));
+        }
     }
 }

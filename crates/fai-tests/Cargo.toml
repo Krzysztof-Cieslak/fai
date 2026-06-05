@@ -53,5 +53,9 @@ harness = false
 name = "daemon"
 harness = false
 
+[[bench]]
+name = "data_layer"
+harness = false
+
 [lints]
 workspace = true
