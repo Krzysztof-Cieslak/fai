@@ -14,11 +14,16 @@
 //!
 //! ```text
 //! //~ TYPE name : Int -> Int      -- assert binding `name`'s type renders thus
+//! //~ LOCAL f.x : Int             -- assert the inferred type of local `x` in `f`
 //! //~ ERROR FAI3004               -- assert at least one error with this code
 //! //~ WARN  FAI2010               -- assert at least one warning with this code
 //! //~ COUNT ERROR 2               -- assert the exact number of error diagnostics
 //! //~ CLEAN                       -- assert the file has no error diagnostics
 //! ```
+//!
+//! `LOCAL` assertions check **inferred** types of parameters, `let`-bound
+//! locals, and lambda binders inside a function body — the part of inference
+//! that public-signature assertions (which report the *declared* scheme) miss.
 //!
 //! A file with no `ERROR`/`COUNT`/`CLEAN` annotation is required to be clean.
 
@@ -64,6 +69,16 @@ impl CheckOutcome {
     #[must_use]
     pub fn has_code(&self, code: &str) -> bool {
         self.diagnostics.iter().any(|d| d.code.as_str() == code)
+    }
+
+    /// The inferred type of local `var` in function `func`'s body, rendered with
+    /// canonical names in isolation. `None` if the function or local is absent.
+    #[must_use]
+    pub fn local_type(&self, func: &str, var: &str) -> Option<String> {
+        fai_types::def_local_types(&self.db, self.file, Symbol::intern(func))
+            .into_iter()
+            .find(|(name, _)| name == var)
+            .map(|(_, ty)| fai_types::render_canonical(&ty))
     }
 }
 
@@ -190,6 +205,7 @@ fn raw_local_types(source: &str, fn_name: &str) -> Vec<(String, fai_types::Ty)> 
 #[derive(Debug, PartialEq, Eq)]
 enum Expect {
     Type { name: String, rendered: String },
+    Local { func: String, var: String, rendered: String },
     Error(String),
     Warn(String),
     Count { severity: Severity, n: usize },
@@ -209,6 +225,17 @@ fn parse_annotations(source: &str) -> Vec<Expect> {
                 if let Some((name, rendered)) = arg.split_once(':') {
                     out.push(Expect::Type {
                         name: name.trim().to_owned(),
+                        rendered: rendered.trim().to_owned(),
+                    });
+                }
+            }
+            "LOCAL" => {
+                if let Some((path, rendered)) = arg.split_once(':')
+                    && let Some((func, var)) = path.trim().split_once('.')
+                {
+                    out.push(Expect::Local {
+                        func: func.trim().to_owned(),
+                        var: var.trim().to_owned(),
                         rendered: rendered.trim().to_owned(),
                     });
                 }
@@ -251,6 +278,15 @@ pub fn run_annotated(label: &str, source: &str) {
                 assert_eq!(
                     got, rendered,
                     "[{label}] type of `{name}`: expected `{rendered}`, got `{got}`"
+                );
+            }
+            Expect::Local { func, var, rendered } => {
+                let got = outcome
+                    .local_type(func, var)
+                    .unwrap_or_else(|| panic!("[{label}] no local `{var}` in `{func}`"));
+                assert_eq!(
+                    &got, rendered,
+                    "[{label}] type of local `{func}.{var}`: expected `{rendered}`, got `{got}`"
                 );
             }
             Expect::Error(code) => assert!(

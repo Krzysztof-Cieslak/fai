@@ -124,15 +124,17 @@ let-generalization, the required-signature rule, contract typing), and `fai-ide`
 cross-module firewall is proven by the incremental verifier. See decisions
 **D36–D44** for the choices made while implementing it.
 
-> **TODO (update when M4 lands):** The integration test fixtures under
-> `crates/fai-tests/tests/fixtures/typed/` (including the poker-game model in
-> `Card.fai`, `HandEval.fai`, `Poker.fai`) encode card ranks, suits, and game
-> state as `Int`/`Bool`/tuples because records, ADTs, and `match` are not
-> available yet. When M4 lands, rewrite these fixtures using `type` declarations,
-> record literals, and `match` expressions — both to dogfood M4 and to give the
-> type-checker a richer real-world corpus. Also promote `Hello.fai` and any other
-> capability-using samples from the future-surface bucket into the typecheck-clean
-> set once M3/M5 land.
+> **TODO (update when M4 lands):** The real-world integration test fixtures under
+> `crates/fai-tests/tests/fixtures/typed/` (the poker model in `Card.fai`,
+> `HandEval.fai`, `Poker.fai`, plus `Geometry.fai`, `Rational.fai`, `Matrix2.fai`,
+> `Combinators.fai`) encode domain data as `Int`/`Float`/`Bool`/tuples because
+> records, ADTs, and `match` are not available yet (e.g. vectors and matrices are
+> bare tuples, hands are 5-tuples). When M4 lands, rewrite them using `type`
+> declarations, record literals, and `match` — both to dogfood M4 and to give the
+> checker a richer real-world corpus — and revisit the `//~ LOCAL` assertions in
+> `crates/fai-tests/tests/real_world_locals.rs`. Also promote `Hello.fai` and any
+> other capability-using samples from the future-surface bucket into the
+> typecheck-clean set once M3/M5 land.
 
 **Goal:** type the pure functional core; enforce that every `public` binding has
 an explicit signature.

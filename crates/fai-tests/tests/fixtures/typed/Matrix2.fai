@@ -1,0 +1,118 @@
+module Matrix2
+
+// 2x2 matrices over Float, stored row-major as a 4-tuple:
+//   (a, b,
+//    c, d)
+// Every operation destructures the 4-tuple, giving rich Float local inference.
+
+//~ TYPE matrix : Float -> Float -> Float -> Float -> Float * Float * Float * Float
+public matrix : Float -> Float -> Float -> Float -> Float * Float * Float * Float
+let matrix a b c d = (a, b, c, d)
+
+//~ TYPE identity : Float * Float * Float * Float
+public identity : Float * Float * Float * Float
+let identity = (1.0, 0.0, 0.0, 1.0)
+
+//~ TYPE zero : Float * Float * Float * Float
+public zero : Float * Float * Float * Float
+let zero = (0.0, 0.0, 0.0, 0.0)
+
+// ── element-wise ─────────────────────────────────────────────────────────────
+
+//~ TYPE addM : Float * Float * Float * Float -> Float * Float * Float * Float -> Float * Float * Float * Float
+//~ LOCAL addM.a1 : Float
+//~ LOCAL addM.d2 : Float
+public addM : Float * Float * Float * Float -> Float * Float * Float * Float -> Float * Float * Float * Float
+let addM m n =
+  let (a1, b1, c1, d1) = m
+  let (a2, b2, c2, d2) = n
+  (a1 + a2, b1 + b2, c1 + c2, d1 + d2)
+
+//~ TYPE scaleM : Float -> Float * Float * Float * Float -> Float * Float * Float * Float
+//~ LOCAL scaleM.a : Float
+//~ LOCAL scaleM.d : Float
+public scaleM : Float -> Float * Float * Float * Float -> Float * Float * Float * Float
+let scaleM k m =
+  let (a, b, c, d) = m
+  (k * a, k * b, k * c, k * d)
+
+// ── matrix multiply ──────────────────────────────────────────────────────────
+
+//~ TYPE mulM : Float * Float * Float * Float -> Float * Float * Float * Float -> Float * Float * Float * Float
+//~ LOCAL mulM.a1 : Float
+//~ LOCAL mulM.b2 : Float
+//~ LOCAL mulM.r11 : Float
+//~ LOCAL mulM.r12 : Float
+//~ LOCAL mulM.r21 : Float
+//~ LOCAL mulM.r22 : Float
+public mulM : Float * Float * Float * Float -> Float * Float * Float * Float -> Float * Float * Float * Float
+let mulM m n =
+  let (a1, b1, c1, d1) = m
+  let (a2, b2, c2, d2) = n
+  let r11 = a1 * a2 + b1 * c2
+  let r12 = a1 * b2 + b1 * d2
+  let r21 = c1 * a2 + d1 * c2
+  let r22 = c1 * b2 + d1 * d2
+  (r11, r12, r21, r22)
+
+// ── determinant / trace / transpose ──────────────────────────────────────────
+
+//~ TYPE determinant : Float * Float * Float * Float -> Float
+//~ LOCAL determinant.a : Float
+//~ LOCAL determinant.b : Float
+//~ LOCAL determinant.c : Float
+//~ LOCAL determinant.d : Float
+public determinant : Float * Float * Float * Float -> Float
+let determinant m =
+  let (a, b, c, d) = m
+  a * d - b * c
+
+//~ TYPE trace : Float * Float * Float * Float -> Float
+public trace : Float * Float * Float * Float -> Float
+let trace m =
+  let (a, b, c, d) = m
+  a + d
+
+//~ TYPE transpose : Float * Float * Float * Float -> Float * Float * Float * Float
+public transpose : Float * Float * Float * Float -> Float * Float * Float * Float
+let transpose m =
+  let (a, b, c, d) = m
+  (a, c, b, d)
+
+// ── inverse (returns the zero matrix when singular) ──────────────────────────
+
+//~ TYPE inverse : Float * Float * Float * Float -> Float * Float * Float * Float
+//~ LOCAL inverse.det : Float
+//~ LOCAL inverse.a : Float
+//~ LOCAL inverse.invDet : Float
+public inverse : Float * Float * Float * Float -> Float * Float * Float * Float
+let inverse m =
+  let (a, b, c, d) = m
+  let det = determinant m
+  if det = 0.0 then zero
+  else
+    let invDet = 1.0 / det
+    (d * invDet, (0.0 - b) * invDet, (0.0 - c) * invDet, a * invDet)
+
+// ── matrix-vector product (Vec2 = Float * Float) ─────────────────────────────
+
+//~ TYPE apply : Float * Float * Float * Float -> Float * Float -> Float * Float
+//~ LOCAL apply.x : Float
+//~ LOCAL apply.y : Float
+//~ LOCAL apply.a : Float
+public apply : Float * Float * Float * Float -> Float * Float -> Float * Float
+let apply m v =
+  let (a, b, c, d) = m
+  let (x, y) = v
+  (a * x + b * y, c * x + d * y)
+
+// ── Contracts ────────────────────────────────────────────────────────────────
+
+example: determinant identity = 1.0
+example: determinant (2.0, 0.0, 0.0, 3.0) = 6.0
+example: trace identity = 2.0
+example: transpose (1.0, 2.0, 3.0, 4.0) = (1.0, 3.0, 2.0, 4.0)
+example: mulM identity identity = identity
+example: apply identity (5.0, 7.0) = (5.0, 7.0)
+example: addM identity zero = identity
+forall a b c d: trace (a, b, c, d) = a + d
