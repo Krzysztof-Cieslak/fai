@@ -1,0 +1,33 @@
+[package]
+name = "fai-codegen"
+description = "Core IR to Cranelift IR, with AOT object emission and an in-process JIT."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+license.workspace = true
+
+[dependencies]
+fai-syntax.workspace = true
+fai-resolve.workspace = true
+fai-types.workspace = true
+fai-core.workspace = true
+# Linked as an rlib so the JIT can resolve runtime symbols by address, and for
+# the shared object-layout constants.
+fai-runtime.workspace = true
+cranelift-codegen.workspace = true
+cranelift-frontend.workspace = true
+cranelift-module.workspace = true
+cranelift-jit.workspace = true
+cranelift-object.workspace = true
+cranelift-native.workspace = true
+target-lexicon.workspace = true
+rustc-hash.workspace = true
+
+[dev-dependencies]
+fai-db.workspace = true
+fai-rc.workspace = true
+fai-span.workspace = true
+
+[lints]
+workspace = true

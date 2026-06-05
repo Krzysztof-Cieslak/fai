@@ -11,6 +11,7 @@ members = [
     "crates/fai-ide",
     "crates/fai-core",
     "crates/fai-rc",
+    "crates/fai-codegen",
     "crates/fai-runtime",
     "crates/fai-driver",
     "crates/fai-cli",
@@ -52,6 +53,16 @@ proptest = "1"
 # Microbenchmark harness (lean; throughput counters). Wall-clock benches are for
 # local profiling — CI gates performance via the deterministic guard tests.
 divan = "0.1"
+# Native code generation backend (M3): Cranelift, plus object emission and the
+# target triple. Pinned together; JIT and AOT share one codegen path.
+cranelift-codegen = "0.132"
+cranelift-frontend = "0.132"
+cranelift-module = "0.132"
+cranelift-jit = "0.132"
+cranelift-object = "0.132"
+cranelift-native = "0.132"
+target-lexicon = "0.13"
+object = "0.39"
 
 # Internal crates (path deps, versions inherited from the workspace).
 fai-span = { path = "crates/fai-span" }
