@@ -1,0 +1,10 @@
+module Int
+
+// Operations on the built-in `Int` type. Reach them qualified: `Int.toString`.
+/// Render an integer in base 10.
+public toString : Int -> String
+let toString n = Prim.intToString n
+
+/// Convert an integer to the nearest `Float`.
+public toFloat : Int -> Float
+let toFloat n = Prim.intToFloat n

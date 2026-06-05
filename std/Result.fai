@@ -1,0 +1,31 @@
+module Result
+
+// Operations on the auto-imported `Result` type. Reach them qualified:
+// `Result.map`, `Result.mapError`, …
+/// Map over the success value of a `Result`.
+public map : ('a -> 'b) -> Result 'a 'err -> Result 'b 'err
+let map f result =
+  match result with
+  | Ok x -> Ok (f x)
+  | Err e -> Err e
+
+/// Map over the error value of a `Result`.
+public mapError : ('a -> 'b) -> Result 'ok 'a -> Result 'ok 'b
+let mapError f result =
+  match result with
+  | Ok x -> Ok x
+  | Err e -> Err (f e)
+
+/// Whether a `Result` is `Ok`.
+public isOk : Result 'ok 'err -> Bool
+let isOk result =
+  match result with
+  | Ok _ -> true
+  | Err _ -> false
+
+/// Whether a `Result` is `Err`.
+public isErr : Result 'ok 'err -> Bool
+let isErr result =
+  match result with
+  | Ok _ -> false
+  | Err _ -> true

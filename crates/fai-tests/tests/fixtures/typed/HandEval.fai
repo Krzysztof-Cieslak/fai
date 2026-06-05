@@ -68,19 +68,19 @@ let rankValue r =
 
 //~ TYPE ranks : List { rank : Rank, suit : Suit } -> List Int
 public ranks : List Card -> List Int
-let ranks hand = map (fun c -> rankValue c.rank) hand
+let ranks hand = List.map (fun c -> rankValue c.rank) hand
 
 //~ TYPE suits : List { rank : Rank, suit : Suit } -> List Suit
 public suits : List Card -> List Suit
-let suits hand = map (fun c -> c.suit) hand
+let suits hand = List.map (fun c -> c.suit) hand
 
 // ── Private counting helpers ─────────────────────────────────────────────────
 
 // How many entries of `rs` equal `v`.
-let countOf v rs = length (filter (fun x -> x = v) rs)
+let countOf v rs = List.length (List.filter (fun x -> x = v) rs)
 
 // The largest value in `xs` (0 when empty; ranks are always >= 2).
-let maximum xs = foldl (fun acc x -> if x > acc then x else acc) 0 xs
+let maximum xs = List.foldl (fun acc x -> if x > acc then x else acc) 0 xs
 
 // Whether the sorted list steps up by exactly one at each position.
 let consecutive xs =
@@ -99,22 +99,22 @@ public isFlush : List Card -> Bool
 let isFlush hand =
   match suits hand with
   | [] -> false
-  | s :: rest -> all (fun x -> x = s) rest
+  | s :: rest -> List.all (fun x -> x = s) rest
 
 // A straight: the ranks form five consecutive values.
 //~ TYPE isStraight : List { rank : Rank, suit : Suit } -> Bool
 public isStraight : List Card -> Bool
-let isStraight hand = consecutive (sort (ranks hand))
+let isStraight hand = consecutive (List.sort (ranks hand))
 
 // The size of the largest same-rank group (1..4).
 //~ TYPE maxCount : List Int -> Int
 public maxCount : List Int -> Int
-let maxCount rs = foldl (fun acc v -> if countOf v rs > acc then countOf v rs else acc) 0 rs
+let maxCount rs = List.foldl (fun acc v -> if countOf v rs > acc then countOf v rs else acc) 0 rs
 
 // The number of ranks that appear exactly twice.
 //~ TYPE pairCount : List Int -> Int
 public pairCount : List Int -> Int
-let pairCount rs = length (filter (fun v -> countOf v rs = 2) rs) / 2
+let pairCount rs = List.length (List.filter (fun v -> countOf v rs = 2) rs) / 2
 
 // ── Classification ───────────────────────────────────────────────────────────
 

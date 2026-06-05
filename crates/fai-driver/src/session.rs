@@ -34,7 +34,7 @@ pub struct Session {
     /// Per-file stats keyed by workspace-relative path (user files only).
     stats: FxHashMap<Utf8PathBuf, FileStat>,
     /// The source files currently present on disk (excludes deleted files whose
-    /// salsa input lingers, and the synthetic prelude).
+    /// salsa input lingers, and the synthetic standard library).
     live: FxHashSet<SourceId>,
 }
 
@@ -48,9 +48,9 @@ impl Session {
             return Err(DriverError::NotADirectory(root));
         }
         let mut db = FaiDatabase::new();
-        // The embedded prelude is loaded first as a high-durability synthetic
-        // file, so its module name is reserved and rarely-changing.
-        fai_types::prelude::load_prelude(&mut db);
+        // The embedded standard library is loaded first as high-durability
+        // synthetic files, so their module names are reserved and rarely-changing.
+        fai_types::std_lib::load_std(&mut db);
         let mut session =
             Self { db, root, stats: FxHashMap::default(), live: FxHashSet::default() };
         session.sync_from_disk()?;
@@ -137,14 +137,14 @@ impl Session {
     }
 
     /// The user-facing source files currently present (excludes the synthetic
-    /// prelude and deleted files).
+    /// standard library and deleted files).
     #[must_use]
     pub fn user_files(&self) -> Vec<SourceFile> {
         self.db
             .all_source_files()
             .into_iter()
             .filter(|f| self.live.contains(&f.source(&self.db)))
-            .filter(|f| !fai_types::prelude::is_prelude_path(f.path(&self.db)))
+            .filter(|f| !fai_db::is_std_path(f.path(&self.db)))
             .collect()
     }
 
@@ -183,7 +183,7 @@ impl Session {
     #[must_use]
     pub fn select_files(&self, path: Option<&Utf8Path>) -> Vec<SourceFile> {
         let db = self.db();
-        // Never select the synthetic prelude: it is a dependency, not user code.
+        // Never select the synthetic standard library: a dependency, not user code.
         let files = self.user_files();
         let Some(path) = path else {
             return files;

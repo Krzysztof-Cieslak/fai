@@ -6,9 +6,9 @@ let grow balance years =
 
 public main : Runtime -> Unit
 let main runtime =
-  let a = Console.writeLine runtime (intToString (grow 1000 0))
-  let b = Console.writeLine runtime (intToString (grow 1000 1))
-  Console.writeLine runtime (intToString (grow 1000 3))
+  let a = Console.writeLine runtime (Int.toString (grow 1000 0))
+  let b = Console.writeLine runtime (Int.toString (grow 1000 1))
+  Console.writeLine runtime (Int.toString (grow 1000 3))
 
 //~ OUTPUT 1000
 //~ OUTPUT 1100

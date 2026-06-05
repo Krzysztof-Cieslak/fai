@@ -280,7 +280,7 @@ mod tests {
     #[test]
     fn pipe_chain_is_one_item() {
         // Same-column lines led by `|>` continue the item: no inner Sep.
-        let src = "module M\nlet describe n =\n  n\n  |> inc\n  |> intToString";
+        let src = "module M\nlet describe n =\n  n\n  |> inc\n  |> Int.toString";
         // One Sep (header -> binding); none inside the block.
         assert_eq!(count(src, TokenKind::LayoutSep), 1);
         assert_eq!(count(src, TokenKind::LayoutOpen), 1);
@@ -477,7 +477,7 @@ mod tests {
     fn snapshot_pipe_chain() {
         insta::assert_snapshot!(
             "pipe_chain",
-            render("module M\nlet describe n =\n  n\n  |> inc\n  |> intToString"),
+            render("module M\nlet describe n =\n  n\n  |> inc\n  |> Int.toString"),
         );
     }
 

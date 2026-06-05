@@ -53,7 +53,7 @@ fn print_main(expr: &str) -> String {
 
 #[test]
 fn arithmetic() {
-    let (out, code) = build_and_run(&print_main("intToString (1 + 2 * 3)"));
+    let (out, code) = build_and_run(&print_main("Int.toString (1 + 2 * 3)"));
     assert_eq!(out, "7\n");
     assert_eq!(code, Some(0));
 }
@@ -74,7 +74,7 @@ fn conditional() {
 
 #[test]
 fn cross_definition_call() {
-    let src = "module Main\n\nlet double x = x + x\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (intToString (double 21))\n";
+    let src = "module Main\n\nlet double x = x + x\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (Int.toString (double 21))\n";
     let (out, code) = build_and_run(src);
     assert_eq!(out, "42\n");
     assert_eq!(code, Some(0));
@@ -82,7 +82,7 @@ fn cross_definition_call() {
 
 #[test]
 fn higher_order_and_partial_application() {
-    let src = "module Main\n\nlet add x y = x + y\n\nlet apply f x = f x\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (intToString (apply (add 40) 2))\n";
+    let src = "module Main\n\nlet add x y = x + y\n\nlet apply f x = f x\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (Int.toString (apply (add 40) 2))\n";
     let (out, code) = build_and_run(src);
     assert_eq!(out, "42\n");
     assert_eq!(code, Some(0));

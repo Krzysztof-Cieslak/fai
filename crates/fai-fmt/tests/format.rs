@@ -51,7 +51,7 @@ fn signatures_and_operators() {
 
 #[test]
 fn pipes_collapse_when_they_fit() {
-    let src = "module Funcs\npublic describe : Int -> String\nlet describe n =\n  n\n  |> inc\n  |> intToString";
+    let src = "module Funcs\npublic describe : Int -> String\nlet describe n =\n  n\n  |> inc\n  |> Int.toString";
     insta::assert_snapshot!("pipes", fmt(src));
     assert_idempotent(src);
 }
@@ -604,11 +604,11 @@ fn alias_and_record_type_declarations_format() {
 
 #[test]
 fn match_expression_formats_and_round_trips() {
-    let src = "module M\npublic describe : Option Int -> String\nlet describe o =\n  match o with\n  | None -> \"none\"\n  | Some n -> intToString n";
+    let src = "module M\npublic describe : Option Int -> String\nlet describe o =\n  match o with\n  | None -> \"none\"\n  | Some n -> Int.toString n";
     let out = assert_canonical(src);
     assert!(out.contains("match o with"), "out:\n{out}");
     assert!(out.contains("| None -> \"none\""), "out:\n{out}");
-    assert!(out.contains("| Some n -> intToString n"), "out:\n{out}");
+    assert!(out.contains("| Some n -> Int.toString n"), "out:\n{out}");
 }
 
 #[test]

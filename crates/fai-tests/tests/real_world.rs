@@ -95,7 +95,7 @@ fn real_world_programs_run_under_the_jit() {
 
     for (name, src, expected) in fixtures() {
         let mut db = fai_db::FaiDatabase::new();
-        fai_types::prelude::load_prelude(&mut db);
+        fai_types::std_lib::load_std(&mut db);
         let id = db.add_source(name.clone().into(), src);
         let file = db.source_file(id).unwrap();
 

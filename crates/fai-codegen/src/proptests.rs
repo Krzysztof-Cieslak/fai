@@ -143,7 +143,7 @@ proptest! {
     ) {
         let expected = eval(&e, x);
         let src = format!(
-            "module M\n\nlet f x = {}\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (intToString (f {}))\n",
+            "module M\n\nlet f x = {}\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (Int.toString (f {}))\n",
             render(&e),
             render_arg(x),
         );
@@ -160,7 +160,7 @@ proptest! {
     ) {
         let expected = if eval_b(&b, x) { 1 } else { 0 };
         let src = format!(
-            "module M\n\nlet f x = if {} then 1 else 0\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (intToString (f {}))\n",
+            "module M\n\nlet f x = if {} then 1 else 0\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (Int.toString (f {}))\n",
             render_b(&b),
             render_arg(x),
         );

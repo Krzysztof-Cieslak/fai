@@ -14,6 +14,19 @@ fn db_with(files: &[(&str, &str)]) -> (FaiDatabase, Vec<SourceFile>) {
     (db, handles)
 }
 
+/// Like [`db_with`], but with the standard library loaded so qualified calls
+/// (`Int.toFloat`, …) and auto-imported names resolve.
+fn db_with_std(files: &[(&str, &str)]) -> (FaiDatabase, Vec<SourceFile>) {
+    let mut db = FaiDatabase::new();
+    crate::std_lib::load_std(&mut db);
+    let mut handles = Vec::new();
+    for (path, text) in files {
+        let id = db.add_source((*path).into(), (*text).to_owned());
+        handles.push(db.source_file(id).unwrap());
+    }
+    (db, handles)
+}
+
 /// The rendered inferred type of a top-level binding.
 fn type_of(db: &dyn Db, file: SourceFile, name: &str) -> String {
     render_scheme(&def_type(db, file, fai_syntax::Symbol::intern(name)))
@@ -161,20 +174,34 @@ fn good_contract_is_clean() {
 }
 
 #[test]
-fn embedded_prelude_typechecks() {
+fn embedded_std_library_typechecks() {
     let mut db = FaiDatabase::new();
-    let id = crate::prelude::load_prelude(&mut db);
-    let file = db.source_file(id).unwrap();
-    assert!(check_codes(&db, file).is_empty(), "prelude has errors: {:?}", check_codes(&db, file));
-    assert_eq!(type_of(&db, file, "identity"), "'a -> 'a");
-    assert_eq!(type_of(&db, file, "const"), "'a -> 'b -> 'a");
+    let ids = crate::std_lib::load_std(&mut db);
+    assert!(!ids.is_empty(), "the standard library should not be empty");
+    let mut prelude = None;
+    for id in ids {
+        let file = db.source_file(id).unwrap();
+        assert!(
+            check_codes(&db, file).is_empty(),
+            "{} has errors: {:?}",
+            file.path(&db),
+            check_codes(&db, file)
+        );
+        if file.path(&db).ends_with("Prelude.fai") {
+            prelude = Some(file);
+        }
+    }
+    let prelude = prelude.expect("the standard library should contain Prelude.fai");
+    assert_eq!(type_of(&db, prelude, "identity"), "'a -> 'a");
+    assert_eq!(type_of(&db, prelude, "const"), "'a -> 'b -> 'a");
 }
 
 #[test]
-fn user_can_use_prelude_function() {
+fn user_can_use_qualified_std_function() {
     let mut db = FaiDatabase::new();
-    crate::prelude::load_prelude(&mut db);
-    let id = db.add_source("M.fai".into(), "module M\n\nlet n = length [1, 2, 3]\n".to_owned());
+    crate::std_lib::load_std(&mut db);
+    let id =
+        db.add_source("M.fai".into(), "module M\n\nlet n = List.length [1, 2, 3]\n".to_owned());
     let file = db.source_file(id).unwrap();
     assert!(check_codes(&db, file).is_empty(), "got {:?}", check_codes(&db, file));
     assert_eq!(type_of(&db, file, "n"), "Int");
@@ -550,8 +577,8 @@ fn numeric_literal_flexes_to_float_in_context() {
 
 #[test]
 fn mixing_fixed_int_and_float_is_rejected() {
-    // `floatToInt 1.0` is a fixed `Int`; adding a `Float` literal cannot coerce.
-    let (db, f) = db_with(&[("M.fai", "module M\n\nlet bad = floatToInt 1.0 + 2.0\n")]);
+    // `Float.toInt 1.0` is a fixed `Int`; adding a `Float` literal cannot coerce.
+    let (db, f) = db_with_std(&[("M.fai", "module M\n\nlet bad = Float.toInt 1.0 + 2.0\n")]);
     assert!(
         check_codes(&db, f[0]).contains(&"FAI3001".to_owned()),
         "got {:?}",
@@ -562,7 +589,7 @@ fn mixing_fixed_int_and_float_is_rejected() {
 #[test]
 fn conversion_intrinsics_have_expected_types() {
     let (db, f) =
-        db_with(&[("M.fai", "module M\n\nlet toF = intToFloat\n\nlet toI = floatToInt\n")]);
+        db_with_std(&[("M.fai", "module M\n\nlet toF = Int.toFloat\n\nlet toI = Float.toInt\n")]);
     assert_eq!(type_of(&db, f[0], "toF"), "Int -> Float");
     assert_eq!(type_of(&db, f[0], "toI"), "Float -> Int");
 }
@@ -579,7 +606,7 @@ fn ordering_generalizes_like_equality() {
 #[test]
 fn prelude_compare_is_polymorphic() {
     let mut db = FaiDatabase::new();
-    crate::prelude::load_prelude(&mut db);
+    crate::std_lib::load_std(&mut db);
     let id = db.add_source("M.fai".into(), "module M\n\nlet cmp a b = compare a b\n".to_owned());
     let file = db.source_file(id).unwrap();
     assert!(check_codes(&db, file).is_empty(), "got {:?}", check_codes(&db, file));

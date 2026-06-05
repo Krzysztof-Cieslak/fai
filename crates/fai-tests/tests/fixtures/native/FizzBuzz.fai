@@ -4,7 +4,7 @@ let classify n =
   if n % 15 = 0 then "FizzBuzz"
   else if n % 3 = 0 then "Fizz"
   else if n % 5 = 0 then "Buzz"
-  else intToString n
+  else Int.toString n
 
 // A recursive print loop threading the runtime capability.
 let loop runtime i n =

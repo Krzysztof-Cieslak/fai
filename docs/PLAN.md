@@ -767,7 +767,8 @@ Resolved while implementing **M2** (the type-system layer):
   is embedded (`include_str!`) and loaded as a synthetic high-durability
   `SourceFile`; it is reachable unqualified everywhere (the one exception),
   excluded from default `symbols`/`check`, and shadowing a prelude name warns
-  (`FAI2010`).
+  (`FAI2010`). *(Amended by D73/D74: the embedded library is now a curated,
+  multi-file `std/`, and the Rust intrinsics are prelude-private `Prim.*`.)*
 - **D44 Code intelligence:** `fai-ide` returns typed serde envelopes (one per
   command) with `schemaVersion`; targets address by `Module.name`, bare-unique
   name, or `file:line:col`. `refs`/`dependents` assemble reverse indices on
@@ -952,7 +953,9 @@ Resolved while implementing **M3.5** (the daemon, persistence, and protocol):
   are visible unqualified in every module. Only genuinely primitive operations
   stay in Rust as a small `INTRINSICS` set. `Float` is always boxed; the
   arithmetic/comparison primitive is selected from the operand type during Core
-  lowering.
+  lowering. *(Amended by D73/D74: split into a curated, multi-file `std/`; only a
+  small `Prelude` module is auto-imported and the rest is reached qualified, and
+  the `INTRINSICS` are prelude-private `Prim.*` re-exported under clean names.)*
 - **D72 Row-polymorphic field-access codegen is staged with M5:** a **monomorphic
   closed** record compiles field access/update to a **constant offset**; a field
   access or `{ r with … }` on a **row-polymorphic** record that is *reachable
@@ -964,6 +967,42 @@ Resolved while implementing **M3.5** (the daemon, persistence, and protocol):
   `FAI4001`/`FAI4002` (non-exhaustive / unreachable `match`). The unused
   `FAI3009` is retired (the catalog test allows the `FAI4xxx` range in
   `fai-types`).
+- **D73 The standard library is a curated, multi-file `std/` (amends D43, D71):**
+  the embedded library moves from a single `crates/fai-types/src/Prelude.fai` to
+  real `.fai` modules under a top-level **`std/`**, embedded at build time by
+  `crates/fai-types/build.rs` (a generated `include_str!` table) and loaded as
+  synthetic high-durability inputs under the `<std>/` path namespace
+  (`fai_db::is_std_path`, shared so name resolution can classify a file without
+  depending on the loader). Auto-import becomes **curated, Elm-style**: a single
+  module **`Prelude`** is visible unqualified everywhere — forced by the grammar,
+  since there is no qualified-type syntax and no opaque types, so every
+  user-facing type and its constructors must be auto-imported. `Prelude` owns
+  `Option`/`Result`/`Dict`/`Set` (+ constructors) and the free functions
+  `identity`/`const`/`not`/`compare`; **every other operation is reached
+  qualified** through a per-type module (`List.map`, `Option.withDefault`,
+  `Dict.insert`, `String.split`, `Int.toString`, `Float.sqrt`, …). So
+  `Prelude`/`List`/`Option`/`Result`/`Dict`/`Set`/`String`/`Int`/`Float` are
+  reserved module names; `Dict`/`Set` still expose their node constructors (no
+  opaque types yet — noted as future work). Auto-import is a pure tracked
+  `prelude_exports` (the merged interface of the auto-imported set, keyed on the
+  public **name set** for early cutoff: a Prelude *body* edit recomputes nothing
+  downstream) shared by resolution and the type-name fallback; the `Prelude`
+  module is located **among `std/` files only**, so a stray user `module Prelude`
+  cannot hijack or collapse auto-import. The whole sample/fixture/test corpus is
+  rewritten to the qualified form (a hard cutover; no compatibility aliases).
+- **D74 Intrinsics are prelude-private (`Prim.*`) (amends D71):** the Rust
+  intrinsics are no longer bare names anywhere. They are reached only as
+  `Prim.<name>`, and only from inside `std/` modules (`FAI2014` otherwise); the
+  standard library re-exports the user-facing ones under clean qualified names
+  (`Int.toString` wraps `Prim.intToString`, `String.split` wraps `Prim.split`,
+  `Prelude.not` wraps `Prim.not`, …), adding one call of indirection per
+  intrinsic until an inliner exists. New resolution diagnostics: **`FAI2013`** (a
+  name exported by more than one auto-imported module — contributor-facing,
+  detected by the auto-import merge so it stays unit-testable even while the
+  auto-imported set is a single module) and **`FAI2014`** (`Prim` referenced
+  outside `std/`). The `INTRINSICS` name list moves to `fai_resolve::intrinsics`;
+  the loader and built-in `Scheme` table move to `fai_types::std_lib`
+  (`load_std`/`builtin_scheme`).
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected milestones.

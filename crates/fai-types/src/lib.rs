@@ -11,9 +11,9 @@ mod contracts;
 mod exhaustive;
 mod infer;
 mod lower;
-pub mod prelude;
 #[allow(unsafe_code)]
 mod query;
+pub mod std_lib;
 mod ty;
 
 #[cfg(test)]

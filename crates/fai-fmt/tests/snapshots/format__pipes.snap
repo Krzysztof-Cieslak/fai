@@ -5,4 +5,4 @@ expression: fmt(src)
 module Funcs
 
 public describe : Int -> String
-let describe n = n |> inc |> intToString
+let describe n = n |> inc |> Int.toString

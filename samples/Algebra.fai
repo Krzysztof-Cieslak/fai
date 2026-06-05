@@ -1,4 +1,4 @@
 module Algebra
 
-forall xs ys: length (append xs ys) = length xs + length ys
-forall xs: reverse (reverse xs) = xs
+forall xs ys: List.length (List.append xs ys) = List.length xs + List.length ys
+forall xs: List.reverse (List.reverse xs) = xs

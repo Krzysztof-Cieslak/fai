@@ -17,10 +17,14 @@
 > structural ordering** — all compiling to native code (monomorphic records use
 > constant-offset projections; a *row-polymorphic* field access/update reachable
 > from `main` reports `FAI7002`, pending the M5 offset-evidence work). The
-> standard library (`Option`/`Result`, list combinators, `sort`, `Dict`/`Set`,
-> string ops) ships as a real prelude module. Later milestones (interfaces &
-> capabilities, …) define the *intended* interface we build toward. The design is
-> locked (see the decision table below).
+> standard library is a set of real compiled modules under **`std/`** (embedded
+> at build time): an auto-imported `Prelude` (the core types `Option`/`Result`/
+> `Dict`/`Set` with their constructors, plus `identity`/`const`/`not`/`compare`)
+> and qualified operation modules (`List`, `Option`, `Result`, `Dict`, `Set`,
+> `String`, `Int`, `Float` — e.g. `List.map`, `Int.toString`). The few Rust
+> intrinsics are prelude-private, reached only as `Prim.*` inside `std/`. Later
+> milestones (interfaces & capabilities, …) define the *intended* interface we
+> build toward. The design is locked (see the decision table below).
 
 This document is the orientation guide for anyone — human or AI agent — working
 on the Fai compiler. Read it first. For the staged build plan see `docs/PLAN.md`; for
@@ -82,7 +86,7 @@ table **and** the decision log in `docs/PLAN.md`).
 | Type variables | F#-style leading tick: `'a`, `'k 'v` |
 | Equality | `=` (equal) / `<>` (not equal), structural; undefined on function-typed values |
 | Ordering | `< <= > >=` are **structural** over any non-function type (a runtime `compare`; constructor tags order by declaration, records by sorted label); undefined on functions. Generalizes like equality |
-| Arithmetic | `+ - * /` **overloaded over `Int`/`Float`** (F#-style); unconstrained numeric type **defaults to `Int`**; **no implicit `Int`/`Float` coercion** (use `intToFloat`/`floatToInt`) |
+| Arithmetic | `+ - * /` **overloaded over `Int`/`Float`** (F#-style); unconstrained numeric type **defaults to `Int`**; **no implicit `Int`/`Float` coercion** (use `Int.toFloat`/`Float.toInt`) |
 | Comments | `//` line, `(* ... *)` block, `///` doc |
 | Misc syntax | `[1, 2, 3]` lists, `::` cons, `List 'a`; `\|>`, `>>`, `++`; `true`/`false`; `if/then/else`; 64-bit `Int`/`Float` |
 | Algebraic types | Discriminated unions (`type T = \| A \| B 'a`); transparent type aliases (`type Id = …`, acyclic) |
@@ -97,6 +101,7 @@ table **and** the decision log in `docs/PLAN.md`).
 | Memory | **Perceus-style reference counting** (pure + strict ⇒ acyclic heaps ⇒ no cycle collector); reuse analysis enables in-place updates incl. `{ r with ... }` |
 | Representation | Uniform 64-bit boxed/immediate values; canonical record field layout (sorted by label text); monomorphic field access is a **constant offset**; **offset-evidence passing** for *row-polymorphic* field access is staged with the M5 dictionary work (reachable row-poly access reports `FAI7002` for now); dictionaries for interfaces/generics |
 | Determinism | Clock / random / env / IO are reachable only via capabilities |
+| Standard library | Real compiled `.fai` modules under **`std/`**, embedded at build time. One **auto-imported** module, `Prelude`, owns the core types (`Option`/`Result`/`Dict`/`Set` + constructors) and the free functions `identity`/`const`/`not`/`compare`; all other operations are **qualified** under per-type modules (`List.map`, `Option.withDefault`, `Int.toString`, …). `Prelude`/`List`/`Option`/`Result`/`Dict`/`Set`/`String`/`Int`/`Float` are reserved module names. The few Rust **intrinsics** are prelude-private, reached only as `Prim.*` from inside `std/` (`FAI2014` elsewhere) and re-exported under clean names. (`Dict`/`Set` expose their node constructors until opaque types land.) |
 | Compilation model | **Demand-driven (salsa) query engine**; per-workspace **daemon** holds the DB hot, thin CLI client; **content-addressed on-disk cache**; **JIT** for `run`/`test`, **AOT** for `build`; incremental at definition/SCC granularity |
 | Tooling | `fai build/run/check/fmt/test/lsp` + read-only `fai query …` (code intelligence); per-workspace daemon (MessagePack JSON-RPC); global `--message-format=json`; stable error codes `FAInnnn`. Full reference: **`docs/CLI.md`** |
 
@@ -136,6 +141,7 @@ appear as the milestones that need them land — see `docs/PLAN.md`.)
 fai/
 ├── AGENTS.md            # this file
 ├── samples/             # language by example (canonical, tested .fai tour)
+├── std/                 # standard library: real .fai modules, embedded at build time
 ├── docs/
 │   ├── PLAN.md          # milestones, acceptance criteria, risks, decisions
 │   └── CLI.md           # CLI + daemon-protocol reference
@@ -155,7 +161,7 @@ fai/
 │   ├── fai-syntax/      # lexer, parser (recursive descent + Pratt), item tree + AST (M1)
 │   ├── fai-fmt/         # canonical formatter (AST → pretty)         (M1)
 │   ├── fai-resolve/     # module graph, name resolution, visibility  (M1/M2)
-│   ├── fai-types/       # HM inference, rows, dictionaries, exhaustiveness (M2/M4)
+│   ├── fai-types/       # HM inference, rows, dictionaries, exhaustiveness; embeds std/ (build.rs) (M2/M4)
 │   ├── fai-ide/         # code intelligence (powers `fai query` + LSP) (M2/M8)
 │   ├── fai-core/        # typed, desugared Core IR                   (M3)
 │   ├── fai-rc/          # Perceus dup/drop + reuse analysis on Core  (M3/M6)

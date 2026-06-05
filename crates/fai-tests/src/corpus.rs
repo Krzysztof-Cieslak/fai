@@ -135,7 +135,7 @@ pub fn generate(spec: &CorpusSpec) -> Vec<(String, String)> {
 #[must_use]
 pub fn build_db(spec: &CorpusSpec) -> (FaiDatabase, Vec<SourceFile>) {
     let mut db = FaiDatabase::new();
-    fai_types::prelude::load_prelude(&mut db);
+    fai_types::std_lib::load_std(&mut db);
     let mut files = Vec::new();
     for (path, source) in generate(spec) {
         let id = db.add_source(Utf8PathBuf::from(path), source);

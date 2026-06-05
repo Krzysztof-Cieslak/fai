@@ -1,0 +1,43 @@
+module Dict
+
+// An ordered map keyed by any comparable type, backed by a binary search tree.
+// The `Dict` type and its constructors are declared in `Prelude`; build and
+// query dictionaries through these qualified operations (`Dict.insert`, …).
+/// The empty dictionary.
+public empty : Dict 'k 'v
+let empty = DictEmpty
+
+/// Insert or replace the value for `key`.
+public insert : 'k -> 'v -> Dict 'k 'v -> Dict 'k 'v
+let insert key value d =
+  match d with
+  | DictEmpty -> DictNode DictEmpty key value DictEmpty
+  | DictNode l k v r ->
+    if key < k then
+      DictNode (insert key value l) k v r
+    else if key > k then DictNode l k v (insert key value r) else DictNode l key value r
+
+/// Look up the value for `key`.
+public get : 'k -> Dict 'k 'v -> Option 'v
+let get key d =
+  match d with
+  | DictEmpty -> None
+  | DictNode l k v r -> if key < k then get key l else if key > k then get key r else Some v
+
+/// Whether `key` is present.
+public member : 'k -> Dict 'k 'v -> Bool
+let member key d = Option.isSome (get key d)
+
+/// The number of entries.
+public size : Dict 'k 'v -> Int
+let size d =
+  match d with
+  | DictEmpty -> 0
+  | DictNode l _ _ r -> 1 + size l + size r
+
+/// The entries in ascending key order.
+public toList : Dict 'k 'v -> List ('k * 'v)
+let toList d =
+  match d with
+  | DictEmpty -> []
+  | DictNode l k v r -> List.append (toList l) ((k, v) :: toList r)

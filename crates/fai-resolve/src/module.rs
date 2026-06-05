@@ -16,9 +16,10 @@ use fai_syntax::Symbol;
 use fai_syntax::ast::{ItemId, ItemKind, Visibility};
 use rustc_hash::FxHashMap;
 
+use crate::ids::{CtorRef, DefId};
 use crate::{
-    BINDING_VISIBILITY_MARKER, DUPLICATE_DEFINITION, DUPLICATE_MODULE, MULTIPLE_SIGNATURES,
-    ORPHAN_SIGNATURE,
+    BINDING_VISIBILITY_MARKER, DUPLICATE_DEFINITION, DUPLICATE_MODULE, DUPLICATE_PRELUDE_EXPORT,
+    MULTIPLE_SIGNATURES, ORPHAN_SIGNATURE,
 };
 
 /// A module's declared header name.
@@ -295,14 +296,179 @@ pub fn module_file(db: &dyn Db, name: ModuleName) -> Option<SourceFile> {
     found
 }
 
-/// The embedded prelude file, if it has been loaded into the workspace.
+/// The reserved module whose public interface is auto-imported everywhere.
+pub const PRELUDE_MODULE: &str = "Prelude";
+
+/// The standard-library modules whose public interface is visible unqualified in
+/// every module (the one exception to the qualified-only cross-module rule).
 ///
-/// The prelude is the module named `Prelude`; its public values, types, and
-/// constructors are visible unqualified everywhere (the one exception to the
-/// qualified-only cross-module rule).
+/// Kept as a set so the auto-import machinery and the duplicate-export check
+/// already generalize beyond a single module; today it is just `Prelude`.
+const AUTO_IMPORTED: &[&str] = &[PRELUDE_MODULE];
+
+/// The embedded standard-library files currently loaded (recognized by their
+/// synthetic `<std>/` path), in [`SourceId`] order.
 #[must_use]
-pub fn prelude_file(db: &dyn Db) -> Option<SourceFile> {
-    module_file(db, ModuleName(Symbol::intern(crate::prelude::PRELUDE_MODULE)))
+pub fn std_files(db: &dyn Db) -> Vec<SourceFile> {
+    let mut files: Vec<SourceFile> =
+        db.all_source_files().into_iter().filter(|f| fai_db::is_std_path(f.path(db))).collect();
+    files.sort_by_key(|f| f.source(db));
+    files
+}
+
+/// The auto-imported `Prelude` module's file, located **among the standard-library
+/// files** so a user's own `module Prelude` can neither hijack nor collapse
+/// auto-import (it still gets [`DUPLICATE_MODULE`] and is excluded from lookup).
+#[must_use]
+pub fn prelude_module_file(db: &dyn Db) -> Option<SourceFile> {
+    let name = ModuleName(Symbol::intern(PRELUDE_MODULE));
+    std_files(db).into_iter().find(|&f| module_name(db, f) == Some(name))
+}
+
+/// Which namespace a duplicated auto-imported export lives in (for its message).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportKind {
+    /// A value binding.
+    Value,
+    /// A data constructor.
+    Ctor,
+    /// A type name.
+    Type,
+}
+
+/// A name exported by more than one auto-imported module (recorded against the
+/// later-declaring file, which is reported by [`emit_duplicate_prelude_export_errors`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DuplicateExport {
+    /// The clashing name.
+    pub name: Symbol,
+    /// The file that re-declares an already-auto-imported name.
+    pub file: SourceFile,
+    /// The namespace the clash is in.
+    pub kind: ExportKind,
+}
+
+/// The merged public interface of the auto-imported modules — the names visible
+/// unqualified everywhere.
+///
+/// Keyed on names (each entry carries its declaring identity), so this value is
+/// stable under body edits and reformatting: only a change to the auto-imported
+/// *name set* invalidates dependents. Sorted for determinism.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PreludeExports {
+    /// Auto-imported value bindings, sorted by name.
+    pub values: Vec<(Symbol, DefId)>,
+    /// Auto-imported data constructors, sorted by name.
+    pub ctors: Vec<(Symbol, CtorRef)>,
+    /// Auto-imported type names with their declaring file, sorted by name.
+    pub types: Vec<(Symbol, SourceFile)>,
+    /// Names declared by more than one auto-imported module.
+    pub duplicates: Vec<DuplicateExport>,
+}
+
+/// Merges the public interfaces of `modules` into the auto-imported name set,
+/// recording any name a later module redeclares.
+///
+/// Pure (no diagnostics): the first module to declare a name owns it; a later
+/// redeclaration is pushed to `duplicates` for per-file emission. Exposed so the
+/// duplicate detection is unit-testable with more than one module even while the
+/// production set is a single `Prelude`.
+#[must_use]
+pub fn merge_auto_imports(db: &dyn Db, modules: &[SourceFile]) -> PreludeExports {
+    use rustc_hash::FxHashSet;
+
+    let mut value_names: FxHashSet<Symbol> = FxHashSet::default();
+    let mut ctor_names: FxHashSet<Symbol> = FxHashSet::default();
+    let mut type_names: FxHashSet<Symbol> = FxHashSet::default();
+    let mut out = PreludeExports::default();
+
+    for &file in modules {
+        let source = file.source(db);
+        let interface = module_interface(db, file);
+        for export in &interface.exports {
+            if value_names.insert(export.name) {
+                out.values.push((export.name, DefId::new(source, export.name)));
+            } else {
+                out.duplicates.push(DuplicateExport {
+                    name: export.name,
+                    file,
+                    kind: ExportKind::Value,
+                });
+            }
+        }
+        for &ctor in &interface.ctors {
+            if ctor_names.insert(ctor) {
+                out.ctors.push((ctor, CtorRef::new(source, ctor)));
+            } else {
+                out.duplicates.push(DuplicateExport { name: ctor, file, kind: ExportKind::Ctor });
+            }
+        }
+        for &ty in &interface.types {
+            if type_names.insert(ty) {
+                out.types.push((ty, file));
+            } else {
+                out.duplicates.push(DuplicateExport { name: ty, file, kind: ExportKind::Type });
+            }
+        }
+    }
+
+    out.values.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+    out.ctors.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+    out.types.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+    out
+}
+
+/// The auto-imported name set (the merged `Prelude` interface).
+///
+/// Tracked so the merge is computed once per revision and shared by every
+/// module's resolution and the type-name fallback; its early cutoff means a
+/// Prelude body edit (which leaves the name set unchanged) recomputes nothing
+/// downstream.
+#[salsa::tracked]
+pub fn prelude_exports(db: &dyn Db) -> Arc<PreludeExports> {
+    let modules: Vec<SourceFile> = AUTO_IMPORTED
+        .iter()
+        .filter_map(|n| {
+            let name = ModuleName(Symbol::intern(n));
+            std_files(db).into_iter().find(|&f| module_name(db, f) == Some(name))
+        })
+        .collect();
+    Arc::new(merge_auto_imports(db, &modules))
+}
+
+/// Emits [`DUPLICATE_PRELUDE_EXPORT`] for any auto-imported name that `file`
+/// redeclares, attributing it to `file` so it is reported once (when the
+/// standard library itself is checked) rather than under every user module.
+pub fn emit_duplicate_prelude_export_errors(db: &dyn Db, file: SourceFile) {
+    let exports = prelude_exports(db);
+    if exports.duplicates.iter().all(|d| d.file != file) {
+        return;
+    }
+    let defs = module_defs(db, file);
+    let decls = crate::decls::type_decls(db, file);
+    let parsed = fai_syntax::parse(db, file);
+    let source = file.source(db);
+    let items = &parsed.module.items;
+    for dup in exports.duplicates.iter().filter(|d| d.file == file) {
+        let span = match dup.kind {
+            ExportKind::Value => defs.get(dup.name).map(|d| items[d.binding.index()].span),
+            ExportKind::Ctor => decls
+                .ctor(dup.name)
+                .and_then(|ci| decls.type_named(ci.adt))
+                .map(|ti| items[ti.item.index()].span),
+            ExportKind::Type => decls.type_named(dup.name).map(|ti| items[ti.item.index()].span),
+        };
+        let span = span.unwrap_or(parsed.module.header);
+        emit(
+            db,
+            Diagnostic::warning(
+                DUPLICATE_PRELUDE_EXPORT,
+                format!("`{}` is exported by more than one auto-imported module", dup.name),
+                Span::new(source, span),
+            )
+            .with_help("auto-imported modules must export disjoint names"),
+        );
+    }
 }
 
 /// Emits a duplicate-module error for `file` if its header name collides.

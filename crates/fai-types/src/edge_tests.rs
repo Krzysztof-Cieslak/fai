@@ -10,7 +10,7 @@ use crate::{check_file, def_type, render_scheme};
 
 fn db1(src: &str) -> (FaiDatabase, SourceFile) {
     let mut db = FaiDatabase::new();
-    crate::prelude::load_prelude(&mut db);
+    crate::std_lib::load_std(&mut db);
     let id = db.add_source("M.fai".into(), format!("module M\n\n{src}\n"));
     let file = db.source_file(id).unwrap();
     (db, file)

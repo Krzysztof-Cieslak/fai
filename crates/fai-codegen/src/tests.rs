@@ -30,7 +30,7 @@ fn lock() -> MutexGuard<'static, ()> {
 /// most programs touch only a handful of its functions.
 pub(crate) fn run(src: &str) -> (i32, String) {
     let mut db = FaiDatabase::new();
-    fai_types::prelude::load_prelude(&mut db);
+    fai_types::std_lib::load_std(&mut db);
     let id = db.add_source("M.fai".into(), src.to_owned());
     let user = db.source_file(id).unwrap();
 
@@ -91,7 +91,7 @@ fn hello_world() {
 
 #[test]
 fn arithmetic() {
-    let (code, out) = run(&main_printing("intToString (1 + 2 * 3)"));
+    let (code, out) = run(&main_printing("Int.toString (1 + 2 * 3)"));
     assert_eq!(code, 0);
     assert_eq!(out, "7\n");
 }
@@ -112,7 +112,7 @@ fn conditional() {
 
 #[test]
 fn cross_definition_call() {
-    let src = "module M\n\nlet double x = x + x\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (intToString (double 21))\n";
+    let src = "module M\n\nlet double x = x + x\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (Int.toString (double 21))\n";
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "42\n");
@@ -120,7 +120,7 @@ fn cross_definition_call() {
 
 #[test]
 fn saturated_curried_call() {
-    let src = "module M\n\nlet add x y = x + y\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (intToString (add 40 2))\n";
+    let src = "module M\n\nlet add x y = x + y\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (Int.toString (add 40 2))\n";
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "42\n");
@@ -130,7 +130,7 @@ fn saturated_curried_call() {
 fn partial_application_via_zero_arity_binding() {
     // `inc = add 1` is a zero-arity value (a partial application); applying it
     // exercises over-application and forcing.
-    let src = "module M\n\nlet add x y = x + y\n\nlet inc = add 1\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (intToString (inc 41))\n";
+    let src = "module M\n\nlet add x y = x + y\n\nlet inc = add 1\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (Int.toString (inc 41))\n";
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "42\n");
@@ -138,7 +138,7 @@ fn partial_application_via_zero_arity_binding() {
 
 #[test]
 fn higher_order_with_closure_capture() {
-    let src = "module M\n\nlet apply f x = f x\n\nlet adder n = fun m -> n + m\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (intToString (apply (adder 40) 2))\n";
+    let src = "module M\n\nlet apply f x = f x\n\nlet adder n = fun m -> n + m\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (Int.toString (apply (adder 40) 2))\n";
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "42\n");
@@ -154,7 +154,7 @@ fn equality_on_strings() {
 #[test]
 fn boxed_overflow_integer_round_trips() {
     // 2^62 overflows the immediate range and must box, print, and free cleanly.
-    let (code, out) = run(&main_printing("intToString (4611686018427387904 + 0)"));
+    let (code, out) = run(&main_printing("Int.toString (4611686018427387904 + 0)"));
     assert_eq!(code, 0);
     assert_eq!(out, "4611686018427387904\n");
 }
@@ -171,7 +171,7 @@ fn short_circuit_and_or() {
 
 #[test]
 fn unary_negation() {
-    let (code, out) = run(&main_printing("intToString (0 - (-5))"));
+    let (code, out) = run(&main_printing("Int.toString (0 - (-5))"));
     assert_eq!(code, 0);
     assert_eq!(out, "5\n");
 }
@@ -186,7 +186,7 @@ fn nested_conditionals() {
 
 #[test]
 fn let_block_in_body() {
-    let src = "module M\n\nlet compute n =\n  let doubled = n + n\n  let plus1 = doubled + 1\n  plus1 * 2\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (intToString (compute 10))\n";
+    let src = "module M\n\nlet compute n =\n  let doubled = n + n\n  let plus1 = doubled + 1\n  plus1 * 2\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (Int.toString (compute 10))\n";
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "42\n");
@@ -208,7 +208,7 @@ fn adt_constructor_and_match() {
         public area : Shape -> Int\n\
         let area s =\n  match s with\n  | Circle r -> 3 * r * r\n  | Rect w h -> w * h\n\n\
         public main : Runtime -> Unit\n\
-        let main r = Console.writeLine r (intToString (area (Rect 3 4)))\n";
+        let main r = Console.writeLine r (Int.toString (area (Rect 3 4)))\n";
     let (code, out) = run(src);
     assert_eq!(code, 0, "clean exit");
     assert_eq!(out, "12\n");
@@ -218,7 +218,7 @@ fn adt_constructor_and_match() {
 fn nullary_constructor_match() {
     let src = "module M\n\n\
         public describe : Option Int -> String\n\
-        let describe opt =\n  match opt with\n  | None -> \"none\"\n  | Some n -> intToString n\n\n\
+        let describe opt =\n  match opt with\n  | None -> \"none\"\n  | Some n -> Int.toString n\n\n\
         public main : Runtime -> Unit\n\
         let main r = Console.writeLine r (describe None)\n";
     let (code, out) = run(src);
@@ -232,8 +232,8 @@ fn list_map_and_fold() {
         public main : Runtime -> Unit\n\
         let main r =\n  \
           let xs = [1, 2, 3, 4]\n  \
-          let ys = map (fun x -> x * x) xs\n  \
-          Console.writeLine r (intToString (foldl (fun acc x -> acc + x) 0 ys))\n";
+          let ys = List.map (fun x -> x * x) xs\n  \
+          Console.writeLine r (Int.toString (List.foldl (fun acc x -> acc + x) 0 ys))\n";
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "30\n");
@@ -243,7 +243,7 @@ fn list_map_and_fold() {
 fn cons_and_recursive_length() {
     let src = "module M\n\n\
         public main : Runtime -> Unit\n\
-        let main r = Console.writeLine r (intToString (length (1 :: 2 :: 3 :: [])))\n";
+        let main r = Console.writeLine r (Int.toString (List.length (1 :: 2 :: 3 :: [])))\n";
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "3\n");
@@ -255,7 +255,7 @@ fn list_pattern_match() {
         public firstOr : Int -> List Int -> Int\n\
         let firstOr d xs =\n  match xs with\n  | [] -> d\n  | x :: _ -> x\n\n\
         public main : Runtime -> Unit\n\
-        let main r = Console.writeLine r (intToString (firstOr 0 [7, 8, 9]))\n";
+        let main r = Console.writeLine r (Int.toString (firstOr 0 [7, 8, 9]))\n";
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "7\n");
@@ -263,22 +263,23 @@ fn list_pattern_match() {
 
 #[test]
 fn option_combinators_from_prelude() {
-    let (code, out) =
-        run(&main_printing("intToString (withDefault 0 (mapOption (fun x -> x + 1) (Some 41)))"));
+    let (code, out) = run(&main_printing(
+        "Int.toString (Option.withDefault 0 (Option.map (fun x -> x + 1) (Some 41)))",
+    ));
     assert_eq!(code, 0);
     assert_eq!(out, "42\n");
 }
 
 #[test]
 fn float_arithmetic_and_to_string() {
-    let (code, out) = run(&main_printing("floatToString (1.5 + 2.5)"));
+    let (code, out) = run(&main_printing("Float.toString (1.5 + 2.5)"));
     assert_eq!(code, 0);
     assert_eq!(out, "4.0\n");
 }
 
 #[test]
 fn float_conversions_and_sqrt() {
-    let (code, out) = run(&main_printing("floatToString (sqrt (intToFloat 16))"));
+    let (code, out) = run(&main_printing("Float.toString (Float.sqrt (Int.toFloat 16))"));
     assert_eq!(code, 0);
     assert_eq!(out, "4.0\n");
 }
@@ -297,7 +298,7 @@ fn tuple_construction_and_destructuring() {
         let main r =\n  \
           let pair = (40, 2)\n  \
           let (a, b) = pair\n  \
-          Console.writeLine r (intToString (a + b))\n";
+          Console.writeLine r (Int.toString (a + b))\n";
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "42\n");
@@ -308,8 +309,8 @@ fn dict_runs() {
     let src = "module M\n\n\
         public main : Runtime -> Unit\n\
         let main r =\n  \
-          let d = insert 1 10 (insert 3 30 (insert 2 20 emptyDict))\n  \
-          Console.writeLine r (intToString (withDefault 0 (get 2 d) + dictSize d))\n";
+          let d = Dict.insert 1 10 (Dict.insert 3 30 (Dict.insert 2 20 Dict.empty))\n  \
+          Console.writeLine r (Int.toString (Option.withDefault 0 (Dict.get 2 d) + Dict.size d))\n";
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "23\n");
@@ -319,7 +320,7 @@ fn dict_runs() {
 fn string_ops_run() {
     let src = "module M\n\n\
         public main : Runtime -> Unit\n\
-        let main r = Console.writeLine r (join \"-\" (map toUpper (split \" \" \"hi there world\")))\n";
+        let main r = Console.writeLine r (String.join \"-\" (List.map String.toUpper (String.split \" \" \"hi there world\")))\n";
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "HI-THERE-WORLD\n");
@@ -330,8 +331,8 @@ fn sort_runs() {
     let src = "module M\n\n\
         public main : Runtime -> Unit\n\
         let main r =\n  \
-          let xs = sort [3, 1, 2]\n  \
-          Console.writeLine r (intToString (foldl (fun acc x -> acc * 10 + x) 0 xs))\n";
+          let xs = List.sort [3, 1, 2]\n  \
+          Console.writeLine r (Int.toString (List.foldl (fun acc x -> acc * 10 + x) 0 xs))\n";
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "123\n");
@@ -343,7 +344,7 @@ fn record_literal_and_field_access() {
         public main : Runtime -> Unit\n\
         let main r =\n  \
           let p = { x = 1, y = 2 }\n  \
-          Console.writeLine r (intToString (p.x + p.y))\n";
+          Console.writeLine r (Int.toString (p.x + p.y))\n";
     let (code, out) = run(src);
     assert_eq!(code, 0, "clean exit");
     assert_eq!(out, "3\n");
@@ -358,7 +359,7 @@ fn record_update_runs() {
         public main : Runtime -> Unit\n\
         let main r =\n  \
           let q = shift { a = 1, b = 2 }\n  \
-          Console.writeLine r (intToString (q.a + q.b))\n";
+          Console.writeLine r (Int.toString (q.a + q.b))\n";
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "13\n");
@@ -371,7 +372,7 @@ fn record_pattern_and_punning() {
         public describe : Point -> Int\n\
         let describe pt =\n  match pt with\n  | { x = 0, y } -> y\n  | { x, y } -> x + y\n\n\
         public main : Runtime -> Unit\n\
-        let main r = Console.writeLine r (intToString (describe { x = 0, y = 5 }))\n";
+        let main r = Console.writeLine r (Int.toString (describe { x = 0, y = 5 }))\n";
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "5\n");
@@ -384,7 +385,7 @@ fn record_destructuring_let() {
         let main r =\n  \
           let p = { a = 40, b = 2 }\n  \
           let { a, b } = p\n  \
-          Console.writeLine r (intToString (a + b))\n";
+          Console.writeLine r (Int.toString (a + b))\n";
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "42\n");
@@ -414,8 +415,8 @@ fn float_sort_orders_ascending() {
     let src = "module M\n\n\
         public main : Runtime -> Unit\n\
         let main r =\n  \
-          let xs = sort [3.0, 1.0, 2.0]\n  \
-          Console.writeLine r (join \" \" (map floatToString xs))\n";
+          let xs = List.sort [3.0, 1.0, 2.0]\n  \
+          Console.writeLine r (String.join \" \" (List.map Float.toString xs))\n";
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "1.0 2.0 3.0\n");
@@ -424,7 +425,7 @@ fn float_sort_orders_ascending() {
 #[test]
 fn three_way_compare_runs() {
     let (code, out) = run(&main_printing(
-        "intToString (compare 3 2) ++ intToString (compare 2 2) ++ intToString (compare 1 5)",
+        "Int.toString (compare 3 2) ++ Int.toString (compare 2 2) ++ Int.toString (compare 1 5)",
     ));
     assert_eq!(code, 0);
     assert_eq!(out, "10-1\n");
@@ -438,7 +439,7 @@ fn structural_ordering_sorts_constructors_by_declaration_order() {
         public name : Rank -> String\n\
         let name x =\n  match x with\n  | Low -> \"L\"\n  | Mid -> \"M\"\n  | High -> \"H\"\n\n\
         public main : Runtime -> Unit\n\
-        let main r = Console.writeLine r (join \"\" (map name (sort [High, Low, Mid, Low])))\n";
+        let main r = Console.writeLine r (String.join \"\" (List.map name (List.sort [High, Low, Mid, Low])))\n";
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "LLMH\n");
@@ -463,7 +464,7 @@ fn recursive_tree_fold() {
         public sumTree : Tree -> Int\n\
         let sumTree t =\n  match t with\n  | Leaf -> 0\n  | Node l x rt -> sumTree l + x + sumTree rt\n\n\
         public main : Runtime -> Unit\n\
-        let main r = Console.writeLine r (intToString (sumTree (Node (Node Leaf 1 Leaf) 2 (Node Leaf 3 Leaf))))\n";
+        let main r = Console.writeLine r (Int.toString (sumTree (Node (Node Leaf 1 Leaf) 2 (Node Leaf 3 Leaf))))\n";
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "6\n");
@@ -473,7 +474,7 @@ fn recursive_tree_fold() {
 fn result_pattern_match() {
     let src = "module M\n\n\
         public describe : Result Int String -> String\n\
-        let describe res =\n  match res with\n  | Ok n -> intToString n\n  | Err e -> e\n\n\
+        let describe res =\n  match res with\n  | Ok n -> Int.toString n\n  | Err e -> e\n\n\
         public main : Runtime -> Unit\n\
         let main r = Console.writeLine r (describe (Ok 5) ++ describe (Err \"boom\"))\n";
     let (code, out) = run(src);
@@ -486,8 +487,8 @@ fn set_dedups_elements() {
     let src = "module M\n\n\
         public main : Runtime -> Unit\n\
         let main r =\n  \
-          let s = setInsert 3 (setInsert 1 (setInsert 3 emptySet))\n  \
-          Console.writeLine r (intToString (setSize s))\n";
+          let s = Set.insert 3 (Set.insert 1 (Set.insert 3 Set.empty))\n  \
+          Console.writeLine r (Int.toString (Set.size s))\n";
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "2\n");
@@ -501,7 +502,7 @@ fn nested_record_field_access() {
         public main : Runtime -> Unit\n\
         let main r =\n  \
           let s = { src = { x = 1, y = 2 }, dest = { x = 3, y = 4 } }\n  \
-          Console.writeLine r (intToString (s.src.x + s.dest.y))\n";
+          Console.writeLine r (Int.toString (s.src.x + s.dest.y))\n";
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "5\n");
@@ -513,7 +514,7 @@ fn nested_constructor_patterns() {
         public unwrap : Option (Option Int) -> Int\n\
         let unwrap oo =\n  match oo with\n  | Some (Some n) -> n\n  | Some None -> 0\n  | None -> 0\n\n\
         public main : Runtime -> Unit\n\
-        let main r = Console.writeLine r (intToString (unwrap (Some (Some 7))))\n";
+        let main r = Console.writeLine r (Int.toString (unwrap (Some (Some 7))))\n";
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "7\n");

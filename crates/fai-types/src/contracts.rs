@@ -16,7 +16,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::CONTRACT_NOT_BOOL;
 use crate::infer::{InferCtx, SolveTy, Walker, contract_env};
-use crate::prelude;
+use crate::std_lib;
 use crate::ty::Scheme;
 
 /// Type-checks all contracts in `file`.
@@ -72,7 +72,7 @@ fn check_contract_body(
 
     let mut cx = InferCtx::new();
     let def_schemes = |db: &dyn Db, def: DefId| scheme_for(db, def);
-    let builtins = |name: Symbol| prelude::builtin_scheme(name);
+    let builtins = |name: Symbol| std_lib::builtin_scheme(name);
     let scc_types: FxHashMap<DefId, SolveTy> = FxHashMap::default();
     let mut env = contract_env(db, &scc_types, &def_schemes, &builtins);
 
