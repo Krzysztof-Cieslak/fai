@@ -4,7 +4,10 @@ module Int
 /// Render an integer in base 10.
 public toString : Int -> String
 let toString n = Prim.intToString n
+example: toString 42 = "42"
+example: toString 0 = "0"
 
 /// Convert an integer to the nearest `Float`.
 public toFloat : Int -> Float
 let toFloat n = Prim.intToFloat n
+example: toFloat 3 = 3.0

@@ -8,6 +8,8 @@ let length xs =
   match xs with
   | [] -> 0
   | _ :: rest -> 1 + length rest
+example: length [1, 2, 3] = 3
+forall xs: length xs >= 0
 
 /// Whether a list has no elements.
 public isEmpty : List 'a -> Bool
@@ -15,6 +17,8 @@ let isEmpty xs =
   match xs with
   | [] -> true
   | _ :: _ -> false
+example: isEmpty []
+example: isEmpty [1] = false
 
 /// The first element, if any.
 public head : List 'a -> Option 'a
@@ -22,6 +26,8 @@ let head xs =
   match xs with
   | [] -> None
   | x :: _ -> Some x
+example: head [1, 2] = Some 1
+example: head [] = None
 
 /// Everything after the first element (`[]` for the empty list).
 public tail : List 'a -> List 'a
@@ -29,6 +35,7 @@ let tail xs =
   match xs with
   | [] -> []
   | _ :: rest -> rest
+example: tail [1, 2, 3] = [2, 3]
 
 /// Concatenate two lists.
 public append : List 'a -> List 'a -> List 'a
@@ -36,6 +43,8 @@ let append xs ys =
   match xs with
   | [] -> ys
   | x :: rest -> x :: append rest ys
+example: append [1, 2] [3] = [1, 2, 3]
+forall xs: append [] xs = xs
 
 /// Apply `f` to every element, preserving order.
 public map : ('a -> 'b) -> List 'a -> List 'b
@@ -43,6 +52,8 @@ let map f xs =
   match xs with
   | [] -> []
   | x :: rest -> f x :: map f rest
+example: map (fun x -> x + 1) [1, 2, 3] = [2, 3, 4]
+forall xs: map identity xs = xs
 
 /// Keep the elements satisfying `keep`.
 public filter : ('a -> Bool) -> List 'a -> List 'a
@@ -50,6 +61,7 @@ let filter keep xs =
   match xs with
   | [] -> []
   | x :: rest -> if keep x then x :: filter keep rest else filter keep rest
+example: filter (fun x -> x > 1) [1, 2, 3] = [2, 3]
 
 /// Left fold: `foldl f acc [a, b] = f (f acc a) b`.
 public foldl : ('acc -> 'a -> 'acc) -> 'acc -> List 'a -> 'acc
@@ -57,6 +69,7 @@ let foldl f acc xs =
   match xs with
   | [] -> acc
   | x :: rest -> foldl f (f acc x) rest
+example: foldl (fun acc x -> acc + x) 0 [1, 2, 3] = 6
 
 /// Right fold: `foldr f acc [a, b] = f a (f b acc)`.
 public foldr : ('a -> 'acc -> 'acc) -> 'acc -> List 'a -> 'acc
@@ -64,18 +77,24 @@ let foldr f acc xs =
   match xs with
   | [] -> acc
   | x :: rest -> f x (foldr f acc rest)
+example: foldr (fun x acc -> x + acc) 0 [1, 2, 3] = 6
 
 /// Reverse a list.
 public reverse : List 'a -> List 'a
 let reverse xs = foldl (fun acc x -> x :: acc) [] xs
+example: reverse [1, 2, 3] = [3, 2, 1]
+forall xs: reverse (reverse xs) = xs
 
 /// Flatten a list of lists.
 public concat : List (List 'a) -> List 'a
 let concat xss = foldr append [] xss
+example: concat [[1, 2], [3]] = [1, 2, 3]
 
 /// Sum a list of integers.
 public sum : List Int -> Int
 let sum xs = foldl (fun acc x -> acc + x) 0 xs
+example: sum [1, 2, 3] = 6
+example: sum [] = 0
 
 /// Whether every element satisfies `pred`.
 public all : ('a -> Bool) -> List 'a -> Bool
@@ -83,6 +102,8 @@ let all pred xs =
   match xs with
   | [] -> true
   | x :: rest -> if pred x then all pred rest else false
+example: all (fun x -> x > 0) [1, 2, 3]
+example: all (fun x -> x > 1) [1, 2] = false
 
 /// Whether any element satisfies `pred`.
 public any : ('a -> Bool) -> List 'a -> Bool
@@ -90,6 +111,8 @@ let any pred xs =
   match xs with
   | [] -> false
   | x :: rest -> if pred x then true else any pred rest
+example: any (fun x -> x > 2) [1, 2, 3]
+example: any (fun x -> x > 9) [1, 2] = false
 
 /// Whether `target` is an element of the list.
 public member : 'a -> List 'a -> Bool
@@ -97,6 +120,8 @@ let member target xs =
   match xs with
   | [] -> false
   | x :: rest -> if x = target then true else member target rest
+example: member 2 [1, 2, 3]
+example: member 9 [1, 2, 3] = false
 
 /// The first `n` elements (fewer if the list is shorter).
 public take : Int -> List 'a -> List 'a
@@ -104,6 +129,7 @@ let take n xs =
   match xs with
   | [] -> []
   | x :: rest -> if n <= 0 then [] else x :: take (n - 1) rest
+example: take 2 [1, 2, 3] = [1, 2]
 
 /// All but the first `n` elements.
 public drop : Int -> List 'a -> List 'a
@@ -111,10 +137,12 @@ let drop n xs =
   match xs with
   | [] -> []
   | x :: rest -> if n <= 0 then x :: rest else drop (n - 1) rest
+example: drop 2 [1, 2, 3] = [3]
 
 /// The integers `[lo, lo+1, …, hi-1]`.
 public range : Int -> Int -> List Int
 let range lo hi = if lo >= hi then [] else lo :: range (lo + 1) hi
+example: range 0 3 = [0, 1, 2]
 
 /// Pair up corresponding elements (truncating to the shorter list).
 public zip : List 'a -> List 'b -> List ('a * 'b)
@@ -125,6 +153,7 @@ let zip xs ys =
     match ys with
     | [] -> []
     | y :: yrest -> (x, y) :: zip xrest yrest
+example: zip [1, 2] [3, 4] = [(1, 3), (2, 4)]
 
 /// The first element satisfying `pred`, if any.
 public find : ('a -> Bool) -> List 'a -> Option 'a
@@ -132,6 +161,8 @@ let find pred xs =
   match xs with
   | [] -> None
   | x :: rest -> if pred x then Some x else find pred rest
+example: find (fun x -> x > 1) [1, 2, 3] = Some 2
+example: find (fun x -> x > 9) [1, 2, 3] = None
 
 /// Split a list into the elements satisfying `pred` and those that do not.
 public partition : ('a -> Bool) -> List 'a -> List 'a * List 'a
@@ -141,6 +172,7 @@ let partition pred xs =
   | x :: rest ->
     let (yes, no) = partition pred rest
     if pred x then (x :: yes, no) else (yes, x :: no)
+example: partition (fun x -> x > 1) [1, 2, 3] = ([2, 3], [1])
 
 /// The longest prefix of elements satisfying `pred`.
 public takeWhile : ('a -> Bool) -> List 'a -> List 'a
@@ -148,6 +180,7 @@ let takeWhile pred xs =
   match xs with
   | [] -> []
   | x :: rest -> if pred x then x :: takeWhile pred rest else []
+example: takeWhile (fun x -> x < 3) [1, 2, 3, 1] = [1, 2]
 
 /// The remainder after the longest prefix satisfying `pred`.
 public dropWhile : ('a -> Bool) -> List 'a -> List 'a
@@ -155,10 +188,12 @@ let dropWhile pred xs =
   match xs with
   | [] -> []
   | x :: rest -> if pred x then dropWhile pred rest else x :: rest
+example: dropWhile (fun x -> x < 3) [1, 2, 3, 1] = [3, 1]
 
 /// Map each element to a list and concatenate the results.
 public concatMap : ('a -> List 'b) -> List 'a -> List 'b
 let concatMap f xs = concat (map f xs)
+example: concatMap (fun x -> [x, x]) [1, 2] = [1, 1, 2, 2]
 
 /// Merge two ascending lists under the comparator `cmp`.
 let mergeBy cmp xs ys =
@@ -168,6 +203,7 @@ let mergeBy cmp xs ys =
     match ys with
     | [] -> xs
     | y :: yrest -> if cmp x y <= 0 then x :: mergeBy cmp xrest ys else y :: mergeBy cmp xs yrest
+example: mergeBy compare [1, 3] [2, 4] = [1, 2, 3, 4]
 
 /// Stable merge sort under a comparator (`cmp a b < 0` means `a` comes first).
 public sortBy : ('a -> 'a -> Int) -> List 'a -> List 'a
@@ -180,7 +216,10 @@ let sortBy cmp xs =
     | _ :: _ ->
       let half = length xs / 2
       mergeBy cmp (sortBy cmp (take half xs)) (sortBy cmp (drop half xs))
+example: sortBy compare [3, 1, 2] = [1, 2, 3]
 
 /// Sort a list into ascending order by the structural comparison.
 public sort : List 'a -> List 'a
 let sort xs = sortBy compare xs
+example: sort [3, 1, 2] = [1, 2, 3]
+forall xs: sort (sort xs) = sort xs

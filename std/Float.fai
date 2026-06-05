@@ -4,15 +4,19 @@ module Float
 /// Render a float in decimal notation.
 public toString : Float -> String
 let toString x = Prim.floatToString x
+example: toString 1.5 = "1.5"
 
 /// Truncate a float toward zero to an `Int`.
 public toInt : Float -> Int
 let toInt x = Prim.floatToInt x
+example: toInt 3.0 = 3
 
 /// The non-negative square root.
 public sqrt : Float -> Float
 let sqrt x = Prim.sqrt x
+example: sqrt 4.0 = 2.0
 
 /// The ratio of a circle's circumference to its diameter.
 public pi : Float
 let pi = 3.141592653589793
+example: pi > 3.0

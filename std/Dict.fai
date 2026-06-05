@@ -6,6 +6,7 @@ module Dict
 /// The empty dictionary.
 public empty : Dict 'k 'v
 let empty = DictEmpty
+example: size empty = 0
 
 /// Insert or replace the value for `key`.
 public insert : 'k -> 'v -> Dict 'k 'v -> Dict 'k 'v
@@ -16,6 +17,8 @@ let insert key value d =
     if key < k then
       DictNode (insert key value l) k v r
     else if key > k then DictNode l k v (insert key value r) else DictNode l key value r
+example: get 2 (insert 2 20 empty) = Some 20
+example: size (insert 1 10 (insert 1 99 empty)) = 1
 
 /// Look up the value for `key`.
 public get : 'k -> Dict 'k 'v -> Option 'v
@@ -23,10 +26,14 @@ let get key d =
   match d with
   | DictEmpty -> None
   | DictNode l k v r -> if key < k then get key l else if key > k then get key r else Some v
+example: get 2 (insert 1 10 (insert 2 20 empty)) = Some 20
+forall k: get k empty = None
 
 /// Whether `key` is present.
 public member : 'k -> Dict 'k 'v -> Bool
 let member key d = Option.isSome (get key d)
+example: member 2 (insert 2 20 empty)
+forall k: member k empty = false
 
 /// The number of entries.
 public size : Dict 'k 'v -> Int
@@ -34,6 +41,8 @@ let size d =
   match d with
   | DictEmpty -> 0
   | DictNode l _ _ r -> 1 + size l + size r
+example: size (insert 1 10 empty) = 1
+forall d: size d >= 0
 
 /// The entries in ascending key order.
 public toList : Dict 'k 'v -> List ('k * 'v)
@@ -41,3 +50,4 @@ let toList d =
   match d with
   | DictEmpty -> []
   | DictNode l k v r -> List.append (toList l) ((k, v) :: toList r)
+example: toList (insert 1 10 empty) = [(1, 10)]

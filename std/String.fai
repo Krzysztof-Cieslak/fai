@@ -5,27 +5,36 @@ module String
 /// The number of characters in a string.
 public length : String -> Int
 let length s = Prim.stringLength s
+example: length "abc" = 3
+example: length "" = 0
 
 /// Convert every character to upper case.
 public toUpper : String -> String
 let toUpper s = Prim.toUpper s
+example: toUpper "hi" = "HI"
 
 /// Convert every character to lower case.
 public toLower : String -> String
 let toLower s = Prim.toLower s
+example: toLower "HI" = "hi"
 
 /// Remove leading and trailing whitespace.
 public trim : String -> String
 let trim s = Prim.trim s
+example: trim "  hi  " = "hi"
 
 /// Whether `s` contains `needle` as a substring.
 public contains : String -> String -> Bool
 let contains s needle = Prim.stringContains s needle
+example: contains "hello" "ell"
+example: contains "hello" "xyz" = false
 
 /// Split `s` on every occurrence of `sep`.
 public split : String -> String -> List String
 let split sep s = Prim.split sep s
+example: split "," "a,b,c" = ["a", "b", "c"]
 
 /// Join the strings in `parts`, inserting `sep` between them.
 public join : String -> List String -> String
 let join sep parts = Prim.join sep parts
+example: join "," ["a", "b", "c"] = "a,b,c"

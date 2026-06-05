@@ -8,6 +8,8 @@ let map f result =
   match result with
   | Ok x -> Ok (f x)
   | Err e -> Err e
+example: map (fun x -> x + 1) (Ok 1) = Ok 2
+forall r: map identity r = r
 
 /// Map over the error value of a `Result`.
 public mapError : ('a -> 'b) -> Result 'ok 'a -> Result 'ok 'b
@@ -15,6 +17,8 @@ let mapError f result =
   match result with
   | Ok x -> Ok x
   | Err e -> Err (f e)
+example: mapError (fun e -> e + 1) (Err 1) = Err 2
+example: mapError (fun e -> e + 1) (Ok 5) = Ok 5
 
 /// Whether a `Result` is `Ok`.
 public isOk : Result 'ok 'err -> Bool
@@ -22,6 +26,8 @@ let isOk result =
   match result with
   | Ok _ -> true
   | Err _ -> false
+example: isOk (Ok 1)
+forall r: isOk r = not (isErr r)
 
 /// Whether a `Result` is `Err`.
 public isErr : Result 'ok 'err -> Bool
@@ -29,3 +35,5 @@ let isErr result =
   match result with
   | Ok _ -> false
   | Err _ -> true
+example: isErr (Err 1)
+example: isErr (Ok 1) = false

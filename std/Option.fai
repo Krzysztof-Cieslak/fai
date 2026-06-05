@@ -8,6 +8,9 @@ let map f opt =
   match opt with
   | None -> None
   | Some x -> Some (f x)
+example: map (fun x -> x + 1) (Some 1) = Some 2
+example: map (fun x -> x + 1) None = None
+forall o: map identity o = o
 
 /// The contained value, or `fallback` for `None`.
 public withDefault : 'a -> Option 'a -> 'a
@@ -15,6 +18,8 @@ let withDefault fallback opt =
   match opt with
   | None -> fallback
   | Some x -> x
+example: withDefault 0 (Some 5) = 5
+forall d: withDefault d None = d
 
 /// Whether an `Option` holds a value.
 public isSome : Option 'a -> Bool
@@ -22,6 +27,8 @@ let isSome opt =
   match opt with
   | None -> false
   | Some _ -> true
+example: isSome (Some 1)
+example: isSome None = false
 
 /// Whether an `Option` is empty.
 public isNone : Option 'a -> Bool
@@ -29,6 +36,8 @@ let isNone opt =
   match opt with
   | None -> true
   | Some _ -> false
+example: isNone None
+forall o: isNone o = not (isSome o)
 
 /// Chain a fallible computation over an `Option`.
 public andThen : ('a -> Option 'b) -> Option 'a -> Option 'b
@@ -36,3 +45,5 @@ let andThen f opt =
   match opt with
   | None -> None
   | Some x -> f x
+example: andThen (fun x -> Some (x + 1)) (Some 1) = Some 2
+forall o: andThen (fun x -> Some x) o = o
