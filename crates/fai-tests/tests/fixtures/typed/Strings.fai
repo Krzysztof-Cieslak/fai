@@ -12,7 +12,7 @@ let shout s = s ++ "!"
 
 //~ TYPE label : Int -> String
 public label : Int -> String
-let label n = "n = " ++ intToString n
+let label n = "n = " ++ Int.toString n
 
 //~ TYPE describe : Int -> String
 public describe : Int -> String

@@ -58,19 +58,19 @@ let validGame game =
 
 //~ TYPE totalChips : List Int -> Int
 public totalChips : List Int -> Int
-let totalChips stacks = sum stacks
+let totalChips stacks = List.sum stacks
 
 //~ TYPE playerCount : List Int -> Int
 public playerCount : List Int -> Int
-let playerCount stacks = length stacks
+let playerCount stacks = List.length stacks
 
 //~ TYPE isEliminated : List Int -> Int -> Bool
 public isEliminated : List Int -> Int -> Bool
-let isEliminated stacks idx = idx < 0 || idx >= length stacks
+let isEliminated stacks idx = idx < 0 || idx >= List.length stacks
 
 //~ TYPE activePlayers : List Int -> Int
 public activePlayers : List Int -> Int
-let activePlayers stacks = length (filter (fun s -> s > 0) stacks)
+let activePlayers stacks = List.length (List.filter (fun s -> s > 0) stacks)
 
 // ── Betting actions ───────────────────────────────────────────────────────────
 

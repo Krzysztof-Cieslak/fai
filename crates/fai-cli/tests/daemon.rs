@@ -155,7 +155,7 @@ fn run_streams_output_via_daemon() {
 fn run_timeout_is_reaped_and_daemon_survives() {
     // Naive fib is exponential-time but shallow-stack, so it runs well past the
     // timeout without crashing — the daemon must reap it (exit 124) and live on.
-    let fib = "module Main\n\nlet fib n = if n < 2 then n else fib (n - 1) + fib (n - 2)\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (intToString (fib 40))\n";
+    let fib = "module Main\n\nlet fib n = if n < 2 then n else fib (n - 1) + fib (n - 2)\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (Int.toString (fib 40))\n";
     let daemon = Daemon::new("timeout", &[("Main.fai", fib)]).with_run_timeout(500);
 
     let run = daemon.run(&["run"], &["Main.fai"]);
@@ -227,7 +227,7 @@ fn run_compile_error_exits_four_via_daemon() {
 
 #[test]
 fn build_via_daemon_produces_a_runnable_binary() {
-    let src = "module Calc\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (intToString (40 + 2))\n";
+    let src = "module Calc\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (Int.toString (40 + 2))\n";
     let daemon = Daemon::new("build", &[("Calc.fai", src)]);
     let exe = daemon.workspace.join("calc");
 

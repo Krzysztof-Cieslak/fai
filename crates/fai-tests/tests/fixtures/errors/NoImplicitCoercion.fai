@@ -4,9 +4,9 @@ module NoImplicitCoercion
 // `floatToInt 1.0` is an `Int` and `2.0` is a `Float`, so `+` cannot unify them
 // (the fix is to convert explicitly with `intToFloat`).
 //~ ERROR FAI3001
-let badAdd = floatToInt 1.0 + 2.0
+let badAdd = Float.toInt 1.0 + 2.0
 
 // Structural comparison likewise needs both sides at one numeric type: here an
 // `Int` from `floatToInt` against a `Float` literal.
 //~ ERROR FAI3001
-let badCompare = 2.0 < floatToInt 1.0
+let badCompare = 2.0 < Float.toInt 1.0

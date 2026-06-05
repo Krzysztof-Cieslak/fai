@@ -20,7 +20,7 @@ use rustc_hash::FxHashMap;
 use crate::ty::Ty;
 
 use crate::infer::{declared_scheme, error_scheme, infer_scc};
-use crate::prelude;
+use crate::std_lib;
 use crate::ty::Scheme;
 use crate::{MISSING_PUBLIC_SIGNATURE, SIGNATURE_MISMATCH};
 
@@ -34,7 +34,7 @@ pub fn infer_scc_query(db: &dyn Db, file: SourceFile, scc_index: usize) -> Arc<S
     let resolved = resolve(db, file);
 
     let def_schemes = |db: &dyn Db, def: DefId| declared_or_inferred_scheme(db, def);
-    let builtins = |name: Symbol| prelude::builtin_scheme(name);
+    let builtins = |name: Symbol| std_lib::builtin_scheme(name);
 
     let inference = infer_scc(db, file, &scc.members, &resolved, &def_schemes, &builtins);
     Arc::new(SccTypes {
@@ -125,7 +125,7 @@ pub fn def_local_types(
     name: Symbol,
 ) -> Vec<(String, crate::ty::Ty)> {
     let def_schemes = |db: &dyn Db, def: DefId| declared_or_inferred_scheme(db, def);
-    let builtins = |n: Symbol| prelude::builtin_scheme(n);
+    let builtins = |n: Symbol| std_lib::builtin_scheme(n);
     crate::infer::infer_local_types(db, file, name, &def_schemes, &builtins)
         .into_iter()
         .map(|(sym, ty)| (sym.as_str().to_owned(), ty))
@@ -164,7 +164,7 @@ impl BodyTypes {
 #[salsa::tracked]
 pub fn body_types(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<BodyTypes> {
     let def_schemes = |db: &dyn Db, def: DefId| declared_or_inferred_scheme(db, def);
-    let builtins = |n: Symbol| prelude::builtin_scheme(n);
+    let builtins = |n: Symbol| std_lib::builtin_scheme(n);
     let (exprs, pats) = crate::infer::infer_body_types(db, file, name, &def_schemes, &builtins);
     Arc::new(BodyTypes {
         types: exprs.into_iter().collect(),

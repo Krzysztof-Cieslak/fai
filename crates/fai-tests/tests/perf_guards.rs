@@ -149,14 +149,14 @@ fn cold_check_is_linear_in_workspace_size() {
 /// recompiles everything and returns how many objects were re-emitted.
 fn object_code_runs_after_helper_edit(fillers: usize) -> usize {
     let mut db = FaiDatabase::new();
-    fai_types::prelude::load_prelude(&mut db);
+    fai_types::std_lib::load_std(&mut db);
     let helper_id = db.add_source(
         "Helper.fai".into(),
         "module Helper\n\npublic helper : Int -> Int\nlet helper x = x + 1\n".to_owned(),
     );
     let main_id = db.add_source(
         "Main.fai".into(),
-        "module Main\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (intToString (Helper.helper 1))\n".to_owned(),
+        "module Main\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (Int.toString (Helper.helper 1))\n".to_owned(),
     );
     let mut filler: Vec<(SourceFile, Symbol)> = Vec::new();
     for i in 0..fillers {

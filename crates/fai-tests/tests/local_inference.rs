@@ -91,7 +91,7 @@ fn let_chain_propagates_types() {
 
 #[test]
 fn let_local_string() {
-    let src = func("n", "  let label = \"n=\" ++ intToString n\n  label");
+    let src = func("n", "  let label = \"n=\" ++ Int.toString n\n  label");
     let ls = locals(&src);
     assert_eq!(ls.get("n").map(String::as_str), Some("Int"));
     assert_eq!(ls.get("label").map(String::as_str), Some("String"));
@@ -220,7 +220,7 @@ fn inner_shadow_changes_type() {
 
 #[test]
 fn local_uses_prelude_length() {
-    let src = func("xs", "  let n = length xs\n  n");
+    let src = func("xs", "  let n = List.length xs\n  n");
     let ls = locals(&src);
     assert_eq!(ls.get("n").map(String::as_str), Some("Int"));
     assert_eq!(ls.get("xs").map(String::as_str), Some("List 'a"));
@@ -228,7 +228,7 @@ fn local_uses_prelude_length() {
 
 #[test]
 fn local_uses_prelude_append() {
-    let src = func("xs ys", "  let zs = append xs ys\n  zs");
+    let src = func("xs ys", "  let zs = List.append xs ys\n  zs");
     let ls = locals(&src);
     assert_eq!(ls.get("zs").map(String::as_str), Some("List 'a"));
     assert_eq!(ls.get("xs").map(String::as_str), Some("List 'a"));
@@ -306,5 +306,5 @@ fn signatureless_inferred_bool_logic() {
 
 #[test]
 fn signatureless_inferred_from_prelude_use() {
-    assert_eq!(type_of("module M\n\nlet f xs = length xs + 1\n", "f"), "List 'a -> Int");
+    assert_eq!(type_of("module M\n\nlet f xs = List.length xs + 1\n", "f"), "List 'a -> Int");
 }

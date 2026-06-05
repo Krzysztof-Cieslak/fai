@@ -20,6 +20,6 @@ let pipeline = inc >> double >> inc
 
 //~ TYPE describe : Int -> String
 public describe : Int -> String
-let describe n = n |> inc |> intToString
+let describe n = n |> inc |> Int.toString
 
 example: incThenDouble 3 = 8

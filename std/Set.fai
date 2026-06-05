@@ -1,0 +1,37 @@
+module Set
+
+// An ordered set keyed by any comparable type, backed by a binary search tree.
+// The `Set` type and its constructors are declared in `Prelude`; build and query
+// sets through these qualified operations (`Set.insert`, `Set.member`, …).
+/// The empty set.
+public empty : Set 'a
+let empty = SetEmpty
+
+/// Add an element.
+public insert : 'a -> Set 'a -> Set 'a
+let insert x s =
+  match s with
+  | SetEmpty -> SetNode SetEmpty x SetEmpty
+  | SetNode l y r ->
+    if x < y then SetNode (insert x l) y r else if x > y then SetNode l y (insert x r) else s
+
+/// Whether an element is present.
+public member : 'a -> Set 'a -> Bool
+let member x s =
+  match s with
+  | SetEmpty -> false
+  | SetNode l y r -> if x < y then member x l else if x > y then member x r else true
+
+/// The number of elements.
+public size : Set 'a -> Int
+let size s =
+  match s with
+  | SetEmpty -> 0
+  | SetNode l _ r -> 1 + size l + size r
+
+/// The elements in ascending order.
+public toList : Set 'a -> List 'a
+let toList s =
+  match s with
+  | SetEmpty -> []
+  | SetNode l x r -> List.append (toList l) (x :: toList r)

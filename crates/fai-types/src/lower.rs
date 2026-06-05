@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use fai_db::{Db, SourceFile, emit};
 use fai_diagnostics::Diagnostic;
-use fai_resolve::{AdtRef, TypeDeclInfo, prelude_file, type_decls};
+use fai_resolve::{AdtRef, TypeDeclInfo, prelude_exports, type_decls};
 use fai_span::{Span, TextRange};
 use fai_syntax::Symbol;
 use fai_syntax::ast::{ItemKind, Module, RowTail, TypeDef, TypeId, TypeKind};
@@ -245,17 +245,19 @@ impl Lowerer<'_> {
         subst_ty(&body_ty, &subst)
     }
 
-    /// Finds the declaration of type `name` in this module, then the prelude.
+    /// Finds the declaration of type `name` in this module, then the auto-imported
+    /// core (the merged `Prelude` interface).
     fn lookup_type(&self, name: Symbol) -> Option<(SourceFile, TypeDeclInfo)> {
         if let Some(info) = type_decls(self.db, self.file).type_named(name) {
             return Some((self.file, info.clone()));
         }
-        if let Some(pf) = prelude_file(self.db)
-            && pf != self.file
-            && let Some(info) = type_decls(self.db, pf).type_named(name)
+        let exports = prelude_exports(self.db);
+        if let Some(&(_, decl_file)) = exports.types.iter().find(|(n, _)| *n == name)
+            && decl_file != self.file
+            && let Some(info) = type_decls(self.db, decl_file).type_named(name)
             && info.visibility == fai_syntax::ast::Visibility::Public
         {
-            return Some((pf, info.clone()));
+            return Some((decl_file, info.clone()));
         }
         None
     }

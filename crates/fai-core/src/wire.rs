@@ -345,7 +345,7 @@ mod tests {
     /// returns the original and rebuilt pretty renderings (which must be equal).
     fn wire_and_back(src: &str, name: &str) -> (String, String, Rebuilt) {
         let mut db = FaiDatabase::new();
-        fai_types::prelude::load_prelude(&mut db);
+        fai_types::std_lib::load_std(&mut db);
         let id = db.add_source("M.fai".into(), src.to_owned());
         let file = db.source_file(id).unwrap();
         let lowered = core(&db, file, Symbol::intern(name));
@@ -386,7 +386,7 @@ mod tests {
     fn bundle_survives_json_round_trip() {
         // The run worker reads the bundle as JSON from a temp file.
         let mut db = FaiDatabase::new();
-        fai_types::prelude::load_prelude(&mut db);
+        fai_types::std_lib::load_std(&mut db);
         let id = db.add_source("M.fai".into(), "module M\n\nlet f x = x + 1\n".to_owned());
         let file = db.source_file(id).unwrap();
         let lowered = core(&db, file, Symbol::intern("f"));

@@ -1,6 +1,6 @@
 ---
 source: crates/fai-syntax/src/layout.rs
-expression: "render(\"module M\\nlet describe n =\\n  n\\n  |> inc\\n  |> intToString\")"
+expression: "render(\"module M\\nlet describe n =\\n  n\\n  |> inc\\n  |> Int.toString\")"
 ---
 module
 M
@@ -14,6 +14,8 @@ n
   |>
   inc
   |>
-  intToString
+  Int
+  .
+  toString
 }
 <eof>

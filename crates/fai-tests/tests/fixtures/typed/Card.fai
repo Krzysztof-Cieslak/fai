@@ -97,7 +97,7 @@ let rankName r =
   | Queen -> "Q"
   | King -> "K"
   | Ace -> "A"
-  | other -> intToString (rankValue other)
+  | other -> Int.toString (rankValue other)
 
 //~ TYPE suitName : Suit -> String
 public suitName : Suit -> String

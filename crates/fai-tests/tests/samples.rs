@@ -104,9 +104,9 @@ const TYPECHECK_CLEAN: &[&str] = &[
 #[test]
 fn typecheck_clean_samples_have_no_errors() {
     // Load every sample into one workspace (so cross-file refs would resolve),
-    // plus the embedded prelude.
+    // plus the embedded standard library.
     let mut db = FaiDatabase::new();
-    fai_types::prelude::load_prelude(&mut db);
+    fai_types::std_lib::load_std(&mut db);
 
     let mut files: Vec<PathBuf> = std::fs::read_dir(samples_dir())
         .expect("samples/ directory exists")

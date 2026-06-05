@@ -36,7 +36,7 @@ let interest balance = balance / 100
 
 //~ TYPE summary : Int -> String
 public summary : Int -> String
-let summary balance = "balance: " ++ intToString balance
+let summary balance = "balance: " ++ Int.toString balance
 
 example: deposit 100 50 = 150
 example: withdraw 100 30 = 70

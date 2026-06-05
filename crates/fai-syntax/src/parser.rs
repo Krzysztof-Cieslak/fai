@@ -1579,7 +1579,7 @@ mod tests {
         insta::assert_snapshot!(
             "function_with_pipes",
             dump(
-                "module Funcs\npublic describe : Int -> String\nlet describe n =\n  n\n  |> inc\n  |> intToString"
+                "module Funcs\npublic describe : Int -> String\nlet describe n =\n  n\n  |> inc\n  |> Int.toString"
             )
         );
     }
@@ -1624,7 +1624,7 @@ mod tests {
         insta::assert_snapshot!(
             "union_match_and_records",
             dump(
-                "module Cards\ntype Suit =\n  | Red\n  | Black\ntype Card = { rank : Int, suit : Suit }\npublic describe : Card -> String\nlet describe c =\n  match c with\n  | { rank = 1 | _ } -> \"ace\"\n  | { rank, suit } -> intToString rank"
+                "module Cards\ntype Suit =\n  | Red\n  | Black\ntype Card = { rank : Int, suit : Suit }\npublic describe : Card -> String\nlet describe c =\n  match c with\n  | { rank = 1 | _ } -> \"ace\"\n  | { rank, suit } -> Int.toString rank"
             )
         );
     }

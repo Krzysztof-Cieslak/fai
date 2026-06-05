@@ -152,11 +152,11 @@ fn signatured_def_is_singleton_scc() {
 
 #[test]
 fn shadowing_prelude_warns() {
-    // Shadow a prelude export: the warning needs the prelude module present so its
-    // exports are known.
+    // Shadow an auto-imported name: the warning needs the Prelude module present
+    // (as a standard-library file) so its exports are known.
     let (db, files) = db_with(&[
-        ("Prelude.fai", "module Prelude\n\npublic length : List 'a -> Int\nlet length xs = 0\n"),
-        ("M.fai", "module M\n\nlet length x = x\n"),
+        ("<std>/Prelude.fai", "module Prelude\n\npublic not : Bool -> Bool\nlet not b = b\n"),
+        ("M.fai", "module M\n\nlet not x = x\n"),
     ]);
     let diags = resolve_diags(&db, files[1]);
     let warn = diags.iter().find(|d| d.code.as_str() == "FAI2010");
@@ -165,11 +165,47 @@ fn shadowing_prelude_warns() {
 }
 
 #[test]
-fn shadowing_intrinsic_warns() {
-    // Intrinsics are known without loading the prelude module.
-    let (db, files) = db_with(&[("M.fai", "module M\n\nlet not x = x\n")]);
+fn standard_library_module_may_use_prim() {
+    let (db, files) = db_with(&[(
+        "<std>/Bool.fai",
+        "module Bool\n\npublic neg : Bool -> Bool\nlet neg b = Prim.not b\n",
+    )]);
     let diags = resolve_diags(&db, files[0]);
-    assert!(diags.iter().any(|d| d.code.as_str() == "FAI2010"), "got {:?}", codes(&diags));
+    assert!(diags.is_empty(), "a std module may use Prim, got {:?}", codes(&diags));
+}
+
+#[test]
+fn prim_outside_standard_library_is_rejected() {
+    let (db, files) = db_with(&[("M.fai", "module M\n\nlet neg b = Prim.not b\n")]);
+    let diags = resolve_diags(&db, files[0]);
+    assert!(
+        diags.iter().any(|d| d.code.as_str() == "FAI2014"),
+        "expected FAI2014, got {:?}",
+        codes(&diags)
+    );
+}
+
+#[test]
+fn prim_unknown_intrinsic_is_unbound() {
+    let (db, files) =
+        db_with(&[("<std>/M.fai", "module M\n\npublic f : Int -> Int\nlet f x = Prim.nope x\n")]);
+    let diags = resolve_diags(&db, files[0]);
+    assert!(diags.iter().any(|d| d.code.as_str() == "FAI2001"), "got {:?}", codes(&diags));
+}
+
+#[test]
+fn duplicate_auto_imported_export_is_detected() {
+    // Two auto-imported modules exporting the same name are recorded as a
+    // duplicate by the merge (FAI2013 is emitted per offending file from there).
+    let (db, files) = db_with(&[
+        ("<std>/A.fai", "module A\n\npublic dup : Int\nlet dup = 1\n"),
+        ("<std>/B.fai", "module B\n\npublic dup : Int\nlet dup = 2\n"),
+    ]);
+    let exports = crate::merge_auto_imports(&db, &files);
+    assert!(
+        exports.duplicates.iter().any(|d| d.name.as_str() == "dup"),
+        "expected `dup` recorded as a duplicate export"
+    );
 }
 
 #[test]

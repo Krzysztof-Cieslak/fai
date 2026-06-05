@@ -11,9 +11,9 @@ let numDigits n = if n < 10 then 1 else 1 + numDigits (n / 10)
 
 public main : Runtime -> Unit
 let main runtime =
-  let a = Console.writeLine runtime (intToString (isqrt 144))
-  let b = Console.writeLine runtime (intToString (digitSum 9999))
-  Console.writeLine runtime (intToString (numDigits 1000000))
+  let a = Console.writeLine runtime (Int.toString (isqrt 144))
+  let b = Console.writeLine runtime (Int.toString (digitSum 9999))
+  Console.writeLine runtime (Int.toString (numDigits 1000000))
 
 //~ OUTPUT 12
 //~ OUTPUT 36

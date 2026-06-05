@@ -70,6 +70,25 @@ pub struct SourceFile {
     pub text: String,
 }
 
+/// The synthetic path namespace of the embedded standard library.
+///
+/// Standard-library modules are loaded as synthetic inputs whose paths start
+/// with this prefix, keeping them distinct from any on-disk file (so a user's
+/// own `std/` directory can never collide) and letting every phase recognize
+/// them by path alone. The loader lives in `fai-types`; the prefix is shared
+/// here so lower crates (e.g. name resolution) can classify a file without
+/// depending on the loader.
+pub const STD_PATH_PREFIX: &str = "<std>/";
+
+/// Whether `path` names an embedded standard-library module.
+///
+/// Such files are kept out of user-facing surfaces (`check`, `query`) and are
+/// the only ones allowed to reach the prelude-private `Prim` intrinsics.
+#[must_use]
+pub fn is_std_path(path: &str) -> bool {
+    path.starts_with(STD_PATH_PREFIX)
+}
+
 /// An interned string key.
 ///
 /// Demonstrates salsa interning, which later phases use for derived keys (module

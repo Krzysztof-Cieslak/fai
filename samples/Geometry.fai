@@ -2,7 +2,7 @@ module Geometry
 
 // Used structurally — no declaration needed.
 public length : { x : Float, y : Float } -> Float
-let length v = sqrt (v.x * v.x + v.y * v.y)
+let length v = Float.sqrt (v.x * v.x + v.y * v.y)
 
 // A transparent alias: `Vec2` and `{ x : Float, y : Float }` are interchangeable.
 type Vec2 = { x : Float, y : Float }

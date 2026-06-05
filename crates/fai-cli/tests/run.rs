@@ -34,7 +34,7 @@ fn run_prints_via_console_capability() {
 
 #[test]
 fn build_produces_a_runnable_binary() {
-    let src = "module Calc\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (intToString (40 + 2))\n";
+    let src = "module Calc\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (Int.toString (40 + 2))\n";
     let dir = workspace("build", &[("Calc.fai", src)]);
     let exe = dir.join("calc");
 

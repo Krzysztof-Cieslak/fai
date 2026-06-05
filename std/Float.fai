@@ -1,0 +1,18 @@
+module Float
+
+// Operations on the built-in `Float` type. Reach them qualified: `Float.sqrt`.
+/// Render a float in decimal notation.
+public toString : Float -> String
+let toString x = Prim.floatToString x
+
+/// Truncate a float toward zero to an `Int`.
+public toInt : Float -> Int
+let toInt x = Prim.floatToInt x
+
+/// The non-negative square root.
+public sqrt : Float -> Float
+let sqrt x = Prim.sqrt x
+
+/// The ratio of a circle's circumference to its diameter.
+public pi : Float
+let pi = 3.141592653589793

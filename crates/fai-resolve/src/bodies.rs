@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use fai_db::{Db, SourceFile, emit};
+use fai_db::{Db, SourceFile, emit, is_std_path};
 use fai_diagnostics::Diagnostic;
 use fai_span::Span;
 use fai_syntax::Symbol;
@@ -22,13 +22,14 @@ use rustc_hash::FxHashMap;
 
 use crate::decls::type_decls;
 use crate::ids::{CtorRef, DefId, LocalId, Res, is_upper};
+use crate::intrinsics;
 use crate::module::{
-    ModuleName, emit_duplicate_module_errors, module_defs, module_file, module_interface,
-    prelude_file,
+    ModuleName, emit_duplicate_module_errors, emit_duplicate_prelude_export_errors, module_defs,
+    module_file, module_interface, prelude_exports,
 };
-use crate::prelude;
 use crate::{
-    PRIVATE_REFERENCE, SHADOWS_PRELUDE, UNBOUND_CONSTRUCTOR, UNBOUND_NAME, UNRESOLVED_MODULE,
+    INTRINSIC_OUTSIDE_STD, PRIVATE_REFERENCE, SHADOWS_PRELUDE, UNBOUND_CONSTRUCTOR, UNBOUND_NAME,
+    UNRESOLVED_MODULE,
 };
 
 /// The resolved references of one file's bodies.
@@ -121,11 +122,16 @@ impl Scope {
 #[salsa::tracked]
 pub fn resolve(db: &dyn Db, file: SourceFile) -> Arc<ResolvedBodies> {
     emit_duplicate_module_errors(db, file);
+    emit_duplicate_prelude_export_errors(db, file);
 
     let parsed = fai_syntax::parse(db, file);
     let module = &parsed.module;
     let defs = module_defs(db, file);
     let source = file.source(db);
+
+    // A standard-library module: it may reach the `Prim` intrinsics, and its own
+    // bindings *define* the auto-imported names (so they never "shadow").
+    let is_std = is_std_path(file.path(db));
 
     // Names defined at this module's top level (binding present).
     let top_level: FxHashMap<Symbol, DefId> =
@@ -135,26 +141,16 @@ pub fn resolve(db: &dyn Db, file: SourceFile) -> Arc<ResolvedBodies> {
     let local_ctors: FxHashMap<Symbol, CtorRef> =
         type_decls(db, file).ctors.keys().map(|&name| (name, CtorRef::new(source, name))).collect();
 
-    // The prelude module's public values and constructors, visible unqualified.
-    // (Skipped while resolving the prelude itself — its defs are already local.)
-    let mut prelude_values: FxHashMap<Symbol, DefId> = FxHashMap::default();
-    let mut prelude_ctors: FxHashMap<Symbol, CtorRef> = FxHashMap::default();
-    if let Some(pf) = prelude_file(db)
-        && pf != file
-    {
-        let pf_source = pf.source(db);
-        for export in &module_interface(db, pf).exports {
-            prelude_values.insert(export.name, DefId::new(pf_source, export.name));
-        }
-        for &ctor in &module_interface(db, pf).ctors {
-            prelude_ctors.insert(ctor, CtorRef::new(pf_source, ctor));
-        }
-    }
+    // The auto-imported core (the merged `Prelude` interface), visible unqualified.
+    let exports = prelude_exports(db);
+    let prelude_values: FxHashMap<Symbol, DefId> = exports.values.iter().copied().collect();
+    let prelude_ctors: FxHashMap<Symbol, CtorRef> = exports.ctors.iter().copied().collect();
 
     let mut cx = Resolver {
         db,
         module,
         source,
+        is_std,
         top_level: &top_level,
         local_ctors: &local_ctors,
         prelude_values: &prelude_values,
@@ -169,14 +165,11 @@ pub fn resolve(db: &dyn Db, file: SourceFile) -> Arc<ResolvedBodies> {
         pat_locals: FxHashMap::default(),
     };
 
-    // Warn when a top-level binding shadows a prelude name — except inside the
-    // prelude module itself, whose bindings *define* those names.
-    let is_prelude_module = module.name.is_some_and(|n| n.as_str() == prelude::PRELUDE_MODULE);
+    // Warn when a top-level binding shadows an auto-imported name — except inside
+    // standard-library modules, whose bindings *define* those names.
     for d in &defs.defs {
-        let shadows = prelude::is_intrinsic(d.name)
-            || prelude_values.contains_key(&d.name)
-            || prelude_ctors.contains_key(&d.name);
-        if !is_prelude_module && shadows {
+        let shadows = prelude_values.contains_key(&d.name) || prelude_ctors.contains_key(&d.name);
+        if !is_std && shadows {
             let span = module.items[d.binding.index()].span;
             emit(
                 db,
@@ -235,6 +228,8 @@ struct Resolver<'a> {
     db: &'a dyn Db,
     module: &'a Module,
     source: fai_span::SourceId,
+    /// Whether this is a standard-library module (may use `Prim`).
+    is_std: bool,
     top_level: &'a FxHashMap<Symbol, DefId>,
     local_ctors: &'a FxHashMap<Symbol, CtorRef>,
     prelude_values: &'a FxHashMap<Symbol, DefId>,
@@ -424,8 +419,10 @@ impl Resolver<'_> {
     }
 
     /// Resolves a bare name. Upper-case names are constructors (this module, then
-    /// the prelude); lower-case names are `true`/`false`, then local scope, this
-    /// module's top level, the prelude module's values, then intrinsics.
+    /// the auto-imported core); lower-case names are `true`/`false`, then local
+    /// scope, this module's top level, then the auto-imported core's values.
+    /// (Intrinsics are reached only as `Prim.<name>` inside standard-library
+    /// modules, never as a bare name.)
     fn resolve_name(&self, name: Symbol) -> Res {
         // `true`/`false` are keyword-like boolean literals parsed as `Var`.
         if matches!(name.as_str(), "true" | "false") {
@@ -442,9 +439,6 @@ impl Resolver<'_> {
         }
         if let Some(def) = self.prelude_values.get(&name) {
             return Res::Def(*def);
-        }
-        if prelude::is_intrinsic(name) {
-            return Res::Builtin(name);
         }
         Res::Error
     }
@@ -497,6 +491,37 @@ impl Resolver<'_> {
         // capabilities ordinary values reached through a `Runtime` record.
         if module_sym.as_str() == "Console" && field.as_str() == "writeLine" {
             return Res::Builtin(field);
+        }
+        // The prelude-private intrinsics module: `Prim.<name>` is reachable only
+        // from standard-library modules, and only for a known intrinsic.
+        if module_sym.as_str() == intrinsics::PRIM_MODULE {
+            if !self.is_std {
+                emit(
+                    self.db,
+                    Diagnostic::error(
+                        INTRINSIC_OUTSIDE_STD,
+                        format!(
+                            "the intrinsics module `{}` is only available inside standard-library \
+                             modules",
+                            intrinsics::PRIM_MODULE
+                        ),
+                        self.span(base_span),
+                    ),
+                );
+                return Res::Error;
+            }
+            if intrinsics::is_intrinsic(field) {
+                return Res::Builtin(field);
+            }
+            emit(
+                self.db,
+                Diagnostic::error(
+                    UNBOUND_NAME,
+                    format!("`{}` has no intrinsic `{field}`", intrinsics::PRIM_MODULE),
+                    self.span(whole_span),
+                ),
+            );
+            return Res::Error;
         }
         let Some(target_file) = module_file(self.db, ModuleName(module_sym)) else {
             emit(

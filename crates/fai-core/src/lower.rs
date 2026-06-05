@@ -47,7 +47,6 @@ pub fn core(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
         module: &parsed.module,
         resolved: &resolved,
         types: &types,
-        prelude: prelude_file(db),
         next_local: first_free_local(&resolved),
         fns: vec![placeholder_fn()],
     };
@@ -66,11 +65,6 @@ fn binding_body(module: &Module, name: Symbol) -> Option<(Vec<PatId>, ExprId)> {
         }
         _ => None,
     })
-}
-
-/// The embedded prelude file, if loaded (for resolving prelude-defined helpers).
-fn prelude_file(db: &dyn Db) -> Option<SourceFile> {
-    db.all_source_files().into_iter().find(|f| fai_types::prelude::is_prelude_path(f.path(db)))
 }
 
 /// The first `LocalId` index not used by resolution (so synthesized binders —
@@ -94,7 +88,6 @@ struct Lowerer<'a> {
     module: &'a Module,
     resolved: &'a ResolvedBodies,
     types: &'a BodyTypes,
-    prelude: Option<SourceFile>,
     next_local: usize,
     fns: Vec<CoreFn>,
 }
@@ -333,25 +326,20 @@ impl Lowerer<'_> {
         list
     }
 
-    /// Lowers a builtin reference used as a value: booleans become literals,
-    /// primitives are eta-expanded into a closure, and prelude-defined helpers
-    /// become global references.
+    /// Lowers a builtin reference used as a value: booleans become literals and
+    /// intrinsics (`Prim.*`, the boolean ops, `Console.writeLine`) are
+    /// eta-expanded into a closure. Auto-imported core functions are ordinary
+    /// `Res::Def` globals, so they never reach here.
     fn lower_builtin_ref(&mut self, name: Symbol, ty: Ty, span: TextRange) -> CExpr {
         match name.as_str() {
             "true" => return CExpr::new(K::Lit(Lit::Bool(true)), ty),
             "false" => return CExpr::new(K::Lit(Lit::Bool(false)), ty),
-            "identity" | "const" | "notEqual" => {
-                if let Some(prelude) = self.prelude {
-                    return CExpr::new(K::Global(DefId::new(prelude.source(self.db), name)), ty);
-                }
-                return self.unsupported(span, "this prelude function");
-            }
             _ => {}
         }
         if let Some(prim) = Prim::from_builtin(name.as_str()) {
             return self.eta_expand_prim(prim, ty);
         }
-        self.unsupported(span, "this prelude function")
+        self.unsupported(span, "this intrinsic")
     }
 
     /// Builds a closure `fun a0 … -> prim a0 …` for a primitive used as a value.

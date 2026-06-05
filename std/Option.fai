@@ -1,0 +1,38 @@
+module Option
+
+// Operations on the auto-imported `Option` type. Reach them qualified:
+// `Option.map`, `Option.withDefault`, …
+/// Map over the value inside an `Option`.
+public map : ('a -> 'b) -> Option 'a -> Option 'b
+let map f opt =
+  match opt with
+  | None -> None
+  | Some x -> Some (f x)
+
+/// The contained value, or `fallback` for `None`.
+public withDefault : 'a -> Option 'a -> 'a
+let withDefault fallback opt =
+  match opt with
+  | None -> fallback
+  | Some x -> x
+
+/// Whether an `Option` holds a value.
+public isSome : Option 'a -> Bool
+let isSome opt =
+  match opt with
+  | None -> false
+  | Some _ -> true
+
+/// Whether an `Option` is empty.
+public isNone : Option 'a -> Bool
+let isNone opt =
+  match opt with
+  | None -> true
+  | Some _ -> false
+
+/// Chain a fallible computation over an `Option`.
+public andThen : ('a -> Option 'b) -> Option 'a -> Option 'b
+let andThen f opt =
+  match opt with
+  | None -> None
+  | Some x -> f x

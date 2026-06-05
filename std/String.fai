@@ -1,0 +1,31 @@
+module String
+
+// String operations. Each wraps a runtime primitive reached through the
+// prelude-private `Prim` module; user code calls them qualified (`String.split`).
+/// The number of characters in a string.
+public length : String -> Int
+let length s = Prim.stringLength s
+
+/// Convert every character to upper case.
+public toUpper : String -> String
+let toUpper s = Prim.toUpper s
+
+/// Convert every character to lower case.
+public toLower : String -> String
+let toLower s = Prim.toLower s
+
+/// Remove leading and trailing whitespace.
+public trim : String -> String
+let trim s = Prim.trim s
+
+/// Whether `s` contains `needle` as a substring.
+public contains : String -> String -> Bool
+let contains s needle = Prim.stringContains s needle
+
+/// Split `s` on every occurrence of `sep`.
+public split : String -> String -> List String
+let split sep s = Prim.split sep s
+
+/// Join the strings in `parts`, inserting `sep` between them.
+public join : String -> List String -> String
+let join sep parts = Prim.join sep parts

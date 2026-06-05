@@ -76,7 +76,7 @@ let magnitudeSquared2 v = dot2 v v
 public magnitude2 : Vec2 -> Float
 let magnitude2 v =
   let m2 = magnitudeSquared2 v
-  sqrt m2
+  Float.sqrt m2
 
 //~ TYPE distance2 : { x : Float, y : Float } -> { x : Float, y : Float } -> Float
 //~ LOCAL distance2.diff : { x : Float, y : Float }
@@ -126,7 +126,7 @@ let cross3 a b =
 public magnitude3 : Vec3 -> Float
 let magnitude3 v =
   let m2 = dot3 v v
-  sqrt m2
+  Float.sqrt m2
 
 // ── A small projectile-motion step (Float physics) ───────────────────────────
 // State is a body with a position and a velocity, each a Vec2.

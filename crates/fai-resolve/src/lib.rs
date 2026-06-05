@@ -16,9 +16,9 @@ mod ids;
 mod bodies;
 #[allow(unsafe_code)]
 mod decls;
+pub mod intrinsics;
 #[allow(unsafe_code)]
 mod module;
-pub mod prelude;
 #[allow(unsafe_code)]
 mod scc;
 #[cfg(test)]
@@ -28,9 +28,10 @@ pub use bodies::{ResolvedBodies, resolve};
 pub use decls::{CtorInfo, TypeDeclInfo, TypeDecls, type_decls};
 pub use ids::{AdtRef, CtorRef, DefId, LocalId, Res, is_upper};
 pub use module::{
-    DefInfo, Export, ModuleDefs, ModuleInterface, ModuleName, duplicate_module_files,
-    emit_duplicate_module_errors, module_defs, module_file, module_interface, module_name,
-    prelude_file,
+    DefInfo, DuplicateExport, Export, ExportKind, ModuleDefs, ModuleInterface, ModuleName,
+    PRELUDE_MODULE, PreludeExports, duplicate_module_files, emit_duplicate_module_errors,
+    emit_duplicate_prelude_export_errors, merge_auto_imports, module_defs, module_file,
+    module_interface, module_name, prelude_exports, prelude_module_file, std_files,
 };
 pub use scc::{ModuleSccs, Scc, def_deps, module_sccs};
 
@@ -60,6 +61,10 @@ pub const SHADOWS_PRELUDE: DiagnosticCode = DiagnosticCode::new("FAI2010");
 pub const DUPLICATE_BINDER: DiagnosticCode = DiagnosticCode::new("FAI2011");
 /// An upper-case name is not a known data constructor.
 pub const UNBOUND_CONSTRUCTOR: DiagnosticCode = DiagnosticCode::new("FAI2012");
+/// More than one auto-imported module exports the same name (a warning).
+pub const DUPLICATE_PRELUDE_EXPORT: DiagnosticCode = DiagnosticCode::new("FAI2013");
+/// The `Prim` intrinsics module is referenced outside a standard-library module.
+pub const INTRINSIC_OUTSIDE_STD: DiagnosticCode = DiagnosticCode::new("FAI2014");
 
 /// Diagnostic codes owned by name resolution/visibility (the `FAI2xxx` range).
 pub const CODES: &[CodeInfo] = &[
@@ -113,6 +118,16 @@ pub const CODES: &[CodeInfo] = &[
     CodeInfo {
         code: UNBOUND_CONSTRUCTOR,
         title: "unbound constructor",
+        default_severity: Severity::Error,
+    },
+    CodeInfo {
+        code: DUPLICATE_PRELUDE_EXPORT,
+        title: "duplicate auto-imported export",
+        default_severity: Severity::Warning,
+    },
+    CodeInfo {
+        code: INTRINSIC_OUTSIDE_STD,
+        title: "intrinsics used outside the standard library",
         default_severity: Severity::Error,
     },
 ];

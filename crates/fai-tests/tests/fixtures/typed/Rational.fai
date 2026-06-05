@@ -143,7 +143,7 @@ let isPositive r = r.num * r.den > 0
 public showR : Rational -> String
 let showR r =
   let { num = n, den = d } = r
-  if d = 1 then intToString n else intToString n ++ "/" ++ intToString d
+  if d = 1 then Int.toString n else Int.toString n ++ "/" ++ Int.toString d
 
 // ── Contracts ────────────────────────────────────────────────────────────────
 

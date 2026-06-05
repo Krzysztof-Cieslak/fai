@@ -14,7 +14,7 @@ use crate::rc;
 
 fn db_with(src: &str) -> (FaiDatabase, SourceFile) {
     let mut db = FaiDatabase::new();
-    fai_types::prelude::load_prelude(&mut db);
+    fai_types::std_lib::load_std(&mut db);
     let id = db.add_source("M.fai".into(), src.to_owned());
     let file = db.source_file(id).unwrap();
     (db, file)
@@ -154,7 +154,7 @@ fn rc_invariants_hold_over_a_corpus() {
         ("module M\n\nlet f a =\n  let b = a + 1\n  let c = b + a\n  b + c\n", "f"),
         ("module M\n\nlet twice f = f >> f\n", "twice"),
         ("module M\n\nlet adder x = fun y -> x + y\n", "adder"),
-        ("module M\n\nlet pipe n = n |> intToString\n", "pipe"),
+        ("module M\n\nlet pipe n = n |> Int.toString\n", "pipe"),
         ("module M\n\nlet neq a b = a <> b\n", "neq"),
         ("module M\n\nlet both a b = a && b\n", "both"),
         (

@@ -93,7 +93,7 @@ pub fn check_source(source: &str) -> CheckOutcome {
 #[must_use]
 pub fn check_named(primary: &str, files: &[(&str, &str)]) -> CheckOutcome {
     let mut db = FaiDatabase::new();
-    fai_types::prelude::load_prelude(&mut db);
+    fai_types::std_lib::load_std(&mut db);
     let mut primary_id = None;
     for (path, text) in files {
         let id = db.add_source(Utf8PathBuf::from(*path), (*text).to_owned());
@@ -195,7 +195,7 @@ pub fn local_type(source: &str, fn_name: &str, local: &str) -> String {
 /// The raw `(name, Ty)` locals for `fn_name`, sharing one variable numbering.
 fn raw_local_types(source: &str, fn_name: &str) -> Vec<(String, fai_types::Ty)> {
     let mut db = FaiDatabase::new();
-    fai_types::prelude::load_prelude(&mut db);
+    fai_types::std_lib::load_std(&mut db);
     let id = db.add_source("Test.fai".into(), source.to_owned());
     let file = db.source_file(id).unwrap();
     fai_types::def_local_types(&db, file, Symbol::intern(fn_name))

@@ -23,7 +23,7 @@ fn main() {
 /// Builds a database with the prelude and a single module `M` from `source`.
 fn db_with(source: &str) -> (FaiDatabase, SourceFile) {
     let mut db = FaiDatabase::new();
-    fai_types::prelude::load_prelude(&mut db);
+    fai_types::std_lib::load_std(&mut db);
     let id = db.add_source("M.fai".into(), source.to_owned());
     let file = db.source_file(id).unwrap();
     (db, file)

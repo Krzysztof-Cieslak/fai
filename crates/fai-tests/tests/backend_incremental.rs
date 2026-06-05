@@ -14,8 +14,8 @@ use fai_rc::rc;
 use fai_syntax::Symbol;
 use fai_tests::{Revision, assert_incremental_matches_clean};
 
-const MAIN_A: &str = "module Main\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (intToString (Helper.helper 41))\n";
-const MAIN_B: &str = "module Main\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (intToString (Helper.helper 7))\n";
+const MAIN_A: &str = "module Main\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (Int.toString (Helper.helper 41))\n";
+const MAIN_B: &str = "module Main\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (Int.toString (Helper.helper 7))\n";
 const HELPER_1: &str = "module Helper\n\npublic helper : Int -> Int\nlet helper x = x + 1\n";
 const HELPER_2: &str = "module Helper\n\npublic helper : Int -> Int\nlet helper x = x + 2\n";
 const HELPER_COMMENT: &str = "module Helper\n\n// shift byte offsets without changing the item tree\npublic helper : Int -> Int\nlet helper x = x + 2\n";

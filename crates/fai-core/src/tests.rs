@@ -7,7 +7,7 @@ use crate::{core, pretty_def};
 
 fn db_with(src: &str) -> (FaiDatabase, SourceFile) {
     let mut db = FaiDatabase::new();
-    fai_types::prelude::load_prelude(&mut db);
+    fai_types::std_lib::load_std(&mut db);
     let id = db.add_source("M.fai".into(), src.to_owned());
     let file = db.source_file(id).unwrap();
     (db, file)
@@ -69,9 +69,11 @@ fn lowers_pipe_to_application() {
 }
 
 #[test]
-fn lowers_pipe_into_primitive() {
-    let src = "module M\n\nlet describe n = n |> intToString\n";
-    assert_eq!(lower(src, "describe"), "fn0(%0) = (intToString %0)\n");
+fn lowers_pipe_into_global_wrapper() {
+    // `Int.toString` is an ordinary standard-library wrapper, so the pipe lowers
+    // to a call of the global (whose body is the intrinsic).
+    let src = "module M\n\nlet describe n = n |> Int.toString\n";
+    assert_eq!(lower(src, "describe"), "fn0(%0) = (app @toString %0)\n");
 }
 
 #[test]
@@ -102,8 +104,8 @@ fn lowers_short_circuit_booleans() {
 
 #[test]
 fn references_prelude_helper_as_global() {
-    let src = "module M\n\nlet f a b = notEqual a b\n";
-    assert_eq!(lower(src, "f"), "fn0(%0, %1) = (app @notEqual %0 %1)\n");
+    let src = "module M\n\nlet f a b = compare a b\n";
+    assert_eq!(lower(src, "f"), "fn0(%0, %1) = (app @compare %0 %1)\n");
 }
 
 #[test]
@@ -148,14 +150,14 @@ fn cons_lowers_to_data() {
 
 #[test]
 fn float_in_argument_position_lowers() {
-    let src = "module M\n\nlet f = floatToString 3.0\n";
+    let src = "module M\n\nlet f = Float.toString 3.0\n";
     assert!(codes(src, "f").is_empty());
 }
 
 #[test]
 fn list_prelude_helper_lowers_to_a_global() {
-    // `length` is now an ordinary prelude definition, reached as a global.
-    let src = "module M\n\nlet n = length [1]\n";
+    // `List.length` is an ordinary standard-library definition, reached as a global.
+    let src = "module M\n\nlet n = List.length [1]\n";
     assert!(codes(src, "n").is_empty());
 }
 
@@ -242,7 +244,7 @@ fn lowering_invariants_hold_across_programs() {
         ("module M\n\nlet twice f = f >> f\n", "twice"),
         ("module M\n\nlet adder x = fun y -> x + y\n", "adder"),
         (
-            "module M\n\nlet helper x = x + 1\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (intToString (helper 1))\n",
+            "module M\n\nlet helper x = x + 1\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (Int.toString (helper 1))\n",
             "main",
         ),
     ];

@@ -168,7 +168,7 @@ mod tests {
 
     fn fingerprint(src: &str, name: &str) -> String {
         let mut db = FaiDatabase::new();
-        fai_types::prelude::load_prelude(&mut db);
+        fai_types::std_lib::load_std(&mut db);
         let id = db.add_source("M.fai".into(), src.to_owned());
         let file = db.source_file(id).unwrap();
         let lowered = core(&db, file, Symbol::intern(name));
@@ -214,7 +214,7 @@ mod tests {
     /// Lowers a def that references another (so its body holds a `Global`).
     fn caller() -> (FaiDatabase, LoweredDef) {
         let mut db = FaiDatabase::new();
-        fai_types::prelude::load_prelude(&mut db);
+        fai_types::std_lib::load_std(&mut db);
         let id = db.add_source(
             "M.fai".into(),
             "module M\n\nlet helper x = x + 1\n\nlet g x = helper x\n".into(),

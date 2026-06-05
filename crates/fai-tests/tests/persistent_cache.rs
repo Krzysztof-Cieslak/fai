@@ -20,7 +20,7 @@ use fai_driver::{Session, build_native, cache_stats, reset_stats, set_cache_dir}
 /// tests in this binary must not run their cache sections concurrently.
 static CACHE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
-const SRC: &str = "module Main\n\nlet double x = x + x\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (intToString (double 21))\n";
+const SRC: &str = "module Main\n\nlet double x = x + x\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (Int.toString (double 21))\n";
 
 fn unique_dir(tag: &str) -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -79,7 +79,7 @@ fn second_cold_build_reuses_cached_objects() {
 
 /// A different program (→ 99) whose `main` lives in the same module/symbol as
 /// `SRC` (→ 42): a symbol-keyed cache would wrongly reuse the 42 object.
-const SRC_99: &str = "module Main\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (intToString (33 + 66))\n";
+const SRC_99: &str = "module Main\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (Int.toString (33 + 66))\n";
 
 #[test]
 fn changed_source_is_not_served_a_stale_object() {

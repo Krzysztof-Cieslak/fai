@@ -23,15 +23,15 @@ fn main() {
 }
 
 /// A small program (a single arithmetic `main`).
-const SMALL: &str = "module M\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (intToString (1 + 2 * 3))\n";
+const SMALL: &str = "module M\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (Int.toString (1 + 2 * 3))\n";
 
 /// A medium program: a helper chain plus higher-order use.
-const MEDIUM: &str = "module M\n\nlet inc x = x + 1\n\nlet double x = x + x\n\nlet apply f x = f x\n\nlet step x = double (inc x)\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (intToString (apply step (step 10)))\n";
+const MEDIUM: &str = "module M\n\nlet inc x = x + 1\n\nlet double x = x + x\n\nlet apply f x = f x\n\nlet step x = double (inc x)\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (Int.toString (apply step (step 10)))\n";
 
 /// Builds a fresh database holding `src` (and the prelude), returning the file.
 fn fresh(src: &str) -> (FaiDatabase, SourceFile) {
     let mut db = FaiDatabase::new();
-    fai_types::prelude::load_prelude(&mut db);
+    fai_types::std_lib::load_std(&mut db);
     let id = db.add_source("M.fai".into(), src.to_owned());
     let file = db.source_file(id).unwrap();
     (db, file)

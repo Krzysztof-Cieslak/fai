@@ -10,7 +10,7 @@ use crate::{build_native, object_code, reachable_defs};
 
 fn db_with(files: &[(&str, &str)]) -> (FaiDatabase, Vec<SourceFile>) {
     let mut db = FaiDatabase::new();
-    fai_types::prelude::load_prelude(&mut db);
+    fai_types::std_lib::load_std(&mut db);
     let mut handles = Vec::new();
     for (path, text) in files {
         let id = db.add_source((*path).into(), (*text).to_owned());
@@ -57,7 +57,7 @@ fn missing_main_is_an_error() {
 #[test]
 fn unsupported_construct_blocks_the_build() {
     // A reachable definition using a `Char` (outside the native subset) fails.
-    let src = "module M\n\nlet flag = if 'a' = 'b' then 0 else 1\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (intToString flag)\n";
+    let src = "module M\n\nlet flag = if 'a' = 'b' then 0 else 1\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (Int.toString flag)\n";
     let (db, files) = db_with(&[("M.fai", src)]);
     let exe = temp_exe();
     let outcome = build_native(&db, files[0], &exe);
@@ -71,7 +71,7 @@ fn unsupported_construct_blocks_the_build() {
 
 #[test]
 fn reachability_includes_used_definitions_and_excludes_unused() {
-    let src = "module M\n\nlet used x = x + 1\n\nlet unused x = x + 2\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (intToString (used 1))\n";
+    let src = "module M\n\nlet used x = x + 1\n\nlet unused x = x + 2\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (Int.toString (used 1))\n";
     let (db, files) = db_with(&[("M.fai", src)]);
     let names: Vec<String> =
         reachable_defs(&db, files[0]).iter().map(|d| d.name.as_str().to_owned()).collect();
@@ -82,7 +82,7 @@ fn reachability_includes_used_definitions_and_excludes_unused() {
 
 #[test]
 fn builds_and_runs_a_cross_module_program() {
-    let main = "module Main\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (intToString (Helper.triple 14))\n";
+    let main = "module Main\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (Int.toString (Helper.triple 14))\n";
     let helper = "module Helper\n\npublic triple : Int -> Int\nlet triple x = x * 3\n";
     let (db, files) = db_with(&[("Main.fai", main), ("Helper.fai", helper)]);
     let exe = temp_exe();
@@ -101,7 +101,7 @@ fn comment_edit_recompiles_no_objects() {
     // re-lowers the edited definition but produces an identical LoweredDef, which
     // cuts off before codegen: neither the edited module's object nor its
     // dependents' objects are re-emitted.
-    let main = "module Main\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (intToString (Helper.helper 1))\n";
+    let main = "module Main\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (Int.toString (Helper.helper 1))\n";
     let helper_v1 = "module Helper\n\npublic helper : Int -> Int\nlet helper x = x + 1\n";
     let helper_v2 = "module Helper\n\n// an added comment shifts offsets only\npublic helper : Int -> Int\nlet helper x = x + 1\n";
     let (mut db, files) = db_with(&[("Main.fai", main), ("Helper.fai", helper_v1)]);
@@ -136,7 +136,7 @@ fn type_error_blocks_the_build() {
 
 #[test]
 fn division_by_zero_aborts_at_runtime() {
-    let src = "module M\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (intToString (10 / 0))\n";
+    let src = "module M\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (Int.toString (10 / 0))\n";
     let (db, files) = db_with(&[("M.fai", src)]);
     let exe = temp_exe();
     let outcome = build_native(&db, files[0], &exe);
@@ -153,7 +153,7 @@ fn division_by_zero_aborts_at_runtime() {
 
 #[test]
 fn object_code_is_deterministic() {
-    let src = "module M\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (intToString (1 + 2))\n";
+    let src = "module M\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (Int.toString (1 + 2))\n";
     let object = |contents: &str| {
         let (db, files) = db_with(&[("M.fai", contents)]);
         (*object_code(&db, files[0], fai_syntax::Symbol::intern("main"))).clone()
@@ -164,8 +164,8 @@ fn object_code_is_deterministic() {
 #[test]
 fn editing_a_definition_recompiles_its_object() {
     use fai_db::Setter;
-    let v1 = "module M\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (intToString 1)\n";
-    let v2 = "module M\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (intToString 2)\n";
+    let v1 = "module M\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (Int.toString 1)\n";
+    let v2 = "module M\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (Int.toString 2)\n";
     let (mut db, files) = db_with(&[("M.fai", v1)]);
     let file = files[0];
     let _ = object_code(&db, file, fai_syntax::Symbol::intern("main"));
@@ -181,7 +181,7 @@ fn editing_one_module_reuses_cached_objects_for_the_others() {
     // Main calls Helper.helper. Editing Helper's *body* must re-run only
     // Helper.helper's object_code; Main.main's stays cached (the cross-module
     // firewall, now at the codegen layer).
-    let main = "module Main\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (intToString (Helper.helper 41))\n";
+    let main = "module Main\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (Int.toString (Helper.helper 41))\n";
     let helper_v1 = "module Helper\n\npublic helper : Int -> Int\nlet helper x = x + 1\n";
     let helper_v2 = "module Helper\n\npublic helper : Int -> Int\nlet helper x = x + 2\n";
     let (mut db, files) = db_with(&[("Main.fai", main), ("Helper.fai", helper_v1)]);

@@ -56,7 +56,7 @@ fn cross_module_type_flows_into_local_inference() {
     let outcome = check_named(
         "B.fai",
         &[
-            ("A.fai", "module A\n\npublic toStr : Int -> String\nlet toStr n = intToString n\n"),
+            ("A.fai", "module A\n\npublic toStr : Int -> String\nlet toStr n = Int.toString n\n"),
             ("B.fai", "module B\n\npublic label : Int -> String\nlet label n = A.toStr n\n"),
         ],
     );
