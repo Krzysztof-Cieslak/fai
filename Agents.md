@@ -310,16 +310,21 @@ cache plus a fast linker (mold/lld).
   workspace size** (the cross-module firewall).
 - **Wall-clock benches** (`crates/fai-tests/benches/`, [divan]) are for local
   profiling: `cargo bench -p fai-tests`. `inference.rs` covers cold check vs warm
-  incremental edits over a synthetic corpus; `micro.rs` covers unification,
-  instantiation, rendering, deep bodies, and large SCCs. They are **not** a CI
-  gate (shared runners are noisy); CI only compiles them (`build --all-targets`)
-  to prevent bitrot. The deterministic [`corpus`](crates/fai-tests/src/corpus.rs)
-  generator backs both.
+  incremental edits over a synthetic corpus; `micro.rs` covers the inference
+  primitives (unification, instantiation, rendering, deep bodies, large SCCs);
+  `stress.rs` covers pathological scenarios (exponential type growth, wide/deep
+  structures, instantiation- and constraint-heavy bodies, wide modules, deep
+  dependency chains, contract- and error-heavy files). They are **not** a CI gate
+  (shared runners are noisy); CI only compiles them (`build --all-targets`) to
+  prevent bitrot. The deterministic [`corpus`](crates/fai-tests/src/corpus.rs)
+  generator backs the corpus benches and the guards.
 
-Known super-linear hot spots surfaced by `micro.rs` (M9 tuning targets, not
-correctness issues): deep per-block `let`-chains (local-let generalization
-recomputes environment free-variables per binding) and unification of very deep
-types (repeated `resolve_shallow`/occurs walks without path compression).
+Known super-linear hot spots surfaced by the benches (M9 tuning targets, not
+correctness issues): the **occurs check** re-walks the whole growing type per
+binding (O(n²) on long application chains / exponential type growth);
+**local-`let` generalization** recomputes environment free-variables per binding
+(O(n²) in block size); and unification of very deep types repeats
+`resolve_shallow` walks (wants union-find path compression).
 
 ## 10. Diagnostics & error codes
 
