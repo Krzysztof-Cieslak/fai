@@ -230,6 +230,16 @@ single built-in capability (`Console.writeLine`) reached via `main`.
 ---
 
 ### M3.5 — Daemon, persistence & protocol
+**Status:** in progress. The on-disk content-addressed object cache (`fai-core`'s
+portable `fingerprint_def` + the driver's disk layer around `object_code`) and the
+per-workspace daemon (`fai-server`: MessagePack JSON-RPC over `interprocess` local
+sockets, `initialize` handshake, file-state sync, idle shutdown) are built; the CLI
+is a thin client that routes `check`/`query`/`fmt`/`build` through the warm daemon
+(falling back to in-process when it is unreachable) and manages it via
+`fai daemon status|start|stop|restart`. Still to land: the supervised `run` worker
+(streamed output, timeout, resource limits) and `fai daemon tap`. See decisions
+**D56–D62**.
+
 **Goal:** make the warm-database speedups available to the CLI *across*
 invocations — the heart of the agent feedback loop. (Inserted milestone; later
 numbers unchanged.)
@@ -800,6 +810,68 @@ Resolved while implementing **M3** (the native thin slice):
   only for *reachable* definitions. The runtime ABI (tagged values, the
   `fn(env, args) -> i64` calling convention, the `fai_*` symbols) is the contract
   shared by codegen and the runtime.
+
+Resolved while implementing **M3.5** (the daemon, persistence, and protocol):
+
+- **D56 Persistent object cache:** the on-disk cache lives in a **non-salsa
+  wrapper** (`fai-driver`'s `load_or_build_object`) around the pure `object_code`
+  query, so the query stays side-effect-free: a disk hit skips code generation; a
+  miss generates then writes atomically (temp file + rename). The content key is
+  **blake3** over a portable `fingerprint_def` (`fai-core`) — which renders every
+  `Global` through the backend namer (module-qualified symbol + arity, never a
+  process-local `DefId`/`SourceId`) and includes canonical node types — stamped
+  with the target triple, compiler version, and a codegen-config tag. Derived
+  `Hash` is unusable (interner ids and file indices are process-local). The cache
+  is global per-user (`$FAI_CACHE_DIR` → platform cache dir; a process-global
+  override for embedding/tests), unbounded for now (GC is future work), and
+  benefits **AOT `build`** only (the JIT can't consume objects). Determinism of
+  `object_code` (already verified) makes it sound.
+- **D57 Daemon concurrency (serialized):** the daemon serves per-connection
+  threads but serializes **all** database access through one `Mutex<Session>`
+  (true serialization, sidestepping salsa's concurrent-read/cancellation
+  machinery). Control messages and (later) `run` supervision stay off-lock.
+  Concurrent reads + cancel-on-input-change are deferred to the performance
+  milestone; the acceptance bar (warm speedup) needs only the warm DB.
+- **D58 Transport:** the client↔daemon link uses the **`interprocess`** crate
+  (sync) for one safe cross-platform code path — Unix-domain sockets on POSIX,
+  named pipes on Windows — with our `u32`-LE + MessagePack framing layered on top
+  and the Unix socket created `0600`. The endpoint name embeds a blake3 of the
+  canonicalized root and the compiler version; binding is the spawn-race lock, and
+  a stale socket from a crash is reclaimed (probe-connect → unlink → rebind).
+  Windows is compiled but, given the Linux-only CI, **untested** (a Windows CI job
+  is future work).
+- **D59 Result exchange (rendered bytes):** because the thin client has **no
+  database** (so it cannot resolve spans), the daemon runs the command and returns
+  the already-rendered `{stdout, stderr, exit}`; the client passes its resolved
+  `message_format`/`color` and writes the bytes verbatim. A single
+  `fai_driver::run_command` powers both the daemon and the `--no-daemon` path, so
+  warm output equals one-shot output by construction. This deviates from CLI.md
+  §7.6's structured per-method results (a documented simplification); `$/output`
+  for `run` is the streaming exception, and `$/diagnostic`/`$/progress` are
+  deferred.
+- **D60 Daemon detachment & lifecycle:** the client spawns a detached
+  `__daemon-serve` (null stdio; on Windows the safe `DETACHED_PROCESS`/
+  `CREATE_NEW_PROCESS_GROUP` flags) and the daemon calls **`nix::setsid()`** at
+  startup on Unix so a terminal hangup can't kill it (no hand-written unsafe; the
+  same `nix` crate later covers the worker's kill/`setrlimit`). The daemon shuts
+  down on an explicit `Shutdown` or after an idle period
+  (`FAI_DAEMON_IDLE_TIMEOUT`, default 600s), unlinking its socket on the way out.
+- **D61 File-state sync:** before each request the daemon re-scans the workspace,
+  **stat-gated** (mtime/size) and **hash-confirmed** (blake3), updating a salsa
+  input only when content truly changed (so a `touch` doesn't break early cutoff).
+  New files are added; deleted files are dropped from a live set (their input
+  lingers harmlessly). A client dirty-set (`{path, hash|content}`) is honored as a
+  scan-skip fast path; the CLI does not populate it (it is for an editor/LSP
+  client), and unwritten overlays remain deferred.
+- **D62 Routing & graceful fallback:** the routing layer sits **above**
+  `fai_cli::run` (which stays the pure in-process executor, so the existing suite
+  is unchanged); the daemon server calls `fai_driver` directly. `fmt`/`build` I/O
+  is performed by whoever runs the command — the daemon writes the formatted files
+  and links the artifact (client sends absolute paths), the `--no-daemon` path
+  does it locally (a documented relaxation of "the CLI does I/O" for the daemon
+  path). When the daemon is unreachable, the client warns (`FAI0005`) and runs
+  in-process, so a daemon problem never breaks a command. New tooling codes:
+  `FAI0005` daemon-unavailable (warning), `FAI0006` run-timeout.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected milestones.

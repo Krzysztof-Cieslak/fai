@@ -23,7 +23,8 @@ fn empty_workspace() -> Utf8PathBuf {
 #[test]
 fn check_json_output() {
     let dir = empty_workspace();
-    let (code, out, err) = run(&["fai", "check", "-C", dir.as_str(), "--message-format=json"]);
+    let (code, out, err) =
+        run(&["fai", "check", "--no-daemon", "-C", dir.as_str(), "--message-format=json"]);
     assert_eq!(code, 0, "stderr: {err}");
     insta::assert_snapshot!("check_json", out);
 }
@@ -31,7 +32,8 @@ fn check_json_output() {
 #[test]
 fn check_human_output() {
     let dir = empty_workspace();
-    let (code, out, err) = run(&["fai", "check", "-C", dir.as_str(), "--color=never"]);
+    let (code, out, err) =
+        run(&["fai", "check", "--no-daemon", "-C", dir.as_str(), "--color=never"]);
     assert_eq!(code, 0, "stderr: {err}");
     insta::assert_snapshot!("check_human", out);
 }
@@ -53,7 +55,8 @@ fn typed_workspace() -> Utf8PathBuf {
 #[test]
 fn query_type_json_output() {
     let dir = typed_workspace();
-    let (code, out, err) = run(&["fai", "query", "-C", dir.as_str(), "type", "Calc.add"]);
+    let (code, out, err) =
+        run(&["fai", "query", "--no-daemon", "-C", dir.as_str(), "type", "Calc.add"]);
     assert_eq!(code, 0, "stderr: {err}");
     insta::assert_snapshot!("query_type_calc_add", out);
 }
@@ -66,8 +69,15 @@ fn check_reports_type_error() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("Bad.fai"), "module Bad\n\npublic f : Int -> Bool\nlet f x = x + 1\n")
         .unwrap();
-    let (code, out, err) =
-        run(&["fai", "check", "-C", dir.as_str(), "Bad.fai", "--message-format=json"]);
+    let (code, out, err) = run(&[
+        "fai",
+        "check",
+        "--no-daemon",
+        "-C",
+        dir.as_str(),
+        "Bad.fai",
+        "--message-format=json",
+    ]);
     assert_eq!(code, 1, "stderr: {err}");
     assert!(out.contains("FAI3004"), "expected FAI3004 in {out}");
 }

@@ -93,6 +93,9 @@ pub enum Command {
     /// Internal: JIT-run an entry file in this (worker) process. Hidden.
     #[command(name = "__run-worker", hide = true)]
     RunWorker(RunWorkerArgs),
+    /// Internal: run the per-workspace daemon in this process. Hidden.
+    #[command(name = "__daemon-serve", hide = true)]
+    DaemonServe,
     /// Typecheck only (fast inner loop).
     Check(PathArgs),
     /// Run example/forall contracts.
@@ -268,18 +271,4 @@ pub enum DaemonCommand {
     Restart,
     /// Stream a JSON decode of daemon traffic.
     Tap,
-}
-
-impl DaemonCommand {
-    /// The subcommand name, for diagnostics.
-    #[must_use]
-    pub fn name(&self) -> &'static str {
-        match self {
-            DaemonCommand::Status => "status",
-            DaemonCommand::Start => "start",
-            DaemonCommand::Stop => "stop",
-            DaemonCommand::Restart => "restart",
-            DaemonCommand::Tap => "tap",
-        }
-    }
 }

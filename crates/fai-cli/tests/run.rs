@@ -39,7 +39,7 @@ fn build_produces_a_runnable_binary() {
     let exe = dir.join("calc");
 
     let build = fai()
-        .args(["build", "-C"])
+        .args(["build", "--no-daemon", "-C"])
         .arg(&dir)
         .arg("Calc.fai")
         .arg("--out")
@@ -71,7 +71,7 @@ fn build_json_envelope_reports_the_artifact() {
     let dir = workspace("buildjson", &[("Calc.fai", src)]);
     let exe = dir.join("out");
     let output = fai()
-        .args(["build", "--message-format=json", "-C"])
+        .args(["build", "--message-format=json", "--no-daemon", "-C"])
         .arg(&dir)
         .arg("Calc.fai")
         .arg("--out")
@@ -91,7 +91,7 @@ fn build_type_error_exits_one_with_json_diagnostic() {
     let src = "module Bad\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (1 + 2)\n";
     let dir = workspace("buildbad", &[("Bad.fai", src)]);
     let output = fai()
-        .args(["build", "--message-format=json", "-C"])
+        .args(["build", "--message-format=json", "--no-daemon", "-C"])
         .arg(&dir)
         .arg("Bad.fai")
         .output()
