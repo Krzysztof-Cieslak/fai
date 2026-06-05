@@ -1,13 +1,13 @@
 //! End-to-end JIT tests: compile small programs and run them, asserting their
 //! console output and a clean (leak-free) exit.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, MutexGuard};
 
 use fai_core::ir::LoweredDef;
-use fai_db::{Db, FaiDatabase};
+use fai_db::{Db, FaiDatabase, SourceFile};
 use fai_rc::rc;
-use fai_resolve::{DefId, module_defs, module_name};
+use fai_resolve::{DefId, module_name};
 use fai_runtime as rt;
 use fai_span::SourceId;
 use fai_syntax::Symbol;
@@ -21,33 +21,52 @@ fn lock() -> MutexGuard<'static, ()> {
     LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Lowers every definition (user modules + prelude) and runs the entry file's
-/// `main` through the JIT, returning `(exit_code, captured_output)`.
+/// Lowers the definitions reachable from the entry file's `main` and runs it
+/// through the JIT, returning `(exit_code, captured_output)`.
+///
+/// Only the *reachable* closure is compiled: starting at `main`, we follow each
+/// definition's referenced globals transitively. The prelude is a large module,
+/// so compiling all of it on every call would dominate the test cost even though
+/// most programs touch only a handful of its functions.
 pub(crate) fn run(src: &str) -> (i32, String) {
     let mut db = FaiDatabase::new();
     fai_types::prelude::load_prelude(&mut db);
     let id = db.add_source("M.fai".into(), src.to_owned());
     let user = db.source_file(id).unwrap();
 
-    let mut defs: Vec<LoweredDef> = Vec::new();
-    let mut arity: HashMap<DefId, usize> = HashMap::new();
+    // Resolve every source id to its file and module label up front — this is
+    // cheap (no lowering or codegen) and lets us map a referenced global's
+    // `DefId` back to the `SourceFile` whose definition we must lower.
+    let mut files: HashMap<SourceId, SourceFile> = HashMap::new();
     let mut labels: HashMap<SourceId, String> = HashMap::new();
     for file in db.all_source_files() {
         let label =
             module_name(&db, file).map_or_else(|| "M".to_owned(), |m| m.0.as_str().to_owned());
+        files.insert(file.source(&db), file);
         labels.insert(file.source(&db), label);
-        for d in &module_defs(&db, file).defs {
-            let lowered = rc(&db, file, d.name);
-            let def = DefId::new(file.source(&db), d.name);
-            arity.insert(def, lowered.entry().params.len());
-            defs.push((*lowered).clone());
+    }
+
+    let entry = DefId::new(user.source(&db), Symbol::intern("main"));
+
+    // Lower only the definitions transitively reachable from `main`.
+    let mut defs: Vec<LoweredDef> = Vec::new();
+    let mut arity: HashMap<DefId, usize> = HashMap::new();
+    let mut seen: HashSet<DefId> = HashSet::new();
+    let mut worklist = vec![entry];
+    while let Some(def) = worklist.pop() {
+        if !seen.insert(def) {
+            continue;
         }
+        let Some(&file) = files.get(&def.file) else { continue };
+        let lowered = rc(&db, file, def.name);
+        arity.insert(def, lowered.entry().params.len());
+        worklist.extend(lowered.referenced_globals());
+        defs.push((*lowered).clone());
     }
 
     let namer =
         |d: DefId| format!("fai_{}_{}", labels.get(&d.file).cloned().unwrap_or_default(), d.name);
     let arity_of = |d: DefId| arity.get(&d).copied().unwrap_or(1);
-    let entry = DefId::new(user.source(&db), Symbol::intern("main"));
 
     let _g = lock();
     rt::capture_start();
