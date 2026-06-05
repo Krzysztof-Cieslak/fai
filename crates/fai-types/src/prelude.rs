@@ -40,6 +40,12 @@ pub fn builtin_scheme(name: Symbol) -> Option<Scheme> {
     let a = || Ty::Var(TyVarId(0));
     Some(match name.as_str() {
         "true" | "false" => Scheme::mono(Ty::bool()),
+        // The Console capability's sole member, reached as `Console.writeLine`
+        // (a qualified builtin). A placeholder until interfaces/records land:
+        // `Runtime -> String -> Unit`.
+        "writeLine" => {
+            Scheme::mono(Ty::arrows([Ty::Con(Con::Runtime), Ty::Con(Con::String)], Ty::Unit))
+        }
         // Derived `.fai` prelude exports (their bodies live in Prelude.fai; the
         // schemes here mirror their written signatures).
         "identity" => Scheme::new(vec![TyVarId(0)], Ty::arrow(a(), a())),

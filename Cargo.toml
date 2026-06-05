@@ -9,6 +9,7 @@ members = [
     "crates/fai-resolve",
     "crates/fai-types",
     "crates/fai-ide",
+    "crates/fai-core",
     "crates/fai-runtime",
     "crates/fai-driver",
     "crates/fai-cli",

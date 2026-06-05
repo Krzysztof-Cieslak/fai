@@ -48,6 +48,10 @@ pub struct Walker<'a, E: Env> {
     pub env: &'a mut E,
     /// Types of locals bound so far in the current body.
     locals: FxHashMap<LocalId, LocalBinding>,
+    /// When set, every expression's solver type is recorded in `expr_types`.
+    record_types: bool,
+    /// Per-expression solver types (populated only when `record_types` is set).
+    expr_types: FxHashMap<ExprId, SolveTy>,
 }
 
 impl<'a, E: Env> Walker<'a, E> {
@@ -60,7 +64,17 @@ impl<'a, E: Env> Walker<'a, E> {
         cx: &'a mut InferCtx,
         env: &'a mut E,
     ) -> Self {
-        Self { db, file, module, resolved, cx, env, locals: FxHashMap::default() }
+        Self {
+            db,
+            file,
+            module,
+            resolved,
+            cx,
+            env,
+            locals: FxHashMap::default(),
+            record_types: false,
+            expr_types: FxHashMap::default(),
+        }
     }
 }
 
@@ -128,8 +142,37 @@ impl<E: Env> Walker<'_, E> {
         self.bind_pattern_into(pat)
     }
 
-    /// Infers the type of an expression.
+    /// Enables recording of every visited expression's type (for `body_types`).
+    pub fn enable_type_recording(&mut self) {
+        self.record_types = true;
+    }
+
+    /// The recorded per-expression types, defaulted and reified against a shared
+    /// renumbering (so a variable shared between expressions renders the same).
+    /// Call after inferring the body; requires [`Self::enable_type_recording`].
+    pub fn collect_expr_types(&mut self) -> Vec<(ExprId, crate::ty::Ty)> {
+        let mut entries: Vec<(ExprId, SolveTy)> =
+            self.expr_types.iter().map(|(id, ty)| (*id, ty.clone())).collect();
+        entries.sort_by_key(|(id, _)| id.index());
+        for (_, solve) in &entries {
+            self.cx.default_numerics_deep(solve);
+        }
+        let solves: Vec<SolveTy> = entries.iter().map(|(_, s)| s.clone()).collect();
+        let reified = self.cx.reify_many(&solves);
+        entries.iter().map(|(id, _)| *id).zip(reified).collect()
+    }
+
+    /// Infers the type of an expression, recording it when enabled.
     pub fn infer_expr(&mut self, expr: ExprId) -> SolveTy {
+        let ty = self.infer_expr_inner(expr);
+        if self.record_types {
+            self.expr_types.insert(expr, ty.clone());
+        }
+        ty
+    }
+
+    /// The core of [`Self::infer_expr`] (one expression node).
+    fn infer_expr_inner(&mut self, expr: ExprId) -> SolveTy {
         let node = self.module.expr(expr);
         match &node.kind {
             ExprKind::Int(_) => self.cx.fresh_constrained(Some(Constraint::Numeric)),

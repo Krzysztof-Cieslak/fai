@@ -3,6 +3,12 @@
 //! The live-object counter and the console sink are process-global, so every
 //! test serializes on [`TEST_LOCK`] and asserts reference-count balance (the
 //! live count returns to its starting value) around each scenario.
+//!
+//! The runtime uses a uniform **consume** convention: every primitive and
+//! [`fai_apply_n`] consumes (releases) its operands. A function's parameters are
+//! owned (consumed by its body); its captured environment is borrowed (a use
+//! must [`fai_dup`] it, and the closure releases it on death). The test code
+//! functions below follow that discipline, mirroring generated code.
 
 use std::sync::{Mutex, MutexGuard};
 
@@ -23,11 +29,9 @@ const FALSE: Value = 1;
 /// A value just past the 63-bit immediate range, so it must be boxed.
 const BIG: i64 = 1 << 62;
 
+/// Whether `v` equals `Int n`. Consumes `v` (via `fai_equal`).
 fn int_eq(v: Value, n: i64) -> bool {
-    let boxed = fai_box_int(n);
-    let eq = fai_equal(v, boxed);
-    fai_drop(boxed);
-    eq == TRUE
+    fai_equal(v, fai_box_int(n)) == TRUE
 }
 
 // --- Test "Fai functions" (the compiled-code ABI). ------------------------
@@ -38,19 +42,12 @@ unsafe extern "C" fn code_id(_env: *const i64, args: *const i64) -> Value {
 }
 
 unsafe extern "C" fn code_add(_env: *const i64, args: *const i64) -> Value {
-    // SAFETY: `args` holds two owned values.
-    unsafe {
-        let a = *args;
-        let b = *args.add(1);
-        let r = fai_int_add(a, b);
-        fai_drop(a);
-        fai_drop(b);
-        r
-    }
+    // SAFETY: `args` holds two owned values; `fai_int_add` consumes both.
+    unsafe { fai_int_add(*args, *args.add(1)) }
 }
 
 unsafe extern "C" fn code_const(_env: *const i64, args: *const i64) -> Value {
-    // SAFETY: returns arg0, drops arg1.
+    // SAFETY: returns arg0 (owned), drops arg1.
     unsafe {
         let a = *args;
         fai_drop(*args.add(1));
@@ -59,14 +56,8 @@ unsafe extern "C" fn code_const(_env: *const i64, args: *const i64) -> Value {
 }
 
 unsafe extern "C" fn code_addenv(env: *const i64, args: *const i64) -> Value {
-    // SAFETY: env[0] is borrowed; args[0] is owned (consumed).
-    unsafe {
-        let x = *env;
-        let y = *args;
-        let r = fai_int_add(x, y);
-        fai_drop(y);
-        r
-    }
+    // SAFETY: env[0] is borrowed (dup before the consuming add); args[0] is owned.
+    unsafe { fai_int_add(fai_dup(*env), *args) }
 }
 
 unsafe extern "C" fn code_make_adder(_env: *const i64, args: *const i64) -> Value {
@@ -103,14 +94,12 @@ fn overflow_is_boxed_and_preserves_value() {
     let base = live_count();
     let big = fai_box_int(BIG);
     assert!(is_boxed(big), "value past 63 bits must be boxed");
-    assert!(int_eq(big, BIG));
-    fai_drop(big);
+    assert!(int_eq(big, BIG)); // consumes `big`
 
     // An immediate that overflows under multiplication boxes its result.
     let prod = fai_int_mul(imm_int(BIG / 2), imm_int(4));
     assert!(is_boxed(prod));
-    assert!(int_eq(prod, (BIG / 2).wrapping_mul(4)));
-    fai_drop(prod);
+    assert!(int_eq(prod, (BIG / 2).wrapping_mul(4))); // consumes `prod`
     assert_eq!(live_count(), base);
 }
 
@@ -140,16 +129,12 @@ fn equality_over_kinds() {
     let a = fai_int_to_string(imm_int(123));
     let b = fai_int_to_string(imm_int(123));
     let c = fai_int_to_string(imm_int(124));
-    assert_eq!(fai_equal(a, b), TRUE);
-    assert_eq!(fai_equal(a, c), FALSE);
-    fai_drop(a);
-    fai_drop(b);
-    fai_drop(c);
+    assert_eq!(fai_equal(fai_dup(a), b), TRUE); // consumes a-dup and b
+    assert_eq!(fai_equal(a, c), FALSE); // consumes a and c
 
     // A boxed Int never equals a small immediate.
     let big = fai_box_int(BIG);
-    assert_eq!(fai_equal(big, imm_int(0)), FALSE);
-    fai_drop(big);
+    assert_eq!(fai_equal(big, imm_int(0)), FALSE); // consumes big
     assert_eq!(live_count(), base);
 }
 
@@ -159,14 +144,14 @@ fn equality_over_kinds() {
 fn string_concat_and_console_capture() {
     let _g = lock();
     let base = live_count();
-    let a = fai_int_to_string(imm_int(1));
-    let b = fai_string_concat(a, a); // "11"
+    let a = fai_int_to_string(imm_int(1)); // "1", rc 1
+    let b = fai_string_concat(fai_dup(a), fai_dup(a)); // "11"; `a` stays rc 1
     capture_start();
-    fai_console_write_line(FAI_UNIT, b);
+    let unit = fai_console_write_line(FAI_UNIT, b); // consumes b
+    assert_eq!(unit, FAI_UNIT);
     let out = capture_take();
     assert_eq!(out, "11\n");
     fai_drop(a);
-    fai_drop(b);
     assert_eq!(live_count(), base);
 }
 
@@ -244,7 +229,7 @@ fn const_drops_second_argument() {
 #[test]
 fn run_entry_reports_clean_exit() {
     let _g = lock();
-    // A trivial entry: `main runtime = runtime`-like; returns its (immediate) arg.
+    // A trivial entry returning its (immediate) argument.
     let entry = closure(code_id, 1);
     let code = run_entry(entry);
     assert_eq!(code, 0);

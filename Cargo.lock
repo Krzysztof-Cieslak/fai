@@ -309,6 +309,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "fai-core"
+version = "0.1.0"
+dependencies = [
+ "fai-db",
+ "fai-diagnostics",
+ "fai-resolve",
+ "fai-span",
+ "fai-syntax",
+ "fai-types",
+ "rustc-hash",
+ "salsa",
+]
+
+[[package]]
 name = "fai-db"
 version = "0.1.0"
 dependencies = [
