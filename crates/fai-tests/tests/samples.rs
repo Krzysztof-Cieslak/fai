@@ -69,14 +69,21 @@ fn samples_round_trip_or_are_future_surface() {
     }
 }
 
-/// The files that must additionally *typecheck* in M2 with zero errors.
+/// The files that must additionally *typecheck* with zero errors.
 ///
-/// This is the parse-clean set minus files that need future surface:
-/// `Hello.fai` uses a capability type (`Runtime`) and record field access (M3/M5),
-/// and `Comments.fai` is documentation-only with no bindings. Files auto-promote
-/// here as later milestones land.
-const TYPECHECK_CLEAN: &[&str] =
-    &["Algebra.fai", "Basics.fai", "Funcs.fai", "Locals.fai", "Math.fai", "Tuples.fai"];
+/// This is the parse-clean set minus files that need future surface;
+/// `Comments.fai` is documentation-only with no bindings. `Hello.fai` typechecks
+/// since M3 (the `Runtime` capability and `Console.writeLine` are built in).
+/// Files auto-promote here as later milestones land.
+const TYPECHECK_CLEAN: &[&str] = &[
+    "Algebra.fai",
+    "Basics.fai",
+    "Funcs.fai",
+    "Hello.fai",
+    "Locals.fai",
+    "Math.fai",
+    "Tuples.fai",
+];
 
 #[test]
 fn typecheck_clean_samples_have_no_errors() {

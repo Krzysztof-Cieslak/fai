@@ -184,6 +184,18 @@ an explicit signature.
 ---
 
 ### M3 — End-to-end native thin slice ⚠️ (highest-risk milestone)
+**Status:** complete — `fai-core` (typed, desugared Core IR + lowering), `fai-rc`
+(plain dup/drop), `fai-codegen` (Core → Cranelift IR through one path feeding both
+a per-`Def` AOT object emitter and an in-process JIT), and `fai-runtime` (tagged
+values, reference counting, closures/`apply_n`, primitives, the `Console` host,
+and an entry shim with a live-object leak check) are implemented. `fai build`
+produces a self-contained native executable and `fai run` executes via the JIT in
+an isolated worker process; the per-`Def` `object_code` cache, the
+reachable-from-`main` closure, and AOT linking live in `fai-driver`. The thin
+subset is `Int`/`Bool`/`String`, functions, `let`, `if`, arithmetic, and
+`Console.writeLine` reached via `main`; a reachable construct outside it reports
+`FAI7001`. See decisions **D45–D55** for the choices made while implementing it.
+
 **Goal:** compile a tiny program to a **native executable that runs**, exercising
 the whole backend toolchain on the smallest possible language.
 
@@ -734,6 +746,60 @@ Resolved while implementing **M2** (the type-system layer):
   demand from each file's cached resolution, keyed by `ExprId` with spans
   resolved late (firewall-safe). Results are deterministically sorted and
   best-effort under errors.
+
+Resolved while implementing **M3** (the native thin slice):
+
+- **D45 Capability shape (temporary):** the thin slice predates records (M4) and
+  interfaces (M5), so `Runtime` is an **opaque built-in type constructor**
+  threaded through `main` (`main : Runtime -> Unit`), and `Console.writeLine :
+  Runtime -> String -> Unit` is a **qualified builtin** resolved through the
+  existing prelude/qualified-name path (a `Console` builtin module). This honors
+  "capabilities flow from `main`" without the record/interface machinery; M5
+  replaces it with the real record form (`runtime.console.writeLine`). The
+  sample `Hello.fai` is written in this form for now.
+- **D46 `fai run` worker:** `fai run` JIT-compiles and executes in an **isolated
+  worker subprocess** (a hidden `__run-worker` subcommand that opens its own
+  session); stdio is inherited and the worker's exit code is returned. Timeouts,
+  resource limits, and daemon-survival are deferred to M3.5 (R15).
+- **D47 Object cache = salsa query:** `object_code(Def)` is a tracked query
+  producing one relocatable object per definition; salsa's dependency graph *is*
+  the content-addressed cache, and the per-function cache hit is asserted via the
+  query event log. Symbols and arities feeding it are derived from
+  **body-edit-stable** information, so the codegen layer keeps the M2 firewall.
+  On-disk persistence is M3.5.
+- **D48 Value representation:** a uniform 64-bit **LSB-tagged** word — immediate
+  `payload<<1|1` (Int/Bool/Unit/Runtime), boxed = 8-aligned pointer (tag 0).
+  `dup`/`drop` are tag-checked, so polymorphic code reference-counts correctly
+  with no type information and immediates are RC no-ops.
+- **D49 Int range under tagging:** the full **64-bit `Int` is preserved** via
+  boxed overflow — immediate when it fits 63 bits, a heap `i64` object otherwise.
+- **D50 Heap layout:** a descriptor-pointer header `{ rc, descriptor, size }`;
+  static per-type descriptors carry a children-scan used at drop. Extensible to
+  ADTs/records (M4).
+- **D51 Function model:** closures `{ code, arity, env… }` with a uniform
+  `apply_n` eval/apply handling exact, partial (a PAP object), and
+  over-application. Top-level functions are static **immortal** closures (a
+  zero-arity binding — a value, not a function — is forced on reference).
+  Primitives lower to runtime calls. Every operation **consumes** its operands,
+  so RC insertion reduces to dup-at-use + one drop per owned binding (no reuse;
+  reuse is M6).
+- **D52 Typed Core IR:** `fai-core` carries a `Ty` on every node, from a new
+  `body_types` query, so M4 (record field offsets) need not retrofit types —
+  even though M3 codegen leans on tagging and uses the types lightly.
+- **D53 Entry & scope:** the entry file must define `public main : Runtime ->
+  Unit`; the backend compiles only the transitive closure reachable from `main`
+  (over the lowered `Global` references, so prelude helpers are included).
+- **D54 Runtime embedding:** `fai-runtime` is **std-only**, so the driver's build
+  script compiles it to a static archive with a single `$RUSTC` invocation and
+  embeds it (`include_bytes!`); produced executables are self-contained. Host
+  target only (cross-compilation is future). The runtime is also linked as an
+  `rlib` so the JIT can resolve its symbols by address.
+- **D55 Backend error range & runtime ABI:** the **`FAI7xxx`** range is owned by
+  the backend (`fai-core`/`fai-codegen`/`fai-runtime`): `FAI7001` "construct not
+  supported by the native backend yet" (e.g. `Float`, tuples, lists), reported
+  only for *reachable* definitions. The runtime ABI (tagged values, the
+  `fn(env, args) -> i64` calling convention, the `fai_*` symbols) is the contract
+  shared by codegen and the runtime.
 
 To change a locked decision: update this log **and** the table in `Agents.md`,
 and note the migration in the affected milestones.
