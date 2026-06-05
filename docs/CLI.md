@@ -1,12 +1,20 @@
 # Fai — CLI Reference
 
 > **Status:** `fai check`, `fai fmt`, and the `fai query` family are implemented,
-> as are `fai build` and `fai run` for the M3 native subset (`Int`/`Bool`/`String`,
+> as are `fai build` and `fai run` for the native subset (`Int`/`Bool`/`String`,
 > functions, `let`, `if`, arithmetic, and `Console.writeLine` via `main`):
 > `fai build` produces a native executable and `fai run` executes it in an
-> isolated worker process. The daemon protocol and the remaining commands
-> specified here are the *intended* contract the implementation builds toward. See
-> `AGENTS.md` for project conventions, `docs/PLAN.md` for milestones, and the
+> isolated worker process. The per-workspace **daemon is implemented**: `check`,
+> `query`, `fmt`, and `build` route through a warm `fai-server` (auto-spawned;
+> `--no-daemon` and graceful in-process fallback both work), managed via
+> `fai daemon status|start|stop|restart`, and backed by an on-disk
+> content-addressed object cache. Two simplifications versus the full spec below:
+> the daemon currently serializes requests (no concurrent reads / cancellation
+> yet) and returns each command's **already-rendered** stdout/stderr rather than
+> structured per-method results, so warm output is byte-identical to a one-shot
+> run. Still building toward the spec: daemon-supervised `run`/`test` with streamed
+> `$/output`, timeouts, and resource limits; `fai daemon tap`; and a Windows CI.
+> See `AGENTS.md` for project conventions, `docs/PLAN.md` for milestones, and the
 > `samples/` directory for the language itself.
 
 ---

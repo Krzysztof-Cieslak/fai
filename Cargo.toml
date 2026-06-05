@@ -14,6 +14,7 @@ members = [
     "crates/fai-codegen",
     "crates/fai-runtime",
     "crates/fai-driver",
+    "crates/fai-server",
     "crates/fai-cli",
     "crates/fai-tests",
 ]
@@ -41,8 +42,14 @@ rustc-hash = "2"
 blake3 = "1"
 # String interning for identifiers (the non-salsa `Symbol`).
 lasso = { version = "0.7", features = ["multi-threaded"] }
-# UTF-8 paths (clean JSON, no lossy conversion).
-camino = "1"
+# UTF-8 paths (clean JSON, no lossy conversion). `serde1` for wire params.
+camino = { version = "1", features = ["serde1"] }
+# MessagePack encoding for the client<->daemon JSON-RPC wire.
+rmp-serde = "1"
+# Cross-platform local IPC (unix sockets / Windows named pipes), safe API.
+interprocess = "2"
+# Unix process control: setsid (daemon detachment), kill, setrlimit.
+nix = { version = "0.29", features = ["process", "signal", "resource"] }
 # Typed library errors.
 thiserror = "2"
 # Logging spine (also a salsa dependency).
@@ -80,6 +87,7 @@ fai-rc = { path = "crates/fai-rc" }
 fai-codegen = { path = "crates/fai-codegen" }
 fai-runtime = { path = "crates/fai-runtime" }
 fai-driver = { path = "crates/fai-driver" }
+fai-server = { path = "crates/fai-server" }
 fai-cli = { path = "crates/fai-cli" }
 
 # Lints denied workspace-wide (decision Q3: "deny in table, hard everywhere").

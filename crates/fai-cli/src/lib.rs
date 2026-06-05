@@ -1,23 +1,32 @@
 //! The `fai` command-line client.
 //!
 //! [`run`] is the in-process entry point: it parses arguments, dispatches to the
-//! driver, and writes output to the provided streams, returning a process exit
-//! code. `main` is a thin wrapper around it; tests call it directly with
-//! captured buffers.
+//! driver (directly, or through the per-workspace daemon), and writes output to
+//! the provided streams, returning a process exit code. `main` is a thin wrapper
+//! around it; tests call it directly with captured buffers.
+//!
+//! Build/dev/query commands route through the warm daemon by default; `--no-daemon`
+//! (and the hidden worker/daemon subcommands) run in-process. The daemon and the
+//! in-process path share `fai_driver::run_command`, so their output is identical.
 
 mod cli;
 
 use std::ffi::OsString;
 use std::io::{IsTerminal, Write};
+use std::path::PathBuf;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::Parser;
 use clap::error::ErrorKind;
-use fai_driver::{CommandResult, DriverError, QueryRequest, Session};
+use fai_driver::{
+    CommandResult, CommandSpec, DriverError, OutputFormat, QueryRequest, RenderOpts, Rendered,
+    Session,
+};
 use fai_span::{SourceMap, SpanResolver};
 
 use crate::cli::{
-    BuildArgs, Cli, ColorChoice, Command, FmtArgs, GlobalArgs, MessageFormat, QueryCommand, RunArgs,
+    BuildArgs, Cli, ColorChoice, Command, DaemonCommand, GlobalArgs, MessageFormat, QueryCommand,
+    RunArgs,
 };
 
 /// Success: no errors.
@@ -64,29 +73,111 @@ fn dispatch(parsed: Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
 
     let format = parsed.global.message_format.unwrap_or_else(|| default_format(&parsed.command));
     let color = use_color(parsed.global.color);
+    let log = parsed.global.protocol_log.clone().map(Utf8PathBuf::into_std_path_buf);
+
+    // Subcommands that always run in this process, never through the daemon.
+    match &parsed.command {
+        Command::RunWorker(args) => return run_worker(&parsed.global, &args.path, err),
+        Command::DaemonServe => return run_daemon_serve(&parsed.global, err),
+        _ => {}
+    }
 
     let root = match workspace_root(parsed.global.project.clone()) {
         Ok(root) => root,
         Err(error) => return emit_error(&error, format, color, out, err),
     };
-    let session = match Session::open(root) {
+
+    match &parsed.command {
+        Command::Check(args) => {
+            let spec = CommandSpec::Check { path: args.path.clone() };
+            route(&parsed.global, &root, spec, format, color, log, out, err)
+        }
+        Command::Fmt(args) => {
+            let spec = CommandSpec::Fmt { path: args.path.clone(), check: args.check };
+            route(&parsed.global, &root, spec, format, color, log, out, err)
+        }
+        Command::Build(args) => {
+            let spec = build_spec(args, &root);
+            route(&parsed.global, &root, spec, format, color, log, out, err)
+        }
+        Command::Query { sub } => {
+            let spec = CommandSpec::Query(to_request(sub));
+            route(&parsed.global, &root, spec, format, color, log, out, err)
+        }
+        Command::Run(args) => run_program(&parsed.global, args, err),
+        Command::Test(_) => run_in_process_result(&root, fai_driver::test, format, color, out, err),
+        Command::Lsp => run_in_process_result(&root, fai_driver::lsp, format, color, out, err),
+        Command::Daemon { sub } => run_daemon_command(&root, sub, log, out, err),
+        Command::RunWorker(_) | Command::DaemonServe => unreachable!("handled above"),
+    }
+}
+
+/// Runs a daemon-eligible command: through the warm daemon by default, in-process
+/// under `--no-daemon` or as a fallback when the daemon is unreachable.
+#[allow(clippy::too_many_arguments)]
+fn route(
+    global: &GlobalArgs,
+    root: &Utf8Path,
+    spec: CommandSpec,
+    format: MessageFormat,
+    color: bool,
+    log: Option<PathBuf>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> i32 {
+    let opts = RenderOpts { format: to_output_format(format), color };
+
+    let rendered = if global.no_daemon {
+        match run_in_process(root, &spec, opts) {
+            Ok(rendered) => rendered,
+            Err(error) => return emit_error(&error, format, color, out, err),
+        }
+    } else {
+        match fai_server::run_command(root, spec.clone(), opts, Vec::new(), log) {
+            Ok(rendered) => rendered,
+            Err(daemon_error) => {
+                let _ = writeln!(
+                    err,
+                    "warning [{}]: daemon unavailable ({daemon_error}); running in-process",
+                    fai_driver::DAEMON_UNAVAILABLE
+                );
+                match run_in_process(root, &spec, opts) {
+                    Ok(rendered) => rendered,
+                    Err(error) => return emit_error(&error, format, color, out, err),
+                }
+            }
+        }
+    };
+
+    let _ = out.write_all(rendered.stdout.as_bytes());
+    let _ = err.write_all(rendered.stderr.as_bytes());
+    rendered.exit
+}
+
+/// Runs `spec` against a freshly opened session in this process.
+fn run_in_process(
+    root: &Utf8Path,
+    spec: &CommandSpec,
+    opts: RenderOpts,
+) -> Result<Rendered, DriverError> {
+    let session = Session::open(root.to_owned())?;
+    Ok(fai_driver::run_command(&session, spec, opts))
+}
+
+/// Runs an in-process command that returns a [`CommandResult`] (`test`/`lsp`).
+fn run_in_process_result(
+    root: &Utf8Path,
+    command: fn(&dyn fai_driver::Db) -> CommandResult,
+    format: MessageFormat,
+    color: bool,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> i32 {
+    let session = match Session::open(root.to_owned()) {
         Ok(session) => session,
         Err(error) => return emit_error(&error, format, color, out, err),
     };
-
-    let db = session.db();
-    let result = match &parsed.command {
-        Command::Check(args) => fai_driver::check(db, &session.select_files(args.path.as_deref())),
-        Command::Fmt(args) => return run_fmt(&session, args, format, color, out, err),
-        Command::Build(args) => return run_build(&session, args, format, color, out, err),
-        Command::Run(args) => return run_program(&parsed.global, args, err),
-        Command::RunWorker(args) => return run_worker(&session, &args.path, err),
-        Command::Test(_) => fai_driver::test(db),
-        Command::Lsp => fai_driver::lsp(db),
-        Command::Query { sub } => return run_query(&session, sub, format, out, err),
-        Command::Daemon { sub } => fai_driver::daemon(db, sub.name()),
-    };
-
+    let result = command(session.db());
     let resolver = session.resolver();
     match print_result(&result, &resolver, format, color, out, err) {
         Some(code) => code,
@@ -95,90 +186,92 @@ fn dispatch(parsed: Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     }
 }
 
-/// Runs `fai fmt`: formats the selected files, writes changed ones (unless
-/// `--check`), and reports the result.
-fn run_fmt(
-    session: &Session,
-    args: &FmtArgs,
-    format: MessageFormat,
-    color: bool,
-    out: &mut dyn Write,
-    err: &mut dyn Write,
-) -> i32 {
-    let files = session.select_files(args.path.as_deref());
-    let result = fai_driver::fmt(session.db(), &files);
+/// Builds the `build` command spec, resolving the output path to absolute.
+fn build_spec(args: &BuildArgs, root: &Utf8Path) -> CommandSpec {
+    let stem = Utf8Path::new(args.path.as_str()).file_stem().unwrap_or("a.out").to_owned();
+    let requested = args.out.clone().unwrap_or_else(|| Utf8PathBuf::from(stem));
+    let out = if requested.is_absolute() { requested } else { root.join(requested) };
+    CommandSpec::Build { path: args.path.clone(), out, release: args.release }
+}
 
-    if !args.check {
-        for file in &result.files {
-            if file.changed {
-                let path = session.root().join(&file.path);
-                if let Err(error) = std::fs::write(&path, &file.formatted) {
-                    let _ = writeln!(err, "error: failed to write {path}: {error}");
-                    return EXIT_WORKSPACE;
-                }
-            }
+/// Runs the per-workspace daemon in this process (the `__daemon-serve` worker).
+fn run_daemon_serve(global: &GlobalArgs, err: &mut dyn Write) -> i32 {
+    let root = match workspace_root(global.project.clone()) {
+        Ok(root) => root,
+        Err(error) => {
+            let _ = writeln!(err, "error: {error}");
+            return EXIT_WORKSPACE;
         }
-    }
-
-    let resolver = session.resolver();
-    match format {
-        MessageFormat::Json => match serde_json::to_string_pretty(&result.to_output(&resolver)) {
-            Ok(json) => {
-                let _ = writeln!(out, "{json}");
-            }
-            Err(error) => {
-                let _ = writeln!(err, "internal error: failed to serialize output: {error}");
-                return EXIT_INTERNAL;
-            }
-        },
-        MessageFormat::Human => {
-            let _ = write!(out, "{}", result.render_human(&resolver, color, args.check));
+    };
+    match fai_server::serve(root) {
+        Ok(()) => EXIT_OK,
+        Err(error) => {
+            let _ = writeln!(err, "daemon error: {error}");
+            EXIT_WORKSPACE
         }
-    }
-
-    if result.has_errors() || (args.check && result.has_changes()) {
-        EXIT_FAILURES
-    } else {
-        EXIT_OK
     }
 }
 
-/// Runs `fai build`: compiles the entry file to a native executable.
-fn run_build(
-    session: &Session,
-    args: &BuildArgs,
-    format: MessageFormat,
-    color: bool,
+/// Manages the per-workspace daemon (`fai daemon ...`).
+fn run_daemon_command(
+    root: &Utf8Path,
+    sub: &DaemonCommand,
+    log: Option<PathBuf>,
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> i32 {
-    let files = session.select_files(Some(&args.path));
-    let Some(entry) = files.first().copied() else {
-        let _ = writeln!(err, "error: no such file in workspace: {}", args.path);
-        return EXIT_WORKSPACE;
-    };
-
-    let stem = Utf8Path::new(entry.path(session.db())).file_stem().unwrap_or("a.out").to_owned();
-    let requested = args.out.clone().unwrap_or_else(|| Utf8PathBuf::from(stem));
-    let artifact = if requested.is_absolute() { requested } else { session.root().join(requested) };
-
-    let outcome = fai_driver::build_native(session.db(), entry, &artifact);
-    let resolver = session.resolver();
-    match format {
-        MessageFormat::Json => match serde_json::to_string_pretty(&outcome.to_output(&resolver)) {
-            Ok(json) => {
-                let _ = writeln!(out, "{json}");
+    match sub {
+        DaemonCommand::Status => match fai_server::status(root, log) {
+            Ok(Some(info)) => {
+                let _ = writeln!(
+                    out,
+                    "daemon running: pid {}, version {}, protocol {}, uptime {}s",
+                    info.pid, info.compiler_version, info.protocol_version, info.uptime_secs
+                );
+                EXIT_OK
             }
-            Err(error) => {
-                let _ = writeln!(err, "internal error: failed to serialize output: {error}");
-                return EXIT_INTERNAL;
+            Ok(None) => {
+                let _ = writeln!(out, "no daemon running for this workspace");
+                EXIT_OK
             }
+            Err(error) => daemon_error(err, &error),
         },
-        MessageFormat::Human => {
-            let _ = write!(out, "{}", outcome.render_human(&resolver, color));
+        DaemonCommand::Start => match fai_server::start(root, log) {
+            Ok(()) => {
+                let _ = writeln!(out, "daemon running");
+                EXIT_OK
+            }
+            Err(error) => daemon_error(err, &error),
+        },
+        DaemonCommand::Stop => match fai_server::stop(root, log) {
+            Ok(true) => {
+                let _ = writeln!(out, "daemon stopped");
+                EXIT_OK
+            }
+            Ok(false) => {
+                let _ = writeln!(out, "no daemon running for this workspace");
+                EXIT_OK
+            }
+            Err(error) => daemon_error(err, &error),
+        },
+        DaemonCommand::Restart => match fai_server::restart(root, log) {
+            Ok(()) => {
+                let _ = writeln!(out, "daemon restarted");
+                EXIT_OK
+            }
+            Err(error) => daemon_error(err, &error),
+        },
+        DaemonCommand::Tap => {
+            let _ = writeln!(err, "`fai daemon tap` is not implemented yet");
+            EXIT_FAILURES
         }
     }
-    if outcome.ok { EXIT_OK } else { EXIT_FAILURES }
+}
+
+/// Reports a daemon-control error and returns the workspace exit code.
+fn daemon_error(err: &mut dyn Write, error: &fai_server::DaemonError) -> i32 {
+    let _ = writeln!(err, "error: {error}");
+    EXIT_WORKSPACE
 }
 
 /// Runs `fai run`: spawns an isolated worker process that JIT-compiles and runs
@@ -209,7 +302,21 @@ fn run_program(global: &GlobalArgs, args: &RunArgs, err: &mut dyn Write) -> i32 
 
 /// The worker side of `fai run`: JIT-compiles and runs the entry file in this
 /// process, returning the program's exit code.
-fn run_worker(session: &Session, path: &Utf8Path, err: &mut dyn Write) -> i32 {
+fn run_worker(global: &GlobalArgs, path: &Utf8Path, err: &mut dyn Write) -> i32 {
+    let root = match workspace_root(global.project.clone()) {
+        Ok(root) => root,
+        Err(error) => {
+            let _ = writeln!(err, "error: {error}");
+            return EXIT_WORKSPACE;
+        }
+    };
+    let session = match Session::open(root) {
+        Ok(session) => session,
+        Err(error) => {
+            let _ = writeln!(err, "error: {error}");
+            return EXIT_WORKSPACE;
+        }
+    };
     let files = session.select_files(Some(path));
     let Some(entry) = files.first().copied() else {
         let _ = writeln!(err, "error: no such file in workspace: {path}");
@@ -242,29 +349,6 @@ fn to_request(sub: &QueryCommand) -> QueryRequest {
         | QueryCommand::Search { .. }
         | QueryCommand::Caps { .. } => QueryRequest::Unsupported { name: sub.name().to_owned() },
     }
-}
-
-/// Runs `fai query`: dispatches to the IDE engine and writes JSON (or, with
-/// `--human`, the readable rendering).
-fn run_query(
-    session: &Session,
-    sub: &QueryCommand,
-    format: MessageFormat,
-    out: &mut dyn Write,
-    err: &mut dyn Write,
-) -> i32 {
-    let request = to_request(sub);
-    let result = fai_driver::run_query(session, &request);
-    let _ = err;
-    match format {
-        MessageFormat::Json => {
-            let _ = writeln!(out, "{}", result.json);
-        }
-        MessageFormat::Human => {
-            let _ = writeln!(out, "{}", result.human);
-        }
-    }
-    if result.ok { EXIT_OK } else { EXIT_FAILURES }
 }
 
 /// Writes `result` in the chosen format. Returns `Some(exit)` only on an
@@ -319,16 +403,29 @@ fn default_format(command: &Command) -> MessageFormat {
     }
 }
 
-/// Resolves the workspace root from `--project`, defaulting to the current dir.
+/// Maps the CLI message format onto the driver's output format.
+fn to_output_format(format: MessageFormat) -> OutputFormat {
+    match format {
+        MessageFormat::Json => OutputFormat::Json,
+        MessageFormat::Human => OutputFormat::Human,
+    }
+}
+
+/// Resolves the workspace root from `--project`, defaulting to the current dir,
+/// and makes it absolute (so the client and daemon agree on the endpoint).
 fn workspace_root(project: Option<Utf8PathBuf>) -> Result<Utf8PathBuf, DriverError> {
+    let cwd = || {
+        std::env::current_dir()
+            .map_err(|source| DriverError::Io { path: Utf8PathBuf::from("."), source })
+            .and_then(|p| {
+                Utf8PathBuf::from_path_buf(p)
+                    .map_err(|p| DriverError::NonUtf8Path(p.to_string_lossy().into_owned()))
+            })
+    };
     match project {
-        Some(path) => Ok(path),
-        None => {
-            let cwd = std::env::current_dir()
-                .map_err(|source| DriverError::Io { path: Utf8PathBuf::from("."), source })?;
-            Utf8PathBuf::from_path_buf(cwd)
-                .map_err(|p| DriverError::NonUtf8Path(p.to_string_lossy().into_owned()))
-        }
+        Some(path) if path.is_absolute() => Ok(path),
+        Some(path) => Ok(cwd()?.join(path)),
+        None => cwd(),
     }
 }
 
@@ -412,7 +509,8 @@ mod tests {
     #[test]
     fn check_clean_workspace_succeeds() {
         let dir = workspace_with("fai-cli-check-clean", "Ok.fai", "module Ok\nlet x = 1");
-        let (code, out, _err) = run_capture(&["fai", "check", "-C", &dir, "--message-format=json"]);
+        let (code, out, _err) =
+            run_capture(&["fai", "check", "--no-daemon", "-C", &dir, "--message-format=json"]);
         assert_eq!(code, EXIT_OK);
         let value: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
         assert_eq!(value["schemaVersion"], 1);
@@ -423,7 +521,8 @@ mod tests {
     #[test]
     fn check_reports_syntax_errors() {
         let dir = workspace_with("fai-cli-check-bad", "Bad.fai", "module");
-        let (code, out, _err) = run_capture(&["fai", "check", "-C", &dir, "--message-format=json"]);
+        let (code, out, _err) =
+            run_capture(&["fai", "check", "--no-daemon", "-C", &dir, "--message-format=json"]);
         assert_eq!(code, EXIT_FAILURES);
         let value: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
         assert_eq!(value["ok"], false);
@@ -433,8 +532,15 @@ mod tests {
     #[test]
     fn fmt_check_reports_drift() {
         let dir = workspace_with("fai-cli-fmt-check", "Drift.fai", "module Drift\nlet   x=1");
-        let (code, out, _err) =
-            run_capture(&["fai", "fmt", "-C", &dir, "--check", "--message-format=json"]);
+        let (code, out, _err) = run_capture(&[
+            "fai",
+            "fmt",
+            "--no-daemon",
+            "-C",
+            &dir,
+            "--check",
+            "--message-format=json",
+        ]);
         assert_eq!(code, EXIT_FAILURES);
         let value: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
         assert_eq!(value["changed"][0], "Drift.fai");
@@ -449,7 +555,8 @@ mod tests {
     #[test]
     fn fmt_rewrites_files_in_place() {
         let dir = workspace_with("fai-cli-fmt-write", "W.fai", "module W\nlet   x=1");
-        let (code, _out, _err) = run_capture(&["fai", "fmt", "-C", &dir, "--message-format=json"]);
+        let (code, _out, _err) =
+            run_capture(&["fai", "fmt", "--no-daemon", "-C", &dir, "--message-format=json"]);
         assert_eq!(code, EXIT_OK);
         let on_disk =
             std::fs::read_to_string(std::env::temp_dir().join("fai-cli-fmt-write").join("W.fai"))

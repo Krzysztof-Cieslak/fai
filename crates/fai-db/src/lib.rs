@@ -180,6 +180,12 @@ impl FaiDatabase {
         id
     }
 
+    /// Looks up the [`SourceId`] previously registered for `path`, if any.
+    #[must_use]
+    pub fn id_for_path(&self, path: &Utf8Path) -> Option<SourceId> {
+        self.ids_by_path.get(path).copied()
+    }
+
     /// Registers `path` at a given [`Durability`]. Use [`Durability::HIGH`] for
     /// rarely-changing inputs (e.g. the embedded prelude) so dependents are not
     /// needlessly revalidated.

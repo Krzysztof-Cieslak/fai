@@ -17,7 +17,16 @@ fn build_and_run(src: &str) -> (String, Option<i32>) {
     let mut out = Vec::new();
     let mut err = Vec::new();
     let code = fai_cli::run(
-        ["fai", "build", "-C", dir.to_str().unwrap(), "Main.fai", "--out", exe.to_str().unwrap()],
+        [
+            "fai",
+            "build",
+            "--no-daemon",
+            "-C",
+            dir.to_str().unwrap(),
+            "Main.fai",
+            "--out",
+            exe.to_str().unwrap(),
+        ],
         &mut out,
         &mut err,
     );

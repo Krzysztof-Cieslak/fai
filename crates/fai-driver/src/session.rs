@@ -1,19 +1,41 @@
-//! The workspace session: builds and seeds a one-shot database.
+//! The workspace session: a query database plus the disk-sync bookkeeping that
+//! keeps it current.
 //!
 //! A [`Session`] owns a [`FaiDatabase`] populated from the `.fai` files under a
-//! workspace root. The CLI (and, later, the daemon) drive command entry points
-//! against the session's database; the daemon variant will keep the database
-//! warm across requests instead of rebuilding it.
+//! workspace root. The one-shot CLI builds a session per invocation; the daemon
+//! keeps one alive and calls [`Session::sync_from_disk`] (or
+//! [`Session::apply_dirty`]) before each request so the warm database tracks the
+//! filesystem. Change detection is stat-gated and hash-confirmed, so an unchanged
+//! file (or a `touch` that doesn't change content) never bumps the salsa
+//! revision — preserving early cutoff.
+
+use std::time::SystemTime;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use fai_db::{Db, DbSpanResolver, FaiDatabase, SourceFile};
+use fai_span::SourceId;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::DriverError;
+use crate::command::DirtyFile;
 
-/// A workspace root plus its populated query database.
+/// A cached file stat: enough to skip re-reading an unchanged file.
+#[derive(Clone, Copy)]
+struct FileStat {
+    mtime: Option<SystemTime>,
+    len: u64,
+    hash: [u8; 32],
+}
+
+/// A workspace root, its populated query database, and disk-sync bookkeeping.
 pub struct Session {
     db: FaiDatabase,
     root: Utf8PathBuf,
+    /// Per-file stats keyed by workspace-relative path (user files only).
+    stats: FxHashMap<Utf8PathBuf, FileStat>,
+    /// The source files currently present on disk (excludes deleted files whose
+    /// salsa input lingers, and the synthetic prelude).
+    live: FxHashSet<SourceId>,
 }
 
 impl Session {
@@ -29,24 +51,99 @@ impl Session {
         // The embedded prelude is loaded first as a high-durability synthetic
         // file, so its module name is reserved and rarely-changing.
         fai_types::prelude::load_prelude(&mut db);
-        let mut sources = Vec::new();
-        collect_fai_files(&root, &mut sources)?;
-        sources.sort();
-        for absolute in sources {
-            let relative = absolute.strip_prefix(&root).unwrap_or(&absolute).to_owned();
-            let text = std::fs::read_to_string(&absolute)
-                .map_err(|source| DriverError::Io { path: absolute.clone(), source })?;
-            db.add_source(relative, text);
-        }
-        Ok(Self { db, root })
+        let mut session =
+            Self { db, root, stats: FxHashMap::default(), live: FxHashSet::default() };
+        session.sync_from_disk()?;
+        Ok(session)
     }
 
-    /// The user-facing source files (excluding the synthetic prelude).
+    /// Re-scans the workspace and updates the database for files that actually
+    /// changed (stat-gated, hash-confirmed). New files are added, deleted files
+    /// are dropped from the live set, and unchanged files are left untouched.
+    pub fn sync_from_disk(&mut self) -> Result<(), DriverError> {
+        let mut present = Vec::new();
+        collect_fai_files(&self.root, &mut present)?;
+        present.sort();
+
+        let mut live = FxHashSet::default();
+        let mut seen_paths = FxHashSet::default();
+        for absolute in present {
+            let relative = absolute.strip_prefix(&self.root).unwrap_or(&absolute).to_owned();
+            seen_paths.insert(relative.clone());
+
+            let metadata = std::fs::metadata(&absolute)
+                .map_err(|source| DriverError::Io { path: absolute.clone(), source })?;
+            let mtime = metadata.modified().ok();
+            let len = metadata.len();
+
+            // Stat gate: identical (mtime, len) ⇒ assume unchanged, reuse the id.
+            if let Some(prev) = self.stats.get(&relative)
+                && prev.mtime == mtime
+                && prev.len == len
+                && let Some(id) = self.db.id_for_path(&relative)
+            {
+                live.insert(id);
+                continue;
+            }
+
+            let text = std::fs::read_to_string(&absolute)
+                .map_err(|source| DriverError::Io { path: absolute.clone(), source })?;
+            let hash = *blake3::hash(text.as_bytes()).as_bytes();
+
+            // Hash confirm: only touch the input when the content really changed,
+            // so a no-op mtime bump doesn't cascade recompute.
+            let changed = self.stats.get(&relative).is_none_or(|prev| prev.hash != hash);
+            let id = if changed {
+                self.db.add_source(relative.clone(), text)
+            } else {
+                self.db.id_for_path(&relative).expect("known path has an id")
+            };
+            self.stats.insert(relative, FileStat { mtime, len, hash });
+            live.insert(id);
+        }
+
+        // Forget stats for files that disappeared (their salsa input lingers but
+        // is excluded from the live set, so commands ignore it).
+        self.stats.retain(|path, _| seen_paths.contains(path));
+        self.live = live;
+        Ok(())
+    }
+
+    /// Applies a client-supplied dirty-set as a fast path: each entry's content
+    /// (inline, or re-read from disk) is hashed and the input updated if changed.
+    pub fn apply_dirty(&mut self, dirty: &[DirtyFile]) -> Result<(), DriverError> {
+        for entry in dirty {
+            let relative = Utf8PathBuf::from(&entry.path);
+            let absolute = self.root.join(&relative);
+            let text = match &entry.content {
+                Some(content) => content.clone(),
+                None => std::fs::read_to_string(&absolute)
+                    .map_err(|source| DriverError::Io { path: absolute.clone(), source })?,
+            };
+            let hash = *blake3::hash(text.as_bytes()).as_bytes();
+            let changed = self.stats.get(&relative).is_none_or(|prev| prev.hash != hash);
+            let id = if changed {
+                self.db.add_source(relative.clone(), text)
+            } else {
+                self.db.id_for_path(&relative).expect("known path has an id")
+            };
+            let metadata = std::fs::metadata(&absolute).ok();
+            let mtime = metadata.as_ref().and_then(|m| m.modified().ok());
+            let len = metadata.as_ref().map_or(0, std::fs::Metadata::len);
+            self.stats.insert(relative, FileStat { mtime, len, hash });
+            self.live.insert(id);
+        }
+        Ok(())
+    }
+
+    /// The user-facing source files currently present (excludes the synthetic
+    /// prelude and deleted files).
     #[must_use]
     pub fn user_files(&self) -> Vec<SourceFile> {
         self.db
             .all_source_files()
             .into_iter()
+            .filter(|f| self.live.contains(&f.source(&self.db)))
             .filter(|f| !fai_types::prelude::is_prelude_path(f.path(&self.db)))
             .collect()
     }

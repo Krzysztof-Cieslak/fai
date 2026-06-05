@@ -6,12 +6,12 @@
 //! [`QueryResult`] (JSON plus a human rendering).
 
 use fai_ide::ListOpts;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::Session;
 
 /// A read-only code-intelligence request (CLI.md §8).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum QueryRequest {
     /// List/search symbols (optionally within a module).
     Symbols { module: Option<String>, limit: Option<usize> },

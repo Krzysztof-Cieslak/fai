@@ -13,13 +13,15 @@ mod backend;
 #[cfg(test)]
 mod build_tests;
 mod cache;
+mod command;
 mod query;
 mod session;
 
 use std::fmt::Write as _;
 
 use camino::Utf8PathBuf;
-use fai_db::{Db, SourceFile};
+pub use fai_db::Db;
+use fai_db::SourceFile;
 use fai_diagnostics::wire::{DiagnosticWire, to_wire};
 use fai_diagnostics::{
     CodeInfo, Diagnostic, DiagnosticCode, SCHEMA_VERSION, Severity, render_human,
@@ -32,6 +34,10 @@ pub use backend::{
     reachable_defs,
 };
 pub use cache::{cache_stats, reset_stats, set_cache_dir};
+pub use command::{
+    CommandSpec, DirtyFile, EXIT_FAILURES, EXIT_INTERNAL, EXIT_OK, EXIT_WORKSPACE, OutputFormat,
+    RenderOpts, Rendered, run_command,
+};
 pub use query::{QueryRequest, QueryResult, run_query};
 pub use session::Session;
 
@@ -43,6 +49,10 @@ pub const WORKSPACE_ERROR: DiagnosticCode = DiagnosticCode::new("FAI0002");
 pub const LINK_FAILED: DiagnosticCode = DiagnosticCode::new("FAI0003");
 /// The entry file has no `main` to build or run.
 pub const NO_ENTRY_POINT: DiagnosticCode = DiagnosticCode::new("FAI0004");
+/// The daemon could not be reached; the command ran in-process instead.
+pub const DAEMON_UNAVAILABLE: DiagnosticCode = DiagnosticCode::new("FAI0005");
+/// A `run` worker exceeded its time limit and was terminated.
+pub const RUN_TIMEOUT: DiagnosticCode = DiagnosticCode::new("FAI0006");
 
 /// Diagnostic codes owned by the tooling/driver layer (the `FAI0xxx` range).
 pub const CODES: &[CodeInfo] = &[
@@ -58,6 +68,12 @@ pub const CODES: &[CodeInfo] = &[
     },
     CodeInfo { code: LINK_FAILED, title: "linker failed", default_severity: Severity::Error },
     CodeInfo { code: NO_ENTRY_POINT, title: "no entry point", default_severity: Severity::Error },
+    CodeInfo {
+        code: DAEMON_UNAVAILABLE,
+        title: "daemon unavailable; ran in-process",
+        default_severity: Severity::Warning,
+    },
+    CodeInfo { code: RUN_TIMEOUT, title: "run timed out", default_severity: Severity::Error },
 ];
 
 /// A workspace or I/O failure that prevents a command from running.
@@ -335,12 +351,6 @@ pub fn fmt(db: &dyn Db, files: &[SourceFile]) -> FmtResult {
 #[must_use]
 pub fn lsp(db: &dyn Db) -> CommandResult {
     not_implemented(db, "lsp")
-}
-
-/// `fai daemon <name>` — daemon lifecycle management.
-#[must_use]
-pub fn daemon(db: &dyn Db, name: &str) -> CommandResult {
-    not_implemented(db, &format!("daemon {name}"))
 }
 
 #[cfg(test)]
