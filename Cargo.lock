@@ -384,6 +384,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "fai-runtime"
+version = "0.1.0"
+
+[[package]]
 name = "fai-span"
 version = "0.1.0"
 dependencies = [

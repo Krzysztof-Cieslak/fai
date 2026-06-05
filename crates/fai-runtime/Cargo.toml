@@ -1,0 +1,18 @@
+[package]
+name = "fai-runtime"
+description = "The Fai native runtime: tagged values, reference counting, closures, primitives, and capability hosts."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+license.workspace = true
+
+# Built as a static archive (embedded and linked into AOT executables) and as an
+# rlib (linked into the compiler so the JIT can resolve runtime symbols by
+# address). The crate is intentionally dependency-free (std only) so the AOT
+# archive can be produced by a single `$RUSTC` invocation from a build script.
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[lints]
+workspace = true
