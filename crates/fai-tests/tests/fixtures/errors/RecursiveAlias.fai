@@ -1,0 +1,11 @@
+module RecursiveAlias
+
+// A transparent alias may not refer to itself directly.
+//~ ERROR FAI3013
+type Loop = Loop
+
+// Nor through another type constructor — a self-referential *alias* is the
+// classic mistake of reaching for `type` where a union (`type T = | ...`) is
+// needed.
+//~ ERROR FAI3013
+type Stream = List Stream

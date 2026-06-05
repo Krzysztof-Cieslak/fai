@@ -1,0 +1,9 @@
+module DuplicateField
+
+// A record literal cannot list the same label twice.
+//~ ERROR FAI3010
+let bad = { x = 1, y = 2, x = 3 }
+
+// The duplicate can also be non-adjacent and is still rejected.
+//~ ERROR FAI3010
+let alsoBad = { a = 1, b = 2, c = 3, a = 4 }

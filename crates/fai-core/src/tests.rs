@@ -182,6 +182,58 @@ fn row_polymorphic_field_access_is_deferred() {
 }
 
 #[test]
+fn record_literal_lowers_to_sorted_data() {
+    // Fields are stored in canonical (sorted-by-label) order, so `x` precedes
+    // `y` regardless of how the literal is written.
+    let src = "module M\n\nlet p = { y = 2, x = 1 }\n";
+    assert_eq!(lower(src, "p"), "fn0() = (data 0 1 2)\n");
+    assert!(codes(src, "p").is_empty());
+}
+
+#[test]
+fn nullary_constructor_lowers_to_tagged_data() {
+    let src = "module M\n\ntype T =\n  | A\n  | B Int\n\nlet mkA = A\n";
+    assert_eq!(lower(src, "mkA"), "fn0() = (data 0)\n");
+    assert!(codes(src, "mkA").is_empty());
+}
+
+#[test]
+fn constructor_with_field_lowers_to_tagged_data() {
+    // `B` is the second constructor, so it carries tag 1 and its field.
+    let src = "module M\n\ntype T =\n  | A\n  | B Int\n\nlet mkB n = B n\n";
+    assert_eq!(lower(src, "mkB"), "fn0(%0) = (data 1 %0)\n");
+    assert!(codes(src, "mkB").is_empty());
+}
+
+#[test]
+fn match_lowers_to_tag_tests_and_field_projections() {
+    // The scrutinee is bound once, then a chain of tag tests selects an arm and
+    // projects the matched constructor's field; the impossible final fallthrough
+    // of this exhaustive match is an unreachable `<error>` leaf.
+    let src = "module M\n\ntype T =\n  | A Int\n  | B Int\n\nlet f t =\n  match t with\n  | A x -> x\n  | B y -> y\n";
+    assert_eq!(
+        lower(src, "f"),
+        "fn0(%0) = (let %3 = %0; (if (= (tag %3) 0) (let %1 = (field 0 %3); %1) (if (= (tag %3) 1) (let %2 = (field 0 %3); %2) <error>)))\n"
+    );
+    assert!(codes(src, "f").is_empty());
+}
+
+#[test]
+fn float_comparison_selects_the_float_primitive() {
+    let src = "module M\n\nlet lt = 1.0 < 2.0\n";
+    assert_eq!(lower(src, "lt"), "fn0() = (<. 1 2)\n");
+    assert!(codes(src, "lt").is_empty());
+}
+
+#[test]
+fn structural_compare_lowers_to_the_compare_primitive() {
+    // `<` on a non-numeric type (a tuple here) becomes the structural `compare`.
+    let src = "module M\n\nlet before a b = (a, 1) < (b, 2)\n";
+    assert!(codes(src, "before").is_empty());
+    assert!(lower(src, "before").contains("compare"), "got {}", lower(src, "before"));
+}
+
+#[test]
 fn lowering_invariants_hold_across_programs() {
     use fai_syntax::ast::ItemKind;
 

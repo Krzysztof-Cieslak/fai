@@ -1,0 +1,10 @@
+---
+source: crates/fai-fmt/tests/format.rs
+expression: fmt(src)
+---
+module Geo
+
+type Vec2 = { x : Float, y : Float }
+
+public scale : Float -> Vec2 -> Vec2
+let scale k v = { v with x = v.x * k, y = v.y * k }

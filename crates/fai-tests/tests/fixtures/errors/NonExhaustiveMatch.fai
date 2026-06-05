@@ -1,0 +1,29 @@
+module NonExhaustiveMatch
+
+type Color =
+  | Red
+  | Green
+  | Blue
+
+// `Blue` is never matched, so the match is not exhaustive.
+//~ ERROR FAI4001
+public name : Color -> String
+let name c =
+  match c with
+  | Red -> "red"
+  | Green -> "green"
+
+// A list match that forgets the cons case.
+//~ ERROR FAI4001
+public firstOr0 : List Int -> Int
+let firstOr0 xs =
+  match xs with
+  | [] -> 0
+
+// A nested pattern that leaves `Some false` uncovered.
+//~ ERROR FAI4001
+public truthy : Option Bool -> Int
+let truthy o =
+  match o with
+  | None -> 0
+  | Some true -> 1

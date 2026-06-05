@@ -1,0 +1,13 @@
+module UnknownConstructor
+
+// `Nope` is not a constructor of any type in scope (expression position).
+//~ ERROR FAI2012
+let x = Nope 1
+
+// The same in pattern position: `Missing` names no constructor.
+//~ ERROR FAI2012
+public describe : Option Int -> Int
+let describe o =
+  match o with
+  | Missing n -> n
+  | _ -> 0

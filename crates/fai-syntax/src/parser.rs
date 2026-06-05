@@ -1441,6 +1441,108 @@ mod tests {
         }
     }
 
+    // --- data types, match, and records: AST shape -----------------------
+
+    #[test]
+    fn record_literal_update_and_field_shape() {
+        assert_eq!(expr("{ x = 1, y = 2 }"), "(record [x = (int 1), y = (int 2)])");
+        assert_eq!(expr("{ r with x = 1 }"), "(update (var r) [x = (int 1)])");
+        assert_eq!(expr("{ r with x = 1, y = 2 }"), "(update (var r) [x = (int 1), y = (int 2)])");
+        // Field labels keep their source order in the AST (the formatter and the
+        // type renderer are what sort them).
+        assert_eq!(expr("{ y = 2, x = 1 }"), "(record [y = (int 2), x = (int 1)])");
+    }
+
+    #[test]
+    fn match_with_constructor_and_wildcard_shape() {
+        assert_eq!(
+            expr("match x with | Some n -> n | None -> 0"),
+            "(match (var x) [((pctor Some [(pvar n)]) -> (var n)) ((pctor None []) -> (int 0))])"
+        );
+    }
+
+    #[test]
+    fn match_with_list_and_cons_patterns_shape() {
+        assert_eq!(
+            expr("match xs with | [] -> 0 | x :: rest -> x"),
+            "(match (var xs) [((plist ) -> (int 0)) ((pcons (pvar x) (pvar rest)) -> (var x))])"
+        );
+    }
+
+    #[test]
+    fn match_with_literal_and_or_patterns_shape() {
+        assert_eq!(
+            expr("match n with | 0 | 1 -> 1 | _ -> 2"),
+            "(match (var n) [((por (pint 0) (pint 1)) -> (int 1)) ((pwild) -> (int 2))])"
+        );
+    }
+
+    #[test]
+    fn match_with_record_patterns_open_and_closed_shape() {
+        assert_eq!(
+            expr("match r with | { x = 0 | _ } -> 0 | { x, y } -> x"),
+            "(match (var r) [((precord [x = (pint 0)] open=true) -> (int 0)) ((precord [x, y] open=false) -> (var x))])"
+        );
+    }
+
+    #[test]
+    fn match_with_bool_and_string_patterns_shape() {
+        assert_eq!(
+            expr("match b with | true -> \"y\" | false -> \"n\""),
+            "(match (var b) [((pbool true) -> (string \"y\")) ((pbool false) -> (string \"n\"))])"
+        );
+    }
+
+    #[test]
+    fn union_type_declaration_shape() {
+        let nullary = dump("module M\ntype Color =\n  | Red\n  | Green");
+        assert_eq!(
+            nullary.lines().nth(1).unwrap(),
+            "(type Private Color [] = (| Red []) (| Green []))"
+        );
+        let with_fields = dump("module M\ntype Shape =\n  | Circle Float\n  | Rect Float Float");
+        assert_eq!(
+            with_fields.lines().nth(1).unwrap(),
+            "(type Private Shape [] = (| Circle [(tcon Float)]) (| Rect [(tcon Float) (tcon Float)]))"
+        );
+    }
+
+    #[test]
+    fn parametric_union_declaration_shape() {
+        let parsed = dump("module M\ntype Opt 'a =\n  | None\n  | Some 'a");
+        assert_eq!(
+            parsed.lines().nth(1).unwrap(),
+            "(type Private Opt ['a] = (| None []) (| Some [(tvar 'a)]))"
+        );
+    }
+
+    #[test]
+    fn alias_and_record_type_declaration_shape() {
+        assert_eq!(
+            dump("module M\ntype Celsius = Int").lines().nth(1).unwrap(),
+            "(type Private Celsius [] = (tcon Int))"
+        );
+        assert_eq!(
+            dump("module M\ntype Vec2 = { x : Float, y : Float }").lines().nth(1).unwrap(),
+            "(type Private Vec2 [] = (trecord [x : (tcon Float), y : (tcon Float)]))"
+        );
+    }
+
+    #[test]
+    fn open_and_named_record_types_in_signatures_shape() {
+        assert_eq!(
+            dump("module M\npublic getX : { x : 'a | _ } -> 'a").lines().nth(1).unwrap(),
+            "(sig Public getX (arrow (trecord [x : (tvar 'a)] | _) (tvar 'a)))"
+        );
+        assert_eq!(
+            dump("module M\npublic setX : { x : 'a | 'r } -> { x : 'a | 'r }")
+                .lines()
+                .nth(1)
+                .unwrap(),
+            "(sig Public setX (arrow (trecord [x : (tvar 'a)] | 'r) (trecord [x : (tvar 'a)] | 'r)))"
+        );
+    }
+
     #[test]
     fn one_bad_item_does_not_hide_the_next() {
         // A garbage item (a stray `)`) between two good ones: the parser reports
@@ -1515,6 +1617,16 @@ mod tests {
     #[test]
     fn snapshot_recovery() {
         insta::assert_snapshot!("recovery", dump("module M\nlet a = 1\n)\nlet b = 2"));
+    }
+
+    #[test]
+    fn snapshot_union_match_and_records() {
+        insta::assert_snapshot!(
+            "union_match_and_records",
+            dump(
+                "module Cards\ntype Suit =\n  | Red\n  | Black\ntype Card = { rank : Int, suit : Suit }\npublic describe : Card -> String\nlet describe c =\n  match c with\n  | { rank = 1 | _ } -> \"ace\"\n  | { rank, suit } -> intToString rank"
+            )
+        );
     }
 }
 

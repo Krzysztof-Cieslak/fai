@@ -382,3 +382,127 @@ fn nested_match_and_or_patterns() {
     assert_eq!(code, 0);
     assert_eq!(out, "small\n");
 }
+
+#[test]
+fn float_comparison_runs() {
+    let (code, out) = run(&main_printing("if 2.0 < 3.0 then \"lt\" else \"ge\""));
+    assert_eq!(code, 0);
+    assert_eq!(out, "lt\n");
+}
+
+#[test]
+fn float_sort_orders_ascending() {
+    let src = "module M\n\n\
+        public main : Runtime -> Unit\n\
+        let main r =\n  \
+          let xs = sort [3.0, 1.0, 2.0]\n  \
+          Console.writeLine r (join \" \" (map floatToString xs))\n";
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "1.0 2.0 3.0\n");
+}
+
+#[test]
+fn three_way_compare_runs() {
+    let (code, out) = run(&main_printing(
+        "intToString (compare 3 2) ++ intToString (compare 2 2) ++ intToString (compare 1 5)",
+    ));
+    assert_eq!(code, 0);
+    assert_eq!(out, "10-1\n");
+}
+
+#[test]
+fn structural_ordering_sorts_constructors_by_declaration_order() {
+    // Declaration order is the ordering: Low < Mid < High.
+    let src = "module M\n\n\
+        type Rank =\n  | Low\n  | Mid\n  | High\n\n\
+        public name : Rank -> String\n\
+        let name x =\n  match x with\n  | Low -> \"L\"\n  | Mid -> \"M\"\n  | High -> \"H\"\n\n\
+        public main : Runtime -> Unit\n\
+        let main r = Console.writeLine r (join \"\" (map name (sort [High, Low, Mid, Low])))\n";
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "LLMH\n");
+}
+
+#[test]
+fn structural_equality_on_records() {
+    let (code, out) =
+        run(&main_printing("if { x = 1, y = 2 } = { x = 1, y = 2 } then \"eq\" else \"ne\""));
+    assert_eq!(code, 0);
+    assert_eq!(out, "eq\n");
+    let (code, out) =
+        run(&main_printing("if { x = 1, y = 2 } = { x = 1, y = 9 } then \"eq\" else \"ne\""));
+    assert_eq!(code, 0);
+    assert_eq!(out, "ne\n");
+}
+
+#[test]
+fn recursive_tree_fold() {
+    let src = "module M\n\n\
+        type Tree =\n  | Leaf\n  | Node Tree Int Tree\n\n\
+        public sumTree : Tree -> Int\n\
+        let sumTree t =\n  match t with\n  | Leaf -> 0\n  | Node l x rt -> sumTree l + x + sumTree rt\n\n\
+        public main : Runtime -> Unit\n\
+        let main r = Console.writeLine r (intToString (sumTree (Node (Node Leaf 1 Leaf) 2 (Node Leaf 3 Leaf))))\n";
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "6\n");
+}
+
+#[test]
+fn result_pattern_match() {
+    let src = "module M\n\n\
+        public describe : Result Int String -> String\n\
+        let describe res =\n  match res with\n  | Ok n -> intToString n\n  | Err e -> e\n\n\
+        public main : Runtime -> Unit\n\
+        let main r = Console.writeLine r (describe (Ok 5) ++ describe (Err \"boom\"))\n";
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "5boom\n");
+}
+
+#[test]
+fn set_dedups_elements() {
+    let src = "module M\n\n\
+        public main : Runtime -> Unit\n\
+        let main r =\n  \
+          let s = setInsert 3 (setInsert 1 (setInsert 3 emptySet))\n  \
+          Console.writeLine r (intToString (setSize s))\n";
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "2\n");
+}
+
+#[test]
+fn nested_record_field_access() {
+    let src = "module M\n\n\
+        type Vec = { x : Int, y : Int }\n\n\
+        type Seg = { dest : Vec, src : Vec }\n\n\
+        public main : Runtime -> Unit\n\
+        let main r =\n  \
+          let s = { src = { x = 1, y = 2 }, dest = { x = 3, y = 4 } }\n  \
+          Console.writeLine r (intToString (s.src.x + s.dest.y))\n";
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "5\n");
+}
+
+#[test]
+fn nested_constructor_patterns() {
+    let src = "module M\n\n\
+        public unwrap : Option (Option Int) -> Int\n\
+        let unwrap oo =\n  match oo with\n  | Some (Some n) -> n\n  | Some None -> 0\n  | None -> 0\n\n\
+        public main : Runtime -> Unit\n\
+        let main r = Console.writeLine r (intToString (unwrap (Some (Some 7))))\n";
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "7\n");
+}
+
+#[test]
+fn string_trim_and_lowercase() {
+    let (code, out) = run(&main_printing("toLower (trim \"  Hello WORLD  \")"));
+    assert_eq!(code, 0);
+    assert_eq!(out, "hello world\n");
+}
