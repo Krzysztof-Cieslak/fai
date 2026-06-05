@@ -55,6 +55,22 @@ pub fn builtin_scheme(name: Symbol) -> Option<Scheme> {
         "floatToInt" => Scheme::mono(Ty::arrow(Ty::Con(Con::Float), Ty::int())),
         "sqrt" => Scheme::mono(Ty::arrow(Ty::Con(Con::Float), Ty::Con(Con::Float))),
         "not" => Scheme::mono(Ty::arrow(Ty::bool(), Ty::bool())),
+        // String operations.
+        "stringLength" => Scheme::mono(Ty::arrow(Ty::Con(Con::String), Ty::int())),
+        "toUpper" | "toLower" | "trim" => {
+            Scheme::mono(Ty::arrow(Ty::Con(Con::String), Ty::Con(Con::String)))
+        }
+        "stringContains" => {
+            Scheme::mono(Ty::arrows([Ty::Con(Con::String), Ty::Con(Con::String)], Ty::bool()))
+        }
+        "split" => Scheme::mono(Ty::arrows(
+            [Ty::Con(Con::String), Ty::Con(Con::String)],
+            Ty::list(Ty::Con(Con::String)),
+        )),
+        "join" => Scheme::mono(Ty::arrows(
+            [Ty::Con(Con::String), Ty::list(Ty::Con(Con::String))],
+            Ty::Con(Con::String),
+        )),
         _ => return None,
     })
 }

@@ -49,6 +49,13 @@ fn prim_name(op: Prim) -> &'static str {
         Prim::IntToFloat => "intToFloat",
         Prim::FloatToInt => "floatToInt",
         Prim::Sqrt => "sqrt",
+        Prim::StringLength => "stringLength",
+        Prim::ToUpper => "toUpper",
+        Prim::ToLower => "toLower",
+        Prim::Trim => "trim",
+        Prim::StringContains => "stringContains",
+        Prim::StringSplit => "split",
+        Prim::StringJoin => "join",
         Prim::Not => "not",
         Prim::ConsoleWriteLine => "writeLine",
     }

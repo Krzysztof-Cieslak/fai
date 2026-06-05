@@ -174,6 +174,20 @@ pub enum Prim {
     FloatToInt,
     /// `sqrt`
     Sqrt,
+    /// `stringLength`
+    StringLength,
+    /// `toUpper`
+    ToUpper,
+    /// `toLower`
+    ToLower,
+    /// `trim`
+    Trim,
+    /// `stringContains`
+    StringContains,
+    /// `split`
+    StringSplit,
+    /// `join`
+    StringJoin,
     /// `not`
     Not,
     /// `Console.writeLine`
@@ -210,6 +224,13 @@ impl Prim {
             Prim::IntToFloat => "fai_int_to_float",
             Prim::FloatToInt => "fai_float_to_int",
             Prim::Sqrt => "fai_sqrt",
+            Prim::StringLength => "fai_string_length",
+            Prim::ToUpper => "fai_to_upper",
+            Prim::ToLower => "fai_to_lower",
+            Prim::Trim => "fai_trim",
+            Prim::StringContains => "fai_string_contains",
+            Prim::StringSplit => "fai_string_split",
+            Prim::StringJoin => "fai_string_join",
             Prim::Not => "fai_not",
             Prim::ConsoleWriteLine => "fai_console_write_line",
         }
@@ -224,6 +245,10 @@ impl Prim {
             | Prim::IntToFloat
             | Prim::FloatToInt
             | Prim::Sqrt
+            | Prim::StringLength
+            | Prim::ToUpper
+            | Prim::ToLower
+            | Prim::Trim
             | Prim::Not => 1,
             _ => 2,
         }
@@ -239,6 +264,13 @@ impl Prim {
             "intToFloat" => Prim::IntToFloat,
             "floatToInt" => Prim::FloatToInt,
             "sqrt" => Prim::Sqrt,
+            "stringLength" => Prim::StringLength,
+            "toUpper" => Prim::ToUpper,
+            "toLower" => Prim::ToLower,
+            "trim" => Prim::Trim,
+            "stringContains" => Prim::StringContains,
+            "split" => Prim::StringSplit,
+            "join" => Prim::StringJoin,
             "not" => Prim::Not,
             "writeLine" => Prim::ConsoleWriteLine,
             _ => return None,
