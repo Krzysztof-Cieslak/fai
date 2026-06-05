@@ -12,6 +12,7 @@
 mod backend;
 #[cfg(test)]
 mod build_tests;
+mod cache;
 mod query;
 mod session;
 
@@ -30,6 +31,7 @@ pub use backend::{
     BuildOutcome, BuildOutput, RunOutcome, build_native, jit_run_program, object_code,
     reachable_defs,
 };
+pub use cache::{cache_stats, reset_stats, set_cache_dir};
 pub use query::{QueryRequest, QueryResult, run_query};
 pub use session::Session;
 

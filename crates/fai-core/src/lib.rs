@@ -9,6 +9,7 @@
 //! counting (`fai-rc`) and code generation (`fai-codegen`). Diagnostics for
 //! constructs outside the native subset use the backend `FAI7xxx` range.
 
+pub mod fingerprint;
 pub mod ir;
 mod lit;
 #[allow(unsafe_code)]
@@ -20,6 +21,7 @@ mod proptests;
 #[cfg(test)]
 mod tests;
 
+pub use fingerprint::fingerprint_def;
 pub use ir::{CExpr, CoreFn, ExprKind, FnId, Lit, LoweredDef, Prim};
 pub use lit::{decode_int, decode_string};
 pub use lower::core;

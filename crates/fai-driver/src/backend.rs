@@ -64,7 +64,7 @@ pub fn def_arity(db: &dyn Db, file: SourceFile, name: Symbol) -> usize {
         .unwrap_or(0)
 }
 
-fn arity_of(db: &dyn Db, def: DefId) -> usize {
+pub(crate) fn arity_of(db: &dyn Db, def: DefId) -> usize {
     db.source_file(def.file).map_or(0, |f| def_arity(db, f, def.name))
 }
 
@@ -200,7 +200,7 @@ pub fn build_native(db: &dyn Db, file: SourceFile, out: &Utf8Path) -> BuildOutco
     let mut objects: Vec<(String, Vec<u8>)> = Vec::with_capacity(reachable.len() + 1);
     for def in &reachable {
         let Some(def_file) = db.source_file(def.file) else { continue };
-        let bytes = object_code(db, def_file, def.name);
+        let bytes = crate::cache::load_or_build_object(db, def_file, def.name);
         objects.push((symbol_base(db, *def), (*bytes).clone()));
     }
     let entry = DefId::new(file.source(db), Symbol::intern(ENTRY));
