@@ -32,6 +32,12 @@ use crate::{LINK_FAILED, NO_ENTRY_POINT, semantic_diagnostics, tooling_span};
 /// The runtime static archive, built by `build.rs` and linked into executables.
 const RUNTIME_ARCHIVE: &[u8] = include_bytes!(env!("FAI_RUNTIME_ARCHIVE"));
 
+/// The system libraries the runtime archive must be linked against on this host,
+/// as reported by `rustc --print native-static-libs` at build time (see
+/// `build.rs`). Whitespace-separated, in the linker's own flag syntax
+/// (`-lpthread …` for Unix `cc`, `kernel32.lib …` for MSVC `link.exe`).
+const RUNTIME_NATIVE_LIBS: &str = env!("FAI_RUNTIME_NATIVE_LIBS");
+
 /// The required entry-point name.
 const ENTRY: &str = "main";
 
@@ -217,7 +223,7 @@ pub fn build_native(db: &dyn Db, file: SourceFile, out: &Utf8Path) -> BuildOutco
     objects.push(("fai_main".to_owned(), main_object(entry, &|d| symbol_base(db, d))));
 
     match link(&objects, out) {
-        Ok(()) => BuildOutcome { artifact: Some(out.to_owned()), diagnostics, ok: true },
+        Ok(artifact) => BuildOutcome { artifact: Some(artifact), diagnostics, ok: true },
         Err(message) => {
             let mut diagnostics = diagnostics;
             diagnostics.push(Diagnostic::error(LINK_FAILED, message, tooling_span()));
@@ -356,8 +362,11 @@ fn apply_run_limits() {
 fn apply_run_limits() {}
 
 /// Writes the objects and the runtime archive to a temporary directory and links
-/// them into `out` with the system C compiler.
-fn link(objects: &[(String, Vec<u8>)], out: &Utf8Path) -> Result<(), String> {
+/// them into a native executable, returning the path actually produced (which
+/// gains a `.exe` suffix on Windows). Uses the host's system linker — `cc` on
+/// Unix, MSVC `link.exe` on Windows — with the runtime's required system
+/// libraries (captured by `build.rs`).
+fn link(objects: &[(String, Vec<u8>)], out: &Utf8Path) -> Result<Utf8PathBuf, String> {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
         "fai-build-{}-{}",
@@ -366,25 +375,81 @@ fn link(objects: &[(String, Vec<u8>)], out: &Utf8Path) -> Result<(), String> {
     ));
     std::fs::create_dir_all(&dir).map_err(|e| format!("creating build directory: {e}"))?;
 
+    // MSVC's `link.exe` wants object inputs named `.obj`; Unix linkers accept any
+    // extension. The bytes are host-native objects from Cranelift either way.
+    let obj_ext = if cfg!(target_env = "msvc") { "obj" } else { "o" };
     let mut object_paths = Vec::with_capacity(objects.len());
     for (name, bytes) in objects {
-        let path = dir.join(format!("{name}.o"));
+        let path = dir.join(format!("{name}.{obj_ext}"));
         std::fs::write(&path, bytes).map_err(|e| format!("writing {}: {e}", path.display()))?;
         object_paths.push(path);
     }
-    let archive = dir.join("libfai_runtime.a");
+    let archive_name =
+        if cfg!(target_env = "msvc") { "fai_runtime.lib" } else { "libfai_runtime.a" };
+    let archive = dir.join(archive_name);
     std::fs::write(&archive, RUNTIME_ARCHIVE)
         .map_err(|e| format!("writing runtime archive: {e}"))?;
 
+    // Native executables need the platform's executable extension (`.exe` on
+    // Windows, none elsewhere). Respect an extension the caller already gave.
+    let exe_ext = std::env::consts::EXE_EXTENSION;
+    let target = if !exe_ext.is_empty() && out.extension().is_none() {
+        out.with_extension(exe_ext)
+    } else {
+        out.to_owned()
+    };
+
+    let native_libs: Vec<&str> = RUNTIME_NATIVE_LIBS.split_whitespace().collect();
+    if cfg!(target_env = "msvc") {
+        link_msvc(&object_paths, &archive, &target, &native_libs)?;
+    } else {
+        link_unix(&object_paths, &archive, &target, &native_libs)?;
+    }
+    Ok(target)
+}
+
+/// Links with a Unix C compiler driver (`$CC`, default `cc`), which supplies the
+/// C runtime startup and resolves the runtime's system dependencies.
+fn link_unix(
+    objects: &[std::path::PathBuf],
+    archive: &std::path::Path,
+    out: &Utf8Path,
+    native_libs: &[&str],
+) -> Result<(), String> {
     let linker = std::env::var("CC").unwrap_or_else(|_| "cc".to_owned());
-    let status = std::process::Command::new(&linker)
-        .args(&object_paths)
-        .arg(&archive)
-        .arg("-o")
-        .arg(out.as_std_path())
-        .args(["-lpthread", "-ldl", "-lm"])
-        .status()
-        .map_err(|e| format!("invoking linker `{linker}`: {e}"))?;
+    let mut command = std::process::Command::new(&linker);
+    command.args(objects).arg(archive).arg("-o").arg(out.as_std_path());
+    if native_libs.is_empty() {
+        // Fall back to the historic Linux set if the toolchain reported nothing.
+        if cfg!(target_os = "linux") {
+            command.args(["-lpthread", "-ldl", "-lm"]);
+        }
+    } else {
+        command.args(native_libs);
+    }
+    let status = command.status().map_err(|e| format!("invoking linker `{linker}`: {e}"))?;
+    if !status.success() {
+        return Err(format!("linker `{linker}` exited with {status}"));
+    }
+    Ok(())
+}
+
+/// Links with the MSVC linker (`link.exe`, overridable via `$FAI_LINKER`). The
+/// runtime archive's objects carry `/DEFAULTLIB` directives for the C runtime, so
+/// the CRT entry point (`mainCRTStartup`) finds the emitted `main`; the reported
+/// Win32 import libraries cover the rest. Requires the MSVC environment (the
+/// `LIB` paths) on `PATH`, as a normal Rust toolchain build already does.
+fn link_msvc(
+    objects: &[std::path::PathBuf],
+    archive: &std::path::Path,
+    out: &Utf8Path,
+    native_libs: &[&str],
+) -> Result<(), String> {
+    let linker = std::env::var("FAI_LINKER").unwrap_or_else(|_| "link.exe".to_owned());
+    let mut command = std::process::Command::new(&linker);
+    command.arg("/NOLOGO").arg("/SUBSYSTEM:CONSOLE").arg(format!("/OUT:{out}"));
+    command.args(objects).arg(archive).args(native_libs);
+    let status = command.status().map_err(|e| format!("invoking linker `{linker}`: {e}"))?;
     if !status.success() {
         return Err(format!("linker `{linker}` exited with {status}"));
     }

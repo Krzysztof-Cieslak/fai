@@ -1,0 +1,8 @@
+# Force LF line endings on checkout for every platform.
+#
+# The test suite is full of byte-exact golden and snapshot assertions (and
+# `indoc!` source blocks) that embed `\n`; `cargo fmt --check` is likewise
+# newline-sensitive. Without this, Windows checkouts (where Git defaults to
+# `core.autocrlf=true`) would rewrite `.rs`/`.snap`/`.fai` files with CRLF and
+# break those comparisons. The tree is all text, so normalize everything to LF.
+* text=auto eol=lf
