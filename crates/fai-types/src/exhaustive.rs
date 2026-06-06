@@ -570,6 +570,6 @@ fn collect_ty_vars(ty: &Ty, out: &mut Vec<TyVarId>) {
         }
         Ty::Tuple(elems) => elems.iter().for_each(|e| collect_ty_vars(e, out)),
         Ty::Record(row) => row.fields.iter().for_each(|(_, t)| collect_ty_vars(t, out)),
-        Ty::Con(_) | Ty::Adt(_) | Ty::Unit | Ty::Error => {}
+        Ty::Con(_) | Ty::Adt(_) | Ty::Interface(_) | Ty::Unit | Ty::Error => {}
     }
 }

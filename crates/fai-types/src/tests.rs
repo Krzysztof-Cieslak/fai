@@ -952,6 +952,117 @@ fn inferred_user_operator_generalizes() {
     assert_eq!(type_of(&db, f[0], ">+>"), "'a -> 'b -> 'a");
 }
 
+// ── Interfaces, instances, and method dispatch ───────────────────────────────
+
+#[test]
+fn interface_instance_and_method_access_typecheck() {
+    let src = indoc! {r#"
+        module M
+
+        public interface Greeter =
+          greet : String -> String
+
+        public prefixed : String -> Greeter
+        let prefixed p = { Greeter with greet name = p ++ name }
+
+        public greetWith : Greeter -> String -> String
+        let greetWith g name = g.greet name
+    "#};
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+    assert_eq!(type_of(&db, f[0], "prefixed"), "String -> Greeter");
+    assert_eq!(type_of(&db, f[0], "greetWith"), "Greeter -> String -> String");
+}
+
+#[test]
+fn parameterized_interface_method_access() {
+    let src = indoc! {r#"
+        module M
+
+        public interface Box 'a =
+          get : Unit -> 'a
+
+        public unwrap : Box Int -> Int
+        let unwrap b = b.get ()
+    "#};
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+    assert_eq!(type_of(&db, f[0], "unwrap"), "Box Int -> Int");
+}
+
+#[test]
+fn instance_missing_a_method_is_an_error() {
+    let src = indoc! {r#"
+        module M
+
+        public interface Pair =
+          fst : Unit -> Int
+          snd : Unit -> Int
+
+        public p : Pair
+        let p = { Pair with fst u = 1 }
+    "#};
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert!(
+        check_codes(&db, f[0]).contains(&"FAI3015".to_owned()),
+        "got {:?}",
+        check_codes(&db, f[0])
+    );
+}
+
+#[test]
+fn unknown_method_access_is_an_error() {
+    let src = indoc! {r#"
+        module M
+
+        public interface Box =
+          get : Unit -> Int
+
+        public take : Box -> Int
+        let take b = b.missing ()
+    "#};
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert!(
+        check_codes(&db, f[0]).contains(&"FAI3014".to_owned()),
+        "got {:?}",
+        check_codes(&db, f[0])
+    );
+}
+
+#[test]
+fn instance_of_a_non_interface_is_an_error() {
+    let src = indoc! {r#"
+        module M
+
+        public type NotIface = Int
+
+        public mk : Int -> NotIface
+        let mk x = { NotIface with foo y = y }
+    "#};
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert!(
+        check_codes(&db, f[0]).contains(&"FAI3016".to_owned()),
+        "got {:?}",
+        check_codes(&db, f[0])
+    );
+}
+
+#[test]
+fn equality_on_an_interface_value_is_rejected() {
+    // Interfaces are dictionaries of closures, so `=` is not defined on them.
+    let src = indoc! {r#"
+        module M
+
+        public interface Greeter =
+          greet : Unit -> Unit
+
+        public same : Greeter -> Greeter -> Bool
+        let same a b = a = b
+    "#};
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert!(!check_codes(&db, f[0]).is_empty(), "expected an error for `=` on interfaces");
+}
+
 #[test]
 fn builtin_operator_in_value_position_has_its_type() {
     // `(+)` as a value is the numeric operator; the signature fixes it to `Int`.

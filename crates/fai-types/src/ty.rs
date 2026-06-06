@@ -10,7 +10,7 @@
 use std::fmt::{self, Write as _};
 use std::sync::Arc;
 
-use fai_resolve::AdtRef;
+use fai_resolve::{AdtRef, InterfaceRef};
 use fai_syntax::Symbol;
 
 /// A type-variable identifier (a slot in the solver's union-find).
@@ -58,6 +58,9 @@ pub enum Ty {
     /// A user-declared nominal type constructor (a `type` union), applied via
     /// [`Ty::App`]: `Option a` is `App(Adt(Option), a)`.
     Adt(AdtRef),
+    /// A nominal interface type (its values are dictionaries), applied via
+    /// [`Ty::App`] for any type parameters.
+    Interface(InterfaceRef),
     /// Type application, e.g. `List a` is `App(List, a)`.
     App(Arc<Ty>, Arc<Ty>),
     /// A function type `from -> to`.
@@ -275,7 +278,7 @@ fn collect_vars(ty: &Ty, out: &mut Vec<TyVarId>) {
                 collect_vars(t, out);
             }
         }
-        Ty::Con(_) | Ty::Adt(_) | Ty::Unit | Ty::Error => {}
+        Ty::Con(_) | Ty::Adt(_) | Ty::Interface(_) | Ty::Unit | Ty::Error => {}
     }
 }
 
@@ -376,6 +379,9 @@ fn write_ty(out: &mut String, ty: &Ty, names: &VarNames, prec: Prec) {
         }
         Ty::Adt(adt) => {
             let _ = out.write_str(adt.name.as_str());
+        }
+        Ty::Interface(i) => {
+            let _ = out.write_str(i.name.as_str());
         }
         Ty::Unit => {
             let _ = out.write_str("()");

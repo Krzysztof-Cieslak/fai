@@ -25,8 +25,10 @@ mod scc;
 mod tests;
 
 pub use bodies::{ResolvedBodies, resolve};
-pub use decls::{CtorInfo, TypeDeclInfo, TypeDecls, type_decls};
-pub use ids::{AdtRef, CtorRef, DefId, LocalId, Res, is_upper};
+pub use decls::{
+    CtorInfo, InterfaceDecls, InterfaceInfo, TypeDeclInfo, TypeDecls, interface_decls, type_decls,
+};
+pub use ids::{AdtRef, CtorRef, DefId, InterfaceRef, LocalId, Res, is_upper};
 pub use module::{
     DefInfo, DuplicateExport, Export, ExportKind, ModuleDefs, ModuleInterface, ModuleName,
     PRELUDE_MODULE, PreludeExports, duplicate_module_files, emit_duplicate_module_errors,

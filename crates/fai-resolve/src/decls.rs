@@ -69,6 +69,57 @@ impl TypeDecls {
     }
 }
 
+/// An `interface` declaration's position-independent summary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterfaceInfo {
+    /// The interface's name.
+    pub name: Symbol,
+    /// The interface's visibility.
+    pub visibility: Visibility,
+    /// The declared type parameters, in order.
+    pub params: Vec<Symbol>,
+    /// The declaring item (to fetch method types from the AST).
+    pub item: ItemId,
+    /// The method names, in declaration order.
+    pub methods: Vec<Symbol>,
+}
+
+/// A file's declared interfaces, by name.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InterfaceDecls {
+    /// Declared interfaces, by name.
+    pub interfaces: FxHashMap<Symbol, InterfaceInfo>,
+}
+
+impl InterfaceDecls {
+    /// The declaration of interface `name`, if any.
+    #[must_use]
+    pub fn interface_named(&self, name: Symbol) -> Option<&InterfaceInfo> {
+        self.interfaces.get(&name)
+    }
+}
+
+/// Indexes the `interface` declarations of `file` (pure; no diagnostics).
+#[salsa::tracked]
+pub fn interface_decls(db: &dyn Db, file: SourceFile) -> Arc<InterfaceDecls> {
+    let parsed = fai_syntax::parse(db, file);
+    let module = &parsed.module;
+    let mut decls = InterfaceDecls::default();
+    for (index, item) in module.items.iter().enumerate() {
+        let ItemKind::Interface { visibility, name, params, methods } = &item.kind else {
+            continue;
+        };
+        decls.interfaces.entry(*name).or_insert(InterfaceInfo {
+            name: *name,
+            visibility: *visibility,
+            params: params.clone(),
+            item: ItemId::from_index(index),
+            methods: methods.iter().map(|m| m.name).collect(),
+        });
+    }
+    Arc::new(decls)
+}
+
 /// Indexes the `type` declarations of `file` (pure; no diagnostics).
 ///
 /// Duplicate type or constructor names keep the first declaration (later

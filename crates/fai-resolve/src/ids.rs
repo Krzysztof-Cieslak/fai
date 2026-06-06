@@ -51,6 +51,25 @@ impl AdtRef {
     }
 }
 
+/// An interface, keyed by its declaring file and name (a nominal type whose
+/// values are dictionaries). Distinct from [`AdtRef`] so a type and a same-named
+/// interface never collide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct InterfaceRef {
+    /// The declaring file.
+    pub file: SourceId,
+    /// The interface's name (an upper-case identifier).
+    pub name: Symbol,
+}
+
+impl InterfaceRef {
+    /// Builds an `InterfaceRef` for `name` declared in `file`.
+    #[must_use]
+    pub fn new(file: SourceId, name: Symbol) -> Self {
+        Self { file, name }
+    }
+}
+
 /// A data constructor of a discriminated union, keyed by its file and name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CtorRef {

@@ -144,6 +144,43 @@ fn user_defined_operator_runs() {
 }
 
 #[test]
+fn interface_instance_dispatch_runs() {
+    let src = indoc! {r#"
+        module Main
+
+        interface Greeter =
+          greet : String -> String
+
+        let exclaimer = { Greeter with greet name = name ++ "!" }
+
+        public main : Runtime -> Unit
+        let main runtime = Console.writeLine runtime (exclaimer.greet "hi")
+    "#};
+    let (out, code) = build_and_run(src);
+    assert_eq!(out, "hi!\n");
+    assert_eq!(code, Some(0));
+}
+
+#[test]
+fn interface_instance_captures_state() {
+    // The method closure captures the surrounding `n`.
+    let src = indoc! {r#"
+        module Main
+
+        interface Counter =
+          next : Unit -> Int
+
+        let always n = { Counter with next u = n }
+
+        public main : Runtime -> Unit
+        let main runtime = Console.writeLine runtime (Int.toString ((always 42).next ()))
+    "#};
+    let (out, code) = build_and_run(src);
+    assert_eq!(out, "42\n");
+    assert_eq!(code, Some(0));
+}
+
+#[test]
 fn builtin_operator_as_value_runs() {
     // `(+)` passed first-class to a fold.
     let src = indoc! {r#"

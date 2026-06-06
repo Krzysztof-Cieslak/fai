@@ -6,7 +6,7 @@
 //! [`Ty`]. The context is local to one inference call (one def or SCC); nothing
 //! here is cached by salsa.
 
-use fai_resolve::AdtRef;
+use fai_resolve::{AdtRef, InterfaceRef};
 use fai_syntax::Symbol;
 
 use crate::ty::{Con, RecordRow, RowEnd, RowVarId, Scheme, Ty, TyVarId};
@@ -68,6 +68,8 @@ pub enum SolveTy {
     Con(Con),
     /// A user-declared nominal type constructor (applied via [`SolveTy::App`]).
     Adt(AdtRef),
+    /// A nominal interface type (applied via [`SolveTy::App`] for parameters).
+    Interface(InterfaceRef),
     /// Application.
     App(Box<SolveTy>, Box<SolveTy>),
     /// Function type.
@@ -335,6 +337,7 @@ impl InferCtx {
             (_, SolveTy::Var(y)) => self.bind(*y, &a),
             (SolveTy::Con(x), SolveTy::Con(y)) if x == y => UnifyResult::Ok,
             (SolveTy::Adt(x), SolveTy::Adt(y)) if x == y => UnifyResult::Ok,
+            (SolveTy::Interface(x), SolveTy::Interface(y)) if x == y => UnifyResult::Ok,
             (SolveTy::Unit, SolveTy::Unit) => UnifyResult::Ok,
             (SolveTy::App(f1, a1), SolveTy::App(f2, a2)) => match self.unify(f1, f2) {
                 UnifyResult::Ok => self.unify(a1, a2),
@@ -401,9 +404,12 @@ impl InferCtx {
                     | SolveTy::Con(Con::Float)
             ),
             // Ordering is structural (`fai_compare`), so like `Eq` it admits any
-            // non-function type. (A record may contain a function field, but that
+            // non-function type. Interfaces are dictionaries of closures, so they
+            // are not comparable. (A record may contain a function field, but that
             // is caught when the field type is compared.)
-            Constraint::Ord | Constraint::Eq => !matches!(ty, SolveTy::Arrow(_, _)),
+            Constraint::Ord | Constraint::Eq => {
+                !matches!(ty, SolveTy::Arrow(_, _) | SolveTy::Interface(_))
+            }
         }
     }
 
@@ -417,7 +423,11 @@ impl InferCtx {
                 let row = self.expand_row(&row);
                 row.fields.iter().any(|(_, t)| self.occurs(id, t))
             }
-            SolveTy::Con(_) | SolveTy::Adt(_) | SolveTy::Unit | SolveTy::Error => false,
+            SolveTy::Con(_)
+            | SolveTy::Adt(_)
+            | SolveTy::Interface(_)
+            | SolveTy::Unit
+            | SolveTy::Error => false,
         }
     }
 
@@ -460,7 +470,11 @@ impl InferCtx {
                     self.default_numerics_deep(t);
                 }
             }
-            SolveTy::Con(_) | SolveTy::Adt(_) | SolveTy::Unit | SolveTy::Error => {}
+            SolveTy::Con(_)
+            | SolveTy::Adt(_)
+            | SolveTy::Interface(_)
+            | SolveTy::Unit
+            | SolveTy::Error => {}
         }
     }
 
@@ -492,6 +506,7 @@ impl InferCtx {
             SolveTy::Var(id) => Ty::Var(renumber.map(id)),
             SolveTy::Con(c) => Ty::Con(c),
             SolveTy::Adt(adt) => Ty::Adt(adt),
+            SolveTy::Interface(i) => Ty::Interface(i),
             SolveTy::Unit => Ty::Unit,
             SolveTy::Error => Ty::Error,
             SolveTy::App(f, a) => Ty::App(
@@ -516,6 +531,27 @@ impl InferCtx {
                 Ty::Record(RecordRow { fields, tail })
             }
         }
+    }
+
+    /// A fresh solver variable's id.
+    pub fn fresh_var_id(&mut self) -> TyVarId {
+        match self.fresh() {
+            SolveTy::Var(id) => id,
+            _ => unreachable!("fresh() always yields a Var"),
+        }
+    }
+
+    /// Instantiates a scheme, binding its first `prefix.len()` quantified
+    /// variables to the given solver variables (the rest get fresh ones). Used to
+    /// share an interface's parameter variables across all of an instance's
+    /// methods.
+    pub fn instantiate_sharing(&mut self, scheme: &Scheme, prefix: &[TyVarId]) -> SolveTy {
+        let mut map = InstMap::default();
+        for (i, &v) in scheme.vars.iter().enumerate() {
+            let id = if i < prefix.len() { prefix[i] } else { self.fresh_var_id() };
+            map.types.insert(v, id);
+        }
+        self.instantiate_solve(&scheme.ty, &mut map)
     }
 
     /// Instantiates a scheme with fresh variables (no constraints recorded; M2
@@ -550,6 +586,7 @@ impl InferCtx {
             Ty::Var(v) => SolveTy::Var(*map.types.get(v).unwrap_or(v)),
             Ty::Con(c) => SolveTy::Con(*c),
             Ty::Adt(adt) => SolveTy::Adt(*adt),
+            Ty::Interface(i) => SolveTy::Interface(*i),
             Ty::Unit => SolveTy::Unit,
             Ty::Error => SolveTy::Error,
             Ty::App(f, a) => SolveTy::App(

@@ -61,6 +61,8 @@ pub struct ItemSummary {
     pub visibility: Visibility,
     /// Constructor names declared by a `type` union (empty otherwise), in order.
     pub ctors: Vec<crate::Symbol>,
+    /// Method names declared by an `interface` (empty otherwise), in order.
+    pub methods: Vec<crate::Symbol>,
 }
 
 /// The kind of an [`ItemSummary`].
@@ -72,6 +74,8 @@ pub enum ItemTreeKind {
     Binding,
     /// A `type` declaration.
     Type,
+    /// An `interface` declaration.
+    Interface,
     /// An `example` contract.
     Example,
     /// A `forall` contract.
@@ -88,6 +92,7 @@ pub fn build_item_tree(module: &Module) -> ItemTree {
         .iter()
         .map(|item| {
             let mut ctors = Vec::new();
+            let mut methods = Vec::new();
             let (kind, name, visibility) = match &item.kind {
                 ItemKind::Signature { visibility, name, .. } => {
                     (ItemTreeKind::Signature, Some(*name), *visibility)
@@ -101,11 +106,15 @@ pub fn build_item_tree(module: &Module) -> ItemTree {
                     }
                     (ItemTreeKind::Type, Some(*name), *visibility)
                 }
+                ItemKind::Interface { visibility, name, methods: sigs, .. } => {
+                    methods = sigs.iter().map(|m| m.name).collect();
+                    (ItemTreeKind::Interface, Some(*name), *visibility)
+                }
                 ItemKind::Example { .. } => (ItemTreeKind::Example, None, Visibility::Private),
                 ItemKind::Forall { .. } => (ItemTreeKind::Forall, None, Visibility::Private),
                 ItemKind::Error => (ItemTreeKind::Error, None, Visibility::Private),
             };
-            ItemSummary { kind, name, visibility, ctors }
+            ItemSummary { kind, name, visibility, ctors, methods }
         })
         .collect();
     ItemTree { module_name: module.name, items }

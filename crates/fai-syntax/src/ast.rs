@@ -117,12 +117,25 @@ pub enum ItemKind {
     Binding { visibility: Visibility, name: Symbol, params: Vec<PatId>, body: ExprId },
     /// A type declaration: `[public] type Name 'p… = <definition>`.
     Type { visibility: Visibility, name: Symbol, params: Vec<Symbol>, def: TypeDef },
+    /// An interface declaration: `[public] interface Name 'p… = <methods>`.
+    Interface { visibility: Visibility, name: Symbol, params: Vec<Symbol>, methods: Vec<MethodSig> },
     /// An `example: body` contract.
     Example { body: ExprId },
     /// A `forall binders…: body` contract.
     Forall { binders: Vec<Symbol>, body: ExprId },
     /// An unparseable item (recovered).
     Error,
+}
+
+/// One method signature in an [`ItemKind::Interface`]: `name : ty` (no `self`).
+#[derive(Debug, PartialEq, Eq)]
+pub struct MethodSig {
+    /// The method name.
+    pub name: Symbol,
+    /// The method's type.
+    pub ty: TypeId,
+    /// The method's source range.
+    pub span: TextRange,
 }
 
 /// The body of a [`ItemKind::Type`] declaration.
@@ -191,6 +204,9 @@ pub enum ExprKind {
     Record(Vec<FieldInit>),
     /// A record update `{ base with x = a, … }`.
     RecordUpdate { base: ExprId, fields: Vec<FieldInit> },
+    /// An interface instance `{ Name with m args = body, … }` (an existential
+    /// value compiled to a dictionary of closures).
+    Instance { name: Symbol, methods: Vec<MethodImpl> },
     /// A parenthesized expression (kept so the formatter is faithful).
     Paren(ExprId),
     /// A tuple `(a, b, …)` (two or more elements).
@@ -220,6 +236,20 @@ pub struct FieldInit {
     /// The field's value.
     pub value: ExprId,
     /// The field's source range.
+    pub span: TextRange,
+}
+
+/// One method implementation in an [`ExprKind::Instance`]: `name params… = body`
+/// (ML method sugar). Sibling methods are not in scope in the body.
+#[derive(Debug, PartialEq, Eq)]
+pub struct MethodImpl {
+    /// The method name.
+    pub name: Symbol,
+    /// The method's parameters (empty for a value-shaped method).
+    pub params: Vec<PatId>,
+    /// The method body.
+    pub body: ExprId,
+    /// The method's source range.
     pub span: TextRange,
 }
 

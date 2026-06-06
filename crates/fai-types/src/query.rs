@@ -181,9 +181,10 @@ pub fn check_file(db: &dyn Db, file: SourceFile) {
 
     // Validate `type` declarations: lower each alias body (surfacing recursive
     // aliases and unknown constructors) and each union's constructor schemes.
+    // Validate `interface` declarations by lowering each method signature.
     for item in &module.items {
-        if let fai_syntax::ast::ItemKind::Type { name, def, .. } = &item.kind {
-            match def {
+        match &item.kind {
+            fai_syntax::ast::ItemKind::Type { def, .. } => match def {
                 fai_syntax::ast::TypeDef::Alias(ty) => {
                     let mut vars = crate::lower::LowerVars::default();
                     let _ = crate::lower::lower_type(db, file, module, *ty, &mut vars);
@@ -193,8 +194,17 @@ pub fn check_file(db: &dyn Db, file: SourceFile) {
                         let _ = constructor_scheme(db, file, v.name);
                     }
                 }
+            },
+            fai_syntax::ast::ItemKind::Interface { methods, params, .. } => {
+                for m in methods {
+                    let mut vars = crate::lower::LowerVars::default();
+                    for &p in params {
+                        vars.var(p);
+                    }
+                    let _ = crate::lower::lower_type(db, file, module, m.ty, &mut vars);
+                }
             }
-            let _ = name;
+            _ => {}
         }
     }
 
