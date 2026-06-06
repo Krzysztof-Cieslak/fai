@@ -5,17 +5,17 @@ module Poker
 // `Outcome` rather than a magic integer. `Game` is a transparent alias, so
 // public signatures render as the structural record (fields sorted by label).
 
-type Game =
+public type Game =
   { pot : Int, smallBlind : Int, bigBlind : Int, currentBet : Int, button : Int }
 
-type Action =
+public type Action =
   | Fold
   | Check
   | Call
   | Raise
   | AllIn
 
-type Outcome =
+public type Outcome =
   | PlayerA
   | PlayerB
   | Split

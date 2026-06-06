@@ -7,13 +7,13 @@ module HandEval
 // `foldl`, `sort`), and `match` drives the category names. `Card` is a
 // transparent alias, so `List Card` renders as the structural record list.
 
-type Suit =
+public type Suit =
   | Clubs
   | Diamonds
   | Hearts
   | Spades
 
-type Rank =
+public type Rank =
   | Two
   | Three
   | Four
@@ -28,9 +28,9 @@ type Rank =
   | King
   | Ace
 
-type Card = { rank : Rank, suit : Suit }
+public type Card = { rank : Rank, suit : Suit }
 
-type HandCategory =
+public type HandCategory =
   | HighCard
   | Pair
   | TwoPair

@@ -15,9 +15,11 @@ use std::sync::Arc;
 
 use fai_db::{Db, SourceFile, emit, is_std_path};
 use fai_diagnostics::Diagnostic;
-use fai_span::Span;
+use fai_span::{SourceId, Span, TextRange};
 use fai_syntax::Symbol;
-use fai_syntax::ast::{ExprId, ExprKind, ItemKind, Module, PatId, PatKind, Visibility};
+use fai_syntax::ast::{
+    ExprId, ExprKind, ItemKind, Module, PatId, PatKind, TypeDef, TypeId, TypeKind, Visibility,
+};
 use rustc_hash::FxHashMap;
 
 use crate::decls::type_decls;
@@ -28,8 +30,8 @@ use crate::module::{
     module_file, module_interface, prelude_exports,
 };
 use crate::{
-    INTRINSIC_OUTSIDE_STD, PRIVATE_REFERENCE, SHADOWS_PRELUDE, UNBOUND_CONSTRUCTOR, UNBOUND_NAME,
-    UNRESOLVED_MODULE,
+    INTRINSIC_OUTSIDE_STD, PRIVATE_REFERENCE, PRIVATE_TYPE_IN_PUBLIC_SIGNATURE, SHADOWS_PRELUDE,
+    UNBOUND_CONSTRUCTOR, UNBOUND_NAME, UNRESOLVED_MODULE,
 };
 
 /// The resolved references of one file's bodies.
@@ -118,6 +120,86 @@ impl Scope {
     }
 }
 
+/// Collects every type-constructor reference (`Con`) reachable from `ty`, with
+/// its span, into `out`. Type variables, `Unit`, and error nodes contribute none.
+fn collect_con_refs(module: &Module, ty: TypeId, out: &mut Vec<(Symbol, TextRange)>) {
+    let node = module.ty(ty);
+    match &node.kind {
+        TypeKind::Con(name) => out.push((*name, node.span)),
+        TypeKind::App { func, arg } => {
+            collect_con_refs(module, *func, out);
+            collect_con_refs(module, *arg, out);
+        }
+        TypeKind::Arrow { from, to } => {
+            collect_con_refs(module, *from, out);
+            collect_con_refs(module, *to, out);
+        }
+        TypeKind::Tuple(items) => {
+            for &item in items {
+                collect_con_refs(module, item, out);
+            }
+        }
+        TypeKind::Record { fields, .. } => {
+            for field in fields {
+                collect_con_refs(module, field.ty, out);
+            }
+        }
+        TypeKind::Paren(inner) => collect_con_refs(module, *inner, out),
+        TypeKind::Var(_) | TypeKind::Unit | TypeKind::Error => {}
+    }
+}
+
+/// Emits [`PRIVATE_TYPE_IN_PUBLIC_SIGNATURE`] for any public surface that names a
+/// same-module private type: public binding signatures, public type-alias bodies,
+/// and public union constructors' field types. Built-in, prelude, and other
+/// modules' types are never local here, so they never trip the check; a private
+/// type reached only from private surfaces is fine.
+fn emit_privacy_leaks(db: &dyn Db, file: SourceFile, module: &Module, source: SourceId) {
+    let decls = type_decls(db, file);
+    // Fast path: with no private types there is nothing to leak.
+    if decls.types.values().all(|t| t.visibility == Visibility::Public) {
+        return;
+    }
+
+    let mut refs: Vec<(Symbol, TextRange)> = Vec::new();
+    let check = |module: &Module, ty: TypeId, refs: &mut Vec<(Symbol, TextRange)>| {
+        refs.clear();
+        collect_con_refs(module, ty, refs);
+        for &(name, span) in refs.iter() {
+            if decls.types.get(&name).is_some_and(|t| t.visibility == Visibility::Private) {
+                emit(
+                    db,
+                    Diagnostic::error(
+                        PRIVATE_TYPE_IN_PUBLIC_SIGNATURE,
+                        format!("the public signature exposes the private type `{name}`"),
+                        Span::new(source, span),
+                    )
+                    .with_help(format!("make `{name}` public, or make this binding private")),
+                );
+            }
+        }
+    };
+
+    for item in &module.items {
+        match &item.kind {
+            ItemKind::Signature { visibility: Visibility::Public, ty, .. } => {
+                check(module, *ty, &mut refs);
+            }
+            ItemKind::Type { visibility: Visibility::Public, def, .. } => match def {
+                TypeDef::Alias(ty) => check(module, *ty, &mut refs),
+                TypeDef::Union(variants) => {
+                    for variant in variants {
+                        for &field in &variant.fields {
+                            check(module, field, &mut refs);
+                        }
+                    }
+                }
+            },
+            _ => {}
+        }
+    }
+}
+
 /// Resolves all bodies in `file`, emitting resolution diagnostics.
 #[salsa::tracked]
 pub fn resolve(db: &dyn Db, file: SourceFile) -> Arc<ResolvedBodies> {
@@ -128,6 +210,9 @@ pub fn resolve(db: &dyn Db, file: SourceFile) -> Arc<ResolvedBodies> {
     let module = &parsed.module;
     let defs = module_defs(db, file);
     let source = file.source(db);
+
+    // A public surface must not expose a same-module private type.
+    emit_privacy_leaks(db, file, module, source);
 
     // A standard-library module: it may reach the `Prim` intrinsics, and its own
     // bindings *define* the auto-imported names (so they never "shadow").

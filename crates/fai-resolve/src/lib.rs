@@ -65,6 +65,9 @@ pub const UNBOUND_CONSTRUCTOR: DiagnosticCode = DiagnosticCode::new("FAI2012");
 pub const DUPLICATE_PRELUDE_EXPORT: DiagnosticCode = DiagnosticCode::new("FAI2013");
 /// The `Prim` intrinsics module is referenced outside a standard-library module.
 pub const INTRINSIC_OUTSIDE_STD: DiagnosticCode = DiagnosticCode::new("FAI2014");
+/// A public surface (signature, alias body, or constructor field) exposes a
+/// same-module private type.
+pub const PRIVATE_TYPE_IN_PUBLIC_SIGNATURE: DiagnosticCode = DiagnosticCode::new("FAI2015");
 
 /// Diagnostic codes owned by name resolution/visibility (the `FAI2xxx` range).
 pub const CODES: &[CodeInfo] = &[
@@ -128,6 +131,11 @@ pub const CODES: &[CodeInfo] = &[
     CodeInfo {
         code: INTRINSIC_OUTSIDE_STD,
         title: "intrinsics used outside the standard library",
+        default_severity: Severity::Error,
+    },
+    CodeInfo {
+        code: PRIVATE_TYPE_IN_PUBLIC_SIGNATURE,
+        title: "private type exposed by a public signature",
         default_severity: Severity::Error,
     },
 ];

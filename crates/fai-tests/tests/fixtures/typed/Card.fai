@@ -7,13 +7,13 @@ module Card
 // transparent alias, so public signatures render as the structural record it
 // stands for.
 
-type Suit =
+public type Suit =
   | Clubs
   | Diamonds
   | Hearts
   | Spades
 
-type Rank =
+public type Rank =
   | Two
   | Three
   | Four
@@ -28,7 +28,7 @@ type Rank =
   | King
   | Ace
 
-type Card = { rank : Rank, suit : Suit }
+public type Card = { rank : Rank, suit : Suit }
 
 // ── Construction & accessors ─────────────────────────────────────────────────
 

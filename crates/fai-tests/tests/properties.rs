@@ -334,7 +334,7 @@ proptest! {
         let header = formatdoc! {r#"
             module P
 
-            type T =
+            public type T =
             {variants}
 
             public f : T -> Int

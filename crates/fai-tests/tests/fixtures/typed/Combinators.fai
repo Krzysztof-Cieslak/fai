@@ -95,7 +95,7 @@ let applyToFive f =
 // ── data-aware combinators (recursive parametric ADT + match) ────────────────
 
 // A binary tree — the classic carrier for polymorphic folds.
-type Tree 'a =
+public type Tree 'a =
   | Leaf
   | Node (Tree 'a) 'a (Tree 'a)
 
