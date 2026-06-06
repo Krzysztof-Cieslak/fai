@@ -8,8 +8,8 @@ let line s = "<< " ++ s ++ " >>"
 
 public main : Runtime -> Unit
 let main runtime =
-  let a = Console.writeLine runtime banner
-  Console.writeLine runtime (line "café")
+  let a = runtime.console.writeLine banner
+  runtime.console.writeLine (line "café")
 
 //~ OUTPUT héllo, 世界 😀
 //~ OUTPUT << café >>

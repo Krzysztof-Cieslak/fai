@@ -10,9 +10,9 @@ let pow base exp =
 
 public main : Runtime -> Unit
 let main runtime =
-  let a = Console.writeLine runtime (Int.toString (pow 2 10))
-  let b = Console.writeLine runtime (Int.toString (pow 3 4))
-  Console.writeLine runtime (Int.toString (pow 2 62))
+  let a = runtime.console.writeLine (Int.toString (pow 2 10))
+  let b = runtime.console.writeLine (Int.toString (pow 3 4))
+  runtime.console.writeLine (Int.toString (pow 2 62))
 
 //~ OUTPUT 1024
 //~ OUTPUT 81

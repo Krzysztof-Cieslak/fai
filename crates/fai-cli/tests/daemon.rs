@@ -200,7 +200,7 @@ const HELLO: &str = indoc! {r#"
     module Hello
 
     public main : Runtime -> Unit
-    let main runtime = Console.writeLine runtime "hi from run"
+    let main runtime = runtime.console.writeLine "hi from run"
 "#};
 
 #[test]
@@ -221,7 +221,7 @@ fn run_timeout_is_reaped_and_daemon_survives() {
         let fib n = if n < 2 then n else fib (n - 1) + fib (n - 2)
 
         public main : Runtime -> Unit
-        let main runtime = Console.writeLine runtime (Int.toString (fib 40))
+        let main runtime = runtime.console.writeLine (Int.toString (fib 40))
     "#};
     let daemon = Daemon::new("timeout", &[("Main.fai", fib)]).with_run_timeout(500);
 
@@ -302,7 +302,7 @@ fn run_compile_error_exits_four_via_daemon() {
         module Main
 
         public main : Runtime -> Unit
-        let main r = Console.writeLine r (1 + 2)
+        let main r = r.console.writeLine (1 + 2)
     "#};
     let daemon = Daemon::new("runbad", &[("Main.fai", bad)]);
     let out = daemon.run(&["run"], &["Main.fai"]);
@@ -320,7 +320,7 @@ fn build_via_daemon_produces_a_runnable_binary() {
         module Calc
 
         public main : Runtime -> Unit
-        let main runtime = Console.writeLine runtime (Int.toString (40 + 2))
+        let main runtime = runtime.console.writeLine (Int.toString (40 + 2))
     "#};
     let daemon = Daemon::new("build", &[("Calc.fai", src)]);
     let exe = daemon.workspace.join("calc");

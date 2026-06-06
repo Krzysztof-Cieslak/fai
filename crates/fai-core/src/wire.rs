@@ -19,11 +19,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::ir::{CExpr, CoreFn, ExprKind, FnId, Lit, LoweredDef, Prim};
 
-/// A complete program ready to JIT: an entry definition and its reachable set.
+/// A complete program ready to JIT: an entry definition, the `Runtime` value
+/// binding applied to it, and their reachable set.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WireBundle {
     /// The entry definition (`main`).
     pub entry: WireDefId,
+    /// The standard library's `Runtime` value binding, applied to `main` by the
+    /// entry trampoline.
+    pub runtime: WireDefId,
     /// Every reachable definition, in discovery order.
     pub defs: Vec<WireDef>,
 }
@@ -225,6 +229,8 @@ pub struct Rebuilt {
     pub defs: Vec<LoweredDef>,
     /// The entry definition.
     pub entry: DefId,
+    /// The `Runtime` value binding applied to the entry.
+    pub runtime: DefId,
     /// Synthetic source id → module label.
     pub module_labels: FxHashMap<SourceId, String>,
     /// Definition → arity.
@@ -238,6 +244,7 @@ pub struct Rebuilt {
 pub fn from_wire(bundle: &WireBundle) -> Rebuilt {
     let mut sources = SourceAssigner::default();
     let entry = sources.def_id(&bundle.entry);
+    let runtime = sources.def_id(&bundle.runtime);
 
     let mut defs = Vec::with_capacity(bundle.defs.len());
     let mut arities = FxHashMap::default();
@@ -250,7 +257,7 @@ pub fn from_wire(bundle: &WireBundle) -> Rebuilt {
         });
     }
 
-    Rebuilt { defs, entry, module_labels: sources.labels, arities }
+    Rebuilt { defs, entry, runtime, module_labels: sources.labels, arities }
 }
 
 /// Assigns stable synthetic source ids to module labels as they are seen.
@@ -352,7 +359,8 @@ mod tests {
 
         let module_of = |_d: DefId| "M".to_owned();
         let wire = def_to_wire(&lowered, &module_of, lowered.entry().params.len());
-        let bundle = WireBundle { entry: wire.id.clone(), defs: vec![wire] };
+        let bundle =
+            WireBundle { entry: wire.id.clone(), runtime: wire.id.clone(), defs: vec![wire] };
         let rebuilt = from_wire(&bundle);
         (pretty_def(&lowered), pretty_def(&rebuilt.defs[0]), rebuilt)
     }
@@ -391,7 +399,8 @@ mod tests {
         let file = db.source_file(id).unwrap();
         let lowered = core(&db, file, Symbol::intern("f"));
         let wire = def_to_wire(&lowered, &|_| "M".to_owned(), 1);
-        let bundle = WireBundle { entry: wire.id.clone(), defs: vec![wire] };
+        let bundle =
+            WireBundle { entry: wire.id.clone(), runtime: wire.id.clone(), defs: vec![wire] };
 
         let json = serde_json::to_string(&bundle).unwrap();
         let decoded: WireBundle = serde_json::from_str(&json).unwrap();
@@ -413,7 +422,7 @@ mod tests {
             arity: 0,
             fns: vec![WireFn { params: vec![], captures: vec![], body: WireExpr::Lit(Lit::Unit) }],
         };
-        let bundle = WireBundle { entry: a.id.clone(), defs: vec![a, b] };
+        let bundle = WireBundle { entry: a.id.clone(), runtime: a.id.clone(), defs: vec![a, b] };
         let rebuilt = from_wire(&bundle);
         assert_eq!(rebuilt.defs.len(), 2);
         assert_ne!(rebuilt.defs[0].def.file, rebuilt.defs[1].def.file);

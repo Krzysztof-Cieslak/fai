@@ -1066,11 +1066,10 @@ pub fn capture_take() -> String {
     text
 }
 
-/// `Console.writeLine`: writes a `String` followed by a newline to the sink. The
-/// `Runtime` capability argument is ignored in this build; both arguments are
-/// consumed. Returns `Unit`.
+/// `Console.writeLine`: writes a `String` followed by a newline to the sink.
+/// Consumes `s` and returns `Unit`.
 #[unsafe(no_mangle)]
-pub extern "C" fn fai_console_write_line(runtime: Value, s: Value) -> Value {
+pub extern "C" fn fai_console_write_line(s: Value) -> Value {
     {
         // SAFETY: `s` is a boxed `String`.
         let bytes = unsafe { string_bytes(s) };
@@ -1089,23 +1088,60 @@ pub extern "C" fn fai_console_write_line(runtime: Value, s: Value) -> Value {
             }
         }
     }
-    fai_drop(runtime);
     fai_drop(s);
     FAI_UNIT
+}
+
+/// `Clock.now`: milliseconds since the Unix epoch as an immediate `Int`. Consumes
+/// its `Unit` argument.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_clock_now(unit: Value) -> Value {
+    fai_drop(unit);
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    fai_box_int(millis)
+}
+
+/// `Random.nextInt`: a pseudo-random `Int` in `[0, n)` (`0` for `n <= 0`),
+/// advancing a process-global xorshift state. Consumes `n`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_random_next_int(n: Value) -> Value {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static STATE: AtomicU64 = AtomicU64::new(0x2545_f491_4f6c_dd1d);
+    let bound = unbox_int(n);
+    fai_drop(n);
+    if bound <= 0 {
+        return fai_box_int(0);
+    }
+    // xorshift64*
+    let mut x = STATE.load(Ordering::Relaxed);
+    x ^= x >> 12;
+    x ^= x << 25;
+    x ^= x >> 27;
+    STATE.store(x, Ordering::Relaxed);
+    let r = x.wrapping_mul(0x2545_f491_4f6c_dd1d);
+    fai_box_int((r % bound as u64) as i64)
 }
 
 // ---------------------------------------------------------------------------
 // Entry point.
 // ---------------------------------------------------------------------------
 
-/// Runs a program: applies the entry closure (`main : Runtime -> Unit`) to a
-/// fresh `Runtime`, drops the result, and reports leaks. Returns a process exit
-/// code (0 success, 70 if objects leaked). Consumes `entry`.
+/// Runs a program: forces the `Runtime` value binding, applies the entry closure
+/// (`main : Runtime -> Unit`) to it, drops the result, and reports leaks. Returns
+/// a process exit code (0 success, 70 if objects leaked). Consumes both closures.
 ///
+/// `runtime` is the standard library's zero-arity `Runtime` value binding (a
+/// static closure forced by applying it to no arguments); `entry` is `main`.
 /// Both the AOT `main` (emitted by codegen) and the JIT runner call this.
 #[must_use]
-pub fn run_entry(entry: Value) -> i32 {
-    let args = [FAI_UNIT];
+pub fn run_entry(entry: Value, runtime: Value) -> i32 {
+    // Force the zero-arity `Runtime` value binding (apply to no arguments).
+    // SAFETY: `runtime` is a closure of arity 0.
+    let runtime_value = unsafe { fai_apply_n(runtime, 0, std::ptr::null()) };
+    let args = [runtime_value];
     // SAFETY: `entry` is a closure of arity 1; `args` holds one owned value.
     let result = unsafe { fai_apply_n(entry, 1, args.as_ptr()) };
     fai_drop(result);
@@ -1117,10 +1153,11 @@ pub fn run_entry(entry: Value) -> i32 {
     0
 }
 
-/// C entry shim called from generated `main`: runs the entry closure.
+/// C entry shim called from generated `main`: runs the entry closure against the
+/// standard library's `Runtime` value binding.
 #[unsafe(no_mangle)]
-pub extern "C" fn fai_run_main(entry: Value) -> i32 {
-    run_entry(entry)
+pub extern "C" fn fai_run_main(entry: Value, runtime: Value) -> i32 {
+    run_entry(entry, runtime)
 }
 
 #[cfg(test)]

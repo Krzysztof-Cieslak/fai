@@ -41,6 +41,10 @@ unsafe extern "C" fn code_id(_env: *const i64, args: *const i64) -> Value {
     unsafe { *args }
 }
 
+extern "C" fn code_unit(_env: *const i64, _args: *const i64) -> Value {
+    FAI_UNIT
+}
+
 unsafe extern "C" fn code_add(_env: *const i64, args: *const i64) -> Value {
     // SAFETY: `args` holds two owned values; `fai_int_add` consumes both.
     unsafe { fai_int_add(*args, *args.add(1)) }
@@ -161,7 +165,7 @@ fn string_concat_and_console_capture() {
     let a = fai_int_to_string(imm_int(1)); // "1", rc 1
     let b = fai_string_concat(fai_dup(a), fai_dup(a)); // "11"; `a` stays rc 1
     capture_start();
-    let unit = fai_console_write_line(FAI_UNIT, b); // consumes b
+    let unit = fai_console_write_line(b); // consumes b
     assert_eq!(unit, FAI_UNIT);
     let out = capture_take();
     assert_eq!(out, "11\n");
@@ -243,9 +247,11 @@ fn const_drops_second_argument() {
 #[test]
 fn run_entry_reports_clean_exit() {
     let _g = lock();
-    // A trivial entry returning its (immediate) argument.
+    // A trivial entry returning its (immediate) argument, applied to the value
+    // forced from a zero-arity `Runtime` binding (here just `Unit`).
     let entry = closure(code_id, 1);
-    let code = run_entry(entry);
+    let runtime = closure(code_unit, 0);
+    let code = run_entry(entry, runtime);
     assert_eq!(code, 0);
 }
 

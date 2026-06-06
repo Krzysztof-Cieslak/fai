@@ -18,9 +18,9 @@ let describe n =
 
 public main : Runtime -> Unit
 let main runtime =
-  let a = Console.writeLine runtime (describe 7)
-  let b = Console.writeLine runtime (describe 12)
-  Console.writeLine runtime (Int.toString (countPrimesUpTo 1 30))
+  let a = runtime.console.writeLine (describe 7)
+  let b = runtime.console.writeLine (describe 12)
+  runtime.console.writeLine (Int.toString (countPrimesUpTo 1 30))
 
 //~ OUTPUT 7 is prime
 //~ OUTPUT 12 is not prime

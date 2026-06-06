@@ -610,12 +610,6 @@ impl Resolver<'_> {
         base_span: fai_span::TextRange,
         whole_span: fai_span::TextRange,
     ) -> Res {
-        // Built-in capability modules (M3): `Console.writeLine` resolves to a
-        // qualified builtin. A placeholder until interfaces/records (M5) make
-        // capabilities ordinary values reached through a `Runtime` record.
-        if module_sym.as_str() == "Console" && field.as_str() == "writeLine" {
-            return Res::Builtin(field);
-        }
         // The prelude-private intrinsics module: `Prim.<name>` is reachable only
         // from standard-library modules, and only for a known intrinsic.
         if module_sym.as_str() == intrinsics::PRIM_MODULE {

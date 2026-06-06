@@ -39,7 +39,7 @@ fn builds_and_runs_native_executable() {
         module Hello
 
         public main : Runtime -> Unit
-        let main runtime = Console.writeLine runtime ("Hello, " ++ "Fai!")
+        let main runtime = runtime.console.writeLine ("Hello, " ++ "Fai!")
     "#};
     let (db, files) = db_with(&[("Hello.fai", src)]);
     let exe = temp_exe();
@@ -76,7 +76,7 @@ fn unsupported_construct_blocks_the_build() {
         let flag = if 'a' = 'b' then 0 else 1
 
         public main : Runtime -> Unit
-        let main runtime = Console.writeLine runtime (Int.toString flag)
+        let main runtime = runtime.console.writeLine (Int.toString flag)
     "#};
     let (db, files) = db_with(&[("M.fai", src)]);
     let exe = temp_exe();
@@ -99,7 +99,7 @@ fn reachability_includes_used_definitions_and_excludes_unused() {
         let unused x = x + 2
 
         public main : Runtime -> Unit
-        let main r = Console.writeLine r (Int.toString (used 1))
+        let main r = r.console.writeLine (Int.toString (used 1))
     "#};
     let (db, files) = db_with(&[("M.fai", src)]);
     let names: Vec<String> =
@@ -115,7 +115,7 @@ fn builds_and_runs_a_cross_module_program() {
         module Main
 
         public main : Runtime -> Unit
-        let main r = Console.writeLine r (Int.toString (Helper.triple 14))
+        let main r = r.console.writeLine (Int.toString (Helper.triple 14))
     "#};
     let helper = indoc! {r#"
         module Helper
@@ -144,7 +144,7 @@ fn comment_edit_recompiles_no_objects() {
         module Main
 
         public main : Runtime -> Unit
-        let main r = Console.writeLine r (Int.toString (Helper.helper 1))
+        let main r = r.console.writeLine (Int.toString (Helper.helper 1))
     "#};
     let helper_v1 = indoc! {r#"
         module Helper
@@ -180,7 +180,7 @@ fn type_error_blocks_the_build() {
         module M
 
         public main : Runtime -> Unit
-        let main runtime = Console.writeLine runtime (1 + 2)
+        let main runtime = runtime.console.writeLine (1 + 2)
     "#};
     let (db, files) = db_with(&[("M.fai", src)]);
     let exe = temp_exe();
@@ -200,7 +200,7 @@ fn division_by_zero_aborts_at_runtime() {
         module M
 
         public main : Runtime -> Unit
-        let main runtime = Console.writeLine runtime (Int.toString (10 / 0))
+        let main runtime = runtime.console.writeLine (Int.toString (10 / 0))
     "#};
     let (db, files) = db_with(&[("M.fai", src)]);
     let exe = temp_exe();
@@ -222,7 +222,7 @@ fn object_code_is_deterministic() {
         module M
 
         public main : Runtime -> Unit
-        let main runtime = Console.writeLine runtime (Int.toString (1 + 2))
+        let main runtime = runtime.console.writeLine (Int.toString (1 + 2))
     "#};
     let object = |contents: &str| {
         let (db, files) = db_with(&[("M.fai", contents)]);
@@ -238,13 +238,13 @@ fn editing_a_definition_recompiles_its_object() {
         module M
 
         public main : Runtime -> Unit
-        let main runtime = Console.writeLine runtime (Int.toString 1)
+        let main runtime = runtime.console.writeLine (Int.toString 1)
     "#};
     let v2 = indoc! {r#"
         module M
 
         public main : Runtime -> Unit
-        let main runtime = Console.writeLine runtime (Int.toString 2)
+        let main runtime = runtime.console.writeLine (Int.toString 2)
     "#};
     let (mut db, files) = db_with(&[("M.fai", v1)]);
     let file = files[0];
@@ -265,7 +265,7 @@ fn editing_one_module_reuses_cached_objects_for_the_others() {
         module Main
 
         public main : Runtime -> Unit
-        let main runtime = Console.writeLine runtime (Int.toString (Helper.helper 41))
+        let main runtime = runtime.console.writeLine (Int.toString (Helper.helper 41))
     "#};
     let helper_v1 = indoc! {r#"
         module Helper

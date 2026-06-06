@@ -6,9 +6,9 @@ let greet name = "Hello, " ++ name ++ "!"
 
 public main : Runtime -> Unit
 let main runtime =
-  let a = Console.writeLine runtime (repeat "ab" 3)
-  let b = Console.writeLine runtime (greet "Fai")
-  Console.writeLine runtime (repeat "-" 5)
+  let a = runtime.console.writeLine (repeat "ab" 3)
+  let b = runtime.console.writeLine (greet "Fai")
+  runtime.console.writeLine (repeat "-" 5)
 
 //~ OUTPUT ababab
 //~ OUTPUT Hello, Fai!

@@ -27,7 +27,7 @@ const SRC: &str = indoc! {r#"
     let double x = x + x
 
     public main : Runtime -> Unit
-    let main runtime = Console.writeLine runtime (Int.toString (double 21))
+    let main runtime = runtime.console.writeLine (Int.toString (double 21))
 "#};
 
 fn unique_dir(tag: &str) -> PathBuf {
@@ -93,7 +93,7 @@ const SRC_99: &str = indoc! {r#"
     module Main
 
     public main : Runtime -> Unit
-    let main runtime = Console.writeLine runtime (Int.toString (33 + 66))
+    let main runtime = runtime.console.writeLine (Int.toString (33 + 66))
 "#};
 
 #[test]

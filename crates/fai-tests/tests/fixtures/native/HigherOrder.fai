@@ -14,9 +14,9 @@ let addThenDouble = inc >> double
 
 public main : Runtime -> Unit
 let main runtime =
-  let a = Console.writeLine runtime (Int.toString (apply inc 41))
-  let b = Console.writeLine runtime (Int.toString (twice double 3))
-  Console.writeLine runtime (Int.toString (addThenDouble 20))
+  let a = runtime.console.writeLine (Int.toString (apply inc 41))
+  let b = runtime.console.writeLine (Int.toString (twice double 3))
+  runtime.console.writeLine (Int.toString (addThenDouble 20))
 
 //~ OUTPUT 42
 //~ OUTPUT 12

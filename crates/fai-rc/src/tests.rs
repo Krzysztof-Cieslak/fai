@@ -101,14 +101,17 @@ fn captures_dup_on_use_but_are_not_dropped() {
 }
 
 #[test]
-fn console_write_line_drops_runtime() {
+fn console_capability_access_balances_runtime() {
     let src = indoc! {r#"
         module M
 
         public main : Runtime -> Unit
-        let main runtime = Console.writeLine runtime "Hi"
+        let main runtime = runtime.console.writeLine "Hi"
     "#};
-    assert_eq!(rc_of(src, "main"), "fn0(%0) = (drop %0; (writeLine (dup %0; %0) \"Hi\"))\n");
+    assert_eq!(
+        rc_of(src, "main"),
+        "fn0(%0) = (drop %0; (app (field 0 (field 1 (dup %0; %0))) \"Hi\"))\n"
+    );
 }
 
 /// Tallies the reference-count structure of one function body.
@@ -278,7 +281,7 @@ fn rc_invariants_hold_over_a_corpus() {
                 module M
 
                 public main : Runtime -> Unit
-                let main r = Console.writeLine r ("a" ++ "b")
+                let main r = r.console.writeLine ("a" ++ "b")
             "#},
             "main",
         ),

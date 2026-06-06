@@ -90,10 +90,6 @@ pub enum Con {
     Char,
     /// `List` (a unary constructor, applied via [`Ty::App`]).
     List,
-    /// `Runtime`: the opaque built-in capability bundle passed to `main`. A
-    /// placeholder until records/interfaces give it real structure; for now it is
-    /// a nullary constructor threaded through `main`.
-    Runtime,
 }
 
 impl Con {
@@ -107,7 +103,6 @@ impl Con {
             Con::String => "String",
             Con::Char => "Char",
             Con::List => "List",
-            Con::Runtime => "Runtime",
         }
     }
 
@@ -121,7 +116,6 @@ impl Con {
             "String" => Con::String,
             "Char" => Con::Char,
             "List" => Con::List,
-            "Runtime" => Con::Runtime,
             _ => return None,
         })
     }
@@ -493,8 +487,7 @@ mod tests {
 
     #[test]
     fn con_round_trips() {
-        for c in [Con::Int, Con::Float, Con::Bool, Con::String, Con::Char, Con::List, Con::Runtime]
-        {
+        for c in [Con::Int, Con::Float, Con::Bool, Con::String, Con::Char, Con::List] {
             assert_eq!(Con::from_name(c.name()), Some(c));
         }
         assert_eq!(Con::from_name("Widget"), None);

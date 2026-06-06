@@ -47,12 +47,11 @@ pub fn load_std(db: &mut FaiDatabase) -> Vec<SourceId> {
 pub fn builtin_scheme(name: Symbol) -> Option<Scheme> {
     Some(match name.as_str() {
         "true" | "false" => Scheme::mono(Ty::bool()),
-        // The Console capability's sole member, reached as `Console.writeLine`
-        // (a qualified builtin). A placeholder until interfaces/records land:
-        // `Runtime -> String -> Unit`.
-        "writeLine" => {
-            Scheme::mono(Ty::arrows([Ty::Con(Con::Runtime), Ty::Con(Con::String)], Ty::Unit))
-        }
+        // Capability hosts (prelude-private `Prim.*`), reached only through the
+        // `Runtime` value the standard library builds and `main` receives.
+        "consoleWriteLine" => Scheme::mono(Ty::arrow(Ty::Con(Con::String), Ty::Unit)),
+        "clockNow" => Scheme::mono(Ty::arrow(Ty::Unit, Ty::int())),
+        "randomNextInt" => Scheme::mono(Ty::arrow(Ty::int(), Ty::int())),
         "intToString" => Scheme::mono(Ty::arrow(Ty::int(), Ty::Con(Con::String))),
         "floatToString" => Scheme::mono(Ty::arrow(Ty::Con(Con::Float), Ty::Con(Con::String))),
         "intToFloat" => Scheme::mono(Ty::arrow(Ty::int(), Ty::Con(Con::Float))),

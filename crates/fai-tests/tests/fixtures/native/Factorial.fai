@@ -5,9 +5,9 @@ let factorial n = if n <= 1 then 1 else n * factorial (n - 1)
 
 public main : Runtime -> Unit
 let main runtime =
-  let a = Console.writeLine runtime (Int.toString (factorial 5))
-  let b = Console.writeLine runtime (Int.toString (factorial 10))
-  Console.writeLine runtime (Int.toString (factorial 20))
+  let a = runtime.console.writeLine (Int.toString (factorial 5))
+  let b = runtime.console.writeLine (Int.toString (factorial 10))
+  runtime.console.writeLine (Int.toString (factorial 20))
 
 //~ OUTPUT 120
 //~ OUTPUT 3628800

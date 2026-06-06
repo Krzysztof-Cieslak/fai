@@ -57,7 +57,9 @@ fn prim_name(op: Prim) -> &'static str {
         Prim::StringSplit => "split",
         Prim::StringJoin => "join",
         Prim::Not => "not",
-        Prim::ConsoleWriteLine => "writeLine",
+        Prim::ConsoleWriteLine => "consoleWriteLine",
+        Prim::ClockNow => "clockNow",
+        Prim::RandomNextInt => "randomNextInt",
     }
 }
 

@@ -190,8 +190,12 @@ pub enum Prim {
     StringJoin,
     /// `not`
     Not,
-    /// `Console.writeLine`
+    /// `Console.writeLine`: write a line (the host for the `Console` capability).
     ConsoleWriteLine,
+    /// `Clock.now`: milliseconds since the epoch.
+    ClockNow,
+    /// `Random.nextInt`: a pseudo-random `Int` in `[0, n)`.
+    RandomNextInt,
 }
 
 impl Prim {
@@ -233,6 +237,8 @@ impl Prim {
             Prim::StringJoin => "fai_string_join",
             Prim::Not => "fai_not",
             Prim::ConsoleWriteLine => "fai_console_write_line",
+            Prim::ClockNow => "fai_clock_now",
+            Prim::RandomNextInt => "fai_random_next_int",
         }
     }
 
@@ -249,7 +255,10 @@ impl Prim {
             | Prim::ToUpper
             | Prim::ToLower
             | Prim::Trim
-            | Prim::Not => 1,
+            | Prim::Not
+            | Prim::ConsoleWriteLine
+            | Prim::ClockNow
+            | Prim::RandomNextInt => 1,
             _ => 2,
         }
     }
@@ -273,7 +282,9 @@ impl Prim {
             "split" => Prim::StringSplit,
             "join" => Prim::StringJoin,
             "not" => Prim::Not,
-            "writeLine" => Prim::ConsoleWriteLine,
+            "consoleWriteLine" => Prim::ConsoleWriteLine,
+            "clockNow" => Prim::ClockNow,
+            "randomNextInt" => Prim::RandomNextInt,
             _ => return None,
         })
     }

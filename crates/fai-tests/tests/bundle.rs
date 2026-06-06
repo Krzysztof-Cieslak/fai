@@ -36,7 +36,7 @@ const ARITH: &str = indoc! {r#"
     module Main
 
     public main : Runtime -> Unit
-    let main r = Console.writeLine r (Int.toString (1 + 2 * 3))
+    let main r = r.console.writeLine (Int.toString (1 + 2 * 3))
 "#};
 
 #[test]
@@ -56,7 +56,7 @@ fn cross_module_bundle_reconstructs_distinct_modules() {
         module Main
 
         public main : Runtime -> Unit
-        let main r = Console.writeLine r (Lib.shout "hi")
+        let main r = r.console.writeLine (Lib.shout "hi")
     "#};
     let lib = indoc! {r#"
         module Lib
@@ -103,7 +103,7 @@ fn jit_run_bundle_executes_a_cross_module_program() {
         module Main
 
         public main : Runtime -> Unit
-        let main r = Console.writeLine r (Lib.shout "hi")
+        let main r = r.console.writeLine (Lib.shout "hi")
     "#};
     let lib = indoc! {r#"
         module Lib
@@ -150,7 +150,7 @@ fn reachable_unsupported_construct_blocks_the_bundle() {
         module Main
 
         public main : Runtime -> Unit
-        let main r = Console.writeLine r (Int.toString (if 'a' = 'b' then 0 else 1))
+        let main r = r.console.writeLine (Int.toString (if 'a' = 'b' then 0 else 1))
     "#};
     let dir = workspace(&[("Main.fai", src)]);
     let session = Session::open(dir).unwrap();

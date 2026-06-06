@@ -54,7 +54,7 @@ fn print_main(expr: &str) -> String {
         module Main
 
         public main : Runtime -> Unit
-        let main runtime = Console.writeLine runtime ({expr})
+        let main runtime = runtime.console.writeLine ({expr})
     "#}
 }
 
@@ -87,7 +87,7 @@ fn cross_definition_call() {
         let double x = x + x
 
         public main : Runtime -> Unit
-        let main runtime = Console.writeLine runtime (Int.toString (double 21))
+        let main runtime = runtime.console.writeLine (Int.toString (double 21))
     "#};
     let (out, code) = build_and_run(src);
     assert_eq!(out, "42\n");
@@ -112,7 +112,7 @@ fn higher_order_and_partial_application() {
         let apply f x = f x
 
         public main : Runtime -> Unit
-        let main runtime = Console.writeLine runtime (Int.toString (apply (add 40) 2))
+        let main runtime = runtime.console.writeLine (Int.toString (apply (add 40) 2))
     "#};
     let (out, code) = build_and_run(src);
     assert_eq!(out, "42\n");
@@ -136,7 +136,7 @@ fn user_defined_operator_runs() {
         let (+++) a b = a * b + 1
 
         public main : Runtime -> Unit
-        let main runtime = Console.writeLine runtime (Int.toString (2 +++ 3))
+        let main runtime = runtime.console.writeLine (Int.toString (2 +++ 3))
     "#};
     let (out, code) = build_and_run(src);
     assert_eq!(out, "7\n"); // 2 * 3 + 1
@@ -154,7 +154,7 @@ fn interface_instance_dispatch_runs() {
         let exclaimer = { Greeter with greet name = name ++ "!" }
 
         public main : Runtime -> Unit
-        let main runtime = Console.writeLine runtime (exclaimer.greet "hi")
+        let main runtime = runtime.console.writeLine (exclaimer.greet "hi")
     "#};
     let (out, code) = build_and_run(src);
     assert_eq!(out, "hi!\n");
@@ -173,7 +173,7 @@ fn interface_instance_captures_state() {
         let always n = { Counter with next u = n }
 
         public main : Runtime -> Unit
-        let main runtime = Console.writeLine runtime (Int.toString ((always 42).next ()))
+        let main runtime = runtime.console.writeLine (Int.toString ((always 42).next ()))
     "#};
     let (out, code) = build_and_run(src);
     assert_eq!(out, "42\n");
@@ -188,9 +188,59 @@ fn builtin_operator_as_value_runs() {
 
         public main : Runtime -> Unit
         let main runtime =
-          Console.writeLine runtime (Int.toString (List.foldl (+) 0 [1, 2, 3, 4]))
+          runtime.console.writeLine (Int.toString (List.foldl (+) 0 [1, 2, 3, 4]))
     "#};
     let (out, code) = build_and_run(src);
     assert_eq!(out, "10\n");
+    assert_eq!(code, Some(0));
+}
+
+#[test]
+fn random_capability_runs() {
+    // `nextInt 1` is always `0` (the half-open range `[0, 1)`), so the output is
+    // deterministic even though the source is the host's random capability.
+    let src = indoc! {r#"
+        module Main
+
+        public main : Runtime -> Unit
+        let main runtime =
+          runtime.console.writeLine (Int.toString (runtime.random.nextInt 1))
+    "#};
+    let (out, code) = build_and_run(src);
+    assert_eq!(out, "0\n");
+    assert_eq!(code, Some(0));
+}
+
+#[test]
+fn clock_capability_runs() {
+    // The clock reads positive epoch milliseconds.
+    let src = indoc! {r#"
+        module Main
+
+        public main : Runtime -> Unit
+        let main runtime =
+          runtime.console.writeLine (if runtime.clock.now () > 0 then "ok" else "no")
+    "#};
+    let (out, code) = build_and_run(src);
+    assert_eq!(out, "ok\n");
+    assert_eq!(code, Some(0));
+}
+
+#[test]
+fn user_supplied_console_instance_runs() {
+    // Capabilities are ordinary interfaces: a program can build its own `Console`
+    // instance and dispatch through it. This one discards its argument, so it
+    // prints nothing (and the host runtime goes unused).
+    let src = indoc! {r#"
+        module Main
+
+        silent : Console
+        let silent = { Console with writeLine s = () }
+
+        public main : Runtime -> Unit
+        let main runtime = silent.writeLine "ignored"
+    "#};
+    let (out, code) = build_and_run(src);
+    assert_eq!(out, "");
     assert_eq!(code, Some(0));
 }
