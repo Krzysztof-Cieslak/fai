@@ -67,6 +67,12 @@ pub const CONSTRUCTOR_ARITY: DiagnosticCode = DiagnosticCode::new("FAI3011");
 pub const TYPE_ARITY: DiagnosticCode = DiagnosticCode::new("FAI3012");
 /// A transparent type alias refers to itself (directly or transitively).
 pub const RECURSIVE_ALIAS: DiagnosticCode = DiagnosticCode::new("FAI3013");
+/// A method is accessed/implemented that the interface does not declare.
+pub const UNKNOWN_METHOD: DiagnosticCode = DiagnosticCode::new("FAI3014");
+/// An interface instance does not implement exactly the declared methods.
+pub const INSTANCE_METHOD_SET: DiagnosticCode = DiagnosticCode::new("FAI3015");
+/// `{ Name with … }` names something that is not an interface.
+pub const NOT_AN_INTERFACE: DiagnosticCode = DiagnosticCode::new("FAI3016");
 /// A `match` does not cover every possible value.
 pub const NON_EXHAUSTIVE_MATCH: DiagnosticCode = DiagnosticCode::new("FAI4001");
 /// A `match` arm can never be reached (an earlier arm already covers it).
@@ -129,6 +135,21 @@ pub const CODES: &[CodeInfo] = &[
     CodeInfo {
         code: RECURSIVE_ALIAS,
         title: "recursive type alias",
+        default_severity: Severity::Error,
+    },
+    CodeInfo {
+        code: UNKNOWN_METHOD,
+        title: "unknown interface method",
+        default_severity: Severity::Error,
+    },
+    CodeInfo {
+        code: INSTANCE_METHOD_SET,
+        title: "interface instance method set mismatch",
+        default_severity: Severity::Error,
+    },
+    CodeInfo {
+        code: NOT_AN_INTERFACE,
+        title: "not an interface",
         default_severity: Severity::Error,
     },
     CodeInfo {

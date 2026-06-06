@@ -8,17 +8,21 @@
 
 use fai_db::{Db, SourceFile, emit};
 use fai_diagnostics::Diagnostic;
-use fai_resolve::{CtorRef, DefId, LocalId, Res, ResolvedBodies};
+use fai_resolve::{CtorRef, DefId, InterfaceRef, LocalId, Res, ResolvedBodies, interface_decls};
 use fai_span::Span;
 use fai_syntax::Symbol;
 use fai_syntax::ast::{
-    BinOp, ExprId, ExprKind, Module, PatId, PatKind, UnOp, classify_op, classify_prefix,
+    BinOp, ExprId, ExprKind, MethodImpl, Module, PatId, PatKind, UnOp, classify_op, classify_prefix,
 };
 use rustc_hash::FxHashMap;
 
 use crate::infer::ctx::{Constraint, InferCtx, RowTail, SolveRow, SolveTy, UnifyResult};
+use crate::lower::{build_interface_method_scheme, interface_param_count, resolve_interface};
 use crate::ty::Scheme;
-use crate::{EQUALITY_ON_FUNCTION, OCCURS_CHECK, TYPE_MISMATCH};
+use crate::{
+    EQUALITY_ON_FUNCTION, INSTANCE_METHOD_SET, NOT_AN_INTERFACE, OCCURS_CHECK, TYPE_MISMATCH,
+    UNKNOWN_METHOD,
+};
 
 /// Supplies the scheme for a referenced definition or builtin, and signals
 /// whether a same-SCC definition should be treated monomorphically.
@@ -149,6 +153,16 @@ impl<E: Env> Walker<'_, E> {
         self.bind_pattern_into(pat)
     }
 
+    /// Binds a parameter and unifies it with its declared type, so the body is
+    /// checked with the parameter at its signature type (needed for type-directed
+    /// interface method access on a parameter).
+    pub fn bind_param_checked(&mut self, pat: PatId, expected: &SolveTy) -> SolveTy {
+        let pt = self.bind_pattern_into(pat);
+        let span = self.module.pat(pat).span;
+        self.unify_at(span, &pt, expected, "a parameter");
+        pt
+    }
+
     /// Enables recording of every visited expression's type (for `body_types`).
     pub fn enable_type_recording(&mut self) {
         self.record_types = true;
@@ -224,6 +238,7 @@ impl<E: Env> Walker<'_, E> {
                 self.unify_at(node.span, &base_ty, &base_shape, "a record update");
                 SolveTy::Record(SolveRow { fields: updated, tail: RowTail::Open(rho) })
             }
+            ExprKind::Instance { name, methods } => self.infer_instance(*name, methods, node.span),
             ExprKind::App { func, arg } => {
                 let func_ty = self.infer_expr(*func);
                 let arg_ty = self.infer_expr(*arg);
@@ -400,12 +415,151 @@ impl<E: Env> Walker<'_, E> {
             // Not a qualified reference: ordinary record field access.
             Some(Res::Local(_)) | None => {}
         }
-        // `r.x` requires `r` to be a record with at least field `x` (open row).
         let base_ty = self.infer_expr(base);
+        // Type-directed: if the base is a (resolved) interface, `e.m` is method
+        // access; otherwise it is ordinary record field access.
+        if let Some((iref, args)) = self.as_interface(&base_ty) {
+            return self.infer_method_access(iref, &args, field, span);
+        }
+        // `r.x` requires `r` to be a record with at least field `x` (open row).
         let field_ty = self.cx.fresh();
         let shape = self.cx.fresh_open_record(vec![(field, field_ty.clone())]);
         self.unify_at(span, &base_ty, &shape, "a record field access");
         field_ty
+    }
+
+    /// If `ty` resolves to an interface head `Interface(iref)` applied to args,
+    /// returns the interface and its type arguments (in order).
+    fn as_interface(&self, ty: &SolveTy) -> Option<(InterfaceRef, Vec<SolveTy>)> {
+        let mut args = Vec::new();
+        let mut cur = self.cx.resolve_shallow(ty);
+        loop {
+            match cur {
+                SolveTy::Interface(iref) => {
+                    args.reverse();
+                    return Some((iref, args));
+                }
+                SolveTy::App(f, a) => {
+                    args.push(self.cx.resolve_shallow(&a));
+                    cur = self.cx.resolve_shallow(&f);
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    /// Types `e.m` where `e : Interface(iref) args…`: looks up the method scheme,
+    /// instantiates it, and unifies the interface's parameter instances with the
+    /// actual type arguments.
+    fn infer_method_access(
+        &mut self,
+        iref: InterfaceRef,
+        args: &[SolveTy],
+        method: Symbol,
+        span: fai_span::TextRange,
+    ) -> SolveTy {
+        let Some(scheme) = build_interface_method_scheme(self.db, iref, method) else {
+            emit(
+                self.db,
+                Diagnostic::error(
+                    UNKNOWN_METHOD,
+                    format!("interface `{}` has no method `{method}`", iref.name),
+                    self.span(span),
+                ),
+            );
+            return SolveTy::Error;
+        };
+        let (method_ty, fresh) = self.cx.instantiate_tracked(&scheme);
+        // The leading fresh variables correspond to the interface parameters.
+        let n = interface_param_count(self.db, iref);
+        for (param_instance, arg) in fresh.iter().take(n).zip(args) {
+            self.unify_at(span, &SolveTy::Var(*param_instance), arg, "an interface type argument");
+        }
+        method_ty
+    }
+
+    /// Types an interface instance `{ Name with m args = body, … }`: each method
+    /// body is checked against the declared method type (the interface's
+    /// parameters shared across methods), and the implemented set must match the
+    /// declaration exactly.
+    fn infer_instance(
+        &mut self,
+        name: Symbol,
+        methods: &[MethodImpl],
+        span: fai_span::TextRange,
+    ) -> SolveTy {
+        let Some(iref) = resolve_interface(self.db, self.file, name) else {
+            emit(
+                self.db,
+                Diagnostic::error(
+                    NOT_AN_INTERFACE,
+                    format!("`{name}` is not an interface"),
+                    self.span(span),
+                ),
+            );
+            // Still type the method bodies so the rest of the body is coherent.
+            for m in methods {
+                for &p in &m.params {
+                    self.bind_pattern_into(p);
+                }
+                self.infer_expr(m.body);
+            }
+            return SolveTy::Error;
+        };
+
+        let n = interface_param_count(self.db, iref);
+        let param_fresh: Vec<crate::ty::TyVarId> = (0..n).map(|_| self.cx.fresh_var_id()).collect();
+
+        let declared: Vec<Symbol> = self
+            .db
+            .source_file(iref.file)
+            .and_then(|f| {
+                interface_decls(self.db, f).interface_named(iref.name).map(|i| i.methods.clone())
+            })
+            .unwrap_or_default();
+
+        let mut implemented: Vec<Symbol> = Vec::new();
+        for m in methods {
+            let param_tys: Vec<SolveTy> =
+                m.params.iter().map(|&p| self.bind_pattern_into(p)).collect();
+            let body_ty = self.infer_expr(m.body);
+            let impl_ty = SolveTy::arrows_solver(param_tys, body_ty);
+            match build_interface_method_scheme(self.db, iref, m.name) {
+                Some(scheme) => {
+                    let expected = self.cx.instantiate_sharing(&scheme, &param_fresh);
+                    self.unify_at(m.span, &impl_ty, &expected, "an interface method");
+                    implemented.push(m.name);
+                }
+                None => emit(
+                    self.db,
+                    Diagnostic::error(
+                        UNKNOWN_METHOD,
+                        format!("interface `{name}` has no method `{}`", m.name),
+                        self.span(m.span),
+                    ),
+                ),
+            }
+        }
+
+        let missing: Vec<&Symbol> = declared.iter().filter(|d| !implemented.contains(d)).collect();
+        if !missing.is_empty() {
+            let names = missing.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("`, `");
+            emit(
+                self.db,
+                Diagnostic::error(
+                    INSTANCE_METHOD_SET,
+                    format!("instance of `{name}` is missing method(s): `{names}`"),
+                    self.span(span),
+                ),
+            );
+        }
+
+        // The instance's type is the interface applied to the (inferred) args.
+        let mut t = SolveTy::Interface(iref);
+        for &p in &param_fresh {
+            t = SolveTy::App(Box::new(t), Box::new(SolveTy::Var(p)));
+        }
+        t
     }
 
     /// Emits [`crate::DUPLICATE_FIELD`] for any repeated label among `fields`.
@@ -839,7 +993,11 @@ impl<E: Env> Walker<'_, E> {
                     self.collect_free_vars(t, out);
                 }
             }
-            SolveTy::Con(_) | SolveTy::Adt(_) | SolveTy::Unit | SolveTy::Error => {}
+            SolveTy::Con(_)
+            | SolveTy::Adt(_)
+            | SolveTy::Interface(_)
+            | SolveTy::Unit
+            | SolveTy::Error => {}
         }
     }
 
@@ -898,6 +1056,10 @@ fn subst(
             fields: row.fields.iter().map(|(l, t)| (*l, subst(cx, t, mapping))).collect(),
             tail: row.tail,
         }),
-        other @ (SolveTy::Con(_) | SolveTy::Adt(_) | SolveTy::Unit | SolveTy::Error) => other,
+        other @ (SolveTy::Con(_)
+        | SolveTy::Adt(_)
+        | SolveTy::Interface(_)
+        | SolveTy::Unit
+        | SolveTy::Error) => other,
     }
 }

@@ -82,6 +82,8 @@ pub struct ModuleInterface {
     pub types: Vec<Symbol>,
     /// Public data-constructor names, sorted by name text.
     pub ctors: Vec<Symbol>,
+    /// Public interface names, sorted by name text.
+    pub interfaces: Vec<Symbol>,
 }
 
 impl ModuleInterface {
@@ -166,6 +168,7 @@ pub fn module_defs(db: &dyn Db, file: SourceFile) -> ModuleDefs {
                 }
             }
             ItemKind::Type { .. }
+            | ItemKind::Interface { .. }
             | ItemKind::Example { .. }
             | ItemKind::Forall { .. }
             | ItemKind::Error => {}
@@ -246,7 +249,16 @@ pub fn module_interface(db: &dyn Db, file: SourceFile) -> ModuleInterface {
     types.sort_by(|a, b| a.as_str().cmp(b.as_str()));
     ctors.sort_by(|a, b| a.as_str().cmp(b.as_str()));
 
-    ModuleInterface { exports, types, ctors }
+    // Public interfaces, derived from `interface_decls`.
+    let mut interfaces: Vec<Symbol> = crate::decls::interface_decls(db, file)
+        .interfaces
+        .values()
+        .filter(|info| info.visibility == Visibility::Public)
+        .map(|info| info.name)
+        .collect();
+    interfaces.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+
+    ModuleInterface { exports, types, ctors, interfaces }
 }
 
 /// The module's declared header name, if it has one.
@@ -334,6 +346,8 @@ pub enum ExportKind {
     Ctor,
     /// A type name.
     Type,
+    /// An interface name.
+    Interface,
 }
 
 /// A name exported by more than one auto-imported module (recorded against the
@@ -362,6 +376,8 @@ pub struct PreludeExports {
     pub ctors: Vec<(Symbol, CtorRef)>,
     /// Auto-imported type names with their declaring file, sorted by name.
     pub types: Vec<(Symbol, SourceFile)>,
+    /// Auto-imported interface names with their declaring file, sorted by name.
+    pub interfaces: Vec<(Symbol, SourceFile)>,
     /// Names declared by more than one auto-imported module.
     pub duplicates: Vec<DuplicateExport>,
 }
@@ -380,6 +396,7 @@ pub fn merge_auto_imports(db: &dyn Db, modules: &[SourceFile]) -> PreludeExports
     let mut value_names: FxHashSet<Symbol> = FxHashSet::default();
     let mut ctor_names: FxHashSet<Symbol> = FxHashSet::default();
     let mut type_names: FxHashSet<Symbol> = FxHashSet::default();
+    let mut interface_names: FxHashSet<Symbol> = FxHashSet::default();
     let mut out = PreludeExports::default();
 
     for &file in modules {
@@ -410,11 +427,23 @@ pub fn merge_auto_imports(db: &dyn Db, modules: &[SourceFile]) -> PreludeExports
                 out.duplicates.push(DuplicateExport { name: ty, file, kind: ExportKind::Type });
             }
         }
+        for &iface in &interface.interfaces {
+            if interface_names.insert(iface) {
+                out.interfaces.push((iface, file));
+            } else {
+                out.duplicates.push(DuplicateExport {
+                    name: iface,
+                    file,
+                    kind: ExportKind::Interface,
+                });
+            }
+        }
     }
 
     out.values.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
     out.ctors.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
     out.types.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+    out.interfaces.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
     out
 }
 
@@ -457,6 +486,9 @@ pub fn emit_duplicate_prelude_export_errors(db: &dyn Db, file: SourceFile) {
                 .and_then(|ci| decls.type_named(ci.adt))
                 .map(|ti| items[ti.item.index()].span),
             ExportKind::Type => decls.type_named(dup.name).map(|ti| items[ti.item.index()].span),
+            ExportKind::Interface => crate::decls::interface_decls(db, file)
+                .interface_named(dup.name)
+                .map(|ii| items[ii.item.index()].span),
         };
         let span = span.unwrap_or(parsed.module.header);
         emit(

@@ -12,7 +12,8 @@ use fai_span::{ByteOffset, SourceId, Span, TextRange};
 
 use crate::ast::{
     Expr, ExprId, ExprKind, FieldInit, FieldPat, FieldType, Item, ItemKind, LetStmt, MatchArm,
-    Module, Pat, PatId, PatKind, RowTail, Type, TypeDef, TypeId, TypeKind, Variant, Visibility,
+    MethodImpl, MethodSig, Module, Pat, PatId, PatKind, RowTail, Type, TypeDef, TypeId, TypeKind,
+    Variant, Visibility,
 };
 use crate::token::{Token, TokenKind};
 use crate::{Comment, MODULE_HEADER, SYNTAX_ERROR, Symbol, UNSUPPORTED, layout, lex};
@@ -302,7 +303,7 @@ impl Parser<'_> {
             TokenKind::Example => self.parse_example(),
             TokenKind::Forall => self.parse_forall(),
             TokenKind::Type => self.parse_type_decl(Visibility::Private),
-            TokenKind::Interface => self.unsupported("interface declarations"),
+            TokenKind::Interface => self.parse_interface_decl(Visibility::Private),
             TokenKind::Module => self.unsupported("nested modules"),
             _ => {
                 let span = self.cur().range;
@@ -321,12 +322,13 @@ impl Parser<'_> {
             TokenKind::LowerIdent => self.parse_signature(Visibility::Public),
             TokenKind::LParen if self.at_op_name() => self.parse_signature(Visibility::Public),
             TokenKind::Type => self.parse_type_decl(Visibility::Public),
+            TokenKind::Interface => self.parse_interface_decl(Visibility::Public),
             _ => {
                 let span = self.cur().range;
                 self.error(
                     SYNTAX_ERROR,
                     span,
-                    "expected `let`, a signature, or `type` after `public`",
+                    "expected `let`, a signature, `type`, or `interface` after `public`",
                 );
                 ItemKind::Error
             }
@@ -427,6 +429,59 @@ impl Parser<'_> {
             Some(name) => ItemKind::Type { visibility, name, params, def },
             None => ItemKind::Error,
         }
+    }
+
+    fn parse_interface_decl(&mut self, visibility: Visibility) -> ItemKind {
+        self.bump(); // `interface`
+        let name = if self.at(TokenKind::UpperIdent) {
+            Some(self.bump_symbol())
+        } else {
+            let span = self.cur().range;
+            self.error(
+                SYNTAX_ERROR,
+                span,
+                "expected an upper-case interface name after `interface`",
+            );
+            None
+        };
+        let mut params = Vec::new();
+        while self.at(TokenKind::TypeVar) {
+            params.push(self.bump_symbol());
+        }
+        self.expect(TokenKind::Equals, "`=` in the interface declaration");
+        // The `=` opens a layout block when the methods start on a new line.
+        let opened = self.eat(TokenKind::LayoutOpen);
+        while self.eat(TokenKind::LayoutSep) {}
+        let mut methods = Vec::new();
+        if opened {
+            while !matches!(self.peek(), TokenKind::LayoutClose | TokenKind::Eof) {
+                let Some(m) = self.parse_method_sig() else { break };
+                methods.push(m);
+                while self.eat(TokenKind::LayoutSep) {}
+            }
+            while self.eat(TokenKind::LayoutSep) {}
+            self.expect(TokenKind::LayoutClose, "the end of the interface declaration");
+        } else if let Some(m) = self.parse_method_sig() {
+            methods.push(m);
+        }
+        match name {
+            Some(name) => ItemKind::Interface { visibility, name, params, methods },
+            None => ItemKind::Error,
+        }
+    }
+
+    /// Parses one interface method signature `name : ty`, or `None` on a
+    /// malformed method (after reporting it).
+    fn parse_method_sig(&mut self) -> Option<MethodSig> {
+        let start = self.start();
+        if !self.at(TokenKind::LowerIdent) {
+            self.error(SYNTAX_ERROR, self.cur().range, "expected a method name");
+            return None;
+        }
+        let name = self.bump_symbol();
+        self.expect(TokenKind::Colon, "`:` in the method signature");
+        let ty = self.parse_type();
+        Some(MethodSig { name, ty, span: self.span_from(start) })
     }
 
     /// Parses the `| A | B 'a …` variants of a discriminated union (the cursor is
@@ -592,6 +647,14 @@ impl Parser<'_> {
         if self.eat(TokenKind::RBrace) {
             return self.alloc_expr(ExprKind::Record(Vec::new()), self.span_from(start));
         }
+        // `{ Name with … }` (upper-case head) is an interface instance.
+        if self.at(TokenKind::UpperIdent) && self.peek_at(1) == TokenKind::With {
+            let name = self.bump_symbol();
+            self.bump(); // `with`
+            let methods = self.parse_method_impls();
+            self.expect(TokenKind::RBrace, "`}` to close the interface instance");
+            return self.alloc_expr(ExprKind::Instance { name, methods }, self.span_from(start));
+        }
         // `{ ident = … }` is a literal; anything else is `{ expr with … }`.
         if self.at(TokenKind::LowerIdent) && self.peek_at(1) == TokenKind::Equals {
             let fields = self.parse_field_inits();
@@ -604,6 +667,37 @@ impl Parser<'_> {
             self.expect(TokenKind::RBrace, "`}` to close the record update");
             self.alloc_expr(ExprKind::RecordUpdate { base, fields }, self.span_from(start))
         }
+    }
+
+    /// Parses the comma-separated `m args = body` methods of an interface instance
+    /// (the cursor is just past `with`; stops at `}`).
+    fn parse_method_impls(&mut self) -> Vec<MethodImpl> {
+        let mut methods = Vec::new();
+        loop {
+            if self.at(TokenKind::RBrace) || self.at_eof() {
+                break;
+            }
+            let start = self.start();
+            let name = if self.at(TokenKind::LowerIdent) {
+                self.bump_symbol()
+            } else {
+                self.error(SYNTAX_ERROR, self.cur().range, "expected a method name");
+                Symbol::intern("")
+            };
+            let mut params = Vec::new();
+            while !matches!(self.peek(), TokenKind::Equals | TokenKind::Comma | TokenKind::RBrace)
+                && !self.at_eof()
+            {
+                params.push(self.parse_pattern());
+            }
+            self.expect(TokenKind::Equals, "`=` after the method parameters");
+            let body = self.parse_expr();
+            methods.push(MethodImpl { name, params, body, span: self.span_from(start) });
+            if !self.eat(TokenKind::Comma) {
+                break;
+            }
+        }
+        methods
     }
 
     fn parse_field_inits(&mut self) -> Vec<FieldInit> {
@@ -1173,6 +1267,21 @@ mod tests {
                     .join(", ");
                 format!("(update {} [{fs}])", dump_expr(m, *base))
             }
+            ExprKind::Instance { name, methods } => {
+                let ms = methods
+                    .iter()
+                    .map(|meth| {
+                        format!(
+                            "({} [{}] {})",
+                            meth.name.as_str(),
+                            dump_pats(m, &meth.params),
+                            dump_expr(m, meth.body)
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("(instance {} [{ms}])", name.as_str())
+            }
             ExprKind::Paren(inner) => format!("(paren {})", dump_expr(m, *inner)),
             ExprKind::Tuple(xs) => format!("(tuple {})", dump_exprs(m, xs)),
             ExprKind::List(xs) => format!("(list {})", dump_exprs(m, xs)),
@@ -1308,6 +1417,15 @@ mod tests {
                         }
                     };
                     format!("(type {visibility:?} {} [{}] {})", name.as_str(), ps, body)
+                }
+                ItemKind::Interface { visibility, name, params, methods } => {
+                    let ps = params.iter().map(|p| p.as_str()).collect::<Vec<_>>().join(" ");
+                    let ms = methods
+                        .iter()
+                        .map(|meth| format!("({} : {})", meth.name.as_str(), dump_type(m, meth.ty)))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    format!("(interface {visibility:?} {} [{}] [{}])", name.as_str(), ps, ms)
                 }
                 ItemKind::Example { body } => format!("(example {})", dump_expr(m, *body)),
                 ItemKind::Forall { binders, body } => {
@@ -1516,24 +1634,31 @@ mod tests {
 
     #[test]
     fn unsupported_constructs_report_fai1030_and_recover() {
-        // `interface` and nested modules remain unimplemented; `type`/`match`/
-        // records no longer do.
-        for src in [
-            indoc! {r#"
+        // Nested modules remain unimplemented; `type`/`match`/records/`interface`
+        // no longer do.
+        let src = indoc! {r#"
+            module M
+            module Inner =
+              let x = 1"#};
+        let parsed = parse(src);
+        assert!(
+            parsed.diagnostics.iter().any(|d| d.code == crate::UNSUPPORTED),
+            "expected FAI1030 for: {src}",
+        );
+    }
+
+    #[test]
+    fn interface_declarations_parse() {
+        assert_eq!(
+            dump(indoc! {r#"
                 module M
-                interface I =
-                  m : Int"#},
-            indoc! {r#"
-                module M
-                module Inner =
-                  let x = 1"#},
-        ] {
-            let parsed = parse(src);
-            assert!(
-                parsed.diagnostics.iter().any(|d| d.code == crate::UNSUPPORTED),
-                "expected FAI1030 for: {src}",
-            );
-        }
+                interface Console =
+                  writeLine : String -> Unit"#})
+            .lines()
+            .nth(1)
+            .unwrap(),
+            "(interface Private Console [] [(writeLine : (arrow (tcon String) (tcon Unit)))])"
+        );
     }
 
     #[test]
@@ -2017,6 +2142,11 @@ mod proptests {
                             }
                         }
                     },
+                    ItemKind::Interface { methods, .. } => {
+                        for meth in methods {
+                            walk_type(&parsed.module, meth.ty);
+                        }
+                    }
                     ItemKind::Example { body } => walk_expr(&parsed.module, *body),
                     ItemKind::Forall { body, .. } => walk_expr(&parsed.module, *body),
                     ItemKind::Error => {}

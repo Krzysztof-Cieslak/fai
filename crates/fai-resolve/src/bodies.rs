@@ -196,6 +196,11 @@ fn emit_privacy_leaks(db: &dyn Db, file: SourceFile, module: &Module, source: So
                     }
                 }
             },
+            ItemKind::Interface { visibility: Visibility::Public, methods, .. } => {
+                for m in methods {
+                    check(module, m.ty, &mut refs);
+                }
+            }
             _ => {}
         }
     }
@@ -293,10 +298,13 @@ pub fn resolve(db: &dyn Db, file: SourceFile) -> Arc<ResolvedBodies> {
                 cx.resolve_expr(*body);
                 cx.scope.pop();
             }
-            // Type declarations introduce constructors (handled via `type_decls`)
-            // and reference type names (resolved in the types phase); they have no
-            // value body to resolve here.
-            ItemKind::Type { .. } | ItemKind::Signature { .. } | ItemKind::Error => {}
+            // Type and interface declarations introduce type-level names and
+            // (for unions) constructors, resolved via `type_decls`/the types
+            // phase; they have no value body to resolve here.
+            ItemKind::Type { .. }
+            | ItemKind::Interface { .. }
+            | ItemKind::Signature { .. }
+            | ItemKind::Error => {}
         }
     }
 
@@ -499,6 +507,20 @@ impl Resolver<'_> {
                 self.resolve_expr(*base);
                 for f in fields {
                     self.resolve_expr(f.value);
+                }
+            }
+            // An interface instance `{ Name with m args = body, … }`. The
+            // interface name is resolved in the types phase; each method body is
+            // resolved with its own parameters in scope but *without* sibling
+            // methods (record semantics).
+            ExprKind::Instance { methods, .. } => {
+                for m in methods {
+                    self.scope.push();
+                    for &p in &m.params {
+                        self.bind_pattern(p);
+                    }
+                    self.resolve_expr(m.body);
+                    self.scope.pop();
                 }
             }
             ExprKind::Int(_)

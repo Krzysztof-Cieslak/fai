@@ -12,8 +12,8 @@ mod doc;
 use doc::{Doc, concat, group, nest, print, text};
 use fai_span::LineIndex;
 use fai_syntax::ast::{
-    ExprId, ExprKind, FieldInit, FieldPat, FieldType, Item, ItemId, ItemKind, LetStmt, Module,
-    PatId, PatKind, RowTail, TypeDef, TypeId, TypeKind, Visibility,
+    ExprId, ExprKind, FieldInit, FieldPat, FieldType, Item, ItemId, ItemKind, LetStmt, MethodImpl,
+    MethodSig, Module, PatId, PatKind, RowTail, TypeDef, TypeId, TypeKind, Visibility,
 };
 use fai_syntax::{Comment, CommentMap, NodeId, attach_comments};
 
@@ -100,6 +100,9 @@ impl Printer<'_> {
             ItemKind::Type { visibility, name, params, def } => {
                 self.type_decl_doc(*visibility, *name, params, def)
             }
+            ItemKind::Interface { visibility, name, params, methods } => {
+                self.interface_decl_doc(*visibility, *name, params, methods)
+            }
             ItemKind::Example { body } => concat(vec![text("example: "), self.expr_doc(*body)]),
             ItemKind::Forall { binders, body } => {
                 let bound = binders.iter().map(|b| b.as_str()).collect::<Vec<_>>().join(" ");
@@ -143,6 +146,55 @@ impl Printer<'_> {
                 concat(parts)
             }
         }
+    }
+
+    fn interface_decl_doc(
+        &self,
+        visibility: Visibility,
+        name: fai_syntax::Symbol,
+        params: &[fai_syntax::Symbol],
+        methods: &[MethodSig],
+    ) -> Doc {
+        let mut header = String::from(visibility_prefix(visibility));
+        header.push_str("interface ");
+        header.push_str(name.as_str());
+        for p in params {
+            header.push(' ');
+            header.push_str(p.as_str());
+        }
+        // Methods are rendered in canonical (sorted-name) order, one per line.
+        let mut order: Vec<&MethodSig> = methods.iter().collect();
+        order.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+        let mut parts = vec![text(header), text(" =")];
+        let mut lines = Vec::new();
+        for m in order {
+            lines.push(Doc::Hardline);
+            lines.push(concat(vec![
+                text(var_text(m.name.as_str())),
+                text(" : "),
+                self.type_doc(m.ty),
+            ]));
+        }
+        parts.push(nest(2, concat(lines)));
+        concat(parts)
+    }
+
+    fn instance_doc(&self, name: fai_syntax::Symbol, methods: &[MethodImpl]) -> Doc {
+        let mut order: Vec<&MethodImpl> = methods.iter().collect();
+        order.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+        let mut parts = vec![text("{ "), text(name.as_str()), text(" with")];
+        for (index, m) in order.iter().enumerate() {
+            parts.push(text(if index == 0 { " " } else { ", " }));
+            parts.push(text(var_text(m.name.as_str())));
+            for &p in &m.params {
+                parts.push(text(" "));
+                parts.push(self.pat_doc(p));
+            }
+            parts.push(text(" = "));
+            parts.push(self.expr_doc(m.body));
+        }
+        parts.push(text(" }"));
+        concat(parts)
     }
 
     /// A binding/lambda body: a forced-multiline block, or an inline-or-broken
@@ -259,6 +311,7 @@ impl Printer<'_> {
             }
             ExprKind::Record(fields) => self.record_literal_doc(None, fields),
             ExprKind::RecordUpdate { base, fields } => self.record_literal_doc(Some(*base), fields),
+            ExprKind::Instance { name, methods } => self.instance_doc(*name, methods),
             ExprKind::Paren(inner) => concat(vec![text("("), self.expr_doc(*inner), text(")")]),
             ExprKind::Tuple(xs) => self.delimited("(", ")", xs),
             ExprKind::List(xs) => self.delimited("[", "]", xs),

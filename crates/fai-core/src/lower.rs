@@ -12,12 +12,15 @@ use std::sync::Arc;
 
 use fai_db::{Db, SourceFile, emit};
 use fai_diagnostics::Diagnostic;
-use fai_resolve::{CtorRef, DefId, LocalId, Res, ResolvedBodies, resolve, type_decls};
+use fai_resolve::{
+    CtorRef, DefId, InterfaceRef, LocalId, Res, ResolvedBodies, interface_decls, resolve,
+    type_decls,
+};
 use fai_span::{Span, TextRange};
 use fai_syntax::Symbol;
 use fai_syntax::ast::{
-    BinOp, ExprId, ExprKind, FieldInit, MatchArm, Module, PatId, PatKind, UnOp, classify_op,
-    classify_prefix,
+    BinOp, ExprId, ExprKind, FieldInit, MatchArm, MethodImpl, Module, PatId, PatKind, UnOp,
+    classify_op, classify_prefix,
 };
 use fai_types::{BodyTypes, Con, RowEnd, Ty, body_types};
 use rustc_hash::FxHashSet;
@@ -171,6 +174,7 @@ impl Lowerer<'_> {
             ExprKind::RecordUpdate { base, fields } => {
                 return self.lower_record_update(*base, fields, &ty, node.span);
             }
+            ExprKind::Instance { methods, .. } => return self.lower_instance(methods, ty),
             ExprKind::App { .. } => {
                 let (head, args) = self.app_spine(expr);
                 return self.lower_application(head, &args, ty);
@@ -249,7 +253,8 @@ impl Lowerer<'_> {
         error_expr()
     }
 
-    /// Lowers `r.x` to a constant-offset projection for a monomorphic record.
+    /// Lowers `r.x`: a constant-offset projection for a monomorphic record, or a
+    /// method projection (also a constant offset) for a nominal interface.
     fn lower_field_access(
         &mut self,
         base: ExprId,
@@ -258,6 +263,17 @@ impl Lowerer<'_> {
         ty: Ty,
     ) -> CExpr {
         let base_ty = self.ty_of(base);
+        // Interface method access: the dictionary stores method closures sorted
+        // by name, so the method's index is a constant offset.
+        if let Some(iref) = interface_head(&base_ty) {
+            return match self.interface_method_index(iref, field) {
+                Some(index) => {
+                    let b = self.lower_expr(base);
+                    CExpr::new(K::DataField { base: Box::new(b), index }, ty)
+                }
+                None => error_expr(),
+            };
+        }
         match record_field_index(&base_ty, field) {
             Some(index) => {
                 let b = self.lower_expr(base);
@@ -265,6 +281,39 @@ impl Lowerer<'_> {
             }
             None => self.unsupported_row_poly(span, "row-polymorphic record field access"),
         }
+    }
+
+    /// The index of `method` in interface `iref`'s dictionary (its methods sorted
+    /// by name), or `None` if the method is unknown.
+    fn interface_method_index(&self, iref: InterfaceRef, method: Symbol) -> Option<u32> {
+        let file = self.db.source_file(iref.file)?;
+        let decls = interface_decls(self.db, file);
+        let info = decls.interface_named(iref.name)?;
+        let mut names: Vec<Symbol> = info.methods.clone();
+        names.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        names.iter().position(|&n| n == method).map(|i| u32::try_from(i).unwrap_or(0))
+    }
+
+    /// Lowers an interface instance to a dictionary `MakeData{tag:0, …}` whose
+    /// method closures are stored sorted by name (matching method access).
+    fn lower_instance(&mut self, methods: &[MethodImpl], ty: Ty) -> CExpr {
+        let mut sorted: Vec<&MethodImpl> = methods.iter().collect();
+        sorted.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+        let args: Vec<CExpr> = sorted
+            .iter()
+            .map(|m| {
+                if m.params.is_empty() {
+                    // A value-shaped method stores its value directly.
+                    self.lower_expr(m.body)
+                } else {
+                    let param_locals: Vec<LocalId> =
+                        m.params.iter().map(|&p| self.param_local(p)).collect();
+                    let body = self.lower_expr(m.body);
+                    self.lift_lambda(param_locals, body, Ty::Error)
+                }
+            })
+            .collect();
+        CExpr::new(K::MakeData { tag: 0, args }, ty)
     }
 
     /// Lowers a record literal to a tagless composite, fields in canonical
@@ -874,6 +923,15 @@ fn is_simple_binder(module: &Module, pat: PatId) -> bool {
         PatKind::Var(_) | PatKind::Wildcard => true,
         PatKind::Paren(inner) => is_simple_binder(module, *inner),
         _ => false,
+    }
+}
+
+/// The interface at the head of a (possibly applied) type, if any.
+fn interface_head(ty: &Ty) -> Option<InterfaceRef> {
+    match ty {
+        Ty::Interface(iref) => Some(*iref),
+        Ty::App(f, _) => interface_head(f),
+        _ => None,
     }
 }
 

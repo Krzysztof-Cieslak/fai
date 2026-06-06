@@ -419,6 +419,15 @@ fn shape_item(m: &Module, item: &Item) -> String {
             };
             format!("(type {visibility:?} {} [{}] {})", name.as_str(), ps, body)
         }
+        ItemKind::Interface { visibility, name, params, methods } => {
+            let ps = params.iter().map(|p| p.as_str()).collect::<Vec<_>>().join(" ");
+            let ms = methods
+                .iter()
+                .map(|meth| format!("({} : {})", meth.name.as_str(), shape_type(m, meth.ty)))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("(interface {visibility:?} {} [{}] [{}])", name.as_str(), ps, ms)
+        }
         ItemKind::Example { body } => format!("(example {})", shape_expr(m, *body)),
         ItemKind::Forall { binders, body } => format!(
             "(forall [{}] {})",
@@ -501,6 +510,23 @@ fn shape_expr(m: &Module, id: ExprId) -> String {
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("(update {} [{fs}])", shape_expr(m, *base))
+        }
+        ExprKind::Instance { name, methods } => {
+            let mut order: Vec<_> = methods.iter().collect();
+            order.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+            let ms = order
+                .iter()
+                .map(|meth| {
+                    format!(
+                        "({} [{}] {})",
+                        meth.name.as_str(),
+                        shape_pats(m, &meth.params),
+                        shape_expr(m, meth.body)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("(instance {} [{ms}])", name.as_str())
         }
         ExprKind::Error => "(expr-error)".to_owned(),
     }

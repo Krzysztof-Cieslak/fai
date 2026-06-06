@@ -471,6 +471,40 @@ fn private_surface_referencing_private_type_is_clean() {
 }
 
 #[test]
+fn public_interface_method_exposing_private_type_is_a_leak() {
+    let src = indoc! {r#"
+        module M
+
+        type Secret = Int
+
+        public interface Store =
+          get : Unit -> Secret
+    "#};
+    let (db, files) = db_with(&[("M.fai", src)]);
+    let diags = resolve_diags(&db, files[0]);
+    assert_eq!(codes(&diags), vec!["FAI2015"], "got {:?}", codes(&diags));
+    assert_eq!(primary_text(src, &diags[0]), "Secret");
+}
+
+#[test]
+fn instance_method_body_resolves_without_sibling_methods() {
+    // `a` calls `b` by a bare name — methods are record fields, not siblings, so
+    // the bare `b` is unbound (not the sibling method).
+    let src = indoc! {r#"
+        module M
+
+        interface Two =
+          a : Unit -> Int
+          b : Unit -> Int
+
+        let bad = { Two with a u = b u, b u = 1 }
+    "#};
+    let (db, files) = db_with(&[("M.fai", src)]);
+    let diags = resolve_diags(&db, files[0]);
+    assert!(codes(&diags).contains(&"FAI2001"), "expected unbound `b`, got {:?}", codes(&diags));
+}
+
+#[test]
 fn user_operator_resolves_and_unknown_operator_is_unbound() {
     // A user-defined operator resolves to its definition; a built-in operator is
     // a builtin; an undefined operator is unbound.

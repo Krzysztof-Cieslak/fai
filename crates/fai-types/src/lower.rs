@@ -11,7 +11,9 @@ use std::sync::Arc;
 
 use fai_db::{Db, SourceFile, emit};
 use fai_diagnostics::Diagnostic;
-use fai_resolve::{AdtRef, TypeDeclInfo, prelude_exports, type_decls};
+use fai_resolve::{
+    AdtRef, InterfaceInfo, InterfaceRef, TypeDeclInfo, interface_decls, prelude_exports, type_decls,
+};
 use fai_span::{Span, TextRange};
 use fai_syntax::Symbol;
 use fai_syntax::ast::{ItemKind, Module, RowTail, TypeDef, TypeId, TypeKind};
@@ -33,7 +35,7 @@ pub struct LowerVars {
 }
 
 impl LowerVars {
-    fn var(&mut self, name: Symbol) -> TyVarId {
+    pub(crate) fn var(&mut self, name: Symbol) -> TyVarId {
         if let Some(id) = self.by_name.get(&name) {
             return *id;
         }
@@ -152,6 +154,28 @@ impl Lowerer<'_> {
             }
             return t;
         }
+        // An interface name → a nominal interface type.
+        if let Some((decl_file, info)) = self.lookup_interface(name) {
+            if args.len() != info.params.len() {
+                emit(
+                    self.db,
+                    Diagnostic::error(
+                        TYPE_ARITY,
+                        format!(
+                            "`{name}` takes {} type argument(s), but {} were given",
+                            info.params.len(),
+                            args.len()
+                        ),
+                        Span::new(self.file.source(self.db), span),
+                    ),
+                );
+            }
+            let mut t = Ty::Interface(InterfaceRef::new(decl_file.source(self.db), name));
+            for &a in args {
+                t = Ty::App(Arc::new(t), Arc::new(self.lower(a, vars)));
+            }
+            return t;
+        }
         // A user/prelude type.
         let Some((decl_file, info)) = self.lookup_type(name) else {
             emit(
@@ -261,6 +285,24 @@ impl Lowerer<'_> {
         }
         None
     }
+
+    /// Looks up an interface name: this module's interfaces first, then the
+    /// auto-imported prelude's. (Cross-module interfaces are auto-imported only,
+    /// like types, since there is no qualified-type syntax.)
+    fn lookup_interface(&self, name: Symbol) -> Option<(SourceFile, InterfaceInfo)> {
+        if let Some(info) = interface_decls(self.db, self.file).interface_named(name) {
+            return Some((self.file, info.clone()));
+        }
+        let exports = prelude_exports(self.db);
+        if let Some(&(_, decl_file)) = exports.interfaces.iter().find(|(n, _)| *n == name)
+            && decl_file != self.file
+            && let Some(info) = interface_decls(self.db, decl_file).interface_named(name)
+            && info.visibility == fai_syntax::ast::Visibility::Public
+        {
+            return Some((decl_file, info.clone()));
+        }
+        None
+    }
 }
 
 /// Peels an application spine, returning the head node and its arguments in order.
@@ -286,7 +328,7 @@ fn subst_ty(ty: &Ty, map: &FxHashMap<TyVarId, Ty>) -> Ty {
             fields: row.fields.iter().map(|(l, t)| (*l, subst_ty(t, map))).collect(),
             tail: row.tail,
         }),
-        Ty::Con(_) | Ty::Adt(_) | Ty::Unit | Ty::Error => ty.clone(),
+        Ty::Con(_) | Ty::Adt(_) | Ty::Interface(_) | Ty::Unit | Ty::Error => ty.clone(),
     }
 }
 
@@ -352,6 +394,67 @@ pub fn build_constructor_scheme(db: &dyn Db, file: SourceFile, name: Symbol) -> 
         result = Ty::App(Arc::new(result), Arc::new(Ty::Var(pid)));
     }
     let body = Ty::arrows(field_tys, result);
+
+    Some(
+        Scheme::new(type_vars(&vars), body)
+            .with_names(type_names(&vars))
+            .with_rows(row_vars(&vars), row_names(&vars)),
+    )
+}
+
+/// Resolves an interface name to its [`InterfaceRef`] in the context of `file`
+/// (this module's interfaces, then the auto-imported prelude's).
+#[must_use]
+pub fn resolve_interface(db: &dyn Db, file: SourceFile, name: Symbol) -> Option<InterfaceRef> {
+    if interface_decls(db, file).interface_named(name).is_some() {
+        return Some(InterfaceRef::new(file.source(db), name));
+    }
+    let exports = prelude_exports(db);
+    if let Some(&(_, decl_file)) = exports.interfaces.iter().find(|(n, _)| *n == name)
+        && decl_file != file
+        && interface_decls(db, decl_file)
+            .interface_named(name)
+            .is_some_and(|i| i.visibility == fai_syntax::ast::Visibility::Public)
+    {
+        return Some(InterfaceRef::new(decl_file.source(db), name));
+    }
+    None
+}
+
+/// The number of type parameters of the interface `iref`.
+#[must_use]
+pub fn interface_param_count(db: &dyn Db, iref: InterfaceRef) -> usize {
+    db.source_file(iref.file)
+        .and_then(|file| {
+            interface_decls(db, file).interface_named(iref.name).map(|i| i.params.len())
+        })
+        .unwrap_or(0)
+}
+
+/// Builds the scheme of interface `iref`'s method `method`, quantified over the
+/// interface's type parameters **first** (so positional sharing works), then any
+/// method-local variables. Returns `None` if the method is not declared.
+pub fn build_interface_method_scheme(
+    db: &dyn Db,
+    iref: InterfaceRef,
+    method: Symbol,
+) -> Option<Scheme> {
+    let file = db.source_file(iref.file)?;
+    let decls = interface_decls(db, file);
+    let info = decls.interface_named(iref.name)?;
+    let parsed = fai_syntax::parse(db, file);
+    let module = &parsed.module;
+    let ItemKind::Interface { params, methods, .. } = &module.items[info.item.index()].kind else {
+        return None;
+    };
+    let msig = methods.iter().find(|m| m.name == method)?;
+
+    let mut vars = LowerVars::default();
+    // Seed the interface's parameters first so they occupy the leading scheme
+    // variables, in declaration order.
+    let _: Vec<TyVarId> = params.iter().map(|&p| vars.var(p)).collect();
+    let mut lowerer = Lowerer { db, file, module, expanding: Vec::new() };
+    let body = lowerer.lower(msig.ty, &mut vars);
 
     Some(
         Scheme::new(type_vars(&vars), body)

@@ -166,12 +166,29 @@ pub fn infer_scc(
         };
         let member_ty = scc_types[m].clone();
 
+        // For a signatured member, the body is checked with each parameter bound
+        // to its declared type (peeled from the signature). This makes
+        // type-directed interface method access on a parameter work.
+        let declared_params: Option<Vec<SolveTy>> = if declared.contains_key(m) {
+            Some(peel_param_types(&cx, &member_ty, params.len()))
+        } else {
+            None
+        };
+
         let env_scc = scc_types.clone();
         let mut env = SccEnv { db, scc_types: &env_scc, def_schemes, builtins };
         let mut walker = Walker::new(db, file, module, resolved, &mut cx, &mut env);
 
-        // Parameters introduce fresh local types; the body's type is the result.
-        let param_tys: Vec<SolveTy> = params.iter().map(|&p| walker.bind_param(p)).collect();
+        // Parameters introduce local types (the declared one when known); the
+        // body's type is the result.
+        let param_tys: Vec<SolveTy> = params
+            .iter()
+            .enumerate()
+            .map(|(i, &p)| match declared_params.as_ref().and_then(|d| d.get(i)).cloned() {
+                Some(expected) => walker.bind_param_checked(p, &expected),
+                None => walker.bind_param(p),
+            })
+            .collect();
         let body_ty = walker.infer_expr(body);
         let fn_ty = SolveTy::arrows_solver(param_tys, body_ty);
 
@@ -215,6 +232,22 @@ pub fn infer_scc(
         result.insert(*m, scheme);
     }
     SccInference { schemes: result, mismatches }
+}
+
+/// Peels the first `n` parameter types from a (resolved) function type.
+fn peel_param_types(cx: &InferCtx, ty: &SolveTy, n: usize) -> Vec<SolveTy> {
+    let mut out = Vec::with_capacity(n);
+    let mut cur = cx.resolve_shallow(ty);
+    for _ in 0..n {
+        match cur {
+            SolveTy::Arrow(from, to) => {
+                out.push(*from);
+                cur = cx.resolve_shallow(&to);
+            }
+            _ => break,
+        }
+    }
+    out
 }
 
 /// Recursively defaults still-free Numeric variables in a solver type to `Int`.
