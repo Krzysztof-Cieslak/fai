@@ -15,8 +15,9 @@
 > unions and transparent type aliases, `match` with exhaustiveness/redundancy
 > checking, structural records with row polymorphism, a native `Float`, and
 > structural ordering** — all compiling to native code (monomorphic records use
-> constant-offset projections; a *row-polymorphic* field access/update reachable
-> from `main` reports `FAI7002`, pending the M5 offset-evidence work). The
+> constant-offset projections; *row-polymorphic* field access and `{ r with … }`
+> update compile via **offset-evidence passing** — integer field offsets threaded
+> in as leading arguments, like dictionaries). The
 > standard library is a set of real compiled modules under **`std/`** (embedded
 > at build time): an auto-imported `Prelude` (the core types `Option`/`Result`/
 > `Dict`/`Set` with their constructors, plus `identity`/`const`/`not`/`compare`)
@@ -100,7 +101,7 @@ table **and** the decision log in `docs/PLAN.md`).
 | Contracts | **First-class `example` / `forall` declarations** (`example: e` / `forall xs: e`; peers of `let`/`type`), resolved in module scope, type-checked to `Bool`, run by `fai test`; `///` is human prose only |
 | Backend | **Cranelift** native code generation |
 | Memory | **Perceus-style reference counting** (pure + strict ⇒ acyclic heaps ⇒ no cycle collector); reuse analysis enables in-place updates incl. `{ r with ... }` |
-| Representation | Uniform 64-bit boxed/immediate values; canonical record field layout (sorted by label text); monomorphic field access is a **constant offset**; **offset-evidence passing** for *row-polymorphic* field access is staged with the M5 dictionary work (reachable row-poly access reports `FAI7002` for now); dictionaries for interfaces/generics |
+| Representation | Uniform 64-bit boxed/immediate values; canonical record field layout (sorted by label text); monomorphic field access is a **constant offset**; *row-polymorphic* field access and `{ r with … }` update use **offset-evidence passing** — per row lacks-constraint, an integer offset threaded in as a leading argument (like a dictionary), composing through call chains and baked into partial applications for first-class use; dictionaries for interfaces/generics |
 | Determinism | Clock / random / env / IO are reachable only via capabilities |
 | Standard library | Real compiled `.fai` modules under **`std/`**, embedded at build time. One **auto-imported** module, `Prelude`, owns the core types (`Option`/`Result`/`Dict`/`Set` + constructors) and the free functions `identity`/`const`/`not`/`compare`; all other operations are **qualified** under per-type modules (`List.map`, `Option.withDefault`, `Int.toString`, …). `Prelude`/`List`/`Option`/`Result`/`Dict`/`Set`/`String`/`Int`/`Float` are reserved module names. The few Rust **intrinsics** are prelude-private, reached only as `Prim.*` from inside `std/` (`FAI2014` elsewhere) and re-exported under clean names. (`Dict`/`Set` expose their node constructors until opaque types land.) |
 | Compilation model | **Demand-driven (salsa) query engine**; per-workspace **daemon** holds the DB hot, thin CLI client; **content-addressed on-disk cache**; **JIT** for `run`/`test`, **AOT** for `build`; incremental at definition/SCC granularity |

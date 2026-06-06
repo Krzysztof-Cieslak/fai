@@ -196,6 +196,42 @@ fn builtin_operator_as_value_runs() {
 }
 
 #[test]
+fn row_polymorphic_least_authority_runs() {
+    // A function that requests only the `console` capability, given the full
+    // `Runtime`. The native build resolves the field offset via runtime evidence.
+    let src = indoc! {r#"
+        module Main
+
+        announce : { console : Console | 'r } -> String -> Unit
+        let announce env msg = env.console.writeLine msg
+
+        public main : Runtime -> Unit
+        let main runtime = announce runtime "least authority"
+    "#};
+    let (out, code) = build_and_run(src);
+    assert_eq!(out, "least authority\n");
+    assert_eq!(code, Some(0));
+}
+
+#[test]
+fn row_polymorphic_record_update_runs() {
+    let src = indoc! {r#"
+        module Main
+
+        bump : { score : Int | 'r } -> { score : Int | 'r }
+        let bump rec = { rec with score = rec.score + 100 }
+
+        public main : Runtime -> Unit
+        let main runtime =
+          let bumped = bump { name = "x", score = 5 }
+          runtime.console.writeLine (Int.toString bumped.score)
+    "#};
+    let (out, code) = build_and_run(src);
+    assert_eq!(out, "105\n");
+    assert_eq!(code, Some(0));
+}
+
+#[test]
 fn random_capability_runs() {
     // `nextInt 1` is always `0` (the half-open range `[0, 1)`), so the output is
     // deterministic even though the source is the host's random capability.

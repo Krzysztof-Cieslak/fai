@@ -8,6 +8,7 @@
 //! Skeleton: the representation and queries land incrementally across M2.
 
 mod contracts;
+pub mod evidence;
 mod exhaustive;
 mod infer;
 mod lower;
@@ -24,14 +25,15 @@ mod prop_tests;
 mod tests;
 
 pub use contracts::check_contracts;
+pub use evidence::{EvidenceReq, evidence_count, evidence_requirements};
 pub use infer::{
     Constraint, Env, InferCtx, SccEnv, SccInference, SolveTy, UnifyResult, Walker, contract_env,
     declared_scheme, error_scheme, generalize, infer_scc,
 };
 pub use lower::{LowerVars, lower_signature, lower_type};
 pub use query::{
-    BodyTypes, SccTypes, body_types, check_file, constructor_scheme, def_local_types, def_type,
-    infer_scc_query,
+    BodyTypes, SccTypes, body_types, check_file, constructor_scheme, declared_or_inferred_scheme,
+    def_local_types, def_type, infer_scc_query,
 };
 pub use ty::{
     Con, RecordRow, RowEnd, RowVarId, Scheme, Ty, TyVarId, VarNames, render, render_canonical,

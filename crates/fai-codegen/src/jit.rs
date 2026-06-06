@@ -64,6 +64,7 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_console_write_line", rt::fai_console_write_line);
     sym!("fai_clock_now", rt::fai_clock_now);
     sym!("fai_random_next_int", rt::fai_random_next_int);
+    sym!("fai_record_update", rt::fai_record_update);
     sym!("fai_apply_n", rt::fai_apply_n);
     sym!("fai_make_closure", rt::fai_make_closure);
     sym!("fai_run_main", rt::fai_run_main);

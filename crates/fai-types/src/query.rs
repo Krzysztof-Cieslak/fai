@@ -97,8 +97,9 @@ pub fn def_type(db: &dyn Db, file: SourceFile, name: Symbol) -> Scheme {
 
 /// The scheme used for an out-of-SCC reference: a declared signature when the
 /// callee has one (cutting the dependency on its body — the firewall), else the
-/// callee's inferred type.
-fn declared_or_inferred_scheme(db: &dyn Db, def: DefId) -> Option<Scheme> {
+/// callee's inferred type. Also drives offset-evidence elaboration in lowering,
+/// where caller and callee must agree on a function's evidence from its type.
+pub fn declared_or_inferred_scheme(db: &dyn Db, def: DefId) -> Option<Scheme> {
     let file = db.source_file(def.file)?;
     if let Some(scheme) = signature_scheme(db, file, def.name) {
         return Some(scheme);

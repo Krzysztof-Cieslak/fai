@@ -14,7 +14,7 @@ use std::fmt::Write as _;
 use fai_resolve::DefId;
 use fai_types::render_canonical;
 
-use crate::ir::{CExpr, ExprKind, Lit, LoweredDef, Prim};
+use crate::ir::{CExpr, ExprKind, FieldIndex, Lit, LoweredDef, Prim};
 
 /// Builds a portable, deterministic fingerprint string for `def`.
 ///
@@ -118,7 +118,14 @@ fn write_expr(
             out.push(')');
         }
         ExprKind::DataField { base, index } => {
-            let _ = write!(out, "(field {index} ");
+            match index {
+                FieldIndex::Const(n) => {
+                    let _ = write!(out, "(field {n} ");
+                }
+                FieldIndex::Dyn { base: off, evidence } => {
+                    let _ = write!(out, "(field {off}+%{} ", evidence.index());
+                }
+            }
             write_expr(out, base, namer, arity_of);
             out.push(')');
         }

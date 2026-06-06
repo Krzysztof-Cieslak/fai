@@ -80,8 +80,8 @@ fn samples_round_trip_or_are_future_surface() {
 /// The files that must additionally *typecheck* with zero errors.
 ///
 /// This is the parse-clean set minus files that need future surface;
-/// `Comments.fai` is documentation-only with no bindings. `Hello.fai` typechecks
-/// since M3 (the `Runtime` capability and `Console.writeLine` are built in).
+/// `Comments.fai` is documentation-only with no bindings. `Greet.fai` and
+/// `Logging.fai` exercise capabilities and row-polymorphic least authority.
 /// Files auto-promote here as later milestones land.
 const TYPECHECK_CLEAN: &[&str] = &[
     "Algebra.fai",
@@ -89,9 +89,11 @@ const TYPECHECK_CLEAN: &[&str] = &[
     "Basics.fai",
     "Funcs.fai",
     "Geometry.fai",
+    "Greet.fai",
     "Hello.fai",
     "Lists.fai",
     "Locals.fai",
+    "Logging.fai",
     "Math.fai",
     "Optional.fai",
     "RecordMatch.fai",

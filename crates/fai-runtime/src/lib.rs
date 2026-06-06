@@ -395,6 +395,37 @@ pub extern "C" fn fai_data_field(v: Value, index: i64) -> Value {
     field
 }
 
+/// Row-polymorphic record update: clones `record` (its field count read from the
+/// runtime object's size) with the field at `index` replaced by `value`. The
+/// index is an immediate `Int` slot. Consumes `record` and `value`; the old field
+/// at `index` is released when `record` is dropped.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_record_update(record: Value, index: Value, value: Value) -> Value {
+    let slot = unbox_int(index) as usize;
+    // SAFETY: `record` is a boxed data value; `slot` is a valid field index.
+    let new = unsafe {
+        let tag = read_u64(as_obj(record), DATA_TAG_OFFSET) as i64;
+        let n = data_field_count(record);
+        let size = DATA_FIELDS_OFFSET + n * 8;
+        let p = alloc_obj(size, &FAI_DATA_DESC);
+        write_u64(p, DATA_TAG_OFFSET, tag as u64);
+        for i in 0..n {
+            if i == slot {
+                write_i64(p, DATA_FIELDS_OFFSET + i * 8, value);
+            } else {
+                let field = read_i64(as_obj(record), DATA_FIELDS_OFFSET + i * 8);
+                fai_dup(field);
+                write_i64(p, DATA_FIELDS_OFFSET + i * 8, field);
+            }
+        }
+        from_obj(p)
+    };
+    // Releases `record`'s hold on every field (its `data_scan` drops each once),
+    // balancing the dups above and releasing the replaced field.
+    fai_drop(record);
+    new
+}
+
 // ---------------------------------------------------------------------------
 // Integers.
 // ---------------------------------------------------------------------------
@@ -825,21 +856,23 @@ pub unsafe extern "C" fn fai_apply_n(callee: Value, argc: u64, args: *const i64)
     let desc = unsafe { read_ptr(p, DESC_OFFSET).cast::<Descriptor>() };
 
     if std::ptr::eq(desc, &FAI_PAP_DESC) {
-        // Steal the stored target and arguments, free the shell without
-        // scanning (ownership has moved), then apply the combined arguments.
+        // Take owned references to the stored target and arguments, then release
+        // this reference to the shell. Dropping (rather than unconditionally
+        // freeing) is correct when the partial application is shared: a dup'd PAP
+        // applied here must not free storage another reference still holds.
         // SAFETY: `p` is a partial application.
         unsafe {
-            let func = read_i64(p, PAP_FUNC_OFFSET);
+            let func = fai_dup(read_i64(p, PAP_FUNC_OFFSET));
             let stored = read_u64(p, PAP_NARGS_OFFSET);
             let total = stored + argc;
             let mut combined: Vec<i64> = Vec::with_capacity(total as usize);
             for i in 0..stored as usize {
-                combined.push(read_i64(p, PAP_ARGS_OFFSET + i * 8));
+                combined.push(fai_dup(read_i64(p, PAP_ARGS_OFFSET + i * 8)));
             }
             for i in 0..argc as usize {
                 combined.push(*args.add(i));
             }
-            free_obj(p);
+            fai_drop(callee);
             return fai_apply_n(func, total, combined.as_ptr());
         }
     }

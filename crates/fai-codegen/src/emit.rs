@@ -15,7 +15,7 @@ use cranelift_codegen::ir::{AbiParam, FuncRef, InstBuilder, MemFlags, Value, typ
 use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
-use fai_core::ir::{CExpr, CoreFn, ExprKind, Lit, LoweredDef, Prim};
+use fai_core::ir::{CExpr, CoreFn, ExprKind, FieldIndex, Lit, LoweredDef, Prim};
 use fai_resolve::{DefId, LocalId};
 use fai_runtime as rt;
 use rustc_hash::FxHashMap;
@@ -321,10 +321,21 @@ impl<M: Module> Translator<'_, M> {
         self.builder.inst_results(call)[0]
     }
 
-    /// Projects field `index` of a data value (consuming `base`).
-    fn data_field(&mut self, base: &CExpr, index: u32) -> Value {
+    /// Projects a field of a data value (consuming `base`). A constant slot is an
+    /// immediate; a row-polymorphic slot is `base + evidence` computed at runtime
+    /// from a leading offset-evidence parameter.
+    fn data_field(&mut self, base: &CExpr, index: FieldIndex) -> Value {
         let v = self.expr(base);
-        let idx = self.builder.ins().iconst(types::I64, i64::from(index));
+        let idx = match index {
+            FieldIndex::Const(n) => self.builder.ins().iconst(types::I64, i64::from(n)),
+            FieldIndex::Dyn { base: off, evidence } => {
+                // Evidence is an immediate `Int` local; read it (a borrow), strip
+                // the tag, and add the statically known preceding-field count.
+                let ev = self.use_var(evidence);
+                let unboxed = self.builder.ins().sshr_imm(ev, 1);
+                self.builder.ins().iadd_imm(unboxed, i64::from(off))
+            }
+        };
         let f = self.runtime("fai_data_field", 2, true);
         let call = self.builder.ins().call(f, &[v, idx]);
         self.builder.inst_results(call)[0]

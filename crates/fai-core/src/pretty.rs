@@ -2,7 +2,7 @@
 
 use std::fmt::Write as _;
 
-use crate::ir::{CExpr, ExprKind, Lit, LoweredDef, Prim};
+use crate::ir::{CExpr, ExprKind, FieldIndex, Lit, LoweredDef, Prim};
 
 /// Renders a lowered definition as a compact, deterministic string.
 #[must_use]
@@ -60,6 +60,7 @@ fn prim_name(op: Prim) -> &'static str {
         Prim::ConsoleWriteLine => "consoleWriteLine",
         Prim::ClockNow => "clockNow",
         Prim::RandomNextInt => "randomNextInt",
+        Prim::RecordUpdate => "recordUpdate",
     }
 }
 
@@ -126,7 +127,14 @@ fn write_expr(out: &mut String, e: &CExpr) {
             out.push(')');
         }
         ExprKind::DataField { base, index } => {
-            let _ = write!(out, "(field {index} ");
+            match index {
+                FieldIndex::Const(n) => {
+                    let _ = write!(out, "(field {n} ");
+                }
+                FieldIndex::Dyn { base: off, evidence } => {
+                    let _ = write!(out, "(field {off}+%{} ", evidence.index());
+                }
+            }
             write_expr(out, base);
             out.push(')');
         }

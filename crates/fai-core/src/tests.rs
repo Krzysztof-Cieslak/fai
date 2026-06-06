@@ -245,15 +245,17 @@ fn monomorphic_record_access_lowers_to_a_projection() {
 }
 
 #[test]
-fn row_polymorphic_field_access_is_deferred() {
-    // A reachable field access through a row variable cannot pick a constant
-    // offset yet; it defers to the offset-evidence work with FAI7002.
+fn row_polymorphic_field_access_uses_offset_evidence() {
+    // A field access through a row variable cannot pick a constant slot; the
+    // function takes a leading offset-evidence parameter (here `%1`) and the slot
+    // is `base + evidence`.
     let src = indoc! {r#"
         module M
 
         let getX r = r.x
     "#};
-    assert!(codes(src, "getX").contains(&"FAI7002".to_owned()));
+    assert!(codes(src, "getX").is_empty(), "got {:?}", codes(src, "getX"));
+    assert_eq!(lower(src, "getX"), "fn0(%1, %0) = (field 0+%1 %0)\n");
 }
 
 #[test]
