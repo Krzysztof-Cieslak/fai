@@ -583,6 +583,7 @@ dependencies = [
  "fai-driver",
  "fai-server",
  "fai-span",
+ "indoc",
  "serde_json",
  "tracing",
  "tracing-subscriber",
@@ -606,6 +607,7 @@ dependencies = [
  "fai-span",
  "fai-syntax",
  "fai-types",
+ "indoc",
  "proptest",
  "rustc-hash",
  "target-lexicon",
@@ -621,6 +623,7 @@ dependencies = [
  "fai-span",
  "fai-syntax",
  "fai-types",
+ "indoc",
  "proptest",
  "rustc-hash",
  "salsa",
@@ -664,6 +667,7 @@ dependencies = [
  "fai-span",
  "fai-syntax",
  "fai-types",
+ "indoc",
  "nix",
  "rustc-hash",
  "salsa",
@@ -679,6 +683,7 @@ version = "0.1.0"
 dependencies = [
  "fai-span",
  "fai-syntax",
+ "indoc",
  "insta",
  "proptest",
 ]
@@ -693,6 +698,7 @@ dependencies = [
  "fai-span",
  "fai-syntax",
  "fai-types",
+ "indoc",
  "insta",
  "serde",
  "serde_json",
@@ -707,6 +713,7 @@ dependencies = [
  "fai-resolve",
  "fai-syntax",
  "fai-types",
+ "indoc",
  "proptest",
  "salsa",
 ]
@@ -719,6 +726,7 @@ dependencies = [
  "fai-diagnostics",
  "fai-span",
  "fai-syntax",
+ "indoc",
  "insta",
  "rustc-hash",
  "salsa",
@@ -763,6 +771,7 @@ dependencies = [
  "fai-db",
  "fai-diagnostics",
  "fai-span",
+ "indoc",
  "insta",
  "lasso",
  "proptest",
@@ -791,6 +800,7 @@ dependencies = [
  "fai-span",
  "fai-syntax",
  "fai-types",
+ "indoc",
  "insta",
  "proptest",
  "serde_json",
@@ -805,6 +815,7 @@ dependencies = [
  "fai-resolve",
  "fai-span",
  "fai-syntax",
+ "indoc",
  "insta",
  "proptest",
  "rustc-hash",
@@ -945,6 +956,15 @@ dependencies = [
  "hashbrown 0.17.1",
  "serde",
  "serde_core",
+]
+
+[[package]]
+name = "indoc"
+version = "2.0.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "79cf5c93f93228cf8efb3ba362535fb11199ac548a09ce117c9b1adc3030d706"
+dependencies = [
+ "rustversion",
 ]
 
 [[package]]

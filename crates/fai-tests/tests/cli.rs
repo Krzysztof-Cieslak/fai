@@ -1,6 +1,7 @@
 //! Golden snapshots of CLI output, driven in-process through `fai_cli::run`.
 
 use camino::Utf8PathBuf;
+use indoc::indoc;
 
 /// Runs the CLI in-process, returning `(exit_code, stdout, stderr)`.
 fn run(args: &[&str]) -> (i32, String, String) {
@@ -46,7 +47,12 @@ fn typed_workspace() -> Utf8PathBuf {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join("Calc.fai"),
-        "module Calc\n\npublic add : Int -> Int -> Int\nlet add x y = x + y\n",
+        indoc! {r#"
+            module Calc
+
+            public add : Int -> Int -> Int
+            let add x y = x + y
+        "#},
     )
     .unwrap();
     dir
@@ -67,8 +73,16 @@ fn check_reports_type_error() {
         .expect("temp dir is UTF-8")
         .join("fai-m2-cli-typeerr");
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("Bad.fai"), "module Bad\n\npublic f : Int -> Bool\nlet f x = x + 1\n")
-        .unwrap();
+    std::fs::write(
+        dir.join("Bad.fai"),
+        indoc! {r#"
+            module Bad
+
+            public f : Int -> Bool
+            let f x = x + 1
+        "#},
+    )
+    .unwrap();
     let (code, out, err) = run(&[
         "fai",
         "check",

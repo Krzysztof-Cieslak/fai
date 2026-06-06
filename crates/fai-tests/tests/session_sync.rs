@@ -7,9 +7,19 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use camino::Utf8PathBuf;
 use fai_driver::{DirtyFile, Session, check};
+use indoc::indoc;
 
-const CLEAN: &str = "module Bad\n\nlet x = 1\n";
-const TYPE_ERROR: &str = "module Bad\n\npublic f : Int -> Bool\nlet f x = x + 1\n";
+const CLEAN: &str = indoc! {r#"
+    module Bad
+
+    let x = 1
+"#};
+const TYPE_ERROR: &str = indoc! {r#"
+    module Bad
+
+    public f : Int -> Bool
+    let f x = x + 1
+"#};
 
 fn workspace() -> Utf8PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -34,11 +44,27 @@ fn checks_ok(session: &Session) -> bool {
 #[test]
 fn new_file_is_picked_up() {
     let dir = workspace();
-    write(&dir, "A.fai", "module A\n\nlet a = 1\n");
+    write(
+        &dir,
+        "A.fai",
+        indoc! {r#"
+            module A
+
+            let a = 1
+        "#},
+    );
     let mut session = Session::open(dir.clone()).unwrap();
     assert_eq!(session.user_files().len(), 1);
 
-    write(&dir, "B.fai", "module B\n\nlet b = 2\n");
+    write(
+        &dir,
+        "B.fai",
+        indoc! {r#"
+            module B
+
+            let b = 2
+        "#},
+    );
     session.sync_from_disk().unwrap();
     assert_eq!(session.user_files().len(), 2);
     assert!(checks_ok(&session));
@@ -59,8 +85,24 @@ fn edit_is_reflected() {
 #[test]
 fn delete_is_dropped_from_selection() {
     let dir = workspace();
-    write(&dir, "A.fai", "module A\n\nlet a = 1\n");
-    write(&dir, "B.fai", "module B\n\nlet b = 2\n");
+    write(
+        &dir,
+        "A.fai",
+        indoc! {r#"
+            module A
+
+            let a = 1
+        "#},
+    );
+    write(
+        &dir,
+        "B.fai",
+        indoc! {r#"
+            module B
+
+            let b = 2
+        "#},
+    );
     let mut session = Session::open(dir.clone()).unwrap();
     assert_eq!(session.user_files().len(), 2);
 

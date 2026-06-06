@@ -4,13 +4,18 @@
 use fai_db::{Db, FaiDatabase};
 use fai_syntax::{item_tree, public_item_count};
 use fai_tests::assert_incremental_matches_clean;
+use indoc::indoc;
 
 #[test]
 fn comment_edit_cuts_off_at_the_item_tree() {
     let mut db = FaiDatabase::new();
     let id = db.add_source(
         "M.fai".into(),
-        "module M\npublic main : Runtime -> Unit\nlet main r = r".to_owned(),
+        indoc! {r#"
+            module M
+            public main : Runtime -> Unit
+            let main r = r"#}
+        .to_owned(),
     );
     let file = db.source_file(id).unwrap();
 
@@ -23,7 +28,12 @@ fn comment_edit_cuts_off_at_the_item_tree() {
     // the span-free item tree is unchanged, so `public_item_count` is cut off.
     db.add_source(
         "M.fai".into(),
-        "module M\n// a fresh comment\npublic main : Runtime -> Unit\nlet main r = r".to_owned(),
+        indoc! {r#"
+            module M
+            // a fresh comment
+            public main : Runtime -> Unit
+            let main r = r"#}
+        .to_owned(),
     );
     assert_eq!(public_item_count(&db, file), 1);
     let log = db.take_events();
@@ -37,8 +47,12 @@ fn comment_edit_cuts_off_at_the_item_tree() {
     // Rename the public binding: the item tree changes, so the dependent re-runs.
     db.add_source(
         "M.fai".into(),
-        "module M\n// a fresh comment\npublic renamed : Runtime -> Unit\nlet renamed r = r"
-            .to_owned(),
+        indoc! {r#"
+            module M
+            // a fresh comment
+            public renamed : Runtime -> Unit
+            let renamed r = r"#}
+        .to_owned(),
     );
     assert_eq!(public_item_count(&db, file), 1);
     let log = db.take_events();
@@ -51,13 +65,27 @@ fn comment_edit_cuts_off_at_the_item_tree() {
 #[test]
 fn body_edit_cuts_off_at_the_item_tree() {
     let mut db = FaiDatabase::new();
-    let id = db.add_source("M.fai".into(), "module M\npublic f : Int\nlet f = 1".to_owned());
+    let id = db.add_source(
+        "M.fai".into(),
+        indoc! {r#"
+            module M
+            public f : Int
+            let f = 1"#}
+        .to_owned(),
+    );
     let file = db.source_file(id).unwrap();
     assert_eq!(public_item_count(&db, file), 1);
 
     db.enable_event_log();
     // Changing a binding *body* leaves names/kinds/visibility unchanged.
-    db.add_source("M.fai".into(), "module M\npublic f : Int\nlet f = 9999".to_owned());
+    db.add_source(
+        "M.fai".into(),
+        indoc! {r#"
+            module M
+            public f : Int
+            let f = 9999"#}
+        .to_owned(),
+    );
     assert_eq!(public_item_count(&db, file), 1);
     let log = db.take_events();
     assert!(
@@ -70,17 +98,59 @@ fn body_edit_cuts_off_at_the_item_tree() {
 fn item_tree_incremental_matches_clean() {
     assert_incremental_matches_clean(
         &[
-            &[("a.fai", "module A\npublic f : Int\nlet f = 1")],
+            &[(
+                "a.fai",
+                indoc! {r#"
+                    module A
+                    public f : Int
+                    let f = 1"#},
+            )],
             // Trivia edit: same item tree.
-            &[("a.fai", "module A\n// note\npublic f : Int\nlet f = 1")],
+            &[(
+                "a.fai",
+                indoc! {r#"
+                    module A
+                    // note
+                    public f : Int
+                    let f = 1"#},
+            )],
             // Body edit: same item tree.
-            &[("a.fai", "module A\n// note\npublic f : Int\nlet f = 2")],
+            &[(
+                "a.fai",
+                indoc! {r#"
+                    module A
+                    // note
+                    public f : Int
+                    let f = 2"#},
+            )],
             // Rename: item tree changes.
-            &[("a.fai", "module A\npublic g : Int\nlet g = 2")],
+            &[(
+                "a.fai",
+                indoc! {r#"
+                    module A
+                    public g : Int
+                    let g = 2"#},
+            )],
             // Add an item: item tree grows.
-            &[("a.fai", "module A\npublic g : Int\nlet g = 2\nlet h = 3")],
+            &[(
+                "a.fai",
+                indoc! {r#"
+                    module A
+                    public g : Int
+                    let g = 2
+                    let h = 3"#},
+            )],
             // A second file appears.
-            &[("a.fai", "module A\nlet g = 2"), ("b.fai", "module B\npublic k : Int\nlet k = 0")],
+            &[
+                ("a.fai", "module A\nlet g = 2"),
+                (
+                    "b.fai",
+                    indoc! {r#"
+                        module B
+                        public k : Int
+                        let k = 0"#},
+                ),
+            ],
         ],
         |db, ids| {
             ids.iter().map(|&id| item_tree(db, db.source_file(id).unwrap())).collect::<Vec<_>>()

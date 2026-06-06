@@ -12,6 +12,7 @@ fai-span.workspace = true
 fai-syntax.workspace = true
 
 [dev-dependencies]
+indoc.workspace = true
 insta.workspace = true
 proptest.workspace = true
 

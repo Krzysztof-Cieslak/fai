@@ -5,6 +5,7 @@
 //! interactions, defaulting, generalization, patterns, and each diagnostic code.
 
 use fai_db::{Db, Diag, FaiDatabase, SourceFile};
+use indoc::indoc;
 
 use crate::{check_file, def_type, render_scheme};
 
@@ -218,21 +219,44 @@ fn lambda_multi_param() {
 
 #[test]
 fn local_let_chain() {
-    assert_eq!(ty("let f a =\n  let b = a + 1\n  let c = b + 1\n  c", "f"), "Int -> Int");
+    assert_eq!(
+        ty(
+            indoc! {r#"
+                let f a =
+                  let b = a + 1
+                  let c = b + 1
+                  c"#},
+            "f"
+        ),
+        "Int -> Int"
+    );
 }
 
 #[test]
 fn local_shadowing_inner_wins() {
     // Inner `x` shadows the parameter; result type follows the inner binding.
-    assert_eq!(ty("let f x =\n  let x = \"s\"\n  x", "f"), "'a -> String");
+    assert_eq!(
+        ty(
+            indoc! {r#"
+                let f x =
+                  let x = "s"
+                  x"#},
+            "f"
+        ),
+        "'a -> String"
+    );
 }
 
 #[test]
 fn local_let_polymorphism() {
     // A locally-bound identity used at two types.
-    clean(
-        "public f : Int -> Bool -> Int\nlet f n b =\n  let id = fun x -> x\n  let a = id n\n  let c = id b\n  if c then a else a",
-    );
+    clean(indoc! {r#"
+        public f : Int -> Bool -> Int
+        let f n b =
+          let id = fun x -> x
+          let a = id n
+          let c = id b
+          if c then a else a"#});
 }
 
 // ---- tuples & patterns -----------------------------------------------------
@@ -250,7 +274,14 @@ fn nested_tuple() {
 #[test]
 fn tuple_pattern_in_param() {
     assert_eq!(
-        ty("public fst : 'a * 'b -> 'a\nlet fst p =\n  let (a, b) = p\n  a", "fst"),
+        ty(
+            indoc! {r#"
+                public fst : 'a * 'b -> 'a
+                let fst p =
+                  let (a, b) = p
+                  a"#},
+            "fst"
+        ),
         "'a * 'b -> 'a"
     );
 }

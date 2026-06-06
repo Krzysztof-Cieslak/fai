@@ -9,6 +9,8 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use indoc::indoc;
+
 fn unique(tag: &str) -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     std::env::temp_dir().join(format!(
@@ -89,7 +91,17 @@ fn status_pid(daemon: &Daemon) -> Option<u32> {
 
 #[test]
 fn warm_check_matches_no_daemon() {
-    let daemon = Daemon::new("parity", &[("Ok.fai", "module Ok\n\nlet x = 1\n")]);
+    let daemon = Daemon::new(
+        "parity",
+        &[(
+            "Ok.fai",
+            indoc! {r#"
+                module Ok
+
+                let x = 1
+            "#},
+        )],
+    );
 
     // First check auto-spawns the daemon; second is warm. Both must match a
     // one-shot --no-daemon run byte-for-byte.
@@ -104,7 +116,17 @@ fn warm_check_matches_no_daemon() {
 
 #[test]
 fn status_reports_running_then_stopped() {
-    let daemon = Daemon::new("lifecycle", &[("Ok.fai", "module Ok\n\nlet x = 1\n")]);
+    let daemon = Daemon::new(
+        "lifecycle",
+        &[(
+            "Ok.fai",
+            indoc! {r#"
+                module Ok
+
+                let x = 1
+            "#},
+        )],
+    );
 
     // No daemon yet.
     let before = daemon.run(&["daemon", "status"], &[]);
@@ -124,7 +146,17 @@ fn status_reports_running_then_stopped() {
 
 #[test]
 fn warm_check_reflects_an_edit() {
-    let daemon = Daemon::new("filesync", &[("Main.fai", "module Main\n\nlet x = 1\n")]);
+    let daemon = Daemon::new(
+        "filesync",
+        &[(
+            "Main.fai",
+            indoc! {r#"
+                module Main
+
+                let x = 1
+            "#},
+        )],
+    );
 
     // Warm up: clean.
     let clean = daemon.run(&["check"], &["--message-format=json"]);
@@ -133,7 +165,12 @@ fn warm_check_reflects_an_edit() {
     // Introduce a type error on disk; the warm daemon must re-sync and see it.
     std::fs::write(
         daemon.workspace.join("Main.fai"),
-        "module Main\n\npublic f : Int -> Bool\nlet f x = x + 1\n",
+        indoc! {r#"
+            module Main
+
+            public f : Int -> Bool
+            let f x = x + 1
+        "#},
     )
     .unwrap();
     let dirty = daemon.run(&["check"], &["--message-format=json"]);
@@ -141,7 +178,12 @@ fn warm_check_reflects_an_edit() {
     assert!(stdout(&dirty).contains("FAI3004"), "got: {}", stdout(&dirty));
 }
 
-const HELLO: &str = "module Hello\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime \"hi from run\"\n";
+const HELLO: &str = indoc! {r#"
+    module Hello
+
+    public main : Runtime -> Unit
+    let main runtime = Console.writeLine runtime "hi from run"
+"#};
 
 #[test]
 fn run_streams_output_via_daemon() {
@@ -155,7 +197,14 @@ fn run_streams_output_via_daemon() {
 fn run_timeout_is_reaped_and_daemon_survives() {
     // Naive fib is exponential-time but shallow-stack, so it runs well past the
     // timeout without crashing — the daemon must reap it (exit 124) and live on.
-    let fib = "module Main\n\nlet fib n = if n < 2 then n else fib (n - 1) + fib (n - 2)\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (Int.toString (fib 40))\n";
+    let fib = indoc! {r#"
+        module Main
+
+        let fib n = if n < 2 then n else fib (n - 1) + fib (n - 2)
+
+        public main : Runtime -> Unit
+        let main runtime = Console.writeLine runtime (Int.toString (fib 40))
+    "#};
     let daemon = Daemon::new("timeout", &[("Main.fai", fib)]).with_run_timeout(500);
 
     let run = daemon.run(&["run"], &["Main.fai"]);
@@ -175,7 +224,15 @@ fn run_timeout_is_reaped_and_daemon_survives() {
 fn query_via_daemon_matches_no_daemon() {
     let daemon = Daemon::new(
         "query",
-        &[("Calc.fai", "module Calc\n\npublic add : Int -> Int -> Int\nlet add x y = x + y\n")],
+        &[(
+            "Calc.fai",
+            indoc! {r#"
+                module Calc
+
+                public add : Int -> Int -> Int
+                let add x y = x + y
+            "#},
+        )],
     );
     let warm = daemon.run(&["query", "type", "Calc.add"], &[]);
     assert!(warm.status.success(), "stderr: {}", String::from_utf8_lossy(&warm.stderr));
@@ -198,7 +255,17 @@ fn fmt_via_daemon_writes_the_file() {
 
 #[test]
 fn restart_replaces_the_daemon() {
-    let daemon = Daemon::new("restart", &[("Ok.fai", "module Ok\n\nlet x = 1\n")]);
+    let daemon = Daemon::new(
+        "restart",
+        &[(
+            "Ok.fai",
+            indoc! {r#"
+                module Ok
+
+                let x = 1
+            "#},
+        )],
+    );
     let _ = daemon.run(&["check"], &[]); // spawn
     let pid1 = status_pid(&daemon).expect("a daemon should be running");
 
@@ -213,8 +280,12 @@ fn restart_replaces_the_daemon() {
 fn run_compile_error_exits_four_via_daemon() {
     // `writeLine` expects a String; passing an Int is a type error, so the bundle
     // never builds: the daemon streams the diagnostic and the run exits 4.
-    let bad =
-        "module Main\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (1 + 2)\n";
+    let bad = indoc! {r#"
+        module Main
+
+        public main : Runtime -> Unit
+        let main r = Console.writeLine r (1 + 2)
+    "#};
     let daemon = Daemon::new("runbad", &[("Main.fai", bad)]);
     let out = daemon.run(&["run"], &["Main.fai"]);
     assert_eq!(out.status.code(), Some(4), "a compile error exits 4");
@@ -227,7 +298,12 @@ fn run_compile_error_exits_four_via_daemon() {
 
 #[test]
 fn build_via_daemon_produces_a_runnable_binary() {
-    let src = "module Calc\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (Int.toString (40 + 2))\n";
+    let src = indoc! {r#"
+        module Calc
+
+        public main : Runtime -> Unit
+        let main runtime = Console.writeLine runtime (Int.toString (40 + 2))
+    "#};
     let daemon = Daemon::new("build", &[("Calc.fai", src)]);
     let exe = daemon.workspace.join("calc");
 

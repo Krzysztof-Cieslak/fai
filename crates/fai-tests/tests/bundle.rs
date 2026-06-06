@@ -9,6 +9,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use fai_core::from_wire;
 use fai_db::SourceFile;
 use fai_driver::{Session, build_run_bundle, jit_run_bundle};
+use indoc::indoc;
 
 /// Serializes the in-process JIT runs (the runtime's output sink is global).
 static RUN_LOCK: Mutex<()> = Mutex::new(());
@@ -31,7 +32,12 @@ fn entry(session: &Session, name: &str) -> SourceFile {
     *session.select_files(Some(Utf8Path::new(name))).first().expect("entry file")
 }
 
-const ARITH: &str = "module Main\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (Int.toString (1 + 2 * 3))\n";
+const ARITH: &str = indoc! {r#"
+    module Main
+
+    public main : Runtime -> Unit
+    let main r = Console.writeLine r (Int.toString (1 + 2 * 3))
+"#};
 
 #[test]
 fn builds_a_bundle_for_a_single_module() {
@@ -46,8 +52,18 @@ fn builds_a_bundle_for_a_single_module() {
 
 #[test]
 fn cross_module_bundle_reconstructs_distinct_modules() {
-    let main = "module Main\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (Lib.shout \"hi\")\n";
-    let lib = "module Lib\n\npublic shout : String -> String\nlet shout s = s ++ \"!\"\n";
+    let main = indoc! {r#"
+        module Main
+
+        public main : Runtime -> Unit
+        let main r = Console.writeLine r (Lib.shout "hi")
+    "#};
+    let lib = indoc! {r#"
+        module Lib
+
+        public shout : String -> String
+        let shout s = s ++ "!"
+    "#};
     let dir = workspace(&[("Main.fai", main), ("Lib.fai", lib)]);
     let session = Session::open(dir).unwrap();
 
@@ -81,8 +97,18 @@ fn bundle_survives_the_json_transport_hop() {
 
 #[test]
 fn jit_run_bundle_executes_a_cross_module_program() {
-    let main = "module Main\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (Lib.shout \"hi\")\n";
-    let lib = "module Lib\n\npublic shout : String -> String\nlet shout s = s ++ \"!\"\n";
+    let main = indoc! {r#"
+        module Main
+
+        public main : Runtime -> Unit
+        let main r = Console.writeLine r (Lib.shout "hi")
+    "#};
+    let lib = indoc! {r#"
+        module Lib
+
+        public shout : String -> String
+        let shout s = s ++ "!"
+    "#};
     let dir = workspace(&[("Main.fai", main), ("Lib.fai", lib)]);
     let session = Session::open(dir).unwrap();
     let bundle = build_run_bundle(session.db(), entry(&session, "Main.fai")).bundle.unwrap();
@@ -97,7 +123,14 @@ fn jit_run_bundle_executes_a_cross_module_program() {
 
 #[test]
 fn no_main_reports_no_entry_point_and_no_bundle() {
-    let dir = workspace(&[("M.fai", "module M\n\nlet x = 1\n")]);
+    let dir = workspace(&[(
+        "M.fai",
+        indoc! {r#"
+            module M
+
+            let x = 1
+        "#},
+    )]);
     let session = Session::open(dir).unwrap();
     let result = build_run_bundle(session.db(), entry(&session, "M.fai"));
     assert!(result.bundle.is_none());
@@ -111,7 +144,12 @@ fn no_main_reports_no_entry_point_and_no_bundle() {
 #[test]
 fn reachable_unsupported_construct_blocks_the_bundle() {
     // A reachable `Char` is outside the native subset (FAI7001): no bundle.
-    let src = "module Main\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (Int.toString (if 'a' = 'b' then 0 else 1))\n";
+    let src = indoc! {r#"
+        module Main
+
+        public main : Runtime -> Unit
+        let main r = Console.writeLine r (Int.toString (if 'a' = 'b' then 0 else 1))
+    "#};
     let dir = workspace(&[("Main.fai", src)]);
     let session = Session::open(dir).unwrap();
     let result = build_run_bundle(session.db(), entry(&session, "Main.fai"));

@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use indoc::{formatdoc, indoc};
+
 /// Builds `src` (as `Main.fai`) into a native binary and runs it, returning its
 /// `(stdout, exit_code)`.
 fn build_and_run(src: &str) -> (String, Option<i32>) {
@@ -32,7 +34,9 @@ fn build_and_run(src: &str) -> (String, Option<i32>) {
     );
     assert_eq!(code, 0, "build failed: {}", String::from_utf8_lossy(&err));
 
-    let run = Command::new(&exe).output().unwrap();
+    // `fai build` appends the platform executable extension (`.exe` on Windows).
+    let produced = exe.with_extension(std::env::consts::EXE_EXTENSION);
+    let run = Command::new(&produced).output().unwrap();
     (String::from_utf8_lossy(&run.stdout).into_owned(), run.status.code())
 }
 
@@ -46,9 +50,12 @@ fn unique_dir() -> PathBuf {
 }
 
 fn print_main(expr: &str) -> String {
-    format!(
-        "module Main\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime ({expr})\n"
-    )
+    formatdoc! {r#"
+        module Main
+
+        public main : Runtime -> Unit
+        let main runtime = Console.writeLine runtime ({expr})
+    "#}
 }
 
 #[test]
@@ -74,7 +81,14 @@ fn conditional() {
 
 #[test]
 fn cross_definition_call() {
-    let src = "module Main\n\nlet double x = x + x\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (Int.toString (double 21))\n";
+    let src = indoc! {r#"
+        module Main
+
+        let double x = x + x
+
+        public main : Runtime -> Unit
+        let main runtime = Console.writeLine runtime (Int.toString (double 21))
+    "#};
     let (out, code) = build_and_run(src);
     assert_eq!(out, "42\n");
     assert_eq!(code, Some(0));
@@ -82,7 +96,16 @@ fn cross_definition_call() {
 
 #[test]
 fn higher_order_and_partial_application() {
-    let src = "module Main\n\nlet add x y = x + y\n\nlet apply f x = f x\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (Int.toString (apply (add 40) 2))\n";
+    let src = indoc! {r#"
+        module Main
+
+        let add x y = x + y
+
+        let apply f x = f x
+
+        public main : Runtime -> Unit
+        let main runtime = Console.writeLine runtime (Int.toString (apply (add 40) 2))
+    "#};
     let (out, code) = build_and_run(src);
     assert_eq!(out, "42\n");
     assert_eq!(code, Some(0));

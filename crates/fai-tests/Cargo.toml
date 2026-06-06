@@ -28,6 +28,7 @@ fai-core.workspace = true
 fai-rc.workspace = true
 fai-codegen.workspace = true
 fai-runtime.workspace = true
+indoc.workspace = true
 insta.workspace = true
 serde_json.workspace = true
 proptest.workspace = true

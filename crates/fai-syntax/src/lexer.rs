@@ -456,6 +456,7 @@ fn is_ident_continue(c: char) -> bool {
 #[cfg(test)]
 mod tests {
     use fai_span::{ByteOffset, SourceId, TextRange};
+    use indoc::indoc;
 
     use super::{Lexed, lex};
     use crate::token::{Token, TokenKind};
@@ -623,16 +624,17 @@ mod tests {
 
     #[test]
     fn comments_are_trivia() {
-        let result = lexed("// line\n/// doc\n(* block *) x");
+        let src = indoc! {r#"
+            // line
+            /// doc
+            (* block *) x"#};
+        let result = lexed(src);
         let comment_kinds: Vec<_> = result.comments.iter().map(|c| c.kind).collect();
         assert_eq!(
             comment_kinds,
             vec![crate::CommentKind::Line, crate::CommentKind::Doc, crate::CommentKind::Block,]
         );
-        assert_eq!(
-            kinds("// line\n/// doc\n(* block *) x"),
-            vec![TokenKind::LowerIdent, TokenKind::Eof,]
-        );
+        assert_eq!(kinds(src), vec![TokenKind::LowerIdent, TokenKind::Eof,]);
     }
 
     #[test]
@@ -719,7 +721,10 @@ mod tests {
     fn snapshot_trivia_and_literals() {
         insta::assert_snapshot!(
             "trivia_and_literals",
-            render("/// doc\nlet name = \"Fai\" // trailing\nlet c = 'F'"),
+            render(indoc! {r#"
+                /// doc
+                let name = "Fai" // trailing
+                let c = 'F'"#}),
         );
     }
 
