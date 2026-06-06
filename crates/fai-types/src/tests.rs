@@ -61,7 +61,8 @@ fn float_arithmetic_stays_float() {
 
 #[test]
 fn string_concat() {
-    let (db, f) = db_with(&[("M.fai", "module M\n\nlet s = \"a\" ++ \"b\"\n")]);
+    // `++` is now a Prelude operator, so the standard library must be loaded.
+    let (db, f) = db_with_std(&[("M.fai", "module M\n\nlet s = \"a\" ++ \"b\"\n")]);
     assert_eq!(type_of(&db, f[0], "s"), "String");
 }
 
@@ -962,15 +963,15 @@ fn interface_instance_and_method_access_typecheck() {
         public interface Greeter =
           greet : String -> String
 
-        public prefixed : String -> Greeter
-        let prefixed p = { Greeter with greet name = p ++ name }
+        public constGreeter : String -> Greeter
+        let constGreeter p = { Greeter with greet name = p }
 
         public greetWith : Greeter -> String -> String
         let greetWith g name = g.greet name
     "#};
     let (db, f) = db_with(&[("M.fai", src)]);
     assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
-    assert_eq!(type_of(&db, f[0], "prefixed"), "String -> Greeter");
+    assert_eq!(type_of(&db, f[0], "constGreeter"), "String -> Greeter");
     assert_eq!(type_of(&db, f[0], "greetWith"), "Greeter -> String -> String");
 }
 
@@ -1061,6 +1062,46 @@ fn equality_on_an_interface_value_is_rejected() {
     "#};
     let (db, f) = db_with(&[("M.fai", src)]);
     assert!(!check_codes(&db, f[0]).is_empty(), "expected an error for `=` on interfaces");
+}
+
+#[test]
+fn instantiating_a_sealed_builtin_interface_is_rejected() {
+    // `Num`/`Eq`/`Ord` are sealed: their operators dispatch to primitives.
+    let (db, f) = db_with_std(&[("M.fai", "module M\n\nlet bad = { Num with }\n")]);
+    assert!(
+        check_codes(&db, f[0]).contains(&"FAI3017".to_owned()),
+        "got {:?}",
+        check_codes(&db, f[0])
+    );
+}
+
+#[test]
+fn equality_on_a_record_with_a_function_field_is_rejected() {
+    // The deep comparability check rejects a concrete aggregate that contains a
+    // function, even though the function is nested.
+    let src = indoc! {r#"
+        module M
+
+        public same : { run : Int -> Int } -> { run : Int -> Int } -> Bool
+        let same a b = a = b
+    "#};
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert!(
+        !check_codes(&db, f[0]).is_empty(),
+        "expected an error for `=` on a function-bearing record"
+    );
+}
+
+#[test]
+fn equality_on_a_plain_record_is_fine() {
+    let src = indoc! {r#"
+        module M
+
+        public same : { x : Int, y : Int } -> { x : Int, y : Int } -> Bool
+        let same a b = a = b
+    "#};
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
 }
 
 #[test]

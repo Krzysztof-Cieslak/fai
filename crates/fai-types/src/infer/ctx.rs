@@ -403,12 +403,26 @@ impl InferCtx {
                     | SolveTy::Con(Con::Int)
                     | SolveTy::Con(Con::Float)
             ),
-            // Ordering is structural (`fai_compare`), so like `Eq` it admits any
-            // non-function type. Interfaces are dictionaries of closures, so they
-            // are not comparable. (A record may contain a function field, but that
-            // is caught when the field type is compared.)
-            Constraint::Ord | Constraint::Eq => {
-                !matches!(ty, SolveTy::Arrow(_, _) | SolveTy::Interface(_))
+            // Ordering and equality are structural (`fai_compare`/`fai_equal`),
+            // admitting any type that does not (transitively) contain a function
+            // or interface. A still-free variable is deferred (treated as
+            // satisfying); a concrete function-bearing aggregate is rejected here.
+            Constraint::Ord | Constraint::Eq => self.is_comparable(&ty),
+        }
+    }
+
+    /// Whether a (resolved) type is structurally comparable: no function or
+    /// interface anywhere in it. Free variables and `Error` are deferred (`true`).
+    fn is_comparable(&self, ty: &SolveTy) -> bool {
+        match self.resolve_shallow(ty) {
+            SolveTy::Arrow(_, _) | SolveTy::Interface(_) => false,
+            SolveTy::Var(_) | SolveTy::Error => true,
+            SolveTy::Con(_) | SolveTy::Adt(_) | SolveTy::Unit => true,
+            SolveTy::App(f, a) => self.is_comparable(&f) && self.is_comparable(&a),
+            SolveTy::Tuple(elems) => elems.iter().all(|e| self.is_comparable(e)),
+            SolveTy::Record(row) => {
+                let row = self.expand_row(&row);
+                row.fields.iter().all(|(_, t)| self.is_comparable(t))
             }
         }
     }

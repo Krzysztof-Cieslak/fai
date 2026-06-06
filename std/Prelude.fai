@@ -48,3 +48,38 @@ public compare : 'a -> 'a -> Int
 let compare a b = if a < b then 0 - 1 else if a > b then 1 else 0
 example: compare 1 1 = 0
 forall a: compare a a = 0
+
+// The overloaded operators are methods of these built-in interfaces. They are
+// sealed: the operators dispatch to primitives, so the interfaces document the
+// constraint and are not user-instantiable.
+public interface Num 'a =
+  (%) : 'a -> 'a -> 'a
+  ( * ) : 'a -> 'a -> 'a
+  (+) : 'a -> 'a -> 'a
+  (-) : 'a -> 'a -> 'a
+  (/) : 'a -> 'a -> 'a
+
+public interface Eq 'a =
+  (<>) : 'a -> 'a -> Bool
+  (=) : 'a -> 'a -> Bool
+
+public interface Ord 'a =
+  (<) : 'a -> 'a -> Bool
+  (<=) : 'a -> 'a -> Bool
+  (>) : 'a -> 'a -> Bool
+  (>=) : 'a -> 'a -> Bool
+
+/// Forward application: `x |> f` is `f x`.
+public (|>) : 'a -> ('a -> 'b) -> 'b
+let (|>) x f = f x
+example: (|>) 5 identity = 5
+
+/// Left-to-right composition: `(f >> g) x` is `g (f x)`.
+public (>>) : ('a -> 'b) -> ('b -> 'c) -> 'a -> 'c
+let (>>) f g = fun x -> g (f x)
+example: (>>) identity identity 0 = 0
+
+/// String concatenation.
+public (++) : String -> String -> String
+let (++) a b = Prim.stringConcat a b
+example: (++) "a" "b" = "ab"

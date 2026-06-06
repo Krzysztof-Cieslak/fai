@@ -73,6 +73,8 @@ pub const UNKNOWN_METHOD: DiagnosticCode = DiagnosticCode::new("FAI3014");
 pub const INSTANCE_METHOD_SET: DiagnosticCode = DiagnosticCode::new("FAI3015");
 /// `{ Name with … }` names something that is not an interface.
 pub const NOT_AN_INTERFACE: DiagnosticCode = DiagnosticCode::new("FAI3016");
+/// `{ Name with … }` instantiates a sealed built-in interface (`Num`/`Eq`/`Ord`).
+pub const SEALED_INTERFACE: DiagnosticCode = DiagnosticCode::new("FAI3017");
 /// A `match` does not cover every possible value.
 pub const NON_EXHAUSTIVE_MATCH: DiagnosticCode = DiagnosticCode::new("FAI4001");
 /// A `match` arm can never be reached (an earlier arm already covers it).
@@ -150,6 +152,11 @@ pub const CODES: &[CodeInfo] = &[
     CodeInfo {
         code: NOT_AN_INTERFACE,
         title: "not an interface",
+        default_severity: Severity::Error,
+    },
+    CodeInfo {
+        code: SEALED_INTERFACE,
+        title: "sealed built-in interface cannot be instantiated",
         default_severity: Severity::Error,
     },
     CodeInfo {

@@ -470,15 +470,18 @@ impl Parser<'_> {
         }
     }
 
-    /// Parses one interface method signature `name : ty`, or `None` on a
-    /// malformed method (after reporting it).
+    /// Parses one interface method signature `name : ty` (the name may be a
+    /// parenthesized operator), or `None` on a malformed method.
     fn parse_method_sig(&mut self) -> Option<MethodSig> {
         let start = self.start();
-        if !self.at(TokenKind::LowerIdent) {
+        let name = if let Some(op) = self.parse_op_name() {
+            op
+        } else if self.at(TokenKind::LowerIdent) {
+            self.bump_symbol()
+        } else {
             self.error(SYNTAX_ERROR, self.cur().range, "expected a method name");
             return None;
-        }
-        let name = self.bump_symbol();
+        };
         self.expect(TokenKind::Colon, "`:` in the method signature");
         let ty = self.parse_type();
         Some(MethodSig { name, ty, span: self.span_from(start) })
@@ -678,7 +681,9 @@ impl Parser<'_> {
                 break;
             }
             let start = self.start();
-            let name = if self.at(TokenKind::LowerIdent) {
+            let name = if let Some(op) = self.parse_op_name() {
+                op
+            } else if self.at(TokenKind::LowerIdent) {
                 self.bump_symbol()
             } else {
                 self.error(SYNTAX_ERROR, self.cur().range, "expected a method name");

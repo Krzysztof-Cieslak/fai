@@ -90,7 +90,7 @@ fn captures_dup_on_use_but_are_not_dropped() {
             module M
 
             public twice : ('a -> 'a) -> 'a -> 'a
-            let twice f = f >> f
+            let twice f = fun x -> f (f x)
         "#},
         "twice",
     );

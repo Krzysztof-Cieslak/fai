@@ -526,10 +526,6 @@ impl Lowerer<'_> {
             let args = vec![self.lower_expr(lhs), self.lower_expr(rhs)];
             return CExpr::new(K::Prim { op: Prim::Eq, args }, ty);
         }
-        if matches!(op, BinOp::Concat) {
-            let args = vec![self.lower_expr(lhs), self.lower_expr(rhs)];
-            return CExpr::new(K::Prim { op: Prim::StrConcat, args }, ty);
-        }
         match op {
             BinOp::Ne => {
                 let eq = CExpr::new(
@@ -554,10 +550,6 @@ impl Lowerer<'_> {
                 let els = Box::new(self.lower_expr(rhs));
                 CExpr::new(K::If { cond, then, els }, ty)
             }
-            // `a |> f` ≡ `f a`.
-            BinOp::Pipe => self.lower_application(rhs, &[lhs], ty),
-            // `f >> g` ≡ `fun x -> g (f x)`.
-            BinOp::Compose => self.lower_compose(lhs, rhs, ty),
             // `x :: xs` builds a `Cons` cell.
             BinOp::Cons => {
                 let args = vec![self.lower_expr(lhs), self.lower_expr(rhs)];
@@ -607,20 +599,6 @@ impl Lowerer<'_> {
     }
 
     /// Lowers `f >> g` to a lifted `fun x -> g (f x)`.
-    fn lower_compose(&mut self, lhs: ExprId, rhs: ExprId, ty: Ty) -> CExpr {
-        let (param_ty, result_ty) = match &ty {
-            Ty::Arrow(a, b) => ((**a).clone(), (**b).clone()),
-            _ => (Ty::Error, Ty::Error),
-        };
-        let x = self.fresh_local();
-        let f = self.lower_expr(lhs);
-        let g = self.lower_expr(rhs);
-        let xref = CExpr::new(K::Local(x), param_ty);
-        let fx = CExpr::new(K::App { func: Box::new(f), args: vec![xref] }, Ty::Error);
-        let gfx = CExpr::new(K::App { func: Box::new(g), args: vec![fx] }, result_ty);
-        self.lift_lambda(vec![x], gfx, ty)
-    }
-
     fn lower_lambda(&mut self, params: &[PatId], body: ExprId, ty: Ty) -> CExpr {
         let param_locals: Vec<LocalId> = params.iter().map(|&p| self.param_local(p)).collect();
         let body = self.lower_expr(body);

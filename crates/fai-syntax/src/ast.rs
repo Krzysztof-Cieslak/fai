@@ -279,14 +279,8 @@ pub enum BinOp {
     Div,
     /// `%`
     Rem,
-    /// `++`
-    Concat,
-    /// `::`
+    /// `::` (the built-in list constructor)
     Cons,
-    /// `|>`
-    Pipe,
-    /// `>>`
-    Compose,
     /// `&&`
     And,
     /// `||`
@@ -324,10 +318,7 @@ pub fn classify_op(symbol: Symbol) -> Option<BinOp> {
         "*" => BinOp::Mul,
         "/" => BinOp::Div,
         "%" => BinOp::Rem,
-        "++" => BinOp::Concat,
         "::" => BinOp::Cons,
-        "|>" => BinOp::Pipe,
-        ">>" => BinOp::Compose,
         "&&" => BinOp::And,
         "||" => BinOp::Or,
         "=" => BinOp::Eq,
