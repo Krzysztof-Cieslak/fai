@@ -22,10 +22,13 @@ use fai_syntax::ast::{
     BinOp, ExprId, ExprKind, FieldInit, MatchArm, MethodImpl, Module, PatId, PatKind, UnOp,
     classify_op, classify_prefix,
 };
-use fai_types::{BodyTypes, Con, RowEnd, Ty, body_types};
-use rustc_hash::FxHashSet;
+use fai_types::{
+    BodyTypes, Con, RecordRow, RowEnd, RowVarId, Scheme, Ty, body_types,
+    declared_or_inferred_scheme, evidence_requirements,
+};
+use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::ir::{CExpr, CoreFn, ExprKind as K, FnId, Lit, LoweredDef, Prim};
+use crate::ir::{CExpr, CoreFn, ExprKind as K, FieldIndex, FnId, Lit, LoweredDef, Prim};
 use crate::{ROW_POLY_UNSUPPORTED, UNSUPPORTED_NATIVE};
 
 /// The built-in `List` constructor tags: `[]` is `Nil`, `x :: xs` is `Cons`.
@@ -55,11 +58,18 @@ pub fn core(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
         types: &types,
         next_local: first_free_local(&resolved),
         fns: vec![placeholder_fn()],
+        evidence: FxHashMap::default(),
     };
 
     let param_locals: Vec<LocalId> = params.iter().map(|&p| lowerer.param_local(p)).collect();
+    // Offset-evidence parameters precede the real parameters; allocate and bind
+    // them before lowering the body so row-polymorphic field accesses can use
+    // them, and so calls supply them in the type-derived canonical order.
+    let evidence_params = lowerer.bind_evidence_params(&params, body);
     let body = lowerer.lower_expr(body);
-    lowerer.fns[0] = CoreFn { params: param_locals, captures: Vec::new(), body };
+    let mut all_params = evidence_params;
+    all_params.extend(param_locals);
+    lowerer.fns[0] = CoreFn { params: all_params, captures: Vec::new(), body };
     Arc::new(LoweredDef { def, fns: lowerer.fns })
 }
 
@@ -87,6 +97,45 @@ fn error_expr() -> CExpr {
     CExpr::new(K::Error, Ty::Error)
 }
 
+/// An immediate `Int` literal (used for statically known offset evidence).
+fn int_lit(n: i64) -> CExpr {
+    CExpr::new(K::Lit(Lit::Int(n)), Ty::int())
+}
+
+/// Recovers each scheme row variable's instantiation by matching a (general)
+/// scheme type against an actual instantiated type in parallel. For an open
+/// record `{ known | 'r }` matched against `{ actual… | tail }`, `'r` is bound to
+/// the actual fields not named in the scheme record, plus the actual tail — so an
+/// offset can be split into a static part and (when `tail` is another row
+/// variable) threaded caller evidence.
+fn match_rows(scheme: &Ty, actual: &Ty, out: &mut FxHashMap<RowVarId, RecordRow>) {
+    match (scheme, actual) {
+        (Ty::Record(s), Ty::Record(a)) => {
+            if let RowEnd::Open(r) = s.tail {
+                let known: FxHashSet<Symbol> = s.fields.iter().map(|(l, _)| *l).collect();
+                let extra: Vec<(Symbol, Ty)> =
+                    a.fields.iter().filter(|(l, _)| !known.contains(l)).cloned().collect();
+                out.insert(r, RecordRow { fields: extra, tail: a.tail });
+            }
+            for (label, st) in &s.fields {
+                if let Some((_, at)) = a.fields.iter().find(|(m, _)| m == label) {
+                    match_rows(st, at, out);
+                }
+            }
+        }
+        (Ty::Arrow(sf, st), Ty::Arrow(af, at)) | (Ty::App(sf, st), Ty::App(af, at)) => {
+            match_rows(sf, af, out);
+            match_rows(st, at, out);
+        }
+        (Ty::Tuple(ss), Ty::Tuple(aa)) => {
+            for (s, a) in ss.iter().zip(aa) {
+                match_rows(s, a, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// The per-definition lowering state.
 struct Lowerer<'a> {
     db: &'a dyn Db,
@@ -96,6 +145,10 @@ struct Lowerer<'a> {
     types: &'a BodyTypes,
     next_local: usize,
     fns: Vec<CoreFn>,
+    /// Offset evidence for the definition's row variables: the integer local
+    /// holding the count of the row's hidden fields before each lacked label.
+    /// Keyed by the row variable's body-numbered id and the label.
+    evidence: FxHashMap<(RowVarId, Symbol), LocalId>,
 }
 
 impl Lowerer<'_> {
@@ -209,10 +262,25 @@ impl Lowerer<'_> {
         let span = self.module.expr(expr).span;
         match self.resolved.get(expr) {
             Some(Res::Local(id)) => CExpr::new(K::Local(id), ty),
-            Some(Res::Def(def)) => CExpr::new(K::Global(def), ty),
+            Some(Res::Def(def)) => self.def_value(def, ty),
             Some(Res::Ctor(ctor)) => self.lower_ctor_value(ctor, ty),
             Some(Res::Builtin(name)) => self.lower_builtin_ref(name, ty, span),
             Some(Res::Error) | None => error_expr(),
+        }
+    }
+
+    /// A reference to a top-level definition as a value. A row-polymorphic
+    /// definition takes leading offset evidence; partially apply it here so the
+    /// resulting value — used first-class or applied to the real arguments —
+    /// already carries it. (A saturated call thus completes the partial
+    /// application; `apply_n` handles both uniformly.)
+    fn def_value(&mut self, def: DefId, ty: Ty) -> CExpr {
+        let args = self.evidence_args(def, &ty);
+        let global = CExpr::new(K::Global(def), ty.clone());
+        if args.is_empty() {
+            global
+        } else {
+            CExpr::new(K::App { func: Box::new(global), args }, ty)
         }
     }
 
@@ -269,7 +337,10 @@ impl Lowerer<'_> {
             return match self.interface_method_index(iref, field) {
                 Some(index) => {
                     let b = self.lower_expr(base);
-                    CExpr::new(K::DataField { base: Box::new(b), index }, ty)
+                    CExpr::new(
+                        K::DataField { base: Box::new(b), index: FieldIndex::Const(index) },
+                        ty,
+                    )
                 }
                 None => error_expr(),
             };
@@ -277,9 +348,101 @@ impl Lowerer<'_> {
         match record_field_index(&base_ty, field) {
             Some(index) => {
                 let b = self.lower_expr(base);
-                CExpr::new(K::DataField { base: Box::new(b), index }, ty)
+                CExpr::new(K::DataField { base: Box::new(b), index: FieldIndex::Const(index) }, ty)
             }
-            None => self.unsupported_row_poly(span, "row-polymorphic record field access"),
+            None => self.row_poly_field(base, &base_ty, field, span, ty),
+        }
+    }
+
+    /// Lowers a field access on a *row-polymorphic* record: the slot is the count
+    /// of the record's statically known fields that precede `field` plus the
+    /// row's offset evidence (a leading parameter).
+    fn row_poly_field(
+        &mut self,
+        base: ExprId,
+        base_ty: &Ty,
+        field: Symbol,
+        span: TextRange,
+        ty: Ty,
+    ) -> CExpr {
+        if let Ty::Record(row) = base_ty
+            && let RowEnd::Open(r) = row.tail
+            && let Some(&evidence) = self.evidence.get(&(r, field))
+        {
+            let preceding = row.fields.iter().filter(|(l, _)| l.as_str() < field.as_str()).count();
+            let index = FieldIndex::Dyn { base: u32::try_from(preceding).unwrap_or(0), evidence };
+            let b = self.lower_expr(base);
+            return CExpr::new(K::DataField { base: Box::new(b), index }, ty);
+        }
+        self.unsupported_row_poly(span, "row-polymorphic record field access")
+    }
+
+    /// Allocates a leading offset-evidence parameter for each row lacks-constraint
+    /// in the definition's (body-reconstructed) type, recording the local for
+    /// every `(row variable, label)` so field accesses can find it. Returns the
+    /// evidence parameters in canonical order (matching what callers supply).
+    fn bind_evidence_params(&mut self, params: &[PatId], body: ExprId) -> Vec<LocalId> {
+        let mut fn_ty = self.ty_of(body);
+        for &p in params.iter().rev() {
+            let pt = self.types.pat_type(p).cloned().unwrap_or(Ty::Error);
+            fn_ty = Ty::arrow(pt, fn_ty);
+        }
+        let mut locals = Vec::new();
+        for req in evidence_requirements(&Scheme::mono(fn_ty)) {
+            let local = self.fresh_local();
+            self.evidence.insert((req.row_var, req.label), local);
+            locals.push(local);
+        }
+        locals
+    }
+
+    /// The offset-evidence arguments to supply when referencing `def` (whose
+    /// reference has instantiated type `ref_ty`): one integer per the callee's row
+    /// lacks-constraints, in the same canonical order the callee binds them.
+    fn evidence_args(&self, def: DefId, ref_ty: &Ty) -> Vec<CExpr> {
+        let Some(scheme) = declared_or_inferred_scheme(self.db, def) else {
+            return Vec::new();
+        };
+        let reqs = evidence_requirements(&scheme);
+        if reqs.is_empty() {
+            return Vec::new();
+        }
+        let mut inst: FxHashMap<RowVarId, RecordRow> = FxHashMap::default();
+        match_rows(&scheme.ty, ref_ty, &mut inst);
+        reqs.iter().map(|req| self.evidence_value(req.row_var, req.label, &inst)).collect()
+    }
+
+    /// The evidence value for `(row_var, label)` under a call's row instantiation:
+    /// the statically known count of preceding fields plus, when the row resolves
+    /// to an extension of one of *this* function's row variables, that variable's
+    /// own evidence (threaded through).
+    fn evidence_value(
+        &self,
+        row_var: RowVarId,
+        label: Symbol,
+        inst: &FxHashMap<RowVarId, RecordRow>,
+    ) -> CExpr {
+        let Some(row) = inst.get(&row_var) else {
+            return int_lit(0);
+        };
+        let preceding = row.fields.iter().filter(|(l, _)| l.as_str() < label.as_str()).count();
+        let preceding = i64::try_from(preceding).unwrap_or(0);
+        match row.tail {
+            RowEnd::Closed => int_lit(preceding),
+            RowEnd::Open(s) => match self.evidence.get(&(s, label)).copied() {
+                Some(local) => {
+                    let caller = CExpr::new(K::Local(local), Ty::int());
+                    if preceding == 0 {
+                        caller
+                    } else {
+                        CExpr::new(
+                            K::Prim { op: Prim::IntAdd, args: vec![int_lit(preceding), caller] },
+                            Ty::int(),
+                        )
+                    }
+                }
+                None => int_lit(preceding),
+            },
         }
     }
 
@@ -338,7 +501,7 @@ impl Lowerer<'_> {
             return self.unsupported_row_poly(span, "record update");
         };
         if row.tail != RowEnd::Closed {
-            return self.unsupported_row_poly(span, "row-polymorphic record update");
+            return self.lower_row_poly_update(base, fields, ty, span);
         }
         let s = self.fresh_local();
         let base_c = self.lower_expr(base);
@@ -350,11 +513,59 @@ impl Lowerer<'_> {
             } else {
                 let i = u32::try_from(index).unwrap_or(0);
                 let base = Box::new(CExpr::new(K::Local(s), Ty::Error));
-                args.push(CExpr::new(K::DataField { base, index: i }, Ty::Error));
+                args.push(CExpr::new(
+                    K::DataField { base, index: FieldIndex::Const(i) },
+                    Ty::Error,
+                ));
             }
         }
         let make = CExpr::new(K::MakeData { tag: 0, args }, ty.clone());
         CExpr::new(K::Let { local: s, value: Box::new(base_c), body: Box::new(make) }, ty.clone())
+    }
+
+    /// Lowers `{ base with l = v, … }` on a *row-polymorphic* record: the field
+    /// count is unknown, so clone the record at runtime (by its object size) once
+    /// per updated field, replacing the field at its offset-evidence slot.
+    fn lower_row_poly_update(
+        &mut self,
+        base: ExprId,
+        fields: &[FieldInit],
+        ty: &Ty,
+        span: TextRange,
+    ) -> CExpr {
+        let base_ty = self.ty_of(base);
+        let Ty::Record(brow) = &base_ty else {
+            return self.unsupported_row_poly(span, "record update");
+        };
+        let RowEnd::Open(r) = brow.tail else {
+            return self.unsupported_row_poly(span, "record update");
+        };
+        let mut cur = self.lower_expr(base);
+        for f in fields {
+            let Some(&evidence) = self.evidence.get(&(r, f.name)) else {
+                return self.unsupported_row_poly(span, "row-polymorphic record update");
+            };
+            let preceding =
+                brow.fields.iter().filter(|(l, _)| l.as_str() < f.name.as_str()).count();
+            let offset = self.offset_expr(i64::try_from(preceding).unwrap_or(0), evidence);
+            let value = self.lower_expr(f.value);
+            cur = CExpr::new(
+                K::Prim { op: Prim::RecordUpdate, args: vec![cur, offset, value] },
+                ty.clone(),
+            );
+        }
+        cur
+    }
+
+    /// An `Int`-valued slot expression `preceding + evidence` for a
+    /// row-polymorphic field (just the evidence when no fields precede it).
+    fn offset_expr(&self, preceding: i64, evidence: LocalId) -> CExpr {
+        let ev = CExpr::new(K::Local(evidence), Ty::int());
+        if preceding == 0 {
+            ev
+        } else {
+            CExpr::new(K::Prim { op: Prim::IntAdd, args: vec![int_lit(preceding), ev] }, Ty::int())
+        }
     }
 
     /// Lowers a list literal `[a, b, …]` to nested `Cons`/`Nil` data.
@@ -731,7 +942,7 @@ impl Lowerer<'_> {
                 CExpr::new(
                     K::DataField {
                         base: Box::new(CExpr::new(K::Local(value_local), Ty::Error)),
-                        index,
+                        index: FieldIndex::Const(index),
                     },
                     Ty::Error,
                 )
@@ -798,7 +1009,7 @@ impl Lowerer<'_> {
                 CExpr::new(
                     K::DataField {
                         base: Box::new(CExpr::new(K::Local(value_local), Ty::Error)),
-                        index,
+                        index: FieldIndex::Const(index),
                     },
                     Ty::Error,
                 )
@@ -847,7 +1058,7 @@ impl Lowerer<'_> {
                 value: Box::new(CExpr::new(
                     K::DataField {
                         base: Box::new(CExpr::new(K::Local(value_local), Ty::Error)),
-                        index: 1,
+                        index: FieldIndex::Const(1),
                     },
                     Ty::Error,
                 )),

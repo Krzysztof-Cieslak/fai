@@ -79,12 +79,13 @@ pub(crate) fn mangle(module_label: &str, name: &str) -> String {
     format!("fai_{sanitized}_{name}")
 }
 
-/// A definition's parameter count, read from its binding (body-edit-stable, so it
-/// keeps the codegen firewall intact).
+/// A definition's runtime arity: its source parameters plus the leading offset
+/// evidence its (row-polymorphic) type requires. Read from the binding and the
+/// signature, both body-edit-stable, so the codegen firewall stays intact.
 #[salsa::tracked]
 pub fn def_arity(db: &dyn Db, file: SourceFile, name: Symbol) -> usize {
     let parsed = fai_syntax::parse(db, file);
-    parsed
+    let source_params = parsed
         .module
         .items
         .iter()
@@ -92,7 +93,11 @@ pub fn def_arity(db: &dyn Db, file: SourceFile, name: Symbol) -> usize {
             ItemKind::Binding { name: n, params, .. } if *n == name => Some(params.len()),
             _ => None,
         })
-        .unwrap_or(0)
+        .unwrap_or(0);
+    let def = DefId::new(file.source(db), name);
+    let evidence = fai_types::declared_or_inferred_scheme(db, def)
+        .map_or(0, |scheme| fai_types::evidence_count(&scheme));
+    source_params + evidence
 }
 
 pub(crate) fn arity_of(db: &dyn Db, def: DefId) -> usize {

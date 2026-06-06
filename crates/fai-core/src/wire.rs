@@ -17,7 +17,7 @@ use fai_types::Ty;
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
-use crate::ir::{CExpr, CoreFn, ExprKind, FnId, Lit, LoweredDef, Prim};
+use crate::ir::{CExpr, CoreFn, ExprKind, FieldIndex, FnId, Lit, LoweredDef, Prim};
 
 /// A complete program ready to JIT: an entry definition, the `Runtime` value
 /// binding applied to it, and their reachable set.
@@ -61,6 +61,20 @@ pub struct WireFn {
     pub captures: Vec<u32>,
     /// The function body.
     pub body: WireExpr,
+}
+
+/// A field slot in wire form (mirrors [`crate::ir::FieldIndex`]).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum WireFieldIndex {
+    /// A statically known slot.
+    Const(u32),
+    /// A row-polymorphic slot: `base` plus the value of the `evidence` slot.
+    Dyn {
+        /// The statically known preceding-field count.
+        base: u32,
+        /// The evidence slot.
+        evidence: u32,
+    },
 }
 
 /// A Core expression in wire form (no types).
@@ -124,8 +138,8 @@ pub enum WireExpr {
     DataField {
         /// The data value.
         base: Box<WireExpr>,
-        /// The field index.
-        index: u32,
+        /// The field slot.
+        index: WireFieldIndex,
     },
     /// Increment a slot's refcount.
     Dup {
@@ -177,6 +191,24 @@ fn slot(local: LocalId) -> u32 {
     u32::try_from(local.index()).expect("slot index fits u32")
 }
 
+fn field_index_to_wire(index: FieldIndex) -> WireFieldIndex {
+    match index {
+        FieldIndex::Const(n) => WireFieldIndex::Const(n),
+        FieldIndex::Dyn { base, evidence } => {
+            WireFieldIndex::Dyn { base, evidence: slot(evidence) }
+        }
+    }
+}
+
+fn field_index_from_wire(index: &WireFieldIndex) -> FieldIndex {
+    match *index {
+        WireFieldIndex::Const(n) => FieldIndex::Const(n),
+        WireFieldIndex::Dyn { base, evidence } => {
+            FieldIndex::Dyn { base, evidence: LocalId::from_index(evidence as usize) }
+        }
+    }
+}
+
 fn expr_to_wire(e: &CExpr, module_of: &dyn Fn(DefId) -> String) -> WireExpr {
     match &e.kind {
         ExprKind::Lit(lit) => WireExpr::Lit(lit.clone()),
@@ -209,9 +241,10 @@ fn expr_to_wire(e: &CExpr, module_of: &dyn Fn(DefId) -> String) -> WireExpr {
             args: args.iter().map(|a| expr_to_wire(a, module_of)).collect(),
         },
         ExprKind::DataTag(base) => WireExpr::DataTag(Box::new(expr_to_wire(base, module_of))),
-        ExprKind::DataField { base, index } => {
-            WireExpr::DataField { base: Box::new(expr_to_wire(base, module_of)), index: *index }
-        }
+        ExprKind::DataField { base, index } => WireExpr::DataField {
+            base: Box::new(expr_to_wire(base, module_of)),
+            index: field_index_to_wire(*index),
+        },
         ExprKind::Dup { local, body } => {
             WireExpr::Dup { local: slot(*local), body: Box::new(expr_to_wire(body, module_of)) }
         }
@@ -324,9 +357,10 @@ fn expr_from_wire(e: &WireExpr, sources: &mut SourceAssigner) -> CExpr {
             args: args.iter().map(|a| expr_from_wire(a, sources)).collect(),
         },
         WireExpr::DataTag(base) => ExprKind::DataTag(Box::new(expr_from_wire(base, sources))),
-        WireExpr::DataField { base, index } => {
-            ExprKind::DataField { base: Box::new(expr_from_wire(base, sources)), index: *index }
-        }
+        WireExpr::DataField { base, index } => ExprKind::DataField {
+            base: Box::new(expr_from_wire(base, sources)),
+            index: field_index_from_wire(index),
+        },
         WireExpr::Dup { local, body } => ExprKind::Dup {
             local: LocalId::from_index(*local as usize),
             body: Box::new(expr_from_wire(body, sources)),

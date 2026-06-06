@@ -196,6 +196,9 @@ pub enum Prim {
     ClockNow,
     /// `Random.nextInt`: a pseudo-random `Int` in `[0, n)`.
     RandomNextInt,
+    /// Row-polymorphic record update: clone a record (by runtime size), replacing
+    /// the field at a runtime index. Internal to lowering, never a source name.
+    RecordUpdate,
 }
 
 impl Prim {
@@ -239,6 +242,7 @@ impl Prim {
             Prim::ConsoleWriteLine => "fai_console_write_line",
             Prim::ClockNow => "fai_clock_now",
             Prim::RandomNextInt => "fai_random_next_int",
+            Prim::RecordUpdate => "fai_record_update",
         }
     }
 
@@ -259,6 +263,7 @@ impl Prim {
             | Prim::ConsoleWriteLine
             | Prim::ClockNow
             | Prim::RandomNextInt => 1,
+            Prim::RecordUpdate => 3,
             _ => 2,
         }
     }
@@ -306,6 +311,26 @@ impl CExpr {
     pub fn new(kind: ExprKind, ty: Ty) -> Self {
         Self { kind, ty }
     }
+}
+
+/// The slot of a projected record/dictionary field.
+///
+/// Monomorphic access is a compile-time constant. Row-polymorphic access is a
+/// runtime sum `base + evidence`, where `evidence` is an integer local — a
+/// leading offset-evidence parameter holding the count of the row's hidden
+/// fields that precede this one (see [`fai_types::evidence`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldIndex {
+    /// A statically known slot (monomorphic record or interface dictionary).
+    Const(u32),
+    /// A row-polymorphic slot: `base` (the statically known preceding fields)
+    /// plus the value of the `evidence` local.
+    Dyn {
+        /// The statically known fields preceding this one.
+        base: u32,
+        /// The evidence local holding the count of preceding hidden fields.
+        evidence: LocalId,
+    },
 }
 
 /// The forms of a Core expression.
@@ -371,8 +396,8 @@ pub enum ExprKind {
     DataField {
         /// The data value (consumed).
         base: Box<CExpr>,
-        /// The field index.
-        index: u32,
+        /// The field slot (constant, or row-polymorphic `base + evidence`).
+        index: FieldIndex,
     },
     /// Increment a variable's reference count, then evaluate `body` (inserted by
     /// `fai-rc`).

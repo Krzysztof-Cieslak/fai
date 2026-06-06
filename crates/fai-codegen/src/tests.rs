@@ -718,6 +718,120 @@ fn clock_capability_reads_positive_time() {
 }
 
 #[test]
+fn shared_partial_application_is_applied_safely() {
+    // A partial application bound to a parameter is dup'd at its use; applying it
+    // must respect the refcount (it must not free storage another reference
+    // holds).
+    let src = indoc! {r#"
+        module M
+
+        let add a b = a + b
+
+        let applyIt g = g 10
+
+        public main : Runtime -> Unit
+        let main r = r.console.writeLine (Int.toString (applyIt (add 5)))
+    "#};
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "15\n");
+}
+
+#[test]
+fn row_polymorphic_field_access_runs() {
+    // A least-authority signature: `pick` accepts any record with an `a` field.
+    let src = indoc! {r#"
+        module M
+
+        pick : { a : Int | 'r } -> Int
+        let pick rec = rec.a
+
+        public main : Runtime -> Unit
+        let main r = r.console.writeLine (Int.toString (pick { a = 7, b = 9 }))
+    "#};
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "7\n");
+}
+
+#[test]
+fn row_polymorphic_offset_differs_per_call_site() {
+    // `c` sits at slot 2 in `{a,b,c}` but slot 1 in `{a,c,z}`: the same function
+    // reads it via runtime evidence, not a baked-in slot.
+    let src = indoc! {r#"
+        module M
+
+        sumAC : { a : Int, c : Int | 'r } -> Int
+        let sumAC rec = rec.a + rec.c
+
+        public main : Runtime -> Unit
+        let main r =
+          r.console.writeLine (Int.toString (sumAC { a = 1, b = 2, c = 3 } + sumAC { a = 10, c = 20, z = 9 }))
+    "#};
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "34\n"); // (1+3) + (10+20)
+}
+
+#[test]
+fn row_polymorphic_evidence_threads_through_calls() {
+    // `greet` forwards its record to `emit`; the offset evidence threads through.
+    let src = indoc! {r#"
+        module M
+
+        emit : { console : Console | 'r } -> String -> Unit
+        let emit env msg = env.console.writeLine msg
+
+        greet : { console : Console | 'r } -> Unit
+        let greet env = emit env "hi"
+
+        public main : Runtime -> Unit
+        let main r = greet r
+    "#};
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "hi\n");
+}
+
+#[test]
+fn row_polymorphic_function_passed_first_class() {
+    // `getA` (row-polymorphic) is passed as a value; its evidence is baked in.
+    let src = indoc! {r#"
+        module M
+
+        getA : { a : Int | 'r } -> Int
+        let getA rec = rec.a
+
+        applyRec : ({ a : Int, b : Int } -> Int) -> Int
+        let applyRec f = f { a = 5, b = 7 }
+
+        public main : Runtime -> Unit
+        let main r = r.console.writeLine (Int.toString (applyRec getA))
+    "#};
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "5\n");
+}
+
+#[test]
+fn row_polymorphic_record_update_runs() {
+    let src = indoc! {r#"
+        module M
+
+        bump : { score : Int | 'r } -> { score : Int | 'r }
+        let bump rec = { rec with score = rec.score + 100 }
+
+        public main : Runtime -> Unit
+        let main r =
+          let bumped = bump { name = "x", score = 5 }
+          r.console.writeLine (Int.toString bumped.score)
+    "#};
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "105\n");
+}
+
+#[test]
 fn runtime_threaded_through_signatured_helper() {
     // A helper that receives the full `Runtime` can project a capability, given a
     // signature (the receiver's type must be known for method access).
