@@ -19,6 +19,7 @@ salsa.workspace = true
 rustc-hash.workspace = true
 
 [dev-dependencies]
+indoc.workspace = true
 insta.workspace = true
 proptest.workspace = true
 

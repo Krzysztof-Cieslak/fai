@@ -2,17 +2,34 @@
 
 use fai_db::{Db, DbSpanResolver, FaiDatabase, SourceFile};
 use fai_ide::{ListOpts, api, def, dependents, outline, refs, symbols, type_at};
+use indoc::indoc;
 
 fn workspace() -> (FaiDatabase, Vec<SourceFile>) {
     let mut db = FaiDatabase::new();
     let a = db.add_source(
         "A.fai".into(),
-        "module A\n\npublic inc : Int -> Int\nlet inc x = x + 1\n\npublic twice : ('a -> 'a) -> 'a -> 'a\nlet twice f = f >> f\n".to_owned(),
+        indoc! {r#"
+            module A
+
+            public inc : Int -> Int
+            let inc x = x + 1
+
+            public twice : ('a -> 'a) -> 'a -> 'a
+            let twice f = f >> f
+        "#}
+        .to_owned(),
     );
     let b = db.add_source(
         "B.fai".into(),
-        "module B\n\npublic two : Int\nlet two = A.inc 1\n\nlet four = A.inc (A.inc two)\n"
-            .to_owned(),
+        indoc! {r#"
+            module B
+
+            public two : Int
+            let two = A.inc 1
+
+            let four = A.inc (A.inc two)
+        "#}
+        .to_owned(),
     );
     let files = vec![db.source_file(a).unwrap(), db.source_file(b).unwrap()];
     (db, files)
@@ -77,7 +94,16 @@ fn type_under_error_is_best_effort() {
     let mut db = FaiDatabase::new();
     let id = db.add_source(
         "M.fai".into(),
-        "module M\n\npublic good : Int -> Int\nlet good x = x + 1\n\npublic bad : Int -> Bool\nlet bad x = x + 1\n".to_owned(),
+        indoc! {r#"
+            module M
+
+            public good : Int -> Int
+            let good x = x + 1
+
+            public bad : Int -> Bool
+            let bad x = x + 1
+        "#}
+        .to_owned(),
     );
     let _ = db.source_file(id).unwrap();
     let r = type_at(&db, "M.good", &DbSpanResolver::new(&db));

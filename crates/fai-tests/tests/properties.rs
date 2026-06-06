@@ -6,6 +6,7 @@
 //! inference is deterministic and never panics on arbitrary (parseable) input.
 
 use fai_tests::{check_source, local_type};
+use indoc::formatdoc;
 use proptest::prelude::*;
 
 /// Whether `name` is a reserved keyword (so it cannot be a binding name).
@@ -170,7 +171,11 @@ proptest! {
     // A well-typed Int expression typechecks clean and infers to `Int`.
     #[test]
     fn well_typed_int_expressions_infer_int(e in int_strategy()) {
-        let src = format!("module P\n\nlet result = {}\n", render_int(&e));
+        let src = formatdoc! {r#"
+            module P
+
+            let result = {}
+        "#, render_int(&e)};
         let outcome = check_source(&src);
         prop_assert!(!outcome.has_errors(), "errors {:?} for {src}", outcome.codes());
         prop_assert_eq!(outcome.types.get("result").map(String::as_str), Some("Int"));
@@ -181,17 +186,24 @@ proptest! {
     // public signature.
     #[test]
     fn local_binding_of_int_expr_infers_int(e in int_strategy()) {
-        let src = format!(
-            "module P\n\nlet f =\n  let value = {}\n  value\n",
-            render_int(&e)
-        );
+        let src = formatdoc! {r#"
+            module P
+
+            let f =
+              let value = {}
+              value
+        "#, render_int(&e)};
         prop_assert_eq!(local_type(&src, "f", "value"), "Int");
     }
 
     // A well-typed Bool expression typechecks clean and infers to `Bool`.
     #[test]
     fn well_typed_bool_expressions_infer_bool(e in bool_strategy_with(int_strategy().boxed())) {
-        let src = format!("module P\n\nlet result = {}\n", render_bool(&e));
+        let src = formatdoc! {r#"
+            module P
+
+            let result = {}
+        "#, render_bool(&e)};
         let outcome = check_source(&src);
         prop_assert!(!outcome.has_errors(), "errors {:?} for {src}", outcome.codes());
         prop_assert_eq!(outcome.types.get("result").map(String::as_str), Some("Bool"));
@@ -200,10 +212,12 @@ proptest! {
     // Adding the correct signature to a well-typed expression keeps it clean.
     #[test]
     fn correct_signature_keeps_it_clean(e in int_strategy()) {
-        let src = format!(
-            "module P\n\npublic result : Int\nlet result = {}\n",
-            render_int(&e)
-        );
+        let src = formatdoc! {r#"
+            module P
+
+            public result : Int
+            let result = {}
+        "#, render_int(&e)};
         let outcome = check_source(&src);
         prop_assert!(!outcome.has_errors(), "errors {:?} for {src}", outcome.codes());
     }
@@ -216,7 +230,11 @@ proptest! {
             Expr::Int(i) => render_int(i),
             Expr::Bool(b) => render_bool(b),
         };
-        let src = format!("module P\n\nlet result = {body}\n");
+        let src = formatdoc! {r#"
+            module P
+
+            let result = {body}
+        "#};
         let a = check_source(&src);
         let b = check_source(&src);
         let (a_codes, b_codes) = (a.codes(), b.codes());
@@ -231,7 +249,11 @@ proptest! {
         name in "[a-z][a-z0-9]{0,8}".prop_filter("reserved keyword", |s| !is_reserved(s)),
         n in 0i64..100,
     ) {
-        let src = format!("module P\n\nlet {name} = {n}\n");
+        let src = formatdoc! {r#"
+            module P
+
+            let {name} = {n}
+        "#};
         let outcome = check_source(&src);
         // A lone integer binding (with a non-keyword name) is always clean `Int`.
         prop_assert!(!outcome.has_errors(), "{:?}", outcome.codes());
@@ -241,11 +263,11 @@ proptest! {
     // exercising mixed Int/Bool subexpressions.
     #[test]
     fn comparison_of_ints_is_bool(a in int_strategy(), b in int_strategy()) {
-        let src = format!(
-            "module P\n\nlet result = {} < {}\n",
-            render_int(&a),
-            render_int(&b)
-        );
+        let src = formatdoc! {r#"
+            module P
+
+            let result = {} < {}
+        "#, render_int(&a), render_int(&b)};
         let outcome = check_source(&src);
         prop_assert!(!outcome.has_errors(), "errors {:?} for {src}", outcome.codes());
         prop_assert_eq!(outcome.types.get("result").map(String::as_str), Some("Bool"));
@@ -255,7 +277,11 @@ proptest! {
     // overloaded operators resolve to the Float type with no Int defaulting.
     #[test]
     fn well_typed_float_expressions_infer_float(e in float_strategy()) {
-        let src = format!("module P\n\nlet result = {}\n", render_float(&e));
+        let src = formatdoc! {r#"
+            module P
+
+            let result = {}
+        "#, render_float(&e)};
         let outcome = check_source(&src);
         prop_assert!(!outcome.has_errors(), "errors {:?} for {src}", outcome.codes());
         prop_assert_eq!(outcome.types.get("result").map(String::as_str), Some("Float"));
@@ -278,7 +304,13 @@ proptest! {
             .collect::<Vec<_>>()
             .join(", ");
         let first = &sorted[0];
-        let src = format!("module P\n\nlet rec0 = {{ {lits} }}\n\nlet got = rec0.{first}\n");
+        let src = formatdoc! {r#"
+            module P
+
+            let rec0 = {{ {lits} }}
+
+            let got = rec0.{first}
+        "#};
 
         let outcome = check_source(&src);
         prop_assert!(!outcome.has_errors(), "errors {:?} for {src}", outcome.codes());
@@ -299,7 +331,16 @@ proptest! {
         let arms = |count: usize| {
             (0..count).map(|i| format!("  | C{i} -> {i}")).collect::<Vec<_>>().join("\n")
         };
-        let header = format!("module P\n\ntype T =\n{variants}\n\npublic f : T -> Int\nlet f t =\n  match t with\n");
+        let header = formatdoc! {r#"
+            module P
+
+            type T =
+            {variants}
+
+            public f : T -> Int
+            let f t =
+              match t with
+        "#};
 
         // Covering all `n` constructors is exhaustive and clean.
         let complete = check_source(&format!("{header}{}\n", arms(n)));

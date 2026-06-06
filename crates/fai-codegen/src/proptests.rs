@@ -7,6 +7,7 @@
 //! evaluator. Each run also asserts a leak-free exit, so this exercises codegen,
 //! the calling convention, and reference counting together.
 
+use indoc::formatdoc;
 use proptest::prelude::*;
 
 use crate::tests::run;
@@ -142,11 +143,17 @@ proptest! {
         x in any::<i64>().prop_filter("avoid i64::MIN rendering", |v| *v != i64::MIN),
     ) {
         let expected = eval(&e, x);
-        let src = format!(
-            "module M\n\nlet f x = {}\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (Int.toString (f {}))\n",
+        let src = formatdoc! {r#"
+            module M
+
+            let f x = {}
+
+            public main : Runtime -> Unit
+            let main r = Console.writeLine r (Int.toString (f {}))
+        "#,
             render(&e),
             render_arg(x),
-        );
+        };
         let (code, out) = run(&src);
         prop_assert_eq!(code, 0, "program leaked or failed: {}", out);
         let got: i64 = out.trim().parse().expect("integer output");
@@ -159,11 +166,17 @@ proptest! {
         x in any::<i64>().prop_filter("avoid i64::MIN rendering", |v| *v != i64::MIN),
     ) {
         let expected = if eval_b(&b, x) { 1 } else { 0 };
-        let src = format!(
-            "module M\n\nlet f x = if {} then 1 else 0\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (Int.toString (f {}))\n",
+        let src = formatdoc! {r#"
+            module M
+
+            let f x = if {} then 1 else 0
+
+            public main : Runtime -> Unit
+            let main r = Console.writeLine r (Int.toString (f {}))
+        "#,
             render_b(&b),
             render_arg(x),
-        );
+        };
         let (code, out) = run(&src);
         prop_assert_eq!(code, 0, "program leaked or failed: {}", out);
         let got: i64 = out.trim().parse().expect("integer output");

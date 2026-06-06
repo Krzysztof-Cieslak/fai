@@ -5,6 +5,7 @@ use fai_syntax::ast::{
     ExprId, ExprKind, Item, ItemKind, LetStmt, Module, PatId, PatKind, RowTail, TypeId, TypeKind,
 };
 use fai_syntax::{ItemTree, TokenKind, build_item_tree, parse_module};
+use indoc::indoc;
 use proptest::prelude::*;
 use proptest::test_runner::FileFailurePersistence;
 
@@ -37,56 +38,100 @@ fn assert_idempotent(src: &str) {
 
 #[test]
 fn hello() {
-    let src = "module Hello\npublic main : Runtime -> Unit\nlet main runtime =\n  runtime.console.writeLine \"Hello, Fai!\"";
+    let src = indoc! {r#"
+        module Hello
+        public main : Runtime -> Unit
+        let main runtime =
+          runtime.console.writeLine "Hello, Fai!""#};
     insta::assert_snapshot!("hello", fmt(src));
     assert_idempotent(src);
 }
 
 #[test]
 fn signatures_and_operators() {
-    let src = "module Basics\npublic add : Int -> Int -> Int\nlet add x y = x + y\nlet ratio = 3.0 / 2.0\nlet isEven = count % 2 = 0";
+    let src = indoc! {r#"
+        module Basics
+        public add : Int -> Int -> Int
+        let add x y = x + y
+        let ratio = 3.0 / 2.0
+        let isEven = count % 2 = 0"#};
     insta::assert_snapshot!("basics", fmt(src));
     assert_idempotent(src);
 }
 
 #[test]
 fn pipes_collapse_when_they_fit() {
-    let src = "module Funcs\npublic describe : Int -> String\nlet describe n =\n  n\n  |> inc\n  |> Int.toString";
+    let src = indoc! {r#"
+        module Funcs
+        public describe : Int -> String
+        let describe n =
+          n
+          |> inc
+          |> Int.toString"#};
     insta::assert_snapshot!("pipes", fmt(src));
     assert_idempotent(src);
 }
 
 #[test]
 fn local_let_block() {
-    let src = "module Locals\npublic hypotenuse : Float -> Float -> Float\nlet hypotenuse a b =\n  let a2 = a * a\n  let b2 = b * b\n  sqrt (a2 + b2)";
+    let src = indoc! {r#"
+        module Locals
+        public hypotenuse : Float -> Float -> Float
+        let hypotenuse a b =
+          let a2 = a * a
+          let b2 = b * b
+          sqrt (a2 + b2)"#};
     insta::assert_snapshot!("locals", fmt(src));
     assert_idempotent(src);
 }
 
 #[test]
 fn if_else_chain_collapses_when_it_fits() {
-    let src = "module Locals\npublic classify : Int -> String\nlet classify n =\n  if n < 0 then \"negative\"\n  else if n = 0 then \"zero\"\n  else \"positive\"";
+    let src = indoc! {r#"
+        module Locals
+        public classify : Int -> String
+        let classify n =
+          if n < 0 then "negative"
+          else if n = 0 then "zero"
+          else "positive""#};
     insta::assert_snapshot!("classify", fmt(src));
     assert_idempotent(src);
 }
 
 #[test]
 fn multiline_if_when_it_does_not_fit() {
-    let src = "module M\nlet f x =\n  if someVeryLongCondition x then theFirstRatherLongBranchResult x else theSecondEquallyLongBranchResultValue x";
+    let src = indoc! {r#"
+        module M
+        let f x =
+          if someVeryLongCondition x then theFirstRatherLongBranchResult x else theSecondEquallyLongBranchResultValue x"#};
     insta::assert_snapshot!("multiline_if", fmt(src));
     assert_idempotent(src);
 }
 
 #[test]
 fn tuples_lists_and_contracts() {
-    let src = "module Tuples\npublic divMod : Int -> Int -> Int * Int\nlet divMod a b = (a / b, a % b)\nexample: divMod 7 3 = (2, 1)\nlet xs = [1, 2, 3]\npublic swap : 'a * 'b -> 'b * 'a\nlet swap pair =\n  let (x, y) = pair\n  (y, x)";
+    let src = indoc! {r#"
+        module Tuples
+        public divMod : Int -> Int -> Int * Int
+        let divMod a b = (a / b, a % b)
+        example: divMod 7 3 = (2, 1)
+        let xs = [1, 2, 3]
+        public swap : 'a * 'b -> 'b * 'a
+        let swap pair =
+          let (x, y) = pair
+          (y, x)"#};
     insta::assert_snapshot!("tuples", fmt(src));
     assert_idempotent(src);
 }
 
 #[test]
 fn comments_doc_leading_and_trailing() {
-    let src = "module Comments\n// a standalone note\n/// Doc for answer.\npublic answer : Int\nlet answer = 42 // the trailing answer";
+    let src = indoc! {r#"
+        module Comments
+        // a standalone note
+        /// Doc for answer.
+        public answer : Int
+        let answer = 42 // the trailing answer"#};
     insta::assert_snapshot!("comments", fmt(src));
     assert_idempotent(src);
 }
@@ -94,7 +139,11 @@ fn comments_doc_leading_and_trailing() {
 #[test]
 fn trailing_comment_on_local_let_survives() {
     // Exercises the expression-trailing attachment path end to end.
-    let src = "module M\nlet f =\n  let a = 1 // keep me\n  a";
+    let src = indoc! {r#"
+        module M
+        let f =
+          let a = 1 // keep me
+          a"#};
     let out = fmt(src);
     assert!(out.contains("let a = 1 // keep me"), "comment dropped:\n{out}");
     assert_idempotent(src);
@@ -151,7 +200,19 @@ fn assert_canonical(src: &str) -> String {
 
 #[test]
 fn all_binary_operators_format_with_spaces() {
-    let src = "module M\nlet a = w - x * y / z % p\nlet b = c ++ d :: e\nlet c = p && q || r\nlet d = a = b\nlet e = a <> b\nlet f = a < b\nlet g = a <= b\nlet h = a > b\nlet i = a >= b\nlet j = f >> g\nlet k = x |> f";
+    let src = indoc! {r#"
+        module M
+        let a = w - x * y / z % p
+        let b = c ++ d :: e
+        let c = p && q || r
+        let d = a = b
+        let e = a <> b
+        let f = a < b
+        let g = a <= b
+        let h = a > b
+        let i = a >= b
+        let j = f >> g
+        let k = x |> f"#};
     let out = assert_canonical(src);
     for needle in [
         "w - x * y / z % p",
@@ -185,9 +246,13 @@ fn unary_minus_and_negatives() {
 
 #[test]
 fn literals_are_reproduced_verbatim() {
-    let out = assert_canonical(
-        "module M\nlet a = 0xFF\nlet b = 1_000\nlet c = 'a'\nlet d = 3.0\nlet e = \"hi\"",
-    );
+    let out = assert_canonical(indoc! {r#"
+        module M
+        let a = 0xFF
+        let b = 1_000
+        let c = 'a'
+        let d = 3.0
+        let e = "hi""#});
     for needle in ["= 0xFF", "= 1_000", "= 'a'", "= 3.0", "= \"hi\""] {
         assert!(out.contains(needle), "missing `{needle}` in:\n{out}");
     }
@@ -261,8 +326,12 @@ fn comment_only_module_keeps_the_comment() {
 
 #[test]
 fn contracts_stay_in_the_binding_group() {
-    let out =
-        assert_canonical("module M\npublic f : Int\nlet f = 1\nexample: f = 1\nforall x: f = x");
+    let out = assert_canonical(indoc! {r#"
+        module M
+        public f : Int
+        let f = 1
+        example: f = 1
+        forall x: f = x"#});
     assert!(
         out.contains("public f : Int\nlet f = 1\nexample: f = 1\nforall x: f = x"),
         "contracts were split from the binding:\n{out}",
@@ -532,7 +601,10 @@ fn fmt_preserves_structure_examples() {
     for src in [
         "module M\nlet f =\n  x",
         "module M\nlet g x = if c then a else b",
-        "module M\nlet h x =\n  if someLongCondition then theFirstResult else theSecondResult",
+        indoc! {r#"
+            module M
+            let h x =
+              if someLongCondition then theFirstResult else theSecondResult"#},
         "module M\nlet a = w - x * y / z % p",
         "module M\nlet b = f (g x) (h y)",
         "module M\nlet t = ((a, b), [c, d])",
@@ -540,9 +612,22 @@ fn fmt_preserves_structure_examples() {
         "module M\nlet p = a :: b :: c ++ d",
         "module M\npublic q : ('a -> 'b) -> List 'a -> List 'b\nlet q f = f",
         // Data types, match, and records.
-        "module M\ntype Color =\n  | Red\n  | Green\n  | Blue",
-        "module M\ntype Shape =\n  | Circle Float\n  | Rect Float Float",
-        "module M\ntype Opt 'a =\n  | None\n  | Some 'a",
+        indoc! {r#"
+            module M
+            type Color =
+              | Red
+              | Green
+              | Blue"#},
+        indoc! {r#"
+            module M
+            type Shape =
+              | Circle Float
+              | Rect Float Float"#},
+        indoc! {r#"
+            module M
+            type Opt 'a =
+              | None
+              | Some 'a"#},
         "module M\ntype Celsius = Int",
         "module M\ntype Vec2 = { x : Float, y : Float }",
         "module M\npublic getX : { x : 'a | _ } -> 'a\nlet getX r = r.x",
@@ -550,10 +635,30 @@ fn fmt_preserves_structure_examples() {
         "module M\nlet p = { x = 1, y = 2 }",
         "module M\nlet q = { r with x = 1, y = 2 }",
         "module M\nlet g r = r.x.y",
-        "module M\nlet f x =\n  match x with\n  | Some n -> n\n  | None -> 0",
-        "module M\nlet f xs =\n  match xs with\n  | [] -> 0\n  | x :: rest -> x",
-        "module M\nlet f n =\n  match n with\n  | 0 | 1 -> 1\n  | _ -> 2",
-        "module M\nlet f r =\n  match r with\n  | { x = 0 | _ } -> 0\n  | { x, y } -> x",
+        indoc! {r#"
+            module M
+            let f x =
+              match x with
+              | Some n -> n
+              | None -> 0"#},
+        indoc! {r#"
+            module M
+            let f xs =
+              match xs with
+              | [] -> 0
+              | x :: rest -> x"#},
+        indoc! {r#"
+            module M
+            let f n =
+              match n with
+              | 0 | 1 -> 1
+              | _ -> 2"#},
+        indoc! {r#"
+            module M
+            let f r =
+              match r with
+              | { x = 0 | _ } -> 0
+              | { x, y } -> x"#},
     ] {
         let before = parse_module(SourceId::new(0), src);
         assert!(before.diagnostics.is_empty(), "sample did not parse: {src}");
@@ -591,7 +696,11 @@ fn record_types_in_signatures_format() {
 
 #[test]
 fn union_type_declaration_formats() {
-    let out = assert_canonical("module M\ntype Shape =\n  | Circle Float\n  | Rect Float Float");
+    let out = assert_canonical(indoc! {r#"
+        module M
+        type Shape =
+          | Circle Float
+          | Rect Float Float"#});
     assert!(out.contains("type Shape =\n  | Circle Float\n  | Rect Float Float"), "out:\n{out}");
 }
 
@@ -604,7 +713,13 @@ fn alias_and_record_type_declarations_format() {
 
 #[test]
 fn match_expression_formats_and_round_trips() {
-    let src = "module M\npublic describe : Option Int -> String\nlet describe o =\n  match o with\n  | None -> \"none\"\n  | Some n -> Int.toString n";
+    let src = indoc! {r#"
+        module M
+        public describe : Option Int -> String
+        let describe o =
+          match o with
+          | None -> "none"
+          | Some n -> Int.toString n"#};
     let out = assert_canonical(src);
     assert!(out.contains("match o with"), "out:\n{out}");
     assert!(out.contains("| None -> \"none\""), "out:\n{out}");
@@ -613,14 +728,27 @@ fn match_expression_formats_and_round_trips() {
 
 #[test]
 fn snapshot_union_and_match() {
-    let src = "module Shapes\ntype Shape =\n  | Circle Float\n  | Rect Float Float\npublic area : Shape -> Float\nlet area s =\n  match s with\n  | Circle r -> 3.14 * r * r\n  | Rect w h -> w * h";
+    let src = indoc! {r#"
+        module Shapes
+        type Shape =
+          | Circle Float
+          | Rect Float Float
+        public area : Shape -> Float
+        let area s =
+          match s with
+          | Circle r -> 3.14 * r * r
+          | Rect w h -> w * h"#};
     insta::assert_snapshot!("union_and_match", fmt(src));
     assert_idempotent(src);
 }
 
 #[test]
 fn snapshot_records() {
-    let src = "module Geo\ntype Vec2 = { x : Float, y : Float }\npublic scale : Float -> Vec2 -> Vec2\nlet scale k v = { v with x = v.x * k, y = v.y * k }";
+    let src = indoc! {r#"
+        module Geo
+        type Vec2 = { x : Float, y : Float }
+        public scale : Float -> Vec2 -> Vec2
+        let scale k v = { v with x = v.x * k, y = v.y * k }"#};
     insta::assert_snapshot!("records", fmt(src));
     assert_idempotent(src);
 }

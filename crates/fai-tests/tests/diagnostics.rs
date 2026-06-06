@@ -2,10 +2,19 @@
 
 use fai_diagnostics::{Diagnostic, DiagnosticCode, Label, render_human, wire};
 use fai_span::{ByteOffset, SourceMap, Span, TextRange};
+use indoc::indoc;
 
 fn fixture() -> (SourceMap, Vec<Diagnostic>) {
     let mut map = SourceMap::new();
-    let id = map.add("src/Main.fai".into(), "let x =\n  bad + 1\nlet y = 2\n".to_owned());
+    let id = map.add(
+        "src/Main.fai".into(),
+        indoc! {r#"
+            let x =
+              bad + 1
+            let y = 2
+        "#}
+        .to_owned(),
+    );
     let span = |start: u32, end: u32| {
         Span::new(id, TextRange::new(ByteOffset::new(start), ByteOffset::new(end)))
     };

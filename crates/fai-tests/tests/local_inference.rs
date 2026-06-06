@@ -9,10 +9,16 @@
 use std::collections::BTreeMap;
 
 use fai_tests::{check_source, local_type, local_types, type_of};
+use indoc::{formatdoc, indoc};
 
 /// Wrap a body in a module with a single function `f` taking the given params.
 fn func(params: &str, body: &str) -> String {
-    format!("module M\n\nlet f {params} =\n{body}\n")
+    formatdoc! {r#"
+        module M
+
+        let f {params} =
+        {body}
+    "#}
 }
 
 fn locals(src: &str) -> BTreeMap<String, String> {
@@ -185,7 +191,15 @@ fn local_function_binding() {
 #[test]
 fn local_let_is_generalized_and_used_at_two_types() {
     // `id` is generalized, then used at Int and Bool — the whole thing checks.
-    let src = "module M\n\nlet f =\n  let id = fun x -> x\n  let a = id 1\n  let b = id true\n  if b then a else a\n";
+    let src = indoc! {r#"
+        module M
+
+        let f =
+          let id = fun x -> x
+          let a = id 1
+          let b = id true
+          if b then a else a
+    "#};
     let outcome = check_source(src);
     assert!(!outcome.has_errors(), "got {:?}", outcome.codes());
     // The generalized local renders polymorphically.
@@ -211,7 +225,13 @@ fn monomorphic_local_not_generalized_through_application() {
 fn inner_shadow_changes_type() {
     // The inner `x` (a String) shadows the parameter `x` within the block; the
     // body returns the inner one.
-    let src = "module M\n\nlet f x =\n  let x = \"s\"\n  x\n";
+    let src = indoc! {r#"
+        module M
+
+        let f x =
+          let x = "s"
+          x
+    "#};
     // The top-level inferred type follows the shadowing binding.
     assert_eq!(type_of(src, "f"), "'a -> String");
 }
@@ -283,28 +303,75 @@ fn unused_local_still_inferred() {
 #[test]
 fn signatureless_inferred_int_chain() {
     // No signature: def_type returns the *inferred* type.
-    assert_eq!(type_of("module M\n\nlet f a b = a * b + a\n", "f"), "Int -> Int -> Int");
+    assert_eq!(
+        type_of(
+            indoc! {r#"
+                module M
+
+                let f a b = a * b + a
+            "#},
+            "f"
+        ),
+        "Int -> Int -> Int"
+    );
 }
 
 #[test]
 fn signatureless_inferred_higher_order() {
-    assert_eq!(type_of("module M\n\nlet f g x = g (g x)\n", "f"), "('a -> 'a) -> 'a -> 'a");
+    assert_eq!(
+        type_of(
+            indoc! {r#"
+                module M
+
+                let f g x = g (g x)
+            "#},
+            "f"
+        ),
+        "('a -> 'a) -> 'a -> 'a"
+    );
 }
 
 #[test]
 fn signatureless_inferred_polymorphic_pair() {
-    assert_eq!(type_of("module M\n\nlet f a b = (b, a)\n", "f"), "'a -> 'b -> 'b * 'a");
+    assert_eq!(
+        type_of(
+            indoc! {r#"
+                module M
+
+                let f a b = (b, a)
+            "#},
+            "f"
+        ),
+        "'a -> 'b -> 'b * 'a"
+    );
 }
 
 #[test]
 fn signatureless_inferred_bool_logic() {
     assert_eq!(
-        type_of("module M\n\nlet f a b c = a && b || not c\n", "f"),
+        type_of(
+            indoc! {r#"
+                module M
+
+                let f a b c = a && b || not c
+            "#},
+            "f"
+        ),
         "Bool -> Bool -> Bool -> Bool"
     );
 }
 
 #[test]
 fn signatureless_inferred_from_prelude_use() {
-    assert_eq!(type_of("module M\n\nlet f xs = List.length xs + 1\n", "f"), "List 'a -> Int");
+    assert_eq!(
+        type_of(
+            indoc! {r#"
+                module M
+
+                let f xs = List.length xs + 1
+            "#},
+            "f"
+        ),
+        "List 'a -> Int"
+    );
 }

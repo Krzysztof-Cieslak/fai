@@ -11,6 +11,7 @@ use fai_resolve::{DefId, module_name};
 use fai_runtime as rt;
 use fai_span::SourceId;
 use fai_syntax::Symbol;
+use indoc::{formatdoc, indoc};
 
 use crate::jit_run;
 
@@ -76,9 +77,12 @@ pub(crate) fn run(src: &str) -> (i32, String) {
 }
 
 fn main_printing(expr: &str) -> String {
-    format!(
-        "module M\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime ({expr})\n"
-    )
+    formatdoc! {r#"
+        module M
+
+        public main : Runtime -> Unit
+        let main runtime = Console.writeLine runtime ({expr})
+    "#}
 }
 
 #[test]
@@ -112,7 +116,14 @@ fn conditional() {
 
 #[test]
 fn cross_definition_call() {
-    let src = "module M\n\nlet double x = x + x\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (Int.toString (double 21))\n";
+    let src = indoc! {r#"
+        module M
+
+        let double x = x + x
+
+        public main : Runtime -> Unit
+        let main runtime = Console.writeLine runtime (Int.toString (double 21))
+    "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "42\n");
@@ -120,7 +131,14 @@ fn cross_definition_call() {
 
 #[test]
 fn saturated_curried_call() {
-    let src = "module M\n\nlet add x y = x + y\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (Int.toString (add 40 2))\n";
+    let src = indoc! {r#"
+        module M
+
+        let add x y = x + y
+
+        public main : Runtime -> Unit
+        let main runtime = Console.writeLine runtime (Int.toString (add 40 2))
+    "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "42\n");
@@ -130,7 +148,16 @@ fn saturated_curried_call() {
 fn partial_application_via_zero_arity_binding() {
     // `inc = add 1` is a zero-arity value (a partial application); applying it
     // exercises over-application and forcing.
-    let src = "module M\n\nlet add x y = x + y\n\nlet inc = add 1\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (Int.toString (inc 41))\n";
+    let src = indoc! {r#"
+        module M
+
+        let add x y = x + y
+
+        let inc = add 1
+
+        public main : Runtime -> Unit
+        let main runtime = Console.writeLine runtime (Int.toString (inc 41))
+    "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "42\n");
@@ -138,7 +165,16 @@ fn partial_application_via_zero_arity_binding() {
 
 #[test]
 fn higher_order_with_closure_capture() {
-    let src = "module M\n\nlet apply f x = f x\n\nlet adder n = fun m -> n + m\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (Int.toString (apply (adder 40) 2))\n";
+    let src = indoc! {r#"
+        module M
+
+        let apply f x = f x
+
+        let adder n = fun m -> n + m
+
+        public main : Runtime -> Unit
+        let main runtime = Console.writeLine runtime (Int.toString (apply (adder 40) 2))
+    "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "42\n");
@@ -178,7 +214,14 @@ fn unary_negation() {
 
 #[test]
 fn nested_conditionals() {
-    let src = "module M\n\nlet sign n = if n < 0 then \"neg\" else if n = 0 then \"zero\" else \"pos\"\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (sign (0 - 3))\n";
+    let src = indoc! {r#"
+        module M
+
+        let sign n = if n < 0 then "neg" else if n = 0 then "zero" else "pos"
+
+        public main : Runtime -> Unit
+        let main r = Console.writeLine r (sign (0 - 3))
+    "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "neg\n");
@@ -186,7 +229,17 @@ fn nested_conditionals() {
 
 #[test]
 fn let_block_in_body() {
-    let src = "module M\n\nlet compute n =\n  let doubled = n + n\n  let plus1 = doubled + 1\n  plus1 * 2\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (Int.toString (compute 10))\n";
+    let src = indoc! {r#"
+        module M
+
+        let compute n =
+          let doubled = n + n
+          let plus1 = doubled + 1
+          plus1 * 2
+
+        public main : Runtime -> Unit
+        let main r = Console.writeLine r (Int.toString (compute 10))
+    "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "42\n");
@@ -203,12 +256,22 @@ fn inequality_on_strings() {
 
 #[test]
 fn adt_constructor_and_match() {
-    let src = "module M\n\n\
-        type Shape =\n  | Circle Int\n  | Rect Int Int\n\n\
-        public area : Shape -> Int\n\
-        let area s =\n  match s with\n  | Circle r -> 3 * r * r\n  | Rect w h -> w * h\n\n\
-        public main : Runtime -> Unit\n\
-        let main r = Console.writeLine r (Int.toString (area (Rect 3 4)))\n";
+    let src = indoc! {r#"
+        module M
+
+        type Shape =
+          | Circle Int
+          | Rect Int Int
+
+        public area : Shape -> Int
+        let area s =
+          match s with
+          | Circle r -> 3 * r * r
+          | Rect w h -> w * h
+
+        public main : Runtime -> Unit
+        let main r = Console.writeLine r (Int.toString (area (Rect 3 4)))
+    "#};
     let (code, out) = run(src);
     assert_eq!(code, 0, "clean exit");
     assert_eq!(out, "12\n");
@@ -216,11 +279,18 @@ fn adt_constructor_and_match() {
 
 #[test]
 fn nullary_constructor_match() {
-    let src = "module M\n\n\
-        public describe : Option Int -> String\n\
-        let describe opt =\n  match opt with\n  | None -> \"none\"\n  | Some n -> Int.toString n\n\n\
-        public main : Runtime -> Unit\n\
-        let main r = Console.writeLine r (describe None)\n";
+    let src = indoc! {r#"
+        module M
+
+        public describe : Option Int -> String
+        let describe opt =
+          match opt with
+          | None -> "none"
+          | Some n -> Int.toString n
+
+        public main : Runtime -> Unit
+        let main r = Console.writeLine r (describe None)
+    "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "none\n");
@@ -228,12 +298,15 @@ fn nullary_constructor_match() {
 
 #[test]
 fn list_map_and_fold() {
-    let src = "module M\n\n\
-        public main : Runtime -> Unit\n\
-        let main r =\n  \
-          let xs = [1, 2, 3, 4]\n  \
-          let ys = List.map (fun x -> x * x) xs\n  \
-          Console.writeLine r (Int.toString (List.foldl (fun acc x -> acc + x) 0 ys))\n";
+    let src = indoc! {r#"
+        module M
+
+        public main : Runtime -> Unit
+        let main r =
+          let xs = [1, 2, 3, 4]
+          let ys = List.map (fun x -> x * x) xs
+          Console.writeLine r (Int.toString (List.foldl (fun acc x -> acc + x) 0 ys))
+    "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "30\n");
@@ -241,9 +314,12 @@ fn list_map_and_fold() {
 
 #[test]
 fn cons_and_recursive_length() {
-    let src = "module M\n\n\
-        public main : Runtime -> Unit\n\
-        let main r = Console.writeLine r (Int.toString (List.length (1 :: 2 :: 3 :: [])))\n";
+    let src = indoc! {r#"
+        module M
+
+        public main : Runtime -> Unit
+        let main r = Console.writeLine r (Int.toString (List.length (1 :: 2 :: 3 :: [])))
+    "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "3\n");
@@ -251,11 +327,18 @@ fn cons_and_recursive_length() {
 
 #[test]
 fn list_pattern_match() {
-    let src = "module M\n\n\
-        public firstOr : Int -> List Int -> Int\n\
-        let firstOr d xs =\n  match xs with\n  | [] -> d\n  | x :: _ -> x\n\n\
-        public main : Runtime -> Unit\n\
-        let main r = Console.writeLine r (Int.toString (firstOr 0 [7, 8, 9]))\n";
+    let src = indoc! {r#"
+        module M
+
+        public firstOr : Int -> List Int -> Int
+        let firstOr d xs =
+          match xs with
+          | [] -> d
+          | x :: _ -> x
+
+        public main : Runtime -> Unit
+        let main r = Console.writeLine r (Int.toString (firstOr 0 [7, 8, 9]))
+    "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "7\n");
@@ -293,12 +376,15 @@ fn structural_equality_on_data() {
 
 #[test]
 fn tuple_construction_and_destructuring() {
-    let src = "module M\n\n\
-        public main : Runtime -> Unit\n\
-        let main r =\n  \
-          let pair = (40, 2)\n  \
-          let (a, b) = pair\n  \
-          Console.writeLine r (Int.toString (a + b))\n";
+    let src = indoc! {r#"
+        module M
+
+        public main : Runtime -> Unit
+        let main r =
+          let pair = (40, 2)
+          let (a, b) = pair
+          Console.writeLine r (Int.toString (a + b))
+    "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "42\n");
@@ -306,11 +392,14 @@ fn tuple_construction_and_destructuring() {
 
 #[test]
 fn dict_runs() {
-    let src = "module M\n\n\
-        public main : Runtime -> Unit\n\
-        let main r =\n  \
-          let d = Dict.insert 1 10 (Dict.insert 3 30 (Dict.insert 2 20 Dict.empty))\n  \
-          Console.writeLine r (Int.toString (Option.withDefault 0 (Dict.get 2 d) + Dict.size d))\n";
+    let src = indoc! {r#"
+        module M
+
+        public main : Runtime -> Unit
+        let main r =
+          let d = Dict.insert 1 10 (Dict.insert 3 30 (Dict.insert 2 20 Dict.empty))
+          Console.writeLine r (Int.toString (Option.withDefault 0 (Dict.get 2 d) + Dict.size d))
+    "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "23\n");
@@ -318,9 +407,12 @@ fn dict_runs() {
 
 #[test]
 fn string_ops_run() {
-    let src = "module M\n\n\
-        public main : Runtime -> Unit\n\
-        let main r = Console.writeLine r (String.join \"-\" (List.map String.toUpper (String.split \" \" \"hi there world\")))\n";
+    let src = indoc! {r#"
+        module M
+
+        public main : Runtime -> Unit
+        let main r = Console.writeLine r (String.join "-" (List.map String.toUpper (String.split " " "hi there world")))
+    "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "HI-THERE-WORLD\n");
@@ -328,11 +420,14 @@ fn string_ops_run() {
 
 #[test]
 fn sort_runs() {
-    let src = "module M\n\n\
-        public main : Runtime -> Unit\n\
-        let main r =\n  \
-          let xs = List.sort [3, 1, 2]\n  \
-          Console.writeLine r (Int.toString (List.foldl (fun acc x -> acc * 10 + x) 0 xs))\n";
+    let src = indoc! {r#"
+        module M
+
+        public main : Runtime -> Unit
+        let main r =
+          let xs = List.sort [3, 1, 2]
+          Console.writeLine r (Int.toString (List.foldl (fun acc x -> acc * 10 + x) 0 xs))
+    "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "123\n");
@@ -340,11 +435,14 @@ fn sort_runs() {
 
 #[test]
 fn record_literal_and_field_access() {
-    let src = "module M\n\n\
-        public main : Runtime -> Unit\n\
-        let main r =\n  \
-          let p = { x = 1, y = 2 }\n  \
-          Console.writeLine r (Int.toString (p.x + p.y))\n";
+    let src = indoc! {r#"
+        module M
+
+        public main : Runtime -> Unit
+        let main r =
+          let p = { x = 1, y = 2 }
+          Console.writeLine r (Int.toString (p.x + p.y))
+    "#};
     let (code, out) = run(src);
     assert_eq!(code, 0, "clean exit");
     assert_eq!(out, "3\n");
@@ -352,14 +450,19 @@ fn record_literal_and_field_access() {
 
 #[test]
 fn record_update_runs() {
-    let src = "module M\n\n\
-        type P = { a : Int, b : Int }\n\n\
-        public shift : P -> P\n\
-        let shift p = { p with a = p.a + 10 }\n\n\
-        public main : Runtime -> Unit\n\
-        let main r =\n  \
-          let q = shift { a = 1, b = 2 }\n  \
-          Console.writeLine r (Int.toString (q.a + q.b))\n";
+    let src = indoc! {r#"
+        module M
+
+        type P = { a : Int, b : Int }
+
+        public shift : P -> P
+        let shift p = { p with a = p.a + 10 }
+
+        public main : Runtime -> Unit
+        let main r =
+          let q = shift { a = 1, b = 2 }
+          Console.writeLine r (Int.toString (q.a + q.b))
+    "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "13\n");
@@ -367,12 +470,20 @@ fn record_update_runs() {
 
 #[test]
 fn record_pattern_and_punning() {
-    let src = "module M\n\n\
-        type Point = { x : Int, y : Int }\n\n\
-        public describe : Point -> Int\n\
-        let describe pt =\n  match pt with\n  | { x = 0, y } -> y\n  | { x, y } -> x + y\n\n\
-        public main : Runtime -> Unit\n\
-        let main r = Console.writeLine r (Int.toString (describe { x = 0, y = 5 }))\n";
+    let src = indoc! {r#"
+        module M
+
+        type Point = { x : Int, y : Int }
+
+        public describe : Point -> Int
+        let describe pt =
+          match pt with
+          | { x = 0, y } -> y
+          | { x, y } -> x + y
+
+        public main : Runtime -> Unit
+        let main r = Console.writeLine r (Int.toString (describe { x = 0, y = 5 }))
+    "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "5\n");
@@ -380,12 +491,15 @@ fn record_pattern_and_punning() {
 
 #[test]
 fn record_destructuring_let() {
-    let src = "module M\n\n\
-        public main : Runtime -> Unit\n\
-        let main r =\n  \
-          let p = { a = 40, b = 2 }\n  \
-          let { a, b } = p\n  \
-          Console.writeLine r (Int.toString (a + b))\n";
+    let src = indoc! {r#"
+        module M
+
+        public main : Runtime -> Unit
+        let main r =
+          let p = { a = 40, b = 2 }
+          let { a, b } = p
+          Console.writeLine r (Int.toString (a + b))
+    "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "42\n");
@@ -393,11 +507,18 @@ fn record_destructuring_let() {
 
 #[test]
 fn nested_match_and_or_patterns() {
-    let src = "module M\n\n\
-        public classify : Int -> String\n\
-        let classify n =\n  match n with\n  | 0 | 1 -> \"small\"\n  | _ -> \"big\"\n\n\
-        public main : Runtime -> Unit\n\
-        let main r = Console.writeLine r (classify 1)\n";
+    let src = indoc! {r#"
+        module M
+
+        public classify : Int -> String
+        let classify n =
+          match n with
+          | 0 | 1 -> "small"
+          | _ -> "big"
+
+        public main : Runtime -> Unit
+        let main r = Console.writeLine r (classify 1)
+    "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "small\n");
@@ -412,11 +533,14 @@ fn float_comparison_runs() {
 
 #[test]
 fn float_sort_orders_ascending() {
-    let src = "module M\n\n\
-        public main : Runtime -> Unit\n\
-        let main r =\n  \
-          let xs = List.sort [3.0, 1.0, 2.0]\n  \
-          Console.writeLine r (String.join \" \" (List.map Float.toString xs))\n";
+    let src = indoc! {r#"
+        module M
+
+        public main : Runtime -> Unit
+        let main r =
+          let xs = List.sort [3.0, 1.0, 2.0]
+          Console.writeLine r (String.join " " (List.map Float.toString xs))
+    "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "1.0 2.0 3.0\n");
@@ -434,12 +558,24 @@ fn three_way_compare_runs() {
 #[test]
 fn structural_ordering_sorts_constructors_by_declaration_order() {
     // Declaration order is the ordering: Low < Mid < High.
-    let src = "module M\n\n\
-        type Rank =\n  | Low\n  | Mid\n  | High\n\n\
-        public name : Rank -> String\n\
-        let name x =\n  match x with\n  | Low -> \"L\"\n  | Mid -> \"M\"\n  | High -> \"H\"\n\n\
-        public main : Runtime -> Unit\n\
-        let main r = Console.writeLine r (String.join \"\" (List.map name (List.sort [High, Low, Mid, Low])))\n";
+    let src = indoc! {r#"
+        module M
+
+        type Rank =
+          | Low
+          | Mid
+          | High
+
+        public name : Rank -> String
+        let name x =
+          match x with
+          | Low -> "L"
+          | Mid -> "M"
+          | High -> "H"
+
+        public main : Runtime -> Unit
+        let main r = Console.writeLine r (String.join "" (List.map name (List.sort [High, Low, Mid, Low])))
+    "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "LLMH\n");
@@ -459,12 +595,22 @@ fn structural_equality_on_records() {
 
 #[test]
 fn recursive_tree_fold() {
-    let src = "module M\n\n\
-        type Tree =\n  | Leaf\n  | Node Tree Int Tree\n\n\
-        public sumTree : Tree -> Int\n\
-        let sumTree t =\n  match t with\n  | Leaf -> 0\n  | Node l x rt -> sumTree l + x + sumTree rt\n\n\
-        public main : Runtime -> Unit\n\
-        let main r = Console.writeLine r (Int.toString (sumTree (Node (Node Leaf 1 Leaf) 2 (Node Leaf 3 Leaf))))\n";
+    let src = indoc! {r#"
+        module M
+
+        type Tree =
+          | Leaf
+          | Node Tree Int Tree
+
+        public sumTree : Tree -> Int
+        let sumTree t =
+          match t with
+          | Leaf -> 0
+          | Node l x rt -> sumTree l + x + sumTree rt
+
+        public main : Runtime -> Unit
+        let main r = Console.writeLine r (Int.toString (sumTree (Node (Node Leaf 1 Leaf) 2 (Node Leaf 3 Leaf))))
+    "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "6\n");
@@ -472,11 +618,18 @@ fn recursive_tree_fold() {
 
 #[test]
 fn result_pattern_match() {
-    let src = "module M\n\n\
-        public describe : Result Int String -> String\n\
-        let describe res =\n  match res with\n  | Ok n -> Int.toString n\n  | Err e -> e\n\n\
-        public main : Runtime -> Unit\n\
-        let main r = Console.writeLine r (describe (Ok 5) ++ describe (Err \"boom\"))\n";
+    let src = indoc! {r#"
+        module M
+
+        public describe : Result Int String -> String
+        let describe res =
+          match res with
+          | Ok n -> Int.toString n
+          | Err e -> e
+
+        public main : Runtime -> Unit
+        let main r = Console.writeLine r (describe (Ok 5) ++ describe (Err "boom"))
+    "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "5boom\n");
@@ -484,11 +637,14 @@ fn result_pattern_match() {
 
 #[test]
 fn set_dedups_elements() {
-    let src = "module M\n\n\
-        public main : Runtime -> Unit\n\
-        let main r =\n  \
-          let s = Set.insert 3 (Set.insert 1 (Set.insert 3 Set.empty))\n  \
-          Console.writeLine r (Int.toString (Set.size s))\n";
+    let src = indoc! {r#"
+        module M
+
+        public main : Runtime -> Unit
+        let main r =
+          let s = Set.insert 3 (Set.insert 1 (Set.insert 3 Set.empty))
+          Console.writeLine r (Int.toString (Set.size s))
+    "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "2\n");
@@ -496,13 +652,18 @@ fn set_dedups_elements() {
 
 #[test]
 fn nested_record_field_access() {
-    let src = "module M\n\n\
-        type Vec = { x : Int, y : Int }\n\n\
-        type Seg = { dest : Vec, src : Vec }\n\n\
-        public main : Runtime -> Unit\n\
-        let main r =\n  \
-          let s = { src = { x = 1, y = 2 }, dest = { x = 3, y = 4 } }\n  \
-          Console.writeLine r (Int.toString (s.src.x + s.dest.y))\n";
+    let src = indoc! {r#"
+        module M
+
+        type Vec = { x : Int, y : Int }
+
+        type Seg = { dest : Vec, src : Vec }
+
+        public main : Runtime -> Unit
+        let main r =
+          let s = { src = { x = 1, y = 2 }, dest = { x = 3, y = 4 } }
+          Console.writeLine r (Int.toString (s.src.x + s.dest.y))
+    "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "5\n");
@@ -510,11 +671,19 @@ fn nested_record_field_access() {
 
 #[test]
 fn nested_constructor_patterns() {
-    let src = "module M\n\n\
-        public unwrap : Option (Option Int) -> Int\n\
-        let unwrap oo =\n  match oo with\n  | Some (Some n) -> n\n  | Some None -> 0\n  | None -> 0\n\n\
-        public main : Runtime -> Unit\n\
-        let main r = Console.writeLine r (Int.toString (unwrap (Some (Some 7))))\n";
+    let src = indoc! {r#"
+        module M
+
+        public unwrap : Option (Option Int) -> Int
+        let unwrap oo =
+          match oo with
+          | Some (Some n) -> n
+          | Some None -> 0
+          | None -> 0
+
+        public main : Runtime -> Unit
+        let main r = Console.writeLine r (Int.toString (unwrap (Some (Some 7))))
+    "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "7\n");

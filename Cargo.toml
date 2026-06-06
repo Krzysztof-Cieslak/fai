@@ -61,6 +61,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 insta = "1"
 # Property-based (generative) testing.
 proptest = "1"
+# Readable multi-line string literals in tests (strips common indentation).
+indoc = "2"
 # Microbenchmark harness (lean; throughput counters). Wall-clock benches are for
 # local profiling — CI gates performance via the deterministic guard tests.
 divan = "0.1"

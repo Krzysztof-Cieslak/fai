@@ -1019,6 +1019,7 @@ fn can_start_type_atom(kind: TokenKind) -> bool {
 #[cfg(test)]
 mod tests {
     use fai_span::SourceId;
+    use indoc::indoc;
 
     use super::{Parsed, parse_module};
     use crate::ast::{
@@ -1338,7 +1339,11 @@ mod tests {
 
     #[test]
     fn local_let_block_with_destructuring() {
-        let src = "module M\nlet swap p =\n  let (x, y) = p\n  (y, x)";
+        let src = indoc! {r#"
+            module M
+            let swap p =
+              let (x, y) = p
+              (y, x)"#};
         assert_eq!(
             body(src),
             "(block [(let (ptuple (pvar x) (pvar y)) [] (var p))] (tuple (var y) (var x)))"
@@ -1396,7 +1401,16 @@ mod tests {
     fn unsupported_constructs_report_fai1030_and_recover() {
         // `interface` and nested modules remain unimplemented; `type`/`match`/
         // records no longer do.
-        for src in ["module M\ninterface I =\n  m : Int", "module M\nmodule Inner =\n  let x = 1"] {
+        for src in [
+            indoc! {r#"
+                module M
+                interface I =
+                  m : Int"#},
+            indoc! {r#"
+                module M
+                module Inner =
+                  let x = 1"#},
+        ] {
             let parsed = parse(src);
             assert!(
                 parsed.diagnostics.iter().any(|d| d.code == crate::UNSUPPORTED),
@@ -1408,13 +1422,49 @@ mod tests {
     #[test]
     fn type_match_and_records_now_parse_cleanly() {
         for src in [
-            "module M\n\ntype T =\n  | A\n  | B Int\n",
-            "module M\n\nlet f x =\n  match x with\n  | A -> 1\n  | _ -> 2\n",
-            "module M\n\ntype Celsius = Float\n",
-            "module M\n\ntype Vec2 = { x : Float, y : Float }\n",
-            "module M\n\nlet origin = { x = 0, y = 0 }\n",
-            "module M\n\nlet f r = { r with x = 1 }\n",
-            "module M\n\nlet f v =\n  match v with\n  | { x = 0 | _ } -> 1\n  | { x, y } -> x\n",
+            indoc! {r#"
+                module M
+
+                type T =
+                  | A
+                  | B Int
+            "#},
+            indoc! {r#"
+                module M
+
+                let f x =
+                  match x with
+                  | A -> 1
+                  | _ -> 2
+            "#},
+            indoc! {r#"
+                module M
+
+                type Celsius = Float
+            "#},
+            indoc! {r#"
+                module M
+
+                type Vec2 = { x : Float, y : Float }
+            "#},
+            indoc! {r#"
+                module M
+
+                let origin = { x = 0, y = 0 }
+            "#},
+            indoc! {r#"
+                module M
+
+                let f r = { r with x = 1 }
+            "#},
+            indoc! {r#"
+                module M
+
+                let f v =
+                  match v with
+                  | { x = 0 | _ } -> 1
+                  | { x, y } -> x
+            "#},
         ] {
             let parsed = parse(src);
             assert!(
@@ -1428,9 +1478,26 @@ mod tests {
     #[test]
     fn type_and_match_now_parse_cleanly() {
         for src in [
-            "module M\n\ntype T =\n  | A\n  | B Int\n",
-            "module M\n\nlet f x =\n  match x with\n  | A -> 1\n  | _ -> 2\n",
-            "module M\n\ntype Celsius = Float\n",
+            indoc! {r#"
+                module M
+
+                type T =
+                  | A
+                  | B Int
+            "#},
+            indoc! {r#"
+                module M
+
+                let f x =
+                  match x with
+                  | A -> 1
+                  | _ -> 2
+            "#},
+            indoc! {r#"
+                module M
+
+                type Celsius = Float
+            "#},
         ] {
             let parsed = parse(src);
             assert!(
@@ -1495,12 +1562,20 @@ mod tests {
 
     #[test]
     fn union_type_declaration_shape() {
-        let nullary = dump("module M\ntype Color =\n  | Red\n  | Green");
+        let nullary = dump(indoc! {r#"
+            module M
+            type Color =
+              | Red
+              | Green"#});
         assert_eq!(
             nullary.lines().nth(1).unwrap(),
             "(type Private Color [] = (| Red []) (| Green []))"
         );
-        let with_fields = dump("module M\ntype Shape =\n  | Circle Float\n  | Rect Float Float");
+        let with_fields = dump(indoc! {r#"
+            module M
+            type Shape =
+              | Circle Float
+              | Rect Float Float"#});
         assert_eq!(
             with_fields.lines().nth(1).unwrap(),
             "(type Private Shape [] = (| Circle [(tcon Float)]) (| Rect [(tcon Float) (tcon Float)]))"
@@ -1509,7 +1584,11 @@ mod tests {
 
     #[test]
     fn parametric_union_declaration_shape() {
-        let parsed = dump("module M\ntype Opt 'a =\n  | None\n  | Some 'a");
+        let parsed = dump(indoc! {r#"
+            module M
+            type Opt 'a =
+              | None
+              | Some 'a"#});
         assert_eq!(
             parsed.lines().nth(1).unwrap(),
             "(type Private Opt ['a] = (| None []) (| Some [(tvar 'a)]))"
@@ -1547,7 +1626,11 @@ mod tests {
     fn one_bad_item_does_not_hide_the_next() {
         // A garbage item (a stray `)`) between two good ones: the parser reports
         // it and still parses both bindings.
-        let parsed = parse("module M\nlet a = 1\n)\nlet b = 2");
+        let parsed = parse(indoc! {r#"
+            module M
+            let a = 1
+            )
+            let b = 2"#});
         let bindings = parsed
             .module
             .items
@@ -1568,7 +1651,10 @@ mod tests {
 
     #[test]
     fn block_must_end_in_an_expression() {
-        let parsed = parse("module M\nlet f =\n  let a = 1");
+        let parsed = parse(indoc! {r#"
+            module M
+            let f =
+              let a = 1"#});
         assert!(parsed.diagnostics.iter().any(|d| d.code == crate::SYNTAX_ERROR));
     }
 
@@ -1578,9 +1664,13 @@ mod tests {
     fn snapshot_function_with_pipes() {
         insta::assert_snapshot!(
             "function_with_pipes",
-            dump(
-                "module Funcs\npublic describe : Int -> String\nlet describe n =\n  n\n  |> inc\n  |> Int.toString"
-            )
+            dump(indoc! {r#"
+                    module Funcs
+                    public describe : Int -> String
+                    let describe n =
+                      n
+                      |> inc
+                      |> Int.toString"#})
         );
     }
 
@@ -1588,9 +1678,12 @@ mod tests {
     fn snapshot_local_bindings() {
         insta::assert_snapshot!(
             "local_bindings",
-            dump(
-                "module Locals\nlet hypotenuse a b =\n  let a2 = a * a\n  let b2 = b * b\n  sqrt (a2 + b2)"
-            )
+            dump(indoc! {r#"
+                    module Locals
+                    let hypotenuse a b =
+                      let a2 = a * a
+                      let b2 = b * b
+                      sqrt (a2 + b2)"#})
         );
     }
 
@@ -1598,9 +1691,12 @@ mod tests {
     fn snapshot_if_else_chain() {
         insta::assert_snapshot!(
             "if_else_chain",
-            dump(
-                "module Math\nlet classify n =\n  if n < 0 then \"neg\"\n  else if n = 0 then \"zero\"\n  else \"pos\""
-            )
+            dump(indoc! {r#"
+                    module Math
+                    let classify n =
+                      if n < 0 then "neg"
+                      else if n = 0 then "zero"
+                      else "pos""#})
         );
     }
 
@@ -1608,24 +1704,43 @@ mod tests {
     fn snapshot_contract_group() {
         insta::assert_snapshot!(
             "contract_group",
-            dump(
-                "module Math\npublic abs : Int -> Int\nlet abs n =\n  if n < 0 then 0 - n else n\nexample: abs (-3) = 3\nforall n: abs n >= 0"
-            )
+            dump(indoc! {r#"
+                    module Math
+                    public abs : Int -> Int
+                    let abs n =
+                      if n < 0 then 0 - n else n
+                    example: abs (-3) = 3
+                    forall n: abs n >= 0"#})
         );
     }
 
     #[test]
     fn snapshot_recovery() {
-        insta::assert_snapshot!("recovery", dump("module M\nlet a = 1\n)\nlet b = 2"));
+        insta::assert_snapshot!(
+            "recovery",
+            dump(indoc! {r#"
+                module M
+                let a = 1
+                )
+                let b = 2"#})
+        );
     }
 
     #[test]
     fn snapshot_union_match_and_records() {
         insta::assert_snapshot!(
             "union_match_and_records",
-            dump(
-                "module Cards\ntype Suit =\n  | Red\n  | Black\ntype Card = { rank : Int, suit : Suit }\npublic describe : Card -> String\nlet describe c =\n  match c with\n  | { rank = 1 | _ } -> \"ace\"\n  | { rank, suit } -> Int.toString rank"
-            )
+            dump(indoc! {r#"
+                    module Cards
+                    type Suit =
+                      | Red
+                      | Black
+                    type Card = { rank : Int, suit : Suit }
+                    public describe : Card -> String
+                    let describe c =
+                      match c with
+                      | { rank = 1 | _ } -> "ace"
+                      | { rank, suit } -> Int.toString rank"#})
         );
     }
 }

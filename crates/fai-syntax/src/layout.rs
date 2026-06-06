@@ -199,6 +199,7 @@ fn is_continuation(kind: TokenKind) -> bool {
 #[cfg(test)]
 mod tests {
     use fai_span::SourceId;
+    use indoc::indoc;
 
     use super::{Layout, layout};
     use crate::lex;
@@ -255,7 +256,10 @@ mod tests {
     #[test]
     fn top_level_items_are_separated_by_sep() {
         // `module M`, then two bindings: two separators, no blocks.
-        let src = "module M\nlet a = 1\nlet b = 2";
+        let src = indoc! {r#"
+            module M
+            let a = 1
+            let b = 2"#};
         assert_eq!(count(src, TokenKind::LayoutSep), 2);
         assert_eq!(count(src, TokenKind::LayoutOpen), 0);
         assert_eq!(count(src, TokenKind::LayoutClose), 0);
@@ -272,7 +276,10 @@ mod tests {
 
     #[test]
     fn indented_body_opens_one_block() {
-        let src = "module M\nlet f x =\n  body";
+        let src = indoc! {r#"
+            module M
+            let f x =
+              body"#};
         assert_eq!(count(src, TokenKind::LayoutOpen), 1);
         assert_eq!(count(src, TokenKind::LayoutClose), 1);
     }
@@ -280,7 +287,12 @@ mod tests {
     #[test]
     fn pipe_chain_is_one_item() {
         // Same-column lines led by `|>` continue the item: no inner Sep.
-        let src = "module M\nlet describe n =\n  n\n  |> inc\n  |> Int.toString";
+        let src = indoc! {r#"
+            module M
+            let describe n =
+              n
+              |> inc
+              |> Int.toString"#};
         // One Sep (header -> binding); none inside the block.
         assert_eq!(count(src, TokenKind::LayoutSep), 1);
         assert_eq!(count(src, TokenKind::LayoutOpen), 1);
@@ -288,7 +300,12 @@ mod tests {
 
     #[test]
     fn else_chain_is_one_item() {
-        let src = "module M\nlet classify n =\n  if n < 0 then \"neg\"\n  else if n = 0 then \"zero\"\n  else \"pos\"";
+        let src = indoc! {r#"
+            module M
+            let classify n =
+              if n < 0 then "neg"
+              else if n = 0 then "zero"
+              else "pos""#};
         // `else` at the reference column continues the if-expression: no inner Sep.
         assert_eq!(count(src, TokenKind::LayoutSep), 1);
         assert_eq!(count(src, TokenKind::LayoutOpen), 1);
@@ -297,7 +314,12 @@ mod tests {
 
     #[test]
     fn local_lets_produce_inner_seps() {
-        let src = "module M\nlet hyp a b =\n  let a2 = a * a\n  let b2 = b * b\n  sqrt (a2 + b2)";
+        let src = indoc! {r#"
+            module M
+            let hyp a b =
+              let a2 = a * a
+              let b2 = b * b
+              sqrt (a2 + b2)"#};
         // header->binding (1) + two inner seps between the three block items (2).
         assert_eq!(count(src, TokenKind::LayoutSep), 3);
         assert_eq!(count(src, TokenKind::LayoutOpen), 1);
@@ -307,7 +329,12 @@ mod tests {
     #[test]
     fn brackets_suspend_layout() {
         // A multi-line list inside `[ ]` must not introduce Seps or Closes.
-        let src = "module M\nlet xs =\n  [ 1\n  , 2\n  , 3 ]";
+        let src = indoc! {r#"
+            module M
+            let xs =
+              [ 1
+              , 2
+              , 3 ]"#};
         assert_eq!(count(src, TokenKind::LayoutSep), 1); // only header -> binding
         assert_eq!(count(src, TokenKind::LayoutOpen), 1);
         assert_eq!(count(src, TokenKind::LayoutClose), 1);
@@ -324,7 +351,13 @@ mod tests {
 
     #[test]
     fn multiline_then_else_open_blocks() {
-        let src = "module M\nlet f x =\n  if c then\n    a\n  else\n    b";
+        let src = indoc! {r#"
+            module M
+            let f x =
+              if c then
+                a
+              else
+                b"#};
         // Outer binding block + then-block + else-block = 3 opens/closes.
         assert_eq!(count(src, TokenKind::LayoutOpen), 3);
         assert_eq!(count(src, TokenKind::LayoutClose), 3);
@@ -342,7 +375,14 @@ mod tests {
 
     #[test]
     fn every_open_is_balanced_by_a_close() {
-        let src = "module M\nlet f x =\n  if c then\n    a\n  else\n    b\nlet g = 1";
+        let src = indoc! {r#"
+            module M
+            let f x =
+              if c then
+                a
+              else
+                b
+            let g = 1"#};
         assert_eq!(
             count(src, TokenKind::LayoutOpen),
             count(src, TokenKind::LayoutClose),
@@ -354,7 +394,10 @@ mod tests {
     fn virtual_tokens_are_positioned_correctly() {
         // `module M\nlet f x =\n  body`
         //  0          9          21
-        let result = run("module M\nlet f x =\n  body");
+        let result = run(indoc! {r#"
+            module M
+            let f x =
+              body"#});
         let find =
             |kind: TokenKind| result.tokens.iter().find(|t| t.kind == kind).copied().unwrap();
         let sep = find(TokenKind::LayoutSep);
@@ -389,7 +432,12 @@ mod tests {
 
     #[test]
     fn dedent_closes_multiple_blocks_at_once() {
-        let src = "module M\nlet f =\n  let g =\n    deep\nlet top = 1";
+        let src = indoc! {r#"
+            module M
+            let f =
+              let g =
+                deep
+            let top = 1"#};
         assert_eq!(count(src, TokenKind::LayoutOpen), 2);
         assert_eq!(count(src, TokenKind::LayoutClose), 2);
         // Returning to the top level closes both nested blocks back to back.
@@ -402,7 +450,11 @@ mod tests {
 
     #[test]
     fn nested_brackets_are_not_split() {
-        let src = "module M\nlet xs =\n  [ [ 1 ]\n  , [ 2 ] ]";
+        let src = indoc! {r#"
+            module M
+            let xs =
+              [ [ 1 ]
+              , [ 2 ] ]"#};
         assert_eq!(count(src, TokenKind::LayoutSep), 1); // only header -> binding
         assert_eq!(count(src, TokenKind::LayoutOpen), 1);
         assert_eq!(count(src, TokenKind::LayoutClose), 1);
@@ -411,7 +463,11 @@ mod tests {
     #[test]
     fn opener_inside_brackets_does_not_open_a_block() {
         // The `->` here is inside parentheses, so it must not open a layout block.
-        let src = "module M\nlet f =\n  (a ->\n   b)";
+        let src = indoc! {r#"
+            module M
+            let f =
+              (a ->
+               b)"#};
         assert_eq!(count(src, TokenKind::LayoutOpen), 1); // only the `=` body block
         assert_eq!(count(src, TokenKind::LayoutClose), 1);
     }
@@ -425,7 +481,15 @@ mod tests {
 
     #[test]
     fn blank_lines_between_items_collapse_to_one_sep() {
-        let src = "module M\n\n\nlet a = 1\n\n\n\nlet b = 2";
+        let src = indoc! {r#"
+            module M
+
+
+            let a = 1
+
+
+
+            let b = 2"#};
         assert_eq!(count(src, TokenKind::LayoutSep), 2);
     }
 
@@ -439,7 +503,11 @@ mod tests {
     #[test]
     fn multiline_lambda_body_opens_a_block() {
         // Exercises the `->` opener path.
-        let src = "module M\nlet f =\n  fun x ->\n    body";
+        let src = indoc! {r#"
+            module M
+            let f =
+              fun x ->
+                body"#};
         assert_eq!(count(src, TokenKind::LayoutOpen), 2); // `=` body + lambda body
         assert_eq!(count(src, TokenKind::LayoutClose), 2);
     }
@@ -447,7 +515,10 @@ mod tests {
     #[test]
     fn signature_arrows_do_not_open_blocks() {
         // Mid-line `->` followed by same-line tokens never opens a block.
-        let src = "module M\npublic f : Int -> Int -> Int\nlet f x = x";
+        let src = indoc! {r#"
+            module M
+            public f : Int -> Int -> Int
+            let f x = x"#};
         assert_eq!(count(src, TokenKind::LayoutOpen), 0);
         assert_eq!(count(src, TokenKind::LayoutSep), 2); // header -> signature -> binding
     }
@@ -462,14 +533,25 @@ mod tests {
 
     #[test]
     fn snapshot_binding_block() {
-        insta::assert_snapshot!("binding_block", render("module M\nlet f x =\n  body"));
+        insta::assert_snapshot!(
+            "binding_block",
+            render(indoc! {r#"
+                module M
+                let f x =
+                  body"#})
+        );
     }
 
     #[test]
     fn snapshot_local_lets() {
         insta::assert_snapshot!(
             "local_lets",
-            render("module M\nlet hyp a b =\n  let a2 = a * a\n  let b2 = b * b\n  sqrt (a2 + b2)"),
+            render(indoc! {r#"
+                module M
+                let hyp a b =
+                  let a2 = a * a
+                  let b2 = b * b
+                  sqrt (a2 + b2)"#}),
         );
     }
 
@@ -477,7 +559,12 @@ mod tests {
     fn snapshot_pipe_chain() {
         insta::assert_snapshot!(
             "pipe_chain",
-            render("module M\nlet describe n =\n  n\n  |> inc\n  |> Int.toString"),
+            render(indoc! {r#"
+                module M
+                let describe n =
+                  n
+                  |> inc
+                  |> Int.toString"#}),
         );
     }
 
@@ -485,9 +572,12 @@ mod tests {
     fn snapshot_if_else_chain() {
         insta::assert_snapshot!(
             "if_else_chain",
-            render(
-                "module M\nlet classify n =\n  if n < 0 then \"neg\"\n  else if n = 0 then \"zero\"\n  else \"pos\""
-            ),
+            render(indoc! {r#"
+                module M
+                let classify n =
+                  if n < 0 then "neg"
+                  else if n = 0 then "zero"
+                  else "pos""#}),
         );
     }
 
@@ -495,7 +585,13 @@ mod tests {
     fn snapshot_multiline_then_else() {
         insta::assert_snapshot!(
             "multiline_then_else",
-            render("module M\nlet f x =\n  if c then\n    a\n  else\n    b"),
+            render(indoc! {r#"
+                module M
+                let f x =
+                  if c then
+                    a
+                  else
+                    b"#}),
         );
     }
 
@@ -503,14 +599,23 @@ mod tests {
     fn snapshot_bracketed_list() {
         insta::assert_snapshot!(
             "bracketed_list",
-            render("module M\nlet xs =\n  [ 1\n  , 2\n  , 3 ]")
+            render(indoc! {r#"
+                module M
+                let xs =
+                  [ 1
+                  , 2
+                  , 3 ]"#})
         );
     }
 
     #[test]
     fn comments_between_items_do_not_add_separators() {
         // Comments are trivia, so a comment-only line must not produce a Sep.
-        let src = "module M\nlet a = 1\n// note\nlet b = 2";
+        let src = indoc! {r#"
+            module M
+            let a = 1
+            // note
+            let b = 2"#};
         assert_eq!(count(src, TokenKind::LayoutSep), 2);
     }
 
@@ -535,7 +640,12 @@ mod tests {
 
     #[test]
     fn sibling_after_nested_block_separates_at_enclosing_level() {
-        let src = "module M\nlet outer =\n  let a =\n    deep\n  tail";
+        let src = indoc! {r#"
+            module M
+            let outer =
+              let a =
+                deep
+              tail"#};
         assert_eq!(count(src, TokenKind::LayoutOpen), 2);
         assert_eq!(count(src, TokenKind::LayoutClose), 2);
         // header -> binding, plus the `tail` sibling separator inside `outer`.
@@ -544,13 +654,24 @@ mod tests {
 
     #[test]
     fn unindented_then_branch_is_a_layout_error() {
-        let src = "module M\nlet f x =\n  if c then\n  a";
+        let src = indoc! {r#"
+            module M
+            let f x =
+              if c then
+              a"#};
         assert!(run(src).diagnostics.iter().any(|d| d.code == crate::LAYOUT_ERROR));
     }
 
     #[test]
     fn deeply_nested_blocks_balance() {
-        let src = "module M\nlet f =\n  let g =\n    let h =\n      deep\n    h\n  g";
+        let src = indoc! {r#"
+            module M
+            let f =
+              let g =
+                let h =
+                  deep
+                h
+              g"#};
         assert_eq!(count(src, TokenKind::LayoutOpen), 3);
         assert_eq!(count(src, TokenKind::LayoutOpen), count(src, TokenKind::LayoutClose));
     }

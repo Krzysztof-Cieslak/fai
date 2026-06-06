@@ -15,12 +15,20 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use fai_driver::{Session, build_native, cache_stats, reset_stats, set_cache_dir};
+use indoc::indoc;
 
 /// The cache directory override and hit/miss tallies are process-global, so the
 /// tests in this binary must not run their cache sections concurrently.
 static CACHE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
-const SRC: &str = "module Main\n\nlet double x = x + x\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (Int.toString (double 21))\n";
+const SRC: &str = indoc! {r#"
+    module Main
+
+    let double x = x + x
+
+    public main : Runtime -> Unit
+    let main runtime = Console.writeLine runtime (Int.toString (double 21))
+"#};
 
 fn unique_dir(tag: &str) -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -39,7 +47,9 @@ fn build_and_run(root: &Utf8Path, out: &Utf8Path) -> String {
     let entry = *files.first().expect("entry file");
     let outcome = build_native(session.db(), entry, out);
     assert!(outcome.ok, "build failed: {:?}", outcome.diagnostics);
-    let run = Command::new(out.as_std_path()).output().expect("run binary");
+    // Run the artifact `build_native` actually produced (Windows adds `.exe`).
+    let artifact = outcome.artifact.expect("artifact path");
+    let run = Command::new(artifact.as_std_path()).output().expect("run binary");
     assert_eq!(run.status.code(), Some(0), "binary should exit cleanly");
     String::from_utf8_lossy(&run.stdout).into_owned()
 }
@@ -79,7 +89,12 @@ fn second_cold_build_reuses_cached_objects() {
 
 /// A different program (→ 99) whose `main` lives in the same module/symbol as
 /// `SRC` (→ 42): a symbol-keyed cache would wrongly reuse the 42 object.
-const SRC_99: &str = "module Main\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime (Int.toString (33 + 66))\n";
+const SRC_99: &str = indoc! {r#"
+    module Main
+
+    public main : Runtime -> Unit
+    let main runtime = Console.writeLine runtime (Int.toString (33 + 66))
+"#};
 
 #[test]
 fn changed_source_is_not_served_a_stale_object() {

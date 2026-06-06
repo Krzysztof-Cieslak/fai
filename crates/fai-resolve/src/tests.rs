@@ -5,6 +5,7 @@ use fai_db::{Db, Diag, FaiDatabase, SourceFile};
 use fai_diagnostics::Severity;
 use fai_syntax::Symbol;
 use fai_syntax::ast::Visibility;
+use indoc::indoc;
 
 use crate::ids::{DefId, Res};
 use crate::{module_defs, module_interface, module_sccs, resolve};
@@ -31,7 +32,15 @@ fn codes(diags: &[fai_diagnostics::Diagnostic]) -> Vec<&str> {
 
 #[test]
 fn pairs_signature_with_binding() {
-    let (db, files) = db_with(&[("M.fai", "module M\n\npublic f : Int -> Int\nlet f x = x\n")]);
+    let (db, files) = db_with(&[(
+        "M.fai",
+        indoc! {r#"
+            module M
+
+            public f : Int -> Int
+            let f x = x
+        "#},
+    )]);
     let defs = module_defs(&db, files[0]);
     assert_eq!(defs.defs.len(), 1);
     let d = &defs.defs[0];
@@ -42,7 +51,14 @@ fn pairs_signature_with_binding() {
 
 #[test]
 fn private_binding_without_signature_is_ok() {
-    let (db, files) = db_with(&[("M.fai", "module M\n\nlet x = 3\n")]);
+    let (db, files) = db_with(&[(
+        "M.fai",
+        indoc! {r#"
+            module M
+
+            let x = 3
+        "#},
+    )]);
     let defs = module_defs(&db, files[0]);
     assert_eq!(defs.defs.len(), 1);
     assert_eq!(defs.defs[0].visibility, Visibility::Private);
@@ -52,7 +68,14 @@ fn private_binding_without_signature_is_ok() {
 
 #[test]
 fn orphan_signature_is_an_error() {
-    let (db, files) = db_with(&[("M.fai", "module M\n\npublic f : Int\n")]);
+    let (db, files) = db_with(&[(
+        "M.fai",
+        indoc! {r#"
+            module M
+
+            public f : Int
+        "#},
+    )]);
     let _ = module_defs(&db, files[0]);
     let diags = module_defs::accumulated::<Diag>(&db, files[0]);
     let cs: Vec<&str> = diags.iter().map(|d| d.0.code.as_str()).collect();
@@ -61,8 +84,17 @@ fn orphan_signature_is_an_error() {
 
 #[test]
 fn module_interface_excludes_private() {
-    let (db, files) =
-        db_with(&[("M.fai", "module M\n\npublic f : Int -> Int\nlet f x = x\n\nlet g = 3\n")]);
+    let (db, files) = db_with(&[(
+        "M.fai",
+        indoc! {r#"
+            module M
+
+            public f : Int -> Int
+            let f x = x
+
+            let g = 3
+        "#},
+    )]);
     let iface = module_interface(&db, files[0]);
     assert_eq!(iface.exports.len(), 1);
     assert_eq!(iface.exports[0].name.as_str(), "f");
@@ -70,14 +102,28 @@ fn module_interface_excludes_private() {
 
 #[test]
 fn unbound_name_reported() {
-    let (db, files) = db_with(&[("M.fai", "module M\n\nlet f = nope\n")]);
+    let (db, files) = db_with(&[(
+        "M.fai",
+        indoc! {r#"
+            module M
+
+            let f = nope
+        "#},
+    )]);
     let diags = resolve_diags(&db, files[0]);
     assert!(codes(&diags).contains(&"FAI2001"), "got {:?}", codes(&diags));
 }
 
 #[test]
 fn local_params_resolve() {
-    let (db, files) = db_with(&[("M.fai", "module M\n\nlet f x = x\n")]);
+    let (db, files) = db_with(&[(
+        "M.fai",
+        indoc! {r#"
+            module M
+
+            let f x = x
+        "#},
+    )]);
     let diags = resolve_diags(&db, files[0]);
     assert!(diags.is_empty(), "unexpected: {:?}", codes(&diags));
 }
@@ -85,8 +131,23 @@ fn local_params_resolve() {
 #[test]
 fn qualified_reference_resolves_public() {
     let (db, files) = db_with(&[
-        ("A.fai", "module A\n\npublic g : Int -> Int\nlet g x = x\n"),
-        ("B.fai", "module B\n\nlet h = A.g 1\n"),
+        (
+            "A.fai",
+            indoc! {r#"
+                module A
+
+                public g : Int -> Int
+                let g x = x
+            "#},
+        ),
+        (
+            "B.fai",
+            indoc! {r#"
+                module B
+
+                let h = A.g 1
+            "#},
+        ),
     ]);
     let diags = resolve_diags(&db, files[1]);
     assert!(diags.is_empty(), "unexpected: {:?}", codes(&diags));
@@ -98,8 +159,22 @@ fn qualified_reference_resolves_public() {
 #[test]
 fn qualified_reference_to_private_errors() {
     let (db, files) = db_with(&[
-        ("A.fai", "module A\n\nlet g x = x\n"),
-        ("B.fai", "module B\n\nlet h = A.g 1\n"),
+        (
+            "A.fai",
+            indoc! {r#"
+                module A
+
+                let g x = x
+            "#},
+        ),
+        (
+            "B.fai",
+            indoc! {r#"
+                module B
+
+                let h = A.g 1
+            "#},
+        ),
     ]);
     let diags = resolve_diags(&db, files[1]);
     assert!(codes(&diags).contains(&"FAI2003"), "got {:?}", codes(&diags));
@@ -107,15 +182,38 @@ fn qualified_reference_to_private_errors() {
 
 #[test]
 fn qualified_reference_to_unknown_module_errors() {
-    let (db, files) = db_with(&[("B.fai", "module B\n\nlet h = Zzz.g 1\n")]);
+    let (db, files) = db_with(&[(
+        "B.fai",
+        indoc! {r#"
+            module B
+
+            let h = Zzz.g 1
+        "#},
+    )]);
     let diags = resolve_diags(&db, files[0]);
     assert!(codes(&diags).contains(&"FAI2008"), "got {:?}", codes(&diags));
 }
 
 #[test]
 fn duplicate_module_name_errors_on_each_file() {
-    let (db, files) =
-        db_with(&[("A.fai", "module Dup\n\nlet a = 1\n"), ("B.fai", "module Dup\n\nlet b = 2\n")]);
+    let (db, files) = db_with(&[
+        (
+            "A.fai",
+            indoc! {r#"
+                module Dup
+
+                let a = 1
+            "#},
+        ),
+        (
+            "B.fai",
+            indoc! {r#"
+                module Dup
+
+                let b = 2
+            "#},
+        ),
+    ]);
     let a = resolve_diags(&db, files[0]);
     let b = resolve_diags(&db, files[1]);
     assert!(codes(&a).contains(&"FAI2007"), "file A: {:?}", codes(&a));
@@ -124,7 +222,15 @@ fn duplicate_module_name_errors_on_each_file() {
 
 #[test]
 fn duplicate_definition_errors() {
-    let (db, files) = db_with(&[("M.fai", "module M\n\nlet f = 1\nlet f = 2\n")]);
+    let (db, files) = db_with(&[(
+        "M.fai",
+        indoc! {r#"
+            module M
+
+            let f = 1
+            let f = 2
+        "#},
+    )]);
     let _ = module_defs(&db, files[0]);
     let diags = module_defs::accumulated::<Diag>(&db, files[0]);
     let cs: Vec<&str> = diags.iter().map(|d| d.0.code.as_str()).collect();
@@ -133,8 +239,15 @@ fn duplicate_definition_errors() {
 
 #[test]
 fn mutually_recursive_sigless_defs_share_one_scc() {
-    let (db, files) =
-        db_with(&[("M.fai", "module M\n\nlet isEven n = isOdd n\nlet isOdd n = isEven n\n")]);
+    let (db, files) = db_with(&[(
+        "M.fai",
+        indoc! {r#"
+            module M
+
+            let isEven n = isOdd n
+            let isOdd n = isEven n
+        "#},
+    )]);
     let sccs = module_sccs(&db, files[0]);
     // One SCC containing both isEven and isOdd.
     let big = sccs.sccs.iter().find(|s| s.members.len() == 2);
@@ -143,8 +256,16 @@ fn mutually_recursive_sigless_defs_share_one_scc() {
 
 #[test]
 fn signatured_def_is_singleton_scc() {
-    let (db, files) =
-        db_with(&[("M.fai", "module M\n\npublic f : Int -> Int\nlet f x = g x\nlet g y = y\n")]);
+    let (db, files) = db_with(&[(
+        "M.fai",
+        indoc! {r#"
+            module M
+
+            public f : Int -> Int
+            let f x = g x
+            let g y = y
+        "#},
+    )]);
     let sccs = module_sccs(&db, files[0]);
     // f has a signature => its own singleton; g is sig-less singleton too.
     assert!(sccs.sccs.iter().all(|s| s.members.len() == 1), "got {:?}", sccs.sccs);
@@ -155,8 +276,23 @@ fn shadowing_prelude_warns() {
     // Shadow an auto-imported name: the warning needs the Prelude module present
     // (as a standard-library file) so its exports are known.
     let (db, files) = db_with(&[
-        ("<std>/Prelude.fai", "module Prelude\n\npublic not : Bool -> Bool\nlet not b = b\n"),
-        ("M.fai", "module M\n\nlet not x = x\n"),
+        (
+            "<std>/Prelude.fai",
+            indoc! {r#"
+                module Prelude
+
+                public not : Bool -> Bool
+                let not b = b
+            "#},
+        ),
+        (
+            "M.fai",
+            indoc! {r#"
+                module M
+
+                let not x = x
+            "#},
+        ),
     ]);
     let diags = resolve_diags(&db, files[1]);
     let warn = diags.iter().find(|d| d.code.as_str() == "FAI2010");
@@ -168,7 +304,12 @@ fn shadowing_prelude_warns() {
 fn standard_library_module_may_use_prim() {
     let (db, files) = db_with(&[(
         "<std>/Bool.fai",
-        "module Bool\n\npublic neg : Bool -> Bool\nlet neg b = Prim.not b\n",
+        indoc! {r#"
+            module Bool
+
+            public neg : Bool -> Bool
+            let neg b = Prim.not b
+        "#},
     )]);
     let diags = resolve_diags(&db, files[0]);
     assert!(diags.is_empty(), "a std module may use Prim, got {:?}", codes(&diags));
@@ -176,7 +317,14 @@ fn standard_library_module_may_use_prim() {
 
 #[test]
 fn prim_outside_standard_library_is_rejected() {
-    let (db, files) = db_with(&[("M.fai", "module M\n\nlet neg b = Prim.not b\n")]);
+    let (db, files) = db_with(&[(
+        "M.fai",
+        indoc! {r#"
+            module M
+
+            let neg b = Prim.not b
+        "#},
+    )]);
     let diags = resolve_diags(&db, files[0]);
     assert!(
         diags.iter().any(|d| d.code.as_str() == "FAI2014"),
@@ -187,8 +335,15 @@ fn prim_outside_standard_library_is_rejected() {
 
 #[test]
 fn prim_unknown_intrinsic_is_unbound() {
-    let (db, files) =
-        db_with(&[("<std>/M.fai", "module M\n\npublic f : Int -> Int\nlet f x = Prim.nope x\n")]);
+    let (db, files) = db_with(&[(
+        "<std>/M.fai",
+        indoc! {r#"
+            module M
+
+            public f : Int -> Int
+            let f x = Prim.nope x
+        "#},
+    )]);
     let diags = resolve_diags(&db, files[0]);
     assert!(diags.iter().any(|d| d.code.as_str() == "FAI2001"), "got {:?}", codes(&diags));
 }
@@ -198,8 +353,24 @@ fn duplicate_auto_imported_export_is_detected() {
     // Two auto-imported modules exporting the same name are recorded as a
     // duplicate by the merge (FAI2013 is emitted per offending file from there).
     let (db, files) = db_with(&[
-        ("<std>/A.fai", "module A\n\npublic dup : Int\nlet dup = 1\n"),
-        ("<std>/B.fai", "module B\n\npublic dup : Int\nlet dup = 2\n"),
+        (
+            "<std>/A.fai",
+            indoc! {r#"
+                module A
+
+                public dup : Int
+                let dup = 1
+            "#},
+        ),
+        (
+            "<std>/B.fai",
+            indoc! {r#"
+                module B
+
+                public dup : Int
+                let dup = 2
+            "#},
+        ),
     ]);
     let exports = crate::merge_auto_imports(&db, &files);
     assert!(
@@ -211,7 +382,15 @@ fn duplicate_auto_imported_export_is_detected() {
 #[test]
 fn resolves_to_local_over_def() {
     // A parameter named like a top-level def resolves to the local.
-    let (db, files) = db_with(&[("M.fai", "module M\n\nlet g = 1\nlet f g = g\n")]);
+    let (db, files) = db_with(&[(
+        "M.fai",
+        indoc! {r#"
+            module M
+
+            let g = 1
+            let f g = g
+        "#},
+    )]);
     let resolved = resolve(&db, files[0]);
     // The `g` in `f`'s body is the parameter (Local), not the top-level def.
     let has_local = resolved.by_expr.values().any(|r| matches!(r, Res::Local(_)));

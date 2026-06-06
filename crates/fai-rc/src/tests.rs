@@ -8,6 +8,7 @@ use fai_core::pretty_def;
 use fai_db::{Db, FaiDatabase, SourceFile};
 use fai_resolve::LocalId;
 use fai_syntax::Symbol;
+use indoc::{formatdoc, indoc};
 use proptest::prelude::*;
 
 use crate::rc;
@@ -27,25 +28,55 @@ fn rc_of(src: &str, name: &str) -> String {
 
 #[test]
 fn identity_dups_use_and_drops_param() {
-    let got = rc_of("module M\n\nlet id x = x\n", "id");
+    let got = rc_of(
+        indoc! {r#"
+            module M
+
+            let id x = x
+        "#},
+        "id",
+    );
     assert_eq!(got, "fn0(%0) = (drop %0; (dup %0; %0))\n");
 }
 
 #[test]
 fn arithmetic_dups_each_operand() {
-    let got = rc_of("module M\n\nlet add x y = x + y\n", "add");
+    let got = rc_of(
+        indoc! {r#"
+            module M
+
+            let add x y = x + y
+        "#},
+        "add",
+    );
     assert_eq!(got, "fn0(%0, %1) = (drop %0; (drop %1; (+ (dup %0; %0) (dup %1; %1))))\n");
 }
 
 #[test]
 fn const_drops_unused_argument() {
-    let got = rc_of("module M\n\nlet k x y = x\n", "k");
+    let got = rc_of(
+        indoc! {r#"
+            module M
+
+            let k x y = x
+        "#},
+        "k",
+    );
     assert_eq!(got, "fn0(%0, %1) = (drop %0; (drop %1; (dup %0; %0)))\n");
 }
 
 #[test]
 fn let_binding_dropped_at_scope_end() {
-    let got = rc_of("module M\n\nlet f a =\n  let b = a + 1\n  b + b\n", "f");
+    let got = rc_of(
+        indoc! {r#"
+            module M
+
+            let f a =
+              let b = a + 1
+              b + b
+        "#},
+        "f",
+    );
     assert_eq!(
         got,
         "fn0(%0) = (drop %0; (let %1 = (+ (dup %0; %0) 1); (drop %1; (+ (dup %1; %1) (dup %1; %1)))))\n"
@@ -54,8 +85,15 @@ fn let_binding_dropped_at_scope_end() {
 
 #[test]
 fn captures_dup_on_use_but_are_not_dropped() {
-    let got =
-        rc_of("module M\n\npublic twice : ('a -> 'a) -> 'a -> 'a\nlet twice f = f >> f\n", "twice");
+    let got = rc_of(
+        indoc! {r#"
+            module M
+
+            public twice : ('a -> 'a) -> 'a -> 'a
+            let twice f = f >> f
+        "#},
+        "twice",
+    );
     assert_eq!(
         got,
         "fn0(%0) = (drop %0; (closure fn1 [%0]))\nfn1(%1) [caps %0] = (drop %1; (app (dup %0; %0) (app (dup %0; %0) (dup %1; %1))))\n"
@@ -64,7 +102,12 @@ fn captures_dup_on_use_but_are_not_dropped() {
 
 #[test]
 fn console_write_line_drops_runtime() {
-    let src = "module M\n\npublic main : Runtime -> Unit\nlet main runtime = Console.writeLine runtime \"Hi\"\n";
+    let src = indoc! {r#"
+        module M
+
+        public main : Runtime -> Unit
+        let main runtime = Console.writeLine runtime "Hi"
+    "#};
     assert_eq!(rc_of(src, "main"), "fn0(%0) = (drop %0; (writeLine (dup %0; %0) \"Hi\"))\n");
 }
 
@@ -147,18 +190,96 @@ fn assert_rc_invariants(def: &LoweredDef) {
 #[test]
 fn rc_invariants_hold_over_a_corpus() {
     let corpus: &[(&str, &str)] = &[
-        ("module M\n\nlet id x = x\n", "id"),
-        ("module M\n\nlet add x y = x + y\n", "add"),
-        ("module M\n\nlet k x y = x\n", "k"),
-        ("module M\n\nlet abs n = if n < 0 then 0 - n else n\n", "abs"),
-        ("module M\n\nlet f a =\n  let b = a + 1\n  let c = b + a\n  b + c\n", "f"),
-        ("module M\n\nlet twice f = f >> f\n", "twice"),
-        ("module M\n\nlet adder x = fun y -> x + y\n", "adder"),
-        ("module M\n\nlet pipe n = n |> Int.toString\n", "pipe"),
-        ("module M\n\nlet neq a b = a <> b\n", "neq"),
-        ("module M\n\nlet both a b = a && b\n", "both"),
         (
-            "module M\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (\"a\" ++ \"b\")\n",
+            indoc! {r#"
+                module M
+
+                let id x = x
+            "#},
+            "id",
+        ),
+        (
+            indoc! {r#"
+                module M
+
+                let add x y = x + y
+            "#},
+            "add",
+        ),
+        (
+            indoc! {r#"
+                module M
+
+                let k x y = x
+            "#},
+            "k",
+        ),
+        (
+            indoc! {r#"
+                module M
+
+                let abs n = if n < 0 then 0 - n else n
+            "#},
+            "abs",
+        ),
+        (
+            indoc! {r#"
+                module M
+
+                let f a =
+                  let b = a + 1
+                  let c = b + a
+                  b + c
+            "#},
+            "f",
+        ),
+        (
+            indoc! {r#"
+                module M
+
+                let twice f = f >> f
+            "#},
+            "twice",
+        ),
+        (
+            indoc! {r#"
+                module M
+
+                let adder x = fun y -> x + y
+            "#},
+            "adder",
+        ),
+        (
+            indoc! {r#"
+                module M
+
+                let pipe n = n |> Int.toString
+            "#},
+            "pipe",
+        ),
+        (
+            indoc! {r#"
+                module M
+
+                let neq a b = a <> b
+            "#},
+            "neq",
+        ),
+        (
+            indoc! {r#"
+                module M
+
+                let both a b = a && b
+            "#},
+            "both",
+        ),
+        (
+            indoc! {r#"
+                module M
+
+                public main : Runtime -> Unit
+                let main r = Console.writeLine r ("a" ++ "b")
+            "#},
             "main",
         ),
     ];
@@ -184,7 +305,11 @@ fn int_expr() -> impl Strategy<Value = String> {
 proptest! {
     #[test]
     fn rc_invariants_hold_for_generated_expressions(expr in int_expr()) {
-        let src = format!("module M\n\nlet f x = {expr}\n");
+        let src = formatdoc! {r#"
+            module M
+
+            let f x = {expr}
+        "#};
         let (db, file) = db_with(&src);
         let lowered = rc(&db, file, Symbol::intern("f"));
         assert_rc_invariants(&lowered);

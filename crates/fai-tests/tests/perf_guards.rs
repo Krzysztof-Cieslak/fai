@@ -17,6 +17,7 @@ use fai_driver::{Session, check, object_code};
 use fai_syntax::Symbol;
 use fai_tests::corpus::{self, CorpusSpec};
 use fai_types::check_file;
+use indoc::{formatdoc, indoc};
 
 /// Type-checks every file (driving inference) so the database is fully warmed.
 fn check_all(db: &FaiDatabase, files: &[SourceFile]) {
@@ -152,15 +153,32 @@ fn object_code_runs_after_helper_edit(fillers: usize) -> usize {
     fai_types::std_lib::load_std(&mut db);
     let helper_id = db.add_source(
         "Helper.fai".into(),
-        "module Helper\n\npublic helper : Int -> Int\nlet helper x = x + 1\n".to_owned(),
+        indoc! {r#"
+            module Helper
+
+            public helper : Int -> Int
+            let helper x = x + 1
+        "#}
+        .to_owned(),
     );
     let main_id = db.add_source(
         "Main.fai".into(),
-        "module Main\n\npublic main : Runtime -> Unit\nlet main r = Console.writeLine r (Int.toString (Helper.helper 1))\n".to_owned(),
+        indoc! {r#"
+            module Main
+
+            public main : Runtime -> Unit
+            let main r = Console.writeLine r (Int.toString (Helper.helper 1))
+        "#}
+        .to_owned(),
     );
     let mut filler: Vec<(SourceFile, Symbol)> = Vec::new();
     for i in 0..fillers {
-        let src = format!("module F{i}\n\npublic g{i} : Int -> Int\nlet g{i} x = x + {i}\n");
+        let src = formatdoc! {r#"
+            module F{i}
+
+            public g{i} : Int -> Int
+            let g{i} x = x + {i}
+        "#};
         let id = db.add_source(format!("F{i}.fai").into(), src);
         filler.push((db.source_file(id).unwrap(), Symbol::intern(&format!("g{i}"))));
     }
@@ -177,9 +195,13 @@ fn object_code_runs_after_helper_edit(fillers: usize) -> usize {
     warm(&db);
 
     db.enable_event_log();
-    helper
-        .set_text(&mut db)
-        .to("module Helper\n\npublic helper : Int -> Int\nlet helper x = x + 2\n".to_owned());
+    helper.set_text(&mut db).to(indoc! {r#"
+        module Helper
+
+        public helper : Int -> Int
+        let helper x = x + 2
+    "#}
+    .to_owned());
     warm(&db);
     count(&db.take_events(), "object_code")
 }
@@ -203,10 +225,26 @@ fn sync_workspace() -> Utf8PathBuf {
         COUNTER.fetch_add(1, Ordering::Relaxed)
     ));
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("A.fai"), "module A\n\npublic a : Int -> Int\nlet a x = x + 1\n")
-        .unwrap();
-    std::fs::write(dir.join("B.fai"), "module B\n\npublic b : Int -> Int\nlet b x = x + 2\n")
-        .unwrap();
+    std::fs::write(
+        dir.join("A.fai"),
+        indoc! {r#"
+            module A
+
+            public a : Int -> Int
+            let a x = x + 1
+        "#},
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("B.fai"),
+        indoc! {r#"
+            module B
+
+            public b : Int -> Int
+            let b x = x + 2
+        "#},
+    )
+    .unwrap();
     dir
 }
 
@@ -222,8 +260,16 @@ fn content_preserving_resync_reinfers_nothing() {
 
     session.enable_event_log();
     // Identical bytes, fresh mtime.
-    std::fs::write(dir.join("A.fai"), "module A\n\npublic a : Int -> Int\nlet a x = x + 1\n")
-        .unwrap();
+    std::fs::write(
+        dir.join("A.fai"),
+        indoc! {r#"
+            module A
+
+            public a : Int -> Int
+            let a x = x + 1
+        "#},
+    )
+    .unwrap();
     session.sync_from_disk().unwrap();
     let _ = check(session.db(), &session.select_files(None));
 
@@ -242,8 +288,16 @@ fn editing_content_reinfers_the_changed_module() {
     let _ = check(session.db(), &session.select_files(None)); // warm
 
     session.enable_event_log();
-    std::fs::write(dir.join("A.fai"), "module A\n\npublic a : Int -> Int\nlet a x = x + 999\n")
-        .unwrap();
+    std::fs::write(
+        dir.join("A.fai"),
+        indoc! {r#"
+            module A
+
+            public a : Int -> Int
+            let a x = x + 999
+        "#},
+    )
+    .unwrap();
     session.sync_from_disk().unwrap();
     let _ = check(session.db(), &session.select_files(None));
 
