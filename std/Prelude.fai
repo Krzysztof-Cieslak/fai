@@ -69,6 +69,35 @@ public interface Ord 'a =
   (>) : 'a -> 'a -> Bool
   (>=) : 'a -> 'a -> Bool
 
+// The host capabilities, reached as interface instances threaded from `main`
+// through a `Runtime`. A function names only the capabilities it needs, so its
+// type reveals its reach. Unlike the operator interfaces these are ordinary,
+// user-instantiable interfaces (a program may supply its own console, say).
+public interface Console =
+  writeLine : String -> Unit
+
+public interface Clock =
+  now : Unit -> Int
+
+public interface Random =
+  nextInt : Int -> Int
+
+/// The capability bundle `main` receives: the host's console, clock, and random
+/// sources. Request only the fields you need (an open record) to keep authority
+/// least.
+public type Runtime = { clock : Clock, console : Console, random : Random }
+
+// The default host capabilities, backed by the runtime intrinsics. Private: a
+// program obtains them only as the `Runtime` `main` is applied to.
+let stdConsole = { Console with writeLine s = Prim.consoleWriteLine s }
+
+let stdClock = { Clock with now u = Prim.clockNow u }
+
+let stdRandom = { Random with nextInt n = Prim.randomNextInt n }
+
+// The standard `Runtime` the entry trampoline applies `main` to.
+let defaultRuntime = { clock = stdClock, console = stdConsole, random = stdRandom }
+
 /// Forward application: `x |> f` is `f x`.
 public (|>) : 'a -> ('a -> 'b) -> 'b
 let (|>) x f = f x

@@ -8,9 +8,9 @@ let collatz n = steps n 0
 
 public main : Runtime -> Unit
 let main runtime =
-  let a = Console.writeLine runtime (Int.toString (collatz 6))
-  let b = Console.writeLine runtime (Int.toString (collatz 27))
-  Console.writeLine runtime (Int.toString (collatz 1))
+  let a = runtime.console.writeLine (Int.toString (collatz 6))
+  let b = runtime.console.writeLine (Int.toString (collatz 27))
+  runtime.console.writeLine (Int.toString (collatz 1))
 
 //~ OUTPUT 8
 //~ OUTPUT 111

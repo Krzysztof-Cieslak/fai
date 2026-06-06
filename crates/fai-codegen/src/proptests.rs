@@ -149,7 +149,7 @@ proptest! {
             let f x = {}
 
             public main : Runtime -> Unit
-            let main r = Console.writeLine r (Int.toString (f {}))
+            let main r = r.console.writeLine (Int.toString (f {}))
         "#,
             render(&e),
             render_arg(x),
@@ -172,7 +172,7 @@ proptest! {
             let f x = if {} then 1 else 0
 
             public main : Runtime -> Unit
-            let main r = Console.writeLine r (Int.toString (f {}))
+            let main r = r.console.writeLine (Int.toString (f {}))
         "#,
             render_b(&b),
             render_arg(x),

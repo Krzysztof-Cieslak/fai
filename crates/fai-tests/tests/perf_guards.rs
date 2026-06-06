@@ -167,7 +167,7 @@ fn object_code_runs_after_helper_edit(fillers: usize) -> usize {
             module Main
 
             public main : Runtime -> Unit
-            let main r = Console.writeLine r (Int.toString (Helper.helper 1))
+            let main r = r.console.writeLine (Int.toString (Helper.helper 1))
         "#}
         .to_owned(),
     );

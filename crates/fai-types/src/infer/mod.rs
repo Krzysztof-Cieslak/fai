@@ -282,8 +282,9 @@ pub fn infer_local_types(
     let params: Vec<fai_syntax::ast::PatId> = params.to_vec();
 
     let mut cx = InferCtx::new();
-    let member_ty = match declared_scheme(db, file, name) {
-        Some(scheme) => cx.instantiate(&scheme),
+    let declared = declared_scheme(db, file, name);
+    let member_ty = match &declared {
+        Some(scheme) => cx.instantiate(scheme),
         None => cx.fresh(),
     };
     let mut scc_types: FxHashMap<DefId, SolveTy> = FxHashMap::default();
@@ -297,10 +298,22 @@ pub fn infer_local_types(
         }
     }
 
+    // Bind signatured parameters to their declared types up front (see
+    // [`infer_body_types`]), so method access on a parameter resolves.
+    let declared_params: Option<Vec<SolveTy>> =
+        declared.is_some().then(|| peel_param_types(&cx, &member_ty, params.len()));
+
     let locals = {
         let mut env = SccEnv::new(db, &scc_types, def_schemes, builtins);
         let mut walker = Walker::new(db, file, module, &resolved, &mut cx, &mut env);
-        let param_tys: Vec<SolveTy> = params.iter().map(|&p| walker.bind_param(p)).collect();
+        let param_tys: Vec<SolveTy> = params
+            .iter()
+            .enumerate()
+            .map(|(i, &p)| match declared_params.as_ref().and_then(|d| d.get(i)).cloned() {
+                Some(expected) => walker.bind_param_checked(p, &expected),
+                None => walker.bind_param(p),
+            })
+            .collect();
         let body_ty = walker.infer_expr(body);
         let fn_ty = SolveTy::arrows_solver(param_tys, body_ty);
         let _ = walker.cx.unify(&fn_ty, &member_ty);
@@ -335,17 +348,31 @@ pub fn infer_body_types(
     let params: Vec<fai_syntax::ast::PatId> = params.to_vec();
 
     let mut cx = InferCtx::new();
-    let member_ty = match declared_scheme(db, file, name) {
-        Some(scheme) => cx.instantiate(&scheme),
+    let declared = declared_scheme(db, file, name);
+    let member_ty = match &declared {
+        Some(scheme) => cx.instantiate(scheme),
         None => cx.fresh(),
     };
     let mut scc_types: FxHashMap<DefId, SolveTy> = FxHashMap::default();
     scc_types.insert(DefId::new(file.source(db), name), member_ty.clone());
 
+    // For a signatured binding, bind each parameter to its declared type *before*
+    // checking the body, so type-directed interface method access on a parameter
+    // (e.g. `runtime.console.writeLine`) sees the parameter's real type.
+    let declared_params: Option<Vec<SolveTy>> =
+        declared.is_some().then(|| peel_param_types(&cx, &member_ty, params.len()));
+
     let mut env = SccEnv::new(db, &scc_types, def_schemes, builtins);
     let mut walker = Walker::new(db, file, module, &resolved, &mut cx, &mut env);
     walker.enable_type_recording();
-    let param_tys: Vec<SolveTy> = params.iter().map(|&p| walker.bind_param(p)).collect();
+    let param_tys: Vec<SolveTy> = params
+        .iter()
+        .enumerate()
+        .map(|(i, &p)| match declared_params.as_ref().and_then(|d| d.get(i)).cloned() {
+            Some(expected) => walker.bind_param_checked(p, &expected),
+            None => walker.bind_param(p),
+        })
+        .collect();
     let body_ty = walker.infer_expr(body);
     let fn_ty = SolveTy::arrows_solver(param_tys, body_ty);
     let _ = walker.cx.unify(&fn_ty, &member_ty);

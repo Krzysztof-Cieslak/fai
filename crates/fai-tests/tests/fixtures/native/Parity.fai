@@ -9,9 +9,9 @@ let parity n = if isEven n then "even" else "odd"
 
 public main : Runtime -> Unit
 let main runtime =
-  let a = Console.writeLine runtime (parity 10)
-  let b = Console.writeLine runtime (parity 7)
-  Console.writeLine runtime (parity 0)
+  let a = runtime.console.writeLine (parity 10)
+  let b = runtime.console.writeLine (parity 7)
+  runtime.console.writeLine (parity 0)
 
 //~ OUTPUT even
 //~ OUTPUT odd

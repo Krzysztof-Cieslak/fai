@@ -23,7 +23,7 @@ const HELLO: &str = indoc! {r#"
     module Hello
 
     public main : Runtime -> Unit
-    let main runtime = Console.writeLine runtime "hi from run"
+    let main runtime = runtime.console.writeLine "hi from run"
 "#};
 
 #[test]
@@ -45,7 +45,7 @@ fn build_produces_a_runnable_binary() {
         module Calc
 
         public main : Runtime -> Unit
-        let main runtime = Console.writeLine runtime (Int.toString (40 + 2))
+        let main runtime = runtime.console.writeLine (Int.toString (40 + 2))
     "#};
     let dir = workspace("build", &[("Calc.fai", src)]);
     let exe = dir.join("calc");
@@ -95,7 +95,7 @@ fn build_json_envelope_reports_the_artifact() {
         module Calc
 
         public main : Runtime -> Unit
-        let main runtime = Console.writeLine runtime "ok"
+        let main runtime = runtime.console.writeLine "ok"
     "#};
     let dir = workspace("buildjson", &[("Calc.fai", src)]);
     let exe = dir.join("out");
@@ -122,7 +122,7 @@ fn build_type_error_exits_one_with_json_diagnostic() {
         module Bad
 
         public main : Runtime -> Unit
-        let main runtime = Console.writeLine runtime (1 + 2)
+        let main runtime = runtime.console.writeLine (1 + 2)
     "#};
     let dir = workspace("buildbad", &[("Bad.fai", src)]);
     let output = fai()
@@ -150,7 +150,7 @@ fn run_resolves_calls_across_modules() {
         module Main
 
         public main : Runtime -> Unit
-        let main r = Console.writeLine r (Lib.shout "hi")
+        let main r = r.console.writeLine (Lib.shout "hi")
     "#};
     let lib = indoc! {r#"
         module Lib

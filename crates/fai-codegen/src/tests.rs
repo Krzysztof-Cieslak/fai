@@ -48,12 +48,18 @@ pub(crate) fn run(src: &str) -> (i32, String) {
     }
 
     let entry = DefId::new(user.source(&db), Symbol::intern("main"));
+    // The entry trampoline forces and applies the standard library's `Runtime`
+    // value binding; it is not referenced from `main`, so seed it explicitly.
+    let runtime = DefId::new(
+        fai_resolve::prelude_module_file(&db).expect("prelude module").source(&db),
+        Symbol::intern("defaultRuntime"),
+    );
 
     // Lower only the definitions transitively reachable from `main`.
     let mut defs: Vec<LoweredDef> = Vec::new();
     let mut arity: HashMap<DefId, usize> = HashMap::new();
     let mut seen: HashSet<DefId> = HashSet::new();
-    let mut worklist = vec![entry];
+    let mut worklist = vec![entry, runtime];
     while let Some(def) = worklist.pop() {
         if !seen.insert(def) {
             continue;
@@ -71,7 +77,7 @@ pub(crate) fn run(src: &str) -> (i32, String) {
 
     let _g = lock();
     rt::capture_start();
-    let code = jit_run(&defs, entry, &namer, &arity_of);
+    let code = jit_run(&defs, entry, runtime, &namer, &arity_of);
     let out = rt::capture_take();
     (code, out)
 }
@@ -81,7 +87,7 @@ fn main_printing(expr: &str) -> String {
         module M
 
         public main : Runtime -> Unit
-        let main runtime = Console.writeLine runtime ({expr})
+        let main runtime = runtime.console.writeLine ({expr})
     "#}
 }
 
@@ -122,7 +128,7 @@ fn cross_definition_call() {
         let double x = x + x
 
         public main : Runtime -> Unit
-        let main runtime = Console.writeLine runtime (Int.toString (double 21))
+        let main runtime = runtime.console.writeLine (Int.toString (double 21))
     "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
@@ -137,7 +143,7 @@ fn saturated_curried_call() {
         let add x y = x + y
 
         public main : Runtime -> Unit
-        let main runtime = Console.writeLine runtime (Int.toString (add 40 2))
+        let main runtime = runtime.console.writeLine (Int.toString (add 40 2))
     "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
@@ -156,7 +162,7 @@ fn partial_application_via_zero_arity_binding() {
         let inc = add 1
 
         public main : Runtime -> Unit
-        let main runtime = Console.writeLine runtime (Int.toString (inc 41))
+        let main runtime = runtime.console.writeLine (Int.toString (inc 41))
     "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
@@ -173,7 +179,7 @@ fn higher_order_with_closure_capture() {
         let adder n = fun m -> n + m
 
         public main : Runtime -> Unit
-        let main runtime = Console.writeLine runtime (Int.toString (apply (adder 40) 2))
+        let main runtime = runtime.console.writeLine (Int.toString (apply (adder 40) 2))
     "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
@@ -220,7 +226,7 @@ fn nested_conditionals() {
         let sign n = if n < 0 then "neg" else if n = 0 then "zero" else "pos"
 
         public main : Runtime -> Unit
-        let main r = Console.writeLine r (sign (0 - 3))
+        let main r = r.console.writeLine (sign (0 - 3))
     "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
@@ -238,7 +244,7 @@ fn let_block_in_body() {
           plus1 * 2
 
         public main : Runtime -> Unit
-        let main r = Console.writeLine r (Int.toString (compute 10))
+        let main r = r.console.writeLine (Int.toString (compute 10))
     "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
@@ -270,7 +276,7 @@ fn adt_constructor_and_match() {
           | Rect w h -> w * h
 
         public main : Runtime -> Unit
-        let main r = Console.writeLine r (Int.toString (area (Rect 3 4)))
+        let main r = r.console.writeLine (Int.toString (area (Rect 3 4)))
     "#};
     let (code, out) = run(src);
     assert_eq!(code, 0, "clean exit");
@@ -289,7 +295,7 @@ fn nullary_constructor_match() {
           | Some n -> Int.toString n
 
         public main : Runtime -> Unit
-        let main r = Console.writeLine r (describe None)
+        let main r = r.console.writeLine (describe None)
     "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
@@ -305,7 +311,7 @@ fn list_map_and_fold() {
         let main r =
           let xs = [1, 2, 3, 4]
           let ys = List.map (fun x -> x * x) xs
-          Console.writeLine r (Int.toString (List.foldl (fun acc x -> acc + x) 0 ys))
+          r.console.writeLine (Int.toString (List.foldl (fun acc x -> acc + x) 0 ys))
     "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
@@ -318,7 +324,7 @@ fn cons_and_recursive_length() {
         module M
 
         public main : Runtime -> Unit
-        let main r = Console.writeLine r (Int.toString (List.length (1 :: 2 :: 3 :: [])))
+        let main r = r.console.writeLine (Int.toString (List.length (1 :: 2 :: 3 :: [])))
     "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
@@ -337,7 +343,7 @@ fn list_pattern_match() {
           | x :: _ -> x
 
         public main : Runtime -> Unit
-        let main r = Console.writeLine r (Int.toString (firstOr 0 [7, 8, 9]))
+        let main r = r.console.writeLine (Int.toString (firstOr 0 [7, 8, 9]))
     "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
@@ -383,7 +389,7 @@ fn tuple_construction_and_destructuring() {
         let main r =
           let pair = (40, 2)
           let (a, b) = pair
-          Console.writeLine r (Int.toString (a + b))
+          r.console.writeLine (Int.toString (a + b))
     "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
@@ -398,7 +404,7 @@ fn dict_runs() {
         public main : Runtime -> Unit
         let main r =
           let d = Dict.insert 1 10 (Dict.insert 3 30 (Dict.insert 2 20 Dict.empty))
-          Console.writeLine r (Int.toString (Option.withDefault 0 (Dict.get 2 d) + Dict.size d))
+          r.console.writeLine (Int.toString (Option.withDefault 0 (Dict.get 2 d) + Dict.size d))
     "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
@@ -411,7 +417,7 @@ fn string_ops_run() {
         module M
 
         public main : Runtime -> Unit
-        let main r = Console.writeLine r (String.join "-" (List.map String.toUpper (String.split " " "hi there world")))
+        let main r = r.console.writeLine (String.join "-" (List.map String.toUpper (String.split " " "hi there world")))
     "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
@@ -426,7 +432,7 @@ fn sort_runs() {
         public main : Runtime -> Unit
         let main r =
           let xs = List.sort [3, 1, 2]
-          Console.writeLine r (Int.toString (List.foldl (fun acc x -> acc * 10 + x) 0 xs))
+          r.console.writeLine (Int.toString (List.foldl (fun acc x -> acc * 10 + x) 0 xs))
     "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
@@ -441,7 +447,7 @@ fn record_literal_and_field_access() {
         public main : Runtime -> Unit
         let main r =
           let p = { x = 1, y = 2 }
-          Console.writeLine r (Int.toString (p.x + p.y))
+          r.console.writeLine (Int.toString (p.x + p.y))
     "#};
     let (code, out) = run(src);
     assert_eq!(code, 0, "clean exit");
@@ -461,7 +467,7 @@ fn record_update_runs() {
         public main : Runtime -> Unit
         let main r =
           let q = shift { a = 1, b = 2 }
-          Console.writeLine r (Int.toString (q.a + q.b))
+          r.console.writeLine (Int.toString (q.a + q.b))
     "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
@@ -482,7 +488,7 @@ fn record_pattern_and_punning() {
           | { x, y } -> x + y
 
         public main : Runtime -> Unit
-        let main r = Console.writeLine r (Int.toString (describe { x = 0, y = 5 }))
+        let main r = r.console.writeLine (Int.toString (describe { x = 0, y = 5 }))
     "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
@@ -498,7 +504,7 @@ fn record_destructuring_let() {
         let main r =
           let p = { a = 40, b = 2 }
           let { a, b } = p
-          Console.writeLine r (Int.toString (a + b))
+          r.console.writeLine (Int.toString (a + b))
     "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
@@ -517,7 +523,7 @@ fn nested_match_and_or_patterns() {
           | _ -> "big"
 
         public main : Runtime -> Unit
-        let main r = Console.writeLine r (classify 1)
+        let main r = r.console.writeLine (classify 1)
     "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
@@ -539,7 +545,7 @@ fn float_sort_orders_ascending() {
         public main : Runtime -> Unit
         let main r =
           let xs = List.sort [3.0, 1.0, 2.0]
-          Console.writeLine r (String.join " " (List.map Float.toString xs))
+          r.console.writeLine (String.join " " (List.map Float.toString xs))
     "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
@@ -574,7 +580,7 @@ fn structural_ordering_sorts_constructors_by_declaration_order() {
           | High -> "H"
 
         public main : Runtime -> Unit
-        let main r = Console.writeLine r (String.join "" (List.map name (List.sort [High, Low, Mid, Low])))
+        let main r = r.console.writeLine (String.join "" (List.map name (List.sort [High, Low, Mid, Low])))
     "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
@@ -609,7 +615,7 @@ fn recursive_tree_fold() {
           | Node l x rt -> sumTree l + x + sumTree rt
 
         public main : Runtime -> Unit
-        let main r = Console.writeLine r (Int.toString (sumTree (Node (Node Leaf 1 Leaf) 2 (Node Leaf 3 Leaf))))
+        let main r = r.console.writeLine (Int.toString (sumTree (Node (Node Leaf 1 Leaf) 2 (Node Leaf 3 Leaf))))
     "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
@@ -628,7 +634,7 @@ fn result_pattern_match() {
           | Err e -> e
 
         public main : Runtime -> Unit
-        let main r = Console.writeLine r (describe (Ok 5) ++ describe (Err "boom"))
+        let main r = r.console.writeLine (describe (Ok 5) ++ describe (Err "boom"))
     "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
@@ -643,7 +649,7 @@ fn set_dedups_elements() {
         public main : Runtime -> Unit
         let main r =
           let s = Set.insert 3 (Set.insert 1 (Set.insert 3 Set.empty))
-          Console.writeLine r (Int.toString (Set.size s))
+          r.console.writeLine (Int.toString (Set.size s))
     "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
@@ -662,7 +668,7 @@ fn nested_record_field_access() {
         public main : Runtime -> Unit
         let main r =
           let s = { src = { x = 1, y = 2 }, dest = { x = 3, y = 4 } }
-          Console.writeLine r (Int.toString (s.src.x + s.dest.y))
+          r.console.writeLine (Int.toString (s.src.x + s.dest.y))
     "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
@@ -682,7 +688,7 @@ fn nested_constructor_patterns() {
           | None -> 0
 
         public main : Runtime -> Unit
-        let main r = Console.writeLine r (Int.toString (unwrap (Some (Some 7))))
+        let main r = r.console.writeLine (Int.toString (unwrap (Some (Some 7))))
     "#};
     let (code, out) = run(src);
     assert_eq!(code, 0);
@@ -694,4 +700,37 @@ fn string_trim_and_lowercase() {
     let (code, out) = run(&main_printing("String.toLower (String.trim \"  Hello WORLD  \")"));
     assert_eq!(code, 0);
     assert_eq!(out, "hello world\n");
+}
+
+#[test]
+fn random_capability_in_range() {
+    // `nextInt 1` is deterministically `0` (the range `[0, 1)`).
+    let (code, out) = run(&main_printing("Int.toString (runtime.random.nextInt 1)"));
+    assert_eq!(code, 0);
+    assert_eq!(out, "0\n");
+}
+
+#[test]
+fn clock_capability_reads_positive_time() {
+    let (code, out) = run(&main_printing("if runtime.clock.now () > 0 then \"ok\" else \"no\""));
+    assert_eq!(code, 0);
+    assert_eq!(out, "ok\n");
+}
+
+#[test]
+fn runtime_threaded_through_signatured_helper() {
+    // A helper that receives the full `Runtime` can project a capability, given a
+    // signature (the receiver's type must be known for method access).
+    let src = indoc! {r#"
+        module M
+
+        emit : Runtime -> String -> Unit
+        let emit runtime msg = runtime.console.writeLine msg
+
+        public main : Runtime -> Unit
+        let main runtime = emit runtime "hi"
+    "#};
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "hi\n");
 }

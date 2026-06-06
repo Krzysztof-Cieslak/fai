@@ -255,11 +255,15 @@ fn console_writeline_via_runtime_typechecks() {
         module Hello
 
         public main : Runtime -> Unit
-        let main runtime = Console.writeLine runtime "Hi"
+        let main runtime = runtime.console.writeLine "Hi"
     "#};
-    let (db, f) = db_with(&[("Hello.fai", src)]);
+    let (db, f) = db_with_std(&[("Hello.fai", src)]);
     assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
-    assert_eq!(type_of(&db, f[0], "main"), "Runtime -> ()");
+    // `Runtime` is a transparent alias, so the signature renders expanded.
+    assert_eq!(
+        type_of(&db, f[0], "main"),
+        "{ clock : Clock, console : Console, random : Random } -> ()"
+    );
 }
 
 #[test]

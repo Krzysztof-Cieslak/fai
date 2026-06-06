@@ -41,6 +41,21 @@ const RUNTIME_NATIVE_LIBS: &str = env!("FAI_RUNTIME_NATIVE_LIBS");
 /// The required entry-point name.
 const ENTRY: &str = "main";
 
+/// The standard library's private `Runtime` value binding, applied to `main` by
+/// the entry trampoline.
+const RUNTIME_VALUE: &str = "defaultRuntime";
+
+/// The `Runtime` value binding's definition, supplied to `main` by the entry
+/// trampoline. It is not referenced from `main`'s body (the trampoline injects
+/// it), so the backend seeds it as a second reachability root. `None` if the
+/// standard library does not define it.
+fn runtime_root(db: &dyn Db) -> Option<DefId> {
+    let file = fai_resolve::prelude_module_file(db)?;
+    let name = Symbol::intern(RUNTIME_VALUE);
+    module_defs(db, file).get(name)?;
+    Some(DefId::new(file.source(db), name))
+}
+
 /// The mangled symbol base for a definition: `fai_<module>_<name>`.
 #[must_use]
 pub fn symbol_base(db: &dyn Db, def: DefId) -> String {
@@ -107,7 +122,12 @@ pub fn reachable_defs(db: &dyn Db, file: SourceFile) -> Vec<DefId> {
     let entry = DefId::new(file.source(db), Symbol::intern(ENTRY));
     let mut seen = FxHashSet::default();
     let mut order = Vec::new();
+    // `main` plus the `Runtime` value binding the entry trampoline forces and
+    // applies to it; the latter is not referenced from any reachable body.
     let mut stack = vec![entry];
+    if let Some(runtime) = runtime_root(db) {
+        stack.push(runtime);
+    }
     while let Some(def) = stack.pop() {
         if !seen.insert(def) {
             continue;
@@ -220,7 +240,8 @@ pub fn build_native(db: &dyn Db, file: SourceFile, out: &Utf8Path) -> BuildOutco
         objects.push((symbol_base(db, *def), (*bytes).clone()));
     }
     let entry = DefId::new(file.source(db), Symbol::intern(ENTRY));
-    objects.push(("fai_main".to_owned(), main_object(entry, &|d| symbol_base(db, d))));
+    let runtime = runtime_root(db).expect("standard library defines the Runtime value binding");
+    objects.push(("fai_main".to_owned(), main_object(entry, runtime, &|d| symbol_base(db, d))));
 
     match link(&objects, out) {
         Ok(artifact) => BuildOutcome { artifact: Some(artifact), diagnostics, ok: true },
@@ -270,9 +291,10 @@ pub fn jit_run_program(db: &dyn Db, file: SourceFile) -> RunOutcome {
         .filter_map(|def| db.source_file(def.file).map(|f| (*rc(db, f, def.name)).clone()))
         .collect();
     let entry = DefId::new(file.source(db), Symbol::intern(ENTRY));
+    let runtime = runtime_root(db).expect("standard library defines the Runtime value binding");
     let namer = |d: DefId| symbol_base(db, d);
     let arity = |d: DefId| arity_of(db, d);
-    let exit_code = fai_codegen::jit_run(&defs, entry, &namer, &arity);
+    let exit_code = fai_codegen::jit_run(&defs, entry, runtime, &namer, &arity);
     RunOutcome { exit_code, diagnostics }
 }
 
@@ -319,8 +341,10 @@ pub fn build_run_bundle(db: &dyn Db, file: SourceFile) -> RunBundleResult {
         })
         .collect();
     let entry = DefId::new(file.source(db), Symbol::intern(ENTRY));
+    let runtime = runtime_root(db).expect("standard library defines the Runtime value binding");
     let bundle = WireBundle {
         entry: WireDefId { module: module_label(db, entry), name: ENTRY.to_owned() },
+        runtime: WireDefId { module: module_label(db, runtime), name: RUNTIME_VALUE.to_owned() },
         defs,
     };
     RunBundleResult { bundle: Some(bundle), diagnostics }
@@ -337,7 +361,7 @@ pub fn jit_run_bundle(bundle: &WireBundle) -> i32 {
     let arities = rebuilt.arities;
     let namer = |d: DefId| mangle(labels.get(&d.file).map_or("M", String::as_str), d.name.as_str());
     let arity = |d: DefId| arities.get(&d).copied().unwrap_or(0);
-    fai_codegen::jit_run(&rebuilt.defs, rebuilt.entry, &namer, &arity)
+    fai_codegen::jit_run(&rebuilt.defs, rebuilt.entry, rebuilt.runtime, &namer, &arity)
 }
 
 /// Applies self-imposed resource limits from the environment (set by the daemon

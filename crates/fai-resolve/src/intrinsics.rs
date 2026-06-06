@@ -28,6 +28,10 @@ pub const INTRINSICS: &[&str] = &[
     "stringConcat",
     "split",
     "join",
+    // Capability hosts (reached only through the `Runtime` built in `Prelude`).
+    "consoleWriteLine",
+    "clockNow",
+    "randomNextInt",
 ];
 
 /// The synthetic module through which standard-library code reaches intrinsics.

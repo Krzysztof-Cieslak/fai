@@ -61,9 +61,10 @@ pub fn object_for_def(
 }
 
 /// Emits the program's C `main`: it hands the entry definition's static closure
-/// to `fai_run_main`, returning its exit code.
+/// and the standard library's `Runtime` value binding to `fai_run_main`,
+/// returning its exit code.
 #[must_use]
-pub fn main_object(entry: DefId, namer: &dyn Fn(DefId) -> String) -> Vec<u8> {
+pub fn main_object(entry: DefId, runtime: DefId, namer: &dyn Fn(DefId) -> String) -> Vec<u8> {
     let mut module = object_module("fai_main");
 
     let mut sig = module.make_signature();
@@ -72,13 +73,17 @@ pub fn main_object(entry: DefId, namer: &dyn Fn(DefId) -> String) -> Vec<u8> {
 
     let mut run_sig = module.make_signature();
     run_sig.params.push(AbiParam::new(types::I64));
+    run_sig.params.push(AbiParam::new(types::I64));
     run_sig.returns.push(AbiParam::new(types::I32));
     let run_id =
         module.declare_function("fai_run_main", Linkage::Import, &run_sig).expect("declare run");
 
-    let closure_id = module
+    let entry_id = module
         .declare_data(&closure_symbol(namer, entry), Linkage::Import, true, false)
         .expect("declare entry closure");
+    let runtime_id = module
+        .declare_data(&closure_symbol(namer, runtime), Linkage::Import, true, false)
+        .expect("declare runtime closure");
 
     let mut ctx = module.make_context();
     ctx.func.signature = sig;
@@ -88,10 +93,12 @@ pub fn main_object(entry: DefId, namer: &dyn Fn(DefId) -> String) -> Vec<u8> {
         let block = builder.create_block();
         builder.switch_to_block(block);
         builder.seal_block(block);
-        let gv = module.declare_data_in_func(closure_id, builder.func);
-        let entry_value = builder.ins().symbol_value(types::I64, gv);
+        let entry_gv = module.declare_data_in_func(entry_id, builder.func);
+        let entry_value = builder.ins().symbol_value(types::I64, entry_gv);
+        let runtime_gv = module.declare_data_in_func(runtime_id, builder.func);
+        let runtime_value = builder.ins().symbol_value(types::I64, runtime_gv);
         let run = module.declare_func_in_func(run_id, builder.func);
-        let call = builder.ins().call(run, &[entry_value]);
+        let call = builder.ins().call(run, &[entry_value, runtime_value]);
         let code = builder.inst_results(call)[0];
         builder.ins().return_(&[code]);
         builder.finalize();

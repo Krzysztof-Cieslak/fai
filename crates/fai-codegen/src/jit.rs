@@ -62,6 +62,8 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_string_join", rt::fai_string_join);
     sym!("fai_not", rt::fai_not);
     sym!("fai_console_write_line", rt::fai_console_write_line);
+    sym!("fai_clock_now", rt::fai_clock_now);
+    sym!("fai_random_next_int", rt::fai_random_next_int);
     sym!("fai_apply_n", rt::fai_apply_n);
     sym!("fai_make_closure", rt::fai_make_closure);
     sym!("fai_run_main", rt::fai_run_main);
@@ -84,12 +86,14 @@ fn jit_module() -> JITModule {
     JITModule::new(builder)
 }
 
-/// Compiles `defs` and runs the entry definition's `main`, returning its exit
-/// code (0 on success, 70 on a detected leak).
+/// Compiles `defs` and runs the entry definition's `main` against the standard
+/// library's `Runtime` value binding, returning its exit code (0 on success, 70
+/// on a detected leak).
 #[must_use]
 pub fn jit_run(
     defs: &[LoweredDef],
     entry: DefId,
+    runtime: DefId,
     namer: &dyn Fn(DefId) -> String,
     arity_of: &dyn Fn(DefId) -> usize,
 ) -> i32 {
@@ -99,13 +103,19 @@ pub fn jit_run(
     }
     module.finalize_definitions().expect("finalize");
 
-    let closure_id = module
+    let entry_id = module
         .declare_data(&closure_symbol(namer, entry), Linkage::Export, true, false)
         .expect("entry closure");
-    let (ptr, _size) = module.get_finalized_data(closure_id);
-    let entry_value = ptr as i64;
+    let (entry_ptr, _size) = module.get_finalized_data(entry_id);
+    let entry_value = entry_ptr as i64;
 
-    let code = rt::run_entry(entry_value);
+    let runtime_id = module
+        .declare_data(&closure_symbol(namer, runtime), Linkage::Export, true, false)
+        .expect("runtime closure");
+    let (runtime_ptr, _size) = module.get_finalized_data(runtime_id);
+    let runtime_value = runtime_ptr as i64;
+
+    let code = rt::run_entry(entry_value, runtime_value);
     // Keep the JIT image alive until execution completes, then release it.
     drop(module);
     code
