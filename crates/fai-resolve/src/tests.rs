@@ -396,3 +396,94 @@ fn resolves_to_local_over_def() {
     let has_local = resolved.by_expr.values().any(|r| matches!(r, Res::Local(_)));
     assert!(has_local, "expected a local resolution");
 }
+
+// ── Privacy-leak check (FAI2015) ─────────────────────────────────────────────
+
+/// The source slice a diagnostic's primary span covers (for exact-span asserts).
+fn primary_text<'a>(src: &'a str, diag: &fai_diagnostics::Diagnostic) -> &'a str {
+    let range = diag.primary.range();
+    &src[range.start().to_usize()..range.end().to_usize()]
+}
+
+#[test]
+fn public_signature_exposing_private_type_is_a_leak() {
+    let src = indoc! {r#"
+        module M
+
+        type Secret = Int
+
+        public f : Secret -> Int
+        let f x = x
+    "#};
+    let (db, files) = db_with(&[("M.fai", src)]);
+    let diags = resolve_diags(&db, files[0]);
+    assert_eq!(codes(&diags), vec!["FAI2015"], "expected one privacy leak");
+    assert!(diags[0].message.contains("Secret"), "message: {}", diags[0].message);
+    // The span points precisely at the leaked type reference.
+    assert_eq!(primary_text(src, &diags[0]), "Secret");
+}
+
+#[test]
+fn public_alias_body_exposing_private_type_is_a_leak() {
+    let src = indoc! {r#"
+        module M
+
+        type Inner = Int
+
+        public type Outer = { value : Inner }
+    "#};
+    let (db, files) = db_with(&[("M.fai", src)]);
+    let diags = resolve_diags(&db, files[0]);
+    assert_eq!(codes(&diags), vec!["FAI2015"]);
+    assert_eq!(primary_text(src, &diags[0]), "Inner");
+}
+
+#[test]
+fn public_constructor_field_exposing_private_type_is_a_leak() {
+    let src = indoc! {r#"
+        module M
+
+        type Inner = Int
+
+        public type Wrap =
+          | Wrap Inner
+    "#};
+    let (db, files) = db_with(&[("M.fai", src)]);
+    let diags = resolve_diags(&db, files[0]);
+    assert_eq!(codes(&diags), vec!["FAI2015"]);
+    assert_eq!(primary_text(src, &diags[0]), "Inner");
+}
+
+#[test]
+fn private_surface_referencing_private_type_is_clean() {
+    // A private signature may freely name a private type — nothing is exposed.
+    let src = indoc! {r#"
+        module M
+
+        type Secret = Int
+
+        f : Secret -> Int
+        let f x = x
+    "#};
+    let (db, files) = db_with(&[("M.fai", src)]);
+    let diags = resolve_diags(&db, files[0]);
+    assert!(diags.is_empty(), "got {:?}", codes(&diags));
+}
+
+#[test]
+fn public_signature_referencing_public_or_builtin_type_is_clean() {
+    let src = indoc! {r#"
+        module M
+
+        public type Visible = Int
+
+        public f : Visible -> Int
+        let f x = x
+
+        public g : Int -> Int
+        let g x = x
+    "#};
+    let (db, files) = db_with(&[("M.fai", src)]);
+    let diags = resolve_diags(&db, files[0]);
+    assert!(diags.is_empty(), "got {:?}", codes(&diags));
+}

@@ -5,7 +5,7 @@ public length : { x : Float, y : Float } -> Float
 let length v = Float.sqrt (v.x * v.x + v.y * v.y)
 
 // A transparent alias: `Vec2` and `{ x : Float, y : Float }` are interchangeable.
-type Vec2 = { x : Float, y : Float }
+public type Vec2 = { x : Float, y : Float }
 
 public origin : Vec2
 let origin = { x = 0.0, y = 0.0 }

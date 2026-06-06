@@ -7,7 +7,7 @@ module Rational
 // signatures render as the structural record (fields sorted by label, so the
 // denominator prints first).
 
-type Rational = { num : Int, den : Int }
+public type Rational = { num : Int, den : Int }
 
 // ── gcd / reduction ──────────────────────────────────────────────────────────
 

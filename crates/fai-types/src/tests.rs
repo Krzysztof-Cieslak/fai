@@ -298,7 +298,7 @@ fn constructor_scheme_and_match_type() {
         indoc! {r#"
             module M
 
-            type Shape =
+            public type Shape =
               | Circle Float
               | Rect Float Float
 
@@ -320,7 +320,7 @@ fn non_exhaustive_union_is_an_error() {
         indoc! {r#"
             module M
 
-            type T =
+            public type T =
               | A
               | B
 
@@ -344,7 +344,7 @@ fn exhaustive_union_is_clean() {
         indoc! {r#"
             module M
 
-            type T =
+            public type T =
               | A
               | B
 
@@ -365,7 +365,7 @@ fn wildcard_makes_match_exhaustive() {
         indoc! {r#"
             module M
 
-            type T =
+            public type T =
               | A
               | B
               | C
@@ -387,7 +387,7 @@ fn redundant_arm_is_an_error() {
         indoc! {r#"
             module M
 
-            type T =
+            public type T =
               | A
               | B
 
@@ -413,7 +413,7 @@ fn arm_after_wildcard_is_unreachable() {
         indoc! {r#"
             module M
 
-            type T =
+            public type T =
               | A
               | B
 
@@ -476,7 +476,7 @@ fn nested_pattern_non_exhaustive() {
         indoc! {r#"
             module M
 
-            type T =
+            public type T =
               | A Bool
 
             public f : T -> Int
@@ -499,7 +499,7 @@ fn or_pattern_covers_alternatives() {
         indoc! {r#"
             module M
 
-            type T =
+            public type T =
               | A
               | B
               | C
@@ -521,7 +521,7 @@ fn constructor_arity_mismatch_in_pattern() {
         indoc! {r#"
             module M
 
-            type T =
+            public type T =
               | Pair Int Int
 
             public f : T -> Int
@@ -554,7 +554,7 @@ fn transparent_alias_expands() {
         indoc! {r#"
             module M
 
-            type Celsius = Int
+            public type Celsius = Int
 
             public freezing : Celsius
             let freezing = 0
@@ -608,7 +608,7 @@ fn record_alias_is_transparent() {
     let src = indoc! {r#"
         module M
 
-        type Vec2 = { x : Float, y : Float }
+        public type Vec2 = { x : Float, y : Float }
 
         public origin : Vec2
         let origin = { x = 0.0, y = 0.0 }
@@ -649,7 +649,7 @@ fn record_pattern_match_typechecks() {
     let src = indoc! {r#"
         module M
 
-        type Point = { x : Int, y : Int }
+        public type Point = { x : Int, y : Int }
 
         public sum : Point -> Int
         let sum p =
@@ -701,7 +701,7 @@ fn nested_record_field_access_chains() {
     let src = indoc! {r#"
         module M
 
-        type Seg = { from : { x : Int, y : Int }, to : { x : Int, y : Int } }
+        public type Seg = { from : { x : Int, y : Int }, to : { x : Int, y : Int } }
 
         public startX : Seg -> Int
         let startX s = s.from.x
@@ -720,9 +720,9 @@ fn record_in_constructor_field() {
     let src = indoc! {r#"
         module M
 
-        type Pt = { x : Int, y : Int }
+        public type Pt = { x : Int, y : Int }
 
-        type Shape =
+        public type Shape =
           | Dot Pt
           | Blank
 
@@ -740,7 +740,7 @@ fn record_in_constructor_field() {
 // prelude), so they test the ADT machinery directly rather than `Option`.
 
 const OPT: &str = indoc! {r#"
-    type Opt 'a =
+    public type Opt 'a =
       | Nothing
       | Just 'a
 
@@ -770,7 +770,7 @@ fn user_parametric_union_with_two_params() {
     let src = indoc! {r#"
         module M
 
-        type Pair 'a 'b =
+        public type Pair 'a 'b =
           | Pair 'a 'b
 
         public mk : 'a -> 'b -> Pair 'a 'b
@@ -787,7 +787,7 @@ fn type_constructor_arity_mismatch_in_signature() {
     let src = indoc! {r#"
         module M
 
-        type Box 'a =
+        public type Box 'a =
           | Box 'a
 
         public f : Box Int Int -> Int
@@ -913,7 +913,7 @@ fn or_pattern_binds_consistently_across_alternatives() {
     let src = indoc! {r#"
         module M
 
-        type T =
+        public type T =
           | A Int
           | B Int
 

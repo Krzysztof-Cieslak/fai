@@ -9,9 +9,9 @@ module Geometry
 // `Vec2`/`Vec3` are transparent aliases, so public signatures render as the
 // structural record they stand for.
 
-type Vec2 = { x : Float, y : Float }
+public type Vec2 = { x : Float, y : Float }
 
-type Vec3 = { x : Float, y : Float, z : Float }
+public type Vec3 = { x : Float, y : Float, z : Float }
 
 // ── Vec2 construction & accessors ────────────────────────────────────────────
 
@@ -131,7 +131,7 @@ let magnitude3 v =
 // ── A small projectile-motion step (Float physics) ───────────────────────────
 // State is a body with a position and a velocity, each a Vec2.
 
-type Body = { pos : Vec2, vel : Vec2 }
+public type Body = { pos : Vec2, vel : Vec2 }
 
 //~ TYPE step : { pos : { x : Float, y : Float }, vel : { x : Float, y : Float } } -> Float -> { pos : { x : Float, y : Float }, vel : { x : Float, y : Float } }
 //~ LOCAL step.pos : { x : Float, y : Float }

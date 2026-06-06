@@ -1,6 +1,6 @@
 module RecordMatch
 
-type Vec2 = { x : Float, y : Float }
+public type Vec2 = { x : Float, y : Float }
 
 public describe : Vec2 -> String
 let describe v =

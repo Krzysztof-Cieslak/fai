@@ -7,9 +7,9 @@ module Matrix2
 // `Mat2`/`Vec2` are transparent aliases, so public signatures render as the
 // structural records they stand for.
 
-type Mat2 = { a : Float, b : Float, c : Float, d : Float }
+public type Mat2 = { a : Float, b : Float, c : Float, d : Float }
 
-type Vec2 = { x : Float, y : Float }
+public type Vec2 = { x : Float, y : Float }
 
 //~ TYPE matrix : Float -> Float -> Float -> Float -> { a : Float, b : Float, c : Float, d : Float }
 public matrix : Float -> Float -> Float -> Float -> Mat2

@@ -1,6 +1,6 @@
 module Shapes
 
-type Shape =
+public type Shape =
   | Circle Float
   | Rect Float Float
 
