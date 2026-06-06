@@ -471,6 +471,29 @@ fn private_surface_referencing_private_type_is_clean() {
 }
 
 #[test]
+fn user_operator_resolves_and_unknown_operator_is_unbound() {
+    // A user-defined operator resolves to its definition; a built-in operator is
+    // a builtin; an undefined operator is unbound.
+    let src = indoc! {r#"
+        module M
+
+        let (+++) a b = a
+
+        let usesUser x = x +++ x
+        let usesBuiltin x = x + x
+        let usesUnknown x = x >?> x
+    "#};
+    let (db, files) = db_with(&[("M.fai", src)]);
+    let resolved = resolve(&db, files[0]);
+    // The user operator is a definition reference (so it is a dependency).
+    assert!(resolved.deps.iter().any(|d| d.name.as_str() == "+++"), "expected `+++` in deps");
+    // The unknown operator `>?>` is reported unbound.
+    let diags = resolve_diags(&db, files[0]);
+    let cs = codes(&diags);
+    assert!(cs.contains(&"FAI2001"), "expected unbound operator, got {cs:?}");
+}
+
+#[test]
 fn public_signature_referencing_public_or_builtin_type_is_clean() {
     let src = indoc! {r#"
         module M

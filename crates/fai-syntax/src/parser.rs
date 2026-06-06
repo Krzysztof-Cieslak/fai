@@ -11,9 +11,8 @@ use fai_diagnostics::{Diagnostic, DiagnosticCode};
 use fai_span::{ByteOffset, SourceId, Span, TextRange};
 
 use crate::ast::{
-    BinOp, Expr, ExprId, ExprKind, FieldInit, FieldPat, FieldType, Item, ItemKind, LetStmt,
-    MatchArm, Module, Pat, PatId, PatKind, RowTail, Type, TypeDef, TypeId, TypeKind, UnOp, Variant,
-    Visibility,
+    Expr, ExprId, ExprKind, FieldInit, FieldPat, FieldType, Item, ItemKind, LetStmt, MatchArm,
+    Module, Pat, PatId, PatKind, RowTail, Type, TypeDef, TypeId, TypeKind, Variant, Visibility,
 };
 use crate::token::{Token, TokenKind};
 use crate::{Comment, MODULE_HEADER, SYNTAX_ERROR, Symbol, UNSUPPORTED, layout, lex};
@@ -137,6 +136,74 @@ impl Parser<'_> {
         self.symbol(token)
     }
 
+    /// The operator symbol an operator-ish token denotes. The reserved `=` and
+    /// `::` carry fixed lexemes; a general `Operator` interns its run.
+    fn op_symbol(&self, token: Token) -> Symbol {
+        match token.kind {
+            TokenKind::Equals => Symbol::intern("="),
+            TokenKind::ColonColon => Symbol::intern("::"),
+            _ => self.symbol(token),
+        }
+    }
+
+    /// The symbol of the current token if it can be used as an *infix* operator
+    /// (`Operator`, the equality `=`, or the list-cons `::`).
+    fn infix_op_symbol(&self) -> Option<Symbol> {
+        match self.peek() {
+            TokenKind::Operator | TokenKind::Equals | TokenKind::ColonColon => {
+                Some(self.op_symbol(self.cur()))
+            }
+            _ => None,
+        }
+    }
+
+    /// The symbol of the current token if it can be used as a *prefix* operator.
+    /// Only a general `Operator` may be prefix (`=`/`::` are infix-only).
+    fn prefix_op_symbol(&self) -> Option<Symbol> {
+        match self.peek() {
+            TokenKind::Operator => Some(self.op_symbol(self.cur())),
+            _ => None,
+        }
+    }
+
+    /// Whether the current token is the operator with lexeme `op`.
+    fn at_operator(&self, op: &str) -> bool {
+        self.at(TokenKind::Operator) && self.lexeme(self.cur()) == op
+    }
+
+    /// Consumes the current token if it is the operator with lexeme `op`.
+    fn eat_operator(&mut self, op: &str) -> bool {
+        if self.at_operator(op) {
+            self.bump();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Whether the cursor is at a parenthesized operator name `( op )`.
+    fn at_op_name(&self) -> bool {
+        self.at(TokenKind::LParen)
+            && matches!(
+                self.peek_at(1),
+                TokenKind::Operator | TokenKind::Equals | TokenKind::ColonColon
+            )
+            && self.peek_at(2) == TokenKind::RParen
+    }
+
+    /// Consumes a parenthesized operator name `( op )` and returns its symbol, or
+    /// `None` (cursor unchanged) when the cursor is not at one.
+    fn parse_op_name(&mut self) -> Option<Symbol> {
+        if !self.at_op_name() {
+            return None;
+        }
+        self.bump(); // `(`
+        let op = self.op_symbol(self.cur());
+        self.bump(); // operator
+        self.bump(); // `)`
+        Some(op)
+    }
+
     fn error(&mut self, code: DiagnosticCode, span: TextRange, message: impl Into<String>) {
         self.diagnostics.push(Diagnostic::error(code, message, Span::new(self.source, span)));
     }
@@ -231,6 +298,7 @@ impl Parser<'_> {
             TokenKind::Public => self.parse_public_item(),
             TokenKind::Let => self.parse_binding(Visibility::Private),
             TokenKind::LowerIdent => self.parse_signature(Visibility::Private),
+            TokenKind::LParen if self.at_op_name() => self.parse_signature(Visibility::Private),
             TokenKind::Example => self.parse_example(),
             TokenKind::Forall => self.parse_forall(),
             TokenKind::Type => self.parse_type_decl(Visibility::Private),
@@ -251,6 +319,7 @@ impl Parser<'_> {
         match self.peek() {
             TokenKind::Let => self.parse_binding(Visibility::Public),
             TokenKind::LowerIdent => self.parse_signature(Visibility::Public),
+            TokenKind::LParen if self.at_op_name() => self.parse_signature(Visibility::Public),
             TokenKind::Type => self.parse_type_decl(Visibility::Public),
             _ => {
                 let span = self.cur().range;
@@ -271,7 +340,11 @@ impl Parser<'_> {
     }
 
     fn parse_signature(&mut self, visibility: Visibility) -> ItemKind {
-        let name = self.bump_symbol(); // LowerIdent
+        // A `LowerIdent` name, or a parenthesized operator name `(+++)`.
+        let name = match self.parse_op_name() {
+            Some(op) => op,
+            None => self.bump_symbol(),
+        };
         self.expect(TokenKind::Colon, "`:` in the signature");
         let ty = self.parse_type();
         ItemKind::Signature { visibility, name, ty }
@@ -279,7 +352,9 @@ impl Parser<'_> {
 
     fn parse_binding(&mut self, visibility: Visibility) -> ItemKind {
         self.bump(); // `let`
-        let name = if self.at(TokenKind::LowerIdent) {
+        let name = if let Some(op) = self.parse_op_name() {
+            Some(op)
+        } else if self.at(TokenKind::LowerIdent) {
             Some(self.bump_symbol())
         } else {
             let span = self.cur().range;
@@ -391,24 +466,27 @@ impl Parser<'_> {
     fn parse_expr_bp(&mut self, min_bp: u8) -> ExprId {
         let start = self.start();
         let mut lhs = self.parse_unary();
-        while let Some(op) = binop(self.peek()) {
-            let (left_bp, right_bp) = binding_power(op);
+        while let Some(op_sym) = self.infix_op_symbol() {
+            let (left_bp, right_bp) = binding_power(op_sym.as_str());
             if left_bp < min_bp {
                 break;
             }
-            self.bump(); // operator
+            let op_token = self.bump(); // operator
+            // The operator is a `Var` node, so it resolves and types like a name.
+            let op = self.alloc_expr(ExprKind::Var(op_sym), op_token.range);
             let rhs = self.parse_expr_bp(right_bp);
-            lhs = self.alloc_expr(ExprKind::Binary { op, lhs, rhs }, self.span_from(start));
+            lhs = self.alloc_expr(ExprKind::Infix { op, lhs, rhs }, self.span_from(start));
         }
         lhs
     }
 
     fn parse_unary(&mut self) -> ExprId {
-        if self.at(TokenKind::Minus) {
+        if let Some(op_sym) = self.prefix_op_symbol() {
             let start = self.start();
-            self.bump();
+            let op_token = self.bump();
+            let op = self.alloc_expr(ExprKind::Var(op_sym), op_token.range);
             let operand = self.parse_unary();
-            self.alloc_expr(ExprKind::Unary { op: UnOp::Neg, operand }, self.span_from(start))
+            self.alloc_expr(ExprKind::Prefix { op, operand }, self.span_from(start))
         } else {
             self.parse_app()
         }
@@ -472,6 +550,14 @@ impl Parser<'_> {
         self.bump(); // `(`
         if self.eat(TokenKind::RParen) {
             return self.alloc_expr(ExprKind::Unit, self.span_from(start));
+        }
+        // `(op)`: an operator in value position (e.g. `(+)`, `(::)`, `(|>)`).
+        if let Some(op_sym) = self.infix_op_symbol()
+            && self.peek_at(1) == TokenKind::RParen
+        {
+            self.bump(); // operator
+            self.bump(); // `)`
+            return self.alloc_expr(ExprKind::Var(op_sym), self.span_from(start));
         }
         let first = self.parse_expr();
         if self.at(TokenKind::Comma) {
@@ -720,7 +806,7 @@ impl Parser<'_> {
             TokenKind::Float => PatKind::Float(self.bump_symbol()),
             TokenKind::String => PatKind::String(self.bump_symbol()),
             TokenKind::Char => PatKind::Char(self.bump_symbol()),
-            TokenKind::Minus => {
+            TokenKind::Operator if self.lexeme(self.cur()) == "-" => {
                 self.bump(); // `-`
                 let token = self.cur();
                 match self.peek() {
@@ -847,9 +933,9 @@ impl Parser<'_> {
     fn parse_type_tuple(&mut self) -> TypeId {
         let start = self.start();
         let first = self.parse_type_app();
-        if self.at(TokenKind::Star) {
+        if self.at_operator("*") {
             let mut elems = vec![first];
-            while self.eat(TokenKind::Star) {
+            while self.eat_operator("*") {
                 elems.push(self.parse_type_app());
             }
             self.alloc_ty(TypeKind::Tuple(elems), self.span_from(start))
@@ -925,10 +1011,8 @@ impl Parser<'_> {
                 let span = self.cur().range;
                 self.error(SYNTAX_ERROR, span, "expected a type");
                 if !self.at_terminator()
-                    && !matches!(
-                        self.peek(),
-                        TokenKind::Arrow | TokenKind::Star | TokenKind::Equals
-                    )
+                    && !matches!(self.peek(), TokenKind::Arrow | TokenKind::Equals)
+                    && !self.at_operator("*")
                 {
                     self.bump();
                 }
@@ -939,42 +1023,36 @@ impl Parser<'_> {
     }
 }
 
-/// Maps an operator token to its [`BinOp`], if it is a binary operator.
-fn binop(kind: TokenKind) -> Option<BinOp> {
-    Some(match kind {
-        TokenKind::Plus => BinOp::Add,
-        TokenKind::Minus => BinOp::Sub,
-        TokenKind::Star => BinOp::Mul,
-        TokenKind::Slash => BinOp::Div,
-        TokenKind::Percent => BinOp::Rem,
-        TokenKind::PlusPlus => BinOp::Concat,
-        TokenKind::ColonColon => BinOp::Cons,
-        TokenKind::PipeGreater => BinOp::Pipe,
-        TokenKind::GreaterGreater => BinOp::Compose,
-        TokenKind::AmpAmp => BinOp::And,
-        TokenKind::PipePipe => BinOp::Or,
-        TokenKind::Equals => BinOp::Eq,
-        TokenKind::NotEq => BinOp::Ne,
-        TokenKind::Less => BinOp::Lt,
-        TokenKind::LessEq => BinOp::Le,
-        TokenKind::Greater => BinOp::Gt,
-        TokenKind::GreaterEq => BinOp::Ge,
-        _ => return None,
-    })
+/// The left/right binding powers for an operator symbol (higher binds tighter),
+/// a pure function of the lexeme. The known built-ins keep their canonical
+/// levels; any other (user-defined) operator is placed F#-style by its leading
+/// character. Left-associative operators use `(2n, 2n+1)`; right-associative ones
+/// (`::`, `++`, `^…`) use `(2n+1, 2n)`.
+fn binding_power(op: &str) -> (u8, u8) {
+    match op {
+        "|>" => (2, 3),
+        ">>" => (4, 5),
+        "||" => (6, 7),
+        "&&" => (8, 9),
+        "=" | "<>" | "<" | "<=" | ">" | ">=" => (10, 11),
+        "::" | "++" => (13, 12),
+        "+" | "-" => (14, 15),
+        "*" | "/" | "%" => (16, 17),
+        _ => leading_char_binding_power(op),
+    }
 }
 
-/// The left/right binding powers for `op` (higher binds tighter). Left-associative
-/// operators use `(2n, 2n+1)`; the right-associative `::`/`++` use `(2n+1, 2n)`.
-fn binding_power(op: BinOp) -> (u8, u8) {
-    match op {
-        BinOp::Pipe => (2, 3),
-        BinOp::Compose => (4, 5),
-        BinOp::Or => (6, 7),
-        BinOp::And => (8, 9),
-        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => (10, 11),
-        BinOp::Cons | BinOp::Concat => (13, 12),
-        BinOp::Add | BinOp::Sub => (14, 15),
-        BinOp::Mul | BinOp::Div | BinOp::Rem => (16, 17),
+/// The F#-style fallback precedence for a user-defined operator, keyed on its
+/// leading character.
+fn leading_char_binding_power(op: &str) -> (u8, u8) {
+    match op.chars().next() {
+        Some('|') => (2, 3),                     // pipe-like (left)
+        Some('&') => (8, 9),                     // and-like (left)
+        Some('=' | '<' | '>' | '!') => (10, 11), // comparison-like (left)
+        Some(':' | '@' | '^') => (13, 12),       // cons/append-like (right)
+        Some('+' | '-') => (14, 15),             // additive (left)
+        Some('*' | '/' | '%') => (16, 17),       // multiplicative (left)
+        _ => (10, 11),                           // default: comparison level
     }
 }
 
@@ -1030,6 +1108,14 @@ mod tests {
         parse_module(SourceId::new(0), src)
     }
 
+    /// The operator symbol held in an operator `Var` node, for dumps.
+    fn dump_op(m: &Module, op: ExprId) -> &str {
+        match &m.expr(op).kind {
+            ExprKind::Var(s) => s.as_str(),
+            _ => "?",
+        }
+    }
+
     fn dump_expr(m: &Module, id: ExprId) -> String {
         match &m.expr(id).kind {
             ExprKind::Int(s) => format!("(int {})", s.as_str()),
@@ -1041,10 +1127,12 @@ mod tests {
             ExprKind::App { func, arg } => {
                 format!("(app {} {})", dump_expr(m, *func), dump_expr(m, *arg))
             }
-            ExprKind::Binary { op, lhs, rhs } => {
-                format!("({op:?} {} {})", dump_expr(m, *lhs), dump_expr(m, *rhs))
+            ExprKind::Infix { op, lhs, rhs } => {
+                format!("(infix {} {} {})", dump_op(m, *op), dump_expr(m, *lhs), dump_expr(m, *rhs))
             }
-            ExprKind::Unary { op, operand } => format!("({op:?} {})", dump_expr(m, *operand)),
+            ExprKind::Prefix { op, operand } => {
+                format!("(prefix {} {})", dump_op(m, *op), dump_expr(m, *operand))
+            }
             ExprKind::If { cond, then_branch, else_branch } => format!(
                 "(if {} {} {})",
                 dump_expr(m, *cond),
@@ -1269,38 +1357,67 @@ mod tests {
 
     #[test]
     fn precedence_arithmetic() {
-        assert_eq!(expr("a + b * c"), "(Add (var a) (Mul (var b) (var c)))");
-        assert_eq!(expr("a * b + c"), "(Add (Mul (var a) (var b)) (var c))");
+        assert_eq!(expr("a + b * c"), "(infix + (var a) (infix * (var b) (var c)))");
+        assert_eq!(expr("a * b + c"), "(infix + (infix * (var a) (var b)) (var c))");
     }
 
     #[test]
     fn left_and_right_associativity() {
-        assert_eq!(expr("a - b - c"), "(Sub (Sub (var a) (var b)) (var c))");
-        assert_eq!(expr("a :: b :: c"), "(Cons (var a) (Cons (var b) (var c)))");
+        assert_eq!(expr("a - b - c"), "(infix - (infix - (var a) (var b)) (var c))");
+        assert_eq!(expr("a :: b :: c"), "(infix :: (var a) (infix :: (var b) (var c)))");
     }
 
     #[test]
     fn application_is_left_nested_and_tighter_than_operators() {
         assert_eq!(expr("f a b"), "(app (app (var f) (var a)) (var b))");
-        assert_eq!(expr("f a + g b"), "(Add (app (var f) (var a)) (app (var g) (var b)))");
+        assert_eq!(expr("f a + g b"), "(infix + (app (var f) (var a)) (app (var g) (var b)))");
     }
 
     #[test]
     fn unary_minus_binds_tighter_than_multiply_but_looser_than_application() {
-        assert_eq!(expr("-a * b"), "(Mul (Neg (var a)) (var b))");
-        assert_eq!(expr("-f x"), "(Neg (app (var f) (var x)))");
-        assert_eq!(expr("abs (-3)"), "(app (var abs) (paren (Neg (int 3))))");
+        assert_eq!(expr("-a * b"), "(infix * (prefix - (var a)) (var b))");
+        assert_eq!(expr("-f x"), "(prefix - (app (var f) (var x)))");
+        assert_eq!(expr("abs (-3)"), "(app (var abs) (paren (prefix - (int 3))))");
     }
 
     #[test]
     fn pipe_is_loosest_and_left_associative() {
-        assert_eq!(expr("a |> f |> g"), "(Pipe (Pipe (var a) (var f)) (var g))");
+        assert_eq!(expr("a |> f |> g"), "(infix |> (infix |> (var a) (var f)) (var g))");
     }
 
     #[test]
     fn comparison_tighter_than_boolean_and_equality_is_an_operator() {
-        assert_eq!(expr("a < b && c"), "(And (Lt (var a) (var b)) (var c))");
-        assert_eq!(expr("count % 2 = 0"), "(Eq (Rem (var count) (int 2)) (int 0))");
+        assert_eq!(expr("a < b && c"), "(infix && (infix < (var a) (var b)) (var c))");
+        assert_eq!(expr("count % 2 = 0"), "(infix = (infix % (var count) (int 2)) (int 0))");
+    }
+
+    #[test]
+    fn user_operators_define_use_and_value() {
+        // Definition: the operator is the binding's name.
+        assert_eq!(
+            dump("module M\nlet (+++) a b = a").lines().nth(1).unwrap(),
+            "(let Private +++ [(pvar a) (pvar b)] (var a))"
+        );
+        // A public operator signature.
+        assert_eq!(
+            dump("module M\npublic (+++) : Int -> Int -> Int").lines().nth(1).unwrap(),
+            "(sig Public +++ (arrow (tcon Int) (arrow (tcon Int) (tcon Int))))"
+        );
+        // Infix use carries the operator symbol; a user prefix operator works too.
+        assert_eq!(expr("a +++ b"), "(infix +++ (var a) (var b))");
+        assert_eq!(expr("!x"), "(prefix ! (var x))");
+        // Operator in value position: user, built-in, cons, and equality.
+        assert_eq!(expr("(+++)"), "(var +++)");
+        assert_eq!(expr("(+)"), "(var +)");
+        assert_eq!(expr("(::)"), "(var ::)");
+        assert_eq!(expr("(=)"), "(var =)");
+    }
+
+    #[test]
+    fn user_operator_precedence_follows_leading_char() {
+        // `+++` (leading `+`) is additive; `<+>` (leading `<`) is comparison-level,
+        // so `+++` binds tighter.
+        assert_eq!(expr("a <+> b +++ c"), "(infix <+> (var a) (infix +++ (var b) (var c)))");
     }
 
     #[test]
@@ -1368,11 +1485,11 @@ mod tests {
     fn example_and_forall_items() {
         assert_eq!(
             dump("module M\nexample: f 1 = 2").lines().nth(1).unwrap(),
-            "(example (Eq (app (var f) (int 1)) (int 2)))"
+            "(example (infix = (app (var f) (int 1)) (int 2)))"
         );
         assert_eq!(
             dump("module M\nforall xs ys: f xs = g ys").lines().nth(1).unwrap(),
-            "(forall [xs ys] (Eq (app (var f) (var xs)) (app (var g) (var ys))))"
+            "(forall [xs ys] (infix = (app (var f) (var xs)) (app (var g) (var ys))))"
         );
     }
 
@@ -1383,7 +1500,7 @@ mod tests {
         assert!(parsed.diagnostics.is_empty());
         assert_eq!(
             body("module M\nlet isEven = count % 2 = 0"),
-            "(Eq (Rem (var count) (int 2)) (int 0))"
+            "(infix = (infix % (var count) (int 2)) (int 0))"
         );
     }
 
@@ -1761,11 +1878,16 @@ mod proptests {
                 walk_expr(m, *func);
                 walk_expr(m, *arg);
             }
-            ExprKind::Binary { lhs, rhs, .. } => {
+            ExprKind::Infix { op, lhs, rhs } => {
+                walk_expr(m, *op);
                 walk_expr(m, *lhs);
                 walk_expr(m, *rhs);
             }
-            ExprKind::Unary { operand, .. } | ExprKind::Paren(operand) => walk_expr(m, *operand),
+            ExprKind::Prefix { op, operand } => {
+                walk_expr(m, *op);
+                walk_expr(m, *operand);
+            }
+            ExprKind::Paren(operand) => walk_expr(m, *operand),
             ExprKind::If { cond, then_branch, else_branch } => {
                 walk_expr(m, *cond);
                 walk_expr(m, *then_branch);

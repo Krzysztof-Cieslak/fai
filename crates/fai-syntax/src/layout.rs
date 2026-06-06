@@ -168,26 +168,13 @@ fn is_opener(kind: TokenKind) -> bool {
 }
 
 /// Tokens that, at the reference column, continue the current item instead of
-/// starting a new one.
+/// starting a new one. Any infix operator (now a single `Operator` token, plus
+/// the reserved `::`/`=`) continues, as do `->`, `then`, `else`, and `|`.
 fn is_continuation(kind: TokenKind) -> bool {
     matches!(
         kind,
-        TokenKind::Plus
-            | TokenKind::Minus
-            | TokenKind::Star
-            | TokenKind::Slash
-            | TokenKind::Percent
-            | TokenKind::PlusPlus
+        TokenKind::Operator
             | TokenKind::ColonColon
-            | TokenKind::PipeGreater
-            | TokenKind::GreaterGreater
-            | TokenKind::AmpAmp
-            | TokenKind::PipePipe
-            | TokenKind::Less
-            | TokenKind::LessEq
-            | TokenKind::Greater
-            | TokenKind::GreaterEq
-            | TokenKind::NotEq
             | TokenKind::Equals
             | TokenKind::Arrow
             | TokenKind::Then

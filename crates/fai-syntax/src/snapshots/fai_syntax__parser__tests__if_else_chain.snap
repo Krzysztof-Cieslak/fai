@@ -1,6 +1,6 @@
 ---
 source: crates/fai-syntax/src/parser.rs
-expression: "dump(\"module Math\\nlet classify n =\\n  if n < 0 then \\\"neg\\\"\\n  else if n = 0 then \\\"zero\\\"\\n  else \\\"pos\\\"\")"
+expression: "dump(indoc!\n{r#\"\n                    module Math\n                    let classify n =\n                      if n < 0 then \"neg\"\n                      else if n = 0 then \"zero\"\n                      else \"pos\"\"#})"
 ---
 module Math
-(let Private classify [(pvar n)] (block [] (if (Lt (var n) (int 0)) (string "neg") (if (Eq (var n) (int 0)) (string "zero") (string "pos")))))
+(let Private classify [(pvar n)] (block [] (if (infix < (var n) (int 0)) (string "neg") (if (infix = (var n) (int 0)) (string "zero") (string "pos")))))

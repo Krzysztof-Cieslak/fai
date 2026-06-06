@@ -429,6 +429,13 @@ fn shape_item(m: &Module, item: &Item) -> String {
     }
 }
 
+fn shape_op(m: &Module, op: ExprId) -> &str {
+    match &m.expr(op).kind {
+        ExprKind::Var(s) => s.as_str(),
+        _ => "?",
+    }
+}
+
 fn shape_expr(m: &Module, id: ExprId) -> String {
     match &m.expr(id).kind {
         ExprKind::Int(s) => format!("(int {})", s.as_str()),
@@ -440,10 +447,12 @@ fn shape_expr(m: &Module, id: ExprId) -> String {
         ExprKind::App { func, arg } => {
             format!("(app {} {})", shape_expr(m, *func), shape_expr(m, *arg))
         }
-        ExprKind::Binary { op, lhs, rhs } => {
-            format!("({op:?} {} {})", shape_expr(m, *lhs), shape_expr(m, *rhs))
+        ExprKind::Infix { op, lhs, rhs } => {
+            format!("(infix {} {} {})", shape_op(m, *op), shape_expr(m, *lhs), shape_expr(m, *rhs))
         }
-        ExprKind::Unary { op, operand } => format!("({op:?} {})", shape_expr(m, *operand)),
+        ExprKind::Prefix { op, operand } => {
+            format!("(prefix {} {})", shape_op(m, *op), shape_expr(m, *operand))
+        }
         ExprKind::If { cond, then_branch, else_branch } => format!(
             "(if {} {} {})",
             shape_expr(m, *cond),

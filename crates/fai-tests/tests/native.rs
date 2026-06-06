@@ -127,3 +127,33 @@ fn hello_sample_builds_and_runs() {
     assert_eq!(out, "Hello, Fai!\n");
     assert_eq!(code, Some(0));
 }
+
+#[test]
+fn user_defined_operator_runs() {
+    let src = indoc! {r#"
+        module Main
+
+        let (+++) a b = a * b + 1
+
+        public main : Runtime -> Unit
+        let main runtime = Console.writeLine runtime (Int.toString (2 +++ 3))
+    "#};
+    let (out, code) = build_and_run(src);
+    assert_eq!(out, "7\n"); // 2 * 3 + 1
+    assert_eq!(code, Some(0));
+}
+
+#[test]
+fn builtin_operator_as_value_runs() {
+    // `(+)` passed first-class to a fold.
+    let src = indoc! {r#"
+        module Main
+
+        public main : Runtime -> Unit
+        let main runtime =
+          Console.writeLine runtime (Int.toString (List.foldl (+) 0 [1, 2, 3, 4]))
+    "#};
+    let (out, code) = build_and_run(src);
+    assert_eq!(out, "10\n");
+    assert_eq!(code, Some(0));
+}

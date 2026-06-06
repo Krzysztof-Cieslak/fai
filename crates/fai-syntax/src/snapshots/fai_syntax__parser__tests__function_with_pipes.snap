@@ -1,7 +1,7 @@
 ---
 source: crates/fai-syntax/src/parser.rs
-expression: "dump(\"module Funcs\\npublic describe : Int -> String\\nlet describe n =\\n  n\\n  |> inc\\n  |> Int.toString\")"
+expression: "dump(indoc!\n{r#\"\n                    module Funcs\n                    public describe : Int -> String\n                    let describe n =\n                      n\n                      |> inc\n                      |> Int.toString\"#})"
 ---
 module Funcs
 (sig Public describe (arrow (tcon Int) (tcon String)))
-(let Private describe [(pvar n)] (block [] (Pipe (Pipe (var n) (var inc)) (field (var Int) toString))))
+(let Private describe [(pvar n)] (block [] (infix |> (infix |> (var n) (var inc)) (field (var Int) toString))))

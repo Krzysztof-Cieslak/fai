@@ -1,0 +1,17 @@
+module Operators
+
+// User-defined operators are symbolic identifiers that resolve like ordinary
+// names. Their precedence and associativity follow the leading character
+// (F#-style), so `+-+` (leading `+`) is additive and `|>>` (leading `|`) is the
+// loosest, like the built-in `|>`.
+/// Reverse application: pipe a value into a function.
+public (|>>) : 'a -> ('a -> 'b) -> 'b
+let (|>>) x f = f x
+
+/// A custom additive operator.
+public (+-+) : Int -> Int -> Int
+let (+-+) a b = a + b - 1
+
+/// Operators are ordinary values too: `(+)` is passed first-class to a fold.
+public sumAll : List Int -> Int
+let sumAll xs = List.foldl (+) 0 xs

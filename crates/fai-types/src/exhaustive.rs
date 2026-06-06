@@ -101,11 +101,11 @@ impl MatchChecker<'_> {
                 self.walk(*func);
                 self.walk(*arg);
             }
-            ExprKind::Binary { lhs, rhs, .. } => {
+            ExprKind::Infix { lhs, rhs, .. } => {
                 self.walk(*lhs);
                 self.walk(*rhs);
             }
-            ExprKind::Unary { operand, .. } | ExprKind::Paren(operand) => self.walk(*operand),
+            ExprKind::Prefix { operand, .. } | ExprKind::Paren(operand) => self.walk(*operand),
             ExprKind::If { cond, then_branch, else_branch } => {
                 self.walk(*cond);
                 self.walk(*then_branch);

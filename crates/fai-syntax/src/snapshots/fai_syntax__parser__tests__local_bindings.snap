@@ -1,6 +1,6 @@
 ---
 source: crates/fai-syntax/src/parser.rs
-expression: "dump(\"module Locals\\nlet hypotenuse a b =\\n  let a2 = a * a\\n  let b2 = b * b\\n  sqrt (a2 + b2)\")"
+expression: "dump(indoc!\n{r#\"\n                    module Locals\n                    let hypotenuse a b =\n                      let a2 = a * a\n                      let b2 = b * b\n                      sqrt (a2 + b2)\"#})"
 ---
 module Locals
-(let Private hypotenuse [(pvar a) (pvar b)] (block [(let (pvar a2) [] (Mul (var a) (var a))) (let (pvar b2) [] (Mul (var b) (var b)))] (app (var sqrt) (paren (Add (var a2) (var b2))))))
+(let Private hypotenuse [(pvar a) (pvar b)] (block [(let (pvar a2) [] (infix * (var a) (var a))) (let (pvar b2) [] (infix * (var b) (var b)))] (app (var sqrt) (paren (infix + (var a2) (var b2))))))
