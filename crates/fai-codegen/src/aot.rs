@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use cranelift_codegen::ir::{AbiParam, InstBuilder, types};
-use cranelift_codegen::isa::TargetIsa;
+use cranelift_codegen::isa::{self, TargetIsa};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{Linkage, Module, default_libcall_names};
@@ -18,12 +18,27 @@ use fai_resolve::DefId;
 
 use crate::emit::{closure_symbol, compile_def};
 
-/// Builds a position-independent ISA for the host target.
+/// Builds a position-independent ISA for the host target's object files.
+///
+/// Objects are emitted for the host triple via `isa::lookup` (a baseline host
+/// ISA; the JIT keeps native CPU features). On macOS the detected host OS is
+/// `Darwin`, which `cranelift-object` records in Mach-O objects as
+/// `PLATFORM_UNKNOWN` — the system linker then refuses them ("unknown
+/// platform"). Normalizing it to `MacOSX` makes the objects declare the macOS
+/// platform and a minimum version. On other hosts the triple is used as-is.
 fn host_isa() -> Arc<dyn TargetIsa> {
     let mut flags = settings::builder();
     flags.set("use_colocated_libcalls", "false").expect("flag");
     flags.set("is_pic", "true").expect("flag");
-    let isa_builder = cranelift_native::builder().expect("host machine is supported");
+
+    let mut triple = target_lexicon::Triple::host();
+    if let target_lexicon::OperatingSystem::Darwin(version) = triple.operating_system {
+        let version =
+            version.or(Some(target_lexicon::DeploymentTarget { major: 11, minor: 0, patch: 0 }));
+        triple.operating_system = target_lexicon::OperatingSystem::MacOSX(version);
+    }
+
+    let isa_builder = isa::lookup(triple).expect("host target is supported");
     isa_builder.finish(settings::Flags::new(flags)).expect("isa")
 }
 
