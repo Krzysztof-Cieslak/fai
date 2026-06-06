@@ -25,6 +25,7 @@ pub const INTRINSICS: &[&str] = &[
     "toLower",
     "trim",
     "stringContains",
+    "stringConcat",
     "split",
     "join",
 ];

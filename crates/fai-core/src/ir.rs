@@ -269,6 +269,7 @@ impl Prim {
             "toLower" => Prim::ToLower,
             "trim" => Prim::Trim,
             "stringContains" => Prim::StringContains,
+            "stringConcat" => Prim::StrConcat,
             "split" => Prim::StringSplit,
             "join" => Prim::StringJoin,
             "not" => Prim::Not,

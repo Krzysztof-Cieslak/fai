@@ -20,8 +20,8 @@ use crate::infer::ctx::{Constraint, InferCtx, RowTail, SolveRow, SolveTy, UnifyR
 use crate::lower::{build_interface_method_scheme, interface_param_count, resolve_interface};
 use crate::ty::Scheme;
 use crate::{
-    EQUALITY_ON_FUNCTION, INSTANCE_METHOD_SET, NOT_AN_INTERFACE, OCCURS_CHECK, TYPE_MISMATCH,
-    UNKNOWN_METHOD,
+    EQUALITY_ON_FUNCTION, INSTANCE_METHOD_SET, NOT_AN_INTERFACE, OCCURS_CHECK, SEALED_INTERFACE,
+    TYPE_MISMATCH, UNKNOWN_METHOD,
 };
 
 /// Supplies the scheme for a referenced definition or builtin, and signals
@@ -507,6 +507,20 @@ impl<E: Env> Walker<'_, E> {
             return SolveTy::Error;
         };
 
+        // The built-in constraint interfaces (`Num`/`Eq`/`Ord`) are sealed: their
+        // operators dispatch to primitives, so a hand-written instance would be
+        // dead. Reject it (but keep typing the bodies for coherence).
+        if self.is_sealed_interface(iref) {
+            emit(
+                self.db,
+                Diagnostic::error(
+                    SEALED_INTERFACE,
+                    format!("`{name}` is a sealed built-in interface and cannot be instantiated"),
+                    self.span(span),
+                ),
+            );
+        }
+
         let n = interface_param_count(self.db, iref);
         let param_fresh: Vec<crate::ty::TyVarId> = (0..n).map(|_| self.cx.fresh_var_id()).collect();
 
@@ -603,31 +617,20 @@ impl<E: Env> Walker<'_, E> {
                 let e = self.cx.fresh_constrained(Some(Constraint::Eq));
                 arrow2(e.clone(), e, SolveTy::bool())
             }
-            "++" => arrow2(SolveTy::string(), SolveTy::string(), SolveTy::string()),
             "&&" | "||" => arrow2(SolveTy::bool(), SolveTy::bool(), SolveTy::bool()),
             "::" => {
                 let a = self.cx.fresh();
                 arrow2(a.clone(), SolveTy::list(a.clone()), SolveTy::list(a))
             }
-            "|>" => {
-                // a -> (a -> b) -> b
-                let a = self.cx.fresh();
-                let b = self.cx.fresh();
-                arrow2(a.clone(), SolveTy::arrow(a, b.clone()), b)
-            }
-            ">>" => {
-                // (a -> b) -> (b -> c) -> a -> c
-                let a = self.cx.fresh();
-                let b = self.cx.fresh();
-                let c = self.cx.fresh();
-                arrow2(
-                    SolveTy::arrow(a.clone(), b.clone()),
-                    SolveTy::arrow(b, c.clone()),
-                    SolveTy::arrow(a, c),
-                )
-            }
             _ => return None,
         })
+    }
+
+    /// Whether `iref` is a sealed built-in constraint interface (`Num`/`Eq`/`Ord`
+    /// from the standard library), which is not user-instantiable.
+    fn is_sealed_interface(&self, iref: InterfaceRef) -> bool {
+        matches!(iref.name.as_str(), "Num" | "Eq" | "Ord")
+            && self.db.source_file(iref.file).is_some_and(|f| fai_db::is_std_path(f.path(self.db)))
     }
 
     /// The operator symbol held in an operator `Var` node.
@@ -750,31 +753,10 @@ impl<E: Env> Walker<'_, E> {
                 self.unify_at(span, &rt, &SolveTy::bool(), "a boolean operand");
                 SolveTy::bool()
             }
-            BinOp::Concat => {
-                self.unify_at(span, &lt, &SolveTy::string(), "a `++` operand");
-                self.unify_at(span, &rt, &SolveTy::string(), "a `++` operand");
-                SolveTy::string()
-            }
             BinOp::Cons => {
                 let list = SolveTy::list(lt.clone());
                 self.unify_at(span, &rt, &list, "a `::` tail");
                 list
-            }
-            BinOp::Pipe => {
-                // a |> f : f a, with f : a -> b
-                let result = self.cx.fresh();
-                let f = SolveTy::arrow(lt.clone(), result.clone());
-                self.unify_at(span, &rt, &f, "a `|>` function");
-                result
-            }
-            BinOp::Compose => {
-                // f >> g : a -> c, with f : a -> b, g : b -> c
-                let a = self.cx.fresh();
-                let b = self.cx.fresh();
-                let c = self.cx.fresh();
-                self.unify_at(span, &lt, &SolveTy::arrow(a.clone(), b.clone()), "a `>>` left");
-                self.unify_at(span, &rt, &SolveTy::arrow(b, c.clone()), "a `>>` right");
-                SolveTy::arrow(a, c)
             }
         }
     }

@@ -50,16 +50,9 @@ fn lowers_if_and_negation() {
     assert_eq!(got, "fn0(%0) = (if (< %0 0) (- 0 %0) %0)\n");
 }
 
-#[test]
-fn lowers_string_concat() {
-    let src = indoc! {r#"
-        module M
-
-        let greet name = "Hi " ++ name
-    "#};
-    let got = lower(src, "greet");
-    assert_eq!(got, "fn0(%0) = (++ \"Hi \" %0)\n");
-}
+// `++`, `|>`, and `>>` are ordinary `Prelude` operator functions now, so their
+// lowering is plain application of a global (covered by the application tests and
+// the standard-library/e2e suites) rather than a dedicated Core form.
 
 #[test]
 fn lowers_console_write_line() {
@@ -94,42 +87,6 @@ fn lowers_partial_application_as_general_app() {
         let inc = add 1
     "#};
     assert_eq!(lower(src, "inc"), "fn0() = (app @add 1)\n");
-}
-
-#[test]
-fn lowers_pipe_to_application() {
-    let src = indoc! {r#"
-        module M
-
-        let f x = x
-
-        let g n = n |> f
-    "#};
-    assert_eq!(lower(src, "g"), "fn0(%1) = (app @f %1)\n");
-}
-
-#[test]
-fn lowers_pipe_into_global_wrapper() {
-    // `Int.toString` is an ordinary standard-library wrapper, so the pipe lowers
-    // to a call of the global (whose body is the intrinsic).
-    let src = indoc! {r#"
-        module M
-
-        let describe n = n |> Int.toString
-    "#};
-    assert_eq!(lower(src, "describe"), "fn0(%0) = (app @toString %0)\n");
-}
-
-#[test]
-fn lowers_compose_with_capture() {
-    let src = indoc! {r#"
-        module M
-
-        public twice : ('a -> 'a) -> 'a -> 'a
-        let twice f = f >> f
-    "#};
-    let got = lower(src, "twice");
-    assert_eq!(got, "fn0(%0) = (closure fn1 [%0])\nfn1(%1) [caps %0] = (app %0 (app %0 %1))\n");
 }
 
 #[test]

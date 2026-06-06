@@ -890,7 +890,28 @@ pub extern "C" fn fai_equal(a: Value, b: Value) -> Value {
     from_bool(r)
 }
 
+/// Whether `v` is a function value (a closure or partial application).
+fn is_function_value(v: Value) -> bool {
+    if !is_boxed(v) {
+        return false;
+    }
+    // SAFETY: `v` is boxed.
+    let desc = unsafe { read_ptr(as_obj(v), DESC_OFFSET).cast::<Descriptor>() };
+    std::ptr::eq(desc, &FAI_CLOSURE_DESC) || std::ptr::eq(desc, &FAI_PAP_DESC)
+}
+
+/// Aborts if either operand is a function value: equality/ordering is undefined
+/// on functions. The type checker rejects this for concrete types; this guards
+/// the residual case (a polymorphic comparison instantiated at a function type).
+fn guard_comparable(a: Value, b: Value) {
+    if is_function_value(a) || is_function_value(b) {
+        eprintln!("fai: equality/ordering is not defined on functions");
+        std::process::exit(71);
+    }
+}
+
 fn values_equal(a: Value, b: Value) -> bool {
+    guard_comparable(a, b);
     match (is_boxed(a), is_boxed(b)) {
         (false, false) => a == b,
         (true, true) => {
@@ -960,6 +981,7 @@ pub extern "C" fn fai_compare(a: Value, b: Value) -> Value {
 
 fn values_compare(a: Value, b: Value) -> std::cmp::Ordering {
     use std::cmp::Ordering;
+    guard_comparable(a, b);
     // Both immediates: compare payloads (Int values, Bool, or nullary tags).
     if !is_boxed(a) && !is_boxed(b) {
         return (a >> 1).cmp(&(b >> 1));

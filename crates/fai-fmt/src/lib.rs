@@ -595,7 +595,12 @@ fn is_operator_symbol(s: &str) -> bool {
     })
 }
 
-/// Renders a name in value position, parenthesizing operator names (`(+)`).
+/// Renders a name in value position, parenthesizing operator names (`(+)`). An
+/// operator starting with `*` or `//` keeps a space after `(`, since `(*`/`(//`
+/// would otherwise open a comment.
 fn var_text(s: &str) -> String {
-    if is_operator_symbol(s) { format!("({s})") } else { s.to_owned() }
+    if !is_operator_symbol(s) {
+        return s.to_owned();
+    }
+    if s.starts_with('*') || s.starts_with("//") { format!("( {s} )") } else { format!("({s})") }
 }
