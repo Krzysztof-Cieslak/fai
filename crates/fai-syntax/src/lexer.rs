@@ -392,7 +392,8 @@ impl Lexer<'_> {
 
     fn operator_or_unknown(&mut self, start: usize) {
         let Some(c) = self.bump() else { return };
-        let kind = match c {
+        // Single-character grouping and punctuation (none are operator chars).
+        let punct = match c {
             '(' => Some(TokenKind::LParen),
             ')' => Some(TokenKind::RParen),
             '[' => Some(TokenKind::LBracket),
@@ -401,47 +402,37 @@ impl Lexer<'_> {
             '}' => Some(TokenKind::RBrace),
             ',' => Some(TokenKind::Comma),
             '.' => Some(TokenKind::Dot),
-            '=' => Some(TokenKind::Equals),
-            '*' => Some(TokenKind::Star),
-            '/' => Some(TokenKind::Slash),
-            '%' => Some(TokenKind::Percent),
-            '+' => Some(if self.eat('+') { TokenKind::PlusPlus } else { TokenKind::Plus }),
-            '-' => Some(if self.eat('>') { TokenKind::Arrow } else { TokenKind::Minus }),
-            ':' => Some(if self.eat(':') { TokenKind::ColonColon } else { TokenKind::Colon }),
-            '|' => Some(if self.eat('>') {
-                TokenKind::PipeGreater
-            } else if self.eat('|') {
-                TokenKind::PipePipe
-            } else {
-                TokenKind::Pipe
-            }),
-            '>' => Some(if self.eat('>') {
-                TokenKind::GreaterGreater
-            } else if self.eat('=') {
-                TokenKind::GreaterEq
-            } else {
-                TokenKind::Greater
-            }),
-            '<' => Some(if self.eat('=') {
-                TokenKind::LessEq
-            } else if self.eat('>') {
-                TokenKind::NotEq
-            } else {
-                TokenKind::Less
-            }),
-            '&' if self.eat('&') => Some(TokenKind::AmpAmp),
             _ => None,
         };
-        match kind {
-            Some(kind) => {
-                let range = self.range_from(start);
-                self.push(kind, range);
-            }
-            None => {
-                let range = self.range_from(start);
-                self.error(UNEXPECTED_CHAR, range, format!("unexpected character `{c}`"));
-            }
+        if let Some(kind) = punct {
+            let range = self.range_from(start);
+            self.push(kind, range);
+            return;
         }
+
+        if is_operator_char(c) {
+            // Maximal munch: an operator is the longest run of operator chars.
+            while self.peek().is_some_and(is_operator_char) {
+                self.pos += 1; // operator chars are all single-byte ASCII
+            }
+            let range = self.range_from(start);
+            let lexeme = &self.text[start..self.pos];
+            // A run that exactly matches a reserved symbol is that token; every
+            // other run is a general operator (resolved as a name later).
+            let kind = match lexeme {
+                "=" => TokenKind::Equals,
+                "|" => TokenKind::Pipe,
+                ":" => TokenKind::Colon,
+                "::" => TokenKind::ColonColon,
+                "->" => TokenKind::Arrow,
+                _ => TokenKind::Operator,
+            };
+            self.push(kind, range);
+            return;
+        }
+
+        let range = self.range_from(start);
+        self.error(UNEXPECTED_CHAR, range, format!("unexpected character `{c}`"));
     }
 }
 
@@ -451,6 +442,31 @@ fn is_ident_start(c: char) -> bool {
 
 fn is_ident_continue(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
+}
+
+/// The operator-character class (F#'s set minus `.` and `#`). A maximal run of
+/// these forms a single operator token; `=`, `|`, `:`, `::`, and `->` are carved
+/// back out as reserved tokens.
+fn is_operator_char(c: char) -> bool {
+    matches!(
+        c,
+        '!' | '$'
+            | '%'
+            | '&'
+            | '*'
+            | '+'
+            | '-'
+            | '/'
+            | ':'
+            | '<'
+            | '='
+            | '>'
+            | '?'
+            | '@'
+            | '^'
+            | '|'
+            | '~'
+    )
 }
 
 #[cfg(test)]
@@ -574,50 +590,75 @@ mod tests {
         );
     }
 
+    /// The `(kind, lexeme)` of every non-EOF token.
+    fn token_pairs(src: &str) -> Vec<(TokenKind, &str)> {
+        lexed(src)
+            .tokens
+            .iter()
+            .filter(|t| t.kind != TokenKind::Eof)
+            .map(|t| (t.kind, lexeme(src, t)))
+            .collect()
+    }
+
     #[test]
     fn multi_char_operators() {
+        // Operator-character runs munch maximally into one `Operator`; `->`, `::`,
+        // and `|` carve back out as reserved tokens.
         assert_eq!(
-            kinds("-> :: |> >> ++ <> <= >= && || |"),
+            token_pairs("-> :: |> >> ++ <> <= >= && || |"),
             vec![
-                TokenKind::Arrow,
-                TokenKind::ColonColon,
-                TokenKind::PipeGreater,
-                TokenKind::GreaterGreater,
-                TokenKind::PlusPlus,
-                TokenKind::NotEq,
-                TokenKind::LessEq,
-                TokenKind::GreaterEq,
-                TokenKind::AmpAmp,
-                TokenKind::PipePipe,
-                TokenKind::Pipe,
-                TokenKind::Eof,
+                (TokenKind::Arrow, "->"),
+                (TokenKind::ColonColon, "::"),
+                (TokenKind::Operator, "|>"),
+                (TokenKind::Operator, ">>"),
+                (TokenKind::Operator, "++"),
+                (TokenKind::Operator, "<>"),
+                (TokenKind::Operator, "<="),
+                (TokenKind::Operator, ">="),
+                (TokenKind::Operator, "&&"),
+                (TokenKind::Operator, "||"),
+                (TokenKind::Pipe, "|"),
             ],
         );
     }
 
     #[test]
-    fn single_char_punctuation() {
+    fn single_char_operators_and_punctuation() {
         assert_eq!(
-            kinds("+ - * / % = < > . , : ( ) [ ] { }"),
+            token_pairs("+ - * / % = < > . , : ( ) [ ] { }"),
             vec![
-                TokenKind::Plus,
-                TokenKind::Minus,
-                TokenKind::Star,
-                TokenKind::Slash,
-                TokenKind::Percent,
-                TokenKind::Equals,
-                TokenKind::Less,
-                TokenKind::Greater,
-                TokenKind::Dot,
-                TokenKind::Comma,
-                TokenKind::Colon,
-                TokenKind::LParen,
-                TokenKind::RParen,
-                TokenKind::LBracket,
-                TokenKind::RBracket,
-                TokenKind::LBrace,
-                TokenKind::RBrace,
-                TokenKind::Eof,
+                (TokenKind::Operator, "+"),
+                (TokenKind::Operator, "-"),
+                (TokenKind::Operator, "*"),
+                (TokenKind::Operator, "/"),
+                (TokenKind::Operator, "%"),
+                (TokenKind::Equals, "="),
+                (TokenKind::Operator, "<"),
+                (TokenKind::Operator, ">"),
+                (TokenKind::Dot, "."),
+                (TokenKind::Comma, ","),
+                (TokenKind::Colon, ":"),
+                (TokenKind::LParen, "("),
+                (TokenKind::RParen, ")"),
+                (TokenKind::LBracket, "["),
+                (TokenKind::RBracket, "]"),
+                (TokenKind::LBrace, "{"),
+                (TokenKind::RBrace, "}"),
+            ],
+        );
+    }
+
+    #[test]
+    fn user_operators_munch_maximally() {
+        // Novel operator runs are single tokens; their lexeme is preserved.
+        assert_eq!(
+            token_pairs("<$> >>= +++ <|> !?"),
+            vec![
+                (TokenKind::Operator, "<$>"),
+                (TokenKind::Operator, ">>="),
+                (TokenKind::Operator, "+++"),
+                (TokenKind::Operator, "<|>"),
+                (TokenKind::Operator, "!?"),
             ],
         );
     }
@@ -691,11 +732,12 @@ mod tests {
 
     #[test]
     fn unexpected_character_reports() {
-        let result = lexed("@");
+        // `#` is not an operator character, so it is genuinely unexpected.
+        let result = lexed("#");
         assert_eq!(result.diagnostics.len(), 1);
         assert_eq!(result.diagnostics[0].code, crate::UNEXPECTED_CHAR);
         // Stray characters are skipped, leaving just EOF.
-        assert_eq!(kinds("@"), vec![TokenKind::Eof]);
+        assert_eq!(kinds("#"), vec![TokenKind::Eof]);
     }
 
     #[test]
@@ -740,7 +782,7 @@ mod tests {
     fn tokens_need_no_whitespace() {
         assert_eq!(
             kinds("x+y"),
-            vec![TokenKind::LowerIdent, TokenKind::Plus, TokenKind::LowerIdent, TokenKind::Eof,]
+            vec![TokenKind::LowerIdent, TokenKind::Operator, TokenKind::LowerIdent, TokenKind::Eof,]
         );
         assert_eq!(
             kinds("a->b"),
@@ -789,23 +831,24 @@ mod tests {
 
     #[test]
     fn diagnostic_points_at_the_offending_span() {
-        let result = lexed("x @ y");
+        let result = lexed("x # y");
         assert_eq!(result.diagnostics.len(), 1);
         let diag = &result.diagnostics[0];
         assert_eq!(diag.code, crate::UNEXPECTED_CHAR);
         assert_eq!(diag.primary.source(), SourceId::new(0));
-        assert_eq!(diag.primary.start().to_usize(), 2); // the `@`
+        assert_eq!(diag.primary.start().to_usize(), 2); // the `#`
         assert_eq!(diag.primary.end().to_usize(), 3);
         // Lexing recovers and continues on both sides of the bad character.
         assert_eq!(
-            kinds("x @ y"),
+            kinds("x # y"),
             vec![TokenKind::LowerIdent, TokenKind::LowerIdent, TokenKind::Eof,]
         );
     }
 
     #[test]
     fn multiple_errors_are_all_reported() {
-        let result = lexed("@ #");
+        // Neither `#` nor `\` is an operator character.
+        let result = lexed("# \\");
         assert_eq!(result.diagnostics.len(), 2);
         assert!(result.diagnostics.iter().all(|d| d.code == crate::UNEXPECTED_CHAR));
     }
@@ -906,13 +949,10 @@ mod tests {
     }
 
     #[test]
-    fn operators_split_greedily_left_to_right() {
-        // `||>` is `||` then `>`, and `>>=` is `>>` then `=`.
-        assert_eq!(kinds("||>"), vec![TokenKind::PipePipe, TokenKind::Greater, TokenKind::Eof,]);
-        assert_eq!(
-            kinds(">>="),
-            vec![TokenKind::GreaterGreater, TokenKind::Equals, TokenKind::Eof,]
-        );
+    fn operators_munch_maximally() {
+        // A maximal run of operator characters is a single operator token.
+        assert_eq!(token_pairs("||>"), vec![(TokenKind::Operator, "||>")]);
+        assert_eq!(token_pairs(">>="), vec![(TokenKind::Operator, ">>=")]);
     }
 
     #[test]
@@ -984,23 +1024,23 @@ mod proptests {
 
     /// Operator and punctuation lexemes paired with the single token they form.
     const OPERATORS: &[(&str, TokenKind)] = &[
-        ("+", TokenKind::Plus),
-        ("-", TokenKind::Minus),
-        ("*", TokenKind::Star),
-        ("/", TokenKind::Slash),
-        ("%", TokenKind::Percent),
-        ("++", TokenKind::PlusPlus),
+        ("+", TokenKind::Operator),
+        ("-", TokenKind::Operator),
+        ("*", TokenKind::Operator),
+        ("/", TokenKind::Operator),
+        ("%", TokenKind::Operator),
+        ("++", TokenKind::Operator),
+        ("|>", TokenKind::Operator),
+        (">>", TokenKind::Operator),
+        ("&&", TokenKind::Operator),
+        ("||", TokenKind::Operator),
+        ("<>", TokenKind::Operator),
+        ("<", TokenKind::Operator),
+        ("<=", TokenKind::Operator),
+        (">", TokenKind::Operator),
+        (">=", TokenKind::Operator),
         ("::", TokenKind::ColonColon),
-        ("|>", TokenKind::PipeGreater),
-        (">>", TokenKind::GreaterGreater),
-        ("&&", TokenKind::AmpAmp),
-        ("||", TokenKind::PipePipe),
         ("=", TokenKind::Equals),
-        ("<>", TokenKind::NotEq),
-        ("<", TokenKind::Less),
-        ("<=", TokenKind::LessEq),
-        (">", TokenKind::Greater),
-        (">=", TokenKind::GreaterEq),
         ("->", TokenKind::Arrow),
         ("|", TokenKind::Pipe),
         (":", TokenKind::Colon),

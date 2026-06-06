@@ -67,28 +67,19 @@ pub enum TokenKind {
     RBrace,
     Comma,
     Dot,
+    // Reserved symbols carved out of the operator-character runs: the type/sig
+    // colon, the function arrow, the binding/equality `=`, the match/row `|`,
+    // and the list-cons `::`. Everything else made of operator characters is an
+    // `Operator`.
     Colon,
     Arrow,
     Equals,
     Pipe,
-
-    // Operators.
-    Plus,
-    Minus,
-    Star,
-    Slash,
-    Percent,
-    PlusPlus,
     ColonColon,
-    PipeGreater,
-    GreaterGreater,
-    AmpAmp,
-    PipePipe,
-    Less,
-    LessEq,
-    Greater,
-    GreaterEq,
-    NotEq,
+
+    /// A symbolic operator: a maximal run of operator characters (e.g. `+`,
+    /// `|>`, `<$>`). Its lexeme is recovered from the token's range.
+    Operator,
 
     // Virtual layout tokens, inserted by the layout pass (never produced by the
     // lexer). They delimit indentation-derived blocks for the parser.

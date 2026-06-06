@@ -282,8 +282,8 @@ fn body_types_records_every_expression() {
 
     // The body `x + 1` and both operands are all `Int`.
     assert_eq!(crate::render_canonical(types.get(body).unwrap()), "Int");
-    let ExprKind::Binary { lhs, rhs, .. } = &parsed.module.expr(body).kind else {
-        panic!("expected a binary expression");
+    let ExprKind::Infix { lhs, rhs, .. } = &parsed.module.expr(body).kind else {
+        panic!("expected an infix expression");
     };
     assert_eq!(crate::render_canonical(types.get(*lhs).unwrap()), "Int");
     assert_eq!(crate::render_canonical(types.get(*rhs).unwrap()), "Int");
@@ -925,4 +925,38 @@ fn or_pattern_binds_consistently_across_alternatives() {
     let (db, f) = db_with(&[("M.fai", src)]);
     assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
     assert_eq!(type_of(&db, f[0], "unwrap"), "T -> Int");
+}
+
+// ── User-defined operators ───────────────────────────────────────────────────
+
+#[test]
+fn user_defined_operator_typechecks() {
+    let src = indoc! {r#"
+        module M
+
+        public (+++) : Int -> Int -> Int
+        let (+++) a b = a + b
+
+        public twice : Int -> Int
+        let twice x = x +++ x
+    "#};
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+    assert_eq!(type_of(&db, f[0], "twice"), "Int -> Int");
+}
+
+#[test]
+fn inferred_user_operator_generalizes() {
+    // A signature-less operator generalizes like any other binding.
+    let (db, f) = db_with(&[("M.fai", "module M\n\nlet (>+>) a b = a\n")]);
+    assert_eq!(type_of(&db, f[0], ">+>"), "'a -> 'b -> 'a");
+}
+
+#[test]
+fn builtin_operator_in_value_position_has_its_type() {
+    // `(+)` as a value is the numeric operator; the signature fixes it to `Int`.
+    let src = "module M\n\npublic add : Int -> Int -> Int\nlet add = (+)\n";
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+    assert_eq!(type_of(&db, f[0], "add"), "Int -> Int -> Int");
 }

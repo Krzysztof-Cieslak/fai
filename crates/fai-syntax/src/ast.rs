@@ -171,10 +171,12 @@ pub enum ExprKind {
     Unit,
     /// Function application `func arg` (curried; one argument per node).
     App { func: ExprId, arg: ExprId },
-    /// A binary operator application.
-    Binary { op: BinOp, lhs: ExprId, rhs: ExprId },
-    /// A prefix operator application (unary minus).
-    Unary { op: UnOp, operand: ExprId },
+    /// An infix operator application `lhs op rhs`. `op` is a [`ExprKind::Var`]
+    /// node holding the operator symbol, so it resolves and types like any name.
+    Infix { op: ExprId, lhs: ExprId, rhs: ExprId },
+    /// A prefix operator application `op operand` (e.g. unary minus). `op` is a
+    /// [`ExprKind::Var`] node holding the operator symbol.
+    Prefix { op: ExprId, operand: ExprId },
     /// `if cond then then_branch else else_branch`.
     If { cond: ExprId, then_branch: ExprId, else_branch: ExprId },
     /// `fun params… -> body`.
@@ -278,6 +280,44 @@ pub enum BinOp {
 pub enum UnOp {
     /// Arithmetic negation `-`.
     Neg,
+}
+
+/// Classifies an operator symbol as a built-in binary operator, or `None` for a
+/// user-defined operator (which resolves and types like an ordinary function).
+/// This is a pure function of the lexeme; whether a built-in is *shadowed* is
+/// decided by name resolution, not here.
+#[must_use]
+pub fn classify_op(symbol: Symbol) -> Option<BinOp> {
+    Some(match symbol.as_str() {
+        "+" => BinOp::Add,
+        "-" => BinOp::Sub,
+        "*" => BinOp::Mul,
+        "/" => BinOp::Div,
+        "%" => BinOp::Rem,
+        "++" => BinOp::Concat,
+        "::" => BinOp::Cons,
+        "|>" => BinOp::Pipe,
+        ">>" => BinOp::Compose,
+        "&&" => BinOp::And,
+        "||" => BinOp::Or,
+        "=" => BinOp::Eq,
+        "<>" => BinOp::Ne,
+        "<" => BinOp::Lt,
+        "<=" => BinOp::Le,
+        ">" => BinOp::Gt,
+        ">=" => BinOp::Ge,
+        _ => return None,
+    })
+}
+
+/// Classifies an operator symbol as a built-in prefix operator (only unary `-`),
+/// or `None` for a user-defined prefix operator.
+#[must_use]
+pub fn classify_prefix(symbol: Symbol) -> Option<UnOp> {
+    match symbol.as_str() {
+        "-" => Some(UnOp::Neg),
+        _ => None,
+    }
 }
 
 /// A pattern.

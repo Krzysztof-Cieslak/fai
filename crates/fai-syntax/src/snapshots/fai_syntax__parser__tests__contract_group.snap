@@ -1,9 +1,9 @@
 ---
 source: crates/fai-syntax/src/parser.rs
-expression: "dump(\"module Math\\npublic abs : Int -> Int\\nlet abs n =\\n  if n < 0 then 0 - n else n\\nexample: abs (-3) = 3\\nforall n: abs n >= 0\")"
+expression: "dump(indoc!\n{r#\"\n                    module Math\n                    public abs : Int -> Int\n                    let abs n =\n                      if n < 0 then 0 - n else n\n                    example: abs (-3) = 3\n                    forall n: abs n >= 0\"#})"
 ---
 module Math
 (sig Public abs (arrow (tcon Int) (tcon Int)))
-(let Private abs [(pvar n)] (block [] (if (Lt (var n) (int 0)) (Sub (int 0) (var n)) (var n))))
-(example (Eq (app (var abs) (paren (Neg (int 3)))) (int 3)))
-(forall [n] (Ge (app (var abs) (var n)) (int 0)))
+(let Private abs [(pvar n)] (block [] (if (infix < (var n) (int 0)) (infix - (int 0) (var n)) (var n))))
+(example (infix = (app (var abs) (paren (prefix - (int 3)))) (int 3)))
+(forall [n] (infix >= (app (var abs) (var n)) (int 0)))

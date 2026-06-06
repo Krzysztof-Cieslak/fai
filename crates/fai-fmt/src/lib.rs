@@ -12,8 +12,8 @@ mod doc;
 use doc::{Doc, concat, group, nest, print, text};
 use fai_span::LineIndex;
 use fai_syntax::ast::{
-    BinOp, ExprId, ExprKind, FieldInit, FieldPat, FieldType, Item, ItemId, ItemKind, LetStmt,
-    Module, PatId, PatKind, RowTail, TypeDef, TypeId, TypeKind, Visibility,
+    ExprId, ExprKind, FieldInit, FieldPat, FieldType, Item, ItemId, ItemKind, LetStmt, Module,
+    PatId, PatKind, RowTail, TypeDef, TypeId, TypeKind, Visibility,
 };
 use fai_syntax::{Comment, CommentMap, NodeId, attach_comments};
 
@@ -79,13 +79,16 @@ impl Printer<'_> {
         match &item.kind {
             ItemKind::Signature { visibility, name, ty } => concat(vec![
                 text(visibility_prefix(*visibility)),
-                text(name.as_str()),
+                text(var_text(name.as_str())),
                 text(" : "),
                 self.type_doc(*ty),
             ]),
             ItemKind::Binding { visibility, name, params, body } => {
-                let mut parts =
-                    vec![text(visibility_prefix(*visibility)), text("let "), text(name.as_str())];
+                let mut parts = vec![
+                    text(visibility_prefix(*visibility)),
+                    text("let "),
+                    text(var_text(name.as_str())),
+                ];
                 for &param in params {
                     parts.push(text(" "));
                     parts.push(self.pat_doc(param));
@@ -209,24 +212,35 @@ impl Printer<'_> {
         }
     }
 
+    /// The bare operator lexeme held in an operator `Var` node (used to render an
+    /// infix/prefix operator without the value-position parentheses).
+    fn op_text(&self, op: ExprId) -> &str {
+        match &self.module.expr(op).kind {
+            ExprKind::Var(s) => s.as_str(),
+            _ => "?",
+        }
+    }
+
     fn expr_core(&self, id: ExprId) -> Doc {
         let expr = self.module.expr(id);
         match &expr.kind {
-            ExprKind::Int(s)
-            | ExprKind::Float(s)
-            | ExprKind::String(s)
-            | ExprKind::Char(s)
-            | ExprKind::Var(s) => text(s.as_str()),
+            ExprKind::Int(s) | ExprKind::Float(s) | ExprKind::String(s) | ExprKind::Char(s) => {
+                text(s.as_str())
+            }
+            // A name reference; an operator name in value position is parenthesized.
+            ExprKind::Var(s) => text(var_text(s.as_str())),
             ExprKind::Unit => text("()"),
             ExprKind::App { func, arg } => {
                 concat(vec![self.expr_doc(*func), text(" "), self.expr_doc(*arg)])
             }
-            ExprKind::Binary { op, lhs, rhs } => concat(vec![
+            ExprKind::Infix { op, lhs, rhs } => concat(vec![
                 self.expr_doc(*lhs),
-                text(format!(" {} ", binop_str(*op))),
+                text(format!(" {} ", self.op_text(*op))),
                 self.expr_doc(*rhs),
             ]),
-            ExprKind::Unary { operand, .. } => concat(vec![text("-"), self.expr_doc(*operand)]),
+            ExprKind::Prefix { op, operand } => {
+                concat(vec![text(self.op_text(*op).to_owned()), self.expr_doc(*operand)])
+            }
             ExprKind::If { .. } => self.if_doc(id),
             ExprKind::Lambda { params, body } => {
                 let mut parts = vec![text("fun")];
@@ -502,24 +516,33 @@ fn visibility_prefix(visibility: Visibility) -> &'static str {
     }
 }
 
-fn binop_str(op: BinOp) -> &'static str {
-    match op {
-        BinOp::Add => "+",
-        BinOp::Sub => "-",
-        BinOp::Mul => "*",
-        BinOp::Div => "/",
-        BinOp::Rem => "%",
-        BinOp::Concat => "++",
-        BinOp::Cons => "::",
-        BinOp::Pipe => "|>",
-        BinOp::Compose => ">>",
-        BinOp::And => "&&",
-        BinOp::Or => "||",
-        BinOp::Eq => "=",
-        BinOp::Ne => "<>",
-        BinOp::Lt => "<",
-        BinOp::Le => "<=",
-        BinOp::Gt => ">",
-        BinOp::Ge => ">=",
-    }
+/// Whether `s` reads as a symbolic operator (its first character is an operator
+/// character), so that in value position it must be written `(s)`.
+fn is_operator_symbol(s: &str) -> bool {
+    s.chars().next().is_some_and(|c| {
+        matches!(
+            c,
+            '!' | '$'
+                | '%'
+                | '&'
+                | '*'
+                | '+'
+                | '-'
+                | '/'
+                | ':'
+                | '<'
+                | '='
+                | '>'
+                | '?'
+                | '@'
+                | '^'
+                | '|'
+                | '~'
+        )
+    })
+}
+
+/// Renders a name in value position, parenthesizing operator names (`(+)`).
+fn var_text(s: &str) -> String {
+    if is_operator_symbol(s) { format!("({s})") } else { s.to_owned() }
 }

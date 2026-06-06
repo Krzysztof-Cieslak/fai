@@ -19,6 +19,7 @@ use fai_span::{SourceId, Span, TextRange};
 use fai_syntax::Symbol;
 use fai_syntax::ast::{
     ExprId, ExprKind, ItemKind, Module, PatId, PatKind, TypeDef, TypeId, TypeKind, Visibility,
+    classify_op,
 };
 use rustc_hash::FxHashMap;
 
@@ -434,11 +435,17 @@ impl Resolver<'_> {
                 self.resolve_expr(*func);
                 self.resolve_expr(*arg);
             }
-            ExprKind::Binary { lhs, rhs, .. } => {
+            ExprKind::Infix { op, lhs, rhs } => {
+                // `op` is a `Var` node, resolved like any name (built-in, user, or
+                // a shadowing local/top-level binding).
+                self.resolve_expr(*op);
                 self.resolve_expr(*lhs);
                 self.resolve_expr(*rhs);
             }
-            ExprKind::Unary { operand, .. } => self.resolve_expr(*operand),
+            ExprKind::Prefix { op, operand } => {
+                self.resolve_expr(*op);
+                self.resolve_expr(*operand);
+            }
             ExprKind::If { cond, then_branch, else_branch } => {
                 self.resolve_expr(*cond);
                 self.resolve_expr(*then_branch);
@@ -513,6 +520,11 @@ impl Resolver<'_> {
         if matches!(name.as_str(), "true" | "false") {
             return Res::Builtin(name);
         }
+        // The short-circuit operators and the list-cons constructor are built-in
+        // syntax — never shadowed by a user binding.
+        if matches!(name.as_str(), "&&" | "||" | "::") {
+            return Res::Builtin(name);
+        }
         if let Some(local) = self.scope.lookup(name) {
             return Res::Local(local);
         }
@@ -524,6 +536,11 @@ impl Resolver<'_> {
         }
         if let Some(def) = self.prelude_values.get(&name) {
             return Res::Def(*def);
+        }
+        // The built-in operators are reachable as bare names (the standard-library
+        // interfaces will own them); a same-named user binding shadows them above.
+        if classify_op(name).is_some() {
+            return Res::Builtin(name);
         }
         Res::Error
     }

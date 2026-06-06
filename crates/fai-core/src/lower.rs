@@ -15,7 +15,10 @@ use fai_diagnostics::Diagnostic;
 use fai_resolve::{CtorRef, DefId, LocalId, Res, ResolvedBodies, resolve, type_decls};
 use fai_span::{Span, TextRange};
 use fai_syntax::Symbol;
-use fai_syntax::ast::{BinOp, ExprId, ExprKind, FieldInit, MatchArm, Module, PatId, PatKind, UnOp};
+use fai_syntax::ast::{
+    BinOp, ExprId, ExprKind, FieldInit, MatchArm, Module, PatId, PatKind, UnOp, classify_op,
+    classify_prefix,
+};
 use fai_types::{BodyTypes, Con, RowEnd, Ty, body_types};
 use rustc_hash::FxHashSet;
 
@@ -172,19 +175,8 @@ impl Lowerer<'_> {
                 let (head, args) = self.app_spine(expr);
                 return self.lower_application(head, &args, ty);
             }
-            ExprKind::Binary { op, lhs, rhs } => return self.lower_binary(*op, *lhs, *rhs, ty),
-            ExprKind::Unary { op, operand } => {
-                let UnOp::Neg = op;
-                let is_float = matches!(self.ty_of(*operand), Ty::Con(Con::Float));
-                let operand = self.lower_expr(*operand);
-                if is_float {
-                    let zero = CExpr::new(K::Lit(Lit::Float(0f64.to_bits())), Ty::Con(Con::Float));
-                    K::Prim { op: Prim::FloatSub, args: vec![zero, operand] }
-                } else {
-                    let zero = CExpr::new(K::Lit(Lit::Int(0)), Ty::int());
-                    K::Prim { op: Prim::IntSub, args: vec![zero, operand] }
-                }
-            }
+            ExprKind::Infix { op, lhs, rhs } => return self.lower_infix(*op, *lhs, *rhs, ty),
+            ExprKind::Prefix { op, operand } => return self.lower_prefix(*op, *operand, ty),
             ExprKind::If { cond, then_branch, else_branch } => {
                 let cond = Box::new(self.lower_expr(*cond));
                 let then = Box::new(self.lower_expr(*then_branch));
@@ -339,7 +331,34 @@ impl Lowerer<'_> {
         if let Some(prim) = Prim::from_builtin(name.as_str()) {
             return self.eta_expand_prim(prim, ty);
         }
+        // A built-in operator used as a value (`(+)`, `(=)`, …): eta-expand it to
+        // its primitive at the use-site type.
+        if classify_op(name).is_some() || classify_prefix(name).is_some() {
+            return self.eta_expand_operator(name, ty, span);
+        }
         self.unsupported(span, "this intrinsic")
+    }
+
+    /// Eta-expands a built-in operator used in value position to a closure over
+    /// its primitive. The operand type selects the Int vs Float primitive. The
+    /// structural/short-circuit operators are not yet available as values.
+    fn eta_expand_operator(&mut self, name: Symbol, ty: Ty, span: TextRange) -> CExpr {
+        let float = matches!(first_arg_ty(&ty), Some(Ty::Con(Con::Float)));
+        let prim = match name.as_str() {
+            "+" if float => Prim::FloatAdd,
+            "+" => Prim::IntAdd,
+            "-" if float => Prim::FloatSub,
+            "-" => Prim::IntSub,
+            "*" if float => Prim::FloatMul,
+            "*" => Prim::IntMul,
+            "/" if float => Prim::FloatDiv,
+            "/" => Prim::IntDiv,
+            "%" => Prim::IntRem,
+            "=" => Prim::Eq,
+            "++" => Prim::StrConcat,
+            _ => return self.unsupported(span, "this operator as a value"),
+        };
+        self.eta_expand_prim(prim, ty)
     }
 
     /// Builds a closure `fun a0 … -> prim a0 …` for a primitive used as a value.
@@ -386,7 +405,52 @@ impl Lowerer<'_> {
         CExpr::new(K::App { func, args }, ty)
     }
 
-    fn lower_binary(&mut self, op: BinOp, lhs: ExprId, rhs: ExprId, ty: Ty) -> CExpr {
+    /// The operator symbol held in an operator `Var` node.
+    fn op_symbol(&self, op: ExprId) -> Symbol {
+        match &self.module.expr(op).kind {
+            ExprKind::Var(s) => *s,
+            _ => Symbol::intern(""),
+        }
+    }
+
+    /// Whether the operator node resolved to the built-in operator (not shadowed).
+    fn is_builtin_op(&self, op: ExprId) -> bool {
+        matches!(self.resolved.get(op), Some(Res::Builtin(_)))
+    }
+
+    /// Lowers an infix application. A non-shadowed built-in operator lowers to its
+    /// dedicated form; otherwise it is an ordinary curried application of the
+    /// resolved operator function.
+    fn lower_infix(&mut self, op: ExprId, lhs: ExprId, rhs: ExprId, ty: Ty) -> CExpr {
+        let sym = self.op_symbol(op);
+        if self.is_builtin_op(op)
+            && let Some(binop) = classify_op(sym)
+        {
+            return self.lower_builtin_binary(binop, lhs, rhs, ty);
+        }
+        self.lower_application(op, &[lhs, rhs], ty)
+    }
+
+    /// Lowers a prefix application: built-in negation, or an ordinary one-argument
+    /// application of the resolved operator function.
+    fn lower_prefix(&mut self, op: ExprId, operand: ExprId, ty: Ty) -> CExpr {
+        let sym = self.op_symbol(op);
+        if self.is_builtin_op(op) && matches!(classify_prefix(sym), Some(UnOp::Neg)) {
+            let is_float = matches!(self.ty_of(operand), Ty::Con(Con::Float));
+            let operand = self.lower_expr(operand);
+            let kind = if is_float {
+                let zero = CExpr::new(K::Lit(Lit::Float(0f64.to_bits())), Ty::Con(Con::Float));
+                K::Prim { op: Prim::FloatSub, args: vec![zero, operand] }
+            } else {
+                let zero = CExpr::new(K::Lit(Lit::Int(0)), Ty::int());
+                K::Prim { op: Prim::IntSub, args: vec![zero, operand] }
+            };
+            return CExpr::new(kind, ty);
+        }
+        self.lower_application(op, &[operand], ty)
+    }
+
+    fn lower_builtin_binary(&mut self, op: BinOp, lhs: ExprId, rhs: ExprId, ty: Ty) -> CExpr {
         let float = matches!(self.ty_of(lhs), Ty::Con(Con::Float));
         // Arithmetic: pick the Int or Float primitive from the operand type.
         let arith = match (op, float) {
@@ -810,6 +874,15 @@ fn is_simple_binder(module: &Module, pat: PatId) -> bool {
         PatKind::Var(_) | PatKind::Wildcard => true,
         PatKind::Paren(inner) => is_simple_binder(module, *inner),
         _ => false,
+    }
+}
+
+/// The first argument type of a function type `a -> …` (used to pick the Int vs
+/// Float primitive when eta-expanding an operator value).
+fn first_arg_ty(ty: &Ty) -> Option<&Ty> {
+    match ty {
+        Ty::Arrow(from, _) => Some(from),
+        _ => None,
     }
 }
 

@@ -11,7 +11,9 @@ use fai_diagnostics::Diagnostic;
 use fai_resolve::{CtorRef, DefId, LocalId, Res, ResolvedBodies};
 use fai_span::Span;
 use fai_syntax::Symbol;
-use fai_syntax::ast::{BinOp, ExprId, ExprKind, Module, PatId, PatKind, UnOp};
+use fai_syntax::ast::{
+    BinOp, ExprId, ExprKind, Module, PatId, PatKind, UnOp, classify_op, classify_prefix,
+};
 use rustc_hash::FxHashMap;
 
 use crate::infer::ctx::{Constraint, InferCtx, RowTail, SolveRow, SolveTy, UnifyResult};
@@ -230,8 +232,8 @@ impl<E: Env> Walker<'_, E> {
                 self.unify_at(node.span, &func_ty, &expected, "function application");
                 result
             }
-            ExprKind::Binary { op, lhs, rhs } => self.infer_binary(*op, *lhs, *rhs, node.span),
-            ExprKind::Unary { op, operand } => self.infer_unary(*op, *operand, node.span),
+            ExprKind::Infix { op, lhs, rhs } => self.infer_infix(*op, *lhs, *rhs, node.span),
+            ExprKind::Prefix { op, operand } => self.infer_prefix(*op, *operand, node.span),
             ExprKind::If { cond, then_branch, else_branch } => {
                 let cond_ty = self.infer_expr(*cond);
                 self.unify_at(
@@ -342,10 +344,18 @@ impl<E: Env> Walker<'_, E> {
                 Some(scheme) => self.cx.instantiate(&scheme),
                 None => SolveTy::Error,
             },
-            Some(Res::Builtin(b)) => match self.env.builtin_scheme(b) {
-                Some(scheme) => self.cx.instantiate(&scheme),
-                None => SolveTy::Error,
-            },
+            Some(Res::Builtin(b)) => {
+                // A built-in operator used in value position (`(+)`, `(::)`, …)
+                // gets its operator type; other builtins use the scheme table.
+                if let Some(ty) = self.operator_value_type(b) {
+                    ty
+                } else {
+                    match self.env.builtin_scheme(b) {
+                        Some(scheme) => self.cx.instantiate(&scheme),
+                        None => SolveTy::Error,
+                    }
+                }
+            }
             Some(Res::Error) | None => {
                 let _ = (name, span);
                 SolveTy::Error
@@ -421,15 +431,107 @@ impl<E: Env> Walker<'_, E> {
         }
     }
 
-    fn infer_unary(&mut self, op: UnOp, operand: ExprId, span: fai_span::TextRange) -> SolveTy {
-        let UnOp::Neg = op;
-        let t = self.infer_expr(operand);
-        let num = self.cx.fresh_constrained(Some(Constraint::Numeric));
-        self.unify_at(span, &t, &num, "a negation");
-        num
+    /// The type of a built-in operator used in value position (`(+)`, `(::)`, …),
+    /// or `None` if `name` is not a built-in operator. Mirrors the applied-form
+    /// typing in [`Self::infer_builtin_binary`].
+    fn operator_value_type(&mut self, name: Symbol) -> Option<SolveTy> {
+        let arrow2 = |a: SolveTy, b: SolveTy, r: SolveTy| SolveTy::arrow(a, SolveTy::arrow(b, r));
+        Some(match name.as_str() {
+            "+" | "-" | "*" | "/" | "%" => {
+                let n = self.cx.fresh_constrained(Some(Constraint::Numeric));
+                arrow2(n.clone(), n.clone(), n)
+            }
+            "<" | "<=" | ">" | ">=" => {
+                let o = self.cx.fresh_constrained(Some(Constraint::Ord));
+                arrow2(o.clone(), o, SolveTy::bool())
+            }
+            "=" | "<>" => {
+                let e = self.cx.fresh_constrained(Some(Constraint::Eq));
+                arrow2(e.clone(), e, SolveTy::bool())
+            }
+            "++" => arrow2(SolveTy::string(), SolveTy::string(), SolveTy::string()),
+            "&&" | "||" => arrow2(SolveTy::bool(), SolveTy::bool(), SolveTy::bool()),
+            "::" => {
+                let a = self.cx.fresh();
+                arrow2(a.clone(), SolveTy::list(a.clone()), SolveTy::list(a))
+            }
+            "|>" => {
+                // a -> (a -> b) -> b
+                let a = self.cx.fresh();
+                let b = self.cx.fresh();
+                arrow2(a.clone(), SolveTy::arrow(a, b.clone()), b)
+            }
+            ">>" => {
+                // (a -> b) -> (b -> c) -> a -> c
+                let a = self.cx.fresh();
+                let b = self.cx.fresh();
+                let c = self.cx.fresh();
+                arrow2(
+                    SolveTy::arrow(a.clone(), b.clone()),
+                    SolveTy::arrow(b, c.clone()),
+                    SolveTy::arrow(a, c),
+                )
+            }
+            _ => return None,
+        })
     }
 
-    fn infer_binary(
+    /// The operator symbol held in an operator `Var` node.
+    fn op_symbol(&self, op: ExprId) -> Symbol {
+        match &self.module.expr(op).kind {
+            ExprKind::Var(s) => *s,
+            _ => Symbol::intern(""),
+        }
+    }
+
+    /// Whether the operator node `op` resolved to the built-in operator (rather
+    /// than a shadowing user binding).
+    fn is_builtin_op(&self, op: ExprId) -> bool {
+        matches!(self.resolved.get(op), Some(Res::Builtin(_)))
+    }
+
+    fn infer_prefix(&mut self, op: ExprId, operand: ExprId, span: fai_span::TextRange) -> SolveTy {
+        let sym = self.op_symbol(op);
+        if self.is_builtin_op(op) && matches!(classify_prefix(sym), Some(UnOp::Neg)) {
+            let t = self.infer_expr(operand);
+            let num = self.cx.fresh_constrained(Some(Constraint::Numeric));
+            self.unify_at(span, &t, &num, "a negation");
+            return num;
+        }
+        // A user-defined prefix operator: an ordinary one-argument application.
+        let op_ty = self.infer_expr(op);
+        let operand_ty = self.infer_expr(operand);
+        let result = self.cx.fresh();
+        let expected = SolveTy::arrow(operand_ty, result.clone());
+        self.unify_at(span, &op_ty, &expected, "a prefix operator application");
+        result
+    }
+
+    fn infer_infix(
+        &mut self,
+        op: ExprId,
+        lhs: ExprId,
+        rhs: ExprId,
+        span: fai_span::TextRange,
+    ) -> SolveTy {
+        let sym = self.op_symbol(op);
+        if self.is_builtin_op(op)
+            && let Some(binop) = classify_op(sym)
+        {
+            return self.infer_builtin_binary(binop, lhs, rhs, span);
+        }
+        // A user-defined operator (or a shadowed built-in): a curried application
+        // of the resolved operator function to its two operands.
+        let op_ty = self.infer_expr(op);
+        let lt = self.infer_expr(lhs);
+        let rt = self.infer_expr(rhs);
+        let result = self.cx.fresh();
+        let expected = SolveTy::arrow(lt, SolveTy::arrow(rt, result.clone()));
+        self.unify_at(span, &op_ty, &expected, "an operator application");
+        result
+    }
+
+    fn infer_builtin_binary(
         &mut self,
         op: BinOp,
         lhs: ExprId,
