@@ -13,11 +13,9 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
-# Use bash on every OS (Git Bash on Windows) so the steps below are identical
-# across the matrix.
-defaults:
-  run:
-    shell: bash
+# Each OS uses its native default shell (bash on Linux/macOS, PowerShell on
+# Windows). Forcing bash on Windows puts Git's `usr/bin/link.exe` ahead of the
+# MSVC linker on PATH, which breaks all linking — so it is deliberately avoided.
 
 jobs:
   check:
