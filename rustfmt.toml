@@ -5,3 +5,6 @@
 # to `max_width` instead of rustfmt's verbose default expansion.
 edition = "2024"
 use_small_heuristics = "Max"
+# Pin LF newlines so `cargo fmt --check` is identical on Linux, macOS, and
+# Windows (rather than depending on the checkout's line endings).
+newline_style = "Unix"

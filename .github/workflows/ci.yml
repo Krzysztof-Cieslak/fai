@@ -13,12 +13,37 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
+# Use bash on every OS (Git Bash on Windows) so the steps below are identical
+# across the matrix.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   check:
     name: build / lint / test
-    runs-on: ubuntu-latest
+    strategy:
+      # Report every OS's result instead of cancelling the matrix on the first
+      # failure.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+
+      # The AOT linker (`fai build`) shells out to the host's system linker. On
+      # Windows that is MSVC `link.exe`, which needs the Visual Studio
+      # environment (PATH/LIB/INCLUDE) — export it for the build/test steps.
+      - name: Set up MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      # Guarantee a `python` on PATH for the test-summary step on every runner.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
 
       # The first cargo invocation makes rustup install the toolchain pinned by
       # rust-toolchain.toml, together with its rustfmt and clippy components.
@@ -62,12 +87,13 @@ jobs:
       - name: Test summary
         # Render the JUnit report into the run's job summary, even on failure.
         if: always()
-        run: python3 scripts/junit-summary.py target/nextest/ci/junit.xml
+        run: python scripts/junit-summary.py target/nextest/ci/junit.xml
 
       - name: Upload JUnit report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: junit-report
+          # Artifact names must be unique across matrix jobs in a run.
+          name: junit-report-${{ matrix.os }}
           path: target/nextest/ci/junit.xml
           if-no-files-found: ignore

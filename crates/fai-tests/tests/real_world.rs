@@ -64,7 +64,9 @@ fn build_and_run(file_name: &str, src: &str) -> (String, Option<i32>) {
     );
     assert_eq!(code, 0, "building {file_name} failed: {}", String::from_utf8_lossy(&err));
 
-    let run = Command::new(&exe).output().unwrap();
+    // `fai build` appends the platform executable extension (`.exe` on Windows).
+    let produced = exe.with_extension(std::env::consts::EXE_EXTENSION);
+    let run = Command::new(&produced).output().unwrap();
     (String::from_utf8_lossy(&run.stdout).into_owned(), run.status.code())
 }
 
