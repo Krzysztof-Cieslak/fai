@@ -20,6 +20,17 @@ fn unique(tag: &str) -> PathBuf {
     ))
 }
 
+/// A short base directory for the daemon's Unix socket. macOS caps socket paths
+/// at ~104 bytes, and its default temp dir (`/var/folders/…`) is long enough
+/// that appending the per-workspace socket file overflows the limit — so the
+/// socket directory uses a short, fixed base instead of [`unique`]. (On Windows
+/// the endpoint is a namespaced pipe, so the path length is irrelevant.)
+fn unique_socket_dir() -> PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let base = if cfg!(unix) { PathBuf::from("/tmp") } else { std::env::temp_dir() };
+    base.join(format!("fai-rt-{}-{}", std::process::id(), COUNTER.fetch_add(1, Ordering::Relaxed)))
+}
+
 /// An isolated workspace with its own daemon endpoint and cache.
 struct Daemon {
     workspace: PathBuf,
@@ -37,7 +48,7 @@ impl Daemon {
         }
         Self {
             workspace,
-            runtime_dir: unique(&format!("{name}-rt")),
+            runtime_dir: unique_socket_dir(),
             cache_dir: unique(&format!("{name}-cache")),
             run_timeout_ms: None,
         }
