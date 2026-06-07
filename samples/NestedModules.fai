@@ -3,12 +3,11 @@ module NestedModules
 // Nested module — private helpers grouped together.
 module Internal =
   let pi = 3.14159
+
   let square x = x * x
 
 public circleArea : Float -> Float
-let circleArea r =
-  Internal.pi * Internal.square r
+let circleArea r = Internal.pi * Internal.square r
 
 public perimeter : Float -> Float
-let perimeter r =
-  2.0 * Internal.pi * r
+let perimeter r = 2.0 * Internal.pi * r

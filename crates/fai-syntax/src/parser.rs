@@ -11,12 +11,12 @@ use fai_diagnostics::{Diagnostic, DiagnosticCode};
 use fai_span::{ByteOffset, SourceId, Span, TextRange};
 
 use crate::ast::{
-    Expr, ExprId, ExprKind, FieldInit, FieldPat, FieldType, Item, ItemKind, LetStmt, MatchArm,
-    MethodImpl, MethodSig, Module, Pat, PatId, PatKind, RowTail, Type, TypeDef, TypeId, TypeKind,
-    Variant, Visibility,
+    Expr, ExprId, ExprKind, FieldInit, FieldPat, FieldType, Item, ItemId, ItemKind, LetStmt,
+    MatchArm, MethodImpl, MethodSig, Module, Pat, PatId, PatKind, RowTail, Type, TypeDef, TypeId,
+    TypeKind, Variant, Visibility,
 };
 use crate::token::{Token, TokenKind};
-use crate::{Comment, MODULE_HEADER, SYNTAX_ERROR, Symbol, UNSUPPORTED, layout, lex};
+use crate::{Comment, MODULE_HEADER, SYNTAX_ERROR, Symbol, layout, lex};
 
 /// The result of parsing one source file.
 #[derive(Debug)]
@@ -137,6 +137,22 @@ impl Parser<'_> {
         self.symbol(token)
     }
 
+    /// Consumes a dotted upper-case path `Upper(.Upper)*` and interns it as one
+    /// qualified symbol (e.g. `Outer.Inner.Shape`). Used for qualified type and
+    /// constructor references; resolution splits on `.` to walk the module path.
+    /// The leading `UpperIdent` must already be current.
+    fn parse_dotted_upper(&mut self) -> Symbol {
+        let head = self.bump();
+        let mut name = self.lexeme(head).to_owned();
+        while self.at(TokenKind::Dot) && self.peek_at(1) == TokenKind::UpperIdent {
+            self.bump(); // `.`
+            let seg = self.bump();
+            name.push('.');
+            name.push_str(self.lexeme(seg));
+        }
+        Symbol::intern(&name)
+    }
+
     /// The operator symbol an operator-ish token denotes. The reserved `=` and
     /// `::` carry fixed lexemes; a general `Operator` interns its run.
     fn op_symbol(&self, token: Token) -> Symbol {
@@ -227,6 +243,12 @@ impl Parser<'_> {
         id
     }
 
+    fn alloc_item(&mut self, item: Item) -> ItemId {
+        let id = ItemId::from_index(self.module.items.len());
+        self.module.items.push(item);
+        id
+    }
+
     // --- top level --------------------------------------------------------
 
     fn parse_top_level(&mut self) {
@@ -238,7 +260,8 @@ impl Parser<'_> {
             }
             let before = self.pos;
             let item = self.parse_item();
-            self.module.items.push(item);
+            let id = self.alloc_item(item);
+            self.module.roots.push(id);
             self.resync(0);
             if self.pos == before {
                 self.bump(); // guarantee forward progress
@@ -304,7 +327,7 @@ impl Parser<'_> {
             TokenKind::Forall => self.parse_forall(),
             TokenKind::Type => self.parse_type_decl(Visibility::Private),
             TokenKind::Interface => self.parse_interface_decl(Visibility::Private),
-            TokenKind::Module => self.unsupported("nested modules"),
+            TokenKind::Module => self.parse_nested_module(),
             _ => {
                 let span = self.cur().range;
                 self.error(SYNTAX_ERROR, span, "expected a declaration");
@@ -323,6 +346,17 @@ impl Parser<'_> {
             TokenKind::LParen if self.at_op_name() => self.parse_signature(Visibility::Public),
             TokenKind::Type => self.parse_type_decl(Visibility::Public),
             TokenKind::Interface => self.parse_interface_decl(Visibility::Public),
+            TokenKind::Module => {
+                let span = self.cur().range;
+                self.error(
+                    SYNTAX_ERROR,
+                    span,
+                    "a nested module cannot be marked `public`; mark its members `public` \
+                     to expose them across files",
+                );
+                // Recover by parsing it as an ordinary (unmarked) nested module.
+                self.parse_nested_module()
+            }
             _ => {
                 let span = self.cur().range;
                 self.error(
@@ -335,10 +369,48 @@ impl Parser<'_> {
         }
     }
 
-    fn unsupported(&mut self, what: &str) -> ItemKind {
-        let token = self.bump(); // the keyword, so its span anchors the diagnostic
-        self.error(UNSUPPORTED, token.range, format!("{what} are not supported yet"));
-        ItemKind::Error
+    /// Parses a nested module `module Name = <indented items>`. The body is an
+    /// item list (mirroring the top level) bounded by a layout block; its child
+    /// items are allocated into the shared arena and referenced by `ItemId`.
+    fn parse_nested_module(&mut self) -> ItemKind {
+        self.bump(); // `module`
+        let name = if self.at(TokenKind::UpperIdent) {
+            Some(self.bump_symbol())
+        } else {
+            let span = self.cur().range;
+            self.error(SYNTAX_ERROR, span, "expected an upper-case module name after `module`");
+            None
+        };
+        self.expect(TokenKind::Equals, "`=` in the nested module declaration");
+        // The `=` opens a layout block when the body starts on a new line.
+        let opened = self.eat(TokenKind::LayoutOpen);
+        let mut body = Vec::new();
+        if opened {
+            loop {
+                while self.eat(TokenKind::LayoutSep) {}
+                if self.at(TokenKind::LayoutClose) || self.at_eof() {
+                    break;
+                }
+                let before = self.pos;
+                let item = self.parse_item();
+                let id = self.alloc_item(item);
+                body.push(id);
+                self.resync(0);
+                if self.pos == before {
+                    self.bump(); // guarantee forward progress
+                }
+            }
+            self.expect(TokenKind::LayoutClose, "the end of the nested module");
+        } else if !self.at_terminator() {
+            // A single-line nested module `module M = let x = 1` (no block).
+            let item = self.parse_item();
+            let id = self.alloc_item(item);
+            body.push(id);
+        }
+        match name {
+            Some(name) => ItemKind::Module { name, body },
+            None => ItemKind::Error,
+        }
     }
 
     fn parse_signature(&mut self, visibility: Visibility) -> ItemKind {
@@ -567,7 +639,10 @@ impl Parser<'_> {
         let mut base = self.parse_atom();
         while self.at(TokenKind::Dot) {
             self.bump();
-            let field = if self.at(TokenKind::LowerIdent) {
+            // A field may be lower (record field / module value) or upper (a
+            // nested-module segment or a qualified constructor); resolution
+            // disambiguates the `A.B.c` / `Inner.MyCtor` chains by casing.
+            let field = if self.at(TokenKind::LowerIdent) || self.at(TokenKind::UpperIdent) {
                 self.bump_symbol()
             } else {
                 let span = self.cur().range;
@@ -874,7 +949,7 @@ impl Parser<'_> {
     fn parse_pattern_app(&mut self) -> PatId {
         if self.at(TokenKind::UpperIdent) {
             let start = self.start();
-            let name = self.bump_symbol();
+            let name = self.parse_dotted_upper();
             let mut args = Vec::new();
             while can_start_pattern_atom(self.peek()) {
                 args.push(self.parse_pattern_atom());
@@ -901,7 +976,7 @@ impl Parser<'_> {
                 PatKind::Wildcard
             }
             TokenKind::UpperIdent => {
-                PatKind::Constructor { name: self.bump_symbol(), args: Vec::new() }
+                PatKind::Constructor { name: self.parse_dotted_upper(), args: Vec::new() }
             }
             TokenKind::Int => PatKind::Int(self.bump_symbol()),
             TokenKind::Float => PatKind::Float(self.bump_symbol()),
@@ -1096,7 +1171,7 @@ impl Parser<'_> {
         let start = self.start();
         let kind = match self.peek() {
             TokenKind::TypeVar => TypeKind::Var(self.bump_symbol()),
-            TokenKind::UpperIdent => TypeKind::Con(self.bump_symbol()),
+            TokenKind::UpperIdent => TypeKind::Con(self.parse_dotted_upper()),
             TokenKind::LParen => {
                 self.bump();
                 if self.eat(TokenKind::RParen) {
@@ -1202,7 +1277,7 @@ mod tests {
 
     use super::{Parsed, parse_module};
     use crate::ast::{
-        ExprId, ExprKind, ItemKind, LetStmt, Module, PatId, PatKind, TypeId, TypeKind,
+        ExprId, ExprKind, Item, ItemKind, LetStmt, Module, PatId, PatKind, TypeId, TypeKind,
     };
 
     fn parse(src: &str) -> Parsed {
@@ -1391,59 +1466,70 @@ mod tests {
 
     fn dump_module(m: &Module) -> String {
         let mut out = format!("module {}\n", m.name.map_or("<none>", |s| s.as_str()));
-        for item in &m.items {
-            let line = match &item.kind {
-                ItemKind::Signature { visibility, name, ty } => {
-                    format!("(sig {visibility:?} {} {})", name.as_str(), dump_type(m, *ty))
-                }
-                ItemKind::Binding { visibility, name, params, body } => format!(
-                    "(let {visibility:?} {} [{}] {})",
-                    name.as_str(),
-                    dump_pats(m, params),
-                    dump_expr(m, *body)
-                ),
-                ItemKind::Type { visibility, name, params, def } => {
-                    let ps = params.iter().map(|p| p.as_str()).collect::<Vec<_>>().join(" ");
-                    let body = match def {
-                        crate::ast::TypeDef::Alias(ty) => format!("= {}", dump_type(m, *ty)),
-                        crate::ast::TypeDef::Union(variants) => {
-                            let vs = variants
-                                .iter()
-                                .map(|v| {
-                                    let fs = v
-                                        .fields
-                                        .iter()
-                                        .map(|f| dump_type(m, *f))
-                                        .collect::<Vec<_>>()
-                                        .join(" ");
-                                    format!("(| {} [{}])", v.name.as_str(), fs)
-                                })
-                                .collect::<Vec<_>>()
-                                .join(" ");
-                            format!("= {vs}")
-                        }
-                    };
-                    format!("(type {visibility:?} {} [{}] {})", name.as_str(), ps, body)
-                }
-                ItemKind::Interface { visibility, name, params, methods } => {
-                    let ps = params.iter().map(|p| p.as_str()).collect::<Vec<_>>().join(" ");
-                    let ms = methods
-                        .iter()
-                        .map(|meth| format!("({} : {})", meth.name.as_str(), dump_type(m, meth.ty)))
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    format!("(interface {visibility:?} {} [{}] [{}])", name.as_str(), ps, ms)
-                }
-                ItemKind::Example { body } => format!("(example {})", dump_expr(m, *body)),
-                ItemKind::Forall { binders, body } => {
-                    format!("(forall [{}] {})", dump_pats(m, binders), dump_expr(m, *body))
-                }
-                ItemKind::Error => "(item-error)".to_owned(),
-            };
-            out.push_str(&line);
+        for &id in &m.roots {
+            out.push_str(&dump_item(m, &m.items[id.index()]));
             out.push('\n');
         }
         out
+    }
+
+    fn dump_item(m: &Module, item: &Item) -> String {
+        match &item.kind {
+            ItemKind::Signature { visibility, name, ty } => {
+                format!("(sig {visibility:?} {} {})", name.as_str(), dump_type(m, *ty))
+            }
+            ItemKind::Binding { visibility, name, params, body } => format!(
+                "(let {visibility:?} {} [{}] {})",
+                name.as_str(),
+                dump_pats(m, params),
+                dump_expr(m, *body)
+            ),
+            ItemKind::Type { visibility, name, params, def } => {
+                let ps = params.iter().map(|p| p.as_str()).collect::<Vec<_>>().join(" ");
+                let body = match def {
+                    crate::ast::TypeDef::Alias(ty) => format!("= {}", dump_type(m, *ty)),
+                    crate::ast::TypeDef::Union(variants) => {
+                        let vs = variants
+                            .iter()
+                            .map(|v| {
+                                let fs = v
+                                    .fields
+                                    .iter()
+                                    .map(|f| dump_type(m, *f))
+                                    .collect::<Vec<_>>()
+                                    .join(" ");
+                                format!("(| {} [{}])", v.name.as_str(), fs)
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        format!("= {vs}")
+                    }
+                };
+                format!("(type {visibility:?} {} [{}] {})", name.as_str(), ps, body)
+            }
+            ItemKind::Interface { visibility, name, params, methods } => {
+                let ps = params.iter().map(|p| p.as_str()).collect::<Vec<_>>().join(" ");
+                let ms = methods
+                    .iter()
+                    .map(|meth| format!("({} : {})", meth.name.as_str(), dump_type(m, meth.ty)))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!("(interface {visibility:?} {} [{}] [{}])", name.as_str(), ps, ms)
+            }
+            ItemKind::Example { body } => format!("(example {})", dump_expr(m, *body)),
+            ItemKind::Forall { binders, body } => {
+                format!("(forall [{}] {})", dump_pats(m, binders), dump_expr(m, *body))
+            }
+            ItemKind::Module { name, body } => {
+                let children = body
+                    .iter()
+                    .map(|&id| dump_item(m, &m.items[id.index()]))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!("(module {} [{children}])", name.as_str())
+            }
+            ItemKind::Error => "(item-error)".to_owned(),
+        }
     }
 
     fn dump(src: &str) -> String {
@@ -1639,17 +1725,40 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_constructs_report_fai1030_and_recover() {
-        // Nested modules remain unimplemented; `type`/`match`/records/`interface`
-        // no longer do.
+    fn nested_modules_parse_cleanly() {
         let src = indoc! {r#"
             module M
+
             module Inner =
-              let x = 1"#};
+              let pi = 3
+              let square x = x * x
+
+            let area r =
+              Inner.pi * Inner.square r"#};
         let parsed = parse(src);
         assert!(
-            parsed.diagnostics.iter().any(|d| d.code == crate::UNSUPPORTED),
-            "expected FAI1030 for: {src}",
+            parsed.diagnostics.is_empty(),
+            "nested modules should parse without diagnostics: {:?}",
+            parsed.diagnostics,
+        );
+        // Two top-level roots: the nested module and `area`.
+        assert_eq!(parsed.module.roots.len(), 2);
+        // The nested module groups its two children.
+        let out = dump(src);
+        assert!(out.contains("(module Inner [(let Private pi"), "got: {out}");
+        assert!(out.contains("square"), "got: {out}");
+    }
+
+    #[test]
+    fn public_nested_module_is_rejected() {
+        let parsed = parse(indoc! {r#"
+            module M
+            public module Inner =
+              let x = 1"#});
+        assert!(
+            parsed.diagnostics.iter().any(|d| d.code == crate::SYNTAX_ERROR),
+            "expected a syntax error for `public module`: {:?}",
+            parsed.diagnostics,
         );
     }
 
@@ -2202,6 +2311,9 @@ mod proptests {
                     }
                     ItemKind::Example { body } => walk_expr(&parsed.module, *body),
                     ItemKind::Forall { body, .. } => walk_expr(&parsed.module, *body),
+                    // A nested module's children are themselves entries in the
+                    // `items` arena, so this same loop walks them.
+                    ItemKind::Module { .. } => {}
                     ItemKind::Error => {}
                 }
             }

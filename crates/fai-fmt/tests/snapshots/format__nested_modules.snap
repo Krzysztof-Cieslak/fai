@@ -1,0 +1,13 @@
+---
+source: crates/fai-fmt/tests/format.rs
+expression: fmt(src)
+---
+module M
+
+module Inner =
+  let pi = 3
+
+  let square x = x * x
+
+public area : Int -> Int
+let area r = Inner.pi * Inner.square r

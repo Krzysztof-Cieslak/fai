@@ -54,14 +54,23 @@ arena_id!(
 );
 
 /// A parsed module: its header plus the node arenas.
+///
+/// `items` is the arena of **all** items — top-level *and* those nested inside an
+/// [`ItemKind::Module`] — each addressed by a stable single-index [`ItemId`].
+/// `roots` lists the top-level items in source order; a nested module's children
+/// are listed (by `ItemId`) on its [`ItemKind::Module`]. Walk `roots` (recursing
+/// into module bodies) to visit items with their enclosing-module context; index
+/// `items` by `ItemId` to fetch any one item directly.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Module {
     /// The declared module name, or `None` if the header was missing/malformed.
     pub name: Option<Symbol>,
     /// Span of the module header (`module Name`), for diagnostics.
     pub header: TextRange,
-    /// Top-level items, in source order.
+    /// The arena of all items (top-level and nested), addressed by [`ItemId`].
     pub items: Vec<Item>,
+    /// The top-level items, in source order (indices into `items`).
+    pub roots: Vec<ItemId>,
     /// Expression arena.
     pub exprs: Vec<Expr>,
     /// Pattern arena.
@@ -130,6 +139,11 @@ pub enum ItemKind {
     Type { visibility: Visibility, name: Symbol, params: Vec<Symbol>, def: TypeDef },
     /// An interface declaration: `[public] interface Name 'p… = <methods>`.
     Interface { visibility: Visibility, name: Symbol, params: Vec<Symbol>, methods: Vec<MethodSig> },
+    /// A nested module: `module Name = <body>`. The body lists its child items by
+    /// `ItemId` (into [`Module::items`]). Nested modules group declarations under a
+    /// qualified path; they carry no visibility marker (member-level visibility
+    /// governs cross-file access).
+    Module { name: Symbol, body: Vec<ItemId> },
     /// An `example: body` contract.
     Example { body: ExprId },
     /// A `forall binders…: body` contract. Each binder is a `PatKind::Var`

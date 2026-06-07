@@ -123,8 +123,10 @@ pub fn module_defs(db: &dyn Db, file: SourceFile) -> ModuleDefs {
     let mut binding_by_name: FxHashMap<Symbol, ItemId> = FxHashMap::default();
     let mut binding_order: Vec<(Symbol, ItemId)> = Vec::new();
 
-    for (index, item) in module.items.iter().enumerate() {
-        let id = ItemId::from_index(index);
+    // Nested modules are walked in a later stage; for now pair only the
+    // top-level definitions (the `roots`).
+    for &id in &module.roots {
+        let item = &module.items[id.index()];
         match &item.kind {
             ItemKind::Signature { name, .. } => {
                 if sig_by_name.insert(*name, id).is_some() {
@@ -171,6 +173,7 @@ pub fn module_defs(db: &dyn Db, file: SourceFile) -> ModuleDefs {
             | ItemKind::Interface { .. }
             | ItemKind::Example { .. }
             | ItemKind::Forall { .. }
+            | ItemKind::Module { .. }
             | ItemKind::Error => {}
         }
     }
