@@ -441,12 +441,35 @@ impl<M: Module> Translator<'_, M> {
     }
 
     fn application(&mut self, func: &CExpr, args: &[CExpr]) -> Value {
+        // Direct call: a saturated application of a known top-level function calls
+        // its code symbol directly, skipping `apply_n` and the static closure.
+        // (Top-level functions capture nothing, so the environment is unused.)
+        if let ExprKind::Global(def) = func.kind {
+            let arity = (self.arity_of)(def);
+            if arity == args.len() && arity > 0 {
+                let vals: Vec<Value> = args.iter().map(|a| self.expr(a)).collect();
+                let args_ptr = self.spill(&vals);
+                return self.direct_call(def, args_ptr);
+            }
+        }
         let callee = self.expr(func);
         let vals: Vec<Value> = args.iter().map(|a| self.expr(a)).collect();
         let args_ptr = self.spill(&vals);
         let argc = self.builder.ins().iconst(types::I64, vals.len() as i64);
         let f = self.runtime("fai_apply_n", 3, true);
         let call = self.builder.ins().call(f, &[callee, argc, args_ptr]);
+        self.builder.inst_results(call)[0]
+    }
+
+    /// Calls a top-level definition's code symbol directly with a null environment
+    /// (it has no captures) and the spilled argument array.
+    fn direct_call(&mut self, def: DefId, args_ptr: Value) -> Value {
+        let name = code_symbol(self.namer, def);
+        let sig = code_signature(self.module);
+        let id = self.module.declare_function(&name, Linkage::Import, &sig).expect("declare code");
+        let fref = self.module.declare_func_in_func(id, self.builder.func);
+        let null_env = self.builder.ins().iconst(types::I64, 0);
+        let call = self.builder.ins().call(fref, &[null_env, args_ptr]);
         self.builder.inst_results(call)[0]
     }
 
