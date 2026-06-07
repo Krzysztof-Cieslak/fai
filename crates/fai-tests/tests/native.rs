@@ -49,6 +49,84 @@ fn unique_dir() -> PathBuf {
     ))
 }
 
+/// Builds a multi-file program (entry is `Main.fai`) and runs it.
+fn build_and_run_files(files: &[(&str, &str)]) -> (String, Option<i32>) {
+    let dir = unique_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, src) in files {
+        std::fs::write(dir.join(name), src).unwrap();
+    }
+    let exe = dir.join("prog");
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let code = fai_cli::run(
+        [
+            "fai",
+            "build",
+            "--no-daemon",
+            "-C",
+            dir.to_str().unwrap(),
+            "Main.fai",
+            "--out",
+            exe.to_str().unwrap(),
+        ],
+        &mut out,
+        &mut err,
+    );
+    assert_eq!(code, 0, "build failed: {}", String::from_utf8_lossy(&err));
+    let produced = exe.with_extension(std::env::consts::EXE_EXTENSION);
+    let run = Command::new(&produced).output().unwrap();
+    (String::from_utf8_lossy(&run.stdout).into_owned(), run.status.code())
+}
+
+#[test]
+fn nested_module_values_types_and_ctors_run() {
+    let src = indoc! {r#"
+        module Main
+
+        module Math =
+          let square x = x * x
+
+          public type Shape =
+            | Circle Int
+            | Rect Int Int
+
+          public area : Shape -> Int
+          let area s =
+            match s with
+            | Circle r -> square r
+            | Rect w h -> w * h
+
+        public main : Runtime -> Unit
+        let main runtime =
+          runtime.console.writeLine (Int.toString (Math.area (Math.Circle 3)))
+    "#};
+    let (out, code) = build_and_run(src);
+    assert_eq!(out, "9\n");
+    assert_eq!(code, Some(0));
+}
+
+#[test]
+fn cross_file_nested_qualified_access_runs() {
+    let lib = indoc! {r#"
+        module Lib
+
+        module Geo =
+          public double : Int -> Int
+          let double x = x + x
+    "#};
+    let main = indoc! {r#"
+        module Main
+
+        public main : Runtime -> Unit
+        let main runtime =
+          runtime.console.writeLine (Int.toString (Lib.Geo.double 21))
+    "#};
+    let (out, code) = build_and_run_files(&[("Lib.fai", lib), ("Main.fai", main)]);
+    assert_eq!(out, "42\n");
+    assert_eq!(code, Some(0));
+}
+
 fn print_main(expr: &str) -> String {
     formatdoc! {r#"
         module Main
