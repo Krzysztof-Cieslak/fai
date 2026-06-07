@@ -1,0 +1,19 @@
+module LogApp
+
+// A derived capability (a prefixing `Console` built from another `Console`)
+// handed to a least-authority function that requests only a console.
+prefix : String -> Console -> Console
+let prefix tag inner = { Console with writeLine s = inner.writeLine (tag ++ s) }
+
+report : { console : Console | 'r } -> Unit
+let report env =
+  let started = env.console.writeLine "starting"
+  env.console.writeLine "done"
+
+public main : Runtime -> Unit
+let main runtime =
+  let app = prefix "[app] " runtime.console
+  report { console = app }
+
+//~ OUTPUT [app] starting
+//~ OUTPUT [app] done

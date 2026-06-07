@@ -1,0 +1,24 @@
+module Interpreter
+
+// A tiny arithmetic interpreter: an expression tree evaluated by structural
+// recursion, exercising discriminated unions, `match`, and the `Num` operators.
+type Expr =
+  | Lit Int
+  | Add Expr Expr
+  | Mul Expr Expr
+  | Neg Expr
+
+eval : Expr -> Int
+let eval e =
+  match e with
+  | Lit n -> n
+  | Add a b -> eval a + eval b
+  | Mul a b -> eval a * eval b
+  | Neg a -> 0 - eval a
+
+public main : Runtime -> Unit
+let main runtime =
+  let e = Add (Lit 1) (Mul (Lit 2) (Neg (Lit 3)))
+  runtime.console.writeLine (Int.toString (eval e))
+
+//~ OUTPUT -5

@@ -1,0 +1,15 @@
+module Account
+
+// Row-polymorphic record update: `deposit` works on any record carrying a
+// `balance`, threading the rest of the row (`'r`) through to the result, so the
+// caller's other fields survive. Chained updates exercise the runtime clone.
+deposit : Int -> { balance : Int | 'r } -> { balance : Int | 'r }
+let deposit amount acc = { acc with balance = acc.balance + amount }
+
+public main : Runtime -> Unit
+let main runtime =
+  let acc = { owner = "alice", balance = 100 }
+  let acc2 = deposit 50 (deposit 25 acc)
+  runtime.console.writeLine (acc2.owner ++ ": " ++ Int.toString acc2.balance)
+
+//~ OUTPUT alice: 175

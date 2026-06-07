@@ -1,0 +1,21 @@
+module Drawing
+
+// Interface dispatch over a heterogeneous-but-uniform list: each shape is a
+// `Shape` instance (an existential dictionary), mapped and joined for display.
+interface Shape =
+  area : Unit -> Int
+  name : Unit -> String
+
+let rect w h = { Shape with area u = w * h, name u = "rect" }
+
+let square s = { Shape with area u = s * s, name u = "square" }
+
+describe : Shape -> String
+let describe s = s.name () ++ " area=" ++ Int.toString (s.area ())
+
+public main : Runtime -> Unit
+let main runtime =
+  let shapes = [rect 3 4, square 5]
+  runtime.console.writeLine (String.join "; " (List.map describe shapes))
+
+//~ OUTPUT rect area=12; square area=25
