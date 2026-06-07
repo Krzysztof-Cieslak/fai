@@ -48,6 +48,26 @@ fn hello() {
 }
 
 #[test]
+fn nested_modules() {
+    let src = indoc! {r#"
+        module M
+
+        module Inner =
+          let pi = 3
+          let square x = x * x
+
+        public area : Int -> Int
+        let area r = Inner.pi * Inner.square r"#};
+    insta::assert_snapshot!("nested_modules", fmt(src));
+    assert_idempotent(src);
+    // Formatting preserves the parsed shape (including the nesting).
+    let before = parse_module(SourceId::new(0), src);
+    let after = parse_module(SourceId::new(0), &fmt(src));
+    assert_eq!(shape(&before.module), shape(&after.module));
+    assert!(after.diagnostics.is_empty());
+}
+
+#[test]
 fn signatures_and_operators() {
     let src = indoc! {r#"
         module Basics
@@ -378,9 +398,9 @@ proptest! {
 
 fn shape(m: &Module) -> String {
     let mut out = format!("module {:?}", m.name.map(|s| s.as_str()));
-    for item in &m.items {
+    for &id in &m.roots {
         out.push('\n');
-        out.push_str(&shape_item(m, item));
+        out.push_str(&shape_item(m, &m.items[id.index()]));
     }
     out
 }
@@ -431,6 +451,14 @@ fn shape_item(m: &Module, item: &Item) -> String {
         ItemKind::Example { body } => format!("(example {})", shape_expr(m, *body)),
         ItemKind::Forall { binders, body } => {
             format!("(forall [{}] {})", shape_pats(m, binders), shape_expr(m, *body))
+        }
+        ItemKind::Module { name, body } => {
+            let children = body
+                .iter()
+                .map(|&id| shape_item(m, &m.items[id.index()]))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("(module {} [{children}])", name.as_str())
         }
         ItemKind::Error => "(item-error)".to_owned(),
     }

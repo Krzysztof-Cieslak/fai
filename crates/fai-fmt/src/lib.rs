@@ -52,25 +52,36 @@ impl Printer<'_> {
         };
         parts.push(text(header));
 
-        for (index, item) in self.module.items.iter().enumerate() {
-            let id = ItemId::from_index(index);
-            if index == 0 {
+        if !self.module.roots.is_empty() {
+            parts.push(Doc::Hardline);
+            parts.push(Doc::Hardline);
+            parts.push(self.item_sequence(&self.module.roots));
+        }
+
+        for &id in self.map.dangling() {
+            parts.push(Doc::Hardline);
+            parts.push(text(self.comment_text(id)));
+        }
+        concat(parts)
+    }
+
+    /// Formats a sequence of items (top-level roots or a nested module's body):
+    /// one per line, with exactly one blank line between differing groups, and
+    /// each item's attached comments. No leading or trailing hardline.
+    fn item_sequence(&self, ids: &[ItemId]) -> Doc {
+        let mut parts = Vec::new();
+        for (index, &id) in ids.iter().enumerate() {
+            let item = &self.module.items[id.index()];
+            if index > 0 {
                 parts.push(Doc::Hardline);
-                parts.push(Doc::Hardline);
-            } else {
-                parts.push(Doc::Hardline);
-                if !same_group(&self.module.items[index - 1].kind, &item.kind) {
+                let prev = &self.module.items[ids[index - 1].index()];
+                if !same_group(&prev.kind, &item.kind) {
                     parts.push(Doc::Hardline);
                 }
             }
             parts.extend(self.leading_docs(NodeId::Item(id)));
             parts.push(self.item_doc(item));
             parts.extend(self.trailing_docs(NodeId::Item(id)));
-        }
-
-        for &id in self.map.dangling() {
-            parts.push(Doc::Hardline);
-            parts.push(text(self.comment_text(id)));
         }
         concat(parts)
     }
@@ -114,6 +125,13 @@ impl Printer<'_> {
                     .collect::<Vec<_>>()
                     .join(" ");
                 concat(vec![text(format!("forall {bound}: ")), self.expr_doc(*body)])
+            }
+            ItemKind::Module { name, body } => {
+                let mut parts = vec![text(format!("module {} =", name.as_str()))];
+                if !body.is_empty() {
+                    parts.push(nest(2, concat(vec![Doc::Hardline, self.item_sequence(body)])));
+                }
+                concat(parts)
             }
             ItemKind::Error => text(self.span_src(item.span)),
         }

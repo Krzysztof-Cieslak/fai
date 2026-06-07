@@ -54,15 +54,26 @@ enum Mode {
 }
 
 /// Renders `doc` to a string, breaking groups that do not fit in `width`.
+///
+/// A broken line's indentation is written **lazily** — only when real text
+/// follows on that line — so an otherwise-blank line carries no trailing
+/// whitespace (e.g. the blank line between two groups inside a nested module).
 #[must_use]
 pub fn print(doc: &Doc, width: usize) -> String {
     let mut out = String::new();
     let mut col = 0usize;
+    // When a line break is emitted, its indentation is deferred here and flushed
+    // by the next non-empty `Text` (or a flat `Line`). A line that ends with no
+    // text written keeps no trailing spaces.
+    let mut pending_indent: Option<usize> = None;
     let mut stack: Vec<(usize, Mode, &Doc)> = vec![(0, Mode::Break, doc)];
     while let Some((indent, mode, doc)) = stack.pop() {
         match doc {
             Doc::Text(s) => {
-                out.push_str(s);
+                if !s.is_empty() {
+                    flush_indent(&mut out, &mut pending_indent);
+                    out.push_str(s);
+                }
                 match s.rfind('\n') {
                     Some(nl) => col = s[nl + 1..].chars().count(),
                     None => col += s.chars().count(),
@@ -76,16 +87,19 @@ pub fn print(doc: &Doc, width: usize) -> String {
             Doc::Nest(n, inner) => stack.push((indent + n, mode, inner)),
             Doc::Line => match mode {
                 Mode::Flat => {
+                    flush_indent(&mut out, &mut pending_indent);
                     out.push(' ');
                     col += 1;
                 }
                 Mode::Break => {
-                    newline(&mut out, indent);
+                    out.push('\n');
+                    pending_indent = Some(indent);
                     col = indent;
                 }
             },
             Doc::Hardline => {
-                newline(&mut out, indent);
+                out.push('\n');
+                pending_indent = Some(indent);
                 col = indent;
             }
             Doc::Group(inner) => {
@@ -98,10 +112,12 @@ pub fn print(doc: &Doc, width: usize) -> String {
     out
 }
 
-fn newline(out: &mut String, indent: usize) {
-    out.push('\n');
-    for _ in 0..indent {
-        out.push(' ');
+/// Writes any deferred line indentation before real text is emitted.
+fn flush_indent(out: &mut String, pending: &mut Option<usize>) {
+    if let Some(indent) = pending.take() {
+        for _ in 0..indent {
+            out.push(' ');
+        }
     }
 }
 

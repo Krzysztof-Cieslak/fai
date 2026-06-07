@@ -273,7 +273,8 @@ pub fn resolve(db: &dyn Db, file: SourceFile) -> Arc<ResolvedBodies> {
         }
     }
 
-    for item in &module.items {
+    for &root in &module.roots {
+        let item = &module.items[root.index()];
         match &item.kind {
             ItemKind::Binding { name, params, body, .. } => {
                 cx.current_def = Some(DefId::new(file.source(db), *name));
@@ -304,6 +305,7 @@ pub fn resolve(db: &dyn Db, file: SourceFile) -> Arc<ResolvedBodies> {
             ItemKind::Type { .. }
             | ItemKind::Interface { .. }
             | ItemKind::Signature { .. }
+            | ItemKind::Module { .. }
             | ItemKind::Error => {}
         }
     }

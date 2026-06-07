@@ -55,7 +55,7 @@ pub struct ItemTree {
 pub struct ItemSummary {
     /// What the item is.
     pub kind: ItemTreeKind,
-    /// The item's name (signatures, bindings, and types).
+    /// The item's name (signatures, bindings, types, and nested modules).
     pub name: Option<crate::Symbol>,
     /// The item's visibility.
     pub visibility: Visibility,
@@ -63,6 +63,10 @@ pub struct ItemSummary {
     pub ctors: Vec<crate::Symbol>,
     /// Method names declared by an `interface` (empty otherwise), in order.
     pub methods: Vec<crate::Symbol>,
+    /// Child item summaries declared by a nested `module` (empty otherwise), in
+    /// source order — so moving/renaming a nested item invalidates dependents
+    /// while a nested *body* edit still cuts off.
+    pub children: Vec<ItemSummary>,
 }
 
 /// The kind of an [`ItemSummary`].
@@ -80,6 +84,8 @@ pub enum ItemTreeKind {
     Example,
     /// A `forall` contract.
     Forall,
+    /// A nested `module` declaration.
+    Module,
     /// An unparseable item.
     Error,
 }
@@ -87,37 +93,41 @@ pub enum ItemTreeKind {
 /// Builds the span-free [`ItemTree`] for a parsed module (pure).
 #[must_use]
 pub fn build_item_tree(module: &Module) -> ItemTree {
-    let items = module
-        .items
-        .iter()
-        .map(|item| {
-            let mut ctors = Vec::new();
-            let mut methods = Vec::new();
-            let (kind, name, visibility) = match &item.kind {
-                ItemKind::Signature { visibility, name, .. } => {
-                    (ItemTreeKind::Signature, Some(*name), *visibility)
-                }
-                ItemKind::Binding { visibility, name, .. } => {
-                    (ItemTreeKind::Binding, Some(*name), *visibility)
-                }
-                ItemKind::Type { visibility, name, def, .. } => {
-                    if let crate::ast::TypeDef::Union(variants) = def {
-                        ctors = variants.iter().map(|v| v.name).collect();
-                    }
-                    (ItemTreeKind::Type, Some(*name), *visibility)
-                }
-                ItemKind::Interface { visibility, name, methods: sigs, .. } => {
-                    methods = sigs.iter().map(|m| m.name).collect();
-                    (ItemTreeKind::Interface, Some(*name), *visibility)
-                }
-                ItemKind::Example { .. } => (ItemTreeKind::Example, None, Visibility::Private),
-                ItemKind::Forall { .. } => (ItemTreeKind::Forall, None, Visibility::Private),
-                ItemKind::Error => (ItemTreeKind::Error, None, Visibility::Private),
-            };
-            ItemSummary { kind, name, visibility, ctors, methods }
-        })
-        .collect();
+    let items = module.roots.iter().map(|&id| summarize_item(module, id)).collect();
     ItemTree { module_name: module.name, items }
+}
+
+/// Summarizes one item (recursing into nested-module bodies).
+fn summarize_item(module: &Module, id: crate::ast::ItemId) -> ItemSummary {
+    let mut ctors = Vec::new();
+    let mut methods = Vec::new();
+    let mut children = Vec::new();
+    let (kind, name, visibility) = match &module.items[id.index()].kind {
+        ItemKind::Signature { visibility, name, .. } => {
+            (ItemTreeKind::Signature, Some(*name), *visibility)
+        }
+        ItemKind::Binding { visibility, name, .. } => {
+            (ItemTreeKind::Binding, Some(*name), *visibility)
+        }
+        ItemKind::Type { visibility, name, def, .. } => {
+            if let crate::ast::TypeDef::Union(variants) = def {
+                ctors = variants.iter().map(|v| v.name).collect();
+            }
+            (ItemTreeKind::Type, Some(*name), *visibility)
+        }
+        ItemKind::Interface { visibility, name, methods: sigs, .. } => {
+            methods = sigs.iter().map(|m| m.name).collect();
+            (ItemTreeKind::Interface, Some(*name), *visibility)
+        }
+        ItemKind::Example { .. } => (ItemTreeKind::Example, None, Visibility::Private),
+        ItemKind::Forall { .. } => (ItemTreeKind::Forall, None, Visibility::Private),
+        ItemKind::Module { name, body } => {
+            children = body.iter().map(|&child| summarize_item(module, child)).collect();
+            (ItemTreeKind::Module, Some(*name), Visibility::Private)
+        }
+        ItemKind::Error => (ItemTreeKind::Error, None, Visibility::Private),
+    };
+    ItemSummary { kind, name, visibility, ctors, methods, children }
 }
 
 /// Parses `file`, emitting diagnostics into the accumulator.
