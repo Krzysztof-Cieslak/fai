@@ -71,12 +71,29 @@ pub(crate) fn module_label(db: &dyn Db, def: DefId) -> String {
 
 /// Builds the backend symbol base from a module label and a binding name. Pure,
 /// so a database-free worker reconstructs identical names from the wire bundle.
+///
+/// Both parts are sanitized: the result names a symbol *and* an on-disk object
+/// file, so it must be a valid identifier and a valid file name on every OS.
+/// Operator definitions (e.g. `>>`, `<>`) carry characters Windows forbids in
+/// file names (`<>:"/\|?*`), so each non-alphanumeric byte is escaped as `_xNN`
+/// (its hex) — injective, so distinct definitions keep distinct symbols.
 pub(crate) fn mangle(module_label: &str, name: &str) -> String {
-    let sanitized: String = module_label
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
-        .collect();
-    format!("fai_{sanitized}_{name}")
+    format!("fai_{}_{}", sanitize_ident(module_label), sanitize_ident(name))
+}
+
+/// Escapes a string to an identifier- and file-name-safe form: ASCII
+/// alphanumerics and `_` pass through; every other byte becomes `_xNN`.
+fn sanitize_ident(s: &str) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || b == b'_' {
+            out.push(b as char);
+        } else {
+            let _ = write!(out, "_x{b:02x}");
+        }
+    }
+    out
 }
 
 /// A definition's runtime arity: its source parameters plus the leading offset
