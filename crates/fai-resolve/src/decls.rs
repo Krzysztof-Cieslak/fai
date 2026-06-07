@@ -100,69 +100,106 @@ impl InterfaceDecls {
 }
 
 /// Indexes the `interface` declarations of `file` (pure; no diagnostics).
+///
+/// Walks nested modules; an interface's `name` is qualified by its module path.
 #[salsa::tracked]
 pub fn interface_decls(db: &dyn Db, file: SourceFile) -> Arc<InterfaceDecls> {
     let parsed = fai_syntax::parse(db, file);
     let module = &parsed.module;
     let mut decls = InterfaceDecls::default();
-    for (index, item) in module.items.iter().enumerate() {
-        let ItemKind::Interface { visibility, name, params, methods } = &item.kind else {
-            continue;
-        };
-        decls.interfaces.entry(*name).or_insert(InterfaceInfo {
-            name: *name,
-            visibility: *visibility,
-            params: params.clone(),
-            item: ItemId::from_index(index),
-            methods: methods.iter().map(|m| m.name).collect(),
-        });
-    }
+    let mut scope: Vec<Symbol> = Vec::new();
+    collect_interfaces(module, &mut scope, &module.roots, &mut decls);
     Arc::new(decls)
+}
+
+fn collect_interfaces(
+    module: &fai_syntax::ast::Module,
+    scope: &mut Vec<Symbol>,
+    items: &[ItemId],
+    decls: &mut InterfaceDecls,
+) {
+    for &id in items {
+        match &module.items[id.index()].kind {
+            ItemKind::Interface { visibility, name, params, methods } => {
+                let qual = crate::qualify(scope, *name);
+                decls.interfaces.entry(qual).or_insert(InterfaceInfo {
+                    name: qual,
+                    visibility: *visibility,
+                    params: params.clone(),
+                    item: id,
+                    methods: methods.iter().map(|m| m.name).collect(),
+                });
+            }
+            ItemKind::Module { name, body } => {
+                scope.push(*name);
+                collect_interfaces(module, scope, body, decls);
+                scope.pop();
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Indexes the `type` declarations of `file` (pure; no diagnostics).
 ///
-/// Duplicate type or constructor names keep the first declaration (later
-/// duplicates are reported by the types phase, which has spans).
+/// Walks nested modules; type and constructor `name`s (and a constructor's owning
+/// `adt`) are qualified by their module path. Duplicate names keep the first
+/// declaration (later duplicates are reported by the types phase, which has spans).
 #[salsa::tracked]
 pub fn type_decls(db: &dyn Db, file: SourceFile) -> Arc<TypeDecls> {
     let parsed = fai_syntax::parse(db, file);
     let module = &parsed.module;
     let mut decls = TypeDecls::default();
-
-    for (index, item) in module.items.iter().enumerate() {
-        let ItemKind::Type { visibility, name, params, def } = &item.kind else {
-            continue;
-        };
-        let item_id = ItemId::from_index(index);
-        let (is_alias, ctor_names) = match def {
-            TypeDef::Alias(_) => (true, Vec::new()),
-            TypeDef::Union(variants) => {
-                let mut names = Vec::with_capacity(variants.len());
-                for (variant_index, variant) in variants.iter().enumerate() {
-                    names.push(variant.name);
-                    let tag = u32::try_from(variant_index).unwrap_or(u32::MAX);
-                    decls.ctors.entry(variant.name).or_insert(CtorInfo {
-                        name: variant.name,
-                        adt: *name,
-                        tag,
-                        arity: variant.fields.len(),
-                        variant_index,
-                        visibility: *visibility,
-                    });
-                }
-                (false, names)
-            }
-        };
-        decls.types.entry(*name).or_insert(TypeDeclInfo {
-            name: *name,
-            visibility: *visibility,
-            params: params.clone(),
-            item: item_id,
-            is_alias,
-            ctors: ctor_names,
-        });
-    }
-
+    let mut scope: Vec<Symbol> = Vec::new();
+    collect_types(module, &mut scope, &module.roots, &mut decls);
     Arc::new(decls)
+}
+
+fn collect_types(
+    module: &fai_syntax::ast::Module,
+    scope: &mut Vec<Symbol>,
+    items: &[ItemId],
+    decls: &mut TypeDecls,
+) {
+    for &id in items {
+        match &module.items[id.index()].kind {
+            ItemKind::Type { visibility, name, params, def } => {
+                let qual = crate::qualify(scope, *name);
+                let (is_alias, ctor_names) = match def {
+                    TypeDef::Alias(_) => (true, Vec::new()),
+                    TypeDef::Union(variants) => {
+                        let mut names = Vec::with_capacity(variants.len());
+                        for (variant_index, variant) in variants.iter().enumerate() {
+                            let ctor_qual = crate::qualify(scope, variant.name);
+                            names.push(ctor_qual);
+                            let tag = u32::try_from(variant_index).unwrap_or(u32::MAX);
+                            decls.ctors.entry(ctor_qual).or_insert(CtorInfo {
+                                name: ctor_qual,
+                                adt: qual,
+                                tag,
+                                arity: variant.fields.len(),
+                                variant_index,
+                                visibility: *visibility,
+                            });
+                        }
+                        (false, names)
+                    }
+                };
+                decls.types.entry(qual).or_insert(TypeDeclInfo {
+                    name: qual,
+                    visibility: *visibility,
+                    params: params.clone(),
+                    item: id,
+                    is_alias,
+                    ctors: ctor_names,
+                });
+            }
+            ItemKind::Module { name, body } => {
+                scope.push(*name);
+                collect_types(module, scope, body, decls);
+                scope.pop();
+            }
+            _ => {}
+        }
+    }
 }

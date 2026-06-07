@@ -66,15 +66,36 @@ pub fn check_matches(db: &dyn Db, file: SourceFile) {
     let parsed = fai_syntax::parse(db, file);
     let module = &parsed.module;
     let resolved = resolve(db, file);
+    let mut scope: Vec<fai_syntax::Symbol> = Vec::new();
+    check_matches_in(db, file, module, &resolved, &mut scope, &module.roots);
+}
 
-    for item in &module.items {
-        let (name, body) = match &item.kind {
-            ItemKind::Binding { name, body, .. } => (*name, *body),
-            _ => continue,
-        };
-        let types = body_types(db, file, name);
-        let mut cx = MatchChecker { db, file, module, resolved: &resolved, types: &types };
-        cx.walk(body);
+/// Checks the `match`es of one module scope's bindings (by their qualified
+/// names, so `body_types` is keyed correctly), recursing into nested modules.
+fn check_matches_in(
+    db: &dyn Db,
+    file: SourceFile,
+    module: &Module,
+    resolved: &ResolvedBodies,
+    scope: &mut Vec<fai_syntax::Symbol>,
+    items: &[fai_syntax::ast::ItemId],
+) {
+    for &id in items {
+        match &module.items[id.index()].kind {
+            ItemKind::Binding { name, body, .. } => {
+                let qual = fai_resolve::qualify(scope, *name);
+                let body = *body;
+                let types = body_types(db, file, qual);
+                let mut cx = MatchChecker { db, file, module, resolved, types: &types };
+                cx.walk(body);
+            }
+            ItemKind::Module { name, body } => {
+                scope.push(*name);
+                check_matches_in(db, file, module, resolved, scope, body);
+                scope.pop();
+            }
+            _ => {}
+        }
     }
 }
 

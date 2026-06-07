@@ -12,7 +12,8 @@ use std::sync::Arc;
 use fai_db::{Db, SourceFile, emit};
 use fai_diagnostics::Diagnostic;
 use fai_resolve::{
-    AdtRef, InterfaceInfo, InterfaceRef, TypeDeclInfo, interface_decls, prelude_exports, type_decls,
+    AdtRef, InterfaceInfo, InterfaceRef, ModuleName, TypeDeclInfo, interface_decls, module_defs,
+    module_file, prelude_exports, qualify, type_decls,
 };
 use fai_span::{Span, TextRange};
 use fai_syntax::Symbol;
@@ -86,6 +87,9 @@ struct Lowerer<'a> {
     db: &'a dyn Db,
     file: SourceFile,
     module: &'a Module,
+    /// The module path where the lowered type appears, for lexical (outward)
+    /// resolution of a bare type/interface name.
+    scope: Vec<Symbol>,
     /// Names of aliases currently being expanded (cycle detection).
     expanding: Vec<Symbol>,
 }
@@ -170,7 +174,9 @@ impl Lowerer<'_> {
                     ),
                 );
             }
-            let mut t = Ty::Interface(InterfaceRef::new(decl_file.source(self.db), name));
+            // Identify the interface by its canonical (resolved) qualified name,
+            // not the as-written reference, so nested/cross-file spellings unify.
+            let mut t = Ty::Interface(InterfaceRef::new(decl_file.source(self.db), info.name));
             for &a in args {
                 t = Ty::App(Arc::new(t), Arc::new(self.lower(a, vars)));
             }
@@ -205,8 +211,9 @@ impl Lowerer<'_> {
         if info.is_alias {
             return self.expand_alias(decl_file, &info, args, span, vars);
         }
-        // A discriminated union: a nominal head applied to its arguments.
-        let mut t = Ty::Adt(AdtRef::new(decl_file.source(self.db), name));
+        // A discriminated union: a nominal head (identified by its canonical
+        // qualified name) applied to its arguments.
+        let mut t = Ty::Adt(AdtRef::new(decl_file.source(self.db), info.name));
         for &a in args {
             t = Ty::App(Arc::new(t), Arc::new(self.lower(a, vars)));
         }
@@ -249,8 +256,13 @@ impl Lowerer<'_> {
 
         // Lower the body in the declaring module with its own variable space, then
         // substitute the parameters' ids with the supplied argument types.
-        let mut body_lowerer =
-            Lowerer { db: self.db, file: decl_file, module: decl_module, expanding: Vec::new() };
+        let mut body_lowerer = Lowerer {
+            db: self.db,
+            file: decl_file,
+            module: decl_module,
+            scope: scope_of(info.name),
+            expanding: Vec::new(),
+        };
         body_lowerer.expanding = std::mem::take(&mut self.expanding);
         body_lowerer.expanding.push(info.name);
         let mut body_vars = LowerVars::default();
@@ -269,39 +281,84 @@ impl Lowerer<'_> {
         subst_ty(&body_ty, &subst)
     }
 
-    /// Finds the declaration of type `name` in this module, then the auto-imported
-    /// core (the merged `Prelude` interface).
+    /// Finds the declaration of type `name`: same-file (up the lexical scope
+    /// chain, qualifying the possibly-dotted name with each scope prefix), then
+    /// the auto-imported prelude (bare names), then a cross-file qualified path.
     fn lookup_type(&self, name: Symbol) -> Option<(SourceFile, TypeDeclInfo)> {
-        if let Some(info) = type_decls(self.db, self.file).type_named(name) {
-            return Some((self.file, info.clone()));
+        let decls = type_decls(self.db, self.file);
+        for k in (0..=self.scope.len()).rev() {
+            let cand = qualify(&self.scope[..k], name);
+            if let Some(info) = decls.type_named(cand) {
+                return Some((self.file, info.clone()));
+            }
         }
-        let exports = prelude_exports(self.db);
-        if let Some(&(_, decl_file)) = exports.types.iter().find(|(n, _)| *n == name)
-            && decl_file != self.file
-            && let Some(info) = type_decls(self.db, decl_file).type_named(name)
-            && info.visibility == fai_syntax::ast::Visibility::Public
-        {
-            return Some((decl_file, info.clone()));
+        if !name.as_str().contains('.') {
+            let exports = prelude_exports(self.db);
+            if let Some(&(_, decl_file)) = exports.types.iter().find(|(n, _)| *n == name)
+                && decl_file != self.file
+                && let Some(info) = type_decls(self.db, decl_file).type_named(name)
+                && info.visibility == fai_syntax::ast::Visibility::Public
+            {
+                return Some((decl_file, info.clone()));
+            }
+            return None;
         }
-        None
+        // A cross-file qualified type `File.[Nested.]Type`.
+        let (target, member) = self.cross_file_member(name)?;
+        let decls = type_decls(self.db, target);
+        let info = decls.type_named(member)?;
+        (info.visibility == fai_syntax::ast::Visibility::Public).then(|| (target, info.clone()))
     }
 
-    /// Looks up an interface name: this module's interfaces first, then the
-    /// auto-imported prelude's. (Cross-module interfaces are auto-imported only,
-    /// like types, since there is no qualified-type syntax.)
+    /// Looks up an interface name: same-file lexical scope chain, then the
+    /// auto-imported prelude (bare names), then a cross-file qualified path.
     fn lookup_interface(&self, name: Symbol) -> Option<(SourceFile, InterfaceInfo)> {
-        if let Some(info) = interface_decls(self.db, self.file).interface_named(name) {
-            return Some((self.file, info.clone()));
+        let decls = interface_decls(self.db, self.file);
+        for k in (0..=self.scope.len()).rev() {
+            let cand = qualify(&self.scope[..k], name);
+            if let Some(info) = decls.interface_named(cand) {
+                return Some((self.file, info.clone()));
+            }
         }
-        let exports = prelude_exports(self.db);
-        if let Some(&(_, decl_file)) = exports.interfaces.iter().find(|(n, _)| *n == name)
-            && decl_file != self.file
-            && let Some(info) = interface_decls(self.db, decl_file).interface_named(name)
-            && info.visibility == fai_syntax::ast::Visibility::Public
-        {
-            return Some((decl_file, info.clone()));
+        if !name.as_str().contains('.') {
+            let exports = prelude_exports(self.db);
+            if let Some(&(_, decl_file)) = exports.interfaces.iter().find(|(n, _)| *n == name)
+                && decl_file != self.file
+                && let Some(info) = interface_decls(self.db, decl_file).interface_named(name)
+                && info.visibility == fai_syntax::ast::Visibility::Public
+            {
+                return Some((decl_file, info.clone()));
+            }
+            return None;
         }
-        None
+        let (target, member) = self.cross_file_member(name)?;
+        let decls = interface_decls(self.db, target);
+        let info = decls.interface_named(member)?;
+        (info.visibility == fai_syntax::ast::Visibility::Public).then(|| (target, info.clone()))
+    }
+
+    /// Resolves the file and within-file qualified member name of a cross-file
+    /// dotted path `File.[Nested.]Member` (the head names a workspace module; the
+    /// inner segments name nested modules within it).
+    fn cross_file_member(&self, name: Symbol) -> Option<(SourceFile, Symbol)> {
+        let segments: Vec<Symbol> = name.as_str().split('.').map(Symbol::intern).collect();
+        let target = module_file(self.db, ModuleName(segments[0]))?;
+        let target_defs = module_defs(self.db, target);
+        let mut inner: Vec<Symbol> = Vec::new();
+        let mut consumed = 1;
+        while consumed < segments.len() {
+            let cand = qualify(&inner, segments[consumed]);
+            if target_defs.is_module(cand) {
+                inner.push(segments[consumed]);
+                consumed += 1;
+            } else {
+                break;
+            }
+        }
+        if consumed != segments.len() - 1 {
+            return None;
+        }
+        Some((target, qualify(&inner, segments[consumed])))
     }
 }
 
@@ -342,18 +399,48 @@ pub fn lower_type(
     ty: TypeId,
     vars: &mut LowerVars,
 ) -> Ty {
-    let mut lowerer = Lowerer { db, file, module, expanding: Vec::new() };
+    lower_type_in(db, file, module, &[], ty, vars)
+}
+
+/// Lowers a type in a given module scope (for lexical resolution of bare names).
+pub fn lower_type_in(
+    db: &dyn Db,
+    file: SourceFile,
+    module: &Module,
+    scope: &[Symbol],
+    ty: TypeId,
+    vars: &mut LowerVars,
+) -> Ty {
+    let mut lowerer = Lowerer { db, file, module, scope: scope.to_vec(), expanding: Vec::new() };
     lowerer.lower(ty, vars)
 }
 
 /// Lowers a written signature type to a generalized [`Scheme`], quantifying every
 /// type variable it mentions.
 pub fn lower_signature(db: &dyn Db, file: SourceFile, module: &Module, ty: TypeId) -> Scheme {
+    lower_signature_in(db, file, module, &[], ty)
+}
+
+/// Lowers a signature type in a given module scope.
+pub fn lower_signature_in(
+    db: &dyn Db,
+    file: SourceFile,
+    module: &Module,
+    scope: &[Symbol],
+    ty: TypeId,
+) -> Scheme {
     let mut vars = LowerVars::default();
-    let body = lower_type(db, file, module, ty, &mut vars);
+    let body = lower_type_in(db, file, module, scope, ty, &mut vars);
     Scheme::new(type_vars(&vars), body)
         .with_names(type_names(&vars))
         .with_rows(row_vars(&vars), row_names(&vars))
+}
+
+/// The module path of a qualified name (everything but the final segment).
+fn scope_of(qualified: Symbol) -> Vec<Symbol> {
+    let mut segs: Vec<&str> = qualified.as_str().split('.').collect();
+    segs.pop();
+    segs.into_iter().map(Symbol::intern).collect()
 }
 
 fn type_vars(vars: &LowerVars) -> Vec<TyVarId> {
@@ -386,7 +473,9 @@ pub fn build_constructor_scheme(db: &dyn Db, file: SourceFile, name: Symbol) -> 
 
     let mut vars = LowerVars::default();
     let param_ids: Vec<TyVarId> = params.iter().map(|&p| vars.var(p)).collect();
-    let mut lowerer = Lowerer { db, file, module, expanding: Vec::new() };
+    // The constructor's field types resolve in its type's module scope.
+    let mut lowerer =
+        Lowerer { db, file, module, scope: scope_of(info.adt), expanding: Vec::new() };
     let field_tys: Vec<Ty> = variant.fields.iter().map(|&f| lowerer.lower(f, &mut vars)).collect();
 
     let mut result = Ty::Adt(AdtRef::new(file.source(db), info.adt));
@@ -453,7 +542,8 @@ pub fn build_interface_method_scheme(
     // Seed the interface's parameters first so they occupy the leading scheme
     // variables, in declaration order.
     let _: Vec<TyVarId> = params.iter().map(|&p| vars.var(p)).collect();
-    let mut lowerer = Lowerer { db, file, module, expanding: Vec::new() };
+    let mut lowerer =
+        Lowerer { db, file, module, scope: scope_of(iref.name), expanding: Vec::new() };
     let body = lowerer.lower(msig.ty, &mut vars);
 
     Some(
