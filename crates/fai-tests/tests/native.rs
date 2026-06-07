@@ -127,6 +127,28 @@ fn cross_file_nested_qualified_access_runs() {
     assert_eq!(code, Some(0));
 }
 
+#[test]
+fn as_pattern_binds_and_runs() {
+    // The as-pattern aliases the whole matched (cons) value; both the alias and
+    // the bound tail reference it, so this also exercises reference counting.
+    let src = indoc! {r#"
+        module Main
+
+        sizeIfNonEmpty : List Int -> Int
+        let sizeIfNonEmpty xs =
+          match xs with
+          | first :: rest as whole -> List.length whole
+          | [] -> 0
+
+        public main : Runtime -> Unit
+        let main runtime =
+          runtime.console.writeLine (Int.toString (sizeIfNonEmpty [10, 20, 30]))
+    "#};
+    let (out, code) = build_and_run(src);
+    assert_eq!(out, "3\n");
+    assert_eq!(code, Some(0));
+}
+
 fn print_main(expr: &str) -> String {
     formatdoc! {r#"
         module Main

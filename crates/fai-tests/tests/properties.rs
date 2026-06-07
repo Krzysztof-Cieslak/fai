@@ -26,6 +26,7 @@ fn is_reserved(name: &str) -> bool {
             | "public"
             | "example"
             | "forall"
+            | "as"
     )
 }
 

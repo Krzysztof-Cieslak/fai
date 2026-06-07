@@ -437,7 +437,11 @@ impl Parser<'_> {
         };
         let mut params = Vec::new();
         while !self.at(TokenKind::Equals) && !self.at_terminator() {
+            let before = self.pos;
             params.push(self.parse_pattern());
+            if self.pos == before {
+                break; // a non-pattern token (e.g. a stray `:`); avoid spinning
+            }
         }
         self.expect(TokenKind::Equals, "`=` in the binding");
         let body = self.parse_expr();
@@ -902,7 +906,11 @@ impl Parser<'_> {
         let pat = self.parse_pattern();
         let mut params = Vec::new();
         while !self.at(TokenKind::Equals) && !self.at_terminator() {
+            let before = self.pos;
             params.push(self.parse_pattern());
+            if self.pos == before {
+                break; // a non-pattern token (e.g. a stray `:`); avoid spinning
+            }
         }
         self.expect(TokenKind::Equals, "`=` in the let binding");
         let value = self.parse_expr();
@@ -912,7 +920,21 @@ impl Parser<'_> {
     // --- patterns ---------------------------------------------------------
 
     fn parse_pattern(&mut self) -> PatId {
-        self.parse_pattern_or()
+        let start = self.start();
+        let pat = self.parse_pattern_or();
+        // `as` binds looser than everything: `p as name` aliases the whole `p`.
+        if self.eat(TokenKind::As) {
+            let name = if self.at(TokenKind::LowerIdent) {
+                self.bump_symbol()
+            } else {
+                let span = self.cur().range;
+                self.error(SYNTAX_ERROR, span, "expected a lower-case name after `as`");
+                Symbol::intern("")
+            };
+            self.alloc_pat(PatKind::As { pat, name }, self.span_from(start))
+        } else {
+            pat
+        }
     }
 
     /// `p | p | …` — or-pattern alternatives (must bind the same variables). The
@@ -1409,6 +1431,7 @@ mod tests {
                 format!("(pcons {} {})", dump_pat(m, *head), dump_pat(m, *tail))
             }
             PatKind::Or(alts) => format!("(por {})", dump_pats(m, alts)),
+            PatKind::As { pat, name } => format!("(pas {} {})", dump_pat(m, *pat), name.as_str()),
             PatKind::Record { fields, open } => {
                 let fs = fields
                     .iter()
@@ -1722,6 +1745,32 @@ mod tests {
         assert!(parsed.diagnostics.iter().any(|d| d.code == crate::MODULE_HEADER));
         // Both bindings still parsed.
         assert_eq!(parsed.module.items.len(), 2);
+    }
+
+    #[test]
+    fn let_binding_with_stray_colon_does_not_hang() {
+        // A malformed `let name : …` (a signature written with `let`) must not
+        // spin the parameter loop; it reports a syntax error and recovers.
+        let parsed = parse("module M\n\nlet h : Int\nlet h x = x");
+        assert!(parsed.diagnostics.iter().any(|d| d.code == crate::SYNTAX_ERROR));
+    }
+
+    #[test]
+    fn as_patterns_bind_loosest() {
+        // `as` binds looser than `|`, `::`, and constructor application.
+        let out = dump(indoc! {r#"
+            module M
+
+            let f x =
+              match x with
+              | Circle r as whole -> whole
+              | a :: rest as all -> all
+              | _ -> x
+        "#});
+        // The whole constructor pattern is aliased.
+        assert!(out.contains("(pas (pctor Circle [(pvar r)]) whole)"), "got: {out}");
+        // The whole cons pattern is aliased.
+        assert!(out.contains("(pas (pcons (pvar a) (pvar rest)) all)"), "got: {out}");
     }
 
     #[test]
@@ -2215,6 +2264,7 @@ mod proptests {
                 walk_pat(m, *head);
                 walk_pat(m, *tail);
             }
+            P::As { pat, .. } => walk_pat(m, *pat),
             _ => {}
         }
     }

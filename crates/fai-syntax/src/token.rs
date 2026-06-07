@@ -57,6 +57,7 @@ pub enum TokenKind {
     Public,
     Example,
     Forall,
+    As,
 
     // Grouping & punctuation.
     LParen,
@@ -109,6 +110,7 @@ impl TokenKind {
             "public" => TokenKind::Public,
             "example" => TokenKind::Example,
             "forall" => TokenKind::Forall,
+            "as" => TokenKind::As,
             _ => return None,
         })
     }

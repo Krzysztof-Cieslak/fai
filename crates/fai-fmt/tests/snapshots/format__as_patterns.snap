@@ -1,0 +1,10 @@
+---
+source: crates/fai-fmt/tests/format.rs
+expression: fmt(src)
+---
+module M
+
+let f xs =
+  match xs with
+  | x :: rest as whole -> whole
+  | [] -> xs
