@@ -18,6 +18,7 @@ use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use fai_core::ir::{CExpr, CoreFn, ExprKind, FieldIndex, Lit, LoweredDef, Prim};
 use fai_resolve::{DefId, LocalId};
 use fai_runtime as rt;
+use fai_types::{Con, Ty};
 use rustc_hash::FxHashMap;
 
 /// Builds the exported code symbol for a definition.
@@ -111,6 +112,7 @@ fn define_fn<M: Module>(
             base,
             fn_index,
             vars: FxHashMap::default(),
+            var_tys: FxHashMap::default(),
             runtime: FxHashMap::default(),
             string_counter: 0,
         };
@@ -180,6 +182,10 @@ struct Translator<'a, M: Module> {
     base: &'a str,
     fn_index: usize,
     vars: FxHashMap<usize, Variable>,
+    /// A local's static type, where known (from `let` value types). Used to
+    /// specialize reference-count operations — drops and dups of a
+    /// statically-immediate value are runtime no-ops, so they are omitted.
+    var_tys: FxHashMap<usize, Ty>,
     runtime: FxHashMap<&'static str, FuncRef>,
     string_counter: usize,
 }
@@ -207,6 +213,12 @@ impl<M: Module> Translator<'_, M> {
     fn use_var(&mut self, local: LocalId) -> Value {
         let var = self.var(local);
         self.builder.use_var(var)
+    }
+
+    /// Whether `local`'s known static type is always an immediate (so its values
+    /// carry no reference count). Conservatively `false` when the type is unknown.
+    fn is_immediate_local(&self, local: LocalId) -> bool {
+        self.var_tys.get(&local.index()).is_some_and(is_immediate_ty)
     }
 
     /// Loads `base[index]` (a tagged word).
@@ -255,6 +267,7 @@ impl<M: Module> Translator<'_, M> {
             ExprKind::If { cond, then, els } => self.conditional(cond, then, els),
             ExprKind::Let { local, value, body } => {
                 let v = self.expr(value);
+                self.var_tys.insert(local.index(), value.ty.clone());
                 self.define_var(*local, v);
                 self.expr(body)
             }
@@ -272,14 +285,21 @@ impl<M: Module> Translator<'_, M> {
                 self.expr(body)
             }
             ExprKind::Dup { local, body } => {
-                let v = self.use_var(*local);
-                let _ = self.call1("fai_dup", v);
+                // A statically-immediate value has no reference count, so a dup is
+                // a no-op and is omitted.
+                if !self.is_immediate_local(*local) {
+                    let v = self.use_var(*local);
+                    let _ = self.call1("fai_dup", v);
+                }
                 self.expr(body)
             }
             ExprKind::Drop { local, body } => {
                 let result = self.expr(body);
-                let v = self.use_var(*local);
-                self.call_drop(v);
+                // Likewise a drop of a statically-immediate value is a no-op.
+                if !self.is_immediate_local(*local) {
+                    let v = self.use_var(*local);
+                    self.call_drop(v);
+                }
                 result
             }
             // Unreachable for a build that passed the FAI7001 check; yield Unit.
@@ -506,4 +526,11 @@ impl<M: Module> Translator<'_, M> {
 /// Whether `n` fits the 63-bit immediate range.
 fn fits_immediate(n: i64) -> bool {
     ((n << 1) >> 1) == n
+}
+
+/// Whether values of `ty` are always immediates (so dup/drop are no-ops). `Int`
+/// is excluded because it boxes on overflow; only `Bool`, `Unit`, and `Char` are
+/// unconditionally immediate.
+fn is_immediate_ty(ty: &Ty) -> bool {
+    matches!(ty, Ty::Unit | Ty::Con(Con::Bool) | Ty::Con(Con::Char))
 }

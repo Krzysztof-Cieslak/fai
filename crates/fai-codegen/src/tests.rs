@@ -1000,6 +1000,75 @@ fn reuse_program(use_body: &str) -> String {
 }
 
 #[test]
+fn record_update_is_in_place_for_a_unique_record() {
+    // `bumpN` rebuilds the (closed-typed, so allocation-free to thread) record `k`
+    // times; each `{ rec with … }` owns its record uniquely, so it overwrites the
+    // field in place — the allocation count is independent of `k`.
+    let prog = |k: i32| {
+        formatdoc! {r#"
+            module M
+
+            type R = {{ a : Int, n : Int }}
+
+            bumpN : Int -> R -> R
+            let bumpN k rec =
+              if k <= 0 then rec else bumpN (k - 1) {{ rec with n = rec.n + 1 }}
+
+            getN : R -> Int
+            let getN rec = rec.n
+
+            public main : Runtime -> Unit
+            let main rt = rt.console.writeLine (Int.toString (getN (bumpN {k} {{ a = 0, n = 0 }})))
+        "#}
+    };
+    let (code_a, out_a, allocs_a) = run_counted(&prog(50));
+    let (code_b, out_b, allocs_b) = run_counted(&prog(100));
+    assert_eq!((code_a, out_a.trim()), (0, "50"));
+    assert_eq!((code_b, out_b.trim()), (0, "100"));
+    assert_eq!(
+        allocs_a, allocs_b,
+        "in-place update allocates the same regardless of update count \
+         (50→{allocs_a}, 100→{allocs_b})"
+    );
+}
+
+#[test]
+fn record_update_copies_a_shared_record() {
+    // When the record is read again after the update, it is shared, so the update
+    // must copy it — one extra allocation versus the unique case.
+    let prog = |body: &str| {
+        formatdoc! {r#"
+            module M
+
+            type R = {{ a : Int, n : Int }}
+
+            bump : R -> R
+            let bump rec = {{ rec with n = rec.n + 1 }}
+
+            getN : R -> Int
+            let getN rec = rec.n
+
+            use : R -> Int
+            let use rec = {body}
+
+            public main : Runtime -> Unit
+            let main rt = rt.console.writeLine (Int.toString (use {{ a = 0, n = 10 }}))
+        "#}
+    };
+    // Unique: `rec` flows only into `bump`, updated in place.
+    let (code_u, out_u, allocs_u) = run_counted(&prog("getN (bump rec)"));
+    assert_eq!((code_u, out_u.trim()), (0, "11"));
+    // Shared: `rec` is also read directly, so `bump` copies it.
+    let (code_s, out_s, allocs_s) = run_counted(&prog("getN (bump rec) + getN rec"));
+    assert_eq!((code_s, out_s.trim()), (0, "21")); // 11 + 10
+    assert_eq!(
+        allocs_s - allocs_u,
+        1,
+        "the shared update copies the record once (unique={allocs_u}, shared={allocs_s})"
+    );
+}
+
+#[test]
 fn reuse_recycles_a_unique_list_but_copies_a_shared_one() {
     // Unique: the list flows straight into `inc`, which recycles each cons cell
     // in place — no fresh cons cells are allocated by `inc`.

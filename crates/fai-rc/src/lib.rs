@@ -153,53 +153,58 @@ fn fresh(next: &mut usize) -> LocalId {
     id
 }
 
-/// Normalizes `e` so every operand of an operation is an atom. Compound operands
-/// are bound to fresh `let`s in evaluation order; flat expressions are unchanged.
+/// Normalizes `e` so every operand of an operation is an atom, with all bindings
+/// **flattened** into one straight-line sequence (sub-operand bindings are hoisted
+/// to the enclosing sequence rather than nested in a `let` value). Flat sequencing
+/// keeps a value's last use — and so its drop/reset — at the outer level where a
+/// following construction can recycle it.
 fn anf(e: CExpr, next: &mut usize) -> CExpr {
+    let mut binds = Vec::new();
+    let op = anf_op(e, &mut binds, next);
+    wrap_binds(binds, op)
+}
+
+/// Normalizes `e` into an operation (or atom) whose operands are atoms, pushing
+/// every binding — including the contents of any nested `let` — into `binds`.
+fn anf_op(e: CExpr, binds: &mut Vec<(LocalId, CExpr)>, next: &mut usize) -> CExpr {
     let CExpr { kind, ty } = e;
     match kind {
         K::Lit(_) | K::Local(_) | K::Global(_) | K::Error => CExpr::new(kind, ty),
         K::Prim { op, args } => {
-            let mut binds = Vec::new();
-            let args = args.into_iter().map(|a| atomize(a, next, &mut binds)).collect();
-            wrap_binds(binds, CExpr::new(K::Prim { op, args }, ty))
+            let args = args.into_iter().map(|a| atomize(a, binds, next)).collect();
+            CExpr::new(K::Prim { op, args }, ty)
         }
         K::MakeData { tag, args, reuse } => {
-            let mut binds = Vec::new();
-            let args = args.into_iter().map(|a| atomize(a, next, &mut binds)).collect();
-            wrap_binds(binds, CExpr::new(K::MakeData { tag, args, reuse }, ty))
+            let args = args.into_iter().map(|a| atomize(a, binds, next)).collect();
+            CExpr::new(K::MakeData { tag, args, reuse }, ty)
         }
         K::App { func, args } => {
-            let mut binds = Vec::new();
-            let func = Box::new(atomize(*func, next, &mut binds));
-            let args = args.into_iter().map(|a| atomize(a, next, &mut binds)).collect();
-            wrap_binds(binds, CExpr::new(K::App { func, args }, ty))
+            let func = Box::new(atomize(*func, binds, next));
+            let args = args.into_iter().map(|a| atomize(a, binds, next)).collect();
+            CExpr::new(K::App { func, args }, ty)
         }
-        K::DataTag(base) => {
-            let mut binds = Vec::new();
-            let base = Box::new(to_local(*base, next, &mut binds));
-            wrap_binds(binds, CExpr::new(K::DataTag(base), ty))
-        }
+        K::DataTag(base) => CExpr::new(K::DataTag(Box::new(to_local(*base, binds, next))), ty),
         K::DataField { base, index } => {
-            let mut binds = Vec::new();
-            let base = Box::new(to_local(*base, next, &mut binds));
-            wrap_binds(binds, CExpr::new(K::DataField { base, index }, ty))
+            CExpr::new(K::DataField { base: Box::new(to_local(*base, binds, next)), index }, ty)
         }
-        K::If { cond, then, els } => {
-            let mut binds = Vec::new();
-            let cond = Box::new(atomize(*cond, next, &mut binds));
-            let then = Box::new(anf(*then, next));
-            let els = Box::new(anf(*els, next));
-            wrap_binds(binds, CExpr::new(K::If { cond, then, els }, ty))
-        }
+        // Branches keep their own scopes (a binding in one branch must not escape).
+        K::If { cond, then, els } => CExpr::new(
+            K::If {
+                cond: Box::new(atomize(*cond, binds, next)),
+                then: Box::new(anf(*then, next)),
+                els: Box::new(anf(*els, next)),
+            },
+            ty,
+        ),
+        // Flatten the binding into the enclosing sequence and continue with body.
         K::Let { local, value, body } => {
-            let value = Box::new(anf(*value, next));
-            let body = Box::new(anf(*body, next));
-            CExpr::new(K::Let { local, value, body }, ty)
+            let value = anf_op(*value, binds, next);
+            binds.push((local, value));
+            anf_op(*body, binds, next)
         }
         // Captures are locals already; no compound operands.
         K::MakeClosure { func, captures } => CExpr::new(K::MakeClosure { func, captures }, ty),
-        // Not produced by lowering; pass through defensively.
+        // Not produced by lowering; handled defensively for exhaustiveness.
         K::Reset { value, token, body } => CExpr::new(
             K::Reset {
                 value: Box::new(anf(*value, next)),
@@ -217,31 +222,33 @@ fn anf(e: CExpr, next: &mut usize) -> CExpr {
     }
 }
 
-/// Normalizes `e` and, if it is compound, binds it to a fresh local, returning
-/// the bound atom; pushes any bindings (including the new one) into `binds`.
-fn atomize(e: CExpr, next: &mut usize, binds: &mut Vec<(LocalId, CExpr)>) -> CExpr {
-    if is_atom(&e) {
-        return e;
+/// Normalizes `e` and, if the result is compound, binds it to a fresh local,
+/// returning the bound atom; pushes all bindings into `binds`.
+fn atomize(e: CExpr, binds: &mut Vec<(LocalId, CExpr)>, next: &mut usize) -> CExpr {
+    let r = anf_op(e, binds, next);
+    if is_atom(&r) {
+        return r;
     }
-    let e = anf(e, next);
-    let ty = e.ty.clone();
-    let local = fresh(next);
-    binds.push((local, e));
-    CExpr::new(K::Local(local), ty)
+    bind(r, binds, next)
 }
 
 /// Like [`atomize`], but always yields a *local* (binding even a global or
 /// literal). A projection borrows its base, so the base must be an owned local
 /// that reference counting can release — in particular a global naming a forced
 /// zero-arity value, which allocates when read.
-fn to_local(e: CExpr, next: &mut usize, binds: &mut Vec<(LocalId, CExpr)>) -> CExpr {
-    if matches!(e.kind, K::Local(_)) {
-        return e;
+fn to_local(e: CExpr, binds: &mut Vec<(LocalId, CExpr)>, next: &mut usize) -> CExpr {
+    let r = anf_op(e, binds, next);
+    if matches!(r.kind, K::Local(_)) {
+        return r;
     }
-    let e = anf(e, next);
-    let ty = e.ty.clone();
+    bind(r, binds, next)
+}
+
+/// Binds `r` to a fresh local, recording the binding and returning the local.
+fn bind(r: CExpr, binds: &mut Vec<(LocalId, CExpr)>, next: &mut usize) -> CExpr {
+    let ty = r.ty.clone();
     let local = fresh(next);
-    binds.push((local, e));
+    binds.push((local, r));
     CExpr::new(K::Local(local), ty)
 }
 
@@ -561,8 +568,10 @@ fn is_projection(e: &CExpr) -> bool {
 // Reuse analysis: recycle a dead data cell into a same-size construction.
 // ---------------------------------------------------------------------------
 
-/// Locals bound to a value of a boxed data type — the cells reuse may recycle.
-/// Read from `let` value types (a match scrutinee is `let s = <data value>`).
+/// Locals that name boxed data cells reuse may recycle: any local used as a
+/// projection base (`DataField`/`DataTag`) is necessarily a data value (a match
+/// scrutinee or a record being read/updated), and any local bound to a value of a
+/// boxed data type also qualifies (e.g. a freshly constructed record).
 fn data_typed_locals(e: &CExpr) -> Locals {
     let mut out = Locals::default();
     collect_data_locals(e, &mut out);
@@ -570,6 +579,11 @@ fn data_typed_locals(e: &CExpr) -> Locals {
 }
 
 fn collect_data_locals(e: &CExpr, out: &mut Locals) {
+    let note_base = |base: &CExpr, out: &mut Locals| {
+        if let K::Local(l) = base.kind {
+            out.insert(l);
+        }
+    };
     match &e.kind {
         K::Let { local, value, body } => {
             if is_boxed_data_ty(&value.ty) {
@@ -590,8 +604,14 @@ fn collect_data_locals(e: &CExpr, out: &mut Locals) {
             collect_data_locals(func, out);
             args.iter().for_each(|a| collect_data_locals(a, out));
         }
-        K::DataTag(base) => collect_data_locals(base, out),
-        K::DataField { base, .. } => collect_data_locals(base, out),
+        K::DataTag(base) => {
+            note_base(base, out);
+            collect_data_locals(base, out);
+        }
+        K::DataField { base, .. } => {
+            note_base(base, out);
+            collect_data_locals(base, out);
+        }
         K::Reset { value, body, .. } => {
             collect_data_locals(value, out);
             collect_data_locals(body, out);

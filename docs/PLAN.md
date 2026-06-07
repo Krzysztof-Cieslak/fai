@@ -391,11 +391,18 @@ construction that builds into it in place (`fai_drop_reuse`/`fai_reuse`); `if`
 pushes the decision into branches (reset-and-reuse where one reconstructs, drop
 where not). A `map`/`filter`/`inc` over a *unique* list now allocates **zero**
 fresh cells, while a shared list falls back to copying (the runtime rc==1 guard),
-proven by a differential allocation count. A borrow-signature seam is in place
-(every argument owned for now), and an abstract reference-count interpreter over
-the IR guards soundness across a corpus and whole programs. The remaining stages —
-in-place `{ r with … }`, drop specialization, and inferred argument borrowing —
-are future work; see `docs/reuse-plan.md` for the staged design.
+proven by a differential allocation count. (3) **In-place update & drop
+specialization**: `{ r with … }` overwrites the record in place when it is unique
+(the row-polymorphic path via `fai_record_update`, the monomorphic path via the
+reuse mechanism — lowering reads a record's unchanged fields from a single base
+local so it stays uniquely referenced), copying only when shared; and code
+generation omits dup/drop of statically-immediate values (a `local → type` map).
+A borrow-signature seam is in place (every argument owned for now), and an
+abstract reference-count interpreter over the IR guards soundness across a corpus
+and whole programs. The remaining stage — inferred argument borrowing — is future
+work; see `docs/reuse-plan.md` for the staged design. (Deeper drop specialization
+— inlining a known data cell's child drops and free — is deferred as marginal
+after reuse and carrying memory-safety risk; noted in `docs/reuse-plan.md`.)
 
 **Goal:** turn correctness-first RC into competitive performance.
 
@@ -1139,6 +1146,32 @@ design is in `docs/reuse-plan.md`):
     cells; a shared list copies (the rc==1 guard). A differential allocation-count
     test pins both, and the soundness interpreter is extended to reset/reuse
     (a token created once, consumed once per path).
+
+- **D78 In-place `{ r with … }` and immediate drop specialization.**
+  - **Row-polymorphic update** (`fai_record_update`): when the record is the
+    unique owner it overwrites the field in place (releasing the old one) and
+    returns the same object; only a shared record is copied.
+  - **Monomorphic update** rides the reuse mechanism (it lowers to a record
+    construction). For that to recognize the record as unique, lowering reads the
+    *unchanged* fields from a single base local rather than binding an alias
+    (`let s = base`): an alias split the base's reference count, because the
+    new-value expressions read the original. So a unique monomorphic `{ r with … }`
+    is rebuilt in place; a shared one copies. A differential allocation count pins
+    both the row-polymorphic and monomorphic cases.
+  - **Two-stage normalization detail that this needs:** A-normal form **flattens**
+    sub-operand bindings into one straight-line sequence (rather than nesting them
+    in a `let` value), so a value's last use — and thus its drop/reset — sits at
+    the outer level where the following construction can recycle it. Without
+    flattening, a record's last field read (and its drop) nests inside a `let`
+    value while the construction sits outside, out of the reuse pass's reach.
+  - **Drop specialization (scoped):** code generation carries a `local → type` map
+    (from `let` value types) and **omits** dup/drop of statically-immediate values
+    (`Bool`/`Unit`/`Char`), whose reference-count operations are no-ops. Deeper
+    specialization — inlining a known data cell's child drops and free to skip the
+    descriptor dispatch — is **deferred**: after reuse, data cells are rarely
+    dropped on hot paths, and inlining the reference-count/free logic (complicated
+    by immediate-versus-boxed constructors) carries memory-safety risk
+    disproportionate to the gain. Revisit with the performance milestone.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected milestones.

@@ -412,35 +412,43 @@ pub extern "C" fn fai_data_field(v: Value, index: i64) -> Value {
     field
 }
 
-/// Row-polymorphic record update: clones `record` (its field count read from the
-/// runtime object's size) with the field at `index` replaced by `value`. The
-/// index is an immediate `Int` slot. Consumes `record` and `value`; the old field
-/// at `index` is released when `record` is dropped.
+/// Row-polymorphic record update with the field at `index` (an immediate `Int`
+/// slot) replaced by `value`. When `record` is the unique owner, the field is
+/// overwritten **in place** (no allocation, no copying); otherwise a fresh copy is
+/// built. Consumes `record` and `value`; the replaced field is released.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_record_update(record: Value, index: Value, value: Value) -> Value {
     let slot = unbox_int(index) as usize;
     // SAFETY: `record` is a boxed data value; `slot` is a valid field index.
-    let new = unsafe {
-        let tag = read_u64(as_obj(record), DATA_TAG_OFFSET) as i64;
+    unsafe {
+        let p = as_obj(record);
+        // Unique owner: overwrite the field in place, releasing the old one.
+        if read_u64(p, RC_OFFSET) == 1 {
+            let old = read_i64(p, DATA_FIELDS_OFFSET + slot * 8);
+            write_i64(p, DATA_FIELDS_OFFSET + slot * 8, value);
+            fai_drop(old);
+            return record;
+        }
+        // Shared: copy the record with the field replaced.
+        let tag = read_u64(p, DATA_TAG_OFFSET) as i64;
         let n = data_field_count(record);
         let size = DATA_FIELDS_OFFSET + n * 8;
-        let p = alloc_obj(size, &FAI_DATA_DESC);
-        write_u64(p, DATA_TAG_OFFSET, tag as u64);
+        let q = alloc_obj(size, &FAI_DATA_DESC);
+        write_u64(q, DATA_TAG_OFFSET, tag as u64);
         for i in 0..n {
             if i == slot {
-                write_i64(p, DATA_FIELDS_OFFSET + i * 8, value);
+                write_i64(q, DATA_FIELDS_OFFSET + i * 8, value);
             } else {
-                let field = read_i64(as_obj(record), DATA_FIELDS_OFFSET + i * 8);
+                let field = read_i64(p, DATA_FIELDS_OFFSET + i * 8);
                 fai_dup(field);
-                write_i64(p, DATA_FIELDS_OFFSET + i * 8, field);
+                write_i64(q, DATA_FIELDS_OFFSET + i * 8, field);
             }
         }
-        from_obj(p)
-    };
-    // Releases `record`'s hold on every field (its `data_scan` drops each once),
-    // balancing the dups above and releasing the replaced field.
-    fai_drop(record);
-    new
+        // Release this reference; `data_scan` drops the copied-out fields once
+        // (balancing the dups) and the replaced field once.
+        fai_drop(record);
+        from_obj(q)
+    }
 }
 
 // ---------------------------------------------------------------------------
