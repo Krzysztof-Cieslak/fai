@@ -196,6 +196,14 @@ pub enum Prim {
     ClockNow,
     /// `Random.nextInt`: a pseudo-random `Int` in `[0, n)`.
     RandomNextInt,
+    /// `FileSystem` read host: `String -> (Bool * String)` (ok?, contents-or-error).
+    FileRead,
+    /// `FileSystem` write host: `String -> String -> (Bool * String)`.
+    FileWrite,
+    /// `Env` lookup host: `String -> (Bool * String)` (found?, value).
+    EnvGet,
+    /// `Env` arguments host: `Unit -> List String`.
+    EnvArgs,
     /// Row-polymorphic record update: clone a record (by runtime size), replacing
     /// the field at a runtime index. Internal to lowering, never a source name.
     RecordUpdate,
@@ -242,6 +250,10 @@ impl Prim {
             Prim::ConsoleWriteLine => "fai_console_write_line",
             Prim::ClockNow => "fai_clock_now",
             Prim::RandomNextInt => "fai_random_next_int",
+            Prim::FileRead => "fai_file_read",
+            Prim::FileWrite => "fai_file_write",
+            Prim::EnvGet => "fai_env_get",
+            Prim::EnvArgs => "fai_env_args",
             Prim::RecordUpdate => "fai_record_update",
         }
     }
@@ -262,7 +274,10 @@ impl Prim {
             | Prim::Not
             | Prim::ConsoleWriteLine
             | Prim::ClockNow
-            | Prim::RandomNextInt => 1,
+            | Prim::RandomNextInt
+            | Prim::EnvGet
+            | Prim::EnvArgs
+            | Prim::FileRead => 1,
             Prim::RecordUpdate => 3,
             _ => 2,
         }
@@ -290,6 +305,10 @@ impl Prim {
             "consoleWriteLine" => Prim::ConsoleWriteLine,
             "clockNow" => Prim::ClockNow,
             "randomNextInt" => Prim::RandomNextInt,
+            "fileRead" => Prim::FileRead,
+            "fileWrite" => Prim::FileWrite,
+            "envGet" => Prim::EnvGet,
+            "envArgs" => Prim::EnvArgs,
             _ => return None,
         })
     }

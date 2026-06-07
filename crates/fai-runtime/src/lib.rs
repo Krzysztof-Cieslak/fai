@@ -1158,6 +1158,67 @@ pub extern "C" fn fai_random_next_int(n: Value) -> Value {
     fai_box_int((r % bound as u64) as i64)
 }
 
+/// Builds the `(Bool * String)` tuple the FileSystem/Env hosts return (a flag and
+/// a payload string), which the standard library unwraps into `Result`/`Option`.
+/// Consumes `payload`.
+fn ok_string_pair(ok: bool, payload: Value) -> Value {
+    let fields = [from_bool(ok), payload];
+    // SAFETY: `fields` holds two owned values, moved into the new tuple.
+    unsafe { fai_make_data(0, 2, fields.as_ptr()) }
+}
+
+/// `FileSystem.readFile`: reads `path`, returning `(true, contents)` or
+/// `(false, error message)`. Consumes `path`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_file_read(path: Value) -> Value {
+    // SAFETY: `path` is a boxed `String`.
+    let p = unsafe { string_str(path) }.to_owned();
+    let result = match std::fs::read_to_string(&p) {
+        Ok(contents) => ok_string_pair(true, make_string(contents.as_bytes())),
+        Err(e) => ok_string_pair(false, make_string(e.to_string().as_bytes())),
+    };
+    fai_drop(path);
+    result
+}
+
+/// `FileSystem.writeFile`: writes `contents` to `path`, returning `(true, "")` or
+/// `(false, error message)`. Consumes both arguments.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_file_write(path: Value, contents: Value) -> Value {
+    // SAFETY: both are boxed `String`s.
+    let (p, c) = unsafe { (string_str(path).to_owned(), string_str(contents).to_owned()) };
+    let result = match std::fs::write(&p, c.as_bytes()) {
+        Ok(()) => ok_string_pair(true, make_string(b"")),
+        Err(e) => ok_string_pair(false, make_string(e.to_string().as_bytes())),
+    };
+    fai_drop(path);
+    fai_drop(contents);
+    result
+}
+
+/// `Env.get`: looks up environment variable `name`, returning `(true, value)` or
+/// `(false, "")`. Consumes `name`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_env_get(name: Value) -> Value {
+    // SAFETY: `name` is a boxed `String`.
+    let n = unsafe { string_str(name) }.to_owned();
+    let result = match std::env::var(&n) {
+        Ok(v) => ok_string_pair(true, make_string(v.as_bytes())),
+        Err(_) => ok_string_pair(false, make_string(b"")),
+    };
+    fai_drop(name);
+    result
+}
+
+/// `Env.args`: the process arguments after the program name, as a `List String`.
+/// Consumes its `Unit` argument.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_env_args(unit: Value) -> Value {
+    fai_drop(unit);
+    let args: Vec<Value> = std::env::args().skip(1).map(|a| make_string(a.as_bytes())).collect();
+    list_of_strings(&args)
+}
+
 // ---------------------------------------------------------------------------
 // Entry point.
 // ---------------------------------------------------------------------------

@@ -60,6 +60,10 @@ fn prim_name(op: Prim) -> &'static str {
         Prim::ConsoleWriteLine => "consoleWriteLine",
         Prim::ClockNow => "clockNow",
         Prim::RandomNextInt => "randomNextInt",
+        Prim::FileRead => "fileRead",
+        Prim::FileWrite => "fileWrite",
+        Prim::EnvGet => "envGet",
+        Prim::EnvArgs => "envArgs",
         Prim::RecordUpdate => "recordUpdate",
     }
 }

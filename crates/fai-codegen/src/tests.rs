@@ -832,6 +832,45 @@ fn row_polymorphic_record_update_runs() {
 }
 
 #[test]
+fn file_system_write_then_read_runs() {
+    let path = std::env::temp_dir().join("fai-codegen-fs-roundtrip.txt");
+    let path = path.to_str().unwrap().replace('\\', "/");
+    let src = formatdoc! {r#"
+        module M
+
+        public main : Runtime -> Unit
+        let main r =
+          match r.fs.writeFile "{path}" "round-trip" with
+          | Err e -> r.console.writeLine e
+          | Ok u ->
+            match r.fs.readFile "{path}" with
+            | Err e -> r.console.writeLine e
+            | Ok c -> r.console.writeLine c
+    "#};
+    let (code, out) = run(&src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "round-trip\n");
+}
+
+#[test]
+fn env_get_unset_variable_runs() {
+    // A variable that is certainly unset yields `None`, exercising the `Env`
+    // capability's `Option`-wrapping deterministically.
+    let src = indoc! {r#"
+        module M
+
+        public main : Runtime -> Unit
+        let main r =
+          match r.env.get "FAI_DEFINITELY_UNSET_PROBE_XYZ" with
+          | Some v -> r.console.writeLine v
+          | None -> r.console.writeLine "unset"
+    "#};
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "unset\n");
+}
+
+#[test]
 fn runtime_threaded_through_signatured_helper() {
     // A helper that receives the full `Runtime` can project a capability, given a
     // signature (the receiver's type must be known for method access).

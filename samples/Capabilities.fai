@@ -1,17 +1,17 @@
 module Capabilities
 
-interface Console =
-  writeLine : String -> Unit
+// Every host effect is a capability: an interface instance threaded from `main`
+// through the `Runtime`. The interfaces live in the Prelude — `Console`,
+// `Clock`, `Random`, `FileSystem`, `Env` — and `Runtime` bundles them. A
+// function requests only the capabilities it needs (an open record), so its type
+// reveals its reach and it accepts any larger runtime.
+// Needs only a file system and a console; the `FileSystem` operations return a
+// `Result`, so failure is honest rather than hidden.
+public save : { console : Console, fs : FileSystem | _ } -> String -> String -> Unit
+let save env path note =
+  match env.fs.writeFile path note with
+  | Err message -> env.console.writeLine message
+  | Ok unit -> env.console.writeLine ("saved: " ++ note)
 
-interface Clock =
-  now : Unit -> Int
-
-// milliseconds since epoch (a capability, so it is
-// honestly effectful, not ambient)
-interface Random =
-  nextInt : Int -> Int
-
-// pseudo-random in [0, n)
-// `Runtime` is the transparent alias bundling the host capabilities supplied to
-// `main`. A function should request only the fields it needs (see Greet).
-type Runtime = { clock : Clock, console : Console, env : Env, fs : FileSystem, random : Random }
+public main : Runtime -> Unit
+let main runtime = save runtime "/tmp/fai-note.txt" "hello"
