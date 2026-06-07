@@ -150,4 +150,63 @@ mod tests {
         );
         assert_eq!(reqs(ty), vec![(0, "a".to_owned()), (0, "b".to_owned())]);
     }
+
+    use proptest::prelude::*;
+
+    const LABELS: &[&str] = &["a", "b", "c", "d"];
+
+    /// A chain of open records, each a `(row variable id, non-empty distinct
+    /// labels)`, folded into an arrow type.
+    fn open_record_chain() -> impl Strategy<Value = Vec<(u32, Vec<&'static str>)>> {
+        let record = (0u32..3, proptest::sample::subsequence(LABELS.to_vec(), 1..=LABELS.len()));
+        proptest::collection::vec(record, 1..=5)
+    }
+
+    proptest! {
+        /// Over arbitrary open-record chains, the requirements are exactly the set
+        /// of `(tail variable, label)` pairs, deduplicated, ordered by the row
+        /// variable's first appearance and then label text.
+        #[test]
+        fn requirements_are_complete_deduped_and_ordered(records in open_record_chain()) {
+            let mut ty = Ty::Unit;
+            for (id, labels) in records.iter().rev() {
+                ty = Ty::arrow(
+                    open_record(
+                        &labels.iter().map(|l| (*l, Ty::int())).collect::<Vec<_>>(),
+                        *id,
+                    ),
+                    ty,
+                );
+            }
+            let result = evidence_requirements(&Scheme::mono(ty));
+
+            // No duplicate (row variable, label) pairs.
+            let mut seen = std::collections::HashSet::new();
+            for r in &result {
+                prop_assert!(seen.insert((r.row_var.0, r.label)), "duplicate {r:?}");
+            }
+            // Completeness: the same set as every open record's (tail, label) pairs.
+            let expected: std::collections::HashSet<(u32, String)> = records
+                .iter()
+                .flat_map(|(id, labels)| labels.iter().map(move |l| (*id, (*l).to_owned())))
+                .collect();
+            let got: std::collections::HashSet<(u32, String)> =
+                result.iter().map(|r| (r.row_var.0, r.label.as_str().to_owned())).collect();
+            prop_assert_eq!(got, expected);
+
+            // Ordering: by the row variable's first appearance, then label text.
+            let mut first_seen: Vec<u32> = Vec::new();
+            for (id, _) in &records {
+                if !first_seen.contains(id) {
+                    first_seen.push(*id);
+                }
+            }
+            let rank = |id: u32| first_seen.iter().position(|x| *x == id).unwrap();
+            for pair in result.windows(2) {
+                let a = (rank(pair[0].row_var.0), pair[0].label.as_str());
+                let b = (rank(pair[1].row_var.0), pair[1].label.as_str());
+                prop_assert!(a < b, "out of order: {:?} then {:?}", pair[0], pair[1]);
+            }
+        }
+    }
 }
