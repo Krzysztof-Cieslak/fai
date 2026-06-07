@@ -32,6 +32,10 @@ pub const INTRINSICS: &[&str] = &[
     "consoleWriteLine",
     "clockNow",
     "randomNextInt",
+    "fileRead",
+    "fileWrite",
+    "envGet",
+    "envArgs",
 ];
 
 /// The synthetic module through which standard-library code reaches intrinsics.

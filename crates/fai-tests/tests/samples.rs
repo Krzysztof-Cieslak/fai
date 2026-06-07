@@ -87,6 +87,7 @@ const TYPECHECK_CLEAN: &[&str] = &[
     "Algebra.fai",
     "Anon.fai",
     "Basics.fai",
+    "Capabilities.fai",
     "Funcs.fai",
     "Geometry.fai",
     "Greet.fai",

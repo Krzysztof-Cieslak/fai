@@ -262,7 +262,7 @@ fn console_writeline_via_runtime_typechecks() {
     // `Runtime` is a transparent alias, so the signature renders expanded.
     assert_eq!(
         type_of(&db, f[0], "main"),
-        "{ clock : Clock, console : Console, random : Random } -> ()"
+        "{ clock : Clock, console : Console, env : Env, fs : FileSystem, random : Random } -> ()"
     );
 }
 

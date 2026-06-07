@@ -232,6 +232,27 @@ fn row_polymorphic_record_update_runs() {
 }
 
 #[test]
+fn file_system_capability_round_trips() {
+    let path = std::env::temp_dir().join("fai-native-fs-roundtrip.txt");
+    let path = path.to_str().unwrap().replace('\\', "/");
+    let src = formatdoc! {r#"
+        module Main
+
+        public main : Runtime -> Unit
+        let main runtime =
+          match runtime.fs.writeFile "{path}" "persisted" with
+          | Err e -> runtime.console.writeLine e
+          | Ok u ->
+            match runtime.fs.readFile "{path}" with
+            | Err e -> runtime.console.writeLine e
+            | Ok contents -> runtime.console.writeLine contents
+    "#};
+    let (out, code) = build_and_run(&src);
+    assert_eq!(out, "persisted\n");
+    assert_eq!(code, Some(0));
+}
+
+#[test]
 fn random_capability_runs() {
     // `nextInt 1` is always `0` (the half-open range `[0, 1)`), so the output is
     // deterministic even though the source is the host's random capability.

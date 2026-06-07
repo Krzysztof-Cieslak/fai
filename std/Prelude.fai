@@ -82,10 +82,18 @@ public interface Clock =
 public interface Random =
   nextInt : Int -> Int
 
-/// The capability bundle `main` receives: the host's console, clock, and random
-/// sources. Request only the fields you need (an open record) to keep authority
-/// least.
-public type Runtime = { clock : Clock, console : Console, random : Random }
+public interface FileSystem =
+  readFile : String -> Result String String
+  writeFile : String -> String -> Result Unit String
+
+public interface Env =
+  args : Unit -> List String
+  get : String -> Option String
+
+/// The capability bundle `main` receives: the host's console, clock, random,
+/// file system, and environment. Request only the fields you need (an open
+/// record) to keep authority least.
+public type Runtime = { clock : Clock, console : Console, env : Env, fs : FileSystem, random : Random }
 
 // The default host capabilities, backed by the runtime intrinsics. Private: a
 // program obtains them only as the `Runtime` `main` is applied to.
@@ -95,8 +103,28 @@ let stdClock = { Clock with now u = Prim.clockNow u }
 
 let stdRandom = { Random with nextInt n = Prim.randomNextInt n }
 
+// The file-system and environment hosts return a `(Bool * String)` — a
+// success/found flag and a payload (contents, value, or error message) — which
+// these helpers wrap into the `Result`/`Option` the interfaces expose.
+let readFileHost path =
+  match Prim.fileRead path with
+  | (ok, contents) -> if ok then Ok contents else Err contents
+
+let writeFileHost path contents =
+  match Prim.fileWrite path contents with
+  | (ok, message) -> if ok then Ok () else Err message
+
+let envGetHost name =
+  match Prim.envGet name with
+  | (found, value) -> if found then Some value else None
+
+let stdFs = { FileSystem with readFile = readFileHost, writeFile = writeFileHost }
+
+let stdEnv = { Env with args u = Prim.envArgs u, get = envGetHost }
+
 // The standard `Runtime` the entry trampoline applies `main` to.
-let defaultRuntime = { clock = stdClock, console = stdConsole, random = stdRandom }
+let defaultRuntime =
+  { clock = stdClock, console = stdConsole, env = stdEnv, fs = stdFs, random = stdRandom }
 
 /// Forward application: `x |> f` is `f x`.
 public (|>) : 'a -> ('a -> 'b) -> 'b
