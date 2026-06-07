@@ -267,6 +267,24 @@ fn console_writeline_via_runtime_typechecks() {
 }
 
 #[test]
+fn effect_without_the_capability_is_a_type_error() {
+    // A function that only holds a `Clock` cannot reach the console: the record
+    // lacks the `console` field, so the access fails to type-check.
+    let src = indoc! {r#"
+        module NoCap
+
+        public bad : { clock : Clock } -> Unit
+        let bad env = env.console.writeLine "nope"
+    "#};
+    let (db, f) = db_with_std(&[("NoCap.fai", src)]);
+    assert!(
+        check_codes(&db, f[0]).contains(&"FAI3001".to_owned()),
+        "got {:?}",
+        check_codes(&db, f[0])
+    );
+}
+
+#[test]
 fn body_types_records_every_expression() {
     use fai_syntax::Symbol;
     use fai_syntax::ast::{ExprKind, ItemKind};

@@ -1,6 +1,6 @@
 # Fai — Agent & Contributor Guide
 
-> **Status:** Implemented through the **data layer** (M4). The compiler front end —
+> **Status:** Implemented through **interfaces & capabilities** (M5). The compiler front end —
 > lexer, layout, parser/AST, the incremental `parse`/`item_tree` queries, and the
 > canonical formatter (M1) — plus name resolution, the module graph, and
 > Hindley–Milner inference for the functional core (M2) are built. `fai check`
@@ -17,15 +17,26 @@
 > structural ordering** — all compiling to native code (monomorphic records use
 > constant-offset projections; *row-polymorphic* field access and `{ r with … }`
 > update compile via **offset-evidence passing** — integer field offsets threaded
-> in as leading arguments, like dictionaries). The
+> in as leading arguments, like dictionaries). Interfaces & capabilities (M5) are
+> built: **`interface` declarations and `{ Name with … }` instances** compile to
+> dictionaries with type-directed method dispatch; the overloaded operators
+> (`+ - * / %`, `= <>`, `< <= > >=`) are **methods of the std interfaces**
+> `Num`/`Eq`/`Ord`, and programs may declare their own **symbolic operators**
+> (F#-style precedence); and the host effects — **`Console`, `Clock`, `Random`,
+> `FileSystem`, `Env`** — are **capabilities**: interface instances bundled in a
+> `Runtime` record that `main` receives, with **row-polymorphic least authority**
+> (a function requests `{ console : Console | _ }` and accepts any larger runtime),
+> realized by that same offset-evidence passing. The
 > standard library is a set of real compiled modules under **`std/`** (embedded
 > at build time): an auto-imported `Prelude` (the core types `Option`/`Result`/
-> `Dict`/`Set` with their constructors, plus `identity`/`const`/`not`/`compare`)
-> and qualified operation modules (`List`, `Option`, `Result`, `Dict`, `Set`,
-> `String`, `Int`, `Float` — e.g. `List.map`, `Int.toString`). The few Rust
-> intrinsics are prelude-private, reached only as `Prim.*` inside `std/`. Later
-> milestones (interfaces & capabilities, …) define the *intended* interface we
-> build toward. The design is locked (see the decision table below).
+> `Dict`/`Set` with their constructors, the free functions
+> `identity`/`const`/`not`/`compare`, the `Num`/`Eq`/`Ord` operator interfaces,
+> and the capability interfaces with the `Runtime` bundle) and qualified operation
+> modules (`List`, `Option`, `Result`, `Dict`, `Set`, `String`, `Int`, `Float` —
+> e.g. `List.map`, `Int.toString`). The few Rust intrinsics are prelude-private,
+> reached only as `Prim.*` inside `std/`. Later milestones (reuse analysis,
+> contracts, the LSP, …) define the *intended* interface we build toward. The
+> design is locked (see the decision table below).
 
 This document is the orientation guide for anyone — human or AI agent — working
 on the Fai compiler. Read it first. For the staged build plan see `docs/PLAN.md`; for
