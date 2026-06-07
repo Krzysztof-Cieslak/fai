@@ -12,8 +12,8 @@ pub mod repr;
 pub mod target;
 
 pub use query::{
-    ApiResult, CallEdge, CallHierarchyResult, DefResult, DependentsResult, DocsResult, ListOpts,
-    OutlineResult, RefsResult, SymbolsResult, TypeResult, api, callees, callers, def, dependents,
-    docs, outline, refs, symbols, type_at,
+    ApiResult, CallEdge, CallHierarchyResult, CapsResult, DefResult, DependentsResult, DocsResult,
+    ListOpts, OutlineResult, RefsResult, SymbolsResult, TypeResult, api, callees, callers, caps,
+    def, dependents, docs, outline, refs, symbols, type_at,
 };
 pub use target::{ResolvedTarget, resolve_target};

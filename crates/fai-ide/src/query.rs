@@ -14,7 +14,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Serialize;
 
 use crate::repr::{
-    Contract, Doc, Location, SCHEMA_VERSION, SpanJson, SymbolKind, SymbolRef, TypeRepr, Visibility,
+    CapOrigin, Capability, Contract, Doc, Location, SCHEMA_VERSION, SpanJson, SymbolKind,
+    SymbolRef, TypeRepr, Visibility,
 };
 use crate::target::{module_label, resolve_target};
 
@@ -490,6 +491,110 @@ pub fn callers(
         schema_version: SCHEMA_VERSION,
         target: symbol_ref(db, t.file, t.name, resolver),
         edges: build_edges(db, by_caller, resolver),
+    }
+}
+
+/// `fai query caps`.
+#[derive(Debug, Serialize)]
+pub struct CapsResult {
+    #[serde(rename = "schemaVersion")]
+    pub schema_version: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<SymbolRef>,
+    pub capabilities: Vec<Capability>,
+}
+
+/// Collects the capabilities a signature requests directly: a parameter that is
+/// an interface, or a record parameter's interface-typed fields. Each is
+/// `(name, interface)`.
+fn param_caps(ty: &fai_types::Ty, out: &mut Vec<(String, String)>) {
+    let mut cur = ty;
+    while let fai_types::Ty::Arrow(from, to) = cur {
+        match from.as_ref() {
+            fai_types::Ty::Interface(iref) => {
+                out.push((iref.name.as_str().to_owned(), iref.name.as_str().to_owned()));
+            }
+            fai_types::Ty::Record(row) => {
+                for (label, fty) in &row.fields {
+                    if let fai_types::Ty::Interface(iref) = fty {
+                        out.push((label.as_str().to_owned(), iref.name.as_str().to_owned()));
+                    }
+                }
+            }
+            _ => {}
+        }
+        cur = to;
+    }
+}
+
+/// `fai query caps`: the capability footprint of a function — the capabilities it
+/// requests directly (its signature parameters) plus those reached through its
+/// callees (the call graph).
+#[must_use]
+pub fn caps(
+    db: &dyn Db,
+    files: &[SourceFile],
+    target: &str,
+    resolver: &dyn SpanResolver,
+) -> CapsResult {
+    let _ = files;
+    let Some(t) = resolve_target(db, target) else {
+        return CapsResult { schema_version: SCHEMA_VERSION, target: None, capabilities: vec![] };
+    };
+    let target_def = DefId::new(t.file.source(db), t.name);
+
+    // Keyed by (interface, name) for determinism and dedup; first origin wins
+    // (a directly-requested capability is never downgraded to transitive).
+    let mut found: std::collections::BTreeMap<(String, String), Capability> =
+        std::collections::BTreeMap::new();
+
+    let mut direct = Vec::new();
+    param_caps(&fai_types::def_type(db, t.file, t.name).ty, &mut direct);
+    for (name, ty) in direct {
+        found.entry((ty.clone(), name.clone())).or_insert(Capability {
+            name,
+            ty,
+            origin: CapOrigin::Parameter,
+            via: vec![],
+        });
+    }
+
+    // Transitive: walk the forward call graph and add any callee's directly
+    // requested capabilities not already requested here.
+    let mut seen: FxHashSet<DefId> = FxHashSet::default();
+    seen.insert(target_def);
+    let mut stack: Vec<DefId> = resolve(db, t.file).deps_of(target_def).to_vec();
+    while let Some(d) = stack.pop() {
+        if !seen.insert(d) {
+            continue;
+        }
+        let Some(file) = db.source_file(d.file) else { continue };
+        let mut callee_caps = Vec::new();
+        param_caps(&fai_types::def_type(db, file, d.name).ty, &mut callee_caps);
+        for (name, ty) in callee_caps {
+            found
+                .entry((ty.clone(), name.clone()))
+                .and_modify(|c| {
+                    if c.origin == CapOrigin::Transitive
+                        && !c.via.contains(&d.name.as_str().to_owned())
+                    {
+                        c.via.push(d.name.as_str().to_owned());
+                    }
+                })
+                .or_insert(Capability {
+                    name,
+                    ty,
+                    origin: CapOrigin::Transitive,
+                    via: vec![d.name.as_str().to_owned()],
+                });
+        }
+        stack.extend(resolve(db, file).deps_of(d).iter().copied());
+    }
+
+    CapsResult {
+        schema_version: SCHEMA_VERSION,
+        target: symbol_ref(db, t.file, t.name, resolver),
+        capabilities: found.into_values().collect(),
     }
 }
 

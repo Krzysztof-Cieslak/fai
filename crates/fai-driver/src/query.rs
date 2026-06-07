@@ -33,6 +33,8 @@ pub enum QueryRequest {
     Callers { target: String },
     /// Outbound call edges (the definitions the target references).
     Callees { target: String },
+    /// The capability footprint of a function.
+    Caps { target: String },
     /// A command that is recognized but not implemented yet.
     Unsupported { name: String },
 }
@@ -122,6 +124,11 @@ pub fn run_query(session: &Session, request: &QueryRequest) -> QueryResult {
         }
         QueryRequest::Callees { target } => {
             let r = fai_ide::callees(db, target, &resolver);
+            let ok = r.target.is_some();
+            QueryResult::from_serializable(&r, ok)
+        }
+        QueryRequest::Caps { target } => {
+            let r = fai_ide::caps(db, &files, target, &resolver);
             let ok = r.target.is_some();
             QueryResult::from_serializable(&r, ok)
         }
