@@ -174,8 +174,68 @@ fn interface_spec() -> impl Strategy<Value = (Vec<(&'static str, i64)>, usize)> 
     )
 }
 
+/// A flat arithmetic expression: `terms` interleaved with `ops` (one fewer).
+/// Operands are positive (so `/`/`%` never divide by zero) and small (so results
+/// render without `i64::MIN` trouble).
+fn flat_arith() -> impl Strategy<Value = (Vec<i64>, Vec<char>)> {
+    (2usize..=6).prop_flat_map(|n| {
+        let terms = proptest::collection::vec(1i64..50, n);
+        let op = prop_oneof![Just('+'), Just('-'), Just('*'), Just('/'), Just('%')];
+        let ops = proptest::collection::vec(op, n - 1);
+        (terms, ops)
+    })
+}
+
+/// Evaluates a flat expression with Fai's precedence and associativity, computed
+/// independently of the parser: `* / %` bind tighter than `+ -`, both groups
+/// left-associative.
+fn eval_flat(terms: &[i64], ops: &[char]) -> i64 {
+    // Pass 1: fold the multiplicative operators left to right.
+    let mut t = vec![terms[0]];
+    let mut additive = Vec::new();
+    for (i, &op) in ops.iter().enumerate() {
+        let rhs = terms[i + 1];
+        match op {
+            '*' => *t.last_mut().unwrap() = t.last().unwrap().wrapping_mul(rhs),
+            '/' => *t.last_mut().unwrap() = t.last().unwrap().wrapping_div(rhs),
+            '%' => *t.last_mut().unwrap() = t.last().unwrap().wrapping_rem(rhs),
+            other => {
+                additive.push(other);
+                t.push(rhs);
+            }
+        }
+    }
+    // Pass 2: fold the additive operators left to right.
+    let mut acc = t[0];
+    for (i, &op) in additive.iter().enumerate() {
+        acc = if op == '+' { acc.wrapping_add(t[i + 1]) } else { acc.wrapping_sub(t[i + 1]) };
+    }
+    acc
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 48, ..ProptestConfig::default() })]
+
+    /// Operators parse and evaluate at their documented precedence: a flat,
+    /// unparenthesized expression agrees with the independent two-level evaluator.
+    #[test]
+    fn operator_precedence_matches_evaluation(spec in flat_arith()) {
+        let (terms, ops) = spec;
+        let expected = eval_flat(&terms, &ops);
+        let mut expr = terms[0].to_string();
+        for (i, op) in ops.iter().enumerate() {
+            expr.push_str(&format!(" {op} {}", terms[i + 1]));
+        }
+        let src = formatdoc! {r#"
+            module M
+
+            public main : Runtime -> Unit
+            let main r = r.console.writeLine (Int.toString ({expr}))
+        "#};
+        let (code, out) = run(&src);
+        prop_assert_eq!(code, 0, "leak or failure: {}", out);
+        prop_assert_eq!(out.trim().parse::<i64>().expect("integer output"), expected);
+    }
 
     /// A row-polymorphic accessor reads the named field's value no matter where it
     /// sits in the caller's record — the headline offset-evidence guarantee.

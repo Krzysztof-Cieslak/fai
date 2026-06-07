@@ -1905,6 +1905,53 @@ mod tests {
         assert!(parsed.diagnostics.iter().any(|d| d.code == crate::SYNTAX_ERROR));
     }
 
+    #[test]
+    fn interface_method_without_a_type_recovers() {
+        let parsed = parse(indoc! {r#"
+            module M
+            interface Foo =
+              bar :
+            let after = 1"#});
+        assert!(!parsed.diagnostics.is_empty(), "expected a diagnostic");
+        // Recovery: the following binding still parses.
+        assert!(
+            parsed.module.items.iter().any(
+                |i| matches!(&i.kind, ItemKind::Binding { name, .. } if name.as_str() == "after")
+            ),
+            "did not recover the following binding"
+        );
+    }
+
+    #[test]
+    fn instance_method_without_a_body_recovers() {
+        let parsed = parse(indoc! {r#"
+            module M
+            let x = { Foo with greet }
+            let after = 1"#});
+        assert!(!parsed.diagnostics.is_empty(), "expected a diagnostic");
+        assert!(
+            parsed.module.items.iter().any(
+                |i| matches!(&i.kind, ItemKind::Binding { name, .. } if name.as_str() == "after")
+            ),
+            "did not recover the following binding"
+        );
+    }
+
+    #[test]
+    fn operator_definition_without_a_body_recovers() {
+        let parsed = parse(indoc! {r#"
+            module M
+            let (+-+) a b =
+            let after = 1"#});
+        assert!(!parsed.diagnostics.is_empty(), "expected a diagnostic");
+        assert!(
+            parsed.module.items.iter().any(
+                |i| matches!(&i.kind, ItemKind::Binding { name, .. } if name.as_str() == "after")
+            ),
+            "did not recover the following binding"
+        );
+    }
+
     // --- snapshots --------------------------------------------------------
 
     #[test]
