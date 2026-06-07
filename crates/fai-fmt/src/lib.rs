@@ -476,6 +476,9 @@ impl Printer<'_> {
                 }
                 concat(parts)
             }
+            PatKind::As { pat: inner, name } => {
+                concat(vec![self.pat_doc(*inner), text(" as "), text(name.as_str())])
+            }
             PatKind::Record { fields, open } => self.record_pat_doc(fields, *open),
             PatKind::Error => text(self.span_src(pat.span)),
         }

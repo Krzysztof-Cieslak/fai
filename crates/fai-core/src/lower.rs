@@ -991,6 +991,17 @@ impl Lowerer<'_> {
                 }
                 chain
             }
+            PatKind::As { pat: inner, .. } => {
+                // Bind the alias name to the whole matched value, then match the
+                // inner pattern against the same value.
+                let inner = *inner;
+                let local = self.resolved.local_of(pat).unwrap_or_else(|| self.fresh_local());
+                let bound = CExpr::new(
+                    K::Let { local, value: Box::new(value()), body: Box::new(success) },
+                    Ty::Error,
+                );
+                self.compile_pattern(value_local, inner, bound, fail)
+            }
             PatKind::Record { fields, .. } => {
                 let fields: Vec<(Symbol, PatId)> = fields.iter().map(|f| (f.name, f.pat)).collect();
                 self.compile_record_pattern(value_local, pat, &fields, success, fail)

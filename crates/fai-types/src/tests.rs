@@ -1264,6 +1264,23 @@ fn recursive_nested_type_resolves_in_scope() {
 }
 
 #[test]
+fn as_pattern_aliases_the_scrutinee_type() {
+    // The as-name has the whole matched value's type, so returning it gives the
+    // list type back.
+    let src = indoc! {r#"
+        module M
+
+        let f xs =
+          match xs with
+          | x :: rest as whole -> whole
+          | [] -> xs
+    "#};
+    let (db, f) = db_with_std(&[("M.fai", src)]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+    assert_eq!(type_of(&db, f[0], "f"), "List 'a -> List 'a");
+}
+
+#[test]
 fn cross_file_qualified_type_resolves() {
     let lib = indoc! {r#"
         module Lib

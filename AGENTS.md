@@ -439,8 +439,8 @@ closes (`'a'`, `'\n'`) and a **type variable** otherwise (`'a`, `'r`). This is
 the F# rule; keep it covered by tests.
 
 **Reserved keywords include** `module`, `let`, `type`, `interface`, `match`,
-`with`, `if`, `then`, `else`, `fun`, `public`, and the contract-declaration
-keywords **`example`** and **`forall`**. Contracts are ordinary
+`with`, `if`, `then`, `else`, `fun`, `public`, `as` (the as-pattern binder), and
+the contract-declaration keywords **`example`** and **`forall`**. Contracts are ordinary
 declarations (peers of `let`), not comment text, so the symbols inside them
 resolve through normal name resolution and are fully type-checked.
 

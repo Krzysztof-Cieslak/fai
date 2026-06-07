@@ -1069,6 +1069,7 @@ mod proptests {
         "public",
         "example",
         "forall",
+        "as",
     ];
 
     proptest! {

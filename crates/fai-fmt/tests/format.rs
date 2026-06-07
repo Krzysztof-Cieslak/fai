@@ -48,6 +48,19 @@ fn hello() {
 }
 
 #[test]
+fn as_patterns() {
+    let src = indoc! {r#"
+        module M
+
+        let f xs =
+          match xs with
+          | x :: rest as whole -> whole
+          | [] -> xs"#};
+    insta::assert_snapshot!("as_patterns", fmt(src));
+    assert_idempotent(src);
+}
+
+#[test]
 fn nested_modules() {
     let src = indoc! {r#"
         module M
@@ -596,6 +609,7 @@ fn shape_pat(m: &Module, id: PatId) -> String {
             format!("(pcons {} {})", shape_pat(m, *head), shape_pat(m, *tail))
         }
         PatKind::Or(alts) => format!("(por {})", shape_pats(m, alts)),
+        PatKind::As { pat, name } => format!("(pas {} {})", shape_pat(m, *pat), name.as_str()),
         PatKind::Record { fields, open } => {
             let mut order: Vec<_> = fields.iter().collect();
             order.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));

@@ -443,6 +443,13 @@ impl Resolver<'_> {
                     self.bind_pattern(a);
                 }
             }
+            PatKind::As { pat: inner, name } => {
+                // Bind the alias name (keyed by the as-pattern node), then bind the
+                // inner pattern's own variables.
+                let slot = self.scope.bind(*name);
+                self.pat_locals.insert(pat, slot);
+                self.bind_pattern(*inner);
+            }
             PatKind::Record { fields, .. } => {
                 // Each field's sub-pattern binds (punning's is a `Var(name)`).
                 let pats: Vec<PatId> = fields.iter().map(|f| f.pat).collect();

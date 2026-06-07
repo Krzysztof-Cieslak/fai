@@ -212,6 +212,8 @@ impl MatchChecker<'_> {
             PatKind::Var(_) | PatKind::Wildcard | PatKind::Error => IPat::Wild,
             PatKind::Unit => IPat::Con { key: ConKey::Unit, args: Vec::new() },
             PatKind::Paren(inner) => self.lower_pat(*inner),
+            // An as-pattern covers exactly what its inner pattern covers.
+            PatKind::As { pat: inner, .. } => self.lower_pat(*inner),
             PatKind::Bool(b) => IPat::Con { key: ConKey::Tag(i64::from(*b)), args: Vec::new() },
             PatKind::Int(s) | PatKind::Float(s) | PatKind::String(s) | PatKind::Char(s) => {
                 IPat::Lit(s.as_str().to_owned())

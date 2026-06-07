@@ -416,6 +416,9 @@ pub enum PatKind {
     Cons { head: PatId, tail: PatId },
     /// An or-pattern `a | b | …` (alternatives must bind the same variables).
     Or(Vec<PatId>),
+    /// An as-pattern `p as name`: matches `p` and also binds the whole matched
+    /// value to `name`. Binds looser than every other pattern form.
+    As { pat: PatId, name: Symbol },
     /// A record pattern `{ x = p, y }` (closed) or `{ x = p | _ }` (open).
     Record { fields: Vec<FieldPat>, open: bool },
     /// An unparseable pattern (recovered).

@@ -1428,6 +1428,17 @@ completeness):
     so `T` (inside its module), `Inner.T` (enclosing), and `File.Inner.T` (another
     file) all unify. Constructors in patterns parse a dotted head (`Inner.MyCtor`).
 
+- **D89 As-patterns `p as name`.** A new reserved keyword `as` introduces the
+  alias pattern `PatKind::As { pat, name }`, which matches `pat` and also binds
+  the whole matched value to `name`. It binds **looser than every other pattern
+  form** (parsed at the top of the pattern grammar), so `(A | B) as w` and
+  `(x :: xs) as w` alias the whole alternative/cons. The alias name is keyed by
+  the as-pattern node for binding and typing (it has the scrutinee's type); the
+  inner pattern is checked/compiled against the same value; exhaustiveness treats
+  `p as name` exactly as `p`. As-patterns are allowed wherever a pattern is
+  (match arms, `let`, parameters); `forall` binders stay plain variables.
+  (Reserving `as` is safe — it appeared only in comments across the corpus.)
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected milestones.
 

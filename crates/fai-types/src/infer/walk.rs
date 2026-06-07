@@ -831,6 +831,14 @@ impl<E: Env> Walker<'_, E> {
                     self.check_pattern(alt, expected);
                 }
             }
+            PatKind::As { pat: inner, .. } => {
+                // The alias name (keyed by the as-pattern node) has the scrutinee
+                // type; the inner pattern is checked against it too.
+                if let Some(slot) = self.resolved.local_of(pat) {
+                    self.locals.insert(slot, LocalBinding::Mono(expected.clone()));
+                }
+                self.check_pattern(*inner, expected);
+            }
             PatKind::Constructor { args, .. } => self.check_ctor_pattern(pat, args, expected, span),
             PatKind::Record { fields, open } => {
                 // Each named field's sub-pattern is checked against a fresh field
