@@ -270,8 +270,9 @@ fn reuse_smaller_size_frees_token_and_allocates() {
     let fields = [imm_int(9)];
     // SAFETY: the token is a 3-field cell; a 1-field rebuild cannot fit it.
     let v = unsafe { fai_reuse(token, 1, 1, fields.as_ptr()) };
+    // The fresh allocation is proven by the counter, not by `v != cell`: the
+    // token's memory was freed, so the allocator may legitimately hand it back.
     assert_eq!(allocations(), 1, "a smaller rebuild frees the token and allocates");
-    assert_ne!(v, cell, "a fresh object, not the reused cell");
     assert_eq!(field_int(v, 0), 9);
     fai_drop(v);
     assert_eq!(live_count(), base);
@@ -287,8 +288,9 @@ fn reuse_larger_size_frees_token_and_allocates() {
     let fields = [imm_int(1), imm_int(2), imm_int(3)];
     // SAFETY: the token is a 1-field cell; a 3-field rebuild cannot fit it.
     let v = unsafe { fai_reuse(token, 0, 3, fields.as_ptr()) };
+    // The fresh allocation is proven by the counter, not by `v != cell`: the
+    // token's memory was freed, so the allocator may legitimately hand it back.
     assert_eq!(allocations(), 1, "a larger rebuild frees the token and allocates");
-    assert_ne!(v, cell);
     assert_eq!(field_int(v, 2), 3);
     fai_drop(v);
     assert_eq!(live_count(), base);
