@@ -1,13 +1,23 @@
 module NestedModules
 
-// Nested module — private helpers grouped together.
+// Nested modules group related declarations. The enclosing module reaches their
+// members through a qualified path (`Internal.area`); other files would see only
+// the members marked `public` (as `NestedModules.Internal.area`).
 module Internal =
   let pi = 3.14159
 
-  let square x = x * x
+  public type Shape =
+    | Circle Float
+    | Rect Float Float
+
+  public area : Shape -> Float
+  let area s =
+    match s with
+    | Circle r -> pi * r * r
+    | Rect w h -> w * h
 
 public circleArea : Float -> Float
-let circleArea r = Internal.pi * Internal.square r
+let circleArea r = Internal.area (Internal.Circle r)
 
-public perimeter : Float -> Float
-let perimeter r = 2.0 * Internal.pi * r
+public rectArea : Float -> Float -> Float
+let rectArea w h = Internal.area (Internal.Rect w h)

@@ -112,7 +112,8 @@ table **and** the decision log in `docs/PLAN.md`).
 |---|---|
 | Family | Strict, **pure**, statically typed functional (ML/F#/Elm) |
 | OOP | None, except **interfaces** (sets of function signatures); **interface instances** `{ Name with ... }` are the only constructor (→ existentials) |
-| Modules | One top-level module per file; nesting allowed; **private by default**, `public` exports |
+| Modules | One top-level module per file; **nested modules** (`module Name = …`) group declarations and are addressed by a qualified path. Within a file the enclosing module sees *every* nested member (`Inner.name`); across files only `public` members are visible (`Outer.Inner.name`). Bare names resolve outward lexically (inner shadows outer) |
+| Qualified names | A cross-module/nested member is reached by a dotted path: a **value/constructor** as `Module.name` / `Outer.Inner.name` (a field-access chain), and a **type/interface** as the same dotted form in type position (`Module.Type`, `Outer.Inner.Type`). Identifiers cannot contain `.`, so a qualified name is one interned dotted symbol |
 | Public API | Every `public` binding **requires an explicit type signature** (Haskell-style, on its own line above the definition) |
 | Recursion | Module-level bindings are **mutually recursive** (no `rec` keyword) |
 | Layout | **Indentation-significant** (offside rule); `fai fmt` pins exactly one canonical layout (2-space indent, no tabs) |

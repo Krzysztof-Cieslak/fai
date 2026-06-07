@@ -118,6 +118,61 @@ fn public_signature_edit_invalidates_dependents_but_not_everything() {
 }
 
 #[test]
+fn nested_private_body_edit_does_not_recheck_dependents() {
+    // The cross-module firewall holds across nesting: editing a nested *private*
+    // body re-infers only the edited file's definitions; another file that uses a
+    // public nested member (through its signature) is not re-checked.
+    let mut db = FaiDatabase::new();
+    let lib = db.add_source(
+        "Lib.fai".into(),
+        indoc! {r#"
+            module Lib
+
+            module Inner =
+              let helper x = x + 1
+
+              public bump : Int -> Int
+              let bump x = helper x
+        "#}
+        .to_owned(),
+    );
+    let user = db.add_source(
+        "User.fai".into(),
+        indoc! {r#"
+            module User
+
+            public use : Int -> Int
+            let use x = Lib.Inner.bump x
+        "#}
+        .to_owned(),
+    );
+    let libf = db.source_file(lib).unwrap();
+    let userf = db.source_file(user).unwrap();
+    check_file(&db, libf);
+    check_file(&db, userf);
+
+    db.enable_event_log();
+    // Edit only the nested private helper's body (no signature change).
+    libf.set_text(&mut db).to(indoc! {r#"
+        module Lib
+
+        module Inner =
+          let helper x = x + 2
+
+          public bump : Int -> Int
+          let bump x = helper x
+    "#}
+    .to_owned());
+    check_file(&db, libf);
+    check_file(&db, userf);
+    let events = db.take_events();
+
+    // The edited file re-infers; `User` does not (it uses `bump`'s signature).
+    let total = count(&events, "infer_scc_query");
+    assert_eq!(total, 2, "only Lib.Inner's two defs should re-infer, got {total}: {events:?}");
+}
+
+#[test]
 fn cold_check_is_linear_in_workspace_size() {
     // From a cold database, the number of inference queries scales linearly with
     // the number of definitions (each def/SCC is inferred once), not super-
