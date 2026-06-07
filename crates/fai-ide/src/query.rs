@@ -9,7 +9,9 @@ use fai_db::{Db, SourceFile};
 use fai_resolve::{DefId, Res, ResolvedBodies, module_defs, resolve};
 use fai_span::{Span, SpanResolver};
 use fai_syntax::Symbol;
-use fai_syntax::ast::{ExprId, ExprKind, ItemKind, Module, PatKind, Visibility as AstVis};
+use fai_syntax::ast::{
+    ExprId, ExprKind, ItemKind, Module, PatKind, RowTail, TypeId, TypeKind, Visibility as AstVis,
+};
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Serialize;
 
@@ -596,6 +598,231 @@ pub fn caps(
         target: symbol_ref(db, t.file, t.name, resolver),
         capabilities: found.into_values().collect(),
     }
+}
+
+/// One hit of a type search.
+#[derive(Debug, Serialize)]
+pub struct SearchHit {
+    pub symbol: SymbolRef,
+    #[serde(rename = "type")]
+    pub ty: TypeRepr,
+    pub score: f64,
+}
+
+/// `fai query search`.
+#[derive(Debug, Serialize)]
+pub struct SearchResult {
+    #[serde(rename = "schemaVersion")]
+    pub schema_version: u32,
+    pub query: String,
+    pub results: Vec<SearchHit>,
+    pub truncated: bool,
+}
+
+/// A normalized type shape, for type-pattern matching (CLI.md `search`).
+#[derive(Debug, Clone, PartialEq)]
+enum Shape {
+    /// A type variable, numbered per side in first-seen order.
+    Var(usize),
+    /// A constructor / type / interface name.
+    Name(String),
+    /// Type application `f a`.
+    App(Box<Shape>, Box<Shape>),
+    /// A function type.
+    Arrow(Box<Shape>, Box<Shape>),
+    /// A tuple.
+    Tuple(Vec<Shape>),
+    /// A record (fields sorted by label) and whether its row is open.
+    Record(Vec<(String, Shape)>, bool),
+    /// Unit.
+    Unit,
+    /// Anything else (no useful structure).
+    Other,
+}
+
+/// Builds a [`Shape`] from a written type (the search pattern's AST).
+fn shape_from_ast(module: &Module, ty: TypeId, vars: &mut FxHashMap<Symbol, usize>) -> Shape {
+    match &module.ty(ty).kind {
+        TypeKind::Var(name) => {
+            let n = vars.len();
+            Shape::Var(*vars.entry(*name).or_insert(n))
+        }
+        TypeKind::Con(name) => Shape::Name(name.as_str().to_owned()),
+        TypeKind::App { func, arg } => Shape::App(
+            Box::new(shape_from_ast(module, *func, vars)),
+            Box::new(shape_from_ast(module, *arg, vars)),
+        ),
+        TypeKind::Arrow { from, to } => Shape::Arrow(
+            Box::new(shape_from_ast(module, *from, vars)),
+            Box::new(shape_from_ast(module, *to, vars)),
+        ),
+        TypeKind::Tuple(elems) => {
+            Shape::Tuple(elems.iter().map(|&e| shape_from_ast(module, e, vars)).collect())
+        }
+        TypeKind::Record { fields, tail } => {
+            let mut fs: Vec<(String, Shape)> = fields
+                .iter()
+                .map(|f| (f.name.as_str().to_owned(), shape_from_ast(module, f.ty, vars)))
+                .collect();
+            fs.sort_by(|a, b| a.0.cmp(&b.0));
+            Shape::Record(fs, !matches!(tail, RowTail::Closed))
+        }
+        TypeKind::Unit => Shape::Unit,
+        TypeKind::Paren(inner) => shape_from_ast(module, *inner, vars),
+        TypeKind::Error => Shape::Other,
+    }
+}
+
+/// Builds a [`Shape`] from a reified candidate type.
+fn shape_from_ty(ty: &fai_types::Ty, vars: &mut FxHashMap<u32, usize>) -> Shape {
+    use fai_types::Ty;
+    match ty {
+        Ty::Var(v) => {
+            let n = vars.len();
+            Shape::Var(*vars.entry(v.0).or_insert(n))
+        }
+        Ty::Con(c) => Shape::Name(c.name().to_owned()),
+        Ty::Adt(a) => Shape::Name(a.name.as_str().to_owned()),
+        Ty::Interface(i) => Shape::Name(i.name.as_str().to_owned()),
+        Ty::App(f, a) => {
+            Shape::App(Box::new(shape_from_ty(f, vars)), Box::new(shape_from_ty(a, vars)))
+        }
+        Ty::Arrow(f, a) => {
+            Shape::Arrow(Box::new(shape_from_ty(f, vars)), Box::new(shape_from_ty(a, vars)))
+        }
+        Ty::Tuple(elems) => Shape::Tuple(elems.iter().map(|e| shape_from_ty(e, vars)).collect()),
+        Ty::Record(row) => {
+            let mut fs: Vec<(String, Shape)> = row
+                .fields
+                .iter()
+                .map(|(l, t)| (l.as_str().to_owned(), shape_from_ty(t, vars)))
+                .collect();
+            fs.sort_by(|a, b| a.0.cmp(&b.0));
+            Shape::Record(fs, matches!(row.tail, fai_types::RowEnd::Open(_)))
+        }
+        Ty::Unit => Shape::Unit,
+        Ty::Error => Shape::Other,
+    }
+}
+
+/// The last `.`-separated segment of a (possibly qualified) name.
+fn last_segment(name: &str) -> &str {
+    name.rsplit('.').next().unwrap_or(name)
+}
+
+/// Matches a query shape against a candidate shape. A query variable is a hole
+/// that binds (consistently) to a candidate subtree; an open query record allows
+/// extra candidate fields (row polymorphism). Returns `None` on no match, else
+/// whether the match is *exact* (alpha-equivalent: holes bound only to variables,
+/// names identical, openness equal).
+fn match_shape(pat: &Shape, cand: &Shape, subst: &mut FxHashMap<usize, Shape>) -> Option<bool> {
+    match (pat, cand) {
+        (Shape::Var(q), _) => {
+            if let Some(bound) = subst.get(q) {
+                return (bound == cand).then_some(matches!(cand, Shape::Var(_)));
+            }
+            subst.insert(*q, cand.clone());
+            Some(matches!(cand, Shape::Var(_)))
+        }
+        (Shape::Name(a), Shape::Name(b)) => {
+            if a == b {
+                Some(true)
+            } else if last_segment(a) == last_segment(b) {
+                Some(false)
+            } else {
+                None
+            }
+        }
+        (Shape::App(f1, a1), Shape::App(f2, a2)) | (Shape::Arrow(f1, a1), Shape::Arrow(f2, a2)) => {
+            let e1 = match_shape(f1, f2, subst)?;
+            let e2 = match_shape(a1, a2, subst)?;
+            Some(e1 && e2)
+        }
+        (Shape::Tuple(xs), Shape::Tuple(ys)) if xs.len() == ys.len() => {
+            let mut exact = true;
+            for (x, y) in xs.iter().zip(ys) {
+                exact &= match_shape(x, y, subst)?;
+            }
+            Some(exact)
+        }
+        (Shape::Record(pf, popen), Shape::Record(cf, copen)) => {
+            let mut exact = popen == copen && pf.len() == cf.len();
+            for (label, psh) in pf {
+                let csh = cf.iter().find(|(l, _)| l == label).map(|(_, s)| s)?;
+                exact &= match_shape(psh, csh, subst)?;
+            }
+            if !popen && pf.len() != cf.len() {
+                return None; // a closed query record must name exactly these fields
+            }
+            Some(exact)
+        }
+        (Shape::Unit, Shape::Unit) => Some(true),
+        _ => None,
+    }
+}
+
+/// `fai query search`: find definitions whose type matches a type pattern
+/// (unification up to variable renaming and row polymorphism), ranked by score.
+#[must_use]
+pub fn search(
+    db: &dyn Db,
+    files: &[SourceFile],
+    pattern: &str,
+    resolver: &dyn SpanResolver,
+    opts: ListOpts,
+) -> SearchResult {
+    let empty = || SearchResult {
+        schema_version: SCHEMA_VERSION,
+        query: pattern.to_owned(),
+        results: vec![],
+        truncated: false,
+    };
+    // Parse the pattern by wrapping it in a synthetic signature.
+    let synthetic = format!("module Q\n\nq : {pattern}\n");
+    let parsed = fai_syntax::parse_module(fai_span::SourceId::new(0), &synthetic);
+    if parsed.diagnostics.iter().any(|d| d.severity == fai_diagnostics::Severity::Error) {
+        return empty();
+    }
+    let Some(pat_ty) = parsed.module.items.iter().find_map(|it| match &it.kind {
+        ItemKind::Signature { ty, .. } => Some(*ty),
+        _ => None,
+    }) else {
+        return empty();
+    };
+    let mut pvars = FxHashMap::default();
+    let pat_shape = shape_from_ast(&parsed.module, pat_ty, &mut pvars);
+
+    let mut hits: Vec<(f64, String, SearchHit)> = Vec::new();
+    for &file in files {
+        for d in &module_defs(db, file).defs {
+            let scheme = fai_types::def_type(db, file, d.name);
+            let mut cvars = FxHashMap::default();
+            let cand_shape = shape_from_ty(&scheme.ty, &mut cvars);
+            let mut subst = FxHashMap::default();
+            if let Some(exact) = match_shape(&pat_shape, &cand_shape, &mut subst) {
+                let score = if exact { 1.0 } else { 0.6 };
+                if let Some(symbol) = symbol_ref(db, file, d.name, resolver) {
+                    let key = symbol.path.clone();
+                    hits.push((
+                        score,
+                        key,
+                        SearchHit {
+                            symbol,
+                            ty: TypeRepr { display: fai_types::render_scheme(&scheme) },
+                            score,
+                        },
+                    ));
+                }
+            }
+        }
+    }
+    // Best score first, then by path for determinism.
+    hits.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(&b.1))
+    });
+    let results: Vec<SearchHit> = hits.into_iter().map(|(_, _, h)| h).collect();
+    let (results, truncated) = truncate(results, opts);
+    SearchResult { schema_version: SCHEMA_VERSION, query: pattern.to_owned(), results, truncated }
 }
 
 /// `fai query outline` / `api` node.
