@@ -6,11 +6,12 @@
 //! has errors.
 
 use fai_db::{Db, SourceFile};
-use fai_resolve::{DefId, Res, ResolvedBodies, module_defs, resolve};
+use fai_resolve::{CtorRef, DefId, LocalId, Res, ResolvedBodies, module_defs, resolve, type_decls};
 use fai_span::{Span, SpanResolver};
 use fai_syntax::Symbol;
 use fai_syntax::ast::{
-    ExprId, ExprKind, ItemKind, Module, PatKind, RowTail, TypeId, TypeKind, Visibility as AstVis,
+    ExprId, ExprKind, ItemKind, Module, PatKind, RowTail, TypeDef, TypeId, TypeKind,
+    Visibility as AstVis,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Serialize;
@@ -162,6 +163,190 @@ pub fn type_at(db: &dyn Db, target: &str, resolver: &dyn SpanResolver) -> TypeRe
         target: symbol_ref(db, t.file, t.name, resolver),
         ty: TypeRepr { display: fai_types::render_scheme(&scheme) },
     }
+}
+
+// --- position-based queries (hover / go-to-definition) -----------------------
+//
+// `fai query` addresses a definition by name; an editor addresses a *byte offset*
+// inside a file, and wants the most specific subexpression there. These two
+// queries answer at offset granularity: they find the innermost expression
+// containing the cursor and report its type (hover) or jump to what its reference
+// resolves to (go-to-definition). They power the LSP.
+
+/// The expressions whose span contains `offset`, smallest (innermost) first.
+///
+/// Half-open containment (`start <= offset < end`) so an offset is "the character
+/// under the cursor"; ties break by arena order, which is stable.
+fn exprs_containing(module: &Module, offset: u32) -> Vec<ExprId> {
+    let mut hits: Vec<(u32, ExprId)> = module
+        .exprs
+        .iter()
+        .enumerate()
+        .filter_map(|(i, e)| {
+            let (start, end) = (e.span.start().raw(), e.span.end().raw());
+            (start <= offset && offset < end).then(|| (end - start, ExprId::from_index(i)))
+        })
+        .collect();
+    hits.sort_by_key(|&(width, _)| width);
+    hits.into_iter().map(|(_, id)| id).collect()
+}
+
+/// The qualified name of the smallest top-level/nested binding whose item span
+/// contains `offset` — the definition whose body the cursor sits in (for keying
+/// the per-definition `body_types`).
+fn enclosing_def(db: &dyn Db, file: SourceFile, offset: u32) -> Option<Symbol> {
+    let parsed = fai_syntax::parse(db, file);
+    let mut best: Option<(u32, Symbol)> = None;
+    for d in &module_defs(db, file).defs {
+        let r = parsed.module.items[d.binding.index()].span;
+        if r.start().raw() <= offset && offset < r.end().raw() {
+            let width = r.end().raw() - r.start().raw();
+            if best.is_none_or(|(w, _)| width < w) {
+                best = Some((width, d.name));
+            }
+        }
+    }
+    best.map(|(_, name)| name)
+}
+
+/// The name a referencing expression refers to (for the hover label), or `None`
+/// when the expression is not a name reference.
+fn reference_name(module: &Module, resolved: &ResolvedBodies, expr: ExprId) -> Option<String> {
+    match resolved.get(expr)? {
+        Res::Def(d) => Some(d.name.as_str().to_owned()),
+        Res::Ctor(c) => Some(c.name.as_str().to_owned()),
+        Res::Builtin(s) => Some(s.as_str().to_owned()),
+        Res::Local(_) => match &module.expr(expr).kind {
+            ExprKind::Var(name) => Some(name.as_str().to_owned()),
+            _ => None,
+        },
+        Res::Error => None,
+    }
+}
+
+/// The declaration site of a data constructor: the variant's span within its
+/// `type` declaration (falling back to the whole declaration).
+fn ctor_location(db: &dyn Db, ctor: CtorRef, resolver: &dyn SpanResolver) -> Option<Location> {
+    let file = db.source_file(ctor.file)?;
+    let decls = type_decls(db, file);
+    let info = decls.ctor(ctor.name)?;
+    let type_info = decls.type_named(info.adt)?;
+    let parsed = fai_syntax::parse(db, file);
+    let item = &parsed.module.items[type_info.item.index()];
+    let range = match &item.kind {
+        ItemKind::Type { def: TypeDef::Union(variants), .. } => {
+            variants.iter().find(|v| v.name == ctor.name).map_or(item.span, |v| v.span)
+        }
+        _ => item.span,
+    };
+    let span = SpanJson::resolve(Span::new(file.source(db), range), resolver)?;
+    Some(Location { span, preview: None })
+}
+
+/// The binding site of a local (the pattern that introduced it). Local slots are
+/// unique within a file's resolution, so the reverse lookup is unambiguous.
+fn local_location(
+    db: &dyn Db,
+    file: SourceFile,
+    local: LocalId,
+    resolver: &dyn SpanResolver,
+) -> Option<Location> {
+    let resolved = resolve(db, file);
+    let pat = resolved.pat_locals.iter().find_map(|(&p, &l)| (l == local).then_some(p))?;
+    let parsed = fai_syntax::parse(db, file);
+    let span =
+        SpanJson::resolve(Span::new(file.source(db), parsed.module.pat(pat).span), resolver)?;
+    Some(Location { span, preview: None })
+}
+
+/// The hover answer at a byte offset: the innermost typed subexpression's type,
+/// labelled with the name it refers to when it is a reference.
+#[derive(Debug, Serialize)]
+pub struct HoverResult {
+    #[serde(rename = "schemaVersion")]
+    pub schema_version: u32,
+    /// The referenced name, when the subexpression is a name reference.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The subexpression's type.
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub ty: Option<TypeRepr>,
+    /// The subexpression's span (so an editor can underline what it described).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub span: Option<SpanJson>,
+}
+
+/// The type at a byte offset: the innermost expression that has an inferred type,
+/// rendered with the name it refers to when applicable. Powers LSP hover.
+#[must_use]
+pub fn hover_at(
+    db: &dyn Db,
+    file: SourceFile,
+    offset: u32,
+    resolver: &dyn SpanResolver,
+) -> HoverResult {
+    let empty = || HoverResult { schema_version: SCHEMA_VERSION, name: None, ty: None, span: None };
+    let parsed = fai_syntax::parse(db, file);
+    let resolved = resolve(db, file);
+    let Some(types) = enclosing_def(db, file, offset).map(|d| fai_types::body_types(db, file, d))
+    else {
+        return empty();
+    };
+    for expr in exprs_containing(&parsed.module, offset) {
+        let Some(ty) = types.get(expr) else { continue };
+        let span =
+            SpanJson::resolve(Span::new(file.source(db), parsed.module.expr(expr).span), resolver);
+        return HoverResult {
+            schema_version: SCHEMA_VERSION,
+            name: reference_name(&parsed.module, &resolved, expr),
+            ty: Some(TypeRepr { display: fai_types::render_canonical(ty) }),
+            span,
+        };
+    }
+    empty()
+}
+
+/// The definition site(s) of the reference at a byte offset: a top-level
+/// definition, a constructor, or a local binding. Powers LSP go-to-definition.
+#[must_use]
+pub fn definition_at(
+    db: &dyn Db,
+    file: SourceFile,
+    offset: u32,
+    resolver: &dyn SpanResolver,
+) -> DefResult {
+    let empty = || DefResult { schema_version: SCHEMA_VERSION, target: None, definitions: vec![] };
+    let parsed = fai_syntax::parse(db, file);
+    let resolved = resolve(db, file);
+    for expr in exprs_containing(&parsed.module, offset) {
+        let Some(res) = resolved.get(expr) else { continue };
+        let result = match res {
+            Res::Def(d) => db.source_file(d.file).and_then(|f| {
+                let symbol = symbol_ref(db, f, d.name, resolver)?;
+                let location = Location { span: symbol.span.clone(), preview: None };
+                Some(DefResult {
+                    schema_version: SCHEMA_VERSION,
+                    target: Some(symbol),
+                    definitions: vec![location],
+                })
+            }),
+            Res::Ctor(c) => ctor_location(db, c, resolver).map(|location| DefResult {
+                schema_version: SCHEMA_VERSION,
+                target: None,
+                definitions: vec![location],
+            }),
+            Res::Local(l) => local_location(db, file, l, resolver).map(|location| DefResult {
+                schema_version: SCHEMA_VERSION,
+                target: None,
+                definitions: vec![location],
+            }),
+            Res::Builtin(_) | Res::Error => None,
+        };
+        if let Some(result) = result {
+            return result;
+        }
+    }
+    empty()
 }
 
 /// `fai query refs`.

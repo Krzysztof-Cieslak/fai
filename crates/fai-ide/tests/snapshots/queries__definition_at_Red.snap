@@ -1,0 +1,24 @@
+---
+source: crates/fai-ide/tests/queries.rs
+expression: json(&r)
+---
+{
+  "schemaVersion": 1,
+  "definitions": [
+    {
+      "span": {
+        "file": "P.fai",
+        "start": {
+          "line": 4,
+          "column": 5
+        },
+        "end": {
+          "line": 4,
+          "column": 8
+        },
+        "byteStart": 27,
+        "byteEnd": 30
+      }
+    }
+  ]
+}

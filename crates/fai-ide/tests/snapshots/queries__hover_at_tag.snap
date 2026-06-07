@@ -1,0 +1,24 @@
+---
+source: crates/fai-ide/tests/queries.rs
+expression: json(&r)
+---
+{
+  "schemaVersion": 1,
+  "name": "tag",
+  "type": {
+    "display": "Color -> Int"
+  },
+  "span": {
+    "file": "P.fai",
+    "start": {
+      "line": 10,
+      "column": 11
+    },
+    "end": {
+      "line": 10,
+      "column": 14
+    },
+    "byteStart": 114,
+    "byteEnd": 117
+  }
+}
