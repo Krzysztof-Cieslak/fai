@@ -1439,6 +1439,34 @@ completeness):
   (match arms, `let`, parameters); `forall` binders stay plain variables.
   (Reserving `as` is safe — it appeared only in comments across the corpus.)
 
+- **D90 Advanced code-intelligence queries (`callers`/`callees`/`caps`/`search`,
+  `dependents --transitive`).** All build on the resolution reference graph
+  (`deps_by_def`) and the type queries; no new compiler phase.
+  - **Call hierarchy & transitive dependents.** `dependents --transitive` is a
+    breadth-first walk of the reverse reference graph. `callers`/`callees` return
+    edges with per-edge *sites*: `callees` walks the target's body collecting
+    referencing expressions; `callers` finds referencing definitions (reverse
+    graph) and walks each for its sites. The graph is the raw reference graph
+    (every reference), not the signature-firewalled SCC graph, so the hierarchy is
+    complete.
+  - **`caps`** reads a function's directly-requested capabilities from its
+    signature — a bare interface parameter, or a record parameter's
+    interface-typed fields (so `{ console : Console | _ }` and a `Runtime` both
+    surface their capabilities) — then adds those of its (transitive) callees over
+    the forward call graph, tagged with the callees they come through. Because
+    capabilities are explicit values, a well-typed function's signature already
+    captures its footprint; the transitive pass covers capabilities a callee
+    requests that the caller only constructs locally.
+  - **`search`** matches a type pattern structurally against each definition's
+    type, **without lowering the pattern through the type checker** (which would
+    emit diagnostics outside a tracked query): the pattern is parsed as a
+    signature and both sides are normalized to a shape tree. A pattern type
+    variable is a hole binding consistently to a candidate subtree; an open
+    pattern record admits extra candidate fields (row polymorphism); names match
+    by qualified or local segment. An alpha-equivalent match scores highest; a
+    hole-to-concrete or loose-name match scores lower. Search spans the whole
+    workspace, the standard library included.
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected milestones.
 
