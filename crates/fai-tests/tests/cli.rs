@@ -158,6 +158,17 @@ fn query_caps_reports_capability_footprint() {
 }
 
 #[test]
+fn query_search_finds_functions_by_type() {
+    // Search covers the standard library; `List.length : List 'a -> Int` is an
+    // exact match for the pattern.
+    let dir = empty_workspace();
+    let (code, out, err) =
+        run(&["fai", "query", "--no-daemon", "-C", dir.as_str(), "search", "List 'a -> Int"]);
+    assert_eq!(code, 0, "stderr: {err}");
+    assert!(out.contains("length"), "expected List.length among results: {out}");
+}
+
+#[test]
 fn query_outline_nests_modules() {
     let dir = nested_workspace();
     let (code, out, err) =

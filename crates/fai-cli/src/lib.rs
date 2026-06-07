@@ -462,7 +462,9 @@ fn to_request(sub: &QueryCommand) -> QueryRequest {
         QueryCommand::Callers { symbol } => QueryRequest::Callers { target: symbol.clone() },
         QueryCommand::Callees { symbol } => QueryRequest::Callees { target: symbol.clone() },
         QueryCommand::Caps { symbol } => QueryRequest::Caps { target: symbol.clone() },
-        QueryCommand::Search { .. } => QueryRequest::Unsupported { name: sub.name().to_owned() },
+        QueryCommand::Search { pattern } => {
+            QueryRequest::Search { pattern: pattern.clone(), limit: None }
+        }
     }
 }
 

@@ -1,7 +1,9 @@
 //! JSON snapshot tests for the `fai query` commands over a small workspace.
 
 use fai_db::{Db, DbSpanResolver, FaiDatabase, SourceFile};
-use fai_ide::{ListOpts, api, callees, callers, def, dependents, outline, refs, symbols, type_at};
+use fai_ide::{
+    ListOpts, api, callees, callers, def, dependents, outline, refs, search, symbols, type_at,
+};
 use indoc::indoc;
 
 fn workspace() -> (FaiDatabase, Vec<SourceFile>) {
@@ -131,6 +133,38 @@ fn callees_of_four() {
     assert!(names.contains(&"inc") && names.contains(&"two"), "{names:?}");
     let inc = r.edges.iter().find(|e| e.symbol.name == "inc").unwrap();
     assert_eq!(inc.sites.len(), 2, "B.four references A.inc twice");
+}
+
+#[test]
+fn search_ranks_exact_above_hole() {
+    let mut db = FaiDatabase::new();
+    let m = db.add_source(
+        "S.fai".into(),
+        indoc! {r#"
+            module S
+
+            public len : List 'a -> Int
+            let len xs = 0
+
+            public sumInts : List Int -> Int
+            let sumInts xs = 0
+
+            public other : Int -> Int
+            let other x = x
+        "#}
+        .to_owned(),
+    );
+    let files = vec![db.source_file(m).unwrap()];
+    let r = search(&db, &files, "List 'a -> Int", &DbSpanResolver::new(&db), ListOpts::default());
+    let names: Vec<&str> = r.results.iter().map(|h| h.symbol.name.as_str()).collect();
+    // `len` matches exactly (var<->var); `sumInts` matches with the hole bound to
+    // `Int`; `other` does not match at all.
+    assert_eq!(names.first(), Some(&"len"), "exact match ranks first: {names:?}");
+    assert!(names.contains(&"sumInts"), "{names:?}");
+    assert!(!names.contains(&"other"), "{names:?}");
+    let len_hit = r.results.iter().find(|h| h.symbol.name == "len").unwrap();
+    let sum_hit = r.results.iter().find(|h| h.symbol.name == "sumInts").unwrap();
+    assert!(len_hit.score > sum_hit.score, "exact score should exceed hole score");
 }
 
 #[test]

@@ -249,27 +249,6 @@ pub enum QueryCommand {
     },
 }
 
-impl QueryCommand {
-    /// The subcommand name, for diagnostics.
-    #[must_use]
-    pub fn name(&self) -> &'static str {
-        match self {
-            QueryCommand::Symbols => "symbols",
-            QueryCommand::Def { .. } => "def",
-            QueryCommand::Refs { .. } => "refs",
-            QueryCommand::Type { .. } => "type",
-            QueryCommand::Docs { .. } => "docs",
-            QueryCommand::Outline { .. } => "outline",
-            QueryCommand::Api { .. } => "api",
-            QueryCommand::Dependents { .. } => "dependents",
-            QueryCommand::Callers { .. } => "callers",
-            QueryCommand::Callees { .. } => "callees",
-            QueryCommand::Search { .. } => "search",
-            QueryCommand::Caps { .. } => "caps",
-        }
-    }
-}
-
 /// `fai daemon` subcommands.
 #[derive(Debug, Subcommand)]
 pub enum DaemonCommand {

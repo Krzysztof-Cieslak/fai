@@ -35,6 +35,8 @@ pub enum QueryRequest {
     Callees { target: String },
     /// The capability footprint of a function.
     Caps { target: String },
+    /// Hoogle-style search by a type pattern.
+    Search { pattern: String, limit: Option<usize> },
     /// A command that is recognized but not implemented yet.
     Unsupported { name: String },
 }
@@ -131,6 +133,12 @@ pub fn run_query(session: &Session, request: &QueryRequest) -> QueryResult {
             let r = fai_ide::caps(db, &files, target, &resolver);
             let ok = r.target.is_some();
             QueryResult::from_serializable(&r, ok)
+        }
+        QueryRequest::Search { pattern, limit } => {
+            // Search the whole workspace, including the standard library.
+            let all = db.all_source_files();
+            let r = fai_ide::search(db, &all, pattern, &resolver, ListOpts { limit: *limit });
+            QueryResult::from_serializable(&r, true)
         }
         QueryRequest::Unsupported { name } => {
             let body = serde_json::json!({
