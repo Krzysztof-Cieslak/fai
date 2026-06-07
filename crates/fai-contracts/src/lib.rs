@@ -11,6 +11,7 @@
 //! that did not hold / a `forall` counterexample) and [`CONTRACT_NOT_RUNNABLE`]
 //! (a contract whose binders cannot be generated, e.g. a function-typed binder).
 
+mod arb;
 mod run;
 mod synth;
 

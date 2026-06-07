@@ -441,12 +441,19 @@ the combinators for the binders' types — reference-counts and JIT-compiles it
 with its reachable callees (`fai-codegen`'s `JitProgram`), then applies it and
 decodes the returned `TestResult`. A failure is a located **`FAI6001`** with the
 shrunk counterexample (binder names + rendered value); a binder with no generator
-(function type, record/ADT, >4 binders) is **`FAI6002`**. `fai test` takes
-`[path]`/`--match`/`--seed`/`--count`/`--max-size`, runs in-process, and asserts
-the runtime's live-object count returns to zero. **Stage 2** (per-type synthesis
-for user records/ADTs via `Arb.fix` + `DataTag`/`DataField`) and isolated-worker
-execution with `$/testEvent` streaming are noted as follow-ups. See decisions
-**D80–D86**.
+(a function type, `>4` binders, or an open record row) is **`FAI6002`**. `fai test`
+takes `[path]`/`--match`/`--seed`/`--count`/`--max-size`, runs in-process, and
+asserts the runtime's live-object count returns to zero. **User records and ADTs**
+(including recursive ones like `Dict`/`Set`/`Tree`) now generate too: the compiler
+synthesizes a top-level `Arbitrary` definition per type — referenced as a `Global`,
+so a recursive type is a self-reference guarded by the size budget, and every
+synthesized function is capture-free (a captured value becomes a leading parameter
+supplied by partial application). The whole `samples/` + `std/` contract corpus
+runs and passes. Remaining follow-ups: **isolated-worker execution** (the
+in-process runner aborts if a generated input triggers a runtime trap, e.g.
+division by zero — worker isolation contains that) with `$/testEvent` streaming,
+and revisiting **full-domain float** generation (it surfaces precision-edge
+counterexamples on float-arithmetic laws). See decisions **D80–D87**.
 
 **Deliverables**
 - `fai-contracts`: collect the typed `example`/`forall` declarations from each
@@ -1322,9 +1329,31 @@ Resolved while implementing **M7** (contracts: examples & properties):
   from `[-size, size]` and `List` length ≤ size — bounded so `abs`/`clamp`-style
   laws hold (no `i64::MIN`/overflow surprises). Generators cover the primitives
   and built-in constructors via the std combinators (which the compiler composes);
-  **`Char` is omitted** (the native backend does not support it yet, so a `Char`
-  binder is `FAI6002`), and per-type synthesis for **user records/ADTs** (via a
-  std `Arb.fix` + `DataTag`/`DataField`) is **Stage 2**.
+   **`Char` is omitted** (the native backend does not support it yet, so a `Char`
+   binder is `FAI6002`).
+- **D87 Per-type `Arbitrary` synthesis for records and ADTs (Stage 2).** A user
+  record or ADT has no generic combinator, so the compiler synthesizes a
+  top-level `Arbitrary` *definition* per type, referenced as a `Global`. Two
+  properties make this tractable without a by-hand closure-conversion pass:
+  (1) because each type's arbitrary is a top-level def, composing them is just
+  `Global` references, and a **recursive type is a self-reference** (the def's
+  generator refers to its own `Global`) guarded by the size budget — at size 0
+  only non-recursive constructors are chosen, and recursive fields are generated
+  at `size - 1` (so no `Arb.fix` combinator is needed); (2) every synthesized
+  function is **capture-free** — a value it would otherwise close over (the record
+  being shrunk, the constructor being rebuilt) becomes a **leading parameter
+  supplied by partial application**, so the runtime forms the closure (e.g.
+  `List.map (setField r) …`). A record's generator builds the record literal and
+  threads the seed through field generators; its shrinker shrinks each field via a
+  partially-applied setter; its renderer prints `{ l = … }`. An ADT's generator
+  picks a constructor with a (private) `Test.choose` and builds it; its
+  shrinker dispatches on the tag, shrinking fields (rebuilt via per-constructor
+  setters) and yielding recursive subterms; its renderer dispatches on the tag and
+  parenthesizes a constructor argument only when it actually renders with a space
+  (`Test.parenIfSpaced`). Field types come from `constructor_scheme` instantiated
+  against the binder's concrete type arguments. Mutually-recursive ADTs and
+  recursion only reachable through a collection field (e.g. `Rose (List Rose)`)
+  are not size-guarded yet; a true fuel parameter is future work.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected milestones.

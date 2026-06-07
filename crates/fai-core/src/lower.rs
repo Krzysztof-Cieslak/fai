@@ -60,6 +60,7 @@ pub fn core(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
         next_local: first_free_local(&resolved),
         fns: vec![placeholder_fn()],
         evidence: FxHashMap::default(),
+        emit_unsupported: true,
     };
 
     let param_locals: Vec<LocalId> = params.iter().map(|&p| lowerer.param_local(p)).collect();
@@ -112,6 +113,10 @@ pub fn lower_params_body(
         next_local: first_free_local(&resolved),
         fns: vec![placeholder_fn()],
         evidence: FxHashMap::default(),
+        // The contract synthesizer runs outside a tracked query, so it must not
+        // accumulate diagnostics; unsupported constructs become error nodes the
+        // caller detects (and reports as not-runnable).
+        emit_unsupported: false,
     };
     let param_locals: Vec<LocalId> = params.iter().map(|&p| lowerer.param_local(p)).collect();
     let body = lowerer.lower_expr(body);
@@ -195,6 +200,11 @@ struct Lowerer<'a> {
     /// holding the count of the row's hidden fields before each lacked label.
     /// Keyed by the row variable's body-numbered id and the label.
     evidence: FxHashMap<(RowVarId, Symbol), LocalId>,
+    /// Whether to accumulate unsupported-construct diagnostics. The per-definition
+    /// `core` query does (it runs inside salsa); a caller outside a tracked query
+    /// (the contract synthesizer) suppresses them and detects the resulting error
+    /// placeholders instead, so it never accumulates outside an active query.
+    emit_unsupported: bool,
 }
 
 impl Lowerer<'_> {
@@ -208,17 +218,19 @@ impl Lowerer<'_> {
 
     /// Reports an unsupported construct and yields an error placeholder.
     fn unsupported(&self, range: TextRange, feature: &str) -> CExpr {
-        emit(
-            self.db,
-            Diagnostic::error(
-                UNSUPPORTED_NATIVE,
-                format!("{feature} is not supported by the native backend yet"),
-                self.span(range),
-            )
-            .with_help(
-                "the M3 native subset is Int, Bool, String, functions, let, if, and arithmetic",
-            ),
-        );
+        if self.emit_unsupported {
+            emit(
+                self.db,
+                Diagnostic::error(
+                    UNSUPPORTED_NATIVE,
+                    format!("{feature} is not supported by the native backend yet"),
+                    self.span(range),
+                )
+                .with_help(
+                    "the M3 native subset is Int, Bool, String, functions, let, if, and arithmetic",
+                ),
+            );
+        }
         error_expr()
     }
 
@@ -355,15 +367,17 @@ impl Lowerer<'_> {
     /// Reports a row-polymorphic record operation (deferred to a later milestone)
     /// and yields an error placeholder.
     fn unsupported_row_poly(&self, range: TextRange, feature: &str) -> CExpr {
-        emit(
-            self.db,
-            Diagnostic::error(
-                ROW_POLY_UNSUPPORTED,
-                format!("{feature} is not supported by the native backend yet"),
-                self.span(range),
-            )
-            .with_help("give the value a closed record type so the field offsets are known"),
-        );
+        if self.emit_unsupported {
+            emit(
+                self.db,
+                Diagnostic::error(
+                    ROW_POLY_UNSUPPORTED,
+                    format!("{feature} is not supported by the native backend yet"),
+                    self.span(range),
+                )
+                .with_help("give the value a closed record type so the field offsets are known"),
+            );
+        }
         error_expr()
     }
 

@@ -46,10 +46,14 @@
 > **dogfooded in the standard library** (`std/Test.fai`: a pure splitmix64 `Gen`,
 > an `Arbitrary 'a` bundle of generator/shrinker/renderer, type-directed
 > combinators, and the `checkExample`/`checkForall` driver with shrinking); the
-> compiler synthesizes, per contract, a harness that composes those combinators
+ > compiler synthesizes, per contract, a harness that composes those combinators
 > for the binders' (monomorphized) types and JIT-runs it, decoding a `TestResult`
 > and reporting a failure as a located **`FAI6001`** with a shrunk counterexample
-> (an ungeneratable binder is **`FAI6002`**). (Splitmix needs **bitwise `Int`
+> (an ungeneratable binder is **`FAI6002`**). User **records and ADTs** (including
+> recursive ones like `Dict`/`Set`/`Tree`) generate too, via a synthesized
+> top-level `Arbitrary` definition per type (a recursive type is a self-reference
+> guarded by a size budget; every synthesized function is capture-free, closing
+> over values by partial application). (Splitmix needs **bitwise `Int`
 > intrinsics** — `Int.and/or/xor/complement/shiftLeft/shiftRight/shiftRightLogical`
 > — and full-domain float generation needs `Float.fromBits`/`toBits`, both added
 > as part of this work.) Later milestones (the LSP, …) define the *intended*
