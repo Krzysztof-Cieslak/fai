@@ -58,5 +58,9 @@ harness = false
 name = "data_layer"
 harness = false
 
+[[bench]]
+name = "interfaces"
+harness = false
+
 [lints]
 workspace = true
