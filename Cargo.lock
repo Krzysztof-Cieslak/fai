@@ -715,6 +715,7 @@ dependencies = [
  "fai-types",
  "indoc",
  "proptest",
+ "rustc-hash",
  "salsa",
 ]
 

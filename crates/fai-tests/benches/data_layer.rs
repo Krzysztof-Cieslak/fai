@@ -158,11 +158,14 @@ fn prim_float_arithmetic(bencher: Bencher) {
 #[divan::bench]
 fn prim_make_data_and_project(bencher: Bencher) {
     bencher.bench(|| {
-        // SAFETY: a two-field data value, then a projection that consumes it.
+        // SAFETY: a two-field data value, then a projection that borrows it (so
+        // the base is released separately).
         let field = unsafe {
             let fields = [rt::fai_box_int(1 << 62), rt::fai_box_int(2)];
             let d = rt::fai_make_data(1, 2, fields.as_ptr());
-            rt::fai_data_field(d, 0)
+            let field = rt::fai_data_field(d, 0);
+            rt::fai_drop(d);
+            field
         };
         rt::fai_drop(divan::black_box(field));
     });

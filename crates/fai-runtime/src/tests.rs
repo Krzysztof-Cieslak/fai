@@ -454,12 +454,14 @@ fn make_data_tag_and_field_projection() {
     let d = unsafe { fai_make_data(1, 2, fields.as_ptr()) };
     assert_eq!(live_count(), base + 2, "the data object plus its boxed field are live");
 
-    // The tag (dup `d` so it survives the consuming read).
-    assert_eq!(fai_data_tag(fai_dup(d)), imm_int(1));
+    // The tag and fields are read by *borrowing* `d` (no release), so it stays
+    // live across these reads and is dropped exactly once at the end.
+    assert_eq!(fai_data_tag(d), imm_int(1));
     // Field 0 is the immediate `10`.
-    assert!(int_eq(fai_data_field(fai_dup(d), 0), 10));
-    // Field 1 is the boxed Int; this consumes the last reference to `d`.
+    assert!(int_eq(fai_data_field(d, 0), 10));
+    // Field 1 is the boxed Int, duplicated out of the still-live `d`.
     assert!(int_eq(fai_data_field(d, 1), BIG));
+    fai_drop(d); // release the borrowed base once
     assert_eq!(live_count(), base, "data object and its capture released");
 }
 

@@ -417,13 +417,13 @@ impl<M: Module> Translator<'_, M> {
         let fref = self.module.declare_func_in_func(code_id, self.builder.func);
         let code_ptr = self.builder.ins().func_addr(ptr, fref);
 
-        // Build the environment array, duplicating each captured value (the
-        // closure takes ownership; the binding keeps its own reference).
+        // Build the environment array. The reference-count pass has already
+        // duplicated each captured value where it is still live afterward
+        // (`MakeClosure` consumes its captures), so the values are stored
+        // directly into the env.
         let mut env_vals = Vec::with_capacity(captures.len());
         for &c in captures {
-            let v = self.use_var(c);
-            let duped = self.call1("fai_dup", v);
-            env_vals.push(duped);
+            env_vals.push(self.use_var(c));
         }
         let env_ptr = self.spill(&env_vals);
 

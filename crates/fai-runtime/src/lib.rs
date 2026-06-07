@@ -370,8 +370,9 @@ unsafe fn data_field_count(v: Value) -> usize {
     (size - DATA_FIELDS_OFFSET) / 8
 }
 
-/// Reads a data value's constructor tag (consuming `v`), as an immediate `Int`.
-/// A nullary constructor is an immediate whose payload is its tag.
+/// Reads a data value's constructor tag (**borrowing** `v`), as an immediate
+/// `Int`. A nullary constructor is an immediate whose payload is its tag. The
+/// base is not released here; its owner drops it once at its last use.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_data_tag(v: Value) -> Value {
     let tag = if is_boxed(v) {
@@ -380,18 +381,17 @@ pub extern "C" fn fai_data_tag(v: Value) -> Value {
     } else {
         v >> 1
     };
-    fai_drop(v);
     imm_int(tag)
 }
 
 /// Projects field `index` of a data value, returning an owned reference to it and
-/// consuming `v`.
+/// **borrowing** `v` (the base is not released here — its owner drops it once at
+/// its last use; the projected field is duplicated so it outlives that drop).
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_data_field(v: Value, index: i64) -> Value {
     // SAFETY: `v` is a boxed data value with at least `index + 1` fields.
     let field = unsafe { read_i64(as_obj(v), DATA_FIELDS_OFFSET + index as usize * 8) };
     fai_dup(field);
-    fai_drop(v);
     field
 }
 
