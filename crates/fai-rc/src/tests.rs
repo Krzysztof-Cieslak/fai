@@ -285,6 +285,50 @@ fn rc_invariants_hold_over_a_corpus() {
             "#},
             "main",
         ),
+        // An interface instance lowers to a dictionary of method closures.
+        (
+            indoc! {r#"
+                module M
+
+                interface Greeter =
+                  greet : String -> String
+
+                let exclaim = { Greeter with greet name = name ++ "!" }
+            "#},
+            "exclaim",
+        ),
+        // A row-polymorphic field access takes a leading evidence parameter and a
+        // dynamic field read; evidence is an immediate borrowed by the read.
+        (
+            indoc! {r#"
+                module M
+
+                public getX : { x : Int | 'r } -> Int
+                let getX rec = rec.x
+            "#},
+            "getX",
+        ),
+        // A least-authority capability access through a row variable.
+        (
+            indoc! {r#"
+                module M
+
+                public announce : { console : Console | 'r } -> String -> Unit
+                let announce env msg = env.console.writeLine msg
+            "#},
+            "announce",
+        ),
+        // A row-polymorphic record update clones the record and overwrites the
+        // field at its evidence slot (the offset is a value use of the evidence).
+        (
+            indoc! {r#"
+                module M
+
+                public bump : { n : Int | 'r } -> { n : Int | 'r }
+                let bump rec = { rec with n = rec.n + 1 }
+            "#},
+            "bump",
+        ),
     ];
     for (src, name) in corpus {
         let (db, file) = db_with(src);
