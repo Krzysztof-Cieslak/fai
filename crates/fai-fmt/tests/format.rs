@@ -694,6 +694,17 @@ fn fmt_preserves_structure_examples() {
               match r with
               | { x = 0 | _ } -> 0
               | { x, y } -> x"#},
+        // Interfaces, instances, and operator definitions.
+        indoc! {r#"
+            module M
+            interface Greeter =
+              greet : String -> String
+              shout : String -> String"#},
+        "module M\nlet g = { Greeter with greet n = n, shout n = n }",
+        "module M\nlet (+-+) a b = a + b",
+        "module M\nlet ( ** ) a b = a + b",
+        "module M\nlet eq = (=)",
+        "module M\nlet add = (+)",
     ] {
         let before = parse_module(SourceId::new(0), src);
         assert!(before.diagnostics.is_empty(), "sample did not parse: {src}");
@@ -702,6 +713,36 @@ fn fmt_preserves_structure_examples() {
         assert!(after.diagnostics.is_empty(), "reformatted output did not parse:\n{out}");
         assert_eq!(shape(&before.module), shape(&after.module), "src: {src}\nout:\n{out}");
     }
+}
+
+#[test]
+fn interface_and_instance_format() {
+    let iface = assert_canonical(indoc! {r#"
+        module M
+        public interface Greeter =
+          greet : String -> String
+          shout : String -> String"#});
+    assert!(
+        iface.contains(
+            "public interface Greeter =\n  greet : String -> String\n  shout : String -> String"
+        ),
+        "interface not canonical:\n{iface}"
+    );
+
+    let inst = assert_canonical("module M\nlet g = { Greeter with greet n = n, shout n = n }");
+    assert!(inst.contains("{ Greeter with greet n = n, shout n = n }"), "instance:\n{inst}");
+}
+
+#[test]
+fn user_operator_definitions_and_values_format() {
+    // Operator names keep their `(op)` spelling; a `*`-led operator gets inner
+    // spaces so `( **` is never read as the start of a block comment.
+    assert!(assert_canonical("module M\nlet (+-+) a b = a + b").contains("let (+-+) a b = a + b"));
+    assert!(
+        assert_canonical("module M\nlet ( ** ) a b = a + b").contains("let ( ** ) a b = a + b")
+    );
+    assert!(assert_canonical("module M\nlet eq = (=)").contains("let eq = (=)"));
+    assert!(assert_canonical("module M\nlet add = (+)").contains("let add = (+)"));
 }
 
 #[test]
