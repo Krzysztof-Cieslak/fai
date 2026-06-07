@@ -1,12 +1,9 @@
 //! Command orchestration for the Fai CLI and daemon.
 //!
-//! This crate is the seam between the thin clients (the CLI today, the daemon
-//! later) and the query database. It defines the result envelopes (the stable
-//! JSON schemas), the workspace [`Session`], and one entry point per command.
-//!
-//! Every command is a stub for now: it returns a single [`NOT_IMPLEMENTED`]
-//! diagnostic. The signatures already take `&dyn Db` so the warm-database daemon
-//! can call the very same functions once the commands gain real behavior.
+//! This crate is the seam between the thin clients (the CLI and the daemon) and
+//! the query database. It defines the result envelopes (the stable JSON schemas),
+//! the workspace [`Session`], and one entry point per command. Entry points take
+//! `&dyn Db` so the warm-database daemon and the one-shot CLI share them.
 
 #[allow(unsafe_code)]
 mod backend;
@@ -178,17 +175,6 @@ pub struct CommandOutput {
 /// refers to no registered file, so resolvers report it as `<unknown>`.
 pub(crate) fn tooling_span() -> Span {
     Span::new(SourceId::new(u32::MAX), TextRange::empty(ByteOffset::ZERO))
-}
-
-/// Builds the standard "not implemented" result for a command.
-fn not_implemented(_db: &dyn Db, command: &str) -> CommandResult {
-    let diagnostic = Diagnostic::error(
-        NOT_IMPLEMENTED,
-        format!("`fai {command}` is not implemented yet"),
-        tooling_span(),
-    )
-    .with_help("this command has no behavior in the current build");
-    CommandResult { diagnostics: vec![diagnostic], ok: false }
 }
 
 /// Renders diagnostics to a human-readable string, for paths that report errors
@@ -391,27 +377,11 @@ pub fn fmt(db: &dyn Db, files: &[SourceFile]) -> FmtResult {
     FmtResult { files: formatted, diagnostics }
 }
 
-/// `fai lsp` — start the language server.
-#[must_use]
-pub fn lsp(db: &dyn Db) -> CommandResult {
-    not_implemented(db, "lsp")
-}
-
 #[cfg(test)]
 mod tests {
     use fai_db::FaiDatabase;
 
     use super::*;
-
-    #[test]
-    fn lsp_is_not_implemented_reports_fai0001() {
-        let db = FaiDatabase::new();
-        let result = lsp(&db); // `lsp` is still a stub
-        assert!(!result.ok);
-        assert_eq!(result.diagnostics.len(), 1);
-        assert_eq!(result.diagnostics[0].code, NOT_IMPLEMENTED);
-        assert!(result.diagnostics[0].message.contains("lsp"));
-    }
 
     #[test]
     fn test_with_no_files_is_ok() {
