@@ -148,11 +148,13 @@ pub fn infer_scc(
     let mut scc_types: FxHashMap<DefId, SolveTy> = FxHashMap::default();
     let mut declared: FxHashMap<DefId, Scheme> = FxHashMap::default();
     let mut declared_vars: FxHashMap<DefId, Vec<crate::ty::TyVarId>> = FxHashMap::default();
+    let mut declared_rows: FxHashMap<DefId, Vec<crate::ty::RowVarId>> = FxHashMap::default();
     for m in members {
         if let Some(scheme) = declared_scheme(db, file, m.name) {
-            let (mono, vars) = cx.instantiate_tracked(&scheme);
+            let (mono, vars, rows) = cx.instantiate_tracked(&scheme);
             scc_types.insert(*m, mono);
             declared_vars.insert(*m, vars);
+            declared_rows.insert(*m, rows);
             declared.insert(*m, scheme);
         } else {
             scc_types.insert(*m, cx.fresh());
@@ -209,11 +211,16 @@ pub fn infer_scc(
     }
 
     // An over-general signature is one whose quantified variables the body forced
-    // to concrete types or collapsed together.
+    // to concrete types or collapsed together, or whose quantified row variable
+    // the body forced to contain a field the signature does not name (which would
+    // read past a caller's record).
     for m in members {
         if declared.contains_key(m) && !mismatches.contains(m) {
-            let over_general = declared_vars.get(m).is_some_and(|vars| !cx.all_distinct_free(vars));
-            if over_general {
+            let vars_over_general =
+                declared_vars.get(m).is_some_and(|vars| !cx.all_distinct_free(vars));
+            let rows_over_general =
+                declared_rows.get(m).is_some_and(|rows| !cx.rows_gained_no_fields(rows));
+            if vars_over_general || rows_over_general {
                 mismatches.push(*m);
             }
         }
