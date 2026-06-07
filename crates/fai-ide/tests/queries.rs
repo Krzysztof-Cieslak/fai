@@ -1,7 +1,7 @@
 //! JSON snapshot tests for the `fai query` commands over a small workspace.
 
 use fai_db::{Db, DbSpanResolver, FaiDatabase, SourceFile};
-use fai_ide::{ListOpts, api, def, dependents, outline, refs, symbols, type_at};
+use fai_ide::{ListOpts, api, callees, callers, def, dependents, outline, refs, symbols, type_at};
 use indoc::indoc;
 
 fn workspace() -> (FaiDatabase, Vec<SourceFile>) {
@@ -70,8 +70,67 @@ fn refs_snapshot() {
 #[test]
 fn dependents_snapshot() {
     let (db, files) = workspace();
-    let r = dependents(&db, &files, "A.inc", &DbSpanResolver::new(&db), ListOpts::default());
+    let r = dependents(&db, &files, "A.inc", &DbSpanResolver::new(&db), false, ListOpts::default());
     insta::assert_snapshot!("dependents_A_inc", json(&r));
+}
+
+#[test]
+fn dependents_transitive_follows_the_chain() {
+    let mut db = FaiDatabase::new();
+    let c = db.add_source(
+        "C.fai".into(),
+        indoc! {r#"
+            module C
+
+            public base : Int
+            let base = 0
+
+            let mid = base + 1
+
+            let top = mid + 1
+        "#}
+        .to_owned(),
+    );
+    let files = vec![db.source_file(c).unwrap()];
+    let names = |transitive: bool| -> Vec<String> {
+        let r = dependents(
+            &db,
+            &files,
+            "C.base",
+            &DbSpanResolver::new(&db),
+            transitive,
+            ListOpts::default(),
+        );
+        r.dependents.iter().map(|s| s.name.clone()).collect()
+    };
+    // Direct: only `mid` references `base`.
+    let direct = names(false);
+    assert!(direct.contains(&"mid".to_owned()), "{direct:?}");
+    assert!(!direct.contains(&"top".to_owned()), "{direct:?}");
+    // Transitive: `top` reaches `base` through `mid`.
+    let all = names(true);
+    assert!(all.contains(&"mid".to_owned()) && all.contains(&"top".to_owned()), "{all:?}");
+}
+
+#[test]
+fn callers_of_inc() {
+    let (db, files) = workspace();
+    let r = callers(&db, &files, "A.inc", &DbSpanResolver::new(&db));
+    // Both `B.two` and `B.four` reference `A.inc` (edges sorted by path).
+    let names: Vec<&str> = r.edges.iter().map(|e| e.symbol.name.as_str()).collect();
+    assert_eq!(names, vec!["four", "two"], "{names:?}");
+    let four = r.edges.iter().find(|e| e.symbol.name == "four").unwrap();
+    assert_eq!(four.sites.len(), 2, "B.four calls A.inc twice");
+}
+
+#[test]
+fn callees_of_four() {
+    let (db, _files) = workspace();
+    let r = callees(&db, "B.four", &DbSpanResolver::new(&db));
+    let names: Vec<&str> = r.edges.iter().map(|e| e.symbol.name.as_str()).collect();
+    assert!(names.contains(&"inc") && names.contains(&"two"), "{names:?}");
+    let inc = r.edges.iter().find(|e| e.symbol.name == "inc").unwrap();
+    assert_eq!(inc.sites.len(), 2, "B.four references A.inc twice");
 }
 
 #[test]

@@ -27,9 +27,13 @@ pub enum QueryRequest {
     Outline { target: String },
     /// A module's public interface.
     Api { module: String },
-    /// Reverse dependencies of a target.
-    Dependents { target: String, limit: Option<usize> },
-    /// A command that is recognized but not implemented in M2.
+    /// Reverse dependencies of a target (transitive closure when `transitive`).
+    Dependents { target: String, transitive: bool, limit: Option<usize> },
+    /// Inbound call edges (the definitions that reference the target).
+    Callers { target: String },
+    /// Outbound call edges (the definitions the target references).
+    Callees { target: String },
+    /// A command that is recognized but not implemented yet.
     Unsupported { name: String },
 }
 
@@ -99,8 +103,25 @@ pub fn run_query(session: &Session, request: &QueryRequest) -> QueryResult {
             let r = fai_ide::api(db, module, &files, &resolver);
             QueryResult::from_serializable(&r, true)
         }
-        QueryRequest::Dependents { target, limit } => {
-            let r = fai_ide::dependents(db, &files, target, &resolver, ListOpts { limit: *limit });
+        QueryRequest::Dependents { target, transitive, limit } => {
+            let r = fai_ide::dependents(
+                db,
+                &files,
+                target,
+                &resolver,
+                *transitive,
+                ListOpts { limit: *limit },
+            );
+            let ok = r.target.is_some();
+            QueryResult::from_serializable(&r, ok)
+        }
+        QueryRequest::Callers { target } => {
+            let r = fai_ide::callers(db, &files, target, &resolver);
+            let ok = r.target.is_some();
+            QueryResult::from_serializable(&r, ok)
+        }
+        QueryRequest::Callees { target } => {
+            let r = fai_ide::callees(db, target, &resolver);
             let ok = r.target.is_some();
             QueryResult::from_serializable(&r, ok)
         }
