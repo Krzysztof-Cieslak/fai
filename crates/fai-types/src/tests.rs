@@ -267,6 +267,87 @@ fn console_writeline_via_runtime_typechecks() {
 }
 
 #[test]
+fn console_write_line_rejects_a_non_string() {
+    let src = indoc! {r#"
+        module M
+
+        public main : Runtime -> Unit
+        let main runtime = runtime.console.writeLine 5
+    "#};
+    let (db, f) = db_with_std(&[("M.fai", src)]);
+    assert!(
+        check_codes(&db, f[0]).contains(&"FAI3001".to_owned()),
+        "got {:?}",
+        check_codes(&db, f[0])
+    );
+}
+
+#[test]
+fn file_read_rejects_a_non_string_path() {
+    let src = indoc! {r#"
+        module M
+
+        public probe : Runtime -> Result String String
+        let probe runtime = runtime.fs.readFile 5
+    "#};
+    let (db, f) = db_with_std(&[("M.fai", src)]);
+    assert!(
+        check_codes(&db, f[0]).contains(&"FAI3001".to_owned()),
+        "got {:?}",
+        check_codes(&db, f[0])
+    );
+}
+
+#[test]
+fn random_capability_requires_a_random_field() {
+    // A function holding only `Console` cannot reach `random`.
+    let src = indoc! {r#"
+        module M
+
+        public roll : { console : Console } -> Int
+        let roll env = env.random.nextInt 6
+    "#};
+    let (db, f) = db_with_std(&[("M.fai", src)]);
+    assert!(
+        check_codes(&db, f[0]).contains(&"FAI3001".to_owned()),
+        "got {:?}",
+        check_codes(&db, f[0])
+    );
+}
+
+#[test]
+fn row_polymorphic_body_reading_an_unpromised_field_is_rejected() {
+    // The signature promises only `x`, but the body reads `y`; accepting it would
+    // let a caller pass a record without `y`, reading past it. The signature is
+    // rejected as too general.
+    let src = indoc! {r#"
+        module M
+
+        public bad : { x : Int | _ } -> Int
+        let bad r = r.y
+    "#};
+    let (db, f) = db_with_std(&[("M.fai", src)]);
+    assert!(
+        check_codes(&db, f[0]).contains(&"FAI3004".to_owned()),
+        "got {:?}",
+        check_codes(&db, f[0])
+    );
+}
+
+#[test]
+fn row_polymorphic_signature_naming_every_read_field_is_accepted() {
+    // The sound counterpart: the signature names both fields the body reads.
+    let src = indoc! {r#"
+        module M
+
+        public sum : { x : Int, y : Int | _ } -> Int
+        let sum r = r.x + r.y
+    "#};
+    let (db, f) = db_with_std(&[("M.fai", src)]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+}
+
+#[test]
 fn effect_without_the_capability_is_a_type_error() {
     // A function that only holds a `Clock` cannot reach the console: the record
     // lacks the `console` field, so the access fails to type-check.

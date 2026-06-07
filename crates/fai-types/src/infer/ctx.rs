@@ -574,12 +574,28 @@ impl InferCtx {
         self.instantiate_tracked(scheme).0
     }
 
+    /// Whether none of `rows` — a signature's quantified row variables — gained a
+    /// field while checking the body. A signature row variable forced to contain
+    /// a field promises less than the body needs (the body would read a field the
+    /// caller is not required to provide), so the signature is too general.
+    #[must_use]
+    pub fn rows_gained_no_fields(&self, rows: &[RowVarId]) -> bool {
+        rows.iter().all(|&v| {
+            self.expand_row(&SolveRow { fields: Vec::new(), tail: RowTail::Open(v) })
+                .fields
+                .is_empty()
+        })
+    }
+
     /// Like [`instantiate`](InferCtx::instantiate), but also returns the fresh
-    /// variable id introduced for each of the scheme's quantified variables (in
-    /// `scheme.vars` order). Used to check a signature is not *more general* than
-    /// the body: if a fresh var ends up bound to a concrete type or shared with
-    /// another, the signature over-generalized.
-    pub fn instantiate_tracked(&mut self, scheme: &Scheme) -> (SolveTy, Vec<TyVarId>) {
+    /// variable id introduced for each of the scheme's quantified type *and* row
+    /// variables. Used to check a signature is not *more general* than the body:
+    /// if a fresh type var ends up bound to a concrete type or shared with
+    /// another, or a fresh row var gains a field, the signature over-generalized.
+    pub fn instantiate_tracked(
+        &mut self,
+        scheme: &Scheme,
+    ) -> (SolveTy, Vec<TyVarId>, Vec<RowVarId>) {
         let mut map = InstMap::default();
         let mut fresh_vars = Vec::with_capacity(scheme.vars.len());
         for &v in &scheme.vars {
@@ -589,7 +605,8 @@ impl InferCtx {
             }
         }
         let solved = self.instantiate_solve(&scheme.ty, &mut map);
-        (solved, fresh_vars)
+        let fresh_rows = scheme.row_vars.iter().filter_map(|v| map.rows.get(v).copied()).collect();
+        (solved, fresh_vars, fresh_rows)
     }
 
     /// Builds a solver type from a scheme body, mapping quantified type variables

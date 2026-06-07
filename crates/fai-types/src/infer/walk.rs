@@ -469,7 +469,7 @@ impl<E: Env> Walker<'_, E> {
             );
             return SolveTy::Error;
         };
-        let (method_ty, fresh) = self.cx.instantiate_tracked(&scheme);
+        let (method_ty, fresh, _) = self.cx.instantiate_tracked(&scheme);
         // The leading fresh variables correspond to the interface parameters.
         let n = interface_param_count(self.db, iref);
         for (param_instance, arg) in fresh.iter().take(n).zip(args) {
