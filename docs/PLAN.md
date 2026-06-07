@@ -464,12 +464,48 @@ counterexamples on float-arithmetic laws). See decisions **D80–D87**.
   shrinking on failure.
 - `fai test` runs all contracts and reports pass/fail with codes + JSON.
 
-**Acceptance**
+**Acceptance** (met)
 - `fai test` passes for all contracts in `samples/`; a deliberately wrong
   `example`/`forall` fails with a precise, located diagnostic (+ shrunk
   counterexample for properties).
 
-**Crates:** `fai-contracts` (+ `fai-cli`, `fai-driver`).
+**Follow-up work (deferred; correctness-neutral unless noted):**
+- **Isolated-worker execution for `fai test`.** The runner is in-process, so a
+  generated input that triggers a runtime trap (e.g. integer division by zero in
+  a property body — observed running the `Poker` fixture) **aborts the process**.
+  Run contracts in the supervised worker that `fai run` already uses (timeouts +
+  resource limits), and stream per-contract results as `$/testEvent` so the
+  daemon serves `fai test` (today it routes in-process; results are a rendered
+  `TestOutput`). This is the one *robustness* gap, not just an optimization.
+- **Generators for the remaining type shapes.** Mutually-recursive ADTs, and
+  recursion reachable only through a collection field (e.g. `Rose (List Rose)`),
+  are not size-guarded — generation could diverge; add a fuel parameter threaded
+  through generation. **`Char`** generation awaits native `Char` support (a
+  `Char` binder is reported `FAI6002`). Allow **user-defined/custom generators**
+  (e.g. invariant-respecting `Arbitrary` instances) to override the synthesized
+  ones.
+- **Full-domain float generation** (incl. NaN/inf) surfaces precision-edge
+  counterexamples on float-arithmetic laws (observed running the `Geometry`
+  fixture). Revisit: offer a finite-float generator, or shrink float
+  counterexamples toward simple values.
+- **Constant `example` evaluation at `fai check`.** Examples with no free
+  variables could be checked during `fai check` (folded), surfacing failures
+  without a separate `fai test`.
+- **Configurable trials/size per property** and a richer JSON `TestOutput`
+  (per-contract events, seeds) once the worker streams results.
+- **Explicit contract-purity diagnostic.** Purity is currently enforced by
+  construction (a contract has no `Runtime` in scope), but an explicit check
+  would give a clearer error than a downstream type mismatch.
+- **Pre-existing crash uncovered (not M7-specific):** a **single-line union
+  declaration** (`type T = A | B …` on one line) panics the exhaustiveness
+  checker (`fai-types/src/exhaustive.rs` `default_matrix`, "non-empty row"); the
+  multi-line form is fine. A malformed/over-terse program must yield a
+  `Diagnostic`, never panic — fix in the parser or exhaustiveness check (M8
+  surface-completeness work).
+
+**Crates:** `fai-contracts` (+ `fai-cli`, `fai-driver`, `fai-core`, `fai-rc`,
+`fai-codegen`, `fai-runtime`, `fai-types`, `fai-resolve`, `fai-syntax`,
+`fai-fmt`, `fai-ide`).
 
 ---
 
