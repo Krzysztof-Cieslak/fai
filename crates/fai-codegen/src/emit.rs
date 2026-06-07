@@ -65,7 +65,65 @@ pub fn compile_def<M: Module>(
         define_fn(module, fn_ids[i], f, lowered, namer, arity_of, &fn_ids, &base, i);
     }
 
-    define_static_closure(module, closure_data, fn_ids[0], lowered.entry().params.len() as u64);
+    // The static closure (the first-class value form, reached via `apply_n`) must
+    // use the all-owned ABI. When the entry borrows parameters, point the closure
+    // at an owned-ABI wrapper that calls the borrowed entry and then releases the
+    // borrowed arguments; direct callers call the (borrowed) entry symbol.
+    let arity = lowered.entry().params.len() as u64;
+    let closure_code = if lowered.borrows_any() {
+        let wrapper = module
+            .declare_function(&format!("{base}__owned"), Linkage::Local, &sig)
+            .expect("declare wrapper");
+        define_owned_wrapper(module, wrapper, fn_ids[0], &lowered.entry_borrowed);
+        wrapper
+    } else {
+        fn_ids[0]
+    };
+    define_static_closure(module, closure_data, closure_code, arity);
+}
+
+/// Defines the owned-ABI wrapper for a function whose entry borrows parameters:
+/// it calls the borrowed entry with the same environment and arguments, then drops
+/// the borrowed arguments (which the entry left untouched), and returns the result.
+fn define_owned_wrapper<M: Module>(
+    module: &mut M,
+    wrapper: FuncId,
+    entry: FuncId,
+    borrowed: &[bool],
+) {
+    let mut ctx = module.make_context();
+    ctx.func.signature = code_signature(module);
+    let mut fbcx = FunctionBuilderContext::new();
+    {
+        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fbcx);
+        let block = builder.create_block();
+        builder.append_block_params_for_function_params(block);
+        builder.switch_to_block(block);
+        builder.seal_block(block);
+        let env = builder.block_params(block)[0];
+        let args = builder.block_params(block)[1];
+
+        let entry_ref = module.declare_func_in_func(entry, builder.func);
+        let call = builder.ins().call(entry_ref, &[env, args]);
+        let result = builder.inst_results(call)[0];
+
+        let mut drop_sig = module.make_signature();
+        drop_sig.params.push(AbiParam::new(types::I64));
+        let drop_id =
+            module.declare_function("fai_drop", Linkage::Import, &drop_sig).expect("declare drop");
+        let drop_ref = module.declare_func_in_func(drop_id, builder.func);
+        for (i, &borrowed) in borrowed.iter().enumerate() {
+            if borrowed {
+                let offset = i32::try_from(i * 8).expect("arg offset");
+                let v = builder.ins().load(types::I64, MemFlags::trusted(), args, offset);
+                builder.ins().call(drop_ref, &[v]);
+            }
+        }
+        builder.ins().return_(&[result]);
+        builder.finalize();
+    }
+    module.define_function(wrapper, &mut ctx).expect("define wrapper");
+    module.clear_context(&mut ctx);
 }
 
 /// The calling convention shared by every compiled function.

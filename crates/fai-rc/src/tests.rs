@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use fai_core::ir::{CExpr, ExprKind, FieldIndex, LoweredDef};
 use fai_core::pretty_def;
 use fai_db::{Db, FaiDatabase, SourceFile};
-use fai_resolve::LocalId;
+use fai_resolve::{DefId, LocalId};
 use fai_syntax::Symbol;
 use indoc::{formatdoc, indoc};
 use proptest::prelude::*;
@@ -67,7 +67,7 @@ fn arithmetic_consumes_each_operand() {
 }
 
 #[test]
-fn unused_argument_is_dropped() {
+fn unused_argument_is_borrowed() {
     let got = rc_of(
         indoc! {r#"
             module M
@@ -76,7 +76,9 @@ fn unused_argument_is_dropped() {
         "#},
         "k",
     );
-    assert_eq!(got, "fn0(%0, %1) = (drop %1; %0)\n");
+    // `x` is returned (owned); the unused `y` is borrowed, so the caller releases
+    // it rather than `k`.
+    assert_eq!(got, "fn0(%0, %1) = %0\n");
 }
 
 #[test]
@@ -116,18 +118,89 @@ fn captures_dup_on_use_and_are_never_dropped() {
 }
 
 // ---------------------------------------------------------------------------
+// Argument borrowing.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn borrows_inspectors_and_owns_rebuilders() {
+    let cases: &[(&str, &str, &[bool])] = &[
+        // Pure inspectors borrow the structure they traverse.
+        (
+            "module M\n\nlet len xs =\n  match xs with\n  | [] -> 0\n  | _ :: r -> 1 + len r\n",
+            "len",
+            &[true],
+        ),
+        (
+            "module M\n\nlet sum xs =\n  match xs with\n  | [] -> 0\n  | x :: r -> x + sum r\n",
+            "sum",
+            &[true],
+        ),
+        // Rebuilders own their structure so its cells are reused in place.
+        (
+            "module M\n\nlet inc xs =\n  match xs with\n  | [] -> []\n  | x :: r -> (x + 1) :: inc r\n",
+            "inc",
+            &[false],
+        ),
+        (
+            "module M\n\nlet map f xs =\n  match xs with\n  | [] -> []\n  | x :: r -> f x :: map f r\n",
+            "map",
+            &[false, false],
+        ),
+        // A returned parameter is owned; an unused one is borrowed.
+        ("module M\n\nlet id x = x\n", "id", &[false]),
+        ("module M\n\nlet k x y = x\n", "k", &[false, true]),
+    ];
+    for (src, name, expected) in cases {
+        let (db, file) = db_with(src);
+        let sig = crate::borrow_signature(&db, file, Symbol::intern(name));
+        assert_eq!(sig.0, *expected, "borrow signature for `{name}`");
+    }
+}
+
+#[test]
+fn caller_lends_a_borrowed_argument_without_duplicating() {
+    // `len` borrows its list, so a caller passing the *same* list to two `len`
+    // calls lends it to each rather than duplicating it (the churn win). It is
+    // released once at its last use. (Cross-function borrowing is exploited at the
+    // call site; `count`'s own parameter is conservatively owned.)
+    let got = rc_of(
+        indoc! {r#"
+            module M
+
+            let len xs =
+              match xs with
+              | [] -> 0
+              | _ :: r -> 1 + len r
+
+            let count xs = len xs + len xs
+        "#},
+        "count",
+    );
+    assert!(!got.contains("dup"), "a borrowed argument is lent, not duplicated: {got}");
+    assert_eq!(got.matches("drop").count(), 1, "the list is released once: {got}");
+}
+
+// ---------------------------------------------------------------------------
 // Abstract reference-count interpreter.
 // ---------------------------------------------------------------------------
 
 /// Asserts the reference-count soundness invariants on every function of `def`.
-fn assert_rc_sound(def: &LoweredDef) {
+/// `arg_borrows(callee, nargs)` reports the callee's per-argument borrow flags for
+/// a saturated direct call, mirroring what reference counting used.
+fn assert_rc_sound(def: &LoweredDef, arg_borrows: &dyn Fn(DefId, usize) -> Vec<bool>) {
     for (i, f) in def.fns.iter().enumerate() {
-        let captures: std::collections::HashSet<LocalId> = f.captures.iter().copied().collect();
+        // Borrowed slots (captures, and the entry's borrowed parameters) are read
+        // but never owned/dropped by this function.
+        let mut captures: std::collections::HashSet<LocalId> = f.captures.iter().copied().collect();
         let mut refs: HashMap<LocalId, i64> = HashMap::new();
-        for &p in &f.params {
-            refs.insert(p, 1);
+        for (pos, &p) in f.params.iter().enumerate() {
+            if i == 0 && def.entry_param_borrowed(pos) {
+                captures.insert(p); // borrowed: lent by the caller, not owned here
+            } else {
+                refs.insert(p, 1);
+            }
         }
-        let mut ck = Checker { captures: &captures, fn_index: i };
+        let mut ck = Checker { captures: &captures, fn_index: i, arg_borrows };
         ck.eval(&f.body, &mut refs);
         for (l, n) in &refs {
             assert_eq!(*n, 0, "fn{i}: local %{} left with {n} refs at exit", l.index());
@@ -135,9 +208,20 @@ fn assert_rc_sound(def: &LoweredDef) {
     }
 }
 
+/// Checks soundness of `def` using `db`'s real borrow signatures for direct calls.
+fn check_sound(db: &dyn Db, def: &LoweredDef) {
+    let borrows = |d: DefId, nargs: usize| -> Vec<bool> {
+        let Some(cf) = db.source_file(d.file) else { return vec![false; nargs] };
+        let sig = crate::borrow_signature(db, cf, d.name);
+        if sig.exploitable_at(nargs) { sig.0.clone() } else { vec![false; nargs] }
+    };
+    assert_rc_sound(def, &borrows);
+}
+
 struct Checker<'a> {
     captures: &'a std::collections::HashSet<LocalId>,
     fn_index: usize,
+    arg_borrows: &'a dyn Fn(DefId, usize) -> Vec<bool>,
 }
 
 impl Checker<'_> {
@@ -157,6 +241,15 @@ impl Checker<'_> {
         *n -= 1;
     }
 
+    /// An operation operand: a borrowed atom is read; otherwise it is consumed.
+    fn operand(&mut self, a: &CExpr, is_borrow: bool, refs: &mut HashMap<LocalId, i64>) {
+        if is_borrow && let ExprKind::Local(x) = a.kind {
+            self.borrow(x, refs);
+        } else {
+            self.eval(a, refs);
+        }
+    }
+
     /// Reads `x` without consuming it (borrow); the value must still be alive.
     fn borrow(&self, x: LocalId, refs: &HashMap<LocalId, i64>) {
         if !self.owned(x) {
@@ -170,8 +263,11 @@ impl Checker<'_> {
         match &e.kind {
             ExprKind::Lit(_) | ExprKind::Global(_) | ExprKind::Error => {}
             ExprKind::Local(x) => self.consume(*x, refs),
-            ExprKind::Prim { args, .. } => {
-                args.iter().for_each(|a| self.eval(a, refs));
+            ExprKind::Prim { op, args } => {
+                let borrows = crate::prim_borrows(*op, args);
+                for (i, a) in args.iter().enumerate() {
+                    self.operand(a, borrows.get(i).copied().unwrap_or(false), refs);
+                }
             }
             ExprKind::MakeData { args, reuse, .. } => {
                 args.iter().for_each(|a| self.eval(a, refs));
@@ -181,7 +277,13 @@ impl Checker<'_> {
             }
             ExprKind::App { func, args } => {
                 self.eval(func, refs);
-                args.iter().for_each(|a| self.eval(a, refs));
+                let borrows = match &func.kind {
+                    ExprKind::Global(def) => (self.arg_borrows)(*def, args.len()),
+                    _ => Vec::new(),
+                };
+                for (i, a) in args.iter().enumerate() {
+                    self.operand(a, borrows.get(i).copied().unwrap_or(false), refs);
+                }
             }
             ExprKind::MakeClosure { captures, .. } => {
                 captures.iter().for_each(|&c| self.consume(c, refs));
@@ -446,7 +548,8 @@ fn rc_is_sound_over_a_corpus() {
     for (src, name) in corpus {
         let (db, file) = db_with(src);
         let def = rc(&db, file, Symbol::intern(name));
-        assert_rc_sound(&def);
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| check_sound(&db, &def)));
+        assert!(r.is_ok(), "rc unsound for `{name}`:\n{}", pretty_def(&def));
     }
 }
 
@@ -492,7 +595,7 @@ fn rc_is_sound_over_a_whole_program() {
         let Some(&file) = files.get(&def.file) else { continue };
         let lowered = rc(&db, file, def.name);
         work.extend(lowered.referenced_globals());
-        assert_rc_sound(&lowered);
+        check_sound(&db, &lowered);
     }
 }
 
@@ -522,6 +625,6 @@ proptest! {
         "#};
         let (db, file) = db_with(&src);
         let def = rc(&db, file, Symbol::intern("f"));
-        assert_rc_sound(&def);
+        check_sound(&db, &def);
     }
 }

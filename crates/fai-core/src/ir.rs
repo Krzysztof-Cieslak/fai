@@ -35,6 +35,10 @@ pub struct LoweredDef {
     /// The functions; `fns[0]` is the definition's entry, the rest are lifted
     /// lambdas referenced by [`FnId`].
     pub fns: Vec<CoreFn>,
+    /// Per-entry-parameter borrow flags (set by reference counting): a borrowed
+    /// parameter is lent by direct callers and not dropped here. Empty before
+    /// reference counting (and means all-owned). Lifted lambdas are always owned.
+    pub entry_borrowed: Vec<bool>,
 }
 
 impl LoweredDef {
@@ -42,6 +46,18 @@ impl LoweredDef {
     #[must_use]
     pub fn entry(&self) -> &CoreFn {
         &self.fns[0]
+    }
+
+    /// Whether entry parameter `i` is borrowed (lent by direct callers).
+    #[must_use]
+    pub fn entry_param_borrowed(&self, i: usize) -> bool {
+        self.entry_borrowed.get(i).copied().unwrap_or(false)
+    }
+
+    /// Whether the entry borrows any parameter (so it needs an owned-ABI wrapper).
+    #[must_use]
+    pub fn borrows_any(&self) -> bool {
+        self.entry_borrowed.iter().any(|&b| b)
     }
 
     /// The top-level definitions referenced as values anywhere in this lowering

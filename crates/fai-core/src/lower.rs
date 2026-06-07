@@ -47,6 +47,7 @@ pub fn core(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
         return Arc::new(LoweredDef {
             def,
             fns: vec![CoreFn { params: Vec::new(), captures: Vec::new(), body: error_expr() }],
+            entry_borrowed: Vec::new(),
         });
     };
 
@@ -70,7 +71,7 @@ pub fn core(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
     let mut all_params = evidence_params;
     all_params.extend(param_locals);
     lowerer.fns[0] = CoreFn { params: all_params, captures: Vec::new(), body };
-    Arc::new(LoweredDef { def, fns: lowerer.fns })
+    Arc::new(LoweredDef { def, fns: lowerer.fns, entry_borrowed: Vec::new() })
 }
 
 /// The body item (params + body expr) of a definition.
