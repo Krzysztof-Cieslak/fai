@@ -61,46 +61,72 @@ pub const CODES: &[CodeInfo] = &[
         code: UNEXPECTED_CHAR,
         title: "unexpected character",
         default_severity: Severity::Error,
+        explanation: "The lexer met a character that cannot begin any token. Remove or correct \
+                      the stray character.",
     },
     CodeInfo {
         code: UNTERMINATED_STRING,
         title: "unterminated string literal",
         default_severity: Severity::Error,
+        explanation: "A string literal reached the end of the line or file without a closing \
+                      double quote. Add the missing `\"`.",
     },
     CodeInfo {
         code: UNTERMINATED_BLOCK_COMMENT,
         title: "unterminated block comment",
         default_severity: Severity::Error,
+        explanation: "A `(*` block comment was never closed. Add the matching `*)` (block \
+                      comments nest, so each `(*` needs its own `*)`).",
     },
     CodeInfo {
         code: INVALID_CHAR_LITERAL,
         title: "invalid character literal",
         default_severity: Severity::Error,
+        explanation: "A character literal is malformed — empty, multi-character, or missing its \
+                      closing quote. A char literal holds exactly one character, e.g. `'a'`.",
     },
     CodeInfo {
         code: INVALID_NUMBER,
         title: "invalid numeric literal",
         default_severity: Severity::Error,
+        explanation: "A numeric literal has invalid digits for its base or a trailing \
+                      identifier character. Check the digits and remove any stray suffix.",
     },
     CodeInfo {
         code: INVALID_ESCAPE,
         title: "invalid escape sequence",
         default_severity: Severity::Error,
+        explanation: "A string or character literal contains an unrecognized `\\` escape. The \
+                      supported escapes are `\\n \\t \\r \\0 \\\\ \\\" \\' \\u{…}`.",
     },
-    CodeInfo { code: SYNTAX_ERROR, title: "syntax error", default_severity: Severity::Error },
+    CodeInfo {
+        code: SYNTAX_ERROR,
+        title: "syntax error",
+        default_severity: Severity::Error,
+        explanation: "The parser found an unexpected token or a token it expected was missing. \
+                      The message names what was expected; the parser recovers and continues so \
+                      later errors are still reported.",
+    },
     CodeInfo {
         code: LAYOUT_ERROR,
         title: "layout/indentation error",
         default_severity: Severity::Error,
+        explanation: "Indentation does not fit the offside rule — typically a block body that \
+                      is not indented past its enclosing block. `fai fmt` produces the canonical \
+                      layout.",
     },
     CodeInfo {
         code: MODULE_HEADER,
         title: "malformed module header",
         default_severity: Severity::Error,
+        explanation: "Every file must begin with a `module Name` header naming an upper-case \
+                      module; it is missing or malformed.",
     },
     CodeInfo {
         code: UNSUPPORTED,
         title: "construct not yet supported",
         default_severity: Severity::Error,
+        explanation: "A reserved construct that the parser recognizes but does not yet \
+                      implement. It is rejected and recovered from until the feature lands.",
     },
 ];

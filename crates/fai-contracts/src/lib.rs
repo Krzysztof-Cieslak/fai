@@ -34,11 +34,20 @@ pub const CONTRACT_NOT_RUNNABLE: DiagnosticCode = DiagnosticCode::new("FAI6002")
 
 /// Diagnostic codes owned by the contracts layer (the `FAI6xxx` range).
 pub const CODES: &[CodeInfo] = &[
-    CodeInfo { code: CONTRACT_FAILED, title: "contract failed", default_severity: Severity::Error },
+    CodeInfo {
+        code: CONTRACT_FAILED,
+        title: "contract failed",
+        default_severity: Severity::Error,
+        explanation: "An `example`/`forall` contract did not hold when `fai test` ran it. The \
+                      help shows the shrunk counterexample (binder names and rendered values).",
+    },
     CodeInfo {
         code: CONTRACT_NOT_RUNNABLE,
         title: "contract cannot be run",
         default_severity: Severity::Error,
+        explanation: "A contract cannot be exercised because a binder's type has no value \
+                      generator — a function-typed binder, an unsupported type (e.g. `Char`), or \
+                      too many binders.",
     },
 ];
 

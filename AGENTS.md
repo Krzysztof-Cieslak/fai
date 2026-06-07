@@ -408,13 +408,18 @@ binding (O(n²) on long application chains / exponential type growth);
 - All structured CLI output — diagnostics **and** `fai query` results — carries a
   `schemaVersion` and is a stable, versioned API. The schemas and the daemon
   protocol are specified in **`docs/CLI.md`**.
-- **Error codes are an API.** Allocate codes by phase and document each in the
-  error-code catalog (M8): `FAI0xxx` tooling/CLI/driver, `FAI1xxx` lex/parse,
-  `FAI2xxx` resolve/visibility, `FAI3xxx` types/rows, `FAI4xxx`
-  exhaustiveness/patterns, `FAI5xxx` capabilities, `FAI6xxx` contracts, `FAI7xxx`
-  backend (Core lowering / codegen / runtime). Each phase crate owns its codes as
-  a `pub const CODES: &[CodeInfo]` slice, which the `fai-tests` catalog test
-  aggregates to enforce format and uniqueness. Never renumber a shipped code.
+- **Error codes are an API.** Allocate codes by phase, documented in the
+  error-code catalog **`docs/ERROR_CODES.md`**: `FAI0xxx` tooling/CLI/driver,
+  `FAI1xxx` lex/parse, `FAI2xxx` resolve/visibility, `FAI3xxx` types/rows,
+  `FAI4xxx` exhaustiveness/patterns, `FAI5xxx` capabilities, `FAI6xxx` contracts,
+  `FAI7xxx` backend (Core lowering / codegen / runtime). Each phase crate owns its
+  codes as a `pub const CODES: &[CodeInfo]` slice (code, title, default severity,
+  and a prose `explanation`). The `fai-tests` catalog test aggregates them to
+  enforce format, uniqueness, and that every code is documented; it also
+  **renders `docs/ERROR_CODES.md` from those tables** (regenerate with
+  `UPDATE_ERROR_CODES=1 cargo test -p fai-tests --test catalog`) and asserts every
+  code constant defined in the sources is catalogued. Never renumber a shipped
+  code.
 - Parsing **recovers** and reports multiple errors per run; one mistake should
   not hide the rest.
 

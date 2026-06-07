@@ -43,10 +43,16 @@ pub const CODES: &[CodeInfo] = &[
         code: UNSUPPORTED_NATIVE,
         title: "construct not supported by the native backend yet",
         default_severity: Severity::Error,
+        explanation: "A definition reachable from `main` uses a construct the native backend \
+                      does not lower yet. Reported only for reachable code, so unused unsupported \
+                      constructs still type-check.",
     },
     CodeInfo {
         code: ROW_POLY_UNSUPPORTED,
         title: "row-polymorphic record access not yet supported by the native backend",
         default_severity: Severity::Error,
+        explanation: "Reserved for a row-polymorphic record access or update the backend could \
+                      not compile. Such access now lowers via offset-evidence passing, so this is \
+                      kept reserved and not normally emitted.",
     },
 ];

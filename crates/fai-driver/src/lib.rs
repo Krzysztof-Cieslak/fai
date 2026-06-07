@@ -63,20 +63,48 @@ pub const CODES: &[CodeInfo] = &[
         code: NOT_IMPLEMENTED,
         title: "command not implemented",
         default_severity: Severity::Error,
+        explanation: "The requested CLI command has no behavior in this build. It is a \
+                      placeholder for a command that lands in a later release.",
     },
     CodeInfo {
         code: WORKSPACE_ERROR,
         title: "workspace or I/O error",
         default_severity: Severity::Error,
+        explanation: "The workspace could not be read: the root is not a directory, a file \
+                      could not be read, or a path was not valid UTF-8. Check the path passed \
+                      to `-C`/the entry file and filesystem permissions.",
     },
-    CodeInfo { code: LINK_FAILED, title: "linker failed", default_severity: Severity::Error },
-    CodeInfo { code: NO_ENTRY_POINT, title: "no entry point", default_severity: Severity::Error },
+    CodeInfo {
+        code: LINK_FAILED,
+        title: "linker failed",
+        default_severity: Severity::Error,
+        explanation: "The system linker returned an error while producing the native \
+                      executable. The linker's own output accompanies this diagnostic; a \
+                      missing toolchain or linker is the usual cause.",
+    },
+    CodeInfo {
+        code: NO_ENTRY_POINT,
+        title: "no entry point",
+        default_severity: Severity::Error,
+        explanation: "`fai build`/`fai run` need an entry file defining \
+                      `public main : Runtime -> Unit`, but none was found.",
+    },
     CodeInfo {
         code: DAEMON_UNAVAILABLE,
         title: "daemon unavailable; ran in-process",
         default_severity: Severity::Warning,
+        explanation: "The per-workspace daemon could not be reached, so the command ran \
+                      in-process (correct, just without the warm-cache speedup). Run \
+                      `fai daemon status` to investigate, or pass `--no-daemon` to silence it.",
     },
-    CodeInfo { code: RUN_TIMEOUT, title: "run timed out", default_severity: Severity::Error },
+    CodeInfo {
+        code: RUN_TIMEOUT,
+        title: "run timed out",
+        default_severity: Severity::Error,
+        explanation: "A program under `fai run` exceeded its wall-clock limit and was \
+                      terminated (exit 124). Raise `FAI_RUN_TIMEOUT_MS` for a longer-running \
+                      program.",
+    },
 ];
 
 /// A workspace or I/O failure that prevents a command from running.

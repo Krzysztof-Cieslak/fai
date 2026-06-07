@@ -79,81 +79,128 @@ pub const MODULE_AS_VALUE: DiagnosticCode = DiagnosticCode::new("FAI2017");
 
 /// Diagnostic codes owned by name resolution/visibility (the `FAI2xxx` range).
 pub const CODES: &[CodeInfo] = &[
-    CodeInfo { code: UNBOUND_NAME, title: "unbound name", default_severity: Severity::Error },
-    CodeInfo { code: AMBIGUOUS_NAME, title: "ambiguous name", default_severity: Severity::Error },
+    CodeInfo {
+        code: UNBOUND_NAME,
+        title: "unbound name",
+        default_severity: Severity::Error,
+        explanation: "A name could not be resolved to any local, this module's top level, or the \
+                      auto-imported prelude. Check for a typo, a missing binding, or a needed \
+                      qualified `Module.name`.",
+    },
+    CodeInfo {
+        code: AMBIGUOUS_NAME,
+        title: "ambiguous name",
+        default_severity: Severity::Error,
+        explanation: "A bare name resolves to more than one definition. Disambiguate it with a \
+                      qualified `Module.name`.",
+    },
     CodeInfo {
         code: PRIVATE_REFERENCE,
         title: "reference to a private binding",
         default_severity: Severity::Error,
+        explanation: "A qualified reference names a member that is not `public` in the target \
+                      module, so it is not visible across files. Mark the member `public` (and \
+                      give it a signature), or move the caller into the same file.",
     },
     CodeInfo {
         code: DUPLICATE_DEFINITION,
         title: "duplicate definition",
         default_severity: Severity::Error,
+        explanation: "Two bindings in the same module scope share a name. Rename or remove one.",
     },
     CodeInfo {
         code: ORPHAN_SIGNATURE,
         title: "signature without a binding",
         default_severity: Severity::Error,
+        explanation: "A type signature has no matching `let` binding of the same name. Add the \
+                      binding or remove the signature.",
     },
     CodeInfo {
         code: MULTIPLE_SIGNATURES,
         title: "multiple signatures for one name",
         default_severity: Severity::Error,
+        explanation: "A name has more than one type signature in the same scope. Keep one.",
     },
     CodeInfo {
         code: DUPLICATE_MODULE,
         title: "duplicate module name",
         default_severity: Severity::Error,
+        explanation: "Two files declare the same top-level module name; module names must be \
+                      unique across the workspace. The duplicated name is excluded from \
+                      cross-module lookup until resolved.",
     },
     CodeInfo {
         code: UNRESOLVED_MODULE,
         title: "unresolved module",
         default_severity: Severity::Error,
+        explanation: "A qualified path's leading segment names no module — neither a nested \
+                      module in scope nor a workspace file module. Check the module name.",
     },
     CodeInfo {
         code: BINDING_VISIBILITY_MARKER,
         title: "visibility marker on a binding with a signature",
         default_severity: Severity::Error,
+        explanation: "Visibility lives on the signature, so a `let` binding may not carry \
+                      `public` when a signature already exists. Move `public` to the signature.",
     },
     CodeInfo {
         code: SHADOWS_PRELUDE,
         title: "binding shadows a prelude name",
         default_severity: Severity::Warning,
+        explanation: "A binding reuses a name auto-imported from the prelude, hiding it in this \
+                      scope. Rename the binding if the prelude name was intended.",
     },
     CodeInfo {
         code: DUPLICATE_BINDER,
         title: "duplicate forall binder",
         default_severity: Severity::Error,
+        explanation: "A `forall` contract lists the same binder name twice. Give each binder a \
+                      distinct name.",
     },
     CodeInfo {
         code: UNBOUND_CONSTRUCTOR,
         title: "unbound constructor",
         default_severity: Severity::Error,
+        explanation: "An upper-case name in expression or pattern position is not a known data \
+                      constructor. Check for a typo or a missing `type` declaration.",
     },
     CodeInfo {
         code: DUPLICATE_PRELUDE_EXPORT,
         title: "duplicate auto-imported export",
         default_severity: Severity::Warning,
+        explanation: "More than one auto-imported module exports the same name; auto-imported \
+                      modules must export disjoint names. (Contributor-facing: it concerns the \
+                      standard library's own modules.)",
     },
     CodeInfo {
         code: INTRINSIC_OUTSIDE_STD,
         title: "intrinsics used outside the standard library",
         default_severity: Severity::Error,
+        explanation: "The prelude-private `Prim.*` intrinsics are reachable only from \
+                      standard-library modules. Use the public wrapper (e.g. `Int.toString`) \
+                      instead.",
     },
     CodeInfo {
         code: PRIVATE_TYPE_IN_PUBLIC_SIGNATURE,
         title: "private type exposed by a public signature",
         default_severity: Severity::Error,
+        explanation: "A public surface (a signature, alias body, or constructor field) names a \
+                      same-file type that is not itself cross-file-accessible. Make the type \
+                      public, or make the surface private.",
     },
     CodeInfo {
         code: MODULE_NAME_CONFLICT,
         title: "name already declared in this module",
         default_severity: Severity::Error,
+        explanation: "A nested module's name collides with another module, type, interface, or \
+                      constructor in the same scope (they share the upper-case namespace). \
+                      Rename one.",
     },
     CodeInfo {
         code: MODULE_AS_VALUE,
         title: "module name used as a value or type",
         default_severity: Severity::Error,
+        explanation: "A qualified path resolved to a module rather than a member. Name a member \
+                      of the module (e.g. `Module.value`).",
     },
 ];
