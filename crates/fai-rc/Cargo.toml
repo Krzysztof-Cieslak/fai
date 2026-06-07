@@ -1,6 +1,6 @@
 [package]
 name = "fai-rc"
-description = "Reference-count insertion (plain dup/drop) over the Core IR."
+description = "Precise ownership-based reference-count insertion over the Core IR."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,6 +13,7 @@ fai-syntax.workspace = true
 fai-resolve.workspace = true
 fai-types.workspace = true
 fai-core.workspace = true
+rustc-hash.workspace = true
 salsa.workspace = true
 
 [dev-dependencies]

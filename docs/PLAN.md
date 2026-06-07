@@ -379,6 +379,18 @@ feature (row-polymorphic structural records).
 ---
 
 ### M6 — Perceus reuse & in-place update
+**Status:** in progress. The first stage — **precise, ownership-based reference
+counting** — is built: `fai-rc` now normalizes each function to A-normal form and
+inserts dup/drop precisely (duplicate only when a value is still live afterward;
+drop at the last use rather than scope end; per-branch drops), with projections
+(`DataField`/`DataTag`) **borrowing** their base so a matched value survives its
+projections and is released once by reference counting — the placement reuse will
+later recycle. A borrow-signature seam is in place (every argument owned for now).
+An abstract reference-count interpreter over the IR guards soundness across a
+corpus and whole programs. The remaining stages — reset/reuse tokens, in-place
+`{ r with … }`, drop specialization, and inferred argument borrowing — are future
+work; see `docs/reuse-plan.md` for the staged design.
+
 **Goal:** turn correctness-first RC into competitive performance.
 
 **Deliverables**
@@ -1050,6 +1062,42 @@ Resolved while implementing **M3.5** (the daemon, persistence, and protocol):
   - **Sequencing:** the lexer/precedence/user-operator half may precede M5 but
     lands unified with the interfaces work so built-in and user operators share
     one mechanism (no throwaway hybrid).
+
+Resolved while implementing **M6** (reuse & in-place update; the full staged
+design is in `docs/reuse-plan.md`):
+
+- **D76 Precise reference counting is the foundation; reuse layers on it.** The
+  scope-end dup-at-every-use scheme cannot reuse a matched cell: `Drop{x; body}`
+  releases `x` *after* `body` runs, so the cell is freed after any reconstruction
+  inside `body`. `fai-rc` is rewritten to precise, ownership-based counting so a
+  dead cell is released exactly where reuse will recycle it. The pieces:
+  - **A-normal form (in `fai-rc`).** Each function is normalized so every
+    operation operand is an atom; compound operands bind to fresh `let`s. This
+    makes sequence points explicit (so the dup/drop rules are exact) and makes
+    every projection base a local — including a projection off a forced
+    zero-arity global, which **must** be bound so the value it allocates is
+    released. Done in `fai-rc` rather than lowering (same effect, all
+    reference-counting normalization in one place; observable semantics
+    identical). Chosen over a narrower "bind only temporary projection bases."
+  - **Borrowing projections.** `fai_data_field`/`fai_data_tag` no longer drop
+    their base; they read through it (the field is duplicated out). The base is an
+    ordinary owned local that reference counting drops once at its last use — the
+    drop that reuse will turn into a reset.
+  - **Drop-early, dup-only-when-live.** A consuming use is preceded by `Dup` only
+    when the value is still needed afterward; the last consuming use transfers
+    ownership. An owned binding whose last use is a borrow (or which is unused) is
+    dropped right after that use. Per-branch drops handle `if`.
+  - **`MakeClosure` consumes its captures.** The capture duplication moves from
+    code generation into the IR (explicit `Dup` nodes), so "operations consume
+    their operands" holds uniformly; `make_closure` stores the values directly.
+  - **Borrow-signature seam.** The consume-vs-borrow classification of call
+    arguments and primitive operands flows from a provider that currently reports
+    every argument owned (matching prior behavior); inferred argument borrowing
+    fills it in a later stage.
+  - **Soundness guard.** An abstract reference-count interpreter walks the
+    reference-counted IR on every path (owned consumed-or-dropped once; no
+    use-after-release or double drop; captures never dropped; consistent branches)
+    over a corpus and a whole reachable program.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected milestones.

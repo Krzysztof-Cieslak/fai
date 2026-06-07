@@ -1,9 +1,17 @@
-//! Tests that dup/drop land in the expected positions, plus structural
-//! invariants of the reference-count transform.
+//! Tests for precise reference-count insertion.
+//!
+//! The primary guard is an **abstract reference-count interpreter**
+//! ([`assert_rc_sound`]): it walks each reference-counted function on every path,
+//! modeling ownership (owned-live / consumed / dropped), borrowing (projection
+//! bases and offset evidence read without consuming), and captures (borrowed,
+//! never dropped). It asserts that every owned binding is consumed-or-dropped
+//! exactly once per path, that no value is used after release or dropped twice,
+//! that captures are never dropped, and that branches leave a consistent state.
+//! Snapshot tests pin the exact dup/drop shapes for representative programs.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 
-use fai_core::ir::{CExpr, ExprKind, LoweredDef};
+use fai_core::ir::{CExpr, ExprKind, FieldIndex, LoweredDef};
 use fai_core::pretty_def;
 use fai_db::{Db, FaiDatabase, SourceFile};
 use fai_resolve::LocalId;
@@ -26,8 +34,12 @@ fn rc_of(src: &str, name: &str) -> String {
     pretty_def(&rc(&db, file, Symbol::intern(name)))
 }
 
+// ---------------------------------------------------------------------------
+// Snapshot tests: exact dup/drop placement.
+// ---------------------------------------------------------------------------
+
 #[test]
-fn identity_dups_use_and_drops_param() {
+fn identity_passes_ownership_through() {
     let got = rc_of(
         indoc! {r#"
             module M
@@ -36,11 +48,12 @@ fn identity_dups_use_and_drops_param() {
         "#},
         "id",
     );
-    assert_eq!(got, "fn0(%0) = (drop %0; (dup %0; %0))\n");
+    // Ownership flows straight out: no dup, no drop.
+    assert_eq!(got, "fn0(%0) = %0\n");
 }
 
 #[test]
-fn arithmetic_dups_each_operand() {
+fn arithmetic_consumes_each_operand() {
     let got = rc_of(
         indoc! {r#"
             module M
@@ -49,11 +62,12 @@ fn arithmetic_dups_each_operand() {
         "#},
         "add",
     );
-    assert_eq!(got, "fn0(%0, %1) = (drop %0; (drop %1; (+ (dup %0; %0) (dup %1; %1))))\n");
+    // The primitive consumes both operands; nothing to dup or drop.
+    assert_eq!(got, "fn0(%0, %1) = (+ %0 %1)\n");
 }
 
 #[test]
-fn const_drops_unused_argument() {
+fn unused_argument_is_dropped() {
     let got = rc_of(
         indoc! {r#"
             module M
@@ -62,11 +76,11 @@ fn const_drops_unused_argument() {
         "#},
         "k",
     );
-    assert_eq!(got, "fn0(%0, %1) = (drop %0; (drop %1; (dup %0; %0)))\n");
+    assert_eq!(got, "fn0(%0, %1) = (drop %1; %0)\n");
 }
 
 #[test]
-fn let_binding_dropped_at_scope_end() {
+fn reused_binding_is_duplicated_once() {
     let got = rc_of(
         indoc! {r#"
             module M
@@ -77,14 +91,11 @@ fn let_binding_dropped_at_scope_end() {
         "#},
         "f",
     );
-    assert_eq!(
-        got,
-        "fn0(%0) = (drop %0; (let %1 = (+ (dup %0; %0) 1); (drop %1; (+ (dup %1; %1) (dup %1; %1)))))\n"
-    );
+    assert_eq!(got, "fn0(%0) = (let %1 = (+ %0 1); (dup %1; (+ %1 %1)))\n");
 }
 
 #[test]
-fn captures_dup_on_use_but_are_not_dropped() {
+fn captures_dup_on_use_and_are_never_dropped() {
     let got = rc_of(
         indoc! {r#"
             module M
@@ -94,137 +105,160 @@ fn captures_dup_on_use_but_are_not_dropped() {
         "#},
         "twice",
     );
+    // `f` moves into the closure env (no dup at the last use). In the lifted
+    // body, A-normal form names the inner `f x`; the captured `f` is duplicated
+    // per use and never dropped, and `x`/the temporary are consumed.
     assert_eq!(
         got,
-        "fn0(%0) = (drop %0; (closure fn1 [%0]))\nfn1(%1) [caps %0] = (drop %1; (app (dup %0; %0) (app (dup %0; %0) (dup %1; %1))))\n"
+        "fn0(%0) = (closure fn1 [%0])\n\
+         fn1(%1) [caps %0] = (let %2 = (dup %0; (app %0 %1)); (dup %0; (app %0 %2)))\n"
     );
 }
 
-#[test]
-fn console_capability_access_balances_runtime() {
-    let src = indoc! {r#"
-        module M
+// ---------------------------------------------------------------------------
+// Abstract reference-count interpreter.
+// ---------------------------------------------------------------------------
 
-        public main : Runtime -> Unit
-        let main runtime = runtime.console.writeLine "Hi"
-    "#};
-    assert_eq!(
-        rc_of(src, "main"),
-        "fn0(%0) = (drop %0; (app (field 0 (field 1 (dup %0; %0))) \"Hi\"))\n"
-    );
-}
-
-/// Tallies the reference-count structure of one function body.
-#[derive(Default)]
-struct Counts {
-    dups: usize,
-    drops: usize,
-    locals: usize,
-    lets: usize,
-    let_locals: HashSet<LocalId>,
-    drop_locals: Vec<LocalId>,
-}
-
-fn tally(expr: &CExpr, c: &mut Counts) {
-    match &expr.kind {
-        ExprKind::Local(_) => c.locals += 1,
-        ExprKind::Lit(_) | ExprKind::Global(_) | ExprKind::MakeClosure { .. } | ExprKind::Error => {
+/// Asserts the reference-count soundness invariants on every function of `def`.
+fn assert_rc_sound(def: &LoweredDef) {
+    for (i, f) in def.fns.iter().enumerate() {
+        let captures: std::collections::HashSet<LocalId> = f.captures.iter().copied().collect();
+        let mut refs: HashMap<LocalId, i64> = HashMap::new();
+        for &p in &f.params {
+            refs.insert(p, 1);
         }
-        ExprKind::Prim { args, .. } => args.iter().for_each(|a| tally(a, c)),
-        ExprKind::MakeData { args, .. } => args.iter().for_each(|a| tally(a, c)),
-        ExprKind::DataTag(base) => tally(base, c),
-        ExprKind::DataField { base, .. } => tally(base, c),
-        ExprKind::App { func, args } => {
-            tally(func, c);
-            args.iter().for_each(|a| tally(a, c));
-        }
-        ExprKind::If { cond, then, els } => {
-            tally(cond, c);
-            tally(then, c);
-            tally(els, c);
-        }
-        ExprKind::Let { local, value, body } => {
-            c.lets += 1;
-            c.let_locals.insert(*local);
-            tally(value, c);
-            tally(body, c);
-        }
-        ExprKind::Dup { body, .. } => {
-            c.dups += 1;
-            tally(body, c);
-        }
-        ExprKind::Drop { local, body } => {
-            c.drops += 1;
-            c.drop_locals.push(*local);
-            tally(body, c);
+        let mut ck = Checker { captures: &captures, fn_index: i };
+        ck.eval(&f.body, &mut refs);
+        for (l, n) in &refs {
+            assert_eq!(*n, 0, "fn{i}: local %{} left with {n} refs at exit", l.index());
         }
     }
 }
 
-/// Asserts the plain-RC invariants on every function of `def`.
-fn assert_rc_invariants(def: &LoweredDef) {
-    for f in &def.fns {
-        let mut c = Counts::default();
-        tally(&f.body, &mut c);
+struct Checker<'a> {
+    captures: &'a std::collections::HashSet<LocalId>,
+    fn_index: usize,
+}
 
-        // Every variable use is wrapped in exactly one `Dup`.
-        assert_eq!(c.dups, c.locals, "each use must be duplicated once");
+impl Checker<'_> {
+    fn owned(&self, x: LocalId) -> bool {
+        !self.captures.contains(&x)
+    }
 
-        // Exactly one `Drop` per owned binding (parameter or `let`).
-        assert_eq!(c.drops, f.params.len() + c.lets, "one drop per owned binding");
-
-        // No drop targets a captured (borrowed) variable.
-        let captures: HashSet<LocalId> = f.captures.iter().copied().collect();
-        let drop_set: HashSet<LocalId> = c.drop_locals.iter().copied().collect();
-        assert_eq!(c.drop_locals.len(), drop_set.len(), "no binding dropped twice");
-        for d in &c.drop_locals {
-            assert!(!captures.contains(d), "a captured variable must not be dropped");
+    /// Consumes one owned reference of `x` (no-op for a borrowed capture).
+    fn consume(&self, x: LocalId, refs: &mut HashMap<LocalId, i64>) {
+        if !self.owned(x) {
+            return;
         }
-        // Every parameter and `let` binding is dropped.
-        for p in &f.params {
-            assert!(drop_set.contains(p), "parameter must be dropped");
+        let n = refs.get_mut(&x).unwrap_or_else(|| {
+            panic!("fn{}: consume of unbound/owned %{}", self.fn_index, x.index())
+        });
+        assert!(*n >= 1, "fn{}: use of released %{}", self.fn_index, x.index());
+        *n -= 1;
+    }
+
+    /// Reads `x` without consuming it (borrow); the value must still be alive.
+    fn borrow(&self, x: LocalId, refs: &HashMap<LocalId, i64>) {
+        if !self.owned(x) {
+            return;
         }
-        for l in &c.let_locals {
-            assert!(drop_set.contains(l), "let binding must be dropped");
+        let n = refs.get(&x).copied().unwrap_or(0);
+        assert!(n >= 1, "fn{}: borrow of released/unbound %{}", self.fn_index, x.index());
+    }
+
+    fn eval(&mut self, e: &CExpr, refs: &mut HashMap<LocalId, i64>) {
+        match &e.kind {
+            ExprKind::Lit(_) | ExprKind::Global(_) | ExprKind::Error => {}
+            ExprKind::Local(x) => self.consume(*x, refs),
+            ExprKind::Prim { args, .. } | ExprKind::MakeData { args, .. } => {
+                args.iter().for_each(|a| self.eval(a, refs));
+            }
+            ExprKind::App { func, args } => {
+                self.eval(func, refs);
+                args.iter().for_each(|a| self.eval(a, refs));
+            }
+            ExprKind::MakeClosure { captures, .. } => {
+                captures.iter().for_each(|&c| self.consume(c, refs));
+            }
+            ExprKind::DataTag(base) => self.borrow_atom(base, refs),
+            ExprKind::DataField { base, index } => {
+                self.borrow_atom(base, refs);
+                if let FieldIndex::Dyn { evidence, .. } = index {
+                    self.borrow(*evidence, refs);
+                }
+            }
+            ExprKind::If { cond, then, els } => {
+                // The condition (an immediate Bool) is consumed by the test.
+                self.eval(cond, refs);
+                let mut t = refs.clone();
+                let mut e2 = refs.clone();
+                self.eval(then, &mut t);
+                self.eval(els, &mut e2);
+                assert_eq!(
+                    t, e2,
+                    "fn{}: branches leave inconsistent reference state",
+                    self.fn_index
+                );
+                *refs = t;
+            }
+            ExprKind::Let { local, value, body } => {
+                self.eval(value, refs);
+                assert!(
+                    refs.insert(*local, 1).is_none(),
+                    "fn{}: rebound %{}",
+                    self.fn_index,
+                    local.index()
+                );
+                self.eval(body, refs);
+                let n = refs.remove(local).unwrap_or(0);
+                assert_eq!(n, 0, "fn{}: let %{} left with {n} refs", self.fn_index, local.index());
+            }
+            ExprKind::Dup { local, body } => {
+                if self.owned(*local) {
+                    let n = refs.get_mut(local).unwrap_or_else(|| {
+                        panic!("fn{}: dup of unbound %{}", self.fn_index, local.index())
+                    });
+                    assert!(*n >= 1, "fn{}: dup of released %{}", self.fn_index, local.index());
+                    *n += 1;
+                }
+                self.eval(body, refs);
+            }
+            ExprKind::Drop { local, body } => {
+                assert!(
+                    self.owned(*local),
+                    "fn{}: drop of captured %{}",
+                    self.fn_index,
+                    local.index()
+                );
+                self.consume(*local, refs);
+                self.eval(body, refs);
+            }
+        }
+    }
+
+    /// A projection base is an atom after A-normal form; borrow it.
+    fn borrow_atom(&self, base: &CExpr, refs: &HashMap<LocalId, i64>) {
+        if let ExprKind::Local(x) = base.kind {
+            self.borrow(x, refs);
+        } else {
+            // Defensive: a non-atom base is itself an owned temporary.
+            // (A-normal form should prevent this.)
+            panic!("fn{}: projection base is not an atom", self.fn_index);
         }
     }
 }
 
+// ---------------------------------------------------------------------------
+// Corpus: the interpreter must accept every reference-counted definition.
+// ---------------------------------------------------------------------------
+
 #[test]
-fn rc_invariants_hold_over_a_corpus() {
+fn rc_is_sound_over_a_corpus() {
     let corpus: &[(&str, &str)] = &[
-        (
-            indoc! {r#"
-                module M
-
-                let id x = x
-            "#},
-            "id",
-        ),
-        (
-            indoc! {r#"
-                module M
-
-                let add x y = x + y
-            "#},
-            "add",
-        ),
-        (
-            indoc! {r#"
-                module M
-
-                let k x y = x
-            "#},
-            "k",
-        ),
-        (
-            indoc! {r#"
-                module M
-
-                let abs n = if n < 0 then 0 - n else n
-            "#},
-            "abs",
-        ),
+        ("module M\n\nlet id x = x\n", "id"),
+        ("module M\n\nlet add x y = x + y\n", "add"),
+        ("module M\n\nlet k x y = x\n", "k"),
+        ("module M\n\nlet abs n = if n < 0 then 0 - n else n\n", "abs"),
         (
             indoc! {r#"
                 module M
@@ -236,46 +270,12 @@ fn rc_invariants_hold_over_a_corpus() {
             "#},
             "f",
         ),
-        (
-            indoc! {r#"
-                module M
-
-                let twice f = f >> f
-            "#},
-            "twice",
-        ),
-        (
-            indoc! {r#"
-                module M
-
-                let adder x = fun y -> x + y
-            "#},
-            "adder",
-        ),
-        (
-            indoc! {r#"
-                module M
-
-                let pipe n = n |> Int.toString
-            "#},
-            "pipe",
-        ),
-        (
-            indoc! {r#"
-                module M
-
-                let neq a b = a <> b
-            "#},
-            "neq",
-        ),
-        (
-            indoc! {r#"
-                module M
-
-                let both a b = a && b
-            "#},
-            "both",
-        ),
+        ("module M\n\nlet twice f = f >> f\n", "twice"),
+        ("module M\n\nlet adder x = fun y -> x + y\n", "adder"),
+        ("module M\n\nlet pipe n = n |> Int.toString\n", "pipe"),
+        ("module M\n\nlet neq a b = a <> b\n", "neq"),
+        ("module M\n\nlet both a b = a && b\n", "both"),
+        ("module M\n\nlet nested f g x = f (g (g x))\n", "nested"),
         (
             indoc! {r#"
                 module M
@@ -285,7 +285,6 @@ fn rc_invariants_hold_over_a_corpus() {
             "#},
             "main",
         ),
-        // An interface instance lowers to a dictionary of method closures.
         (
             indoc! {r#"
                 module M
@@ -297,8 +296,6 @@ fn rc_invariants_hold_over_a_corpus() {
             "#},
             "exclaim",
         ),
-        // A row-polymorphic field access takes a leading evidence parameter and a
-        // dynamic field read; evidence is an immediate borrowed by the read.
         (
             indoc! {r#"
                 module M
@@ -308,7 +305,15 @@ fn rc_invariants_hold_over_a_corpus() {
             "#},
             "getX",
         ),
-        // A least-authority capability access through a row variable.
+        (
+            indoc! {r#"
+                module M
+
+                public sumXY : { x : Int, y : Int | 'r } -> Int
+                let sumXY rec = rec.x + rec.y
+            "#},
+            "sumXY",
+        ),
         (
             indoc! {r#"
                 module M
@@ -318,8 +323,6 @@ fn rc_invariants_hold_over_a_corpus() {
             "#},
             "announce",
         ),
-        // A row-polymorphic record update clones the record and overwrites the
-        // field at its evidence slot (the offset is a value use of the evidence).
         (
             indoc! {r#"
                 module M
@@ -329,14 +332,150 @@ fn rc_invariants_hold_over_a_corpus() {
             "#},
             "bump",
         ),
+        // A list `match` that destructures and rebuilds (the reuse-shaped case).
+        (
+            indoc! {r#"
+                module M
+
+                let inc xs =
+                  match xs with
+                  | [] -> []
+                  | x :: rest -> (x + 1) :: inc rest
+            "#},
+            "inc",
+        ),
+        // A recursive inspector (destructures, never rebuilds).
+        (
+            indoc! {r#"
+                module M
+
+                let len xs =
+                  match xs with
+                  | [] -> 0
+                  | _ :: rest -> 1 + len rest
+            "#},
+            "len",
+        ),
+        // A higher-order map over a list.
+        (
+            indoc! {r#"
+                module M
+
+                let map f xs =
+                  match xs with
+                  | [] -> []
+                  | x :: rest -> f x :: map f rest
+            "#},
+            "map",
+        ),
+        // A monomorphic record literal, field access, and update.
+        (
+            indoc! {r#"
+                module M
+
+                type P = { x : Int, y : Int }
+
+                let mk a = { x = a, y = a + 1 }
+            "#},
+            "mk",
+        ),
+        (
+            indoc! {r#"
+                module M
+
+                type P = { x : Int, y : Int }
+
+                let shift p = { p with x = p.x + 1 }
+            "#},
+            "shift",
+        ),
+        // An ADT with a constructor match.
+        (
+            indoc! {r#"
+                module M
+
+                type T =
+                  | A Int
+                  | B Int Int
+
+                let eval t =
+                  match t with
+                  | A x -> x
+                  | B x y -> x + y
+            "#},
+            "eval",
+        ),
+        // A constructor used to build a value (and a nested call chain).
+        (
+            indoc! {r#"
+                module M
+
+                type T =
+                  | A Int
+                  | B Int Int
+
+                let pair a = B a a
+            "#},
+            "pair",
+        ),
     ];
     for (src, name) in corpus {
         let (db, file) = db_with(src);
-        assert_rc_invariants(&rc(&db, file, Symbol::intern(name)));
+        let def = rc(&db, file, Symbol::intern(name));
+        assert_rc_sound(&def);
     }
 }
 
-/// A strategy generating `Int`-typed expressions over the parameter `x`.
+/// Every definition transitively reachable from a program's `main` (including the
+/// standard library and the `Runtime` value binding) must be reference-count
+/// sound. This guards leaks the single-definition corpus cannot reach — e.g.
+/// projecting a method off a forced top-level interface instance.
+#[test]
+fn rc_is_sound_over_a_whole_program() {
+    let src = indoc! {r#"
+        module M
+
+        interface Thing =
+          a : Unit -> Int
+          b : Unit -> Int
+
+        let inst = { Thing with a u = 1, b u = 2 }
+
+        public main : Runtime -> Unit
+        let main runtime =
+          let total = inst.a () + inst.b ()
+          runtime.console.writeLine (Int.toString total)
+    "#};
+    let mut db = FaiDatabase::new();
+    fai_types::std_lib::load_std(&mut db);
+    let id = db.add_source("M.fai".into(), src.to_owned());
+    let user = db.source_file(id).unwrap();
+    let mut files = std::collections::HashMap::new();
+    for f in db.all_source_files() {
+        files.insert(f.source(&db), f);
+    }
+    let entry = fai_resolve::DefId::new(user.source(&db), Symbol::intern("main"));
+    let runtime = fai_resolve::DefId::new(
+        fai_resolve::prelude_module_file(&db).expect("prelude module").source(&db),
+        Symbol::intern("defaultRuntime"),
+    );
+    let mut seen = std::collections::HashSet::new();
+    let mut work = vec![entry, runtime];
+    while let Some(def) = work.pop() {
+        if !seen.insert(def) {
+            continue;
+        }
+        let Some(&file) = files.get(&def.file) else { continue };
+        let lowered = rc(&db, file, def.name);
+        work.extend(lowered.referenced_globals());
+        assert_rc_sound(&lowered);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Property: generated integer expressions are reference-count sound.
+// ---------------------------------------------------------------------------
+
 fn int_expr() -> impl Strategy<Value = String> {
     let leaf = prop_oneof![Just("x".to_string()), (0i64..1000).prop_map(|n| n.to_string())];
     leaf.prop_recursive(4, 32, 4, |inner| {
@@ -351,14 +490,14 @@ fn int_expr() -> impl Strategy<Value = String> {
 
 proptest! {
     #[test]
-    fn rc_invariants_hold_for_generated_expressions(expr in int_expr()) {
+    fn rc_is_sound_for_generated_expressions(expr in int_expr()) {
         let src = formatdoc! {r#"
             module M
 
             let f x = {expr}
         "#};
         let (db, file) = db_with(&src);
-        let lowered = rc(&db, file, Symbol::intern("f"));
-        assert_rc_invariants(&lowered);
+        let def = rc(&db, file, Symbol::intern("f"));
+        assert_rc_sound(&def);
     }
 }
