@@ -48,6 +48,57 @@ fn hello() {
 }
 
 #[test]
+fn conformance_nested_qualified_and_as_patterns() {
+    // Each snippet must format idempotently and preserve its parsed shape (so
+    // formatting never drops or reshapes nested modules, qualified types, deep
+    // nesting, or as-patterns).
+    let corpus = [
+        // Qualified type in a public signature, referencing a nested type.
+        indoc! {r#"
+            module M
+
+            module Geo =
+              public type Shape =
+                | Circle Float
+                | Rect Float Float
+
+            public mk : Float -> Geo.Shape
+            let mk r = Geo.Circle r
+        "#},
+        // Modules nested two deep.
+        indoc! {r#"
+            module M
+
+            module A =
+              module B =
+                public seven : Int
+                let seven = 7
+        "#},
+        // As-patterns over tuples, cons, and or-patterns.
+        indoc! {r#"
+            module M
+
+            let f p =
+              match p with
+              | (a, b) as both -> both
+              | other -> other
+
+            let g xs =
+              match xs with
+              | x :: rest as whole -> whole
+              | [] -> xs
+        "#},
+    ];
+    for src in corpus {
+        assert_idempotent(src);
+        let before = parse_module(SourceId::new(0), src);
+        let after = parse_module(SourceId::new(0), &fmt(src));
+        assert!(after.diagnostics.is_empty(), "reformatted source must parse: {src}");
+        assert_eq!(shape(&before.module), shape(&after.module), "formatting changed shape: {src}");
+    }
+}
+
+#[test]
 fn as_patterns() {
     let src = indoc! {r#"
         module M
