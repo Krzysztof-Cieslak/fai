@@ -259,21 +259,24 @@ fn row_polymorphic_record_update_runs() {
 fn all_capabilities_compose_in_one_program() {
     // Console, clock, random, file system, and environment used together. The
     // output is deterministic: `nextInt 1` is `0` and the clock reads positive.
-    let src = indoc! {r#"
+    // The path comes from the host temp directory so it is valid on every OS.
+    let path = std::env::temp_dir().join("fai-native-allcaps.txt");
+    let path = path.to_str().unwrap().replace('\\', "/");
+    let src = formatdoc! {r#"
         module Main
 
         public main : Runtime -> Unit
         let main runtime =
           let t = runtime.clock.now ()
           let n = runtime.random.nextInt 1
-          match runtime.fs.writeFile "/tmp/fai-allcaps-e2e.txt" "x" with
+          match runtime.fs.writeFile "{path}" "x" with
           | Err e -> runtime.console.writeLine e
           | Ok u ->
             match runtime.env.get "FAI_DEFINITELY_UNSET_E2E" with
             | Some v -> runtime.console.writeLine v
             | None -> runtime.console.writeLine (if t > 0 then Int.toString n else "no-clock")
     "#};
-    let (out, code) = build_and_run(src);
+    let (out, code) = build_and_run(&src);
     assert_eq!(out, "0\n");
     assert_eq!(code, Some(0));
 }
