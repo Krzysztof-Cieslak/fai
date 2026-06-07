@@ -259,12 +259,18 @@ impl<M: Module> Translator<'_, M> {
                 self.expr(body)
             }
             ExprKind::MakeClosure { func, captures } => self.make_closure(*func, captures),
-            ExprKind::MakeData { tag, args } => self.make_data(*tag, args),
+            ExprKind::MakeData { tag, args, reuse } => self.make_data(*tag, args, *reuse),
             ExprKind::DataTag(base) => {
                 let v = self.expr(base);
                 self.call1("fai_data_tag", v)
             }
             ExprKind::DataField { base, index } => self.data_field(base, *index),
+            ExprKind::Reset { value, token, body } => {
+                let v = self.expr(value);
+                let tok = self.call1("fai_drop_reuse", v);
+                self.define_var(*token, tok);
+                self.expr(body)
+            }
             ExprKind::Dup { local, body } => {
                 let v = self.use_var(*local);
                 let _ = self.call1("fai_dup", v);
@@ -305,9 +311,13 @@ impl<M: Module> Translator<'_, M> {
     }
 
     /// Builds a data value: a nullary constructor is an immediate carrying its
-    /// tag; an n-ary one allocates `{ tag, fields… }` via the runtime.
-    fn make_data(&mut self, tag: u32, args: &[CExpr]) -> Value {
+    /// tag; an n-ary one builds `{ tag, fields… }` via the runtime — into a reuse
+    /// token's memory in place when one is supplied (and the right size), else
+    /// freshly allocated. The reuse pass never attaches a token to a nullary
+    /// constructor (which allocates nothing).
+    fn make_data(&mut self, tag: u32, args: &[CExpr], reuse: Option<LocalId>) -> Value {
         if args.is_empty() {
+            debug_assert!(reuse.is_none(), "nullary constructor cannot reuse a cell");
             let imm = (i64::from(tag) << 1) | 1;
             return self.builder.ins().iconst(types::I64, imm);
         }
@@ -316,9 +326,19 @@ impl<M: Module> Translator<'_, M> {
         let ptr = self.spill(&vals);
         let tag_v = self.builder.ins().iconst(types::I64, i64::from(tag));
         let n_v = self.builder.ins().iconst(types::I64, count as i64);
-        let f = self.runtime("fai_make_data", 3, true);
-        let call = self.builder.ins().call(f, &[tag_v, n_v, ptr]);
-        self.builder.inst_results(call)[0]
+        match reuse {
+            Some(token) => {
+                let tok = self.use_var(token);
+                let f = self.runtime("fai_reuse", 4, true);
+                let call = self.builder.ins().call(f, &[tok, tag_v, n_v, ptr]);
+                self.builder.inst_results(call)[0]
+            }
+            None => {
+                let f = self.runtime("fai_make_data", 3, true);
+                let call = self.builder.ins().call(f, &[tag_v, n_v, ptr]);
+                self.builder.inst_results(call)[0]
+            }
+        }
     }
 
     /// Projects a field of a data value (consuming `base`). A constant slot is an

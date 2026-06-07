@@ -43,6 +43,7 @@ use fai_core::ir::{CExpr, CoreFn, ExprKind as K, FieldIndex, LoweredDef};
 use fai_db::{Db, SourceFile};
 use fai_resolve::LocalId;
 use fai_syntax::Symbol;
+use fai_types::{Con, Ty};
 use rustc_hash::FxHashSet;
 
 /// A set of locals (used for free-variable and liveness sets).
@@ -59,8 +60,11 @@ pub fn rc(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
         let body = anf(f.body.clone(), &mut next);
         let used = fv_owned(&body, &captures);
         let mut cx = Rc { captures: &captures, next };
-        let mut body = cx.owned(body, &Locals::default());
+        let body = cx.owned(body, &Locals::default());
         next = cx.next;
+        // Recycle a dead data cell into a same-size construction where one follows.
+        let data = data_typed_locals(&body);
+        let mut body = reuse_pass(body, &data, &mut next);
         // Drop parameters that the body never mentions (drop-early, at entry).
         for &p in f.params.iter().rev() {
             if !used.contains(&p) {
@@ -122,6 +126,11 @@ fn max_local(e: &CExpr, max: &mut usize) {
                 bump(*evidence, max);
             }
         }
+        K::Reset { value, token, body } => {
+            bump(*token, max);
+            max_local(value, max);
+            max_local(body, max);
+        }
         K::Dup { local, body } | K::Drop { local, body } => {
             bump(*local, max);
             max_local(body, max);
@@ -155,10 +164,10 @@ fn anf(e: CExpr, next: &mut usize) -> CExpr {
             let args = args.into_iter().map(|a| atomize(a, next, &mut binds)).collect();
             wrap_binds(binds, CExpr::new(K::Prim { op, args }, ty))
         }
-        K::MakeData { tag, args } => {
+        K::MakeData { tag, args, reuse } => {
             let mut binds = Vec::new();
             let args = args.into_iter().map(|a| atomize(a, next, &mut binds)).collect();
-            wrap_binds(binds, CExpr::new(K::MakeData { tag, args }, ty))
+            wrap_binds(binds, CExpr::new(K::MakeData { tag, args, reuse }, ty))
         }
         K::App { func, args } => {
             let mut binds = Vec::new();
@@ -191,6 +200,14 @@ fn anf(e: CExpr, next: &mut usize) -> CExpr {
         // Captures are locals already; no compound operands.
         K::MakeClosure { func, captures } => CExpr::new(K::MakeClosure { func, captures }, ty),
         // Not produced by lowering; pass through defensively.
+        K::Reset { value, token, body } => CExpr::new(
+            K::Reset {
+                value: Box::new(anf(*value, next)),
+                token,
+                body: Box::new(anf(*body, next)),
+            },
+            ty,
+        ),
         K::Dup { local, body } => {
             CExpr::new(K::Dup { local, body: Box::new(anf(*body, next)) }, ty)
         }
@@ -290,6 +307,14 @@ fn collect_fv(e: &CExpr, captures: &Locals, bound: &mut Locals, out: &mut Locals
                 note(*evidence, bound, out);
             }
         }
+        K::Reset { value, token, body } => {
+            collect_fv(value, captures, bound, out);
+            let added = bound.insert(*token);
+            collect_fv(body, captures, bound, out);
+            if added {
+                bound.remove(token);
+            }
+        }
         K::Dup { local, body } | K::Drop { local, body } => {
             note(*local, bound, out);
             collect_fv(body, captures, bound, out);
@@ -333,8 +358,8 @@ impl Rc<'_> {
                 let rebuilt = |args| CExpr::new(K::Prim { op, args }, ty.clone());
                 self.consume_operands(args, live, rebuilt)
             }
-            K::MakeData { tag, args } => {
-                let rebuilt = |args| CExpr::new(K::MakeData { tag, args }, ty.clone());
+            K::MakeData { tag, args, reuse } => {
+                let rebuilt = move |args| CExpr::new(K::MakeData { tag, args, reuse }, ty.clone());
                 self.consume_operands(args, live, rebuilt)
             }
             K::App { func, args } => {
@@ -374,6 +399,11 @@ impl Rc<'_> {
             }
             K::If { cond, then, els } => self.conditional(*cond, *then, *els, ty, live),
             K::Let { local, value, body } => self.binding(local, *value, *body, ty, live),
+            // The reuse pass runs after this; pass through for exhaustiveness.
+            K::Reset { value, token, body } => {
+                let body = self.owned(*body, live);
+                CExpr::new(K::Reset { value, token, body: Box::new(body) }, ty)
+            }
             // Lowering never emits these; pass through.
             K::Dup { local, body } => dup_(local, self.owned(*body, live)),
             K::Drop { local, body } => drop_(local, self.owned(*body, live)),
@@ -525,6 +555,257 @@ fn dropify(mut drops: Vec<LocalId>, e: CExpr) -> CExpr {
 /// Whether `e` is a bare borrowing projection (`DataField`/`DataTag`).
 fn is_projection(e: &CExpr) -> bool {
     matches!(e.kind, K::DataField { .. } | K::DataTag(_))
+}
+
+// ---------------------------------------------------------------------------
+// Reuse analysis: recycle a dead data cell into a same-size construction.
+// ---------------------------------------------------------------------------
+
+/// Locals bound to a value of a boxed data type — the cells reuse may recycle.
+/// Read from `let` value types (a match scrutinee is `let s = <data value>`).
+fn data_typed_locals(e: &CExpr) -> Locals {
+    let mut out = Locals::default();
+    collect_data_locals(e, &mut out);
+    out
+}
+
+fn collect_data_locals(e: &CExpr, out: &mut Locals) {
+    match &e.kind {
+        K::Let { local, value, body } => {
+            if is_boxed_data_ty(&value.ty) {
+                out.insert(*local);
+            }
+            collect_data_locals(value, out);
+            collect_data_locals(body, out);
+        }
+        K::If { cond, then, els } => {
+            collect_data_locals(cond, out);
+            collect_data_locals(then, out);
+            collect_data_locals(els, out);
+        }
+        K::Prim { args, .. } | K::MakeData { args, .. } => {
+            args.iter().for_each(|a| collect_data_locals(a, out));
+        }
+        K::App { func, args } => {
+            collect_data_locals(func, out);
+            args.iter().for_each(|a| collect_data_locals(a, out));
+        }
+        K::DataTag(base) => collect_data_locals(base, out),
+        K::DataField { base, .. } => collect_data_locals(base, out),
+        K::Reset { value, body, .. } => {
+            collect_data_locals(value, out);
+            collect_data_locals(body, out);
+        }
+        K::Dup { body, .. } | K::Drop { body, .. } => collect_data_locals(body, out),
+        K::Local(_) | K::Lit(_) | K::Global(_) | K::MakeClosure { .. } | K::Error => {}
+    }
+}
+
+/// Whether values of `ty` are boxed data cells (so resetting one yields a usable
+/// reuse token). Records, tuples, ADTs, lists, and interface dictionaries qualify;
+/// scalars, strings, floats, functions, and type variables do not.
+fn is_boxed_data_ty(ty: &Ty) -> bool {
+    fn is_data_head(ty: &Ty) -> bool {
+        match ty {
+            Ty::Adt(_) | Ty::Interface(_) | Ty::Con(Con::List) => true,
+            Ty::App(head, _) => is_data_head(head),
+            _ => false,
+        }
+    }
+    matches!(ty, Ty::Record(_) | Ty::Tuple(_)) || is_data_head(ty)
+}
+
+/// Rewrites the drop of a dead data cell into a reset whose token a same-size
+/// construction on each path reuses; paths with no construction keep a plain drop.
+fn reuse_pass(e: CExpr, data: &Locals, next: &mut usize) -> CExpr {
+    let CExpr { kind, ty } = e;
+    match kind {
+        K::Drop { local, body } if data.contains(&local) => {
+            let body = reuse_pass(*body, data, next);
+            release(local, body, next)
+        }
+        K::Drop { local, body } => drop_(local, reuse_pass(*body, data, next)),
+        K::Dup { local, body } => dup_(local, reuse_pass(*body, data, next)),
+        K::Let { local, value, body } => CExpr::new(
+            K::Let {
+                local,
+                value: Box::new(reuse_pass(*value, data, next)),
+                body: Box::new(reuse_pass(*body, data, next)),
+            },
+            ty,
+        ),
+        K::If { cond, then, els } => CExpr::new(
+            K::If {
+                cond: Box::new(reuse_pass(*cond, data, next)),
+                then: Box::new(reuse_pass(*then, data, next)),
+                els: Box::new(reuse_pass(*els, data, next)),
+            },
+            ty,
+        ),
+        K::Reset { value, token, body } => {
+            CExpr::new(K::Reset { value, token, body: Box::new(reuse_pass(*body, data, next)) }, ty)
+        }
+        K::Prim { op, args } => CExpr::new(
+            K::Prim { op, args: args.into_iter().map(|a| reuse_pass(a, data, next)).collect() },
+            ty,
+        ),
+        K::MakeData { tag, args, reuse } => CExpr::new(
+            K::MakeData {
+                tag,
+                args: args.into_iter().map(|a| reuse_pass(a, data, next)).collect(),
+                reuse,
+            },
+            ty,
+        ),
+        K::App { func, args } => CExpr::new(
+            K::App {
+                func: Box::new(reuse_pass(*func, data, next)),
+                args: args.into_iter().map(|a| reuse_pass(a, data, next)).collect(),
+            },
+            ty,
+        ),
+        K::DataTag(base) => CExpr::new(K::DataTag(Box::new(reuse_pass(*base, data, next))), ty),
+        K::DataField { base, index } => {
+            CExpr::new(K::DataField { base: Box::new(reuse_pass(*base, data, next)), index }, ty)
+        }
+        K::Local(_) | K::Lit(_) | K::Global(_) | K::MakeClosure { .. } | K::Error => {
+            CExpr::new(kind, ty)
+        }
+    }
+}
+
+/// Places the release of the dead cell `s` into `expr`, recycling its memory for a
+/// construction where possible. `s`'s memory is reset at the **death point** (the
+/// start of `expr`, before any recursive call) when `expr` reaches a construction
+/// on a single straight-line path — so the cell's fields become unique for that
+/// call — with the token threaded forward to that construction. When a branch
+/// intervenes, the responsibility is pushed into the branches (each resets and
+/// reuses, or drops, on its own). A path with no construction keeps a plain drop.
+/// `expr` never uses `s` (it is already dead).
+fn release(s: LocalId, expr: CExpr, next: &mut usize) -> CExpr {
+    if !has_construction(&expr) {
+        // Nothing to recycle into: drop early, as plain reference counting would.
+        return drop_(s, expr);
+    }
+    if linear_construction(&expr) {
+        // A construction post-dominates on one path: reset now (freeing the cell's
+        // fields for any recursive call) and thread the token to it.
+        let token = fresh(next);
+        return reset_(s, token, thread_token(expr, token));
+    }
+    // A branch precedes the construction: peel straight-line lets and push the
+    // release into each branch, which decides reset-and-reuse or drop on its own.
+    let CExpr { kind, ty } = expr;
+    match kind {
+        K::If { cond, then, els } => CExpr::new(
+            K::If {
+                cond,
+                then: Box::new(release(s, *then, next)),
+                els: Box::new(release(s, *els, next)),
+            },
+            ty,
+        ),
+        K::Let { local, value, body } => {
+            CExpr::new(K::Let { local, value, body: Box::new(release(s, *body, next)) }, ty)
+        }
+        K::Dup { local, body } => {
+            CExpr::new(K::Dup { local, body: Box::new(release(s, *body, next)) }, ty)
+        }
+        K::Drop { local, body } => {
+            CExpr::new(K::Drop { local, body: Box::new(release(s, *body, next)) }, ty)
+        }
+        K::Reset { value, token, body } => {
+            CExpr::new(K::Reset { value, token, body: Box::new(release(s, *body, next)) }, ty)
+        }
+        other => drop_(s, CExpr::new(other, ty)),
+    }
+}
+
+/// Whether `e` contains a non-nullary construction with no reuse token yet.
+fn has_construction(e: &CExpr) -> bool {
+    match &e.kind {
+        K::MakeData { args, reuse, .. } => {
+            (reuse.is_none() && !args.is_empty()) || args.iter().any(has_construction)
+        }
+        K::Let { value, body, .. } => has_construction(value) || has_construction(body),
+        K::If { cond, then, els } => {
+            has_construction(cond) || has_construction(then) || has_construction(els)
+        }
+        K::Reset { value, body, .. } => has_construction(value) || has_construction(body),
+        K::Dup { body, .. } | K::Drop { body, .. } => has_construction(body),
+        K::Prim { args, .. } => args.iter().any(has_construction),
+        K::App { func, args } => has_construction(func) || args.iter().any(has_construction),
+        K::DataTag(base) => has_construction(base),
+        K::DataField { base, .. } => has_construction(base),
+        K::Local(_) | K::Global(_) | K::Lit(_) | K::MakeClosure { .. } | K::Error => false,
+    }
+}
+
+/// Whether a non-nullary construction is reached on a single straight-line path
+/// (through `let`/`dup`/`drop`/`reset`), with no `if` before it.
+fn linear_construction(e: &CExpr) -> bool {
+    match &e.kind {
+        K::MakeData { args, reuse, .. } => reuse.is_none() && !args.is_empty(),
+        K::Let { value, body, .. } => is_reuse_target(value) || linear_construction(body),
+        K::Dup { body, .. } | K::Drop { body, .. } | K::Reset { body, .. } => {
+            linear_construction(body)
+        }
+        _ => false,
+    }
+}
+
+/// Attaches `token` to the first construction on the straight-line path (assumes
+/// [`linear_construction`]).
+fn thread_token(e: CExpr, token: LocalId) -> CExpr {
+    let CExpr { kind, ty } = e;
+    match kind {
+        K::MakeData { tag, args, reuse: None } if !args.is_empty() => {
+            CExpr::new(K::MakeData { tag, args, reuse: Some(token) }, ty)
+        }
+        K::Let { local, value, body } => {
+            if is_reuse_target(&value) {
+                let value = Box::new(attach_reuse(*value, token));
+                CExpr::new(K::Let { local, value, body }, ty)
+            } else {
+                let body = Box::new(thread_token(*body, token));
+                CExpr::new(K::Let { local, value, body }, ty)
+            }
+        }
+        K::Dup { local, body } => {
+            CExpr::new(K::Dup { local, body: Box::new(thread_token(*body, token)) }, ty)
+        }
+        K::Drop { local, body } => {
+            CExpr::new(K::Drop { local, body: Box::new(thread_token(*body, token)) }, ty)
+        }
+        K::Reset { value, token: tok, body } => CExpr::new(
+            K::Reset { value, token: tok, body: Box::new(thread_token(*body, token)) },
+            ty,
+        ),
+        other => CExpr::new(other, ty),
+    }
+}
+
+/// Whether `e` is a non-nullary construction with no reuse token yet.
+fn is_reuse_target(e: &CExpr) -> bool {
+    matches!(&e.kind, K::MakeData { args, reuse: None, .. } if !args.is_empty())
+}
+
+/// Attaches a reuse `token` to a construction (assumes [`is_reuse_target`]).
+fn attach_reuse(e: CExpr, token: LocalId) -> CExpr {
+    let CExpr { kind, ty } = e;
+    match kind {
+        K::MakeData { tag, args, reuse: None } => {
+            CExpr::new(K::MakeData { tag, args, reuse: Some(token) }, ty)
+        }
+        _ => unreachable!("attach_reuse on a non-target construction"),
+    }
+}
+
+/// `reset s = Local(s); body` (binding the reuse `token`).
+fn reset_(s: LocalId, token: LocalId, body: CExpr) -> CExpr {
+    let ty = body.ty.clone();
+    let value = Box::new(CExpr::new(K::Local(s), Ty::Error));
+    CExpr::new(K::Reset { value, token, body: Box::new(body) }, ty)
 }
 
 /// The owned locals a projection borrows: its base, plus row-polymorphic offset

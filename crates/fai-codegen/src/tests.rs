@@ -30,6 +30,13 @@ fn lock() -> MutexGuard<'static, ()> {
 /// so compiling all of it on every call would dominate the test cost even though
 /// most programs touch only a handful of its functions.
 pub(crate) fn run(src: &str) -> (i32, String) {
+    let (code, out, _allocs) = run_counted(src);
+    (code, out)
+}
+
+/// As [`run`], but also returns the number of heap allocations performed during
+/// execution (for reuse measurement).
+pub(crate) fn run_counted(src: &str) -> (i32, String, i64) {
     let mut db = FaiDatabase::new();
     fai_types::std_lib::load_std(&mut db);
     let id = db.add_source("M.fai".into(), src.to_owned());
@@ -77,9 +84,11 @@ pub(crate) fn run(src: &str) -> (i32, String) {
 
     let _g = lock();
     rt::capture_start();
+    rt::reset_allocations();
     let code = jit_run(&defs, entry, runtime, &namer, &arity_of);
+    let allocs = rt::allocations();
     let out = rt::capture_take();
-    (code, out)
+    (code, out, allocs)
 }
 
 fn main_printing(expr: &str) -> String {
@@ -960,4 +969,60 @@ fn runtime_threaded_through_signatured_helper() {
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "hi\n");
+}
+
+// --- Reuse (in-place recycling of a unique list) ---------------------------
+
+/// Shared `build`/`inc`/`sum` definitions plus a `use : List Int -> Int`
+/// consumer, for measuring the allocations a `map`-like rebuild performs over a
+/// unique vs a shared list. `use_body` references its parameter `xs`.
+fn reuse_program(use_body: &str) -> String {
+    formatdoc! {r#"
+        module M
+
+        let build n = if n <= 0 then [] else n :: build (n - 1)
+
+        let inc xs =
+          match xs with
+          | [] -> []
+          | x :: rest -> (x + 1) :: inc rest
+
+        let sum xs =
+          match xs with
+          | [] -> 0
+          | x :: rest -> x + sum rest
+
+        let use xs = {use_body}
+
+        public main : Runtime -> Unit
+        let main rt = rt.console.writeLine (Int.toString (use (build 50)))
+    "#}
+}
+
+#[test]
+fn reuse_recycles_a_unique_list_but_copies_a_shared_one() {
+    // Unique: the list flows straight into `inc`, which recycles each cons cell
+    // in place — no fresh cons cells are allocated by `inc`.
+    let unique = reuse_program("sum (inc xs)");
+    let (code_u, out_u, allocs_u) = run_counted(&unique);
+    assert_eq!(code_u, 0, "unique program exits cleanly (no leak)");
+    assert_eq!(out_u.trim(), "1325"); // sum (2..=51)
+
+    // Shared: `xs` is read again by `sum xs`, so it is not unique when `inc`
+    // runs; `inc` must allocate fresh cons cells (the rc==1 guard falls back to a
+    // copy), one per element.
+    let shared = reuse_program("sum (inc xs) + sum xs");
+    let (code_s, out_s, allocs_s) = run_counted(&shared);
+    assert_eq!(code_s, 0, "shared program exits cleanly (no leak)");
+    assert_eq!(out_s.trim(), "2600"); // 1325 + sum (1..=50)
+
+    // Everything else (building the list, the runtime, the result string) is the
+    // same; the difference is exactly the 50 cons cells `inc` had to allocate in
+    // the shared case but recycled in place in the unique case.
+    assert_eq!(
+        allocs_s - allocs_u,
+        50,
+        "shared map allocates 50 cons cells the unique map recycles \
+         (unique={allocs_u}, shared={allocs_s})"
+    );
 }

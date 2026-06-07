@@ -219,10 +219,26 @@ unsafe fn write_ptr(obj: *mut u8, off: usize, val: *const u8) {
 /// The number of heap objects currently allocated (debug leak detection).
 static LIVE: AtomicI64 = AtomicI64::new(0);
 
+/// The cumulative number of heap allocations since the last reset. Unlike [`LIVE`]
+/// it never decreases, so reuse (which writes in place rather than allocating) is
+/// observable as allocations that did *not* happen.
+static ALLOCATIONS: AtomicI64 = AtomicI64::new(0);
+
 /// Returns the number of live heap objects (used by the leak check and tests).
 #[must_use]
 pub fn live_count() -> i64 {
     LIVE.load(Ordering::Relaxed)
+}
+
+/// Returns the cumulative allocation count (used by reuse benchmarks and tests).
+#[must_use]
+pub fn allocations() -> i64 {
+    ALLOCATIONS.load(Ordering::Relaxed)
+}
+
+/// Resets the cumulative allocation counter (tests/benchmarks).
+pub fn reset_allocations() {
+    ALLOCATIONS.store(0, Ordering::Relaxed);
 }
 
 /// Allocates a zeroed object of `size` bytes with `rc = 1` and `descriptor`,
@@ -241,6 +257,7 @@ fn alloc_obj(size: usize, descriptor: *const Descriptor) -> *mut u8 {
         write_u64(p, SIZE_OFFSET, size as u64);
     }
     LIVE.fetch_add(1, Ordering::Relaxed);
+    ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
     p
 }
 
@@ -424,6 +441,83 @@ pub extern "C" fn fai_record_update(record: Value, index: Value, value: Value) -
     // balancing the dups above and releasing the replaced field.
     fai_drop(record);
     new
+}
+
+// ---------------------------------------------------------------------------
+// Reuse: reset a dead cell to a token, then build into it in place.
+// ---------------------------------------------------------------------------
+
+/// The null reuse token (a boxed-tagged zero; real object pointers are never
+/// null), meaning "no cell to reuse — allocate fresh."
+const NO_REUSE: Value = 0;
+
+/// Releases `v` for reuse. If `v` is the unique owner of a boxed object, runs its
+/// descriptor's child scan (releasing its fields) and returns the object's raw
+/// memory as a reuse token **without freeing or untracking it**; otherwise
+/// (shared, or an immediate) decrements as a normal drop would and returns the
+/// null token. Consumes one reference of `v`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_drop_reuse(v: Value) -> Value {
+    if !is_boxed(v) {
+        return NO_REUSE;
+    }
+    let p = as_obj(v);
+    // SAFETY: `p` is a live object pointer.
+    unsafe {
+        let rc = read_u64(p, RC_OFFSET) - 1;
+        write_u64(p, RC_OFFSET, rc);
+        if rc == 0 {
+            let desc = read_ptr(p, DESC_OFFSET).cast::<Descriptor>();
+            if let Some(scan) = (*desc).scan {
+                scan(p);
+            }
+            // Keep the memory live (no `free_obj`); `fai_reuse` rebuilds into it.
+            return from_obj(p);
+        }
+    }
+    NO_REUSE
+}
+
+/// Builds a data value `{ tag, fields… }`, reusing `token`'s memory in place when
+/// it is a non-null token of exactly the right size, otherwise allocating a fresh
+/// object (and freeing a wrong-sized token). Ownership of the `fields` transfers
+/// in.
+///
+/// # Safety
+/// `fields` must point to `nfields` owned values; `token` is `0` or a token
+/// returned by [`fai_drop_reuse`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fai_reuse(
+    token: Value,
+    tag: i64,
+    nfields: i64,
+    fields: *const i64,
+) -> Value {
+    let n = nfields as usize;
+    let size = DATA_FIELDS_OFFSET + n * 8;
+    if token != NO_REUSE {
+        let p = token as usize as *mut u8;
+        // SAFETY: `token` is a reset object's memory; its size header is valid.
+        let cell_size = unsafe { read_u64(p, SIZE_OFFSET) } as usize;
+        if cell_size == size {
+            // SAFETY: `p` has exactly room for the header, tag, and `n` fields;
+            // its children were already released by `fai_drop_reuse`.
+            unsafe {
+                write_u64(p, RC_OFFSET, 1);
+                write_ptr(p, DESC_OFFSET, std::ptr::addr_of!(FAI_DATA_DESC).cast());
+                write_u64(p, DATA_TAG_OFFSET, tag as u64);
+                for i in 0..n {
+                    write_i64(p, DATA_FIELDS_OFFSET + i * 8, *fields.add(i));
+                }
+            }
+            return from_obj(p);
+        }
+        // Wrong size: the token's children are gone, so just reclaim its memory.
+        // SAFETY: `p` is a reset object's memory.
+        unsafe { free_obj(p) };
+    }
+    // SAFETY: `fields` points to `n` owned values.
+    unsafe { fai_make_data(tag, nfields, fields) }
 }
 
 // ---------------------------------------------------------------------------
