@@ -136,6 +136,20 @@ fn callees_of_four() {
 }
 
 #[test]
+fn callers_snapshot() {
+    let (db, files) = workspace();
+    let r = callers(&db, &files, "A.inc", &DbSpanResolver::new(&db));
+    insta::assert_snapshot!("callers_A_inc", json(&r));
+}
+
+#[test]
+fn callees_snapshot() {
+    let (db, _files) = workspace();
+    let r = callees(&db, "B.four", &DbSpanResolver::new(&db));
+    insta::assert_snapshot!("callees_B_four", json(&r));
+}
+
+#[test]
 fn search_ranks_exact_above_hole() {
     let mut db = FaiDatabase::new();
     let m = db.add_source(

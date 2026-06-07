@@ -1,0 +1,125 @@
+---
+source: crates/fai-ide/tests/queries.rs
+expression: json(&r)
+---
+{
+  "schemaVersion": 1,
+  "target": {
+    "path": "B.four",
+    "name": "four",
+    "kind": "value",
+    "module": "B",
+    "visibility": "private",
+    "signature": "Int",
+    "span": {
+      "file": "B.fai",
+      "start": {
+        "line": 6,
+        "column": 1
+      },
+      "end": {
+        "line": 6,
+        "column": 29
+      },
+      "byteStart": 46,
+      "byteEnd": 74
+    }
+  },
+  "edges": [
+    {
+      "symbol": {
+        "path": "A.inc",
+        "name": "inc",
+        "kind": "function",
+        "module": "A",
+        "visibility": "public",
+        "signature": "Int -> Int",
+        "span": {
+          "file": "A.fai",
+          "start": {
+            "line": 4,
+            "column": 1
+          },
+          "end": {
+            "line": 4,
+            "column": 18
+          },
+          "byteStart": 34,
+          "byteEnd": 51
+        }
+      },
+      "sites": [
+        {
+          "span": {
+            "file": "B.fai",
+            "start": {
+              "line": 6,
+              "column": 12
+            },
+            "end": {
+              "line": 6,
+              "column": 17
+            },
+            "byteStart": 57,
+            "byteEnd": 62
+          }
+        },
+        {
+          "span": {
+            "file": "B.fai",
+            "start": {
+              "line": 6,
+              "column": 19
+            },
+            "end": {
+              "line": 6,
+              "column": 24
+            },
+            "byteStart": 64,
+            "byteEnd": 69
+          }
+        }
+      ]
+    },
+    {
+      "symbol": {
+        "path": "B.two",
+        "name": "two",
+        "kind": "value",
+        "module": "B",
+        "visibility": "public",
+        "signature": "Int",
+        "span": {
+          "file": "B.fai",
+          "start": {
+            "line": 4,
+            "column": 1
+          },
+          "end": {
+            "line": 4,
+            "column": 18
+          },
+          "byteStart": 27,
+          "byteEnd": 44
+        }
+      },
+      "sites": [
+        {
+          "span": {
+            "file": "B.fai",
+            "start": {
+              "line": 6,
+              "column": 25
+            },
+            "end": {
+              "line": 6,
+              "column": 28
+            },
+            "byteStart": 70,
+            "byteEnd": 73
+          }
+        }
+      ]
+    }
+  ]
+}
