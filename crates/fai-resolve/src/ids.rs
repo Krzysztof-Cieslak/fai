@@ -127,6 +127,24 @@ pub enum Res {
     Error,
 }
 
+/// Joins a nested-module scope path and a local name into one qualified symbol
+/// (`["A", "B"], "x"` → `A.B.x`). A top-level name (empty scope) is returned
+/// unchanged, so top-level identities keep their bare names. Identifiers cannot
+/// contain `.`, so the result splits back unambiguously on `.`.
+#[must_use]
+pub fn qualify(scope: &[Symbol], local: Symbol) -> Symbol {
+    if scope.is_empty() {
+        return local;
+    }
+    let mut s = String::new();
+    for seg in scope {
+        s.push_str(seg.as_str());
+        s.push('.');
+    }
+    s.push_str(local.as_str());
+    Symbol::intern(&s)
+}
+
 /// Returns whether `name` is in the upper-case (constructor/module) namespace.
 ///
 /// Mirrors the lexer's rule (`fai-syntax` lexer): an identifier is `UpperIdent`

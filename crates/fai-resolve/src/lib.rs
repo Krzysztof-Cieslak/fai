@@ -28,7 +28,7 @@ pub use bodies::{ResolvedBodies, resolve};
 pub use decls::{
     CtorInfo, InterfaceDecls, InterfaceInfo, TypeDeclInfo, TypeDecls, interface_decls, type_decls,
 };
-pub use ids::{AdtRef, CtorRef, DefId, InterfaceRef, LocalId, Res, is_upper};
+pub use ids::{AdtRef, CtorRef, DefId, InterfaceRef, LocalId, Res, is_upper, qualify};
 pub use module::{
     DefInfo, DuplicateExport, Export, ExportKind, ModuleDefs, ModuleInterface, ModuleName,
     PRELUDE_MODULE, PreludeExports, duplicate_module_files, emit_duplicate_module_errors,
@@ -70,6 +70,12 @@ pub const INTRINSIC_OUTSIDE_STD: DiagnosticCode = DiagnosticCode::new("FAI2014")
 /// A public surface (signature, alias body, or constructor field) exposes a
 /// same-module private type.
 pub const PRIVATE_TYPE_IN_PUBLIC_SIGNATURE: DiagnosticCode = DiagnosticCode::new("FAI2015");
+/// A nested module's name collides with another module, type, interface, or
+/// constructor declared in the same scope.
+pub const MODULE_NAME_CONFLICT: DiagnosticCode = DiagnosticCode::new("FAI2016");
+/// A qualified path names a module where a value or type is expected (it has no
+/// trailing member).
+pub const MODULE_AS_VALUE: DiagnosticCode = DiagnosticCode::new("FAI2017");
 
 /// Diagnostic codes owned by name resolution/visibility (the `FAI2xxx` range).
 pub const CODES: &[CodeInfo] = &[
@@ -138,6 +144,16 @@ pub const CODES: &[CodeInfo] = &[
     CodeInfo {
         code: PRIVATE_TYPE_IN_PUBLIC_SIGNATURE,
         title: "private type exposed by a public signature",
+        default_severity: Severity::Error,
+    },
+    CodeInfo {
+        code: MODULE_NAME_CONFLICT,
+        title: "name already declared in this module",
+        default_severity: Severity::Error,
+    },
+    CodeInfo {
+        code: MODULE_AS_VALUE,
+        title: "module name used as a value or type",
         default_severity: Severity::Error,
     },
 ];
