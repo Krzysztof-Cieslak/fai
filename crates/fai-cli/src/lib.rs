@@ -106,7 +106,9 @@ fn dispatch(parsed: Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
         }
         Command::Run(args) => run_program(&parsed.global, &root, args, log, out, err),
         Command::Test(args) => run_test(&root, args, format, color, out, err),
-        Command::Lsp => run_in_process_result(&root, fai_driver::lsp, format, color, out, err),
+        // The language server owns the stdio loop directly (it speaks LSP, not the
+        // CLI's command envelopes), so it bypasses the usual command routing.
+        Command::Lsp => fai_lsp::run_stdio(root),
         Command::Daemon { sub } => run_daemon_command(&root, sub, log, out, err),
         Command::RunWorker(_) | Command::DaemonServe => unreachable!("handled above"),
     }
@@ -202,28 +204,6 @@ fn run_test(
         }
     }
     if outcome.ok { EXIT_OK } else { EXIT_FAILURES }
-}
-
-/// Runs an in-process command that returns a [`CommandResult`] (`test`/`lsp`).
-fn run_in_process_result(
-    root: &Utf8Path,
-    command: fn(&dyn fai_driver::Db) -> CommandResult,
-    format: MessageFormat,
-    color: bool,
-    out: &mut dyn Write,
-    err: &mut dyn Write,
-) -> i32 {
-    let session = match Session::open(root.to_owned()) {
-        Ok(session) => session,
-        Err(error) => return emit_error(&error, format, color, out, err),
-    };
-    let result = command(session.db());
-    let resolver = session.resolver();
-    match print_result(&result, &resolver, format, color, out, err) {
-        Some(code) => code,
-        None if result.ok => EXIT_OK,
-        None => EXIT_FAILURES,
-    }
 }
 
 /// Builds the `build` command spec, resolving the output path to absolute.

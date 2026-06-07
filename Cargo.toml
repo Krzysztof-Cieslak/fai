@@ -16,6 +16,7 @@ members = [
     "crates/fai-contracts",
     "crates/fai-driver",
     "crates/fai-server",
+    "crates/fai-lsp",
     "crates/fai-cli",
     "crates/fai-tests",
 ]
@@ -47,6 +48,11 @@ lasso = { version = "0.7", features = ["multi-threaded"] }
 camino = { version = "1", features = ["serde1"] }
 # MessagePack encoding for the client<->daemon JSON-RPC wire.
 rmp-serde = "1"
+# Language Server Protocol: synchronous framing/connection + the LSP type surface.
+lsp-server = "0.7"
+# 0.95 keeps `Url` with `to_file_path`/`from_file_path`; 0.97 swapped to a `Uri`
+# type without filesystem-path helpers.
+lsp-types = "0.95"
 # Cross-platform local IPC (unix sockets / Windows named pipes), safe API.
 interprocess = "2"
 # Unix process control: setsid (daemon detachment), kill, setrlimit.
@@ -94,6 +100,7 @@ fai-runtime = { path = "crates/fai-runtime" }
 fai-contracts = { path = "crates/fai-contracts" }
 fai-driver = { path = "crates/fai-driver" }
 fai-server = { path = "crates/fai-server" }
+fai-lsp = { path = "crates/fai-lsp" }
 fai-cli = { path = "crates/fai-cli" }
 
 # Lints denied workspace-wide (decision Q3: "deny in table, hard everywhere").

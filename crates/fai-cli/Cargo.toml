@@ -15,6 +15,7 @@ path = "src/main.rs"
 fai-span.workspace = true
 fai-driver.workspace = true
 fai-server.workspace = true
+fai-lsp.workspace = true
 clap = { workspace = true }
 serde_json.workspace = true
 camino.workspace = true
