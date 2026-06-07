@@ -1090,7 +1090,8 @@ Resolved while implementing **M3.5** (the daemon, persistence, and protocol):
   `FAI4001`/`FAI4002` (non-exhaustive / unreachable `match`). The unused
   `FAI3009` is retired (the catalog test allows the `FAI4xxx` range in
   `fai-types`).
-- **D73 The standard library is a curated, multi-file `std/` (amends D43, D71):**
+- **D73 The standard library is a curated, multi-file `std/` (amends D43, D71;
+  the "no qualified-type syntax" clause is superseded by D88):**
   the embedded library moves from a single `crates/fai-types/src/Prelude.fai` to
   real `.fai` modules under a top-level **`std/`**, embedded at build time by
   `crates/fai-types/build.rs` (a generated `include_str!` table) and loaded as
@@ -1390,6 +1391,42 @@ Resolved while implementing **M7** (contracts: examples & properties):
   against the binder's concrete type arguments. Mutually-recursive ADTs and
   recursion only reachable through a collection field (e.g. `Rose (List Rose)`)
   are not size-guarded yet; a true fuel parameter is future work.
+
+Resolved while implementing **nested modules & qualified-type syntax** (surface
+completeness):
+
+- **D88 Nested modules group declarations under a qualified path; qualified-type
+  syntax is introduced (amends D73's "no qualified-type syntax").**
+  - **Representation & identity.** A nested `module Name = <indented items>` is an
+    `ItemKind::Module { name, body }` whose children are entries in the file's one
+    shared item arena (so every item, nested or not, keeps a single-index
+    `ItemId`); `Module.roots` lists the top-level items. A nested member is keyed
+    by a **qualified `Symbol`** (`Internal.pi`, `Outer.Inner.Shape`), so
+    `DefId`/`AdtRef`/`CtorRef`/`InterfaceRef` stay `(SourceId, Symbol)` and `Copy`,
+    the content-addressed cache and the daemon wire form need no change (the
+    backend namer already escapes `.`), and a top-level name keeps its bare
+    spelling (qualified == bare). Chosen over a structured path id (which collapses
+    to this once the path is interned).
+  - **Scoping.** Transparent lexical nesting: a bare name resolves locals → this
+    scope → enclosing scopes → the auto-imported `Prelude`, inner shadowing outer;
+    the enclosing file sees *every* nested member (no privacy edge inside a file),
+    while another file sees only `public` members. A qualified field/con chain
+    resolves by a greedy path walk — leading segments that name a visible module
+    (same-file nested first, then a workspace file module, then nested modules
+    within it) form the module path, the next segment is the member, and any
+    further segments are record-field accesses; same-file access is ungated,
+    cross-file requires the member `public`. Mutual recursion and SCCs stay
+    per-file over qualified `DefId`s. A nested module takes no visibility marker
+    (`public module` is rejected). New diagnostics: `FAI2016` (a nested module's
+    name collides with a module/type/interface/constructor in the same scope) and
+    `FAI2017` (a module name used where a value/type is expected).
+  - **Qualified-type syntax.** A dotted upper-case path in type position is one
+    `TypeKind::Con` with an interned dotted name, resolved the same way as values
+    (lexically when bare, by path walk when dotted); this also enables cross-file
+    `File.Type` for top-level types, which D73 had ruled out. A constructor
+    application is identified by the type's **resolved canonical** qualified name,
+    so `T` (inside its module), `Inner.T` (enclosing), and `File.Inner.T` (another
+    file) all unify. Constructors in patterns parse a dotted head (`Inner.MyCtor`).
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected milestones.
