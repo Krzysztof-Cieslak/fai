@@ -50,6 +50,8 @@ pub struct WireDef {
     pub arity: usize,
     /// Its functions (`fns[0]` is the entry; the rest are lifted lambdas).
     pub fns: Vec<WireFn>,
+    /// Per-entry-parameter borrow flags.
+    pub entry_borrowed: Vec<bool>,
 }
 
 /// One function in wire form.
@@ -183,6 +185,7 @@ pub fn def_to_wire(
         id: wire_id(lowered.def, module_of),
         arity,
         fns: lowered.fns.iter().map(|f| fn_to_wire(f, module_of)).collect(),
+        entry_borrowed: lowered.entry_borrowed.clone(),
     }
 }
 
@@ -304,6 +307,7 @@ pub fn from_wire(bundle: &WireBundle) -> Rebuilt {
         defs.push(LoweredDef {
             def: def_id,
             fns: wire.fns.iter().map(|f| fn_from_wire(f, &mut sources)).collect(),
+            entry_borrowed: wire.entry_borrowed.clone(),
         });
     }
 
@@ -477,6 +481,7 @@ mod tests {
         let lowered = LoweredDef {
             def,
             fns: vec![CoreFn { params: vec![cell], captures: Vec::new(), body }],
+            entry_borrowed: Vec::new(),
         };
 
         let wire = def_to_wire(&lowered, &|_| "M".to_owned(), 1);
@@ -521,11 +526,13 @@ mod tests {
             id: WireDefId { module: "A".to_owned(), name: "f".to_owned() },
             arity: 0,
             fns: vec![WireFn { params: vec![], captures: vec![], body: WireExpr::Lit(Lit::Unit) }],
+            entry_borrowed: Vec::new(),
         };
         let b = WireDef {
             id: WireDefId { module: "B".to_owned(), name: "f".to_owned() },
             arity: 0,
             fns: vec![WireFn { params: vec![], captures: vec![], body: WireExpr::Lit(Lit::Unit) }],
+            entry_borrowed: Vec::new(),
         };
         let bundle = WireBundle { entry: a.id.clone(), runtime: a.id.clone(), defs: vec![a, b] };
         let rebuilt = from_wire(&bundle);

@@ -29,6 +29,11 @@ pub fn fingerprint_def(
 ) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "def {}/{}", namer(def.def), arity_of(def.def));
+    // Borrowing changes the calling convention (the owned-ABI wrapper and which
+    // arguments direct callers transfer), so it is part of the cache key.
+    if def.borrows_any() {
+        let _ = writeln!(out, "borrow {:?}", def.entry_borrowed);
+    }
     for (i, f) in def.fns.iter().enumerate() {
         let params: Vec<String> = f.params.iter().map(|p| format!("%{}", p.index())).collect();
         let caps: Vec<String> = f.captures.iter().map(|c| format!("%{}", c.index())).collect();

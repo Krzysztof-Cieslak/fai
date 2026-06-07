@@ -379,30 +379,36 @@ feature (row-polymorphic structural records).
 ---
 
 ### M6 — Perceus reuse & in-place update
-**Status:** in progress. Two stages are built. (1) **Precise, ownership-based
-reference counting**: `fai-rc` normalizes each function to A-normal form and
-inserts dup/drop precisely (duplicate only when a value is still live afterward;
-drop at the last use rather than scope end; per-branch drops), with projections
-(`DataField`/`DataTag`) **borrowing** their base so a matched value survives its
-projections and is released once by reference counting. (2) **Reset/reuse**: a
-dead data cell's release becomes a `Reset` at its death point that yields a reuse
-token (its raw memory if unique, else null), threaded forward to a same-size
-construction that builds into it in place (`fai_drop_reuse`/`fai_reuse`); `if`
-pushes the decision into branches (reset-and-reuse where one reconstructs, drop
-where not). A `map`/`filter`/`inc` over a *unique* list now allocates **zero**
-fresh cells, while a shared list falls back to copying (the runtime rc==1 guard),
-proven by a differential allocation count. (3) **In-place update & drop
-specialization**: `{ r with … }` overwrites the record in place when it is unique
-(the row-polymorphic path via `fai_record_update`, the monomorphic path via the
-reuse mechanism — lowering reads a record's unchanged fields from a single base
-local so it stays uniquely referenced), copying only when shared; and code
-generation omits dup/drop of statically-immediate values (a `local → type` map).
-A borrow-signature seam is in place (every argument owned for now), and an
-abstract reference-count interpreter over the IR guards soundness across a corpus
-and whole programs. The remaining stage — inferred argument borrowing — is future
-work; see `docs/reuse-plan.md` for the staged design. (Deeper drop specialization
-— inlining a known data cell's child drops and free — is deferred as marginal
-after reuse and carrying memory-safety risk; noted in `docs/reuse-plan.md`.)
+**Status:** complete. (1) **Precise, ownership-based reference counting**: `fai-rc`
+normalizes each function to A-normal form and inserts dup/drop precisely
+(duplicate only when a value is still live afterward; drop at the last use rather
+than scope end; per-branch drops), with projections (`DataField`/`DataTag`)
+**borrowing** their base so a matched value survives its projections and is
+released once by reference counting. (2) **Reset/reuse**: a dead data cell's
+release becomes a `Reset` at its death point that yields a reuse token (its raw
+memory if unique, else null), threaded forward to a same-size construction that
+builds into it in place (`fai_drop_reuse`/`fai_reuse`); `if` pushes the decision
+into branches (reset-and-reuse where one reconstructs, drop where not). A
+`map`/`filter`/`inc` over a *unique* list allocates **zero** fresh cells, while a
+shared list falls back to copying (the runtime rc==1 guard), proven by a
+differential allocation count. (3) **In-place update & drop specialization**:
+`{ r with … }` overwrites the record in place when it is unique (the
+row-polymorphic path via `fai_record_update`, the monomorphic path via the reuse
+mechanism — lowering reads a record's unchanged fields from a single base local so
+it stays uniquely referenced), copying only when shared; and code generation omits
+dup/drop of statically-immediate values (a `local → type` map). (4) **Argument
+borrowing**: a saturated call to a top-level function is emitted as a **direct
+call** to its code; a per-function inference (`borrow_signature`) lends parameters
+that are only inspected (e.g. `length`/`sum`'s list) while owning those that
+escape or are matched-and-reconstructed (e.g. `map`/`inc`, so reuse still fires);
+a callee treats a borrowed parameter like a capture, a direct caller lends it
+(no duplication), and the first-class value form uses an owned-ABI wrapper that
+releases the borrowed arguments (so `apply_n`/escaping use stays sound without a
+whole-program escape analysis). An abstract reference-count interpreter over the
+IR guards soundness (ownership, borrowing, reuse tokens) across a corpus and whole
+programs. Inspect-only **primitive borrowing**, the **cross-module borrowing
+fixpoint**, deeper **drop specialization**, and **tail-recursion modulo cons** are
+correctness-neutral follow-ups (see M9).
 
 **Goal:** turn correctness-first RC into competitive performance.
 
@@ -479,6 +485,23 @@ and content-addressed cache landed in M0–M3.5; this milestone is *tuning*.)
 - **Opt-in monomorphization** for hot generic paths (optimization only — never a
   correctness requirement, and the one feature that *hurts* incrementality, so it
   stays opt-in).
+- **Reuse/borrowing follow-ups** layered on the M6 work, all correctness-neutral:
+  - **Tail-recursion modulo cons (TRMC):** flatten a self-tail-recursive
+    constructor-returning function (e.g. `map`, `filter`) into an in-place-building
+    loop using destination passing, removing the stack growth. Cell reuse already
+    makes such a function allocate zero fresh cells over a unique list (with N
+    reset tokens live on the stack); TRMC additionally removes the O(N) stack and
+    improves locality. A substantial separate transform.
+  - **Cross-module argument borrowing:** an inter-procedural borrow fixpoint (over
+    call-graph SCCs) so a function borrows parameters it only forwards to other
+    modules' borrowing functions; the current inference is self-contained
+    (self-recursion only, conservative across functions).
+  - **Primitive borrowing** for inspect-only primitives (`=`/`compare`/string
+    reads) on boxed operands, guarded by operand type so the hot `match` tag-test
+    path keeps consuming its (immediate) operands.
+  - **Drop specialization:** inline a known monomorphic data cell's child drops
+    and free to skip the descriptor dispatch (deferred from M6 as marginal after
+    reuse and carrying memory-safety risk).
 - Compile-throughput + `edit→diagnostic` / `edit→test` benchmarks with CI
   regression guards. (Foundation landed early during M2: a deterministic
   query-count guard suite — `crates/fai-tests/tests/perf_guards.rs`, proving the
@@ -1076,8 +1099,7 @@ Resolved while implementing **M3.5** (the daemon, persistence, and protocol):
     lands unified with the interfaces work so built-in and user operators share
     one mechanism (no throwaway hybrid).
 
-Resolved while implementing **M6** (reuse & in-place update; the full staged
-design is in `docs/reuse-plan.md`):
+Resolved while implementing **M6** (reuse & in-place update):
 
 - **D76 Precise reference counting is the foundation; reuse layers on it.** The
   scope-end dup-at-every-use scheme cannot reuse a matched cell: `Drop{x; body}`
@@ -1172,6 +1194,44 @@ design is in `docs/reuse-plan.md`):
     dropped on hot paths, and inlining the reference-count/free logic (complicated
     by immediate-versus-boxed constructors) carries memory-safety risk
     disproportionate to the gain. Revisit with the performance milestone.
+
+- **D79 Argument borrowing — sound by construction, self-contained inference,
+  two-entry-point ABI.** Borrowing lends a parameter (the caller keeps ownership)
+  instead of transferring it, cutting dup/drop churn for inspectors.
+  - **Always sound.** A borrowed parameter is treated exactly like a capture
+    (duplicated on a consuming use, never dropped), and the caller releases it at
+    its own last use. So the inference can never cause a leak or double free — it
+    is purely a performance choice.
+  - **Direct calls (prerequisite).** Code generation gained a direct-call path: a
+    saturated application of a top-level function calls its code symbol directly
+    (null environment — top-level functions capture nothing), skipping the generic
+    `apply_n` and the static closure. Borrowing is exploited only at such direct
+    calls; partial/over/indirect applications stay all-owned.
+  - **Self-contained inference.** `borrow_signature(def)` inspects one function's
+    body: it lends a parameter that only flows to inspecting positions (projection
+    bases, primitive operands, borrowed self-call arguments), and owns one that
+    *escapes* (returned, stored in a constructor/closure, or passed to a function)
+    or is *matched-and-reconstructed* (so the matched cell is reused in place — a
+    field-transformed rebuild like `(x + 1) :: …` still owns). Self-recursion is a
+    local monotone fixpoint; every other call's arguments are treated as consumed.
+    The query never reads another function's signature, so it is **acyclic** and
+    the cross-module firewall holds (a caller depends on a callee's small
+    signature, computed at the call site). Row-polymorphic functions (curried
+    through evidence) stay all-owned. Cross-module borrowing (an inter-procedural
+    fixpoint) is a future refinement.
+  - **Two-entry-point ABI (escape without whole-program analysis).** A function
+    that borrows a parameter is compiled with a borrowed entry (used by direct
+    callers) and an owned-ABI wrapper that calls the entry and then releases the
+    borrowed arguments; the static closure (the first-class value form reached via
+    `apply_n`) points at the wrapper. So passing a borrowing function as a value
+    is sound with no escape analysis. Chosen over the planned "escaping functions
+    forced all-owned," which on implementation needs a whole-program escape
+    analysis that does not fit the per-definition incremental model. The borrow
+    signature travels with the lowered definition (`entry_borrowed`), through the
+    cache fingerprint and the daemon-run wire form.
+  - **Primitive borrowing** (inspect-only `=`/`compare`/string reads) is left as a
+    refinement: on the hot path (a `match` tag test) it would add a no-op drop, so
+    it is not worth it without a per-operand-type guard.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected milestones.

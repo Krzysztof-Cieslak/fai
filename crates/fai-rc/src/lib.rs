@@ -41,10 +41,14 @@ use std::sync::Arc;
 use fai_core::core;
 use fai_core::ir::{CExpr, CoreFn, ExprKind as K, FieldIndex, LoweredDef};
 use fai_db::{Db, SourceFile};
-use fai_resolve::LocalId;
+use fai_resolve::{DefId, LocalId};
 use fai_syntax::Symbol;
 use fai_types::{Con, Ty};
 use rustc_hash::FxHashSet;
+
+pub use borrow::{BorrowSig, borrow_signature};
+
+mod borrow;
 
 /// A set of locals (used for free-variable and liveness sets).
 type Locals = FxHashSet<LocalId>;
@@ -54,26 +58,48 @@ type Locals = FxHashSet<LocalId>;
 pub fn rc(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
     let lowered = core(db, file, name);
     let mut next = next_free_local(&lowered);
+
+    // The borrow signature of `name` itself (the entry function's parameters): a
+    // borrowed parameter is treated like a capture — never dropped, duplicated on
+    // a consuming use. Lifted lambdas are reached only via `apply_n`, so their
+    // parameters stay owned.
+    let self_sig = borrow_signature(db, file, name);
+    // Per-call argument borrowing: a saturated direct call to a known top-level
+    // function borrows the parameters that function's signature marks borrowed.
+    let arg_borrows = |def: DefId, nargs: usize| -> Vec<bool> {
+        let Some(cf) = db.source_file(def.file) else { return vec![false; nargs] };
+        let sig = borrow_signature(db, cf, def.name);
+        if sig.exploitable_at(nargs) { sig.0.clone() } else { vec![false; nargs] }
+    };
+
     let mut fns = Vec::with_capacity(lowered.fns.len());
-    for f in &lowered.fns {
-        let captures: Locals = f.captures.iter().copied().collect();
+    for (i, f) in lowered.fns.iter().enumerate() {
+        let mut borrowed: Locals = f.captures.iter().copied().collect();
+        if i == 0 {
+            for (p, &param) in f.params.iter().enumerate() {
+                if self_sig.is_borrowed(p) {
+                    borrowed.insert(param);
+                }
+            }
+        }
         let body = anf(f.body.clone(), &mut next);
-        let used = fv_owned(&body, &captures);
-        let mut cx = Rc { captures: &captures, next };
+        let used = fv_owned(&body, &borrowed);
+        let mut cx = Rc { captures: &borrowed, next, call_borrows: &arg_borrows };
         let body = cx.owned(body, &Locals::default());
         next = cx.next;
         // Recycle a dead data cell into a same-size construction where one follows.
         let data = data_typed_locals(&body);
         let mut body = reuse_pass(body, &data, &mut next);
-        // Drop parameters that the body never mentions (drop-early, at entry).
+        // Drop parameters that the body never mentions (drop-early, at entry) —
+        // but never a borrowed parameter (the caller owns and releases it).
         for &p in f.params.iter().rev() {
-            if !used.contains(&p) {
+            if !used.contains(&p) && !borrowed.contains(&p) {
                 body = drop_(p, body);
             }
         }
         fns.push(CoreFn { params: f.params.clone(), captures: f.captures.clone(), body });
     }
-    Arc::new(LoweredDef { def: lowered.def, fns })
+    Arc::new(LoweredDef { def: lowered.def, fns, entry_borrowed: self_sig.0.clone() })
 }
 
 // ---------------------------------------------------------------------------
@@ -335,10 +361,14 @@ fn collect_fv(e: &CExpr, captures: &Locals, bound: &mut Locals, out: &mut Locals
 
 /// Per-function reference-counting state.
 struct Rc<'a> {
-    /// The function's captured slots (borrowed: dup on use, never dropped).
+    /// Borrowed slots (captures and borrowed parameters): dup on a consuming use,
+    /// never dropped here.
     captures: &'a Locals,
     /// The next free local slot (for projection-result temporaries).
     next: usize,
+    /// Per-argument borrow flags for a saturated direct call to a top-level
+    /// definition (empty/all-false when borrowing does not apply).
+    call_borrows: &'a dyn Fn(DefId, usize) -> Vec<bool>,
 }
 
 impl Rc<'_> {
@@ -362,22 +392,35 @@ impl Rc<'_> {
                 if self.is_capture(x) || live.contains(&x) { dup_(x, used) } else { used }
             }
             K::Prim { op, args } => {
+                let borrows = prim_borrows(op, &args);
                 let rebuilt = |args| CExpr::new(K::Prim { op, args }, ty.clone());
-                self.consume_operands(args, live, rebuilt)
+                self.operands_rc(args, &borrows, live, rebuilt)
             }
             K::MakeData { tag, args, reuse } => {
+                // Constructor fields are stored (consumed); none are borrowed.
+                let borrows = vec![false; args.len()];
                 let rebuilt = move |args| CExpr::new(K::MakeData { tag, args, reuse }, ty.clone());
-                self.consume_operands(args, live, rebuilt)
+                self.operands_rc(args, &borrows, live, rebuilt)
             }
             K::App { func, args } => {
-                let mut operands = Vec::with_capacity(args.len() + 1);
+                // The callee value is consumed; arguments at a saturated direct
+                // call to a top-level definition follow its borrow signature.
+                let nargs = args.len();
+                let arg_borrows = match &func.kind {
+                    K::Global(def) => (self.call_borrows)(*def, nargs),
+                    _ => vec![false; nargs],
+                };
+                let mut borrows = Vec::with_capacity(nargs + 1);
+                borrows.push(false);
+                borrows.extend(arg_borrows);
+                let mut operands = Vec::with_capacity(nargs + 1);
                 operands.push(*func);
                 operands.extend(args);
                 let rebuilt = |mut ops: Vec<CExpr>| {
                     let func = Box::new(ops.remove(0));
                     CExpr::new(K::App { func, args: ops }, ty.clone())
                 };
-                self.consume_operands(operands, live, rebuilt)
+                self.operands_rc(operands, &borrows, live, rebuilt)
             }
             K::MakeClosure { func, captures } => {
                 let inner = CExpr::new(K::MakeClosure { func, captures: captures.clone() }, ty);
@@ -417,28 +460,97 @@ impl Rc<'_> {
         }
     }
 
-    /// Transforms an operation whose operand atoms are all consumed, inserting a
-    /// `Dup` before the operation for each owned operand that is still needed
-    /// afterward (live, or consumed again at a later operand).
-    fn consume_operands(
-        &self,
+    /// Transforms an operation's atom operands, where `borrows[i]` marks operand
+    /// `i` as borrowed (read, not consumed). A consume operand still needed
+    /// afterward is duplicated before the operation; a borrowed operand whose last
+    /// use is here is dropped right after it.
+    fn operands_rc(
+        &mut self,
         operands: Vec<CExpr>,
+        borrows: &[bool],
         live: &Locals,
         rebuild: impl FnOnce(Vec<CExpr>) -> CExpr,
     ) -> CExpr {
+        let is_borrow = |i: usize| borrows.get(i).copied().unwrap_or(false);
+
+        // A borrowed operand must be a local the caller owns and releases. A
+        // non-local (e.g. a boxed literal) is bound to a fresh local first, so it
+        // is dropped after the operation rather than leaked.
+        let mut pre_binds: Vec<(LocalId, CExpr)> = Vec::new();
+        let operands: Vec<CExpr> = operands
+            .into_iter()
+            .enumerate()
+            .map(|(i, a)| {
+                if is_borrow(i) && !matches!(a.kind, K::Local(_)) {
+                    let ty = a.ty.clone();
+                    let t = self.fresh();
+                    pre_binds.push((t, a));
+                    CExpr::new(K::Local(t), ty)
+                } else {
+                    a
+                }
+            })
+            .collect();
+
+        // Locals this operation consumes (transfers ownership of).
+        let mut consumed = Locals::default();
+        for (i, a) in operands.iter().enumerate() {
+            if !is_borrow(i)
+                && let K::Local(x) = a.kind
+            {
+                consumed.insert(x);
+            }
+        }
+
+        // Duplicate a consume operand still needed afterward: a borrowed slot,
+        // live after the op, or consumed again at a later operand.
         let mut dups = Vec::new();
         for (i, a) in operands.iter().enumerate() {
+            if is_borrow(i) {
+                continue;
+            }
             if let K::Local(x) = a.kind {
-                let later =
-                    operands[i + 1..].iter().any(|b| matches!(b.kind, K::Local(y) if y == x));
+                let later = operands
+                    .iter()
+                    .enumerate()
+                    .skip(i + 1)
+                    .any(|(j, b)| !is_borrow(j) && matches!(b.kind, K::Local(y) if y == x));
                 if self.is_capture(x) || live.contains(&x) || later {
                     dups.push(x);
                 }
             }
         }
+
+        // A borrowed operand whose last use is this op (not consumed here, not
+        // live, not a capture) is released right after the operation.
+        let mut dead = Vec::new();
+        for (i, a) in operands.iter().enumerate() {
+            if is_borrow(i)
+                && let K::Local(x) = a.kind
+                && !self.is_capture(x)
+                && !live.contains(&x)
+                && !consumed.contains(&x)
+                && !dead.contains(&x)
+            {
+                dead.push(x);
+            }
+        }
+
         let mut e = rebuild(operands);
+        if !dead.is_empty() {
+            let ty = e.ty.clone();
+            let tmp = self.fresh();
+            let body = dropify(dead, CExpr::new(K::Local(tmp), ty.clone()));
+            e = CExpr::new(K::Let { local: tmp, value: Box::new(e), body: Box::new(body) }, ty);
+        }
         for x in dups.into_iter().rev() {
             e = dup_(x, e);
+        }
+        // Bind any borrowed non-local operands outermost (they evaluate first, are
+        // borrowed by the operation, and were released by the dead-borrow drops).
+        for (local, value) in pre_binds.into_iter().rev() {
+            let ty = e.ty.clone();
+            e = CExpr::new(K::Let { local, value: Box::new(value), body: Box::new(e) }, ty);
         }
         e
     }
@@ -537,6 +649,12 @@ impl Rc<'_> {
 // ---------------------------------------------------------------------------
 // Helpers.
 // ---------------------------------------------------------------------------
+
+/// Per-operand borrow flags for a primitive. Currently every primitive consumes
+/// its operands; inspect-only primitives that borrow are added later.
+fn prim_borrows(_op: fai_core::ir::Prim, args: &[CExpr]) -> Vec<bool> {
+    vec![false; args.len()]
+}
 
 fn dup_(local: LocalId, body: CExpr) -> CExpr {
     let ty = body.ty.clone();

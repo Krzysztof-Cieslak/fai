@@ -1,6 +1,6 @@
 # Fai — Agent & Contributor Guide
 
-> **Status:** Implemented through **interfaces & capabilities** (M5). The compiler front end —
+> **Status:** Implemented through **reuse & in-place update** (M6). The compiler front end —
 > lexer, layout, parser/AST, the incremental `parse`/`item_tree` queries, and the
 > canonical formatter (M1) — plus name resolution, the module graph, and
 > Hindley–Milner inference for the functional core (M2) are built. `fai check`
@@ -34,9 +34,16 @@
 > and the capability interfaces with the `Runtime` bundle) and qualified operation
 > modules (`List`, `Option`, `Result`, `Dict`, `Set`, `String`, `Int`, `Float` —
 > e.g. `List.map`, `Int.toString`). The few Rust intrinsics are prelude-private,
-> reached only as `Prim.*` inside `std/`. Later milestones (reuse analysis,
-> contracts, the LSP, …) define the *intended* interface we build toward. The
-> design is locked (see the decision table below).
+> reached only as `Prim.*` inside `std/`. Reuse & in-place update (M6) are built:
+> reference counting is **precise and ownership-based** (A-normal form, drop at
+> last use, borrowing projections), a dead data cell is **reset and reused** in
+> place for a same-size construction (so `map`/`filter` over a unique list
+> allocate zero fresh cells, falling back to copying when shared), `{ r with … }`
+> updates a unique record in place, and **argument borrowing** lends
+> inspect-only parameters at direct calls (with an owned-ABI wrapper for the
+> first-class value form). Later milestones (contracts, the LSP, …) define the
+> *intended* interface we build toward. The design is locked (see the decision
+> table below).
 
 This document is the orientation guide for anyone — human or AI agent — working
 on the Fai compiler. Read it first. For the staged build plan see `docs/PLAN.md`; for
