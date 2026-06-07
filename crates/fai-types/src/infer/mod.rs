@@ -41,7 +41,10 @@ pub fn declared_scheme(db: &dyn Db, file: SourceFile, name: Symbol) -> Option<Sc
     let parsed = fai_syntax::parse(db, file);
     let module = &parsed.module;
     if let ItemKind::Signature { ty, .. } = &module.items[sig_item.index()].kind {
-        Some(crate::lower::lower_signature(db, file, module, *ty))
+        // Resolve the signature's type names in the definition's module scope.
+        let mut scope: Vec<Symbol> = name.as_str().split('.').map(Symbol::intern).collect();
+        scope.pop();
+        Some(crate::lower::lower_signature_in(db, file, module, &scope, *ty))
     } else {
         None
     }
@@ -100,17 +103,20 @@ impl Env for SccEnv<'_> {
     }
 }
 
-/// The body item (params + body expr) of a definition, located in `module`.
-fn binding_body(
-    module: &Module,
+/// The body item (params + body expr) of a definition with qualified `name`,
+/// located by its binding `ItemId` (so a nested definition is found by its
+/// module-qualified name, not the local name in the AST).
+fn binding_body<'a>(
+    db: &dyn Db,
+    file: SourceFile,
+    module: &'a Module,
     name: Symbol,
-) -> Option<(&[fai_syntax::ast::PatId], fai_syntax::ast::ExprId)> {
-    module.items.iter().find_map(|it| match &it.kind {
-        ItemKind::Binding { name: n, params, body, .. } if *n == name => {
-            Some((params.as_slice(), *body))
-        }
+) -> Option<(&'a [fai_syntax::ast::PatId], fai_syntax::ast::ExprId)> {
+    let binding = fai_resolve::module_defs(db, file).get(name)?.binding;
+    match &module.items[binding.index()].kind {
+        ItemKind::Binding { params, body, .. } => Some((params.as_slice(), *body)),
         _ => None,
-    })
+    }
 }
 
 /// Infers the schemes of an SCC's members.
@@ -163,7 +169,7 @@ pub fn infer_scc(
 
     // Infer each member's body, unifying with its monomorphic type.
     for m in members {
-        let Some((params, body)) = binding_body(module, m.name) else {
+        let Some((params, body)) = binding_body(db, file, module, m.name) else {
             continue;
         };
         let member_ty = scc_types[m].clone();
@@ -283,7 +289,7 @@ pub fn infer_local_types(
     let module = &parsed.module;
     let resolved = fai_resolve::resolve(db, file);
 
-    let Some((params, body)) = binding_body(module, name) else {
+    let Some((params, body)) = binding_body(db, file, module, name) else {
         return Vec::new();
     };
     let params: Vec<fai_syntax::ast::PatId> = params.to_vec();
@@ -349,7 +355,7 @@ pub fn infer_body_types(
     let module = &parsed.module;
     let resolved = fai_resolve::resolve(db, file);
 
-    let Some((params, body)) = binding_body(module, name) else {
+    let Some((params, body)) = binding_body(db, file, module, name) else {
         return (Vec::new(), Vec::new());
     };
     let params: Vec<fai_syntax::ast::PatId> = params.to_vec();

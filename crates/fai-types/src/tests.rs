@@ -1215,3 +1215,70 @@ fn builtin_operator_in_value_position_has_its_type() {
     assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
     assert_eq!(type_of(&db, f[0], "add"), "Int -> Int -> Int");
 }
+
+#[test]
+fn nested_type_and_constructor_typecheck() {
+    // A nested module declares a type used both by its own (bare) members and by
+    // the enclosing module (qualified).
+    let src = indoc! {r#"
+        module M
+
+        module Geo =
+          public type Shape =
+            | Circle Float
+            | Rect Float Float
+
+          public size : Shape -> Float
+          let size s =
+            match s with
+            | Circle r -> r
+            | Rect w h -> w + h
+
+        public big : Float
+        let big = Geo.size (Geo.Circle 2.0)
+    "#};
+    let (db, f) = db_with_std(&[("M.fai", src)]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+    assert_eq!(type_of(&db, f[0], "big"), "Float");
+}
+
+#[test]
+fn recursive_nested_type_resolves_in_scope() {
+    // A nested recursive ADT refers to itself and its constructors by bare name.
+    let src = indoc! {r#"
+        module M
+
+        module Tree =
+          public type T =
+            | Leaf
+            | Node T T
+
+          public depth : T -> Int
+          let depth t =
+            match t with
+            | Leaf -> 0
+            | Node l r -> 1
+    "#};
+    let (db, f) = db_with_std(&[("M.fai", src)]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+}
+
+#[test]
+fn cross_file_qualified_type_resolves() {
+    let lib = indoc! {r#"
+        module Lib
+
+        module Geo =
+          public type Shape =
+            | Circle Float
+            | Rect Float Float
+    "#};
+    let user = indoc! {r#"
+        module User
+
+        public make : Float -> Lib.Geo.Shape
+        let make r = Lib.Geo.Circle r
+    "#};
+    let (db, f) = db_with_std(&[("Lib.fai", lib), ("User.fai", user)]);
+    assert!(check_codes(&db, f[1]).is_empty(), "got {:?}", check_codes(&db, f[1]));
+}

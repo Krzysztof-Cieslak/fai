@@ -198,26 +198,26 @@ pub fn contract_body_types(db: &dyn Db, file: SourceFile, ordinal: usize) -> Arc
     })
 }
 
-/// Type-checks every definition and contract in `file`, emitting diagnostics.
-#[salsa::tracked]
-pub fn check_file(db: &dyn Db, file: SourceFile) {
-    let defs = module_defs(db, file);
-    let parsed = fai_syntax::parse(db, file);
-    let module = &parsed.module;
-
-    // Validate `type` declarations: lower each alias body (surfacing recursive
-    // aliases and unknown constructors) and each union's constructor schemes.
-    // Validate `interface` declarations by lowering each method signature.
-    for item in &module.items {
-        match &item.kind {
+/// Validates the `type`/`interface` declarations of one module scope (lowering
+/// alias bodies, constructor schemes, and method signatures), recursing into
+/// nested modules so each declaration is checked under its own scope path.
+fn validate_decls(
+    db: &dyn Db,
+    file: SourceFile,
+    module: &fai_syntax::ast::Module,
+    scope: &mut Vec<fai_syntax::Symbol>,
+    items: &[fai_syntax::ast::ItemId],
+) {
+    for &id in items {
+        match &module.items[id.index()].kind {
             fai_syntax::ast::ItemKind::Type { def, .. } => match def {
                 fai_syntax::ast::TypeDef::Alias(ty) => {
                     let mut vars = crate::lower::LowerVars::default();
-                    let _ = crate::lower::lower_type(db, file, module, *ty, &mut vars);
+                    let _ = crate::lower::lower_type_in(db, file, module, scope, *ty, &mut vars);
                 }
                 fai_syntax::ast::TypeDef::Union(variants) => {
                     for v in variants {
-                        let _ = constructor_scheme(db, file, v.name);
+                        let _ = constructor_scheme(db, file, fai_resolve::qualify(scope, v.name));
                     }
                 }
             },
@@ -227,12 +227,30 @@ pub fn check_file(db: &dyn Db, file: SourceFile) {
                     for &p in params {
                         vars.var(p);
                     }
-                    let _ = crate::lower::lower_type(db, file, module, m.ty, &mut vars);
+                    let _ = crate::lower::lower_type_in(db, file, module, scope, m.ty, &mut vars);
                 }
+            }
+            fai_syntax::ast::ItemKind::Module { name, body } => {
+                scope.push(*name);
+                validate_decls(db, file, module, scope, body);
+                scope.pop();
             }
             _ => {}
         }
     }
+}
+
+/// Type-checks every definition and contract in `file`, emitting diagnostics.
+#[salsa::tracked]
+pub fn check_file(db: &dyn Db, file: SourceFile) {
+    let defs = module_defs(db, file);
+    let parsed = fai_syntax::parse(db, file);
+    let module = &parsed.module;
+
+    // Validate `type` and `interface` declarations (in source order, descending
+    // into nested modules so each declaration is checked in its own scope).
+    let mut scope: Vec<fai_syntax::Symbol> = Vec::new();
+    validate_decls(db, file, module, &mut scope, &module.roots);
 
     for d in &defs.defs {
         let def = DefId::new(file.source(db), d.name);
