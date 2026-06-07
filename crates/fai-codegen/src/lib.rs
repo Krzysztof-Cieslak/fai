@@ -23,4 +23,6 @@ pub use jit::jit_run;
 #[cfg(test)]
 mod proptests;
 #[cfg(test)]
+mod reuse_tests;
+#[cfg(test)]
 mod tests;

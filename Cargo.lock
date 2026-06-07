@@ -710,6 +710,7 @@ version = "0.1.0"
 dependencies = [
  "fai-core",
  "fai-db",
+ "fai-diagnostics",
  "fai-resolve",
  "fai-syntax",
  "fai-types",

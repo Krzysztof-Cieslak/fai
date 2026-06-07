@@ -17,6 +17,7 @@ rustc-hash.workspace = true
 salsa.workspace = true
 
 [dev-dependencies]
+fai-diagnostics.workspace = true
 indoc.workspace = true
 proptest.workspace = true
 

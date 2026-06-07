@@ -1,0 +1,4772 @@
+//! A large suite of concrete, hand-written reference-count soundness cases.
+//!
+//! Every case is its own `#[test]`, so the test runner reports each program
+//! individually. Each program is run through the soundness oracle
+//! ([`crate::tests::check_program`], which also rejects ill-typed programs so no
+//! case passes vacuously); reuse cases additionally pin the reset/reuse marker.
+
+use indoc::indoc;
+
+use crate::tests::{check_program, rc_checked};
+
+/// Asserts `name` in `src` typechecks and is reference-count sound.
+#[track_caller]
+fn sound(src: &str, name: &str) {
+    if let Err(e) = check_program(src, name) {
+        panic!("rc unsound for `{name}`: {e}\n{src}");
+    }
+}
+
+/// Asserts `name` is sound and emits a reset+reuse opportunity.
+#[track_caller]
+fn reuses(src: &str, name: &str) {
+    sound(src, name);
+    let out = rc_checked(src, name);
+    assert!(out.contains("data@%"), "expected reuse for `{name}`:\n{out}");
+}
+
+/// Asserts `name` is sound and emits no reuse token (inspector or fresh build).
+#[track_caller]
+fn no_reuse(src: &str, name: &str) {
+    sound(src, name);
+    let out = rc_checked(src, name);
+    assert!(!out.contains("data@%"), "unexpected reuse for `{name}`:\n{out}");
+    assert!(!out.contains("reset %"), "unexpected reset for `{name}`:\n{out}");
+}
+
+/// Asserts `name` is sound and updates a record in place (`recordUpdate`).
+#[track_caller]
+fn updates_in_place(src: &str, name: &str) {
+    sound(src, name);
+    let out = rc_checked(src, name);
+    assert!(out.contains("recordUpdate"), "expected in-place update for `{name}`:\n{out}");
+}
+
+#[test]
+fn arith_add() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x y = x + y
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn arith_sub() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x y = x - y
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn arith_mul() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x y = x * y
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn arith_div() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x y = x / y
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn arith_mod() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x y = x % y
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn arith_add1() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x = x + 1
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn arith_sub1() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x = x - 1
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn arith_mul2() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x = x * 2
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn arith_div2() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x = x / 2
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn arith_mod2() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x = x % 2
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn arith_one_plus() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x = 1 + x
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn arith_hundred_minus() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x = 100 - x
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn arith_x_plus_x() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x = x + x
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn arith_x_times_x() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x = x * x
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn arith_xx_minus_x() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x = (x + x) - x
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn arith_xy_mul_z() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x y z = (x + y) * z
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn arith_x_add_yz() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x y z = x + (y * z)
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn arith_xy_div_z() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x y z = (x - y) / z
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn arith_xy_mod_z() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x y z = (x * y) % z
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn arith_sum4() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x y z = (x + y) + (z + x)
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn arith_mix4() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x y z = (x * y) - (z * x)
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn arith_poly1() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x = ((x + 1) * (x - 1)) + x
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn arith_poly2() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x = (x * x) - (2 * x)
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn arith_square() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let square x = x * x
+        "#},
+        "square",
+    );
+}
+
+#[test]
+fn arith_cube() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let cube x = (x * x) * x
+        "#},
+        "cube",
+    );
+}
+
+#[test]
+fn arith_neg() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let neg x = 0 - x
+        "#},
+        "neg",
+    );
+}
+
+#[test]
+fn arith_double() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let double x = x + x
+        "#},
+        "double",
+    );
+}
+
+#[test]
+fn arith_avg() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let avg a b = (a + b) / 2
+        "#},
+        "avg",
+    );
+}
+
+#[test]
+fn arith_abs() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let abs n = if n < 0 then 0 - n else n
+        "#},
+        "abs",
+    );
+}
+
+#[test]
+fn arith_sign() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let sign n = if n < 0 then 0 - 1 else if n > 0 then 1 else 0
+        "#},
+        "sign",
+    );
+}
+
+#[test]
+fn cmp_eq() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x y = x = y
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn cmp_ne() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x y = x <> y
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn cmp_lt() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x y = x < y
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn cmp_le() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x y = x <= y
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn cmp_gt() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x y = x > y
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn cmp_ge() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x y = x >= y
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn cmp_if_eq() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x y = if x = y then 1 else 0
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn cmp_if_ne() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x y = if x <> y then x else y
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn cmp_if_lt() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x y = if x < y then y else x
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn cmp_if_le() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x y = if x <= y then x else y
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn cmp_if_gt() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x y = if x > y then x else y
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn cmp_if_ge() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x y = if x >= y then 0 else 1
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn cmp_max3() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let max3 a b c = if a > b then (if a > c then a else c) else (if b > c then b else c)
+        "#},
+        "max3",
+    );
+}
+
+#[test]
+fn cmp_clamp() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let clamp n = if n < 0 then 0 else if n > 10 then 10 else n
+        "#},
+        "clamp",
+    );
+}
+
+#[test]
+fn bool_and() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f a b = a && b
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn bool_or() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f a b = a || b
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn bool_not() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f a = not a
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn bool_nand() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f a b = not (a && b)
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn bool_andor() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f a b c = (a && b) || c
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn bool_orand() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f a b c = a && (b || c)
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn bool_lt_and() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x y = (x < y) && (y < 100)
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn bool_eq_or() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x y = (x = y) || (x < y)
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn bool_not_eq() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x y = not (x = y)
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn bool_between() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let between lo hi x = (lo <= x) && (x <= hi)
+        "#},
+        "between",
+    );
+}
+
+#[test]
+fn bool_guard() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x = if (x < 0) || (x > 9) then 0 else x
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn list_inspect_len() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let len xs =
+              match xs with
+              | [] -> 0
+              | _ :: r -> 1 + len r
+        "#},
+        "len",
+    );
+}
+
+#[test]
+fn list_inspect_sum() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let sum xs =
+              match xs with
+              | [] -> 0
+              | x :: r -> x + sum r
+        "#},
+        "sum",
+    );
+}
+
+#[test]
+fn list_inspect_product() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let product xs =
+              match xs with
+              | [] -> 1
+              | x :: r -> x * product r
+        "#},
+        "product",
+    );
+}
+
+#[test]
+fn list_inspect_isempty() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let isEmpty xs =
+              match xs with
+              | [] -> true
+              | _ :: _ -> false
+        "#},
+        "isEmpty",
+    );
+}
+
+#[test]
+fn list_inspect_first() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let first xs =
+              match xs with
+              | [] -> 0
+              | x :: _ -> x
+        "#},
+        "first",
+    );
+}
+
+#[test]
+fn list_inspect_last() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let last xs =
+              match xs with
+              | [] -> 0
+              | x :: r ->
+                match r with
+                | [] -> x
+                | _ :: _ -> last r
+        "#},
+        "last",
+    );
+}
+
+#[test]
+fn list_inspect_maxl() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let maxl xs =
+              match xs with
+              | [] -> 0
+              | x :: r ->
+                let m = maxl r
+                if x > m then x else m
+        "#},
+        "maxl",
+    );
+}
+
+#[test]
+fn list_inspect_minl() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let minl xs =
+              match xs with
+              | [] -> 0
+              | x :: r ->
+                let m = minl r
+                if x < m then x else m
+        "#},
+        "minl",
+    );
+}
+
+#[test]
+fn list_inspect_elem() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let elem v xs =
+              match xs with
+              | [] -> false
+              | x :: r -> if x = v then true else elem v r
+        "#},
+        "elem",
+    );
+}
+
+#[test]
+fn list_inspect_countpos() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let countPos xs =
+              match xs with
+              | [] -> 0
+              | x :: r -> if x > 0 then 1 + countPos r else countPos r
+        "#},
+        "countPos",
+    );
+}
+
+#[test]
+fn list_build_inc() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let inc xs =
+              match xs with
+              | [] -> []
+              | x :: r -> (x + 1) :: inc r
+        "#},
+        "inc",
+    );
+}
+
+#[test]
+fn list_build_dec() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let dec xs =
+              match xs with
+              | [] -> []
+              | x :: r -> (x - 1) :: dec r
+        "#},
+        "dec",
+    );
+}
+
+#[test]
+fn list_build_dbl() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let dbl xs =
+              match xs with
+              | [] -> []
+              | x :: r -> (x * 2) :: dbl r
+        "#},
+        "dbl",
+    );
+}
+
+#[test]
+fn list_build_squares() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let squares xs =
+              match xs with
+              | [] -> []
+              | x :: r -> (x * x) :: squares r
+        "#},
+        "squares",
+    );
+}
+
+#[test]
+fn list_build_zero() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let zero xs =
+              match xs with
+              | [] -> []
+              | _ :: r -> 0 :: zero r
+        "#},
+        "zero",
+    );
+}
+
+#[test]
+fn list_build_idlist() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let idList xs =
+              match xs with
+              | [] -> []
+              | x :: r -> x :: idList r
+        "#},
+        "idList",
+    );
+}
+
+#[test]
+fn list_build_keeppos() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let keepPos xs =
+              match xs with
+              | [] -> []
+              | x :: r -> if x > 0 then x :: keepPos r else keepPos r
+        "#},
+        "keepPos",
+    );
+}
+
+#[test]
+fn list_build_dropneg() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let dropNeg xs =
+              match xs with
+              | [] -> []
+              | x :: r -> if x < 0 then dropNeg r else x :: dropNeg r
+        "#},
+        "dropNeg",
+    );
+}
+
+#[test]
+fn list_build_take() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let take n xs =
+              match xs with
+              | [] -> []
+              | x :: r -> if n <= 0 then [] else x :: take (n - 1) r
+        "#},
+        "take",
+    );
+}
+
+#[test]
+fn list_build_drop() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let drop n xs =
+              match xs with
+              | [] -> []
+              | x :: r -> if n <= 0 then x :: r else drop (n - 1) r
+        "#},
+        "drop",
+    );
+}
+
+#[test]
+fn list_build_rev() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let rev acc xs =
+              match xs with
+              | [] -> acc
+              | x :: r -> rev (x :: acc) r
+        "#},
+        "rev",
+    );
+}
+
+#[test]
+fn list_build_append() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let append xs ys =
+              match xs with
+              | [] -> ys
+              | x :: r -> x :: append r ys
+        "#},
+        "append",
+    );
+}
+
+#[test]
+fn list_build_replicate() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let replicate n x =
+              if n <= 0 then [] else x :: replicate (n - 1) x
+        "#},
+        "replicate",
+    );
+}
+
+#[test]
+fn list_build_zipsum() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let zipSum xs ys =
+              match xs with
+              | [] -> []
+              | x :: rx ->
+                match ys with
+                | [] -> []
+                | y :: ry -> (x + y) :: zipSum rx ry
+        "#},
+        "zipSum",
+    );
+}
+
+#[test]
+fn list_build_enumfrom() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let enumFrom n xs =
+              match xs with
+              | [] -> []
+              | _ :: r -> n :: enumFrom (n + 1) r
+        "#},
+        "enumFrom",
+    );
+}
+
+#[test]
+fn list2d_concat() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let append xs ys =
+              match xs with
+              | [] -> ys
+              | x :: r -> x :: append r ys
+
+            let concat xss =
+              match xss with
+              | [] -> []
+              | xs :: r -> append xs (concat r)
+        "#},
+        "concat",
+    );
+}
+
+#[test]
+fn list2d_lengths() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let lengths xss =
+              match xss with
+              | [] -> []
+              | xs :: r -> sumLen xs :: lengths r
+
+            let sumLen xs =
+              match xs with
+              | [] -> 0
+              | _ :: r -> 1 + sumLen r
+        "#},
+        "lengths",
+    );
+}
+
+#[test]
+fn list2d_heads() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let heads xss =
+              match xss with
+              | [] -> []
+              | xs :: r ->
+                match xs with
+                | [] -> heads r
+                | x :: _ -> x :: heads r
+        "#},
+        "heads",
+    );
+}
+
+#[test]
+fn ho_apply() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let apply f x = f x
+        "#},
+        "apply",
+    );
+}
+
+#[test]
+fn ho_twice() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let twice f x = f (f x)
+        "#},
+        "twice",
+    );
+}
+
+#[test]
+fn ho_thrice() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let thrice f x = f (f (f x))
+        "#},
+        "thrice",
+    );
+}
+
+#[test]
+fn ho_compose() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let compose f g x = f (g x)
+        "#},
+        "compose",
+    );
+}
+
+#[test]
+fn ho_flip() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let flip f x y = f y x
+        "#},
+        "flip",
+    );
+}
+
+#[test]
+fn ho_on2() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let on2 f a b = f a b
+        "#},
+        "on2",
+    );
+}
+
+#[test]
+fn ho_adder() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let adder x = fun y -> x + y
+        "#},
+        "adder",
+    );
+}
+
+#[test]
+fn ho_const2() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let const2 x = fun y -> x
+        "#},
+        "const2",
+    );
+}
+
+#[test]
+fn ho_make3() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let make3 x y = fun z -> (x + y) + z
+        "#},
+        "make3",
+    );
+}
+
+#[test]
+fn ho_map() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let map f xs =
+              match xs with
+              | [] -> []
+              | x :: r -> f x :: map f r
+        "#},
+        "map",
+    );
+}
+
+#[test]
+fn ho_filter() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let filter p xs =
+              match xs with
+              | [] -> []
+              | x :: r -> if p x then x :: filter p r else filter p r
+        "#},
+        "filter",
+    );
+}
+
+#[test]
+fn ho_foldl() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let foldl f acc xs =
+              match xs with
+              | [] -> acc
+              | x :: r -> foldl f (f acc x) r
+        "#},
+        "foldl",
+    );
+}
+
+#[test]
+fn ho_foldr() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let foldr f z xs =
+              match xs with
+              | [] -> z
+              | x :: r -> f x (foldr f z r)
+        "#},
+        "foldr",
+    );
+}
+
+#[test]
+fn ho_all() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let all p xs =
+              match xs with
+              | [] -> true
+              | x :: r -> if p x then all p r else false
+        "#},
+        "all",
+    );
+}
+
+#[test]
+fn ho_any() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let any p xs =
+              match xs with
+              | [] -> false
+              | x :: r -> if p x then true else any p r
+        "#},
+        "any",
+    );
+}
+
+#[test]
+fn ho_count() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let count p xs =
+              match xs with
+              | [] -> 0
+              | x :: r -> if p x then 1 + count p r else count p r
+        "#},
+        "count",
+    );
+}
+
+#[test]
+fn adt_enum_code() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type Color = | Red | Green | Blue
+
+            let code c =
+              match c with
+              | Red -> 0
+              | Green -> 1
+              | Blue -> 2
+        "#},
+        "code",
+    );
+}
+
+#[test]
+fn adt_enum_next() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type Color = | Red | Green | Blue
+
+            let next c =
+              match c with
+              | Red -> Green
+              | Green -> Blue
+              | Blue -> Red
+        "#},
+        "next",
+    );
+}
+
+#[test]
+fn adt_enum_turn() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type Dir = | N | E | S | W
+
+            let turn d =
+              match d with
+              | N -> E
+              | E -> S
+              | S -> W
+              | W -> N
+        "#},
+        "turn",
+    );
+}
+
+#[test]
+fn adt_payload_eval() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type T = | A Int | B Int Int
+
+            let eval t =
+              match t with
+              | A x -> x
+              | B x y -> x + y
+        "#},
+        "eval",
+    );
+}
+
+#[test]
+fn adt_payload_swap() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type T = | A Int | B Int Int
+
+            let swap t =
+              match t with
+              | A x -> A x
+              | B x y -> B y x
+        "#},
+        "swap",
+    );
+}
+
+#[test]
+fn adt_payload_bump() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type T = | A Int | B Int Int
+
+            let bump t =
+              match t with
+              | A x -> A (x + 1)
+              | B x y -> B (x + 1) (y + 1)
+        "#},
+        "bump",
+    );
+}
+
+#[test]
+fn adt_payload_mka() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type T = | A Int | B Int Int
+
+            let mkA n = A n
+        "#},
+        "mkA",
+    );
+}
+
+#[test]
+fn adt_payload_mkb() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type T = | A Int | B Int Int
+
+            let mkB n = B n n
+        "#},
+        "mkB",
+    );
+}
+
+#[test]
+fn adt_payload_area() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type Shape =
+              | Circle Int
+              | Rect Int Int
+
+            let area s =
+              match s with
+              | Circle r -> (3 * r) * r
+              | Rect w h -> w * h
+        "#},
+        "area",
+    );
+}
+
+#[test]
+fn adt_payload_merge() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type E = | L Int | R Int
+
+            let merge e =
+              match e with
+              | L x -> x
+              | R y -> y
+        "#},
+        "merge",
+    );
+}
+
+#[test]
+fn adt_opt_getor() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type Opt = | Non | Som Int
+
+            let getOr d o =
+              match o with
+              | Non -> d
+              | Som x -> x
+        "#},
+        "getOr",
+    );
+}
+
+#[test]
+fn adt_opt_map() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type Opt = | Non | Som Int
+
+            let mapO o =
+              match o with
+              | Non -> Non
+              | Som x -> Som (x + 1)
+        "#},
+        "mapO",
+    );
+}
+
+#[test]
+fn adt_opt_issome() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type Opt = | Non | Som Int
+
+            let isSome o =
+              match o with
+              | Non -> false
+              | Som _ -> true
+        "#},
+        "isSome",
+    );
+}
+
+#[test]
+fn adt_opt_orelse() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type Opt = | Non | Som Int
+
+            let orElse a b =
+              match a with
+              | Non -> b
+              | Som _ -> a
+        "#},
+        "orElse",
+    );
+}
+
+#[test]
+fn tree_sumt() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type Tree = | Leaf Int | Node Tree Tree
+
+            let sumT t =
+              match t with
+              | Leaf n -> n
+              | Node l r -> sumT l + sumT r
+        "#},
+        "sumT",
+    );
+}
+
+#[test]
+fn tree_deptht() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type Tree = | Leaf Int | Node Tree Tree
+
+            let depthT t =
+              match t with
+              | Leaf _ -> 1
+              | Node l r ->
+                let dl = depthT l
+                let dr = depthT r
+                1 + (if dl > dr then dl else dr)
+        "#},
+        "depthT",
+    );
+}
+
+#[test]
+fn tree_mirror() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type Tree = | Leaf Int | Node Tree Tree
+
+            let mirror t =
+              match t with
+              | Leaf n -> Leaf n
+              | Node l r -> Node (mirror r) (mirror l)
+        "#},
+        "mirror",
+    );
+}
+
+#[test]
+fn tree_inct() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type Tree = | Leaf Int | Node Tree Tree
+
+            let incT t =
+              match t with
+              | Leaf n -> Leaf (n + 1)
+              | Node l r -> Node (incT l) (incT r)
+        "#},
+        "incT",
+    );
+}
+
+#[test]
+fn tree_countleaves() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type Tree = | Leaf Int | Node Tree Tree
+
+            let countLeaves t =
+              match t with
+              | Leaf _ -> 1
+              | Node l r -> countLeaves l + countLeaves r
+        "#},
+        "countLeaves",
+    );
+}
+
+#[test]
+fn expr_eval() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type Expr =
+              | Lit Int
+              | Add Expr Expr
+              | Mul Expr Expr
+              | Neg Expr
+
+            let eval e =
+              match e with
+              | Lit n -> n
+              | Add a b -> eval a + eval b
+              | Mul a b -> eval a * eval b
+              | Neg a -> 0 - eval a
+        "#},
+        "eval",
+    );
+}
+
+#[test]
+fn tuple_pair() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let pair a b = (a, b)
+        "#},
+        "pair",
+    );
+}
+
+#[test]
+fn tuple_triple() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let triple a b c = (a, b, c)
+        "#},
+        "triple",
+    );
+}
+
+#[test]
+fn tuple_fst() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let fst p =
+              match p with
+              | (a, _) -> a
+        "#},
+        "fst",
+    );
+}
+
+#[test]
+fn tuple_snd() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let snd p =
+              match p with
+              | (_, b) -> b
+        "#},
+        "snd",
+    );
+}
+
+#[test]
+fn tuple_addt() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let addT p =
+              match p with
+              | (a, b) -> a + b
+        "#},
+        "addT",
+    );
+}
+
+#[test]
+fn tuple_swap() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let swap p =
+              let (a, b) = p
+              (b, a)
+        "#},
+        "swap",
+    );
+}
+
+#[test]
+fn tuple_dup() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let dup x = (x, x)
+        "#},
+        "dup",
+    );
+}
+
+#[test]
+fn tuple_onpair() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let onPair f p =
+              match p with
+              | (a, b) -> f a b
+        "#},
+        "onPair",
+    );
+}
+
+#[test]
+fn tuple_first3() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let firstOfThree t =
+              match t with
+              | (a, _, _) -> a
+        "#},
+        "firstOfThree",
+    );
+}
+
+#[test]
+fn record_mk() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type P = { x : Int, y : Int }
+
+            let mk a = { x = a, y = a + 1 }
+        "#},
+        "mk",
+    );
+}
+
+#[test]
+fn record_shift() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type P = { x : Int, y : Int }
+
+            let shift p = { p with x = p.x + 1 }
+        "#},
+        "shift",
+    );
+}
+
+#[test]
+fn record_scale() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type P = { x : Int, y : Int }
+
+            let scale k p = { p with x = p.x * k, y = p.y * k }
+        "#},
+        "scale",
+    );
+}
+
+#[test]
+fn record_sump() {
+    sound(
+        indoc! {r#"
+            module M
+
+            public type P = { x : Int, y : Int }
+
+            public sumP : P -> Int
+            let sumP p = p.x + p.y
+        "#},
+        "sumP",
+    );
+}
+
+#[test]
+fn record_getx() {
+    sound(
+        indoc! {r#"
+            module M
+
+            public type P = { x : Int, y : Int }
+
+            public getX : P -> Int
+            let getX p = p.x
+        "#},
+        "getX",
+    );
+}
+
+#[test]
+fn record_mag() {
+    sound(
+        indoc! {r#"
+            module M
+
+            public type P = { x : Int, y : Int }
+
+            public mag : P -> Int
+            let mag p =
+              match p with
+              | { x, y } -> x + y
+        "#},
+        "mag",
+    );
+}
+
+#[test]
+fn record_getx_row() {
+    sound(
+        indoc! {r#"
+            module M
+
+            public getX : { x : Int | 'r } -> Int
+            let getX rec = rec.x
+        "#},
+        "getX",
+    );
+}
+
+#[test]
+fn record_sumxy_row() {
+    sound(
+        indoc! {r#"
+            module M
+
+            public sumXY : { x : Int, y : Int | 'r } -> Int
+            let sumXY rec = rec.x + rec.y
+        "#},
+        "sumXY",
+    );
+}
+
+#[test]
+fn record_bump_row() {
+    sound(
+        indoc! {r#"
+            module M
+
+            public bump : { n : Int | 'r } -> { n : Int | 'r }
+            let bump rec = { rec with n = rec.n + 1 }
+        "#},
+        "bump",
+    );
+}
+
+#[test]
+fn record_setx_row() {
+    sound(
+        indoc! {r#"
+            module M
+
+            public setX : { x : Int | 'r } -> Int -> { x : Int | 'r }
+            let setX rec v = { rec with x = v }
+        "#},
+        "setX",
+    );
+}
+
+#[test]
+fn string_shout() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let shout s = s ++ "!"
+        "#},
+        "shout",
+    );
+}
+
+#[test]
+fn string_greet() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let greet name = "Hello, " ++ name
+        "#},
+        "greet",
+    );
+}
+
+#[test]
+fn string_wrap() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let wrap s = "[" ++ s ++ "]"
+        "#},
+        "wrap",
+    );
+}
+
+#[test]
+fn string_join2() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let join2 a b = a ++ ", " ++ b
+        "#},
+        "join2",
+    );
+}
+
+#[test]
+fn string_twice() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let twice s = s ++ s
+        "#},
+        "twice",
+    );
+}
+
+#[test]
+fn string_banner() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let banner s = "== " ++ s ++ " =="
+        "#},
+        "banner",
+    );
+}
+
+#[test]
+fn string_label() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let label n = "n = " ++ Int.toString n
+        "#},
+        "label",
+    );
+}
+
+#[test]
+fn cap_exclaim() {
+    sound(
+        indoc! {r#"
+            module M
+
+            interface Greeter =
+              greet : String -> String
+
+            let exclaim = { Greeter with greet name = name ++ "!" }
+        "#},
+        "exclaim",
+    );
+}
+
+#[test]
+fn cap_useg() {
+    sound(
+        indoc! {r#"
+            module M
+
+            interface Greeter =
+              greet : String -> String
+
+            let useG g = g.greet "hi"
+        "#},
+        "useG",
+    );
+}
+
+#[test]
+fn cap_total() {
+    sound(
+        indoc! {r#"
+            module M
+
+            interface Pair =
+              fst : Unit -> Int
+              snd : Unit -> Int
+
+            let inst = { Pair with fst u = 1, snd u = 2 }
+
+            let total p = p.fst () + p.snd ()
+        "#},
+        "total",
+    );
+}
+
+#[test]
+fn cap_main() {
+    sound(
+        indoc! {r#"
+            module M
+
+            public main : Runtime -> Unit
+            let main r = r.console.writeLine "hi"
+        "#},
+        "main",
+    );
+}
+
+#[test]
+fn cap_announce() {
+    sound(
+        indoc! {r#"
+            module M
+
+            public announce : { console : Console | 'r } -> String -> Unit
+            let announce env msg = env.console.writeLine msg
+        "#},
+        "announce",
+    );
+}
+
+#[test]
+fn cap_greetall() {
+    sound(
+        indoc! {r#"
+            module M
+
+            public greetAll : { console : Console | 'r } -> Unit
+            let greetAll env =
+              let _ = env.console.writeLine "a"
+              env.console.writeLine "b"
+        "#},
+        "greetAll",
+    );
+}
+
+#[test]
+fn mixed_let1() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f a =
+              let b = a + 1
+              let c = b + a
+              b + c
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn mixed_let2() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x =
+              let a = x + 1
+              let b = (a + x) * a
+              let c = (a + b) - x
+              ((a + b) + c) + x
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn mixed_firstsome() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type Opt = | Non | Som Int
+
+            let firstSome xs =
+              match xs with
+              | [] -> Non
+              | x :: r -> if x > 0 then Som x else firstSome r
+        "#},
+        "firstSome",
+    );
+}
+
+#[test]
+fn mixed_tolist() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type Tree = | Leaf Int | Node Tree Tree
+
+            let toList t =
+              match t with
+              | Leaf n -> n :: []
+              | Node l r -> append (toList l) (toList r)
+
+            let append xs ys =
+              match xs with
+              | [] -> ys
+              | x :: r -> x :: append r ys
+        "#},
+        "toList",
+    );
+}
+
+#[test]
+fn mixed_partitionsum() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let partitionSum xs =
+              match xs with
+              | [] -> (0, 0)
+              | x :: r ->
+                let (pos, neg) = partitionSum r
+                if x < 0 then (pos, neg + x) else (pos + x, neg)
+        "#},
+        "partitionSum",
+    );
+}
+
+#[test]
+fn mixed_shiftall() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type P = { x : Int, y : Int }
+
+            let shiftAll ps =
+              match ps with
+              | [] -> []
+              | p :: r -> { p with x = p.x + 1 } :: shiftAll r
+        "#},
+        "shiftAll",
+    );
+}
+
+#[test]
+fn reuse_pos_inc() {
+    reuses(
+        indoc! {r#"
+            module M
+
+            let inc xs =
+              match xs with
+              | [] -> []
+              | x :: r -> (x + 1) :: inc r
+        "#},
+        "inc",
+    );
+}
+
+#[test]
+fn reuse_pos_dec() {
+    reuses(
+        indoc! {r#"
+            module M
+
+            let dec xs =
+              match xs with
+              | [] -> []
+              | x :: r -> (x - 1) :: dec r
+        "#},
+        "dec",
+    );
+}
+
+#[test]
+fn reuse_pos_squares() {
+    reuses(
+        indoc! {r#"
+            module M
+
+            let squares xs =
+              match xs with
+              | [] -> []
+              | x :: r -> (x * x) :: squares r
+        "#},
+        "squares",
+    );
+}
+
+#[test]
+fn reuse_pos_zero() {
+    reuses(
+        indoc! {r#"
+            module M
+
+            let zero xs =
+              match xs with
+              | [] -> []
+              | _ :: r -> 0 :: zero r
+        "#},
+        "zero",
+    );
+}
+
+#[test]
+fn reuse_pos_swap() {
+    reuses(
+        indoc! {r#"
+            module M
+
+            type T = | A Int | B Int Int
+
+            let swap t =
+              match t with
+              | A x -> A x
+              | B x y -> B y x
+        "#},
+        "swap",
+    );
+}
+
+#[test]
+fn reuse_pos_mapo() {
+    reuses(
+        indoc! {r#"
+            module M
+
+            type Opt = | Non | Som Int
+
+            let mapO o =
+              match o with
+              | Non -> Non
+              | Som x -> Som (x + 1)
+        "#},
+        "mapO",
+    );
+}
+
+#[test]
+fn reuse_pos_inct() {
+    reuses(
+        indoc! {r#"
+            module M
+
+            type Tree = | Leaf Int | Node Tree Tree
+
+            let incT t =
+              match t with
+              | Leaf n -> Leaf (n + 1)
+              | Node l r -> Node (incT l) (incT r)
+        "#},
+        "incT",
+    );
+}
+
+#[test]
+fn reuse_neg_len() {
+    no_reuse(
+        indoc! {r#"
+            module M
+
+            let len xs =
+              match xs with
+              | [] -> 0
+              | _ :: r -> 1 + len r
+        "#},
+        "len",
+    );
+}
+
+#[test]
+fn reuse_neg_sum() {
+    no_reuse(
+        indoc! {r#"
+            module M
+
+            let sum xs =
+              match xs with
+              | [] -> 0
+              | x :: r -> x + sum r
+        "#},
+        "sum",
+    );
+}
+
+#[test]
+fn reuse_neg_product() {
+    no_reuse(
+        indoc! {r#"
+            module M
+
+            let product xs =
+              match xs with
+              | [] -> 1
+              | x :: r -> x * product r
+        "#},
+        "product",
+    );
+}
+
+#[test]
+fn reuse_neg_isempty() {
+    no_reuse(
+        indoc! {r#"
+            module M
+
+            let isEmpty xs =
+              match xs with
+              | [] -> true
+              | _ :: _ -> false
+        "#},
+        "isEmpty",
+    );
+}
+
+#[test]
+fn reuse_neg_singleton() {
+    no_reuse(
+        indoc! {r#"
+            module M
+
+            let singleton x = x :: []
+        "#},
+        "singleton",
+    );
+}
+
+#[test]
+fn reuse_neg_pairup() {
+    no_reuse(
+        indoc! {r#"
+            module M
+
+            let pairUp n = n :: n :: []
+        "#},
+        "pairUp",
+    );
+}
+
+#[test]
+fn reuse_neg_mkb() {
+    no_reuse(
+        indoc! {r#"
+            module M
+
+            type T = | A Int | B Int Int
+
+            let mkB n = B n n
+        "#},
+        "mkB",
+    );
+}
+
+#[test]
+fn reuse_neg_id() {
+    no_reuse(
+        indoc! {r#"
+            module M
+
+            let id x = x
+        "#},
+        "id",
+    );
+}
+
+#[test]
+fn reuse_neg_addone() {
+    no_reuse(
+        indoc! {r#"
+            module M
+
+            let addOne x = x + 1
+        "#},
+        "addOne",
+    );
+}
+
+#[test]
+fn reuse_neg_sumt() {
+    no_reuse(
+        indoc! {r#"
+            module M
+
+            type Tree = | Leaf Int | Node Tree Tree
+
+            let sumT t =
+              match t with
+              | Leaf n -> n
+              | Node l r -> sumT l + sumT r
+        "#},
+        "sumT",
+    );
+}
+
+#[test]
+fn list_more_takewhile() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let takeWhile p xs =
+              match xs with
+              | [] -> []
+              | x :: r -> if p x then x :: takeWhile p r else []
+        "#},
+        "takeWhile",
+    );
+}
+
+#[test]
+fn list_more_dropwhile() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let dropWhile p xs =
+              match xs with
+              | [] -> []
+              | x :: r -> if p x then dropWhile p r else x :: r
+        "#},
+        "dropWhile",
+    );
+}
+
+#[test]
+fn list_more_addall() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let addAll n xs =
+              match xs with
+              | [] -> []
+              | x :: r -> (x + n) :: addAll n r
+        "#},
+        "addAll",
+    );
+}
+
+#[test]
+fn list_more_scaleall() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let scaleAll k xs =
+              match xs with
+              | [] -> []
+              | x :: r -> (x * k) :: scaleAll k r
+        "#},
+        "scaleAll",
+    );
+}
+
+#[test]
+fn list_more_sumsquares() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let sumSquares xs =
+              match xs with
+              | [] -> 0
+              | x :: r -> (x * x) + sumSquares r
+        "#},
+        "sumSquares",
+    );
+}
+
+#[test]
+fn list_more_dot() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let dot xs ys =
+              match xs with
+              | [] -> 0
+              | x :: rx ->
+                match ys with
+                | [] -> 0
+                | y :: ry -> (x * y) + dot rx ry
+        "#},
+        "dot",
+    );
+}
+
+#[test]
+fn list_more_range() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let range lo hi =
+              if lo > hi then [] else lo :: range (lo + 1) hi
+        "#},
+        "range",
+    );
+}
+
+#[test]
+fn list_more_prependall() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let prependAll sep xs =
+              match xs with
+              | [] -> []
+              | x :: r -> sep :: x :: prependAll sep r
+        "#},
+        "prependAll",
+    );
+}
+
+#[test]
+fn list_more_countdown() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let countDown n =
+              if n <= 0 then [] else n :: countDown (n - 1)
+        "#},
+        "countDown",
+    );
+}
+
+#[test]
+fn list_more_nth() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let nth n xs =
+              match xs with
+              | [] -> 0
+              | x :: r -> if n <= 0 then x else nth (n - 1) r
+        "#},
+        "nth",
+    );
+}
+
+#[test]
+fn list_more_splitfirst() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let splitFirst xs =
+              match xs with
+              | [] -> (0, [])
+              | x :: r -> (x, r)
+        "#},
+        "splitFirst",
+    );
+}
+
+#[test]
+fn list_more_pairs() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let pairs xs =
+              match xs with
+              | [] -> []
+              | x :: r ->
+                match r with
+                | [] -> []
+                | y :: rr -> (x, y) :: pairs rr
+        "#},
+        "pairs",
+    );
+}
+
+#[test]
+fn list_more_interleave() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let interleave xs ys =
+              match xs with
+              | [] -> ys
+              | x :: r -> x :: interleave ys r
+        "#},
+        "interleave",
+    );
+}
+
+#[test]
+fn list_more_sumwith() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let sumWith f xs =
+              match xs with
+              | [] -> 0
+              | x :: r -> f x + sumWith f r
+        "#},
+        "sumWith",
+    );
+}
+
+#[test]
+fn ho_more_curry() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let curry f a b =
+              f (a, b)
+        "#},
+        "curry",
+    );
+}
+
+#[test]
+fn ho_more_uncurry() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let uncurry f p =
+              match p with
+              | (a, b) -> f a b
+        "#},
+        "uncurry",
+    );
+}
+
+#[test]
+fn ho_more_applyn() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let applyN n f x =
+              if n <= 0 then x else applyN (n - 1) f (f x)
+        "#},
+        "applyN",
+    );
+}
+
+#[test]
+fn ho_more_iterate() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let iterate n f x =
+              if n <= 0 then [] else x :: iterate (n - 1) f (f x)
+        "#},
+        "iterate",
+    );
+}
+
+#[test]
+fn ho_more_pipe() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let pipe x f g =
+              g (f x)
+        "#},
+        "pipe",
+    );
+}
+
+#[test]
+fn ho_more_both() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let both f g x =
+              (f x, g x)
+        "#},
+        "both",
+    );
+}
+
+#[test]
+fn ho_more_usetwice() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let useTwice f x =
+              f x + f x
+        "#},
+        "useTwice",
+    );
+}
+
+#[test]
+fn ho_more_composepipe() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let composePipe f g = f >> g
+        "#},
+        "composePipe",
+    );
+}
+
+#[test]
+fn ho_more_pipeinto() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let pipeInto n = n |> Int.toString
+        "#},
+        "pipeInto",
+    );
+}
+
+#[test]
+fn peano_toint() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type Nat = | Z | S Nat
+
+            let toInt n =
+              match n with
+              | Z -> 0
+              | S m -> 1 + toInt m
+        "#},
+        "toInt",
+    );
+}
+
+#[test]
+fn peano_plus() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type Nat = | Z | S Nat
+
+            let plus a b =
+              match a with
+              | Z -> b
+              | S m -> S (plus m b)
+        "#},
+        "plus",
+    );
+}
+
+#[test]
+fn peano_iszero() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type Nat = | Z | S Nat
+
+            let isZero n =
+              match n with
+              | Z -> true
+              | S _ -> false
+        "#},
+        "isZero",
+    );
+}
+
+#[test]
+fn peano_pred() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type Nat = | Z | S Nat
+
+            let pred n =
+              match n with
+              | Z -> Z
+              | S m -> m
+        "#},
+        "pred",
+    );
+}
+
+#[test]
+fn peano_double() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type Nat = | Z | S Nat
+
+            let double n =
+              match n with
+              | Z -> Z
+              | S m -> S (S (double m))
+        "#},
+        "double",
+    );
+}
+
+#[test]
+fn record_more_mk3() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type V3 = { x : Int, y : Int, z : Int }
+
+            let mk3 a = { x = a, y = a + 1, z = a + 2 }
+        "#},
+        "mk3",
+    );
+}
+
+#[test]
+fn record_more_shiftz() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type V3 = { x : Int, y : Int, z : Int }
+
+            let shiftZ v = { v with z = v.z + 1 }
+        "#},
+        "shiftZ",
+    );
+}
+
+#[test]
+fn record_more_bumpall() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type V3 = { x : Int, y : Int, z : Int }
+
+            let bumpAll v = { v with x = v.x + 1, y = v.y + 1, z = v.z + 1 }
+        "#},
+        "bumpAll",
+    );
+}
+
+#[test]
+fn record_more_total() {
+    sound(
+        indoc! {r#"
+            module M
+
+            public type V3 = { x : Int, y : Int, z : Int }
+
+            public total : V3 -> Int
+            let total v = (v.x + v.y) + v.z
+        "#},
+        "total",
+    );
+}
+
+#[test]
+fn record_more_startx() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type Point = { x : Int, y : Int }
+            type Seg = { a : Point, b : Point }
+
+            let startX s = s.a.x
+        "#},
+        "startX",
+    );
+}
+
+#[test]
+fn record_more_dx() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type Point = { x : Int, y : Int }
+            type Seg = { a : Point, b : Point }
+
+            let dx s = s.b.x - s.a.x
+        "#},
+        "dx",
+    );
+}
+
+#[test]
+fn record_more_tick() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type Counter = { n : Int, step : Int }
+
+            let tick c = { c with n = c.n + c.step }
+        "#},
+        "tick",
+    );
+}
+
+#[test]
+fn record_more_swapxy() {
+    sound(
+        indoc! {r#"
+            module M
+
+            public swapXY : { x : Int, y : Int | 'r } -> { x : Int, y : Int | 'r }
+            let swapXY rec = { rec with x = rec.y, y = rec.x }
+        "#},
+        "swapXY",
+    );
+}
+
+#[test]
+fn adt_more_json() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type Json =
+              | JNull
+              | JBool Bool
+              | JNum Int
+              | JArr (List Json)
+
+            let size j =
+              match j with
+              | JNull -> 1
+              | JBool _ -> 1
+              | JNum _ -> 1
+              | JArr xs -> 1 + sizeArr xs
+
+            let sizeArr xs =
+              match xs with
+              | [] -> 0
+              | x :: r -> size x + sizeArr r
+        "#},
+        "size",
+    );
+}
+
+#[test]
+fn adt_more_rose() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type Rose = | Rose Int (List Rose)
+
+            let sumR t =
+              match t with
+              | Rose n kids -> n + sumForest kids
+
+            let sumForest ts =
+              match ts with
+              | [] -> 0
+              | t :: r -> sumR t + sumForest r
+        "#},
+        "sumR",
+    );
+}
+
+#[test]
+fn adt_more_cmd() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type Cmd =
+              | Up Int
+              | Down Int
+              | Reset
+
+            let apply pos c =
+              match c with
+              | Up n -> pos + n
+              | Down n -> pos - n
+              | Reset -> 0
+        "#},
+        "apply",
+    );
+}
+
+#[test]
+fn adt_more_token() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type Token =
+              | Num Int
+              | Plus
+              | Minus
+              | Times
+
+            let prec t =
+              match t with
+              | Num _ -> 0
+              | Plus -> 1
+              | Minus -> 1
+              | Times -> 2
+        "#},
+        "prec",
+    );
+}
+
+#[test]
+fn adt_more_result3() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type Result3 =
+              | Ok3 Int
+              | Warn Int Int
+              | Err
+
+            let value r =
+              match r with
+              | Ok3 x -> x
+              | Warn x _ -> x
+              | Err -> 0
+        "#},
+        "value",
+    );
+}
+
+#[test]
+fn pat_ignore2() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let ignore2 x y = 0
+        "#},
+        "ignore2",
+    );
+}
+
+#[test]
+fn pat_ignore3() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let ignore3 a b c = 0
+        "#},
+        "ignore3",
+    );
+}
+
+#[test]
+fn pat_heador() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let headOr d xs =
+              match xs with
+              | [] -> d
+              | x :: _ -> x
+        "#},
+        "headOr",
+    );
+}
+
+#[test]
+fn pat_secondor() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let secondOr d xs =
+              match xs with
+              | [] -> d
+              | _ :: rest ->
+                match rest with
+                | [] -> d
+                | y :: _ -> y
+        "#},
+        "secondOr",
+    );
+}
+
+#[test]
+fn pat_firstfield() {
+    sound(
+        indoc! {r#"
+            module M
+
+            type T = | A Int | B Int Int
+
+            let firstField t =
+              match t with
+              | A x -> x
+              | B x _ -> x
+        "#},
+        "firstField",
+    );
+}
+
+#[test]
+fn pat_classify() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let classify xs =
+              match xs with
+              | [] -> 0
+              | _ :: [] -> 1
+              | _ :: _ :: _ -> 2
+        "#},
+        "classify",
+    );
+}
+
+#[test]
+fn arith_more_poly() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let poly x =
+              let x2 = x * x
+              let x3 = x2 * x
+              ((x3 + (2 * x2)) + (3 * x)) + 4
+        "#},
+        "poly",
+    );
+}
+
+#[test]
+fn arith_more_hypotsq() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let hypotSq a b =
+              (a * a) + (b * b)
+        "#},
+        "hypotSq",
+    );
+}
+
+#[test]
+fn arith_more_lerp() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let lerp a b t =
+              a + (((b - a) * t) / 100)
+        "#},
+        "lerp",
+    );
+}
+
+#[test]
+fn arith_more_f() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x y =
+              let s = x + y
+              let d = x - y
+              let p = x * y
+              (s + d) + p
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn arith_more_g() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let g a b c d =
+              let ab = a * b
+              let cd = c * d
+              ab + cd
+        "#},
+        "g",
+    );
+}
+
+#[test]
+fn arith_more_mixed() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let mixed x =
+              let a = x + 1
+              let b = a * 2
+              let c = b - x
+              let d = c % 7
+              ((a + b) + c) + d
+        "#},
+        "mixed",
+    );
+}
+
+#[test]
+fn arith_more_reuseheavy() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let reuseHeavy x =
+              let a = x + 1
+              (((a + a) + a) + a) + a
+        "#},
+        "reuseHeavy",
+    );
+}
+
+#[test]
+fn std_list_length() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f xs = List.length xs
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_list_isempty() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f xs = List.isEmpty xs
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_list_sum() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f xs = List.sum xs
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_list_reverse() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f xs = List.reverse xs
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_list_append() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f xs ys = List.append xs ys
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_list_map() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f xs = List.map (fun x -> x + 1) xs
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_list_filter() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f xs = List.filter (fun x -> x > 0) xs
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_list_foldl() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f xs = List.foldl (fun a x -> a + x) 0 xs
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_list_foldr() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f xs = List.foldr (fun x a -> x + a) 0 xs
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_list_all() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f xs = List.all (fun x -> x > 0) xs
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_list_any() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f xs = List.any (fun x -> x > 0) xs
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_list_member() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f xs = List.member 3 xs
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_list_take() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f xs = List.take 2 xs
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_list_drop() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f xs = List.drop 2 xs
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_list_range() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f = List.range 1 10
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_list_zip() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f xs ys = List.zip xs ys
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_list_find() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f xs = List.find (fun x -> x > 0) xs
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_list_takewhile() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f xs = List.takeWhile (fun x -> x < 10) xs
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_list_dropwhile() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f xs = List.dropWhile (fun x -> x < 10) xs
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_list_partition() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f xs = List.partition (fun x -> x > 0) xs
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_list_sort() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f xs = List.sort xs
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_list_concat() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f xss = List.concat xss
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_list_concatmap() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f xs = List.concatMap (fun x -> x :: x :: []) xs
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_list_head() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f xs = List.head xs
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_list_tail() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f xs = List.tail xs
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_list_pipeline() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let pipeline xs =
+              xs
+              |> List.filter (fun x -> x > 0)
+              |> List.map (fun x -> x * 2)
+              |> List.sum
+        "#},
+        "pipeline",
+    );
+}
+
+#[test]
+fn std_optres_map() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f o = Option.map (fun x -> x + 1) o
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_optres_withdefault() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f o = Option.withDefault 0 o
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_optres_issome() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f o = Option.isSome o
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_optres_isnone() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f o = Option.isNone o
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_optres_andthen() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f o = Option.andThen (fun x -> Some (x + 1)) o
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_optres_some1() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let some1 = Some 1
+        "#},
+        "some1",
+    );
+}
+
+#[test]
+fn std_optres_none1() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let none1 = None
+        "#},
+        "none1",
+    );
+}
+
+#[test]
+fn std_optres_wrap() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let wrap x = Some x
+        "#},
+        "wrap",
+    );
+}
+
+#[test]
+fn std_optres_safediv() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let safeDiv a b =
+              if b = 0 then None else Some (a / b)
+        "#},
+        "safeDiv",
+    );
+}
+
+#[test]
+fn std_optres_resmap() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f r = Result.map (fun x -> x + 1) r
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_optres_isok() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f r = Result.isOk r
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_optres_iserr() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f r = Result.isErr r
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_optres_okn() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let okN n = Ok n
+        "#},
+        "okN",
+    );
+}
+
+#[test]
+fn std_optres_errs() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let errS s = Err s
+        "#},
+        "errS",
+    );
+}
+
+#[test]
+fn std_optres_checkpos() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let checkPos n =
+              if n > 0 then Ok n else Err "not positive"
+        "#},
+        "checkPos",
+    );
+}
+
+#[test]
+fn std_sif_inttostring() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f n = Int.toString n
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_sif_inttofloat() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f n = Int.toFloat n
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_sif_strlen() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f s = String.length s
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_sif_toupper() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f s = String.toUpper s
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_sif_tolower() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f s = String.toLower s
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_sif_trim() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f s = String.trim s
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_sif_contains() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f a b = String.contains a b
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_sif_join() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f sep parts = String.join sep parts
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_sif_split() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f sep s = String.split sep s
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_sif_floattostring() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x = Float.toString x
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_sif_floattoint() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x = Float.toInt x
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_sif_sqrt() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x = Float.sqrt x
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_sif_area() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let area r = (Float.pi * r) * r
+        "#},
+        "area",
+    );
+}
+
+#[test]
+fn std_sif_describe() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let describe n =
+              "value: " ++ Int.toString n
+        "#},
+        "describe",
+    );
+}
+
+#[test]
+fn std_sif_shoutupper() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let shoutUpper s =
+              String.toUpper s ++ "!"
+        "#},
+        "shoutUpper",
+    );
+}
+
+#[test]
+fn std_dictset_insert() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f d k v = Dict.insert k v d
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_dictset_get() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f d k = Dict.get k d
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_dictset_member() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f d k = Dict.member k d
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_dictset_size() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f d = Dict.size d
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_dictset_tolist() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f d = Dict.toList d
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_dictset_setinsert() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f s x = Set.insert x s
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_dictset_setmember() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f s x = Set.member x s
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_dictset_setsize() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f s = Set.size s
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_dictset_settolist() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f s = Set.toList s
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_dictset_addpair() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let addPair d =
+              d
+              |> Dict.insert 1 10
+              |> Dict.insert 2 20
+        "#},
+        "addPair",
+    );
+}
+
+#[test]
+fn mutual_iseven() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let isEven n =
+              if n = 0 then true else isOdd (n - 1)
+
+            let isOdd n =
+              if n = 0 then false else isEven (n - 1)
+        "#},
+        "isEven",
+    );
+}
+
+#[test]
+fn mutual_isodd() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let isOdd n =
+              if n = 0 then false else isEven (n - 1)
+
+            let isEven n =
+              if n = 0 then true else isOdd (n - 1)
+        "#},
+        "isOdd",
+    );
+}
+
+#[test]
+fn mutual_ping() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let ping n acc =
+              if n <= 0 then acc else pong (n - 1) (acc + 1)
+
+            let pong n acc =
+              if n <= 0 then acc else ping (n - 1) (acc + 2)
+        "#},
+        "ping",
+    );
+}
+
+#[test]
+fn mutual_evens() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let evens xs =
+              match xs with
+              | [] -> []
+              | x :: r -> x :: odds r
+
+            let odds xs =
+              match xs with
+              | [] -> []
+              | _ :: r -> evens r
+        "#},
+        "evens",
+    );
+}
+
+#[test]
+fn acc_sum() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let sumAcc acc xs =
+              match xs with
+              | [] -> acc
+              | x :: r -> sumAcc (acc + x) r
+        "#},
+        "sumAcc",
+    );
+}
+
+#[test]
+fn acc_len() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let lenAcc acc xs =
+              match xs with
+              | [] -> acc
+              | _ :: r -> lenAcc (acc + 1) r
+        "#},
+        "lenAcc",
+    );
+}
+
+#[test]
+fn acc_rev() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let revAcc acc xs =
+              match xs with
+              | [] -> acc
+              | x :: r -> revAcc (x :: acc) r
+        "#},
+        "revAcc",
+    );
+}
+
+#[test]
+fn acc_max() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let maxAcc best xs =
+              match xs with
+              | [] -> best
+              | x :: r -> maxAcc (if x > best then x else best) r
+        "#},
+        "maxAcc",
+    );
+}
+
+#[test]
+fn acc_fact() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let factAcc acc n =
+              if n <= 1 then acc else factAcc (acc * n) (n - 1)
+        "#},
+        "factAcc",
+    );
+}
+
+#[test]
+fn acc_count() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let countAcc acc p xs =
+              match xs with
+              | [] -> acc
+              | x :: r -> countAcc (if p x then acc + 1 else acc) p r
+        "#},
+        "countAcc",
+    );
+}
+
+#[test]
+fn ho_self_compose() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let twice f = f >> f
+        "#},
+        "twice",
+    );
+}
+
+#[test]
+fn ho_nested() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let nested f g x = f (g (g x))
+        "#},
+        "nested",
+    );
+}
+
+#[test]
+fn upd_shift() {
+    updates_in_place(
+        indoc! {r#"
+            module M
+
+            type P = { x : Int, y : Int }
+
+            let shift p = { p with x = p.x + 1 }
+        "#},
+        "shift",
+    );
+}
+
+#[test]
+fn upd_scale() {
+    updates_in_place(
+        indoc! {r#"
+            module M
+
+            type P = { x : Int, y : Int }
+
+            let scale k p = { p with x = p.x * k, y = p.y * k }
+        "#},
+        "scale",
+    );
+}
+
+#[test]
+fn upd_bump_row() {
+    updates_in_place(
+        indoc! {r#"
+            module M
+
+            public bump : { n : Int | 'r } -> { n : Int | 'r }
+            let bump rec = { rec with n = rec.n + 1 }
+        "#},
+        "bump",
+    );
+}
+
+#[test]
+fn borrow_len() {
+    assert_eq!(
+        crate::tests::borrow_sig(
+            indoc! {r#"
+                module M
+
+                let len xs =
+                  match xs with
+                  | [] -> 0
+                  | _ :: r -> 1 + len r
+            "#},
+            "len",
+        ),
+        vec![true],
+    );
+}
+
+#[test]
+fn borrow_sum() {
+    assert_eq!(
+        crate::tests::borrow_sig(
+            indoc! {r#"
+                module M
+
+                let sum xs =
+                  match xs with
+                  | [] -> 0
+                  | x :: r -> x + sum r
+            "#},
+            "sum",
+        ),
+        vec![true],
+    );
+}
+
+#[test]
+fn borrow_isempty() {
+    assert_eq!(
+        crate::tests::borrow_sig(
+            indoc! {r#"
+                module M
+
+                let isEmpty xs =
+                  match xs with
+                  | [] -> true
+                  | _ :: _ -> false
+            "#},
+            "isEmpty",
+        ),
+        vec![true],
+    );
+}
+
+#[test]
+fn borrow_inc() {
+    assert_eq!(
+        crate::tests::borrow_sig(
+            indoc! {r#"
+                module M
+
+                let inc xs =
+                  match xs with
+                  | [] -> []
+                  | x :: r -> (x + 1) :: inc r
+            "#},
+            "inc",
+        ),
+        vec![false],
+    );
+}
+
+#[test]
+fn borrow_dbl() {
+    assert_eq!(
+        crate::tests::borrow_sig(
+            indoc! {r#"
+                module M
+
+                let dbl xs =
+                  match xs with
+                  | [] -> []
+                  | x :: r -> (x * 2) :: dbl r
+            "#},
+            "dbl",
+        ),
+        vec![false],
+    );
+}
+
+#[test]
+fn borrow_map() {
+    assert_eq!(
+        crate::tests::borrow_sig(
+            indoc! {r#"
+                module M
+
+                let map f xs =
+                  match xs with
+                  | [] -> []
+                  | x :: r -> f x :: map f r
+            "#},
+            "map",
+        ),
+        vec![false, false],
+    );
+}
+
+#[test]
+fn borrow_first() {
+    assert_eq!(
+        crate::tests::borrow_sig(
+            indoc! {r#"
+                module M
+
+                let first xs =
+                  match xs with
+                  | [] -> 0
+                  | x :: _ -> x
+            "#},
+            "first",
+        ),
+        vec![false],
+    );
+}
+
+#[test]
+fn borrow_id() {
+    assert_eq!(
+        crate::tests::borrow_sig(
+            indoc! {r#"
+                module M
+
+                let id x = x
+            "#},
+            "id",
+        ),
+        vec![false],
+    );
+}
+
+#[test]
+fn borrow_k() {
+    assert_eq!(
+        crate::tests::borrow_sig(
+            indoc! {r#"
+                module M
+
+                let k x y = x
+            "#},
+            "k",
+        ),
+        vec![false, true],
+    );
+}
+
+#[test]
+fn borrow_snd() {
+    assert_eq!(
+        crate::tests::borrow_sig(
+            indoc! {r#"
+                module M
+
+                let snd a b = b
+            "#},
+            "snd",
+        ),
+        vec![true, false],
+    );
+}
+
+#[test]
+fn borrow_konst() {
+    assert_eq!(
+        crate::tests::borrow_sig(
+            indoc! {r#"
+                module M
+
+                let konst x = 5
+            "#},
+            "konst",
+        ),
+        vec![true],
+    );
+}
+
+#[test]
+fn borrow_drop2() {
+    assert_eq!(
+        crate::tests::borrow_sig(
+            indoc! {r#"
+                module M
+
+                let drop2 x y = 0
+            "#},
+            "drop2",
+        ),
+        vec![true, true],
+    );
+}
+
+#[test]
+fn borrow_addone() {
+    assert_eq!(
+        crate::tests::borrow_sig(
+            indoc! {r#"
+                module M
+
+                let addOne x = x + 1
+            "#},
+            "addOne",
+        ),
+        vec![false],
+    );
+}
+
+#[test]
+fn borrow_usetwice() {
+    assert_eq!(
+        crate::tests::borrow_sig(
+            indoc! {r#"
+                module M
+
+                let useTwice x = x + x
+            "#},
+            "useTwice",
+        ),
+        vec![false],
+    );
+}
+
+#[test]
+fn borrow_addxy() {
+    assert_eq!(
+        crate::tests::borrow_sig(
+            indoc! {r#"
+                module M
+
+                let addXY x y = x + y
+            "#},
+            "addXY",
+        ),
+        vec![false, false],
+    );
+}
+
+#[test]
+fn borrow_apply() {
+    assert_eq!(
+        crate::tests::borrow_sig(
+            indoc! {r#"
+                module M
+
+                let apply f x = f x
+            "#},
+            "apply",
+        ),
+        vec![false, false],
+    );
+}
+
+#[test]
+fn borrow_twice() {
+    assert_eq!(
+        crate::tests::borrow_sig(
+            indoc! {r#"
+                module M
+
+                let twice f x = f (f x)
+            "#},
+            "twice",
+        ),
+        vec![false, false],
+    );
+}
+
+#[test]
+fn borrow_compose() {
+    assert_eq!(
+        crate::tests::borrow_sig(
+            indoc! {r#"
+                module M
+
+                let compose f g x = f (g x)
+            "#},
+            "compose",
+        ),
+        vec![false, false, false],
+    );
+}
+
+#[test]
+fn borrow_depth() {
+    assert_eq!(
+        crate::tests::borrow_sig(
+            indoc! {r#"
+                module M
+
+                type T = | A Int | B Int Int
+
+                let depth t =
+                  match t with
+                  | A _ -> 1
+                  | B _ _ -> 2
+            "#},
+            "depth",
+        ),
+        vec![true],
+    );
+}
+
+#[test]
+fn borrow_swap() {
+    assert_eq!(
+        crate::tests::borrow_sig(
+            indoc! {r#"
+                module M
+
+                type T = | A Int | B Int Int
+
+                let swap t =
+                  match t with
+                  | A x -> A x
+                  | B x y -> B y x
+            "#},
+            "swap",
+        ),
+        vec![false],
+    );
+}
+
+#[test]
+fn borrow_sel() {
+    assert_eq!(
+        crate::tests::borrow_sig(
+            indoc! {r#"
+                module M
+
+                type T = | A Int | B Int Int
+
+                let sel t =
+                  match t with
+                  | A x -> x
+                  | B x y -> x
+            "#},
+            "sel",
+        ),
+        vec![false],
+    );
+}
+
+#[test]
+fn borrow_mk() {
+    assert_eq!(
+        crate::tests::borrow_sig(
+            indoc! {r#"
+                module M
+
+                type T = | A Int | B Int Int
+
+                let mk a = B a a
+            "#},
+            "mk",
+        ),
+        vec![false],
+    );
+}
+
+#[test]
+fn borrow_getx_closed() {
+    assert_eq!(
+        crate::tests::borrow_sig(
+            indoc! {r#"
+                module M
+
+                public type P = { x : Int, y : Int }
+
+                public getX : P -> Int
+                let getX p = p.x
+            "#},
+            "getX",
+        ),
+        vec![true],
+    );
+}
+
+#[test]
+fn borrow_shift_closed() {
+    assert_eq!(
+        crate::tests::borrow_sig(
+            indoc! {r#"
+                module M
+
+                public type P = { x : Int, y : Int }
+
+                public shift : P -> P
+                let shift p = { p with x = p.x + 1 }
+            "#},
+            "shift",
+        ),
+        vec![false],
+    );
+}
+
+#[test]
+fn borrow_gety_row() {
+    assert_eq!(
+        crate::tests::borrow_sig(
+            indoc! {r#"
+                module M
+
+                public getY : { y : Int | 'r } -> Int
+                let getY r = r.y
+            "#},
+            "getY",
+        ),
+        vec![false, false],
+    );
+}

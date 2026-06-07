@@ -47,8 +47,10 @@ use fai_types::{Con, Ty};
 use rustc_hash::FxHashSet;
 
 pub use borrow::{BorrowSig, borrow_signature};
+pub use verify::check_rc;
 
 mod borrow;
+mod verify;
 
 /// A set of locals (used for free-variable and liveness sets).
 type Locals = FxHashSet<LocalId>;
@@ -969,5 +971,9 @@ fn projection_borrows(e: &CExpr) -> Vec<LocalId> {
     out
 }
 
+#[cfg(test)]
+mod cases;
+#[cfg(test)]
+mod proptests;
 #[cfg(test)]
 mod tests;

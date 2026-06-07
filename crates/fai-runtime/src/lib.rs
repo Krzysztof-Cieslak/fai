@@ -1359,4 +1359,6 @@ pub extern "C" fn fai_run_main(entry: Value, runtime: Value) -> i32 {
 #[cfg(test)]
 mod proptests;
 #[cfg(test)]
+mod reuse_tests;
+#[cfg(test)]
 mod tests;

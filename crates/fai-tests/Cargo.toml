@@ -62,5 +62,9 @@ harness = false
 name = "interfaces"
 harness = false
 
+[[bench]]
+name = "reuse"
+harness = false
+
 [lints]
 workspace = true
