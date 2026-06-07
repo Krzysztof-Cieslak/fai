@@ -102,12 +102,12 @@ fn sanitize_ident(s: &str) -> String {
 #[salsa::tracked]
 pub fn def_arity(db: &dyn Db, file: SourceFile, name: Symbol) -> usize {
     let parsed = fai_syntax::parse(db, file);
-    let source_params = parsed
-        .module
-        .items
-        .iter()
-        .find_map(|it| match &it.kind {
-            ItemKind::Binding { name: n, params, .. } if *n == name => Some(params.len()),
+    // Locate the binding by its (qualified) name via the paired definitions, so a
+    // nested definition is found by its module path rather than the local name.
+    let source_params = module_defs(db, file)
+        .get(name)
+        .and_then(|d| match &parsed.module.items[d.binding.index()].kind {
+            ItemKind::Binding { params, .. } => Some(params.len()),
             _ => None,
         })
         .unwrap_or(0);

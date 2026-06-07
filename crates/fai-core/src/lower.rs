@@ -43,7 +43,7 @@ pub fn core(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
     let types = body_types(db, file, name);
     let def = DefId::new(file.source(db), name);
 
-    let Some((params, body)) = binding_body(&parsed.module, name) else {
+    let Some((params, body)) = binding_body(db, file, &parsed.module, name) else {
         return Arc::new(LoweredDef {
             def,
             fns: vec![CoreFn { params: Vec::new(), captures: Vec::new(), body: error_expr() }],
@@ -124,14 +124,20 @@ pub fn lower_params_body(
     LoweredBody { body, lifted, param_locals, next_local: lowerer.next_local }
 }
 
-/// The body item (params + body expr) of a definition.
-fn binding_body(module: &Module, name: Symbol) -> Option<(Vec<PatId>, ExprId)> {
-    module.items.iter().find_map(|it| match &it.kind {
-        fai_syntax::ast::ItemKind::Binding { name: n, params, body, .. } if *n == name => {
-            Some((params.clone(), *body))
-        }
+/// The body item (params + body expr) of a definition with qualified `name`,
+/// located by its binding item (so a nested definition is found by its
+/// module-qualified name, not the local name in the AST).
+fn binding_body(
+    db: &dyn Db,
+    file: SourceFile,
+    module: &Module,
+    name: Symbol,
+) -> Option<(Vec<PatId>, ExprId)> {
+    let binding = fai_resolve::module_defs(db, file).get(name)?.binding;
+    match &module.items[binding.index()].kind {
+        fai_syntax::ast::ItemKind::Binding { params, body, .. } => Some((params.clone(), *body)),
         _ => None,
-    })
+    }
 }
 
 /// The first `LocalId` index not used by resolution (so synthesized binders —
