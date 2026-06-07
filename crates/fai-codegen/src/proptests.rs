@@ -134,8 +134,132 @@ fn bool_expr() -> impl Strategy<Value = B> {
     })
 }
 
+/// A pool of distinct field names (sorted, so a label's slot is its index among
+/// the present fields — which shifts as the field set changes).
+const FIELD_NAMES: &[&str] = &["a", "b", "c", "d", "e", "f", "g", "h"];
+
+/// A non-empty record (distinct fields with `Int` values) plus the index of one
+/// field to read back. Different field sets put the read field at different slots,
+/// so this exercises the offset evidence rather than a baked-in offset.
+fn record_spec() -> impl Strategy<Value = (Vec<(&'static str, i64)>, usize)> {
+    proptest::sample::subsequence(FIELD_NAMES.to_vec(), 1..=FIELD_NAMES.len()).prop_flat_map(
+        |names| {
+            let count = names.len();
+            let values = proptest::collection::vec(0i64..1_000, count);
+            (Just(names), values, 0..count).prop_map(|(names, values, idx)| {
+                (names.into_iter().zip(values).collect::<Vec<_>>(), idx)
+            })
+        },
+    )
+}
+
+/// Renders `{ a = 1, b = 2, … }` from field specs.
+fn render_record(fields: &[(&str, i64)]) -> String {
+    let body = fields.iter().map(|(n, v)| format!("{n} = {v}")).collect::<Vec<_>>().join(", ");
+    format!("{{ {body} }}")
+}
+
+/// A non-empty set of distinct method names with `Int` results, plus the index of
+/// the method to call back. As the method set changes, the called method sits at
+/// a different dictionary slot (methods are stored sorted by name).
+fn interface_spec() -> impl Strategy<Value = (Vec<(&'static str, i64)>, usize)> {
+    proptest::sample::subsequence(FIELD_NAMES.to_vec(), 1..=FIELD_NAMES.len()).prop_flat_map(
+        |names| {
+            let count = names.len();
+            let values = proptest::collection::vec(0i64..1_000, count);
+            (Just(names), values, 0..count).prop_map(|(names, values, idx)| {
+                (names.into_iter().zip(values).collect::<Vec<_>>(), idx)
+            })
+        },
+    )
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 48, ..ProptestConfig::default() })]
+
+    /// A row-polymorphic accessor reads the named field's value no matter where it
+    /// sits in the caller's record — the headline offset-evidence guarantee.
+    #[test]
+    fn row_polymorphic_access_reads_the_named_field(spec in record_spec()) {
+        let (fields, idx) = spec;
+        let (name, value) = fields[idx];
+        let record = render_record(&fields);
+        let src = formatdoc! {r#"
+            module M
+
+            getField : {{ {name} : Int | _ }} -> Int
+            let getField rec = rec.{name}
+
+            public main : Runtime -> Unit
+            let main r = r.console.writeLine (Int.toString (getField {record}))
+        "#};
+        let (code, out) = run(&src);
+        prop_assert_eq!(code, 0, "leak or failure: {}", out);
+        prop_assert_eq!(out.trim().parse::<i64>().expect("integer output"), value);
+    }
+
+    /// The *same* accessor, applied to two records that place the field at
+    /// different slots, reads the right value from each — per-call-site evidence.
+    #[test]
+    fn row_polymorphic_access_is_consistent_across_layouts(
+        a in record_spec(),
+        b in record_spec(),
+    ) {
+        let (fa, ia) = a;
+        let (name, va) = fa[ia];
+        // Build `b` so it also contains `name` exactly once (drop any existing
+        // entry, then add it) with a distinct value, so one accessor must read
+        // both records correctly despite different field layouts.
+        let (fb, _) = b;
+        let vb = 1_000 + va;
+        let mut fb: Vec<(&str, i64)> = fb.into_iter().filter(|(n, _)| *n != name).collect();
+        fb.push((name, vb));
+        let (ra, rb) = (render_record(&fa), render_record(&fb));
+        let src = formatdoc! {r#"
+            module M
+
+            getField : {{ {name} : Int | _ }} -> Int
+            let getField rec = rec.{name}
+
+            public main : Runtime -> Unit
+            let main r = r.console.writeLine (Int.toString (getField {ra} + getField {rb}))
+        "#};
+        let (code, out) = run(&src);
+        prop_assert_eq!(code, 0, "leak or failure: {}", out);
+        prop_assert_eq!(out.trim().parse::<i64>().expect("integer output"), va + vb);
+    }
+
+    /// Calling an interface method returns that method's value no matter how many
+    /// methods the interface declares — the dictionary slot is found by name.
+    #[test]
+    fn interface_method_dispatch_finds_the_method(spec in interface_spec()) {
+        let (methods, idx) = spec;
+        let (name, value) = methods[idx];
+        let decls = methods
+            .iter()
+            .map(|(n, _)| format!("  {n} : Unit -> Int"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let impls = methods
+            .iter()
+            .map(|(n, v)| format!("{n} u = {v}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let src = formatdoc! {r#"
+            module M
+
+            interface Thing =
+            {decls}
+
+            let inst = {{ Thing with {impls} }}
+
+            public main : Runtime -> Unit
+            let main r = r.console.writeLine (Int.toString (inst.{name} ()))
+        "#};
+        let (code, out) = run(&src);
+        prop_assert_eq!(code, 0, "leak or failure: {}", out);
+        prop_assert_eq!(out.trim().parse::<i64>().expect("integer output"), value);
+    }
 
     #[test]
     fn jit_matches_reference_evaluator(
