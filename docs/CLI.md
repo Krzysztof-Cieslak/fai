@@ -487,7 +487,8 @@ $ fai query caps App.greetUser
 These are treated as **public, versioned APIs**:
 
 - The **JSON output schemas** (`schemaVersion`).
-- The **diagnostic codes** `FAInnnn` (never renumbered; see `AGENTS.md` §10).
+- The **diagnostic codes** `FAInnnn` (never renumbered; every code is documented
+  in the catalog **`ERROR_CODES.md`**).
 - The **daemon protocol** (`protocolVersion`) and **query method names**.
 
 Within a major version, changes are additive and backward-compatible. Breaking

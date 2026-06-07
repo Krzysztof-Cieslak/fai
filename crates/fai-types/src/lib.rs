@@ -84,91 +84,142 @@ pub const UNREACHABLE_ARM: DiagnosticCode = DiagnosticCode::new("FAI4002");
 
 /// Diagnostic codes owned by the type system (the `FAI3xxx` range).
 pub const CODES: &[CodeInfo] = &[
-    CodeInfo { code: TYPE_MISMATCH, title: "type mismatch", default_severity: Severity::Error },
+    CodeInfo {
+        code: TYPE_MISMATCH,
+        title: "type mismatch",
+        default_severity: Severity::Error,
+        explanation: "Two types that had to be equal could not be unified (e.g. an `Int` used \
+                      where a `String` was expected). The message shows the expected and actual \
+                      types. Note there is no implicit `Int`/`Float` coercion — use \
+                      `Int.toFloat`/`Float.toInt`.",
+    },
     CodeInfo {
         code: OCCURS_CHECK,
         title: "infinite type (occurs check)",
         default_severity: Severity::Error,
+        explanation: "Unification would make a type contain itself (an infinite type), usually \
+                      from a self-application or a mis-shaped recursive definition. Add a \
+                      signature or fix the recursion.",
     },
     CodeInfo {
         code: MISSING_PUBLIC_SIGNATURE,
         title: "missing public signature",
         default_severity: Severity::Error,
+        explanation: "Every `public` binding must carry an explicit type signature (so a \
+                      module's API is readable from its signatures alone). Add the signature on \
+                      the line above the binding.",
     },
     CodeInfo {
         code: SIGNATURE_MISMATCH,
         title: "signature disagrees with inferred type",
         default_severity: Severity::Error,
+        explanation: "A binding's declared signature does not match the type inferred from its \
+                      body (signatures are checked, not trusted). Fix the body or the signature.",
     },
-    CodeInfo { code: AMBIGUOUS_TYPE, title: "ambiguous type", default_severity: Severity::Error },
+    CodeInfo {
+        code: AMBIGUOUS_TYPE,
+        title: "ambiguous type",
+        default_severity: Severity::Error,
+        explanation: "Inference could not determine a type (e.g. an unresolved numeric or \
+                      constrained variable that would escape without a signature). Add a type \
+                      annotation or a conversion.",
+    },
     CodeInfo {
         code: EQUALITY_ON_FUNCTION,
         title: "equality on a function type",
         default_severity: Severity::Error,
+        explanation: "`=`/`<>` (and ordering) are structural and undefined on function-typed \
+                      values. Compare the results of applying the functions instead.",
     },
     CodeInfo {
         code: CONTRACT_NOT_BOOL,
         title: "contract is not Bool",
         default_severity: Severity::Error,
+        explanation: "An `example`/`forall` contract body must have type `Bool`. Make the body a \
+                      boolean expression (often an equality).",
     },
     CodeInfo {
         code: UNKNOWN_TYPE_CONSTRUCTOR,
         title: "unknown type constructor",
         default_severity: Severity::Error,
+        explanation: "A type name in a signature or declaration is not a known built-in, \
+                      in-scope, prelude, or qualified type. Check the spelling or qualify it.",
     },
     CodeInfo {
         code: UNSUPPORTED_FIELD_ACCESS,
         title: "record field access not supported yet",
         default_severity: Severity::Error,
+        explanation: "A record field access shape is not yet supported by the type checker. \
+                      (Retired in current builds; kept reserved so the code is never reused.)",
     },
     CodeInfo {
         code: DUPLICATE_FIELD,
         title: "duplicate record field label",
         default_severity: Severity::Error,
+        explanation: "A record type or literal lists the same field label twice. Records have no \
+                      duplicate labels; remove the repeat.",
     },
     CodeInfo {
         code: CONSTRUCTOR_ARITY,
         title: "wrong number of constructor arguments",
         default_severity: Severity::Error,
+        explanation: "A data constructor was applied to the wrong number of arguments. Supply \
+                      exactly the fields the constructor declares.",
     },
     CodeInfo {
         code: TYPE_ARITY,
         title: "wrong number of type arguments",
         default_severity: Severity::Error,
+        explanation: "A type constructor or interface was applied to the wrong number of type \
+                      arguments. Match the declared parameter count.",
     },
     CodeInfo {
         code: RECURSIVE_ALIAS,
         title: "recursive type alias",
         default_severity: Severity::Error,
+        explanation: "A transparent `type` alias refers to itself (directly or indirectly); \
+                      aliases must be acyclic. Use a discriminated union for a recursive type.",
     },
     CodeInfo {
         code: UNKNOWN_METHOD,
         title: "unknown interface method",
         default_severity: Severity::Error,
+        explanation: "An interface instance defines a method the interface does not declare. \
+                      Match the interface's method set.",
     },
     CodeInfo {
         code: INSTANCE_METHOD_SET,
         title: "interface instance method set mismatch",
         default_severity: Severity::Error,
+        explanation: "An interface instance does not implement exactly the interface's methods \
+                      (some missing or extra). Provide each declared method once.",
     },
     CodeInfo {
         code: NOT_AN_INTERFACE,
         title: "not an interface",
         default_severity: Severity::Error,
+        explanation: "An instance `{ Name with … }` names something that is not an interface. \
+                      Use a declared interface name.",
     },
     CodeInfo {
         code: SEALED_INTERFACE,
         title: "sealed built-in interface cannot be instantiated",
         default_severity: Severity::Error,
+        explanation: "The operator interfaces (`Num`/`Eq`/`Ord`) are sealed to their built-in \
+                      instances and cannot be instantiated by user code.",
     },
     CodeInfo {
         code: NON_EXHAUSTIVE_MATCH,
         title: "non-exhaustive match",
         default_severity: Severity::Error,
+        explanation: "A `match` does not cover every possible value of the scrutinee. Add the \
+                      missing arms, or a `_` catch-all.",
     },
     CodeInfo {
         code: UNREACHABLE_ARM,
         title: "unreachable match arm",
         default_severity: Severity::Error,
+        explanation: "A `match` arm can never be reached because earlier arms already cover its \
+                      values. Remove or reorder it.",
     },
 ];

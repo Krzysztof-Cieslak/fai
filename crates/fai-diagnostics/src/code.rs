@@ -51,7 +51,8 @@ impl fmt::Display for DiagnosticCode {
 /// Catalog metadata for one diagnostic code.
 ///
 /// Phase crates expose `pub const CODES: &[CodeInfo]`; the catalog test checks
-/// that every code is well-formed and unique across the workspace.
+/// that every code is well-formed, unique across the workspace, and documented,
+/// and renders the error-code catalog (`docs/ERROR_CODES.md`) from these entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CodeInfo {
     /// The stable code.
@@ -60,4 +61,7 @@ pub struct CodeInfo {
     pub title: &'static str,
     /// The severity this code is normally emitted at.
     pub default_severity: Severity,
+    /// A one-or-two-sentence explanation of what triggers the diagnostic and how
+    /// to resolve it — the prose shown in the error-code catalog.
+    pub explanation: &'static str,
 }
