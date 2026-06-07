@@ -224,10 +224,62 @@ fn full_corpus_report() {
     }
     println!("\n=== {passed} passed, {failures} failed, {not_run} not-run (of {total}) ===");
 
-    // No genuine failures anywhere. The only not-runnable contracts are the
-    // `Dict`/`Set` collection foralls, whose generators are Stage-2 work.
+    // Every std + sample contract runs and passes (records and ADTs now have
+    // synthesized generators).
     assert_eq!(failures, 0, "no contract should fail across std + samples");
-    assert_eq!(not_run, 2, "only the Dict and Set foralls await Stage-2 generators");
+    assert_eq!(not_run, 0, "every std + sample contract should be runnable");
+}
+
+#[test]
+fn record_binder_contract_runs() {
+    let src = "module R\npublic type Point = { x : Int, y : Int }\n\
+               public swap : Point -> Point\nlet swap p = { x = p.y, y = p.x }\n\
+               forall p: swap (swap p) = p\n";
+    let outcome = run(&[("R.fai", src)]);
+    assert!(outcome.ok, "diagnostics: {:?}", outcome.diagnostics);
+    assert_eq!(outcome.passed, 1);
+    assert_eq!(outcome.leaked, 0);
+}
+
+#[test]
+fn record_counterexample_is_labeled() {
+    let src = "module R\npublic type Point = { x : Int, y : Int }\n\
+               public total : Point -> Int\nlet total p = p.x + p.y\n\
+               forall p: total p = p.x\n";
+    let outcome = run(&[("R.fai", src)]);
+    let d = outcome.diagnostics.iter().find(|d| d.code.as_str() == "FAI6001").expect("FAI6001");
+    assert_eq!(d.help.as_deref(), Some("counterexample: p = { x = 0, y = 1 }"));
+}
+
+/// A recursive ADT carrier (multi-line union form, matching the sample/fixture
+/// style).
+const TREE: &str =
+    "module T\n\npublic type Tree 'a =\n  | Leaf\n  | Node (Tree 'a) 'a (Tree 'a)\n\n";
+
+#[test]
+fn recursive_adt_contract_runs() {
+    let src = format!(
+        "{TREE}public count : Tree Int -> Int\n\
+         let count t =\n  match t with\n  | Leaf -> 0\n  | Node l x r -> 1 + count l + count r\n\
+         forall t: count t >= 0\n"
+    );
+    let outcome = run(&[("T.fai", &src)]);
+    assert!(outcome.ok, "diagnostics: {:?}", outcome.diagnostics);
+    assert_eq!(outcome.passed, 1);
+    assert_eq!(outcome.leaked, 0);
+}
+
+#[test]
+fn recursive_adt_counterexample_shrinks_to_minimal_node() {
+    // A false property (every tree is a leaf) shrinks to the smallest Node.
+    let src = format!(
+        "{TREE}public isLeaf : Tree Int -> Bool\n\
+         let isLeaf t =\n  match t with\n  | Leaf -> true\n  | Node l x r -> false\n\
+         forall t: isLeaf t\n"
+    );
+    let outcome = run(&[("T.fai", &src)]);
+    let d = outcome.diagnostics.iter().find(|d| d.code.as_str() == "FAI6001").expect("FAI6001");
+    assert_eq!(d.help.as_deref(), Some("counterexample: t = Node Leaf 0 Leaf"));
 }
 
 #[test]

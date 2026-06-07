@@ -47,6 +47,18 @@ let upTo bound seed =
   let (r, s2) = nextInt seed
   if bound <= 0 then (0, s2) else (nonNeg r % (bound + 1), s2)
 
+// A pseudo-random index in `[0, bound)` (or 0 when `bound <= 0`), and the next
+// seed. The compiler references this (as a synthesized call) to pick a
+// constructor when generating an ADT; it is not part of the public surface.
+let choose bound seed =
+  let (r, s2) = nextInt seed
+  if bound <= 0 then (0, s2) else (nonNeg r % bound, s2)
+
+// Parenthesizes a rendered constructor argument only when it is itself a
+// multi-token application (so `Node Leaf 0 Leaf` stays unparenthesized but a
+// nested `Node …` is wrapped). Referenced by synthesized ADT renderers.
+let parenIfSpaced s = if String.contains s " " then "(" ++ s ++ ")" else s
+
 // --- Combinators ------------------------------------------------------------
 let shrinkTowardZero n = if n = 0 then [] else if n / 2 = 0 then [0] else [0, n / 2]
 

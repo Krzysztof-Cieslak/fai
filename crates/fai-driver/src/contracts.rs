@@ -150,14 +150,20 @@ pub fn run_tests(
     // Reference-count and gather the synthesized defs and their real callees.
     let mut synth_defs: FxHashMap<DefId, (LoweredDef, usize)> = FxHashMap::default();
     let mut roots: Vec<DefId> = Vec::new();
+    let all_owned = |n: usize| BorrowSig(vec![false; n]);
     for (_, s) in &synths {
-        let all_owned = |n: usize| BorrowSig(vec![false; n]);
         let entry = rc_lowered(db, &s.entry, &all_owned(s.entry_arity));
         let prop = rc_lowered(db, &s.prop, &all_owned(s.prop_arity));
         roots.extend(entry.referenced_globals());
         roots.extend(prop.referenced_globals());
         synth_defs.insert(s.entry.def, (entry, s.entry_arity));
         synth_defs.insert(s.prop.def, (prop, s.prop_arity));
+        // Synthesized Arbitrary/setter defs for record/ADT binders.
+        for (extra, arity) in &s.extra {
+            let rcd = rc_lowered(db, extra, &all_owned(*arity));
+            roots.extend(rcd.referenced_globals());
+            synth_defs.insert(extra.def, (rcd, *arity));
+        }
     }
     let synth_ids: FxHashSet<DefId> = synth_defs.keys().copied().collect();
     let reachable = reachable_from_roots(db, &roots, &synth_ids);

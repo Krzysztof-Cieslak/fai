@@ -19,9 +19,11 @@
 > property-testing harness per contract using the dogfooded `std/Test.fai`
 > library, JIT-runs it, and reports failures as located `FAI6001` diagnostics with
 > a shrunk counterexample (an ungeneratable binder is `FAI6002`); it takes
-> `[path]`/`--match`/`--seed`/`--count`/`--max-size`. Per-type generation for user
-> records/ADTs and isolated-worker execution (with `$/testEvent` streaming) are
-> follow-ups. Not yet implemented: `fai daemon tap`, Windows resource limits, and
+> `[path]`/`--match`/`--seed`/`--count`/`--max-size`, and generates values for
+> built-in types, records, and (recursive) ADTs. Isolated-worker execution (with
+> `$/testEvent` streaming) is a follow-up — the in-process runner aborts if a
+> generated input triggers a runtime trap (e.g. division by zero). Not yet
+> implemented: `fai daemon tap`, Windows resource limits, and
 > a Windows CI (the named-pipe transport compiles but is untested). See
 > `AGENTS.md` for project conventions, `docs/PLAN.md` for milestones, and the
 > `samples/` directory for the language itself.
