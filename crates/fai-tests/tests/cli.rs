@@ -95,3 +95,43 @@ fn check_reports_type_error() {
     assert_eq!(code, 1, "stderr: {err}");
     assert!(out.contains("FAI3004"), "expected FAI3004 in {out}");
 }
+
+/// A workspace with a nested module, for nested code-intelligence queries.
+fn nested_workspace() -> Utf8PathBuf {
+    let dir = Utf8PathBuf::from_path_buf(std::env::temp_dir())
+        .expect("temp dir is UTF-8")
+        .join("fai-nested-cli-tests");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("Nest.fai"),
+        indoc! {r#"
+            module Nest
+
+            module Inner =
+              public val : Int
+              let val = 1
+        "#},
+    )
+    .unwrap();
+    dir
+}
+
+#[test]
+fn query_type_of_nested_member_via_dotted_path() {
+    let dir = nested_workspace();
+    let (code, out, err) =
+        run(&["fai", "query", "--no-daemon", "-C", dir.as_str(), "type", "Nest.Inner.val"]);
+    assert_eq!(code, 0, "stderr: {err}");
+    assert!(out.contains("Int"), "expected the nested member's type, got {out}");
+}
+
+#[test]
+fn query_outline_nests_modules() {
+    let dir = nested_workspace();
+    let (code, out, err) =
+        run(&["fai", "query", "--no-daemon", "-C", dir.as_str(), "outline", "Nest"]);
+    assert_eq!(code, 0, "stderr: {err}");
+    assert!(out.contains("\"module\""), "outline should mark the nested module: {out}");
+    assert!(out.contains("\"children\""), "outline should nest children: {out}");
+    assert!(out.contains("val"), "outline should include the nested member: {out}");
+}

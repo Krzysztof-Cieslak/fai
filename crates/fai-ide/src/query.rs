@@ -298,15 +298,70 @@ pub fn outline(
         files.iter().copied().find(|&f| module_label(db, f) == target || f.path(db) == target);
     let mut nodes = Vec::new();
     if let Some(file) = file {
-        let defs = module_defs(db, file);
-        for d in &defs.defs {
-            if let Some(symbol) = symbol_ref(db, file, d.name, resolver) {
-                nodes.push(OutlineNode { symbol, children: vec![] });
-            }
-        }
-        nodes.sort_by(|a, b| a.symbol.name.cmp(&b.symbol.name));
+        let parsed = fai_syntax::parse(db, file);
+        let module = &parsed.module;
+        let mut scope: Vec<Symbol> = Vec::new();
+        nodes = outline_items(db, file, module, &mut scope, &module.roots, resolver);
     }
     OutlineResult { schema_version: SCHEMA_VERSION, outline: nodes }
+}
+
+/// Builds the outline nodes of one module scope, nesting child items under each
+/// nested module (sorted by name within each level).
+fn outline_items(
+    db: &dyn Db,
+    file: SourceFile,
+    module: &fai_syntax::ast::Module,
+    scope: &mut Vec<Symbol>,
+    items: &[fai_syntax::ast::ItemId],
+    resolver: &dyn SpanResolver,
+) -> Vec<OutlineNode> {
+    use fai_syntax::ast::ItemKind;
+    let mut nodes = Vec::new();
+    for &id in items {
+        match &module.items[id.index()].kind {
+            ItemKind::Binding { name, .. } => {
+                let qual = fai_resolve::qualify(scope, *name);
+                if let Some(symbol) = symbol_ref(db, file, qual, resolver) {
+                    nodes.push(OutlineNode { symbol, children: vec![] });
+                }
+            }
+            ItemKind::Module { name, body } => {
+                let span = module.items[id.index()].span;
+                scope.push(*name);
+                let children = outline_items(db, file, module, scope, body, resolver);
+                scope.pop();
+                if let Some(symbol) = module_symbol_ref(db, file, scope, *name, span, resolver) {
+                    nodes.push(OutlineNode { symbol, children });
+                }
+            }
+            _ => {}
+        }
+    }
+    nodes.sort_by(|a, b| a.symbol.name.cmp(&b.symbol.name));
+    nodes
+}
+
+/// A `SymbolRef` for a nested module declaration (kind `Module`).
+fn module_symbol_ref(
+    db: &dyn Db,
+    file: SourceFile,
+    scope: &[Symbol],
+    name: Symbol,
+    span: fai_span::TextRange,
+    resolver: &dyn SpanResolver,
+) -> Option<SymbolRef> {
+    let module_name = module_label(db, file);
+    let qual = fai_resolve::qualify(scope, name);
+    Some(SymbolRef {
+        path: format!("{module_name}.{qual}"),
+        name: name.as_str().to_owned(),
+        kind: SymbolKind::Module,
+        module: module_name,
+        visibility: Visibility::Private,
+        signature: None,
+        span: SpanJson::resolve(Span::new(file.source(db), span), resolver)?,
+    })
 }
 
 /// One export in an `api` result.
