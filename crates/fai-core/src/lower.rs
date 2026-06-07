@@ -503,8 +503,16 @@ impl Lowerer<'_> {
         if row.tail != RowEnd::Closed {
             return self.lower_row_poly_update(base, fields, ty, span);
         }
-        let s = self.fresh_local();
         let base_c = self.lower_expr(base);
+        // Project the unchanged fields from a single base local. When the base is
+        // already a local, use it directly rather than binding an alias: an alias
+        // would split the base's reference count (the new-value expressions read
+        // the original), preventing the record from being recognized as unique and
+        // reused in place. A compound base is bound once to avoid re-evaluating it.
+        let (base_local, wrap) = match base_c.kind {
+            K::Local(l) => (l, None),
+            _ => (self.fresh_local(), Some(base_c)),
+        };
         let row_fields = row.fields.clone();
         let mut args = Vec::with_capacity(row_fields.len());
         for (index, (label, _)) in row_fields.iter().enumerate() {
@@ -512,7 +520,7 @@ impl Lowerer<'_> {
                 args.push(self.lower_expr(f.value));
             } else {
                 let i = u32::try_from(index).unwrap_or(0);
-                let base = Box::new(CExpr::new(K::Local(s), Ty::Error));
+                let base = Box::new(CExpr::new(K::Local(base_local), Ty::Error));
                 args.push(CExpr::new(
                     K::DataField { base, index: FieldIndex::Const(i) },
                     Ty::Error,
@@ -520,7 +528,13 @@ impl Lowerer<'_> {
             }
         }
         let make = CExpr::new(K::MakeData { tag: 0, args, reuse: None }, ty.clone());
-        CExpr::new(K::Let { local: s, value: Box::new(base_c), body: Box::new(make) }, ty.clone())
+        match wrap {
+            Some(base_c) => CExpr::new(
+                K::Let { local: base_local, value: Box::new(base_c), body: Box::new(make) },
+                ty.clone(),
+            ),
+            None => make,
+        }
     }
 
     /// Lowers `{ base with l = v, … }` on a *row-polymorphic* record: the field

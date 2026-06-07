@@ -518,3 +518,39 @@ fn string_contains_split_and_join() {
     fai_drop(joined);
     assert_eq!(live_count(), base);
 }
+
+#[test]
+fn record_update_in_place_when_unique() {
+    let _g = lock();
+    let base = live_count();
+    let a0 = allocations();
+    // A unique 2-field record.
+    let rec = pair(1, 2);
+    assert_eq!(allocations(), a0 + 1, "one record allocated");
+    // Update field 1 in place: no new allocation, same pointer.
+    let updated = fai_record_update(rec, imm_int(1), imm_int(9));
+    assert_eq!(updated, rec, "in-place update returns the same object");
+    assert_eq!(allocations(), a0 + 1, "no allocation for an in-place update");
+    assert_eq!(fai_data_field(updated, 1), imm_int(9));
+    fai_drop(updated);
+    assert_eq!(live_count(), base);
+}
+
+#[test]
+fn record_update_copies_when_shared() {
+    let _g = lock();
+    let base = live_count();
+    let rec = pair(1, 2);
+    fai_dup(rec); // share it
+    let a0 = allocations();
+    let updated = fai_record_update(fai_dup(rec), imm_int(1), imm_int(9));
+    assert_eq!(allocations(), a0 + 1, "shared update copies (one allocation)");
+    assert_ne!(updated, rec, "a copy is a different object");
+    // Original is unchanged.
+    assert_eq!(fai_data_field(rec, 1), imm_int(2));
+    assert_eq!(fai_data_field(updated, 1), imm_int(9));
+    fai_drop(rec);
+    fai_drop(rec);
+    fai_drop(updated);
+    assert_eq!(live_count(), base);
+}

@@ -340,31 +340,42 @@ Operates on the precise-RC output. For an owned data value that dies at point `P
 
 ## 8. Stage 3 — In-place `{r with}` + drop specialization
 
-### 8.1 In-place row-polymorphic update (`fai-runtime`)
+**Status: built** (with the deeper drop specialization deferred — see §8.2).
+
+### 8.1 In-place update (`fai-runtime` + lowering)
 
 - `fai_record_update(record, index, value)`: if `record` is unique (rc==1), drop
   the old field at the slot, write `value`, return the same cell (no alloc, no dup
-  of the other fields); if shared, copy as today. No new symbol, no IR change.
-- The monomorphic `{r with}` already gets in-place via Stage 2; add a test. The
-  differential alloc test covers both.
+  of the other fields); if shared, copy as before. No new symbol, no IR change.
+- The monomorphic `{r with}` rides the reuse mechanism, but only once a lowering
+  fix lands: read the *unchanged* fields from a single base local rather than
+  binding an alias (`let s = base`), which split the base's reference count (the
+  new-value expressions read the original), keeping the record from being unique.
+- This also relies on A-normal form **flattening** sub-operand bindings into one
+  straight-line sequence (done in `fai-rc`), so the record's last field read — and
+  its drop/reset — sits at the outer level where the construction can reuse it,
+  rather than nested inside a `let` value out of the reuse pass's reach.
+- A differential allocation test pins both the row-polymorphic and monomorphic
+  cases (unique → in place, shared → one copy).
 
 ### 8.2 Drop specialization (`fai-codegen`)
 
-- Build a `local→Ty` map from the lowered `CExpr` types during translation (no
-  IR/wire change).
-- At a drop site of known monomorphic shape: omit for immediate-only types
-  (`Bool`/`Unit`); unconditional decref for always-boxed leaves
-  (`Float`/`String`); direct field-drop + free for known data/records — **one
-  level**, calling generic `fai_drop` for composite/`Int`/polymorphic fields
-  (bounds code size; safe on recursive types). Also specialize `Reset`'s
-  child-scan.
-- Falls back to generic `fai_drop` when the local's type is a placeholder (the
-  daemon-run wire path) — still correct.
+- Code generation carries a `local → Ty` map (from `let` value types; no IR/wire
+  change) and **omits** dup/drop of statically-immediate values (`Bool`/`Unit`/
+  `Char`), whose reference-count operations are runtime no-ops. Unknown types fall
+  back to the generic `fai_drop`/`fai_dup`, so it is always correct.
+- **Deferred:** inlining a known data cell's child drops and free (to skip the
+  descriptor dispatch). After reuse, data cells are seldom dropped on hot paths,
+  and inlining the reference-count/free logic — complicated by immediate-versus-
+  boxed constructors (an ADT value may be either) — carries memory-safety risk
+  out of proportion to the gain. Revisit in the performance milestone.
 
 ### 8.3 Tests / acceptance
 
-Behavioral equivalence (stdout, exit, zero leaks) under specialization; benches
-show fewer/cheaper drops; the in-place `{r with}` differential alloc test passes.
+Behavioral equivalence (stdout, exit, zero leaks) under specialization — covered
+by the existing `Bool`/`Unit`-heavy suite; the in-place `{r with}` differential
+allocation test passes (unique allocates a count independent of update count; a
+shared record copies exactly once).
 
 ---
 
