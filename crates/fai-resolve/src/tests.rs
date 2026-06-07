@@ -544,3 +544,148 @@ fn public_signature_referencing_public_or_builtin_type_is_clean() {
     let diags = resolve_diags(&db, files[0]);
     assert!(diags.is_empty(), "got {:?}", codes(&diags));
 }
+
+#[test]
+fn nested_module_members_are_qualified_and_resolve() {
+    let src = indoc! {r#"
+        module M
+
+        module Inner =
+          let pi = 3
+          let square x = x * x
+
+        let area r = Inner.pi * Inner.square r
+    "#};
+    let (db, files) = db_with(&[("M.fai", src)]);
+    let defs = module_defs(&db, files[0]);
+    let names: Vec<&str> = defs.defs.iter().map(|d| d.name.as_str()).collect();
+    assert!(names.contains(&"Inner.pi"), "got {names:?}");
+    assert!(names.contains(&"Inner.square"), "got {names:?}");
+    assert!(names.contains(&"area"), "got {names:?}");
+    assert!(defs.is_module(Symbol::intern("Inner")));
+    let diags = resolve_diags(&db, files[0]);
+    assert!(diags.is_empty(), "got {:?}", codes(&diags));
+}
+
+#[test]
+fn nested_body_sees_enclosing_names_lexically() {
+    // A nested binding may use an enclosing module's binding by its bare name.
+    let src = indoc! {r#"
+        module M
+
+        let base = 10
+
+        module Inner =
+          let scaled = base + 1
+    "#};
+    let (db, files) = db_with(&[("M.fai", src)]);
+    let resolved = resolve(&db, files[0]);
+    // `Inner.scaled` depends on the top-level `base`.
+    let inner = DefId::new(files[0].source(&db), Symbol::intern("Inner.scaled"));
+    let base = DefId::new(files[0].source(&db), Symbol::intern("base"));
+    assert!(resolved.deps_of(inner).contains(&base), "Inner.scaled should reference base");
+    let diags = resolve_diags(&db, files[0]);
+    assert!(diags.is_empty(), "got {:?}", codes(&diags));
+}
+
+#[test]
+fn top_level_cannot_see_nested_member_by_bare_name() {
+    let src = indoc! {r#"
+        module M
+
+        module Inner =
+          let helper = 1
+
+        let bad = helper
+    "#};
+    let (db, files) = db_with(&[("M.fai", src)]);
+    let diags = resolve_diags(&db, files[0]);
+    let cs = codes(&diags);
+    assert!(cs.contains(&"FAI2001"), "bare `helper` at top level should be unbound, got {cs:?}");
+}
+
+#[test]
+fn cross_file_sees_only_public_nested_members() {
+    let outer = indoc! {r#"
+        module Outer
+
+        module Inner =
+          public exposed : Int
+          let exposed = 1
+
+          let hidden = 2
+    "#};
+    let user_ok = indoc! {r#"
+        module User
+
+        let use = Outer.Inner.exposed
+    "#};
+    let user_bad = indoc! {r#"
+        module Bad
+
+        let use = Outer.Inner.hidden
+    "#};
+    let (db, files) =
+        db_with(&[("Outer.fai", outer), ("User.fai", user_ok), ("Bad.fai", user_bad)]);
+    let ok = resolve_diags(&db, files[1]);
+    assert!(ok.is_empty(), "public nested member should resolve: {:?}", codes(&ok));
+    let bad_diags = resolve_diags(&db, files[2]);
+    let bad = codes(&bad_diags);
+    assert!(bad.contains(&"FAI2003"), "private nested member should be FAI2003, got {bad:?}");
+}
+
+#[test]
+fn module_name_conflict_is_reported() {
+    let src = indoc! {r#"
+        module M
+
+        type Inner = Int
+
+        module Inner =
+          let x = 1
+    "#};
+    let (db, files) = db_with(&[("M.fai", src)]);
+    let diags = resolve_diags(&db, files[0]);
+    let cs = codes(&diags);
+    assert!(cs.contains(&"FAI2016"), "module/type name clash should be FAI2016, got {cs:?}");
+}
+
+#[test]
+fn module_used_as_value_is_reported() {
+    let src = indoc! {r#"
+        module M
+
+        module Inner =
+          let x = 1
+
+        let bad = Inner
+    "#};
+    let (db, files) = db_with(&[("M.fai", src)]);
+    let diags = resolve_diags(&db, files[0]);
+    let cs = codes(&diags);
+    assert!(cs.contains(&"FAI2017"), "a bare module name should be FAI2017, got {cs:?}");
+}
+
+#[test]
+fn nested_module_shadows_a_cross_file_module() {
+    // A same-file nested module named like a workspace file module wins.
+    let list_file = indoc! {r#"
+        module List
+
+        public bad : Int
+        let bad = 99
+    "#};
+    let user = indoc! {r#"
+        module M
+
+        module List =
+          let good = 1
+
+        let pick = List.good
+    "#};
+    let (db, files) = db_with(&[("List.fai", list_file), ("M.fai", user)]);
+    // `List.good` resolves to the nested module's member (no diagnostics), not the
+    // cross-file `List` (which has no `good`).
+    let diags = resolve_diags(&db, files[1]);
+    assert!(diags.is_empty(), "got {:?}", codes(&diags));
+}

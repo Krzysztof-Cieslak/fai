@@ -19,20 +19,22 @@ use rustc_hash::FxHashMap;
 use crate::ids::{CtorRef, DefId};
 use crate::{
     BINDING_VISIBILITY_MARKER, DUPLICATE_DEFINITION, DUPLICATE_MODULE, DUPLICATE_PRELUDE_EXPORT,
-    MULTIPLE_SIGNATURES, ORPHAN_SIGNATURE,
+    MODULE_NAME_CONFLICT, MULTIPLE_SIGNATURES, ORPHAN_SIGNATURE,
 };
 
 /// A module's declared header name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ModuleName(pub Symbol);
 
-/// One paired top-level definition in a module.
+/// One paired definition in a module (at any nesting depth).
 ///
 /// Produced by [`module_defs`]: a binding, optionally paired with a signature of
-/// the same name. All ids are arena indices (span-free, stable under reformat).
+/// the same name. `name` is the **qualified** name (a nested binding's name is
+/// prefixed by its module path, e.g. `Internal.pi`; a top-level binding keeps its
+/// bare name). All ids are arena indices (span-free, stable under reformat).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DefInfo {
-    /// The definition's name.
+    /// The definition's qualified name (bare for a top-level binding).
     pub name: Symbol,
     /// Effective visibility (from the signature when present, else the binding).
     pub visibility: Visibility,
@@ -42,20 +44,31 @@ pub struct DefInfo {
     pub binding: ItemId,
 }
 
-/// The paired definitions of a module, in source order.
+/// The paired definitions of a module, in source order (pre-order across nesting).
 ///
 /// This is a `salsa` value: it is `Eq`/`Update` and free of byte offsets.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ModuleDefs {
-    /// The definitions, in source order.
+    /// The definitions, in source order (a nested module's defs follow its
+    /// declaration). Names are qualified.
     pub defs: Vec<DefInfo>,
+    /// The qualified paths of every nested module declared in the file (e.g.
+    /// `Internal`, `Outer.Inner`), in declaration order. Used to recognize a
+    /// module segment during qualified-path resolution.
+    pub modules: Vec<Symbol>,
 }
 
 impl ModuleDefs {
-    /// Looks up a definition by name.
+    /// Looks up a definition by its qualified name.
     #[must_use]
     pub fn get(&self, name: Symbol) -> Option<&DefInfo> {
         self.defs.iter().find(|d| d.name == name)
+    }
+
+    /// Whether `name` is the qualified path of a nested module in this file.
+    #[must_use]
+    pub fn is_module(&self, name: Symbol) -> bool {
+        self.modules.contains(&name)
     }
 }
 
@@ -106,26 +119,48 @@ impl ModuleInterface {
     }
 }
 
-/// Pairs each binding with its same-name signature, reporting pairing errors.
+/// Pairs each binding with its same-name signature, reporting pairing errors —
+/// recursively, per nested-module scope.
 ///
-/// Errors: a signature with no binding ([`ORPHAN_SIGNATURE`]); two signatures for
-/// one name ([`MULTIPLE_SIGNATURES`]); two bindings for one name
-/// ([`DUPLICATE_DEFINITION`]); a visibility marker on a binding that already has
-/// a signature ([`BINDING_VISIBILITY_MARKER`]).
+/// Errors (each per scope): a signature with no binding ([`ORPHAN_SIGNATURE`]);
+/// two signatures for one name ([`MULTIPLE_SIGNATURES`]); two bindings for one
+/// name ([`DUPLICATE_DEFINITION`]); a visibility marker on a binding that already
+/// has a signature ([`BINDING_VISIBILITY_MARKER`]); a nested-module name that
+/// collides with another module/type/interface/constructor in the same scope
+/// ([`MODULE_NAME_CONFLICT`]). Names in the result are qualified by their module
+/// path.
 #[salsa::tracked]
 pub fn module_defs(db: &dyn Db, file: SourceFile) -> ModuleDefs {
     let parsed = fai_syntax::parse(db, file);
     let module = &parsed.module;
     let source = file.source(db);
 
-    // Collect signatures and bindings by name, in order, tracking duplicates.
+    let mut out = ModuleDefs::default();
+    let mut scope: Vec<Symbol> = Vec::new();
+    collect_scope(db, module, source, &mut scope, &module.roots, &mut out);
+    out
+}
+
+/// Pairs and qualifies the definitions of one module scope (`items`), then
+/// recurses into its nested modules.
+fn collect_scope(
+    db: &dyn Db,
+    module: &fai_syntax::ast::Module,
+    source: fai_span::SourceId,
+    scope: &mut Vec<Symbol>,
+    items: &[ItemId],
+    out: &mut ModuleDefs,
+) {
     let mut sig_by_name: FxHashMap<Symbol, ItemId> = FxHashMap::default();
     let mut binding_by_name: FxHashMap<Symbol, ItemId> = FxHashMap::default();
     let mut binding_order: Vec<(Symbol, ItemId)> = Vec::new();
+    // Upper-namespace names declared in this scope (types, interfaces, and union
+    // constructors) — a nested module may not reuse one of these.
+    let mut upper_names: FxHashMap<Symbol, ()> = FxHashMap::default();
+    // Nested modules in this scope: (name, declaring item, body), recursed last.
+    let mut nested: Vec<(Symbol, ItemId)> = Vec::new();
 
-    // Nested modules are walked in a later stage; for now pair only the
-    // top-level definitions (the `roots`).
-    for &id in &module.roots {
+    for &id in items {
         let item = &module.items[id.index()];
         match &item.kind {
             ItemKind::Signature { name, .. } => {
@@ -152,8 +187,6 @@ pub fn module_defs(db: &dyn Db, file: SourceFile) -> ModuleDefs {
                     );
                 } else {
                     binding_order.push((*name, id));
-                    // A binding may not carry a visibility marker when a
-                    // signature exists; visibility lives on the signature.
                     if *visibility == Visibility::Public && sig_by_name.contains_key(name) {
                         emit(
                             db,
@@ -169,24 +202,33 @@ pub fn module_defs(db: &dyn Db, file: SourceFile) -> ModuleDefs {
                     }
                 }
             }
-            ItemKind::Type { .. }
-            | ItemKind::Interface { .. }
-            | ItemKind::Example { .. }
-            | ItemKind::Forall { .. }
-            | ItemKind::Module { .. }
-            | ItemKind::Error => {}
+            ItemKind::Type { name, def, .. } => {
+                upper_names.insert(*name, ());
+                if let fai_syntax::ast::TypeDef::Union(variants) = def {
+                    for v in variants {
+                        upper_names.insert(v.name, ());
+                    }
+                }
+            }
+            ItemKind::Interface { name, .. } => {
+                upper_names.insert(*name, ());
+            }
+            ItemKind::Module { name, .. } => nested.push((*name, id)),
+            ItemKind::Example { .. } | ItemKind::Forall { .. } | ItemKind::Error => {}
         }
     }
 
-    // Build the paired definitions, in binding source order.
-    let mut defs = Vec::new();
     for (name, binding) in &binding_order {
         let signature = sig_by_name.get(name).copied();
         let visibility = effective_visibility(module, signature, *binding);
-        defs.push(DefInfo { name: *name, visibility, signature, binding: *binding });
+        out.defs.push(DefInfo {
+            name: crate::qualify(scope, *name),
+            visibility,
+            signature,
+            binding: *binding,
+        });
     }
 
-    // Any signature without a matching binding is an orphan.
     for (name, sig) in &sig_by_name {
         if !binding_by_name.contains_key(name) {
             let span = module.items[sig.index()].span;
@@ -201,7 +243,35 @@ pub fn module_defs(db: &dyn Db, file: SourceFile) -> ModuleDefs {
         }
     }
 
-    ModuleDefs { defs }
+    // A nested module's name must not collide with another module, type,
+    // interface, or constructor in the same scope.
+    let mut module_count: FxHashMap<Symbol, usize> = FxHashMap::default();
+    for (name, _) in &nested {
+        *module_count.entry(*name).or_insert(0) += 1;
+    }
+    for &(name, id) in &nested {
+        if upper_names.contains_key(&name) || module_count[&name] > 1 {
+            emit(
+                db,
+                Diagnostic::error(
+                    MODULE_NAME_CONFLICT,
+                    format!("`{name}` is already declared in this module"),
+                    Span::new(source, module.items[id.index()].span),
+                )
+                .with_help("a module shares the upper-case namespace with types, interfaces, and constructors"),
+            );
+        }
+    }
+
+    // Record and recurse into nested modules (in declaration order).
+    for &(name, id) in &nested {
+        out.modules.push(crate::qualify(scope, name));
+        if let ItemKind::Module { body, .. } = &module.items[id.index()].kind {
+            scope.push(name);
+            collect_scope(db, module, source, scope, body, out);
+            scope.pop();
+        }
+    }
 }
 
 /// The effective visibility of a definition: the signature's when present, else

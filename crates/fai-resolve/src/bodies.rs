@@ -18,21 +18,21 @@ use fai_diagnostics::Diagnostic;
 use fai_span::{SourceId, Span, TextRange};
 use fai_syntax::Symbol;
 use fai_syntax::ast::{
-    ExprId, ExprKind, ItemKind, Module, PatId, PatKind, TypeDef, TypeId, TypeKind, Visibility,
-    classify_op,
+    ExprId, ExprKind, ItemId, ItemKind, Module, PatId, PatKind, TypeDef, TypeId, TypeKind,
+    Visibility, classify_op,
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::decls::type_decls;
-use crate::ids::{CtorRef, DefId, LocalId, Res, is_upper};
+use crate::ids::{CtorRef, DefId, LocalId, Res, is_upper, qualify};
 use crate::intrinsics;
 use crate::module::{
     ModuleName, emit_duplicate_module_errors, emit_duplicate_prelude_export_errors, module_defs,
     module_file, module_interface, prelude_exports,
 };
 use crate::{
-    INTRINSIC_OUTSIDE_STD, PRIVATE_REFERENCE, PRIVATE_TYPE_IN_PUBLIC_SIGNATURE, SHADOWS_PRELUDE,
-    UNBOUND_CONSTRUCTOR, UNBOUND_NAME, UNRESOLVED_MODULE,
+    INTRINSIC_OUTSIDE_STD, MODULE_AS_VALUE, PRIVATE_REFERENCE, PRIVATE_TYPE_IN_PUBLIC_SIGNATURE,
+    SHADOWS_PRELUDE, UNBOUND_CONSTRUCTOR, UNBOUND_NAME, UNRESOLVED_MODULE,
 };
 
 /// The resolved references of one file's bodies.
@@ -224,11 +224,15 @@ pub fn resolve(db: &dyn Db, file: SourceFile) -> Arc<ResolvedBodies> {
     // bindings *define* the auto-imported names (so they never "shadow").
     let is_std = is_std_path(file.path(db));
 
-    // Names defined at this module's top level (binding present).
-    let top_level: FxHashMap<Symbol, DefId> =
+    // Every definition in the file, keyed by its qualified name.
+    let def_ids: FxHashMap<Symbol, DefId> =
         defs.defs.iter().map(|d| (d.name, DefId::new(source, d.name))).collect();
 
-    // Constructors declared in this module.
+    // The nested module paths in this file (qualified), used to recognize a
+    // module segment during qualified-path resolution.
+    let modules: FxHashSet<Symbol> = defs.modules.iter().copied().collect();
+
+    // Constructors declared in this module (qualified by their module path).
     let local_ctors: FxHashMap<Symbol, CtorRef> =
         type_decls(db, file).ctors.keys().map(|&name| (name, CtorRef::new(source, name))).collect();
 
@@ -242,11 +246,13 @@ pub fn resolve(db: &dyn Db, file: SourceFile) -> Arc<ResolvedBodies> {
         module,
         source,
         is_std,
-        top_level: &top_level,
-        local_ctors: &local_ctors,
+        defs: &def_ids,
+        ctors: &local_ctors,
+        modules: &modules,
         prelude_values: &prelude_values,
         prelude_ctors: &prelude_ctors,
         scope: Scope::default(),
+        current_scope: Vec::new(),
         by_expr: FxHashMap::default(),
         by_pat: FxHashMap::default(),
         deps: Vec::new(),
@@ -256,28 +262,38 @@ pub fn resolve(db: &dyn Db, file: SourceFile) -> Arc<ResolvedBodies> {
         pat_locals: FxHashMap::default(),
     };
 
-    // Warn when a top-level binding shadows an auto-imported name — except inside
-    // standard-library modules, whose bindings *define* those names.
-    for d in &defs.defs {
-        let shadows = prelude_values.contains_key(&d.name) || prelude_ctors.contains_key(&d.name);
-        if !is_std && shadows {
-            let span = module.items[d.binding.index()].span;
-            emit(
-                db,
-                Diagnostic::warning(
-                    SHADOWS_PRELUDE,
-                    format!("`{}` shadows a prelude name", d.name),
-                    Span::new(source, span),
-                ),
-            );
-        }
-    }
+    resolve_items(&mut cx, module, &module.roots);
 
-    for &root in &module.roots {
-        let item = &module.items[root.index()];
-        match &item.kind {
+    Arc::new(ResolvedBodies {
+        by_expr: cx.by_expr,
+        by_pat: cx.by_pat,
+        deps: cx.deps,
+        deps_by_def: cx.deps_by_def,
+        pat_locals: cx.pat_locals,
+    })
+}
+
+/// Resolves the bodies of a module scope (`items`), descending into nested
+/// modules so each body resolves with its lexical scope path active.
+fn resolve_items(cx: &mut Resolver, module: &Module, items: &[ItemId]) {
+    for &id in items {
+        match &module.items[id.index()].kind {
             ItemKind::Binding { name, params, body, .. } => {
-                cx.current_def = Some(DefId::new(file.source(db), *name));
+                // A binding whose local name shadows an auto-imported name (except
+                // in standard-library modules, whose bindings *define* them).
+                if !cx.is_std
+                    && (cx.prelude_values.contains_key(name) || cx.prelude_ctors.contains_key(name))
+                {
+                    emit(
+                        cx.db,
+                        Diagnostic::warning(
+                            SHADOWS_PRELUDE,
+                            format!("`{name}` shadows a prelude name"),
+                            Span::new(cx.source, module.items[id.index()].span),
+                        ),
+                    );
+                }
+                cx.current_def = Some(DefId::new(cx.source, qualify(&cx.current_scope, *name)));
                 cx.scope.push();
                 for &p in params {
                     cx.bind_pattern(p);
@@ -299,24 +315,20 @@ pub fn resolve(db: &dyn Db, file: SourceFile) -> Arc<ResolvedBodies> {
                 cx.resolve_expr(*body);
                 cx.scope.pop();
             }
+            ItemKind::Module { name, body } => {
+                cx.current_scope.push(*name);
+                resolve_items(cx, module, body);
+                cx.current_scope.pop();
+            }
             // Type and interface declarations introduce type-level names and
             // (for unions) constructors, resolved via `type_decls`/the types
             // phase; they have no value body to resolve here.
             ItemKind::Type { .. }
             | ItemKind::Interface { .. }
             | ItemKind::Signature { .. }
-            | ItemKind::Module { .. }
             | ItemKind::Error => {}
         }
     }
-
-    Arc::new(ResolvedBodies {
-        by_expr: cx.by_expr,
-        by_pat: cx.by_pat,
-        deps: cx.deps,
-        deps_by_def: cx.deps_by_def,
-        pat_locals: cx.pat_locals,
-    })
 }
 
 /// The per-file resolution walker.
@@ -326,11 +338,18 @@ struct Resolver<'a> {
     source: fai_span::SourceId,
     /// Whether this is a standard-library module (may use `Prim`).
     is_std: bool,
-    top_level: &'a FxHashMap<Symbol, DefId>,
-    local_ctors: &'a FxHashMap<Symbol, CtorRef>,
+    /// Every definition in the file, keyed by qualified name.
+    defs: &'a FxHashMap<Symbol, DefId>,
+    /// Constructors declared in this file, keyed by qualified name.
+    ctors: &'a FxHashMap<Symbol, CtorRef>,
+    /// Qualified paths of the nested modules declared in this file.
+    modules: &'a FxHashSet<Symbol>,
     prelude_values: &'a FxHashMap<Symbol, DefId>,
     prelude_ctors: &'a FxHashMap<Symbol, CtorRef>,
     scope: Scope,
+    /// The module path of the definition currently being resolved (empty at the
+    /// top level), for lexical (outward) bare-name resolution.
+    current_scope: Vec<Symbol>,
     by_expr: FxHashMap<ExprId, Res>,
     by_pat: FxHashMap<PatId, Res>,
     deps: Vec<DefId>,
@@ -379,17 +398,39 @@ impl Resolver<'_> {
             }
             PatKind::Constructor { name, args } => {
                 // Resolve the constructor head (a reference), then bind its args.
-                let res = self.resolve_ctor(*name);
-                if matches!(res, Res::Error) {
-                    emit(
-                        self.db,
-                        Diagnostic::error(
-                            UNBOUND_CONSTRUCTOR,
-                            format!("cannot find constructor `{name}` in scope"),
-                            self.span(node.span),
-                        ),
-                    );
-                }
+                // A dotted name is a qualified constructor path; the path resolver
+                // reports its own errors.
+                let res = if name.as_str().contains('.') {
+                    let segments: Vec<Symbol> =
+                        name.as_str().split('.').map(Symbol::intern).collect();
+                    match self.resolve_path(&segments, node.span) {
+                        Some((res, _)) => res,
+                        None => {
+                            emit(
+                                self.db,
+                                Diagnostic::error(
+                                    UNBOUND_CONSTRUCTOR,
+                                    format!("cannot find constructor `{name}` in scope"),
+                                    self.span(node.span),
+                                ),
+                            );
+                            Res::Error
+                        }
+                    }
+                } else {
+                    let res = self.resolve_ctor(*name);
+                    if matches!(res, Res::Error) {
+                        emit(
+                            self.db,
+                            Diagnostic::error(
+                                UNBOUND_CONSTRUCTOR,
+                                format!("cannot find constructor `{name}` in scope"),
+                                self.span(node.span),
+                            ),
+                        );
+                    }
+                    res
+                };
                 self.by_pat.insert(pat, res);
                 for &a in args {
                     self.bind_pattern(a);
@@ -429,10 +470,15 @@ impl Resolver<'_> {
                     self.record_dep(def);
                 }
                 if matches!(res, Res::Error) {
-                    let (code, msg) = if is_upper(*name) {
-                        (UNBOUND_CONSTRUCTOR, format!("cannot find constructor `{name}` in scope"))
-                    } else {
+                    let (code, msg) = if !is_upper(*name) {
                         (UNBOUND_NAME, format!("cannot find `{name}` in scope"))
+                    } else if self.same_file_module_anchor(*name).is_some()
+                        || module_file(self.db, ModuleName(*name)).is_some()
+                    {
+                        // A bare module name used where a value is expected.
+                        (MODULE_AS_VALUE, format!("`{name}` is a module, not a value"))
+                    } else {
+                        (UNBOUND_CONSTRUCTOR, format!("cannot find constructor `{name}` in scope"))
                     };
                     emit(self.db, Diagnostic::error(code, msg, self.span(node.span)));
                 }
@@ -534,11 +580,11 @@ impl Resolver<'_> {
         }
     }
 
-    /// Resolves a bare name. Upper-case names are constructors (this module, then
-    /// the auto-imported core); lower-case names are `true`/`false`, then local
-    /// scope, this module's top level, then the auto-imported core's values.
-    /// (Intrinsics are reached only as `Prim.<name>` inside standard-library
-    /// modules, never as a bare name.)
+    /// Resolves a bare name. `true`/`false` and the built-in operators are
+    /// builtins; otherwise local scope, then the lexical module-scope chain
+    /// (inner → outer), then the auto-imported core. Upper-case names are
+    /// constructors. (Intrinsics are reached only as `Prim.<name>` inside
+    /// standard-library modules, never as a bare name.)
     fn resolve_name(&self, name: Symbol) -> Res {
         // `true`/`false` are keyword-like boolean literals parsed as `Var`.
         if matches!(name.as_str(), "true" | "false") {
@@ -555,8 +601,8 @@ impl Resolver<'_> {
         if is_upper(name) {
             return self.resolve_ctor(name);
         }
-        if let Some(def) = self.top_level.get(&name) {
-            return Res::Def(*def);
+        if let Some(def) = self.lookup_value(name) {
+            return Res::Def(def);
         }
         if let Some(def) = self.prelude_values.get(&name) {
             return Res::Def(*def);
@@ -569,11 +615,27 @@ impl Resolver<'_> {
         Res::Error
     }
 
-    /// Resolves an upper-case constructor name: this module's constructors, then
-    /// the prelude module's.
+    /// Looks a bare value name up the lexical module-scope chain (innermost scope
+    /// first), returning the qualified definition it binds to.
+    fn lookup_value(&self, local: Symbol) -> Option<DefId> {
+        for k in (0..=self.current_scope.len()).rev() {
+            let cand = qualify(&self.current_scope[..k], local);
+            if let Some(def) = self.defs.get(&cand) {
+                return Some(*def);
+            }
+        }
+        None
+    }
+
+    /// Resolves a bare upper-case constructor name up the lexical scope chain,
+    /// then the auto-imported core. (Qualified constructors `M.Ctor` go through
+    /// the path resolver.)
     fn resolve_ctor(&self, name: Symbol) -> Res {
-        if let Some(ctor) = self.local_ctors.get(&name) {
-            return Res::Ctor(*ctor);
+        for k in (0..=self.current_scope.len()).rev() {
+            let cand = qualify(&self.current_scope[..k], name);
+            if let Some(ctor) = self.ctors.get(&cand) {
+                return Res::Ctor(*ctor);
+            }
         }
         if let Some(ctor) = self.prelude_ctors.get(&name) {
             return Res::Ctor(*ctor);
@@ -581,123 +643,285 @@ impl Resolver<'_> {
         Res::Error
     }
 
-    /// Resolves a `Field`. A `Var(Upper)` base is a qualified cross-module
-    /// reference `Foo.bar`; any other base is record field access (unimplemented
-    /// in M2 — the types phase reports it). Depth-1 only.
-    fn resolve_field(&mut self, expr: ExprId, base: ExprId, field: Symbol) {
-        let base_node = self.module.expr(base);
-        if let ExprKind::Var(module_sym) = &base_node.kind
-            && is_upper(*module_sym)
-        {
-            let res = self.resolve_qualified(
-                *module_sym,
-                field,
-                base_node.span,
-                self.module.expr(expr).span,
-            );
-            if let Res::Def(def) = res {
-                self.record_dep(def);
-            }
-            self.by_expr.insert(expr, res);
+    /// Resolves a `Field` chain. A chain whose innermost base is an upper-case
+    /// `Var` may be a qualified reference (`Outer.Inner.member`); otherwise it is
+    /// ordinary record-field access (the field is handled by the types phase).
+    fn resolve_field(&mut self, expr: ExprId, base: ExprId, _field: Symbol) {
+        let Some(chain) = self.flatten_chain(expr) else {
+            // The head is a complex expression: ordinary record-field access.
+            self.resolve_expr(base);
+            return;
+        };
+        let head = chain[0].0;
+        if !is_upper(head) {
+            // Record-field access on a local/value: resolve the head; the types
+            // phase handles the fields.
+            self.resolve_expr(chain[0].1);
             return;
         }
-        // Record field access: resolve the base; the field is handled by types.
-        self.resolve_expr(base);
+        let segments: Vec<Symbol> = chain.iter().map(|&(s, _)| s).collect();
+        let span = self.module.expr(expr).span;
+        match self.resolve_path(&segments, span) {
+            Some((res, consumed)) => {
+                // The member reference is the chain node at `consumed - 1`; any
+                // trailing segments are record-field accesses (no resolution).
+                let member_expr = chain[consumed - 1].1;
+                if let Res::Def(def) = res {
+                    self.record_dep(def);
+                }
+                self.by_expr.insert(member_expr, res);
+            }
+            None => {
+                // An upper head in a field chain is a qualified reference; if it
+                // names no module (nested or cross-file), it is unresolved.
+                let head_span = self.module.expr(chain[0].1).span;
+                emit(
+                    self.db,
+                    Diagnostic::error(
+                        UNRESOLVED_MODULE,
+                        format!("no module named `{head}` in scope"),
+                        self.span(head_span),
+                    ),
+                );
+                self.by_expr.insert(expr, Res::Error);
+            }
+        }
     }
 
-    fn resolve_qualified(
-        &self,
-        module_sym: Symbol,
-        field: Symbol,
-        base_span: fai_span::TextRange,
-        whole_span: fai_span::TextRange,
-    ) -> Res {
-        // The prelude-private intrinsics module: `Prim.<name>` is reachable only
-        // from standard-library modules, and only for a known intrinsic.
-        if module_sym.as_str() == intrinsics::PRIM_MODULE {
+    /// Flattens a `Field`/`Var` spine into its segments, innermost first, each
+    /// paired with the expression node that ends at that segment. Returns `None`
+    /// when the head is not a simple name (so the chain is record access on a
+    /// complex expression).
+    fn flatten_chain(&self, expr: ExprId) -> Option<Vec<(Symbol, ExprId)>> {
+        let mut rev: Vec<(Symbol, ExprId)> = Vec::new();
+        let mut cur = expr;
+        loop {
+            match &self.module.expr(cur).kind {
+                ExprKind::Field { base, field } => {
+                    rev.push((*field, cur));
+                    cur = *base;
+                }
+                ExprKind::Var(sym) => {
+                    rev.push((*sym, cur));
+                    break;
+                }
+                _ => return None,
+            }
+        }
+        rev.reverse();
+        Some(rev)
+    }
+
+    /// Resolves a qualified dotted path `segments` (the head is upper-case).
+    /// Returns the member's resolution plus the number of leading segments it
+    /// spans (the module path plus the member); the remaining segments are
+    /// record-field accesses. Returns `None` when the head is not a module at all
+    /// (the caller falls back to constructor/record handling). Emits the
+    /// appropriate diagnostic on a genuine path error.
+    fn resolve_path(&self, segments: &[Symbol], span: TextRange) -> Option<(Res, usize)> {
+        let head = segments[0];
+
+        // `Prim.<name>`: prelude-private intrinsics, only inside std modules.
+        if head.as_str() == intrinsics::PRIM_MODULE {
             if !self.is_std {
                 emit(
                     self.db,
                     Diagnostic::error(
                         INTRINSIC_OUTSIDE_STD,
                         format!(
-                            "the intrinsics module `{}` is only available inside standard-library \
-                             modules",
+                            "the intrinsics module `{}` is only available inside \
+                             standard-library modules",
                             intrinsics::PRIM_MODULE
                         ),
-                        self.span(base_span),
+                        self.span(span),
                     ),
                 );
-                return Res::Error;
+                return Some((Res::Error, 1));
             }
-            if intrinsics::is_intrinsic(field) {
-                return Res::Builtin(field);
+            if segments.len() >= 2 && intrinsics::is_intrinsic(segments[1]) {
+                return Some((Res::Builtin(segments[1]), 2));
             }
             emit(
                 self.db,
                 Diagnostic::error(
                     UNBOUND_NAME,
-                    format!("`{}` has no intrinsic `{field}`", intrinsics::PRIM_MODULE),
-                    self.span(whole_span),
+                    format!(
+                        "`{}` has no intrinsic `{}`",
+                        intrinsics::PRIM_MODULE,
+                        segments.get(1).map_or("", |s| s.as_str())
+                    ),
+                    self.span(span),
                 ),
             );
-            return Res::Error;
+            return Some((Res::Error, segments.len().clamp(1, 2)));
         }
-        let Some(target_file) = module_file(self.db, ModuleName(module_sym)) else {
-            emit(
-                self.db,
-                Diagnostic::error(
-                    UNRESOLVED_MODULE,
-                    format!("no module named `{module_sym}` in the workspace"),
-                    self.span(base_span),
-                ),
-            );
-            return Res::Error;
+
+        // A nested module visible in the current lexical scope chain.
+        if let Some(anchor) = self.same_file_module_anchor(head) {
+            return Some(self.walk_same_file(anchor, segments, span));
+        }
+
+        // A workspace file module (the current file's own name resolves here too,
+        // so a self-qualified reference is treated like any cross-module one).
+        if let Some(target) = module_file(self.db, ModuleName(head)) {
+            return Some(self.walk_cross_file(target, segments, span));
+        }
+
+        None
+    }
+
+    /// The innermost qualified module path for which `head` names a nested module
+    /// visible in the current scope chain, if any.
+    fn same_file_module_anchor(&self, head: Symbol) -> Option<Symbol> {
+        for k in (0..=self.current_scope.len()).rev() {
+            let cand = qualify(&self.current_scope[..k], head);
+            if self.modules.contains(&cand) {
+                return Some(cand);
+            }
+        }
+        None
+    }
+
+    /// Resolves the member of a same-file nested-module path. Same-file access has
+    /// no visibility gate (the enclosing file sees every nested member).
+    fn walk_same_file(&self, anchor: Symbol, segments: &[Symbol], span: TextRange) -> (Res, usize) {
+        let mut module_path = anchor;
+        let mut consumed = 1;
+        while consumed < segments.len() {
+            let cand = extend(module_path, segments[consumed]);
+            if self.modules.contains(&cand) {
+                module_path = cand;
+                consumed += 1;
+            } else {
+                break;
+            }
+        }
+        if consumed >= segments.len() {
+            self.emit_module_as_value(module_path, span);
+            return (Res::Error, consumed);
+        }
+        let member = segments[consumed];
+        let member_qual = extend(module_path, member);
+        consumed += 1;
+        let res = if is_upper(member) {
+            match self.ctors.get(&member_qual) {
+                Some(ctor) => Res::Ctor(*ctor),
+                None => self.emit_no_member(module_path, member, span),
+            }
+        } else {
+            match self.defs.get(&member_qual) {
+                Some(def) => Res::Def(*def),
+                None => self.emit_no_member(module_path, member, span),
+            }
         };
-        let target_source = target_file.source(self.db);
-        let defs = module_defs(self.db, target_file);
-        match defs.get(field) {
+        (res, consumed)
+    }
+
+    /// Resolves the member of a cross-file (possibly nested) module path. Only
+    /// `public` members are visible across files.
+    fn walk_cross_file(
+        &self,
+        target: SourceFile,
+        segments: &[Symbol],
+        span: TextRange,
+    ) -> (Res, usize) {
+        let target_source = target.source(self.db);
+        let target_defs = module_defs(self.db, target);
+        // Walk nested-module segments within the target file.
+        let mut inner: Vec<Symbol> = Vec::new();
+        let mut consumed = 1;
+        while consumed < segments.len() {
+            let cand = qualify(&inner, segments[consumed]);
+            if target_defs.is_module(cand) {
+                inner.push(segments[consumed]);
+                consumed += 1;
+            } else {
+                break;
+            }
+        }
+        if consumed >= segments.len() {
+            self.emit_module_as_value(join_segments(&segments[..consumed]), span);
+            return (Res::Error, consumed);
+        }
+        let member = segments[consumed];
+        let member_qual = qualify(&inner, member);
+        consumed += 1;
+        match target_defs.get(member_qual) {
             Some(def) if def.visibility == Visibility::Public => {
-                return Res::Def(DefId::new(target_source, field));
+                return (Res::Def(DefId::new(target_source, member_qual)), consumed);
             }
             Some(_) => {
                 emit(
                     self.db,
                     Diagnostic::error(
                         PRIVATE_REFERENCE,
-                        format!("`{field}` is private to module `{module_sym}`"),
-                        self.span(whole_span),
+                        format!("`{member}` is private to module `{}`", segments[0]),
+                        self.span(span),
                     ),
                 );
-                return Res::Error;
+                return (Res::Error, consumed);
             }
             None => {}
         }
-        // Not a value: try a constructor of the target module.
-        if module_interface(self.db, target_file).has_ctor(field) {
-            return Res::Ctor(CtorRef::new(target_source, field));
+        if module_interface(self.db, target).has_ctor(member_qual) {
+            return (Res::Ctor(CtorRef::new(target_source, member_qual)), consumed);
         }
-        if let Some(info) = type_decls(self.db, target_file).ctor(field) {
-            // The constructor exists but its type is private.
-            let _ = info;
+        if type_decls(self.db, target).ctor(member_qual).is_some() {
             emit(
                 self.db,
                 Diagnostic::error(
                     PRIVATE_REFERENCE,
-                    format!("constructor `{field}` is private to module `{module_sym}`"),
-                    self.span(whole_span),
+                    format!("constructor `{member}` is private to module `{}`", segments[0]),
+                    self.span(span),
                 ),
             );
-            return Res::Error;
+            return (Res::Error, consumed);
         }
+        (self.emit_no_member_named(segments[0], member, span), consumed)
+    }
+
+    fn emit_module_as_value(&self, module_path: Symbol, span: TextRange) {
+        emit(
+            self.db,
+            Diagnostic::error(
+                MODULE_AS_VALUE,
+                format!("`{module_path}` is a module, not a value or type"),
+                self.span(span),
+            )
+            .with_help("name a member of the module (e.g. `Module.value`)"),
+        );
+    }
+
+    fn emit_no_member(&self, module_path: Symbol, member: Symbol, span: TextRange) -> Res {
+        self.emit_no_member_named(module_path, member, span)
+    }
+
+    fn emit_no_member_named(&self, module_path: Symbol, member: Symbol, span: TextRange) -> Res {
         emit(
             self.db,
             Diagnostic::error(
                 UNBOUND_NAME,
-                format!("module `{module_sym}` has no member `{field}`"),
-                self.span(whole_span),
+                format!("module `{module_path}` has no member `{member}`"),
+                self.span(span),
             ),
         );
         Res::Error
     }
+}
+
+/// Extends a qualified module path with one more segment (`A.B` + `c` → `A.B.c`).
+fn extend(base: Symbol, seg: Symbol) -> Symbol {
+    Symbol::intern(&format!("{}.{}", base.as_str(), seg.as_str()))
+}
+
+/// Joins path segments into one dotted symbol (for diagnostic messages).
+fn join_segments(segments: &[Symbol]) -> Symbol {
+    let mut s = String::new();
+    for (i, seg) in segments.iter().enumerate() {
+        if i > 0 {
+            s.push('.');
+        }
+        s.push_str(seg.as_str());
+    }
+    Symbol::intern(&s)
 }
