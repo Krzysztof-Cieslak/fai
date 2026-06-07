@@ -18,7 +18,7 @@ mod jit;
 
 pub use aot::{main_object, object_for_def};
 pub use emit::{closure_symbol, code_symbol};
-pub use jit::jit_run;
+pub use jit::{JitProgram, jit_run};
 
 #[cfg(test)]
 mod proptests;

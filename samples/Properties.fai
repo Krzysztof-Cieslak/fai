@@ -1,0 +1,29 @@
+module Properties
+
+// Contracts state intent the toolchain checks. An `example` pins one concrete
+// case; a `forall` states a law that `fai test` verifies over generated inputs,
+// shrinking any counterexample to a minimal one. Both are ordinary declarations
+// placed under the binding they describe.
+/// Double an integer.
+public double : Int -> Int
+let double n = n + n
+example: double 21 = 42
+forall n: double n = n * 2
+
+/// Reverse a list, twice the identity.
+public mirror : List 'a -> List 'a
+let mirror xs = List.reverse xs
+example: mirror [1, 2, 3] = [3, 2, 1]
+forall xs: mirror (mirror xs) = xs
+
+/// Clamp a number up to zero.
+public atLeastZero : Int -> Int
+let atLeastZero n = if n < 0 then 0 else n
+example: atLeastZero (0 - 5) = 0
+forall n: atLeastZero n >= 0
+
+/// Absolute difference is symmetric.
+public absDiff : Int -> Int -> Int
+let absDiff a b = if a < b then b - a else a - b
+example: absDiff 3 10 = 7
+forall a b: absDiff a b = absDiff b a

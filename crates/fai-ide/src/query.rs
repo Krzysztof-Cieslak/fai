@@ -9,7 +9,8 @@ use fai_db::{Db, SourceFile};
 use fai_resolve::{DefId, module_defs, resolve};
 use fai_span::{Span, SpanResolver};
 use fai_syntax::Symbol;
-use fai_syntax::ast::Visibility as AstVis;
+use fai_syntax::ast::{ItemKind, PatKind, Visibility as AstVis};
+use rustc_hash::FxHashMap;
 use serde::Serialize;
 
 use crate::repr::{
@@ -338,17 +339,62 @@ pub fn api(
     let mut exports = Vec::new();
     if let Some(file) = file {
         let defs = module_defs(db, file);
+        let mut by_subject = contracts_by_subject(db, file, resolver);
         for d in &defs.defs {
             if d.visibility != AstVis::Public {
                 continue;
             }
             if let Some(symbol) = symbol_ref(db, file, d.name, resolver) {
-                exports.push(ApiExport { symbol, doc: None, contracts: vec![] });
+                let contracts = by_subject.remove(&d.name).unwrap_or_default();
+                exports.push(ApiExport { symbol, doc: None, contracts });
             }
         }
         exports.sort_by(|a, b| a.symbol.name.cmp(&b.symbol.name));
     }
     ApiResult { schema_version: SCHEMA_VERSION, module: module.to_owned(), exports }
+}
+
+/// Collects a file's contracts, grouped by the top-level binding they describe
+/// (the nearest preceding one). Powers the contract lists in `api`/`docs`.
+fn contracts_by_subject(
+    db: &dyn Db,
+    file: SourceFile,
+    resolver: &dyn SpanResolver,
+) -> FxHashMap<Symbol, Vec<Contract>> {
+    let parsed = fai_syntax::parse(db, file);
+    let module = &parsed.module;
+    let text = file.text(db);
+    let mut by_subject: FxHashMap<Symbol, Vec<Contract>> = FxHashMap::default();
+    let mut subject: Option<Symbol> = None;
+    for item in &module.items {
+        let (kind, binders) = match &item.kind {
+            ItemKind::Binding { name, .. } => {
+                subject = Some(*name);
+                continue;
+            }
+            ItemKind::Example { .. } => ("example".to_owned(), Vec::new()),
+            ItemKind::Forall { binders, .. } => (
+                "forall".to_owned(),
+                binders
+                    .iter()
+                    .filter_map(|&p| match module.pat(p).kind {
+                        PatKind::Var(name) => Some(name.as_str().to_owned()),
+                        _ => None,
+                    })
+                    .collect(),
+            ),
+            _ => continue,
+        };
+        let Some(subject) = subject else { continue };
+        let start = item.span.start().raw() as usize;
+        let end = item.span.end().raw() as usize;
+        let source = text.get(start..end).unwrap_or("").to_owned();
+        let Some(span) = SpanJson::resolve(Span::new(file.source(db), item.span), resolver) else {
+            continue;
+        };
+        by_subject.entry(subject).or_default().push(Contract { kind, binders, source, span });
+    }
+    by_subject
 }
 
 /// `fai query docs`.
@@ -374,10 +420,11 @@ pub fn docs(db: &dyn Db, target: &str, resolver: &dyn SpanResolver) -> DocsResul
             contracts: vec![],
         };
     };
+    let contracts = contracts_by_subject(db, t.file, resolver).remove(&t.name).unwrap_or_default();
     DocsResult {
         schema_version: SCHEMA_VERSION,
         target: symbol_ref(db, t.file, t.name, resolver),
         doc: None,
-        contracts: vec![],
+        contracts,
     }
 }

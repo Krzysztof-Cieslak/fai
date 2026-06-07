@@ -1,6 +1,6 @@
 module Cart
 
-type Item = { name : String, price : Float, qty : Int }
+public type Item = { name : String, price : Float, qty : Int }
 
 /// Line-item total (price × quantity).
 public subtotal : Item -> Float

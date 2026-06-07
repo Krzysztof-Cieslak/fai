@@ -105,7 +105,7 @@ fn dispatch(parsed: Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
             route(&parsed.global, &root, spec, format, color, log, out, err)
         }
         Command::Run(args) => run_program(&parsed.global, &root, args, log, out, err),
-        Command::Test(_) => run_in_process_result(&root, fai_driver::test, format, color, out, err),
+        Command::Test(args) => run_test(&root, args, format, color, out, err),
         Command::Lsp => run_in_process_result(&root, fai_driver::lsp, format, color, out, err),
         Command::Daemon { sub } => run_daemon_command(&root, sub, log, out, err),
         Command::RunWorker(_) | Command::DaemonServe => unreachable!("handled above"),
@@ -162,6 +162,46 @@ fn run_in_process(
 ) -> Result<Rendered, DriverError> {
     let session = Session::open(root.to_owned())?;
     Ok(fai_driver::run_command(&session, spec, opts))
+}
+
+/// Runs `fai test` in-process: selects the contracts under the optional path and
+/// runs them with the configured generator settings.
+fn run_test(
+    root: &Utf8Path,
+    args: &cli::TestArgs,
+    format: MessageFormat,
+    color: bool,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> i32 {
+    let session = match Session::open(root.to_owned()) {
+        Ok(session) => session,
+        Err(error) => return emit_error(&error, format, color, out, err),
+    };
+    let files = session.select_files(args.path.as_deref());
+    let defaults = fai_driver::TestConfig::default();
+    let config = fai_driver::TestConfig {
+        seed: args.seed.unwrap_or(defaults.seed),
+        trials: args.count.unwrap_or(defaults.trials),
+        max_size: args.max_size.unwrap_or(defaults.max_size),
+    };
+    let outcome = fai_driver::test(session.db(), &files, args.r#match.as_deref(), config);
+    let resolver = session.resolver();
+    match format {
+        MessageFormat::Json => match serde_json::to_string_pretty(&outcome.to_output(&resolver)) {
+            Ok(json) => {
+                let _ = writeln!(out, "{json}");
+            }
+            Err(error) => {
+                let _ = writeln!(err, "internal error: failed to serialize output: {error}");
+                return EXIT_INTERNAL;
+            }
+        },
+        MessageFormat::Human => {
+            let _ = write!(out, "{}", outcome.render_human(&resolver, color));
+        }
+    }
+    if outcome.ok { EXIT_OK } else { EXIT_FAILURES }
 }
 
 /// Runs an in-process command that returns a [`CommandResult`] (`test`/`lsp`).

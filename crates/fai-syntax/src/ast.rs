@@ -88,6 +88,17 @@ impl Module {
     pub fn ty(&self, id: TypeId) -> &Type {
         &self.types[id.index()]
     }
+
+    /// The contract items (`example`/`forall`) in source order.
+    pub fn contracts(&self) -> impl Iterator<Item = &Item> {
+        self.items.iter().filter(|it| it.kind.is_contract())
+    }
+
+    /// The `ordinal`-th contract item (`example`/`forall`) in source order.
+    #[must_use]
+    pub fn contract(&self, ordinal: usize) -> Option<&Item> {
+        self.contracts().nth(ordinal)
+    }
 }
 
 /// Visibility of a top-level binding.
@@ -121,10 +132,20 @@ pub enum ItemKind {
     Interface { visibility: Visibility, name: Symbol, params: Vec<Symbol>, methods: Vec<MethodSig> },
     /// An `example: body` contract.
     Example { body: ExprId },
-    /// A `forall binders…: body` contract.
-    Forall { binders: Vec<Symbol>, body: ExprId },
+    /// A `forall binders…: body` contract. Each binder is a `PatKind::Var`
+    /// pattern, so it flows through resolution/inference/lowering exactly like a
+    /// function parameter (its local and type are recoverable downstream).
+    Forall { binders: Vec<PatId>, body: ExprId },
     /// An unparseable item (recovered).
     Error,
+}
+
+impl ItemKind {
+    /// Whether this item is a contract declaration (`example`/`forall`).
+    #[must_use]
+    pub fn is_contract(&self) -> bool {
+        matches!(self, ItemKind::Example { .. } | ItemKind::Forall { .. })
+    }
 }
 
 /// One method signature in an [`ItemKind::Interface`]: `name : ty` (no `self`).

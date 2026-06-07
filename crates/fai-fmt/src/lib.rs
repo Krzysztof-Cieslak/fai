@@ -105,7 +105,14 @@ impl Printer<'_> {
             }
             ItemKind::Example { body } => concat(vec![text("example: "), self.expr_doc(*body)]),
             ItemKind::Forall { binders, body } => {
-                let bound = binders.iter().map(|b| b.as_str()).collect::<Vec<_>>().join(" ");
+                let bound = binders
+                    .iter()
+                    .map(|&b| match &self.module.pat(b).kind {
+                        PatKind::Var(s) => s.as_str().to_owned(),
+                        _ => self.span_src(self.module.pat(b).span).to_owned(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
                 concat(vec![text(format!("forall {bound}: ")), self.expr_doc(*body)])
             }
             ItemKind::Error => text(self.span_src(item.span)),

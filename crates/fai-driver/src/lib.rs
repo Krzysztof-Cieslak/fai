@@ -14,6 +14,7 @@ mod backend;
 mod build_tests;
 mod cache;
 mod command;
+mod contracts;
 mod query;
 mod session;
 
@@ -38,6 +39,7 @@ pub use command::{
     CommandSpec, DirtyFile, EXIT_FAILURES, EXIT_INTERNAL, EXIT_OK, EXIT_WORKSPACE, OutputFormat,
     RenderOpts, Rendered, run_command,
 };
+pub use contracts::{TestConfig, TestOutcome, TestOutput, run_tests};
 pub use fai_core::WireBundle;
 pub use query::{QueryRequest, QueryResult, run_query};
 pub use session::Session;
@@ -250,10 +252,16 @@ pub fn check(db: &dyn Db, files: &[SourceFile]) -> CommandResult {
     CommandResult { diagnostics, ok }
 }
 
-/// `fai test` — run example/forall contracts.
+/// `fai test` — run example/forall contracts over `files`, filtered by
+/// `match_pat` (against the subject symbol / module), with generator `config`.
 #[must_use]
-pub fn test(db: &dyn Db) -> CommandResult {
-    not_implemented(db, "test")
+pub fn test(
+    db: &dyn Db,
+    files: &[SourceFile],
+    match_pat: Option<&str>,
+    config: TestConfig,
+) -> TestOutcome {
+    run_tests(db, files, match_pat, config)
 }
 
 /// One file's formatting outcome.
@@ -368,27 +376,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn not_implemented_reports_fai0001() {
+    fn lsp_is_not_implemented_reports_fai0001() {
         let db = FaiDatabase::new();
-        let result = test(&db); // `test` is still a stub
+        let result = lsp(&db); // `lsp` is still a stub
         assert!(!result.ok);
         assert_eq!(result.diagnostics.len(), 1);
         assert_eq!(result.diagnostics[0].code, NOT_IMPLEMENTED);
-        assert!(result.diagnostics[0].message.contains("test"));
+        assert!(result.diagnostics[0].message.contains("lsp"));
     }
 
     #[test]
-    fn output_envelope_shape() {
+    fn test_with_no_files_is_ok() {
         let db = FaiDatabase::new();
-        let result = test(&db);
+        let outcome = test(&db, &[], None, TestConfig::default());
+        assert!(outcome.ok);
+        assert_eq!(outcome.total, 0);
+        assert_eq!(outcome.passed, 0);
         let resolver = fai_db::DbSpanResolver::new(&db);
-        let output = result.to_output(&resolver);
+        let output = outcome.to_output(&resolver);
         assert_eq!(output.schema_version, 1);
-        assert!(!output.ok);
-        assert_eq!(output.diagnostics.len(), 1);
-        // Tooling diagnostics have no real source location.
-        assert_eq!(output.diagnostics[0].primary.file, "<unknown>");
-        assert_eq!(output.diagnostics[0].code, "FAI0001");
+        assert!(output.ok);
     }
 
     #[test]

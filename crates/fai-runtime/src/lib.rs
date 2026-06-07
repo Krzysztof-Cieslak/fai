@@ -599,6 +599,24 @@ pub extern "C" fn fai_int_rem(a: Value, b: Value) -> Value {
     fai_box_int(r)
 }
 
+// Bitwise integer primitives (operands consumed). Shifts mask the amount to
+// `0..63` so they are always well-defined; `fai_int_shr` is arithmetic
+// (sign-extending) and `fai_int_shr_logical` is logical (zero-filling).
+int_binop!(fai_int_and, |a, b| a & b);
+int_binop!(fai_int_or, |a, b| a | b);
+int_binop!(fai_int_xor, |a, b| a ^ b);
+int_binop!(fai_int_shl, |a, b| ((a as u64) << ((b & 63) as u32)) as i64);
+int_binop!(fai_int_shr, |a, b| a >> ((b & 63) as u32));
+int_binop!(fai_int_shr_logical, |a, b| ((a as u64) >> ((b & 63) as u32)) as i64);
+
+/// Bitwise complement (operand consumed): `complement 0 = -1`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_int_complement(a: Value) -> Value {
+    let r = !unbox_int(a);
+    fai_drop(a);
+    fai_box_int(r)
+}
+
 /// Encodes a Rust `bool` as a Fai `Bool` immediate.
 #[inline]
 fn from_bool(b: bool) -> Value {
@@ -693,6 +711,24 @@ pub extern "C" fn fai_sqrt(v: Value) -> Value {
     let r = unbox_float(v).sqrt();
     fai_drop(v);
     fai_box_float(r.to_bits() as i64)
+}
+
+/// Reinterprets an `Int`'s 64-bit pattern as a `Float` (operand consumed). The
+/// inverse of [`fai_float_to_bits`]; lets any bit pattern (incl. NaN/inf) be
+/// produced, which value generators rely on.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_float_from_bits(bits: Value) -> Value {
+    let r = unbox_int(bits);
+    fai_drop(bits);
+    fai_box_float(r)
+}
+
+/// Reinterprets a `Float`'s IEEE-754 bits as an `Int` (operand consumed).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_float_to_bits(v: Value) -> Value {
+    let r = unbox_float(v).to_bits() as i64;
+    fai_drop(v);
+    fai_box_int(r)
 }
 
 /// Converts an `Int` to a `Float` (operand consumed).
@@ -1354,6 +1390,41 @@ pub fn run_entry(entry: Value, runtime: Value) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_run_main(entry: Value, runtime: Value) -> i32 {
     run_entry(entry, runtime)
+}
+
+// ---------------------------------------------------------------------------
+// Host helpers for the in-process contract runner: build `Int` arguments and
+// decode result values without exposing the internal tagging.
+// ---------------------------------------------------------------------------
+
+/// Builds a Fai `Int` value from a host `i64` (immediate when it fits, else boxed).
+#[must_use]
+pub fn make_int(n: i64) -> Value {
+    fai_box_int(n)
+}
+
+/// Applies a closure value to owned arguments (a safe wrapper over
+/// [`fai_apply_n`]); the call consumes `closure` and each argument.
+#[must_use]
+pub fn apply(closure: Value, args: &[Value]) -> Value {
+    let argc = args.len() as u64;
+    // SAFETY: `closure` is a closure value and `args` holds `argc` owned values;
+    // `fai_apply_n` reads exactly `argc` of them.
+    unsafe { fai_apply_n(closure, argc, args.as_ptr()) }
+}
+
+/// The constructor tag of a data value (borrowing it): a nullary constructor's
+/// payload, or a boxed data value's stored tag.
+#[must_use]
+pub fn data_tag_of(v: Value) -> i64 {
+    fai_data_tag(v) >> 1
+}
+
+/// Copies a Fai `String`'s bytes into an owned `Vec` (borrowing the value).
+#[must_use]
+pub fn read_string(v: Value) -> Vec<u8> {
+    // SAFETY: `v` is a boxed `String` (valid by the caller's typing).
+    unsafe { string_bytes(v).to_vec() }
 }
 
 #[cfg(test)]

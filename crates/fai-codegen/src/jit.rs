@@ -29,6 +29,13 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_int_mul", rt::fai_int_mul);
     sym!("fai_int_div", rt::fai_int_div);
     sym!("fai_int_rem", rt::fai_int_rem);
+    sym!("fai_int_and", rt::fai_int_and);
+    sym!("fai_int_or", rt::fai_int_or);
+    sym!("fai_int_xor", rt::fai_int_xor);
+    sym!("fai_int_shl", rt::fai_int_shl);
+    sym!("fai_int_shr", rt::fai_int_shr);
+    sym!("fai_int_shr_logical", rt::fai_int_shr_logical);
+    sym!("fai_int_complement", rt::fai_int_complement);
     sym!("fai_int_lt", rt::fai_int_lt);
     sym!("fai_int_le", rt::fai_int_le);
     sym!("fai_int_gt", rt::fai_int_gt);
@@ -43,6 +50,8 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_float_gt", rt::fai_float_gt);
     sym!("fai_float_ge", rt::fai_float_ge);
     sym!("fai_sqrt", rt::fai_sqrt);
+    sym!("fai_float_from_bits", rt::fai_float_from_bits);
+    sym!("fai_float_to_bits", rt::fai_float_to_bits);
     sym!("fai_int_to_float", rt::fai_int_to_float);
     sym!("fai_float_to_int", rt::fai_float_to_int);
     sym!("fai_float_to_string", rt::fai_float_to_string);
@@ -91,6 +100,43 @@ fn jit_module() -> JITModule {
     let mut builder = JITBuilder::with_isa(isa, default_libcall_names());
     register_runtime(&mut builder);
     JITModule::new(builder)
+}
+
+/// A compiled, finalized JIT image kept alive so its code can be called by
+/// address. Used to run contracts: build once from the reachable definitions,
+/// then fetch each contract's static-closure pointer and apply it via the
+/// runtime's `fai_apply_n`.
+pub struct JitProgram {
+    module: JITModule,
+}
+
+impl JitProgram {
+    /// Compiles and finalizes `defs` into one JIT image.
+    #[must_use]
+    pub fn compile(
+        defs: &[LoweredDef],
+        namer: &dyn Fn(DefId) -> String,
+        arity_of: &dyn Fn(DefId) -> usize,
+    ) -> JitProgram {
+        let mut module = jit_module();
+        for def in defs {
+            compile_def(&mut module, def, namer, arity_of);
+        }
+        module.finalize_definitions().expect("finalize");
+        JitProgram { module }
+    }
+
+    /// The address (as an `i64` Fai value) of `def`'s static closure — the value
+    /// form through which a definition is applied via `fai_apply_n`.
+    #[must_use]
+    pub fn closure_value(&mut self, namer: &dyn Fn(DefId) -> String, def: DefId) -> i64 {
+        let id = self
+            .module
+            .declare_data(&closure_symbol(namer, def), Linkage::Export, true, false)
+            .expect("closure data");
+        let (ptr, _size) = self.module.get_finalized_data(id);
+        ptr as i64
+    }
 }
 
 /// Compiles `defs` and runs the entry definition's `main` against the standard

@@ -292,8 +292,8 @@ pub fn resolve(db: &dyn Db, file: SourceFile) -> Arc<ResolvedBodies> {
             }
             ItemKind::Forall { binders, body } => {
                 cx.scope.push();
-                for &b in binders {
-                    cx.scope.bind(b);
+                for &p in binders {
+                    cx.bind_pattern(p);
                 }
                 cx.resolve_expr(*body);
                 cx.scope.pop();

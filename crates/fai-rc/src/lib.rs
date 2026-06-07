@@ -59,13 +59,22 @@ type Locals = FxHashSet<LocalId>;
 #[salsa::tracked]
 pub fn rc(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
     let lowered = core(db, file, name);
-    let mut next = next_free_local(&lowered);
-
     // The borrow signature of `name` itself (the entry function's parameters): a
     // borrowed parameter is treated like a capture — never dropped, duplicated on
     // a consuming use. Lifted lambdas are reached only via `apply_n`, so their
     // parameters stay owned.
     let self_sig = borrow_signature(db, file, name);
+    Arc::new(rc_lowered(db, &lowered, &self_sig))
+}
+
+/// Inserts reference-count operations into an already-lowered definition, given
+/// its entry's borrow signature. Used by [`rc`] and by callers that synthesize a
+/// [`LoweredDef`] outside the per-definition pipeline (e.g. contract harnesses,
+/// which pass an all-owned signature).
+#[must_use]
+pub fn rc_lowered(db: &dyn Db, lowered: &LoweredDef, self_sig: &BorrowSig) -> LoweredDef {
+    let mut next = next_free_local(lowered);
+
     // Per-call argument borrowing: a saturated direct call to a known top-level
     // function borrows the parameters that function's signature marks borrowed.
     let arg_borrows = |def: DefId, nargs: usize| -> Vec<bool> {
@@ -101,7 +110,7 @@ pub fn rc(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
         }
         fns.push(CoreFn { params: f.params.clone(), captures: f.captures.clone(), body });
     }
-    Arc::new(LoweredDef { def: lowered.def, fns, entry_borrowed: self_sig.0.clone() })
+    LoweredDef { def: lowered.def, fns, entry_borrowed: self_sig.0.clone() }
 }
 
 // ---------------------------------------------------------------------------

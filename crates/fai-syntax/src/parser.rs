@@ -386,7 +386,9 @@ impl Parser<'_> {
         self.bump(); // `forall`
         let mut binders = Vec::new();
         while self.at(TokenKind::LowerIdent) {
-            binders.push(self.bump_symbol());
+            let range = self.cur().range;
+            let sym = self.bump_symbol();
+            binders.push(self.alloc_pat(PatKind::Var(sym), range));
         }
         if binders.is_empty() {
             let span = self.cur().range;
@@ -1434,8 +1436,7 @@ mod tests {
                 }
                 ItemKind::Example { body } => format!("(example {})", dump_expr(m, *body)),
                 ItemKind::Forall { binders, body } => {
-                    let bs = binders.iter().map(|b| b.as_str()).collect::<Vec<_>>().join(" ");
-                    format!("(forall [{}] {})", bs, dump_expr(m, *body))
+                    format!("(forall [{}] {})", dump_pats(m, binders), dump_expr(m, *body))
                 }
                 ItemKind::Error => "(item-error)".to_owned(),
             };
@@ -1612,7 +1613,7 @@ mod tests {
         );
         assert_eq!(
             dump("module M\nforall xs ys: f xs = g ys").lines().nth(1).unwrap(),
-            "(forall [xs ys] (infix = (app (var f) (var xs)) (app (var g) (var ys))))"
+            "(forall [(pvar xs) (pvar ys)] (infix = (app (var f) (var xs)) (app (var g) (var ys))))"
         );
     }
 

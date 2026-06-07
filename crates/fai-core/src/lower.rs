@@ -74,6 +74,51 @@ pub fn core(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
     Arc::new(LoweredDef { def, fns: lowerer.fns, entry_borrowed: Vec::new() })
 }
 
+/// The lowered pieces of a `(params, body)` form, for callers that assemble their
+/// own enclosing function(s) — e.g. the contract harness synthesizer. The body's
+/// nested lambdas are `lifted` (a `MakeClosure { func: FnId(i) }` in `body` refers
+/// to `lifted[i - 1]`, so placing `lifted` at `fns[1..]` keeps the indices valid).
+pub struct LoweredBody {
+    /// The lowered body expression.
+    pub body: CExpr,
+    /// The body's lifted lambdas, in `FnId` order starting at 1.
+    pub lifted: Vec<CoreFn>,
+    /// The local slot bound by each parameter, in order.
+    pub param_locals: Vec<LocalId>,
+    /// The first local index free after lowering (for synthesizing more locals).
+    pub next_local: usize,
+}
+
+/// Lowers a `(params, body)` form (parameters as monomorphic locals, no
+/// offset-evidence) to its body expression plus lifted lambdas. Used to lower a
+/// contract body, which the contract synthesizer wraps in a harness; `types` is
+/// the contract's [`fai_types::contract_body_types`].
+#[must_use]
+pub fn lower_params_body(
+    db: &dyn Db,
+    file: SourceFile,
+    params: &[PatId],
+    body: ExprId,
+    types: &BodyTypes,
+) -> LoweredBody {
+    let parsed = fai_syntax::parse(db, file);
+    let resolved = resolve(db, file);
+    let mut lowerer = Lowerer {
+        db,
+        file,
+        module: &parsed.module,
+        resolved: &resolved,
+        types,
+        next_local: first_free_local(&resolved),
+        fns: vec![placeholder_fn()],
+        evidence: FxHashMap::default(),
+    };
+    let param_locals: Vec<LocalId> = params.iter().map(|&p| lowerer.param_local(p)).collect();
+    let body = lowerer.lower_expr(body);
+    let lifted = lowerer.fns.split_off(1);
+    LoweredBody { body, lifted, param_locals, next_local: lowerer.next_local }
+}
+
 /// The body item (params + body expr) of a definition.
 fn binding_body(module: &Module, name: Symbol) -> Option<(Vec<PatId>, ExprId)> {
     module.items.iter().find_map(|it| match &it.kind {

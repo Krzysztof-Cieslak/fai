@@ -107,6 +107,26 @@ fn immediate_int_arithmetic() {
 }
 
 #[test]
+fn bitwise_int_ops() {
+    let _g = lock();
+    let base = live_count();
+    assert!(int_eq(fai_int_and(imm_int(0b1100), imm_int(0b1010)), 0b1000));
+    assert!(int_eq(fai_int_or(imm_int(0b1100), imm_int(0b1010)), 0b1110));
+    assert!(int_eq(fai_int_xor(imm_int(0b1100), imm_int(0b1010)), 0b0110));
+    assert!(int_eq(fai_int_complement(imm_int(0)), -1));
+    assert!(int_eq(fai_int_shl(imm_int(1), imm_int(4)), 16));
+    assert!(int_eq(fai_int_shr(imm_int(-16), imm_int(2)), -4)); // arithmetic: sign-extends
+    assert!(int_eq(fai_int_shr_logical(imm_int(16), imm_int(2)), 4));
+    // A logical right shift of a negative value fills with zeros (no sign bit),
+    // unlike the arithmetic shift, which sign-extends.
+    assert!(int_eq(fai_int_shr_logical(imm_int(-1), imm_int(60)), 15));
+    assert!(int_eq(fai_int_shr(imm_int(-1), imm_int(60)), -1));
+    // Shift amounts are taken modulo 64, so 64 is a no-op shift, not UB.
+    assert!(int_eq(fai_int_shl(imm_int(1), imm_int(64)), 1));
+    assert_eq!(live_count(), base);
+}
+
+#[test]
 fn overflow_is_boxed_and_preserves_value() {
     let _g = lock();
     let base = live_count();

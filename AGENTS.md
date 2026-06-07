@@ -39,11 +39,21 @@
 > last use, borrowing projections), a dead data cell is **reset and reused** in
 > place for a same-size construction (so `map`/`filter` over a unique list
 > allocate zero fresh cells, falling back to copying when shared), `{ r with … }`
-> updates a unique record in place, and **argument borrowing** lends
+ > updates a unique record in place, and **argument borrowing** lends
 > inspect-only parameters at direct calls (with an owned-ABI wrapper for the
-> first-class value form). Later milestones (contracts, the LSP, …) define the
-> *intended* interface we build toward. The design is locked (see the decision
-> table below).
+> first-class value form). Contracts (M7) are built: **`fai test` runs the
+> first-class `example`/`forall` declarations**. The property-testing framework is
+> **dogfooded in the standard library** (`std/Test.fai`: a pure splitmix64 `Gen`,
+> an `Arbitrary 'a` bundle of generator/shrinker/renderer, type-directed
+> combinators, and the `checkExample`/`checkForall` driver with shrinking); the
+> compiler synthesizes, per contract, a harness that composes those combinators
+> for the binders' (monomorphized) types and JIT-runs it, decoding a `TestResult`
+> and reporting a failure as a located **`FAI6001`** with a shrunk counterexample
+> (an ungeneratable binder is **`FAI6002`**). (Splitmix needs **bitwise `Int`
+> intrinsics** — `Int.and/or/xor/complement/shiftLeft/shiftRight/shiftRightLogical`
+> — and full-domain float generation needs `Float.fromBits`/`toBits`, both added
+> as part of this work.) Later milestones (the LSP, …) define the *intended*
+> interface we build toward. The design is locked (see the decision table below).
 
 This document is the orientation guide for anyone — human or AI agent — working
 on the Fai compiler. Read it first. For the staged build plan see `docs/PLAN.md`; for
