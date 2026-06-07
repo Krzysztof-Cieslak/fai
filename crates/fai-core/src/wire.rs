@@ -131,6 +131,8 @@ pub enum WireExpr {
         tag: u32,
         /// The field values.
         args: Vec<WireExpr>,
+        /// An optional reuse-token slot to build into in place.
+        reuse: Option<u32>,
     },
     /// Read a data value's tag.
     DataTag(Box<WireExpr>),
@@ -140,6 +142,15 @@ pub enum WireExpr {
         base: Box<WireExpr>,
         /// The field slot.
         index: WireFieldIndex,
+    },
+    /// Release a data value for reuse, binding a token.
+    Reset {
+        /// The data value to release.
+        value: Box<WireExpr>,
+        /// The reuse-token slot.
+        token: u32,
+        /// The continuation.
+        body: Box<WireExpr>,
     },
     /// Increment a slot's refcount.
     Dup {
@@ -236,14 +247,20 @@ fn expr_to_wire(e: &CExpr, module_of: &dyn Fn(DefId) -> String) -> WireExpr {
             func: func.0,
             captures: captures.iter().map(|c| slot(*c)).collect(),
         },
-        ExprKind::MakeData { tag, args } => WireExpr::MakeData {
+        ExprKind::MakeData { tag, args, reuse } => WireExpr::MakeData {
             tag: *tag,
             args: args.iter().map(|a| expr_to_wire(a, module_of)).collect(),
+            reuse: reuse.map(slot),
         },
         ExprKind::DataTag(base) => WireExpr::DataTag(Box::new(expr_to_wire(base, module_of))),
         ExprKind::DataField { base, index } => WireExpr::DataField {
             base: Box::new(expr_to_wire(base, module_of)),
             index: field_index_to_wire(*index),
+        },
+        ExprKind::Reset { value, token, body } => WireExpr::Reset {
+            value: Box::new(expr_to_wire(value, module_of)),
+            token: slot(*token),
+            body: Box::new(expr_to_wire(body, module_of)),
         },
         ExprKind::Dup { local, body } => {
             WireExpr::Dup { local: slot(*local), body: Box::new(expr_to_wire(body, module_of)) }
@@ -352,14 +369,20 @@ fn expr_from_wire(e: &WireExpr, sources: &mut SourceAssigner) -> CExpr {
             func: FnId(*func),
             captures: captures.iter().map(|&i| LocalId::from_index(i as usize)).collect(),
         },
-        WireExpr::MakeData { tag, args } => ExprKind::MakeData {
+        WireExpr::MakeData { tag, args, reuse } => ExprKind::MakeData {
             tag: *tag,
             args: args.iter().map(|a| expr_from_wire(a, sources)).collect(),
+            reuse: reuse.map(|i| LocalId::from_index(i as usize)),
         },
         WireExpr::DataTag(base) => ExprKind::DataTag(Box::new(expr_from_wire(base, sources))),
         WireExpr::DataField { base, index } => ExprKind::DataField {
             base: Box::new(expr_from_wire(base, sources)),
             index: field_index_from_wire(index),
+        },
+        WireExpr::Reset { value, token, body } => ExprKind::Reset {
+            value: Box::new(expr_from_wire(value, sources)),
+            token: LocalId::from_index(*token as usize),
+            body: Box::new(expr_from_wire(body, sources)),
         },
         WireExpr::Dup { local, body } => ExprKind::Dup {
             local: LocalId::from_index(*local as usize),
@@ -422,6 +445,54 @@ mod tests {
             wire_and_back("module M\n\nlet adder x = fun y -> x + y\n", "adder");
         assert_eq!(rebuilt, original);
         assert!(original.contains("closure"), "expected a closure in {original}");
+    }
+
+    #[test]
+    fn round_trip_reset_and_reuse() {
+        // Reset + a reuse-tokened construction are inserted by reference counting,
+        // so they are built by hand here and round-tripped through the wire form.
+        let mut db = FaiDatabase::new();
+        let id = db.add_source("M.fai".into(), "module M\n\nlet f x = x\n".to_owned());
+        let file = db.source_file(id).unwrap();
+        let def = DefId::new(file.source(&db), Symbol::intern("f"));
+
+        let cell = LocalId::from_index(0);
+        let token = LocalId::from_index(1);
+        let made = CExpr::new(
+            ExprKind::MakeData {
+                tag: 1,
+                args: vec![CExpr::new(ExprKind::Lit(Lit::Int(7)), Ty::Error)],
+                reuse: Some(token),
+            },
+            Ty::Error,
+        );
+        let body = CExpr::new(
+            ExprKind::Reset {
+                value: Box::new(CExpr::new(ExprKind::Local(cell), Ty::Error)),
+                token,
+                body: Box::new(made),
+            },
+            Ty::Error,
+        );
+        let lowered = LoweredDef {
+            def,
+            fns: vec![CoreFn { params: vec![cell], captures: Vec::new(), body }],
+        };
+
+        let wire = def_to_wire(&lowered, &|_| "M".to_owned(), 1);
+        let json = serde_json::to_string(&wire).unwrap();
+        let decoded: WireDef = serde_json::from_str(&json).unwrap();
+        let bundle = WireBundle {
+            entry: decoded.id.clone(),
+            runtime: decoded.id.clone(),
+            defs: vec![decoded],
+        };
+        let rebuilt = from_wire(&bundle);
+
+        let text = pretty_def(&rebuilt.defs[0]);
+        assert_eq!(text, pretty_def(&lowered));
+        assert!(text.contains("reset %1 = %0"), "expected the reset in {text}");
+        assert!(text.contains("data@%1"), "expected the reuse in {text}");
     }
 
     #[test]

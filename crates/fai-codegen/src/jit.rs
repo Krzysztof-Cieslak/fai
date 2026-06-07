@@ -49,6 +49,8 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_compare", rt::fai_compare);
     sym!("fai_equal", rt::fai_equal);
     sym!("fai_make_data", rt::fai_make_data);
+    sym!("fai_drop_reuse", rt::fai_drop_reuse);
+    sym!("fai_reuse", rt::fai_reuse);
     sym!("fai_data_tag", rt::fai_data_tag);
     sym!("fai_data_field", rt::fai_data_field);
     sym!("fai_string_concat", rt::fai_string_concat);

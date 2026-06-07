@@ -89,6 +89,10 @@ fn collect_globals(expr: &CExpr, out: &mut Vec<DefId>) {
             collect_globals(value, out);
             collect_globals(body, out);
         }
+        ExprKind::Reset { value, body, .. } => {
+            collect_globals(value, out);
+            collect_globals(body, out);
+        }
         ExprKind::Dup { body, .. } | ExprKind::Drop { body, .. } => collect_globals(body, out),
     }
 }
@@ -407,6 +411,10 @@ pub enum ExprKind {
         tag: u32,
         /// The field values, consumed into the new object.
         args: Vec<CExpr>,
+        /// An optional reuse token (from a [`ExprKind::Reset`]) to build into in
+        /// place when it is non-null and the right size, instead of allocating
+        /// (inserted by `fai-rc`). The token is consumed here.
+        reuse: Option<LocalId>,
     },
     /// Reads the tag of a data value (consuming `base`), as an immediate `Int`.
     DataTag(Box<CExpr>),
@@ -417,6 +425,18 @@ pub enum ExprKind {
         base: Box<CExpr>,
         /// The field slot (constant, or row-polymorphic `base + evidence`).
         index: FieldIndex,
+    },
+    /// Release `value` for reuse: drop its reference-counted children and, if it
+    /// was unique, bind `token` to its raw memory (else to a null token); then
+    /// evaluate `body`. The token is consumed by exactly one [`ExprKind::MakeData`]
+    /// on each path (inserted by `fai-rc`).
+    Reset {
+        /// The data value to release (consumed); a local after A-normal form.
+        value: Box<CExpr>,
+        /// The reuse token bound for `body`.
+        token: LocalId,
+        /// The continuation.
+        body: Box<CExpr>,
     },
     /// Increment a variable's reference count, then evaluate `body` (inserted by
     /// `fai-rc`).

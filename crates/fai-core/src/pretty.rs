@@ -120,8 +120,15 @@ fn write_expr(out: &mut String, e: &CExpr) {
             let caps: Vec<String> = captures.iter().map(|c| format!("%{}", c.index())).collect();
             let _ = write!(out, "(closure fn{} [{}])", func.index(), caps.join(", "));
         }
-        ExprKind::MakeData { tag, args } => {
-            let _ = write!(out, "(data {tag}");
+        ExprKind::MakeData { tag, args, reuse } => {
+            match reuse {
+                Some(t) => {
+                    let _ = write!(out, "(data@%{} {tag}", t.index());
+                }
+                None => {
+                    let _ = write!(out, "(data {tag}");
+                }
+            }
             write_args(out, args);
             out.push(')');
         }
@@ -140,6 +147,13 @@ fn write_expr(out: &mut String, e: &CExpr) {
                 }
             }
             write_expr(out, base);
+            out.push(')');
+        }
+        ExprKind::Reset { value, token, body } => {
+            let _ = write!(out, "(reset %{} = ", token.index());
+            write_expr(out, value);
+            out.push_str("; ");
+            write_expr(out, body);
             out.push(')');
         }
         ExprKind::Dup { local, body } => {

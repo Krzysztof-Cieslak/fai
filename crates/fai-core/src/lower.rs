@@ -248,7 +248,7 @@ impl Lowerer<'_> {
             ExprKind::Paren(inner) => return self.lower_expr(*inner),
             ExprKind::Tuple(elems) => {
                 let args = elems.iter().map(|&e| self.lower_expr(e)).collect();
-                K::MakeData { tag: 0, args }
+                K::MakeData { tag: 0, args, reuse: None }
             }
             ExprKind::List(elems) => return self.lower_list(elems, ty),
             ExprKind::Error => K::Error,
@@ -297,11 +297,11 @@ impl Lowerer<'_> {
     fn lower_ctor_value(&mut self, ctor: CtorRef, ty: Ty) -> CExpr {
         let (tag, arity) = self.ctor_tag_arity(ctor).unwrap_or((0, 0));
         if arity == 0 {
-            return CExpr::new(K::MakeData { tag, args: Vec::new() }, ty);
+            return CExpr::new(K::MakeData { tag, args: Vec::new(), reuse: None }, ty);
         }
         let params: Vec<LocalId> = (0..arity).map(|_| self.fresh_local()).collect();
         let args = params.iter().map(|&p| CExpr::new(K::Local(p), Ty::Error)).collect();
-        let body = CExpr::new(K::MakeData { tag, args }, Ty::Error);
+        let body = CExpr::new(K::MakeData { tag, args, reuse: None }, Ty::Error);
         let fn_id = self.push_fn(CoreFn { params, captures: Vec::new(), body });
         CExpr::new(K::MakeClosure { func: fn_id, captures: Vec::new() }, ty)
     }
@@ -476,7 +476,7 @@ impl Lowerer<'_> {
                 }
             })
             .collect();
-        CExpr::new(K::MakeData { tag: 0, args }, ty)
+        CExpr::new(K::MakeData { tag: 0, args, reuse: None }, ty)
     }
 
     /// Lowers a record literal to a tagless composite, fields in canonical
@@ -485,7 +485,7 @@ impl Lowerer<'_> {
         let mut sorted: Vec<&FieldInit> = fields.iter().collect();
         sorted.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
         let args = sorted.iter().map(|f| self.lower_expr(f.value)).collect();
-        CExpr::new(K::MakeData { tag: 0, args }, ty.clone())
+        CExpr::new(K::MakeData { tag: 0, args, reuse: None }, ty.clone())
     }
 
     /// Lowers `{ base with x = v, … }` to a fresh record copying the unchanged
@@ -519,7 +519,7 @@ impl Lowerer<'_> {
                 ));
             }
         }
-        let make = CExpr::new(K::MakeData { tag: 0, args }, ty.clone());
+        let make = CExpr::new(K::MakeData { tag: 0, args, reuse: None }, ty.clone());
         CExpr::new(K::Let { local: s, value: Box::new(base_c), body: Box::new(make) }, ty.clone())
     }
 
@@ -570,10 +570,14 @@ impl Lowerer<'_> {
 
     /// Lowers a list literal `[a, b, …]` to nested `Cons`/`Nil` data.
     fn lower_list(&mut self, elems: &[ExprId], ty: Ty) -> CExpr {
-        let mut list = CExpr::new(K::MakeData { tag: NIL_TAG, args: Vec::new() }, ty.clone());
+        let mut list =
+            CExpr::new(K::MakeData { tag: NIL_TAG, args: Vec::new(), reuse: None }, ty.clone());
         for &e in elems.iter().rev() {
             let head = self.lower_expr(e);
-            list = CExpr::new(K::MakeData { tag: CONS_TAG, args: vec![head, list] }, ty.clone());
+            list = CExpr::new(
+                K::MakeData { tag: CONS_TAG, args: vec![head, list], reuse: None },
+                ty.clone(),
+            );
         }
         list
     }
@@ -658,7 +662,7 @@ impl Lowerer<'_> {
             && arity == args.len()
         {
             let args = args.iter().map(|&a| self.lower_expr(a)).collect();
-            return CExpr::new(K::MakeData { tag, args }, ty);
+            return CExpr::new(K::MakeData { tag, args, reuse: None }, ty);
         }
         let func = Box::new(self.lower_expr(head));
         let args = args.iter().map(|&a| self.lower_expr(a)).collect();
@@ -764,7 +768,7 @@ impl Lowerer<'_> {
             // `x :: xs` builds a `Cons` cell.
             BinOp::Cons => {
                 let args = vec![self.lower_expr(lhs), self.lower_expr(rhs)];
-                CExpr::new(K::MakeData { tag: CONS_TAG, args }, ty)
+                CExpr::new(K::MakeData { tag: CONS_TAG, args, reuse: None }, ty)
             }
             _ => error_expr(),
         }
@@ -1210,6 +1214,11 @@ fn collect_free(expr: &CExpr, bound: &mut FxHashSet<LocalId>, out: &mut FxHashSe
             if !bound.contains(local) {
                 out.insert(*local);
             }
+            collect_free(body, bound, out);
+        }
+        // Reset is inserted after lowering; handled defensively for exhaustiveness.
+        K::Reset { value, body, .. } => {
+            collect_free(value, bound, out);
             collect_free(body, bound, out);
         }
     }

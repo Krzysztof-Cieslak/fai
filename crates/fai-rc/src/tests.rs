@@ -170,8 +170,14 @@ impl Checker<'_> {
         match &e.kind {
             ExprKind::Lit(_) | ExprKind::Global(_) | ExprKind::Error => {}
             ExprKind::Local(x) => self.consume(*x, refs),
-            ExprKind::Prim { args, .. } | ExprKind::MakeData { args, .. } => {
+            ExprKind::Prim { args, .. } => {
                 args.iter().for_each(|a| self.eval(a, refs));
+            }
+            ExprKind::MakeData { args, reuse, .. } => {
+                args.iter().for_each(|a| self.eval(a, refs));
+                if let Some(t) = reuse {
+                    self.consume(*t, refs); // the reuse token is consumed here
+                }
             }
             ExprKind::App { func, args } => {
                 self.eval(func, refs);
@@ -232,6 +238,24 @@ impl Checker<'_> {
                 );
                 self.consume(*local, refs);
                 self.eval(body, refs);
+            }
+            ExprKind::Reset { value, token, body } => {
+                self.eval(value, refs);
+                assert!(
+                    refs.insert(*token, 1).is_none(),
+                    "fn{}: rebound reuse token %{}",
+                    self.fn_index,
+                    token.index()
+                );
+                self.eval(body, refs);
+                let n = refs.remove(token).unwrap_or(0);
+                assert_eq!(
+                    n,
+                    0,
+                    "fn{}: reuse token %{} left with {n} refs",
+                    self.fn_index,
+                    token.index()
+                );
             }
         }
     }

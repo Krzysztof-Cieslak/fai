@@ -379,17 +379,23 @@ feature (row-polymorphic structural records).
 ---
 
 ### M6 — Perceus reuse & in-place update
-**Status:** in progress. The first stage — **precise, ownership-based reference
-counting** — is built: `fai-rc` now normalizes each function to A-normal form and
+**Status:** in progress. Two stages are built. (1) **Precise, ownership-based
+reference counting**: `fai-rc` normalizes each function to A-normal form and
 inserts dup/drop precisely (duplicate only when a value is still live afterward;
 drop at the last use rather than scope end; per-branch drops), with projections
 (`DataField`/`DataTag`) **borrowing** their base so a matched value survives its
-projections and is released once by reference counting — the placement reuse will
-later recycle. A borrow-signature seam is in place (every argument owned for now).
-An abstract reference-count interpreter over the IR guards soundness across a
-corpus and whole programs. The remaining stages — reset/reuse tokens, in-place
-`{ r with … }`, drop specialization, and inferred argument borrowing — are future
-work; see `docs/reuse-plan.md` for the staged design.
+projections and is released once by reference counting. (2) **Reset/reuse**: a
+dead data cell's release becomes a `Reset` at its death point that yields a reuse
+token (its raw memory if unique, else null), threaded forward to a same-size
+construction that builds into it in place (`fai_drop_reuse`/`fai_reuse`); `if`
+pushes the decision into branches (reset-and-reuse where one reconstructs, drop
+where not). A `map`/`filter`/`inc` over a *unique* list now allocates **zero**
+fresh cells, while a shared list falls back to copying (the runtime rc==1 guard),
+proven by a differential allocation count. A borrow-signature seam is in place
+(every argument owned for now), and an abstract reference-count interpreter over
+the IR guards soundness across a corpus and whole programs. The remaining stages —
+in-place `{ r with … }`, drop specialization, and inferred argument borrowing —
+are future work; see `docs/reuse-plan.md` for the staged design.
 
 **Goal:** turn correctness-first RC into competitive performance.
 
@@ -1098,6 +1104,41 @@ design is in `docs/reuse-plan.md`):
     reference-counted IR on every path (owned consumed-or-dropped once; no
     use-after-release or double drop; captures never dropped; consistent branches)
     over a corpus and a whole reachable program.
+
+- **D77 Reuse recycles a dead cell into a same-size construction.** On the precise
+  reference-counted IR, `fai-rc` rewrites the release of a dead, data-typed cell
+  into reuse:
+  - **IR.** A new `Reset { value, token, body }` releases the cell and binds a
+    reuse `token`; `MakeData` gains an optional `reuse` slot. The token is a raw
+    value — never duplicated or dropped by ordinary reference counting — consumed
+    by exactly one construction per path. Both flow through the daemon-run wire
+    form.
+  - **Runtime.** `fai_drop_reuse(v)` decrements `v`; if it was unique it runs the
+    cell's child scan and returns the cell's raw memory as the token (without
+    freeing or untracking it), otherwise the null token. `fai_reuse(token, …)`
+    builds into the token's memory in place when it is non-null and exactly the
+    right size, else allocates fresh (freeing a wrong-sized token). A cumulative
+    `ALLOCATIONS` counter (incremented only on real allocation) makes reuse
+    observable.
+  - **Reset at the death point, not the construction.** The reset is placed where
+    the cell dies — at its last projection, *before* any recursive call — so the
+    cell's now-released fields (e.g. a list tail) are unique for that call and can
+    themselves be reused; the token is threaded forward to the construction. (A
+    reset placed just before the construction would only recycle the outermost
+    cell, since the parent's tail projection keeps the tail shared.)
+  - **Branches.** Where an `if` precedes the construction, the release is pushed
+    into the branches: a branch that reconstructs resets-and-reuses; one that does
+    not drops — so no path leaks an unconsumed token and no separate
+    free-token operation is needed.
+  - **Same size, checked at runtime.** Pairing is greedy (the first construction
+    on a path); the runtime size check makes any pairing correct, recycling in
+    place only when the sizes match and otherwise falling back to allocation. Only
+    data-typed cells (records, tuples, ADTs, lists, interface dictionaries) are
+    reset, recognized from `let`-binding types.
+  - **Acceptance.** `map`/`filter`/`inc` over a unique list allocate zero fresh
+    cells; a shared list copies (the rc==1 guard). A differential allocation-count
+    test pins both, and the soundness interpreter is extended to reset/reuse
+    (a token created once, consumed once per path).
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected milestones.
