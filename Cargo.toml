@@ -13,6 +13,7 @@ members = [
     "crates/fai-rc",
     "crates/fai-codegen",
     "crates/fai-runtime",
+    "crates/fai-contracts",
     "crates/fai-driver",
     "crates/fai-server",
     "crates/fai-cli",
@@ -90,6 +91,7 @@ fai-core = { path = "crates/fai-core" }
 fai-rc = { path = "crates/fai-rc" }
 fai-codegen = { path = "crates/fai-codegen" }
 fai-runtime = { path = "crates/fai-runtime" }
+fai-contracts = { path = "crates/fai-contracts" }
 fai-driver = { path = "crates/fai-driver" }
 fai-server = { path = "crates/fai-server" }
 fai-cli = { path = "crates/fai-cli" }

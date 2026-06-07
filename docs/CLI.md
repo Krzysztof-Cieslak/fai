@@ -14,11 +14,17 @@
 > versus the full spec below: the daemon currently serializes requests (no
 > concurrent reads / cancellation yet) and returns each non-streaming command's
 > **already-rendered** stdout/stderr rather than structured per-method results, so
-> warm output is byte-identical to a one-shot run. Not yet implemented:
-> `fai daemon tap`, `fai test` (contracts), Windows resource limits, and a Windows
-> CI (the named-pipe transport compiles but is untested). See `AGENTS.md` for
-> project conventions, `docs/PLAN.md` for milestones, and the `samples/` directory
-> for the language itself.
+> warm output is byte-identical to a one-shot run. **`fai test` is implemented**
+> (in-process): it collects the `example`/`forall` contracts, synthesizes a
+> property-testing harness per contract using the dogfooded `std/Test.fai`
+> library, JIT-runs it, and reports failures as located `FAI6001` diagnostics with
+> a shrunk counterexample (an ungeneratable binder is `FAI6002`); it takes
+> `[path]`/`--match`/`--seed`/`--count`/`--max-size`. Per-type generation for user
+> records/ADTs and isolated-worker execution (with `$/testEvent` streaming) are
+> follow-ups. Not yet implemented: `fai daemon tap`, Windows resource limits, and
+> a Windows CI (the named-pipe transport compiles but is untested). See
+> `AGENTS.md` for project conventions, `docs/PLAN.md` for milestones, and the
+> `samples/` directory for the language itself.
 
 ---
 

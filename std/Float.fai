@@ -20,3 +20,13 @@ example: sqrt 4.0 = 2.0
 public pi : Float
 let pi = 3.141592653589793
 example: pi > 3.0
+
+/// Reinterpret an integer's 64-bit pattern as a float (the inverse of `toBits`).
+public fromBits : Int -> Float
+let fromBits bits = Prim.floatFromBits bits
+example: fromBits 0 = 0.0
+
+/// Reinterpret a float's IEEE-754 bits as an integer.
+public toBits : Float -> Int
+let toBits x = Prim.floatToBits x
+example: toBits 0.0 = 0

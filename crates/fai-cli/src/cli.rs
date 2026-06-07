@@ -163,6 +163,15 @@ pub struct TestArgs {
     /// Run only contracts whose symbol matches this pattern.
     #[arg(long, value_name = "PAT")]
     pub r#match: Option<String>,
+    /// The initial PRNG seed (runs are deterministic for a given seed).
+    #[arg(long, value_name = "N")]
+    pub seed: Option<i64>,
+    /// The number of random trials per property.
+    #[arg(long, value_name = "N")]
+    pub count: Option<i64>,
+    /// The maximum generation size.
+    #[arg(long, value_name = "N")]
+    pub max_size: Option<i64>,
 }
 
 /// Arguments for `fai fmt`.

@@ -15,6 +15,7 @@ fn all_codes() -> Vec<CodeInfo> {
     codes.extend_from_slice(fai_resolve::CODES);
     codes.extend_from_slice(fai_types::CODES);
     codes.extend_from_slice(fai_core::CODES);
+    codes.extend_from_slice(fai_contracts::CODES);
     codes
 }
 
@@ -48,6 +49,17 @@ fn resolve_codes_are_in_the_fai2xxx_range() {
         assert!(
             info.code.as_str().starts_with("FAI2"),
             "resolve code {} should be in the FAI2xxx range",
+            info.code
+        );
+    }
+}
+
+#[test]
+fn contract_codes_are_in_the_fai6xxx_range() {
+    for info in fai_contracts::CODES {
+        assert!(
+            info.code.as_str().starts_with("FAI6"),
+            "contract code {} should be in the FAI6xxx range",
             info.code
         );
     }

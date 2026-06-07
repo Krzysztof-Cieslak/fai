@@ -388,6 +388,57 @@ pub fn infer_body_types(
     (exprs, pats)
 }
 
+/// Infers the per-expression and per-pattern types of a contract body, with the
+/// `forall` binders bound as fresh monomorphic parameters and every residual
+/// (unconstrained) type variable defaulted to `Int` — so the synthesized harness
+/// lowers to monomorphic code and the value generators know each binder's shape.
+#[allow(clippy::type_complexity)]
+pub fn infer_contract_body_types(
+    db: &dyn Db,
+    file: SourceFile,
+    binders: &[fai_syntax::ast::PatId],
+    body: fai_syntax::ast::ExprId,
+    def_schemes: &dyn Fn(&dyn Db, DefId) -> Option<Scheme>,
+    builtins: &dyn Fn(Symbol) -> Option<Scheme>,
+) -> (Vec<(fai_syntax::ast::ExprId, Ty)>, Vec<(fai_syntax::ast::PatId, Ty)>) {
+    let parsed = fai_syntax::parse(db, file);
+    let module = &parsed.module;
+    let resolved = fai_resolve::resolve(db, file);
+
+    let mut cx = InferCtx::new();
+    let scc_types: FxHashMap<DefId, SolveTy> = FxHashMap::default();
+    let mut env = contract_env(db, &scc_types, def_schemes, builtins);
+    let mut walker = Walker::new(db, file, module, &resolved, &mut cx, &mut env);
+    walker.enable_type_recording();
+    for &p in binders {
+        let _ = walker.bind_param(p);
+    }
+    let _ = walker.infer_expr(body);
+    let exprs = walker.collect_expr_types();
+    let pats = walker.collect_pat_types();
+    let exprs = exprs.into_iter().map(|(e, t)| (e, monomorphize(&t))).collect();
+    let pats = pats.into_iter().map(|(p, t)| (p, monomorphize(&t))).collect();
+    (exprs, pats)
+}
+
+/// Replaces every residual (unconstrained) type variable with `Int`, recursing
+/// through compound types. A row tail is left intact (an open-row binder is
+/// unsupported by generation and reported as not-runnable, not silently changed).
+fn monomorphize(ty: &Ty) -> Ty {
+    use std::sync::Arc;
+    match ty {
+        Ty::Var(_) => Ty::int(),
+        Ty::App(f, a) => Ty::App(Arc::new(monomorphize(f)), Arc::new(monomorphize(a))),
+        Ty::Arrow(f, t) => Ty::Arrow(Arc::new(monomorphize(f)), Arc::new(monomorphize(t))),
+        Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(monomorphize).collect()),
+        Ty::Record(row) => Ty::Record(crate::ty::RecordRow {
+            fields: row.fields.iter().map(|(l, t)| (*l, monomorphize(t))).collect(),
+            tail: row.tail,
+        }),
+        Ty::Con(_) | Ty::Adt(_) | Ty::Interface(_) | Ty::Unit | Ty::Error => ty.clone(),
+    }
+}
+
 /// The error scheme (monomorphic error type).
 #[must_use]
 pub fn error_scheme() -> Scheme {

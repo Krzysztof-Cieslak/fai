@@ -429,11 +429,9 @@ fn shape_item(m: &Module, item: &Item) -> String {
             format!("(interface {visibility:?} {} [{}] [{}])", name.as_str(), ps, ms)
         }
         ItemKind::Example { body } => format!("(example {})", shape_expr(m, *body)),
-        ItemKind::Forall { binders, body } => format!(
-            "(forall [{}] {})",
-            binders.iter().map(|b| b.as_str()).collect::<Vec<_>>().join(" "),
-            shape_expr(m, *body),
-        ),
+        ItemKind::Forall { binders, body } => {
+            format!("(forall [{}] {})", shape_pats(m, binders), shape_expr(m, *body))
+        }
         ItemKind::Error => "(item-error)".to_owned(),
     }
 }

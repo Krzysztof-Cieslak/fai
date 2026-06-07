@@ -173,6 +173,31 @@ pub fn body_types(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<BodyTypes>
     })
 }
 
+/// The per-expression and per-pattern types of the `ordinal`-th contract in
+/// `file` (a peer of [`body_types`], but for an `example`/`forall` body). Binders
+/// are bound as fresh parameters and residual type variables default to `Int`, so
+/// the result is fully monomorphic and ready for harness lowering.
+#[salsa::tracked]
+pub fn contract_body_types(db: &dyn Db, file: SourceFile, ordinal: usize) -> Arc<BodyTypes> {
+    let parsed = fai_syntax::parse(db, file);
+    let Some(item) = parsed.module.contract(ordinal) else {
+        return Arc::new(BodyTypes::default());
+    };
+    let (binders, body) = match &item.kind {
+        fai_syntax::ast::ItemKind::Example { body } => (Vec::new(), *body),
+        fai_syntax::ast::ItemKind::Forall { binders, body } => (binders.clone(), *body),
+        _ => return Arc::new(BodyTypes::default()),
+    };
+    let def_schemes = |db: &dyn Db, def: DefId| declared_or_inferred_scheme(db, def);
+    let builtins = |n: Symbol| std_lib::builtin_scheme(n);
+    let (exprs, pats) =
+        crate::infer::infer_contract_body_types(db, file, &binders, body, &def_schemes, &builtins);
+    Arc::new(BodyTypes {
+        types: exprs.into_iter().collect(),
+        pat_types: pats.into_iter().collect(),
+    })
+}
+
 /// Type-checks every definition and contract in `file`, emitting diagnostics.
 #[salsa::tracked]
 pub fn check_file(db: &dyn Db, file: SourceFile) {

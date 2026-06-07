@@ -614,6 +614,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "fai-contracts"
+version = "0.1.0"
+dependencies = [
+ "fai-core",
+ "fai-db",
+ "fai-diagnostics",
+ "fai-resolve",
+ "fai-runtime",
+ "fai-span",
+ "fai-syntax",
+ "fai-types",
+ "rustc-hash",
+]
+
+[[package]]
 name = "fai-core"
 version = "0.1.0"
 dependencies = [
@@ -657,6 +672,7 @@ dependencies = [
  "blake3",
  "camino",
  "fai-codegen",
+ "fai-contracts",
  "fai-core",
  "fai-db",
  "fai-diagnostics",
@@ -664,6 +680,7 @@ dependencies = [
  "fai-ide",
  "fai-rc",
  "fai-resolve",
+ "fai-runtime",
  "fai-span",
  "fai-syntax",
  "fai-types",
@@ -700,6 +717,7 @@ dependencies = [
  "fai-types",
  "indoc",
  "insta",
+ "rustc-hash",
  "serde",
  "serde_json",
 ]
@@ -789,6 +807,7 @@ dependencies = [
  "divan",
  "fai-cli",
  "fai-codegen",
+ "fai-contracts",
  "fai-core",
  "fai-db",
  "fai-diagnostics",

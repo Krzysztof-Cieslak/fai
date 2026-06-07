@@ -428,7 +428,25 @@ correctness-neutral follow-ups (see M9).
 ---
 
 ### M7 — Contracts: examples & properties
-**Goal:** run the first-class `example`/`forall` declarations (typed in M2).
+**Status:** complete (Stage 1). `fai test` collects, synthesizes, JIT-runs, and
+reports the `example`/`forall` contracts. The property-testing framework is a
+**dogfooded standard-library module** (`std/Test.fai`): a pure splitmix64 `Gen`,
+an `Arbitrary 'a = { gen, shrink, show }` bundle, type-directed combinators
+(`int`/`bool`/`float`/`string`/`unit`/`list`/`tuple2..4`/`option`/`result`), and
+the `checkExample`/`checkForall` driver (sized trials, greedy shrinking). The
+compiler (`fai-contracts`) types a contract's binders (defaulting residual type
+variables to `Int`), synthesizes a harness — a *property* function plus an entry
+that calls `Test.checkForall`/`checkExample` with an `Arbitrary` composed from
+the combinators for the binders' types — reference-counts and JIT-compiles it
+with its reachable callees (`fai-codegen`'s `JitProgram`), then applies it and
+decodes the returned `TestResult`. A failure is a located **`FAI6001`** with the
+shrunk counterexample (binder names + rendered value); a binder with no generator
+(function type, record/ADT, >4 binders) is **`FAI6002`**. `fai test` takes
+`[path]`/`--match`/`--seed`/`--count`/`--max-size`, runs in-process, and asserts
+the runtime's live-object count returns to zero. **Stage 2** (per-type synthesis
+for user records/ADTs via `Arb.fix` + `DataTag`/`DataField`) and isolated-worker
+execution with `$/testEvent` streaming are noted as follow-ups. See decisions
+**D80–D86**.
 
 **Deliverables**
 - `fai-contracts`: collect the typed `example`/`forall` declarations from each
@@ -1232,6 +1250,81 @@ Resolved while implementing **M6** (reuse & in-place update):
   - **Primitive borrowing** (inspect-only `=`/`compare`/string reads) is left as a
     refinement: on the hot path (a `match` tag test) it would add a no-op drop, so
     it is not worth it without a per-operand-type guard.
+
+Resolved while implementing **M7** (contracts: examples & properties):
+
+- **D80 The property-testing framework is a dogfooded standard-library module.**
+  Because Fai has **no implicit instance resolution** (interfaces are explicit
+  values, D4/D13), a QuickCheck-style library cannot pick a generator by type on
+  its own — so the type→generator mapping must live in the compiler regardless of
+  where the generator *code* runs. Given that, the generators/shrinkers/renderers
+  are written **in Fai** (`std/Test.fai`) for dogfooding and user extensibility,
+  and the compiler composes them. `std/Test.fai` defines `type Gen 'a = Size ->
+  Seed -> ('a * Seed)` (a pure splitmix64 over the seed — deterministic, no
+  `Random` capability), `type Arbitrary 'a = { gen, shrink, show }` (a closed
+  record — constant-offset access, no row evidence), `type TestResult = Passed |
+  Failed String`, the combinators, and the `checkExample`/`checkForall` driver
+  (the trial loop + greedy shrink run in Fai). Rejected: a Rust-side generator
+  (not dogfooded; loses user-extensibility) and a generic `TypeRep`+`Dyn` Fai
+  interpreter (a `Dyn` universal value cannot be coerced to a binder's real static
+  type without dependent types).
+- **D81 `forall` binders are patterns; residual type variables default to `Int`.**
+  `Forall { binders }` carries `PatId` (`PatKind::Var`) rather than bare `Symbol`s,
+  so binders flow through resolution (`pat_locals`), inference (`bind_param` →
+  `pat_type`, which closes the prior "binders type as `Error`" gap), and lowering
+  (`param_local`) exactly like function parameters. A new `contract_body_types`
+  query infers a contract body with the binders bound and then **monomorphizes**:
+  every residual unconstrained type variable becomes `Int`, so the harness lowers
+  to monomorphic code and the generators know each binder's shape. `Int` is the
+  standard QuickCheck witness; for parametric functions parametricity makes the
+  choice irrelevant, and structural `=`/`compare` work at `Int`.
+- **D82 Synthesis: dedicated, plain (non-tracked), in `fai-contracts`.** Contracts
+  are lowered by parallel pieces that leave the normal-def queries untouched (so
+  the cross-module firewall and perf guards are unaffected): `contract_body_types`
+  (`fai-types`), the exposed `lower_params_body` (`fai-core`), and `rc_lowered`
+  (`fai-rc`). `fai-contracts::synthesize` (a plain function — JIT execution needs
+  no `object_code`, so no salsa key is required) builds, per contract, a *property*
+  def (`contract#k$prop`: `fun binders -> body`, or a single tuple projected back
+  out for ≥2 binders) and an *entry* def (`contract#k : Seed -> Int -> Size ->
+  TestResult`) that calls the `Test` driver with an `Arbitrary` composed from the
+  combinators for the binder types. Synthesis (and the `Test`/`Arb` name
+  knowledge) lives in `fai-contracts`, not `fai-core`, which stays
+  testing-agnostic.
+- **D83 In-process JIT execution; one module per run; leak-guarded.** `fai test`
+  runs in-process (matching the existing CLI wiring). The driver builds **one**
+  `JitProgram` (`fai-codegen`) from all runnable contracts' synthesized defs plus
+  the deduped reachable callees, fetches each contract's static-closure pointer,
+  and applies it via the runtime's safe `apply` wrapper, decoding the returned
+  `TestResult` (`Passed`/`Failed counterexample`). After the run it asserts the
+  runtime's global live-object count returned to its baseline (an RC soundness
+  guard). A contract whose reachable closure fails to compile, or whose lowered
+  body contains an error placeholder, is reported rather than run. Isolated-worker
+  execution + daemon `$/testEvent` streaming are deferred follow-ups.
+- **D84 Diagnostics & output.** `FAI6001` (`CONTRACT_FAILED`, error) for a failing
+  `example`/`forall`, located at the contract span, with the shrunk counterexample
+  in its help (binder names + the Fai-rendered value); `FAI6002`
+  (`CONTRACT_NOT_RUNNABLE`, **error** — an untestable contract fails the run) for a
+  binder with no generator. Each contract associates with the nearest preceding
+  top-level binding (its "subject"), which powers the `Contract` lists in
+  `fai query docs`/`api` and the nullable `symbol` in the `TestOutput` JSON
+  envelope (`{ total, passed, notRun, diagnostics, ok }`).
+- **D85 Bitwise `Int` intrinsics + float bit-reinterpretation.** splitmix64 needs
+  bitwise ops, which Fai lacked. They are **functions** in the `Int` module
+  (`and`/`or`/`xor`/`complement`/`shiftLeft`/`shiftRight`/`shiftRightLogical`),
+  not operators (symbolic forms collide with `>>` compose, `|` union/pattern, and
+  `&&`/`||`); shift amounts are masked to `0..63`, and there are two right shifts
+  (arithmetic `shiftRight`, logical `shiftRightLogical`). Full-domain float
+  generation (incl. NaN/inf) needs bit reinterpretation, added as
+  `Float.fromBits`/`Float.toBits`. Both are ordinary `Prim.*` intrinsics
+  re-exported under clean names, mirroring the existing intrinsic wiring.
+- **D86 Generation policy (Stage 1).** Deterministic by default (a fixed seed; a
+  `--seed` flag overrides), 100 trials, size ramping `0..maxSize` with `Int` drawn
+  from `[-size, size]` and `List` length ≤ size — bounded so `abs`/`clamp`-style
+  laws hold (no `i64::MIN`/overflow surprises). Generators cover the primitives
+  and built-in constructors via the std combinators (which the compiler composes);
+  **`Char` is omitted** (the native backend does not support it yet, so a `Char`
+  binder is `FAI6002`), and per-type synthesis for **user records/ADTs** (via a
+  std `Arb.fix` + `DataTag`/`DataField`) is **Stage 2**.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected milestones.

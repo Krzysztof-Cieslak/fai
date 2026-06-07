@@ -154,6 +154,20 @@ pub enum Prim {
     IntDiv,
     /// `%`
     IntRem,
+    /// `Int.and` (bitwise and)
+    IntAnd,
+    /// `Int.or` (bitwise or)
+    IntOr,
+    /// `Int.xor` (bitwise xor)
+    IntXor,
+    /// `Int.shiftLeft`
+    IntShl,
+    /// `Int.shiftRight` (arithmetic, sign-extending)
+    IntShr,
+    /// `Int.shiftRightLogical` (logical, zero-filling)
+    IntShrLogical,
+    /// `Int.complement` (bitwise not, unary)
+    IntComplement,
     /// `<`
     IntLt,
     /// `<=`
@@ -194,6 +208,10 @@ pub enum Prim {
     FloatToInt,
     /// `sqrt`
     Sqrt,
+    /// `floatFromBits` (reinterpret an Int's bits as a Float)
+    FloatFromBits,
+    /// `floatToBits` (reinterpret a Float's bits as an Int)
+    FloatToBits,
     /// `stringLength`
     StringLength,
     /// `toUpper`
@@ -239,6 +257,13 @@ impl Prim {
             Prim::IntMul => "fai_int_mul",
             Prim::IntDiv => "fai_int_div",
             Prim::IntRem => "fai_int_rem",
+            Prim::IntAnd => "fai_int_and",
+            Prim::IntOr => "fai_int_or",
+            Prim::IntXor => "fai_int_xor",
+            Prim::IntShl => "fai_int_shl",
+            Prim::IntShr => "fai_int_shr",
+            Prim::IntShrLogical => "fai_int_shr_logical",
+            Prim::IntComplement => "fai_int_complement",
             Prim::IntLt => "fai_int_lt",
             Prim::IntLe => "fai_int_le",
             Prim::IntGt => "fai_int_gt",
@@ -259,6 +284,8 @@ impl Prim {
             Prim::IntToFloat => "fai_int_to_float",
             Prim::FloatToInt => "fai_float_to_int",
             Prim::Sqrt => "fai_sqrt",
+            Prim::FloatFromBits => "fai_float_from_bits",
+            Prim::FloatToBits => "fai_float_to_bits",
             Prim::StringLength => "fai_string_length",
             Prim::ToUpper => "fai_to_upper",
             Prim::ToLower => "fai_to_lower",
@@ -287,6 +314,8 @@ impl Prim {
             | Prim::IntToFloat
             | Prim::FloatToInt
             | Prim::Sqrt
+            | Prim::FloatFromBits
+            | Prim::FloatToBits
             | Prim::StringLength
             | Prim::ToUpper
             | Prim::ToLower
@@ -297,6 +326,7 @@ impl Prim {
             | Prim::RandomNextInt
             | Prim::EnvGet
             | Prim::EnvArgs
+            | Prim::IntComplement
             | Prim::FileRead => 1,
             Prim::RecordUpdate => 3,
             _ => 2,
@@ -308,11 +338,20 @@ impl Prim {
     #[must_use]
     pub fn from_builtin(name: &str) -> Option<Prim> {
         Some(match name {
+            "intAnd" => Prim::IntAnd,
+            "intOr" => Prim::IntOr,
+            "intXor" => Prim::IntXor,
+            "intShiftLeft" => Prim::IntShl,
+            "intShiftRight" => Prim::IntShr,
+            "intShiftRightLogical" => Prim::IntShrLogical,
+            "intComplement" => Prim::IntComplement,
             "intToString" => Prim::IntToString,
             "floatToString" => Prim::FloatToString,
             "intToFloat" => Prim::IntToFloat,
             "floatToInt" => Prim::FloatToInt,
             "sqrt" => Prim::Sqrt,
+            "floatFromBits" => Prim::FloatFromBits,
+            "floatToBits" => Prim::FloatToBits,
             "stringLength" => Prim::StringLength,
             "toUpper" => Prim::ToUpper,
             "toLower" => Prim::ToLower,

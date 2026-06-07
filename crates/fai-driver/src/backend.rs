@@ -166,10 +166,38 @@ pub fn reachable_defs(db: &dyn Db, file: SourceFile) -> Vec<DefId> {
     order
 }
 
+/// The definitions reachable from a set of root references, in discovery order,
+/// excluding a set of synthesized defs that are supplied directly (not via
+/// `core`). Used to gather a contract harness's real callees.
+#[must_use]
+pub(crate) fn reachable_from_roots(
+    db: &dyn Db,
+    roots: &[DefId],
+    exclude: &FxHashSet<DefId>,
+) -> Vec<DefId> {
+    let mut seen = exclude.clone();
+    let mut order = Vec::new();
+    let mut stack: Vec<DefId> = roots.iter().copied().filter(|d| !exclude.contains(d)).collect();
+    while let Some(def) = stack.pop() {
+        if !seen.insert(def) {
+            continue;
+        }
+        order.push(def);
+        if let Some(file) = db.source_file(def.file) {
+            for callee in core(db, file, def.name).referenced_globals() {
+                if !seen.contains(&callee) {
+                    stack.push(callee);
+                }
+            }
+        }
+    }
+    order
+}
+
 /// Collects the diagnostics that must be clean before codegen: each reachable
 /// file's parse/resolve/type diagnostics plus each reachable definition's
 /// lowering diagnostics (e.g. unsupported-construct `FAI7001`).
-fn precompile_diagnostics(db: &dyn Db, reachable: &[DefId]) -> Vec<Diagnostic> {
+pub(crate) fn precompile_diagnostics(db: &dyn Db, reachable: &[DefId]) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     let mut files = FxHashSet::default();
     for def in reachable {

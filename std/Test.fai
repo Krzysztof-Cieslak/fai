@@ -1,0 +1,264 @@
+module Test
+
+// Property-based testing: type-directed value generators with shrinking, plus
+// the driver the compiler targets when it runs `example`/`forall` contracts.
+//
+// A `Gen 'a` is a pure function from a size and a seed to a value and the next
+// seed (randomness is a deterministic splitmix64 over the seed, so a run
+// reproduces). An `Arbitrary 'a` bundles a generator with a shrinker (smaller
+// candidates, tried on failure) and a renderer (for counterexamples). The
+// compiler builds an `Arbitrary` for each `forall` binder by composing these
+// combinators, then calls `checkForall`/`checkExample`.
+/// A pseudo-random generator state.
+public type Seed = Int
+
+/// A generation size budget (collection length / value magnitude).
+public type Size = Int
+
+/// A pure value generator: size and seed in, a value and the next seed out.
+public type Gen 'a = Size -> Seed -> ('a * Seed)
+
+/// A type's testing kit: how to generate, shrink, and render its values.
+public type Arbitrary 'a = { gen : Gen 'a, show : 'a -> String, shrink : 'a -> List 'a }
+
+/// The outcome of checking one contract.
+public type TestResult =
+  | Passed
+  | Failed String
+
+// --- Random source (splitmix64) --------------------------------------------
+let goldenGamma = 0x9E37_79B9_7F4A_7C15
+
+let mix z =
+  let z1 = Int.xor z (Int.shiftRightLogical z 30) * 0xBF58_476D_1CE4_E5B9
+  let z2 = Int.xor z1 (Int.shiftRightLogical z1 27) * 0x94D0_49BB_1331_11EB
+  Int.xor z2 (Int.shiftRightLogical z2 31)
+
+// Advance the seed and produce a pseudo-random 64-bit value.
+let nextInt seed =
+  let s2 = seed + goldenGamma
+  (mix s2, s2)
+
+// Clear the sign bit, giving a non-negative `Int` (avoids overflow on negate).
+let nonNeg n = Int.and n 0x7FFF_FFFF_FFFF_FFFF
+
+// A value in `[0, bound]` (inclusive); `0` when the bound is not positive.
+let upTo bound seed =
+  let (r, s2) = nextInt seed
+  if bound <= 0 then (0, s2) else (nonNeg r % (bound + 1), s2)
+
+// --- Combinators ------------------------------------------------------------
+let shrinkTowardZero n = if n = 0 then [] else if n / 2 = 0 then [0] else [0, n / 2]
+
+/// Generates integers in `[-size, size]`, shrinking toward zero.
+public int : Arbitrary Int
+let int =
+  let g size seed =
+    let (r, s2) = nextInt seed
+    if size <= 0 then (0, s2) else (nonNeg r % (2 * size + 1) - size, s2)
+  { gen = g, show = Int.toString, shrink = shrinkTowardZero }
+example: int.show 7 = "7"
+
+/// Generates booleans, shrinking `true` toward `false`.
+public bool : Arbitrary Bool
+let bool =
+  let g size seed =
+    let (r, s2) = nextInt seed
+    (Int.and r 1 = 1, s2)
+  let sh b = if b then [false] else []
+  { gen = g, show = fun b -> if b then "true" else "false", shrink = sh }
+example: bool.show true = "true"
+
+/// Generates floats across the whole domain (including NaN/inf), shrinking
+/// toward zero.
+public float : Arbitrary Float
+let float =
+  let g size seed =
+    let (r, s2) = nextInt seed
+    (Float.fromBits r, s2)
+  let sh x = if x = 0.0 then [] else [0.0]
+  { gen = g, show = Float.toString, shrink = sh }
+example: float.show 1.5 = "1.5"
+
+let alphabet =
+  ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", " ", "0", "1", "2", "3"]
+
+let nthOr fallback i xs =
+  match xs with
+  | [] -> fallback
+  | h :: t -> if i <= 0 then h else nthOr fallback (i - 1) t
+
+let pickChar seed =
+  let (r, s2) = nextInt seed
+  (nthOr "a" (nonNeg r % List.length alphabet) alphabet, s2)
+
+let buildString n seed =
+  if n <= 0 then
+    ("", seed)
+  else
+    let (c, s2) = pickChar seed
+    let (rest, s3) = buildString (n - 1) s2
+    (c ++ rest, s3)
+
+/// Generates short strings from a small alphabet, shrinking toward `""`.
+public string : Arbitrary String
+let string =
+  let g size seed =
+    let (n, s2) = upTo size seed
+    buildString n s2
+  let sh s = if String.length s = 0 then [] else [""]
+  { gen = g, show = fun s -> "\"" ++ s ++ "\"", shrink = sh }
+example: string.show "hi" = "\"hi\""
+
+/// The trivial generator for `Unit`.
+public unit : Arbitrary Unit
+let unit = { gen = fun size seed -> ((), seed), show = fun u -> "()", shrink = fun u -> [] }
+example: unit.show () = "()"
+
+let buildList elemGen size n seed =
+  if n <= 0 then
+    ([], seed)
+  else
+    let (x, s2) = elemGen size seed
+    let (rest, s3) = buildList elemGen size (n - 1) s2
+    (x :: rest, s3)
+
+// Shrink a list toward shorter lists (drop the head, empty it) and by shrinking
+// its head element.
+let shrinkList shrinkElem xs =
+  match xs with
+  | [] -> []
+  | h :: t -> List.append [t, []] (List.map (fun h2 -> h2 :: t) (shrinkElem h))
+
+let showList showElem xs = "[" ++ String.join ", " (List.map showElem xs) ++ "]"
+
+/// Generates lists (length up to the size) of the element arbitrary.
+public list : Arbitrary 'a -> Arbitrary (List 'a)
+let list elem =
+  let g size seed =
+    let (n, s2) = upTo size seed
+    buildList elem.gen size n s2
+  { gen = g, show = showList elem.show, shrink = shrinkList elem.shrink }
+example: (list int).show [1, 2] = "[1, 2]"
+
+/// Generates pairs, shrinking each component in turn.
+public tuple2 : Arbitrary 'a -> Arbitrary 'b -> Arbitrary ('a * 'b)
+let tuple2 a b =
+  let g size seed =
+    let (x, s2) = a.gen size seed
+    let (y, s3) = b.gen size s2
+    ((x, y), s3)
+  let sh p =
+    let (x, y) = p
+    List.append (List.map (fun x2 ->
+      (x2, y)) (a.shrink x)) (List.map (fun y2 -> (x, y2)) (b.shrink y))
+  let sho p =
+    let (x, y) = p
+    "(" ++ a.show x ++ ", " ++ b.show y ++ ")"
+  { gen = g, show = sho, shrink = sh }
+example: (tuple2 int bool).show (1, true) = "(1, true)"
+
+/// Generates triples, shrinking each component in turn.
+public tuple3 : Arbitrary 'a -> Arbitrary 'b -> Arbitrary 'c -> Arbitrary ('a * 'b * 'c)
+let tuple3 a b c =
+  let g size seed =
+    let (x, s2) = a.gen size seed
+    let (y, s3) = b.gen size s2
+    let (z, s4) = c.gen size s3
+    ((x, y, z), s4)
+  let sho t =
+    let (x, y, z) = t
+    "(" ++ a.show x ++ ", " ++ b.show y ++ ", " ++ c.show z ++ ")"
+  { gen = g, show = sho, shrink = fun t -> [] }
+example: (tuple3 int int int).show (1, 2, 3) = "(1, 2, 3)"
+
+/// Generates 4-tuples (no per-component shrinking).
+public tuple4 : Arbitrary 'a -> Arbitrary 'b -> Arbitrary 'c -> Arbitrary 'd -> Arbitrary ('a * 'b * 'c * 'd)
+let tuple4 a b c d =
+  let g size seed =
+    let (w, s2) = a.gen size seed
+    let (x, s3) = b.gen size s2
+    let (y, s4) = c.gen size s3
+    let (z, s5) = d.gen size s4
+    ((w, x, y, z), s5)
+  let sho t =
+    let (w, x, y, z) = t
+    "(" ++ a.show w ++ ", " ++ b.show x ++ ", " ++ c.show y ++ ", " ++ d.show z ++ ")"
+  { gen = g, show = sho, shrink = fun t -> [] }
+example: (tuple4 int int int int).show (1, 2, 3, 4) = "(1, 2, 3, 4)"
+
+/// Generates `Option` values (mostly `Some`), shrinking `Some x` toward `None`.
+public option : Arbitrary 'a -> Arbitrary (Option 'a)
+let option elem =
+  let g size seed =
+    let (r, s2) = nextInt seed
+    if nonNeg r % 4 = 0 then
+      (None, s2)
+    else
+      let (x, s3) = elem.gen size s2
+      (Some x, s3)
+  let sh o =
+    match o with
+    | None -> []
+    | Some x -> None :: List.map (fun x2 -> Some x2) (elem.shrink x)
+  let sho o =
+    match o with
+    | None -> "None"
+    | Some x -> "Some " ++ elem.show x
+  { gen = g, show = sho, shrink = sh }
+example: (option int).show (Some 3) = "Some 3"
+
+/// Generates `Result` values from arbitraries for the ok and error types.
+public result : Arbitrary 'a -> Arbitrary 'e -> Arbitrary (Result 'a 'e)
+let result okArb errArb =
+  let g size seed =
+    let (r, s2) = nextInt seed
+    if nonNeg r % 4 = 0 then
+      let (e, s3) = errArb.gen size s2
+      (Err e, s3)
+    else
+      let (x, s3) = okArb.gen size s2
+      (Ok x, s3)
+  let sho res =
+    match res with
+    | Ok x -> "Ok " ++ okArb.show x
+    | Err e -> "Err " ++ errArb.show e
+  { gen = g, show = sho, shrink = fun res -> [] }
+example: (result int int).show (Ok 1) = "Ok 1"
+
+// --- The driver -------------------------------------------------------------
+let sizeFor i trials maxSize = if trials <= 1 then maxSize else i * maxSize / trials
+
+let firstFailing prop candidates =
+  match candidates with
+  | [] -> None
+  | c :: rest -> if prop c then firstFailing prop rest else Some c
+
+let shrinkLoop arb prop x budget =
+  if budget <= 0 then
+    x
+  else
+    match firstFailing prop (arb.shrink x) with
+    | None -> x
+    | Some smaller -> shrinkLoop arb prop smaller (budget - 1)
+
+let runLoop arb prop seed i trials maxSize =
+  if i >= trials then
+    Passed
+  else
+    let (x, s2) = arb.gen (sizeFor i trials maxSize) seed
+    if prop x then
+      runLoop arb prop s2 (i + 1) trials maxSize
+    else
+      Failed (arb.show (shrinkLoop arb prop x 2000))
+
+/// Checks a `forall` property over `trials` random inputs (size ramping to
+/// `maxSize`), shrinking the first counterexample found.
+public checkForall : Seed -> Int -> Size -> Arbitrary 'a -> ('a -> Bool) -> TestResult
+let checkForall seed trials maxSize arb prop = runLoop arb prop seed 0 trials maxSize
+example: checkForall 0 10 10 int (fun n -> n = n) = Passed
+
+/// Checks a constant `example`: `Passed` when it holds, else `Failed`.
+public checkExample : Bool -> TestResult
+let checkExample ok = if ok then Passed else Failed ""
+example: checkExample true = Passed

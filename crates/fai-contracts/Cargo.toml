@@ -1,10 +1,10 @@
 [package]
-name = "fai-ide"
-description = "Code intelligence powering `fai query` and the LSP for Fai."
+name = "fai-contracts"
+description = "Collecting, synthesizing, and running example/forall contracts (property testing)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-publish.workspace = true
+publish = false
 license.workspace = true
 
 [dependencies]
@@ -14,13 +14,9 @@ fai-db.workspace = true
 fai-syntax.workspace = true
 fai-resolve.workspace = true
 fai-types.workspace = true
+fai-core.workspace = true
+fai-runtime.workspace = true
 rustc-hash.workspace = true
-serde = { workspace = true }
-
-[dev-dependencies]
-indoc.workspace = true
-insta.workspace = true
-serde_json.workspace = true
 
 [lints]
 workspace = true

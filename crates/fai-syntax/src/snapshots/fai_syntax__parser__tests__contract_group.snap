@@ -6,4 +6,4 @@ module Math
 (sig Public abs (arrow (tcon Int) (tcon Int)))
 (let Private abs [(pvar n)] (block [] (if (infix < (var n) (int 0)) (infix - (int 0) (var n)) (var n))))
 (example (infix = (app (var abs) (paren (prefix - (int 3)))) (int 3)))
-(forall [n] (infix >= (app (var abs) (var n)) (int 0)))
+(forall [(pvar n)] (infix >= (app (var abs) (var n)) (int 0)))

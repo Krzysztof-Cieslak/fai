@@ -25,7 +25,7 @@ mod tests;
 pub use fingerprint::fingerprint_def;
 pub use ir::{CExpr, CoreFn, ExprKind, FnId, Lit, LoweredDef, Prim};
 pub use lit::{decode_float, decode_int, decode_string};
-pub use lower::core;
+pub use lower::{LoweredBody, core, lower_params_body};
 pub use pretty::pretty_def;
 pub use wire::{Rebuilt, WireBundle, WireDef, WireDefId, from_wire};
 

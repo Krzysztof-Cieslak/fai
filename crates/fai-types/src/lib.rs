@@ -32,8 +32,8 @@ pub use infer::{
 };
 pub use lower::{LowerVars, lower_signature, lower_type};
 pub use query::{
-    BodyTypes, SccTypes, body_types, check_file, constructor_scheme, declared_or_inferred_scheme,
-    def_local_types, def_type, infer_scc_query,
+    BodyTypes, SccTypes, body_types, check_file, constructor_scheme, contract_body_types,
+    declared_or_inferred_scheme, def_local_types, def_type, infer_scc_query,
 };
 pub use ty::{
     Con, RecordRow, RowEnd, RowVarId, Scheme, Ty, TyVarId, VarNames, render, render_canonical,

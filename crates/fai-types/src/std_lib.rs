@@ -67,11 +67,21 @@ pub fn builtin_scheme(name: Symbol) -> Option<Scheme> {
         }
         "envGet" => Scheme::mono(Ty::arrow(Ty::Con(Con::String), ok_string_pair())),
         "envArgs" => Scheme::mono(Ty::arrow(Ty::Unit, Ty::list(Ty::Con(Con::String)))),
+        // Bitwise integer intrinsics.
+        "intAnd"
+        | "intOr"
+        | "intXor"
+        | "intShiftLeft"
+        | "intShiftRight"
+        | "intShiftRightLogical" => Scheme::mono(Ty::arrows([Ty::int(), Ty::int()], Ty::int())),
+        "intComplement" => Scheme::mono(Ty::arrow(Ty::int(), Ty::int())),
         "intToString" => Scheme::mono(Ty::arrow(Ty::int(), Ty::Con(Con::String))),
         "floatToString" => Scheme::mono(Ty::arrow(Ty::Con(Con::Float), Ty::Con(Con::String))),
         "intToFloat" => Scheme::mono(Ty::arrow(Ty::int(), Ty::Con(Con::Float))),
         "floatToInt" => Scheme::mono(Ty::arrow(Ty::Con(Con::Float), Ty::int())),
         "sqrt" => Scheme::mono(Ty::arrow(Ty::Con(Con::Float), Ty::Con(Con::Float))),
+        "floatFromBits" => Scheme::mono(Ty::arrow(Ty::int(), Ty::Con(Con::Float))),
+        "floatToBits" => Scheme::mono(Ty::arrow(Ty::Con(Con::Float), Ty::int())),
         "not" => Scheme::mono(Ty::arrow(Ty::bool(), Ty::bool())),
         // String operations.
         "stringLength" => Scheme::mono(Ty::arrow(Ty::Con(Con::String), Ty::int())),

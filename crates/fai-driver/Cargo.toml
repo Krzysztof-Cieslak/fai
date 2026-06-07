@@ -19,6 +19,8 @@ fai-ide.workspace = true
 fai-core.workspace = true
 fai-rc.workspace = true
 fai-codegen.workspace = true
+fai-runtime.workspace = true
+fai-contracts.workspace = true
 salsa.workspace = true
 rustc-hash.workspace = true
 serde = { workspace = true }

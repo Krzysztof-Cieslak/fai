@@ -11,3 +11,38 @@ example: toString 0 = "0"
 public toFloat : Int -> Float
 let toFloat n = Prim.intToFloat n
 example: toFloat 3 = 3.0
+
+/// Bitwise and.
+public and : Int -> Int -> Int
+let and a b = Prim.intAnd a b
+example: and 6 3 = 2
+
+/// Bitwise or.
+public or : Int -> Int -> Int
+let or a b = Prim.intOr a b
+example: or 6 3 = 7
+
+/// Bitwise exclusive or.
+public xor : Int -> Int -> Int
+let xor a b = Prim.intXor a b
+example: xor 6 3 = 5
+
+/// Bitwise complement (one's complement).
+public complement : Int -> Int
+let complement a = Prim.intComplement a
+example: complement 0 = 0 - 1
+
+/// Shift left by `n` bits (the amount is taken modulo 64).
+public shiftLeft : Int -> Int -> Int
+let shiftLeft a n = Prim.intShiftLeft a n
+example: shiftLeft 1 4 = 16
+
+/// Arithmetic shift right by `n` bits (sign-extending; amount modulo 64).
+public shiftRight : Int -> Int -> Int
+let shiftRight a n = Prim.intShiftRight a n
+example: shiftRight 16 2 = 4
+
+/// Logical shift right by `n` bits (zero-filling; amount modulo 64).
+public shiftRightLogical : Int -> Int -> Int
+let shiftRightLogical a n = Prim.intShiftRightLogical a n
+example: shiftRightLogical 16 2 = 4

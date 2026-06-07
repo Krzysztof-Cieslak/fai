@@ -14,11 +14,20 @@ use fai_syntax::Symbol;
 /// These resolve to [`Res::Builtin`](crate::Res::Builtin); everything else the
 /// standard library offers is an ordinary definition (resolved as a `Def`/`Ctor`).
 pub const INTRINSICS: &[&str] = &[
+    "intAnd",
+    "intOr",
+    "intXor",
+    "intShiftLeft",
+    "intShiftRight",
+    "intShiftRightLogical",
+    "intComplement",
     "intToString",
     "floatToString",
     "intToFloat",
     "floatToInt",
     "sqrt",
+    "floatFromBits",
+    "floatToBits",
     "not",
     "stringLength",
     "toUpper",
