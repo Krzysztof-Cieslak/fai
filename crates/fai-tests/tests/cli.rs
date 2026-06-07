@@ -126,6 +126,38 @@ fn query_type_of_nested_member_via_dotted_path() {
 }
 
 #[test]
+fn query_caps_reports_capability_footprint() {
+    let dir = Utf8PathBuf::from_path_buf(std::env::temp_dir())
+        .expect("temp dir is UTF-8")
+        .join("fai-caps-cli-tests");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("Cap.fai"),
+        indoc! {r#"
+            module Cap
+
+            public greet : { console : Console | _ } -> String -> Unit
+            let greet env name = env.console.writeLine name
+
+            public run : Runtime -> Unit
+            let run rt = greet rt "hi"
+        "#},
+    )
+    .unwrap();
+    // `greet` requests `console` directly (a parameter capability).
+    let (code, out, err) =
+        run(&["fai", "query", "--no-daemon", "-C", dir.as_str(), "caps", "Cap.greet"]);
+    assert_eq!(code, 0, "stderr: {err}");
+    assert!(out.contains("\"console\""), "expected the console capability: {out}");
+    assert!(out.contains("Console") && out.contains("\"parameter\""), "{out}");
+    // `run` takes a full Runtime, so its footprint includes the console too.
+    let (code, out, err) =
+        run(&["fai", "query", "--no-daemon", "-C", dir.as_str(), "caps", "Cap.run"]);
+    assert_eq!(code, 0, "stderr: {err}");
+    assert!(out.contains("\"console\""), "Runtime exposes console: {out}");
+}
+
+#[test]
 fn query_outline_nests_modules() {
     let dir = nested_workspace();
     let (code, out, err) =

@@ -128,3 +128,28 @@ pub struct Contract {
     /// The contract's span.
     pub span: SpanJson,
 }
+
+/// Where a capability in a function's footprint comes from (CLI.md `Capability`).
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CapOrigin {
+    /// Requested directly by the function's own signature (a parameter).
+    Parameter,
+    /// Reached through the call graph (a callee requests it).
+    Transitive,
+}
+
+/// A capability in a function's footprint (CLI.md `Capability`).
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct Capability {
+    /// The capability's name (a record field, or the interface name for a bare
+    /// parameter).
+    pub name: String,
+    /// The capability interface's name.
+    #[serde(rename = "type")]
+    pub ty: String,
+    /// Whether it is requested directly or reached transitively.
+    pub origin: CapOrigin,
+    /// For a transitive capability, the callees through which it is reached.
+    pub via: Vec<String>,
+}
