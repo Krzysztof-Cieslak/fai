@@ -832,6 +832,80 @@ fn row_polymorphic_record_update_runs() {
 }
 
 #[test]
+fn row_polymorphic_access_of_last_sorting_field() {
+    // `z` sorts after `a`/`b`, so its slot is the maximum — a non-zero evidence.
+    let src = indoc! {r#"
+        module M
+
+        get : { z : Int | 'r } -> Int
+        let get rec = rec.z
+
+        public main : Runtime -> Unit
+        let main r = r.console.writeLine (Int.toString (get { a = 1, b = 2, z = 99 }))
+    "#};
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "99\n");
+}
+
+#[test]
+fn row_polymorphic_outer_with_monomorphic_inner_record() {
+    // `rec.p` is a row-polymorphic projection (evidence); the inner `{ x, y }` is
+    // closed, so `.x`/`.y` are constant offsets.
+    let src = indoc! {r#"
+        module M
+
+        getInner : { p : { x : Int, y : Int } | 'r } -> Int
+        let getInner rec = rec.p.x + rec.p.y
+
+        public main : Runtime -> Unit
+        let main r =
+          r.console.writeLine (Int.toString (getInner { tag = 0, p = { x = 3, y = 4 } }))
+    "#};
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "7\n");
+}
+
+#[test]
+fn interface_value_in_a_record_field_dispatches() {
+    let src = indoc! {r#"
+        module M
+
+        interface Greeter =
+          greet : String -> String
+
+        public main : Runtime -> Unit
+        let main r =
+          let g = { Greeter with greet n = n ++ "!" }
+          let rec = { count = 1, greeter = g }
+          r.console.writeLine (rec.greeter.greet "hi")
+    "#};
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "hi!\n");
+}
+
+#[test]
+fn row_polymorphic_update_preserves_the_other_fields() {
+    let src = indoc! {r#"
+        module M
+
+        bump : { n : Int | 'r } -> { n : Int | 'r }
+        let bump rec = { rec with n = rec.n + 1 }
+
+        public main : Runtime -> Unit
+        let main r =
+          let rec = { a = 1, b = 2, c = 3, n = 10, z = 99 }
+          let rec2 = bump rec
+          r.console.writeLine (Int.toString (rec2.a + rec2.b + rec2.c + rec2.n + rec2.z))
+    "#};
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "116\n"); // 1 + 2 + 3 + 11 + 99
+}
+
+#[test]
 fn file_system_write_then_read_runs() {
     let path = std::env::temp_dir().join("fai-codegen-fs-roundtrip.txt");
     let path = path.to_str().unwrap().replace('\\', "/");
