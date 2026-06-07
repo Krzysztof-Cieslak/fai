@@ -454,13 +454,16 @@ fn to_request(sub: &QueryCommand) -> QueryRequest {
         QueryCommand::Docs { target } => QueryRequest::Docs { target: target.clone() },
         QueryCommand::Outline { target } => QueryRequest::Outline { target: target.clone() },
         QueryCommand::Api { module } => QueryRequest::Api { module: module.clone() },
-        QueryCommand::Dependents { target } => {
-            QueryRequest::Dependents { target: target.clone(), limit: None }
+        QueryCommand::Dependents { target, transitive } => QueryRequest::Dependents {
+            target: target.clone(),
+            transitive: *transitive,
+            limit: None,
+        },
+        QueryCommand::Callers { symbol } => QueryRequest::Callers { target: symbol.clone() },
+        QueryCommand::Callees { symbol } => QueryRequest::Callees { target: symbol.clone() },
+        QueryCommand::Search { .. } | QueryCommand::Caps { .. } => {
+            QueryRequest::Unsupported { name: sub.name().to_owned() }
         }
-        QueryCommand::Callers { .. }
-        | QueryCommand::Callees { .. }
-        | QueryCommand::Search { .. }
-        | QueryCommand::Caps { .. } => QueryRequest::Unsupported { name: sub.name().to_owned() },
     }
 }
 

@@ -223,6 +223,9 @@ pub enum QueryCommand {
     Dependents {
         /// Symbol or module.
         target: String,
+        /// Follow the reverse graph to its transitive closure.
+        #[arg(long)]
+        transitive: bool,
     },
     /// Inbound call edges.
     Callers {

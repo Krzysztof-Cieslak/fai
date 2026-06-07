@@ -6,11 +6,11 @@
 //! has errors.
 
 use fai_db::{Db, SourceFile};
-use fai_resolve::{DefId, module_defs, resolve};
+use fai_resolve::{DefId, Res, ResolvedBodies, module_defs, resolve};
 use fai_span::{Span, SpanResolver};
 use fai_syntax::Symbol;
-use fai_syntax::ast::{ItemKind, PatKind, Visibility as AstVis};
-use rustc_hash::FxHashMap;
+use fai_syntax::ast::{ExprId, ExprKind, ItemKind, Module, PatKind, Visibility as AstVis};
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Serialize;
 
 use crate::repr::{
@@ -228,13 +228,30 @@ pub struct DependentsResult {
     pub truncated: bool,
 }
 
+/// The reverse dependency graph over `files`: each definition mapped to the
+/// definitions that reference it (a body-edit assembled, deterministic-free map).
+fn reverse_dep_graph(db: &dyn Db, files: &[SourceFile]) -> FxHashMap<DefId, FxHashSet<DefId>> {
+    let mut rev: FxHashMap<DefId, FxHashSet<DefId>> = FxHashMap::default();
+    for &file in files {
+        let resolved = resolve(db, file);
+        for (owner, edges) in &resolved.deps_by_def {
+            for &callee in edges {
+                rev.entry(callee).or_default().insert(*owner);
+            }
+        }
+    }
+    rev
+}
+
 /// Finds the definitions that reference the target (reverse dependency edges).
+/// With `transitive`, follows the reverse graph to its transitive closure.
 #[must_use]
 pub fn dependents(
     db: &dyn Db,
     files: &[SourceFile],
     target: &str,
     resolver: &dyn SpanResolver,
+    transitive: bool,
     opts: ListOpts,
 ) -> DependentsResult {
     let Some(t) = resolve_target(db, target) else {
@@ -242,23 +259,32 @@ pub fn dependents(
             schema_version: SCHEMA_VERSION,
             target: None,
             dependents: vec![],
-            transitive: false,
+            transitive,
             truncated: false,
         };
     };
     let target_def = DefId::new(t.file.source(db), t.name);
-    let mut deps: Vec<SymbolRef> = Vec::new();
-    for &file in files {
-        let resolved = resolve(db, file);
-        for (owner, edges) in &resolved.deps_by_def {
-            if edges.contains(&target_def)
-                && let Some(owner_file) = db.source_file(owner.file)
-                && let Some(sr) = symbol_ref(db, owner_file, owner.name, resolver)
-            {
-                deps.push(sr);
-            }
+    let rev = reverse_dep_graph(db, files);
+
+    // Collect the dependent definitions: direct callers, or the transitive
+    // closure of the reverse graph (breadth-first, excluding the target itself).
+    let mut found: Vec<DefId> = Vec::new();
+    let mut seen: FxHashSet<DefId> = FxHashSet::default();
+    let mut stack: Vec<DefId> = rev.get(&target_def).into_iter().flatten().copied().collect();
+    while let Some(d) = stack.pop() {
+        if d == target_def || !seen.insert(d) {
+            continue;
+        }
+        found.push(d);
+        if transitive {
+            stack.extend(rev.get(&d).into_iter().flatten().copied());
         }
     }
+
+    let mut deps: Vec<SymbolRef> = found
+        .into_iter()
+        .filter_map(|d| db.source_file(d.file).and_then(|f| symbol_ref(db, f, d.name, resolver)))
+        .collect();
     deps.sort_by(|a, b| a.path.cmp(&b.path));
     deps.dedup_by(|a, b| a.path == b.path);
     let (dependents, truncated) = truncate(deps, opts);
@@ -266,8 +292,204 @@ pub fn dependents(
         schema_version: SCHEMA_VERSION,
         target: symbol_ref(db, t.file, t.name, resolver),
         dependents,
-        transitive: false,
+        transitive,
         truncated,
+    }
+}
+
+/// One edge of a call hierarchy: a related definition and the sites that realize
+/// the edge (CLI.md `callers`/`callees`).
+#[derive(Debug, Serialize)]
+pub struct CallEdge {
+    pub symbol: SymbolRef,
+    pub sites: Vec<Location>,
+}
+
+/// `fai query callers` / `callees`.
+#[derive(Debug, Serialize)]
+pub struct CallHierarchyResult {
+    #[serde(rename = "schemaVersion")]
+    pub schema_version: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<SymbolRef>,
+    pub edges: Vec<CallEdge>,
+}
+
+fn empty_hierarchy() -> CallHierarchyResult {
+    CallHierarchyResult { schema_version: SCHEMA_VERSION, target: None, edges: vec![] }
+}
+
+/// The body expression of a (value) definition with qualified `name` in `file`.
+fn def_body(module: &Module, defs: &fai_resolve::ModuleDefs, name: Symbol) -> Option<ExprId> {
+    let binding = defs.get(name)?.binding;
+    match &module.items[binding.index()].kind {
+        ItemKind::Binding { body, .. } => Some(*body),
+        _ => None,
+    }
+}
+
+/// Collects every referencing expression in `expr`'s subtree (those resolution
+/// recorded), with what it resolved to — the per-body reference sites.
+fn collect_body_refs(
+    module: &Module,
+    resolved: &ResolvedBodies,
+    expr: ExprId,
+    out: &mut Vec<(ExprId, Res)>,
+) {
+    if let Some(res) = resolved.get(expr) {
+        out.push((expr, res));
+    }
+    match &module.expr(expr).kind {
+        ExprKind::App { func, arg } => {
+            collect_body_refs(module, resolved, *func, out);
+            collect_body_refs(module, resolved, *arg, out);
+        }
+        ExprKind::Infix { op, lhs, rhs } => {
+            collect_body_refs(module, resolved, *op, out);
+            collect_body_refs(module, resolved, *lhs, out);
+            collect_body_refs(module, resolved, *rhs, out);
+        }
+        ExprKind::Prefix { op, operand } => {
+            collect_body_refs(module, resolved, *op, out);
+            collect_body_refs(module, resolved, *operand, out);
+        }
+        ExprKind::If { cond, then_branch, else_branch } => {
+            collect_body_refs(module, resolved, *cond, out);
+            collect_body_refs(module, resolved, *then_branch, out);
+            collect_body_refs(module, resolved, *else_branch, out);
+        }
+        ExprKind::Lambda { body, .. } => collect_body_refs(module, resolved, *body, out),
+        ExprKind::Match { scrutinee, arms } => {
+            collect_body_refs(module, resolved, *scrutinee, out);
+            for arm in arms {
+                collect_body_refs(module, resolved, arm.body, out);
+            }
+        }
+        ExprKind::Block { stmts, tail } => {
+            for stmt in stmts {
+                collect_body_refs(module, resolved, stmt.value, out);
+            }
+            collect_body_refs(module, resolved, *tail, out);
+        }
+        ExprKind::Field { base, .. } => collect_body_refs(module, resolved, *base, out),
+        ExprKind::Record(fields) => {
+            for f in fields {
+                collect_body_refs(module, resolved, f.value, out);
+            }
+        }
+        ExprKind::RecordUpdate { base, fields } => {
+            collect_body_refs(module, resolved, *base, out);
+            for f in fields {
+                collect_body_refs(module, resolved, f.value, out);
+            }
+        }
+        ExprKind::Instance { methods, .. } => {
+            for m in methods {
+                collect_body_refs(module, resolved, m.body, out);
+            }
+        }
+        ExprKind::Paren(inner) => collect_body_refs(module, resolved, *inner, out),
+        ExprKind::Tuple(xs) | ExprKind::List(xs) => {
+            for &x in xs {
+                collect_body_refs(module, resolved, x, out);
+            }
+        }
+        ExprKind::Var(_)
+        | ExprKind::Unit
+        | ExprKind::Int(_)
+        | ExprKind::Float(_)
+        | ExprKind::String(_)
+        | ExprKind::Char(_)
+        | ExprKind::Error => {}
+    }
+}
+
+/// Groups `(callee, site)` pairs into sorted call edges.
+fn build_edges(
+    db: &dyn Db,
+    by_callee: FxHashMap<DefId, Vec<Location>>,
+    resolver: &dyn SpanResolver,
+) -> Vec<CallEdge> {
+    let mut edges: Vec<CallEdge> = by_callee
+        .into_iter()
+        .filter_map(|(def, mut sites)| {
+            let file = db.source_file(def.file)?;
+            let symbol = symbol_ref(db, file, def.name, resolver)?;
+            sites.sort_by(|a, b| {
+                (a.span.file.as_str(), a.span.byte_start)
+                    .cmp(&(b.span.file.as_str(), b.span.byte_start))
+            });
+            Some(CallEdge { symbol, sites })
+        })
+        .collect();
+    edges.sort_by(|a, b| a.symbol.path.cmp(&b.symbol.path));
+    edges
+}
+
+/// `fai query callees`: the definitions `target`'s body references, with sites.
+#[must_use]
+pub fn callees(db: &dyn Db, target: &str, resolver: &dyn SpanResolver) -> CallHierarchyResult {
+    let Some(t) = resolve_target(db, target) else {
+        return empty_hierarchy();
+    };
+    let parsed = fai_syntax::parse(db, t.file);
+    let resolved = resolve(db, t.file);
+    let defs = module_defs(db, t.file);
+    let mut by_callee: FxHashMap<DefId, Vec<Location>> = FxHashMap::default();
+    if let Some(body) = def_body(&parsed.module, &defs, t.name) {
+        let mut refs = Vec::new();
+        collect_body_refs(&parsed.module, &resolved, body, &mut refs);
+        for (expr, res) in refs {
+            if let Res::Def(callee) = res {
+                let span = parsed.module.expr(expr).span;
+                if let Some(sj) = SpanJson::resolve(Span::new(t.file.source(db), span), resolver) {
+                    by_callee.entry(callee).or_default().push(Location { span: sj, preview: None });
+                }
+            }
+        }
+    }
+    CallHierarchyResult {
+        schema_version: SCHEMA_VERSION,
+        target: symbol_ref(db, t.file, t.name, resolver),
+        edges: build_edges(db, by_callee, resolver),
+    }
+}
+
+/// `fai query callers`: the definitions whose body references `target`, with sites.
+#[must_use]
+pub fn callers(
+    db: &dyn Db,
+    files: &[SourceFile],
+    target: &str,
+    resolver: &dyn SpanResolver,
+) -> CallHierarchyResult {
+    let Some(t) = resolve_target(db, target) else {
+        return empty_hierarchy();
+    };
+    let target_def = DefId::new(t.file.source(db), t.name);
+    let rev = reverse_dep_graph(db, files);
+    let mut by_caller: FxHashMap<DefId, Vec<Location>> = FxHashMap::default();
+    for &caller in rev.get(&target_def).into_iter().flatten() {
+        let Some(file) = db.source_file(caller.file) else { continue };
+        let parsed = fai_syntax::parse(db, file);
+        let resolved = resolve(db, file);
+        let defs = module_defs(db, file);
+        let Some(body) = def_body(&parsed.module, &defs, caller.name) else { continue };
+        let mut refs = Vec::new();
+        collect_body_refs(&parsed.module, &resolved, body, &mut refs);
+        for (expr, res) in refs {
+            if res == Res::Def(target_def) {
+                let span = parsed.module.expr(expr).span;
+                if let Some(sj) = SpanJson::resolve(Span::new(file.source(db), span), resolver) {
+                    by_caller.entry(caller).or_default().push(Location { span: sj, preview: None });
+                }
+            }
+        }
+    }
+    CallHierarchyResult {
+        schema_version: SCHEMA_VERSION,
+        target: symbol_ref(db, t.file, t.name, resolver),
+        edges: build_edges(db, by_caller, resolver),
     }
 }
 
