@@ -2,7 +2,8 @@
 
 use fai_db::{Db, DbSpanResolver, FaiDatabase, SourceFile};
 use fai_ide::{
-    ListOpts, api, callees, callers, def, dependents, outline, refs, search, symbols, type_at,
+    ListOpts, api, callees, callers, def, definition_at, dependents, hover_at, outline, refs,
+    search, symbols, type_at,
 };
 use indoc::indoc;
 
@@ -215,4 +216,129 @@ fn type_under_error_is_best_effort() {
     let _ = db.source_file(id).unwrap();
     let r = type_at(&db, "M.good", &DbSpanResolver::new(&db));
     assert_eq!(r.ty.display, "Int -> Int");
+}
+
+// --- position-based queries (hover / go-to-definition) -----------------------
+
+const POSITION_SOURCE: &str = indoc! {r#"
+    module P
+
+    type Color =
+      | Red
+      | Green
+
+    public paint : Color -> Int
+    let paint c =
+      let shade = tag c
+      shade + tag Red
+
+    public tag : Color -> Int
+    let tag c =
+      match c with
+      | Red -> 0
+      | Green -> 1
+"#};
+
+/// A one-file workspace (`P.fai`) with locals, a constructor, and a self-call,
+/// plus its source text (so tests can locate offsets and slice spans).
+fn position_workspace() -> (FaiDatabase, SourceFile, &'static str) {
+    let mut db = FaiDatabase::new();
+    let id = db.add_source("P.fai".into(), POSITION_SOURCE.to_owned());
+    let file = db.source_file(id).unwrap();
+    (db, file, POSITION_SOURCE)
+}
+
+/// The byte offset of `needle` in `text` (panics if absent).
+fn at(text: &str, needle: &str) -> u32 {
+    text.find(needle).unwrap_or_else(|| panic!("`{needle}` not found")) as u32
+}
+
+#[test]
+fn definition_at_jumps_to_a_local_binding() {
+    let (db, file, text) = position_workspace();
+    // The `shade` in the tail `shade + tag Red` is a use of the local binding.
+    let offset = at(text, "shade + tag Red");
+    let r = definition_at(&db, file, offset, &DbSpanResolver::new(&db));
+    assert!(r.target.is_none(), "a local has no addressable symbol");
+    let span = &r.definitions[0].span;
+    // It resolves to the binding occurrence `let shade = …`, not the use.
+    assert_eq!(span.byte_start, at(text, "shade = tag c"));
+    assert_eq!(&text[span.byte_start as usize..span.byte_end as usize], "shade");
+}
+
+#[test]
+fn definition_at_jumps_to_a_constructor() {
+    let (db, file, text) = position_workspace();
+    // The `Red` in `tag Red` is a constructor reference.
+    let offset = at(text, "tag Red") + "tag ".len() as u32;
+    let r = definition_at(&db, file, offset, &DbSpanResolver::new(&db));
+    let span = &r.definitions[0].span;
+    // It resolves to the variant declaration `| Red`.
+    assert_eq!(span.byte_start, at(text, "| Red\n") + "| ".len() as u32);
+    assert_eq!(&text[span.byte_start as usize..span.byte_end as usize], "Red");
+}
+
+#[test]
+fn definition_at_jumps_across_modules_via_outward_walk() {
+    let (db, files) = workspace();
+    // Point at the module segment `A` in `A.inc`; the bare `Var(A)` has no
+    // resolution, so the query walks outward to the qualified reference.
+    let b = files[1];
+    let text = b.text(&db).clone();
+    let offset = text.find("A.inc").unwrap() as u32;
+    let r = definition_at(&db, b, offset, &DbSpanResolver::new(&db));
+    assert_eq!(r.target.as_ref().unwrap().name, "inc");
+    assert_eq!(r.definitions[0].span.file, "A.fai");
+}
+
+#[test]
+fn definition_at_off_a_reference_is_empty() {
+    let (db, file, text) = position_workspace();
+    // The module header has no referencing expression.
+    let offset = at(text, "module P");
+    let r = definition_at(&db, file, offset, &DbSpanResolver::new(&db));
+    assert!(r.target.is_none() && r.definitions.is_empty());
+}
+
+#[test]
+fn hover_at_reports_a_local_type() {
+    let (db, file, text) = position_workspace();
+    let offset = at(text, "shade + tag Red");
+    let r = hover_at(&db, file, offset, &DbSpanResolver::new(&db));
+    assert_eq!(r.name.as_deref(), Some("shade"));
+    assert_eq!(r.ty.unwrap().display, "Int");
+}
+
+#[test]
+fn hover_at_reports_a_function_reference_type() {
+    let (db, file, text) = position_workspace();
+    // The `tag` in the tail resolves to the top-level function.
+    let offset = at(text, "tag Red");
+    let r = hover_at(&db, file, offset, &DbSpanResolver::new(&db));
+    assert_eq!(r.name.as_deref(), Some("tag"));
+    assert_eq!(r.ty.unwrap().display, "Color -> Int");
+}
+
+#[test]
+fn hover_at_off_an_expression_is_empty() {
+    let (db, file, text) = position_workspace();
+    let offset = at(text, "module P");
+    let r = hover_at(&db, file, offset, &DbSpanResolver::new(&db));
+    assert!(r.ty.is_none() && r.name.is_none());
+}
+
+#[test]
+fn definition_at_snapshot() {
+    let (db, file, text) = position_workspace();
+    let offset = at(text, "tag Red") + "tag ".len() as u32;
+    let r = definition_at(&db, file, offset, &DbSpanResolver::new(&db));
+    insta::assert_snapshot!("definition_at_Red", json(&r));
+}
+
+#[test]
+fn hover_at_snapshot() {
+    let (db, file, text) = position_workspace();
+    let offset = at(text, "tag Red");
+    let r = hover_at(&db, file, offset, &DbSpanResolver::new(&db));
+    insta::assert_snapshot!("hover_at_tag", json(&r));
 }
