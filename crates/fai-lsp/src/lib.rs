@@ -17,6 +17,7 @@ use fai_db::SourceFile;
 use fai_driver::{DirtyFile, Session, check, fmt};
 use lsp_server::{Connection, Message, Notification, Request, RequestId, Response};
 use lsp_types::{
+    CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
     Diagnostic as LspDiagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
     DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentFormattingParams,
     DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
@@ -82,6 +83,12 @@ fn server_capabilities() -> ServerCapabilities {
         document_symbol_provider: Some(OneOf::Left(true)),
         workspace_symbol_provider: Some(OneOf::Left(true)),
         references_provider: Some(OneOf::Left(true)),
+        completion_provider: Some(CompletionOptions {
+            // `.` triggers member completion; identifier characters trigger
+            // automatically without being listed.
+            trigger_characters: Some(vec![".".to_owned()]),
+            ..CompletionOptions::default()
+        }),
         rename_provider: Some(OneOf::Right(RenameOptions {
             prepare_provider: Some(true),
             work_done_progress_options: Default::default(),
@@ -195,6 +202,12 @@ impl Server {
             "textDocument/rename" => {
                 if let Ok((id, params)) = req.extract::<RenameParams>("textDocument/rename") {
                     respond(conn, id, &self.rename(&params));
+                }
+            }
+            "textDocument/completion" => {
+                if let Ok((id, params)) = req.extract::<CompletionParams>("textDocument/completion")
+                {
+                    respond(conn, id, &self.completion(&params));
                 }
             }
             // An unsupported request still needs a reply so the client is not
@@ -313,6 +326,23 @@ impl Server {
             }
         }
         Some(WorkspaceEdit { changes: Some(changes), ..WorkspaceEdit::default() })
+    }
+
+    fn completion(&self, params: &CompletionParams) -> Option<CompletionResponse> {
+        let pos = &params.text_document_position;
+        let (file, offset) = self.locate(&pos.text_document.uri, pos.position)?;
+        let result = fai_ide::completions_at(self.session.db(), file, offset);
+        let items: Vec<CompletionItem> = result
+            .items
+            .into_iter()
+            .map(|i| CompletionItem {
+                label: i.label,
+                kind: Some(lsp_completion_kind(i.kind)),
+                detail: i.detail,
+                ..CompletionItem::default()
+            })
+            .collect();
+        Some(CompletionResponse::Array(items))
     }
 
     // --- helpers ----------------------------------------------------------
@@ -506,5 +536,16 @@ fn lsp_symbol_kind(kind: fai_ide::repr::SymbolKind) -> LspSymbolKind {
         fai_ide::repr::SymbolKind::Function => LspSymbolKind::FUNCTION,
         fai_ide::repr::SymbolKind::Value => LspSymbolKind::VARIABLE,
         fai_ide::repr::SymbolKind::Module => LspSymbolKind::MODULE,
+    }
+}
+
+/// Maps an IDE completion kind to its LSP counterpart.
+fn lsp_completion_kind(kind: fai_ide::CompletionKind) -> CompletionItemKind {
+    match kind {
+        fai_ide::CompletionKind::Function => CompletionItemKind::FUNCTION,
+        fai_ide::CompletionKind::Value => CompletionItemKind::VARIABLE,
+        fai_ide::CompletionKind::Constructor => CompletionItemKind::CONSTRUCTOR,
+        fai_ide::CompletionKind::Field => CompletionItemKind::FIELD,
+        fai_ide::CompletionKind::Module => CompletionItemKind::MODULE,
     }
 }

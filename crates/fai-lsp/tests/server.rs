@@ -430,6 +430,63 @@ fn rename_rejects_an_invalid_name() {
     harness.shutdown();
 }
 
+#[test]
+fn completion_offers_qualified_members() {
+    let src = "module M\n\npublic total : List Int -> Int\nlet total xs = List.length xs\n";
+    let mut harness = Harness::start("complete-qual", &[("M.fai", src)]);
+    let uri = harness.did_open("M.fai", src);
+    // Right after `List.` (line 3, col 20).
+    let result = harness.request(
+        "textDocument/completion",
+        json!({ "textDocument": { "uri": uri }, "position": { "line": 3, "character": 20 } }),
+    );
+    let items = result.as_array().expect("an array of completion items");
+    let labels: Vec<&str> = items.iter().map(|i| i["label"].as_str().unwrap()).collect();
+    assert!(labels.contains(&"length") && labels.contains(&"map"), "{labels:?}");
+    // `length` is a function (LSP completion kind 3).
+    let length = items.iter().find(|i| i["label"] == "length").unwrap();
+    assert_eq!(length["kind"], 3, "{length:?}");
+    harness.shutdown();
+}
+
+#[test]
+fn completion_offers_record_fields() {
+    let src =
+        "module M\n\npublic area : { width : Int, height : Int } -> Int\nlet area r = r.width\n";
+    let mut harness = Harness::start("complete-field", &[("M.fai", src)]);
+    let uri = harness.did_open("M.fai", src);
+    // Right after `r.` (line 3, col 15).
+    let result = harness.request(
+        "textDocument/completion",
+        json!({ "textDocument": { "uri": uri }, "position": { "line": 3, "character": 15 } }),
+    );
+    let items = result.as_array().expect("an array of completion items");
+    let labels: Vec<&str> = items.iter().map(|i| i["label"].as_str().unwrap()).collect();
+    assert_eq!(labels, vec!["height", "width"], "{labels:?}");
+    // Fields are LSP completion kind 5.
+    assert!(items.iter().all(|i| i["kind"] == 5), "{items:?}");
+    harness.shutdown();
+}
+
+#[test]
+fn completion_offers_in_scope_names() {
+    let src =
+        "module M\n\npublic describe : Int -> Int\nlet describe c =\n  let label = 1\n  label\n";
+    let mut harness = Harness::start("complete-bare", &[("M.fai", src)]);
+    let uri = harness.did_open("M.fai", src);
+    // In the trailing `label` (line 5).
+    let result = harness.request(
+        "textDocument/completion",
+        json!({ "textDocument": { "uri": uri }, "position": { "line": 5, "character": 4 } }),
+    );
+    let items = result.as_array().expect("an array of completion items");
+    let labels: Vec<&str> = items.iter().map(|i| i["label"].as_str().unwrap()).collect();
+    assert!(labels.contains(&"c"), "the parameter: {labels:?}");
+    assert!(labels.contains(&"label"), "the local: {labels:?}");
+    assert!(labels.contains(&"describe"), "the module definition: {labels:?}");
+    harness.shutdown();
+}
+
 // --- dirty (unsaved) buffers -------------------------------------------------
 //
 // These exercise the case the earlier tests do not: the open buffer differs from

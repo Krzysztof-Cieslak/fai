@@ -925,6 +925,18 @@ server:
     new name must be a plain identifier in the symbol's casing namespace (a
     constructor stays upper-case, a value or local lower-case), so a rename can
     never move a symbol between namespaces; an invalid name yields no edit.
+  - **Completion.** The candidate set is chosen by the context immediately before
+    the cursor, determined lexically so a half-typed buffer with a trailing `.`
+    still works (the parser recovers a `Field` with an empty member): after
+    `Module.` the module's members (cross-file public exports, or a same-file
+    nested module's members), after `value.` the fields of the value's record
+    type, and otherwise the names in scope — locals visible at the cursor
+    (reconstructed by a scope walk down to the offset, innermost binding winning),
+    this module's scope-visible definitions, the visible constructors, and the
+    auto-imported prelude values. Each item carries a kind and a rendered type;
+    the editor filters by the typed prefix. Lazy doc resolution
+    (`completionItem/resolve`) waits on `///` doc extraction, so detail is the
+    type only for now.
 
 Inference tuning, primitive borrowing & intra-build parallelism
 (measurement-driven; correctness-neutral — inferred types, diagnostics, and

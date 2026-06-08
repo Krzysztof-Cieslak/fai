@@ -61,11 +61,11 @@
 > — and full-domain float generation needs `Float.fromBits`/`toBits`, both added
 > as part of this work.) A standard **language server** (`fai lsp`, the `fai-lsp`
 > crate) is built: it reuses the warm session and the `fai-ide` engine to serve
-> diagnostics, hover, go-to-definition, document & workspace symbols,
+> diagnostics, hover, go-to-definition, completion, document & workspace symbols,
 > find-references, rename, and document formatting over stdio, backed by
-> offset-addressed code-intelligence queries (`hover`/`definition`, the
-> `references` reverse lookup that also drives rename, and the symbol outline).
-> Later
+> offset-addressed code-intelligence queries (`hover`/`definition`, context-aware
+> `completion`, the `references` reverse lookup that also drives rename, and the
+> symbol outline). Later
 > milestones (performance tuning at scale, …) define the *intended* interface we
 > build toward. The design is locked (see the decision table below).
 
