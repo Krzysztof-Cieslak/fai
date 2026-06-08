@@ -222,6 +222,49 @@ impl Checker<'_> {
                     ));
                 }
             }
+            // The loop's carried locals are already bound (function parameters and,
+            // for a destination-passing loop, the hole). Each `Recur`/`HoleClose`
+            // along a path consumes them, so loop balance falls out of the existing
+            // per-path consistency check; the body is evaluated once here.
+            ExprKind::Join { body, .. } => self.eval(body, refs)?,
+            // A tail back-edge consumes the new loop-carried values (the next
+            // iteration's parameters). It is terminal.
+            ExprKind::Recur { args } => {
+                for a in args {
+                    self.eval(a, refs)?;
+                }
+            }
+            // The hole is a linear token: born here (like a reuse token), advanced
+            // by `HoleFill`, consumed by `HoleClose` — exactly once per path.
+            ExprKind::HoleStart { hole, body } => {
+                if refs.insert(*hole, 1).is_some() {
+                    return Err(format!(
+                        "fn{}: rebound hole token %{}",
+                        self.fn_index,
+                        hole.index()
+                    ));
+                }
+                self.eval(body, refs)?;
+                let n = refs.remove(hole).unwrap_or(0);
+                if n != 0 {
+                    return Err(format!(
+                        "fn{}: hole token %{} left with {n} refs",
+                        self.fn_index,
+                        hole.index()
+                    ));
+                }
+            }
+            // Linking a cell consumes the current hole token and the cell; the new
+            // token it yields is bound by the enclosing `let`.
+            ExprKind::HoleFill { hole, cell, .. } => {
+                self.eval(cell, refs)?;
+                self.consume(*hole, refs)?;
+            }
+            // Closing the spine consumes the hole token and the base value.
+            ExprKind::HoleClose { hole, base } => {
+                self.eval(base, refs)?;
+                self.consume(*hole, refs)?;
+            }
         }
         Ok(())
     }

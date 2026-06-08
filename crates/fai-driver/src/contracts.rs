@@ -263,6 +263,10 @@ fn has_error_node(def: &LoweredDef) -> bool {
             }
             ExprKind::DataTag(b) | ExprKind::DataField { base: b, .. } => scan(b),
             ExprKind::Dup { body, .. } | ExprKind::Drop { body, .. } => scan(body),
+            ExprKind::Join { body, .. } | ExprKind::HoleStart { body, .. } => scan(body),
+            ExprKind::Recur { args } => args.iter().any(scan),
+            ExprKind::HoleFill { cell, .. } => scan(cell),
+            ExprKind::HoleClose { base, .. } => scan(base),
             ExprKind::Lit(_)
             | ExprKind::Local(_)
             | ExprKind::Global(_)

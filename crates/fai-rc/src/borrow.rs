@@ -287,8 +287,16 @@ impl Analyzer<'_> {
                 self.record_match(base);
                 self.scan(base, false);
             }
-            // Reference-counting nodes are not present in the pre-count IR.
-            K::Reset { .. } | K::Dup { .. } | K::Drop { .. } => {}
+            // Reference-counting and tail-call nodes are not present in the
+            // pre-count IR borrow inference runs on.
+            K::Reset { .. }
+            | K::Dup { .. }
+            | K::Drop { .. }
+            | K::Join { .. }
+            | K::Recur { .. }
+            | K::HoleStart { .. }
+            | K::HoleFill { .. }
+            | K::HoleClose { .. } => {}
         }
     }
 

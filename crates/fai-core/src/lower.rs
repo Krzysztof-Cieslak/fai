@@ -1307,10 +1307,43 @@ fn collect_free(expr: &CExpr, bound: &mut FxHashSet<LocalId>, out: &mut FxHashSe
             }
             collect_free(body, bound, out);
         }
-        // Reset is inserted after lowering; handled defensively for exhaustiveness.
+        // The following are inserted after lowering (reset/reuse and the tail-call
+        // transform), so they never reach here; handled defensively for
+        // exhaustiveness.
         K::Reset { value, body, .. } => {
             collect_free(value, bound, out);
             collect_free(body, bound, out);
+        }
+        K::Join { params, body } => {
+            let fresh: Vec<LocalId> = params.iter().copied().filter(|p| bound.insert(*p)).collect();
+            collect_free(body, bound, out);
+            for p in fresh {
+                bound.remove(&p);
+            }
+        }
+        K::Recur { args } => {
+            for a in args {
+                collect_free(a, bound, out);
+            }
+        }
+        K::HoleStart { hole, body } => {
+            let fresh = bound.insert(*hole);
+            collect_free(body, bound, out);
+            if fresh {
+                bound.remove(hole);
+            }
+        }
+        K::HoleFill { hole, cell, .. } => {
+            if !bound.contains(hole) {
+                out.insert(*hole);
+            }
+            collect_free(cell, bound, out);
+        }
+        K::HoleClose { hole, base } => {
+            if !bound.contains(hole) {
+                out.insert(*hole);
+            }
+            collect_free(base, bound, out);
         }
     }
 }

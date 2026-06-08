@@ -175,6 +175,32 @@ fn write_expr(out: &mut String, e: &CExpr) {
             write_expr(out, body);
             out.push(')');
         }
+        ExprKind::Join { params, body } => {
+            let ps: Vec<String> = params.iter().map(|p| format!("%{}", p.index())).collect();
+            let _ = write!(out, "(join [{}] ", ps.join(", "));
+            write_expr(out, body);
+            out.push(')');
+        }
+        ExprKind::Recur { args } => {
+            out.push_str("(recur");
+            write_args(out, args);
+            out.push(')');
+        }
+        ExprKind::HoleStart { hole, body } => {
+            let _ = write!(out, "(holestart %{}; ", hole.index());
+            write_expr(out, body);
+            out.push(')');
+        }
+        ExprKind::HoleFill { hole, cell, field } => {
+            let _ = write!(out, "(holefill %{} {field} ", hole.index());
+            write_expr(out, cell);
+            out.push(')');
+        }
+        ExprKind::HoleClose { hole, base } => {
+            let _ = write!(out, "(holeclose %{} ", hole.index());
+            write_expr(out, base);
+            out.push(')');
+        }
         ExprKind::Error => out.push_str("<error>"),
     }
 }

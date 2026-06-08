@@ -158,6 +158,35 @@ fn write_expr(
             write_expr(out, body, namer, arity_of);
             out.push(')');
         }
+        ExprKind::Join { params, body } => {
+            let ps: Vec<String> = params.iter().map(|p| format!("%{}", p.index())).collect();
+            let _ = write!(out, "(join [{}] ", ps.join(","));
+            write_expr(out, body, namer, arity_of);
+            out.push(')');
+        }
+        ExprKind::Recur { args } => {
+            out.push_str("(recur");
+            for a in args {
+                out.push(' ');
+                write_expr(out, a, namer, arity_of);
+            }
+            out.push(')');
+        }
+        ExprKind::HoleStart { hole, body } => {
+            let _ = write!(out, "(holestart %{} ", hole.index());
+            write_expr(out, body, namer, arity_of);
+            out.push(')');
+        }
+        ExprKind::HoleFill { hole, cell, field } => {
+            let _ = write!(out, "(holefill %{} {field} ", hole.index());
+            write_expr(out, cell, namer, arity_of);
+            out.push(')');
+        }
+        ExprKind::HoleClose { hole, base } => {
+            let _ = write!(out, "(holeclose %{} ", hole.index());
+            write_expr(out, base, namer, arity_of);
+            out.push(')');
+        }
         ExprKind::Error => out.push_str("<err>"),
     }
     // Each node carries its canonical type. Codegen ignores types in the current

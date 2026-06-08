@@ -168,6 +168,41 @@ pub enum WireExpr {
         /// The continuation.
         body: Box<WireExpr>,
     },
+    /// A loop header (join point).
+    Join {
+        /// The loop-carried slots.
+        params: Vec<u32>,
+        /// The loop body.
+        body: Box<WireExpr>,
+    },
+    /// A tail back-edge to the enclosing loop.
+    Recur {
+        /// The new loop-carried values.
+        args: Vec<WireExpr>,
+    },
+    /// Begin destination-passing construction, binding a hole token.
+    HoleStart {
+        /// The destination token slot.
+        hole: u32,
+        /// The continuation.
+        body: Box<WireExpr>,
+    },
+    /// Link a cell into the spine and advance the destination.
+    HoleFill {
+        /// The current destination token slot.
+        hole: u32,
+        /// The cell to link in.
+        cell: Box<WireExpr>,
+        /// The recursive field index (the next hole).
+        field: u32,
+    },
+    /// Finish the spine with the base-case value.
+    HoleClose {
+        /// The destination token slot.
+        hole: u32,
+        /// The base value.
+        base: Box<WireExpr>,
+    },
     /// A lowering-error placeholder.
     Error,
 }
@@ -270,6 +305,24 @@ fn expr_to_wire(e: &CExpr, module_of: &dyn Fn(DefId) -> String) -> WireExpr {
         }
         ExprKind::Drop { local, body } => {
             WireExpr::Drop { local: slot(*local), body: Box::new(expr_to_wire(body, module_of)) }
+        }
+        ExprKind::Join { params, body } => WireExpr::Join {
+            params: params.iter().map(|p| slot(*p)).collect(),
+            body: Box::new(expr_to_wire(body, module_of)),
+        },
+        ExprKind::Recur { args } => {
+            WireExpr::Recur { args: args.iter().map(|a| expr_to_wire(a, module_of)).collect() }
+        }
+        ExprKind::HoleStart { hole, body } => {
+            WireExpr::HoleStart { hole: slot(*hole), body: Box::new(expr_to_wire(body, module_of)) }
+        }
+        ExprKind::HoleFill { hole, cell, field } => WireExpr::HoleFill {
+            hole: slot(*hole),
+            cell: Box::new(expr_to_wire(cell, module_of)),
+            field: *field,
+        },
+        ExprKind::HoleClose { hole, base } => {
+            WireExpr::HoleClose { hole: slot(*hole), base: Box::new(expr_to_wire(base, module_of)) }
         }
         ExprKind::Error => WireExpr::Error,
     }
@@ -396,6 +449,26 @@ fn expr_from_wire(e: &WireExpr, sources: &mut SourceAssigner) -> CExpr {
             local: LocalId::from_index(*local as usize),
             body: Box::new(expr_from_wire(body, sources)),
         },
+        WireExpr::Join { params, body } => ExprKind::Join {
+            params: params.iter().map(|&i| LocalId::from_index(i as usize)).collect(),
+            body: Box::new(expr_from_wire(body, sources)),
+        },
+        WireExpr::Recur { args } => {
+            ExprKind::Recur { args: args.iter().map(|a| expr_from_wire(a, sources)).collect() }
+        }
+        WireExpr::HoleStart { hole, body } => ExprKind::HoleStart {
+            hole: LocalId::from_index(*hole as usize),
+            body: Box::new(expr_from_wire(body, sources)),
+        },
+        WireExpr::HoleFill { hole, cell, field } => ExprKind::HoleFill {
+            hole: LocalId::from_index(*hole as usize),
+            cell: Box::new(expr_from_wire(cell, sources)),
+            field: *field,
+        },
+        WireExpr::HoleClose { hole, base } => ExprKind::HoleClose {
+            hole: LocalId::from_index(*hole as usize),
+            base: Box::new(expr_from_wire(base, sources)),
+        },
         WireExpr::Error => ExprKind::Error,
     };
     CExpr::new(kind, Ty::Error)
@@ -498,6 +571,85 @@ mod tests {
         assert_eq!(text, pretty_def(&lowered));
         assert!(text.contains("reset %1 = %0"), "expected the reset in {text}");
         assert!(text.contains("data@%1"), "expected the reuse in {text}");
+    }
+
+    #[test]
+    fn round_trip_tail_call_loop() {
+        // The loop and destination-hole nodes are inserted by the tail-call
+        // transform, so they are built by hand here and round-tripped through the
+        // wire form (the daemon ships post-transform definitions).
+        let mut db = FaiDatabase::new();
+        let id = db.add_source("M.fai".into(), "module M\n\nlet f x = x\n".to_owned());
+        let file = db.source_file(id).unwrap();
+        let def = DefId::new(file.source(&db), Symbol::intern("f"));
+
+        let xs = LocalId::from_index(0);
+        let hole = LocalId::from_index(1);
+        let h2 = LocalId::from_index(2);
+        let lit = || CExpr::new(ExprKind::Lit(Lit::Int(0)), Ty::Error);
+        let cell = CExpr::new(
+            ExprKind::MakeData { tag: 1, args: vec![lit(), lit()], reuse: None },
+            Ty::Error,
+        );
+        // let h2 = holefill hole 1 cell; recur xs h2
+        let fill = CExpr::new(
+            ExprKind::Let {
+                local: h2,
+                value: Box::new(CExpr::new(
+                    ExprKind::HoleFill { hole, cell: Box::new(cell), field: 1 },
+                    Ty::Error,
+                )),
+                body: Box::new(CExpr::new(
+                    ExprKind::Recur {
+                        args: vec![
+                            CExpr::new(ExprKind::Local(xs), Ty::Error),
+                            CExpr::new(ExprKind::Local(h2), Ty::Error),
+                        ],
+                    },
+                    Ty::Error,
+                )),
+            },
+            Ty::Error,
+        );
+        let close = CExpr::new(ExprKind::HoleClose { hole, base: Box::new(lit()) }, Ty::Error);
+        let join = CExpr::new(
+            ExprKind::Join {
+                params: vec![xs, hole],
+                body: Box::new(CExpr::new(
+                    ExprKind::If {
+                        cond: Box::new(lit()),
+                        then: Box::new(close),
+                        els: Box::new(fill),
+                    },
+                    Ty::Error,
+                )),
+            },
+            Ty::Error,
+        );
+        let body = CExpr::new(ExprKind::HoleStart { hole, body: Box::new(join) }, Ty::Error);
+        let lowered = LoweredDef {
+            def,
+            fns: vec![CoreFn { params: vec![xs], captures: Vec::new(), body }],
+            entry_borrowed: Vec::new(),
+        };
+
+        let wire = def_to_wire(&lowered, &|_| "M".to_owned(), 1);
+        let json = serde_json::to_string(&wire).unwrap();
+        let decoded: WireDef = serde_json::from_str(&json).unwrap();
+        let bundle = WireBundle {
+            entry: decoded.id.clone(),
+            runtime: decoded.id.clone(),
+            defs: vec![decoded],
+        };
+        let rebuilt = from_wire(&bundle);
+
+        let text = pretty_def(&rebuilt.defs[0]);
+        assert_eq!(text, pretty_def(&lowered));
+        assert!(text.contains("holestart %1"), "expected the hole start in {text}");
+        assert!(text.contains("(join [%0, %1]"), "expected the loop in {text}");
+        assert!(text.contains("holefill %1 1"), "expected the hole fill in {text}");
+        assert!(text.contains("holeclose %1"), "expected the hole close in {text}");
+        assert!(text.contains("(recur %0 %2)"), "expected the back-edge in {text}");
     }
 
     #[test]

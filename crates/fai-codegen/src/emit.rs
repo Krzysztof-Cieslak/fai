@@ -12,7 +12,7 @@
 //! and `Drop` lower to runtime calls (no-ops on immediates).
 
 use cranelift_codegen::Context;
-use cranelift_codegen::ir::{AbiParam, FuncRef, InstBuilder, MemFlags, Value, types};
+use cranelift_codegen::ir::{AbiParam, Block, FuncRef, InstBuilder, MemFlags, Value, types};
 use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
@@ -193,6 +193,8 @@ fn build_fn<M: Module>(
             var_tys: FxHashMap::default(),
             runtime: FxHashMap::default(),
             string_counter: 0,
+            loop_ctx: None,
+            result_slot: None,
         };
 
         // Bind parameters (from `args`) and captures (from `env`).
@@ -265,6 +267,22 @@ struct Translator<'a, M: Module> {
     var_tys: FxHashMap<usize, Ty>,
     runtime: FxHashMap<&'static str, FuncRef>,
     string_counter: usize,
+    /// The enclosing tail-call loop, while translating a `Join` body: where
+    /// `Recur` jumps back and where the loop's result exits.
+    loop_ctx: Option<LoopCtx>,
+    /// The destination-passing result slot's address (set by `HoleStart`, read by
+    /// `HoleClose`), for a loop that builds a spine.
+    result_slot: Option<Value>,
+}
+
+/// The active tail-call loop being translated.
+struct LoopCtx {
+    /// The loop header (the `Recur` back-edge target).
+    header: Block,
+    /// The loop exit, taking the result as its block parameter.
+    exit: Block,
+    /// The loop-carried locals, reassigned (in order) by each `Recur`.
+    params: Vec<LocalId>,
 }
 
 impl<M: Module> Translator<'_, M> {
@@ -378,6 +396,27 @@ impl<M: Module> Translator<'_, M> {
                     self.call_drop(v);
                 }
                 result
+            }
+            ExprKind::Join { params, body } => self.join(params, body),
+            ExprKind::HoleStart { hole, body } => {
+                // The result slot holds the head of the spine being built; the hole
+                // (destination) starts pointing at it. Both live for the loop.
+                let slot = self.builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    8,
+                    3,
+                ));
+                let ptr = self.ptr();
+                let addr = self.builder.ins().stack_addr(ptr, slot, 0);
+                self.result_slot = Some(addr);
+                self.define_var(*hole, addr);
+                self.expr(body)
+            }
+            ExprKind::HoleFill { hole, cell, field } => self.hole_fill(*hole, cell, *field),
+            // `Recur`/`HoleClose` are terminal and only appear in a `Join` body,
+            // translated through `expr_tail`.
+            ExprKind::Recur { .. } | ExprKind::HoleClose { .. } => {
+                unreachable!("tail-only node reached non-tail code generation")
             }
             // Unreachable for a build that passed the FAI7001 check; yield Unit.
             ExprKind::Error => self.builder.ins().iconst(types::I64, rt::FAI_UNIT),
@@ -629,6 +668,132 @@ impl<M: Module> Translator<'_, M> {
         self.builder.switch_to_block(merge_b);
         self.builder.seal_block(merge_b);
         self.builder.block_params(merge_b)[0]
+    }
+
+    /// Code-generates a tail-call loop: a header block the loop-carried locals flow
+    /// into (carried as cranelift variables, so the header is sealed only after its
+    /// `Recur` back-edges are emitted), an exit block carrying the loop's result,
+    /// and the body translated in tail position.
+    fn join(&mut self, params: &[LocalId], body: &CExpr) -> Value {
+        let header = self.builder.create_block();
+        let exit = self.builder.create_block();
+        self.builder.append_block_param(exit, types::I64);
+
+        // The loop-carried locals already hold their initial values (parameters
+        // and, for a spine-building loop, the hole). Enter the header.
+        self.builder.ins().jump(header, &[]);
+        self.builder.switch_to_block(header);
+        // The header stays unsealed: its `Recur` back-edge predecessors are still
+        // to be emitted while translating the body.
+
+        let prev = self.loop_ctx.replace(LoopCtx { header, exit, params: params.to_vec() });
+        self.expr_tail(body);
+        self.loop_ctx = prev;
+
+        self.builder.seal_block(header);
+        self.builder.switch_to_block(exit);
+        self.builder.seal_block(exit);
+        self.builder.block_params(exit)[0]
+    }
+
+    /// Links a freshly built cell into the spine through the hole: store the cell
+    /// where the destination points, then advance the destination to the cell's
+    /// recursive `field` (its next hole). Returns the new destination.
+    fn hole_fill(&mut self, hole: LocalId, cell: &CExpr, field: u32) -> Value {
+        let cellv = self.expr(cell);
+        let dst = self.use_var(hole);
+        self.builder.ins().store(MemFlags::trusted(), cellv, dst, 0);
+        // A boxed value is its own pointer (low bit clear), so the field address is
+        // a constant offset from the cell.
+        let offset = rt::DATA_FIELDS_OFFSET + field as usize * 8;
+        self.builder.ins().iadd_imm(cellv, i64::try_from(offset).expect("field offset"))
+    }
+
+    /// Translates an expression in tail position within a `Join` body: `Recur`
+    /// jumps to the loop header, `HoleClose` and plain base values jump to the loop
+    /// exit with the loop's result, control flow recurses in tail position, and
+    /// binders are emitted with their continuation recursed.
+    fn expr_tail(&mut self, e: &CExpr) {
+        match &e.kind {
+            ExprKind::If { cond, then, els } => {
+                let cv = self.expr(cond);
+                let false_v = self.builder.ins().iconst(types::I64, 1); // Bool false
+                let is_true = self.builder.ins().icmp(
+                    cranelift_codegen::ir::condcodes::IntCC::NotEqual,
+                    cv,
+                    false_v,
+                );
+                let then_b = self.builder.create_block();
+                let else_b = self.builder.create_block();
+                self.builder.ins().brif(is_true, then_b, &[], else_b, &[]);
+                self.builder.switch_to_block(then_b);
+                self.builder.seal_block(then_b);
+                self.expr_tail(then);
+                self.builder.switch_to_block(else_b);
+                self.builder.seal_block(else_b);
+                self.expr_tail(els);
+            }
+            ExprKind::Let { local, value, body } => {
+                let v = self.expr(value);
+                self.var_tys.insert(local.index(), value.ty.clone());
+                self.define_var(*local, v);
+                self.expr_tail(body);
+            }
+            ExprKind::Reset { value, token, body } => {
+                let v = self.expr(value);
+                let tok = self.call1("fai_drop_reuse", v);
+                self.define_var(*token, tok);
+                self.expr_tail(body);
+            }
+            ExprKind::Dup { local, body } => {
+                if !self.is_immediate_local(*local) {
+                    let v = self.use_var(*local);
+                    let _ = self.call1("fai_dup", v);
+                }
+                self.expr_tail(body);
+            }
+            ExprKind::Drop { local, body } => {
+                // The continuation is terminal, so the drop is emitted before it.
+                // Reference counting placed the drop after the local's last use, so
+                // neither the back-edge arguments nor the exit value read it.
+                if !self.is_immediate_local(*local) {
+                    let v = self.use_var(*local);
+                    self.call_drop(v);
+                }
+                self.expr_tail(body);
+            }
+            ExprKind::Recur { args } => self.recur(args),
+            ExprKind::HoleClose { hole, base } => {
+                let basev = self.expr(base);
+                let dst = self.use_var(*hole);
+                self.builder.ins().store(MemFlags::trusted(), basev, dst, 0);
+                let slot = self.result_slot.expect("a spine-building loop has a result slot");
+                let result = self.builder.ins().load(types::I64, MemFlags::trusted(), slot, 0);
+                let exit = self.loop_ctx.as_ref().expect("hole close inside a loop").exit;
+                self.builder.ins().jump(exit, &[result.into()]);
+            }
+            // Any other tail expression is the loop's value (a plain tail-call
+            // loop's base case): evaluate it and exit.
+            _ => {
+                let v = self.expr(e);
+                let exit = self.loop_ctx.as_ref().expect("tail value inside a loop").exit;
+                self.builder.ins().jump(exit, &[v.into()]);
+            }
+        }
+    }
+
+    /// A `Recur` back-edge: evaluate the new loop-carried values (which may read the
+    /// current ones), then reassign every loop local and jump to the header.
+    fn recur(&mut self, args: &[CExpr]) {
+        let vals: Vec<Value> = args.iter().map(|a| self.expr(a)).collect();
+        let (header, params) = {
+            let ctx = self.loop_ctx.as_ref().expect("recur inside a loop");
+            (ctx.header, ctx.params.clone())
+        };
+        for (param, val) in params.iter().zip(vals) {
+            self.define_var(*param, val);
+        }
+        self.builder.ins().jump(header, &[]);
     }
 }
 
