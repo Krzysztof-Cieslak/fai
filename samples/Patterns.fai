@@ -1,0 +1,21 @@
+module Patterns
+
+/// An or-pattern lets several values share a single match arm.
+public rank : Int -> Int
+let rank n =
+  match n with
+  | 0 | 1 | 2 -> 0
+  | 3 | 4 | 5 -> 1
+  | _ -> 2
+example: rank 1 = 0
+example: rank 4 = 1
+example: rank 9 = 2
+
+/// An as-pattern binds the whole matched value while also destructuring it.
+public canonical : Int * Int -> Int * Int
+let canonical pair =
+  match pair with
+  | (0, 0) as origin -> origin
+  | (x, y) -> (x + y, x)
+example: canonical (0, 0) = (0, 0)
+example: canonical (2, 3) = (5, 2)

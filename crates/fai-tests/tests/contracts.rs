@@ -61,6 +61,7 @@ fn sample_contracts_all_pass() {
         "Geometry.fai",
         "Properties.fai",
         "Cart.fai",
+        "Patterns.fai",
     ];
     let sources: Vec<(String, String)> =
         names.iter().map(|n| ((*n).to_owned(), read_sample(n))).collect();
