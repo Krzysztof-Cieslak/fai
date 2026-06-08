@@ -487,6 +487,64 @@ fn completion_offers_in_scope_names() {
     harness.shutdown();
 }
 
+#[test]
+fn hover_includes_doc_prose_and_contracts() {
+    let src = indoc! {r#"
+        module Main
+
+        /// Increment by one.
+        public inc : Int -> Int
+        let inc x = x + 1
+        example: inc 1 = 2
+
+        public two : Int
+        let two = inc 7
+    "#};
+    let mut harness = Harness::start("hover-doc", &[("Main.fai", src)]);
+    let uri = harness.did_open("Main.fai", src);
+    // Hover the `inc` use in `let two = inc 7` (line 8, col 10).
+    let result = harness.request(
+        "textDocument/hover",
+        json!({ "textDocument": { "uri": uri }, "position": { "line": 8, "character": 10 } }),
+    );
+    let value = result["contents"]["value"].as_str().unwrap();
+    assert!(value.contains("inc : Int -> Int"), "type line: {value:?}");
+    assert!(value.contains("Increment by one."), "doc prose: {value:?}");
+    assert!(value.contains("example: inc 1 = 2"), "attached contract: {value:?}");
+    harness.shutdown();
+}
+
+#[test]
+fn signature_help_reports_parameters_and_active() {
+    let src = indoc! {r#"
+        module Main
+
+        public add : Int -> Int -> Int
+        let add x y = x + y
+
+        public apply : Int
+        let apply = add 1 2
+    "#};
+    let mut harness = Harness::start("sighelp", &[("Main.fai", src)]);
+    let uri = harness.did_open("Main.fai", src);
+    // On the first argument `1` (line 6, col 16).
+    let first = harness.request(
+        "textDocument/signatureHelp",
+        json!({ "textDocument": { "uri": uri }, "position": { "line": 6, "character": 16 } }),
+    );
+    assert_eq!(first["signatures"][0]["label"], "add : Int -> Int -> Int", "{first:?}");
+    assert_eq!(first["activeParameter"], 0, "{first:?}");
+    let params = first["signatures"][0]["parameters"].as_array().unwrap();
+    assert_eq!(params.len(), 2, "{params:?}");
+    // On the second argument `2` (col 18): parameter 1.
+    let second = harness.request(
+        "textDocument/signatureHelp",
+        json!({ "textDocument": { "uri": uri }, "position": { "line": 6, "character": 18 } }),
+    );
+    assert_eq!(second["activeParameter"], 1, "{second:?}");
+    harness.shutdown();
+}
+
 // --- dirty (unsaved) buffers -------------------------------------------------
 //
 // These exercise the case the earlier tests do not: the open buffer differs from

@@ -7,12 +7,13 @@
 
 use fai_db::{Db, SourceFile};
 use fai_resolve::{CtorRef, DefId, LocalId, Res, ResolvedBodies, module_defs, resolve, type_decls};
-use fai_span::{ByteOffset, Span, SpanResolver, TextRange};
-use fai_syntax::Symbol;
+use fai_span::{ByteOffset, LineIndex, Span, SpanResolver, TextRange};
 use fai_syntax::ast::{
     ExprId, ExprKind, ItemKind, Module, PatId, PatKind, RowTail, TypeDef, TypeId, TypeKind,
     Visibility as AstVis,
 };
+use fai_syntax::{CommentKind, NodeId, Symbol, attach_comments};
+use fai_types::Ty;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Serialize;
 
@@ -301,10 +302,19 @@ pub struct HoverResult {
     /// The subexpression's span (so an editor can underline what it described).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub span: Option<SpanJson>,
+    /// The `///` doc prose of the referenced definition, when the subexpression
+    /// is a reference to one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc: Option<Doc>,
+    /// The contracts attached to the referenced definition.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub contracts: Vec<Contract>,
 }
 
 /// The type at a byte offset: the innermost expression that has an inferred type,
-/// rendered with the name it refers to when applicable. Powers LSP hover.
+/// rendered with the name it refers to when applicable. When that expression is a
+/// reference to a definition, the definition's doc prose and attached contracts
+/// are included too. Powers LSP hover.
 #[must_use]
 pub fn hover_at(
     db: &dyn Db,
@@ -312,7 +322,14 @@ pub fn hover_at(
     offset: u32,
     resolver: &dyn SpanResolver,
 ) -> HoverResult {
-    let empty = || HoverResult { schema_version: SCHEMA_VERSION, name: None, ty: None, span: None };
+    let empty = || HoverResult {
+        schema_version: SCHEMA_VERSION,
+        name: None,
+        ty: None,
+        span: None,
+        doc: None,
+        contracts: vec![],
+    };
     let parsed = fai_syntax::parse(db, file);
     let resolved = resolve(db, file);
     let Some(types) = enclosing_def(db, file, offset).map(|d| fai_types::body_types(db, file, d))
@@ -323,11 +340,25 @@ pub fn hover_at(
         let Some(ty) = types.get(expr) else { continue };
         let span =
             SpanJson::resolve(Span::new(file.source(db), parsed.module.expr(expr).span), resolver);
+        // When the subexpression references a definition, surface its docs and
+        // contracts (resolving through to the defining file).
+        let (doc, contracts) = match resolved.get(expr) {
+            Some(Res::Def(d)) => match db.source_file(d.file) {
+                Some(f) => (
+                    doc_for(db, f, d.name),
+                    contracts_by_subject(db, f, resolver).remove(&d.name).unwrap_or_default(),
+                ),
+                None => (None, vec![]),
+            },
+            _ => (None, vec![]),
+        };
         return HoverResult {
             schema_version: SCHEMA_VERSION,
             name: reference_name(&parsed.module, &resolved, expr),
             ty: Some(TypeRepr { display: fai_types::render_canonical(ty) }),
             span,
+            doc,
+            contracts,
         };
     }
     empty()
@@ -374,6 +405,164 @@ pub fn definition_at(
         }
     }
     empty()
+}
+
+// --- signature help (LSP `textDocument/signatureHelp`) -----------------------
+//
+// While the cursor sits among a call's arguments, signature help shows the
+// callee's type with the parameter currently being supplied highlighted. We find
+// the enclosing application (or a bare function name with a trailing space),
+// take the head's inferred function type, and split its arrow chain into
+// parameters; the active parameter is the count of arguments already before the
+// cursor.
+
+/// One parameter of a signature, as a half-open `[start, end)` slice of the
+/// signature label (so the editor can highlight it).
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct ParamInfo {
+    /// Start offset into the label.
+    pub start: u32,
+    /// End offset into the label.
+    pub end: u32,
+}
+
+/// The signature help at a byte offset: the callee's rendered type, its parameter
+/// spans, and which parameter the cursor is currently supplying.
+#[derive(Debug, Serialize)]
+pub struct SignatureHelp {
+    #[serde(rename = "schemaVersion")]
+    pub schema_version: u32,
+    /// The full signature label (`name : T1 -> T2 -> R`, or just the type).
+    pub label: String,
+    /// The parameter slices of `label`, in order.
+    pub parameters: Vec<ParamInfo>,
+    /// The 0-based index of the parameter currently being supplied.
+    pub active_parameter: u32,
+}
+
+/// The head of an application spine and the argument expressions applied to it
+/// (`f a b` → `(f, [a, b])`). Returns `None` when `expr` is not an application.
+fn application_spine(module: &Module, expr: ExprId) -> Option<(ExprId, Vec<ExprId>)> {
+    let mut args = Vec::new();
+    let mut cur = expr;
+    while let ExprKind::App { func, arg } = &module.expr(cur).kind {
+        args.push(*arg);
+        cur = *func;
+    }
+    if args.is_empty() {
+        return None;
+    }
+    args.reverse();
+    Some((cur, args))
+}
+
+/// Whether `[from, offset)` is a non-empty run of whitespace — the cursor sits
+/// just past `from` with only spaces between.
+fn whitespace_gap(src: &str, from: u32, offset: u32) -> bool {
+    from < offset
+        && src
+            .get(from as usize..offset as usize)
+            .is_some_and(|s| s.chars().all(char::is_whitespace))
+}
+
+/// The signature help at `offset`: finds the enclosing call (or a function name
+/// followed by whitespace) and reports the callee's parameters with the active
+/// one. Powers LSP signature help.
+#[must_use]
+pub fn signature_help_at(db: &dyn Db, file: SourceFile, offset: u32) -> Option<SignatureHelp> {
+    let parsed = fai_syntax::parse(db, file);
+    let module = &parsed.module;
+    let src = file.text(db);
+    let resolved = resolve(db, file);
+
+    // The enclosing application: the widest `App` whose span contains the cursor
+    // (inclusive), or that ends with only whitespace before it (a trailing
+    // argument position, `f a |`).
+    let app = module
+        .exprs
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| matches!(e.kind, ExprKind::App { .. }))
+        .filter(|(_, e)| {
+            let (start, end) = (e.span.start().raw(), e.span.end().raw());
+            (start <= offset && offset <= end) || whitespace_gap(src, end, offset)
+        })
+        .max_by_key(|(_, e)| e.span.len())
+        .map(|(i, _)| ExprId::from_index(i));
+
+    let (head, args_before) = match app.and_then(|a| application_spine(module, a)) {
+        // An argument advances the active parameter once the cursor is strictly
+        // past it (so jamming the cursor against an argument keeps editing it,
+        // while a following space moves on to the next parameter).
+        Some((head, args)) => {
+            let before = args.iter().filter(|&&a| module.expr(a).span.end().raw() < offset).count();
+            (head, before)
+        }
+        None => (head_with_trailing_space(module, src, offset)?, 0),
+    };
+
+    // The head expression sits inside its definition's body even when the cursor
+    // is in trailing whitespace, so key the per-body types on the head's position.
+    let def = enclosing_def(db, file, module.expr(head).span.start().raw())?;
+    let types = fai_types::body_types(db, file, def);
+    let head_ty = types.get(head)?;
+    let (params, result) = decompose_arrow(head_ty);
+    if params.is_empty() {
+        return None;
+    }
+
+    let mut label = String::new();
+    if let Some(name) = reference_name(module, &resolved, head) {
+        label.push_str(&name);
+        label.push_str(" : ");
+    }
+    let mut parameters = Vec::with_capacity(params.len());
+    for (i, p) in params.iter().enumerate() {
+        if i > 0 {
+            label.push_str(" -> ");
+        }
+        let start = label.len() as u32;
+        label.push_str(&render_param(p));
+        parameters.push(ParamInfo { start, end: label.len() as u32 });
+    }
+    label.push_str(" -> ");
+    label.push_str(&fai_types::render_canonical(result));
+
+    let active_parameter = args_before.min(params.len() - 1) as u32;
+    Some(SignatureHelp { schema_version: SCHEMA_VERSION, label, parameters, active_parameter })
+}
+
+/// A function-typed name reference whose span ends before `offset` with only
+/// whitespace in between (`f |`, the first argument not yet typed).
+fn head_with_trailing_space(module: &Module, src: &str, offset: u32) -> Option<ExprId> {
+    module
+        .exprs
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| {
+            matches!(e.kind, ExprKind::Var(_) | ExprKind::Field { .. })
+                && whitespace_gap(src, e.span.end().raw(), offset)
+        })
+        .max_by_key(|(_, e)| e.span.end().raw())
+        .map(|(i, _)| ExprId::from_index(i))
+}
+
+/// Splits a function type into its parameter types and result type.
+fn decompose_arrow(ty: &Ty) -> (Vec<Ty>, &Ty) {
+    let mut params = Vec::new();
+    let mut cur = ty;
+    while let Ty::Arrow(from, to) = cur {
+        params.push((**from).clone());
+        cur = to;
+    }
+    (params, cur)
+}
+
+/// Renders a parameter type, parenthesizing a function-typed parameter so the
+/// signature reads unambiguously.
+fn render_param(ty: &Ty) -> String {
+    let rendered = fai_types::render_canonical(ty);
+    if matches!(ty, Ty::Arrow(_, _)) { format!("({rendered})") } else { rendered }
 }
 
 // --- find-references at a position (LSP `textDocument/references`) ------------
@@ -1542,7 +1731,7 @@ pub fn api(
             }
             if let Some(symbol) = symbol_ref(db, file, d.name, resolver) {
                 let contracts = by_subject.remove(&d.name).unwrap_or_default();
-                exports.push(ApiExport { symbol, doc: None, contracts });
+                exports.push(ApiExport { symbol, doc: doc_for(db, file, d.name), contracts });
             }
         }
         exports.sort_by(|a, b| a.symbol.name.cmp(&b.symbol.name));
@@ -1620,7 +1809,49 @@ pub fn docs(db: &dyn Db, target: &str, resolver: &dyn SpanResolver) -> DocsResul
     DocsResult {
         schema_version: SCHEMA_VERSION,
         target: symbol_ref(db, t.file, t.name, resolver),
-        doc: None,
+        doc: doc_for(db, t.file, t.name),
         contracts,
     }
+}
+
+/// The `///` doc prose attached to a definition, if any.
+///
+/// Doc comments lead the definition; they are attached to the signature item
+/// (preferred, since it appears first) or, failing that, the binding. The `///`
+/// markers and one following space are stripped and the lines joined with
+/// newlines.
+pub(crate) fn doc_for(db: &dyn Db, file: SourceFile, name: Symbol) -> Option<Doc> {
+    let info = *module_defs(db, file).get(name)?;
+    let parsed = fai_syntax::parse(db, file);
+    let src = file.text(db);
+    let line_index = LineIndex::new(src);
+    let map = attach_comments(&parsed.module, &parsed.comments, &line_index);
+    for item in [info.signature, Some(info.binding)].into_iter().flatten() {
+        if let Some(doc) = item_doc(&map, &parsed.comments, NodeId::Item(item), src) {
+            return Some(doc);
+        }
+    }
+    None
+}
+
+/// Extracts the leading `///` doc comments of a node as joined markdown prose.
+fn item_doc(
+    map: &fai_syntax::CommentMap,
+    comments: &[fai_syntax::Comment],
+    node: NodeId,
+    src: &str,
+) -> Option<Doc> {
+    let mut lines: Vec<String> = Vec::new();
+    for &id in map.leading(node) {
+        let comment = &comments[id];
+        if comment.kind != CommentKind::Doc {
+            continue;
+        }
+        let raw = src.get(comment.range.start().to_usize()..comment.range.end().to_usize())?;
+        let body = raw.trim_end();
+        let body = body.strip_prefix("///").unwrap_or(body);
+        let body = body.strip_prefix(' ').unwrap_or(body);
+        lines.push(body.to_owned());
+    }
+    (!lines.is_empty()).then(|| Doc { markdown: lines.join("\n") })
 }
