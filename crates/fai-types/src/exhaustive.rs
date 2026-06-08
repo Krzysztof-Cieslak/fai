@@ -239,11 +239,15 @@ impl MatchChecker<'_> {
                 list
             }
             PatKind::Constructor { args, .. } => {
-                let (tag, arity) = match self.resolved.pat_res(pat) {
-                    Some(Res::Ctor(ctor)) => type_decls(self.db, self.ctor_file(ctor.file))
-                        .ctor(ctor.name)
-                        .map_or((0, args.len()), |c| (c.tag, c.arity)),
-                    _ => (0, args.len()),
+                // An unresolved constructor (a typo, or one whose declaration is
+                // missing) has no known tag or arity. Lowering it to tag 0 would
+                // collide with the real first constructor while carrying a
+                // different field count, leaving an arity-inconsistent matrix row.
+                // The unbound name is already reported; treat the pattern as a
+                // distinct, unmatchable value (as refutable records are below) so
+                // it neither claims coverage nor corrupts the matrix.
+                let Some((tag, arity)) = self.ctor_tag_arity(pat) else {
+                    return IPat::Lit(format!("@unresolved{}", pat.index()));
                 };
                 // Normalize to the declared arity; an arity error is reported by
                 // type checking, and keeping the matrix consistent avoids panics.
@@ -263,6 +267,16 @@ impl MatchChecker<'_> {
                 }
             }
         }
+    }
+
+    /// The declared `(tag, arity)` of a resolved constructor pattern, or `None`
+    /// when the constructor is unresolved or has no declaration (so the matrix
+    /// must not treat it as a real, tag-bearing constructor).
+    fn ctor_tag_arity(&self, pat: PatId) -> Option<(u32, usize)> {
+        let Some(Res::Ctor(ctor)) = self.resolved.pat_res(pat) else { return None };
+        let decls = type_decls(self.db, self.ctor_file(ctor.file));
+        let info = decls.ctor(ctor.name)?;
+        Some((info.tag, info.arity))
     }
 
     /// Whether a pattern always matches (binds without testing).
@@ -341,7 +355,10 @@ impl MatchChecker<'_> {
     fn specialize(&self, matrix: &[Vec<IPat>], key: &ConKey, arity: usize) -> Vec<Vec<IPat>> {
         let mut out = Vec::new();
         for row in matrix {
-            let (head, rest) = row.split_first().expect("non-empty row");
+            // A row shorter than the column being matched can only come from an
+            // already-reported ill-typed pattern (e.g. a wrong-arity constructor
+            // or tuple). Skip it rather than panic.
+            let Some((head, rest)) = row.split_first() else { continue };
             match head {
                 IPat::Con { key: k, args } if k == key => {
                     let mut new = args.clone();
@@ -370,7 +387,10 @@ impl MatchChecker<'_> {
     fn specialize_lit(&self, matrix: &[Vec<IPat>], value: &str) -> Vec<Vec<IPat>> {
         let mut out = Vec::new();
         for row in matrix {
-            let (head, rest) = row.split_first().expect("non-empty row");
+            // A row shorter than the column being matched can only come from an
+            // already-reported ill-typed pattern (e.g. a wrong-arity constructor
+            // or tuple). Skip it rather than panic.
+            let Some((head, rest)) = row.split_first() else { continue };
             match head {
                 IPat::Lit(v) if v == value => out.push(rest.to_vec()),
                 IPat::Wild => out.push(rest.to_vec()),
@@ -522,7 +542,9 @@ fn default_matrix(matrix: &[Vec<IPat>]) -> Vec<Vec<IPat>> {
 fn head_keys(matrix: &[Vec<IPat>]) -> Vec<ConKey> {
     let mut keys = Vec::new();
     for row in matrix {
-        collect_keys(&row[0], &mut keys);
+        if let Some(first) = row.first() {
+            collect_keys(first, &mut keys);
+        }
     }
     keys
 }

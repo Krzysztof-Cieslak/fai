@@ -463,6 +463,34 @@ fn exhaustive_union_is_clean() {
 }
 
 #[test]
+fn unknown_constructor_arm_does_not_panic() {
+    // An unresolved constructor pattern collides on tag 0 with the real first
+    // constructor (`Wrap`, arity 1); the exhaustiveness checker must not panic on
+    // the resulting arity mismatch. The unbound name is reported, and the bogus
+    // arm is neither flagged unreachable nor reported as leaving the match
+    // non-exhaustive.
+    let (db, f) = db_with(&[(
+        "M.fai",
+        indoc! {r#"
+            module M
+
+            public type T =
+              | Wrap Int
+
+            public f : T -> Int
+            let f t =
+              match t with
+              | Wrap x -> x
+              | Bogus -> 0
+        "#},
+    )]);
+    let codes = check_codes(&db, f[0]);
+    assert!(codes.contains(&"FAI2012".to_owned()), "expected unbound constructor, got {codes:?}");
+    assert!(!codes.contains(&"FAI4001".to_owned()), "unexpected non-exhaustive, got {codes:?}");
+    assert!(!codes.contains(&"FAI4002".to_owned()), "unexpected unreachable arm, got {codes:?}");
+}
+
+#[test]
 fn wildcard_makes_match_exhaustive() {
     let (db, f) = db_with(&[(
         "M.fai",
