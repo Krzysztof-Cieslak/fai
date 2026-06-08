@@ -892,8 +892,9 @@ server:
     `lsp-types` crates. `lsp-types` is pinned at `0.95` because `0.97` replaced
     `Url` (with `to_file_path`/`from_file_path`) with a `Uri` type lacking
     filesystem-path helpers.
-  - **Surface (v1).** Full-document `textDocument` sync, `publishDiagnostics`,
-    `hover`, `definition`, and `formatting`. Open buffers are overlaid into the
+  - **Surface.** `textDocument` sync (incremental; see below),
+    `publishDiagnostics`, `hover`, `definition`, and `formatting`, since grown
+    with the features in the following notes. Open buffers are overlaid into the
     database as in-memory edits, so analysis tracks unsaved changes; diagnostics
     reuse `fai check` and formatting reuses `fai fmt`.
   - **Position-addressed queries.** Hover and go-to-definition are offset-keyed
@@ -902,10 +903,23 @@ server:
     offset (walking outward when it carries no resolution), then report its
     inferred type or jump to what its reference resolves to — a definition, a
     constructor variant, or a local's binding pattern.
-  - **Positions.** LSP positions are `(0-based line, 0-based UTF-16 unit)` while
-    Fai spans are UTF-8 byte offsets; a per-document line map converts both ways
-    (exact across non-BMP characters), clamping an out-of-range column to the
-    line's content rather than spilling onto the next line.
+  - **Positions.** LSP positions are `(0-based line, 0-based column)` while Fai
+    spans are UTF-8 byte offsets; a per-document line map converts both ways,
+    clamping an out-of-range column to the line's content rather than spilling
+    onto the next line. The column unit is the **negotiated encoding**: the split
+    initialize handshake reads the client's `general.positionEncodings` and picks
+    UTF-8 when offered (Fai's native byte offsets — no re-encoding) else the LSP
+    default UTF-16, and advertises the choice; the line map measures columns
+    accordingly (exact across non-BMP characters either way).
+  - **Editing fidelity & dependent diagnostics.** Sync is **incremental**: each
+    change's range is applied to the open buffer in order (a range-less change is
+    a full replacement), and `didSave` re-checks. On any change the server
+    re-publishes diagnostics for **every open file**, not just the edited one, so
+    a cross-module edit refreshes its open dependents (salsa's early cutoff keeps
+    the unaffected files cheap). Range formatting reuses the whole-file formatter
+    and line-diffs its output against the original, keeping only the changed hunks
+    whose lines overlap the requested range, so "format selection" rewrites just
+    the selection.
   - **Navigation & structure.** `documentSymbol` and `workspace/symbol` reuse the
     outline/symbol queries (nested-module aware; `documentSymbol` is keyed by file
     and `outline` delegates to it, so the two never drift). `references` first
