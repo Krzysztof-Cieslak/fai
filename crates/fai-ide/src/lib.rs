@@ -15,9 +15,9 @@ pub mod target;
 pub use completion::{CompletionItem, CompletionKind, CompletionResult, completions_at};
 pub use query::{
     ApiResult, CallEdge, CallHierarchyResult, CapsResult, DefResult, DependentsResult, DocsResult,
-    HoverResult, ListOpts, OutlineNode, OutlineResult, RefsResult, RenameTarget, SearchHit,
-    SearchResult, SymbolsResult, TypeResult, api, callees, callers, caps, def, definition_at,
-    dependents, docs, document_symbols, hover_at, outline, prepare_rename_at, references_at, refs,
-    rename_at, search, symbols, type_at, workspace_symbols,
+    HoverResult, ListOpts, OutlineNode, OutlineResult, ParamInfo, RefsResult, RenameTarget,
+    SearchHit, SearchResult, SignatureHelp, SymbolsResult, TypeResult, api, callees, callers, caps,
+    def, definition_at, dependents, docs, document_symbols, hover_at, outline, prepare_rename_at,
+    references_at, refs, rename_at, search, signature_help_at, symbols, type_at, workspace_symbols,
 };
 pub use target::{ResolvedTarget, resolve_target};

@@ -22,9 +22,11 @@ use lsp_types::{
     DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentFormattingParams,
     DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
     GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
-    Location as LspLocation, MarkupContent, MarkupKind, NumberOrString, OneOf, Position,
-    PrepareRenameResponse, PublishDiagnosticsParams, Range, ReferenceParams, RenameOptions,
-    RenameParams, ServerCapabilities, SymbolInformation, SymbolKind as LspSymbolKind,
+    Location as LspLocation, MarkupContent, MarkupKind, NumberOrString, OneOf,
+    ParameterInformation, ParameterLabel, Position, PrepareRenameResponse,
+    PublishDiagnosticsParams, Range, ReferenceParams, RenameOptions, RenameParams,
+    ServerCapabilities, SignatureHelp as LspSignatureHelp, SignatureHelpOptions,
+    SignatureHelpParams, SignatureInformation, SymbolInformation, SymbolKind as LspSymbolKind,
     TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url,
     WorkspaceEdit, WorkspaceSymbolParams,
 };
@@ -88,6 +90,11 @@ fn server_capabilities() -> ServerCapabilities {
             // automatically without being listed.
             trigger_characters: Some(vec![".".to_owned()]),
             ..CompletionOptions::default()
+        }),
+        signature_help_provider: Some(SignatureHelpOptions {
+            // Fai calls are juxtaposition, so a space moves between arguments.
+            trigger_characters: Some(vec![" ".to_owned()]),
+            ..SignatureHelpOptions::default()
         }),
         rename_provider: Some(OneOf::Right(RenameOptions {
             prepare_provider: Some(true),
@@ -210,6 +217,13 @@ impl Server {
                     respond(conn, id, &self.completion(&params));
                 }
             }
+            "textDocument/signatureHelp" => {
+                if let Ok((id, params)) =
+                    req.extract::<SignatureHelpParams>("textDocument/signatureHelp")
+                {
+                    respond(conn, id, &self.signature_help(&params));
+                }
+            }
             // An unsupported request still needs a reply so the client is not
             // left waiting; a null result is the conventional "no answer".
             _ => respond(conn, req.id, &serde_json::Value::Null),
@@ -221,11 +235,26 @@ impl Server {
         let (file, offset) = self.locate(&pos.text_document.uri, pos.position)?;
         let result = fai_ide::hover_at(self.session.db(), file, offset, &self.session.resolver());
         let ty = result.ty?;
-        // Label the type with the referenced name when there is one.
-        let value = match &result.name {
-            Some(name) => format!("```fai\n{name} : {}\n```", ty.display),
-            None => format!("```fai\n{}\n```", ty.display),
+        // The type, labelled with the referenced name when there is one, …
+        let signature = match &result.name {
+            Some(name) => format!("{name} : {}", ty.display),
+            None => ty.display.clone(),
         };
+        let mut value = format!("```fai\n{signature}\n```");
+        // … then the definition's doc prose, …
+        if let Some(doc) = &result.doc {
+            value.push_str("\n\n");
+            value.push_str(&doc.markdown);
+        }
+        // … then its attached contracts as a fenced block.
+        if !result.contracts.is_empty() {
+            value.push_str("\n\n```fai\n");
+            for contract in &result.contracts {
+                value.push_str(contract.source.trim_end());
+                value.push('\n');
+            }
+            value.push_str("```");
+        }
         let range = result.span.and_then(|span| self.span_range(&pos.text_document.uri, &span));
         Some(Hover {
             contents: HoverContents::Markup(MarkupContent { kind: MarkupKind::Markdown, value }),
@@ -343,6 +372,31 @@ impl Server {
             })
             .collect();
         Some(CompletionResponse::Array(items))
+    }
+
+    fn signature_help(&self, params: &SignatureHelpParams) -> Option<LspSignatureHelp> {
+        let pos = &params.text_document_position_params;
+        let (file, offset) = self.locate(&pos.text_document.uri, pos.position)?;
+        let help = fai_ide::signature_help_at(self.session.db(), file, offset)?;
+        let parameters = help
+            .parameters
+            .iter()
+            .map(|p| ParameterInformation {
+                label: ParameterLabel::LabelOffsets([p.start, p.end]),
+                documentation: None,
+            })
+            .collect();
+        let info = SignatureInformation {
+            label: help.label,
+            documentation: None,
+            parameters: Some(parameters),
+            active_parameter: Some(help.active_parameter),
+        };
+        Some(LspSignatureHelp {
+            signatures: vec![info],
+            active_signature: Some(0),
+            active_parameter: Some(help.active_parameter),
+        })
     }
 
     // --- helpers ----------------------------------------------------------

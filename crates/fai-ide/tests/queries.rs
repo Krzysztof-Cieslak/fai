@@ -2,9 +2,9 @@
 
 use fai_db::{Db, DbSpanResolver, FaiDatabase, SourceFile};
 use fai_ide::{
-    ListOpts, api, callees, callers, def, definition_at, dependents, document_symbols, hover_at,
-    outline, prepare_rename_at, references_at, refs, rename_at, search, symbols, type_at,
-    workspace_symbols,
+    ListOpts, api, callees, callers, def, definition_at, dependents, docs, document_symbols,
+    hover_at, outline, prepare_rename_at, references_at, refs, rename_at, search,
+    signature_help_at, symbols, type_at, workspace_symbols,
 };
 use indoc::indoc;
 
@@ -592,4 +592,134 @@ fn rename_rejects_standard_library_symbols() {
     );
     let files = vec![file];
     assert!(rename_at(&db, &files, file, offset, "transform", &DbSpanResolver::new(&db)).is_none());
+}
+
+// --- doc extraction, richer hover, signature help ----------------------------
+
+/// A one-file workspace with the given source, plus its text.
+fn doc_workspace(source: &str) -> (FaiDatabase, SourceFile, String) {
+    let mut db = FaiDatabase::new();
+    let id = db.add_source("D.fai".into(), source.to_owned());
+    let file = db.source_file(id).unwrap();
+    let text = file.text(&db).clone();
+    (db, file, text)
+}
+
+#[test]
+fn docs_query_extracts_doc_and_contracts() {
+    let (db, _file, _text) = doc_workspace(indoc! {r#"
+        module D
+
+        /// Increment by one.
+        public inc : Int -> Int
+        let inc x = x + 1
+        example: inc 1 = 2
+    "#});
+    let r = docs(&db, "D.inc", &DbSpanResolver::new(&db));
+    assert_eq!(r.doc.expect("a doc").markdown, "Increment by one.");
+    assert_eq!(r.contracts.len(), 1, "the example is attached");
+}
+
+#[test]
+fn docs_query_joins_multiline_doc() {
+    let (db, _file, _text) = doc_workspace(indoc! {r#"
+        module D
+
+        /// First line.
+        /// Second line.
+        public inc : Int -> Int
+        let inc x = x + 1
+    "#});
+    let r = docs(&db, "D.inc", &DbSpanResolver::new(&db));
+    assert_eq!(r.doc.expect("a doc").markdown, "First line.\nSecond line.");
+}
+
+#[test]
+fn private_binding_doc_on_the_binding_is_found() {
+    // A signature-less private binding carries its doc on the binding itself.
+    let (db, _file, _text) = doc_workspace(indoc! {r#"
+        module D
+
+        /// A local helper.
+        let helper x = x
+    "#});
+    let r = docs(&db, "D.helper", &DbSpanResolver::new(&db));
+    assert_eq!(r.doc.expect("a doc").markdown, "A local helper.");
+}
+
+#[test]
+fn hover_includes_doc_and_contracts_of_the_referenced_definition() {
+    let (db, file, text) = doc_workspace(indoc! {r#"
+        module D
+
+        /// Increment by one.
+        public inc : Int -> Int
+        let inc x = x + 1
+        example: inc 1 = 2
+
+        public two : Int
+        let two = inc 7
+    "#});
+    // Hover the use `inc` in `let two = inc 7`.
+    let offset = at(&text, "inc 7");
+    let r = hover_at(&db, file, offset, &DbSpanResolver::new(&db));
+    assert_eq!(r.name.as_deref(), Some("inc"));
+    assert_eq!(r.ty.unwrap().display, "Int -> Int");
+    assert_eq!(r.doc.expect("doc").markdown, "Increment by one.");
+    assert_eq!(r.contracts.len(), 1, "the definition's example travels with the hover");
+}
+
+#[test]
+fn hover_on_a_local_has_no_doc() {
+    let (db, file, text) = position_workspace();
+    let offset = at(text, "shade + tag Red");
+    let r = hover_at(&db, file, offset, &DbSpanResolver::new(&db));
+    assert_eq!(r.name.as_deref(), Some("shade"));
+    assert!(r.doc.is_none() && r.contracts.is_empty(), "a local carries no doc/contracts");
+}
+
+#[test]
+fn signature_help_reports_the_active_parameter() {
+    let (db, file, text) = doc_workspace(indoc! {r#"
+        module D
+
+        public add : Int -> Int -> Int
+        let add x y = x + y
+
+        public apply : Int
+        let apply = add 1 2
+    "#});
+    // Cursor on the first argument: parameter 0.
+    let p0 = at(&text, "add 1 2") + "add ".len() as u32;
+    let s0 = signature_help_at(&db, file, p0).expect("signature help");
+    assert_eq!(s0.label, "add : Int -> Int -> Int");
+    assert_eq!(s0.parameters.len(), 2);
+    assert_eq!(s0.active_parameter, 0);
+    // The parameter slices index back into the label.
+    let p = &s0.parameters[0];
+    assert_eq!(&s0.label[p.start as usize..p.end as usize], "Int");
+    // Cursor on the second argument: parameter 1.
+    let p1 = at(&text, "add 1 2") + "add 1 ".len() as u32;
+    let s1 = signature_help_at(&db, file, p1).expect("signature help");
+    assert_eq!(s1.active_parameter, 1);
+}
+
+#[test]
+fn signature_help_before_the_first_argument() {
+    // A function name followed by a space, no argument typed yet (the trailing
+    // newline keeps the space after `add`).
+    let (db, file, text) = doc_workspace(
+        "module D\n\npublic add : Int -> Int -> Int\nlet add x y = x + y\n\npublic p : Int -> Int -> Int\nlet p = add \n",
+    );
+    let offset = at(&text, "= add ") + "= add ".len() as u32;
+    let s = signature_help_at(&db, file, offset).expect("signature help");
+    assert_eq!(s.label, "add : Int -> Int -> Int");
+    assert_eq!(s.active_parameter, 0);
+}
+
+#[test]
+fn signature_help_off_a_call_is_none() {
+    let (db, file, text) = position_workspace();
+    let offset = at(text, "module P");
+    assert!(signature_help_at(&db, file, offset).is_none());
 }

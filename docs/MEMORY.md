@@ -937,6 +937,16 @@ server:
     the editor filters by the typed prefix. Lazy doc resolution
     (`completionItem/resolve`) waits on `///` doc extraction, so detail is the
     type only for now.
+  - **Docs, richer hover & signature help.** `///` doc prose is extracted by
+    attaching the leading doc trivia to a definition (its signature when present,
+    else its binding) and stripping the markers — filling the previously-empty
+    `doc` of the `docs`/`api` queries and enriching hover, which now reports the
+    referenced definition's type, doc prose, and attached `example`/`forall`
+    contracts. Signature help finds the enclosing application (or a function name
+    followed by whitespace), takes the head's inferred function type, and splits
+    its arrow chain into parameters (a function-typed parameter is parenthesized);
+    the active parameter is the number of arguments lying strictly before the
+    cursor, so a separating space — not mere adjacency — advances it.
 
 Inference tuning, primitive borrowing & intra-build parallelism
 (measurement-driven; correctness-neutral — inferred types, diagnostics, and
