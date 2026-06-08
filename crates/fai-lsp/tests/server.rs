@@ -136,14 +136,33 @@ impl Harness {
         }
     }
 
-    /// Waits for the next `publishDiagnostics` for `uri`, returning the diagnostics.
-    fn await_diagnostics(&self, uri: &str) -> Vec<Value> {
+    /// The current diagnostics published for `uri`.
+    ///
+    /// Diagnostics are asynchronous push notifications, so this synchronizes with
+    /// a barrier request: the server processes messages strictly in order, so its
+    /// response cannot arrive until every notification sent before it has been
+    /// handled and its diagnostics published. We drain up to that response and
+    /// return the most recent publish for `uri` (later publishes supersede
+    /// earlier ones), which is robust against timing and notification coalescing.
+    fn diagnostics(&mut self, uri: &str) -> Vec<Value> {
+        let id: RequestId = self.next_id.into();
+        self.next_id += 1;
+        // An unrecognized request still gets a (null) reply, which serves as the
+        // ordering barrier.
+        self.client
+            .sender
+            .send(Message::Request(Request::new(id.clone(), "fai/sync".to_owned(), Value::Null)))
+            .unwrap();
+        let mut latest: Option<Vec<Value>> = None;
         loop {
-            if let Message::Notification(n) = self.recv()
-                && n.method == "textDocument/publishDiagnostics"
-                && n.params["uri"] == *uri
-            {
-                return n.params["diagnostics"].as_array().cloned().unwrap_or_default();
+            match self.recv() {
+                Message::Response(r) if r.id == id => return latest.unwrap_or_default(),
+                Message::Notification(n)
+                    if n.method == "textDocument/publishDiagnostics" && n.params["uri"] == *uri =>
+                {
+                    latest = Some(n.params["diagnostics"].as_array().cloned().unwrap_or_default());
+                }
+                _ => {}
             }
         }
     }
@@ -183,9 +202,9 @@ const MAIN: &str = indoc! {r#"
 
 #[test]
 fn publishes_empty_diagnostics_for_a_clean_file() {
-    let harness = Harness::start("clean", &[("Main.fai", MAIN)]);
+    let mut harness = Harness::start("clean", &[("Main.fai", MAIN)]);
     let uri = harness.did_open("Main.fai", MAIN);
-    let diagnostics = harness.await_diagnostics(&uri);
+    let diagnostics = harness.diagnostics(&uri);
     assert!(diagnostics.is_empty(), "a well-typed file has no diagnostics: {diagnostics:?}");
     harness.shutdown();
 }
@@ -198,9 +217,9 @@ fn publishes_type_errors_as_diagnostics() {
         public bad : Int -> Bool
         let bad x = x + 1
     "#};
-    let harness = Harness::start("errors", &[("Main.fai", bad)]);
+    let mut harness = Harness::start("errors", &[("Main.fai", bad)]);
     let uri = harness.did_open("Main.fai", bad);
-    let diagnostics = harness.await_diagnostics(&uri);
+    let diagnostics = harness.diagnostics(&uri);
     assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
     let d = &diagnostics[0];
     assert!(d["code"].as_str().unwrap().starts_with("FAI"), "{d:?}");
@@ -276,14 +295,14 @@ fn formatting_returns_canonical_text() {
 fn did_change_analyzes_unsaved_edits_not_disk() {
     // Disk stays clean for the whole test; only the buffer changes. A reported
     // error can therefore only come from the overlaid (unsaved) text.
-    let harness = Harness::start("dirty-change", &[("Main.fai", MAIN)]);
+    let mut harness = Harness::start("dirty-change", &[("Main.fai", MAIN)]);
     let uri = harness.did_open("Main.fai", MAIN);
-    assert!(harness.await_diagnostics(&uri).is_empty(), "clean buffer, no diagnostics");
+    assert!(harness.diagnostics(&uri).is_empty(), "clean buffer, no diagnostics");
 
     // Edit the buffer to a type error (the signature no longer matches the body).
     let broken = "module Main\n\npublic inc : Int -> Bool\nlet inc x = x + 1\n\npublic two : Int\nlet two = inc 1\n";
     harness.did_change(&uri, broken);
-    let diagnostics = harness.await_diagnostics(&uri);
+    let diagnostics = harness.diagnostics(&uri);
     assert!(!diagnostics.is_empty(), "the unsaved edit is type-checked: {diagnostics:?}");
     assert!(
         diagnostics.iter().all(|d| d["code"].as_str().unwrap().starts_with("FAI")),
@@ -292,7 +311,7 @@ fn did_change_analyzes_unsaved_edits_not_disk() {
 
     // Edit back to a clean buffer: the diagnostics clear again.
     harness.did_change(&uri, MAIN);
-    assert!(harness.await_diagnostics(&uri).is_empty(), "fixing the buffer clears diagnostics");
+    assert!(harness.diagnostics(&uri).is_empty(), "fixing the buffer clears diagnostics");
     harness.shutdown();
 }
 
@@ -330,26 +349,51 @@ fn did_close_reverts_the_overlay_to_disk() {
     // `A` defines `n : Int`; `B` uses it as an `Int` (valid against disk).
     let disk_a = "module A\n\npublic n : Int\nlet n = 0\n";
     let disk_b = "module B\n\npublic m : Int\nlet m = A.n + 1\n";
-    let harness = Harness::start("dirty-close", &[("A.fai", disk_a), ("B.fai", disk_b)]);
+    let mut harness = Harness::start("dirty-close", &[("A.fai", disk_a), ("B.fai", disk_b)]);
 
     // Open `A` with an unsaved edit that retypes `n` to `Bool` (valid in `A`),
     // which breaks `B`'s `A.n + 1`.
     let dirty_a = "module A\n\npublic n : Bool\nlet n = true\n";
     let uri_a = harness.did_open("A.fai", dirty_a);
     let uri_b = harness.did_open("B.fai", disk_b);
-    assert_eq!(
-        harness.await_diagnostics(&uri_b).len(),
-        1,
-        "B sees A's unsaved edit across modules"
-    );
+    assert_eq!(harness.diagnostics(&uri_b).len(), 1, "B sees A's unsaved edit across modules");
 
     // Close `A` without saving: the overlay must revert to the on-disk `n : Int`.
     harness.did_close(&uri_a);
     // Re-check `B` (an identical-content change re-runs analysis): now clean.
     harness.did_change(&uri_b, disk_b);
     assert!(
-        harness.await_diagnostics(&uri_b).is_empty(),
+        harness.diagnostics(&uri_b).is_empty(),
         "closing A restored its on-disk type, so B is valid again"
     );
+    harness.shutdown();
+}
+
+#[test]
+fn formatting_uses_the_unsaved_buffer() {
+    // On disk the file is already canonical and has no `inc`.
+    let disk = indoc! {r#"
+        module Main
+
+        public two : Int
+        let two = 0
+    "#};
+    let mut harness = Harness::start("dirty-fmt", &[("Main.fai", disk)]);
+    let uri = harness.did_open("Main.fai", disk);
+    // The unsaved buffer adds a (badly spaced) `inc` that is not on disk.
+    let messy =
+        "module Main\n\npublic two : Int\nlet two=0\n\npublic inc : Int -> Int\nlet inc x=x+1\n";
+    harness.did_change(&uri, messy);
+    let result = harness.request(
+        "textDocument/formatting",
+        json!({
+            "textDocument": { "uri": uri },
+            "options": { "tabSize": 2, "insertSpaces": true }
+        }),
+    );
+    let new_text = result.as_array().expect("edits")[0]["newText"].as_str().unwrap();
+    // The buffer-only `inc` is formatted, proving the unsaved text was used.
+    assert!(new_text.contains("let inc x = x + 1"), "{new_text:?}");
+    assert!(new_text.contains("let two = 0") && !new_text.contains("two=0"), "{new_text:?}");
     harness.shutdown();
 }
