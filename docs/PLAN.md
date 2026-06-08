@@ -515,8 +515,11 @@ counterexamples on float-arithmetic laws). See decisions **D80–D87**.
 **Deliverables**
 - Nested modules; remaining pattern forms; broader standard library.
 - `fai-fmt` completeness across the whole grammar; formatter conformance tests.
-- `fai-lsp`: diagnostics, hover (types/docs), go-to-definition, document format —
-  **reusing `fai-ide`** (the same engine behind `fai query`).
+- `fai-lsp`: an LSP v1 over stdio — push diagnostics, hover (types),
+  go-to-definition, and document formatting — **reusing `fai-ide`** (the same
+  engine behind `fai query`). Completion, references, rename, symbols, signature
+  help, hover docs, code actions, and the editor client/grammars are their own
+  milestone (M10).
 - **Advanced `fai query`:** `callers`/`callees` (call hierarchy), `dependents`
   (transitive), `caps` (capability footprint), and `search` (Hoogle-style type
   search; needs a type-normalized index).
@@ -591,6 +594,81 @@ and content-addressed cache landed in M0–M3.5; this milestone is *tuning*.)
 
 ---
 
+### M10 — Editor integration: LSP v2, VS Code extension & grammars
+**Goal:** ship a first-class editor experience for Fai — grow the language server
+from the v1 surface (push diagnostics, hover, go-to-definition, document
+formatting) into full editing, and deliver the client and grammars an editor
+actually needs. The server features reuse `fai-ide`, so every one shares the warm
+session and the `fai query` answers; open buffers are already overlaid as
+in-memory edits, so each works on unsaved text.
+
+**Deliverables — language-server completeness (LSP v2)**
+- **Completion** (`textDocument/completion`): in-scope names, qualified members
+  after `Module.`, record fields after a value's `.`, and constructors in
+  patterns; each item carries a kind, the rendered type signature as detail, and
+  docs (lazily, via `completionItem/resolve`).
+- **Find references** (`textDocument/references`) and **rename**
+  (`textDocument/rename` + `prepareRename`): cross-file workspace edits over the
+  resolution reference graph, honoring visibility and qualified paths.
+- **Document & workspace symbols** (`textDocument/documentSymbol`,
+  `workspace/symbol`): the `fai-ide` outline/symbols, nested-module aware.
+- **Signature help** (`textDocument/signatureHelp`): parameter types while
+  writing an application.
+- **Richer hover:** include `///` doc prose and attached `example`/`forall`
+  contracts (v1 shows the type only).
+- **Code actions / quick fixes** (`textDocument/codeAction`): apply the
+  machine-applicable diagnostic suggestions (span + replacement) the diagnostics
+  model already carries; "add the missing public signature"; qualify an ambiguous
+  name.
+- **Inlay hints** (inferred types for `let`/parameter bindings) and **semantic
+  tokens** (semantic highlighting) — both optional, both from the existing
+  type/resolution data.
+- **Editing fidelity:** incremental (range) document sync and `didSave` handling
+  (v1 is full-document sync); range / on-type **formatting**; client
+  position-encoding negotiation (UTF-8/UTF-16) layered on the existing line map.
+- **Dependent diagnostics:** re-publish an open file's diagnostics when a
+  cross-module change invalidates it (v1 pushes diagnostics only for the edited
+  file), or adopt pull-based diagnostics (`textDocument/diagnostic`).
+
+**Deliverables — editor integration & grammars**
+- **VS Code extension** (`editors/vscode/`): a thin TypeScript client
+  (`vscode-languageclient`) that launches `fai lsp` over stdio and surfaces it; a
+  `fai` language contribution (`.fai`, aliases), a `language-configuration.json`
+  (comment tokens `//` and `(* *)`, bracket pairs, auto-closing/surrounding
+  pairs, offside-aware indentation), settings (server-binary path, trace) and a
+  "restart server" command; bundled with esbuild and packaged to a `.vsix` with
+  `vsce`. The client is intentionally thin — all intelligence stays in the
+  server.
+- **TextMate grammar** (`editors/vscode/syntaxes/fai.tmLanguage.json`):
+  editor-agnostic syntax highlighting consumed by VS Code (and usable by GitHub
+  Linguist). Scopes for keywords (incl. `module`/`interface`/`match`/`with`/`as`/
+  `example`/`forall`), the three comment forms (`//`, `(* *)`, `///` doc),
+  string/char literals, numeric literals (`0xFF`, `1_000`, floats), operators,
+  constructors/modules (upper-case idents), and type variables — faithfully
+  encoding the lexer's **`'a'` char-literal vs `'a` type-variable** rule.
+- **Tree-sitter grammar** (`tree-sitter-fai/`, *stretch*): a `grammar.js`
+  mirroring `fai-syntax`, the generated parser, and `queries/` (highlights,
+  locals, folds, indents) for editors that consume tree-sitter (Neovim, Helix,
+  Zed, GitHub). A second, independent encoding of the grammar, so it is scoped as
+  a stretch goal and must be kept in step with the canonical parser (see R18).
+
+**Acceptance**
+- On a sample multi-file project: completion offers in-scope and qualified
+  members with types; references and rename are correct and complete across
+  modules; document symbols mirror `fai query outline`; a quick fix applies a
+  diagnostic's suggested edit.
+- The packaged VS Code extension installs, connects to `fai lsp`, and shows
+  diagnostics + highlighting on a `samples/` file; the TextMate grammar tokenizes
+  every `samples/` file with no `invalid`/unscoped spans; the tree-sitter grammar
+  (if built) parses every `samples/` file without `ERROR` nodes.
+
+**Crates / dirs:** `fai-lsp`, `fai-ide`, `fai-resolve`, `fai-types`, `fai-fmt`
+(server side); new non-Cargo trees `editors/vscode/` and `tree-sitter-fai/`
+(TypeScript / JS, built and tested by their own tooling, wired into CI
+separately from the Cargo workspace).
+
+---
+
 ## Risk register
 
 | # | Risk | Likelihood | Impact | Mitigation |
@@ -612,6 +690,7 @@ and content-addressed cache landed in M0–M3.5; this milestone is *tuning*.)
 | R15 | JIT'd user code crashes/hangs the toolchain | Med | High | Run in an isolated **worker process** with timeouts/resource limits; the daemon survives worker death. |
 | R16 | Large mutually-recursive SCCs reduce per-def granularity | Low | Med | SCCs computed from actual references (usually small); consider a lint for accidental large cycles. |
 | R17 | Type-search (`query search`) indexing/matching complexity | Low | Med | Ship as an M8 goal; type-normalized index; unify up to row polymorphism; bound results with `--limit`. |
+| R18 | The editor grammars (TextMate, tree-sitter) re-encode the lexer/parser and drift from the canonical `fai-syntax` | Med | Low | The hand-written `fai-syntax` stays the single source of truth; grammars are highlighting/structure aids only. Pin both with tests over `samples/` (TextMate: no unscoped spans; tree-sitter: no `ERROR` nodes), so drift fails CI. Keep the tree-sitter grammar a stretch goal to bound the dual-maintenance cost. |
 
 ---
 
