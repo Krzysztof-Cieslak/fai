@@ -78,6 +78,11 @@ fn lists_contracts_pass() {
 }
 
 #[test]
+fn tail_loops_contracts_pass() {
+    sample_contracts_pass("TailLoops.fai");
+}
+
+#[test]
 fn algebra_contracts_pass() {
     sample_contracts_pass("Algebra.fai");
 }

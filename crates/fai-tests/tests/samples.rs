@@ -73,6 +73,7 @@ fn samples_round_trip_or_are_future_surface() {
         "Rows.fai",
         "Shapes.fai",
         "Status.fai",
+        "TailLoops.fai",
         "Tuples.fai",
     ] {
         assert!(clean.contains(expected), "{expected} should parse cleanly and round-trip");
@@ -107,6 +108,7 @@ const TYPECHECK_CLEAN: &[&str] = &[
     "Rows.fai",
     "Shapes.fai",
     "Status.fai",
+    "TailLoops.fai",
     "Tuples.fai",
 ];
 
