@@ -349,73 +349,83 @@ fn structural_compare_lowers_to_the_compare_primitive() {
     assert!(lower(src, "before").contains("compare"), "got {}", lower(src, "before"));
 }
 
-#[test]
-fn lowering_invariants_hold_across_programs() {
+/// The lowered entry's arity matches the binding's parameter count, and every
+/// global the body references resolves to a real binding somewhere.
+#[track_caller]
+fn assert_lowering_invariants(src: &str, name: &str) {
     use fai_syntax::ast::ItemKind;
 
-    let programs: &[(&str, &str)] = &[
-        (
-            indoc! {r#"
-                module M
+    let (db, file) = db_with(src);
+    let lowered = core(&db, file, fai_syntax::Symbol::intern(name));
 
-                let add x y = x + y
-            "#},
-            "add",
-        ),
-        (
-            indoc! {r#"
-                module M
+    let params = fai_syntax::parse(&db, file)
+        .module
+        .items
+        .iter()
+        .find_map(|it| match &it.kind {
+            ItemKind::Binding { name: n, params, .. } if n.as_str() == name => Some(params.len()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(lowered.entry().params.len(), params, "{name}: entry arity");
 
-                let twice f = f >> f
-            "#},
-            "twice",
-        ),
-        (
-            indoc! {r#"
-                module M
-
-                let adder x = fun y -> x + y
-            "#},
-            "adder",
-        ),
-        (
-            indoc! {r#"
-                module M
-
-                let helper x = x + 1
-
-                public main : Runtime -> Unit
-                let main r = r.console.writeLine (Int.toString (helper 1))
-            "#},
-            "main",
-        ),
-    ];
-    for (src, name) in programs {
-        let (db, file) = db_with(src);
-        let lowered = core(&db, file, fai_syntax::Symbol::intern(name));
-
-        // The entry function's arity matches the binding's parameter count.
-        let params = fai_syntax::parse(&db, file)
-            .module
-            .items
-            .iter()
-            .find_map(|it| match &it.kind {
-                ItemKind::Binding { name: n, params, .. } if n.as_str() == *name => {
-                    Some(params.len())
-                }
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(lowered.entry().params.len(), params, "{name}: entry arity");
-
-        // Every referenced global resolves to a real binding somewhere.
-        for def in lowered.referenced_globals() {
-            let target = db.source_file(def.file).expect("global's file is registered");
-            assert!(
-                fai_resolve::module_defs(&db, target).get(def.name).is_some(),
-                "{name}: dangling global {}",
-                def.name
-            );
-        }
+    for def in lowered.referenced_globals() {
+        let target = db.source_file(def.file).expect("global's file is registered");
+        assert!(
+            fai_resolve::module_defs(&db, target).get(def.name).is_some(),
+            "{name}: dangling global {}",
+            def.name
+        );
     }
+}
+
+#[test]
+fn lowering_invariants_simple_binding() {
+    assert_lowering_invariants(
+        indoc! {r#"
+            module M
+
+            let add x y = x + y
+        "#},
+        "add",
+    );
+}
+
+#[test]
+fn lowering_invariants_composition() {
+    assert_lowering_invariants(
+        indoc! {r#"
+            module M
+
+            let twice f = f >> f
+        "#},
+        "twice",
+    );
+}
+
+#[test]
+fn lowering_invariants_returns_closure() {
+    assert_lowering_invariants(
+        indoc! {r#"
+            module M
+
+            let adder x = fun y -> x + y
+        "#},
+        "adder",
+    );
+}
+
+#[test]
+fn lowering_invariants_calls_helper_and_capability() {
+    assert_lowering_invariants(
+        indoc! {r#"
+            module M
+
+            let helper x = x + 1
+
+            public main : Runtime -> Unit
+            let main r = r.console.writeLine (Int.toString (helper 1))
+        "#},
+        "main",
+    );
 }

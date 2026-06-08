@@ -133,17 +133,30 @@ fn reuse_std_map_unique_vs_shared() {
     assert_eq!(s - u, 50, "List.map recycles a unique spine (u={u}, s={s})");
 }
 
+/// The recycled-vs-copied gap is exactly one cons cell per element, so it grows
+/// linearly with the list length.
+#[track_caller]
+fn reuse_gap_equals_length(n: i32) {
+    let n64 = i64::from(n);
+    // unique output = sum (inc xs) = n(n+3)/2; shared output also adds sum xs.
+    let u = allocs(&prog(INC, "sum (inc xs)", n), &(n64 * (n64 + 3) / 2).to_string());
+    let s = allocs(&prog(INC, "sum (inc xs) + sum xs", n), &(n64 * (n64 + 2)).to_string());
+    assert_eq!(s - u, n64, "n={n}: shared copies n cons cells (u={u}, s={s})");
+}
+
 #[test]
-fn reuse_scales_with_list_length() {
-    // The recycled-vs-copied gap is exactly one cons cell per element, so it grows
-    // linearly with the list length.
-    for n in [10, 100, 250] {
-        let n64 = i64::from(n);
-        // unique output = sum (inc xs) = n(n+3)/2; shared output also adds sum xs.
-        let u = allocs(&prog(INC, "sum (inc xs)", n), &(n64 * (n64 + 3) / 2).to_string());
-        let s = allocs(&prog(INC, "sum (inc xs) + sum xs", n), &(n64 * (n64 + 2)).to_string());
-        assert_eq!(s - u, n64, "n={n}: shared copies n cons cells (u={u}, s={s})");
-    }
+fn reuse_scales_n10() {
+    reuse_gap_equals_length(10);
+}
+
+#[test]
+fn reuse_scales_n100() {
+    reuse_gap_equals_length(100);
+}
+
+#[test]
+fn reuse_scales_n250() {
+    reuse_gap_equals_length(250);
 }
 
 // ===========================================================================

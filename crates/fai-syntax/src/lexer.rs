@@ -980,20 +980,63 @@ mod tests {
         assert!(lexed("1e+5").diagnostics.is_empty());
     }
 
-    #[test]
-    fn underscores_are_allowed_in_every_base() {
-        for src in ["1_000", "0xFF_FF", "0o1_7", "0b1010_1010"] {
-            assert!(lexed(src).diagnostics.is_empty(), "unexpected diagnostic for {src}");
-            assert_eq!(lexed(src).tokens[0].kind, TokenKind::Int, "{src}");
-        }
+    #[track_caller]
+    fn lexes_clean_int(src: &str) {
+        let result = lexed(src);
+        assert!(result.diagnostics.is_empty(), "unexpected diagnostic for {src}");
+        assert_eq!(result.tokens[0].kind, TokenKind::Int, "{src}");
     }
 
     #[test]
-    fn bare_or_wrong_digit_base_prefixes_are_invalid() {
-        // A base prefix with no valid digits, or digits outside the base.
-        for src in ["0x", "0o", "0b", "0b2", "0o9"] {
-            assert_eq!(lexed(src).diagnostics[0].code, crate::INVALID_NUMBER, "{src}");
-        }
+    fn underscores_in_decimal() {
+        lexes_clean_int("1_000");
+    }
+
+    #[test]
+    fn underscores_in_hex() {
+        lexes_clean_int("0xFF_FF");
+    }
+
+    #[test]
+    fn underscores_in_octal() {
+        lexes_clean_int("0o1_7");
+    }
+
+    #[test]
+    fn underscores_in_binary() {
+        lexes_clean_int("0b1010_1010");
+    }
+
+    /// A base prefix with no valid digits, or a digit outside the base, is a
+    /// single invalid-number token.
+    #[track_caller]
+    fn first_diag_is_invalid_number(src: &str) {
+        assert_eq!(lexed(src).diagnostics[0].code, crate::INVALID_NUMBER, "{src}");
+    }
+
+    #[test]
+    fn bare_hex_prefix_is_invalid() {
+        first_diag_is_invalid_number("0x");
+    }
+
+    #[test]
+    fn bare_octal_prefix_is_invalid() {
+        first_diag_is_invalid_number("0o");
+    }
+
+    #[test]
+    fn bare_binary_prefix_is_invalid() {
+        first_diag_is_invalid_number("0b");
+    }
+
+    #[test]
+    fn binary_digit_out_of_range_is_invalid() {
+        first_diag_is_invalid_number("0b2");
+    }
+
+    #[test]
+    fn octal_digit_out_of_range_is_invalid() {
+        first_diag_is_invalid_number("0o9");
     }
 
     #[test]

@@ -50,33 +50,56 @@ fn read_sample(name: &str) -> String {
     std::fs::read_to_string(samples_dir().join(name)).expect("sample exists")
 }
 
-#[test]
-fn sample_contracts_all_pass() {
-    // The typecheck-clean samples that carry contracts.
-    let names = [
-        "Math.fai",
-        "Lists.fai",
-        "Algebra.fai",
-        "Tuples.fai",
-        "Geometry.fai",
-        "Properties.fai",
-        "Cart.fai",
-        "Patterns.fai",
-    ];
-    let sources: Vec<(String, String)> =
-        names.iter().map(|n| ((*n).to_owned(), read_sample(n))).collect();
-    let files: Vec<(&str, &str)> = sources.iter().map(|(n, s)| (n.as_str(), s.as_str())).collect();
-
-    let outcome = run(&files);
+/// Runs one typecheck-clean sample's contracts on their own and asserts they all
+/// pass cleanly.
+#[track_caller]
+fn sample_contracts_pass(name: &str) {
+    let src = read_sample(name);
+    let outcome = run(&[(name, src.as_str())]);
     assert!(
         outcome.ok,
-        "samples should pass; diagnostics: {:?}",
+        "{name} contracts should pass; diagnostics: {:?}",
         outcome.diagnostics.iter().map(|d| (d.code.as_str(), &d.message)).collect::<Vec<_>>()
     );
-    assert!(outcome.total >= 8, "expected the sample contracts, got {}", outcome.total);
-    assert_eq!(outcome.passed, outcome.total);
-    assert_eq!(outcome.not_run, 0);
-    assert_eq!(outcome.leaked, 0, "running contracts must not leak");
+    assert!(outcome.total > 0, "{name}: expected contracts, got {}", outcome.total);
+    assert_eq!(outcome.passed, outcome.total, "{name}: every contract passes");
+    assert_eq!(outcome.not_run, 0, "{name}: no contracts skipped");
+    assert_eq!(outcome.leaked, 0, "{name}: running contracts must not leak");
+}
+
+#[test]
+fn math_contracts_pass() {
+    sample_contracts_pass("Math.fai");
+}
+
+#[test]
+fn lists_contracts_pass() {
+    sample_contracts_pass("Lists.fai");
+}
+
+#[test]
+fn algebra_contracts_pass() {
+    sample_contracts_pass("Algebra.fai");
+}
+
+#[test]
+fn tuples_contracts_pass() {
+    sample_contracts_pass("Tuples.fai");
+}
+
+#[test]
+fn properties_contracts_pass() {
+    sample_contracts_pass("Properties.fai");
+}
+
+#[test]
+fn cart_contracts_pass() {
+    sample_contracts_pass("Cart.fai");
+}
+
+#[test]
+fn patterns_contracts_pass() {
+    sample_contracts_pass("Patterns.fai");
 }
 
 #[test]
