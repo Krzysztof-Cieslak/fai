@@ -121,3 +121,53 @@ fn borrow_inspector_read_twice(bencher: Bencher, n: i32) {
         .with_inputs(|| fresh(&src))
         .bench_values(|(db, file)| divan::black_box(jit_run_program(&db, file).exit_code));
 }
+
+// ── inspect-only primitives: a boxed operand compared/read then reused ───────
+// `=` / `String.length` only read their operands, so borrowing them lets the
+// reused value flow on without a per-step duplication.
+
+/// A boxed list compared on each step and then passed to the recursive call.
+fn compare_prog(k: i32, n: i32) -> String {
+    formatdoc! {r#"
+        module M
+
+        let build k = if k <= 0 then [] else k :: build (k - 1)
+
+        let cmpAll k xs =
+          if k <= 0 then 0
+          else (if xs = xs then 1 else 0) + cmpAll (k - 1) xs
+
+        public main : Runtime -> Unit
+        let main rt = rt.console.writeLine (Int.toString (cmpAll {k} (build {n})))
+    "#}
+}
+
+#[divan::bench(args = [50, 200, 1000])]
+fn compare_heavy(bencher: Bencher, k: i32) {
+    let src = compare_prog(k, 20);
+    bencher
+        .with_inputs(|| fresh(&src))
+        .bench_values(|(db, file)| divan::black_box(jit_run_program(&db, file).exit_code));
+}
+
+/// A boxed string read on each step (`String.length`) and then passed along.
+fn string_read_prog(k: i32) -> String {
+    formatdoc! {r#"
+        module M
+
+        let lenAll k s =
+          if k <= 0 then 0
+          else String.length s + lenAll (k - 1) s
+
+        public main : Runtime -> Unit
+        let main rt = rt.console.writeLine (Int.toString (lenAll {k} "abcdefghij"))
+    "#}
+}
+
+#[divan::bench(args = [50, 200, 1000])]
+fn string_read_heavy(bencher: Bencher, k: i32) {
+    let src = string_read_prog(k);
+    bencher
+        .with_inputs(|| fresh(&src))
+        .bench_values(|(db, file)| divan::black_box(jit_run_program(&db, file).exit_code));
+}

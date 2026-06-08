@@ -308,10 +308,14 @@ impl InferCtx {
 
     /// Follows bound variables to the representative shallow form.
     pub fn resolve_shallow(&self, ty: &SolveTy) -> SolveTy {
+        crate::perf::bump_resolve_clone();
         let mut cur = ty.clone();
         while let SolveTy::Var(id) = cur {
             match &self.vars[id.0 as usize] {
-                VarState::Bound(t) => cur = t.clone(),
+                VarState::Bound(t) => {
+                    crate::perf::bump_resolve_clone();
+                    cur = t.clone();
+                }
                 VarState::Free(_) => break,
             }
         }
@@ -429,6 +433,7 @@ impl InferCtx {
 
     /// Whether `id` occurs in `ty` (the occurs check).
     fn occurs(&self, id: TyVarId, ty: &SolveTy) -> bool {
+        crate::perf::bump_occurs_visit();
         match self.resolve_shallow(ty) {
             SolveTy::Var(other) => other == id,
             SolveTy::App(f, a) | SolveTy::Arrow(f, a) => self.occurs(id, &f) || self.occurs(id, &a),

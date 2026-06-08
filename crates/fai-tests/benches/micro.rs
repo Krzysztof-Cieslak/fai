@@ -139,3 +139,45 @@ fn infer_large_scc(bencher: Bencher, n: usize) {
         db
     });
 }
+
+// ── shared-variable DAG (occurs / free-var walk) ─────────────────────────────
+// Each `let` pairs the previous binding with itself, so one variable is reached
+// through an exponentially branching DAG, but the result stays `Int` — isolating
+// the occurs/free-variable walk cost from reification. Without memoizing visited
+// representatives these walks are exponential in depth.
+
+#[divan::bench(args = [6, 9, 12])]
+fn occurs_shared_dag(bencher: Bencher, depth: usize) {
+    let mut src = String::from("module M\n\nlet f x =\n  let p0 = (x, x)\n");
+    for d in 1..depth {
+        src.push_str(&format!("  let p{d} = (p{}, p{})\n", d - 1, d - 1));
+    }
+    src.push_str("  0\n");
+    let entry = fai_syntax::Symbol::intern("f");
+
+    bencher.with_inputs(|| db_with(&src)).bench_values(|(db, file)| {
+        divan::black_box(def_type(&db, file, entry));
+        db
+    });
+}
+
+// ── value-restricted let chain (generalization) ──────────────────────────────
+// A block of many simple-value `let`s, each generalized. Generalizing each one
+// recomputes the environment's free variables over every prior binding — O(n^2)
+// in block size — until rank-based generalization replaces that with a per-var
+// level test.
+
+#[divan::bench(args = [50, 200, 800])]
+fn generalize_let_values(bencher: Bencher, n: usize) {
+    let mut src = String::from("module M\n\nlet f =\n");
+    for i in 0..n {
+        src.push_str(&format!("  let a{i} = []\n"));
+    }
+    src.push_str("  0\n");
+    let entry = fai_syntax::Symbol::intern("f");
+
+    bencher.with_inputs(|| db_with(&src)).bench_values(|(db, file)| {
+        divan::black_box(def_type(&db, file, entry));
+        db
+    });
+}

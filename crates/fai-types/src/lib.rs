@@ -12,6 +12,7 @@ pub mod evidence;
 mod exhaustive;
 mod infer;
 mod lower;
+pub mod perf;
 #[allow(unsafe_code)]
 mod query;
 pub mod std_lib;
