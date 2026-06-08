@@ -491,9 +491,18 @@ impl<M: Module> Translator<'_, M> {
 
     fn prim(&mut self, op: Prim, args: &[CExpr]) -> Value {
         let vals: Vec<Value> = args.iter().map(|a| self.expr(a)).collect();
+        // An inspect-only primitive whose operands reference counting lent (boxed,
+        // reference-counted values) calls the non-consuming runtime variant — the
+        // caller drops them at their last use. The borrow decision is the same one
+        // `fai-rc` made (`Prim::borrows_operand` on the operand type), so the
+        // emitted drops and the runtime's (non-)consumption agree.
+        let symbol = match op.borrowed_runtime_symbol() {
+            Some(borrowed) if args.first().is_some_and(|a| op.borrows_operand(&a.ty)) => borrowed,
+            _ => op.runtime_symbol(),
+        };
         // Every primitive (including `Console.writeLine`, which yields Unit)
         // returns a value.
-        let f = self.runtime(op.runtime_symbol(), op.arity(), true);
+        let f = self.runtime(symbol, op.arity(), true);
         let call = self.builder.ins().call(f, &vals);
         self.builder.inst_results(call)[0]
     }

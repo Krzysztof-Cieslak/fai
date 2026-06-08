@@ -157,6 +157,33 @@ fn borrow_alongside_rebuild_runs_clean() {
     outputs(&prog(INC, "sum (inc xs) + len xs", 50), "1375"); // 1325 + 50
 }
 
+#[test]
+fn equality_borrows_its_operand_so_reuse_still_fires() {
+    // `=` on a boxed list inspects (borrows) its operands rather than consuming
+    // them, so comparing `xs` leaves it uniquely owned and the following `inc`
+    // still recycles the spine in place. If `=` consumed `xs`, the comparison
+    // would duplicate it (sharing the spine) and `inc` would copy — 50 extra
+    // allocations. The compared and plain forms therefore allocate identically.
+    let plain = allocs(&prog(INC, "sum (inc xs)", 50), "1325");
+    let compared = allocs(&prog(INC, "if xs = xs then sum (inc xs) else 0", 50), "1325");
+    assert_eq!(plain, compared, "comparing xs borrows it (plain={plain}, compared={compared})");
+}
+
+#[test]
+fn string_reader_borrows_its_operand() {
+    // `String.length` reads (borrows) its operand; reading a string twice must
+    // run cleanly and leak-free without duplicating it.
+    let src = formatdoc! {r#"
+        module M
+
+        let twice s = String.length s + String.length s
+
+        public main : Runtime -> Unit
+        let main rt = rt.console.writeLine (Int.toString (twice "abcde"))
+    "#};
+    outputs(&src, "10");
+}
+
 // ===========================================================================
 // Record update: a unique record is overwritten in place; a shared one is copied.
 // ===========================================================================

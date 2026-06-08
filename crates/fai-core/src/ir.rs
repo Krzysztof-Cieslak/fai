@@ -13,7 +13,7 @@
 //! original lambda's position.
 
 use fai_resolve::{DefId, LocalId};
-use fai_types::Ty;
+use fai_types::{Con, Ty};
 
 /// Identifies a [`CoreFn`] within a [`LoweredDef`] (index into its `fns`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -247,7 +247,52 @@ pub enum Prim {
     RecordUpdate,
 }
 
+/// Whether values of `ty` are boxed, reference-counted heap values, so lending
+/// rather than consuming one saves a duplicate/drop. Strings, floats, records,
+/// tuples, ADTs, lists, and interface dictionaries qualify; immediates
+/// (`Int`/`Bool`/`Char`/`Unit`), functions, and type variables do not.
+fn is_boxed_rc(ty: &Ty) -> bool {
+    fn boxed_head(ty: &Ty) -> bool {
+        match ty {
+            Ty::Adt(_) | Ty::Interface(_) | Ty::Con(Con::List) => true,
+            Ty::App(head, _) => boxed_head(head),
+            _ => false,
+        }
+    }
+    matches!(ty, Ty::Record(_) | Ty::Tuple(_) | Ty::Con(Con::String) | Ty::Con(Con::Float))
+        || boxed_head(ty)
+}
+
 impl Prim {
+    /// Whether this primitive only *inspects* an operand of `operand_ty`, so the
+    /// operand may be borrowed (the caller keeps ownership and the runtime's
+    /// borrowed variant does not consume it) rather than consumed.
+    ///
+    /// True only for the inspect-only primitives — `=`, structural `compare`, and
+    /// the `String` readers — and only when the operand is a reliably boxed,
+    /// reference-counted type. Immediate operands (notably the hot `match`
+    /// tag-test path) stay consumed, since lending them would only add a no-op
+    /// drop. Both reference counting and code generation consult this, so they
+    /// agree on whether the operand is borrowed.
+    #[must_use]
+    pub fn borrows_operand(self, operand_ty: &Ty) -> bool {
+        matches!(self, Prim::Eq | Prim::Compare | Prim::StringLength | Prim::StringContains)
+            && is_boxed_rc(operand_ty)
+    }
+
+    /// The runtime symbol of this primitive's non-consuming variant, for the
+    /// inspect-only primitives that have one (see [`Prim::borrows_operand`]).
+    #[must_use]
+    pub fn borrowed_runtime_symbol(self) -> Option<&'static str> {
+        match self {
+            Prim::Eq => Some("fai_equal_borrowed"),
+            Prim::Compare => Some("fai_compare_borrowed"),
+            Prim::StringLength => Some("fai_string_length_borrowed"),
+            Prim::StringContains => Some("fai_string_contains_borrowed"),
+            _ => None,
+        }
+    }
+
     /// The runtime symbol implementing this primitive.
     #[must_use]
     pub fn runtime_symbol(self) -> &'static str {

@@ -661,10 +661,15 @@ impl Rc<'_> {
 // Helpers.
 // ---------------------------------------------------------------------------
 
-/// Per-operand borrow flags for a primitive. Currently every primitive consumes
-/// its operands; inspect-only primitives that borrow are added later.
-fn prim_borrows(_op: fai_core::ir::Prim, args: &[CExpr]) -> Vec<bool> {
-    vec![false; args.len()]
+/// Per-operand borrow flags for a primitive. Inspect-only primitives (`=`,
+/// `compare`, the `String` readers) borrow their operands when those are boxed,
+/// reference-counted values; every other primitive consumes its operands. The
+/// decision is uniform across a call's operands (those primitives are
+/// homogeneous), keyed on the first operand's type, so it matches the variant
+/// code generation selects.
+fn prim_borrows(op: fai_core::ir::Prim, args: &[CExpr]) -> Vec<bool> {
+    let borrow = args.first().is_some_and(|a| op.borrows_operand(&a.ty));
+    vec![borrow; args.len()]
 }
 
 fn dup_(local: LocalId, body: CExpr) -> CExpr {
