@@ -512,6 +512,16 @@ test; under-testing a phase is a defect, not a shortcut.
   observable output (tokens, parse trees, diagnostics, formatted text, types,
   lowered IR). Cross-cutting end-to-end and incremental tests live in
   `fai-tests`.
+- **One case per `#[test]`; avoid table-driven loops.** Don't iterate a literal
+  table of cases inside a single test — the first failing case aborts the rest,
+  and the panic doesn't say which case failed. Write one focused `#[test]` per
+  case instead, factoring the shared assertion into a `#[track_caller]` helper
+  they each call (see `fai-rc/src/cases.rs`). This isolates and names failures
+  and lets the cases run in parallel. Two exceptions: generative **property
+  tests** (`proptest`) are the right tool when a law holds across *all* inputs;
+  and when the "cases" are really sub-parts of one logical fact (e.g. every field
+  of a single inferred record), assert the whole structure in one comparison
+  rather than looping over its pieces.
 - **Cover the whole matrix for each construct.** For every surface form, test:
   valid inputs; **malformed inputs** (which must yield a `Diagnostic`, never a
   panic or hang); error **recovery** (one run reports *many* diagnostics, and a
