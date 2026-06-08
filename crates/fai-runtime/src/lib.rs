@@ -14,11 +14,12 @@
 //! boxed.
 //!
 //! Heap objects begin with a [`Header`] (`{ rc, descriptor, size }`); the
-//! descriptor points at a static [`Descriptor`] whose `scan` decrements the
-//! object's reference-counted children before it is freed. Reference counting is
-//! plain (no reuse): [`fai_dup`]/[`fai_drop`] are tag-checked, so immediates are
-//! no-ops and polymorphic code reference-counts correctly with no type
-//! information.
+//! descriptor identifies the object's kind (by address), from which [`fai_drop`]
+//! recovers and releases the object's reference-counted children. A dead object's
+//! descendants are released with an explicit worklist rather than native
+//! recursion, so freeing an arbitrarily deep structure never overflows the stack.
+//! [`fai_dup`]/[`fai_drop`] are tag-checked, so immediates are no-ops and
+//! polymorphic code reference-counts correctly with no type information.
 //!
 //! Functions are closures `{ header, code, arity, env_count, env… }`; every
 //! application goes through [`fai_apply_n`], which matches the argument count to
@@ -94,48 +95,46 @@ const ALIGN: usize = 8;
 // Heap header & descriptors.
 // ---------------------------------------------------------------------------
 
-/// A heap-type descriptor: a static record identifying a boxed value's kind and
-/// how to release its reference-counted children. Referenced by address from
-/// every object header (and, for static objects, from generated code).
+/// A heap-type descriptor: a static record identifying a boxed value's kind.
+/// Referenced by address from every object header (and, for static objects, from
+/// generated code), so a value's kind is recovered by comparing its descriptor
+/// pointer against these statics. Releasing an object's reference-counted children
+/// is driven by kind in [`scan_push`] (see [`fai_drop`]).
 #[repr(C)]
 pub struct Descriptor {
     /// A human-readable kind name (used in leak/debug reporting).
     pub name: &'static str,
-    /// Releases the object's reference-counted children, if any. `None` for leaf
-    /// objects (`String`, boxed `Int`). Called once, when the count hits zero,
-    /// just before the object is freed.
-    pub scan: Option<unsafe extern "C" fn(*mut u8)>,
 }
 
-// SAFETY: a `Descriptor` holds only a `&'static str` and an optional function
-// pointer, both of which are `Sync`; it carries no interior mutability.
+// SAFETY: a `Descriptor` holds only a `&'static str`, which is `Sync`; it carries
+// no interior mutability.
 unsafe impl Sync for Descriptor {}
 
 /// Descriptor for `String` objects (leaf: inline bytes, no children).
 #[unsafe(no_mangle)]
-pub static FAI_STRING_DESC: Descriptor = Descriptor { name: "String", scan: None };
+pub static FAI_STRING_DESC: Descriptor = Descriptor { name: "String" };
 
 /// Descriptor for boxed (overflowed) `Int` objects (leaf).
 #[unsafe(no_mangle)]
-pub static FAI_INT_DESC: Descriptor = Descriptor { name: "Int", scan: None };
+pub static FAI_INT_DESC: Descriptor = Descriptor { name: "Int" };
 
 /// Descriptor for closures (children: the captured environment slots).
 #[unsafe(no_mangle)]
-pub static FAI_CLOSURE_DESC: Descriptor = Descriptor { name: "Closure", scan: Some(closure_scan) };
+pub static FAI_CLOSURE_DESC: Descriptor = Descriptor { name: "Closure" };
 
 /// Descriptor for partial applications (children: the target plus stored args).
 #[unsafe(no_mangle)]
-pub static FAI_PAP_DESC: Descriptor = Descriptor { name: "Pap", scan: Some(pap_scan) };
+pub static FAI_PAP_DESC: Descriptor = Descriptor { name: "Pap" };
 
 /// Descriptor for boxed `Float` objects (leaf).
 #[unsafe(no_mangle)]
-pub static FAI_FLOAT_DESC: Descriptor = Descriptor { name: "Float", scan: None };
+pub static FAI_FLOAT_DESC: Descriptor = Descriptor { name: "Float" };
 
 /// Descriptor for data values — constructors, records, and tuples (children: all
 /// fields). A single descriptor serves every shape; the field count is derived
 /// from the object's size.
 #[unsafe(no_mangle)]
-pub static FAI_DATA_DESC: Descriptor = Descriptor { name: "Data", scan: Some(data_scan) };
+pub static FAI_DATA_DESC: Descriptor = Descriptor { name: "Data" };
 
 // ---------------------------------------------------------------------------
 // Tagging helpers.
@@ -299,6 +298,11 @@ pub extern "C" fn fai_dup(v: Value) -> Value {
 
 /// Decrements a value's reference count, releasing it (and its children) at
 /// zero. No-op for immediates.
+///
+/// Releasing a dead object walks its descendants with an explicit [`DropWork`]
+/// worklist rather than native recursion, so dropping an arbitrarily deep
+/// structure (e.g. a long list) never overflows the native stack. The common
+/// case — decrementing a still-shared value — touches no worklist.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_drop(v: Value) {
     if !is_boxed(v) {
@@ -309,48 +313,115 @@ pub extern "C" fn fai_drop(v: Value) {
     unsafe {
         let rc = read_u64(p, RC_OFFSET) - 1;
         write_u64(p, RC_OFFSET, rc);
-        if rc == 0 {
-            let desc = read_ptr(p, DESC_OFFSET).cast::<Descriptor>();
-            if let Some(scan) = (*desc).scan {
-                scan(p);
+        if rc != 0 {
+            return;
+        }
+        // Dead: release its reference-counted children, then its memory. The
+        // children (and their descendants) are drained iteratively.
+        let mut work = DropWork::new();
+        scan_push(p, &mut work);
+        free_obj(p);
+        drain(&mut work);
+    }
+}
+
+/// A drop worklist: boxed values whose reference count is still to be decremented.
+/// A fixed inline buffer keeps shallow drops allocation-free; deeper structures
+/// spill onto the heap. Either way the walk is iterative, so no structure
+/// overflows the native stack when it is freed.
+struct DropWork {
+    inline: [Value; DROP_INLINE],
+    len: usize,
+    spill: Vec<Value>,
+}
+
+/// The inline worklist capacity before spilling to the heap.
+const DROP_INLINE: usize = 32;
+
+impl DropWork {
+    fn new() -> Self {
+        Self { inline: [0; DROP_INLINE], len: 0, spill: Vec::new() }
+    }
+
+    fn push(&mut self, v: Value) {
+        if self.len < DROP_INLINE {
+            self.inline[self.len] = v;
+            self.len += 1;
+        } else {
+            self.spill.push(v);
+        }
+    }
+
+    fn pop(&mut self) -> Option<Value> {
+        if let Some(v) = self.spill.pop() {
+            return Some(v);
+        }
+        if self.len > 0 {
+            self.len -= 1;
+            return Some(self.inline[self.len]);
+        }
+        None
+    }
+}
+
+/// Pushes the boxed, reference-counted children of the live object `p` onto
+/// `work` (immediates carry no count and are skipped). The child layout is
+/// recovered from the object's kind, identified by its descriptor address.
+///
+/// # Safety
+/// `p` is a live object pointer.
+unsafe fn scan_push(p: *mut u8, work: &mut DropWork) {
+    // SAFETY: `p` is a live object; its descriptor and fields are in bounds.
+    unsafe {
+        let desc = read_ptr(p, DESC_OFFSET).cast::<Descriptor>();
+        if std::ptr::eq(desc, &FAI_DATA_DESC) {
+            let size = read_u64(p, SIZE_OFFSET) as usize;
+            let nfields = (size - DATA_FIELDS_OFFSET) / 8;
+            for i in 0..nfields {
+                let field = read_i64(p, DATA_FIELDS_OFFSET + i * 8);
+                if is_boxed(field) {
+                    work.push(field);
+                }
             }
-            free_obj(p);
+        } else if std::ptr::eq(desc, &FAI_CLOSURE_DESC) {
+            let env_count = read_u64(p, CLOSURE_ENV_COUNT_OFFSET) as usize;
+            for i in 0..env_count {
+                let slot = read_i64(p, CLOSURE_ENV_OFFSET + i * 8);
+                if is_boxed(slot) {
+                    work.push(slot);
+                }
+            }
+        } else if std::ptr::eq(desc, &FAI_PAP_DESC) {
+            let func = read_i64(p, PAP_FUNC_OFFSET);
+            if is_boxed(func) {
+                work.push(func);
+            }
+            let nargs = read_u64(p, PAP_NARGS_OFFSET) as usize;
+            for i in 0..nargs {
+                let arg = read_i64(p, PAP_ARGS_OFFSET + i * 8);
+                if is_boxed(arg) {
+                    work.push(arg);
+                }
+            }
         }
+        // Leaf kinds (`String`, boxed `Int`/`Float`) have no children.
     }
 }
 
-/// Releases a closure's captured environment slots.
-unsafe extern "C" fn closure_scan(p: *mut u8) {
-    // SAFETY: `p` is a live closure object.
-    unsafe {
-        let env_count = read_u64(p, CLOSURE_ENV_COUNT_OFFSET);
-        for i in 0..env_count as usize {
-            let slot = read_i64(p, CLOSURE_ENV_OFFSET + i * 8);
-            fai_drop(slot);
-        }
-    }
-}
-
-/// Releases a partial application's target and stored arguments.
-unsafe extern "C" fn pap_scan(p: *mut u8) {
-    // SAFETY: `p` is a live partial-application object.
-    unsafe {
-        fai_drop(read_i64(p, PAP_FUNC_OFFSET));
-        let nargs = read_u64(p, PAP_NARGS_OFFSET);
-        for i in 0..nargs as usize {
-            fai_drop(read_i64(p, PAP_ARGS_OFFSET + i * 8));
-        }
-    }
-}
-
-/// Releases a data value's fields (the field count is derived from its size).
-unsafe extern "C" fn data_scan(p: *mut u8) {
-    // SAFETY: `p` is a live data object.
-    unsafe {
-        let size = read_u64(p, SIZE_OFFSET) as usize;
-        let nfields = (size - DATA_FIELDS_OFFSET) / 8;
-        for i in 0..nfields {
-            fai_drop(read_i64(p, DATA_FIELDS_OFFSET + i * 8));
+/// Drains a drop worklist: decrement each queued value, freeing (and enqueuing
+/// the children of) any that reaches zero. Purely iterative.
+fn drain(work: &mut DropWork) {
+    while let Some(w) = work.pop() {
+        // Only boxed values are ever pushed.
+        let q = as_obj(w);
+        // SAFETY: `q` is a live object pointer.
+        unsafe {
+            let rc = read_u64(q, RC_OFFSET) - 1;
+            write_u64(q, RC_OFFSET, rc);
+            if rc == 0 {
+                scan_push(q, work);
+                free_obj(q);
+            }
         }
     }
 }
@@ -444,7 +515,7 @@ pub extern "C" fn fai_record_update(record: Value, index: Value, value: Value) -
                 write_i64(q, DATA_FIELDS_OFFSET + i * 8, field);
             }
         }
-        // Release this reference; `data_scan` drops the copied-out fields once
+        // Release this reference; dropping it releases the copied-out fields once
         // (balancing the dups) and the replaced field once.
         fai_drop(record);
         from_obj(q)
@@ -459,11 +530,11 @@ pub extern "C" fn fai_record_update(record: Value, index: Value, value: Value) -
 /// null), meaning "no cell to reuse — allocate fresh."
 const NO_REUSE: Value = 0;
 
-/// Releases `v` for reuse. If `v` is the unique owner of a boxed object, runs its
-/// descriptor's child scan (releasing its fields) and returns the object's raw
-/// memory as a reuse token **without freeing or untracking it**; otherwise
-/// (shared, or an immediate) decrements as a normal drop would and returns the
-/// null token. Consumes one reference of `v`.
+/// Releases `v` for reuse. If `v` is the unique owner of a boxed object, releases
+/// its reference-counted children (iteratively, like [`fai_drop`]) and returns the
+/// object's raw memory as a reuse token **without freeing or untracking it**;
+/// otherwise (shared, or an immediate) decrements as a normal drop would and
+/// returns the null token. Consumes one reference of `v`.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_drop_reuse(v: Value) -> Value {
     if !is_boxed(v) {
@@ -475,11 +546,11 @@ pub extern "C" fn fai_drop_reuse(v: Value) -> Value {
         let rc = read_u64(p, RC_OFFSET) - 1;
         write_u64(p, RC_OFFSET, rc);
         if rc == 0 {
-            let desc = read_ptr(p, DESC_OFFSET).cast::<Descriptor>();
-            if let Some(scan) = (*desc).scan {
-                scan(p);
-            }
-            // Keep the memory live (no `free_obj`); `fai_reuse` rebuilds into it.
+            // Release the children but keep `p`'s memory live (no `free_obj`);
+            // `fai_reuse` rebuilds into it.
+            let mut work = DropWork::new();
+            scan_push(p, &mut work);
+            drain(&mut work);
             return from_obj(p);
         }
     }
