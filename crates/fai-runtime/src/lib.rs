@@ -801,6 +801,21 @@ pub extern "C" fn fai_string_concat(a: Value, b: Value) -> Value {
     result
 }
 
+/// Concatenates two `String`s, *borrowing* both operands (the caller releases
+/// them at their last use).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_string_concat_borrowed(a: Value, b: Value) -> Value {
+    // SAFETY: `a` and `b` are boxed `String`s (guaranteed by typing).
+    let out = unsafe {
+        let (ab, bb) = (string_bytes(a), string_bytes(b));
+        let mut out = Vec::with_capacity(ab.len() + bb.len());
+        out.extend_from_slice(ab);
+        out.extend_from_slice(bb);
+        out
+    };
+    make_string(&out)
+}
+
 /// Renders an `Int` as a `String` (operand consumed).
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_int_to_string(n: Value) -> Value {
@@ -836,27 +851,48 @@ pub extern "C" fn fai_string_length_borrowed(s: Value) -> Value {
 /// Uppercases a `String` (operand consumed).
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_to_upper(s: Value) -> Value {
+    let result = fai_to_upper_borrowed(s);
+    fai_drop(s);
+    result
+}
+
+/// Uppercases a `String`, *borrowing* the operand (the caller releases it).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_to_upper_borrowed(s: Value) -> Value {
     // SAFETY: `s` is a boxed `String`.
     let out = unsafe { string_str(s) }.to_uppercase();
-    fai_drop(s);
     make_string(out.as_bytes())
 }
 
 /// Lowercases a `String` (operand consumed).
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_to_lower(s: Value) -> Value {
+    let result = fai_to_lower_borrowed(s);
+    fai_drop(s);
+    result
+}
+
+/// Lowercases a `String`, *borrowing* the operand (the caller releases it).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_to_lower_borrowed(s: Value) -> Value {
     // SAFETY: `s` is a boxed `String`.
     let out = unsafe { string_str(s) }.to_lowercase();
-    fai_drop(s);
     make_string(out.as_bytes())
 }
 
 /// Trims leading and trailing ASCII whitespace from a `String` (consumed).
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_trim(s: Value) -> Value {
+    let result = fai_trim_borrowed(s);
+    fai_drop(s);
+    result
+}
+
+/// Trims a `String`, *borrowing* the operand (the caller releases it).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_trim_borrowed(s: Value) -> Value {
     // SAFETY: `s` is a boxed `String`.
     let out = unsafe { string_str(s) }.trim().to_owned();
-    fai_drop(s);
     make_string(out.as_bytes())
 }
 
@@ -898,6 +934,16 @@ fn list_of_strings(pieces: &[Value]) -> Value {
 /// Splits `s` on the separator `sep` into a `List String` (both consumed).
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_string_split(sep: Value, s: Value) -> Value {
+    let list = fai_string_split_borrowed(sep, s);
+    fai_drop(sep);
+    fai_drop(s);
+    list
+}
+
+/// Splits `s` on `sep` into a `List String`, *borrowing* both operands (the
+/// caller releases them at their last use).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_string_split_borrowed(sep: Value, s: Value) -> Value {
     // SAFETY: both are boxed `String`s.
     let pieces: Vec<Value> = unsafe {
         let (sep_s, src) = (string_str(sep), string_str(s));
@@ -907,15 +953,22 @@ pub extern "C" fn fai_string_split(sep: Value, s: Value) -> Value {
             src.split(sep_s).map(|piece| make_string(piece.as_bytes())).collect()
         }
     };
-    let list = list_of_strings(&pieces);
-    fai_drop(sep);
-    fai_drop(s);
-    list
+    list_of_strings(&pieces)
 }
 
 /// Joins a `List String` with the separator `sep` (both consumed).
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_string_join(sep: Value, list: Value) -> Value {
+    let result = fai_string_join_borrowed(sep, list);
+    fai_drop(sep);
+    fai_drop(list);
+    result
+}
+
+/// Joins a `List String` with `sep`, *borrowing* both operands (the caller
+/// releases them at their last use).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_string_join_borrowed(sep: Value, list: Value) -> Value {
     // SAFETY: `sep` is a `String`; `list` is a `List String`.
     let out = unsafe {
         let sep_s = string_str(sep);
@@ -934,10 +987,7 @@ pub extern "C" fn fai_string_join(sep: Value, list: Value) -> Value {
         }
         out
     };
-    let result = make_string(out.as_bytes());
-    fai_drop(sep);
-    fai_drop(list);
-    result
+    make_string(out.as_bytes())
 }
 
 /// The constructor tags of the built-in `List` (shared with codegen lowering).

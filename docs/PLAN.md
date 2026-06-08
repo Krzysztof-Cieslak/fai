@@ -406,9 +406,9 @@ a callee treats a borrowed parameter like a capture, a direct caller lends it
 releases the borrowed arguments (so `apply_n`/escaping use stays sound without a
 whole-program escape analysis). An abstract reference-count interpreter over the
 IR guards soundness (ownership, borrowing, reuse tokens) across a corpus and whole
-programs. Inspect-only **primitive borrowing**, the **cross-module borrowing
-fixpoint**, deeper **drop specialization**, and **tail-recursion modulo cons** are
-correctness-neutral follow-ups (see M9).
+programs. Inspect-only **primitive borrowing** has since landed (see D94); the
+**cross-module borrowing fixpoint**, deeper **drop specialization**, and
+**tail-recursion modulo cons** remain correctness-neutral follow-ups (see M9).
 
 **Goal:** turn correctness-first RC into competitive performance.
 
@@ -544,8 +544,9 @@ borrowing** are done (see decisions **D92–D94**): the solver shares its types 
 variables), and path-compresses variable chains — turning the unify/occurs/
 generalization/chain shapes that were O(n²)/O(n³) into linear ones (e.g. unifying
 a depth-256 arrow drops from ~3.7ms to ~28µs, a value-`let` chain of 800 from
-~31ms to ~1ms); and the inspect-only primitives (`=`, `compare`, the `String`
-readers) now borrow boxed operands via non-consuming runtime variants. Always-on
+~31ms to ~1ms); and the inspect-only primitives (`=`, `compare`, and the `String`
+readers/builders) now borrow boxed operands via non-consuming runtime variants.
+Always-on
 thread-local **work counters** (`fai-types/src/perf.rs`) gate the solver's
 asymptotic complexity deterministically in `perf_guards.rs`. **Intra-build
 parallelism** is also done (see decisions **D95–D96**): per-definition code
@@ -584,8 +585,8 @@ borrowing).
     modules' borrowing functions; the current inference is self-contained
     (self-recursion only, conservative across functions).
   - **Primitive borrowing** for inspect-only primitives (`=`/`compare`/string
-    reads) on boxed operands, guarded by operand type so the hot `match` tag-test
-    path keeps consuming its (immediate) operands.
+    reads and builders) on boxed operands, guarded by operand type so the hot
+    `match` tag-test path keeps consuming its (immediate) operands. *(Done — D94.)*
   - **Drop specialization:** inline a known monomorphic data cell's child drops
     and free to skip the descriptor dispatch (deferred from M6 as marginal after
     reuse and carrying memory-safety risk).
@@ -1633,10 +1634,12 @@ suite):
   variables" behavior are all preserved exactly.
 
 - **D94 Primitive borrowing for inspect-only operations (two-variant ABI).** `=`,
-  structural `compare`, and the `String` readers only inspect their operands, yet
-  the runtime consumed (dropped) them, forcing a caller to duplicate a value it
-  still needed (and, by sharing it, defeating in-place reuse). They now have
-  **non-consuming runtime variants** (`fai_equal_borrowed`, …), and the operands
+  structural `compare`, and the `String` operations that only read their inputs —
+  the readers (`length`, `contains`) and the read-and-rebuild builders
+  (`toUpper`/`toLower`/`trim`/`split`/`++`/`join`) — were consumed (dropped) by
+  the runtime, forcing a caller to duplicate a value it still needed (and, by
+  sharing it, defeating in-place reuse). They now have **non-consuming runtime
+  variants** (`fai_equal_borrowed`, `fai_to_upper_borrowed`, …), and the operands
   are **borrowed when boxed**. One predicate — `Prim::borrows_operand`, on the
   operand type, in `fai-core` — drives reference counting, the RC soundness
   interpreter, and code generation's choice of runtime symbol, so the caller's

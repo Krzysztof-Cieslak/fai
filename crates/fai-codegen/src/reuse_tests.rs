@@ -184,6 +184,38 @@ fn string_reader_borrows_its_operand() {
     outputs(&src, "10");
 }
 
+#[test]
+fn string_builders_borrow_their_operand() {
+    // `toUpper`/`trim` read their input and build a new string; reusing the same
+    // string across two such calls must run cleanly and leak-free (the input is
+    // borrowed, not consumed, so it is dropped exactly once at its last use).
+    let src = formatdoc! {r#"
+        module M
+
+        let twice s = String.length (String.toUpper s) + String.length (String.trim s)
+
+        public main : Runtime -> Unit
+        let main rt = rt.console.writeLine (Int.toString (twice "  Hi  "))
+    "#};
+    // toUpper "  Hi  " -> "  HI  " (length 6); trim "  Hi  " -> "Hi" (length 2).
+    outputs(&src, "8");
+}
+
+#[test]
+fn string_split_join_borrow_the_separator() {
+    // `split` and `join` both read the separator; reusing it across the two calls
+    // must run cleanly and leak-free.
+    let src = formatdoc! {r#"
+        module M
+
+        let roundtrip sep s = String.join sep (String.split sep s)
+
+        public main : Runtime -> Unit
+        let main rt = rt.console.writeLine (roundtrip "," "a,b,c")
+    "#};
+    outputs(&src, "a,b,c");
+}
+
 // ===========================================================================
 // Record update: a unique record is overwritten in place; a shared one is copied.
 // ===========================================================================

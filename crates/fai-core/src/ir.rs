@@ -276,8 +276,19 @@ impl Prim {
     /// agree on whether the operand is borrowed.
     #[must_use]
     pub fn borrows_operand(self, operand_ty: &Ty) -> bool {
-        matches!(self, Prim::Eq | Prim::Compare | Prim::StringLength | Prim::StringContains)
-            && is_boxed_rc(operand_ty)
+        matches!(
+            self,
+            Prim::Eq
+                | Prim::Compare
+                | Prim::StringLength
+                | Prim::StringContains
+                | Prim::ToUpper
+                | Prim::ToLower
+                | Prim::Trim
+                | Prim::StrConcat
+                | Prim::StringSplit
+                | Prim::StringJoin
+        ) && is_boxed_rc(operand_ty)
     }
 
     /// The runtime symbol of this primitive's non-consuming variant, for the
@@ -289,6 +300,12 @@ impl Prim {
             Prim::Compare => Some("fai_compare_borrowed"),
             Prim::StringLength => Some("fai_string_length_borrowed"),
             Prim::StringContains => Some("fai_string_contains_borrowed"),
+            Prim::ToUpper => Some("fai_to_upper_borrowed"),
+            Prim::ToLower => Some("fai_to_lower_borrowed"),
+            Prim::Trim => Some("fai_trim_borrowed"),
+            Prim::StrConcat => Some("fai_string_concat_borrowed"),
+            Prim::StringSplit => Some("fai_string_split_borrowed"),
+            Prim::StringJoin => Some("fai_string_join_borrowed"),
             _ => None,
         }
     }
