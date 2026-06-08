@@ -105,6 +105,22 @@ impl Harness {
         uri
     }
 
+    /// Replaces an open document's text (full-sync change notification).
+    fn did_change(&self, uri: &str, text: &str) {
+        self.notify(
+            "textDocument/didChange",
+            json!({
+                "textDocument": { "uri": uri, "version": 2 },
+                "contentChanges": [ { "text": text } ]
+            }),
+        );
+    }
+
+    /// Closes an open document.
+    fn did_close(&self, uri: &str) {
+        self.notify("textDocument/didClose", json!({ "textDocument": { "uri": uri } }));
+    }
+
     /// Waits for the response to `id`, skipping notifications (e.g. diagnostics).
     fn await_response(&self, id: &RequestId) -> Value {
         loop {
@@ -246,5 +262,94 @@ fn formatting_returns_canonical_text() {
     assert!(new_text.contains("let two = inc 1"), "{new_text:?}");
     assert!(new_text.contains("let inc x = x + 1"), "{new_text:?}");
     assert!(!new_text.contains("=inc") && !new_text.contains("x=x"), "{new_text:?}");
+    harness.shutdown();
+}
+
+// --- dirty (unsaved) buffers -------------------------------------------------
+//
+// These exercise the case the earlier tests do not: the open buffer differs from
+// the file on disk. The server overlays the buffer into the warm database, so
+// analysis must track the unsaved edits, and a close must hand ownership back to
+// the filesystem.
+
+#[test]
+fn did_change_analyzes_unsaved_edits_not_disk() {
+    // Disk stays clean for the whole test; only the buffer changes. A reported
+    // error can therefore only come from the overlaid (unsaved) text.
+    let harness = Harness::start("dirty-change", &[("Main.fai", MAIN)]);
+    let uri = harness.did_open("Main.fai", MAIN);
+    assert!(harness.await_diagnostics(&uri).is_empty(), "clean buffer, no diagnostics");
+
+    // Edit the buffer to a type error (the signature no longer matches the body).
+    let broken = "module Main\n\npublic inc : Int -> Bool\nlet inc x = x + 1\n\npublic two : Int\nlet two = inc 1\n";
+    harness.did_change(&uri, broken);
+    let diagnostics = harness.await_diagnostics(&uri);
+    assert!(!diagnostics.is_empty(), "the unsaved edit is type-checked: {diagnostics:?}");
+    assert!(
+        diagnostics.iter().all(|d| d["code"].as_str().unwrap().starts_with("FAI")),
+        "{diagnostics:?}"
+    );
+
+    // Edit back to a clean buffer: the diagnostics clear again.
+    harness.did_change(&uri, MAIN);
+    assert!(harness.await_diagnostics(&uri).is_empty(), "fixing the buffer clears diagnostics");
+    harness.shutdown();
+}
+
+#[test]
+fn hover_and_definition_track_the_unsaved_buffer() {
+    // On disk, `Main` has only `two`; the buffer adds `inc` and a reference to it.
+    let disk = indoc! {r#"
+        module Main
+
+        public two : Int
+        let two = 0
+    "#};
+    let mut harness = Harness::start("dirty-hover", &[("Main.fai", disk)]);
+    let uri = harness.did_open("Main.fai", disk);
+    let buffer = MAIN; // adds `inc` (line 3) and `let two = inc 1` (line 6)
+    harness.did_change(&uri, buffer);
+
+    // `inc` and line 6 exist only in the buffer; answers here prove the overlay
+    // (the offset would be out of range against the 4-line disk file).
+    let position =
+        json!({ "textDocument": { "uri": uri }, "position": { "line": 6, "character": 10 } });
+    let hover = harness.request("textDocument/hover", position.clone());
+    assert!(
+        hover["contents"]["value"].as_str().unwrap().contains("inc : Int -> Int"),
+        "hover: {hover:?}"
+    );
+    let definition = harness.request("textDocument/definition", position);
+    let locations = definition.as_array().expect("locations");
+    assert_eq!(locations[0]["range"]["start"]["line"], 3, "jumps to the buffer-only binding");
+    harness.shutdown();
+}
+
+#[test]
+fn did_close_reverts_the_overlay_to_disk() {
+    // `A` defines `n : Int`; `B` uses it as an `Int` (valid against disk).
+    let disk_a = "module A\n\npublic n : Int\nlet n = 0\n";
+    let disk_b = "module B\n\npublic m : Int\nlet m = A.n + 1\n";
+    let harness = Harness::start("dirty-close", &[("A.fai", disk_a), ("B.fai", disk_b)]);
+
+    // Open `A` with an unsaved edit that retypes `n` to `Bool` (valid in `A`),
+    // which breaks `B`'s `A.n + 1`.
+    let dirty_a = "module A\n\npublic n : Bool\nlet n = true\n";
+    let uri_a = harness.did_open("A.fai", dirty_a);
+    let uri_b = harness.did_open("B.fai", disk_b);
+    assert_eq!(
+        harness.await_diagnostics(&uri_b).len(),
+        1,
+        "B sees A's unsaved edit across modules"
+    );
+
+    // Close `A` without saving: the overlay must revert to the on-disk `n : Int`.
+    harness.did_close(&uri_a);
+    // Re-check `B` (an identical-content change re-runs analysis): now clean.
+    harness.did_change(&uri_b, disk_b);
+    assert!(
+        harness.await_diagnostics(&uri_b).is_empty(),
+        "closing A restored its on-disk type, so B is valid again"
+    );
     harness.shutdown();
 }
