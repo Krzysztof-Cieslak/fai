@@ -596,7 +596,9 @@ impl Server {
         let children: Vec<DocumentSymbol> =
             node.children.iter().filter_map(|c| self.to_document_symbol(c)).collect();
         Some(DocumentSymbol {
-            name: node.symbol.name.clone(),
+            // The hierarchy conveys nesting, so a nested member shows its bare
+            // name (`deep`), not its module-qualified one (`Inner.deep`).
+            name: node.symbol.name.rsplit('.').next().unwrap_or(&node.symbol.name).to_owned(),
             detail: node.symbol.signature.clone(),
             kind: lsp_symbol_kind(node.symbol.kind),
             tags: None,

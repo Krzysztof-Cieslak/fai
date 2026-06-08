@@ -364,8 +364,9 @@ pub fn hover_at(
     empty()
 }
 
-/// The definition site(s) of the reference at a byte offset: a top-level
-/// definition, a constructor, or a local binding. Powers LSP go-to-definition.
+/// The definition site(s) of what the cursor names at a byte offset: a top-level
+/// definition, a constructor (in an expression *or* a pattern), or a local
+/// binding. Powers LSP go-to-definition.
 #[must_use]
 pub fn definition_at(
     db: &dyn Db,
@@ -374,37 +375,28 @@ pub fn definition_at(
     resolver: &dyn SpanResolver,
 ) -> DefResult {
     let empty = || DefResult { schema_version: SCHEMA_VERSION, target: None, definitions: vec![] };
-    let parsed = fai_syntax::parse(db, file);
-    let resolved = resolve(db, file);
-    for expr in exprs_containing(&parsed.module, offset) {
-        let Some(res) = resolved.get(expr) else { continue };
-        let result = match res {
-            Res::Def(d) => db.source_file(d.file).and_then(|f| {
+    let one = |target, location| DefResult {
+        schema_version: SCHEMA_VERSION,
+        target,
+        definitions: vec![location],
+    };
+    match target_at(db, file, offset) {
+        Some((RefTarget::Def(d), _)) => db
+            .source_file(d.file)
+            .and_then(|f| {
                 let symbol = symbol_ref(db, f, d.name, resolver)?;
                 let location = Location { span: symbol.span.clone(), preview: None };
-                Some(DefResult {
-                    schema_version: SCHEMA_VERSION,
-                    target: Some(symbol),
-                    definitions: vec![location],
-                })
-            }),
-            Res::Ctor(c) => ctor_location(db, c, resolver).map(|location| DefResult {
-                schema_version: SCHEMA_VERSION,
-                target: None,
-                definitions: vec![location],
-            }),
-            Res::Local(l) => local_location(db, file, l, resolver).map(|location| DefResult {
-                schema_version: SCHEMA_VERSION,
-                target: None,
-                definitions: vec![location],
-            }),
-            Res::Builtin(_) | Res::Error => None,
-        };
-        if let Some(result) = result {
-            return result;
+                Some(one(Some(symbol), location))
+            })
+            .unwrap_or_else(empty),
+        Some((RefTarget::Ctor(c), _)) => {
+            ctor_location(db, c, resolver).map_or_else(empty, |loc| one(None, loc))
         }
+        Some((RefTarget::Local(lfile, l), _)) => {
+            local_location(db, lfile, l, resolver).map_or_else(empty, |loc| one(None, loc))
+        }
+        None => empty(),
     }
-    empty()
 }
 
 // --- signature help (LSP `textDocument/signatureHelp`) -----------------------
