@@ -407,8 +407,9 @@ releases the borrowed arguments (so `apply_n`/escaping use stays sound without a
 whole-program escape analysis). An abstract reference-count interpreter over the
 IR guards soundness (ownership, borrowing, reuse tokens) across a corpus and whole
 programs. Inspect-only **primitive borrowing** has since landed (see D94); the
-**cross-module borrowing fixpoint**, deeper **drop specialization**, and
-**tail-recursion modulo cons** remain correctness-neutral follow-ups (see M9).
+**cross-module borrowing fixpoint** (issue #19), deeper **drop specialization**
+(issue #20), and **tail-recursion modulo cons** (issue #18) remain
+correctness-neutral follow-ups (see M9).
 
 **Goal:** turn correctness-first RC into competitive performance.
 
@@ -561,8 +562,8 @@ hardening** has landed its memory-bound and latency halves (see decision
 `fai daemon status`. Still to come: the shared/remote cache (deferred — issue
 #15), the rest of daemon hardening (cross-request concurrency, still serialized
 per D57 — deferred to issue #17), opt-in monomorphization (deferred — issue
-#16), and the remaining reuse/borrowing follow-ups (TRMC, cross-module
-borrowing).
+#16), and the remaining reuse/borrowing follow-ups (TRMC — issue #18,
+cross-module borrowing — issue #19, drop specialization — issue #20).
 
 **Deliverables**
 - `rayon` parallelism across independent defs/modules (parallel salsa queries;
@@ -579,17 +580,17 @@ borrowing).
     loop using destination passing, removing the stack growth. Cell reuse already
     makes such a function allocate zero fresh cells over a unique list (with N
     reset tokens live on the stack); TRMC additionally removes the O(N) stack and
-    improves locality. A substantial separate transform.
+    improves locality. A substantial separate transform. *(Deferred — issue #18.)*
   - **Cross-module argument borrowing:** an inter-procedural borrow fixpoint (over
     call-graph SCCs) so a function borrows parameters it only forwards to other
     modules' borrowing functions; the current inference is self-contained
-    (self-recursion only, conservative across functions).
+    (self-recursion only, conservative across functions). *(Deferred — issue #19.)*
   - **Primitive borrowing** for inspect-only primitives (`=`/`compare`/string
     reads and builders) on boxed operands, guarded by operand type so the hot
     `match` tag-test path keeps consuming its (immediate) operands. *(Done — D94.)*
   - **Drop specialization:** inline a known monomorphic data cell's child drops
     and free to skip the descriptor dispatch (deferred from M6 as marginal after
-    reuse and carrying memory-safety risk).
+    reuse and carrying memory-safety risk). *(Deferred — issue #20.)*
 - Compile-throughput + `edit→diagnostic` / `edit→test` benchmarks with CI
   regression guards. (Foundation landed early during M2: a deterministic
   query-count guard suite — `crates/fai-tests/tests/perf_guards.rs`, proving the
