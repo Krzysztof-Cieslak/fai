@@ -491,6 +491,29 @@ fn unknown_constructor_arm_does_not_panic() {
 }
 
 #[test]
+fn single_line_union_type_checks() {
+    // The single-line union form (no leading pipe) is a real union: both
+    // constructors resolve and the `match` covering them is exhaustive, so the
+    // program type-checks cleanly (issue #27).
+    let (db, f) = db_with(&[(
+        "M.fai",
+        indoc! {r#"
+            module Main
+
+            public type T = A | B
+
+            public describe : T -> Int
+            let describe t =
+              match t with
+              | A -> 0
+              | B -> 1
+        "#},
+    )]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+    assert_eq!(type_of(&db, f[0], "describe"), "T -> Int");
+}
+
+#[test]
 fn wildcard_makes_match_exhaustive() {
     let (db, f) = db_with(&[(
         "M.fai",

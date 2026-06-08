@@ -345,4 +345,30 @@ proptest! {
             );
         }
     }
+
+    // A union written on one line *without* leading pipes
+    // (`type T = C0 | C1 | …`) is the same union as the canonical form: a
+    // `match` over all its constructors is clean and exhaustive (issue #27).
+    // At least two variants are needed: a lone `type T = C0` (no `|`) is an
+    // alias, since there is nothing to distinguish it from one.
+    #[test]
+    fn no_leading_pipe_union_checks_like_the_canonical_form(n in 2usize..6) {
+        let inline = (0..n).map(|i| format!("C{i}")).collect::<Vec<_>>().join(" | ");
+        let arms = (0..n).map(|i| format!("  | C{i} -> {i}")).collect::<Vec<_>>().join("\n");
+        let header = formatdoc! {r#"
+            module P
+
+            public type T = {inline}
+
+            public f : T -> Int
+            let f t =
+              match t with
+        "#};
+        let outcome = check_source(&format!("{header}{arms}\n"));
+        prop_assert!(
+            !outcome.has_errors(),
+            "no-leading-pipe union errored: {:?}\n{header}{arms}",
+            outcome.codes()
+        );
+    }
 }
