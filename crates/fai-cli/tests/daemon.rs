@@ -163,6 +163,33 @@ fn status_reports_running_then_stopped() {
 }
 
 #[test]
+fn status_reports_command_latency() {
+    let daemon = Daemon::new(
+        "latency",
+        &[(
+            "Ok.fai",
+            indoc! {r#"
+                module Ok
+
+                let x = 1
+            "#},
+        )],
+    );
+
+    // Each `check` is a Command request the daemon serves and times; `status`
+    // itself is not a Command, so it is not counted.
+    let _ = daemon.run(&["check"], &[]);
+    let _ = daemon.run(&["check"], &[]);
+
+    let status = stdout(&daemon.run(&["daemon", "status"], &[]));
+    assert!(status.contains("commands served:"), "got: {status}");
+    assert!(
+        !status.contains("commands served: 0"),
+        "expected a nonzero command count, got: {status}"
+    );
+}
+
+#[test]
 fn warm_check_reflects_an_edit() {
     let daemon = Daemon::new(
         "filesync",

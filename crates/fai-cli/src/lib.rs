@@ -248,6 +248,18 @@ fn run_daemon_command(
                     "daemon running: pid {}, version {}, protocol {}, uptime {}s",
                     info.pid, info.compiler_version, info.protocol_version, info.uptime_secs
                 );
+                let avg_ms = if info.commands_served == 0 {
+                    0.0
+                } else {
+                    info.command_micros_total as f64 / info.commands_served as f64 / 1000.0
+                };
+                let _ = writeln!(
+                    out,
+                    "  commands served: {} (avg {:.1}ms, max {:.1}ms)",
+                    info.commands_served,
+                    avg_ms,
+                    info.command_micros_max as f64 / 1000.0
+                );
                 EXIT_OK
             }
             Ok(None) => {

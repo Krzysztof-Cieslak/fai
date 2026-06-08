@@ -239,7 +239,7 @@ Editors speak this; agents use `fai query` instead.
 ## 6. Daemon commands
 
 ```
-fai daemon status      # is a daemon running for this workspace? print pid, versions, uptime, memory
+fai daemon status      # is a daemon running? print pid, versions, uptime, and command latency
 fai daemon start       # start (idempotent; no-op if already running)
 fai daemon stop        # graceful shutdown
 fai daemon restart     # stop + start (e.g. to pick up a new compiler version)

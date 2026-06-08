@@ -124,12 +124,26 @@ pub(crate) fn arity_of(db: &dyn Db, def: DefId) -> usize {
 
 /// The cached relocatable object for one definition (the content-addressed cache
 /// unit; see [`build_native`]).
-#[salsa::tracked]
+///
+/// Declared LRU-capable (`lru = 0` is unbounded, so the one-shot CLI and tests
+/// are unaffected); the long-lived daemon caps it via
+/// [`set_object_cache_capacity`] so these large, on-disk-backed object blobs do
+/// not accumulate without bound. An evicted entry is re-read from the on-disk
+/// cache (or regenerated), so eviction only trades memory for that lookup.
+#[salsa::tracked(lru = 0)]
 pub fn object_code(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<Vec<u8>> {
     let lowered = rc(db, file, name);
     let namer = |d: DefId| symbol_base(db, d);
     let arity = |d: DefId| arity_of(db, d);
     Arc::new(object_for_def(&lowered, &namer, &arity))
+}
+
+/// Bounds the number of cached [`object_code`] blobs the database keeps in
+/// memory (0 = unbounded). The least-recently-used entries above the cap are
+/// evicted at the next revision; each is cheaply recoverable from the on-disk
+/// cache. Used by the daemon to keep its warm database's footprint bounded.
+pub fn set_object_cache_capacity(db: &mut dyn Db, capacity: usize) {
+    object_code::set_lru_capacity(db, capacity);
 }
 
 /// Whether `file` defines an entry `main`.

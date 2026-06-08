@@ -130,6 +130,13 @@ pub struct StatusInfo {
     pub protocol_version: u32,
     /// Seconds since the daemon started.
     pub uptime_secs: u64,
+    /// Number of `Command` requests (check/query/fmt/build) served (latency
+    /// profiling; excludes `run`).
+    pub commands_served: u64,
+    /// Total processing time of those commands, in microseconds.
+    pub command_micros_total: u64,
+    /// The slowest single command's processing time, in microseconds.
+    pub command_micros_max: u64,
 }
 
 /// Writes one length-prefixed MessagePack frame.
@@ -233,6 +240,9 @@ mod tests {
             compiler_version: "0.1.0".to_owned(),
             protocol_version: PROTOCOL_VERSION,
             uptime_secs: 12,
+            commands_served: 7,
+            command_micros_total: 1500,
+            command_micros_max: 400,
         })));
         round_trip(&ServerMessage::Result(Response::RunExit(124)));
         round_trip(&ServerMessage::Result(Response::Ok));
