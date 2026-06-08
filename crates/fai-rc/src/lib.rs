@@ -50,6 +50,7 @@ pub use borrow::{BorrowSig, borrow_signature};
 pub use verify::check_rc;
 
 mod borrow;
+mod trmc;
 mod verify;
 
 /// A set of locals (used for free-variable and liveness sets).
@@ -107,6 +108,14 @@ pub fn rc_lowered(db: &dyn Db, lowered: &LoweredDef, self_sig: &BorrowSig) -> Lo
             if !used.contains(&p) && !borrowed.contains(&p) {
                 body = drop_(p, body);
             }
+        }
+        // Flatten self-tail-recursion in the entry function into a loop (only the
+        // entry can recurse by definition id; lifted lambdas are reached through
+        // `apply_n`). A no-op unless the body is tail-recursive.
+        if i == 0 {
+            let evidence = fai_types::declared_or_inferred_scheme(db, lowered.def)
+                .map_or(0, |s| fai_types::evidence_count(&s));
+            body = trmc::flatten(body, &f.params, lowered.def, evidence, &mut next);
         }
         fns.push(CoreFn { params: f.params.clone(), captures: f.captures.clone(), body });
     }
@@ -171,6 +180,23 @@ fn max_local(e: &CExpr, max: &mut usize) {
         K::Dup { local, body } | K::Drop { local, body } => {
             bump(*local, max);
             max_local(body, max);
+        }
+        K::Join { params, body } => {
+            params.iter().for_each(|p| bump(*p, max));
+            max_local(body, max);
+        }
+        K::Recur { args } => args.iter().for_each(|a| max_local(a, max)),
+        K::HoleStart { hole, body } => {
+            bump(*hole, max);
+            max_local(body, max);
+        }
+        K::HoleFill { hole, cell, .. } => {
+            bump(*hole, max);
+            max_local(cell, max);
+        }
+        K::HoleClose { hole, base } => {
+            bump(*hole, max);
+            max_local(base, max);
         }
     }
 }
@@ -256,6 +282,13 @@ fn anf_op(e: CExpr, binds: &mut Vec<(LocalId, CExpr)>, next: &mut usize) -> CExp
         K::Drop { local, body } => {
             CExpr::new(K::Drop { local, body: Box::new(anf(*body, next)) }, ty)
         }
+        // The tail-call transform runs after reference counting, so its loop and
+        // hole nodes never reach A-normal form.
+        K::Join { .. }
+        | K::Recur { .. }
+        | K::HoleStart { .. }
+        | K::HoleFill { .. }
+        | K::HoleClose { .. } => unreachable!("tail-call nodes precede A-normal form"),
     }
 }
 
@@ -363,6 +396,29 @@ fn collect_fv(e: &CExpr, captures: &Locals, bound: &mut Locals, out: &mut Locals
             note(*local, bound, out);
             collect_fv(body, captures, bound, out);
         }
+        K::Join { params, body } => {
+            let added: Vec<LocalId> = params.iter().copied().filter(|p| bound.insert(*p)).collect();
+            collect_fv(body, captures, bound, out);
+            for p in added {
+                bound.remove(&p);
+            }
+        }
+        K::Recur { args } => args.iter().for_each(|a| collect_fv(a, captures, bound, out)),
+        K::HoleStart { hole, body } => {
+            let added = bound.insert(*hole);
+            collect_fv(body, captures, bound, out);
+            if added {
+                bound.remove(hole);
+            }
+        }
+        K::HoleFill { hole, cell, .. } => {
+            note(*hole, bound, out);
+            collect_fv(cell, captures, bound, out);
+        }
+        K::HoleClose { hole, base } => {
+            note(*hole, bound, out);
+            collect_fv(base, captures, bound, out);
+        }
     }
 }
 
@@ -468,6 +524,14 @@ impl Rc<'_> {
             // Lowering never emits these; pass through.
             K::Dup { local, body } => dup_(local, self.owned(*body, live)),
             K::Drop { local, body } => drop_(local, self.owned(*body, live)),
+            // The tail-call transform runs after reference counting.
+            K::Join { .. }
+            | K::Recur { .. }
+            | K::HoleStart { .. }
+            | K::HoleFill { .. }
+            | K::HoleClose { .. } => {
+                unreachable!("tail-call nodes are inserted after reference counting")
+            }
         }
     }
 
@@ -751,6 +815,11 @@ fn collect_data_locals(e: &CExpr, out: &mut Locals) {
             collect_data_locals(body, out);
         }
         K::Dup { body, .. } | K::Drop { body, .. } => collect_data_locals(body, out),
+        // The tail-call transform runs after reuse analysis; handled defensively.
+        K::Join { body, .. } | K::HoleStart { body, .. } => collect_data_locals(body, out),
+        K::Recur { args } => args.iter().for_each(|a| collect_data_locals(a, out)),
+        K::HoleFill { cell, .. } => collect_data_locals(cell, out),
+        K::HoleClose { base, .. } => collect_data_locals(base, out),
         K::Local(_) | K::Lit(_) | K::Global(_) | K::MakeClosure { .. } | K::Error => {}
     }
 }
@@ -822,6 +891,13 @@ fn reuse_pass(e: CExpr, data: &Locals, next: &mut usize) -> CExpr {
         K::DataField { base, index } => {
             CExpr::new(K::DataField { base: Box::new(reuse_pass(*base, data, next)), index }, ty)
         }
+        // The tail-call transform consumes the output of reuse analysis, so its
+        // nodes are never present here.
+        K::Join { .. }
+        | K::Recur { .. }
+        | K::HoleStart { .. }
+        | K::HoleFill { .. }
+        | K::HoleClose { .. } => unreachable!("tail-call nodes are inserted after reuse analysis"),
         K::Local(_) | K::Lit(_) | K::Global(_) | K::MakeClosure { .. } | K::Error => {
             CExpr::new(kind, ty)
         }
@@ -891,6 +967,11 @@ fn has_construction(e: &CExpr) -> bool {
         K::App { func, args } => has_construction(func) || args.iter().any(has_construction),
         K::DataTag(base) => has_construction(base),
         K::DataField { base, .. } => has_construction(base),
+        // The tail-call transform runs after reuse analysis; handled defensively.
+        K::Join { body, .. } | K::HoleStart { body, .. } => has_construction(body),
+        K::Recur { args } => args.iter().any(has_construction),
+        K::HoleFill { cell, .. } => has_construction(cell),
+        K::HoleClose { base, .. } => has_construction(base),
         K::Local(_) | K::Global(_) | K::Lit(_) | K::MakeClosure { .. } | K::Error => false,
     }
 }

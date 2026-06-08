@@ -1,0 +1,404 @@
+//! Tail-call flattening: rewrite a self-tail-recursive entry function into a loop.
+//!
+//! Runs after dup/drop insertion and reuse analysis, so it consumes the existing
+//! `Reset`/`MakeData { reuse }` shape and preserves it. A function is eligible when
+//! it is monomorphic (no offset evidence) and **every** reference to itself is a
+//! saturated self-call in tail position — either a plain tail call or the single
+//! argument of one tail constructor (the "modulo cons" case). The whole function
+//! is transformed or left untouched; there is no partial flattening.
+//!
+//! The rewrite introduces a generic loop ([`K::Join`]/[`K::Recur`]). A
+//! constructor-wrapped recursion additionally uses **destination passing**: a
+//! non-reference-counted "hole" token threads through the loop; each iteration
+//! builds its cell with a placeholder recursive field, links it into the spine
+//! ([`K::HoleFill`]), and advances; the base case fills the final hole
+//! ([`K::HoleClose`]). The per-iteration reuse token is consumed by the cell build
+//! *before* the back-edge, so a unique list still rebuilds with zero allocations
+//! and the recursion runs in constant stack.
+
+use fai_core::ir::{CExpr, ExprKind as K, Lit, Prim};
+use fai_resolve::{DefId, LocalId};
+use fai_types::Ty;
+
+use crate::fresh;
+
+/// Flattens `body` (the entry function's body, after reference counting and reuse)
+/// into a loop when it is tail-recursive; otherwise returns it unchanged.
+///
+/// `params` are the entry's parameter slots, `self_def` its definition id, and
+/// `evidence` its offset-evidence-parameter count (nonzero ⇒ row-polymorphic, left
+/// untransformed). `next` supplies fresh local slots for the synthesized hole.
+pub(crate) fn flatten(
+    body: CExpr,
+    params: &[LocalId],
+    self_def: DefId,
+    evidence: usize,
+    next: &mut usize,
+) -> CExpr {
+    if evidence != 0 {
+        return body;
+    }
+    let arity = params.len();
+    let Some(uses_hole) = eligible(&body, self_def, arity) else {
+        return body;
+    };
+
+    let result_ty = body.ty.clone();
+    if uses_hole {
+        let hole = fresh(next);
+        let mut join_params = params.to_vec();
+        join_params.push(hole);
+        let loop_body = rewrite_tail(body, Some(hole), self_def, arity, next);
+        let join =
+            CExpr::new(K::Join { params: join_params, body: Box::new(loop_body) }, result_ty);
+        let ty = join.ty.clone();
+        CExpr::new(K::HoleStart { hole, body: Box::new(join) }, ty)
+    } else {
+        let loop_body = rewrite_tail(body, None, self_def, arity, next);
+        CExpr::new(K::Join { params: params.to_vec(), body: Box::new(loop_body) }, result_ty)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Eligibility.
+// ---------------------------------------------------------------------------
+
+/// Whether `body` is tail-recursive and may be flattened. Returns `Some(uses_hole)`
+/// when eligible (`uses_hole` true if any tail is constructor-wrapped, so the loop
+/// needs a destination hole), or `None` to leave it untouched.
+fn eligible(body: &CExpr, self_def: DefId, arity: usize) -> Option<bool> {
+    let mut uses_hole = false;
+    let mut found_tail = false;
+    if !check_tail(body, self_def, arity, &mut uses_hole, &mut found_tail) {
+        return None;
+    }
+    // Nothing to flatten unless there is at least one tail self-call.
+    found_tail.then_some(uses_hole)
+}
+
+/// Validates every tail position reachable from `e`. Returns false (ineligible) on
+/// any self-reference that is not a saturated tail self-call in an allowed shape.
+fn check_tail(
+    e: &CExpr,
+    self_def: DefId,
+    arity: usize,
+    uses_hole: &mut bool,
+    found_tail: &mut bool,
+) -> bool {
+    match &e.kind {
+        K::If { cond, then, els } => {
+            !contains_self(cond, self_def)
+                && check_tail(then, self_def, arity, uses_hole, found_tail)
+                && check_tail(els, self_def, arity, uses_hole, found_tail)
+        }
+        K::Let { local, value, body } => {
+            if self_call_args(value, self_def, arity).is_some() {
+                // A constructor-wrapped recursion: the bound self-call result must
+                // feed exactly one field of the tail constructor.
+                check_cons_wrap(*local, body, self_def, uses_hole, found_tail)
+            } else if contains_self(value, self_def) {
+                // A self-reference anywhere off the tail path is unsupported.
+                false
+            } else {
+                check_tail(body, self_def, arity, uses_hole, found_tail)
+            }
+        }
+        K::Reset { value, body, .. } => {
+            !contains_self(value, self_def)
+                && check_tail(body, self_def, arity, uses_hole, found_tail)
+        }
+        K::Dup { body, .. } | K::Drop { body, .. } => {
+            check_tail(body, self_def, arity, uses_hole, found_tail)
+        }
+        // A bare tail self-call (no surrounding constructor) is plain tail
+        // recursion; any other tail must contain no self-reference (it is a base).
+        _ => {
+            if self_call_args(e, self_def, arity).is_some() {
+                *found_tail = true;
+                true
+            } else {
+                !contains_self(e, self_def)
+            }
+        }
+    }
+}
+
+/// Validates the continuation of a constructor-wrapped recursion: `e` follows the
+/// `let v = <self-call>` binder and must reach a tail constructor that uses `v`
+/// exactly once, with every intervening (hoisted) binder pure and total.
+fn check_cons_wrap(
+    v: LocalId,
+    e: &CExpr,
+    self_def: DefId,
+    uses_hole: &mut bool,
+    found_tail: &mut bool,
+) -> bool {
+    match &e.kind {
+        K::Let { value, body, .. } => {
+            // A later constructor argument: it is hoisted before the back-edge, so
+            // it must be reorder-safe, carry no self-reference, and not read `v`.
+            pure_total(value)
+                && !contains_self(value, self_def)
+                && !uses_local(value, v)
+                && check_cons_wrap(v, body, self_def, uses_hole, found_tail)
+        }
+        K::Reset { value, body, .. } => {
+            !contains_self(value, self_def)
+                && !uses_local(value, v)
+                && check_cons_wrap(v, body, self_def, uses_hole, found_tail)
+        }
+        K::Dup { local, body } | K::Drop { local, body } => {
+            *local != v && check_cons_wrap(v, body, self_def, uses_hole, found_tail)
+        }
+        K::MakeData { args, .. } => {
+            // `v` must appear exactly once, as a whole argument (the recursive
+            // field), and nowhere else along the path.
+            let occurrences = args.iter().filter(|a| is_local(a, v)).count();
+            if occurrences != 1 {
+                return false;
+            }
+            *uses_hole = true;
+            *found_tail = true;
+            true
+        }
+        // The self-call result reaches a non-constructor tail (returned, tested,
+        // etc.): not tail-modulo-cons.
+        _ => false,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rewrite.
+// ---------------------------------------------------------------------------
+
+/// Rewrites a tail-position expression: tail self-calls become [`K::Recur`],
+/// constructor-wrapped recursions become [`K::HoleFill`] + `Recur`, and base cases
+/// become [`K::HoleClose`] (when building a spine) or are left as-is (plain
+/// tail-call loops). `hole` is `Some` exactly when the loop carries a destination.
+fn rewrite_tail(
+    e: CExpr,
+    hole: Option<LocalId>,
+    self_def: DefId,
+    arity: usize,
+    next: &mut usize,
+) -> CExpr {
+    let CExpr { kind, ty } = e;
+    match kind {
+        K::If { cond, then, els } => {
+            let then = rewrite_tail(*then, hole, self_def, arity, next);
+            let els = rewrite_tail(*els, hole, self_def, arity, next);
+            CExpr::new(K::If { cond, then: Box::new(then), els: Box::new(els) }, ty)
+        }
+        K::Let { local, value, body } => {
+            if let Some(sargs) = self_call_args(&value, self_def, arity) {
+                // Drop the `let v = <self-call>` binder; the recursion becomes the
+                // hole, threaded through the constructor's continuation.
+                let hole = hole.expect("constructor-wrapped recursion implies a hole");
+                let sargs: Vec<CExpr> = sargs.to_vec();
+                rewrite_cons_wrap(local, *body, hole, sargs, next)
+            } else {
+                let body = rewrite_tail(*body, hole, self_def, arity, next);
+                CExpr::new(K::Let { local, value, body: Box::new(body) }, ty)
+            }
+        }
+        K::Reset { value, token, body } => {
+            let body = rewrite_tail(*body, hole, self_def, arity, next);
+            CExpr::new(K::Reset { value, token, body: Box::new(body) }, ty)
+        }
+        K::Dup { local, body } => {
+            let body = rewrite_tail(*body, hole, self_def, arity, next);
+            CExpr::new(K::Dup { local, body: Box::new(body) }, ty)
+        }
+        K::Drop { local, body } => {
+            let body = rewrite_tail(*body, hole, self_def, arity, next);
+            CExpr::new(K::Drop { local, body: Box::new(body) }, ty)
+        }
+        other => {
+            let e = CExpr::new(other, ty);
+            rewrite_final(e, hole, self_def, arity)
+        }
+    }
+}
+
+/// Rewrites a final (non-binder, non-`if`) tail expression: a plain tail self-call
+/// becomes `Recur`; anything else is a base case (closed into the hole when
+/// building a spine, otherwise returned as the loop's value).
+fn rewrite_final(e: CExpr, hole: Option<LocalId>, self_def: DefId, arity: usize) -> CExpr {
+    if let Some(sargs) = self_call_args(&e, self_def, arity) {
+        let mut args: Vec<CExpr> = sargs.to_vec();
+        if let Some(h) = hole {
+            // Thread the destination unchanged (this iteration extends nothing).
+            args.push(CExpr::new(K::Local(h), Ty::Error));
+        }
+        return CExpr::new(K::Recur { args }, Ty::Error);
+    }
+    match hole {
+        Some(h) => {
+            let ty = e.ty.clone();
+            CExpr::new(K::HoleClose { hole: h, base: Box::new(e) }, ty)
+        }
+        None => e,
+    }
+}
+
+/// Rewrites the continuation after a dropped `let v = <self-call>` binder: peel the
+/// hoisted later-argument binders down to the tail constructor, build that cell
+/// with a placeholder recursive field, link it through the hole, and loop.
+fn rewrite_cons_wrap(
+    v: LocalId,
+    e: CExpr,
+    hole: LocalId,
+    sargs: Vec<CExpr>,
+    next: &mut usize,
+) -> CExpr {
+    let CExpr { kind, ty } = e;
+    match kind {
+        K::Let { local, value, body } => {
+            let body = rewrite_cons_wrap(v, *body, hole, sargs, next);
+            CExpr::new(K::Let { local, value, body: Box::new(body) }, ty)
+        }
+        K::Reset { value, token, body } => {
+            let body = rewrite_cons_wrap(v, *body, hole, sargs, next);
+            CExpr::new(K::Reset { value, token, body: Box::new(body) }, ty)
+        }
+        K::Dup { local, body } => {
+            let body = rewrite_cons_wrap(v, *body, hole, sargs, next);
+            CExpr::new(K::Dup { local, body: Box::new(body) }, ty)
+        }
+        K::Drop { local, body } => {
+            let body = rewrite_cons_wrap(v, *body, hole, sargs, next);
+            CExpr::new(K::Drop { local, body: Box::new(body) }, ty)
+        }
+        K::MakeData { tag, mut args, reuse } => {
+            let field = args.iter().position(|a| is_local(a, v)).expect("recursive field present");
+            // Build the cell with a placeholder recursive field; the next fill or
+            // close overwrites it. The placeholder is an immediate (drop-safe).
+            args[field] = CExpr::new(K::Lit(Lit::Unit), Ty::Error);
+            let cell = CExpr::new(K::MakeData { tag, args, reuse }, ty);
+            let field = u32::try_from(field).expect("field index fits u32");
+
+            let h2 = fresh(next);
+            let mut recur_args = sargs;
+            recur_args.push(CExpr::new(K::Local(h2), Ty::Error));
+            let recur = CExpr::new(K::Recur { args: recur_args }, Ty::Error);
+            let fill = CExpr::new(K::HoleFill { hole, cell: Box::new(cell), field }, Ty::Error);
+            CExpr::new(
+                K::Let { local: h2, value: Box::new(fill), body: Box::new(recur) },
+                Ty::Error,
+            )
+        }
+        // `check_cons_wrap` guaranteed a constructor at the end of the chain.
+        _ => unreachable!("constructor-wrapped recursion must end in a construction"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Predicates.
+// ---------------------------------------------------------------------------
+
+/// The arguments of `e` if it is a saturated direct call to `self_def`.
+fn self_call_args(e: &CExpr, self_def: DefId, arity: usize) -> Option<&[CExpr]> {
+    if let K::App { func, args } = &e.kind
+        && let K::Global(def) = &func.kind
+        && *def == self_def
+        && args.len() == arity
+    {
+        return Some(args);
+    }
+    None
+}
+
+/// Whether `e` is exactly `Local(v)`.
+fn is_local(e: &CExpr, v: LocalId) -> bool {
+    matches!(&e.kind, K::Local(x) if *x == v)
+}
+
+/// Whether `self_def` is referenced (as a value or call target) anywhere in `e`.
+fn contains_self(e: &CExpr, self_def: DefId) -> bool {
+    let mut found = false;
+    walk(e, &mut |n| {
+        if let K::Global(def) = &n.kind
+            && *def == self_def
+        {
+            found = true;
+        }
+    });
+    found
+}
+
+/// Whether `v` is read anywhere in `e`.
+fn uses_local(e: &CExpr, v: LocalId) -> bool {
+    let mut found = false;
+    walk(e, &mut |n| {
+        if is_local(n, v) {
+            found = true;
+        }
+    });
+    found
+}
+
+/// Whether `e` is pure and total: free of calls, partial primitives (integer
+/// division/remainder), and capability effects — so it may be hoisted ahead of the
+/// recursion without changing observable behavior.
+fn pure_total(e: &CExpr) -> bool {
+    let mut ok = true;
+    walk(e, &mut |n| match &n.kind {
+        K::App { .. } => ok = false,
+        K::Prim { op, .. } if is_effectful_or_partial(*op) => ok = false,
+        _ => {}
+    });
+    ok
+}
+
+/// Primitives that either abort (division/remainder by zero) or perform a
+/// capability effect, so reordering them ahead of the recursion is unsafe.
+fn is_effectful_or_partial(op: Prim) -> bool {
+    matches!(
+        op,
+        Prim::IntDiv
+            | Prim::IntRem
+            | Prim::ConsoleWriteLine
+            | Prim::ClockNow
+            | Prim::RandomNextInt
+            | Prim::FileRead
+            | Prim::FileWrite
+            | Prim::EnvGet
+            | Prim::EnvArgs
+    )
+}
+
+/// Visits every subexpression of `e` (pre-order), including the children of nodes
+/// the tail-call transform never sees (handled for completeness).
+fn walk(e: &CExpr, f: &mut impl FnMut(&CExpr)) {
+    f(e);
+    match &e.kind {
+        K::Lit(_) | K::Local(_) | K::Global(_) | K::MakeClosure { .. } | K::Error => {}
+        K::Prim { args, .. } | K::MakeData { args, .. } | K::Recur { args } => {
+            args.iter().for_each(|a| walk(a, f));
+        }
+        K::App { func, args } => {
+            walk(func, f);
+            args.iter().for_each(|a| walk(a, f));
+        }
+        K::If { cond, then, els } => {
+            walk(cond, f);
+            walk(then, f);
+            walk(els, f);
+        }
+        K::Let { value, body, .. } => {
+            walk(value, f);
+            walk(body, f);
+        }
+        K::Reset { value, body, .. } => {
+            walk(value, f);
+            walk(body, f);
+        }
+        K::DataTag(base) | K::DataField { base, .. } => walk(base, f),
+        K::Dup { body, .. }
+        | K::Drop { body, .. }
+        | K::Join { body, .. }
+        | K::HoleStart { body, .. } => walk(body, f),
+        K::HoleFill { cell, .. } => walk(cell, f),
+        K::HoleClose { base, .. } => walk(base, f),
+    }
+}

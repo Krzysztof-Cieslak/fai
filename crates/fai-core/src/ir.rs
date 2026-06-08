@@ -110,6 +110,15 @@ fn collect_globals(expr: &CExpr, out: &mut Vec<DefId>) {
             collect_globals(body, out);
         }
         ExprKind::Dup { body, .. } | ExprKind::Drop { body, .. } => collect_globals(body, out),
+        ExprKind::Join { body, .. } => collect_globals(body, out),
+        ExprKind::Recur { args } => {
+            for a in args {
+                collect_globals(a, out);
+            }
+        }
+        ExprKind::HoleStart { body, .. } => collect_globals(body, out),
+        ExprKind::HoleFill { cell, .. } => collect_globals(cell, out),
+        ExprKind::HoleClose { base, .. } => collect_globals(base, out),
     }
 }
 
@@ -569,6 +578,56 @@ pub enum ExprKind {
         local: LocalId,
         /// The continuation.
         body: Box<CExpr>,
+    },
+    /// A loop header (a join point): the loop-carried `params` are already in scope
+    /// holding their initial values; evaluate `body`. Each [`ExprKind::Recur`] in
+    /// tail position of `body` reassigns the params and re-enters the loop. The
+    /// loop's value is that of its non-`Recur` tails. Produced only by the
+    /// tail-call transform in `fai-rc`.
+    Join {
+        /// The loop-carried locals, reassigned positionally by each `Recur`.
+        params: Vec<LocalId>,
+        /// The loop body.
+        body: Box<CExpr>,
+    },
+    /// A tail back-edge to the enclosing [`ExprKind::Join`]: reassign its params to
+    /// `args` (positionally; consuming each) and re-enter the loop. Valid only in
+    /// tail position of a `Join` body.
+    Recur {
+        /// The new values for the enclosing `Join`'s params, in order.
+        args: Vec<CExpr>,
+    },
+    /// Begin destination-passing construction of a spine: bind `hole` to a fresh,
+    /// empty destination and evaluate `body`. The hole is a **non-reference-counted
+    /// linear token** (like a reuse token): advanced by exactly one
+    /// [`ExprKind::HoleFill`] per spine-extending tail and consumed by exactly one
+    /// [`ExprKind::HoleClose`] per base case along each path.
+    HoleStart {
+        /// The destination token bound for `body`.
+        hole: LocalId,
+        /// The continuation.
+        body: Box<CExpr>,
+    },
+    /// Link `cell` into the spine through `hole`'s destination — store `cell` where
+    /// the hole points, then advance the destination to `cell`'s field `field` (the
+    /// recursive field, the next hole). Consumes `hole` and `cell`; yields the new
+    /// destination token. The recursive field of `cell` is built with a placeholder
+    /// immediate that the next fill or close overwrites.
+    HoleFill {
+        /// The current destination token (consumed).
+        hole: LocalId,
+        /// The freshly built cell to link in (consumed).
+        cell: Box<CExpr>,
+        /// The index of `cell`'s recursive field (the next hole).
+        field: u32,
+    },
+    /// Finish the spine: write the base-case value `base` where `hole` points and
+    /// yield the completed structure. Consumes `hole` and `base`.
+    HoleClose {
+        /// The destination token (consumed).
+        hole: LocalId,
+        /// The base value written into the final hole (consumed).
+        base: Box<CExpr>,
     },
     /// A lowering error placeholder (an unsupported construct was reported).
     Error,

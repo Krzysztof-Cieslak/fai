@@ -4833,3 +4833,254 @@ fn borrow_gety_row() {
         vec![false, false],
     );
 }
+
+// ===========================================================================
+// Tail-call flattening: a self-tail-recursive function becomes a loop. A
+// constructor-wrapped recursion additionally threads a destination hole; a plain
+// tail recursion is a hole-free loop; a non-tail or multiply-recursive function is
+// left as ordinary recursion. Every transformed function must stay sound.
+// ===========================================================================
+
+/// Asserts `name` is sound and was flattened into a loop with a destination hole
+/// (the constructor-wrapped, "modulo cons" case).
+#[track_caller]
+fn trmc_spine(src: &str, name: &str) {
+    sound(src, name);
+    let out = rc_checked(src, name);
+    assert!(out.contains("(join "), "expected a loop for `{name}`:\n{out}");
+    assert!(out.contains("holestart"), "expected a hole for `{name}`:\n{out}");
+    assert!(out.contains("holefill"), "expected a hole fill for `{name}`:\n{out}");
+    assert!(out.contains("holeclose"), "expected a hole close for `{name}`:\n{out}");
+    assert!(out.contains("(recur"), "expected a back-edge for `{name}`:\n{out}");
+}
+
+/// Asserts `name` is sound and was flattened into a plain (hole-free) loop.
+#[track_caller]
+fn trmc_plain(src: &str, name: &str) {
+    sound(src, name);
+    let out = rc_checked(src, name);
+    assert!(out.contains("(join "), "expected a loop for `{name}`:\n{out}");
+    assert!(out.contains("(recur"), "expected a back-edge for `{name}`:\n{out}");
+    assert!(!out.contains("holestart"), "unexpected hole for `{name}`:\n{out}");
+}
+
+/// Asserts `name` is sound and was left as ordinary recursion (no loop).
+#[track_caller]
+fn no_trmc(src: &str, name: &str) {
+    sound(src, name);
+    let out = rc_checked(src, name);
+    assert!(!out.contains("(join "), "unexpected loop for `{name}`:\n{out}");
+    assert!(!out.contains("(recur"), "unexpected back-edge for `{name}`:\n{out}");
+}
+
+#[test]
+fn trmc_inc() {
+    trmc_spine(
+        indoc! {r#"
+            module M
+
+            let inc xs =
+              match xs with
+              | [] -> []
+              | x :: r -> (x + 1) :: inc r
+        "#},
+        "inc",
+    );
+}
+
+#[test]
+fn trmc_map() {
+    trmc_spine(
+        indoc! {r#"
+            module M
+
+            let map f xs =
+              match xs with
+              | [] -> []
+              | x :: r -> f x :: map f r
+        "#},
+        "map",
+    );
+}
+
+#[test]
+fn trmc_filter() {
+    // The cons arm both extends the spine (then) and recurses without extending
+    // (else); the hole threads through both.
+    trmc_spine(
+        indoc! {r#"
+            module M
+
+            let keep xs =
+              match xs with
+              | [] -> []
+              | x :: r -> if x > 0 then x :: keep r else keep r
+        "#},
+        "keep",
+    );
+}
+
+#[test]
+fn trmc_non_last_recursive_field() {
+    // The recursive call is the *first* field; the later field (`x + 1`) is pure
+    // and total, so it is hoisted ahead of the back-edge and the function is
+    // flattened with the hole at field 0.
+    trmc_spine(
+        indoc! {r#"
+            module M
+
+            type Snoc = | Empty | Snoc Snoc Int
+
+            let bump xs =
+              match xs with
+              | Empty -> Empty
+              | Snoc rest x -> Snoc (bump rest) (x + 1)
+        "#},
+        "bump",
+    );
+}
+
+#[test]
+fn trmc_reverse_is_a_plain_loop() {
+    trmc_plain(
+        indoc! {r#"
+            module M
+
+            let rev acc xs =
+              match xs with
+              | [] -> acc
+              | x :: r -> rev (x :: acc) r
+        "#},
+        "rev",
+    );
+}
+
+#[test]
+fn trmc_sum_acc_is_a_plain_loop() {
+    trmc_plain(
+        indoc! {r#"
+            module M
+
+            let sumAcc acc xs =
+              match xs with
+              | [] -> acc
+              | x :: r -> sumAcc (acc + x) r
+        "#},
+        "sumAcc",
+    );
+}
+
+#[test]
+fn trmc_find_is_a_plain_loop() {
+    trmc_plain(
+        indoc! {r#"
+            module M
+
+            let find p xs =
+              match xs with
+              | [] -> 0
+              | x :: r -> if p x then x else find p r
+        "#},
+        "find",
+    );
+}
+
+#[test]
+fn no_trmc_non_tail_sum() {
+    // `x + sum r` is not in tail position (the recursion feeds `+`), so the
+    // function is left as ordinary recursion.
+    no_trmc(
+        indoc! {r#"
+            module M
+
+            let sum xs =
+              match xs with
+              | [] -> 0
+              | x :: r -> x + sum r
+        "#},
+        "sum",
+    );
+}
+
+#[test]
+fn no_trmc_two_recursions_in_one_constructor() {
+    // `Node (incT l) (incT r)` has two self-calls in one constructor: not
+    // tail-modulo-cons.
+    no_trmc(
+        indoc! {r#"
+            module M
+
+            type Tree = | Leaf Int | Node Tree Tree
+
+            let incT t =
+              match t with
+              | Leaf n -> Leaf (n + 1)
+              | Node l r -> Node (incT l) (incT r)
+        "#},
+        "incT",
+    );
+}
+
+#[test]
+fn no_trmc_reorder_unsafe_later_field() {
+    // The recursive call is not last, and the later field divides by a value (it
+    // may abort), so hoisting it ahead of the recursion is unsafe: bail.
+    no_trmc(
+        indoc! {r#"
+            module M
+
+            type Snoc = | Empty | Snoc Snoc Int
+
+            let bump xs =
+              match xs with
+              | Empty -> Empty
+              | Snoc rest x -> Snoc (bump rest) (100 / x)
+        "#},
+        "bump",
+    );
+}
+
+#[test]
+fn no_trmc_non_recursive() {
+    no_trmc(
+        indoc! {r#"
+            module M
+
+            let isEmpty xs =
+              match xs with
+              | [] -> true
+              | _ :: _ -> false
+        "#},
+        "isEmpty",
+    );
+}
+
+#[test]
+fn trmc_inc_exact_shape() {
+    // The full transformed body: a hole-carrying loop. The reuse token (`%10`) is
+    // preserved on the recycled cell, which is built with a placeholder recursive
+    // field (`()`) and linked via `holefill` *before* the back-edge — so a unique
+    // list still rebuilds in place and the recursion runs in constant stack. The
+    // base and the unreachable exhaustive fallthrough both close the hole, keeping
+    // every path's reference state consistent.
+    let out = rc_checked(
+        indoc! {r#"
+            module M
+
+            let inc xs =
+              match xs with
+              | [] -> []
+              | x :: r -> (x + 1) :: inc r
+        "#},
+        "inc",
+    );
+    assert_eq!(
+        out,
+        "fn0(%0) = (holestart %11; (join [%0, %11] (let %3 = %0; (let %4 = (tag %3); \
+         (let %5 = (= %4 0); (if %5 (drop %3; (holeclose %11 (data 0))) \
+         (let %6 = (tag %3); (let %7 = (= %6 1); (if %7 \
+         (let %1 = (field 0 %3); (let %2 = (field 1 %3); (reset %10 = %3; \
+         (let %8 = (+ %1 1); (let %12 = (holefill %11 1 (data@%10 1 %8 ())); \
+         (recur %2 %12)))))) (drop %3; (holeclose %11 <error>)))))))))))\n"
+    );
+}
