@@ -7,10 +7,10 @@
 
 use fai_db::{Db, SourceFile};
 use fai_resolve::{CtorRef, DefId, LocalId, Res, ResolvedBodies, module_defs, resolve, type_decls};
-use fai_span::{Span, SpanResolver};
+use fai_span::{ByteOffset, Span, SpanResolver, TextRange};
 use fai_syntax::Symbol;
 use fai_syntax::ast::{
-    ExprId, ExprKind, ItemKind, Module, PatKind, RowTail, TypeDef, TypeId, TypeKind,
+    ExprId, ExprKind, ItemKind, Module, PatId, PatKind, RowTail, TypeDef, TypeId, TypeKind,
     Visibility as AstVis,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -102,6 +102,33 @@ pub fn symbols(
         }
         let defs = module_defs(db, file);
         for d in &defs.defs {
+            if let Some(sr) = symbol_ref(db, file, d.name, resolver) {
+                out.push(sr);
+            }
+        }
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    let (symbols, truncated) = truncate(out, opts);
+    SymbolsResult { schema_version: SCHEMA_VERSION, symbols, truncated }
+}
+
+/// Symbols across the workspace whose name matches `query` (case-insensitive
+/// substring; an empty query matches everything). Powers LSP `workspace/symbol`.
+#[must_use]
+pub fn workspace_symbols(
+    db: &dyn Db,
+    files: &[SourceFile],
+    query: &str,
+    resolver: &dyn SpanResolver,
+    opts: ListOpts,
+) -> SymbolsResult {
+    let needle = query.to_lowercase();
+    let mut out = Vec::new();
+    for &file in files {
+        for d in &module_defs(db, file).defs {
+            if !needle.is_empty() && !d.name.as_str().to_lowercase().contains(&needle) {
+                continue;
+            }
             if let Some(sr) = symbol_ref(db, file, d.name, resolver) {
                 out.push(sr);
             }
@@ -347,6 +374,257 @@ pub fn definition_at(
         }
     }
     empty()
+}
+
+// --- find-references at a position (LSP `textDocument/references`) ------------
+//
+// `fai query refs` addresses a target by name; an editor invokes find-references
+// at a *byte offset*, which may sit on a use, a constructor pattern, a local's
+// binding, or a definition's name. We first resolve what the offset refers to
+// (a definition, a constructor, or a local), then collect every occurrence of
+// that thing across the workspace.
+
+/// What a cursor position refers to — the subject of find-references and rename.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RefTarget {
+    /// A top-level (possibly nested) definition.
+    Def(DefId),
+    /// A data constructor.
+    Ctor(CtorRef),
+    /// A local binding within a single file's body.
+    Local(SourceFile, LocalId),
+}
+
+/// The patterns whose span contains `offset`, smallest (innermost) first — the
+/// pattern-side analogue of [`exprs_containing`].
+fn pats_containing(module: &Module, offset: u32) -> Vec<PatId> {
+    let mut hits: Vec<(u32, PatId)> = module
+        .pats
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| {
+            let (start, end) = (p.span.start().raw(), p.span.end().raw());
+            (start <= offset && offset < end).then(|| (end - start, PatId::from_index(i)))
+        })
+        .collect();
+    hits.sort_by_key(|&(width, _)| width);
+    hits.into_iter().map(|(_, id)| id).collect()
+}
+
+/// The source range of a definition's *name* within one of its items (the
+/// binding or signature). The name is the last segment of the (possibly
+/// nested-qualified) symbol; it is the first whole-word occurrence of that
+/// identifier inside the item's text, which sits after the leading
+/// `let`/`public`/`type` keyword and before the parameters/body. Returns `None`
+/// when the text cannot be located (e.g. a recovered item).
+fn def_name_range(text: &str, item_span: TextRange, name: Symbol) -> Option<TextRange> {
+    let ident = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
+    if ident.is_empty() {
+        return None;
+    }
+    let start = item_span.start().raw() as usize;
+    let end = item_span.end().raw() as usize;
+    let slice = text.get(start..end)?;
+    let bytes = slice.as_bytes();
+    let is_ident = |b: u8| b == b'_' || b.is_ascii_alphanumeric();
+    let mut from = 0usize;
+    while let Some(rel) = slice[from..].find(ident) {
+        let at = from + rel;
+        let before_ok = at == 0 || !is_ident(bytes[at - 1]);
+        let after = at + ident.len();
+        let after_ok = after >= bytes.len() || !is_ident(bytes[after]);
+        if before_ok && after_ok {
+            let abs = (start + at) as u32;
+            return Some(TextRange::new(
+                ByteOffset::new(abs),
+                ByteOffset::new(abs + ident.len() as u32),
+            ));
+        }
+        from = at + ident.len();
+    }
+    None
+}
+
+/// The name range of `name`'s definition (preferring the binding item, falling
+/// back to the signature), for locating a declaration occurrence.
+fn def_decl_range(db: &dyn Db, file: SourceFile, name: Symbol) -> Option<TextRange> {
+    let parsed = fai_syntax::parse(db, file);
+    let text = file.text(db);
+    let def = module_defs(db, file).get(name).copied()?;
+    for item in [Some(def.binding), def.signature].into_iter().flatten() {
+        let span = parsed.module.items[item.index()].span;
+        if let Some(r) = def_name_range(text, span, name) {
+            return Some(r);
+        }
+    }
+    None
+}
+
+/// Whether `offset` falls on the *name* of a definition in `file` (its binding
+/// or signature), returning that definition's qualified name.
+fn def_name_at(db: &dyn Db, file: SourceFile, offset: u32) -> Option<Symbol> {
+    let parsed = fai_syntax::parse(db, file);
+    let text = file.text(db);
+    for d in &module_defs(db, file).defs {
+        for item in [Some(d.binding), d.signature].into_iter().flatten() {
+            let span = parsed.module.items[item.index()].span;
+            if let Some(r) = def_name_range(text, span, d.name)
+                && r.start().raw() <= offset
+                && offset < r.end().raw()
+            {
+                return Some(d.name);
+            }
+        }
+    }
+    None
+}
+
+/// Resolves what the reference at `offset` refers to: a use site, a constructor
+/// or local pattern, or a definition's own name.
+fn target_at(db: &dyn Db, file: SourceFile, offset: u32) -> Option<RefTarget> {
+    let parsed = fai_syntax::parse(db, file);
+    let resolved = resolve(db, file);
+    // A use site: the innermost referencing expression.
+    for expr in exprs_containing(&parsed.module, offset) {
+        match resolved.get(expr) {
+            Some(Res::Def(d)) => return Some(RefTarget::Def(d)),
+            Some(Res::Ctor(c)) => return Some(RefTarget::Ctor(c)),
+            Some(Res::Local(l)) => return Some(RefTarget::Local(file, l)),
+            _ => {}
+        }
+    }
+    // A pattern: a constructor head, or a local's binding occurrence.
+    for pat in pats_containing(&parsed.module, offset) {
+        if let Some(Res::Ctor(c)) = resolved.pat_res(pat) {
+            return Some(RefTarget::Ctor(c));
+        }
+        if let Some(l) = resolved.local_of(pat) {
+            return Some(RefTarget::Local(file, l));
+        }
+    }
+    // A definition's own name (the declaration site).
+    def_name_at(db, file, offset).map(|name| RefTarget::Def(DefId::new(file.source(db), name)))
+}
+
+/// The precise source range of the *name* an expression reference occupies: the
+/// whole span for a bare `Var`, or the trailing member segment for a qualified
+/// `Field` reference (`A.inc` → just `inc`). Anchoring at the span's end is robust
+/// to whitespace and to a module segment that repeats the member text.
+fn ref_expr_name_range(module: &Module, expr: ExprId) -> TextRange {
+    let span = module.expr(expr).span;
+    if let ExprKind::Field { field, .. } = &module.expr(expr).kind {
+        let flen = field.as_str().len() as u32;
+        if flen > 0 && flen <= span.len() {
+            return TextRange::new(ByteOffset::new(span.end().raw() - flen), span.end());
+        }
+    }
+    span
+}
+
+/// The source range of a constructor pattern's *head* name (`Some x` → `Some`,
+/// `Inner.MyCtor x` → `MyCtor`), excluding its arguments. Falls back to the whole
+/// pattern span when the head cannot be located.
+fn ctor_pat_name_range(module: &Module, text: &str, pat: PatId) -> TextRange {
+    let span = module.pat(pat).span;
+    if let PatKind::Constructor { name, .. } = &module.pat(pat).kind
+        && let Some(r) = def_name_range(text, span, *name)
+    {
+        return r;
+    }
+    span
+}
+
+/// Pushes the resolved form of `range` (in `file`) into `out` as a keyed
+/// location, for later deterministic sort + dedup.
+fn push_location(
+    db: &dyn Db,
+    file: SourceFile,
+    range: TextRange,
+    resolver: &dyn SpanResolver,
+    out: &mut Vec<(String, u32, Location)>,
+) {
+    if let Some(span) = SpanJson::resolve(Span::new(file.source(db), range), resolver) {
+        out.push((span.file.clone(), span.byte_start, Location { span, preview: None }));
+    }
+}
+
+/// Every occurrence of the symbol referenced at `offset` in `file`, across the
+/// given files: its uses (expressions and patterns) and, when
+/// `include_declaration`, its definition site. Powers LSP find-references.
+#[must_use]
+pub fn references_at(
+    db: &dyn Db,
+    files: &[SourceFile],
+    file: SourceFile,
+    offset: u32,
+    resolver: &dyn SpanResolver,
+    include_declaration: bool,
+) -> Vec<Location> {
+    let Some(target) = target_at(db, file, offset) else {
+        return vec![];
+    };
+    let mut out: Vec<(String, u32, Location)> = Vec::new();
+    match target {
+        RefTarget::Def(def) => {
+            for &f in files {
+                let resolved = resolve(db, f);
+                let parsed = fai_syntax::parse(db, f);
+                for (expr, res) in &resolved.by_expr {
+                    if *res == Res::Def(def) {
+                        let range = ref_expr_name_range(&parsed.module, *expr);
+                        push_location(db, f, range, resolver, &mut out);
+                    }
+                }
+            }
+            if include_declaration
+                && let Some(decl_file) = db.source_file(def.file)
+                && let Some(range) = def_decl_range(db, decl_file, def.name)
+            {
+                push_location(db, decl_file, range, resolver, &mut out);
+            }
+        }
+        RefTarget::Ctor(ctor) => {
+            for &f in files {
+                let resolved = resolve(db, f);
+                let parsed = fai_syntax::parse(db, f);
+                for (expr, res) in &resolved.by_expr {
+                    if *res == Res::Ctor(ctor) {
+                        let range = ref_expr_name_range(&parsed.module, *expr);
+                        push_location(db, f, range, resolver, &mut out);
+                    }
+                }
+                for (pat, res) in &resolved.by_pat {
+                    if *res == Res::Ctor(ctor) {
+                        let range = ctor_pat_name_range(&parsed.module, f.text(db), *pat);
+                        push_location(db, f, range, resolver, &mut out);
+                    }
+                }
+            }
+            if include_declaration && let Some(loc) = ctor_location(db, ctor, resolver) {
+                out.push((loc.span.file.clone(), loc.span.byte_start, loc));
+            }
+        }
+        RefTarget::Local(lfile, local) => {
+            let resolved = resolve(db, lfile);
+            let parsed = fai_syntax::parse(db, lfile);
+            for (expr, res) in &resolved.by_expr {
+                if *res == Res::Local(local) {
+                    let range = ref_expr_name_range(&parsed.module, *expr);
+                    push_location(db, lfile, range, resolver, &mut out);
+                }
+            }
+            if include_declaration {
+                for (pat, l) in &resolved.pat_locals {
+                    if *l == local {
+                        push_location(db, lfile, parsed.module.pat(*pat).span, resolver, &mut out);
+                    }
+                }
+            }
+        }
+    }
+    out.sort_by(|a, b| (a.0.as_str(), a.1).cmp(&(b.0.as_str(), b.1)));
+    out.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
+    out.into_iter().map(|(_, _, loc)| loc).collect()
 }
 
 /// `fai query refs`.
@@ -1035,13 +1313,25 @@ pub fn outline(
 ) -> OutlineResult {
     let file =
         files.iter().copied().find(|&f| module_label(db, f) == target || f.path(db) == target);
-    let mut nodes = Vec::new();
-    if let Some(file) = file {
-        let parsed = fai_syntax::parse(db, file);
-        let module = &parsed.module;
-        let mut scope: Vec<Symbol> = Vec::new();
-        nodes = outline_items(db, file, module, &mut scope, &module.roots, resolver);
+    match file {
+        Some(file) => document_symbols(db, file, resolver),
+        None => OutlineResult { schema_version: SCHEMA_VERSION, outline: vec![] },
     }
+}
+
+/// The nested symbol outline of one file, keyed by [`SourceFile`] rather than a
+/// target string. Powers LSP `textDocument/documentSymbol` (and is the core of
+/// [`outline`]).
+#[must_use]
+pub fn document_symbols(
+    db: &dyn Db,
+    file: SourceFile,
+    resolver: &dyn SpanResolver,
+) -> OutlineResult {
+    let parsed = fai_syntax::parse(db, file);
+    let module = &parsed.module;
+    let mut scope: Vec<Symbol> = Vec::new();
+    let nodes = outline_items(db, file, module, &mut scope, &module.roots, resolver);
     OutlineResult { schema_version: SCHEMA_VERSION, outline: nodes }
 }
 

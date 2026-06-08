@@ -1,0 +1,57 @@
+---
+source: crates/fai-ide/tests/queries.rs
+expression: json(&r)
+---
+{
+  "schemaVersion": 1,
+  "outline": [
+    {
+      "symbol": {
+        "path": "P.paint",
+        "name": "paint",
+        "kind": "function",
+        "module": "P",
+        "visibility": "public",
+        "signature": "Color -> Int",
+        "span": {
+          "file": "P.fai",
+          "start": {
+            "line": 8,
+            "column": 1
+          },
+          "end": {
+            "line": 12,
+            "column": 1
+          },
+          "byteStart": 70,
+          "byteEnd": 123
+        }
+      },
+      "children": []
+    },
+    {
+      "symbol": {
+        "path": "P.tag",
+        "name": "tag",
+        "kind": "function",
+        "module": "P",
+        "visibility": "public",
+        "signature": "Color -> Int",
+        "span": {
+          "file": "P.fai",
+          "start": {
+            "line": 13,
+            "column": 1
+          },
+          "end": {
+            "line": 17,
+            "column": 1
+          },
+          "byteStart": 149,
+          "byteEnd": 204
+        }
+      },
+      "children": []
+    }
+  ]
+}

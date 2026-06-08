@@ -2,8 +2,8 @@
 
 use fai_db::{Db, DbSpanResolver, FaiDatabase, SourceFile};
 use fai_ide::{
-    ListOpts, api, callees, callers, def, definition_at, dependents, hover_at, outline, refs,
-    search, symbols, type_at,
+    ListOpts, api, callees, callers, def, definition_at, dependents, document_symbols, hover_at,
+    outline, references_at, refs, search, symbols, type_at, workspace_symbols,
 };
 use indoc::indoc;
 
@@ -341,4 +341,145 @@ fn hover_at_snapshot() {
     let offset = at(text, "tag Red");
     let r = hover_at(&db, file, offset, &DbSpanResolver::new(&db));
     insta::assert_snapshot!("hover_at_tag", json(&r));
+}
+
+// --- find references at a position --------------------------------------------
+
+#[test]
+fn references_at_a_definition_spans_all_modules() {
+    let (db, files) = workspace();
+    let b = files[1];
+    let b_text = b.text(&db).clone();
+    // Point inside a use of `A.inc` in B; with the declaration included, the
+    // result is every use across the workspace plus the binding's own name.
+    let offset = at(&b_text, "A.inc") + "A.".len() as u32;
+    let refs = references_at(&db, &files, b, offset, &DbSpanResolver::new(&db), true);
+    assert_eq!(refs.len(), 4, "3 uses in B + 1 declaration in A: {refs:?}");
+    let in_a = refs.iter().filter(|l| l.span.file == "A.fai").count();
+    let in_b = refs.iter().filter(|l| l.span.file == "B.fai").count();
+    assert_eq!((in_a, in_b), (1, 3), "{refs:?}");
+    // Every reported reference is the name `inc`.
+    let a_text = files[0].text(&db).clone();
+    for loc in &refs {
+        let text = if loc.span.file == "A.fai" { &a_text } else { &b_text };
+        assert_eq!(&text[loc.span.byte_start as usize..loc.span.byte_end as usize], "inc");
+    }
+}
+
+#[test]
+fn references_at_a_definition_match_those_from_a_use() {
+    let (db, files) = workspace();
+    let a = files[0];
+    let a_text = a.text(&db).clone();
+    let b = files[1];
+    let b_text = b.text(&db).clone();
+    // From the binding's name `let inc x` …
+    let from_def =
+        references_at(&db, &files, a, at(&a_text, "inc x"), &DbSpanResolver::new(&db), true);
+    // … and from a use `A.inc` — the same complete set.
+    let from_use = references_at(
+        &db,
+        &files,
+        b,
+        at(&b_text, "A.inc") + "A.".len() as u32,
+        &DbSpanResolver::new(&db),
+        true,
+    );
+    assert_eq!(from_def, from_use, "references are independent of where they are requested");
+}
+
+#[test]
+fn references_at_can_exclude_the_declaration() {
+    let (db, files) = workspace();
+    let b = files[1];
+    let b_text = b.text(&db).clone();
+    let offset = at(&b_text, "A.inc") + "A.".len() as u32;
+    let refs = references_at(&db, &files, b, offset, &DbSpanResolver::new(&db), false);
+    assert_eq!(refs.len(), 3, "only the three uses, no declaration: {refs:?}");
+    assert!(refs.iter().all(|l| l.span.file == "B.fai"), "{refs:?}");
+}
+
+#[test]
+fn references_at_a_local_stay_within_the_body() {
+    let (db, file, text) = position_workspace();
+    // `shade` is bound by `let shade = tag c` and used in `shade + tag Red`.
+    let offset = at(text, "shade + tag Red");
+    let with_decl = references_at(&db, &[file], file, offset, &DbSpanResolver::new(&db), true);
+    assert_eq!(with_decl.len(), 2, "the binding plus one use: {with_decl:?}");
+    let without_decl = references_at(&db, &[file], file, offset, &DbSpanResolver::new(&db), false);
+    assert_eq!(without_decl.len(), 1, "just the use: {without_decl:?}");
+}
+
+#[test]
+fn references_at_a_constructor_cover_uses_and_patterns() {
+    let (db, file, text) = position_workspace();
+    // `Red` is declared as a variant, used as an expression (`tag Red`), and
+    // matched as a pattern (`| Red -> 0`).
+    let offset = at(text, "tag Red") + "tag ".len() as u32;
+    let refs = references_at(&db, &[file], file, offset, &DbSpanResolver::new(&db), true);
+    assert_eq!(refs.len(), 3, "declaration + expression use + pattern use: {refs:?}");
+    for loc in &refs {
+        assert_eq!(&text[loc.span.byte_start as usize..loc.span.byte_end as usize], "Red");
+    }
+}
+
+#[test]
+fn references_off_a_symbol_is_empty() {
+    let (db, file, text) = position_workspace();
+    let offset = at(text, "module P");
+    let refs = references_at(&db, &[file], file, offset, &DbSpanResolver::new(&db), true);
+    assert!(refs.is_empty(), "{refs:?}");
+}
+
+#[test]
+fn references_at_snapshot() {
+    let (db, files) = workspace();
+    let b = files[1];
+    let offset = at(&b.text(&db).clone(), "A.inc") + "A.".len() as u32;
+    let refs = references_at(&db, &files, b, offset, &DbSpanResolver::new(&db), true);
+    insta::assert_snapshot!("references_at_A_inc", json(&refs));
+}
+
+// --- document & workspace symbols --------------------------------------------
+
+#[test]
+fn document_symbols_mirror_the_outline() {
+    // `fai query outline` is keyed by module name; `documentSymbol` by file. They
+    // must agree (the former delegates to the latter).
+    let (db, files) = workspace();
+    let by_file = document_symbols(&db, files[0], &DbSpanResolver::new(&db));
+    let by_name = outline(&db, "A", &files, &DbSpanResolver::new(&db));
+    assert_eq!(json(&by_file), json(&by_name));
+}
+
+#[test]
+fn document_symbols_snapshot() {
+    let (db, file, _text) = position_workspace();
+    let r = document_symbols(&db, file, &DbSpanResolver::new(&db));
+    insta::assert_snapshot!("document_symbols_P", json(&r));
+}
+
+#[test]
+fn workspace_symbols_filter_by_substring() {
+    let (db, files) = workspace();
+    let names = |q: &str| -> Vec<String> {
+        workspace_symbols(&db, &files, q, &DbSpanResolver::new(&db), ListOpts::default())
+            .symbols
+            .into_iter()
+            .map(|s| s.name)
+            .collect()
+    };
+    // An empty query lists every definition, sorted by path (A.* before B.*).
+    assert_eq!(names(""), vec!["inc", "twice", "four", "two"]);
+    // A substring filters case-insensitively.
+    assert_eq!(names("INC"), vec!["inc"]);
+    // `t` matches `twice` and `two` (sorted by path: A.twice before B.two).
+    assert_eq!(names("t"), vec!["twice", "two"]);
+}
+
+#[test]
+fn workspace_symbols_snapshot() {
+    let (db, files) = workspace();
+    let r = workspace_symbols(&db, &files, "two", &DbSpanResolver::new(&db), ListOpts::default());
+    insta::assert_snapshot!("workspace_symbols_two", json(&r));
 }

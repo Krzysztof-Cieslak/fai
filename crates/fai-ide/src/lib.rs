@@ -13,8 +13,9 @@ pub mod target;
 
 pub use query::{
     ApiResult, CallEdge, CallHierarchyResult, CapsResult, DefResult, DependentsResult, DocsResult,
-    HoverResult, ListOpts, OutlineResult, RefsResult, SearchHit, SearchResult, SymbolsResult,
-    TypeResult, api, callees, callers, caps, def, definition_at, dependents, docs, hover_at,
-    outline, refs, search, symbols, type_at,
+    HoverResult, ListOpts, OutlineNode, OutlineResult, RefsResult, SearchHit, SearchResult,
+    SymbolsResult, TypeResult, api, callees, callers, caps, def, definition_at, dependents, docs,
+    document_symbols, hover_at, outline, references_at, refs, search, symbols, type_at,
+    workspace_symbols,
 };
 pub use target::{ResolvedTarget, resolve_target};

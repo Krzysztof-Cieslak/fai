@@ -284,6 +284,86 @@ fn formatting_returns_canonical_text() {
     harness.shutdown();
 }
 
+// --- navigation & structure --------------------------------------------------
+
+#[test]
+fn document_symbol_lists_top_level_bindings() {
+    let mut harness = Harness::start("docsym", &[("Main.fai", MAIN)]);
+    let uri = harness.did_open("Main.fai", MAIN);
+    let result =
+        harness.request("textDocument/documentSymbol", json!({ "textDocument": { "uri": uri } }));
+    let symbols = result.as_array().expect("an array of document symbols");
+    // Sorted by name: `inc` then `two`.
+    let names: Vec<&str> = symbols.iter().map(|s| s["name"].as_str().unwrap()).collect();
+    assert_eq!(names, vec!["inc", "two"], "{symbols:?}");
+    // `inc` is a function (LSP kind 12), `two` a value (kind 13).
+    assert_eq!(symbols[0]["kind"], 12, "{symbols:?}");
+    assert_eq!(symbols[1]["kind"], 13, "{symbols:?}");
+    assert_eq!(symbols[0]["detail"], "Int -> Int");
+    harness.shutdown();
+}
+
+#[test]
+fn workspace_symbol_finds_by_query() {
+    let mut harness = Harness::start("wssym", &[("Main.fai", MAIN)]);
+    let _ = harness.did_open("Main.fai", MAIN);
+    let result = harness.request("workspace/symbol", json!({ "query": "inc" }));
+    let symbols = result.as_array().expect("an array of symbols");
+    assert_eq!(symbols.len(), 1, "only `inc` matches: {symbols:?}");
+    assert_eq!(symbols[0]["name"], "inc");
+    assert!(symbols[0]["location"]["uri"].as_str().unwrap().ends_with("Main.fai"), "{symbols:?}");
+    assert_eq!(symbols[0]["containerName"], "Main");
+    harness.shutdown();
+}
+
+#[test]
+fn references_list_uses_and_declaration() {
+    let mut harness = Harness::start("refs", &[("Main.fai", MAIN)]);
+    let uri = harness.did_open("Main.fai", MAIN);
+    // Invoke on the use `inc` in `let two = inc 1` (line 6, col 10).
+    let with_decl = harness.request(
+        "textDocument/references",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 6, "character": 10 },
+            "context": { "includeDeclaration": true }
+        }),
+    );
+    let locs = with_decl.as_array().expect("locations");
+    assert_eq!(locs.len(), 2, "the declaration plus one use: {locs:?}");
+    let lines: Vec<i64> =
+        locs.iter().map(|l| l["range"]["start"]["line"].as_i64().unwrap()).collect();
+    assert!(
+        lines.contains(&3) && lines.contains(&6),
+        "declaration on line 3, use on line 6: {lines:?}"
+    );
+    harness.shutdown();
+}
+
+#[test]
+fn references_span_multiple_modules() {
+    let a = "module A\n\npublic inc : Int -> Int\nlet inc x = x + 1\n";
+    let b = "module B\n\npublic two : Int\nlet two = A.inc 1\n\nlet four = A.inc (A.inc two)\n";
+    let mut harness = Harness::start("refs-multi", &[("A.fai", a), ("B.fai", b)]);
+    let uri_a = harness.did_open("A.fai", a);
+    let _ = harness.did_open("B.fai", b);
+    // Invoke on the `inc` binding's name in A (line 3, col 4).
+    let result = harness.request(
+        "textDocument/references",
+        json!({
+            "textDocument": { "uri": uri_a },
+            "position": { "line": 3, "character": 4 },
+            "context": { "includeDeclaration": true }
+        }),
+    );
+    let locs = result.as_array().expect("locations");
+    // One declaration in A, three uses in B.
+    assert_eq!(locs.len(), 4, "{locs:?}");
+    let in_b = locs.iter().filter(|l| l["uri"].as_str().unwrap().ends_with("B.fai")).count();
+    assert_eq!(in_b, 3, "{locs:?}");
+    harness.shutdown();
+}
+
 // --- dirty (unsaved) buffers -------------------------------------------------
 //
 // These exercise the case the earlier tests do not: the open buffer differs from

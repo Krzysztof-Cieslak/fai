@@ -906,6 +906,16 @@ server:
     Fai spans are UTF-8 byte offsets; a per-document line map converts both ways
     (exact across non-BMP characters), clamping an out-of-range column to the
     line's content rather than spilling onto the next line.
+  - **Navigation & structure.** `documentSymbol` and `workspace/symbol` reuse the
+    outline/symbol queries (nested-module aware; `documentSymbol` is keyed by file
+    and `outline` delegates to it, so the two never drift). `references` first
+    resolves what the cursor names — a definition, a constructor, or a local —
+    then collects every occurrence across the workspace (uses in expressions and
+    patterns), adding the declaration when the client asks for it. Each reported
+    range is the bare name: a qualified use `A.inc` reports only the trailing
+    `inc`, and a constructor pattern reports only its head. A definition's own
+    name is itself a reference site, so find-references (and, later, rename) works
+    when invoked on the declaration, not just a use.
 
 Inference tuning, primitive borrowing & intra-build parallelism
 (measurement-driven; correctness-neutral — inferred types, diagnostics, and
