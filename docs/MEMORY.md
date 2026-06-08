@@ -26,7 +26,7 @@ retired; IDs are not reused).
 |---|---|---|---|---|
 | R1 | Cranelift integration + linking harder than expected | Med | High | Driven early via a thin native slice on a tiny subset; runtime ABI kept minimal and stable. Realized; platform-specific codegen/link edge cases remain (tracked in #9, #10). |
 | R2 | RC correctness (leaks / double-free), esp. with closures & existentials | Med | High | Plain RC first; a debug leak counter in every e2e test; precise reuse added only after green. Standing invariant. |
-| R6 | Exhaustiveness checking bugs (rows/literals) | Med | Med | A known algorithm (Maranget-style); golden tests for false pos/neg. Residual: a single-line union declaration panics the checker (#27). |
+| R6 | Exhaustiveness checking bugs (rows/literals) | Med | Med | A known algorithm (Maranget-style); golden tests for false pos/neg. An unresolved/ill-typed pattern that left an arity-inconsistent matrix row once panicked the checker (#27); such rows are now lowered to a distinct unmatchable value and the matrix splits guard against short rows. |
 | R8 | Scope creep from "AI-first" features | Med | Med | Effect rows, extension/restriction, and a package manager are out of the current scope — tracked as proposals (#35, #36, #37). |
 | R9 | Docs drifting from implementation | Med | Low | Self-hosted check: `samples/` files are part of the test suite (DoD #6). |
 | R11 | salsa API churn / version instability | Med | Med | Pin a version; wrap behind `fai-db` so the engine is swappable; keep query definitions framework-agnostic. |
@@ -1231,6 +1231,35 @@ program output are unchanged, guarded by the full type/golden suite):
     matrix (record with a boxed child, tuple, all-immediate record, nested record,
     tail-position loop drop, shared `rc > 1` drop) exits leak-free with the expected
     output.
+
+- **D102 A leading `|` on a union is optional (refines D-era union syntax).** A
+  discriminated union may be written without the leading pipe — `type T = A | B`,
+  the same union as the canonical `| A | B`. The parser reads the type body as a
+  type expression and, if a `|` follows, reinterprets it as the first variant
+  (its application spine `Con atom…` is the constructor name and its field types)
+  and parses the remaining `| …` variants.
+  - **Why it is unambiguous.** A union is signalled by the presence of a `|`; no
+    transparent alias has a top-level `|` (record-row `|` lives inside `{ … }`,
+    and there is no structural-union type). The previous behavior silently parsed
+    `type T = A | B` as an alias to `A` and dropped `| B`, which was a latent
+    bug, not a competing meaning.
+  - **Spellings.** Because `|` is a layout *continuation* token, the single-line,
+    inline-first-variant (`type T = A` then `  | B`), and
+    indented-without-leading-pipe forms all parse to one union. `fai fmt`
+    normalizes every spelling back to the canonical leading-pipe form, so the
+    canonical layout is unchanged.
+  - **Limit.** A lone nullary variant still needs the pipe: `type T = A` (no `|`)
+    stays a transparent alias, since nothing distinguishes it from one. A
+    qualified or non-constructor head before the `|` is a recoverable syntax
+    error.
+  - **Exhaustiveness robustness (fixes #27).** Independently, the usefulness
+    checker no longer panics on an arity-inconsistent pattern matrix. An
+    unresolved constructor (whose tag/arity are unknown) is lowered to a unique,
+    unmatchable value rather than to tag 0 — so it cannot collide with a real
+    first constructor and leave a matrix row shorter than its column — and the
+    matrix split/first-column reads guard against short rows. The unbound-name
+    error is reported as before; the bogus arm is no longer also flagged
+    unreachable.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.
