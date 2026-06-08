@@ -391,6 +391,36 @@ impl InferCtx {
         }
     }
 
+    /// Like [`resolve_shallow`](InferCtx::resolve_shallow), but compresses the
+    /// variable→variable chain it walks so later resolutions are O(1). Only
+    /// variable links are rewritten (never structures), so no large value is
+    /// duplicated. Used on the hot `&mut` solving path (unification), where long
+    /// result-variable chains otherwise make repeated resolution quadratic.
+    fn resolve_compress(&mut self, ty: &SolveTy) -> SolveTy {
+        let SolveTy::Var(v0) = ty else {
+            crate::perf::bump_resolve_clone();
+            return ty.clone();
+        };
+        // Follow variable→variable links to the chain's last variable.
+        let mut v = *v0;
+        let mut chain: Vec<TyVarId> = Vec::new();
+        while let VarState::Bound(SolveTy::Var(next)) = &self.vars[v.0 as usize] {
+            chain.push(v);
+            v = *next;
+        }
+        // Point every earlier link straight at that last variable.
+        for link in chain {
+            if link != v {
+                self.vars[link.0 as usize] = VarState::Bound(SolveTy::Var(v));
+            }
+        }
+        crate::perf::bump_resolve_clone();
+        match &self.vars[v.0 as usize] {
+            VarState::Bound(t) => t.clone(),
+            VarState::Free(..) => SolveTy::Var(v),
+        }
+    }
+
     fn constraint_of(&self, id: TyVarId) -> Option<Constraint> {
         match &self.vars[id.0 as usize] {
             VarState::Free(c, _) => *c,
@@ -448,8 +478,8 @@ impl InferCtx {
     /// Unifies two types, applying bindings. Constraint checks run as variables
     /// are bound.
     pub fn unify(&mut self, a: &SolveTy, b: &SolveTy) -> UnifyResult {
-        let a = self.resolve_shallow(a);
-        let b = self.resolve_shallow(b);
+        let a = self.resolve_compress(a);
+        let b = self.resolve_compress(b);
         match (&a, &b) {
             (SolveTy::Error, _) | (_, SolveTy::Error) => UnifyResult::Ok,
             (SolveTy::Var(x), SolveTy::Var(y)) if x == y => UnifyResult::Ok,
