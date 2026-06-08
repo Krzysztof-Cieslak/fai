@@ -7,11 +7,13 @@
 //! [`definition_at`], keyed by a byte offset — that power the language server.
 //! It produces no diagnostics of its own, so it owns no `FAInnnn` codes.
 
+pub mod code_action;
 pub mod completion;
 pub mod query;
 pub mod repr;
 pub mod target;
 
+pub use code_action::{CodeAction, CodeActionEdit, code_actions_at};
 pub use completion::{CompletionItem, CompletionKind, CompletionResult, completions_at};
 pub use query::{
     ApiResult, CallEdge, CallHierarchyResult, CapsResult, DefResult, DependentsResult, DocsResult,

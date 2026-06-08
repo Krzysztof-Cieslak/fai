@@ -947,6 +947,17 @@ server:
     its arrow chain into parameters (a function-typed parameter is parenthesized);
     the active parameter is the number of arguments lying strictly before the
     cursor, so a separating space — not mere adjacency — advances it.
+  - **Code actions / quick fixes.** Two sources feed `codeAction`: the
+    machine-applicable `Suggestion`s a diagnostic already carries become a
+    one-edit quick fix, and an unbound/ambiguous bare name (`FAI2001`/`FAI2002`)
+    becomes a "qualify as `Module.name`" fix per module that publicly exports that
+    name (the standard library included, the prelude-private `Prim` excluded) —
+    the qualified form Fai requires for cross-module access. The missing
+    public-signature diagnostic (`FAI3003`) now carries such a suggestion: it
+    moves `public` onto a freshly inserted signature line (the inferred type),
+    matching the binding's indentation and the member's bare name. The engine
+    re-derives the file's diagnostics from the salsa accumulators, so the
+    suggestions exactly match `fai check`'s.
 
 Inference tuning, primitive borrowing & intra-build parallelism
 (measurement-driven; correctness-neutral — inferred types, diagnostics, and

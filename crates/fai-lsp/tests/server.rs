@@ -545,6 +545,66 @@ fn signature_help_reports_parameters_and_active() {
     harness.shutdown();
 }
 
+#[test]
+fn code_action_adds_a_missing_signature() {
+    let src = "module Main\n\npublic let inc x = x + 1\n";
+    let mut harness = Harness::start("ca-sig", &[("Main.fai", src)]);
+    let uri = harness.did_open("Main.fai", src);
+    let result = harness.request(
+        "textDocument/codeAction",
+        json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 2, "character": 11 },
+                "end": { "line": 2, "character": 14 }
+            },
+            "context": { "diagnostics": [] }
+        }),
+    );
+    let actions = result.as_array().expect("an array of code actions");
+    let fix = actions
+        .iter()
+        .find(|a| a["title"] == "Add the inferred signature")
+        .unwrap_or_else(|| panic!("no signature fix: {actions:?}"));
+    assert_eq!(fix["kind"], "quickfix");
+    let changes = fix["edit"]["changes"].as_object().unwrap();
+    let edits = changes.values().next().unwrap().as_array().unwrap();
+    assert!(
+        edits[0]["newText"].as_str().unwrap().contains("public inc : Int -> Int"),
+        "edit: {edits:?}"
+    );
+    harness.shutdown();
+}
+
+#[test]
+fn code_action_qualifies_an_unbound_name() {
+    let src = "module Main\n\npublic ids : List Int -> List Int\nlet ids xs = map identity xs\n";
+    let mut harness = Harness::start("ca-qual", &[("Main.fai", src)]);
+    let uri = harness.did_open("Main.fai", src);
+    // Range over the bare `map` (line 3, cols 13..16).
+    let result = harness.request(
+        "textDocument/codeAction",
+        json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 3, "character": 13 },
+                "end": { "line": 3, "character": 16 }
+            },
+            "context": { "diagnostics": [] }
+        }),
+    );
+    let actions = result.as_array().expect("an array of code actions");
+    let titles: Vec<&str> = actions.iter().map(|a| a["title"].as_str().unwrap()).collect();
+    let fix = actions
+        .iter()
+        .find(|a| a["title"] == "Qualify as `List.map`")
+        .unwrap_or_else(|| panic!("no List.map fix among {titles:?}"));
+    let changes = fix["edit"]["changes"].as_object().unwrap();
+    let edits = changes.values().next().unwrap().as_array().unwrap();
+    assert_eq!(edits[0]["newText"], "List.map", "{edits:?}");
+    harness.shutdown();
+}
+
 // --- dirty (unsaved) buffers -------------------------------------------------
 //
 // These exercise the case the earlier tests do not: the open buffer differs from
