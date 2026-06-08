@@ -965,6 +965,7 @@ impl<E: Env> Walker<'_, E> {
     /// Collects the free (unbound) solver variables of `ty`, following the
     /// current substitution.
     fn collect_free_vars(&self, ty: &SolveTy, out: &mut rustc_hash::FxHashSet<crate::ty::TyVarId>) {
+        crate::perf::bump_free_var_visit();
         match self.cx.resolve_shallow(ty) {
             SolveTy::Var(v) => {
                 out.insert(v);
