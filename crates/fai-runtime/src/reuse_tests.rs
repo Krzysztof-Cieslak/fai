@@ -632,3 +632,60 @@ fn dupdrop_shared_inner_released_once_per_owner() {
     fai_drop(inner);
     assert_eq!(live_count(), base);
 }
+
+// ===========================================================================
+// Iterative drop: an arbitrarily deep structure is released without overflowing
+// the native stack (a recursive child scan would crash here).
+// ===========================================================================
+
+/// Builds a cons list `[1, 1, …]` of `n` immediate-headed cells, from the tail up
+/// (iteratively, so construction itself does not recurse).
+fn deep_int_list(n: usize) -> Value {
+    let mut list = imm_int(NIL_TAG);
+    for _ in 0..n {
+        list = data(CONS_TAG, &[imm_int(1), list]);
+    }
+    list
+}
+
+#[test]
+fn drop_of_a_very_deep_list_does_not_overflow_the_stack() {
+    let _g = lock();
+    let base = live_count();
+    // Far deeper than any native call stack would tolerate under recursive drop.
+    let list = deep_int_list(1_000_000);
+    assert_eq!(live_count(), base + 1_000_000, "one cell per element");
+    fai_drop(list);
+    assert_eq!(live_count(), base, "the whole spine was released, leak-free");
+}
+
+#[test]
+fn drop_of_a_deep_list_with_boxed_heads_releases_every_cell_and_head() {
+    let _g = lock();
+    let base = live_count();
+    // Boxed heads are reference-counted children that are *not* the last field, so
+    // they exercise the worklist (and its heap spill past the inline buffer).
+    let n = 100_000usize;
+    let mut list = imm_int(NIL_TAG);
+    for _ in 0..n {
+        list = data(CONS_TAG, &[big(), list]);
+    }
+    assert_eq!(live_count(), base + 2 * n as i64, "a cell and a boxed head each");
+    fai_drop(list);
+    assert_eq!(live_count(), base, "every cell and head released, leak-free");
+}
+
+#[test]
+fn drop_reuse_of_a_deep_unique_list_releases_the_spine_iteratively() {
+    let _g = lock();
+    let base = live_count();
+    // Resetting the head of a *unique* deep list releases its single tail child,
+    // which (being unique) cascades down the whole spine — iteratively, no
+    // overflow. The head cell's own memory is returned as a reuse token.
+    let list = deep_int_list(1_000_000);
+    let token = fai_drop_reuse(list);
+    assert_ne!(token, NO_REUSE, "the unique head cell yields its memory");
+    assert_eq!(live_count(), base + 1, "only the reset head cell remains");
+    discard_token(token, 2);
+    assert_eq!(live_count(), base, "the reset cell is released, leak-free");
+}
