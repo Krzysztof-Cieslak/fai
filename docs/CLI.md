@@ -22,11 +22,11 @@
 > `[path]`/`--match`/`--seed`/`--count`/`--max-size`, and generates values for
 > built-in types, records, and (recursive) ADTs. Isolated-worker execution (with
 > `$/testEvent` streaming) is a follow-up — the in-process runner aborts if a
-> generated input triggers a runtime trap (e.g. division by zero). Not yet
-> implemented: `fai daemon tap`, Windows resource limits, and
-> a Windows CI (the named-pipe transport compiles but is untested). See
-> `AGENTS.md` for project conventions, `docs/PLAN.md` for milestones, and the
-> `samples/` directory for the language itself.
+> generated input triggers a runtime trap (e.g. division by zero) (#22). Not yet
+> implemented: `fai daemon tap` (#28), Windows resource limits and a Windows CI
+> (the named-pipe transport compiles but is untested) (#29). See `AGENTS.md` for
+> project conventions, `docs/MEMORY.md` for the design decisions, the issue
+> tracker for the roadmap, and the `samples/` directory for the language itself.
 
 ---
 

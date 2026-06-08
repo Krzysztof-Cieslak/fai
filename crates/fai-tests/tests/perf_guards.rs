@@ -74,7 +74,7 @@ fn private_body_edit_work_is_independent_of_workspace_size() {
 #[test]
 fn comment_edit_does_not_recheck_other_modules() {
     // A trivia (comment) edit shifts byte offsets, so the edited file's own
-    // bodies are re-inferred (body-level cutoff is deferred — see PLAN.md D27),
+    // bodies are re-inferred (body-level cutoff is deferred — future work),
     // but the cross-module firewall still protects every *other* module: the work
     // stays constant regardless of workspace size.
     let small = infer_runs_after_edit(

@@ -4,7 +4,7 @@
 //! structure — virtual [`TokenKind::LayoutOpen`], [`TokenKind::LayoutSep`], and
 //! [`TokenKind::LayoutClose`] tokens — letting the parser stay layout-agnostic.
 //!
-//! The rule (a restricted offside; see the decision log in `docs/PLAN.md`):
+//! The rule (a restricted offside; see the decision log in `docs/MEMORY.md`):
 //!
 //! * The first token establishes the implicit top-level block's reference
 //!   column. Top-level items are separated by `LayoutSep`; the top level is not

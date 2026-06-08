@@ -75,8 +75,8 @@ fn wide_tuple_roundtrip(bencher: Bencher, width: usize) {
 
 // ── long curried application ─────────────────────────────────────────────────
 // A function of N params fully applied to N arguments; stresses arrow unify and
-// the curried-application walk. (Currently super-linear — the occurs check
-// re-walks the growing result type at each binding; see PLAN.md M9.)
+// the curried-application walk. (The occurs check re-walks the growing result
+// type at each binding, a residual super-linear node-visit shape.)
 
 #[divan::bench(args = [20, 60, 120])]
 fn long_application_chain(bencher: Bencher, n: usize) {

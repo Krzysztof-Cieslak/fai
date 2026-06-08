@@ -64,8 +64,9 @@
 > build toward. The design is locked (see the decision table below).
 
 This document is the orientation guide for anyone — human or AI agent — working
-on the Fai compiler. Read it first. For the staged build plan see `docs/PLAN.md`; for
-the language by example see the `samples/` directory.
+on the Fai compiler. Read it first. For the design rationale (locked decisions
+and standing risks) see `docs/MEMORY.md`; remaining and proposed work lives in
+the issue tracker; for the language by example see the `samples/` directory.
 
 ---
 
@@ -110,7 +111,7 @@ with high confidence**. Every design choice serves one of these goals:
 ## 3. Locked design decisions
 
 These are settled. Changing one is a deliberate, documented event (update this
-table **and** the decision log in `docs/PLAN.md`).
+table **and** the decision log in `docs/MEMORY.md`).
 
 | Area | Decision |
 |---|---|
@@ -130,11 +131,11 @@ table **and** the decision log in `docs/PLAN.md`).
 | Misc syntax | `[1, 2, 3]` lists, `::` cons, `List 'a`; `\|>`, `>>`, `++`; `true`/`false`; `if/then/else`; 64-bit `Int`/`Float` |
 | Algebraic types | Discriminated unions (`type T = \| A \| B 'a`); transparent type aliases (`type Id = …`, acyclic) |
 | Tuples | **Structural**; values `(a, b)`, type `'a * 'b` (`*` binds tighter than `->`) |
-| Records | **Structural with row polymorphism**; no duplicate labels (lacks constraints); `{ x = 1.0, y = 2.0 }`; dot access; `{ r with ... }` update; field punning in patterns; `type Point = { ... }` is a **transparent alias**; **closed by default** `{ x : T }`, anonymous-open `{ x : T \| _ }`, named-open `{ x : T \| 'r }` (named only to thread the tail to the result); **patterns mirror this** — `{ ... }` closed (names all fields), `{ ... \| _ }` open (ignore rest; required for row-poly scrutinees); extension/restriction (incl. binding a pattern tail) deferred to v2 |
+| Records | **Structural with row polymorphism**; no duplicate labels (lacks constraints); `{ x = 1.0, y = 2.0 }`; dot access; `{ r with ... }` update; field punning in patterns; `type Point = { ... }` is a **transparent alias**; **closed by default** `{ x : T }`, anonymous-open `{ x : T \| _ }`, named-open `{ x : T \| 'r }` (named only to thread the tail to the result); **patterns mirror this** — `{ ... }` closed (names all fields), `{ ... \| _ }` open (ignore rest; required for row-poly scrutinees); extension/restriction (incl. binding a pattern tail) is future work (tracked as a proposal) |
 | Inference | Hindley–Milner + let-generalization + **rows / row unification / lacks constraints**; exhaustiveness checking for `match` |
 | Generics | **Uniform boxed representation + dictionary passing** (no monomorphization by default) |
 | Interfaces | Compiled to **dictionaries**; instances (`{ Name with ... }`) are existential values |
-| Effects | **Capabilities as explicit values** (interface instances flowing from `main`); **row-polymorphic capability records give least authority**; type-level effect rows deferred to v2 |
+| Effects | **Capabilities as explicit values** (interface instances flowing from `main`); **row-polymorphic capability records give least authority**; type-level effect rows are future work (tracked as a proposal) |
 | Contracts | **First-class `example` / `forall` declarations** (`example: e` / `forall xs: e`; peers of `let`/`type`), resolved in module scope, type-checked to `Bool`, run by `fai test`; `///` is human prose only |
 | Backend | **Cranelift** native code generation |
 | Memory | **Perceus-style reference counting** (pure + strict ⇒ acyclic heaps ⇒ no cycle collector); reuse analysis enables in-place updates incl. `{ r with ... }` |
@@ -173,8 +174,7 @@ records, interfaces + instances, capabilities, contracts, nested modules). Each
 
 ## 5. Repository layout
 
-A single Cargo workspace. Each crate owns one compiler phase or tool. (Crates
-appear as the milestones that need them land — see `docs/PLAN.md`.)
+A single Cargo workspace. Each crate owns one compiler phase or tool.
 
 ```
 fai/
@@ -182,7 +182,7 @@ fai/
 ├── samples/             # language by example (canonical, tested .fai tour)
 ├── std/                 # standard library: real .fai modules, embedded at build time
 ├── docs/
-│   ├── PLAN.md          # milestones, acceptance criteria, risks, decisions
+│   ├── MEMORY.md        # design memory: standing risks + locked decisions
 │   └── CLI.md           # CLI + daemon-protocol reference
 ├── Cargo.toml           # workspace manifest + shared deps/lints      (M0)
 ├── Cargo.lock           # committed (reproducible builds)             (M0)
@@ -301,17 +301,18 @@ output schemas, and the daemon (MessagePack JSON-RPC) protocol.
   - **milestone names** — `M0`, `M2`, `M3`, `M3.5`, … (and never "this milestone");
   - **build-plan phases** — `Phase 2a`, "Phase 2.5", …;
   - **decision-log identifiers** — `Q7`, `D14`, `D45`, …;
-  - **`docs/PLAN.md`** — write "noted as future work", not "see the plan".
+  - **the roadmap / issue tracker as "the plan"** — write "noted as future work", not "see the plan".
 
   This holds **even when the change implements a milestone or a logged
   decision**: describe the behavior, not the roadmap step that produced it. So:
   - write "Add the native runtime", **not** "Implement the M3 runtime";
   - write "no reuse analysis yet", **not** "reuse is deferred to M6";
-  - write "record the design decisions in the build plan", **not** "see D45–D55 in
-    `docs/PLAN.md`".
+  - write "record the design decisions in the design memory", **not** "see D45–D55
+    in `docs/MEMORY.md`".
 
-  Pointers to the durable specs (`docs/CLI.md`, `AGENTS.md`) are fine when they
-  document a real contract (e.g. a wire schema or a naming convention). A commit
+  Pointers to the durable specs (`docs/CLI.md`, `docs/MEMORY.md`, `AGENTS.md`) are
+  fine when they document a real contract (e.g. a wire schema or a naming
+  convention). A commit
   whose subject or body names a milestone, phase, or decision id **must be
   reworded before it merges** (reword local history with `git rebase`). Describe
   *what changed and why*, not the step in a roadmap that produced it.
@@ -479,8 +480,8 @@ A change is done when:
 3. `cargo test` passes, including golden/snapshot and e2e tests.
 4. New behavior has tests at the appropriate levels (see §13); new diagnostics
    have codes + catalog entries.
-5. Any surface-language change is reflected in `AGENTS.md`, `docs/PLAN.md`, and
-   the `samples/` directory.
+5. Any surface-language change is reflected in `AGENTS.md`, `docs/MEMORY.md`
+   (decisions), and the `samples/` directory.
 6. Self-hosted check: every `.fai` file in `samples/` is verified by the test
    suite (parsed/formatted, and typechecked/run where applicable) so the docs
    cannot drift from the implementation.

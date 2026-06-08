@@ -1,727 +1,47 @@
-# Fai — Implementation Plan
-
-This is the tactical build plan: milestones with concrete deliverables and
-acceptance criteria, the sequencing rationale, a risk register, and the decision
-log. For project conventions see `AGENTS.md`; for the language itself see the
-`samples/` directory.
-
----
-
-## Strategy & sequencing rationale
-
-1. **De-risk the backend early.** Native codegen via Cranelift + a
-   reference-counted runtime + linking is the highest-uncertainty part of the
-   project. We therefore drive a **thin vertical slice all the way to a running
-   native binary (M3)** on a tiny language subset, *before* widening the
-   language. Integration risk is paid down first, not last.
-2. **Incremental from day one.** The **salsa query spine**, the
-   position-independent item tree, and the per-workspace **daemon** are
-   foundational, not a late add-on: every phase is a memoized query from the
-   start, and the `fai check` / `fai query` loop is incremental by **M2**. Only
-   *optimizations* (Perceus reuse M6; parallelism, remote cache, and opt-in
-   monomorphization M9) come later.
-3. **Front-end before types, types before data.** Get a forgiving parser and the
-   formatter working (M1), then Hindley–Milner for the functional core (M2),
-   then the slice (M3), then the data layer — ADTs + pattern matching +
-   structural records with rows (M4).
-4. **Capabilities follow interfaces.** Interfaces compile to dictionaries;
-   capabilities are just interface instances threaded from `main`. So M5
-   delivers both at once.
-5. **Optimize only once it runs and is correct.** Perceus reuse (M6) and the
-   parallel/remote-cache/monomorphization work (M9) come after correctness — the
-   *incremental architecture* is foundational, but *performance tuning* is not.
-6. **Docs are tested.** Every `.fai` file in `samples/` is checked by the
-   test suite from M1 onward, so documentation cannot drift.
-
-Milestones are vertical where possible: each should leave `main` building,
-linting clean, and green.
-
----
-
-## Milestones
-
-### M0 — Workspace scaffolding & toolchain
-**Status:** complete — all deliverables landed and the acceptance gates pass.
-
-**Goal:** an empty but coherent Cargo workspace with the diagnostics/span
-foundation and a test harness, so every later milestone plugs in cleanly.
-
-**Deliverables**
-- `Cargo.toml` workspace; `rust-toolchain.toml` pinning a stable Rust.
-- Crates created as stubs: `fai-span`, `fai-diagnostics`, `fai-db`, `fai-cli`,
-  `fai-driver`.
-- `fai-span`: `SourceId`, `Span` (byte offsets), `SourceMap`, line/column mapping.
-- `fai-diagnostics`: `Diagnostic` model (code, severity, primary/secondary spans,
-  labels, help, suggestions); human renderer + `--message-format=json` renderer;
-  a stable, versioned JSON schema.
-- `fai-db`: the **salsa database** skeleton — input queries (`source_text`),
-  interning, revisions, durability tiers — that every later phase plugs query
-  groups into. (salsa is pinned and wrapped here so the engine stays swappable.)
-- `fai-cli`: argument parsing; subcommand stubs (`build/run/check/fmt/test/lsp` +
-  `query`/`daemon`) that return "not implemented" diagnostics; global
-  `--message-format`.
-- `tests/`: golden/snapshot harness (e.g. `insta`) wired into `cargo test`;
-  scaffolding for the **incremental verifier** (incremental vs from-scratch).
-- CI script running build + `clippy -D warnings` + `fmt --check` + `cargo test`.
-
-**Acceptance**
-- `cargo build`, `cargo clippy -D warnings`, `cargo fmt --check`, `cargo test`
-  all pass.
-- `fai --help` and `fai check --message-format=json` emit well-formed output.
-- A trivial salsa query memoizes and re-runs correctly (smoke test).
-
-**Crates:** `fai-span`, `fai-diagnostics`, `fai-db`, `fai-cli`, `fai-driver`.
-
----
-
-### M1 — Lexer, parser, AST, formatter (no types)
-**Status:** complete — lexer, offside layout, recursive-descent/Pratt parser with
-error recovery, the position-independent item tree, the `parse`/`item_tree` salsa
-queries (early cutoff proven), and the idempotent canonical formatter are all
-implemented; `fai check` and `fai fmt` run end to end. Every acceptance bullet
-below is covered by tests.
-
-**Goal:** parse the core surface syntax with error recovery and format it
-canonically.
-
-**Deliverables**
-- `fai-syntax`: hand-written lexer (incl. the `'a'` char vs `'a` type-variable
-  rule), tokens with spans.
-- Recursive-descent parser with a Pratt expression sub-parser; **error
-  recovery** (synchronize on layout/keywords; report multiple errors).
-- AST in arenas, referenced by newtyped ids; spans on every node.
-- **Position-independent item tree** keyed by stable `ItemId`s, with an
-  `AstId` map and **spans in a side-table** — semantic queries depend on the
-  item tree, not byte offsets, so whitespace/comment edits cut off at parse.
-- `parse` is a **salsa query** (`source_text → item tree + diagnostics`) in
-  `fai-db`; this is where early-cutoff first pays off.
-- Offside-rule layout handling (indentation → virtual block tokens).
-- Surface covered: module header, `let`, lambdas (`fun`), application, literals
-  (`Int`, `Float`, `String`, `Bool`, `Unit`, char), `if/then/else`, operators
-  (`+ - * / |> >> ++ = <>` …), tuples, lists, parenthesization, `//`/`(* *)`/`///`
-  comments, and **`example` / `forall` contract declarations** (parsed as
-  ordinary declarations — their bodies are real expressions, not comment text).
-- `fai-fmt`: AST → canonical layout (2-space indent); **idempotent**.
-- `fai check` runs lex+parse and reports syntax diagnostics; `fai fmt` works.
-
-**Acceptance**
-- Parser snapshot tests for valid + invalid inputs (recovery produces ≥N errors).
-- `fai fmt` is idempotent: `fmt(fmt(x)) == fmt(x)` on a corpus.
-- All non-type-dependent files in `samples/` parse and round-trip through
-  `fai fmt` unchanged.
-- **Edit-churn test:** inserting a comment / reformatting re-runs `parse` but the
-  item tree is unchanged → near-zero downstream recompute (early cutoff proven).
-
-**Crates:** `fai-syntax`, `fai-fmt`, `fai-db`, (+`fai-resolve` skeleton).
-
----
-
-### M2 — Hindley–Milner inference for the functional core
-**Status:** complete — `fai-resolve` (name resolution, the module graph,
-visibility, per-module SCCs), `fai-types` (HM representation, unification,
-let-generalization, the required-signature rule, contract typing), and `fai-ide`
-(the eight `fai query` commands) are implemented; `fai check` type-checks and the
-cross-module firewall is proven by the incremental verifier. See decisions
-**D36–D44** for the choices made while implementing it.
-
-> **Test-corpus note:** the real-world integration fixtures under
-> `crates/fai-tests/tests/fixtures/typed/` (the poker model in `Card.fai`,
-> `HandEval.fai`, `Poker.fai`, plus `Geometry.fai`, `Rational.fai`, `Matrix2.fai`,
-> `Combinators.fai`) still encode domain data as `Int`/`Float`/`Bool`/tuples
-> (vectors and matrices are bare tuples, hands are 5-tuples). They remain valid
-> programs and typecheck clean; rewriting them to dogfood records/ADTs/`match`
-> (and revisiting the tuple-shaped `//~ LOCAL` assertions in
-> `crates/fai-tests/tests/real_world_locals.rs`) is tracked as enrichment work in
-> the data-layer milestone below. Capability-using samples such as `Hello.fai`
-> stay in the future-surface bucket until the interfaces milestone lands the
-> `Runtime`/`console` capability surface.
-
-**Goal:** type the pure functional core; enforce that every `public` binding has
-an explicit signature.
-
-**Deliverables**
-- `fai-resolve`: single top-level module per file; name resolution; visibility
-  (`public`/private); **dependency analysis / SCCs** so module-level bindings are
-  mutually recursive and generalized correctly.
-- **Queries & firewall:** `resolve`, `module_exports` (a module's public-signature
-  interface), and `infer` (per def/SCC) are **salsa queries**. Editing a *private*
-  body recomputes only that def's chain; `module_exports` is unchanged, so other
-  modules don't re-check — `fai check` is now **incremental**, at per-def/SCC
-  granularity.
-- `fai-types`: HM type representation; unification; let-generalization;
-  principal types for: primitives, functions/closures, application, `if`, `let`,
-  **tuples**, lists.
-- **Required-signature rule:** missing signature on a `public` binding is an
-  error; a signature that disagrees with the inferred type is an error
-  (signature is checked, not trusted).
-- Equality typing: `=`/`<>` admitted on non-function types; using them on
-  function-typed values is a type error.
-- **Overloaded arithmetic:** `+ - * /` resolve over `Int`/`Float`; unconstrained
-  numeric types **default to `Int`**; **no implicit `Int`/`Float` coercion**.
-  Genuine ambiguity is reported (with a help to annotate or convert).
-- **Contract typing:** `example`/`forall` bodies are resolved in module scope and
-  checked to type `Bool`; `forall` binder types are inferred from use; contracts
-  must be **pure** (no capability values in scope). (Execution lands in M7.)
-- Diagnostics: type mismatch, occurs-check, unbound name, missing public
-  signature, ambiguous types (incl. unresolved numeric defaulting) — each with a
-  stable code, human + JSON.
-- `fai-ide` + the **core `fai query` commands** (`symbols`, `def`, `refs`,
-  `type`, `docs`, `outline`, `api`, `dependents`) built on these queries, with
-  JSON output per `docs/CLI.md`. The same `fai-ide` layer powers the LSP (M8).
-
-**Acceptance**
-- Golden type tests (expected type or expected diagnostic) over a corpus.
-- `fai check` reports precise, well-located type errors in both formats.
-- Every public function in `samples/` typechecks against its written signature.
-- **Firewall test (incremental verifier):** editing a private body invalidates
-  only that def's chain; editing a public signature invalidates its dependents
-  and nothing more.
-- `fai query def/refs/type/api` return correct results on the corpus, including
-  partial results when the workspace has errors.
-
-**Crates:** `fai-resolve`, `fai-types`, `fai-db`, `fai-ide`.
-
----
-
-### M3 — End-to-end native thin slice ⚠️ (highest-risk milestone)
-**Status:** complete — `fai-core` (typed, desugared Core IR + lowering), `fai-rc`
-(plain dup/drop), `fai-codegen` (Core → Cranelift IR through one path feeding both
-a per-`Def` AOT object emitter and an in-process JIT), and `fai-runtime` (tagged
-values, reference counting, closures/`apply_n`, primitives, the `Console` host,
-and an entry shim with a live-object leak check) are implemented. `fai build`
-produces a self-contained native executable and `fai run` executes via the JIT in
-an isolated worker process; the per-`Def` `object_code` cache, the
-reachable-from-`main` closure, and AOT linking live in `fai-driver`. The thin
-subset is `Int`/`Bool`/`String`, functions, `let`, `if`, arithmetic, and
-`Console.writeLine` reached via `main`; a reachable construct outside it reports
-`FAI7001`. See decisions **D45–D55** for the choices made while implementing it.
-
-**Goal:** compile a tiny program to a **native executable that runs**, exercising
-the whole backend toolchain on the smallest possible language.
-
-**Subset:** `Int`/`Bool`/`String`, functions, `let`, `if`, arithmetic, and a
-single built-in capability (`Console.writeLine`) reached via `main`.
-
-**Deliverables**
-- `fai-core`: typed, desugared Core IR (the canonical lowered form).
-- `fai-rc`: **plain** dup/drop insertion (no reuse analysis yet) over Core IR.
-- `fai-codegen`: Core IR → Cranelift IR, with **two emitters from one path** —
-  **AOT** object files (`fai build`) and a **JIT** module (`fai run`/`fai test`);
-  calling convention; boxed/immediate value representation; string constants.
-- `fai-runtime` (Rust static lib): allocator, RC primitives (`dup`/`drop`/free),
-  boxed value layout, `String` builtins, the `Console` capability host, and the
-  entry shim that constructs `Runtime` and calls `main`; symbols resolvable by
-  both the linker (AOT) and the JIT.
-- `fai-driver`: **content-addressed object cache** — `object_code(Def)` keyed by
-  `hash(rc(Def)) + target + compiler-version` — plus AOT link (fast linker) and
-  the **JIT runner** that executes `fai run` in an isolated worker process.
-
-**Acceptance**
-- `fai build hello.fai` produces a native binary; `fai run hello.fai` (JIT)
-  prints via the Console capability and exits 0.
-- A handful of e2e programs (arithmetic, string concat, conditional) produce
-  correct stdout under `cargo test`.
-- **Cache hit:** rebuilding after editing one function reuses cached
-  `object_code` for the untouched functions (measured).
-- No leaks: a debug allocator/counter reports zero live objects at exit.
-
-**Crates:** `fai-core`, `fai-rc`, `fai-codegen`, `fai-runtime`, `fai-driver`.
-
----
-
-### M3.5 — Daemon, persistence & protocol
-**Status:** complete (one deferral). The on-disk content-addressed object cache
-(`fai-core`'s portable `fingerprint_def` + the driver's disk layer around
-`object_code`) and the per-workspace daemon (`fai-server`: MessagePack JSON-RPC
-over `interprocess` local sockets, `initialize` handshake, stat-gated/hash-confirmed
-file-state sync, idle shutdown) are built. The CLI is a thin client that routes
-`check`/`query`/`fmt`/`build` through the warm daemon and runs `run` under daemon
-supervision — the warm front end ships a portable IR bundle (`fai-core`'s `wire`)
-to an isolated worker that JITs and executes it, with streamed `$/output`, a
-wall-clock timeout, and a self-imposed `RLIMIT_CPU`; an unreachable daemon falls
-back to in-process. `fai daemon status|start|stop|restart` manage it. **Deferred:**
-`fai daemon tap` (cross-connection traffic broadcast) and a Windows CI (the
-`interprocess`/named-pipe path compiles but is untested). Concurrent reads and
-cancellation remain performance-milestone work. See decisions **D56–D65**.
-
-**Goal:** make the warm-database speedups available to the CLI *across*
-invocations — the heart of the agent feedback loop. (Inserted milestone; later
-numbers unchanged.)
-
-**Deliverables**
-- `fai-server`: per-workspace **daemon** holding the live salsa `Database`;
-  **MessagePack JSON-RPC** over a unix socket / named pipe (full spec in
-  `docs/CLI.md` §7) — `initialize` handshake + version negotiation, request
-  cancellation on input change, `$/progress`/`$/diagnostic`/`$/output` streaming.
-- `fai-cli` becomes a **thin client**: auto-spawn/connect, `--no-daemon`
-  fallback, `fai daemon status|start|stop|restart|tap`.
-- **File-state sync:** incremental disk scan (mtime/size → re-hash changed) plus
-  an optional client dirty-set fast path.
-- **On-disk persistence** of the content-addressed artifact cache (from M3), so
-  cold starts reuse backend output.
-- Isolated **worker process** for `fai run`/`fai test` (stdio streamed back;
-  timeouts and resource limits enforced by the daemon).
-
-**Acceptance**
-- A warm `fai check` / `fai query` is dramatically faster than the cold run
-  (tracked edit→diagnostic latency benchmark).
-- An upgraded binary restarts a stale daemon (version handshake).
-- A panicking/runaway program under `fai run` cannot take down the daemon.
-
-**Crates:** `fai-server`, `fai-cli`, `fai-driver`, `fai-db`.
-
----
-
-### M4 — Data: ADTs, pattern matching, structural records with rows
-**Status:** complete — discriminated unions and transparent aliases, `match`
-with Maranget exhaustiveness/redundancy checking, structural records with row
-polymorphism (parallel row union-find, lacks constraints, row-var
-generalization), a native boxed `Float`, and a single structural `compare` all
-typecheck and compile to native code. Monomorphic records use constant-offset
-projection; a *row-polymorphic* field access/update reachable from `main` reports
-`FAI7002`, pending the offset-evidence work tracked with the interfaces
-milestone. The standard library (`Option`/`Result`, list combinators,
-`compare`/`sort`/`sortBy`, `Dict`/`Set`, string ops) ships as a real prelude
-module. See decisions **D66–D72** for the choices made while implementing it.
-
-> **Test-corpus follow-up:** the `samples/` tour is promoted to the
-> typecheck-clean set and exercised end-to-end. The larger real-world *fixtures*
-> under `crates/fai-tests/tests/fixtures/typed/` (the poker model in `Card.fai`,
-> `HandEval.fai`, `Poker.fai`, plus `Geometry.fai`, `Rational.fai`, `Matrix2.fai`)
-> still encode their domain data as tuples — they remain valid programs and
-> typecheck clean, but do not yet dogfood records/ADTs. Rewriting them (and the
-> tuple-shaped `//~ LOCAL` assertions in `real_world_locals.rs`) is enrichment
-> work, not a correctness gap.
-
-**Goal:** the full data layer, including the project's largest type-system
-feature (row-polymorphic structural records).
-
-**Deliverables**
-- `fai-syntax`/`fai-resolve`: `type` declarations — discriminated unions and
-  record-type *aliases*; constructor and field resolution.
-- `fai-types`:
-  - ADTs with type parameters; constructors as functions.
-  - **Structural records via row polymorphism**: rows as a kind, **row
-    unification**, **lacks constraints** (no duplicate labels), generalization
-    over row variables; record literals, dot access, `{ r with ... }`.
-  - **Record-type annotations: closed by default** (`{ x : T }`); `{ x : T | _ }`
-    elaborates to a fresh anonymous open row (the common accessor/capability
-    case); `{ x : T | 'r }` names the tail to thread it to the result. Governs
-    *written signatures* only — inference always infers open rows for field
-    access; **no subtyping**.
-  - **Exhaustiveness & redundancy checking** for `match` (incl. literals, cons,
-    tuples, records with field punning).
-  - **Record patterns mirror type openness:** a bare `{ ... }` is closed and must
-    name *all* fields (missing field → diagnostic: "name it or add `| _`"); a
-    `{ ... | _ }` tail is open (ignore the rest) and is **required** for
-    row-polymorphic scrutinees (the abstract tail is unmatchable). Binding the
-    tail (`{ x | rest }`, restriction) is **v2**. The pattern row-tail `|` is
-    contextual (distinct from the `match`-arm separator, which is outside braces)
-    — add a parser test.
-- `fai-core`/`fai-codegen`/`fai-runtime`:
-  - Constructor representation (tag + fields; nullary → immediate).
-  - **Canonical record field layout** (by interned label id).
-  - Constant-offset access for monomorphic records; **offset-evidence passing**
-    for row-polymorphic field access.
-  - Pattern-match compilation to decision trees/switches.
-  - `List`, `Option`, `Result`, `String` standard module surface.
-
-**Acceptance**
-- Golden tests: exhaustiveness errors fire correctly; row inference produces the
-  expected principal types (e.g. `getX : { x : 'a | _ } -> 'a`).
-- e2e: programs using ADTs, `map`/`fold`, records, `{ with }`-update, and field
-  punning compile and run with correct output and zero leaks.
-
-**Crates:** `fai-syntax`, `fai-resolve`, `fai-types`, `fai-core`, `fai-codegen`,
-`fai-runtime`.
-
----
-
-### M5 — Interfaces, instances & capabilities
-**Goal:** the one OO-flavored feature and the effect model it powers.
-
-**Deliverables**
-- `interface` declarations (named sets of function signatures).
-- **Interface instances** (`{ Name with <methods> }`, ML method sugar `m args = …`)
-  as the only constructor → existential values compiled to **dictionaries**
-  (records of closures capturing existential state). No `new`; methods don't see
-  each other as bare names (record semantics — factor shared logic to module
-  level). Parser must disambiguate `{ Name with … }` (instance) from
-  `{ e with … }` (record update) by the head (interface name vs record expr), and
-  from `match e with …` — add tests.
-- `fai-types`: interface types, dictionary insertion, existential packing/
-  unpacking; integration with rows so capability records work.
-- Capabilities: built-in capability interfaces (`Console`, `Clock`, `Random`,
-  `FileSystem`, `Env`) and a `Runtime` record alias bundling them; the runtime
-  constructs `Runtime` and passes it to `main`.
-- **Least authority via rows:** a function may request `{ console : Console | _ }`
-  and accept any larger runtime.
-- `fai-runtime`: host implementations for each capability.
-- **Operators as interface methods + user-defined operators (D75):** a generic
-  operator-character lexer and **F#-style precedence** (derived from the
-  operator's symbols, no fixity declarations); the overloaded operators become
-  std interface methods — `Num` (`+ - * / %`), `Eq` (`= <>`), `Ord`
-  (`< <= > >=`) — defined in `Prelude`, with the M2 constraint flavors replaced by
-  these interface constraints (monomorphic uses still lower to the direct
-  primitive); user-defined operators resolve like names (module-local +
-  `Prelude`); formatter support for arbitrary operators. `&&`/`||` stay
-  short-circuit sugar and `::` stays the `List` constructor.
-
-**Acceptance**
-- e2e: a program that takes only the capabilities it needs, builds a derived
-  capability via an interface instance (`{ Name with … }`, e.g. a prefixing
-  `Console`), and runs.
-- Type error when code attempts an effect without holding the capability.
-
-**Crates:** `fai-syntax`, `fai-resolve`, `fai-types`, `fai-core`, `fai-codegen`,
-`fai-runtime`.
-
----
-
-### M6 — Perceus reuse & in-place update
-**Status:** complete. (1) **Precise, ownership-based reference counting**: `fai-rc`
-normalizes each function to A-normal form and inserts dup/drop precisely
-(duplicate only when a value is still live afterward; drop at the last use rather
-than scope end; per-branch drops), with projections (`DataField`/`DataTag`)
-**borrowing** their base so a matched value survives its projections and is
-released once by reference counting. (2) **Reset/reuse**: a dead data cell's
-release becomes a `Reset` at its death point that yields a reuse token (its raw
-memory if unique, else null), threaded forward to a same-size construction that
-builds into it in place (`fai_drop_reuse`/`fai_reuse`); `if` pushes the decision
-into branches (reset-and-reuse where one reconstructs, drop where not). A
-`map`/`filter`/`inc` over a *unique* list allocates **zero** fresh cells, while a
-shared list falls back to copying (the runtime rc==1 guard), proven by a
-differential allocation count. (3) **In-place update & drop specialization**:
-`{ r with … }` overwrites the record in place when it is unique (the
-row-polymorphic path via `fai_record_update`, the monomorphic path via the reuse
-mechanism — lowering reads a record's unchanged fields from a single base local so
-it stays uniquely referenced), copying only when shared; and code generation omits
-dup/drop of statically-immediate values (a `local → type` map). (4) **Argument
-borrowing**: a saturated call to a top-level function is emitted as a **direct
-call** to its code; a per-function inference (`borrow_signature`) lends parameters
-that are only inspected (e.g. `length`/`sum`'s list) while owning those that
-escape or are matched-and-reconstructed (e.g. `map`/`inc`, so reuse still fires);
-a callee treats a borrowed parameter like a capture, a direct caller lends it
-(no duplication), and the first-class value form uses an owned-ABI wrapper that
-releases the borrowed arguments (so `apply_n`/escaping use stays sound without a
-whole-program escape analysis). An abstract reference-count interpreter over the
-IR guards soundness (ownership, borrowing, reuse tokens) across a corpus and whole
-programs. Inspect-only **primitive borrowing** has since landed (see D94); the
-**cross-module borrowing fixpoint** (issue #19), deeper **drop specialization**
-(issue #20), and **tail-recursion modulo cons** (issue #18) remain
-correctness-neutral follow-ups (see M9).
-
-**Goal:** turn correctness-first RC into competitive performance.
-
-**Deliverables**
-- `fai-rc`: reuse analysis (reuse tokens), drop specialization, borrowing of
-  arguments to avoid dup/drop churn.
-- In-place reuse for same-size constructors and for `{ r with ... }` when the
-  refcount is 1.
-
-**Acceptance**
-- `map`/`filter`/`fold` over a unique list allocate ~zero fresh cells
-  (measured); benchmarks show the expected reduction vs M3-style plain RC.
-- Correctness unchanged: full test suite green, zero leaks.
-
-**Crates:** `fai-rc` (+ codegen support).
-
----
-
-### M7 — Contracts: examples & properties
-**Status:** complete (Stage 1). `fai test` collects, synthesizes, JIT-runs, and
-reports the `example`/`forall` contracts. The property-testing framework is a
-**dogfooded standard-library module** (`std/Test.fai`): a pure splitmix64 `Gen`,
-an `Arbitrary 'a = { gen, shrink, show }` bundle, type-directed combinators
-(`int`/`bool`/`float`/`string`/`unit`/`list`/`tuple2..4`/`option`/`result`), and
-the `checkExample`/`checkForall` driver (sized trials, greedy shrinking). The
-compiler (`fai-contracts`) types a contract's binders (defaulting residual type
-variables to `Int`), synthesizes a harness — a *property* function plus an entry
-that calls `Test.checkForall`/`checkExample` with an `Arbitrary` composed from
-the combinators for the binders' types — reference-counts and JIT-compiles it
-with its reachable callees (`fai-codegen`'s `JitProgram`), then applies it and
-decodes the returned `TestResult`. A failure is a located **`FAI6001`** with the
-shrunk counterexample (binder names + rendered value); a binder with no generator
-(a function type, `>4` binders, or an open record row) is **`FAI6002`**. `fai test`
-takes `[path]`/`--match`/`--seed`/`--count`/`--max-size`, runs in-process, and
-asserts the runtime's live-object count returns to zero. **User records and ADTs**
-(including recursive ones like `Dict`/`Set`/`Tree`) now generate too: the compiler
-synthesizes a top-level `Arbitrary` definition per type — referenced as a `Global`,
-so a recursive type is a self-reference guarded by the size budget, and every
-synthesized function is capture-free (a captured value becomes a leading parameter
-supplied by partial application). The whole `samples/` + `std/` contract corpus
-runs and passes. Remaining follow-ups: **isolated-worker execution** (the
-in-process runner aborts if a generated input triggers a runtime trap, e.g.
-division by zero — worker isolation contains that) with `$/testEvent` streaming,
-and revisiting **full-domain float** generation (it surfaces precision-edge
-counterexamples on float-arithmetic laws). See decisions **D80–D87**.
-
-**Deliverables**
-- `fai-contracts`: collect the typed `example`/`forall` declarations from each
-  module (associating each with the top-level symbols its body references, for
-  reporting/docs).
-- `example` evaluated (constant cases may be checked as early as `fai check`);
-  `forall` exercised with **type-driven generators** (QuickCheck-style),
-  shrinking on failure.
-- `fai test` runs all contracts and reports pass/fail with codes + JSON.
-
-**Acceptance** (met)
-- `fai test` passes for all contracts in `samples/`; a deliberately wrong
-  `example`/`forall` fails with a precise, located diagnostic (+ shrunk
-  counterexample for properties).
-
-**Follow-up work (deferred; correctness-neutral unless noted):**
-- **Isolated-worker execution for `fai test`.** The runner is in-process, so a
-  generated input that triggers a runtime trap (e.g. integer division by zero in
-  a property body — observed running the `Poker` fixture) **aborts the process**.
-  Run contracts in the supervised worker that `fai run` already uses (timeouts +
-  resource limits), and stream per-contract results as `$/testEvent` so the
-  daemon serves `fai test` (today it routes in-process; results are a rendered
-  `TestOutput`). This is the one *robustness* gap, not just an optimization.
-- **Generators for the remaining type shapes.** Mutually-recursive ADTs, and
-  recursion reachable only through a collection field (e.g. `Rose (List Rose)`),
-  are not size-guarded — generation could diverge; add a fuel parameter threaded
-  through generation. **`Char`** generation awaits native `Char` support (a
-  `Char` binder is reported `FAI6002`). Allow **user-defined/custom generators**
-  (e.g. invariant-respecting `Arbitrary` instances) to override the synthesized
-  ones.
-- **Full-domain float generation** (incl. NaN/inf) surfaces precision-edge
-  counterexamples on float-arithmetic laws (observed running the `Geometry`
-  fixture). Revisit: offer a finite-float generator, or shrink float
-  counterexamples toward simple values.
-- **Constant `example` evaluation at `fai check`.** Examples with no free
-  variables could be checked during `fai check` (folded), surfacing failures
-  without a separate `fai test`.
-- **Configurable trials/size per property** and a richer JSON `TestOutput`
-  (per-contract events, seeds) once the worker streams results.
-- **Explicit contract-purity diagnostic.** Purity is currently enforced by
-  construction (a contract has no `Runtime` in scope), but an explicit check
-  would give a clearer error than a downstream type mismatch.
-- **Pre-existing crash uncovered (not M7-specific):** a **single-line union
-  declaration** (`type T = A | B …` on one line) panics the exhaustiveness
-  checker (`fai-types/src/exhaustive.rs` `default_matrix`, "non-empty row"); the
-  multi-line form is fine. A malformed/over-terse program must yield a
-  `Diagnostic`, never panic — fix in the parser or exhaustiveness check (M8
-  surface-completeness work).
-
-**Crates:** `fai-contracts` (+ `fai-cli`, `fai-driver`, `fai-core`, `fai-rc`,
-`fai-codegen`, `fai-runtime`, `fai-types`, `fai-resolve`, `fai-syntax`,
-`fai-fmt`, `fai-ide`).
-
----
-
-### M8 — Surface completeness, LSP v1, advanced code intelligence, error-code catalog
-**Goal:** make it pleasant and complete enough for real use.
-
-**Deliverables**
-- Nested modules; remaining pattern forms; broader standard library.
-- `fai-fmt` completeness across the whole grammar; formatter conformance tests.
-- `fai-lsp`: an LSP v1 over stdio — push diagnostics, hover (types),
-  go-to-definition, and document formatting — **reusing `fai-ide`** (the same
-  engine behind `fai query`). Completion, references, rename, symbols, signature
-  help, hover docs, code actions, and the editor client/grammars are their own
-  milestone (M10).
-- **Advanced `fai query`:** `callers`/`callees` (call hierarchy), `dependents`
-  (transitive), `caps` (capability footprint), and `search` (Hoogle-style type
-  search; needs a type-normalized index).
-- **Error-code catalog** documenting every `FAInnnn`, plus the **`docs/CLI.md` JSON
-  output schemas** (a public, versioned API).
-
-**Acceptance**
-- LSP serves diagnostics/hover/go-to-def on a sample project over stdio.
-- `fai query search "List 'a -> Int"` and `fai query caps <fn>` return correct
-  results on the corpus.
-- Catalog covers every emitted code; a test asserts no undocumented code ships.
-
-**Crates:** `fai-lsp`, `fai-ide`, `fai-fmt`, `fai-resolve`, `fai-diagnostics`.
-
----
-
-### M9 — Performance at scale (incrementality is already foundational)
-**Status:** in progress. The **inference-tuning** targets and **primitive
-borrowing** are done (see decisions **D92–D94**): the solver shares its types via
-`Rc`, borrows and memoizes its occurs/free-variable walks, generalizes local
-`let`s by binding level (rather than recomputing the environment's free
-variables), and path-compresses variable chains — turning the unify/occurs/
-generalization/chain shapes that were O(n²)/O(n³) into linear ones (e.g. unifying
-a depth-256 arrow drops from ~3.7ms to ~28µs, a value-`let` chain of 800 from
-~31ms to ~1ms); and the inspect-only primitives (`=`, `compare`, and the `String`
-readers/builders) now borrow boxed operands via non-consuming runtime variants.
-Always-on
-thread-local **work counters** (`fai-types/src/perf.rs`) gate the solver's
-asymptotic complexity deterministically in `perf_guards.rs`. **Intra-build
-parallelism** is also done (see decisions **D95–D96**): per-definition code
-generation (the AOT object loop) and the lower/reference-count gathers for the
-run paths run across a `rayon` pool, each worker on its own cheap database-handle
-clone (salsa coordinates the shared memoization) — ~2× on a 200-definition build
-here; and the JIT path code-generates each function in parallel (building IR and
-linking the shared module serially) — ~1.4× on the same program. **Daemon
-hardening** has landed its memory-bound and latency halves (see decision
-**D97**): the warm database caps its native-object cache (salsa LRU on
-`object_code`, daemon-set, env-configurable) and reports per-command latency in
-`fai daemon status`. Still to come: the shared/remote cache (deferred — issue
-#15), the rest of daemon hardening (cross-request concurrency, still serialized
-per D57 — deferred to issue #17), opt-in monomorphization (deferred — issue
-#16), and the remaining reuse/borrowing follow-ups (TRMC — issue #18,
-cross-module borrowing — issue #19, drop specialization — issue #20).
-
-**Deliverables**
-- `rayon` parallelism across independent defs/modules (parallel salsa queries;
-  per-function Cranelift codegen).
-- **Shared/remote artifact cache** layered on the local content-addressed cache
-  (team/CI dedup; portable by construction). *(Deferred — tracked in issue #15.)*
-- Daemon hardening: LRU eviction / memory bounds; latency profiling.
-- **Opt-in monomorphization** for hot generic paths (optimization only — never a
-  correctness requirement, and the one feature that *hurts* incrementality, so it
-  stays opt-in). *(Deferred — tracked in issue #16.)*
-- **Reuse/borrowing follow-ups** layered on the M6 work, all correctness-neutral:
-  - **Tail-recursion modulo cons (TRMC):** flatten a self-tail-recursive
-    constructor-returning function (e.g. `map`, `filter`) into an in-place-building
-    loop using destination passing, removing the stack growth. Cell reuse already
-    makes such a function allocate zero fresh cells over a unique list (with N
-    reset tokens live on the stack); TRMC additionally removes the O(N) stack and
-    improves locality. A substantial separate transform. *(Deferred — issue #18.)*
-  - **Cross-module argument borrowing:** an inter-procedural borrow fixpoint (over
-    call-graph SCCs) so a function borrows parameters it only forwards to other
-    modules' borrowing functions; the current inference is self-contained
-    (self-recursion only, conservative across functions). *(Deferred — issue #19.)*
-  - **Primitive borrowing** for inspect-only primitives (`=`/`compare`/string
-    reads and builders) on boxed operands, guarded by operand type so the hot
-    `match` tag-test path keeps consuming its (immediate) operands. *(Done — D94.)*
-  - **Drop specialization:** inline a known monomorphic data cell's child drops
-    and free to skip the descriptor dispatch (deferred from M6 as marginal after
-    reuse and carrying memory-safety risk). *(Deferred — issue #20.)*
-- Compile-throughput + `edit→diagnostic` / `edit→test` benchmarks with CI
-  regression guards. (Foundation landed early during M2: a deterministic
-  query-count guard suite — `crates/fai-tests/tests/perf_guards.rs`, proving the
-  firewall makes a localized edit's recompute independent of workspace size — and
-  wall-clock divan benches in `crates/fai-tests/benches/` over a synthetic
-  `corpus` generator. M9 extends these to codegen/`edit→test` and adds trend
-  tracking.)
-- **Inference tuning targets** surfaced by the M2 micro/stress benchmarks
-  (`crates/fai-tests/benches/{micro,stress}.rs`), all correctness-neutral:
-  - the **occurs check** re-walks the whole (growing) type on every variable
-    binding → O(n²) on long curried-application chains and exponential type
-    growth (defer/skip occurs via union-find ranks, or rank-based path
-    compression);
-  - **local-`let` generalization** recomputes environment free-variables per
-    binding → O(n²) in block size for long `let`-chains (cache the env var set);
-  - **unification of very deep types** repeats `resolve_shallow` walks (add path
-    compression to the union-find).
-
-**Acceptance**
-- Documented throughput + latency targets on a large synthetic corpus; no
-  regressions beyond a set threshold in CI.
-- Remote-cache hit reproduces a clean build's artifacts on a fresh checkout.
-
-**Crates:** `fai-driver`, `fai-db`, `fai-server`, `fai-types`, `fai-codegen`,
-(+ most front-end crates).
-
----
-
-### M10 — Editor integration: LSP v2, VS Code extension & grammars
-**Goal:** ship a first-class editor experience for Fai — grow the language server
-from the v1 surface (push diagnostics, hover, go-to-definition, document
-formatting) into full editing, and deliver the client and grammars an editor
-actually needs. The server features reuse `fai-ide`, so every one shares the warm
-session and the `fai query` answers; open buffers are already overlaid as
-in-memory edits, so each works on unsaved text.
-
-**Deliverables — language-server completeness (LSP v2)**
-- **Completion** (`textDocument/completion`): in-scope names, qualified members
-  after `Module.`, record fields after a value's `.`, and constructors in
-  patterns; each item carries a kind, the rendered type signature as detail, and
-  docs (lazily, via `completionItem/resolve`).
-- **Find references** (`textDocument/references`) and **rename**
-  (`textDocument/rename` + `prepareRename`): cross-file workspace edits over the
-  resolution reference graph, honoring visibility and qualified paths.
-- **Document & workspace symbols** (`textDocument/documentSymbol`,
-  `workspace/symbol`): the `fai-ide` outline/symbols, nested-module aware.
-- **Signature help** (`textDocument/signatureHelp`): parameter types while
-  writing an application.
-- **Richer hover:** include `///` doc prose and attached `example`/`forall`
-  contracts (v1 shows the type only).
-- **Code actions / quick fixes** (`textDocument/codeAction`): apply the
-  machine-applicable diagnostic suggestions (span + replacement) the diagnostics
-  model already carries; "add the missing public signature"; qualify an ambiguous
-  name.
-- **Inlay hints** (inferred types for `let`/parameter bindings) and **semantic
-  tokens** (semantic highlighting) — both optional, both from the existing
-  type/resolution data.
-- **Editing fidelity:** incremental (range) document sync and `didSave` handling
-  (v1 is full-document sync); range / on-type **formatting**; client
-  position-encoding negotiation (UTF-8/UTF-16) layered on the existing line map.
-- **Dependent diagnostics:** re-publish an open file's diagnostics when a
-  cross-module change invalidates it (v1 pushes diagnostics only for the edited
-  file), or adopt pull-based diagnostics (`textDocument/diagnostic`).
-
-**Deliverables — editor integration & grammars**
-- **VS Code extension** (`editors/vscode/`): a thin TypeScript client
-  (`vscode-languageclient`) that launches `fai lsp` over stdio and surfaces it; a
-  `fai` language contribution (`.fai`, aliases), a `language-configuration.json`
-  (comment tokens `//` and `(* *)`, bracket pairs, auto-closing/surrounding
-  pairs, offside-aware indentation), settings (server-binary path, trace) and a
-  "restart server" command; bundled with esbuild and packaged to a `.vsix` with
-  `vsce`. The client is intentionally thin — all intelligence stays in the
-  server.
-- **TextMate grammar** (`editors/vscode/syntaxes/fai.tmLanguage.json`):
-  editor-agnostic syntax highlighting consumed by VS Code (and usable by GitHub
-  Linguist). Scopes for keywords (incl. `module`/`interface`/`match`/`with`/`as`/
-  `example`/`forall`), the three comment forms (`//`, `(* *)`, `///` doc),
-  string/char literals, numeric literals (`0xFF`, `1_000`, floats), operators,
-  constructors/modules (upper-case idents), and type variables — faithfully
-  encoding the lexer's **`'a'` char-literal vs `'a` type-variable** rule.
-- **Tree-sitter grammar** (`tree-sitter-fai/`, *stretch*): a `grammar.js`
-  mirroring `fai-syntax`, the generated parser, and `queries/` (highlights,
-  locals, folds, indents) for editors that consume tree-sitter (Neovim, Helix,
-  Zed, GitHub). A second, independent encoding of the grammar, so it is scoped as
-  a stretch goal and must be kept in step with the canonical parser (see R18).
-
-**Acceptance**
-- On a sample multi-file project: completion offers in-scope and qualified
-  members with types; references and rename are correct and complete across
-  modules; document symbols mirror `fai query outline`; a quick fix applies a
-  diagnostic's suggested edit.
-- The packaged VS Code extension installs, connects to `fai lsp`, and shows
-  diagnostics + highlighting on a `samples/` file; the TextMate grammar tokenizes
-  every `samples/` file with no `invalid`/unscoped spans; the tree-sitter grammar
-  (if built) parses every `samples/` file without `ERROR` nodes.
-
-**Crates / dirs:** `fai-lsp`, `fai-ide`, `fai-resolve`, `fai-types`, `fai-fmt`
-(server side); new non-Cargo trees `editors/vscode/` and `tree-sitter-fai/`
-(TypeScript / JS, built and tested by their own tooling, wired into CI
-separately from the Cargo workspace).
+# Fai — Design Memory
+
+The durable design rationale for the Fai compiler: the **locked decisions** and
+the **standing risks** — the "why" behind the code. Read it alongside
+`AGENTS.md`, which carries the project conventions and a summary table of the
+locked decisions.
+
+- Conventions, repository layout, coding standards: `AGENTS.md`.
+- CLI surface and the daemon protocol: `docs/CLI.md`.
+- Error-code catalog: `docs/ERROR_CODES.md`.
+- The language by example: the `samples/` directory.
+- **Remaining and proposed work lives in the issue tracker**, not here.
+
+Decision and risk IDs are stable and never reused; a gap in the numbering is an
+entry that was folded into a later one (consolidated) or whose mitigation is
+fully realized.
 
 ---
 
 ## Risk register
 
+Standing and residual risks (fully-realized one-time integration risks are
+retired; IDs are not reused).
+
 | # | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|---|
-| R1 | Cranelift integration + linking harder than expected | Med | High | Pulled forward to **M3** on a tiny subset; keep runtime ABI minimal and stable. |
-| R2 | RC correctness (leaks / double-free), esp. with closures & existentials | Med | High | Plain RC first (M3); debug leak counter in every e2e test; reuse (M6) added only after green. |
-| R3 | Row polymorphism (unification, lacks, evidence passing) is intricate | Med | High | Lacks constraints (no scoped labels) to bound complexity; defer extension/restriction to v2; extensive golden tests. |
-| R4 | Offset-evidence codegen for polymorphic field access | Med | Med | Reuse the dictionary-passing mechanism already needed for interfaces/generics; monomorphic access stays constant-offset. |
-| R5 | Offside-rule parsing ambiguities / poor recovery | Med | Med | Well-specified layout algorithm; the canonical formatter pins one layout; snapshot tests for tricky indentation. |
-| R6 | Exhaustiveness checking bugs (rows/literals) | Med | Med | Implement a known algorithm (Maranget-style); golden tests for false pos/neg. |
-| R7 | `'a'` char vs `'a` type-var lexing | Low | Med | Single documented lexer rule; dedicated tests (`AGENTS.md` §11). |
-| R8 | Scope creep from "AI-first" features | Med | Med | Effect rows, extension/restriction, package manager are explicitly **v2**. |
+| R1 | Cranelift integration + linking harder than expected | Med | High | Driven early via a thin native slice on a tiny subset; runtime ABI kept minimal and stable. Realized; platform-specific codegen/link edge cases remain (tracked in #9, #10). |
+| R2 | RC correctness (leaks / double-free), esp. with closures & existentials | Med | High | Plain RC first; a debug leak counter in every e2e test; precise reuse added only after green. Standing invariant. |
+| R6 | Exhaustiveness checking bugs (rows/literals) | Med | Med | A known algorithm (Maranget-style); golden tests for false pos/neg. Residual: a single-line union declaration panics the checker (#27). |
+| R8 | Scope creep from "AI-first" features | Med | Med | Effect rows, extension/restriction, and a package manager are out of the current scope — tracked as proposals (#35, #36, #37). |
 | R9 | Docs drifting from implementation | Med | Low | Self-hosted check: `samples/` files are part of the test suite (DoD #6). |
-| R10 | Overloaded arithmetic adds inference complexity / "ambiguous numeric type" noise | Low | Med | Restrict overloading to the built-in numeric set (`+ - * /`) with a simple `Int`-defaulting rule; clear help text steering to annotation or `intToFloat`/`floatToInt`. |
 | R11 | salsa API churn / version instability | Med | Med | Pin a version; wrap behind `fai-db` so the engine is swappable; keep query definitions framework-agnostic. |
 | R12 | Incremental-cache correctness (stale results → wrong diagnostics) | Med | High | Incremental-vs-clean **verifier** in CI; content-addressed keys stamped with compiler version + flags; determinism is a locked invariant. |
 | R13 | Span/position instability collapses incrementality | Med | High | Position-independent item tree + spans in a side-table; edit-churn test asserts "add a comment → near-zero recompute". |
-| R14 | Daemon lifecycle: stale/version-mismatch, spawn races, memory growth | Med | Med | Version handshake + auto-restart; version-stamped socket path + spawn-lock; LRU eviction + idle-timeout shutdown. |
-| R15 | JIT'd user code crashes/hangs the toolchain | Med | High | Run in an isolated **worker process** with timeouts/resource limits; the daemon survives worker death. |
+| R14 | Daemon lifecycle: stale/version-mismatch, spawn races, memory growth | Med | Med | Version handshake + auto-restart; version-stamped socket path + spawn-lock; LRU eviction + idle-timeout shutdown. Windows lifecycle gaps tracked in #10, #29. |
+| R15 | JIT'd user code crashes/hangs the toolchain | Med | High | Run in an isolated **worker process** with timeouts/resource limits; the daemon survives worker death. Residual: `fai test` still runs in-process (#22). |
 | R16 | Large mutually-recursive SCCs reduce per-def granularity | Low | Med | SCCs computed from actual references (usually small); consider a lint for accidental large cycles. |
-| R17 | Type-search (`query search`) indexing/matching complexity | Low | Med | Ship as an M8 goal; type-normalized index; unify up to row polymorphism; bound results with `--limit`. |
-| R18 | The editor grammars (TextMate, tree-sitter) re-encode the lexer/parser and drift from the canonical `fai-syntax` | Med | Low | The hand-written `fai-syntax` stays the single source of truth; grammars are highlighting/structure aids only. Pin both with tests over `samples/` (TextMate: no unscoped spans; tree-sitter: no `ERROR` nodes), so drift fails CI. Keep the tree-sitter grammar a stretch goal to bound the dual-maintenance cost. |
+| R18 | The editor grammars (TextMate, tree-sitter) re-encode the lexer/parser and drift from the canonical `fai-syntax` | Med | Low | The hand-written `fai-syntax` stays the single source of truth; grammars are highlighting/structure aids only, pinned with tests over `samples/` (TextMate: no unscoped spans; tree-sitter: no `ERROR` nodes) so drift fails CI; the tree-sitter grammar is a stretch goal to bound the dual-maintenance cost. Tracked in #31, #32, #33. |
 
 ---
 
 ## Decision log
 
-Resolved during planning (see the locked table in `AGENTS.md` §3):
+Initial design decisions (summarized in the locked table in `AGENTS.md` §3):
 
 - **D1 Backend:** Cranelift native codegen (over interpreter / bytecode VM / LLVM
   / transpile). Rationale: native speed with fast compiles; avoids LLVM build cost.
@@ -729,10 +49,10 @@ Resolved during planning (see the locked table in `AGENTS.md` §3):
   acyclic heaps ⇒ no cycle collector; enables in-place reuse.
 - **D3 Generics:** uniform boxed representation + dictionary passing (no
   monomorphization by default). Rationale: protects compile throughput; no code
-  bloat. Monomorphization is an opt-in M9 optimization.
+  bloat. Monomorphization is an opt-in optimization (tracked as a proposal, #16).
 - **D4 Effects:** capabilities as explicit values (interface instances from
-  `main`); **no** type-level effect rows in v1. Rationale: simple, auditable,
-  implementable now; rows can layer on later.
+  `main`); **no** type-level effect rows for now (tracked as a proposal, #35).
+  Rationale: simple, auditable, implementable now; rows can layer on later.
 - **D5 Signatures:** Haskell-style explicit signature on its own line above each
   `public` binding; signatures are checked, not trusted.
 - **D6 Layout:** indentation-significant (offside); one canonical layout pinned
@@ -742,8 +62,9 @@ Resolved during planning (see the locked table in `AGENTS.md` §3):
 - **D8 Tuples:** structural; value `(a, b)`, type `'a * 'b`.
 - **D9 Records:** **structural with row polymorphism**; lacks constraints (no
   duplicate labels); `type X = { ... }` is a transparent alias; extension/
-  restriction deferred to v2. Rationale: better inference + row-polymorphic
-  capability least-authority; reuses evidence-passing machinery.
+  restriction is future work (tracked as a proposal, #36). Rationale: better
+  inference + row-polymorphic capability least-authority; reuses evidence-passing
+  machinery.
   **Openness:** record type annotations are **closed by default** (`{ x : T }`);
   `{ x : T | _ }` is anonymous-open (common case), `{ x : T | 'r }` names the
   tail only to thread it to the result. Chosen over open-by-default (which would
@@ -752,14 +73,8 @@ Resolved during planning (see the locked table in `AGENTS.md` §3):
   Governs written signatures only; inference is unchanged; no subtyping.
   **Patterns mirror this (P-A):** `{ ... }` closed (names all fields),
   `{ ... | _ }` open (ignore rest; required for row-poly scrutinees); binding a
-  pattern tail (restriction) is v2. Chosen over always-open patterns so `{ ... }`
-  means the same thing in types and patterns.
-- **D11 Arithmetic:** F#-style overloaded `+ - * /` over `Int`/`Float` (over
-  OCaml-style `+.`); unconstrained numerics default to `Int`; no implicit
-  `Int`/`Float` coercion. Rationale: "similar to F#", one operator set; the
-  built-in overload set is small and bounded (we already special-case `=`/
-  comparison). *(Amended by D75: `+ - * / %` become methods of a std `Num`
-  interface at M5.)*
+  pattern tail (restriction) is future work (#36). Chosen over always-open
+  patterns so `{ ... }` means the same thing in types and patterns.
 - **D12 Contracts:** **first-class `example`/`forall` declarations** (peers of
   `let`), placed immediately after the binding they describe, *not* a doc-comment
   extension. Rationale: symbols inside contracts resolve via normal name
@@ -802,7 +117,7 @@ Resolved during planning (see the locked table in `AGENTS.md` §3):
   streamed over the protocol.
 - **D17 Caching:** local **content-addressed artifact cache** — `object_code`
   keyed by `hash(rc(Def)) + target + compiler-version` — designed so a
-  shared/remote cache layers on later (M9). Determinism makes this sound; an
+  shared/remote cache layers on later (#15). Determinism makes this sound; an
   incremental-vs-clean **verifier** runs in CI.
 - **D18 Code intelligence:** a **read-only** `fai query` surface (namespaced),
   sharing the `fai-ide` engine with the LSP; addressing by name path or
@@ -810,8 +125,7 @@ Resolved during planning (see the locked table in `AGENTS.md` §3):
   commands** (no `rename`/`fix`) — agents perform edits themselves. Full command
   reference in `docs/CLI.md`.
 
-Resolved while implementing **M0** (cross-cutting conventions later milestones
-must honor):
+Cross-cutting conventions (workspace, spans, diagnostics, the database seam):
 
 - **D19 Edition & toolchain:** Rust **edition 2024**, toolchain pinned to
   `1.96.0` (`rust-toolchain.toml`); `resolver = "3"`; `Cargo.lock` committed.
@@ -851,8 +165,7 @@ must honor):
   verifier live in the `fai-tests` crate (the literal top-level `tests/` from the
   original layout became `crates/fai-tests`).
 
-Resolved while planning the syntax front end (lexer, parser, AST, incremental
-queries, and formatter):
+Syntax front end (lexer, layout, parser, AST, formatter, incremental queries):
 
 - **D26 Identifier interning:** a non-salsa `Symbol` wrapping `lasso::Spur`,
   resolved through a process-global `LazyLock<ThreadedRodeo>`, homed in
@@ -866,7 +179,7 @@ queries, and formatter):
   depend on) plus `ItemId` = arena index as the stable id; the "AstId map" is
   `parse` output indexed by `ItemId`. Inline spans cost nothing incrementally
   because the firewall is the item tree, not the syntax tree. Per-body
-  local-arena lowering (for body-level cutoff) is deferred to M2.
+  local-arena lowering (for body-level cutoff) is deferred (future work).
 - **D28 Lexer:** emits **significant tokens** (`{ kind, range }`) plus a side
   `Vec<Comment>` (`Line`/`Block`/`Doc`); no whitespace/newline tokens (layout
   derives line/column from `LineIndex`). Character-literal vs type-variable is
@@ -891,13 +204,14 @@ queries, and formatter):
   `Block { stmts, tail }` (sequential, non-recursive local `let`s); explicit
   `Paren` nodes; literals stored as their raw lexeme; `else` required; patterns
   limited to var/`_`/tuple/paren; types are var/con/app/arrow/tuple (record types
-  deferred to M4). The binding `=` is consumed by the declaration parser, so `=`
+  added later). The binding `=` is consumed by the declaration parser, so `=`
   in expressions is always equality. **Error nodes in every category** with
   multi-level recovery (synchronize on layout `Sep`/`Close` and item keywords).
   `public` is accepted on signature and binding items; sig↔binding association and
-  the "public needs a signature" rule are M2. A reserved-but-unimplemented
-  construct (`type`, records, `match`, `interface`, nested `module … =`) emits
-  **`FAI1030` "not yet supported"** and recovers, going dormant as M4/M5/M8 land.
+  the "public needs a signature" rule belong to name resolution and the type
+  system. A reserved-but-unimplemented construct (`type`, records, `match`,
+  `interface`, nested `module … =`) emits **`FAI1030` "not yet supported"** and
+  recovers, going dormant as those constructs landed.
   The module header is required, first, and the single top-level module
   (`FAI1022`).
 - **D31 Comments:** attached **fine-grained to all nodes** via a per-category
@@ -920,16 +234,16 @@ queries, and formatter):
   a `has_errors` flag) emits parse diagnostics via the `Diag` accumulator.
   `item_tree(db, file)` is span-free and `Eq`/`Update` (names/kinds/visibility/
   order; `Error` items as anonymous entries) — the early-cutoff firewall;
-  signature types are added in M2. `fai-db` gains `Db::all_source_files` and
-  re-exports `salsa::Update`.
+  signature types are added by the resolution/type layer. `fai-db` gains
+  `Db::all_source_files` and re-exports `salsa::Update`.
 - **D34 `check`/`fmt` wiring:** the driver computes, the CLI does I/O.
   `check(db, files)` parses the filtered files and reports `Diag` (`ok` = no
   error-severity diagnostics). `fmt(db, files)` returns per-file results; the CLI
   writes changed files unless `--check`; the JSON envelope is `FmtOutput
   { schemaVersion, changed, diagnostics }` (the additive `diagnostics` reports
   files skipped for parse errors). The optional `[path]` argument is resolved to a
-  `SourceFile` set by the CLI. The front end is one-shot in-process (the daemon is
-  M3.5).
+  `SourceFile` set by the CLI. The front end is one-shot in-process (the daemon
+  layered on later; see D56–D65).
 - **D35 Samples as files:** the language tour lives as canonical `.fai` files in
   **`samples/`** (one self-contained module per file), replacing the former
   `Samples.md`. The test suite buckets each file by parse result: zero diagnostics
@@ -938,7 +252,7 @@ queries, and formatter):
   syntax bug). A known-module guard asserts the implemented-surface modules stay
   clean; files auto-promote to the round-trip set as later milestones land.
 
-Resolved while implementing **M2** (the type-system layer):
+Type system (name resolution, inference, code intelligence):
 
 - **D36 Cross-module access:** **qualified only**, no imports and no implicit
   workspace scope. A bare name resolves local → this-module top-level → prelude,
@@ -973,27 +287,21 @@ Resolved while implementing **M2** (the type-system layer):
 - **D41 Type representation:** an immutable, structural, span-free `Ty` (`Arc`
   tree) reified after solving; the mutable union-find solver is local to one
   inference call. Constrained type-variable flavors **Numeric** (Int/Float),
-  **Eq** (non-function), and **Ord** (Int/Float/String/Char) stand in for type
-  classes (deferred). Numeric defaults to `Int`; `=`/`<>` on a function type is
-  `FAI3006`; no implicit Int/Float coercion (`FAI3001`).
+  **Eq** (non-function), and **Ord** (Int/Float/String/Char) are realized as the
+  std `Num`/`Eq`/`Ord` interface constraints (D75). Numeric defaults to `Int`;
+  `=`/`<>` on a function type is `FAI3006`; no implicit Int/Float coercion
+  (`FAI3001`).
 - **D42 Operators:** `++` is **String-only** (lists use the prelude `append`);
   `::` is cons; `|>`/`>>` are pipe/compose; comparison is `Ord`, equality is
-  `Eq`, arithmetic is `Numeric`. Constraint generalization is **lenient for Eq**
-  (generalizes to `'a`, function misuse caught at concrete sites) and **strict
-  for Numeric/Ord** (a constrained var that would generalize without a signature
-  is ambiguous) — because M2 has no constrained schemes to carry the constraint.
-  *Deviation (to revisit):* the current build *defaults* an escaping Numeric var
-  to `Int` rather than reporting the strict ambiguity; sound and predictable, to
-  be tightened when constrained schemes land. *(Amended by D75: operators become
-  symbolic identifiers with F#-style precedence; the overloaded ones become std
-  `Num`/`Eq`/`Ord` interface methods at M5.)*
-- **D43 Prelude:** **hybrid, type-only in M2** — primitives are a Rust
-  `name → Scheme` table (no bodies; codegen is M3), and a derived `.fai` prelude
-  is embedded (`include_str!`) and loaded as a synthetic high-durability
-  `SourceFile`; it is reachable unqualified everywhere (the one exception),
-  excluded from default `symbols`/`check`, and shadowing a prelude name warns
-  (`FAI2010`). *(Amended by D73/D74: the embedded library is now a curated,
-  multi-file `std/`, and the Rust intrinsics are prelude-private `Prim.*`.)*
+  `Eq`, arithmetic is `Num`. The overloaded operators are std interface methods
+  (D75) — a monomorphic use lowers to the direct primitive, so concrete-type
+  operators pay no dictionary cost.
+- **D43 Prelude visibility:** the standard library is embedded and loaded as
+  synthetic high-durability inputs; the auto-imported `Prelude` is reachable
+  unqualified everywhere (the one exception), excluded from default
+  `symbols`/`check`, and shadowing a `Prelude` name warns (`FAI2010`). The
+  curated multi-file `std/` layout and the prelude-private `Prim.*` intrinsics
+  are D73/D74; primitive `Scheme`s live in a Rust table consumed by codegen.
 - **D44 Code intelligence:** `fai-ide` returns typed serde envelopes (one per
   command) with `schemaVersion`; targets address by `Module.name`, bare-unique
   name, or `file:line:col`. `refs`/`dependents` assemble reverse indices on
@@ -1001,26 +309,26 @@ Resolved while implementing **M2** (the type-system layer):
   resolved late (firewall-safe). Results are deterministically sorted and
   best-effort under errors.
 
-Resolved while implementing **M3** (the native thin slice):
+Native backend (Core IR, reference counting, codegen, runtime, object cache):
 
-- **D45 Capability shape (temporary):** the thin slice predates records (M4) and
-  interfaces (M5), so `Runtime` is an **opaque built-in type constructor**
-  threaded through `main` (`main : Runtime -> Unit`), and `Console.writeLine :
-  Runtime -> String -> Unit` is a **qualified builtin** resolved through the
-  existing prelude/qualified-name path (a `Console` builtin module). This honors
-  "capabilities flow from `main`" without the record/interface machinery; M5
-  replaces it with the real record form (`runtime.console.writeLine`). The
-  sample `Hello.fai` is written in this form for now.
+- **D45 Capability shape (historical, superseded):** the initial native slice
+  predated records and interfaces, so `Runtime` was an **opaque built-in type
+  constructor** threaded through `main` (`main : Runtime -> Unit`), and
+  `Console.writeLine : Runtime -> String -> Unit` was a **qualified builtin**
+  resolved through the prelude/qualified-name path. This honored "capabilities
+  flow from `main`" without the record/interface machinery; the real capability
+  records/interfaces (`runtime.console.writeLine`) later replaced it.
 - **D46 `fai run` worker:** `fai run` JIT-compiles and executes in an **isolated
   worker subprocess** (a hidden `__run-worker` subcommand that opens its own
   session); stdio is inherited and the worker's exit code is returned. Timeouts,
-  resource limits, and daemon-survival are deferred to M3.5 (R15).
+  resource limits, and daemon-survival are handled by the daemon supervision
+  (D63–D65, R15).
 - **D47 Object cache = salsa query:** `object_code(Def)` is a tracked query
   producing one relocatable object per definition; salsa's dependency graph *is*
   the content-addressed cache, and the per-function cache hit is asserted via the
   query event log. Symbols and arities feeding it are derived from
-  **body-edit-stable** information, so the codegen layer keeps the M2 firewall.
-  On-disk persistence is M3.5.
+  **body-edit-stable** information, so the codegen layer keeps the cross-module
+  firewall. On-disk persistence layered on later (D56).
 - **D48 Value representation:** a uniform 64-bit **LSB-tagged** word — immediate
   `payload<<1|1` (Int/Bool/Unit/Runtime), boxed = 8-aligned pointer (tag 0).
   `dup`/`drop` are tag-checked, so polymorphic code reference-counts correctly
@@ -1029,17 +337,18 @@ Resolved while implementing **M3** (the native thin slice):
   boxed overflow — immediate when it fits 63 bits, a heap `i64` object otherwise.
 - **D50 Heap layout:** a descriptor-pointer header `{ rc, descriptor, size }`;
   static per-type descriptors carry a children-scan used at drop. Extensible to
-  ADTs/records (M4).
+  ADTs/records (later realized).
 - **D51 Function model:** closures `{ code, arity, env… }` with a uniform
   `apply_n` eval/apply handling exact, partial (a PAP object), and
   over-application. Top-level functions are static **immortal** closures (a
   zero-arity binding — a value, not a function — is forced on reference).
   Primitives lower to runtime calls. Every operation **consumes** its operands,
   so RC insertion reduces to dup-at-use + one drop per owned binding (no reuse;
-  reuse is M6).
+  precise reuse layered on later, D76–D79).
 - **D52 Typed Core IR:** `fai-core` carries a `Ty` on every node, from a new
-  `body_types` query, so M4 (record field offsets) need not retrofit types —
-  even though M3 codegen leans on tagging and uses the types lightly.
+  `body_types` query, so the later record-field-offset work need not retrofit
+  types — even though the thin-slice codegen leans on tagging and uses the types
+  lightly.
 - **D53 Entry & scope:** the entry file must define `public main : Runtime ->
   Unit`; the backend compiles only the transitive closure reachable from `main`
   (over the lowered `Global` references, so prelude helpers are included).
@@ -1055,7 +364,7 @@ Resolved while implementing **M3** (the native thin slice):
   `fn(env, args) -> i64` calling convention, the `fai_*` symbols) is the contract
   shared by codegen and the runtime.
 
-Resolved while implementing **M3.5** (the daemon, persistence, and protocol):
+Daemon, persistence & protocol:
 
 - **D56 Persistent object cache:** the on-disk cache lives in a **non-salsa
   wrapper** (`fai-driver`'s `load_or_build_object`) around the pure `object_code`
@@ -1142,6 +451,8 @@ Resolved while implementing **M3.5** (the daemon, persistence, and protocol):
   Job-Object limits are future work. No hand-written unsafe (the safe `nix`
   wrappers), and limits apply only under daemon supervision.
 
+Data layer (ADTs, pattern matching, structural records with rows):
+
 - **D66 ADT type & value representation:** a declared union is a nullary type
   head `Ty::Adt(AdtRef)` applied to its arguments through the existing `App`
   machinery (so `Option 'a` reuses ordinary type application); `List` keeps its
@@ -1172,39 +483,39 @@ Resolved while implementing **M3.5** (the daemon, persistence, and protocol):
   runtime `fai_compare` (constructor tags order by declaration order, records by
   sorted label, recursively). Because ordering needs no dictionary, the generic
   `compare`/`sort`/`sortBy` and the `Dict`/`Set` BSTs are plain prelude code.
-  *(Amended by D75: `< <= > >=`/`= <>` become `Ord`/`Eq` interface methods at
-  M5 that specialize to this single runtime compare/equal on concrete types.)*
-- **D71 The prelude is a real compiled module, not magic:** `Option`/`Result`,
-  the `List` combinators, `compare`/`sort`, `Dict`/`Set`, and the string helpers
-  live in an embedded `Prelude.fai` whose public values, types, and constructors
-  are visible unqualified in every module. Only genuinely primitive operations
-  stay in Rust as a small `INTRINSICS` set. `Float` is always boxed; the
-  arithmetic/comparison primitive is selected from the operand type during Core
-  lowering. *(Amended by D73/D74: split into a curated, multi-file `std/`; only a
-  small `Prelude` module is auto-imported and the rest is reached qualified, and
-  the `INTRINSICS` are prelude-private `Prim.*` re-exported under clean names.)*
-- **D72 Row-polymorphic field-access codegen is staged with M5:** a **monomorphic
-  closed** record compiles field access/update to a **constant offset**; a field
-  access or `{ r with … }` on a **row-polymorphic** record that is *reachable
-  from `main`* reports `FAI7002` ("row-polymorphic field access needs runtime
-  offset evidence"), pending the offset-evidence/dictionary work in the
-  interfaces milestone — the type system already infers the fully general
-  signatures (e.g. `getX : { x : 'a | _ } -> 'a`). New M4 diagnostics:
-  `FAI3012` (type-constructor arity), `FAI3013` (recursive alias),
-  `FAI4001`/`FAI4002` (non-exhaustive / unreachable `match`). The unused
-  `FAI3009` is retired (the catalog test allows the `FAI4xxx` range in
-  `fai-types`).
-- **D73 The standard library is a curated, multi-file `std/` (amends D43, D71;
-  the "no qualified-type syntax" clause is superseded by D88):**
-  the embedded library moves from a single `crates/fai-types/src/Prelude.fai` to
-  real `.fai` modules under a top-level **`std/`**, embedded at build time by
+  `< <= > >=`/`= <>` are `Ord`/`Eq` interface methods (D75) that specialize to
+  this single runtime compare/equal on concrete types.
+- **D71 The standard library is real compiled code, not magic:** `Option`/
+  `Result`, the `List` combinators, `compare`/`sort`, `Dict`/`Set`, and the
+  string helpers are ordinary compiled `.fai` modules; only genuinely primitive
+  operations stay in Rust (the `Prim.*` intrinsics, D74). `Float` is always
+  boxed; the arithmetic/comparison primitive is selected from the operand type
+  during Core lowering. The curated multi-file `std/` layout and auto-import are
+  D73.
+- **D72 Field-access codegen:** a **monomorphic closed** record compiles field
+  access/update to a **constant offset**; a **row-polymorphic** access or
+  `{ r with … }` update compiles via **offset-evidence passing** — per-row
+  lacks-constraint integer offsets threaded in as leading arguments, like
+  dictionaries (D75) — and the type system infers the fully general signatures
+  (e.g. `getX : { x : 'a | _ } -> 'a`). A residual row-polymorphic case with no
+  available offset evidence still reports `FAI7002` (help: give the value a
+  closed record type). Diagnostics: `FAI3012` (type-constructor arity),
+  `FAI3013` (recursive alias), `FAI4001`/`FAI4002` (non-exhaustive / unreachable
+  `match`); the unused `FAI3009` is retired (the catalog test allows the
+  `FAI4xxx` range in `fai-types`).
+
+Standard library & operators:
+
+- **D73 The standard library is a curated, multi-file `std/`:**
+  the embedded library is real `.fai` modules under a top-level **`std/`**,
+  embedded at build time by
   `crates/fai-types/build.rs` (a generated `include_str!` table) and loaded as
   synthetic high-durability inputs under the `<std>/` path namespace
   (`fai_db::is_std_path`, shared so name resolution can classify a file without
-  depending on the loader). Auto-import becomes **curated, Elm-style**: a single
-  module **`Prelude`** is visible unqualified everywhere — forced by the grammar,
-  since there is no qualified-type syntax and no opaque types, so every
-  user-facing type and its constructors must be auto-imported. `Prelude` owns
+  depending on the loader). Auto-import is **curated, Elm-style**: a single
+  module **`Prelude`** is visible unqualified everywhere; with no opaque types
+  yet, a type's constructors travel with it, so the core types are
+  auto-imported. `Prelude` owns
   `Option`/`Result`/`Dict`/`Set` (+ constructors) and the free functions
   `identity`/`const`/`not`/`compare`; **every other operation is reached
   qualified** through a per-type module (`List.map`, `Option.withDefault`,
@@ -1218,13 +529,14 @@ Resolved while implementing **M3.5** (the daemon, persistence, and protocol):
   module is located **among `std/` files only**, so a stray user `module Prelude`
   cannot hijack or collapse auto-import. The whole sample/fixture/test corpus is
   rewritten to the qualified form (a hard cutover; no compatibility aliases).
-- **D74 Intrinsics are prelude-private (`Prim.*`) (amends D71):** the Rust
+- **D74 Intrinsics are prelude-private (`Prim.*`):** the Rust
   intrinsics are no longer bare names anywhere. They are reached only as
   `Prim.<name>`, and only from inside `std/` modules (`FAI2014` otherwise); the
   standard library re-exports the user-facing ones under clean qualified names
   (`Int.toString` wraps `Prim.intToString`, `String.split` wraps `Prim.split`,
   `Prelude.not` wraps `Prim.not`, …), adding one call of indirection per
-  intrinsic until an inliner exists. New resolution diagnostics: **`FAI2013`** (a
+  intrinsic (an inliner is tracked as a proposal, #40). New resolution
+  diagnostics: **`FAI2013`** (a
   name exported by more than one auto-imported module — contributor-facing,
   detected by the auto-import merge so it stays unit-testable even while the
   auto-imported set is a single module) and **`FAI2014`** (`Prim` referenced
@@ -1233,7 +545,7 @@ Resolved while implementing **M3.5** (the daemon, persistence, and protocol):
   (`load_std`/`builtin_scheme`).
 - **D75 Operators are symbolic identifiers with F#-style precedence; the
   overloaded ones are std interface methods; user-defined operators are allowed
-  (amends D11, D42, D70; delivered with M5):**
+  (supersedes the earlier solver constraint-flavor handling; see D41, D42, D70):**
   - An operator is a **symbolic identifier** (a maximal run of operator
     characters), written infix and named in value position as `(op)` — e.g.
     `let (+++) a b = …`, `List.foldl (+++) z xs`. The lexer becomes a generic
@@ -1250,10 +562,10 @@ Resolved while implementing **M3.5** (the daemon, persistence, and protocol):
     `Prelude`. A user operator is usable infix **within its defining module**;
     there is no qualified-infix form, so cross-module sharing means defining it in
     `Prelude` or accepting module scope (consistent with D36).
-  - **Overloading via interfaces (M5):** `+ - * / %` become methods of a std
-    **`Num`**, `= <>` of **`Eq`**, `< <= > >=` of **`Ord`**, with `Int`/`Float`/
-    structural instances in `std/`. The M2 constraint flavors
-    (`Numeric`/`Eq`/`Ord`) are replaced by these interface constraints; `Num`
+  - **Overloading via interfaces:** `+ - * / %` are methods of a std **`Num`**,
+    `= <>` of **`Eq`**, `< <= > >=` of **`Ord`**, with `Int`/`Float`/structural
+    instances in `std/`. The earlier solver constraint flavors
+    (`Numeric`/`Eq`/`Ord`) are realized as these interface constraints; `Num`
     keeps the `Int`-defaulting rule. **Monomorphic uses still lower to the direct
     primitive** (e.g. `IntAdd`), so concrete-type operators pay no dictionary
     cost.
@@ -1261,11 +573,11 @@ Resolved while implementing **M3.5** (the daemon, persistence, and protocol):
     (a strict function cannot short-circuit); `::` stays the built-in `List`
     constructor. `|>`/`>>` may be redefined as ordinary `Prelude` operators (they
     are plain higher-order functions), inlined when monomorphic.
-  - **Sequencing:** the lexer/precedence/user-operator half may precede M5 but
-    lands unified with the interfaces work so built-in and user operators share
-    one mechanism (no throwaway hybrid).
+  - **Mechanism:** the lexer/precedence/user-operator half is unified with the
+    interfaces work, so built-in and user operators share one mechanism (no
+    throwaway hybrid).
 
-Resolved while implementing **M6** (reuse & in-place update):
+Reuse & in-place update:
 
 - **D76 Precise reference counting is the foundation; reuse layers on it.** The
   scope-end dup-at-every-use scheme cannot reuse a matched cell: `Drop{x; body}`
@@ -1399,7 +711,7 @@ Resolved while implementing **M6** (reuse & in-place update):
     refinement: on the hot path (a `match` tag test) it would add a no-op drop, so
     it is not worth it without a per-operand-type guard.
 
-Resolved while implementing **M7** (contracts: examples & properties):
+Contracts (examples & properties):
 
 - **D80 The property-testing framework is a dogfooded standard-library module.**
   Because Fai has **no implicit instance resolution** (interfaces are explicit
@@ -1496,8 +808,8 @@ Resolved while implementing **M7** (contracts: examples & properties):
   recursion only reachable through a collection field (e.g. `Rose (List Rose)`)
   are not size-guarded yet; a true fuel parameter is future work.
 
-Resolved while implementing **nested modules & qualified-type syntax** (surface
-completeness):
+Nested modules, qualified-type syntax, advanced code intelligence & the language
+server:
 
 - **D88 Nested modules group declarations under a qualified path; qualified-type
   syntax is introduced (amends D73's "no qualified-type syntax").**
@@ -1594,10 +906,9 @@ completeness):
     (exact across non-BMP characters), clamping an out-of-range column to the
     line's content rather than spilling onto the next line.
 
-Resolved while implementing the **inference-tuning** and **primitive-borrowing**
-performance work (measurement-driven; correctness-neutral — inferred types,
-diagnostics, and program output are unchanged, guarded by the full type/golden
-suite):
+Inference tuning, primitive borrowing & intra-build parallelism
+(measurement-driven; correctness-neutral — inferred types, diagnostics, and
+program output are unchanged, guarded by the full type/golden suite):
 
 - **D92 Solver representation & read walks: `Rc`-shared types, borrowing, and
   memoization.** The mutable solver's `SolveTy` represented application/arrow
@@ -1709,16 +1020,4 @@ suite):
   Cross-request concurrency remains future work (D57).
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
-and note the migration in the affected milestones.
-
----
-
-## Deferred to v2 (explicitly out of scope for now)
-
-- Type-level **effect rows** (`a -> b / {Console, Net}`) layered over the
-  capability-as-values model.
-- Record **extension/restriction** operators (`{ r | z = ... }`, field removal)
-  and scoped/duplicate labels.
-- A **package manager** / multi-package builds and a project manifest beyond a
-  single entry file.
-- Additional backends and self-hosting.
+and note the migration in the affected decisions.

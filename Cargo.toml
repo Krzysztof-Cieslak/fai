@@ -29,7 +29,7 @@ publish = false
 license = "MIT OR Apache-2.0"
 
 # Centralized dependency versions. Concrete versions are pinned by the committed
-# Cargo.lock; these caret ranges allow compatible updates. (docs/PLAN.md M0.)
+# Cargo.lock; these caret ranges allow compatible updates. (See docs/MEMORY.md.)
 [workspace.dependencies]
 # Incremental query engine (wrapped behind fai-db; decision Q11/R11).
 salsa = "0.26"

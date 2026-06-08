@@ -10,7 +10,8 @@ surface are parsed, formatted, and round-tripped by the test suite; files that
 exercise not-yet-implemented surface are recognized as such and skipped until
 their feature lands.
 
-> **Status:** the compiler is still being built (see `docs/PLAN.md`). Built-in
+> **Status:** the compiler is still being built (see `docs/MEMORY.md` and the
+> issue tracker). Built-in
 > names like `sqrt`, `intToString`, `floatToString`, `Console`, and `Runtime`
 > denote the standard prelude and capability set that the runtime provides.
 

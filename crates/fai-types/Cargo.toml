@@ -14,7 +14,7 @@ fai-db.workspace = true
 fai-syntax.workspace = true
 fai-resolve.workspace = true
 # salsa's `tracked`/`Update` macros resolve `salsa::` from the crate root, so a
-# query-defining crate needs salsa as a direct dependency (see `docs/PLAN.md`).
+# query-defining crate needs salsa as a direct dependency (see `docs/MEMORY.md`).
 salsa.workspace = true
 rustc-hash.workspace = true
 
