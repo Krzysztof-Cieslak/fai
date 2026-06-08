@@ -824,6 +824,15 @@ pub extern "C" fn fai_string_length(s: Value) -> Value {
     imm_int(i64::try_from(n).unwrap_or(i64::MAX))
 }
 
+/// The number of Unicode scalar values in a `String`, *borrowing* the operand
+/// (the caller releases it at its last use).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_string_length_borrowed(s: Value) -> Value {
+    // SAFETY: `s` is a boxed `String`.
+    let n = unsafe { string_str(s) }.chars().count();
+    imm_int(i64::try_from(n).unwrap_or(i64::MAX))
+}
+
 /// Uppercases a `String` (operand consumed).
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_to_upper(s: Value) -> Value {
@@ -858,6 +867,15 @@ pub extern "C" fn fai_string_contains(s: Value, needle: Value) -> Value {
     let found = unsafe { string_str(s).contains(string_str(needle)) };
     fai_drop(s);
     fai_drop(needle);
+    from_bool(found)
+}
+
+/// Whether `s` contains `needle`, *borrowing* both operands (the caller releases
+/// them at their last use).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_string_contains_borrowed(s: Value, needle: Value) -> Value {
+    // SAFETY: both are boxed `String`s.
+    let found = unsafe { string_str(s).contains(string_str(needle)) };
     from_bool(found)
 }
 
@@ -1061,6 +1079,14 @@ pub extern "C" fn fai_equal(a: Value, b: Value) -> Value {
     from_bool(r)
 }
 
+/// Structural equality that *borrows* its operands (the caller retains ownership
+/// and releases them at their last use). Used for boxed operands that reference
+/// counting lent rather than transferred.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_equal_borrowed(a: Value, b: Value) -> Value {
+    from_bool(values_equal(a, b))
+}
+
 /// Whether `v` is a function value (a closure or partial application).
 fn is_function_value(v: Value) -> bool {
     if !is_boxed(v) {
@@ -1144,6 +1170,16 @@ pub extern "C" fn fai_compare(a: Value, b: Value) -> Value {
     fai_drop(a);
     fai_drop(b);
     imm_int(match ord {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    })
+}
+
+/// Structural ordering that *borrows* its operands (see [`fai_equal_borrowed`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_compare_borrowed(a: Value, b: Value) -> Value {
+    imm_int(match values_compare(a, b) {
         std::cmp::Ordering::Less => -1,
         std::cmp::Ordering::Equal => 0,
         std::cmp::Ordering::Greater => 1,

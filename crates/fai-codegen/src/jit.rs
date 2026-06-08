@@ -56,7 +56,9 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_float_to_int", rt::fai_float_to_int);
     sym!("fai_float_to_string", rt::fai_float_to_string);
     sym!("fai_compare", rt::fai_compare);
+    sym!("fai_compare_borrowed", rt::fai_compare_borrowed);
     sym!("fai_equal", rt::fai_equal);
+    sym!("fai_equal_borrowed", rt::fai_equal_borrowed);
     sym!("fai_make_data", rt::fai_make_data);
     sym!("fai_drop_reuse", rt::fai_drop_reuse);
     sym!("fai_reuse", rt::fai_reuse);
@@ -65,6 +67,8 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_string_concat", rt::fai_string_concat);
     sym!("fai_int_to_string", rt::fai_int_to_string);
     sym!("fai_string_length", rt::fai_string_length);
+    sym!("fai_string_length_borrowed", rt::fai_string_length_borrowed);
+    sym!("fai_string_contains_borrowed", rt::fai_string_contains_borrowed);
     sym!("fai_to_upper", rt::fai_to_upper);
     sym!("fai_to_lower", rt::fai_to_lower);
     sym!("fai_trim", rt::fai_trim);
