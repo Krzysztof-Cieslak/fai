@@ -373,7 +373,9 @@ cache plus a fast linker (mold/lld).
   the run-path lower/reference-count gathers already do this: each worker takes
   its own database-handle clone (`Db::clone_box`; salsa databases are `Send` not
   `Sync`, so handles are cloned, not shared), order-preserving so builds stay
-  deterministic. The JIT compile (one shared module) is still serial.
+  deterministic. The JIT compile generates each function's machine code in
+  parallel too (`Context::compile` across the pool, needing only the shared ISA),
+  building the IR and linking the shared module serially.
 - Opt-in monomorphization for hot paths is an M9 optimization, never a
   correctness requirement — and the one feature that *hurts* incrementality, so
   it stays opt-in.

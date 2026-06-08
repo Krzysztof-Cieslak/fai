@@ -115,6 +115,18 @@ fn aot_codegen_reachable(bencher: Bencher, n: usize) {
         });
 }
 
+/// JIT-compiling and running the closure reachable from `main` over a many-def
+/// program. The lower/reference-count gather and the per-function Cranelift
+/// code generation run in parallel (the serial JIT link/finalize and the tiny
+/// run remain). Run with `RAYON_NUM_THREADS=1` vs unset to compare.
+#[divan::bench(args = [50, 200])]
+fn jit_compile_reachable(bencher: Bencher, n: usize) {
+    let src = many_defs(n);
+    bencher
+        .with_inputs(|| fresh(&src))
+        .bench_values(|(db, file)| divan::black_box(jit_run_program(&db, file).exit_code));
+}
+
 /// Object codegen straight from a pre-lowered definition (no salsa, no front
 /// end) — the pure Cranelift cost.
 #[divan::bench]

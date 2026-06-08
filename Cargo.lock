@@ -632,6 +632,7 @@ dependencies = [
  "fai-types",
  "indoc",
  "proptest",
+ "rayon",
  "rustc-hash",
  "target-lexicon",
 ]

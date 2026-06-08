@@ -23,6 +23,7 @@ cranelift-object.workspace = true
 cranelift-native.workspace = true
 target-lexicon.workspace = true
 rustc-hash.workspace = true
+rayon.workspace = true
 
 [dev-dependencies]
 fai-db.workspace = true
