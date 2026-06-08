@@ -473,3 +473,63 @@ fn warm_reverify_with_no_edit_is_free() {
         "warm re-check must be fully memoized"
     );
 }
+
+// ── Intra-inference complexity guards ────────────────────────────────────────
+// The firewall guards above count whole-query re-runs; these count the solver's
+// *internal* structural work (via the thread-local instrumentation counters) to
+// gate the inference solver's asymptotic complexity. They are deterministic
+// (inference is single-threaded per definition), so doubling the input must at
+// most ~double the work — a regression to quadratic (a ~4x jump) trips the 3x
+// bound. Sizes stay small so the deeply-nested chain does not overflow the
+// (debug) stack.
+
+/// Infers definition `f` in a fresh database (so the query runs, uncached) and
+/// returns the solver-work counters it accumulated.
+fn solver_counts(src: String) -> fai_types::perf::Counters {
+    let mut db = FaiDatabase::new();
+    fai_types::std_lib::load_std(&mut db);
+    let id = db.add_source("M.fai".into(), src);
+    let file = db.source_file(id).unwrap();
+    fai_types::perf::reset();
+    let _ = fai_types::def_type(&db, file, Symbol::intern("f"));
+    fai_types::perf::snapshot()
+}
+
+#[test]
+fn generalization_work_is_linear_in_block_size() {
+    // A block of `n` generalized value-`let`s. Rank-based generalization quantifies
+    // by binding level, so the free-variable work is linear in `n`; the previous
+    // environment-free-variable recomputation was O(n^2).
+    let src = |n: usize| {
+        let mut s = String::from("module M\n\nlet f =\n");
+        for i in 0..n {
+            s.push_str(&format!("  let a{i} = []\n"));
+        }
+        s.push_str("  0\n");
+        s
+    };
+    let small = solver_counts(src(100)).free_var_visits;
+    let large = solver_counts(src(200)).free_var_visits;
+    assert!(small > 0, "expected free-variable collection work");
+    assert!(
+        large <= small * 3,
+        "generalization free-var visits must stay sub-quadratic (n=100: {small}, n=200: {large})"
+    );
+}
+
+#[test]
+fn chain_resolution_work_is_linear() {
+    // A left-nested arithmetic chain builds a result-variable chain; path
+    // compression keeps re-resolving it linear (it was O(n^2)).
+    let src = |n: usize| {
+        let terms = (0..n).map(|i| format!("x + {i}")).collect::<Vec<_>>().join(" + ");
+        format!("module M\n\nlet f x = {terms}\n")
+    };
+    let small = solver_counts(src(100)).resolve_clones;
+    let large = solver_counts(src(200)).resolve_clones;
+    assert!(small > 0, "expected resolution work");
+    assert!(
+        large <= small * 3,
+        "chain resolution clones must stay sub-quadratic (n=100: {small}, n=200: {large})"
+    );
+}
