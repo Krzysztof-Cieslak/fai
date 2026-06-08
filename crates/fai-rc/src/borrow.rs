@@ -15,11 +15,19 @@
 //! accumulator fold into constant stack space). Non-tail self-calls (`1 + f r`)
 //! are unaffected and still borrow.
 //!
-//! The analysis is **self-contained**: it inspects one function's lowered body,
-//! using its own (in-progress) signature for self-recursive calls and treating
-//! every other call's arguments as consumed. It never queries another function's
-//! signature, so `borrow_signature` is acyclic and the cross-module firewall is
-//! preserved (a caller depends on a callee's small signature, not its body).
+//! The analysis is **inter-procedural**: a parameter that is only forwarded to
+//! another function's borrowing parameter is itself borrowed. A saturated direct
+//! call to another function consults that function's [`borrow_signature`] (a
+//! self-call still uses the in-progress signature, handled by the local fixpoint
+//! below). Acyclic call graphs resolve as ordinary query dependencies; mutual
+//! recursion forms a salsa cycle resolved by a **monotone fixpoint** — start
+//! optimistic (every parameter borrowed) and demote on escape/reconstruct. The
+//! lattice is finite and the step is monotone (a more-borrowed callee can only
+//! make a forwarding caller more-borrowed), so it converges; a high-iteration
+//! fallback to all-owned keeps the query total even for a pathologically large
+//! recursion cluster. Because the result feeds the codegen firewall, editing a
+//! callee's body only ripples to callers when its borrow signature actually
+//! changes (early cutoff on the small [`BorrowSig`] value).
 
 use fai_core::core;
 use fai_core::ir::{CExpr, CoreFn, ExprKind as K};
@@ -55,7 +63,12 @@ impl BorrowSig {
 }
 
 /// The borrow signature of `name`'s entry function.
-#[salsa::tracked]
+///
+/// Inter-procedural: a saturated direct call to another function consults its
+/// borrow signature (this query), so a forwarded inspect-only parameter is
+/// borrowed transitively. Mutual recursion forms a salsa cycle resolved by the
+/// monotone fixpoint declared here ([`borrow_initial`]/[`borrow_recover`]).
+#[salsa::tracked(cycle_fn = borrow_recover, cycle_initial = borrow_initial)]
 pub fn borrow_signature(db: &dyn Db, file: SourceFile, name: Symbol) -> BorrowSig {
     let lowered = core(db, file, name);
     let entry = lowered.entry();
@@ -73,13 +86,15 @@ pub fn borrow_signature(db: &dyn Db, file: SourceFile, name: Symbol) -> BorrowSi
         return BorrowSig(vec![false; n]);
     }
 
-    // Self-recursion fixpoint: start optimistic (all borrowed) and demote a
-    // parameter to owned once it escapes (using the current signature for
-    // self-calls) or is matched-and-reconstructed (owned so its cell is reused in
-    // place). Monotone, so it converges in ≤ n rounds.
+    // Local fixpoint over self-recursion: start optimistic (all borrowed) and
+    // demote a parameter to owned once it escapes (using the in-progress signature
+    // for self-calls, and callees' signatures for cross-function calls) or is
+    // matched-and-reconstructed (owned so its cell is reused in place). Monotone,
+    // so it converges in ≤ n rounds. (Cross-function mutual recursion is the outer
+    // salsa fixpoint; this inner loop only resolves the self-calls.)
     let mut sig = vec![true; n];
     loop {
-        let a = analyze(entry, def, &sig);
+        let a = analyze(db, entry, def, &sig);
         let mut changed = false;
         for (i, p) in entry.params.iter().enumerate() {
             let owned = a.escaped.contains(p) || (a.reconstructs && a.matched.contains(p));
@@ -95,6 +110,40 @@ pub fn borrow_signature(db: &dyn Db, file: SourceFile, name: Symbol) -> BorrowSi
     BorrowSig(sig)
 }
 
+/// Iteration count after which the cross-function borrow fixpoint gives up and
+/// falls back to all-owned. The fixpoint is monotone over a finite lattice, so it
+/// converges in far fewer rounds for any realistic program; this bound only keeps
+/// the query total for a pathologically large mutual-recursion cluster, and sits
+/// well below salsa's own iteration cap.
+const BORROW_FIXPOINT_BOUND: u32 = 100;
+
+/// The optimistic start for a borrow-signature cycle: every parameter borrowed
+/// (the top of the lattice), so the monotone fixpoint converges to the greatest —
+/// most precise — sound signature. (An all-owned start would be a trivial
+/// fixpoint that never borrows across a cycle.)
+fn borrow_initial(db: &dyn Db, _id: salsa::Id, file: SourceFile, name: Symbol) -> BorrowSig {
+    let n = core(db, file, name).entry().params.len();
+    BorrowSig(vec![true; n])
+}
+
+/// Cycle recovery for [`borrow_signature`]: accept each iteration's value (salsa
+/// finalizes once it stops changing). Past [`BORROW_FIXPOINT_BOUND`] iterations —
+/// unreachable for a monotone fixpoint over any realistic program — fall back to
+/// all-owned so the query stays total rather than reaching salsa's iteration cap.
+fn borrow_recover(
+    _db: &dyn Db,
+    cycle: &salsa::Cycle,
+    _last: &BorrowSig,
+    value: BorrowSig,
+    _file: SourceFile,
+    _name: Symbol,
+) -> BorrowSig {
+    if cycle.iteration() >= BORROW_FIXPOINT_BOUND {
+        return BorrowSig(vec![false; value.0.len()]);
+    }
+    value
+}
+
 /// The result of analyzing a function body for borrowing.
 struct Facts {
     /// Parameters whose value escapes (stored, returned, or passed to a function).
@@ -105,15 +154,16 @@ struct Facts {
     reconstructs: bool,
 }
 
-/// The parameters that are *owned* under the current self signature: a value
-/// derived from the parameter (by projection or aliasing) reaches a consuming
-/// position.
-fn analyze(entry: &CoreFn, self_def: DefId, self_sig: &[bool]) -> Facts {
+/// The parameters that are *owned* under the current self signature (and callees'
+/// signatures, consulted via `db`): a value derived from the parameter (by
+/// projection or aliasing) reaches a consuming position.
+fn analyze<'a>(db: &'a dyn Db, entry: &CoreFn, self_def: DefId, self_sig: &'a [bool]) -> Facts {
     let mut origins: FxHashMap<LocalId, LocalId> = FxHashMap::default();
     for &p in &entry.params {
         origins.insert(p, p);
     }
     let mut cx = Analyzer {
+        db,
         self_def,
         self_sig,
         origins,
@@ -127,6 +177,7 @@ fn analyze(entry: &CoreFn, self_def: DefId, self_sig: &[bool]) -> Facts {
 }
 
 struct Analyzer<'a> {
+    db: &'a dyn Db,
     self_def: DefId,
     self_sig: &'a [bool],
     /// The parameter each local is a projection/alias of, if any.
@@ -196,13 +247,27 @@ impl Analyzer<'_> {
     }
 
     /// Per-argument borrow flags for a call: a saturated self-call uses the
-    /// current signature; every other call consumes its arguments.
+    /// in-progress signature; a saturated call to another function consults that
+    /// function's borrow signature; every other call consumes its arguments.
     fn call_arg_borrows(&self, func: &CExpr, nargs: usize) -> Vec<bool> {
-        if let K::Global(def) = &func.kind
-            && *def == self.self_def
-            && nargs == self.self_sig.len()
-        {
-            return self.self_sig.to_vec();
+        if let K::Global(def) = &func.kind {
+            if *def == self.self_def {
+                // A self-call uses the in-progress signature (resolved by the
+                // local fixpoint); never re-enter the query for self.
+                if nargs == self.self_sig.len() {
+                    return self.self_sig.to_vec();
+                }
+            } else if let Some(file) = self.db.source_file(def.file) {
+                // A saturated direct call to another function borrows the
+                // parameters its signature marks borrowed. Reading the query here
+                // is what makes inference inter-procedural; mutual recursion
+                // resolves through the salsa fixpoint, and the same `exploitable_at`
+                // gating keeps this consistent with the call-site exploit in `rc`.
+                let sig = borrow_signature(self.db, file, def.name);
+                if sig.exploitable_at(nargs) {
+                    return sig.0.clone();
+                }
+            }
         }
         vec![false; nargs]
     }

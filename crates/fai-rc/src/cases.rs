@@ -4835,6 +4835,185 @@ fn borrow_gety_row() {
 }
 
 // ===========================================================================
+// Inter-procedural borrowing: a parameter only *forwarded* to another function's
+// borrowing parameter is itself borrowed. Acyclic forwarding resolves as an
+// ordinary query dependency; mutual recursion resolves through the salsa fixpoint.
+// ===========================================================================
+
+#[test]
+fn borrow_forward() {
+    // `len` borrows its list; `f` only forwards `xs` to `len`, so `f` borrows it
+    // too (the headline inter-procedural case).
+    assert_eq!(
+        crate::tests::borrow_sig(
+            indoc! {r#"
+                module M
+
+                let len xs =
+                  match xs with
+                  | [] -> 0
+                  | _ :: r -> 1 + len r
+
+                let f xs = len xs
+            "#},
+            "f",
+        ),
+        vec![true],
+    );
+}
+
+#[test]
+fn borrow_forward_chain() {
+    // Borrowing composes along a forwarding chain `f -> g -> len`.
+    assert_eq!(
+        crate::tests::borrow_sig(
+            indoc! {r#"
+                module M
+
+                let len xs =
+                  match xs with
+                  | [] -> 0
+                  | _ :: r -> 1 + len r
+
+                let g xs = len xs
+
+                let f xs = g xs
+            "#},
+            "f",
+        ),
+        vec![true],
+    );
+}
+
+#[test]
+fn borrow_forward_consume() {
+    // Forwarding to a function that *owns* its parameter (a rebuilder) leaves the
+    // forwarder owning it too — borrowing only follows borrowing callees.
+    assert_eq!(
+        crate::tests::borrow_sig(
+            indoc! {r#"
+                module M
+
+                let inc xs =
+                  match xs with
+                  | [] -> []
+                  | x :: r -> (x + 1) :: inc r
+
+                let f xs = inc xs
+            "#},
+            "f",
+        ),
+        vec![false],
+    );
+}
+
+#[test]
+fn borrow_forward_to_std() {
+    // Forwarding to a borrowing function in *another module* (the standard
+    // library `List.length`, a pure inspector) borrows the parameter too.
+    assert_eq!(
+        crate::tests::borrow_sig(
+            indoc! {r#"
+                module M
+
+                let f xs = List.length xs
+            "#},
+            "f",
+        ),
+        vec![true],
+    );
+}
+
+#[test]
+fn borrow_forward_partial_is_owned() {
+    // A *partial* application is not a saturated direct call, so the callee's
+    // borrowing is not exploited and the forwarded parameter stays owned.
+    assert_eq!(
+        crate::tests::borrow_sig(
+            indoc! {r#"
+                module M
+
+                let g a b = 0
+
+                let f x = g x
+            "#},
+            "f",
+        ),
+        vec![false],
+    );
+}
+
+#[test]
+fn borrow_forward_mixed_escape_is_owned() {
+    // A parameter both forwarded to a borrowing function and stored (escaping into
+    // a tuple) is owned — any escape wins over the borrow.
+    assert_eq!(
+        crate::tests::borrow_sig(
+            indoc! {r#"
+                module M
+
+                let len xs =
+                  match xs with
+                  | [] -> 0
+                  | _ :: r -> 1 + len r
+
+                let f xs = (len xs, xs)
+            "#},
+            "f",
+        ),
+        vec![false],
+    );
+}
+
+#[test]
+fn borrow_mutual_recursion() {
+    // Mutually-recursive inspectors that each forward the tail to the other form a
+    // borrow cycle; the salsa fixpoint converges with both borrowing their list.
+    for name in ["isEven", "isOdd"] {
+        assert_eq!(
+            crate::tests::borrow_sig(
+                indoc! {r#"
+                    module M
+
+                    let isEven xs =
+                      match xs with
+                      | [] -> true
+                      | _ :: r -> isOdd r
+
+                    let isOdd xs =
+                      match xs with
+                      | [] -> false
+                      | _ :: r -> isEven r
+                "#},
+                name,
+            ),
+            vec![true],
+            "{name} should borrow its list",
+        );
+    }
+}
+
+#[test]
+fn borrow_mutual_recursion_is_sound() {
+    // The reference-counted output of a borrow cycle stays sound on both members.
+    let src = indoc! {r#"
+        module M
+
+        let isEven xs =
+          match xs with
+          | [] -> true
+          | _ :: r -> isOdd r
+
+        let isOdd xs =
+          match xs with
+          | [] -> false
+          | _ :: r -> isEven r
+    "#};
+    sound(src, "isEven");
+    sound(src, "isOdd");
+}
+
+// ===========================================================================
 // Tail-call flattening: a self-tail-recursive function becomes a loop. A
 // constructor-wrapped recursion additionally threads a destination hole; a plain
 // tail recursion is a hole-free loop; a non-tail or multiply-recursive function is

@@ -367,6 +367,116 @@ fn codegen_firewall_is_independent_of_workspace_size() {
     assert_eq!(small, 1, "only the edited module's object is recompiled");
 }
 
+/// Builds `Helper.helper`, `Probe.probe` (which only *forwards* its parameter to
+/// `Helper.helper`, so inter-procedural inference makes `borrow_signature(probe)`
+/// depend on `borrow_signature(helper)`), and `fillers` independent modules; warms
+/// every definition's `object_code`; edits `Helper`'s body either preserving its
+/// borrow signature (`x + 1` -> `x + 2`) or changing it (`x + 1` -> `0`, dropping
+/// the use of `x` so the parameter becomes borrowed); then recompiles and returns
+/// how many `borrow_signature` and `object_code` queries re-ran.
+fn borrow_firewall_reruns(fillers: usize, sig_changing: bool) -> (usize, usize) {
+    let mut db = FaiDatabase::new();
+    fai_types::std_lib::load_std(&mut db);
+    let helper_id = db.add_source(
+        "Helper.fai".into(),
+        indoc! {r#"
+            module Helper
+
+            public helper : Int -> Int
+            let helper x = x + 1
+        "#}
+        .to_owned(),
+    );
+    let probe_id = db.add_source(
+        "Probe.fai".into(),
+        indoc! {r#"
+            module Probe
+
+            public probe : Int -> Int
+            let probe x = Helper.helper x
+        "#}
+        .to_owned(),
+    );
+    let mut filler: Vec<(SourceFile, Symbol)> = Vec::new();
+    for i in 0..fillers {
+        let src = formatdoc! {r#"
+            module F{i}
+
+            public g{i} : Int -> Int
+            let g{i} x = x + {i}
+        "#};
+        let id = db.add_source(format!("F{i}.fai").into(), src);
+        filler.push((db.source_file(id).unwrap(), Symbol::intern(&format!("g{i}"))));
+    }
+
+    let probe = db.source_file(probe_id).unwrap();
+    let helper = db.source_file(helper_id).unwrap();
+    let warm = |db: &FaiDatabase| {
+        object_code(db, probe, Symbol::intern("probe"));
+        object_code(db, helper, Symbol::intern("helper"));
+        for (f, g) in &filler {
+            object_code(db, *f, *g);
+        }
+    };
+    warm(&db);
+
+    db.enable_event_log();
+    let edited = if sig_changing {
+        // `x` is now unused, so `helper` borrows it ([false] -> [true]).
+        indoc! {r#"
+            module Helper
+
+            public helper : Int -> Int
+            let helper x = 0
+        "#}
+    } else {
+        // Borrow signature is unchanged ([false]): `x` is still inspected.
+        indoc! {r#"
+            module Helper
+
+            public helper : Int -> Int
+            let helper x = x + 2
+        "#}
+    };
+    helper.set_text(&mut db).to(edited.to_owned());
+    warm(&db);
+    let events = db.take_events();
+    (count(&events, "borrow_signature"), count(&events, "object_code"))
+}
+
+#[test]
+fn borrow_signature_firewall_is_independent_of_workspace_size() {
+    // A callee-body edit that does NOT change the callee's borrow signature re-runs
+    // only the callee's own `borrow_signature`/`object_code`; the forwarding
+    // caller is cut off (early cutoff on the small `BorrowSig` value) — the same
+    // work whether the workspace has 5 modules or 50.
+    let small = borrow_firewall_reruns(5, false);
+    let large = borrow_firewall_reruns(50, false);
+    assert_eq!(small, large, "borrow firewall must not grow with workspace size");
+    assert_eq!(
+        small,
+        (1, 1),
+        "a sig-preserving callee edit re-runs only the callee (caller cut off)"
+    );
+}
+
+#[test]
+fn borrow_signature_change_ripples_only_to_forwarding_caller() {
+    // Non-vacuity: an edit that *changes* the callee's borrow signature does re-run
+    // the forwarding caller's `borrow_signature` and `object_code` — and only those
+    // (the callee plus the one caller), independent of workspace size. This is the
+    // bounded firewall widening: it fires exactly on borrow-signature-changing
+    // edits.
+    let small = borrow_firewall_reruns(5, true);
+    let large = borrow_firewall_reruns(50, true);
+    assert_eq!(small, large, "the ripple must not grow with workspace size");
+    assert_eq!(
+        small,
+        (2, 2),
+        "a sig-changing callee edit re-runs the callee and the forwarding caller"
+    );
+}
+
 /// Warms four definitions' `object_code` under the given cache capacity, bumps a
 /// revision (so any over-capacity blobs are evicted), then re-accesses all four
 /// and returns how many had to be regenerated.
