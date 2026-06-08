@@ -634,24 +634,26 @@ fn def_name_range(text: &str, item_span: TextRange, name: Symbol) -> Option<Text
     None
 }
 
-/// The name range of `name`'s definition (preferring the binding item, falling
-/// back to the signature), for locating a declaration occurrence.
-fn def_decl_range(db: &dyn Db, file: SourceFile, name: Symbol) -> Option<TextRange> {
+/// Every name-occurrence range of `name`'s definition: its `let` binding *and*
+/// its signature (when present). A rename must rewrite both, or a signatured
+/// definition is left with a stale signature name.
+fn def_decl_ranges(db: &dyn Db, file: SourceFile, name: Symbol) -> Vec<TextRange> {
     let parsed = fai_syntax::parse(db, file);
     let text = file.text(db);
-    let def = module_defs(db, file).get(name).copied()?;
-    for item in [Some(def.binding), def.signature].into_iter().flatten() {
-        let span = parsed.module.items[item.index()].span;
-        if let Some(r) = def_name_range(text, span, name) {
-            return Some(r);
-        }
-    }
-    None
+    let Some(def) = module_defs(db, file).get(name).copied() else {
+        return Vec::new();
+    };
+    [Some(def.binding), def.signature]
+        .into_iter()
+        .flatten()
+        .filter_map(|item| def_name_range(text, parsed.module.items[item.index()].span, name))
+        .collect()
 }
 
 /// Whether `offset` falls on the *name* of a definition in `file` (its binding
-/// or signature), returning that definition's qualified name.
-fn def_name_at(db: &dyn Db, file: SourceFile, offset: u32) -> Option<Symbol> {
+/// or signature), returning that definition's qualified name and the precise
+/// occurrence range under the cursor.
+fn def_name_at(db: &dyn Db, file: SourceFile, offset: u32) -> Option<(Symbol, TextRange)> {
     let parsed = fai_syntax::parse(db, file);
     let text = file.text(db);
     for d in &module_defs(db, file).defs {
@@ -661,7 +663,7 @@ fn def_name_at(db: &dyn Db, file: SourceFile, offset: u32) -> Option<Symbol> {
                 && r.start().raw() <= offset
                 && offset < r.end().raw()
             {
-                return Some(d.name);
+                return Some((d.name, r));
             }
         }
     }
@@ -696,8 +698,7 @@ fn target_at(db: &dyn Db, file: SourceFile, offset: u32) -> Option<(RefTarget, T
         }
     }
     // A definition's own name (the declaration site).
-    let name = def_name_at(db, file, offset)?;
-    let range = def_decl_range(db, file, name)?;
+    let (name, range) = def_name_at(db, file, offset)?;
     Some((RefTarget::Def(DefId::new(file.source(db), name)), range))
 }
 
@@ -785,11 +786,11 @@ fn collect_references(
                     }
                 }
             }
-            if include_declaration
-                && let Some(decl_file) = db.source_file(def.file)
-                && let Some(range) = def_decl_range(db, decl_file, def.name)
-            {
-                push_location(db, decl_file, range, resolver, &mut out);
+            if include_declaration && let Some(decl_file) = db.source_file(def.file) {
+                // Both the binding and the signature carry the name.
+                for range in def_decl_ranges(db, decl_file, def.name) {
+                    push_location(db, decl_file, range, resolver, &mut out);
+                }
             }
         }
         RefTarget::Ctor(ctor) => {

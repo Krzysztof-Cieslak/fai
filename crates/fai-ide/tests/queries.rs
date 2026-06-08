@@ -352,13 +352,14 @@ fn references_at_a_definition_spans_all_modules() {
     let b = files[1];
     let b_text = b.text(&db).clone();
     // Point inside a use of `A.inc` in B; with the declaration included, the
-    // result is every use across the workspace plus the binding's own name.
+    // result is every use across the workspace plus both declaration names in A
+    // (the signature and the binding).
     let offset = at(&b_text, "A.inc") + "A.".len() as u32;
     let refs = references_at(&db, &files, b, offset, &DbSpanResolver::new(&db), true);
-    assert_eq!(refs.len(), 4, "3 uses in B + 1 declaration in A: {refs:?}");
+    assert_eq!(refs.len(), 5, "3 uses in B + signature and binding names in A: {refs:?}");
     let in_a = refs.iter().filter(|l| l.span.file == "A.fai").count();
     let in_b = refs.iter().filter(|l| l.span.file == "B.fai").count();
-    assert_eq!((in_a, in_b), (1, 3), "{refs:?}");
+    assert_eq!((in_a, in_b), (2, 3), "{refs:?}");
     // Every reported reference is the name `inc`.
     let a_text = files[0].text(&db).clone();
     for loc in &refs {
@@ -534,8 +535,9 @@ fn rename_definition_rewrites_every_module() {
     let offset = at(&b_text, "A.inc") + "A.".len() as u32;
     let edits = rename_at(&db, &files, b, offset, "increment", &DbSpanResolver::new(&db))
         .expect("a user definition is renameable");
-    // The declaration in A plus three uses in B; each edit targets the bare name.
-    assert_eq!(edits.len(), 4, "{edits:?}");
+    // Both declaration names in A (signature + binding) plus three uses in B;
+    // each edit targets the bare name, so applying them keeps the program valid.
+    assert_eq!(edits.len(), 5, "{edits:?}");
     for loc in &edits {
         let text = if loc.span.file == "A.fai" { &a_text } else { &b_text };
         assert_eq!(&text[loc.span.byte_start as usize..loc.span.byte_end as usize], "inc");
