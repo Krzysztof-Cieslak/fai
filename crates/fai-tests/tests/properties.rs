@@ -10,24 +10,12 @@ use indoc::formatdoc;
 use proptest::prelude::*;
 
 /// Whether `name` is a reserved keyword (so it cannot be a binding name).
+///
+/// Delegates to the lexer's keyword table — the single source of truth — so this
+/// can never drift from the set the lexer actually reserves (a new keyword is
+/// honored here automatically).
 fn is_reserved(name: &str) -> bool {
-    matches!(
-        name,
-        "module"
-            | "let"
-            | "type"
-            | "interface"
-            | "match"
-            | "with"
-            | "if"
-            | "then"
-            | "else"
-            | "fun"
-            | "public"
-            | "example"
-            | "forall"
-            | "as"
-    )
+    fai_syntax::TokenKind::keyword(name).is_some()
 }
 
 /// A generated, well-typed expression of a known type.
