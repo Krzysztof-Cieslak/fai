@@ -554,15 +554,15 @@ run paths run across a `rayon` pool, each worker on its own cheap database-handl
 clone (salsa coordinates the shared memoization) — ~2× on a 200-definition build
 here; and the JIT path code-generates each function in parallel (building IR and
 linking the shared module serially) — ~1.4× on the same program. Still to come:
-the shared/remote cache, daemon hardening (LRU/memory bounds,
-cross-request concurrency), opt-in monomorphization, and the remaining
-reuse/borrowing follow-ups (TRMC, cross-module borrowing).
+the shared/remote cache (deferred — tracked in issue #15), daemon hardening
+(LRU/memory bounds, cross-request concurrency), opt-in monomorphization, and the
+remaining reuse/borrowing follow-ups (TRMC, cross-module borrowing).
 
 **Deliverables**
 - `rayon` parallelism across independent defs/modules (parallel salsa queries;
   per-function Cranelift codegen).
 - **Shared/remote artifact cache** layered on the local content-addressed cache
-  (team/CI dedup; portable by construction).
+  (team/CI dedup; portable by construction). *(Deferred — tracked in issue #15.)*
 - Daemon hardening: LRU eviction / memory bounds; latency profiling.
 - **Opt-in monomorphization** for hot generic paths (optimization only — never a
   correctness requirement, and the one feature that *hurts* incrementality, so it
