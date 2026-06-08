@@ -316,6 +316,11 @@ output schemas, and the daemon (MessagePack JSON-RPC) protocol.
   whose subject or body names a milestone, phase, or decision id **must be
   reworded before it merges** (reword local history with `git rebase`). Describe
   *what changed and why*, not the step in a roadmap that produced it.
+- **Work on feature branches — never directly on `main`.** Every change lands on a
+  short-lived feature branch (`git switch -c <topic>`) and merges into `main`
+  through a pull request; `main` is never committed or pushed to directly. Keep
+  the branch focused, rebase on `main` before opening the PR, and let the CI gates
+  (§12) pass before merging.
 
 ## 9. Performance & incremental compilation
 
