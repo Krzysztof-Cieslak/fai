@@ -3,7 +3,8 @@
 use fai_db::{Db, DbSpanResolver, FaiDatabase, SourceFile};
 use fai_ide::{
     ListOpts, api, callees, callers, def, definition_at, dependents, document_symbols, hover_at,
-    outline, references_at, refs, search, symbols, type_at, workspace_symbols,
+    outline, prepare_rename_at, references_at, refs, rename_at, search, symbols, type_at,
+    workspace_symbols,
 };
 use indoc::indoc;
 
@@ -482,4 +483,113 @@ fn workspace_symbols_snapshot() {
     let (db, files) = workspace();
     let r = workspace_symbols(&db, &files, "two", &DbSpanResolver::new(&db), ListOpts::default());
     insta::assert_snapshot!("workspace_symbols_two", json(&r));
+}
+
+// --- rename ------------------------------------------------------------------
+
+#[test]
+fn prepare_rename_reports_the_name_under_the_cursor() {
+    let (db, files) = workspace();
+    let b = files[1];
+    let b_text = b.text(&db).clone();
+    // On the `inc` of a qualified use `A.inc`, the rename range is just `inc`.
+    let offset = at(&b_text, "A.inc") + "A.".len() as u32;
+    let target = prepare_rename_at(&db, b, offset, &DbSpanResolver::new(&db)).expect("renameable");
+    assert_eq!(target.name, "inc");
+    let s = &b_text[target.span.byte_start as usize..target.span.byte_end as usize];
+    assert_eq!(s, "inc", "the rename range covers only the member, not `A.inc`");
+}
+
+#[test]
+fn prepare_rename_rejects_builtins_and_empty_positions() {
+    let (db, files) = workspace();
+    let a = files[0];
+    let a_text = a.text(&db).clone();
+    // The `+` operator is a standard-library method, not user code.
+    let plus = at(&a_text, "+ 1");
+    assert!(prepare_rename_at(&db, a, plus, &DbSpanResolver::new(&db)).is_none(), "no rename on +");
+    // The module header is not a symbol.
+    let header = at(&a_text, "module A");
+    assert!(prepare_rename_at(&db, a, header, &DbSpanResolver::new(&db)).is_none());
+}
+
+#[test]
+fn rename_local_rewrites_binding_and_uses() {
+    let (db, file, text) = position_workspace();
+    let offset = at(text, "shade + tag Red");
+    let edits = rename_at(&db, &[file], file, offset, "lvl", &DbSpanResolver::new(&db))
+        .expect("a local is renameable");
+    assert_eq!(edits.len(), 2, "the binding plus one use: {edits:?}");
+    for loc in &edits {
+        assert_eq!(&text[loc.span.byte_start as usize..loc.span.byte_end as usize], "shade");
+    }
+}
+
+#[test]
+fn rename_definition_rewrites_every_module() {
+    let (db, files) = workspace();
+    let b = files[1];
+    let a_text = files[0].text(&db).clone();
+    let b_text = b.text(&db).clone();
+    let offset = at(&b_text, "A.inc") + "A.".len() as u32;
+    let edits = rename_at(&db, &files, b, offset, "increment", &DbSpanResolver::new(&db))
+        .expect("a user definition is renameable");
+    // The declaration in A plus three uses in B; each edit targets the bare name.
+    assert_eq!(edits.len(), 4, "{edits:?}");
+    for loc in &edits {
+        let text = if loc.span.file == "A.fai" { &a_text } else { &b_text };
+        assert_eq!(&text[loc.span.byte_start as usize..loc.span.byte_end as usize], "inc");
+    }
+}
+
+#[test]
+fn rename_rejects_a_cross_namespace_or_malformed_name() {
+    let (db, files) = workspace();
+    let b = files[1];
+    let offset = at(&b.text(&db).clone(), "A.inc") + "A.".len() as u32;
+    // A value cannot become an upper-case (constructor) name…
+    assert!(rename_at(&db, &files, b, offset, "Inc", &DbSpanResolver::new(&db)).is_none());
+    // …nor a non-identifier.
+    assert!(rename_at(&db, &files, b, offset, "in c", &DbSpanResolver::new(&db)).is_none());
+    assert!(rename_at(&db, &files, b, offset, "", &DbSpanResolver::new(&db)).is_none());
+}
+
+#[test]
+fn rename_constructor_requires_an_upper_name() {
+    let (db, file, text) = position_workspace();
+    let offset = at(text, "tag Red") + "tag ".len() as u32;
+    // A constructor keeps the upper-case namespace.
+    let ok = rename_at(&db, &[file], file, offset, "Crimson", &DbSpanResolver::new(&db));
+    assert_eq!(ok.expect("upper name is valid").len(), 3, "declaration + expr use + pattern use");
+    assert!(
+        rename_at(&db, &[file], file, offset, "crimson", &DbSpanResolver::new(&db)).is_none(),
+        "a lower-case constructor name is rejected"
+    );
+}
+
+#[test]
+fn rename_rejects_standard_library_symbols() {
+    // A qualified use of a std function resolves to a definition in the embedded
+    // standard library, which is read-only.
+    let mut db = FaiDatabase::new();
+    fai_types::std_lib::load_std(&mut db);
+    let id = db.add_source(
+        "U.fai".into(),
+        indoc! {r#"
+            module U
+
+            public ids : List Int -> List Int
+            let ids xs = List.map (fun x -> x) xs
+        "#}
+        .to_owned(),
+    );
+    let file = db.source_file(id).unwrap();
+    let text = file.text(&db).clone();
+    let offset = at(&text, "List.map") + "List.".len() as u32;
+    assert!(
+        prepare_rename_at(&db, file, offset, &DbSpanResolver::new(&db)).is_none(),
+        "cannot rename a standard-library symbol"
+    );
+    let files = vec![file];
+    assert!(rename_at(&db, &files, file, offset, "transform", &DbSpanResolver::new(&db)).is_none());
 }

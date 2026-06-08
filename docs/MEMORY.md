@@ -914,8 +914,17 @@ server:
     patterns), adding the declaration when the client asks for it. Each reported
     range is the bare name: a qualified use `A.inc` reports only the trailing
     `inc`, and a constructor pattern reports only its head. A definition's own
-    name is itself a reference site, so find-references (and, later, rename) works
-    when invoked on the declaration, not just a use.
+    name is itself a reference site, so find-references and rename work when
+    invoked on the declaration, not just a use.
+  - **Rename.** `prepareRename` returns the bare-name range under the cursor (the
+    editor's placeholder) and rejects what cannot be renamed: builtins, and
+    standard-library symbols (the embedded std is read-only). `rename` is
+    find-references with the declaration always included, replacing each
+    occurrence with the new name — so the same bare-name precision applies (a
+    qualified `A.inc` edits only `inc`, a constructor pattern only its head). The
+    new name must be a plain identifier in the symbol's casing namespace (a
+    constructor stays upper-case, a value or local lower-case), so a rename can
+    never move a symbol between namespaces; an invalid name yields no edit.
 
 Inference tuning, primitive borrowing & intra-build parallelism
 (measurement-driven; correctness-neutral — inferred types, diagnostics, and
