@@ -367,6 +367,59 @@ fn codegen_firewall_is_independent_of_workspace_size() {
     assert_eq!(small, 1, "only the edited module's object is recompiled");
 }
 
+/// Warms four definitions' `object_code` under the given cache capacity, bumps a
+/// revision (so any over-capacity blobs are evicted), then re-accesses all four
+/// and returns how many had to be regenerated.
+fn object_code_reruns_after_eviction(capacity: usize) -> usize {
+    let mut db = FaiDatabase::new();
+    fai_types::std_lib::load_std(&mut db);
+    let mut defs: Vec<(SourceFile, Symbol)> = Vec::new();
+    for i in 0..4 {
+        let src = formatdoc! {r#"
+            module F{i}
+
+            public g{i} : Int -> Int
+            let g{i} x = x + {i}
+        "#};
+        let id = db.add_source(format!("F{i}.fai").into(), src);
+        defs.push((db.source_file(id).unwrap(), Symbol::intern(&format!("g{i}"))));
+    }
+    // A separate input edited to bump the revision (which triggers LRU eviction).
+    let bump_id =
+        db.add_source("Bump.fai".into(), "module Bump\n\npublic v : Int\nlet v = 0\n".into());
+    let bump = db.source_file(bump_id).unwrap();
+
+    fai_driver::set_object_cache_capacity(&mut db, capacity);
+    for (f, g) in &defs {
+        object_code(&db, *f, *g);
+    }
+
+    bump.set_text(&mut db).to("module Bump\n\npublic v : Int\nlet v = 1\n".into());
+
+    db.enable_event_log();
+    for (f, g) in &defs {
+        object_code(&db, *f, *g);
+    }
+    count(&db.take_events(), "object_code")
+}
+
+#[test]
+fn bounded_object_cache_evicts_then_recomputes() {
+    // Unbounded (capacity 0): the warm blobs survive the revision — nothing is
+    // regenerated. This is the one-shot CLI / test default, so it is unaffected.
+    assert_eq!(
+        object_code_reruns_after_eviction(0),
+        0,
+        "an unbounded object cache keeps every blob memoized across a revision"
+    );
+    // Bounded (capacity 1): the least-recently-used blobs are evicted at the
+    // revision and must be regenerated on next access (the daemon's memory bound).
+    assert!(
+        object_code_reruns_after_eviction(1) > 0,
+        "a bounded object cache evicts and regenerates over-capacity blobs"
+    );
+}
+
 /// A temp workspace seeded with two clean modules; returns its directory.
 fn sync_workspace() -> Utf8PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);

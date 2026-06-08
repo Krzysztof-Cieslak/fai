@@ -41,6 +41,18 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Default idle lifetime before the daemon shuts itself down.
 const DEFAULT_IDLE_SECS: u64 = 600;
 
+/// Default cap on the warm database's in-memory native-object cache (number of
+/// `object_code` blobs; 0 = unbounded). Overridable via `FAI_DAEMON_OBJECT_CACHE`.
+const DEFAULT_OBJECT_CACHE: usize = 1024;
+
+/// The configured native-object cache cap (see [`DEFAULT_OBJECT_CACHE`]).
+fn object_cache_capacity() -> usize {
+    std::env::var("FAI_DAEMON_OBJECT_CACHE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_OBJECT_CACHE)
+}
+
 /// Shared daemon state.
 struct Daemon {
     session: Mutex<Session>,
@@ -49,6 +61,23 @@ struct Daemon {
     last_activity_ms: AtomicU64,
     socket_path: Option<PathBuf>,
     idle: Duration,
+    /// Latency profiling for served `Command` requests (the compile path:
+    /// check/query/fmt/build): how many, their total processing time, and the
+    /// slowest single one. `run` is excluded (it is dominated by the user
+    /// program's own execution in the worker, not daemon work).
+    commands: AtomicU64,
+    command_micros_total: AtomicU64,
+    command_micros_max: AtomicU64,
+}
+
+impl Daemon {
+    /// Records that a `Command` was processed in `elapsed`.
+    fn record_command(&self, elapsed: Duration) {
+        let micros = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+        self.commands.fetch_add(1, Ordering::Relaxed);
+        self.command_micros_total.fetch_add(micros, Ordering::Relaxed);
+        self.command_micros_max.fetch_max(micros, Ordering::Relaxed);
+    }
 }
 
 impl Daemon {
@@ -75,7 +104,11 @@ pub fn serve(root: Utf8PathBuf) -> std::io::Result<()> {
         Err(BindError::Io(error)) => return Err(error),
     };
 
-    let session = Session::open(root.clone()).map_err(|e| std::io::Error::other(e.to_string()))?;
+    let mut session =
+        Session::open(root.clone()).map_err(|e| std::io::Error::other(e.to_string()))?;
+    // Bound the warm database's native-object cache so the large, on-disk-backed
+    // object blobs do not accumulate over a long-lived daemon (0 = unbounded).
+    session.set_object_cache_capacity(object_cache_capacity());
 
     let idle = Duration::from_secs(
         std::env::var("FAI_DAEMON_IDLE_TIMEOUT")
@@ -90,6 +123,9 @@ pub fn serve(root: Utf8PathBuf) -> std::io::Result<()> {
         last_activity_ms: AtomicU64::new(0),
         socket_path: transport::socket_path(&root),
         idle,
+        commands: AtomicU64::new(0),
+        command_micros_total: AtomicU64::new(0),
+        command_micros_max: AtomicU64::new(0),
     });
 
     spawn_idle_watchdog(Arc::clone(&daemon));
@@ -170,12 +206,20 @@ fn handle_connection(mut stream: Stream, daemon: &Daemon) {
                     ))
                 }
             }
-            Request::Command(command) => Response::Command(run(daemon, command)),
+            Request::Command(command) => {
+                let started = Instant::now();
+                let rendered = run(daemon, command);
+                daemon.record_command(started.elapsed());
+                Response::Command(rendered)
+            }
             Request::Status => Response::Status(StatusInfo {
                 pid: std::process::id(),
                 compiler_version: VERSION.to_owned(),
                 protocol_version: PROTOCOL_VERSION,
                 uptime_secs: daemon.start.elapsed().as_secs(),
+                commands_served: daemon.commands.load(Ordering::Relaxed),
+                command_micros_total: daemon.command_micros_total.load(Ordering::Relaxed),
+                command_micros_max: daemon.command_micros_max.load(Ordering::Relaxed),
             }),
             Request::Run(_) => unreachable!("handled above"),
             Request::Shutdown => {

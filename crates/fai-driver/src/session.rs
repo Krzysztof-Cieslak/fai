@@ -148,6 +148,14 @@ impl Session {
             .collect()
     }
 
+    /// Bounds the in-memory native-object cache to `capacity` blobs (0 =
+    /// unbounded). These `object_code` blobs are large and backed by the on-disk
+    /// content-addressed cache, so the long-lived daemon caps them to keep its
+    /// warm database's footprint bounded; the one-shot CLI leaves it unbounded.
+    pub fn set_object_cache_capacity(&mut self, capacity: usize) {
+        crate::backend::set_object_cache_capacity(&mut self.db, capacity);
+    }
+
     /// The session's database as a trait object.
     #[must_use]
     pub fn db(&self) -> &dyn Db {

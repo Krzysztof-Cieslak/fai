@@ -553,11 +553,14 @@ generation (the AOT object loop) and the lower/reference-count gathers for the
 run paths run across a `rayon` pool, each worker on its own cheap database-handle
 clone (salsa coordinates the shared memoization) — ~2× on a 200-definition build
 here; and the JIT path code-generates each function in parallel (building IR and
-linking the shared module serially) — ~1.4× on the same program. Still to come:
-the shared/remote cache (deferred — issue #15), daemon hardening (LRU/memory
-bounds, cross-request concurrency), opt-in monomorphization (deferred — issue
-#16), and the remaining reuse/borrowing follow-ups (TRMC, cross-module
-borrowing).
+linking the shared module serially) — ~1.4× on the same program. **Daemon
+hardening** has landed its memory-bound and latency halves (see decision
+**D97**): the warm database caps its native-object cache (salsa LRU on
+`object_code`, daemon-set, env-configurable) and reports per-command latency in
+`fai daemon status`. Still to come: the shared/remote cache (deferred — issue
+#15), the rest of daemon hardening (cross-request concurrency, still serialized
+per D57), opt-in monomorphization (deferred — issue #16), and the remaining
+reuse/borrowing follow-ups (TRMC, cross-module borrowing).
 
 **Deliverables**
 - `rayon` parallelism across independent defs/modules (parallel salsa queries;
@@ -1679,6 +1682,26 @@ suite):
   per-function code grows). Parallelizing IR building too would require
   pre-declaring every symbol so building never mutates the module — a larger
   refactor, deferred.
+
+- **D97 Daemon hardening: a bounded native-object cache and per-command latency.**
+  The warm daemon keeps one salsa database for its lifetime. Salsa stores one
+  memo per query *key* (replaced, not accumulated, across edits), so the warm
+  front-end memos track workspace size — that is the daemon's intended working
+  set and is left unbounded. The one explicitly growable, large payload is
+  `object_code` (a relocatable object per definition, also backed by the on-disk
+  cache), so it is made LRU-capable (`#[salsa::tracked(lru = 0)]` — `0` is
+  unbounded, so the one-shot CLI and tests are unaffected) and the daemon caps it
+  at startup via `Session::set_object_cache_capacity` (`FAI_DAEMON_OBJECT_CACHE`,
+  default 1024); over-capacity blobs are evicted at the next revision (salsa's
+  per-revision hook, driven by the daemon's disk-sync) and re-read from the
+  on-disk cache on demand, so eviction only trades memory for a lookup. For
+  latency profiling, the daemon times each served `Command` (the check/query/fmt/
+  build path; `run` is excluded — it is dominated by the worker's own execution)
+  and reports the count, total, and slowest in `fai daemon status`. Chosen over
+  bounding the front-end queries (which would defeat the daemon's whole purpose)
+  and over a coarse RSS-watchdog Session rebuild (unnecessary given memory tracks
+  workspace size; deferred as a safety valve if a pathological case appears).
+  Cross-request concurrency remains future work (D57).
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected milestones.
