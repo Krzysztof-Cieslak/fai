@@ -118,9 +118,16 @@ impl Server {
             }
             "textDocument/didClose" => {
                 if let Ok(p) = note.extract::<DidCloseTextDocumentParams>("textDocument/didClose") {
-                    self.open.remove(&p.text_document.uri);
-                    // Clear the file's diagnostics on close.
-                    self.publish(conn, &p.text_document.uri, vec![]);
+                    let uri = &p.text_document.uri;
+                    self.open.remove(uri);
+                    // On close the buffer is no longer authoritative — ownership
+                    // returns to the filesystem — so drop the in-memory overlay and
+                    // restore the database to the on-disk content. Otherwise a file
+                    // closed without saving would leave its unsaved edits in the
+                    // warm session for any module that references it.
+                    self.revert_to_disk(uri);
+                    // Clear the closed file's diagnostics.
+                    self.publish(conn, uri, vec![]);
                 }
             }
             _ => {}
@@ -219,6 +226,19 @@ impl Server {
             None => vec![],
         };
         self.publish(conn, uri, diagnostics);
+    }
+
+    /// Restores a closed document's database entry to the on-disk file, dropping
+    /// any unsaved overlay. A document with no disk copy (an unsaved, untitled
+    /// buffer) has nothing to revert to and is left as-is.
+    fn revert_to_disk(&mut self, uri: &Url) {
+        let Some(rel) = self.relative(uri) else { return };
+        if !self.root.join(&rel).exists() {
+            return;
+        }
+        // A content-less dirty entry re-reads the file from disk.
+        let dirty = [DirtyFile { path: rel.to_string(), hash: None, content: None }];
+        let _ = self.session.apply_dirty(&dirty);
     }
 
     fn publish(&self, conn: &Connection, uri: &Url, diagnostics: Vec<LspDiagnostic>) {
