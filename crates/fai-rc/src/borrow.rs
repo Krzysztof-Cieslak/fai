@@ -7,6 +7,14 @@
 //! parameter that is only read, own one whose contents escape (so that, e.g., a
 //! rebuilt list keeps being reused in place).
 //!
+//! One ownership rule is not about churn but about enabling a later transform: a
+//! parameter that flows into a **saturated self-call in tail position** is owned,
+//! never borrowed. A lent argument must be dropped *after* the call, which would
+//! push the call out of tail position; owning it keeps the self-call in tail
+//! position so the recursion can be flattened into a loop (turning, e.g., an
+//! accumulator fold into constant stack space). Non-tail self-calls (`1 + f r`)
+//! are unaffected and still borrow.
+//!
 //! The analysis is **self-contained**: it inspects one function's lowered body,
 //! using its own (in-progress) signature for self-recursive calls and treating
 //! every other call's arguments as consumed. It never queries another function's
@@ -199,6 +207,15 @@ impl Analyzer<'_> {
         vec![false; nargs]
     }
 
+    /// Whether `func` applied to `nargs` arguments is a saturated call to this very
+    /// function. A *tail* such call can be flattened into a loop, which requires
+    /// its arguments to be owned (transferred), so we never borrow a parameter that
+    /// flows into one.
+    fn is_self_call(&self, func: &CExpr, nargs: usize) -> bool {
+        matches!(&func.kind, K::Global(def) if *def == self.self_def)
+            && nargs == self.self_sig.len()
+    }
+
     fn scan(&mut self, e: &CExpr, tail: bool) {
         match &e.kind {
             // A returned local has its value consumed (passed to the caller).
@@ -246,10 +263,16 @@ impl Analyzer<'_> {
             K::App { func, args } => {
                 self.scan(func, false);
                 self.consume(func);
+                // A saturated self-call in tail position owns its arguments. A lent
+                // argument must be dropped *after* the call, which would push the
+                // call out of tail position; owning it keeps the call in tail
+                // position so the recursion can later be flattened into a loop.
+                // Other calls (and non-tail self-calls) follow the borrow signature.
+                let tail_self_call = tail && self.is_self_call(func, args.len());
                 let borrows = self.call_arg_borrows(func, args.len());
                 for (i, a) in args.iter().enumerate() {
                     self.scan(a, false);
-                    if !borrows.get(i).copied().unwrap_or(false) {
+                    if tail_self_call || !borrows.get(i).copied().unwrap_or(false) {
                         self.consume(a);
                     }
                 }
