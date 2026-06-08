@@ -1825,93 +1825,85 @@ mod tests {
         );
     }
 
-    #[test]
-    fn type_match_and_records_now_parse_cleanly() {
-        for src in [
-            indoc! {r#"
-                module M
-
-                type T =
-                  | A
-                  | B Int
-            "#},
-            indoc! {r#"
-                module M
-
-                let f x =
-                  match x with
-                  | A -> 1
-                  | _ -> 2
-            "#},
-            indoc! {r#"
-                module M
-
-                type Celsius = Float
-            "#},
-            indoc! {r#"
-                module M
-
-                type Vec2 = { x : Float, y : Float }
-            "#},
-            indoc! {r#"
-                module M
-
-                let origin = { x = 0, y = 0 }
-            "#},
-            indoc! {r#"
-                module M
-
-                let f r = { r with x = 1 }
-            "#},
-            indoc! {r#"
-                module M
-
-                let f v =
-                  match v with
-                  | { x = 0 | _ } -> 1
-                  | { x, y } -> x
-            "#},
-        ] {
-            let parsed = parse(src);
-            assert!(
-                parsed.diagnostics.is_empty(),
-                "expected clean parse for {src}: {:?}",
-                parsed.diagnostics
-            );
-        }
+    #[track_caller]
+    fn parses_clean(src: &str) {
+        let parsed = parse(src);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "expected clean parse for {src}: {:?}",
+            parsed.diagnostics
+        );
     }
 
     #[test]
-    fn type_and_match_now_parse_cleanly() {
-        for src in [
-            indoc! {r#"
-                module M
+    fn parses_discriminated_union() {
+        parses_clean(indoc! {r#"
+            module M
 
-                type T =
-                  | A
-                  | B Int
-            "#},
-            indoc! {r#"
-                module M
+            type T =
+              | A
+              | B Int
+        "#});
+    }
 
-                let f x =
-                  match x with
-                  | A -> 1
-                  | _ -> 2
-            "#},
-            indoc! {r#"
-                module M
+    #[test]
+    fn parses_match_expression() {
+        parses_clean(indoc! {r#"
+            module M
 
-                type Celsius = Float
-            "#},
-        ] {
-            let parsed = parse(src);
-            assert!(
-                parsed.diagnostics.is_empty(),
-                "expected clean parse for {src}: {:?}",
-                parsed.diagnostics
-            );
-        }
+            let f x =
+              match x with
+              | A -> 1
+              | _ -> 2
+        "#});
+    }
+
+    #[test]
+    fn parses_transparent_type_alias() {
+        parses_clean(indoc! {r#"
+            module M
+
+            type Celsius = Float
+        "#});
+    }
+
+    #[test]
+    fn parses_record_type() {
+        parses_clean(indoc! {r#"
+            module M
+
+            type Vec2 = { x : Float, y : Float }
+        "#});
+    }
+
+    #[test]
+    fn parses_record_literal() {
+        parses_clean(indoc! {r#"
+            module M
+
+            let origin = { x = 0, y = 0 }
+        "#});
+    }
+
+    #[test]
+    fn parses_record_update() {
+        parses_clean(indoc! {r#"
+            module M
+
+            let f r = { r with x = 1 }
+        "#});
+    }
+
+    #[test]
+    fn parses_record_patterns() {
+        parses_clean(indoc! {r#"
+            module M
+
+            let f v =
+              match v with
+              | { x = 0 | _ } -> 1
+              | { x, y } -> x
+        "#});
     }
 
     // --- data types, match, and records: AST shape -----------------------

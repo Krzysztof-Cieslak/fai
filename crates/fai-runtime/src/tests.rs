@@ -275,25 +275,73 @@ fn run_entry_reports_clean_exit() {
     assert_eq!(code, 0);
 }
 
-#[test]
-fn integer_boundaries_round_trip() {
+/// A value at or inside the immediate range stays unboxed and round-trips with
+/// no net heap allocation.
+#[track_caller]
+fn immediate_round_trips(n: i64) {
     let _g = lock();
     let base = live_count();
-    let max_immediate = (1i64 << 62) - 1;
-    let min_immediate = -(1i64 << 62);
-    // Boundary values that must stay immediate.
-    for n in [0, 1, -1, max_immediate, min_immediate] {
-        let v = fai_box_int(n);
-        assert!(!is_boxed(v), "{n} should be immediate");
-        assert!(int_eq(v, n));
-    }
-    // Boundary values that must box.
-    for n in [1i64 << 62, -(1i64 << 62) - 1, i64::MAX, i64::MIN] {
-        let v = fai_box_int(n);
-        assert!(is_boxed(v), "{n} should be boxed");
-        assert!(int_eq(v, n)); // consumes v
-    }
+    let v = fai_box_int(n);
+    assert!(!is_boxed(v), "{n} should be immediate");
+    assert!(int_eq(v, n));
     assert_eq!(live_count(), base);
+}
+
+/// A value outside the immediate range boxes and round-trips with no net heap
+/// allocation (the comparison consumes the box).
+#[track_caller]
+fn boxed_round_trips(n: i64) {
+    let _g = lock();
+    let base = live_count();
+    let v = fai_box_int(n);
+    assert!(is_boxed(v), "{n} should be boxed");
+    assert!(int_eq(v, n)); // consumes v
+    assert_eq!(live_count(), base);
+}
+
+#[test]
+fn zero_is_immediate() {
+    immediate_round_trips(0);
+}
+
+#[test]
+fn one_is_immediate() {
+    immediate_round_trips(1);
+}
+
+#[test]
+fn neg_one_is_immediate() {
+    immediate_round_trips(-1);
+}
+
+#[test]
+fn max_immediate_is_immediate() {
+    immediate_round_trips((1i64 << 62) - 1);
+}
+
+#[test]
+fn min_immediate_is_immediate() {
+    immediate_round_trips(-(1i64 << 62));
+}
+
+#[test]
+fn just_above_max_immediate_boxes() {
+    boxed_round_trips(1i64 << 62);
+}
+
+#[test]
+fn just_below_min_immediate_boxes() {
+    boxed_round_trips(-(1i64 << 62) - 1);
+}
+
+#[test]
+fn i64_max_boxes() {
+    boxed_round_trips(i64::MAX);
+}
+
+#[test]
+fn i64_min_boxes() {
+    boxed_round_trips(i64::MIN);
 }
 
 #[test]
@@ -316,32 +364,51 @@ fn min_int_division_does_not_panic() {
     assert!(int_eq(q, i64::MIN.wrapping_div(-1)));
 }
 
-#[test]
-fn arity_three_application_splits_are_equivalent() {
+/// Applying a 3-ary closure to the arguments 1, 2, 3 — whether in one call or
+/// split into several partial applications — always totals 6, with no net heap
+/// allocation.
+#[track_caller]
+fn arity_three_split_totals_six(split: &[usize]) {
     let _g = lock();
     let base = live_count();
-    // Apply a 3-ary closure as one call, or split across several, always 6.
-    let splits: &[&[usize]] = &[&[3], &[1, 2], &[2, 1], &[1, 1, 1]];
-    for split in splits {
-        let mut callee = closure(code_add3, 3);
-        let mut next = 1i64;
-        for (k, &count) in split.iter().enumerate() {
-            let args: Vec<Value> = (0..count)
-                .map(|_| {
-                    let v = imm_int(next);
-                    next += 1;
-                    v
-                })
-                .collect();
-            let is_last = k + 1 == split.len();
-            // SAFETY: applying `count` owned arguments to the current callee.
-            callee = unsafe { fai_apply_n(callee, count as u64, args.as_ptr()) };
-            if is_last {
-                assert!(int_eq(callee, 6), "split {split:?} should total 6");
-            }
+    let mut callee = closure(code_add3, 3);
+    let mut next = 1i64;
+    for (k, &count) in split.iter().enumerate() {
+        let args: Vec<Value> = (0..count)
+            .map(|_| {
+                let v = imm_int(next);
+                next += 1;
+                v
+            })
+            .collect();
+        let is_last = k + 1 == split.len();
+        // SAFETY: applying `count` owned arguments to the current callee.
+        callee = unsafe { fai_apply_n(callee, count as u64, args.as_ptr()) };
+        if is_last {
+            assert!(int_eq(callee, 6), "split {split:?} should total 6");
         }
     }
     assert_eq!(live_count(), base);
+}
+
+#[test]
+fn arity_three_single_call() {
+    arity_three_split_totals_six(&[3]);
+}
+
+#[test]
+fn arity_three_split_one_then_two() {
+    arity_three_split_totals_six(&[1, 2]);
+}
+
+#[test]
+fn arity_three_split_two_then_one() {
+    arity_three_split_totals_six(&[2, 1]);
+}
+
+#[test]
+fn arity_three_fully_curried() {
+    arity_three_split_totals_six(&[1, 1, 1]);
 }
 
 #[test]

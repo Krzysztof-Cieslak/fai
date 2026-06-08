@@ -41,27 +41,47 @@ fn geometry_add2_locals_are_all_float() {
 }
 
 #[test]
-fn geometry_cross3_all_components_float() {
+fn geometry_cross3_locals() {
     let src = fixture("Geometry.fai");
     let locals = local_types(&src, "cross3");
-    for name in ["ax", "ay", "az", "bx", "by", "bz", "cx", "cy", "cz"] {
-        assert_eq!(locals.get(name).map(String::as_str), Some("Float"), "{name}");
-    }
-    assert_eq!(locals.get("a").map(String::as_str), Some("{ x : Float, y : Float, z : Float }"));
+    // Both Vec3 params, their destructured components, and the cross-product
+    // results are all Float.
+    assert_eq!(
+        locals,
+        map(&[
+            ("a", "{ x : Float, y : Float, z : Float }"),
+            ("ax", "Float"),
+            ("ay", "Float"),
+            ("az", "Float"),
+            ("b", "{ x : Float, y : Float, z : Float }"),
+            ("bx", "Float"),
+            ("by", "Float"),
+            ("bz", "Float"),
+            ("cx", "Float"),
+            ("cy", "Float"),
+            ("cz", "Float"),
+        ])
+    );
 }
 
 #[test]
 fn geometry_step_threads_vec2_through_locals() {
     let src = fixture("Geometry.fai");
     let locals = local_types(&src, "step");
-    // The physics step keeps every vector as a Vec2 record.
-    for name in ["pos", "vel", "gravity", "newVel", "newPos"] {
-        assert_eq!(
-            locals.get(name).map(String::as_str),
-            Some("{ x : Float, y : Float }"),
-            "{name}"
-        );
-    }
+    // The physics step keeps every vector as a Vec2 record; `state` is the Body
+    // and `dt` the Float timestep.
+    assert_eq!(
+        locals,
+        map(&[
+            ("dt", "Float"),
+            ("gravity", "{ x : Float, y : Float }"),
+            ("newPos", "{ x : Float, y : Float }"),
+            ("newVel", "{ x : Float, y : Float }"),
+            ("pos", "{ x : Float, y : Float }"),
+            ("state", "{ pos : { x : Float, y : Float }, vel : { x : Float, y : Float } }"),
+            ("vel", "{ x : Float, y : Float }"),
+        ])
+    );
 }
 
 // ── Rational: every intermediate is Int, params destructure consistently ─────
@@ -105,12 +125,29 @@ fn rational_reduce_locals() {
 // ── Matrix2: 4-tuple destructuring yields all Floats ─────────────────────────
 
 #[test]
-fn matrix_mul_m_results_are_float() {
+fn matrix_mul_m_locals() {
     let src = fixture("Matrix2.fai");
     let locals = local_types(&src, "mulM");
-    for name in ["a1", "b1", "c1", "d1", "a2", "b2", "c2", "d2", "r11", "r12", "r21", "r22"] {
-        assert_eq!(locals.get(name).map(String::as_str), Some("Float"), "{name}");
-    }
+    // Both Mat2 params plus every destructured element and product term is Float.
+    assert_eq!(
+        locals,
+        map(&[
+            ("a1", "Float"),
+            ("a2", "Float"),
+            ("b1", "Float"),
+            ("b2", "Float"),
+            ("c1", "Float"),
+            ("c2", "Float"),
+            ("d1", "Float"),
+            ("d2", "Float"),
+            ("m", "{ a : Float, b : Float, c : Float, d : Float }"),
+            ("n", "{ a : Float, b : Float, c : Float, d : Float }"),
+            ("r11", "Float"),
+            ("r12", "Float"),
+            ("r21", "Float"),
+            ("r22", "Float"),
+        ])
+    );
 }
 
 #[test]
@@ -126,10 +163,20 @@ fn matrix_inverse_locals() {
 fn matrix_apply_mixes_matrix_and_vector_locals() {
     let src = fixture("Matrix2.fai");
     let locals = local_types(&src, "apply");
-    // Matrix components and vector components are all Float.
-    for name in ["a", "b", "c", "d", "x", "y"] {
-        assert_eq!(locals.get(name).map(String::as_str), Some("Float"), "{name}");
-    }
+    // The Mat2 and Vec2 params, plus their destructured Float components.
+    assert_eq!(
+        locals,
+        map(&[
+            ("a", "Float"),
+            ("b", "Float"),
+            ("c", "Float"),
+            ("d", "Float"),
+            ("m", "{ a : Float, b : Float, c : Float, d : Float }"),
+            ("v", "{ x : Float, y : Float }"),
+            ("x", "Float"),
+            ("y", "Float"),
+        ])
+    );
 }
 
 // ── Combinators: polymorphic local inference ─────────────────────────────────

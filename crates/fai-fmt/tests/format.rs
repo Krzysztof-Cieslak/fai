@@ -282,35 +282,56 @@ fn assert_canonical(src: &str) -> String {
     once
 }
 
-#[test]
-fn all_binary_operators_format_with_spaces() {
-    let src = indoc! {r#"
-        module M
-        let a = w - x * y / z % p
-        let b = c ++ d :: e
-        let c = p && q || r
-        let d = a = b
-        let e = a <> b
-        let f = a < b
-        let g = a <= b
-        let h = a > b
-        let i = a >= b
-        let j = f >> g
-        let k = x |> f"#};
+/// Formatting `src` canonically produces output containing `needle`.
+#[track_caller]
+fn formats_with(src: &str, needle: &str) {
     let out = assert_canonical(src);
-    for needle in [
-        "w - x * y / z % p",
-        "c ++ d :: e",
-        "p && q || r",
-        "a = b",
-        "a <> b",
-        "a <= b",
-        "a >= b",
-        "f >> g",
-        "x |> f",
-    ] {
-        assert!(out.contains(needle), "missing `{needle}` in:\n{out}");
-    }
+    assert!(out.contains(needle), "missing `{needle}` in:\n{out}");
+}
+
+#[test]
+fn arithmetic_operators_spaced() {
+    formats_with("module M\nlet a = w - x * y / z % p", "w - x * y / z % p");
+}
+
+#[test]
+fn cons_and_concat_spaced() {
+    formats_with("module M\nlet b = c ++ d :: e", "c ++ d :: e");
+}
+
+#[test]
+fn boolean_operators_spaced() {
+    formats_with("module M\nlet c = p && q || r", "p && q || r");
+}
+
+#[test]
+fn equality_spaced() {
+    formats_with("module M\nlet d = a = b", "a = b");
+}
+
+#[test]
+fn inequality_spaced() {
+    formats_with("module M\nlet e = a <> b", "a <> b");
+}
+
+#[test]
+fn less_equal_spaced() {
+    formats_with("module M\nlet g = a <= b", "a <= b");
+}
+
+#[test]
+fn greater_equal_spaced() {
+    formats_with("module M\nlet i = a >= b", "a >= b");
+}
+
+#[test]
+fn compose_spaced() {
+    formats_with("module M\nlet j = f >> g", "f >> g");
+}
+
+#[test]
+fn pipe_spaced() {
+    formats_with("module M\nlet k = x |> f", "x |> f");
 }
 
 #[test]
@@ -329,17 +350,28 @@ fn unary_minus_and_negatives() {
 }
 
 #[test]
-fn literals_are_reproduced_verbatim() {
-    let out = assert_canonical(indoc! {r#"
-        module M
-        let a = 0xFF
-        let b = 1_000
-        let c = 'a'
-        let d = 3.0
-        let e = "hi""#});
-    for needle in ["= 0xFF", "= 1_000", "= 'a'", "= 3.0", "= \"hi\""] {
-        assert!(out.contains(needle), "missing `{needle}` in:\n{out}");
-    }
+fn hex_literal_verbatim() {
+    formats_with("module M\nlet a = 0xFF", "= 0xFF");
+}
+
+#[test]
+fn underscore_decimal_verbatim() {
+    formats_with("module M\nlet b = 1_000", "= 1_000");
+}
+
+#[test]
+fn char_literal_verbatim() {
+    formats_with("module M\nlet c = 'a'", "= 'a'");
+}
+
+#[test]
+fn float_literal_verbatim() {
+    formats_with("module M\nlet d = 3.0", "= 3.0");
+}
+
+#[test]
+fn string_literal_verbatim() {
+    formats_with("module M\nlet e = \"hi\"", "= \"hi\"");
 }
 
 #[test]
@@ -720,90 +752,210 @@ fn shape_type(m: &Module, id: TypeId) -> String {
     }
 }
 
+/// Parsing, formatting, and reparsing `src` must preserve its structural shape.
+/// These cases specifically exercise the block-collapse normalization and the
+/// if-break path.
+#[track_caller]
+fn preserves_structure(src: &str) {
+    let before = parse_module(SourceId::new(0), src);
+    assert!(before.diagnostics.is_empty(), "sample did not parse: {src}");
+    let out = fmt(src);
+    let after = parse_module(SourceId::new(0), &out);
+    assert!(after.diagnostics.is_empty(), "reformatted output did not parse:\n{out}");
+    assert_eq!(shape(&before.module), shape(&after.module), "src: {src}\nout:\n{out}");
+}
+
+// --- expressions, blocks, and the if-break path ---
+
 #[test]
-fn fmt_preserves_structure_examples() {
-    // Cases that specifically exercise the block-collapse normalization and the
-    // if-break path; the structural shape must survive a format round-trip.
-    for src in [
-        "module M\nlet f =\n  x",
-        "module M\nlet g x = if c then a else b",
-        indoc! {r#"
-            module M
-            let h x =
-              if someLongCondition then theFirstResult else theSecondResult"#},
-        "module M\nlet a = w - x * y / z % p",
-        "module M\nlet b = f (g x) (h y)",
-        "module M\nlet t = ((a, b), [c, d])",
-        "module M\nlet n = -a - -b",
-        "module M\nlet p = a :: b :: c ++ d",
-        "module M\npublic q : ('a -> 'b) -> List 'a -> List 'b\nlet q f = f",
-        // Data types, match, and records.
-        indoc! {r#"
-            module M
-            type Color =
-              | Red
-              | Green
-              | Blue"#},
-        indoc! {r#"
-            module M
-            type Shape =
-              | Circle Float
-              | Rect Float Float"#},
-        indoc! {r#"
-            module M
-            type Opt 'a =
-              | None
-              | Some 'a"#},
-        "module M\ntype Celsius = Int",
-        "module M\ntype Vec2 = { x : Float, y : Float }",
-        "module M\npublic getX : { x : 'a | _ } -> 'a\nlet getX r = r.x",
+fn preserves_bare_let_body() {
+    preserves_structure("module M\nlet f =\n  x");
+}
+
+#[test]
+fn preserves_inline_if() {
+    preserves_structure("module M\nlet g x = if c then a else b");
+}
+
+#[test]
+fn preserves_if_break() {
+    preserves_structure(indoc! {r#"
+        module M
+        let h x =
+          if someLongCondition then theFirstResult else theSecondResult"#});
+}
+
+#[test]
+fn preserves_arithmetic_chain() {
+    preserves_structure("module M\nlet a = w - x * y / z % p");
+}
+
+#[test]
+fn preserves_nested_application() {
+    preserves_structure("module M\nlet b = f (g x) (h y)");
+}
+
+#[test]
+fn preserves_nested_tuples_and_lists() {
+    preserves_structure("module M\nlet t = ((a, b), [c, d])");
+}
+
+#[test]
+fn preserves_double_negation() {
+    preserves_structure("module M\nlet n = -a - -b");
+}
+
+#[test]
+fn preserves_cons_and_concat() {
+    preserves_structure("module M\nlet p = a :: b :: c ++ d");
+}
+
+#[test]
+fn preserves_higher_order_signature() {
+    preserves_structure("module M\npublic q : ('a -> 'b) -> List 'a -> List 'b\nlet q f = f");
+}
+
+// --- data types, match, and records ---
+
+#[test]
+fn preserves_enum_type() {
+    preserves_structure(indoc! {r#"
+        module M
+        type Color =
+          | Red
+          | Green
+          | Blue"#});
+}
+
+#[test]
+fn preserves_shape_type() {
+    preserves_structure(indoc! {r#"
+        module M
+        type Shape =
+          | Circle Float
+          | Rect Float Float"#});
+}
+
+#[test]
+fn preserves_option_type() {
+    preserves_structure(indoc! {r#"
+        module M
+        type Opt 'a =
+          | None
+          | Some 'a"#});
+}
+
+#[test]
+fn preserves_type_alias() {
+    preserves_structure("module M\ntype Celsius = Int");
+}
+
+#[test]
+fn preserves_record_type() {
+    preserves_structure("module M\ntype Vec2 = { x : Float, y : Float }");
+}
+
+#[test]
+fn preserves_open_record_getter_sig() {
+    preserves_structure("module M\npublic getX : { x : 'a | _ } -> 'a\nlet getX r = r.x");
+}
+
+#[test]
+fn preserves_open_record_setter_sig() {
+    preserves_structure(
         "module M\npublic setX : { x : 'a | 'r } -> { x : 'a | 'r }\nlet setX r = r",
-        "module M\nlet p = { x = 1, y = 2 }",
-        "module M\nlet q = { r with x = 1, y = 2 }",
-        "module M\nlet g r = r.x.y",
-        indoc! {r#"
-            module M
-            let f x =
-              match x with
-              | Some n -> n
-              | None -> 0"#},
-        indoc! {r#"
-            module M
-            let f xs =
-              match xs with
-              | [] -> 0
-              | x :: rest -> x"#},
-        indoc! {r#"
-            module M
-            let f n =
-              match n with
-              | 0 | 1 -> 1
-              | _ -> 2"#},
-        indoc! {r#"
-            module M
-            let f r =
-              match r with
-              | { x = 0 | _ } -> 0
-              | { x, y } -> x"#},
-        // Interfaces, instances, and operator definitions.
-        indoc! {r#"
-            module M
-            interface Greeter =
-              greet : String -> String
-              shout : String -> String"#},
-        "module M\nlet g = { Greeter with greet n = n, shout n = n }",
-        "module M\nlet (+-+) a b = a + b",
-        "module M\nlet ( ** ) a b = a + b",
-        "module M\nlet eq = (=)",
-        "module M\nlet add = (+)",
-    ] {
-        let before = parse_module(SourceId::new(0), src);
-        assert!(before.diagnostics.is_empty(), "sample did not parse: {src}");
-        let out = fmt(src);
-        let after = parse_module(SourceId::new(0), &out);
-        assert!(after.diagnostics.is_empty(), "reformatted output did not parse:\n{out}");
-        assert_eq!(shape(&before.module), shape(&after.module), "src: {src}\nout:\n{out}");
-    }
+    );
+}
+
+#[test]
+fn preserves_record_literal() {
+    preserves_structure("module M\nlet p = { x = 1, y = 2 }");
+}
+
+#[test]
+fn preserves_record_update() {
+    preserves_structure("module M\nlet q = { r with x = 1, y = 2 }");
+}
+
+#[test]
+fn preserves_nested_field_access() {
+    preserves_structure("module M\nlet g r = r.x.y");
+}
+
+#[test]
+fn preserves_option_match() {
+    preserves_structure(indoc! {r#"
+        module M
+        let f x =
+          match x with
+          | Some n -> n
+          | None -> 0"#});
+}
+
+#[test]
+fn preserves_list_match() {
+    preserves_structure(indoc! {r#"
+        module M
+        let f xs =
+          match xs with
+          | [] -> 0
+          | x :: rest -> x"#});
+}
+
+#[test]
+fn preserves_or_pattern() {
+    preserves_structure(indoc! {r#"
+        module M
+        let f n =
+          match n with
+          | 0 | 1 -> 1
+          | _ -> 2"#});
+}
+
+#[test]
+fn preserves_record_pattern_match() {
+    preserves_structure(indoc! {r#"
+        module M
+        let f r =
+          match r with
+          | { x = 0 | _ } -> 0
+          | { x, y } -> x"#});
+}
+
+// --- interfaces, instances, and operator definitions ---
+
+#[test]
+fn preserves_interface_decl() {
+    preserves_structure(indoc! {r#"
+        module M
+        interface Greeter =
+          greet : String -> String
+          shout : String -> String"#});
+}
+
+#[test]
+fn preserves_instance() {
+    preserves_structure("module M\nlet g = { Greeter with greet n = n, shout n = n }");
+}
+
+#[test]
+fn preserves_custom_operator_def() {
+    preserves_structure("module M\nlet (+-+) a b = a + b");
+}
+
+#[test]
+fn preserves_spaced_operator_def() {
+    preserves_structure("module M\nlet ( ** ) a b = a + b");
+}
+
+#[test]
+fn preserves_eq_section() {
+    preserves_structure("module M\nlet eq = (=)");
+}
+
+#[test]
+fn preserves_plus_section() {
+    preserves_structure("module M\nlet add = (+)");
 }
 
 #[test]
