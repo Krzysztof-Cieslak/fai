@@ -9,12 +9,16 @@
 
 pub mod code_action;
 pub mod completion;
+pub mod highlight;
 pub mod query;
 pub mod repr;
 pub mod target;
 
 pub use code_action::{CodeAction, CodeActionEdit, code_actions_at};
 pub use completion::{CompletionItem, CompletionKind, CompletionResult, completions_at};
+pub use highlight::{
+    InlayHint, SEMANTIC_TOKEN_TYPES, SemKind, SemToken, inlay_hints, semantic_tokens,
+};
 pub use query::{
     ApiResult, CallEdge, CallHierarchyResult, CapsResult, DefResult, DependentsResult, DocsResult,
     HoverResult, ListOpts, OutlineNode, OutlineResult, ParamInfo, RefsResult, RenameTarget,

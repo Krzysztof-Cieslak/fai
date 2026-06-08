@@ -605,6 +605,48 @@ fn code_action_qualifies_an_unbound_name() {
     harness.shutdown();
 }
 
+#[test]
+fn inlay_hints_show_inferred_binder_types() {
+    let src = "module Main\n\npublic area : Int -> Int\nlet area w = w + 1\n";
+    let mut harness = Harness::start("inlay", &[("Main.fai", src)]);
+    let uri = harness.did_open("Main.fai", src);
+    let result = harness.request(
+        "textDocument/inlayHint",
+        json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 9, "character": 0 }
+            }
+        }),
+    );
+    let hints = result.as_array().expect("an array of inlay hints");
+    // The parameter `w` is hinted as `Int` (LSP inlay kind 1 = Type).
+    let w = hints
+        .iter()
+        .find(|h| h["label"] == ": Int")
+        .unwrap_or_else(|| panic!("no `: Int` hint: {hints:?}"));
+    assert_eq!(w["position"], json!({ "line": 3, "character": 10 }), "after `w`: {w:?}");
+    assert_eq!(w["kind"], 1, "{w:?}");
+    harness.shutdown();
+}
+
+#[test]
+fn semantic_tokens_encode_the_document() {
+    let src = "module Main\n\npublic two : Int\nlet two = 2\n";
+    let mut harness = Harness::start("semtok", &[("Main.fai", src)]);
+    let uri = harness.did_open("Main.fai", src);
+    let result = harness
+        .request("textDocument/semanticTokens/full", json!({ "textDocument": { "uri": uri } }));
+    let data = result["data"].as_array().expect("delta-encoded token data");
+    assert!(!data.is_empty() && data.len().is_multiple_of(5), "5-tuples: {data:?}");
+    // The first token is the `module` keyword: line 0, col 0, length 6, type 0
+    // (keyword is the first legend entry), no modifiers.
+    let head: Vec<i64> = data[0..5].iter().map(|v| v.as_i64().unwrap()).collect();
+    assert_eq!(head, vec![0, 0, 6, 0, 0], "leading `module` keyword: {head:?}");
+    harness.shutdown();
+}
+
 // --- dirty (unsaved) buffers -------------------------------------------------
 //
 // These exercise the case the earlier tests do not: the open buffer differs from

@@ -23,13 +23,16 @@ use lsp_types::{
     DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DocumentFormattingParams, DocumentSymbol, DocumentSymbolParams,
     DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
-    HoverParams, HoverProviderCapability, Location as LspLocation, MarkupContent, MarkupKind,
-    NumberOrString, OneOf, ParameterInformation, ParameterLabel, Position, PrepareRenameResponse,
-    PublishDiagnosticsParams, Range, ReferenceParams, RenameOptions, RenameParams,
-    ServerCapabilities, SignatureHelp as LspSignatureHelp, SignatureHelpOptions,
-    SignatureHelpParams, SignatureInformation, SymbolInformation, SymbolKind as LspSymbolKind,
-    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url,
-    WorkspaceEdit, WorkspaceSymbolParams,
+    HoverParams, HoverProviderCapability, InlayHint as LspInlayHint, InlayHintKind, InlayHintLabel,
+    InlayHintParams, Location as LspLocation, MarkupContent, MarkupKind, NumberOrString, OneOf,
+    ParameterInformation, ParameterLabel, Position, PrepareRenameResponse,
+    PublishDiagnosticsParams, Range, ReferenceParams, RenameOptions, RenameParams, SemanticToken,
+    SemanticTokenType, SemanticTokens, SemanticTokensFullOptions, SemanticTokensLegend,
+    SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
+    SemanticTokensServerCapabilities, ServerCapabilities, SignatureHelp as LspSignatureHelp,
+    SignatureHelpOptions, SignatureHelpParams, SignatureInformation, SymbolInformation,
+    SymbolKind as LspSymbolKind, TextDocumentPositionParams, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextEdit, Url, WorkspaceEdit, WorkspaceSymbolParams,
 };
 
 mod position;
@@ -86,6 +89,10 @@ fn server_capabilities() -> ServerCapabilities {
         document_symbol_provider: Some(OneOf::Left(true)),
         workspace_symbol_provider: Some(OneOf::Left(true)),
         references_provider: Some(OneOf::Left(true)),
+        rename_provider: Some(OneOf::Right(RenameOptions {
+            prepare_provider: Some(true),
+            work_done_progress_options: Default::default(),
+        })),
         completion_provider: Some(CompletionOptions {
             // `.` triggers member completion; identifier characters trigger
             // automatically without being listed.
@@ -98,10 +105,20 @@ fn server_capabilities() -> ServerCapabilities {
             ..SignatureHelpOptions::default()
         }),
         code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
-        rename_provider: Some(OneOf::Right(RenameOptions {
-            prepare_provider: Some(true),
-            work_done_progress_options: Default::default(),
-        })),
+        inlay_hint_provider: Some(OneOf::Left(true)),
+        semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
+            SemanticTokensOptions {
+                legend: SemanticTokensLegend {
+                    token_types: fai_ide::SEMANTIC_TOKEN_TYPES
+                        .iter()
+                        .map(|&t| SemanticTokenType::new(t))
+                        .collect(),
+                    token_modifiers: vec![],
+                },
+                full: Some(SemanticTokensFullOptions::Bool(true)),
+                ..SemanticTokensOptions::default()
+            },
+        )),
         ..ServerCapabilities::default()
     }
 }
@@ -230,6 +247,18 @@ impl Server {
                 if let Ok((id, params)) = req.extract::<CodeActionParams>("textDocument/codeAction")
                 {
                     respond(conn, id, &self.code_actions(&params));
+                }
+            }
+            "textDocument/inlayHint" => {
+                if let Ok((id, params)) = req.extract::<InlayHintParams>("textDocument/inlayHint") {
+                    respond(conn, id, &self.inlay_hints(&params));
+                }
+            }
+            "textDocument/semanticTokens/full" => {
+                if let Ok((id, params)) =
+                    req.extract::<SemanticTokensParams>("textDocument/semanticTokens/full")
+                {
+                    respond(conn, id, &self.semantic_tokens(&params));
                 }
             }
             // An unsupported request still needs a reply so the client is not
@@ -452,6 +481,43 @@ impl Server {
         Some(response)
     }
 
+    fn inlay_hints(&self, params: &InlayHintParams) -> Option<Vec<LspInlayHint>> {
+        let uri = &params.text_document.uri;
+        let rel = self.relative(uri)?;
+        let file = *self.session.select_files(Some(&rel)).first()?;
+        let text = self.open.get(uri)?;
+        let lines = LineMap::new(text);
+        let start = lines.offset(params.range.start) as u32;
+        let end = lines.offset(params.range.end) as u32;
+        let hints = fai_ide::inlay_hints(self.session.db(), file, start, end);
+        Some(
+            hints
+                .into_iter()
+                .map(|h| LspInlayHint {
+                    position: lines.position(h.offset as usize),
+                    label: InlayHintLabel::String(h.label),
+                    kind: Some(InlayHintKind::TYPE),
+                    text_edits: None,
+                    tooltip: None,
+                    padding_left: Some(true),
+                    padding_right: None,
+                    data: None,
+                })
+                .collect(),
+        )
+    }
+
+    fn semantic_tokens(&self, params: &SemanticTokensParams) -> Option<SemanticTokensResult> {
+        let uri = &params.text_document.uri;
+        let rel = self.relative(uri)?;
+        let file = *self.session.select_files(Some(&rel)).first()?;
+        let text = self.open.get(uri)?;
+        let lines = LineMap::new(text);
+        let tokens = fai_ide::semantic_tokens(self.session.db(), file);
+        let data = encode_semantic_tokens(text, &lines, &tokens);
+        Some(SemanticTokensResult::Tokens(SemanticTokens { result_id: None, data }))
+    }
+
     // --- helpers ----------------------------------------------------------
 
     /// Converts an IDE outline node into an LSP [`DocumentSymbol`] (recursively
@@ -644,6 +710,59 @@ fn lsp_symbol_kind(kind: fai_ide::repr::SymbolKind) -> LspSymbolKind {
         fai_ide::repr::SymbolKind::Value => LspSymbolKind::VARIABLE,
         fai_ide::repr::SymbolKind::Module => LspSymbolKind::MODULE,
     }
+}
+
+/// Delta-encodes engine semantic tokens into the LSP wire form (UTF-16 columns),
+/// splitting any token that crosses a line so each emitted token is single-line.
+fn encode_semantic_tokens(
+    text: &str,
+    lines: &LineMap,
+    tokens: &[fai_ide::SemToken],
+) -> Vec<SemanticToken> {
+    let mut out = Vec::new();
+    let (mut prev_line, mut prev_char) = (0u32, 0u32);
+    for token in tokens {
+        let token_type = token.kind.index();
+        for (line, character, length) in
+            line_pieces(text, lines, token.offset as usize, token.length as usize)
+        {
+            if length == 0 {
+                continue;
+            }
+            let delta_line = line - prev_line;
+            let delta_start = if delta_line == 0 { character - prev_char } else { character };
+            out.push(SemanticToken {
+                delta_line,
+                delta_start,
+                length,
+                token_type,
+                token_modifiers_bitset: 0,
+            });
+            (prev_line, prev_char) = (line, character);
+        }
+    }
+    out
+}
+
+/// Splits the byte range `[offset, offset+length)` into single-line
+/// `(line, utf16 start column, utf16 length)` pieces, excluding line terminators.
+fn line_pieces(text: &str, lines: &LineMap, offset: usize, length: usize) -> Vec<(u32, u32, u32)> {
+    let end = (offset + length).min(text.len());
+    let mut pieces = Vec::new();
+    let mut cur = offset;
+    while cur < end {
+        let start_pos = lines.position(cur);
+        let next_line_start = lines.line_start(start_pos.line as usize + 1);
+        let mut content_end = next_line_start.min(end);
+        // Drop a trailing CR/LF so the token covers only the line's content.
+        while content_end > cur && matches!(text.as_bytes()[content_end - 1], b'\n' | b'\r') {
+            content_end -= 1;
+        }
+        let end_pos = lines.position(content_end);
+        pieces.push((start_pos.line, start_pos.character, end_pos.character - start_pos.character));
+        cur = next_line_start.max(cur + 1);
+    }
+    pieces
 }
 
 /// Maps an IDE completion kind to its LSP counterpart.
