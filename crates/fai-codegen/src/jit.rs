@@ -5,14 +5,17 @@
 //! through the runtime and returns its exit code. The reachable set (including
 //! prelude definitions) is computed by the driver.
 
+use cranelift_codegen::Context;
+use cranelift_codegen::control::ControlPlane;
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{Linkage, Module, default_libcall_names};
+use cranelift_module::{FuncId, Linkage, Module, ModuleReloc, default_libcall_names};
 use fai_core::ir::LoweredDef;
 use fai_resolve::DefId;
 use fai_runtime as rt;
+use rayon::prelude::*;
 
-use crate::emit::{closure_symbol, compile_def};
+use crate::emit::{build_def, closure_symbol};
 
 /// Registers every runtime symbol the generated code may reference.
 fn register_runtime(builder: &mut JITBuilder) {
@@ -106,6 +109,48 @@ fn jit_module() -> JITModule {
     JITModule::new(builder)
 }
 
+/// Compiles every definition into `module`: builds each function's IR serially
+/// (it mutates the module — declaring callees, runtime imports, and string data),
+/// then code-generates the function bodies **in parallel** (each
+/// `Context::compile` — the expensive legalize/register-allocate/encode step —
+/// needs only the shared, read-only ISA), and finally registers the machine code
+/// serially. This is the split `Module::define_function` performs internally,
+/// with the costly middle step spread across a rayon pool.
+fn compile_module(
+    module: &mut JITModule,
+    defs: &[LoweredDef],
+    namer: &dyn Fn(DefId) -> String,
+    arity_of: &dyn Fn(DefId) -> usize,
+) {
+    let mut jobs: Vec<(FuncId, Context)> = Vec::new();
+    for def in defs {
+        build_def(module, def, namer, arity_of, &mut jobs);
+    }
+
+    // Code-generate each function in parallel; only the read-only ISA is shared.
+    {
+        let isa = module.isa();
+        jobs.par_iter_mut().for_each(|(_, ctx)| {
+            ctx.compile(isa, &mut ControlPlane::default()).expect("compile function");
+        });
+    }
+
+    // Register the compiled machine code into the module (serial — mutates it).
+    for (id, ctx) in &jobs {
+        let compiled = ctx.compiled_code().expect("function was compiled");
+        let alignment = compiled.buffer.alignment as u64;
+        let relocs: Vec<ModuleReloc> = compiled
+            .buffer
+            .relocs()
+            .iter()
+            .map(|reloc| ModuleReloc::from_mach_reloc(reloc, &ctx.func, *id))
+            .collect();
+        module
+            .define_function_bytes(*id, alignment, compiled.code_buffer(), &relocs)
+            .expect("define function bytes");
+    }
+}
+
 /// A compiled, finalized JIT image kept alive so its code can be called by
 /// address. Used to run contracts: build once from the reachable definitions,
 /// then fetch each contract's static-closure pointer and apply it via the
@@ -123,9 +168,7 @@ impl JitProgram {
         arity_of: &dyn Fn(DefId) -> usize,
     ) -> JitProgram {
         let mut module = jit_module();
-        for def in defs {
-            compile_def(&mut module, def, namer, arity_of);
-        }
+        compile_module(&mut module, defs, namer, arity_of);
         module.finalize_definitions().expect("finalize");
         JitProgram { module }
     }
@@ -155,9 +198,7 @@ pub fn jit_run(
     arity_of: &dyn Fn(DefId) -> usize,
 ) -> i32 {
     let mut module = jit_module();
-    for def in defs {
-        compile_def(&mut module, def, namer, arity_of);
-    }
+    compile_module(&mut module, defs, namer, arity_of);
     module.finalize_definitions().expect("finalize");
 
     let entry_id = module

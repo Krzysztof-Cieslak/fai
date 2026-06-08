@@ -548,11 +548,13 @@ a depth-256 arrow drops from ~3.7ms to ~28µs, a value-`let` chain of 800 from
 readers) now borrow boxed operands via non-consuming runtime variants. Always-on
 thread-local **work counters** (`fai-types/src/perf.rs`) gate the solver's
 asymptotic complexity deterministically in `perf_guards.rs`. **Intra-build
-parallelism** is also done (see decision **D95**): per-definition code generation
-(the AOT object loop) and the lower/reference-count gathers for the run paths run
-across a `rayon` pool, each worker on its own cheap database-handle clone (salsa
-coordinates the shared memoization) — ~2× on a 200-definition build here. Still
-to come: the shared/remote cache, daemon hardening (LRU/memory bounds,
+parallelism** is also done (see decisions **D95–D96**): per-definition code
+generation (the AOT object loop) and the lower/reference-count gathers for the
+run paths run across a `rayon` pool, each worker on its own cheap database-handle
+clone (salsa coordinates the shared memoization) — ~2× on a 200-definition build
+here; and the JIT path code-generates each function in parallel (building IR and
+linking the shared module serially) — ~1.4× on the same program. Still to come:
+the shared/remote cache, daemon hardening (LRU/memory bounds,
 cross-request concurrency), opt-in monomorphization, and the remaining
 reuse/borrowing follow-ups (TRMC, cross-module borrowing).
 
@@ -1652,11 +1654,30 @@ suite):
   `build_run_bundle`) run across the rayon pool; **order is preserved** (indexed
   `collect`), so the linker input and the run bundle stay deterministic. This is
   **intra-command** parallelism only — it does not change the daemon's
-  per-command serialization (D57); concurrent *requests* remain future work. The
-  JIT *compile* (one shared module) stays serial — parallelizing it is a separate
-  refactor. Chosen over a generic `build_native<DB: Db + Clone>` (which would push
-  the concrete database type through the driver seam) and over sharing a `&dyn Db`
+  per-command serialization (D57); concurrent *requests* remain future work. (The
+  JIT compile's per-function code generation is parallelized too — see D96.)
+  Chosen over a generic `build_native<DB: Db + Clone>` (which would push the
+  concrete database type through the driver seam) and over sharing a `&dyn Db`
   (impossible: not `Sync`).
+
+- **D96 Parallel per-function JIT code generation (compile/define split).** The
+  JIT compiles all definitions into one shared `JITModule`, which a worker cannot
+  mutate concurrently, so the naive loop is serial. Split the work the way
+  `Module::define_function` does internally: build each function's Cranelift IR
+  serially (it must mutate the module — declaring callees, runtime imports, and
+  string data), then run `Context::compile` (the expensive
+  legalize/register-allocate/encode step) **in parallel** across a rayon pool —
+  it needs only the module's read-only, `Sync` ISA — and finally register the
+  compiled machine code serially via `define_function_bytes`. Code generation is
+  factored into `build_def`/`build_fn` (build only, returning an uncompiled
+  `Context`) shared by both back ends: the AOT path defines each context
+  serially (it is already parallel across whole per-definition modules, D95), the
+  JIT path compiles the collected contexts in parallel. The remaining serial
+  parts — IR building and `finalize_definitions` (linking/relocating the shared
+  image) — bound the speedup (~1.4× on a 200-tiny-function program; more as
+  per-function code grows). Parallelizing IR building too would require
+  pre-declaring every symbol so building never mutates the module — a larger
+  refactor, deferred.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected milestones.

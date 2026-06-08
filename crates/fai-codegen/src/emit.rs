@@ -11,6 +11,7 @@
 //! `args`, captures from `env`. Values are uniform tagged 64-bit words; `Dup`
 //! and `Drop` lower to runtime calls (no-ops on immediates).
 
+use cranelift_codegen::Context;
 use cranelift_codegen::ir::{AbiParam, FuncRef, InstBuilder, MemFlags, Value, types};
 use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
@@ -44,6 +45,26 @@ pub fn compile_def<M: Module>(
     namer: &dyn Fn(DefId) -> String,
     arity_of: &dyn Fn(DefId) -> usize,
 ) {
+    let mut jobs = Vec::new();
+    build_def(module, lowered, namer, arity_of, &mut jobs);
+    for (id, mut ctx) in jobs {
+        module.define_function(id, &mut ctx).expect("define function");
+    }
+}
+
+/// Declares one lowered definition's functions and static closure, defines the
+/// closure data, and **builds** (but does not compile or define) each function
+/// body, pushing a `(FuncId, Context)` job per body onto `jobs`. The IR building
+/// mutates `module` (declaring callees, runtime imports, and string data), so it
+/// is serial; the caller compiles the collected jobs — the expensive step —
+/// however it likes (the JIT does so in parallel, the AOT path serially).
+pub(crate) fn build_def<M: Module>(
+    module: &mut M,
+    lowered: &LoweredDef,
+    namer: &dyn Fn(DefId) -> String,
+    arity_of: &dyn Fn(DefId) -> usize,
+    jobs: &mut Vec<(FuncId, Context)>,
+) {
     let base = namer(lowered.def);
     let sig = code_signature(module);
 
@@ -60,9 +81,10 @@ pub fn compile_def<M: Module>(
         .declare_data(&closure_symbol(namer, lowered.def), Linkage::Export, true, false)
         .expect("declare closure data");
 
-    // Define each function body.
+    // Build each function body into its own (uncompiled) context.
     for (i, f) in lowered.fns.iter().enumerate() {
-        define_fn(module, fn_ids[i], f, lowered, namer, arity_of, &fn_ids, &base, i);
+        let ctx = build_fn(module, f, lowered, namer, arity_of, &fn_ids, &base, i);
+        jobs.push((fn_ids[i], ctx));
     }
 
     // The static closure (the first-class value form, reached via `apply_n`) must
@@ -74,7 +96,8 @@ pub fn compile_def<M: Module>(
         let wrapper = module
             .declare_function(&format!("{base}__owned"), Linkage::Local, &sig)
             .expect("declare wrapper");
-        define_owned_wrapper(module, wrapper, fn_ids[0], &lowered.entry_borrowed);
+        let ctx = build_owned_wrapper(module, fn_ids[0], &lowered.entry_borrowed);
+        jobs.push((wrapper, ctx));
         wrapper
     } else {
         fn_ids[0]
@@ -82,15 +105,11 @@ pub fn compile_def<M: Module>(
     define_static_closure(module, closure_data, closure_code, arity);
 }
 
-/// Defines the owned-ABI wrapper for a function whose entry borrows parameters:
-/// it calls the borrowed entry with the same environment and arguments, then drops
-/// the borrowed arguments (which the entry left untouched), and returns the result.
-fn define_owned_wrapper<M: Module>(
-    module: &mut M,
-    wrapper: FuncId,
-    entry: FuncId,
-    borrowed: &[bool],
-) {
+/// Builds the owned-ABI wrapper for a function whose entry borrows parameters: it
+/// calls the borrowed entry with the same environment and arguments, then drops
+/// the borrowed arguments (which the entry left untouched), and returns the
+/// result. Returns the uncompiled context (the caller compiles and defines it).
+fn build_owned_wrapper<M: Module>(module: &mut M, entry: FuncId, borrowed: &[bool]) -> Context {
     let mut ctx = module.make_context();
     ctx.func.signature = code_signature(module);
     let mut fbcx = FunctionBuilderContext::new();
@@ -122,8 +141,7 @@ fn define_owned_wrapper<M: Module>(
         builder.ins().return_(&[result]);
         builder.finalize();
     }
-    module.define_function(wrapper, &mut ctx).expect("define wrapper");
-    module.clear_context(&mut ctx);
+    ctx
 }
 
 /// The calling convention shared by every compiled function.
@@ -135,10 +153,12 @@ fn code_signature<M: Module>(module: &M) -> cranelift_codegen::ir::Signature {
     sig
 }
 
+/// Builds one function's Cranelift IR into a fresh, **uncompiled** context. The
+/// build mutates `module` (declaring callees, runtime imports, and string data),
+/// so it is serial; the caller compiles the returned context.
 #[allow(clippy::too_many_arguments)]
-fn define_fn<M: Module>(
+fn build_fn<M: Module>(
     module: &mut M,
-    func_id: FuncId,
     core_fn: &CoreFn,
     lowered: &LoweredDef,
     namer: &dyn Fn(DefId) -> String,
@@ -146,7 +166,7 @@ fn define_fn<M: Module>(
     fn_ids: &[FuncId],
     base: &str,
     fn_index: usize,
-) {
+) -> Context {
     let mut ctx = module.make_context();
     ctx.func.signature = code_signature(module);
     let mut fbcx = FunctionBuilderContext::new();
@@ -190,8 +210,7 @@ fn define_fn<M: Module>(
         tr.builder.finalize();
     }
 
-    module.define_function(func_id, &mut ctx).expect("define function");
-    module.clear_context(&mut ctx);
+    ctx
 }
 
 /// Defines a definition's immortal static closure:
