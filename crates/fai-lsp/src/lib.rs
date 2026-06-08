@@ -21,11 +21,12 @@ use lsp_types::{
     CodeActionProviderCapability, CodeActionResponse, CompletionItem, CompletionItemKind,
     CompletionOptions, CompletionParams, CompletionResponse, Diagnostic as LspDiagnostic,
     DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DocumentFormattingParams, DocumentSymbol, DocumentSymbolParams,
-    DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
-    HoverParams, HoverProviderCapability, InlayHint as LspInlayHint, InlayHintKind, InlayHintLabel,
+    DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
+    DocumentRangeFormattingParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
+    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
+    HoverProviderCapability, InlayHint as LspInlayHint, InlayHintKind, InlayHintLabel,
     InlayHintParams, Location as LspLocation, MarkupContent, MarkupKind, NumberOrString, OneOf,
-    ParameterInformation, ParameterLabel, Position, PrepareRenameResponse,
+    ParameterInformation, ParameterLabel, Position, PositionEncodingKind, PrepareRenameResponse,
     PublishDiagnosticsParams, Range, ReferenceParams, RenameOptions, RenameParams, SemanticToken,
     SemanticTokenType, SemanticTokens, SemanticTokensFullOptions, SemanticTokensLegend,
     SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
@@ -36,7 +37,7 @@ use lsp_types::{
 };
 
 mod position;
-use position::LineMap;
+use position::{Encoding, LineMap};
 
 /// Runs the language server over real stdio until the client shuts it down.
 /// Returns the process exit code.
@@ -61,9 +62,13 @@ pub fn run_stdio(root: Utf8PathBuf) -> i32 {
 /// # Errors
 /// Returns an error if the initialize handshake or workspace setup fails.
 pub fn serve(connection: &Connection, root: Utf8PathBuf) -> Result<(), Box<dyn Error>> {
-    let capabilities = serde_json::to_value(server_capabilities())?;
-    let _init = connection.initialize(capabilities)?;
-    let mut server = Server::new(root)?;
+    // Split handshake: read the client's capabilities first so the advertised
+    // position encoding can match what the client supports.
+    let (id, init_params) = connection.initialize_start()?;
+    let encoding = negotiate_encoding(&init_params);
+    let capabilities = serde_json::to_value(server_capabilities(encoding))?;
+    connection.initialize_finish(id, serde_json::json!({ "capabilities": capabilities }))?;
+    let mut server = Server::new(root, encoding)?;
     for msg in &connection.receiver {
         match msg {
             Message::Request(req) => {
@@ -79,13 +84,41 @@ pub fn serve(connection: &Connection, root: Utf8PathBuf) -> Result<(), Box<dyn E
     Ok(())
 }
 
-/// The capabilities Fai's language server advertises.
-fn server_capabilities() -> ServerCapabilities {
+/// The encoding's LSP wire kind, for the advertised `position_encoding`.
+fn encoding_kind(encoding: Encoding) -> PositionEncodingKind {
+    match encoding {
+        Encoding::Utf8 => PositionEncodingKind::UTF8,
+        Encoding::Utf16 => PositionEncodingKind::UTF16,
+    }
+}
+
+/// Picks the position encoding: UTF-8 when the client lists it (Fai's native byte
+/// offsets, so no re-encoding), else the LSP default of UTF-16.
+fn negotiate_encoding(init_params: &serde_json::Value) -> Encoding {
+    let offered = init_params
+        .get("capabilities")
+        .and_then(|c| c.get("general"))
+        .and_then(|g| g.get("positionEncodings"))
+        .and_then(serde_json::Value::as_array);
+    match offered {
+        Some(encodings) if encodings.iter().any(|e| e.as_str() == Some("utf-8")) => Encoding::Utf8,
+        _ => Encoding::Utf16,
+    }
+}
+
+/// The capabilities Fai's language server advertises (with the negotiated
+/// position `encoding`).
+fn server_capabilities(encoding: Encoding) -> ServerCapabilities {
     ServerCapabilities {
-        text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
+        position_encoding: Some(encoding_kind(encoding)),
+        // Incremental sync: the client sends only the changed ranges.
+        text_document_sync: Some(TextDocumentSyncCapability::Kind(
+            TextDocumentSyncKind::INCREMENTAL,
+        )),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         definition_provider: Some(OneOf::Left(true)),
         document_formatting_provider: Some(OneOf::Left(true)),
+        document_range_formatting_provider: Some(OneOf::Left(true)),
         document_symbol_provider: Some(OneOf::Left(true)),
         workspace_symbol_provider: Some(OneOf::Left(true)),
         references_provider: Some(OneOf::Left(true)),
@@ -129,13 +162,20 @@ struct Server {
     root: Utf8PathBuf,
     /// Open documents' current text, by URI.
     open: HashMap<Url, String>,
+    /// The negotiated position encoding for all conversions.
+    encoding: Encoding,
 }
 
 impl Server {
-    fn new(root: Utf8PathBuf) -> Result<Self, Box<dyn Error>> {
+    fn new(root: Utf8PathBuf, encoding: Encoding) -> Result<Self, Box<dyn Error>> {
         let root = root.canonicalize_utf8().unwrap_or(root);
         let session = Session::open(root.clone())?;
-        Ok(Self { session, root, open: HashMap::new() })
+        Ok(Self { session, root, open: HashMap::new(), encoding })
+    }
+
+    /// A line map over `text` under the negotiated position encoding.
+    fn line_map<'t>(&self, text: &'t str) -> LineMap<'t> {
+        LineMap::with_encoding(text, self.encoding)
     }
 
     // --- notifications ----------------------------------------------------
@@ -149,12 +189,19 @@ impl Server {
                 }
             }
             "textDocument/didChange" => {
-                if let Ok(mut p) =
-                    note.extract::<DidChangeTextDocumentParams>("textDocument/didChange")
+                if let Ok(p) = note.extract::<DidChangeTextDocumentParams>("textDocument/didChange")
                 {
-                    // Full sync: the last change carries the whole document.
-                    if let Some(change) = p.content_changes.pop() {
-                        self.open.insert(p.text_document.uri.clone(), change.text);
+                    let uri = p.text_document.uri;
+                    self.apply_changes(&uri, p.content_changes);
+                    self.refresh(conn, &uri);
+                }
+            }
+            "textDocument/didSave" => {
+                if let Ok(p) = note.extract::<DidSaveTextDocumentParams>("textDocument/didSave") {
+                    // The buffer is already authoritative; just re-run diagnostics
+                    // (also picking up the included text when the client sends it).
+                    if let Some(text) = p.text {
+                        self.open.insert(p.text_document.uri.clone(), text);
                     }
                     self.refresh(conn, &p.text_document.uri);
                 }
@@ -169,8 +216,10 @@ impl Server {
                     // closed without saving would leave its unsaved edits in the
                     // warm session for any module that references it.
                     self.revert_to_disk(uri);
-                    // Clear the closed file's diagnostics.
+                    // Clear the closed file's diagnostics, then refresh the rest:
+                    // reverting may have changed what other open files see.
                     self.publish(conn, uri, vec![]);
+                    self.publish_all_open(conn);
                 }
             }
             _ => {}
@@ -198,6 +247,13 @@ impl Server {
                     req.extract::<DocumentFormattingParams>("textDocument/formatting")
                 {
                     respond(conn, id, &self.formatting(&params));
+                }
+            }
+            "textDocument/rangeFormatting" => {
+                if let Ok((id, params)) =
+                    req.extract::<DocumentRangeFormattingParams>("textDocument/rangeFormatting")
+                {
+                    respond(conn, id, &self.range_formatting(&params));
                 }
             }
             "textDocument/documentSymbol" => {
@@ -319,9 +375,21 @@ impl Server {
         // formatter sees the unsaved text.
         let result = fmt(self.session.db(), &[*file]);
         let formatted = result.files.first()?.formatted.clone();
-        let lines = LineMap::new(text);
+        let lines = self.line_map(text);
         let range = Range { start: Position { line: 0, character: 0 }, end: lines.end() };
         Some(vec![TextEdit { range, new_text: formatted }])
+    }
+
+    fn range_formatting(&self, params: &DocumentRangeFormattingParams) -> Option<Vec<TextEdit>> {
+        let uri = &params.text_document.uri;
+        let rel = self.relative(uri)?;
+        let original = self.open.get(uri)?;
+        let file = *self.session.select_files(Some(&rel)).first()?;
+        let result = fmt(self.session.db(), &[file]);
+        let formatted = &result.files.first()?.formatted;
+        // The formatter is whole-file; restrict its edits to the lines the request
+        // asked for, so a "format selection" only touches the selection.
+        Some(range_formatting_edits(original, formatted, params.range))
     }
 
     fn document_symbols(&self, params: &DocumentSymbolParams) -> Option<DocumentSymbolResponse> {
@@ -441,7 +509,7 @@ impl Server {
         let rel = self.relative(uri)?;
         let file = *self.session.select_files(Some(&rel)).first()?;
         let text = self.open.get(uri)?;
-        let lines = LineMap::new(text);
+        let lines = self.line_map(text);
         let start = lines.offset(params.range.start) as u32;
         let end = lines.offset(params.range.end) as u32;
         let actions = fai_ide::code_actions_at(
@@ -486,7 +554,7 @@ impl Server {
         let rel = self.relative(uri)?;
         let file = *self.session.select_files(Some(&rel)).first()?;
         let text = self.open.get(uri)?;
-        let lines = LineMap::new(text);
+        let lines = self.line_map(text);
         let start = lines.offset(params.range.start) as u32;
         let end = lines.offset(params.range.end) as u32;
         let hints = fai_ide::inlay_hints(self.session.db(), file, start, end);
@@ -512,7 +580,7 @@ impl Server {
         let rel = self.relative(uri)?;
         let file = *self.session.select_files(Some(&rel)).first()?;
         let text = self.open.get(uri)?;
-        let lines = LineMap::new(text);
+        let lines = self.line_map(text);
         let tokens = fai_ide::semantic_tokens(self.session.db(), file);
         let data = encode_semantic_tokens(text, &lines, &tokens);
         Some(SemanticTokensResult::Tokens(SemanticTokens { result_id: None, data }))
@@ -561,32 +629,64 @@ impl Server {
     /// buffer when present, else the database copy).
     fn range_in_file(&self, span: &fai_ide::repr::SpanJson) -> Option<Range> {
         let text = self.file_text(&span.file)?;
-        let lines = LineMap::new(&text);
+        let lines = self.line_map(&text);
         Some(Range {
             start: lines.position(span.byte_start as usize),
             end: lines.position(span.byte_end as usize),
         })
     }
 
-    /// Overlays a document's current text into the session and republishes its
-    /// diagnostics.
+    /// Applies a document's content changes (incremental ranges, or a full-text
+    /// replacement when a change carries no range) to its open buffer, in order.
+    fn apply_changes(
+        &mut self,
+        uri: &Url,
+        changes: Vec<lsp_types::TextDocumentContentChangeEvent>,
+    ) {
+        let mut text = self.open.get(uri).cloned().unwrap_or_default();
+        for change in changes {
+            match change.range {
+                Some(range) => {
+                    let lines = self.line_map(&text);
+                    let start = lines.offset(range.start);
+                    let end = lines.offset(range.end).max(start);
+                    text.replace_range(start..end, &change.text);
+                }
+                None => text = change.text,
+            }
+        }
+        self.open.insert(uri.clone(), text);
+    }
+
+    /// Overlays a document's current text into the session, then republishes
+    /// diagnostics for every open document — a cross-module edit can invalidate
+    /// another open file, so all of them are refreshed.
     fn refresh(&mut self, conn: &Connection, uri: &Url) {
         let Some(rel) = self.relative(uri) else { return };
         let Some(text) = self.open.get(uri).cloned() else { return };
-        let dirty = [DirtyFile { path: rel.to_string(), hash: None, content: Some(text.clone()) }];
+        let dirty = [DirtyFile { path: rel.to_string(), hash: None, content: Some(text) }];
         if self.session.apply_dirty(&dirty).is_err() {
             return;
         }
-        let files = self.session.select_files(Some(&rel));
-        let diagnostics = match files.first() {
-            Some(&file) => {
-                let result = check(self.session.db(), &[file]);
-                let lines = LineMap::new(&text);
-                result.diagnostics.iter().map(|d| to_lsp_diagnostic(d, &lines)).collect()
-            }
-            None => vec![],
-        };
-        self.publish(conn, uri, diagnostics);
+        self.publish_all_open(conn);
+    }
+
+    /// Recomputes and publishes diagnostics for every open document.
+    fn publish_all_open(&self, conn: &Connection) {
+        for (uri, text) in &self.open {
+            let diagnostics = match self.relative(uri) {
+                Some(rel) => match self.session.select_files(Some(&rel)).first() {
+                    Some(&file) => {
+                        let result = check(self.session.db(), &[file]);
+                        let lines = self.line_map(text);
+                        result.diagnostics.iter().map(|d| to_lsp_diagnostic(d, &lines)).collect()
+                    }
+                    None => vec![],
+                },
+                None => vec![],
+            };
+            self.publish(conn, uri, diagnostics);
+        }
     }
 
     /// Restores a closed document's database entry to the on-disk file, dropping
@@ -640,14 +740,14 @@ impl Server {
         let rel = self.relative(uri)?;
         let text = self.open.get(uri)?;
         let file = *self.session.select_files(Some(&rel)).first()?;
-        let offset = LineMap::new(text).offset(position) as u32;
+        let offset = self.line_map(text).offset(position) as u32;
         Some((file, offset))
     }
 
     /// Converts an IDE span (byte offsets) into a range within an open document.
     fn span_range(&self, uri: &Url, span: &fai_ide::repr::SpanJson) -> Option<Range> {
         let text = self.open.get(uri)?;
-        let lines = LineMap::new(text);
+        let lines = self.line_map(text);
         Some(Range {
             start: lines.position(span.byte_start as usize),
             end: lines.position(span.byte_end as usize),
@@ -659,7 +759,7 @@ impl Server {
     fn to_lsp_location(&self, span: &fai_ide::repr::SpanJson) -> Option<LspLocation> {
         let uri = self.uri_for(&span.file)?;
         let text = self.file_text(&span.file)?;
-        let lines = LineMap::new(&text);
+        let lines = self.line_map(&text);
         let range = Range {
             start: lines.position(span.byte_start as usize),
             end: lines.position(span.byte_end as usize),
@@ -710,6 +810,50 @@ fn lsp_symbol_kind(kind: fai_ide::repr::SymbolKind) -> LspSymbolKind {
         fai_ide::repr::SymbolKind::Value => LspSymbolKind::VARIABLE,
         fai_ide::repr::SymbolKind::Module => LspSymbolKind::MODULE,
     }
+}
+
+/// The whole-file formatter's edits restricted to `range`'s lines: the original
+/// and formatted texts are line-diffed, and each changed hunk whose original
+/// lines overlap the requested span becomes a `TextEdit` replacing those whole
+/// lines. So "format selection" only rewrites the selection.
+fn range_formatting_edits(original: &str, formatted: &str, range: Range) -> Vec<TextEdit> {
+    use similar::{DiffTag, TextDiff};
+
+    if original == formatted {
+        return Vec::new();
+    }
+    // A selection ending at column 0 does not include that trailing line.
+    let lo = range.start.line;
+    let hi = if range.end.character == 0 && range.end.line > range.start.line {
+        range.end.line.saturating_sub(1)
+    } else {
+        range.end.line
+    };
+    let overlaps = |o1: u32, o2: u32| {
+        if o1 == o2 { o1 >= lo && o1 <= hi + 1 } else { o1 <= hi && o2 > lo }
+    };
+
+    let diff = TextDiff::from_lines(original, formatted);
+    let new_lines = diff.new_slices();
+    let mut edits = Vec::new();
+    for op in diff.ops() {
+        let (tag, old, new) = op.as_tag_tuple();
+        if tag == DiffTag::Equal {
+            continue;
+        }
+        let (o1, o2) = (old.start as u32, old.end as u32);
+        if !overlaps(o1, o2) {
+            continue;
+        }
+        edits.push(TextEdit {
+            range: Range {
+                start: Position { line: o1, character: 0 },
+                end: Position { line: o2, character: 0 },
+            },
+            new_text: new_lines[new.start..new.end].concat(),
+        });
+    }
+    edits
 }
 
 /// Delta-encodes engine semantic tokens into the LSP wire form (UTF-16 columns),

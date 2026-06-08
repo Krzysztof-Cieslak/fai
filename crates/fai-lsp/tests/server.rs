@@ -40,6 +40,12 @@ impl Harness {
     /// Starts a server over a workspace containing `files` (`(name, contents)`),
     /// and completes the initialize handshake.
     fn start(tag: &str, files: &[(&str, &str)]) -> Self {
+        Self::start_with_caps(tag, files, json!({})).0
+    }
+
+    /// Like [`Self::start`], but sends `capabilities` in the initialize request
+    /// and returns the server's `InitializeResult` (for capability assertions).
+    fn start_with_caps(tag: &str, files: &[(&str, &str)], capabilities: Value) -> (Self, Value) {
         let workspace = unique_workspace(tag);
         for (name, contents) in files {
             std::fs::write(workspace.join(name), contents).unwrap();
@@ -57,17 +63,28 @@ impl Harness {
             .send(Message::Request(Request::new(
                 1.into(),
                 "initialize".to_owned(),
-                json!({ "capabilities": {} }),
+                json!({ "capabilities": capabilities }),
             )))
             .unwrap();
         let harness = Self { client, server: Some(server), workspace, next_id: 2 };
-        let _ = harness.await_response(&1.into());
+        let init = harness.await_response(&1.into());
         harness
             .client
             .sender
             .send(Message::Notification(Notification::new("initialized".to_owned(), json!({}))))
             .unwrap();
-        harness
+        (harness, init)
+    }
+
+    /// Sends an incremental change replacing `range` with `text`.
+    fn did_change_range(&self, uri: &str, range: Value, text: &str) {
+        self.notify(
+            "textDocument/didChange",
+            json!({
+                "textDocument": { "uri": uri, "version": 2 },
+                "contentChanges": [ { "range": range, "text": text } ]
+            }),
+        );
     }
 
     /// The `file://` URI (as a string) for a workspace file.
@@ -644,6 +661,92 @@ fn semantic_tokens_encode_the_document() {
     // (keyword is the first legend entry), no modifiers.
     let head: Vec<i64> = data[0..5].iter().map(|v| v.as_i64().unwrap()).collect();
     assert_eq!(head, vec![0, 0, 6, 0, 0], "leading `module` keyword: {head:?}");
+    harness.shutdown();
+}
+
+// --- editing fidelity & dependent diagnostics --------------------------------
+
+#[test]
+fn negotiates_position_encoding() {
+    // With no client preference, the server advertises the LSP default UTF-16.
+    let (def, init) = Harness::start_with_caps("enc-default", &[("Main.fai", MAIN)], json!({}));
+    assert_eq!(init["capabilities"]["positionEncoding"], "utf-16", "{init:?}");
+    def.shutdown();
+    // When the client offers UTF-8, the server picks it.
+    let (utf8, init) = Harness::start_with_caps(
+        "enc-utf8",
+        &[("Main.fai", MAIN)],
+        json!({ "general": { "positionEncodings": ["utf-8", "utf-16"] } }),
+    );
+    assert_eq!(init["capabilities"]["positionEncoding"], "utf-8", "{init:?}");
+    utf8.shutdown();
+}
+
+#[test]
+fn incremental_range_edit_updates_the_buffer() {
+    let clean = "module Main\n\npublic inc : Int -> Int\nlet inc x = x + 1\n";
+    let mut harness = Harness::start("incremental", &[("Main.fai", clean)]);
+    let uri = harness.did_open("Main.fai", clean);
+    assert!(harness.diagnostics(&uri).is_empty(), "clean to start");
+    // Replace the body `x + 1` (line 3, cols 12..17) with `true` — a type error.
+    harness.did_change_range(
+        &uri,
+        json!({ "start": { "line": 3, "character": 12 }, "end": { "line": 3, "character": 17 } }),
+        "true",
+    );
+    let diagnostics = harness.diagnostics(&uri);
+    assert!(!diagnostics.is_empty(), "the range edit introduced a type error: {diagnostics:?}");
+    assert!(
+        diagnostics.iter().all(|d| d["code"].as_str().unwrap().starts_with("FAI")),
+        "{diagnostics:?}"
+    );
+    harness.shutdown();
+}
+
+#[test]
+fn cross_module_change_refreshes_open_dependents() {
+    let a = "module A\n\npublic n : Int\nlet n = 0\n";
+    let b = "module B\n\npublic m : Int\nlet m = A.n + 1\n";
+    let mut harness = Harness::start("dependent", &[("A.fai", a), ("B.fai", b)]);
+    let _uri_a = harness.did_open("A.fai", a);
+    let uri_b = harness.did_open("B.fai", b);
+    assert!(harness.diagnostics(&uri_b).is_empty(), "B is valid against A's `n : Int`");
+    // Retype `n` to `Bool` in A only — this breaks B's `A.n + 1`.
+    let broken_a = "module A\n\npublic n : Bool\nlet n = true\n";
+    harness.did_change(&_uri_a, broken_a);
+    // B was not touched, yet its diagnostics refresh because A changed.
+    assert!(
+        !harness.diagnostics(&uri_b).is_empty(),
+        "B's diagnostics refresh after the cross-module edit"
+    );
+    harness.shutdown();
+}
+
+#[test]
+fn range_formatting_touches_only_the_range() {
+    let messy = "module Main\n\npublic a : Int\nlet a=1\n\npublic b : Int\nlet b=2\n";
+    let mut harness = Harness::start("range-fmt", &[("Main.fai", messy)]);
+    let uri = harness.did_open("Main.fai", messy);
+    // Format only the first binding's line (line 3, `let a=1`).
+    let result = harness.request(
+        "textDocument/rangeFormatting",
+        json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 3, "character": 0 },
+                "end": { "line": 3, "character": 7 }
+            },
+            "options": { "tabSize": 2, "insertSpaces": true }
+        }),
+    );
+    let edits = result.as_array().expect("an array of edits");
+    assert!(!edits.is_empty(), "the messy `let a=1` is reformatted: {edits:?}");
+    // Every edit stays on line 3 — `let b=2` on line 6 is left untouched.
+    for edit in edits {
+        assert_eq!(edit["range"]["start"]["line"], 3, "edit outside the range: {edit:?}");
+    }
+    let joined: String = edits.iter().map(|e| e["newText"].as_str().unwrap()).collect();
+    assert!(joined.contains("let a = 1"), "{joined:?}");
     harness.shutdown();
 }
 

@@ -234,12 +234,16 @@ Canonically format in place (idempotent).
 Start the Language Server on stdio (standard LSP, JSON over `Content-Length`).
 Editors speak this; agents use `fai query` instead.
 
-Supported requests: full-document sync with pushed `publishDiagnostics`; `hover`
-(type, `///` doc prose, and attached contracts), `definition`, `completion`,
-`signatureHelp`, `documentSymbol`, `workspace/symbol`, `references`,
-`prepareRename`/`rename`, `codeAction` (quick fixes), `inlayHint` (inferred
-binder types), `semanticTokens` (full), and document `formatting`. Open buffers
-are analyzed as unsaved overlays, so every answer tracks the in-editor text.
+Supported requests: incremental `textDocument` sync (with `didSave`) and pushed
+`publishDiagnostics` (re-published for every open file, so a cross-module edit
+refreshes its dependents); `hover` (type, `///` doc prose, and attached
+contracts), `definition`, `completion`, `signatureHelp`, `documentSymbol`,
+`workspace/symbol`, `references`, `prepareRename`/`rename`, `codeAction` (quick
+fixes), `inlayHint` (inferred binder types), `semanticTokens` (full), and
+document `formatting` (whole-document and range). The position encoding is
+negotiated at initialization (UTF-8 when the client offers it, else UTF-16). Open
+buffers are analyzed as unsaved overlays, so every answer tracks the in-editor
+text.
 
 ---
 

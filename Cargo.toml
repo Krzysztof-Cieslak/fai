@@ -66,6 +66,8 @@ thiserror = "2"
 # Logging spine (also a salsa dependency).
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Text diffing (range formatting emits only the edits within the requested span).
+similar = "2"
 # Snapshot testing.
 insta = "1"
 # Property-based (generative) testing.
