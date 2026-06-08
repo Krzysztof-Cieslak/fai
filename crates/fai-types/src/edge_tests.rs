@@ -47,6 +47,21 @@ fn clean(src: &str) {
     );
 }
 
+/// The exact source text the first diagnostic with `code` points at (its primary
+/// span). Pins diagnostic locations, which assert only codes elsewhere.
+fn span_text(src: &str, code: &str) -> String {
+    let (db, file) = db1(src);
+    let source = file.source(&db);
+    let full = file.text(&db);
+    let diag = fai_resolve::resolve::accumulated::<Diag>(&db, file)
+        .into_iter()
+        .chain(check_file::accumulated::<Diag>(&db, file))
+        .find(|d| d.0.primary.source() == source && d.0.code.as_str() == code)
+        .unwrap_or_else(|| panic!("no {code} diagnostic; got {:?}", codes(src)));
+    let range = diag.0.primary.range();
+    full[range.start().raw() as usize..range.end().raw() as usize].to_owned()
+}
+
 // ---- literals --------------------------------------------------------------
 
 #[test]
@@ -413,6 +428,20 @@ fn duplicate_forall_binder_errors() {
 #[test]
 fn self_application_occurs_check() {
     assert!(codes("let f x = x x").contains(&"FAI3002".to_owned()));
+}
+
+#[test]
+fn occurs_check_span_points_at_self_application() {
+    // Pins the occurs-check location so a future change to the occurs walk that
+    // shifts which expression it blames fails here (the span comes from the
+    // application's `unify_at` site, not the occurs internals).
+    assert_eq!(span_text("let f x = x x", "FAI3002"), "x x");
+}
+
+#[test]
+fn type_mismatch_span_points_at_the_expression() {
+    // Pins the type-mismatch location for a representative arithmetic mismatch.
+    assert_eq!(span_text("let x = 1 + true", "FAI3001"), "1 + true");
 }
 
 // ---- determinism -----------------------------------------------------------

@@ -27,8 +27,11 @@ pub enum Constraint {
 /// The binding of a solver variable.
 #[derive(Debug, Clone)]
 enum VarState {
-    /// Unbound, possibly constrained.
-    Free(Option<Constraint>),
+    /// Unbound, possibly constrained, tagged with the binding *level* at which it
+    /// was created. The level is lowered when the variable is unified with an
+    /// outer (lower-level) one; a nested `let` generalizes only variables whose
+    /// level is deeper than the enclosing scope's.
+    Free(Option<Constraint>, u32),
     /// Bound to a (solver-level) type.
     Bound(SolveTy),
 }
@@ -153,6 +156,9 @@ enum Repr<'a> {
 pub struct InferCtx {
     vars: Vec<VarState>,
     rows: Vec<RowState>,
+    /// The current binding depth, bumped around a generalizable `let` right-hand
+    /// side. A variable generalizes only if its level exceeds the enclosing one.
+    current_level: u32,
 }
 
 impl Default for InferCtx {
@@ -165,7 +171,42 @@ impl InferCtx {
     /// Creates an empty context.
     #[must_use]
     pub fn new() -> Self {
-        Self { vars: Vec::new(), rows: Vec::new() }
+        Self { vars: Vec::new(), rows: Vec::new(), current_level: 0 }
+    }
+
+    /// Enters a deeper binding level (around a generalizable `let` right-hand
+    /// side); variables created here generalize unless unified with an outer one.
+    pub fn enter_level(&mut self) {
+        self.current_level += 1;
+    }
+
+    /// Leaves the current binding level.
+    pub fn exit_level(&mut self) {
+        self.current_level -= 1;
+    }
+
+    /// The current binding level.
+    #[must_use]
+    pub fn current_level(&self) -> u32 {
+        self.current_level
+    }
+
+    /// The binding level of a (free) variable. A bound variable reports level 0
+    /// (it is never queried for generalization — free representatives are).
+    pub(crate) fn level_of(&self, v: TyVarId) -> u32 {
+        match &self.vars[v.0 as usize] {
+            VarState::Free(_, level) => *level,
+            VarState::Bound(_) => 0,
+        }
+    }
+
+    /// Lowers a free variable's level toward `to` (never raises it).
+    fn lower_level(&mut self, v: TyVarId, to: u32) {
+        if let VarState::Free(_, level) = &mut self.vars[v.0 as usize]
+            && *level > to
+        {
+            *level = to;
+        }
     }
 
     /// Allocates a fresh row variable forbidden from containing `lacks`.
@@ -310,10 +351,11 @@ impl InferCtx {
         self.fresh_constrained(None)
     }
 
-    /// Allocates a fresh variable with an optional constraint.
+    /// Allocates a fresh variable with an optional constraint, at the current
+    /// binding level.
     pub fn fresh_constrained(&mut self, c: Option<Constraint>) -> SolveTy {
         let id = TyVarId(u32::try_from(self.vars.len()).expect("type var overflow"));
-        self.vars.push(VarState::Free(c));
+        self.vars.push(VarState::Free(c, self.current_level));
         SolveTy::Var(id)
     }
 
@@ -327,7 +369,7 @@ impl InferCtx {
                     crate::perf::bump_resolve_clone();
                     cur = t.clone();
                 }
-                VarState::Free(_) => break,
+                VarState::Free(..) => break,
             }
         }
         cur
@@ -344,14 +386,14 @@ impl InferCtx {
             match &self.vars[v.0 as usize] {
                 VarState::Bound(SolveTy::Var(next)) => v = *next,
                 VarState::Bound(t) => return Repr::Bound(v, t),
-                VarState::Free(_) => return Repr::Free(v),
+                VarState::Free(..) => return Repr::Free(v),
             }
         }
     }
 
     fn constraint_of(&self, id: TyVarId) -> Option<Constraint> {
         match &self.vars[id.0 as usize] {
-            VarState::Free(c) => *c,
+            VarState::Free(c, _) => *c,
             VarState::Bound(_) => None,
         }
     }
@@ -442,10 +484,13 @@ impl InferCtx {
         }
     }
 
-    /// Binds variable `id` to `ty`, running the occurs and constraint checks.
+    /// Binds variable `id` to `ty`, running the occurs check, lowering the levels
+    /// of `ty`'s variables to `id`'s (so a variable unified with an outer one is
+    /// not generalized), and checking constraints.
     fn bind(&mut self, id: TyVarId, ty: &SolveTy) -> UnifyResult {
+        let lower_to = self.level_of(id);
         let mut visited = rustc_hash::FxHashSet::default();
-        if self.occurs(id, ty, &mut visited) {
+        if self.occurs_and_lower(id, lower_to, ty, &mut visited) {
             return UnifyResult::Occurs;
         }
         if let Some(c) = self.constraint_of(id) {
@@ -465,7 +510,7 @@ impl InferCtx {
     }
 
     fn merge_constraint(&mut self, id: TyVarId, c: Constraint) {
-        if let VarState::Free(existing) = &mut self.vars[id.0 as usize] {
+        if let VarState::Free(existing, _) = &mut self.vars[id.0 as usize] {
             *existing = Some(stronger_constraint(*existing, c));
         }
     }
@@ -506,38 +551,65 @@ impl InferCtx {
         }
     }
 
-    /// Whether `id` occurs in `ty` (the occurs check). Walks by borrowing (no
-    /// clone) and memoizes bound representatives in `visited`, so a variable
-    /// reached through a shared (DAG) subterm is expanded only once.
-    fn occurs(
-        &self,
-        id: TyVarId,
+    /// Follows a variable chain to its representative, returning the
+    /// representative id and (if bound) an *owned* shallow clone of the structure
+    /// it points at. The clone releases the borrow on the solver so a `&mut self`
+    /// walk can recurse; with `Rc`-shared children it is O(1) for the common
+    /// arrow/application case.
+    fn repr_owned(&self, mut v: TyVarId) -> (TyVarId, Option<SolveTy>) {
+        loop {
+            match &self.vars[v.0 as usize] {
+                VarState::Bound(SolveTy::Var(next)) => v = *next,
+                VarState::Bound(t) => return (v, Some(t.clone())),
+                VarState::Free(..) => return (v, None),
+            }
+        }
+    }
+
+    /// The occurs check fused with level lowering: walks `ty`, lowering every free
+    /// variable's level toward `lower_to`, and returns whether `target` occurs.
+    /// Bound representatives are memoized in `visited` (a shared DAG subterm is
+    /// expanded once) and syntactically variable-free subtrees are skipped (they
+    /// have nothing to find or lower).
+    fn occurs_and_lower(
+        &mut self,
+        target: TyVarId,
+        lower_to: u32,
         ty: &SolveTy,
         visited: &mut rustc_hash::FxHashSet<TyVarId>,
     ) -> bool {
         crate::perf::bump_occurs_visit();
         match ty {
-            SolveTy::Var(v0) => match self.repr(*v0) {
-                Repr::Free(v) => v == id,
-                Repr::Bound(v, t) => {
-                    // `id` is the free variable being bound, so it never equals a
-                    // bound representative; the guard is defensive.
-                    if v == id {
-                        return true;
+            SolveTy::Var(v0) => {
+                let (v, bound) = self.repr_owned(*v0);
+                match bound {
+                    None => {
+                        self.lower_level(v, lower_to);
+                        v == target
                     }
-                    if !visited.insert(v) {
-                        return false;
+                    Some(t) => {
+                        // `target` is the free variable being bound, so it never
+                        // equals a bound representative; the guard is defensive.
+                        if v == target {
+                            return true;
+                        }
+                        if !visited.insert(v) {
+                            return false;
+                        }
+                        self.occurs_and_lower(target, lower_to, &t, visited)
                     }
-                    self.occurs(id, t, visited)
                 }
-            },
-            SolveTy::App(f, a) | SolveTy::Arrow(f, a) => {
-                self.occurs(id, f, visited) || self.occurs(id, a, visited)
             }
-            SolveTy::Tuple(elems) => elems.iter().any(|e| self.occurs(id, e, visited)),
+            SolveTy::App(f, a) | SolveTy::Arrow(f, a) => {
+                self.occurs_and_lower(target, lower_to, f, visited)
+                    || self.occurs_and_lower(target, lower_to, a, visited)
+            }
+            SolveTy::Tuple(elems) => {
+                elems.iter().any(|e| self.occurs_and_lower(target, lower_to, e, visited))
+            }
             SolveTy::Record(row) => {
                 let row = self.expand_row(row);
-                row.fields.iter().any(|(_, t)| self.occurs(id, t, visited))
+                row.fields.iter().any(|(_, t)| self.occurs_and_lower(target, lower_to, t, visited))
             }
             SolveTy::Con(_)
             | SolveTy::Adt(_)
