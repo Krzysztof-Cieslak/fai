@@ -492,12 +492,25 @@ impl Parser<'_> {
         // The `=` opens a layout block when the body starts on a new line.
         let opened = self.eat(TokenKind::LayoutOpen);
         while self.eat(TokenKind::LayoutSep) {}
-        // A leading `|` marks a discriminated union; anything else is a
-        // transparent alias to a type expression.
+        // A leading `|` marks a discriminated union. Without one, parse a type
+        // expression: if a `|` follows it, it is a union written without a
+        // leading pipe (`type T = A | B`), whose first variant is that type
+        // expression; otherwise it is a transparent alias. (`|` is a layout
+        // continuation token, so this also covers the multi-line spellings.)
         let def = if self.at(TokenKind::Pipe) {
-            self.parse_union()
+            let mut variants = Vec::new();
+            self.parse_union_variants(&mut variants);
+            TypeDef::Union(variants)
         } else {
-            TypeDef::Alias(self.parse_type())
+            let ty = self.parse_type();
+            if self.at(TokenKind::Pipe) {
+                let mut variants = Vec::new();
+                variants.extend(self.type_to_variant(ty));
+                self.parse_union_variants(&mut variants);
+                TypeDef::Union(variants)
+            } else {
+                TypeDef::Alias(ty)
+            }
         };
         if opened {
             while self.eat(TokenKind::LayoutSep) {}
@@ -565,10 +578,10 @@ impl Parser<'_> {
         Some(MethodSig { name, ty, span: self.span_from(start) })
     }
 
-    /// Parses the `| A | B 'a …` variants of a discriminated union (the cursor is
-    /// at the leading `|`).
-    fn parse_union(&mut self) -> TypeDef {
-        let mut variants = Vec::new();
+    /// Parses the `| A | B 'a …` variants of a discriminated union, appending to
+    /// `variants` (the cursor is at a leading `|`). A union written without a
+    /// leading pipe seeds `variants` with its first variant before calling this.
+    fn parse_union_variants(&mut self, variants: &mut Vec<Variant>) {
         while self.eat(TokenKind::Pipe) {
             let start = self.start();
             let Some(name) = (if self.at(TokenKind::UpperIdent) {
@@ -590,7 +603,53 @@ impl Parser<'_> {
             }
             variants.push(Variant { name, fields, span: self.span_from(start) });
         }
-        TypeDef::Union(variants)
+    }
+
+    /// Reinterprets a type expression parsed for the leading variant of a
+    /// `|`-less union (`type T = A | B`) as a [`Variant`]: the application spine
+    /// `Con atom…` becomes the constructor name and its field types. A
+    /// qualified or non-constructor head is a recoverable error.
+    fn type_to_variant(&mut self, ty: TypeId) -> Option<Variant> {
+        enum Head {
+            Con(Symbol),
+            Qualified,
+            NotConstructor,
+        }
+        let span = self.module.types[ty.index()].span;
+        let mut fields = Vec::new();
+        let mut cur = ty;
+        // Peel the spine without mutating, so the borrow ends before any `error`.
+        let head = loop {
+            match &self.module.types[cur.index()].kind {
+                TypeKind::App { func, arg } => {
+                    fields.push(*arg);
+                    cur = *func;
+                }
+                // A redundant paren around the head (`(A) | B`) is unwrapped.
+                TypeKind::Paren(inner) => cur = *inner,
+                TypeKind::Con(name) if name.as_str().contains('.') => break Head::Qualified,
+                TypeKind::Con(name) => break Head::Con(*name),
+                _ => break Head::NotConstructor,
+            }
+        };
+        match head {
+            Head::Con(name) => {
+                fields.reverse();
+                Some(Variant { name, fields, span })
+            }
+            Head::Qualified => {
+                self.error(SYNTAX_ERROR, span, "a union constructor name cannot be qualified");
+                None
+            }
+            Head::NotConstructor => {
+                self.error(
+                    SYNTAX_ERROR,
+                    span,
+                    "expected a constructor name before `|` in the union",
+                );
+                None
+            }
+        }
     }
 
     // --- expressions (Pratt) ---------------------------------------------
@@ -1990,6 +2049,78 @@ mod tests {
         assert_eq!(
             parsed.lines().nth(1).unwrap(),
             "(type Private Opt ['a] = (| None []) (| Some [(tvar 'a)]))"
+        );
+    }
+
+    #[test]
+    fn single_line_union_without_leading_pipe_is_a_union() {
+        // `type T = A | B` (no leading `|`) lowers to the same shape as the
+        // canonical multi-line `| A | B` form.
+        assert_eq!(
+            dump("module M\ntype T = A | B").lines().nth(1).unwrap(),
+            "(type Private T [] = (| A []) (| B []))"
+        );
+    }
+
+    #[test]
+    fn single_line_union_without_leading_pipe_carries_fields() {
+        assert_eq!(
+            dump("module M\ntype Shape = Circle Float | Rect Float Float").lines().nth(1).unwrap(),
+            "(type Private Shape [] = (| Circle [(tcon Float)]) (| Rect [(tcon Float) (tcon Float)]))"
+        );
+    }
+
+    #[test]
+    fn multiline_union_without_leading_pipe_is_a_union() {
+        // `|` is a layout continuation token, so the no-leading-pipe form also
+        // works across lines.
+        let parsed = dump(indoc! {r#"
+            module M
+            type T =
+              A
+              | B"#});
+        assert_eq!(parsed.lines().nth(1).unwrap(), "(type Private T [] = (| A []) (| B []))");
+    }
+
+    #[test]
+    fn redundant_paren_around_leading_variant_is_unwrapped() {
+        assert_eq!(
+            dump("module M\ntype T = (A) | B").lines().nth(1).unwrap(),
+            "(type Private T [] = (| A []) (| B []))"
+        );
+    }
+
+    #[test]
+    fn qualified_head_before_pipe_is_an_error_but_recovers() {
+        let parsed = parse("module M\ntype T = Mod.A | B");
+        let diag = parsed
+            .diagnostics
+            .iter()
+            .find(|d| d.code == crate::SYNTAX_ERROR)
+            .expect("expected a syntax error for the qualified constructor name");
+        assert_eq!(diag.message, "a union constructor name cannot be qualified");
+        // The span points at the offending `Mod.A`.
+        assert_eq!(diag.primary.start().to_usize(), 18);
+        assert_eq!(diag.primary.end().to_usize(), 23);
+        // Recovery still yields a union from the remaining `| B`.
+        assert_eq!(
+            dump_module(&parsed.module).lines().nth(1).unwrap(),
+            "(type Private T [] = (| B []))"
+        );
+    }
+
+    #[test]
+    fn non_constructor_head_before_pipe_is_an_error_but_recovers() {
+        let parsed = parse("module M\ntype T = 'a | B");
+        let diag = parsed
+            .diagnostics
+            .iter()
+            .find(|d| d.code == crate::SYNTAX_ERROR)
+            .expect("expected a syntax error for the non-constructor head");
+        assert_eq!(diag.message, "expected a constructor name before `|` in the union");
+        assert_eq!(
+            dump_module(&parsed.module).lines().nth(1).unwrap(),
+            "(type Private T [] = (| B []))"
         );
     }
 

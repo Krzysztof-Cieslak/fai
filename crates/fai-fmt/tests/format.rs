@@ -397,6 +397,15 @@ fn type_signatures_format() {
 }
 
 #[test]
+fn single_line_union_is_normalized_to_canonical_form() {
+    // A union written without a leading pipe reformats to the canonical
+    // multi-line form, reparses cleanly, and preserves the item tree (so it is
+    // semantically the same declaration as the leading-pipe spelling).
+    let out = assert_canonical("module M\ntype T = A | B");
+    assert!(out.contains("type T =\n  | A\n  | B"), "got:\n{out}");
+}
+
+#[test]
 fn lambda_forms() {
     assert!(assert_canonical("module M\nlet a = fun x -> x").contains("fun x -> x"));
     assert!(
