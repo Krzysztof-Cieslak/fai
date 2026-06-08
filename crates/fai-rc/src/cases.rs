@@ -4406,6 +4406,69 @@ fn borrow_isempty() {
 }
 
 #[test]
+fn borrow_sum_acc_owns_the_list() {
+    // The accumulator fold is *tail*-recursive, so the list parameter flows into a
+    // tail self-call and is owned (unlike non-tail `sum`, which borrows). Owning it
+    // keeps the call in tail position so it can be flattened into a loop, and frees
+    // the input cell-by-cell as it is consumed.
+    assert_eq!(
+        crate::tests::borrow_sig(
+            indoc! {r#"
+                module M
+
+                let sumAcc acc xs =
+                  match xs with
+                  | [] -> acc
+                  | x :: r -> sumAcc (acc + x) r
+            "#},
+            "sumAcc",
+        ),
+        vec![false, false],
+    );
+}
+
+#[test]
+fn borrow_all_pos_owns_the_list() {
+    // A tail-recursive predicate also owns its list (its self-call is the
+    // then-branch tail), where the otherwise-identical non-recursive `isEmpty`
+    // borrows.
+    assert_eq!(
+        crate::tests::borrow_sig(
+            indoc! {r#"
+                module M
+
+                let allPos xs =
+                  match xs with
+                  | [] -> true
+                  | x :: r -> if x > 0 then allPos r else false
+            "#},
+            "allPos",
+        ),
+        vec![false],
+    );
+}
+
+#[test]
+fn borrow_find_owns_both_args() {
+    // The predicate and the list both flow into the else-branch tail self-call, so
+    // both are owned.
+    assert_eq!(
+        crate::tests::borrow_sig(
+            indoc! {r#"
+                module M
+
+                let find p xs =
+                  match xs with
+                  | [] -> 0
+                  | x :: r -> if p x then x else find p r
+            "#},
+            "find",
+        ),
+        vec![false, false],
+    );
+}
+
+#[test]
 fn borrow_inc() {
     assert_eq!(
         crate::tests::borrow_sig(
