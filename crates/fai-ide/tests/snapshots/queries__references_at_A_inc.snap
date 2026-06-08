@@ -7,6 +7,21 @@ expression: json(&refs)
     "span": {
       "file": "A.fai",
       "start": {
+        "line": 3,
+        "column": 8
+      },
+      "end": {
+        "line": 3,
+        "column": 11
+      },
+      "byteStart": 17,
+      "byteEnd": 20
+    }
+  },
+  {
+    "span": {
+      "file": "A.fai",
+      "start": {
         "line": 4,
         "column": 5
       },
