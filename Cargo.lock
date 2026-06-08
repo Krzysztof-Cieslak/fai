@@ -605,6 +605,8 @@ dependencies = [
  "fai-server",
  "fai-span",
  "indoc",
+ "lsp-server",
+ "lsp-types",
  "serde_json",
  "tracing",
  "tracing-subscriber",
