@@ -559,8 +559,9 @@ hardening** has landed its memory-bound and latency halves (see decision
 `object_code`, daemon-set, env-configurable) and reports per-command latency in
 `fai daemon status`. Still to come: the shared/remote cache (deferred — issue
 #15), the rest of daemon hardening (cross-request concurrency, still serialized
-per D57), opt-in monomorphization (deferred — issue #16), and the remaining
-reuse/borrowing follow-ups (TRMC, cross-module borrowing).
+per D57 — deferred to issue #17), opt-in monomorphization (deferred — issue
+#16), and the remaining reuse/borrowing follow-ups (TRMC, cross-module
+borrowing).
 
 **Deliverables**
 - `rayon` parallelism across independent defs/modules (parallel salsa queries;
@@ -1070,9 +1071,9 @@ Resolved while implementing **M3.5** (the daemon, persistence, and protocol):
 - **D57 Daemon concurrency (serialized):** the daemon serves per-connection
   threads but serializes **all** database access through one `Mutex<Session>`
   (true serialization, sidestepping salsa's concurrent-read/cancellation
-  machinery). Control messages and (later) `run` supervision stay off-lock.
-  Concurrent reads + cancel-on-input-change are deferred to the performance
-  milestone; the acceptance bar (warm speedup) needs only the warm DB.
+   machinery). Control messages and (later) `run` supervision stay off-lock.
+   Concurrent reads + cancel-on-input-change are deferred (tracked in issue #17);
+   the acceptance bar (warm speedup) needs only the warm DB.
 - **D58 Transport:** the client↔daemon link uses the **`interprocess`** crate
   (sync) for one safe cross-platform code path — Unix-domain sockets on POSIX,
   named pipes on Windows — with our `u32`-LE + MessagePack framing layered on top
