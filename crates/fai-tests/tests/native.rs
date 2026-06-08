@@ -128,6 +128,74 @@ fn cross_file_nested_qualified_access_runs() {
 }
 
 #[test]
+fn cross_module_forwarder_borrows_and_runs() {
+    // `Lib.sumList` borrows its list; `Main.forward` only forwards `xs` to it, so
+    // inter-procedural inference borrows `xs` too. `main` lends the same list to
+    // two `forward` calls and releases it once — a leak-free (exit 0) run proves
+    // the cross-module borrowing is reference-count sound.
+    let lib = indoc! {r#"
+        module Lib
+
+        public sumList : List Int -> Int
+        let sumList xs =
+          match xs with
+          | [] -> 0
+          | x :: r -> x + sumList r
+    "#};
+    let main = indoc! {r#"
+        module Main
+
+        forward : List Int -> Int
+        let forward xs = Lib.sumList xs
+
+        public main : Runtime -> Unit
+        let main runtime =
+          let xs = [1, 2, 3, 4, 5]
+          runtime.console.writeLine (Int.toString (forward xs + forward xs))
+    "#};
+    let (out, code) = build_and_run_files(&[("Lib.fai", lib), ("Main.fai", main)]);
+    assert_eq!(out, "30\n");
+    assert_eq!(code, Some(0));
+}
+
+#[test]
+fn cross_module_mutual_recursion_borrow_cycle_runs() {
+    // `Ev.isEven` and `Od.isOdd` are mutually recursive *across files*, each only
+    // forwarding the tail to the other — a borrow cycle that spans modules,
+    // resolved by the salsa borrow fixpoint (both borrow their list). A leak-free
+    // run confirms the cross-module cycle is reference-count sound end-to-end.
+    let ev = indoc! {r#"
+        module Ev
+
+        public isEven : List Int -> Bool
+        let isEven xs =
+          match xs with
+          | [] -> true
+          | _ :: r -> Od.isOdd r
+    "#};
+    let od = indoc! {r#"
+        module Od
+
+        public isOdd : List Int -> Bool
+        let isOdd xs =
+          match xs with
+          | [] -> false
+          | _ :: r -> Ev.isEven r
+    "#};
+    let main = indoc! {r#"
+        module Main
+
+        public main : Runtime -> Unit
+        let main runtime =
+          let xs = [1, 2, 3, 4]
+          runtime.console.writeLine (if Ev.isEven xs then "even" else "odd")
+    "#};
+    let (out, code) = build_and_run_files(&[("Ev.fai", ev), ("Od.fai", od), ("Main.fai", main)]);
+    assert_eq!(out, "even\n");
+    assert_eq!(code, Some(0));
+}
+
+#[test]
 fn as_pattern_binds_and_runs() {
     // The as-pattern aliases the whole matched (cons) value; both the alias and
     // the bound tail reference it, so this also exercises reference counting.

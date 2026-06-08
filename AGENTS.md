@@ -41,8 +41,11 @@
 > allocate zero fresh cells, falling back to copying when shared), `{ r with … }`
  > updates a unique record in place, and **argument borrowing** lends
 > inspect-only parameters at direct calls (with an owned-ABI wrapper for the
-> first-class value form). Contracts (M7) are built: **`fai test` runs the
-> first-class `example`/`forall` declarations**. The property-testing framework is
+> first-class value form). Borrow inference is **inter-procedural**: a parameter
+> only forwarded to another function's borrowing parameter is itself borrowed
+> (a borrow fixpoint over the call graph, across modules). Contracts (M7) are
+> built: **`fai test` runs the first-class `example`/`forall` declarations**. The
+> property-testing framework is
 > **dogfooded in the standard library** (`std/Test.fai`: a pure splitmix64 `Gen`,
 > an `Arbitrary 'a` bundle of generator/shrinker/renderer, type-directed
 > combinators, and the `checkExample`/`checkForall` driver with shrinking); the

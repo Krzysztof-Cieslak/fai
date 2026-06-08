@@ -692,11 +692,12 @@ Reuse & in-place update:
     or is *matched-and-reconstructed* (so the matched cell is reused in place — a
     field-transformed rebuild like `(x + 1) :: …` still owns). Self-recursion is a
     local monotone fixpoint; every other call's arguments are treated as consumed.
-    The query never reads another function's signature, so it is **acyclic** and
-    the cross-module firewall holds (a caller depends on a callee's small
-    signature, computed at the call site). Row-polymorphic functions (curried
-    through evidence) stay all-owned. Cross-module borrowing (an inter-procedural
-    fixpoint) is a future refinement.
+    Originally the query never read another function's signature, so it was
+    **acyclic** (a caller depended on a callee's small signature, computed at the
+    call site). Row-polymorphic functions (curried through evidence) stay
+    all-owned. Cross-module borrowing — the inter-procedural fixpoint that lets a
+    forwarded parameter be borrowed — is **now implemented (see D100)**, which
+    supersedes that self-contained/acyclic property.
   - **Two-entry-point ABI (escape without whole-program analysis).** A function
     that borrows a parameter is compiled with a borrowed entry (used by direct
     callers) and an owned-ABI wrapper that calls the entry and then releases the
@@ -1071,6 +1072,44 @@ program output are unchanged, guarded by the full type/golden suite):
     and deep end-to-end runs (JIT and AOT) confirm constant stack and a leak-free
     exit. Mutually-recursive, nested-constructor, non-last reorder-unsafe, and
     row-polymorphic cases are noted as future generalizations.
+
+- **D100 Inter-procedural argument borrowing (amends D79).** Borrow inference now
+  consults callees' signatures, so a parameter only *forwarded* to another
+  function's borrowing parameter is itself borrowed. This implements the
+  "future refinement" D79 named, superseding its self-contained/acyclic property.
+  - **The exploit.** In `call_arg_borrows`, a saturated direct call to another
+    function reads that function's `borrow_signature` (gated by `exploitable_at`,
+    the same saturation test code generation uses for a direct call), so the args
+    it lends mirror the callee's borrowed parameters. A self-call still uses the
+    in-progress signature from the function's own local fixpoint (so self-recursion
+    — the common case — never enters a salsa cycle).
+  - **Sound regardless of precision.** Borrowing is sound by construction (a
+    borrowed parameter is a capture: duplicated on a consuming use, never dropped;
+    the caller releases it), so over- or under-borrowing only adds or removes a
+    dup — never a leak or double free. The same `borrow_signature` feeds the RC
+    pass (`arg_borrows`), code generation (the two-entry-point ABI), and the
+    soundness interpreter, so the caller-side drops always match the assumed sig.
+  - **Cycles: the first deliberate salsa cycle.** An acyclic call graph resolves
+    as ordinary query dependencies. Cross-module mutual recursion (which the call
+    graph permits — unlike the type-SCC graph, signatures do **not** cut a real
+    call, so a borrow SCC can span files) forms a salsa cycle resolved by a
+    **monotone fixpoint** (`cycle_fn`/`cycle_initial`, `CycleRecoveryStrategy::
+    Fixpoint`). It starts **optimistic** — every parameter borrowed (the top of the
+    lattice) — so it converges to the *greatest*, most precise, sound signature; an
+    all-owned start would be a trivial fixpoint that never borrows across a cycle.
+    The step is monotone (a more-borrowed callee can only make a forwarding caller
+    more-borrowed) over a finite lattice, so it converges in a few rounds; a
+    high-iteration **fallback to all-owned** keeps the query total for a
+    pathologically large recursion cluster, well below salsa's own iteration cap.
+    This is the project's first use of salsa cycle recovery — chosen over a manual
+    cross-module call-SCC + joint fixpoint because it is far smaller and keeps the
+    per-definition incremental model (no whole-call-graph SCC query).
+  - **Firewall.** `borrow_signature(A)` now depends on its saturated callees'
+    `borrow_signature`. Early cutoff on the small `BorrowSig` value bounds the
+    ripple: editing a callee body re-runs a forwarding caller's
+    `borrow_signature`/`rc`/`object_code` only when the callee's borrow signature
+    actually changes — analogous to a public-signature change, and confirmed
+    workspace-size-independent by the perf guards.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

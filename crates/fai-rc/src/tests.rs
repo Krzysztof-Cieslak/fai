@@ -153,10 +153,10 @@ fn captures_dup_on_use_and_are_never_dropped() {
 
 #[test]
 fn caller_lends_a_borrowed_argument_without_duplicating() {
-    // `len` borrows its list, so a caller passing the *same* list to two `len`
-    // calls lends it to each rather than duplicating it (the churn win). It is
-    // released once at its last use. (Cross-function borrowing is exploited at the
-    // call site; `count`'s own parameter is conservatively owned.)
+    // `len` borrows its list, so `count` — which only forwards `xs` to two `len`
+    // calls — lends it to each rather than duplicating it (the churn win), and is
+    // *itself* inferred to borrow `xs` (inter-procedural borrowing). A borrowed
+    // parameter is released by the caller, so `count` neither dups nor drops it.
     let got = rc_of(
         indoc! {r#"
             module M
@@ -171,7 +171,12 @@ fn caller_lends_a_borrowed_argument_without_duplicating() {
         "count",
     );
     assert!(!got.contains("dup"), "a borrowed argument is lent, not duplicated: {got}");
-    assert_eq!(got.matches("drop").count(), 1, "the list is released once: {got}");
+    assert_eq!(
+        got.matches("drop").count(),
+        0,
+        "count forwards its parameter to a borrowing function, so it borrows it too \
+         (the caller releases it): {got}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -280,5 +285,63 @@ proptest! {
         let def = rc(&db, file, Symbol::intern("f"));
         let r = check_sound(&db, &def);
         prop_assert!(r.is_ok(), "rc unsound: {}\n{}", r.unwrap_err(), pretty_def(&def));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Property: inter-procedural borrowing over arbitrary forwarding/mutual-recursion
+// call graphs stays reference-count sound, and the borrow fixpoint always
+// terminates (the salsa cycle converges or falls back, never panics).
+// ---------------------------------------------------------------------------
+
+/// Generates a module of `n` functions `f0..f{n-1}`, each `List Int -> Int`, whose
+/// body either inspects its list, forwards the whole list to another function,
+/// forwards the tail, or sums the head and recurses into another function. Targets
+/// are unconstrained (0..n), so the call graph is arbitrary — including self- and
+/// mutual recursion (borrow cycles). Every program is well-typed by construction.
+fn forwarding_program() -> impl Strategy<Value = (String, usize)> {
+    (1usize..=4).prop_flat_map(|n| {
+        proptest::collection::vec((0u8..4u8, 0..n, 0i64..100), n).prop_map(move |defs| {
+            let mut src = String::from("module M\n");
+            for (i, &(kind, j, c)) in defs.iter().enumerate() {
+                src.push('\n');
+                let def = match kind {
+                    // Forward the whole list to another function.
+                    1 => format!("let f{i} xs = f{j} xs\n"),
+                    // Forward the tail to another function.
+                    2 => format!(
+                        "let f{i} xs =\n  match xs with\n  | [] -> {c}\n  | _ :: r -> f{j} r\n"
+                    ),
+                    // Inspect the head, recurse into another function on the tail.
+                    3 => format!(
+                        "let f{i} xs =\n  match xs with\n  | [] -> {c}\n  | x :: r -> x + f{j} r\n"
+                    ),
+                    // Inspect the list, ignore the element.
+                    _ => format!(
+                        "let f{i} xs =\n  match xs with\n  | [] -> {c}\n  | _ :: _ -> {c}\n"
+                    ),
+                };
+                src.push_str(&def);
+            }
+            (src, n)
+        })
+    })
+}
+
+proptest! {
+    #[test]
+    fn borrow_is_sound_over_forwarding_graphs((src, n) in forwarding_program()) {
+        let (db, file) = db_with(&src);
+        // Well-typed by construction; assert it so soundness is not vacuous over
+        // `Error` nodes.
+        prop_assert!(assert_well_typed(&db, file).is_ok(), "ill-typed:\n{src}");
+        // Reference-counting each function drives `borrow_signature` (and its
+        // cross-function fixpoint) and must stay sound on every member.
+        for i in 0..n {
+            let name = format!("f{i}");
+            let def = rc(&db, file, Symbol::intern(&name));
+            let r = check_sound(&db, &def);
+            prop_assert!(r.is_ok(), "rc unsound for {name}: {}\n{src}", r.unwrap_err());
+        }
     }
 }
