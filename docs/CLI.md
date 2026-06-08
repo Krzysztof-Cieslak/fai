@@ -237,9 +237,9 @@ Editors speak this; agents use `fai query` instead.
 Supported requests: full-document sync with pushed `publishDiagnostics`; `hover`
 (type, `///` doc prose, and attached contracts), `definition`, `completion`,
 `signatureHelp`, `documentSymbol`, `workspace/symbol`, `references`,
-`prepareRename`/`rename`, `codeAction` (quick fixes), and document `formatting`.
-Open buffers are analyzed as unsaved overlays, so every answer tracks the
-in-editor text.
+`prepareRename`/`rename`, `codeAction` (quick fixes), `inlayHint` (inferred
+binder types), `semanticTokens` (full), and document `formatting`. Open buffers
+are analyzed as unsaved overlays, so every answer tracks the in-editor text.
 
 ---
 

@@ -64,10 +64,11 @@
 > diagnostics, hover (type, `///` docs, and contracts), go-to-definition,
 > completion, signature help, document & workspace symbols, find-references,
 > rename, quick fixes (apply a diagnostic's suggested edit, add a missing public
-> signature, qualify an unbound name), and document formatting over stdio, backed
-> by offset-addressed code-intelligence queries (`hover`/`definition`,
-> context-aware `completion`, signature help, the `references` reverse lookup that
-> also drives rename, code actions, and the symbol outline). Later
+> signature, qualify an unbound name), inlay hints (inferred binder types),
+> semantic tokens, and document formatting over stdio, backed by offset-addressed
+> code-intelligence queries (`hover`/`definition`, context-aware `completion`,
+> signature help, the `references` reverse lookup that also drives rename, code
+> actions, inlay hints, semantic tokens, and the symbol outline). Later
 > milestones (performance tuning at scale, …) define the *intended* interface we
 > build toward. The design is locked (see the decision table below).
 

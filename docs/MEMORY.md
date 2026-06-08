@@ -958,6 +958,16 @@ server:
     matching the binding's indentation and the member's bare name. The engine
     re-derives the file's diagnostics from the salsa accumulators, so the
     suggestions exactly match `fai check`'s.
+  - **Inlay hints & semantic tokens.** Inlay hints annotate every variable binder
+    (parameters, lambda binders, local `let`s, match binders — Fai binders carry
+    no inline annotation) with its inferred type, read from the per-body pattern
+    types. Semantic tokens classify the lexer's token stream: keywords, literals,
+    operators, and comments syntactically; identifiers by resolution (a function
+    vs. value definition, a constructor, a local, a builtin) where a name
+    reference resolves, the qualifier of a `Module.member` as a namespace, and
+    otherwise by casing (a lower name is a variable, an upper one a type). The
+    engine yields byte-range tokens; the server splits any multi-line token and
+    delta-encodes them in UTF-16 against the advertised legend.
 
 Inference tuning, primitive borrowing & intra-build parallelism
 (measurement-driven; correctness-neutral — inferred types, diagnostics, and
