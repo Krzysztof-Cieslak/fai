@@ -195,14 +195,9 @@ fn cross_definition_call() {
 }
 
 #[test]
-// Known limitation: on aarch64 macOS the AOT-built binary crashes (produces no
-// output) when a top-level function is used as a value — i.e. partial
-// application of a named function. Direct/saturated calls and the JIT path are
-// fine; this is a Mach-O codegen issue with the static-closure code pointer.
-#[cfg_attr(
-    all(target_os = "macos", target_arch = "aarch64"),
-    ignore = "aarch64 macOS AOT: a function used as a value crashes the produced binary"
-)]
+// A named top-level function used as a *value*: `add 40` is a partial application
+// passed to `apply`, which applies it. This exercises the static-closure code
+// pointer and the runtime partial-application path on every target, AOT included.
 fn higher_order_and_partial_application() {
     let src = indoc! {r#"
         module Main
@@ -213,6 +208,61 @@ fn higher_order_and_partial_application() {
 
         public main : Runtime -> Unit
         let main runtime = runtime.console.writeLine (Int.toString (apply (add 40) 2))
+    "#};
+    let (out, code) = build_and_run(src);
+    assert_eq!(out, "42\n");
+    assert_eq!(code, Some(0));
+}
+
+#[test]
+// A function returns a function (a closure), which is then bound and applied.
+fn returns_a_function() {
+    let src = indoc! {r#"
+        module Main
+
+        let makeAdder x = fun y -> x + y
+
+        public main : Runtime -> Unit
+        let main runtime =
+          let add40 = makeAdder 40
+          runtime.console.writeLine (Int.toString (add40 2))
+    "#};
+    let (out, code) = build_and_run(src);
+    assert_eq!(out, "42\n");
+    assert_eq!(code, Some(0));
+}
+
+#[test]
+// Over-application: `makeAdder` has arity one but is applied to two arguments in a
+// single expression, so the runtime applies the surplus to the returned function.
+fn over_application_of_returned_function() {
+    let src = indoc! {r#"
+        module Main
+
+        let makeAdder x = fun y -> x + y
+
+        public main : Runtime -> Unit
+        let main runtime = runtime.console.writeLine (Int.toString (makeAdder 40 2))
+    "#};
+    let (out, code) = build_and_run(src);
+    assert_eq!(out, "42\n");
+    assert_eq!(code, Some(0));
+}
+
+#[test]
+// A zero-arity top-level binding holding a partial application: referencing `inc`
+// forces its static closure (applying it to no arguments), yielding the `add 1`
+// partial application, which is then applied.
+fn forced_zero_arity_value_binding() {
+    let src = indoc! {r#"
+        module Main
+
+        let add x y = x + y
+
+        let inc = add 1
+
+        public main : Runtime -> Unit
+        let main runtime = runtime.console.writeLine (Int.toString (inc 41))
     "#};
     let (out, code) = build_and_run(src);
     assert_eq!(out, "42\n");
