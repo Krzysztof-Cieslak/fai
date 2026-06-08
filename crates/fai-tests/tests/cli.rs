@@ -11,14 +11,26 @@ fn run(args: &[&str]) -> (i32, String, String) {
     (code, String::from_utf8(out).unwrap(), String::from_utf8(err).unwrap())
 }
 
+/// A fresh, unique temporary directory. Each test gets its own workspace so
+/// parallel tests never share a directory — a fixture write in one test cannot
+/// race a read in another (tests run in parallel, and `std::fs::write` truncates
+/// before it writes). Unique by process id (nextest runs a process per test) and
+/// an atomic counter (so threads, and repeat calls, never collide).
+fn unique_dir(prefix: &str) -> Utf8PathBuf {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = Utf8PathBuf::from_path_buf(std::env::temp_dir())
+        .expect("temp dir is UTF-8")
+        .join(format!("{prefix}-{}-{n}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
 /// An empty, controlled workspace so command output never depends on whatever
 /// files happen to be near the test's working directory.
 fn empty_workspace() -> Utf8PathBuf {
-    let dir = Utf8PathBuf::from_path_buf(std::env::temp_dir())
-        .expect("temp dir is UTF-8")
-        .join("fai-m0-cli-tests");
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    unique_dir("fai-cli-empty")
 }
 
 #[test]
@@ -41,10 +53,7 @@ fn check_human_output() {
 
 /// A workspace with a single typed module, for query/check-with-types tests.
 fn typed_workspace() -> Utf8PathBuf {
-    let dir = Utf8PathBuf::from_path_buf(std::env::temp_dir())
-        .expect("temp dir is UTF-8")
-        .join("fai-m2-cli-tests");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = unique_dir("fai-cli-typed");
     std::fs::write(
         dir.join("Calc.fai"),
         indoc! {r#"
@@ -69,10 +78,7 @@ fn query_type_json_output() {
 
 #[test]
 fn check_reports_type_error() {
-    let dir = Utf8PathBuf::from_path_buf(std::env::temp_dir())
-        .expect("temp dir is UTF-8")
-        .join("fai-m2-cli-typeerr");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = unique_dir("fai-cli-typeerr");
     std::fs::write(
         dir.join("Bad.fai"),
         indoc! {r#"
@@ -98,10 +104,7 @@ fn check_reports_type_error() {
 
 /// A workspace with a nested module, for nested code-intelligence queries.
 fn nested_workspace() -> Utf8PathBuf {
-    let dir = Utf8PathBuf::from_path_buf(std::env::temp_dir())
-        .expect("temp dir is UTF-8")
-        .join("fai-nested-cli-tests");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = unique_dir("fai-cli-nested");
     std::fs::write(
         dir.join("Nest.fai"),
         indoc! {r#"
@@ -127,10 +130,7 @@ fn query_type_of_nested_member_via_dotted_path() {
 
 #[test]
 fn query_caps_reports_capability_footprint() {
-    let dir = Utf8PathBuf::from_path_buf(std::env::temp_dir())
-        .expect("temp dir is UTF-8")
-        .join("fai-caps-cli-tests");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = unique_dir("fai-cli-caps");
     std::fs::write(
         dir.join("Cap.fai"),
         indoc! {r#"
