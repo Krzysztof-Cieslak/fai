@@ -1466,6 +1466,29 @@ completeness):
     by qualified or local segment. An alpha-equivalent match scores highest; a
     hole-to-concrete or loose-name match scores lower. Search spans the whole
     workspace, the standard library included.
+- **D91 Language server (`fai-lsp`).** A standard LSP server, speaking JSON-RPC
+  over stdio, reusing the warm workspace `Session` and the `fai-ide` engine so its
+  answers match the `fai query`/`fai check` ones; `fai lsp` runs it (the server
+  owns its own stdio loop, bypassing the CLI's command envelopes). Editors use it;
+  agents use `fai query`.
+  - **Transport.** The `lsp-server` (synchronous framing/connection) and
+    `lsp-types` crates. `lsp-types` is pinned at `0.95` because `0.97` replaced
+    `Url` (with `to_file_path`/`from_file_path`) with a `Uri` type lacking
+    filesystem-path helpers.
+  - **Surface (v1).** Full-document `textDocument` sync, `publishDiagnostics`,
+    `hover`, `definition`, and `formatting`. Open buffers are overlaid into the
+    database as in-memory edits, so analysis tracks unsaved changes; diagnostics
+    reuse `fai check` and formatting reuses `fai fmt`.
+  - **Position-addressed queries.** Hover and go-to-definition are offset-keyed
+    (an editor addresses a byte position, not a name), so `fai-ide` gains
+    `hover_at`/`definition_at`: find the innermost expression containing the
+    offset (walking outward when it carries no resolution), then report its
+    inferred type or jump to what its reference resolves to — a definition, a
+    constructor variant, or a local's binding pattern.
+  - **Positions.** LSP positions are `(0-based line, 0-based UTF-16 unit)` while
+    Fai spans are UTF-8 byte offsets; a per-document line map converts both ways
+    (exact across non-BMP characters), clamping an out-of-range column to the
+    line's content rather than spilling onto the next line.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected milestones.

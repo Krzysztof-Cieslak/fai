@@ -56,8 +56,12 @@
 > over values by partial application). (Splitmix needs **bitwise `Int`
 > intrinsics** — `Int.and/or/xor/complement/shiftLeft/shiftRight/shiftRightLogical`
 > — and full-domain float generation needs `Float.fromBits`/`toBits`, both added
-> as part of this work.) Later milestones (the LSP, …) define the *intended*
-> interface we build toward. The design is locked (see the decision table below).
+> as part of this work.) A standard **language server** (`fai lsp`, the `fai-lsp`
+> crate) is built: it reuses the warm session and the `fai-ide` engine to serve
+> diagnostics, hover, go-to-definition, and document formatting over stdio, backed
+> by offset-addressed `hover`/`definition` code-intelligence queries. Later
+> milestones (performance tuning at scale, …) define the *intended* interface we
+> build toward. The design is locked (see the decision table below).
 
 This document is the orientation guide for anyone — human or AI agent — working
 on the Fai compiler. Read it first. For the staged build plan see `docs/PLAN.md`; for
