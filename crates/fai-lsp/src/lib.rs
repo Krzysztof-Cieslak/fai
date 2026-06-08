@@ -17,13 +17,14 @@ use fai_db::SourceFile;
 use fai_driver::{DirtyFile, Session, check, fmt};
 use lsp_server::{Connection, Message, Notification, Request, RequestId, Response};
 use lsp_types::{
-    CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
-    Diagnostic as LspDiagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
-    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentFormattingParams,
-    DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
-    GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
-    Location as LspLocation, MarkupContent, MarkupKind, NumberOrString, OneOf,
-    ParameterInformation, ParameterLabel, Position, PrepareRenameResponse,
+    CodeAction as LspCodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams,
+    CodeActionProviderCapability, CodeActionResponse, CompletionItem, CompletionItemKind,
+    CompletionOptions, CompletionParams, CompletionResponse, Diagnostic as LspDiagnostic,
+    DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, DocumentFormattingParams, DocumentSymbol, DocumentSymbolParams,
+    DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
+    HoverParams, HoverProviderCapability, Location as LspLocation, MarkupContent, MarkupKind,
+    NumberOrString, OneOf, ParameterInformation, ParameterLabel, Position, PrepareRenameResponse,
     PublishDiagnosticsParams, Range, ReferenceParams, RenameOptions, RenameParams,
     ServerCapabilities, SignatureHelp as LspSignatureHelp, SignatureHelpOptions,
     SignatureHelpParams, SignatureInformation, SymbolInformation, SymbolKind as LspSymbolKind,
@@ -96,6 +97,7 @@ fn server_capabilities() -> ServerCapabilities {
             trigger_characters: Some(vec![" ".to_owned()]),
             ..SignatureHelpOptions::default()
         }),
+        code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
         rename_provider: Some(OneOf::Right(RenameOptions {
             prepare_provider: Some(true),
             work_done_progress_options: Default::default(),
@@ -222,6 +224,12 @@ impl Server {
                     req.extract::<SignatureHelpParams>("textDocument/signatureHelp")
                 {
                     respond(conn, id, &self.signature_help(&params));
+                }
+            }
+            "textDocument/codeAction" => {
+                if let Ok((id, params)) = req.extract::<CodeActionParams>("textDocument/codeAction")
+                {
+                    respond(conn, id, &self.code_actions(&params));
                 }
             }
             // An unsupported request still needs a reply so the client is not
@@ -397,6 +405,51 @@ impl Server {
             active_signature: Some(0),
             active_parameter: Some(help.active_parameter),
         })
+    }
+
+    fn code_actions(&self, params: &CodeActionParams) -> Option<CodeActionResponse> {
+        let uri = &params.text_document.uri;
+        let rel = self.relative(uri)?;
+        let file = *self.session.select_files(Some(&rel)).first()?;
+        let text = self.open.get(uri)?;
+        let lines = LineMap::new(text);
+        let start = lines.offset(params.range.start) as u32;
+        let end = lines.offset(params.range.end) as u32;
+        let actions = fai_ide::code_actions_at(
+            self.session.db(),
+            &self.session.user_files(),
+            file,
+            start,
+            end,
+            &self.session.resolver(),
+        );
+        let response: CodeActionResponse = actions
+            .into_iter()
+            .map(|action| {
+                // Group the action's edits into a workspace edit keyed by file URI.
+                let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
+                for edit in action.edits {
+                    if let Some(euri) = self.uri_for(&edit.span.file)
+                        && let Some(range) = self.range_in_file(&edit.span)
+                    {
+                        changes
+                            .entry(euri)
+                            .or_default()
+                            .push(TextEdit { range, new_text: edit.new_text });
+                    }
+                }
+                CodeActionOrCommand::CodeAction(LspCodeAction {
+                    title: action.title,
+                    kind: Some(CodeActionKind::QUICKFIX),
+                    edit: Some(WorkspaceEdit {
+                        changes: Some(changes),
+                        ..WorkspaceEdit::default()
+                    }),
+                    ..LspCodeAction::default()
+                })
+            })
+            .collect();
+        Some(response)
     }
 
     // --- helpers ----------------------------------------------------------

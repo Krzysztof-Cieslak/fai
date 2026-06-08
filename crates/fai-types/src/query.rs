@@ -10,9 +10,9 @@
 use std::sync::Arc;
 
 use fai_db::{Db, SourceFile, emit};
-use fai_diagnostics::{Diagnostic, Label};
+use fai_diagnostics::{Diagnostic, Label, Suggestion};
 use fai_resolve::{DefId, module_defs, module_sccs, resolve};
-use fai_span::Span;
+use fai_span::{ByteOffset, Span, TextRange};
 use fai_syntax::Symbol;
 use fai_syntax::ast::ExprId;
 use rustc_hash::FxHashMap;
@@ -261,16 +261,19 @@ pub fn check_file(db: &dyn Db, file: SourceFile) {
                 // A public binding must have a signature.
                 if d.visibility == fai_syntax::ast::Visibility::Public {
                     let span = module.items[d.binding.index()].span;
-                    let suggestion = crate::ty::render_scheme(&inferred);
-                    emit(
-                        db,
-                        Diagnostic::error(
-                            MISSING_PUBLIC_SIGNATURE,
-                            format!("public binding `{}` needs a signature", d.name),
-                            Span::new(file.source(db), span),
-                        )
-                        .with_help(format!("add a signature, e.g. `{} : {suggestion}`", d.name)),
-                    );
+                    let rendered = crate::ty::render_scheme(&inferred);
+                    let mut diag = Diagnostic::error(
+                        MISSING_PUBLIC_SIGNATURE,
+                        format!("public binding `{}` needs a signature", d.name),
+                        Span::new(file.source(db), span),
+                    )
+                    .with_help(format!("add a signature, e.g. `{} : {rendered}`", d.name));
+                    // Offer the inferred signature as a machine-applicable fix:
+                    // move `public` onto a new signature line above the binding.
+                    if let Some(fix) = missing_signature_fix(db, file, span, d.name, &rendered) {
+                        diag = diag.with_suggestion(fix);
+                    }
+                    emit(db, diag);
                 }
             }
             Some(sig_item) => {
@@ -309,4 +312,34 @@ pub fn check_file(db: &dyn Db, file: SourceFile) {
 
     crate::exhaustive::check_matches(db, file);
     crate::contracts::check_contracts(db, file);
+}
+
+/// The machine-applicable fix for a missing public signature: replace the
+/// binding's leading `public ` keyword with a `public name : type` signature line
+/// (so visibility moves to the signature) followed by the binding's original
+/// indentation, leaving the binding itself a plain `let`.
+fn missing_signature_fix(
+    db: &dyn Db,
+    file: SourceFile,
+    binding_span: TextRange,
+    name: Symbol,
+    rendered_type: &str,
+) -> Option<Suggestion> {
+    let text = file.text(db);
+    let start = binding_span.start().to_usize();
+    let end = binding_span.end().to_usize();
+    let binding_text = text.get(start..end)?;
+    // The `let` keyword sits right after the `public ` prefix to replace.
+    let let_off = binding_text.find("let")?;
+    // Repeat the binding's own indentation on the inserted signature line.
+    let line_start = text[..start].rfind('\n').map_or(0, |i| i + 1);
+    let indent = &text[line_start..start];
+    let prefix = Span::new(
+        file.source(db),
+        TextRange::new(ByteOffset::from_usize(start), ByteOffset::from_usize(start + let_off)),
+    );
+    // The signature uses the binding's own (bare) name, even for a nested member
+    // whose qualified `name` carries a module path.
+    let bare = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
+    Some(Suggestion::new(prefix, format!("public {bare} : {rendered_type}\n{indent}")))
 }
