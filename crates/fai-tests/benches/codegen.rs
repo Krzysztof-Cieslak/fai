@@ -67,6 +67,54 @@ fn jit_compile_and_run(bencher: Bencher, program: (&str, &str)) {
         .bench_values(|(db, file)| divan::black_box(jit_run_program(&db, file).exit_code));
 }
 
+/// A program of `n` independent functions, all summed by `main`, so the closure
+/// reachable from `main` has ~`n` definitions to code-generate.
+fn many_defs(n: usize) -> String {
+    use std::fmt::Write as _;
+    let mut s = String::from("module M\n\n");
+    for i in 0..n {
+        let _ = writeln!(s, "let f{i} x = x + {i} - {i} * 2\n");
+    }
+    let calls = (0..n).map(|i| format!("f{i} {i}")).collect::<Vec<_>>().join(" + ");
+    let _ = write!(
+        s,
+        "public main : Runtime -> Unit\nlet main r = r.console.writeLine (Int.toString ({calls}))\n"
+    );
+    s
+}
+
+/// Code generation across the definitions reachable from `main`, in parallel
+/// (each `object_code` is an independent query on a per-worker database handle —
+/// the shape `build_native` uses). Run with `RAYON_NUM_THREADS=1` vs unset to
+/// compare serial and parallel. Uses a fresh database so the in-memory cache is
+/// cold and real code generation runs; `object_code` is called directly, so the
+/// on-disk cache is not involved.
+#[divan::bench(args = [50, 200])]
+fn aot_codegen_reachable(bencher: Bencher, n: usize) {
+    use fai_db::Db;
+    use fai_driver::{object_code, reachable_defs};
+    use rayon::prelude::*;
+
+    let src = many_defs(n);
+    bencher
+        .counter(divan::counter::ItemsCount::new(n))
+        .with_inputs(|| {
+            let (db, file) = fresh(&src);
+            let reachable = reachable_defs(&db, file);
+            (db, reachable)
+        })
+        .bench_values(|(db, reachable)| {
+            let objs: Vec<_> = reachable
+                .par_iter()
+                .map_with(db.clone_box(), |dbh, def| {
+                    let db: &dyn Db = &**dbh;
+                    db.source_file(def.file).map(|f| object_code(db, f, def.name))
+                })
+                .collect();
+            divan::black_box(objs)
+        });
+}
+
 /// Object codegen straight from a pre-lowered definition (no salsa, no front
 /// end) — the pure Cranelift cost.
 #[divan::bench]

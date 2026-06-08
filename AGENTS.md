@@ -369,7 +369,11 @@ cache plus a fast linker (mold/lld).
 - `FxHashMap`/`FxHashSet` (rustc-hash) internally; deterministic ordering where
   observable.
 - Parallelize across independent defs/modules with `rayon` (Cranelift codegen is
-  embarrassingly parallel per function).
+  embarrassingly parallel per function). Per-definition AOT object emission and
+  the run-path lower/reference-count gathers already do this: each worker takes
+  its own database-handle clone (`Db::clone_box`; salsa databases are `Send` not
+  `Sync`, so handles are cloned, not shared), order-preserving so builds stay
+  deterministic. The JIT compile (one shared module) is still serial.
 - Opt-in monomorphization for hot paths is an M9 optimization, never a
   correctness requirement — and the one feature that *hurts* incrementality, so
   it stays opt-in.

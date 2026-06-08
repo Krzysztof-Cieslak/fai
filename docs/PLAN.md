@@ -547,10 +547,14 @@ a depth-256 arrow drops from ~3.7ms to ~28µs, a value-`let` chain of 800 from
 ~31ms to ~1ms); and the inspect-only primitives (`=`, `compare`, the `String`
 readers) now borrow boxed operands via non-consuming runtime variants. Always-on
 thread-local **work counters** (`fai-types/src/perf.rs`) gate the solver's
-asymptotic complexity deterministically in `perf_guards.rs`. Still to come:
-`rayon` parallelism, the shared/remote cache, daemon hardening, opt-in
-monomorphization, and the remaining reuse/borrowing follow-ups (TRMC,
-cross-module borrowing).
+asymptotic complexity deterministically in `perf_guards.rs`. **Intra-build
+parallelism** is also done (see decision **D95**): per-definition code generation
+(the AOT object loop) and the lower/reference-count gathers for the run paths run
+across a `rayon` pool, each worker on its own cheap database-handle clone (salsa
+coordinates the shared memoization) — ~2× on a 200-definition build here. Still
+to come: the shared/remote cache, daemon hardening (LRU/memory bounds,
+cross-request concurrency), opt-in monomorphization, and the remaining
+reuse/borrowing follow-ups (TRMC, cross-module borrowing).
 
 **Deliverables**
 - `rayon` parallelism across independent defs/modules (parallel salsa queries;
@@ -1634,6 +1638,25 @@ suite):
   is unchanged), so borrowing only applies where it removes real dup/drop churn.
   Chosen over a single uniformly-non-consuming variant, which would have pushed
   drops and let-bindings onto the immediate operand path.
+
+- **D95 Intra-build parallelism via per-worker database clones.** salsa databases
+  are `Send` but not `Sync`, so a `&dyn Db` cannot be shared across threads;
+  parallelism instead gives each worker its own database handle (a cheap clone
+  sharing the underlying storage and memoization, with salsa coordinating
+  concurrent query execution). To keep the `&dyn Db` seam, the `Db` trait gains a
+  `clone_box(&self) -> Box<dyn Db>` and `Box<dyn Db>` implements `Clone` (via
+  `clone_box`; sound by the orphan rule because `Box` is `#[fundamental]` and
+  `dyn Db` is local), so it is `Clone + Send` and works as a rayon `map_with`
+  seed (cloned per worker). The per-definition AOT object emission and the
+  lower/reference-count gathers for the run paths (`jit_run_program`,
+  `build_run_bundle`) run across the rayon pool; **order is preserved** (indexed
+  `collect`), so the linker input and the run bundle stay deterministic. This is
+  **intra-command** parallelism only — it does not change the daemon's
+  per-command serialization (D57); concurrent *requests* remain future work. The
+  JIT *compile* (one shared module) stays serial — parallelizing it is a separate
+  refactor. Chosen over a generic `build_native<DB: Db + Clone>` (which would push
+  the concrete database type through the driver seam) and over sharing a `&dyn Db`
+  (impossible: not `Sync`).
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected milestones.

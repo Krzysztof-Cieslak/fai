@@ -23,6 +23,7 @@ fai-runtime.workspace = true
 fai-contracts.workspace = true
 salsa.workspace = true
 rustc-hash.workspace = true
+rayon.workspace = true
 serde = { workspace = true }
 serde_json.workspace = true
 thiserror.workspace = true

@@ -709,6 +709,7 @@ dependencies = [
  "fai-types",
  "indoc",
  "nix",
+ "rayon",
  "rustc-hash",
  "salsa",
  "serde",
@@ -867,6 +868,7 @@ dependencies = [
  "lsp-server",
  "lsp-types",
  "proptest",
+ "rayon",
  "serde_json",
 ]
 
