@@ -7,6 +7,8 @@
 //! each column's type to know a constructor set is complete, so column types are
 //! threaded alongside the pattern matrix.
 
+use std::rc::Rc;
+
 use fai_db::{Db, SourceFile, emit};
 use fai_diagnostics::Diagnostic;
 use fai_resolve::{Res, ResolvedBodies, resolve, type_decls};
@@ -559,8 +561,8 @@ fn instantiate_fields(scheme: &crate::ty::Scheme, ty: &Ty, arity: usize) -> Vec<
     for _ in 0..arity {
         match cx.resolve_shallow(&cur) {
             SolveTy::Arrow(from, to) => {
-                fields.push(*from);
-                cur = *to;
+                fields.push(Rc::unwrap_or_clone(from));
+                cur = Rc::unwrap_or_clone(to);
             }
             _ => break,
         }

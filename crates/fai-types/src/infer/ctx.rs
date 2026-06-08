@@ -6,6 +6,8 @@
 //! [`Ty`]. The context is local to one inference call (one def or SCC); nothing
 //! here is cached by salsa.
 
+use std::rc::Rc;
+
 use fai_resolve::{AdtRef, InterfaceRef};
 use fai_syntax::Symbol;
 
@@ -70,10 +72,11 @@ pub enum SolveTy {
     Adt(AdtRef),
     /// A nominal interface type (applied via [`SolveTy::App`] for parameters).
     Interface(InterfaceRef),
-    /// Application.
-    App(Box<SolveTy>, Box<SolveTy>),
-    /// Function type.
-    Arrow(Box<SolveTy>, Box<SolveTy>),
+    /// Application. Children are `Rc`-shared so resolving/cloning a representative
+    /// is O(1) (the deep clone otherwise dominates unification of large types).
+    App(Rc<SolveTy>, Rc<SolveTy>),
+    /// Function type. Children are `Rc`-shared (see [`SolveTy::App`]).
+    Arrow(Rc<SolveTy>, Rc<SolveTy>),
     /// Tuple type.
     Tuple(Vec<SolveTy>),
     /// A structural record.
@@ -99,18 +102,18 @@ impl SolveTy {
     }
     /// A function `from -> to`.
     pub fn arrow(from: SolveTy, to: SolveTy) -> SolveTy {
-        SolveTy::Arrow(Box::new(from), Box::new(to))
+        SolveTy::Arrow(Rc::new(from), Rc::new(to))
     }
     /// A `List t`.
     pub fn list(elem: SolveTy) -> SolveTy {
-        SolveTy::App(Box::new(SolveTy::Con(Con::List)), Box::new(elem))
+        SolveTy::App(Rc::new(SolveTy::Con(Con::List)), Rc::new(elem))
     }
 
     /// A nominal ADT head applied to `args` (e.g. `Option a`).
     pub fn adt(adt: AdtRef, args: Vec<SolveTy>) -> SolveTy {
         let mut ty = SolveTy::Adt(adt);
         for a in args {
-            ty = SolveTy::App(Box::new(ty), Box::new(a));
+            ty = SolveTy::App(Rc::new(ty), Rc::new(a));
         }
         ty
     }
@@ -136,6 +139,14 @@ pub enum UnifyResult {
     Occurs,
     /// A constrained variable was unified with a type it does not admit.
     BadConstraint,
+}
+
+/// The representative a variable chain resolves to (see [`InferCtx::repr`]).
+enum Repr<'a> {
+    /// A free representative variable.
+    Free(TyVarId),
+    /// A bound representative variable and the structure it is bound to.
+    Bound(TyVarId, &'a SolveTy),
 }
 
 /// The mutable inference solver.
@@ -322,10 +333,73 @@ impl InferCtx {
         cur
     }
 
+    /// Follows a variable chain to its representative *without cloning*: either a
+    /// free variable, or a bound representative variable paired with the
+    /// structure it points at (borrowed from the solver). The read-only walks
+    /// (`occurs`, free-variable collection) use this to avoid the per-node clone
+    /// that [`resolve_shallow`](InferCtx::resolve_shallow) makes, and to recover
+    /// the representative variable so a shared (DAG) subterm is walked once.
+    fn repr(&self, mut v: TyVarId) -> Repr<'_> {
+        loop {
+            match &self.vars[v.0 as usize] {
+                VarState::Bound(SolveTy::Var(next)) => v = *next,
+                VarState::Bound(t) => return Repr::Bound(v, t),
+                VarState::Free(_) => return Repr::Free(v),
+            }
+        }
+    }
+
     fn constraint_of(&self, id: TyVarId) -> Option<Constraint> {
         match &self.vars[id.0 as usize] {
             VarState::Free(c) => *c,
             VarState::Bound(_) => None,
+        }
+    }
+
+    /// Collects the free (unbound) representative variables reachable from `ty`,
+    /// following the substitution by borrowing (no clone). `visited` records the
+    /// bound representatives already walked, so a variable shared across `ty` (a
+    /// DAG, e.g. `(p, p)` repeated) is expanded only once.
+    pub(crate) fn collect_free_vars(
+        &self,
+        ty: &SolveTy,
+        out: &mut rustc_hash::FxHashSet<TyVarId>,
+        visited: &mut rustc_hash::FxHashSet<TyVarId>,
+    ) {
+        crate::perf::bump_free_var_visit();
+        match ty {
+            SolveTy::Var(v0) => match self.repr(*v0) {
+                Repr::Free(v) => {
+                    out.insert(v);
+                }
+                Repr::Bound(v, t) => {
+                    if visited.insert(v) {
+                        self.collect_free_vars(t, out, visited);
+                    }
+                }
+            },
+            SolveTy::App(f, a) | SolveTy::Arrow(f, a) => {
+                self.collect_free_vars(f, out, visited);
+                self.collect_free_vars(a, out, visited);
+            }
+            SolveTy::Tuple(elems) => {
+                for e in elems {
+                    self.collect_free_vars(e, out, visited);
+                }
+            }
+            // The immediate fields only (a bound row tail is not expanded here):
+            // generalization quantifies the type variables it can see, matching
+            // the record's principal-type fields.
+            SolveTy::Record(row) => {
+                for (_, t) in &row.fields {
+                    self.collect_free_vars(t, out, visited);
+                }
+            }
+            SolveTy::Con(_)
+            | SolveTy::Adt(_)
+            | SolveTy::Interface(_)
+            | SolveTy::Unit
+            | SolveTy::Error => {}
         }
     }
 
@@ -370,7 +444,8 @@ impl InferCtx {
 
     /// Binds variable `id` to `ty`, running the occurs and constraint checks.
     fn bind(&mut self, id: TyVarId, ty: &SolveTy) -> UnifyResult {
-        if self.occurs(id, ty) {
+        let mut visited = rustc_hash::FxHashSet::default();
+        if self.occurs(id, ty, &mut visited) {
             return UnifyResult::Occurs;
         }
         if let Some(c) = self.constraint_of(id) {
@@ -431,16 +506,38 @@ impl InferCtx {
         }
     }
 
-    /// Whether `id` occurs in `ty` (the occurs check).
-    fn occurs(&self, id: TyVarId, ty: &SolveTy) -> bool {
+    /// Whether `id` occurs in `ty` (the occurs check). Walks by borrowing (no
+    /// clone) and memoizes bound representatives in `visited`, so a variable
+    /// reached through a shared (DAG) subterm is expanded only once.
+    fn occurs(
+        &self,
+        id: TyVarId,
+        ty: &SolveTy,
+        visited: &mut rustc_hash::FxHashSet<TyVarId>,
+    ) -> bool {
         crate::perf::bump_occurs_visit();
-        match self.resolve_shallow(ty) {
-            SolveTy::Var(other) => other == id,
-            SolveTy::App(f, a) | SolveTy::Arrow(f, a) => self.occurs(id, &f) || self.occurs(id, &a),
-            SolveTy::Tuple(elems) => elems.iter().any(|e| self.occurs(id, e)),
+        match ty {
+            SolveTy::Var(v0) => match self.repr(*v0) {
+                Repr::Free(v) => v == id,
+                Repr::Bound(v, t) => {
+                    // `id` is the free variable being bound, so it never equals a
+                    // bound representative; the guard is defensive.
+                    if v == id {
+                        return true;
+                    }
+                    if !visited.insert(v) {
+                        return false;
+                    }
+                    self.occurs(id, t, visited)
+                }
+            },
+            SolveTy::App(f, a) | SolveTy::Arrow(f, a) => {
+                self.occurs(id, f, visited) || self.occurs(id, a, visited)
+            }
+            SolveTy::Tuple(elems) => elems.iter().any(|e| self.occurs(id, e, visited)),
             SolveTy::Record(row) => {
-                let row = self.expand_row(&row);
-                row.fields.iter().any(|(_, t)| self.occurs(id, t))
+                let row = self.expand_row(row);
+                row.fields.iter().any(|(_, t)| self.occurs(id, t, visited))
             }
             SolveTy::Con(_)
             | SolveTy::Adt(_)
@@ -626,8 +723,8 @@ impl InferCtx {
             Ty::Unit => SolveTy::Unit,
             Ty::Error => SolveTy::Error,
             Ty::App(f, a) => SolveTy::App(
-                Box::new(self.instantiate_solve(f, map)),
-                Box::new(self.instantiate_solve(a, map)),
+                Rc::new(self.instantiate_solve(f, map)),
+                Rc::new(self.instantiate_solve(a, map)),
             ),
             Ty::Arrow(f, t) => {
                 SolveTy::arrow(self.instantiate_solve(f, map), self.instantiate_solve(t, map))

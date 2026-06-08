@@ -39,7 +39,7 @@ fn to_solve(ty: &Ty) -> SolveTy {
         Ty::Interface(i) => SolveTy::Interface(*i),
         Ty::Unit => SolveTy::Unit,
         Ty::Error => SolveTy::Error,
-        Ty::App(f, a) => SolveTy::App(Box::new(to_solve(f)), Box::new(to_solve(a))),
+        Ty::App(f, a) => SolveTy::App(std::rc::Rc::new(to_solve(f)), std::rc::Rc::new(to_solve(a))),
         Ty::Arrow(f, a) => SolveTy::arrow(to_solve(f), to_solve(a)),
         Ty::Tuple(elems) => SolveTy::Tuple(elems.iter().map(to_solve).collect()),
         // The generator never produces records; convert structurally for totality.

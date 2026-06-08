@@ -254,7 +254,7 @@ fn peel_param_types(cx: &InferCtx, ty: &SolveTy, n: usize) -> Vec<SolveTy> {
     for _ in 0..n {
         match cur {
             SolveTy::Arrow(from, to) => {
-                out.push(*from);
+                out.push(std::rc::Rc::unwrap_or_clone(from));
                 cur = cx.resolve_shallow(&to);
             }
             _ => break,

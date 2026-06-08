@@ -6,6 +6,8 @@
 //! go through *types*, never bodies — the firewall). Operator typing and the
 //! Numeric/Eq/Ord constraints live here.
 
+use std::rc::Rc;
+
 use fai_db::{Db, SourceFile, emit};
 use fai_diagnostics::Diagnostic;
 use fai_resolve::{CtorRef, DefId, InterfaceRef, LocalId, Res, ResolvedBodies, interface_decls};
@@ -571,7 +573,7 @@ impl<E: Env> Walker<'_, E> {
         // The instance's type is the interface applied to the (inferred) args.
         let mut t = SolveTy::Interface(iref);
         for &p in &param_fresh {
-            t = SolveTy::App(Box::new(t), Box::new(SolveTy::Var(p)));
+            t = SolveTy::App(Rc::new(t), Rc::new(SolveTy::Var(p)));
         }
         t
     }
@@ -892,7 +894,7 @@ impl<E: Env> Walker<'_, E> {
             match self.cx.resolve_shallow(&cur) {
                 SolveTy::Arrow(from, to) => {
                     self.check_pattern(a, &from);
-                    cur = *to;
+                    cur = Rc::unwrap_or_clone(to);
                 }
                 _ => {
                     arity_ok = false;
@@ -922,13 +924,14 @@ impl<E: Env> Walker<'_, E> {
     fn env_free_vars(&self) -> rustc_hash::FxHashSet<crate::ty::TyVarId> {
         let mut set = rustc_hash::FxHashSet::default();
         for binding in self.locals.values() {
+            let mut visited = rustc_hash::FxHashSet::default();
             match binding {
-                LocalBinding::Mono(t) => self.collect_free_vars(t, &mut set),
+                LocalBinding::Mono(t) => self.cx.collect_free_vars(t, &mut set, &mut visited),
                 // A poly local's quantified vars are bound, not free; only its
                 // free (non-quantified) vars constrain generalization.
                 LocalBinding::Poly { vars, ty } => {
                     let mut local = rustc_hash::FxHashSet::default();
-                    self.collect_free_vars(ty, &mut local);
+                    self.cx.collect_free_vars(ty, &mut local, &mut visited);
                     for v in vars {
                         local.remove(v);
                     }
@@ -952,7 +955,8 @@ impl<E: Env> Walker<'_, E> {
         env_vars: &rustc_hash::FxHashSet<crate::ty::TyVarId>,
     ) -> Vec<crate::ty::TyVarId> {
         let mut free = rustc_hash::FxHashSet::default();
-        self.collect_free_vars(ty, &mut free);
+        let mut visited = rustc_hash::FxHashSet::default();
+        self.cx.collect_free_vars(ty, &mut free, &mut visited);
         let mut vars: Vec<crate::ty::TyVarId> = free
             .into_iter()
             .filter(|v| !env_vars.contains(v))
@@ -960,36 +964,6 @@ impl<E: Env> Walker<'_, E> {
             .collect();
         vars.sort();
         vars
-    }
-
-    /// Collects the free (unbound) solver variables of `ty`, following the
-    /// current substitution.
-    fn collect_free_vars(&self, ty: &SolveTy, out: &mut rustc_hash::FxHashSet<crate::ty::TyVarId>) {
-        crate::perf::bump_free_var_visit();
-        match self.cx.resolve_shallow(ty) {
-            SolveTy::Var(v) => {
-                out.insert(v);
-            }
-            SolveTy::App(f, a) | SolveTy::Arrow(f, a) => {
-                self.collect_free_vars(&f, out);
-                self.collect_free_vars(&a, out);
-            }
-            SolveTy::Tuple(elems) => {
-                for e in &elems {
-                    self.collect_free_vars(e, out);
-                }
-            }
-            SolveTy::Record(row) => {
-                for (_, t) in &row.fields {
-                    self.collect_free_vars(t, out);
-                }
-            }
-            SolveTy::Con(_)
-            | SolveTy::Adt(_)
-            | SolveTy::Interface(_)
-            | SolveTy::Unit
-            | SolveTy::Error => {}
-        }
     }
 
     /// Instantiates a local scheme with fresh variables for each quantified var.
@@ -1037,7 +1011,7 @@ fn subst(
             None => SolveTy::Var(v),
         },
         SolveTy::App(f, a) => {
-            SolveTy::App(Box::new(subst(cx, &f, mapping)), Box::new(subst(cx, &a, mapping)))
+            SolveTy::App(Rc::new(subst(cx, &f, mapping)), Rc::new(subst(cx, &a, mapping)))
         }
         SolveTy::Arrow(f, a) => SolveTy::arrow(subst(cx, &f, mapping), subst(cx, &a, mapping)),
         SolveTy::Tuple(elems) => {
