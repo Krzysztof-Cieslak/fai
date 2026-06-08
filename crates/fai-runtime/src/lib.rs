@@ -426,6 +426,22 @@ fn drain(work: &mut DropWork) {
     }
 }
 
+/// Reclaims a dead cell's memory directly — the deallocator the inlined drop
+/// (generated code's specialized release of a known monomorphic data cell) calls
+/// once it has decremented the cell to zero and released its reference-counted
+/// children. Reclaims the backing memory and decrements the live-object counter.
+///
+/// # Safety
+/// `v` must be a boxed object whose reference count has reached zero and whose
+/// reference-counted children have already been released (as the inlined drop
+/// guarantees); it must not be used afterward.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fai_free(v: Value) {
+    // SAFETY: the caller guarantees `v` is a boxed, dead, child-released object,
+    // so its size header is valid and its memory matches the original allocation.
+    unsafe { free_obj(as_obj(v)) };
+}
+
 // ---------------------------------------------------------------------------
 // Data values (constructors, records, tuples).
 // ---------------------------------------------------------------------------

@@ -667,11 +667,11 @@ Reuse & in-place update:
   - **Drop specialization (scoped):** code generation carries a `local → type` map
     (from `let` value types) and **omits** dup/drop of statically-immediate values
     (`Bool`/`Unit`/`Char`), whose reference-count operations are no-ops. Deeper
-    specialization — inlining a known data cell's child drops and free to skip the
-    descriptor dispatch — is **deferred**: after reuse, data cells are rarely
-    dropped on hot paths, and inlining the reference-count/free logic (complicated
-    by immediate-versus-boxed constructors) carries memory-safety risk
-    disproportionate to the gain. Revisit with the performance milestone.
+    specialization — inlining a known data cell's child drops and free instead of
+    the runtime release path — was originally deferred (after reuse, data cells are
+    rarely dropped on hot paths, and the inlined release carries memory-safety risk
+    disproportionate to the gain), but is **now implemented for monomorphic records
+    and tuples — see D101**.
 
 - **D79 Argument borrowing — sound by construction, self-contained inference,
   two-entry-point ABI.** Borrowing lends a parameter (the caller keeps ownership)
@@ -1110,6 +1110,51 @@ program output are unchanged, guarded by the full type/golden suite):
     `borrow_signature`/`rc`/`object_code` only when the callee's borrow signature
     actually changes — analogous to a public-signature change, and confirmed
     workspace-size-independent by the perf guards.
+
+- **D101 Inline drops of monomorphic data cells (extends D78).** Code generation
+  now releases a dropped local whose static type is a fixed-shape data cell — a
+  non-empty **closed record** or a **tuple** — with inlined IR instead of a
+  `fai_drop` call.
+  - **What it emits.** Decrement the cell's reference count in place; branch on
+    zero; on the dead path load each **boxed** field at its constant offset and
+    release it with `fai_drop` (immediate fields — `Bool`/`Unit`/`Char` — are
+    skipped at compile time), then reclaim the cell's memory with a new `fai_free`
+    runtime export. The common still-shared case is the bare decrement-and-branch.
+  - **What it actually saves (premise corrected).** There is no indirect "scan"
+    call to remove: `fai_drop` recovers a dead object's children by **comparing its
+    descriptor address** against the known kinds (data is compared first), not by an
+    indirect call through a function pointer. The inlining saves the `fai_drop`
+    call, that descriptor load and comparison, the field-count-from-size
+    arithmetic, and the per-immediate-field `is_boxed` checks of the runtime's
+    field loop. The win is small (after reuse, hot-path cells are recycled, not
+    dropped); it is taken because it is correctness-neutral and immediate fields
+    then drop for free.
+  - **Scope (sound by construction).** Only **closed** records (exact field count)
+    and tuples qualify: a value of such a type is always a boxed cell with exactly
+    those fields at the canonical layout offsets (records sorted by label, tuples
+    positional), with no constructor-tag variation. Excluded — discriminated unions
+    and `List` (field count varies by tag), open/row-polymorphic records (unknown
+    count), the empty record (a tagged immediate), and anything reached only as a
+    **parameter** (parameter types are absent from code generation's `let`-value
+    type map, so they take the runtime path). Children are released through
+    `fai_drop` rather than recursing the inlining, so deep structures stay
+    iterative and the emitted code stays small; the cell is freed **last** — the
+    heap is acyclic, so a child drop can never reach the parent, and the field
+    pointers are read before the free.
+  - **Width cap.** A cell with more than eight **boxed** fields takes the runtime
+    path, bounding generated-code growth (immediate fields are free to skip and do
+    not count toward the cap, so a wide mostly-immediate record still inlines).
+  - **The IR is unchanged.** This is purely a code-generation lowering of the
+    existing `Drop` node, so the reference-count soundness interpreter is
+    unaffected. `fai_free(v)` reclaims a dead, child-released cell's memory and
+    decrements the live-object counter (an `unsafe extern "C"` carrying the
+    precondition the inlined drop establishes).
+  - **Acceptance.** A classifier unit-test matrix pins which static types
+    specialize; an IR-inspection test pins that a specialized drop emits a
+    reference-count branch (`brif`) while a `List` drop does not; and a behavioral
+    matrix (record with a boxed child, tuple, all-immediate record, nested record,
+    tail-position loop drop, shared `rc > 1` drop) exits leak-free with the expected
+    output.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

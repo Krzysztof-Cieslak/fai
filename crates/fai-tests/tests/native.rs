@@ -159,6 +159,31 @@ fn cross_module_forwarder_borrows_and_runs() {
 }
 
 #[test]
+fn inlined_record_drop_links_and_runs() {
+    // A let-bound closed record owning a `String` is dropped through the inlined
+    // release path, which calls the `fai_free` runtime export directly. Building
+    // natively proves that symbol resolves against the runtime archive at link
+    // time; the leak-free (exit 0) run proves the inlined drop frees the cell and
+    // its String child.
+    let src = indoc! {r#"
+        module Main
+
+        type R = { name : String, n : Int }
+
+        make : String -> R
+        let make s = { name = s, n = 7 }
+
+        public main : Runtime -> Unit
+        let main runtime =
+          let rec = make "boxed"
+          runtime.console.writeLine (Int.toString rec.n)
+    "#};
+    let (out, code) = build_and_run(src);
+    assert_eq!(out, "7\n");
+    assert_eq!(code, Some(0));
+}
+
+#[test]
 fn cross_module_mutual_recursion_borrow_cycle_runs() {
     // `Ev.isEven` and `Od.isOdd` are mutually recursive *across files*, each only
     // forwarding the tail to the other — a borrow cycle that spans modules,
