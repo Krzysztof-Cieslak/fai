@@ -394,12 +394,20 @@ cache plus a fast linker (mold/lld).
   prevent bitrot. The deterministic [`corpus`](crates/fai-tests/src/corpus.rs)
   generator backs the corpus benches and the guards.
 
-Known super-linear hot spots surfaced by the benches (M9 tuning targets, not
-correctness issues): the **occurs check** re-walks the whole growing type per
-binding (O(n²) on long application chains / exponential type growth);
-**local-`let` generalization** recomputes environment free-variables per binding
-(O(n²) in block size); and unification of very deep types repeats
-`resolve_shallow` walks (wants union-find path compression).
+The inference solver carries always-on thread-local **work counters** (variable
+resolution clones, occurs-check node visits, free-variable visits — see
+`fai-types/src/perf.rs`) so its asymptotic complexity is gated deterministically
+by `crates/fai-tests/tests/perf_guards.rs`, not just wall-clock benches. The
+super-linear hot spots the benches once surfaced have been addressed: solver
+types share their children via `Rc` (so `resolve_shallow` is O(1), not a deep
+clone) and the occurs/free-variable walks **borrow** and **memoize** shared
+representatives; **local-`let` generalization** uses rank/level-based
+quantification (no per-binding environment free-variable recomputation); and
+unification **path-compresses** variable chains. The remaining super-linear case
+is the occurs *walk* over a long ground application chain (O(n²) node visits, but
+microseconds in practice once the dominant clone cost is gone — a structural
+"variable-free" cache was measured to add per-node overhead for no real gain, so
+it was dropped).
 
 ## 10. Diagnostics & error codes
 

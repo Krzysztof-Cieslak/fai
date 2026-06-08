@@ -537,8 +537,20 @@ counterexamples on float-arithmetic laws). See decisions **D80–D87**.
 ---
 
 ### M9 — Performance at scale (incrementality is already foundational)
-**Goal:** push throughput on large workspaces. (The incremental engine, daemon,
-and content-addressed cache landed in M0–M3.5; this milestone is *tuning*.)
+**Status:** in progress. The **inference-tuning** targets and **primitive
+borrowing** are done (see decisions **D92–D94**): the solver shares its types via
+`Rc`, borrows and memoizes its occurs/free-variable walks, generalizes local
+`let`s by binding level (rather than recomputing the environment's free
+variables), and path-compresses variable chains — turning the unify/occurs/
+generalization/chain shapes that were O(n²)/O(n³) into linear ones (e.g. unifying
+a depth-256 arrow drops from ~3.7ms to ~28µs, a value-`let` chain of 800 from
+~31ms to ~1ms); and the inspect-only primitives (`=`, `compare`, the `String`
+readers) now borrow boxed operands via non-consuming runtime variants. Always-on
+thread-local **work counters** (`fai-types/src/perf.rs`) gate the solver's
+asymptotic complexity deterministically in `perf_guards.rs`. Still to come:
+`rayon` parallelism, the shared/remote cache, daemon hardening, opt-in
+monomorphization, and the remaining reuse/borrowing follow-ups (TRMC,
+cross-module borrowing).
 
 **Deliverables**
 - `rayon` parallelism across independent defs/modules (parallel salsa queries;
@@ -1568,6 +1580,60 @@ completeness):
     Fai spans are UTF-8 byte offsets; a per-document line map converts both ways
     (exact across non-BMP characters), clamping an out-of-range column to the
     line's content rather than spilling onto the next line.
+
+Resolved while implementing the **inference-tuning** and **primitive-borrowing**
+performance work (measurement-driven; correctness-neutral — inferred types,
+diagnostics, and program output are unchanged, guarded by the full type/golden
+suite):
+
+- **D92 Solver representation & read walks: `Rc`-shared types, borrowing, and
+  memoization.** The mutable solver's `SolveTy` represented application/arrow
+  children with `Box`, so `resolve_shallow` deep-cloned the whole structure on
+  every call — quadratic when unifying large types, cubic for the occurs check
+  over a growing curried type (the dominant cost the benches surfaced). The fix:
+  application/arrow children are now `Rc`, so resolving/cloning a representative
+  is O(1); the read-only walks (occurs, free-variable collection) **borrow**
+  (no clone) and **memoize** bound representatives, so a variable shared across a
+  type (a DAG, e.g. `(p, p)` repeated) is expanded once. Unification also
+  **path-compresses** the variable→variable chain it walks (only variable links
+  are rewritten, never structures), keeping the repeated resolution of long
+  result-variable chains (left-nested arithmetic / if-else) linear. Always-on
+  thread-local **work counters** (`fai-types/src/perf.rs`) make this observable
+  and let `perf_guards.rs` gate the complexity deterministically. Rejected as
+  measured-not-worthwhile: a structural "variable-free" cache to skip ground
+  subtrees in the occurs walk (a residual O(n²) over long *ground* application
+  chains) — once `Rc` removed the clone cost the residual walk is microseconds,
+  dominated by fixed overhead, and the cache only added a per-node lookup to every
+  unification (it regressed the common path), so it was dropped.
+
+- **D93 Local-`let` generalization by binding level (rank-based).** Generalizing a
+  local `let` recomputed the environment's free type variables by walking every
+  in-scope local — O(n²) in block size. Replaced with the standard rank/level
+  scheme: each free variable records the binding depth at which it was created, a
+  generalizable `let`'s right-hand side is inferred one level deeper, unifying a
+  variable with an outer one lowers its level (fused into the occurs walk, which
+  now also lowers as it goes), and the `let` quantifies exactly the variables
+  whose level is deeper than the enclosing scope — equivalent to "free in the
+  value but not the environment", computed in time proportional to the value's
+  type, not the environment's size. Top-level/SCC generalization is unchanged (it
+  has no enclosing environment, so it still quantifies every remaining free
+  variable). The value restriction, the constrained-variable exclusion (so a
+  `Numeric` local still defaults to `Int`), and the "locals do not generalize row
+  variables" behavior are all preserved exactly.
+
+- **D94 Primitive borrowing for inspect-only operations (two-variant ABI).** `=`,
+  structural `compare`, and the `String` readers only inspect their operands, yet
+  the runtime consumed (dropped) them, forcing a caller to duplicate a value it
+  still needed (and, by sharing it, defeating in-place reuse). They now have
+  **non-consuming runtime variants** (`fai_equal_borrowed`, …), and the operands
+  are **borrowed when boxed**. One predicate — `Prim::borrows_operand`, on the
+  operand type, in `fai-core` — drives reference counting, the RC soundness
+  interpreter, and code generation's choice of runtime symbol, so the caller's
+  drop and the runtime's (non-)consumption always agree by construction.
+  **Immediate operands keep the consuming variant** (the hot `match` tag-test path
+  is unchanged), so borrowing only applies where it removes real dup/drop churn.
+  Chosen over a single uniformly-non-consuming variant, which would have pushed
+  drops and let-bindings onto the immediate operand path.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected milestones.
