@@ -1,0 +1,31 @@
+---
+source: crates/fai-ide/tests/queries.rs
+expression: json(&r)
+---
+{
+  "schemaVersion": 1,
+  "symbols": [
+    {
+      "path": "B.two",
+      "name": "two",
+      "kind": "value",
+      "module": "B",
+      "visibility": "public",
+      "signature": "Int",
+      "span": {
+        "file": "B.fai",
+        "start": {
+          "line": 4,
+          "column": 1
+        },
+        "end": {
+          "line": 4,
+          "column": 18
+        },
+        "byteStart": 27,
+        "byteEnd": 44
+      }
+    }
+  ],
+  "truncated": false
+}

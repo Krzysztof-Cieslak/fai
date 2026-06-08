@@ -234,6 +234,11 @@ Canonically format in place (idempotent).
 Start the Language Server on stdio (standard LSP, JSON over `Content-Length`).
 Editors speak this; agents use `fai query` instead.
 
+Supported requests: full-document sync with pushed `publishDiagnostics`; `hover`,
+`definition`, `documentSymbol`, `workspace/symbol`, `references`, and document
+`formatting`. Open buffers are analyzed as unsaved overlays, so every answer
+tracks the in-editor text.
+
 ---
 
 ## 6. Daemon commands

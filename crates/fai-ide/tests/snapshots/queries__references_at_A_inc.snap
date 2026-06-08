@@ -1,0 +1,66 @@
+---
+source: crates/fai-ide/tests/queries.rs
+expression: json(&refs)
+---
+[
+  {
+    "span": {
+      "file": "A.fai",
+      "start": {
+        "line": 4,
+        "column": 5
+      },
+      "end": {
+        "line": 4,
+        "column": 8
+      },
+      "byteStart": 38,
+      "byteEnd": 41
+    }
+  },
+  {
+    "span": {
+      "file": "B.fai",
+      "start": {
+        "line": 4,
+        "column": 13
+      },
+      "end": {
+        "line": 4,
+        "column": 16
+      },
+      "byteStart": 39,
+      "byteEnd": 42
+    }
+  },
+  {
+    "span": {
+      "file": "B.fai",
+      "start": {
+        "line": 6,
+        "column": 14
+      },
+      "end": {
+        "line": 6,
+        "column": 17
+      },
+      "byteStart": 59,
+      "byteEnd": 62
+    }
+  },
+  {
+    "span": {
+      "file": "B.fai",
+      "start": {
+        "line": 6,
+        "column": 21
+      },
+      "end": {
+        "line": 6,
+        "column": 24
+      },
+      "byteStart": 66,
+      "byteEnd": 69
+    }
+  }
+]

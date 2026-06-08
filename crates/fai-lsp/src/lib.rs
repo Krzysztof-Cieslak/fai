@@ -19,10 +19,12 @@ use lsp_server::{Connection, Message, Notification, Request, RequestId, Response
 use lsp_types::{
     Diagnostic as LspDiagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
     DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentFormattingParams,
-    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
-    HoverProviderCapability, Location as LspLocation, MarkupContent, MarkupKind, NumberOrString,
-    OneOf, Position, PublishDiagnosticsParams, Range, ServerCapabilities,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url,
+    DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
+    GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
+    Location as LspLocation, MarkupContent, MarkupKind, NumberOrString, OneOf, Position,
+    PublishDiagnosticsParams, Range, ReferenceParams, ServerCapabilities, SymbolInformation,
+    SymbolKind as LspSymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url,
+    WorkspaceSymbolParams,
 };
 
 mod position;
@@ -76,6 +78,9 @@ fn server_capabilities() -> ServerCapabilities {
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         definition_provider: Some(OneOf::Left(true)),
         document_formatting_provider: Some(OneOf::Left(true)),
+        document_symbol_provider: Some(OneOf::Left(true)),
+        workspace_symbol_provider: Some(OneOf::Left(true)),
+        references_provider: Some(OneOf::Left(true)),
         ..ServerCapabilities::default()
     }
 }
@@ -157,6 +162,24 @@ impl Server {
                     respond(conn, id, &self.formatting(&params));
                 }
             }
+            "textDocument/documentSymbol" => {
+                if let Ok((id, params)) =
+                    req.extract::<DocumentSymbolParams>("textDocument/documentSymbol")
+                {
+                    respond(conn, id, &self.document_symbols(&params));
+                }
+            }
+            "workspace/symbol" => {
+                if let Ok((id, params)) = req.extract::<WorkspaceSymbolParams>("workspace/symbol") {
+                    respond(conn, id, &self.workspace_symbols(&params));
+                }
+            }
+            "textDocument/references" => {
+                if let Ok((id, params)) = req.extract::<ReferenceParams>("textDocument/references")
+                {
+                    respond(conn, id, &self.references(&params));
+                }
+            }
             // An unsupported request still needs a reply so the client is not
             // left waiting; a null result is the conventional "no answer".
             _ => respond(conn, req.id, &serde_json::Value::Null),
@@ -205,7 +228,91 @@ impl Server {
         Some(vec![TextEdit { range, new_text: formatted }])
     }
 
+    fn document_symbols(&self, params: &DocumentSymbolParams) -> Option<DocumentSymbolResponse> {
+        let uri = &params.text_document.uri;
+        let rel = self.relative(uri)?;
+        let file = *self.session.select_files(Some(&rel)).first()?;
+        let result = fai_ide::document_symbols(self.session.db(), file, &self.session.resolver());
+        let symbols: Vec<DocumentSymbol> =
+            result.outline.iter().filter_map(|n| self.to_document_symbol(n)).collect();
+        Some(DocumentSymbolResponse::Nested(symbols))
+    }
+
+    fn workspace_symbols(&self, params: &WorkspaceSymbolParams) -> Option<Vec<SymbolInformation>> {
+        let files = self.session.user_files();
+        let result = fai_ide::workspace_symbols(
+            self.session.db(),
+            &files,
+            &params.query,
+            &self.session.resolver(),
+            fai_ide::ListOpts::default(),
+        );
+        Some(result.symbols.iter().filter_map(|s| self.to_symbol_information(s)).collect())
+    }
+
+    fn references(&self, params: &ReferenceParams) -> Option<Vec<LspLocation>> {
+        let pos = &params.text_document_position;
+        let (file, offset) = self.locate(&pos.text_document.uri, pos.position)?;
+        let locations = fai_ide::references_at(
+            self.session.db(),
+            &self.session.user_files(),
+            file,
+            offset,
+            &self.session.resolver(),
+            params.context.include_declaration,
+        );
+        Some(locations.iter().filter_map(|l| self.to_lsp_location(&l.span)).collect())
+    }
+
     // --- helpers ----------------------------------------------------------
+
+    /// Converts an IDE outline node into an LSP [`DocumentSymbol`] (recursively
+    /// nesting children under nested modules).
+    #[allow(deprecated)] // the `deprecated` field is required by the struct literal.
+    fn to_document_symbol(&self, node: &fai_ide::OutlineNode) -> Option<DocumentSymbol> {
+        let range = self.range_in_file(&node.symbol.span)?;
+        let children: Vec<DocumentSymbol> =
+            node.children.iter().filter_map(|c| self.to_document_symbol(c)).collect();
+        Some(DocumentSymbol {
+            name: node.symbol.name.clone(),
+            detail: node.symbol.signature.clone(),
+            kind: lsp_symbol_kind(node.symbol.kind),
+            tags: None,
+            deprecated: None,
+            range,
+            // No separate name span is tracked, so the selection range is the
+            // whole declaration; it is trivially contained by `range`.
+            selection_range: range,
+            children: (!children.is_empty()).then_some(children),
+        })
+    }
+
+    /// Converts an IDE symbol reference into an LSP [`SymbolInformation`].
+    #[allow(deprecated)] // the `deprecated` field is required by the struct literal.
+    fn to_symbol_information(
+        &self,
+        symbol: &fai_ide::repr::SymbolRef,
+    ) -> Option<SymbolInformation> {
+        Some(SymbolInformation {
+            name: symbol.name.clone(),
+            kind: lsp_symbol_kind(symbol.kind),
+            tags: None,
+            deprecated: None,
+            location: self.to_lsp_location(&symbol.span)?,
+            container_name: Some(symbol.module.clone()),
+        })
+    }
+
+    /// Converts an IDE span into a range, reading the span's own file (the open
+    /// buffer when present, else the database copy).
+    fn range_in_file(&self, span: &fai_ide::repr::SpanJson) -> Option<Range> {
+        let text = self.file_text(&span.file)?;
+        let lines = LineMap::new(&text);
+        Some(Range {
+            start: lines.position(span.byte_start as usize),
+            end: lines.position(span.byte_end as usize),
+        })
+    }
 
     /// Overlays a document's current text into the session and republishes its
     /// diagnostics.
@@ -339,5 +446,14 @@ fn severity(severity: fai_diagnostics::Severity) -> DiagnosticSeverity {
         fai_diagnostics::Severity::Error => DiagnosticSeverity::ERROR,
         fai_diagnostics::Severity::Warning => DiagnosticSeverity::WARNING,
         fai_diagnostics::Severity::Info => DiagnosticSeverity::INFORMATION,
+    }
+}
+
+/// Maps an IDE symbol kind to its LSP counterpart.
+fn lsp_symbol_kind(kind: fai_ide::repr::SymbolKind) -> LspSymbolKind {
+    match kind {
+        fai_ide::repr::SymbolKind::Function => LspSymbolKind::FUNCTION,
+        fai_ide::repr::SymbolKind::Value => LspSymbolKind::VARIABLE,
+        fai_ide::repr::SymbolKind::Module => LspSymbolKind::MODULE,
     }
 }
