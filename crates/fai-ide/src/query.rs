@@ -221,7 +221,7 @@ fn exprs_containing(module: &Module, offset: u32) -> Vec<ExprId> {
 /// The qualified name of the smallest top-level/nested binding whose item span
 /// contains `offset` — the definition whose body the cursor sits in (for keying
 /// the per-definition `body_types`).
-fn enclosing_def(db: &dyn Db, file: SourceFile, offset: u32) -> Option<Symbol> {
+pub(crate) fn enclosing_def(db: &dyn Db, file: SourceFile, offset: u32) -> Option<Symbol> {
     let parsed = fai_syntax::parse(db, file);
     let mut best: Option<(u32, Symbol)> = None;
     for d in &module_defs(db, file).defs {
