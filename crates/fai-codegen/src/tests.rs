@@ -91,6 +91,51 @@ pub(crate) fn run_counted(src: &str) -> (i32, String, i64) {
     (code, out, allocs)
 }
 
+/// Lowers `def_name` from `src` (plus, for direct-call arity, the globals it
+/// references) and returns the Cranelift IR text of its compiled functions
+/// (entry first). For inspecting the emitted code — e.g. that a known data
+/// cell's drop is inlined (a reference-count branch, hence a `brif`) rather than
+/// dispatched to the runtime (a plain `fai_drop` call, no branch).
+fn function_ir(src: &str, def_name: &str) -> Vec<String> {
+    let mut db = FaiDatabase::new();
+    fai_types::std_lib::load_std(&mut db);
+    let id = db.add_source("M.fai".into(), src.to_owned());
+    let user = db.source_file(id).unwrap();
+
+    let mut files: HashMap<SourceId, SourceFile> = HashMap::new();
+    let mut labels: HashMap<SourceId, String> = HashMap::new();
+    for file in db.all_source_files() {
+        let label =
+            module_name(&db, file).map_or_else(|| "M".to_owned(), |m| m.0.as_str().to_owned());
+        files.insert(file.source(&db), file);
+        labels.insert(file.source(&db), label);
+    }
+
+    let target = DefId::new(user.source(&db), Symbol::intern(def_name));
+    let mut arity: HashMap<DefId, usize> = HashMap::new();
+    let mut seen: HashSet<DefId> = HashSet::new();
+    let mut worklist = vec![target];
+    let mut lowered = None;
+    while let Some(def) = worklist.pop() {
+        if !seen.insert(def) {
+            continue;
+        }
+        let Some(&file) = files.get(&def.file) else { continue };
+        let l = rc(&db, file, def.name);
+        arity.insert(def, l.entry().params.len());
+        worklist.extend(l.referenced_globals());
+        if def == target {
+            lowered = Some((*l).clone());
+        }
+    }
+    let lowered = lowered.expect("target definition lowered");
+
+    let namer =
+        |d: DefId| format!("fai_{}_{}", labels.get(&d.file).cloned().unwrap_or_default(), d.name);
+    let arity_of = |d: DefId| arity.get(&d).copied().unwrap_or(1);
+    crate::aot::function_ir_text(&lowered, &namer, &arity_of)
+}
+
 fn main_printing(expr: &str) -> String {
     formatdoc! {r#"
         module M
@@ -1094,4 +1139,185 @@ fn reuse_recycles_a_unique_list_but_copies_a_shared_one() {
         "shared map allocates 50 cons cells the unique map recycles \
          (unique={allocs_u}, shared={allocs_s})"
     );
+}
+
+// --- Drop specialization: inlined drops of monomorphic data cells ----------
+
+#[test]
+fn drop_of_a_monomorphic_record_is_inlined() {
+    // `p` is a closed-record let-local dropped (unused) at its last point; its
+    // release is inlined — a reference-count decrement and a branch on zero — so
+    // the function carries a `brif`. The body has no `if`, so the only possible
+    // source of a branch is the specialized drop.
+    let src = indoc! {r#"
+        module M
+
+        type R = { a : Int, b : Int }
+
+        mk : Int -> R
+        let mk n = { a = n, b = n }
+
+        f : Int -> Int
+        let f n =
+          let p = mk n
+          n
+    "#};
+    let ir = function_ir(src, "f").join("\n");
+    assert!(ir.contains("brif"), "the inlined record drop branches on the refcount:\n{ir}");
+}
+
+#[test]
+fn drop_of_a_tuple_is_inlined() {
+    let src = indoc! {r#"
+        module M
+
+        pair : Int -> Int * Int
+        let pair n = (n, n)
+
+        f : Int -> Int
+        let f n =
+          let p = pair n
+          n
+    "#};
+    let ir = function_ir(src, "f").join("\n");
+    assert!(ir.contains("brif"), "the inlined tuple drop branches on the refcount:\n{ir}");
+}
+
+#[test]
+fn drop_of_a_list_falls_back_to_the_runtime() {
+    // A `List` has no fixed shape, so its drop is dispatched to `fai_drop` — a
+    // plain call with no reference-count branch in the generated code. The body
+    // has no `if`, so the absence of any `brif` confirms the runtime path.
+    let src = indoc! {r#"
+        module M
+
+        g : Int -> Int
+        let g n =
+          let xs = [n]
+          n
+    "#};
+    let ir = function_ir(src, "g").join("\n");
+    assert!(!ir.contains("brif"), "the runtime drop path emits no refcount branch:\n{ir}");
+}
+
+// --- Drop specialization: behavioral leak/correctness matrix ----------------
+// Each program drops a monomorphic data cell through the inlined path; a clean
+// (code 0) exit is the runtime's end-of-run leak check, so it proves the cell —
+// and its reference-counted children — were released exactly once.
+
+#[test]
+fn inlined_drop_frees_a_records_boxed_child() {
+    // The record owns a `String`; dropping the record must free it (no leak).
+    let src = indoc! {r#"
+        module M
+
+        type R = { name : String, n : Int }
+
+        make : String -> R
+        let make s = { name = s, n = 5 }
+
+        public main : Runtime -> Unit
+        let main r =
+          let rec = make "hello"
+          r.console.writeLine (Int.toString rec.n)
+    "#};
+    let (code, out) = run(src);
+    assert_eq!((code, out.as_str()), (0, "5\n"));
+}
+
+#[test]
+fn inlined_drop_of_a_tuple_with_a_boxed_element() {
+    let src = indoc! {r#"
+        module M
+
+        public main : Runtime -> Unit
+        let main r =
+          let t = ("hi", 5)
+          let (s, n) = t
+          r.console.writeLine (s ++ Int.toString n)
+    "#};
+    let (code, out) = run(src);
+    assert_eq!((code, out.as_str()), (0, "hi5\n"));
+}
+
+#[test]
+fn inlined_drop_of_an_all_immediate_record() {
+    // No boxed fields: the inlined drop is a bare decrement-and-free, no child
+    // drops at all.
+    let src = indoc! {r#"
+        module M
+
+        type Flags = { a : Bool, b : Bool }
+
+        mkFlags : Bool -> Flags
+        let mkFlags x = { a = x, b = x }
+
+        public main : Runtime -> Unit
+        let main r =
+          let f = mkFlags true
+          r.console.writeLine (if f.a then "yes" else "no")
+    "#};
+    let (code, out) = run(src);
+    assert_eq!((code, out.as_str()), (0, "yes\n"));
+}
+
+#[test]
+fn inlined_drop_of_a_nested_record_releases_the_inner_cell() {
+    // The outer drop is inlined; the inner record field is released through the
+    // runtime drop (no inline recursion), which in turn frees its String.
+    let src = indoc! {r#"
+        module M
+
+        type Inner = { s : String }
+        type Outer = { inner : Inner, k : Int }
+
+        public main : Runtime -> Unit
+        let main r =
+          let o = { inner = { s = "deep" }, k = 1 }
+          r.console.writeLine o.inner.s
+    "#};
+    let (code, out) = run(src);
+    assert_eq!((code, out.as_str()), (0, "deep\n"));
+}
+
+#[test]
+fn inlined_drop_in_tail_position_of_a_loop() {
+    // A tail-recursive loop builds and discards a record each iteration; the drop
+    // sits in tail position (before the back-edge), exercising the tail emitter.
+    let src = indoc! {r#"
+        module M
+
+        type R = { a : Int, b : Int }
+
+        sumR : Int -> Int -> Int
+        let sumR n acc =
+          if n <= 0 then acc
+          else
+            let p = { a = n, b = n }
+            sumR (n - 1) (acc + p.a)
+
+        public main : Runtime -> Unit
+        let main r = r.console.writeLine (Int.toString (sumR 5 0))
+    "#};
+    let (code, out) = run(src);
+    assert_eq!((code, out.as_str()), (0, "15\n"));
+}
+
+#[test]
+fn inlined_drop_of_a_shared_record_decrements_without_freeing() {
+    // `p` is aliased, so it is shared (rc > 1) when the first drop runs: that
+    // inlined drop must only decrement; the last reference's drop frees it.
+    let src = indoc! {r#"
+        module M
+
+        type R = { a : Int, b : Int }
+
+        public main : Runtime -> Unit
+        let main r =
+          let p = { a = 10, b = 20 }
+          let q = p
+          r.console.writeLine (Int.toString (p.a + q.b))
+    "#};
+    let (code, out) = run(src);
+    assert_eq!((code, out.as_str()), (0, "30\n"));
 }

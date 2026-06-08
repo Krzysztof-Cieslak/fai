@@ -19,7 +19,7 @@ use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use fai_core::ir::{CExpr, CoreFn, ExprKind, FieldIndex, Lit, LoweredDef, Prim};
 use fai_resolve::{DefId, LocalId};
 use fai_runtime as rt;
-use fai_types::{Con, Ty};
+use fai_types::{Con, RowEnd, Ty};
 use rustc_hash::FxHashMap;
 
 /// Builds the exported code symbol for a definition.
@@ -316,6 +316,15 @@ impl<M: Module> Translator<'_, M> {
         self.var_tys.get(&local.index()).is_some_and(is_immediate_ty)
     }
 
+    /// If `local`'s known static type is a monomorphic, fixed-shape data cell —
+    /// a closed record or a tuple — returns its fields' drop classes in heap
+    /// layout order, so the drop can be inlined instead of dispatched through the
+    /// runtime. `None` when the type is unknown (e.g. a parameter, not recorded in
+    /// `var_tys`) or not a fixed shape. See [`fixed_shape_drop`].
+    fn specialized_drop(&self, local: LocalId) -> Option<Vec<FieldDrop>> {
+        fixed_shape_drop(self.var_tys.get(&local.index())?, MAX_INLINE_DROP_BOXED_FIELDS)
+    }
+
     /// Loads `base[index]` (a tagged word).
     fn load_slot(&mut self, base: Value, index: usize) -> Value {
         let offset = i32::try_from(index * 8).expect("slot offset");
@@ -350,6 +359,66 @@ impl<M: Module> Translator<'_, M> {
     fn call_drop(&mut self, value: Value) {
         let f = self.runtime("fai_drop", 1, false);
         self.builder.ins().call(f, &[value]);
+    }
+
+    /// Releases `local` at its last use: a no-op for a statically-immediate value
+    /// (no reference count), an inlined release for a known monomorphic data cell
+    /// (skipping the runtime descriptor classification), else a runtime drop.
+    fn drop_local(&mut self, local: LocalId) {
+        if self.is_immediate_local(local) {
+            return;
+        }
+        if let Some(fields) = self.specialized_drop(local) {
+            self.emit_inline_drop(local, &fields);
+        } else {
+            let v = self.use_var(local);
+            self.call_drop(v);
+        }
+    }
+
+    /// Inlines the release of a known monomorphic data cell (`local`, a boxed
+    /// closed-record or tuple value with the given per-field drop classes),
+    /// skipping the runtime's descriptor classification: decrement the reference
+    /// count, and when it reaches zero release each boxed field at its constant
+    /// offset (dropping immediate fields is a no-op, so they are omitted) and free
+    /// the cell directly. Leaves the builder in the continuation block.
+    ///
+    /// Releasing each boxed child through `fai_drop` (rather than recursing the
+    /// inlining) keeps deep structures iterative and the emitted code small. The
+    /// cell is freed last: the heap is acyclic, so dropping a child can never
+    /// reach the parent, and the field pointers are loaded before the free.
+    fn emit_inline_drop(&mut self, local: LocalId, fields: &[FieldDrop]) {
+        let cell = self.use_var(local);
+
+        // Decrement the reference count in place.
+        let rc_off = i32::try_from(rt::RC_OFFSET).expect("rc offset");
+        let rc = self.builder.ins().load(types::I64, MemFlags::trusted(), cell, rc_off);
+        let dec = self.builder.ins().iadd_imm(rc, -1);
+        self.builder.ins().store(MemFlags::trusted(), dec, cell, rc_off);
+
+        // Branch on whether the cell is now dead.
+        let dead =
+            self.builder.ins().icmp_imm(cranelift_codegen::ir::condcodes::IntCC::Equal, dec, 0);
+        let free_b = self.builder.create_block();
+        let cont_b = self.builder.create_block();
+        self.builder.ins().brif(dead, free_b, &[], cont_b, &[]);
+
+        // Dead: release the boxed fields, then reclaim the cell's memory.
+        self.builder.switch_to_block(free_b);
+        self.builder.seal_block(free_b);
+        for (i, class) in fields.iter().enumerate() {
+            if matches!(class, FieldDrop::Boxed) {
+                let off = i32::try_from(rt::DATA_FIELDS_OFFSET + i * 8).expect("field offset");
+                let field = self.builder.ins().load(types::I64, MemFlags::trusted(), cell, off);
+                self.call_drop(field);
+            }
+        }
+        let free = self.runtime("fai_free", 1, false);
+        self.builder.ins().call(free, &[cell]);
+        self.builder.ins().jump(cont_b, &[]);
+
+        self.builder.switch_to_block(cont_b);
+        self.builder.seal_block(cont_b);
     }
 
     fn expr(&mut self, e: &CExpr) -> Value {
@@ -390,11 +459,9 @@ impl<M: Module> Translator<'_, M> {
             }
             ExprKind::Drop { local, body } => {
                 let result = self.expr(body);
-                // Likewise a drop of a statically-immediate value is a no-op.
-                if !self.is_immediate_local(*local) {
-                    let v = self.use_var(*local);
-                    self.call_drop(v);
-                }
+                // The drop follows the body (its last use); see `drop_local` for
+                // the immediate / inlined-cell / runtime-dispatch choice.
+                self.drop_local(*local);
                 result
             }
             ExprKind::Join { params, body } => self.join(params, body),
@@ -756,10 +823,7 @@ impl<M: Module> Translator<'_, M> {
                 // The continuation is terminal, so the drop is emitted before it.
                 // Reference counting placed the drop after the local's last use, so
                 // neither the back-edge arguments nor the exit value read it.
-                if !self.is_immediate_local(*local) {
-                    let v = self.use_var(*local);
-                    self.call_drop(v);
-                }
+                self.drop_local(*local);
                 self.expr_tail(body);
             }
             ExprKind::Recur { args } => self.recur(args),
@@ -807,4 +871,202 @@ fn fits_immediate(n: i64) -> bool {
 /// unconditionally immediate.
 fn is_immediate_ty(ty: &Ty) -> bool {
     matches!(ty, Ty::Unit | Ty::Con(Con::Bool) | Ty::Con(Con::Char))
+}
+
+/// How a data cell's field is released by an inlined drop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FieldDrop {
+    /// A statically-immediate field (no reference count): nothing to release.
+    Immediate,
+    /// A possibly-boxed field: released with a runtime drop (a no-op at runtime if
+    /// it turns out to be immediate, e.g. a small `Int`).
+    Boxed,
+}
+
+/// The most boxed fields an inlined drop will release before falling back to the
+/// runtime path. Each boxed field emits a load and a drop call, so capping the
+/// count bounds generated-code growth (the runtime loop handles any width in
+/// fixed code); immediate fields are free to skip and do not count.
+const MAX_INLINE_DROP_BOXED_FIELDS: usize = 8;
+
+/// If `ty` is a monomorphic, fixed-shape data cell — a non-empty **closed**
+/// record or a **tuple** — returns each field's [`FieldDrop`] class in heap
+/// layout order (records sorted by label, tuples positional), so the cell's drop
+/// can be inlined. Returns `None` for anything whose runtime shape is not a fixed
+/// boxed cell of statically-known arity: open (row-polymorphic) records, the
+/// empty record (an immediate), discriminated unions and `List` (the field count
+/// varies by constructor), interfaces, and the scalar/immediate/function types.
+///
+/// Also returns `None` when more than `max_boxed` fields are boxed, leaving wide
+/// cells to the runtime path.
+fn fixed_shape_drop(ty: &Ty, max_boxed: usize) -> Option<Vec<FieldDrop>> {
+    let fields: Vec<FieldDrop> = match ty {
+        Ty::Tuple(elems) => elems.iter().map(field_drop).collect(),
+        // A closed record is exactly its listed fields; an open one has an unknown
+        // tail, and an empty one is a tagged immediate (no heap cell).
+        Ty::Record(row) if row.tail == RowEnd::Closed && !row.fields.is_empty() => {
+            row.fields.iter().map(|(_, t)| field_drop(t)).collect()
+        }
+        _ => return None,
+    };
+    let boxed = fields.iter().filter(|c| matches!(c, FieldDrop::Boxed)).count();
+    if boxed > max_boxed { None } else { Some(fields) }
+}
+
+/// Classifies a field type for an inlined drop: a statically-immediate type needs
+/// no release; everything else is released with a runtime drop (which is itself a
+/// no-op on a value that turns out to be immediate).
+fn field_drop(ty: &Ty) -> FieldDrop {
+    if is_immediate_ty(ty) { FieldDrop::Immediate } else { FieldDrop::Boxed }
+}
+
+#[cfg(test)]
+mod classifier_tests {
+    //! Unit tests for [`fixed_shape_drop`] — which static types the inlined-drop
+    //! classifier recognizes as fixed-shape data cells, and how it classifies and
+    //! width-caps their fields. One focused `#[test]` per case.
+
+    use fai_resolve::AdtRef;
+    use fai_span::SourceId;
+    use fai_syntax::Symbol;
+    use fai_types::{Con, RecordRow, RowEnd, RowVarId, Ty};
+
+    use super::{FieldDrop, fixed_shape_drop};
+
+    use FieldDrop::{Boxed, Immediate};
+
+    /// A high cap, so width never interferes with shape-recognition cases.
+    const WIDE: usize = 64;
+
+    fn closed_record(fields: &[(&str, Ty)]) -> Ty {
+        Ty::Record(RecordRow {
+            fields: fields.iter().map(|(l, t)| (Symbol::intern(l), t.clone())).collect(),
+            tail: RowEnd::Closed,
+        })
+    }
+
+    fn open_record(fields: &[(&str, Ty)]) -> Ty {
+        Ty::Record(RecordRow {
+            fields: fields.iter().map(|(l, t)| (Symbol::intern(l), t.clone())).collect(),
+            tail: RowEnd::Open(RowVarId(0)),
+        })
+    }
+
+    fn adt(name: &str) -> Ty {
+        Ty::Adt(AdtRef::new(SourceId::new(0), Symbol::intern(name)))
+    }
+
+    #[test]
+    fn tuple_is_a_fixed_shape() {
+        let ty = Ty::Tuple(vec![Ty::bool(), Ty::Con(Con::String)]);
+        assert_eq!(fixed_shape_drop(&ty, WIDE), Some(vec![Immediate, Boxed]));
+    }
+
+    #[test]
+    fn closed_record_classifies_fields_in_layout_order() {
+        // Fields are stored sorted by label (the heap layout); the classes line up
+        // with that order, not source order.
+        let ty = closed_record(&[("a", Ty::bool()), ("b", Ty::Con(Con::String))]);
+        assert_eq!(fixed_shape_drop(&ty, WIDE), Some(vec![Immediate, Boxed]));
+    }
+
+    #[test]
+    fn single_field_closed_record_is_a_fixed_shape() {
+        let ty = closed_record(&[("x", Ty::Con(Con::String))]);
+        assert_eq!(fixed_shape_drop(&ty, WIDE), Some(vec![Boxed]));
+    }
+
+    #[test]
+    fn mixed_record_classifies_each_field() {
+        // `Int` counts as boxed (it overflow-boxes), so it is released, not skipped.
+        let ty = closed_record(&[("a", Ty::bool()), ("b", Ty::int()), ("c", Ty::Con(Con::String))]);
+        assert_eq!(fixed_shape_drop(&ty, WIDE), Some(vec![Immediate, Boxed, Boxed]));
+    }
+
+    #[test]
+    fn nested_record_field_is_boxed_not_recursed() {
+        // The inner record is itself a fixed shape, but a field is never recursed
+        // into: it is released as one boxed child (via the runtime drop).
+        let inner = closed_record(&[("x", Ty::int())]);
+        let ty = closed_record(&[("inner", inner)]);
+        assert_eq!(fixed_shape_drop(&ty, WIDE), Some(vec![Boxed]));
+    }
+
+    #[test]
+    fn open_record_is_not_specialized() {
+        // A row-polymorphic tail means an unknown field count.
+        let ty = open_record(&[("a", Ty::int())]);
+        assert_eq!(fixed_shape_drop(&ty, WIDE), None);
+    }
+
+    #[test]
+    fn empty_closed_record_is_not_specialized() {
+        // An empty record is a tagged immediate, not a heap cell.
+        let ty = closed_record(&[]);
+        assert_eq!(fixed_shape_drop(&ty, WIDE), None);
+    }
+
+    #[test]
+    fn discriminated_union_is_not_specialized() {
+        // A union's field count varies by constructor, so it has no fixed shape.
+        assert_eq!(fixed_shape_drop(&adt("Shape"), WIDE), None);
+        // …including when applied to type arguments (`Option Int`).
+        let applied = Ty::App(adt("Option").into(), Ty::int().into());
+        assert_eq!(fixed_shape_drop(&applied, WIDE), None);
+    }
+
+    #[test]
+    fn list_is_not_specialized() {
+        assert_eq!(fixed_shape_drop(&Ty::list(Ty::int()), WIDE), None);
+    }
+
+    #[test]
+    fn string_is_not_specialized() {
+        // A boxed leaf, but not a data cell with addressable fields.
+        assert_eq!(fixed_shape_drop(&Ty::Con(Con::String), WIDE), None);
+    }
+
+    #[test]
+    fn int_is_not_specialized() {
+        assert_eq!(fixed_shape_drop(&Ty::int(), WIDE), None);
+    }
+
+    #[test]
+    fn immediate_scalar_is_not_specialized() {
+        // Immediates are handled by `is_immediate_local`, not the cell classifier.
+        assert_eq!(fixed_shape_drop(&Ty::bool(), WIDE), None);
+    }
+
+    #[test]
+    fn type_variable_is_not_specialized() {
+        assert_eq!(fixed_shape_drop(&Ty::Var(fai_types::TyVarId(0)), WIDE), None);
+    }
+
+    #[test]
+    fn function_type_is_not_specialized() {
+        assert_eq!(fixed_shape_drop(&Ty::arrow(Ty::int(), Ty::int()), WIDE), None);
+    }
+
+    #[test]
+    fn width_threshold_rejects_too_many_boxed_fields() {
+        let three = Ty::Tuple(vec![Ty::Con(Con::String); 3]);
+        assert_eq!(fixed_shape_drop(&three, 2), None, "3 boxed > cap of 2");
+        let two = Ty::Tuple(vec![Ty::Con(Con::String); 2]);
+        assert!(fixed_shape_drop(&two, 2).is_some(), "2 boxed is within the cap");
+    }
+
+    #[test]
+    fn width_threshold_ignores_immediate_fields() {
+        // Many immediate fields plus a couple of boxed ones: only the boxed count
+        // is capped, so a wide all-but-two-immediate record still specializes.
+        let mut fields: Vec<(&str, Ty)> =
+            vec![("aa", Ty::bool()), ("bb", Ty::bool()), ("cc", Ty::bool()), ("dd", Ty::bool())];
+        fields.push(("ee", Ty::Con(Con::String)));
+        fields.push(("ff", Ty::Con(Con::String)));
+        let ty = closed_record(&fields);
+        assert_eq!(
+            fixed_shape_drop(&ty, 2),
+            Some(vec![Immediate, Immediate, Immediate, Immediate, Boxed, Boxed])
+        );
+    }
 }

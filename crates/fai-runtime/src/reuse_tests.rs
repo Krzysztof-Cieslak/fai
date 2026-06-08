@@ -689,3 +689,36 @@ fn drop_reuse_of_a_deep_unique_list_releases_the_spine_iteratively() {
     discard_token(token, 2);
     assert_eq!(live_count(), base, "the reset cell is released, leak-free");
 }
+
+// ===========================================================================
+// fai_free: the inlined drop's direct deallocator.
+// ===========================================================================
+
+#[test]
+fn free_reclaims_a_childless_cell() {
+    let _g = lock();
+    let base = live_count();
+    let cell = data(0, &[imm_int(1), imm_int(2)]);
+    assert_eq!(live_count(), base + 1, "the cell is allocated");
+    // SAFETY: the cell has only immediate fields (no children to release) and no
+    // other references — the precondition the inlined drop establishes.
+    unsafe { fai_free(cell) };
+    assert_eq!(live_count(), base, "fai_free reclaims the cell's memory");
+}
+
+#[test]
+fn free_after_releasing_children_balances_like_a_drop() {
+    let _g = lock();
+    let base = live_count();
+    // A cell owning one boxed child: the live count is the cell plus the child.
+    let cell = data(0, &[big()]);
+    assert_eq!(live_count(), base + 2, "the cell and its boxed child");
+    // Mirror the inlined drop's dead-cell sequence: load each boxed field and drop
+    // it, then free the cell directly.
+    // SAFETY: `cell` is a boxed one-field data value.
+    let child = unsafe { read_i64(as_obj(cell), DATA_FIELDS_OFFSET) };
+    fai_drop(child);
+    // SAFETY: the cell is dead and its child released — fai_free's precondition.
+    unsafe { fai_free(cell) };
+    assert_eq!(live_count(), base, "releasing the child then freeing balances");
+}
