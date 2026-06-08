@@ -144,6 +144,94 @@ fn build_type_error_exits_one_with_json_diagnostic() {
     assert!(codes.iter().any(|c| c.starts_with("FAI3")), "expected a type error, got {codes:?}");
 }
 
+/// A program whose `build`, `inc`, and `sumAcc` are all self-tail-recursive over a
+/// list far deeper than any native call stack would tolerate under recursion:
+/// `build`/`inc` are tail-modulo-cons, `sumAcc` is a plain tail fold. With the loop
+/// transform all three run in constant stack and free their input cell-by-cell.
+/// `sum (inc (build n)) = n(n+3)/2`; for n = 1_000_000 that is 500001500000.
+const DEEP: &str = indoc! {r#"
+    module Deep
+
+    let build k = if k <= 0 then [] else k :: build (k - 1)
+
+    let inc xs =
+      match xs with
+      | [] -> []
+      | x :: r -> (x + 1) :: inc r
+
+    let sumAcc acc xs =
+      match xs with
+      | [] -> acc
+      | x :: r -> sumAcc (acc + x) r
+
+    public main : Runtime -> Unit
+    let main rt = rt.console.writeLine (Int.toString (sumAcc 0 (inc (build 1000000))))
+"#};
+
+#[test]
+fn deep_tail_recursion_runs_in_constant_stack_via_jit() {
+    let dir = workspace("deepjit", &[("Deep.fai", DEEP)]);
+    let out = fai().args(["run", "--no-daemon", "-C"]).arg(&dir).arg("Deep.fai").output().unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a deep tail recursion must run cleanly (no overflow, no leak); stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "500001500000\n");
+}
+
+#[test]
+fn deep_tail_recursion_runs_in_constant_stack_via_aot() {
+    let dir = workspace("deepaot", &[("Deep.fai", DEEP)]);
+    let exe = dir.join("deep");
+    let build = fai()
+        .args(["build", "--no-daemon", "-C"])
+        .arg(&dir)
+        .arg("Deep.fai")
+        .arg("--out")
+        .arg(&exe)
+        .output()
+        .unwrap();
+    assert!(build.status.success(), "build stderr: {}", String::from_utf8_lossy(&build.stderr));
+    let produced = exe.with_extension(std::env::consts::EXE_EXTENSION);
+    let run = Command::new(&produced).output().unwrap();
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "the deep native binary must run cleanly; stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "500001500000\n");
+}
+
+#[test]
+fn deep_unconsumed_list_is_dropped_without_overflow() {
+    // Builds a very deep list and never consumes it, so it is released *wholesale*
+    // at the end of the binding's scope. The iterative drop frees the spine without
+    // recursing, so the run exits cleanly (a recursive child release would
+    // overflow the native stack here).
+    let src = indoc! {r#"
+        module Deep
+
+        let build k = if k <= 0 then [] else k :: build (k - 1)
+
+        public main : Runtime -> Unit
+        let main rt =
+          let big = build 1000000
+          rt.console.writeLine "built"
+    "#};
+    let dir = workspace("deepdrop", &[("Deep.fai", src)]);
+    let out = fai().args(["run", "--no-daemon", "-C"]).arg(&dir).arg("Deep.fai").output().unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "dropping a deep list must not overflow; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "built\n");
+}
+
 #[test]
 fn run_resolves_calls_across_modules() {
     let main = indoc! {r#"

@@ -1,0 +1,44 @@
+module TailLoops
+
+// Self-tail-recursive functions compile to loops, so they run in constant stack
+// space over arbitrarily deep lists. Two shapes appear here: a plain tail call
+// (the accumulator folds) and a tail call wrapped in one constructor (`build` and
+// `filter`, "tail recursion modulo cons"), which rebuilds the spine in place.
+/// Build the descending list `[n, n - 1, …, 1]` (`[]` for `n <= 0`).
+/// The recursive call sits under `::`, so it is flattened to a spine-building loop.
+public build : Int -> List Int
+let build n = if n <= 0 then [] else n :: build (n - 1)
+example: build 3 = [3, 2, 1]
+example: build 0 = []
+
+/// Keep the elements that satisfy `pred`, preserving order. The kept branch
+/// extends the spine; the dropped branch is a plain tail call — both loop.
+public filter : ('a -> Bool) -> List 'a -> List 'a
+let filter pred xs =
+  match xs with
+  | [] -> []
+  | x :: rest -> if pred x then x :: filter pred rest else filter pred rest
+example: filter (fun x -> x > 0) [1, -1, 2, -2, 3] = [1, 2, 3]
+
+// Tail recursion with an accumulator: a plain tail call that consumes the list
+// cell-by-cell. `sum`/`length` thread the accumulator through `sumFrom`/`countFrom`.
+public sum : List Int -> Int
+let sum xs = sumFrom 0 xs
+
+sumFrom : Int -> List Int -> Int
+let sumFrom acc xs =
+  match xs with
+  | [] -> acc
+  | x :: rest -> sumFrom (acc + x) rest
+example: sum [1, 2, 3, 4] = 10
+example: sum (build 100) = 5050
+
+public length : List 'a -> Int
+let length xs = countFrom 0 xs
+
+countFrom : Int -> List 'a -> Int
+let countFrom acc xs =
+  match xs with
+  | [] -> acc
+  | _ :: rest -> countFrom (acc + 1) rest
+forall xs: length (filter (fun x -> true) xs) = length xs
