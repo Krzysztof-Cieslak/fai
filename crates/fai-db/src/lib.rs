@@ -50,6 +50,20 @@ pub trait Db: salsa::Database {
 
     /// Returns every registered source file, in [`SourceId`] order.
     fn all_source_files(&self) -> Vec<SourceFile>;
+
+    /// An independent handle to the same database, for running queries in
+    /// parallel. salsa databases are `Send` but not `Sync`, so a `&dyn Db`
+    /// cannot be shared across threads; instead each worker takes its own clone,
+    /// which shares the underlying storage (and thus memoization) — salsa
+    /// coordinates concurrent execution. Used with rayon's `map_with` (the seed
+    /// is cloned per worker) so the `&dyn Db` seam is preserved.
+    fn clone_box(&self) -> Box<dyn Db>;
+}
+
+impl Clone for Box<dyn Db> {
+    fn clone(&self) -> Self {
+        self.clone_box()
+    }
 }
 
 /// The authoritative source-text input.
@@ -154,6 +168,10 @@ impl Db for FaiDatabase {
 
     fn all_source_files(&self) -> Vec<SourceFile> {
         self.files.clone()
+    }
+
+    fn clone_box(&self) -> Box<dyn Db> {
+        Box::new(self.clone())
     }
 }
 

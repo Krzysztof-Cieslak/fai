@@ -24,6 +24,7 @@ use fai_resolve::{DefId, ModuleName, module_defs, module_name};
 use fai_span::SpanResolver;
 use fai_syntax::Symbol;
 use fai_syntax::ast::ItemKind;
+use rayon::prelude::*;
 use rustc_hash::FxHashSet;
 use serde::Serialize;
 
@@ -270,6 +271,27 @@ impl BuildOutcome {
     }
 }
 
+/// Builds (or loads from the content-addressed cache) the relocatable object for
+/// each reachable definition, **in parallel across definitions** — each is an
+/// independent code generation plus cache lookup. Order is preserved, so the
+/// linker input (and the resulting artifact) stays deterministic. Each rayon
+/// worker takes its own database handle (a cheap clone sharing the storage and
+/// memoization; salsa coordinates concurrent query execution).
+fn build_objects(db: &dyn Db, reachable: &[DefId]) -> Vec<(String, Vec<u8>)> {
+    reachable
+        .par_iter()
+        .map_with(db.clone_box(), |dbh, def| {
+            let db: &dyn Db = &**dbh;
+            let def_file = db.source_file(def.file)?;
+            let bytes = crate::cache::load_or_build_object(db, def_file, def.name);
+            Some((symbol_base(db, *def), (*bytes).clone()))
+        })
+        .collect::<Vec<Option<(String, Vec<u8>)>>>()
+        .into_iter()
+        .flatten()
+        .collect()
+}
+
 /// Compiles the closure reachable from `file`'s `main` to a native executable at
 /// `out`, reusing cached `object_code` for unchanged definitions.
 #[must_use]
@@ -283,12 +305,7 @@ pub fn build_native(db: &dyn Db, file: SourceFile, out: &Utf8Path) -> BuildOutco
         return BuildOutcome { artifact: None, diagnostics, ok: false };
     }
 
-    let mut objects: Vec<(String, Vec<u8>)> = Vec::with_capacity(reachable.len() + 1);
-    for def in &reachable {
-        let Some(def_file) = db.source_file(def.file) else { continue };
-        let bytes = crate::cache::load_or_build_object(db, def_file, def.name);
-        objects.push((symbol_base(db, *def), (*bytes).clone()));
-    }
+    let mut objects = build_objects(db, &reachable);
     let entry = DefId::new(file.source(db), Symbol::intern(ENTRY));
     let runtime = runtime_root(db).expect("standard library defines the Runtime value binding");
     objects.push(("fai_main".to_owned(), main_object(entry, runtime, &|d| symbol_base(db, d))));
@@ -336,9 +353,17 @@ pub fn jit_run_program(db: &dyn Db, file: SourceFile) -> RunOutcome {
         return RunOutcome { exit_code: COMPILE_ERROR_EXIT, diagnostics };
     }
 
+    // Lower + reference-count each reachable def in parallel (independent
+    // queries); the JIT compile that follows is serial (one shared module).
     let defs: Vec<LoweredDef> = reachable
-        .iter()
-        .filter_map(|def| db.source_file(def.file).map(|f| (*rc(db, f, def.name)).clone()))
+        .par_iter()
+        .map_with(db.clone_box(), |dbh, def| {
+            let db: &dyn Db = &**dbh;
+            db.source_file(def.file).map(|f| (*rc(db, f, def.name)).clone())
+        })
+        .collect::<Vec<Option<LoweredDef>>>()
+        .into_iter()
+        .flatten()
         .collect();
     let entry = DefId::new(file.source(db), Symbol::intern(ENTRY));
     let runtime = runtime_root(db).expect("standard library defines the Runtime value binding");
@@ -381,14 +406,20 @@ pub fn build_run_bundle(db: &dyn Db, file: SourceFile) -> RunBundleResult {
         return RunBundleResult { bundle: None, diagnostics };
     }
 
-    let module_of = |d: DefId| module_label(db, d);
+    // Lower + reference-count + serialize each reachable def in parallel
+    // (independent queries), preserving order so the bundle is deterministic.
     let defs: Vec<WireDef> = reachable
-        .iter()
-        .filter_map(|d| {
+        .par_iter()
+        .map_with(db.clone_box(), |dbh, d| {
+            let db: &dyn Db = &**dbh;
             let def_file = db.source_file(d.file)?;
             let lowered = rc(db, def_file, d.name);
+            let module_of = |x: DefId| module_label(db, x);
             Some(def_to_wire(&lowered, &module_of, arity_of(db, *d)))
         })
+        .collect::<Vec<Option<WireDef>>>()
+        .into_iter()
+        .flatten()
         .collect();
     let entry = DefId::new(file.source(db), Symbol::intern(ENTRY));
     let runtime = runtime_root(db).expect("standard library defines the Runtime value binding");
