@@ -299,11 +299,16 @@ impl<E: Env> Walker<'_, E> {
                     let is_simple_var = stmt.params.is_empty()
                         && matches!(self.module.pat(stmt.pat).kind, PatKind::Var(_))
                         && is_syntactic_value(self.module, stmt.value);
-                    // The vars already fixed by the enclosing environment must not
-                    // be generalized; snapshot them before inferring the value.
-                    let env_vars = self.env_free_vars();
 
-                    let value_ty = if stmt.params.is_empty() {
+                    let value_ty = if is_simple_var {
+                        // Infer a generalizable right-hand side one level deeper;
+                        // variables created here that are not unified with an
+                        // outer one (their level stays deeper) are generalized.
+                        self.cx.enter_level();
+                        let v = self.infer_expr(stmt.value);
+                        self.cx.exit_level();
+                        v
+                    } else if stmt.params.is_empty() {
                         self.infer_expr(stmt.value)
                     } else {
                         let param_tys: Vec<SolveTy> =
@@ -314,10 +319,10 @@ impl<E: Env> Walker<'_, E> {
 
                     if is_simple_var {
                         // Generalize a simple `let v = value`: quantify the value
-                        // type's free variables that are not fixed by the
-                        // environment (standard let-polymorphism; sound because M2
-                        // has no mutable references).
-                        let vars = self.generalizable_vars(&value_ty, &env_vars);
+                        // type's free variables created in its right-hand side and
+                        // not fixed by the environment (standard let-polymorphism;
+                        // sound because there are no mutable references).
+                        let vars = self.generalizable_vars(&value_ty);
                         if let Some(slot) = self.resolved.local_of(stmt.pat) {
                             let binding = if vars.is_empty() {
                                 LocalBinding::Mono(value_ty)
@@ -919,47 +924,23 @@ impl<E: Env> Walker<'_, E> {
         }
     }
 
-    /// The solver variables currently fixed by the environment (all in-scope
-    /// locals), which must not be generalized by a nested `let`.
-    fn env_free_vars(&self) -> rustc_hash::FxHashSet<crate::ty::TyVarId> {
-        let mut set = rustc_hash::FxHashSet::default();
-        for binding in self.locals.values() {
-            let mut visited = rustc_hash::FxHashSet::default();
-            match binding {
-                LocalBinding::Mono(t) => self.cx.collect_free_vars(t, &mut set, &mut visited),
-                // A poly local's quantified vars are bound, not free; only its
-                // free (non-quantified) vars constrain generalization.
-                LocalBinding::Poly { vars, ty } => {
-                    let mut local = rustc_hash::FxHashSet::default();
-                    self.cx.collect_free_vars(ty, &mut local, &mut visited);
-                    for v in vars {
-                        local.remove(v);
-                    }
-                    set.extend(local);
-                }
-            }
-        }
-        set
-    }
-
-    /// The free variables of `ty` that may be generalized: those not fixed by the
-    /// environment and not still carrying a constraint.
+    /// The free variables of `ty` that may be generalized: those created in the
+    /// just-inferred right-hand side (their level is deeper than the enclosing
+    /// scope, i.e. they were not unified with an outer variable) and not still
+    /// carrying a constraint.
     ///
     /// A *constrained* variable (Numeric/Eq/Ord) is left ungeneralized so it can
     /// be resolved or defaulted later — e.g. `let inc = fun a -> a + 1` keeps its
     /// numeric variable monomorphic so it defaults to `Int` (giving
     /// `Int -> Int`), rather than generalizing to `'a -> 'a`.
-    fn generalizable_vars(
-        &self,
-        ty: &SolveTy,
-        env_vars: &rustc_hash::FxHashSet<crate::ty::TyVarId>,
-    ) -> Vec<crate::ty::TyVarId> {
+    fn generalizable_vars(&self, ty: &SolveTy) -> Vec<crate::ty::TyVarId> {
         let mut free = rustc_hash::FxHashSet::default();
         let mut visited = rustc_hash::FxHashSet::default();
         self.cx.collect_free_vars(ty, &mut free, &mut visited);
+        let current = self.cx.current_level();
         let mut vars: Vec<crate::ty::TyVarId> = free
             .into_iter()
-            .filter(|v| !env_vars.contains(v))
+            .filter(|v| self.cx.level_of(*v) > current)
             .filter(|v| self.cx.pending_constraint(&SolveTy::Var(*v)).is_none())
             .collect();
         vars.sort();
