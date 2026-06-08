@@ -22,9 +22,10 @@ use lsp_types::{
     DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
     GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
     Location as LspLocation, MarkupContent, MarkupKind, NumberOrString, OneOf, Position,
-    PublishDiagnosticsParams, Range, ReferenceParams, ServerCapabilities, SymbolInformation,
-    SymbolKind as LspSymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url,
-    WorkspaceSymbolParams,
+    PrepareRenameResponse, PublishDiagnosticsParams, Range, ReferenceParams, RenameOptions,
+    RenameParams, ServerCapabilities, SymbolInformation, SymbolKind as LspSymbolKind,
+    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url,
+    WorkspaceEdit, WorkspaceSymbolParams,
 };
 
 mod position;
@@ -81,6 +82,10 @@ fn server_capabilities() -> ServerCapabilities {
         document_symbol_provider: Some(OneOf::Left(true)),
         workspace_symbol_provider: Some(OneOf::Left(true)),
         references_provider: Some(OneOf::Left(true)),
+        rename_provider: Some(OneOf::Right(RenameOptions {
+            prepare_provider: Some(true),
+            work_done_progress_options: Default::default(),
+        })),
         ..ServerCapabilities::default()
     }
 }
@@ -180,6 +185,18 @@ impl Server {
                     respond(conn, id, &self.references(&params));
                 }
             }
+            "textDocument/prepareRename" => {
+                if let Ok((id, params)) =
+                    req.extract::<TextDocumentPositionParams>("textDocument/prepareRename")
+                {
+                    respond(conn, id, &self.prepare_rename(&params));
+                }
+            }
+            "textDocument/rename" => {
+                if let Ok((id, params)) = req.extract::<RenameParams>("textDocument/rename") {
+                    respond(conn, id, &self.rename(&params));
+                }
+            }
             // An unsupported request still needs a reply so the client is not
             // left waiting; a null result is the conventional "no answer".
             _ => respond(conn, req.id, &serde_json::Value::Null),
@@ -262,6 +279,40 @@ impl Server {
             params.context.include_declaration,
         );
         Some(locations.iter().filter_map(|l| self.to_lsp_location(&l.span)).collect())
+    }
+
+    fn prepare_rename(&self, params: &TextDocumentPositionParams) -> Option<PrepareRenameResponse> {
+        let (file, offset) = self.locate(&params.text_document.uri, params.position)?;
+        let target =
+            fai_ide::prepare_rename_at(self.session.db(), file, offset, &self.session.resolver())?;
+        let range = self.range_in_file(&target.span)?;
+        Some(PrepareRenameResponse::RangeWithPlaceholder { range, placeholder: target.name })
+    }
+
+    fn rename(&self, params: &RenameParams) -> Option<WorkspaceEdit> {
+        let pos = &params.text_document_position;
+        let (file, offset) = self.locate(&pos.text_document.uri, pos.position)?;
+        let locations = fai_ide::rename_at(
+            self.session.db(),
+            &self.session.user_files(),
+            file,
+            offset,
+            &params.new_name,
+            &self.session.resolver(),
+        )?;
+        // Group the per-occurrence replacements by file into a workspace edit.
+        let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
+        for loc in locations {
+            if let Some(uri) = self.uri_for(&loc.span.file)
+                && let Some(range) = self.range_in_file(&loc.span)
+            {
+                changes
+                    .entry(uri)
+                    .or_default()
+                    .push(TextEdit { range, new_text: params.new_name.clone() });
+            }
+        }
+        Some(WorkspaceEdit { changes: Some(changes), ..WorkspaceEdit::default() })
     }
 
     // --- helpers ----------------------------------------------------------

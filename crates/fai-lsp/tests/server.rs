@@ -364,6 +364,72 @@ fn references_span_multiple_modules() {
     harness.shutdown();
 }
 
+#[test]
+fn prepare_rename_returns_the_name_range() {
+    let mut harness = Harness::start("prep-rename", &[("Main.fai", MAIN)]);
+    let uri = harness.did_open("Main.fai", MAIN);
+    // On the `inc` use in `let two = inc 1` (line 6, col 10).
+    let result = harness.request(
+        "textDocument/prepareRename",
+        json!({ "textDocument": { "uri": uri }, "position": { "line": 6, "character": 10 } }),
+    );
+    assert_eq!(result["placeholder"], "inc", "{result:?}");
+    assert_eq!(result["range"]["start"], json!({ "line": 6, "character": 10 }));
+    assert_eq!(result["range"]["end"], json!({ "line": 6, "character": 13 }));
+    harness.shutdown();
+}
+
+#[test]
+fn rename_rewrites_across_modules() {
+    let a = "module A\n\npublic inc : Int -> Int\nlet inc x = x + 1\n";
+    let b = "module B\n\npublic two : Int\nlet two = A.inc 1\n\nlet four = A.inc (A.inc two)\n";
+    let mut harness = Harness::start("rename-multi", &[("A.fai", a), ("B.fai", b)]);
+    let uri_a = harness.did_open("A.fai", a);
+    let _ = harness.did_open("B.fai", b);
+    // Rename from the `inc` declaration in A (line 3, col 4).
+    let result = harness.request(
+        "textDocument/rename",
+        json!({
+            "textDocument": { "uri": uri_a },
+            "position": { "line": 3, "character": 4 },
+            "newName": "increment"
+        }),
+    );
+    // The workspace-edit keys are canonicalized URIs, so match them by file suffix.
+    let changes = result["changes"].as_object().expect("a changes map");
+    let edits_for = |suffix: &str| -> Vec<Value> {
+        changes
+            .iter()
+            .find(|(k, _)| k.ends_with(suffix))
+            .and_then(|(_, v)| v.as_array().cloned())
+            .unwrap_or_default()
+    };
+    let a_edits = edits_for("A.fai");
+    let b_edits = edits_for("B.fai");
+    assert_eq!(a_edits.len(), 1, "the declaration in A: {a_edits:?}");
+    assert_eq!(b_edits.len(), 3, "three uses in B: {b_edits:?}");
+    assert!(a_edits.iter().all(|e| e["newText"] == "increment"), "{a_edits:?}");
+    assert!(b_edits.iter().all(|e| e["newText"] == "increment"), "{b_edits:?}");
+    harness.shutdown();
+}
+
+#[test]
+fn rename_rejects_an_invalid_name() {
+    let mut harness = Harness::start("rename-bad", &[("Main.fai", MAIN)]);
+    let uri = harness.did_open("Main.fai", MAIN);
+    // A value cannot be renamed to an upper-case (constructor) name.
+    let result = harness.request(
+        "textDocument/rename",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 6, "character": 10 },
+            "newName": "Inc"
+        }),
+    );
+    assert!(result.is_null(), "an invalid rename yields no edit: {result:?}");
+    harness.shutdown();
+}
+
 // --- dirty (unsaved) buffers -------------------------------------------------
 //
 // These exercise the case the earlier tests do not: the open buffer differs from

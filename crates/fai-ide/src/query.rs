@@ -479,31 +479,37 @@ fn def_name_at(db: &dyn Db, file: SourceFile, offset: u32) -> Option<Symbol> {
     None
 }
 
-/// Resolves what the reference at `offset` refers to: a use site, a constructor
-/// or local pattern, or a definition's own name.
-fn target_at(db: &dyn Db, file: SourceFile, offset: u32) -> Option<RefTarget> {
+/// Resolves what the reference at `offset` refers to — a use site, a constructor
+/// or local pattern, or a definition's own name — together with the precise
+/// source range of the *occurrence under the cursor* (the bare name, for
+/// highlighting and rename).
+fn target_at(db: &dyn Db, file: SourceFile, offset: u32) -> Option<(RefTarget, TextRange)> {
     let parsed = fai_syntax::parse(db, file);
     let resolved = resolve(db, file);
+    let text = file.text(db);
     // A use site: the innermost referencing expression.
     for expr in exprs_containing(&parsed.module, offset) {
+        let range = ref_expr_name_range(&parsed.module, expr);
         match resolved.get(expr) {
-            Some(Res::Def(d)) => return Some(RefTarget::Def(d)),
-            Some(Res::Ctor(c)) => return Some(RefTarget::Ctor(c)),
-            Some(Res::Local(l)) => return Some(RefTarget::Local(file, l)),
+            Some(Res::Def(d)) => return Some((RefTarget::Def(d), range)),
+            Some(Res::Ctor(c)) => return Some((RefTarget::Ctor(c), range)),
+            Some(Res::Local(l)) => return Some((RefTarget::Local(file, l), range)),
             _ => {}
         }
     }
     // A pattern: a constructor head, or a local's binding occurrence.
     for pat in pats_containing(&parsed.module, offset) {
         if let Some(Res::Ctor(c)) = resolved.pat_res(pat) {
-            return Some(RefTarget::Ctor(c));
+            return Some((RefTarget::Ctor(c), ctor_pat_name_range(&parsed.module, text, pat)));
         }
         if let Some(l) = resolved.local_of(pat) {
-            return Some(RefTarget::Local(file, l));
+            return Some((RefTarget::Local(file, l), parsed.module.pat(pat).span));
         }
     }
     // A definition's own name (the declaration site).
-    def_name_at(db, file, offset).map(|name| RefTarget::Def(DefId::new(file.source(db), name)))
+    let name = def_name_at(db, file, offset)?;
+    let range = def_decl_range(db, file, name)?;
+    Some((RefTarget::Def(DefId::new(file.source(db), name)), range))
 }
 
 /// The precise source range of the *name* an expression reference occupies: the
@@ -560,9 +566,23 @@ pub fn references_at(
     resolver: &dyn SpanResolver,
     include_declaration: bool,
 ) -> Vec<Location> {
-    let Some(target) = target_at(db, file, offset) else {
+    let Some((target, _)) = target_at(db, file, offset) else {
         return vec![];
     };
+    collect_references(db, files, target, resolver, include_declaration)
+}
+
+/// Every occurrence of a resolved [`RefTarget`] across `files` (uses in
+/// expressions and patterns), plus its declaration when `include_declaration`.
+/// Deterministically sorted and deduplicated by location. Shared by
+/// find-references and rename.
+fn collect_references(
+    db: &dyn Db,
+    files: &[SourceFile],
+    target: RefTarget,
+    resolver: &dyn SpanResolver,
+    include_declaration: bool,
+) -> Vec<Location> {
     let mut out: Vec<(String, u32, Location)> = Vec::new();
     match target {
         RefTarget::Def(def) => {
@@ -625,6 +645,98 @@ pub fn references_at(
     out.sort_by(|a, b| (a.0.as_str(), a.1).cmp(&(b.0.as_str(), b.1)));
     out.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
     out.into_iter().map(|(_, _, loc)| loc).collect()
+}
+
+// --- rename (LSP `textDocument/prepareRename` + `rename`) --------------------
+//
+// Rename is find-references with the declaration always included, rewriting each
+// occurrence to the new name. Because the reference ranges are already the bare
+// name (a qualified `A.inc` use yields just `inc`), the edits never disturb the
+// surrounding module path or constructor arguments.
+
+/// The renameable symbol under the cursor: the precise range to replace and the
+/// current name (the editor's rename placeholder).
+#[derive(Debug, Serialize)]
+pub struct RenameTarget {
+    /// The span of the name occurrence under the cursor.
+    pub span: SpanJson,
+    /// The current name (placeholder for the rename input).
+    pub name: String,
+}
+
+/// Whether `name` is a plain identifier (a letter or `_` then letters/digits/`_`),
+/// the only form rename can safely produce.
+fn is_plain_ident(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+}
+
+/// Whether a target may be renamed: its definition must live in user code (the
+/// standard library is read-only), and a local always may.
+fn target_is_renameable(db: &dyn Db, target: RefTarget) -> bool {
+    let defining = match target {
+        RefTarget::Def(d) => d.file,
+        RefTarget::Ctor(c) => c.file,
+        RefTarget::Local(..) => return true,
+    };
+    db.source_file(defining).is_some_and(|f| !fai_db::is_std_path(f.path(db)))
+}
+
+/// Whether `new_name` is a legal replacement for `target`: a plain identifier in
+/// the same casing namespace (a constructor stays upper-case; a value or local
+/// stays lower-case), so the rename cannot move a symbol between namespaces.
+fn valid_new_name(target: RefTarget, new_name: &str) -> bool {
+    if !is_plain_ident(new_name) {
+        return false;
+    }
+    let upper = new_name.as_bytes()[0].is_ascii_uppercase();
+    match target {
+        RefTarget::Ctor(_) => upper,
+        RefTarget::Def(_) | RefTarget::Local(..) => !upper,
+    }
+}
+
+/// The renameable symbol at `offset`, or `None` when the cursor is not on a
+/// user-defined name (a builtin, a standard-library symbol, or no symbol at all).
+/// Powers LSP `textDocument/prepareRename`.
+#[must_use]
+pub fn prepare_rename_at(
+    db: &dyn Db,
+    file: SourceFile,
+    offset: u32,
+    resolver: &dyn SpanResolver,
+) -> Option<RenameTarget> {
+    let (target, range) = target_at(db, file, offset)?;
+    if !target_is_renameable(db, target) {
+        return None;
+    }
+    let name = file.text(db).get(range.start().raw() as usize..range.end().raw() as usize)?;
+    let span = SpanJson::resolve(Span::new(file.source(db), range), resolver)?;
+    Some(RenameTarget { span, name: name.to_owned() })
+}
+
+/// The edits that rename the symbol at `offset` to `new_name` across `files`:
+/// one replacement per occurrence (uses and the declaration). Returns `None`
+/// when the target is not renameable or `new_name` is not a valid replacement.
+/// Powers LSP `textDocument/rename`.
+#[must_use]
+pub fn rename_at(
+    db: &dyn Db,
+    files: &[SourceFile],
+    file: SourceFile,
+    offset: u32,
+    new_name: &str,
+    resolver: &dyn SpanResolver,
+) -> Option<Vec<Location>> {
+    let (target, _) = target_at(db, file, offset)?;
+    if !target_is_renameable(db, target) || !valid_new_name(target, new_name) {
+        return None;
+    }
+    Some(collect_references(db, files, target, resolver, true))
 }
 
 /// `fai query refs`.
