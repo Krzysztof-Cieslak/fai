@@ -12,7 +12,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use camino::Utf8PathBuf;
-use fai_db::{Db, FaiDatabase, Setter, SourceFile};
+use fai_db::{Db, DbSpanResolver, FaiDatabase, Setter, SourceFile};
 use fai_driver::{Session, check, object_code};
 use fai_syntax::Symbol;
 use fai_tests::corpus::{self, CorpusSpec};
@@ -170,6 +170,102 @@ fn nested_private_body_edit_does_not_recheck_dependents() {
     // The edited file re-infers; `User` does not (it uses `bump`'s signature).
     let total = count(&events, "infer_scc_query");
     assert_eq!(total, 2, "only Lib.Inner's two defs should re-infer, got {total}: {events:?}");
+}
+
+// ── the language-server multi-file firewall ──────────────────────────────────
+//
+// The server answers per open file: diagnostics for the file being edited, and
+// hover / go-to-definition at a position in it. These guards assert the
+// cross-module firewall holds for that multi-file workflow — editing one module
+// leaves the *others'* analysis fully cached — which the wall-clock LSP benches
+// (`benches/lsp.rs`) cannot prove, since validation and allocation noise drift
+// the warm latency a little even when the recomputed work is constant.
+//
+// The work is observed through the underlying salsa queries: `check_file` (the
+// inference behind a file's diagnostics) and `body_types` (what hover and
+// go-to-definition read). A `_after_editing(target)` helper edits one module and
+// then serves a *fixed probe* module (`M7`), so each guard checks both the
+// firewall (a foreign edit ⇒ zero work for the probe) and its own non-vacuity
+// (editing the probe itself ⇒ work), at two workspace sizes.
+
+/// The byte offset of a cross-module reference (`Core.fN`) in a leaf module.
+fn core_reference(db: &FaiDatabase, file: SourceFile) -> u32 {
+    file.text(db).find("f0 x").expect("a leaf body calls Core.f0") as u32
+}
+
+/// The probe module every guard serves (must exist at all tested sizes).
+const PROBE: &str = "M7.fai";
+const PROBE_INDEX: usize = 7;
+
+#[test]
+fn diagnostics_for_one_file_are_unaffected_by_edits_to_another() {
+    // The inference behind the probe's diagnostics re-runs only when the probe
+    // itself changed: a private-body edit to *another* module re-infers nothing
+    // for the probe (the firewall), at any workspace size, while editing the
+    // probe re-infers exactly its own defs (so the guard is not vacuous).
+    fn probe_infer_after_editing(modules: usize, target: usize) -> usize {
+        let spec = CorpusSpec::with_modules(modules);
+        let (mut db, files) = corpus::build_db(&spec);
+        check_all(&db, &files); // warm every file's inference
+        let probe = files.iter().copied().find(|f| f.path(&db).as_str() == PROBE).unwrap();
+
+        db.enable_event_log();
+        db.add_source(format!("M{target}.fai").into(), corpus::edit_private_body(&spec, target, 1));
+        check_file(&db, probe);
+        count(&db.take_events(), "infer_scc_query")
+    }
+
+    let defs_in_one = {
+        let one = CorpusSpec::with_modules(1);
+        one.public_defs_per_module + one.private_defs_per_module
+    };
+    for &modules in &[10usize, 100] {
+        assert_eq!(
+            probe_infer_after_editing(modules, 3),
+            0,
+            "editing another module must not re-infer the probe ({modules} modules)"
+        );
+        assert_eq!(
+            probe_infer_after_editing(modules, PROBE_INDEX),
+            defs_in_one,
+            "editing the probe itself re-infers exactly its defs ({modules} modules)"
+        );
+    }
+}
+
+#[test]
+fn hover_and_definition_on_one_file_are_unaffected_by_edits_to_another() {
+    // Hover and go-to-definition read `body_types`; serving them for the probe
+    // after a private-body edit to *another* module recomputes none of it (the
+    // firewall), at any workspace size, while editing the probe does (non-vacuity).
+    fn probe_bodytypes_after_editing(modules: usize, target: usize) -> usize {
+        let spec = CorpusSpec::with_modules(modules);
+        let (mut db, files) = corpus::build_db(&spec);
+        check_all(&db, &files);
+        let probe = files.iter().copied().find(|f| f.path(&db).as_str() == PROBE).unwrap();
+        let offset = core_reference(&db, probe);
+        // Warm the probe's hover/definition so a later call is a pure cache hit.
+        let _ = fai_ide::hover_at(&db, probe, offset, &DbSpanResolver::new(&db));
+        let _ = fai_ide::definition_at(&db, probe, offset, &DbSpanResolver::new(&db));
+
+        db.enable_event_log();
+        db.add_source(format!("M{target}.fai").into(), corpus::edit_private_body(&spec, target, 1));
+        let _ = fai_ide::hover_at(&db, probe, offset, &DbSpanResolver::new(&db));
+        let _ = fai_ide::definition_at(&db, probe, offset, &DbSpanResolver::new(&db));
+        count(&db.take_events(), "body_types")
+    }
+
+    for &modules in &[10usize, 100] {
+        assert_eq!(
+            probe_bodytypes_after_editing(modules, 3),
+            0,
+            "editing another module must not recompute the probe's hover/def ({modules} modules)"
+        );
+        assert!(
+            probe_bodytypes_after_editing(modules, PROBE_INDEX) > 0,
+            "editing the probe itself recomputes its hover/def ({modules} modules)"
+        );
+    }
 }
 
 #[test]
