@@ -47,9 +47,11 @@ use fai_types::{Con, Ty};
 use rustc_hash::FxHashSet;
 
 pub use borrow::{BorrowSig, borrow_signature};
+pub use mutual::{Group, MutualGroups, combined_lowered, member_wrapper, mutual_groups};
 pub use verify::check_rc;
 
 mod borrow;
+mod mutual;
 mod purity;
 mod trmc;
 mod verify;

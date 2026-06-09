@@ -19,13 +19,13 @@ use fai_core::wire::{WireBundle, WireDef, WireDefId, def_to_wire, from_wire};
 use fai_db::{Db, Diag, SourceFile};
 use fai_diagnostics::wire::{DiagnosticWire, to_wire};
 use fai_diagnostics::{Diagnostic, SCHEMA_VERSION, Severity, render_human};
-use fai_rc::rc;
+use fai_rc::{BorrowSig, combined_lowered, member_wrapper, mutual_groups, rc, rc_lowered};
 use fai_resolve::{DefId, ModuleName, module_defs, module_name};
 use fai_span::SpanResolver;
 use fai_syntax::Symbol;
 use fai_syntax::ast::ItemKind;
 use rayon::prelude::*;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Serialize;
 
 use crate::{LINK_FAILED, NO_ENTRY_POINT, semantic_diagnostics, tooling_span};
@@ -209,6 +209,57 @@ pub(crate) fn reachable_from_roots(
     order
 }
 
+/// The mutual-recursion flattening applied to a reachable set: each member is
+/// replaced by a wrapper that calls its group's combined function, and one
+/// combined function (a flattened loop) is added per group. The combined
+/// functions are not source-backed, so they are reference-counted in memory (via
+/// [`rc_lowered`], like contract harnesses) rather than through the cached
+/// `object_code` query, and built at assembly time like the `fai_main` trampoline.
+struct ProgramGroups {
+    /// Reachable group members, each mapped to its (reference-counted) wrapper.
+    wrappers: FxHashMap<DefId, LoweredDef>,
+    /// The combined loop functions (reference-counted), one per group.
+    combined: Vec<LoweredDef>,
+    /// The arity of each synthetic combined function (its callers need it to make
+    /// a saturated direct call); these definitions have no source binding.
+    arity: FxHashMap<DefId, usize>,
+}
+
+impl ProgramGroups {
+    /// Whether `def` is a group member (so its normal object/def is replaced by a
+    /// wrapper).
+    fn is_member(&self, def: DefId) -> bool {
+        self.wrappers.contains_key(&def)
+    }
+}
+
+/// Reference-counts an in-memory (non-source-backed) definition with an all-owned
+/// signature, the way the combined functions and wrappers are compiled.
+fn rc_owned(db: &dyn Db, lowered: &LoweredDef) -> LoweredDef {
+    let n = lowered.entry().params.len();
+    rc_lowered(db, lowered, &BorrowSig(vec![false; n]))
+}
+
+/// Computes the mutual-recursion flattening for a reachable set: the wrappers for
+/// reachable group members and the combined loop for each such group.
+fn program_groups(db: &dyn Db, reachable: &[DefId]) -> ProgramGroups {
+    let mut wrappers = FxHashMap::default();
+    let mut combined = Vec::new();
+    let mut arity = FxHashMap::default();
+    let mut seen = FxHashSet::default();
+    for &def in reachable {
+        let Some(file) = db.source_file(def.file) else { continue };
+        let groups = mutual_groups(db, file);
+        let Some(group) = groups.group_of(def) else { continue };
+        wrappers.insert(def, rc_owned(db, &member_wrapper(db, file, def, group)));
+        if seen.insert(group.combined) {
+            combined.push(rc_owned(db, &combined_lowered(db, file, group)));
+            arity.insert(group.combined, group.arity);
+        }
+    }
+    ProgramGroups { wrappers, combined, arity }
+}
+
 /// Collects the diagnostics that must be clean before codegen: each reachable
 /// file's parse/resolve/type diagnostics plus each reachable definition's
 /// lowering diagnostics (e.g. unsupported-construct `FAI7001`).
@@ -319,10 +370,24 @@ pub fn build_native(db: &dyn Db, file: SourceFile, out: &Utf8Path) -> BuildOutco
         return BuildOutcome { artifact: None, diagnostics, ok: false };
     }
 
-    let mut objects = build_objects(db, &reachable);
+    // Flatten mutual-recursion groups: members compile to wrappers, plus one
+    // combined loop per group (built here, like the `fai_main` trampoline, so the
+    // cached `object_code` path stays untouched for ordinary definitions).
+    let groups = program_groups(db, &reachable);
+    let normal: Vec<DefId> = reachable.iter().copied().filter(|d| !groups.is_member(*d)).collect();
+    let mut objects = build_objects(db, &normal);
+    let namer = |d: DefId| symbol_base(db, d);
+    let arity = |d: DefId| groups.arity.get(&d).copied().unwrap_or_else(|| arity_of(db, d));
+    for (member, wrapper) in &groups.wrappers {
+        objects.push((symbol_base(db, *member), object_for_def(wrapper, &namer, &arity)));
+    }
+    for combined in &groups.combined {
+        objects.push((symbol_base(db, combined.def), object_for_def(combined, &namer, &arity)));
+    }
+
     let entry = DefId::new(file.source(db), Symbol::intern(ENTRY));
     let runtime = runtime_root(db).expect("standard library defines the Runtime value binding");
-    objects.push(("fai_main".to_owned(), main_object(entry, runtime, &|d| symbol_base(db, d))));
+    objects.push(("fai_main".to_owned(), main_object(entry, runtime, &namer)));
 
     match link(&objects, out) {
         Ok(artifact) => BuildOutcome { artifact: Some(artifact), diagnostics, ok: true },
@@ -367,11 +432,19 @@ pub fn jit_run_program(db: &dyn Db, file: SourceFile) -> RunOutcome {
         return RunOutcome { exit_code: COMPILE_ERROR_EXIT, diagnostics };
     }
 
-    // Lower + reference-count each reachable def in parallel (independent
+    // Flatten mutual-recursion groups (members → wrappers, plus a combined loop
+    // per group); the member set is consulted in the parallel lowering below.
+    let groups = program_groups(db, &reachable);
+    let members: FxHashSet<DefId> = groups.wrappers.keys().copied().collect();
+
+    // Lower + reference-count each ordinary reachable def in parallel (independent
     // queries); the JIT compile that follows is serial (one shared module).
-    let defs: Vec<LoweredDef> = reachable
+    let mut defs: Vec<LoweredDef> = reachable
         .par_iter()
         .map_with(db.clone_box(), |dbh, def| {
+            if members.contains(def) {
+                return None; // a group member compiles to its wrapper, added below
+            }
             let db: &dyn Db = &**dbh;
             db.source_file(def.file).map(|f| (*rc(db, f, def.name)).clone())
         })
@@ -379,10 +452,13 @@ pub fn jit_run_program(db: &dyn Db, file: SourceFile) -> RunOutcome {
         .into_iter()
         .flatten()
         .collect();
+    defs.extend(groups.wrappers.into_values());
+    defs.extend(groups.combined);
+
     let entry = DefId::new(file.source(db), Symbol::intern(ENTRY));
     let runtime = runtime_root(db).expect("standard library defines the Runtime value binding");
     let namer = |d: DefId| symbol_base(db, d);
-    let arity = |d: DefId| arity_of(db, d);
+    let arity = |d: DefId| groups.arity.get(&d).copied().unwrap_or_else(|| arity_of(db, d));
     let exit_code = fai_codegen::jit_run(&defs, entry, runtime, &namer, &arity);
     RunOutcome { exit_code, diagnostics }
 }
@@ -420,11 +496,19 @@ pub fn build_run_bundle(db: &dyn Db, file: SourceFile) -> RunBundleResult {
         return RunBundleResult { bundle: None, diagnostics };
     }
 
-    // Lower + reference-count + serialize each reachable def in parallel
+    // Flatten mutual-recursion groups (members → wrappers, plus a combined loop
+    // per group), so the shipped bundle carries the flattened program.
+    let groups = program_groups(db, &reachable);
+    let members: FxHashSet<DefId> = groups.wrappers.keys().copied().collect();
+
+    // Lower + reference-count + serialize each ordinary reachable def in parallel
     // (independent queries), preserving order so the bundle is deterministic.
-    let defs: Vec<WireDef> = reachable
+    let mut defs: Vec<WireDef> = reachable
         .par_iter()
         .map_with(db.clone_box(), |dbh, d| {
+            if members.contains(d) {
+                return None; // a group member ships as its wrapper, added below
+            }
             let db: &dyn Db = &**dbh;
             let def_file = db.source_file(d.file)?;
             let lowered = rc(db, def_file, d.name);
@@ -435,6 +519,15 @@ pub fn build_run_bundle(db: &dyn Db, file: SourceFile) -> RunBundleResult {
         .into_iter()
         .flatten()
         .collect();
+    let module_of = |x: DefId| module_label(db, x);
+    for (member, wrapper) in &groups.wrappers {
+        defs.push(def_to_wire(wrapper, &module_of, arity_of(db, *member)));
+    }
+    for combined in &groups.combined {
+        let arity = groups.arity.get(&combined.def).copied().unwrap_or(0);
+        defs.push(def_to_wire(combined, &module_of, arity));
+    }
+
     let entry = DefId::new(file.source(db), Symbol::intern(ENTRY));
     let runtime = runtime_root(db).expect("standard library defines the Runtime value binding");
     let bundle = WireBundle {

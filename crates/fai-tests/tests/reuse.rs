@@ -400,3 +400,66 @@ fn correct_reorder_pure_call() {
     "#};
     outputs(&src, "40200");
 }
+
+// ===========================================================================
+// Mutual recursion: a plain-tail-recursive group flattens to a combined loop, so
+// it runs in constant stack over a deep input and stays correct.
+// ===========================================================================
+
+#[test]
+fn correct_mutual_even_odd() {
+    let src = formatdoc! {r#"
+        module M
+
+        isEven : Int -> Bool
+        let isEven n = if n <= 0 then true else isOdd (n - 1)
+
+        isOdd : Int -> Bool
+        let isOdd n = if n <= 0 then false else isEven (n - 1)
+
+        public main : Runtime -> Unit
+        let main rt = rt.console.writeLine (if isEven 10 then "even" else "odd")
+    "#};
+    outputs(&src, "even");
+}
+
+#[test]
+fn mutual_even_odd_runs_in_constant_stack() {
+    // 200000 mutual bounces: a flattened loop runs fine; ordinary mutual recursion
+    // would overflow the stack (a non-zero exit).
+    let src = formatdoc! {r#"
+        module M
+
+        isEven : Int -> Bool
+        let isEven n = if n <= 0 then true else isOdd (n - 1)
+
+        isOdd : Int -> Bool
+        let isOdd n = if n <= 0 then false else isEven (n - 1)
+
+        public main : Runtime -> Unit
+        let main rt = rt.console.writeLine (if isEven 200000 then "even" else "odd")
+    "#};
+    outputs(&src, "even");
+}
+
+#[test]
+fn correct_mutual_three_cycle() {
+    // A three-function cycle (mod-3 classifier) flattens too.
+    let src = formatdoc! {r#"
+        module M
+
+        modA : Int -> Int
+        let modA n = if n <= 0 then 0 else modB (n - 1)
+
+        modB : Int -> Int
+        let modB n = if n <= 0 then 1 else modC (n - 1)
+
+        modC : Int -> Int
+        let modC n = if n <= 0 then 2 else modA (n - 1)
+
+        public main : Runtime -> Unit
+        let main rt = rt.console.writeLine (Int.toString (modA 100000))
+    "#};
+    // modA computes n mod 3, and 100000 mod 3 = 1.
+    outputs(&src, "1");
+}

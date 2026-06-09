@@ -221,6 +221,28 @@ fn cross_module_mutual_recursion_borrow_cycle_runs() {
 }
 
 #[test]
+fn intra_module_mutual_recursion_flattens_and_runs() {
+    // `isEven`/`isOdd` are an intra-module plain-tail mutual group, so they compile
+    // to one shared loop. A 500000-deep call runs in constant stack and exits
+    // cleanly; ordinary mutual recursion would overflow the stack.
+    let src = indoc! {r#"
+        module Main
+
+        isEven : Int -> Bool
+        let isEven n = if n <= 0 then true else isOdd (n - 1)
+
+        isOdd : Int -> Bool
+        let isOdd n = if n <= 0 then false else isEven (n - 1)
+
+        public main : Runtime -> Unit
+        let main rt = rt.console.writeLine (if isEven 500000 then "even" else "odd")
+    "#};
+    let (out, code) = build_and_run(src);
+    assert_eq!(out, "even\n");
+    assert_eq!(code, Some(0));
+}
+
+#[test]
 fn as_pattern_binds_and_runs() {
     // The as-pattern aliases the whole matched (cons) value; both the alias and
     // the bound tail reference it, so this also exercises reference counting.

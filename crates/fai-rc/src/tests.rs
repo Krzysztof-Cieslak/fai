@@ -59,6 +59,40 @@ pub(crate) fn pure_total(src: &str, name: &str) -> bool {
     crate::purity::is_pure_total(&db, file, Symbol::intern(name))
 }
 
+/// The flattenable mutual-tail-recursion groups in `src`, as member-name lists.
+pub(crate) fn mutual_member_groups(src: &str) -> Vec<Vec<String>> {
+    let (db, file) = db_with(src);
+    assert_well_typed(&db, file).unwrap_or_else(|e| panic!("{e}\n{src}"));
+    crate::mutual_groups(&db, file)
+        .groups
+        .iter()
+        .map(|g| g.members.iter().map(|m| m.name.as_str().to_owned()).collect())
+        .collect()
+}
+
+/// For the group containing `member` in `src`, whether the combined function is
+/// reference-count sound and was flattened into a loop, and whether each member's
+/// wrapper is sound.
+pub(crate) fn mutual_combined(src: &str, member: &str) -> (bool, bool, bool) {
+    let (db, file) = db_with(src);
+    assert_well_typed(&db, file).unwrap_or_else(|e| panic!("{e}\n{src}"));
+    let groups = crate::mutual_groups(&db, file);
+    let id = DefId::new(file.source(&db), Symbol::intern(member));
+    let group = groups.group_of(id).expect("member belongs to a flattenable group");
+
+    let combined = crate::combined_lowered(&db, file, group);
+    let rc = crate::rc_lowered(&db, &combined, &crate::BorrowSig(vec![false; group.arity]));
+    let sound = check_sound(&db, &rc).is_ok();
+    let flattened = pretty_def(&rc).contains("(join ");
+
+    let wrappers_sound = group.members.iter().all(|&m| {
+        let w = crate::member_wrapper(&db, file, m, group);
+        let n = w.entry().params.len();
+        check_sound(&db, &crate::rc_lowered(&db, &w, &crate::BorrowSig(vec![false; n]))).is_ok()
+    });
+    (sound, flattened, wrappers_sound)
+}
+
 /// Fails if `file` has any error-severity diagnostic. A program that does not
 /// typecheck lowers to `Error` nodes that the soundness oracle accepts trivially,
 /// so the corpus and generators must reject it explicitly.
