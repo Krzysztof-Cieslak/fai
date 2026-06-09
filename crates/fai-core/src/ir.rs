@@ -223,6 +223,14 @@ pub enum Prim {
     FloatFromBits,
     /// `floatToBits` (reinterpret a Float's bits as an Int)
     FloatToBits,
+    /// `charToString` (a one-character `String`)
+    CharToString,
+    /// `charToCode` (a Char's Unicode scalar value as an Int)
+    CharToCode,
+    /// `charFromCode` (an Int code point as a Char; valid code guaranteed by the caller)
+    CharFromCode,
+    /// `isValidCharCode` (whether an Int is a Unicode scalar value)
+    IsValidCharCode,
     /// `stringLength`
     StringLength,
     /// `toUpper`
@@ -359,6 +367,10 @@ impl Prim {
             Prim::Sqrt => "fai_sqrt",
             Prim::FloatFromBits => "fai_float_from_bits",
             Prim::FloatToBits => "fai_float_to_bits",
+            Prim::CharToString => "fai_char_to_string",
+            Prim::CharToCode => "fai_char_to_code",
+            Prim::CharFromCode => "fai_char_from_code",
+            Prim::IsValidCharCode => "fai_is_valid_char_code",
             Prim::StringLength => "fai_string_length",
             Prim::ToUpper => "fai_to_upper",
             Prim::ToLower => "fai_to_lower",
@@ -389,6 +401,10 @@ impl Prim {
             | Prim::Sqrt
             | Prim::FloatFromBits
             | Prim::FloatToBits
+            | Prim::CharToString
+            | Prim::CharToCode
+            | Prim::CharFromCode
+            | Prim::IsValidCharCode
             | Prim::StringLength
             | Prim::ToUpper
             | Prim::ToLower
@@ -425,6 +441,10 @@ impl Prim {
             "sqrt" => Prim::Sqrt,
             "floatFromBits" => Prim::FloatFromBits,
             "floatToBits" => Prim::FloatToBits,
+            "charToString" => Prim::CharToString,
+            "charToCode" => Prim::CharToCode,
+            "charFromCode" => Prim::CharFromCode,
+            "isValidCharCode" => Prim::IsValidCharCode,
             "stringLength" => Prim::StringLength,
             "toUpper" => Prim::ToUpper,
             "toLower" => Prim::ToLower,

@@ -483,6 +483,45 @@ fn float_conversions_and_rendering() {
     assert_eq!(live_count(), base);
 }
 
+// --- Chars -----------------------------------------------------------------
+
+#[test]
+fn char_to_string_renders_one_character() {
+    let _g = lock();
+    let base = live_count();
+    let s = fai_char_to_string(imm_int(i64::from('a' as u32)));
+    assert_eq!(unsafe { string_str(s) }, "a");
+    fai_drop(s);
+    // A multibyte scalar value encodes to its full UTF-8.
+    let emoji = fai_char_to_string(imm_int(0x1F600));
+    assert_eq!(unsafe { string_str(emoji) }, "\u{1F600}");
+    fai_drop(emoji);
+    assert_eq!(live_count(), base);
+}
+
+#[test]
+fn char_int_conversions_are_identity_round_trips() {
+    let _g = lock();
+    let base = live_count();
+    // Char and Int share the immediate encoding, so the conversions are bitcasts.
+    assert_eq!(fai_char_to_code(imm_int(i64::from('a' as u32))), imm_int(97));
+    assert_eq!(fai_char_from_code(imm_int(97)), imm_int(i64::from('a' as u32)));
+    assert_eq!(fai_char_from_code(fai_char_to_code(imm_int(0x1F600))), imm_int(0x1F600));
+    assert_eq!(live_count(), base);
+}
+
+#[test]
+fn is_valid_char_code_rejects_out_of_range_and_surrogates() {
+    let _g = lock();
+    let base = live_count();
+    assert_eq!(fai_is_valid_char_code(imm_int(97)), TRUE);
+    assert_eq!(fai_is_valid_char_code(imm_int(0x10_FFFF)), TRUE);
+    assert_eq!(fai_is_valid_char_code(imm_int(0xD800)), FALSE); // a surrogate
+    assert_eq!(fai_is_valid_char_code(imm_int(0x11_0000)), FALSE); // past the maximum
+    assert_eq!(fai_is_valid_char_code(imm_int(-1)), FALSE);
+    assert_eq!(live_count(), base);
+}
+
 // --- Structural comparison -------------------------------------------------
 
 /// The three-way `compare` result as a plain `i64` (consumes both operands).
