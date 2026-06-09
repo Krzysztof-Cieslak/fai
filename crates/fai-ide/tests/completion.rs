@@ -1,8 +1,8 @@
 //! Tests for code completion over small workspaces (with the standard library
 //! loaded, so prelude names and qualified `List.`/`Option.` members resolve).
 
-use fai_db::{Db, FaiDatabase, SourceFile};
-use fai_ide::{CompletionKind, completions_at};
+use fai_db::{Db, DbSpanResolver, FaiDatabase, SourceFile};
+use fai_ide::{CompletionKind, completion_docs, completions_at};
 use indoc::indoc;
 
 /// A database with the embedded standard library plus one user file.
@@ -146,4 +146,74 @@ fn no_member_context_off_a_dot_is_bare() {
     let result = completions_at(&db, file, offset);
     let names = labels(&result.items);
     assert!(names.contains(&"Green") && names.contains(&"Red"), "constructors offered: {names:?}");
+}
+
+#[test]
+fn value_items_carry_resolvable_identity_with_docs() {
+    let source = indoc! {r#"
+        module C
+
+        public s : String
+        let s = Int.toString 0
+    "#};
+    let (db, file) = workspace(source);
+    let offset = after(source, "Int.");
+    let result = completions_at(&db, file, offset);
+    let to_string =
+        result.items.iter().find(|i| i.label == "toString").expect("toString is offered");
+    let data = to_string.data.as_ref().expect("a value item carries a resolve identity");
+    assert_eq!(data.name, "toString", "the identity keeps the qualified definition name");
+
+    // Resolving that identity surfaces the std doc prose and both examples.
+    let docs = completion_docs(&db, data.file, &data.name, &DbSpanResolver::new(&db));
+    assert_eq!(
+        docs.doc.as_ref().map(|d| d.markdown.as_str()),
+        Some("Render an integer in base 10.")
+    );
+    let sources: Vec<&str> = docs.contracts.iter().map(|c| c.source.as_str()).collect();
+    assert_eq!(sources, vec![r#"example: toString 42 = "42""#, r#"example: toString 0 = "0""#]);
+}
+
+#[test]
+fn constructor_items_carry_resolve_identity() {
+    let source = indoc! {r#"
+        module C
+
+        type Color =
+          | Red
+          | Green
+
+        public flip : Color -> Color
+        let flip c =
+          match c with
+          | Red -> Green
+          | Green -> Red
+    "#};
+    let (db, file) = workspace(source);
+    let offset = after(source, "Red -> Gre");
+    let result = completions_at(&db, file, offset);
+    let red = result.items.iter().find(|i| i.label == "Red").expect("Red is offered");
+    let data = red.data.as_ref().expect("a constructor carries a resolve identity");
+    assert_eq!(data.name, "Red");
+    // Constructors have no `///` doc source today, so resolving yields nothing.
+    let docs = completion_docs(&db, data.file, &data.name, &DbSpanResolver::new(&db));
+    assert!(docs.doc.is_none() && docs.contracts.is_empty(), "no constructor docs yet");
+}
+
+#[test]
+fn field_items_have_no_resolve_identity() {
+    let source = indoc! {r#"
+        module C
+
+        public area : { width : Int, height : Int } -> Int
+        let area r = r.width
+    "#};
+    let (db, file) = workspace(source);
+    let offset = after(source, "r.");
+    let result = completions_at(&db, file, offset);
+    assert!(!result.items.is_empty(), "fields are offered");
+    assert!(
+        result.items.iter().all(|i| i.data.is_none()),
+        "record fields have no addressable definition to resolve"
+    );
 }

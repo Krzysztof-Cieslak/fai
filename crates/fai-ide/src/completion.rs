@@ -23,7 +23,7 @@ use fai_types::{
     Scheme, Ty, body_types, constructor_scheme, def_type, render_canonical, render_scheme,
 };
 use rustc_hash::FxHashSet;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::query::enclosing_def;
 use crate::repr::SCHEMA_VERSION;
@@ -44,6 +44,19 @@ pub enum CompletionKind {
     Module,
 }
 
+/// A resolvable item's stable identity: the defining file and the definition's
+/// qualified name. A serializable mirror of `fai_resolve::DefId`, carried through
+/// the LSP `completionItem/resolve` round trip so the chosen item's `///` docs and
+/// contracts can be fetched lazily without a cursor position. `file` is the raw
+/// [`fai_span::SourceId`]; reconstruct with `db.source_file(SourceId::new(file))`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CompletionData {
+    /// The defining file's source id (raw index).
+    pub file: u32,
+    /// The definition's fully-qualified name.
+    pub name: String,
+}
+
 /// One completion candidate.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct CompletionItem {
@@ -54,6 +67,11 @@ pub struct CompletionItem {
     /// A rendered type (or other detail), when known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// The definition's identity, when it has one (value/function/constructor
+    /// items); `None` for record fields and locals, which have no addressable
+    /// definition. Lets `completionItem/resolve` fetch docs lazily.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<CompletionData>,
 }
 
 /// `textDocument/completion` result.
@@ -164,14 +182,27 @@ fn last_segment(name: &str) -> &str {
     name.rsplit('.').next().unwrap_or(name)
 }
 
-/// A value/function candidate from a binding's name and scheme.
-fn value_item(label: &str, scheme: &Scheme) -> CompletionItem {
+/// A value/function candidate from a binding's (qualified) name and scheme. The
+/// displayed label is the name's last segment; the resolve payload keeps the full
+/// qualified name and defining file so its docs can be fetched lazily.
+fn value_item(db: &dyn Db, file: SourceFile, name: Symbol, scheme: &Scheme) -> CompletionItem {
     let kind = if matches!(scheme.ty, Ty::Arrow(_, _)) {
         CompletionKind::Function
     } else {
         CompletionKind::Value
     };
-    CompletionItem { label: label.to_owned(), kind, detail: Some(render_scheme(scheme)) }
+    CompletionItem {
+        label: last_segment(name.as_str()).to_owned(),
+        kind,
+        detail: Some(render_scheme(scheme)),
+        data: Some(completion_data(db, file, name)),
+    }
+}
+
+/// The resolve payload identifying a definition: its file's source id and its
+/// fully-qualified name.
+fn completion_data(db: &dyn Db, file: SourceFile, name: Symbol) -> CompletionData {
+    CompletionData { file: file.source(db).raw(), name: name.as_str().to_owned() }
 }
 
 // --- member access: `Module.` -----------------------------------------------
@@ -184,10 +215,7 @@ fn module_members(db: &dyn Db, file: SourceFile, path: &str) -> Vec<CompletionIt
         let interface = module_interface(db, mfile);
         let mut out = Vec::new();
         for export in &interface.exports {
-            out.push(value_item(
-                last_segment(export.name.as_str()),
-                &def_type(db, mfile, export.name),
-            ));
+            out.push(value_item(db, mfile, export.name, &def_type(db, mfile, export.name)));
         }
         for &ctor in &interface.ctors {
             out.push(ctor_item(db, mfile, ctor));
@@ -203,7 +231,7 @@ fn module_members(db: &dyn Db, file: SourceFile, path: &str) -> Vec<CompletionIt
             if let Some(child) = d.name.as_str().strip_prefix(&prefix)
                 && !child.contains('.')
             {
-                out.push(value_item(child, &def_type(db, file, d.name)));
+                out.push(value_item(db, file, d.name, &def_type(db, file, d.name)));
             }
         }
         for ctor in type_decls(db, file).ctors.values() {
@@ -225,6 +253,7 @@ fn ctor_item(db: &dyn Db, file: SourceFile, name: Symbol) -> CompletionItem {
         label: last_segment(name.as_str()).to_owned(),
         kind: CompletionKind::Constructor,
         detail,
+        data: Some(completion_data(db, file, name)),
     }
 }
 
@@ -246,6 +275,7 @@ fn record_fields(db: &dyn Db, file: SourceFile, offset: u32, base: ExprId) -> Ve
             label: label.as_str().to_owned(),
             kind: CompletionKind::Field,
             detail: Some(render_canonical(fty)),
+            data: None,
         })
         .collect()
 }
@@ -295,6 +325,7 @@ fn local_candidates(db: &dyn Db, file: SourceFile, offset: u32) -> Vec<Completio
             label: name.as_str().to_owned(),
             kind: CompletionKind::Value,
             detail,
+            data: None,
         });
     }
     out
@@ -309,7 +340,7 @@ fn module_def_candidates(db: &dyn Db, file: SourceFile, offset: u32) -> Vec<Comp
     let mut out = Vec::new();
     for d in &defs.defs {
         if visible_in_scope(d.name.as_str(), &scope) {
-            out.push(value_item(last_segment(d.name.as_str()), &def_type(db, file, d.name)));
+            out.push(value_item(db, file, d.name, &def_type(db, file, d.name)));
         }
     }
     out
@@ -343,7 +374,7 @@ fn prelude_value_candidates(db: &dyn Db) -> Vec<CompletionItem> {
             continue;
         }
         if let Some(dfile) = db.source_file(def.file) {
-            out.push(value_item(name.as_str(), &def_type(db, dfile, *name)));
+            out.push(value_item(db, dfile, *name, &def_type(db, dfile, *name)));
         }
     }
     out

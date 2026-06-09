@@ -137,6 +137,12 @@ impl Harness {
         self.at("textDocument/completion", uri, position)
     }
 
+    /// Resolves a completion item (the verbatim item the server returned),
+    /// filling in lazily-computed detail such as documentation.
+    pub fn resolve_completion(&mut self, item: Value) -> Value {
+        self.request("completionItem/resolve", item)
+    }
+
     pub fn signature_help(&mut self, uri: &str, position: Value) -> Value {
         self.at("textDocument/signatureHelp", uri, position)
     }

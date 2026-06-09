@@ -23,7 +23,7 @@ use lsp_types::{
     DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
     DocumentRangeFormattingParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
-    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
+    Documentation, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
     HoverProviderCapability, InlayHint as LspInlayHint, InlayHintKind, InlayHintLabel,
     InlayHintParams, Location as LspLocation, MarkupContent, MarkupKind, NumberOrString, OneOf,
     ParameterInformation, ParameterLabel, Position, PositionEncodingKind, PrepareRenameResponse,
@@ -130,6 +130,9 @@ fn server_capabilities(encoding: Encoding) -> ServerCapabilities {
             // `.` triggers member completion; identifier characters trigger
             // automatically without being listed.
             trigger_characters: Some(vec![".".to_owned()]),
+            // Items are returned with a kind and rendered type eagerly; the `///`
+            // docs and contracts are filled in on `completionItem/resolve`.
+            resolve_provider: Some(true),
             ..CompletionOptions::default()
         }),
         signature_help_provider: Some(SignatureHelpOptions {
@@ -290,6 +293,11 @@ impl Server {
                 if let Ok((id, params)) = req.extract::<CompletionParams>("textDocument/completion")
                 {
                     respond(conn, id, &self.completion(&params));
+                }
+            }
+            "completionItem/resolve" => {
+                if let Ok((id, item)) = req.extract::<CompletionItem>("completionItem/resolve") {
+                    respond(conn, id, &self.resolve_completion(item));
                 }
             }
             "textDocument/signatureHelp" => {
@@ -473,10 +481,58 @@ impl Server {
                 label: i.label,
                 kind: Some(lsp_completion_kind(i.kind)),
                 detail: i.detail,
+                // The symbol identity for a later `completionItem/resolve`; absent
+                // for items without an addressable definition (fields, locals).
+                data: i.data.and_then(|d| serde_json::to_value(d).ok()),
                 ..CompletionItem::default()
             })
             .collect();
         Some(CompletionResponse::Array(items))
+    }
+
+    /// Fills a chosen completion item's documentation lazily: the definition's
+    /// `///` doc prose and attached contracts, prefixed with its type signature
+    /// (mirroring hover). Items without a `data` identity are returned unchanged.
+    fn resolve_completion(&self, mut item: CompletionItem) -> CompletionItem {
+        let Some(raw) = item.data.clone() else { return item };
+        let Ok(data) = serde_json::from_value::<fai_ide::CompletionData>(raw) else { return item };
+        let resolved = fai_ide::completion_docs(
+            self.session.db(),
+            data.file,
+            &data.name,
+            &self.session.resolver(),
+        );
+        // The type signature, then the doc prose, then the contracts — the same
+        // composition as hover, except the type comes from the item's own detail
+        // (its general scheme) since completion has no use-site instantiation.
+        let mut value = String::new();
+        if let Some(detail) = &item.detail {
+            value.push_str(&format!("```fai\n{} : {detail}\n```", item.label));
+        }
+        if let Some(doc) = &resolved.doc {
+            if !value.is_empty() {
+                value.push_str("\n\n");
+            }
+            value.push_str(&doc.markdown);
+        }
+        if !resolved.contracts.is_empty() {
+            if !value.is_empty() {
+                value.push_str("\n\n");
+            }
+            value.push_str("```fai\n");
+            for contract in &resolved.contracts {
+                value.push_str(contract.source.trim_end());
+                value.push('\n');
+            }
+            value.push_str("```");
+        }
+        if !value.is_empty() {
+            item.documentation = Some(Documentation::MarkupContent(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value,
+            }));
+        }
+        item
     }
 
     fn signature_help(&self, params: &SignatureHelpParams) -> Option<LspSignatureHelp> {

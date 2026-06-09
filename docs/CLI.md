@@ -243,7 +243,8 @@ Editors speak this; agents use `fai query` instead.
 Supported requests: incremental `textDocument` sync (with `didSave`) and pushed
 `publishDiagnostics` (re-published for every open file, so a cross-module edit
 refreshes its dependents); `hover` (type, `///` doc prose, and attached
-contracts), `definition`, `completion`, `signatureHelp`, `documentSymbol`,
+contracts), `definition`, `completion` (with `completionItem/resolve` filling the
+chosen item's `///` docs and contracts lazily), `signatureHelp`, `documentSymbol`,
 `workspace/symbol`, `references`, `prepareRename`/`rename`, `codeAction` (quick
 fixes), `inlayHint` (inferred binder types), `semanticTokens` (full), and
 document `formatting` (whole-document and range). The position encoding is

@@ -7,7 +7,7 @@
 
 use fai_db::{Db, SourceFile};
 use fai_resolve::{CtorRef, DefId, LocalId, Res, ResolvedBodies, module_defs, resolve, type_decls};
-use fai_span::{ByteOffset, LineIndex, Span, SpanResolver, TextRange};
+use fai_span::{ByteOffset, LineIndex, SourceId, Span, SpanResolver, TextRange};
 use fai_syntax::ast::{
     ExprId, ExprKind, ItemKind, Module, PatId, PatKind, RowTail, TypeDef, TypeId, TypeKind,
     Visibility as AstVis,
@@ -1804,6 +1804,38 @@ pub fn docs(db: &dyn Db, target: &str, resolver: &dyn SpanResolver) -> DocsResul
         target: symbol_ref(db, t.file, t.name, resolver),
         doc: doc_for(db, t.file, t.name),
         contracts,
+    }
+}
+
+/// The `///` docs and attached contracts of the definition identified by a
+/// completion item's resolve payload (its defining file id + qualified name).
+///
+/// Keyed by the exact `(file, name)` captured when the completion item was built,
+/// so it is unambiguous (no name re-resolution) and works for nested-module
+/// members. Powers the LSP `completionItem/resolve` lazy-doc round trip.
+#[derive(Debug, Serialize)]
+pub struct CompletionDocs {
+    /// The definition's `///` doc prose, if any.
+    pub doc: Option<Doc>,
+    /// The contracts attached to the definition.
+    pub contracts: Vec<Contract>,
+}
+
+/// Docs and contracts for a completion item's `(file, name)` identity.
+#[must_use]
+pub fn completion_docs(
+    db: &dyn Db,
+    file: u32,
+    name: &str,
+    resolver: &dyn SpanResolver,
+) -> CompletionDocs {
+    let Some(source) = db.source_file(SourceId::new(file)) else {
+        return CompletionDocs { doc: None, contracts: vec![] };
+    };
+    let sym = Symbol::intern(name);
+    CompletionDocs {
+        doc: doc_for(db, source, sym),
+        contracts: contracts_by_subject(db, source, resolver).remove(&sym).unwrap_or_default(),
     }
 }
 
