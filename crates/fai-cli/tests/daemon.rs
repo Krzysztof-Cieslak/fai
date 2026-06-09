@@ -359,13 +359,20 @@ fn restart_replaces_the_daemon() {
         )],
     );
     let _ = daemon.run(&["check"], &[]); // spawn
-    let pid1 = status_pid(&daemon).expect("a daemon should be running");
+    let mut prev = status_pid(&daemon).expect("a daemon should be running");
 
-    let restart = daemon.run(&["daemon", "restart"], &[]);
-    assert!(stdout(&restart).contains("restarted"), "got: {}", stdout(&restart));
+    // Restart is synchronous: it stops the old daemon (waiting until its endpoint
+    // refuses) and only returns once a fresh, distinct one is connectable. Repeat
+    // it to stress the stop→start handoff — a regression races the old shutdown
+    // and the status that follows finds no (or the old) daemon.
+    for _ in 0..5 {
+        let restart = daemon.run(&["daemon", "restart"], &[]);
+        assert!(stdout(&restart).contains("restarted"), "got: {}", stdout(&restart));
 
-    let pid2 = status_pid(&daemon).expect("a daemon should be running after restart");
-    assert_ne!(pid1, pid2, "restart must replace the daemon process");
+        let next = status_pid(&daemon).expect("a daemon should be running after restart");
+        assert_ne!(prev, next, "restart must replace the daemon process");
+        prev = next;
+    }
 }
 
 #[test]

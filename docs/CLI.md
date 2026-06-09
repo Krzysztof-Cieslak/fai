@@ -259,8 +259,8 @@ text.
 ```
 fai daemon status      # is a daemon running? print pid, versions, uptime, and command latency
 fai daemon start       # start (idempotent; no-op if already running)
-fai daemon stop        # graceful shutdown
-fai daemon restart     # stop + start (e.g. to pick up a new compiler version)
+fai daemon stop        # graceful shutdown; returns once the daemon has exited
+fai daemon restart     # stop + start (e.g. to pick up a new compiler version); returns once a fresh daemon is ready
 fai daemon tap         # stream a JSON decode of this workspace's daemon traffic (debug)
 ```
 
