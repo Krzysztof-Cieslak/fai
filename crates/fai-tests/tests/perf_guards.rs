@@ -12,10 +12,10 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use camino::Utf8PathBuf;
+use fai_corpus::{self as corpus, CorpusSpec};
 use fai_db::{Db, DbSpanResolver, FaiDatabase, Setter, SourceFile};
 use fai_driver::{Session, check, object_code};
 use fai_syntax::Symbol;
-use fai_tests::corpus::{self, CorpusSpec};
 use fai_types::check_file;
 use indoc::{formatdoc, indoc};
 

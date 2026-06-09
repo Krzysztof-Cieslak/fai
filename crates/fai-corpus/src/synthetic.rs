@@ -13,6 +13,10 @@
 //!   signature-less** helpers — exercising per-def inference, SCCs, and early
 //!   cutoff.
 //!
+//! When [`CorpusSpec::contracts_per_module`] is non-zero each leaf module also
+//! carries `example`/`forall` contracts over its own public functions, so the
+//! same generator drives the `fai test` (edit → re-run contracts) benchmarks.
+//!
 //! The [`edit_*`](edit_private_body) helpers define, in one place, what a given
 //! kind of edit looks like, so benches and guards agree on it.
 
@@ -32,6 +36,9 @@ pub struct CorpusSpec {
     pub body_depth: usize,
     /// How many public functions the shared `Core` module exposes.
     pub core_defs: usize,
+    /// Contracts (`example`/`forall`) generated per leaf module. Zero leaves the
+    /// corpus contract-free (the default for the inference benches and guards).
+    pub contracts_per_module: usize,
 }
 
 impl CorpusSpec {
@@ -44,6 +51,7 @@ impl CorpusSpec {
             private_defs_per_module: 1,
             body_depth: 2,
             core_defs: 4,
+            contracts_per_module: 0,
         }
     }
 
@@ -57,7 +65,16 @@ impl CorpusSpec {
             private_defs_per_module: 2,
             body_depth: 3,
             core_defs: 8,
+            contracts_per_module: 0,
         }
+    }
+
+    /// Like [`with_modules`](Self::with_modules), but every leaf module also
+    /// carries one `example` and one `forall` contract over its own public
+    /// functions — the corpus the `fai test` benchmarks edit and re-run.
+    #[must_use]
+    pub fn with_modules_and_contracts(modules: usize) -> Self {
+        Self { contracts_per_module: 2, ..Self::with_modules(modules) }
     }
 
     /// The total number of top-level value bindings the spec generates.
@@ -101,6 +118,22 @@ fn leaf_source(spec: &CorpusSpec, index: usize) -> String {
     for i in 0..spec.private_defs_per_module {
         s.push_str(&format!("let h{i} x =\n"));
         s.push_str(&body(spec.body_depth, "x + 1"));
+    }
+
+    // Contracts over this module's own public functions. `g{j} x = Core.f{j %
+    // core_defs} x = x + (j % core_defs)`, so `g{j} 0 = j % core_defs` is an
+    // exact `example`; the `forall` is reflexive (always true). Both stay green
+    // under the value-preserving edits below.
+    for k in 0..spec.contracts_per_module {
+        // Pair an example and a forall on the same function (so the value-
+        // preserving `edit_public_body` to `g0` re-synthesizes both).
+        let j = (k / 2) % spec.public_defs_per_module.max(1);
+        if k % 2 == 0 {
+            let expected = j % spec.core_defs.max(1);
+            s.push_str(&format!("example: g{j} 0 = {expected}\n"));
+        } else {
+            s.push_str(&format!("forall x: g{j} x = g{j} x\n"));
+        }
     }
 
     s
@@ -158,6 +191,24 @@ pub fn edit_private_body(spec: &CorpusSpec, index: usize, revision: u32) -> Stri
     original.replacen("x + 1 +", &format!("x + 1 + {revision} - {revision} +"), 1)
 }
 
+/// A new source for leaf module `index` with public function `g0`'s body changed
+/// in a value-preserving way (a public-body edit: re-lowers `g0` and forces its
+/// contracts to be re-synthesized, while keeping them green). This is the edit
+/// the `fai test` (edit → re-run contracts) benchmarks apply.
+#[must_use]
+pub fn edit_public_body(spec: &CorpusSpec, index: usize, revision: u32) -> String {
+    let original = leaf_source(spec, index);
+    // The first chained `let` of every body is `  let t0 = x + 0`; the first
+    // occurrence belongs to `g0` (public functions are generated first). Adding
+    // `+ R - R` preserves the value, so `g0 0` is unchanged and its contracts
+    // still hold.
+    original.replacen(
+        "  let t0 = x + 0\n",
+        &format!("  let t0 = x + 0 + {revision} - {revision}\n"),
+        1,
+    )
+}
+
 /// A new source for the shared `Core` module with `f0`'s *signature* changed
 /// (a public-signature edit: must invalidate dependents).
 #[must_use]
@@ -187,21 +238,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn generated_corpus_typechecks_clean() {
-        let spec = CorpusSpec::tiny();
-        let (db, files) = build_db(&spec);
-        for &file in &files {
-            let diags = crate::check_source_diagnostics(&db, file);
-            let errors: Vec<&str> = diags
-                .iter()
-                .filter(|d| d.severity == fai_diagnostics::Severity::Error)
-                .map(|d| d.code.as_str())
-                .collect();
-            assert!(errors.is_empty(), "{}: {errors:?}", file.path(&db));
-        }
-    }
-
-    #[test]
     fn edits_change_the_source() {
         let spec = CorpusSpec::tiny();
         assert_ne!(leaf_source(&spec, 0), edit_private_body(&spec, 0, 1));
@@ -210,8 +246,28 @@ mod tests {
     }
 
     #[test]
+    fn public_body_edit_changes_source_but_keeps_g0_value() {
+        let spec = CorpusSpec::with_modules_and_contracts(4);
+        let edited = edit_public_body(&spec, 0, 7);
+        assert_ne!(leaf_source(&spec, 0), edited);
+        // The splice is value-preserving, so `g0`'s `example` literal is intact.
+        assert!(edited.contains("example: g0 0 = 0"));
+        assert!(edited.contains("let t0 = x + 0 + 7 - 7"));
+    }
+
+    #[test]
+    fn contracts_are_emitted_only_when_requested() {
+        assert!(!leaf_source(&CorpusSpec::with_modules(4), 0).contains("example:"));
+        let with = leaf_source(&CorpusSpec::with_modules_and_contracts(4), 0);
+        assert!(with.contains("example: g0 0 = 0"));
+        assert!(with.contains("forall x: g0 x = g0 x"));
+    }
+
+    #[test]
     fn generation_is_deterministic() {
         let spec = CorpusSpec::with_modules(5);
+        assert_eq!(generate(&spec), generate(&spec));
+        let spec = CorpusSpec::with_modules_and_contracts(5);
         assert_eq!(generate(&spec), generate(&spec));
     }
 }

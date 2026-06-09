@@ -26,6 +26,12 @@ tracing-subscriber.workspace = true
 indoc.workspace = true
 lsp-server.workspace = true
 lsp-types.workspace = true
+fai-corpus.workspace = true
+divan.workspace = true
+
+[[bench]]
+name = "test_loop"
+harness = false
 
 [lints]
 workspace = true

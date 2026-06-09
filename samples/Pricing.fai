@@ -1,0 +1,15 @@
+module Pricing
+
+public type Discount =
+  | NoDiscount
+  | Percent Float
+
+public apply : Discount -> Float -> Float
+let apply discount price =
+  match discount with
+  | NoDiscount -> price
+  | Percent rate -> price * (1.0 - rate / 100.0)
+example: apply NoDiscount 10.0 = 10.0
+
+public priceOf : Catalog.Product -> Discount -> Float
+let priceOf product discount = apply discount product.price

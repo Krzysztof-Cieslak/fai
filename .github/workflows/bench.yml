@@ -1,0 +1,67 @@
+name: Benchmarks
+
+# Wall-clock benchmarks are informational, never a pass/fail gate (shared runners
+# are noisy — performance is gated by the deterministic guard tests in the `CI`
+# workflow). This job runs the divan benches on the main branch and on demand,
+# renders a report into the run summary (real-world language-server rows link to
+# the exact source line they measured), and uploads the raw + parsed results.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Supersede an in-flight run when main advances again.
+concurrency:
+  group: bench-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: never
+
+jobs:
+  bench:
+    name: divan benchmarks
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select pinned toolchain
+        run: |
+          cargo --version
+          rustc --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run benchmarks
+        # `DIVAN_MAX_TIME` caps the wall time per benchmarked function so the
+        # heavy cases (the daemon e2e at 200 modules, the stress suite) stay
+        # bounded; everything else samples at divan's default for steady medians.
+        # `pipefail` surfaces a benchmark that actually crashes (a bug, not a
+        # perf regression) while still capturing the output rendered below.
+        env:
+          DIVAN_MAX_TIME: "3"
+        run: |
+          set -o pipefail
+          mkdir -p target
+          cargo bench --workspace --benches --locked 2>&1 | tee target/bench-output.txt
+
+      - name: Render report
+        if: always()
+        # Appends a Markdown report to the run summary ($GITHUB_STEP_SUMMARY) and
+        # writes the parsed JSON artifact. Reads GITHUB_SERVER_URL/REPOSITORY/SHA
+        # to link real-world rows to their source line. Never fails the build.
+        run: cargo run -q -p fai-tests --bin bench-summary -- target/bench-output.txt target/bench-results.json
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: |
+            target/bench-output.txt
+            target/bench-results.json
+          if-no-files-found: ignore

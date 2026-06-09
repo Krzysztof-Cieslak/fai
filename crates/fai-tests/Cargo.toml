@@ -20,6 +20,7 @@ camino.workspace = true
 
 [dev-dependencies]
 fai-cli.workspace = true
+fai-corpus.workspace = true
 fai-driver.workspace = true
 fai-server.workspace = true
 fai-lsp.workspace = true
@@ -73,6 +74,10 @@ harness = false
 
 [[bench]]
 name = "lsp"
+harness = false
+
+[[bench]]
+name = "contracts"
 harness = false
 
 [lints]

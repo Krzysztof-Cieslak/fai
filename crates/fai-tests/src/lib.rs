@@ -7,8 +7,8 @@
 //! so this guards the correctness of early cutoff and invalidation as later
 //! phases add real queries.
 
+pub mod bench_summary;
 mod checker;
-pub mod corpus;
 
 pub use checker::{
     CheckOutcome, check_named, check_source, local_type, local_types, run_annotated, sym, type_of,

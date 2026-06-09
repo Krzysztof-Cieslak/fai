@@ -219,6 +219,7 @@ fai/
 │   ├── fai-db/          # salsa database: inputs, interning, queries, durability (M0)
 │   ├── fai-driver/      # command orchestration (cache + link land in M3) (M0)
 │   ├── fai-tests/       # end-to-end & golden/snapshot tests + incremental verifier (M0)
+│   ├── fai-corpus/      # synthetic workspace generator + real-world bench fixtures
 │   ├── fai-syntax/      # lexer, parser (recursive descent + Pratt), item tree + AST (M1)
 │   ├── fai-fmt/         # canonical formatter (AST → pretty)         (M1)
 │   ├── fai-resolve/     # module graph, name resolution, visibility  (M1/M2)
@@ -417,16 +418,28 @@ cache plus a fast linker (mold/lld).
   which salsa queries re-ran), not wall-clock — so they gate in CI without
   flakiness. The headline guard: a localized edit's recompute is **independent of
   workspace size** (the cross-module firewall).
-- **Wall-clock benches** (`crates/fai-tests/benches/`, [divan]) are for local
-  profiling: `cargo bench -p fai-tests`. `inference.rs` covers cold check vs warm
-  incremental edits over a synthetic corpus; `micro.rs` covers the inference
-  primitives (unification, instantiation, rendering, deep bodies, large SCCs);
-  `stress.rs` covers pathological scenarios (exponential type growth, wide/deep
-  structures, instantiation- and constraint-heavy bodies, wide modules, deep
-  dependency chains, contract- and error-heavy files). They are **not** a CI gate
-  (shared runners are noisy); CI only compiles them (`build --all-targets`) to
-  prevent bitrot. The deterministic [`corpus`](crates/fai-tests/src/corpus.rs)
-  generator backs the corpus benches and the guards.
+- **Wall-clock benches** ([divan]) are for local profiling: `cargo bench`.
+  `inference.rs` covers cold check vs warm incremental edits over a synthetic
+  corpus; `contracts.rs` covers the `fai test` edit→test loop (synthesize → JIT →
+  run), and `fai-cli`'s `test_loop.rs` benches the same loop end-to-end through
+  the real binary and its daemon (client → daemon → worker subprocess);
+  `lsp.rs` covers the language-server features (hover, go-to-definition,
+  diagnostics, completion, signature help, references, rename, document symbols)
+  both as warm analysis and as full round trips through the real server, over the
+  synthetic corpus *and* a hand-written multi-module application (under
+  `samples/`, via [`fai-corpus`](crates/fai-corpus)'s `realworld` fixtures) whose
+  rows link to the exact source line each probes; `micro.rs` covers the inference
+  primitives; `stress.rs` covers pathological scenarios. The deterministic
+  [`fai-corpus`](crates/fai-corpus) generator backs the corpus benches and the
+  guards.
+- These benches are **not** a CI gate (shared runners are noisy). Every CI run
+  still **compiles** them (`build --all-targets`) to prevent bitrot, and a
+  separate **`Benchmarks` workflow** (`.github/workflows/bench.yml`) **runs** them
+  on `main` and on demand to publish an **informational** report — a Markdown
+  summary on the run page plus the raw and parsed (`bench-results.json`) results
+  as artifacts — rendered by the `bench-summary` tool
+  (`crates/fai-tests/src/bench_summary.rs`). It never fails the build on timings;
+  the deterministic guards remain the sole performance gate.
 
 The inference solver carries always-on thread-local **work counters** (variable
 resolution clones, occurs-check node visits, free-variable visits — see
