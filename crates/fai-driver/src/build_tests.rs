@@ -69,14 +69,16 @@ fn missing_main_is_an_error() {
 
 #[test]
 fn unsupported_construct_blocks_the_build() {
-    // A reachable definition using a `Char` (outside the native subset) fails.
+    // A reachable comparison operator used as a first-class value is outside the
+    // native subset and fails.
     let src = indoc! {r#"
         module M
 
-        let flag = if 'a' = 'b' then 0 else 1
+        public lt : Int -> Int -> Bool
+        let lt = (<)
 
         public main : Runtime -> Unit
-        let main runtime = runtime.console.writeLine (Int.toString flag)
+        let main runtime = runtime.console.writeLine (if lt 1 2 then "lt" else "ge")
     "#};
     let (db, files) = db_with(&[("M.fai", src)]);
     let exe = temp_exe();

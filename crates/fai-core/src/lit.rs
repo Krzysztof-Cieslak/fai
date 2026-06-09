@@ -35,6 +35,21 @@ fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
     if lower == prefix { s.get(prefix.len()..) } else { None }
 }
 
+/// Decodes a char lexeme (`'a'`, `'\n'`, `'\u{1F600}'`, including its surrounding
+/// quotes and escape) into its Unicode scalar value. Escapes were validated by
+/// the lexer. Returns `None` only for a malformed lexeme (which the lexer rules
+/// out), so callers fall back to a default.
+#[must_use]
+pub fn decode_char(raw: &str) -> Option<char> {
+    let inner = raw.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')).unwrap_or(raw);
+    let mut chars = inner.chars();
+    let first = chars.next()?;
+    if first != '\\' {
+        return Some(first);
+    }
+    decode_escape(&mut chars)
+}
+
 /// Decodes a string lexeme (including its surrounding quotes and escapes) into
 /// its UTF-8 bytes. Escapes were validated by the lexer.
 #[must_use]
@@ -47,26 +62,35 @@ pub fn decode_string(raw: &str) -> Vec<u8> {
             push_char(&mut out, c);
             continue;
         }
-        match chars.next() {
-            Some('n') => out.push(b'\n'),
-            Some('t') => out.push(b'\t'),
-            Some('r') => out.push(b'\r'),
-            Some('0') => out.push(0),
-            Some('\\') => out.push(b'\\'),
-            Some('"') => out.push(b'"'),
-            Some('\'') => out.push(b'\''),
-            Some('u') => decode_unicode_escape(&mut chars, &mut out),
-            Some(other) => push_char(&mut out, other),
+        match decode_escape(&mut chars) {
+            Some(decoded) => push_char(&mut out, decoded),
             None => out.push(b'\\'),
         }
     }
     out
 }
 
+/// Decodes one escape sequence (the text after the backslash) into a `char`,
+/// shared by string and char literals. The lexer guarantees the escape is
+/// well-formed; an unrecognized escape yields its trailing character verbatim.
+fn decode_escape(chars: &mut std::str::Chars<'_>) -> Option<char> {
+    match chars.next()? {
+        'n' => Some('\n'),
+        't' => Some('\t'),
+        'r' => Some('\r'),
+        '0' => Some('\0'),
+        '\\' => Some('\\'),
+        '"' => Some('"'),
+        '\'' => Some('\''),
+        'u' => decode_unicode_escape(chars),
+        other => Some(other),
+    }
+}
+
 /// Decodes a `\u{XXXX}` escape (the lexer guarantees the braces and hex digits).
-fn decode_unicode_escape(chars: &mut std::str::Chars<'_>, out: &mut Vec<u8>) {
+fn decode_unicode_escape(chars: &mut std::str::Chars<'_>) -> Option<char> {
     if chars.next() != Some('{') {
-        return;
+        return None;
     }
     let mut hex = String::new();
     for c in chars.by_ref() {
@@ -75,11 +99,7 @@ fn decode_unicode_escape(chars: &mut std::str::Chars<'_>, out: &mut Vec<u8>) {
         }
         hex.push(c);
     }
-    if let Ok(code) = u32::from_str_radix(&hex, 16)
-        && let Some(ch) = char::from_u32(code)
-    {
-        push_char(out, ch);
-    }
+    u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32)
 }
 
 fn push_char(out: &mut Vec<u8>, c: char) {
@@ -107,5 +127,28 @@ mod tests {
         assert_eq!(decode_string("\"a\\nb\""), b"a\nb");
         assert_eq!(decode_string("\"\\t\\\\\\\"\""), b"\t\\\"");
         assert_eq!(decode_string("\"\\u{41}\""), b"A");
+    }
+
+    #[test]
+    fn decodes_plain_char() {
+        assert_eq!(decode_char("'a'"), Some('a'));
+        assert_eq!(decode_char("'F'"), Some('F'));
+        assert_eq!(decode_char("' '"), Some(' '));
+    }
+
+    #[test]
+    fn decodes_char_escapes() {
+        assert_eq!(decode_char("'\\n'"), Some('\n'));
+        assert_eq!(decode_char("'\\t'"), Some('\t'));
+        assert_eq!(decode_char("'\\r'"), Some('\r'));
+        assert_eq!(decode_char("'\\0'"), Some('\0'));
+        assert_eq!(decode_char("'\\\\'"), Some('\\'));
+        assert_eq!(decode_char("'\\''"), Some('\''));
+    }
+
+    #[test]
+    fn decodes_char_unicode_escape() {
+        assert_eq!(decode_char("'\\u{41}'"), Some('A'));
+        assert_eq!(decode_char("'\\u{1F600}'"), Some('\u{1F600}'));
     }
 }

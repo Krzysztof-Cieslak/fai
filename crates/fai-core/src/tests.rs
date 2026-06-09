@@ -167,13 +167,28 @@ fn integer_literals_are_decoded() {
 }
 
 #[test]
-fn char_literal_is_unsupported() {
+fn char_literal_lowers_to_an_immediate() {
     let src = indoc! {r#"
         module M
 
         let c = 'a'
     "#};
-    assert!(codes(src, "c").contains(&"FAI7001".to_owned()));
+    assert_eq!(lower(src, "c"), "fn0() = 'a'\n");
+    assert!(codes(src, "c").is_empty());
+}
+
+#[test]
+fn char_pattern_lowers_to_an_equality_test() {
+    let src = indoc! {r#"
+        module M
+
+        let f c =
+          match c with
+          | 'a' -> 1
+          | _ -> 0
+    "#};
+    assert_eq!(lower(src, "f"), "fn0(%0) = (let %2 = %0; (if (= %2 'a') 1 0))\n");
+    assert!(codes(src, "f").is_empty());
 }
 
 #[test]

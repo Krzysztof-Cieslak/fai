@@ -508,6 +508,11 @@ impl<M: Module> Translator<'_, M> {
                 let raw = self.builder.ins().iconst(types::I64, *bits as i64);
                 self.call1("fai_box_float", raw)
             }
+            Lit::Char(c) => {
+                // A code point is an immediate, tagged like `Int`/`Bool`: it
+                // always fits the 63-bit payload, so no boxing is needed.
+                self.builder.ins().iconst(types::I64, ((*c as i64) << 1) | 1)
+            }
             Lit::Unit => self.builder.ins().iconst(types::I64, rt::FAI_UNIT),
             Lit::Str(bytes) => self.string_literal(bytes),
         }

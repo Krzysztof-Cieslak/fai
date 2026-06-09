@@ -85,6 +85,9 @@ fn write_expr(out: &mut String, e: &CExpr) {
         ExprKind::Lit(Lit::Float(bits)) => {
             let _ = write!(out, "{}", f64::from_bits(*bits));
         }
+        ExprKind::Lit(Lit::Char(c)) => {
+            let _ = write!(out, "{c:?}");
+        }
         ExprKind::Lit(Lit::Bool(b)) => {
             let _ = write!(out, "{b}");
         }

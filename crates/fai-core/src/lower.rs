@@ -3,10 +3,12 @@
 //! [`core`] is a per-definition salsa query: it lowers one top-level binding
 //! (its parameters and body) into a [`LoweredDef`], lambda-lifting nested
 //! lambdas and desugaring operators, pipes, composition, and short-circuit
-//! booleans. Constructs outside the M3 native subset (`Float`, `Char`, tuples,
-//! lists, records, `match`) are reported as [`crate::UNSUPPORTED_NATIVE`] and
-//! lowered to an error placeholder, so an unused such definition never blocks a
-//! build (only the reachable closure is lowered).
+//! booleans. A few constructs are not yet supported by the native backend (a
+//! destructuring function parameter, and the structural/short-circuit operators
+//! used as first-class values); these are reported as
+//! [`crate::UNSUPPORTED_NATIVE`] and lowered to an error placeholder, so an
+//! unused such definition never blocks a build (only the reachable closure is
+//! lowered).
 
 use std::sync::Arc;
 
@@ -277,7 +279,9 @@ impl Lowerer<'_> {
             ExprKind::String(raw) => K::Lit(Lit::Str(crate::lit::decode_string(raw.as_str()))),
             ExprKind::Unit => K::Lit(Lit::Unit),
             ExprKind::Float(raw) => K::Lit(Lit::Float(crate::lit::decode_float(raw.as_str()))),
-            ExprKind::Char(_) => return self.unsupported(node.span, "the Char type"),
+            ExprKind::Char(raw) => {
+                K::Lit(Lit::Char(crate::lit::decode_char(raw.as_str()).unwrap_or('\0')))
+            }
             ExprKind::Var(_) => return self.lower_ref(expr),
             ExprKind::Field { base, field } => {
                 // A qualified `Module.x` is recorded in resolution; otherwise it
@@ -960,7 +964,10 @@ impl Lowerer<'_> {
                 let bytes = crate::lit::decode_string(raw.as_str());
                 self.test_lit(value(), Lit::Str(bytes), success, fail)
             }
-            PatKind::Char(_) => self.unsupported(self.module.pat(pat).span, "a character pattern"),
+            PatKind::Char(raw) => {
+                let c = crate::lit::decode_char(raw.as_str()).unwrap_or('\0');
+                self.test_lit(value(), Lit::Char(c), success, fail)
+            }
             PatKind::Tuple(elems) => {
                 let elems = elems.clone();
                 self.compile_fields(value_local, &elems, success, &fail)

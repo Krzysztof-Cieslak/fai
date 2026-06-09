@@ -141,6 +141,8 @@ pub enum Lit {
     Int(i64),
     /// A 64-bit float, stored as its IEEE-754 bit pattern (so `Eq`/`Hash` hold).
     Float(u64),
+    /// A Unicode scalar value (an immediate code point, like `Bool`/`Int`).
+    Char(char),
     /// A boolean.
     Bool(bool),
     /// A string's decoded UTF-8 bytes.

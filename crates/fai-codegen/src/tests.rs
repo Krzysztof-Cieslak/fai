@@ -435,6 +435,52 @@ fn structural_equality_on_data() {
 }
 
 #[test]
+fn char_equality() {
+    let (code, out) = run(&main_printing("if 'a' = 'a' then \"eq\" else \"ne\""));
+    assert_eq!(code, 0);
+    assert_eq!(out, "eq\n");
+}
+
+#[test]
+fn char_ordering() {
+    let (code, out) = run(&main_printing("if 'a' < 'b' then \"lt\" else \"ge\""));
+    assert_eq!(code, 0);
+    assert_eq!(out, "lt\n");
+}
+
+#[test]
+fn char_pattern_match() {
+    let src = indoc! {r#"
+        module M
+
+        let classify c =
+          match c with
+          | 'a' -> "first"
+          | 'z' -> "last"
+          | _ -> "other"
+
+        public main : Runtime -> Unit
+        let main r = r.console.writeLine (classify 'z')
+    "#};
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "last\n");
+}
+
+#[test]
+fn char_unicode_escape_literal() {
+    let src = indoc! {r#"
+        module M
+
+        public main : Runtime -> Unit
+        let main r = r.console.writeLine (if '\u{1F600}' = '\u{1F600}' then "eq" else "ne")
+    "#};
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "eq\n");
+}
+
+#[test]
 fn tuple_construction_and_destructuring() {
     let src = indoc! {r#"
         module M

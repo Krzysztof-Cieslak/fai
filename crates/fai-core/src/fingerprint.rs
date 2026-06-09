@@ -57,6 +57,9 @@ fn write_expr(
         ExprKind::Lit(Lit::Float(bits)) => {
             let _ = write!(out, "f{bits}");
         }
+        ExprKind::Lit(Lit::Char(c)) => {
+            let _ = write!(out, "c{}", *c as u32);
+        }
         ExprKind::Lit(Lit::Bool(b)) => {
             let _ = write!(out, "b{b}");
         }

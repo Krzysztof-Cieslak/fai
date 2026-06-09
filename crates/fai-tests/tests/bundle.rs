@@ -145,12 +145,16 @@ fn no_main_reports_no_entry_point_and_no_bundle() {
 
 #[test]
 fn reachable_unsupported_construct_blocks_the_bundle() {
-    // A reachable `Char` is outside the native subset (FAI7001): no bundle.
+    // A reachable comparison operator used as a first-class value is outside the
+    // native subset (FAI7001): no bundle.
     let src = indoc! {r#"
         module Main
 
+        public lt : Int -> Int -> Bool
+        let lt = (<)
+
         public main : Runtime -> Unit
-        let main r = r.console.writeLine (Int.toString (if 'a' = 'b' then 0 else 1))
+        let main r = r.console.writeLine (if lt 1 2 then "lt" else "ge")
     "#};
     let dir = workspace(&[("Main.fai", src)]);
     let session = Session::open(dir).unwrap();
