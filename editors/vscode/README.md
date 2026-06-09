@@ -20,6 +20,7 @@ source) and either put it on your `PATH` or point `fai.server.path` at it.
 | --- | --- | --- |
 | `fai.server.path` | `fai` | Path to the `fai` executable. For a build from source, set this to e.g. `${workspaceFolder}/target/debug/fai`. |
 | `fai.server.args` | `[]` | Extra arguments appended to `fai lsp`. |
+| `fai.examples` | `true` | Evaluate a file's closed `example` contracts on save, reporting a failing one as `FAI6001` without running `fai test`. Disable for a pure type-check. |
 | `fai.trace.server` | `off` | Trace LSP traffic in the **Fai Language Server** output channel (`off`/`messages`/`verbose`). |
 
 ## Commands

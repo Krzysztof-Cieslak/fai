@@ -90,7 +90,7 @@ fn dispatch(parsed: Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
 
     match &parsed.command {
         Command::Check(args) => {
-            let spec = CommandSpec::Check { path: args.path.clone() };
+            let spec = CommandSpec::Check { path: args.path.clone(), examples: !args.no_examples };
             route(&parsed.global, &root, spec, format, color, log, out, err)
         }
         Command::Fmt(args) => {

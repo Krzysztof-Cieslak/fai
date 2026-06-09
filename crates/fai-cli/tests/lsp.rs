@@ -49,6 +49,12 @@ struct Lsp {
 impl Lsp {
     /// Starts `fai lsp -C <workspace>` and completes the initialize handshake.
     fn start(workspace: PathBuf) -> Self {
+        Self::start_with_init(workspace, json!({ "capabilities": {} }))
+    }
+
+    /// Like [`start`](Self::start), but with caller-supplied `initialize` params
+    /// (e.g. to set `initializationOptions.examples`).
+    fn start_with_init(workspace: PathBuf, init_params: Value) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_fai"))
             .arg("lsp")
             .arg("-C")
@@ -63,11 +69,7 @@ impl Lsp {
         let mut lsp =
             Self { child: Some(child), stdin: Some(stdin), stdout, workspace, next_id: 2 };
 
-        lsp.send(Message::Request(Request::new(
-            1.into(),
-            "initialize".to_owned(),
-            json!({ "capabilities": {} }),
-        )));
+        lsp.send(Message::Request(Request::new(1.into(), "initialize".to_owned(), init_params)));
         lsp.read_response(&1.into());
         lsp.notify("initialized", json!({}));
         lsp
@@ -116,6 +118,27 @@ impl Lsp {
             json!({
                 "textDocument": { "uri": uri, "languageId": "fai", "version": 1, "text": text }
             }),
+        );
+        uri
+    }
+
+    fn did_change(&mut self, name: &str, version: i32, text: &str) -> String {
+        let uri = self.uri(name);
+        self.notify(
+            "textDocument/didChange",
+            json!({
+                "textDocument": { "uri": uri, "version": version },
+                "contentChanges": [ { "text": text } ]
+            }),
+        );
+        uri
+    }
+
+    fn did_save(&mut self, name: &str, text: &str) -> String {
+        let uri = self.uri(name);
+        self.notify(
+            "textDocument/didSave",
+            json!({ "textDocument": { "uri": uri }, "text": text }),
         );
         uri
     }
@@ -181,6 +204,58 @@ fn lsp_serves_a_sample_project_over_stdio() {
     assert!(locations[0]["uri"].as_str().unwrap().ends_with("Locals.fai"), "{definition:?}");
     let (binding_line, _) = position(&src, "a2 = a * a");
     assert_eq!(locations[0]["range"]["start"]["line"], binding_line, "{definition:?}");
+
+    lsp.shutdown();
+}
+
+/// The diagnostic codes in a `publishDiagnostics` payload.
+fn codes(diags: &[Value]) -> Vec<String> {
+    diags.iter().filter_map(|d| d["code"].as_str().map(str::to_owned)).collect()
+}
+
+#[test]
+fn example_failure_appears_on_save_and_clears_on_edit() {
+    let workspace = unique_workspace();
+    let src = "module Bad\nexample: 1 = 2\n";
+    std::fs::write(workspace.join("Bad.fai"), src).unwrap();
+    let mut lsp = Lsp::start(workspace);
+
+    // Opening type-checks the file but does not evaluate its examples.
+    let uri = lsp.did_open("Bad.fai", src);
+    assert!(codes(&lsp.await_diagnostics(&uri)).is_empty(), "no example eval on open");
+
+    // Saving evaluates the closed example (in the isolated worker) and reports
+    // the failure as FAI6001 — without a separate `fai test`.
+    lsp.did_save("Bad.fai", src);
+    let on_save = codes(&lsp.await_diagnostics(&uri));
+    assert!(on_save.contains(&"FAI6001".to_owned()), "expected FAI6001 on save: {on_save:?}");
+
+    // Editing the file clears the cached failure (it is recomputed on next save),
+    // so it does not linger on stale text.
+    lsp.did_change("Bad.fai", 2, "module Bad\nexample: 1 = 2\n// edited\n");
+    let after_edit = codes(&lsp.await_diagnostics(&uri));
+    assert!(after_edit.is_empty(), "an edit clears the example diagnostic: {after_edit:?}");
+
+    lsp.shutdown();
+}
+
+#[test]
+fn examples_disabled_by_initialization_option() {
+    let workspace = unique_workspace();
+    let src = "module Bad\nexample: 1 = 2\n";
+    std::fs::write(workspace.join("Bad.fai"), src).unwrap();
+    let mut lsp = Lsp::start_with_init(
+        workspace,
+        json!({ "capabilities": {}, "initializationOptions": { "examples": false } }),
+    );
+
+    let uri = lsp.did_open("Bad.fai", src);
+    assert!(codes(&lsp.await_diagnostics(&uri)).is_empty());
+
+    // With the option off, saving does not evaluate examples either.
+    lsp.did_save("Bad.fai", src);
+    let on_save = codes(&lsp.await_diagnostics(&uri));
+    assert!(on_save.is_empty(), "examples disabled: no FAI6001 on save: {on_save:?}");
 
     lsp.shutdown();
 }

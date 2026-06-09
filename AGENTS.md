@@ -44,7 +44,10 @@
 > first-class value form). Borrow inference is **inter-procedural**: a parameter
 > only forwarded to another function's borrowing parameter is itself borrowed
 > (a borrow fixpoint over the call graph, across modules). Contracts (M7) are
-> built: **`fai test` runs the first-class `example`/`forall` declarations**. The
+> built: **`fai test` runs the first-class `example`/`forall` declarations**, and
+> **`fai check` eagerly evaluates the closed `example`s** (reporting a failing one
+> as the located `FAI6001` without a separate `fai test`, in the same isolated
+> worker; `--no-examples` opts out, and the language server does it on save). The
 > property-testing framework is
 > **dogfooded in the standard library** (`std/Test.fai`: a pure splitmix64 `Gen`,
 > an `Arbitrary 'a` bundle of generator/shrinker/renderer, type-directed
@@ -156,7 +159,7 @@ table **and** the decision log in `docs/MEMORY.md`).
 | Generics | **Uniform boxed representation + dictionary passing** (no monomorphization by default) |
 | Interfaces | Compiled to **dictionaries**; instances (`{ Name with ... }`) are existential values |
 | Effects | **Capabilities as explicit values** (interface instances flowing from `main`); **row-polymorphic capability records give least authority**; type-level effect rows are future work (tracked as a proposal) |
-| Contracts | **First-class `example` / `forall` declarations** (`example: e` / `forall xs: e`; peers of `let`/`type`), resolved in module scope, type-checked to `Bool`, run by `fai test`; `///` is human prose only |
+| Contracts | **First-class `example` / `forall` declarations** (`example: e` / `forall xs: e`; peers of `let`/`type`), resolved in module scope, type-checked to `Bool`, run by `fai test` (closed `example`s are also evaluated eagerly by `fai check`, reported as `FAI6001`); `///` is human prose only |
 | Backend | **Cranelift** native code generation |
 | Memory | **Perceus-style reference counting** (pure + strict ⇒ acyclic heaps ⇒ no cycle collector); reuse analysis enables in-place updates incl. `{ r with ... }` |
 | Representation | Uniform 64-bit boxed/immediate values; canonical record field layout (sorted by label text); monomorphic field access is a **constant offset**; *row-polymorphic* field access and `{ r with … }` update use **offset-evidence passing** — per row lacks-constraint, an integer offset threaded in as a leading argument (like a dictionary), composing through call chains and baked into partial applications for first-class use; dictionaries for interfaces/generics |

@@ -14,7 +14,7 @@ use std::error::Error;
 
 use camino::Utf8PathBuf;
 use fai_db::SourceFile;
-use fai_driver::{DirtyFile, Session, check, fmt};
+use fai_driver::{DirtyFile, Session, check, check_examples, fmt};
 use lsp_server::{Connection, Message, Notification, Request, RequestId, Response};
 use lsp_types::{
     CodeAction as LspCodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams,
@@ -67,9 +67,10 @@ pub fn serve(connection: &Connection, root: Utf8PathBuf) -> Result<(), Box<dyn E
     // position encoding can match what the client supports.
     let (id, init_params) = connection.initialize_start()?;
     let encoding = negotiate_encoding(&init_params);
+    let examples_enabled = examples_enabled(&init_params);
     let capabilities = serde_json::to_value(server_capabilities(encoding))?;
     connection.initialize_finish(id, serde_json::json!({ "capabilities": capabilities }))?;
-    let mut server = Server::new(root, encoding)?;
+    let mut server = Server::new(root, encoding, examples_enabled)?;
     for msg in &connection.receiver {
         match msg {
             Message::Request(req) => {
@@ -105,6 +106,16 @@ fn negotiate_encoding(init_params: &serde_json::Value) -> Encoding {
         Some(encodings) if encodings.iter().any(|e| e.as_str() == Some("utf-8")) => Encoding::Utf8,
         _ => Encoding::Utf16,
     }
+}
+
+/// Whether to evaluate closed `example` contracts on save, read from the
+/// client's `initializationOptions.examples` (default `true` when absent).
+fn examples_enabled(init_params: &serde_json::Value) -> bool {
+    init_params
+        .get("initializationOptions")
+        .and_then(|o| o.get("examples"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true)
 }
 
 /// The capabilities Fai's language server advertises (with the negotiated
@@ -174,13 +185,31 @@ struct Server {
     open: HashMap<Url, String>,
     /// The negotiated position encoding for all conversions.
     encoding: Encoding,
+    /// Whether to evaluate closed `example` contracts on save
+    /// (`initializationOptions.examples`, default on).
+    examples_enabled: bool,
+    /// Each open file's example failures (`FAI6001`) from its last save. Held
+    /// here so they survive the diagnostic refreshes that edits to *other* files
+    /// trigger; cleared when the file itself is edited or closed.
+    saved_examples: HashMap<Url, Vec<fai_diagnostics::Diagnostic>>,
 }
 
 impl Server {
-    fn new(root: Utf8PathBuf, encoding: Encoding) -> Result<Self, Box<dyn Error>> {
+    fn new(
+        root: Utf8PathBuf,
+        encoding: Encoding,
+        examples_enabled: bool,
+    ) -> Result<Self, Box<dyn Error>> {
         let root = root.canonicalize_utf8().unwrap_or(root);
         let session = Session::open(root.clone())?;
-        Ok(Self { session, root, open: HashMap::new(), encoding })
+        Ok(Self {
+            session,
+            root,
+            open: HashMap::new(),
+            encoding,
+            examples_enabled,
+            saved_examples: HashMap::new(),
+        })
     }
 
     /// A line map over `text` under the negotiated position encoding.
@@ -203,6 +232,9 @@ impl Server {
                 {
                     let uri = p.text_document.uri;
                     self.apply_changes(&uri, p.content_changes);
+                    // An edit invalidates the last save's example results; they
+                    // are recomputed on the next save (not on every keystroke).
+                    self.saved_examples.remove(&uri);
                     self.refresh(conn, &uri);
                 }
             }
@@ -213,13 +245,14 @@ impl Server {
                     if let Some(text) = p.text {
                         self.open.insert(p.text_document.uri.clone(), text);
                     }
-                    self.refresh(conn, &p.text_document.uri);
+                    self.refresh_saved(conn, &p.text_document.uri);
                 }
             }
             "textDocument/didClose" => {
                 if let Ok(p) = note.extract::<DidCloseTextDocumentParams>("textDocument/didClose") {
                     let uri = &p.text_document.uri;
                     self.open.remove(uri);
+                    self.saved_examples.remove(uri);
                     // On close the buffer is no longer authoritative — ownership
                     // returns to the filesystem — so drop the in-memory overlay and
                     // restore the database to the on-disk content. Otherwise a file
@@ -762,7 +795,44 @@ impl Server {
         self.publish_all_open(conn);
     }
 
-    /// Recomputes and publishes diagnostics for every open document.
+    /// Like [`refresh`](Self::refresh), but additionally re-evaluates the saved
+    /// file's closed `example` contracts and caches their failures. Used on save,
+    /// so a wrong example surfaces in the editor without running `fai test` — and
+    /// without re-running on every keystroke.
+    fn refresh_saved(&mut self, conn: &Connection, uri: &Url) {
+        let Some(rel) = self.relative(uri) else { return };
+        let Some(text) = self.open.get(uri).cloned() else { return };
+        let dirty = [DirtyFile { path: rel.to_string(), hash: None, content: Some(text) }];
+        if self.session.apply_dirty(&dirty).is_err() {
+            return;
+        }
+        self.refresh_saved_examples(uri);
+        self.publish_all_open(conn);
+    }
+
+    /// Re-evaluates `uri`'s closed `example` contracts (in an isolated worker) and
+    /// caches the located failures, replacing any prior set. A type error, a
+    /// disabled `examples` option, or no example yields an empty (removed) set.
+    fn refresh_saved_examples(&mut self, uri: &Url) {
+        if !self.examples_enabled {
+            return;
+        }
+        let failures = match self.relative(uri) {
+            Some(rel) => match self.session.select_files(Some(&rel)).first() {
+                Some(&file) => check_examples(self.session.db(), &[file]),
+                None => Vec::new(),
+            },
+            None => Vec::new(),
+        };
+        if failures.is_empty() {
+            self.saved_examples.remove(uri);
+        } else {
+            self.saved_examples.insert(uri.clone(), failures);
+        }
+    }
+
+    /// Recomputes and publishes diagnostics for every open document: each file's
+    /// front-end diagnostics, plus its cached example failures from the last save.
     fn publish_all_open(&self, conn: &Connection) {
         for (uri, text) in &self.open {
             let diagnostics = match self.relative(uri) {
@@ -770,7 +840,15 @@ impl Server {
                     Some(&file) => {
                         let result = check(self.session.db(), &[file]);
                         let lines = self.line_map(text);
-                        result.diagnostics.iter().map(|d| to_lsp_diagnostic(d, &lines)).collect()
+                        let mut diags: Vec<LspDiagnostic> = result
+                            .diagnostics
+                            .iter()
+                            .map(|d| to_lsp_diagnostic(d, &lines))
+                            .collect();
+                        if let Some(examples) = self.saved_examples.get(uri) {
+                            diags.extend(examples.iter().map(|d| to_lsp_diagnostic(d, &lines)));
+                        }
+                        diags
                     }
                     None => vec![],
                 },

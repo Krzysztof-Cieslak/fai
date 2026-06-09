@@ -332,7 +332,7 @@ A `match` arm can never be reached because earlier arms already cover its values
 
 **Severity:** error
 
-An `example`/`forall` contract did not hold when `fai test` ran it. The help shows the shrunk counterexample (binder names and rendered values).
+An `example`/`forall` contract did not hold. `fai check` evaluates closed `example` contracts and reports a failing one here; `fai test` runs the rest (every `example` and `forall`), reporting a `forall` failure with the shrunk counterexample (binder names and rendered values) in the help.
 
 ### FAI6002 — contract cannot be run
 

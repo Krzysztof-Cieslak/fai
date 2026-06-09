@@ -31,11 +31,14 @@ function clientOptionsFor(folder: vscode.WorkspaceFolder): LanguageClientOptions
   // server handles one folder's documents. The protocol document selector takes
   // a string glob; normalize to forward slashes so it matches on Windows too.
   const glob = `${folder.uri.fsPath.replace(/\\/g, "/")}/**/*`;
+  const config = vscode.workspace.getConfiguration("fai", folder.uri);
   return {
     documentSelector: [{ scheme: "file", language: "fai", pattern: glob }],
     workspaceFolder: folder,
     outputChannel,
     traceOutputChannel: outputChannel,
+    // Server-side settings passed at the LSP handshake.
+    initializationOptions: { examples: config.get<boolean>("examples", true) },
   };
 }
 

@@ -135,6 +135,30 @@ fn warm_check_matches_no_daemon() {
     assert_eq!(stdout(&warm2), stdout(&cold), "a second warm run must also match");
 }
 
+#[test]
+fn warm_check_reports_a_failing_example() {
+    let daemon = Daemon::new(
+        "checkexample",
+        &[(
+            "Bad.fai",
+            indoc! {r#"
+                module Bad
+
+                example: 1 = 2
+            "#},
+        )],
+    );
+
+    // The daemon evaluates closed `example` contracts (in an isolated worker) and
+    // reports a failure as FAI6001 — byte-for-byte matching the --no-daemon run.
+    let warm = daemon.run(&["check"], &["--message-format=json", "Bad.fai"]);
+    let cold = daemon.run(&["check", "--no-daemon"], &["--message-format=json", "Bad.fai"]);
+    assert_eq!(warm.status.code(), Some(1), "stderr: {}", String::from_utf8_lossy(&warm.stderr));
+    let warm_out = stdout(&warm);
+    assert!(warm_out.contains("FAI6001"), "expected FAI6001 in warm output: {warm_out}");
+    assert_eq!(warm_out, stdout(&cold), "warm output must equal --no-daemon output");
+}
+
 /// A passing example, a `forall` that divides by a runtime zero so it aborts on
 /// the first generated input, then a passing `forall`.
 const CRASH: &str = indoc! {r#"

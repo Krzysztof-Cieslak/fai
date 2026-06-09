@@ -100,7 +100,7 @@ pub enum Command {
     #[command(name = "__daemon-serve", hide = true)]
     DaemonServe,
     /// Typecheck only (fast inner loop).
-    Check(PathArgs),
+    Check(CheckArgs),
     /// Run example/forall contracts.
     Test(TestArgs),
     /// Canonically format sources.
@@ -121,11 +121,14 @@ pub enum Command {
     },
 }
 
-/// Arguments for commands taking an optional path.
+/// Arguments for `fai check`.
 #[derive(Debug, Args)]
-pub struct PathArgs {
+pub struct CheckArgs {
     /// A file or directory; defaults to the whole workspace.
     pub path: Option<Utf8PathBuf>,
+    /// Type-check only: skip evaluating closed `example` contracts.
+    #[arg(long)]
+    pub no_examples: bool,
 }
 
 /// Arguments for `fai build`.

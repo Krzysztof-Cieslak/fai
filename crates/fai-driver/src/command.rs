@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::query::{QueryRequest, run_query};
 use crate::session::Session;
-use crate::{build_native, check, fmt};
+use crate::{build_native, check, check_examples, fmt};
 
 /// Success: no errors.
 pub const EXIT_OK: i32 = 0;
@@ -70,6 +70,9 @@ pub enum CommandSpec {
     Check {
         /// File/dir to check; `None` = the whole workspace.
         path: Option<Utf8PathBuf>,
+        /// Evaluate closed `example` contracts and report failures (`FAI6001`).
+        /// `false` restores a pure type-check (`fai check --no-examples`).
+        examples: bool,
     },
     /// Format the selection; `check` reports drift without writing.
     Fmt {
@@ -106,15 +109,34 @@ pub struct Rendered {
 #[must_use]
 pub fn run_command(session: &Session, spec: &CommandSpec, opts: RenderOpts) -> Rendered {
     match spec {
-        CommandSpec::Check { path } => run_check(session, path.as_deref(), opts),
+        CommandSpec::Check { path, examples } => {
+            run_check(session, path.as_deref(), *examples, opts)
+        }
         CommandSpec::Fmt { path, check } => run_fmt(session, path.as_deref(), *check, opts),
         CommandSpec::Build { path, out, release } => run_build(session, path, out, *release, opts),
         CommandSpec::Query(request) => run_query_command(session, request, opts),
     }
 }
 
-fn run_check(session: &Session, path: Option<&camino::Utf8Path>, opts: RenderOpts) -> Rendered {
-    let result = check(session.db(), &session.select_files(path));
+fn run_check(
+    session: &Session,
+    path: Option<&camino::Utf8Path>,
+    examples: bool,
+    opts: RenderOpts,
+) -> Rendered {
+    let files = session.select_files(path);
+    let mut result = check(session.db(), &files);
+    // Once the selection type-checks cleanly, evaluate its closed `example`
+    // contracts and fold in any failures (located `FAI6001`). A type error skips
+    // this (the examples could not be compiled soundly anyway).
+    if examples && result.ok {
+        let failures = check_examples(session.db(), &files);
+        if !failures.is_empty() {
+            result.diagnostics.extend(failures);
+            crate::sort_diagnostics(&mut result.diagnostics);
+            result.ok = false;
+        }
+    }
     let resolver = session.resolver();
     let mut r = Rendered::default();
     match opts.format {

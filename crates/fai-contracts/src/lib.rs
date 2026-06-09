@@ -43,8 +43,10 @@ pub const CODES: &[CodeInfo] = &[
         code: CONTRACT_FAILED,
         title: "contract failed",
         default_severity: Severity::Error,
-        explanation: "An `example`/`forall` contract did not hold when `fai test` ran it. The \
-                      help shows the shrunk counterexample (binder names and rendered values).",
+        explanation: "An `example`/`forall` contract did not hold. `fai check` evaluates closed \
+                      `example` contracts and reports a failing one here; `fai test` runs the rest \
+                      (every `example` and `forall`), reporting a `forall` failure with the shrunk \
+                      counterexample (binder names and rendered values) in the help.",
     },
     CodeInfo {
         code: CONTRACT_NOT_RUNNABLE,
