@@ -2,10 +2,20 @@
 //!
 //! Runs after dup/drop insertion and reuse analysis, so it consumes the existing
 //! `Reset`/`MakeData { reuse }` shape and preserves it. A function is eligible when
-//! it is monomorphic (no offset evidence) and **every** reference to itself is a
-//! saturated self-call in tail position — either a plain tail call or the single
-//! argument of one tail constructor (the "modulo cons" case). The whole function
-//! is transformed or left untouched; there is no partial flattening.
+//! **every** reference to itself is a saturated self-call in tail position — either
+//! a plain tail call or the single argument of one tail constructor (the "modulo
+//! cons" case). The whole function is transformed or left untouched; there is no
+//! partial flattening.
+//!
+//! A **row-polymorphic** function (one carrying leading offset-evidence
+//! parameters) calls itself curried: lowering partially applies the function to
+//! its evidence (`let t = self ev0 …`) and then applies that to the real arguments
+//! (`t a b`). A fusion pre-pass ([`fuse_evidence_self_calls`]) normalizes that pair
+//! back into a single saturated `self ev0 … a b` before detection runs, so a
+//! row-polymorphic function is detected and rewritten exactly like a monomorphic
+//! one. The evidence then rides through the loop as ordinary loop-carried
+//! parameters, passed unchanged on every back-edge (Fai has no polymorphic
+//! recursion, so a self-call always threads its own evidence).
 //!
 //! The rewrite introduces a generic loop ([`K::Join`]/[`K::Recur`]). A
 //! constructor-wrapped recursion additionally uses **destination passing**: a
@@ -25,24 +35,31 @@ use crate::fresh;
 /// Flattens `body` (the entry function's body, after reference counting and reuse)
 /// into a loop when it is tail-recursive; otherwise returns it unchanged.
 ///
-/// `params` are the entry's parameter slots, `self_def` its definition id, and
-/// `evidence` its offset-evidence-parameter count (nonzero ⇒ row-polymorphic, left
-/// untransformed). `next` supplies fresh local slots for the synthesized hole.
-pub(crate) fn flatten(
+/// `params` are the entry's parameter slots (a row-polymorphic function's leading
+/// slots are its offset evidence, the rest its real parameters), `self_def` its
+/// definition id. `next` supplies fresh local slots for the synthesized hole.
+pub(crate) fn flatten(body: CExpr, params: &[LocalId], self_def: DefId, next: &mut usize) -> CExpr {
+    let arity = params.len();
+    // A row-polymorphic function's curried self-calls were already normalized into
+    // saturated form before reference counting (see [`fuse_evidence_self_calls`]),
+    // so detection treats every function the same.
+    match eligible(&body, self_def, arity) {
+        Some(uses_hole) => rewrite_into_loop(body, params, self_def, arity, uses_hole, next),
+        None => body,
+    }
+}
+
+/// Builds the loop from an eligible `body`: a [`K::Join`] header over the function
+/// parameters (and, when a tail is constructor-wrapped, a destination [`K::HoleStart`]
+/// and an extra hole parameter), with the body rewritten in tail position.
+fn rewrite_into_loop(
     body: CExpr,
     params: &[LocalId],
     self_def: DefId,
-    evidence: usize,
+    arity: usize,
+    uses_hole: bool,
     next: &mut usize,
 ) -> CExpr {
-    if evidence != 0 {
-        return body;
-    }
-    let arity = params.len();
-    let Some(uses_hole) = eligible(&body, self_def, arity) else {
-        return body;
-    };
-
     let result_ty = body.ty.clone();
     if uses_hole {
         let hole = fresh(next);
@@ -56,6 +73,99 @@ pub(crate) fn flatten(
     } else {
         let loop_body = rewrite_tail(body, None, self_def, arity, next);
         CExpr::new(K::Join { params: params.to_vec(), body: Box::new(loop_body) }, result_ty)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Row-polymorphic self-call fusion (before reference counting).
+// ---------------------------------------------------------------------------
+
+/// Normalizes a row-polymorphic function's curried self-calls into flat saturated
+/// ones, so that — once reference-counted and reuse-analyzed — they look exactly
+/// like a monomorphic self-call and [`flatten`] handles every function uniformly.
+///
+/// Lowering references a row-polymorphic `self` as a partial application to its
+/// leading offset evidence and then applies that to the real arguments, producing
+/// the nested `App { func: App { Global(self), [ev0 … ev_{k-1}] }, args }`. This
+/// rewrites it to the saturated `App { Global(self), [ev0 … ev_{k-1}] ++ args }`.
+///
+/// Run **before** reference counting, on the lowered body: at this point the
+/// nested application is intact (A-normal form has not yet split it behind a
+/// binder, and no `dup`/`drop` has been inserted), so the rewrite is a pure
+/// structural substitution. Reference counting then treats the flat self-call's
+/// operands — evidence included — as ordinary values consumed at the (tail) call,
+/// with no partial-application closure to materialize and, crucially, no
+/// `dup`/`drop` of the evidence forced by the partial application's early
+/// consumption. Doing this *after* reference counting would leave that `dup`/`drop`
+/// pair stranded when the call becomes a back-edge.
+///
+/// Only the exact shape lowering produces is fused: the inner application's
+/// arguments must be precisely the leading evidence parameters, in order (Fai has
+/// no polymorphic recursion, so a genuine self-call always threads its own
+/// evidence). Anything else is left intact.
+pub(crate) fn fuse_evidence_self_calls(e: CExpr, self_def: DefId, evidence: &[LocalId]) -> CExpr {
+    let CExpr { kind, ty } = e;
+    let sub = |e: CExpr| fuse_evidence_self_calls(e, self_def, evidence);
+    match kind {
+        K::App { func, args } => {
+            // `self` partially applied to its evidence, then to the real arguments.
+            if let K::App { func: inner, args: ev } = &func.kind
+                && let K::Global(def) = &inner.kind
+                && *def == self_def
+                && ev.len() == evidence.len()
+                && ev.iter().zip(evidence).all(|(a, &p)| is_local(a, p))
+            {
+                let head = (**inner).clone(); // `Global(self)` with its own type
+                let mut new_args: Vec<CExpr> = ev.clone();
+                new_args.extend(args.into_iter().map(sub));
+                CExpr::new(K::App { func: Box::new(head), args: new_args }, ty)
+            } else {
+                let func = Box::new(fuse_evidence_self_calls(*func, self_def, evidence));
+                let args = args.into_iter().map(sub).collect();
+                CExpr::new(K::App { func, args }, ty)
+            }
+        }
+        K::If { cond, then, els } => CExpr::new(
+            K::If {
+                cond: Box::new(fuse_evidence_self_calls(*cond, self_def, evidence)),
+                then: Box::new(fuse_evidence_self_calls(*then, self_def, evidence)),
+                els: Box::new(fuse_evidence_self_calls(*els, self_def, evidence)),
+            },
+            ty,
+        ),
+        K::Let { local, value, body } => CExpr::new(
+            K::Let {
+                local,
+                value: Box::new(fuse_evidence_self_calls(*value, self_def, evidence)),
+                body: Box::new(fuse_evidence_self_calls(*body, self_def, evidence)),
+            },
+            ty,
+        ),
+        K::Prim { op, args } => {
+            CExpr::new(K::Prim { op, args: args.into_iter().map(sub).collect() }, ty)
+        }
+        K::MakeData { tag, args, reuse } => {
+            CExpr::new(K::MakeData { tag, args: args.into_iter().map(sub).collect(), reuse }, ty)
+        }
+        K::DataTag(base) => CExpr::new(K::DataTag(Box::new(sub(*base))), ty),
+        K::DataField { base, index } => {
+            CExpr::new(K::DataField { base: Box::new(sub(*base)), index }, ty)
+        }
+        // No self-calls live inside these before reference counting (a lifted
+        // lambda is referenced by id, not inlined); return them unchanged.
+        K::Lit(_) | K::Local(_) | K::Global(_) | K::MakeClosure { .. } | K::Error => {
+            CExpr::new(kind, ty)
+        }
+        // The reference-counting and tail-call nodes do not exist yet; pass through
+        // for exhaustiveness.
+        K::Reset { .. }
+        | K::Dup { .. }
+        | K::Drop { .. }
+        | K::Join { .. }
+        | K::Recur { .. }
+        | K::HoleStart { .. }
+        | K::HoleFill { .. }
+        | K::HoleClose { .. } => CExpr::new(kind, ty),
     }
 }
 

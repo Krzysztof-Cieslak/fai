@@ -4,6 +4,8 @@ module TailLoops
 // space over arbitrarily deep lists. Two shapes appear here: a plain tail call
 // (the accumulator folds) and a tail call wrapped in one constructor (`build` and
 // `filter`, "tail recursion modulo cons"), which rebuilds the spine in place.
+// This holds for row-polymorphic functions too (`sumWeights`/`doubleScores`,
+// below): their offset evidence simply rides through the loop unchanged.
 /// Build the descending list `[n, n - 1, …, 1]` (`[]` for `n <= 0`).
 /// The recursive call sits under `::`, so it is flattened to a spine-building loop.
 public build : Int -> List Int
@@ -42,3 +44,26 @@ let countFrom acc xs =
   | [] -> acc
   | _ :: rest -> countFrom (acc + 1) rest
 forall xs: length (filter (fun x -> true) xs) = length xs
+
+// Row-polymorphic loops: these accept any record that has the named field,
+// reading it through offset evidence threaded in from the caller. Flattening
+// carries that evidence through the loop like any other parameter, so they too
+// run in constant stack and (for `doubleScores`) rebuild the spine in place.
+/// Sum the `weight` field of every record, ignoring any other fields. A plain
+/// tail call with an accumulator, so it folds the list in constant stack.
+public sumWeights : Int -> List ({ weight : Int | _ }) -> Int
+let sumWeights acc items =
+  match items with
+  | [] -> acc
+  | item :: rest -> sumWeights (acc + item.weight) rest
+example: sumWeights 0 [{ label = 10, weight = 1 }, { label = 20, weight = 2 }] = 3
+example: sumWeights 0 [] = 0
+
+/// Double the `score` field of every record, preserving each record's other
+/// fields. The recursive call sits under `::`, so it rebuilds the spine in place.
+public doubleScores : List ({ score : Int | 'r }) -> List ({ score : Int | 'r })
+let doubleScores items =
+  match items with
+  | [] -> []
+  | item :: rest -> { item with score = item.score * 2 } :: doubleScores rest
+example: doubleScores [{ id = 1, score = 3 }] = [{ id = 1, score = 6 }]
