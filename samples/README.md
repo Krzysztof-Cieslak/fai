@@ -36,3 +36,19 @@ their feature lands.
 
 Because there is one canonical layout, generated code is low-entropy: there is
 essentially one correct way to write a given program.
+
+## `algorithms/` — runtime benchmark samples
+
+The `algorithms/` subdirectory holds well-known algorithms (Fibonacci, Collatz,
+list map-and-sum, merge sort, binary trees, and a Leibniz approximation of pi)
+that back the **Rust-vs-Fai runtime benchmarks** (`fai-tests`' `algorithms_jit`
+and `algorithms_aot` benches). Each module exposes a benched entry — `run`
+(`Int -> Int`) or `runF` (`Int -> Float`) — plus a `main` that runs it once at a
+representative size, and `example` contracts pinning correctness. A dedicated
+test (`crates/fai-tests/tests/algorithms.rs`) checks every file formats, type-
+checks, passes its contracts, and runs to the value the Rust reference computes.
+
+The benchmarks compare Fai's current code generation (uniform boxed values,
+reference counting, Cranelift at optimization level "none") against idiomatic
+Rust (`-O3`); the ratio is a progress metric to watch shrink as the backend
+improves, not a claim of parity.

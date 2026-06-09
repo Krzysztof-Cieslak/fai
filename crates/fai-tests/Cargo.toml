@@ -80,5 +80,13 @@ harness = false
 name = "contracts"
 harness = false
 
+[[bench]]
+name = "algorithms_jit"
+harness = false
+
+[[bench]]
+name = "algorithms_aot"
+harness = false
+
 [lints]
 workspace = true

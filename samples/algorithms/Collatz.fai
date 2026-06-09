@@ -1,0 +1,29 @@
+module Collatz
+
+// The Collatz stopping times summed over a range: an integer loop with division,
+// remainder, and a data-dependent branch, no allocation. Used by the Rust-vs-Fai
+// runtime benchmark; the recursions are tail calls, so they compile to loops.
+// One Collatz step: halve if even, otherwise 3n + 1.
+step : Int -> Int
+let step n = if n % 2 = 0 then n / 2 else 3 * n + 1
+
+// Steps to reach 1 from n, accumulated in tail position.
+stepsFrom : Int -> Int -> Int
+let stepsFrom acc n = if n <= 1 then acc else stepsFrom (acc + 1) (step n)
+
+/// The number of Collatz steps to reach 1 from n.
+public stoppingTime : Int -> Int
+let stoppingTime n = stepsFrom 0 n
+example: stoppingTime 6 = 8
+
+// Sum of stopping times over 1..k, accumulated in tail position.
+sumFrom : Int -> Int -> Int
+let sumFrom acc k = if k <= 0 then acc else sumFrom (acc + stoppingTime k) (k - 1)
+
+/// The benchmark workload: total Collatz stopping time over 1..n.
+public run : Int -> Int
+let run n = sumFrom 0 n
+example: run 6 = 23
+
+public main : Runtime -> Unit
+let main runtime = runtime.console.writeLine (Int.toString (run 60000))

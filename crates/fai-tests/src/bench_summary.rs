@@ -116,7 +116,9 @@ impl Report {
         Self { rows }
     }
 
-    /// Renders the report as Markdown: one collapsible table per bench group.
+    /// Renders the report as Markdown: one collapsible table per bench group,
+    /// each followed by a Fai-vs-Rust ratio table when the group pairs `rust`/`fai`
+    /// rows (the runtime-comparison benches).
     #[must_use]
     pub fn to_markdown(&self, links: &LinkBase) -> String {
         use std::fmt::Write as _;
@@ -148,9 +150,73 @@ impl Report {
                     escape(&row.samples),
                 );
             }
+
+            let ratios = self.ratios_for_group(group);
+            if !ratios.is_empty() {
+                out.push_str("\n**Fai vs Rust** (median; lower ratio is better)\n\n");
+                out.push_str("| Benchmark | Variant | Rust | Fai | Fai/Rust |\n");
+                out.push_str("| --- | --- | --: | --: | --: |\n");
+                for r in ratios {
+                    let ratio = match r.ratio {
+                        Some(x) => format!("{x:.2}×"),
+                        None => "—".to_owned(),
+                    };
+                    let _ = writeln!(
+                        out,
+                        "| {} | {} | {} | {} | {} |",
+                        escape(&r.bench),
+                        escape(&r.variant),
+                        escape(&r.rust),
+                        escape(&r.fai),
+                        escape(&ratio),
+                    );
+                }
+            }
+
             out.push_str("\n</details>\n\n");
         }
         out
+    }
+
+    /// Pairs the `rust`/`fai` rows of `group` into Fai-vs-Rust ratio rows, keyed
+    /// by benchmark and variant (the case with the leading `rust`/`fai` segment
+    /// removed), in first-seen order. A benchmark whose group has no such pairs
+    /// yields nothing, so non-comparison groups are unaffected.
+    fn ratios_for_group(&self, group: &str) -> Vec<RatioRow> {
+        let mut order: Vec<(String, String)> = Vec::new();
+        let mut table: std::collections::HashMap<(String, String), RatioRow> =
+            std::collections::HashMap::new();
+        for row in self.rows.iter().filter(|r| r.group == group) {
+            let Some((side, variant)) = split_side(&row.case) else { continue };
+            let key = (row.bench.clone(), variant.to_owned());
+            let entry = table.entry(key.clone()).or_insert_with(|| {
+                order.push(key);
+                RatioRow {
+                    bench: row.bench.clone(),
+                    variant: variant.to_owned(),
+                    rust: String::new(),
+                    fai: String::new(),
+                    ratio: None,
+                }
+            });
+            if side == "rust" {
+                entry.rust = row.median.clone();
+            } else {
+                entry.fai = row.median.clone();
+            }
+        }
+        order
+            .into_iter()
+            .filter_map(|key| table.remove(&key))
+            .filter(|r| !r.rust.is_empty() && !r.fai.is_empty())
+            .map(|mut r| {
+                r.ratio = match (parse_duration(&r.rust), parse_duration(&r.fai)) {
+                    (Some(rust), Some(fai)) if rust > 0.0 => Some(fai / rust),
+                    _ => None,
+                };
+                r
+            })
+            .collect()
     }
 
     /// Renders the rows as a compact JSON array (hand-rolled: the crate's
@@ -175,6 +241,46 @@ impl Report {
         out.push(']');
         out
     }
+}
+
+/// One Fai-vs-Rust comparison row (a paired `rust`/`fai` measurement).
+#[derive(Debug, Clone, PartialEq)]
+struct RatioRow {
+    /// The benchmark (algorithm) name.
+    bench: String,
+    /// The remaining case path after the `rust`/`fai` side (e.g. a size), or empty.
+    variant: String,
+    /// The Rust median, as divan rendered it.
+    rust: String,
+    /// The Fai median, as divan rendered it.
+    fai: String,
+    /// `fai / rust`, or `None` if either median could not be parsed.
+    ratio: Option<f64>,
+}
+
+/// Splits a case into its leading `rust`/`fai` side and the remaining variant
+/// (the rest of the ` / `-separated path), or `None` if it names neither side.
+fn split_side(case: &str) -> Option<(&str, &str)> {
+    let mut parts = case.splitn(2, " / ");
+    let side = parts.next()?;
+    if side == "rust" || side == "fai" { Some((side, parts.next().unwrap_or(""))) } else { None }
+}
+
+/// Parses a divan duration (`14.51 ms`, `996.8 µs`, `120 ns`, `1.2 s`, …) into
+/// nanoseconds. Best-effort: an unrecognized shape yields `None`.
+fn parse_duration(s: &str) -> Option<f64> {
+    let s = s.trim();
+    let pos = s.find(char::is_alphabetic)?;
+    let value: f64 = s[..pos].trim().parse().ok()?;
+    let scale = match s[pos..].trim() {
+        "ps" => 1e-3,
+        "ns" => 1.0,
+        "µs" | "μs" | "us" => 1e3,
+        "ms" => 1e6,
+        "s" => 1e9,
+        _ => return None,
+    };
+    Some(value * scale)
 }
 
 /// Whether `line` is divan's column header (which also names the group).
@@ -323,5 +429,70 @@ lsp            fastest       │ slowest       │ median        │ mean       
         // Best-effort: no rows, no panic.
         let _ = report.to_markdown(&LinkBase::default());
         let _ = report.to_json();
+    }
+
+    /// A runtime-comparison group as the `algorithms_jit`/`algorithms_aot` benches
+    /// render it: each algorithm a parent node with `fai` and `rust` leaves.
+    const COMPARISON: &str = "\
+     Running benches/algorithms_jit.rs (target/release/deps/algorithms_jit-1)
+algorithms_jit  fastest       │ slowest       │ median        │ mean          │ samples │ iters
+├─ fib                        │               │               │               │         │
+│  ├─ fai       14.15 ms      │ 15.03 ms      │ 14.51 ms      │ 14.53 ms      │ 31      │ 31
+│  ╰─ rust      965.9 µs      │ 1.065 ms      │ 996.8 µs      │ 997.6 µs      │ 100     │ 100
+╰─ pi                         │               │               │               │         │
+   ├─ fai       8.0 ms        │ 8.2 ms        │ 8.1 ms        │ 8.1 ms        │ 50      │ 50
+   ╰─ rust      2.0 ms        │ 2.1 ms        │ 2.0 ms        │ 2.0 ms        │ 100     │ 100
+";
+
+    #[test]
+    fn parses_seconds_to_nanoseconds() {
+        assert_eq!(parse_duration("120 ns"), Some(120.0));
+        assert_eq!(parse_duration("996.8 µs"), Some(996_800.0));
+        assert_eq!(parse_duration("14.51 ms"), Some(14_510_000.0));
+        assert_eq!(parse_duration("1.2 s"), Some(1_200_000_000.0));
+        assert_eq!(parse_duration("2 ps"), Some(0.002));
+        // The Greek-mu and ASCII spellings of microseconds are both accepted.
+        assert_eq!(parse_duration("5 μs"), Some(5_000.0));
+        assert_eq!(parse_duration("5 us"), Some(5_000.0));
+    }
+
+    #[test]
+    fn unparseable_durations_yield_none() {
+        assert_eq!(parse_duration(""), None);
+        assert_eq!(parse_duration("fast"), None);
+        assert_eq!(parse_duration("12 weeks"), None);
+    }
+
+    #[test]
+    fn pairs_rust_and_fai_into_ratios() {
+        let report = Report::parse(COMPARISON);
+        let ratios = report.ratios_for_group("algorithms_jit");
+        assert_eq!(ratios.len(), 2, "{ratios:#?}");
+        // First-seen order is preserved (fib before pi).
+        assert_eq!(ratios[0].bench, "fib");
+        assert_eq!(ratios[0].variant, "");
+        assert_eq!(ratios[0].rust, "996.8 µs");
+        assert_eq!(ratios[0].fai, "14.51 ms");
+        let ratio = ratios[0].ratio.expect("a ratio");
+        assert!((ratio - 14_510_000.0 / 996_800.0).abs() < 1e-6, "{ratio}");
+        assert_eq!(ratios[1].bench, "pi");
+    }
+
+    #[test]
+    fn ratio_table_renders_after_the_group() {
+        let report = Report::parse(COMPARISON);
+        let md = report.to_markdown(&LinkBase::default());
+        assert!(md.contains("**Fai vs Rust**"), "{md}");
+        assert!(md.contains("| Benchmark | Variant | Rust | Fai | Fai/Rust |"), "{md}");
+        // fib: 14.51 ms / 996.8 µs ≈ 14.56×.
+        assert!(md.contains("14.56×"), "{md}");
+    }
+
+    #[test]
+    fn non_comparison_group_has_no_ratio_table() {
+        let report = Report::parse(SAMPLE);
+        // The `inference`/`lsp` sample has no rust/fai pairs.
+        assert!(report.ratios_for_group("inference").is_empty());
+        assert!(!report.to_markdown(&LinkBase::default()).contains("**Fai vs Rust**"));
     }
 }

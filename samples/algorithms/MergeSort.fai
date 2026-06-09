@@ -1,0 +1,12 @@
+module MergeSort
+
+// Sort a descending list into ascending order with the standard library's merge
+// sort, then sum it: recursion plus heavy allocation over a linked list. Used by
+// the Rust-vs-Fai runtime benchmark.
+/// The benchmark workload: sort the descending list [n-1, …, 0] and sum it.
+public run : Int -> Int
+let run n = List.sum (List.sort (List.reverse (List.range 0 n)))
+example: run 5 = 10
+
+public main : Runtime -> Unit
+let main runtime = runtime.console.writeLine (Int.toString (run 80000))
