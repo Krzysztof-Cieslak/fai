@@ -2,10 +2,11 @@ module TailLoops
 
 // Self-tail-recursive functions compile to loops, so they run in constant stack
 // space over arbitrarily deep lists. Two shapes appear here: a plain tail call
-// (the accumulator folds) and a tail call wrapped in one constructor (`build` and
-// `filter`, "tail recursion modulo cons"), which rebuilds the spine in place.
-// This holds for row-polymorphic functions too (`sumWeights`/`doubleScores`,
-// below): their offset evidence simply rides through the loop unchanged.
+// (the accumulator folds) and a tail call wrapped in one or more constructors
+// (`build`/`filter` one deep, `stutter` two deep), "tail recursion modulo cons",
+// which rebuilds the spine in place. This holds for row-polymorphic functions too
+// (`sumWeights`/`doubleScores`): their offset evidence rides through the loop
+// unchanged.
 /// Build the descending list `[n, n - 1, …, 1]` (`[]` for `n <= 0`).
 /// The recursive call sits under `::`, so it is flattened to a spine-building loop.
 public build : Int -> List Int
@@ -67,3 +68,14 @@ let doubleScores items =
   | [] -> []
   | item :: rest -> { item with score = item.score * 2 } :: doubleScores rest
 example: doubleScores [{ id = 1, score = 3 }] = [{ id = 1, score = 6 }]
+
+/// Repeat each element twice: `[1, 2]` becomes `[1, 1, 2, 2]`. The recursion sits
+/// under two `::`, so each step links two cons cells into the spine — a recursion
+/// nested two constructors deep still flattens to a loop.
+public stutter : List Int -> List Int
+let stutter xs =
+  match xs with
+  | [] -> []
+  | x :: rest -> x :: x :: stutter rest
+example: stutter [1, 2] = [1, 1, 2, 2]
+example: stutter [] = []

@@ -1122,11 +1122,13 @@ program output are unchanged, guarded by the full type/golden suite):
   function into a loop.
   - **Eligibility (all-or-nothing).** Every reference to the function itself is a
     **saturated self-call in tail position** — either plain (a tail-call loop) or
-    the single argument of one tail constructor (the "modulo cons" case). The
-    recursive call may sit at any field index; a constructor argument after it is
-    hoisted ahead of the back-edge only when it is **pure and total** (no call, no
-    integer division/remainder, no capability effect), preserving observable order.
-    Two self-calls in one constructor, nesting more than one constructor deep, a
+    threaded through a **chain of one or more tail constructors** (the "modulo cons"
+    case, e.g. `x :: f r` or `x :: x :: f r`). The recursive call may sit at any
+    field index; a constructor argument after it (in evaluation order) is hoisted
+    ahead of the back-edge only when it is **pure and total** (no call, no integer
+    division/remainder, no capability effect), preserving observable order. The
+    recursion must flow *linearly* — used exactly once at each step, carried whole
+    through each cell — so two self-calls in one constructor (`Node (f l) (f r)`), a
     non-tail self-call, or any other self-reference leaves the function as ordinary
     recursion.
   - **Row-polymorphic functions flatten too.** A function carrying leading
@@ -1152,11 +1154,14 @@ program output are unchanged, guarded by the full type/golden suite):
     recursion, **destination passing**: a non-reference-counted "hole" token (the
     same shape as a reuse token) threads through the loop; each iteration builds its
     cell with a placeholder recursive field, links it into the spine (`HoleFill`),
-    and advances, and the base case fills the final hole (`HoleClose`). The
-    per-iteration reuse token is consumed by the cell build **before** the
-    back-edge, so a unique list still rebuilds with zero allocations. The nodes
-    flow through the pretty-printer, the content fingerprint, and the daemon wire
-    form.
+    and advances, and the base case fills the final hole (`HoleClose`). A recursion
+    nested several constructors deep links a **chain** of `HoleFill`s (one per cell)
+    — no new node: the cells are built in their original (reference-count) order and
+    then linked outermost-first, so the outer cell goes at the loop hole and each
+    inner cell into its parent's recursive field. The per-iteration reuse token is
+    consumed by one cell build **before** the back-edge, so a unique list still
+    rebuilds with zero fresh allocations for that cell. The nodes flow through the
+    pretty-printer, the content fingerprint, and the daemon wire form.
   - **Code generation.** A Cranelift loop: the header carries the loop locals as
     variables (sealed after its `Recur` back-edges), the holes lower to inline
     pointer stores into a per-frame result slot, and a tail-position translator
@@ -1164,10 +1169,10 @@ program output are unchanged, guarded by the full type/golden suite):
   - **Soundness.** The abstract reference-count interpreter models the new nodes
     (the hole as a linear token; loop balance via the existing per-path consistency
     check), so the corpus and whole-program oracles cover the transformed output;
-    the differential allocation tests confirm zero fresh cells over a unique list
-    (for monomorphic *and* row-polymorphic rebuilds), and deep end-to-end runs (JIT
-    and AOT) confirm constant stack and a leak-free exit. Mutually-recursive,
-    nested-constructor, and non-last reorder-unsafe cases are noted as future
+    the differential allocation tests confirm a unique list still recycles its
+    spine (for monomorphic, row-polymorphic, *and* nested-constructor rebuilds), and
+    deep end-to-end runs (JIT and AOT) confirm constant stack and a leak-free exit.
+    Mutually-recursive and non-last reorder-unsafe cases are noted as future
     generalizations.
 
 - **D100 Inter-procedural argument borrowing (amends D79).** Borrow inference now

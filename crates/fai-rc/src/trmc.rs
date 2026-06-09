@@ -26,7 +26,7 @@
 //! *before* the back-edge, so a unique list still rebuilds with zero allocations
 //! and the recursion runs in constant stack.
 
-use fai_core::ir::{CExpr, ExprKind as K, Lit, Prim};
+use fai_core::ir::{CExpr, ExprKind as K, FieldIndex, Lit, Prim};
 use fai_resolve::{DefId, LocalId};
 use fai_types::Ty;
 
@@ -203,9 +203,12 @@ fn check_tail(
         }
         K::Let { local, value, body } => {
             if self_call_args(value, self_def, arity).is_some() {
-                // A constructor-wrapped recursion: the bound self-call result must
-                // feed exactly one field of the tail constructor.
-                check_cons_wrap(*local, body, self_def, uses_hole, found_tail)
+                // A constructor-wrapped recursion: the bound self-call result flows
+                // through a (possibly nested) chain of constructors to the tail. It
+                // must be used exactly once, so dropping its binder cannot orphan
+                // another reference.
+                count_uses(body, *local) == 1
+                    && check_cons_wrap(*local, body, self_def, uses_hole, found_tail)
             } else if contains_self(value, self_def) {
                 // A self-reference anywhere off the tail path is unsupported.
                 false
@@ -234,45 +237,63 @@ fn check_tail(
 }
 
 /// Validates the continuation of a constructor-wrapped recursion: `e` follows the
-/// `let v = <self-call>` binder and must reach a tail constructor that uses `v`
-/// exactly once, with every intervening (hoisted) binder pure and total.
+/// `let rec = <self-call>` binder and must carry `rec` through a (possibly nested)
+/// chain of constructors to the tail, with every intervening (hoisted) binder pure
+/// and total.
+///
+/// Invariant on entry: `rec` is used exactly once in `e` (the caller verified it),
+/// which makes the recursion flow linear — so dropping its binder during the
+/// rewrite cannot orphan another reference.
 fn check_cons_wrap(
-    v: LocalId,
+    rec: LocalId,
     e: &CExpr,
     self_def: DefId,
     uses_hole: &mut bool,
     found_tail: &mut bool,
 ) -> bool {
     match &e.kind {
-        K::Let { value, body, .. } => {
-            // A later constructor argument: it is hoisted before the back-edge, so
-            // it must be reorder-safe, carry no self-reference, and not read `v`.
-            pure_total(value)
-                && !contains_self(value, self_def)
-                && !uses_local(value, v)
-                && check_cons_wrap(v, body, self_def, uses_hole, found_tail)
+        K::Let { local, value, body } => {
+            if count_uses(value, rec) > 0 {
+                // `rec` flows into this binding: it must be a constructor using
+                // `rec` exactly once as a field (no other self-reference), and the
+                // recursion carries on through `local` (the next cell, used once).
+                // The construction may be wrapped in `dup`/`drop` that reference
+                // counting placed on its other field operands.
+                count_uses(value, rec) == 1
+                    && is_construction(value)
+                    && !contains_self(value, self_def)
+                    && count_uses(body, *local) == 1
+                    && check_cons_wrap(*local, body, self_def, uses_hole, found_tail)
+            } else {
+                // A later constructor argument, hoisted before the back-edge: it
+                // must be reorder-safe and carry no self-reference.
+                pure_total(value)
+                    && !contains_self(value, self_def)
+                    && check_cons_wrap(rec, body, self_def, uses_hole, found_tail)
+            }
         }
         K::Reset { value, body, .. } => {
-            !contains_self(value, self_def)
-                && !uses_local(value, v)
-                && check_cons_wrap(v, body, self_def, uses_hole, found_tail)
+            count_uses(value, rec) == 0
+                && !contains_self(value, self_def)
+                && check_cons_wrap(rec, body, self_def, uses_hole, found_tail)
         }
         K::Dup { local, body } | K::Drop { local, body } => {
-            *local != v && check_cons_wrap(v, body, self_def, uses_hole, found_tail)
+            *local != rec && check_cons_wrap(rec, body, self_def, uses_hole, found_tail)
         }
         K::MakeData { args, .. } => {
-            // `v` must appear exactly once, as a whole argument (the recursive
-            // field), and nowhere else along the path.
-            let occurrences = args.iter().filter(|a| is_local(a, v)).count();
-            if occurrences != 1 {
-                return false;
-            }
-            *uses_hole = true;
-            *found_tail = true;
-            true
+            // The outermost (tail) constructor: `rec` is exactly one field (the
+            // invariant guarantees its single use is here), with no other
+            // self-reference.
+            args.iter().filter(|a| is_local(a, rec)).count() == 1
+                && !contains_self(e, self_def)
+                && {
+                    *uses_hole = true;
+                    *found_tail = true;
+                    true
+                }
         }
-        // The self-call result reaches a non-constructor tail (returned, tested,
-        // etc.): not tail-modulo-cons.
+        // The recursion reaches a non-constructor tail (returned, tested, etc.):
+        // not tail-modulo-cons.
         _ => false,
     }
 }
@@ -351,55 +372,159 @@ fn rewrite_final(e: CExpr, hole: Option<LocalId>, self_def: DefId, arity: usize)
     }
 }
 
-/// Rewrites the continuation after a dropped `let v = <self-call>` binder: peel the
-/// hoisted later-argument binders down to the tail constructor, build that cell
-/// with a placeholder recursive field, link it through the hole, and loop.
+/// One constructor on a (possibly nested) tail-cons chain: the cell expression
+/// (a `MakeData`, possibly wrapped in the `dup`/`drop` reference counting placed on
+/// its field operands) with its recursive field already replaced by a placeholder,
+/// and that field's index (where the next inner cell, or the recursion, links in).
+struct ChainLink {
+    cell: CExpr,
+    field: usize,
+}
+
+/// Rewrites the continuation after a dropped `let rec = <self-call>` binder: keep
+/// the hoisted/reference-count wrappers, collect the chain of constructors carrying
+/// the recursion, and link them into the spine with one [`K::HoleFill`] per cell.
 fn rewrite_cons_wrap(
-    v: LocalId,
+    rec: LocalId,
     e: CExpr,
     hole: LocalId,
     sargs: Vec<CExpr>,
     next: &mut usize,
 ) -> CExpr {
+    let mut chain: Vec<ChainLink> = Vec::new();
+    collect_chain(rec, e, hole, sargs, &mut chain, next)
+}
+
+/// Walks the continuation: rebuilds each wrapper node, records each chain-link
+/// constructor (dropping its `let`), and at the tail emits the `HoleFill` chain.
+fn collect_chain(
+    rec: LocalId,
+    e: CExpr,
+    hole: LocalId,
+    sargs: Vec<CExpr>,
+    chain: &mut Vec<ChainLink>,
+    next: &mut usize,
+) -> CExpr {
     let CExpr { kind, ty } = e;
     match kind {
+        K::Let { local, value, body } if uses_local(&value, rec) => {
+            // A chain link: record the constructor (its `let` is dropped — the cell
+            // is hole-linked, not bound), and carry the recursion through `local` to
+            // the next cell.
+            let (cell, field) = hole_cell(*value, rec);
+            chain.push(ChainLink { cell, field });
+            collect_chain(local, *body, hole, sargs, chain, next)
+        }
         K::Let { local, value, body } => {
-            let body = rewrite_cons_wrap(v, *body, hole, sargs, next);
+            // A hoisted later argument (or other binder): keep it.
+            let body = collect_chain(rec, *body, hole, sargs, chain, next);
             CExpr::new(K::Let { local, value, body: Box::new(body) }, ty)
         }
         K::Reset { value, token, body } => {
-            let body = rewrite_cons_wrap(v, *body, hole, sargs, next);
+            let body = collect_chain(rec, *body, hole, sargs, chain, next);
             CExpr::new(K::Reset { value, token, body: Box::new(body) }, ty)
         }
         K::Dup { local, body } => {
-            let body = rewrite_cons_wrap(v, *body, hole, sargs, next);
+            let body = collect_chain(rec, *body, hole, sargs, chain, next);
             CExpr::new(K::Dup { local, body: Box::new(body) }, ty)
         }
         K::Drop { local, body } => {
-            let body = rewrite_cons_wrap(v, *body, hole, sargs, next);
+            let body = collect_chain(rec, *body, hole, sargs, chain, next);
             CExpr::new(K::Drop { local, body: Box::new(body) }, ty)
         }
-        K::MakeData { tag, mut args, reuse } => {
-            let field = args.iter().position(|a| is_local(a, v)).expect("recursive field present");
-            // Build the cell with a placeholder recursive field; the next fill or
-            // close overwrites it. The placeholder is an immediate (drop-safe).
-            args[field] = CExpr::new(K::Lit(Lit::Unit), Ty::Error);
-            let cell = CExpr::new(K::MakeData { tag, args, reuse }, ty);
-            let field = u32::try_from(field).expect("field index fits u32");
-
-            let h2 = fresh(next);
-            let mut recur_args = sargs;
-            recur_args.push(CExpr::new(K::Local(h2), Ty::Error));
-            let recur = CExpr::new(K::Recur { args: recur_args }, Ty::Error);
-            let fill = CExpr::new(K::HoleFill { hole, cell: Box::new(cell), field }, Ty::Error);
-            CExpr::new(
-                K::Let { local: h2, value: Box::new(fill), body: Box::new(recur) },
-                Ty::Error,
-            )
+        K::MakeData { tag, args, reuse } => {
+            // The outermost (tail) constructor completes the chain.
+            let (cell, field) = hole_cell(CExpr::new(K::MakeData { tag, args, reuse }, ty), rec);
+            chain.push(ChainLink { cell, field });
+            emit_holefill_chain(std::mem::take(chain), hole, sargs, next)
         }
         // `check_cons_wrap` guaranteed a constructor at the end of the chain.
         _ => unreachable!("constructor-wrapped recursion must end in a construction"),
     }
+}
+
+/// Turns a chain-link value into its destination-passing cell: replace the field
+/// holding `rec` with a placeholder (an immediate, so it is drop-safe; the next
+/// fill or close overwrites it) and report that field's index. Descends through any
+/// `dup`/`drop` reference counting placed around the construction, preserving them.
+fn hole_cell(value: CExpr, rec: LocalId) -> (CExpr, usize) {
+    let CExpr { kind, ty } = value;
+    match kind {
+        K::Dup { local, body } => {
+            let (body, field) = hole_cell(*body, rec);
+            (CExpr::new(K::Dup { local, body: Box::new(body) }, ty), field)
+        }
+        K::Drop { local, body } => {
+            let (body, field) = hole_cell(*body, rec);
+            (CExpr::new(K::Drop { local, body: Box::new(body) }, ty), field)
+        }
+        K::MakeData { tag, mut args, reuse } => {
+            let field =
+                args.iter().position(|a| is_local(a, rec)).expect("recursive field present");
+            args[field] = CExpr::new(K::Lit(Lit::Unit), Ty::Error);
+            (CExpr::new(K::MakeData { tag, args, reuse }, ty), field)
+        }
+        // `check_cons_wrap` guaranteed the construction under any dup/drop.
+        _ => unreachable!("a chain link is a construction"),
+    }
+}
+
+/// Emits the destination-passing chain for the collected constructors (held
+/// inner→outer): one [`K::HoleFill`] per cell, each storing its
+/// (placeholder-filled) cell and advancing the hole into the recursive field,
+/// ending in the back-edge.
+///
+/// The spine must be *linked* outer→inner (the outer cell goes at the loop hole;
+/// the inner cell goes into the outer's field), but the cells must be *constructed*
+/// inner→outer — the order reference counting assumed when it placed the `dup`/
+/// `drop` on their shared field operands; building them in the linking order would
+/// run a consume before its matching dup. So for a chain of more than one cell the
+/// cells are built into locals first (in construction order), then linked
+/// (referencing those locals). A single cell has no such ordering and is linked
+/// inline.
+fn emit_holefill_chain(
+    chain: Vec<ChainLink>,
+    hole: LocalId,
+    sargs: Vec<CExpr>,
+    next: &mut usize,
+) -> CExpr {
+    let recur = |cur_hole: LocalId, sargs: Vec<CExpr>| {
+        let mut args = sargs;
+        args.push(CExpr::new(K::Local(cur_hole), Ty::Error));
+        CExpr::new(K::Recur { args }, Ty::Error)
+    };
+    let fill = |hole: LocalId, cell: CExpr, field: usize| {
+        let field = u32::try_from(field).expect("field index fits u32");
+        CExpr::new(K::HoleFill { hole, cell: Box::new(cell), field }, Ty::Error)
+    };
+    let let_ = |local, value, body| {
+        CExpr::new(K::Let { local, value: Box::new(value), body: Box::new(body) }, Ty::Error)
+    };
+
+    if chain.len() == 1 {
+        let ChainLink { cell, field } = chain.into_iter().next().expect("one cell");
+        let h = fresh(next);
+        return let_(h, fill(hole, cell, field), recur(h, sargs));
+    }
+
+    // Build the cells (with their embedded dup/drop) in construction order.
+    let cells: Vec<(LocalId, usize)> = chain.iter().map(|link| (fresh(next), link.field)).collect();
+    // Link the built cells outer→inner, threading the hole.
+    let mut cur_hole = hole;
+    let mut hole_binds: Vec<(LocalId, CExpr)> = Vec::new();
+    for &(c, field) in cells.iter().rev() {
+        let h = fresh(next);
+        hole_binds.push((h, fill(cur_hole, CExpr::new(K::Local(c), Ty::Error), field)));
+        cur_hole = h;
+    }
+    let mut result = recur(cur_hole, sargs);
+    for (h, f) in hole_binds.into_iter().rev() {
+        result = let_(h, f, result);
+    }
+    for (link, &(c, _)) in chain.into_iter().zip(cells.iter()).rev() {
+        result = let_(c, link.cell, result);
+    }
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -421,6 +546,18 @@ fn self_call_args(e: &CExpr, self_def: DefId, arity: usize) -> Option<&[CExpr]> 
 /// Whether `e` is exactly `Local(v)`.
 fn is_local(e: &CExpr, v: LocalId) -> bool {
     matches!(&e.kind, K::Local(x) if *x == v)
+}
+
+/// Whether `e` is a data construction, possibly wrapped in the `dup`/`drop` that
+/// reference counting placed on its field operands. A chain-link cell has this
+/// shape (the recursion threads through a constructor, not through a call or other
+/// operation).
+fn is_construction(e: &CExpr) -> bool {
+    match &e.kind {
+        K::MakeData { .. } => true,
+        K::Dup { body, .. } | K::Drop { body, .. } => is_construction(body),
+        _ => false,
+    }
 }
 
 /// Whether `self_def` is referenced (as a value or call target) anywhere in `e`.
@@ -445,6 +582,84 @@ fn uses_local(e: &CExpr, v: LocalId) -> bool {
         }
     });
     found
+}
+
+/// The number of times `x` is read in `e`, counting *every* `Local` position —
+/// including closure captures, `dup`/`drop`, row-polymorphic field-access evidence,
+/// and hole tokens, which [`walk`] skips. The chain-detection linearity check
+/// relies on this completeness: a recursion result captured in a hoisted field, for
+/// instance, must still be counted, so the function is left as ordinary recursion
+/// rather than having its `let` binder dropped out from under the capture.
+fn count_uses(e: &CExpr, x: LocalId) -> usize {
+    let mut n = 0;
+    count_local(e, x, &mut n);
+    n
+}
+
+fn count_local(e: &CExpr, x: LocalId, n: &mut usize) {
+    match &e.kind {
+        K::Local(l) => {
+            if *l == x {
+                *n += 1;
+            }
+        }
+        K::Lit(_) | K::Global(_) | K::Error => {}
+        K::Prim { args, .. } | K::MakeData { args, .. } | K::Recur { args } => {
+            args.iter().for_each(|a| count_local(a, x, n));
+        }
+        K::App { func, args } => {
+            count_local(func, x, n);
+            args.iter().for_each(|a| count_local(a, x, n));
+        }
+        K::If { cond, then, els } => {
+            count_local(cond, x, n);
+            count_local(then, x, n);
+            count_local(els, x, n);
+        }
+        K::Let { value, body, .. } => {
+            count_local(value, x, n);
+            count_local(body, x, n);
+        }
+        K::MakeClosure { captures, .. } => {
+            for &c in captures {
+                if c == x {
+                    *n += 1;
+                }
+            }
+        }
+        K::DataTag(base) => count_local(base, x, n),
+        K::DataField { base, index } => {
+            count_local(base, x, n);
+            if let FieldIndex::Dyn { evidence, .. } = index
+                && *evidence == x
+            {
+                *n += 1;
+            }
+        }
+        K::Reset { value, body, .. } => {
+            count_local(value, x, n);
+            count_local(body, x, n);
+        }
+        K::Dup { local, body } | K::Drop { local, body } => {
+            if *local == x {
+                *n += 1;
+            }
+            count_local(body, x, n);
+        }
+        K::Join { body, .. } | K::HoleStart { body, .. } => count_local(body, x, n),
+        K::HoleFill { hole, cell, .. } => {
+            if *hole == x {
+                *n += 1;
+            }
+            count_local(cell, x, n);
+        }
+        K::HoleClose { hole, base } => {
+            if *hole == x {
+                *n += 1;
+            }
+            count_local(base, x, n);
+        }
+    }
 }
 
 /// Whether `e` is pure and total: free of calls, partial primitives (integer
