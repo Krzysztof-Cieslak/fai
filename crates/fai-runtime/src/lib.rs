@@ -845,6 +845,46 @@ pub extern "C" fn fai_float_to_string(f: Value) -> Value {
 }
 
 // ---------------------------------------------------------------------------
+// Chars. A Char is an immediate Unicode scalar value, encoded exactly like an
+// Int (`code << 1 | 1`), so the Char/Int conversions are typed bitcasts.
+// ---------------------------------------------------------------------------
+
+/// Renders a `Char` as a one-character `String` (operand consumed; a Char is an
+/// immediate, so there is nothing to release).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_char_to_string(c: Value) -> Value {
+    let ch = char::from_u32((c >> 1) as u32).unwrap_or('\u{FFFD}');
+    make_string(ch.encode_utf8(&mut [0u8; 4]).as_bytes())
+}
+
+/// A `Char`'s Unicode scalar value as an `Int`. Char and Int share the immediate
+/// encoding, so this is the identity (the bits are already an `Int` immediate).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_char_to_code(c: Value) -> Value {
+    debug_assert!(!is_boxed(c), "a Char is always an immediate");
+    c
+}
+
+/// An `Int` code point as a `Char`. The caller guarantees a valid scalar value
+/// (via `isValidCharCode`), which always fits the immediate, so this is the
+/// identity (the bits are already a `Char` immediate).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_char_from_code(n: Value) -> Value {
+    debug_assert!(!is_boxed(n), "a valid code point is always an immediate");
+    n
+}
+
+/// Whether an `Int` is a Unicode scalar value (in range and not a surrogate),
+/// returning a `Bool` (operand consumed).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_is_valid_char_code(n: Value) -> Value {
+    let code = unbox_int(n);
+    let valid = u32::try_from(code).ok().and_then(char::from_u32).is_some();
+    fai_drop(n);
+    from_bool(valid)
+}
+
+// ---------------------------------------------------------------------------
 // Strings.
 // ---------------------------------------------------------------------------
 

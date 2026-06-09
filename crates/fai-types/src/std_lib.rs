@@ -82,6 +82,13 @@ pub fn builtin_scheme(name: Symbol) -> Option<Scheme> {
         "sqrt" => Scheme::mono(Ty::arrow(Ty::Con(Con::Float), Ty::Con(Con::Float))),
         "floatFromBits" => Scheme::mono(Ty::arrow(Ty::int(), Ty::Con(Con::Float))),
         "floatToBits" => Scheme::mono(Ty::arrow(Ty::Con(Con::Float), Ty::int())),
+        // Char conversions. A Char shares the immediate encoding with Int, so the
+        // code-point conversions are typed bitcasts; `isValidCharCode` guards the
+        // partial `Int -> Char` direction so `Char.fromCode` can return `Option`.
+        "charToString" => Scheme::mono(Ty::arrow(Ty::Con(Con::Char), Ty::Con(Con::String))),
+        "charToCode" => Scheme::mono(Ty::arrow(Ty::Con(Con::Char), Ty::int())),
+        "charFromCode" => Scheme::mono(Ty::arrow(Ty::int(), Ty::Con(Con::Char))),
+        "isValidCharCode" => Scheme::mono(Ty::arrow(Ty::int(), Ty::bool())),
         "not" => Scheme::mono(Ty::arrow(Ty::bool(), Ty::bool())),
         // String operations.
         "stringLength" => Scheme::mono(Ty::arrow(Ty::Con(Con::String), Ty::int())),

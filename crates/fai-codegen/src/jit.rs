@@ -59,6 +59,10 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_int_to_float", rt::fai_int_to_float);
     sym!("fai_float_to_int", rt::fai_float_to_int);
     sym!("fai_float_to_string", rt::fai_float_to_string);
+    sym!("fai_char_to_string", rt::fai_char_to_string);
+    sym!("fai_char_to_code", rt::fai_char_to_code);
+    sym!("fai_char_from_code", rt::fai_char_from_code);
+    sym!("fai_is_valid_char_code", rt::fai_is_valid_char_code);
     sym!("fai_compare", rt::fai_compare);
     sym!("fai_compare_borrowed", rt::fai_compare_borrowed);
     sym!("fai_equal", rt::fai_equal);
