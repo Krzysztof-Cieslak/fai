@@ -5263,3 +5263,152 @@ fn trmc_inc_exact_shape() {
          (recur %2 %12)))))) (drop %3; (holeclose %11 <error>)))))))))))\n"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Tail-call flattening of row-polymorphic functions. A function carrying leading
+// offset-evidence parameters calls itself curried (partially applied to its
+// evidence, then to the real arguments); that pair is normalized to a saturated
+// self-call before reference counting, so it flattens exactly like a monomorphic
+// one, with the evidence riding through the loop as a loop-carried parameter.
+// ===========================================================================
+
+#[test]
+fn trmc_rowpoly_plain() {
+    // A row-polymorphic accumulator fold (`r.n` forces an open record, so `sumNs`
+    // carries one offset-evidence parameter). The tail self-call is plain, so it
+    // becomes a hole-free loop; the evidence rides unchanged through the back-edge.
+    trmc_plain(
+        indoc! {r#"
+            module M
+
+            sumNs : Int -> List ({ n : Int | 'r }) -> Int
+            let sumNs acc rs =
+              match rs with
+              | [] -> acc
+              | r :: rest -> sumNs (acc + r.n) rest
+        "#},
+        "sumNs",
+    );
+}
+
+#[test]
+fn trmc_rowpoly_multi_evidence() {
+    // Two open-record fields (`r.x`, `r.y`) ⇒ two offset-evidence parameters. Both
+    // ride through the loop, reassigned to themselves on every back-edge.
+    trmc_plain(
+        indoc! {r#"
+            module M
+
+            addBoth : Int -> List ({ x : Int, y : Int | 'r }) -> Int
+            let addBoth acc rs =
+              match rs with
+              | [] -> acc
+              | r :: rest -> addBoth (acc + r.x + r.y) rest
+        "#},
+        "addBoth",
+    );
+}
+
+#[test]
+fn trmc_rowpoly_spine() {
+    // A row-polymorphic modulo-cons rebuild: the recursion sits under `::`, so it
+    // becomes a spine-building loop. The element field `r.x` is read through offset
+    // evidence that the loop carries.
+    trmc_spine(
+        indoc! {r#"
+            module M
+
+            firsts : List ({ x : Int | 'r }) -> List Int
+            let firsts rs =
+              match rs with
+              | [] -> []
+              | r :: rest -> r.x :: firsts rest
+        "#},
+        "firsts",
+    );
+}
+
+#[test]
+fn trmc_rowpoly_record_update_spine() {
+    // A modulo-cons rebuild whose element is a row-polymorphic `{ r with … }`
+    // update (using the carried evidence both to read and to replace the field).
+    trmc_spine(
+        indoc! {r#"
+            module M
+
+            bumpNs : List ({ n : Int | 'r }) -> List ({ n : Int | 'r })
+            let bumpNs rs =
+              match rs with
+              | [] -> []
+              | r :: rest -> { r with n = r.n + 1 } :: bumpNs rest
+        "#},
+        "bumpNs",
+    );
+}
+
+#[test]
+fn trmc_rowpoly_filter() {
+    // A row-polymorphic filter: the kept branch extends the spine and the dropped
+    // branch is a plain tail call — both flatten, threading the hole and evidence.
+    trmc_spine(
+        indoc! {r#"
+            module M
+
+            keepPos : List ({ n : Int | 'r }) -> List ({ n : Int | 'r })
+            let keepPos rs =
+              match rs with
+              | [] -> []
+              | r :: rest -> if r.n > 0 then r :: keepPos rest else keepPos rest
+        "#},
+        "keepPos",
+    );
+}
+
+#[test]
+fn no_trmc_rowpoly_non_tail() {
+    // `r.n + sumP rest` is not in tail position (the recursion feeds `+`), so the
+    // row-polymorphic function is left as ordinary recursion — the curried
+    // self-call is still normalized to a saturated direct call, but no loop forms.
+    no_trmc(
+        indoc! {r#"
+            module M
+
+            sumP : List ({ n : Int | 'r }) -> Int
+            let sumP rs =
+              match rs with
+              | [] -> 0
+              | r :: rest -> r.n + sumP rest
+        "#},
+        "sumP",
+    );
+}
+
+#[test]
+fn trmc_rowpoly_plain_exact_shape() {
+    // The full transformed body of a row-polymorphic accumulator fold: a hole-free
+    // loop whose first loop-carried parameter is the offset evidence (`%4`),
+    // reassigned to itself on the back-edge (`recur %4 …`). The evidence is read by
+    // the field projection (`field 0+%4 %2`) and consumed once per path — by the
+    // back-edge on the recursive path, by a `drop` on the base/fallthrough paths —
+    // so no duplicate is needed and every path's reference state stays consistent.
+    let out = rc_checked(
+        indoc! {r#"
+            module M
+
+            sumNs : Int -> List ({ n : Int | 'r }) -> Int
+            let sumNs acc rs =
+              match rs with
+              | [] -> acc
+              | r :: rest -> sumNs (acc + r.n) rest
+        "#},
+        "sumNs",
+    );
+    assert_eq!(
+        out,
+        "fn0(%4, %0, %1) = (join [%4, %0, %1] (let %5 = %1; (let %6 = (tag %5); \
+         (let %7 = (= %6 0); (if %7 (drop %4; (drop %5; %0)) (let %8 = (tag %5); \
+         (let %9 = (= %8 1); (if %9 (let %2 = (field 0 %5); (let %3 = (field 1 %5); \
+         (drop %5; (let %10 = (field 0+%4 %2); (drop %2; (let %11 = (+ %0 %10); \
+         (recur %4 %11 %3))))))) (drop %0; (drop %4; (drop %5; <error>)))))))))))\n"
+    );
+}
