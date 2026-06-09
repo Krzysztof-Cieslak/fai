@@ -113,6 +113,10 @@ fn jit_module() -> JITModule {
     let mut flags = settings::builder();
     flags.set("use_colocated_libcalls", "false").expect("flag");
     flags.set("is_pic", "false").expect("flag");
+    // Optimize generated code (inlining, better register allocation, redundant
+    // load/store elimination) at a modest compile-time cost. Cranelift's
+    // optimizations are value-preserving, so this stays correctness-neutral.
+    flags.set("opt_level", "speed").expect("flag");
     let isa_builder = cranelift_native::builder().expect("host machine is supported");
     let isa = isa_builder.finish(settings::Flags::new(flags)).expect("isa");
     let mut builder = JITBuilder::with_isa(isa, default_libcall_names());

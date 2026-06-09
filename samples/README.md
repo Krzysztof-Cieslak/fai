@@ -49,6 +49,6 @@ test (`crates/fai-tests/tests/algorithms.rs`) checks every file formats, type-
 checks, passes its contracts, and runs to the value the Rust reference computes.
 
 The benchmarks compare Fai's current code generation (uniform boxed values,
-reference counting, Cranelift at optimization level "none") against idiomatic
+reference counting, Cranelift at optimization level "speed") against idiomatic
 Rust (`-O3`); the ratio is a progress metric to watch shrink as the backend
 improves, not a claim of parity.
