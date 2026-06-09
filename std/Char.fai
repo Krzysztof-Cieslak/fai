@@ -1,0 +1,24 @@
+module Char
+
+// Operations on the built-in `Char` type (a Unicode scalar value). Reach them
+// qualified: `Char.toString`.
+/// Render a character as a one-character string.
+public toString : Char -> String
+let toString c = Prim.charToString c
+example: toString 'a' = "a"
+example: toString '\u{1F600}' = "\u{1F600}"
+
+/// The character's Unicode code point.
+public toCode : Char -> Int
+let toCode c = Prim.charToCode c
+example: toCode 'a' = 97
+example: toCode 'A' = 65
+
+/// The character at a code point, or `None` if it is not a Unicode scalar value
+/// (out of range, or a surrogate).
+public fromCode : Int -> Option Char
+let fromCode n = if Prim.isValidCharCode n then Some (Prim.charFromCode n) else None
+example: fromCode 97 = Some 'a'
+example: fromCode 55296 = None
+example: fromCode (0 - 1) = None
+forall c: fromCode (toCode c) = Some c

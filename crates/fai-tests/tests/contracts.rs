@@ -225,6 +225,19 @@ fn function_typed_binder_is_not_runnable() {
     assert!(d.message.contains("cannot be run"), "got: {}", d.message);
 }
 
+#[test]
+fn char_binder_contract_runs() {
+    // A `forall` over a `Char` binder is generatable (the inverse of the
+    // function-typed binder above): it runs and passes, with nothing skipped.
+    let src = "module C\npublic dup : Char -> (Char * Char)\nlet dup c = (c, c)\n\
+               forall c: dup c = (c, c)\n";
+    let outcome = run(&[("C.fai", src)]);
+    assert!(outcome.ok, "diagnostics: {:?}", outcome.diagnostics);
+    assert_eq!(outcome.passed, 1);
+    assert_eq!(outcome.not_run, 0);
+    assert_eq!(outcome.leaked, 0);
+}
+
 /// Runs every standard-library module's and every sample's contracts, printing a
 /// per-module report and asserting nothing fails or is un-runnable.
 #[test]
