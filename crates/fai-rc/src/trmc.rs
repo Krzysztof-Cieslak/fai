@@ -26,7 +26,7 @@
 //! *before* the back-edge, so a unique list still rebuilds with zero allocations
 //! and the recursion runs in constant stack.
 
-use fai_core::ir::{CExpr, ExprKind as K, FieldIndex, Lit, Prim};
+use fai_core::ir::{CExpr, ExprKind as K, FieldIndex, Lit};
 use fai_resolve::{DefId, LocalId};
 use fai_types::Ty;
 
@@ -37,13 +37,21 @@ use crate::fresh;
 ///
 /// `params` are the entry's parameter slots (a row-polymorphic function's leading
 /// slots are its offset evidence, the rest its real parameters), `self_def` its
-/// definition id. `next` supplies fresh local slots for the synthesized hole.
-pub(crate) fn flatten(body: CExpr, params: &[LocalId], self_def: DefId, next: &mut usize) -> CExpr {
+/// definition id, and `is_pure_total` reports whether calling a given top-level
+/// function is pure and total (so a later constructor argument that calls it may be
+/// hoisted ahead of the back-edge). `next` supplies fresh local slots for the hole.
+pub(crate) fn flatten(
+    body: CExpr,
+    params: &[LocalId],
+    self_def: DefId,
+    is_pure_total: &dyn Fn(DefId) -> bool,
+    next: &mut usize,
+) -> CExpr {
     let arity = params.len();
     // A row-polymorphic function's curried self-calls were already normalized into
     // saturated form before reference counting (see [`fuse_evidence_self_calls`]),
     // so detection treats every function the same.
-    match eligible(&body, self_def, arity) {
+    match eligible(&body, self_def, arity, is_pure_total) {
         Some(uses_hole) => rewrite_into_loop(body, params, self_def, arity, uses_hole, next),
         None => body,
     }
@@ -176,10 +184,15 @@ pub(crate) fn fuse_evidence_self_calls(e: CExpr, self_def: DefId, evidence: &[Lo
 /// Whether `body` is tail-recursive and may be flattened. Returns `Some(uses_hole)`
 /// when eligible (`uses_hole` true if any tail is constructor-wrapped, so the loop
 /// needs a destination hole), or `None` to leave it untouched.
-fn eligible(body: &CExpr, self_def: DefId, arity: usize) -> Option<bool> {
+fn eligible(
+    body: &CExpr,
+    self_def: DefId,
+    arity: usize,
+    is_pure_total: &dyn Fn(DefId) -> bool,
+) -> Option<bool> {
     let mut uses_hole = false;
     let mut found_tail = false;
-    if !check_tail(body, self_def, arity, &mut uses_hole, &mut found_tail) {
+    if !check_tail(body, self_def, arity, is_pure_total, &mut uses_hole, &mut found_tail) {
         return None;
     }
     // Nothing to flatten unless there is at least one tail self-call.
@@ -192,14 +205,15 @@ fn check_tail(
     e: &CExpr,
     self_def: DefId,
     arity: usize,
+    is_pure_total: &dyn Fn(DefId) -> bool,
     uses_hole: &mut bool,
     found_tail: &mut bool,
 ) -> bool {
     match &e.kind {
         K::If { cond, then, els } => {
             !contains_self(cond, self_def)
-                && check_tail(then, self_def, arity, uses_hole, found_tail)
-                && check_tail(els, self_def, arity, uses_hole, found_tail)
+                && check_tail(then, self_def, arity, is_pure_total, uses_hole, found_tail)
+                && check_tail(els, self_def, arity, is_pure_total, uses_hole, found_tail)
         }
         K::Let { local, value, body } => {
             if self_call_args(value, self_def, arity).is_some() {
@@ -208,20 +222,20 @@ fn check_tail(
                 // must be used exactly once, so dropping its binder cannot orphan
                 // another reference.
                 count_uses(body, *local) == 1
-                    && check_cons_wrap(*local, body, self_def, uses_hole, found_tail)
+                    && check_cons_wrap(*local, body, self_def, is_pure_total, uses_hole, found_tail)
             } else if contains_self(value, self_def) {
                 // A self-reference anywhere off the tail path is unsupported.
                 false
             } else {
-                check_tail(body, self_def, arity, uses_hole, found_tail)
+                check_tail(body, self_def, arity, is_pure_total, uses_hole, found_tail)
             }
         }
         K::Reset { value, body, .. } => {
             !contains_self(value, self_def)
-                && check_tail(body, self_def, arity, uses_hole, found_tail)
+                && check_tail(body, self_def, arity, is_pure_total, uses_hole, found_tail)
         }
         K::Dup { body, .. } | K::Drop { body, .. } => {
-            check_tail(body, self_def, arity, uses_hole, found_tail)
+            check_tail(body, self_def, arity, is_pure_total, uses_hole, found_tail)
         }
         // A bare tail self-call (no surrounding constructor) is plain tail
         // recursion; any other tail must contain no self-reference (it is a base).
@@ -248,6 +262,7 @@ fn check_cons_wrap(
     rec: LocalId,
     e: &CExpr,
     self_def: DefId,
+    is_pure_total: &dyn Fn(DefId) -> bool,
     uses_hole: &mut bool,
     found_tail: &mut bool,
 ) -> bool {
@@ -263,22 +278,23 @@ fn check_cons_wrap(
                     && is_construction(value)
                     && !contains_self(value, self_def)
                     && count_uses(body, *local) == 1
-                    && check_cons_wrap(*local, body, self_def, uses_hole, found_tail)
+                    && check_cons_wrap(*local, body, self_def, is_pure_total, uses_hole, found_tail)
             } else {
                 // A later constructor argument, hoisted before the back-edge: it
                 // must be reorder-safe and carry no self-reference.
-                pure_total(value)
+                pure_total(value, is_pure_total)
                     && !contains_self(value, self_def)
-                    && check_cons_wrap(rec, body, self_def, uses_hole, found_tail)
+                    && check_cons_wrap(rec, body, self_def, is_pure_total, uses_hole, found_tail)
             }
         }
         K::Reset { value, body, .. } => {
             count_uses(value, rec) == 0
                 && !contains_self(value, self_def)
-                && check_cons_wrap(rec, body, self_def, uses_hole, found_tail)
+                && check_cons_wrap(rec, body, self_def, is_pure_total, uses_hole, found_tail)
         }
         K::Dup { local, body } | K::Drop { local, body } => {
-            *local != rec && check_cons_wrap(rec, body, self_def, uses_hole, found_tail)
+            *local != rec
+                && check_cons_wrap(rec, body, self_def, is_pure_total, uses_hole, found_tail)
         }
         K::MakeData { args, .. } => {
             // The outermost (tail) constructor: `rec` is exactly one field (the
@@ -662,34 +678,25 @@ fn count_local(e: &CExpr, x: LocalId, n: &mut usize) {
     }
 }
 
-/// Whether `e` is pure and total: free of calls, partial primitives (integer
-/// division/remainder), and capability effects — so it may be hoisted ahead of the
-/// recursion without changing observable behavior.
-fn pure_total(e: &CExpr) -> bool {
+/// Whether `e` is pure and total — free of capability effects, of aborts (integer
+/// division/remainder by a possibly-zero divisor), and of non-terminating or
+/// effectful calls — so it may be hoisted ahead of the recursion without changing
+/// observable behavior. A call is admitted only when it is a saturated-or-partial
+/// application of a statically known top-level function that `is_pure_total`
+/// reports pure and total; any indirect or curried call is rejected.
+fn pure_total(e: &CExpr, is_pure_total: &dyn Fn(DefId) -> bool) -> bool {
     let mut ok = true;
     walk(e, &mut |n| match &n.kind {
-        K::App { .. } => ok = false,
-        K::Prim { op, .. } if is_effectful_or_partial(*op) => ok = false,
+        K::App { func, .. } => {
+            let safe = matches!(&func.kind, K::Global(def) if is_pure_total(*def));
+            if !safe {
+                ok = false;
+            }
+        }
+        K::Prim { op, args } if crate::purity::op_unsafe_to_reorder(*op, args) => ok = false,
         _ => {}
     });
     ok
-}
-
-/// Primitives that either abort (division/remainder by zero) or perform a
-/// capability effect, so reordering them ahead of the recursion is unsafe.
-fn is_effectful_or_partial(op: Prim) -> bool {
-    matches!(
-        op,
-        Prim::IntDiv
-            | Prim::IntRem
-            | Prim::ConsoleWriteLine
-            | Prim::ClockNow
-            | Prim::RandomNextInt
-            | Prim::FileRead
-            | Prim::FileWrite
-            | Prim::EnvGet
-            | Prim::EnvArgs
-    )
 }
 
 /// Visits every subexpression of `e` (pre-order), including the children of nodes

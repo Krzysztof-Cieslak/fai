@@ -51,6 +51,14 @@ pub(crate) fn borrow_sig(src: &str, name: &str) -> Vec<bool> {
     crate::borrow_signature(&db, file, Symbol::intern(name)).0
 }
 
+/// Whether calling `name` in `src` is pure and total. Asserts the program
+/// typechecks first.
+pub(crate) fn pure_total(src: &str, name: &str) -> bool {
+    let (db, file) = db_with(src);
+    assert_well_typed(&db, file).unwrap_or_else(|e| panic!("`{name}` {e}\n{src}"));
+    crate::purity::is_pure_total(&db, file, Symbol::intern(name))
+}
+
 /// Fails if `file` has any error-severity diagnostic. A program that does not
 /// typecheck lowers to `Error` nodes that the soundness oracle accepts trivially,
 /// so the corpus and generators must reject it explicitly.

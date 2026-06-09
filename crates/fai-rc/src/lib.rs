@@ -50,6 +50,7 @@ pub use borrow::{BorrowSig, borrow_signature};
 pub use verify::check_rc;
 
 mod borrow;
+mod purity;
 mod trmc;
 mod verify;
 
@@ -82,6 +83,13 @@ pub fn rc_lowered(db: &dyn Db, lowered: &LoweredDef, self_sig: &BorrowSig) -> Lo
         let Some(cf) = db.source_file(def.file) else { return vec![false; nargs] };
         let sig = borrow_signature(db, cf, def.name);
         if sig.exploitable_at(nargs) { sig.0.clone() } else { vec![false; nargs] }
+    };
+
+    // Whether calling a top-level function is pure and total, so the tail-call
+    // transform may hoist a later constructor argument that calls it ahead of the
+    // back-edge. Unknown/builtin targets are conservatively impure.
+    let is_pure_total = |def: DefId| {
+        db.source_file(def.file).is_some_and(|f| purity::is_pure_total(db, f, def.name))
     };
 
     // The entry's offset-evidence-parameter count: a row-polymorphic function
@@ -128,7 +136,7 @@ pub fn rc_lowered(db: &dyn Db, lowered: &LoweredDef, self_sig: &BorrowSig) -> Lo
         // entry can recurse by definition id; lifted lambdas are reached through
         // `apply_n`). A no-op unless the body is tail-recursive.
         if i == 0 {
-            body = trmc::flatten(body, &f.params, lowered.def, &mut next);
+            body = trmc::flatten(body, &f.params, lowered.def, &is_pure_total, &mut next);
         }
         fns.push(CoreFn { params: f.params.clone(), captures: f.captures.clone(), body });
     }
