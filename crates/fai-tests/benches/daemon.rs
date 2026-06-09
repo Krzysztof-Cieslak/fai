@@ -10,13 +10,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use camino::Utf8PathBuf;
 use divan::{Bencher, black_box};
 use fai_core::{fingerprint_def, from_wire};
+use fai_corpus::{self as corpus, CorpusSpec};
 use fai_db::{Db, FaiDatabase, SourceFile};
 use fai_driver::{Rendered, Session, WireBundle, build_run_bundle};
 use fai_rc::rc;
 use fai_resolve::DefId;
 use fai_server::protocol::{Response, ServerMessage, read_frame, write_frame};
 use fai_syntax::Symbol;
-use fai_tests::corpus::{self, CorpusSpec};
 
 fn main() {
     divan::main();

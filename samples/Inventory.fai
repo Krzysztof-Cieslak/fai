@@ -1,0 +1,12 @@
+module Inventory
+
+public type Stock = { onHand : Int, product : Catalog.Product }
+
+public inStock : Stock -> Bool
+let inStock stock = stock.onHand > 0
+
+public restock : Int -> Stock -> Stock
+let restock amount stock = { stock with onHand = stock.onHand + amount }
+
+public available : List Stock -> List Stock
+let available stocks = List.filter inStock stocks

@@ -1,0 +1,16 @@
+module Storefront
+
+interface Renderer =
+  render : Orders.Line -> String
+
+public describe : Orders.Line -> String
+let describe line = Catalog.label line.product ++ ": " ++ Float.toString (Orders.lineTotal line)
+
+public lineRenderer : Renderer
+let lineRenderer = { Renderer with render line = describe line }
+
+public main : Runtime -> Unit
+let main runtime =
+  let sample =
+    { discount = Pricing.Percent 10.0, product = { category = Catalog.Food, name = "Apple", price = 0.5, sku = "A1" }, qty = 4 }
+  runtime.console.writeLine (lineRenderer.render sample)

@@ -10,8 +10,8 @@
 
 use divan::Bencher;
 use divan::counter::ItemsCount;
+use fai_corpus::{self as corpus, CorpusSpec};
 use fai_db::{FaiDatabase, SourceFile};
-use fai_tests::corpus::{self, CorpusSpec};
 use fai_types::check_file;
 
 fn main() {

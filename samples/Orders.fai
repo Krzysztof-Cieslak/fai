@@ -1,0 +1,10 @@
+module Orders
+
+public type Line = { discount : Pricing.Discount, product : Catalog.Product, qty : Int }
+
+public lineTotal : Line -> Float
+let lineTotal line = Pricing.priceOf line.product line.discount * Int.toFloat line.qty
+
+public total : List Line -> Float
+let total lines = lines |> List.map lineTotal |> List.foldl (fun acc x -> acc + x) 0.0
+example: total [] = 0.0

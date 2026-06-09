@@ -18,6 +18,7 @@ members = [
     "crates/fai-server",
     "crates/fai-lsp",
     "crates/fai-cli",
+    "crates/fai-corpus",
     "crates/fai-tests",
 ]
 
@@ -106,6 +107,7 @@ fai-driver = { path = "crates/fai-driver" }
 fai-server = { path = "crates/fai-server" }
 fai-lsp = { path = "crates/fai-lsp" }
 fai-cli = { path = "crates/fai-cli" }
+fai-corpus = { path = "crates/fai-corpus" }
 
 # Lints denied workspace-wide (decision Q3: "deny in table, hard everywhere").
 # Inherited by each crate via `[lints] workspace = true`. `deny` (not `forbid`)

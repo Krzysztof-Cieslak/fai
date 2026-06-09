@@ -1,0 +1,27 @@
+module Catalog
+
+public type Category =
+  | Food
+  | Tool
+  | Book
+
+public type Product = { category : Category, name : String, price : Float, sku : String }
+
+public categoryName : Category -> String
+let categoryName category =
+  match category with
+  | Food -> "food"
+  | Tool -> "tool"
+  | Book -> "book"
+example: categoryName Food = "food"
+
+public rank : Category -> Int
+let rank category =
+  match category with
+  | Food -> 0
+  | Tool -> 1
+  | Book -> 2
+forall c: rank c >= 0
+
+public label : Product -> String
+let label product = product.name ++ " (" ++ categoryName product.category ++ ")"

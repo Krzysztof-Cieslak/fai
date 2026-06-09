@@ -1349,5 +1349,37 @@ Editor integration:
     lexer change that the grammar does not track breaks CI. Stronger golden token
     snapshots were rejected to keep maintenance low.
 
+- **D104 Informational CI benchmark report (non-gating).** The wall-clock benches
+  now run in CI, but only to **publish a report**, never to gate. A separate
+  `Benchmarks` workflow (`.github/workflows/bench.yml`) runs `cargo bench` on
+  `main` and on demand (a single Linux runner, `DIVAN_MAX_TIME` bounding the heavy
+  cases), renders a Markdown summary onto the run page, and uploads the raw output
+  plus a parsed `bench-results.json` as artifacts. The deterministic guard tests
+  remain the **sole** performance gate (shared runners are too noisy to gate on
+  timings); every other CI run still merely compiles the benches to prevent
+  bitrot. Trend-over-time tracking is deliberately left to the artifacts (no
+  gh-pages/threshold automation) to keep the anti-flakiness stance intact.
+  - **Parsing divan, not a new harness.** divan has no machine-readable output,
+    so a small in-tree tool (`fai-tests`' `bench_summary` module + `bench-summary`
+    bin, unit-tested over a captured fixture) parses its Unicode-tree text. Writing
+    the parser in Rust (rather than a shell/Python script) keeps it covered by the
+    normal test suite; it degrades gracefully (an unrecognized line is skipped)
+    so a divan format change thins the report instead of failing the job.
+  - **`edit→test` measured at two levels.** The contract loop is benched both
+    in-process (`fai-tests`' `contracts` bench — front end + synthesize + JIT +
+    run, scaling to large workspaces) and end-to-end through the real binary and
+    its daemon (`fai-cli`'s `test_loop` bench — adding the client/daemon round trip
+    and the worker subprocess + IPC). No new deterministic guard was added: the
+    incremental front end it exercises is already guarded, and synthesis + JIT are
+    per-run by design and so not deterministically countable.
+  - **Language-server benches over real code, linked to source.** Beyond the
+    synthetic corpus, the `lsp` bench probes a hand-written multi-module
+    application (`fai-corpus`'s `realworld` fixtures, living under `samples/` so the
+    sample suite keeps them green). Each probe's divan argument label is its
+    `<path>.fai#Lnn` source location, so the rendered report links every
+    real-world row to the exact line it measured. The corpus generator itself moved
+    into the standalone `fai-corpus` crate so both `fai-tests` and `fai-cli`'s
+    benches can share it without a dependency cycle.
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

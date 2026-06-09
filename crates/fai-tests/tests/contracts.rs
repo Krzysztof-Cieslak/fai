@@ -126,6 +126,46 @@ fn prelude_contracts_pass() {
 }
 
 #[test]
+fn store_app_contracts_pass() {
+    // The real-world sample app (the language-server bench fixture) carries
+    // `example`/`forall` contracts across its modules; run them together (the
+    // modules reference each other) and assert they all hold.
+    let _g = lock();
+    let (db, files) = fai_corpus::realworld::load_app();
+    let handles: Vec<SourceFile> = files.values().copied().collect();
+    let outcome = test(&db, &handles, None, TestConfig::default());
+    assert!(
+        outcome.ok,
+        "store app contracts should pass; diagnostics: {:?}",
+        outcome.diagnostics.iter().map(|d| (d.code.as_str(), &d.message)).collect::<Vec<_>>()
+    );
+    assert!(outcome.total > 0, "expected contracts in the store app");
+    assert_eq!(outcome.passed, outcome.total, "every store-app contract passes");
+    assert_eq!(outcome.not_run, 0, "no store-app contract skipped");
+    assert_eq!(outcome.leaked, 0, "running contracts must not leak");
+}
+
+#[test]
+fn generated_corpus_contracts_pass() {
+    // The synthetic corpus the `fai test` benchmarks edit and re-run: its
+    // generated `example`/`forall` contracts must all hold (a green corpus, so the
+    // benches measure a passing run). Fewer trials keeps the test quick.
+    let _g = lock();
+    let spec = fai_corpus::CorpusSpec::with_modules_and_contracts(3);
+    let (db, files) = fai_corpus::build_db(&spec);
+    let config = TestConfig { trials: 16, ..TestConfig::default() };
+    let outcome = test(&db, &files, None, config);
+    assert!(
+        outcome.ok,
+        "generated corpus contracts should pass; diagnostics: {:?}",
+        outcome.diagnostics.iter().map(|d| (d.code.as_str(), &d.message)).collect::<Vec<_>>()
+    );
+    assert!(outcome.total > 0, "expected generated contracts");
+    assert_eq!(outcome.passed, outcome.total, "every generated contract passes");
+    assert_eq!(outcome.leaked, 0, "running contracts must not leak");
+}
+
+#[test]
 fn wrong_example_fails_located() {
     let outcome = run(&[("Bad.fai", "module Bad\nexample: 1 = 2\n")]);
     assert!(!outcome.ok);

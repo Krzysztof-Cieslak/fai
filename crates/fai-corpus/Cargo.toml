@@ -1,0 +1,16 @@
+[package]
+name = "fai-corpus"
+description = "Deterministic synthetic-workspace generator and real-world fixtures for benchmarks and performance guards."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+license.workspace = true
+
+[dependencies]
+fai-db.workspace = true
+fai-types.workspace = true
+camino.workspace = true
+
+[lints]
+workspace = true

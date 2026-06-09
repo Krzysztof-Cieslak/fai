@@ -600,6 +600,8 @@ version = "0.1.0"
 dependencies = [
  "camino",
  "clap",
+ "divan",
+ "fai-corpus",
  "fai-driver",
  "fai-lsp",
  "fai-server",
@@ -668,6 +670,15 @@ dependencies = [
  "salsa",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "fai-corpus"
+version = "0.1.0"
+dependencies = [
+ "camino",
+ "fai-db",
+ "fai-types",
 ]
 
 [[package]]
@@ -853,6 +864,7 @@ dependencies = [
  "fai-codegen",
  "fai-contracts",
  "fai-core",
+ "fai-corpus",
  "fai-db",
  "fai-diagnostics",
  "fai-driver",
