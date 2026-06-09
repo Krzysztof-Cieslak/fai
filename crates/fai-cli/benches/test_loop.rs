@@ -9,10 +9,10 @@
 //! profiling only (not a CI gate). Run with `cargo bench -p fai-cli --bench
 //! test_loop`.
 //!
-//! Disabled on Windows for the same reason as the daemon tests: the spawned
+//! Not run on Windows for the same reason as the daemon tests: the spawned
 //! daemon inherits the client's captured stdio and would block until its idle
-//! timeout.
-#![cfg(not(windows))]
+//! timeout. The bench still compiles there (CI builds every target); only the
+//! run is skipped — and the Benchmarks workflow runs on Linux regardless.
 
 use std::cell::Cell;
 use std::path::PathBuf;
@@ -23,6 +23,10 @@ use divan::Bencher;
 use fai_corpus::{self as corpus, CorpusSpec};
 
 fn main() {
+    // The daemon would block on Windows (it inherits the client's captured
+    // stdio), so the benches are not run there; on every other platform this
+    // runs the full divan suite.
+    #[cfg(not(windows))]
     divan::main();
 }
 
