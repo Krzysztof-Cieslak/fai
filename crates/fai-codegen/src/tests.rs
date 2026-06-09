@@ -1328,10 +1328,11 @@ fn drop_of_a_tuple_is_inlined() {
 }
 
 #[test]
-fn drop_of_a_list_falls_back_to_the_runtime() {
-    // A `List` has no fixed shape, so its drop is dispatched to `fai_drop` — a
-    // plain call with no reference-count branch in the generated code. The body
-    // has no `if`, so the absence of any `brif` confirms the runtime path.
+fn drop_of_a_list_is_inlined_with_a_runtime_dead_path() {
+    // A `List` is a known data type, so its drop is inlined: a tag-check and an
+    // in-place reference-count decrement (each a `brif`), releasing the cell's
+    // children through the runtime (`fai_drop_dead`) only on the dead path. The
+    // body has no `if`, so any `brif` comes from the inlined drop.
     let src = indoc! {r#"
         module M
 
@@ -1341,7 +1342,55 @@ fn drop_of_a_list_falls_back_to_the_runtime() {
           n
     "#};
     let ir = function_ir(src, "g").join("\n");
-    assert!(!ir.contains("brif"), "the runtime drop path emits no refcount branch:\n{ir}");
+    assert!(ir.contains("brif"), "the inlined list drop branches on the tag and refcount:\n{ir}");
+}
+
+#[test]
+fn drop_of_a_string_leaf_is_inlined() {
+    // A `String` is a boxed leaf (no reference-counted children), so its drop is
+    // inlined: an in-place decrement and a free on the dead path (a `brif`), no
+    // descriptor scan. The body has no `if`, so any `brif` is the inlined drop.
+    let src = indoc! {r#"
+        module M
+
+        f : Int -> Int
+        let f n =
+          let s = Int.toString n
+          n
+    "#};
+    let ir = function_ir(src, "f").join("\n");
+    assert!(ir.contains("brif"), "the inlined leaf drop branches on the refcount:\n{ir}");
+}
+
+#[test]
+fn dup_of_an_always_boxed_value_omits_the_tag_check() {
+    // `s` is used twice, so it is duplicated; a `String` is always boxed, so the
+    // increment is unconditional — no tag-check branch. The body has no `if` and
+    // builds a tuple (a runtime call, no branch), so the absence of any `brif`
+    // confirms the guard was elided.
+    let src = indoc! {r#"
+        module M
+
+        g : String -> String * String
+        let g s = (s, s)
+    "#};
+    let ir = function_ir(src, "g").join("\n");
+    assert!(!ir.contains("brif"), "an always-boxed dup needs no tag-check branch:\n{ir}");
+}
+
+#[test]
+fn dup_of_an_int_is_tag_checked() {
+    // `n` is used twice, so it is duplicated; an `Int` may be an immediate, so the
+    // increment is guarded by a tag-check (`brif`). The body has no `if`, so that
+    // branch is the inlined dup's guard.
+    let src = indoc! {r#"
+        module M
+
+        g : Int -> Int * Int
+        let g n = (n, n)
+    "#};
+    let ir = function_ir(src, "g").join("\n");
+    assert!(ir.contains("brif"), "an Int dup is guarded by a tag-check:\n{ir}");
 }
 
 // --- Drop specialization: behavioral leak/correctness matrix ----------------
@@ -1464,6 +1513,153 @@ fn inlined_drop_of_a_shared_record_decrements_without_freeing() {
     "#};
     let (code, out) = run(src);
     assert_eq!((code, out.as_str()), (0, "30\n"));
+}
+
+// --- Inlined drop of variable-shape data (List/ADT) and boxed leaves ---------
+// Each program discards a value through the inlined data/leaf drop path; a clean
+// (code 0) exit is the runtime's end-of-run leak check, proving the cell — and
+// its reference-counted children — were released exactly once.
+
+#[test]
+fn inlined_drop_of_a_list_frees_cells_and_elements() {
+    // The list (boxed cons cells) owns boxed `String` elements; dropping it must
+    // free every cell and every element.
+    let src = indoc! {r#"
+        module M
+
+        public main : Runtime -> Unit
+        let main r =
+          let xs = ["a", "b", "c"]
+          r.console.writeLine "ok"
+    "#};
+    let (code, out) = run(src);
+    assert_eq!((code, out.as_str()), (0, "ok\n"));
+}
+
+#[test]
+fn inlined_drop_of_an_adt_value() {
+    // A boxed `Some` cell owning a boxed child, dropped unused.
+    let src = indoc! {r#"
+        module M
+
+        public main : Runtime -> Unit
+        let main r =
+          let x = Some "wrapped"
+          r.console.writeLine "ok"
+    "#};
+    let (code, out) = run(src);
+    assert_eq!((code, out.as_str()), (0, "ok\n"));
+}
+
+#[test]
+fn inlined_drop_of_a_nullary_constructor_is_a_no_op() {
+    // `None` is an immediate (a nullary constructor), so the tag-checked data drop
+    // must take the immediate branch and do nothing — no spurious free.
+    let src = indoc! {r#"
+        module M
+
+        none : Option String
+        let none = None
+
+        public main : Runtime -> Unit
+        let main r =
+          let x = none
+          r.console.writeLine "ok"
+    "#};
+    let (code, out) = run(src);
+    assert_eq!((code, out.as_str()), (0, "ok\n"));
+}
+
+#[test]
+fn inlined_drop_of_a_float_leaf() {
+    let src = indoc! {r#"
+        module M
+
+        public main : Runtime -> Unit
+        let main r =
+          let x = 1.5
+          r.console.writeLine "ok"
+    "#};
+    let (code, out) = run(src);
+    assert_eq!((code, out.as_str()), (0, "ok\n"));
+}
+
+#[test]
+fn inlined_drop_of_a_string_leaf() {
+    let src = indoc! {r#"
+        module M
+
+        public main : Runtime -> Unit
+        let main r =
+          let s = Int.toString 42
+          r.console.writeLine "ok"
+    "#};
+    let (code, out) = run(src);
+    assert_eq!((code, out.as_str()), (0, "ok\n"));
+}
+
+#[test]
+fn inlined_drop_of_a_recursive_adt_parameter() {
+    // A binary-trees-shaped traversal: `count` drops its `Tree` *parameter* at the
+    // match's last use. Parameter types reach codegen through the `var_tys`
+    // pre-pass, so the node drop is the inlined data path (not a runtime fallback);
+    // a clean exit proves every allocated node was freed.
+    let src = indoc! {r#"
+        module M
+
+        type Tree =
+          | Leaf
+          | Node Tree Tree
+
+        build : Int -> Tree
+        let build n =
+          if n <= 0 then Leaf else Node (build (n - 1)) (build (n - 1))
+
+        count : Tree -> Int
+        let count t =
+          match t with
+          | Leaf -> 0
+          | Node l r -> 1 + count l + count r
+
+        public main : Runtime -> Unit
+        let main r = r.console.writeLine (Int.toString (count (build 5)))
+    "#};
+    let (code, out) = run(src);
+    assert_eq!((code, out.as_str()), (0, "31\n"));
+}
+
+#[test]
+fn inlined_drop_of_a_shared_list_does_not_double_free() {
+    // The list is aliased, so it is shared when the first drop runs: the inlined
+    // data drop must only decrement; the last reference frees it (and its cells).
+    let src = indoc! {r#"
+        module M
+
+        public main : Runtime -> Unit
+        let main r =
+          let xs = ["x", "y"]
+          let ys = xs
+          r.console.writeLine (Int.toString (List.length xs + List.length ys))
+    "#};
+    let (code, out) = run(src);
+    assert_eq!((code, out.as_str()), (0, "4\n"));
+}
+
+#[test]
+fn inlined_drop_of_a_deep_list_is_stack_safe() {
+    // A long list dropped at once: the inlined decrement reaches zero and hands
+    // the dead cell to `fai_drop_dead`, which drains the spine iteratively — so a
+    // structure far deeper than the native stack still releases without overflow.
+    let src = indoc! {r#"
+        module M
+
+        public main : Runtime -> Unit
+        let main r =
+          let xs = List.range 0 200000
+          r.console.writeLine "ok"
+    "#};
+    let (code, out) = run(src);
+    assert_eq!((code, out.as_str()), (0, "ok\n"));
 }
 
 // --- Inline integer primitives: emitted IR shape ----------------------------

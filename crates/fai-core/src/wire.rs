@@ -2,18 +2,21 @@
 //! from the warm daemon to an isolated run worker.
 //!
 //! The wire form mirrors the Core IR but drops everything that is either
-//! process-local or unused by code generation: a `Global` becomes a
+//! process-local or finer than code generation needs: a `Global` becomes a
 //! module-qualified [`WireDefId`] (the daemon resolves the module label; the
-//! worker re-interns it), local/function ids become plain integers, and node
-//! **types are omitted** (codegen ignores them, so the worker rebuilds each node
-//! with a placeholder type). [`from_wire`] reconstructs real [`LoweredDef`]s with
-//! synthetic [`SourceId`]s, returning the module labels and arities the worker
-//! needs to build the backend namer.
+//! worker re-interns it), and local/function ids become plain integers. Each node
+//! still carries its type, but as a [`WireTy`] — a projection of [`Ty`] that
+//! keeps only the reference-count-relevant *shape* code generation distinguishes
+//! (dropping ADT/interface identity, record labels, and arrow operands), so the
+//! worker classifies inlined dup/drop exactly as the warm in-process path does.
+//! [`from_wire`] reconstructs real [`LoweredDef`]s with synthetic [`SourceId`]s
+//! and marker types, returning the module labels and arities the worker needs to
+//! build the backend namer.
 
-use fai_resolve::{DefId, LocalId};
+use fai_resolve::{AdtRef, DefId, InterfaceRef, LocalId};
 use fai_span::SourceId;
 use fai_syntax::Symbol;
-use fai_types::{Con, Ty};
+use fai_types::{Con, RecordRow, RowEnd, RowVarId, Ty, TyVarId};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
@@ -109,9 +112,63 @@ pub enum WireFieldIndex {
     },
 }
 
-/// A Core expression in wire form (no types).
+/// A type in wire form: a projection of [`Ty`] that keeps only the
+/// reference-count-relevant *shape* code generation distinguishes. ADT/interface
+/// identity, record labels, and arrow operand types are dropped;
+/// [`reconstruct_ty`] rebuilds a marker [`Ty`] in the same class, so the worker
+/// classifies inlined dup/drop exactly as the warm in-process path does.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WireTy {
+    /// A type variable, or any type unknown to the projection: the runtime
+    /// reference-count fallback.
+    Var,
+    /// The error type (also the fallback).
+    Error,
+    /// `Unit`.
+    Unit,
+    /// `Int`.
+    Int,
+    /// `Float`.
+    Float,
+    /// `Bool`.
+    Bool,
+    /// `String`.
+    Str,
+    /// `Char`.
+    Char,
+    /// A tuple — its element types, for fixed-shape field classification.
+    Tuple(Vec<WireTy>),
+    /// A record — its field types in canonical (label-sorted) layout order, and
+    /// whether the row is closed.
+    Record {
+        /// The field types, in layout order (labels dropped).
+        fields: Vec<WireTy>,
+        /// Whether the record row is closed (no open tail).
+        closed: bool,
+    },
+    /// A `List` (maybe-immediate data: `[]` is an immediate).
+    List,
+    /// A discriminated union (maybe-immediate data: nullary constructors are
+    /// immediates).
+    Adt,
+    /// An interface dictionary (always boxed).
+    Interface,
+    /// A function value / closure (always boxed).
+    Arrow,
+}
+
+/// A Core expression in wire form: a [`WireExprKind`] plus its projected type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum WireExpr {
+pub struct WireExpr {
+    /// The expression form.
+    pub kind: WireExprKind,
+    /// The expression's projected type (see [`WireTy`]).
+    pub ty: WireTy,
+}
+
+/// The form of a [`WireExpr`] (mirrors [`crate::ir::ExprKind`]).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum WireExprKind {
     /// A literal.
     Lit(Lit),
     /// A local slot.
@@ -122,14 +179,6 @@ pub enum WireExpr {
     Prim {
         /// The primitive.
         op: Prim,
-        /// Whether the primitive borrows (does not consume) its first operand,
-        /// decided from the operand's real type at serialization time. Codegen
-        /// re-derives this from the operand type to pick the borrowed vs owned
-        /// runtime variant, but the wire form drops types — so the decision is
-        /// carried here and restored (as a boxed-type marker on the first
-        /// operand) so it still agrees with the drops reference counting inserted.
-        #[serde(default)]
-        borrowed: bool,
         /// The operands.
         args: Vec<WireExpr>,
     },
@@ -245,6 +294,76 @@ pub enum WireExpr {
     Error,
 }
 
+/// Projects a [`Ty`] to the [`WireTy`] code generation needs (see [`WireTy`]).
+#[must_use]
+pub fn project_ty(ty: &Ty) -> WireTy {
+    match ty {
+        Ty::Var(_) => WireTy::Var,
+        Ty::Error => WireTy::Error,
+        Ty::Unit => WireTy::Unit,
+        Ty::Con(Con::Int) => WireTy::Int,
+        Ty::Con(Con::Float) => WireTy::Float,
+        Ty::Con(Con::Bool) => WireTy::Bool,
+        Ty::Con(Con::String) => WireTy::Str,
+        Ty::Con(Con::Char) => WireTy::Char,
+        Ty::Con(Con::List) => WireTy::List,
+        Ty::Adt(_) => WireTy::Adt,
+        Ty::Interface(_) => WireTy::Interface,
+        Ty::Arrow(_, _) => WireTy::Arrow,
+        Ty::Tuple(elems) => WireTy::Tuple(elems.iter().map(project_ty).collect()),
+        Ty::Record(row) => WireTy::Record {
+            fields: row.fields.iter().map(|(_, t)| project_ty(t)).collect(),
+            closed: matches!(row.tail, RowEnd::Closed),
+        },
+        Ty::App(head, _) => project_app_head(head),
+    }
+}
+
+/// Projects the head of a type application (`List a`, `Option a`, `Dict k v`, …)
+/// to its constructor's [`WireTy`]. An unrecognized head falls back to `Var` (the
+/// runtime drop), which is always correct.
+fn project_app_head(head: &Ty) -> WireTy {
+    match head {
+        Ty::Con(Con::List) => WireTy::List,
+        Ty::Adt(_) => WireTy::Adt,
+        Ty::Interface(_) => WireTy::Interface,
+        Ty::App(inner, _) => project_app_head(inner),
+        _ => WireTy::Var,
+    }
+}
+
+/// Rebuilds a marker [`Ty`] from a [`WireTy`] — not the original type, but one in
+/// the same code-generation class (identity, labels, and component types are
+/// stand-ins), so the worker's dup/drop classifier agrees with the warm path.
+#[must_use]
+pub fn reconstruct_ty(w: &WireTy) -> Ty {
+    match w {
+        WireTy::Var => Ty::Var(TyVarId(0)),
+        WireTy::Error => Ty::Error,
+        WireTy::Unit => Ty::Unit,
+        WireTy::Int => Ty::Con(Con::Int),
+        WireTy::Float => Ty::Con(Con::Float),
+        WireTy::Bool => Ty::Con(Con::Bool),
+        WireTy::Str => Ty::Con(Con::String),
+        WireTy::Char => Ty::Con(Con::Char),
+        WireTy::Tuple(elems) => Ty::Tuple(elems.iter().map(reconstruct_ty).collect()),
+        WireTy::Record { fields, closed } => Ty::Record(RecordRow {
+            fields: fields
+                .iter()
+                .enumerate()
+                .map(|(i, t)| (Symbol::intern(&format!("_{i}")), reconstruct_ty(t)))
+                .collect(),
+            tail: if *closed { RowEnd::Closed } else { RowEnd::Open(RowVarId(0)) },
+        }),
+        WireTy::List => Ty::list(Ty::Error),
+        WireTy::Adt => Ty::Adt(AdtRef::new(SourceId::new(0), Symbol::intern("_Adt"))),
+        WireTy::Interface => {
+            Ty::Interface(InterfaceRef::new(SourceId::new(0), Symbol::intern("_Interface")))
+        }
+        WireTy::Arrow => Ty::arrow(Ty::Error, Ty::Error),
+    }
+}
+
 /// Converts a lowered definition to wire form. `module_of` maps any referenced
 /// definition to its module label (resolved by the caller, which has the
 /// database).
@@ -297,74 +416,77 @@ fn field_index_from_wire(index: &WireFieldIndex) -> FieldIndex {
 }
 
 fn expr_to_wire(e: &CExpr, module_of: &dyn Fn(DefId) -> String) -> WireExpr {
-    match &e.kind {
-        ExprKind::Lit(lit) => WireExpr::Lit(lit.clone()),
-        ExprKind::Local(local) => WireExpr::Local(slot(*local)),
-        ExprKind::Global(def) => WireExpr::Global(wire_id(*def, module_of)),
-        ExprKind::Prim { op, args } => WireExpr::Prim {
+    let kind = match &e.kind {
+        ExprKind::Lit(lit) => WireExprKind::Lit(lit.clone()),
+        ExprKind::Local(local) => WireExprKind::Local(slot(*local)),
+        ExprKind::Global(def) => WireExprKind::Global(wire_id(*def, module_of)),
+        ExprKind::Prim { op, args } => WireExprKind::Prim {
             op: *op,
-            borrowed: args.first().is_some_and(|a| op.borrows_operand(&a.ty)),
             args: args.iter().map(|a| expr_to_wire(a, module_of)).collect(),
         },
-        ExprKind::App { func, args } => WireExpr::App {
+        ExprKind::App { func, args } => WireExprKind::App {
             func: Box::new(expr_to_wire(func, module_of)),
             args: args.iter().map(|a| expr_to_wire(a, module_of)).collect(),
         },
-        ExprKind::If { cond, then, els } => WireExpr::If {
+        ExprKind::If { cond, then, els } => WireExprKind::If {
             cond: Box::new(expr_to_wire(cond, module_of)),
             then: Box::new(expr_to_wire(then, module_of)),
             els: Box::new(expr_to_wire(els, module_of)),
         },
-        ExprKind::Let { local, value, body } => WireExpr::Let {
+        ExprKind::Let { local, value, body } => WireExprKind::Let {
             local: slot(*local),
             value: Box::new(expr_to_wire(value, module_of)),
             body: Box::new(expr_to_wire(body, module_of)),
         },
-        ExprKind::MakeClosure { func, captures } => WireExpr::MakeClosure {
+        ExprKind::MakeClosure { func, captures } => WireExprKind::MakeClosure {
             func: func.0,
             captures: captures.iter().map(|c| slot(*c)).collect(),
         },
-        ExprKind::MakeData { tag, args, reuse } => WireExpr::MakeData {
+        ExprKind::MakeData { tag, args, reuse } => WireExprKind::MakeData {
             tag: *tag,
             args: args.iter().map(|a| expr_to_wire(a, module_of)).collect(),
             reuse: reuse.map(slot),
         },
-        ExprKind::DataTag(base) => WireExpr::DataTag(Box::new(expr_to_wire(base, module_of))),
-        ExprKind::DataField { base, index } => WireExpr::DataField {
+        ExprKind::DataTag(base) => WireExprKind::DataTag(Box::new(expr_to_wire(base, module_of))),
+        ExprKind::DataField { base, index } => WireExprKind::DataField {
             base: Box::new(expr_to_wire(base, module_of)),
             index: field_index_to_wire(*index),
         },
-        ExprKind::Reset { value, token, body } => WireExpr::Reset {
+        ExprKind::Reset { value, token, body } => WireExprKind::Reset {
             value: Box::new(expr_to_wire(value, module_of)),
             token: slot(*token),
             body: Box::new(expr_to_wire(body, module_of)),
         },
         ExprKind::Dup { local, body } => {
-            WireExpr::Dup { local: slot(*local), body: Box::new(expr_to_wire(body, module_of)) }
+            WireExprKind::Dup { local: slot(*local), body: Box::new(expr_to_wire(body, module_of)) }
         }
-        ExprKind::Drop { local, body } => {
-            WireExpr::Drop { local: slot(*local), body: Box::new(expr_to_wire(body, module_of)) }
-        }
-        ExprKind::Join { params, body } => WireExpr::Join {
+        ExprKind::Drop { local, body } => WireExprKind::Drop {
+            local: slot(*local),
+            body: Box::new(expr_to_wire(body, module_of)),
+        },
+        ExprKind::Join { params, body } => WireExprKind::Join {
             params: params.iter().map(|p| slot(*p)).collect(),
             body: Box::new(expr_to_wire(body, module_of)),
         },
         ExprKind::Recur { args } => {
-            WireExpr::Recur { args: args.iter().map(|a| expr_to_wire(a, module_of)).collect() }
+            WireExprKind::Recur { args: args.iter().map(|a| expr_to_wire(a, module_of)).collect() }
         }
-        ExprKind::HoleStart { hole, body } => {
-            WireExpr::HoleStart { hole: slot(*hole), body: Box::new(expr_to_wire(body, module_of)) }
-        }
-        ExprKind::HoleFill { hole, cell, field } => WireExpr::HoleFill {
+        ExprKind::HoleStart { hole, body } => WireExprKind::HoleStart {
+            hole: slot(*hole),
+            body: Box::new(expr_to_wire(body, module_of)),
+        },
+        ExprKind::HoleFill { hole, cell, field } => WireExprKind::HoleFill {
             hole: slot(*hole),
             cell: Box::new(expr_to_wire(cell, module_of)),
             field: *field,
         },
-        ExprKind::HoleClose { hole, base } => {
-            WireExpr::HoleClose { hole: slot(*hole), base: Box::new(expr_to_wire(base, module_of)) }
-        }
-        ExprKind::Error => WireExpr::Error,
-    }
+        ExprKind::HoleClose { hole, base } => WireExprKind::HoleClose {
+            hole: slot(*hole),
+            base: Box::new(expr_to_wire(base, module_of)),
+        },
+        ExprKind::Error => WireExprKind::Error,
+    };
+    WireExpr { kind, ty: project_ty(&e.ty) }
 }
 
 /// Reconstructed program: real [`LoweredDef`]s plus the module labels and
@@ -496,85 +618,80 @@ fn fn_from_wire(f: &WireFn, sources: &mut SourceAssigner) -> CoreFn {
 }
 
 fn expr_from_wire(e: &WireExpr, sources: &mut SourceAssigner) -> CExpr {
-    // Types are unused by codegen; rebuild every node with a placeholder.
-    let kind = match e {
-        WireExpr::Lit(lit) => ExprKind::Lit(lit.clone()),
-        WireExpr::Local(i) => ExprKind::Local(LocalId::from_index(*i as usize)),
-        WireExpr::Global(id) => ExprKind::Global(sources.def_id(id)),
-        WireExpr::Prim { op, borrowed, args } => {
-            let mut args: Vec<CExpr> = args.iter().map(|a| expr_from_wire(a, sources)).collect();
-            // Restore the borrow decision: codegen reads the first operand's type
-            // to pick the borrowed runtime variant, so give it a boxed-type marker
-            // when the primitive borrows (the type is otherwise a placeholder).
-            if *borrowed && let Some(first) = args.first_mut() {
-                first.ty = Ty::Con(Con::String);
-            }
-            ExprKind::Prim { op: *op, args }
-        }
-        WireExpr::App { func, args } => ExprKind::App {
+    let kind = match &e.kind {
+        WireExprKind::Lit(lit) => ExprKind::Lit(lit.clone()),
+        WireExprKind::Local(i) => ExprKind::Local(LocalId::from_index(*i as usize)),
+        WireExprKind::Global(id) => ExprKind::Global(sources.def_id(id)),
+        WireExprKind::Prim { op, args } => ExprKind::Prim {
+            op: *op,
+            args: args.iter().map(|a| expr_from_wire(a, sources)).collect(),
+        },
+        WireExprKind::App { func, args } => ExprKind::App {
             func: Box::new(expr_from_wire(func, sources)),
             args: args.iter().map(|a| expr_from_wire(a, sources)).collect(),
         },
-        WireExpr::If { cond, then, els } => ExprKind::If {
+        WireExprKind::If { cond, then, els } => ExprKind::If {
             cond: Box::new(expr_from_wire(cond, sources)),
             then: Box::new(expr_from_wire(then, sources)),
             els: Box::new(expr_from_wire(els, sources)),
         },
-        WireExpr::Let { local, value, body } => ExprKind::Let {
+        WireExprKind::Let { local, value, body } => ExprKind::Let {
             local: LocalId::from_index(*local as usize),
             value: Box::new(expr_from_wire(value, sources)),
             body: Box::new(expr_from_wire(body, sources)),
         },
-        WireExpr::MakeClosure { func, captures } => ExprKind::MakeClosure {
+        WireExprKind::MakeClosure { func, captures } => ExprKind::MakeClosure {
             func: FnId(*func),
             captures: captures.iter().map(|&i| LocalId::from_index(i as usize)).collect(),
         },
-        WireExpr::MakeData { tag, args, reuse } => ExprKind::MakeData {
+        WireExprKind::MakeData { tag, args, reuse } => ExprKind::MakeData {
             tag: *tag,
             args: args.iter().map(|a| expr_from_wire(a, sources)).collect(),
             reuse: reuse.map(|i| LocalId::from_index(i as usize)),
         },
-        WireExpr::DataTag(base) => ExprKind::DataTag(Box::new(expr_from_wire(base, sources))),
-        WireExpr::DataField { base, index } => ExprKind::DataField {
+        WireExprKind::DataTag(base) => ExprKind::DataTag(Box::new(expr_from_wire(base, sources))),
+        WireExprKind::DataField { base, index } => ExprKind::DataField {
             base: Box::new(expr_from_wire(base, sources)),
             index: field_index_from_wire(index),
         },
-        WireExpr::Reset { value, token, body } => ExprKind::Reset {
+        WireExprKind::Reset { value, token, body } => ExprKind::Reset {
             value: Box::new(expr_from_wire(value, sources)),
             token: LocalId::from_index(*token as usize),
             body: Box::new(expr_from_wire(body, sources)),
         },
-        WireExpr::Dup { local, body } => ExprKind::Dup {
+        WireExprKind::Dup { local, body } => ExprKind::Dup {
             local: LocalId::from_index(*local as usize),
             body: Box::new(expr_from_wire(body, sources)),
         },
-        WireExpr::Drop { local, body } => ExprKind::Drop {
+        WireExprKind::Drop { local, body } => ExprKind::Drop {
             local: LocalId::from_index(*local as usize),
             body: Box::new(expr_from_wire(body, sources)),
         },
-        WireExpr::Join { params, body } => ExprKind::Join {
+        WireExprKind::Join { params, body } => ExprKind::Join {
             params: params.iter().map(|&i| LocalId::from_index(i as usize)).collect(),
             body: Box::new(expr_from_wire(body, sources)),
         },
-        WireExpr::Recur { args } => {
+        WireExprKind::Recur { args } => {
             ExprKind::Recur { args: args.iter().map(|a| expr_from_wire(a, sources)).collect() }
         }
-        WireExpr::HoleStart { hole, body } => ExprKind::HoleStart {
+        WireExprKind::HoleStart { hole, body } => ExprKind::HoleStart {
             hole: LocalId::from_index(*hole as usize),
             body: Box::new(expr_from_wire(body, sources)),
         },
-        WireExpr::HoleFill { hole, cell, field } => ExprKind::HoleFill {
+        WireExprKind::HoleFill { hole, cell, field } => ExprKind::HoleFill {
             hole: LocalId::from_index(*hole as usize),
             cell: Box::new(expr_from_wire(cell, sources)),
             field: *field,
         },
-        WireExpr::HoleClose { hole, base } => ExprKind::HoleClose {
+        WireExprKind::HoleClose { hole, base } => ExprKind::HoleClose {
             hole: LocalId::from_index(*hole as usize),
             base: Box::new(expr_from_wire(base, sources)),
         },
-        WireExpr::Error => ExprKind::Error,
+        WireExprKind::Error => ExprKind::Error,
     };
-    CExpr::new(kind, Ty::Error)
+    // Each node's projected type is reconstructed as a marker `Ty` in the same
+    // code-generation class, so the worker classifies dup/drop as the warm path.
+    CExpr::new(kind, reconstruct_ty(&e.ty))
 }
 
 #[cfg(test)]
@@ -784,18 +901,22 @@ mod tests {
     fn prim_borrow_decision_survives_wire() {
         // A borrow-sensitive primitive (structural equality) on a boxed operand
         // must keep its borrow decision across the wire: codegen re-derives the
-        // borrowed vs owned runtime variant from the operand's type, and the wire
-        // form drops types, so without carrying the decision codegen would pick
-        // the consuming variant and double-free (disagreeing with the drops that
-        // reference counting inserted).
+        // borrowed vs owned runtime variant from the operand's type. The wire form
+        // carries each node's projected type, so the boxed operand still reads as
+        // boxed-rc after the round trip (otherwise codegen would pick the consuming
+        // variant and double-free, disagreeing with the drops reference counting
+        // inserted).
         let boxed = CExpr::new(ExprKind::Local(LocalId::from_index(0)), Ty::Con(Con::String));
         let eq = CExpr::new(
             ExprKind::Prim { op: Prim::Eq, args: vec![boxed.clone(), boxed] },
             Ty::Error,
         );
         let wire = expr_to_wire(&eq, &|_| "M".to_owned());
-        match &wire {
-            WireExpr::Prim { borrowed, .. } => assert!(*borrowed, "boxed Eq records a borrow"),
+        // The operand's projected type is carried on the node (no separate flag).
+        match &wire.kind {
+            WireExprKind::Prim { args, .. } => {
+                assert_eq!(args[0].ty, WireTy::Str, "the boxed operand's type is carried");
+            }
             other => panic!("expected a Prim, got {other:?}"),
         }
         let mut sources = SourceAssigner::default();
@@ -848,13 +969,21 @@ mod tests {
         let a = WireDef {
             id: WireDefId { module: "A".to_owned(), name: "f".to_owned() },
             arity: 0,
-            fns: vec![WireFn { params: vec![], captures: vec![], body: WireExpr::Lit(Lit::Unit) }],
+            fns: vec![WireFn {
+                params: vec![],
+                captures: vec![],
+                body: WireExpr { kind: WireExprKind::Lit(Lit::Unit), ty: WireTy::Unit },
+            }],
             entry_borrowed: Vec::new(),
         };
         let b = WireDef {
             id: WireDefId { module: "B".to_owned(), name: "f".to_owned() },
             arity: 0,
-            fns: vec![WireFn { params: vec![], captures: vec![], body: WireExpr::Lit(Lit::Unit) }],
+            fns: vec![WireFn {
+                params: vec![],
+                captures: vec![],
+                body: WireExpr { kind: WireExprKind::Lit(Lit::Unit), ty: WireTy::Unit },
+            }],
             entry_borrowed: Vec::new(),
         };
         let bundle = WireBundle { entry: a.id.clone(), runtime: a.id.clone(), defs: vec![a, b] };

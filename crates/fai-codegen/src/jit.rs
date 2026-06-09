@@ -27,6 +27,7 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_dup", rt::fai_dup);
     sym!("fai_drop", rt::fai_drop);
     sym!("fai_free", rt::fai_free);
+    sym!("fai_drop_dead", rt::fai_drop_dead);
     sym!("fai_box_int", rt::fai_box_int);
     sym!("fai_int_add", rt::fai_int_add);
     sym!("fai_int_sub", rt::fai_int_sub);
