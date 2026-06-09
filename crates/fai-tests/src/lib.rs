@@ -7,6 +7,7 @@
 //! so this guards the correctness of early cutoff and invalidation as later
 //! phases add real queries.
 
+pub mod algorithms;
 pub mod bench_summary;
 mod checker;
 

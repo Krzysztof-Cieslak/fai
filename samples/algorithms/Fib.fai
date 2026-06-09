@@ -1,0 +1,17 @@
+module Fib
+
+// Naive recursive Fibonacci: exponential, so it measures function-call and
+// integer-arithmetic overhead with no allocation. Used by the Rust-vs-Fai
+// runtime benchmark; `run` is the benched entry, `main` runs it once.
+/// The nth Fibonacci number (naive, exponential recursion).
+public fib : Int -> Int
+let fib n = if n < 2 then n else fib (n - 1) + fib (n - 2)
+example: fib 10 = 55
+
+/// The benchmark workload: the nth Fibonacci number.
+public run : Int -> Int
+let run n = fib n
+example: run 7 = 13
+
+public main : Runtime -> Unit
+let main runtime = runtime.console.writeLine (Int.toString (run 33))
