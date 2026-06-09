@@ -5556,3 +5556,165 @@ fn trmc_nested_two_deep_exact_shape() {
          (recur %2 %15)))))))) (drop %3; (holeclose %11 <error>)))))))))))\n"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Purity/totality analysis (`is_pure_total`) and the reorder-safety it unlocks:
+// a later constructor argument hoisted ahead of the back-edge may call a pure,
+// total (non-recursive, effect-free, abort-free) function. This analysis is the
+// correctness guard — the reference-count oracle does not check effect ordering.
+// ===========================================================================
+
+use crate::tests::pure_total;
+
+#[test]
+fn pure_total_arithmetic() {
+    assert!(pure_total("module M\n\nlet f x = x + 1\n", "f"));
+}
+
+#[test]
+fn pure_total_constructor() {
+    assert!(pure_total("module M\n\nlet f x = Some x\n", "f"));
+}
+
+#[test]
+fn pure_total_division_by_literal() {
+    assert!(pure_total("module M\n\nlet f x = x / 2\n", "f"));
+}
+
+#[test]
+fn not_pure_total_division_by_variable() {
+    assert!(!pure_total("module M\n\nlet f x y = x / y\n", "f"));
+}
+
+#[test]
+fn not_pure_total_self_recursive() {
+    // Termination of a recursive function is undecidable, so it is conservatively
+    // not total.
+    assert!(!pure_total(
+        indoc! {r#"
+            module M
+
+            let countDown n = if n <= 0 then 0 else countDown (n - 1)
+        "#},
+        "countDown",
+    ));
+}
+
+#[test]
+fn not_pure_total_mutually_recursive() {
+    // A mutual-recursion cycle resolves to not-total.
+    let src = indoc! {r#"
+        module M
+
+        let isEven n = if n <= 0 then true else isOdd (n - 1)
+        let isOdd n = if n <= 0 then false else isEven (n - 1)
+    "#};
+    assert!(!pure_total(src, "isEven"));
+    assert!(!pure_total(src, "isOdd"));
+}
+
+#[test]
+fn pure_total_calls_pure_function() {
+    // Calling a non-recursive pure function is pure and total.
+    assert!(pure_total(
+        indoc! {r#"
+            module M
+
+            let g x = x + 1
+            let f x = g x + g x
+        "#},
+        "f",
+    ));
+}
+
+#[test]
+fn not_pure_total_calls_recursive_function() {
+    assert!(!pure_total(
+        indoc! {r#"
+            module M
+
+            let len xs =
+              match xs with
+              | [] -> 0
+              | _ :: rest -> 1 + len rest
+
+            let f xs = len xs
+        "#},
+        "f",
+    ));
+}
+
+#[test]
+fn not_pure_total_capability_effect() {
+    // A console write is an observable effect.
+    assert!(!pure_total(
+        indoc! {r#"
+            module M
+
+            public shout : Runtime -> Unit
+            let shout rt = rt.console.writeLine "hi"
+        "#},
+        "shout",
+    ));
+}
+
+#[test]
+fn trmc_reorder_pure_call() {
+    // The recursion is the first field; the later field calls a non-recursive pure
+    // function, which the analysis now admits, so the function flattens.
+    trmc_spine(
+        indoc! {r#"
+            module M
+
+            type Snoc = | Empty | Snoc Snoc Int
+
+            let twice x = x + x
+
+            let bump xs =
+              match xs with
+              | Empty -> Empty
+              | Snoc rest x -> Snoc (bump rest) (twice x)
+        "#},
+        "bump",
+    );
+}
+
+#[test]
+fn trmc_reorder_division_by_literal() {
+    // The later field divides by a non-zero literal, which cannot abort, so the
+    // function flattens.
+    trmc_spine(
+        indoc! {r#"
+            module M
+
+            type Snoc = | Empty | Snoc Snoc Int
+
+            let bump xs =
+              match xs with
+              | Empty -> Empty
+              | Snoc rest x -> Snoc (bump rest) (x / 2)
+        "#},
+        "bump",
+    );
+}
+
+#[test]
+fn no_trmc_reorder_recursive_call() {
+    // The later field calls a recursive function (not provably total), so hoisting
+    // it ahead of the recursion is unsafe: the function stays ordinary recursion.
+    no_trmc(
+        indoc! {r#"
+            module M
+
+            type Snoc = | Empty | Snoc Snoc Int
+
+            let countDown n = if n <= 0 then 0 else countDown (n - 1)
+
+            let bump xs =
+              match xs with
+              | Empty -> Empty
+              | Snoc rest x -> Snoc (bump rest) (countDown x)
+        "#},
+        "bump",
+    );
+}

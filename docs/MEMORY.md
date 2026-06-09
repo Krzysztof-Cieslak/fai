@@ -1125,12 +1125,18 @@ program output are unchanged, guarded by the full type/golden suite):
     threaded through a **chain of one or more tail constructors** (the "modulo cons"
     case, e.g. `x :: f r` or `x :: x :: f r`). The recursive call may sit at any
     field index; a constructor argument after it (in evaluation order) is hoisted
-    ahead of the back-edge only when it is **pure and total** (no call, no integer
-    division/remainder, no capability effect), preserving observable order. The
-    recursion must flow *linearly* — used exactly once at each step, carried whole
-    through each cell — so two self-calls in one constructor (`Node (f l) (f r)`), a
-    non-tail self-call, or any other self-reference leaves the function as ordinary
-    recursion.
+    ahead of the back-edge only when it is **pure and total**, preserving observable
+    effect/abort order. Purity/totality is decided by the `is_pure_total` analysis:
+    no capability effect, no integer division/remainder that could abort (a non-zero
+    *literal* divisor cannot), and no call except a saturated/partial application of
+    a statically known top-level function that is itself pure and total. Since Fai
+    has no loops, an acyclic call graph implies termination, so **recursion is
+    conservatively excluded** (a function reachable from itself is treated as
+    not-total — proving its termination is undecidable); this falls out of a salsa
+    cycle whose members resolve to "not pure-total". The recursion must flow
+    *linearly* — used exactly once at each step, carried whole through each cell — so
+    two self-calls in one constructor (`Node (f l) (f r)`), a non-tail self-call, or
+    any other self-reference leaves the function as ordinary recursion.
   - **Row-polymorphic functions flatten too.** A function carrying leading
     offset-evidence parameters calls itself *curried* — lowering partially applies
     it to its evidence and then to the real arguments
@@ -1172,8 +1178,10 @@ program output are unchanged, guarded by the full type/golden suite):
     the differential allocation tests confirm a unique list still recycles its
     spine (for monomorphic, row-polymorphic, *and* nested-constructor rebuilds), and
     deep end-to-end runs (JIT and AOT) confirm constant stack and a leak-free exit.
-    Mutually-recursive and non-last reorder-unsafe cases are noted as future
-    generalizations.
+    The reorder-safety of hoisting a later argument is **not** covered by the
+    reference-count oracle (it does not model effect ordering), so the
+    `is_pure_total` analysis is the guarantee and carries its own conservative test
+    matrix. **Mutual recursion** is the one remaining noted future generalization.
 
 - **D100 Inter-procedural argument borrowing (amends D79).** Borrow inference now
   consults callees' signatures, so a parameter only *forwarded* to another

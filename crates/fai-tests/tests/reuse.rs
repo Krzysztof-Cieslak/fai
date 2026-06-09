@@ -365,3 +365,38 @@ fn correct_row_polymorphic_update() {
 fn correct_nested_rebuild_chain() {
     outputs(&prog(&format!("{INC}\n\n{DBL}"), "sum (dbl (inc xs))", 10), "130");
 }
+
+#[test]
+fn correct_reorder_pure_call() {
+    // `bump` has a non-last recursive field whose later field calls the pure,
+    // non-recursive `twice`, which the reorder-safety analysis now admits, so it
+    // flattens to a loop. Built and consumed over a deep snoc-list, it runs
+    // leak-free with the expected output (2 * (1 + ... + 200) = 40200).
+    let src = formatdoc! {r#"
+        module M
+
+        type Snoc = | Empty | Snoc Snoc Int
+
+        let twice x = x + x
+
+        build : Int -> Snoc
+        let build n = if n <= 0 then Empty else Snoc (build (n - 1)) n
+
+        bump : Snoc -> Snoc
+        let bump xs =
+          match xs with
+          | Empty -> Empty
+          | Snoc rest x -> Snoc (bump rest) (twice x)
+
+        sumS : Int -> Snoc -> Int
+        let sumS acc xs =
+          match xs with
+          | Empty -> acc
+          | Snoc rest x -> sumS (acc + x) rest
+
+        public main : Runtime -> Unit
+        let main rt =
+          rt.console.writeLine (Int.toString (sumS 0 (bump (build 200))))
+    "#};
+    outputs(&src, "40200");
+}
