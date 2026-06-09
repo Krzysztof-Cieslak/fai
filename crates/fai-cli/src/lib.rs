@@ -374,10 +374,10 @@ fn run_daemon_command(
             }
             Err(error) => daemon_error(err, &error),
         },
-        DaemonCommand::Tap => {
-            let _ = writeln!(err, "`fai daemon tap` is not implemented yet");
-            EXIT_FAILURES
-        }
+        DaemonCommand::Tap => match fai_server::tap(root, log, out, err) {
+            Ok(()) => EXIT_OK,
+            Err(error) => daemon_error(err, &error),
+        },
     }
 }
 

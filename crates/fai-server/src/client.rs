@@ -20,7 +20,7 @@ use interprocess::local_socket::Stream;
 
 use crate::protocol::{
     CommandRequest, InitParams, OutputStream, PROTOCOL_VERSION, Request, Response, RunRequest,
-    ServerMessage, StatusInfo, TestRequest, frame_to_json, read_frame, write_frame,
+    ServerMessage, StatusInfo, TestRequest, frame_to_json, read_frame, render_tap, write_frame,
 };
 use crate::transport;
 
@@ -85,7 +85,9 @@ impl Client {
         self.send(request)?;
         loop {
             match self.next_message()? {
-                ServerMessage::Output { .. } | ServerMessage::TestEvent(_) => {}
+                ServerMessage::Output { .. }
+                | ServerMessage::TestEvent(_)
+                | ServerMessage::TapFrame(_) => {}
                 ServerMessage::Result(response) => return Ok(response),
             }
         }
@@ -129,8 +131,8 @@ impl Client {
                     let _ = err.write_all(&chunk);
                     let _ = err.flush();
                 }
-                // `run` produces no test events; ignore any defensively.
-                ServerMessage::TestEvent(_) => {}
+                // `run` produces no test events or tap frames; ignore defensively.
+                ServerMessage::TestEvent(_) | ServerMessage::TapFrame(_) => {}
                 ServerMessage::Result(Response::RunExit(code)) => return Ok(code),
                 ServerMessage::Result(Response::Error(message)) => {
                     return Err(DaemonError::Protocol(message));
@@ -162,8 +164,8 @@ impl Client {
                     }
                 }
                 // `test` contracts have no capabilities, so no `$/output` is
-                // expected; ignore any defensively.
-                ServerMessage::Output { .. } => {}
+                // expected; ignore output and tap frames defensively.
+                ServerMessage::Output { .. } | ServerMessage::TapFrame(_) => {}
                 ServerMessage::Result(Response::Test(rendered)) => {
                     let _ = out.write_all(rendered.stdout.as_bytes());
                     let _ = err.write_all(rendered.stderr.as_bytes());
@@ -175,6 +177,45 @@ impl Client {
                 ServerMessage::Result(other) => {
                     return Err(DaemonError::Protocol(format!("unexpected response: {other:?}")));
                 }
+            }
+        }
+    }
+
+    /// Subscribes to the daemon's traffic and prints a JSON decode of every
+    /// frame on other connections to `out`, one per line, until the connection
+    /// closes. A readiness notice is written to `status` once the daemon has
+    /// acknowledged the subscription (so a caller can know observation is live).
+    ///
+    /// Returns `Ok(())` on a clean end of stream (the daemon shut down or the
+    /// connection was closed), so an interrupted tap is not reported as an error.
+    pub fn tap(&mut self, out: &mut dyn Write, status: &mut dyn Write) -> Result<(), DaemonError> {
+        self.send(&Request::Tap)?;
+        // The first frame is the subscription acknowledgement; once it arrives,
+        // the daemon has registered this tap and every later frame is observed.
+        match self.next_message()? {
+            ServerMessage::Result(Response::Ok) => {}
+            ServerMessage::Result(Response::Error(message)) => {
+                return Err(DaemonError::Protocol(message));
+            }
+            other => {
+                return Err(DaemonError::Protocol(format!("unexpected tap response: {other:?}")));
+            }
+        }
+        let _ = writeln!(status, "tapping daemon traffic for this workspace (Ctrl-C to stop)");
+        let _ = status.flush();
+
+        loop {
+            match self.next_message() {
+                Ok(ServerMessage::TapFrame(frame)) => {
+                    let _ = writeln!(out, "{}", render_tap(&frame));
+                    let _ = out.flush();
+                }
+                // No other server message is expected on a tap connection; ignore.
+                Ok(_) => {}
+                // A clean close (the daemon shut down, or we were interrupted) ends
+                // the tap without an error.
+                Err(error) if is_disconnect(&error) => return Ok(()),
+                Err(error) => return Err(error.into()),
             }
         }
     }
@@ -280,6 +321,18 @@ fn try_handshake(root: &Utf8Path, log: Option<&PathBuf>) -> Result<Option<Client
         // A daemon that died mid-handshake is simply not usable.
         Err(_) => Ok(None),
     }
+}
+
+/// Whether an I/O error means the peer closed the connection cleanly (the daemon
+/// shut down, or the stream reached EOF), as opposed to a real protocol failure.
+fn is_disconnect(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::BrokenPipe
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+    )
 }
 
 /// Spawns a detached daemon for `root` (same binary, hidden subcommand).

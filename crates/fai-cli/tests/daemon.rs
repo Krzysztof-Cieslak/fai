@@ -12,9 +12,12 @@
 //! daemon without inheriting the client's handles) before these run there.
 #![cfg(not(windows))]
 
+use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::{Child, Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver};
+use std::time::{Duration, Instant};
 
 use indoc::indoc;
 
@@ -412,4 +415,97 @@ fn build_via_daemon_produces_a_runnable_binary() {
     let run = Command::new(&exe).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&run.stdout), "42\n");
     assert_eq!(run.status.code(), Some(0));
+}
+
+/// Kills the wrapped child on drop, so a panicking assertion never leaks the
+/// long-lived `daemon tap` process.
+struct KillOnDrop(Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Reads `reader` line by line on a background thread, forwarding each line over
+/// a channel so a test can poll with a timeout instead of blocking on the pipe.
+fn read_lines<R: Read + Send + 'static>(reader: R) -> Receiver<String> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(reader).lines() {
+            let Ok(line) = line else { break };
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    rx
+}
+
+#[test]
+fn tap_streams_decoded_traffic() {
+    let daemon = Daemon::new(
+        "tap",
+        &[(
+            "Ok.fai",
+            indoc! {r#"
+                module Ok
+
+                let x = 1
+            "#},
+        )],
+    );
+
+    // Spawn `fai daemon tap` as a child: it auto-spawns the daemon, prints a
+    // readiness notice on stderr, then streams a JSON decode of traffic on stdout.
+    let mut command = daemon.cmd();
+    command
+        .args(["daemon", "tap"])
+        .arg("-C")
+        .arg(&daemon.workspace)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().unwrap();
+    let frames = read_lines(child.stdout.take().unwrap());
+    let notices = read_lines(child.stderr.take().unwrap());
+    let _tap = KillOnDrop(child);
+
+    // Wait until the subscription is acknowledged (the readiness notice), so the
+    // traffic generated next cannot slip past a not-yet-registered tap.
+    let ready = notices.recv_timeout(Duration::from_secs(10));
+    assert!(
+        matches!(&ready, Ok(line) if line.contains("tapping daemon traffic")),
+        "expected a readiness notice, got: {ready:?}"
+    );
+
+    // Generate traffic on a separate connection; the tap must decode it.
+    let check = daemon.run(&["check"], &["--message-format=json"]);
+    assert!(check.status.success(), "stderr: {}", String::from_utf8_lossy(&check.stderr));
+
+    // Collect tapped lines until the decoded `check` command appears, or time out.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut seen: Vec<String> = Vec::new();
+    let command_line = loop {
+        match frames.recv_timeout(Duration::from_millis(500)) {
+            Ok(line) => {
+                let is_command = line.contains(r#""Command""#);
+                seen.push(line.clone());
+                if is_command {
+                    break Some(line);
+                }
+            }
+            Err(_) if Instant::now() >= deadline => break None,
+            Err(_) => {}
+        }
+    };
+    let command_line = command_line
+        .unwrap_or_else(|| panic!("tap did not decode the check command; saw: {seen:#?}"));
+
+    // A tapped line is `#<conn> <arrow> <json>`: the arrow shows direction and the
+    // remainder is the valid JSON decode of the frame.
+    assert!(command_line.contains("->"), "the check request is inbound: {command_line}");
+    let json = command_line.splitn(3, ' ').nth(2).expect("a frame carries a json payload");
+    let value: serde_json::Value = serde_json::from_str(json).expect("tap payload is valid JSON");
+    assert!(value.get("Command").is_some(), "decode names the request variant: {value}");
 }
