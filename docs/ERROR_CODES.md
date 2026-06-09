@@ -352,6 +352,18 @@ The contract aborted while being checked: a generated input drove the body into 
 
 An `example`/`forall` contract references a host capability — `Console`, `Clock`, `Random`, `FileSystem`, `Env`, or the `Runtime` that bundles them. Contracts are checked by `fai check` and run by `fai test`, so they must be deterministic and pure and cannot reach a capability. Express the law over pure values instead.
 
+### FAI6005 — binder type has no finite value
+
+**Severity:** error
+
+A `forall` binder's type cannot be generated because it has no finite value: every constructor is recursive, with no base case to terminate generation (e.g. `type S = Cons Int S`, or a mutually-recursive group where no member bottoms out). Add a non-recursive constructor, or supply a custom `Arbitrary` for the type.
+
+### FAI6006 — ambiguous custom generator
+
+**Severity:** error
+
+More than one top-level `Arbitrary` value matches a binder's type, so which one overrides the synthesized generator is ambiguous. Keep a single `Arbitrary` for the type in the contract's module.
+
 ## FAI7xxx — Native backend
 
 ### FAI7001 — construct not supported by the native backend yet

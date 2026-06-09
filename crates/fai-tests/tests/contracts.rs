@@ -460,6 +460,164 @@ fn passing_contract_run_is_clean() {
     assert_eq!(outcome.leaked, 0);
 }
 
+// --- Fuel-guarded recursion (collection-wrapped and mutual) ------------------
+
+/// A rose tree recurses only through a `List` field, which the old size-only
+/// guard did not shrink — so generation would explode. The fuel split bounds the
+/// total size, so it generates, runs, and passes (rather than timing out).
+#[test]
+fn rose_tree_collection_recursion_runs() {
+    let src = "module R\n\
+               public type Rose =\n  | Node Int (List Rose)\n\
+               public count : Rose -> Int\n\
+               let count r =\n  match r with\n  | Node n kids -> 1 + sumCounts kids\n\
+               let sumCounts kids =\n  match kids with\n  | [] -> 0\n\
+               \u{20}\u{20}| k :: rest -> count k + sumCounts rest\n\
+               forall r: count r >= 1\n";
+    let outcome = run(&[("R.fai", src)]);
+    assert!(outcome.ok, "diagnostics: {:?}", outcome.diagnostics);
+    assert_eq!(outcome.passed, 1);
+    assert_eq!(outcome.not_run, 0);
+    assert_eq!(outcome.leaked, 0);
+}
+
+/// A false property over a rose tree still shrinks to a small counterexample.
+#[test]
+fn rose_tree_counterexample_shrinks() {
+    let src = "module R\n\
+               public type Rose =\n  | Node Int (List Rose)\n\
+               public count : Rose -> Int\n\
+               let count r =\n  match r with\n  | Node n kids -> 1 + sumCounts kids\n\
+               let sumCounts kids =\n  match kids with\n  | [] -> 0\n\
+               \u{20}\u{20}| k :: rest -> count k + sumCounts rest\n\
+               forall r: count r = 1\n";
+    let outcome = run(&[("R.fai", src)]);
+    let d = outcome.diagnostics.iter().find(|d| d.code.as_str() == "FAI6001").expect("FAI6001");
+    let help = d.help.as_deref().unwrap_or("");
+    assert!(help.starts_with("counterexample: r = Node "), "got: {help}");
+}
+
+/// Mutually-recursive types (the recursion crosses `Tree`↔`Forest`, never a
+/// direct self-field) generate and run without diverging.
+#[test]
+fn mutually_recursive_adts_run() {
+    let src = "module M\n\
+               public type Tree =\n  | Leaf Int\n  | Branch Forest\n\
+               public type Forest =\n  | Empty\n  | Cons Tree Forest\n\
+               public treeSize : Tree -> Int\n\
+               let treeSize t =\n  match t with\n  | Leaf n -> 1\n  | Branch f -> 1 + forestSize f\n\
+               let forestSize f =\n  match f with\n  | Empty -> 0\n\
+               \u{20}\u{20}| Cons t rest -> treeSize t + forestSize rest\n\
+               forall t: treeSize t >= 1\n";
+    let outcome = run(&[("M.fai", src)]);
+    assert!(outcome.ok, "diagnostics: {:?}", outcome.diagnostics);
+    assert_eq!(outcome.passed, 1);
+    assert_eq!(outcome.not_run, 0);
+    assert_eq!(outcome.leaked, 0);
+}
+
+/// Recursion reachable only through an `Option` field bottoms out (the wrapper
+/// grounds to `None` at the budget floor).
+#[test]
+fn option_wrapped_recursion_runs() {
+    let src = "module O\n\
+               public type Chain =\n  | End\n  | Link (Option Chain)\n\
+               public len : Chain -> Int\n\
+               let len c =\n  match c with\n  | End -> 0\n\
+               \u{20}\u{20}| Link o ->\n    match o with\n    | None -> 1\n    | Some c2 -> 1 + len c2\n\
+               forall c: len c >= 0\n";
+    let outcome = run(&[("O.fai", src)]);
+    assert!(outcome.ok, "diagnostics: {:?}", outcome.diagnostics);
+    assert_eq!(outcome.passed, 1);
+    assert_eq!(outcome.not_run, 0);
+}
+
+/// A type with no finite value (every constructor recurses, no base case) cannot
+/// be generated: a clean `FAI6005`, not a hang or panic.
+#[test]
+fn non_groundable_type_is_reported() {
+    let src = "module S\n\
+               public type Stream =\n  | More Int Stream\n\
+               public head : Stream -> Int\n\
+               let head s =\n  match s with\n  | More n rest -> n\n\
+               forall s: head s = head s\n";
+    let outcome = run(&[("S.fai", src)]);
+    assert!(!outcome.ok);
+    assert_eq!(outcome.not_run, 1);
+    let d = outcome.diagnostics.iter().find(|d| d.code.as_str() == "FAI6005").expect("FAI6005");
+    assert!(d.message.contains("no finite value"), "got: {}", d.message);
+}
+
+// --- Custom `Arbitrary` overrides --------------------------------------------
+
+/// The invariant generator: every `Even` carries an even number.
+const EVEN: &str = "module C\n\
+                    public type Even =\n  | Even Int\n\
+                    public value : Even -> Int\n\
+                    let value e =\n  match e with\n  | Even n -> n\n\
+                    public arbEven : Test.Arbitrary Even\n\
+                    let arbEven =\n\
+                    \u{20}\u{20}let g size seed =\n    let (n, s2) = Test.int.gen size seed\n\
+                    \u{20}\u{20}\u{20}\u{20}(Even (n + n), s2)\n\
+                    \u{20}\u{20}{ gen = g, show = fun e -> Int.toString (value e), shrink = fun e -> [] }\n";
+
+/// A user-supplied `Arbitrary Even` overrides synthesis: the property holds only
+/// because every generated `Even` is even (the synthesized generator would draw
+/// odd values and fail).
+#[test]
+fn custom_generator_overrides_synthesis() {
+    let src = format!("{EVEN}forall e: value e % 2 = 0\n");
+    let outcome = run(&[("C.fai", &src)]);
+    assert!(outcome.ok, "diagnostics: {:?}", outcome.diagnostics);
+    assert_eq!(outcome.passed, 1);
+    assert_eq!(outcome.not_run, 0);
+}
+
+/// The override also applies where the type appears nested (here, as the element
+/// of a `List Even` binder).
+#[test]
+fn custom_generator_applies_to_nested_use() {
+    let src = format!(
+        "{EVEN}public allEven : List Even -> Bool\n\
+         let allEven es =\n  match es with\n  | [] -> true\n\
+         \u{20}\u{20}| e :: rest -> value e % 2 = 0 && allEven rest\n\
+         forall es: allEven es\n"
+    );
+    let outcome = run(&[("C.fai", &src)]);
+    assert!(outcome.ok, "diagnostics: {:?}", outcome.diagnostics);
+    assert_eq!(outcome.passed, 1);
+}
+
+/// Two `Arbitrary Even` definitions make the override ambiguous: `FAI6006`.
+#[test]
+fn ambiguous_custom_generator_is_reported() {
+    let src = format!(
+        "{EVEN}public arbEven2 : Test.Arbitrary Even\n\
+         let arbEven2 = arbEven\n\
+         forall e: value e % 2 = 0\n"
+    );
+    let outcome = run(&[("C.fai", &src)]);
+    assert!(!outcome.ok);
+    assert_eq!(outcome.not_run, 1);
+    let d = outcome.diagnostics.iter().find(|d| d.code.as_str() == "FAI6006").expect("FAI6006");
+    assert!(d.message.contains("more than one"), "got: {}", d.message);
+}
+
+/// Overrides apply to user records/ADTs only — a user `Arbitrary Int` does not
+/// replace the built-in `Int` generator, so a property that holds only for one
+/// fixed value still fails.
+#[test]
+fn custom_generator_does_not_override_builtins() {
+    let src = "module C\n\
+               public arbInt : Test.Arbitrary Int\n\
+               let arbInt =\n\
+               \u{20}\u{20}{ gen = fun size seed -> (42, seed), show = Int.toString, shrink = fun n -> [] }\n\
+               forall n: n = 42\n";
+    let outcome = run(&[("C.fai", src)]);
+    assert!(!outcome.ok, "built-in Int must not be overridden");
+    assert!(outcome.diagnostics.iter().any(|d| d.code.as_str() == "FAI6001"));
+}
+
 // --- `fai check`'s eager closed-`example` evaluation (in-process) -------------
 
 /// Evaluates the closed `example` contracts in `files` the way `fai check` does,

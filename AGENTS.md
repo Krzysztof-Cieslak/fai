@@ -62,9 +62,16 @@
 > counterexample (an ungeneratable binder is **`FAI6002`**). User **records and
 > ADTs** (including
 > recursive ones like `Dict`/`Set`/`Tree`) generate too, via a synthesized
-> top-level `Arbitrary` definition per type (a recursive type is a self-reference
-> guarded by a size budget; every synthesized function is capture-free, closing
-> over values by partial application). (Splitmix needs **bitwise `Int`
+> top-level `Arbitrary` definition per type (a recursive type is a self-reference;
+> every synthesized function is capture-free, closing over values by partial
+> application). The **size budget is consumed as node fuel** — split across a
+> constructor's recursive fields (a recursive list splits again across its
+> elements) — so **mutually-recursive types and recursion through a collection
+> field** (e.g. `Rose (List Rose)`) generate without blowing up, the base case is
+> the **minimal-rank** constructor, a type with no finite value is reported
+> **`FAI6005`**, and a user-supplied **`Arbitrary T`** in the contract's module
+> **overrides** the synthesized generator for a user record/ADT (an ambiguous
+> override is **`FAI6006`**). (Splitmix needs **bitwise `Int`
 > intrinsics** — `Int.and/or/xor/complement/shiftLeft/shiftRight/shiftRightLogical`
 > — and full-domain float generation needs `Float.fromBits`/`toBits`, both added
 > as part of this work.) A standard **language server** (`fai lsp`, the `fai-lsp`

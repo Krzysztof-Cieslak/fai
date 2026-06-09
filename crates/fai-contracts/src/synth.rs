@@ -21,11 +21,29 @@ use crate::arb::ArbBuilder;
 /// The standard-library testing module the harness targets.
 const TEST_MODULE: &str = "Test";
 
-/// A contract that cannot be run, with a human-readable reason.
+/// A contract that cannot be run, with a human-readable reason and the
+/// diagnostic code to report it under.
 #[derive(Debug, Clone)]
 pub struct NotRunnable {
     /// Why the contract cannot be generated/executed.
     pub reason: String,
+    /// The diagnostic code (defaults to [`crate::CONTRACT_NOT_RUNNABLE`]; a
+    /// non-groundable type or an ambiguous generator use a more specific code).
+    pub code: fai_diagnostics::DiagnosticCode,
+}
+
+impl NotRunnable {
+    /// A generic "cannot be run" reason, reported as `FAI6002`.
+    #[must_use]
+    pub fn reason(reason: impl Into<String>) -> Self {
+        NotRunnable { reason: reason.into(), code: crate::CONTRACT_NOT_RUNNABLE }
+    }
+
+    /// A "cannot be run" reason under a specific diagnostic code.
+    #[must_use]
+    pub fn coded(code: fai_diagnostics::DiagnosticCode, reason: impl Into<String>) -> Self {
+        NotRunnable { reason: reason.into(), code }
+    }
 }
 
 /// A contract lowered to a runnable harness: the entry to call plus the property
@@ -56,12 +74,12 @@ pub fn synthesize(
     let module = &parsed.module;
     let source = file.source(db);
     let Some(item) = module.contract(info.ordinal) else {
-        return Err(NotRunnable { reason: "contract not found".to_owned() });
+        return Err(NotRunnable::reason("contract not found"));
     };
     let (binder_pats, body_expr) = match &item.kind {
         ItemKind::Example { body } => (Vec::new(), *body),
         ItemKind::Forall { binders, body } => (binders.clone(), *body),
-        _ => return Err(NotRunnable { reason: "not a contract".to_owned() }),
+        _ => return Err(NotRunnable::reason("not a contract")),
     };
 
     let types = contract_body_types(db, file, info.ordinal);
@@ -69,7 +87,7 @@ pub fn synthesize(
 
     let test = |name: &str| -> Result<DefId, NotRunnable> {
         let m = module_file(db, ModuleName(Symbol::intern(TEST_MODULE)))
-            .ok_or_else(|| NotRunnable { reason: "the std `Test` module is missing".to_owned() })?;
+            .ok_or_else(|| NotRunnable::reason("the std `Test` module is missing"))?;
         Ok(DefId::new(m.source(db), Symbol::intern(name)))
     };
 
@@ -77,7 +95,10 @@ pub fn synthesize(
     // them. Records/ADTs synthesize supporting definitions, collected in `extra`.
     let binder_types: Vec<Ty> =
         binder_pats.iter().map(|&p| types.pat_type(p).cloned().unwrap_or(Ty::Error)).collect();
-    let mut builder = ArbBuilder::new(db, source, format!("contract#{}", info.ordinal));
+    let mut builder = ArbBuilder::new(db, file, format!("contract#{}", info.ordinal));
+    // Discover user-defined `Arbitrary` overrides and rank the reachable types
+    // (for the recursion base case) before composing the binders' generators.
+    builder.prepare(&binder_types);
     let arb = build_arbitrary(&mut builder, &binder_types)?;
     let extra = std::mem::take(&mut builder.defs);
 

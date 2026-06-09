@@ -37,7 +37,7 @@ use fai_core::wire::def_to_wire;
 use fai_core::{RebuiltTest, TestWireBundle, WireContract, WireDefId, from_wire_test};
 use fai_db::{Db, SourceFile};
 use fai_diagnostics::wire::{DiagnosticWire, to_wire};
-use fai_diagnostics::{Diagnostic, SCHEMA_VERSION, Severity, render_human};
+use fai_diagnostics::{Diagnostic, DiagnosticCode, SCHEMA_VERSION, Severity, render_human};
 use fai_rc::{BorrowSig, rc, rc_lowered};
 use fai_resolve::{DefId, ModuleName, module_name};
 use fai_span::{Span, SpanResolver};
@@ -148,8 +148,9 @@ pub struct TestPlan {
     pub bundle: TestWireBundle,
     /// Render-side metadata for each runnable contract, in bundle order.
     pub runnable_meta: Vec<ContractMeta>,
-    /// Contracts that cannot be run, with the reason.
-    pub not_runnable: Vec<(ContractMeta, String)>,
+    /// Contracts that cannot be run, with the reason and the code to report it
+    /// under (a non-groundable type / ambiguous generator use a specific code).
+    pub not_runnable: Vec<(ContractMeta, String, DiagnosticCode)>,
     /// Diagnostics that must be clean before running (type/callee errors).
     pub pre_diagnostics: Vec<Diagnostic>,
     /// Total contracts considered (runnable + not-runnable).
@@ -415,16 +416,17 @@ fn build_plan(
 
     // Synthesize each contract into a harness, or record why it cannot run.
     let mut runnable: Vec<(fai_contracts::SynthContract, ContractMeta)> = Vec::new();
-    let mut not_runnable: Vec<(ContractMeta, String)> = Vec::new();
+    let mut not_runnable: Vec<(ContractMeta, String, DiagnosticCode)> = Vec::new();
     for (file, info) in &items {
         let meta = contract_meta(db, *file, info, config);
         match synthesize(db, *file, info) {
             Ok(s) if has_error_node(&s.prop) || has_error_node(&s.entry) => not_runnable.push((
                 meta,
                 "uses a construct the native backend does not support yet".to_owned(),
+                CONTRACT_NOT_RUNNABLE,
             )),
             Ok(s) => runnable.push((s, meta)),
-            Err(nr) => not_runnable.push((meta, nr.reason)),
+            Err(nr) => not_runnable.push((meta, nr.reason, nr.code)),
         }
     }
 
@@ -526,8 +528,8 @@ pub fn assemble_outcome(plan: &TestPlan, results: &[ContractResult]) -> TestOutc
         }
     }
 
-    for (meta, reason) in &plan.not_runnable {
-        diagnostics.push(not_runnable_diagnostic(meta, reason));
+    for (meta, reason, code) in &plan.not_runnable {
+        diagnostics.push(not_runnable_diagnostic(meta, reason, *code));
         events.push(not_run_event(meta));
     }
 
@@ -964,10 +966,12 @@ fn binding_str(binders: &[String], ce: &str) -> String {
     }
 }
 
-/// Builds the `FAI6002` diagnostic for a contract that cannot be run.
-fn not_runnable_diagnostic(meta: &ContractMeta, reason: &str) -> Diagnostic {
+/// Builds the "cannot be run" diagnostic for a contract, under `code` (usually
+/// `FAI6002`, but a more specific code for a non-groundable type or an ambiguous
+/// custom generator).
+fn not_runnable_diagnostic(meta: &ContractMeta, reason: &str, code: DiagnosticCode) -> Diagnostic {
     Diagnostic::error(
-        CONTRACT_NOT_RUNNABLE,
+        code,
         format!("this {} cannot be run: {reason}", meta.kind.keyword()),
         meta.span,
     )
