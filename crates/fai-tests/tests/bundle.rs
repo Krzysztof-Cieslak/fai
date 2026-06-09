@@ -124,6 +124,48 @@ fn jit_run_bundle_executes_a_cross_module_program() {
 }
 
 #[test]
+fn jit_run_bundle_drops_data_cleanly_with_reconstructed_types() {
+    // The worker compiles definitions whose node types are marker types rebuilt
+    // from the bundle's `WireTy` projection. This program discards a list of
+    // strings, an ADT value, a record, and a float (each through the inlined
+    // drop), and frees a deep list (the iterative dead path). A clean (exit 0) run
+    // is the runtime's end-of-run leak check, so the reconstructed-type drops
+    // released — and freed the children of — every value exactly once, and the
+    // deep list drained without overflowing the native stack.
+    let src = indoc! {r#"
+        module Main
+
+        type Box = { label : String, n : Int }
+
+        compute : Int -> Int
+        let compute n =
+          let names = ["a", "b", "c"]
+          let opt = Some "wrapped"
+          let b = { label = "k", n = n }
+          let f = 1.5
+          let deep = List.range 0 50000
+          List.length names + List.length deep + b.n
+
+        public main : Runtime -> Unit
+        let main r = r.console.writeLine (Int.toString (compute 7))
+    "#};
+    let dir = workspace(&[("Main.fai", src)]);
+    let session = Session::open(dir).unwrap();
+    let bundle = build_run_bundle(session.db(), entry(&session, "Main.fai")).bundle.unwrap();
+
+    // Through the JSON transport hop, as the daemon ships it to the worker.
+    let json = serde_json::to_vec(&bundle).unwrap();
+    let decoded: fai_driver::WireBundle = serde_json::from_slice(&json).unwrap();
+
+    let _guard = RUN_LOCK.lock().unwrap();
+    fai_runtime::capture_start();
+    let exit = jit_run_bundle(&decoded);
+    let output = fai_runtime::capture_take();
+    assert_eq!(exit, 0, "the reconstructed-type drops must run leak-free");
+    assert_eq!(output, "50010\n");
+}
+
+#[test]
 fn no_main_reports_no_entry_point_and_no_bundle() {
     let dir = workspace(&[(
         "M.fai",

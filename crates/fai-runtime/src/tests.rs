@@ -618,6 +618,68 @@ fn make_data_tag_and_field_projection() {
     assert_eq!(live_count(), base, "data object and its capture released");
 }
 
+// --- Inlined-drop dead path (fai_drop_dead) --------------------------------
+// Generated code inlines a boxed value's reference-count decrement and, on
+// reaching zero, calls `fai_drop_dead` to release its children and free it.
+// `inline_drop_boxed` mirrors that emitted sequence exactly.
+
+/// Mirrors generated code's inlined drop of a known-boxed value: decrement the
+/// reference count in place and, on reaching zero, release the children and free
+/// the cell via `fai_drop_dead`.
+fn inline_drop_boxed(v: Value) {
+    // SAFETY: `v` is a boxed object; its refcount slot is in bounds, and
+    // `fai_drop_dead` is called only once the count has reached zero.
+    unsafe {
+        let rc = read_u64(as_obj(v), RC_OFFSET) - 1;
+        write_u64(as_obj(v), RC_OFFSET, rc);
+        if rc == 0 {
+            fai_drop_dead(v);
+        }
+    }
+}
+
+#[test]
+fn fai_drop_dead_releases_a_boxed_child() {
+    let _g = lock();
+    let base = live_count();
+    // A cell with one immediate field and one boxed (reference-counted) child.
+    let fields = [imm_int(7), fai_box_int(BIG)];
+    // SAFETY: two owned fields move into the data value.
+    let d = unsafe { fai_make_data(1, 2, fields.as_ptr()) };
+    assert_eq!(live_count(), base + 2, "the cell and its boxed child are live");
+    inline_drop_boxed(d); // unique, so the decrement reaches the dead path
+    assert_eq!(live_count(), base, "fai_drop_dead freed the cell and released its child");
+}
+
+#[test]
+fn fai_drop_dead_frees_a_childless_cell() {
+    let _g = lock();
+    let base = live_count();
+    let d = pair(1, 2); // two immediate fields: nothing to release
+    assert_eq!(live_count(), base + 1, "the cell is live");
+    inline_drop_boxed(d);
+    assert_eq!(live_count(), base, "fai_drop_dead freed the childless cell");
+}
+
+#[test]
+fn fai_drop_dead_drains_a_deep_structure_iteratively() {
+    let _g = lock();
+    let base = live_count();
+    // A long unique cons list (each cell owns the tail). Freeing the head must
+    // drain the whole chain with the worklist, never via native recursion, so a
+    // structure far deeper than the native stack still releases cleanly.
+    let n: i64 = 200_000;
+    let mut list = imm_int(NIL_TAG); // the immediate empty tail
+    for i in 0..n {
+        let fields = [imm_int(i), list];
+        // SAFETY: two owned fields (the payload and the owned tail) move in.
+        list = unsafe { fai_make_data(CONS_TAG, 2, fields.as_ptr()) };
+    }
+    assert_eq!(live_count(), base + n, "every cons cell is live");
+    inline_drop_boxed(list);
+    assert_eq!(live_count(), base, "the whole chain drained iteratively");
+}
+
 #[test]
 fn structural_equality_over_composites() {
     let _g = lock();

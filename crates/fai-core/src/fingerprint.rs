@@ -192,9 +192,9 @@ fn write_expr(
         }
         ExprKind::Error => out.push_str("<err>"),
     }
-    // Each node carries its canonical type. Codegen ignores types in the current
-    // subset, but including them keeps the key correct as later phases derive
-    // layout (e.g. record field offsets) from types.
+    // Each node carries its canonical type. Code generation derives both layout
+    // (record field offsets) and the inlined reference-count shape (a value's
+    // dup/drop strategy) from types, so the type is part of the cache key.
     let _ = write!(out, ":{}", render_canonical(&e.ty));
 }
 

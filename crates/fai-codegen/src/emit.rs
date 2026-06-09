@@ -8,8 +8,12 @@
 //!
 //! Every compiled function has the runtime calling convention
 //! `fn(env: *const i64, args: *const i64) -> i64`: parameters are read from
-//! `args`, captures from `env`. Values are uniform tagged 64-bit words; `Dup`
-//! and `Drop` lower to runtime calls (no-ops on immediates).
+//! `args`, captures from `env`. Values are uniform tagged 64-bit words. `Dup` and
+//! `Drop` lower to inline reference-count code — a tag-check (elided for a
+//! statically always-boxed type), then an in-place increment or a
+//! decrement-and-conditional-free — calling the runtime only to reclaim memory
+//! (`fai_free` for a boxed leaf, `fai_drop_dead` for a variable-shape cell) or,
+//! for a value of unknown (polymorphic) type, falling back to `fai_drop`.
 
 use cranelift_codegen::Context;
 use cranelift_codegen::ir::condcodes::IntCC;
@@ -198,6 +202,10 @@ fn build_fn<M: Module>(
             result_slot: None,
         };
 
+        // Record each local's static type up front, so reference-count operations
+        // on parameters and captures (not just `let`s) can be specialized.
+        collect_local_types(&core_fn.body, &mut tr.var_tys);
+
         // Bind parameters (from `args`) and captures (from `env`).
         for (i, &p) in core_fn.params.iter().enumerate() {
             let v = tr.load_slot(args, i);
@@ -262,9 +270,11 @@ struct Translator<'a, M: Module> {
     base: &'a str,
     fn_index: usize,
     vars: FxHashMap<usize, Variable>,
-    /// A local's static type, where known (from `let` value types). Used to
-    /// specialize reference-count operations — drops and dups of a
-    /// statically-immediate value are runtime no-ops, so they are omitted.
+    /// Each local's static type, where known — collected up front (see
+    /// [`collect_local_types`]) from every `Local` use and `let` binding, so
+    /// parameters and captures are covered, not just `let`s. Used to specialize
+    /// the inlined reference-count operations (immediate no-op, boxed leaf,
+    /// fixed-shape cell, variable-shape data, or the runtime fallback).
     var_tys: FxHashMap<usize, Ty>,
     runtime: FxHashMap<&'static str, FuncRef>,
     string_counter: usize,
@@ -311,19 +321,27 @@ impl<M: Module> Translator<'_, M> {
         self.builder.use_var(var)
     }
 
-    /// Whether `local`'s known static type is always an immediate (so its values
-    /// carry no reference count). Conservatively `false` when the type is unknown.
-    fn is_immediate_local(&self, local: LocalId) -> bool {
-        self.var_tys.get(&local.index()).is_some_and(is_immediate_ty)
+    /// `local`'s known static type, if recorded (see the `var_tys` pre-pass).
+    fn var_ty(&self, local: LocalId) -> Option<&Ty> {
+        self.var_tys.get(&local.index())
     }
 
-    /// If `local`'s known static type is a monomorphic, fixed-shape data cell —
-    /// a closed record or a tuple — returns its fields' drop classes in heap
-    /// layout order, so the drop can be inlined instead of dispatched through the
-    /// runtime. `None` when the type is unknown (e.g. a parameter, not recorded in
-    /// `var_tys`) or not a fixed shape. See [`fixed_shape_drop`].
-    fn specialized_drop(&self, local: LocalId) -> Option<Vec<FieldDrop>> {
-        fixed_shape_drop(self.var_tys.get(&local.index())?, MAX_INLINE_DROP_BOXED_FIELDS)
+    /// How to inline a `Dup` of `local`: from its static type ([`dup_class`]), or
+    /// a tag-checked increment when the type is unknown (the safe default).
+    fn dup_plan(&self, local: LocalId) -> DupPlan {
+        match self.var_ty(local) {
+            Some(ty) => dup_class(ty),
+            None => DupPlan::Incr { tag_check: true },
+        }
+    }
+
+    /// How to inline a `Drop` of `local`: from its static type ([`drop_class`]),
+    /// or the runtime drop when the type is unknown (the polymorphic fallback).
+    fn drop_plan(&self, local: LocalId) -> DropPlan {
+        match self.var_ty(local) {
+            Some(ty) => drop_class(ty),
+            None => DropPlan::Runtime,
+        }
     }
 
     /// Loads `base[index]` (a tagged word).
@@ -362,64 +380,139 @@ impl<M: Module> Translator<'_, M> {
         self.builder.ins().call(f, &[value]);
     }
 
-    /// Releases `local` at its last use: a no-op for a statically-immediate value
-    /// (no reference count), an inlined release for a known monomorphic data cell
-    /// (skipping the runtime descriptor classification), else a runtime drop.
-    fn drop_local(&mut self, local: LocalId) {
-        if self.is_immediate_local(local) {
-            return;
-        }
-        if let Some(fields) = self.specialized_drop(local) {
-            self.emit_inline_drop(local, &fields);
-        } else {
-            let v = self.use_var(local);
-            self.call_drop(v);
+    /// Duplicates `local` (increments its reference count) inline, per its
+    /// [`DupPlan`]: an immediate is a no-op, an always-boxed value increments
+    /// unconditionally, and any other value guards the increment with a tag-check.
+    fn dup_local(&mut self, local: LocalId) {
+        match self.dup_plan(local) {
+            DupPlan::NoOp => {}
+            DupPlan::Incr { tag_check } => self.emit_rc_incr(local, tag_check),
         }
     }
 
-    /// Inlines the release of a known monomorphic data cell (`local`, a boxed
-    /// closed-record or tuple value with the given per-field drop classes),
-    /// skipping the runtime's descriptor classification: decrement the reference
-    /// count, and when it reaches zero release each boxed field at its constant
-    /// offset (dropping immediate fields is a no-op, so they are omitted) and free
-    /// the cell directly. Leaves the builder in the continuation block.
+    /// Releases `local` at its last use, per its [`DropPlan`]: a no-op for an
+    /// immediate, an unrolled release for a fixed-shape cell, a direct free for a
+    /// boxed leaf, a runtime child-release for other data, and the runtime drop as
+    /// the fallback for an unknown type.
+    fn drop_local(&mut self, local: LocalId) {
+        match self.drop_plan(local) {
+            DropPlan::NoOp => {}
+            DropPlan::Fixed(fields) => self.emit_inline_drop(local, &fields),
+            DropPlan::Leaf { tag_check } => {
+                self.emit_rc_dec_then(local, tag_check, |s, cell| {
+                    // A leaf (Int/Float/String) has no reference-counted children,
+                    // so a dead one is reclaimed directly.
+                    let free = s.runtime("fai_free", 1, false);
+                    s.builder.ins().call(free, &[cell]);
+                });
+            }
+            DropPlan::Data { tag_check } => {
+                self.emit_rc_dec_then(local, tag_check, |s, cell| {
+                    // A variable-shape cell's children are recovered from its
+                    // descriptor and released by the runtime (iteratively, so a
+                    // deep structure never overflows the native stack).
+                    let f = s.runtime("fai_drop_dead", 1, false);
+                    s.builder.ins().call(f, &[cell]);
+                });
+            }
+            DropPlan::Runtime => {
+                let v = self.use_var(local);
+                self.call_drop(v);
+            }
+        }
+    }
+
+    /// Emits an in-place reference-count increment of `local`. When `tag_check`,
+    /// an immediate value (low bit set) skips the increment; an always-boxed type
+    /// omits the guard entirely. Leaves the builder in the continuation block.
+    fn emit_rc_incr(&mut self, local: LocalId, tag_check: bool) {
+        let cell = self.use_var(local);
+        let rc_off = i32::try_from(rt::RC_OFFSET).expect("rc offset");
+        if !tag_check {
+            let rc = self.builder.ins().load(types::I64, MemFlags::trusted(), cell, rc_off);
+            let inc = self.builder.ins().iadd_imm(rc, 1);
+            self.builder.ins().store(MemFlags::trusted(), inc, cell, rc_off);
+            return;
+        }
+        let incr_b = self.builder.create_block();
+        let cont_b = self.builder.create_block();
+        // An immediate has its low bit set; a boxed value has it clear.
+        let bit = self.builder.ins().band_imm(cell, 1);
+        self.builder.ins().brif(bit, cont_b, &[], incr_b, &[]);
+
+        self.builder.switch_to_block(incr_b);
+        self.builder.seal_block(incr_b);
+        let rc = self.builder.ins().load(types::I64, MemFlags::trusted(), cell, rc_off);
+        let inc = self.builder.ins().iadd_imm(rc, 1);
+        self.builder.ins().store(MemFlags::trusted(), inc, cell, rc_off);
+        self.builder.ins().jump(cont_b, &[]);
+
+        self.builder.switch_to_block(cont_b);
+        self.builder.seal_block(cont_b);
+    }
+
+    /// Emits the inlined decrement of a boxed value `local` and runs `dead` (which
+    /// reclaims the cell) when the count reaches zero. When `tag_check`, an
+    /// immediate value skips the whole sequence; an always-boxed type omits the
+    /// guard. Leaves the builder in the continuation block.
+    fn emit_rc_dec_then(
+        &mut self,
+        local: LocalId,
+        tag_check: bool,
+        dead: impl FnOnce(&mut Self, Value),
+    ) {
+        let cell = self.use_var(local);
+        let cont_b = self.builder.create_block();
+        let dead_b = self.builder.create_block();
+
+        // Optional immediate guard: an immediate (low bit set) carries no count.
+        if tag_check {
+            let dec_b = self.builder.create_block();
+            let bit = self.builder.ins().band_imm(cell, 1);
+            self.builder.ins().brif(bit, cont_b, &[], dec_b, &[]);
+            self.builder.switch_to_block(dec_b);
+            self.builder.seal_block(dec_b);
+        }
+
+        // Decrement the reference count in place, then branch on whether dead.
+        let rc_off = i32::try_from(rt::RC_OFFSET).expect("rc offset");
+        let rc = self.builder.ins().load(types::I64, MemFlags::trusted(), cell, rc_off);
+        let dec = self.builder.ins().iadd_imm(rc, -1);
+        self.builder.ins().store(MemFlags::trusted(), dec, cell, rc_off);
+        let is_dead = self.builder.ins().icmp_imm(IntCC::Equal, dec, 0);
+        self.builder.ins().brif(is_dead, dead_b, &[], cont_b, &[]);
+
+        self.builder.switch_to_block(dead_b);
+        self.builder.seal_block(dead_b);
+        dead(self, cell);
+        self.builder.ins().jump(cont_b, &[]);
+
+        self.builder.switch_to_block(cont_b);
+        self.builder.seal_block(cont_b);
+    }
+
+    /// Inlines the release of a known monomorphic, fixed-shape data cell (`local`,
+    /// a boxed closed-record or tuple value with the given per-field drop classes,
+    /// always boxed so no tag-check is needed): when its count reaches zero,
+    /// release each boxed field at its constant offset (immediate fields are a
+    /// no-op, so they are omitted) and free the cell directly.
     ///
     /// Releasing each boxed child through `fai_drop` (rather than recursing the
     /// inlining) keeps deep structures iterative and the emitted code small. The
     /// cell is freed last: the heap is acyclic, so dropping a child can never
     /// reach the parent, and the field pointers are loaded before the free.
     fn emit_inline_drop(&mut self, local: LocalId, fields: &[FieldDrop]) {
-        let cell = self.use_var(local);
-
-        // Decrement the reference count in place.
-        let rc_off = i32::try_from(rt::RC_OFFSET).expect("rc offset");
-        let rc = self.builder.ins().load(types::I64, MemFlags::trusted(), cell, rc_off);
-        let dec = self.builder.ins().iadd_imm(rc, -1);
-        self.builder.ins().store(MemFlags::trusted(), dec, cell, rc_off);
-
-        // Branch on whether the cell is now dead.
-        let dead =
-            self.builder.ins().icmp_imm(cranelift_codegen::ir::condcodes::IntCC::Equal, dec, 0);
-        let free_b = self.builder.create_block();
-        let cont_b = self.builder.create_block();
-        self.builder.ins().brif(dead, free_b, &[], cont_b, &[]);
-
-        // Dead: release the boxed fields, then reclaim the cell's memory.
-        self.builder.switch_to_block(free_b);
-        self.builder.seal_block(free_b);
-        for (i, class) in fields.iter().enumerate() {
-            if matches!(class, FieldDrop::Boxed) {
-                let off = i32::try_from(rt::DATA_FIELDS_OFFSET + i * 8).expect("field offset");
-                let field = self.builder.ins().load(types::I64, MemFlags::trusted(), cell, off);
-                self.call_drop(field);
+        self.emit_rc_dec_then(local, false, |s, cell| {
+            for (i, class) in fields.iter().enumerate() {
+                if matches!(class, FieldDrop::Boxed) {
+                    let off = i32::try_from(rt::DATA_FIELDS_OFFSET + i * 8).expect("field offset");
+                    let field = s.builder.ins().load(types::I64, MemFlags::trusted(), cell, off);
+                    s.call_drop(field);
+                }
             }
-        }
-        let free = self.runtime("fai_free", 1, false);
-        self.builder.ins().call(free, &[cell]);
-        self.builder.ins().jump(cont_b, &[]);
-
-        self.builder.switch_to_block(cont_b);
-        self.builder.seal_block(cont_b);
+            let free = s.runtime("fai_free", 1, false);
+            s.builder.ins().call(free, &[cell]);
+        });
     }
 
     fn expr(&mut self, e: &CExpr) -> Value {
@@ -432,7 +525,6 @@ impl<M: Module> Translator<'_, M> {
             ExprKind::If { cond, then, els } => self.conditional(cond, then, els),
             ExprKind::Let { local, value, body } => {
                 let v = self.expr(value);
-                self.var_tys.insert(local.index(), value.ty.clone());
                 self.define_var(*local, v);
                 self.expr(body)
             }
@@ -450,12 +542,9 @@ impl<M: Module> Translator<'_, M> {
                 self.expr(body)
             }
             ExprKind::Dup { local, body } => {
-                // A statically-immediate value has no reference count, so a dup is
-                // a no-op and is omitted.
-                if !self.is_immediate_local(*local) {
-                    let v = self.use_var(*local);
-                    let _ = self.call1("fai_dup", v);
-                }
+                // The dup is inlined per the local's static type; see `dup_local`
+                // (immediate no-op / unconditional / tag-checked increment).
+                self.dup_local(*local);
                 self.expr(body)
             }
             ExprKind::Drop { local, body } => {
@@ -1091,7 +1180,6 @@ impl<M: Module> Translator<'_, M> {
             }
             ExprKind::Let { local, value, body } => {
                 let v = self.expr(value);
-                self.var_tys.insert(local.index(), value.ty.clone());
                 self.define_var(*local, v);
                 self.expr_tail(body);
             }
@@ -1102,10 +1190,7 @@ impl<M: Module> Translator<'_, M> {
                 self.expr_tail(body);
             }
             ExprKind::Dup { local, body } => {
-                if !self.is_immediate_local(*local) {
-                    let v = self.use_var(*local);
-                    let _ = self.call1("fai_dup", v);
-                }
+                self.dup_local(*local);
                 self.expr_tail(body);
             }
             ExprKind::Drop { local, body } => {
@@ -1160,6 +1245,161 @@ fn fits_immediate(n: i64) -> bool {
 /// unconditionally immediate.
 fn is_immediate_ty(ty: &Ty) -> bool {
     matches!(ty, Ty::Unit | Ty::Con(Con::Bool) | Ty::Con(Con::Char))
+}
+
+/// Whether values of `ty` are *always* boxed heap objects (never an immediate),
+/// so an inlined dup/drop can safely skip the immediate tag-check. `String` and
+/// `Float` are unconditionally heap-allocated; a tuple always has its elements; a
+/// non-empty record (closed or open) always has at least one field; interface
+/// dictionaries and closures are always boxed. Deliberately excludes `Int` (a
+/// small value is an immediate), discriminated unions and `List` (a nullary
+/// constructor is an immediate), the empty record, and type variables / unknowns.
+fn is_always_boxed_ty(ty: &Ty) -> bool {
+    match ty {
+        Ty::Con(Con::String | Con::Float) | Ty::Tuple(_) | Ty::Interface(_) | Ty::Arrow(_, _) => {
+            true
+        }
+        Ty::Record(row) => !row.fields.is_empty(),
+        _ => false,
+    }
+}
+
+/// Whether `ty` is a boxed *leaf* — a heap object with no reference-counted
+/// children — so a dead one is freed directly, with no child release. The boxed
+/// `Int`, `Float`, and `String` kinds are leaves.
+fn is_leaf_boxed_ty(ty: &Ty) -> bool {
+    matches!(ty, Ty::Con(Con::Int | Con::Float | Con::String))
+}
+
+/// Whether `ty` is a data type that may also be an immediate — a discriminated
+/// union or `List`, whose nullary constructors (`None`, `[]`, …) are immediates —
+/// so an inlined drop must tag-check before touching the cell.
+fn is_data_maybe_immediate(ty: &Ty) -> bool {
+    fn head(ty: &Ty) -> bool {
+        match ty {
+            Ty::Adt(_) | Ty::Con(Con::List) => true,
+            Ty::App(h, _) => head(h),
+            _ => false,
+        }
+    }
+    head(ty)
+}
+
+/// Records each local's static type from `e` into `out`: the type carried by
+/// every `Local` use (so parameters and captures are covered, not just `let`
+/// bindings) plus each `let`'s value type. A local's reference-count operations
+/// read this map to specialize. `Ty::Error` is skipped, leaving the local to the
+/// runtime fallback rather than recording a useless type (e.g. a reuse `Reset`'s
+/// synthesized base carries no type).
+fn collect_local_types(e: &CExpr, out: &mut FxHashMap<usize, Ty>) {
+    let note = |out: &mut FxHashMap<usize, Ty>, local: LocalId, ty: &Ty| {
+        if !matches!(ty, Ty::Error) {
+            out.insert(local.index(), ty.clone());
+        }
+    };
+    match &e.kind {
+        ExprKind::Local(l) => note(out, *l, &e.ty),
+        ExprKind::Lit(_) | ExprKind::Global(_) | ExprKind::MakeClosure { .. } | ExprKind::Error => {
+        }
+        ExprKind::Prim { args, .. } | ExprKind::MakeData { args, .. } => {
+            args.iter().for_each(|a| collect_local_types(a, out));
+        }
+        ExprKind::App { func, args } => {
+            collect_local_types(func, out);
+            args.iter().for_each(|a| collect_local_types(a, out));
+        }
+        ExprKind::If { cond, then, els } => {
+            collect_local_types(cond, out);
+            collect_local_types(then, out);
+            collect_local_types(els, out);
+        }
+        ExprKind::Let { local, value, body } => {
+            note(out, *local, &value.ty);
+            collect_local_types(value, out);
+            collect_local_types(body, out);
+        }
+        ExprKind::DataTag(base) => collect_local_types(base, out),
+        ExprKind::DataField { base, .. } => collect_local_types(base, out),
+        ExprKind::Reset { value, body, .. } => {
+            collect_local_types(value, out);
+            collect_local_types(body, out);
+        }
+        ExprKind::Dup { body, .. } | ExprKind::Drop { body, .. } => collect_local_types(body, out),
+        ExprKind::Join { body, .. } | ExprKind::HoleStart { body, .. } => {
+            collect_local_types(body, out);
+        }
+        ExprKind::Recur { args } => args.iter().for_each(|a| collect_local_types(a, out)),
+        ExprKind::HoleFill { cell, .. } => collect_local_types(cell, out),
+        ExprKind::HoleClose { base, .. } => collect_local_types(base, out),
+    }
+}
+
+/// The inlined dup strategy for a value of statically known type `ty`: a no-op
+/// for an immediate, an unconditional increment for an always-boxed value, else a
+/// tag-checked increment (the safe default for `Int`, data, and unknown types).
+fn dup_class(ty: &Ty) -> DupPlan {
+    if is_immediate_ty(ty) {
+        DupPlan::NoOp
+    } else {
+        DupPlan::Incr { tag_check: !is_always_boxed_ty(ty) }
+    }
+}
+
+/// The inlined drop strategy for a value of statically known type `ty`. The
+/// tag-check is elided only for types that are provably never an immediate
+/// ([`is_always_boxed_ty`]); a fixed-shape cell unrolls its field releases, a
+/// boxed leaf frees directly, other data releases its children via the runtime,
+/// and an unrecognized type falls back to the runtime drop.
+fn drop_class(ty: &Ty) -> DropPlan {
+    if is_immediate_ty(ty) {
+        return DropPlan::NoOp;
+    }
+    if let Some(fields) = fixed_shape_drop(ty, MAX_INLINE_DROP_BOXED_FIELDS) {
+        return DropPlan::Fixed(fields);
+    }
+    let always_boxed = is_always_boxed_ty(ty);
+    if is_leaf_boxed_ty(ty) {
+        return DropPlan::Leaf { tag_check: !always_boxed };
+    }
+    if always_boxed || is_data_maybe_immediate(ty) {
+        return DropPlan::Data { tag_check: !always_boxed };
+    }
+    DropPlan::Runtime
+}
+
+/// How an inlined `Dup` of a known-typed local increments its reference count.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DupPlan {
+    /// An immediate carries no reference count: nothing to do.
+    NoOp,
+    /// Increment in place, guarded by an immediate tag-check unless `tag_check`
+    /// is `false` (a statically always-boxed value).
+    Incr {
+        /// Whether to guard the increment with an immediate tag-check.
+        tag_check: bool,
+    },
+}
+
+/// How an inlined `Drop` of a known-typed local releases it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DropPlan {
+    /// An immediate carries no reference count: nothing to do.
+    NoOp,
+    /// A fixed-shape record/tuple (always boxed): unroll its per-field release.
+    Fixed(Vec<FieldDrop>),
+    /// A boxed leaf (Int/Float/String): decrement and, when dead, free directly.
+    Leaf {
+        /// Whether to guard with an immediate tag-check (true for `Int`).
+        tag_check: bool,
+    },
+    /// A variable-shape data cell (List/union/interface/closure/wide record):
+    /// decrement and, when dead, release its children via the runtime, then free.
+    Data {
+        /// Whether to guard with an immediate tag-check (true for List/union).
+        tag_check: bool,
+    },
+    /// An unknown type: dispatch to the runtime drop (the polymorphic fallback).
+    Runtime,
 }
 
 /// A fast-path integer operation whose result of two immediates can exceed the
@@ -1345,7 +1585,7 @@ mod classifier_tests {
 
     #[test]
     fn immediate_scalar_is_not_specialized() {
-        // Immediates are handled by `is_immediate_local`, not the cell classifier.
+        // Immediates are handled by `is_immediate_ty`, not the cell classifier.
         assert_eq!(fixed_shape_drop(&Ty::bool(), WIDE), None);
     }
 
@@ -1380,5 +1620,84 @@ mod classifier_tests {
             fixed_shape_drop(&ty, 2),
             Some(vec![Immediate, Immediate, Immediate, Immediate, Boxed, Boxed])
         );
+    }
+}
+
+#[cfg(test)]
+mod wire_projection_tests {
+    //! The worker (`fai run`/`fai test`) compiles definitions reconstructed from
+    //! the wire bundle, where each node's type is a marker rebuilt from its
+    //! [`fai_core::wire::WireTy`] projection. These tests pin the safety-critical
+    //! invariant: that round-trip preserves every classification code generation
+    //! makes from a type — the inlined dup/drop strategy and the prim borrow
+    //! decision — so the worker emits the same reference-count code as the warm
+    //! in-process path. A divergence here is a memory-safety bug.
+
+    use std::sync::Arc;
+
+    use fai_core::ir::Prim;
+    use fai_core::wire::{project_ty, reconstruct_ty};
+    use fai_resolve::{AdtRef, InterfaceRef};
+    use fai_span::SourceId;
+    use fai_syntax::Symbol;
+    use fai_types::{Con, RecordRow, RowEnd, RowVarId, Ty, TyVarId};
+    use proptest::collection::vec;
+    use proptest::prelude::*;
+
+    use super::{drop_class, dup_class};
+
+    fn adt() -> Ty {
+        Ty::Adt(AdtRef::new(SourceId::new(0), Symbol::intern("T")))
+    }
+
+    /// A strategy generating types across every code-generation class, including
+    /// nested tuples/records and open/closed rows.
+    fn arb_ty() -> impl Strategy<Value = Ty> {
+        let leaf = prop_oneof![
+            Just(Ty::Unit),
+            Just(Ty::Con(Con::Int)),
+            Just(Ty::Con(Con::Float)),
+            Just(Ty::Con(Con::Bool)),
+            Just(Ty::Con(Con::String)),
+            Just(Ty::Con(Con::Char)),
+            Just(Ty::Var(TyVarId(0))),
+            Just(Ty::Error),
+            Just(adt()),
+            Just(Ty::Interface(InterfaceRef::new(SourceId::new(0), Symbol::intern("I")))),
+        ];
+        leaf.prop_recursive(3, 32, 4, |inner| {
+            prop_oneof![
+                vec(inner.clone(), 2..4).prop_map(Ty::Tuple),
+                (vec(inner.clone(), 0..4), any::<bool>()).prop_map(|(tys, closed)| {
+                    let fields = tys
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, t)| (Symbol::intern(&format!("f{i}")), t))
+                        .collect();
+                    let tail = if closed { RowEnd::Closed } else { RowEnd::Open(RowVarId(0)) };
+                    Ty::Record(RecordRow { fields, tail })
+                }),
+                inner.clone().prop_map(Ty::list),
+                inner.clone().prop_map(|a| Ty::App(Arc::new(adt()), Arc::new(a))),
+                (inner.clone(), inner.clone()).prop_map(|(a, b)| Ty::arrow(a, b)),
+            ]
+        })
+    }
+
+    proptest! {
+        #[test]
+        fn round_trip_preserves_codegen_classification(ty in arb_ty()) {
+            let round = reconstruct_ty(&project_ty(&ty));
+            prop_assert_eq!(drop_class(&ty), drop_class(&round), "drop class for {:?}", ty);
+            prop_assert_eq!(dup_class(&ty), dup_class(&round), "dup class for {:?}", ty);
+            // The prim borrow decision (e.g. structural equality) is re-derived from
+            // the operand type, so the projection must preserve it too.
+            prop_assert_eq!(
+                Prim::Eq.borrows_operand(&ty),
+                Prim::Eq.borrows_operand(&round),
+                "borrow decision for {:?}",
+                ty
+            );
+        }
     }
 }

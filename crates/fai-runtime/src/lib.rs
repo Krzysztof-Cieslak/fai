@@ -21,6 +21,13 @@
 //! [`fai_dup`]/[`fai_drop`] are tag-checked, so immediates are no-ops and
 //! polymorphic code reference-counts correctly with no type information.
 //!
+//! Generated code inlines the common reference-count work — a tag-check, then an
+//! in-place increment (dup) or a decrement and zero-test (drop) — and only calls
+//! out to the runtime to actually reclaim memory: [`fai_free`] for a childless
+//! leaf, or [`fai_drop_dead`] for a variable-shape cell whose children the
+//! descriptor identifies. [`fai_dup`]/[`fai_drop`] remain for the first-class
+//! application path and as the fallback for values of unknown (polymorphic) type.
+//!
 //! Functions are closures `{ header, code, arity, env_count, env… }`; every
 //! application goes through [`fai_apply_n`], which matches the argument count to
 //! the arity (exact call / partial-application closure / over-application).
@@ -313,16 +320,48 @@ pub extern "C" fn fai_drop(v: Value) {
     unsafe {
         let rc = read_u64(p, RC_OFFSET) - 1;
         write_u64(p, RC_OFFSET, rc);
-        if rc != 0 {
-            return;
+        if rc == 0 {
+            // Dead: release its reference-counted children and reclaim its memory.
+            release_dead(p);
         }
-        // Dead: release its reference-counted children, then its memory. The
-        // children (and their descendants) are drained iteratively.
+    }
+}
+
+/// Releases the reference-counted children of a dead object `p` and reclaims its
+/// memory. Shared by [`fai_drop`]'s dead branch and [`fai_drop_dead`]. The
+/// children (and their descendants) are drained iteratively with an explicit
+/// worklist, so freeing an arbitrarily deep structure never overflows the native
+/// stack. The child pointers are gathered (into the worklist) before `p` is
+/// freed; the heap is acyclic, so a child release can never reach `p`.
+///
+/// # Safety
+/// `p` is a live object pointer whose reference count has reached zero.
+unsafe fn release_dead(p: *mut u8) {
+    // SAFETY: `p` is a dead live object; its descriptor and fields are in bounds,
+    // and `free_obj` matches the original allocation.
+    unsafe {
         let mut work = DropWork::new();
         scan_push(p, &mut work);
         free_obj(p);
         drain(&mut work);
     }
+}
+
+/// Releases a dead object's reference-counted children and reclaims its memory —
+/// the out-of-line dead path generated code calls once its inlined decrement has
+/// driven the reference count to zero. The variable-shape counterpart of
+/// [`fai_free`] (which assumes the object has no reference-counted children): the
+/// children to release are recovered from the object's descriptor, and every
+/// descendant that reaches zero is freed too, iteratively.
+///
+/// # Safety
+/// `v` must be a boxed object whose reference count has already reached zero (as
+/// the inlined drop guarantees); it must not be used afterward.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fai_drop_dead(v: Value) {
+    // SAFETY: the caller guarantees `v` is a boxed, dead object, so its descriptor
+    // and size header are valid and its memory matches the original allocation.
+    unsafe { release_dead(as_obj(v)) };
 }
 
 /// A drop worklist: boxed values whose reference count is still to be decremented.
