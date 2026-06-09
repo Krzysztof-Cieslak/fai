@@ -921,7 +921,11 @@ server:
     the unaffected files cheap). Range formatting reuses the whole-file formatter
     and line-diffs its output against the original, keeping only the changed hunks
     whose lines overlap the requested range, so "format selection" rewrites just
-    the selection.
+    the selection. On-type formatting shares that machinery: a newline trigger
+    scopes the same line-diffed edits to the line just completed and the cursor's
+    line, so typing reformats the current construct and nothing else. Because the
+    whole-file formatter skips a file with parse errors, a mid-edit buffer that
+    does not yet parse simply yields no edits rather than disturbing the typing.
   - **Navigation & structure.** `documentSymbol` and `workspace/symbol` reuse the
     outline/symbol queries (nested-module aware; `documentSymbol` is keyed by file
     and `outline` delegates to it, so the two never drift). `references` first

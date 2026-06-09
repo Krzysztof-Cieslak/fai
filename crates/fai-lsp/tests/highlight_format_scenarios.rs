@@ -2,7 +2,7 @@
 
 mod harness;
 
-use harness::{Harness, position_of, range, whole_document};
+use harness::{Harness, pos, position_of, range, whole_document};
 use indoc::indoc;
 use serde_json::{Value, json};
 
@@ -250,5 +250,58 @@ fn range_formatting_touches_only_the_requested_lines() {
     let edits = edits.as_array().unwrap();
     assert!(!edits.is_empty(), "the messy line is reformatted");
     assert!(edits.iter().all(|e| e["range"]["start"]["line"] == 3), "only line 3: {edits:?}");
+    h.shutdown();
+}
+
+// --- on-type formatting ------------------------------------------------------
+
+// `let a=1+2` and `let b=2` are both non-canonical; on-type formatting after the
+// first one should reformat only it.
+const ON_TYPE: &str = "module M\n\npublic a : Int\nlet a=1+2\n\npublic b : Int\nlet b=2\n";
+
+#[test]
+fn on_type_formatting_reformats_the_completed_line() {
+    // The user finished `let a=1+2` (line 3) and pressed Enter, so the cursor now
+    // sits on the new blank line 4; the construct just completed is line 3.
+    let (mut h, uri) = Harness::open_main("ot-line", ON_TYPE);
+    let edits = h.on_type_formatting(&uri, pos(4, 0), "\n");
+    let edits = edits.as_array().expect("edits for the completed line");
+    assert!(!edits.is_empty(), "the completed line is reformatted: {edits:?}");
+    assert!(
+        edits.iter().any(|e| e["newText"].as_str().unwrap_or_default().contains("let a = 1 + 2")),
+        "{edits:?}"
+    );
+    h.shutdown();
+}
+
+#[test]
+fn on_type_formatting_leaves_other_lines_untouched() {
+    // Only line 3 was just edited; the equally-messy `let b=2` (line 6) lies
+    // outside the trigger window and must be left alone.
+    let (mut h, uri) = Harness::open_main("ot-scope", ON_TYPE);
+    let edits = h.on_type_formatting(&uri, pos(4, 0), "\n");
+    let edits = edits.as_array().expect("edits");
+    assert!(!edits.is_empty(), "the completed line is reformatted");
+    // Every edit stays within the two-line window [3, 4]; none reaches line 6.
+    assert!(
+        edits.iter().all(|e| e["range"]["start"]["line"].as_u64().unwrap() <= 4),
+        "only the trigger window is touched: {edits:?}"
+    );
+    assert!(
+        edits.iter().all(|e| !e["newText"].as_str().unwrap_or_default().contains("let b = 2")),
+        "the far declaration is untouched: {edits:?}"
+    );
+    h.shutdown();
+}
+
+#[test]
+fn on_type_formatting_is_a_noop_on_an_unparseable_buffer() {
+    // Mid-edit the buffer does not parse (an unclosed `(`); the whole-file
+    // formatter skips it, so on-type formatting returns no edits rather than
+    // disturbing what the user is typing.
+    let partial = "module M\n\npublic f : Int\nlet f = (\n";
+    let (mut h, uri) = Harness::open_main("ot-noparse", partial);
+    let result = h.on_type_formatting(&uri, pos(4, 0), "\n");
+    assert!(result.is_null(), "no edits for an unparseable buffer: {result}");
     h.shutdown();
 }

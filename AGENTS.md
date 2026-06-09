@@ -77,8 +77,9 @@
 > signature help, the `references` reverse lookup that also drives rename, code
 > actions, inlay hints, semantic tokens, and the symbol outline). Editing is
 > incremental (range sync + `didSave`), with client position-encoding negotiation
-> (UTF-8/UTF-16), range formatting, and diagnostics re-published for every open
-> file so a cross-module edit refreshes its dependents. Later
+> (UTF-8/UTF-16), range and on-type formatting (a newline reformats the construct
+> just completed), and diagnostics re-published for every open file so a
+> cross-module edit refreshes its dependents. Later
 > milestones (performance tuning at scale, …) define the *intended* interface we
 > build toward. The design is locked (see the decision table below).
 
