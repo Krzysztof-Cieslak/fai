@@ -628,6 +628,13 @@ mod tests {
     }
 
     #[test]
+    fn round_trip_char_literal() {
+        let (original, rebuilt, _) = wire_and_back("module M\n\nlet c = '\\n'\n", "c");
+        assert_eq!(rebuilt, original);
+        assert!(original.contains("'\\n'"), "expected a char literal in {original}");
+    }
+
+    #[test]
     fn round_trip_reset_and_reuse() {
         // Reset + a reuse-tokened construction are inserted by reference counting,
         // so they are built by hand here and round-tripped through the wire form.
