@@ -38,8 +38,9 @@ pub use command::{
 };
 pub use contracts::{
     ContractEvent, ContractResult, ContractStatus, TestConfig, TestOutcome, TestOutput, TestPlan,
-    assemble_outcome, build_test_plan, jit_test_bundle, render_test_event_line, run_test_workers,
-    run_tests,
+    assemble_outcome, build_example_plan, build_test_plan, check_examples,
+    check_examples_in_process, example_failures, jit_test_bundle, render_test_event_line,
+    run_test_workers, run_test_workers_with_timeout, run_tests,
 };
 pub use fai_core::{TestWireBundle, WireBundle};
 pub use query::{QueryRequest, QueryResult, run_query};
@@ -242,7 +243,7 @@ fn dedup_diagnostics(diagnostics: &mut Vec<Diagnostic>) {
 }
 
 /// Sorts diagnostics deterministically by (byte start, code).
-fn sort_diagnostics(diagnostics: &mut [Diagnostic]) {
+pub(crate) fn sort_diagnostics(diagnostics: &mut [Diagnostic]) {
     diagnostics.sort_by(|a, b| {
         (a.primary.start().raw(), a.code.as_str()).cmp(&(b.primary.start().raw(), b.code.as_str()))
     });

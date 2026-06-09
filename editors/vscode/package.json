@@ -70,6 +70,12 @@
           "markdownDescription": "Extra arguments passed to `fai lsp` (after the workspace `--project` argument the client adds automatically).",
           "scope": "machine-overridable"
         },
+        "fai.examples": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Evaluate a file's closed `example` contracts when you save it, reporting a failing one as a diagnostic (`FAI6001`) without running `fai test`. Disable for a pure type-check.",
+          "scope": "window"
+        },
         "fai.trace.server": {
           "type": "string",
           "enum": [

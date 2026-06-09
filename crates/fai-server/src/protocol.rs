@@ -269,7 +269,7 @@ mod tests {
             workspace_root: "/ws".to_owned(),
         }));
         round_trip(&Request::Command(CommandRequest {
-            spec: CommandSpec::Check { path: None },
+            spec: CommandSpec::Check { path: None, examples: true },
             opts: opts(),
             dirty: vec![DirtyFile {
                 path: "A.fai".to_owned(),
@@ -443,7 +443,7 @@ mod tests {
         // A tap decode of a real request must itself be valid JSON the client can
         // re-parse, since `tap` consumers may pipe the stream into a JSON tool.
         let json = frame_to_json(&Request::Command(CommandRequest {
-            spec: CommandSpec::Check { path: None },
+            spec: CommandSpec::Check { path: None, examples: true },
             opts: opts(),
             dirty: Vec::new(),
         }));

@@ -358,3 +358,77 @@ fn passing_contract_run_is_clean() {
     assert_eq!(outcome.passed, 1);
     assert_eq!(outcome.leaked, 0);
 }
+
+// --- `fai check`'s eager closed-`example` evaluation (in-process) -------------
+
+/// Evaluates the closed `example` contracts in `files` the way `fai check` does,
+/// but in this process (no worker isolation — the examples here never trap).
+fn check_example_failures(files: &[(&str, &str)]) -> Vec<fai_diagnostics::Diagnostic> {
+    let _g = lock();
+    let (db, handles) = db_with(files);
+    fai_driver::check_examples_in_process(&db, &handles)
+}
+
+#[test]
+fn check_reports_a_wrong_example_at_its_span() {
+    let src = "module Bad\nexample: 1 = 2\n";
+    let diags = check_example_failures(&[("Bad.fai", src)]);
+    assert_eq!(diags.len(), 1, "one failing example: {diags:?}");
+    assert_eq!(diags[0].code.as_str(), "FAI6001");
+    assert!(diags[0].message.contains("example does not hold"), "got: {}", diags[0].message);
+    // Located at the `example:` declaration, not the whole file.
+    let start = diags[0].primary.start().raw() as usize;
+    assert_eq!(start, src.find("example").expect("the example keyword"));
+}
+
+#[test]
+fn check_passes_a_correct_example() {
+    let diags = check_example_failures(&[("Ok.fai", "module Ok\nexample: 1 + 1 = 2\n")]);
+    assert!(diags.is_empty(), "a true example yields no diagnostic: {diags:?}");
+}
+
+#[test]
+fn check_evaluates_an_example_over_callees() {
+    // A correct example calling into the embedded standard library passes; the
+    // wrong one is reported. Exercises the reachable-callee gathering.
+    let ok = "module M\nexample: List.map (fun x -> x + 1) [1, 2, 3] = [2, 3, 4]\n";
+    assert!(check_example_failures(&[("M.fai", ok)]).is_empty());
+    let bad = "module M\nexample: List.map (fun x -> x + 1) [1, 2, 3] = [1, 2, 3]\n";
+    let diags = check_example_failures(&[("M.fai", bad)]);
+    assert_eq!(diags.len(), 1);
+    assert_eq!(diags[0].code.as_str(), "FAI6001");
+}
+
+#[test]
+fn check_ignores_forall_contracts() {
+    // `forall`s need generated inputs; `fai check` leaves them to `fai test`,
+    // even a plainly false one.
+    let diags = check_example_failures(&[("F.fai", "module F\nforall n: n = n + 1\n")]);
+    assert!(diags.is_empty(), "forall is not evaluated by check: {diags:?}");
+}
+
+#[test]
+fn check_skips_a_file_with_a_type_error() {
+    // The file has a wrong example *and* an unrelated type error: the example is
+    // not run (a broken module cannot be compiled soundly), so check reports no
+    // FAI6001 — the type error is surfaced by the type-check itself.
+    let src = "module M\nexample: 1 = 2\npublic bad : Int\nlet bad = true\n";
+    let diags = check_example_failures(&[("M.fai", src)]);
+    assert!(diags.is_empty(), "examples are skipped when the file does not type-check: {diags:?}");
+}
+
+#[test]
+fn check_ignores_an_example_free_file() {
+    let diags = check_example_failures(&[("M.fai", "module M\n\nlet x = 1\n")]);
+    assert!(diags.is_empty());
+}
+
+#[test]
+fn check_example_plan_is_empty_without_a_closed_example() {
+    // The fast path: a file with no `example` (here, only a `forall`) builds an
+    // empty plan, so `fai check` spawns no worker and pays nothing extra.
+    let _g = lock();
+    let (db, handles) = db_with(&[("M.fai", "module M\n\nlet x = 1\nforall n: n = n\n")]);
+    let plan = fai_driver::build_example_plan(&db, &handles, fai_driver::TestConfig::default());
+    assert!(plan.bundle.contracts.is_empty(), "no closed example ⇒ empty plan, no worker");
+}

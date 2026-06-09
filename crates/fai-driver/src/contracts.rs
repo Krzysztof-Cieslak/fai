@@ -53,6 +53,12 @@ use crate::{WORKSPACE_ERROR, semantic_diagnostics, tooling_span};
 /// Default wall-clock limit for a single supervised test-worker batch.
 const DEFAULT_TEST_TIMEOUT_MS: u64 = 300_000;
 
+/// Default wall-clock limit for `fai check`'s eager example evaluation. Shorter
+/// than the test limit: the daemon holds the session lock while checking, so a
+/// runaway example must not stall it for long (a timed-out example is dropped,
+/// since `fai check` reports only definite failures — see [`example_failures`]).
+const DEFAULT_CHECK_TIMEOUT_MS: u64 = 10_000;
+
 /// Generator configuration for a `fai test` run (fixed defaults are deterministic).
 #[derive(Debug, Clone, Copy)]
 pub struct TestConfig {
@@ -309,6 +315,51 @@ pub fn run_tests(
     assemble_outcome(&plan, &results)
 }
 
+/// `fai check`'s eager example check: evaluates the closed `example` contracts in
+/// `files` in an isolated worker — so a trapping or looping example cannot crash
+/// or hang the checker — and returns only the located `FAI6001` failures. Aborts,
+/// timeouts, and leaks are dropped here ([`example_failures`]); `fai test` stays
+/// authoritative for those and for `forall`s. Returns nothing when there is no
+/// example to run or a reachable callee fails to compile (the plan is blocked).
+#[must_use]
+pub fn check_examples(db: &dyn Db, files: &[SourceFile]) -> Vec<Diagnostic> {
+    let plan = build_example_plan(db, files, TestConfig::default());
+    if plan.blocked || plan.bundle.contracts.is_empty() {
+        return Vec::new();
+    }
+    let results = run_test_workers_with_timeout(&plan, check_timeout(), &mut |_| {});
+    example_failures(&plan, &results)
+}
+
+/// Like [`check_examples`], but evaluates the examples in this process with no
+/// worker isolation — for callers testing known-safe corpora (a trapping example
+/// would abort the caller). The CLI, daemon, and LSP use [`check_examples`].
+#[must_use]
+pub fn check_examples_in_process(db: &dyn Db, files: &[SourceFile]) -> Vec<Diagnostic> {
+    let plan = build_example_plan(db, files, TestConfig::default());
+    if plan.blocked || plan.bundle.contracts.is_empty() {
+        return Vec::new();
+    }
+    let rebuilt = from_wire_test(&plan.bundle);
+    let mut results = Vec::new();
+    let mut sink = |wr: WorkerResult| results.push(ContractResult::from_worker(wr));
+    run_contracts(&rebuilt, 0, &mut sink);
+    example_failures(&plan, &results)
+}
+
+/// The located `FAI6001` diagnostics for the failed `example`s in `results`.
+/// Crashes/timeouts (`FAI6003`), live-object leaks, and not-runnable binders
+/// (`FAI6002`) are deliberately omitted: `fai check` reports only definite
+/// example failures and defers the rest to `fai test`.
+#[must_use]
+pub fn example_failures(plan: &TestPlan, results: &[ContractResult]) -> Vec<Diagnostic> {
+    assemble_outcome(plan, results)
+        .diagnostics
+        .into_iter()
+        .filter(|d| d.code == CONTRACT_FAILED)
+        .collect()
+}
+
 /// Builds a prepared [`TestPlan`] for the contracts in `files` (filtered by
 /// `match_pat`): collects, synthesizes, reference-counts, and serializes the
 /// runnable contracts into a portable bundle, alongside the render-side metadata
@@ -320,11 +371,32 @@ pub fn build_test_plan(
     match_pat: Option<&str>,
     config: TestConfig,
 ) -> TestPlan {
+    build_plan(db, files, match_pat, config, |_| true)
+}
+
+/// Builds a prepared [`TestPlan`] containing only the closed `example` contracts
+/// in `files` — the contracts `fai check` evaluates eagerly. `forall`s (which
+/// need generated inputs) are excluded; they remain `fai test`'s responsibility.
+#[must_use]
+pub fn build_example_plan(db: &dyn Db, files: &[SourceFile], config: TestConfig) -> TestPlan {
+    build_plan(db, files, None, config, |kind| kind == ContractKind::Example)
+}
+
+/// The shared body of [`build_test_plan`]/[`build_example_plan`]: collects the
+/// contracts accepted by `accept` (and the `match_pat` filter), synthesizes,
+/// reference-counts, and serializes them into a portable bundle.
+fn build_plan(
+    db: &dyn Db,
+    files: &[SourceFile],
+    match_pat: Option<&str>,
+    config: TestConfig,
+    accept: impl Fn(ContractKind) -> bool,
+) -> TestPlan {
     // Collect contracts, keeping each with its file.
     let mut items: Vec<(SourceFile, ContractInfo)> = Vec::new();
     for &file in files {
         for info in fai_contracts::contracts(db, file) {
-            if matches_filter(db, file, &info, match_pat) {
+            if accept(info.kind) && matches_filter(db, file, &info, match_pat) {
                 items.push((file, info));
             }
         }
@@ -487,6 +559,18 @@ pub fn run_test_workers(
     plan: &TestPlan,
     on_event: &mut dyn FnMut(&ContractEvent),
 ) -> Vec<ContractResult> {
+    run_test_workers_with_timeout(plan, test_timeout(), on_event)
+}
+
+/// Like [`run_test_workers`], but with a caller-chosen per-worker wall-clock
+/// `timeout`. `fai check`'s eager example evaluation uses a shorter limit than
+/// `fai test` so a runaway example cannot hold the daemon session lock for long.
+#[must_use]
+pub fn run_test_workers_with_timeout(
+    plan: &TestPlan,
+    timeout: Duration,
+    on_event: &mut dyn FnMut(&ContractEvent),
+) -> Vec<ContractResult> {
     let n = plan.bundle.contracts.len();
     if n == 0 {
         return Vec::new();
@@ -509,7 +593,6 @@ pub fn run_test_workers(
                 .collect();
         }
     };
-    let timeout = test_timeout();
     let mut spawn = |start: usize| spawn_and_read(&bundle_path, start, timeout);
     let mut on_result =
         |r: &ContractResult| on_event(&resolve_event(&plan.runnable_meta[r.position], r));
@@ -694,6 +777,15 @@ fn test_timeout() -> Duration {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_TEST_TIMEOUT_MS);
+    Duration::from_millis(ms)
+}
+
+/// The eager-example-check wall-clock limit (`FAI_CHECK_TIMEOUT_MS`, default 10s).
+fn check_timeout() -> Duration {
+    let ms = std::env::var("FAI_CHECK_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_CHECK_TIMEOUT_MS);
     Duration::from_millis(ms)
 }
 
@@ -1035,6 +1127,57 @@ mod tests {
         assert_eq!(d.help.as_deref(), Some("counterexample: n = 0"));
         assert_eq!(outcome.events[0].status, ContractStatus::Failed);
         assert_eq!(outcome.events[0].counterexample.as_deref(), Some("n = 0"));
+    }
+
+    #[test]
+    fn example_failures_keep_only_contract_failures() {
+        // `example_failures` filters the assembled diagnostics to FAI6001 (a
+        // definite contract failure), dropping crashes/timeouts and leaks — what
+        // `fai check` reports, leaving the rest to `fai test`.
+        let p = plan(3);
+        let results = vec![
+            ContractResult {
+                position: 0,
+                status: ResultStatus::Failed,
+                counterexample: Some("0".to_owned()),
+                live_delta: 0,
+            },
+            ContractResult {
+                position: 1,
+                status: ResultStatus::Crashed,
+                counterexample: None,
+                live_delta: 0,
+            },
+            ContractResult {
+                position: 2,
+                status: ResultStatus::Passed,
+                counterexample: None,
+                live_delta: 1,
+            },
+        ];
+        let diags = example_failures(&p, &results);
+        assert_eq!(diags.len(), 1, "only the failure becomes a diagnostic: {diags:?}");
+        assert_eq!(diags[0].code.as_str(), "FAI6001");
+    }
+
+    #[test]
+    fn example_failures_empty_when_all_pass() {
+        let p = plan(2);
+        let results = vec![
+            ContractResult {
+                position: 0,
+                status: ResultStatus::Passed,
+                counterexample: None,
+                live_delta: 0,
+            },
+            ContractResult {
+                position: 1,
+                status: ResultStatus::Passed,
+                counterexample: None,
+                live_delta: 0,
+            },
+        ];
+        assert!(example_failures(&p, &results).is_empty());
     }
 
     #[test]

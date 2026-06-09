@@ -190,13 +190,21 @@ Diagnostic = { "code": string, "severity": "error"|"warning"|"info",
 
 ## 5. Build & dev commands
 
-### `fai check [path]`
-Typecheck only (front-end queries; no codegen/link). The fast inner-loop command.
+### `fai check [path] [--no-examples]`
+Typecheck the selection, then evaluate its closed `example` contracts. The fast
+inner-loop command: the type-check is front-end-only (no codegen/link), and once
+it is clean each closed `example` is evaluated in an isolated worker (the same one
+`fai test` uses), reporting a failing one as a located `FAI6001` — so a wrong
+example is caught here, not only by `fai test`. `forall` laws and any example that
+cannot be compiled are left to `fai test`, and aborts/timeouts are dropped (only
+definite failures are reported). A file with no examples runs nothing extra; a
+runaway example is bounded by `FAI_CHECK_TIMEOUT_MS` (default 10s).
 
 - **Arguments:** `path` — a file or directory; default: the whole workspace.
+- **Options:** `--no-examples` (type-check only; skip example evaluation).
 - **Streaming:** emits diagnostics as they are found.
 - **Output (json):** `{ "schemaVersion": 1, "diagnostics": [Diagnostic], "ok": bool }`
-- **Exit:** `0` if no errors; `1` if any error diagnostic.
+- **Exit:** `0` if no errors; `1` if any error diagnostic (including a failing example).
 
 ```
 $ fai check
@@ -253,6 +261,12 @@ the construct just completed). The position encoding is
 negotiated at initialization (UTF-8 when the client offers it, else UTF-16). Open
 buffers are analyzed as unsaved overlays, so every answer tracks the in-editor
 text.
+
+On **save** (not on every keystroke), the saved file's closed `example` contracts
+are evaluated in an isolated worker and a failing one is published as `FAI6001`
+alongside its type diagnostics; the results persist across edits to other files
+and are cleared when the file itself is edited. Set the `examples` initialization
+option to `false` to disable this (the type-check is unaffected).
 
 ---
 

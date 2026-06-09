@@ -1452,6 +1452,42 @@ Editor integration:
     observes every later frame with no startup race. `tap` auto-spawns a daemon
     like `start`. Rejected: an unbounded buffer (a forgotten tap could grow daemon
     memory without bound).
+- **D106 `fai check` evaluates closed `example` contracts (extends D12/D84;
+  reuses D103).** A closed `example` has no binders, so it can be evaluated
+  eagerly without generation. `fai check` now does so: after the selection
+  type-checks clean, each closed `example` in the selected files is run and a
+  failure is reported as the located **`FAI6001`** — the same diagnostic `fai
+  test` produces — so a wrong example is caught in the fast inner loop, not only
+  by `fai test`.
+  - **Reuse the isolated worker, not in-process evaluation.** An example can trap
+    (e.g. division by zero) or loop, which would crash or hang the checker — fatal
+    in the warm daemon. So check reuses the **same `__test-worker` subprocess**
+    `fai test` uses (D103): it builds an example-only `TestPlan`
+    (`build_example_plan`, `forall`s excluded) and runs it under a **shorter
+    wall-clock limit** (`FAI_CHECK_TIMEOUT_MS`, default 10s) than the test limit,
+    because the daemon serves check **under the session lock** (the generic
+    command path, not a dedicated off-lock handler — a deliberate
+    simplicity/responsiveness trade, since the happy path is one fast JIT and a
+    runaway example is bounded by the short limit). Off-lock execution and
+    memoizing results by the reachable rc-hash are noted as future work.
+  - **Definite failures only.** Check reports `FAI6001` and nothing else: an
+    example that aborts/times out (`FAI6003`), one that cannot be compiled
+    (`FAI6002`), and a live-object leak are all dropped here, leaving `fai test`
+    authoritative for them and for every `forall`. A type error skips example
+    evaluation entirely (the body could not be compiled soundly), and a file with
+    no example pays nothing (no plan, no worker).
+  - **Opt-out.** `fai check --no-examples` restores a pure type-check (an
+    `examples` flag on the `Check` command spec, flowing to the daemon). The
+    front-end `check` query stays pure — example evaluation lives in the command
+    path — so the LSP's per-keystroke diagnostics and the incremental firewall are
+    unchanged.
+  - **Editor: on save, not per keystroke.** The language server evaluates the
+    saved file's examples on `didSave` (in the worker) and caches the failures per
+    file, re-attaching them to that file's published diagnostics until the file is
+    edited (which clears them, to be recomputed on the next save) or closed.
+    Running on save — not on every change — keeps typing responsive; the
+    `examples` initialization option (surfaced as the `fai.examples` VS Code
+    setting) disables it.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.
