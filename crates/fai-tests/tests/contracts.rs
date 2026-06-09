@@ -103,6 +103,11 @@ fn cart_contracts_pass() {
 }
 
 #[test]
+fn chars_contracts_pass() {
+    sample_contracts_pass("Chars.fai");
+}
+
+#[test]
 fn patterns_contracts_pass() {
     sample_contracts_pass("Patterns.fai");
 }

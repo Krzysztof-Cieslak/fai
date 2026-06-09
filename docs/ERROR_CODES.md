@@ -338,7 +338,7 @@ An `example`/`forall` contract did not hold. `fai check` evaluates closed `examp
 
 **Severity:** error
 
-A contract cannot be exercised because a binder's type has no value generator — a function-typed binder, an unsupported type (e.g. `Char`), or too many binders.
+A contract cannot be exercised because a binder's type has no value generator — a function-typed binder, a row-polymorphic (open) record, or too many binders.
 
 ### FAI6003 — contract aborted at runtime
 

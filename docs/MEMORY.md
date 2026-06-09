@@ -784,9 +784,9 @@ Contracts (examples & properties):
   `--seed` flag overrides), 100 trials, size ramping `0..maxSize` with `Int` drawn
   from `[-size, size]` and `List` length ≤ size — bounded so `abs`/`clamp`-style
   laws hold (no `i64::MIN`/overflow surprises). Generators cover the primitives
-  and built-in constructors via the std combinators (which the compiler composes);
-   **`Char` is omitted** (the native backend does not support it yet, so a `Char`
-   binder is `FAI6002`).
+  and built-in constructors via the std combinators (which the compiler composes).
+  (`Char` was initially omitted while the native backend lacked it; it is now a
+  native type with a generator, so a `Char` binder is runnable — see D107.)
 - **D87 Per-type `Arbitrary` synthesis for records and ADTs (Stage 2).** A user
   record or ADT has no generic combinator, so the compiler synthesizes a
   top-level `Arbitrary` *definition* per type, referenced as a `Global`. Two
@@ -1488,6 +1488,35 @@ Editor integration:
     Running on save — not on every change — keeps typing responsive; the
     `examples` initialization option (surfaced as the `fai.examples` VS Code
     setting) disables it.
+- **D107 Native `Char` (supersedes the `Char` omission in D86).** `Char` is a
+  first-class native type, not just a lexer distinction. The lexer/parser/types
+  already handled it; this makes it compile, run, and generate.
+  - **Representation: an immediate, like `Int`/`Bool`.** A `Char` is a tagged
+    Unicode scalar value, `(codepoint << 1) | 1`. A code point fits the 63-bit
+    immediate payload, so there is no heap descriptor and no boxing (unlike
+    `Float`, which is boxed because it needs all 64 bits). Because it is an
+    immediate that shares the `Int` encoding, structural equality and ordering
+    work through the existing immediate paths with no new `fai_equal`/`fai_compare`
+    branch, and reference counting treats it as a no-op. Codegen already
+    classified `Con::Char` as immediate; lowering now emits `Lit::Char`.
+  - **Four prelude-private intrinsics.** `charToString` (a one-character
+    `String`), `charToCode`/`charFromCode` (the Char/Int conversions — typed
+    bitcasts, implemented as the identity at runtime since the encodings
+    coincide), and `isValidCharCode` (range/surrogate check). `std/Char.fai`
+    exposes `toString`, `toCode`, and a total `fromCode : Int -> Option Char`
+    written as `if isValidCharCode n then Some (charFromCode n) else None` — the
+    `Option` is built in Fai, keeping the runtime ADT-agnostic (the same split as
+    the `FileSystem`/`Env` hosts in D-era capability wiring). Naming follows the
+    representation-conversion precedent (`Float.toBits`/`fromBits`), not a
+    numeric-cast spelling.
+  - **Generator.** `Test.char` draws across the whole valid range (an invalid
+    surrogate/out-of-range draw falls back to `'a'`) and shrinks toward `'a'`. Its
+    renderer prints a valid Fai char literal — printable ASCII verbatim, the quote
+    and backslash and the common control characters as named escapes, and anything
+    else as `\u{hex}` (hex built in Fai from the bitwise `Int` intrinsics) — so a
+    counterexample is unambiguous and always renderable. The contract harness maps
+    a `Char` binder to it, so a `forall` over a `Char` is runnable (no longer
+    `FAI6002`).
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.
