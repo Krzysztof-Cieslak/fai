@@ -1120,15 +1120,29 @@ program output are unchanged, guarded by the full type/golden suite):
 - **D99 Flatten self-tail-recursion into a loop (tail-call/TRMC).** A transform in
   `fai-rc`, run after dup/drop and reuse, rewrites a self-tail-recursive entry
   function into a loop.
-  - **Eligibility (all-or-nothing).** Monomorphic (no offset evidence), and every
-    reference to the function itself is a **saturated self-call in tail position** —
-    either plain (a tail-call loop) or the single argument of one tail constructor
-    (the "modulo cons" case). The recursive call may sit at any field index; a
-    constructor argument after it is hoisted ahead of the back-edge only when it is
-    **pure and total** (no call, no integer division/remainder, no capability
-    effect), preserving observable order. Two self-calls in one constructor,
-    nesting more than one constructor deep, a non-tail self-call, or any other
-    self-reference leaves the function as ordinary recursion.
+  - **Eligibility (all-or-nothing).** Every reference to the function itself is a
+    **saturated self-call in tail position** — either plain (a tail-call loop) or
+    the single argument of one tail constructor (the "modulo cons" case). The
+    recursive call may sit at any field index; a constructor argument after it is
+    hoisted ahead of the back-edge only when it is **pure and total** (no call, no
+    integer division/remainder, no capability effect), preserving observable order.
+    Two self-calls in one constructor, nesting more than one constructor deep, a
+    non-tail self-call, or any other self-reference leaves the function as ordinary
+    recursion.
+  - **Row-polymorphic functions flatten too.** A function carrying leading
+    offset-evidence parameters calls itself *curried* — lowering partially applies
+    it to its evidence and then to the real arguments
+    (`App { App { self, [ev…] }, [args] }`). A fusion pre-pass **before** reference
+    counting normalizes that nested application back to a single saturated
+    `self ev… args`; the flattened loop then carries the evidence as ordinary
+    loop-carried parameters, passed unchanged on every back-edge (Fai has no
+    polymorphic recursion, so a self-call always threads its own evidence). Fusing
+    before reference counting is essential: done afterward, a plain tail call's
+    evidence — consumed early by the partial application and so `dup`/`drop`-balanced
+    around it — would strand that `drop` once the call became a back-edge. As a side
+    effect every saturated row-polymorphic self-call (even in a non-flattened
+    function) becomes a direct call rather than building a partial-application
+    closure.
   - **Borrowing yields to it (amends D79).** A parameter that flows into a
     saturated tail self-call is **owned, not borrowed**: a lent argument must be
     dropped *after* the call, which would push the call out of tail position. So an
@@ -1150,10 +1164,11 @@ program output are unchanged, guarded by the full type/golden suite):
   - **Soundness.** The abstract reference-count interpreter models the new nodes
     (the hole as a linear token; loop balance via the existing per-path consistency
     check), so the corpus and whole-program oracles cover the transformed output;
-    the differential allocation tests confirm zero fresh cells over a unique list,
-    and deep end-to-end runs (JIT and AOT) confirm constant stack and a leak-free
-    exit. Mutually-recursive, nested-constructor, non-last reorder-unsafe, and
-    row-polymorphic cases are noted as future generalizations.
+    the differential allocation tests confirm zero fresh cells over a unique list
+    (for monomorphic *and* row-polymorphic rebuilds), and deep end-to-end runs (JIT
+    and AOT) confirm constant stack and a leak-free exit. Mutually-recursive,
+    nested-constructor, and non-last reorder-unsafe cases are noted as future
+    generalizations.
 
 - **D100 Inter-procedural argument borrowing (amends D79).** Borrow inference now
   consults callees' signatures, so a parameter only *forwarded* to another

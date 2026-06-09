@@ -84,6 +84,16 @@ pub fn rc_lowered(db: &dyn Db, lowered: &LoweredDef, self_sig: &BorrowSig) -> Lo
         if sig.exploitable_at(nargs) { sig.0.clone() } else { vec![false; nargs] }
     };
 
+    // The entry's offset-evidence-parameter count: a row-polymorphic function
+    // calls itself curried (partially applied to its evidence, then to the real
+    // arguments), so those calls are normalized to a saturated self-call *before*
+    // reference counting, where the nested application is still intact and no
+    // dup/drop has been inserted (see [`trmc::fuse_evidence_self_calls`]). The
+    // flattened loop then carries the evidence as an ordinary loop-carried
+    // parameter, just like the real ones.
+    let evidence = fai_types::declared_or_inferred_scheme(db, lowered.def)
+        .map_or(0, |s| fai_types::evidence_count(&s));
+
     let mut fns = Vec::with_capacity(lowered.fns.len());
     for (i, f) in lowered.fns.iter().enumerate() {
         let mut borrowed: Locals = f.captures.iter().copied().collect();
@@ -94,7 +104,12 @@ pub fn rc_lowered(db: &dyn Db, lowered: &LoweredDef, self_sig: &BorrowSig) -> Lo
                 }
             }
         }
-        let body = anf(f.body.clone(), &mut next);
+        let raw = if i == 0 && evidence > 0 {
+            trmc::fuse_evidence_self_calls(f.body.clone(), lowered.def, &f.params[..evidence])
+        } else {
+            f.body.clone()
+        };
+        let body = anf(raw, &mut next);
         let used = fv_owned(&body, &borrowed);
         let mut cx = Rc { captures: &borrowed, next, call_borrows: &arg_borrows };
         let body = cx.owned(body, &Locals::default());
@@ -113,9 +128,7 @@ pub fn rc_lowered(db: &dyn Db, lowered: &LoweredDef, self_sig: &BorrowSig) -> Lo
         // entry can recurse by definition id; lifted lambdas are reached through
         // `apply_n`). A no-op unless the body is tail-recursive.
         if i == 0 {
-            let evidence = fai_types::declared_or_inferred_scheme(db, lowered.def)
-                .map_or(0, |s| fai_types::evidence_count(&s));
-            body = trmc::flatten(body, &f.params, lowered.def, evidence, &mut next);
+            body = trmc::flatten(body, &f.params, lowered.def, &mut next);
         }
         fns.push(CoreFn { params: f.params.clone(), captures: f.captures.clone(), body });
     }

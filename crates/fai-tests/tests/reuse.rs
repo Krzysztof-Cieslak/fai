@@ -133,6 +133,54 @@ fn reuse_std_map_unique_vs_shared() {
     assert_eq!(s - u, 50, "List.map recycles a unique spine (u={u}, s={s})");
 }
 
+/// A program over a list of records whose `main` prints `Int.toString {use_body}`
+/// after binding `xs = build 50` (a descending list of `{ n = k, tag = 0 }`, all
+/// with `n > 0`). `keepPos` is the **row-polymorphic** modulo-cons filter under
+/// test (`r :: keepPos rest`, testing the `n` field through offset evidence); with
+/// every element kept it rebuilds the same list, so it flattens to a spine-building
+/// loop that recycles a unique input's cons cells in place. `sumR` (monomorphic,
+/// over the concrete record type) reads the field back and re-uses `xs` in the
+/// shared variant; keeping the re-use monomorphic means both variants build the
+/// same single partial-application closure for the one `keepPos` call, so the
+/// allocation gap is exactly the recycled-vs-copied spine.
+fn rowpoly_prog(use_body: &str) -> String {
+    formatdoc! {r#"
+        module M
+
+        type R = {{ n : Int, tag : Int }}
+
+        build : Int -> List R
+        let build k = if k <= 0 then [] else {{ n = k, tag = 0 }} :: build (k - 1)
+
+        keepPos : List ({{ n : Int | 'r }}) -> List ({{ n : Int | 'r }})
+        let keepPos rs =
+          match rs with
+          | [] -> []
+          | r :: rest -> if r.n > 0 then r :: keepPos rest else keepPos rest
+
+        sumR : List R -> Int
+        let sumR rs =
+          match rs with
+          | [] -> 0
+          | r :: rest -> r.n + sumR rest
+
+        public main : Runtime -> Unit
+        let main rt =
+          let xs = build 50
+          rt.console.writeLine (Int.toString ({use_body}))
+    "#}
+}
+
+#[test]
+fn reuse_rowpoly_filter_unique_vs_shared() {
+    // A row-polymorphic modulo-cons rebuild recycles a unique cons spine in place
+    // (zero fresh cells) and copies a shared one (+50) — the same differential as
+    // the monomorphic rebuilders, confirming an evidence-carrying loop still reuses.
+    let u = allocs(&rowpoly_prog("sumR (keepPos xs)"), "1275");
+    let s = allocs(&rowpoly_prog("sumR (keepPos xs) + sumR xs"), "2550");
+    assert_eq!(s - u, 50, "unique row-poly rebuild recycles 50 cons cells (u={u}, s={s})");
+}
+
 /// The recycled-vs-copied gap is exactly one cons cell per element, so it grows
 /// linearly with the list length.
 #[track_caller]
