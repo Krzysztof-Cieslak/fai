@@ -93,6 +93,8 @@ const DBL: &str =
     "let dbl xs =\n  match xs with\n  | [] -> []\n  | x :: rest -> (x * 2) :: dbl rest";
 const KEEP: &str = "let keep xs =\n  match xs with\n  | [] -> []\n  | x :: rest -> if x > 0 then x :: keep rest else keep rest";
 const REV: &str = "let rev acc xs =\n  match xs with\n  | [] -> acc\n  | x :: rest -> rev (x :: acc) rest\n\nlet reverse xs = rev [] xs";
+const STUTTER: &str =
+    "let stutter xs =\n  match xs with\n  | [] -> []\n  | x :: rest -> x :: x :: stutter rest";
 
 // ===========================================================================
 // Differential reuse: a unique spine is recycled, a shared one copied (+50).
@@ -131,6 +133,17 @@ fn reuse_std_map_unique_vs_shared() {
     let u = allocs(&prog("", "sum (List.map (fun x -> x + 1) xs)", 50), "1325");
     let s = allocs(&prog("", "sum (List.map (fun x -> x + 1) xs) + sum xs", 50), "2600");
     assert_eq!(s - u, 50, "List.map recycles a unique spine (u={u}, s={s})");
+}
+
+#[test]
+fn reuse_nested_stutter_unique_vs_shared() {
+    // A two-deep rebuild (`x :: x :: stutter rest`) produces two cons cells per
+    // element. Over a unique list each iteration recycles the matched cell into one
+    // of them and allocates the other fresh; a shared list cannot recycle and
+    // allocates both. So the gap is one cell per element — the recycled spine.
+    let u = allocs(&prog(STUTTER, "sum (stutter xs)", 50), "2550");
+    let s = allocs(&prog(STUTTER, "sum (stutter xs) + sum xs", 50), "3825");
+    assert_eq!(s - u, 50, "unique nested rebuild recycles 50 cons cells (u={u}, s={s})");
 }
 
 /// A program over a list of records whose `main` prints `Int.toString {use_body}`
