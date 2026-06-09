@@ -53,7 +53,7 @@ pub const CODES: &[CodeInfo] = &[
         title: "contract cannot be run",
         default_severity: Severity::Error,
         explanation: "A contract cannot be exercised because a binder's type has no value \
-                      generator — a function-typed binder, an unsupported type (e.g. `Char`), or \
+                      generator — a function-typed binder, a row-polymorphic (open) record, or \
                       too many binders.",
     },
     CodeInfo {

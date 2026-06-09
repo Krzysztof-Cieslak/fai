@@ -1,0 +1,24 @@
+module Chars
+
+// A `Char` is a single Unicode scalar value, written with single quotes (`'a'`,
+// `'\n'`, `'\u{1F600}'`); a leading tick without a closing one is a type
+// variable (`'a`). Its operations are reached qualified, e.g. `Char.toString`.
+/// Whether a character is an ASCII vowel (matched against char literals).
+public isVowel : Char -> Bool
+let isVowel c =
+  match c with
+  | 'a' | 'e' | 'i' | 'o' | 'u' -> true
+  | _ -> false
+example: isVowel 'e'
+example: isVowel 'z' = false
+
+/// Render a character together with its code point, e.g. `'A' (65)`.
+public describe : Char -> String
+let describe c = "'" ++ Char.toString c ++ "' (" ++ Int.toString (Char.toCode c) ++ ")"
+example: describe 'A' = "'A' (65)"
+
+/// The next character by code point, or `None` past the last scalar value.
+public next : Char -> Option Char
+let next c = Char.fromCode (Char.toCode c + 1)
+example: next 'a' = Some 'b'
+forall c: Char.toCode c >= 0

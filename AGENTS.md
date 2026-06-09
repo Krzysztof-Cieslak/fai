@@ -32,8 +32,8 @@
 > `Dict`/`Set` with their constructors, the free functions
 > `identity`/`const`/`not`/`compare`, the `Num`/`Eq`/`Ord` operator interfaces,
 > and the capability interfaces with the `Runtime` bundle) and qualified operation
-> modules (`List`, `Option`, `Result`, `Dict`, `Set`, `String`, `Int`, `Float` —
-> e.g. `List.map`, `Int.toString`). The few Rust intrinsics are prelude-private,
+> modules (`List`, `Option`, `Result`, `Dict`, `Set`, `String`, `Int`, `Float`,
+> `Char` — e.g. `List.map`, `Int.toString`). The few Rust intrinsics are prelude-private,
 > reached only as `Prim.*` inside `std/`. Reuse & in-place update (M6) are built:
 > reference counting is **precise and ownership-based** (A-normal form, drop at
 > last use, borrowing projections), a dead data cell is **reset and reused** in
@@ -164,7 +164,7 @@ table **and** the decision log in `docs/MEMORY.md`).
 | Memory | **Perceus-style reference counting** (pure + strict ⇒ acyclic heaps ⇒ no cycle collector); reuse analysis enables in-place updates incl. `{ r with ... }` |
 | Representation | Uniform 64-bit boxed/immediate values; canonical record field layout (sorted by label text); monomorphic field access is a **constant offset**; *row-polymorphic* field access and `{ r with … }` update use **offset-evidence passing** — per row lacks-constraint, an integer offset threaded in as a leading argument (like a dictionary), composing through call chains and baked into partial applications for first-class use; dictionaries for interfaces/generics |
 | Determinism | Clock / random / env / IO are reachable only via capabilities |
-| Standard library | Real compiled `.fai` modules under **`std/`**, embedded at build time. One **auto-imported** module, `Prelude`, owns the core types (`Option`/`Result`/`Dict`/`Set` + constructors) and the free functions `identity`/`const`/`not`/`compare`; all other operations are **qualified** under per-type modules (`List.map`, `Option.withDefault`, `Int.toString`, …). `Prelude`/`List`/`Option`/`Result`/`Dict`/`Set`/`String`/`Int`/`Float` are reserved module names. The few Rust **intrinsics** are prelude-private, reached only as `Prim.*` from inside `std/` (`FAI2014` elsewhere) and re-exported under clean names. (`Dict`/`Set` expose their node constructors until opaque types land.) |
+| Standard library | Real compiled `.fai` modules under **`std/`**, embedded at build time. One **auto-imported** module, `Prelude`, owns the core types (`Option`/`Result`/`Dict`/`Set` + constructors) and the free functions `identity`/`const`/`not`/`compare`; all other operations are **qualified** under per-type modules (`List.map`, `Option.withDefault`, `Int.toString`, …). `Prelude`/`List`/`Option`/`Result`/`Dict`/`Set`/`String`/`Int`/`Float`/`Char` are reserved module names. The few Rust **intrinsics** are prelude-private, reached only as `Prim.*` from inside `std/` (`FAI2014` elsewhere) and re-exported under clean names. (`Dict`/`Set` expose their node constructors until opaque types land.) |
 | Compilation model | **Demand-driven (salsa) query engine**; per-workspace **daemon** holds the DB hot, thin CLI client; **content-addressed on-disk cache**; **JIT** for `run`/`test`, **AOT** for `build`; incremental at definition/SCC granularity |
 | Tooling | `fai build/run/check/fmt/test/lsp` + read-only `fai query …` (code intelligence); per-workspace daemon (MessagePack JSON-RPC); global `--message-format=json`; stable error codes `FAInnnn`. Full reference: **`docs/CLI.md`** |
 
