@@ -25,8 +25,9 @@
 > `FAI6002`); it takes `[path]`/`--match`/`--seed`/`--count`/`--max-size`, and
 > generates values for built-in types, records, and (recursive) ADTs. The daemon
 > serves `fai test`, streaming per-contract results as `$/testEvent`; warm output
-> is byte-identical to `--no-daemon`. Not yet
-> implemented: `fai daemon tap` (#28), Windows resource limits and a Windows CI
+> is byte-identical to `--no-daemon`. `fai daemon tap` streams a live JSON decode
+> of the workspace daemon's traffic for debugging. Not yet
+> implemented: Windows resource limits and a Windows CI
 > (the named-pipe transport compiles but is untested) (#29). See `AGENTS.md` for
 > project conventions, `docs/MEMORY.md` for the design decisions, the issue
 > tracker for the roadmap, and the `samples/` directory for the language itself.
@@ -292,8 +293,11 @@ The client↔daemon link is **JSON-RPC 2.0 semantics encoded with MessagePack**.
   followed by a **MessagePack**-encoded JSON-RPC 2.0 object.
 - Message kinds: **request** (`id`, `method`, `params`), **response**
   (`id`, `result` | `error`), **notification** (`method`, `params`, no `id`).
-- **Debugging:** `--protocol-log <file>` / `fai daemon tap` decode frames to
-  JSON; a dev-only `--protocol=json` switches the wire to plaintext JSON-RPC.
+- **Debugging:** `--protocol-log <file>` decodes one connection's frames to JSON;
+  `fai daemon tap` subscribes to a live decode of the frames on *every other*
+  connection (the daemon broadcasts each frame, best-effort, to attached taps),
+  printing `#<conn> <arrow> <json>` per frame until interrupted. A dev-only
+  `--protocol=json` switches the wire to plaintext JSON-RPC.
 
 ### 7.3 Handshake & versioning
 
@@ -351,6 +355,7 @@ deferred; the request shape reserves room for them.
 | `fai test` | `test` |
 | `fai fmt` | `fmt` |
 | `fai query <q>` | `query/<q>` (`symbols`, `def`, `refs`, `type`, `docs`, `outline`, `api`, `dependents`, `callers`, `callees`, `search`, `caps`) |
+| `fai daemon tap` | `tap` |
 
 ### 7.7 Notifications (server → client)
 
@@ -364,6 +369,13 @@ deferred; the request shape reserves room for them.
 
 A streaming command emits notifications keyed by the request `id`, then sends the
 final `result`.
+
+A `tap` request is acknowledged with an `Ok` result and then turns the connection
+into a passive subscriber: the daemon streams a `tapFrame` (`{ conn, direction,
+json }`) for every frame read or written on any *other* connection — a JSON
+decode of live traffic — until the subscriber disconnects. Delivery is
+best-effort (a subscriber that falls behind drops frames rather than throttling
+the connection producing them).
 
 ### 7.8 Execution model (`run` / `test`)
 

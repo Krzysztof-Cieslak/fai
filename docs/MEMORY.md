@@ -1381,5 +1381,28 @@ Editor integration:
     into the standalone `fai-corpus` crate so both `fai-tests` and `fai-cli`'s
     benches can share it without a dependency cycle.
 
+- **D105 Daemon traffic tap (realizes the D15 "JSON tap").** `fai daemon tap`
+  observes a workspace daemon's live traffic for debugging. A `Tap` request turns
+  its connection into a passive subscriber; the daemon then **broadcasts** a JSON
+  decode of every frame read or written on every *other* connection (requests,
+  responses, streamed `$/output`, `$/testEvent`) as a `TapFrame { conn, direction,
+  json }`, which the client prints one per line. This is the cross-connection
+  surface D15 anticipated when it kept binary framing "a JSON tap keeps
+  debuggability".
+  - **One read/write choke point.** Each served connection runs through a `Conn`
+    wrapper whose `read`/`send` mirror the frame to subscribers, so the tap feed
+    is complete without each call site remembering to broadcast. The cost is gated
+    on a relaxed atomic: with no tap attached (the common case) a broadcast is one
+    load and the frame is never serialized, so the warm `run`/`test` streaming
+    path is unaffected.
+  - **Best-effort, bounded delivery.** Subscribers have a bounded buffer; a tap
+    that falls behind drops the surplus rather than throttling the connection
+    producing it (a debug observer must never affect real work), and a
+    disconnected tap is pruned on the next broadcast. The subscription is
+    acknowledged (`Ok`) *before* streaming, so a client that waits for the ack
+    observes every later frame with no startup race. `tap` auto-spawns a daemon
+    like `start`. Rejected: an unbounded buffer (a forgotten tap could grow daemon
+    memory without bound).
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

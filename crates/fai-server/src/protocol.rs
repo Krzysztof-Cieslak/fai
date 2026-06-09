@@ -32,6 +32,11 @@ pub enum Request {
     /// Run example/forall contracts under daemon supervision (streamed
     /// per-contract events, then the rendered report).
     Test(TestRequest),
+    /// Subscribe this connection to a JSON decode of the frames flowing on every
+    /// other connection (debugging; see [`TapFrame`]). The daemon acknowledges
+    /// with [`Response::Ok`], then streams [`ServerMessage::TapFrame`]s until the
+    /// client disconnects.
+    Tap,
     /// Graceful shutdown: reply, then exit the daemon process.
     Shutdown,
     /// Close this connection.
@@ -115,8 +120,44 @@ pub enum ServerMessage {
     },
     /// A per-contract result from a supervised `test` run (`$/testEvent`).
     TestEvent(ContractEvent),
+    /// A JSON decode of one frame observed on another connection, streamed to a
+    /// `tap` subscriber.
+    TapFrame(TapFrame),
     /// The terminal response for the request.
     Result(Response),
+}
+
+/// One frame observed on a daemon connection, decoded for a `tap` subscriber:
+/// which connection carried it, its direction, and a JSON rendering of the frame.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TapFrame {
+    /// A per-connection sequence id (stable for the life of the connection),
+    /// distinguishing concurrent clients in the interleaved feed.
+    pub conn: u64,
+    /// Whether the frame travelled toward the daemon or back to its client.
+    pub direction: TapDirection,
+    /// The frame decoded to a compact JSON string (see [`frame_to_json`]).
+    pub json: String,
+}
+
+/// The travel direction of a [`TapFrame`], relative to the observed client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TapDirection {
+    /// A request travelling from the client to the daemon.
+    Inbound,
+    /// A message travelling from the daemon back to the client.
+    Outbound,
+}
+
+/// Renders a [`TapFrame`] as a single line: `#<conn> <arrow> <json>`, where the
+/// arrow (`->` inbound, `<-` outbound) mirrors the `--protocol-log` format.
+#[must_use]
+pub fn render_tap(frame: &TapFrame) -> String {
+    let arrow = match frame.direction {
+        TapDirection::Inbound => "->",
+        TapDirection::Outbound => "<-",
+    };
+    format!("#{} {arrow} {}", frame.conn, frame.json)
 }
 
 /// Which standard stream an [`ServerMessage::Output`] chunk targets.
@@ -191,7 +232,8 @@ pub fn read_frame<R: Read, T: DeserializeOwned>(reader: &mut R) -> io::Result<T>
     rmp_serde::from_slice(&body).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
-/// Decodes a frame body to a pretty JSON string, for `--protocol-log`/`tap`.
+/// Decodes a frame body to a compact (one-line) JSON string, for
+/// `--protocol-log`/`tap`.
 #[must_use]
 pub fn frame_to_json<T: Serialize>(message: &T) -> String {
     serde_json::to_string(message).unwrap_or_else(|_| "<unserializable>".to_owned())
@@ -255,6 +297,7 @@ mod tests {
             dirty: Vec::new(),
         }));
         round_trip(&Request::Status);
+        round_trip(&Request::Tap);
         round_trip(&Request::Shutdown);
         round_trip(&Request::Exit);
     }
@@ -299,6 +342,11 @@ mod tests {
             command_micros_total: 1500,
             command_micros_max: 400,
         })));
+        round_trip(&ServerMessage::TapFrame(TapFrame {
+            conn: 3,
+            direction: TapDirection::Inbound,
+            json: r#"{"Status":null}"#.to_owned(),
+        }));
         round_trip(&ServerMessage::Result(Response::RunExit(124)));
         round_trip(&ServerMessage::Result(Response::Ok));
         round_trip(&ServerMessage::Result(Response::Error("boom".to_owned())));
@@ -368,5 +416,39 @@ mod tests {
     fn frame_to_json_is_valid_json() {
         let json = frame_to_json(&Request::Status);
         let _: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+    }
+
+    #[test]
+    fn render_tap_inbound_uses_a_right_arrow() {
+        let frame = TapFrame {
+            conn: 7,
+            direction: TapDirection::Inbound,
+            json: r#"{"Status":null}"#.to_owned(),
+        };
+        assert_eq!(render_tap(&frame), r##"#7 -> {"Status":null}"##);
+    }
+
+    #[test]
+    fn render_tap_outbound_uses_a_left_arrow() {
+        let frame = TapFrame {
+            conn: 2,
+            direction: TapDirection::Outbound,
+            json: r#"{"Result":"Ok"}"#.to_owned(),
+        };
+        assert_eq!(render_tap(&frame), r##"#2 <- {"Result":"Ok"}"##);
+    }
+
+    #[test]
+    fn a_tapped_frame_carries_valid_json() {
+        // A tap decode of a real request must itself be valid JSON the client can
+        // re-parse, since `tap` consumers may pipe the stream into a JSON tool.
+        let json = frame_to_json(&Request::Command(CommandRequest {
+            spec: CommandSpec::Check { path: None },
+            opts: opts(),
+            dirty: Vec::new(),
+        }));
+        let frame = TapFrame { conn: 0, direction: TapDirection::Inbound, json };
+        let value: serde_json::Value = serde_json::from_str(&frame.json).expect("valid JSON");
+        assert!(value.get("Command").is_some(), "decode should name the request variant: {value}");
     }
 }

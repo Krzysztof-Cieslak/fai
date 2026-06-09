@@ -26,8 +26,10 @@ use wait_timeout::ChildExt;
 
 use crate::protocol::{
     CommandRequest, InitResult, OutputStream, PROTOCOL_VERSION, Request, Response, RunRequest,
-    ServerMessage, StatusInfo, TestRequest, read_frame, write_frame,
+    ServerMessage, StatusInfo, TapDirection, TapFrame, TestRequest, frame_to_json, read_frame,
+    write_frame,
 };
+use crate::tap::TapRegistry;
 use crate::transport::{self, BindError};
 
 /// Exit code when a supervised run exceeds its time limit.
@@ -72,6 +74,9 @@ struct Daemon {
     commands: AtomicU64,
     command_micros_total: AtomicU64,
     command_micros_max: AtomicU64,
+    /// Live `tap` subscribers and the next connection id to hand out.
+    taps: TapRegistry,
+    conn_seq: AtomicU64,
 }
 
 impl Daemon {
@@ -130,6 +135,8 @@ pub fn serve(root: Utf8PathBuf) -> std::io::Result<()> {
         commands: AtomicU64::new(0),
         command_micros_total: AtomicU64::new(0),
         command_micros_max: AtomicU64::new(0),
+        taps: TapRegistry::default(),
+        conn_seq: AtomicU64::new(0),
     });
 
     spawn_idle_watchdog(Arc::clone(&daemon));
@@ -138,7 +145,8 @@ pub fn serve(root: Utf8PathBuf) -> std::io::Result<()> {
         match transport::accept(&listener) {
             Ok(stream) => {
                 let daemon = Arc::clone(&daemon);
-                std::thread::spawn(move || handle_connection(stream, &daemon));
+                let id = daemon.conn_seq.fetch_add(1, Ordering::Relaxed);
+                std::thread::spawn(move || handle_connection(stream, &daemon, id));
             }
             // A failed accept is transient; keep serving.
             Err(_) => continue,
@@ -176,11 +184,54 @@ fn shutdown(daemon: &Daemon) -> ! {
     std::process::exit(0);
 }
 
+/// One connection: the framed stream plus the context needed to mirror every
+/// frame to `tap` subscribers. All reads and writes on a served connection go
+/// through [`Conn::read`]/[`Conn::send`], so the tap feed sees the complete
+/// traffic without each call site remembering to broadcast.
+struct Conn<'a> {
+    stream: Stream,
+    daemon: &'a Daemon,
+    /// This connection's id, stamped onto every tapped frame.
+    id: u64,
+}
+
+impl<'a> Conn<'a> {
+    fn new(stream: Stream, daemon: &'a Daemon, id: u64) -> Self {
+        Self { stream, daemon, id }
+    }
+
+    /// Reads one request, mirroring it to any tap subscribers as inbound.
+    fn read(&mut self) -> std::io::Result<Request> {
+        let request: Request = read_frame(&mut self.stream)?;
+        self.broadcast(TapDirection::Inbound, &request);
+        Ok(request)
+    }
+
+    /// Writes one server message, mirroring it to any tap subscribers as
+    /// outbound (before the write, so a tap sees it even if the client has gone).
+    fn send(&mut self, message: &ServerMessage) -> std::io::Result<()> {
+        self.broadcast(TapDirection::Outbound, message);
+        write_frame(&mut self.stream, message)
+    }
+
+    /// Offers a frame to tap subscribers. Decoding to JSON is skipped entirely
+    /// when no tap is attached (the common case), so the served path pays only a
+    /// relaxed atomic load.
+    fn broadcast<T: serde::Serialize>(&self, direction: TapDirection, message: &T) {
+        if self.daemon.taps.is_empty() {
+            return;
+        }
+        let frame = TapFrame { conn: self.id, direction, json: frame_to_json(message) };
+        self.daemon.taps.broadcast(&frame);
+    }
+}
+
 /// Serves requests on one connection until it closes (or a shutdown is
 /// requested, which exits the process).
-fn handle_connection(mut stream: Stream, daemon: &Daemon) {
+fn handle_connection(stream: Stream, daemon: &Daemon, id: u64) {
+    let mut conn = Conn::new(stream, daemon, id);
     loop {
-        let request: Request = match read_frame(&mut stream) {
+        let request = match conn.read() {
             Ok(request) => request,
             // EOF or a malformed frame ends the connection.
             Err(_) => return,
@@ -189,7 +240,7 @@ fn handle_connection(mut stream: Stream, daemon: &Daemon) {
 
         // `run` streams `$/output` frames before its terminal result.
         if let Request::Run(request) = request {
-            if handle_run(&mut stream, daemon, &request).is_err() {
+            if handle_run(&mut conn, &request).is_err() {
                 return;
             }
             continue;
@@ -197,10 +248,17 @@ fn handle_connection(mut stream: Stream, daemon: &Daemon) {
 
         // `test` streams `$/testEvent` frames before its terminal result.
         if let Request::Test(request) = request {
-            if handle_test(&mut stream, daemon, &request).is_err() {
+            if handle_test(&mut conn, &request).is_err() {
                 return;
             }
             continue;
+        }
+
+        // `tap` turns this connection into a passive subscriber and never returns
+        // to the request loop.
+        if matches!(request, Request::Tap) {
+            subscribe_and_stream(&mut conn);
+            return;
         }
 
         let response = match request {
@@ -233,15 +291,40 @@ fn handle_connection(mut stream: Stream, daemon: &Daemon) {
                 command_micros_total: daemon.command_micros_total.load(Ordering::Relaxed),
                 command_micros_max: daemon.command_micros_max.load(Ordering::Relaxed),
             }),
-            Request::Run(_) | Request::Test(_) => unreachable!("handled above"),
+            Request::Run(_) | Request::Test(_) | Request::Tap => {
+                unreachable!("handled above")
+            }
             Request::Shutdown => {
-                let _ = write_frame(&mut stream, &ServerMessage::Result(Response::Ok));
+                let _ = conn.send(&ServerMessage::Result(Response::Ok));
                 shutdown(daemon);
             }
             Request::Exit => return,
         };
 
-        if write_frame(&mut stream, &ServerMessage::Result(response)).is_err() {
+        if conn.send(&ServerMessage::Result(response)).is_err() {
+            return;
+        }
+    }
+}
+
+/// Subscribes this connection to the tap feed and streams decoded frames until
+/// the client disconnects.
+///
+/// The subscription is registered, then acknowledged with [`Response::Ok`]
+/// *before* streaming begins, so a client that waits for the ack is guaranteed
+/// to observe every frame produced after it — there is no window where traffic
+/// slips past a not-yet-registered tap. Tap frames are written directly (not via
+/// [`Conn::send`]) so the feed never echoes itself.
+///
+/// An idle tap whose client has vanished is reaped on the next broadcast (its
+/// send fails) or when the daemon shuts down.
+fn subscribe_and_stream(conn: &mut Conn) {
+    let frames = conn.daemon.taps.subscribe();
+    if write_frame(&mut conn.stream, &ServerMessage::Result(Response::Ok)).is_err() {
+        return;
+    }
+    for frame in frames {
+        if write_frame(&mut conn.stream, &ServerMessage::TapFrame(frame)).is_err() {
             return;
         }
     }
@@ -277,46 +360,35 @@ fn sync_error(message: &str) -> Rendered {
 /// Handles a `run` request: build the bundle warm, then supervise an isolated
 /// worker, streaming its output and enforcing a timeout. Writes its own
 /// `$/output` frames and terminal `RunExit`.
-fn handle_run(stream: &mut Stream, daemon: &Daemon, request: &RunRequest) -> std::io::Result<()> {
-    let bundle = match prepare_run(daemon, request) {
+fn handle_run(conn: &mut Conn, request: &RunRequest) -> std::io::Result<()> {
+    let bundle = match prepare_run(conn.daemon, request) {
         Prepared::Bundle(bundle) => bundle,
         Prepared::Failed(message) => {
             if !message.is_empty() {
-                write_frame(
-                    stream,
-                    &ServerMessage::Output {
-                        stream: OutputStream::Stderr,
-                        chunk: message.into_bytes(),
-                    },
-                )?;
+                conn.send(&ServerMessage::Output {
+                    stream: OutputStream::Stderr,
+                    chunk: message.into_bytes(),
+                })?;
             }
-            return write_frame(
-                stream,
-                &ServerMessage::Result(Response::RunExit(COMPILE_ERROR_EXIT)),
-            );
+            return conn.send(&ServerMessage::Result(Response::RunExit(COMPILE_ERROR_EXIT)));
         }
     };
 
     let bundle_path = match write_bundle(&bundle) {
         Ok(path) => path,
         Err(message) => {
-            write_frame(
-                stream,
-                &ServerMessage::Output {
-                    stream: OutputStream::Stderr,
-                    chunk: format!("error: {message}\n").into_bytes(),
-                },
-            )?;
-            return write_frame(
-                stream,
-                &ServerMessage::Result(Response::RunExit(fai_driver::EXIT_WORKSPACE)),
-            );
+            conn.send(&ServerMessage::Output {
+                stream: OutputStream::Stderr,
+                chunk: format!("error: {message}\n").into_bytes(),
+            })?;
+            return conn
+                .send(&ServerMessage::Result(Response::RunExit(fai_driver::EXIT_WORKSPACE)));
         }
     };
 
-    let exit = supervise(stream, &bundle_path)?;
+    let exit = supervise(conn, &bundle_path)?;
     let _ = std::fs::remove_file(&bundle_path);
-    write_frame(stream, &ServerMessage::Result(Response::RunExit(exit)))
+    conn.send(&ServerMessage::Result(Response::RunExit(exit)))
 }
 
 /// The result of preparing a run: a ready bundle, or rendered failure text.
@@ -360,11 +432,11 @@ fn prepare_run(daemon: &Daemon, request: &RunRequest) -> Prepared {
 /// `Test` result. The worker execution — the long part — runs off-lock so the
 /// daemon stays responsive; a crashing contract is a separate process, so the
 /// daemon always survives.
-fn handle_test(stream: &mut Stream, daemon: &Daemon, request: &TestRequest) -> std::io::Result<()> {
-    let plan = match prepare_test(daemon, request) {
+fn handle_test(conn: &mut Conn, request: &TestRequest) -> std::io::Result<()> {
+    let plan = match prepare_test(conn.daemon, request) {
         Ok(plan) => plan,
         Err(rendered) => {
-            return write_frame(stream, &ServerMessage::Result(Response::Test(rendered)));
+            return conn.send(&ServerMessage::Result(Response::Test(rendered)));
         }
     };
 
@@ -375,7 +447,7 @@ fn handle_test(stream: &mut Stream, daemon: &Daemon, request: &TestRequest) -> s
         let results = {
             let mut on_event = |event: &ContractEvent| {
                 if send_err.is_ok() {
-                    send_err = write_frame(stream, &ServerMessage::TestEvent(event.clone()));
+                    send_err = conn.send(&ServerMessage::TestEvent(event.clone()));
                 }
             };
             run_test_workers(&plan, &mut on_event)
@@ -384,8 +456,8 @@ fn handle_test(stream: &mut Stream, daemon: &Daemon, request: &TestRequest) -> s
         results
     };
 
-    let rendered = render_test(daemon, request, &plan, &results);
-    write_frame(stream, &ServerMessage::Result(Response::Test(rendered)))
+    let rendered = render_test(conn.daemon, request, &plan, &results);
+    conn.send(&ServerMessage::Result(Response::Test(rendered)))
 }
 
 /// Builds the test plan under the session lock (warm front end). The lock is
@@ -448,7 +520,7 @@ fn render_test(
 
 /// Spawns and supervises the worker, streaming its stdout/stderr as `$/output`
 /// and enforcing the wall-clock timeout. Returns the program's exit code.
-fn supervise(stream: &mut Stream, bundle_path: &Path) -> std::io::Result<i32> {
+fn supervise(conn: &mut Conn, bundle_path: &Path) -> std::io::Result<i32> {
     let timeout = run_timeout();
     let cpu_secs = timeout.as_secs().max(1);
 
@@ -486,7 +558,7 @@ fn supervise(stream: &mut Stream, bundle_path: &Path) -> std::io::Result<i32> {
     // Forward output until both pipes reach EOF (the child has exited or was
     // killed). A write failure means the client disconnected.
     for (which, chunk) in rx {
-        write_frame(stream, &ServerMessage::Output { stream: which, chunk })?;
+        conn.send(&ServerMessage::Output { stream: which, chunk })?;
     }
     let _ = reader_out.join();
     let _ = reader_err.join();

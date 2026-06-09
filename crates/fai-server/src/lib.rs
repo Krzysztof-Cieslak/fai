@@ -11,6 +11,7 @@
 mod client;
 pub mod protocol;
 mod server;
+mod tap;
 mod transport;
 
 use std::io::Write;
@@ -79,6 +80,20 @@ pub fn test(
         dirty: Vec::new(),
     };
     client.stream_test(request, out, err)
+}
+
+/// Streams a JSON decode of this workspace's daemon traffic to `out` (one frame
+/// per line), spawning a daemon if none is running, until the connection closes
+/// (the client is interrupted, or the daemon shuts down). A readiness notice is
+/// written to `err` once the subscription is live.
+pub fn tap(
+    root: &Utf8Path,
+    log: Option<PathBuf>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<(), DaemonError> {
+    let mut client = connect_or_spawn(root, log)?;
+    client.tap(out, err)
 }
 
 /// Returns the daemon's status, or `None` if no daemon is running for `root`.
