@@ -192,6 +192,21 @@ let list elem =
   { gen = g, show = showList elem.show, shrink = shrinkList elem.shrink }
 example: (list int).show [1, 2] = "[1, 2]"
 
+// Generate a list whose elements share the budget, so a recursive element type
+// (e.g. a tree's children) cannot blow up the total size: the length stays within
+// the budget and each element draws from an equal slice of it. The compiler
+// references this (as a synthesized call) for a list field that re-enters the
+// type being generated; it is not part of the public surface. The signature is
+// explicit (though the helper is private) so `elem` is the closed `Arbitrary`
+// record rather than an inferred open row — the synthesized call site passes it
+// directly, so its runtime arity must stay 1.
+recList : Arbitrary 'a -> Arbitrary (List 'a)
+let recList elem =
+  let g size seed =
+    let (n, s2) = upTo size seed
+    buildList elem.gen (size / (n + 1)) n s2
+  { gen = g, show = showList elem.show, shrink = shrinkList elem.shrink }
+
 /// Generates pairs, shrinking each component in turn.
 public tuple2 : Arbitrary 'a -> Arbitrary 'b -> Arbitrary ('a * 'b)
 let tuple2 a b =
@@ -243,7 +258,7 @@ public option : Arbitrary 'a -> Arbitrary (Option 'a)
 let option elem =
   let g size seed =
     let (r, s2) = nextInt seed
-    if nonNeg r % 4 = 0 then
+    if size <= 0 || nonNeg r % 4 = 0 then
       (None, s2)
     else
       let (x, s3) = elem.gen size s2
@@ -264,7 +279,7 @@ public result : Arbitrary 'a -> Arbitrary 'e -> Arbitrary (Result 'a 'e)
 let result okArb errArb =
   let g size seed =
     let (r, s2) = nextInt seed
-    if nonNeg r % 4 = 0 then
+    if size > 0 && nonNeg r % 4 = 0 then
       let (e, s3) = errArb.gen size s2
       (Err e, s3)
     else

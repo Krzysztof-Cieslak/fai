@@ -1,0 +1,77 @@
+module Trees
+
+// Recursive data and property generation. The compiler synthesizes a value
+// generator for each user type, so a `forall` over a recursive shape is checked
+// over random instances. Recursion through a collection field or between two
+// types is budget-guarded so generation always terminates, and a custom
+// `Test.Arbitrary` can override the synthesized generator to respect an
+// invariant.
+/// A rose tree: a label and any number of children. The recursion runs through a
+/// `List` field, which the generator budgets so a tree never blows up.
+public type Rose =
+  | Node Int (List Rose)
+
+/// The number of nodes in a rose tree.
+public size : Rose -> Int
+let size r =
+  match r with
+  | Node n kids -> 1 + sizeForest kids
+example: size (Node 1 []) = 1
+example: size (Node 1 [Node 2 [], Node 3 []]) = 3
+forall r: size r >= 1
+
+let sizeForest kids =
+  match kids with
+  | [] -> 0
+  | k :: rest -> size k + sizeForest rest
+
+/// An expression and the statement sequence it can contain — two types that
+/// refer to each other (mutual recursion), generated without diverging.
+public type Expr =
+  | Lit Int
+  | Block Stmts
+
+public type Stmts =
+  | Done
+  | Seq Expr Stmts
+
+/// Count the literals in an expression.
+public literals : Expr -> Int
+let literals e =
+  match e with
+  | Lit n -> 1
+  | Block s -> literalsIn s
+forall e: literals e >= 0
+
+let literalsIn s =
+  match s with
+  | Done -> 0
+  | Seq e rest -> literals e + literalsIn rest
+
+/// An ordered range: the low endpoint never exceeds the high one. The synthesized
+/// generator would draw the two fields independently and could break the
+/// invariant, so a custom generator builds only ordered ranges.
+public type Range =
+  | Range Int Int
+
+public low : Range -> Int
+let low r =
+  match r with
+  | Range lo hi -> lo
+
+public high : Range -> Int
+let high r =
+  match r with
+  | Range lo hi -> hi
+
+/// Generate an ordered range by sorting the two drawn endpoints.
+public arbRange : Test.Arbitrary Range
+let arbRange =
+  let gen size seed =
+    let (a, s2) = Test.int.gen size seed
+    let (b, s3) = Test.int.gen size s2
+    let r = if a <= b then Range a b else Range b a
+    (r, s3)
+  let show r = "Range " ++ Int.toString (low r) ++ " " ++ Int.toString (high r)
+  { gen = gen, show = show, shrink = fun r -> [] }
+forall r: low r <= high r

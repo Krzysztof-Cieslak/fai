@@ -812,9 +812,8 @@ Contracts (examples & properties):
   setters) and yielding recursive subterms; its renderer dispatches on the tag and
   parenthesizes a constructor argument only when it actually renders with a space
   (`Test.parenIfSpaced`). Field types come from `constructor_scheme` instantiated
-  against the binder's concrete type arguments. Mutually-recursive ADTs and
-  recursion only reachable through a collection field (e.g. `Rose (List Rose)`)
-  are not size-guarded yet; a true fuel parameter is future work.
+  against the binder's concrete type arguments. The recursion budget and
+  user-overridable generators are refined in D109.
 
 Nested modules, qualified-type syntax, advanced code intelligence & the language
 server:
@@ -1572,6 +1571,50 @@ Editor integration:
     immediate maximum/minimum, overflow-to-box, `wrapping_mul`, logical-shift of a
     negative, and boxed-operand fallbacks; and the JIT-vs-Rust-reference property
     test now spans the bitwise operators over full `i64`.
+- **D109 Fuel-guarded generation and custom `Arbitrary` overrides (refines
+  D87).** Two gaps in the per-type `Arbitrary` synthesis are closed: recursion
+  that the size budget did not guard, and the inability to supply one's own
+  generator.
+  - **Size is a node-fuel budget, split across recursive fields.** The earlier
+    rule decremented the size only for a field of the type's *own* type, which
+    left mutually-recursive types and recursion through a collection field (e.g.
+    `Rose (List Rose)`) unguarded — and even a directly-recursive constructor with
+    more than one recursive child could blow up super-linearly. Now a field is
+    "recursive" when its type can **reach** the type being generated (a transitive
+    walk of the type graph: tuple/record/`List`/`Option`/`Result` arguments and
+    constructor fields, with custom-overridden types as opaque leaves), and a
+    constructor or record with `k` recursive fields gives **each** recursive field
+    `(size - 1) / k` — so the total number of generated nodes stays within the
+    budget regardless of branching or mutual recursion. A recursive `List` field
+    splits its slice again across its elements via a private `Test.recList`
+    combinator (length within the slice, each element an equal share); the
+    `Option`/`Result` wrappers bottom out at the floor (`None` / `Ok`), and `List`
+    already does (`[]`).
+  - **The base case is rank-driven.** A least-fixpoint `rank` (smallest-value
+    depth; a cycle with no base ⇒ ungeneratable) is computed over the reachable
+    types. At the budget floor a constructor is eligible only if it is of minimal
+    rank, so floor generation strictly shrinks and always terminates — which the
+    old "no self-typed field" heuristic got wrong for a type like `Rose` (its only
+    constructor is "recursive" yet bottoms out through the empty list) and for
+    mutually-recursive types (where a constructor's field forces another type that
+    itself grounds). A binder whose type has no finite value is reported
+    **`FAI6005`** (a non-groundable type) rather than diverging.
+  - **`Result` grounds through its `Ok` side.** Rank/groundability of `Result X Y`
+    follow `X`, and the floor grounds to `Ok`. A type whose only base case is
+    reachable through the `Err` side (e.g. `type T = MkT (Result T Int)`) is
+    reported `FAI6005` rather than generated — a deliberately accepted limitation
+    for a rare shape.
+  - **User-supplied generators override synthesis.** A top-level value in the
+    contract's file whose type is `Arbitrary T` (the closed `{ gen, show, shrink }`
+    record, recognized by its `show : T -> String` field) overrides the
+    synthesized generator for `T`, checked at the top of `arb_for` so it applies
+    wherever `T` is generated (as a binder, a tuple component, or nested in another
+    type) and bypasses the groundability analysis (so a user can generate a type
+    the synthesizer would reject). Overrides apply to **user records/ADTs only**,
+    not the built-in generators or the `Option`/`Result` wrappers. Two matching
+    definitions for one type are ambiguous, reported **`FAI6006`**. Parametric
+    custom combinators (`Arbitrary 'a -> Arbitrary (T 'a)`) are out of scope (the
+    discovered value must be a monomorphic `Arbitrary T`).
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

@@ -44,6 +44,14 @@ pub const CONTRACT_NOT_RUNNABLE: DiagnosticCode = DiagnosticCode::new("FAI6002")
 /// finish within the time limit.
 pub const CONTRACT_ABORTED: DiagnosticCode = DiagnosticCode::new("FAI6003");
 
+/// A contract cannot be run: a binder's type has no finite value, so generation
+/// would never terminate (every constructor is recursive, with no base case).
+pub const CONTRACT_NON_GROUNDABLE: DiagnosticCode = DiagnosticCode::new("FAI6005");
+
+/// A contract cannot be run: more than one user-defined `Arbitrary` generator
+/// matches a binder's type, so the override to use is ambiguous.
+pub const CONTRACT_AMBIGUOUS_GENERATOR: DiagnosticCode = DiagnosticCode::new("FAI6006");
+
 /// Diagnostic codes owned by the contracts layer (the `FAI6xxx` range).
 pub const CODES: &[CodeInfo] = &[
     CodeInfo {
@@ -81,6 +89,24 @@ pub const CODES: &[CodeInfo] = &[
                       Contracts are checked by `fai check` and run by `fai test`, so they must be \
                       deterministic and pure and cannot reach a capability. Express the law over \
                       pure values instead.",
+    },
+    CodeInfo {
+        code: CONTRACT_NON_GROUNDABLE,
+        title: "binder type has no finite value",
+        default_severity: Severity::Error,
+        explanation: "A `forall` binder's type cannot be generated because it has no finite value: \
+                      every constructor is recursive, with no base case to terminate generation \
+                      (e.g. `type S = Cons Int S`, or a mutually-recursive group where no member \
+                      bottoms out). Add a non-recursive constructor, or supply a custom \
+                      `Arbitrary` for the type.",
+    },
+    CodeInfo {
+        code: CONTRACT_AMBIGUOUS_GENERATOR,
+        title: "ambiguous custom generator",
+        default_severity: Severity::Error,
+        explanation: "More than one top-level `Arbitrary` value matches a binder's type, so which \
+                      one overrides the synthesized generator is ambiguous. Keep a single \
+                      `Arbitrary` for the type in the contract's module.",
     },
 ];
 

@@ -10,14 +10,15 @@
 //! closure), so no by-hand capture analysis is required.
 
 use fai_core::ir::{CExpr, CoreFn, ExprKind as K, FieldIndex, Lit, LoweredDef, Prim};
-use fai_db::Db;
-use fai_resolve::{AdtRef, DefId, LocalId, ModuleName, module_file, type_decls};
+use fai_db::{Db, SourceFile};
+use fai_resolve::{AdtRef, DefId, LocalId, ModuleName, module_defs, module_file, type_decls};
 use fai_span::SourceId;
 use fai_syntax::Symbol;
-use fai_types::{Con, RecordRow, RowEnd, Scheme, Ty, TyVarId, constructor_scheme};
-use rustc_hash::FxHashMap;
+use fai_types::{Con, RecordRow, RowEnd, Scheme, Ty, TyVarId, constructor_scheme, def_type};
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::synth::NotRunnable;
+use crate::{CONTRACT_AMBIGUOUS_GENERATOR, CONTRACT_NON_GROUNDABLE};
 
 /// Field offsets in the std `Arbitrary` record (sorted labels: `gen`, `show`,
 /// `shrink`) and the `(value, seed)` pair a generator returns.
@@ -30,6 +31,8 @@ const PAIR_SEED: u32 = 1;
 /// Synthesizes `Arbitrary` definitions for user types, deduplicated per run.
 pub struct ArbBuilder<'a> {
     db: &'a dyn Db,
+    /// The contract's file (its declarations supply custom-generator overrides).
+    file: SourceFile,
     /// The file the synthesized defs belong to (the contract's source).
     source: SourceId,
     /// A prefix making synthesized names unique across a file's contracts.
@@ -38,14 +41,65 @@ pub struct ArbBuilder<'a> {
     counter: usize,
     /// Already-synthesized arbitraries, by type (also breaks recursion).
     seen: FxHashMap<Ty, DefId>,
+    /// User-defined `Arbitrary T` overrides, keyed by the generated type `T`.
+    /// Consulted at the top of [`Self::arb_for`] and treated as opaque leaves by
+    /// the reachability/rank analyses.
+    custom: FxHashMap<Ty, DefId>,
+    /// Types with more than one matching user `Arbitrary` (an ambiguous override).
+    ambiguous: FxHashSet<Ty>,
+    /// Least-fixpoint smallest-value depth of each reachable groundable user ADT
+    /// (absent ⇒ no finite value). Drives the recursion base case.
+    ranks: FxHashMap<Ty, u32>,
     /// The synthesized definitions and their runtime arities.
     pub defs: Vec<(LoweredDef, usize)>,
 }
 
 impl<'a> ArbBuilder<'a> {
     /// Creates a builder; `prefix` (e.g. `contract#3`) namespaces synthesized defs.
-    pub fn new(db: &'a dyn Db, source: SourceId, prefix: String) -> Self {
-        ArbBuilder { db, source, prefix, counter: 0, seen: FxHashMap::default(), defs: Vec::new() }
+    pub fn new(db: &'a dyn Db, file: SourceFile, prefix: String) -> Self {
+        ArbBuilder {
+            db,
+            file,
+            source: file.source(db),
+            prefix,
+            counter: 0,
+            seen: FxHashMap::default(),
+            custom: FxHashMap::default(),
+            ambiguous: FxHashSet::default(),
+            ranks: FxHashMap::default(),
+            defs: Vec::new(),
+        }
+    }
+
+    /// Discovers user-defined `Arbitrary` overrides in the contract's file and
+    /// ranks the types reachable from the binders (for the recursion base case).
+    /// Call once, before [`Self::arb_for`].
+    pub fn prepare(&mut self, binder_types: &[Ty]) {
+        self.scan_custom();
+        self.ranks = compute_ranks(self.db, &self.custom, binder_types);
+    }
+
+    /// Scans the contract file's top-level definitions for values whose type is
+    /// `Arbitrary T` (a closed `{ gen, show, shrink }` record), recording each as
+    /// the override for `T`. A `T` matched by two definitions is ambiguous.
+    fn scan_custom(&mut self) {
+        for info in &module_defs(self.db, self.file).defs {
+            let scheme = def_type(self.db, self.file, info.name);
+            // Only a monomorphic `Arbitrary T` value (not a parametric combinator
+            // `Arbitrary 'a -> Arbitrary (T 'a)`, whose type is an arrow).
+            if !scheme.vars.is_empty() || !scheme.row_vars.is_empty() {
+                continue;
+            }
+            let Some(elem) = arbitrary_element(&scheme.ty) else { continue };
+            // Overrides apply to user records/ADTs only — not built-in generators.
+            if !is_custom_eligible(&elem) {
+                continue;
+            }
+            let def = DefId::new(self.source, info.name);
+            if self.custom.insert(elem.clone(), def).is_some() {
+                self.ambiguous.insert(elem);
+            }
+        }
     }
 
     /// A `DefId` in the contract's file with a unique synthesized name.
@@ -57,9 +111,8 @@ impl<'a> ArbBuilder<'a> {
 
     /// Resolves a `Module.name` standard-library definition.
     fn std(&self, module: &str, name: &str) -> Result<DefId, NotRunnable> {
-        let m = module_file(self.db, ModuleName(Symbol::intern(module))).ok_or_else(|| {
-            NotRunnable { reason: format!("the std `{module}` module is missing") }
-        })?;
+        let m = module_file(self.db, ModuleName(Symbol::intern(module)))
+            .ok_or_else(|| NotRunnable::reason(format!("the std `{module}` module is missing")))?;
         Ok(DefId::new(m.source(self.db), Symbol::intern(name)))
     }
 
@@ -71,6 +124,20 @@ impl<'a> ArbBuilder<'a> {
     /// types, or a `Global` reference to a synthesized definition for a
     /// record/ADT (which it generates on demand).
     pub fn arb_for(&mut self, ty: &Ty) -> Result<CExpr, NotRunnable> {
+        // A user-defined `Arbitrary T` takes precedence over synthesis (and over
+        // the groundability analysis), wherever `T` is generated.
+        if self.ambiguous.contains(ty) {
+            return Err(NotRunnable::coded(
+                CONTRACT_AMBIGUOUS_GENERATOR,
+                format!(
+                    "more than one `Arbitrary` is defined for `{}`",
+                    fai_types::render(ty, &fai_types::VarNames::new())
+                ),
+            ));
+        }
+        if let Some(&def) = self.custom.get(ty) {
+            return Ok(global(def));
+        }
         if let Ty::Record(row) = ty {
             return if row.tail == RowEnd::Closed {
                 Ok(global(self.ensure_record(ty, row)?))
@@ -112,46 +179,148 @@ impl<'a> ArbBuilder<'a> {
     }
 
     fn unsupported(&self, ty: &Ty) -> Result<CExpr, NotRunnable> {
-        Err(NotRunnable {
-            reason: format!(
-                "cannot generate values of type `{}`",
+        Err(NotRunnable::reason(format!(
+            "cannot generate values of type `{}`",
+            fai_types::render(ty, &fai_types::VarNames::new())
+        )))
+    }
+
+    /// Rejects a type with no finite value (no base case ⇒ generation can't
+    /// terminate) as [`CONTRACT_NON_GROUNDABLE`].
+    fn require_groundable(&self, ty: &Ty) -> Result<(), NotRunnable> {
+        if self.groundable(ty) {
+            return Ok(());
+        }
+        Err(NotRunnable::coded(
+            CONTRACT_NON_GROUNDABLE,
+            format!(
+                "type `{}` has no finite value (every constructor is recursive)",
                 fai_types::render(ty, &fai_types::VarNames::new())
             ),
-        })
+        ))
+    }
+
+    /// The generator for one constructor/record field, paired with whether it
+    /// re-enters `target` (and so consumes a split slice of the budget). A
+    /// recursive `List` field uses `recList`, which splits its slice across its
+    /// elements; every other field uses its ordinary arbitrary.
+    fn field_arb(&mut self, field_ty: &Ty, target: &Ty) -> Result<(CExpr, bool), NotRunnable> {
+        let recursive = self.can_reach(field_ty, target);
+        if recursive && let Some(elem) = list_element(field_ty) {
+            let elem_arb = self.arb_for(elem)?;
+            return Ok((app(self.test("recList")?, vec![elem_arb]), true));
+        }
+        Ok((self.arb_for(field_ty)?, recursive))
+    }
+
+    /// Whether `ty` has a finite value (can be generated at all).
+    fn groundable(&self, ty: &Ty) -> bool {
+        self.rank_of(ty).is_some()
+    }
+
+    /// The smallest-value depth of `ty` (its rank), or `None` if it has no finite
+    /// value. ADT ranks come from the precomputed [`Self::ranks`] fixpoint.
+    fn rank_of(&self, ty: &Ty) -> Option<u32> {
+        rank_of(&self.ranks, &self.custom, ty)
+    }
+
+    /// The constructors eligible at the budget floor: those whose smallest value
+    /// is as shallow as the type's (so floor generation strictly shrinks).
+    fn base_ctors<'c>(&self, ty: &Ty, ctors: &'c [Ctor]) -> Vec<&'c Ctor> {
+        let target = self.rank_of(ty);
+        ctors.iter().filter(|c| self.ctor_rank(c) == target).collect()
+    }
+
+    /// The rank of a constructor: one deeper than its deepest field, or `None` if
+    /// any field has no finite value.
+    fn ctor_rank(&self, ctor: &Ctor) -> Option<u32> {
+        let mut worst = 0;
+        for f in &ctor.fields {
+            worst = worst.max(self.rank_of(f)?);
+        }
+        Some(worst + 1)
+    }
+
+    /// Whether generating `field` can re-enter `target` (directly, mutually, or
+    /// through a collection/wrapper). A custom-overridden type is an opaque leaf.
+    fn can_reach(&self, field: &Ty, target: &Ty) -> bool {
+        let mut visited = FxHashSet::default();
+        self.reaches(field, target, &mut visited)
+    }
+
+    fn reaches(&self, ty: &Ty, target: &Ty, visited: &mut FxHashSet<Ty>) -> bool {
+        if ty == target {
+            return true;
+        }
+        if self.custom.contains_key(ty) {
+            return false;
+        }
+        match ty {
+            Ty::Tuple(es) => es.iter().any(|e| self.reaches(e, target, visited)),
+            Ty::Record(row) => row.fields.iter().any(|(_, t)| self.reaches(t, target, visited)),
+            _ => {
+                let (head, args) = peel_app(ty);
+                match head {
+                    Ty::Con(Con::List) => args.iter().any(|a| self.reaches(a, target, visited)),
+                    Ty::Adt(adt) if is_builtin_adt(*adt) => {
+                        args.iter().any(|a| self.reaches(a, target, visited))
+                    }
+                    Ty::Adt(adt) => {
+                        // Pathological non-regular recursion: force a split (safe).
+                        if visited.len() > MAX_REACH {
+                            return true;
+                        }
+                        if !visited.insert(ty.clone()) {
+                            return false; // already exploring this applied type
+                        }
+                        adt_ctor_fields(self.db, *adt, &args).is_some_and(|ctors| {
+                            ctors.iter().flatten().any(|f| self.reaches(f, target, visited))
+                        })
+                    }
+                    _ => false,
+                }
+            }
+        }
     }
 
     /// Ensures a synthesized `Arbitrary` for a closed record type and returns it.
     fn ensure_record(&mut self, ty: &Ty, row: &RecordRow) -> Result<DefId, NotRunnable> {
+        self.require_groundable(ty)?;
         if let Some(def) = self.seen.get(ty) {
             return Ok(*def);
         }
         let arb_def = self.fresh_def("arb");
         self.seen.insert(ty.clone(), arb_def);
 
-        // The per-field arbitraries (as expressions referenced from each function).
-        let field_arbs: Vec<CExpr> =
-            row.fields.iter().map(|(_, t)| self.arb_for(t)).collect::<Result<_, _>>()?;
-        let n = row.fields.len();
+        // Each field's arbitrary plus whether it re-enters this record (so it is
+        // generated with a divided slice of the budget).
+        let fields: Vec<(CExpr, bool)> =
+            row.fields.iter().map(|(_, t)| self.field_arb(t, ty)).collect::<Result<_, _>>()?;
+        let field_arbs: Vec<CExpr> = fields.iter().map(|(a, _)| a.clone()).collect();
 
-        let gen_fn = self.record_gen(&field_arbs, n);
+        let gen_fn = self.record_gen(&fields);
         let show_fn = self.record_show(row, &field_arbs);
         let shrink_fn = self.record_shrink(ty, row, &field_arbs)?;
         self.push_arbitrary(arb_def, gen_fn, show_fn, shrink_fn);
         Ok(arb_def)
     }
 
-    /// `fun size seed -> let (v0, s1) = a0.gen size seed in … ({ … }, sN)`.
-    fn record_gen(&mut self, field_arbs: &[CExpr], n: usize) -> CoreFn {
+    /// `fun size seed -> let (v0, s1) = a0.gen <b0> seed in … ({ … }, sN)`, where a
+    /// recursive field's budget `<bi>` is the size split across the recursive
+    /// fields (so the record stays within the fuel budget).
+    fn record_gen(&mut self, fields: &[(CExpr, bool)]) -> CoreFn {
         let mut next = 2; // 0 = size, 1 = seed
         let size = LocalId::from_index(0);
         let mut seed = LocalId::from_index(1);
+        let k = fields.iter().filter(|(_, rec)| *rec).count();
         let mut binds: Vec<(LocalId, CExpr)> = Vec::new();
-        let mut values: Vec<CExpr> = Vec::with_capacity(n);
-        for arb in field_arbs.iter().take(n) {
+        let mut values: Vec<CExpr> = Vec::with_capacity(fields.len());
+        for (arb, rec) in fields {
+            let size_arg = if *rec { split_budget(size, k) } else { local(size) };
             let pair = fresh(&mut next);
             let value = fresh(&mut next);
             let next_seed = fresh(&mut next);
-            binds.push((pair, app(field(arb.clone(), GEN), vec![local(size), local(seed)])));
+            binds.push((pair, app(field(arb.clone(), GEN), vec![size_arg, local(seed)])));
             binds.push((value, field(local(pair), PAIR_VALUE)));
             binds.push((next_seed, field(local(pair), PAIR_SEED)));
             values.push(local(value));
@@ -227,13 +396,16 @@ impl<'a> ArbBuilder<'a> {
     /// Ensures a synthesized `Arbitrary` for a (possibly recursive) ADT applied
     /// to `args`, and returns its definition.
     fn ensure_adt(&mut self, ty: &Ty, adt: AdtRef, args: &[&Ty]) -> Result<DefId, NotRunnable> {
+        // A type with no finite value cannot be generated (no base case to
+        // terminate generation); reject before recursing into its constructors.
+        self.require_groundable(ty)?;
         if let Some(def) = self.seen.get(ty) {
             return Ok(*def);
         }
         let arb_def = self.fresh_def("arb");
         self.seen.insert(ty.clone(), arb_def); // before building, so recursion self-refers
 
-        let unknown = || NotRunnable { reason: format!("type `{}` is unavailable", adt.name) };
+        let unknown = || NotRunnable::reason(format!("type `{}` is unavailable", adt.name));
         let adt_file = self.db.source_file(adt.file).ok_or_else(unknown)?;
         let decls = type_decls(self.db, adt_file);
         let info = decls.type_named(adt.name).filter(|i| !i.is_alias).ok_or_else(unknown)?;
@@ -244,13 +416,6 @@ impl<'a> ArbBuilder<'a> {
             let tag = decls.ctor(cname).map_or(0, |c| c.tag);
             ctors.push(Ctor { tag, name: cname, fields: ctor_field_types(&scheme, args) });
         }
-        // A non-recursive constructor (no field of the ADT's own type) is needed
-        // to terminate generation at size 0.
-        if !ctors.iter().any(|c| c.fields.iter().all(|f| f != ty)) {
-            return Err(NotRunnable {
-                reason: format!("type `{}` has no non-recursive constructor", adt.name),
-            });
-        }
 
         let gen_fn = self.adt_gen(ty, &ctors)?;
         let show_fn = self.adt_show(&ctors)?;
@@ -259,15 +424,18 @@ impl<'a> ArbBuilder<'a> {
         Ok(arb_def)
     }
 
-    /// `fun size seed -> if size <= 0 then <choose a terminal> else <choose any>`.
+    /// `fun size seed -> if size <= 0 then <choose a base ctor> else <choose any>`.
+    ///
+    /// At the budget floor only the **minimal-rank** (smallest-value) constructors
+    /// are eligible, so generation deterministically bottoms out; above the floor
+    /// any constructor is fair game, with recursive fields drawn at a split budget.
     fn adt_gen(&mut self, ty: &Ty, ctors: &[Ctor]) -> Result<CoreFn, NotRunnable> {
         let size = LocalId::from_index(0);
         let seed = LocalId::from_index(1);
         let mut next = 2;
-        let terminals: Vec<&Ctor> =
-            ctors.iter().filter(|c| c.fields.iter().all(|f| f != ty)).collect();
+        let base = self.base_ctors(ty, ctors);
         let all: Vec<&Ctor> = ctors.iter().collect();
-        let small = self.choose_among(&terminals, ty, size, seed, &mut next)?;
+        let small = self.choose_among(&base, ty, size, seed, &mut next)?;
         let big = self.choose_among(&all, ty, size, seed, &mut next)?;
         let cond = prim(Prim::IntLe, vec![local(size), int(0)]);
         Ok(CoreFn { params: vec![size, seed], captures: Vec::new(), body: if_(cond, small, big) })
@@ -308,8 +476,10 @@ impl<'a> ArbBuilder<'a> {
         ))
     }
 
-    /// Builds one constructor value, returning the `(value, seed)` pair; recursive
-    /// fields are generated at `size - 1`.
+    /// Builds one constructor value, returning the `(value, seed)` pair. Each
+    /// recursive field is drawn at the size split across the constructor's
+    /// recursive fields (so the value stays within the fuel budget); a recursive
+    /// `List` field splits its slice further across its elements (`recList`).
     fn build_ctor(
         &mut self,
         ctor: &Ctor,
@@ -321,16 +491,17 @@ impl<'a> ArbBuilder<'a> {
         if ctor.fields.is_empty() {
             return Ok(make_data(0, vec![make_data(ctor.tag, Vec::new()), local(seed)]));
         }
+        let fields: Vec<(CExpr, bool)> =
+            ctor.fields.iter().map(|ft| self.field_arb(ft, ty)).collect::<Result<_, _>>()?;
+        let k = fields.iter().filter(|(_, rec)| *rec).count();
         let mut binds = Vec::new();
-        let mut values = Vec::with_capacity(ctor.fields.len());
+        let mut values = Vec::with_capacity(fields.len());
         let mut cur = seed;
-        for ft in &ctor.fields {
-            let arb = self.arb_for(ft)?;
+        for (arb, rec) in fields {
+            let size_arg = if rec { split_budget(size, k) } else { local(size) };
             let pair = fresh(next);
             let value = fresh(next);
             let next_seed = fresh(next);
-            let size_arg =
-                if ft == ty { prim(Prim::IntSub, vec![local(size), int(1)]) } else { local(size) };
             binds.push((pair, app(field(arb, GEN), vec![size_arg, local(cur)])));
             binds.push((value, field(local(pair), PAIR_VALUE)));
             binds.push((next_seed, field(local(pair), PAIR_SEED)));
@@ -457,6 +628,206 @@ struct Ctor {
     tag: u32,
     name: Symbol,
     fields: Vec<Ty>,
+}
+
+/// A cap on the type-graph walk depth, guarding against pathological non-regular
+/// recursion (a type whose monomorphic field types never repeat).
+const MAX_REACH: usize = 1000;
+
+/// Whether `adt` is one of the built-in wrapper ADTs (`Option`/`Result`), which
+/// are generated by the std combinators rather than synthesized per type.
+fn is_builtin_adt(adt: AdtRef) -> bool {
+    matches!(adt.name.as_str(), "Option" | "Result")
+}
+
+/// The element type of a `List T`, if `ty` is one.
+fn list_element(ty: &Ty) -> Option<&Ty> {
+    let (head, args) = peel_app(ty);
+    match (head, args.as_slice()) {
+        (Ty::Con(Con::List), [elem]) => Some(elem),
+        _ => None,
+    }
+}
+
+/// The `size` slice a recursive field receives when a constructor/record has `k`
+/// recursive fields: `size - 1` split `k` ways, so the value stays within budget
+/// (the `- 1` accounts for the node itself, keeping `k == 1` strictly smaller).
+fn split_budget(size: LocalId, k: usize) -> CExpr {
+    let dec = prim(Prim::IntSub, vec![local(size), int(1)]);
+    if k <= 1 { dec } else { prim(Prim::IntDiv, vec![dec, int(i64::try_from(k).unwrap_or(1))]) }
+}
+
+/// The element type `T` of a value whose type is the `Arbitrary T` record
+/// (`{ gen, show, shrink }`, sorted labels), recognized via `show : T -> String`.
+fn arbitrary_element(ty: &Ty) -> Option<Ty> {
+    let Ty::Record(row) = ty else { return None };
+    if row.tail != RowEnd::Closed || row.fields.len() != 3 {
+        return None;
+    }
+    let labels: Vec<&str> = row.fields.iter().map(|(l, _)| l.as_str()).collect();
+    if labels != ["gen", "show", "shrink"] {
+        return None;
+    }
+    match &row.fields[1].1 {
+        Ty::Arrow(t, res) if matches!(&**res, Ty::Con(Con::String)) => Some((**t).clone()),
+        _ => None,
+    }
+}
+
+/// Whether a custom `Arbitrary T` is allowed to override synthesis for `T`: only
+/// user records and ADTs (not built-in generators or the `Option`/`Result`
+/// wrappers).
+fn is_custom_eligible(ty: &Ty) -> bool {
+    match ty {
+        Ty::Record(_) => true,
+        _ => matches!(peel_app(ty).0, Ty::Adt(adt) if !is_builtin_adt(*adt)),
+    }
+}
+
+/// The field types of every constructor of `adt` applied to `args` (one inner
+/// vec per constructor), or `None` if the type is unavailable or an alias.
+fn adt_ctor_fields(db: &dyn Db, adt: AdtRef, args: &[&Ty]) -> Option<Vec<Vec<Ty>>> {
+    let adt_file = db.source_file(adt.file)?;
+    let decls = type_decls(db, adt_file);
+    let info = decls.type_named(adt.name).filter(|i| !i.is_alias)?;
+    let mut out = Vec::with_capacity(info.ctors.len());
+    for cname in &info.ctors {
+        let scheme = constructor_scheme(db, adt_file, *cname)?;
+        out.push(ctor_field_types(&scheme, args));
+    }
+    Some(out)
+}
+
+/// The smallest-value depth of `ty` (`None` ⇒ no finite value), reading ADT ranks
+/// from `ranks` and treating custom-overridden types as opaque leaves.
+///
+/// Primitives, `List` (`[]`), and `Option` (`None`) ground at depth 0; `Result`
+/// grounds through its `Ok` side; a tuple/record is as deep as its deepest
+/// component; a user ADT's rank is the precomputed fixpoint value.
+fn rank_of(ranks: &FxHashMap<Ty, u32>, custom: &FxHashMap<Ty, DefId>, ty: &Ty) -> Option<u32> {
+    if custom.contains_key(ty) {
+        return Some(0);
+    }
+    match ty {
+        Ty::Unit | Ty::Con(_) => Some(0),
+        Ty::Tuple(es) => max_rank(es.iter().map(|e| rank_of(ranks, custom, e))),
+        Ty::Record(row) => max_rank(row.fields.iter().map(|(_, t)| rank_of(ranks, custom, t))),
+        Ty::Var(_) | Ty::Arrow(_, _) | Ty::Interface(_) | Ty::Error => None,
+        _ => {
+            let (head, args) = peel_app(ty);
+            match head {
+                Ty::Con(Con::List) => Some(0),
+                Ty::Adt(adt) if adt.name.as_str() == "Option" => Some(0),
+                Ty::Adt(adt) if adt.name.as_str() == "Result" => {
+                    args.first().and_then(|ok| rank_of(ranks, custom, ok))
+                }
+                Ty::Adt(_) => ranks.get(ty).copied(),
+                _ => None,
+            }
+        }
+    }
+}
+
+/// The max of ranks, or `None` if any input is `None` (an empty iterator ⇒ 0).
+fn max_rank(ranks: impl Iterator<Item = Option<u32>>) -> Option<u32> {
+    let mut worst = 0;
+    for r in ranks {
+        worst = worst.max(r?);
+    }
+    Some(worst)
+}
+
+/// The least-fixpoint rank of every user ADT reachable from `roots` (absent ⇒ no
+/// finite value). Ranks start at ∞ and relax downward until stable, so a
+/// mutually-recursive group settles on each member's true smallest-value depth.
+fn compute_ranks(db: &dyn Db, custom: &FxHashMap<Ty, DefId>, roots: &[Ty]) -> FxHashMap<Ty, u32> {
+    let mut adts: Vec<Ty> = Vec::new();
+    let mut seen: FxHashSet<Ty> = FxHashSet::default();
+    for r in roots {
+        collect_adts(db, custom, r, &mut adts, &mut seen);
+    }
+    let mut ranks: FxHashMap<Ty, u32> = FxHashMap::default();
+    loop {
+        let mut changed = false;
+        for adt_ty in &adts {
+            if let Some(cost) = adt_min_cost(db, custom, &ranks, adt_ty) {
+                let better = ranks.get(adt_ty).is_none_or(|&old| cost < old);
+                if better {
+                    ranks.insert(adt_ty.clone(), cost);
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    ranks
+}
+
+/// Collects the distinct user-ADT applied types reachable from `ty` (following
+/// constructor fields and collection/wrapper arguments); custom-overridden types
+/// are opaque leaves and are not entered.
+fn collect_adts(
+    db: &dyn Db,
+    custom: &FxHashMap<Ty, DefId>,
+    ty: &Ty,
+    out: &mut Vec<Ty>,
+    seen: &mut FxHashSet<Ty>,
+) {
+    if custom.contains_key(ty) || seen.len() > MAX_REACH {
+        return;
+    }
+    match ty {
+        Ty::Tuple(es) => es.iter().for_each(|e| collect_adts(db, custom, e, out, seen)),
+        Ty::Record(row) => {
+            row.fields.iter().for_each(|(_, t)| collect_adts(db, custom, t, out, seen));
+        }
+        _ => {
+            let (head, args) = peel_app(ty);
+            match head {
+                Ty::Con(Con::List) => {
+                    args.iter().for_each(|a| collect_adts(db, custom, a, out, seen));
+                }
+                Ty::Adt(adt) if is_builtin_adt(*adt) => {
+                    args.iter().for_each(|a| collect_adts(db, custom, a, out, seen));
+                }
+                Ty::Adt(adt) => {
+                    if !seen.insert(ty.clone()) {
+                        return;
+                    }
+                    out.push(ty.clone());
+                    if let Some(ctors) = adt_ctor_fields(db, *adt, &args) {
+                        for f in ctors.iter().flatten() {
+                            collect_adts(db, custom, f, out, seen);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// The minimal constructor cost of an ADT applied type under the current `ranks`
+/// (one deeper than the shallowest groundable constructor), or `None` if no
+/// constructor is yet groundable.
+fn adt_min_cost(
+    db: &dyn Db,
+    custom: &FxHashMap<Ty, DefId>,
+    ranks: &FxHashMap<Ty, u32>,
+    adt_ty: &Ty,
+) -> Option<u32> {
+    let (head, args) = peel_app(adt_ty);
+    let Ty::Adt(adt) = head else { return None };
+    let ctors = adt_ctor_fields(db, *adt, &args)?;
+    let mut best: Option<u32> = None;
+    for fields in &ctors {
+        if let Some(depth) = max_rank(fields.iter().map(|f| rank_of(ranks, custom, f))) {
+            best = Some(best.map_or(depth + 1, |b| b.min(depth + 1)));
+        }
+    }
+    best
 }
 
 /// The (monomorphic) field types of a constructor whose owning ADT is applied to
@@ -587,4 +958,128 @@ fn fresh(next: &mut usize) -> LocalId {
     let id = LocalId::from_index(*next);
     *next += 1;
     id
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use fai_types::RowVarId;
+
+    use super::*;
+
+    fn sym(s: &str) -> Symbol {
+        Symbol::intern(s)
+    }
+
+    fn arrow(from: Ty, to: Ty) -> Ty {
+        Ty::Arrow(Arc::new(from), Arc::new(to))
+    }
+
+    fn user_adt(name: &str) -> Ty {
+        Ty::Adt(AdtRef::new(SourceId::new(0), sym(name)))
+    }
+
+    /// An `Arbitrary T` record (only the `show` field's shape is inspected).
+    fn arbitrary_record(elem: Ty) -> Ty {
+        Ty::Record(RecordRow {
+            fields: vec![
+                (sym("gen"), Ty::Error),
+                (sym("show"), arrow(elem, Ty::Con(Con::String))),
+                (sym("shrink"), Ty::Error),
+            ],
+            tail: RowEnd::Closed,
+        })
+    }
+
+    #[test]
+    fn arbitrary_element_extracts_the_generated_type() {
+        assert_eq!(arbitrary_element(&arbitrary_record(user_adt("Rose"))), Some(user_adt("Rose")));
+    }
+
+    #[test]
+    fn arbitrary_element_rejects_an_open_row() {
+        let Ty::Record(mut row) = arbitrary_record(Ty::int()) else { unreachable!() };
+        row.tail = RowEnd::Open(RowVarId(0));
+        assert_eq!(arbitrary_element(&Ty::Record(row)), None);
+    }
+
+    #[test]
+    fn arbitrary_element_rejects_a_non_arbitrary_record() {
+        let ty = Ty::Record(RecordRow {
+            fields: vec![(sym("x"), Ty::int()), (sym("y"), Ty::int())],
+            tail: RowEnd::Closed,
+        });
+        assert_eq!(arbitrary_element(&ty), None);
+    }
+
+    #[test]
+    fn arbitrary_element_rejects_when_show_does_not_return_string() {
+        let ty = Ty::Record(RecordRow {
+            fields: vec![
+                (sym("gen"), Ty::Error),
+                (sym("show"), arrow(Ty::int(), Ty::int())),
+                (sym("shrink"), Ty::Error),
+            ],
+            tail: RowEnd::Closed,
+        });
+        assert_eq!(arbitrary_element(&ty), None);
+    }
+
+    #[test]
+    fn list_element_unwraps_a_list() {
+        let lst = Ty::list(user_adt("Rose"));
+        let elem = user_adt("Rose");
+        assert_eq!(list_element(&lst), Some(&elem));
+    }
+
+    #[test]
+    fn list_element_rejects_a_non_list() {
+        assert_eq!(list_element(&Ty::int()), None);
+        assert_eq!(list_element(&user_adt("Rose")), None);
+    }
+
+    #[test]
+    fn custom_overrides_apply_to_user_records_and_adts() {
+        assert!(is_custom_eligible(&user_adt("Rose")));
+        assert!(is_custom_eligible(&Ty::Record(RecordRow {
+            fields: Vec::new(),
+            tail: RowEnd::Closed
+        })));
+    }
+
+    #[test]
+    fn custom_overrides_skip_builtins_and_wrappers() {
+        assert!(!is_custom_eligible(&user_adt("Option")));
+        assert!(!is_custom_eligible(&user_adt("Result")));
+        assert!(!is_custom_eligible(&Ty::int()));
+        assert!(!is_custom_eligible(&Ty::list(Ty::int())));
+    }
+
+    #[test]
+    fn split_budget_for_one_recursive_field_just_decrements() {
+        let e = split_budget(LocalId::from_index(0), 1);
+        assert!(matches!(e.kind, K::Prim { op: Prim::IntSub, .. }));
+    }
+
+    #[test]
+    fn split_budget_for_several_recursive_fields_divides() {
+        let e = split_budget(LocalId::from_index(0), 3);
+        assert!(matches!(e.kind, K::Prim { op: Prim::IntDiv, .. }));
+    }
+
+    #[test]
+    fn max_rank_propagates_none() {
+        assert_eq!(max_rank([Some(1), None, Some(2)].into_iter()), None);
+    }
+
+    #[test]
+    fn max_rank_takes_the_deepest() {
+        assert_eq!(max_rank([Some(1), Some(3), Some(2)].into_iter()), Some(3));
+    }
+
+    #[test]
+    fn max_rank_of_no_fields_is_zero() {
+        assert_eq!(max_rank(std::iter::empty()), Some(0));
+    }
 }
