@@ -1465,3 +1465,193 @@ fn inlined_drop_of_a_shared_record_decrements_without_freeing() {
     let (code, out) = run(src);
     assert_eq!((code, out.as_str()), (0, "30\n"));
 }
+
+// --- Inline integer primitives: emitted IR shape ----------------------------
+// The hot integer/boolean primitives compile to inline machine code with an
+// immediate fast path and a runtime-call fallback. `function_ir` shows the
+// pre-optimization IR we emit. In that form a runtime callee is a numbered
+// external reference (`fn0`), not its symbol name, so these assert the structural
+// shape: the inline machine op, the immediate guard branch (`brif`), and the lone
+// fallback `call` (the fast path makes no call).
+
+#[test]
+fn integer_add_is_inlined_with_a_runtime_fallback() {
+    let src = indoc! {r#"
+        module M
+
+        f : Int -> Int -> Int
+        let f x y = x + y
+    "#};
+    let ir = function_ir(src, "f").join("\n");
+    assert!(ir.contains("iadd"), "inline native add:\n{ir}");
+    assert!(ir.contains("sadd_overflow"), "inline 63-bit fit check:\n{ir}");
+    assert!(ir.contains("brif"), "immediate-operand guard branch:\n{ir}");
+    assert!(ir.contains("call fn0"), "runtime fallback call retained:\n{ir}");
+}
+
+#[test]
+fn integer_comparison_is_inlined_with_a_runtime_fallback() {
+    let src = indoc! {r#"
+        module M
+
+        g : Int -> Int -> Bool
+        let g x y = x < y
+    "#};
+    let ir = function_ir(src, "g").join("\n");
+    assert!(ir.contains("icmp"), "inline native comparison:\n{ir}");
+    assert!(ir.contains("brif"), "immediate-operand guard branch:\n{ir}");
+    assert!(ir.contains("call fn0"), "runtime fallback call retained:\n{ir}");
+}
+
+#[test]
+fn integer_equality_is_inlined_with_a_runtime_fallback() {
+    let src = indoc! {r#"
+        module M
+
+        e : Int -> Int -> Bool
+        let e x y = x = y
+    "#};
+    let ir = function_ir(src, "e").join("\n");
+    assert!(ir.contains("icmp"), "inline native equality:\n{ir}");
+    assert!(ir.contains("brif"), "immediate-operand guard branch:\n{ir}");
+    assert!(ir.contains("call fn0"), "runtime fallback call retained:\n{ir}");
+}
+
+#[test]
+fn char_equality_is_inlined_without_a_guard_or_fallback() {
+    // Char is unconditionally immediate, so equality is a bare `icmp eq` with no
+    // guard branch and no runtime call. The body has no `if`, so the absence of
+    // any `brif` confirms the bare inline path.
+    let src = indoc! {r#"
+        module M
+
+        ceq : Char -> Char -> Bool
+        let ceq a b = a = b
+    "#};
+    let ir = function_ir(src, "ceq").join("\n");
+    assert!(ir.contains("icmp"), "inline native equality:\n{ir}");
+    assert!(!ir.contains("brif"), "no guard for an always-immediate type:\n{ir}");
+    assert!(!ir.contains("call"), "no runtime fallback for an always-immediate type:\n{ir}");
+}
+
+#[test]
+fn integer_division_stays_an_out_of_line_call() {
+    // Division guards against zero in the runtime, so it is not inlined: a plain
+    // call, with no immediate guard branch and no inline fit check.
+    let src = indoc! {r#"
+        module M
+
+        d : Int -> Int -> Int
+        let d x y = x / y
+    "#};
+    let ir = function_ir(src, "d").join("\n");
+    assert!(ir.contains("call fn0"), "division is a runtime call:\n{ir}");
+    assert!(!ir.contains("brif"), "no immediate guard for the non-inlined call:\n{ir}");
+    assert!(!ir.contains("sadd_overflow"), "no inline fit check for division:\n{ir}");
+}
+
+// --- Inline integer primitives: immediate/boxed boundary behavior -----------
+// One case each across the 63-bit immediate boundary, exercising the fast path,
+// the overflow fallback, and the boxed-operand fallback. A clean (code 0) exit
+// also asserts no leak.
+
+/// Runs `main` printing `Int.toString (expr)` and returns `(exit, output)`.
+fn int_out(expr: &str) -> (i32, String) {
+    run(&main_printing(&format!("Int.toString ({expr})")))
+}
+
+#[test]
+fn add_at_the_max_immediate_stays_immediate() {
+    // 2^62 - 1 is the largest immediate; adding 0 stays in range (fast path).
+    let (code, out) = int_out("4611686018427387903 + 0");
+    assert_eq!((code, out.as_str()), (0, "4611686018427387903\n"));
+}
+
+#[test]
+fn add_overflowing_the_immediate_boxes_via_the_fallback() {
+    // 2^62 - 1 + 1 = 2^62 no longer fits the immediate: the fast path's fit check
+    // fails and the runtime fallback boxes the result.
+    let (code, out) = int_out("4611686018427387903 + 1");
+    assert_eq!((code, out.as_str()), (0, "4611686018427387904\n"));
+}
+
+#[test]
+fn add_of_two_maxima_boxes_without_i64_overflow() {
+    // 2^62 - 1 doubled is 2^63 - 2: fits i64 but not the 63-bit immediate, so the
+    // fit check still routes it to the boxing fallback.
+    let (code, out) = int_out("4611686018427387903 + 4611686018427387903");
+    assert_eq!((code, out.as_str()), (0, "9223372036854775806\n"));
+}
+
+#[test]
+fn subtraction_reaches_the_min_immediate_on_the_fast_path() {
+    // -(2^62 - 1) - 1 = -2^62, the smallest immediate, all on the fast path.
+    let (code, out) = int_out("(0 - 4611686018427387903) - 1");
+    assert_eq!((code, out.as_str()), (0, "-4611686018427387904\n"));
+}
+
+#[test]
+fn multiplication_wraps_like_the_runtime() {
+    // Both operands are immediates, but the product overflows i64; the wrapped
+    // result must match the runtime's `wrapping_mul` (then box).
+    let expected = 3_037_000_500_i64.wrapping_mul(3_037_000_500);
+    let (code, out) = int_out("3037000500 * 3037000500");
+    assert_eq!((code, out.as_str()), (0, format!("{expected}\n").as_str()));
+}
+
+#[test]
+fn logical_shift_right_of_negative_one_boxes_via_the_fallback() {
+    // shiftRightLogical (-1) 1 = 2^63 - 1, which overflows the immediate: the fit
+    // check fails and the runtime boxes it.
+    let (code, out) = int_out("Int.shiftRightLogical (0 - 1) 1");
+    assert_eq!((code, out.as_str()), (0, "9223372036854775807\n"));
+}
+
+#[test]
+fn bitwise_and_of_a_boxed_operand_uses_the_fallback() {
+    // 2^62 is boxed; `and` with an immediate falls back to the runtime, which
+    // unboxes, masks (clearing the low bit), and re-boxes nothing (0 is immediate).
+    let (code, out) = int_out("Int.and 4611686018427387904 1");
+    assert_eq!((code, out.as_str()), (0, "0\n"));
+}
+
+#[test]
+fn bitwise_xor_on_the_fast_path() {
+    let (code, out) = int_out("Int.xor 6 3");
+    assert_eq!((code, out.as_str()), (0, "5\n"));
+}
+
+#[test]
+fn complement_on_the_fast_path() {
+    let (code, out) = int_out("Int.complement 0");
+    assert_eq!((code, out.as_str()), (0, "-1\n"));
+}
+
+#[test]
+fn equality_of_two_boxed_integers_uses_the_fallback() {
+    // Both operands are boxed (2^62); equality falls back to `fai_equal`, which
+    // compares the unboxed values.
+    let (code, out) =
+        run(&main_printing("if 4611686018427387904 = 4611686018427387904 then \"eq\" else \"ne\""));
+    assert_eq!((code, out.as_str()), (0, "eq\n"));
+}
+
+#[test]
+fn comparison_across_the_immediate_boundary_uses_the_fallback() {
+    // Both operands are boxed; `<` falls back to `fai_int_lt` on the unboxed values.
+    let (code, out) =
+        run(&main_printing("if 4611686018427387904 < 4611686018427387905 then \"lt\" else \"ge\""));
+    assert_eq!((code, out.as_str()), (0, "lt\n"));
+}
+
+#[test]
+fn boolean_not_and_inequality_are_inlined() {
+    let (code, out) = run(&main_printing("if not (true <> true) then \"y\" else \"n\""));
+    assert_eq!((code, out.as_str()), (0, "y\n"));
+}
+
+#[test]
+fn boolean_equality_on_the_fast_path() {
+    let (code, out) = run(&main_printing("if true = true then \"y\" else \"n\""));
+    assert_eq!((code, out.as_str()), (0, "y\n"));
+}

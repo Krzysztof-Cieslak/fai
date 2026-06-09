@@ -18,6 +18,11 @@ enum E {
     X,
     Lit(i64),
     Bin(char, Box<E>, Box<E>),
+    /// A bitwise operation by std name: `and`/`or`/`xor`/`shiftLeft`/
+    /// `shiftRight`/`shiftRightLogical`.
+    Bit(&'static str, Box<E>, Box<E>),
+    /// Bitwise complement (unary).
+    Comp(Box<E>),
     If(&'static str, Box<E>, Box<E>, Box<E>, Box<E>),
 }
 
@@ -33,6 +38,20 @@ fn eval(e: &E, x: i64) -> i64 {
                 _ => a.wrapping_mul(b),
             }
         }
+        // Mirrors the runtime's bitwise primitives: shifts mask the amount to
+        // `0..63`; `shiftRight` is arithmetic, `shiftRightLogical` is logical.
+        E::Bit(op, a, b) => {
+            let (a, b) = (eval(a, x), eval(b, x));
+            match *op {
+                "and" => a & b,
+                "or" => a | b,
+                "xor" => a ^ b,
+                "shiftLeft" => ((a as u64) << ((b & 63) as u32)) as i64,
+                "shiftRight" => a >> ((b & 63) as u32),
+                _ => ((a as u64) >> ((b & 63) as u32)) as i64,
+            }
+        }
+        E::Comp(a) => !eval(a, x),
         E::If(cmp, cl, cr, t, f) => {
             let (l, r) = (eval(cl, x), eval(cr, x));
             let take = match *cmp {
@@ -53,6 +72,8 @@ fn render(e: &E) -> String {
         E::X => "x".to_owned(),
         E::Lit(n) => n.to_string(),
         E::Bin(op, a, b) => format!("({} {op} {})", render(a), render(b)),
+        E::Bit(op, a, b) => format!("(Int.{op} {} {})", render(a), render(b)),
+        E::Comp(a) => format!("(Int.complement {})", render(a)),
         E::If(cmp, cl, cr, t, f) => {
             format!(
                 "(if {} {cmp} {} then {} else {})",
@@ -76,12 +97,26 @@ fn expr() -> impl Strategy<Value = E> {
     leaf.prop_recursive(4, 48, 4, |inner| {
         let arith = (prop_oneof![Just('+'), Just('-'), Just('*')], inner.clone(), inner.clone())
             .prop_map(|(op, a, b)| E::Bin(op, Box::new(a), Box::new(b)));
+        let bitwise = (
+            prop_oneof![
+                Just("and"),
+                Just("or"),
+                Just("xor"),
+                Just("shiftLeft"),
+                Just("shiftRight"),
+                Just("shiftRightLogical"),
+            ],
+            inner.clone(),
+            inner.clone(),
+        )
+            .prop_map(|(op, a, b)| E::Bit(op, Box::new(a), Box::new(b)));
+        let complement = inner.clone().prop_map(|a| E::Comp(Box::new(a)));
         let cmp = prop_oneof![Just("<"), Just("<="), Just(">"), Just(">="), Just("="), Just("<>"),];
         let conditional = (cmp, inner.clone(), inner.clone(), inner.clone(), inner.clone())
             .prop_map(|(c, cl, cr, t, f)| {
                 E::If(c, Box::new(cl), Box::new(cr), Box::new(t), Box::new(f))
             });
-        prop_oneof![arith, conditional]
+        prop_oneof![arith, bitwise, complement, conditional]
     })
 }
 
