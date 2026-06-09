@@ -3981,6 +3981,100 @@ fn std_sif_area() {
     );
 }
 
+// --- Chars: immediates, so dup/drop are no-ops; the oracle confirms balance ---
+
+#[test]
+fn char_returned_is_sound() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x = 'a'
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn char_identity_is_sound() {
+    sound(
+        indoc! {r#"
+            module M
+
+            public f : Char -> Char
+            let f c = c
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn char_match_is_sound() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let classify c =
+              match c with
+              | 'a' -> 1
+              | 'b' -> 2
+              | _ -> 0
+        "#},
+        "classify",
+    );
+}
+
+#[test]
+fn char_list_is_sound() {
+    // The list cells are boxed (and reference-counted); the Char elements are
+    // immediates that are never duplicated or dropped.
+    no_reuse(
+        indoc! {r#"
+            module M
+
+            let xs = ['a', 'b', 'c']
+        "#},
+        "xs",
+    );
+}
+
+#[test]
+fn char_tuple_is_sound() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let p = ('a', 'b')
+        "#},
+        "p",
+    );
+}
+
+#[test]
+fn char_to_string_is_sound() {
+    // Consumes an immediate Char and produces a reference-counted String.
+    sound(
+        indoc! {r#"
+            module M
+
+            let f c = Char.toString c
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn char_from_code_is_sound() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f n = Char.fromCode n
+        "#},
+        "f",
+    );
+}
+
 #[test]
 fn std_sif_describe() {
     sound(

@@ -65,6 +65,26 @@ fn qualified_module_offers_public_members() {
 }
 
 #[test]
+fn qualified_char_module_offers_its_members() {
+    let source = indoc! {r#"
+        module C
+
+        public code : Char -> Int
+        let code c = Char.toCode c
+    "#};
+    let (db, file) = workspace(source);
+    let offset = after(source, "Char.");
+    let result = completions_at(&db, file, offset);
+    let names = labels(&result.items);
+    assert!(names.contains(&"toString"), "{names:?}");
+    assert!(names.contains(&"toCode"), "{names:?}");
+    assert!(names.contains(&"fromCode"), "{names:?}");
+    let from_code = result.items.iter().find(|i| i.label == "fromCode").unwrap();
+    assert_eq!(from_code.kind, CompletionKind::Function);
+    assert_eq!(from_code.detail.as_deref(), Some("Int -> Option Char"));
+}
+
+#[test]
 fn bare_context_offers_locals_defs_constructors_and_prelude() {
     let source = indoc! {r#"
         module C

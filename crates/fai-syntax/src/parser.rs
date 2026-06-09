@@ -1747,6 +1747,56 @@ mod tests {
     }
 
     #[test]
+    fn char_literals_keep_escape_and_multibyte_lexemes() {
+        assert_eq!(expr("'\\n'"), "(char '\\n')");
+        assert_eq!(expr("'\\u{1F600}'"), "(char '\\u{1F600}')");
+        assert_eq!(expr("'😀'"), "(char '😀')");
+        assert_eq!(expr("' '"), "(char ' ')");
+    }
+
+    #[test]
+    fn char_literal_is_an_application_argument() {
+        // A char literal can start an application argument (no parens needed).
+        assert_eq!(expr("f 'a' 'b'"), "(app (app (var f) (char 'a')) (char 'b'))");
+    }
+
+    #[test]
+    fn char_literal_in_a_list() {
+        assert_eq!(expr("['a', 'b']"), "(list (char 'a') (char 'b'))");
+    }
+
+    #[test]
+    fn char_pattern_in_match_arms() {
+        let src = indoc! {r#"
+            module M
+            let f c =
+              match c with
+              | 'a' -> 1
+              | '\n' -> 2
+              | _ -> 0"#};
+        assert_eq!(
+            body(src),
+            "(block [] (match (var c) [((pchar 'a') -> (int 1)) ((pchar '\\n') -> (int 2)) \
+             ((pwild) -> (int 0))]))"
+        );
+    }
+
+    #[test]
+    fn char_or_pattern() {
+        let src = indoc! {r#"
+            module M
+            let f c =
+              match c with
+              | 'a' | 'e' | 'i' -> 1
+              | _ -> 0"#};
+        assert_eq!(
+            body(src),
+            "(block [] (match (var c) [((por (pchar 'a') (pchar 'e') (pchar 'i')) -> (int 1)) \
+             ((pwild) -> (int 0))]))"
+        );
+    }
+
+    #[test]
     fn local_let_block_with_destructuring() {
         let src = indoc! {r#"
             module M

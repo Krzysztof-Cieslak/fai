@@ -365,6 +365,32 @@ fn char_literal_verbatim() {
 }
 
 #[test]
+fn char_escape_literals_are_preserved() {
+    formats_with("module M\nlet c = '\\n'", "= '\\n'");
+    formats_with("module M\nlet c = '\\t'", "= '\\t'");
+    formats_with("module M\nlet c = '\\''", "= '\\''");
+    formats_with("module M\nlet c = '\\\\'", "= '\\\\'");
+}
+
+#[test]
+fn char_unicode_escape_is_preserved() {
+    formats_with("module M\nlet c = '\\u{1F600}'", "= '\\u{1F600}'");
+}
+
+#[test]
+fn multibyte_char_literal_is_preserved() {
+    formats_with("module M\nlet c = '😀'", "= '😀'");
+}
+
+#[test]
+fn char_patterns_are_preserved() {
+    let src = "module M\nlet f c =\n  match c with\n  | 'a' -> 1\n  | '\\n' -> 2\n  | _ -> 0\n";
+    let out = assert_canonical(src);
+    assert!(out.contains("| 'a' -> 1"), "out:\n{out}");
+    assert!(out.contains("| '\\n' -> 2"), "out:\n{out}");
+}
+
+#[test]
 fn float_literal_verbatim() {
     formats_with("module M\nlet d = 3.0", "= 3.0");
 }
