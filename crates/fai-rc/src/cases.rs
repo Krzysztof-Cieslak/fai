@@ -5004,17 +5004,42 @@ fn borrow_forward_consume() {
 #[test]
 fn borrow_forward_to_std() {
     // Forwarding to a borrowing function in *another module* (the standard
-    // library `List.length`, a pure inspector) borrows the parameter too.
+    // library `List.isEmpty`, a pure inspector that never recurses) borrows the
+    // parameter too. (A tail-recursive inspector like `List.length` threads its
+    // list through a loop and so owns it — see `borrow_loop_threaded_owns`.)
     assert_eq!(
         crate::tests::borrow_sig(
             indoc! {r#"
                 module M
 
-                let f xs = List.length xs
+                let f xs = List.isEmpty xs
             "#},
             "f",
         ),
         vec![true],
+    );
+}
+
+#[test]
+fn borrow_loop_threaded_owns() {
+    // A self-tail-recursive function compiles to a loop that threads its list
+    // parameter (rebinding it to the tail each iteration), so it *owns* the list
+    // even though it only inspects elements — unlike the non-tail inspector form,
+    // which borrows. This is why `List.length` (a tail-recursive accumulator, for
+    // constant stack) does not borrow its argument.
+    assert_eq!(
+        crate::tests::borrow_sig(
+            indoc! {r#"
+                module M
+
+                let count acc xs =
+                  match xs with
+                  | [] -> acc
+                  | _ :: rest -> count (acc + 1) rest
+            "#},
+            "count",
+        ),
+        vec![false, false],
     );
 }
 
@@ -5354,7 +5379,7 @@ fn trmc_inc_exact_shape() {
          (let %6 = (tag %3); (let %7 = (= %6 1); (if %7 \
          (let %1 = (field 0 %3); (let %2 = (field 1 %3); (reset %10 = %3; \
          (let %8 = (+ %1 1); (let %12 = (holefill %11 1 (data@%10 1 %8 ())); \
-         (recur %2 %12)))))) (drop %3; (holeclose %11 <error>)))))))))))\n"
+          (recur %2 %12)))))) (drop %3; (holeclose %11 <error>)))))))))))\n"
     );
 }
 

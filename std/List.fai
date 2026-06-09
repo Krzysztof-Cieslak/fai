@@ -4,10 +4,15 @@ module List
 // `List.foldl`, and so on.
 /// The number of elements in a list.
 public length : List 'a -> Int
-let length xs =
+let length xs = lengthFrom 0 xs
+
+// Count with a tail-recursive accumulator so it compiles to a loop: counting a
+// long list runs in constant native stack space rather than recursing per cell.
+lengthFrom : Int -> List 'a -> Int
+let lengthFrom acc xs =
   match xs with
-  | [] -> 0
-  | _ :: rest -> 1 + length rest
+  | [] -> acc
+  | _ :: rest -> lengthFrom (acc + 1) rest
 example: length [1, 2, 3] = 3
 forall xs: length xs >= 0
 
@@ -72,11 +77,12 @@ let foldl f acc xs =
 example: foldl (fun acc x -> acc + x) 0 [1, 2, 3] = 6
 
 /// Right fold: `foldr f acc [a, b] = f a (f b acc)`.
+// Implemented as a left fold over the reversed list so it runs in constant
+// native stack space (a direct `f x (foldr … rest)` would recurse per element).
+// Reversing then folding left with the arguments flipped preserves both the
+// result and the right-to-left evaluation order.
 public foldr : ('a -> 'acc -> 'acc) -> 'acc -> List 'a -> 'acc
-let foldr f acc xs =
-  match xs with
-  | [] -> acc
-  | x :: rest -> f x (foldr f acc rest)
+let foldr f acc xs = foldl (fun a x -> f x a) acc (reverse xs)
 example: foldr (fun x acc -> x + acc) 0 [1, 2, 3] = 6
 
 /// Reverse a list.
