@@ -1151,6 +1151,23 @@ program output are unchanged, guarded by the full type/golden suite):
     effect every saturated row-polymorphic self-call (even in a non-flattened
     function) becomes a direct call rather than building a partial-application
     closure.
+  - **Mutual recursion flattens too (intra-module, plain-tail first cut).** A group
+    of functions that tail-call one another in a cycle (e.g. `isEven`/`isOdd`) is
+    reduced to *self*-recursion: a per-file analysis (`mutual_groups`) finds the
+    plain-saturated-tail-call SCCs of size ≥ 2 whose every member is monomorphic,
+    lambda-free, and references group members only through plain tail calls, then a
+    synthetic **combined** function is built whose body dispatches on a leading tag
+    parameter (`if tag == 0 then <member 0> else …`) with every group-internal tail
+    call rewritten to a saturated *self*-call of the combined function carrying the
+    target's tag. Ordinary reference counting and this very transform then turn it
+    into one `Join`/`Recur` loop — so no new IR or code generation. Each member
+    becomes a thin wrapper (`f args = combined(tag, args, padding)`). The combined
+    function is not source-backed, so (like a contract harness) it is
+    reference-counted in memory and assembled at build time — emitted as an extra
+    object/def per group alongside the `fai_main` trampoline — leaving the cached
+    per-definition `object_code` path untouched; reachability still finds members
+    (and their callees) through their original bodies. Cross-module groups and
+    constructor-wrapped ("modulo cons") mutual calls are left as ordinary recursion.
   - **Borrowing yields to it (amends D79).** A parameter that flows into a
     saturated tail self-call is **owned, not borrowed**: a lent argument must be
     dropped *after* the call, which would push the call out of tail position. So an
@@ -1177,11 +1194,15 @@ program output are unchanged, guarded by the full type/golden suite):
     check), so the corpus and whole-program oracles cover the transformed output;
     the differential allocation tests confirm a unique list still recycles its
     spine (for monomorphic, row-polymorphic, *and* nested-constructor rebuilds), and
-    deep end-to-end runs (JIT and AOT) confirm constant stack and a leak-free exit.
-    The reorder-safety of hoisting a later argument is **not** covered by the
-    reference-count oracle (it does not model effect ordering), so the
-    `is_pure_total` analysis is the guarantee and carries its own conservative test
-    matrix. **Mutual recursion** is the one remaining noted future generalization.
+    deep end-to-end runs (JIT and AOT) confirm constant stack and a leak-free exit
+    (including a deep mutual `isEven`/`isOdd`). The reorder-safety of hoisting a
+    later argument is **not** covered by the reference-count oracle (it does not
+    model effect ordering), so the `is_pure_total` analysis is the guarantee and
+    carries its own conservative test matrix; likewise the combined function for a
+    mutual group is reference-counted and checked like any other definition. The
+    remaining noted future generalizations are **cross-module** mutual groups and
+    **constructor-wrapped ("modulo cons") mutual** calls (the test harness also does
+    not flatten mutual recursion, which is harmless on its small generated inputs).
 
 - **D100 Inter-procedural argument borrowing (amends D79).** Borrow inference now
   consults callees' signatures, so a parameter only *forwarded* to another

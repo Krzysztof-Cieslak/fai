@@ -5718,3 +5718,107 @@ fn no_trmc_reorder_recursive_call() {
         "bump",
     );
 }
+
+// ---------------------------------------------------------------------------
+// Mutual-recursion flattening: a plain-tail-recursive group is detected, combined
+// into one tag-dispatched self-recursive loop, and each member becomes a wrapper.
+// Only intra-module, plain-tail, monomorphic, lambda-free groups qualify.
+// ===========================================================================
+
+use crate::tests::{mutual_combined, mutual_member_groups};
+
+#[test]
+fn mutual_pair_is_a_group() {
+    let groups = mutual_member_groups(indoc! {r#"
+        module M
+
+        let isEven n = if n <= 0 then true else isOdd (n - 1)
+        let isOdd n = if n <= 0 then false else isEven (n - 1)
+    "#});
+    assert_eq!(groups, vec![vec!["isEven".to_owned(), "isOdd".to_owned()]]);
+}
+
+#[test]
+fn mutual_three_cycle_is_a_group() {
+    let groups = mutual_member_groups(indoc! {r#"
+        module M
+
+        let a n = if n <= 0 then 0 else b (n - 1)
+        let b n = if n <= 0 then 1 else c (n - 1)
+        let c n = if n <= 0 then 2 else a (n - 1)
+    "#});
+    assert_eq!(groups, vec![vec!["a".to_owned(), "b".to_owned(), "c".to_owned()]]);
+}
+
+#[test]
+fn mutual_combined_is_sound_and_flattened() {
+    let (sound, flattened, wrappers_sound) = mutual_combined(
+        indoc! {r#"
+            module M
+
+            let isEven n = if n <= 0 then true else isOdd (n - 1)
+            let isOdd n = if n <= 0 then false else isEven (n - 1)
+        "#},
+        "isEven",
+    );
+    assert!(sound, "combined function is reference-count sound");
+    assert!(flattened, "combined function flattens to a loop");
+    assert!(wrappers_sound, "member wrappers are reference-count sound");
+}
+
+#[test]
+fn no_mutual_non_tail() {
+    // `1 + g n` is not a tail call (it feeds `+`), so there is no plain-tail cycle.
+    let groups = mutual_member_groups(indoc! {r#"
+        module M
+
+        let f n = if n <= 0 then 0 else 1 + g (n - 1)
+        let g n = if n <= 0 then 0 else 1 + f (n - 1)
+    "#});
+    assert!(groups.is_empty(), "non-tail mutual recursion is not a group: {groups:?}");
+}
+
+#[test]
+fn no_mutual_modulo_cons() {
+    // The sibling call is wrapped in a constructor (`x :: g r`), the deferred
+    // mutual-modulo-cons case — not a plain-tail cycle.
+    let groups = mutual_member_groups(indoc! {r#"
+        module M
+
+        let f xs =
+          match xs with
+          | [] -> []
+          | x :: r -> x :: g r
+
+        let g xs =
+          match xs with
+          | [] -> []
+          | x :: r -> x :: f r
+    "#});
+    assert!(groups.is_empty(), "modulo-cons mutual recursion is not a group: {groups:?}");
+}
+
+#[test]
+fn no_mutual_self_recursion_only() {
+    // A single self-recursive function is the ordinary per-definition loop, not a
+    // mutual group.
+    let groups = mutual_member_groups(indoc! {r#"
+        module M
+
+        let countDown n = if n <= 0 then 0 else countDown (n - 1)
+    "#});
+    assert!(groups.is_empty(), "self-recursion is not a mutual group: {groups:?}");
+}
+
+#[test]
+fn no_mutual_with_nested_lambda() {
+    // A member containing a nested lambda is excluded (the combined function would
+    // need to carry the lifted lambda — deferred).
+    let groups = mutual_member_groups(indoc! {r#"
+        module M
+
+        let f n = if n <= 0 then (fun x -> x) 0 else g (n - 1)
+        let g n = if n <= 0 then 1 else f (n - 1)
+    "#});
+    assert!(groups.is_empty(), "a member with a lambda is not flattened: {groups:?}");
+}
