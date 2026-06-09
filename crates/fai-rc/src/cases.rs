@@ -5412,3 +5412,147 @@ fn trmc_rowpoly_plain_exact_shape() {
          (recur %4 %11 %3))))))) (drop %0; (drop %4; (drop %5; <error>)))))))))))\n"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Tail-call flattening of nested-constructor wrapping: a recursion several
+// constructors deep (`K1 a (K2 b (f x))`, `x :: x :: f r`) becomes a loop that
+// links a chain of cells into the spine, one hole fill per cell.
+// ===========================================================================
+
+#[test]
+fn trmc_nested_two_deep() {
+    // The recursion sits under two `::`, so each iteration links two cons cells.
+    trmc_spine(
+        indoc! {r#"
+            module M
+
+            let stutter xs =
+              match xs with
+              | [] -> []
+              | x :: rest -> x :: x :: stutter rest
+        "#},
+        "stutter",
+    );
+}
+
+#[test]
+fn trmc_nested_three_deep() {
+    // Three constructors deep: a chain of three hole fills per iteration.
+    trmc_spine(
+        indoc! {r#"
+            module M
+
+            let triple xs =
+              match xs with
+              | [] -> []
+              | x :: rest -> x :: x :: x :: triple rest
+        "#},
+        "triple",
+    );
+}
+
+#[test]
+fn trmc_nested_custom_adt() {
+    // A two-deep nest over a user ADT, with pure later arguments (`a + 1`,
+    // `a + 2`) hoisted ahead of the back-edge.
+    trmc_spine(
+        indoc! {r#"
+            module M
+
+            type Nums = | End | Num Int Nums
+
+            let bump xs =
+              match xs with
+              | End -> End
+              | Num a rest -> Num (a + 1) (Num (a + 2) (bump rest))
+        "#},
+        "bump",
+    );
+}
+
+#[test]
+fn trmc_nested_filter() {
+    // A filter whose kept branch nests two constructors and whose dropped branch
+    // is a plain tail call: both flatten, threading the hole.
+    trmc_spine(
+        indoc! {r#"
+            module M
+
+            let keepDup xs =
+              match xs with
+              | [] -> []
+              | x :: rest -> if x > 0 then x :: x :: keepDup rest else keepDup rest
+        "#},
+        "keepDup",
+    );
+}
+
+#[test]
+fn trmc_nested_rowpoly() {
+    // Row-polymorphic (the offset evidence for `r.x`) *and* nested: the curried
+    // self-call is normalized to a saturated one before reference counting, then
+    // the chain of cons cells flattens with the evidence carried through the loop.
+    trmc_spine(
+        indoc! {r#"
+            module M
+
+            firsts2 : List ({ x : Int | 'r }) -> List Int
+            let firsts2 rs =
+              match rs with
+              | [] -> []
+              | r :: rest -> r.x :: r.x :: firsts2 rest
+        "#},
+        "firsts2",
+    );
+}
+
+#[test]
+fn no_trmc_nested_reorder_unsafe() {
+    // The recursion is the non-last field of the inner constructor, and the later
+    // field `100 / x` may abort, so hoisting it ahead of the recursion is unsafe:
+    // the whole function stays ordinary recursion.
+    no_trmc(
+        indoc! {r#"
+            module M
+
+            type Snoc = | Empty | Snoc Snoc Int
+
+            let bad xs =
+              match xs with
+              | Empty -> Empty
+              | Snoc rest x -> Snoc (Snoc (bad rest) (100 / x)) (x + 1)
+        "#},
+        "bad",
+    );
+}
+
+#[test]
+fn trmc_nested_two_deep_exact_shape() {
+    // The full transformed body of a two-deep nest (`x :: x :: stutter rest`): a
+    // hole-carrying loop that, each iteration, builds the two cons cells in their
+    // original (reference-count) order — the inner one (`%12`, freshly allocated,
+    // dropping in its `dup` of the shared head `%1`) before the outer (`%13`,
+    // recycling the matched cell via the reuse token `%10`) — then links them into
+    // the spine outermost-first (`%14` stores the outer at the loop hole, `%15`
+    // stores the inner into the outer's recursive field) before the back-edge.
+    let out = rc_checked(
+        indoc! {r#"
+            module M
+
+            let stutter xs =
+              match xs with
+              | [] -> []
+              | x :: rest -> x :: x :: stutter rest
+        "#},
+        "stutter",
+    );
+    assert_eq!(
+        out,
+        "fn0(%0) = (holestart %11; (join [%0, %11] (let %3 = %0; (let %4 = (tag %3); \
+         (let %5 = (= %4 0); (if %5 (drop %3; (holeclose %11 (data 0))) (let %6 = (tag %3); \
+         (let %7 = (= %6 1); (if %7 (let %1 = (field 0 %3); (let %2 = (field 1 %3); \
+         (reset %10 = %3; (let %12 = (dup %1; (data 1 %1 ())); (let %13 = (data@%10 1 %1 ()); \
+         (let %14 = (holefill %11 1 %13); (let %15 = (holefill %14 1 %12); \
+         (recur %2 %15)))))))) (drop %3; (holeclose %11 <error>)))))))))))\n"
+    );
+}
