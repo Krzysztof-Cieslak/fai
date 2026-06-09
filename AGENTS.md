@@ -193,6 +193,8 @@ fai/
 ├── AGENTS.md            # this file
 ├── samples/             # language by example (canonical, tested .fai tour)
 ├── std/                 # standard library: real .fai modules, embedded at build time
+├── editors/
+│   └── vscode/          # VS Code extension: thin `fai lsp` client + TextMate grammar (TypeScript/JSON; own npm tooling + CI, outside the Cargo workspace)
 ├── docs/
 │   ├── MEMORY.md        # design memory: standing risks + locked decisions
 │   └── CLI.md           # CLI + daemon-protocol reference

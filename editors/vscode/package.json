@@ -1,0 +1,114 @@
+{
+  "name": "fai",
+  "displayName": "Fai",
+  "description": "Fai language support for Visual Studio Code: syntax highlighting and a Language Server client.",
+  "version": "0.1.0",
+  "publisher": "fai-lang",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "main": "./dist/extension.cjs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Krzysztof-Cieslak/fai.git",
+    "directory": "editors/vscode"
+  },
+  "bugs": {
+    "url": "https://github.com/Krzysztof-Cieslak/fai/issues"
+  },
+  "homepage": "https://github.com/Krzysztof-Cieslak/fai",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "fai",
+    "functional",
+    "ml",
+    "language server"
+  ],
+  "activationEvents": [
+    "onLanguage:fai"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "fai",
+        "aliases": [
+          "Fai",
+          "fai"
+        ],
+        "extensions": [
+          ".fai"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "fai",
+        "scopeName": "source.fai",
+        "path": "./syntaxes/fai.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Fai",
+      "properties": {
+        "fai.server.path": {
+          "type": "string",
+          "default": "fai",
+          "markdownDescription": "Path to the `fai` executable used to launch the language server (`fai lsp`). Defaults to `fai` on your `PATH`. For a build from source, set this to e.g. `${workspaceFolder}/target/debug/fai`.",
+          "scope": "machine-overridable"
+        },
+        "fai.server.args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Extra arguments passed to `fai lsp` (after the workspace `--project` argument the client adds automatically).",
+          "scope": "machine-overridable"
+        },
+        "fai.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Trace the communication between VS Code and the Fai language server in the 'Fai Language Server' output channel.",
+          "scope": "window"
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "fai.restartServer",
+        "title": "Restart Language Server",
+        "category": "Fai"
+      }
+    ]
+  },
+  "scripts": {
+    "check-types": "tsc --noEmit",
+    "build": "node esbuild.js",
+    "build:prod": "node esbuild.js --production",
+    "watch": "node esbuild.js --watch",
+    "build:tests": "node esbuild.js --tests",
+    "test": "npm run build:tests && node --test out/grammar.test.mjs",
+    "vscode:prepublish": "npm run check-types && node esbuild.js --production",
+    "package": "vsce package --out fai.vsix"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.2.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.0",
+    "vscode-languageclient": "^9.0.1",
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^9.1.0"
+  }
+}

@@ -1,0 +1,216 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Fai",
+  "scopeName": "source.fai",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#char-literal" },
+    { "include": "#type-variable" },
+    { "include": "#numbers" },
+    { "include": "#keywords" },
+    { "include": "#module-qualifier" },
+    { "include": "#constructor" },
+    { "include": "#identifier" },
+    { "include": "#operators" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        { "include": "#doc-comment" },
+        { "include": "#line-comment" },
+        { "include": "#block-comment" }
+      ]
+    },
+    "doc-comment": {
+      "comment": "A `///` doc comment is exactly three slashes (four or more is an ordinary line comment), mirroring the lexer.",
+      "match": "(///)(?!/).*$",
+      "name": "comment.line.documentation.fai",
+      "captures": {
+        "1": { "name": "punctuation.definition.comment.fai" }
+      }
+    },
+    "line-comment": {
+      "match": "(//).*$",
+      "name": "comment.line.double-slash.fai",
+      "captures": {
+        "1": { "name": "punctuation.definition.comment.fai" }
+      }
+    },
+    "block-comment": {
+      "comment": "Block comments nest, so the rule includes itself.",
+      "name": "comment.block.fai",
+      "begin": "\\(\\*",
+      "end": "\\*\\)",
+      "captures": {
+        "0": { "name": "punctuation.definition.comment.fai" }
+      },
+      "patterns": [
+        { "include": "#block-comment" }
+      ]
+    },
+    "strings": {
+      "comment": "Strings are single-line: a newline ends the (unterminated) string, matching the lexer.",
+      "name": "string.quoted.double.fai",
+      "begin": "\"",
+      "end": "\"|(?=$)",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.string.begin.fai" }
+      },
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.string.end.fai" }
+      },
+      "patterns": [
+        { "include": "#string-escape" }
+      ]
+    },
+    "string-escape": {
+      "patterns": [
+        {
+          "match": "\\\\(u\\{[0-9A-Fa-f]+\\}|[ntr0\\\\\"'])",
+          "name": "constant.character.escape.fai"
+        },
+        {
+          "match": "\\\\.",
+          "name": "invalid.illegal.escape.fai"
+        }
+      ]
+    },
+    "char-literal": {
+      "comment": "A leading tick is a character literal only when it closes (an escape or a single non-newline char then a tick); otherwise it is a type variable. The char rules are tried before #type-variable.",
+      "patterns": [
+        {
+          "match": "(')(\\\\(?:u\\{[0-9A-Fa-f]+\\}|[ntr0\\\\\"']))(')",
+          "name": "string.quoted.single.fai",
+          "captures": {
+            "1": { "name": "punctuation.definition.char.begin.fai" },
+            "2": { "name": "constant.character.escape.fai" },
+            "3": { "name": "punctuation.definition.char.end.fai" }
+          }
+        },
+        {
+          "match": "(')([^'\\\\\\n])(')",
+          "name": "string.quoted.single.fai",
+          "captures": {
+            "1": { "name": "punctuation.definition.char.begin.fai" },
+            "3": { "name": "punctuation.definition.char.end.fai" }
+          }
+        }
+      ]
+    },
+    "type-variable": {
+      "match": "'[A-Za-z_][A-Za-z0-9_]*",
+      "name": "variable.other.generic.fai"
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "match": "\\b0[xX][0-9A-Fa-f][0-9A-Fa-f_]*\\b",
+          "name": "constant.numeric.hex.fai"
+        },
+        {
+          "match": "\\b0[oO][0-7][0-7_]*\\b",
+          "name": "constant.numeric.octal.fai"
+        },
+        {
+          "match": "\\b0[bB][01][01_]*\\b",
+          "name": "constant.numeric.binary.fai"
+        },
+        {
+          "comment": "A float needs a fraction (a dot followed by a digit) or an exponent.",
+          "match": "\\b[0-9][0-9_]*(?:\\.[0-9][0-9_]*(?:[eE][+-]?[0-9][0-9_]*)?|[eE][+-]?[0-9][0-9_]*)\\b",
+          "name": "constant.numeric.float.fai"
+        },
+        {
+          "match": "\\b[0-9][0-9_]*\\b",
+          "name": "constant.numeric.integer.fai"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "match": "\\b(?:if|then|else)\\b",
+          "name": "keyword.control.conditional.fai"
+        },
+        {
+          "match": "\\b(?:match|with)\\b",
+          "name": "keyword.control.match.fai"
+        },
+        {
+          "match": "\\b(?:let|fun|type|interface|module)\\b",
+          "name": "storage.type.fai"
+        },
+        {
+          "match": "\\bpublic\\b",
+          "name": "storage.modifier.fai"
+        },
+        {
+          "match": "\\b(?:as|example|forall)\\b",
+          "name": "keyword.other.fai"
+        },
+        {
+          "comment": "true/false are ordinary lower identifiers in the lexer, highlighted here as language constants.",
+          "match": "\\b(?:true|false)\\b",
+          "name": "constant.language.boolean.fai"
+        }
+      ]
+    },
+    "module-qualifier": {
+      "comment": "An upper-case identifier immediately before a dot is a module/namespace segment.",
+      "match": "\\b[A-Z][A-Za-z0-9_]*(?=\\.)",
+      "name": "entity.name.namespace.fai"
+    },
+    "constructor": {
+      "comment": "Other upper-case identifiers are constructors or types (the lexer does not distinguish them).",
+      "match": "\\b[A-Z][A-Za-z0-9_]*\\b",
+      "name": "entity.name.type.fai"
+    },
+    "identifier": {
+      "match": "\\b[a-z_][A-Za-z0-9_]*\\b",
+      "name": "variable.other.fai"
+    },
+    "operators": {
+      "comment": "Operators are a maximal run of operator characters. The five lexemes the lexer reserves as syntax (-> :: = | :) get specific scopes, but only when they are the whole run (not a prefix of a longer operator).",
+      "patterns": [
+        {
+          "match": "->(?![!$%&*+\\-/:<=>?@^|~])",
+          "name": "keyword.operator.arrow.fai"
+        },
+        {
+          "match": "::(?![!$%&*+\\-/:<=>?@^|~])",
+          "name": "keyword.operator.cons.fai"
+        },
+        {
+          "match": "=(?![!$%&*+\\-/:<=>?@^|~])",
+          "name": "keyword.operator.assignment.fai"
+        },
+        {
+          "match": "\\|(?![!$%&*+\\-/:<=>?@^|~])",
+          "name": "keyword.operator.pipe.fai"
+        },
+        {
+          "match": ":(?![!$%&*+\\-/:<=>?@^|~])",
+          "name": "punctuation.separator.colon.fai"
+        },
+        {
+          "match": "[!$%&*+\\-/:<=>?@^|~]+",
+          "name": "keyword.operator.fai"
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        { "match": "\\(", "name": "punctuation.section.parens.begin.fai" },
+        { "match": "\\)", "name": "punctuation.section.parens.end.fai" },
+        { "match": "\\[", "name": "punctuation.section.brackets.begin.fai" },
+        { "match": "\\]", "name": "punctuation.section.brackets.end.fai" },
+        { "match": "\\{", "name": "punctuation.section.braces.begin.fai" },
+        { "match": "\\}", "name": "punctuation.section.braces.end.fai" },
+        { "match": ",", "name": "punctuation.separator.comma.fai" },
+        { "match": "\\.", "name": "punctuation.accessor.dot.fai" }
+      ]
+    }
+  }
+}

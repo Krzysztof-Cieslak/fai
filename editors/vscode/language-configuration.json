@@ -1,0 +1,43 @@
+{
+  "comments": {
+    "lineComment": "//",
+    "blockComment": ["(*", "*)"]
+  },
+  "brackets": [
+    ["(", ")"],
+    ["[", "]"],
+    ["{", "}"]
+  ],
+  "colorizedBracketPairs": [
+    ["(", ")"],
+    ["[", "]"],
+    ["{", "}"]
+  ],
+  "autoClosingPairs": [
+    { "open": "(*", "close": "*)" },
+    { "open": "(", "close": ")" },
+    { "open": "[", "close": "]" },
+    { "open": "{", "close": "}" },
+    { "open": "\"", "close": "\"", "notIn": ["string", "comment"] }
+  ],
+  "surroundingPairs": [
+    ["(", ")"],
+    ["[", "]"],
+    ["{", "}"],
+    ["\"", "\""],
+    ["'", "'"]
+  ],
+  "wordPattern": "('?[A-Za-z_][A-Za-z0-9_]*)",
+  "indentationRules": {
+    "comment": "Fai is offside; the formatter opens a block after a line ending in =, ->, then, or else. `match ... with` keeps its arms at the same indent (| is a continuation), so `with` is intentionally absent.",
+    "increaseIndentPattern": "(=|->|\\bthen|\\belse)\\s*(//.*|\\(\\*.*\\*\\))?\\s*$",
+    "decreaseIndentPattern": "^\\s*[)\\]}]"
+  },
+  "onEnterRules": [
+    {
+      "comment": "Continue a /// doc comment onto the next line.",
+      "beforeText": "^\\s*///.*$",
+      "action": { "indent": "none", "appendText": "/// " }
+    }
+  ]
+}

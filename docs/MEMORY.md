@@ -35,7 +35,7 @@ retired; IDs are not reused).
 | R14 | Daemon lifecycle: stale/version-mismatch, spawn races, memory growth | Med | Med | Version handshake + auto-restart; version-stamped socket path + spawn-lock; LRU eviction + idle-timeout shutdown. Windows lifecycle gaps tracked in #10, #29. |
 | R15 | JIT'd user code crashes/hangs the toolchain | Med | High | Run in an isolated **worker process** with timeouts/resource limits; the daemon survives worker death. Residual: `fai test` still runs in-process (#22). |
 | R16 | Large mutually-recursive SCCs reduce per-def granularity | Low | Med | SCCs computed from actual references (usually small); consider a lint for accidental large cycles. |
-| R18 | The editor grammars (TextMate, tree-sitter) re-encode the lexer/parser and drift from the canonical `fai-syntax` | Med | Low | The hand-written `fai-syntax` stays the single source of truth; grammars are highlighting/structure aids only, pinned with tests over `samples/` (TextMate: no unscoped spans; tree-sitter: no `ERROR` nodes) so drift fails CI; the tree-sitter grammar is a stretch goal to bound the dual-maintenance cost. Tracked in #31, #32, #33. |
+| R18 | The editor grammars (TextMate, tree-sitter) re-encode the lexer/parser and drift from the canonical `fai-syntax` | Med | Low | The hand-written `fai-syntax` stays the single source of truth; grammars are highlighting/structure aids only, pinned with tests over `samples/` so drift fails CI. The TextMate grammar (in `editors/vscode/`) and its samples tokenization test (no `invalid`/unscoped spans) are realized (D103); the tree-sitter grammar (no `ERROR` nodes) remains a stretch goal to bound the dual-maintenance cost. Tracked in #31, #33 (#32 done). |
 
 ---
 
@@ -1260,6 +1260,40 @@ program output are unchanged, guarded by the full type/golden suite):
     matrix split/first-column reads guard against short rows. The unbound-name
     error is reported as before; the bogus arm is no longer also flagged
     unreachable.
+
+Editor integration:
+
+- **D103 VS Code extension (`editors/vscode/`).** An official editor integration:
+  a thin `vscode-languageclient` for the `fai lsp` server, a `fai` language
+  contribution + `language-configuration.json`, and a TextMate grammar
+  (`source.fai`) for highlighting. It lives outside the Cargo workspace, with its
+  own TypeScript/esbuild tooling and a separate CI workflow.
+  - **Multi-root is client-side.** `fai lsp` is single-root by construction (it
+    opens one warm `Session` for the root it is handed and does **not** read the
+    LSP `rootUri`/`workspaceFolders`), matching the per-workspace-root
+    session/daemon/cache model. So the client launches **one server per workspace
+    folder**, passing the root as `fai lsp --project <folder>` (plus `cwd`), and
+    confines each client to its folder with a document-selector glob; servers
+    start/stop as folders are added/removed. A `.fai` file outside every folder
+    gets highlighting but no language features. This needs no compiler change; a
+    single server multiplexing roots was rejected as a large `fai-lsp` refactor at
+    the wrong layer.
+  - **Shipped as CommonJS, authored as ESM.** VS Code cannot load an ESM
+    extension entry point (microsoft/vscode#130367 is open/backlog; the 1.94 ESM
+    migration was core-only and explicitly excluded extensions), so esbuild emits
+    a CommonJS `dist/extension.cjs` even though the source and the test are
+    authored as ES modules. Only `vscode` is external; everything else
+    (including `vscode-languageclient`) is bundled, so the package ships no
+    `node_modules`.
+  - **The grammar is a highlighting aid, pinned against drift.** `fai-syntax`
+    stays the single source of truth (R18). The grammar mirrors the lexer's
+    dispatch order (the `'a'` char-literal vs `'a` type-variable rule, the three
+    comment forms, `_`-separated/hex/oct/bin/float numerics, maximal-munch
+    operators with the reserved `-> :: = | :` carved out, upper-vs-lower idents).
+    A Node test tokenizes every `samples/*.fai` and fails on any `invalid` scope
+    or any non-whitespace span left with only the root `source.fai` scope, so a
+    lexer change that the grammar does not track breaks CI. Stronger golden token
+    snapshots were rejected to keep maintenance low.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

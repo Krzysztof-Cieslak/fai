@@ -1,0 +1,19 @@
+{
+  // Source is authored as ES modules; esbuild is the bundler/resolver and decides
+  // the emitted format (CJS for the extension entry, ESM for tests), so
+  // typechecking uses bundler resolution.
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "strict": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "resolveJsonModule": true,
+    "types": ["node", "vscode"]
+  },
+  "include": ["src", "test"]
+}

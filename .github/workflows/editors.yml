@@ -1,0 +1,51 @@
+name: Editors
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: editors-${{ github.ref }}
+  cancel-in-progress: true
+
+# The VS Code extension is a self-contained npm package outside the Cargo
+# workspace. This job is intentionally separate from the Rust `CI` workflow. It
+# runs on every push/PR (not path-filtered) so it is safe to require as a status
+# check and so a `samples/` change re-runs the grammar drift test, which pins the
+# TextMate grammar against the sample corpus.
+jobs:
+  vscode:
+    name: vscode extension
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: editors/vscode
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: editors/vscode/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Type-check
+        run: npm run check-types
+
+      - name: Grammar drift test
+        run: npm test
+
+      - name: Package
+        run: npm run package
+
+      - name: Upload VSIX
+        uses: actions/upload-artifact@v4
+        with:
+          name: fai-vscode-extension
+          path: editors/vscode/fai.vsix
+          if-no-files-found: error
