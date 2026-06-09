@@ -1531,7 +1531,10 @@ fn char_equality_is_inlined_without_a_guard_or_fallback() {
     let ir = function_ir(src, "ceq").join("\n");
     assert!(ir.contains("icmp"), "inline native equality:\n{ir}");
     assert!(!ir.contains("brif"), "no guard for an always-immediate type:\n{ir}");
-    assert!(!ir.contains("call"), "no runtime fallback for an always-immediate type:\n{ir}");
+    // Match the call *instruction* (`call fn0`), not a bare "call": the Windows
+    // calling-convention name (`windows_fastcall`) in the function signature
+    // contains the substring "call".
+    assert!(!ir.contains("call fn0"), "no runtime fallback for an always-immediate type:\n{ir}");
 }
 
 #[test]
