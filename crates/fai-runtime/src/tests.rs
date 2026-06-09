@@ -522,6 +522,33 @@ fn is_valid_char_code_rejects_out_of_range_and_surrogates() {
     assert_eq!(live_count(), base);
 }
 
+#[test]
+fn is_valid_char_code_at_surrogate_and_range_boundaries() {
+    let _g = lock();
+    let base = live_count();
+    assert_eq!(fai_is_valid_char_code(imm_int(0)), TRUE); // NUL is a scalar value
+    assert_eq!(fai_is_valid_char_code(imm_int(0xD7FF)), TRUE); // just below the surrogates
+    assert_eq!(fai_is_valid_char_code(imm_int(0xD800)), FALSE); // first surrogate
+    assert_eq!(fai_is_valid_char_code(imm_int(0xDFFF)), FALSE); // last surrogate
+    assert_eq!(fai_is_valid_char_code(imm_int(0xE000)), TRUE); // just above the surrogates
+    assert_eq!(live_count(), base);
+}
+
+#[test]
+fn char_to_string_encodes_utf8_at_byte_boundaries() {
+    let _g = lock();
+    let base = live_count();
+    // One representative per UTF-8 length, plus the extremes: each must match
+    // Rust's own encoding of the same scalar value.
+    for &cp in &[0u32, 0x7F, 0x80, 0x7FF, 0x800, 0xFFFF, 0x1_0000, 0x10_FFFF] {
+        let expected = char::from_u32(cp).unwrap().to_string();
+        let s = fai_char_to_string(imm_int(i64::from(cp)));
+        assert_eq!(unsafe { string_str(s) }, expected, "code point U+{cp:X}");
+        fai_drop(s);
+    }
+    assert_eq!(live_count(), base);
+}
+
 // --- Structural comparison -------------------------------------------------
 
 /// The three-way `compare` result as a plain `i64` (consumes both operands).

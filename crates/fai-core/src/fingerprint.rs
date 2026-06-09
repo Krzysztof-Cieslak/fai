@@ -251,6 +251,20 @@ mod tests {
     }
 
     #[test]
+    fn char_literal_is_distinct_from_other_literals() {
+        // A char must hash differently from every other literal kind — in
+        // particular from an `Int` of the same code point (`'a'` vs `97`), or a
+        // stale cached object could be reused across a Char/Int edit.
+        let chr = fingerprint("module M\n\nlet f x = 'a'\n", "f");
+        let int = fingerprint("module M\n\nlet f x = 97\n", "f");
+        let other_chr = fingerprint("module M\n\nlet f x = 'b'\n", "f");
+        let string = fingerprint("module M\n\nlet f x = \"a\"\n", "f");
+        assert_ne!(chr, int);
+        assert_ne!(chr, other_chr);
+        assert_ne!(chr, string);
+    }
+
+    #[test]
     fn stable_for_identical_bodies_across_databases() {
         // Two independent databases (fresh interners, fresh file ids) must yield
         // identical fingerprints — nothing process-local leaks into the key.

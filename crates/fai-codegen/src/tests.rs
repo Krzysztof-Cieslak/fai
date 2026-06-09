@@ -481,6 +481,104 @@ fn char_unicode_escape_literal() {
 }
 
 #[test]
+fn char_to_string_ascii() {
+    let (code, out) = run(&main_printing("Char.toString 'A'"));
+    assert_eq!(code, 0);
+    assert_eq!(out, "A\n");
+}
+
+#[test]
+fn char_to_string_multibyte() {
+    let (code, out) = run(&main_printing("Char.toString '\\u{1F600}'"));
+    assert_eq!(code, 0);
+    assert_eq!(out, "\u{1F600}\n");
+}
+
+#[test]
+fn char_to_code_renders_int() {
+    let (code, out) = run(&main_printing("Int.toString (Char.toCode 'A')"));
+    assert_eq!(code, 0);
+    assert_eq!(out, "65\n");
+}
+
+#[test]
+fn char_from_code_valid_round_trips() {
+    let (code, out) =
+        run(&main_printing("Char.toString (Option.withDefault 'z' (Char.fromCode 66))"));
+    assert_eq!(code, 0);
+    assert_eq!(out, "B\n");
+}
+
+#[test]
+fn char_from_code_surrogate_is_none() {
+    // 0xD800 is a surrogate, so `fromCode` is `None` and the default is used.
+    let (code, out) =
+        run(&main_printing("Char.toString (Option.withDefault 'z' (Char.fromCode 55296))"));
+    assert_eq!(code, 0);
+    assert_eq!(out, "z\n");
+}
+
+#[test]
+fn chars_sort_by_code_point() {
+    let expr = "String.join \"\" (List.map Char.toString (List.sort ['c', 'a', 'b']))";
+    let (code, out) = run(&main_printing(expr));
+    assert_eq!(code, 0);
+    assert_eq!(out, "abc\n");
+}
+
+#[test]
+fn char_as_dict_key() {
+    // A Char key exercises the BST's structural comparison at runtime.
+    let src = indoc! {r#"
+        module M
+
+        public main : Runtime -> Unit
+        let main r =
+          let d = Dict.insert 'b' "two" (Dict.insert 'a' "one" Dict.empty)
+          r.console.writeLine (Option.withDefault "?" (Dict.get 'b' d))
+    "#};
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "two\n");
+}
+
+#[test]
+fn char_tuple_destructuring_runs() {
+    let src = indoc! {r#"
+        module M
+
+        public main : Runtime -> Unit
+        let main r =
+          let (a, b) = ('x', 'y')
+          r.console.writeLine (Char.toString a ++ Char.toString b)
+    "#};
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "xy\n");
+}
+
+#[test]
+fn multi_arm_char_match_with_escape_runs() {
+    let src = indoc! {r#"
+        module M
+
+        let name c =
+          match c with
+          | 'a' -> "alpha"
+          | '\n' -> "newline"
+          | ' ' -> "space"
+          | _ -> "other"
+
+        public main : Runtime -> Unit
+        let main r =
+          r.console.writeLine (name '\n' ++ "," ++ name ' ' ++ "," ++ name 'a' ++ "," ++ name 'q')
+    "#};
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "newline,space,alpha,other\n");
+}
+
+#[test]
 fn tuple_construction_and_destructuring() {
     let src = indoc! {r#"
         module M

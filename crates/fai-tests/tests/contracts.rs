@@ -243,6 +243,75 @@ fn char_binder_contract_runs() {
     assert_eq!(outcome.leaked, 0);
 }
 
+#[test]
+fn char_and_int_binders_run() {
+    // Two binders compose via tuple2 (Char, Int).
+    let src = "module C\npublic f : Char -> Int -> Int\nlet f c n = Char.toCode c + n\n\
+               forall c n: f c n = n + Char.toCode c\n";
+    let outcome = run(&[("C.fai", src)]);
+    assert!(outcome.ok, "diagnostics: {:?}", outcome.diagnostics);
+    assert_eq!(outcome.passed, 1);
+    assert_eq!(outcome.not_run, 0);
+}
+
+#[test]
+fn list_of_char_binder_runs() {
+    let src = "module C\npublic len : List Char -> Int\nlet len cs = List.length cs\n\
+               forall cs: len cs >= 0\n";
+    let outcome = run(&[("C.fai", src)]);
+    assert!(outcome.ok, "diagnostics: {:?}", outcome.diagnostics);
+    assert_eq!(outcome.passed, 1);
+    assert_eq!(outcome.not_run, 0);
+    assert_eq!(outcome.leaked, 0);
+}
+
+#[test]
+fn option_char_binder_runs() {
+    let src = "module C\npublic f : Option Char -> Bool\nlet f o = Option.isSome o || Option.isNone o\n\
+               forall o: f o\n";
+    let outcome = run(&[("C.fai", src)]);
+    assert!(outcome.ok, "diagnostics: {:?}", outcome.diagnostics);
+    assert_eq!(outcome.passed, 1);
+    assert_eq!(outcome.not_run, 0);
+}
+
+#[test]
+fn record_with_char_field_binder_runs() {
+    // A synthesized record generator with a Char field.
+    let src = "module C\npublic type Tagged = { c : Char, n : Int }\n\
+               public flip : Tagged -> Tagged\nlet flip t = { c = t.c, n = 0 - t.n }\n\
+               forall t: flip (flip t) = t\n";
+    let outcome = run(&[("C.fai", src)]);
+    assert!(outcome.ok, "diagnostics: {:?}", outcome.diagnostics);
+    assert_eq!(outcome.passed, 1);
+    assert_eq!(outcome.not_run, 0);
+    assert_eq!(outcome.leaked, 0);
+}
+
+#[test]
+fn adt_with_char_field_binder_runs() {
+    // A synthesized ADT generator carrying a Char.
+    let src = "module C\npublic type Keyed =\n  | Empty\n  | One Char\n\
+               public same : Keyed -> Bool\nlet same k = k = k\n\
+               forall k: same k\n";
+    let outcome = run(&[("C.fai", src)]);
+    assert!(outcome.ok, "diagnostics: {:?}", outcome.diagnostics);
+    assert_eq!(outcome.passed, 1);
+    assert_eq!(outcome.not_run, 0);
+}
+
+#[test]
+fn char_counterexample_is_rendered_as_a_char_literal() {
+    // A property that only holds for one char fails; the shrunk counterexample is
+    // rendered by the Char generator's `show` as a valid char literal.
+    let src = "module C\npublic isA : Char -> Bool\nlet isA c = c = 'a'\nforall c: isA c\n";
+    let outcome = run(&[("C.fai", src)]);
+    let d = outcome.diagnostics.iter().find(|d| d.code.as_str() == "FAI6001").expect("FAI6001");
+    let help = d.help.as_deref().unwrap_or("");
+    assert!(help.starts_with("counterexample: c = '"), "got: {help}");
+    assert!(help.ends_with('\''), "got: {help}");
+}
+
 /// Runs every standard-library module's and every sample's contracts, printing a
 /// per-module report and asserting nothing fails or is un-runnable.
 #[test]

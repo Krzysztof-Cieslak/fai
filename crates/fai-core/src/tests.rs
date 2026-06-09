@@ -192,6 +192,46 @@ fn char_pattern_lowers_to_an_equality_test() {
 }
 
 #[test]
+fn char_escape_literal_decodes_in_lowering() {
+    let src = indoc! {r#"
+        module M
+
+        let c = '\n'
+    "#};
+    assert_eq!(lower(src, "c"), "fn0() = '\\n'\n");
+    assert!(codes(src, "c").is_empty());
+}
+
+#[test]
+fn multi_arm_char_match_lowers_to_chained_equality_tests() {
+    let src = indoc! {r#"
+        module M
+
+        let f c =
+          match c with
+          | 'a' -> 1
+          | 'b' -> 2
+          | _ -> 0
+    "#};
+    assert_eq!(lower(src, "f"), "fn0(%0) = (let %2 = %0; (if (= %2 'a') 1 (if (= %2 'b') 2 0)))\n");
+    assert!(codes(src, "f").is_empty());
+}
+
+#[test]
+fn char_in_argument_and_list_positions_lowers_cleanly() {
+    let src = indoc! {r#"
+        module M
+
+        let f g = g 'a'
+
+        let xs = ['a', 'b', 'c']
+    "#};
+    assert!(codes(src, "f").is_empty());
+    assert!(codes(src, "xs").is_empty());
+    assert_eq!(lower(src, "xs"), "fn0() = (data 1 'a' (data 1 'b' (data 1 'c' (data 0))))\n");
+}
+
+#[test]
 fn list_literal_lowers_to_cons_and_nil() {
     let src = indoc! {r#"
         module M

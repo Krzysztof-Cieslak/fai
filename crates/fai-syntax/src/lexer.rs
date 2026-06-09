@@ -932,6 +932,85 @@ mod tests {
     }
 
     #[test]
+    fn char_literal_lexeme_includes_both_quotes() {
+        let result = lexed("'a'");
+        assert_eq!(result.tokens[0].kind, TokenKind::Char);
+        assert_eq!(lexeme("'a'", &result.tokens[0]), "'a'");
+        assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn char_literal_span_is_exact() {
+        // A leading binding pins the char's byte range away from offset 0.
+        let src = "x = 'a'";
+        let result = lexed(src);
+        let tok = result.tokens.iter().find(|t| t.kind == TokenKind::Char).unwrap();
+        assert_eq!(tok.range, range(4, 7));
+        assert_eq!(lexeme(src, tok), "'a'");
+    }
+
+    #[test]
+    fn char_escape_forms_lex_clean() {
+        for src in ["'\\t'", "'\\r'", "'\\0'", "'\\\\'", "'\\''", "'\\\"'"] {
+            let result = lexed(src);
+            assert_eq!(result.tokens[0].kind, TokenKind::Char, "{src} should lex as a Char");
+            assert!(result.diagnostics.is_empty(), "{src} should have no diagnostics");
+        }
+    }
+
+    #[test]
+    fn char_unicode_escape_lexes_and_validates() {
+        assert!(lexed("'\\u{41}'").diagnostics.is_empty());
+        assert_eq!(lexed("'\\u{1F600}'").tokens[0].kind, TokenKind::Char);
+        // Empty braces and non-hex digits are rejected, like in strings.
+        assert_eq!(lexed("'\\u{}'").diagnostics[0].code, crate::INVALID_ESCAPE);
+        assert_eq!(lexed("'\\u{zz}'").diagnostics[0].code, crate::INVALID_ESCAPE);
+    }
+
+    #[test]
+    fn multibyte_char_literal_lexes_with_exact_span() {
+        // A two-byte scalar value: `'é'` spans the quote, two content bytes, quote.
+        let two = lexed("'é'");
+        assert_eq!(two.tokens[0].kind, TokenKind::Char);
+        assert_eq!(two.tokens[0].range, range(0, 4));
+        assert!(two.diagnostics.is_empty());
+        // A four-byte astral scalar value: `'😀'`.
+        let four = lexed("'😀'");
+        assert_eq!(four.tokens[0].kind, TokenKind::Char);
+        assert_eq!(four.tokens[0].range, range(0, 6));
+        assert!(four.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn adjacent_char_literals_are_two_tokens() {
+        let src = "'a''b'";
+        let result = lexed(src);
+        assert_eq!(
+            result.tokens.iter().map(|t| t.kind).collect::<Vec<_>>(),
+            vec![TokenKind::Char, TokenKind::Char, TokenKind::Eof]
+        );
+        assert_eq!(result.tokens[0].range, range(0, 3));
+        assert_eq!(result.tokens[1].range, range(3, 6));
+    }
+
+    #[test]
+    fn char_literals_in_a_list_are_not_type_vars() {
+        // `['a', 'b']`: each closed tick is a Char; an open tick (`'a`) would be a
+        // type variable, but these all close.
+        assert_eq!(
+            kinds("['a', 'b']"),
+            vec![
+                TokenKind::LBracket,
+                TokenKind::Char,
+                TokenKind::Comma,
+                TokenKind::Char,
+                TokenKind::RBracket,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
     fn non_ascii_outside_strings_is_unexpected() {
         // Identifiers are ASCII in v1; a stray multi-byte char is reported and
         // skipped wholesale, leaving following tokens at valid offsets.

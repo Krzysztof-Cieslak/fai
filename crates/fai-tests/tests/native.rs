@@ -107,6 +107,29 @@ fn nested_module_values_types_and_ctors_run() {
 }
 
 #[test]
+fn char_operations_run_natively() {
+    // Exercises char literals, intrinsics, pattern matching, and a multibyte
+    // scalar value through the AOT build path; a clean exit also proves the
+    // reference counting stays balanced (the runtime aborts nonzero on a leak).
+    let src = indoc! {r#"
+        module Main
+
+        let vowel c =
+          match c with
+          | 'a' | 'e' | 'i' | 'o' | 'u' -> "yes"
+          | _ -> "no"
+
+        public main : Runtime -> Unit
+        let main runtime =
+          let parts = [Char.toString 'A', Int.toString (Char.toCode 'A'), Char.toString '\u{1F600}', vowel 'e', vowel 'z']
+          runtime.console.writeLine (String.join "|" parts)
+    "#};
+    let (out, code) = build_and_run(src);
+    assert_eq!(out, "A|65|\u{1F600}|yes|no\n");
+    assert_eq!(code, Some(0));
+}
+
+#[test]
 fn cross_file_nested_qualified_access_runs() {
     let lib = indoc! {r#"
         module Lib

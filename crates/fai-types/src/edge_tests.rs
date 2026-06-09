@@ -166,6 +166,82 @@ fn equality_on_function_errors() {
     );
 }
 
+// ---- chars -----------------------------------------------------------------
+
+#[test]
+fn char_comparison_yields_bool() {
+    // Ord admits Char (structural over any non-function type).
+    assert_eq!(ty("let x = 'a' < 'b'", "x"), "Bool");
+}
+
+#[test]
+fn char_equality_yields_bool() {
+    assert_eq!(ty("let x = 'a' = 'b'", "x"), "Bool");
+}
+
+#[test]
+fn char_structural_compare_is_int() {
+    assert_eq!(ty("let x = compare 'a' 'b'", "x"), "Int");
+}
+
+#[test]
+fn char_is_not_numeric() {
+    // Char does not satisfy the Num constraint, so arithmetic on it is rejected.
+    assert!(codes("let x = 'a' + 'b'").contains(&"FAI3001".to_owned()));
+    assert!(codes("let x = 'a' + 1").contains(&"FAI3001".to_owned()));
+}
+
+#[test]
+fn char_list_is_homogeneous() {
+    assert_eq!(ty("let xs = ['a', 'b', 'c']", "xs"), "List Char");
+    assert!(codes("let xs = ['a', 1]").contains(&"FAI3001".to_owned()));
+}
+
+#[test]
+fn char_in_tuple_and_option() {
+    assert_eq!(ty("let p = ('a', 1)", "p"), "Char * Int");
+    assert_eq!(ty("let o = Some 'a'", "o"), "Option Char");
+}
+
+#[test]
+fn char_type_annotation_resolves() {
+    assert_eq!(ty("public f : Char -> Char\nlet f c = c", "f"), "Char -> Char");
+    clean("public f : Char -> Char\nlet f c = c");
+}
+
+#[test]
+fn char_module_signatures() {
+    assert_eq!(ty("let f = Char.toString", "f"), "Char -> String");
+    assert_eq!(ty("let f = Char.toCode", "f"), "Char -> Int");
+    assert_eq!(ty("let f = Char.fromCode", "f"), "Int -> Option Char");
+}
+
+#[test]
+fn char_to_string_rejects_a_non_char() {
+    assert!(codes("let s = Char.toString 5").contains(&"FAI3001".to_owned()));
+}
+
+#[test]
+fn char_match_without_wildcard_is_non_exhaustive() {
+    // Char has an infinite domain, so literal arms alone never cover it.
+    let src = "let f c =\n  match c with\n  | 'a' -> 1\n  | 'b' -> 2";
+    assert!(codes(src).contains(&"FAI4001".to_owned()));
+}
+
+#[test]
+fn char_match_with_wildcard_is_exhaustive() {
+    let src = "let f c =\n  match c with\n  | 'a' -> 1\n  | _ -> 0";
+    let cs = codes(src);
+    assert!(!cs.contains(&"FAI4001".to_owned()), "unexpected non-exhaustive: {cs:?}");
+}
+
+#[test]
+fn char_pattern_pins_the_scrutinee_type() {
+    // Matching char literals forces the parameter to be a Char.
+    let src = "let f c =\n  match c with\n  | 'a' -> 1\n  | _ -> 0";
+    assert_eq!(ty(src, "f"), "Char -> Int");
+}
+
 // ---- boolean logic ---------------------------------------------------------
 
 #[test]

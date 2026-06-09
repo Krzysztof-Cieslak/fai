@@ -18,6 +18,7 @@ fn ty_strategy() -> impl Strategy<Value = Ty> {
         Just(Ty::Con(Con::Float)),
         Just(Ty::Con(Con::Bool)),
         Just(Ty::Con(Con::String)),
+        Just(Ty::Con(Con::Char)),
         Just(Ty::Unit),
     ];
     leaf.prop_recursive(5, 32, 3, |inner| {

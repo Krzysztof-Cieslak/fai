@@ -329,6 +329,17 @@ fn hover_at_off_an_expression_is_empty() {
 }
 
 #[test]
+fn hover_at_reports_a_char_literal_type() {
+    let mut db = FaiDatabase::new();
+    let src = "module M\n\nlet first = 'a'\n";
+    let id = db.add_source("M.fai".into(), src.to_owned());
+    let file = db.source_file(id).unwrap();
+    let offset = src.find("'a'").unwrap() as u32;
+    let r = hover_at(&db, file, offset, &DbSpanResolver::new(&db));
+    assert_eq!(r.ty.unwrap().display, "Char");
+}
+
+#[test]
 fn definition_at_snapshot() {
     let (db, file, text) = position_workspace();
     let offset = at(text, "tag Red") + "tag ".len() as u32;

@@ -107,6 +107,17 @@ fn semantic_tokens_classify_by_role() {
 }
 
 #[test]
+fn semantic_tokens_classify_a_char_literal() {
+    let source = "module M\n\npublic c : Char\nlet c = 'a'\n";
+    let (db, file, text) = workspace(source);
+    let tokens = semantic_tokens(&db, file);
+    // A char literal is classified like a string literal.
+    assert_eq!(kind_of(&tokens, at(&text, "'a'")), SemKind::String);
+    // The `Char` in the signature is a type.
+    assert_eq!(kind_of(&tokens, at(&text, "Char")), SemKind::Type);
+}
+
+#[test]
 fn semantic_tokens_distinguish_module_from_member() {
     let source = "module M\n\npublic total : List Int -> Int\nlet total xs = List.length xs\n";
     let (db, file, text) = workspace(source);

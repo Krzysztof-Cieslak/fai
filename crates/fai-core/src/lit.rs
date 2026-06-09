@@ -151,4 +151,18 @@ mod tests {
         assert_eq!(decode_char("'\\u{41}'"), Some('A'));
         assert_eq!(decode_char("'\\u{1F600}'"), Some('\u{1F600}'));
     }
+
+    #[test]
+    fn decodes_multibyte_char() {
+        assert_eq!(decode_char("'é'"), Some('é'));
+        assert_eq!(decode_char("'😀'"), Some('😀'));
+    }
+
+    #[test]
+    fn shared_escape_helper_keeps_strings_working() {
+        // The char decoder shares `decode_escape` with the string decoder; this
+        // guards that refactor (the string path must be unchanged).
+        assert_eq!(decode_string("\"a\\n\\t\\\\b\""), b"a\n\t\\b");
+        assert_eq!(decode_string("\"\\u{1F600}\""), "\u{1F600}".as_bytes());
+    }
 }
