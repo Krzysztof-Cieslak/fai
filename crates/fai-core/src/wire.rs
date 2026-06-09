@@ -13,7 +13,7 @@
 use fai_resolve::{DefId, LocalId};
 use fai_span::SourceId;
 use fai_syntax::Symbol;
-use fai_types::Ty;
+use fai_types::{Con, Ty};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
@@ -30,6 +30,36 @@ pub struct WireBundle {
     pub runtime: WireDefId,
     /// Every reachable definition, in discovery order.
     pub defs: Vec<WireDef>,
+}
+
+/// A complete set of contracts ready to JIT and check in an isolated worker: the
+/// reachable definitions (including each contract's synthesized harness/property)
+/// plus the list of contract entries to apply, each with the generator
+/// configuration it should run with.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestWireBundle {
+    /// Every reachable definition, in discovery order (includes the contract
+    /// entry/property/`Arbitrary` defs).
+    pub defs: Vec<WireDef>,
+    /// The contract entries to apply, in run order.
+    pub contracts: Vec<WireContract>,
+}
+
+/// One contract entry in wire form: the harness entry to apply
+/// (`Seed -> Int -> Size -> TestResult`) and the generator configuration it runs
+/// with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireContract {
+    /// The harness entry definition's identity.
+    pub id: WireDefId,
+    /// The contract's position among the file's contracts (stable identifier).
+    pub ordinal: usize,
+    /// The initial PRNG seed.
+    pub seed: i64,
+    /// The number of random trials.
+    pub trials: i64,
+    /// The maximum generation size.
+    pub max_size: i64,
 }
 
 /// A portable definition identity: its module label and binding name.
@@ -92,6 +122,14 @@ pub enum WireExpr {
     Prim {
         /// The primitive.
         op: Prim,
+        /// Whether the primitive borrows (does not consume) its first operand,
+        /// decided from the operand's real type at serialization time. Codegen
+        /// re-derives this from the operand type to pick the borrowed vs owned
+        /// runtime variant, but the wire form drops types — so the decision is
+        /// carried here and restored (as a boxed-type marker on the first
+        /// operand) so it still agrees with the drops reference counting inserted.
+        #[serde(default)]
+        borrowed: bool,
         /// The operands.
         args: Vec<WireExpr>,
     },
@@ -265,6 +303,7 @@ fn expr_to_wire(e: &CExpr, module_of: &dyn Fn(DefId) -> String) -> WireExpr {
         ExprKind::Global(def) => WireExpr::Global(wire_id(*def, module_of)),
         ExprKind::Prim { op, args } => WireExpr::Prim {
             op: *op,
+            borrowed: args.first().is_some_and(|a| op.borrows_operand(&a.ty)),
             args: args.iter().map(|a| expr_to_wire(a, module_of)).collect(),
         },
         ExprKind::App { func, args } => WireExpr::App {
@@ -351,20 +390,78 @@ pub fn from_wire(bundle: &WireBundle) -> Rebuilt {
     let mut sources = SourceAssigner::default();
     let entry = sources.def_id(&bundle.entry);
     let runtime = sources.def_id(&bundle.runtime);
+    let (defs, arities) = defs_from_wire(&bundle.defs, &mut sources);
+    Rebuilt { defs, entry, runtime, module_labels: sources.labels, arities }
+}
 
-    let mut defs = Vec::with_capacity(bundle.defs.len());
+/// Reconstructed contract set: real [`LoweredDef`]s plus the contract entries to
+/// apply and the module labels/arities needed to build the backend namer in a
+/// database-free worker.
+pub struct RebuiltTest {
+    /// The reconstructed definitions (harnesses, properties, and callees).
+    pub defs: Vec<LoweredDef>,
+    /// The contract entries to apply, in run order.
+    pub contracts: Vec<TestContract>,
+    /// Synthetic source id → module label.
+    pub module_labels: FxHashMap<SourceId, String>,
+    /// Definition → arity.
+    pub arities: FxHashMap<DefId, usize>,
+}
+
+/// A reconstructed contract entry: the harness definition to apply and its
+/// generator configuration.
+pub struct TestContract {
+    /// The harness entry definition.
+    pub def: DefId,
+    /// The contract's position among its file's contracts.
+    pub ordinal: usize,
+    /// The initial PRNG seed.
+    pub seed: i64,
+    /// The number of random trials.
+    pub trials: i64,
+    /// The maximum generation size.
+    pub max_size: i64,
+}
+
+/// Reconstructs a [`TestWireBundle`] into real [`LoweredDef`]s and the contract
+/// entries to apply, assigning a synthetic [`SourceId`] per distinct module label
+/// (so the harness defs, their callees, and the contract entries all align).
+#[must_use]
+pub fn from_wire_test(bundle: &TestWireBundle) -> RebuiltTest {
+    let mut sources = SourceAssigner::default();
+    let (defs, arities) = defs_from_wire(&bundle.defs, &mut sources);
+    let contracts = bundle
+        .contracts
+        .iter()
+        .map(|c| TestContract {
+            def: sources.def_id(&c.id),
+            ordinal: c.ordinal,
+            seed: c.seed,
+            trials: c.trials,
+            max_size: c.max_size,
+        })
+        .collect();
+    RebuiltTest { defs, contracts, module_labels: sources.labels, arities }
+}
+
+/// Reconstructs a list of wire definitions into real [`LoweredDef`]s, recording
+/// each definition's arity. Shared by the run and test bundle reconstructions.
+fn defs_from_wire(
+    wire_defs: &[WireDef],
+    sources: &mut SourceAssigner,
+) -> (Vec<LoweredDef>, FxHashMap<DefId, usize>) {
+    let mut defs = Vec::with_capacity(wire_defs.len());
     let mut arities = FxHashMap::default();
-    for wire in &bundle.defs {
+    for wire in wire_defs {
         let def_id = sources.def_id(&wire.id);
         arities.insert(def_id, wire.arity);
         defs.push(LoweredDef {
             def: def_id,
-            fns: wire.fns.iter().map(|f| fn_from_wire(f, &mut sources)).collect(),
+            fns: wire.fns.iter().map(|f| fn_from_wire(f, sources)).collect(),
             entry_borrowed: wire.entry_borrowed.clone(),
         });
     }
-
-    Rebuilt { defs, entry, runtime, module_labels: sources.labels, arities }
+    (defs, arities)
 }
 
 /// Assigns stable synthetic source ids to module labels as they are seen.
@@ -404,10 +501,16 @@ fn expr_from_wire(e: &WireExpr, sources: &mut SourceAssigner) -> CExpr {
         WireExpr::Lit(lit) => ExprKind::Lit(lit.clone()),
         WireExpr::Local(i) => ExprKind::Local(LocalId::from_index(*i as usize)),
         WireExpr::Global(id) => ExprKind::Global(sources.def_id(id)),
-        WireExpr::Prim { op, args } => ExprKind::Prim {
-            op: *op,
-            args: args.iter().map(|a| expr_from_wire(a, sources)).collect(),
-        },
+        WireExpr::Prim { op, borrowed, args } => {
+            let mut args: Vec<CExpr> = args.iter().map(|a| expr_from_wire(a, sources)).collect();
+            // Restore the borrow decision: codegen reads the first operand's type
+            // to pick the borrowed runtime variant, so give it a boxed-type marker
+            // when the primitive borrows (the type is otherwise a placeholder).
+            if *borrowed && let Some(first) = args.first_mut() {
+                first.ty = Ty::Con(Con::String);
+            }
+            ExprKind::Prim { op: *op, args }
+        }
         WireExpr::App { func, args } => ExprKind::App {
             func: Box::new(expr_from_wire(func, sources)),
             args: args.iter().map(|a| expr_from_wire(a, sources)).collect(),
@@ -668,6 +771,67 @@ mod tests {
         let decoded: WireBundle = serde_json::from_str(&json).unwrap();
         let rebuilt = from_wire(&decoded);
         assert_eq!(pretty_def(&rebuilt.defs[0]), pretty_def(&lowered));
+    }
+
+    #[test]
+    fn prim_borrow_decision_survives_wire() {
+        // A borrow-sensitive primitive (structural equality) on a boxed operand
+        // must keep its borrow decision across the wire: codegen re-derives the
+        // borrowed vs owned runtime variant from the operand's type, and the wire
+        // form drops types, so without carrying the decision codegen would pick
+        // the consuming variant and double-free (disagreeing with the drops that
+        // reference counting inserted).
+        let boxed = CExpr::new(ExprKind::Local(LocalId::from_index(0)), Ty::Con(Con::String));
+        let eq = CExpr::new(
+            ExprKind::Prim { op: Prim::Eq, args: vec![boxed.clone(), boxed] },
+            Ty::Error,
+        );
+        let wire = expr_to_wire(&eq, &|_| "M".to_owned());
+        match &wire {
+            WireExpr::Prim { borrowed, .. } => assert!(*borrowed, "boxed Eq records a borrow"),
+            other => panic!("expected a Prim, got {other:?}"),
+        }
+        let mut sources = SourceAssigner::default();
+        let back = expr_from_wire(&wire, &mut sources);
+        match &back.kind {
+            ExprKind::Prim { op, args } => {
+                assert!(op.borrows_operand(&args[0].ty), "first operand reads as boxed-rc");
+            }
+            other => panic!("expected a Prim, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_bundle_survives_json_round_trip() {
+        // The test worker reads a TestWireBundle as JSON from a temp file, then
+        // applies each listed contract entry.
+        let mut db = FaiDatabase::new();
+        fai_types::std_lib::load_std(&mut db);
+        let id = db.add_source("M.fai".into(), "module M\n\nlet f x = x + 1\n".to_owned());
+        let file = db.source_file(id).unwrap();
+        let lowered = core(&db, file, Symbol::intern("f"));
+        let wire = def_to_wire(&lowered, &|_| "M".to_owned(), 1);
+        let bundle = TestWireBundle {
+            contracts: vec![WireContract {
+                id: wire.id.clone(),
+                ordinal: 0,
+                seed: 7,
+                trials: 50,
+                max_size: 30,
+            }],
+            defs: vec![wire],
+        };
+
+        let json = serde_json::to_string(&bundle).unwrap();
+        let decoded: TestWireBundle = serde_json::from_str(&json).unwrap();
+        let rebuilt = from_wire_test(&decoded);
+        assert_eq!(pretty_def(&rebuilt.defs[0]), pretty_def(&lowered));
+        assert_eq!(rebuilt.contracts.len(), 1);
+        let c = &rebuilt.contracts[0];
+        assert_eq!((c.ordinal, c.seed, c.trials, c.max_size), (0, 7, 50, 30));
+        // The contract entry resolves to the same def the bundle compiles.
+        assert_eq!(c.def, rebuilt.defs[0].def);
+        assert_eq!(rebuilt.arities[&c.def], 1);
     }
 
     #[test]

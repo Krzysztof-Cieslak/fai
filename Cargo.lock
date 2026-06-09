@@ -717,6 +717,7 @@ dependencies = [
  "serde_json",
  "target-lexicon",
  "thiserror",
+ "wait-timeout",
 ]
 
 [[package]]

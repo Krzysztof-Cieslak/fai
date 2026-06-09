@@ -16,13 +16,17 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use camino::{Utf8Path, Utf8PathBuf};
-use fai_driver::{Rendered, Session, WireBundle, run_command};
+use fai_driver::{
+    ContractEvent, EXIT_FAILURES, EXIT_INTERNAL, EXIT_OK, OutputFormat, Rendered, Session,
+    TestConfig, TestPlan, WireBundle, assemble_outcome, build_test_plan, run_command,
+    run_test_workers,
+};
 use interprocess::local_socket::Stream;
 use wait_timeout::ChildExt;
 
 use crate::protocol::{
     CommandRequest, InitResult, OutputStream, PROTOCOL_VERSION, Request, Response, RunRequest,
-    ServerMessage, StatusInfo, read_frame, write_frame,
+    ServerMessage, StatusInfo, TestRequest, read_frame, write_frame,
 };
 use crate::transport::{self, BindError};
 
@@ -191,6 +195,14 @@ fn handle_connection(mut stream: Stream, daemon: &Daemon) {
             continue;
         }
 
+        // `test` streams `$/testEvent` frames before its terminal result.
+        if let Request::Test(request) = request {
+            if handle_test(&mut stream, daemon, &request).is_err() {
+                return;
+            }
+            continue;
+        }
+
         let response = match request {
             Request::Initialize(params) => {
                 if params.protocol_version == PROTOCOL_VERSION && params.compiler_version == VERSION
@@ -221,7 +233,7 @@ fn handle_connection(mut stream: Stream, daemon: &Daemon) {
                 command_micros_total: daemon.command_micros_total.load(Ordering::Relaxed),
                 command_micros_max: daemon.command_micros_max.load(Ordering::Relaxed),
             }),
-            Request::Run(_) => unreachable!("handled above"),
+            Request::Run(_) | Request::Test(_) => unreachable!("handled above"),
             Request::Shutdown => {
                 let _ = write_frame(&mut stream, &ServerMessage::Result(Response::Ok));
                 shutdown(daemon);
@@ -339,6 +351,98 @@ fn prepare_run(daemon: &Daemon, request: &RunRequest) -> Prepared {
             let resolver = session.resolver();
             Prepared::Failed(fai_driver::render_diagnostics(&result.diagnostics, &resolver))
         }
+    }
+}
+
+/// Handles a `test` request: build the plan warm (under the lock), then supervise
+/// the isolated worker(s) off-lock, streaming each contract's result as a
+/// `$/testEvent`, and finally render the report (under the lock) as the terminal
+/// `Test` result. The worker execution — the long part — runs off-lock so the
+/// daemon stays responsive; a crashing contract is a separate process, so the
+/// daemon always survives.
+fn handle_test(stream: &mut Stream, daemon: &Daemon, request: &TestRequest) -> std::io::Result<()> {
+    let plan = match prepare_test(daemon, request) {
+        Ok(plan) => plan,
+        Err(rendered) => {
+            return write_frame(stream, &ServerMessage::Result(Response::Test(rendered)));
+        }
+    };
+
+    let results = if plan.blocked || plan.bundle.contracts.is_empty() {
+        Vec::new()
+    } else {
+        let mut send_err: std::io::Result<()> = Ok(());
+        let results = {
+            let mut on_event = |event: &ContractEvent| {
+                if send_err.is_ok() {
+                    send_err = write_frame(stream, &ServerMessage::TestEvent(event.clone()));
+                }
+            };
+            run_test_workers(&plan, &mut on_event)
+        };
+        send_err?;
+        results
+    };
+
+    let rendered = render_test(daemon, request, &plan, &results);
+    write_frame(stream, &ServerMessage::Result(Response::Test(rendered)))
+}
+
+/// Builds the test plan under the session lock (warm front end). The lock is
+/// released before the worker(s) run.
+fn prepare_test(daemon: &Daemon, request: &TestRequest) -> Result<TestPlan, Rendered> {
+    let mut session = match daemon.session.lock() {
+        Ok(session) => session,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if let Err(error) = session.sync_from_disk() {
+        return Err(sync_error(&error.to_string()));
+    }
+    if !request.dirty.is_empty()
+        && let Err(error) = session.apply_dirty(&request.dirty)
+    {
+        return Err(sync_error(&error.to_string()));
+    }
+    let files = session.select_files(request.path.as_deref().map(Utf8Path::new));
+    let defaults = TestConfig::default();
+    let config = TestConfig {
+        seed: request.seed.unwrap_or(defaults.seed),
+        trials: request.count.unwrap_or(defaults.trials),
+        max_size: request.max_size.unwrap_or(defaults.max_size),
+    };
+    Ok(build_test_plan(session.db(), &files, request.r#match.as_deref(), config))
+}
+
+/// Renders the assembled outcome to the terminal `Rendered` (under the lock, for
+/// the span resolver), using the same code path as the in-process CLI so warm
+/// output is byte-identical to `--no-daemon`.
+fn render_test(
+    daemon: &Daemon,
+    request: &TestRequest,
+    plan: &TestPlan,
+    results: &[fai_driver::ContractResult],
+) -> Rendered {
+    let session = match daemon.session.lock() {
+        Ok(session) => session,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let outcome = assemble_outcome(plan, results);
+    let resolver = session.resolver();
+    let exit = if outcome.ok { EXIT_OK } else { EXIT_FAILURES };
+    match request.opts.format {
+        OutputFormat::Json => match serde_json::to_string_pretty(&outcome.to_output(&resolver)) {
+            Ok(json) => Rendered { stdout: format!("{json}\n"), stderr: String::new(), exit },
+            Err(error) => Rendered {
+                stdout: String::new(),
+                stderr: format!("internal error: failed to serialize output: {error}\n"),
+                exit: EXIT_INTERNAL,
+            },
+        },
+        OutputFormat::Human => Rendered {
+            stdout: outcome.render_human(&resolver, request.opts.color),
+            stderr: String::new(),
+            exit,
+        },
     }
 }
 

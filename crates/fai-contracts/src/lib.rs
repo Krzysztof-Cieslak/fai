@@ -32,6 +32,11 @@ pub const CONTRACT_FAILED: DiagnosticCode = DiagnosticCode::new("FAI6001");
 /// function-typed binder, an unsupported type, or too many binders).
 pub const CONTRACT_NOT_RUNNABLE: DiagnosticCode = DiagnosticCode::new("FAI6002");
 
+/// A contract aborted at runtime before producing a result: a generated input
+/// drove the body into a runtime trap (e.g. division by zero), or it did not
+/// finish within the time limit.
+pub const CONTRACT_ABORTED: DiagnosticCode = DiagnosticCode::new("FAI6003");
+
 /// Diagnostic codes owned by the contracts layer (the `FAI6xxx` range).
 pub const CODES: &[CodeInfo] = &[
     CodeInfo {
@@ -48,6 +53,15 @@ pub const CODES: &[CodeInfo] = &[
         explanation: "A contract cannot be exercised because a binder's type has no value \
                       generator — a function-typed binder, an unsupported type (e.g. `Char`), or \
                       too many binders.",
+    },
+    CodeInfo {
+        code: CONTRACT_ABORTED,
+        title: "contract aborted at runtime",
+        default_severity: Severity::Error,
+        explanation: "The contract aborted while being checked: a generated input drove the body \
+                      into a runtime trap (e.g. integer division by zero), or it did not finish \
+                      within the time limit. Each contract runs in an isolated worker, so the \
+                      abort fails only this contract — the rest of the run continues.",
     },
 ];
 

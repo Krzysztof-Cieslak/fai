@@ -33,7 +33,7 @@ retired; IDs are not reused).
 | R12 | Incremental-cache correctness (stale results → wrong diagnostics) | Med | High | Incremental-vs-clean **verifier** in CI; content-addressed keys stamped with compiler version + flags; determinism is a locked invariant. |
 | R13 | Span/position instability collapses incrementality | Med | High | Position-independent item tree + spans in a side-table; edit-churn test asserts "add a comment → near-zero recompute". |
 | R14 | Daemon lifecycle: stale/version-mismatch, spawn races, memory growth | Med | Med | Version handshake + auto-restart; version-stamped socket path + spawn-lock; LRU eviction + idle-timeout shutdown. Windows lifecycle gaps tracked in #10, #29. |
-| R15 | JIT'd user code crashes/hangs the toolchain | Med | High | Run in an isolated **worker process** with timeouts/resource limits; the daemon survives worker death. Residual: `fai test` still runs in-process (#22). |
+| R15 | JIT'd user code crashes/hangs the toolchain | Med | High | Run in an isolated **worker process** with timeouts/resource limits; the daemon survives worker death. `run` *and* `test` both supervise isolated workers (D63–D65, D103). |
 | R16 | Large mutually-recursive SCCs reduce per-def granularity | Low | Med | SCCs computed from actual references (usually small); consider a lint for accidental large cycles. |
 | R18 | The editor grammars (TextMate, tree-sitter) re-encode the lexer/parser and drift from the canonical `fai-syntax` | Med | Low | The hand-written `fai-syntax` stays the single source of truth; grammars are highlighting/structure aids only, pinned with tests over `samples/` so drift fails CI. The TextMate grammar (in `editors/vscode/`) and its samples tokenization test (no `invalid`/unscoped spans) are realized (D103); the tree-sitter grammar (no `ERROR` nodes) remains a stretch goal to bound the dual-maintenance cost. Tracked in #31, #33 (#32 done). |
 
@@ -759,8 +759,10 @@ Contracts (examples & properties):
   `TestResult` (`Passed`/`Failed counterexample`). After the run it asserts the
   runtime's global live-object count returned to its baseline (an RC soundness
   guard). A contract whose reachable closure fails to compile, or whose lowered
-  body contains an error placeholder, is reported rather than run. Isolated-worker
-  execution + daemon `$/testEvent` streaming are deferred follow-ups.
+  body contains an error placeholder, is reported rather than run. (This
+  in-process path is retained as the `fai_driver::test` library entry point and
+  for the corpus tests; the CLI/daemon now check in an isolated worker — see
+  D103.)
 - **D84 Diagnostics & output.** `FAI6001` (`CONTRACT_FAILED`, error) for a failing
   `example`/`forall`, located at the contract span, with the shrunk counterexample
   in its help (binder names + the Fai-rendered value); `FAI6002`
@@ -1260,6 +1262,54 @@ program output are unchanged, guarded by the full type/golden suite):
     matrix split/first-column reads guard against short rows. The unbound-name
     error is reported as before; the bogus arm is no longer also flagged
     unreachable.
+- **D103 Isolated-worker contract execution + daemon `test`, resume-on-crash
+  (supersedes the in-process part of D83; reuses D63–D65).** `fai test` no longer
+  checks contracts in-process. The warm front end builds a portable
+  **`TestWireBundle`** — the synthesized harness/property/`Arbitrary` defs plus
+  the reachable callees, and the list of contract entries with their generator
+  configuration — and a supervisor ships it to the same isolated worker `fai run`
+  uses (a hidden `__test-worker` subcommand) under a wall-clock timeout
+  (`FAI_TEST_TIMEOUT_MS`) and the self-imposed `RLIMIT_CPU`. The worker JIT-compiles
+  the bundle once and applies each contract from a start index, streaming one
+  newline-delimited result frame per contract (position, pass/fail, raw
+  counterexample, live-object delta) **after** fully dropping each result.
+  - **Resume on crash.** A generated input that drives a body into a runtime trap
+    (e.g. integer division by zero, which the runtime turns into a process abort)
+    kills *the worker*, not the run: the supervisor takes the first un-acked
+    contract as the culprit, records it as **`FAI6003`** (aborted; a timeout is the
+    same code), and re-spawns a worker to resume after it. Each spawn advances past
+    at least one contract, so the loop terminates in at most *n* spawns. The
+    happy path is a single worker, a single JIT. The resume state machine is pure
+    over a spawn closure (unit-tested with a mock spawner).
+  - **One execution path.** The worker, the in-process `fai_driver::test` library
+    entry point (retained for the corpus tests; no isolation, for known-safe
+    inputs), and the daemon all share one `run_contracts` over the reconstructed
+    bundle, so behavior is identical; only the spawn/resume wrapper is worker-only.
+  - **Daemon + streaming.** The daemon serves `test` as a dedicated streaming
+    request (like `run`): it builds the plan under the session lock, supervises the
+    worker(s) **off-lock** streaming each contract as a `$/testEvent`, then renders
+    the report under the lock as the terminal result. The CLI prints live
+    per-contract lines (human mode) from the same shared formatter in both paths
+    and the same final report, so warm output is byte-identical to `--no-daemon`.
+  - **Per-contract config + richer output.** Each contract carries its own
+    `seed`/`trials`/`max_size` in the bundle (uniform — the global flags — for now;
+    the structure admits a future per-property source override) and the JSON
+    `TestOutput` gains a top-level `seed` and an `events` array (one `TestEvent`
+    per contract: ordinal, subject symbol, kind, status, counterexample, and the
+    config it ran with). The per-contract live-object soundness check moves into
+    the worker (a nonzero delta is a located internal error).
+  - **Wire types fix (corrects D63).** Codegen does *not* fully ignore node types:
+    it reads the first operand's type to pick the borrowed vs owned runtime variant
+    of an inspect-only primitive (`=`, `compare`, the `String` ops), the same
+    decision reference counting made when it inserted the matching drops. The wire
+    form drops types, so that decision was being re-derived from a placeholder type
+    and silently flipped — a latent double-free for any boxed structural `=`/
+    `compare`/`String` op shipped to a worker (it never bit `run` because such
+    programs were rare, but property bodies hit it constantly). The bundle now
+    carries the borrow decision per primitive and restores it as a boxed-type
+    marker on the first operand; the other type uses in codegen
+    (immediate/fixed-shape drop) are optimizations that safely fall back when the
+    type is a placeholder.
 
 Editor integration:
 

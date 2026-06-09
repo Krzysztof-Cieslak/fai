@@ -132,6 +132,53 @@ fn warm_check_matches_no_daemon() {
     assert_eq!(stdout(&warm2), stdout(&cold), "a second warm run must also match");
 }
 
+/// A passing example, a `forall` that divides by a runtime zero so it aborts on
+/// the first generated input, then a passing `forall`.
+const CRASH: &str = indoc! {r#"
+    module Crash
+
+    example: 1 + 1 = 2
+    forall n: 1 / (n - n) = 0
+    forall xs: List.length xs >= 0
+"#};
+
+#[test]
+fn warm_test_matches_no_daemon() {
+    let daemon = Daemon::new("testparity", &[("Crash.fai", CRASH)]);
+
+    // The daemon supervises isolated workers and streams per-contract events;
+    // its rendered report must equal the one-shot --no-daemon run byte-for-byte,
+    // for both JSON and human output, even with a contract that aborts.
+    let warm_json = daemon.run(&["test"], &["--message-format=json", "Crash.fai"]);
+    let cold_json = daemon.run(&["test", "--no-daemon"], &["--message-format=json", "Crash.fai"]);
+    assert_eq!(
+        warm_json.status.code(),
+        Some(1),
+        "stderr: {}",
+        String::from_utf8_lossy(&warm_json.stderr)
+    );
+    assert_eq!(stdout(&warm_json), stdout(&cold_json), "warm JSON must equal --no-daemon");
+
+    let warm_human = daemon.run(&["test"], &["Crash.fai"]);
+    let cold_human = daemon.run(&["test", "--no-daemon"], &["Crash.fai"]);
+    assert_eq!(stdout(&warm_human), stdout(&cold_human), "warm human must equal --no-daemon");
+}
+
+#[test]
+fn daemon_survives_a_trapping_contract() {
+    let daemon = Daemon::new("survive", &[("Crash.fai", CRASH)]);
+
+    // A contract that traps aborts its isolated worker, not the daemon.
+    let out = daemon.run(&["test"], &["Crash.fai"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stdout(&out).contains("FAI6003"), "expected a located abort: {}", stdout(&out));
+
+    // The daemon is still alive and serving after the worker aborted.
+    assert!(status_pid(&daemon).is_some(), "daemon must survive a trapping contract");
+    let again = daemon.run(&["test"], &["--message-format=json", "Crash.fai"]);
+    assert_eq!(again.status.code(), Some(1), "a second warm test still works");
+}
+
 #[test]
 fn status_reports_running_then_stopped() {
     let daemon = Daemon::new(

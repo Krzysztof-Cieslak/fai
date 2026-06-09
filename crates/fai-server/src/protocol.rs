@@ -8,7 +8,7 @@
 
 use std::io::{self, Read, Write};
 
-use fai_driver::{CommandSpec, DirtyFile, RenderOpts, Rendered};
+use fai_driver::{CommandSpec, ContractEvent, DirtyFile, RenderOpts, Rendered};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -29,6 +29,9 @@ pub enum Request {
     Status,
     /// Run a program under daemon supervision (streamed output, then exit code).
     Run(RunRequest),
+    /// Run example/forall contracts under daemon supervision (streamed
+    /// per-contract events, then the rendered report).
+    Test(TestRequest),
     /// Graceful shutdown: reply, then exit the daemon process.
     Shutdown,
     /// Close this connection.
@@ -79,7 +82,28 @@ pub struct RunRequest {
     pub dirty: Vec<DirtyFile>,
 }
 
-/// A server→client message: streamed output, then a final result.
+/// A `test` invocation: an optional path/match selection, generator overrides,
+/// the client's render options, and a dirty-set.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TestRequest {
+    /// File/dir to select contracts from; `None` = the whole workspace.
+    pub path: Option<String>,
+    /// Run only contracts whose subject/module matches this pattern.
+    pub r#match: Option<String>,
+    /// The initial PRNG seed override.
+    pub seed: Option<i64>,
+    /// The number of trials override.
+    pub count: Option<i64>,
+    /// The maximum generation size override.
+    pub max_size: Option<i64>,
+    /// Rendering options (format/color) from the client.
+    pub opts: RenderOpts,
+    /// Optional client-declared changed files.
+    #[serde(default)]
+    pub dirty: Vec<DirtyFile>,
+}
+
+/// A server→client message: streamed output/events, then a final result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ServerMessage {
     /// A chunk of a supervised program's output (`$/output`).
@@ -89,6 +113,8 @@ pub enum ServerMessage {
         /// The raw bytes.
         chunk: Vec<u8>,
     },
+    /// A per-contract result from a supervised `test` run (`$/testEvent`).
+    TestEvent(ContractEvent),
     /// The terminal response for the request.
     Result(Response),
 }
@@ -113,6 +139,8 @@ pub enum Response {
     Status(StatusInfo),
     /// A supervised program finished with this exit code.
     RunExit(i32),
+    /// A supervised `test` run's rendered report (stdout/stderr/exit).
+    Test(Rendered),
     /// An acknowledgement (e.g. for `Shutdown`).
     Ok,
     /// A request-level error (message; carries a `FAInnnn` when applicable).
@@ -171,7 +199,10 @@ pub fn frame_to_json<T: Serialize>(message: &T) -> String {
 
 #[cfg(test)]
 mod tests {
-    use fai_driver::{CommandSpec, DirtyFile, OutputFormat, QueryRequest, RenderOpts, Rendered};
+    use fai_driver::{
+        CommandSpec, ContractEvent, ContractStatus, DirtyFile, OutputFormat, QueryRequest,
+        RenderOpts, Rendered,
+    };
 
     use super::*;
 
@@ -214,6 +245,15 @@ mod tests {
             args: vec!["--".to_owned(), "x".to_owned()],
             dirty: Vec::new(),
         }));
+        round_trip(&Request::Test(TestRequest {
+            path: Some("M.fai".to_owned()),
+            r#match: Some("foo".to_owned()),
+            seed: Some(7),
+            count: None,
+            max_size: Some(50),
+            opts: opts(),
+            dirty: Vec::new(),
+        }));
         round_trip(&Request::Status);
         round_trip(&Request::Shutdown);
         round_trip(&Request::Exit);
@@ -226,6 +266,21 @@ mod tests {
             chunk: b"hello\n".to_vec(),
         });
         round_trip(&ServerMessage::Output { stream: OutputStream::Stderr, chunk: Vec::new() });
+        round_trip(&ServerMessage::TestEvent(ContractEvent {
+            ordinal: 0,
+            symbol: Some("M.f".to_owned()),
+            kind: "forall".to_owned(),
+            status: ContractStatus::Failed,
+            counterexample: Some("n = 0".to_owned()),
+            seed: 0,
+            trials: 100,
+            max_size: 100,
+        }));
+        round_trip(&ServerMessage::Result(Response::Test(Rendered {
+            stdout: "1 passed, 0 failed, 0 could not run (of 1)\n".to_owned(),
+            stderr: String::new(),
+            exit: 0,
+        })));
         round_trip(&ServerMessage::Result(Response::Initialized(InitResult {
             protocol_version: PROTOCOL_VERSION,
             compiler_version: "0.1.0".to_owned(),
