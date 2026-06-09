@@ -1523,5 +1523,55 @@ Editor integration:
     a `Char` binder to it, so a `forall` over a `Char` is runnable (no longer
     `FAI6002`).
 
+- **D108 Inline integer/boolean primitives with an immediate fast path (extends
+  D70/D71; companion to the `opt=speed` codegen).** The hot integer primitives —
+  `+ - *`, the `< <= > >=` comparisons, the bitwise `and/or/xor`, the shifts,
+  unary `complement`, boolean `not`, and structural `=`/`compare` **on
+  immediate-representable operands** — compile to inline machine code instead of an
+  out-of-line runtime call per operation. Division and remainder stay calls (they
+  guard against zero); the `Float` operations stay calls (a boxed `Float` would add
+  a heap box and operand drops, so inlining waits on unboxing them).
+  - **What it emits.** The fast path mirrors the runtime (`unbox_int` / operate /
+    `fai_box_int`): a both-operands-immediate guard (`(a & b) & 1`), then untag
+    (`sshr` by one), the native operation, and re-tag (`value << 1 | 1`). For the
+    operations whose result can exceed the 63-bit immediate (`+ - *` and the
+    shifts) the re-tag is guarded by `sadd_overflow(r, r)` — `r + r` overflows i64
+    signed exactly when `r`'s top two bits differ, i.e. exactly when `r` no longer
+    fits the immediate, which is the precise `fai_box_int` boundary; its result is
+    the `r << 1` we need. `and/or/xor/complement` of immediates always fit (the
+    operands' top two bits agree), so they skip the fit check. Comparisons build a
+    `Bool` immediate (`false`=1, `true`=3) from the `icmp`; `compare` builds
+    `-1/0/1` as `(a > b) - (a < b)` (no overflowing subtraction). `not` is
+    `x ^ 2` (no guard — its operand is always an immediate `Bool`).
+  - **The fallback is today's call, and it is always correct.** Whenever an
+    operand is boxed (a large `Int`) or the result overflowed the immediate,
+    control branches to the same runtime symbol the operation used before, which
+    unboxes, operates, boxes, and consumes both operands. Because the slow path is
+    unchanged and valid for *any* operands, the fast path is a pure optimization.
+  - **Reference counting is unaffected.** Operands are consumed exactly as before:
+    in the fast path both are immediates, so the runtime drops the operation would
+    perform are no-ops and are correctly omitted; a boxed operand always takes the
+    fallback, which consumes it. The IR (the `Prim` node) is unchanged — this is
+    purely a code-generation lowering — so the reference-count soundness
+    interpreter is untouched. Operands are evaluated once, up front, in source
+    order; the fast and fallback paths reuse those values.
+  - **Equality/ordering are type-directed.** `Bool`/`Char`/`Unit` are never boxed,
+    so `=`/`compare` on them inline with no guard and no fallback (a small
+    immediate never equals a boxed `Int`, so the mixed case the guard excludes is
+    already handled correctly by the runtime). `Int` adds the guard and the
+    `fai_equal`/`fai_compare` fallback. Every other operand type (strings, floats,
+    records, ADTs, type variables) keeps the structural runtime path **including its
+    operand borrowing**, so only the listed primitives change.
+  - **Cache invalidation.** The change alters the generated object for identical
+    IR/target/compiler-version, so the object cache's codegen-config stamp gains an
+    `int-prims-inlined` token; a cache warmed before the change can never serve a
+    pre-inlining object.
+  - **Acceptance.** IR-inspection tests pin the inline op + guard `brif` + a lone
+    fallback `call` for `+`/`<`/`=`, the bare (no-guard, no-call) shape for `Char`
+    `=`, and that `/` stays a plain call; a boundary matrix exercises the
+    immediate maximum/minimum, overflow-to-box, `wrapping_mul`, logical-shift of a
+    negative, and boxed-operand fallbacks; and the JIT-vs-Rust-reference property
+    test now spans the bitwise operators over full `i64`.
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

@@ -12,6 +12,7 @@
 //! and `Drop` lower to runtime calls (no-ops on immediates).
 
 use cranelift_codegen::Context;
+use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::{AbiParam, Block, FuncRef, InstBuilder, MemFlags, Value, types};
 use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
@@ -620,6 +621,12 @@ impl<M: Module> Translator<'_, M> {
     }
 
     fn prim(&mut self, op: Prim, args: &[CExpr]) -> Value {
+        // The hot integer/boolean primitives compile to inline machine code with
+        // an immediate fast path; everything else — and the boxed/overflow cases
+        // of those — falls through to the out-of-line runtime call below.
+        if let Some(v) = self.inline_prim(op, args) {
+            return v;
+        }
         let vals: Vec<Value> = args.iter().map(|a| self.expr(a)).collect();
         // An inspect-only primitive whose operands reference counting lent (boxed,
         // reference-counted values) calls the non-consuming runtime variant — the
@@ -635,6 +642,283 @@ impl<M: Module> Translator<'_, M> {
         let f = self.runtime(symbol, op.arity(), true);
         let call = self.builder.ins().call(f, &vals);
         self.builder.inst_results(call)[0]
+    }
+
+    /// Compiles an integer/boolean primitive to inline machine code when its
+    /// operands are immediates, or returns `None` for the primitives that stay
+    /// out-of-line runtime calls (division/remainder, the float operations,
+    /// structural/string operations on boxed values, capabilities).
+    ///
+    /// The fast path mirrors the runtime (`unbox_int` / operate / `fai_box_int`):
+    /// it untags the operands, runs the native operation, and re-tags — branching
+    /// to the same runtime call as a fallback whenever an operand is boxed (a
+    /// large `Int`) or the result no longer fits the 63-bit immediate. Operands
+    /// are evaluated **once, up front, in source order**; the fast and fallback
+    /// paths reuse those values.
+    ///
+    /// In the fast path both operands are immediates, so the operand drops the
+    /// primitive would otherwise perform are no-ops and are correctly omitted; a
+    /// boxed operand always takes the fallback, which consumes it. Equality and
+    /// ordering are inlined only for immediate-representable operand types; other
+    /// types keep the structural runtime path (including its operand borrowing).
+    fn inline_prim(&mut self, op: Prim, args: &[CExpr]) -> Option<Value> {
+        match op {
+            Prim::IntAdd => Some(self.inline_arith(op, args, FitsOp::Add)),
+            Prim::IntSub => Some(self.inline_arith(op, args, FitsOp::Sub)),
+            Prim::IntMul => Some(self.inline_arith(op, args, FitsOp::Mul)),
+            Prim::IntShl => Some(self.inline_arith(op, args, FitsOp::Shl)),
+            Prim::IntShr => Some(self.inline_arith(op, args, FitsOp::Shr)),
+            Prim::IntShrLogical => Some(self.inline_arith(op, args, FitsOp::Ushr)),
+            Prim::IntAnd => Some(self.inline_bitwise(op, args, BitOp::And)),
+            Prim::IntOr => Some(self.inline_bitwise(op, args, BitOp::Or)),
+            Prim::IntXor => Some(self.inline_bitwise(op, args, BitOp::Xor)),
+            Prim::IntComplement => Some(self.inline_complement(op, args)),
+            Prim::IntLt => Some(self.inline_cmp(op, args, IntCC::SignedLessThan)),
+            Prim::IntLe => Some(self.inline_cmp(op, args, IntCC::SignedLessThanOrEqual)),
+            Prim::IntGt => Some(self.inline_cmp(op, args, IntCC::SignedGreaterThan)),
+            Prim::IntGe => Some(self.inline_cmp(op, args, IntCC::SignedGreaterThanOrEqual)),
+            Prim::Not => Some(self.inline_not(args)),
+            Prim::Eq => self.inline_eq(op, args),
+            Prim::Compare => self.inline_compare(op, args),
+            _ => None,
+        }
+    }
+
+    /// Strips the immediate tag: an immediate `Int`/`Char`/`Bool` is encoded as
+    /// `value << 1 | 1`, so the value is an arithmetic right shift by one.
+    fn untag(&mut self, v: Value) -> Value {
+        self.builder.ins().sshr_imm(v, 1)
+    }
+
+    /// Re-applies the immediate `Int` tag to a raw value (`value << 1 | 1`).
+    fn tag_int(&mut self, raw: Value) -> Value {
+        let shifted = self.builder.ins().ishl_imm(raw, 1);
+        self.builder.ins().bor_imm(shifted, 1)
+    }
+
+    /// Tags a Cranelift comparison result (an `I8` `0`/`1`) as a `Bool` immediate
+    /// (`false` = `1`, `true` = `3`, i.e. `value << 1 | 1`).
+    fn tag_bool(&mut self, cmp: Value) -> Value {
+        let wide = self.builder.ins().uextend(types::I64, cmp);
+        self.tag_int(wide)
+    }
+
+    /// The out-of-line runtime call for a primitive's fallback path (a boxed
+    /// operand, or a result that overflowed the immediate). It consumes the
+    /// operands exactly as the fast path's drops-omitted-on-immediates would.
+    fn prim_runtime_call(&mut self, op: Prim, args: &[Value]) -> Value {
+        let f = self.runtime(op.runtime_symbol(), args.len(), true);
+        let call = self.builder.ins().call(f, args);
+        self.builder.inst_results(call)[0]
+    }
+
+    /// Emits the immediate-operand guard. When `tagbits`'s low bit is set (every
+    /// operand is an immediate), `fast` runs in a fast block — it produces the
+    /// result and jumps to the returned merge block, and may itself branch to the
+    /// slow block for a result that overflowed the immediate. Otherwise control
+    /// falls to the slow block, which runs `fallback` (the runtime call). Returns
+    /// the merged result value, leaving the builder in the merge block.
+    fn guard_immediate(
+        &mut self,
+        tagbits: Value,
+        fallback: impl FnOnce(&mut Self) -> Value,
+        fast: impl FnOnce(&mut Self, Block, Block),
+    ) -> Value {
+        let fast_b = self.builder.create_block();
+        let slow_b = self.builder.create_block();
+        let merge_b = self.builder.create_block();
+        self.builder.append_block_param(merge_b, types::I64);
+
+        let bit = self.builder.ins().band_imm(tagbits, 1);
+        self.builder.ins().brif(bit, fast_b, &[], slow_b, &[]);
+
+        self.builder.switch_to_block(fast_b);
+        self.builder.seal_block(fast_b);
+        fast(self, slow_b, merge_b);
+
+        // `slow_b` is reached from the guard's else edge and, for an out-of-range
+        // fast result, the fast block's branch — both now emitted, so it can seal.
+        self.builder.switch_to_block(slow_b);
+        self.builder.seal_block(slow_b);
+        let res = fallback(self);
+        self.builder.ins().jump(merge_b, &[res.into()]);
+
+        self.builder.switch_to_block(merge_b);
+        self.builder.seal_block(merge_b);
+        self.builder.block_params(merge_b)[0]
+    }
+
+    /// Inlines an arithmetic or shift primitive: untag, native op, then re-tag
+    /// guarded by a 63-bit fit check. `sadd_overflow(r, r)` computes `r << 1` and
+    /// flags overflow exactly when `r` no longer fits the immediate (its top two
+    /// bits differ) — the precise `fai_box_int` boundary — so an out-of-range
+    /// result falls back to the runtime, which boxes it. The native multiply and
+    /// shifts wrap like the runtime's `wrapping_mul` / masked shifts (Cranelift
+    /// masks a dynamic shift amount modulo the 64-bit width, matching `& 63`).
+    fn inline_arith(&mut self, op: Prim, args: &[CExpr], fop: FitsOp) -> Value {
+        let a = self.expr(&args[0]);
+        let b = self.expr(&args[1]);
+        let anded = self.builder.ins().band(a, b);
+        self.guard_immediate(
+            anded,
+            |s| s.prim_runtime_call(op, &[a, b]),
+            |s, slow, merge| {
+                let xa = s.untag(a);
+                let xb = s.untag(b);
+                let r = match fop {
+                    FitsOp::Add => s.builder.ins().iadd(xa, xb),
+                    FitsOp::Sub => s.builder.ins().isub(xa, xb),
+                    FitsOp::Mul => s.builder.ins().imul(xa, xb),
+                    FitsOp::Shl => s.builder.ins().ishl(xa, xb),
+                    FitsOp::Shr => s.builder.ins().sshr(xa, xb),
+                    FitsOp::Ushr => s.builder.ins().ushr(xa, xb),
+                };
+                let (shifted, overflow) = s.builder.ins().sadd_overflow(r, r);
+                let tagged = s.builder.ins().bor_imm(shifted, 1);
+                s.builder.ins().brif(overflow, slow, &[], merge, &[tagged.into()]);
+            },
+        )
+    }
+
+    /// Inlines a bitwise `and`/`or`/`xor`: untag, native op, re-tag. The result of
+    /// two immediates always fits the immediate (the operands' top two bits agree,
+    /// so the result's do too), so no fit check is needed; a boxed operand falls
+    /// back to the runtime.
+    fn inline_bitwise(&mut self, op: Prim, args: &[CExpr], bop: BitOp) -> Value {
+        let a = self.expr(&args[0]);
+        let b = self.expr(&args[1]);
+        let anded = self.builder.ins().band(a, b);
+        self.guard_immediate(
+            anded,
+            |s| s.prim_runtime_call(op, &[a, b]),
+            |s, _slow, merge| {
+                let xa = s.untag(a);
+                let xb = s.untag(b);
+                let r = match bop {
+                    BitOp::And => s.builder.ins().band(xa, xb),
+                    BitOp::Or => s.builder.ins().bor(xa, xb),
+                    BitOp::Xor => s.builder.ins().bxor(xa, xb),
+                };
+                let tagged = s.tag_int(r);
+                s.builder.ins().jump(merge, &[tagged.into()]);
+            },
+        )
+    }
+
+    /// Inlines bitwise `complement` (unary): untag, `bnot`, re-tag. `!x` of a
+    /// 63-bit value is again 63-bit, so no fit check is needed; a boxed operand
+    /// falls back to the runtime.
+    fn inline_complement(&mut self, op: Prim, args: &[CExpr]) -> Value {
+        let a = self.expr(&args[0]);
+        self.guard_immediate(
+            a,
+            |s| s.prim_runtime_call(op, &[a]),
+            |s, _slow, merge| {
+                let xa = s.untag(a);
+                let r = s.builder.ins().bnot(xa);
+                let tagged = s.tag_int(r);
+                s.builder.ins().jump(merge, &[tagged.into()]);
+            },
+        )
+    }
+
+    /// Inlines an integer comparison: untag, native `icmp`, tag the `Bool` result.
+    fn inline_cmp(&mut self, op: Prim, args: &[CExpr], cc: IntCC) -> Value {
+        let a = self.expr(&args[0]);
+        let b = self.expr(&args[1]);
+        let anded = self.builder.ins().band(a, b);
+        self.guard_immediate(
+            anded,
+            |s| s.prim_runtime_call(op, &[a, b]),
+            |s, _slow, merge| {
+                let xa = s.untag(a);
+                let xb = s.untag(b);
+                let c = s.builder.ins().icmp(cc, xa, xb);
+                let tagged = s.tag_bool(c);
+                s.builder.ins().jump(merge, &[tagged.into()]);
+            },
+        )
+    }
+
+    /// Inlines boolean `not`. Its operand is always an immediate `Bool`
+    /// (`false` = `1`, `true` = `3`), so flipping the value bit is `x ^ 2`; no
+    /// guard or fallback is needed.
+    fn inline_not(&mut self, args: &[CExpr]) -> Value {
+        let b = self.expr(&args[0]);
+        self.builder.ins().bxor_imm(b, 2)
+    }
+
+    /// Inlines structural equality when the operands are immediate-representable.
+    /// `Bool`/`Char`/`Unit` are never boxed, so a bare `icmp eq` suffices (the
+    /// injective immediate tag makes word equality value equality). `Int` adds the
+    /// immediate guard and the `fai_equal` fallback — a small immediate `Int` is
+    /// never equal to a boxed (overflowed) one, so the fallback's mixed case is
+    /// already correct. Other types keep the out-of-line structural path.
+    fn inline_eq(&mut self, op: Prim, args: &[CExpr]) -> Option<Value> {
+        let oty = &args[0].ty;
+        if is_immediate_ty(oty) {
+            let a = self.expr(&args[0]);
+            let b = self.expr(&args[1]);
+            let c = self.builder.ins().icmp(IntCC::Equal, a, b);
+            Some(self.tag_bool(c))
+        } else if matches!(oty, Ty::Con(Con::Int)) {
+            let a = self.expr(&args[0]);
+            let b = self.expr(&args[1]);
+            let anded = self.builder.ins().band(a, b);
+            Some(self.guard_immediate(
+                anded,
+                |s| s.prim_runtime_call(op, &[a, b]),
+                |s, _slow, merge| {
+                    let c = s.builder.ins().icmp(IntCC::Equal, a, b);
+                    let tagged = s.tag_bool(c);
+                    s.builder.ins().jump(merge, &[tagged.into()]);
+                },
+            ))
+        } else {
+            None
+        }
+    }
+
+    /// Inlines structural ordering when the operands are immediate-representable,
+    /// producing the same `-1`/`0`/`1` as `fai_compare`. `Bool`/`Char`/`Unit`
+    /// compare bare; `Int` adds the guard and the `fai_compare` fallback. Other
+    /// types keep the out-of-line structural path.
+    fn inline_compare(&mut self, op: Prim, args: &[CExpr]) -> Option<Value> {
+        let oty = &args[0].ty;
+        if is_immediate_ty(oty) {
+            let a = self.expr(&args[0]);
+            let b = self.expr(&args[1]);
+            Some(self.compare_three_way(a, b))
+        } else if matches!(oty, Ty::Con(Con::Int)) {
+            let a = self.expr(&args[0]);
+            let b = self.expr(&args[1]);
+            let anded = self.builder.ins().band(a, b);
+            Some(self.guard_immediate(
+                anded,
+                |s| s.prim_runtime_call(op, &[a, b]),
+                |s, _slow, merge| {
+                    let tagged = s.compare_three_way(a, b);
+                    s.builder.ins().jump(merge, &[tagged.into()]);
+                },
+            ))
+        } else {
+            None
+        }
+    }
+
+    /// Computes structural ordering of two immediate operands as a tagged
+    /// `-1`/`0`/`1`: `(a > b) - (a < b)`, matching the runtime's
+    /// `(a >> 1).cmp(b >> 1)`. The two-comparison form cannot overflow (unlike a
+    /// direct subtraction), so the result always fits the immediate.
+    fn compare_three_way(&mut self, a: Value, b: Value) -> Value {
+        let xa = self.untag(a);
+        let xb = self.untag(b);
+        let gt = self.builder.ins().icmp(IntCC::SignedGreaterThan, xa, xb);
+        let lt = self.builder.ins().icmp(IntCC::SignedLessThan, xa, xb);
+        let gtw = self.builder.ins().uextend(types::I64, gt);
+        let ltw = self.builder.ins().uextend(types::I64, lt);
+        let cmp = self.builder.ins().isub(gtw, ltw);
+        self.tag_int(cmp)
     }
 
     fn application(&mut self, func: &CExpr, args: &[CExpr]) -> Value {
@@ -876,6 +1160,29 @@ fn fits_immediate(n: i64) -> bool {
 /// unconditionally immediate.
 fn is_immediate_ty(ty: &Ty) -> bool {
     matches!(ty, Ty::Unit | Ty::Con(Con::Bool) | Ty::Con(Con::Char))
+}
+
+/// A fast-path integer operation whose result of two immediates can exceed the
+/// 63-bit immediate range, so its re-tag is guarded by an overflow check.
+#[derive(Clone, Copy)]
+enum FitsOp {
+    Add,
+    Sub,
+    Mul,
+    Shl,
+    /// Arithmetic (sign-extending) shift right.
+    Shr,
+    /// Logical (zero-filling) shift right.
+    Ushr,
+}
+
+/// A fast-path bitwise operation whose result of two immediates always fits the
+/// immediate, so its re-tag needs no overflow check.
+#[derive(Clone, Copy)]
+enum BitOp {
+    And,
+    Or,
+    Xor,
 }
 
 /// How a data cell's field is released by an inlined drop.
