@@ -84,6 +84,11 @@ Initial design decisions (summarized in the locked table in `AGENTS.md` §3):
   (doctest-style) — murky scoping + lexer/formatter complexity.
   Separator is `:` (`example: e` / `forall xs: e`); `=` was rejected because
   contract bodies are usually equalities, which would put two `=` on one line.
+  Contracts are **pure**: a contract has no `Runtime` in scope, so reaching a
+  host capability is impossible by construction. A contract that references an
+  effectful binding (whose type carries `Console`/`Clock`/`Random`/`FileSystem`/
+  `Env`, or the `Runtime` bundling them) is now reported directly as `FAI6004` at
+  the offending reference, rather than as a downstream type mismatch.
 - **D13 Interface instances:** construct with **`{ Name with <methods> }`** (ML
   method sugar `m args = …`); the OO `new` and the "object expression" term are
   dropped, but the braces are kept so it mirrors record update `{ r with … }`.

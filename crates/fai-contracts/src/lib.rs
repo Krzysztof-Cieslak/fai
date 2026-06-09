@@ -8,8 +8,9 @@
 //! combinators. [`run`] applies a compiled harness and decodes its `TestResult`.
 //!
 //! Diagnostics live in the `FAI6xxx` range: [`CONTRACT_FAILED`] (an `example`
-//! that did not hold / a `forall` counterexample) and [`CONTRACT_NOT_RUNNABLE`]
-//! (a contract whose binders cannot be generated, e.g. a function-typed binder).
+//! that did not hold / a `forall` counterexample), [`CONTRACT_NOT_RUNNABLE`]
+//! (a contract whose binders cannot be generated, e.g. a function-typed binder),
+//! and [`CONTRACT_IMPURE`] (a contract body that references a host capability).
 
 mod arb;
 mod run;
@@ -23,6 +24,12 @@ use fai_syntax::ast::{ItemKind, PatKind};
 
 pub use run::{ContractOutcome, run_contract};
 pub use synth::{NotRunnable, SynthContract, synthesize};
+
+/// A contract body references a host capability and so is impure. The constant
+/// is defined in `fai-diagnostics` (it is emitted by the type checker, which
+/// cannot depend on this crate) and re-exported here so the contracts layer
+/// owns every `FAI6xxx` name; its catalog entry is in [`CODES`].
+pub use fai_diagnostics::CONTRACT_IMPURE;
 
 /// A contract failed: an `example` evaluated to false, or a `forall` found a
 /// counterexample.
@@ -64,6 +71,16 @@ pub const CODES: &[CodeInfo] = &[
                       into a runtime trap (e.g. integer division by zero), or it did not finish \
                       within the time limit. Each contract runs in an isolated worker, so the \
                       abort fails only this contract — the rest of the run continues.",
+    },
+    CodeInfo {
+        code: CONTRACT_IMPURE,
+        title: "impure contract",
+        default_severity: Severity::Error,
+        explanation: "An `example`/`forall` contract references a host capability — `Console`, \
+                      `Clock`, `Random`, `FileSystem`, `Env`, or the `Runtime` that bundles them. \
+                      Contracts are checked by `fai check` and run by `fai test`, so they must be \
+                      deterministic and pure and cannot reach a capability. Express the law over \
+                      pure values instead.",
     },
 ];
 

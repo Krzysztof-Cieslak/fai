@@ -231,6 +231,20 @@ fn function_typed_binder_is_not_runnable() {
 }
 
 #[test]
+fn impure_contract_blocks_the_test_run() {
+    // A contract that references a capability is impure: `fai test` surfaces the
+    // located purity diagnostic and runs nothing (a file with errors cannot be
+    // compiled soundly), exactly like any other type error.
+    let src = "module M\npublic greet : Console -> Unit\nlet greet c = c.writeLine \"hi\"\n\
+               example: greet\n";
+    let outcome = run(&[("M.fai", src)]);
+    assert!(!outcome.ok);
+    assert_eq!(outcome.passed, 0, "nothing runs when blocked");
+    let d = outcome.diagnostics.iter().find(|d| d.code.as_str() == "FAI6004").expect("FAI6004");
+    assert!(d.message.contains("must be pure"), "got: {}", d.message);
+}
+
+#[test]
 fn char_binder_contract_runs() {
     // A `forall` over a `Char` binder is generatable (the inverse of the
     // function-typed binder above): it runs and passes, with nothing skipped.

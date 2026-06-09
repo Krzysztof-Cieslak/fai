@@ -26,8 +26,17 @@ pub use severity::Severity;
 /// changes; additive fields stay within a major version.
 pub const SCHEMA_VERSION: u32 = 1;
 
+/// A contract (`example`/`forall`) body references a host capability and so is
+/// impure. Defined here, rather than in a phase crate, because it is *emitted*
+/// by the type checker (`fai-types`, while contract-typing a body) but belongs
+/// to the contracts code range and is *catalogued* by `fai-contracts` — and
+/// those two crates have no shared dependency other than this one. The
+/// `CodeInfo` entry lives in `fai_contracts::CODES`.
+pub const CONTRACT_IMPURE: DiagnosticCode = DiagnosticCode::new("FAI6004");
+
 /// Diagnostic codes owned by this crate. `fai-diagnostics` defines the code
-/// machinery but emits no codes of its own.
+/// machinery and emits none of its own; [`CONTRACT_IMPURE`] is the lone shared
+/// code constant it hosts (catalogued by `fai-contracts`).
 pub const CODES: &[CodeInfo] = &[];
 
 #[cfg(test)]

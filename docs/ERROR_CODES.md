@@ -346,6 +346,12 @@ A contract cannot be exercised because a binder's type has no value generator �
 
 The contract aborted while being checked: a generated input drove the body into a runtime trap (e.g. integer division by zero), or it did not finish within the time limit. Each contract runs in an isolated worker, so the abort fails only this contract — the rest of the run continues.
 
+### FAI6004 — impure contract
+
+**Severity:** error
+
+An `example`/`forall` contract references a host capability — `Console`, `Clock`, `Random`, `FileSystem`, `Env`, or the `Runtime` that bundles them. Contracts are checked by `fai check` and run by `fai test`, so they must be deterministic and pure and cannot reach a capability. Express the law over pure values instead.
+
 ## FAI7xxx — Native backend
 
 ### FAI7001 — construct not supported by the native backend yet
