@@ -30,6 +30,9 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// How long to wait for a freshly spawned daemon to accept connections.
 const SPAWN_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How long to wait for a stopped daemon's endpoint to stop answering.
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// A client-side failure talking to the daemon.
 #[derive(Debug, thiserror::Error)]
 pub enum DaemonError {
@@ -242,6 +245,24 @@ pub fn try_connect(root: &Utf8Path, log: Option<PathBuf>) -> Result<Option<Clien
     try_handshake(root, log.as_ref())
 }
 
+/// Blocks until no daemon answers at `root`'s endpoint — the just-stopped daemon
+/// has unlinked its socket and exited — so a following spawn binds a genuinely
+/// fresh daemon.
+///
+/// A daemon acknowledges [`Request::Shutdown`] *before* it unlinks its socket and
+/// exits, so a bare `shutdown` returns while the old process is still listening;
+/// probing here makes the stop synchronous. Best-effort: returns after
+/// [`SHUTDOWN_TIMEOUT`] even if something still answers.
+pub fn wait_until_unreachable(root: &Utf8Path) {
+    let deadline = Instant::now() + SHUTDOWN_TIMEOUT;
+    while transport::connect(root).is_ok() {
+        if Instant::now() >= deadline {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// Attempts one connect + handshake. `Ok(None)` means no usable daemon is
 /// reachable (none running, or a stale one we just told to exit).
 fn try_handshake(root: &Utf8Path, log: Option<&PathBuf>) -> Result<Option<Client>, DaemonError> {
@@ -290,5 +311,23 @@ fn detach(command: &mut Command) {
     {
         // On Unix the daemon calls setsid() itself at startup.
         let _ = command;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// With no daemon at the endpoint, the probe must return promptly rather than
+    /// spin until the timeout — a connect to an unbound endpoint refuses at once.
+    #[test]
+    fn wait_until_unreachable_returns_when_no_daemon() {
+        let root = Utf8Path::new("/nonexistent/fai-wait-no-daemon-probe");
+        let started = Instant::now();
+        wait_until_unreachable(root);
+        assert!(
+            started.elapsed() < SHUTDOWN_TIMEOUT,
+            "probe should return well before the timeout when nothing is listening"
+        );
     }
 }

@@ -97,10 +97,16 @@ pub fn start(root: &Utf8Path, log: Option<PathBuf>) -> Result<(), DaemonError> {
 }
 
 /// Stops the daemon for `root`, returning whether one was running.
+///
+/// Synchronous: the daemon acknowledges shutdown before it unlinks its socket and
+/// exits, so we then block until its endpoint refuses connections. This way a
+/// caller — notably [`restart`] — sees a true stop and a following spawn binds a
+/// genuinely fresh daemon rather than reattaching to the dying one.
 pub fn stop(root: &Utf8Path, log: Option<PathBuf>) -> Result<bool, DaemonError> {
     match client::try_connect(root, log)? {
         Some(mut client) => {
             client.shutdown()?;
+            client::wait_until_unreachable(root);
             Ok(true)
         }
         None => Ok(false),
