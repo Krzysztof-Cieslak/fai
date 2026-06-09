@@ -67,7 +67,9 @@
 > as part of this work.) A standard **language server** (`fai lsp`, the `fai-lsp`
 > crate) is built: it reuses the warm session and the `fai-ide` engine to serve
 > diagnostics, hover (type, `///` docs, and contracts), go-to-definition,
-> completion, signature help, document & workspace symbols, find-references,
+> completion (whose chosen item resolves its `///` docs and contracts lazily via
+> `completionItem/resolve`), signature help, document & workspace symbols,
+> find-references,
 > rename, quick fixes (apply a diagnostic's suggested edit, add a missing public
 > signature, qualify an unbound name), inlay hints (inferred binder types),
 > semantic tokens, and document formatting over stdio, backed by offset-addressed

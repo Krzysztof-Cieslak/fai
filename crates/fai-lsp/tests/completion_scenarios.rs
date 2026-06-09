@@ -6,6 +6,18 @@ mod harness;
 
 use harness::{Harness, completion_labels, position_after, position_of};
 use indoc::indoc;
+use serde_json::Value;
+
+/// The completion item with the given label, from an array-form response.
+fn item_named(result: &Value, label: &str) -> Value {
+    result
+        .as_array()
+        .unwrap_or_else(|| panic!("an array of completion items"))
+        .iter()
+        .find(|i| i["label"] == label)
+        .unwrap_or_else(|| panic!("no completion item labelled `{label}`"))
+        .clone()
+}
 
 /// The completion labels offered just after `prefix` (typically a `Module.` or
 /// `value.`) in `src`.
@@ -196,6 +208,55 @@ fn record_field_completion_carries_the_field_type() {
     assert_eq!(width["detail"], "Int", "{width:?}");
     // Fields use the LSP field kind (5).
     assert_eq!(width["kind"], 5, "{width:?}");
+    h.shutdown();
+}
+
+#[test]
+fn resolving_a_documented_member_fills_its_docs_and_contracts() {
+    // Completing `Int.` offers `toString`; resolving the chosen item fills its
+    // documentation with the type signature, the `///` prose, and the contracts.
+    let src = "module M\n\npublic s : String\nlet s = Int.toString 0\n";
+    let (mut h, uri) = Harness::open_main("c-resolve-docs", src);
+    let result = h.completion(&uri, position_after(src, "Int."));
+    let resolved = h.resolve_completion(item_named(&result, "toString"));
+    assert_eq!(resolved["documentation"]["kind"], "markdown", "{resolved:?}");
+    let expected = "```fai\n\
+        toString : Int -> String\n\
+        ```\n\
+        \n\
+        Render an integer in base 10.\n\
+        \n\
+        ```fai\n\
+        example: toString 42 = \"42\"\n\
+        example: toString 0 = \"0\"\n\
+        ```";
+    assert_eq!(resolved["documentation"]["value"], expected, "{resolved:?}");
+    h.shutdown();
+}
+
+#[test]
+fn resolving_an_undocumented_definition_yields_only_its_type() {
+    // An undocumented binding has no prose or contracts, so its resolved
+    // documentation is just the type-signature block.
+    let src = "module M\n\npublic inc : Int -> Int\nlet inc x = x + 1\n\npublic two : Int\nlet two = inc 1\n";
+    let (mut h, uri) = Harness::open_main("c-resolve-plain", src);
+    let result = h.completion(&uri, position_of(src, "inc 1"));
+    let resolved = h.resolve_completion(item_named(&result, "inc"));
+    assert_eq!(resolved["documentation"]["value"], "```fai\ninc : Int -> Int\n```", "{resolved:?}");
+    h.shutdown();
+}
+
+#[test]
+fn resolving_a_field_item_leaves_it_unchanged() {
+    // Record fields have no addressable definition, so they carry no resolve
+    // payload and resolving them adds no documentation.
+    let src = "module M\n\npublic area : { width : Int, height : Int } -> Int\nlet area rect = rect.width\n";
+    let (mut h, uri) = Harness::open_main("c-resolve-field", src);
+    let result = h.completion(&uri, position_after(src, "rect."));
+    let item = item_named(&result, "width");
+    assert!(item.get("data").is_none(), "a field item has no resolve payload: {item:?}");
+    let resolved = h.resolve_completion(item);
+    assert!(resolved.get("documentation").is_none(), "no documentation added: {resolved:?}");
     h.shutdown();
 }
 

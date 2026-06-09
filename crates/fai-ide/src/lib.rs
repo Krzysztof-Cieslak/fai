@@ -15,15 +15,18 @@ pub mod repr;
 pub mod target;
 
 pub use code_action::{CodeAction, CodeActionEdit, code_actions_at};
-pub use completion::{CompletionItem, CompletionKind, CompletionResult, completions_at};
+pub use completion::{
+    CompletionData, CompletionItem, CompletionKind, CompletionResult, completions_at,
+};
 pub use highlight::{
     InlayHint, SEMANTIC_TOKEN_TYPES, SemKind, SemToken, inlay_hints, semantic_tokens,
 };
 pub use query::{
-    ApiResult, CallEdge, CallHierarchyResult, CapsResult, DefResult, DependentsResult, DocsResult,
-    HoverResult, ListOpts, OutlineNode, OutlineResult, ParamInfo, RefsResult, RenameTarget,
-    SearchHit, SearchResult, SignatureHelp, SymbolsResult, TypeResult, api, callees, callers, caps,
-    def, definition_at, dependents, docs, document_symbols, hover_at, outline, prepare_rename_at,
-    references_at, refs, rename_at, search, signature_help_at, symbols, type_at, workspace_symbols,
+    ApiResult, CallEdge, CallHierarchyResult, CapsResult, CompletionDocs, DefResult,
+    DependentsResult, DocsResult, HoverResult, ListOpts, OutlineNode, OutlineResult, ParamInfo,
+    RefsResult, RenameTarget, SearchHit, SearchResult, SignatureHelp, SymbolsResult, TypeResult,
+    api, callees, callers, caps, completion_docs, def, definition_at, dependents, docs,
+    document_symbols, hover_at, outline, prepare_rename_at, references_at, refs, rename_at, search,
+    signature_help_at, symbols, type_at, workspace_symbols,
 };
 pub use target::{ResolvedTarget, resolve_target};

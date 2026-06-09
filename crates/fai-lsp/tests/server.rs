@@ -470,6 +470,16 @@ fn semantic_tokens_encode_the_document() {
 // --- editing fidelity & dependent diagnostics --------------------------------
 
 #[test]
+fn advertises_completion_item_resolve() {
+    let (h, init) = Harness::start_with_caps("cap-resolve", &[("Main.fai", MAIN)], json!({}));
+    assert_eq!(
+        init["capabilities"]["completionProvider"]["resolveProvider"], true,
+        "the server offers lazy completion resolution: {init:?}"
+    );
+    h.shutdown();
+}
+
+#[test]
 fn negotiates_position_encoding() {
     // With no client preference, the server advertises the LSP default UTF-16.
     let (def, init) = Harness::start_with_caps("enc-default", &[("Main.fai", MAIN)], json!({}));
