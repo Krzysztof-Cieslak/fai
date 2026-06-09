@@ -301,3 +301,38 @@ fn editing_one_module_reuses_cached_objects_for_the_others() {
         "only Helper.helper's object should be recompiled; Main.main stays cached"
     );
 }
+
+#[test]
+fn jit_compile_applies_a_named_function() {
+    let (db, files) = db_with(&[(
+        "M.fai",
+        indoc! {r#"
+            module M
+
+            public double : Int -> Int
+            let double x = x + x
+
+            public main : Runtime -> Unit
+            let main rt = rt.console.writeLine (Int.toString (double 21))
+        "#},
+    )]);
+
+    let mut program = crate::jit_compile(&db, files[0]).expect("compiles");
+    let closure = program.function(fai_syntax::Symbol::intern("double")).expect("double exists");
+    // Applying consumes one reference of the immortal static closure; dup so the
+    // image's closure stays balanced (also exercises the repeat-apply contract).
+    let result = fai_runtime::apply(fai_runtime::fai_dup(closure), &[fai_runtime::make_int(21)]);
+    let n = fai_runtime::read_int(result);
+    fai_runtime::fai_drop(result);
+    assert_eq!(n, 42, "double 21 = 42 via the fetched closure");
+
+    // A binding the file does not define yields `None`.
+    assert!(program.function(fai_syntax::Symbol::intern("missing")).is_none());
+}
+
+#[test]
+fn jit_compile_without_main_is_an_error() {
+    let (db, files) = db_with(&[("M.fai", "module M\n\npublic x : Int\nlet x = 1\n")]);
+    let Err(err) = crate::jit_compile(&db, files[0]) else { panic!("expected a no-main error") };
+    assert!(err.iter().any(|d| d.code == crate::NO_ENTRY_POINT), "reports the no-entry diagnostic");
+}
