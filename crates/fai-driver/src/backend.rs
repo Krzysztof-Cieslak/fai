@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use camino::{Utf8Path, Utf8PathBuf};
-use fai_codegen::{main_object, object_for_def};
+use fai_codegen::{JitProgram, main_object, object_for_def};
 use fai_core::core;
 use fai_core::ir::LoweredDef;
 use fai_core::wire::{WireBundle, WireDef, WireDefId, def_to_wire, from_wire};
@@ -461,6 +461,82 @@ pub fn jit_run_program(db: &dyn Db, file: SourceFile) -> RunOutcome {
     let arity = |d: DefId| groups.arity.get(&d).copied().unwrap_or_else(|| arity_of(db, d));
     let exit_code = fai_codegen::jit_run(&defs, entry, runtime, &namer, &arity);
     RunOutcome { exit_code, diagnostics }
+}
+
+/// A compiled, finalized JIT image of the closure reachable from a file's `main`,
+/// retained so a caller can fetch a top-level function's closure value and apply
+/// it directly (through [`fai_runtime::apply`]) instead of only running `main`.
+///
+/// This drives a specific function in process — for example, to measure a
+/// function's execution time apart from the cost of compiling it (compile once
+/// via [`jit_compile`], then apply many times). The image is kept alive for as
+/// long as the value lives, so the fetched closures stay callable.
+pub struct CompiledProgram {
+    program: JitProgram,
+    /// The mangled backend symbol of every compiled definition (the namer that
+    /// [`fai_codegen::JitProgram::closure_value`] needs).
+    names: FxHashMap<DefId, String>,
+    /// The entry file's own top-level definitions, by name. Restricted to that
+    /// file so a bare name (e.g. `run`) is unambiguous against standard-library
+    /// definitions reachable in the same image.
+    entry_defs: FxHashMap<Symbol, DefId>,
+}
+
+impl CompiledProgram {
+    /// The static-closure value of the entry file's top-level binding `name`,
+    /// ready to apply via [`fai_runtime::apply`]. `None` if the file has no such
+    /// binding (or it was unreachable from `main` and so not compiled).
+    ///
+    /// The returned value is a long-lived (immortal) static closure; applying it
+    /// consumes one reference, so a caller that applies it repeatedly should
+    /// [`fai_runtime::fai_dup`] it before each application.
+    pub fn function(&mut self, name: Symbol) -> Option<i64> {
+        let def = *self.entry_defs.get(&name)?;
+        let Self { program, names, .. } = self;
+        let namer = |d: DefId| names[&d].clone();
+        Some(program.closure_value(&namer, def))
+    }
+}
+
+/// Compiles the closure reachable from `file`'s `main` into a retained JIT image
+/// (see [`CompiledProgram`]) without running it. `Err` carries the precompile
+/// diagnostics (no `main`, or a reachable definition that failed to compile),
+/// mirroring [`jit_run_program`]'s error path.
+pub fn jit_compile(db: &dyn Db, file: SourceFile) -> Result<CompiledProgram, Vec<Diagnostic>> {
+    if !has_main(db, file) {
+        return Err(vec![no_entry_point()]);
+    }
+    let reachable = reachable_defs(db, file);
+    let diagnostics = precompile_diagnostics(db, &reachable);
+    if diagnostics.iter().any(|d| d.severity == Severity::Error) {
+        return Err(diagnostics);
+    }
+
+    // Lower + reference-count each reachable def in parallel (independent
+    // queries), as the JIT runner does, then build one finalized image.
+    let defs: Vec<LoweredDef> = reachable
+        .par_iter()
+        .map_with(db.clone_box(), |dbh, def| {
+            let db: &dyn Db = &**dbh;
+            db.source_file(def.file).map(|f| (*rc(db, f, def.name)).clone())
+        })
+        .collect::<Vec<Option<LoweredDef>>>()
+        .into_iter()
+        .flatten()
+        .collect();
+
+    let names: FxHashMap<DefId, String> =
+        reachable.iter().map(|&d| (d, symbol_base(db, d))).collect();
+    let arities: FxHashMap<DefId, usize> =
+        reachable.iter().map(|&d| (d, arity_of(db, d))).collect();
+    let source = file.source(db);
+    let entry_defs: FxHashMap<Symbol, DefId> =
+        reachable.iter().filter(|d| d.file == source).map(|&d| (d.name, d)).collect();
+
+    let namer = |d: DefId| names[&d].clone();
+    let arity = |d: DefId| arities[&d];
+    let program = JitProgram::compile(&defs, &namer, &arity);
+    Ok(CompiledProgram { program, names, entry_defs })
 }
 
 fn no_entry_point() -> Diagnostic {

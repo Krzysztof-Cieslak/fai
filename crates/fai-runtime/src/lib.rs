@@ -1616,6 +1616,18 @@ pub fn make_int(n: i64) -> Value {
     fai_box_int(n)
 }
 
+/// Reads a Fai `Int` value as a host `i64` (borrowing it; immediate or boxed).
+#[must_use]
+pub fn read_int(v: Value) -> i64 {
+    unbox_int(v)
+}
+
+/// Reads a Fai `Float` value as a host `f64` (borrowing it).
+#[must_use]
+pub fn read_float(v: Value) -> f64 {
+    unbox_float(v)
+}
+
 /// Applies a closure value to owned arguments (a safe wrapper over
 /// [`fai_apply_n`]); the call consumes `closure` and each argument.
 #[must_use]
