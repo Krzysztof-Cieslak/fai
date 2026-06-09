@@ -30,6 +30,10 @@ fn host_isa() -> Arc<dyn TargetIsa> {
     let mut flags = settings::builder();
     flags.set("use_colocated_libcalls", "false").expect("flag");
     flags.set("is_pic", "true").expect("flag");
+    // Optimize generated code (inlining, better register allocation, redundant
+    // load/store elimination) at a modest compile-time cost. Cranelift's
+    // optimizations are value-preserving, so this stays correctness-neutral.
+    flags.set("opt_level", "speed").expect("flag");
 
     let mut triple = target_lexicon::Triple::host();
     if let target_lexicon::OperatingSystem::Darwin(version) = triple.operating_system {

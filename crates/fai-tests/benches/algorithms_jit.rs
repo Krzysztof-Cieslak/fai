@@ -9,7 +9,7 @@
 //!
 //! Read the ratios as a progress metric, not a fair fight: Fai runs with a
 //! uniform **boxed** value representation and **reference counting**, generated
-//! by Cranelift at optimization level "none" (with the host's native CPU
+//! by Cranelift at optimization level "speed" (with the host's native CPU
 //! features, since this is the JIT), while Rust is unboxed and optimized by LLVM
 //! at the bench profile's `-O3`. Representation gaps are intentional and
 //! idiomatic — e.g. `MapSum`'s Rust iterator allocates nothing where Fai builds a
