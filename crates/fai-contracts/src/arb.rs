@@ -93,6 +93,7 @@ impl<'a> ArbBuilder<'a> {
             Ty::Con(Con::Int) => self.test("int"),
             Ty::Con(Con::Bool) => self.test("bool"),
             Ty::Con(Con::Float) => self.test("float"),
+            Ty::Con(Con::Char) => self.test("char"),
             Ty::Con(Con::String) => self.test("string"),
             Ty::Unit => self.test("unit"),
             Ty::Con(Con::List) if args.len() == 1 => {

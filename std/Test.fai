@@ -92,6 +92,45 @@ let float =
   { gen = g, show = Float.toString, shrink = sh }
 example: float.show 1.5 = "1.5"
 
+let hexDigits = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f']
+
+let toHex n acc =
+  let digit = Char.toString (nthOr '0' (Int.and n 15) hexDigits)
+  let rest = Int.shiftRightLogical n 4
+  if rest = 0 then digit ++ acc else toHex rest (digit ++ acc)
+
+// Render a character as a Fai char literal: printable ASCII verbatim (escaping
+// the quote and backslash), the rest as a named or `\u{…}` escape.
+let showChar c =
+  let n = Char.toCode c
+  let inner =
+    if c = '\'' then
+      "\\'"
+    else if c = '\\' then
+      "\\\\"
+    else if n = 10 then
+      "\\n"
+    else if n = 9 then
+      "\\t"
+    else if n = 13 then
+      "\\r"
+    else if n = 0 then
+      "\\0"
+    else if n >= 32 && n <= 126 then Char.toString c else "\\u{" ++ toHex n "" ++ "}"
+  "'" ++ inner ++ "'"
+
+/// Generates characters across the whole Unicode range, shrinking toward `'a'`.
+public char : Arbitrary Char
+let char =
+  let g size seed =
+    let (r, s2) = nextInt seed
+    (Option.withDefault 'a' (Char.fromCode (nonNeg r % 1114112)), s2)
+  let sh c = if c = 'a' then [] else ['a']
+  { gen = g, show = showChar, shrink = sh }
+example: char.show 'a' = "'a'"
+example: char.show '\n' = "'\\n'"
+example: char.show '\u{1F600}' = "'\\u{1f600}'"
+
 let alphabet =
   ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", " ", "0", "1", "2", "3"]
 
