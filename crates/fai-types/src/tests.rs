@@ -41,6 +41,11 @@ fn check_codes(db: &dyn Db, file: SourceFile) -> Vec<String> {
         .collect()
 }
 
+/// All check diagnostics for a file (full diagnostic, for span/message asserts).
+fn check_diags(db: &dyn Db, file: SourceFile) -> Vec<fai_diagnostics::Diagnostic> {
+    check_file::accumulated::<Diag>(db, file).into_iter().map(|d| d.0.clone()).collect()
+}
+
 #[test]
 fn infers_identity() {
     let (db, f) = db_with(&[("M.fai", "module M\n\nlet id x = x\n")]);
@@ -196,6 +201,113 @@ fn good_contract_is_clean() {
         "#},
     )]);
     assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+}
+
+#[test]
+fn contract_referencing_a_capability_is_impure() {
+    let src = indoc! {r#"
+        module M
+
+        public greet : Console -> Unit
+        let greet c = c.writeLine "hi"
+        example: greet
+    "#};
+    let (db, f) = db_with_std(&[("M.fai", src)]);
+    let codes = check_codes(&db, f[0]);
+    // The dedicated purity diagnostic fires, and the downstream not-`Bool`
+    // mismatch (FAI3007) it would otherwise produce is suppressed.
+    assert!(codes.contains(&"FAI6004".to_owned()), "got {codes:?}");
+    assert!(!codes.contains(&"FAI3007".to_owned()), "FAI3007 must be suppressed; got {codes:?}");
+
+    // It points at the offending reference (the `greet` in the contract body),
+    // and names the single capability it touches.
+    let diag = check_diags(&db, f[0]).into_iter().find(|d| d.code.as_str() == "FAI6004").unwrap();
+    let start = src.rfind("greet").unwrap();
+    assert_eq!(diag.primary.start().to_usize(), start);
+    assert_eq!(diag.primary.end().to_usize(), start + "greet".len());
+    assert!(diag.message.contains("the `Console` capability"), "got {:?}", diag.message);
+}
+
+#[test]
+fn contract_referencing_a_runtime_lists_its_capabilities() {
+    let src = indoc! {r#"
+        module M
+
+        public run : Runtime -> Unit
+        let run rt = rt.console.writeLine "hi"
+        example: run
+    "#};
+    let (db, f) = db_with_std(&[("M.fai", src)]);
+    assert!(check_codes(&db, f[0]).contains(&"FAI6004".to_owned()));
+    let diag = check_diags(&db, f[0]).into_iter().find(|d| d.code.as_str() == "FAI6004").unwrap();
+    // A `Runtime` bundles every capability, so the message lists them (sorted).
+    assert!(
+        diag.message.contains(
+            "references capabilities (`Clock`, `Console`, `Env`, `FileSystem`, `Random`)"
+        ),
+        "got {:?}",
+        diag.message
+    );
+}
+
+#[test]
+fn forall_binder_forced_to_a_capability_is_impure() {
+    // The binder `c` carries no capability on its own (a bare `c.writeLine` would
+    // make it a record); passing it to a capability-typed function forces it.
+    let src = indoc! {r#"
+        module M
+
+        public useConsole : Console -> Unit
+        let useConsole c = c.writeLine "hi"
+        forall c: useConsole c = ()
+    "#};
+    let (db, f) = db_with_std(&[("M.fai", src)]);
+    let codes = check_codes(&db, f[0]);
+    assert!(codes.contains(&"FAI6004".to_owned()), "got {codes:?}");
+}
+
+#[test]
+fn contract_over_a_user_interface_is_clean() {
+    // A user-defined interface is not a capability: a contract that builds and
+    // exercises one is pure and must not trip the purity diagnostic.
+    let src = indoc! {r#"
+        module M
+
+        interface Greeter =
+          greet : String -> String
+
+        public mkGreeter : String -> Greeter
+        let mkGreeter prefix = { Greeter with greet s = prefix ++ s }
+
+        public run : Greeter -> String
+        let run g = g.greet "x"
+        example: run (mkGreeter ">") = ">x"
+    "#};
+    let (db, f) = db_with_std(&[("M.fai", src)]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+}
+
+#[test]
+fn contract_referencing_a_capability_across_modules_is_impure() {
+    // The capability surfaces through a qualified reference to another module's
+    // effectful binding; the capability interface still resolves to the Prelude.
+    let (db, f) = db_with_std(&[
+        (
+            "A.fai",
+            indoc! {r#"
+                module A
+
+                public greet : Console -> Unit
+                let greet c = c.writeLine "hi"
+            "#},
+        ),
+        ("B.fai", "module B\n\nexample: A.greet\n"),
+    ]);
+    assert!(
+        check_codes(&db, f[1]).contains(&"FAI6004".to_owned()),
+        "got {:?}",
+        check_codes(&db, f[1])
+    );
 }
 
 #[test]

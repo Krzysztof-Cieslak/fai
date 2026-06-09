@@ -1,0 +1,10 @@
+module ContractImpure
+
+public greet : Console -> Unit
+let greet c = c.writeLine "hi"
+
+// A contract must be pure; referencing the Console capability is rejected with
+// the dedicated purity diagnostic (not a downstream not-Bool mismatch).
+//~ ERROR FAI6004
+//~ COUNT ERROR 1
+example: greet
