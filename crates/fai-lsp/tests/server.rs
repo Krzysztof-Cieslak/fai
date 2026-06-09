@@ -480,6 +480,16 @@ fn advertises_completion_item_resolve() {
 }
 
 #[test]
+fn advertises_on_type_formatting() {
+    let (h, init) = Harness::start_with_caps("cap-ontype", &[("Main.fai", MAIN)], json!({}));
+    assert_eq!(
+        init["capabilities"]["documentOnTypeFormattingProvider"]["firstTriggerCharacter"], "\n",
+        "the server reformats on a newline trigger: {init:?}"
+    );
+    h.shutdown();
+}
+
+#[test]
 fn negotiates_position_encoding() {
     // With no client preference, the server advertises the LSP default UTF-16.
     let (def, init) = Harness::start_with_caps("enc-default", &[("Main.fai", MAIN)], json!({}));

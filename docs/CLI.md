@@ -247,7 +247,8 @@ contracts), `definition`, `completion` (with `completionItem/resolve` filling th
 chosen item's `///` docs and contracts lazily), `signatureHelp`, `documentSymbol`,
 `workspace/symbol`, `references`, `prepareRename`/`rename`, `codeAction` (quick
 fixes), `inlayHint` (inferred binder types), `semanticTokens` (full), and
-document `formatting` (whole-document and range). The position encoding is
+document `formatting` (whole-document, range, and on-type — a newline reformats
+the construct just completed). The position encoding is
 negotiated at initialization (UTF-8 when the client offers it, else UTF-16). Open
 buffers are analyzed as unsaved overlays, so every answer tracks the in-editor
 text.

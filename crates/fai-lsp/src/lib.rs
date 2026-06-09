@@ -22,8 +22,9 @@ use lsp_types::{
     CompletionOptions, CompletionParams, CompletionResponse, Diagnostic as LspDiagnostic,
     DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
-    DocumentRangeFormattingParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
-    Documentation, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
+    DocumentOnTypeFormattingOptions, DocumentOnTypeFormattingParams, DocumentRangeFormattingParams,
+    DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, Documentation,
+    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
     HoverProviderCapability, InlayHint as LspInlayHint, InlayHintKind, InlayHintLabel,
     InlayHintParams, Location as LspLocation, MarkupContent, MarkupKind, NumberOrString, OneOf,
     ParameterInformation, ParameterLabel, Position, PositionEncodingKind, PrepareRenameResponse,
@@ -119,6 +120,12 @@ fn server_capabilities(encoding: Encoding) -> ServerCapabilities {
         definition_provider: Some(OneOf::Left(true)),
         document_formatting_provider: Some(OneOf::Left(true)),
         document_range_formatting_provider: Some(OneOf::Left(true)),
+        // Reformat as the user types: a newline reformats the construct just
+        // completed, reusing the whole-file formatter scoped to that line.
+        document_on_type_formatting_provider: Some(DocumentOnTypeFormattingOptions {
+            first_trigger_character: "\n".to_owned(),
+            more_trigger_character: None,
+        }),
         document_symbol_provider: Some(OneOf::Left(true)),
         workspace_symbol_provider: Some(OneOf::Left(true)),
         references_provider: Some(OneOf::Left(true)),
@@ -259,6 +266,13 @@ impl Server {
                     respond(conn, id, &self.range_formatting(&params));
                 }
             }
+            "textDocument/onTypeFormatting" => {
+                if let Ok((id, params)) =
+                    req.extract::<DocumentOnTypeFormattingParams>("textDocument/onTypeFormatting")
+                {
+                    respond(conn, id, &self.on_type_formatting(&params));
+                }
+            }
             "textDocument/documentSymbol" => {
                 if let Ok((id, params)) =
                     req.extract::<DocumentSymbolParams>("textDocument/documentSymbol")
@@ -389,15 +403,34 @@ impl Server {
     }
 
     fn range_formatting(&self, params: &DocumentRangeFormattingParams) -> Option<Vec<TextEdit>> {
-        let uri = &params.text_document.uri;
+        self.formatting_edits_in_range(&params.text_document.uri, params.range)
+    }
+
+    fn on_type_formatting(&self, params: &DocumentOnTypeFormattingParams) -> Option<Vec<TextEdit>> {
+        let pos = &params.text_document_position;
+        // On a newline trigger the editor's cursor sits on the new line, so the
+        // construct just completed is the line above it. Scope formatting to that
+        // line and the current one, leaving the rest of the document untouched.
+        let line = pos.position.line;
+        let window = Range {
+            start: Position { line: line.saturating_sub(1), character: 0 },
+            end: Position { line: line + 1, character: 0 },
+        };
+        self.formatting_edits_in_range(&pos.text_document.uri, window)
+    }
+
+    /// The whole-file formatter's edits restricted to `range`'s lines (shared by
+    /// range and on-type formatting). The formatter is whole-file; restricting its
+    /// edits to the requested lines means "format selection" only touches the
+    /// selection and an on-type trigger only touches the line being edited.
+    /// `None` when the file does not parse, so a mid-edit buffer is left as-is.
+    fn formatting_edits_in_range(&self, uri: &Url, range: Range) -> Option<Vec<TextEdit>> {
         let rel = self.relative(uri)?;
         let original = self.open.get(uri)?;
         let file = *self.session.select_files(Some(&rel)).first()?;
         let result = fmt(self.session.db(), &[file]);
         let formatted = &result.files.first()?.formatted;
-        // The formatter is whole-file; restrict its edits to the lines the request
-        // asked for, so a "format selection" only touches the selection.
-        Some(range_formatting_edits(original, formatted, params.range))
+        Some(range_formatting_edits(original, formatted, range))
     }
 
     fn document_symbols(&self, params: &DocumentSymbolParams) -> Option<DocumentSymbolResponse> {

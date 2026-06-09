@@ -224,6 +224,18 @@ impl Harness {
         )
     }
 
+    pub fn on_type_formatting(&mut self, uri: &str, position: Value, ch: &str) -> Value {
+        self.request(
+            "textDocument/onTypeFormatting",
+            json!({
+                "textDocument": { "uri": uri },
+                "position": position,
+                "ch": ch,
+                "options": { "tabSize": 2, "insertSpaces": true }
+            }),
+        )
+    }
+
     /// Opens a document, returning its URI.
     pub fn did_open(&self, name: &str, text: &str) -> String {
         let uri = self.uri(name);
