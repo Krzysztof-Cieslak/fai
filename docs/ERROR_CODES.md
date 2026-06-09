@@ -340,6 +340,12 @@ An `example`/`forall` contract did not hold when `fai test` ran it. The help sho
 
 A contract cannot be exercised because a binder's type has no value generator — a function-typed binder, an unsupported type (e.g. `Char`), or too many binders.
 
+### FAI6003 — contract aborted at runtime
+
+**Severity:** error
+
+The contract aborted while being checked: a generated input drove the body into a runtime trap (e.g. integer division by zero), or it did not finish within the time limit. Each contract runs in an isolated worker, so the abort fails only this contract — the rest of the run continues.
+
 ## FAI7xxx — Native backend
 
 ### FAI7001 — construct not supported by the native backend yet

@@ -50,9 +50,14 @@
 > an `Arbitrary 'a` bundle of generator/shrinker/renderer, type-directed
 > combinators, and the `checkExample`/`checkForall` driver with shrinking); the
  > compiler synthesizes, per contract, a harness that composes those combinators
-> for the binders' (monomorphized) types and JIT-runs it, decoding a `TestResult`
-> and reporting a failure as a located **`FAI6001`** with a shrunk counterexample
-> (an ungeneratable binder is **`FAI6002`**). User **records and ADTs** (including
+> for the binders' (monomorphized) types and **checks it in a supervised isolated
+> worker** — the same machinery as `fai run` — so a generated input that drives a
+> body into a runtime trap (e.g. division by zero) fails *that* contract as a
+> located **`FAI6003`** and the run resumes after it instead of aborting; the
+> **daemon serves `fai test`**, streaming per-contract `$/testEvent`s (warm output
+> equals `--no-daemon`). A failure is a located **`FAI6001`** with a shrunk
+> counterexample (an ungeneratable binder is **`FAI6002`**). User **records and
+> ADTs** (including
 > recursive ones like `Dict`/`Set`/`Tree`) generate too, via a synthesized
 > top-level `Arbitrary` definition per type (a recursive type is a self-reference
 > guarded by a size budget; every synthesized function is capture-free, closing

@@ -36,8 +36,12 @@ pub use command::{
     CommandSpec, DirtyFile, EXIT_FAILURES, EXIT_INTERNAL, EXIT_OK, EXIT_WORKSPACE, OutputFormat,
     RenderOpts, Rendered, run_command,
 };
-pub use contracts::{TestConfig, TestOutcome, TestOutput, run_tests};
-pub use fai_core::WireBundle;
+pub use contracts::{
+    ContractEvent, ContractResult, ContractStatus, TestConfig, TestOutcome, TestOutput, TestPlan,
+    assemble_outcome, build_test_plan, jit_test_bundle, render_test_event_line, run_test_workers,
+    run_tests,
+};
+pub use fai_core::{TestWireBundle, WireBundle};
 pub use query::{QueryRequest, QueryResult, run_query};
 pub use session::Session;
 

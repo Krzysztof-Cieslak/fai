@@ -14,15 +14,18 @@
 > versus the full spec below: the daemon currently serializes requests (no
 > concurrent reads / cancellation yet) and returns each non-streaming command's
 > **already-rendered** stdout/stderr rather than structured per-method results, so
-> warm output is byte-identical to a one-shot run. **`fai test` is implemented**
-> (in-process): it collects the `example`/`forall` contracts, synthesizes a
-> property-testing harness per contract using the dogfooded `std/Test.fai`
-> library, JIT-runs it, and reports failures as located `FAI6001` diagnostics with
-> a shrunk counterexample (an ungeneratable binder is `FAI6002`); it takes
-> `[path]`/`--match`/`--seed`/`--count`/`--max-size`, and generates values for
-> built-in types, records, and (recursive) ADTs. Isolated-worker execution (with
-> `$/testEvent` streaming) is a follow-up — the in-process runner aborts if a
-> generated input triggers a runtime trap (e.g. division by zero) (#22). Not yet
+> warm output is byte-identical to a one-shot run. **`fai test` is implemented**:
+> it collects the `example`/`forall` contracts, synthesizes a property-testing
+> harness per contract using the dogfooded `std/Test.fai` library, and checks each
+> in a **supervised isolated worker** (the same machinery as `fai run`) — so a
+> generated input that drives a body into a runtime trap (e.g. division by zero)
+> fails *that contract* as a located **`FAI6003`** and the run continues (the
+> supervisor records the abort and resumes after it). Failures are located
+> `FAI6001` diagnostics with a shrunk counterexample (an ungeneratable binder is
+> `FAI6002`); it takes `[path]`/`--match`/`--seed`/`--count`/`--max-size`, and
+> generates values for built-in types, records, and (recursive) ADTs. The daemon
+> serves `fai test`, streaming per-contract results as `$/testEvent`; warm output
+> is byte-identical to `--no-daemon`. Not yet
 > implemented: `fai daemon tap` (#28), Windows resource limits and a Windows CI
 > (the named-pipe transport compiles but is untested) (#29). See `AGENTS.md` for
 > project conventions, `docs/MEMORY.md` for the design decisions, the issue
@@ -216,11 +219,14 @@ isolated worker spawned by the daemon (capabilities provided by the host).
 
 ### `fai test [path] [--match <pat>]`
 Run the `example` / `forall` contracts (JIT). Examples are evaluated; `forall`
-laws are checked with generated inputs and shrunk on failure.
+laws are checked with generated inputs and shrunk on failure. Each contract runs
+in a supervised isolated worker, so a body that traps on a generated input fails
+*that* contract (a located `FAI6003`) without aborting the run.
 
-- **Options:** `--match <pat>` (run only contracts whose symbol matches).
-- **Streaming:** per-contract pass/fail events.
-- **Output (json):** `{ "schemaVersion": 1, "total": int, "passed": int, "failed": [{ "symbol": SymbolRef, "contract": Contract, "counterexample": string? }] }`
+- **Options:** `--match <pat>` (run only contracts whose subject/module matches),
+  `--seed <n>`, `--count <n>` (trials per property), `--max-size <n>`.
+- **Streaming:** per-contract pass/fail events (`$/testEvent`, from the daemon).
+- **Output (json):** `{ "schemaVersion": 1, "total": int, "passed": int, "notRun": int, "seed": int, "events": [TestEvent], "diagnostics": [Diagnostic], "ok": bool }`, where a `TestEvent` is `{ "ordinal": int, "symbol": string?, "kind": "example"|"forall", "status": "passed"|"failed"|"crashed"|"timedOut"|"notRun", "counterexample": string?, "seed": int, "trials": int, "maxSize": int }`.
 - **Exit:** `0` if all pass; `1` otherwise.
 
 ### `fai fmt [path] [--check]`
@@ -350,8 +356,8 @@ deferred; the request shape reserves room for them.
 |---|---|---|
 | `$/progress` | `{ id, message, done?, total? }` | build/check/test progress |
 | `$/diagnostic` | `{ id, diagnostic: Diagnostic }` | streamed diagnostics |
-| `$/testEvent` | `{ id, symbol, contract, status, counterexample? }` | `test` |
-| `$/output` | `{ id, stream: "stdout"\|"stderr", chunk: bytes }` | `run`/`test` worker output |
+| `$/testEvent` | `TestEvent` (per the `fai test` schema: `ordinal`, `symbol?`, `kind`, `status`, `counterexample?`, `seed`, `trials`, `maxSize`) | `test` |
+| `$/output` | `{ id, stream: "stdout"\|"stderr", chunk: bytes }` | `run` worker output |
 | `$/log` | `{ level, message }` | daemon logs |
 
 A streaming command emits notifications keyed by the request `id`, then sends the
@@ -359,12 +365,17 @@ final `result`.
 
 ### 7.8 Execution model (`run` / `test`)
 
-The daemon JIT-compiles the program (reusing cached function code), then spawns
-an **isolated worker process** carrying the JIT image and the requested
-capabilities. The worker's stdout/stderr stream back as `$/output`; stdin is
-forwarded as needed (piped in v1; full PTY behavior is a later refinement). The
-worker's exit code (or crash/timeout) is reported in the final `result`. The
-daemon enforces timeouts and resource limits on the worker, so a runaway agent
+The daemon builds a portable IR bundle warm (reusing cached function code), then
+ships it to an **isolated worker process** that JIT-compiles and runs it. For
+`run`, the worker carries the requested capabilities; its stdout/stderr stream
+back as `$/output` (stdin is forwarded as needed — piped in v1; full PTY behavior
+is a later refinement) and its exit code (or crash/timeout) is the final
+`result`. For `test`, the worker checks each contract and streams a per-contract
+`$/testEvent`; if a contract aborts (a runtime trap) or exceeds the time limit,
+the supervisor records *that* contract as aborted and re-spawns a worker to resume
+after it, so one bad contract never aborts the run — the final `result` is the
+rendered report. Either way the daemon enforces timeouts (`FAI_RUN_TIMEOUT_MS` /
+`FAI_TEST_TIMEOUT_MS`) and a self-imposed CPU limit on each worker, so a runaway
 program can never take down the daemon.
 
 ### 7.9 Errors & security

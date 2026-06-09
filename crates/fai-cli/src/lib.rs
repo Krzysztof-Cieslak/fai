@@ -78,6 +78,7 @@ fn dispatch(parsed: Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     // Subcommands that always run in this process, never through the daemon.
     match &parsed.command {
         Command::RunWorker(args) => return run_worker(&args.bundle, err),
+        Command::TestWorker(args) => return run_test_worker(&args.bundle, args.start, err),
         Command::DaemonServe => return run_daemon_serve(&parsed.global, err),
         _ => {}
     }
@@ -105,12 +106,14 @@ fn dispatch(parsed: Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
             route(&parsed.global, &root, spec, format, color, log, out, err)
         }
         Command::Run(args) => run_program(&parsed.global, &root, args, log, out, err),
-        Command::Test(args) => run_test(&root, args, format, color, out, err),
+        Command::Test(args) => run_test(&parsed.global, &root, args, format, color, log, out, err),
         // The language server owns the stdio loop directly (it speaks LSP, not the
         // CLI's command envelopes), so it bypasses the usual command routing.
         Command::Lsp => fai_lsp::run_stdio(root),
         Command::Daemon { sub } => run_daemon_command(&root, sub, log, out, err),
-        Command::RunWorker(_) | Command::DaemonServe => unreachable!("handled above"),
+        Command::RunWorker(_) | Command::TestWorker(_) | Command::DaemonServe => {
+            unreachable!("handled above")
+        }
     }
 }
 
@@ -166,11 +169,61 @@ fn run_in_process(
     Ok(fai_driver::run_command(&session, spec, opts))
 }
 
-/// Runs `fai test` in-process: selects the contracts under the optional path and
-/// runs them with the configured generator settings.
+/// Runs `fai test`: through the daemon (which supervises isolated worker processes
+/// and streams per-contract `$/testEvent`s) by default, or in-process under
+/// `--no-daemon` / as a fallback when the daemon is unreachable.
+#[allow(clippy::too_many_arguments)]
 fn run_test(
+    global: &GlobalArgs,
     root: &Utf8Path,
     args: &cli::TestArgs,
+    format: MessageFormat,
+    color: bool,
+    log: Option<PathBuf>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> i32 {
+    let defaults = fai_driver::TestConfig::default();
+    let config = fai_driver::TestConfig {
+        seed: args.seed.unwrap_or(defaults.seed),
+        trials: args.count.unwrap_or(defaults.trials),
+        max_size: args.max_size.unwrap_or(defaults.max_size),
+    };
+    if global.no_daemon {
+        return run_test_in_process(root, args, config, format, color, out, err);
+    }
+    let opts = RenderOpts { format: to_output_format(format), color };
+    match fai_server::test(
+        root,
+        args.path.as_deref(),
+        args.r#match.as_deref(),
+        args.seed,
+        args.count,
+        args.max_size,
+        opts,
+        log,
+        out,
+        err,
+    ) {
+        Ok(exit) => exit,
+        Err(daemon_error) => {
+            let _ = writeln!(
+                err,
+                "warning [{}]: daemon unavailable ({daemon_error}); running in-process",
+                fai_driver::DAEMON_UNAVAILABLE
+            );
+            run_test_in_process(root, args, config, format, color, out, err)
+        }
+    }
+}
+
+/// Runs `fai test` in this process: builds the plan warm, then supervises the
+/// isolated worker(s) locally, printing live per-contract lines (human mode) and
+/// then the final report. The `--no-daemon` / fallback path.
+fn run_test_in_process(
+    root: &Utf8Path,
+    args: &cli::TestArgs,
+    config: fai_driver::TestConfig,
     format: MessageFormat,
     color: bool,
     out: &mut dyn Write,
@@ -181,13 +234,19 @@ fn run_test(
         Err(error) => return emit_error(&error, format, color, out, err),
     };
     let files = session.select_files(args.path.as_deref());
-    let defaults = fai_driver::TestConfig::default();
-    let config = fai_driver::TestConfig {
-        seed: args.seed.unwrap_or(defaults.seed),
-        trials: args.count.unwrap_or(defaults.trials),
-        max_size: args.max_size.unwrap_or(defaults.max_size),
+    let plan = fai_driver::build_test_plan(session.db(), &files, args.r#match.as_deref(), config);
+    let results = if plan.blocked || plan.bundle.contracts.is_empty() {
+        Vec::new()
+    } else {
+        let mut on_event = |event: &fai_driver::ContractEvent| {
+            if matches!(format, MessageFormat::Human) {
+                let _ = out.write_all(fai_driver::render_test_event_line(event).as_bytes());
+                let _ = out.flush();
+            }
+        };
+        fai_driver::run_test_workers(&plan, &mut on_event)
     };
-    let outcome = fai_driver::test(session.db(), &files, args.r#match.as_deref(), config);
+    let outcome = fai_driver::assemble_outcome(&plan, &results);
     let resolver = session.resolver();
     match format {
         MessageFormat::Json => match serde_json::to_string_pretty(&outcome.to_output(&resolver)) {
@@ -204,6 +263,28 @@ fn run_test(
         }
     }
     if outcome.ok { EXIT_OK } else { EXIT_FAILURES }
+}
+
+/// The worker side of `fai test`: reads a serialized test bundle and checks its
+/// contracts from `start` in this process, writing one result frame per contract
+/// to stdout (the supervisor reads them).
+fn run_test_worker(bundle_path: &Utf8Path, start: usize, err: &mut dyn Write) -> i32 {
+    let bytes = match std::fs::read(bundle_path) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            let _ = writeln!(err, "error: failed to read test bundle {bundle_path}: {error}");
+            return EXIT_WORKSPACE;
+        }
+    };
+    let bundle: fai_driver::TestWireBundle = match serde_json::from_slice(&bytes) {
+        Ok(bundle) => bundle,
+        Err(error) => {
+            let _ = writeln!(err, "error: malformed test bundle: {error}");
+            return EXIT_WORKSPACE;
+        }
+    };
+    let mut stdout = std::io::stdout().lock();
+    fai_driver::jit_test_bundle(&bundle, start, &mut stdout)
 }
 
 /// Builds the `build` command spec, resolving the output path to absolute.

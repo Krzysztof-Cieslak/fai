@@ -13,12 +13,14 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use camino::Utf8Path;
-use fai_driver::{CommandSpec, DirtyFile, RenderOpts, Rendered};
+use fai_driver::{
+    CommandSpec, DirtyFile, OutputFormat, RenderOpts, Rendered, render_test_event_line,
+};
 use interprocess::local_socket::Stream;
 
 use crate::protocol::{
     CommandRequest, InitParams, OutputStream, PROTOCOL_VERSION, Request, Response, RunRequest,
-    ServerMessage, StatusInfo, frame_to_json, read_frame, write_frame,
+    ServerMessage, StatusInfo, TestRequest, frame_to_json, read_frame, write_frame,
 };
 use crate::transport;
 
@@ -80,7 +82,7 @@ impl Client {
         self.send(request)?;
         loop {
             match self.next_message()? {
-                ServerMessage::Output { .. } => {}
+                ServerMessage::Output { .. } | ServerMessage::TestEvent(_) => {}
                 ServerMessage::Result(response) => return Ok(response),
             }
         }
@@ -124,7 +126,46 @@ impl Client {
                     let _ = err.write_all(&chunk);
                     let _ = err.flush();
                 }
+                // `run` produces no test events; ignore any defensively.
+                ServerMessage::TestEvent(_) => {}
                 ServerMessage::Result(Response::RunExit(code)) => return Ok(code),
+                ServerMessage::Result(Response::Error(message)) => {
+                    return Err(DaemonError::Protocol(message));
+                }
+                ServerMessage::Result(other) => {
+                    return Err(DaemonError::Protocol(format!("unexpected response: {other:?}")));
+                }
+            }
+        }
+    }
+
+    /// Runs `example`/`forall` contracts under daemon supervision, printing live
+    /// per-contract lines (human mode) as they stream in, then the daemon's
+    /// rendered report, and returns its exit code.
+    pub fn stream_test(
+        &mut self,
+        request: TestRequest,
+        out: &mut dyn Write,
+        err: &mut dyn Write,
+    ) -> Result<i32, DaemonError> {
+        let human = matches!(request.opts.format, OutputFormat::Human);
+        self.send(&Request::Test(request))?;
+        loop {
+            match self.next_message()? {
+                ServerMessage::TestEvent(event) => {
+                    if human {
+                        let _ = out.write_all(render_test_event_line(&event).as_bytes());
+                        let _ = out.flush();
+                    }
+                }
+                // `test` contracts have no capabilities, so no `$/output` is
+                // expected; ignore any defensively.
+                ServerMessage::Output { .. } => {}
+                ServerMessage::Result(Response::Test(rendered)) => {
+                    let _ = out.write_all(rendered.stdout.as_bytes());
+                    let _ = err.write_all(rendered.stderr.as_bytes());
+                    return Ok(rendered.exit);
+                }
                 ServerMessage::Result(Response::Error(message)) => {
                     return Err(DaemonError::Protocol(message));
                 }

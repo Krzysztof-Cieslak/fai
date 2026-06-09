@@ -27,7 +27,10 @@ pub use ir::{CExpr, CoreFn, ExprKind, FnId, Lit, LoweredDef, Prim};
 pub use lit::{decode_float, decode_int, decode_string};
 pub use lower::{LoweredBody, core, lower_params_body};
 pub use pretty::pretty_def;
-pub use wire::{Rebuilt, WireBundle, WireDef, WireDefId, from_wire};
+pub use wire::{
+    Rebuilt, RebuiltTest, TestContract, TestWireBundle, WireBundle, WireContract, WireDef,
+    WireDefId, from_wire, from_wire_test,
+};
 
 use fai_diagnostics::{CodeInfo, DiagnosticCode, Severity};
 

@@ -93,6 +93,9 @@ pub enum Command {
     /// Internal: JIT-run an entry file in this (worker) process. Hidden.
     #[command(name = "__run-worker", hide = true)]
     RunWorker(RunWorkerArgs),
+    /// Internal: check contracts from a bundle in this (worker) process. Hidden.
+    #[command(name = "__test-worker", hide = true)]
+    TestWorker(TestWorkerArgs),
     /// Internal: run the per-workspace daemon in this process. Hidden.
     #[command(name = "__daemon-serve", hide = true)]
     DaemonServe,
@@ -143,6 +146,15 @@ pub struct BuildArgs {
 pub struct RunWorkerArgs {
     /// Path to the serialized run bundle to JIT and execute.
     pub bundle: Utf8PathBuf,
+}
+
+/// Arguments for the hidden `__test-worker` subcommand.
+#[derive(Debug, Args)]
+pub struct TestWorkerArgs {
+    /// Path to the serialized test bundle to JIT and check.
+    pub bundle: Utf8PathBuf,
+    /// The index of the first contract to check (to resume after a crash).
+    pub start: usize,
 }
 
 /// Arguments for `fai run`.

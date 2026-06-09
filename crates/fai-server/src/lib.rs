@@ -23,6 +23,8 @@ pub use client::{Client, DaemonError, connect_or_spawn};
 pub use protocol::StatusInfo;
 pub use server::serve;
 
+use crate::protocol::TestRequest;
+
 /// Runs a command through the workspace daemon (spawning one if needed),
 /// returning its rendered output.
 pub fn run_command(
@@ -48,6 +50,35 @@ pub fn run(
 ) -> Result<i32, DaemonError> {
     let mut client = connect_or_spawn(root, log)?;
     client.stream_run(path, args, out, err)
+}
+
+/// Runs `example`/`forall` contracts under daemon supervision (spawning the
+/// daemon if needed), streaming live per-contract lines to `out` and returning
+/// the run's exit code.
+#[allow(clippy::too_many_arguments)]
+pub fn test(
+    root: &Utf8Path,
+    path: Option<&Utf8Path>,
+    r#match: Option<&str>,
+    seed: Option<i64>,
+    count: Option<i64>,
+    max_size: Option<i64>,
+    opts: RenderOpts,
+    log: Option<PathBuf>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<i32, DaemonError> {
+    let mut client = connect_or_spawn(root, log)?;
+    let request = TestRequest {
+        path: path.map(|p| p.as_str().to_owned()),
+        r#match: r#match.map(str::to_owned),
+        seed,
+        count,
+        max_size,
+        opts,
+        dirty: Vec::new(),
+    };
+    client.stream_test(request, out, err)
 }
 
 /// Returns the daemon's status, or `None` if no daemon is running for `root`.

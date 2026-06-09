@@ -460,10 +460,10 @@ pub fn jit_run_bundle(bundle: &WireBundle) -> i32 {
 }
 
 /// Applies self-imposed resource limits from the environment (set by the daemon
-/// when supervising a run). `RLIMIT_CPU` (seconds) is the default guard;
+/// when supervising a run or test). `RLIMIT_CPU` (seconds) is the default guard;
 /// `RLIMIT_AS` (bytes) is opt-in. A no-op off Unix.
 #[cfg(unix)]
-fn apply_run_limits() {
+pub(crate) fn apply_run_limits() {
     use nix::sys::resource::{Resource, setrlimit};
     if let Ok(secs) = std::env::var("FAI_RUN_CPU_SECS").map(|v| v.parse::<u64>())
         && let Ok(secs) = secs
@@ -478,7 +478,7 @@ fn apply_run_limits() {
 }
 
 #[cfg(not(unix))]
-fn apply_run_limits() {}
+pub(crate) fn apply_run_limits() {}
 
 /// Writes the objects and the runtime archive to a temporary directory and links
 /// them into a native executable, returning the path actually produced (which
