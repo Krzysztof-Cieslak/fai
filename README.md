@@ -169,6 +169,9 @@ Add `--message-format=json` to any command for structured, versioned output.
 The full reference, JSON schemas, and daemon protocol are in
 [`docs/CLI.md`](docs/CLI.md).
 
+A Visual Studio Code extension lives in [`editors/vscode/`](editors/vscode/): a
+thin client for the `fai lsp` language server plus syntax highlighting.
+
 ## Documentation
 
 - [`samples/`](samples/) — the language by example, the source of truth for the syntax.
