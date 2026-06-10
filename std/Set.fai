@@ -1,25 +1,104 @@
 module Set
 
-// An ordered set keyed by any comparable type, backed by a binary search tree.
+// An ordered set of any comparable type, backed by a weight-balanced search tree
+// (a bounded-balance BST kept balanced by rotations). Operations are O(log n)
+// whatever the insertion order — a sorted run no longer degrades to a linear
+// chain. Each node caches its subtree `size`, so `size` is O(1).
+//
 // The type is opaque: its node constructors are private to this module, so sets
 // are built and queried only through these operations. `Prelude` re-exports the
 // name `Set` so it stays usable unqualified.
+//
+// `insert`/`remove` keep their non-rotating reconstruction *in this function's
+// body*, so reference-count reuse recycles the matched node in place when the set
+// is uniquely owned (a unique build allocates no spine, a shared one copies). The
+// amortized O(1) rebalancing rotations go through `balance`, which allocates.
 public opaque type Set 'a =
   | SetEmpty
-  | SetNode (Set 'a) 'a (Set 'a)
+  | SetNode Int (Set 'a) 'a (Set 'a)
+
+// The balance bound and the single-vs-double rotation threshold (the verified
+// weight-balanced parameters that stay correct under deletion).
+delta : Int
+let delta = 3
+
+ratio : Int
+let ratio = 2
+
+// A subtree's cached element count, read in O(1).
+public size : Set 'a -> Int
+let size s =
+  match s with
+  | SetEmpty -> 0
+  | SetNode n _ _ _ -> n
+
+// Smart constructor (used on the rotation/bulk paths, not the hot spine).
+bin : Set 'a -> 'a -> Set 'a -> Set 'a
+let bin l x r = SetNode (size l + size r + 1) l x r
+
+// Restore the balance invariant when one side may be up to one change too heavy.
+balance : Set 'a -> 'a -> Set 'a -> Set 'a
+let balance l x r =
+  let sl = size l
+  let sr = size r
+  if sl + sr <= 1 then
+    SetNode (sl + sr + 1) l x r
+  else if sr > delta * sl then
+    match r with
+    | SetEmpty -> SetNode (sl + sr + 1) l x r
+    | SetNode _ rl ry rr ->
+      if size rl < ratio * size rr then
+        bin (bin l x rl) ry rr
+      else
+        match rl with
+        | SetEmpty -> bin (bin l x rl) ry rr
+        | SetNode _ rll rly rlr -> bin (bin l x rll) rly (bin rlr ry rr)
+  else if sl > delta * sr then
+    match l with
+    | SetEmpty -> SetNode (sl + sr + 1) l x r
+    | SetNode _ ll ly lr ->
+      if size lr < ratio * size ll then
+        bin ll ly (bin lr x r)
+      else
+        match lr with
+        | SetEmpty -> bin ll ly (bin lr x r)
+        | SetNode _ lrl lry lrr -> bin (bin ll ly lrl) lry (bin lrr x r)
+  else
+    SetNode (sl + sr + 1) l x r
 
 /// The empty set.
 public empty : Set 'a
 let empty = SetEmpty
-example: size empty = 0
 
-/// Add an element.
+/// A set of one element.
+public singleton : 'a -> Set 'a
+let singleton x = SetNode 1 SetEmpty x SetEmpty
+example: size (singleton 1) = 1
+
+/// Whether the set has no elements.
+public isEmpty : Set 'a -> Bool
+let isEmpty s =
+  match s with
+  | SetEmpty -> true
+  | SetNode _ _ _ _ -> false
+example: isEmpty empty
+example: isEmpty (singleton 1) = false
+
+/// Add an element. The non-rotating rebuild is inline, so a uniquely owned set is
+/// updated in place; only an unbalancing insert rotates.
 public insert : 'a -> Set 'a -> Set 'a
 let insert x s =
   match s with
-  | SetEmpty -> SetNode SetEmpty x SetEmpty
-  | SetNode l y r ->
-    if x < y then SetNode (insert x l) y r else if x > y then SetNode l y (insert x r) else s
+  | SetEmpty -> SetNode 1 SetEmpty x SetEmpty
+  | SetNode n l y r ->
+    if x < y then
+      let l2 = insert x l
+      if size l2 > delta * size r then balance l2 y r else SetNode (size l2 + size r + 1) l2 y r
+    else if x > y then
+      let r2 = insert x r
+      if size r2 > delta * size l then balance l y r2 else SetNode (size l + size r2 + 1) l y r2
+    else
+      s
 example: member 2 (insert 2 empty)
 example: size (insert 1 (insert 1 empty)) = 1
 
@@ -28,23 +107,176 @@ public member : 'a -> Set 'a -> Bool
 let member x s =
   match s with
   | SetEmpty -> false
-  | SetNode l y r -> if x < y then member x l else if x > y then member x r else true
+  | SetNode _ l y r -> if x < y then member x l else if x > y then member x r else true
 example: member 2 (insert 2 (insert 1 empty))
 forall x: member x empty = false
 
-/// The number of elements.
-public size : Set 'a -> Int
-let size s =
-  match s with
-  | SetEmpty -> 0
-  | SetNode l _ r -> 1 + size l + size r
-example: size (insert 1 (insert 2 empty)) = 2
-forall s: size s >= 0
+// Detach the smallest element of a non-empty set given its parts.
+takeMin : Set 'a -> 'a -> Set 'a -> (Set 'a * 'a)
+let takeMin l x r =
+  match l with
+  | SetEmpty -> (r, x)
+  | SetNode _ ll ly lr ->
+    match takeMin ll ly lr with
+    | (l2, m) ->
+      let rest =
+        if size r > delta * size l2 then balance l2 x r else SetNode (size l2 + size r + 1) l2 x r
+      (rest, m)
 
-/// The elements in ascending order.
-public toList : Set 'a -> List 'a
-let toList s =
+// Merge two sets whose elements are all-less / all-greater (no separating
+// element), promoting the right set's minimum.
+join2 : Set 'a -> Set 'a -> Set 'a
+let join2 l r =
+  match l with
+  | SetEmpty -> r
+  | SetNode _ _ _ _ ->
+    match r with
+    | SetEmpty -> l
+    | SetNode _ rl ry rr ->
+      match takeMin rl ry rr with
+      | (r2, m) -> balance l m r2
+
+/// Remove an element if present. The non-rotating rebuild is inline (reused in place).
+public remove : 'a -> Set 'a -> Set 'a
+let remove x s =
   match s with
-  | SetEmpty -> []
-  | SetNode l x r -> List.append (toList l) (x :: toList r)
-example: toList (insert 2 (insert 1 empty)) = [1, 2]
+  | SetEmpty -> SetEmpty
+  | SetNode n l y r ->
+    if x < y then
+      let l2 = remove x l
+      if size r > delta * size l2 then balance l2 y r else SetNode (size l2 + size r + 1) l2 y r
+    else if x > y then
+      let r2 = remove x r
+      if size l > delta * size r2 then balance l y r2 else SetNode (size l + size r2 + 1) l y r2
+    else
+      join2 l r
+example: member 2 (remove 2 (insert 2 (insert 1 empty))) = false
+example: size (remove 1 (insert 1 empty)) = 0
+
+/// Link `l`, the element `x`, and `r` (all of `l` below `x`, all of `r` above)
+/// into one balanced set, even when the two sides differ widely.
+join : Set 'a -> 'a -> Set 'a -> Set 'a
+let join l x r =
+  if delta * size l < size r then
+    match r with
+    | SetEmpty -> bin l x r
+    | SetNode _ rl ry rr -> balance (join l x rl) ry rr
+  else if delta * size r < size l then
+    match l with
+    | SetEmpty -> bin l x r
+    | SetNode _ ll ly lr -> balance ll ly (join lr x r)
+  else
+    bin l x r
+
+// Split a set by `x` into (elements below, whether `x` was present, elements above).
+splitMember : 'a -> Set 'a -> (Set 'a * Bool * Set 'a)
+let splitMember x s =
+  match s with
+  | SetEmpty -> (SetEmpty, false, SetEmpty)
+  | SetNode _ l y r ->
+    if x < y then
+      match splitMember x l with
+      | (ll, present, lr) -> (ll, present, join lr y r)
+    else if x > y then
+      match splitMember x r with
+      | (rl, present, rr) -> (join l y rl, present, rr)
+    else
+      (l, true, r)
+
+/// The union: every element of either set.
+public union : Set 'a -> Set 'a -> Set 'a
+let union a b =
+  match a with
+  | SetEmpty -> b
+  | SetNode _ la xa ra ->
+    match b with
+    | SetEmpty -> a
+    | SetNode _ _ _ _ ->
+      match splitMember xa b with
+      | (lb, _, rb) -> join (union la lb) xa (union ra rb)
+example: size (union (singleton 1) (singleton 2)) = 2
+example: member 1 (union (singleton 1) (singleton 2))
+
+/// The intersection: elements present in both sets.
+public intersection : Set 'a -> Set 'a -> Set 'a
+let intersection a b =
+  match a with
+  | SetEmpty -> SetEmpty
+  | SetNode _ la xa ra ->
+    match splitMember xa b with
+    | (lb, present, rb) ->
+      let li = intersection la lb
+      let ri = intersection ra rb
+      if present then join li xa ri else join2 li ri
+example: size (intersection (singleton 1) (singleton 2)) = 0
+example: member 1 (intersection (insert 2 (singleton 1)) (singleton 1))
+
+/// The difference: the left set's elements absent from the right.
+public difference : Set 'a -> Set 'a -> Set 'a
+let difference a b =
+  match b with
+  | SetEmpty -> a
+  | SetNode _ lb xb rb ->
+    match splitMember xb a with
+    | (la, _, ra) -> join2 (difference la lb) (difference ra rb)
+example: size (difference (insert 2 (singleton 1)) (singleton 1)) = 1
+
+/// Whether every element of `a` is also in `b`.
+public isSubset : Set 'a -> Set 'a -> Bool
+let isSubset a b = List.all (fun x -> member x b) (toList a)
+example: isSubset (singleton 1) (insert 2 (singleton 1))
+example: isSubset (singleton 3) (singleton 1) = false
+
+/// Build a set from a list (duplicates collapse).
+public fromList : List 'a -> Set 'a
+let fromList xs = List.foldl (fun s x -> insert x s) empty xs
+example: size (fromList [1, 2, 1, 3]) = 3
+
+/// The elements in ascending order. O(n) via an accumulator.
+public toList : Set 'a -> List 'a
+let toList s = toListOnto s []
+
+toListOnto : Set 'a -> List 'a -> List 'a
+let toListOnto s acc =
+  match s with
+  | SetEmpty -> acc
+  | SetNode _ l x r -> toListOnto l (x :: toListOnto r acc)
+example: toList (fromList [2, 1, 3]) = [1, 2, 3]
+
+/// Map a function over the elements (rebuilding, since it may reorder or merge).
+public map : ('a -> 'b) -> Set 'a -> Set 'b
+let map f s = fromList (List.map f (toList s))
+example: toList (map (fun x -> x * 2) (fromList [1, 2, 3])) = [2, 4, 6]
+
+/// Keep the elements satisfying `keep`.
+public filter : ('a -> Bool) -> Set 'a -> Set 'a
+let filter keep s =
+  match s with
+  | SetEmpty -> SetEmpty
+  | SetNode _ l x r ->
+    if keep x then join (filter keep l) x (filter keep r) else join2 (filter keep l) (filter keep r)
+example: size (filter (fun x -> x > 1) (fromList [1, 2, 3])) = 2
+
+/// Fold the elements in ascending order.
+public foldl : ('a -> 'acc -> 'acc) -> 'acc -> Set 'a -> 'acc
+let foldl f acc s =
+  match s with
+  | SetEmpty -> acc
+  | SetNode _ l x r -> foldl f (f x (foldl f acc l)) r
+example: foldl (fun x acc -> acc + x) 0 (fromList [1, 2, 3]) = 6
+
+/// Fold the elements in descending order.
+public foldr : ('a -> 'acc -> 'acc) -> 'acc -> Set 'a -> 'acc
+let foldr f acc s =
+  match s with
+  | SetEmpty -> acc
+  | SetNode _ l x r -> foldr f (f x (foldr f acc r)) l
+example: foldr (fun x acc -> x :: acc) [] (fromList [3, 1, 2]) = [1, 2, 3]
+// Laws over sets built through the public API (so the generators stay built-in
+// lists; a synthesized tree would carry a meaningless cached `size`).
+forall xs x: member x (insert x (fromList xs))
+forall xs x: member x (remove x (fromList xs)) = false
+forall xs: size (fromList xs) = List.length (toList (fromList xs))
+forall a b x: member x (union (fromList a) (fromList b)) = (member x (fromList a) || member x (fromList b))
+forall a b x: member x (intersection (fromList a) (fromList b)) = (member x (fromList a) && member x (fromList b))
+forall a b x: member x (difference (fromList a) (fromList b)) = (member x (fromList a) && not (member x (fromList b)))

@@ -466,3 +466,38 @@ fn correct_mutual_three_cycle() {
     // modA computes n mod 3, and 100000 mod 3 = 1.
     outputs(&src, "1");
 }
+
+// ===========================================================================
+// Weight-balanced Dict/Set reuse: a uniquely-owned tree is rewritten in place,
+// a shared one is copied. `Dict.map` preserves the tree shape, so a unique map
+// recycles every node (zero fresh) while a shared map copies all `n`.
+// ===========================================================================
+
+/// A program building an `n`-entry `Dict Int Int` (unique accumulator) and
+/// running `use_body` on it; prints `Int.toString (use d)`.
+fn dict_prog(use_body: &str, n: i32) -> String {
+    formatdoc! {r#"
+        module M
+
+        fillD : Int -> Dict Int Int -> Dict Int Int
+        let fillD k d = if k <= 0 then d else fillD (k - 1) (Dict.insert k k d)
+
+        let use d = {use_body}
+
+        public main : Runtime -> Unit
+        let main rt = rt.console.writeLine (Int.toString (use (fillD {n} Dict.empty)))
+    "#}
+}
+
+#[test]
+fn dict_map_recycles_a_unique_tree() {
+    // `Dict.map` preserves the tree shape, so each matched node is rebuilt as a
+    // same-size node: a uniquely-owned map recycles all `n` cells (zero fresh),
+    // while a shared map must copy them. The gap is exactly the `n` recycled
+    // nodes — the guard that weight-balanced nodes are reused in place. (`Set`
+    // shares the identical node/insert/balance machinery.)
+    let u = allocs(&dict_prog("Dict.size (Dict.map (fun k v -> v + 1) d)", 50), "50");
+    let s =
+        allocs(&dict_prog("Dict.size (Dict.map (fun k v -> v + 1) d) + Dict.size d", 50), "100");
+    assert_eq!(s - u, 50, "a unique Dict.map must recycle all 50 nodes (shared copies them)");
+}
