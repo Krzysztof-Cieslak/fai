@@ -1704,13 +1704,6 @@ impl<M: Module> Translator<'_, M> {
         self.builder.ins().stack_addr(ptr, slot, 0)
     }
 
-    /// The Cranelift type carrying a value of static type `ty` across a block
-    /// boundary (a branch merge or loop edge): `F64` for an unboxed scalar `Float`,
-    /// else the uniform 64-bit word.
-    fn block_ty(&self, ty: &Ty) -> types::Type {
-        if matches!(ty, Ty::Con(Con::Float)) { types::F64 } else { types::I64 }
-    }
-
     fn conditional(&mut self, cond: &CExpr, then: &CExpr, els: &CExpr) -> Value {
         let cv = self.expr(cond);
         let false_v = self.builder.ins().iconst(types::I64, 1); // Bool false
@@ -1765,11 +1758,16 @@ impl<M: Module> Translator<'_, M> {
     /// into (carried as cranelift variables, so the header is sealed only after its
     /// `Recur` back-edges are emitted), an exit block carrying the loop's result,
     /// and the body translated in tail position.
-    fn join(&mut self, params: &[LocalId], body: &CExpr, result_ty: &Ty) -> Value {
+    ///
+    /// The exit block's parameter type is fixed **lazily**, by the first tail value
+    /// that jumps to it (see [`Self::jump_to_exit`]), rather than from the loop
+    /// node's static type. A desugared `match` wraps its arms in `If` nodes typed
+    /// `Error`, so the loop node's recorded type can be unreliable; reading the
+    /// actual value's representation (as the `if`-merge does) keeps an unboxed
+    /// `f64` loop result from being mistaken for a boxed word.
+    fn join(&mut self, params: &[LocalId], body: &CExpr, _result_ty: &Ty) -> Value {
         let header = self.builder.create_block();
         let exit = self.builder.create_block();
-        let exit_ty = self.block_ty(result_ty);
-        self.builder.append_block_param(exit, exit_ty);
 
         // The loop-carried locals already hold their initial values (parameters
         // and, for a spine-building loop, the hole). Enter the header.
@@ -1783,9 +1781,35 @@ impl<M: Module> Translator<'_, M> {
         self.loop_ctx = prev;
 
         self.builder.seal_block(header);
+        // Every reachable loop exits through at least one tail value, which has
+        // appended the exit parameter. A loop with no exit (only back-edges) is
+        // unreachable past the header; give its exit a uniform parameter so the
+        // result read stays well-formed.
+        if self.builder.func.dfg.block_params(exit).is_empty() {
+            self.builder.append_block_param(exit, types::I64);
+        }
         self.builder.switch_to_block(exit);
         self.builder.seal_block(exit);
         self.builder.block_params(exit)[0]
+    }
+
+    /// Jumps to the enclosing loop's exit with `v`. The first such jump fixes the
+    /// exit parameter's type to `v`'s actual representation (`f64` for an unboxed
+    /// float, else the uniform word); later jumps coerce to it. This makes the
+    /// loop result's representation follow the tail values rather than a static
+    /// type a desugared `match` may have recorded as `Error`.
+    fn jump_to_exit(&mut self, v: Value) {
+        let exit = self.loop_ctx.as_ref().expect("exit inside a loop").exit;
+        let v = if self.builder.func.dfg.block_params(exit).is_empty() {
+            let ty = self.builder.func.dfg.value_type(v);
+            self.builder.append_block_param(exit, ty);
+            v
+        } else {
+            let exit_ty = self.builder.func.dfg.block_params(exit)[0];
+            let exit_ty = self.builder.func.dfg.value_type(exit_ty);
+            self.coerce_repr(v, exit_ty)
+        };
+        self.builder.ins().jump(exit, &[v.into()]);
     }
 
     /// Links a freshly built cell into the spine through the hole: store the cell
@@ -1854,20 +1878,14 @@ impl<M: Module> Translator<'_, M> {
                 self.builder.ins().store(MemFlags::trusted(), basev, dst, 0);
                 let slot = self.result_slot.expect("a spine-building loop has a result slot");
                 let result = self.builder.ins().load(types::I64, MemFlags::trusted(), slot, 0);
-                let exit = self.loop_ctx.as_ref().expect("hole close inside a loop").exit;
-                self.builder.ins().jump(exit, &[result.into()]);
+                self.jump_to_exit(result);
             }
             // Any other tail expression is the loop's value (a plain tail-call
-            // loop's base case): evaluate it and exit.
+            // loop's base case): evaluate it and exit. `jump_to_exit` fixes the
+            // exit representation from this value and coerces a later `<error>`.
             _ => {
                 let v = self.expr(e);
-                let exit = self.loop_ctx.as_ref().expect("tail value inside a loop").exit;
-                // Reconcile a desugared `match`'s unreachable `<error>` tail with
-                // the exit's representation (see `coerce_repr`).
-                let exit_ty = self.builder.func.dfg.block_params(exit)[0];
-                let exit_ty = self.builder.func.dfg.value_type(exit_ty);
-                let v = self.coerce_repr(v, exit_ty);
-                self.builder.ins().jump(exit, &[v.into()]);
+                self.jump_to_exit(v);
             }
         }
     }
