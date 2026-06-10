@@ -21,7 +21,14 @@
 > structural ordering** — all compiling to native code (monomorphic records use
 > constant-offset projections; *row-polymorphic* field access and `{ r with … }`
 > update compile via **offset-evidence passing** — integer field offsets threaded
-> in as leading arguments, like dictionaries). Interfaces & capabilities (M5) are
+> in as leading arguments, like dictionaries). **Opaque types** are built: a
+> **`public opaque type`** exports a type's name but not its definition (a union's
+> constructors, an alias's representation), **file-scoped** — transparent within
+> its declaring file, abstract elsewhere (named, held, passed, and compared
+> structurally, but not constructed, deconstructed, or seen through) — so `Dict`
+> and `Set` now hide their node constructors (declared `opaque` in their own
+> modules, with `Prelude` re-exporting the names via transparent aliases).
+> Interfaces & capabilities (M5) are
 > built: **`interface` declarations and `{ Name with … }` instances** compile to
 > dictionaries with type-directed method dispatch; the overloaded operators
 > (`+ - * / %`, `= <>`, `< <= > >=`) are **methods of the std interfaces**
@@ -165,9 +172,10 @@ table **and** the decision log in `docs/MEMORY.md`).
 | Operators | **Symbolic identifiers** with **F#-style precedence** (derived from the operator's symbols; no fixity declarations); written infix, named as `(op)`. Built-in operators are **std interface methods** — `Num` (`+ - * / %`), `Eq` (`= <>`), `Ord` (`< <= > >=`) — defined in `Prelude`; **user-defined operators** resolve like names (module-local + `Prelude`). `&&`/`\|\|` stay short-circuit sugar; `::` is the built-in `List` constructor. *(Built at M5.)* |
 | Comments | `//` line, `(* ... *)` block, `///` doc |
 | Misc syntax | `[1, 2, 3]` lists, `::` cons, `List 'a`; `\|>`, `>>`, `++`; `true`/`false`; `if/then/else`; 64-bit `Int`/`Float` |
-| Algebraic types | Discriminated unions (`type T = \| A \| B 'a`; the leading `\|` is optional — `type T = A \| B` is the same union, and `fai fmt` adds it — but a single nullary variant still needs it, else `type T = A` is an alias); transparent type aliases (`type Id = …`, acyclic) |
+| Algebraic types | Discriminated unions (`type T = \| A \| B 'a`; the leading `\|` is optional — `type T = A \| B` is the same union, and `fai fmt` adds it — but a single nullary variant still needs it, else `type T = A` is an alias); transparent type aliases (`type Id = …`, acyclic). A `public opaque type` exports the name but not the definition (see Opacity) |
 | Tuples | **Structural**; values `(a, b)`, type `'a * 'b` (`*` binds tighter than `->`) |
-| Records | **Structural with row polymorphism**; no duplicate labels (lacks constraints); `{ x = 1.0, y = 2.0 }`; dot access; `{ r with ... }` update; field punning in patterns; `type Point = { ... }` is a **transparent alias**; **closed by default** `{ x : T }`, anonymous-open `{ x : T \| _ }`, named-open `{ x : T \| 'r }` (named only to thread the tail to the result); **patterns mirror this** — `{ ... }` closed (names all fields), `{ ... \| _ }` open (ignore rest; required for row-poly scrutinees); extension/restriction (incl. binding a pattern tail) is future work (tracked as a proposal) |
+| Records | **Structural with row polymorphism**; no duplicate labels (lacks constraints); `{ x = 1.0, y = 2.0 }`; dot access; `{ r with ... }` update; field punning in patterns; `type Point = { ... }` is a **transparent alias** (unless `opaque`); **closed by default** `{ x : T }`, anonymous-open `{ x : T \| _ }`, named-open `{ x : T \| 'r }` (named only to thread the tail to the result); **patterns mirror this** — `{ ... }` closed (names all fields), `{ ... \| _ }` open (ignore rest; required for row-poly scrutinees); extension/restriction (incl. binding a pattern tail) is future work (tracked as a proposal) |
+| Opacity | A **`public opaque type`** exports the type's name but **not** its definition — a union's constructors / an alias's underlying type. **File-scoped**: transparent within its declaring file (build, match, project freely), abstract everywhere else (named, held, passed, compared structurally, but not constructed, deconstructed, or seen through). `opaque` requires `public`. Cross-file use of a hidden constructor is **`FAI2018`**; of a hidden representation (field access, record construction, `{ r with … }`) is **`FAI3018`**. `Dict`/`Set` use this to hide their node constructors |
 | Inference | Hindley–Milner + let-generalization + **rows / row unification / lacks constraints**; exhaustiveness checking for `match` |
 | Generics | **Uniform boxed representation + dictionary passing** (no monomorphization by default) |
 | Interfaces | Compiled to **dictionaries**; instances (`{ Name with ... }`) are existential values |
@@ -177,7 +185,7 @@ table **and** the decision log in `docs/MEMORY.md`).
 | Memory | **Perceus-style reference counting** (pure + strict ⇒ acyclic heaps ⇒ no cycle collector); reuse analysis enables in-place updates incl. `{ r with ... }` |
 | Representation | Uniform 64-bit boxed/immediate values, **except a monomorphic scalar `Float`, which is an unboxed `f64`** (in registers/locals, in direct-call parameters and results, and across tail loops) — boxed only where it crosses a uniform slot (a data field, a closure environment, an `apply_n`/first-class argument or result, a generic position); the first-class form bridges via a wrapper. Scalarizing `Float` *inside* records/tuples/lists is future work. Canonical record field layout (sorted by label text); monomorphic field access is a **constant offset**; *row-polymorphic* field access and `{ r with … }` update use **offset-evidence passing** — per row lacks-constraint, an integer offset threaded in as a leading argument (like a dictionary), composing through call chains and baked into partial applications for first-class use; dictionaries for interfaces/generics |
 | Determinism | Clock / random / env / IO are reachable only via capabilities |
-| Standard library | Real compiled `.fai` modules under **`std/`**, embedded at build time. One **auto-imported** module, `Prelude`, owns the core types (`Option`/`Result`/`Dict`/`Set` + constructors) and the free functions `identity`/`const`/`not`/`compare`; all other operations are **qualified** under per-type modules (`List.map`, `Option.withDefault`, `Int.toString`, …). `Prelude`/`List`/`Option`/`Result`/`Dict`/`Set`/`String`/`Int`/`Float`/`Char` are reserved module names. The few Rust **intrinsics** are prelude-private, reached only as `Prim.*` from inside `std/` (`FAI2014` elsewhere) and re-exported under clean names. (`Dict`/`Set` expose their node constructors until opaque types land.) |
+| Standard library | Real compiled `.fai` modules under **`std/`**, embedded at build time. One **auto-imported** module, `Prelude`, owns the core types `Option`/`Result` (with their constructors), re-exports the opaque `Dict`/`Set` type names, and provides the free functions `identity`/`const`/`not`/`compare`; all other operations are **qualified** under per-type modules (`List.map`, `Option.withDefault`, `Int.toString`, …). `Prelude`/`List`/`Option`/`Result`/`Dict`/`Set`/`String`/`Int`/`Float`/`Char` are reserved module names. The few Rust **intrinsics** are prelude-private, reached only as `Prim.*` from inside `std/` (`FAI2014` elsewhere) and re-exported under clean names. `Dict`/`Set` are **`opaque`** types declared in their own modules with their node constructors hidden; `Prelude` re-exports the names via transparent aliases so they stay usable unqualified. |
 | Compilation model | **Demand-driven (salsa) query engine**; per-workspace **daemon** holds the DB hot, thin CLI client; **content-addressed on-disk cache**; **JIT** for `run`/`test`, **AOT** for `build`; incremental at definition/SCC granularity |
 | Tooling | `fai build/run/check/fmt/test/lsp` + read-only `fai query …` (code intelligence); per-workspace daemon (MessagePack JSON-RPC); global `--message-format=json`; stable error codes `FAInnnn`. Full reference: **`docs/CLI.md`** |
 
@@ -531,7 +539,8 @@ closes (`'a'`, `'\n'`) and a **type variable** otherwise (`'a`, `'r`). This is
 the F# rule; keep it covered by tests.
 
 **Reserved keywords include** `module`, `let`, `type`, `interface`, `match`,
-`with`, `if`, `then`, `else`, `fun`, `public`, `as` (the as-pattern binder), and
+`with`, `if`, `then`, `else`, `fun`, `public`, `opaque` (the opaque-type marker,
+only before a `public` `type`), `as` (the as-pattern binder), and
 the contract-declaration keywords **`example`** and **`forall`**. Contracts are ordinary
 declarations (peers of `let`), not comment text, so the symbols inside them
 resolve through normal name resolution and are fully type-checked.

@@ -251,6 +251,34 @@ fn impure_contract_blocks_the_test_run() {
 }
 
 #[test]
+fn cross_file_opaque_record_binder_is_generated() {
+    // A `forall` in another file over an opaque record type: the synthesized
+    // generator peeks past opacity to build values, so the contract runs (it does
+    // not become a not-runnable binder).
+    let lib = indoc::indoc! {r#"
+        module Lib
+
+        public opaque type Stats = { hits : Int, misses : Int }
+
+        public swap : Stats -> Stats
+        let swap s = { hits = s.misses, misses = s.hits }
+
+        public total : Stats -> Int
+        let total s = s.hits + s.misses
+    "#};
+    let use_mod = indoc::indoc! {r#"
+        module Use
+
+        forall s: Lib.total (Lib.swap s) = Lib.total s
+    "#};
+    let outcome = run(&[("Lib.fai", lib), ("Use.fai", use_mod)]);
+    assert!(outcome.ok, "diagnostics: {:?}", outcome.diagnostics);
+    assert_eq!(outcome.passed, outcome.total);
+    assert_eq!(outcome.not_run, 0, "an opaque record binder must be generatable");
+    assert_eq!(outcome.leaked, 0);
+}
+
+#[test]
 fn char_binder_contract_runs() {
     // A `forall` over a `Char` binder is generatable (the inverse of the
     // function-typed binder above): it runs and passes, with nothing skipped.

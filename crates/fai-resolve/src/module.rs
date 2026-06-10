@@ -309,14 +309,18 @@ pub fn module_interface(db: &dyn Db, file: SourceFile) -> ModuleInterface {
 
     // Public `type` declarations export their type name and (for unions) every
     // constructor. Derived from `type_decls` filtered to public declarations, so
-    // a private type's edits never change this firewall value.
+    // a private type's edits never change this firewall value. An **opaque** type
+    // exports its name but not its constructors: it is named but not constructed,
+    // deconstructed, or seen through from other files.
     let decls = crate::decls::type_decls(db, file);
     let mut types: Vec<Symbol> = Vec::new();
     let mut ctors: Vec<Symbol> = Vec::new();
     for info in decls.types.values() {
         if info.visibility == Visibility::Public {
             types.push(info.name);
-            ctors.extend(info.ctors.iter().copied());
+            if !info.opaque {
+                ctors.extend(info.ctors.iter().copied());
+            }
         }
     }
     types.sort_by(|a, b| a.as_str().cmp(b.as_str()));

@@ -22,7 +22,7 @@ use crate::ty::Ty;
 use crate::infer::{declared_scheme, error_scheme, infer_scc};
 use crate::std_lib;
 use crate::ty::Scheme;
-use crate::{MISSING_PUBLIC_SIGNATURE, SIGNATURE_MISMATCH};
+use crate::{MISSING_PUBLIC_SIGNATURE, OPAQUE_ACCESS, SIGNATURE_MISMATCH};
 
 /// The inferred schemes of the SCC at `scc_index` in `file`.
 #[salsa::tracked]
@@ -40,6 +40,7 @@ pub fn infer_scc_query(db: &dyn Db, file: SourceFile, scc_index: usize) -> Arc<S
     Arc::new(SccTypes {
         schemes: inference.schemes.into_iter().collect(),
         mismatches: inference.mismatches,
+        opaque_mismatches: inference.opaque_mismatches,
     })
 }
 
@@ -50,6 +51,9 @@ pub struct SccTypes {
     pub schemes: Vec<(DefId, Scheme)>,
     /// Members whose body disagreed with its declared signature.
     pub mismatches: Vec<DefId>,
+    /// Members whose mismatch is a structural value against an opaque signature,
+    /// paired with that opaque type's name.
+    pub opaque_mismatches: Vec<(DefId, Symbol)>,
 }
 
 impl SccTypes {
@@ -63,6 +67,13 @@ impl SccTypes {
     #[must_use]
     pub fn is_mismatch(&self, def: DefId) -> bool {
         self.mismatches.contains(&def)
+    }
+
+    /// The opaque type a `def`'s body tried to build structurally, if its
+    /// mismatch is an opaque-access rather than a plain signature mismatch.
+    #[must_use]
+    pub fn opaque_mismatch(&self, def: DefId) -> Option<Symbol> {
+        self.opaque_mismatches.iter().find(|(d, _)| *d == def).map(|(_, n)| *n)
     }
 }
 
@@ -278,33 +289,47 @@ pub fn check_file(db: &dyn Db, file: SourceFile) {
             }
             Some(sig_item) => {
                 // The body was checked against the declared type during
-                // inference; a recorded mismatch becomes FAI3004.
+                // inference; a recorded mismatch becomes FAI3004 — or, when the
+                // body builds an opaque type structurally, the more specific
+                // FAI3018.
                 let sccs = module_sccs(db, file);
-                let is_mismatch = sccs
-                    .index_of
-                    .get(&def)
-                    .map(|&idx| infer_scc_query(db, file, idx).is_mismatch(def))
-                    .unwrap_or(false);
+                let scc_types = sccs.index_of.get(&def).map(|&idx| infer_scc_query(db, file, idx));
+                let is_mismatch = scc_types.as_ref().is_some_and(|t| t.is_mismatch(def));
                 if is_mismatch {
-                    let sig_span = module.items[sig_item.index()].span;
                     let bind_span = module.items[d.binding.index()].span;
-                    let declared = declared_scheme(db, file, d.name).unwrap_or_else(error_scheme);
-                    emit(
-                        db,
-                        Diagnostic::error(
-                            SIGNATURE_MISMATCH,
-                            format!(
-                                "the body of `{}` does not match its declared type `{}`",
-                                d.name,
-                                crate::ty::render_scheme(&declared),
+                    if let Some(name) = scc_types.and_then(|t| t.opaque_mismatch(def)) {
+                        emit(
+                            db,
+                            Diagnostic::error(
+                                OPAQUE_ACCESS,
+                                format!(
+                                    "the type `{name}` is opaque; its values cannot be built \
+                                     by record construction from this file"
+                                ),
+                                Span::new(file.source(db), bind_span),
                             ),
-                            Span::new(file.source(db), bind_span),
-                        )
-                        .with_label(Label::new(
-                            Span::new(file.source(db), sig_span),
-                            "declared here",
-                        )),
-                    );
+                        );
+                    } else {
+                        let sig_span = module.items[sig_item.index()].span;
+                        let declared =
+                            declared_scheme(db, file, d.name).unwrap_or_else(error_scheme);
+                        emit(
+                            db,
+                            Diagnostic::error(
+                                SIGNATURE_MISMATCH,
+                                format!(
+                                    "the body of `{}` does not match its declared type `{}`",
+                                    d.name,
+                                    crate::ty::render_scheme(&declared),
+                                ),
+                                Span::new(file.source(db), bind_span),
+                            )
+                            .with_label(Label::new(
+                                Span::new(file.source(db), sig_span),
+                                "declared here",
+                            )),
+                        );
+                    }
                 }
             }
         }

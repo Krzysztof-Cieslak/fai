@@ -535,16 +535,17 @@ Standard library & operators:
   synthetic high-durability inputs under the `<std>/` path namespace
   (`fai_db::is_std_path`, shared so name resolution can classify a file without
   depending on the loader). Auto-import is **curated, Elm-style**: a single
-  module **`Prelude`** is visible unqualified everywhere; with no opaque types
-  yet, a type's constructors travel with it, so the core types are
-  auto-imported. `Prelude` owns
-  `Option`/`Result`/`Dict`/`Set` (+ constructors) and the free functions
+  module **`Prelude`** is visible unqualified everywhere; a public type's
+  constructors travel with it (except an **opaque** type, which exports its name
+  only — see D113), so the core types are auto-imported. `Prelude` owns
+  `Option`/`Result` (+ constructors), re-exports the opaque `Dict`/`Set` type
+  names, and provides the free functions
   `identity`/`const`/`not`/`compare`; **every other operation is reached
   qualified** through a per-type module (`List.map`, `Option.withDefault`,
   `Dict.insert`, `String.split`, `Int.toString`, `Float.sqrt`, …). So
   `Prelude`/`List`/`Option`/`Result`/`Dict`/`Set`/`String`/`Int`/`Float` are
-  reserved module names; `Dict`/`Set` still expose their node constructors (no
-  opaque types yet — noted as future work). Auto-import is a pure tracked
+  reserved module names; `Dict`/`Set` are **opaque** types declared in their own
+  modules, with their node constructors hidden (D113). Auto-import is a pure tracked
   `prelude_exports` (the merged interface of the auto-imported set, keyed on the
   public **name set** for early cutoff: a Prelude *body* edit recomputes nothing
   downstream) shared by resolution and the type-name fallback; the `Prelude`
@@ -1812,6 +1813,57 @@ Editor integration:
   - **Scope.** Only a *scalar* `Float` is unboxed; floats nested in
     records/tuples/lists/ADTs stay boxed heap fields. Scalarizing those (record
     SROA / multi-value returns) is future work.
+
+- **D114 Opaque types (`public opaque type`; resolves the D73/D74 note that
+  `Dict`/`Set` had to expose their node constructors).** A `public opaque type`
+  exports a type's **name** but not its **definition** — a union's constructors,
+  an alias's underlying type. Opacity is **file-scoped**: transparent within the
+  declaring file (constructors, field access, and pattern matching all work
+  there), abstract in every other file (the type may be named, held, passed, and
+  compared structurally, but not constructed, deconstructed, or seen through). It
+  requires `public` (a private type already hides everything); a lone `opaque`
+  is reported and recovered as `public opaque`.
+  - **Surface & representation.** A single `opaque: bool` on the `Type` item
+    (only meaningful with `Public`); the formatter prints `public opaque type`.
+    No new `Ty`: a *union* is already a nominal `Ty::Adt`, so opacity only hides
+    its constructors; an *opaque alias* is lowered to a nominal `Ty::Adt` (its
+    own canonical name) **from another file**, suppressing expansion, while the
+    declaring file keeps expanding it transparently (the `decl_file == use_file`
+    test the alias expander already had). Chosen over a distinct representation
+    because reuse needs **zero** changes in Core/codegen/rc: values stay uniform
+    64-bit boxed words and drop is **header-driven** (a dead cell scans its own
+    descriptor's children), so an opaque value crosses a module boundary as an
+    opaque pointer with no layout knowledge required.
+  - **Enforcement.** The hiding is one rule: `module_interface` keeps an opaque
+    type's name in `types` but **omits its constructors** from `ctors`, which
+    cascades through `prelude_exports`/auto-import (the constructors leave the
+    unqualified set) and the cross-file path resolver (a hidden constructor is the
+    new **`FAI2018`**, distinct from the plain-private `FAI2003`). Treating an
+    opaque type structurally from another file — field access, record
+    construction, or `{ r with … }` — is **`FAI3018`**, detected where a record
+    shape fails to unify with an opaque `Ty::Adt` (and at the body-vs-signature
+    check, so a construction in a binder's body reports `FAI3018`, not the bare
+    `FAI3004`). An opaque type's constructor-field / alias-body types are no
+    longer a public surface, so the `FAI2015` privacy-leak check skips them.
+  - **Structural operations stay.** `= <> < <= > >=` / `compare` remain available
+    on an opaque type cross-file (they are universal structural runtime ops keyed
+    on the cell header, not the static type); opacity hides construction and
+    projection, not identity — consistent with the language's structural model
+    and needed so `Dict`/`Set` (and sets of them) stay comparable.
+  - **Contracts.** A property-test generator may **peek past opacity** to build
+    values (the synthesized `Arbitrary` is compiler-generated, not user code), so
+    a cross-file `forall` over an opaque type still runs. `arb` expands an opaque
+    alias to its representation (`expand_alias_ty`) wherever a type enters its
+    analysis (binders, constructor fields, generation), honoring a user-supplied
+    `Arbitrary` override as a leaf. Opaque *unions* already generated, since `arb`
+    reads `type_decls` directly.
+  - **Standard library (amends D73/D74).** `Dict`/`Set` move from `Prelude` into
+    their own `Dict`/`Set` modules as `public opaque type`s (so their operations,
+    same-file, still build and match the nodes), and `Prelude` keeps the names
+    auto-imported by **re-exporting** them as transparent aliases
+    (`public type Dict 'k 'v = Dict.Dict 'k 'v`), which uses the qualified-type
+    syntax of D88. No re-export mechanism or auto-import special-casing was
+    needed; the alias re-export was validated against the embedded-std typecheck.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

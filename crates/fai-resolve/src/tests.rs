@@ -689,3 +689,96 @@ fn nested_module_shadows_a_cross_file_module() {
     let diags = resolve_diags(&db, files[1]);
     assert!(diags.is_empty(), "got {:?}", codes(&diags));
 }
+
+#[test]
+fn opaque_type_exports_its_name_but_not_its_constructors() {
+    let (db, files) = db_with(&[(
+        "M.fai",
+        indoc! {r#"
+            module M
+
+            public opaque type T =
+              | MkT Int
+        "#},
+    )]);
+    let iface = module_interface(&db, files[0]);
+    assert!(iface.has_type(Symbol::intern("T")), "the opaque type name is exported");
+    assert!(!iface.has_ctor(Symbol::intern("MkT")), "its constructor is not exported");
+}
+
+#[test]
+fn same_file_opaque_constructor_resolves() {
+    // Opacity is file-scoped: the declaring file builds and matches freely.
+    let (db, files) = db_with(&[(
+        "M.fai",
+        indoc! {r#"
+            module M
+
+            public opaque type T =
+              | MkT Int
+
+            let make = MkT 1
+
+            let read t =
+              match t with
+              | MkT n -> n
+        "#},
+    )]);
+    let diags = resolve_diags(&db, files[0]);
+    assert!(diags.is_empty(), "same-file constructor use is fine: {:?}", codes(&diags));
+}
+
+#[test]
+fn cross_file_opaque_constructor_is_an_error() {
+    let m = indoc! {r#"
+        module M
+
+        public opaque type T =
+          | MkT Int
+    "#};
+    let user = indoc! {r#"
+        module User
+
+        let bad = M.MkT 1
+    "#};
+    let (db, files) = db_with(&[("M.fai", m), ("User.fai", user)]);
+    let diags = resolve_diags(&db, files[1]);
+    assert!(codes(&diags).contains(&"FAI2018"), "expected FAI2018, got {:?}", codes(&diags));
+}
+
+#[test]
+fn cross_file_opaque_constructor_pattern_is_an_error() {
+    let m = indoc! {r#"
+        module M
+
+        public opaque type T =
+          | MkT Int
+    "#};
+    let user = indoc! {r#"
+        module User
+
+        let read t =
+          match t with
+          | M.MkT n -> n
+    "#};
+    let (db, files) = db_with(&[("M.fai", m), ("User.fai", user)]);
+    let diags = resolve_diags(&db, files[1]);
+    assert!(codes(&diags).contains(&"FAI2018"), "expected FAI2018, got {:?}", codes(&diags));
+}
+
+#[test]
+fn opaque_constructor_field_does_not_leak_a_private_type() {
+    // A non-opaque public type's constructor field would be an FAI2015 leak, but
+    // an opaque type's fields are not cross-file-visible, so they cannot leak.
+    let src = indoc! {r#"
+        module M
+
+        type Secret = Int
+
+        public opaque type T =
+          | MkT Secret
+    "#};
+    let (db, files) = db_with(&[("M.fai", src)]);
+    let diags = resolve_diags(&db, files[0]);
+    assert!(!codes(&diags).contains(&"FAI2015"), "opaque fields don't leak: {:?}", codes(&diags));
+}

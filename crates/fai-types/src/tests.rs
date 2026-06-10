@@ -1462,3 +1462,108 @@ fn cross_file_qualified_type_resolves() {
     let (db, f) = db_with_std(&[("Lib.fai", lib), ("User.fai", user)]);
     assert!(check_codes(&db, f[1]).is_empty(), "got {:?}", check_codes(&db, f[1]));
 }
+
+#[test]
+fn opaque_record_field_access_in_declaring_file_is_transparent() {
+    // File-scoped opacity: the declaring file sees the record structure.
+    let (db, f) = db_with(&[(
+        "M.fai",
+        indoc! {r#"
+            module M
+
+            public opaque type P = { x : Int, y : Int }
+
+            public sum : P -> Int
+            let sum p = p.x + p.y
+        "#},
+    )]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+}
+
+#[test]
+fn cross_file_opaque_record_field_access_is_an_error() {
+    let m = indoc! {r#"
+        module M
+
+        public opaque type P = { x : Int, y : Int }
+    "#};
+    let user = indoc! {r#"
+        module User
+
+        public getX : M.P -> Int
+        let getX p = p.x
+    "#};
+    let (db, f) = db_with(&[("M.fai", m), ("User.fai", user)]);
+    assert!(
+        check_codes(&db, f[1]).contains(&"FAI3018".to_owned()),
+        "got {:?}",
+        check_codes(&db, f[1])
+    );
+}
+
+#[test]
+fn cross_file_opaque_record_construction_is_an_error() {
+    let m = indoc! {r#"
+        module M
+
+        public opaque type P = { x : Int, y : Int }
+    "#};
+    let user = indoc! {r#"
+        module User
+
+        public mk : M.P
+        let mk = { x = 1, y = 2 }
+    "#};
+    let (db, f) = db_with(&[("M.fai", m), ("User.fai", user)]);
+    assert!(
+        check_codes(&db, f[1]).contains(&"FAI3018".to_owned()),
+        "got {:?}",
+        check_codes(&db, f[1])
+    );
+}
+
+#[test]
+fn cross_file_opaque_type_passes_through_by_name() {
+    // An opaque value can be named and forwarded across files; only its
+    // representation is hidden.
+    let m = indoc! {r#"
+        module M
+
+        public opaque type P = { x : Int }
+    "#};
+    let user = indoc! {r#"
+        module User
+
+        public idP : M.P -> M.P
+        let idP p = p
+    "#};
+    let (db, f) = db_with(&[("M.fai", m), ("User.fai", user)]);
+    assert!(check_codes(&db, f[1]).is_empty(), "got {:?}", check_codes(&db, f[1]));
+}
+
+#[test]
+fn opaque_alias_is_transparent_in_declaring_file_nominal_elsewhere() {
+    // In the declaring file `Id` is its underlying `Int`; from another file it is
+    // an abstract type that does not unify with `Int`.
+    let m = indoc! {r#"
+        module M
+
+        public opaque type Id = Int
+
+        public wrap : Int -> Id
+        let wrap n = n
+    "#};
+    let user = indoc! {r#"
+        module User
+
+        public unwrap : M.Id -> Int
+        let unwrap i = i
+    "#};
+    let (db, f) = db_with(&[("M.fai", m), ("User.fai", user)]);
+    assert!(
+        check_codes(&db, f[0]).is_empty(),
+        "declaring file is transparent: {:?}",
+        check_codes(&db, f[0])
+    );
+    assert!(!check_codes(&db, f[1]).is_empty(), "Id is not Int across files");
+}

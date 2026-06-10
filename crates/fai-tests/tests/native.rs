@@ -151,6 +151,53 @@ fn cross_file_nested_qualified_access_runs() {
 }
 
 #[test]
+fn cross_module_opaque_types_build_and_run() {
+    // An opaque union and an opaque record are built and read only in `Lib`;
+    // `Main` holds and forwards their values across the module boundary by name.
+    // A leak-free (exit 0) run proves the uniform boxed representation carries an
+    // opaque value across files with no special codegen.
+    let lib = indoc! {r#"
+        module Lib
+
+        public opaque type Counter =
+          | Counter Int
+
+        public opaque type Stats = { hits : Int, misses : Int }
+
+        public zero : Counter
+        let zero = Counter 0
+
+        public bump : Counter -> Counter
+        let bump c =
+          match c with
+          | Counter n -> Counter (n + 1)
+
+        public value : Counter -> Int
+        let value c =
+          match c with
+          | Counter n -> n
+
+        public stats : Int -> Int -> Stats
+        let stats h m = { hits = h, misses = m }
+
+        public total : Stats -> Int
+        let total s = s.hits + s.misses
+    "#};
+    let main = indoc! {r#"
+        module Main
+
+        public main : Runtime -> Unit
+        let main runtime =
+          let c = Lib.bump (Lib.bump Lib.zero)
+          let s = Lib.stats 3 4
+          runtime.console.writeLine (Int.toString (Lib.value c + Lib.total s))
+    "#};
+    let (out, code) = build_and_run_files(&[("Lib.fai", lib), ("Main.fai", main)]);
+    assert_eq!(out, "9\n");
+    assert_eq!(code, Some(0));
+}
+
+#[test]
 fn cross_module_forwarder_borrows_and_runs() {
     // `Lib.sumList` borrows its list; `Main.forward` only forwards `xs` to it, so
     // inter-procedural inference borrows `xs` too. `main` lends the same list to

@@ -432,6 +432,16 @@ fn single_line_union_is_normalized_to_canonical_form() {
 }
 
 #[test]
+fn opaque_type_keyword_is_formatted_and_preserved() {
+    // The `opaque` marker prints after `public` and survives a reformat (the
+    // structure check in `assert_canonical` also verifies the item tree).
+    let union = assert_canonical("module M\npublic opaque type T =\n  | MkT Int\n");
+    assert!(union.contains("public opaque type T =\n  | MkT Int"), "got:\n{union}");
+    let alias = assert_canonical("module M\npublic opaque type Id = Int\n");
+    assert!(alias.contains("public opaque type Id = Int"), "got:\n{alias}");
+}
+
+#[test]
 fn lambda_forms() {
     assert!(assert_canonical("module M\nlet a = fun x -> x").contains("fun x -> x"));
     assert!(
@@ -547,8 +557,9 @@ fn shape_item(m: &Module, item: &Item) -> String {
             shape_pats(m, params),
             shape_expr(m, *body),
         ),
-        ItemKind::Type { visibility, name, params, def } => {
+        ItemKind::Type { visibility, opaque, name, params, def } => {
             let ps = params.iter().map(|p| p.as_str()).collect::<Vec<_>>().join(" ");
+            let op = if *opaque { " opaque" } else { "" };
             let body = match def {
                 fai_syntax::ast::TypeDef::Alias(ty) => format!("(alias {})", shape_type(m, *ty)),
                 fai_syntax::ast::TypeDef::Union(variants) => {
@@ -568,7 +579,7 @@ fn shape_item(m: &Module, item: &Item) -> String {
                     format!("(union {vs})")
                 }
             };
-            format!("(type {visibility:?} {} [{}] {})", name.as_str(), ps, body)
+            format!("(type {visibility:?}{op} {} [{}] {})", name.as_str(), ps, body)
         }
         ItemKind::Interface { visibility, name, params, methods } => {
             let ps = params.iter().map(|p| p.as_str()).collect::<Vec<_>>().join(" ");

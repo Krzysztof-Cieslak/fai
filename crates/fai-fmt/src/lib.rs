@@ -108,8 +108,8 @@ impl Printer<'_> {
                 parts.push(self.body_doc(*body));
                 concat(parts)
             }
-            ItemKind::Type { visibility, name, params, def } => {
-                self.type_decl_doc(*visibility, *name, params, def)
+            ItemKind::Type { visibility, opaque, name, params, def } => {
+                self.type_decl_doc(*visibility, *opaque, *name, params, def)
             }
             ItemKind::Interface { visibility, name, params, methods } => {
                 self.interface_decl_doc(*visibility, *name, params, methods)
@@ -140,11 +140,15 @@ impl Printer<'_> {
     fn type_decl_doc(
         &self,
         visibility: Visibility,
+        opaque: bool,
         name: fai_syntax::Symbol,
         params: &[fai_syntax::Symbol],
         def: &TypeDef,
     ) -> Doc {
         let mut header = String::from(visibility_prefix(visibility));
+        if opaque {
+            header.push_str("opaque ");
+        }
         header.push_str("type ");
         header.push_str(name.as_str());
         for p in params {

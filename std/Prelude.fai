@@ -11,18 +11,12 @@ public type Result 'ok 'err =
   | Ok 'ok
   | Err 'err
 
-// An ordered map keyed by any comparable type (a binary search tree). The node
-// constructors are visible because a public type exports its constructors; treat
-// them as internal and build dictionaries through the `Dict` module.
-public type Dict 'k 'v =
-  | DictEmpty
-  | DictNode (Dict 'k 'v) 'k 'v (Dict 'k 'v)
+// The ordered map and set are opaque types declared in their own modules; these
+// re-export aliases keep their names usable unqualified everywhere while their
+// node constructors stay hidden. Build and query them through `Dict.*`/`Set.*`.
+public type Dict 'k 'v = Dict.Dict 'k 'v
 
-// An ordered set keyed by any comparable type. As with `Dict`, the node
-// constructors are an implementation detail; use the `Set` module.
-public type Set 'a =
-  | SetEmpty
-  | SetNode (Set 'a) 'a (Set 'a)
+public type Set 'a = Set.Set 'a
 
 /// The identity function.
 public identity : 'a -> 'a

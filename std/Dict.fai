@@ -1,8 +1,13 @@
 module Dict
 
 // An ordered map keyed by any comparable type, backed by a binary search tree.
-// The `Dict` type and its constructors are declared in `Prelude`; build and
-// query dictionaries through these qualified operations (`Dict.insert`, …).
+// The type is opaque: its node constructors are private to this module, so
+// dictionaries are built and queried only through these operations. `Prelude`
+// re-exports the name `Dict` so it stays usable unqualified.
+public opaque type Dict 'k 'v =
+  | DictEmpty
+  | DictNode (Dict 'k 'v) 'k 'v (Dict 'k 'v)
+
 /// The empty dictionary.
 public empty : Dict 'k 'v
 let empty = DictEmpty

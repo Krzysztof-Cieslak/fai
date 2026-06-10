@@ -208,11 +208,16 @@ impl Lowerer<'_> {
                 ),
             );
         }
-        if info.is_alias {
+        // An opaque alias is transparent only within its declaring file; from
+        // another file it stays nominal (its underlying type is hidden), so it
+        // falls through to the `Ty::Adt` head below rather than expanding.
+        let opaque_cross_file = info.opaque && decl_file != self.file;
+        if info.is_alias && !opaque_cross_file {
             return self.expand_alias(decl_file, &info, args, span, vars);
         }
-        // A discriminated union: a nominal head (identified by its canonical
-        // qualified name) applied to its arguments.
+        // A discriminated union, or an opaque alias seen from another file: a
+        // nominal head (identified by its canonical qualified name) applied to
+        // its arguments.
         let mut t = Ty::Adt(AdtRef::new(decl_file.source(self.db), info.name));
         for &a in args {
             t = Ty::App(Arc::new(t), Arc::new(self.lower(a, vars)));
@@ -489,6 +494,39 @@ pub fn build_constructor_scheme(db: &dyn Db, file: SourceFile, name: Symbol) -> 
             .with_names(type_names(&vars))
             .with_rows(row_vars(&vars), row_names(&vars)),
     )
+}
+
+/// Expands an alias's body with concrete type arguments substituted for its
+/// parameters, yielding the underlying type. This deliberately peeks past
+/// opacity, for the few places the compiler legitimately needs an opaque type's
+/// representation (e.g. synthesizing a generator for a property test). Returns
+/// `None` if `adt` is not an alias in a loadable file.
+pub fn expand_alias_ty(db: &dyn Db, adt: AdtRef, args: &[Ty]) -> Option<Ty> {
+    let file = db.source_file(adt.file)?;
+    let decls = type_decls(db, file);
+    let info = decls.type_named(adt.name).filter(|i| i.is_alias)?;
+    let parsed = fai_syntax::parse(db, file);
+    let module = &parsed.module;
+    let ItemKind::Type { def: TypeDef::Alias(body), .. } = &module.items[info.item.index()].kind
+    else {
+        return None;
+    };
+    let body = *body;
+    // The body lowers in its own (declaring) file, where the alias is transparent.
+    let mut lowerer =
+        Lowerer { db, file, module, scope: scope_of(info.name), expanding: Vec::new() };
+    let mut body_vars = LowerVars::default();
+    let body_ty = lowerer.lower(body, &mut body_vars);
+
+    let mut subst: FxHashMap<TyVarId, Ty> = FxHashMap::default();
+    for (i, param) in info.params.iter().enumerate() {
+        if let Some(&id) = body_vars.by_name.get(param)
+            && let Some(arg) = args.get(i)
+        {
+            subst.insert(id, arg.clone());
+        }
+    }
+    Some(subst_ty(&body_ty, &subst))
 }
 
 /// Resolves an interface name to its [`InterfaceRef`] in the context of `file`

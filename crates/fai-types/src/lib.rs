@@ -31,7 +31,7 @@ pub use infer::{
     Constraint, Env, InferCtx, SccEnv, SccInference, SolveTy, UnifyResult, Walker, contract_env,
     declared_scheme, error_scheme, generalize, infer_scc,
 };
-pub use lower::{LowerVars, lower_signature, lower_type};
+pub use lower::{LowerVars, expand_alias_ty, lower_signature, lower_type};
 pub use query::{
     BodyTypes, SccTypes, body_types, check_file, constructor_scheme, contract_body_types,
     declared_or_inferred_scheme, def_local_types, def_type, infer_scc_query,
@@ -78,6 +78,9 @@ pub const INSTANCE_METHOD_SET: DiagnosticCode = DiagnosticCode::new("FAI3015");
 pub const NOT_AN_INTERFACE: DiagnosticCode = DiagnosticCode::new("FAI3016");
 /// `{ Name with … }` instantiates a sealed built-in interface (`Num`/`Eq`/`Ord`).
 pub const SEALED_INTERFACE: DiagnosticCode = DiagnosticCode::new("FAI3017");
+/// The representation of an opaque type is accessed from another file (a field
+/// access, record construction, or `{ r with … }` update).
+pub const OPAQUE_ACCESS: DiagnosticCode = DiagnosticCode::new("FAI3018");
 /// A `match` does not cover every possible value.
 pub const NON_EXHAUSTIVE_MATCH: DiagnosticCode = DiagnosticCode::new("FAI4001");
 /// A `match` arm can never be reached (an earlier arm already covers it).
@@ -208,6 +211,16 @@ pub const CODES: &[CodeInfo] = &[
         default_severity: Severity::Error,
         explanation: "The operator interfaces (`Num`/`Eq`/`Ord`) are sealed to their built-in \
                       instances and cannot be instantiated by user code.",
+    },
+    CodeInfo {
+        code: OPAQUE_ACCESS,
+        title: "access to an opaque type's representation",
+        default_severity: Severity::Error,
+        explanation: "An opaque type's representation (its record fields or alias body) is \
+                      accessed from another file — a field access, record construction, or \
+                      `{ r with … }` update. An opaque type exports its name but not its \
+                      structure, so build and inspect its values through the functions its \
+                      module provides.",
     },
     CodeInfo {
         code: NON_EXHAUSTIVE_MATCH,

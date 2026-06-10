@@ -9,6 +9,8 @@
 //! leading parameter supplied by partial application (the runtime forms the
 //! closure), so no by-hand capture analysis is required.
 
+use std::sync::Arc;
+
 use fai_core::ir::{CExpr, CoreFn, ExprKind as K, FieldIndex, Lit, LoweredDef, Prim};
 use fai_db::{Db, SourceFile};
 use fai_resolve::{AdtRef, DefId, LocalId, ModuleName, module_defs, module_file, type_decls};
@@ -76,7 +78,11 @@ impl<'a> ArbBuilder<'a> {
     /// Call once, before [`Self::arb_for`].
     pub fn prepare(&mut self, binder_types: &[Ty]) {
         self.scan_custom();
-        self.ranks = compute_ranks(self.db, &self.custom, binder_types);
+        // Rank the types reachable once opaque aliases are expanded to their
+        // representation, so a base case hidden inside an opaque record is found.
+        let binders: Vec<Ty> =
+            binder_types.iter().map(|t| expand_opaque(self.db, &self.custom, t)).collect();
+        self.ranks = compute_ranks(self.db, &self.custom, &binders);
     }
 
     /// Scans the contract file's top-level definitions for values whose type is
@@ -138,6 +144,11 @@ impl<'a> ArbBuilder<'a> {
         if let Some(&def) = self.custom.get(ty) {
             return Ok(global(def));
         }
+        // An opaque alias reaches generation nominally (its body is hidden from
+        // this file); expand it to its representation, having first honored any
+        // custom override and the ambiguity check above.
+        let expanded = expand_opaque(self.db, &self.custom, ty);
+        let ty = &expanded;
         if let Ty::Record(row) = ty {
             return if row.tail == RowEnd::Closed {
                 Ok(global(self.ensure_record(ty, row)?))
@@ -273,7 +284,7 @@ impl<'a> ArbBuilder<'a> {
                         if !visited.insert(ty.clone()) {
                             return false; // already exploring this applied type
                         }
-                        adt_ctor_fields(self.db, *adt, &args).is_some_and(|ctors| {
+                        adt_ctor_fields(self.db, &self.custom, *adt, &args).is_some_and(|ctors| {
                             ctors.iter().flatten().any(|f| self.reaches(f, target, visited))
                         })
                     }
@@ -414,7 +425,11 @@ impl<'a> ArbBuilder<'a> {
         for cname in ctor_names {
             let scheme = constructor_scheme(self.db, adt_file, cname).ok_or_else(unknown)?;
             let tag = decls.ctor(cname).map_or(0, |c| c.tag);
-            ctors.push(Ctor { tag, name: cname, fields: ctor_field_types(&scheme, args) });
+            let fields = ctor_field_types(&scheme, args)
+                .iter()
+                .map(|f| expand_opaque(self.db, &self.custom, f))
+                .collect();
+            ctors.push(Ctor { tag, name: cname, fields });
         }
 
         let gen_fn = self.adt_gen(ty, &ctors)?;
@@ -686,16 +701,64 @@ fn is_custom_eligible(ty: &Ty) -> bool {
 
 /// The field types of every constructor of `adt` applied to `args` (one inner
 /// vec per constructor), or `None` if the type is unavailable or an alias.
-fn adt_ctor_fields(db: &dyn Db, adt: AdtRef, args: &[&Ty]) -> Option<Vec<Vec<Ty>>> {
+fn adt_ctor_fields(
+    db: &dyn Db,
+    custom: &FxHashMap<Ty, DefId>,
+    adt: AdtRef,
+    args: &[&Ty],
+) -> Option<Vec<Vec<Ty>>> {
     let adt_file = db.source_file(adt.file)?;
     let decls = type_decls(db, adt_file);
     let info = decls.type_named(adt.name).filter(|i| !i.is_alias)?;
     let mut out = Vec::with_capacity(info.ctors.len());
     for cname in &info.ctors {
         let scheme = constructor_scheme(db, adt_file, *cname)?;
-        out.push(ctor_field_types(&scheme, args));
+        out.push(
+            ctor_field_types(&scheme, args).iter().map(|f| expand_opaque(db, custom, f)).collect(),
+        );
     }
     Some(out)
+}
+
+/// Deeply expands opaque aliases to their underlying types, leaving everything
+/// else unchanged. Generating values for a property test legitimately needs an
+/// opaque type's representation, so generation peeks past opacity here; a
+/// user-supplied `Arbitrary` (a `custom` key) is honored as a leaf and never
+/// expanded. Unions are untouched (they are not aliases).
+fn expand_opaque(db: &dyn Db, custom: &FxHashMap<Ty, DefId>, ty: &Ty) -> Ty {
+    if custom.contains_key(ty) {
+        return ty.clone();
+    }
+    match ty {
+        Ty::Tuple(es) => Ty::Tuple(es.iter().map(|e| expand_opaque(db, custom, e)).collect()),
+        Ty::Record(row) => Ty::Record(RecordRow {
+            fields: row.fields.iter().map(|(l, t)| (*l, expand_opaque(db, custom, t))).collect(),
+            tail: row.tail,
+        }),
+        Ty::Arrow(a, b) => Ty::Arrow(
+            Arc::new(expand_opaque(db, custom, a)),
+            Arc::new(expand_opaque(db, custom, b)),
+        ),
+        Ty::Adt(adt) => match fai_types::expand_alias_ty(db, *adt, &[]) {
+            Some(body) => expand_opaque(db, custom, &body),
+            None => ty.clone(),
+        },
+        Ty::App(..) => {
+            let (head, args) = peel_app(ty);
+            let args: Vec<Ty> = args.iter().map(|a| expand_opaque(db, custom, a)).collect();
+            if let Ty::Adt(adt) = head
+                && let Some(body) = fai_types::expand_alias_ty(db, *adt, &args)
+            {
+                return expand_opaque(db, custom, &body);
+            }
+            let mut t = head.clone();
+            for a in args {
+                t = Ty::App(Arc::new(t), Arc::new(a));
+            }
+            t
+        }
+        _ => ty.clone(),
+    }
 }
 
 /// The smallest-value depth of `ty` (`None` ⇒ no finite value), reading ADT ranks
@@ -797,7 +860,7 @@ fn collect_adts(
                         return;
                     }
                     out.push(ty.clone());
-                    if let Some(ctors) = adt_ctor_fields(db, *adt, &args) {
+                    if let Some(ctors) = adt_ctor_fields(db, custom, *adt, &args) {
                         for f in ctors.iter().flatten() {
                             collect_adts(db, custom, f, out, seen);
                         }
@@ -820,7 +883,7 @@ fn adt_min_cost(
 ) -> Option<u32> {
     let (head, args) = peel_app(adt_ty);
     let Ty::Adt(adt) = head else { return None };
-    let ctors = adt_ctor_fields(db, *adt, &args)?;
+    let ctors = adt_ctor_fields(db, custom, *adt, &args)?;
     let mut best: Option<u32> = None;
     for fields in &ctors {
         if let Some(depth) = max_rank(fields.iter().map(|f| rank_of(ranks, custom, f))) {

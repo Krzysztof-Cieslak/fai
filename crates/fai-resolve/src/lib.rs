@@ -76,6 +76,8 @@ pub const MODULE_NAME_CONFLICT: DiagnosticCode = DiagnosticCode::new("FAI2016");
 /// A qualified path names a module where a value or type is expected (it has no
 /// trailing member).
 pub const MODULE_AS_VALUE: DiagnosticCode = DiagnosticCode::new("FAI2017");
+/// A constructor of an opaque type is referenced from another file.
+pub const OPAQUE_CONSTRUCTOR: DiagnosticCode = DiagnosticCode::new("FAI2018");
 
 /// Diagnostic codes owned by name resolution/visibility (the `FAI2xxx` range).
 pub const CODES: &[CodeInfo] = &[
@@ -202,5 +204,14 @@ pub const CODES: &[CodeInfo] = &[
         default_severity: Severity::Error,
         explanation: "A qualified path resolved to a module rather than a member. Name a member \
                       of the module (e.g. `Module.value`).",
+    },
+    CodeInfo {
+        code: OPAQUE_CONSTRUCTOR,
+        title: "constructor of an opaque type",
+        default_severity: Severity::Error,
+        explanation: "A constructor of an `opaque` type is referenced from another file. An \
+                      opaque type exports its name but not its constructors, so it can only be \
+                      built and matched through the functions its module provides. Use those \
+                      operations instead of the constructor.",
     },
 ];

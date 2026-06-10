@@ -1,0 +1,18 @@
+module OpaqueClient
+
+// A consumer of the opaque types. Their constructor and fields are not in scope
+// here, so the representation stays hidden — the only way in is `Opaque`'s
+// operations. Structural equality still works on an opaque value (only its
+// representation is hidden, not its identity).
+/// Bump a counter twice.
+public twice : Opaque.Counter -> Opaque.Counter
+let twice c = Opaque.bump (Opaque.bump c)
+example: Opaque.value (twice Opaque.zero) = 2
+
+/// Whether two counters hold the same value.
+public same : Opaque.Counter -> Opaque.Counter -> Bool
+let same a b = a = b
+example: same (twice Opaque.zero) (twice Opaque.zero)
+
+public main : Runtime -> Unit
+let main runtime = runtime.console.writeLine (Int.toString (Opaque.value (twice Opaque.zero)))
