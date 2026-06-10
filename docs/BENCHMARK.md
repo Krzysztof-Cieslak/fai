@@ -48,8 +48,10 @@ cargo bench -p fai-cli   --bench test_loop    # the end-to-end fai test loop
 ```
 
 `DIVAN_MAX_TIME=<seconds>` caps the wall time per benchmarked function (CI uses
-`3`) so the heavy cases stay bounded; everything else samples at divan's default
-for steady medians.
+`120`). The report is informational and non-gating, so the cap is set generously
+— enough that even the process-spawn benches (`algorithms_aot`, the daemon e2e,
+the `fai test` loop) reach divan's full ~100-sample target for steady medians,
+while still bounding any pathological function.
 
 ## The CI Benchmarks workflow
 

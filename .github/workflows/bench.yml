@@ -10,10 +10,11 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# Supersede an in-flight run when main advances again.
+# Serialize runs per ref so the long, non-gating report always completes: a new
+# push queues behind the running one rather than cancelling it.
 concurrency:
   group: bench-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -25,7 +26,7 @@ jobs:
   bench:
     name: divan benchmarks
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
 
@@ -37,13 +38,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Run benchmarks
-        # `DIVAN_MAX_TIME` caps the wall time per benchmarked function so the
-        # heavy cases (the daemon e2e at 200 modules, the stress suite) stay
-        # bounded; everything else samples at divan's default for steady medians.
-        # `pipefail` surfaces a benchmark that actually crashes (a bug, not a
-        # perf regression) while still capturing the output rendered below.
+        # `DIVAN_MAX_TIME` caps the wall time per benchmarked function. This is a
+        # non-gating background report, so the cap is generous (120s): enough for
+        # the process-spawn benches (algorithms_aot, the daemon e2e at 200 modules,
+        # the fai test loop) to reach divan's full ~100-sample target for steadier
+        # medians, while still bounding any pathological function. `pipefail`
+        # surfaces a benchmark that actually crashes (a bug, not a perf regression)
+        # while still capturing the output rendered below.
         env:
-          DIVAN_MAX_TIME: "3"
+          DIVAN_MAX_TIME: "120"
         run: |
           set -o pipefail
           mkdir -p target
