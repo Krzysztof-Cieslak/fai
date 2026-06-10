@@ -29,7 +29,10 @@ use crate::ty::{Scheme, Ty};
 pub fn generalize(cx: &InferCtx, ty: &SolveTy) -> Scheme {
     let (reified, vars, row_vars, eff_vars) = cx.reify_with_vars(ty);
     let row_names = row_vars.iter().map(|_| "_".to_owned()).collect();
-    let eff_names = eff_vars.iter().map(|_| "_".to_owned()).collect();
+    // Effect variables read as named (`'e`, `'f`, …), not anonymous `_`, so a
+    // forwarded effect that appears in several positions renders linked.
+    let eff_names =
+        eff_vars.iter().enumerate().map(|(i, _)| crate::ty::eff_canonical_name(i)).collect();
     Scheme::new(vars, reified).with_rows(row_vars, row_names).with_effects(eff_vars, eff_names)
 }
 
@@ -354,6 +357,54 @@ pub fn infer_local_types(
     };
 
     locals.into_iter().filter_map(|(id, ty)| local_names.get(&id).map(|name| (*name, ty))).collect()
+}
+
+/// Infers the latent effect of `name`'s body — the capabilities it uses. Runs
+/// the same walk as [`infer_local_types`] but returns the body's accumulated
+/// effect row (after numeric defaulting). The closure-capturing case is handled
+/// by the walker: a lambda's effect lands on the lambda's arrow, so a function
+/// that only *builds* an effectful closure is itself pure.
+pub fn infer_def_effect(
+    db: &dyn Db,
+    file: SourceFile,
+    name: Symbol,
+    def_schemes: &dyn Fn(&dyn Db, DefId) -> Option<Scheme>,
+    builtins: &dyn Fn(Symbol) -> Option<Scheme>,
+) -> crate::ty::EffectRow {
+    let parsed = fai_syntax::parse(db, file);
+    let module = &parsed.module;
+    let resolved = fai_resolve::resolve(db, file);
+
+    let Some((params, body)) = binding_body(db, file, module, name) else {
+        return crate::ty::EffectRow::pure();
+    };
+    let params: Vec<fai_syntax::ast::PatId> = params.to_vec();
+
+    let mut cx = InferCtx::new();
+    let declared = declared_scheme(db, file, name);
+    let member_ty = match &declared {
+        Some(scheme) => cx.instantiate(scheme),
+        None => cx.fresh(),
+    };
+    let mut scc_types: FxHashMap<DefId, SolveTy> = FxHashMap::default();
+    scc_types.insert(DefId::new(file.source(db), name), member_ty.clone());
+
+    let declared_params: Option<Vec<SolveTy>> =
+        declared.is_some().then(|| peel_param_types(&cx, &member_ty, params.len()));
+
+    let mut env = SccEnv::new(db, &scc_types, def_schemes, builtins);
+    let mut walker = Walker::new(db, file, module, &resolved, &mut cx, &mut env);
+    let param_tys: Vec<SolveTy> = params
+        .iter()
+        .enumerate()
+        .map(|(i, &p)| match declared_params.as_ref().and_then(|d| d.get(i)).cloned() {
+            Some(expected) => walker.bind_param_checked(p, &expected),
+            None => walker.bind_param(p),
+        })
+        .collect();
+    let _ = param_tys;
+    let _ = walker.infer_expr(body);
+    walker.body_effect()
 }
 
 /// Infers the type of every expression in `name`'s body, as `(ExprId, Ty)`

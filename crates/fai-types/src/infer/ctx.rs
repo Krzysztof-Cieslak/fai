@@ -201,6 +201,13 @@ pub struct InferCtx {
     rows: Vec<RowState>,
     /// The parallel union-find for effect-row variables (distinct from `rows`).
     effects: Vec<EffState>,
+    /// When set, effect-row unification never *fails*: a closed-vs-closed atom
+    /// difference is accepted rather than reported. This is the transitional
+    /// "infer-don't-enforce" mode — effects are inferred (and threaded through
+    /// open tails) but a declared-vs-body effect disagreement is not an error
+    /// yet, so existing programs need no effect annotations. Enforcement flips
+    /// this off.
+    lenient_effects: bool,
     /// The current binding depth, bumped around a generalizable `let` right-hand
     /// side. A variable generalizes only if its level exceeds the enclosing one.
     current_level: u32,
@@ -216,7 +223,13 @@ impl InferCtx {
     /// Creates an empty context.
     #[must_use]
     pub fn new() -> Self {
-        Self { vars: Vec::new(), rows: Vec::new(), effects: Vec::new(), current_level: 0 }
+        Self {
+            vars: Vec::new(),
+            rows: Vec::new(),
+            effects: Vec::new(),
+            lenient_effects: true,
+            current_level: 0,
+        }
     }
 
     /// Enters a deeper binding level (around a generalizable `let` right-hand
@@ -442,22 +455,26 @@ impl InferCtx {
         let only2: Vec<InterfaceRef> =
             e2.atoms.iter().filter(|a| !e1.atoms.contains(a)).copied().collect();
 
+        // In lenient mode an irreconcilable atom difference is accepted rather
+        // than reported (infer-don't-enforce); open tails are still bound so
+        // effect-polymorphic forwarding keeps threading.
+        let lenient = self.lenient_effects;
         match (e1.tail, e2.tail) {
             (EffTail::Closed, EffTail::Closed) => {
-                if only1.is_empty() && only2.is_empty() {
+                if only1.is_empty() && only2.is_empty() || lenient {
                     UnifyResult::Ok
                 } else {
                     UnifyResult::Mismatch
                 }
             }
             (EffTail::Closed, EffTail::Open(v2)) => {
-                if !only2.is_empty() {
+                if !only2.is_empty() && !lenient {
                     return UnifyResult::Mismatch;
                 }
                 self.bind_effect(v2, SolveEffect { atoms: only1, tail: EffTail::Closed })
             }
             (EffTail::Open(v1), EffTail::Closed) => {
-                if !only1.is_empty() {
+                if !only1.is_empty() && !lenient {
                     return UnifyResult::Mismatch;
                 }
                 self.bind_effect(v1, SolveEffect { atoms: only2, tail: EffTail::Closed })
@@ -479,6 +496,37 @@ impl InferCtx {
                 self.bind_effect(v2, SolveEffect { atoms: only1, tail: EffTail::Open(fresh) })
             }
         }
+    }
+
+    /// The union of two effect rows: all atoms of both, with the tails merged.
+    /// Two distinct open tails are forced equal (bound to one fresh tail) — the
+    /// conservative merge that keeps inference principal for the single-tail row
+    /// representation; use-site subsumption refines this later.
+    pub fn union_effects(&mut self, a: &SolveEffect, b: &SolveEffect) -> SolveEffect {
+        let a = self.expand_effect(a);
+        let b = self.expand_effect(b);
+        let mut atoms = a.atoms;
+        atoms.extend(b.atoms);
+        dedup_atoms(&mut atoms);
+        let tail = match (a.tail, b.tail) {
+            (EffTail::Closed, t) | (t, EffTail::Closed) => t,
+            (EffTail::Open(v1), EffTail::Open(v2)) if v1 == v2 => EffTail::Open(v1),
+            (EffTail::Open(v1), EffTail::Open(v2)) => {
+                let fresh = self.fresh_effect();
+                self.bind_effect(v1, SolveEffect { atoms: Vec::new(), tail: EffTail::Open(fresh) });
+                self.bind_effect(v2, SolveEffect { atoms: Vec::new(), tail: EffTail::Open(fresh) });
+                EffTail::Open(fresh)
+            }
+        };
+        SolveEffect { atoms, tail }
+    }
+
+    /// Reifies a solver effect row into an immutable [`EffectRow`] standalone (a
+    /// fresh renumbering), for exposing a body's inferred effect.
+    #[must_use]
+    pub fn reify_effect_standalone(&self, eff: &SolveEffect) -> EffectRow {
+        let mut renumber = Renumber::default();
+        self.reify_effect(eff, &mut renumber)
     }
 
     /// Allocates a fresh, unconstrained variable.

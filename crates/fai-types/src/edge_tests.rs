@@ -7,7 +7,7 @@
 use fai_db::{Db, Diag, FaiDatabase, SourceFile};
 use indoc::indoc;
 
-use crate::{check_file, def_type, render_scheme};
+use crate::{check_file, def_effect, def_type, render_scheme};
 
 fn db1(src: &str) -> (FaiDatabase, SourceFile) {
     let mut db = FaiDatabase::new();
@@ -20,6 +20,13 @@ fn db1(src: &str) -> (FaiDatabase, SourceFile) {
 fn ty(src: &str, name: &str) -> String {
     let (db, file) = db1(src);
     render_scheme(&def_type(&db, file, fai_syntax::Symbol::intern(name)))
+}
+
+/// The inferred capability atoms (interface names, sorted) of `name`'s body.
+fn effect_atoms(src: &str, name: &str) -> Vec<String> {
+    let (db, file) = db1(src);
+    let eff = def_effect(&db, file, fai_syntax::Symbol::intern(name));
+    eff.labels.iter().map(|i| i.name.as_str().to_owned()).collect()
 }
 
 fn codes(src: &str) -> Vec<String> {
@@ -289,6 +296,49 @@ fn partial_application() {
 #[test]
 fn higher_order_argument() {
     assert_eq!(ty("let app f x = f x", "app"), "('a -> 'b) -> 'a -> 'b");
+}
+
+// ── Effect inference (capabilities a body uses) ──────────────────────────────
+
+#[test]
+fn pure_function_has_no_effect() {
+    assert!(effect_atoms("let id x = x", "id").is_empty());
+}
+
+#[test]
+fn calling_a_capability_method_incurs_its_effect() {
+    let src = indoc! {"
+        interface Console = writeLine : String -> Unit / { Console }
+        public save : Console -> String -> Unit
+        let save c note = c.writeLine note
+    "};
+    assert_eq!(effect_atoms(src, "save"), vec!["Console".to_owned()]);
+}
+
+#[test]
+fn a_function_using_two_capabilities_unions_their_effects() {
+    // The effect accumulates by union, so distinct capabilities coexist.
+    let src = indoc! {"
+        interface Console = writeLine : String -> Unit / { Console }
+        interface Clock = now : Unit -> Int / { Clock }
+        public both : Console -> Clock -> Int
+        let both c k =
+          let u = c.writeLine \"hi\"
+          k.now ()
+    "};
+    assert_eq!(effect_atoms(src, "both"), vec!["Clock".to_owned(), "Console".to_owned()]);
+}
+
+#[test]
+fn building_a_closure_that_captures_a_capability_is_pure() {
+    // The capability-laundering case: a function that only *builds* an effectful
+    // closure performs no effect itself; the effect rides the closure's arrow.
+    let src = indoc! {"
+        interface Console = writeLine : String -> Unit / { Console }
+        public makeGreeter : Console -> String -> Unit
+        let makeGreeter c = fun name -> c.writeLine name
+    "};
+    assert!(effect_atoms(src, "makeGreeter").is_empty());
 }
 
 #[test]
