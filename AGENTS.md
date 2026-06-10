@@ -221,7 +221,8 @@ fai/
 │   └── vscode/          # VS Code extension: thin `fai lsp` client + TextMate grammar (TypeScript/JSON; own npm tooling + CI, outside the Cargo workspace)
 ├── docs/
 │   ├── MEMORY.md        # design memory: standing risks + locked decisions
-│   └── CLI.md           # CLI + daemon-protocol reference
+│   ├── CLI.md           # CLI + daemon-protocol reference
+│   └── BENCHMARK.md     # benchmarking: perf guards, suites, Fai-vs-Rust comparison
 ├── Cargo.toml           # workspace manifest + shared deps/lints      (M0)
 ├── Cargo.lock           # committed (reproducible builds)             (M0)
 ├── rust-toolchain.toml  # pinned toolchain (edition 2024)            (M0)
@@ -462,8 +463,11 @@ cache plus a fast linker (mold/lld).
   on `main` and on demand to publish an **informational** report — a Markdown
   summary on the run page plus the raw and parsed (`bench-results.json`) results
   as artifacts — rendered by the `bench-summary` tool
-  (`crates/fai-tests/src/bench_summary.rs`). It never fails the build on timings;
-  the deterministic guards remain the sole performance gate.
+   (`crates/fai-tests/src/bench_summary.rs`). It never fails the build on timings;
+   the deterministic guards remain the sole performance gate. The full
+   benchmarking guide — every suite, the CI report, and the Fai-vs-Rust comparison
+   methodology (including why the JIT and AOT benches' Rust baselines are not
+   comparable) — is **`docs/BENCHMARK.md`**.
 
 The inference solver carries always-on thread-local **work counters** (variable
 resolution clones, occurs-check node visits, free-variable visits — see
