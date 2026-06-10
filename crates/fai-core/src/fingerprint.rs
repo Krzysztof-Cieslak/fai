@@ -329,8 +329,10 @@ mod tests {
         // differs, because every `Global` (and the def id) is rendered via the
         // namer — this is what `pretty_def` drops and the fingerprint must not.
         let (_db, g) = caller();
-        let under_a = fingerprint_def(&g, &|d| format!("fai_A_{}", d.name), &|_| 1, &|_| FnAbi::default());
-        let under_b = fingerprint_def(&g, &|d| format!("fai_B_{}", d.name), &|_| 1, &|_| FnAbi::default());
+        let under_a =
+            fingerprint_def(&g, &|d| format!("fai_A_{}", d.name), &|_| 1, &|_| FnAbi::default());
+        let under_b =
+            fingerprint_def(&g, &|d| format!("fai_B_{}", d.name), &|_| 1, &|_| FnAbi::default());
         assert_ne!(under_a, under_b);
     }
 

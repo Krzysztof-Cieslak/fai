@@ -28,7 +28,7 @@ use fai_core::ir::{CExpr, CoreFn, ExprKind as K, FieldIndex, Lit, LoweredDef, Pr
 use fai_db::{Db, SourceFile};
 use fai_resolve::{DefId, LocalId, module_defs};
 use fai_syntax::Symbol;
-use fai_types::Ty;
+use fai_types::{Con, RecordRow, Ty};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 /// One mutual-tail-recursion group eligible for flattening.
@@ -355,10 +355,15 @@ fn remap_member(
     next: &mut usize,
     group: &Group,
 ) -> CExpr {
-    let ty = e.ty.clone();
+    // The combined function shares padded positional slots across members, so a
+    // slot can hold a `Float` value in one branch and an integer (or padding) in
+    // another. It therefore uses the uniform boxed representation for floats:
+    // erasing `Float` from each node's type keeps code generation from unboxing a
+    // shared slot, and its float primitives fall back to the runtime float calls.
+    let ty = erase_floats(&e.ty);
     match &e.kind {
         K::Local(l) => CExpr::new(K::Local(remap_local(*l, subst, next)), ty),
-        K::Lit(_) | K::Global(_) | K::Error => e.clone(),
+        K::Lit(_) | K::Global(_) | K::Error => CExpr::new(e.kind.clone(), ty),
         K::App { func, args } => {
             if let K::Global(def) = &func.kind
                 && let Some(target_tag) = group.tag_of(*def)
@@ -443,4 +448,23 @@ fn local_expr(l: LocalId) -> CExpr {
 
 fn global(def: DefId) -> CExpr {
     CExpr::new(K::Global(def), Ty::Error)
+}
+
+/// Replaces every `Float` in a type with the error marker, so the combined
+/// function treats floats in the uniform boxed representation (its shared,
+/// padded parameter slots cannot carry an unboxed `f64`). Recurses through
+/// composite types; the marker stays in the same code-generation class as
+/// `Float` for a boxed *field* (both release as a boxed child).
+fn erase_floats(ty: &Ty) -> Ty {
+    match ty {
+        Ty::Con(Con::Float) => Ty::Error,
+        Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(erase_floats).collect()),
+        Ty::Record(row) => Ty::Record(RecordRow {
+            fields: row.fields.iter().map(|(l, t)| (*l, erase_floats(t))).collect(),
+            tail: row.tail,
+        }),
+        Ty::App(head, arg) => Ty::App(Arc::new(erase_floats(head)), Arc::new(erase_floats(arg))),
+        Ty::Arrow(from, to) => Ty::arrow(erase_floats(from), erase_floats(to)),
+        other => other.clone(),
+    }
 }
