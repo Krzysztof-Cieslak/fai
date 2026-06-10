@@ -401,4 +401,60 @@ proptest! {
         let got: i64 = out.trim().parse().expect("integer output");
         prop_assert_eq!(got, expected);
     }
+
+    /// A function reached through a `let` alias (`let g = f`) is copy-propagated to
+    /// a direct call to `f`; the result and a leak-free exit must match the direct
+    /// form, over arbitrary bodies.
+    #[test]
+    fn jit_aliased_call_matches_reference_evaluator(
+        e in expr(),
+        x in any::<i64>().prop_filter("avoid i64::MIN rendering", |v| *v != i64::MIN),
+    ) {
+        let expected = eval(&e, x);
+        let src = formatdoc! {r#"
+            module M
+
+            let f x = {}
+
+            public main : Runtime -> Unit
+            let main r =
+              let g = f
+              r.console.writeLine (Int.toString (g {}))
+        "#,
+            render(&e),
+            render_arg(x),
+        };
+        let (code, out) = run(&src);
+        prop_assert_eq!(code, 0, "program leaked or failed: {}", out);
+        let got: i64 = out.trim().parse().expect("integer output");
+        prop_assert_eq!(got, expected);
+    }
+
+    /// An over-application (`f x y`, where `f x` returns a closure) direct-calls the
+    /// saturated prefix and `apply_n`s the surplus; the result and a leak-free exit
+    /// must equal `e(x) + y`, over arbitrary prefix bodies.
+    #[test]
+    fn jit_over_application_matches_reference_evaluator(
+        e in expr(),
+        x in any::<i64>().prop_filter("avoid i64::MIN rendering", |v| *v != i64::MIN),
+        y in (-1000i64..1000),
+    ) {
+        let expected = eval(&e, x).wrapping_add(y);
+        let src = formatdoc! {r#"
+            module M
+
+            let f x = fun w -> {} + w
+
+            public main : Runtime -> Unit
+            let main r = r.console.writeLine (Int.toString (f {} {}))
+        "#,
+            render(&e),
+            render_arg(x),
+            render_arg(y),
+        };
+        let (code, out) = run(&src);
+        prop_assert_eq!(code, 0, "program leaked or failed: {}", out);
+        let got: i64 = out.trim().parse().expect("integer output");
+        prop_assert_eq!(got, expected);
+    }
 }
