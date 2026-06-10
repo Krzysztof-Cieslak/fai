@@ -407,8 +407,11 @@ pub fn build_native(db: &dyn Db, file: SourceFile, out: &Utf8Path) -> BuildOutco
     let namer = |d: DefId| symbol_base(db, d);
     let arity = |d: DefId| groups.arity.get(&d).copied().unwrap_or_else(|| arity_of(db, d));
     // A member's wrapper presents the member's ABI; the synthetic combined loop is
-    // schemeless, so `abi_of` reports the uniform ABI (its slots stay boxed).
-    let abi = |d: DefId| abi_of(db, d);
+    // schemeless but **direct-called** by member wrappers, so it takes the register
+    // ABI with all-boxed (uniform `i64`) slots.
+    let abi = |d: DefId| {
+        groups.arity.get(&d).map_or_else(|| abi_of(db, d), |&n| FnAbi::register_uniform(n))
+    };
     for (member, wrapper) in &groups.wrappers {
         objects.push((symbol_base(db, *member), object_for_def(wrapper, &namer, &arity, &abi)));
     }
@@ -491,7 +494,11 @@ pub fn jit_run_program(db: &dyn Db, file: SourceFile) -> RunOutcome {
     let runtime = runtime_root(db).expect("standard library defines the Runtime value binding");
     let namer = |d: DefId| symbol_base(db, d);
     let arity = |d: DefId| groups.arity.get(&d).copied().unwrap_or_else(|| arity_of(db, d));
-    let abi = |d: DefId| abi_of(db, d);
+    // The synthetic combined loop is direct-called by member wrappers (register ABI,
+    // all-boxed slots); every other def reports its own ABI.
+    let abi = |d: DefId| {
+        groups.arity.get(&d).map_or_else(|| abi_of(db, d), |&n| FnAbi::register_uniform(n))
+    };
     let exit_code = fai_codegen::jit_run(&defs, entry, runtime, &namer, &arity, &abi);
     RunOutcome { exit_code, diagnostics }
 }
@@ -636,10 +643,11 @@ pub fn build_run_bundle(db: &dyn Db, file: SourceFile) -> RunBundleResult {
         defs.push(def_to_wire(wrapper, &module_of, arity_of(db, *member), abi_of(db, *member)));
     }
     for combined in &groups.combined {
-        // The synthetic combined loop shares padded positional slots across
-        // members, so it uses the uniform (boxed) representation throughout.
+        // The synthetic combined loop shares padded positional slots across members
+        // (the uniform boxed representation), but it is **direct-called** by the
+        // member wrappers, so it takes the register ABI with all-boxed slots.
         let arity = groups.arity.get(&combined.def).copied().unwrap_or(0);
-        defs.push(def_to_wire(combined, &module_of, arity, FnAbi::default()));
+        defs.push(def_to_wire(combined, &module_of, arity, FnAbi::register_uniform(arity)));
     }
 
     let entry = DefId::new(file.source(db), Symbol::intern(ENTRY));

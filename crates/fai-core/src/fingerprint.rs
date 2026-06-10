@@ -40,9 +40,15 @@ pub fn fingerprint_def(
     if def.borrows_any() {
         let _ = writeln!(out, "borrow {:?}", def.entry_borrowed);
     }
-    // The unboxed-float calling convention likewise changes the emitted code (the
-    // entry's raw-bits parameters/result and the bridging wrapper).
+    // The calling convention likewise changes the emitted code. The register ABI
+    // (a direct-callable entry: `fn(env, a0, …) -> ret`) and the unboxed-float slot
+    // representation must both be keyed, so a definition's own shape distinguishes
+    // it from a same-bodied one with a different convention (e.g. a row-polymorphic
+    // entry, which keeps the uniform array ABI, vs a non-row-polymorphic one).
     let self_abi = abi_of(def.def);
+    if self_abi.register_abi {
+        let _ = writeln!(out, "regabi");
+    }
     if !self_abi.is_uniform() {
         let _ = writeln!(out, "abi {}", abi_tag(&self_abi));
     }
@@ -358,8 +364,22 @@ mod tests {
         let float = fingerprint_def(&g, &namer, &|_| 1, &|_| FnAbi {
             float_params: vec![true],
             float_return: true,
+            register_abi: true,
         });
         assert_ne!(uniform, float);
+    }
+
+    #[test]
+    fn definition_register_abi_is_part_of_the_key() {
+        // The register-passing calling convention changes the emitted entry and its
+        // direct callers, so it must be keyed even when the float ABI is uniform
+        // (the case a same-bodied row-polymorphic vs non-row-polymorphic pair hits:
+        // identical float shape, different transport).
+        let (_db, g) = caller();
+        let namer = |d: DefId| format!("fai_M_{}", d.name);
+        let uniform = fingerprint_def(&g, &namer, &|_| 1, &|_| FnAbi::default());
+        let register = fingerprint_def(&g, &namer, &|_| 1, &|_| FnAbi::register_uniform(1));
+        assert_ne!(uniform, register);
     }
 
     #[test]
@@ -371,7 +391,7 @@ mod tests {
         let namer = |d: DefId| format!("fai_M_{}", d.name);
         let helper_uniform = fingerprint_def(&g, &namer, &|_| 1, &|d: DefId| {
             if d.name.as_str() == "helper" {
-                FnAbi { float_params: vec![true], float_return: true }
+                FnAbi { float_params: vec![true], float_return: true, register_abi: true }
             } else {
                 FnAbi::default()
             }

@@ -230,6 +230,62 @@ fn saturated_curried_call() {
 }
 
 #[test]
+fn three_argument_direct_call() {
+    // Several register arguments at a saturated direct call.
+    let src = indoc! {r#"
+        module M
+
+        let add3 a b c = a + b + c
+
+        public main : Runtime -> Unit
+        let main runtime = runtime.console.writeLine (Int.toString (add3 10 20 12))
+    "#};
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "42\n");
+}
+
+#[test]
+fn float_direct_call_uses_registers_and_is_leak_free() {
+    // A non-row-poly float function passed/returns scalar `Float` in f64 registers.
+    // `powf`'s self-call is non-tail (an operand of `*.`), so it is a genuine
+    // direct call exercising the register float ABI on both the argument and the
+    // result; `main` direct-calls it. A clean exit also asserts no leak.
+    let src = indoc! {r#"
+        module M
+
+        powf : Float -> Int -> Float
+        let powf x n = if n <= 0 then 1.0 else x * powf x (n - 1)
+
+        public main : Runtime -> Unit
+        let main runtime = runtime.console.writeLine (Float.toString (powf 2.0 10))
+    "#};
+    let (code, out) = run(src);
+    assert_eq!(code, 0, "clean exit (no leak)");
+    assert_eq!(out, "1024.0\n");
+}
+
+#[test]
+fn function_used_both_directly_and_first_class() {
+    // The same definition is reached two ways: a saturated direct call (register
+    // ABI) and as a first-class value applied through `apply_n` (the bridging
+    // wrapper). Both must agree and stay leak-free.
+    let src = indoc! {r#"
+        module M
+
+        let inc x = x + 1
+
+        let apply f x = f x
+
+        public main : Runtime -> Unit
+        let main runtime = runtime.console.writeLine (Int.toString (inc (apply inc 40)))
+    "#};
+    let (code, out) = run(src);
+    assert_eq!(code, 0, "clean exit (no leak)");
+    assert_eq!(out, "42\n");
+}
+
+#[test]
 fn partial_application_via_zero_arity_binding() {
     // `inc = add 1` is a zero-arity value (a partial application); applying it
     // exercises over-application and forcing.
@@ -1832,6 +1888,42 @@ fn integer_division_stays_an_out_of_line_call() {
     assert!(ir.contains("call fn0"), "division is a runtime call:\n{ir}");
     assert!(!ir.contains("brif"), "no immediate guard for the non-inlined call:\n{ir}");
     assert!(!ir.contains("sadd_overflow"), "no inline fit check for division:\n{ir}");
+}
+
+// --- Register calling convention: emitted IR shape --------------------------
+// A saturated direct call to a known top-level function passes its arguments in
+// registers (the call's operands are the values themselves), skipping the
+// argument-array spill that the uniform `apply_n` path still uses. `function_ir`
+// shows the pre-optimization IR, where `stack_store` is the spill instruction.
+
+#[test]
+fn direct_call_passes_arguments_in_registers_without_a_spill() {
+    // `run a b = add a b` is a saturated direct call to `add`: the value arguments
+    // are passed in registers, so no argument array is spilled (`stack_store`).
+    let src = indoc! {r#"
+        module M
+
+        let add x y = x + y
+
+        let run a b = add a b
+    "#};
+    let ir = function_ir(src, "run").join("\n");
+    assert!(ir.contains("call fn0"), "the callee is called directly:\n{ir}");
+    assert!(!ir.contains("stack_store"), "a direct call spills no argument array:\n{ir}");
+}
+
+#[test]
+fn first_class_application_still_spills_an_argument_array() {
+    // An application of a function-typed parameter routes through `fai_apply_n`,
+    // which marshals a uniform argument array — so the spill (`stack_store`) is
+    // retained for the first-class path, the counterpart to the direct path above.
+    let src = indoc! {r#"
+        module M
+
+        let run f x = f x x
+    "#};
+    let ir = function_ir(src, "run").join("\n");
+    assert!(ir.contains("stack_store"), "a first-class application spills its args:\n{ir}");
 }
 
 // --- Inline integer primitives: immediate/boxed boundary behavior -----------
