@@ -21,7 +21,7 @@ use fai_syntax::ast::{
 use rustc_hash::FxHashMap;
 
 use crate::infer::ctx::{
-    Constraint, InferCtx, RowTail, SolveEffect, SolveRow, SolveTy, UnifyResult,
+    Constraint, EffTail, InferCtx, RowTail, SolveEffect, SolveRow, SolveTy, UnifyResult,
 };
 use crate::lower::{build_interface_method_scheme, interface_param_count, resolve_interface};
 use crate::ty::Scheme;
@@ -219,6 +219,13 @@ impl<E: Env> Walker<'_, E> {
         self.cx.reify_effect_standalone(&self.cur_effect)
     }
 
+    /// The accumulated latent effect in solver form, for placing on a function's
+    /// result arrow when building its type.
+    #[must_use]
+    pub fn body_effect_solve(&self) -> SolveEffect {
+        self.cur_effect.clone()
+    }
+
     /// Binds a parameter pattern to fresh local types and returns its type.
     pub fn bind_param(&mut self, pat: PatId) -> SolveTy {
         self.bind_pattern_into(pat)
@@ -310,22 +317,7 @@ impl<E: Env> Walker<'_, E> {
                 SolveTy::Record(SolveRow { fields: updated, tail: RowTail::Open(rho) })
             }
             ExprKind::Instance { name, methods } => self.infer_instance(*name, methods, node.span),
-            ExprKind::App { func, arg } => {
-                let func_ty = self.infer_expr(*func);
-                let arg_ty = self.infer_expr(*arg);
-                let result = self.cx.fresh();
-                let expected = SolveTy::arrow(arg_ty, result.clone());
-                self.unify_at(node.span, &func_ty, &expected, "function application");
-                // Incur the applied function's resolved effect (read, without
-                // binding an effect variable into the function's type — so an
-                // effect-polymorphic *type* is not forced here). A partial
-                // application's outer arrow is pure; the saturating application's
-                // arrow carries the real effect.
-                if let SolveTy::Arrow(_, _, eff) = self.cx.resolve_shallow(&func_ty) {
-                    self.incur_effect(&eff);
-                }
-                result
-            }
+            ExprKind::App { .. } => self.infer_app_spine(expr),
             ExprKind::Infix { op, lhs, rhs } => self.infer_infix(*op, *lhs, *rhs, node.span),
             ExprKind::Prefix { op, operand } => self.infer_prefix(*op, *operand, node.span),
             ExprKind::If { cond, then_branch, else_branch } => {
@@ -352,15 +344,13 @@ impl<E: Env> Walker<'_, E> {
                 // The lambda's body has its own latent effect: save and reset the
                 // enclosing accumulator so the effect lands on the lambda's arrow
                 // (closing the closure-laundering hole), then restore it.
-                // The lambda's body has its own latent effect; it belongs on the
-                // lambda's arrow, not the enclosing function. In this phase the
-                // function type stays effect-free, so the scoped effect is
-                // discarded after the body (computed effects ride `def_effect`,
-                // and coupling effects into the type lands with enforcement).
+                // The lambda's body has its own latent effect; it rides the
+                // lambda's arrow (closing the closure-laundering hole), so the
+                // enclosing function's accumulator is saved and restored.
                 let saved = std::mem::replace(&mut self.cur_effect, SolveEffect::pure());
                 let body_ty = self.infer_expr(*body);
-                self.cur_effect = saved;
-                SolveTy::arrows_solver(param_tys, body_ty)
+                let body_eff = std::mem::replace(&mut self.cur_effect, saved);
+                SolveTy::arrows_solver_eff(param_tys, body_ty, body_eff)
             }
             ExprKind::Match { scrutinee, arms } => {
                 let scrutinee_ty = self.infer_expr(*scrutinee);
@@ -439,6 +429,56 @@ impl<E: Env> Walker<'_, E> {
             }
             ExprKind::Error => SolveTy::Error,
         }
+    }
+
+    /// Infers a (curried) application by its whole spine, so the effect lands on
+    /// the *saturating* arrow and the intermediate (partial-application) arrows
+    /// stay pure. Handling one argument at a time cannot tell a partial from a
+    /// saturating application when the function is an unknown type variable, which
+    /// would spuriously make every arrow effect-polymorphic.
+    fn infer_app_spine(&mut self, outer: ExprId) -> SolveTy {
+        use fai_syntax::ast::ExprKind;
+        // Peel the spine into the head and its arguments (application order).
+        let mut app_nodes: Vec<ExprId> = Vec::new();
+        let mut args: Vec<ExprId> = Vec::new();
+        let mut cur = outer;
+        while let ExprKind::App { func, arg } = &self.module.expr(cur).kind {
+            app_nodes.push(cur);
+            args.push(*arg);
+            cur = *func;
+        }
+        app_nodes.reverse();
+        args.reverse();
+        let head = cur;
+
+        let head_ty = self.infer_expr(head);
+        let arg_tys: Vec<SolveTy> = args.iter().map(|&a| self.infer_expr(a)).collect();
+        let result = self.cx.fresh();
+        // The saturating (innermost) arrow carries a fresh effect tail; the outer
+        // arrows are pure (a partial application does no work).
+        let eff = SolveEffect { atoms: Vec::new(), tail: EffTail::Open(self.cx.fresh_effect()) };
+        let span = self.module.expr(outer).span;
+        let expected = SolveTy::arrows_solver_eff(arg_tys, result.clone(), eff.clone());
+        self.unify_at(span, &head_ty, &expected, "function application");
+        self.incur_effect(&eff);
+
+        // Record each intermediate application node's type (the suffix after the
+        // arguments applied so far), so `body_types` covers them. The outermost
+        // node is recorded by the `infer_expr` wrapper from the returned type.
+        if self.record_types {
+            let mut suffix = self.cx.resolve_shallow(&head_ty);
+            for &app in &app_nodes {
+                let next = match &suffix {
+                    SolveTy::Arrow(_, to, _) => self.cx.resolve_shallow(to),
+                    _ => SolveTy::Error,
+                };
+                if app != outer {
+                    self.expr_types.insert(app, next.clone());
+                }
+                suffix = next;
+            }
+        }
+        result
     }
 
     fn infer_ref(&mut self, expr: ExprId, name: Symbol, span: fai_span::TextRange) -> SolveTy {

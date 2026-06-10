@@ -10,11 +10,13 @@ module Combinators
 //~ TYPE identity : 'a -> 'a
 let identity x = x
 
-// Inferred canonical form (first-appearance variable order).
-//~ TYPE compose : ('a -> 'b) -> ('c -> 'a) -> 'c -> 'b
+// Inferred canonical form (first-appearance variable order). Applying the
+// function parameters makes these combinators effect-polymorphic: they forward
+// the effect `'e` of the functions they call onto their own saturating arrow.
+//~ TYPE compose : ('a -> 'b / 'e) -> ('c -> 'a / 'e) -> 'c -> 'b / 'e
 let compose f g x = f (g x)
 
-//~ TYPE flip : ('a -> 'b -> 'c) -> 'b -> 'a -> 'c
+//~ TYPE flip : ('a -> 'b -> 'c / 'e) -> 'b -> 'a -> 'c / 'e
 let flip f a b = f b a
 
 //~ TYPE constant : 'a -> 'b -> 'a

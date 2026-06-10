@@ -48,8 +48,9 @@ fn param_unconstrained_is_polymorphic() {
 #[test]
 fn param_used_as_function() {
     let src = func("g", "  g 1");
-    // g is applied to an Int, returning a fresh result type.
-    assert_eq!(local_type(&src, "f", "g"), "Int -> 'a");
+    // g is applied to an Int, returning a fresh result type; applying it also
+    // makes g effect-polymorphic (`'e`), the effect its call would perform.
+    assert_eq!(local_type(&src, "f", "g"), "Int -> 'a / 'e");
 }
 
 #[test]
@@ -327,7 +328,8 @@ fn signatureless_inferred_higher_order() {
             "#},
             "f"
         ),
-        "('a -> 'a) -> 'a -> 'a"
+        // Applying `g` makes `f` effect-polymorphic, forwarding `g`'s effect.
+        "('a -> 'a / 'e) -> 'a -> 'a / 'e"
     );
 }
 

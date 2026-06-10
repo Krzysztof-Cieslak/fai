@@ -295,7 +295,9 @@ fn partial_application() {
 
 #[test]
 fn higher_order_argument() {
-    assert_eq!(ty("let app f x = f x", "app"), "('a -> 'b) -> 'a -> 'b");
+    // Applying the parameter `f` makes `app` effect-polymorphic: it forwards
+    // whatever effect `f` performs (`'e`) onto its own saturating arrow.
+    assert_eq!(ty("let app f x = f x", "app"), "('a -> 'b / 'e) -> 'a -> 'b / 'e");
 }
 
 // ── Effect inference (capabilities a body uses) ──────────────────────────────
@@ -327,6 +329,13 @@ fn a_function_using_two_capabilities_unions_their_effects() {
           k.now ()
     "};
     assert_eq!(effect_atoms(src, "both"), vec!["Clock".to_owned(), "Console".to_owned()]);
+}
+
+#[test]
+fn a_returned_closure_carries_its_latent_effect() {
+    // The returned closure `fun x -> f (f x)` carries `f`'s effect on its arrow,
+    // so the latent effect is visible in the type, not laundered away.
+    assert_eq!(ty("let twice f = fun x -> f (f x)", "twice"), "('a -> 'a / 'e) -> 'a -> 'a / 'e");
 }
 
 #[test]
