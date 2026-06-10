@@ -10,11 +10,13 @@
 > on-disk content-addressed object cache. **`fai run` is daemon-supervised**: the
 > warm front end ships a portable IR bundle to an isolated worker that JITs and
 > runs it, with streamed output, a wall-clock timeout (exit `124`), and a
-> self-imposed CPU limit; the daemon survives a runaway worker. Two simplifications
-> versus the full spec below: the daemon currently serializes requests (no
-> concurrent reads / cancellation yet) and returns each non-streaming command's
-> **already-rendered** stdout/stderr rather than structured per-method results, so
-> warm output is byte-identical to a one-shot run. **`fai test` is implemented**:
+> self-imposed CPU limit; the daemon survives a runaway worker. Read commands are
+> served **concurrently** (cloned database snapshots run off-lock) and an input
+> change **cancels** in-flight reads, which retry on the new revision. One
+> simplification versus the full spec below: the daemon returns each non-streaming
+> command's **already-rendered** stdout/stderr rather than structured per-method
+> results, so warm output is byte-identical to a one-shot run. **`fai test` is
+> implemented**:
 > it collects the `example`/`forall` contracts, synthesizes a property-testing
 > harness per contract using the dogfooded `std/Test.fai` library, and checks each
 > in a **supervised isolated worker** (the same machinery as `fai run`) — so a
@@ -274,7 +276,7 @@ option to `false` to disable this (the type-check is unaffected).
 ## 6. Daemon commands
 
 ```
-fai daemon status      # is a daemon running? print pid, versions, uptime, and command latency
+fai daemon status      # is a daemon running? print pid, versions, uptime, command latency, and peak read concurrency
 fai daemon start       # start (idempotent; no-op if already running)
 fai daemon stop        # graceful shutdown; returns once the daemon has exited
 fai daemon restart     # stop + start (e.g. to pick up a new compiler version); returns once a fresh daemon is ready
@@ -336,10 +338,12 @@ Because the client and daemon are the **same binary**, a version mismatch means 
 
 - **Stateless per invocation:** connect → (optionally declare dirty files) →
   issue request(s) → stream results → disconnect.
-- **Concurrency:** reads run concurrently. An input change bumps the salsa
-  revision and **cancels** in-flight reads, which restart on the new revision.
-- **Cancellation:** `$/cancelRequest { id }`; a client disconnect cancels its
-  outstanding requests.
+- **Concurrency:** reads run concurrently (each on a cloned database snapshot,
+  off-lock). An input change bumps the salsa revision and **cancels** in-flight
+  reads, which restart on the new revision. *(Implemented.)*
+- **Cancellation:** input-change cancellation is implemented (above).
+  Client-initiated `$/cancelRequest { id }` and cancelling a client's outstanding
+  requests on disconnect are **not yet implemented** (future work).
 
 ### 7.5 File-state sync
 

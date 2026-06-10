@@ -148,12 +148,19 @@ pub fn line_count(db: &dyn Db, file: SourceFile) -> usize {
 /// Beyond salsa's [`storage`](salsa::Storage) it holds a registry mapping
 /// [`SourceId`]s to [`SourceFile`] inputs (and paths back to ids), plus an
 /// optional execution-event log.
+///
+/// The registry (`files`, `ids_by_path`) lives behind `Arc` so cloning the
+/// database — which the daemon does per read request to serve concurrent reads
+/// on independent handles — shares it in O(1) rather than copying every path
+/// string. A registry mutation (`add_source`) takes `&mut self` and updates it
+/// copy-on-write via [`Arc::make_mut`], so it only ever clones the registry while
+/// a snapshot is still alive (steady state stays in place).
 #[salsa::db]
 #[derive(Clone)]
 pub struct FaiDatabase {
     storage: salsa::Storage<Self>,
-    files: Vec<SourceFile>,
-    ids_by_path: FxHashMap<Utf8PathBuf, SourceId>,
+    files: Arc<Vec<SourceFile>>,
+    ids_by_path: Arc<FxHashMap<Utf8PathBuf, SourceId>>,
     events: Arc<Mutex<Option<Vec<String>>>>,
 }
 
@@ -167,7 +174,7 @@ impl Db for FaiDatabase {
     }
 
     fn all_source_files(&self) -> Vec<SourceFile> {
-        self.files.clone()
+        self.files.as_ref().clone()
     }
 
     fn clone_box(&self) -> Box<dyn Db> {
@@ -197,7 +204,7 @@ impl FaiDatabase {
                 }
             }
         })));
-        Self { storage, files: Vec::new(), ids_by_path: FxHashMap::default(), events }
+        Self { storage, files: Arc::default(), ids_by_path: Arc::default(), events }
     }
 
     /// Registers `path` with `text`, returning its [`SourceId`].
@@ -212,8 +219,9 @@ impl FaiDatabase {
         }
         let id = SourceId::new(u32::try_from(self.files.len()).expect("too many source files"));
         let file = SourceFile::new(&*self, id, path.as_str().to_owned(), text);
-        self.files.push(file);
-        self.ids_by_path.insert(path, id);
+        // Copy-on-write: only clones the registry while a snapshot still holds it.
+        Arc::make_mut(&mut self.files).push(file);
+        Arc::make_mut(&mut self.ids_by_path).insert(path, id);
         id
     }
 
@@ -336,6 +344,28 @@ mod tests {
         assert_eq!(line_count(&db, file), 3);
         let log = db.take_events();
         assert!(log.iter().any(|e| e.contains("line_count")), "log: {log:?}");
+    }
+
+    #[test]
+    fn a_clone_shares_storage_but_its_registry_is_independent() {
+        // The registry lives behind `Arc`, so a clone (the daemon's per-request
+        // read snapshot) shares it cheaply; a later `add_source` on the original
+        // is copy-on-write and must not retroactively appear in the clone's
+        // file list — the snapshot stays a consistent view of its instant.
+        let mut db = FaiDatabase::new();
+        db.add_source("a.fai".into(), "a".to_owned());
+        let snapshot = db.clone();
+        assert_eq!(snapshot.all_source_files().len(), 1);
+
+        // Add a file to the original after snapshotting.
+        db.add_source("b.fai".into(), "b".to_owned());
+        assert_eq!(db.all_source_files().len(), 2, "the original sees the new file");
+        assert_eq!(
+            snapshot.all_source_files().len(),
+            1,
+            "the snapshot keeps its consistent view (copy-on-write)"
+        );
+        assert!(snapshot.id_for_path(Utf8Path::new("b.fai")).is_none());
     }
 
     #[test]

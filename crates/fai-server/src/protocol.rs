@@ -206,6 +206,9 @@ pub struct StatusInfo {
     pub command_micros_total: u64,
     /// The slowest single command's processing time, in microseconds.
     pub command_micros_max: u64,
+    /// Peak number of read commands served concurrently (off-lock). A value > 1
+    /// confirms requests overlapped rather than running strictly one at a time.
+    pub max_concurrency: u64,
 }
 
 /// Writes one length-prefixed MessagePack frame.
@@ -341,6 +344,7 @@ mod tests {
             commands_served: 7,
             command_micros_total: 1500,
             command_micros_max: 400,
+            max_concurrency: 2,
         })));
         round_trip(&ServerMessage::TapFrame(TapFrame {
             conn: 3,

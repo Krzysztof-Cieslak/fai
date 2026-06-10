@@ -183,6 +183,21 @@ pub(crate) fn tooling_span() -> Span {
     Span::new(SourceId::new(u32::MAX), TextRange::empty(ByteOffset::ZERO))
 }
 
+/// Runs a read `f` over a session snapshot, returning `None` if a concurrent
+/// input mutation cancelled it mid-flight.
+///
+/// salsa cancels outstanding snapshots when an input is written: the in-flight
+/// read unwinds with a cancellation payload, which this catches and reports as
+/// `None` so the caller (the daemon) can retry against a fresh snapshot at the
+/// new revision. Any other panic propagates unchanged. The closure is taken as
+/// [`std::panic::UnwindSafe`] because a cancellation discards its work entirely —
+/// the snapshot it reads is dropped and re-taken on retry, so no partially
+/// observed state escapes; callers wrap the read in
+/// [`std::panic::AssertUnwindSafe`].
+pub fn catch_cancellation<T>(f: impl FnOnce() -> T + std::panic::UnwindSafe) -> Option<T> {
+    fai_db::salsa::Cancelled::catch(f).ok()
+}
+
 /// Renders diagnostics to a human-readable string, for paths that report errors
 /// outside the normal result envelope (e.g. a failed `run` bundle).
 #[must_use]

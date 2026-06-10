@@ -384,12 +384,15 @@ Daemon, persistence & protocol:
   override for embedding/tests), unbounded for now (GC is future work), and
   benefits **AOT `build`** only (the JIT can't consume objects). Determinism of
   `object_code` (already verified) makes it sound.
-- **D57 Daemon concurrency (serialized):** the daemon serves per-connection
-  threads but serializes **all** database access through one `Mutex<Session>`
-  (true serialization, sidestepping salsa's concurrent-read/cancellation
-   machinery). Control messages and (later) `run` supervision stay off-lock.
-   Concurrent reads + cancel-on-input-change are deferred (tracked in issue #17);
-   the acceptance bar (warm speedup) needs only the warm DB.
+- **D57 Daemon concurrency (serialized — superseded by D112):** the daemon
+  initially served per-connection threads but serialized **all** database access
+  through one `Mutex<Session>` (true serialization, sidestepping salsa's
+  concurrent-read/cancellation machinery), with control messages and `run`
+  supervision off-lock. **D112 lifts the serialization:** read commands now run
+  off-lock on cloned snapshots (concurrent reads), and an input change cancels and
+  retries in-flight reads. The mutex remains (the brief sync/snapshot section is
+  exclusive, and `Session` is not `Sync`), but it no longer guards command
+  execution.
 - **D58 Transport:** the client↔daemon link uses the **`interprocess`** crate
   (sync) for one safe cross-platform code path — Unix-domain sockets on POSIX,
   named pipes on Windows — with our `u32`-LE + MessagePack framing layered on top
@@ -1723,6 +1726,52 @@ Editor integration:
     proptest, deterministic fixed-seed stress tests, and an out-of-workspace
     cargo-fuzz target (its own workspace, nightly-only, run by a non-gating `fuzz`
     workflow — never on the stable merge path).
+
+- **D112 Cross-request daemon concurrency (concurrent reads + cancel-on-edit;
+  supersedes D57's serialization).** The daemon no longer serializes database
+  access through one mutex. A read command now runs on a **cloned database
+  snapshot off-lock**, so distinct requests are served concurrently; the mutex is
+  held only briefly — to sync inputs to disk and clone the snapshot — not for the
+  command itself.
+  - **Cloned handles, not shared borrows.** A salsa database is `Send` but not
+    `Sync`, so a `&Session` cannot be shared across threads; an `RwLock<Session>`
+    therefore cannot be `Sync` either. Concurrency comes from each request taking
+    its own snapshot (`Session::snapshot`: a database clone sharing salsa's storage
+    and memoization, plus a copy of the live-file set), exactly as intra-build
+    parallelism clones handles (D95). The lock stays a `Mutex` (the brief
+    sync/snapshot critical section is exclusive); the win is off-lock execution.
+  - **Cancel-and-retry on input change (the policy).** salsa's input setters
+    unconditionally set a cancellation flag and then block until every other handle
+    is dropped (`cancel_others` waits for the clone count to reach one). So a sync
+    that actually changes an input cancels in-flight reads — they unwind at the next
+    query boundary and are caught (`catch_cancellation`) and retried on the new
+    revision. A no-op sync touches no setter, so concurrent reads of an unchanged
+    workspace never cancel each other. This policy is therefore forced by the
+    engine, not chosen; it matches what CLI.md already documented. Retries do not
+    re-sync (the cancelling edit is already in shared storage), which also keeps a
+    side-effecting command (`fmt`/`build` writing to disk) from observing its own
+    writes on a retry.
+  - **A held snapshot blocks writes, not reads.** Because `cancel_others` waits for
+    all clones to drop, a snapshot held across a long, non-salsa operation would
+    stall edits. So `run`/`test` build their bundle/plan on a snapshot and **drop it
+    before supervising the worker** (which runs up to minutes); only the brief,
+    bounded eager-example worker of `fai check` keeps its snapshot (its 10 s cap
+    already exists for this reason), and even then concurrent reads are unaffected —
+    only an interleaved edit waits, normally for milliseconds.
+  - **Registry shareable for O(1) snapshots.** The non-salsa file registry
+    (`files`, `ids_by_path`) is wrapped in `Arc`, mutated copy-on-write
+    (`Arc::make_mut`), so a snapshot shares it instead of copying every path
+    string; copy-on-write only fires while a snapshot is alive.
+  - **Observability + tests.** The daemon tracks peak concurrent reads and reports
+    it in `daemon status` (`max_concurrency`), which a test drives over a threshold
+    deterministically via a test-only per-read hold (`FAI_DAEMON_TEST_HOLD_MS`).
+    Coverage: concurrent snapshot reads agree; an edit cancels an in-flight read;
+    reads survive a storm of edits without deadlock; and end-to-end, concurrent
+    `check`/`query` equal `--no-daemon`, peak concurrency exceeds one, and reads
+    interleaved with edits stay well-formed.
+  - **Still future work.** Client-initiated `$/cancelRequest`, client-disconnect
+    cancellation, and a debounced/background sync cadence (today every request
+    syncs under the brief lock).
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

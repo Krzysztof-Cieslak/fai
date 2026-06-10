@@ -45,6 +45,7 @@ struct Daemon {
     cache_dir: PathBuf,
     run_timeout_ms: Option<u64>,
     run_as_bytes: Option<u64>,
+    test_hold_ms: Option<u64>,
 }
 
 impl Daemon {
@@ -60,12 +61,21 @@ impl Daemon {
             cache_dir: unique(&format!("{name}-cache")),
             run_timeout_ms: None,
             run_as_bytes: None,
+            test_hold_ms: None,
         }
     }
 
     /// Sets the supervised-run wall-clock timeout (inherited by the daemon).
     fn with_run_timeout(mut self, ms: u64) -> Self {
         self.run_timeout_ms = Some(ms);
+        self
+    }
+
+    /// Makes the daemon hold each off-lock read for `ms` (the test-only
+    /// `FAI_DAEMON_TEST_HOLD_MS` hook), so a concurrent burst deterministically
+    /// overlaps and `daemon status` reports a peak concurrency > 1.
+    fn with_test_hold(mut self, ms: u64) -> Self {
+        self.test_hold_ms = Some(ms);
         self
     }
 
@@ -90,6 +100,9 @@ impl Daemon {
         }
         if let Some(bytes) = self.run_as_bytes {
             command.env("FAI_RUN_AS_BYTES", bytes.to_string());
+        }
+        if let Some(ms) = self.test_hold_ms {
+            command.env("FAI_DAEMON_TEST_HOLD_MS", ms.to_string());
         }
         command
     }
@@ -117,6 +130,14 @@ fn stdout(output: &Output) -> String {
 fn status_pid(daemon: &Daemon) -> Option<u32> {
     let text = stdout(&daemon.run(&["daemon", "status"], &[]));
     let after = text.split("pid ").nth(1)?;
+    let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
+/// Parses "peak concurrency: N" from `daemon status` output.
+fn status_peak_concurrency(daemon: &Daemon) -> Option<u64> {
+    let text = stdout(&daemon.run(&["daemon", "status"], &[]));
+    let after = text.split("peak concurrency: ").nth(1)?;
     let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
     digits.parse().ok()
 }
@@ -398,6 +419,114 @@ fn query_via_daemon_matches_no_daemon() {
     assert!(warm.status.success(), "stderr: {}", String::from_utf8_lossy(&warm.stderr));
     let cold = daemon.run(&["query", "type", "Calc.add", "--no-daemon"], &[]);
     assert_eq!(stdout(&warm), stdout(&cold), "warm query must match --no-daemon");
+}
+
+const TWO_MODULES: &[(&str, &str)] = &[
+    ("A.fai", "module A\n\npublic a : Int\nlet a = 1\n"),
+    ("B.fai", "module B\n\npublic b : Int\nlet b = 2\n"),
+];
+
+#[test]
+fn concurrent_checks_match_no_daemon() {
+    let daemon = Daemon::new("concurrent", TWO_MODULES);
+    // A one-shot baseline, plus a warm-up that spawns the daemon so the burst
+    // below races neither the spawn nor a cold cache.
+    let cold = stdout(&daemon.run(&["check", "--no-daemon"], &["--message-format=json"]));
+    let _ = daemon.run(&["check"], &["--message-format=json"]);
+
+    // Fire several checks at the one daemon at once; each must return exactly the
+    // result a one-shot run would (the daemon serves them on per-connection
+    // threads, concurrently, on independent snapshots).
+    const N: usize = 6;
+    let outs: Vec<String> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..N)
+            .map(|_| {
+                scope.spawn(|| {
+                    let out = daemon.run(&["check"], &["--message-format=json"]);
+                    assert!(
+                        out.status.success(),
+                        "stderr: {}",
+                        String::from_utf8_lossy(&out.stderr)
+                    );
+                    stdout(&out)
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+
+    for out in &outs {
+        assert_eq!(*out, cold, "each concurrent warm check must equal --no-daemon output");
+    }
+}
+
+#[test]
+fn peak_concurrency_exceeds_one_under_load() {
+    // The test-only hold makes each off-lock read linger, so a concurrent burst is
+    // guaranteed to overlap; `daemon status` then reports a peak concurrency > 1,
+    // proving reads are served in parallel rather than strictly serialized.
+    let daemon = Daemon::new("peak", &[("Ok.fai", "module Ok\n\nlet x = 1\n")]).with_test_hold(300);
+    let _ = daemon.run(&["check"], &["--message-format=json"]); // spawn (with the hold env)
+
+    const N: usize = 4;
+    std::thread::scope(|scope| {
+        for _ in 0..N {
+            scope.spawn(|| {
+                let out = daemon.run(&["check"], &["--message-format=json"]);
+                assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+            });
+        }
+    });
+
+    let peak = status_peak_concurrency(&daemon).expect("status reports peak concurrency");
+    assert!(peak >= 2, "expected reads served in parallel (peak >= 2), got {peak}");
+}
+
+#[test]
+fn concurrent_reads_with_interleaved_edit_stay_valid() {
+    let daemon = Daemon::new("interleave", &[("M.fai", "module M\n\nlet x = 1\n")]);
+    let _ = daemon.run(&["check"], &["--message-format=json"]); // spawn
+
+    let clean = "module M\n\nlet x = 1\n";
+    let bad = "module M\n\npublic f : Int -> Bool\nlet f x = x + 1\n";
+
+    std::thread::scope(|scope| {
+        // An editor toggling the file on disk under the readers.
+        scope.spawn(|| {
+            for i in 0..20 {
+                let content = if i % 2 == 0 { bad } else { clean };
+                std::fs::write(daemon.workspace.join("M.fai"), content).unwrap();
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            std::fs::write(daemon.workspace.join("M.fai"), clean).unwrap();
+        });
+        // Readers checking throughout: every result is a well-formed check (a clean
+        // exit 0 or a typed exit 1), never a crash, hang, or torn output.
+        for _ in 0..2 {
+            scope.spawn(|| {
+                for _ in 0..8 {
+                    let out = daemon.run(&["check"], &["--message-format=json"]);
+                    let code = out.status.code();
+                    assert!(
+                        matches!(code, Some(0) | Some(1)),
+                        "unexpected exit {code:?}; stderr: {}",
+                        String::from_utf8_lossy(&out.stderr)
+                    );
+                    let value: serde_json::Value = serde_json::from_slice(&out.stdout)
+                        .expect("a concurrent check must emit valid JSON");
+                    assert!(value.get("ok").is_some(), "check output has an `ok` field: {value}");
+                }
+            });
+        }
+    });
+
+    // The daemon is healthy after the storm and reflects the final (clean) file.
+    let final_check = daemon.run(&["check"], &["--message-format=json"]);
+    assert!(
+        final_check.status.success(),
+        "final check must be clean; stderr: {}",
+        String::from_utf8_lossy(&final_check.stderr)
+    );
 }
 
 #[test]

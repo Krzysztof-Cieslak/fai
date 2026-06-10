@@ -1,25 +1,32 @@
 //! The daemon: one warm [`Session`] serving framed requests over the endpoint.
 //!
-//! Connections are handled on per-connection threads, but all database access is
-//! serialized through a single mutex (true serialization; concurrent reads and
-//! cancellation are future work). `run` supervision is intentionally off-lock.
-//! The daemon shuts down on an explicit `Shutdown` request or after an idle
-//! period, unlinking its socket on the way out.
+//! Connections are handled on per-connection threads. Read commands run
+//! concurrently: the session lock is held only briefly — to sync inputs to disk
+//! and clone a read snapshot — and the command itself runs off-lock on that
+//! snapshot ([`with_fresh_snapshot`]). Snapshots are independent database handles
+//! that share salsa's storage and memoization, so distinct requests execute in
+//! parallel; salsa cancels any outstanding snapshot when an input is mutated, so
+//! an in-flight read that a concurrent edit cancels is retried on the new
+//! revision (cancel-and-retry). `run`/`test` supervision is intentionally
+//! off-lock, and their long workers run after the snapshot is dropped so an edit
+//! is never blocked behind them. The daemon shuts down on an explicit `Shutdown`
+//! request or after an idle period, unlinking its socket on the way out.
 
 use std::io::Read;
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use fai_driver::{
-    ContractEvent, EXIT_FAILURES, EXIT_INTERNAL, EXIT_OK, OutputFormat, Rendered, Session,
-    TestConfig, TestPlan, WireBundle, assemble_outcome, build_test_plan, run_command,
-    run_test_workers,
+    ContractEvent, DirtyFile, EXIT_FAILURES, EXIT_INTERNAL, EXIT_OK, OutputFormat, Rendered,
+    Session, TestConfig, TestPlan, WireBundle, assemble_outcome, build_test_plan,
+    catch_cancellation, run_command, run_test_workers,
 };
 use interprocess::local_socket::Stream;
 use wait_timeout::ChildExt;
@@ -61,6 +68,13 @@ fn object_cache_capacity() -> usize {
 
 /// Shared daemon state.
 struct Daemon {
+    /// The warm workspace session. The mutex is held only briefly — to sync
+    /// inputs to disk and clone a read snapshot — and the command itself runs
+    /// off-lock on that snapshot, so distinct read requests are served
+    /// concurrently. (A `RwLock` is not an option: `Session` owns a salsa
+    /// database, which is `Send` but not `Sync`, so it cannot be shared as `&T`
+    /// across threads; concurrency comes from per-request cloned handles, not
+    /// from shared borrows.)
     session: Mutex<Session>,
     start: Instant,
     /// Epoch-ish activity clock: milliseconds since `start` of the last request.
@@ -74,6 +88,11 @@ struct Daemon {
     commands: AtomicU64,
     command_micros_total: AtomicU64,
     command_micros_max: AtomicU64,
+    /// Read commands executing off-lock right now, and the peak ever observed.
+    /// The peak is reported in `daemon status` as evidence that reads run
+    /// concurrently (a peak > 1 means two requests overlapped).
+    in_flight: AtomicU64,
+    max_in_flight: AtomicU64,
     /// Live `tap` subscribers and the next connection id to hand out.
     taps: TapRegistry,
     conn_seq: AtomicU64,
@@ -86,6 +105,84 @@ impl Daemon {
         self.commands.fetch_add(1, Ordering::Relaxed);
         self.command_micros_total.fetch_add(micros, Ordering::Relaxed);
         self.command_micros_max.fetch_max(micros, Ordering::Relaxed);
+    }
+
+    /// Runs an off-lock read `f`, accounting it in the concurrency gauge and
+    /// catching a salsa cancellation (returns `None` so the caller retries on a
+    /// fresh snapshot). The gauge is balanced even if `f` propagates a non-cancel
+    /// panic (the guard decrements on unwind).
+    fn run_read<T>(&self, f: impl FnOnce() -> T) -> Option<T> {
+        let current = self.in_flight.fetch_add(1, Ordering::Relaxed) + 1;
+        self.max_in_flight.fetch_max(current, Ordering::Relaxed);
+        let _guard = InFlightGuard(&self.in_flight);
+        test_hold();
+        catch_cancellation(AssertUnwindSafe(f))
+    }
+}
+
+/// Decrements the in-flight gauge when an off-lock read finishes or unwinds.
+struct InFlightGuard<'a>(&'a AtomicU64);
+
+impl Drop for InFlightGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// A test-only artificial delay (`FAI_DAEMON_TEST_HOLD_MS`) inserted into the
+/// off-lock read region so a test can deterministically force concurrent reads
+/// to overlap (and observe `max_in_flight` > 1). Unset/zero in production.
+fn test_hold() {
+    if let Some(ms) = std::env::var("FAI_DAEMON_TEST_HOLD_MS").ok().and_then(|v| v.parse().ok())
+        && ms > 0
+    {
+        std::thread::sleep(Duration::from_millis(ms));
+    }
+}
+
+/// Locks the session (for a sync or a snapshot), recovering from a poisoned lock.
+/// Held only briefly: the actual command runs off-lock on the cloned snapshot.
+fn lock_session(daemon: &Daemon) -> MutexGuard<'_, Session> {
+    daemon.session.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Syncs the workspace to disk once (exclusive), then runs the read `f` on a
+/// consistent off-lock snapshot, retrying if a concurrent edit cancels it.
+///
+/// A no-op sync does not bump the salsa revision, so it never cancels concurrent
+/// reads; only a real input change does. Retries deliberately do **not** re-sync:
+/// the edit that cancelled us is already in the shared storage, and skipping the
+/// re-scan keeps a side-effecting command (`fmt`/`build` writing to disk) from
+/// observing its own writes on a retry.
+fn with_fresh_snapshot<T>(
+    daemon: &Daemon,
+    dirty: &[DirtyFile],
+    f: impl Fn(&Session) -> T,
+) -> Result<T, Rendered> {
+    {
+        let mut session = lock_session(daemon);
+        if let Err(error) = session.sync_from_disk() {
+            return Err(sync_error(&error.to_string()));
+        }
+        if !dirty.is_empty()
+            && let Err(error) = session.apply_dirty(dirty)
+        {
+            return Err(sync_error(&error.to_string()));
+        }
+    }
+    Ok(with_snapshot(daemon, f))
+}
+
+/// Runs the read `f` on an off-lock snapshot taken under a read lock (no sync),
+/// retrying if a concurrent edit cancels it. For follow-up reads (e.g. rendering
+/// a `test` report) that must reflect the current revision without re-scanning.
+fn with_snapshot<T>(daemon: &Daemon, f: impl Fn(&Session) -> T) -> T {
+    loop {
+        let snapshot = lock_session(daemon).snapshot();
+        if let Some(value) = daemon.run_read(|| f(&snapshot)) {
+            return value;
+        }
+        // Cancelled by a concurrent edit; the snapshot drops here, then retry.
     }
 }
 
@@ -135,6 +232,8 @@ pub fn serve(root: Utf8PathBuf) -> std::io::Result<()> {
         commands: AtomicU64::new(0),
         command_micros_total: AtomicU64::new(0),
         command_micros_max: AtomicU64::new(0),
+        in_flight: AtomicU64::new(0),
+        max_in_flight: AtomicU64::new(0),
         taps: TapRegistry::default(),
         conn_seq: AtomicU64::new(0),
     });
@@ -290,6 +389,7 @@ fn handle_connection(stream: Stream, daemon: &Daemon, id: u64) {
                 commands_served: daemon.commands.load(Ordering::Relaxed),
                 command_micros_total: daemon.command_micros_total.load(Ordering::Relaxed),
                 command_micros_max: daemon.command_micros_max.load(Ordering::Relaxed),
+                max_concurrency: daemon.max_in_flight.load(Ordering::Relaxed),
             }),
             Request::Run(_) | Request::Test(_) | Request::Tap => {
                 unreachable!("handled above")
@@ -330,22 +430,13 @@ fn subscribe_and_stream(conn: &mut Conn) {
     }
 }
 
-/// Syncs the workspace, applies any dirty-set, and runs a command under the lock.
+/// Syncs the workspace, applies any dirty-set, and runs a command off-lock on a
+/// read snapshot (so concurrent commands run in parallel), retrying if a
+/// concurrent edit cancels it.
 fn run(daemon: &Daemon, command: CommandRequest) -> Rendered {
     let CommandRequest { spec, opts, dirty } = command;
-    let mut session = match daemon.session.lock() {
-        Ok(session) => session,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    if let Err(error) = session.sync_from_disk() {
-        return sync_error(&error.to_string());
-    }
-    if !dirty.is_empty()
-        && let Err(error) = session.apply_dirty(&dirty)
-    {
-        return sync_error(&error.to_string());
-    }
-    run_command(&session, &spec, opts)
+    with_fresh_snapshot(daemon, &dirty, |snapshot| run_command(snapshot, &spec, opts))
+        .unwrap_or_else(|rendered| rendered)
 }
 
 /// A rendered workspace/IO error (plain text on stderr, exit 3).
@@ -397,41 +488,38 @@ enum Prepared {
     Failed(String),
 }
 
-/// Builds the run bundle under the session lock (warm front end), rendering any
-/// diagnostics server-side. The lock is released before the worker runs.
+/// Builds the run bundle on a warm off-lock snapshot (front end), rendering any
+/// diagnostics server-side. The snapshot is dropped before the worker runs, so a
+/// concurrent edit is never blocked behind the supervised program.
 fn prepare_run(daemon: &Daemon, request: &RunRequest) -> Prepared {
-    let mut session = match daemon.session.lock() {
-        Ok(session) => session,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    if let Err(error) = session.sync_from_disk() {
-        return Prepared::Failed(format!("error: {error}\n"));
-    }
-    if !request.dirty.is_empty()
-        && let Err(error) = session.apply_dirty(&request.dirty)
-    {
-        return Prepared::Failed(format!("error: {error}\n"));
-    }
-    let files = session.select_files(Some(Utf8Path::new(&request.path)));
-    let Some(entry) = files.first().copied() else {
-        return Prepared::Failed(format!("error: no such file in workspace: {}\n", request.path));
-    };
-    let result = fai_driver::build_run_bundle(session.db(), entry);
-    match result.bundle {
-        Some(bundle) => Prepared::Bundle(bundle),
-        None => {
-            let resolver = session.resolver();
-            Prepared::Failed(fai_driver::render_diagnostics(&result.diagnostics, &resolver))
+    let prepared = with_fresh_snapshot(daemon, &request.dirty, |snapshot| {
+        let files = snapshot.select_files(Some(Utf8Path::new(&request.path)));
+        let Some(entry) = files.first().copied() else {
+            return Prepared::Failed(format!(
+                "error: no such file in workspace: {}\n",
+                request.path
+            ));
+        };
+        let result = fai_driver::build_run_bundle(snapshot.db(), entry);
+        match result.bundle {
+            Some(bundle) => Prepared::Bundle(bundle),
+            None => {
+                let resolver = snapshot.resolver();
+                Prepared::Failed(fai_driver::render_diagnostics(&result.diagnostics, &resolver))
+            }
         }
-    }
+    });
+    // A sync failure renders as plain `error: …` text (matching the prior path).
+    prepared.unwrap_or_else(|rendered| Prepared::Failed(rendered.stderr))
 }
 
-/// Handles a `test` request: build the plan warm (under the lock), then supervise
+/// Handles a `test` request: build the plan warm (on a snapshot), then supervise
 /// the isolated worker(s) off-lock, streaming each contract's result as a
-/// `$/testEvent`, and finally render the report (under the lock) as the terminal
-/// `Test` result. The worker execution — the long part — runs off-lock so the
-/// daemon stays responsive; a crashing contract is a separate process, so the
-/// daemon always survives.
+/// `$/testEvent`, and finally render the report (on a fresh snapshot) as the
+/// terminal `Test` result. The worker execution — the long part — runs off-lock
+/// (and after the snapshot is dropped) so the daemon stays responsive and a
+/// concurrent edit is never blocked; a crashing contract is a separate process,
+/// so the daemon always survives.
 fn handle_test(conn: &mut Conn, request: &TestRequest) -> std::io::Result<()> {
     let plan = match prepare_test(conn.daemon, request) {
         Ok(plan) => plan,
@@ -460,62 +548,55 @@ fn handle_test(conn: &mut Conn, request: &TestRequest) -> std::io::Result<()> {
     conn.send(&ServerMessage::Result(Response::Test(rendered)))
 }
 
-/// Builds the test plan under the session lock (warm front end). The lock is
-/// released before the worker(s) run.
+/// Builds the test plan on a warm off-lock snapshot (front end). The snapshot is
+/// dropped before the worker(s) run, so a concurrent edit is never blocked behind
+/// the (potentially long) test execution.
 fn prepare_test(daemon: &Daemon, request: &TestRequest) -> Result<TestPlan, Rendered> {
-    let mut session = match daemon.session.lock() {
-        Ok(session) => session,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    if let Err(error) = session.sync_from_disk() {
-        return Err(sync_error(&error.to_string()));
-    }
-    if !request.dirty.is_empty()
-        && let Err(error) = session.apply_dirty(&request.dirty)
-    {
-        return Err(sync_error(&error.to_string()));
-    }
-    let files = session.select_files(request.path.as_deref().map(Utf8Path::new));
-    let defaults = TestConfig::default();
-    let config = TestConfig {
-        seed: request.seed.unwrap_or(defaults.seed),
-        trials: request.count.unwrap_or(defaults.trials),
-        max_size: request.max_size.unwrap_or(defaults.max_size),
-    };
-    Ok(build_test_plan(session.db(), &files, request.r#match.as_deref(), config))
+    with_fresh_snapshot(daemon, &request.dirty, |snapshot| {
+        let files = snapshot.select_files(request.path.as_deref().map(Utf8Path::new));
+        let defaults = TestConfig::default();
+        let config = TestConfig {
+            seed: request.seed.unwrap_or(defaults.seed),
+            trials: request.count.unwrap_or(defaults.trials),
+            max_size: request.max_size.unwrap_or(defaults.max_size),
+        };
+        build_test_plan(snapshot.db(), &files, request.r#match.as_deref(), config)
+    })
 }
 
-/// Renders the assembled outcome to the terminal `Rendered` (under the lock, for
-/// the span resolver), using the same code path as the in-process CLI so warm
-/// output is byte-identical to `--no-daemon`.
+/// Renders the assembled outcome to the terminal `Rendered`, resolving spans on a
+/// fresh off-lock snapshot (no re-sync), using the same code path as the
+/// in-process CLI so warm output is byte-identical to `--no-daemon`.
 fn render_test(
     daemon: &Daemon,
     request: &TestRequest,
     plan: &TestPlan,
     results: &[fai_driver::ContractResult],
 ) -> Rendered {
-    let session = match daemon.session.lock() {
-        Ok(session) => session,
-        Err(poisoned) => poisoned.into_inner(),
-    };
     let outcome = assemble_outcome(plan, results);
-    let resolver = session.resolver();
     let exit = if outcome.ok { EXIT_OK } else { EXIT_FAILURES };
-    match request.opts.format {
-        OutputFormat::Json => match serde_json::to_string_pretty(&outcome.to_output(&resolver)) {
-            Ok(json) => Rendered { stdout: format!("{json}\n"), stderr: String::new(), exit },
-            Err(error) => Rendered {
-                stdout: String::new(),
-                stderr: format!("internal error: failed to serialize output: {error}\n"),
-                exit: EXIT_INTERNAL,
+    with_snapshot(daemon, |snapshot| {
+        let resolver = snapshot.resolver();
+        match request.opts.format {
+            OutputFormat::Json => {
+                match serde_json::to_string_pretty(&outcome.to_output(&resolver)) {
+                    Ok(json) => {
+                        Rendered { stdout: format!("{json}\n"), stderr: String::new(), exit }
+                    }
+                    Err(error) => Rendered {
+                        stdout: String::new(),
+                        stderr: format!("internal error: failed to serialize output: {error}\n"),
+                        exit: EXIT_INTERNAL,
+                    },
+                }
+            }
+            OutputFormat::Human => Rendered {
+                stdout: outcome.render_human(&resolver, request.opts.color),
+                stderr: String::new(),
+                exit,
             },
-        },
-        OutputFormat::Human => Rendered {
-            stdout: outcome.render_human(&resolver, request.opts.color),
-            stderr: String::new(),
-            exit,
-        },
-    }
+        }
+    })
 }
 
 /// Spawns and supervises the worker, streaming its stdout/stderr as `$/output`
