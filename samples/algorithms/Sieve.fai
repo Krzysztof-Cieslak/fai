@@ -35,4 +35,4 @@ let run n = countFrom 2 n (sieveFrom 2 n Set.empty) 0
 example: run 10 = 4
 
 public main : Runtime -> Unit
-let main runtime = runtime.console.writeLine (Int.toString (run 4000))
+let main runtime = runtime.console.writeLine (Int.toString (run 100000))

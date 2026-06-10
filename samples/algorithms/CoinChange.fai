@@ -33,4 +33,4 @@ let run n = Option.withDefault 0 (Dict.get n (allCoins coins n (Dict.insert 0 1 
 example: run 5 = 4
 
 public main : Runtime -> Unit
-let main runtime = runtime.console.writeLine (Int.toString (run 1500))
+let main runtime = runtime.console.writeLine (Int.toString (run 20000))

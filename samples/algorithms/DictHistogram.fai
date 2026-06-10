@@ -30,4 +30,4 @@ let run n = List.foldl addWeight 0 (Dict.toList (tally 0 n Dict.empty))
 example: run 3 = 3
 
 public main : Runtime -> Unit
-let main runtime = runtime.console.writeLine (Int.toString (run 30000))
+let main runtime = runtime.console.writeLine (Int.toString (run 100000))
