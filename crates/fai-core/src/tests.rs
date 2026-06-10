@@ -94,6 +94,64 @@ fn lowers_partial_application_as_general_app() {
 }
 
 #[test]
+fn function_alias_let_is_copy_propagated() {
+    // `let g = f` (f a non-row-polymorphic function) drops the binding and
+    // propagates `g` to `@f`, so the call head is the global directly (a direct
+    // call at code generation), not a local bound to its closure.
+    let src = indoc! {r#"
+        module M
+
+        let f x = x + 1
+
+        let caller a =
+          let g = f
+          g a
+    "#};
+    // The call head is `@f` (a direct call) and the alias binding is gone.
+    let got = lower(src, "caller");
+    assert!(got.contains("(app @f "), "call head is the global directly: {got}");
+    assert!(!got.contains("(let "), "the alias binding is dropped: {got}");
+}
+
+#[test]
+fn transitive_function_alias_is_copy_propagated() {
+    // The alias composes along a chain: `let h = g` lowers `g` to `@f`, so `h`
+    // aliases `f` too, and both bindings vanish.
+    let src = indoc! {r#"
+        module M
+
+        let f x = x + 1
+
+        let caller a =
+          let g = f
+          let h = g
+          h a
+    "#};
+    let got = lower(src, "caller");
+    assert!(got.contains("(app @f "), "call head is the global directly: {got}");
+    assert!(!got.contains("(let "), "both alias bindings are dropped: {got}");
+}
+
+#[test]
+fn nullary_value_alias_is_not_propagated() {
+    // `let g = <nullary value>` binds a *forced* value, not a function alias
+    // (its type is not an arrow), so the binding is kept — propagating it would
+    // re-force the value at every use.
+    let src = indoc! {r#"
+        module M
+
+        let base = 41
+
+        let caller =
+          let g = base
+          g + 1
+    "#};
+    let got = lower(src, "caller");
+    assert!(got.contains("(let "), "the nullary-value binding is kept: {got}");
+    assert!(got.contains("@base"), "and still references the global: {got}");
+}
+
+#[test]
 fn lowers_lambda_with_capture() {
     let src = indoc! {r#"
         module M

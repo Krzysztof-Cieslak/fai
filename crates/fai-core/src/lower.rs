@@ -62,6 +62,7 @@ pub fn core(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
         next_local: first_free_local(&resolved),
         fns: vec![placeholder_fn()],
         evidence: FxHashMap::default(),
+        aliases: FxHashMap::default(),
         emit_unsupported: true,
     };
 
@@ -115,6 +116,7 @@ pub fn lower_params_body(
         next_local: first_free_local(&resolved),
         fns: vec![placeholder_fn()],
         evidence: FxHashMap::default(),
+        aliases: FxHashMap::default(),
         // The contract synthesizer runs outside a tracked query, so it must not
         // accumulate diagnostics; unsupported constructs become error nodes the
         // caller detects (and reports as not-runnable).
@@ -208,6 +210,12 @@ struct Lowerer<'a> {
     /// holding the count of the row's hidden fields before each lacked label.
     /// Keyed by the row variable's body-numbered id and the label.
     evidence: FxHashMap<(RowVarId, Symbol), LocalId>,
+    /// Function-valued `let` aliases: a local bound directly to a top-level
+    /// function value (`let g = f`, `f` a non-row-polymorphic function) maps to
+    /// that function, so every use of the local is copy-propagated to `Global f`.
+    /// This turns `g x` into a direct call and drops the redundant binding. Keyed by
+    /// the (unique) `LocalId`, so it is scope-exact and append-only.
+    aliases: FxHashMap<LocalId, DefId>,
     /// Whether to accumulate unsupported-construct diagnostics. The per-definition
     /// `core` query does (it runs inside salsa); a caller outside a tracked query
     /// (the contract synthesizer) suppresses them and detects the resulting error
@@ -329,7 +337,13 @@ impl Lowerer<'_> {
         let ty = self.ty_of(expr);
         let span = self.module.expr(expr).span;
         match self.resolved.get(expr) {
-            Some(Res::Local(id)) => CExpr::new(K::Local(id), ty),
+            // A local aliasing a top-level function (`let g = f`) is copy-propagated
+            // to `Global f`, so a saturated use becomes a direct call and a value use
+            // is `f`'s closure — exactly as if `f` had been named directly.
+            Some(Res::Local(id)) => match self.aliases.get(&id) {
+                Some(&def) => CExpr::new(K::Global(def), ty),
+                None => CExpr::new(K::Local(id), ty),
+            },
             Some(Res::Def(def)) => self.def_value(def, ty),
             Some(Res::Ctor(ctor)) => self.lower_ctor_value(ctor, ty),
             Some(Res::Builtin(name)) => self.lower_builtin_ref(name, ty, span),
@@ -1197,6 +1211,22 @@ impl Lowerer<'_> {
             let body = self.lower_expr(stmt.value);
             self.lift_lambda(param_locals, body, value_ty)
         };
+        // A simple `let g = f` binding `g` directly to a non-row-polymorphic
+        // top-level function value (a bare `Global` of arrow type — a row-polymorphic
+        // `f` lowers to a `Global` partial application, and a nullary value to a
+        // non-arrow type, so both are excluded) is recorded as an alias and the
+        // binding dropped: every use of `g` copy-propagates to `Global f`, turning a
+        // saturated `g …` into a direct call. The discarded value is a pure
+        // immortal-closure fetch, so this is sound and changes no observable result.
+        if is_simple_binder(self.module, stmt.pat)
+            && matches!(value.ty, Ty::Arrow(_, _))
+            && let K::Global(def) = &value.kind
+        {
+            let def = *def;
+            let local = self.param_local(stmt.pat);
+            self.aliases.insert(local, def);
+            return self.lower_stmts(rest, tail);
+        }
         let body = self.lower_stmts(rest, tail);
         let ty = body.ty.clone();
         // A simple `let v = …`/`let _ = …` binds directly; a destructuring
