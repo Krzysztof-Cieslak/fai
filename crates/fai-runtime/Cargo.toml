@@ -14,6 +14,12 @@ license.workspace = true
 [lib]
 crate-type = ["staticlib", "rlib"]
 
+# Exposes the allocator fuzz harness (`run_ops`) for the out-of-workspace
+# cargo-fuzz target. Off by default and dependency-free, so the staticlib/rlib and
+# the single-`$RUSTC` archive build are unaffected.
+[features]
+fuzzing = []
+
 # Dev-only; not part of the staticlib/rlib, so the runtime stays dependency-free
 # for the single-`$RUSTC` archive build.
 [dev-dependencies]
