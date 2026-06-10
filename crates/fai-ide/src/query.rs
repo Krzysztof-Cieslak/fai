@@ -1409,7 +1409,7 @@ fn shape_from_ast(module: &Module, ty: TypeId, vars: &mut FxHashMap<Symbol, usiz
             Box::new(shape_from_ast(module, *func, vars)),
             Box::new(shape_from_ast(module, *arg, vars)),
         ),
-        TypeKind::Arrow { from, to } => Shape::Arrow(
+        TypeKind::Arrow { from, to, .. } => Shape::Arrow(
             Box::new(shape_from_ast(module, *from, vars)),
             Box::new(shape_from_ast(module, *to, vars)),
         ),

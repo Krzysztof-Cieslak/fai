@@ -12,10 +12,10 @@ mod doc;
 use doc::{Doc, concat, group, nest, print, text};
 use fai_span::LineIndex;
 use fai_syntax::ast::{
-    ExprId, ExprKind, FieldInit, FieldPat, FieldType, Item, ItemId, ItemKind, LetStmt, MethodImpl,
-    MethodSig, Module, PatId, PatKind, RowTail, TypeDef, TypeId, TypeKind, Visibility,
+    EffectAnnot, ExprId, ExprKind, FieldInit, FieldPat, FieldType, Item, ItemId, ItemKind, LetStmt,
+    MethodImpl, MethodSig, Module, PatId, PatKind, RowTail, TypeDef, TypeId, TypeKind, Visibility,
 };
-use fai_syntax::{Comment, CommentMap, NodeId, attach_comments};
+use fai_syntax::{Comment, CommentMap, NodeId, Symbol, attach_comments};
 
 /// The canonical line width.
 const WIDTH: usize = 100;
@@ -518,8 +518,12 @@ impl Printer<'_> {
             TypeKind::App { func, arg } => {
                 concat(vec![self.type_doc(*func), text(" "), self.type_doc(*arg)])
             }
-            TypeKind::Arrow { from, to } => {
-                concat(vec![self.type_doc(*from), text(" -> "), self.type_doc(*to)])
+            TypeKind::Arrow { from, to, effect } => {
+                let mut parts = vec![self.type_doc(*from), text(" -> "), self.type_doc(*to)];
+                if let Some(eff) = effect {
+                    parts.push(self.effect_doc(eff));
+                }
+                concat(parts)
             }
             TypeKind::Tuple(xs) => {
                 let mut parts = Vec::new();
@@ -536,6 +540,39 @@ impl Printer<'_> {
             TypeKind::Paren(inner) => concat(vec![text("("), self.type_doc(*inner), text(")")]),
             TypeKind::Error => text(self.span_src(ty.span)),
         }
+    }
+
+    /// Renders an arrow's effect annotation canonically: atoms sorted by name,
+    /// `/ 'e` for a lone named tail, and the pure empty-closed effect omitted
+    /// (normalized to a bare arrow).
+    fn effect_doc(&self, eff: &EffectAnnot) -> Doc {
+        // `/ {}` (no atoms, closed) is the pure effect: render nothing.
+        if eff.labels.is_empty() && eff.tail == RowTail::Closed {
+            return text("");
+        }
+        // Lone named tail `/ 'e` is sugar for `/ { | 'e }`.
+        if eff.labels.is_empty()
+            && let RowTail::Named(r) = eff.tail
+        {
+            return concat(vec![text(" / "), text(r.as_str())]);
+        }
+        let mut order: Vec<&Symbol> = eff.labels.iter().collect();
+        order.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        let mut parts = vec![text(" / {")];
+        for (index, label) in order.iter().enumerate() {
+            parts.push(text(if index == 0 { " " } else { ", " }));
+            parts.push(text(label.as_str()));
+        }
+        match eff.tail {
+            RowTail::Closed => {}
+            RowTail::Open => parts.push(text(" | _")),
+            RowTail::Named(r) => {
+                parts.push(text(" | "));
+                parts.push(text(r.as_str()));
+            }
+        }
+        parts.push(text(" }"));
+        concat(parts)
     }
 
     /// Renders a record type `{ x : T, … }` (fields sorted) with its tail.

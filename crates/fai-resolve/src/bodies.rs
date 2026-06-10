@@ -132,7 +132,7 @@ fn collect_con_refs(module: &Module, ty: TypeId, out: &mut Vec<(Symbol, TextRang
             collect_con_refs(module, *func, out);
             collect_con_refs(module, *arg, out);
         }
-        TypeKind::Arrow { from, to } => {
+        TypeKind::Arrow { from, to, .. } => {
             collect_con_refs(module, *from, out);
             collect_con_refs(module, *to, out);
         }

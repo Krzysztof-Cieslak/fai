@@ -464,8 +464,10 @@ pub enum TypeKind {
     Con(Symbol),
     /// Type application `func arg` (curried), e.g. `List 'a`.
     App { func: TypeId, arg: TypeId },
-    /// A function type `from -> to` (right-associative).
-    Arrow { from: TypeId, to: TypeId },
+    /// A function type `from -> to` (right-associative), with an optional effect
+    /// annotation (`a -> b / { Console | 'e }`). `None` is the pure (bare) arrow;
+    /// the annotation binds this arrow (the innermost in a curried chain).
+    Arrow { from: TypeId, to: TypeId, effect: Option<EffectAnnot> },
     /// A tuple type `a * b * …`.
     Tuple(Vec<TypeId>),
     /// A record type `{ x : T, … }` with a closed, anonymous-open, or named-open
@@ -487,6 +489,19 @@ pub struct FieldType {
     /// The field's type.
     pub ty: TypeId,
     /// The field's source range.
+    pub span: TextRange,
+}
+
+/// A written effect annotation on an arrow: the capability atoms (interface
+/// names) it uses plus a tail. A lone effect variable (`/ 'e`) is `labels` empty
+/// with a `Named` tail; `/ { Console | _ }` is one label with an `Open` tail.
+#[derive(Debug, PartialEq, Eq)]
+pub struct EffectAnnot {
+    /// The effect atoms (capability interface names), in written order.
+    pub labels: Vec<Symbol>,
+    /// The row's tail (closed, anonymous-open `_`, or a named variable).
+    pub tail: RowTail,
+    /// The annotation's source range (the `/ …` span).
     pub span: TextRange,
 }
 
