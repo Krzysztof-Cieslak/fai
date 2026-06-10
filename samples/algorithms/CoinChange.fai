@@ -1,0 +1,36 @@
+module CoinChange
+
+// Count the ways to make amount n from a fixed coin set by dynamic programming
+// over a `Dict` keyed by sub-amount, taking each result modulo a large prime so it
+// stays exact. This exercises `Dict` get/insert in a tight nested loop. Used by
+// the Rust-vs-Fai runtime benchmark.
+modulus : Int
+let modulus = 1000000007
+
+coins : List Int
+let coins = [1, 2, 5, 10, 25, 50]
+
+// One coin's pass: for a in [coin, amount], add ways[a - coin] into ways[a].
+coinPass : Int -> Int -> Int -> Dict Int Int -> Dict Int Int
+let coinPass coin a amount ways =
+  if a > amount then
+    ways
+  else
+    let cur = Option.withDefault 0 (Dict.get a ways)
+    let prev = Option.withDefault 0 (Dict.get (a - coin) ways)
+    coinPass coin (a + 1) amount (Dict.insert a ((cur + prev) % modulus) ways)
+
+// Apply every coin's pass in turn.
+allCoins : List Int -> Int -> Dict Int Int -> Dict Int Int
+let allCoins cs amount ways =
+  match cs with
+  | [] -> ways
+  | coin :: rest -> allCoins rest amount (coinPass coin coin amount ways)
+
+/// The benchmark workload: the number of ways to make n (modulo a large prime).
+public run : Int -> Int
+let run n = Option.withDefault 0 (Dict.get n (allCoins coins n (Dict.insert 0 1 Dict.empty)))
+example: run 5 = 4
+
+public main : Runtime -> Unit
+let main runtime = runtime.console.writeLine (Int.toString (run 1500))

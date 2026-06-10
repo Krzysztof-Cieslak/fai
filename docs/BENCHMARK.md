@@ -110,10 +110,30 @@ Two benches compare Fai's runtime performance against an idiomatic Rust
 reference. They are the source of the most confusing numbers, so they get the
 most explanation.
 
-The idiomatic Rust references live in `crates/fai-tests/src/algorithms.rs`
-(`fib`, `collatz_sum`, `map_sum`, `merge_sort_sum`, `tree_count`, `pi`), each
+The idiomatic Rust references live in `crates/fai-tests/src/algorithms.rs`, each
 paired with its Fai sample under `samples/algorithms/` and two workload sizes in
-the `ALGORITHMS` registry.
+the `ALGORITHMS` registry. The suite deliberately spans many runtime shapes so a
+performance change is measured broadly rather than against a handful of cases:
+
+- **arithmetic / recursion** — `fib` (wide, non-tail), `ackermann` (deep stack),
+  `collatz` and `pi` (tail loops), `prng_xorshift` (bitwise `Int` intrinsics);
+- **lists** — `map_sum` (reuse fast path) and `map_sum_shared` (the copying
+  fallback), `merge_sort`, `quicksort`, `matrix_multiply` (nested lists),
+  `fold_pipeline` (closures / first-class calls), `nqueens` and `fannkuch`
+  (backtracking / permutations);
+- **persistent maps & sets** — `dict_histogram`, `set_dedup`, `sieve`,
+  `graph_bfs` (`Dict`+`Set`+`List`), `union_find`, `game_of_life` (`(Int*Int)`
+  tuple keys);
+- **strings & ADTs** — `word_count`, `json_serialize`, `expr_eval` (a recursive
+  parser/evaluator threading `Option`);
+- **records & floats** — `particles` and `nbody` (records + `{ r with … }`),
+  `spectral_norm` and `mandelbrot` (float reductions);
+- **dynamic programming** — `levenshtein`, `coin_change`, `fib_memo` (`Dict` memo);
+- **interface dispatch** — `interface_dispatch`.
+
+Some `Dict`/`Set` workloads insert keys in sorted order, which the unbalanced
+binary-search-tree backing `std/Dict`/`std/Set` degenerates into a linear chain
+(O(n²)); their sizes are kept modest for that reason.
 
 ### "JIT" and "AOT" describe how *Fai* is compiled — not Rust
 
@@ -213,7 +233,8 @@ experiments**, so their Rust baselines are not comparable. Two effects compound.
 
 **1. Different workload sizes.** Each algorithm registers two sizes: a small
 `jit_size` (for stable in-process medians) and a large `aot_size` (to amortize
-process startup), from `crates/fai-tests/src/algorithms.rs`:
+process startup), from `crates/fai-tests/src/algorithms.rs` (a representative
+subset; the registry is the full list):
 
 | algorithm | `jit_size` | `aot_size` | size factor |
 |---|---|---|---|
@@ -223,6 +244,11 @@ process startup), from `crates/fai-tests/src/algorithms.rs`:
 | MergeSort | 6 000 | 80 000 | ~13× |
 | BinaryTrees | 17 | 21 | 16× |
 | Pi | 45 000 | 800 000 | ~18× |
+
+The sizes vary widely by algorithm: a few (`nqueens`, `ackermann`, `fannkuch`,
+`matrix_multiply`) are tens, not thousands, because their cost grows steeply, and
+the sorted-key `Dict`/`Set` workloads are kept modest because the unbalanced tree
+degenerates on sorted input.
 
 **2. Different measurement scope.** `algorithms_jit` times a **pure in-process
 function call**; `algorithms_aot` **spawns a whole subprocess** (fork/exec +
@@ -272,8 +298,14 @@ Each `aot_size` must equal the literal the matching sample's `main` passes to
 assert this by comparing the program's output to the oracle, so the AOT bench
 compares the same workload on both sides. To add an algorithm: add the Rust
 reference and a registry entry in `algorithms.rs`, add the `samples/algorithms/`
-module with the matching baked size, and list it in both `algorithm_benches!`
-macros. The `algorithms_mem` bench iterates the registry directly, so it picks up
-the new algorithm automatically.
+module with the matching baked size, add a `validate` test in
+`tests/algorithms.rs`, and list it in both `algorithm_benches!` macros. The
+`algorithms_mem` bench and the `algo-baseline` binary iterate the registry
+directly, so they pick up the new algorithm automatically; the
+`registry_is_fully_covered` test guards the hand-maintained lists — it fails if a
+registered algorithm is missing from either runtime bench or from the validation
+tests. Keep `aot_size` small enough that running `main` once stays fast (the
+validation test runs it under the JIT), especially for super-linear or
+sorted-key-`Dict` workloads.
 
 [divan]: https://docs.rs/divan

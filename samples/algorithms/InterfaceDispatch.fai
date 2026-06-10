@@ -1,0 +1,35 @@
+module InterfaceDispatch
+
+// Dispatch through an interface in a hot loop: each iteration picks one of three
+// `Scorer` instances and calls its method, so the call goes through a dictionary
+// (the compiled form of an interface instance) rather than a direct call. This
+// measures method-dispatch overhead. Used by the Rust-vs-Fai runtime benchmark.
+interface Scorer =
+  score : Int -> Int
+
+doubler : Scorer
+let doubler = { Scorer with score x = x * 2 }
+
+incer : Scorer
+let incer = { Scorer with score x = x + 1 }
+
+negator : Scorer
+let negator = { Scorer with score x = 0 - x }
+
+// Choose an instance by index, cycling through the three.
+pick : Int -> Scorer
+let pick i =
+  let m = i % 3
+  if m = 0 then doubler else if m = 1 then incer else negator
+
+// Sum (pick i).score i over [0, n), accumulating in tail position.
+loop : Int -> Int -> Int -> Int
+let loop i n acc = if i >= n then acc else loop (i + 1) n (acc + (pick i).score i)
+
+/// The benchmark workload: the dispatched-score sum over [0, n).
+public run : Int -> Int
+let run n = loop 0 n 0
+example: run 3 = 0
+
+public main : Runtime -> Unit
+let main runtime = runtime.console.writeLine (Int.toString (run 400000))

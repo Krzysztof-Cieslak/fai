@@ -1,0 +1,43 @@
+module Mandelbrot
+
+// Sample the Mandelbrot set on an n-by-n grid: iterate z = z² + c a fixed number
+// of times per point and accumulate min(|z|², 4) — a bounded, continuous quantity
+// (rather than an escape count), so the float result is robust to rounding and
+// compares to the reference within tolerance. A float-heavy workload with nested
+// loops and per-iteration branching. Used by the Rust-vs-Fai runtime benchmark.
+maxIter : Int
+let maxIter = 50
+
+// Iterate z = z² + c, k times from (zx, zy), then return min(|z|², 4).
+escape : Float -> Float -> Float -> Float -> Int -> Float
+let escape cx cy zx zy k =
+  if k <= 0 then
+    let m = zx * zx + zy * zy
+    if m < 4.0 then m else 4.0
+  else
+    escape cx cy (zx * zx - zy * zy + cx) (2.0 * zx * zy + cy) (k - 1)
+
+// Grid coordinate of index p in [0, n) over [lo, lo + span).
+coord : Float -> Float -> Int -> Int -> Float
+let coord lo span n p = lo + span * Int.toFloat p / Int.toFloat n
+
+// Accumulate one row (y fixed) across columns, left to right.
+rowSum : Int -> Float -> Int -> Float -> Float
+let rowSum n cy i acc =
+  if i >= n then
+    acc
+  else
+    rowSum n cy (i + 1) (acc + escape (coord (0.0 - 2.0) 2.5 n i) cy 0.0 0.0 maxIter)
+
+// Accumulate the grid row by row, left to right.
+gridSum : Int -> Int -> Float -> Float
+let gridSum n j acc =
+  if j >= n then acc else gridSum n (j + 1) (acc + rowSum n (coord (0.0 - 1.25) 2.5 n j) 0 0.0)
+
+/// The benchmark workload: the clamped-magnitude sum over an n-by-n grid.
+public runF : Int -> Float
+let runF n = gridSum n 0 0.0
+example: runF 1 >= 0.0
+
+public main : Runtime -> Unit
+let main runtime = runtime.console.writeLine (Float.toString (runF 400))

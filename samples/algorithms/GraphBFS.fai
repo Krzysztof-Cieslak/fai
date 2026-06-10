@@ -1,0 +1,39 @@
+module GraphBFS
+
+// Breadth-first reachability over a deterministic directed graph: adjacency is a
+// `Dict` from node to neighbour list, the visited set is a `Set`, and the frontier
+// is a `List` advanced level by level. This combines all three core data
+// structures in one traversal. Used by the Rust-vs-Fai runtime benchmark.
+// Node i points to three others (modulo n).
+neighborsOf : Int -> Int -> List Int
+let neighborsOf n i = [(i + 1) % n, (2 * i + 1) % n, (3 * i + 2) % n]
+
+// Build the adjacency dictionary for nodes [0, n).
+buildGraph : Int -> Int -> Dict Int (List Int) -> Dict Int (List Int)
+let buildGraph i n g =
+  if i >= n then g else buildGraph (i + 1) n (Dict.insert i (neighborsOf n i) g)
+
+// Visit a node: if unseen, mark it and add it to the next frontier.
+visit : (Set Int * List Int) -> Int -> (Set Int * List Int)
+let visit acc node =
+  match acc with
+  | (seen, frontier) ->
+    if Set.member node seen then acc else (Set.insert node seen, node :: frontier)
+
+// Expand the frontier one level, returning the grown visited set.
+bfs : Dict Int (List Int) -> List Int -> Set Int -> Set Int
+let bfs g frontier visited =
+  match frontier with
+  | [] -> visited
+  | _ :: _ ->
+    let expanded = List.concatMap (fun node -> Option.withDefault [] (Dict.get node g)) frontier
+    match List.foldl visit (visited, []) expanded with
+    | (visited2, next) -> bfs g next visited2
+
+/// The benchmark workload: the number of nodes reachable from 0 in an n-node graph.
+public run : Int -> Int
+let run n = Set.size (bfs (buildGraph 0 n Dict.empty) [0] (Set.insert 0 Set.empty))
+example: run 1 = 1
+
+public main : Runtime -> Unit
+let main runtime = runtime.console.writeLine (Int.toString (run 3000))

@@ -485,9 +485,17 @@ cache plus a fast linker (mold/lld).
    comparison spans **runtime** (the `algorithms_jit`/`algorithms_aot` benches) and
    **peak memory** (the `algorithms_mem` bench: each delivered binary self-reports
    its peak resident set size, rendered as a "Fai vs Rust (peak RSS)" table). The
-   full benchmarking guide — every suite, the CI report, and the comparison
-   methodology (including why the JIT and AOT benches' Rust baselines are not
-   comparable) — is **`docs/BENCHMARK.md`**.
+   benchmarked algorithms (the `ALGORITHMS` registry in
+   `crates/fai-tests/src/algorithms.rs`, each a Rust oracle paired with a
+   `samples/algorithms/` module) deliberately span a wide range of runtime shapes —
+   arithmetic/recursion, lists, persistent `Dict`/`Set` (including tuple keys),
+   strings and ADTs, records with `Float` fields, dynamic programming, closures,
+   bitwise intrinsics, and interface dispatch — so a performance change is measured
+   broadly rather than against a few cases; the `registry_is_fully_covered` test
+   keeps the benches and validation in sync with the registry. The full
+   benchmarking guide — every suite, the CI report, and the comparison methodology
+   (including why the JIT and AOT benches' Rust baselines are not comparable) — is
+   **`docs/BENCHMARK.md`**.
 
 The inference solver carries always-on thread-local **work counters** (variable
 resolution clones, occurs-check node visits, free-variable visits — see

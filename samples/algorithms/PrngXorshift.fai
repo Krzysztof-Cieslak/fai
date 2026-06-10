@@ -1,0 +1,29 @@
+module PrngXorshift
+
+// A xorshift64 pseudo-random generator: each step mixes the state with shifts and
+// xors, and the run folds successive states together with xor. This is the only
+// workload that drives the bitwise `Int` intrinsics (`xor`, `shiftLeft`,
+// `shiftRightLogical`) in a hot loop. Used by the Rust-vs-Fai runtime benchmark.
+// One xorshift64 step (the classic 13/7/17 triple).
+next : Int -> Int
+let next x =
+  let a = Int.xor x (Int.shiftLeft x 13)
+  let b = Int.xor a (Int.shiftRightLogical a 7)
+  Int.xor b (Int.shiftLeft b 17)
+
+// Advance the state n times, folding each new state into the accumulator with xor.
+loop : Int -> Int -> Int -> Int -> Int
+let loop i n state acc =
+  if i >= n then
+    acc
+  else
+    let s = next state
+    loop (i + 1) n s (Int.xor acc s)
+
+/// The benchmark workload: the xor of n successive xorshift64 states.
+public run : Int -> Int
+let run n = loop 0 n 88172645463325252 0
+example: run 0 = 0
+
+public main : Runtime -> Unit
+let main runtime = runtime.console.writeLine (Int.toString (run 1000000))

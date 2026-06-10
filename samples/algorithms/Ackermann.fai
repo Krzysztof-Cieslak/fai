@@ -1,0 +1,16 @@
+module Ackermann
+
+// The Ackermann function at m = 3: deep, non-tail recursion that stresses the
+// native call stack and function-call overhead (unlike the wide recursion of
+// Fibonacci). ack(3, n) = 2^(n+3) - 3, so the workload grows fast in both value
+// and recursion depth. Used by the Rust-vs-Fai runtime benchmark.
+ack : Int -> Int -> Int
+let ack m n = if m = 0 then n + 1 else if n = 0 then ack (m - 1) 1 else ack (m - 1) (ack m (n - 1))
+
+/// The benchmark workload: ack(3, n).
+public run : Int -> Int
+let run n = ack 3 n
+example: run 3 = 61
+
+public main : Runtime -> Unit
+let main runtime = runtime.console.writeLine (Int.toString (run 9))

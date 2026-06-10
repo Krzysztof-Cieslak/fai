@@ -1,0 +1,53 @@
+module JsonSerialize
+
+// Build a balanced JSON-like tree of a given size, then serialize it to a string
+// and measure that string's length. This exercises a recursive, multi-constructor
+// algebraic data type and `String` building (`++`, `String.join`, `Int.toString`).
+// Used by the Rust-vs-Fai runtime benchmark.
+type Json =
+  | JNull
+  | JBool Bool
+  | JInt Int
+  | JArr (List Json)
+  | JObj (List (String * Json))
+
+// A leaf chosen by the seed, cycling null / bool / int.
+leaf : Int -> Json
+let leaf seed =
+  let m = seed % 3
+  if m = 0 then JNull else if m = 1 then JBool true else JInt seed
+
+// A balanced tree of `size` nodes: split the budget between two children, choosing
+// an array or object by the seed. Recursion depth is logarithmic in `size`.
+build : Int -> Int -> Json
+let build seed size =
+  if size <= 1 then
+    leaf seed
+  else
+    let half = size / 2
+    if seed % 2 = 0 then
+      JArr [build (seed + 1) half, build (seed + 2) (size - half - 1)]
+    else
+      JObj [("a", build (seed + 1) half), ("b", build (seed + 2) (size - half - 1))]
+
+serField : (String * Json) -> String
+let serField field =
+  match field with
+  | (key, value) -> "\"" ++ key ++ "\":" ++ serialize value
+
+serialize : Json -> String
+let serialize j =
+  match j with
+  | JNull -> "null"
+  | JBool b -> if b then "true" else "false"
+  | JInt k -> Int.toString k
+  | JArr items -> "[" ++ String.join "," (List.map serialize items) ++ "]"
+  | JObj fields -> "{" ++ String.join "," (List.map serField fields) ++ "}"
+
+/// The benchmark workload: the length of the serialized n-node JSON tree.
+public run : Int -> Int
+let run n = String.length (serialize (build 0 n))
+example: run 1 = 4
+
+public main : Runtime -> Unit
+let main runtime = runtime.console.writeLine (Int.toString (run 30000))

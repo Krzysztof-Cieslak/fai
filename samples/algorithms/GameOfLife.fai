@@ -1,0 +1,55 @@
+module GameOfLife
+
+// Conway's Game of Life on an unbounded grid: live cells are an ordered `Set` of
+// (x, y) coordinate pairs, and each generation tallies neighbour counts in a
+// `Dict` keyed by the same pairs. This exercises `Set`/`Dict` with tuple keys
+// (structural comparison on tuples) and the churn of rebuilding both each step.
+// Used by the Rust-vs-Fai runtime benchmark.
+// The eight neighbours of a cell.
+neighbors : (Int * Int) -> List (Int * Int)
+let neighbors cell =
+  match cell with
+  | (x, y) ->
+    [(x - 1, y - 1), (x, y - 1), (x + 1, y - 1), (x - 1, y), (x + 1, y), (x - 1, y + 1), (x, y + 1), (x + 1, y + 1)]
+
+// Add one to a cell's neighbour count.
+bump : Dict (Int * Int) Int -> (Int * Int) -> Dict (Int * Int) Int
+let bump d cell = Dict.insert cell (Option.withDefault 0 (Dict.get cell d) + 1) d
+
+// Tally neighbour counts contributed by every live cell.
+countNeighbors : List (Int * Int) -> Dict (Int * Int) Int
+let countNeighbors live =
+  List.foldl (fun d cell -> List.foldl bump d (neighbors cell)) Dict.empty live
+
+// A cell lives next generation with three neighbours, or two if already alive.
+survives : Set (Int * Int) -> (Int * Int) -> Int -> Bool
+let survives live cell count =
+  if count = 3 then true else if count = 2 then Set.member cell live else false
+
+// Keep one (cell, count) entry if the cell survives.
+keep : Set (Int * Int) -> Set (Int * Int) -> ((Int * Int) * Int) -> Set (Int * Int)
+let keep live acc entry =
+  match entry with
+  | (cell, count) -> if survives live cell count then Set.insert cell acc else acc
+
+// One generation: count neighbours, then keep the surviving cells.
+step : Set (Int * Int) -> Set (Int * Int)
+let step live = List.foldl (keep live) Set.empty (Dict.toList (countNeighbors (Set.toList live)))
+
+fromList : List (Int * Int) -> Set (Int * Int)
+let fromList cells = List.foldl (fun s c -> Set.insert c s) Set.empty cells
+
+// The R-pentomino: a small seed that evolves for over a thousand generations.
+seed : Set (Int * Int)
+let seed = fromList [(1, 0), (2, 0), (0, 1), (1, 1), (1, 2)]
+
+simulate : Int -> Int -> Set (Int * Int) -> Set (Int * Int)
+let simulate i n live = if i >= n then live else simulate (i + 1) n (step live)
+
+/// The benchmark workload: the live-cell count after n generations.
+public run : Int -> Int
+let run n = Set.size (simulate 0 n seed)
+example: run 0 = 5
+
+public main : Runtime -> Unit
+let main runtime = runtime.console.writeLine (Int.toString (run 80))

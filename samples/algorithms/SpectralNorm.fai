@@ -1,0 +1,64 @@
+module SpectralNorm
+
+// The spectral norm of the infinite matrix A(i, j) = 1 / ((i+j)(i+j+1)/2 + i + 1)
+// by ten rounds of power iteration: v = AᵀA u then u = AᵀA v. The vectors are
+// `List Float`, so this is a float-heavy reduction with a final `sqrt`. All sums
+// accumulate left to right (tail-recursive) to match the reference exactly. Used
+// by the Rust-vs-Fai runtime benchmark.
+evalA : Int -> Int -> Float
+let evalA i j =
+  let s = i + j
+  1.0 / Int.toFloat (s * (s + 1) / 2 + i + 1)
+
+// Σ_j A(i, j) * u[j], accumulated left to right.
+rowTimes : Int -> Int -> Float -> List Float -> Float
+let rowTimes i j acc u =
+  match u with
+  | [] -> acc
+  | uj :: rest -> rowTimes i (j + 1) (acc + evalA i j * uj) rest
+
+// Σ_j A(j, i) * u[j] — the transpose, accumulated left to right.
+colTimes : Int -> Int -> Float -> List Float -> Float
+let colTimes i j acc u =
+  match u with
+  | [] -> acc
+  | uj :: rest -> colTimes i (j + 1) (acc + evalA j i * uj) rest
+
+mulAv : Int -> List Float -> List Float
+let mulAv n u = List.map (fun i -> rowTimes i 0 0.0 u) (List.range 0 n)
+
+mulAtv : Int -> List Float -> List Float
+let mulAtv n u = List.map (fun i -> colTimes i 0 0.0 u) (List.range 0 n)
+
+mulAtAv : Int -> List Float -> List Float
+let mulAtAv n u = mulAtv n (mulAv n u)
+
+dot : Float -> List Float -> List Float -> Float
+let dot acc xs ys =
+  match xs with
+  | [] -> acc
+  | x :: xrest ->
+    match ys with
+    | [] -> acc
+    | y :: yrest -> dot (acc + x * y) xrest yrest
+
+// Carry (u, v) through k power-iteration rounds: v = AᵀA u, then u = AᵀA v.
+rounds : Int -> Int -> List Float -> List Float -> List Float * List Float
+let rounds n k u v =
+  if k <= 0 then
+    (u, v)
+  else
+    let v2 = mulAtAv n u
+    let u2 = mulAtAv n v2
+    rounds n (k - 1) u2 v2
+
+/// The benchmark workload: the spectral norm estimate for an n-vector.
+public runF : Int -> Float
+let runF n =
+  let u0 = List.map (fun i -> 1.0) (List.range 0 n)
+  match rounds n 10 u0 u0 with
+  | (u, v) -> Float.sqrt (dot 0.0 u v / dot 0.0 v v)
+example: runF 1 = 1.0
+
+public main : Runtime -> Unit
+let main runtime = runtime.console.writeLine (Float.toString (runF 1000))

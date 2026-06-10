@@ -1,0 +1,34 @@
+module QuickSort
+
+// Quicksort over a linked `List`: partition the tail around the head pivot with
+// two filters, sort each side, and concatenate. A position-weighted checksum of
+// the sorted list (Σ i * x[i]) detects any ordering error, so the result really
+// depends on the sort. A different allocation/partition pattern than the merge
+// sort in `MergeSort`. Used by the Rust-vs-Fai runtime benchmark.
+quicksort : List Int -> List Int
+let quicksort xs =
+  match xs with
+  | [] -> []
+  | pivot :: rest ->
+    let smaller = List.filter (fun x -> x < pivot) rest
+    let greaterEq = List.filter (fun x -> x >= pivot) rest
+    List.append (quicksort smaller) (pivot :: quicksort greaterEq)
+
+// A scrambled input of n values via a multiplicative hash modulo n.
+gen : Int -> List Int
+let gen n = List.map (fun k -> (k * 2654435761 + 12345) % n) (List.range 0 n)
+
+// Σ i * x[i], accumulated left to right.
+checksum : Int -> Int -> List Int -> Int
+let checksum i acc xs =
+  match xs with
+  | [] -> acc
+  | x :: rest -> checksum (i + 1) (acc + i * x) rest
+
+/// The benchmark workload: the position-weighted checksum of the sorted input.
+public run : Int -> Int
+let run n = checksum 0 0 (quicksort (gen n))
+example: run 3 = 5
+
+public main : Runtime -> Unit
+let main runtime = runtime.console.writeLine (Int.toString (run 20000))
