@@ -67,22 +67,24 @@ public interface Ord 'a =
 // through a `Runtime`. A function names only the capabilities it needs, so its
 // type reveals its reach. Unlike the operator interfaces these are ordinary,
 // user-instantiable interfaces (a program may supply its own console, say).
+// Each method is annotated with its own capability as an effect, so calling it
+// (directly or through a captured closure) shows up in a function's effect row.
 public interface Console =
-  writeLine : String -> Unit
+  writeLine : String -> Unit / { Console }
 
 public interface Clock =
-  now : Unit -> Int
+  now : Unit -> Int / { Clock }
 
 public interface Random =
-  nextInt : Int -> Int
+  nextInt : Int -> Int / { Random }
 
 public interface FileSystem =
-  readFile : String -> Result String String
-  writeFile : String -> String -> Result Unit String
+  readFile : String -> Result String String / { FileSystem }
+  writeFile : String -> String -> Result Unit String / { FileSystem }
 
 public interface Env =
-  args : Unit -> List String
-  get : String -> Option String
+  args : Unit -> List String / { Env }
+  get : String -> Option String / { Env }
 
 /// The capability bundle `main` receives: the host's console, clock, random,
 /// file system, and environment. Request only the fields you need (an open
