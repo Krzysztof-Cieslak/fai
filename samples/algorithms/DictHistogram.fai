@@ -1,0 +1,33 @@
+module DictHistogram
+
+// Tally `n` keys into an ordered `Dict` (a balanced-ish binary search tree),
+// incrementing each bucket's count, then weigh the result. Every insert walks the
+// tree comparing keys structurally, so this measures `Dict` build/query and the
+// `compare` hot path. Used by the Rust-vs-Fai runtime benchmark.
+buckets : Int
+let buckets = 256
+
+// Insert i % buckets for i in [0, n), accumulating a count per bucket. The
+// recursion threads the dictionary and is tail-recursive, so it compiles to a loop.
+tally : Int -> Int -> Dict Int Int -> Dict Int Int
+let tally i n d =
+  if i >= n then
+    d
+  else
+    let key = i % buckets
+    let current = Option.withDefault 0 (Dict.get key d)
+    tally (i + 1) n (Dict.insert key (current + 1) d)
+
+// Weigh one (key, count) entry into the running total: an order-independent sum.
+addWeight : Int -> (Int * Int) -> Int
+let addWeight acc entry =
+  match entry with
+  | (key, count) -> acc + key * count
+
+/// The benchmark workload: the count-weighted sum of an n-key histogram.
+public run : Int -> Int
+let run n = List.foldl addWeight 0 (Dict.toList (tally 0 n Dict.empty))
+example: run 3 = 3
+
+public main : Runtime -> Unit
+let main runtime = runtime.console.writeLine (Int.toString (run 30000))

@@ -1,0 +1,96 @@
+module ExprEval
+
+// A recursive-descent parser and evaluator for arithmetic expressions: a token
+// list is parsed into an `Expr` tree honouring `*` over `+`/`-`, then evaluated.
+// The parser threads `Option` results through the token stream, building a nested
+// algebraic data type. (Tokens are generated programmatically — the standard
+// library has no string-to-int parsing.) Used by the Rust-vs-Fai runtime benchmark.
+type Token =
+  | TNum Int
+  | TPlus
+  | TMinus
+  | TStar
+
+type Expr =
+  | Num Int
+  | Add Expr Expr
+  | Sub Expr Expr
+  | Mul Expr Expr
+
+// A factor is a single number.
+parseFactor : List Token -> Option (Expr * List Token)
+let parseFactor tokens =
+  match tokens with
+  | TNum k :: rest -> Some (Num k, rest)
+  | _ -> None
+
+// A term is a factor followed by zero or more `* factor`.
+parseTerm : List Token -> Option (Expr * List Token)
+let parseTerm tokens =
+  match parseFactor tokens with
+  | None -> None
+  | Some (left, rest) -> parseTermTail left rest
+
+parseTermTail : Expr -> List Token -> Option (Expr * List Token)
+let parseTermTail left tokens =
+  match tokens with
+  | TStar :: rest ->
+    match parseFactor rest with
+    | None -> None
+    | Some (right, rest2) -> parseTermTail (Mul left right) rest2
+  | _ -> Some (left, tokens)
+
+// An expression is a term followed by zero or more `(+|-) term`.
+parseExpr : List Token -> Option (Expr * List Token)
+let parseExpr tokens =
+  match parseTerm tokens with
+  | None -> None
+  | Some (left, rest) -> parseExprTail left rest
+
+parseExprTail : Expr -> List Token -> Option (Expr * List Token)
+let parseExprTail left tokens =
+  match tokens with
+  | TPlus :: rest ->
+    match parseTerm rest with
+    | None -> None
+    | Some (right, rest2) -> parseExprTail (Add left right) rest2
+  | TMinus :: rest ->
+    match parseTerm rest with
+    | None -> None
+    | Some (right, rest2) -> parseExprTail (Sub left right) rest2
+  | _ -> Some (left, tokens)
+
+eval : Expr -> Int
+let eval e =
+  match e with
+  | Num k -> k
+  | Add a b -> eval a + eval b
+  | Sub a b -> eval a - eval b
+  | Mul a b -> eval a * eval b
+
+// The operator between numbers i and i+1, cycling +, *, -.
+opFor : Int -> Token
+let opFor i =
+  let m = i % 3
+  if m = 0 then TPlus else if m = 1 then TStar else TMinus
+
+// Generate `count` numbers separated by cycling operators.
+genTokens : Int -> Int -> List Token
+let genTokens i count =
+  if i >= count then
+    []
+  else if i + 1 >= count then
+    [TNum (i % 9 + 1)]
+  else
+    TNum (i % 9 + 1) :: opFor i :: genTokens (i + 1) count
+
+/// The benchmark workload: evaluate a generated n-number expression.
+public run : Int -> Int
+let run n =
+  match parseExpr (genTokens 0 n) with
+  | None -> 0
+  | Some (e, _) -> eval e
+example: run 3 = 7
+
+public main : Runtime -> Unit
+let main runtime = runtime.console.writeLine (Int.toString (run 4000))

@@ -1,0 +1,50 @@
+module Fannkuch
+
+// Fannkuch-redux: over every permutation of [1, n], repeatedly reverse the first
+// p[0] elements until the head is 1, and report the maximum number of reversals.
+// This is permutation-generation and list-reversal heavy (linked-list indexing is
+// O(n), so the size is kept small). Used by the Rust-vs-Fai runtime benchmark.
+// Reverse the first k elements of a list.
+reverseFirst : Int -> List Int -> List Int
+let reverseFirst k xs = List.append (List.reverse (List.take k xs)) (List.drop k xs)
+
+// Count flips: reverse the leading p[0] elements until the head reaches 1.
+flipsFrom : Int -> List Int -> Int
+let flipsFrom acc perm =
+  match perm with
+  | [] -> acc
+  | first :: _ -> if first <= 1 then acc else flipsFrom (acc + 1) (reverseFirst first perm)
+
+flips : List Int -> Int
+let flips perm = flipsFrom 0 perm
+
+// Remove the first occurrence of y.
+removeFirst : Int -> List Int -> List Int
+let removeFirst y xs =
+  match xs with
+  | [] -> []
+  | x :: rest -> if x = y then rest else x :: removeFirst y rest
+
+// Every permutation of a (duplicate-free) list.
+perms : List Int -> List (List Int)
+let perms xs =
+  match xs with
+  | [] -> [[]]
+  | _ :: _ -> List.concatMap (fun x -> List.map (fun p -> x :: p) (perms (removeFirst x xs))) xs
+
+// The maximum flip count over a list of permutations, accumulated left to right.
+maxFlips : Int -> List (List Int) -> Int
+let maxFlips acc ps =
+  match ps with
+  | [] -> acc
+  | p :: rest ->
+    let f = flips p
+    maxFlips (if f > acc then f else acc) rest
+
+/// The benchmark workload: the maximum pancake-flip count over permutations of [1, n].
+public run : Int -> Int
+let run n = maxFlips 0 (perms (List.range 1 (n + 1)))
+example: run 3 = 2
+
+public main : Runtime -> Unit
+let main runtime = runtime.console.writeLine (Int.toString (run 8))

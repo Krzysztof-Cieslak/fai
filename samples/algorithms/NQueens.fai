@@ -1,0 +1,40 @@
+module NQueens
+
+// Count the solutions to the n-queens puzzle by backtracking: the placement so
+// far is a list of chosen columns (most recent first), and each row tries every
+// safe column. This exercises recursion, list allocation, and higher-order
+// filtering. Used by the Rust-vs-Fai runtime benchmark.
+// Whether a queen in column c is safe against the placed queens, where d is the
+// row distance to the nearest placed queen (1 for the immediately previous row).
+safeFrom : Int -> Int -> List Int -> Bool
+let safeFrom c d placed =
+  match placed with
+  | [] -> true
+  | q :: rest ->
+    if q = c then
+      false
+    else if q - c = d then false else if c - q = d then false else safeFrom c (d + 1) rest
+
+safe : Int -> List Int -> Bool
+let safe c placed = safeFrom c 1 placed
+
+// Count completions given the board size, the current row, and the placement.
+solve : Int -> Int -> List Int -> Int
+let solve size row placed = if row >= size then 1 else countCols size row placed 0
+
+// Sum solutions over every column choice for the current row.
+countCols : Int -> Int -> List Int -> Int -> Int
+let countCols size row placed c =
+  if c >= size then
+    0
+  else
+    let here = if safe c placed then solve size (row + 1) (c :: placed) else 0
+    here + countCols size row placed (c + 1)
+
+/// The benchmark workload: the number of solutions to the n-queens puzzle.
+public run : Int -> Int
+let run n = solve n 0 []
+example: run 4 = 2
+
+public main : Runtime -> Unit
+let main runtime = runtime.console.writeLine (Int.toString (run 11))

@@ -1,0 +1,44 @@
+module Particles
+
+// Integrate a small set of particles under a central spring force for n steps,
+// rebuilding each body with `{ b with ... }` every step. This exercises record
+// construction and in-place update, field projection, and boxed `Float` fields
+// (a `Float` inside a record is boxed). Used by the Rust-vs-Fai runtime benchmark.
+type Body = { vx : Float, vy : Float, x : Float, y : Float }
+
+dt : Float
+let dt = 0.01
+
+// One semi-implicit Euler step under acceleration a = -position (a spring toward
+// the origin): update the velocity, then the position from the new velocity.
+advance : Body -> Body
+let advance b =
+  let nvx = b.vx + dt * (0.0 - b.x)
+  let nvy = b.vy + dt * (0.0 - b.y)
+  { b with vx = nvx, vy = nvy, x = b.x + dt * nvx, y = b.y + dt * nvy }
+
+makeBody : Int -> Body
+let makeBody k = { vx = 0.0, vy = 0.0, x = Int.toFloat k + 1.0, y = Int.toFloat k + 2.0 }
+
+initial : List Body
+let initial = List.map makeBody (List.range 0 5)
+
+// Advance every body one step.
+step : List Body -> List Body
+let step bodies = List.map advance bodies
+
+// Run n steps, tail-recursively.
+simulate : Int -> Int -> List Body -> List Body
+let simulate i n bodies = if i >= n then bodies else simulate (i + 1) n (step bodies)
+
+// Sum of every body's x and y — an order-stable checksum of the final state.
+total : List Body -> Float
+let total bodies = List.foldl (fun acc b -> acc + b.x + b.y) 0.0 bodies
+
+/// The benchmark workload: the position checksum after n integration steps.
+public runF : Int -> Float
+let runF n = total (simulate 0 n initial)
+example: runF 0 = 35.0
+
+public main : Runtime -> Unit
+let main runtime = runtime.console.writeLine (Float.toString (runF 100000))

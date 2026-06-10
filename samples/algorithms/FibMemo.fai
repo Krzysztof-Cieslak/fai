@@ -1,0 +1,30 @@
+module FibMemo
+
+// Fibonacci by top-down memoization: results are cached in a `Dict` threaded
+// through the recursion, so each value is computed once and looked up thereafter.
+// This exercises `Dict` get/insert inside recursion and contrasts the naive,
+// exponential `Fib`. Sums wrap on overflow (two's complement), like the reference.
+// Used by the Rust-vs-Fai runtime benchmark.
+// Return fib(k) and the (possibly extended) memo.
+fibMemo : Int -> Dict Int Int -> (Int * Dict Int Int)
+let fibMemo k memo =
+  if k < 2 then
+    (k, memo)
+  else
+    match Dict.get k memo with
+    | Some v -> (v, memo)
+    | None ->
+      match fibMemo (k - 1) memo with
+      | (a, m1) ->
+        match fibMemo (k - 2) m1 with
+        | (b, m2) -> (a + b, Dict.insert k (a + b) m2)
+
+/// The benchmark workload: the nth Fibonacci number (wrapping), memoized.
+public run : Int -> Int
+let run n =
+  match fibMemo n Dict.empty with
+  | (v, _) -> v
+example: run 10 = 55
+
+public main : Runtime -> Unit
+let main runtime = runtime.console.writeLine (Int.toString (run 4000))

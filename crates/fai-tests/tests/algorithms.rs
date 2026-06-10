@@ -21,7 +21,7 @@ use fai_driver::{TestConfig, jit_run_program, test};
 use fai_runtime as rt;
 use fai_span::SourceId;
 use fai_syntax::parse_module;
-use fai_tests::algorithms::{Oracle, by_module};
+use fai_tests::algorithms::{ALGORITHMS, Oracle, by_module};
 use fai_tests::check_source_diagnostics;
 
 static LOCK: Mutex<()> = Mutex::new(());
@@ -132,4 +132,162 @@ fn binary_trees_sample_is_valid() {
 #[test]
 fn pi_sample_is_valid() {
     validate("Pi");
+}
+
+#[test]
+fn dict_histogram_sample_is_valid() {
+    validate("DictHistogram");
+}
+
+#[test]
+fn word_count_sample_is_valid() {
+    validate("WordCount");
+}
+
+#[test]
+fn map_sum_shared_sample_is_valid() {
+    validate("MapSumShared");
+}
+
+#[test]
+fn set_dedup_sample_is_valid() {
+    validate("SetDedup");
+}
+
+#[test]
+fn fold_pipeline_sample_is_valid() {
+    validate("FoldPipeline");
+}
+
+#[test]
+fn interface_dispatch_sample_is_valid() {
+    validate("InterfaceDispatch");
+}
+
+#[test]
+fn particles_sample_is_valid() {
+    validate("Particles");
+}
+
+#[test]
+fn nqueens_sample_is_valid() {
+    validate("NQueens");
+}
+
+#[test]
+fn matrix_multiply_sample_is_valid() {
+    validate("MatrixMultiply");
+}
+
+#[test]
+fn levenshtein_sample_is_valid() {
+    validate("Levenshtein");
+}
+
+#[test]
+fn game_of_life_sample_is_valid() {
+    validate("GameOfLife");
+}
+
+#[test]
+fn spectral_norm_sample_is_valid() {
+    validate("SpectralNorm");
+}
+
+#[test]
+fn mandelbrot_sample_is_valid() {
+    validate("Mandelbrot");
+}
+
+#[test]
+fn ackermann_sample_is_valid() {
+    validate("Ackermann");
+}
+
+#[test]
+fn prng_xorshift_sample_is_valid() {
+    validate("PrngXorshift");
+}
+
+#[test]
+fn expr_eval_sample_is_valid() {
+    validate("ExprEval");
+}
+
+#[test]
+fn graph_bfs_sample_is_valid() {
+    validate("GraphBFS");
+}
+
+#[test]
+fn coin_change_sample_is_valid() {
+    validate("CoinChange");
+}
+
+#[test]
+fn fib_memo_sample_is_valid() {
+    validate("FibMemo");
+}
+
+#[test]
+fn quicksort_sample_is_valid() {
+    validate("QuickSort");
+}
+
+#[test]
+fn sieve_sample_is_valid() {
+    validate("Sieve");
+}
+
+#[test]
+fn nbody_sample_is_valid() {
+    validate("NBody");
+}
+
+#[test]
+fn fannkuch_sample_is_valid() {
+    validate("Fannkuch");
+}
+
+#[test]
+fn union_find_sample_is_valid() {
+    validate("UnionFind");
+}
+
+#[test]
+fn json_serialize_sample_is_valid() {
+    validate("JsonSerialize");
+}
+
+/// The four hand-maintained algorithm lists must not drift from the registry: the
+/// two runtime benches (`algorithms_jit`/`algorithms_aot`) name each module in a
+/// `algorithm_benches!` row, and this file declares a `validate` test per module.
+/// `algorithms_mem` and `algo-baseline` iterate the registry directly, so they
+/// need no guard. Reading the sources keeps a future registry addition from
+/// silently skipping a bench or its validation.
+#[test]
+fn registry_is_fully_covered() {
+    let jit = include_str!("../benches/algorithms_jit.rs");
+    let aot = include_str!("../benches/algorithms_aot.rs");
+    let here = include_str!("algorithms.rs");
+    for algo in ALGORITHMS {
+        let benched = format!("\"{}\"", algo.module);
+        assert!(
+            jit.contains(&benched),
+            "{} is registered but not benched in algorithms_jit.rs",
+            algo.module
+        );
+        assert!(
+            aot.contains(&benched),
+            "{} is registered but not benched in algorithms_aot.rs",
+            algo.module
+        );
+        let validated = format!("validate(\"{}\")", algo.module);
+        assert!(
+            here.contains(&validated),
+            "{} is registered but has no validate(\"{}\") test",
+            algo.module,
+            algo.module
+        );
+    }
 }

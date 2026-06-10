@@ -1,0 +1,70 @@
+module NBody
+
+// An all-pairs gravitational n-body simulation over a small set of bodies for n
+// steps: each step accumulates the pairwise inverse-square forces (with a `sqrt`
+// for the distance), updates velocities, then positions. This exercises records
+// with boxed `Float` fields, a record accumulator, and floating-point math. Used
+// by the Rust-vs-Fai runtime benchmark.
+type Body = { mass : Float, vx : Float, vy : Float, vz : Float, x : Float, y : Float, z : Float }
+
+type Accel = { ax : Float, ay : Float, az : Float, idx : Int }
+
+dt : Float
+let dt = 0.01
+
+// Five bodies at distinct positions (so no pair coincides), at rest.
+makeBody : Int -> Body
+let makeBody i =
+  { mass = 1.0 + Int.toFloat (i % 5), vx = 0.0, vy = 0.0, vz = 0.0, x = Int.toFloat i, y = Int.toFloat (i * i % 7), z = Int.toFloat (i % 3) }
+
+initial : List Body
+let initial = List.map makeBody (List.range 0 5)
+
+// Add the acceleration on `me` from one other body, skipping `me` itself (the
+// body whose index equals `meIdx`). The accumulator carries the running index.
+addAccel : Int -> Body -> Accel -> Body -> Accel
+let addAccel meIdx me acc o =
+  if acc.idx = meIdx then
+    { acc with idx = acc.idx + 1 }
+  else
+    let dx = o.x - me.x
+    let dy = o.y - me.y
+    let dz = o.z - me.z
+    let d2 = dx * dx + dy * dy + dz * dz
+    let f = o.mass / (d2 * Float.sqrt d2)
+    { ax = acc.ax + f * dx, ay = acc.ay + f * dy, az = acc.az + f * dz, idx = acc.idx + 1 }
+
+bodyAt : List Body -> Int -> Body
+let bodyAt bodies i =
+  match bodies with
+  | [] -> makeBody 0
+  | b :: rest -> if i <= 0 then b else bodyAt rest (i - 1)
+
+// New velocity of the body at index meIdx after summing all pairwise forces.
+newVel : List Body -> Int -> Body
+let newVel bodies meIdx =
+  let me = bodyAt bodies meIdx
+  let a = List.foldl (addAccel meIdx me) { ax = 0.0, ay = 0.0, az = 0.0, idx = 0 } bodies
+  { me with vx = me.vx + dt * a.ax, vy = me.vy + dt * a.ay, vz = me.vz + dt * a.az }
+
+advancePos : Body -> Body
+let advancePos b = { b with x = b.x + dt * b.vx, y = b.y + dt * b.vy, z = b.z + dt * b.vz }
+
+// One step: update every velocity from the current state, then every position.
+advance : List Body -> List Body
+let advance bodies =
+  List.map advancePos (List.map (fun i -> newVel bodies i) (List.range 0 (List.length bodies)))
+
+simulate : Int -> Int -> List Body -> List Body
+let simulate i n bodies = if i >= n then bodies else simulate (i + 1) n (advance bodies)
+
+total : List Body -> Float
+let total bodies = List.foldl (fun acc b -> acc + b.x + b.y + b.z) 0.0 bodies
+
+/// The benchmark workload: the position checksum after n simulation steps.
+public runF : Int -> Float
+let runF n = total (simulate 0 n initial)
+example: runF 0 = 23.0
+
+public main : Runtime -> Unit
+let main runtime = runtime.console.writeLine (Float.toString (runF 100000))
