@@ -1924,5 +1924,39 @@ Editor integration:
     on an owned value) would be a use-after-free, so it needs its own design and
     test scrutiny — and the hot tail recursion is already compiled to loops.
 
+- **D116 `Dict`/`Set` are weight-balanced search trees with a fuller API.** The
+  ordered map and set were plain (unbalanced) binary search trees, so inserting
+  keys in sorted order — what most map/set code does — built a linear chain and
+  made every operation O(n) (the benchmark `Dict`/`Set` workloads ran O(n²)). They
+  are now **weight-balanced** (bounded-balance) trees: each node caches its
+  subtree `size`, balance is restored by rotations under the verified parameters
+  `delta = 3`, `ratio = 2` (correct under deletion), so all operations are O(log n)
+  regardless of insertion order and `size` is O(1). The change is internal — the
+  types stay `opaque`, so the public surface (and every caller) is unaffected — and
+  it removes a latent stack overflow (a sorted build no longer recurses O(n) deep).
+  The API grew to a full ordered-collection surface: `singleton`/`isEmpty`/
+  `remove`/`update`/`keys`/`values`/`map`/`filter`/`foldl`/`foldr`/`union`/
+  `intersection`/`difference` for `Dict` (plus `isSubset` for `Set`), the bulk
+  set operations built on `join`/`split`.
+  - **FBIP on the hot path.** `insert`/`remove` keep their non-rotating
+    reconstruction *in the function body* (not a smart-constructor or `balance`
+    helper), so reference-count reuse (D77) recycles the matched node in place when
+    the tree is uniquely owned: a unique build allocates no spine, a shared one
+    copies. `Dict.map` preserves shape, so it too is rewritten in place. The
+    (amortized O(1)) rebalancing rotations route through the separate `balance`,
+    which allocates — so a sorted build is O(n) allocations, not the O(1)-per-op a
+    fully-in-place rotation would give. Inlining the rotations to recycle their
+    cells too needs either a Core inliner or inter-procedural reuse-token passing
+    (both tracked as future work); the time win (O(n²)→O(n log n)) is independent of
+    it. A differential allocation-count test pins the in-place `Dict.map`.
+  - **Two constraints the rewrite had to respect.** (1) The contract generator
+    only honors a *monomorphic* `Arbitrary T` override, not a parametric combinator,
+    so a synthesized `Dict`/`Set` value carries a meaningless cached `size` (a law
+    reading it would fail). The `forall` laws therefore build trees through the
+    public API from generated key *lists* and observe via `toList`/`get`/`member`/
+    `size`. (2) A balanced tree's structural equality is shape-sensitive (two maps
+    with the same entries built differently are unequal), so laws compare via
+    `toList`, never `=` on a map/set.
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

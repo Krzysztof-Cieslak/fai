@@ -1,27 +1,117 @@
 module Dict
 
-// An ordered map keyed by any comparable type, backed by a binary search tree.
+// An ordered map keyed by any comparable type, backed by a weight-balanced
+// search tree (a bounded-balance BST: a node's heavier child is at most `delta`
+// times the lighter one, kept so by rotations). Operations are O(log n) whatever
+// the insertion order — a sorted run no longer degrades to a linear chain. Each
+// node caches its subtree `size`, so `size` is O(1).
+//
 // The type is opaque: its node constructors are private to this module, so
 // dictionaries are built and queried only through these operations. `Prelude`
 // re-exports the name `Dict` so it stays usable unqualified.
+//
+// `insert`/`remove` keep their non-rotating reconstruction *in this function's
+// body* (not in a helper), so reference-count reuse recycles the matched node in
+// place when the tree is uniquely owned — a unique build allocates no spine, a
+// shared one copies. The (amortized O(1)) rebalancing rotations go through
+// `balance`, which allocates.
 public opaque type Dict 'k 'v =
   | DictEmpty
-  | DictNode (Dict 'k 'v) 'k 'v (Dict 'k 'v)
+  | DictNode Int (Dict 'k 'v) 'k 'v (Dict 'k 'v)
+
+// The balance bound (`delta`) and the single-vs-double rotation threshold
+// (`ratio`): the verified weight-balanced parameters that stay correct under
+// deletion.
+delta : Int
+let delta = 3
+
+ratio : Int
+let ratio = 2
+
+// A subtree's cached entry count, read in O(1).
+public size : Dict 'k 'v -> Int
+let size d =
+  match d with
+  | DictEmpty -> 0
+  | DictNode s _ _ _ _ -> s
+
+// Smart constructor: a node whose size is its children's plus one. Used on the
+// rare rotation/bulk paths (not the hot insert/remove spine, which builds inline
+// so the matched cell is reused).
+bin : Dict 'k 'v -> 'k -> 'v -> Dict 'k 'v -> Dict 'k 'v
+let bin l k v r = DictNode (size l + size r + 1) l k v r
+
+// Restore the balance invariant when one side may be up to one insertion/deletion
+// too heavy: rotate the heavy side, choosing a single or double rotation by the
+// inner subtree's weight. Allocates the rebalanced nodes.
+balance : Dict 'k 'v -> 'k -> 'v -> Dict 'k 'v -> Dict 'k 'v
+let balance l k v r =
+  let sl = size l
+  let sr = size r
+  if sl + sr <= 1 then
+    DictNode (sl + sr + 1) l k v r
+  else if sr > delta * sl then
+    match r with
+    | DictEmpty -> DictNode (sl + sr + 1) l k v r
+    | DictNode _ rl rk rv rr ->
+      if size rl < ratio * size rr then
+        bin (bin l k v rl) rk rv rr
+      else
+        match rl with
+        | DictEmpty -> bin (bin l k v rl) rk rv rr
+        | DictNode _ rll rlk rlv rlr -> bin (bin l k v rll) rlk rlv (bin rlr rk rv rr)
+  else if sl > delta * sr then
+    match l with
+    | DictEmpty -> DictNode (sl + sr + 1) l k v r
+    | DictNode _ ll lk lv lr ->
+      if size lr < ratio * size ll then
+        bin ll lk lv (bin lr k v r)
+      else
+        match lr with
+        | DictEmpty -> bin ll lk lv (bin lr k v r)
+        | DictNode _ lrl lrk lrv lrr -> bin (bin ll lk lv lrl) lrk lrv (bin lrr k v r)
+  else
+    DictNode (sl + sr + 1) l k v r
 
 /// The empty dictionary.
 public empty : Dict 'k 'v
 let empty = DictEmpty
-example: size empty = 0
 
-/// Insert or replace the value for `key`.
+/// A dictionary of one entry.
+public singleton : 'k -> 'v -> Dict 'k 'v
+let singleton k v = DictNode 1 DictEmpty k v DictEmpty
+example: size (singleton 1 10) = 1
+
+/// Whether the dictionary has no entries.
+public isEmpty : Dict 'k 'v -> Bool
+let isEmpty d =
+  match d with
+  | DictEmpty -> true
+  | DictNode _ _ _ _ _ -> false
+example: isEmpty empty
+example: isEmpty (singleton 1 10) = false
+
+/// Insert or replace the value for `key`. The non-rotating rebuild is inline, so
+/// a uniquely owned tree is updated in place; only an unbalancing insert rotates.
 public insert : 'k -> 'v -> Dict 'k 'v -> Dict 'k 'v
 let insert key value d =
   match d with
-  | DictEmpty -> DictNode DictEmpty key value DictEmpty
-  | DictNode l k v r ->
+  | DictEmpty -> DictNode 1 DictEmpty key value DictEmpty
+  | DictNode s l k v r ->
     if key < k then
-      DictNode (insert key value l) k v r
-    else if key > k then DictNode l k v (insert key value r) else DictNode l key value r
+      let l2 = insert key value l
+      if size l2 > delta * size r then
+        balance l2 k v r
+      else
+        DictNode (size l2 + size r + 1) l2 k v r
+    else if key > k then
+      let r2 = insert key value r
+      if size r2 > delta * size l then
+        balance l k v r2
+      else
+        DictNode (size l + size r2 + 1) l k v r2
+    else
+      DictNode s l key value r
 example: get 2 (insert 2 20 empty) = Some 20
 example: size (insert 1 10 (insert 1 99 empty)) = 1
 
@@ -30,7 +120,7 @@ public get : 'k -> Dict 'k 'v -> Option 'v
 let get key d =
   match d with
   | DictEmpty -> None
-  | DictNode l k v r -> if key < k then get key l else if key > k then get key r else Some v
+  | DictNode _ l k v r -> if key < k then get key l else if key > k then get key r else Some v
 example: get 2 (insert 1 10 (insert 2 20 empty)) = Some 20
 forall k: get k empty = None
 
@@ -40,19 +130,219 @@ let member key d = Option.isSome (get key d)
 example: member 2 (insert 2 20 empty)
 forall k: member k empty = false
 
-/// The number of entries.
-public size : Dict 'k 'v -> Int
-let size d =
-  match d with
-  | DictEmpty -> 0
-  | DictNode l _ _ r -> 1 + size l + size r
-example: size (insert 1 10 empty) = 1
-forall d: size d >= 0
+// Detach the smallest entry of a non-empty tree given its parts, returning the
+// rest plus that entry. The non-rotating rebuild is inline (reused in place).
+takeMin : Dict 'k 'v -> 'k -> 'v -> Dict 'k 'v -> (Dict 'k 'v * 'k * 'v)
+let takeMin l k v r =
+  match l with
+  | DictEmpty -> (r, k, v)
+  | DictNode _ ll lk lv lr ->
+    match takeMin ll lk lv lr with
+    | (l2, mk, mv) ->
+      let rest =
+        if size r > delta * size l2 then
+          balance l2 k v r
+        else
+          DictNode (size l2 + size r + 1) l2 k v r
+      (rest, mk, mv)
 
-/// The entries in ascending key order.
-public toList : Dict 'k 'v -> List ('k * 'v)
-let toList d =
+// Merge two trees whose keys are all-less / all-greater (no separating key), by
+// promoting the right tree's minimum. Used by `remove` and `difference`.
+join2 : Dict 'k 'v -> Dict 'k 'v -> Dict 'k 'v
+let join2 l r =
+  match l with
+  | DictEmpty -> r
+  | DictNode _ _ _ _ _ ->
+    match r with
+    | DictEmpty -> l
+    | DictNode _ rl rk rv rr ->
+      match takeMin rl rk rv rr with
+      | (r2, mk, mv) -> balance l mk mv r2
+
+/// Remove `key` if present. The non-rotating rebuild is inline (reused in place).
+public remove : 'k -> Dict 'k 'v -> Dict 'k 'v
+let remove key d =
   match d with
-  | DictEmpty -> []
-  | DictNode l k v r -> List.append (toList l) ((k, v) :: toList r)
-example: toList (insert 1 10 empty) = [(1, 10)]
+  | DictEmpty -> DictEmpty
+  | DictNode s l k v r ->
+    if key < k then
+      let l2 = remove key l
+      if size r > delta * size l2 then
+        balance l2 k v r
+      else
+        DictNode (size l2 + size r + 1) l2 k v r
+    else if key > k then
+      let r2 = remove key r
+      if size l > delta * size r2 then
+        balance l k v r2
+      else
+        DictNode (size l + size r2 + 1) l k v r2
+    else
+      join2 l r
+example: get 2 (remove 2 (insert 2 20 (insert 1 10 empty))) = None
+example: size (remove 1 (insert 1 10 empty)) = 0
+
+/// Apply `f` to the value at `key` (if any) and the absence/presence it returns
+/// decides whether to set or clear it.
+public update : 'k -> (Option 'v -> Option 'v) -> Dict 'k 'v -> Dict 'k 'v
+let update key f d =
+  match f (get key d) with
+  | None -> remove key d
+  | Some v -> insert key v d
+example: get 1 (update 1 (fun _ -> Some 5) empty) = Some 5
+
+/// Link `l`, the entry `(k, v)`, and `r` (all of `l`'s keys below `k`, all of
+/// `r`'s above) into one balanced tree, even when the two sides differ widely.
+join : Dict 'k 'v -> 'k -> 'v -> Dict 'k 'v -> Dict 'k 'v
+let join l k v r =
+  if delta * size l < size r then
+    match r with
+    | DictEmpty -> bin l k v r
+    | DictNode _ rl rk rv rr -> balance (join l k v rl) rk rv rr
+  else if delta * size r < size l then
+    match l with
+    | DictEmpty -> bin l k v r
+    | DictNode _ ll lk lv lr -> balance ll lk lv (join lr k v r)
+  else
+    bin l k v r
+
+// Split a tree by `key` into (entries below, whether `key` was present, entries
+// above), rebuilding each side balanced.
+splitMember : 'k -> Dict 'k 'v -> (Dict 'k 'v * Bool * Dict 'k 'v)
+let splitMember key d =
+  match d with
+  | DictEmpty -> (DictEmpty, false, DictEmpty)
+  | DictNode _ l k v r ->
+    if key < k then
+      match splitMember key l with
+      | (ll, present, lr) -> (ll, present, join lr k v r)
+    else if key > k then
+      match splitMember key r with
+      | (rl, present, rr) -> (join l k v rl, present, rr)
+    else
+      (l, true, r)
+
+/// The left-biased union: every key of either map, keeping the left map's value
+/// where both have a key.
+public union : Dict 'k 'v -> Dict 'k 'v -> Dict 'k 'v
+let union a b =
+  match a with
+  | DictEmpty -> b
+  | DictNode _ la ka va ra ->
+    match b with
+    | DictEmpty -> a
+    | DictNode _ _ _ _ _ ->
+      match splitMember ka b with
+      | (lb, _, rb) -> join (union la lb) ka va (union ra rb)
+example: get 1 (union (singleton 1 10) (singleton 1 99)) = Some 10
+example: size (union (singleton 1 10) (singleton 2 20)) = 2
+
+/// The intersection: keys present in both, keeping the left map's value.
+public intersection : Dict 'k 'v -> Dict 'k 'v -> Dict 'k 'v
+let intersection a b =
+  match a with
+  | DictEmpty -> DictEmpty
+  | DictNode _ la ka va ra ->
+    match splitMember ka b with
+    | (lb, present, rb) ->
+      let li = intersection la lb
+      let ri = intersection ra rb
+      if present then join li ka va ri else join2 li ri
+example: size (intersection (singleton 1 10) (singleton 2 20)) = 0
+example: get 1 (intersection (insert 2 20 (singleton 1 10)) (singleton 1 99)) = Some 10
+
+/// The difference: the left map's entries whose keys are absent from the right.
+public difference : Dict 'k 'v -> Dict 'k 'v -> Dict 'k 'v
+let difference a b =
+  match b with
+  | DictEmpty -> a
+  | DictNode _ lb kb _ rb ->
+    match splitMember kb a with
+    | (la, _, ra) -> join2 (difference la lb) (difference ra rb)
+example: size (difference (insert 2 20 (singleton 1 10)) (singleton 1 99)) = 1
+
+/// Build a dictionary from key/value pairs (later pairs win on a repeated key).
+public fromList : List ('k * 'v) -> Dict 'k 'v
+let fromList pairs = List.foldl insertPair empty pairs
+
+insertPair : Dict 'k 'v -> ('k * 'v) -> Dict 'k 'v
+let insertPair d pair =
+  match pair with
+  | (k, v) -> insert k v d
+example: size (fromList [(1, 10), (2, 20), (1, 99)]) = 2
+
+/// The entries in ascending key order. O(n) via an accumulator.
+public toList : Dict 'k 'v -> List ('k * 'v)
+let toList d = toListOnto d []
+
+toListOnto : Dict 'k 'v -> List ('k * 'v) -> List ('k * 'v)
+let toListOnto d acc =
+  match d with
+  | DictEmpty -> acc
+  | DictNode _ l k v r -> toListOnto l ((k, v) :: toListOnto r acc)
+example: toList (fromList [(2, 20), (1, 10)]) = [(1, 10), (2, 20)]
+
+/// The keys in ascending order.
+public keys : Dict 'k 'v -> List 'k
+let keys d = List.map first (toList d)
+
+first : ('a * 'b) -> 'a
+let first pair =
+  match pair with
+  | (a, _) -> a
+example: keys (fromList [(2, 20), (1, 10)]) = [1, 2]
+
+/// The values, ordered by their keys.
+public values : Dict 'k 'v -> List 'v
+let values d = List.map second (toList d)
+
+second : ('a * 'b) -> 'b
+let second pair =
+  match pair with
+  | (_, b) -> b
+example: values (fromList [(2, 20), (1, 10)]) = [10, 20]
+
+/// Transform every value (with its key); the shape is preserved, so a uniquely
+/// owned tree is rewritten in place.
+public map : ('k -> 'v -> 'w) -> Dict 'k 'v -> Dict 'k 'w
+let map f d =
+  match d with
+  | DictEmpty -> DictEmpty
+  | DictNode s l k v r -> DictNode s (map f l) k (f k v) (map f r)
+example: get 1 (map (fun k v -> k + v) (singleton 1 10)) = Some 11
+
+/// Keep the entries whose key/value satisfies `keep`.
+public filter : ('k -> 'v -> Bool) -> Dict 'k 'v -> Dict 'k 'v
+let filter keep d =
+  match d with
+  | DictEmpty -> DictEmpty
+  | DictNode _ l k v r ->
+    if keep k v then
+      join (filter keep l) k v (filter keep r)
+    else
+      join2 (filter keep l) (filter keep r)
+example: size (filter (fun k v -> v > 15) (fromList [(1, 10), (2, 20)])) = 1
+
+/// Fold the entries in ascending key order.
+public foldl : ('k -> 'v -> 'acc -> 'acc) -> 'acc -> Dict 'k 'v -> 'acc
+let foldl f acc d =
+  match d with
+  | DictEmpty -> acc
+  | DictNode _ l k v r -> foldl f (f k v (foldl f acc l)) r
+example: foldl (fun k v acc -> acc + v) 0 (fromList [(1, 10), (2, 20)]) = 30
+
+/// Fold the entries in descending key order.
+public foldr : ('k -> 'v -> 'acc -> 'acc) -> 'acc -> Dict 'k 'v -> 'acc
+let foldr f acc d =
+  match d with
+  | DictEmpty -> acc
+  | DictNode _ l k v r -> foldr f (f k v (foldr f acc r)) l
+example: foldr (fun k v acc -> v :: acc) [] (fromList [(1, 10), (2, 20)]) = [10, 20]
+// Laws over trees built through the public API (so the generators stay built-in
+// lists; a synthesized tree would carry a meaningless cached `size`).
+forall kvs k v: get k (insert k v (fromList kvs)) = Some v
+forall kvs k: get k (remove k (fromList kvs)) = None
+forall kvs: size (fromList kvs) = List.length (toList (fromList kvs))
+forall a b k: member k (union (fromList a) (fromList b)) = (member k (fromList a) || member k (fromList b))
+forall a b k: member k (intersection (fromList a) (fromList b)) = (member k (fromList a) && member k (fromList b))
+forall a b k: member k (difference (fromList a) (fromList b)) = (member k (fromList a) && not (member k (fromList b)))
