@@ -20,7 +20,7 @@ use fai_types::{Con, RecordRow, RowEnd, RowVarId, Ty, TyVarId};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
-use crate::ir::{CExpr, CoreFn, ExprKind, FieldIndex, FnId, Lit, LoweredDef, Prim};
+use crate::ir::{CExpr, CoreFn, ExprKind, FieldIndex, FnAbi, FnId, Lit, LoweredDef, Prim};
 
 /// A complete program ready to JIT: an entry definition, the `Runtime` value
 /// binding applied to it, and their reachable set.
@@ -81,6 +81,10 @@ pub struct WireDef {
     pub id: WireDefId,
     /// Its parameter count (the backend's arity).
     pub arity: usize,
+    /// Its native calling-convention shape (unboxed-float parameters/result),
+    /// computed warm from the signature so the database-free worker marshals
+    /// direct calls identically.
+    pub abi: FnAbi,
     /// Its functions (`fns[0]` is the entry; the rest are lifted lambdas).
     pub fns: Vec<WireFn>,
     /// Per-entry-parameter borrow flags.
@@ -366,16 +370,19 @@ pub fn reconstruct_ty(w: &WireTy) -> Ty {
 
 /// Converts a lowered definition to wire form. `module_of` maps any referenced
 /// definition to its module label (resolved by the caller, which has the
-/// database).
+/// database); `abi` is its native calling-convention shape (computed warm from
+/// the signature, so the worker marshals direct calls identically).
 #[must_use]
 pub fn def_to_wire(
     lowered: &LoweredDef,
     module_of: &dyn Fn(DefId) -> String,
     arity: usize,
+    abi: FnAbi,
 ) -> WireDef {
     WireDef {
         id: wire_id(lowered.def, module_of),
         arity,
+        abi,
         fns: lowered.fns.iter().map(|f| fn_to_wire(f, module_of)).collect(),
         entry_borrowed: lowered.entry_borrowed.clone(),
     }
@@ -502,6 +509,8 @@ pub struct Rebuilt {
     pub module_labels: FxHashMap<SourceId, String>,
     /// Definition → arity.
     pub arities: FxHashMap<DefId, usize>,
+    /// Definition → native calling-convention shape (for direct-call marshalling).
+    pub abis: FxHashMap<DefId, FnAbi>,
 }
 
 /// Reconstructs real [`LoweredDef`]s from a wire bundle, assigning a synthetic
@@ -512,8 +521,8 @@ pub fn from_wire(bundle: &WireBundle) -> Rebuilt {
     let mut sources = SourceAssigner::default();
     let entry = sources.def_id(&bundle.entry);
     let runtime = sources.def_id(&bundle.runtime);
-    let (defs, arities) = defs_from_wire(&bundle.defs, &mut sources);
-    Rebuilt { defs, entry, runtime, module_labels: sources.labels, arities }
+    let (defs, arities, abis) = defs_from_wire(&bundle.defs, &mut sources);
+    Rebuilt { defs, entry, runtime, module_labels: sources.labels, arities, abis }
 }
 
 /// Reconstructed contract set: real [`LoweredDef`]s plus the contract entries to
@@ -528,6 +537,8 @@ pub struct RebuiltTest {
     pub module_labels: FxHashMap<SourceId, String>,
     /// Definition → arity.
     pub arities: FxHashMap<DefId, usize>,
+    /// Definition → native calling-convention shape (for direct-call marshalling).
+    pub abis: FxHashMap<DefId, FnAbi>,
 }
 
 /// A reconstructed contract entry: the harness definition to apply and its
@@ -551,7 +562,7 @@ pub struct TestContract {
 #[must_use]
 pub fn from_wire_test(bundle: &TestWireBundle) -> RebuiltTest {
     let mut sources = SourceAssigner::default();
-    let (defs, arities) = defs_from_wire(&bundle.defs, &mut sources);
+    let (defs, arities, abis) = defs_from_wire(&bundle.defs, &mut sources);
     let contracts = bundle
         .contracts
         .iter()
@@ -563,7 +574,7 @@ pub fn from_wire_test(bundle: &TestWireBundle) -> RebuiltTest {
             max_size: c.max_size,
         })
         .collect();
-    RebuiltTest { defs, contracts, module_labels: sources.labels, arities }
+    RebuiltTest { defs, contracts, module_labels: sources.labels, arities, abis }
 }
 
 /// Reconstructs a list of wire definitions into real [`LoweredDef`]s, recording
@@ -571,19 +582,21 @@ pub fn from_wire_test(bundle: &TestWireBundle) -> RebuiltTest {
 fn defs_from_wire(
     wire_defs: &[WireDef],
     sources: &mut SourceAssigner,
-) -> (Vec<LoweredDef>, FxHashMap<DefId, usize>) {
+) -> (Vec<LoweredDef>, FxHashMap<DefId, usize>, FxHashMap<DefId, FnAbi>) {
     let mut defs = Vec::with_capacity(wire_defs.len());
     let mut arities = FxHashMap::default();
+    let mut abis = FxHashMap::default();
     for wire in wire_defs {
         let def_id = sources.def_id(&wire.id);
         arities.insert(def_id, wire.arity);
+        abis.insert(def_id, wire.abi.clone());
         defs.push(LoweredDef {
             def: def_id,
             fns: wire.fns.iter().map(|f| fn_from_wire(f, sources)).collect(),
             entry_borrowed: wire.entry_borrowed.clone(),
         });
     }
-    (defs, arities)
+    (defs, arities, abis)
 }
 
 /// Assigns stable synthetic source ids to module labels as they are seen.
@@ -712,7 +725,7 @@ mod tests {
         let lowered = core(&db, file, Symbol::intern(name));
 
         let module_of = |_d: DefId| "M".to_owned();
-        let wire = def_to_wire(&lowered, &module_of, lowered.entry().params.len());
+        let wire = def_to_wire(&lowered, &module_of, lowered.entry().params.len(), FnAbi::default());
         let bundle =
             WireBundle { entry: wire.id.clone(), runtime: wire.id.clone(), defs: vec![wire] };
         let rebuilt = from_wire(&bundle);
@@ -784,7 +797,7 @@ mod tests {
             entry_borrowed: Vec::new(),
         };
 
-        let wire = def_to_wire(&lowered, &|_| "M".to_owned(), 1);
+        let wire = def_to_wire(&lowered, &|_| "M".to_owned(), 1, FnAbi::default());
         let json = serde_json::to_string(&wire).unwrap();
         let decoded: WireDef = serde_json::from_str(&json).unwrap();
         let bundle = WireBundle {
@@ -860,7 +873,7 @@ mod tests {
             entry_borrowed: Vec::new(),
         };
 
-        let wire = def_to_wire(&lowered, &|_| "M".to_owned(), 1);
+        let wire = def_to_wire(&lowered, &|_| "M".to_owned(), 1, FnAbi::default());
         let json = serde_json::to_string(&wire).unwrap();
         let decoded: WireDef = serde_json::from_str(&json).unwrap();
         let bundle = WireBundle {
@@ -887,7 +900,7 @@ mod tests {
         let id = db.add_source("M.fai".into(), "module M\n\nlet f x = x + 1\n".to_owned());
         let file = db.source_file(id).unwrap();
         let lowered = core(&db, file, Symbol::intern("f"));
-        let wire = def_to_wire(&lowered, &|_| "M".to_owned(), 1);
+        let wire = def_to_wire(&lowered, &|_| "M".to_owned(), 1, FnAbi::default());
         let bundle =
             WireBundle { entry: wire.id.clone(), runtime: wire.id.clone(), defs: vec![wire] };
 
@@ -938,7 +951,7 @@ mod tests {
         let id = db.add_source("M.fai".into(), "module M\n\nlet f x = x + 1\n".to_owned());
         let file = db.source_file(id).unwrap();
         let lowered = core(&db, file, Symbol::intern("f"));
-        let wire = def_to_wire(&lowered, &|_| "M".to_owned(), 1);
+        let wire = def_to_wire(&lowered, &|_| "M".to_owned(), 1, FnAbi::default());
         let bundle = TestWireBundle {
             contracts: vec![WireContract {
                 id: wire.id.clone(),
@@ -969,6 +982,7 @@ mod tests {
         let a = WireDef {
             id: WireDefId { module: "A".to_owned(), name: "f".to_owned() },
             arity: 0,
+            abi: FnAbi::default(),
             fns: vec![WireFn {
                 params: vec![],
                 captures: vec![],
@@ -979,6 +993,7 @@ mod tests {
         let b = WireDef {
             id: WireDefId { module: "B".to_owned(), name: "f".to_owned() },
             arity: 0,
+            abi: FnAbi::default(),
             fns: vec![WireFn {
                 params: vec![],
                 captures: vec![],

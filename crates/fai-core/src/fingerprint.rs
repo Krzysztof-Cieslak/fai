@@ -14,18 +14,24 @@ use std::fmt::Write as _;
 use fai_resolve::DefId;
 use fai_types::render_canonical;
 
-use crate::ir::{CExpr, ExprKind, FieldIndex, Lit, LoweredDef, Prim};
+use crate::ir::{CExpr, ExprKind, FieldIndex, FnAbi, Lit, LoweredDef, Prim};
 
 /// Builds a portable, deterministic fingerprint string for `def`.
 ///
-/// `namer` maps a definition to its backend symbol (module-qualified) and
-/// `arity_of` to its parameter count — the same information code generation emits
-/// into the object, so the fingerprint tracks exactly what the object depends on.
+/// `namer` maps a definition to its backend symbol (module-qualified), `arity_of`
+/// to its parameter count, and `abi_of` to its native calling-convention shape
+/// (which parameters/result are passed as unboxed `Float`) — the same information
+/// code generation emits into the object, so the fingerprint tracks exactly what
+/// the object depends on. A definition's own ABI and each referenced callee's ABI
+/// are keyed because they change how floats are marshalled at a call (raw bits vs
+/// boxed) without necessarily changing any node's instantiated type. The ABI is
+/// rendered only when non-uniform, so float-free code keeps its prior key.
 #[must_use]
 pub fn fingerprint_def(
     def: &LoweredDef,
     namer: &dyn Fn(DefId) -> String,
     arity_of: &dyn Fn(DefId) -> usize,
+    abi_of: &dyn Fn(DefId) -> FnAbi,
 ) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "def {}/{}", namer(def.def), arity_of(def.def));
@@ -34,14 +40,27 @@ pub fn fingerprint_def(
     if def.borrows_any() {
         let _ = writeln!(out, "borrow {:?}", def.entry_borrowed);
     }
+    // The unboxed-float calling convention likewise changes the emitted code (the
+    // entry's raw-bits parameters/result and the bridging wrapper).
+    let self_abi = abi_of(def.def);
+    if !self_abi.is_uniform() {
+        let _ = writeln!(out, "abi {}", abi_tag(&self_abi));
+    }
     for (i, f) in def.fns.iter().enumerate() {
         let params: Vec<String> = f.params.iter().map(|p| format!("%{}", p.index())).collect();
         let caps: Vec<String> = f.captures.iter().map(|c| format!("%{}", c.index())).collect();
         let _ = write!(out, "fn{i}({})[{}] = ", params.join(","), caps.join(","));
-        write_expr(&mut out, &f.body, namer, arity_of);
+        write_expr(&mut out, &f.body, namer, arity_of, abi_of);
         out.push('\n');
     }
     out
+}
+
+/// Renders a non-uniform [`FnAbi`] compactly (parameter float flags and the
+/// result flag), for the cache key.
+fn abi_tag(abi: &FnAbi) -> String {
+    let params: String = abi.float_params.iter().map(|&f| if f { '1' } else { '0' }).collect();
+    format!("p[{params}]r{}", u8::from(abi.float_return))
 }
 
 fn write_expr(
@@ -49,6 +68,7 @@ fn write_expr(
     e: &CExpr,
     namer: &dyn Fn(DefId) -> String,
     arity_of: &dyn Fn(DefId) -> usize,
+    abi_of: &dyn Fn(DefId) -> FnAbi,
 ) {
     match &e.kind {
         ExprKind::Lit(Lit::Int(n)) => {
@@ -72,40 +92,47 @@ fn write_expr(
         }
         ExprKind::Global(def) => {
             // Module-qualified symbol + arity: exactly what codegen emits for a
-            // call, so the key is stable across processes (no DefId/SourceId).
+            // call, so the key is stable across processes (no DefId/SourceId). The
+            // callee's ABI (rendered only when non-uniform) decides whether a
+            // direct call marshals floats as raw bits, independently of this
+            // reference's instantiated type, so it is part of the key too.
             let _ = write!(out, "@{}/{}", namer(*def), arity_of(*def));
+            let abi = abi_of(*def);
+            if !abi.is_uniform() {
+                let _ = write!(out, "/{}", abi_tag(&abi));
+            }
         }
         ExprKind::Prim { op, args } => {
             let _ = write!(out, "(p:{}", prim_tag(*op));
             for a in args {
                 out.push(' ');
-                write_expr(out, a, namer, arity_of);
+                write_expr(out, a, namer, arity_of, abi_of);
             }
             out.push(')');
         }
         ExprKind::App { func, args } => {
             out.push_str("(app ");
-            write_expr(out, func, namer, arity_of);
+            write_expr(out, func, namer, arity_of, abi_of);
             for a in args {
                 out.push(' ');
-                write_expr(out, a, namer, arity_of);
+                write_expr(out, a, namer, arity_of, abi_of);
             }
             out.push(')');
         }
         ExprKind::If { cond, then, els } => {
             out.push_str("(if ");
-            write_expr(out, cond, namer, arity_of);
+            write_expr(out, cond, namer, arity_of, abi_of);
             out.push(' ');
-            write_expr(out, then, namer, arity_of);
+            write_expr(out, then, namer, arity_of, abi_of);
             out.push(' ');
-            write_expr(out, els, namer, arity_of);
+            write_expr(out, els, namer, arity_of, abi_of);
             out.push(')');
         }
         ExprKind::Let { local, value, body } => {
             let _ = write!(out, "(let %{} ", local.index());
-            write_expr(out, value, namer, arity_of);
+            write_expr(out, value, namer, arity_of, abi_of);
             out.push(' ');
-            write_expr(out, body, namer, arity_of);
+            write_expr(out, body, namer, arity_of, abi_of);
             out.push(')');
         }
         ExprKind::MakeClosure { func, captures } => {
@@ -123,13 +150,13 @@ fn write_expr(
             }
             for a in args {
                 out.push(' ');
-                write_expr(out, a, namer, arity_of);
+                write_expr(out, a, namer, arity_of, abi_of);
             }
             out.push(')');
         }
         ExprKind::DataTag(base) => {
             out.push_str("(tag ");
-            write_expr(out, base, namer, arity_of);
+            write_expr(out, base, namer, arity_of, abi_of);
             out.push(')');
         }
         ExprKind::DataField { base, index } => {
@@ -141,53 +168,53 @@ fn write_expr(
                     let _ = write!(out, "(field {off}+%{} ", evidence.index());
                 }
             }
-            write_expr(out, base, namer, arity_of);
+            write_expr(out, base, namer, arity_of, abi_of);
             out.push(')');
         }
         ExprKind::Reset { value, token, body } => {
             let _ = write!(out, "(reset %{} ", token.index());
-            write_expr(out, value, namer, arity_of);
+            write_expr(out, value, namer, arity_of, abi_of);
             out.push(' ');
-            write_expr(out, body, namer, arity_of);
+            write_expr(out, body, namer, arity_of, abi_of);
             out.push(')');
         }
         ExprKind::Dup { local, body } => {
             let _ = write!(out, "(dup %{} ", local.index());
-            write_expr(out, body, namer, arity_of);
+            write_expr(out, body, namer, arity_of, abi_of);
             out.push(')');
         }
         ExprKind::Drop { local, body } => {
             let _ = write!(out, "(drop %{} ", local.index());
-            write_expr(out, body, namer, arity_of);
+            write_expr(out, body, namer, arity_of, abi_of);
             out.push(')');
         }
         ExprKind::Join { params, body } => {
             let ps: Vec<String> = params.iter().map(|p| format!("%{}", p.index())).collect();
             let _ = write!(out, "(join [{}] ", ps.join(","));
-            write_expr(out, body, namer, arity_of);
+            write_expr(out, body, namer, arity_of, abi_of);
             out.push(')');
         }
         ExprKind::Recur { args } => {
             out.push_str("(recur");
             for a in args {
                 out.push(' ');
-                write_expr(out, a, namer, arity_of);
+                write_expr(out, a, namer, arity_of, abi_of);
             }
             out.push(')');
         }
         ExprKind::HoleStart { hole, body } => {
             let _ = write!(out, "(holestart %{} ", hole.index());
-            write_expr(out, body, namer, arity_of);
+            write_expr(out, body, namer, arity_of, abi_of);
             out.push(')');
         }
         ExprKind::HoleFill { hole, cell, field } => {
             let _ = write!(out, "(holefill %{} {field} ", hole.index());
-            write_expr(out, cell, namer, arity_of);
+            write_expr(out, cell, namer, arity_of, abi_of);
             out.push(')');
         }
         ExprKind::HoleClose { hole, base } => {
             let _ = write!(out, "(holeclose %{} ", hole.index());
-            write_expr(out, base, namer, arity_of);
+            write_expr(out, base, namer, arity_of, abi_of);
             out.push(')');
         }
         ExprKind::Error => out.push_str("<err>"),
@@ -230,7 +257,7 @@ mod tests {
         let id = db.add_source("M.fai".into(), src.to_owned());
         let file = db.source_file(id).unwrap();
         let lowered = core(&db, file, Symbol::intern(name));
-        fingerprint_def(&lowered, &|d| namer(&db, d), &|_| 0)
+        fingerprint_def(&lowered, &|d| namer(&db, d), &|_| 0, &|_| FnAbi::default())
     }
 
     #[test]
@@ -302,8 +329,8 @@ mod tests {
         // differs, because every `Global` (and the def id) is rendered via the
         // namer — this is what `pretty_def` drops and the fingerprint must not.
         let (_db, g) = caller();
-        let under_a = fingerprint_def(&g, &|d| format!("fai_A_{}", d.name), &|_| 1);
-        let under_b = fingerprint_def(&g, &|d| format!("fai_B_{}", d.name), &|_| 1);
+        let under_a = fingerprint_def(&g, &|d| format!("fai_A_{}", d.name), &|_| 1, &|_| FnAbi::default());
+        let under_b = fingerprint_def(&g, &|d| format!("fai_B_{}", d.name), &|_| 1, &|_| FnAbi::default());
         assert_ne!(under_a, under_b);
     }
 
@@ -313,8 +340,8 @@ mod tests {
         // closure, so it must be in the key.
         let (_db, g) = caller();
         let namer = |d: DefId| format!("fai_M_{}", d.name);
-        let arity_one = fingerprint_def(&g, &namer, &|_| 1);
-        let arity_two = fingerprint_def(&g, &namer, &|_| 2);
+        let arity_one = fingerprint_def(&g, &namer, &|_| 1, &|_| FnAbi::default());
+        let arity_two = fingerprint_def(&g, &namer, &|_| 2, &|_| FnAbi::default());
         assert_ne!(arity_one, arity_two);
     }
 }

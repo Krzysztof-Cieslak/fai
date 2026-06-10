@@ -27,6 +27,39 @@ impl FnId {
     }
 }
 
+/// The native calling-convention shape of a definition's entry, derived from its
+/// type signature: which runtime parameters carry an **unboxed** `Float` (raw
+/// `f64` bits in the argument slot) and whether the result is an unboxed `Float`.
+///
+/// Direct, saturated callers marshal float arguments and the result as raw bits
+/// per this shape; the first-class form (`apply_n` / the static closure) keeps the
+/// uniform boxed representation, bridged by a wrapper. A definition with no scalar
+/// `Float` parameter or result is *uniform* (all flags clear) and needs no
+/// bridging. Derived from the stable signature so it is body-edit-independent.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub struct FnAbi {
+    /// One flag per runtime parameter (offset-evidence parameters first, then
+    /// source parameters), `true` when that parameter is an unboxed `Float`.
+    pub float_params: Vec<bool>,
+    /// Whether the result is an unboxed `Float`.
+    pub float_return: bool,
+}
+
+impl FnAbi {
+    /// Whether runtime parameter `i` is passed as an unboxed `Float` (raw bits).
+    #[must_use]
+    pub fn float_param(&self, i: usize) -> bool {
+        self.float_params.get(i).copied().unwrap_or(false)
+    }
+
+    /// Whether the entry uses the plain uniform ABI (no unboxed float parameter or
+    /// result), so direct calls need no float marshalling and no bridging wrapper.
+    #[must_use]
+    pub fn is_uniform(&self) -> bool {
+        !self.float_return && self.float_params.iter().all(|&f| !f)
+    }
+}
+
 /// A lowered top-level definition: its entry function plus lifted lambdas.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoweredDef {
