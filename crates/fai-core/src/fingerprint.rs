@@ -346,4 +346,37 @@ mod tests {
         let arity_two = fingerprint_def(&g, &namer, &|_| 2, &|_| FnAbi::default());
         assert_ne!(arity_one, arity_two);
     }
+
+    #[test]
+    fn definition_float_abi_is_part_of_the_key() {
+        // A definition's own unboxed-float calling convention changes its emitted
+        // code (raw-bits parameters/result and the bridging wrapper), so it must
+        // be keyed even when the body and types are identical.
+        let (_db, g) = caller();
+        let namer = |d: DefId| format!("fai_M_{}", d.name);
+        let uniform = fingerprint_def(&g, &namer, &|_| 1, &|_| FnAbi::default());
+        let float = fingerprint_def(&g, &namer, &|_| 1, &|_| FnAbi {
+            float_params: vec![true],
+            float_return: true,
+        });
+        assert_ne!(uniform, float);
+    }
+
+    #[test]
+    fn callee_float_abi_is_part_of_the_key() {
+        // A callee that is monomorphic `Float` (raw-bits ABI) vs generic
+        // (boxed/uniform) flips the caller's marshalling even when the
+        // instantiated call-site type is identical, so the callee's ABI is keyed.
+        let (_db, g) = caller(); // `g` calls `helper`
+        let namer = |d: DefId| format!("fai_M_{}", d.name);
+        let helper_uniform = fingerprint_def(&g, &namer, &|_| 1, &|d: DefId| {
+            if d.name.as_str() == "helper" {
+                FnAbi { float_params: vec![true], float_return: true }
+            } else {
+                FnAbi::default()
+            }
+        });
+        let all_uniform = fingerprint_def(&g, &namer, &|_| 1, &|_| FnAbi::default());
+        assert_ne!(helper_uniform, all_uniform);
+    }
 }

@@ -1623,8 +1623,11 @@ fn inlined_drop_of_a_nullary_constructor_is_a_no_op() {
 }
 
 #[test]
-fn inlined_drop_of_a_float_leaf() {
-    let src = indoc! {r#"
+fn unused_float_local_is_unboxed_and_leak_free() {
+    // An unused scalar `Float` local is an unboxed `f64` (no allocation, no
+    // reference count): it exits cleanly and adds zero allocations over a baseline
+    // without it.
+    let with_float = indoc! {r#"
         module M
 
         public main : Runtime -> Unit
@@ -1632,8 +1635,38 @@ fn inlined_drop_of_a_float_leaf() {
           let x = 1.5
           r.console.writeLine "ok"
     "#};
-    let (code, out) = run(src);
+    let baseline = indoc! {r#"
+        module M
+
+        public main : Runtime -> Unit
+        let main r =
+          r.console.writeLine "ok"
+    "#};
+    let (code, out, allocs) = run_counted(with_float);
     assert_eq!((code, out.as_str()), (0, "ok\n"));
+    let (_, _, base_allocs) = run_counted(baseline);
+    assert_eq!(allocs, base_allocs, "an unboxed float local allocates nothing");
+}
+
+#[test]
+fn first_class_float_param_function_is_leak_free() {
+    // A float-parameter function that only inspects its argument is borrow-eligible
+    // AND used first-class (applied via `apply_n` through its closure wrapper). The
+    // wrapper must unbox the boxed float argument and release its box exactly once
+    // (float-slot handling supersedes the borrow drop) — no leak, no double free.
+    let src = indoc! {r#"
+        module M
+
+        isPositive : Float -> Bool
+        let isPositive x = x > 0.0
+
+        public main : Runtime -> Unit
+        let main runtime =
+          let check = isPositive
+          runtime.console.writeLine (if check 1.5 then "yes" else "no")
+    "#};
+    let (code, out) = run(src);
+    assert_eq!((code, out.as_str()), (0, "yes\n"));
 }
 
 #[test]

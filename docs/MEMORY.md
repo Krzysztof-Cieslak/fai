@@ -1772,6 +1772,46 @@ Editor integration:
   - **Still future work.** Client-initiated `$/cancelRequest`, client-disconnect
     cancellation, and a debounced/background sync cadence (today every request
     syncs under the brief lock).
+- **D113 Unboxed monomorphic `Float` (amends the "uniform representation" of
+  D-era backend; companion to D108's inline primitives).** A value whose static
+  type is exactly `Float` is represented as an **unboxed `f64`** in a register,
+  not a heap cell — the first representation specialization away from the uniform
+  64-bit word. The boundary rule is purely type-directed (so it round-trips
+  through the wire form, which carries each node's projected type): a `Float`-typed
+  node yields an `f64`; it is **boxed** only where it crosses a *uniform slot* — a
+  data/record/tuple field, a closure environment, an `apply_n`/first-class
+  argument or result, or a generic (type-variable) position — and **unboxed** when
+  read back out (a field read is a borrowing load of the box's bits; an
+  `apply_n`/generic-call result or a forced `Float` global is read and released).
+  - **Calling convention.** A definition's *entry* uses an unboxed-float ABI —
+    scalar `Float` parameters and a scalar `Float` result travel as raw `f64`
+    bits — derived from its stable type signature (a tracked `float_abi` query, so
+    a caller's object depends on a callee's *signature*, not its body; the
+    firewall holds). Saturated direct calls between monomorphic float functions
+    thus allocate nothing — a tail-recursive float accumulator loops allocation
+    free (gated by an iteration-independent allocation-count test). The
+    first-class form keeps the uniform boxed representation (`apply_n`/PAP slots
+    are `i64`): the static closure points at a wrapper that unboxes incoming boxed
+    float arguments (releasing the boxes), drops borrowed arguments, and boxes a
+    raw float result — generalizing the borrow-only owned wrapper. Both the entry
+    ABI and each referenced callee's ABI are part of the object-cache key (the
+    instantiated call-site type cannot distinguish a monomorphic-`Float` callee
+    from a generic one instantiated at `Float`).
+  - **Primitives & reference counting.** Float arithmetic, comparison, `sqrt`, the
+    `Int`/`Float` conversions, bit reinterpretation, and float `=`/ordering are
+    inline machine instructions on `f64` (float `=` compares raw bits, matching
+    the boxed runtime's bit equality; ordering uses a no-alloc
+    `fai_float_compare_bits`). An unboxed float carries no reference count, so its
+    `dup`/`drop` are no-ops; a `Float` *field* inside a cell stays a boxed child.
+    The boxed runtime float operations are retained as the **uniform fallback**
+    for a boxed float operand — reached when a value's representation is forced
+    uniform, e.g. the mutual-recursion combined function, whose shared, padded
+    positional slots cannot carry an unboxed `f64`, so it erases `Float` from its
+    body. A local is unboxed only when *every* observation of its type is `Float`
+    (a contract binder projected by an untyped synthesized access stays boxed).
+  - **Scope.** Only a *scalar* `Float` is unboxed; floats nested in
+    records/tuples/lists/ADTs stay boxed heap fields. Scalarizing those (record
+    SROA / multi-value returns) is future work.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

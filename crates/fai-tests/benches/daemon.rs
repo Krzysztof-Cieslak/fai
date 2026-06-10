@@ -47,7 +47,9 @@ fn namer(def: DefId) -> String {
 fn fingerprint(bencher: Bencher, program: (&str, &str)) {
     let (db, file) = fresh(program.1);
     let lowered = rc(&db, file, Symbol::intern("main"));
-    bencher.bench(|| black_box(fingerprint_def(&lowered, &namer, &|_| 1)));
+    bencher.bench(|| {
+        black_box(fingerprint_def(&lowered, &namer, &|_| 1, &|_| fai_core::ir::FnAbi::default()))
+    });
 }
 
 // ── the run-bundle path (warm front end → wire → JSON → reconstruct) ──────────
