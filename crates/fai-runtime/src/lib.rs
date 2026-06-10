@@ -1094,6 +1094,20 @@ pub extern "C" fn fai_float_to_string(f: Value) -> Value {
     result
 }
 
+/// Compares two unboxed `Float`s given by their IEEE-754 bit patterns, returning
+/// an immediate `Int` `-1`/`0`/`1` by the IEEE-754 total order (matching the
+/// structural [`fai_compare`] on boxed floats). Allocates nothing; used by the
+/// inlined structural ordering of scalar unboxed floats.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_float_compare_bits(a: i64, b: i64) -> Value {
+    let ord = f64::from_bits(a as u64).total_cmp(&f64::from_bits(b as u64));
+    imm_int(match ord {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Chars. A Char is an immediate Unicode scalar value, encoded exactly like an
 // Int (`code << 1 | 1`), so the Char/Int conversions are typed bitcasts.

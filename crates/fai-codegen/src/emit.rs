@@ -16,7 +16,8 @@
 //! for a value of unknown (polymorphic) type, falling back to `fai_drop`.
 
 use cranelift_codegen::Context;
-use cranelift_codegen::ir::condcodes::IntCC;
+use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
+use cranelift_codegen::ir::immediates::Ieee64;
 use cranelift_codegen::ir::{AbiParam, Block, FuncRef, InstBuilder, MemFlags, Value, types};
 use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
@@ -25,7 +26,7 @@ use fai_core::ir::{CExpr, CoreFn, ExprKind, FieldIndex, Lit, LoweredDef, Prim};
 use fai_resolve::{DefId, LocalId};
 use fai_runtime as rt;
 use fai_types::{Con, RowEnd, Ty};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Builds the exported code symbol for a definition.
 #[must_use]
@@ -196,6 +197,7 @@ fn build_fn<M: Module>(
             fn_index,
             vars: FxHashMap::default(),
             var_tys: FxHashMap::default(),
+            f64_locals: FxHashSet::default(),
             runtime: FxHashMap::default(),
             string_counter: 0,
             loop_ctx: None,
@@ -205,19 +207,28 @@ fn build_fn<M: Module>(
         // Record each local's static type up front, so reference-count operations
         // on parameters and captures (not just `let`s) can be specialized.
         collect_local_types(&core_fn.body, &mut tr.var_tys);
+        // Decide which locals are represented as an unboxed `f64` (see
+        // `f64_locals`), so their Cranelift variables are typed `F64`.
+        tr.collect_f64_locals(&core_fn.body);
 
-        // Bind parameters (from `args`) and captures (from `env`).
+        // Bind parameters (from `args`) and captures (from `env`). A boxed `Float`
+        // parameter or capture is unboxed into its `f64` variable on entry:
+        // parameters are owned (the box is released after its bits are read),
+        // captures are borrowed (the closure still owns the environment).
         for (i, &p) in core_fn.params.iter().enumerate() {
-            let v = tr.load_slot(args, i);
+            let raw = tr.load_slot(args, i);
+            let v = if tr.is_f64_local(p) { tr.owning_unbox(raw) } else { raw };
             tr.define_var(p, v);
         }
         for (i, &c) in core_fn.captures.iter().enumerate() {
-            let v = tr.load_slot(env, i);
+            let raw = tr.load_slot(env, i);
+            let v = if tr.is_f64_local(c) { tr.borrowing_unbox(raw) } else { raw };
             tr.define_var(c, v);
         }
 
         let result = tr.expr(&core_fn.body);
-        tr.builder.ins().return_(&[result]);
+        let ret = tr.boxed_return(result);
+        tr.builder.ins().return_(&[ret]);
         tr.builder.finalize();
     }
 
@@ -276,6 +287,13 @@ struct Translator<'a, M: Module> {
     /// the inlined reference-count operations (immediate no-op, boxed leaf,
     /// fixed-shape cell, variable-shape data, or the runtime fallback).
     var_tys: FxHashMap<usize, Ty>,
+    /// Locals represented as an **unboxed** `f64` (Cranelift `F64` variables)
+    /// rather than a tagged `i64`: a monomorphic scalar `Float` local. A value of
+    /// such a local flows in registers; it is boxed only when it crosses into a
+    /// uniform slot (a data field, a closure environment, an `apply_n` argument).
+    /// Built from the recorded local types (and, for the entry, its unboxed-float
+    /// parameters); see [`Translator::collect_f64_locals`].
+    f64_locals: FxHashSet<usize>,
     runtime: FxHashMap<&'static str, FuncRef>,
     string_counter: usize,
     /// The enclosing tail-call loop, while translating a `Join` body: where
@@ -306,9 +324,89 @@ impl<M: Module> Translator<'_, M> {
         if let Some(v) = self.vars.get(&key) {
             return *v;
         }
-        let var = self.builder.declare_var(types::I64);
+        // A monomorphic scalar `Float` local is an unboxed `f64`; every other local
+        // is a tagged 64-bit word.
+        let ty = if self.f64_locals.contains(&key) { types::F64 } else { types::I64 };
+        let var = self.builder.declare_var(ty);
         self.vars.insert(key, var);
         var
+    }
+
+    /// Whether `local` is represented as an unboxed `f64` (see [`Self::f64_locals`]).
+    fn is_f64_local(&self, local: LocalId) -> bool {
+        self.f64_locals.contains(&local.index())
+    }
+
+    /// Records which locals are unboxed `f64`s: a local is unboxed only when
+    /// **every** observation of its type is a scalar `Float`. A local seen with
+    /// both `Float` and another (or unknown) type — e.g. a contract binder
+    /// destructured from a packed tuple via a synthesized, untyped projection but
+    /// used as a `Float` in the body — stays boxed, so its variable type and the
+    /// value bound into it agree. (The entry's unboxed-`Float` parameters are added
+    /// by the raw calling convention; see where the parameter ABI is consulted.)
+    fn collect_f64_locals(&mut self, body: &CExpr) {
+        let mut float_seen = FxHashSet::default();
+        let mut other_seen = FxHashSet::default();
+        collect_float_observations(body, &mut float_seen, &mut other_seen);
+        self.f64_locals = float_seen.difference(&other_seen).copied().collect();
+    }
+
+    /// Whether the Cranelift value `v` is an unboxed `f64`.
+    fn is_f64(&self, v: Value) -> bool {
+        self.builder.func.dfg.value_type(v) == types::F64
+    }
+
+    /// Reinterprets an `f64`'s bits as an `i64` (no conversion).
+    fn f64_to_i64(&mut self, f: Value) -> Value {
+        self.builder.ins().bitcast(types::I64, MemFlags::new(), f)
+    }
+
+    /// Reinterprets an `i64`'s bits as an `f64` (no conversion).
+    fn i64_to_f64(&mut self, bits: Value) -> Value {
+        self.builder.ins().bitcast(types::F64, MemFlags::new(), bits)
+    }
+
+    /// Boxes an unboxed `f64` as a heap `Float` value (a tagged pointer).
+    fn box_float(&mut self, f: Value) -> Value {
+        let bits = self.f64_to_i64(f);
+        self.call1("fai_box_float", bits)
+    }
+
+    /// Reads a boxed `Float`'s `f64` value **without** releasing the box (the
+    /// caller does not own it — its owner drops it later).
+    fn borrowing_unbox(&mut self, boxed: Value) -> Value {
+        let off = i32::try_from(rt::FLOAT_VALUE_OFFSET).expect("float value offset");
+        let bits = self.builder.ins().load(types::I64, MemFlags::trusted(), boxed, off);
+        self.i64_to_f64(bits)
+    }
+
+    /// Reads a boxed `Float`'s `f64` value and **releases** the box (the caller
+    /// owns it: an `apply_n`/generic-call result, a forced `Float` global, or an
+    /// owned boxed parameter), so the unboxed value carries no reference count.
+    fn owning_unbox(&mut self, boxed: Value) -> Value {
+        let f = self.borrowing_unbox(boxed);
+        self.call_drop(boxed);
+        f
+    }
+
+    /// Coerces a value into the uniform boxed/immediate representation: an unboxed
+    /// `f64` is boxed; anything else is already a tagged word.
+    fn ensure_boxed(&mut self, v: Value) -> Value {
+        if self.is_f64(v) { self.box_float(v) } else { v }
+    }
+
+    /// Evaluates `e` and coerces the result into the uniform representation, for a
+    /// value flowing into a boxed slot (a data field, environment, or argument).
+    fn expr_boxed(&mut self, e: &CExpr) -> Value {
+        let v = self.expr(e);
+        self.ensure_boxed(v)
+    }
+
+    /// Coerces a function body's result for the uniform (boxed) ABI: an unboxed
+    /// `f64` result is boxed. (The raw-bits return ABI overrides this where it
+    /// applies; see where the return ABI is consulted.)
+    fn boxed_return(&mut self, v: Value) -> Value {
+        self.ensure_boxed(v)
     }
 
     fn define_var(&mut self, local: LocalId, value: Value) {
@@ -519,9 +617,9 @@ impl<M: Module> Translator<'_, M> {
         match &e.kind {
             ExprKind::Lit(lit) => self.literal(lit),
             ExprKind::Local(local) => self.use_var(*local),
-            ExprKind::Global(def) => self.global_value(*def),
-            ExprKind::Prim { op, args } => self.prim(*op, args),
-            ExprKind::App { func, args } => self.application(func, args),
+            ExprKind::Global(def) => self.global_value(*def, &e.ty),
+            ExprKind::Prim { op, args } => self.prim(*op, args, &e.ty),
+            ExprKind::App { func, args } => self.application(func, args, &e.ty),
             ExprKind::If { cond, then, els } => self.conditional(cond, then, els),
             ExprKind::Let { local, value, body } => {
                 let v = self.expr(value);
@@ -534,7 +632,7 @@ impl<M: Module> Translator<'_, M> {
                 let v = self.expr(base);
                 self.call1("fai_data_tag", v)
             }
-            ExprKind::DataField { base, index } => self.data_field(base, *index),
+            ExprKind::DataField { base, index } => self.data_field(base, *index, &e.ty),
             ExprKind::Reset { value, token, body } => {
                 let v = self.expr(value);
                 let tok = self.call1("fai_drop_reuse", v);
@@ -554,7 +652,7 @@ impl<M: Module> Translator<'_, M> {
                 self.drop_local(*local);
                 result
             }
-            ExprKind::Join { params, body } => self.join(params, body),
+            ExprKind::Join { params, body } => self.join(params, body, &e.ty),
             ExprKind::HoleStart { hole, body } => {
                 // The result slot holds the head of the spine being built; the hole
                 // (destination) starts pointing at it. Both live for the loop.
@@ -595,8 +693,9 @@ impl<M: Module> Translator<'_, M> {
                 self.builder.ins().iconst(types::I64, v)
             }
             Lit::Float(bits) => {
-                let raw = self.builder.ins().iconst(types::I64, *bits as i64);
-                self.call1("fai_box_float", raw)
+                // A monomorphic `Float` literal is an unboxed `f64`; it is boxed
+                // only if it flows into a uniform slot (handled at that boundary).
+                self.builder.ins().f64const(Ieee64::with_bits(*bits))
             }
             Lit::Char(c) => {
                 // A code point is an immediate, tagged like `Int`/`Bool`: it
@@ -619,7 +718,8 @@ impl<M: Module> Translator<'_, M> {
             let imm = (i64::from(tag) << 1) | 1;
             return self.builder.ins().iconst(types::I64, imm);
         }
-        let vals: Vec<Value> = args.iter().map(|a| self.expr(a)).collect();
+        // Data fields are uniform `i64` slots, so a float field is boxed in.
+        let vals: Vec<Value> = args.iter().map(|a| self.expr_boxed(a)).collect();
         let count = vals.len();
         let ptr = self.spill(&vals);
         let tag_v = self.builder.ins().iconst(types::I64, i64::from(tag));
@@ -642,7 +742,13 @@ impl<M: Module> Translator<'_, M> {
     /// Projects a field of a data value (consuming `base`). A constant slot is an
     /// immediate; a row-polymorphic slot is `base + evidence` computed at runtime
     /// from a leading offset-evidence parameter.
-    fn data_field(&mut self, base: &CExpr, index: FieldIndex) -> Value {
+    fn data_field(&mut self, base: &CExpr, index: FieldIndex, result_ty: &Ty) -> Value {
+        // A scalar `Float` field is read **unboxed**: the field box's bits are read
+        // in place without duplicating it (a borrow — `base` outlives the read in
+        // A-normal form, and dropping `base` later releases the field box once).
+        if matches!(result_ty, Ty::Con(Con::Float)) {
+            return self.float_data_field(base, index);
+        }
         let v = self.expr(base);
         let idx = match index {
             FieldIndex::Const(n) => self.builder.ins().iconst(types::I64, i64::from(n)),
@@ -657,6 +763,31 @@ impl<M: Module> Translator<'_, M> {
         let f = self.runtime("fai_data_field", 2, true);
         let call = self.builder.ins().call(f, &[v, idx]);
         self.builder.inst_results(call)[0]
+    }
+
+    /// Reads a scalar `Float` field as an unboxed `f64`: load the field slot's box
+    /// pointer at its (constant or evidence-computed) offset, then read the box's
+    /// bits without touching its reference count (a borrow).
+    fn float_data_field(&mut self, base: &CExpr, index: FieldIndex) -> Value {
+        let base_v = self.expr(base);
+        let fields_off = i64::try_from(rt::DATA_FIELDS_OFFSET).expect("fields offset");
+        let boxed = match index {
+            FieldIndex::Const(n) => {
+                let off =
+                    i32::try_from(rt::DATA_FIELDS_OFFSET + n as usize * 8).expect("field off");
+                self.builder.ins().load(types::I64, MemFlags::trusted(), base_v, off)
+            }
+            FieldIndex::Dyn { base: off, evidence } => {
+                let ev = self.use_var(evidence);
+                let slot = self.builder.ins().sshr_imm(ev, 1);
+                let slot = self.builder.ins().iadd_imm(slot, i64::from(off));
+                let byte = self.builder.ins().imul_imm(slot, 8);
+                let byte = self.builder.ins().iadd_imm(byte, fields_off);
+                let addr = self.builder.ins().iadd(base_v, byte);
+                self.builder.ins().load(types::I64, MemFlags::trusted(), addr, 0)
+            }
+        };
+        self.borrowing_unbox(boxed)
     }
 
     /// Emits an immortal static `String` object and yields its address.
@@ -690,7 +821,7 @@ impl<M: Module> Translator<'_, M> {
     /// A reference to a definition as a value: the static closure for a function,
     /// or — for a zero-arity binding (a value, not a function) — its forced
     /// result (applying the closure to no arguments).
-    fn global_value(&mut self, def: DefId) -> Value {
+    fn global_value(&mut self, def: DefId, result_ty: &Ty) -> Value {
         let name = closure_symbol(self.namer, def);
         let data_id =
             self.module.declare_data(&name, Linkage::Import, false, false).expect("declare global");
@@ -703,20 +834,34 @@ impl<M: Module> Translator<'_, M> {
             let argc = self.builder.ins().iconst(types::I64, 0);
             let f = self.runtime("fai_apply_n", 3, true);
             let call = self.builder.ins().call(f, &[closure, argc, null]);
-            self.builder.inst_results(call)[0]
+            let forced = self.builder.inst_results(call)[0];
+            // A forced `Float` value binding comes back boxed and owned; unbox it.
+            if matches!(result_ty, Ty::Con(Con::Float)) {
+                self.owning_unbox(forced)
+            } else {
+                forced
+            }
         } else {
             closure
         }
     }
 
-    fn prim(&mut self, op: Prim, args: &[CExpr]) -> Value {
+    fn prim(&mut self, op: Prim, args: &[CExpr], result_ty: &Ty) -> Value {
+        // Float primitives compile to inline machine `f64` ops when their operands
+        // are unboxed; a boxed operand (e.g. inside the uniform mutual-recursion
+        // combined function) falls back to the out-of-line runtime float call.
+        if let Some(v) = self.float_prim(op, args, result_ty) {
+            return v;
+        }
         // The hot integer/boolean primitives compile to inline machine code with
         // an immediate fast path; everything else — and the boxed/overflow cases
         // of those — falls through to the out-of-line runtime call below.
         if let Some(v) = self.inline_prim(op, args) {
             return v;
         }
-        let vals: Vec<Value> = args.iter().map(|a| self.expr(a)).collect();
+        // A float operand of a non-float primitive (e.g. `{ r with x = … }`'s new
+        // value) crosses a uniform `i64` boundary, so it is boxed in.
+        let vals: Vec<Value> = args.iter().map(|a| self.expr_boxed(a)).collect();
         // An inspect-only primitive whose operands reference counting lent (boxed,
         // reference-counted values) calls the non-consuming runtime variant — the
         // caller drops them at their last use. The borrow decision is the same one
@@ -731,6 +876,183 @@ impl<M: Module> Translator<'_, M> {
         let f = self.runtime(symbol, op.arity(), true);
         let call = self.builder.ins().call(f, &vals);
         self.builder.inst_results(call)[0]
+    }
+
+    /// Compiles a `Float` primitive. With unboxed `f64` operands these are inline
+    /// machine instructions (`fadd`, `fcmp`, `sqrt`, `fcvt*`, bit reinterpretation)
+    /// with no allocation; a boxed operand or result (the uniform fallback, e.g.
+    /// the mutual-recursion combined function) routes to the out-of-line runtime
+    /// float call instead. Returns `None` for non-float primitives.
+    fn float_prim(&mut self, op: Prim, args: &[CExpr], result_ty: &Ty) -> Option<Value> {
+        Some(match op {
+            Prim::FloatAdd => self.float_binop(op, args, FloatBinop::Add),
+            Prim::FloatSub => self.float_binop(op, args, FloatBinop::Sub),
+            Prim::FloatMul => self.float_binop(op, args, FloatBinop::Mul),
+            Prim::FloatDiv => self.float_binop(op, args, FloatBinop::Div),
+            Prim::FloatLt => self.float_compare_op(op, args, FloatCC::LessThan),
+            Prim::FloatLe => self.float_compare_op(op, args, FloatCC::LessThanOrEqual),
+            Prim::FloatGt => self.float_compare_op(op, args, FloatCC::GreaterThan),
+            Prim::FloatGe => self.float_compare_op(op, args, FloatCC::GreaterThanOrEqual),
+            Prim::Sqrt => self.float_sqrt(op, args),
+            Prim::IntToFloat => self.int_to_float(op, args, result_ty),
+            Prim::FloatToInt => self.float_to_int(op, args),
+            Prim::FloatFromBits => self.float_from_bits(op, args, result_ty),
+            Prim::FloatToBits => self.float_to_bits(op, args),
+            Prim::FloatToString => self.float_to_string(op, args),
+            _ => return None,
+        })
+    }
+
+    /// `+ - * /` on `Float`: inline `f64` arithmetic on unboxed operands; the
+    /// runtime float op on boxed operands.
+    fn float_binop(&mut self, op: Prim, args: &[CExpr], bop: FloatBinop) -> Value {
+        let a = self.expr(&args[0]);
+        let b = self.expr(&args[1]);
+        if self.is_f64(a) && self.is_f64(b) {
+            match bop {
+                FloatBinop::Add => self.builder.ins().fadd(a, b),
+                FloatBinop::Sub => self.builder.ins().fsub(a, b),
+                FloatBinop::Mul => self.builder.ins().fmul(a, b),
+                FloatBinop::Div => self.builder.ins().fdiv(a, b),
+            }
+        } else {
+            let a = self.ensure_boxed(a);
+            let b = self.ensure_boxed(b);
+            self.prim_runtime_call(op, &[a, b])
+        }
+    }
+
+    /// `< <= > >=` on `Float`: inline `fcmp` (tagged `Bool`) on unboxed operands;
+    /// the runtime float comparison on boxed operands.
+    fn float_compare_op(&mut self, op: Prim, args: &[CExpr], cc: FloatCC) -> Value {
+        let a = self.expr(&args[0]);
+        let b = self.expr(&args[1]);
+        if self.is_f64(a) && self.is_f64(b) {
+            let c = self.builder.ins().fcmp(cc, a, b);
+            self.tag_bool(c)
+        } else {
+            let a = self.ensure_boxed(a);
+            let b = self.ensure_boxed(b);
+            self.prim_runtime_call(op, &[a, b])
+        }
+    }
+
+    /// `sqrt`: inline on an unboxed operand; the runtime `fai_sqrt` on a boxed one.
+    fn float_sqrt(&mut self, op: Prim, args: &[CExpr]) -> Value {
+        let a = self.expr(&args[0]);
+        if self.is_f64(a) {
+            self.builder.ins().sqrt(a)
+        } else {
+            let a = self.ensure_boxed(a);
+            self.prim_runtime_call(op, &[a])
+        }
+    }
+
+    /// `Int.toFloat`: inline `fcvt_from_sint` to an unboxed `f64` when the result
+    /// is unboxed; otherwise the runtime `fai_int_to_float` (boxed result).
+    fn int_to_float(&mut self, op: Prim, args: &[CExpr], result_ty: &Ty) -> Value {
+        if matches!(result_ty, Ty::Con(Con::Float)) {
+            let n = self.expr(&args[0]);
+            let raw = self.unbox_int_to_raw(n);
+            self.builder.ins().fcvt_from_sint(types::F64, raw)
+        } else {
+            let n = self.expr_boxed(&args[0]);
+            self.prim_runtime_call(op, &[n])
+        }
+    }
+
+    /// `Float.toInt` (truncating, saturating like the runtime's `as i64`): inline
+    /// `fcvt_to_sint_sat` on an unboxed operand; the runtime call on a boxed one.
+    fn float_to_int(&mut self, op: Prim, args: &[CExpr]) -> Value {
+        let a = self.expr(&args[0]);
+        if self.is_f64(a) {
+            let raw = self.builder.ins().fcvt_to_sint_sat(types::I64, a);
+            self.box_or_tag_int(raw)
+        } else {
+            let a = self.ensure_boxed(a);
+            self.prim_runtime_call(op, &[a])
+        }
+    }
+
+    /// `Float.fromBits`: reinterpret an `Int`'s bits as an unboxed `f64` when the
+    /// result is unboxed; otherwise the runtime call (boxed result).
+    fn float_from_bits(&mut self, op: Prim, args: &[CExpr], result_ty: &Ty) -> Value {
+        if matches!(result_ty, Ty::Con(Con::Float)) {
+            let n = self.expr(&args[0]);
+            let raw = self.unbox_int_to_raw(n);
+            self.i64_to_f64(raw)
+        } else {
+            let n = self.expr_boxed(&args[0]);
+            self.prim_runtime_call(op, &[n])
+        }
+    }
+
+    /// `Float.toBits`: reinterpret an unboxed `f64`'s bits as an `Int`; the runtime
+    /// call on a boxed operand.
+    fn float_to_bits(&mut self, op: Prim, args: &[CExpr]) -> Value {
+        let a = self.expr(&args[0]);
+        if self.is_f64(a) {
+            let raw = self.f64_to_i64(a);
+            self.box_or_tag_int(raw)
+        } else {
+            let a = self.ensure_boxed(a);
+            self.prim_runtime_call(op, &[a])
+        }
+    }
+
+    /// `Float.toString`: the runtime renderer takes a boxed `Float`, so an unboxed
+    /// operand is boxed in (a cold path — rendering allocates anyway).
+    fn float_to_string(&mut self, op: Prim, args: &[CExpr]) -> Value {
+        let a = self.expr_boxed(&args[0]);
+        self.prim_runtime_call(op, &[a])
+    }
+
+    /// Reads an `Int` operand's raw 64-bit value, consuming it: an immediate is
+    /// untagged; a boxed (large) `Int` is read from its cell and released.
+    fn unbox_int_to_raw(&mut self, n: Value) -> Value {
+        let imm_b = self.builder.create_block();
+        let box_b = self.builder.create_block();
+        let merge_b = self.builder.create_block();
+        self.builder.append_block_param(merge_b, types::I64);
+        let bit = self.builder.ins().band_imm(n, 1);
+        self.builder.ins().brif(bit, imm_b, &[], box_b, &[]);
+
+        self.builder.switch_to_block(imm_b);
+        self.builder.seal_block(imm_b);
+        let imm = self.builder.ins().sshr_imm(n, 1);
+        self.builder.ins().jump(merge_b, &[imm.into()]);
+
+        self.builder.switch_to_block(box_b);
+        self.builder.seal_block(box_b);
+        let off = i32::try_from(rt::INT_VALUE_OFFSET).expect("int value offset");
+        let val = self.builder.ins().load(types::I64, MemFlags::trusted(), n, off);
+        self.call_drop(n);
+        self.builder.ins().jump(merge_b, &[val.into()]);
+
+        self.builder.switch_to_block(merge_b);
+        self.builder.seal_block(merge_b);
+        self.builder.block_params(merge_b)[0]
+    }
+
+    /// Tags a raw `i64` as an immediate `Int` when it fits the 63-bit range, else
+    /// boxes it (mirroring the runtime's `fai_box_int` boundary).
+    fn box_or_tag_int(&mut self, raw: Value) -> Value {
+        let box_b = self.builder.create_block();
+        let merge_b = self.builder.create_block();
+        self.builder.append_block_param(merge_b, types::I64);
+        // `raw << 1` overflows exactly when `raw` no longer fits the immediate.
+        let (shifted, overflow) = self.builder.ins().sadd_overflow(raw, raw);
+        let tagged = self.builder.ins().bor_imm(shifted, 1);
+        self.builder.ins().brif(overflow, box_b, &[], merge_b, &[tagged.into()]);
+
+        self.builder.switch_to_block(box_b);
+        self.builder.seal_block(box_b);
+        let boxed = self.call1("fai_box_int", raw);
+        self.builder.ins().jump(merge_b, &[boxed.into()]);
+
+        self.builder.switch_to_block(merge_b);
+        self.builder.seal_block(merge_b);
+        self.builder.block_params(merge_b)[0]
     }
 
     /// Compiles an integer/boolean primitive to inline machine code when its
@@ -963,6 +1285,15 @@ impl<M: Module> Translator<'_, M> {
                     s.builder.ins().jump(merge, &[tagged.into()]);
                 },
             ))
+        } else if matches!(oty, Ty::Con(Con::Float)) {
+            // Unboxed operands: compare raw IEEE-754 bits, exactly matching the
+            // runtime's boxed-`Float` equality (so `NaN <> NaN` and `+0.0 <> -0.0`).
+            let a = self.expr(&args[0]);
+            let b = self.expr(&args[1]);
+            let ab = self.f64_to_i64(a);
+            let bb = self.f64_to_i64(b);
+            let c = self.builder.ins().icmp(IntCC::Equal, ab, bb);
+            Some(self.tag_bool(c))
         } else {
             None
         }
@@ -990,6 +1321,16 @@ impl<M: Module> Translator<'_, M> {
                     s.builder.ins().jump(merge, &[tagged.into()]);
                 },
             ))
+        } else if matches!(oty, Ty::Con(Con::Float)) {
+            // Unboxed operands: the runtime's no-alloc total-order comparison on
+            // the raw bits (matches `fai_compare`'s boxed-`Float` `total_cmp`).
+            let a = self.expr(&args[0]);
+            let b = self.expr(&args[1]);
+            let ab = self.f64_to_i64(a);
+            let bb = self.f64_to_i64(b);
+            let f = self.runtime("fai_float_compare_bits", 2, true);
+            let call = self.builder.ins().call(f, &[ab, bb]);
+            Some(self.builder.inst_results(call)[0])
         } else {
             None
         }
@@ -1010,20 +1351,30 @@ impl<M: Module> Translator<'_, M> {
         self.tag_int(cmp)
     }
 
-    fn application(&mut self, func: &CExpr, args: &[CExpr]) -> Value {
+    fn application(&mut self, func: &CExpr, args: &[CExpr], result_ty: &Ty) -> Value {
+        // Arguments cross a uniform `i64` boundary (the spilled argument array, the
+        // static closure, and `apply_n`'s slots), so a float argument is boxed in.
+        // A `Float` result comes back boxed and owned, so it is unboxed to an `f64`.
+        let boxed = self.application_boxed(func, args);
+        if matches!(result_ty, Ty::Con(Con::Float)) { self.owning_unbox(boxed) } else { boxed }
+    }
+
+    /// Emits the call (direct or via `apply_n`) with boxed arguments, yielding the
+    /// uniform (boxed/immediate) result.
+    fn application_boxed(&mut self, func: &CExpr, args: &[CExpr]) -> Value {
         // Direct call: a saturated application of a known top-level function calls
         // its code symbol directly, skipping `apply_n` and the static closure.
         // (Top-level functions capture nothing, so the environment is unused.)
         if let ExprKind::Global(def) = func.kind {
             let arity = (self.arity_of)(def);
             if arity == args.len() && arity > 0 {
-                let vals: Vec<Value> = args.iter().map(|a| self.expr(a)).collect();
+                let vals: Vec<Value> = args.iter().map(|a| self.expr_boxed(a)).collect();
                 let args_ptr = self.spill(&vals);
                 return self.direct_call(def, args_ptr);
             }
         }
         let callee = self.expr(func);
-        let vals: Vec<Value> = args.iter().map(|a| self.expr(a)).collect();
+        let vals: Vec<Value> = args.iter().map(|a| self.expr_boxed(a)).collect();
         let args_ptr = self.spill(&vals);
         let argc = self.builder.ins().iconst(types::I64, vals.len() as i64);
         let f = self.runtime("fai_apply_n", 3, true);
@@ -1056,7 +1407,9 @@ impl<M: Module> Translator<'_, M> {
         // directly into the env.
         let mut env_vals = Vec::with_capacity(captures.len());
         for &c in captures {
-            env_vals.push(self.use_var(c));
+            // Environment slots are uniform `i64`, so a captured float is boxed in.
+            let v = self.use_var(c);
+            env_vals.push(self.ensure_boxed(v));
         }
         let env_ptr = self.spill(&env_vals);
 
@@ -1087,6 +1440,13 @@ impl<M: Module> Translator<'_, M> {
         self.builder.ins().stack_addr(ptr, slot, 0)
     }
 
+    /// The Cranelift type carrying a value of static type `ty` across a block
+    /// boundary (a branch merge or loop edge): `F64` for an unboxed scalar `Float`,
+    /// else the uniform 64-bit word.
+    fn block_ty(&self, ty: &Ty) -> types::Type {
+        if matches!(ty, Ty::Con(Con::Float)) { types::F64 } else { types::I64 }
+    }
+
     fn conditional(&mut self, cond: &CExpr, then: &CExpr, els: &CExpr) -> Value {
         let cv = self.expr(cond);
         let false_v = self.builder.ins().iconst(types::I64, 1); // Bool false
@@ -1095,19 +1455,27 @@ impl<M: Module> Translator<'_, M> {
 
         let then_b = self.builder.create_block();
         let else_b = self.builder.create_block();
-        let merge_b = self.builder.create_block();
-        self.builder.append_block_param(merge_b, types::I64);
-
         self.builder.ins().brif(is_true, then_b, &[], else_b, &[]);
 
+        // The merge block's parameter type follows the branches' actual
+        // representation (`f64` for an unboxed float, else the uniform word). This
+        // is read from the then-branch value rather than the node's static type,
+        // because desugared `match` arms are wrapped in `If` nodes typed `Error`.
         self.builder.switch_to_block(then_b);
         self.builder.seal_block(then_b);
         let tv = self.expr(then);
+        let merge_b = self.builder.create_block();
+        let merge_ty = self.builder.func.dfg.value_type(tv);
+        self.builder.append_block_param(merge_b, merge_ty);
         self.builder.ins().jump(merge_b, &[tv.into()]);
 
         self.builder.switch_to_block(else_b);
         self.builder.seal_block(else_b);
         let ev = self.expr(els);
+        // The two branches share a type, so they share a representation — except a
+        // desugared `match`'s unreachable fall-through (`<error>`), which is a bare
+        // word; reinterpret it to the merge type (its value is never observed).
+        let ev = self.coerce_repr(ev, merge_ty);
         self.builder.ins().jump(merge_b, &[ev.into()]);
 
         self.builder.switch_to_block(merge_b);
@@ -1115,14 +1483,29 @@ impl<M: Module> Translator<'_, M> {
         self.builder.block_params(merge_b)[0]
     }
 
+    /// Reinterprets `v`'s bits to Cranelift type `ty` if they differ. Used only to
+    /// reconcile a desugared `match`'s unreachable `<error>` fall-through with a
+    /// branch/loop merge of a different representation; the value is never read.
+    fn coerce_repr(&mut self, v: Value, ty: types::Type) -> Value {
+        let vt = self.builder.func.dfg.value_type(v);
+        if vt == ty {
+            v
+        } else if ty == types::F64 {
+            self.i64_to_f64(v)
+        } else {
+            self.f64_to_i64(v)
+        }
+    }
+
     /// Code-generates a tail-call loop: a header block the loop-carried locals flow
     /// into (carried as cranelift variables, so the header is sealed only after its
     /// `Recur` back-edges are emitted), an exit block carrying the loop's result,
     /// and the body translated in tail position.
-    fn join(&mut self, params: &[LocalId], body: &CExpr) -> Value {
+    fn join(&mut self, params: &[LocalId], body: &CExpr, result_ty: &Ty) -> Value {
         let header = self.builder.create_block();
         let exit = self.builder.create_block();
-        self.builder.append_block_param(exit, types::I64);
+        let exit_ty = self.block_ty(result_ty);
+        self.builder.append_block_param(exit, exit_ty);
 
         // The loop-carried locals already hold their initial values (parameters
         // and, for a spine-building loop, the hole). Enter the header.
@@ -1215,6 +1598,11 @@ impl<M: Module> Translator<'_, M> {
             _ => {
                 let v = self.expr(e);
                 let exit = self.loop_ctx.as_ref().expect("tail value inside a loop").exit;
+                // Reconcile a desugared `match`'s unreachable `<error>` tail with
+                // the exit's representation (see `coerce_repr`).
+                let exit_ty = self.builder.func.dfg.block_params(exit)[0];
+                let exit_ty = self.builder.func.dfg.value_type(exit_ty);
+                let v = self.coerce_repr(v, exit_ty);
                 self.builder.ins().jump(exit, &[v.into()]);
             }
         }
@@ -1334,11 +1722,82 @@ fn collect_local_types(e: &CExpr, out: &mut FxHashMap<usize, Ty>) {
     }
 }
 
+/// Records, across the body, which locals are observed as a scalar `Float`
+/// (`float_seen`) and which are observed as any other (or unknown) type
+/// (`other_seen`), at the same points [`collect_local_types`] reads: every
+/// `Local` use and each `let` binding. A local is an unboxed `f64` only when it is
+/// in `float_seen` and not in `other_seen` (see [`Translator::collect_f64_locals`]).
+fn collect_float_observations(
+    e: &CExpr,
+    float_seen: &mut FxHashSet<usize>,
+    other_seen: &mut FxHashSet<usize>,
+) {
+    fn note(
+        local: LocalId,
+        ty: &Ty,
+        float_seen: &mut FxHashSet<usize>,
+        other: &mut FxHashSet<usize>,
+    ) {
+        if matches!(ty, Ty::Con(Con::Float)) {
+            float_seen.insert(local.index());
+        } else {
+            other.insert(local.index());
+        }
+    }
+    match &e.kind {
+        ExprKind::Local(l) => note(*l, &e.ty, float_seen, other_seen),
+        ExprKind::Lit(_) | ExprKind::Global(_) | ExprKind::MakeClosure { .. } | ExprKind::Error => {
+        }
+        ExprKind::Prim { args, .. } | ExprKind::MakeData { args, .. } => {
+            args.iter().for_each(|a| collect_float_observations(a, float_seen, other_seen));
+        }
+        ExprKind::App { func, args } => {
+            collect_float_observations(func, float_seen, other_seen);
+            args.iter().for_each(|a| collect_float_observations(a, float_seen, other_seen));
+        }
+        ExprKind::If { cond, then, els } => {
+            collect_float_observations(cond, float_seen, other_seen);
+            collect_float_observations(then, float_seen, other_seen);
+            collect_float_observations(els, float_seen, other_seen);
+        }
+        ExprKind::Let { local, value, body } => {
+            note(*local, &value.ty, float_seen, other_seen);
+            collect_float_observations(value, float_seen, other_seen);
+            collect_float_observations(body, float_seen, other_seen);
+        }
+        ExprKind::DataTag(base) | ExprKind::DataField { base, .. } => {
+            collect_float_observations(base, float_seen, other_seen);
+        }
+        ExprKind::Reset { value, body, .. } => {
+            collect_float_observations(value, float_seen, other_seen);
+            collect_float_observations(body, float_seen, other_seen);
+        }
+        ExprKind::Dup { body, .. } | ExprKind::Drop { body, .. } => {
+            collect_float_observations(body, float_seen, other_seen);
+        }
+        ExprKind::Join { body, .. } | ExprKind::HoleStart { body, .. } => {
+            collect_float_observations(body, float_seen, other_seen);
+        }
+        ExprKind::Recur { args } => {
+            args.iter().for_each(|a| collect_float_observations(a, float_seen, other_seen));
+        }
+        ExprKind::HoleFill { cell, .. } => {
+            collect_float_observations(cell, float_seen, other_seen);
+        }
+        ExprKind::HoleClose { base, .. } => {
+            collect_float_observations(base, float_seen, other_seen);
+        }
+    }
+}
+
 /// The inlined dup strategy for a value of statically known type `ty`: a no-op
 /// for an immediate, an unconditional increment for an always-boxed value, else a
 /// tag-checked increment (the safe default for `Int`, data, and unknown types).
 fn dup_class(ty: &Ty) -> DupPlan {
-    if is_immediate_ty(ty) {
+    // A monomorphic scalar `Float` local is an unboxed `f64`, which carries no
+    // reference count. (A `Float` *field* inside a cell stays boxed and is handled
+    // by the cell's drop, not here.)
+    if is_immediate_ty(ty) || matches!(ty, Ty::Con(Con::Float)) {
         DupPlan::NoOp
     } else {
         DupPlan::Incr { tag_check: !is_always_boxed_ty(ty) }
@@ -1351,7 +1810,8 @@ fn dup_class(ty: &Ty) -> DupPlan {
 /// boxed leaf frees directly, other data releases its children via the runtime,
 /// and an unrecognized type falls back to the runtime drop.
 fn drop_class(ty: &Ty) -> DropPlan {
-    if is_immediate_ty(ty) {
+    // An unboxed scalar `Float` local carries no reference count (see `dup_class`).
+    if is_immediate_ty(ty) || matches!(ty, Ty::Con(Con::Float)) {
         return DropPlan::NoOp;
     }
     if let Some(fields) = fixed_shape_drop(ty, MAX_INLINE_DROP_BOXED_FIELDS) {
@@ -1423,6 +1883,15 @@ enum BitOp {
     And,
     Or,
     Xor,
+}
+
+/// An unboxed `f64` arithmetic operation.
+#[derive(Clone, Copy)]
+enum FloatBinop {
+    Add,
+    Sub,
+    Mul,
+    Div,
 }
 
 /// How a data cell's field is released by an inlined drop.

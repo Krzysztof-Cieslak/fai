@@ -725,7 +725,8 @@ mod tests {
         let lowered = core(&db, file, Symbol::intern(name));
 
         let module_of = |_d: DefId| "M".to_owned();
-        let wire = def_to_wire(&lowered, &module_of, lowered.entry().params.len(), FnAbi::default());
+        let wire =
+            def_to_wire(&lowered, &module_of, lowered.entry().params.len(), FnAbi::default());
         let bundle =
             WireBundle { entry: wire.id.clone(), runtime: wire.id.clone(), defs: vec![wire] };
         let rebuilt = from_wire(&bundle);

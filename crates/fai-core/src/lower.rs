@@ -1040,13 +1040,15 @@ impl Lowerer<'_> {
                 continue;
             };
             let index = u32::try_from(index).unwrap_or(0);
+            // Carry the field's real type so a scalar `Float` field stays unboxed.
+            let field_ty = self.types.pat_type(fpat).cloned().unwrap_or(Ty::Error);
             let projection = || {
                 CExpr::new(
                     K::DataField {
                         base: Box::new(CExpr::new(K::Local(value_local), Ty::Error)),
                         index: FieldIndex::Const(index),
                     },
-                    Ty::Error,
+                    field_ty.clone(),
                 )
             };
             match &self.module.pat(fpat).kind {
@@ -1107,13 +1109,17 @@ impl Lowerer<'_> {
         let mut inner = success;
         for (i, &fp) in fields.iter().enumerate().rev() {
             let index = u32::try_from(i).unwrap_or(0);
+            // The projection carries the field's real type (the bound pattern's
+            // type), so a scalar `Float` field flows unboxed rather than being
+            // reclassified as a boxed value downstream.
+            let field_ty = self.types.pat_type(fp).cloned().unwrap_or(Ty::Error);
             let projection = || {
                 CExpr::new(
                     K::DataField {
                         base: Box::new(CExpr::new(K::Local(value_local), Ty::Error)),
                         index: FieldIndex::Const(index),
                     },
-                    Ty::Error,
+                    field_ty.clone(),
                 )
             };
             match &self.module.pat(fp).kind {
