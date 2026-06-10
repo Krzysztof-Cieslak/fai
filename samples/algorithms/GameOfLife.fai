@@ -52,4 +52,4 @@ let run n = Set.size (simulate 0 n seed)
 example: run 0 = 5
 
 public main : Runtime -> Unit
-let main runtime = runtime.console.writeLine (Int.toString (run 80))
+let main runtime = runtime.console.writeLine (Int.toString (run 200))

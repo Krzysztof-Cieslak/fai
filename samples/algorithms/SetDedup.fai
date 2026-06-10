@@ -17,4 +17,4 @@ let run n = List.sum (Set.toList (fill 0 n Set.empty))
 example: run 5 = 10
 
 public main : Runtime -> Unit
-let main runtime = runtime.console.writeLine (Int.toString (run 12000))
+let main runtime = runtime.console.writeLine (Int.toString (run 50000))

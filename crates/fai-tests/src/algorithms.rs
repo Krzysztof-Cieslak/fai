@@ -717,8 +717,8 @@ pub const ALGORITHMS: &[Algorithm] = &[
     Algorithm {
         module: "DictHistogram",
         entry: "run",
-        jit_size: 2_000,
-        aot_size: 30_000,
+        jit_size: 5000,
+        aot_size: 100000,
         oracle: Oracle::Int(dict_histogram),
     },
     Algorithm {
@@ -738,8 +738,8 @@ pub const ALGORITHMS: &[Algorithm] = &[
     Algorithm {
         module: "SetDedup",
         entry: "run",
-        jit_size: 2000,
-        aot_size: 12000,
+        jit_size: 3000,
+        aot_size: 50000,
         oracle: Oracle::Int(set_dedup),
     },
     Algorithm {
@@ -787,8 +787,8 @@ pub const ALGORITHMS: &[Algorithm] = &[
     Algorithm {
         module: "GameOfLife",
         entry: "run",
-        jit_size: 30,
-        aot_size: 80,
+        jit_size: 50,
+        aot_size: 200,
         oracle: Oracle::Int(game_of_life),
     },
     Algorithm {
@@ -829,15 +829,15 @@ pub const ALGORITHMS: &[Algorithm] = &[
     Algorithm {
         module: "GraphBFS",
         entry: "run",
-        jit_size: 1000,
-        aot_size: 3000,
+        jit_size: 2000,
+        aot_size: 30000,
         oracle: Oracle::Int(graph_bfs),
     },
     Algorithm {
         module: "CoinChange",
         entry: "run",
-        jit_size: 500,
-        aot_size: 1500,
+        jit_size: 2000,
+        aot_size: 20000,
         oracle: Oracle::Int(coin_change),
     },
     Algorithm {
@@ -857,8 +857,8 @@ pub const ALGORITHMS: &[Algorithm] = &[
     Algorithm {
         module: "Sieve",
         entry: "run",
-        jit_size: 1500,
-        aot_size: 4000,
+        jit_size: 5000,
+        aot_size: 100000,
         oracle: Oracle::Int(sieve),
     },
     Algorithm {
@@ -878,8 +878,8 @@ pub const ALGORITHMS: &[Algorithm] = &[
     Algorithm {
         module: "UnionFind",
         entry: "run",
-        jit_size: 1000,
-        aot_size: 2000,
+        jit_size: 2000,
+        aot_size: 30000,
         oracle: Oracle::Int(union_find),
     },
     Algorithm {
