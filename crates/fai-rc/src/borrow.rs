@@ -55,10 +55,14 @@ impl BorrowSig {
     }
 
     /// Whether a call passing `nargs` arguments may use this signature directly: a
-    /// saturated direct call whose argument count matches the parameter count.
+    /// direct call that saturates the parameters. An **over-application**
+    /// (`nargs > params`) qualifies too — the leading `params` arguments are the
+    /// saturated prefix (which code generation direct-calls), and the surplus
+    /// arguments beyond the signature's length are owned (a consumer reads this
+    /// signature with `.get(i).unwrap_or(false)`, so they default to owned).
     #[must_use]
     pub fn exploitable_at(&self, nargs: usize) -> bool {
-        !self.0.is_empty() && nargs == self.0.len()
+        !self.0.is_empty() && nargs >= self.0.len()
     }
 }
 
@@ -253,8 +257,10 @@ impl Analyzer<'_> {
         if let K::Global(def) = &func.kind {
             if *def == self.self_def {
                 // A self-call uses the in-progress signature (resolved by the
-                // local fixpoint); never re-enter the query for self.
-                if nargs == self.self_sig.len() {
+                // local fixpoint); never re-enter the query for self. An
+                // over-application's saturated prefix follows it too (the surplus
+                // arguments default to owned).
+                if !self.self_sig.is_empty() && nargs >= self.self_sig.len() {
                     return self.self_sig.to_vec();
                 }
             } else if let Some(file) = self.db.source_file(def.file) {

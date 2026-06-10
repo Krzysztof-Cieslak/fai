@@ -5002,6 +5002,37 @@ fn borrow_forward_consume() {
 }
 
 #[test]
+fn borrow_forward_through_over_application() {
+    // An over-application forwards its leading arguments to the callee's saturated
+    // prefix, which follows the callee's borrow signature: `chooseByLen` borrows its
+    // list (it forwards it to the borrowing `len` and returns a top-level function),
+    // and `f` forwards `xs` into that borrowing prefix (then applies a surplus
+    // argument), so `f` borrows `xs` too.
+    assert_eq!(
+        crate::tests::borrow_sig(
+            indoc! {r#"
+                module M
+
+                let add1 x = x + 1
+
+                let add10 x = x + 10
+
+                let len xs =
+                  match xs with
+                  | [] -> 0
+                  | _ :: r -> 1 + len r
+
+                let chooseByLen xs = if len xs > 3 then add10 else add1
+
+                let f xs = chooseByLen xs 5
+            "#},
+            "f",
+        ),
+        vec![true],
+    );
+}
+
+#[test]
 fn borrow_forward_to_std() {
     // Forwarding to a borrowing function in *another module* (the standard
     // library `List.isEmpty`, a pure inspector that never recurses) borrows the

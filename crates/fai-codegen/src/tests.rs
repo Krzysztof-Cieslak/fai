@@ -324,6 +324,54 @@ fn aliased_function_used_directly_and_as_a_value() {
 }
 
 #[test]
+fn over_application_of_a_closure_returning_function() {
+    // `constAdd 40 2` over-applies `constAdd` (arity 1, returns a closure): the
+    // saturated prefix `constAdd 40` is a direct call, and the surplus `2` is
+    // applied to its result through `apply_n`.
+    let src = indoc! {r#"
+        module M
+
+        let constAdd x = fun y -> x + y
+
+        public main : Runtime -> Unit
+        let main runtime = runtime.console.writeLine (Int.toString (constAdd 40 2))
+    "#};
+    let (code, out) = run(src);
+    assert_eq!((code, out.as_str()), (0, "42\n"));
+}
+
+#[test]
+fn over_application_of_a_borrowing_function_is_leak_free() {
+    // The RC-critical case: `chooseByLen` *borrows* its list (it forwards it to the
+    // borrowing `len` and returns a top-level function, capturing nothing), so
+    // over-applying it lends the list for the saturated prefix. The owner (`main`'s
+    // `nums`) must drop it after the call — a clean exit asserts the borrow lending
+    // at the widened over-application boundary balances (no leak, no double free).
+    let src = indoc! {r#"
+        module M
+
+        let add1 x = x + 1
+
+        let add10 x = x + 10
+
+        let len xs =
+          match xs with
+          | [] -> 0
+          | _ :: r -> 1 + len r
+
+        let chooseByLen xs = if len xs > 3 then add10 else add1
+
+        public main : Runtime -> Unit
+        let main runtime =
+          let nums = [1, 2, 3, 4, 5]
+          runtime.console.writeLine (Int.toString (chooseByLen nums 5))
+    "#};
+    let (code, out) = run(src);
+    assert_eq!(code, 0, "clean exit (no leak)");
+    assert_eq!(out, "15\n");
+}
+
+#[test]
 fn aliased_row_polymorphic_function_runs() {
     // A row-polymorphic function aliased by a `let` is *not* copy-propagated to a
     // direct call (it lowers to a partial application, kept on the `apply_n` path);
