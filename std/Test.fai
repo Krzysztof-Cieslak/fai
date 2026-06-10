@@ -81,16 +81,46 @@ let bool =
   { gen = g, show = fun b -> if b then "true" else "false", shrink = sh }
 example: bool.show true = "true"
 
-/// Generates floats across the whole domain (including NaN/inf), shrinking
-/// toward zero.
+// The generator takes a word's top 53 bits as a fraction in [0, 1) (divide by
+// 2^53), scales it by the size budget, and picks a sign from the low bit — so a
+// value is finite, its magnitude grows with size (like `int`), and arithmetic
+// never overflows to infinity. The shrinker drives toward 0.0 and whole numbers.
+/// Generates finite floats in `[-size, size]` (never NaN or infinity), shrinking
+/// toward zero and toward whole numbers.
 public float : Arbitrary Float
 let float =
+  let g size seed =
+    let (r, s2) = nextInt seed
+    let unit = Int.toFloat (Int.shiftRightLogical r 11) / 9_007_199_254_740_992.0
+    let mag = unit * Int.toFloat size
+    let signed = if Int.and r 1 = 1 then 0.0 - mag else mag
+    let x = if mag = 0.0 then 0.0 else signed
+    (x, s2)
+  let sh x =
+    if x = 0.0 then
+      []
+    else
+      let half = x / 2.0
+      let whole = Int.toFloat (Float.toInt x)
+      if whole = x || whole = 0.0 then [0.0, half] else [0.0, whole, half]
+  { gen = g, show = Float.toString, shrink = sh }
+example: float.show 1.5 = "1.5"
+example: float.shrink 0.0 = []
+example: float.shrink 4.0 = [0.0, 2.0]
+example: float.shrink 2.5 = [0.0, 2.0, 1.25]
+example: float.shrink 0.5 = [0.0, 0.25]
+
+/// Generates floats across the whole IEEE-754 domain (including NaN and
+/// infinities) by reinterpreting random bits; for bit-level or round-trip tests.
+/// Prefer `float` for ordinary arithmetic laws.
+public floatAll : Arbitrary Float
+let floatAll =
   let g size seed =
     let (r, s2) = nextInt seed
     (Float.fromBits r, s2)
   let sh x = if x = 0.0 then [] else [0.0]
   { gen = g, show = Float.toString, shrink = sh }
-example: float.show 1.5 = "1.5"
+example: floatAll.show 1.5 = "1.5"
 
 let hexDigits = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f']
 

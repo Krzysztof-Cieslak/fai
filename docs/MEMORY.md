@@ -781,10 +781,11 @@ Contracts (examples & properties):
   (`and`/`or`/`xor`/`complement`/`shiftLeft`/`shiftRight`/`shiftRightLogical`),
   not operators (symbolic forms collide with `>>` compose, `|` union/pattern, and
   `&&`/`||`); shift amounts are masked to `0..63`, and there are two right shifts
-  (arithmetic `shiftRight`, logical `shiftRightLogical`). Full-domain float
-  generation (incl. NaN/inf) needs bit reinterpretation, added as
-  `Float.fromBits`/`Float.toBits`. Both are ordinary `Prim.*` intrinsics
-  re-exported under clean names, mirroring the existing intrinsic wiring.
+  (arithmetic `shiftRight`, logical `shiftRightLogical`). Float bit
+  reinterpretation, added as `Float.fromBits`/`Float.toBits`, backs the splitmix
+  fraction and the full-domain `Test.floatAll` generator (the default `Test.float`
+  is finite — see D110). Both are ordinary `Prim.*` intrinsics re-exported under
+  clean names, mirroring the existing intrinsic wiring.
 - **D86 Generation policy (Stage 1).** Deterministic by default (a fixed seed; a
   `--seed` flag overrides), 100 trials, size ramping `0..maxSize` with `Int` drawn
   from `[-size, size]` and `List` length ≤ size — bounded so `abs`/`clamp`-style
@@ -1615,6 +1616,26 @@ Editor integration:
     definitions for one type are ambiguous, reported **`FAI6006`**. Parametric
     custom combinators (`Arbitrary 'a -> Arbitrary (T 'a)`) are out of scope (the
     discovered value must be a monomorphic `Arbitrary T`).
+- **D110 Finite float generation (amends D86; supersedes the full-domain default
+  of D85/D86).** The default `Float` generator emitted any 64-bit pattern via
+  `Float.fromBits`, so it produced NaN, ±infinity, and astronomically large
+  magnitudes. On float-arithmetic laws those are technically true counterexamples
+  but rarely what a law author means (e.g. `x * 0.0` is `0.0` for every finite
+  `x` but `NaN` for `x = inf`), and they overflow to infinity under further
+  arithmetic. So `Test.float` now generates a **finite, size-bounded** value:
+  take a word's top 53 bits as a fraction in `[0, 1)` (divide by `2^53`), scale by
+  the size budget, and pick a sign from the low bit — giving a magnitude in
+  `[0, size)` that grows with `size` (like `int`'s `[-size, size]`), never NaN/inf,
+  and never overflowing. A zero magnitude is forced to `+0.0` (not `-0.0`). The
+  shrinker drives a counterexample toward simple values: `0.0`, then the
+  whole-number truncation, then half — so a genuine failure reports a clean
+  counterexample (e.g. `x < 1.0` shrinks to `x = 1.0`). The full-domain generator
+  is retained as **`Test.floatAll`** (the old `Float.fromBits` behavior) for
+  bit-level and round-trip tests; it is a building block (reachable, like any
+  generator, through a user newtype's custom `Arbitrary`), since built-in scalar
+  binders are not overridable. Note that structural `=` on `Float` is **bitwise**
+  (so `-0.0 <> 0.0`), so a law expected to hold should compare with the IEEE
+  ordering operators (`>=`/`<=`/`<`/`>`), not `=`.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

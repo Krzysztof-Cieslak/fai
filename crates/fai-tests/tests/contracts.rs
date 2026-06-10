@@ -113,6 +113,12 @@ fn patterns_contracts_pass() {
 }
 
 #[test]
+fn geometry_contracts_pass() {
+    // Float `forall` laws (magnitude is non-negative) over the finite generator.
+    sample_contracts_pass("Geometry.fai");
+}
+
+#[test]
 fn prelude_contracts_pass() {
     // `Prelude` is embedded; run its own example/forall contracts.
     let _g = lock();
@@ -324,6 +330,40 @@ fn char_counterexample_is_rendered_as_a_char_literal() {
     let help = d.help.as_deref().unwrap_or("");
     assert!(help.starts_with("counterexample: c = '"), "got: {help}");
     assert!(help.ends_with('\''), "got: {help}");
+}
+
+#[test]
+fn float_law_holds_without_nan_failures() {
+    // A square is non-negative for every *finite* float, but `NaN >= 0.0` is
+    // false. The default generator is finite, so the law passes — a regression
+    // guard against the earlier full-domain (NaN-emitting) generator. (`>=` is the
+    // IEEE comparison, so signed zero is not an issue, unlike bitwise `=`.)
+    let src = "module M\nforall x: x * x >= 0.0\n";
+    let outcome = run(&[("M.fai", src)]);
+    assert!(outcome.ok, "diagnostics: {:?}", outcome.diagnostics);
+    assert_eq!(outcome.passed, 1);
+    assert_eq!(outcome.not_run, 0);
+    assert_eq!(outcome.leaked, 0);
+}
+
+#[test]
+fn false_float_law_shrinks_to_zero() {
+    // `x * 0.0 = 1.0` is false for every x, so a counterexample is found on the
+    // first trial and shrinks all the way to the simplest float, 0.0.
+    let src = "module M\nforall x: x * 0.0 = 1.0\n";
+    let outcome = run(&[("M.fai", src)]);
+    let d = outcome.diagnostics.iter().find(|d| d.code.as_str() == "FAI6001").expect("FAI6001");
+    assert_eq!(d.help.as_deref(), Some("counterexample: x = 0.0"));
+}
+
+#[test]
+fn float_counterexample_shrinks_to_whole_number() {
+    // `x < 1.0` fails for any x >= 1.0; the shrinker (toward 0.0, then whole-number
+    // truncation, then halving) converges on the simplest failing value, 1.0.
+    let src = "module M\nforall x: x < 1.0\n";
+    let outcome = run(&[("M.fai", src)]);
+    let d = outcome.diagnostics.iter().find(|d| d.code.as_str() == "FAI6001").expect("FAI6001");
+    assert_eq!(d.help.as_deref(), Some("counterexample: x = 1.0"));
 }
 
 /// Runs every standard-library module's and every sample's contracts, printing a

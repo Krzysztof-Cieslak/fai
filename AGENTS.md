@@ -73,8 +73,10 @@
 > **overrides** the synthesized generator for a user record/ADT (an ambiguous
 > override is **`FAI6006`**). (Splitmix needs **bitwise `Int`
 > intrinsics** — `Int.and/or/xor/complement/shiftLeft/shiftRight/shiftRightLogical`
-> — and full-domain float generation needs `Float.fromBits`/`toBits`, both added
-> as part of this work.) A standard **language server** (`fai lsp`, the `fai-lsp`
+> — and float bit-reinterpretation needs `Float.fromBits`/`toBits`, both added
+> as part of this work. The default `Float` generator is **finite and
+> size-bounded** (never NaN/inf); an opt-in `Test.floatAll` covers the full
+> IEEE-754 domain.) A standard **language server** (`fai lsp`, the `fai-lsp`
 > crate) is built: it reuses the warm session and the `fai-ide` engine to serve
 > diagnostics, hover (type, `///` docs, and contracts), go-to-definition,
 > completion (whose chosen item resolves its `///` docs and contracts lazily via
