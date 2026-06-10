@@ -1,0 +1,21 @@
+module Effects
+
+// A function's type carries an effect row recording the host capabilities it
+// uses. Calling a capability method (here the console) is tracked after the `/`.
+public greet : Console -> String -> Unit / { Console }
+let greet console name = console.writeLine ("Hello, " ++ name)
+
+// Using two capabilities unions their effects (atoms are sorted canonically).
+public logTime : { clock : Clock, console : Console | _ } -> String -> Unit / { Clock, Console }
+let logTime env message =
+  let now = env.clock.now ()
+  env.console.writeLine (message ++ " @ " ++ Int.toString now)
+
+// A pure function performs no effect, so its arrow is bare (no `/`).
+public shout : String -> String
+let shout s = String.toUpper s ++ "!"
+
+// The effect propagates: `main` reaches the console only through `greet`, and
+// its declared effect is checked against what the body actually uses.
+public main : Runtime -> Unit / { Console }
+let main runtime = greet runtime.console "Fai"
