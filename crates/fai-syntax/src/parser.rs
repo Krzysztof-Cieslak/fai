@@ -11,9 +11,9 @@ use fai_diagnostics::{Diagnostic, DiagnosticCode};
 use fai_span::{ByteOffset, SourceId, Span, TextRange};
 
 use crate::ast::{
-    Expr, ExprId, ExprKind, FieldInit, FieldPat, FieldType, Item, ItemId, ItemKind, LetStmt,
-    MatchArm, MethodImpl, MethodSig, Module, Pat, PatId, PatKind, RowTail, Type, TypeDef, TypeId,
-    TypeKind, Variant, Visibility,
+    EffectAnnot, Expr, ExprId, ExprKind, FieldInit, FieldPat, FieldType, Item, ItemId, ItemKind,
+    LetStmt, MatchArm, MethodImpl, MethodSig, Module, Pat, PatId, PatKind, RowTail, Type, TypeDef,
+    TypeId, TypeKind, Variant, Visibility,
 };
 use crate::token::{Token, TokenKind};
 use crate::{Comment, MODULE_HEADER, SYNTAX_ERROR, Symbol, layout, lex};
@@ -1209,10 +1209,66 @@ impl Parser<'_> {
         let from = self.parse_type_tuple();
         if self.eat(TokenKind::Arrow) {
             let to = self.parse_type_arrow(); // right-associative
-            self.alloc_ty(TypeKind::Arrow { from, to }, self.span_from(start))
+            // An effect annotation binds the innermost arrow: the right-recursive
+            // `to` has already consumed any inner `/ …`, so a `/` here is ours.
+            let effect = self.parse_effect_annot();
+            self.alloc_ty(TypeKind::Arrow { from, to, effect }, self.span_from(start))
         } else {
             from
         }
+    }
+
+    /// Parses an optional arrow effect annotation: `/ 'e` (a lone tail, sugar for
+    /// `{ | 'e }`) or `/ { Atom, … | tail }`. Returns `None` for a bare arrow.
+    fn parse_effect_annot(&mut self) -> Option<EffectAnnot> {
+        if !self.at_operator("/") {
+            return None;
+        }
+        let start = self.start();
+        self.bump(); // `/`
+        // Lone effect variable: `/ 'e`.
+        if self.at(TokenKind::TypeVar) {
+            let tail = RowTail::Named(self.bump_symbol());
+            return Some(EffectAnnot { labels: Vec::new(), tail, span: self.span_from(start) });
+        }
+        if !self.eat(TokenKind::LBrace) {
+            let span = self.cur().range;
+            self.error(SYNTAX_ERROR, span, "expected `{` or an effect variable after `/`");
+            return Some(EffectAnnot {
+                labels: Vec::new(),
+                tail: RowTail::Closed,
+                span: self.span_from(start),
+            });
+        }
+        // `{ Atom, … | tail }` — atoms are capability interface names (upper).
+        let mut labels = Vec::new();
+        while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Pipe) && !self.at_eof() {
+            if self.at(TokenKind::UpperIdent) {
+                labels.push(self.parse_dotted_upper());
+            } else {
+                let span = self.cur().range;
+                self.error(SYNTAX_ERROR, span, "expected a capability name in the effect row");
+                break;
+            }
+            if !self.eat(TokenKind::Comma) {
+                break;
+            }
+        }
+        let tail = if self.eat(TokenKind::Pipe) {
+            if self.eat(TokenKind::Underscore) {
+                RowTail::Open
+            } else if self.at(TokenKind::TypeVar) {
+                RowTail::Named(self.bump_symbol())
+            } else {
+                let span = self.cur().range;
+                self.error(SYNTAX_ERROR, span, "expected `_` or an effect variable after `|`");
+                RowTail::Closed
+            }
+        } else {
+            RowTail::Closed
+        };
+        self.expect(TokenKind::RBrace, "`}` to close the effect row");
+        Some(EffectAnnot { labels, tail, span: self.span_from(start) })
     }
 
     fn parse_type_tuple(&mut self) -> TypeId {
@@ -1541,6 +1597,24 @@ mod tests {
         ids.iter().map(|id| dump_pat(m, *id)).collect::<Vec<_>>().join(" ")
     }
 
+    fn dump_effect(e: &crate::ast::EffectAnnot) -> String {
+        let mut s = String::from("{");
+        for (i, l) in e.labels.iter().enumerate() {
+            s.push_str(if i == 0 { " " } else { ", " });
+            s.push_str(l.as_str());
+        }
+        match e.tail {
+            crate::ast::RowTail::Closed => {}
+            crate::ast::RowTail::Open => s.push_str(" | _"),
+            crate::ast::RowTail::Named(r) => {
+                s.push_str(" | ");
+                s.push_str(r.as_str());
+            }
+        }
+        s.push_str(" }");
+        s
+    }
+
     fn dump_type(m: &Module, id: TypeId) -> String {
         match &m.ty(id).kind {
             TypeKind::Var(s) => format!("(tvar {})", s.as_str()),
@@ -1548,8 +1622,12 @@ mod tests {
             TypeKind::App { func, arg } => {
                 format!("(tapp {} {})", dump_type(m, *func), dump_type(m, *arg))
             }
-            TypeKind::Arrow { from, to } => {
-                format!("(arrow {} {})", dump_type(m, *from), dump_type(m, *to))
+            TypeKind::Arrow { from, to, effect } => {
+                let eff = match effect {
+                    Some(e) => format!(" / {}", dump_effect(e)),
+                    None => String::new(),
+                };
+                format!("(arrow {} {}{})", dump_type(m, *from), dump_type(m, *to), eff)
             }
             TypeKind::Tuple(xs) => format!(
                 "(ttuple {})",
@@ -1849,6 +1927,70 @@ mod tests {
         assert_eq!(
             dump("module M\npublic map : ('a -> 'b) -> List 'a -> List 'b").lines().nth(1).unwrap(),
             "(sig Public map (arrow (tparen (arrow (tvar 'a) (tvar 'b))) (arrow (tapp (tcon List) (tvar 'a)) (tapp (tcon List) (tvar 'b)))))"
+        );
+    }
+
+    #[test]
+    fn arrow_effect_closed_atoms() {
+        let parsed = parse("module M\npublic save : String -> Unit / { Console }");
+        assert!(parsed.diagnostics.is_empty());
+        assert_eq!(
+            dump_module(&parsed.module).lines().nth(1).unwrap(),
+            "(sig Public save (arrow (tcon String) (tcon Unit) / { Console }))"
+        );
+    }
+
+    #[test]
+    fn arrow_effect_lone_variable_sugar() {
+        // `/ 'e` parses to no atoms with a named tail (sugar for `/ { | 'e }`).
+        let parsed = parse("module M\npublic run : Int -> Int / 'e");
+        assert!(parsed.diagnostics.is_empty());
+        assert_eq!(
+            dump_module(&parsed.module).lines().nth(1).unwrap(),
+            "(sig Public run (arrow (tcon Int) (tcon Int) / { | 'e }))"
+        );
+    }
+
+    #[test]
+    fn arrow_effect_open_with_atom() {
+        let parsed = parse("module M\npublic f : Unit -> Unit / { Console | 'e }");
+        assert!(parsed.diagnostics.is_empty());
+        assert_eq!(
+            dump_module(&parsed.module).lines().nth(1).unwrap(),
+            "(sig Public f (arrow (tcon Unit) (tcon Unit) / { Console | 'e }))"
+        );
+    }
+
+    #[test]
+    fn arrow_effect_binds_innermost_arrow() {
+        // In a curried type the effect attaches to the last (saturating) arrow.
+        let parsed = parse("module M\npublic f : Int -> Int -> Unit / { Console }");
+        assert!(parsed.diagnostics.is_empty());
+        assert_eq!(
+            dump_module(&parsed.module).lines().nth(1).unwrap(),
+            "(sig Public f (arrow (tcon Int) (arrow (tcon Int) (tcon Unit) / { Console })))"
+        );
+    }
+
+    #[test]
+    fn arrow_effect_on_parenthesized_inner_arrow() {
+        // Parens place the effect on the inner arrow; the outer arrow is pure.
+        let parsed = parse("module M\npublic f : (Int -> Int / { Console }) -> Int");
+        assert!(parsed.diagnostics.is_empty());
+        assert_eq!(
+            dump_module(&parsed.module).lines().nth(1).unwrap(),
+            "(sig Public f (arrow (tparen (arrow (tcon Int) (tcon Int) / { Console })) (tcon Int)))"
+        );
+    }
+
+    #[test]
+    fn arrow_without_effect_has_none() {
+        // A bare arrow carries no effect annotation (renders without ` / …`).
+        let parsed = parse("module M\npublic f : Int -> Int");
+        assert!(parsed.diagnostics.is_empty());
+        assert_eq!(
+            dump_module(&parsed.module).lines().nth(1).unwrap(),
+            "(sig Public f (arrow (tcon Int) (tcon Int)))"
         );
     }
 
@@ -2508,7 +2650,7 @@ mod proptests {
                 walk_type(m, *func);
                 walk_type(m, *arg);
             }
-            crate::ast::TypeKind::Arrow { from, to } => {
+            crate::ast::TypeKind::Arrow { from, to, .. } => {
                 walk_type(m, *from);
                 walk_type(m, *to);
             }

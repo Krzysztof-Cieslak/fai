@@ -113,9 +113,12 @@ impl Lowerer<'_> {
     fn lower_leaf(&mut self, ty: TypeId, vars: &mut LowerVars) -> Ty {
         match &self.module.ty(ty).kind {
             TypeKind::Var(name) => Ty::Var(vars.var(*name)),
-            TypeKind::Arrow { from, to } => {
+            TypeKind::Arrow { from, to, effect: _ } => {
                 let f = self.lower(*from, vars);
                 let t = self.lower(*to, vars);
+                // The effect annotation is parsed and formatted but not yet
+                // threaded into the type: effect inference wires it in later, so
+                // for now every written arrow lowers to the pure effect.
                 Ty::arrow(f, t)
             }
             TypeKind::Tuple(elems) => {

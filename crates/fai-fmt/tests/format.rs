@@ -295,6 +295,44 @@ fn arithmetic_operators_spaced() {
 }
 
 #[test]
+fn arrow_effect_closed_is_canonical() {
+    formats_with(
+        "module M\npublic save : String -> Unit / { Console }\nlet save x = x",
+        "save : String -> Unit / { Console }",
+    );
+}
+
+#[test]
+fn arrow_effect_atoms_are_sorted() {
+    formats_with(
+        "module M\npublic f : Unit -> Unit / { FileSystem, Console }\nlet f x = x",
+        "f : Unit -> Unit / { Console, FileSystem }",
+    );
+}
+
+#[test]
+fn arrow_effect_lone_variable_is_canonical() {
+    formats_with(
+        "module M\npublic compose2 : ('a -> 'b / 'e) -> ('b -> 'c / 'e) -> 'a -> 'c / 'e\nlet compose2 f g x = g (f x)",
+        "compose2 : ('a -> 'b / 'e) -> ('b -> 'c / 'e) -> 'a -> 'c / 'e",
+    );
+}
+
+#[test]
+fn arrow_effect_empty_normalizes_to_bare() {
+    // `/ {}` is the pure effect and is dropped by the canonical formatter.
+    let out = assert_canonical("module M\npublic a : Int -> Int / {}\nlet a x = x");
+    assert!(out.contains("a : Int -> Int\n"), "expected bare arrow in:\n{out}");
+}
+
+#[test]
+fn arrow_effect_lone_named_tail_normalizes_to_sugar() {
+    // `/ { | 'r }` canonicalizes to the lone-variable sugar `/ 'r`.
+    let out = assert_canonical("module M\npublic c : Int -> Int / { | 'r }\nlet c x = x");
+    assert!(out.contains("c : Int -> Int / 'r"), "expected `/ 'r` sugar in:\n{out}");
+}
+
+#[test]
 fn cons_and_concat_spaced() {
     formats_with("module M\nlet b = c ++ d :: e", "c ++ d :: e");
 }
@@ -770,7 +808,7 @@ fn shape_type(m: &Module, id: TypeId) -> String {
         TypeKind::App { func, arg } => {
             format!("(tapp {} {})", shape_type(m, *func), shape_type(m, *arg))
         }
-        TypeKind::Arrow { from, to } => {
+        TypeKind::Arrow { from, to, .. } => {
             format!("(tarrow {} {})", shape_type(m, *from), shape_type(m, *to))
         }
         TypeKind::Tuple(xs) => format!(
