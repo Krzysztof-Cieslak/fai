@@ -60,6 +60,9 @@ lsp-types = "0.95"
 interprocess = "2"
 # Unix process control: setsid (daemon detachment), kill, setrlimit.
 nix = { version = "0.29", features = ["process", "signal", "resource"] }
+# Windows process control (the peer of `nix`): the daemon-spawn handle-inheritance
+# fix and the worker's Job-Object resource limits. Features are selected per crate.
+windows-sys = "0.61"
 # Bounded child wait, for enforcing the run worker's timeout.
 wait-timeout = "0.2"
 # Typed library errors.

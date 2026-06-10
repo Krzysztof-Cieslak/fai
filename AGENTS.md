@@ -313,7 +313,12 @@ output schemas, and the daemon (MessagePack JSON-RPC) protocol.
   in `[workspace.lints]` (`warnings`, `unsafe_code`, `clippy::all`) and builds
   must also be clean under `clippy -D warnings`.
 - **No hand-written `unsafe`** outside `fai-runtime` and `fai-codegen` memory
-  primitives, and only with a `// SAFETY:` comment justifying each block. Crates
+  primitives, and only with a `// SAFETY:` comment justifying each block. The sole
+  other hand-written `unsafe` is the **Windows process-control FFI**: the
+  daemon-spawn handle-inheritance fix in `fai-server` and the worker's Job-Object
+  resource limits in `fai-driver` call `windows-sys` directly (the peers of the
+  safe `nix` calls used on Unix, for which no safe wrapper exists), each in a
+  scoped `#[allow(unsafe_code)]` with a `// SAFETY:` comment. Crates
   that define salsa queries (`fai-db` and the phase crates such as `fai-syntax`)
   carry only salsa's macro-generated `unsafe` via a scoped `#![allow(unsafe_code)]`.
 - **Errors:** library crates return `Result` with typed errors; never `panic!`

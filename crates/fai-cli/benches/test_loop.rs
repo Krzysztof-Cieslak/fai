@@ -6,13 +6,8 @@
 //! The in-process compile+run cost is benchmarked separately (and at larger
 //! sizes) in `fai-tests`' `contracts` bench; this one adds the daemon round trip
 //! and the worker subprocess + IPC that only the real binary exercises. Local
-//! profiling only (not a CI gate). Run with `cargo bench -p fai-cli --bench
-//! test_loop`.
-//!
-//! Not run on Windows for the same reason as the daemon tests: the spawned
-//! daemon inherits the client's captured stdio and would block until its idle
-//! timeout. The bench still compiles there (CI builds every target); only the
-//! run is skipped — and the Benchmarks workflow runs on Linux regardless.
+//! profiling only (not a CI gate); the Benchmarks workflow runs it on Linux. Run
+//! with `cargo bench -p fai-cli --bench test_loop`.
 
 use std::cell::Cell;
 use std::path::PathBuf;
@@ -23,10 +18,6 @@ use divan::Bencher;
 use fai_corpus::{self as corpus, CorpusSpec};
 
 fn main() {
-    // The daemon would block on Windows (it inherits the client's captured
-    // stdio), so the benches are not run there; on every other platform this
-    // runs the full divan suite.
-    #[cfg(not(windows))]
     divan::main();
 }
 

@@ -629,8 +629,10 @@ pub fn jit_run_bundle(bundle: &WireBundle) -> i32 {
 }
 
 /// Applies self-imposed resource limits from the environment (set by the daemon
-/// when supervising a run or test). `RLIMIT_CPU` (seconds) is the default guard;
-/// `RLIMIT_AS` (bytes) is opt-in. A no-op off Unix.
+/// when supervising a run or test). A CPU-time limit (`FAI_RUN_CPU_SECS`,
+/// seconds) is the default guard; a memory cap (`FAI_RUN_AS_BYTES`, bytes) is
+/// opt-in. Enforced via `setrlimit` on Unix and a Job Object on Windows; a no-op
+/// on other targets.
 #[cfg(unix)]
 pub(crate) fn apply_run_limits() {
     use nix::sys::resource::{Resource, setrlimit};
@@ -646,7 +648,74 @@ pub(crate) fn apply_run_limits() {
     }
 }
 
-#[cfg(not(unix))]
+/// Assigns the current process to a new Job Object carrying the requested limits
+/// — a per-process committed-memory cap (`FAI_RUN_AS_BYTES`) and/or a user-mode
+/// CPU-time limit (`FAI_RUN_CPU_SECS`) — which the OS enforces by terminating the
+/// process when either is exceeded (the peer of the Unix `setrlimit` path). The
+/// job handle is intentionally left open: the assigned process keeps the job and
+/// its limits alive, and the OS reclaims both on exit. Best-effort throughout — a
+/// failure (e.g. an environment that forbids job nesting) just leaves the worker
+/// unbounded by the job, exactly as a failed `setrlimit` would.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+pub(crate) fn apply_run_limits() {
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_PROCESS_MEMORY,
+        JOB_OBJECT_LIMIT_PROCESS_TIME, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JobObjectExtendedLimitInformation, SetInformationJobObject,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+    let cpu_secs = std::env::var("FAI_RUN_CPU_SECS").ok().and_then(|v| v.parse::<u64>().ok());
+    let mem_bytes = std::env::var("FAI_RUN_AS_BYTES").ok().and_then(|v| v.parse::<u64>().ok());
+    if cpu_secs.is_none() && mem_bytes.is_none() {
+        return;
+    }
+
+    // SAFETY: a null attribute pointer and null name request a new, unnamed job
+    // object; the call returns null on failure, which we treat as "no limits".
+    let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+    if job.is_null() {
+        return;
+    }
+
+    // SAFETY: the struct is plain-old-data (integers and nested integer structs),
+    // so an all-zero value is a valid, limit-free starting point.
+    let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+    let mut flags = 0u32;
+    if let Some(secs) = cpu_secs {
+        // PerProcessUserTimeLimit counts user-mode time in 100-nanosecond ticks.
+        info.BasicLimitInformation.PerProcessUserTimeLimit = secs.saturating_mul(10_000_000) as i64;
+        flags |= JOB_OBJECT_LIMIT_PROCESS_TIME;
+    }
+    if let Some(bytes) = mem_bytes {
+        info.ProcessMemoryLimit = bytes as usize;
+        flags |= JOB_OBJECT_LIMIT_PROCESS_MEMORY;
+    }
+    info.BasicLimitInformation.LimitFlags = flags;
+
+    // SAFETY: `info` is fully initialized; we pass its address and exact byte
+    // length for the matching extended-limit information class.
+    let set = unsafe {
+        SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            (&raw const info).cast(),
+            core::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+    };
+    if set == 0 {
+        return;
+    }
+
+    // SAFETY: GetCurrentProcess yields a pseudo-handle to this process; assigning
+    // it to the configured job binds the limits to us.
+    unsafe {
+        AssignProcessToJobObject(job, GetCurrentProcess());
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 pub(crate) fn apply_run_limits() {}
 
 /// Writes the objects and the runtime archive to a temporary directory and links
