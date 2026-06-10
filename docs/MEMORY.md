@@ -1865,5 +1865,51 @@ Editor integration:
     syntax of D88. No re-export mechanism or auto-import special-casing was
     needed; the alias re-export was validated against the embedded-std typecheck.
 
+- **D115 Register calling convention for direct calls (amends the D-era uniform
+  `fn(env, args)` ABI; companion to D113's unboxed `Float`).** A saturated direct
+  call to a known top-level function previously spilled its arguments to a stack
+  array and round-tripped them through the uniform entry `fn(env, args) -> i64`.
+  Now a **direct-callable** definition uses a register-passing entry
+  `fn(env, a0, …, aN) -> ret` — the value arguments flow in registers — and direct
+  callers pass them directly, the dominant remaining cost for the call-bound
+  algorithms (`fib`, `collatz`).
+  - **Who.** Direct-callable = **non-row-polymorphic** (no offset evidence) with at
+    least one parameter — exactly the definitions a saturated application reaches as
+    a bare `Global` head. Row-polymorphic functions bake their evidence into a
+    partial application (an `App` head, so always `apply_n`), and nullary bindings
+    are values; both are reached *only* through `apply_n`, so a register entry would
+    add a wrapper hop for no benefit. They keep the uniform array entry (and D113's
+    raw-bits `Float` slots) **unchanged** — so capability / least-authority code,
+    which is row-polymorphic, does not regress. A new `FnAbi::register_abi` flag
+    (from the stable signature) records this; it is part of the object fingerprint,
+    and a `reg-direct-call` code-generation cache token retires old-convention
+    objects. The synthetic mutual-recursion combined loop is direct-called by its
+    member wrappers, so it carries the flag too.
+  - **`Float` in registers.** A scalar `Float` argument/result of a register entry
+    is an **`f64` register** (not raw bits in an `i64` slot), matching the native FP
+    ABI; the first-class wrapper unboxes a boxed float argument to `f64` and boxes an
+    `f64` result. The raw-bits representation remains for the uniform (row-poly /
+    nullary) entries.
+  - **First-class form unchanged.** `fai_apply_n` calls a closure through the fixed
+    uniform `fn(env, args)` pointer, so a register entry's static closure points at a
+    **bridging wrapper** that loads the boxed argument array into registers (unboxing
+    a float, releasing borrowed arguments) — generalizing the borrow-only / float-only
+    owned wrapper.
+  - **Two widenings of the direct path.** (1) A `let g = f` binding a non-row-poly
+    top-level function is **copy-propagated** in lowering (every `g` becomes
+    `Global f`, the binding dropped), so `g x` is a direct call and `g`-as-a-value is
+    `f`'s closure — transitive, and capture-eliminating; a nullary value (non-arrow
+    type) or row-polymorphic function (an `App`, not a bare `Global`) is excluded.
+    (2) An **over-application** direct-calls the saturated prefix and `apply_n`s the
+    surplus, which widens the borrow saturation test from `==` to `>=` in lockstep
+    across the borrow inference, the reference-count pass, and code generation (the
+    leading parameters follow the callee's borrow signature, the surplus are owned),
+    so a borrowed prefix argument is lent and dropped by the caller, not leaked.
+  - **Deferred.** Proper tail calls (`return_call`) are future work: Cranelift's
+    `return_call` requires the not-ABI-stable `tail` convention on every
+    participating entry, and a tail call past a pending drop (a borrowing tail call
+    on an owned value) would be a use-after-free, so it needs its own design and
+    test scrutiny — and the hot tail recursion is already compiled to loops.
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

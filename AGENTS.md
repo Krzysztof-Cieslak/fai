@@ -54,7 +54,15 @@
 > inspect-only parameters at direct calls (with an owned-ABI wrapper for the
 > first-class value form). Borrow inference is **inter-procedural**: a parameter
 > only forwarded to another function's borrowing parameter is itself borrowed
-> (a borrow fixpoint over the call graph, across modules). Contracts (M7) are
+> (a borrow fixpoint over the call graph, across modules). Direct calls use a
+> **register calling convention**: a direct-callable definition
+> (non-row-polymorphic, ≥1 parameter) has a register-passing entry
+> `fn(env, a0, …, aN)` (a scalar `Float` in an `f64` register), a saturated call
+> passes its arguments in registers, an over-application direct-calls the saturated
+> prefix and `apply_n`s the rest, and a `let g = f` function alias is
+> copy-propagated to a direct call; the first-class form keeps the uniform
+> spilled-array ABI via the wrapper, and row-polymorphic/nullary entries stay
+> uniform (proper tail calls are future work). Contracts (M7) are
 > built: **`fai test` runs the first-class `example`/`forall` declarations**, and
 > **`fai check` eagerly evaluates the closed `example`s** (reporting a failing one
 > as the located `FAI6001` without a separate `fai test`, in the same isolated
@@ -184,6 +192,7 @@ table **and** the decision log in `docs/MEMORY.md`).
 | Backend | **Cranelift** native code generation |
 | Memory | **Perceus-style reference counting** (pure + strict ⇒ acyclic heaps ⇒ no cycle collector); reuse analysis enables in-place updates incl. `{ r with ... }` |
 | Representation | Uniform 64-bit boxed/immediate values, **except a monomorphic scalar `Float`, which is an unboxed `f64`** (in registers/locals, in direct-call parameters and results, and across tail loops) — boxed only where it crosses a uniform slot (a data field, a closure environment, an `apply_n`/first-class argument or result, a generic position); the first-class form bridges via a wrapper. Scalarizing `Float` *inside* records/tuples/lists is future work. Canonical record field layout (sorted by label text); monomorphic field access is a **constant offset**; *row-polymorphic* field access and `{ r with … }` update use **offset-evidence passing** — per row lacks-constraint, an integer offset threaded in as a leading argument (like a dictionary), composing through call chains and baked into partial applications for first-class use; dictionaries for interfaces/generics |
+| Calling convention | A **direct-callable** definition (non-row-polymorphic, ≥1 parameter) has a **register-passing entry** `fn(env, a0, …, aN) -> ret` — a saturated direct call passes its value arguments in registers (a scalar `Float` as an `f64` register), an over-application direct-calls the saturated prefix and `apply_n`s the rest. Row-polymorphic and nullary entries (reached only via `apply_n`) keep the uniform spilled-array `fn(env, args) -> i64`; the first-class value form always uses the uniform ABI, bridged by a wrapper (the static closure's code). Proper tail calls (`return_call`) are future work. |
 | Determinism | Clock / random / env / IO are reachable only via capabilities |
 | Standard library | Real compiled `.fai` modules under **`std/`**, embedded at build time. One **auto-imported** module, `Prelude`, owns the core types `Option`/`Result` (with their constructors), re-exports the opaque `Dict`/`Set` type names, and provides the free functions `identity`/`const`/`not`/`compare`; all other operations are **qualified** under per-type modules (`List.map`, `Option.withDefault`, `Int.toString`, …). `Prelude`/`List`/`Option`/`Result`/`Dict`/`Set`/`String`/`Int`/`Float`/`Char` are reserved module names. The few Rust **intrinsics** are prelude-private, reached only as `Prim.*` from inside `std/` (`FAI2014` elsewhere) and re-exported under clean names. `Dict`/`Set` are **`opaque`** types declared in their own modules with their node constructors hidden; `Prelude` re-exports the names via transparent aliases so they stay usable unqualified. |
 | Compilation model | **Demand-driven (salsa) query engine**; per-workspace **daemon** holds the DB hot, thin CLI client; **content-addressed on-disk cache**; **JIT** for `run`/`test`, **AOT** for `build`; incremental at definition/SCC granularity |
