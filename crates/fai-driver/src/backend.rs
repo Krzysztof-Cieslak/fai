@@ -701,7 +701,7 @@ pub(crate) fn apply_run_limits() {
             job,
             JobObjectExtendedLimitInformation,
             (&raw const info).cast(),
-            core::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
         )
     };
     if set == 0 {
