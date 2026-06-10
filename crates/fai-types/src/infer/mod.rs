@@ -208,7 +208,9 @@ pub fn infer_scc(
             })
             .collect();
         let body_ty = walker.infer_expr(body);
-        let fn_ty = SolveTy::arrows_solver(param_tys, body_ty);
+        // The body's latent effect rides the function's saturating arrow.
+        let body_eff = walker.body_effect_solve();
+        let fn_ty = SolveTy::arrows_solver_eff(param_tys, body_ty, body_eff);
 
         let unify = cx.unify(&fn_ty, &member_ty);
         // A failed unification (the body conflicts with the signature) is an

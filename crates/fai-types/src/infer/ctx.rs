@@ -172,6 +172,27 @@ impl SolveTy {
         }
         ty
     }
+
+    /// Builds a curried arrow with `effect` on its innermost (saturating) arrow —
+    /// the one whose application triggers the body's effect. Outer arrows (partial
+    /// applications) stay pure.
+    pub fn arrows_solver_eff(
+        params: Vec<SolveTy>,
+        result: SolveTy,
+        effect: SolveEffect,
+    ) -> SolveTy {
+        let mut ty = result;
+        let mut innermost = true;
+        for p in params.into_iter().rev() {
+            if innermost {
+                ty = SolveTy::arrow_eff(p, ty, effect.clone());
+                innermost = false;
+            } else {
+                ty = SolveTy::arrow(p, ty);
+            }
+        }
+        ty
+    }
 }
 
 /// The outcome of attempting to unify two types.

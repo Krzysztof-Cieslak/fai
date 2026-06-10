@@ -325,7 +325,42 @@ pub fn render_canonical(ty: &Ty) -> String {
     for (i, v) in order.into_iter().enumerate() {
         names.set(v, canonical_name(i));
     }
+    let mut eff_order: Vec<EffRowVarId> = Vec::new();
+    collect_eff_vars(ty, &mut eff_order);
+    for (i, v) in eff_order.into_iter().enumerate() {
+        names.set_eff(v, eff_canonical_name(i));
+    }
     render(ty, &names)
+}
+
+/// Collects a type's effect-row variables in first-appearance order (no dups).
+fn collect_eff_vars(ty: &Ty, out: &mut Vec<EffRowVarId>) {
+    match ty {
+        Ty::Arrow(f, a, eff) => {
+            collect_eff_vars(f, out);
+            collect_eff_vars(a, out);
+            if let EffEnd::Open(v) = eff.tail
+                && !out.contains(&v)
+            {
+                out.push(v);
+            }
+        }
+        Ty::App(f, a) => {
+            collect_eff_vars(f, out);
+            collect_eff_vars(a, out);
+        }
+        Ty::Tuple(elems) => {
+            for e in elems {
+                collect_eff_vars(e, out);
+            }
+        }
+        Ty::Record(row) => {
+            for (_, t) in &row.fields {
+                collect_eff_vars(t, out);
+            }
+        }
+        Ty::Var(_) | Ty::Con(_) | Ty::Adt(_) | Ty::Interface(_) | Ty::Unit | Ty::Error => {}
+    }
 }
 
 /// Collects a type's variables in first-appearance order (no duplicates).
