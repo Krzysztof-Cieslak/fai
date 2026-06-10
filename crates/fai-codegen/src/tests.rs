@@ -286,6 +286,63 @@ fn function_used_both_directly_and_first_class() {
 }
 
 #[test]
+fn aliased_function_is_a_direct_call() {
+    // `let g = add` aliases a top-level function; `g 40 2` is copy-propagated to a
+    // direct call to `add`. Correct value and a leak-free exit.
+    let src = indoc! {r#"
+        module M
+
+        let add x y = x + y
+
+        public main : Runtime -> Unit
+        let main runtime =
+          let g = add
+          runtime.console.writeLine (Int.toString (g 40 2))
+    "#};
+    let (code, out) = run(src);
+    assert_eq!((code, out.as_str()), (0, "42\n"));
+}
+
+#[test]
+fn aliased_function_used_directly_and_as_a_value() {
+    // The alias is reached both as a direct call (`g 41`) and as a first-class
+    // value (`apply g 40` passes its closure); both resolve to `inc`.
+    let src = indoc! {r#"
+        module M
+
+        let inc x = x + 1
+
+        let apply f x = f x
+
+        public main : Runtime -> Unit
+        let main runtime =
+          let g = inc
+          runtime.console.writeLine (Int.toString (g (apply g 40)))
+    "#};
+    let (code, out) = run(src);
+    assert_eq!((code, out.as_str()), (0, "42\n"));
+}
+
+#[test]
+fn aliased_row_polymorphic_function_runs() {
+    // A row-polymorphic function aliased by a `let` is *not* copy-propagated to a
+    // direct call (it lowers to a partial application, kept on the `apply_n` path);
+    // it must still run correctly.
+    let src = indoc! {r#"
+        module M
+
+        let getX r = r.x
+
+        public main : Runtime -> Unit
+        let main runtime =
+          let g = getX
+          runtime.console.writeLine (Int.toString (g { x = 5, y = 9 }))
+    "#};
+    let (code, out) = run(src);
+    assert_eq!((code, out.as_str()), (0, "5\n"));
+}
+
+#[test]
 fn partial_application_via_zero_arity_binding() {
     // `inc = add 1` is a zero-arity value (a partial application); applying it
     // exercises over-application and forcing.
