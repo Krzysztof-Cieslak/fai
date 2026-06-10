@@ -144,6 +144,17 @@ pub fn def_local_types(
         .collect()
 }
 
+/// The inferred latent effect of a definition's body — the host capabilities it
+/// uses (directly or via the lambdas/methods it calls). A function that merely
+/// *holds* or *builds an effectful closure* is pure; the effect is recorded
+/// where a capability method is actually invoked.
+#[must_use]
+pub fn def_effect(db: &dyn Db, file: SourceFile, name: Symbol) -> crate::ty::EffectRow {
+    let def_schemes = |db: &dyn Db, def: DefId| declared_or_inferred_scheme(db, def);
+    let builtins = |n: Symbol| std_lib::builtin_scheme(n);
+    crate::infer::infer_def_effect(db, file, name, &def_schemes, &builtins)
+}
+
 /// The inferred type of every expression in a definition's body.
 ///
 /// A salsa value (so Core lowering depends on it for early cutoff). Mirrors the

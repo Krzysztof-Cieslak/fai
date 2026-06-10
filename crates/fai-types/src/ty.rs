@@ -447,6 +447,16 @@ fn canonical_name(n: usize) -> String {
     if suffix == 0 { format!("'{letter}") } else { format!("'{letter}{suffix}") }
 }
 
+/// The canonical name for the `n`th *effect* variable: `'e`, `'f`, … (offset from
+/// `'e`, the conventional effect-variable letter, to read distinctly from the
+/// type variables `'a`, `'b`, … that usually accompany them).
+#[must_use]
+pub fn eff_canonical_name(n: usize) -> String {
+    let letter = (b'e' + (n % 22) as u8) as char; // 'e'..='z'
+    let suffix = n / 22;
+    if suffix == 0 { format!("'{letter}") } else { format!("'{letter}{suffix}") }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Prec {
     /// Top level (no surrounding context).

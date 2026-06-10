@@ -20,7 +20,9 @@ use fai_syntax::ast::{
 };
 use rustc_hash::FxHashMap;
 
-use crate::infer::ctx::{Constraint, InferCtx, RowTail, SolveRow, SolveTy, UnifyResult};
+use crate::infer::ctx::{
+    Constraint, InferCtx, RowTail, SolveEffect, SolveRow, SolveTy, UnifyResult,
+};
 use crate::lower::{build_interface_method_scheme, interface_param_count, resolve_interface};
 use crate::ty::Scheme;
 use crate::{
@@ -79,6 +81,11 @@ pub struct Walker<'a, E: Env> {
     expr_types: FxHashMap<ExprId, SolveTy>,
     /// Per-pattern solver types (populated only when `record_types` is set).
     pat_types: FxHashMap<PatId, SolveTy>,
+    /// The latent effect accumulated for the expression currently being walked
+    /// (the body of the enclosing function or lambda): the union of the effects
+    /// of every application performed. A lambda saves and resets it so the lambda
+    /// carries its own body's effect, closing the capability-laundering hole.
+    cur_effect: SolveEffect,
 }
 
 impl<'a, E: Env> Walker<'a, E> {
@@ -102,6 +109,7 @@ impl<'a, E: Env> Walker<'a, E> {
             record_types: false,
             expr_types: FxHashMap::default(),
             pat_types: FxHashMap::default(),
+            cur_effect: SolveEffect::pure(),
         }
     }
 }
@@ -195,6 +203,20 @@ impl<E: Env> Walker<'_, E> {
     /// Used to report an attempt to treat an opaque type as a structural record.
     fn opaque_adt_name(&self, ty: &crate::ty::Ty) -> Option<Symbol> {
         opaque_adt_head_name(self.db, ty)
+    }
+
+    /// Records that evaluating the current expression performs effect `eff`,
+    /// merging it into the body's accumulated latent effect.
+    fn incur_effect(&mut self, eff: &SolveEffect) {
+        let merged = self.cx.union_effects(&self.cur_effect, eff);
+        self.cur_effect = merged;
+    }
+
+    /// The accumulated latent effect of the body walked so far, reified. This is
+    /// the function/lambda's inferred effect — the capabilities it uses.
+    #[must_use]
+    pub fn body_effect(&self) -> crate::ty::EffectRow {
+        self.cx.reify_effect_standalone(&self.cur_effect)
     }
 
     /// Binds a parameter pattern to fresh local types and returns its type.
@@ -294,6 +316,14 @@ impl<E: Env> Walker<'_, E> {
                 let result = self.cx.fresh();
                 let expected = SolveTy::arrow(arg_ty, result.clone());
                 self.unify_at(node.span, &func_ty, &expected, "function application");
+                // Incur the applied function's resolved effect (read, without
+                // binding an effect variable into the function's type — so an
+                // effect-polymorphic *type* is not forced here). A partial
+                // application's outer arrow is pure; the saturating application's
+                // arrow carries the real effect.
+                if let SolveTy::Arrow(_, _, eff) = self.cx.resolve_shallow(&func_ty) {
+                    self.incur_effect(&eff);
+                }
                 result
             }
             ExprKind::Infix { op, lhs, rhs } => self.infer_infix(*op, *lhs, *rhs, node.span),
@@ -319,7 +349,17 @@ impl<E: Env> Walker<'_, E> {
             ExprKind::Lambda { params, body } => {
                 let param_tys: Vec<SolveTy> =
                     params.iter().map(|&p| self.bind_pattern_into(p)).collect();
+                // The lambda's body has its own latent effect: save and reset the
+                // enclosing accumulator so the effect lands on the lambda's arrow
+                // (closing the closure-laundering hole), then restore it.
+                // The lambda's body has its own latent effect; it belongs on the
+                // lambda's arrow, not the enclosing function. In this phase the
+                // function type stays effect-free, so the scoped effect is
+                // discarded after the body (computed effects ride `def_effect`,
+                // and coupling effects into the type lands with enforcement).
+                let saved = std::mem::replace(&mut self.cur_effect, SolveEffect::pure());
                 let body_ty = self.infer_expr(*body);
+                self.cur_effect = saved;
                 SolveTy::arrows_solver(param_tys, body_ty)
             }
             ExprKind::Match { scrutinee, arms } => {

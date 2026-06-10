@@ -17,10 +17,10 @@ use fai_resolve::{
 };
 use fai_span::{Span, TextRange};
 use fai_syntax::Symbol;
-use fai_syntax::ast::{ItemKind, Module, RowTail, TypeDef, TypeId, TypeKind};
+use fai_syntax::ast::{EffectAnnot, ItemKind, Module, RowTail, TypeDef, TypeId, TypeKind};
 use rustc_hash::FxHashMap;
 
-use crate::ty::{RecordRow, RowEnd, RowVarId, Scheme, Ty, TyVarId};
+use crate::ty::{EffEnd, EffRowVarId, EffectRow, RecordRow, RowEnd, RowVarId, Scheme, Ty, TyVarId};
 use crate::{RECURSIVE_ALIAS, TYPE_ARITY, UNKNOWN_TYPE_CONSTRUCTOR};
 
 /// A scratch map from surface type-variable names to assigned ids during one
@@ -33,6 +33,10 @@ pub struct LowerVars {
     row_next: u32,
     /// Row variables in allocation order, with their spellings (`_` anonymous).
     row_order: Vec<(RowVarId, String)>,
+    effs_by_name: FxHashMap<Symbol, EffRowVarId>,
+    eff_next: u32,
+    /// Effect-row variables in allocation order, with their spellings.
+    eff_order: Vec<(EffRowVarId, String)>,
 }
 
 impl LowerVars {
@@ -64,6 +68,31 @@ impl LowerVars {
         self.row_next += 1;
         self.row_order.push((id, "_".to_owned()));
         id
+    }
+
+    /// A named open effect tail `'e` (shared by name across one signature).
+    fn eff_named(&mut self, name: Symbol) -> EffRowVarId {
+        if let Some(id) = self.effs_by_name.get(&name) {
+            return *id;
+        }
+        let id = EffRowVarId(self.eff_next);
+        self.eff_next += 1;
+        self.effs_by_name.insert(name, id);
+        self.eff_order.push((id, name.as_str().to_owned()));
+        id
+    }
+
+    /// A fresh anonymous open effect tail `_` (never shared).
+    fn eff_anon(&mut self) -> EffRowVarId {
+        let id = EffRowVarId(self.eff_next);
+        self.eff_next += 1;
+        self.eff_order.push((id, "_".to_owned()));
+        id
+    }
+
+    /// The effect-row variables in allocation order, with their spellings.
+    fn effects(&self) -> Vec<(EffRowVarId, String)> {
+        self.eff_order.clone()
     }
 
     /// The `(var, source-name)` pairs, ordered by var id. Names keep the written
@@ -113,13 +142,11 @@ impl Lowerer<'_> {
     fn lower_leaf(&mut self, ty: TypeId, vars: &mut LowerVars) -> Ty {
         match &self.module.ty(ty).kind {
             TypeKind::Var(name) => Ty::Var(vars.var(*name)),
-            TypeKind::Arrow { from, to, effect: _ } => {
+            TypeKind::Arrow { from, to, effect } => {
                 let f = self.lower(*from, vars);
                 let t = self.lower(*to, vars);
-                // The effect annotation is parsed and formatted but not yet
-                // threaded into the type: effect inference wires it in later, so
-                // for now every written arrow lowers to the pure effect.
-                Ty::arrow(f, t)
+                let eff = self.lower_effect(effect.as_ref(), vars);
+                Ty::arrow_eff(f, t, eff)
             }
             TypeKind::Tuple(elems) => {
                 Ty::Tuple(elems.iter().map(|&e| self.lower(e, vars)).collect())
@@ -142,6 +169,30 @@ impl Lowerer<'_> {
             TypeKind::App { .. } => self.lower(ty, vars),
             TypeKind::Error => Ty::Error,
         }
+    }
+
+    /// Lowers a written arrow effect annotation into an [`EffectRow`], resolving
+    /// each atom (a capability interface name) to its canonical [`InterfaceRef`].
+    /// `None` is the pure effect. An atom that does not name a visible interface
+    /// is dropped for now (a dedicated diagnostic lands with enforcement).
+    fn lower_effect(&mut self, annot: Option<&EffectAnnot>, vars: &mut LowerVars) -> EffectRow {
+        let Some(annot) = annot else {
+            return EffectRow::pure();
+        };
+        let mut labels = Vec::new();
+        for &name in &annot.labels {
+            if let Some((decl_file, info)) = self.lookup_interface(name) {
+                labels.push(InterfaceRef::new(decl_file.source(self.db), info.name));
+            }
+        }
+        labels.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+        labels.dedup();
+        let tail = match annot.tail {
+            RowTail::Closed => EffEnd::Closed,
+            RowTail::Open => EffEnd::Open(vars.eff_anon()),
+            RowTail::Named(name) => EffEnd::Open(vars.eff_named(name)),
+        };
+        EffectRow { labels, tail }
     }
 
     /// Lowers a (possibly applied) type-constructor name.
@@ -442,6 +493,7 @@ pub fn lower_signature_in(
     Scheme::new(type_vars(&vars), body)
         .with_names(type_names(&vars))
         .with_rows(row_vars(&vars), row_names(&vars))
+        .with_effects(effect_vars(&vars), effect_names(&vars))
 }
 
 /// The module path of a qualified name (everything but the final segment).
@@ -462,6 +514,12 @@ fn row_vars(vars: &LowerVars) -> Vec<RowVarId> {
 }
 fn row_names(vars: &LowerVars) -> Vec<String> {
     vars.rows().into_iter().map(|(_, n)| n).collect()
+}
+fn effect_vars(vars: &LowerVars) -> Vec<EffRowVarId> {
+    vars.effects().into_iter().map(|(id, _)| id).collect()
+}
+fn effect_names(vars: &LowerVars) -> Vec<String> {
+    vars.effects().into_iter().map(|(_, n)| n).collect()
 }
 
 /// Builds the scheme of a data constructor `name` declared in `file`, e.g.
@@ -495,7 +553,8 @@ pub fn build_constructor_scheme(db: &dyn Db, file: SourceFile, name: Symbol) -> 
     Some(
         Scheme::new(type_vars(&vars), body)
             .with_names(type_names(&vars))
-            .with_rows(row_vars(&vars), row_names(&vars)),
+            .with_rows(row_vars(&vars), row_names(&vars))
+            .with_effects(effect_vars(&vars), effect_names(&vars)),
     )
 }
 
@@ -590,7 +649,8 @@ pub fn build_interface_method_scheme(
     Some(
         Scheme::new(type_vars(&vars), body)
             .with_names(type_names(&vars))
-            .with_rows(row_vars(&vars), row_names(&vars)),
+            .with_rows(row_vars(&vars), row_names(&vars))
+            .with_effects(effect_vars(&vars), effect_names(&vars)),
     )
 }
 
