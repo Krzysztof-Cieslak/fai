@@ -341,6 +341,7 @@ fn run_daemon_command(
                     avg_ms,
                     info.command_micros_max as f64 / 1000.0
                 );
+                let _ = writeln!(out, "  peak concurrency: {}", info.max_concurrency);
                 EXIT_OK
             }
             Ok(None) => {

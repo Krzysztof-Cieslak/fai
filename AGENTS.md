@@ -11,7 +11,11 @@
 > `fai run` executes it. The daemon layer (M3.5) is built: a per-workspace
 > `fai-server` holds the warm query database and serves a thin CLI client over
 > MessagePack JSON-RPC, backed by an on-disk content-addressed object cache;
-> `--no-daemon` runs in-process. The data layer (M4) is built: **discriminated
+> `--no-daemon` runs in-process. Read commands are served **concurrently** on
+> cloned database snapshots (the lock is held only to sync inputs and clone a
+> snapshot, not to run the command), and an input change **cancels** in-flight
+> reads, which retry on the new revision. The data layer (M4) is built:
+> **discriminated
 > unions and transparent type aliases, `match` with exhaustiveness/redundancy
 > checking, structural records with row polymorphism, a native `Float`, and
 > structural ordering** — all compiling to native code (monomorphic records use
@@ -400,9 +404,12 @@ so a new call site elsewhere doesn't invalidate its code.
 (3) shared/remote cache later (portable by construction).
 
 **Runtime topology.** A per-workspace **daemon** (`fai-server`) holds the live DB
-and serves a thin CLI client over MessagePack JSON-RPC (see `docs/CLI.md`), with
-request cancellation on input change and LRU eviction to bound memory. `fai-ide`
-exposes code-intelligence queries to both the CLI (`fai query`) and the LSP.
+and serves a thin CLI client over MessagePack JSON-RPC (see `docs/CLI.md`).
+Read commands run **concurrently** on cloned database snapshots (the lock is held
+only to sync inputs and clone a snapshot); an input change **cancels** in-flight
+reads, which retry on the new revision. With LRU eviction to bound memory.
+`fai-ide` exposes code-intelligence queries to both the CLI (`fai query`) and the
+LSP.
 
 **Execution.** `fai check` runs front-end queries only (no codegen/link); JIT
 serves the `run`/`test` inner loop (no link); AOT (`fai build`) uses the object

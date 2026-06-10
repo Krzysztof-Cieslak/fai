@@ -156,6 +156,29 @@ impl Session {
         crate::backend::set_object_cache_capacity(&mut self.db, capacity);
     }
 
+    /// A read-only snapshot of this session: an independent database handle that
+    /// shares salsa's storage (and thus its memoization) with the original, plus
+    /// a consistent copy of the live-file set.
+    ///
+    /// The daemon takes one of these per read request so distinct requests run
+    /// concurrently on their own handles (salsa coordinates execution and cancels
+    /// outstanding snapshots when an input is mutated). The snapshot is **read
+    /// only**: it carries no file stats, so [`sync_from_disk`](Self::sync_from_disk)
+    /// must never be called on it (it would treat every file as new). Mutate the
+    /// authoritative session under exclusive access instead, then take a fresh
+    /// snapshot.
+    #[must_use]
+    pub fn snapshot(&self) -> Session {
+        Session {
+            db: self.db.clone(),
+            root: self.root.clone(),
+            // Stats drive disk-sync (a write); a read-only snapshot never syncs,
+            // so it carries none.
+            stats: FxHashMap::default(),
+            live: self.live.clone(),
+        }
+    }
+
     /// The session's database as a trait object.
     #[must_use]
     pub fn db(&self) -> &dyn Db {
