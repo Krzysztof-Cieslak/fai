@@ -1,0 +1,53 @@
+name: Fuzz
+
+# Coverage-guided fuzzing of the runtime's size-class allocator. Not a merge gate
+# (libFuzzer needs a nightly toolchain and runs for a wall-clock budget): it runs
+# on a schedule and on demand, and fails only if it finds a crash — which is a
+# real memory-safety bug, uploaded as an artifact for reproduction. The same
+# `run_ops` harness is exercised on every CI run by the stable property and stress
+# tests; this adds mutation + AddressSanitizer depth.
+on:
+  schedule:
+    - cron: "0 4 * * 1" # Mondays, 04:00 UTC
+  workflow_dispatch:
+    inputs:
+      max_total_time:
+        description: "Seconds to fuzz the target"
+        default: "300"
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: never
+
+jobs:
+  fuzz:
+    name: cargo-fuzz free_list
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install nightly toolchain and cargo-fuzz
+        run: |
+          rustup toolchain install nightly --profile minimal
+          cargo install cargo-fuzz --locked
+
+      - name: Fuzz the allocator
+        working-directory: crates/fai-runtime
+        run: |
+          cargo +nightly fuzz run free_list -- \
+            -max_total_time=${{ github.event.inputs.max_total_time || '300' }}
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: crates/fai-runtime/fuzz/artifacts/
+          if-no-files-found: ignore

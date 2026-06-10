@@ -1,0 +1,31 @@
+# cargo-fuzz target for the size-class allocator. Its own workspace (and not a
+# member of the main workspace) so the stable, gating CI never tries to build it:
+# libFuzzer needs a nightly toolchain. Run it with `cargo +nightly fuzz run
+# free_list` from this directory; the `Benchmarks`-style `fuzz` workflow runs it
+# non-gating on a schedule.
+[package]
+name = "fai-runtime-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.fai-runtime]
+path = ".."
+features = ["fuzzing"]
+
+[[bin]]
+name = "free_list"
+path = "fuzz_targets/free_list.rs"
+test = false
+doc = false
+bench = false
+
+# Detach from the main Cargo workspace (libFuzzer deps + nightly are kept out of
+# the stable build/test graph).
+[workspace]

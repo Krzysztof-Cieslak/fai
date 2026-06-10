@@ -21,6 +21,11 @@
 //! [`fai_dup`]/[`fai_drop`] are tag-checked, so immediates are no-ops and
 //! polymorphic code reference-counts correctly with no type information.
 //!
+//! Heap memory comes from a size-class recycling allocator: a freed cell is kept
+//! on a per-size, thread-local free list and handed back to the next same-size
+//! allocation (turning the common alloc/free into a few pointer moves), with sizes
+//! above a cap falling back to the system allocator.
+//!
 //! Generated code inlines the common reference-count work — a tag-check, then an
 //! in-place increment (dup) or a decrement and zero-test (drop) — and only calls
 //! out to the runtime to actually reclaim memory: [`fai_free`] for a childless
@@ -33,6 +38,7 @@
 //! the arity (exact call / partial-application closure / over-application).
 
 use std::alloc::Layout;
+use std::cell::Cell;
 use std::sync::Mutex;
 // The leak/allocation counters are the only users of these atomics, and they are
 // compiled in only under `debug_assertions`, so the import is gated to match (a
@@ -298,16 +304,163 @@ pub fn reset_allocations() {
     ALLOCATIONS.store(0, Ordering::Relaxed);
 }
 
-/// Allocates a zeroed object of `size` bytes with `rc = 1` and `descriptor`,
-/// returning its pointer. Increments the live counter.
-fn alloc_obj(size: usize, descriptor: *const Descriptor) -> *mut u8 {
+// ---------------------------------------------------------------------------
+// Size-class recycling allocator.
+// ---------------------------------------------------------------------------
+//
+// Most Fai objects are small fixed sizes (a cons cell 48 B, an `Int`/`Float` box
+// 32 B), allocated and freed in bursts, so going to the system allocator for each
+// one dominates allocation cost. Instead, a freed cell is kept on a per-size
+// free list and handed back to the next same-size allocation, turning the common
+// alloc/free into a few non-atomic pointer moves. Sizes above `MAX_POOLED_SIZE`
+// (rare — large strings, wide records) bypass the pool and use the system
+// allocator directly.
+//
+// The free lists are **thread-local** and need no synchronization: Fai execution
+// is single-threaded, and a cell is always allocated and freed on the same thread,
+// so a list is only ever touched by its owning thread. The list is **intrusive** —
+// a dead cell's own first word holds the next-free pointer — so pooling allocates
+// nothing itself. Sizes are exact 8-byte classes (capacity equals the request for
+// the 8-multiple sizes the runtime emits), so recycling carries no internal
+// fragmentation. Blocks are recycled until the thread exits, when [`Pool`]'s drop
+// returns them to the system allocator.
+
+/// The byte granularity of a size class. Every heap object is 8-aligned and a
+/// multiple of 8 bytes, so each distinct size is its own class.
+const SIZE_STEP: usize = ALIGN;
+
+/// The largest object served from the recycling pool; larger allocations go
+/// straight to the system allocator. Covers the small objects that dominate
+/// allocation traffic (boxes, cons cells, typical records/closures/PAPs).
+const MAX_POOLED_SIZE: usize = 512;
+
+/// The number of size-class free lists. Class `c` (`= size.div_ceil(8)`) holds
+/// cells of capacity `c * SIZE_STEP`; the low classes below the minimum object
+/// size are simply never used.
+const NUM_CLASSES: usize = MAX_POOLED_SIZE / SIZE_STEP + 1;
+
+/// The size class for an allocation of `size` bytes, or `None` if it exceeds
+/// `MAX_POOLED_SIZE` (and so is not pooled). Class `c` serves any request with
+/// `(c - 1) * 8 < size <= c * 8`; its cells have capacity `c * 8 >= size`, so a
+/// recycled cell always fits. A cell's class is therefore stable across reuse,
+/// which keeps its deallocation layout recoverable.
+#[inline]
+fn size_class(size: usize) -> Option<usize> {
+    if size == 0 || size > MAX_POOLED_SIZE { None } else { Some(size.div_ceil(SIZE_STEP)) }
+}
+
+/// Per-thread size-class free lists. `heads[c]` is the most-recently-freed cell
+/// of class `c` (an intrusive singly-linked stack threaded through each dead
+/// cell's first word), or null when the class is empty.
+struct Pool {
+    heads: [Cell<*mut u8>; NUM_CLASSES],
+}
+
+impl Pool {
+    const fn new() -> Self {
+        Pool { heads: [const { Cell::new(std::ptr::null_mut()) }; NUM_CLASSES] }
+    }
+}
+
+impl Drop for Pool {
+    /// Returns every pooled block to the system allocator when the owning thread
+    /// exits (so a thread's recycled memory is not stranded for the process
+    /// lifetime). A class-`c` block was allocated with capacity `c * SIZE_STEP`.
+    fn drop(&mut self) {
+        for (class, head) in self.heads.iter().enumerate() {
+            let cap = class * SIZE_STEP;
+            if cap == 0 {
+                continue;
+            }
+            let Ok(layout) = Layout::from_size_align(cap, ALIGN) else { continue };
+            let mut p = head.get();
+            while !p.is_null() {
+                // SAFETY: `p` is a pooled class-`class` block; its first word holds
+                // the next-free pointer, and it was allocated with `layout`.
+                unsafe {
+                    let next = p.cast::<*mut u8>().read();
+                    std::alloc::dealloc(p, layout);
+                    p = next;
+                }
+            }
+        }
+    }
+}
+
+thread_local! {
+    static POOL: Pool = const { Pool::new() };
+}
+
+/// Pushes a dead cell `p` of class `c` onto its free list, storing the previous
+/// head in `p`'s first word (the now-unused reference-count slot).
+///
+/// # Safety
+/// `p` is a dead object's memory of class `c` (capacity `c * SIZE_STEP`, at least
+/// `SIZE_STEP` bytes); it must not be used as an object again until popped.
+unsafe fn pool_push(c: usize, p: *mut u8) {
+    POOL.with(|pool| {
+        let head = pool.heads[c].get();
+        // SAFETY: `p` has room for one pointer at offset 0.
+        unsafe { p.cast::<*mut u8>().write(head) };
+        pool.heads[c].set(p);
+    });
+}
+
+/// Pops a recycled cell of class `c`, or null if the free list is empty.
+fn pool_pop(c: usize) -> *mut u8 {
+    POOL.with(|pool| {
+        let head = pool.heads[c].get();
+        if head.is_null() {
+            return std::ptr::null_mut();
+        }
+        // SAFETY: `head` is a pooled block; its first word is the next-free pointer.
+        let next = unsafe { head.cast::<*mut u8>().read() };
+        pool.heads[c].set(next);
+        head
+    })
+}
+
+/// Allocates `size` bytes (8-aligned) from the system allocator, aborting on OOM.
+fn system_alloc(size: usize) -> *mut u8 {
     let layout = Layout::from_size_align(size, ALIGN).expect("valid layout");
-    // SAFETY: `layout` has nonzero size (>= HEADER_SIZE) and valid alignment.
+    // SAFETY: `layout` has nonzero size (a class capacity or a large request) and
+    // valid alignment.
     let p = unsafe { std::alloc::alloc(layout) };
     if p.is_null() {
         std::alloc::handle_alloc_error(layout);
     }
-    // SAFETY: `p` points to `size >= HEADER_SIZE` freshly allocated bytes.
+    p
+}
+
+/// Returns a (large, unpooled) block of `size` bytes to the system allocator.
+///
+/// # Safety
+/// `p` was returned by `system_alloc(size)` with the same size and alignment.
+unsafe fn system_dealloc(p: *mut u8, size: usize) {
+    let layout = Layout::from_size_align(size, ALIGN).expect("valid layout");
+    // SAFETY: `p`/`layout` match the original system allocation.
+    unsafe { std::alloc::dealloc(p, layout) };
+}
+
+/// Allocates an object of `size` bytes with `rc = 1` and `descriptor`, returning
+/// its pointer. Recycles a same-size cell from the thread-local pool when one is
+/// available, otherwise takes a fresh block from the system allocator (at the
+/// class capacity, so every cell of a class is interchangeable). The contents
+/// past the header are left uninitialized — every caller writes all of an object's
+/// fields. Increments the live counter.
+fn alloc_obj(size: usize, descriptor: *const Descriptor) -> *mut u8 {
+    debug_assert!(size >= HEADER_SIZE, "object smaller than its header");
+    let p = match size_class(size) {
+        Some(c) => {
+            let recycled = pool_pop(c);
+            if recycled.is_null() { system_alloc(c * SIZE_STEP) } else { recycled }
+        }
+        None => system_alloc(size),
+    };
+    // SAFETY: `p` points to at least `size` writable bytes — the class capacity
+    // (>= size) for a pooled cell, or exactly `size` for the large path. The
+    // header overwrite repurposes any recycled cell (descriptor, size, and the
+    // intrusive next-pointer that occupied the rc slot are all replaced).
     unsafe {
         write_u64(p, RC_OFFSET, 1);
         write_ptr(p, DESC_OFFSET, descriptor.cast());
@@ -318,13 +471,21 @@ fn alloc_obj(size: usize, descriptor: *const Descriptor) -> *mut u8 {
 }
 
 /// Frees an object's backing memory (no child scan) and decrements the live
-/// counter.
+/// counter. A pooled-size cell is returned to its thread-local free list for
+/// reuse; a larger block is returned to the system allocator.
+///
+/// # Safety
+/// `p` was returned by [`alloc_obj`] and is dead (its reference count is zero and
+/// its children, if any, have been released); it must not be used afterward.
 unsafe fn free_obj(p: *mut u8) {
     // SAFETY: `p` was returned by `alloc_obj`, so the size field is valid.
     let size = unsafe { read_u64(p, SIZE_OFFSET) } as usize;
-    let layout = Layout::from_size_align(size, ALIGN).expect("valid layout");
-    // SAFETY: `p`/`layout` match the original allocation.
-    unsafe { std::alloc::dealloc(p, layout) };
+    match size_class(size) {
+        // SAFETY: `p` is a dead class-`c` cell; pooling repurposes its memory.
+        Some(c) => unsafe { pool_push(c, p) },
+        // SAFETY: a large block was system-allocated with this exact size.
+        None => unsafe { system_dealloc(p, size) },
+    }
     note_free();
 }
 
@@ -1741,6 +1902,95 @@ pub fn read_string(v: Value) -> Vec<u8> {
     unsafe { string_bytes(v).to_vec() }
 }
 
+// ---------------------------------------------------------------------------
+// Allocator fuzz/property harness.
+// ---------------------------------------------------------------------------
+
+/// Drives the size-class allocator through a sequence of alloc/free operations
+/// decoded from `data`, checking its invariants after each step. One harness backs
+/// three drivers: the in-crate property test (proptest-generated `data`), the
+/// deterministic stress test (fixed `data`), and the cargo-fuzz target (fuzzer
+/// `data`) — so all three exercise identical logic.
+///
+/// The decoded sizes span the pooled classes **and** the large (unpooled)
+/// fallback. Invariants, all independent of the debug leak counters so they hold
+/// under any build: no two live blocks share an address; every block is 8-aligned
+/// and holds at least its requested size; and a unique byte pattern written across
+/// each block's payload survives every later operation (verified when the block is
+/// freed — every block is eventually freed — so a cell wrongly handed out twice is
+/// caught). When the counters are present (a debug build), the live-object count
+/// also returns to its starting value once everything is freed.
+///
+/// Must be called single-threaded (or under the runtime test lock): it touches the
+/// process-global live counter and exercises the thread-local pool.
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub fn run_ops(data: &[u8]) {
+    use std::collections::HashSet;
+
+    // Bound the work so a huge fuzzer input cannot make one run pathological.
+    const MAX_OPS: usize = 4096;
+
+    let base = live_count();
+    // Live blocks: (pointer, requested size, payload sentinel byte).
+    let mut live: Vec<(*mut u8, usize, u8)> = Vec::new();
+    // Distinct live addresses, to catch a cell handed out while already live.
+    let mut addrs: HashSet<usize> = HashSet::new();
+
+    for &b in data.iter().take(MAX_OPS) {
+        if !live.is_empty() && b & 0x80 != 0 {
+            // Free a live block, verifying its payload first.
+            let idx = (b as usize) % live.len();
+            let (p, size, sentinel) = live.swap_remove(idx);
+            verify_payload(p, size, sentinel);
+            addrs.remove(&(p as usize));
+            // SAFETY: `p` is a live block from `alloc_obj`, freed exactly once.
+            unsafe { free_obj(p) };
+        } else {
+            // Allocate a block; sizes 32..=664 straddle MAX_POOLED_SIZE (512).
+            let size = HEADER_SIZE + ((b & 0x7f) as usize % 80) * SIZE_STEP;
+            let p = alloc_obj(size, &FAI_INT_DESC);
+            assert_eq!(p as usize % ALIGN, 0, "allocation is not {ALIGN}-aligned");
+            assert!(addrs.insert(p as usize), "alloc returned an address already live");
+            write_payload(p, size, b);
+            live.push((p, size, b));
+        }
+    }
+
+    // Free everything that remains, verifying each block's payload.
+    for (p, size, sentinel) in live.drain(..) {
+        verify_payload(p, size, sentinel);
+        // SAFETY: `p` is a live block from `alloc_obj`, freed exactly once.
+        unsafe { free_obj(p) };
+    }
+    assert_eq!(live_count(), base, "every allocation was freed");
+}
+
+/// Fills a block's payload (`[HEADER_SIZE, size)`) with `byte`.
+#[cfg(any(test, feature = "fuzzing"))]
+fn write_payload(p: *mut u8, size: usize, byte: u8) {
+    // SAFETY: `p` points to at least `size` writable bytes.
+    unsafe {
+        for off in HEADER_SIZE..size {
+            p.add(off).write(byte);
+        }
+    }
+}
+
+/// Asserts a block's payload still holds `byte` everywhere (no corruption from a
+/// later overlapping allocation).
+#[cfg(any(test, feature = "fuzzing"))]
+fn verify_payload(p: *const u8, size: usize, byte: u8) {
+    // SAFETY: `p` points to at least `size` readable bytes.
+    unsafe {
+        for off in HEADER_SIZE..size {
+            assert_eq!(p.add(off).read(), byte, "payload corrupted at offset {off}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod alloc_tests;
 #[cfg(test)]
 mod proptests;
 #[cfg(test)]
