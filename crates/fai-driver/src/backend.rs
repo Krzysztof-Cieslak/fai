@@ -24,7 +24,6 @@ use fai_resolve::{DefId, ModuleName, module_defs, module_name};
 use fai_span::SpanResolver;
 use fai_syntax::Symbol;
 use fai_syntax::ast::ItemKind;
-use fai_types::{Con, Ty};
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Serialize;
@@ -134,30 +133,20 @@ pub(crate) fn arity_of(db: &dyn Db, def: DefId) -> usize {
 /// `Float`. Derived from the *signature* (peeling the syntactic source-parameter
 /// count off the type; leading offset-evidence parameters are integers, never
 /// floats) so it is body-edit-stable, preserving the codegen firewall: a caller's
-/// object depends on a callee's signature, not its body.
-pub(crate) fn abi_of(db: &dyn Db, def: DefId) -> FnAbi {
-    let Some(file) = db.source_file(def.file) else { return FnAbi::default() };
+/// object depends on a callee's signature, not its body. Tracked (like
+/// [`def_arity`]) so its memoization boundary keeps a dependent's recompute
+/// independent of unrelated edits.
+#[salsa::tracked]
+pub fn float_abi(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<FnAbi> {
+    let def = DefId::new(file.source(db), name);
     let Some(scheme) = fai_types::declared_or_inferred_scheme(db, def) else {
-        return FnAbi::default();
+        return Arc::new(FnAbi::default());
     };
-    let evidence = fai_types::evidence_count(&scheme);
-    let nsource = source_param_count(db, file, def.name);
-    // Peel the source parameters off the signature's arrow spine; offset evidence
-    // (always integers) leads the runtime parameter list, so it is non-float.
-    let mut ty = &scheme.ty;
-    let mut float_params = vec![false; evidence];
-    for _ in 0..nsource {
-        match ty {
-            Ty::Arrow(from, to) => {
-                float_params.push(matches!(from.as_ref(), Ty::Con(Con::Float)));
-                ty = to;
-            }
-            // Fewer arrows than declared source params cannot happen for a
-            // well-typed binding; stop defensively rather than panic.
-            _ => break,
-        }
-    }
-    FnAbi { float_params, float_return: matches!(ty, Ty::Con(Con::Float)) }
+    Arc::new(FnAbi::from_scheme(&scheme, source_param_count(db, file, name)))
+}
+
+pub(crate) fn abi_of(db: &dyn Db, def: DefId) -> FnAbi {
+    db.source_file(def.file).map_or_else(FnAbi::default, |f| (*float_abi(db, f, def.name)).clone())
 }
 
 /// The cached relocatable object for one definition (the content-addressed cache
@@ -173,7 +162,8 @@ pub fn object_code(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<Vec<u8>> 
     let lowered = rc(db, file, name);
     let namer = |d: DefId| symbol_base(db, d);
     let arity = |d: DefId| arity_of(db, d);
-    Arc::new(object_for_def(&lowered, &namer, &arity))
+    let abi = |d: DefId| abi_of(db, d);
+    Arc::new(object_for_def(&lowered, &namer, &arity, &abi))
 }
 
 /// Bounds the number of cached [`object_code`] blobs the database keeps in
@@ -416,11 +406,15 @@ pub fn build_native(db: &dyn Db, file: SourceFile, out: &Utf8Path) -> BuildOutco
     let mut objects = build_objects(db, &normal);
     let namer = |d: DefId| symbol_base(db, d);
     let arity = |d: DefId| groups.arity.get(&d).copied().unwrap_or_else(|| arity_of(db, d));
+    // A member's wrapper presents the member's ABI; the synthetic combined loop is
+    // schemeless, so `abi_of` reports the uniform ABI (its slots stay boxed).
+    let abi = |d: DefId| abi_of(db, d);
     for (member, wrapper) in &groups.wrappers {
-        objects.push((symbol_base(db, *member), object_for_def(wrapper, &namer, &arity)));
+        objects.push((symbol_base(db, *member), object_for_def(wrapper, &namer, &arity, &abi)));
     }
     for combined in &groups.combined {
-        objects.push((symbol_base(db, combined.def), object_for_def(combined, &namer, &arity)));
+        objects
+            .push((symbol_base(db, combined.def), object_for_def(combined, &namer, &arity, &abi)));
     }
 
     let entry = DefId::new(file.source(db), Symbol::intern(ENTRY));
@@ -497,7 +491,8 @@ pub fn jit_run_program(db: &dyn Db, file: SourceFile) -> RunOutcome {
     let runtime = runtime_root(db).expect("standard library defines the Runtime value binding");
     let namer = |d: DefId| symbol_base(db, d);
     let arity = |d: DefId| groups.arity.get(&d).copied().unwrap_or_else(|| arity_of(db, d));
-    let exit_code = fai_codegen::jit_run(&defs, entry, runtime, &namer, &arity);
+    let abi = |d: DefId| abi_of(db, d);
+    let exit_code = fai_codegen::jit_run(&defs, entry, runtime, &namer, &arity, &abi);
     RunOutcome { exit_code, diagnostics }
 }
 
@@ -573,7 +568,8 @@ pub fn jit_compile(db: &dyn Db, file: SourceFile) -> Result<CompiledProgram, Vec
 
     let namer = |d: DefId| names[&d].clone();
     let arity = |d: DefId| arities[&d];
-    let program = JitProgram::compile(&defs, &namer, &arity);
+    let abi = |d: DefId| abi_of(db, d);
+    let program = JitProgram::compile(&defs, &namer, &arity, &abi);
     Ok(CompiledProgram { program, names, entry_defs })
 }
 
@@ -665,9 +661,11 @@ pub fn jit_run_bundle(bundle: &WireBundle) -> i32 {
     let rebuilt = from_wire(bundle);
     let labels = rebuilt.module_labels;
     let arities = rebuilt.arities;
+    let abis = rebuilt.abis;
     let namer = |d: DefId| mangle(labels.get(&d.file).map_or("M", String::as_str), d.name.as_str());
     let arity = |d: DefId| arities.get(&d).copied().unwrap_or(0);
-    fai_codegen::jit_run(&rebuilt.defs, rebuilt.entry, rebuilt.runtime, &namer, &arity)
+    let abi = |d: DefId| abis.get(&d).cloned().unwrap_or_default();
+    fai_codegen::jit_run(&rebuilt.defs, rebuilt.entry, rebuilt.runtime, &namer, &arity, &abi)
 }
 
 /// Applies self-imposed resource limits from the environment (set by the daemon

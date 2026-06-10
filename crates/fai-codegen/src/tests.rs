@@ -26,6 +26,19 @@ fn lock() -> MutexGuard<'static, ()> {
     LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// The native calling-convention shape of `def` (which parameters/result are
+/// unboxed floats), derived from its signature — the test-harness analogue of the
+/// driver's `abi_of`. `nparams` is the runtime arity (source + evidence).
+fn abi_of_def(db: &FaiDatabase, def: DefId, nparams: usize) -> fai_core::ir::FnAbi {
+    match fai_types::declared_or_inferred_scheme(db, def) {
+        Some(scheme) => {
+            let source = nparams.saturating_sub(fai_types::evidence_count(&scheme));
+            fai_core::ir::FnAbi::from_scheme(&scheme, source)
+        }
+        None => fai_core::ir::FnAbi::default(),
+    }
+}
+
 /// Lowers the definitions reachable from the entry file's `main` and runs it
 /// through the JIT, returning `(exit_code, captured_output)`.
 ///
@@ -69,6 +82,7 @@ pub(crate) fn run_counted(src: &str) -> (i32, String, i64) {
     // Lower only the definitions transitively reachable from `main`.
     let mut defs: Vec<LoweredDef> = Vec::new();
     let mut arity: HashMap<DefId, usize> = HashMap::new();
+    let mut abi: HashMap<DefId, fai_core::ir::FnAbi> = HashMap::new();
     let mut seen: HashSet<DefId> = HashSet::new();
     let mut worklist = vec![entry, runtime];
     while let Some(def) = worklist.pop() {
@@ -77,7 +91,9 @@ pub(crate) fn run_counted(src: &str) -> (i32, String, i64) {
         }
         let Some(&file) = files.get(&def.file) else { continue };
         let lowered = rc(&db, file, def.name);
-        arity.insert(def, lowered.entry().params.len());
+        let nparams = lowered.entry().params.len();
+        arity.insert(def, nparams);
+        abi.insert(def, abi_of_def(&db, def, nparams));
         worklist.extend(lowered.referenced_globals());
         defs.push((*lowered).clone());
     }
@@ -85,11 +101,12 @@ pub(crate) fn run_counted(src: &str) -> (i32, String, i64) {
     let namer =
         |d: DefId| format!("fai_{}_{}", labels.get(&d.file).cloned().unwrap_or_default(), d.name);
     let arity_of = |d: DefId| arity.get(&d).copied().unwrap_or(1);
+    let signature_of = |d: DefId| abi.get(&d).cloned().unwrap_or_default();
 
     let _g = lock();
     rt::capture_start();
     rt::reset_allocations();
-    let code = jit_run(&defs, entry, runtime, &namer, &arity_of);
+    let code = jit_run(&defs, entry, runtime, &namer, &arity_of, &signature_of);
     let allocs = rt::allocations();
     let out = rt::capture_take();
     (code, out, allocs)
@@ -117,6 +134,7 @@ fn function_ir(src: &str, def_name: &str) -> Vec<String> {
 
     let target = DefId::new(user.source(&db), Symbol::intern(def_name));
     let mut arity: HashMap<DefId, usize> = HashMap::new();
+    let mut abi: HashMap<DefId, fai_core::ir::FnAbi> = HashMap::new();
     let mut seen: HashSet<DefId> = HashSet::new();
     let mut worklist = vec![target];
     let mut lowered = None;
@@ -126,7 +144,9 @@ fn function_ir(src: &str, def_name: &str) -> Vec<String> {
         }
         let Some(&file) = files.get(&def.file) else { continue };
         let l = rc(&db, file, def.name);
-        arity.insert(def, l.entry().params.len());
+        let nparams = l.entry().params.len();
+        arity.insert(def, nparams);
+        abi.insert(def, abi_of_def(&db, def, nparams));
         worklist.extend(l.referenced_globals());
         if def == target {
             lowered = Some((*l).clone());
@@ -137,7 +157,8 @@ fn function_ir(src: &str, def_name: &str) -> Vec<String> {
     let namer =
         |d: DefId| format!("fai_{}_{}", labels.get(&d.file).cloned().unwrap_or_default(), d.name);
     let arity_of = |d: DefId| arity.get(&d).copied().unwrap_or(1);
-    crate::aot::function_ir_text(&lowered, &namer, &arity_of)
+    let signature_of = |d: DefId| abi.get(&d).cloned().unwrap_or_default();
+    crate::aot::function_ir_text(&lowered, &namer, &arity_of, &signature_of)
 }
 
 fn main_printing(expr: &str) -> String {
@@ -422,6 +443,33 @@ fn float_arithmetic_and_to_string() {
     let (code, out) = run(&main_printing("Float.toString (1.5 + 2.5)"));
     assert_eq!(code, 0);
     assert_eq!(out, "4.0\n");
+}
+
+/// Unboxed monomorphic floats: a tail-recursive float-accumulator loop allocates
+/// a constant number of heap cells regardless of its iteration count. A
+/// regression that re-boxed per-operation floats would make the count scale with
+/// the iterations and fail this gate.
+#[test]
+fn unboxed_float_loop_allocates_independently_of_iterations() {
+    let program = |n: i64| {
+        formatdoc! {r#"
+            module M
+
+            sumFrom : Float -> Int -> Int -> Float
+            let sumFrom acc i n =
+              if i >= n then acc else sumFrom (acc + Int.toFloat i) (i + 1) n
+
+            public main : Runtime -> Unit
+            let main runtime = runtime.console.writeLine (Float.toString (sumFrom 0.0 0 {n}))
+        "#}
+    };
+    let (code, _out, few) = run_counted(&program(10));
+    assert_eq!(code, 0, "clean exit");
+    let (_, _, many) = run_counted(&program(100_000));
+    assert_eq!(
+        few, many,
+        "an unboxed float loop must allocate a constant number of cells (got {few} vs {many})"
+    );
 }
 
 #[test]

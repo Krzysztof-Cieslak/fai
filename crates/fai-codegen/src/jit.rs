@@ -10,7 +10,7 @@ use cranelift_codegen::control::ControlPlane;
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module, ModuleReloc, default_libcall_names};
-use fai_core::ir::LoweredDef;
+use fai_core::ir::{FnAbi, LoweredDef};
 use fai_resolve::DefId;
 use fai_runtime as rt;
 use rayon::prelude::*;
@@ -138,10 +138,11 @@ fn compile_module(
     defs: &[LoweredDef],
     namer: &dyn Fn(DefId) -> String,
     arity_of: &dyn Fn(DefId) -> usize,
+    signature_of: &dyn Fn(DefId) -> FnAbi,
 ) {
     let mut jobs: Vec<(FuncId, Context)> = Vec::new();
     for def in defs {
-        build_def(module, def, namer, arity_of, &mut jobs);
+        build_def(module, def, namer, arity_of, signature_of, &mut jobs);
     }
 
     // Code-generate each function in parallel; only the read-only ISA is shared.
@@ -183,9 +184,10 @@ impl JitProgram {
         defs: &[LoweredDef],
         namer: &dyn Fn(DefId) -> String,
         arity_of: &dyn Fn(DefId) -> usize,
+        signature_of: &dyn Fn(DefId) -> FnAbi,
     ) -> JitProgram {
         let mut module = jit_module();
-        compile_module(&mut module, defs, namer, arity_of);
+        compile_module(&mut module, defs, namer, arity_of, signature_of);
         module.finalize_definitions().expect("finalize");
         JitProgram { module }
     }
@@ -213,9 +215,10 @@ pub fn jit_run(
     runtime: DefId,
     namer: &dyn Fn(DefId) -> String,
     arity_of: &dyn Fn(DefId) -> usize,
+    signature_of: &dyn Fn(DefId) -> FnAbi,
 ) -> i32 {
     let mut module = jit_module();
-    compile_module(&mut module, defs, namer, arity_of);
+    compile_module(&mut module, defs, namer, arity_of, signature_of);
     module.finalize_definitions().expect("finalize");
 
     let entry_id = module

@@ -22,7 +22,7 @@ use cranelift_codegen::ir::{AbiParam, Block, FuncRef, InstBuilder, MemFlags, Val
 use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
-use fai_core::ir::{CExpr, CoreFn, ExprKind, FieldIndex, Lit, LoweredDef, Prim};
+use fai_core::ir::{CExpr, CoreFn, ExprKind, FieldIndex, FnAbi, Lit, LoweredDef, Prim};
 use fai_resolve::{DefId, LocalId};
 use fai_runtime as rt;
 use fai_types::{Con, RowEnd, Ty};
@@ -44,15 +44,18 @@ pub fn closure_symbol(namer: &dyn Fn(DefId) -> String, def: DefId) -> String {
 /// closure value, and its string literals.
 ///
 /// `arity_of` reports any referenced definition's parameter count, so a
-/// reference to a zero-arity binding (a value, not a function) is forced.
+/// reference to a zero-arity binding (a value, not a function) is forced;
+/// `signature_of` reports any definition's unboxed-float calling convention, so a
+/// direct call marshals float arguments and the result as raw bits.
 pub fn compile_def<M: Module>(
     module: &mut M,
     lowered: &LoweredDef,
     namer: &dyn Fn(DefId) -> String,
     arity_of: &dyn Fn(DefId) -> usize,
+    signature_of: &dyn Fn(DefId) -> FnAbi,
 ) {
     let mut jobs = Vec::new();
-    build_def(module, lowered, namer, arity_of, &mut jobs);
+    build_def(module, lowered, namer, arity_of, signature_of, &mut jobs);
     for (id, mut ctx) in jobs {
         module.define_function(id, &mut ctx).expect("define function");
     }
@@ -69,9 +72,11 @@ pub(crate) fn build_def<M: Module>(
     lowered: &LoweredDef,
     namer: &dyn Fn(DefId) -> String,
     arity_of: &dyn Fn(DefId) -> usize,
+    signature_of: &dyn Fn(DefId) -> FnAbi,
     jobs: &mut Vec<(FuncId, Context)>,
 ) {
     let base = namer(lowered.def);
+    let abi = signature_of(lowered.def);
     let sig = code_signature(module);
 
     // Declare every function (entry exported, lifted lambdas local).
@@ -89,20 +94,23 @@ pub(crate) fn build_def<M: Module>(
 
     // Build each function body into its own (uncompiled) context.
     for (i, f) in lowered.fns.iter().enumerate() {
-        let ctx = build_fn(module, f, lowered, namer, arity_of, &fn_ids, &base, i);
+        let ctx =
+            build_fn(module, f, lowered, namer, arity_of, signature_of, &abi, &fn_ids, &base, i);
         jobs.push((fn_ids[i], ctx));
     }
 
     // The static closure (the first-class value form, reached via `apply_n`) must
-    // use the all-owned ABI. When the entry borrows parameters, point the closure
-    // at an owned-ABI wrapper that calls the borrowed entry and then releases the
-    // borrowed arguments; direct callers call the (borrowed) entry symbol.
+    // use the uniform all-owned, all-boxed ABI. When the entry borrows parameters
+    // or uses the unboxed-float ABI (raw-bits float parameters/result), point the
+    // closure at a wrapper that bridges to the entry — unboxing boxed float
+    // arguments, releasing borrowed arguments, and boxing a raw float result —
+    // while direct callers call the (specialized) entry symbol.
     let arity = lowered.entry().params.len() as u64;
-    let closure_code = if lowered.borrows_any() {
+    let closure_code = if lowered.borrows_any() || !abi.is_uniform() {
         let wrapper = module
             .declare_function(&format!("{base}__owned"), Linkage::Local, &sig)
             .expect("declare wrapper");
-        let ctx = build_owned_wrapper(module, fn_ids[0], &lowered.entry_borrowed);
+        let ctx = build_owned_wrapper(module, fn_ids[0], &lowered.entry_borrowed, &abi);
         jobs.push((wrapper, ctx));
         wrapper
     } else {
@@ -111,11 +119,19 @@ pub(crate) fn build_def<M: Module>(
     define_static_closure(module, closure_data, closure_code, arity);
 }
 
-/// Builds the owned-ABI wrapper for a function whose entry borrows parameters: it
-/// calls the borrowed entry with the same environment and arguments, then drops
-/// the borrowed arguments (which the entry left untouched), and returns the
-/// result. Returns the uncompiled context (the caller compiles and defines it).
-fn build_owned_wrapper<M: Module>(module: &mut M, entry: FuncId, borrowed: &[bool]) -> Context {
+/// Builds the uniform-ABI wrapper bridging the static-closure / `apply_n` path
+/// (all arguments boxed and owned) to a specialized entry. It unboxes each
+/// unboxed-float parameter — reading the incoming boxed float's bits into a fresh
+/// raw-bits argument array and releasing that box — calls the entry, drops the
+/// borrowed (non-float) arguments the entry left untouched, and boxes a raw-bits
+/// float result. With neither floats nor borrows it forwards the arguments
+/// unchanged. Returns the uncompiled context (the caller compiles and defines it).
+fn build_owned_wrapper<M: Module>(
+    module: &mut M,
+    entry: FuncId,
+    borrowed: &[bool],
+    abi: &FnAbi,
+) -> Context {
     let mut ctx = module.make_context();
     ctx.func.signature = code_signature(module);
     let mut fbcx = FunctionBuilderContext::new();
@@ -128,22 +144,67 @@ fn build_owned_wrapper<M: Module>(module: &mut M, entry: FuncId, borrowed: &[boo
         let env = builder.block_params(block)[0];
         let args = builder.block_params(block)[1];
 
-        let entry_ref = module.declare_func_in_func(entry, builder.func);
-        let call = builder.ins().call(entry_ref, &[env, args]);
-        let result = builder.inst_results(call)[0];
-
         let mut drop_sig = module.make_signature();
         drop_sig.params.push(AbiParam::new(types::I64));
         let drop_id =
             module.declare_function("fai_drop", Linkage::Import, &drop_sig).expect("declare drop");
         let drop_ref = module.declare_func_in_func(drop_id, builder.func);
+        let float_off = i32::try_from(rt::FLOAT_VALUE_OFFSET).expect("float value offset");
+
+        // For unboxed-float parameters, replace the boxed argument with its raw
+        // bits in a fresh array and release the box; other slots pass through.
+        let arity = abi.float_params.len();
+        let entry_args = if abi.float_params.iter().any(|&f| f) {
+            let size = u32::try_from(arity * 8).expect("array size");
+            let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                size,
+                3,
+            ));
+            for i in 0..arity {
+                let offset = i32::try_from(i * 8).expect("arg offset");
+                let orig = builder.ins().load(types::I64, MemFlags::trusted(), args, offset);
+                let v = if abi.float_param(i) {
+                    let bits = builder.ins().load(types::I64, MemFlags::trusted(), orig, float_off);
+                    builder.ins().call(drop_ref, &[orig]);
+                    bits
+                } else {
+                    orig
+                };
+                builder.ins().stack_store(v, slot, offset);
+            }
+            builder.ins().stack_addr(types::I64, slot, 0)
+        } else {
+            args
+        };
+
+        let entry_ref = module.declare_func_in_func(entry, builder.func);
+        let call = builder.ins().call(entry_ref, &[env, entry_args]);
+        let mut result = builder.inst_results(call)[0];
+
+        // Drop the borrowed arguments the entry left untouched; an unboxed-float
+        // argument's box was already released above.
         for (i, &borrowed) in borrowed.iter().enumerate() {
-            if borrowed {
+            if borrowed && !abi.float_param(i) {
                 let offset = i32::try_from(i * 8).expect("arg offset");
                 let v = builder.ins().load(types::I64, MemFlags::trusted(), args, offset);
                 builder.ins().call(drop_ref, &[v]);
             }
         }
+
+        // Box a raw-bits float result back into the uniform representation.
+        if abi.float_return {
+            let mut box_sig = module.make_signature();
+            box_sig.params.push(AbiParam::new(types::I64));
+            box_sig.returns.push(AbiParam::new(types::I64));
+            let box_id = module
+                .declare_function("fai_box_float", Linkage::Import, &box_sig)
+                .expect("declare box float");
+            let box_ref = module.declare_func_in_func(box_id, builder.func);
+            let boxed = builder.ins().call(box_ref, &[result]);
+            result = builder.inst_results(boxed)[0];
+        }
+
         builder.ins().return_(&[result]);
         builder.finalize();
     }
@@ -169,6 +230,8 @@ fn build_fn<M: Module>(
     lowered: &LoweredDef,
     namer: &dyn Fn(DefId) -> String,
     arity_of: &dyn Fn(DefId) -> usize,
+    signature_of: &dyn Fn(DefId) -> FnAbi,
+    abi: &FnAbi,
     fn_ids: &[FuncId],
     base: &str,
     fn_index: usize,
@@ -176,6 +239,10 @@ fn build_fn<M: Module>(
     let mut ctx = module.make_context();
     ctx.func.signature = code_signature(module);
     let mut fbcx = FunctionBuilderContext::new();
+
+    // The definition's unboxed-float calling convention applies only to its entry
+    // (`fn0`); lifted lambdas are reached through `apply_n` with the uniform ABI.
+    let is_entry = fn_index == 0;
 
     {
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fbcx);
@@ -191,6 +258,7 @@ fn build_fn<M: Module>(
             builder,
             namer,
             arity_of,
+            signature_of,
             fn_ids,
             lowered,
             base,
@@ -208,16 +276,32 @@ fn build_fn<M: Module>(
         // on parameters and captures (not just `let`s) can be specialized.
         collect_local_types(&core_fn.body, &mut tr.var_tys);
         // Decide which locals are represented as an unboxed `f64` (see
-        // `f64_locals`), so their Cranelift variables are typed `F64`.
+        // `f64_locals`), so their Cranelift variables are typed `F64`. The entry's
+        // raw-bits float parameters are unboxed by the ABI, so they are included
+        // even when otherwise unobserved (e.g. an unused parameter).
         tr.collect_f64_locals(&core_fn.body);
+        if is_entry {
+            for (i, &p) in core_fn.params.iter().enumerate() {
+                if abi.float_param(i) {
+                    tr.f64_locals.insert(p.index());
+                }
+            }
+        }
 
-        // Bind parameters (from `args`) and captures (from `env`). A boxed `Float`
-        // parameter or capture is unboxed into its `f64` variable on entry:
-        // parameters are owned (the box is released after its bits are read),
-        // captures are borrowed (the closure still owns the environment).
+        // Bind parameters (from `args`) and captures (from `env`):
+        //  - an entry's raw-bits float parameter is bit-reinterpreted to `f64`;
+        //  - any other boxed-`Float` parameter arrives boxed and owned, so its box
+        //    is released after its bits are read;
+        //  - a captured float is borrowed (the closure still owns the environment).
         for (i, &p) in core_fn.params.iter().enumerate() {
             let raw = tr.load_slot(args, i);
-            let v = if tr.is_f64_local(p) { tr.owning_unbox(raw) } else { raw };
+            let v = if is_entry && abi.float_param(i) {
+                tr.i64_to_f64(raw)
+            } else if tr.is_f64_local(p) {
+                tr.owning_unbox(raw)
+            } else {
+                raw
+            };
             tr.define_var(p, v);
         }
         for (i, &c) in core_fn.captures.iter().enumerate() {
@@ -227,7 +311,13 @@ fn build_fn<M: Module>(
         }
 
         let result = tr.expr(&core_fn.body);
-        let ret = tr.boxed_return(result);
+        // The entry returns a raw-bits float when its ABI says so; otherwise the
+        // uniform (boxed) representation.
+        let ret = if is_entry && abi.float_return {
+            tr.raw_float_return(result)
+        } else {
+            tr.boxed_return(result)
+        };
         tr.builder.ins().return_(&[ret]);
         tr.builder.finalize();
     }
@@ -276,6 +366,7 @@ struct Translator<'a, M: Module> {
     builder: FunctionBuilder<'a>,
     namer: &'a dyn Fn(DefId) -> String,
     arity_of: &'a dyn Fn(DefId) -> usize,
+    signature_of: &'a dyn Fn(DefId) -> FnAbi,
     fn_ids: &'a [FuncId],
     lowered: &'a LoweredDef,
     base: &'a str,
@@ -407,6 +498,15 @@ impl<M: Module> Translator<'_, M> {
     /// applies; see where the return ABI is consulted.)
     fn boxed_return(&mut self, v: Value) -> Value {
         self.ensure_boxed(v)
+    }
+
+    /// Coerces a function body's result for the raw-bits float return ABI: an
+    /// unboxed `f64` is bit-reinterpreted to `i64`; a boxed `Float` (the uniform
+    /// fallback, e.g. a mutual-recursion member wrapper's combined-call result) is
+    /// unboxed first, releasing the box.
+    fn raw_float_return(&mut self, v: Value) -> Value {
+        let f = if self.is_f64(v) { v } else { self.owning_unbox(v) };
+        self.f64_to_i64(f)
     }
 
     fn define_var(&mut self, local: LocalId, value: Value) {
@@ -1352,34 +1452,65 @@ impl<M: Module> Translator<'_, M> {
     }
 
     fn application(&mut self, func: &CExpr, args: &[CExpr], result_ty: &Ty) -> Value {
-        // Arguments cross a uniform `i64` boundary (the spilled argument array, the
-        // static closure, and `apply_n`'s slots), so a float argument is boxed in.
-        // A `Float` result comes back boxed and owned, so it is unboxed to an `f64`.
-        let boxed = self.application_boxed(func, args);
-        if matches!(result_ty, Ty::Con(Con::Float)) { self.owning_unbox(boxed) } else { boxed }
-    }
-
-    /// Emits the call (direct or via `apply_n`) with boxed arguments, yielding the
-    /// uniform (boxed/immediate) result.
-    fn application_boxed(&mut self, func: &CExpr, args: &[CExpr]) -> Value {
         // Direct call: a saturated application of a known top-level function calls
-        // its code symbol directly, skipping `apply_n` and the static closure.
+        // its code symbol directly, marshalling per the callee's ABI (raw-bits
+        // float parameters/result), skipping `apply_n` and the static closure.
         // (Top-level functions capture nothing, so the environment is unused.)
         if let ExprKind::Global(def) = func.kind {
             let arity = (self.arity_of)(def);
             if arity == args.len() && arity > 0 {
-                let vals: Vec<Value> = args.iter().map(|a| self.expr_boxed(a)).collect();
-                let args_ptr = self.spill(&vals);
-                return self.direct_call(def, args_ptr);
+                return self.direct_application(def, args, result_ty);
             }
         }
+        // Otherwise route through `apply_n`, whose slots are uniform `i64`: float
+        // arguments are boxed in and a `Float` result comes back boxed and owned.
         let callee = self.expr(func);
         let vals: Vec<Value> = args.iter().map(|a| self.expr_boxed(a)).collect();
         let args_ptr = self.spill(&vals);
         let argc = self.builder.ins().iconst(types::I64, vals.len() as i64);
         let f = self.runtime("fai_apply_n", 3, true);
         let call = self.builder.ins().call(f, &[callee, argc, args_ptr]);
-        self.builder.inst_results(call)[0]
+        let boxed = self.builder.inst_results(call)[0];
+        if matches!(result_ty, Ty::Con(Con::Float)) { self.owning_unbox(boxed) } else { boxed }
+    }
+
+    /// A saturated direct call to top-level `def`, marshalling per its [`FnAbi`]:
+    /// an unboxed-float parameter is passed as raw bits, a non-float parameter
+    /// boxed; a raw-bits float result is bit-reinterpreted back to `f64`, and a
+    /// generic callee's boxed `Float` result is unboxed. The final representation
+    /// matches `result_ty` (the invariant: `f64` iff `Float`).
+    fn direct_application(&mut self, def: DefId, args: &[CExpr], result_ty: &Ty) -> Value {
+        let abi = (self.signature_of)(def);
+        let vals: Vec<Value> = args
+            .iter()
+            .enumerate()
+            .map(|(i, a)| {
+                if abi.float_param(i) {
+                    let v = self.expr(a);
+                    let f = if self.is_f64(v) { v } else { self.owning_unbox(v) };
+                    self.f64_to_i64(f)
+                } else {
+                    self.expr_boxed(a)
+                }
+            })
+            .collect();
+        let args_ptr = self.spill(&vals);
+        let result = self.direct_call(def, args_ptr);
+        // The result is raw float bits when the callee's ABI says so, else the
+        // uniform representation; coerce to `result_ty`'s representation.
+        let v = if abi.float_return { self.i64_to_f64(result) } else { result };
+        self.as_repr_of(v, result_ty)
+    }
+
+    /// Coerces `v` to the representation of `ty` (the invariant: `f64` iff a scalar
+    /// `Float`, else a tagged `i64`), boxing or owning-unboxing as needed.
+    fn as_repr_of(&mut self, v: Value, ty: &Ty) -> Value {
+        let want_f64 = matches!(ty, Ty::Con(Con::Float));
+        match (want_f64, self.is_f64(v)) {
+            (true, true) | (false, false) => v,
+            (true, false) => self.owning_unbox(v),
+            (false, true) => self.box_float(v),
+        }
     }
 
     /// Calls a top-level definition's code symbol directly with a null environment
