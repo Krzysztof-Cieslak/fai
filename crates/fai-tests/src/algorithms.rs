@@ -120,12 +120,17 @@ pub fn word_count(n: i64) -> i64 {
 }
 
 /// The sum of doubling `[0, n)` plus the sum of `[0, n)` — the shared-list twin of
-/// [`map_sum`], which equals `3 * sum [0, n)`.
+/// [`map_sum`], which equals `3 * sum [0, n)`. `black_box` per element defeats
+/// LLVM's scalar-evolution collapse of this arithmetic series to a closed form, so
+/// the benchmark times a real loop rather than a constant (as [`map_sum`] does).
 #[must_use]
 pub fn map_sum_shared(n: i64) -> i64 {
-    let doubled: i64 = (0..n).map(|x| x.wrapping_mul(2)).fold(0, i64::wrapping_add);
-    let plain: i64 = (0..n).fold(0, i64::wrapping_add);
-    doubled.wrapping_add(plain)
+    let mut acc: i64 = 0;
+    for x in 0..n {
+        acc = acc.wrapping_add(std::hint::black_box(x.wrapping_mul(2)));
+        acc = acc.wrapping_add(std::hint::black_box(x));
+    }
+    acc
 }
 
 /// The sum of the distinct values among `[0, n)` reduced modulo a bucket count,
@@ -138,10 +143,16 @@ pub fn set_dedup(n: i64) -> i64 {
 }
 
 /// The sum over `[0, n)` of `((x + 1) * 2) + 3`, the composed/partially-applied
-/// pipeline the Fai version folds with closures.
+/// pipeline the Fai version folds with closures. `black_box` per element defeats
+/// LLVM's scalar-evolution collapse of this arithmetic series to a closed form, so
+/// the benchmark times a real loop rather than a constant (as [`map_sum`] does).
 #[must_use]
 pub fn fold_pipeline(n: i64) -> i64 {
-    (0..n).map(|x| ((x + 1).wrapping_mul(2)).wrapping_add(3)).fold(0, i64::wrapping_add)
+    let mut acc: i64 = 0;
+    for x in 0..n {
+        acc = acc.wrapping_add(std::hint::black_box(((x + 1).wrapping_mul(2)).wrapping_add(3)));
+    }
+    acc
 }
 
 /// The dispatched-score sum over `[0, n)`: index `i` selects one of three scoring
