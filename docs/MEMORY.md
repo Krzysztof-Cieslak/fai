@@ -1813,6 +1813,19 @@ Editor integration:
   - **Scope.** Only a *scalar* `Float` is unboxed; floats nested in
     records/tuples/lists/ADTs stay boxed heap fields. Scalarizing those (record
     SROA / multi-value returns) is future work.
+  - **Cross-block representation follows the value, not the static type.** A value
+    flowing across a block edge — a branch merge or a tail-loop (`Join`) exit —
+    carries an `f64` for an unboxed scalar `Float`, else the uniform word. The edge
+    type must be read from the **actual** value being passed, because a desugared
+    `match` wraps its arms in `If` nodes typed `Error`, so the node's *static* type
+    is unreliable. The branch merge and the loop exit therefore both fix their
+    parameter type from the first value that reaches them (later values coerce to
+    it). A `Float`-returning tail-recursive fold built from a `match` (e.g.
+    summing a `List Float`) relies on this: taking the loop-exit type from the
+    static type instead made the `f64` result a uniform word that the float-return
+    path then unboxed as a pointer — a wild dereference. (`samples/algorithms/`'s
+    `SpectralNorm` and the float folds in the runtime benchmarks cover it; before
+    them only `if`-based float loops like `Pi` were exercised.)
 
 - **D114 Opaque types (`public opaque type`; resolves the D73/D74 note that
   `Dict`/`Set` had to expose their node constructors).** A `public opaque type`

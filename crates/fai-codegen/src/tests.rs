@@ -964,6 +964,51 @@ fn float_sort_orders_ascending() {
 }
 
 #[test]
+fn float_list_fold_returns_correct_value() {
+    // A self-tail-recursive fold with a `Float` accumulator reading `Float`
+    // elements of a list compiles to a loop whose result is an unboxed `f64`.
+    // Regression: the loop's exit representation was taken from the loop node's
+    // static type, which a desugared `match` records as `Error`, so the `f64`
+    // result was mistaken for a boxed word and unboxed (a wild dereference).
+    let src = indoc! {r#"
+        module M
+
+        sumF : Float -> List Float -> Float
+        let sumF acc xs =
+          match xs with
+          | [] -> acc
+          | x :: rest -> sumF (acc + x) rest
+
+        public main : Runtime -> Unit
+        let main r = r.console.writeLine (Float.toString (sumF 0.0 [1.0, 2.0, 3.0]))
+    "#};
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "6.0\n");
+}
+
+#[test]
+fn mapped_float_list_fold_returns_correct_value() {
+    // The same float-accumulator loop over a list produced by `List.map` of a
+    // `Float`-returning function (the original symptom: building and folding a
+    // `List Float`).
+    let src = indoc! {r#"
+        module M
+
+        sumF : Float -> List Float -> Float
+        let sumF acc xs =
+          match xs with
+          | [] -> acc
+          | x :: rest -> sumF (acc + x) rest
+
+        public main : Runtime -> Unit
+        let main r = r.console.writeLine (Float.toString (sumF 0.0 (List.map Int.toFloat (List.range 1 4))))
+    "#};
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "6.0\n");
+}
+#[test]
 fn three_way_compare_runs() {
     let (code, out) = run(&main_printing(
         "Int.toString (compare 3 2) ++ Int.toString (compare 2 2) ++ Int.toString (compare 1 5)",
