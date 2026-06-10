@@ -22,6 +22,41 @@ use fai_db::{Db, Diag, FaiDatabase, SourceFile};
 use fai_diagnostics::Diagnostic;
 use fai_span::SourceId;
 
+/// The process's peak resident set size in KiB, or `None` where it cannot be
+/// determined. Read from `/proc/self/status` (`VmHWM`, the high-water mark of
+/// resident memory). Linux-only; every other platform yields `None`.
+///
+/// This duplicates the runtime's `fai_runtime::peak_rss_kib` deliberately: the
+/// `algo-baseline` binary needs it but reaches the runtime only as a
+/// dev-dependency (unavailable to a `[[bin]]`), so the Rust side of the memory
+/// comparison self-reports through this copy while the Fai side uses the
+/// runtime's.
+#[must_use]
+pub fn peak_rss_kib() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        parse_vmhwm_kib(&std::fs::read_to_string("/proc/self/status").ok()?)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+/// Extracts the `VmHWM:` value (peak resident set size, in KiB) from the contents
+/// of `/proc/self/status`. Split out so the line parsing is testable on any
+/// platform, not only where `/proc` exists.
+#[cfg(any(target_os = "linux", test))]
+fn parse_vmhwm_kib(status: &str) -> Option<u64> {
+    for line in status.lines() {
+        // The line reads `VmHWM:\t   <n> kB`; take the leading numeric field.
+        if let Some(rest) = line.strip_prefix("VmHWM:") {
+            return rest.split_whitespace().next()?.parse().ok();
+        }
+    }
+    None
+}
+
 /// Collects the resolution + type diagnostics belonging to `file` (filtering out
 /// diagnostics from other files that transitive accumulation surfaces). Shared by
 /// the corpus self-check and the performance guards.
@@ -86,4 +121,33 @@ fn load(db: &mut FaiDatabase, revision: Revision) -> Vec<SourceId> {
         .iter()
         .map(|(path, text)| db.add_source(Utf8PathBuf::from(*path), (*text).to_owned()))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// On Linux the peak-RSS probe (used by `algo-baseline`'s self-report) reads a
+    /// positive high-water mark; off Linux it yields `None` rather than a wrong
+    /// number, so the harness marks the measurement unavailable.
+    #[test]
+    fn peak_rss_matches_platform_availability() {
+        let measured = peak_rss_kib();
+        if cfg!(target_os = "linux") {
+            assert!(measured.is_some_and(|kib| kib > 0), "Linux reports a positive peak RSS");
+        } else {
+            assert_eq!(measured, None, "peak RSS is unavailable off Linux");
+        }
+    }
+
+    /// The `/proc/self/status` `VmHWM:` line is parsed to its KiB value; an absent
+    /// or malformed field yields `None`.
+    #[test]
+    fn parses_vmhwm_from_status_text() {
+        let status = "Name:\tbaseline\nVmHWM:\t   65536 kB\nVmRSS:\t 60000 kB\n";
+        assert_eq!(parse_vmhwm_kib(status), Some(65536));
+        assert_eq!(parse_vmhwm_kib("VmRSS:\t 100 kB\n"), None);
+        assert_eq!(parse_vmhwm_kib("VmHWM:\t kB\n"), None);
+        assert_eq!(parse_vmhwm_kib(""), None);
+    }
 }

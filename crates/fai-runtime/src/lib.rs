@@ -1838,6 +1838,37 @@ pub extern "C" fn fai_env_args(unit: Value) -> Value {
 // Entry point.
 // ---------------------------------------------------------------------------
 
+/// The process's peak resident set size in KiB, or `None` where it cannot be
+/// determined. Read from `/proc/self/status` (`VmHWM`, the high-water mark of
+/// resident memory), so it reflects the largest physical-memory footprint reached
+/// at any point in the run, not the footprint at the instant of the call.
+/// Linux-only; every other platform yields `None`.
+#[must_use]
+pub fn peak_rss_kib() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        parse_vmhwm_kib(&std::fs::read_to_string("/proc/self/status").ok()?)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+/// Extracts the `VmHWM:` value (peak resident set size, in KiB) from the contents
+/// of `/proc/self/status`. Split out from [`peak_rss_kib`] so the line parsing is
+/// testable on any platform, not only where `/proc` exists.
+#[cfg(any(target_os = "linux", test))]
+fn parse_vmhwm_kib(status: &str) -> Option<u64> {
+    for line in status.lines() {
+        // The line reads `VmHWM:\t   <n> kB`; take the leading numeric field.
+        if let Some(rest) = line.strip_prefix("VmHWM:") {
+            return rest.split_whitespace().next()?.parse().ok();
+        }
+    }
+    None
+}
+
 /// Runs a program: forces the `Runtime` value binding, applies the entry closure
 /// (`main : Runtime -> Unit`) to it, drops the result, and reports leaks. Returns
 /// a process exit code (0 success, 70 if objects leaked). Consumes both closures.
@@ -1854,6 +1885,15 @@ pub fn run_entry(entry: Value, runtime: Value) -> i32 {
     // SAFETY: `entry` is a closure of arity 1; `args` holds one owned value.
     let result = unsafe { fai_apply_n(entry, 1, args.as_ptr()) };
     fai_drop(result);
+    // Opt-in peak-memory self-report for the Fai-vs-Rust memory comparison: the
+    // benchmark harness sets `FAI_REPORT_RSS` in the spawned binary's environment
+    // and parses this line from stderr. Off by default, so a normal run (and the
+    // in-process JIT path, which never sets it) is unaffected.
+    if std::env::var_os("FAI_REPORT_RSS").is_some()
+        && let Some(kib) = peak_rss_kib()
+    {
+        eprintln!("fai-peak-rss-kib: {kib}");
+    }
     let live = live_count();
     if live != 0 {
         eprintln!("fai: memory leak detected: {live} live object(s) at exit");

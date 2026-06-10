@@ -773,3 +773,31 @@ fn record_update_copies_when_shared() {
     fai_drop(updated);
     assert_eq!(live_count(), base);
 }
+
+/// On Linux the peak-RSS probe reads a positive high-water mark from
+/// `/proc/self/status`; the benchmark harness relies on this value being present.
+#[cfg(target_os = "linux")]
+#[test]
+fn peak_rss_is_reported_on_linux() {
+    let kib = peak_rss_kib().expect("VmHWM is available on Linux");
+    assert!(kib > 0, "a running process has a non-zero peak RSS");
+}
+
+/// Off Linux the probe yields nothing rather than a wrong number, so the harness
+/// can mark the measurement unavailable instead of reporting garbage.
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn peak_rss_is_unavailable_off_linux() {
+    assert_eq!(peak_rss_kib(), None);
+}
+
+/// The `/proc/self/status` `VmHWM:` line is parsed to its KiB value; an absent or
+/// malformed field yields `None` rather than a wrong number.
+#[test]
+fn parses_vmhwm_from_status_text() {
+    let status = "Name:\tfai\nVmHWM:\t   12345 kB\nVmRSS:\t   10000 kB\n";
+    assert_eq!(parse_vmhwm_kib(status), Some(12345));
+    assert_eq!(parse_vmhwm_kib("VmRSS:\t 100 kB\n"), None, "no VmHWM line");
+    assert_eq!(parse_vmhwm_kib("VmHWM:\t kB\n"), None, "no numeric field");
+    assert_eq!(parse_vmhwm_kib(""), None);
+}
