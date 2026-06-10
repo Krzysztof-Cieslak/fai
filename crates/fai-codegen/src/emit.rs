@@ -1553,38 +1553,45 @@ impl<M: Module> Translator<'_, M> {
     }
 
     fn application(&mut self, func: &CExpr, args: &[CExpr], result_ty: &Ty) -> Value {
-        // Direct call: a saturated application of a known top-level function calls
-        // its code symbol directly, passing the value arguments in registers per the
-        // callee's ABI, skipping `apply_n` and the static closure. (Top-level
-        // functions capture nothing, so the environment is a null pointer.)
+        // A saturated application of a known top-level function calls its code
+        // symbol directly, passing the value arguments in registers per the callee's
+        // ABI, skipping `apply_n` and the static closure. (Top-level functions
+        // capture nothing, so the environment is a null pointer.) An
+        // over-application direct-calls the saturated prefix and `apply_n`s the rest.
         if let ExprKind::Global(def) = func.kind {
             let arity = (self.arity_of)(def);
-            if arity == args.len() && arity > 0 {
-                return self.direct_application(def, args, result_ty);
+            if arity > 0 && args.len() >= arity {
+                return if args.len() == arity {
+                    self.direct_application(def, args, result_ty)
+                } else {
+                    self.over_application(def, arity, args, result_ty)
+                };
             }
         }
         // Otherwise route through `apply_n`, whose slots are uniform `i64`: float
         // arguments are boxed in and a `Float` result comes back boxed and owned.
         let callee = self.expr(func);
         let vals: Vec<Value> = args.iter().map(|a| self.expr_boxed(a)).collect();
-        let args_ptr = self.spill(&vals);
-        let argc = self.builder.ins().iconst(types::I64, vals.len() as i64);
-        let f = self.runtime("fai_apply_n", 3, true);
-        let call = self.builder.ins().call(f, &[callee, argc, args_ptr]);
-        let boxed = self.builder.inst_results(call)[0];
+        let boxed = self.apply_n(callee, &vals);
         if matches!(result_ty, Ty::Con(Con::Float)) { self.owning_unbox(boxed) } else { boxed }
     }
 
-    /// A saturated direct call to top-level `def`, passing arguments in registers
-    /// per its [`FnAbi`]: a scalar-float parameter is passed in an `f64` register, a
-    /// non-float parameter as the boxed/immediate word; the result is an `f64`
-    /// register when the callee returns a scalar float, else the uniform word, and a
-    /// generic callee's boxed `Float` result is unboxed. The final representation
-    /// matches `result_ty` (the invariant: `f64` iff `Float`).
-    fn direct_application(&mut self, def: DefId, args: &[CExpr], result_ty: &Ty) -> Value {
+    /// Applies an already-evaluated callee value to boxed arguments through the
+    /// runtime `fai_apply_n` (the uniform first-class path); yields the boxed result.
+    fn apply_n(&mut self, callee: Value, vals: &[Value]) -> Value {
+        let args_ptr = self.spill(vals);
+        let argc = self.builder.ins().iconst(types::I64, vals.len() as i64);
+        let f = self.runtime("fai_apply_n", 3, true);
+        let call = self.builder.ins().call(f, &[callee, argc, args_ptr]);
+        self.builder.inst_results(call)[0]
+    }
+
+    /// Marshals `args` into registers per `def`'s [`FnAbi`] (a scalar-float argument
+    /// in an `f64` register, every other as the boxed/immediate word, behind the
+    /// leading null environment) and direct-calls it, yielding the raw result (an
+    /// `f64` register when the callee returns a scalar float, else the uniform word).
+    fn direct_call_value(&mut self, def: DefId, args: &[CExpr]) -> Value {
         let abi = (self.signature_of)(def);
-        // The leading argument is the (unused) null environment; a top-level
-        // function captures nothing.
         let null_env = self.builder.ins().iconst(types::I64, 0);
         let mut call_args = Vec::with_capacity(args.len() + 1);
         call_args.push(null_env);
@@ -1597,10 +1604,35 @@ impl<M: Module> Translator<'_, M> {
             };
             call_args.push(v);
         }
-        let result = self.direct_call(def, args.len(), &abi, &call_args);
-        // The result is an `f64` register when the callee's ABI says so, else the
-        // uniform representation; coerce to `result_ty`'s representation.
+        self.direct_call(def, args.len(), &abi, &call_args)
+    }
+
+    /// A saturated direct call to top-level `def`. The raw result
+    /// ([`Self::direct_call_value`]) is coerced to `result_ty`'s representation (the
+    /// invariant: `f64` iff a scalar `Float`), unboxing a generic callee's boxed
+    /// `Float`.
+    fn direct_application(&mut self, def: DefId, args: &[CExpr], result_ty: &Ty) -> Value {
+        let result = self.direct_call_value(def, args);
         self.as_repr_of(result, result_ty)
+    }
+
+    /// An over-application of top-level `def` (`args.len() > arity`): direct-call the
+    /// saturated prefix, then apply the surplus arguments to its (function) result
+    /// through `apply_n`. The prefix's residual return is a function — never a scalar
+    /// `Float` — so its result is the uniform boxed word fed straight to `apply_n`.
+    fn over_application(
+        &mut self,
+        def: DefId,
+        arity: usize,
+        args: &[CExpr],
+        result_ty: &Ty,
+    ) -> Value {
+        let (prefix, overflow) = args.split_at(arity);
+        let f_result = self.direct_call_value(def, prefix);
+        let callee = self.ensure_boxed(f_result);
+        let vals: Vec<Value> = overflow.iter().map(|a| self.expr_boxed(a)).collect();
+        let boxed = self.apply_n(callee, &vals);
+        if matches!(result_ty, Ty::Con(Con::Float)) { self.owning_unbox(boxed) } else { boxed }
     }
 
     /// Coerces `v` to the representation of `ty` (the invariant: `f64` iff a scalar
