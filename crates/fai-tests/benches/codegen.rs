@@ -135,7 +135,8 @@ fn object_for_def_only(bencher: Bencher) {
     let lowered = rc(&db, file, Symbol::intern("main"));
     let namer = |_: fai_resolve::DefId| "fai_M_main".to_owned();
     let arity = |_: fai_resolve::DefId| 1usize;
-    bencher.bench(|| divan::black_box(object_for_def(&lowered, &namer, &arity)));
+    let abi = |_: fai_resolve::DefId| fai_core::ir::FnAbi::default();
+    bencher.bench(|| divan::black_box(object_for_def(&lowered, &namer, &arity, &abi)));
 }
 
 // ── runtime primitives ──────────────────────────────────────────────────────
