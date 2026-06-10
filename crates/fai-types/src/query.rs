@@ -22,7 +22,7 @@ use crate::ty::Ty;
 use crate::infer::{declared_scheme, error_scheme, infer_scc};
 use crate::std_lib;
 use crate::ty::Scheme;
-use crate::{MISSING_PUBLIC_SIGNATURE, OPAQUE_ACCESS, SIGNATURE_MISMATCH};
+use crate::{EFFECT_MISMATCH, MISSING_PUBLIC_SIGNATURE, OPAQUE_ACCESS, SIGNATURE_MISMATCH};
 
 /// The inferred schemes of the SCC at `scc_index` in `file`.
 #[salsa::tracked]
@@ -41,6 +41,7 @@ pub fn infer_scc_query(db: &dyn Db, file: SourceFile, scc_index: usize) -> Arc<S
         schemes: inference.schemes.into_iter().collect(),
         mismatches: inference.mismatches,
         opaque_mismatches: inference.opaque_mismatches,
+        effect_mismatches: inference.effect_mismatches,
     })
 }
 
@@ -54,6 +55,9 @@ pub struct SccTypes {
     /// Members whose mismatch is a structural value against an opaque signature,
     /// paired with that opaque type's name.
     pub opaque_mismatches: Vec<(DefId, Symbol)>,
+    /// Members whose declared concrete effect disagreed with the inferred effect,
+    /// as `(def, declared rendered, inferred rendered)` (for FAI5001).
+    pub effect_mismatches: Vec<(DefId, String, String)>,
 }
 
 impl SccTypes {
@@ -74,6 +78,16 @@ impl SccTypes {
     #[must_use]
     pub fn opaque_mismatch(&self, def: DefId) -> Option<Symbol> {
         self.opaque_mismatches.iter().find(|(d, _)| *d == def).map(|(_, n)| *n)
+    }
+
+    /// The `(declared, inferred)` rendered effects for `def` if its declared
+    /// concrete effect disagreed with the inferred one.
+    #[must_use]
+    pub fn effect_mismatch(&self, def: DefId) -> Option<(&str, &str)> {
+        self.effect_mismatches
+            .iter()
+            .find(|(d, _, _)| *d == def)
+            .map(|(_, decl, inf)| (decl.as_str(), inf.as_str()))
     }
 }
 
@@ -343,6 +357,25 @@ pub fn check_file(db: &dyn Db, file: SourceFile) {
                     }
                 }
             }
+        }
+
+        // Opt-in effect enforcement (FAI5001): a signature that declares a
+        // concrete effect must match the capabilities the body actually uses.
+        if let Some(&idx) = module_sccs(db, file).index_of.get(&def)
+            && let Some((declared, used)) = infer_scc_query(db, file, idx).effect_mismatch(def)
+        {
+            let bind_span = module.items[d.binding.index()].span;
+            emit(
+                db,
+                Diagnostic::error(
+                    EFFECT_MISMATCH,
+                    format!(
+                        "the declared effect of `{}` is `{declared}`, but its body uses `{used}`",
+                        d.name
+                    ),
+                    Span::new(file.source(db), bind_span),
+                ),
+            );
         }
     }
 

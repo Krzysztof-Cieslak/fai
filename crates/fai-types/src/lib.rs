@@ -85,6 +85,9 @@ pub const OPAQUE_ACCESS: DiagnosticCode = DiagnosticCode::new("FAI3018");
 pub const NON_EXHAUSTIVE_MATCH: DiagnosticCode = DiagnosticCode::new("FAI4001");
 /// A `match` arm can never be reached (an earlier arm already covers it).
 pub const UNREACHABLE_ARM: DiagnosticCode = DiagnosticCode::new("FAI4002");
+/// A binding's declared effect row disagrees with the effect inferred from its
+/// body (the capabilities it actually uses).
+pub const EFFECT_MISMATCH: DiagnosticCode = DiagnosticCode::new("FAI5001");
 
 /// Diagnostic codes owned by the type system (the `FAI3xxx` range).
 pub const CODES: &[CodeInfo] = &[
@@ -235,5 +238,14 @@ pub const CODES: &[CodeInfo] = &[
         default_severity: Severity::Error,
         explanation: "A `match` arm can never be reached because earlier arms already cover its \
                       values. Remove or reorder it.",
+    },
+    CodeInfo {
+        code: EFFECT_MISMATCH,
+        title: "effect disagrees with inferred effect",
+        default_severity: Severity::Error,
+        explanation: "A binding's declared effect row (the capabilities after `/`) does not match \
+                      the effect inferred from its body — it either performs a capability the \
+                      signature omits, or declares one it never uses. Fix the body or the \
+                      declared effect.",
     },
 ];
