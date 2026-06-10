@@ -582,7 +582,7 @@ fn instantiate_fields(scheme: &crate::ty::Scheme, ty: &Ty, arity: usize) -> Vec<
     let mut fields = Vec::new();
     for _ in 0..arity {
         match cx.resolve_shallow(&cur) {
-            SolveTy::Arrow(from, to) => {
+            SolveTy::Arrow(from, to, _) => {
                 fields.push(Rc::unwrap_or_clone(from));
                 cur = Rc::unwrap_or_clone(to);
             }
@@ -611,7 +611,7 @@ fn collect_ty_vars(ty: &Ty, out: &mut Vec<TyVarId>) {
                 out.push(*v);
             }
         }
-        Ty::App(f, a) | Ty::Arrow(f, a) => {
+        Ty::App(f, a) | Ty::Arrow(f, a, _) => {
             collect_ty_vars(f, out);
             collect_ty_vars(a, out);
         }

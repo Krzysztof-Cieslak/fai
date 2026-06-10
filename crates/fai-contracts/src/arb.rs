@@ -684,7 +684,7 @@ fn arbitrary_element(ty: &Ty) -> Option<Ty> {
         return None;
     }
     match &row.fields[1].1 {
-        Ty::Arrow(t, res) if matches!(&**res, Ty::Con(Con::String)) => Some((**t).clone()),
+        Ty::Arrow(t, res, _) if matches!(&**res, Ty::Con(Con::String)) => Some((**t).clone()),
         _ => None,
     }
 }
@@ -735,10 +735,9 @@ fn expand_opaque(db: &dyn Db, custom: &FxHashMap<Ty, DefId>, ty: &Ty) -> Ty {
             fields: row.fields.iter().map(|(l, t)| (*l, expand_opaque(db, custom, t))).collect(),
             tail: row.tail,
         }),
-        Ty::Arrow(a, b) => Ty::Arrow(
-            Arc::new(expand_opaque(db, custom, a)),
-            Arc::new(expand_opaque(db, custom, b)),
-        ),
+        Ty::Arrow(a, b, e) => {
+            Ty::arrow_eff(expand_opaque(db, custom, a), expand_opaque(db, custom, b), e.clone())
+        }
         Ty::Adt(adt) => match fai_types::expand_alias_ty(db, *adt, &[]) {
             Some(body) => expand_opaque(db, custom, &body),
             None => ty.clone(),
@@ -775,7 +774,7 @@ fn rank_of(ranks: &FxHashMap<Ty, u32>, custom: &FxHashMap<Ty, DefId>, ty: &Ty) -
         Ty::Unit | Ty::Con(_) => Some(0),
         Ty::Tuple(es) => max_rank(es.iter().map(|e| rank_of(ranks, custom, e))),
         Ty::Record(row) => max_rank(row.fields.iter().map(|(_, t)| rank_of(ranks, custom, t))),
-        Ty::Var(_) | Ty::Arrow(_, _) | Ty::Interface(_) | Ty::Error => None,
+        Ty::Var(_) | Ty::Arrow(..) | Ty::Interface(_) | Ty::Error => None,
         _ => {
             let (head, args) = peel_app(ty);
             match head {
@@ -926,7 +925,7 @@ fn peel_app(ty: &Ty) -> (&Ty, Vec<&Ty>) {
 fn peel_arrows(ty: &Ty) -> (Vec<&Ty>, &Ty) {
     let mut args = Vec::new();
     let mut cur = ty;
-    while let Ty::Arrow(f, t) = cur {
+    while let Ty::Arrow(f, t, _) = cur {
         args.push(&**f);
         cur = t;
     }
@@ -939,7 +938,7 @@ fn subst_ty(ty: &Ty, map: &FxHashMap<TyVarId, Ty>) -> Ty {
     match ty {
         Ty::Var(v) => map.get(v).cloned().unwrap_or_else(|| ty.clone()),
         Ty::App(f, a) => Ty::App(Arc::new(subst_ty(f, map)), Arc::new(subst_ty(a, map))),
-        Ty::Arrow(f, t) => Ty::Arrow(Arc::new(subst_ty(f, map)), Arc::new(subst_ty(t, map))),
+        Ty::Arrow(f, t, e) => Ty::arrow_eff(subst_ty(f, map), subst_ty(t, map), e.clone()),
         Ty::Tuple(es) => Ty::Tuple(es.iter().map(|e| subst_ty(e, map)).collect()),
         Ty::Record(row) => Ty::Record(RecordRow {
             fields: row.fields.iter().map(|(l, t)| (*l, subst_ty(t, map))).collect(),
@@ -1025,8 +1024,6 @@ fn fresh(next: &mut usize) -> LocalId {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use fai_types::RowVarId;
 
     use super::*;
@@ -1036,7 +1033,7 @@ mod tests {
     }
 
     fn arrow(from: Ty, to: Ty) -> Ty {
-        Ty::Arrow(Arc::new(from), Arc::new(to))
+        Ty::arrow(from, to)
     }
 
     fn user_adt(name: &str) -> Ty {

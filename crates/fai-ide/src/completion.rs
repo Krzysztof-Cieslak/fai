@@ -186,7 +186,7 @@ fn last_segment(name: &str) -> &str {
 /// displayed label is the name's last segment; the resolve payload keeps the full
 /// qualified name and defining file so its docs can be fetched lazily.
 fn value_item(db: &dyn Db, file: SourceFile, name: Symbol, scheme: &Scheme) -> CompletionItem {
-    let kind = if matches!(scheme.ty, Ty::Arrow(_, _)) {
+    let kind = if matches!(scheme.ty, Ty::Arrow(..)) {
         CompletionKind::Function
     } else {
         CompletionKind::Value

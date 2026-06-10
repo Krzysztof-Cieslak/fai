@@ -384,7 +384,7 @@ fn subst_ty(ty: &Ty, map: &FxHashMap<TyVarId, Ty>) -> Ty {
     match ty {
         Ty::Var(v) => map.get(v).cloned().unwrap_or(Ty::Var(*v)),
         Ty::App(f, a) => Ty::App(Arc::new(subst_ty(f, map)), Arc::new(subst_ty(a, map))),
-        Ty::Arrow(f, a) => Ty::arrow(subst_ty(f, map), subst_ty(a, map)),
+        Ty::Arrow(f, a, e) => Ty::arrow_eff(subst_ty(f, map), subst_ty(a, map), e.clone()),
         Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(|e| subst_ty(e, map)).collect()),
         Ty::Record(row) => Ty::Record(RecordRow {
             fields: row.fields.iter().map(|(l, t)| (*l, subst_ty(t, map))).collect(),

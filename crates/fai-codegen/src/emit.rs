@@ -2069,9 +2069,7 @@ fn is_immediate_ty(ty: &Ty) -> bool {
 /// constructor is an immediate), the empty record, and type variables / unknowns.
 fn is_always_boxed_ty(ty: &Ty) -> bool {
     match ty {
-        Ty::Con(Con::String | Con::Float) | Ty::Tuple(_) | Ty::Interface(_) | Ty::Arrow(_, _) => {
-            true
-        }
+        Ty::Con(Con::String | Con::Float) | Ty::Tuple(_) | Ty::Interface(_) | Ty::Arrow(..) => true,
         Ty::Record(row) => !row.fields.is_empty(),
         _ => false,
     }

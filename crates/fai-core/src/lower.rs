@@ -184,7 +184,7 @@ fn match_rows(scheme: &Ty, actual: &Ty, out: &mut FxHashMap<RowVarId, RecordRow>
                 }
             }
         }
-        (Ty::Arrow(sf, st), Ty::Arrow(af, at)) | (Ty::App(sf, st), Ty::App(af, at)) => {
+        (Ty::Arrow(sf, st, _), Ty::Arrow(af, at, _)) | (Ty::App(sf, st), Ty::App(af, at)) => {
             match_rows(sf, af, out);
             match_rows(st, at, out);
         }
@@ -1219,7 +1219,7 @@ impl Lowerer<'_> {
         // saturated `g …` into a direct call. The discarded value is a pure
         // immortal-closure fetch, so this is sound and changes no observable result.
         if is_simple_binder(self.module, stmt.pat)
-            && matches!(value.ty, Ty::Arrow(_, _))
+            && matches!(value.ty, Ty::Arrow(_, _, _))
             && let K::Global(def) = &value.kind
         {
             let def = *def;
@@ -1266,7 +1266,7 @@ fn interface_head(ty: &Ty) -> Option<InterfaceRef> {
 /// Float primitive when eta-expanding an operator value).
 fn first_arg_ty(ty: &Ty) -> Option<&Ty> {
     match ty {
-        Ty::Arrow(from, _) => Some(from),
+        Ty::Arrow(from, _, _) => Some(from),
         _ => None,
     }
 }

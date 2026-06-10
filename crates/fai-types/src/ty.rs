@@ -27,6 +27,14 @@ pub struct TyVarId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RowVarId(pub u32);
 
+/// An effect-row-variable identifier (a slot in the solver's parallel *effect*-row
+/// union-find, distinct from the record-row one in [`RowVarId`]).
+///
+/// Like [`TyVarId`], in a *reified* type it appears only inside a [`Scheme`],
+/// where it ranges over the scheme's quantified effect-row variables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct EffRowVarId(pub u32);
+
 /// A reified record row: its fields (sorted by label text) and a tail.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RecordRow {
@@ -43,6 +51,43 @@ pub enum RowEnd {
     Closed,
     /// The listed fields plus an open (quantified) tail.
     Open(RowVarId),
+}
+
+/// The tail of a reified effect row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EffEnd {
+    /// Exactly the listed effect atoms (a closed effect).
+    Closed,
+    /// The listed atoms plus an open (quantified) effect tail.
+    Open(EffRowVarId),
+}
+
+/// A reified effect row: the host-capability atoms a function uses (the interface
+/// references, sorted by qualified name for a canonical form) plus a tail.
+///
+/// An empty, closed effect row is the *pure* effect — the default on every arrow
+/// — and renders as nothing (a bare `a -> b`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct EffectRow {
+    /// The effect atoms, sorted by interface qualified name (canonical).
+    pub labels: Vec<InterfaceRef>,
+    /// The row's tail.
+    pub tail: EffEnd,
+}
+
+impl EffectRow {
+    /// The pure (empty, closed) effect row — the default carried by every arrow
+    /// until effect inference fills it in.
+    #[must_use]
+    pub fn pure() -> Self {
+        Self { labels: Vec::new(), tail: EffEnd::Closed }
+    }
+
+    /// Whether this is the pure effect (no atoms, closed) — i.e. renders as bare.
+    #[must_use]
+    pub fn is_pure(&self) -> bool {
+        self.labels.is_empty() && self.tail == EffEnd::Closed
+    }
 }
 
 /// A type.
@@ -63,8 +108,9 @@ pub enum Ty {
     Interface(InterfaceRef),
     /// Type application, e.g. `List a` is `App(List, a)`.
     App(Arc<Ty>, Arc<Ty>),
-    /// A function type `from -> to`.
-    Arrow(Arc<Ty>, Arc<Ty>),
+    /// A function type `from -> to / effect`. The effect row records the host
+    /// capabilities applying the function uses (empty = pure, rendered bare).
+    Arrow(Arc<Ty>, Arc<Ty>, EffectRow),
     /// A tuple type (two or more elements).
     Tuple(Vec<Ty>),
     /// A structural record type with a row tail.
@@ -147,10 +193,16 @@ impl Ty {
         Ty::App(Arc::new(Ty::Con(Con::List)), Arc::new(elem))
     }
 
-    /// A function type `from -> to`.
+    /// A pure function type `from -> to` (empty effect).
     #[must_use]
     pub fn arrow(from: Ty, to: Ty) -> Ty {
-        Ty::Arrow(Arc::new(from), Arc::new(to))
+        Ty::Arrow(Arc::new(from), Arc::new(to), EffectRow::pure())
+    }
+
+    /// A function type `from -> to / effect`.
+    #[must_use]
+    pub fn arrow_eff(from: Ty, to: Ty, effect: EffectRow) -> Ty {
+        Ty::Arrow(Arc::new(from), Arc::new(to), effect)
     }
 
     /// Builds a curried arrow `a -> b -> ... -> result`.
@@ -181,6 +233,10 @@ pub struct Scheme {
     /// Preferred spelling for each row variable, parallel to `row_vars` (`_` for
     /// an anonymous open tail, `'r` for a named one).
     pub row_names: Vec<String>,
+    /// The quantified effect-row variables (for effect-polymorphic functions).
+    pub effect_vars: Vec<EffRowVarId>,
+    /// Preferred spelling for each effect variable, parallel to `effect_vars`.
+    pub effect_names: Vec<String>,
 }
 
 impl Scheme {
@@ -193,13 +249,23 @@ impl Scheme {
             names: Vec::new(),
             row_vars: Vec::new(),
             row_names: Vec::new(),
+            effect_vars: Vec::new(),
+            effect_names: Vec::new(),
         }
     }
 
     /// A scheme with explicit quantified variables (canonical naming).
     #[must_use]
     pub fn new(vars: Vec<TyVarId>, ty: Ty) -> Self {
-        Self { vars, ty, names: Vec::new(), row_vars: Vec::new(), row_names: Vec::new() }
+        Self {
+            vars,
+            ty,
+            names: Vec::new(),
+            row_vars: Vec::new(),
+            row_names: Vec::new(),
+            effect_vars: Vec::new(),
+            effect_names: Vec::new(),
+        }
     }
 
     /// Attaches preferred variable spellings (parallel to `vars`).
@@ -214,6 +280,18 @@ impl Scheme {
     pub fn with_rows(mut self, row_vars: Vec<RowVarId>, row_names: Vec<String>) -> Self {
         self.row_vars = row_vars;
         self.row_names = row_names;
+        self
+    }
+
+    /// Attaches quantified effect-row variables with their spellings.
+    #[must_use]
+    pub fn with_effects(
+        mut self,
+        effect_vars: Vec<EffRowVarId>,
+        effect_names: Vec<String>,
+    ) -> Self {
+        self.effect_vars = effect_vars;
+        self.effect_names = effect_names;
         self
     }
 }
@@ -258,7 +336,11 @@ fn collect_vars(ty: &Ty, out: &mut Vec<TyVarId>) {
                 out.push(*v);
             }
         }
-        Ty::App(f, a) | Ty::Arrow(f, a) => {
+        Ty::App(f, a) => {
+            collect_vars(f, out);
+            collect_vars(a, out);
+        }
+        Ty::Arrow(f, a, _) => {
             collect_vars(f, out);
             collect_vars(a, out);
         }
@@ -281,6 +363,7 @@ fn collect_vars(ty: &Ty, out: &mut Vec<TyVarId>) {
 pub struct VarNames {
     names: rustc_hash::FxHashMap<TyVarId, String>,
     row_names: rustc_hash::FxHashMap<RowVarId, String>,
+    eff_names: rustc_hash::FxHashMap<EffRowVarId, String>,
 }
 
 impl VarNames {
@@ -315,7 +398,13 @@ impl VarNames {
                 row_names.insert(*v, name.clone());
             }
         }
-        Self { names, row_names }
+        let mut eff_names = rustc_hash::FxHashMap::default();
+        if scheme.effect_names.len() == scheme.effect_vars.len() {
+            for (v, name) in scheme.effect_vars.iter().zip(&scheme.effect_names) {
+                eff_names.insert(*v, name.clone());
+            }
+        }
+        Self { names, row_names, eff_names }
     }
 
     /// Records a preferred spelling for a variable.
@@ -328,6 +417,11 @@ impl VarNames {
         self.row_names.insert(var, name);
     }
 
+    /// Records a preferred spelling for an effect-row variable.
+    pub fn set_eff(&mut self, var: EffRowVarId, name: String) {
+        self.eff_names.insert(var, name);
+    }
+
     fn get(&self, var: TyVarId) -> String {
         self.names.get(&var).cloned().unwrap_or_else(|| {
             // Stable fallback for unnamed vars: derive from the id.
@@ -338,6 +432,11 @@ impl VarNames {
     /// The spelling of a row variable's open tail (`_` when anonymous).
     fn get_row(&self, var: RowVarId) -> String {
         self.row_names.get(&var).cloned().unwrap_or_else(|| "_".to_owned())
+    }
+
+    /// The spelling of an effect-row variable's open tail (`_` when anonymous).
+    fn get_eff(&self, var: EffRowVarId) -> String {
+        self.eff_names.get(&var).cloned().unwrap_or_else(|| "_".to_owned())
     }
 }
 
@@ -395,10 +494,11 @@ fn write_ty(out: &mut String, ty: &Ty, names: &VarNames, prec: Prec) {
                 let _ = out.write_char(')');
             }
         }
-        Ty::Arrow(from, to) => {
+        Ty::Arrow(from, to, effect) => {
             // An arrow must be parenthesized when it appears inside a tuple
             // element or an application argument, but not at the top level or to
-            // the right of another arrow (arrows are right-associative).
+            // the right of another arrow (arrows are right-associative). An effect
+            // annotation binds the nearest arrow, so it sits inside the parens.
             let parenthesize = prec >= Prec::Product;
             if parenthesize {
                 let _ = out.write_char('(');
@@ -406,6 +506,7 @@ fn write_ty(out: &mut String, ty: &Ty, names: &VarNames, prec: Prec) {
             write_ty(out, from, names, Prec::Product);
             let _ = out.write_str(" -> ");
             write_ty(out, to, names, Prec::Arrow);
+            write_effect(out, effect, names);
             if parenthesize {
                 let _ = out.write_char(')');
             }
@@ -447,6 +548,31 @@ fn write_ty(out: &mut String, ty: &Ty, names: &VarNames, prec: Prec) {
             let _ = out.write_str(" }");
         }
     }
+}
+
+/// Renders an arrow's effect annotation. The pure effect (empty, closed) renders
+/// as nothing (a bare arrow); otherwise ` / { Atom, … | tail }`, atoms by their
+/// (already-canonicalized) qualified names and a lone open tail as `/ 'e`.
+fn write_effect(out: &mut String, effect: &EffectRow, names: &VarNames) {
+    if effect.is_pure() {
+        return;
+    }
+    // A lone open tail (no atoms) is sugar: `/ 'e` rather than `/ { | 'e }`.
+    if effect.labels.is_empty()
+        && let EffEnd::Open(ev) = effect.tail
+    {
+        let _ = write!(out, " / {}", names.get_eff(ev));
+        return;
+    }
+    let _ = out.write_str(" / {");
+    for (i, atom) in effect.labels.iter().enumerate() {
+        let _ = out.write_str(if i == 0 { " " } else { ", " });
+        let _ = out.write_str(atom.name.as_str());
+    }
+    if let EffEnd::Open(ev) = effect.tail {
+        let _ = write!(out, " | {}", names.get_eff(ev));
+    }
+    let _ = out.write_str(" }");
 }
 
 impl fmt::Display for Ty {
@@ -491,5 +617,56 @@ mod tests {
             assert_eq!(Con::from_name(c.name()), Some(c));
         }
         assert_eq!(Con::from_name("Widget"), None);
+    }
+
+    fn iface(name: &str) -> fai_resolve::InterfaceRef {
+        fai_resolve::InterfaceRef::new(fai_span::SourceId::new(0), fai_syntax::Symbol::intern(name))
+    }
+
+    #[test]
+    fn pure_arrow_renders_bare() {
+        // The empty (pure) effect is the default and renders as a bare arrow.
+        let scheme = Scheme::mono(Ty::arrow(Ty::int(), Ty::int()));
+        assert_eq!(render_scheme(&scheme), "Int -> Int");
+    }
+
+    #[test]
+    fn closed_effect_renders_atoms() {
+        let eff = EffectRow { labels: vec![iface("Console")], tail: EffEnd::Closed };
+        let scheme = Scheme::mono(Ty::arrow_eff(Ty::Con(Con::String), Ty::Unit, eff));
+        assert_eq!(render_scheme(&scheme), "String -> () / { Console }");
+    }
+
+    #[test]
+    fn multi_atom_effect_renders_comma_separated() {
+        let eff =
+            EffectRow { labels: vec![iface("Console"), iface("FileSystem")], tail: EffEnd::Closed };
+        let scheme = Scheme::mono(Ty::arrow_eff(Ty::Unit, Ty::Unit, eff));
+        assert_eq!(render_scheme(&scheme), "() -> () / { Console, FileSystem }");
+    }
+
+    #[test]
+    fn lone_open_effect_tail_renders_as_var_sugar() {
+        // `/ 'e` is sugar for `/ { | 'e }` (no atoms, just a tail).
+        let eff = EffectRow { labels: vec![], tail: EffEnd::Open(EffRowVarId(0)) };
+        let scheme = Scheme::mono(Ty::arrow_eff(v(0), v(1), eff))
+            .with_effects(vec![EffRowVarId(0)], vec!["'e".to_owned()]);
+        assert_eq!(render_scheme(&scheme), "'a -> 'b / 'e");
+    }
+
+    #[test]
+    fn open_effect_with_atoms_renders_tail() {
+        let eff = EffectRow { labels: vec![iface("Console")], tail: EffEnd::Open(EffRowVarId(0)) };
+        let scheme = Scheme::mono(Ty::arrow_eff(Ty::Unit, Ty::Unit, eff))
+            .with_effects(vec![EffRowVarId(0)], vec!["'e".to_owned()]);
+        assert_eq!(render_scheme(&scheme), "() -> () / { Console | 'e }");
+    }
+
+    #[test]
+    fn effect_binds_innermost_arrow_in_curried_type() {
+        // `/ e` attaches to the last (saturating) arrow; the outer arrow is pure.
+        let eff = EffectRow { labels: vec![iface("Console")], tail: EffEnd::Closed };
+        let scheme = Scheme::mono(Ty::arrow(Ty::int(), Ty::arrow_eff(Ty::int(), Ty::Unit, eff)));
+        assert_eq!(render_scheme(&scheme), "Int -> Int -> () / { Console }");
     }
 }

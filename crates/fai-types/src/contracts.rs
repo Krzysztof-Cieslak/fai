@@ -146,7 +146,7 @@ fn capabilities_in_ty(db: &dyn Db, ty: &Ty) -> Vec<Symbol> {
     fn walk(db: &dyn Db, ty: &Ty, out: &mut Vec<Symbol>) {
         match ty {
             Ty::Interface(iref) if is_capability_interface(db, *iref) => out.push(iref.name),
-            Ty::App(f, a) | Ty::Arrow(f, a) => {
+            Ty::App(f, a) | Ty::Arrow(f, a, _) => {
                 walk(db, f, out);
                 walk(db, a, out);
             }
