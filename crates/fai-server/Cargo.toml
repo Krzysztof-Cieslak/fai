@@ -22,6 +22,11 @@ wait-timeout.workspace = true
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+# Clear the inheritable flag on the client's std handles before spawning the
+# detached daemon, so it does not inherit (and hold open) the client's stdio pipes.
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Console"] }
+
 [dev-dependencies]
 proptest.workspace = true
 

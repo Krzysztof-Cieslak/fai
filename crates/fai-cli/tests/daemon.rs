@@ -5,12 +5,9 @@
 //! directory) and `FAI_CACHE_DIR`, all inherited by the self-spawned daemon. A
 //! [`Daemon`] guard stops its daemon on drop so none leak across the run.
 //!
-//! Disabled on Windows: the spawned daemon inherits and holds the client's
-//! stdio pipes, so a client that captures output blocks until the daemon's idle
-//! timeout instead of returning promptly, and `daemon status`/`restart` cannot
-//! reach the running daemon. The daemon path needs a Windows fix (spawn the
-//! daemon without inheriting the client's handles) before these run there.
-#![cfg(not(windows))]
+//! These run on Windows too: the spawn no longer lets the daemon inherit the
+//! client's stdio pipes, so a piped client returns promptly instead of blocking
+//! until the daemon's idle timeout.
 
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
@@ -47,6 +44,7 @@ struct Daemon {
     runtime_dir: PathBuf,
     cache_dir: PathBuf,
     run_timeout_ms: Option<u64>,
+    run_as_bytes: Option<u64>,
 }
 
 impl Daemon {
@@ -61,12 +59,22 @@ impl Daemon {
             runtime_dir: unique_socket_dir(),
             cache_dir: unique(&format!("{name}-cache")),
             run_timeout_ms: None,
+            run_as_bytes: None,
         }
     }
 
     /// Sets the supervised-run wall-clock timeout (inherited by the daemon).
     fn with_run_timeout(mut self, ms: u64) -> Self {
         self.run_timeout_ms = Some(ms);
+        self
+    }
+
+    /// Sets the worker's opt-in committed-memory cap (`FAI_RUN_AS_BYTES`),
+    /// inherited by the daemon and thus the worker it spawns. Used to exercise
+    /// the Windows Job-Object memory limit.
+    #[cfg(windows)]
+    fn with_run_as_bytes(mut self, bytes: u64) -> Self {
+        self.run_as_bytes = Some(bytes);
         self
     }
 
@@ -79,6 +87,9 @@ impl Daemon {
             .env("FAI_DAEMON_IDLE_TIMEOUT", "60");
         if let Some(ms) = self.run_timeout_ms {
             command.env("FAI_RUN_TIMEOUT_MS", ms.to_string());
+        }
+        if let Some(bytes) = self.run_as_bytes {
+            command.env("FAI_RUN_AS_BYTES", bytes.to_string());
         }
         command
     }
@@ -337,6 +348,36 @@ fn run_timeout_is_reaped_and_daemon_survives() {
     // The daemon survived the reaped worker: a later command still works.
     let check = daemon.run(&["check"], &["--message-format=json"]);
     assert!(check.status.success(), "daemon must survive a reaped run worker");
+}
+
+/// On Windows the worker's resource limits are enforced by a Job Object (the peer
+/// of the Unix `setrlimit` guard). A run that commits far past a low
+/// `FAI_RUN_AS_BYTES` cap is terminated by the OS before it can exhaust host
+/// memory, and the daemon survives to serve the next command.
+#[cfg(windows)]
+#[test]
+fn run_memory_limit_is_enforced_and_daemon_survives() {
+    // Build a list of ~100M cons cells: several GiB, dwarfing the 128 MiB cap, so
+    // the committed-memory limit (not the generous wall-clock reaper) is what stops
+    // the worker, and it does so within a fraction of a second.
+    let hog = indoc! {r#"
+        module Main
+
+        let build n acc = if n = 0 then acc else build (n - 1) (n :: acc)
+
+        public main : Runtime -> Unit
+        let main runtime =
+          runtime.console.writeLine (Int.toString (List.length (build 100000000 [])))
+    "#};
+    let daemon = Daemon::new("memlimit", &[("Main.fai", hog)]).with_run_as_bytes(128 * 1024 * 1024);
+
+    let run = daemon.run(&["run"], &["Main.fai"]);
+    assert_ne!(run.status.code(), Some(0), "a worker past the memory cap must not succeed");
+
+    // The daemon survived the killed worker: a later command still works.
+    assert!(status_pid(&daemon).is_some(), "daemon must survive a memory-limited worker");
+    let check = daemon.run(&["check"], &["--message-format=json"]);
+    assert!(check.status.success(), "daemon must serve after a memory-limited worker");
 }
 
 #[test]

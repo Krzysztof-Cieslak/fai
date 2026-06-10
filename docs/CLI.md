@@ -26,9 +26,10 @@
 > generates values for built-in types, records, and (recursive) ADTs. The daemon
 > serves `fai test`, streaming per-contract results as `$/testEvent`; warm output
 > is byte-identical to `--no-daemon`. `fai daemon tap` streams a live JSON decode
-> of the workspace daemon's traffic for debugging. Not yet
-> implemented: Windows resource limits and a Windows CI
-> (the named-pipe transport compiles but is untested) (#29). See `AGENTS.md` for
+> of the workspace daemon's traffic for debugging. The daemon and worker run on
+> Linux, macOS, and Windows — each covered in CI, including the named-pipe
+> transport and the daemon end-to-end suite — and the worker's resource limits are
+> enforced by `setrlimit` on Unix and a Job Object on Windows. See `AGENTS.md` for
 > project conventions, `docs/MEMORY.md` for the design decisions, the issue
 > tracker for the roadmap, and the `samples/` directory for the language itself.
 

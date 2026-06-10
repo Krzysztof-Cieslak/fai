@@ -347,6 +347,14 @@ fn spawn_daemon(root: &Utf8Path) -> Result<(), DaemonError> {
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     detach(&mut command);
+    // On Windows, stop the daemon from inheriting (and holding open) the client's
+    // own stdio handles. The daemon's own stdio is set to NUL above, but a plain
+    // `CreateProcess` inherits *every* inheritable handle in the client — including
+    // its stdout/stderr pipe write ends when the client's output is captured — so
+    // the daemon would keep those pipes open for its whole life and a piped client
+    // would block until the daemon's idle timeout instead of returning promptly.
+    #[cfg(windows)]
+    prevent_handle_inheritance();
     command.spawn()?;
     Ok(())
 }
@@ -364,6 +372,42 @@ fn detach(command: &mut Command) {
     {
         // On Unix the daemon calls setsid() itself at startup.
         let _ = command;
+    }
+}
+
+/// Clears the inheritable flag on this process's standard handles so a later
+/// `CreateProcess` (the detached daemon spawn) does not pass them to the child.
+///
+/// The stable `std::process::Command` always spawns with `bInheritHandles = TRUE`
+/// and no handle-list restriction, so without this the daemon inherits the
+/// client's stdio pipes. There is no safe std API to control per-handle
+/// inheritance, so this calls `SetHandleInformation` directly; every step is
+/// best-effort (a missing or already-non-inheritable handle is fine).
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn prevent_handle_inheritance() {
+    use windows_sys::Win32::Foundation::{
+        HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation,
+    };
+    use windows_sys::Win32::System::Console::{
+        GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    };
+
+    for id in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+        // SAFETY: `id` is a documented standard-handle selector; `GetStdHandle`
+        // returns a borrowed OS handle (or a null/invalid sentinel) and reads no
+        // memory we own.
+        let handle = unsafe { GetStdHandle(id) };
+        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+            continue;
+        }
+        // SAFETY: `handle` is a live standard handle owned by this process;
+        // `SetHandleInformation` only flips its inherit flag. The result is
+        // ignored because clearing an already-clear flag (or a non-settable
+        // handle) is harmless here.
+        unsafe {
+            SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0);
+        }
     }
 }
 

@@ -35,6 +35,16 @@ wait-timeout.workspace = true
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+# Job-Object resource limits for the run/test worker (the peer of the `nix`
+# setrlimit path): a per-process committed-memory cap and user-mode CPU-time limit.
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 indoc.workspace = true
 

@@ -729,6 +729,7 @@ dependencies = [
  "target-lexicon",
  "thiserror",
  "wait-timeout",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -830,6 +831,7 @@ dependencies = [
  "thiserror",
  "tracing",
  "wait-timeout",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

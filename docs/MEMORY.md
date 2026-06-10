@@ -32,7 +32,7 @@ retired; IDs are not reused).
 | R11 | salsa API churn / version instability | Med | Med | Pin a version; wrap behind `fai-db` so the engine is swappable; keep query definitions framework-agnostic. |
 | R12 | Incremental-cache correctness (stale results → wrong diagnostics) | Med | High | Incremental-vs-clean **verifier** in CI; content-addressed keys stamped with compiler version + flags; determinism is a locked invariant. |
 | R13 | Span/position instability collapses incrementality | Med | High | Position-independent item tree + spans in a side-table; edit-churn test asserts "add a comment → near-zero recompute". |
-| R14 | Daemon lifecycle: stale/version-mismatch, spawn races, memory growth | Med | Med | Version handshake + auto-restart; version-stamped socket path + spawn-lock; LRU eviction + idle-timeout shutdown. `stop`/`restart` are synchronous — they block until the prior daemon's endpoint refuses connections, so `restart` spawns a genuinely fresh daemon instead of reattaching to the one still shutting down. Windows lifecycle gaps tracked in #10, #29. |
+| R14 | Daemon lifecycle: stale/version-mismatch, spawn races, memory growth | Med | Med | Version handshake + auto-restart; version-stamped socket path + spawn-lock; LRU eviction + idle-timeout shutdown. `stop`/`restart` are synchronous — they block until the prior daemon's endpoint refuses connections, so `restart` spawns a genuinely fresh daemon instead of reattaching to the one still shutting down. The Windows spawn clears inheritance on the client's std handles so the detached daemon no longer holds them open; the daemon e2e suite runs on Windows CI. |
 | R15 | JIT'd user code crashes/hangs the toolchain | Med | High | Run in an isolated **worker process** with timeouts/resource limits; the daemon survives worker death. `run` *and* `test` both supervise isolated workers (D63–D65, D103). |
 | R16 | Large mutually-recursive SCCs reduce per-def granularity | Low | Med | SCCs computed from actual references (usually small); consider a lint for accidental large cycles. |
 | R18 | The editor grammars (TextMate, tree-sitter) re-encode the lexer/parser and drift from the canonical `fai-syntax` | Med | Low | The hand-written `fai-syntax` stays the single source of truth; grammars are highlighting/structure aids only, pinned with tests over `samples/` so drift fails CI. The TextMate grammar (in `editors/vscode/`) and its samples tokenization test (no `invalid`/unscoped spans) are realized (D103); the tree-sitter grammar (no `ERROR` nodes) remains a stretch goal to bound the dual-maintenance cost. Tracked in #31, #33 (#32 done). |
@@ -396,8 +396,8 @@ Daemon, persistence & protocol:
   and the Unix socket created `0600`. The endpoint name embeds a blake3 of the
   canonicalized root and the compiler version; binding is the spawn-race lock, and
   a stale socket from a crash is reclaimed (probe-connect → unlink → rebind).
-  Windows is compiled but, given the Linux-only CI, **untested** (a Windows CI job
-  is future work).
+  Both platforms run in CI; the Windows named-pipe path is exercised by the daemon
+  end-to-end suite on the `windows-latest` job.
 - **D59 Result exchange (rendered bytes):** because the thin client has **no
   database** (so it cannot resolve spans), the daemon runs the command and returns
   the already-rendered `{stdout, stderr, exit}`; the client passes its resolved
@@ -408,12 +408,19 @@ Daemon, persistence & protocol:
   for `run` is the streaming exception, and `$/diagnostic`/`$/progress` are
   deferred.
 - **D60 Daemon detachment & lifecycle:** the client spawns a detached
-  `__daemon-serve` (null stdio; on Windows the safe `DETACHED_PROCESS`/
+  `__daemon-serve` (null stdio; on Windows the `DETACHED_PROCESS`/
   `CREATE_NEW_PROCESS_GROUP` flags) and the daemon calls **`nix::setsid()`** at
-  startup on Unix so a terminal hangup can't kill it (no hand-written unsafe; the
-  same `nix` crate later covers the worker's kill/`setrlimit`). The daemon shuts
-  down on an explicit `Shutdown` or after an idle period
-  (`FAI_DAEMON_IDLE_TIMEOUT`, default 600s), unlinking its socket on the way out.
+  startup on Unix so a terminal hangup can't kill it. On Windows the stable
+  `Command` always spawns with `bInheritHandles = TRUE` and no handle-list
+  restriction, so before spawning, the client clears the inheritable flag on its
+  own standard handles (`SetHandleInformation`); otherwise the detached daemon
+  inherits and holds the client's stdout/stderr pipes, and a client whose output
+  is captured blocks until the daemon's idle timeout instead of returning
+  promptly. There is no safe std API to control per-handle inheritance, so this is
+  a small scoped `unsafe` block — the Windows peer of the safe `nix` Unix calls
+  (see AGENTS.md §8). The daemon shuts down on an explicit `Shutdown` or after an
+  idle period (`FAI_DAEMON_IDLE_TIMEOUT`, default 600s), unlinking its socket on
+  the way out.
 - **D61 File-state sync:** before each request the daemon re-scans the workspace,
   **stat-gated** (mtime/size) and **hash-confirmed** (blake3), updating a salsa
   input only when content truly changed (so a `touch` doesn't break early cutoff).
@@ -449,12 +456,19 @@ Daemon, persistence & protocol:
   (exit `124`); a crashing/runaway worker is a separate process, so the daemon
   always survives. The `--no-daemon` path runs the same worker with inherited
   stdio and no limits.
-- **D65 Worker resource limits:** the worker self-imposes `RLIMIT_CPU` (seconds,
-  from `FAI_RUN_CPU_SECS` set by the daemon) at startup via `nix` — robust
-  runaway-CPU protection that doesn't interfere with JIT; `RLIMIT_AS`
-  (`FAI_RUN_AS_BYTES`) is opt-in because a low cap can break compilation. Windows
-  Job-Object limits are future work. No hand-written unsafe (the safe `nix`
-  wrappers), and limits apply only under daemon supervision.
+- **D65 Worker resource limits:** the worker self-imposes a CPU-time limit
+  (seconds, from `FAI_RUN_CPU_SECS` set by the daemon) at startup — robust
+  runaway-CPU protection that doesn't interfere with JIT; a memory cap
+  (`FAI_RUN_AS_BYTES`) is opt-in because a low cap can break compilation. On Unix
+  these are `RLIMIT_CPU`/`RLIMIT_AS` via the safe `nix` wrappers. On Windows the
+  worker assigns its own process to a **Job Object** carrying a
+  `PerProcessUserTimeLimit` and a `ProcessMemoryLimit` (the committed-memory peer of
+  `RLIMIT_AS`), which the OS enforces by terminating the process; the job handle is
+  left open so the limits hold for the process's whole life. `win32job`'s safe API
+  exposes only a working-set (not committed-memory) limit and no CPU-time limit, so
+  the job is configured through `windows-sys` in a small scoped `unsafe` block (see
+  AGENTS.md §8). Limits apply only under daemon supervision; either way the daemon's
+  wall-clock reaper (kill on `FAI_RUN_TIMEOUT_MS`) is the cross-platform backstop.
 
 Data layer (ADTs, pattern matching, structural records with rows):
 
