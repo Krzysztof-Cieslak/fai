@@ -46,6 +46,32 @@ pub struct FnAbi {
 }
 
 impl FnAbi {
+    /// Derives the calling-convention shape from a definition's type `scheme` and
+    /// its `source_params` count (the syntactic `let f a b = …` binders). The
+    /// leading offset-evidence parameters (integers) are non-float; each source
+    /// parameter is unboxed when its declared type is exactly `Float`, and the
+    /// result is unboxed when the residual return type is exactly `Float`. Reading
+    /// the *signature* (not the body) keeps a caller's compiled code independent of
+    /// a callee's body.
+    #[must_use]
+    pub fn from_scheme(scheme: &fai_types::Scheme, source_params: usize) -> FnAbi {
+        let evidence = fai_types::evidence_count(scheme);
+        let mut float_params = vec![false; evidence];
+        let mut ty = &scheme.ty;
+        for _ in 0..source_params {
+            match ty {
+                Ty::Arrow(from, to) => {
+                    float_params.push(matches!(from.as_ref(), Ty::Con(Con::Float)));
+                    ty = to;
+                }
+                // Fewer arrows than declared source parameters cannot happen for a
+                // well-typed binding; stop defensively rather than panic.
+                _ => break,
+            }
+        }
+        FnAbi { float_params, float_return: matches!(ty, Ty::Con(Con::Float)) }
+    }
+
     /// Whether runtime parameter `i` is passed as an unboxed `Float` (raw bits).
     #[must_use]
     pub fn float_param(&self, i: usize) -> bool {

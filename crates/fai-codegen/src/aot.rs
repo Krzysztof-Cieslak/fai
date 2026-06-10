@@ -13,7 +13,7 @@ use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{Linkage, Module, default_libcall_names};
 use cranelift_object::{ObjectBuilder, ObjectModule};
-use fai_core::ir::LoweredDef;
+use fai_core::ir::{FnAbi, LoweredDef};
 use fai_resolve::DefId;
 
 use crate::emit::{closure_symbol, compile_def};
@@ -58,9 +58,10 @@ pub fn object_for_def(
     lowered: &LoweredDef,
     namer: &dyn Fn(DefId) -> String,
     arity_of: &dyn Fn(DefId) -> usize,
+    signature_of: &dyn Fn(DefId) -> FnAbi,
 ) -> Vec<u8> {
     let mut module = object_module("fai");
-    compile_def(&mut module, lowered, namer, arity_of);
+    compile_def(&mut module, lowered, namer, arity_of, signature_of);
     module.finish().emit().expect("emit object")
 }
 
@@ -73,10 +74,11 @@ pub(crate) fn function_ir_text(
     lowered: &LoweredDef,
     namer: &dyn Fn(DefId) -> String,
     arity_of: &dyn Fn(DefId) -> usize,
+    signature_of: &dyn Fn(DefId) -> FnAbi,
 ) -> Vec<String> {
     let mut module = object_module("fai_ir_test");
     let mut jobs = Vec::new();
-    crate::emit::build_def(&mut module, lowered, namer, arity_of, &mut jobs);
+    crate::emit::build_def(&mut module, lowered, namer, arity_of, signature_of, &mut jobs);
     jobs.iter().map(|(_, ctx)| ctx.func.display().to_string()).collect()
 }
 

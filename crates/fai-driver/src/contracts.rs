@@ -759,9 +759,11 @@ pub fn jit_test_bundle(bundle: &TestWireBundle, start_index: usize, out: &mut dy
 fn run_contracts(rebuilt: &RebuiltTest, start_index: usize, sink: &mut dyn FnMut(WorkerResult)) {
     let labels = &rebuilt.module_labels;
     let arities = &rebuilt.arities;
+    let abis = &rebuilt.abis;
     let namer = |d: DefId| mangle(labels.get(&d.file).map_or("M", String::as_str), d.name.as_str());
     let arity = |d: DefId| arities.get(&d).copied().unwrap_or(0);
-    let mut program = JitProgram::compile(&rebuilt.defs, &namer, &arity);
+    let abi = |d: DefId| abis.get(&d).cloned().unwrap_or_default();
+    let mut program = JitProgram::compile(&rebuilt.defs, &namer, &arity, &abi);
     for position in start_index..rebuilt.contracts.len() {
         let c = &rebuilt.contracts[position];
         // The live-object counter is compiled in only under `debug_assertions`, so
