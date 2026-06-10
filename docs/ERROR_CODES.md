@@ -208,6 +208,12 @@ A nested module's name collides with another module, type, interface, or constru
 
 A qualified path resolved to a module rather than a member. Name a member of the module (e.g. `Module.value`).
 
+### FAI2018 — constructor of an opaque type
+
+**Severity:** error
+
+A constructor of an `opaque` type is referenced from another file. An opaque type exports its name but not its constructors, so it can only be built and matched through the functions its module provides. Use those operations instead of the constructor.
+
 ## FAI3xxx — Types & rows
 
 ### FAI3001 — type mismatch
@@ -311,6 +317,12 @@ An instance `{ Name with … }` names something that is not an interface. Use a 
 **Severity:** error
 
 The operator interfaces (`Num`/`Eq`/`Ord`) are sealed to their built-in instances and cannot be instantiated by user code.
+
+### FAI3018 — access to an opaque type's representation
+
+**Severity:** error
+
+An opaque type's representation (its record fields or alias body) is accessed from another file — a field access, record construction, or `{ r with … }` update. An opaque type exports its name but not its structure, so build and inspect its values through the functions its module provides.
 
 ## FAI4xxx — Exhaustiveness & patterns
 

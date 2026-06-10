@@ -131,6 +131,11 @@ pub struct SccInference {
     pub schemes: FxHashMap<DefId, Scheme>,
     /// Members whose body did not match its declared signature.
     pub mismatches: Vec<DefId>,
+    /// Members whose mismatch is specifically a structural value (a record)
+    /// where the signature is an opaque type, paired with that type's name —
+    /// reported as the more specific opaque-access error rather than a bare
+    /// signature mismatch.
+    pub opaque_mismatches: Vec<(DefId, Symbol)>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -147,6 +152,7 @@ pub fn infer_scc(
 
     let mut cx = InferCtx::new();
     let mut mismatches: Vec<DefId> = Vec::new();
+    let mut opaque_mismatches: Vec<(DefId, Symbol)> = Vec::new();
 
     // Fresh monomorphic type for each member. If a member has a declared
     // signature, instantiate it as the member's type (so the body is checked
@@ -205,6 +211,19 @@ pub fn infer_scc(
         // immediate mismatch.
         if declared.contains_key(m) && unify != UnifyResult::Ok {
             mismatches.push(*m);
+            // A structural body (a record) against an opaque signature is the
+            // construction-of-an-opaque-type case; report it specifically.
+            let body_re = cx.reify(&fn_ty);
+            let sig_re = cx.reify(&member_ty);
+            let opaque = match (&body_re, &sig_re) {
+                (crate::ty::Ty::Record(_), other) | (other, crate::ty::Ty::Record(_)) => {
+                    walk::opaque_adt_head_name(db, other)
+                }
+                _ => None,
+            };
+            if let Some(name) = opaque {
+                opaque_mismatches.push((*m, name));
+            }
         }
     }
 
@@ -244,7 +263,7 @@ pub fn infer_scc(
         };
         result.insert(*m, scheme);
     }
-    SccInference { schemes: result, mismatches }
+    SccInference { schemes: result, mismatches, opaque_mismatches }
 }
 
 /// Peels the first `n` parameter types from a (resolved) function type.

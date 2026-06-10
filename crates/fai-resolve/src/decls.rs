@@ -19,6 +19,11 @@ pub struct TypeDeclInfo {
     pub name: Symbol,
     /// The type's visibility (constructors inherit it).
     pub visibility: Visibility,
+    /// Whether the type is opaque: its name is exported but its definition (a
+    /// union's constructors / an alias's underlying type) is not, so other files
+    /// can name it but cannot construct, deconstruct, or see through it. Only set
+    /// on `public` types; file-scoped (transparent within its declaring file).
+    pub opaque: bool,
     /// The declared type parameters, in order (e.g. `'a 'b`).
     pub params: Vec<Symbol>,
     /// The declaring item (to fetch field types / alias bodies from the AST).
@@ -163,8 +168,11 @@ fn collect_types(
 ) {
     for &id in items {
         match &module.items[id.index()].kind {
-            ItemKind::Type { visibility, name, params, def } => {
+            ItemKind::Type { visibility, opaque, name, params, def } => {
                 let qual = crate::qualify(scope, *name);
+                // An opaque type's constructors are not exported, so they are
+                // module-private regardless of the type's (public) visibility.
+                let ctor_visibility = if *opaque { Visibility::Private } else { *visibility };
                 let (is_alias, ctor_names) = match def {
                     TypeDef::Alias(_) => (true, Vec::new()),
                     TypeDef::Union(variants) => {
@@ -179,7 +187,7 @@ fn collect_types(
                                 tag,
                                 arity: variant.fields.len(),
                                 variant_index,
-                                visibility: *visibility,
+                                visibility: ctor_visibility,
                             });
                         }
                         (false, names)
@@ -188,6 +196,7 @@ fn collect_types(
                 decls.types.entry(qual).or_insert(TypeDeclInfo {
                     name: qual,
                     visibility: *visibility,
+                    opaque: *opaque,
                     params: params.clone(),
                     item: id,
                     is_alias,

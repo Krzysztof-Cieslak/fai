@@ -1,0 +1,36 @@
+module Opaque
+
+// `opaque` exports a type's name but not its representation: other files may name
+// `Counter` and `Stats` and use the operations below, but cannot see the union's
+// constructor or the record's fields. Opacity is file-scoped, so within this file
+// the types stay transparent (the operations build and read them directly).
+public opaque type Counter =
+  | Counter Int
+
+public opaque type Stats = { hits : Int, misses : Int }
+
+/// A counter at zero.
+public zero : Counter
+let zero = Counter 0
+
+/// Increment a counter.
+public bump : Counter -> Counter
+let bump c =
+  match c with
+  | Counter n -> Counter (n + 1)
+
+/// Read a counter's value.
+public value : Counter -> Int
+let value c =
+  match c with
+  | Counter n -> n
+example: value (bump (bump zero)) = 2
+
+/// Build a stats record.
+public stats : Int -> Int -> Stats
+let stats hits misses = { hits = hits, misses = misses }
+
+/// The total number of events recorded.
+public total : Stats -> Int
+let total s = s.hits + s.misses
+example: total (stats 3 4) = 7

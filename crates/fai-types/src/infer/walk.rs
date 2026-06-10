@@ -10,7 +10,9 @@ use std::rc::Rc;
 
 use fai_db::{Db, SourceFile, emit};
 use fai_diagnostics::Diagnostic;
-use fai_resolve::{CtorRef, DefId, InterfaceRef, LocalId, Res, ResolvedBodies, interface_decls};
+use fai_resolve::{
+    CtorRef, DefId, InterfaceRef, LocalId, Res, ResolvedBodies, interface_decls, type_decls,
+};
 use fai_span::Span;
 use fai_syntax::Symbol;
 use fai_syntax::ast::{
@@ -22,9 +24,22 @@ use crate::infer::ctx::{Constraint, InferCtx, RowTail, SolveRow, SolveTy, UnifyR
 use crate::lower::{build_interface_method_scheme, interface_param_count, resolve_interface};
 use crate::ty::Scheme;
 use crate::{
-    EQUALITY_ON_FUNCTION, INSTANCE_METHOD_SET, NOT_AN_INTERFACE, OCCURS_CHECK, SEALED_INTERFACE,
-    TYPE_MISMATCH, UNKNOWN_METHOD,
+    EQUALITY_ON_FUNCTION, INSTANCE_METHOD_SET, NOT_AN_INTERFACE, OCCURS_CHECK, OPAQUE_ACCESS,
+    SEALED_INTERFACE, TYPE_MISMATCH, UNKNOWN_METHOD,
 };
+
+/// If `ty`'s head is an opaque type (possibly applied to arguments), its name.
+/// Shared by the field-access/record checks here and the body-vs-signature check
+/// in [`crate::infer`], so both report an opaque type used structurally.
+pub(crate) fn opaque_adt_head_name(db: &dyn Db, ty: &crate::ty::Ty) -> Option<Symbol> {
+    let mut head = ty;
+    while let crate::ty::Ty::App(f, _) = head {
+        head = f;
+    }
+    let crate::ty::Ty::Adt(adt) = head else { return None };
+    let file = db.source_file(adt.file)?;
+    type_decls(db, file).type_named(adt.name).filter(|info| info.opaque).map(|_| adt.name)
+}
 
 /// Supplies the scheme for a referenced definition or builtin, and signals
 /// whether a same-SCC definition should be treated monomorphically.
@@ -143,11 +158,43 @@ impl<E: Env> Walker<'_, E> {
                 );
             }
             UnifyResult::Mismatch | UnifyResult::BadConstraint => {
-                let a_ty = crate::ty::render(&self.cx.reify(a), &crate::ty::VarNames::new());
-                let b_ty = crate::ty::render(&self.cx.reify(b), &crate::ty::VarNames::new());
+                let a_re = self.cx.reify(a);
+                let b_re = self.cx.reify(b);
+                // Using an opaque type's value as a structural record — a field
+                // access, `{ … }` construction, or `{ r with … }` update — surfaces
+                // here as a record-shape-vs-opaque-`Adt` mismatch. Report it as
+                // such rather than as a bare type mismatch.
+                let opaque = match (&a_re, &b_re) {
+                    (crate::ty::Ty::Record(_), other) | (other, crate::ty::Ty::Record(_)) => {
+                        self.opaque_adt_name(other)
+                    }
+                    _ => None,
+                };
+                if let Some(name) = opaque {
+                    emit(
+                        self.db,
+                        Diagnostic::error(
+                            OPAQUE_ACCESS,
+                            format!(
+                                "the type `{name}` is opaque; its fields are not accessible \
+                                 from this file"
+                            ),
+                            self.span(range),
+                        ),
+                    );
+                    return;
+                }
+                let a_ty = crate::ty::render(&a_re, &crate::ty::VarNames::new());
+                let b_ty = crate::ty::render(&b_re, &crate::ty::VarNames::new());
                 self.mismatch(range, format!("type mismatch in {what}: `{a_ty}` vs `{b_ty}`"));
             }
         }
+    }
+
+    /// If `ty`'s head is an opaque type (possibly applied to arguments), its name.
+    /// Used to report an attempt to treat an opaque type as a structural record.
+    fn opaque_adt_name(&self, ty: &crate::ty::Ty) -> Option<Symbol> {
+        opaque_adt_head_name(self.db, ty)
     }
 
     /// Binds a parameter pattern to fresh local types and returns its type.

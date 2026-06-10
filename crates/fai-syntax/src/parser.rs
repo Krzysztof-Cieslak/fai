@@ -325,9 +325,27 @@ impl Parser<'_> {
             TokenKind::LParen if self.at_op_name() => self.parse_signature(Visibility::Private),
             TokenKind::Example => self.parse_example(),
             TokenKind::Forall => self.parse_forall(),
-            TokenKind::Type => self.parse_type_decl(Visibility::Private),
+            TokenKind::Type => self.parse_type_decl(Visibility::Private, false),
             TokenKind::Interface => self.parse_interface_decl(Visibility::Private),
             TokenKind::Module => self.parse_nested_module(),
+            TokenKind::Opaque => {
+                // `opaque` only marks a `public` type; written alone it is an
+                // error. Recover by parsing it as `public opaque`, the intent.
+                let span = self.cur().range;
+                self.error(
+                    SYNTAX_ERROR,
+                    span,
+                    "an `opaque` type must be `public`; write `public opaque type`",
+                );
+                self.bump(); // `opaque`
+                if self.at(TokenKind::Type) {
+                    self.parse_type_decl(Visibility::Public, true)
+                } else {
+                    let span = self.cur().range;
+                    self.error(SYNTAX_ERROR, span, "expected `type` after `opaque`");
+                    ItemKind::Error
+                }
+            }
             _ => {
                 let span = self.cur().range;
                 self.error(SYNTAX_ERROR, span, "expected a declaration");
@@ -344,7 +362,17 @@ impl Parser<'_> {
             TokenKind::Let => self.parse_binding(Visibility::Public),
             TokenKind::LowerIdent => self.parse_signature(Visibility::Public),
             TokenKind::LParen if self.at_op_name() => self.parse_signature(Visibility::Public),
-            TokenKind::Type => self.parse_type_decl(Visibility::Public),
+            TokenKind::Type => self.parse_type_decl(Visibility::Public, false),
+            TokenKind::Opaque => {
+                self.bump(); // `opaque`
+                if self.at(TokenKind::Type) {
+                    self.parse_type_decl(Visibility::Public, true)
+                } else {
+                    let span = self.cur().range;
+                    self.error(SYNTAX_ERROR, span, "expected `type` after `public opaque`");
+                    ItemKind::Error
+                }
+            }
             TokenKind::Interface => self.parse_interface_decl(Visibility::Public),
             TokenKind::Module => {
                 let span = self.cur().range;
@@ -362,7 +390,7 @@ impl Parser<'_> {
                 self.error(
                     SYNTAX_ERROR,
                     span,
-                    "expected `let`, a signature, `type`, or `interface` after `public`",
+                    "expected `let`, a signature, `type`, `opaque type`, or `interface` after `public`",
                 );
                 ItemKind::Error
             }
@@ -475,7 +503,7 @@ impl Parser<'_> {
         ItemKind::Forall { binders, body }
     }
 
-    fn parse_type_decl(&mut self, visibility: Visibility) -> ItemKind {
+    fn parse_type_decl(&mut self, visibility: Visibility, opaque: bool) -> ItemKind {
         self.bump(); // `type`
         let name = if self.at(TokenKind::UpperIdent) {
             Some(self.bump_symbol())
@@ -517,7 +545,7 @@ impl Parser<'_> {
             self.expect(TokenKind::LayoutClose, "the end of the type declaration");
         }
         match name {
-            Some(name) => ItemKind::Type { visibility, name, params, def },
+            Some(name) => ItemKind::Type { visibility, opaque, name, params, def },
             None => ItemKind::Error,
         }
     }
@@ -1566,8 +1594,9 @@ mod tests {
                 dump_pats(m, params),
                 dump_expr(m, *body)
             ),
-            ItemKind::Type { visibility, name, params, def } => {
+            ItemKind::Type { visibility, opaque, name, params, def } => {
                 let ps = params.iter().map(|p| p.as_str()).collect::<Vec<_>>().join(" ");
+                let op = if *opaque { " opaque" } else { "" };
                 let body = match def {
                     crate::ast::TypeDef::Alias(ty) => format!("= {}", dump_type(m, *ty)),
                     crate::ast::TypeDef::Union(variants) => {
@@ -1587,7 +1616,7 @@ mod tests {
                         format!("= {vs}")
                     }
                 };
-                format!("(type {visibility:?} {} [{}] {})", name.as_str(), ps, body)
+                format!("(type {visibility:?}{op} {} [{}] {})", name.as_str(), ps, body)
             }
             ItemKind::Interface { visibility, name, params, methods } => {
                 let ps = params.iter().map(|p| p.as_str()).collect::<Vec<_>>().join(" ");
@@ -2087,6 +2116,37 @@ mod tests {
             with_fields.lines().nth(1).unwrap(),
             "(type Private Shape [] = (| Circle [(tcon Float)]) (| Rect [(tcon Float) (tcon Float)]))"
         );
+    }
+
+    #[test]
+    fn public_opaque_union_declaration_shape() {
+        let parsed = dump(indoc! {r#"
+            module M
+            public opaque type T =
+              | MkT Int"#});
+        assert_eq!(
+            parsed.lines().nth(1).unwrap(),
+            "(type Public opaque T [] = (| MkT [(tcon Int)]))"
+        );
+        assert!(!parsed.contains("diag"), "clean parse: {parsed}");
+    }
+
+    #[test]
+    fn public_opaque_alias_declaration_shape() {
+        let parsed = dump("module M\npublic opaque type Id = Int");
+        assert_eq!(parsed.lines().nth(1).unwrap(), "(type Public opaque Id [] = (tcon Int))");
+    }
+
+    #[test]
+    fn opaque_without_public_is_an_error_and_recovers_as_public_opaque() {
+        let parsed = dump(indoc! {r#"
+            module M
+            opaque type T =
+              | MkT Int"#});
+        // Recovered as the intended `public opaque`, so downstream sees it.
+        assert!(parsed.contains("(type Public opaque T [] = (| MkT [(tcon Int)]))"), "{parsed}");
+        // ...but the misuse is still reported.
+        assert!(parsed.contains("diag"), "expected a diagnostic: {parsed}");
     }
 
     #[test]

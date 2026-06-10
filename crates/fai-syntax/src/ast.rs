@@ -135,8 +135,14 @@ pub enum ItemKind {
     Signature { visibility: Visibility, name: Symbol, ty: TypeId },
     /// A value binding: `[public] let name params… = body`.
     Binding { visibility: Visibility, name: Symbol, params: Vec<PatId>, body: ExprId },
-    /// A type declaration: `[public] type Name 'p… = <definition>`.
-    Type { visibility: Visibility, name: Symbol, params: Vec<Symbol>, def: TypeDef },
+    /// A type declaration: `[public] [opaque] type Name 'p… = <definition>`.
+    ///
+    /// `opaque` exports the type's name but not its definition (a union's
+    /// constructors / an alias's underlying type), so other files may name the
+    /// type but cannot construct, deconstruct, or see through it. It is only
+    /// meaningful on a `public` type (the parser rejects `opaque` otherwise) and
+    /// is file-scoped: the type stays transparent within its declaring file.
+    Type { visibility: Visibility, opaque: bool, name: Symbol, params: Vec<Symbol>, def: TypeDef },
     /// An interface declaration: `[public] interface Name 'p… = <methods>`.
     Interface { visibility: Visibility, name: Symbol, params: Vec<Symbol>, methods: Vec<MethodSig> },
     /// A nested module: `module Name = <body>`. The body lists its child items by

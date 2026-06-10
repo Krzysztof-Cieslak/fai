@@ -31,8 +31,9 @@ use crate::module::{
     module_file, module_interface, prelude_exports,
 };
 use crate::{
-    INTRINSIC_OUTSIDE_STD, MODULE_AS_VALUE, PRIVATE_REFERENCE, PRIVATE_TYPE_IN_PUBLIC_SIGNATURE,
-    SHADOWS_PRELUDE, UNBOUND_CONSTRUCTOR, UNBOUND_NAME, UNRESOLVED_MODULE,
+    INTRINSIC_OUTSIDE_STD, MODULE_AS_VALUE, OPAQUE_CONSTRUCTOR, PRIVATE_REFERENCE,
+    PRIVATE_TYPE_IN_PUBLIC_SIGNATURE, SHADOWS_PRELUDE, UNBOUND_CONSTRUCTOR, UNBOUND_NAME,
+    UNRESOLVED_MODULE,
 };
 
 /// The resolved references of one file's bodies.
@@ -186,16 +187,20 @@ fn emit_privacy_leaks(db: &dyn Db, file: SourceFile, module: &Module, source: So
             ItemKind::Signature { visibility: Visibility::Public, ty, .. } => {
                 check(module, *ty, &mut refs);
             }
-            ItemKind::Type { visibility: Visibility::Public, def, .. } => match def {
-                TypeDef::Alias(ty) => check(module, *ty, &mut refs),
-                TypeDef::Union(variants) => {
-                    for variant in variants {
-                        for &field in &variant.fields {
-                            check(module, field, &mut refs);
+            // An opaque type's definition (alias body / constructor fields) is not
+            // cross-file-visible, so it cannot leak a private type — skip it.
+            ItemKind::Type { visibility: Visibility::Public, opaque: false, def, .. } => {
+                match def {
+                    TypeDef::Alias(ty) => check(module, *ty, &mut refs),
+                    TypeDef::Union(variants) => {
+                        for variant in variants {
+                            for &field in &variant.fields {
+                                check(module, field, &mut refs);
+                            }
                         }
                     }
                 }
-            },
+            }
             ItemKind::Interface { visibility: Visibility::Public, methods, .. } => {
                 for m in methods {
                     check(module, m.ty, &mut refs);
@@ -873,15 +878,30 @@ impl Resolver<'_> {
         if module_interface(self.db, target).has_ctor(member_qual) {
             return (Res::Ctor(CtorRef::new(target_source, member_qual)), consumed);
         }
-        if type_decls(self.db, target).ctor(member_qual).is_some() {
-            emit(
-                self.db,
+        let target_decls = type_decls(self.db, target);
+        if let Some(ctor) = target_decls.ctor(member_qual) {
+            // The constructor exists but is not exported. Distinguish an opaque
+            // type (name exported, constructors hidden) from a plain private type.
+            let opaque = target_decls.type_named(ctor.adt).is_some_and(|t| t.opaque);
+            let diagnostic = if opaque {
+                Diagnostic::error(
+                    OPAQUE_CONSTRUCTOR,
+                    format!("`{member}` is a constructor of the opaque type `{}`", ctor.adt),
+                    self.span(span),
+                )
+                .with_help(format!(
+                    "the type is opaque outside its module; build and match values through \
+                     `{}`'s operations instead",
+                    segments[0]
+                ))
+            } else {
                 Diagnostic::error(
                     PRIVATE_REFERENCE,
                     format!("constructor `{member}` is private to module `{}`", segments[0]),
                     self.span(span),
-                ),
-            );
+                )
+            };
+            emit(self.db, diagnostic);
             return (Res::Error, consumed);
         }
         (self.emit_no_member_named(segments[0], member, span), consumed)

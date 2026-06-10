@@ -1,8 +1,13 @@
 module Set
 
 // An ordered set keyed by any comparable type, backed by a binary search tree.
-// The `Set` type and its constructors are declared in `Prelude`; build and query
-// sets through these qualified operations (`Set.insert`, `Set.member`, …).
+// The type is opaque: its node constructors are private to this module, so sets
+// are built and queried only through these operations. `Prelude` re-exports the
+// name `Set` so it stays usable unqualified.
+public opaque type Set 'a =
+  | SetEmpty
+  | SetNode (Set 'a) 'a (Set 'a)
+
 /// The empty set.
 public empty : Set 'a
 let empty = SetEmpty
