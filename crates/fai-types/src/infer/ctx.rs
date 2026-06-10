@@ -11,7 +11,9 @@ use std::rc::Rc;
 use fai_resolve::{AdtRef, InterfaceRef};
 use fai_syntax::Symbol;
 
-use crate::ty::{Con, RecordRow, RowEnd, RowVarId, Scheme, Ty, TyVarId};
+use crate::ty::{
+    Con, EffEnd, EffRowVarId, EffectRow, RecordRow, RowEnd, RowVarId, Scheme, Ty, TyVarId,
+};
 
 /// A constraint a type variable must satisfy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +65,41 @@ enum RowState {
     Bound(SolveRow),
 }
 
+/// A solver effect row: the capability atoms a function uses plus a tail. Atoms
+/// are a *set* (unlike record fields they carry no payload and never duplicate).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SolveEffect {
+    /// The effect atoms present (deduplicated on expansion).
+    pub atoms: Vec<InterfaceRef>,
+    /// The row's tail.
+    pub tail: EffTail,
+}
+
+impl SolveEffect {
+    /// The pure (empty, closed) effect.
+    pub fn pure() -> SolveEffect {
+        SolveEffect { atoms: Vec::new(), tail: EffTail::Closed }
+    }
+}
+
+/// The tail of a solver effect row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EffTail {
+    /// Exactly the listed atoms.
+    Closed,
+    /// The listed atoms plus an open effect-row variable.
+    Open(EffRowVarId),
+}
+
+/// The binding of a solver effect-row variable.
+#[derive(Debug, Clone)]
+enum EffState {
+    /// Unbound.
+    Free,
+    /// Bound to extra atoms plus a further tail.
+    Bound(SolveEffect),
+}
+
 /// A solver-level type: like [`Ty`] but variables are solver ids and there is no
 /// `Arc` sharing requirement (it is transient).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,8 +115,9 @@ pub enum SolveTy {
     /// Application. Children are `Rc`-shared so resolving/cloning a representative
     /// is O(1) (the deep clone otherwise dominates unification of large types).
     App(Rc<SolveTy>, Rc<SolveTy>),
-    /// Function type. Children are `Rc`-shared (see [`SolveTy::App`]).
-    Arrow(Rc<SolveTy>, Rc<SolveTy>),
+    /// Function type `from -> to / effect`. Children are `Rc`-shared (see
+    /// [`SolveTy::App`]); the effect row records the capabilities applying it uses.
+    Arrow(Rc<SolveTy>, Rc<SolveTy>, SolveEffect),
     /// Tuple type.
     Tuple(Vec<SolveTy>),
     /// A structural record.
@@ -103,9 +141,14 @@ impl SolveTy {
     pub fn string() -> SolveTy {
         SolveTy::Con(Con::String)
     }
-    /// A function `from -> to`.
+    /// A pure function `from -> to` (empty effect).
     pub fn arrow(from: SolveTy, to: SolveTy) -> SolveTy {
-        SolveTy::Arrow(Rc::new(from), Rc::new(to))
+        SolveTy::Arrow(Rc::new(from), Rc::new(to), SolveEffect::pure())
+    }
+
+    /// A function `from -> to / effect`.
+    pub fn arrow_eff(from: SolveTy, to: SolveTy, effect: SolveEffect) -> SolveTy {
+        SolveTy::Arrow(Rc::new(from), Rc::new(to), effect)
     }
     /// A `List t`.
     pub fn list(elem: SolveTy) -> SolveTy {
@@ -156,6 +199,8 @@ enum Repr<'a> {
 pub struct InferCtx {
     vars: Vec<VarState>,
     rows: Vec<RowState>,
+    /// The parallel union-find for effect-row variables (distinct from `rows`).
+    effects: Vec<EffState>,
     /// The current binding depth, bumped around a generalizable `let` right-hand
     /// side. A variable generalizes only if its level exceeds the enclosing one.
     current_level: u32,
@@ -171,7 +216,7 @@ impl InferCtx {
     /// Creates an empty context.
     #[must_use]
     pub fn new() -> Self {
-        Self { vars: Vec::new(), rows: Vec::new(), current_level: 0 }
+        Self { vars: Vec::new(), rows: Vec::new(), effects: Vec::new(), current_level: 0 }
     }
 
     /// Enters a deeper binding level (around a generalizable `let` right-hand
@@ -346,6 +391,96 @@ impl InferCtx {
         }
     }
 
+    /// Allocates a fresh effect-row variable.
+    pub fn fresh_effect(&mut self) -> EffRowVarId {
+        let id = EffRowVarId(u32::try_from(self.effects.len()).expect("effect var overflow"));
+        self.effects.push(EffState::Free);
+        id
+    }
+
+    /// A fresh open effect `{ | ε }` with a fresh tail variable (no atoms).
+    pub fn fresh_open_effect(&mut self) -> SolveEffect {
+        let tail = self.fresh_effect();
+        SolveEffect { atoms: Vec::new(), tail: EffTail::Open(tail) }
+    }
+
+    /// Flattens an effect row, following bound tail variables and merging atoms
+    /// (deduplicated). The result's tail is `Closed` or `Open` of a *free* var.
+    fn expand_effect(&self, eff: &SolveEffect) -> SolveEffect {
+        let mut atoms = eff.atoms.clone();
+        let mut tail = eff.tail.clone();
+        while let EffTail::Open(v) = tail {
+            match &self.effects[v.0 as usize] {
+                EffState::Bound(more) => {
+                    atoms.extend(more.atoms.iter().copied());
+                    tail = more.tail.clone();
+                }
+                EffState::Free => break,
+            }
+        }
+        dedup_atoms(&mut atoms);
+        SolveEffect { atoms, tail }
+    }
+
+    /// Binds a free effect-row variable to `eff`.
+    fn bind_effect(&mut self, v: EffRowVarId, eff: SolveEffect) -> UnifyResult {
+        self.effects[v.0 as usize] = EffState::Bound(eff);
+        UnifyResult::Ok
+    }
+
+    /// Unifies two effect rows by row unification (atoms as a set; no payloads).
+    ///
+    /// Phase note: this is plain unification. Use-site *subsumption* (the bipolar
+    /// effect bounds) layers on top of this base when effect inference lands; until
+    /// then every arrow carries the pure effect, so this only ever sees `{} ~ {}`.
+    fn unify_effects(&mut self, e1: &SolveEffect, e2: &SolveEffect) -> UnifyResult {
+        let e1 = self.expand_effect(e1);
+        let e2 = self.expand_effect(e2);
+
+        let only1: Vec<InterfaceRef> =
+            e1.atoms.iter().filter(|a| !e2.atoms.contains(a)).copied().collect();
+        let only2: Vec<InterfaceRef> =
+            e2.atoms.iter().filter(|a| !e1.atoms.contains(a)).copied().collect();
+
+        match (e1.tail, e2.tail) {
+            (EffTail::Closed, EffTail::Closed) => {
+                if only1.is_empty() && only2.is_empty() {
+                    UnifyResult::Ok
+                } else {
+                    UnifyResult::Mismatch
+                }
+            }
+            (EffTail::Closed, EffTail::Open(v2)) => {
+                if !only2.is_empty() {
+                    return UnifyResult::Mismatch;
+                }
+                self.bind_effect(v2, SolveEffect { atoms: only1, tail: EffTail::Closed })
+            }
+            (EffTail::Open(v1), EffTail::Closed) => {
+                if !only1.is_empty() {
+                    return UnifyResult::Mismatch;
+                }
+                self.bind_effect(v1, SolveEffect { atoms: only2, tail: EffTail::Closed })
+            }
+            (EffTail::Open(v1), EffTail::Open(v2)) => {
+                if v1 == v2 {
+                    return if only1.is_empty() && only2.is_empty() {
+                        UnifyResult::Ok
+                    } else {
+                        UnifyResult::Mismatch
+                    };
+                }
+                let fresh = self.fresh_effect();
+                match self.bind_effect(v1, SolveEffect { atoms: only2, tail: EffTail::Open(fresh) })
+                {
+                    UnifyResult::Ok => {}
+                    other => return other,
+                }
+                self.bind_effect(v2, SolveEffect { atoms: only1, tail: EffTail::Open(fresh) })
+            }
+        }
+    }
+
     /// Allocates a fresh, unconstrained variable.
     pub fn fresh(&mut self) -> SolveTy {
         self.fresh_constrained(None)
@@ -450,7 +585,13 @@ impl InferCtx {
                     }
                 }
             },
-            SolveTy::App(f, a) | SolveTy::Arrow(f, a) => {
+            SolveTy::App(f, a) => {
+                self.collect_free_vars(f, out, visited);
+                self.collect_free_vars(a, out, visited);
+            }
+            // An effect row carries no *type* variables (its atoms are interface
+            // refs, its tail an effect-row var), so only the operands are walked.
+            SolveTy::Arrow(f, a, _) => {
                 self.collect_free_vars(f, out, visited);
                 self.collect_free_vars(a, out, visited);
             }
@@ -493,10 +634,16 @@ impl InferCtx {
                 UnifyResult::Ok => self.unify(a1, a2),
                 other => other,
             },
-            (SolveTy::Arrow(f1, t1), SolveTy::Arrow(f2, t2)) => match self.unify(f1, f2) {
-                UnifyResult::Ok => self.unify(t1, t2),
-                other => other,
-            },
+            (SolveTy::Arrow(f1, t1, e1), SolveTy::Arrow(f2, t2, e2)) => {
+                let (e1, e2) = (e1.clone(), e2.clone());
+                match self.unify(f1, f2) {
+                    UnifyResult::Ok => match self.unify(t1, t2) {
+                        UnifyResult::Ok => self.unify_effects(&e1, &e2),
+                        other => other,
+                    },
+                    other => other,
+                }
+            }
             (SolveTy::Tuple(xs), SolveTy::Tuple(ys)) if xs.len() == ys.len() => {
                 for (x, y) in xs.iter().zip(ys) {
                     match self.unify(x, y) {
@@ -569,7 +716,7 @@ impl InferCtx {
     /// interface anywhere in it. Free variables and `Error` are deferred (`true`).
     fn is_comparable(&self, ty: &SolveTy) -> bool {
         match self.resolve_shallow(ty) {
-            SolveTy::Arrow(_, _) | SolveTy::Interface(_) => false,
+            SolveTy::Arrow(..) | SolveTy::Interface(_) => false,
             SolveTy::Var(_) | SolveTy::Error => true,
             SolveTy::Con(_) | SolveTy::Adt(_) | SolveTy::Unit => true,
             SolveTy::App(f, a) => self.is_comparable(&f) && self.is_comparable(&a),
@@ -630,7 +777,11 @@ impl InferCtx {
                     }
                 }
             }
-            SolveTy::App(f, a) | SolveTy::Arrow(f, a) => {
+            SolveTy::App(f, a) => {
+                self.occurs_and_lower(target, lower_to, f, visited)
+                    || self.occurs_and_lower(target, lower_to, a, visited)
+            }
+            SolveTy::Arrow(f, a, _) => {
                 self.occurs_and_lower(target, lower_to, f, visited)
                     || self.occurs_and_lower(target, lower_to, a, visited)
             }
@@ -673,7 +824,11 @@ impl InferCtx {
             SolveTy::Var(_) => {
                 self.default_numeric(ty);
             }
-            SolveTy::App(f, a) | SolveTy::Arrow(f, a) => {
+            SolveTy::App(f, a) => {
+                self.default_numerics_deep(&f);
+                self.default_numerics_deep(&a);
+            }
+            SolveTy::Arrow(f, a, _) => {
                 self.default_numerics_deep(&f);
                 self.default_numerics_deep(&a);
             }
@@ -705,10 +860,13 @@ impl InferCtx {
 
     /// Reifies into a [`Ty`] and reports the free type and row variables it
     /// contains (for generalization), each renumbered compactly.
-    pub fn reify_with_vars(&self, ty: &SolveTy) -> (Ty, Vec<TyVarId>, Vec<RowVarId>) {
+    pub fn reify_with_vars(
+        &self,
+        ty: &SolveTy,
+    ) -> (Ty, Vec<TyVarId>, Vec<RowVarId>, Vec<EffRowVarId>) {
         let mut renumber = Renumber::default();
         let reified = self.reify_inner(ty, &mut renumber);
-        (reified, renumber.order, renumber.row_order)
+        (reified, renumber.order, renumber.row_order, renumber.eff_order)
     }
 
     /// Reifies several solver types against a *shared* renumbering, so a variable
@@ -731,9 +889,11 @@ impl InferCtx {
                 std::sync::Arc::new(self.reify_inner(&f, renumber)),
                 std::sync::Arc::new(self.reify_inner(&a, renumber)),
             ),
-            SolveTy::Arrow(f, t) => {
-                Ty::arrow(self.reify_inner(&f, renumber), self.reify_inner(&t, renumber))
-            }
+            SolveTy::Arrow(f, t, e) => Ty::arrow_eff(
+                self.reify_inner(&f, renumber),
+                self.reify_inner(&t, renumber),
+                self.reify_effect(&e, renumber),
+            ),
             SolveTy::Tuple(elems) => {
                 Ty::Tuple(elems.iter().map(|e| self.reify_inner(e, renumber)).collect())
             }
@@ -749,6 +909,20 @@ impl InferCtx {
                 Ty::Record(RecordRow { fields, tail })
             }
         }
+    }
+
+    /// Reifies a solver effect row into an immutable [`EffectRow`], its atoms
+    /// sorted by qualified name (canonical) and its free tail var renumbered.
+    fn reify_effect(&self, eff: &SolveEffect, renumber: &mut Renumber) -> EffectRow {
+        let eff = self.expand_effect(eff);
+        let mut labels = eff.atoms;
+        labels.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+        labels.dedup();
+        let tail = match eff.tail {
+            EffTail::Closed => EffEnd::Closed,
+            EffTail::Open(v) => EffEnd::Open(renumber.map_eff(v)),
+        };
+        EffectRow { labels, tail }
     }
 
     /// A fresh solver variable's id.
@@ -828,8 +1002,11 @@ impl InferCtx {
                 Rc::new(self.instantiate_solve(f, map)),
                 Rc::new(self.instantiate_solve(a, map)),
             ),
-            Ty::Arrow(f, t) => {
-                SolveTy::arrow(self.instantiate_solve(f, map), self.instantiate_solve(t, map))
+            Ty::Arrow(f, t, e) => {
+                let from = self.instantiate_solve(f, map);
+                let to = self.instantiate_solve(t, map);
+                let effect = self.instantiate_effect(e, map);
+                SolveTy::arrow_eff(from, to, effect)
             }
             Ty::Tuple(elems) => {
                 SolveTy::Tuple(elems.iter().map(|e| self.instantiate_solve(e, map)).collect())
@@ -855,6 +1032,26 @@ impl InferCtx {
                 SolveTy::Record(SolveRow { fields, tail })
             }
         }
+    }
+
+    /// Builds a solver effect row from a reified one, mapping a quantified effect
+    /// tail var to a fresh solver effect var (shared via `map`).
+    fn instantiate_effect(&mut self, eff: &EffectRow, map: &mut InstMap) -> SolveEffect {
+        let tail = match eff.tail {
+            EffEnd::Closed => EffTail::Closed,
+            EffEnd::Open(v) => {
+                let fresh = match map.effects.get(&v) {
+                    Some(f) => *f,
+                    None => {
+                        let f = self.fresh_effect();
+                        map.effects.insert(v, f);
+                        f
+                    }
+                };
+                EffTail::Open(fresh)
+            }
+        };
+        SolveEffect { atoms: eff.labels.clone(), tail }
     }
 
     /// Whether each id in `vars` still resolves to a *distinct* free variable.
@@ -884,6 +1081,8 @@ struct Renumber {
     order: Vec<TyVarId>,
     row_map: rustc_hash::FxHashMap<RowVarId, RowVarId>,
     row_order: Vec<RowVarId>,
+    eff_map: rustc_hash::FxHashMap<EffRowVarId, EffRowVarId>,
+    eff_order: Vec<EffRowVarId>,
 }
 
 impl Renumber {
@@ -906,6 +1105,16 @@ impl Renumber {
         self.row_order.push(next);
         next
     }
+
+    fn map_eff(&mut self, id: EffRowVarId) -> EffRowVarId {
+        if let Some(m) = self.eff_map.get(&id) {
+            return *m;
+        }
+        let next = EffRowVarId(u32::try_from(self.eff_order.len()).expect("effect var overflow"));
+        self.eff_map.insert(id, next);
+        self.eff_order.push(next);
+        next
+    }
 }
 
 /// The mappings applied when instantiating a scheme's quantified variables.
@@ -913,6 +1122,13 @@ impl Renumber {
 struct InstMap {
     types: rustc_hash::FxHashMap<TyVarId, TyVarId>,
     rows: rustc_hash::FxHashMap<RowVarId, RowVarId>,
+    effects: rustc_hash::FxHashMap<EffRowVarId, EffRowVarId>,
+}
+
+/// Removes duplicate effect atoms in place, preserving first-appearance order.
+fn dedup_atoms(atoms: &mut Vec<InterfaceRef>) {
+    let mut seen = rustc_hash::FxHashSet::default();
+    atoms.retain(|a| seen.insert(*a));
 }
 
 /// Picks the stronger of two constraints when a variable accrues both. Ord

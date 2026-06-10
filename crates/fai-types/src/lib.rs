@@ -37,8 +37,8 @@ pub use query::{
     declared_or_inferred_scheme, def_local_types, def_type, infer_scc_query,
 };
 pub use ty::{
-    Con, RecordRow, RowEnd, RowVarId, Scheme, Ty, TyVarId, VarNames, render, render_canonical,
-    render_scheme,
+    Con, EffEnd, EffRowVarId, EffectRow, RecordRow, RowEnd, RowVarId, Scheme, Ty, TyVarId,
+    VarNames, render, render_canonical, render_scheme,
 };
 
 use fai_diagnostics::{CodeInfo, DiagnosticCode, Severity};

@@ -238,7 +238,7 @@ fn classify_res(db: &dyn Db, res: Res) -> Option<SemKind> {
     match res {
         Res::Def(d) => {
             let f = db.source_file(d.file)?;
-            let is_fn = matches!(def_type(db, f, d.name).ty, Ty::Arrow(_, _));
+            let is_fn = matches!(def_type(db, f, d.name).ty, Ty::Arrow(..));
             Some(if is_fn { SemKind::Function } else { SemKind::Variable })
         }
         Res::Ctor(_) => Some(SemKind::EnumMember),

@@ -80,7 +80,7 @@ impl FnAbi {
         let mut ty = &scheme.ty;
         for _ in 0..source_params {
             match ty {
-                Ty::Arrow(from, to) => {
+                Ty::Arrow(from, to, _) => {
                     float_params.push(matches!(from.as_ref(), Ty::Con(Con::Float)));
                     ty = to;
                 }

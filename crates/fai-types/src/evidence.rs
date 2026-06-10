@@ -76,7 +76,7 @@ fn collect(ty: &Ty, order: &mut Vec<RowVarId>, lacks: &mut FxHashMap<RowVarId, V
                 collect(t, order, lacks);
             }
         }
-        Ty::App(f, a) | Ty::Arrow(f, a) => {
+        Ty::App(f, a) | Ty::Arrow(f, a, _) => {
             collect(f, order, lacks);
             collect(a, order, lacks);
         }

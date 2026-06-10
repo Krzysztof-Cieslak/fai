@@ -54,7 +54,7 @@ fn symbol_ref(
     let span = module.items[def.binding.index()].span;
     let module_name = module_label(db, file);
     let scheme = fai_types::def_type(db, file, name);
-    let kind = if matches!(scheme.ty, fai_types::Ty::Arrow(_, _)) {
+    let kind = if matches!(scheme.ty, fai_types::Ty::Arrow(..)) {
         SymbolKind::Function
     } else {
         SymbolKind::Value
@@ -543,7 +543,7 @@ fn head_with_trailing_space(module: &Module, src: &str, offset: u32) -> Option<E
 fn decompose_arrow(ty: &Ty) -> (Vec<Ty>, &Ty) {
     let mut params = Vec::new();
     let mut cur = ty;
-    while let Ty::Arrow(from, to) = cur {
+    while let Ty::Arrow(from, to, _) = cur {
         params.push((**from).clone());
         cur = to;
     }
@@ -554,7 +554,7 @@ fn decompose_arrow(ty: &Ty) -> (Vec<Ty>, &Ty) {
 /// signature reads unambiguously.
 fn render_param(ty: &Ty) -> String {
     let rendered = fai_types::render_canonical(ty);
-    if matches!(ty, Ty::Arrow(_, _)) { format!("({rendered})") } else { rendered }
+    if matches!(ty, Ty::Arrow(..)) { format!("({rendered})") } else { rendered }
 }
 
 // --- find-references at a position (LSP `textDocument/references`) ------------
@@ -1268,7 +1268,7 @@ pub struct CapsResult {
 /// `(name, interface)`.
 fn param_caps(ty: &fai_types::Ty, out: &mut Vec<(String, String)>) {
     let mut cur = ty;
-    while let fai_types::Ty::Arrow(from, to) = cur {
+    while let fai_types::Ty::Arrow(from, to, _) = cur {
         match from.as_ref() {
             fai_types::Ty::Interface(iref) => {
                 out.push((iref.name.as_str().to_owned(), iref.name.as_str().to_owned()));
@@ -1444,7 +1444,9 @@ fn shape_from_ty(ty: &fai_types::Ty, vars: &mut FxHashMap<u32, usize>) -> Shape 
         Ty::App(f, a) => {
             Shape::App(Box::new(shape_from_ty(f, vars)), Box::new(shape_from_ty(a, vars)))
         }
-        Ty::Arrow(f, a) => {
+        // Type-shape search ignores effects (matches regardless of a candidate's
+        // reach), so the arrow's effect row does not enter the shape tree.
+        Ty::Arrow(f, a, _) => {
             Shape::Arrow(Box::new(shape_from_ty(f, vars)), Box::new(shape_from_ty(a, vars)))
         }
         Ty::Tuple(elems) => Shape::Tuple(elems.iter().map(|e| shape_from_ty(e, vars)).collect()),

@@ -313,7 +313,7 @@ pub fn project_ty(ty: &Ty) -> WireTy {
         Ty::Con(Con::List) => WireTy::List,
         Ty::Adt(_) => WireTy::Adt,
         Ty::Interface(_) => WireTy::Interface,
-        Ty::Arrow(_, _) => WireTy::Arrow,
+        Ty::Arrow(..) => WireTy::Arrow,
         Ty::Tuple(elems) => WireTy::Tuple(elems.iter().map(project_ty).collect()),
         Ty::Record(row) => WireTy::Record {
             fields: row.fields.iter().map(|(_, t)| project_ty(t)).collect(),

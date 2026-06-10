@@ -464,7 +464,7 @@ fn erase_floats(ty: &Ty) -> Ty {
             tail: row.tail,
         }),
         Ty::App(head, arg) => Ty::App(Arc::new(erase_floats(head)), Arc::new(erase_floats(arg))),
-        Ty::Arrow(from, to) => Ty::arrow(erase_floats(from), erase_floats(to)),
+        Ty::Arrow(from, to, e) => Ty::arrow_eff(erase_floats(from), erase_floats(to), e.clone()),
         other => other.clone(),
     }
 }

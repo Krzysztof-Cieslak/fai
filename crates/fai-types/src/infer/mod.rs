@@ -27,9 +27,10 @@ use crate::ty::{Scheme, Ty};
 /// generalize is the caller's concern (it is reported as ambiguous before
 /// generalization for Numeric/Ord).
 pub fn generalize(cx: &InferCtx, ty: &SolveTy) -> Scheme {
-    let (reified, vars, row_vars) = cx.reify_with_vars(ty);
+    let (reified, vars, row_vars, eff_vars) = cx.reify_with_vars(ty);
     let row_names = row_vars.iter().map(|_| "_".to_owned()).collect();
-    Scheme::new(vars, reified).with_rows(row_vars, row_names)
+    let eff_names = eff_vars.iter().map(|_| "_".to_owned()).collect();
+    Scheme::new(vars, reified).with_rows(row_vars, row_names).with_effects(eff_vars, eff_names)
 }
 
 /// Looks up the declared signature scheme of a definition in `file`, if it has
@@ -272,7 +273,7 @@ fn peel_param_types(cx: &InferCtx, ty: &SolveTy, n: usize) -> Vec<SolveTy> {
     let mut cur = cx.resolve_shallow(ty);
     for _ in 0..n {
         match cur {
-            SolveTy::Arrow(from, to) => {
+            SolveTy::Arrow(from, to, _) => {
                 out.push(std::rc::Rc::unwrap_or_clone(from));
                 cur = cx.resolve_shallow(&to);
             }
@@ -454,7 +455,9 @@ fn monomorphize(ty: &Ty) -> Ty {
     match ty {
         Ty::Var(_) => Ty::int(),
         Ty::App(f, a) => Ty::App(Arc::new(monomorphize(f)), Arc::new(monomorphize(a))),
-        Ty::Arrow(f, t) => Ty::Arrow(Arc::new(monomorphize(f)), Arc::new(monomorphize(t))),
+        Ty::Arrow(f, t, e) => {
+            Ty::Arrow(Arc::new(monomorphize(f)), Arc::new(monomorphize(t)), e.clone())
+        }
         Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(monomorphize).collect()),
         Ty::Record(row) => Ty::Record(crate::ty::RecordRow {
             fields: row.fields.iter().map(|(l, t)| (*l, monomorphize(t))).collect(),

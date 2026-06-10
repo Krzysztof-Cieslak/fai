@@ -769,8 +769,8 @@ impl<E: Env> Walker<'_, E> {
                 // be non-function. If either operand is already known to be a
                 // function, report the dedicated diagnostic rather than a generic
                 // constraint mismatch.
-                let lhs_fn = matches!(self.cx.resolve_shallow(&lt), SolveTy::Arrow(_, _));
-                let rhs_fn = matches!(self.cx.resolve_shallow(&rt), SolveTy::Arrow(_, _));
+                let lhs_fn = matches!(self.cx.resolve_shallow(&lt), SolveTy::Arrow(..));
+                let rhs_fn = matches!(self.cx.resolve_shallow(&rt), SolveTy::Arrow(..));
                 if lhs_fn || rhs_fn {
                     // Still unify the two sides so the rest of the body stays
                     // coherent, but don't impose the Eq constraint (which would
@@ -789,7 +789,7 @@ impl<E: Env> Walker<'_, E> {
                     self.unify_at(span, &lt, &eq, "an equality operand");
                     self.unify_at(span, &rt, &eq, "an equality operand");
                     // A var that only later resolves to a function is caught here.
-                    if matches!(self.cx.resolve_shallow(&eq), SolveTy::Arrow(_, _)) {
+                    if matches!(self.cx.resolve_shallow(&eq), SolveTy::Arrow(..)) {
                         emit(
                             self.db,
                             Diagnostic::error(
@@ -944,7 +944,7 @@ impl<E: Env> Walker<'_, E> {
         let mut arity_ok = true;
         for &a in args {
             match self.cx.resolve_shallow(&cur) {
-                SolveTy::Arrow(from, to) => {
+                SolveTy::Arrow(from, to, _) => {
                     self.check_pattern(a, &from);
                     cur = Rc::unwrap_or_clone(to);
                 }
@@ -954,7 +954,7 @@ impl<E: Env> Walker<'_, E> {
                 }
             }
         }
-        if matches!(self.cx.resolve_shallow(&cur), SolveTy::Arrow(_, _)) {
+        if matches!(self.cx.resolve_shallow(&cur), SolveTy::Arrow(..)) {
             arity_ok = false; // too few arguments
         }
         if arity_ok {
@@ -1041,7 +1041,9 @@ fn subst(
         SolveTy::App(f, a) => {
             SolveTy::App(Rc::new(subst(cx, &f, mapping)), Rc::new(subst(cx, &a, mapping)))
         }
-        SolveTy::Arrow(f, a) => SolveTy::arrow(subst(cx, &f, mapping), subst(cx, &a, mapping)),
+        SolveTy::Arrow(f, a, e) => {
+            SolveTy::arrow_eff(subst(cx, &f, mapping), subst(cx, &a, mapping), e.clone())
+        }
         SolveTy::Tuple(elems) => {
             SolveTy::Tuple(elems.iter().map(|e| subst(cx, e, mapping)).collect())
         }
