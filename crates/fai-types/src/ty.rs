@@ -315,6 +315,25 @@ pub fn render_scheme(scheme: &Scheme) -> String {
     render(&scheme.ty, &VarNames::canonical(scheme))
 }
 
+/// Renders an effect row standalone as `{ Console, FileSystem | 'e }` (or `{}`
+/// for the pure effect), for diagnostics. Atoms are shown in their stored order.
+#[must_use]
+pub fn render_effect(eff: &EffectRow) -> String {
+    if eff.labels.is_empty() && eff.tail == EffEnd::Closed {
+        return "{}".to_owned();
+    }
+    let mut out = String::from("{");
+    for (i, atom) in eff.labels.iter().enumerate() {
+        out.push_str(if i == 0 { " " } else { ", " });
+        out.push_str(atom.name.as_str());
+    }
+    if let EffEnd::Open(_) = eff.tail {
+        out.push_str(" | _");
+    }
+    out.push_str(" }");
+    out
+}
+
 /// Renders a standalone type with canonical variable names (`'a`, `'b`, … in
 /// first-appearance order), independent of any other type's variable numbering.
 #[must_use]

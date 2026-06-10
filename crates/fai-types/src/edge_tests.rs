@@ -339,6 +339,39 @@ fn a_returned_closure_carries_its_latent_effect() {
 }
 
 #[test]
+fn correct_effect_annotation_passes() {
+    let src = indoc! {"
+        interface Console = writeLine : String -> Unit / { Console }
+        public save : Console -> String -> Unit / { Console }
+        let save c note = c.writeLine note
+    "};
+    assert!(!codes(src).contains(&"FAI5001".to_owned()));
+}
+
+#[test]
+fn wrong_effect_annotation_is_an_error() {
+    // Declares `{ Clock }` but the body uses `{ Console }`.
+    let src = indoc! {"
+        interface Console = writeLine : String -> Unit / { Console }
+        interface Clock = now : Unit -> Int / { Clock }
+        public save : Console -> String -> Unit / { Clock }
+        let save c note = c.writeLine note
+    "};
+    assert!(codes(src).contains(&"FAI5001".to_owned()));
+}
+
+#[test]
+fn over_declared_effect_on_a_pure_body_is_an_error() {
+    // Declares `{ Console }` but the body performs no effect.
+    let src = indoc! {"
+        interface Console = writeLine : String -> Unit / { Console }
+        public f : Int -> Int / { Console }
+        let f x = x
+    "};
+    assert!(codes(src).contains(&"FAI5001".to_owned()));
+}
+
+#[test]
 fn building_a_closure_that_captures_a_capability_is_pure() {
     // The capability-laundering case: a function that only *builds* an effectful
     // closure performs no effect itself; the effect rides the closure's arrow.

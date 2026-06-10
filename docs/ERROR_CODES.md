@@ -338,6 +338,14 @@ A `match` does not cover every possible value of the scrutinee. Add the missing 
 
 A `match` arm can never be reached because earlier arms already cover its values. Remove or reorder it.
 
+## FAI5xxx — Capabilities
+
+### FAI5001 — effect disagrees with inferred effect
+
+**Severity:** error
+
+A binding's declared effect row (the capabilities after `/`) does not match the effect inferred from its body — it either performs a capability the signature omits, or declares one it never uses. Fix the body or the declared effect.
+
 ## FAI6xxx — Contracts
 
 ### FAI6001 — contract failed

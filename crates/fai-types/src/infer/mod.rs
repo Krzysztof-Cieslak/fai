@@ -140,6 +140,9 @@ pub struct SccInference {
     /// reported as the more specific opaque-access error rather than a bare
     /// signature mismatch.
     pub opaque_mismatches: Vec<(DefId, Symbol)>,
+    /// Members whose declared (concrete) effect disagreed with the inferred
+    /// effect (for FAI5001), as `(def, declared rendered, inferred rendered)`.
+    pub effect_mismatches: Vec<(DefId, String, String)>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -157,6 +160,8 @@ pub fn infer_scc(
     let mut cx = InferCtx::new();
     let mut mismatches: Vec<DefId> = Vec::new();
     let mut opaque_mismatches: Vec<(DefId, Symbol)> = Vec::new();
+    // (def, declared effect rendered, inferred effect rendered) for FAI5001.
+    let mut effect_mismatches: Vec<(DefId, String, String)> = Vec::new();
 
     // Fresh monomorphic type for each member. If a member has a declared
     // signature, instantiate it as the member's type (so the body is checked
@@ -210,7 +215,25 @@ pub fn infer_scc(
         let body_ty = walker.infer_expr(body);
         // The body's latent effect rides the function's saturating arrow.
         let body_eff = walker.body_effect_solve();
-        let fn_ty = SolveTy::arrows_solver_eff(param_tys, body_ty, body_eff);
+        let inferred_effect = walker.body_effect();
+        let fn_ty = SolveTy::arrows_solver_eff(param_tys, body_ty.clone(), body_eff);
+
+        // Opt-in effect enforcement: when a signature declares a *concrete* effect
+        // (a closed, non-empty effect row), the body's inferred effect must use
+        // exactly those capabilities. A bare/empty declared effect stays lenient
+        // (no annotation required yet), so unannotated programs are unaffected.
+        if let Some(scheme) = declared.get(m)
+            && let Some(declared_effect) = saturating_effect(&scheme.ty, params.len())
+            && let crate::ty::EffEnd::Closed = declared_effect.tail
+            && !declared_effect.labels.is_empty()
+            && effect_atom_names(&declared_effect) != effect_atom_names(&inferred_effect)
+        {
+            effect_mismatches.push((
+                *m,
+                crate::ty::render_effect(&declared_effect),
+                crate::ty::render_effect(&inferred_effect),
+            ));
+        }
 
         let unify = cx.unify(&fn_ty, &member_ty);
         // A failed unification (the body conflicts with the signature) is an
@@ -269,7 +292,7 @@ pub fn infer_scc(
         };
         result.insert(*m, scheme);
     }
-    SccInference { schemes: result, mismatches, opaque_mismatches }
+    SccInference { schemes: result, mismatches, opaque_mismatches, effect_mismatches }
 }
 
 /// Peels the first `n` parameter types from a (resolved) function type.
@@ -286,6 +309,35 @@ fn peel_param_types(cx: &InferCtx, ty: &SolveTy, n: usize) -> Vec<SolveTy> {
         }
     }
     out
+}
+
+/// The effect on the saturating (`n`-th) arrow of a declared type — the one
+/// whose application performs the function's effect. `None` if there are fewer
+/// than `n` arrows (a malformed/over-applied signature).
+fn saturating_effect(ty: &Ty, n: usize) -> Option<crate::ty::EffectRow> {
+    if n == 0 {
+        return None;
+    }
+    let mut cur = ty;
+    let mut last = None;
+    for _ in 0..n {
+        match cur {
+            Ty::Arrow(_, to, eff) => {
+                last = Some(eff.clone());
+                cur = to;
+            }
+            _ => return last,
+        }
+    }
+    last
+}
+
+/// The sorted atom names of an effect row (for comparing two effects' atoms).
+fn effect_atom_names(eff: &crate::ty::EffectRow) -> Vec<String> {
+    let mut names: Vec<String> = eff.labels.iter().map(|i| i.name.as_str().to_owned()).collect();
+    names.sort();
+    names.dedup();
+    names
 }
 
 /// Recursively defaults still-free Numeric variables in a solver type to `Int`.

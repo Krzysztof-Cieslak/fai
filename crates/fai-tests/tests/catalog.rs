@@ -189,13 +189,13 @@ fn contract_codes_are_in_the_fai6xxx_range() {
 
 #[test]
 fn type_codes_are_in_the_type_or_pattern_ranges() {
-    // The type system owns types/rows (FAI3xxx) and exhaustiveness/patterns
-    // (FAI4xxx).
+    // The type system owns types/rows (FAI3xxx), exhaustiveness/patterns
+    // (FAI4xxx), and the capability *effect* checks (FAI5xxx).
     for info in fai_types::CODES {
         let code = info.code.as_str();
         assert!(
-            code.starts_with("FAI3") || code.starts_with("FAI4"),
-            "type code {} should be in the FAI3xxx or FAI4xxx range",
+            code.starts_with("FAI3") || code.starts_with("FAI4") || code.starts_with("FAI5"),
+            "type code {} should be in the FAI3xxx, FAI4xxx, or FAI5xxx range",
             info.code
         );
     }
