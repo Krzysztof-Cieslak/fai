@@ -24,7 +24,7 @@ use fai_rc::rc;
 use fai_resolve::DefId;
 use fai_syntax::Symbol;
 
-use crate::backend::{arity_of, object_code, symbol_base};
+use crate::backend::{abi_of, arity_of, object_code, symbol_base};
 
 /// The code-generation configuration stamp, mixed into every object's cache key
 /// so a change to how code is generated invalidates stale entries (here, the
@@ -95,7 +95,8 @@ fn object_key(db: &dyn Db, file: SourceFile, def: DefId) -> String {
     let lowered = rc(db, file, def.name);
     let namer = |d: DefId| symbol_base(db, d);
     let arity = |d: DefId| arity_of(db, d);
-    let fingerprint = fingerprint_def(&lowered, &namer, &arity);
+    let abi = |d: DefId| abi_of(db, d);
+    let fingerprint = fingerprint_def(&lowered, &namer, &arity, &abi);
 
     let mut hasher = blake3::Hasher::new();
     hasher.update(fingerprint.as_bytes());

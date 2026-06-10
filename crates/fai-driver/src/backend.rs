@@ -14,13 +14,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use camino::{Utf8Path, Utf8PathBuf};
 use fai_codegen::{JitProgram, main_object, object_for_def};
 use fai_core::core;
-use fai_core::ir::LoweredDef;
+use fai_core::ir::{FnAbi, LoweredDef};
 use fai_core::wire::{WireBundle, WireDef, WireDefId, def_to_wire, from_wire};
 use fai_db::{Db, Diag, SourceFile};
 use fai_diagnostics::wire::{DiagnosticWire, to_wire};
 use fai_diagnostics::{Diagnostic, SCHEMA_VERSION, Severity, render_human};
 use fai_rc::{BorrowSig, combined_lowered, member_wrapper, mutual_groups, rc, rc_lowered};
 use fai_resolve::{DefId, ModuleName, module_defs, module_name};
+use fai_types::{Con, Ty};
 use fai_span::SpanResolver;
 use fai_syntax::Symbol;
 use fai_syntax::ast::ItemKind;
@@ -97,21 +98,27 @@ fn sanitize_ident(s: &str) -> String {
     out
 }
 
-/// A definition's runtime arity: its source parameters plus the leading offset
-/// evidence its (row-polymorphic) type requires. Read from the binding and the
-/// signature, both body-edit-stable, so the codegen firewall stays intact.
-#[salsa::tracked]
-pub fn def_arity(db: &dyn Db, file: SourceFile, name: Symbol) -> usize {
+/// A definition's syntactic source-parameter count (the `let f a b = …` binders),
+/// excluding any offset evidence. Read from the binding, body-edit-stable.
+fn source_param_count(db: &dyn Db, file: SourceFile, name: Symbol) -> usize {
     let parsed = fai_syntax::parse(db, file);
     // Locate the binding by its (qualified) name via the paired definitions, so a
     // nested definition is found by its module path rather than the local name.
-    let source_params = module_defs(db, file)
+    module_defs(db, file)
         .get(name)
         .and_then(|d| match &parsed.module.items[d.binding.index()].kind {
             ItemKind::Binding { params, .. } => Some(params.len()),
             _ => None,
         })
-        .unwrap_or(0);
+        .unwrap_or(0)
+}
+
+/// A definition's runtime arity: its source parameters plus the leading offset
+/// evidence its (row-polymorphic) type requires. Read from the binding and the
+/// signature, both body-edit-stable, so the codegen firewall stays intact.
+#[salsa::tracked]
+pub fn def_arity(db: &dyn Db, file: SourceFile, name: Symbol) -> usize {
+    let source_params = source_param_count(db, file, name);
     let def = DefId::new(file.source(db), name);
     let evidence = fai_types::declared_or_inferred_scheme(db, def)
         .map_or(0, |scheme| fai_types::evidence_count(&scheme));
@@ -120,6 +127,37 @@ pub fn def_arity(db: &dyn Db, file: SourceFile, name: Symbol) -> usize {
 
 pub(crate) fn arity_of(db: &dyn Db, def: DefId) -> usize {
     db.source_file(def.file).map_or(0, |f| def_arity(db, f, def.name))
+}
+
+/// A definition's native calling-convention shape: which runtime parameters carry
+/// an unboxed `Float` (raw `f64` bits) and whether the result is an unboxed
+/// `Float`. Derived from the *signature* (peeling the syntactic source-parameter
+/// count off the type; leading offset-evidence parameters are integers, never
+/// floats) so it is body-edit-stable, preserving the codegen firewall: a caller's
+/// object depends on a callee's signature, not its body.
+pub(crate) fn abi_of(db: &dyn Db, def: DefId) -> FnAbi {
+    let Some(file) = db.source_file(def.file) else { return FnAbi::default() };
+    let Some(scheme) = fai_types::declared_or_inferred_scheme(db, def) else {
+        return FnAbi::default();
+    };
+    let evidence = fai_types::evidence_count(&scheme);
+    let nsource = source_param_count(db, file, def.name);
+    // Peel the source parameters off the signature's arrow spine; offset evidence
+    // (always integers) leads the runtime parameter list, so it is non-float.
+    let mut ty = &scheme.ty;
+    let mut float_params = vec![false; evidence];
+    for _ in 0..nsource {
+        match ty {
+            Ty::Arrow(from, to) => {
+                float_params.push(matches!(from.as_ref(), Ty::Con(Con::Float)));
+                ty = to;
+            }
+            // Fewer arrows than declared source params cannot happen for a
+            // well-typed binding; stop defensively rather than panic.
+            _ => break,
+        }
+    }
+    FnAbi { float_params, float_return: matches!(ty, Ty::Con(Con::Float)) }
 }
 
 /// The cached relocatable object for one definition (the content-addressed cache
@@ -589,7 +627,7 @@ pub fn build_run_bundle(db: &dyn Db, file: SourceFile) -> RunBundleResult {
             let def_file = db.source_file(d.file)?;
             let lowered = rc(db, def_file, d.name);
             let module_of = |x: DefId| module_label(db, x);
-            Some(def_to_wire(&lowered, &module_of, arity_of(db, *d)))
+            Some(def_to_wire(&lowered, &module_of, arity_of(db, *d), abi_of(db, *d)))
         })
         .collect::<Vec<Option<WireDef>>>()
         .into_iter()
@@ -597,11 +635,15 @@ pub fn build_run_bundle(db: &dyn Db, file: SourceFile) -> RunBundleResult {
         .collect();
     let module_of = |x: DefId| module_label(db, x);
     for (member, wrapper) in &groups.wrappers {
-        defs.push(def_to_wire(wrapper, &module_of, arity_of(db, *member)));
+        // The wrapper is emitted at the member's symbol, so it presents the
+        // member's native ABI to direct callers.
+        defs.push(def_to_wire(wrapper, &module_of, arity_of(db, *member), abi_of(db, *member)));
     }
     for combined in &groups.combined {
+        // The synthetic combined loop shares padded positional slots across
+        // members, so it uses the uniform (boxed) representation throughout.
         let arity = groups.arity.get(&combined.def).copied().unwrap_or(0);
-        defs.push(def_to_wire(combined, &module_of, arity));
+        defs.push(def_to_wire(combined, &module_of, arity, FnAbi::default()));
     }
 
     let entry = DefId::new(file.source(db), Symbol::intern(ENTRY));

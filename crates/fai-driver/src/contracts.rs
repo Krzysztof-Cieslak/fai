@@ -32,7 +32,7 @@ use fai_contracts::{
     CONTRACT_ABORTED, CONTRACT_FAILED, CONTRACT_NOT_RUNNABLE, ContractInfo, ContractKind,
     run_contract, synthesize,
 };
-use fai_core::ir::{ExprKind, LoweredDef};
+use fai_core::ir::{ExprKind, FnAbi, LoweredDef};
 use fai_core::wire::def_to_wire;
 use fai_core::{RebuiltTest, TestWireBundle, WireContract, WireDefId, from_wire_test};
 use fai_db::{Db, SourceFile};
@@ -46,7 +46,8 @@ use serde::{Deserialize, Serialize};
 use wait_timeout::ChildExt;
 
 use crate::backend::{
-    apply_run_limits, arity_of, mangle, module_label, precompile_diagnostics, reachable_from_roots,
+    abi_of, apply_run_limits, arity_of, mangle, module_label, precompile_diagnostics,
+    reachable_from_roots,
 };
 use crate::{WORKSPACE_ERROR, semantic_diagnostics, tooling_span};
 
@@ -462,12 +463,15 @@ fn build_plan(
     let module_of = |d: DefId| module_label(db, d);
     let mut defs = Vec::with_capacity(synth_list.len() + reachable.len());
     for (lowered, arity) in &synth_list {
-        defs.push(def_to_wire(lowered, &module_of, *arity));
+        // Synthesized harnesses/generators/properties have no source signature;
+        // they are reached only via `apply_n`, so the uniform (boxed) ABI is both
+        // correct and what that path requires.
+        defs.push(def_to_wire(lowered, &module_of, *arity, FnAbi::default()));
     }
     for def in &reachable {
         if let Some(file) = db.source_file(def.file) {
             let lowered = rc(db, file, def.name);
-            defs.push(def_to_wire(&lowered, &module_of, arity_of(db, *def)));
+            defs.push(def_to_wire(&lowered, &module_of, arity_of(db, *def), abi_of(db, *def)));
         }
     }
 
