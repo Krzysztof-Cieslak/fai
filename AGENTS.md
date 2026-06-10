@@ -472,8 +472,11 @@ cache plus a fast linker (mold/lld).
   summary on the run page plus the raw and parsed (`bench-results.json`) results
   as artifacts — rendered by the `bench-summary` tool
    (`crates/fai-tests/src/bench_summary.rs`). It never fails the build on timings;
-   the deterministic guards remain the sole performance gate. The full
-   benchmarking guide — every suite, the CI report, and the Fai-vs-Rust comparison
+   the deterministic guards remain the sole performance gate. The Fai-vs-Rust
+   comparison spans **runtime** (the `algorithms_jit`/`algorithms_aot` benches) and
+   **peak memory** (the `algorithms_mem` bench: each delivered binary self-reports
+   its peak resident set size, rendered as a "Fai vs Rust (peak RSS)" table). The
+   full benchmarking guide — every suite, the CI report, and the comparison
    methodology (including why the JIT and AOT benches' Rust baselines are not
    comparable) — is **`docs/BENCHMARK.md`**.
 

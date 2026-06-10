@@ -6,7 +6,9 @@
 //! (process startup, linking, and all). Printing the result keeps the
 //! computation from being optimized away, matching the Fai binary's `main`.
 //!
-//! Usage: `algo-baseline <module> <n>`.
+//! Usage: `algo-baseline <module> <n>`. With `FAI_REPORT_RSS` set, it also prints
+//! its peak resident set size to stderr (the same line the Fai runtime emits), so
+//! the memory comparison harness can measure both binaries the same way.
 
 use fai_tests::algorithms::{Oracle, by_module};
 
@@ -24,5 +26,12 @@ fn main() {
         // reader comparing the two binaries' output sees the same formatting.
         Oracle::Int(f) => println!("{}", f(n)),
         Oracle::Float(f) => println!("{:?}", f(n)),
+    }
+    // Self-report peak memory in the same format the Fai runtime uses, so the
+    // memory comparison measures both delivered binaries identically.
+    if std::env::var_os("FAI_REPORT_RSS").is_some()
+        && let Some(kib) = fai_tests::peak_rss_kib()
+    {
+        eprintln!("fai-peak-rss-kib: {kib}");
     }
 }

@@ -101,6 +101,7 @@ All under `crates/fai-tests/benches/` unless noted. None is a CI gate.
 | `lsp` | Language-server latency: warm `analysis_*` (the work to answer a request) and full `roundtrip_*` through the real server over an in-memory connection. |
 | `algorithms_jit` | Runtime comparison, in-process compute: compiled Fai code vs idiomatic Rust (see below). |
 | `algorithms_aot` | Runtime comparison, delivered binaries: a `fai build` executable vs a Rust release binary, end to end (see below). |
+| `algorithms_mem` | Memory comparison, delivered binaries: peak resident set size of the same `fai build` vs Rust binaries (see below). |
 | `test_loop` (`fai-cli`) | The supervised `edit → fai test` loop through the real `fai` binary + daemon: client → daemon → worker subprocess → JIT → run → stream back. |
 
 ## Runtime comparison: Fai vs Rust
@@ -170,6 +171,41 @@ Each timed iteration is a whole process: startup, the workload, print, exit.
 path; it still compiles there so `--all-targets` keeps it from bitrotting, and the
 workflow runs on Linux.)
 
+### `algorithms_mem` — delivered binaries, peak memory
+
+`crates/fai-tests/benches/algorithms_mem.rs` is the **memory** side of the same
+delivered-binaries experiment: instead of timing the spawned processes, it records
+each one's **peak resident set size** at the AOT workload. It is not a divan timing
+loop (peak memory is not a per-iteration measurement); each binary is run a few
+times and the maximum peak is kept.
+
+Both sides are measured **identically by self-reporting**: with `FAI_REPORT_RSS`
+set in the child's environment, the Fai runtime (`run_entry`) and the
+`algo-baseline` binary each read their own peak RSS from `/proc/self/status`
+(`VmHWM`, the high-water mark) and print a `fai-peak-rss-kib:` line to stderr. The
+harness parses that and emits a `MEMSTAT\t<algorithm>\t<side>\t<kib>` line, which
+`bench-summary` renders into a **"memory: Fai vs Rust (peak RSS)"** table (median
+`fai/rust`; lower is better) and includes in `bench-results.json`. divan's parser
+ignores the `MEMSTAT` lines, so they ride safely in the shared output stream.
+
+Reading peak RSS:
+
+- **Peak RSS is the whole-process footprint**, so it includes fixed overhead — the
+  linked runtime/std, code pages, allocator slack — that **dominates the small-heap
+  workloads** (`fib`, `collatz`, `pi` bottom out near the runtime's baseline, and
+  the Fai binary can even read *lower* than Rust there). The **heap-heavy**
+  workloads carry the real signal: `map_sum` builds a 1.5M-element `List` (a large
+  transient heap) where idiomatic Rust runs an allocation-free loop, so its ratio
+  is large and expected; `merge_sort` sorts a linked `List` vs a `Vec`;
+  `binary_trees` builds a comparably large structure on both sides, so its peak is
+  near-even. As with the timing benches this is a **progress metric, not a fair
+  fight** (boxed, reference-counted values vs unboxed) — watch whether the gap
+  shrinks as the backend improves.
+- **Linux-only.** Peak RSS is read from `/proc`, so the table is populated by the
+  Linux Benchmarks workflow; on other platforms (and on Windows, which also skips
+  the build/link + spawn path) the bench prints a skip note and reports no rows.
+  The bench still compiles everywhere so `--all-targets` keeps it from bitrotting.
+
 ### Why the Rust numbers differ so much between the two benches
 
 The Rust *implementation* is identical, but the two benches are **different
@@ -237,6 +273,7 @@ assert this by comparing the program's output to the oracle, so the AOT bench
 compares the same workload on both sides. To add an algorithm: add the Rust
 reference and a registry entry in `algorithms.rs`, add the `samples/algorithms/`
 module with the matching baked size, and list it in both `algorithm_benches!`
-macros.
+macros. The `algorithms_mem` bench iterates the registry directly, so it picks up
+the new algorithm automatically.
 
 [divan]: https://docs.rs/divan

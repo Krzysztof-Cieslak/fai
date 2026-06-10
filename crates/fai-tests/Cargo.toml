@@ -88,5 +88,9 @@ harness = false
 name = "algorithms_aot"
 harness = false
 
+[[bench]]
+name = "algorithms_mem"
+harness = false
+
 [lints]
 workspace = true

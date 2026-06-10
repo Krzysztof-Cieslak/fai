@@ -10,6 +10,12 @@
 //! A benchmark *case* label that looks like a source location (`<path>.fai#Lnn`,
 //! produced by the real-world language-server benches) is linked to its file on
 //! the host forge, so the report points at the exact code each row measured.
+//!
+//! Beyond divan's timing tree, the memory comparison bench (`algorithms_mem`)
+//! emits tab-separated `MEMSTAT\t<algorithm>\t<side>\t<kib>` lines (peak resident
+//! set size, in KiB, of each delivered binary). They are parsed alongside the
+//! timing rows into a "Fai vs Rust — peak RSS" table; divan's own parser ignores
+//! them, so they ride safely in the shared output stream.
 
 /// One parsed benchmark measurement.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,11 +35,25 @@ pub struct Row {
     pub samples: String,
 }
 
+/// One peak-memory sample emitted by the `algorithms_mem` bench: the peak RSS (in
+/// KiB) of one side's (`fai`/`rust`) delivered binary for one algorithm.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemSample {
+    /// The algorithm (sample module) name.
+    pub algorithm: String,
+    /// The measured side: `"fai"` or `"rust"`.
+    pub side: String,
+    /// The peak resident set size in KiB.
+    pub kib: u64,
+}
+
 /// A parsed benchmark report.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Report {
-    /// Every measured row, in output order.
+    /// Every measured timing row, in output order.
     pub rows: Vec<Row>,
+    /// Every peak-memory sample, in output order.
+    pub mem: Vec<MemSample>,
 }
 
 /// The base URL for source links (`<server>/<repo>/blob/<sha>`), if known.
@@ -75,10 +95,15 @@ impl Report {
     #[must_use]
     pub fn parse(text: &str) -> Self {
         let mut rows = Vec::new();
+        let mut mem = Vec::new();
         let mut group = String::new();
         let mut stack: Vec<String> = Vec::new();
 
         for line in text.lines() {
+            if let Some(sample) = parse_memstat(line) {
+                mem.push(sample);
+                continue;
+            }
             if is_header(line) {
                 group = first_field(line);
                 stack.clear();
@@ -113,7 +138,7 @@ impl Report {
             });
         }
 
-        Self { rows }
+        Self { rows, mem }
     }
 
     /// Renders the report as Markdown: one collapsible table per bench group,
@@ -123,7 +148,7 @@ impl Report {
     pub fn to_markdown(&self, links: &LinkBase) -> String {
         use std::fmt::Write as _;
         let mut out = String::from("## Benchmark results\n\n");
-        if self.rows.is_empty() {
+        if self.rows.is_empty() && self.mem.is_empty() {
             out.push_str("_No benchmark results were parsed from the divan output._\n");
             return out;
         }
@@ -175,6 +200,32 @@ impl Report {
 
             out.push_str("\n</details>\n\n");
         }
+
+        let memory = self.memory_ratios();
+        if !memory.is_empty() {
+            out.push_str("<details><summary><b>memory: Fai vs Rust (peak RSS)</b></summary>\n\n");
+            out.push_str("Peak resident set size of each delivered binary at its AOT workload ");
+            out.push_str("(lower Fai/Rust is better). Small-heap rows are dominated by fixed ");
+            out.push_str("process overhead; the heap-heavy ones carry the signal.\n\n");
+            out.push_str("| Algorithm | Rust (KiB) | Fai (KiB) | Fai/Rust |\n");
+            out.push_str("| --- | --: | --: | --: |\n");
+            for row in memory {
+                let ratio = match row.ratio {
+                    Some(x) => format!("{x:.2}×"),
+                    None => "—".to_owned(),
+                };
+                let _ = writeln!(
+                    out,
+                    "| {} | {} | {} | {} |",
+                    escape(&row.algorithm),
+                    kib_cell(row.rust),
+                    kib_cell(row.fai),
+                    escape(&ratio),
+                );
+            }
+            out.push_str("\n</details>\n\n");
+        }
+
         out
     }
 
@@ -219,11 +270,48 @@ impl Report {
             .collect()
     }
 
-    /// Renders the rows as a compact JSON array (hand-rolled: the crate's
-    /// non-dev dependencies do not include a serializer).
+    /// Pairs the `fai`/`rust` peak-memory samples per algorithm into comparison
+    /// rows (in first-seen order), computing the `fai/rust` peak-RSS ratio. An
+    /// algorithm missing one side keeps a `None` for that side and no ratio.
+    fn memory_ratios(&self) -> Vec<MemRatioRow> {
+        let mut order: Vec<String> = Vec::new();
+        let mut table: std::collections::HashMap<String, MemRatioRow> =
+            std::collections::HashMap::new();
+        for sample in &self.mem {
+            let entry = table.entry(sample.algorithm.clone()).or_insert_with(|| {
+                order.push(sample.algorithm.clone());
+                MemRatioRow {
+                    algorithm: sample.algorithm.clone(),
+                    rust: None,
+                    fai: None,
+                    ratio: None,
+                }
+            });
+            if sample.side == "rust" {
+                entry.rust = Some(sample.kib);
+            } else {
+                entry.fai = Some(sample.kib);
+            }
+        }
+        order
+            .into_iter()
+            .filter_map(|key| table.remove(&key))
+            .map(|mut r| {
+                r.ratio = match (r.rust, r.fai) {
+                    (Some(rust), Some(fai)) if rust > 0 => Some(fai as f64 / rust as f64),
+                    _ => None,
+                };
+                r
+            })
+            .collect()
+    }
+
+    /// Renders the report as compact JSON (hand-rolled: the crate's non-dev
+    /// dependencies do not include a serializer). The shape is an object with a
+    /// `benchmarks` array of timing rows and a `memory` array of peak-RSS samples.
     #[must_use]
     pub fn to_json(&self) -> String {
-        let mut out = String::from("[");
+        let mut out = String::from("{\"benchmarks\":[");
         for (i, row) in self.rows.iter().enumerate() {
             if i > 0 {
                 out.push(',');
@@ -238,7 +326,19 @@ impl Report {
                 json_str(&row.samples),
             ));
         }
-        out.push(']');
+        out.push_str("],\"memory\":[");
+        for (i, sample) in self.mem.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push_str(&format!(
+                "{{\"algorithm\":{},\"side\":{},\"kib\":{}}}",
+                json_str(&sample.algorithm),
+                json_str(&sample.side),
+                sample.kib,
+            ));
+        }
+        out.push_str("]}");
         out
     }
 }
@@ -258,12 +358,49 @@ struct RatioRow {
     ratio: Option<f64>,
 }
 
+/// One Fai-vs-Rust peak-memory comparison row (paired `fai`/`rust` peak RSS).
+#[derive(Debug, Clone, PartialEq)]
+struct MemRatioRow {
+    /// The algorithm (sample module) name.
+    algorithm: String,
+    /// The Rust binary's peak RSS in KiB, if measured.
+    rust: Option<u64>,
+    /// The Fai binary's peak RSS in KiB, if measured.
+    fai: Option<u64>,
+    /// `fai / rust`, or `None` if a side is missing or Rust measured zero.
+    ratio: Option<f64>,
+}
+
 /// Splits a case into its leading `rust`/`fai` side and the remaining variant
 /// (the rest of the ` / `-separated path), or `None` if it names neither side.
 fn split_side(case: &str) -> Option<(&str, &str)> {
     let mut parts = case.splitn(2, " / ");
     let side = parts.next()?;
     if side == "rust" || side == "fai" { Some((side, parts.next().unwrap_or(""))) } else { None }
+}
+
+/// Parses a `MEMSTAT\t<algorithm>\t<side>\t<kib>` line from the `algorithms_mem`
+/// bench into a sample, or `None` for any other line. Best-effort: a malformed
+/// side or non-numeric size is dropped rather than panicking.
+fn parse_memstat(line: &str) -> Option<MemSample> {
+    let rest = line.strip_prefix("MEMSTAT\t")?;
+    let mut fields = rest.split('\t');
+    let algorithm = fields.next()?.trim();
+    let side = fields.next()?.trim();
+    let kib: u64 = fields.next()?.trim().parse().ok()?;
+    if algorithm.is_empty() || (side != "fai" && side != "rust") {
+        return None;
+    }
+    Some(MemSample { algorithm: algorithm.to_owned(), side: side.to_owned(), kib })
+}
+
+/// Renders an optional KiB measurement as a Markdown cell (a missing side shows a
+/// dash).
+fn kib_cell(kib: Option<u64>) -> String {
+    match kib {
+        Some(kib) => kib.to_string(),
+        None => "—".to_owned(),
+    }
 }
 
 /// Parses a divan duration (`14.51 ms`, `996.8 µs`, `120 ns`, `1.2 s`, …) into
@@ -409,18 +546,20 @@ lsp            fastest       │ slowest       │ median        │ mean       
     fn json_is_well_formed_and_escaped() {
         let report = Report::parse(SAMPLE);
         let json = report.to_json();
-        assert!(json.starts_with('['));
-        assert!(json.ends_with(']'));
+        assert!(json.starts_with("{\"benchmarks\":["));
+        assert!(json.ends_with("]}"));
         assert!(json.contains("\"benchmark\":\"analysis_hover_real\""));
         assert!(json.contains("\"case\":\"samples/Orders.fai#L6\""));
+        assert!(json.contains("\"memory\":[]"), "no memory samples in a pure timing run: {json}");
     }
 
     #[test]
     fn empty_input_degrades_gracefully() {
         let report = Report::parse("");
         assert!(report.rows.is_empty());
+        assert!(report.mem.is_empty());
         assert!(report.to_markdown(&LinkBase::default()).contains("No benchmark results"));
-        assert_eq!(report.to_json(), "[]");
+        assert_eq!(report.to_json(), "{\"benchmarks\":[],\"memory\":[]}");
     }
 
     #[test]
@@ -494,5 +633,98 @@ algorithms_jit  fastest       │ slowest       │ median        │ mean      
         // The `inference`/`lsp` sample has no rust/fai pairs.
         assert!(report.ratios_for_group("inference").is_empty());
         assert!(!report.to_markdown(&LinkBase::default()).contains("**Fai vs Rust**"));
+    }
+
+    /// The `algorithms_mem` bench output: tab-separated peak-RSS samples mixed
+    /// into the same stream as the divan timing tree (here, alongside `SAMPLE`).
+    const MEMSTATS: &str = "\
+MEMSTAT\tfib\tfai\t4096
+MEMSTAT\tfib\trust\t2048
+MEMSTAT\tmap_sum\tfai\t90000
+MEMSTAT\tmap_sum\trust\t3000
+";
+
+    #[test]
+    fn parses_memstat_lines_alongside_timing_rows() {
+        let report = Report::parse(&format!("{SAMPLE}{MEMSTATS}"));
+        // The timing rows are unaffected by the interleaved memory lines.
+        assert_eq!(report.rows.len(), 4, "{:#?}", report.rows);
+        assert_eq!(report.mem.len(), 4, "{:#?}", report.mem);
+        assert_eq!(
+            report.mem[0],
+            MemSample { algorithm: "fib".to_owned(), side: "fai".to_owned(), kib: 4096 }
+        );
+    }
+
+    #[test]
+    fn malformed_memstat_lines_are_dropped() {
+        assert_eq!(
+            parse_memstat("MEMSTAT\tfib\tfai\t4096"),
+            Some(MemSample { algorithm: "fib".to_owned(), side: "fai".to_owned(), kib: 4096 })
+        );
+        // Wrong side, non-numeric size, missing fields, and unrelated lines.
+        assert_eq!(parse_memstat("MEMSTAT\tfib\tboth\t4096"), None);
+        assert_eq!(parse_memstat("MEMSTAT\tfib\tfai\tlots"), None);
+        assert_eq!(parse_memstat("MEMSTAT\tfib\tfai"), None);
+        assert_eq!(parse_memstat("MEMSTAT\t\tfai\t4096"), None);
+        assert_eq!(parse_memstat("not a memstat line"), None);
+    }
+
+    #[test]
+    fn pairs_memory_samples_into_ratios() {
+        let report = Report::parse(MEMSTATS);
+        let ratios = report.memory_ratios();
+        assert_eq!(ratios.len(), 2, "{ratios:#?}");
+        // First-seen order (fib before map_sum).
+        assert_eq!(ratios[0].algorithm, "fib");
+        assert_eq!(ratios[0].rust, Some(2048));
+        assert_eq!(ratios[0].fai, Some(4096));
+        assert_eq!(ratios[0].ratio, Some(2.0));
+        assert_eq!(ratios[1].algorithm, "map_sum");
+        assert_eq!(ratios[1].ratio, Some(30.0));
+    }
+
+    #[test]
+    fn memory_row_with_one_missing_side_has_no_ratio() {
+        let report = Report::parse("MEMSTAT\tfib\tfai\t4096\n");
+        let ratios = report.memory_ratios();
+        assert_eq!(ratios.len(), 1);
+        assert_eq!(ratios[0].fai, Some(4096));
+        assert_eq!(ratios[0].rust, None);
+        assert_eq!(ratios[0].ratio, None);
+    }
+
+    #[test]
+    fn memory_table_renders_with_ratio() {
+        let report = Report::parse(MEMSTATS);
+        let md = report.to_markdown(&LinkBase::default());
+        assert!(md.contains("memory: Fai vs Rust (peak RSS)"), "{md}");
+        assert!(md.contains("| Algorithm | Rust (KiB) | Fai (KiB) | Fai/Rust |"), "{md}");
+        // map_sum: 90000 / 3000 = 30.00×.
+        assert!(md.contains("| map_sum | 3000 | 90000 | 30.00× |"), "{md}");
+    }
+
+    #[test]
+    fn missing_side_renders_a_dash() {
+        let report = Report::parse("MEMSTAT\tfib\tfai\t4096\n");
+        let md = report.to_markdown(&LinkBase::default());
+        assert!(md.contains("| fib | — | 4096 | — |"), "{md}");
+    }
+
+    #[test]
+    fn memory_samples_appear_in_json() {
+        let report = Report::parse(MEMSTATS);
+        let json = report.to_json();
+        assert!(json.contains("\"memory\":["), "{json}");
+        assert!(json.contains("{\"algorithm\":\"fib\",\"side\":\"fai\",\"kib\":4096}"), "{json}");
+    }
+
+    #[test]
+    fn report_with_only_memory_still_renders() {
+        let report = Report::parse(MEMSTATS);
+        assert!(report.rows.is_empty());
+        let md = report.to_markdown(&LinkBase::default());
+        assert!(!md.contains("No benchmark results"), "{md}");
+        assert!(md.contains("memory: Fai vs Rust (peak RSS)"), "{md}");
     }
 }
