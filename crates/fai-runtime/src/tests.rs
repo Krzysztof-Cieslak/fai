@@ -4,6 +4,10 @@
 //! test serializes on [`TEST_LOCK`] and asserts reference-count balance (the
 //! live count returns to its starting value) around each scenario.
 //!
+//! The live-object counter is compiled in only under `debug_assertions`, so the
+//! balance assertions are meaningful only in a debug build — the default for
+//! `cargo test` (a `--release` test run reports zero and would fail them).
+//!
 //! The runtime uses a uniform **consume** convention: every primitive and
 //! [`fai_apply_n`] consumes (releases) its operands. A function's parameters are
 //! owned (consumed by its body); its captured environment is borrowed (a use

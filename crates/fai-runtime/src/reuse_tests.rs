@@ -7,6 +7,9 @@
 //! test holds the global [`lock`] and asserts reference-count balance (the live
 //! count returns to its start); reuse tests additionally pin the cumulative
 //! allocation counter, the observable signal that a recycle did *not* allocate.
+//!
+//! Both counters are compiled in only under `debug_assertions`, so these
+//! assertions are meaningful only in a debug build (the default for `cargo test`).
 
 use super::*;
 use crate::tests::lock;

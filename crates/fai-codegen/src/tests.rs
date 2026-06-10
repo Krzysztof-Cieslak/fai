@@ -1,5 +1,9 @@
 //! End-to-end JIT tests: compile small programs and run them, asserting their
 //! console output and a clean (leak-free) exit.
+//!
+//! The leak-free exit and the allocation-count assertions rely on the runtime's
+//! counters, which are compiled in only under `debug_assertions` — so these tests
+//! are meaningful only in a debug build (the default for `cargo test`).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, MutexGuard};

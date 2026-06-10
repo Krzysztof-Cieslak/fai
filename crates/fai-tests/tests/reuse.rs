@@ -10,7 +10,10 @@
 //! the runtime's end-of-run leak check passed, so each program is leak-free.
 //!
 //! The runtime's allocation counter, console sink, and live-object counter are
-//! process-global, so every case serializes on [`LOCK`].
+//! process-global, so every case serializes on [`LOCK`]. The allocation and
+//! live-object counters are compiled in only under `debug_assertions`, so the
+//! allocation-delta assertions and the leak-free exit code are meaningful only in
+//! a debug build (the default for `cargo test`).
 
 use std::sync::{Mutex, MutexGuard};
 
