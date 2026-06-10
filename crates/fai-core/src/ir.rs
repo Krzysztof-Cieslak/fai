@@ -28,14 +28,25 @@ impl FnId {
 }
 
 /// The native calling-convention shape of a definition's entry, derived from its
-/// type signature: which runtime parameters carry an **unboxed** `Float` (raw
-/// `f64` bits in the argument slot) and whether the result is an unboxed `Float`.
+/// type signature.
 ///
-/// Direct, saturated callers marshal float arguments and the result as raw bits
-/// per this shape; the first-class form (`apply_n` / the static closure) keeps the
-/// uniform boxed representation, bridged by a wrapper. A definition with no scalar
-/// `Float` parameter or result is *uniform* (all flags clear) and needs no
-/// bridging. Derived from the stable signature so it is body-edit-independent.
+/// Two dimensions:
+///
+/// * **Argument transport** ([`FnAbi::register_abi`]). A *direct-callable*
+///   definition — non-row-polymorphic (no offset evidence) with at least one
+///   parameter — passes its value arguments in registers, with the entry symbol
+///   `fn(env, a0, …, aN) -> ret`. Every other definition (row-polymorphic, which
+///   is only ever reached curried through `apply_n`, and nullary value bindings)
+///   keeps the uniform spilled-array entry `fn(env, args) -> ret`.
+/// * **`Float` representation** ([`FnAbi::float_params`]/[`FnAbi::float_return`]).
+///   A scalar `Float` parameter or result is unboxed: in the register ABI it is an
+///   `f64` register; in the uniform ABI it is raw `f64` bits in the argument slot /
+///   return word.
+///
+/// Direct, saturated callers marshal arguments per this shape; the first-class
+/// form (`apply_n` / the static closure) always uses the uniform all-boxed array
+/// ABI, bridged by a wrapper. Derived from the stable signature so it is
+/// body-edit-independent.
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct FnAbi {
     /// One flag per runtime parameter (offset-evidence parameters first, then
@@ -43,6 +54,15 @@ pub struct FnAbi {
     pub float_params: Vec<bool>,
     /// Whether the result is an unboxed `Float`.
     pub float_return: bool,
+    /// Whether the entry uses the register-passing calling convention
+    /// (`fn(env, a0, …, aN) -> ret`, value arguments in registers) instead of the
+    /// uniform spilled-array entry (`fn(env, args) -> ret`). `true` exactly for a
+    /// **direct-callable** definition: non-row-polymorphic (no offset evidence)
+    /// with at least one parameter. Row-polymorphic and nullary definitions are
+    /// reached only through `apply_n`, so a register entry would add a wrapper hop
+    /// for no benefit; they keep the uniform ABI (and the raw-bits `Float`
+    /// representation above).
+    pub register_abi: bool,
 }
 
 impl FnAbi {
@@ -69,7 +89,19 @@ impl FnAbi {
                 _ => break,
             }
         }
-        FnAbi { float_params, float_return: matches!(ty, Ty::Con(Con::Float)) }
+        // Direct-callable iff non-row-polymorphic (no evidence) with a parameter:
+        // exactly the definitions a saturated call reaches as a bare `Global` head.
+        let register_abi = evidence == 0 && source_params > 0;
+        FnAbi { float_params, float_return: matches!(ty, Ty::Con(Con::Float)), register_abi }
+    }
+
+    /// The calling-convention shape of a non-source synthetic definition (a
+    /// mutual-recursion combined loop) that is **direct-called** — register
+    /// transport, all-boxed (uniform `i64`) arguments and result. `arity` is its
+    /// runtime parameter count.
+    #[must_use]
+    pub fn register_uniform(arity: usize) -> FnAbi {
+        FnAbi { float_params: vec![false; arity], float_return: false, register_abi: arity > 0 }
     }
 
     /// Whether runtime parameter `i` is passed as an unboxed `Float` (raw bits).
