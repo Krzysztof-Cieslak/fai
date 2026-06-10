@@ -760,6 +760,9 @@ fn run_contracts(rebuilt: &RebuiltTest, start_index: usize, sink: &mut dyn FnMut
     let mut program = JitProgram::compile(&rebuilt.defs, &namer, &arity);
     for position in start_index..rebuilt.contracts.len() {
         let c = &rebuilt.contracts[position];
+        // The live-object counter is compiled in only under `debug_assertions`, so
+        // `live_count` is zero (and `live_delta` always zero) in a release-built
+        // toolchain: per-contract leak detection is a debug/test-build feature.
         let base = fai_runtime::live_count();
         let closure = program.closure_value(&namer, c.def);
         let outcome = run_contract(closure, c.seed, c.trials, c.max_size);

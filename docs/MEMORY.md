@@ -630,8 +630,8 @@ Reuse & in-place update:
     freeing or untracking it), otherwise the null token. `fai_reuse(token, …)`
     builds into the token's memory in place when it is non-null and exactly the
     right size, else allocates fresh (freeing a wrong-sized token). A cumulative
-    `ALLOCATIONS` counter (incremented only on real allocation) makes reuse
-    observable.
+    `ALLOCATIONS` counter (incremented only on real allocation, and compiled in
+    only under `debug_assertions` — see D110) makes reuse observable.
   - **Reset at the death point, not the construction.** The reset is placed where
     the cell dies — at its last projection, *before* any recursive call — so the
     cell's now-released fields (e.g. a list tail) are unique for that call and can
@@ -1283,8 +1283,8 @@ program output are unchanged, guarded by the full type/golden suite):
   - **The IR is unchanged.** This is purely a code-generation lowering of the
     existing `Drop` node, so the reference-count soundness interpreter is
     unaffected. `fai_free(v)` reclaims a dead, child-released cell's memory and
-    decrements the live-object counter (an `unsafe extern "C"` carrying the
-    precondition the inlined drop establishes).
+    decrements the live-object counter (debug-only; see D110) — an
+    `unsafe extern "C"` carrying the precondition the inlined drop establishes.
   - **Acceptance.** A classifier unit-test matrix pins which static types
     specialize; an IR-inspection test pins that a specialized drop emits a
     reference-count branch (`brif`) while a `List` drop does not; and a behavioral
@@ -1636,6 +1636,34 @@ Editor integration:
   binders are not overridable. Note that structural `=` on `Float` is **bitwise**
   (so `-0.0 <> 0.0`), so a law expected to hold should compare with the IEEE
   ordering operators (`>=`/`<=`/`<`/`>`), not `=`.
+
+- **D110 Debug-gated leak counters (refines D77/D-era runtime).** The runtime's
+  live-object and cumulative-allocation counters (`LIVE`/`ALLOCATIONS`, behind
+  `live_count`/`allocations`/`reset_allocations`) exist only to detect leaks and
+  to make reuse observable in tests, so they are compiled in only under
+  `debug_assertions`. A release build performs no per-alloc/free atomics (three
+  relaxed atomics per allocation pair were pure hot-path overhead on every
+  allocating program); with the counters absent, `live_count`/`allocations`
+  report zero and `run_entry`'s end-of-run leak check and the per-contract
+  `live_delta` are no-ops.
+  - **Why this is safe to gate.** All heap allocation already flows through
+    `alloc_obj`/`free_obj` (every constructor, box, closure, and reuse-miss calls
+    them), which is why the counter was accurate; routing the increments through
+    `note_alloc`/`note_free` (no-ops in release) keeps that invariant while
+    centralizing the gate. The accessors stay `pub` and return zero in release so
+    callers in other crates compile unchanged.
+  - **The toolchain has counters iff it was built with debug assertions.** The
+    in-process JIT runtime inherits `debug_assertions` from the cargo profile (on
+    for `cargo test`, off for release/bench). The embedded AOT runtime archive is
+    built by the driver's build script with a matching `-C debug-assertions`
+    (read from `CARGO_CFG_DEBUG_ASSERTIONS`), still optimized — so the native
+    end-to-end tests keep their leak check under `cargo test`, while a shipped
+    `fai build` and the benchmarks link a counter-free runtime. An optimized build
+    can opt the counters back in with `[profile.release] debug-assertions = true`.
+  - **Tests are debug-only by nature.** The counter-asserting tests (the runtime
+    unit/property/reuse tests, the codegen JIT tests, and the end-to-end reuse
+    allocation-count tests) are meaningful only in a debug build, which CI always
+    uses; a `--release` test run would see zero and is not supported.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

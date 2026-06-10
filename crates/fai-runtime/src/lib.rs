@@ -34,6 +34,10 @@
 
 use std::alloc::Layout;
 use std::sync::Mutex;
+// The leak/allocation counters are the only users of these atomics, and they are
+// compiled in only under `debug_assertions`, so the import is gated to match (a
+// release build references no atomics here and must not carry an unused import).
+#[cfg(debug_assertions)]
 use std::sync::atomic::{AtomicI64, Ordering};
 
 /// A Fai value: a tagged 64-bit word (see the crate docs).
@@ -221,29 +225,76 @@ unsafe fn write_ptr(obj: *mut u8, off: usize, val: *const u8) {
 // ---------------------------------------------------------------------------
 // Allocation & the live-object counter.
 // ---------------------------------------------------------------------------
+//
+// The live-object and cumulative-allocation counters exist only to detect leaks
+// (the end-of-run check in `run_entry`) and to make reuse observable in tests, so
+// they are compiled in only under `debug_assertions` — a release build pays none
+// of the per-alloc/free atomics. With the counters absent, `live_count` and
+// `allocations` report zero and the leak check is a no-op. (`debug_assertions` is
+// on for `cargo test`/dev and off for release/bench; an optimized build can opt
+// the counters back in with `[profile.release] debug-assertions = true`.)
 
 /// The number of heap objects currently allocated (debug leak detection).
+#[cfg(debug_assertions)]
 static LIVE: AtomicI64 = AtomicI64::new(0);
 
 /// The cumulative number of heap allocations since the last reset. Unlike [`LIVE`]
 /// it never decreases, so reuse (which writes in place rather than allocating) is
 /// observable as allocations that did *not* happen.
+#[cfg(debug_assertions)]
 static ALLOCATIONS: AtomicI64 = AtomicI64::new(0);
 
+/// Records one heap allocation in the debug counters. Compiled to nothing in a
+/// release build (the counters are absent there).
+#[inline(always)]
+fn note_alloc() {
+    #[cfg(debug_assertions)]
+    {
+        LIVE.fetch_add(1, Ordering::Relaxed);
+        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Records one heap free in the debug counters. Compiled to nothing in a release
+/// build (the counters are absent there).
+#[inline(always)]
+fn note_free() {
+    #[cfg(debug_assertions)]
+    LIVE.fetch_sub(1, Ordering::Relaxed);
+}
+
 /// Returns the number of live heap objects (used by the leak check and tests).
+/// Always zero in a release build, where the counter is compiled out.
 #[must_use]
 pub fn live_count() -> i64 {
-    LIVE.load(Ordering::Relaxed)
+    #[cfg(debug_assertions)]
+    {
+        LIVE.load(Ordering::Relaxed)
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        0
+    }
 }
 
 /// Returns the cumulative allocation count (used by reuse benchmarks and tests).
+/// Always zero in a release build, where the counter is compiled out.
 #[must_use]
 pub fn allocations() -> i64 {
-    ALLOCATIONS.load(Ordering::Relaxed)
+    #[cfg(debug_assertions)]
+    {
+        ALLOCATIONS.load(Ordering::Relaxed)
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        0
+    }
 }
 
-/// Resets the cumulative allocation counter (tests/benchmarks).
+/// Resets the cumulative allocation counter (tests/benchmarks). A no-op in a
+/// release build, where the counter is compiled out.
 pub fn reset_allocations() {
+    #[cfg(debug_assertions)]
     ALLOCATIONS.store(0, Ordering::Relaxed);
 }
 
@@ -262,8 +313,7 @@ fn alloc_obj(size: usize, descriptor: *const Descriptor) -> *mut u8 {
         write_ptr(p, DESC_OFFSET, descriptor.cast());
         write_u64(p, SIZE_OFFSET, size as u64);
     }
-    LIVE.fetch_add(1, Ordering::Relaxed);
-    ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+    note_alloc();
     p
 }
 
@@ -275,7 +325,7 @@ unsafe fn free_obj(p: *mut u8) {
     let layout = Layout::from_size_align(size, ALIGN).expect("valid layout");
     // SAFETY: `p`/`layout` match the original allocation.
     unsafe { std::alloc::dealloc(p, layout) };
-    LIVE.fetch_sub(1, Ordering::Relaxed);
+    note_free();
 }
 
 /// Aborts the process with a runtime error message (only reached on conditions a

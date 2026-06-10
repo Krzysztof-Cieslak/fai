@@ -4,6 +4,9 @@
 //! sink are process-global) and assert **reference-count balance** — the live
 //! count returns to its starting value — alongside value correctness. The
 //! `TestRunner` is driven manually so the lock is held across every case.
+//!
+//! The live-object counter is compiled in only under `debug_assertions`, so the
+//! balance assertions hold only in a debug build (the default for `cargo test`).
 
 use proptest::prelude::*;
 use proptest::test_runner::{TestCaseError, TestRunner};
