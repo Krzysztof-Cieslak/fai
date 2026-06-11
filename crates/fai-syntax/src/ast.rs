@@ -473,6 +473,10 @@ pub enum TypeKind {
     /// A record type `{ x : T, … }` with a closed, anonymous-open, or named-open
     /// tail.
     Record { fields: Vec<FieldType>, tail: RowTail },
+    /// An effect row written as an argument (`{ Console | 'e }`), valid only as an
+    /// interface's effect argument (`Logger { Console }`). Distinguished from a
+    /// record by its leading capability name (atoms are upper-case).
+    EffectRow { labels: Vec<Symbol>, tail: RowTail },
     /// The unit type `()`.
     Unit,
     /// A parenthesized type.

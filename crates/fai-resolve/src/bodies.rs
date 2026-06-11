@@ -147,7 +147,9 @@ fn collect_con_refs(module: &Module, ty: TypeId, out: &mut Vec<(Symbol, TextRang
             }
         }
         TypeKind::Paren(inner) => collect_con_refs(module, *inner, out),
-        TypeKind::Var(_) | TypeKind::Unit | TypeKind::Error => {}
+        // An effect row's atoms are capability names resolved during lowering (as
+        // for an arrow's effect annotation), not type-constructor references.
+        TypeKind::Var(_) | TypeKind::EffectRow { .. } | TypeKind::Unit | TypeKind::Error => {}
     }
 }
 

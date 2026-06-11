@@ -1231,7 +1231,7 @@ impl Parser<'_> {
             let tail = RowTail::Named(self.bump_symbol());
             return Some(EffectAnnot { labels: Vec::new(), tail, span: self.span_from(start) });
         }
-        if !self.eat(TokenKind::LBrace) {
+        if !self.at(TokenKind::LBrace) {
             let span = self.cur().range;
             self.error(SYNTAX_ERROR, span, "expected `{` or an effect variable after `/`");
             return Some(EffectAnnot {
@@ -1240,7 +1240,16 @@ impl Parser<'_> {
                 span: self.span_from(start),
             });
         }
-        // `{ Atom, … | tail }` — atoms are capability interface names (upper).
+        let (labels, tail) = self.parse_effect_row_braces();
+        Some(EffectAnnot { labels, tail, span: self.span_from(start) })
+    }
+
+    /// Parses `{ Atom, … | tail }` — the brace group of an effect row, the
+    /// current token being `{`. Atoms are capability interface names (upper-case),
+    /// which is what distinguishes it from a record (lower-case field names).
+    /// Shared by the arrow effect annotation and an interface effect argument.
+    fn parse_effect_row_braces(&mut self) -> (Vec<Symbol>, RowTail) {
+        self.bump(); // `{`
         let mut labels = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Pipe) && !self.at_eof() {
             if self.at(TokenKind::UpperIdent) {
@@ -1268,7 +1277,7 @@ impl Parser<'_> {
             RowTail::Closed
         };
         self.expect(TokenKind::RBrace, "`}` to close the effect row");
-        Some(EffectAnnot { labels, tail, span: self.span_from(start) })
+        (labels, tail)
     }
 
     fn parse_type_tuple(&mut self) -> TypeId {
@@ -1346,6 +1355,12 @@ impl Parser<'_> {
                     self.expect(TokenKind::RParen, "`)`");
                     TypeKind::Paren(inner)
                 }
+            }
+            // `{ Console … }` (a leading upper-case atom) is an effect row used as
+            // an interface argument; `{ x : T }` / `{}` is a record type.
+            TokenKind::LBrace if self.peek_at(1) == TokenKind::UpperIdent => {
+                let (labels, tail) = self.parse_effect_row_braces();
+                TypeKind::EffectRow { labels, tail }
             }
             TokenKind::LBrace => return self.parse_record_type(start),
             _ => {
@@ -1432,7 +1447,10 @@ fn can_start_pattern_atom(kind: TokenKind) -> bool {
 
 /// Whether `kind` can begin a type-application argument atom.
 fn can_start_type_atom(kind: TokenKind) -> bool {
-    matches!(kind, TokenKind::TypeVar | TokenKind::UpperIdent | TokenKind::LParen)
+    matches!(
+        kind,
+        TokenKind::TypeVar | TokenKind::UpperIdent | TokenKind::LParen | TokenKind::LBrace
+    )
 }
 
 #[cfg(test)]
@@ -1645,6 +1663,15 @@ mod tests {
                     crate::ast::RowTail::Named(r) => format!(" | {}", r.as_str()),
                 };
                 format!("(trecord [{fs}]{t})")
+            }
+            TypeKind::EffectRow { labels, tail } => {
+                let ls = labels.iter().map(|l| l.as_str()).collect::<Vec<_>>().join(", ");
+                let t = match tail {
+                    crate::ast::RowTail::Closed => String::new(),
+                    crate::ast::RowTail::Open => " | _".to_owned(),
+                    crate::ast::RowTail::Named(r) => format!(" | {}", r.as_str()),
+                };
+                format!("(teffect [{ls}]{t})")
             }
             TypeKind::Unit => "(tunit)".to_owned(),
             TypeKind::Paren(inner) => format!("(tparen {})", dump_type(m, *inner)),
@@ -2400,6 +2427,47 @@ mod tests {
                 .nth(1)
                 .unwrap(),
             "(sig Public setX (arrow (trecord [x : (tvar 'a)] | 'r) (trecord [x : (tvar 'a)] | 'r)))"
+        );
+    }
+
+    #[test]
+    fn effect_row_as_an_interface_argument_parses() {
+        // A `{ Console … }` (leading upper-case atom) in argument position is an
+        // effect row, not a record (whose fields are lower-case).
+        assert_eq!(
+            dump("module M\npublic f : Logger { Console } -> Unit").lines().nth(1).unwrap(),
+            "(sig Public f (arrow (tapp (tcon Logger) (teffect [Console])) (tcon Unit)))"
+        );
+    }
+
+    #[test]
+    fn effect_row_argument_with_atoms_and_tail_parses() {
+        assert_eq!(
+            dump("module M\npublic f : Logger { Console, Clock | 'e } -> Unit")
+                .lines()
+                .nth(1)
+                .unwrap(),
+            "(sig Public f (arrow (tapp (tcon Logger) (teffect [Console, Clock] | 'e)) (tcon \
+             Unit)))"
+        );
+    }
+
+    #[test]
+    fn polymorphic_effect_argument_parses_as_a_variable() {
+        // The polymorphic form needs no new syntax: `'e` is an ordinary type-var
+        // argument here, reinterpreted as an effect by lowering.
+        assert_eq!(
+            dump("module M\npublic f : Logger 'e -> Unit").lines().nth(1).unwrap(),
+            "(sig Public f (arrow (tapp (tcon Logger) (tvar 'e)) (tcon Unit)))"
+        );
+    }
+
+    #[test]
+    fn record_type_argument_still_parses_as_a_record() {
+        // A lower-case leading name keeps `{ … }` a record argument.
+        assert_eq!(
+            dump("module M\npublic f : Box { x : Int } -> Unit").lines().nth(1).unwrap(),
+            "(sig Public f (arrow (tapp (tcon Box) (trecord [x : (tcon Int)])) (tcon Unit)))"
         );
     }
 

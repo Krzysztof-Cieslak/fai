@@ -1424,6 +1424,9 @@ fn shape_from_ast(module: &Module, ty: TypeId, vars: &mut FxHashMap<Symbol, usiz
             fs.sort_by(|a, b| a.0.cmp(&b.0));
             Shape::Record(fs, !matches!(tail, RowTail::Closed))
         }
+        // Type-shape search ignores effects: an interface's effect argument is a
+        // neutral shape (matching the reified `Ty::EffectArg` case).
+        TypeKind::EffectRow { .. } => Shape::Other,
         TypeKind::Unit => Shape::Unit,
         TypeKind::Paren(inner) => shape_from_ast(module, *inner, vars),
         TypeKind::Error => Shape::Other,
