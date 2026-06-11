@@ -27,7 +27,7 @@ retired; IDs are not reused).
 | R1 | Cranelift integration + linking harder than expected | Med | High | Driven early via a thin native slice on a tiny subset; runtime ABI kept minimal and stable. Realized; platform-specific codegen/link edge cases remain (tracked in #9, #10). |
 | R2 | RC correctness (leaks / double-free), esp. with closures & existentials | Med | High | Plain RC first; a debug leak counter in every e2e test; precise reuse added only after green. Standing invariant. |
 | R6 | Exhaustiveness checking bugs (rows/literals) | Med | Med | A known algorithm (Maranget-style); golden tests for false pos/neg. An unresolved/ill-typed pattern that left an arity-inconsistent matrix row once panicked the checker (#27); such rows are now lowered to a distinct unmatchable value and the matrix splits guard against short rows. |
-| R8 | Scope creep from "AI-first" features | Med | Med | Effect rows, extension/restriction, and a package manager are out of the current scope — tracked as proposals (#35, #36, #37). |
+| R8 | Scope creep from "AI-first" features | Med | Med | Effect rows are now built (D115); extension/restriction and a package manager remain out of scope — tracked as proposals (#36, #37). |
 | R9 | Docs drifting from implementation | Med | Low | Self-hosted check: `samples/` files are part of the test suite (DoD #6). |
 | R11 | salsa API churn / version instability | Med | Med | Pin a version; wrap behind `fai-db` so the engine is swappable; keep query definitions framework-agnostic. |
 | R12 | Incremental-cache correctness (stale results → wrong diagnostics) | Med | High | Incremental-vs-clean **verifier** in CI; content-addressed keys stamped with compiler version + flags; determinism is a locked invariant. |
@@ -50,9 +50,11 @@ Initial design decisions (summarized in the locked table in `AGENTS.md` §3):
 - **D3 Generics:** uniform boxed representation + dictionary passing (no
   monomorphization by default). Rationale: protects compile throughput; no code
   bloat. Monomorphization is an opt-in optimization (tracked as a proposal, #16).
-- **D4 Effects:** capabilities as explicit values (interface instances from
-  `main`); **no** type-level effect rows for now (tracked as a proposal, #35).
-  Rationale: simple, auditable, implementable now; rows can layer on later.
+- **D4 Effects (effect rows since added — see D115):** capabilities as explicit
+  values (interface instances from `main`). Type-level effect rows were
+  initially left out (simple, auditable, implementable then; rows layered on
+  later) and are **now built** — every arrow carries an effect row of the
+  capabilities it uses, required on public signatures (D115).
 - **D5 Signatures:** Haskell-style explicit signature on its own line above each
   `public` binding; signatures are checked, not trusted.
 - **D6 Layout:** indentation-significant (offside); one canonical layout pinned
@@ -2020,6 +2022,51 @@ Editor integration:
     check agreement with `wrapping_div`/`wrapping_rem` over arbitrary operands; and
     end-to-end tests confirm a variable zero divisor and a remainder by zero still
     abort with the located fault.
+
+- **D118 Type-level effect rows over the capability model (realizes #35;
+  amends D4 and the no-subtyping stance of D75/D9 for the effect dimension).**
+  Every arrow carries an **effect row** — the host-capability interfaces that
+  applying it *uses* — so a function's reach is visible in its type. A bare arrow
+  is pure; `a -> b / { Console | 'e }` uses the console plus a forwarded tail.
+  - **Representation.** `Ty::Arrow` gains an `EffectRow` (sorted `InterfaceRef`
+    atoms + a `Closed`/`Open` tail, mirroring `RecordRow`); `Scheme` quantifies
+    effect-row variables; the solver carries a **third parallel union-find** for
+    effect rows alongside the type and record-row ones. Effects are **erased**
+    after the front end (Core/codegen/the daemon wire form are unchanged), so
+    only inference and rendering touch them.
+  - **Used, not held (D8-style precision).** An effect is incurred where a
+    capability *method is applied* (directly, or transitively through a function
+    or a captured closure), not where a capability value is held. So a pure
+    projector (`getConsole rt = rt.console`) and a closure *builder* are pure; the
+    effect rides the closure's own arrow, closing the laundering hole that the
+    value-flow capability model alone leaves. An interface method's declared
+    arrow effect is its incurred effect; the host capabilities self-label
+    (`Console.writeLine : String -> Unit / { Console }`).
+  - **Inferred, coupled, required on public.** A body's latent effect is the
+    union of what it applies; it lands on the function's saturating arrow (so
+    higher-order functions are effect-polymorphic — `List.map : ('a -> 'b / 'e)
+    -> List 'a -> List 'b / 'e`). Required on every signatured binding: the
+    declared effect must equal the inferred one, reported as **`FAI5001`** (a
+    capability used but undeclared, or declared but unused). The whole standard
+    library, samples, and test corpus carry accurate effects; the std combinators
+    forward `'e`, so mapping/folding a capability-using closure reflects it.
+  - **Strict, not lenient (sound, not complete).** Effect-row unification is
+    strict, so two functions with different concrete effects do not silently
+    unify (no laundering) — combining them point-free (`consoleFn >> clockFn`)
+    needs a lambda whose body performs both. Lenient only at the signature-vs-body
+    check (so a disagreement is the single `FAI5001`, not a generic mismatch) and
+    at interface-method conformance (a method body may do *fewer* effects than the
+    interface declares — the declared effect is an upper bound, so a pure instance
+    of an effectful interface is fine).
+  - **Surface & tooling.** Syntax mirrors the record row — `/ { A, B | 'e }`,
+    lone-`'e` sugar, bare = pure — bound to the innermost arrow; `fai fmt` sorts
+    the atoms and drops `/ {}`. Interface effect arguments and `fai query caps`
+    re-derivation are wired through the same machinery.
+  - **Future work.** Deep effect subsumption (unioning different effects so
+    point-free composition type-checks) and effect-parameterized interfaces
+    (`Logger 'e`, which would let a user interface forward a wrapped capability's
+    effect instead of masking it) remain; the design for both is recorded in the
+    issue tracker.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.
