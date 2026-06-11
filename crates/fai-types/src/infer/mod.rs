@@ -15,7 +15,7 @@ use fai_db::{Db, SourceFile};
 use fai_resolve::{DefId, ResolvedBodies};
 use fai_syntax::Symbol;
 use fai_syntax::ast::{ItemKind, Module};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::ty::{Scheme, Ty};
 
@@ -213,11 +213,27 @@ pub fn infer_scc(
             })
             .collect();
         let body_ty = walker.infer_expr(body);
-        // Discharge any subsumption residual before reading the body effect back.
-        walker.close_residual_effect(&param_tys);
         // The body's latent effect rides the function's saturating arrow.
         let body_eff = walker.body_effect_solve();
         let fn_ty = SolveTy::arrows_solver_eff(param_tys, body_ty.clone(), body_eff.clone());
+
+        // Default every effect-row residual that appears only covariantly (a
+        // subsumption leftover, or the body's latent effect) to the pure row,
+        // keeping those in a parameter position (forwarded from a caller). This
+        // makes `let f = inc >> inc` pure while `let g = List.map` stays
+        // effect-polymorphic, and a merely capability-using body does not
+        // generalize a spurious `'e`.
+        {
+            let mut keep: FxHashSet<crate::ty::EffRowVarId> = FxHashSet::default();
+            cx.contravariant_effect_vars(&fn_ty, &mut keep);
+            let mut all: FxHashSet<crate::ty::EffRowVarId> = FxHashSet::default();
+            cx.collect_effect_vars(&fn_ty, &mut all);
+            for v in all {
+                if !keep.contains(&v) {
+                    cx.close_effect_var(v);
+                }
+            }
+        }
         let inferred_effect = cx.reify_effect_standalone(&body_eff);
 
         // Effect enforcement (required on every signatured binding): the
