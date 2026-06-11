@@ -90,6 +90,7 @@ fn expr_pure_total(db: &dyn Db, e: &CExpr) -> bool {
         // The reference-counting and tail-call nodes do not exist in the pre-count
         // body this analysis runs on; handled for exhaustiveness.
         K::Reset { value, body, .. } => expr_pure_total(db, value) && expr_pure_total(db, body),
+        K::FreeReuse { body, .. } => expr_pure_total(db, body),
         K::Dup { body, .. } | K::Drop { body, .. } => expr_pure_total(db, body),
         K::Join { body, .. } | K::HoleStart { body, .. } => expr_pure_total(db, body),
         K::Recur { args } => args.iter().all(|a| expr_pure_total(db, a)),

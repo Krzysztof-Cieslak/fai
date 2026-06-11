@@ -192,6 +192,11 @@ fn write_expr(
             write_expr(out, body, namer, arity_of, abi_of);
             out.push(')');
         }
+        ExprKind::FreeReuse { token, body } => {
+            let _ = write!(out, "(free-reuse %{} ", token.index());
+            write_expr(out, body, namer, arity_of, abi_of);
+            out.push(')');
+        }
         ExprKind::Dup { local, body } => {
             let _ = write!(out, "(dup %{} ", local.index());
             write_expr(out, body, namer, arity_of, abi_of);

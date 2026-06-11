@@ -245,6 +245,13 @@ pub enum WireExprKind {
         /// The continuation.
         body: Box<WireExpr>,
     },
+    /// Free an unconsumed reuse token (no-op on the null token).
+    FreeReuse {
+        /// The reuse-token slot.
+        token: u32,
+        /// The continuation.
+        body: Box<WireExpr>,
+    },
     /// Increment a slot's refcount.
     Dup {
         /// The slot.
@@ -468,6 +475,10 @@ fn expr_to_wire(e: &CExpr, module_of: &dyn Fn(DefId) -> String) -> WireExpr {
             token: slot(*token),
             body: Box::new(expr_to_wire(body, module_of)),
         },
+        ExprKind::FreeReuse { token, body } => WireExprKind::FreeReuse {
+            token: slot(*token),
+            body: Box::new(expr_to_wire(body, module_of)),
+        },
         ExprKind::Dup { local, body } => {
             WireExprKind::Dup { local: slot(*local), body: Box::new(expr_to_wire(body, module_of)) }
         }
@@ -676,6 +687,10 @@ fn expr_from_wire(e: &WireExpr, sources: &mut SourceAssigner) -> CExpr {
             token: LocalId::from_index(*token as usize),
             body: Box::new(expr_from_wire(body, sources)),
         },
+        WireExprKind::FreeReuse { token, body } => ExprKind::FreeReuse {
+            token: LocalId::from_index(*token as usize),
+            body: Box::new(expr_from_wire(body, sources)),
+        },
         WireExprKind::Dup { local, body } => ExprKind::Dup {
             local: LocalId::from_index(*local as usize),
             body: Box::new(expr_from_wire(body, sources)),
@@ -816,6 +831,53 @@ mod tests {
         assert_eq!(text, pretty_def(&lowered));
         assert!(text.contains("reset %1 = %0"), "expected the reset in {text}");
         assert!(text.contains("data@%1"), "expected the reuse in {text}");
+    }
+
+    #[test]
+    fn round_trip_reset_and_free_reuse() {
+        // A reset whose token is freed (a branch that builds nothing into it) is
+        // inserted by reference counting; built by hand here and round-tripped.
+        let mut db = FaiDatabase::new();
+        let id = db.add_source("M.fai".into(), "module M\n\nlet f x = x\n".to_owned());
+        let file = db.source_file(id).unwrap();
+        let def = DefId::new(file.source(&db), Symbol::intern("f"));
+
+        let cell = LocalId::from_index(0);
+        let token = LocalId::from_index(1);
+        let freed = CExpr::new(
+            ExprKind::FreeReuse {
+                token,
+                body: Box::new(CExpr::new(ExprKind::Lit(Lit::Int(7)), Ty::Error)),
+            },
+            Ty::Error,
+        );
+        let body = CExpr::new(
+            ExprKind::Reset {
+                value: Box::new(CExpr::new(ExprKind::Local(cell), Ty::Error)),
+                token,
+                body: Box::new(freed),
+            },
+            Ty::Error,
+        );
+        let lowered = LoweredDef {
+            def,
+            fns: vec![CoreFn { params: vec![cell], captures: Vec::new(), body }],
+            entry_borrowed: Vec::new(),
+        };
+
+        let wire = def_to_wire(&lowered, &|_| "M".to_owned(), 1, FnAbi::default());
+        let json = serde_json::to_string(&wire).unwrap();
+        let decoded: WireDef = serde_json::from_str(&json).unwrap();
+        let bundle = WireBundle {
+            entry: decoded.id.clone(),
+            runtime: decoded.id.clone(),
+            defs: vec![decoded],
+        };
+        let rebuilt = from_wire(&bundle);
+
+        let text = pretty_def(&rebuilt.defs[0]);
+        assert_eq!(text, pretty_def(&lowered));
+        assert!(text.contains("free-reuse %1"), "expected the token free in {text}");
     }
 
     #[test]

@@ -361,6 +361,7 @@ impl Analyzer<'_> {
             // Reference-counting and tail-call nodes are not present in the
             // pre-count IR borrow inference runs on.
             K::Reset { .. }
+            | K::FreeReuse { .. }
             | K::Dup { .. }
             | K::Drop { .. }
             | K::Join { .. }

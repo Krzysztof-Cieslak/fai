@@ -222,6 +222,13 @@ impl Checker<'_> {
                     ));
                 }
             }
+            // Freeing a token consumes its one reference (like a `MakeData` that
+            // reuses it would), so a path that frees and a path that reuses leave a
+            // consistent state.
+            ExprKind::FreeReuse { token, body } => {
+                self.consume(*token, refs)?;
+                self.eval(body, refs)?;
+            }
             // The loop's carried locals are already bound (function parameters and,
             // for a destination-passing loop, the hole). Each `Recur`/`HoleClose`
             // along a path consumes them, so loop balance falls out of the existing

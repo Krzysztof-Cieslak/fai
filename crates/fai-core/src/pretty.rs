@@ -172,6 +172,11 @@ fn write_expr(out: &mut String, e: &CExpr) {
             write_expr(out, body);
             out.push(')');
         }
+        ExprKind::FreeReuse { token, body } => {
+            let _ = write!(out, "(free-reuse %{}; ", token.index());
+            write_expr(out, body);
+            out.push(')');
+        }
         ExprKind::Dup { local, body } => {
             let _ = write!(out, "(dup %{}; ", local.index());
             write_expr(out, body);

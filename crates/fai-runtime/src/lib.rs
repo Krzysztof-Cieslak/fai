@@ -865,6 +865,20 @@ pub unsafe extern "C" fn fai_reuse(
     unsafe { fai_make_data(tag, nfields, fields) }
 }
 
+/// Frees a reuse token produced by [`fai_drop_reuse`] that no [`fai_reuse`] will
+/// consume — reclaiming the held cell's memory — or a no-op on the null token
+/// (the cell was shared, so nothing was reset). A non-null token is a reset cell's
+/// memory: reference count zero with its children already released by
+/// [`fai_drop_reuse`], which is exactly [`free_obj`]'s precondition.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_free_reuse(token: Value) {
+    if token != NO_REUSE {
+        // SAFETY: a non-null token is a reset object's memory (rc 0, childless), so
+        // its size header is valid and `free_obj` reclaims it correctly.
+        unsafe { free_obj(token as usize as *mut u8) };
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Integers.
 // ---------------------------------------------------------------------------

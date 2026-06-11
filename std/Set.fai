@@ -10,9 +10,10 @@ module Set
 // name `Set` so it stays usable unqualified.
 //
 // `insert`/`remove` rebuild the search path (immutable, so a shared set is
-// copied). Recycling the path of a uniquely-owned `insert`/`remove` in place (so
-// a unique build allocates O(n) rather than O(n log n)) needs a reference-counting
-// improvement and is future work.
+// copied); on a uniquely-owned set reference counting recycles that path in place
+// — the matched node is reset before the recursive call, so a unique build
+// allocates O(n), not O(n log n). To enable that, `insert`'s equal branch rebuilds
+// the node rather than returning the matched value (which would share it).
 public opaque type Set 'a =
   | SetEmpty
   | SetNode Int (Set 'a) 'a (Set 'a)
@@ -97,7 +98,7 @@ let insert x s =
       let r2 = insert x r
       if size r2 > delta * size l then balance l y r2 else SetNode (size l + size r2 + 1) l y r2
     else
-      s
+      SetNode n l y r
 example: member 2 (insert 2 empty)
 example: size (insert 1 (insert 1 empty)) = 1
 

@@ -5972,3 +5972,44 @@ fn no_mutual_with_nested_lambda() {
     "#});
     assert!(groups.is_empty(), "a member with a lambda is not flattened: {groups:?}");
 }
+
+/// A "recurse, then rebalance" insert (the shape of a balanced-tree `insert`): the
+/// recursion is bound in a `let` before a branch that either rebuilds the matched
+/// node or calls a helper. The reuse pass must reset the matched node **before** the
+/// recursive call — so the recursed-into child is uniquely owned and rebuilt in
+/// place — threading the token to the rebuilding branch and freeing it (a
+/// `free-reuse`) on the helper branch that builds nothing.
+#[test]
+fn reset_precedes_a_let_bound_recursion() {
+    let src = indoc! {r#"
+        module M
+        type T = | Leaf | Node Int T Int T
+        let sz t =
+          match t with
+          | Leaf -> 0
+          | Node s _ _ _ -> s
+        let bal l x r = Node (sz l + sz r + 1) l x r
+        let insert x t =
+          match t with
+          | Leaf -> Node 1 Leaf x Leaf
+          | Node n l y r ->
+            if x < y then
+              let l2 = insert x l
+              if sz l2 > 3 * sz r then bal l2 y r else Node (sz l2 + sz r + 1) l2 y r
+            else if x > y then
+              let r2 = insert x r
+              if sz r2 > 3 * sz l then bal l y r2 else Node (sz l + sz r2 + 1) l y r2
+            else
+              Node n l x r
+    "#};
+    sound(src, "insert");
+    let out = rc_checked(src, "insert");
+    // The reset of the matched node is hoisted ahead of the recursive call (so the
+    // child it recurses into is uniquely owned).
+    let reset = out.find("reset ").expect("a reset of the matched node");
+    let rec = out.find("app @insert").expect("the recursive call");
+    assert!(reset < rec, "reset must precede the recursion:\n{out}");
+    // The rebuilding branch recycles the cell; the `bal` branch frees the token.
+    assert!(out.contains("data@%"), "the rebuild branch reuses the token:\n{out}");
+    assert!(out.contains("free-reuse %"), "the helper branch frees the token:\n{out}");
+}

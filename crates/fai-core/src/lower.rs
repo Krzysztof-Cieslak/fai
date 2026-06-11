@@ -1357,6 +1357,7 @@ fn collect_free(expr: &CExpr, bound: &mut FxHashSet<LocalId>, out: &mut FxHashSe
             collect_free(value, bound, out);
             collect_free(body, bound, out);
         }
+        K::FreeReuse { body, .. } => collect_free(body, bound, out),
         K::Join { params, body } => {
             let fresh: Vec<LocalId> = params.iter().copied().filter(|p| bound.insert(*p)).collect();
             collect_free(body, bound, out);
