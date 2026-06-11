@@ -682,7 +682,13 @@ impl<E: Env> Walker<'_, E> {
             match build_interface_method_scheme(self.db, iref, m.name) {
                 Some(scheme) => {
                     let expected = self.cx.instantiate_sharing(&scheme, &param_fresh);
+                    // A method body may perform *fewer* effects than the interface
+                    // declares (the declared effect is an upper bound — a pure
+                    // instance of an effectful interface is fine), so effect
+                    // unification is lenient here.
+                    self.cx.set_lenient_effects(true);
                     self.unify_at(m.span, &impl_ty, &expected, "an interface method");
+                    self.cx.set_lenient_effects(false);
                     implemented.push(m.name);
                 }
                 None => emit(

@@ -361,6 +361,22 @@ fn wrong_effect_annotation_is_an_error() {
 }
 
 #[test]
+fn mixed_effect_branches_do_not_unify() {
+    // Without subsumption, two closures with *different* concrete effects cannot
+    // unify (here in the branches of an `if`), so the effect is reported as a
+    // mismatch rather than silently laundered to one of them. A lambda whose body
+    // performs both is the way to combine them.
+    let src = indoc! {"
+        interface Console = writeLine : String -> Unit / { Console }
+        interface Clock = now : Unit -> Int / { Clock }
+        public pick : Bool -> Console -> Clock -> (Unit -> Unit)
+        let pick b c k =
+          if b then fun u -> c.writeLine \"x\" else fun u -> let t = k.now () in ()
+    "};
+    assert!(codes(src).contains(&"FAI3001".to_owned()));
+}
+
+#[test]
 fn over_declared_effect_on_a_pure_body_is_an_error() {
     // Declares `{ Console }` but the body performs no effect.
     let src = indoc! {"

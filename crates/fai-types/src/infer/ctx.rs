@@ -223,11 +223,12 @@ pub struct InferCtx {
     /// The parallel union-find for effect-row variables (distinct from `rows`).
     effects: Vec<EffState>,
     /// When set, effect-row unification never *fails*: a closed-vs-closed atom
-    /// difference is accepted rather than reported. This is the transitional
-    /// "infer-don't-enforce" mode — effects are inferred (and threaded through
-    /// open tails) but a declared-vs-body effect disagreement is not an error
-    /// yet, so existing programs need no effect annotations. Enforcement flips
-    /// this off.
+    /// difference is accepted rather than reported. Effect unification is strict
+    /// by default (so a use-site effect mismatch — e.g. composing two functions
+    /// with different effects via `>>` — is a real error rather than a silent
+    /// laundering); it is enabled only around a binding's signature-vs-body check,
+    /// where a disagreement is reported once as the dedicated effect mismatch
+    /// (FAI5001) instead of a generic type mismatch.
     lenient_effects: bool,
     /// The current binding depth, bumped around a generalizable `let` right-hand
     /// side. A variable generalizes only if its level exceeds the enclosing one.
@@ -248,9 +249,16 @@ impl InferCtx {
             vars: Vec::new(),
             rows: Vec::new(),
             effects: Vec::new(),
-            lenient_effects: true,
+            lenient_effects: false,
             current_level: 0,
         }
+    }
+
+    /// Toggles lenient effect unification (see the field doc). Enabled briefly
+    /// around the signature-vs-body check so an effect disagreement is reported
+    /// once as FAI5001 rather than also as a generic type mismatch.
+    pub fn set_lenient_effects(&mut self, value: bool) {
+        self.lenient_effects = value;
     }
 
     /// Enters a deeper binding level (around a generalizable `let` right-hand

@@ -236,7 +236,12 @@ pub fn infer_scc(
             ));
         }
 
+        // The signature-vs-body check tolerates an effect disagreement (it is
+        // reported once as FAI5001 below); only the body's *internal* effect
+        // unifications are strict.
+        cx.set_lenient_effects(true);
         let unify = cx.unify(&fn_ty, &member_ty);
+        cx.set_lenient_effects(false);
         // A failed unification (the body conflicts with the signature) is an
         // immediate mismatch.
         if declared.contains_key(m) && unify != UnifyResult::Ok {
