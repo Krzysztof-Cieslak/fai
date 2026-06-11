@@ -2025,9 +2025,11 @@ fn char_equality_is_inlined_without_a_guard_or_fallback() {
 }
 
 #[test]
-fn integer_division_stays_an_out_of_line_call() {
-    // Division guards against zero in the runtime, so it is not inlined: a plain
-    // call, with no immediate guard branch and no inline fit check.
+fn integer_division_is_inlined_with_a_runtime_fallback() {
+    // A variable divisor takes the general path: a native sdiv behind the
+    // immediate guard, the zero-divisor branch, the 63-bit fit check, and the
+    // retained runtime fallback (a boxed operand, a zero divisor, or the lone
+    // (-2^62)/-1 = 2^62 immediate-overflow result).
     let src = indoc! {r#"
         module M
 
@@ -2035,9 +2037,113 @@ fn integer_division_stays_an_out_of_line_call() {
         let d x y = x / y
     "#};
     let ir = function_ir(src, "d").join("\n");
-    assert!(ir.contains("call fn0"), "division is a runtime call:\n{ir}");
-    assert!(!ir.contains("brif"), "no immediate guard for the non-inlined call:\n{ir}");
-    assert!(!ir.contains("sadd_overflow"), "no inline fit check for division:\n{ir}");
+    assert!(ir.contains("sdiv"), "inline native division:\n{ir}");
+    assert!(ir.contains("sadd_overflow"), "inline 63-bit fit check:\n{ir}");
+    assert!(ir.contains("brif"), "immediate-operand and zero-divisor guards:\n{ir}");
+    assert!(ir.contains("call fn0"), "runtime fallback call retained:\n{ir}");
+}
+
+#[test]
+fn integer_remainder_is_inlined_with_a_runtime_fallback() {
+    // A variable divisor: a native srem behind the guards. A remainder always
+    // fits the immediate, so — unlike division — there is no fit check.
+    let src = indoc! {r#"
+        module M
+
+        r : Int -> Int -> Int
+        let r x y = x % y
+    "#};
+    let ir = function_ir(src, "r").join("\n");
+    assert!(ir.contains("srem"), "inline native remainder:\n{ir}");
+    assert!(!ir.contains("sadd_overflow"), "a remainder needs no fit check:\n{ir}");
+    assert!(ir.contains("brif"), "immediate-operand and zero-divisor guards:\n{ir}");
+    assert!(ir.contains("call fn0"), "runtime fallback call retained:\n{ir}");
+}
+
+#[test]
+fn division_by_a_constant_power_of_two_strength_reduces_to_a_shift() {
+    // A constant power-of-two divisor needs no zero or overflow guard and
+    // strength-reduces to a bias-corrected arithmetic shift: no native sdiv and no
+    // fit check, only the dividend guard and the boxed-dividend fallback. The
+    // bias's logical shift (`ushr`) marks the strength-reduced path (untag/tag use
+    // `sshr`/`ishl`).
+    let src = indoc! {r#"
+        module M
+
+        d : Int -> Int
+        let d x = x / 2
+    "#};
+    let ir = function_ir(src, "d").join("\n");
+    assert!(!ir.contains("sdiv"), "no native division for a power of two:\n{ir}");
+    assert!(!ir.contains("sadd_overflow"), "no fit check for a power of two:\n{ir}");
+    assert!(ir.contains("ushr"), "strength-reduced via the sign-bias shift:\n{ir}");
+    assert!(ir.contains("brif"), "dividend immediate guard:\n{ir}");
+    assert!(ir.contains("call fn0"), "boxed-dividend runtime fallback retained:\n{ir}");
+}
+
+#[test]
+fn remainder_by_a_constant_power_of_two_strength_reduces_to_a_shift() {
+    // The power-of-two remainder is `x - (q << k)`: no native srem; the bias
+    // shift (`ushr`) again marks the strength-reduced quotient.
+    let src = indoc! {r#"
+        module M
+
+        r : Int -> Int
+        let r x = x % 2
+    "#};
+    let ir = function_ir(src, "r").join("\n");
+    assert!(!ir.contains("srem"), "no native remainder for a power of two:\n{ir}");
+    assert!(ir.contains("ushr"), "strength-reduced via the sign-bias shift:\n{ir}");
+    assert!(ir.contains("brif"), "dividend immediate guard:\n{ir}");
+    assert!(ir.contains("call fn0"), "boxed-dividend runtime fallback retained:\n{ir}");
+}
+
+#[test]
+fn division_by_a_nonzero_constant_elides_the_guards() {
+    // A constant (non-power-of-two) divisor is statically nonzero and never -1, so
+    // the native sdiv carries no zero guard and no fit check — the elision marker
+    // is the absent sadd_overflow — keeping the dividend guard and the fallback.
+    let src = indoc! {r#"
+        module M
+
+        d : Int -> Int
+        let d x = x / 3
+    "#};
+    let ir = function_ir(src, "d").join("\n");
+    assert!(ir.contains("sdiv"), "native division by the constant:\n{ir}");
+    assert!(!ir.contains("sadd_overflow"), "no fit check for a constant divisor:\n{ir}");
+    assert!(ir.contains("brif"), "dividend immediate guard:\n{ir}");
+    assert!(ir.contains("call fn0"), "boxed-dividend runtime fallback retained:\n{ir}");
+}
+
+#[test]
+fn remainder_by_a_nonzero_constant_elides_the_guards() {
+    let src = indoc! {r#"
+        module M
+
+        r : Int -> Int
+        let r x = x % 3
+    "#};
+    let ir = function_ir(src, "r").join("\n");
+    assert!(ir.contains("srem"), "native remainder by the constant:\n{ir}");
+    assert!(ir.contains("brif"), "dividend immediate guard:\n{ir}");
+    assert!(ir.contains("call fn0"), "boxed-dividend runtime fallback retained:\n{ir}");
+}
+
+#[test]
+fn division_by_a_literal_zero_stays_an_out_of_line_call() {
+    // A literal zero divisor must fault with the located message, so it keeps the
+    // plain runtime call: no inline guard and no native division.
+    let src = indoc! {r#"
+        module M
+
+        d : Int -> Int
+        let d x = x / 0
+    "#};
+    let ir = function_ir(src, "d").join("\n");
+    assert!(ir.contains("call fn0"), "division by zero is a runtime call:\n{ir}");
+    assert!(!ir.contains("brif"), "no immediate guard for the bare call:\n{ir}");
+    assert!(!ir.contains("sdiv"), "no native division for a zero divisor:\n{ir}");
 }
 
 // --- Register calling convention: emitted IR shape --------------------------
@@ -2180,4 +2286,115 @@ fn boolean_not_and_inequality_are_inlined() {
 fn boolean_equality_on_the_fast_path() {
     let (code, out) = run(&main_printing("if true = true then \"y\" else \"n\""));
     assert_eq!((code, out.as_str()), (0, "y\n"));
+}
+
+// --- Inline integer division and remainder: per-path behavior ----------------
+// `int_out` evaluates a constant expression, so a literal divisor exercises the
+// constant paths (power-of-two strength reduction, or the guard-elided native
+// op); `var_divrem` routes the operands through a two-argument function, so the
+// divisor is a variable and the general (zero-guarded, fit-checked) path runs.
+
+/// Runs `a <op> b` (op `/` or `%`) through a two-argument function — a variable
+/// divisor, the general inline path — printing the result.
+fn var_divrem(op: char, a: &str, b: &str) -> (i32, String) {
+    let src = formatdoc! {r#"
+        module M
+
+        f : Int -> Int -> Int
+        let f a b = a {op} b
+
+        public main : Runtime -> Unit
+        let main runtime = runtime.console.writeLine (Int.toString (f ({a}) ({b})))
+    "#};
+    run(&src)
+}
+
+#[test]
+fn power_of_two_division_truncates_positive_and_negative_dividends() {
+    // The bias-corrected shift truncates toward zero for either sign.
+    let (code, out) = int_out("7 / 2");
+    assert_eq!((code, out.as_str()), (0, "3\n"));
+    let (code, out) = int_out("(0 - 7) / 2");
+    assert_eq!((code, out.as_str()), (0, "-3\n"));
+    let (code, out) = int_out("(0 - 8) / 2");
+    assert_eq!((code, out.as_str()), (0, "-4\n"));
+    let (code, out) = int_out("(0 - 100) / 8");
+    assert_eq!((code, out.as_str()), (0, "-12\n"));
+    let (code, out) = int_out("100 / 4");
+    assert_eq!((code, out.as_str()), (0, "25\n"));
+}
+
+#[test]
+fn power_of_two_remainder_follows_the_dividend_sign() {
+    let (code, out) = int_out("7 % 2");
+    assert_eq!((code, out.as_str()), (0, "1\n"));
+    let (code, out) = int_out("(0 - 7) % 2");
+    assert_eq!((code, out.as_str()), (0, "-1\n"));
+    let (code, out) = int_out("(0 - 8) % 2");
+    assert_eq!((code, out.as_str()), (0, "0\n"));
+    let (code, out) = int_out("(0 - 100) % 8");
+    assert_eq!((code, out.as_str()), (0, "-4\n"));
+}
+
+#[test]
+fn constant_division_truncates_positive_and_negative_dividends() {
+    let (code, out) = int_out("7 / 3");
+    assert_eq!((code, out.as_str()), (0, "2\n"));
+    let (code, out) = int_out("(0 - 7) / 3");
+    assert_eq!((code, out.as_str()), (0, "-2\n"));
+    let (code, out) = int_out("7 % 3");
+    assert_eq!((code, out.as_str()), (0, "1\n"));
+    let (code, out) = int_out("(0 - 7) % 3");
+    assert_eq!((code, out.as_str()), (0, "-1\n"));
+}
+
+#[test]
+fn division_by_one_is_the_identity() {
+    let (code, out) = int_out("(0 - 42) / 1");
+    assert_eq!((code, out.as_str()), (0, "-42\n"));
+    let (code, out) = int_out("42 % 1");
+    assert_eq!((code, out.as_str()), (0, "0\n"));
+}
+
+#[test]
+fn boxed_dividend_with_a_constant_divisor_uses_the_fallback() {
+    // 2^62 is boxed; the constant paths still keep the dividend guard, so a boxed
+    // dividend takes the runtime fallback.
+    let (code, out) = int_out("4611686018427387904 / 2");
+    assert_eq!((code, out.as_str()), (0, "2305843009213693952\n")); // 2^61
+    let (code, out) = int_out("4611686018427387904 / 3");
+    assert_eq!((code, out.as_str()), (0, "1537228672809129301\n"));
+    let (code, out) = int_out("4611686018427387904 % 3");
+    assert_eq!((code, out.as_str()), (0, "1\n"));
+}
+
+#[test]
+fn variable_division_and_remainder_on_the_fast_path() {
+    let (code, out) = var_divrem('/', "20", "5");
+    assert_eq!((code, out.as_str()), (0, "4\n"));
+    let (code, out) = var_divrem('%', "20", "7");
+    assert_eq!((code, out.as_str()), (0, "6\n"));
+    let (code, out) = var_divrem('/', "0 - 20", "7");
+    assert_eq!((code, out.as_str()), (0, "-2\n"));
+    let (code, out) = var_divrem('%', "0 - 20", "7");
+    assert_eq!((code, out.as_str()), (0, "-6\n"));
+}
+
+#[test]
+fn variable_division_overflow_boxes_via_the_fallback() {
+    // -2^62 / -1 = 2^62 overflows the immediate; the fit check routes it to the
+    // runtime fallback, which boxes the result (matching wrapping_div).
+    let (code, out) = var_divrem('/', "0 - 4611686018427387904", "0 - 1");
+    assert_eq!((code, out.as_str()), (0, "4611686018427387904\n")); // 2^62, boxed
+    // The companion remainder is 0 and fits the immediate.
+    let (code, out) = var_divrem('%', "0 - 4611686018427387904", "0 - 1");
+    assert_eq!((code, out.as_str()), (0, "0\n"));
+}
+
+#[test]
+fn variable_division_by_a_boxed_operand_uses_the_fallback() {
+    // A boxed divisor (2^62) fails the both-immediate guard, so the general path
+    // falls back to the runtime, which unboxes and divides.
+    let (code, out) = var_divrem('/', "9223372036854775806", "4611686018427387904");
+    assert_eq!((code, out.as_str()), (0, "1\n")); // (2^63-2) / 2^62 = 1
 }

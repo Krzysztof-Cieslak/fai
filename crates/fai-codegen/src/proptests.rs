@@ -457,4 +457,75 @@ proptest! {
         let got: i64 = out.trim().parse().expect("integer output");
         prop_assert_eq!(got, expected);
     }
+
+    /// Division and remainder with a **variable** divisor (the general inline path)
+    /// agree with Rust's wrapping reference over arbitrary operands — immediate and
+    /// boxed, both signs, including the lone `-2^62/-1` immediate-overflow that
+    /// boxes via the fallback. The divisor is filtered to be nonzero (a zero
+    /// divisor faults, which aborts the process and so cannot be a JIT case).
+    #[test]
+    fn jit_variable_division_and_remainder_match_wrapping_reference(
+        a in any::<i64>().prop_filter("avoid i64::MIN rendering", |v| *v != i64::MIN),
+        b in any::<i64>().prop_filter("nonzero, non-MIN divisor", |v| *v != 0 && *v != i64::MIN),
+    ) {
+        let (want_div, want_rem) = (a.wrapping_div(b), a.wrapping_rem(b));
+        let src = formatdoc! {r#"
+            module M
+
+            f : Int -> Int -> Int
+            let f a b = a / b
+
+            g : Int -> Int -> Int
+            let g a b = a % b
+
+            public main : Runtime -> Unit
+            let main r =
+              r.console.writeLine (Int.toString (f ({a}) ({b})) ++ " " ++ Int.toString (g ({a}) ({b})))
+        "#,
+            a = render_arg(a),
+            b = render_arg(b),
+        };
+        let (code, out) = run(&src);
+        prop_assert_eq!(code, 0, "program leaked or failed: {}", out);
+        let mut parts = out.split_whitespace();
+        let got_div: i64 = parts.next().expect("division output").parse().expect("integer");
+        let got_rem: i64 = parts.next().expect("remainder output").parse().expect("integer");
+        prop_assert_eq!(got_div, want_div);
+        prop_assert_eq!(got_rem, want_rem);
+    }
+
+    /// Division and remainder by a **constant** positive divisor (the strength-
+    /// reduced power-of-two path and the guard-elided constant path) agree with the
+    /// wrapping reference over an arbitrary dividend — immediate and boxed, both
+    /// signs. The divisor literal spans powers of two and other values.
+    #[test]
+    fn jit_constant_division_and_remainder_match_wrapping_reference(
+        x in any::<i64>().prop_filter("avoid i64::MIN rendering", |v| *v != i64::MIN),
+        d in 1i64..=1024,
+    ) {
+        let (want_div, want_rem) = (x.wrapping_div(d), x.wrapping_rem(d));
+        let src = formatdoc! {r#"
+            module M
+
+            f : Int -> Int
+            let f x = x / {d}
+
+            g : Int -> Int
+            let g x = x % {d}
+
+            public main : Runtime -> Unit
+            let main r =
+              r.console.writeLine (Int.toString (f ({x})) ++ " " ++ Int.toString (g ({x})))
+        "#,
+            x = render_arg(x),
+            d = d,
+        };
+        let (code, out) = run(&src);
+        prop_assert_eq!(code, 0, "program leaked or failed: {}", out);
+        let mut parts = out.split_whitespace();
+        let got_div: i64 = parts.next().expect("division output").parse().expect("integer");
+        let got_rem: i64 = parts.next().expect("remainder output").parse().expect("integer");
+        prop_assert_eq!(got_div, want_div);
+        prop_assert_eq!(got_rem, want_rem);
+    }
 }

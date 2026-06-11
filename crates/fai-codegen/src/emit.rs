@@ -1258,8 +1258,8 @@ impl<M: Module> Translator<'_, M> {
 
     /// Compiles an integer/boolean primitive to inline machine code when its
     /// operands are immediates, or returns `None` for the primitives that stay
-    /// out-of-line runtime calls (division/remainder, the float operations,
-    /// structural/string operations on boxed values, capabilities).
+    /// out-of-line runtime calls (the float operations, structural/string
+    /// operations on boxed values, capabilities).
     ///
     /// The fast path mirrors the runtime (`unbox_int` / operate / `fai_box_int`):
     /// it untags the operands, runs the native operation, and re-tags — branching
@@ -1278,6 +1278,8 @@ impl<M: Module> Translator<'_, M> {
             Prim::IntAdd => Some(self.inline_arith(op, args, FitsOp::Add)),
             Prim::IntSub => Some(self.inline_arith(op, args, FitsOp::Sub)),
             Prim::IntMul => Some(self.inline_arith(op, args, FitsOp::Mul)),
+            Prim::IntDiv => Some(self.inline_divrem(op, args, true)),
+            Prim::IntRem => Some(self.inline_divrem(op, args, false)),
             Prim::IntShl => Some(self.inline_arith(op, args, FitsOp::Shl)),
             Prim::IntShr => Some(self.inline_arith(op, args, FitsOp::Shr)),
             Prim::IntShrLogical => Some(self.inline_arith(op, args, FitsOp::Ushr)),
@@ -1388,6 +1390,147 @@ impl<M: Module> Translator<'_, M> {
                 let (shifted, overflow) = s.builder.ins().sadd_overflow(r, r);
                 let tagged = s.builder.ins().bor_imm(shifted, 1);
                 s.builder.ins().brif(overflow, slow, &[], merge, &[tagged.into()]);
+            },
+        )
+    }
+
+    /// Inlines integer division (`is_div`) or remainder, choosing the shape from
+    /// the divisor:
+    ///
+    /// * A **literal** divisor is always non-negative — a negation lowers to
+    ///   `0 - n`, never a negative literal — so the cases below cover every
+    ///   constant. `0` keeps the out-of-line runtime call, which raises the located
+    ///   division-by-zero fault (a native `sdiv`/`srem` by zero would be a raw
+    ///   hardware trap with no message). A positive power of two strength-reduces
+    ///   to a shift; any other in-range positive constant divides with the native
+    ///   op and **no** zero guard or fit check (the divisor is statically nonzero
+    ///   and never `-1`, so the result always fits). Each constant path still
+    ///   guards the dividend and falls back to the runtime for a boxed (large) one.
+    /// * A **variable** divisor (or a constant too large to be immediate) takes the
+    ///   general path: a both-operands-immediate guard, a zero-divisor branch to
+    ///   the runtime fault, and — for division — the immediate fit check.
+    fn inline_divrem(&mut self, op: Prim, args: &[CExpr], is_div: bool) -> Value {
+        if let ExprKind::Lit(Lit::Int(d)) = args[1].kind {
+            if d == 0 {
+                // A literal zero divisor always faults; keep the out-of-line call
+                // so the located message is raised rather than a hardware trap.
+                let a = self.expr(&args[0]);
+                let b = self.expr(&args[1]);
+                return self.prim_runtime_call(op, &[a, b]);
+            }
+            if d >= 1 && fits_immediate(d) {
+                if d > 1 && (d & (d - 1)) == 0 {
+                    return self.inline_divrem_pow2(
+                        op,
+                        args,
+                        is_div,
+                        i64::from(d.trailing_zeros()),
+                    );
+                }
+                return self.inline_divrem_const(op, args, is_div);
+            }
+        }
+        self.inline_divrem_general(op, args, is_div)
+    }
+
+    /// The general division/remainder path (a variable divisor, or a constant too
+    /// large to be immediate): a both-operands-immediate guard, then a zero-divisor
+    /// branch to the runtime fault, the native `sdiv`/`srem`, and — for division —
+    /// the immediate fit check. A boxed operand or a zero divisor takes the runtime
+    /// fallback, which consumes both operands and raises the located fault on zero.
+    fn inline_divrem_general(&mut self, op: Prim, args: &[CExpr], is_div: bool) -> Value {
+        let a = self.expr(&args[0]);
+        let b = self.expr(&args[1]);
+        let anded = self.builder.ins().band(a, b);
+        self.guard_immediate(
+            anded,
+            |s| s.prim_runtime_call(op, &[a, b]),
+            |s, slow, merge| {
+                let xa = s.untag(a);
+                let xb = s.untag(b);
+                // Cranelift's sdiv/srem trap on a zero divisor, so the native op
+                // must not see one: a zero divisor branches to the runtime call,
+                // which raises the located division-by-zero fault.
+                let nonzero = s.builder.create_block();
+                let is_zero = s.builder.ins().icmp_imm(IntCC::Equal, xb, 0);
+                s.builder.ins().brif(is_zero, slow, &[], nonzero, &[]);
+                s.builder.switch_to_block(nonzero);
+                s.builder.seal_block(nonzero);
+                if is_div {
+                    let r = s.builder.ins().sdiv(xa, xb);
+                    // Immediate operands cannot reach sdiv's own INT_MIN/-1 overflow
+                    // trap, but `(-2^62) / -1 = 2^62` overflows the immediate; the
+                    // fit check routes that lone case to the fallback, which boxes it.
+                    let (shifted, overflow) = s.builder.ins().sadd_overflow(r, r);
+                    let tagged = s.builder.ins().bor_imm(shifted, 1);
+                    s.builder.ins().brif(overflow, slow, &[], merge, &[tagged.into()]);
+                } else {
+                    let r = s.builder.ins().srem(xa, xb);
+                    // `|a % b| < |b| <= 2^62`, so a remainder always fits; no check.
+                    let tagged = s.tag_int(r);
+                    s.builder.ins().jump(merge, &[tagged.into()]);
+                }
+            },
+        )
+    }
+
+    /// Division/remainder by a constant, statically nonzero, in-range divisor that
+    /// is not a power of two (handled by [`Self::inline_divrem_pow2`]). A literal
+    /// divisor is non-negative, so it is never `0` (handled in [`Self::inline_divrem`])
+    /// nor `-1`: with `|d| >= 1` the quotient and remainder always fit the
+    /// immediate, so neither the zero guard nor the division fit check is needed.
+    /// Only the dividend is guarded; a boxed dividend falls back to the runtime.
+    fn inline_divrem_const(&mut self, op: Prim, args: &[CExpr], is_div: bool) -> Value {
+        let a = self.expr(&args[0]);
+        let b = self.expr(&args[1]);
+        self.guard_immediate(
+            a,
+            |s| s.prim_runtime_call(op, &[a, b]),
+            |s, _slow, merge| {
+                let xa = s.untag(a);
+                // The divisor is a constant, so `sdiv`/`srem` strength-reduce in the
+                // backend (e.g. a division by 3 becomes a multiply).
+                let xb = s.untag(b);
+                let r = if is_div {
+                    s.builder.ins().sdiv(xa, xb)
+                } else {
+                    s.builder.ins().srem(xa, xb)
+                };
+                let tagged = s.tag_int(r);
+                s.builder.ins().jump(merge, &[tagged.into()]);
+            },
+        )
+    }
+
+    /// Strength-reduces division/remainder by a constant power of two `2^k`
+    /// (`k >= 1`) to a signed, truncating shift — no zero or overflow guard (the
+    /// divisor is a known nonzero power of two and the result always fits). Only
+    /// the dividend is guarded; a boxed dividend falls back to the runtime.
+    ///
+    /// Truncation toward zero needs a bias, since an arithmetic shift floors:
+    /// `bias = (x < 0) ? 2^k - 1 : 0`, so `q = (x + bias) >> k` and the remainder
+    /// is `x - (q << k)`. The bias is `(x >> 63) >>u (64 - k)` — all-ones to `2^k-1`
+    /// for a negative `x`, zero otherwise.
+    fn inline_divrem_pow2(&mut self, op: Prim, args: &[CExpr], is_div: bool, k: i64) -> Value {
+        let a = self.expr(&args[0]);
+        let b = self.expr(&args[1]); // the constant divisor; used only by the fallback
+        self.guard_immediate(
+            a,
+            |s| s.prim_runtime_call(op, &[a, b]),
+            |s, _slow, merge| {
+                let x = s.untag(a);
+                let sign = s.builder.ins().sshr_imm(x, 63);
+                let bias = s.builder.ins().ushr_imm(sign, 64 - k);
+                let adj = s.builder.ins().iadd(x, bias);
+                let q = s.builder.ins().sshr_imm(adj, k);
+                let r = if is_div {
+                    q
+                } else {
+                    let qk = s.builder.ins().ishl_imm(q, k);
+                    s.builder.ins().isub(x, qk)
+                };
+                let tagged = s.tag_int(r);
+                s.builder.ins().jump(merge, &[tagged.into()]);
             },
         )
     }
