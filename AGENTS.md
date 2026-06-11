@@ -117,9 +117,15 @@
 > binding that performs an undeclared capability — or declares an unused one — is
 > **`FAI5001`**), so a function's reach is visible in its type. Effects close the
 > closure-laundering hole (a captured capability rides the closure's arrow),
-> propagate through the standard combinators (`List.map`, `>>`, …), unify strictly
-> (mixed effects are not laundered), and are erased at runtime; deep subsumption
-> and effect-parameterized interfaces remain future work. Later
+> propagate through the standard combinators (`List.map`, `>>`, …), and are erased
+> at runtime. At a function application a function-typed argument's effect is
+> **subsumed** into the parameter's effect variable, so arguments flowing into one
+> shared variable **union** their effects — point-free composition of
+> differently-effecting functions (`consoleFn >> clockFn : … / { Console, Clock }`)
+> type-checks — while every *other* position unifies strictly (mixed `if`/`match`
+> branches are not laundered; an effectful function is not accepted where a pure
+> one is required). *Deep* (contravariant, under-arrow) subsumption and
+> effect-parameterized interfaces remain future work. Later
 > milestones (performance tuning at scale, …) define the *intended* interface we
 > build toward. The design is locked (see the decision table below).
 
@@ -196,7 +202,7 @@ table **and** the decision log in `docs/MEMORY.md`).
 | Inference | Hindley–Milner + let-generalization + **rows / row unification / lacks constraints** + **effect rows** (a parallel effect-row union-find over arrows, strict by default with the signature-vs-body check lenient); exhaustiveness checking for `match` |
 | Generics | **Uniform boxed representation + dictionary passing** (no monomorphization by default) |
 | Interfaces | Compiled to **dictionaries**; instances (`{ Name with ... }`) are existential values |
-| Effects | **Capabilities as explicit values** (interface instances flowing from `main`); **row-polymorphic capability records give least authority**. **Type-level effect rows** layer over this: every arrow carries an effect row of the host-capability **interfaces it uses** (`a -> b / { Console, FileSystem \| 'e }`; a bare arrow is pure), inferred and **required on every public signature** — a binding that performs a capability it does not declare (or declares one it never uses) is **`FAI5001`**, so a function's reach is visible in its type. Effects are **used, not held** (calling a method incurs its interface's effect; holding/forwarding a capability is pure), close the closure-laundering hole (a captured capability rides the closure's arrow), propagate through the standard combinators (`List.map : ('a -> 'b / 'e) -> List 'a -> List 'b / 'e`, …), and are **erased at runtime**. Unification is strict (mixed effects are not laundered); deep subsumption (unioning different effects point-free) and **effect-parameterized interfaces** (`Logger 'e`) are future work |
+| Effects | **Capabilities as explicit values** (interface instances flowing from `main`); **row-polymorphic capability records give least authority**. **Type-level effect rows** layer over this: every arrow carries an effect row of the host-capability **interfaces it uses** (`a -> b / { Console, FileSystem \| 'e }`; a bare arrow is pure), inferred and **required on every public signature** — a binding that performs a capability it does not declare (or declares one it never uses) is **`FAI5001`**, so a function's reach is visible in its type. Effects are **used, not held** (calling a method incurs its interface's effect; holding/forwarding a capability is pure), close the closure-laundering hole (a captured capability rides the closure's arrow), propagate through the standard combinators (`List.map : ('a -> 'b / 'e) -> List 'a -> List 'b / 'e`, …), and are **erased at runtime**. At a function application a function-typed argument's effect is **subsumed** (`⊆`) into the parameter's effect variable, so arguments sharing one variable **union** their effects — point-free composition of differently-effecting functions (`consoleFn >> clockFn`) type-checks — while all other positions unify strictly (mixed `if`/`match` branches are not laundered; an effectful function is rejected where a pure one is required). **Deep** (contravariant, under-arrow) subsumption and **effect-parameterized interfaces** (`Logger 'e`) are future work |
 | Contracts | **First-class `example` / `forall` declarations** (`example: e` / `forall xs: e`; peers of `let`/`type`), resolved in module scope, type-checked to `Bool`, run by `fai test` (closed `example`s are also evaluated eagerly by `fai check`, reported as `FAI6001`); `///` is human prose only |
 | Backend | **Cranelift** native code generation |
 | Memory | **Perceus-style reference counting** (pure + strict ⇒ acyclic heaps ⇒ no cycle collector); reuse analysis enables in-place updates incl. `{ r with ... }` |
