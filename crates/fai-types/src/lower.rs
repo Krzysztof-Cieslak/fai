@@ -18,7 +18,7 @@ use fai_resolve::{
 use fai_span::{Span, TextRange};
 use fai_syntax::Symbol;
 use fai_syntax::ast::{EffectAnnot, ItemKind, Module, RowTail, TypeDef, TypeId, TypeKind};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::ty::{EffEnd, EffRowVarId, EffectRow, RecordRow, RowEnd, RowVarId, Scheme, Ty, TyVarId};
 use crate::{RECURSIVE_ALIAS, TYPE_ARITY, UNKNOWN_TYPE_CONSTRUCTOR};
@@ -610,7 +610,7 @@ pub fn resolve_interface(db: &dyn Db, file: SourceFile, name: Symbol) -> Option<
     None
 }
 
-/// The number of type parameters of the interface `iref`.
+/// The number of parameters of the interface `iref`.
 #[must_use]
 pub fn interface_param_count(db: &dyn Db, iref: InterfaceRef) -> usize {
     db.source_file(iref.file)
@@ -618,6 +618,112 @@ pub fn interface_param_count(db: &dyn Db, iref: InterfaceRef) -> usize {
             interface_decls(db, file).interface_named(iref.name).map(|i| i.params.len())
         })
         .unwrap_or(0)
+}
+
+/// The kind of an interface parameter, inferred from how the interface's methods
+/// use it: as an ordinary type (`'a`) or as an effect row (`/ 'e`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParamKind {
+    /// A type parameter (`Box 'a`).
+    Type,
+    /// An effect-row parameter (`Logger 'e`), appearing after `/` in a method.
+    Effect,
+}
+
+/// Each interface parameter's kind, inferred from its use across the methods. A
+/// parameter used only as an effect-row tail (`/ 'e`) is [`ParamKind::Effect`];
+/// otherwise (type position, a record-row tail, or unused) it is
+/// [`ParamKind::Type`]. A parameter used as *both* is ill-kinded — resolved here
+/// to `Type` and reported as `FAI3019` at the declaration.
+#[must_use]
+pub fn interface_param_kinds(db: &dyn Db, iref: InterfaceRef) -> Vec<ParamKind> {
+    interface_param_usage(db, iref)
+        .iter()
+        .map(
+            |&(ty_used, eff_used)| {
+                if eff_used && !ty_used { ParamKind::Effect } else { ParamKind::Type }
+            },
+        )
+        .collect()
+}
+
+/// Per-parameter `(used-as-type, used-as-effect)`, scanning the method
+/// signatures of `iref`. Backs both kind inference and the `FAI3019` check.
+#[must_use]
+pub(crate) fn interface_param_usage(db: &dyn Db, iref: InterfaceRef) -> Vec<(bool, bool)> {
+    let Some(file) = db.source_file(iref.file) else { return Vec::new() };
+    let decls = interface_decls(db, file);
+    let Some(info) = decls.interface_named(iref.name) else { return Vec::new() };
+    let parsed = fai_syntax::parse(db, file);
+    let module = &parsed.module;
+    let ItemKind::Interface { params, methods, .. } = &module.items[info.item.index()].kind else {
+        return Vec::new();
+    };
+    let mut type_used: FxHashSet<Symbol> = FxHashSet::default();
+    let mut eff_used: FxHashSet<Symbol> = FxHashSet::default();
+    for m in methods {
+        scan_var_usage(module, m.ty, &mut type_used, &mut eff_used);
+    }
+    params.iter().map(|p| (type_used.contains(p), eff_used.contains(p))).collect()
+}
+
+/// Records, for each type-variable name in `ty`, whether it appears in type
+/// position (`type_used`) or as an effect-row tail after `/` (`eff_used`).
+fn scan_var_usage(
+    module: &Module,
+    ty: TypeId,
+    type_used: &mut FxHashSet<Symbol>,
+    eff_used: &mut FxHashSet<Symbol>,
+) {
+    match &module.ty(ty).kind {
+        TypeKind::Var(name) => {
+            type_used.insert(*name);
+        }
+        TypeKind::App { func, arg } => {
+            scan_var_usage(module, *func, type_used, eff_used);
+            scan_var_usage(module, *arg, type_used, eff_used);
+        }
+        TypeKind::Arrow { from, to, effect } => {
+            scan_var_usage(module, *from, type_used, eff_used);
+            scan_var_usage(module, *to, type_used, eff_used);
+            if let Some(annot) = effect
+                && let RowTail::Named(name) = annot.tail
+            {
+                eff_used.insert(name);
+            }
+        }
+        TypeKind::Tuple(elems) => {
+            for &e in elems {
+                scan_var_usage(module, e, type_used, eff_used);
+            }
+        }
+        TypeKind::Record { fields, tail } => {
+            for f in fields {
+                scan_var_usage(module, f.ty, type_used, eff_used);
+            }
+            if let RowTail::Named(name) = tail {
+                type_used.insert(*name);
+            }
+        }
+        TypeKind::Paren(inner) => scan_var_usage(module, *inner, type_used, eff_used),
+        TypeKind::Con(_) | TypeKind::Unit | TypeKind::Error => {}
+    }
+}
+
+/// Seeds an interface's parameters into `vars` in declaration order, each into
+/// its kind's namespace (a type variable or an effect-row variable), so they
+/// occupy the leading scheme variables for positional sharing across methods.
+pub(crate) fn seed_interface_params(vars: &mut LowerVars, params: &[Symbol], kinds: &[ParamKind]) {
+    for (i, &p) in params.iter().enumerate() {
+        match kinds.get(i).copied().unwrap_or(ParamKind::Type) {
+            ParamKind::Type => {
+                vars.var(p);
+            }
+            ParamKind::Effect => {
+                vars.eff_named(p);
+            }
+        }
+    }
 }
 
 /// Builds the scheme of interface `iref`'s method `method`, quantified over the
@@ -640,8 +746,10 @@ pub fn build_interface_method_scheme(
 
     let mut vars = LowerVars::default();
     // Seed the interface's parameters first so they occupy the leading scheme
-    // variables, in declaration order.
-    let _: Vec<TyVarId> = params.iter().map(|&p| vars.var(p)).collect();
+    // variables, in declaration order — each in its kind's namespace (a type
+    // variable, or an effect-row variable for an effect parameter `'e`).
+    let kinds = interface_param_kinds(db, iref);
+    seed_interface_params(&mut vars, params, &kinds);
     let mut lowerer =
         Lowerer { db, file, module, scope: scope_of(iref.name), expanding: Vec::new() };
     let body = lowerer.lower(msig.ty, &mut vars);
