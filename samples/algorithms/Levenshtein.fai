@@ -62,5 +62,5 @@ let run n =
   lastOf (runRows 1 a b (List.range 0 (List.length b + 1)))
 example: run 3 = 2
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console }
 let main runtime = runtime.console.writeLine (Int.toString (run 150))

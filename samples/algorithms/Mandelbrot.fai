@@ -39,5 +39,5 @@ public runF : Int -> Float
 let runF n = gridSum n 0 0.0
 example: runF 1 >= 0.0
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console }
 let main runtime = runtime.console.writeLine (Float.toString (runF 400))

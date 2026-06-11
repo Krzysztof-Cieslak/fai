@@ -22,7 +22,7 @@ fn workspace(name: &str, files: &[(&str, &str)]) -> PathBuf {
 const HELLO: &str = indoc! {r#"
     module Hello
 
-    public main : Runtime -> Unit
+    public main : Runtime -> Unit / { Console }
     let main runtime = runtime.console.writeLine "hi from run"
 "#};
 
@@ -44,7 +44,7 @@ fn build_produces_a_runnable_binary() {
     let src = indoc! {r#"
         module Calc
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime = runtime.console.writeLine (Int.toString (40 + 2))
     "#};
     let dir = workspace("build", &[("Calc.fai", src)]);
@@ -94,7 +94,7 @@ fn build_json_envelope_reports_the_artifact() {
     let src = indoc! {r#"
         module Calc
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime = runtime.console.writeLine "ok"
     "#};
     let dir = workspace("buildjson", &[("Calc.fai", src)]);
@@ -121,7 +121,7 @@ fn build_type_error_exits_one_with_json_diagnostic() {
     let src = indoc! {r#"
         module Bad
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime = runtime.console.writeLine (1 + 2)
     "#};
     let dir = workspace("buildbad", &[("Bad.fai", src)]);
@@ -164,7 +164,7 @@ const DEEP: &str = indoc! {r#"
       | [] -> acc
       | x :: r -> sumAcc (acc + x) r
 
-    public main : Runtime -> Unit
+    public main : Runtime -> Unit / { Console }
     let main rt = rt.console.writeLine (Int.toString (sumAcc 0 (inc (build 1000000))))
 "#};
 
@@ -216,7 +216,7 @@ fn deep_unconsumed_list_is_dropped_without_overflow() {
 
         let build k = if k <= 0 then [] else k :: build (k - 1)
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main rt =
           let big = build 1000000
           rt.console.writeLine "built"
@@ -237,7 +237,7 @@ fn run_resolves_calls_across_modules() {
     let main = indoc! {r#"
         module Main
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r = r.console.writeLine (Lib.shout "hi")
     "#};
     let lib = indoc! {r#"

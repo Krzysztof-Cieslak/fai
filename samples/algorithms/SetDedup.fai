@@ -16,5 +16,5 @@ public run : Int -> Int
 let run n = List.sum (Set.toList (fill 0 n Set.empty))
 example: run 5 = 10
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console }
 let main runtime = runtime.console.writeLine (Int.toString (run 50000))

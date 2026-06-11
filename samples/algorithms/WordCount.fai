@@ -13,5 +13,5 @@ let run n =
   List.sum (List.map String.length parts)
 example: run 3 = 3
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console }
 let main runtime = runtime.console.writeLine (Int.toString (run 80000))

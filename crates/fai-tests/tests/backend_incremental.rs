@@ -18,13 +18,13 @@ use indoc::indoc;
 const MAIN_A: &str = indoc! {r#"
     module Main
 
-    public main : Runtime -> Unit
+    public main : Runtime -> Unit / { Console }
     let main r = r.console.writeLine (Int.toString (Helper.helper 41))
 "#};
 const MAIN_B: &str = indoc! {r#"
     module Main
 
-    public main : Runtime -> Unit
+    public main : Runtime -> Unit / { Console }
     let main r = r.console.writeLine (Int.toString (Helper.helper 7))
 "#};
 const HELPER_1: &str = indoc! {r#"

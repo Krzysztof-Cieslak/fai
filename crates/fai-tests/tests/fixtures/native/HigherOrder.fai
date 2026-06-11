@@ -12,7 +12,7 @@ let twice f x = f (f x)
 // A zero-argument binding holding a composed function (forced on reference).
 let addThenDouble = inc >> double
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console }
 let main runtime =
   let a = runtime.console.writeLine (Int.toString (apply inc 41))
   let b = runtime.console.writeLine (Int.toString (twice double 3))

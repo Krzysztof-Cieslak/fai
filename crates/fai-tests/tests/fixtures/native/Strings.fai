@@ -4,7 +4,7 @@ let repeat s n = if n <= 0 then "" else s ++ repeat s (n - 1)
 
 let greet name = "Hello, " ++ name ++ "!"
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console }
 let main runtime =
   let a = runtime.console.writeLine (repeat "ab" 3)
   let b = runtime.console.writeLine (greet "Fai")

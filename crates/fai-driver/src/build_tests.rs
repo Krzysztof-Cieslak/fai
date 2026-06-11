@@ -38,7 +38,7 @@ fn builds_and_runs_native_executable() {
     let src = indoc! {r#"
         module Hello
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime = runtime.console.writeLine ("Hello, " ++ "Fai!")
     "#};
     let (db, files) = db_with(&[("Hello.fai", src)]);
@@ -77,7 +77,7 @@ fn unsupported_construct_blocks_the_build() {
         public lt : Int -> Int -> Bool
         let lt = (<)
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime = runtime.console.writeLine (if lt 1 2 then "lt" else "ge")
     "#};
     let (db, files) = db_with(&[("M.fai", src)]);
@@ -100,7 +100,7 @@ fn reachability_includes_used_definitions_and_excludes_unused() {
 
         let unused x = x + 2
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r = r.console.writeLine (Int.toString (used 1))
     "#};
     let (db, files) = db_with(&[("M.fai", src)]);
@@ -116,7 +116,7 @@ fn builds_and_runs_a_cross_module_program() {
     let main = indoc! {r#"
         module Main
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r = r.console.writeLine (Int.toString (Helper.triple 14))
     "#};
     let helper = indoc! {r#"
@@ -145,7 +145,7 @@ fn comment_edit_recompiles_no_objects() {
     let main = indoc! {r#"
         module Main
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r = r.console.writeLine (Int.toString (Helper.helper 1))
     "#};
     let helper_v1 = indoc! {r#"
@@ -181,7 +181,7 @@ fn type_error_blocks_the_build() {
     let src = indoc! {r#"
         module M
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime = runtime.console.writeLine (1 + 2)
     "#};
     let (db, files) = db_with(&[("M.fai", src)]);
@@ -201,7 +201,7 @@ fn division_by_zero_aborts_at_runtime() {
     let src = indoc! {r#"
         module M
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime = runtime.console.writeLine (Int.toString (10 / 0))
     "#};
     let (db, files) = db_with(&[("M.fai", src)]);
@@ -230,7 +230,7 @@ fn division_by_a_variable_zero_aborts_at_runtime() {
         divide : Int -> Int -> Int
         let divide a b = a / b
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime = runtime.console.writeLine (Int.toString (divide 10 0))
     "#};
     let (db, files) = db_with(&[("M.fai", src)]);
@@ -257,7 +257,7 @@ fn remainder_by_zero_aborts_at_runtime() {
         rem : Int -> Int -> Int
         let rem a b = a % b
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime = runtime.console.writeLine (Int.toString (rem 10 0))
     "#};
     let (db, files) = db_with(&[("M.fai", src)]);
@@ -279,7 +279,7 @@ fn object_code_is_deterministic() {
     let src = indoc! {r#"
         module M
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime = runtime.console.writeLine (Int.toString (1 + 2))
     "#};
     let object = |contents: &str| {
@@ -295,13 +295,13 @@ fn editing_a_definition_recompiles_its_object() {
     let v1 = indoc! {r#"
         module M
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime = runtime.console.writeLine (Int.toString 1)
     "#};
     let v2 = indoc! {r#"
         module M
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime = runtime.console.writeLine (Int.toString 2)
     "#};
     let (mut db, files) = db_with(&[("M.fai", v1)]);
@@ -322,7 +322,7 @@ fn editing_one_module_reuses_cached_objects_for_the_others() {
     let main = indoc! {r#"
         module Main
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime = runtime.console.writeLine (Int.toString (Helper.helper 41))
     "#};
     let helper_v1 = indoc! {r#"
@@ -368,7 +368,7 @@ fn jit_compile_applies_a_named_function() {
             public double : Int -> Int
             let double x = x + x
 
-            public main : Runtime -> Unit
+            public main : Runtime -> Unit / { Console }
             let main rt = rt.console.writeLine (Int.toString (double 21))
         "#},
     )]);

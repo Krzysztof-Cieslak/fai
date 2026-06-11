@@ -16,7 +16,7 @@ let eval e =
   | Mul a b -> eval a * eval b
   | Neg a -> 0 - eval a
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console }
 let main runtime =
   let e = Add (Lit 1) (Mul (Lit 2) (Neg (Lit 3)))
   runtime.console.writeLine (Int.toString (eval e))

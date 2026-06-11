@@ -16,7 +16,7 @@ let countPrimesUpTo i n =
 let describe n =
   if isPrime n then Int.toString n ++ " is prime" else Int.toString n ++ " is not prime"
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console }
 let main runtime =
   let a = runtime.console.writeLine (describe 7)
   let b = runtime.console.writeLine (describe 12)

@@ -57,7 +57,7 @@ fn list_prog(use_body: &str, n: i32) -> String {
 
         let use xs = {use_body}
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / {{ Console }}
         let main rt = rt.console.writeLine (Int.toString (use (build {n})))
     "#}
 }
@@ -77,7 +77,7 @@ fn record_prog(k: i32) -> String {
         getN : R -> Int
         let getN rec = rec.n
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / {{ Console }}
         let main rt = rt.console.writeLine (Int.toString (getN (bumpN {k} {{ a = 0, n = 0 }})))
     "#}
 }
@@ -137,7 +137,7 @@ fn compare_prog(k: i32, n: i32) -> String {
           if k <= 0 then 0
           else (if xs = xs then 1 else 0) + cmpAll (k - 1) xs
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / {{ Console }}
         let main rt = rt.console.writeLine (Int.toString (cmpAll {k} (build {n})))
     "#}
 }
@@ -159,7 +159,7 @@ fn string_read_prog(k: i32) -> String {
           if k <= 0 then 0
           else String.length s + lenAll (k - 1) s
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / {{ Console }}
         let main rt = rt.console.writeLine (Int.toString (lenAll {k} "abcdefghij"))
     "#}
 }

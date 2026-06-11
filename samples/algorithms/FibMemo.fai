@@ -26,5 +26,5 @@ let run n =
   | (v, _) -> v
 example: run 10 = 55
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console }
 let main runtime = runtime.console.writeLine (Int.toString (run 4000))

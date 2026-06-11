@@ -35,5 +35,5 @@ public run : Int -> Int
 let run n = Set.size (bfs (buildGraph 0 n Dict.empty) [0] (Set.insert 0 Set.empty))
 example: run 1 = 1
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console }
 let main runtime = runtime.console.writeLine (Int.toString (run 30000))

@@ -63,7 +63,7 @@ fn lowers_console_capability_access() {
     let src = indoc! {r#"
         module M
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime = runtime.console.writeLine "Hi"
     "#};
     assert_eq!(lower(src, "main"), "fn0(%0) = (app (field 0 (field 1 %0)) \"Hi\")\n");
@@ -536,7 +536,7 @@ fn lowering_invariants_calls_helper_and_capability() {
 
             let helper x = x + 1
 
-            public main : Runtime -> Unit
+            public main : Runtime -> Unit / { Console }
             let main r = r.console.writeLine (Int.toString (helper 1))
         "#},
         "main",

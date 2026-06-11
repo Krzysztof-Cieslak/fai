@@ -1,6 +1,6 @@
 module ContractImpure
 
-public greet : Console -> Unit
+public greet : Console -> Unit / { Console }
 let greet c = c.writeLine "hi"
 
 // A contract must be pure; referencing the Console capability is rejected with

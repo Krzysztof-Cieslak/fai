@@ -266,7 +266,7 @@ fn rc_is_sound_over_a_whole_program() {
 
         let inst = { Thing with a u = 1, b u = 2 }
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime =
           let total = inst.a () + inst.b ()
           runtime.console.writeLine (Int.toString total)

@@ -67,7 +67,7 @@ fn prog(defs: &str, use_body: &str, n: i32) -> String {
 
         let use xs = {use_body}
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / {{ Console }}
         let main rt = rt.console.writeLine (Int.toString (use (build {n})))
     "#}
 }
@@ -180,7 +180,7 @@ fn rowpoly_prog(use_body: &str) -> String {
           | [] -> 0
           | r :: rest -> r.n + sumR rest
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / {{ Console }}
         let main rt =
           let xs = build 50
           rt.console.writeLine (Int.toString ({use_body}))
@@ -242,7 +242,7 @@ fn record_update_in_place_is_constant() {
             getN : R -> Int
             let getN rec = rec.n
 
-            public main : Runtime -> Unit
+            public main : Runtime -> Unit / {{ Console }}
             let main rt = rt.console.writeLine (Int.toString (getN (bumpN {k} {{ a = 0, n = 0 }})))
         "#}
     };
@@ -268,7 +268,7 @@ fn record_update_shared_copies_once() {
             use : R -> Int
             let use rec = {body}
 
-            public main : Runtime -> Unit
+            public main : Runtime -> Unit / {{ Console }}
             let main rt = rt.console.writeLine (Int.toString (use {{ a = 0, n = 10 }}))
         "#}
     };
@@ -323,7 +323,7 @@ fn correct_tree_rebuild() {
           | Leaf n -> n
           | Node l r -> sumT l + sumT r
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / {{ Console }}
         let main rt =
           let t = Node (Node (Leaf 1) (Leaf 2)) (Leaf 3)
           rt.console.writeLine (Int.toString (sumT (incT t)))
@@ -340,7 +340,7 @@ fn correct_record_update() {
 
         let shift p = {{ p with x = p.x + 1 }}
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / {{ Console }}
         let main rt =
           let p = shift {{ x = 41, y = 0 }}
           rt.console.writeLine (Int.toString p.x)
@@ -356,7 +356,7 @@ fn correct_row_polymorphic_update() {
         bump : {{ n : Int | 'r }} -> {{ n : Int | 'r }}
         let bump rec = {{ rec with n = rec.n + 1 }}
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / {{ Console }}
         let main rt =
           let r = bump {{ n = 41, tag = 1 }}
           rt.console.writeLine (Int.toString r.n)
@@ -397,7 +397,7 @@ fn correct_reorder_pure_call() {
           | Empty -> acc
           | Snoc rest x -> sumS (acc + x) rest
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / {{ Console }}
         let main rt =
           rt.console.writeLine (Int.toString (sumS 0 (bump (build 200))))
     "#};
@@ -420,7 +420,7 @@ fn correct_mutual_even_odd() {
         isOdd : Int -> Bool
         let isOdd n = if n <= 0 then false else isEven (n - 1)
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / {{ Console }}
         let main rt = rt.console.writeLine (if isEven 10 then "even" else "odd")
     "#};
     outputs(&src, "even");
@@ -439,7 +439,7 @@ fn mutual_even_odd_runs_in_constant_stack() {
         isOdd : Int -> Bool
         let isOdd n = if n <= 0 then false else isEven (n - 1)
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / {{ Console }}
         let main rt = rt.console.writeLine (if isEven 200000 then "even" else "odd")
     "#};
     outputs(&src, "even");
@@ -460,7 +460,7 @@ fn correct_mutual_three_cycle() {
         modC : Int -> Int
         let modC n = if n <= 0 then 2 else modA (n - 1)
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / {{ Console }}
         let main rt = rt.console.writeLine (Int.toString (modA 100000))
     "#};
     // modA computes n mod 3, and 100000 mod 3 = 1.
@@ -484,7 +484,7 @@ fn dict_prog(use_body: &str, n: i32) -> String {
 
         let use d = {use_body}
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / {{ Console }}
         let main rt = rt.console.writeLine (Int.toString (use (fillD {n} Dict.empty)))
     "#}
 }

@@ -70,7 +70,7 @@ const SCRAMBLE_FAI: &str =
 #[track_caller]
 fn check_dict(keys_expr: &str, keys: &[i64]) {
     let src = format!(
-        "module M\n\npublic main : Runtime -> Unit\nlet main rt =\n  \
+        "module M\n\npublic main : Runtime -> Unit / {{ Console }}\nlet main rt =\n  \
          let d = Dict.fromList (List.map (fun k -> (k, k + 1)) ({keys_expr}))\n  \
          rt.console.writeLine (Int.toString (Dict.foldl (fun k v acc -> acc * 31 + k + v) 0 d) ++ \" \" ++ Int.toString (Dict.size d))\n"
     );
@@ -120,7 +120,7 @@ fn dict_set_ops_match_btreemap() {
     ];
     for (op, fai, result) in cases {
         let src = format!(
-            "module M\n\npublic main : Runtime -> Unit\nlet main rt =\n  \
+            "module M\n\npublic main : Runtime -> Unit / {{ Console }}\nlet main rt =\n  \
              let da = Dict.fromList (List.map (fun k -> (k, k + 1)) (List.range 0 400))\n  \
              let db = Dict.fromList (List.map (fun k -> (k, k + 7)) (List.range 200 600))\n  \
              let d = {fai} da db\n  \
@@ -137,7 +137,7 @@ fn dict_set_ops_match_btreemap() {
 #[track_caller]
 fn check_set(keys_expr: &str, keys: &[i64]) {
     let src = format!(
-        "module M\n\npublic main : Runtime -> Unit\nlet main rt =\n  \
+        "module M\n\npublic main : Runtime -> Unit / {{ Console }}\nlet main rt =\n  \
          let s = Set.fromList ({keys_expr})\n  \
          rt.console.writeLine (Int.toString (Set.foldl (fun x acc -> acc * 31 + x) 0 s) ++ \" \" ++ Int.toString (Set.size s))\n"
     );
@@ -170,7 +170,7 @@ fn set_ops_match_btreeset() {
     ];
     for (op, fai, result) in cases {
         let src = format!(
-            "module M\n\npublic main : Runtime -> Unit\nlet main rt =\n  \
+            "module M\n\npublic main : Runtime -> Unit / {{ Console }}\nlet main rt =\n  \
              let s = {fai} (Set.fromList (List.range 0 400)) (Set.fromList (List.range 200 600))\n  \
              rt.console.writeLine (Int.toString (Set.foldl (fun x acc -> acc * 31 + x) 0 s) ++ \" \" ++ Int.toString (Set.size s))\n"
         );

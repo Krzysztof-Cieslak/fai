@@ -7,7 +7,7 @@ let isOdd n = if n = 0 then false else isEven (n - 1)
 
 let parity n = if isEven n then "even" else "odd"
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console }
 let main runtime =
   let a = runtime.console.writeLine (parity 10)
   let b = runtime.console.writeLine (parity 7)

@@ -3,7 +3,7 @@ module Factorial
 // Classic recursion; 20! overflows the 63-bit immediate range and is boxed.
 let factorial n = if n <= 1 then 1 else n * factorial (n - 1)
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console }
 let main runtime =
   let a = runtime.console.writeLine (Int.toString (factorial 5))
   let b = runtime.console.writeLine (Int.toString (factorial 10))

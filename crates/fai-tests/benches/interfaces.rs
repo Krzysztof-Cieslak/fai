@@ -41,7 +41,7 @@ fn interface_module(methods: usize) -> String {
     let impls = (0..methods).map(|i| format!("m{i} u = {i}")).collect::<Vec<_>>().join(", ");
     format!(
         "module M\n\ninterface Big =\n{decls}\n\nlet inst = {{ Big with {impls} }}\n\n\
-         public main : Runtime -> Unit\nlet main r = r.console.writeLine (Int.toString (inst.m0 ()))\n"
+         public main : Runtime -> Unit / {{ Console }}\nlet main r = r.console.writeLine (Int.toString (inst.m0 ()))\n"
     )
 }
 
@@ -51,7 +51,7 @@ fn row_poly_module(fields: usize) -> String {
     let lits = (0..fields).map(|i| format!("f{i} = {i}")).collect::<Vec<_>>().join(", ");
     format!(
         "module M\n\nget : {{ f0 : Int | 'r }} -> Int\nlet get rec = rec.f0\n\n\
-         public main : Runtime -> Unit\n\
+         public main : Runtime -> Unit / {{ Console }}\n\
          let main r = r.console.writeLine (Int.toString (get {{ {lits} }}))\n"
     )
 }
@@ -70,7 +70,10 @@ fn capability_module(depth: usize) -> String {
             "helper{i} : {{ console : Console | 'r }} -> Unit\nlet helper{i} env = {body}\n\n"
         ));
     }
-    out.push_str(&format!("public main : Runtime -> Unit\nlet main r = helper{} r\n", depth - 1));
+    out.push_str(&format!(
+        "public main : Runtime -> Unit / {{ Console }}\nlet main r = helper{} r\n",
+        depth - 1
+    ));
     out
 }
 

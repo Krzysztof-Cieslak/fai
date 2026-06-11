@@ -35,7 +35,7 @@ fn entry(session: &Session, name: &str) -> SourceFile {
 const ARITH: &str = indoc! {r#"
     module Main
 
-    public main : Runtime -> Unit
+    public main : Runtime -> Unit / { Console }
     let main r = r.console.writeLine (Int.toString (1 + 2 * 3))
 "#};
 
@@ -55,7 +55,7 @@ fn cross_module_bundle_reconstructs_distinct_modules() {
     let main = indoc! {r#"
         module Main
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r = r.console.writeLine (Lib.shout "hi")
     "#};
     let lib = indoc! {r#"
@@ -102,7 +102,7 @@ fn jit_run_bundle_executes_a_cross_module_program() {
     let main = indoc! {r#"
         module Main
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r = r.console.writeLine (Lib.shout "hi")
     "#};
     let lib = indoc! {r#"
@@ -146,7 +146,7 @@ fn jit_run_bundle_drops_data_cleanly_with_reconstructed_types() {
           let deep = List.range 0 50000
           List.length names + List.length deep + b.n
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r = r.console.writeLine (Int.toString (compute 7))
     "#};
     let dir = workspace(&[("Main.fai", src)]);
@@ -195,7 +195,7 @@ fn reachable_unsupported_construct_blocks_the_bundle() {
         public lt : Int -> Int -> Bool
         let lt = (<)
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r = r.console.writeLine (if lt 1 2 then "lt" else "ge")
     "#};
     let dir = workspace(&[("Main.fai", src)]);

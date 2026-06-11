@@ -97,7 +97,7 @@ fn nested_module_values_types_and_ctors_run() {
             | Circle r -> square r
             | Rect w h -> w * h
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime =
           runtime.console.writeLine (Int.toString (Math.area (Math.Circle 3)))
     "#};
@@ -119,7 +119,7 @@ fn char_operations_run_natively() {
           | 'a' | 'e' | 'i' | 'o' | 'u' -> "yes"
           | _ -> "no"
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime =
           let parts = [Char.toString 'A', Int.toString (Char.toCode 'A'), Char.toString '\u{1F600}', vowel 'e', vowel 'z']
           runtime.console.writeLine (String.join "|" parts)
@@ -141,7 +141,7 @@ fn cross_file_nested_qualified_access_runs() {
     let main = indoc! {r#"
         module Main
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime =
           runtime.console.writeLine (Int.toString (Lib.Geo.double 21))
     "#};
@@ -186,7 +186,7 @@ fn cross_module_opaque_types_build_and_run() {
     let main = indoc! {r#"
         module Main
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime =
           let c = Lib.bump (Lib.bump Lib.zero)
           let s = Lib.stats 3 4
@@ -218,7 +218,7 @@ fn cross_module_forwarder_borrows_and_runs() {
         forward : List Int -> Int
         let forward xs = Lib.sumList xs
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime =
           let xs = [1, 2, 3, 4, 5]
           runtime.console.writeLine (Int.toString (forward xs + forward xs))
@@ -243,7 +243,7 @@ fn inlined_record_drop_links_and_runs() {
         make : String -> R
         let make s = { name = s, n = 7 }
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime =
           let rec = make "boxed"
           runtime.console.writeLine (Int.toString rec.n)
@@ -280,7 +280,7 @@ fn cross_module_mutual_recursion_borrow_cycle_runs() {
     let main = indoc! {r#"
         module Main
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime =
           let xs = [1, 2, 3, 4]
           runtime.console.writeLine (if Ev.isEven xs then "even" else "odd")
@@ -304,7 +304,7 @@ fn intra_module_mutual_recursion_flattens_and_runs() {
         isOdd : Int -> Bool
         let isOdd n = if n <= 0 then false else isEven (n - 1)
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main rt = rt.console.writeLine (if isEven 500000 then "even" else "odd")
     "#};
     let (out, code) = build_and_run(src);
@@ -325,7 +325,7 @@ fn as_pattern_binds_and_runs() {
           | first :: rest as whole -> List.length whole
           | [] -> 0
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime =
           runtime.console.writeLine (Int.toString (sizeIfNonEmpty [10, 20, 30]))
     "#};
@@ -338,7 +338,7 @@ fn print_main(expr: &str) -> String {
     formatdoc! {r#"
         module Main
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / {{ Console }}
         let main runtime = runtime.console.writeLine ({expr})
     "#}
 }
@@ -371,7 +371,7 @@ fn cross_definition_call() {
 
         let double x = x + x
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime = runtime.console.writeLine (Int.toString (double 21))
     "#};
     let (out, code) = build_and_run(src);
@@ -391,7 +391,7 @@ fn higher_order_and_partial_application() {
 
         let apply f x = f x
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime = runtime.console.writeLine (Int.toString (apply (add 40) 2))
     "#};
     let (out, code) = build_and_run(src);
@@ -407,7 +407,7 @@ fn returns_a_function() {
 
         let makeAdder x = fun y -> x + y
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime =
           let add40 = makeAdder 40
           runtime.console.writeLine (Int.toString (add40 2))
@@ -426,7 +426,7 @@ fn over_application_of_returned_function() {
 
         let makeAdder x = fun y -> x + y
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime = runtime.console.writeLine (Int.toString (makeAdder 40 2))
     "#};
     let (out, code) = build_and_run(src);
@@ -446,7 +446,7 @@ fn forced_zero_arity_value_binding() {
 
         let inc = add 1
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime = runtime.console.writeLine (Int.toString (inc 41))
     "#};
     let (out, code) = build_and_run(src);
@@ -470,7 +470,7 @@ fn user_defined_operator_runs() {
 
         let (+++) a b = a * b + 1
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime = runtime.console.writeLine (Int.toString (2 +++ 3))
     "#};
     let (out, code) = build_and_run(src);
@@ -488,7 +488,7 @@ fn interface_instance_dispatch_runs() {
 
         let exclaimer = { Greeter with greet name = name ++ "!" }
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime = runtime.console.writeLine (exclaimer.greet "hi")
     "#};
     let (out, code) = build_and_run(src);
@@ -507,7 +507,7 @@ fn interface_instance_captures_state() {
 
         let always n = { Counter with next u = n }
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime = runtime.console.writeLine (Int.toString ((always 42).next ()))
     "#};
     let (out, code) = build_and_run(src);
@@ -521,7 +521,7 @@ fn builtin_operator_as_value_runs() {
     let src = indoc! {r#"
         module Main
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime =
           runtime.console.writeLine (Int.toString (List.foldl (+) 0 [1, 2, 3, 4]))
     "#};
@@ -541,10 +541,10 @@ fn derived_capability_with_least_authority_runs() {
         prefixed : String -> Console -> Console
         let prefixed tag inner = { Console with writeLine s = inner.writeLine (tag ++ s) }
 
-        announce : { console : Console | _ } -> String -> Unit
+        announce : { console : Console | _ } -> String -> Unit / { Console }
         let announce env msg = env.console.writeLine msg
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime =
           let logger = prefixed "[log] " runtime.console
           announce { console = logger } "hello"
@@ -561,10 +561,10 @@ fn row_polymorphic_least_authority_runs() {
     let src = indoc! {r#"
         module Main
 
-        announce : { console : Console | 'r } -> String -> Unit
+        announce : { console : Console | 'r } -> String -> Unit / { Console }
         let announce env msg = env.console.writeLine msg
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime = announce runtime "least authority"
     "#};
     let (out, code) = build_and_run(src);
@@ -580,7 +580,7 @@ fn row_polymorphic_record_update_runs() {
         bump : { score : Int | 'r } -> { score : Int | 'r }
         let bump rec = { rec with score = rec.score + 100 }
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime =
           let bumped = bump { name = "x", score = 5 }
           runtime.console.writeLine (Int.toString bumped.score)
@@ -600,7 +600,7 @@ fn all_capabilities_compose_in_one_program() {
     let src = formatdoc! {r#"
         module Main
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / {{ Clock, Console, Env, FileSystem, Random }}
         let main runtime =
           let t = runtime.clock.now ()
           let n = runtime.random.nextInt 1
@@ -623,7 +623,7 @@ fn file_system_capability_round_trips() {
     let src = formatdoc! {r#"
         module Main
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / {{ Console, FileSystem }}
         let main runtime =
           match runtime.fs.writeFile "{path}" "persisted" with
           | Err e -> runtime.console.writeLine e
@@ -644,7 +644,7 @@ fn random_capability_runs() {
     let src = indoc! {r#"
         module Main
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console, Random }
         let main runtime =
           runtime.console.writeLine (Int.toString (runtime.random.nextInt 1))
     "#};
@@ -659,7 +659,7 @@ fn clock_capability_runs() {
     let src = indoc! {r#"
         module Main
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Clock, Console }
         let main runtime =
           runtime.console.writeLine (if runtime.clock.now () > 0 then "ok" else "no")
     "#};
@@ -679,7 +679,7 @@ fn user_supplied_console_instance_runs() {
         silent : Console
         let silent = { Console with writeLine s = () }
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime = silent.writeLine "ignored"
     "#};
     let (out, code) = build_and_run(src);

@@ -218,14 +218,15 @@ pub fn infer_scc(
         let inferred_effect = walker.body_effect();
         let fn_ty = SolveTy::arrows_solver_eff(param_tys, body_ty.clone(), body_eff);
 
-        // Opt-in effect enforcement: when a signature declares a *concrete* effect
-        // (a closed, non-empty effect row), the body's inferred effect must use
-        // exactly those capabilities. A bare/empty declared effect stays lenient
-        // (no annotation required yet), so unannotated programs are unaffected.
+        // Effect enforcement (required on every signatured binding): the
+        // capabilities the body uses must be exactly those the signature
+        // declares after `/`. A bare arrow declares the pure (empty) effect, so a
+        // binding that performs a capability without declaring it is an error —
+        // this is what makes a function's reach visible in its type. The
+        // polymorphic tail is ignored here (a `'e` matches a `'e`); only the
+        // concrete capability atoms are compared.
         if let Some(scheme) = declared.get(m)
             && let Some(declared_effect) = saturating_effect(&scheme.ty, params.len())
-            && let crate::ty::EffEnd::Closed = declared_effect.tail
-            && !declared_effect.labels.is_empty()
             && effect_atom_names(&declared_effect) != effect_atom_names(&inferred_effect)
         {
             effect_mismatches.push((
