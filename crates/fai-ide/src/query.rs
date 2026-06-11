@@ -1459,6 +1459,9 @@ fn shape_from_ty(ty: &fai_types::Ty, vars: &mut FxHashMap<u32, usize>) -> Shape 
             fs.sort_by(|a, b| a.0.cmp(&b.0));
             Shape::Record(fs, matches!(row.tail, fai_types::RowEnd::Open(_)))
         }
+        // Type-shape search ignores effects, so an interface's effect argument is
+        // a neutral shape (it never narrows or widens a match).
+        Ty::EffectArg(_) => Shape::Other,
         Ty::Unit => Shape::Unit,
         Ty::Error => Shape::Other,
     }

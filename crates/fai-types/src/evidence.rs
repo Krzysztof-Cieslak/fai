@@ -85,7 +85,13 @@ fn collect(ty: &Ty, order: &mut Vec<RowVarId>, lacks: &mut FxHashMap<RowVarId, V
                 collect(e, order, lacks);
             }
         }
-        Ty::Var(_) | Ty::Con(_) | Ty::Adt(_) | Ty::Interface(_) | Ty::Unit | Ty::Error => {}
+        Ty::Var(_)
+        | Ty::Con(_)
+        | Ty::Adt(_)
+        | Ty::Interface(_)
+        | Ty::EffectArg(_)
+        | Ty::Unit
+        | Ty::Error => {}
     }
 }
 

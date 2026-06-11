@@ -112,6 +112,10 @@ pub enum SolveTy {
     Adt(AdtRef),
     /// A nominal interface type (applied via [`SolveTy::App`] for parameters).
     Interface(InterfaceRef),
+    /// An effect row supplied as an interface argument (`Logger { Console }`).
+    /// Appears only as a child of an interface [`SolveTy::App`]; erased after the
+    /// front end.
+    EffectArg(SolveEffect),
     /// Application. Children are `Rc`-shared so resolving/cloning a representative
     /// is O(1) (the deep clone otherwise dominates unification of large types).
     App(Rc<SolveTy>, Rc<SolveTy>),
@@ -769,9 +773,12 @@ impl InferCtx {
                     self.collect_free_vars(t, out, visited);
                 }
             }
+            // An effect argument carries no *type* variables (only an effect-row
+            // tail), so it contributes nothing to free-type-variable collection.
             SolveTy::Con(_)
             | SolveTy::Adt(_)
             | SolveTy::Interface(_)
+            | SolveTy::EffectArg(_)
             | SolveTy::Unit
             | SolveTy::Error => {}
         }
@@ -790,6 +797,12 @@ impl InferCtx {
             (SolveTy::Con(x), SolveTy::Con(y)) if x == y => UnifyResult::Ok,
             (SolveTy::Adt(x), SolveTy::Adt(y)) if x == y => UnifyResult::Ok,
             (SolveTy::Interface(x), SolveTy::Interface(y)) if x == y => UnifyResult::Ok,
+            // Two effect arguments unify by effect-row unification (an interface's
+            // effect parameter applied to differing rows must agree).
+            (SolveTy::EffectArg(e1), SolveTy::EffectArg(e2)) => {
+                let (e1, e2) = (e1.clone(), e2.clone());
+                self.unify_effects(&e1, &e2)
+            }
             (SolveTy::Unit, SolveTy::Unit) => UnifyResult::Ok,
             (SolveTy::App(f1, a1), SolveTy::App(f2, a2)) => match self.unify(f1, f2) {
                 UnifyResult::Ok => self.unify(a1, a2),
@@ -877,7 +890,7 @@ impl InferCtx {
     /// interface anywhere in it. Free variables and `Error` are deferred (`true`).
     fn is_comparable(&self, ty: &SolveTy) -> bool {
         match self.resolve_shallow(ty) {
-            SolveTy::Arrow(..) | SolveTy::Interface(_) => false,
+            SolveTy::Arrow(..) | SolveTy::Interface(_) | SolveTy::EffectArg(_) => false,
             SolveTy::Var(_) | SolveTy::Error => true,
             SolveTy::Con(_) | SolveTy::Adt(_) | SolveTy::Unit => true,
             SolveTy::App(f, a) => self.is_comparable(&f) && self.is_comparable(&a),
@@ -956,6 +969,7 @@ impl InferCtx {
             SolveTy::Con(_)
             | SolveTy::Adt(_)
             | SolveTy::Interface(_)
+            | SolveTy::EffectArg(_)
             | SolveTy::Unit
             | SolveTy::Error => false,
         }
@@ -1007,6 +1021,7 @@ impl InferCtx {
             SolveTy::Con(_)
             | SolveTy::Adt(_)
             | SolveTy::Interface(_)
+            | SolveTy::EffectArg(_)
             | SolveTy::Unit
             | SolveTy::Error => {}
         }
@@ -1044,6 +1059,7 @@ impl InferCtx {
             SolveTy::Con(c) => Ty::Con(c),
             SolveTy::Adt(adt) => Ty::Adt(adt),
             SolveTy::Interface(i) => Ty::Interface(i),
+            SolveTy::EffectArg(e) => Ty::EffectArg(self.reify_effect(&e, renumber)),
             SolveTy::Unit => Ty::Unit,
             SolveTy::Error => Ty::Error,
             SolveTy::App(f, a) => Ty::App(
@@ -1157,6 +1173,7 @@ impl InferCtx {
             Ty::Con(c) => SolveTy::Con(*c),
             Ty::Adt(adt) => SolveTy::Adt(*adt),
             Ty::Interface(i) => SolveTy::Interface(*i),
+            Ty::EffectArg(e) => SolveTy::EffectArg(self.instantiate_effect(e, map)),
             Ty::Unit => SolveTy::Unit,
             Ty::Error => SolveTy::Error,
             Ty::App(f, a) => SolveTy::App(

@@ -944,7 +944,9 @@ fn subst_ty(ty: &Ty, map: &FxHashMap<TyVarId, Ty>) -> Ty {
             fields: row.fields.iter().map(|(l, t)| (*l, subst_ty(t, map))).collect(),
             tail: row.tail,
         }),
-        Ty::Con(_) | Ty::Adt(_) | Ty::Interface(_) | Ty::Unit | Ty::Error => ty.clone(),
+        Ty::Con(_) | Ty::Adt(_) | Ty::Interface(_) | Ty::EffectArg(_) | Ty::Unit | Ty::Error => {
+            ty.clone()
+        }
     }
 }
 
