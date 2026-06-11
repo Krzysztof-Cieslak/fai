@@ -12,7 +12,7 @@ effects you can see in a type to specifications the compiler checks for you.
 ```fai
 module Hello
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console }
 let main runtime = runtime.console.writeLine "Hello, Fai!"
 ```
 
@@ -22,7 +22,7 @@ Intent lives next to the code and is checked, not just written down:
 module Collections
 
 /// Apply f to every element.
-public map : ('a -> 'b) -> List 'a -> List 'b
+public map : ('a -> 'b / 'e) -> List 'a -> List 'b / 'e
 let map f xs =
   match xs with
   | [] -> []
@@ -71,26 +71,43 @@ built on [Salsa](https://github.com/salsa-rs/salsa).
 
 Fai is pure: nothing happens behind your back. The clock, randomness, the
 environment, the file system, and the console are not global facilities — they
-are ordinary values passed in from `main` as a `Runtime`. A function's type
-therefore tells you exactly what it can reach, and a function asks for only the
-capabilities it needs, so it is handed no more authority than that.
+are ordinary values passed in from `main` as a `Runtime`, and a function asks for
+only the capabilities it needs, so it is handed no more authority than that.
+
+Every function's type then spells out not just the capabilities it receives but
+the effects it performs. Each arrow carries an **effect row** — the host
+capabilities its calls reach — written after a `/`; a bare arrow is pure. Effects
+are inferred everywhere and **required on every public signature**, and the
+declared row must match what the body actually does, so a signature can never
+understate or overstate its reach.
 
 ```fai
 module Capabilities
 
-public save : { console : Console, fs : FileSystem | _ } -> String -> String -> Unit
+public save : { console : Console, fs : FileSystem | _ } -> String -> String -> Unit / { Console, FileSystem }
 let save env path note =
   match env.fs.writeFile path note with
   | Err message -> env.console.writeLine message
   | Ok unit -> env.console.writeLine ("saved: " ++ note)
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console, FileSystem }
 let main runtime = save runtime "/tmp/fai-note.txt" "hello"
 ```
 
-`save` requests a console and a file system and nothing else; it accepts any
-larger runtime, but can never touch the clock or the network. Side effects are
-honest and auditable, and programs are deterministic by default.
+`save` requests a console and a file system and nothing else, and its type also
+states that calling it writes to both — it accepts any larger runtime, but can
+never touch the clock or the network. Effects are about use, not possession:
+holding or forwarding a capability is pure, and an effect is incurred only where a
+capability's method is called, so a captured capability rides its closure's arrow
+and nothing is laundered away. They propagate through ordinary combinators —
+mapping a console-using function over a list reflects `Console`, and composing
+differently-effecting functions unions their effects — and interfaces themselves
+can be effect-parameterized, forwarding their methods' effects, so even
+abstractions stay honest. Side effects are auditable and programs are
+deterministic by default.
+
+Under the hood this is a row-based effect system inspired by
+[Koka](https://koka-lang.github.io/).
 
 ### Intent that the compiler checks
 
