@@ -516,6 +516,30 @@ fn interface_instance_captures_state() {
 }
 
 #[test]
+fn effect_parameterized_interface_runs() {
+    // An effect-parameterized `Logger 'e`: the console-backed instance has type
+    // `Logger { Console }`, and dispatching `.log` forwards the effect. The
+    // effect argument is erased, so this compiles to an ordinary dictionary.
+    let src = indoc! {r#"
+        module Main
+
+        interface Logger 'e =
+          log : String -> Unit / 'e
+
+        consoleLogger : Console -> Logger { Console }
+        let consoleLogger c = { Logger with log msg = c.writeLine msg }
+
+        public main : Runtime -> Unit / { Console }
+        let main runtime =
+          let logger = consoleLogger runtime.console
+          logger.log "logged via Logger"
+    "#};
+    let (out, code) = build_and_run(src);
+    assert_eq!(out, "logged via Logger\n");
+    assert_eq!(code, Some(0));
+}
+
+#[test]
 fn builtin_operator_as_value_runs() {
     // `(+)` passed first-class to a fold.
     let src = indoc! {r#"

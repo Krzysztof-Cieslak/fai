@@ -2057,28 +2057,48 @@ Editor integration:
     one shared effect variable therefore *union* their effects, so point-free
     composition through an effect-polymorphic combinator type-checks —
     `consoleFn >> clockFn` (with `(>>) : (b -> c / 'e) -> (a -> b / 'e) -> a -> c /
-    'e`) is `… / { Console, Clock }` rather than rejected. A residual open tail
-    left by subsuming a concrete effect into a fresh variable is **closed to pure**
-    at body finalization (unless it is forwarded from a parameter, which must stay
+    'e`) is `… / { Console, Clock }` rather than rejected. User-defined operator
+    application takes the **same path** as function application, so a function
+    operand's effect is subsumed too. A residual open tail left by subsuming a
+    concrete effect into a fresh variable is **closed to pure** at body
+    finalization (unless it is forwarded from a parameter, which must stay
     polymorphic), so composing pure functions — or merely using capabilities — does
     not generalize a spurious `'e`. Everywhere *other* than an argument, effect
     unification stays strict: differently-effecting `if`/`match` branches do not
     silently unify (no laundering), and passing an effectful function where a pure
     one is required is still a type mismatch. Lenient only at the signature-vs-body
-    check (so a disagreement is the single `FAI5001`, not a generic mismatch) and
-    at interface-method conformance (a method body may do *fewer* effects than the
-    interface declares — the declared effect is an upper bound, so a pure instance
-    of an effectful interface is fine).
+    check (so a disagreement is the single `FAI5001`, not a generic mismatch);
+    interface instance methods are checked by **subsumption** against the declared
+    method effect (see *Effect-parameterized interfaces* below), not leniently.
   - **Surface & tooling.** Syntax mirrors the record row — `/ { A, B | 'e }`,
     lone-`'e` sugar, bare = pure — bound to the innermost arrow; `fai fmt` sorts
     the atoms and drops `/ {}`. Interface effect arguments and `fai query caps`
     re-derivation are wired through the same machinery.
+  - **Effect-parameterized interfaces.** An interface parameter used after `/` in a
+    method is an *effect* parameter (`interface Logger 'e = log : String -> Unit /
+    'e`); its kind is inferred from use across the methods (type position → a type
+    parameter, an effect-row tail → an effect parameter, *both* → the ill-kinded
+    **FAI3019**, unused → a type parameter as before). The effect argument is
+    written with effect-row braces in argument position — `Logger { Console }`,
+    `Logger 'e`, `Logger {}` — told apart from a record by its upper-case leading
+    atom, and carried as an erased **`EffectArg`** child of the interface
+    application (the spine keeps type and effect arguments in declaration order; a
+    type supplied for an effect parameter, or vice versa, is **FAI3020**). An
+    instance shares its parameters across methods by kind, and each method body's
+    effect is checked against the declared method effect by **subsumption**
+    (`body ⊆ declared`): performing fewer is fine (the declared effect is an upper
+    bound), performing more than a *concrete* declared effect is **FAI5001** (this
+    closes the dictionary-laundering hole the old lenient check left open), and an
+    effect *parameter* grows to admit the body's effect — so a console-backed
+    instance is `Logger { Console }`, **forwarding** the effect rather than masking
+    it. At dispatch the value's effect argument is unified into the method's effect
+    parameter, so calling the method incurs it. Effects are erased before codegen,
+    so a parameterized interface compiles to the same dictionary as any other.
   - **Future work.** *Deep* effect subsumption — full bidirectional bounds that
-    also subsume under nested arrows and in non-argument positions — and
-    effect-parameterized interfaces (`Logger 'e`, which would let a user interface
-    forward a wrapped capability's effect instead of masking it) remain; the design
-    for both is recorded in the issue tracker. (Covariant subsumption at argument
-    positions, the common point-free-composition case, is done — see above.)
+    also subsume under nested arrows and in non-argument positions — remains; the
+    design is recorded in the issue tracker. (Covariant subsumption at argument
+    positions, including through user-defined operators, and effect-parameterized
+    interfaces are done — see above.)
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.
