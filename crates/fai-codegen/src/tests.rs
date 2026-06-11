@@ -83,6 +83,7 @@ pub(crate) fn run_counted(src: &str) -> (i32, String, i64) {
     let mut defs: Vec<LoweredDef> = Vec::new();
     let mut arity: HashMap<DefId, usize> = HashMap::new();
     let mut abi: HashMap<DefId, fai_core::ir::FnAbi> = HashMap::new();
+    let mut borrows: HashMap<DefId, Vec<bool>> = HashMap::new();
     let mut seen: HashSet<DefId> = HashSet::new();
     let mut worklist = vec![entry, runtime];
     while let Some(def) = worklist.pop() {
@@ -94,6 +95,7 @@ pub(crate) fn run_counted(src: &str) -> (i32, String, i64) {
         let nparams = lowered.entry().params.len();
         arity.insert(def, nparams);
         abi.insert(def, abi_of_def(&db, def, nparams));
+        borrows.insert(def, lowered.entry_borrowed.clone());
         worklist.extend(lowered.referenced_globals());
         defs.push((*lowered).clone());
     }
@@ -102,11 +104,12 @@ pub(crate) fn run_counted(src: &str) -> (i32, String, i64) {
         |d: DefId| format!("fai_{}_{}", labels.get(&d.file).cloned().unwrap_or_default(), d.name);
     let arity_of = |d: DefId| arity.get(&d).copied().unwrap_or(1);
     let signature_of = |d: DefId| abi.get(&d).cloned().unwrap_or_default();
+    let borrows_of = |d: DefId| borrows.get(&d).cloned().unwrap_or_default();
 
     let _g = lock();
     rt::capture_start();
     rt::reset_allocations();
-    let code = jit_run(&defs, entry, runtime, &namer, &arity_of, &signature_of);
+    let code = jit_run(&defs, entry, runtime, &namer, &arity_of, &signature_of, &borrows_of);
     let allocs = rt::allocations();
     let out = rt::capture_take();
     (code, out, allocs)
@@ -135,6 +138,7 @@ fn function_ir(src: &str, def_name: &str) -> Vec<String> {
     let target = DefId::new(user.source(&db), Symbol::intern(def_name));
     let mut arity: HashMap<DefId, usize> = HashMap::new();
     let mut abi: HashMap<DefId, fai_core::ir::FnAbi> = HashMap::new();
+    let mut borrows: HashMap<DefId, Vec<bool>> = HashMap::new();
     let mut seen: HashSet<DefId> = HashSet::new();
     let mut worklist = vec![target];
     let mut lowered = None;
@@ -147,6 +151,7 @@ fn function_ir(src: &str, def_name: &str) -> Vec<String> {
         let nparams = l.entry().params.len();
         arity.insert(def, nparams);
         abi.insert(def, abi_of_def(&db, def, nparams));
+        borrows.insert(def, l.entry_borrowed.clone());
         worklist.extend(l.referenced_globals());
         if def == target {
             lowered = Some((*l).clone());
@@ -158,7 +163,17 @@ fn function_ir(src: &str, def_name: &str) -> Vec<String> {
         |d: DefId| format!("fai_{}_{}", labels.get(&d.file).cloned().unwrap_or_default(), d.name);
     let arity_of = |d: DefId| arity.get(&d).copied().unwrap_or(1);
     let signature_of = |d: DefId| abi.get(&d).cloned().unwrap_or_default();
-    crate::aot::function_ir_text(&lowered, &namer, &arity_of, &signature_of)
+    let borrows_of = |d: DefId| borrows.get(&d).cloned().unwrap_or_default();
+    crate::aot::function_ir_text(&lowered, &namer, &arity_of, &signature_of, &borrows_of)
+}
+
+/// The Cranelift IR of a definition's **entry** function alone (index 0),
+/// excluding the first-class bridging wrapper and any lifted lambdas — for
+/// asserting the inline op shape of the body itself. (A monomorphic-`Int` register
+/// function now carries a wrapper that boxes/untags at the uniform ABI boundary,
+/// whose tag/box guards would otherwise pollute a whole-definition IR scan.)
+fn entry_ir(src: &str, def_name: &str) -> String {
+    function_ir(src, def_name).into_iter().next().expect("entry function IR")
 }
 
 fn main_printing(expr: &str) -> String {
@@ -1637,18 +1652,20 @@ fn dup_of_an_always_boxed_value_omits_the_tag_check() {
 }
 
 #[test]
-fn dup_of_an_int_is_tag_checked() {
-    // `n` is used twice, so it is duplicated; an `Int` may be an immediate, so the
-    // increment is guarded by a tag-check (`brif`). The body has no `if`, so that
-    // branch is the inlined dup's guard.
+fn dup_of_a_polymorphic_value_is_tag_checked() {
+    // `x` is used twice, so it is duplicated; a polymorphic value may be an
+    // immediate or a boxed cell, so the increment is guarded by a tag-check
+    // (`brif`). The body has no `if`, so that branch is the inlined dup's guard. (A
+    // monomorphic raw `Int` local is, by contrast, a no-op dup — see
+    // `raw_int_local_dup_and_drop_are_no_ops`.)
     let src = indoc! {r#"
         module M
 
-        g : Int -> Int * Int
-        let g n = (n, n)
+        g : 'a -> 'a * 'a
+        let g x = (x, x)
     "#};
     let ir = function_ir(src, "g").join("\n");
-    assert!(ir.contains("brif"), "an Int dup is guarded by a tag-check:\n{ir}");
+    assert!(ir.contains("brif"), "a polymorphic dup is guarded by a tag-check:\n{ir}");
 }
 
 // --- Drop specialization: behavioral leak/correctness matrix ----------------
@@ -1954,54 +1971,61 @@ fn inlined_drop_of_a_deep_list_is_stack_safe() {
 }
 
 // --- Inline integer primitives: emitted IR shape ----------------------------
-// The hot integer/boolean primitives compile to inline machine code with an
-// immediate fast path and a runtime-call fallback. `function_ir` shows the
-// pre-optimization IR we emit. In that form a runtime callee is a numbered
-// external reference (`fn0`), not its symbol name, so these assert the structural
-// shape: the inline machine op, the immediate guard branch (`brif`), and the lone
-// fallback `call` (the fast path makes no call).
+// With the register int ABI, a monomorphic-`Int` function's parameters are raw
+// untagged `i64`s, so the hot integer/boolean primitives compile to **bare**
+// native machine ops in the entry — no immediate tag guard, no 63-bit fit check,
+// no boxing, and no runtime fallback (the result stays a raw 64-bit value).
+// `entry_ir` inspects the entry alone (the first-class bridging wrapper, which
+// boxes/untags at the uniform ABI boundary, is excluded). The tagged guarded path
+// with the runtime fallback survives for the int-erased mutual-recursion combined
+// functions, exercised behaviorally by the mutual-recursion tests.
+// `function_ir` shows pre-optimization IR, where a runtime callee is a numbered
+// external reference (`fn0`), not its symbol name.
 
 #[test]
-fn integer_add_is_inlined_with_a_runtime_fallback() {
+fn integer_add_is_a_bare_native_op_on_raw_operands() {
+    // With unboxed (raw `i64`) operands — the register int ABI — addition is a
+    // single bare native `iadd`: no immediate guard, no 63-bit fit check, and no
+    // runtime fallback (the result stays a raw 64-bit value).
     let src = indoc! {r#"
         module M
 
         f : Int -> Int -> Int
         let f x y = x + y
     "#};
-    let ir = function_ir(src, "f").join("\n");
-    assert!(ir.contains("iadd"), "inline native add:\n{ir}");
-    assert!(ir.contains("sadd_overflow"), "inline 63-bit fit check:\n{ir}");
-    assert!(ir.contains("brif"), "immediate-operand guard branch:\n{ir}");
-    assert!(ir.contains("call fn0"), "runtime fallback call retained:\n{ir}");
+    let ir = entry_ir(src, "f");
+    assert!(ir.contains("iadd"), "bare native add:\n{ir}");
+    assert!(!ir.contains("sadd_overflow"), "no 63-bit fit check on raw operands:\n{ir}");
+    assert!(!ir.contains("brif"), "no immediate-operand guard on raw operands:\n{ir}");
+    assert!(!ir.contains("call fn0"), "no runtime fallback on raw operands:\n{ir}");
 }
 
 #[test]
-fn integer_comparison_is_inlined_with_a_runtime_fallback() {
+fn integer_comparison_is_a_bare_native_op_on_raw_operands() {
     let src = indoc! {r#"
         module M
 
         g : Int -> Int -> Bool
         let g x y = x < y
     "#};
-    let ir = function_ir(src, "g").join("\n");
-    assert!(ir.contains("icmp"), "inline native comparison:\n{ir}");
-    assert!(ir.contains("brif"), "immediate-operand guard branch:\n{ir}");
-    assert!(ir.contains("call fn0"), "runtime fallback call retained:\n{ir}");
+    let ir = entry_ir(src, "g");
+    assert!(ir.contains("icmp"), "bare native comparison:\n{ir}");
+    assert!(!ir.contains("brif"), "no immediate-operand guard on raw operands:\n{ir}");
+    assert!(!ir.contains("call fn0"), "no runtime fallback on raw operands:\n{ir}");
 }
 
 #[test]
-fn integer_equality_is_inlined_with_a_runtime_fallback() {
+fn integer_equality_is_a_bare_native_op_on_raw_operands() {
     let src = indoc! {r#"
         module M
 
         e : Int -> Int -> Bool
         let e x y = x = y
     "#};
-    let ir = function_ir(src, "e").join("\n");
-    assert!(ir.contains("icmp"), "inline native equality:\n{ir}");
-    assert!(ir.contains("brif"), "immediate-operand guard branch:\n{ir}");
-    assert!(ir.contains("call fn0"), "runtime fallback call retained:\n{ir}");
+    let ir = entry_ir(src, "e");
+    assert!(ir.contains("icmp"), "bare native equality:\n{ir}");
+    assert!(!ir.contains("brif"), "no immediate-operand guard on raw operands:\n{ir}");
+    assert!(!ir.contains("call fn0"), "no runtime fallback on raw operands:\n{ir}");
 }
 
 #[test]
@@ -2025,109 +2049,107 @@ fn char_equality_is_inlined_without_a_guard_or_fallback() {
 }
 
 #[test]
-fn integer_division_is_inlined_with_a_runtime_fallback() {
-    // A variable divisor takes the general path: a native sdiv behind the
-    // immediate guard, the zero-divisor branch, the 63-bit fit check, and the
-    // retained runtime fallback (a boxed operand, a zero divisor, or the lone
-    // (-2^62)/-1 = 2^62 immediate-overflow result).
+fn integer_division_on_raw_operands_drops_the_fit_check() {
+    // With raw operands a variable divisor needs no 63-bit fit check (the result
+    // stays a raw 64-bit value): a native sdiv guarded only by the zero-divisor
+    // branch (to the located runtime fault) and the `b == -1` branch (which yields
+    // `0 - a`, matching wrapping_div and dodging sdiv's INT_MIN/-1 trap).
     let src = indoc! {r#"
         module M
 
         d : Int -> Int -> Int
         let d x y = x / y
     "#};
-    let ir = function_ir(src, "d").join("\n");
-    assert!(ir.contains("sdiv"), "inline native division:\n{ir}");
-    assert!(ir.contains("sadd_overflow"), "inline 63-bit fit check:\n{ir}");
-    assert!(ir.contains("brif"), "immediate-operand and zero-divisor guards:\n{ir}");
-    assert!(ir.contains("call fn0"), "runtime fallback call retained:\n{ir}");
+    let ir = entry_ir(src, "d");
+    assert!(ir.contains("sdiv"), "native division:\n{ir}");
+    assert!(!ir.contains("sadd_overflow"), "no 63-bit fit check on raw operands:\n{ir}");
+    assert!(ir.contains("brif"), "zero-divisor and -1 guards:\n{ir}");
+    assert!(ir.contains("call fn0"), "located zero-divisor fault retained:\n{ir}");
 }
 
 #[test]
-fn integer_remainder_is_inlined_with_a_runtime_fallback() {
-    // A variable divisor: a native srem behind the guards. A remainder always
-    // fits the immediate, so — unlike division — there is no fit check.
+fn integer_remainder_on_raw_operands() {
+    // A variable divisor: a native srem behind the zero and `-1` guards; a
+    // remainder never needs a fit check.
     let src = indoc! {r#"
         module M
 
         r : Int -> Int -> Int
         let r x y = x % y
     "#};
-    let ir = function_ir(src, "r").join("\n");
-    assert!(ir.contains("srem"), "inline native remainder:\n{ir}");
+    let ir = entry_ir(src, "r");
+    assert!(ir.contains("srem"), "native remainder:\n{ir}");
     assert!(!ir.contains("sadd_overflow"), "a remainder needs no fit check:\n{ir}");
-    assert!(ir.contains("brif"), "immediate-operand and zero-divisor guards:\n{ir}");
-    assert!(ir.contains("call fn0"), "runtime fallback call retained:\n{ir}");
+    assert!(ir.contains("brif"), "zero-divisor and -1 guards:\n{ir}");
+    assert!(ir.contains("call fn0"), "located zero-divisor fault retained:\n{ir}");
 }
 
 #[test]
-fn division_by_a_constant_power_of_two_strength_reduces_to_a_shift() {
-    // A constant power-of-two divisor needs no zero or overflow guard and
-    // strength-reduces to a bias-corrected arithmetic shift: no native sdiv and no
-    // fit check, only the dividend guard and the boxed-dividend fallback. The
-    // bias's logical shift (`ushr`) marks the strength-reduced path (untag/tag use
-    // `sshr`/`ishl`).
+fn division_by_a_constant_power_of_two_is_a_bare_shift() {
+    // On a raw operand a constant power-of-two divisor strength-reduces to a
+    // bias-corrected arithmetic shift with no guards or fallback at all: no native
+    // sdiv, no fit check, no immediate guard, no runtime call. The bias's logical
+    // shift (`ushr`) marks the strength-reduced path.
     let src = indoc! {r#"
         module M
 
         d : Int -> Int
         let d x = x / 2
     "#};
-    let ir = function_ir(src, "d").join("\n");
+    let ir = entry_ir(src, "d");
     assert!(!ir.contains("sdiv"), "no native division for a power of two:\n{ir}");
     assert!(!ir.contains("sadd_overflow"), "no fit check for a power of two:\n{ir}");
     assert!(ir.contains("ushr"), "strength-reduced via the sign-bias shift:\n{ir}");
-    assert!(ir.contains("brif"), "dividend immediate guard:\n{ir}");
-    assert!(ir.contains("call fn0"), "boxed-dividend runtime fallback retained:\n{ir}");
+    assert!(!ir.contains("brif"), "no dividend guard on a raw operand:\n{ir}");
+    assert!(!ir.contains("call fn0"), "no runtime fallback on a raw operand:\n{ir}");
 }
 
 #[test]
-fn remainder_by_a_constant_power_of_two_strength_reduces_to_a_shift() {
-    // The power-of-two remainder is `x - (q << k)`: no native srem; the bias
-    // shift (`ushr`) again marks the strength-reduced quotient.
+fn remainder_by_a_constant_power_of_two_is_a_bare_shift() {
+    // The power-of-two remainder is `x - (q << k)`: no native srem, no guard, no
+    // fallback; the bias shift (`ushr`) marks the strength-reduced quotient.
     let src = indoc! {r#"
         module M
 
         r : Int -> Int
         let r x = x % 2
     "#};
-    let ir = function_ir(src, "r").join("\n");
+    let ir = entry_ir(src, "r");
     assert!(!ir.contains("srem"), "no native remainder for a power of two:\n{ir}");
     assert!(ir.contains("ushr"), "strength-reduced via the sign-bias shift:\n{ir}");
-    assert!(ir.contains("brif"), "dividend immediate guard:\n{ir}");
-    assert!(ir.contains("call fn0"), "boxed-dividend runtime fallback retained:\n{ir}");
+    assert!(!ir.contains("brif"), "no dividend guard on a raw operand:\n{ir}");
+    assert!(!ir.contains("call fn0"), "no runtime fallback on a raw operand:\n{ir}");
 }
 
 #[test]
-fn division_by_a_nonzero_constant_elides_the_guards() {
+fn division_by_a_nonzero_constant_is_a_bare_native_op() {
     // A constant (non-power-of-two) divisor is statically nonzero and never -1, so
-    // the native sdiv carries no zero guard and no fit check — the elision marker
-    // is the absent sadd_overflow — keeping the dividend guard and the fallback.
+    // on a raw operand the native sdiv carries no guards and no fallback at all.
     let src = indoc! {r#"
         module M
 
         d : Int -> Int
         let d x = x / 3
     "#};
-    let ir = function_ir(src, "d").join("\n");
+    let ir = entry_ir(src, "d");
     assert!(ir.contains("sdiv"), "native division by the constant:\n{ir}");
     assert!(!ir.contains("sadd_overflow"), "no fit check for a constant divisor:\n{ir}");
-    assert!(ir.contains("brif"), "dividend immediate guard:\n{ir}");
-    assert!(ir.contains("call fn0"), "boxed-dividend runtime fallback retained:\n{ir}");
+    assert!(!ir.contains("brif"), "no dividend guard on a raw operand:\n{ir}");
+    assert!(!ir.contains("call fn0"), "no runtime fallback on a raw operand:\n{ir}");
 }
 
 #[test]
-fn remainder_by_a_nonzero_constant_elides_the_guards() {
+fn remainder_by_a_nonzero_constant_is_a_bare_native_op() {
     let src = indoc! {r#"
         module M
 
         r : Int -> Int
         let r x = x % 3
     "#};
-    let ir = function_ir(src, "r").join("\n");
+    let ir = entry_ir(src, "r");
     assert!(ir.contains("srem"), "native remainder by the constant:\n{ir}");
-    assert!(ir.contains("brif"), "dividend immediate guard:\n{ir}");
-    assert!(ir.contains("call fn0"), "boxed-dividend runtime fallback retained:\n{ir}");
+    assert!(!ir.contains("brif"), "no dividend guard on a raw operand:\n{ir}");
+    assert!(!ir.contains("call fn0"), "no runtime fallback on a raw operand:\n{ir}");
 }
 
 #[test]
@@ -2140,9 +2162,8 @@ fn division_by_a_literal_zero_stays_an_out_of_line_call() {
         d : Int -> Int
         let d x = x / 0
     "#};
-    let ir = function_ir(src, "d").join("\n");
+    let ir = entry_ir(src, "d");
     assert!(ir.contains("call fn0"), "division by zero is a runtime call:\n{ir}");
-    assert!(!ir.contains("brif"), "no immediate guard for the bare call:\n{ir}");
     assert!(!ir.contains("sdiv"), "no native division for a zero divisor:\n{ir}");
 }
 
@@ -2182,10 +2203,13 @@ fn first_class_application_still_spills_an_argument_array() {
     assert!(ir.contains("stack_store"), "a first-class application spills its args:\n{ir}");
 }
 
-// --- Inline integer primitives: immediate/boxed boundary behavior -----------
-// One case each across the 63-bit immediate boundary, exercising the fast path,
-// the overflow fallback, and the boxed-operand fallback. A clean (code 0) exit
-// also asserts no leak.
+// --- Inline integer primitives: value correctness across the 63-bit boundary -
+// These evaluate constant or variable integer expressions whose operands and
+// results straddle the 63-bit immediate range, and check the printed value. The
+// raw inline arithmetic computes the exact (wrapping) result regardless of
+// magnitude; a value beyond the immediate range is boxed only when it crosses a
+// uniform slot (here, when handed to `Int.toString` for rendering). A clean
+// (code 0) exit also asserts no leak.
 
 /// Runs `main` printing `Int.toString (expr)` and returns `(exit, output)`.
 fn int_out(expr: &str) -> (i32, String) {
@@ -2193,84 +2217,83 @@ fn int_out(expr: &str) -> (i32, String) {
 }
 
 #[test]
-fn add_at_the_max_immediate_stays_immediate() {
-    // 2^62 - 1 is the largest immediate; adding 0 stays in range (fast path).
+fn add_at_the_max_immediate_is_exact() {
+    // 2^62 - 1 is the largest immediate; adding 0 keeps it in range.
     let (code, out) = int_out("4611686018427387903 + 0");
     assert_eq!((code, out.as_str()), (0, "4611686018427387903\n"));
 }
 
 #[test]
-fn add_overflowing_the_immediate_boxes_via_the_fallback() {
-    // 2^62 - 1 + 1 = 2^62 no longer fits the immediate: the fast path's fit check
-    // fails and the runtime fallback boxes the result.
+fn add_overflowing_the_immediate_is_exact() {
+    // 2^62 - 1 + 1 = 2^62 no longer fits the 63-bit immediate; the raw sum is exact
+    // (boxed only when rendered).
     let (code, out) = int_out("4611686018427387903 + 1");
     assert_eq!((code, out.as_str()), (0, "4611686018427387904\n"));
 }
 
 #[test]
-fn add_of_two_maxima_boxes_without_i64_overflow() {
-    // 2^62 - 1 doubled is 2^63 - 2: fits i64 but not the 63-bit immediate, so the
-    // fit check still routes it to the boxing fallback.
+fn add_of_two_maxima_is_exact_without_i64_overflow() {
+    // 2^62 - 1 doubled is 2^63 - 2: fits i64 but not the 63-bit immediate, and the
+    // raw sum carries it exactly.
     let (code, out) = int_out("4611686018427387903 + 4611686018427387903");
     assert_eq!((code, out.as_str()), (0, "9223372036854775806\n"));
 }
 
 #[test]
-fn subtraction_reaches_the_min_immediate_on_the_fast_path() {
-    // -(2^62 - 1) - 1 = -2^62, the smallest immediate, all on the fast path.
+fn subtraction_reaches_the_min_immediate() {
+    // -(2^62 - 1) - 1 = -2^62, the smallest immediate.
     let (code, out) = int_out("(0 - 4611686018427387903) - 1");
     assert_eq!((code, out.as_str()), (0, "-4611686018427387904\n"));
 }
 
 #[test]
 fn multiplication_wraps_like_the_runtime() {
-    // Both operands are immediates, but the product overflows i64; the wrapped
-    // result must match the runtime's `wrapping_mul` (then box).
+    // The product overflows i64; the raw `imul` wraps, matching the runtime's
+    // `wrapping_mul`.
     let expected = 3_037_000_500_i64.wrapping_mul(3_037_000_500);
     let (code, out) = int_out("3037000500 * 3037000500");
     assert_eq!((code, out.as_str()), (0, format!("{expected}\n").as_str()));
 }
 
 #[test]
-fn logical_shift_right_of_negative_one_boxes_via_the_fallback() {
-    // shiftRightLogical (-1) 1 = 2^63 - 1, which overflows the immediate: the fit
-    // check fails and the runtime boxes it.
+fn logical_shift_right_of_negative_one_is_exact() {
+    // shiftRightLogical (-1) 1 = 2^63 - 1, beyond the 63-bit immediate; the raw
+    // shift carries it exactly.
     let (code, out) = int_out("Int.shiftRightLogical (0 - 1) 1");
     assert_eq!((code, out.as_str()), (0, "9223372036854775807\n"));
 }
 
 #[test]
-fn bitwise_and_of_a_boxed_operand_uses_the_fallback() {
-    // 2^62 is boxed; `and` with an immediate falls back to the runtime, which
-    // unboxes, masks (clearing the low bit), and re-boxes nothing (0 is immediate).
+fn bitwise_and_across_the_immediate_boundary() {
+    // 2^62 exceeds the immediate; the raw `and` with 1 clears the low bit, giving 0.
     let (code, out) = int_out("Int.and 4611686018427387904 1");
     assert_eq!((code, out.as_str()), (0, "0\n"));
 }
 
 #[test]
-fn bitwise_xor_on_the_fast_path() {
+fn bitwise_xor_computes_correctly() {
     let (code, out) = int_out("Int.xor 6 3");
     assert_eq!((code, out.as_str()), (0, "5\n"));
 }
 
 #[test]
-fn complement_on_the_fast_path() {
+fn complement_computes_correctly() {
     let (code, out) = int_out("Int.complement 0");
     assert_eq!((code, out.as_str()), (0, "-1\n"));
 }
 
 #[test]
-fn equality_of_two_boxed_integers_uses_the_fallback() {
-    // Both operands are boxed (2^62); equality falls back to `fai_equal`, which
-    // compares the unboxed values.
+fn equality_of_two_large_integers() {
+    // Both operands exceed the 63-bit immediate (2^62); raw equality is a bare
+    // comparison of the values.
     let (code, out) =
         run(&main_printing("if 4611686018427387904 = 4611686018427387904 then \"eq\" else \"ne\""));
     assert_eq!((code, out.as_str()), (0, "eq\n"));
 }
 
 #[test]
-fn comparison_across_the_immediate_boundary_uses_the_fallback() {
-    // Both operands are boxed; `<` falls back to `fai_int_lt` on the unboxed values.
+fn comparison_of_two_large_integers() {
+    // Both operands exceed the immediate; raw `<` is a bare native comparison.
     let (code, out) =
         run(&main_printing("if 4611686018427387904 < 4611686018427387905 then \"lt\" else \"ge\""));
     assert_eq!((code, out.as_str()), (0, "lt\n"));
@@ -2292,7 +2315,8 @@ fn boolean_equality_on_the_fast_path() {
 // `int_out` evaluates a constant expression, so a literal divisor exercises the
 // constant paths (power-of-two strength reduction, or the guard-elided native
 // op); `var_divrem` routes the operands through a two-argument function, so the
-// divisor is a variable and the general (zero-guarded, fit-checked) path runs.
+// divisor is a variable and the general path runs (on raw operands: a zero-divisor
+// branch to the located fault and a `b == -1` branch, no fit check).
 
 /// Runs `a <op> b` (op `/` or `%`) through a two-argument function — a variable
 /// divisor, the general inline path — printing the result.
@@ -2357,9 +2381,9 @@ fn division_by_one_is_the_identity() {
 }
 
 #[test]
-fn boxed_dividend_with_a_constant_divisor_uses_the_fallback() {
-    // 2^62 is boxed; the constant paths still keep the dividend guard, so a boxed
-    // dividend takes the runtime fallback.
+fn large_dividend_with_a_constant_divisor_is_exact() {
+    // A dividend beyond the 63-bit immediate (2^62) divides exactly on the raw
+    // constant paths (power-of-two shift and the guard-elided native op).
     let (code, out) = int_out("4611686018427387904 / 2");
     assert_eq!((code, out.as_str()), (0, "2305843009213693952\n")); // 2^61
     let (code, out) = int_out("4611686018427387904 / 3");
@@ -2369,7 +2393,7 @@ fn boxed_dividend_with_a_constant_divisor_uses_the_fallback() {
 }
 
 #[test]
-fn variable_division_and_remainder_on_the_fast_path() {
+fn variable_division_and_remainder_compute_correctly() {
     let (code, out) = var_divrem('/', "20", "5");
     assert_eq!((code, out.as_str()), (0, "4\n"));
     let (code, out) = var_divrem('%', "20", "7");
@@ -2381,20 +2405,324 @@ fn variable_division_and_remainder_on_the_fast_path() {
 }
 
 #[test]
-fn variable_division_overflow_boxes_via_the_fallback() {
-    // -2^62 / -1 = 2^62 overflows the immediate; the fit check routes it to the
-    // runtime fallback, which boxes the result (matching wrapping_div).
+fn variable_division_of_min_by_negative_one_wraps() {
+    // -2^62 / -1 = 2^62 (wrapping): the raw general path's `b == -1` branch yields
+    // `0 - a`, matching wrapping_div and dodging sdiv's INT_MIN/-1 trap.
     let (code, out) = var_divrem('/', "0 - 4611686018427387904", "0 - 1");
-    assert_eq!((code, out.as_str()), (0, "4611686018427387904\n")); // 2^62, boxed
-    // The companion remainder is 0 and fits the immediate.
+    assert_eq!((code, out.as_str()), (0, "4611686018427387904\n")); // 2^62
+    // The companion remainder is 0.
     let (code, out) = var_divrem('%', "0 - 4611686018427387904", "0 - 1");
     assert_eq!((code, out.as_str()), (0, "0\n"));
 }
 
 #[test]
-fn variable_division_by_a_boxed_operand_uses_the_fallback() {
-    // A boxed divisor (2^62) fails the both-immediate guard, so the general path
-    // falls back to the runtime, which unboxes and divides.
+fn variable_division_of_large_operands_is_exact() {
+    // Operands beyond the 63-bit immediate divide exactly on the raw general path.
     let (code, out) = var_divrem('/', "9223372036854775806", "4611686018427387904");
     assert_eq!((code, out.as_str()), (0, "1\n")); // (2^63-2) / 2^62 = 1
+}
+
+// --- Unboxed monomorphic `Int`: behavior, allocation, and safety -------------
+// A monomorphic `Int` flows as a raw, untagged `i64` in registers/locals (the
+// register ABI), tagged/boxed only where it crosses a uniform slot. These check
+// the bellwethers run correctly and leak-free, that a raw loop allocates nothing
+// per iteration, that full 64-bit values survive, and the safety invariant that a
+// raw int local is never treated as a heap pointer.
+
+#[test]
+fn fib_recursive_runs_and_is_leak_free() {
+    // Non-tail recursion with raw int parameters/results: each call passes and
+    // returns a raw `i64`, and the two recursive results add with a bare op. A
+    // clean exit also asserts no leak.
+    let src = indoc! {r#"
+        module M
+
+        fib : Int -> Int
+        let fib n = if n < 2 then n else fib (n - 1) + fib (n - 2)
+
+        public main : Runtime -> Unit
+        let main r = r.console.writeLine (Int.toString (fib 20))
+    "#};
+    let (code, out) = run(src);
+    assert_eq!((code, out.as_str()), (0, "6765\n"));
+}
+
+#[test]
+fn collatz_runs_and_is_leak_free() {
+    // Uses `%`, `/` (constant power of two), `*`, `+`, and comparisons on raw ints.
+    let src = indoc! {r#"
+        module M
+
+        steps : Int -> Int -> Int
+        let steps n acc =
+          if n <= 1 then acc
+          else if n % 2 = 0 then steps (n / 2) (acc + 1)
+          else steps (3 * n + 1) (acc + 1)
+
+        public main : Runtime -> Unit
+        let main r = r.console.writeLine (Int.toString (steps 27 0))
+    "#};
+    let (code, out) = run(src);
+    assert_eq!((code, out.as_str()), (0, "111\n"));
+}
+
+#[test]
+fn ackermann_runs_and_is_leak_free() {
+    let src = indoc! {r#"
+        module M
+
+        ack : Int -> Int -> Int
+        let ack m n =
+          if m = 0 then n + 1
+          else if n = 0 then ack (m - 1) 1
+          else ack (m - 1) (ack m (n - 1))
+
+        public main : Runtime -> Unit
+        let main r = r.console.writeLine (Int.toString (ack 2 3))
+    "#};
+    let (code, out) = run(src);
+    assert_eq!((code, out.as_str()), (0, "9\n"));
+}
+
+/// A xorshift64-style state carried through a tail loop with bitwise/shift ops on
+/// raw ints — the `prng_xorshift` shape. The state routinely exceeds the 63-bit
+/// immediate range, but as a raw `i64` it never boxes.
+fn xorshift_loop(n: i64) -> String {
+    formatdoc! {r#"
+        module M
+
+        next : Int -> Int
+        let next x =
+          let a = Int.xor x (Int.shiftLeft x 13)
+          let b = Int.xor a (Int.shiftRightLogical a 7)
+          Int.xor b (Int.shiftLeft b 17)
+
+        loop : Int -> Int -> Int -> Int
+        let loop i n state =
+          if i >= n then state else loop (i + 1) n (next state)
+
+        public main : Runtime -> Unit
+        let main r = r.console.writeLine (Int.toString (loop 0 {n} 88172645463325252))
+    "#}
+}
+
+#[test]
+fn unboxed_int_loop_allocates_independently_of_iterations() {
+    // The 64-bit xorshift state stays a raw `i64` across the loop, so the program
+    // allocates a constant number of cells regardless of its iteration count. A
+    // regression that re-boxed the >63-bit state per step would make the count
+    // scale with the iterations and fail this gate.
+    let (code, _out, few) = run_counted(&xorshift_loop(10));
+    assert_eq!(code, 0, "clean exit");
+    let (_, _, many) = run_counted(&xorshift_loop(100_000));
+    assert_eq!(
+        few, many,
+        "an unboxed int loop must allocate a constant number of cells (got {few} vs {many})"
+    );
+}
+
+#[test]
+fn raw_int_loop_preserves_a_value_beyond_the_immediate_range() {
+    // A doubling loop reaches 2^62, which does not fit the 63-bit immediate; as a
+    // raw `i64` it is carried and printed exactly (no truncation, no boxing).
+    let src = indoc! {r#"
+        module M
+
+        double : Int -> Int -> Int
+        let double i acc = if i >= 62 then acc else double (i + 1) (acc + acc)
+
+        public main : Runtime -> Unit
+        let main r = r.console.writeLine (Int.toString (double 0 1))
+    "#};
+    let (code, out) = run(src);
+    assert_eq!((code, out.as_str()), (0, "4611686018427387904\n")); // 2^62
+}
+
+#[test]
+fn raw_int_local_dup_and_drop_are_no_ops() {
+    // SAFETY: a raw int local carries no reference count and is not a pointer, so
+    // duplicating it (used twice) and dropping it must emit no tag-check branch and
+    // no reference-count load/store — a tag-check could misfire on an even value
+    // (low bit clear) and dereference the integer as a heap cell. The entry of
+    // `g n = n + n` (n used twice, then dead) is a bare `iadd` with no `brif` and
+    // no rc memory access.
+    let src = indoc! {r#"
+        module M
+
+        g : Int -> Int
+        let g n = n + n
+    "#};
+    let ir = entry_ir(src, "g");
+    assert!(ir.contains("iadd"), "bare native add:\n{ir}");
+    assert!(!ir.contains("brif"), "no tag-checked dup/drop on a raw int local:\n{ir}");
+    assert!(!ir.contains("load"), "no reference-count access on a raw int local:\n{ir}");
+    assert!(!ir.contains("store"), "no reference-count access on a raw int local:\n{ir}");
+}
+
+#[test]
+fn raw_even_valued_int_local_is_dropped_without_a_pointer_access() {
+    // The behavioral companion: a raw int local holding an even value (low bit
+    // clear, so it would look "boxed" to a tag-check) is duplicated and dropped
+    // with a clean, leak-checked exit — no wild dereference.
+    let src = indoc! {r#"
+        module M
+
+        twice : Int -> Int
+        let twice n = n + n
+
+        public main : Runtime -> Unit
+        let main r =
+          let x = 1000000
+          r.console.writeLine (Int.toString (twice x + x))
+    "#};
+    let (code, out) = run(src);
+    assert_eq!((code, out.as_str()), (0, "3000000\n"));
+}
+
+#[test]
+fn int_through_a_data_field_round_trips() {
+    // A raw int crosses into a record field (tagged/boxed there) and is read back
+    // out unboxed to raw, including a value beyond the 63-bit immediate range.
+    let src = indoc! {r#"
+        module M
+
+        type Box = { value : Int }
+
+        public main : Runtime -> Unit
+        let main r =
+          let b = { value = 4611686018427387904 + 1 }
+          r.console.writeLine (Int.toString (b.value + 1))
+    "#};
+    let (code, out) = run(src);
+    assert_eq!((code, out.as_str()), (0, "4611686018427387906\n")); // 2^62 + 2
+}
+
+#[test]
+fn int_through_a_closure_capture_round_trips() {
+    // A raw int captured into a closure environment (boxed there) is read back out.
+    let src = indoc! {r#"
+        module M
+
+        public main : Runtime -> Unit
+        let main r =
+          let n = 5000000000000000000
+          let add = fun k -> n + k
+          r.console.writeLine (Int.toString (add 3))
+    "#};
+    let (code, out) = run(src);
+    assert_eq!((code, out.as_str()), (0, "5000000000000000003\n"));
+}
+
+#[test]
+fn int_through_a_polymorphic_position_round_trips() {
+    // A raw int flows through a generic identity (a uniform/boxed position) and
+    // comes back, unboxed to raw on the way out.
+    let src = indoc! {r#"
+        module M
+
+        id : 'a -> 'a
+        let id x = x
+
+        public main : Runtime -> Unit
+        let main r = r.console.writeLine (Int.toString (id 9000000000000000000 + 1))
+    "#};
+    let (code, out) = run(src);
+    assert_eq!((code, out.as_str()), (0, "9000000000000000001\n"));
+}
+
+#[test]
+fn first_class_int_function_via_the_wrapper_is_leak_free() {
+    // A monomorphic int function reached first-class goes through its bridging
+    // wrapper, which untags each boxed argument to a raw `i64` and re-tags/boxes the
+    // raw result. The value and a leak-free exit must match the direct form.
+    let src = indoc! {r#"
+        module M
+
+        inc : Int -> Int
+        let inc x = x + 1
+
+        apply : (Int -> Int) -> Int -> Int
+        let apply f x = f x
+
+        public main : Runtime -> Unit
+        let main r = r.console.writeLine (Int.toString (apply inc 41))
+    "#};
+    let (code, out) = run(src);
+    assert_eq!((code, out.as_str()), (0, "42\n"));
+}
+
+#[test]
+fn mutually_recursive_int_functions_run_and_are_leak_free() {
+    // A mutual-recursion group compiles to a combined loop with shared uniform
+    // slots, which erases `Int` to keep them tagged — so its integer arithmetic
+    // takes the tagged guarded path (the runtime fallback retained for that path).
+    let src = indoc! {r#"
+        module M
+
+        isEven : Int -> Bool
+        let isEven n = if n = 0 then true else isOdd (n - 1)
+
+        isOdd : Int -> Bool
+        let isOdd n = if n = 0 then false else isEven (n - 1)
+
+        public main : Runtime -> Unit
+        let main r = r.console.writeLine (if isEven 10 then "even" else "odd")
+    "#};
+    let (code, out) = run(src);
+    assert_eq!((code, out.as_str()), (0, "even\n"));
+}
+
+#[test]
+fn scalar_int_argument_to_a_generic_borrowing_function_is_leak_free() {
+    // A generic function borrows its (here unused) parameter; passing a >63-bit int
+    // boxes it at the call boundary, and the caller must release that lent box (the
+    // box is a temporary, not a named local whose drop would free it — and a raw
+    // int local's drop is a no-op). A clean exit asserts the box did not leak.
+    let src = indoc! {r#"
+        module M
+
+        const3 : 'a -> Int
+        let const3 x = 1 + 2
+
+        public main : Runtime -> Unit
+        let main r = r.console.writeLine (Int.toString (const3 6504279590443731508))
+    "#};
+    let (code, out) = run(src);
+    assert_eq!((code, out.as_str()), (0, "3\n"));
+}
+
+#[test]
+fn scalar_float_argument_to_a_generic_borrowing_function_is_leak_free() {
+    // The `Float` companion of the boundary-box release above: a boxed float lent to
+    // a borrowed generic parameter must be freed by the caller after the call.
+    let src = indoc! {r#"
+        module M
+
+        const3 : 'a -> Float
+        let const3 x = 3.0
+
+        public main : Runtime -> Unit
+        let main r = r.console.writeLine (Float.toString (const3 1.5))
+    "#};
+    let (code, out) = run(src);
+    assert_eq!((code, out.as_str()), (0, "3.0\n"));
+}
+
+#[test]
+fn int_contract_is_checked_eagerly() {
+    // A closed `example` over int functions is evaluated by the contract harness
+    // (which reaches the user functions through `apply_n`/the wrapper). A passing
+    // contract leaves the program leak-free and correct.
+    let src = indoc! {r#"
+        module M
+
+        sq : Int -> Int
+        let sq x = x * x
+        example: sq 9 = 81
+
+        public main : Runtime -> Unit
+        let main r = r.console.writeLine (Int.toString (sq 7))
+    "#};
+    let (code, out) = run(src);
+    assert_eq!((code, out.as_str()), (0, "49\n"));
 }

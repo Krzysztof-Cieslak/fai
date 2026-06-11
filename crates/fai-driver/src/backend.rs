@@ -19,7 +19,9 @@ use fai_core::wire::{WireBundle, WireDef, WireDefId, def_to_wire, from_wire};
 use fai_db::{Db, Diag, SourceFile};
 use fai_diagnostics::wire::{DiagnosticWire, to_wire};
 use fai_diagnostics::{Diagnostic, SCHEMA_VERSION, Severity, render_human};
-use fai_rc::{BorrowSig, combined_lowered, member_wrapper, mutual_groups, rc, rc_lowered};
+use fai_rc::{
+    BorrowSig, borrow_signature, combined_lowered, member_wrapper, mutual_groups, rc, rc_lowered,
+};
 use fai_resolve::{DefId, ModuleName, module_defs, module_name};
 use fai_span::SpanResolver;
 use fai_syntax::Symbol;
@@ -149,6 +151,15 @@ pub(crate) fn abi_of(db: &dyn Db, def: DefId) -> FnAbi {
     db.source_file(def.file).map_or_else(FnAbi::default, |f| (*float_abi(db, f, def.name)).clone())
 }
 
+/// A definition's per-parameter borrow flags — the same [`borrow_signature`] the
+/// reference-count pass uses to place a caller's drops — so a direct caller knows
+/// which boxed scalar arguments it must release after the call (a borrowed
+/// parameter is lent, not consumed). A definition with no source file (a synthetic
+/// combined loop) borrows nothing.
+pub(crate) fn borrows_of(db: &dyn Db, def: DefId) -> Vec<bool> {
+    db.source_file(def.file).map_or_else(Vec::new, |f| borrow_signature(db, f, def.name).0)
+}
+
 /// The cached relocatable object for one definition (the content-addressed cache
 /// unit; see [`build_native`]).
 ///
@@ -163,7 +174,8 @@ pub fn object_code(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<Vec<u8>> 
     let namer = |d: DefId| symbol_base(db, d);
     let arity = |d: DefId| arity_of(db, d);
     let abi = |d: DefId| abi_of(db, d);
-    Arc::new(object_for_def(&lowered, &namer, &arity, &abi))
+    let borrows = |d: DefId| borrows_of(db, d);
+    Arc::new(object_for_def(&lowered, &namer, &arity, &abi, &borrows))
 }
 
 /// Bounds the number of cached [`object_code`] blobs the database keeps in
@@ -412,12 +424,22 @@ pub fn build_native(db: &dyn Db, file: SourceFile, out: &Utf8Path) -> BuildOutco
     let abi = |d: DefId| {
         groups.arity.get(&d).map_or_else(|| abi_of(db, d), |&n| FnAbi::register_uniform(n))
     };
+    // A synthetic combined loop has no source binding, so it borrows nothing; every
+    // other callee reports its real borrow signature.
+    let borrows = |d: DefId| {
+        if groups.arity.contains_key(&d) { Vec::new() } else { borrows_of(db, d) }
+    };
     for (member, wrapper) in &groups.wrappers {
-        objects.push((symbol_base(db, *member), object_for_def(wrapper, &namer, &arity, &abi)));
+        objects.push((
+            symbol_base(db, *member),
+            object_for_def(wrapper, &namer, &arity, &abi, &borrows),
+        ));
     }
     for combined in &groups.combined {
-        objects
-            .push((symbol_base(db, combined.def), object_for_def(combined, &namer, &arity, &abi)));
+        objects.push((
+            symbol_base(db, combined.def),
+            object_for_def(combined, &namer, &arity, &abi, &borrows),
+        ));
     }
 
     let entry = DefId::new(file.source(db), Symbol::intern(ENTRY));
@@ -499,7 +521,10 @@ pub fn jit_run_program(db: &dyn Db, file: SourceFile) -> RunOutcome {
     let abi = |d: DefId| {
         groups.arity.get(&d).map_or_else(|| abi_of(db, d), |&n| FnAbi::register_uniform(n))
     };
-    let exit_code = fai_codegen::jit_run(&defs, entry, runtime, &namer, &arity, &abi);
+    let borrows = |d: DefId| {
+        if groups.arity.contains_key(&d) { Vec::new() } else { borrows_of(db, d) }
+    };
+    let exit_code = fai_codegen::jit_run(&defs, entry, runtime, &namer, &arity, &abi, &borrows);
     RunOutcome { exit_code, diagnostics }
 }
 
@@ -576,7 +601,8 @@ pub fn jit_compile(db: &dyn Db, file: SourceFile) -> Result<CompiledProgram, Vec
     let namer = |d: DefId| names[&d].clone();
     let arity = |d: DefId| arities[&d];
     let abi = |d: DefId| abi_of(db, d);
-    let program = JitProgram::compile(&defs, &namer, &arity, &abi);
+    let borrows = |d: DefId| borrows_of(db, d);
+    let program = JitProgram::compile(&defs, &namer, &arity, &abi, &borrows);
     Ok(CompiledProgram { program, names, entry_defs })
 }
 
@@ -670,10 +696,24 @@ pub fn jit_run_bundle(bundle: &WireBundle) -> i32 {
     let labels = rebuilt.module_labels;
     let arities = rebuilt.arities;
     let abis = rebuilt.abis;
+    // The bundle carries each definition's borrow flags (its `entry_borrowed`); a
+    // direct caller reads them to release boxed scalar arguments lent to a borrowed
+    // parameter.
+    let borrows: FxHashMap<DefId, Vec<bool>> =
+        rebuilt.defs.iter().map(|d| (d.def, d.entry_borrowed.clone())).collect();
     let namer = |d: DefId| mangle(labels.get(&d.file).map_or("M", String::as_str), d.name.as_str());
     let arity = |d: DefId| arities.get(&d).copied().unwrap_or(0);
     let abi = |d: DefId| abis.get(&d).cloned().unwrap_or_default();
-    fai_codegen::jit_run(&rebuilt.defs, rebuilt.entry, rebuilt.runtime, &namer, &arity, &abi)
+    let borrow = |d: DefId| borrows.get(&d).cloned().unwrap_or_default();
+    fai_codegen::jit_run(
+        &rebuilt.defs,
+        rebuilt.entry,
+        rebuilt.runtime,
+        &namer,
+        &arity,
+        &abi,
+        &borrow,
+    )
 }
 
 /// Applies self-imposed resource limits from the environment (set by the daemon
