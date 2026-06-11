@@ -16,6 +16,17 @@ let logTime env message =
 public logAll : Console -> List String -> List Unit / { Console }
 let logAll console lines = List.map (fun line -> console.writeLine line) lines
 
+// Point-free composition unions the pieces' effects. `>>` threads one effect
+// variable through both functions, and each side is subsumed into it — so
+// composing a clock-reading step with a console-writing step yields a function
+// that uses both. (Building and composing the closures performs nothing, so
+// `compose` itself is pure; the effect rides the returned arrow.)
+public report : { clock : Clock, console : Console | _ } -> Unit -> Unit / { Clock, Console }
+let report env =
+  let stamp = fun u -> Int.toString (env.clock.now ())
+  let emit = fun s -> env.console.writeLine s
+  stamp >> emit
+
 // A pure function performs no effect, so its arrow is bare (no `/`).
 public shout : String -> String
 let shout s = String.toUpper s ++ "!"

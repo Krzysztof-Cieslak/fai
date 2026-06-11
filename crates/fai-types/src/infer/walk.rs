@@ -18,7 +18,7 @@ use fai_syntax::Symbol;
 use fai_syntax::ast::{
     BinOp, ExprId, ExprKind, MethodImpl, Module, PatId, PatKind, UnOp, classify_op, classify_prefix,
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::infer::ctx::{
     Constraint, EffTail, InferCtx, RowTail, SolveEffect, SolveRow, SolveTy, UnifyResult,
@@ -224,6 +224,25 @@ impl<E: Env> Walker<'_, E> {
     #[must_use]
     pub fn body_effect_solve(&self) -> SolveEffect {
         self.cur_effect.clone()
+    }
+
+    /// Closes the body's residual open effect tail — a leftover left by subsuming
+    /// a concrete argument effect into a fresh variable — unless that variable is
+    /// a capability *forwarded* from a parameter (which must stay polymorphic, as
+    /// in `List.map`). Without this a function that merely *uses* capabilities, or
+    /// composes pure functions through an effect-polymorphic combinator, would
+    /// generalize a spurious `'e`. Run at body finalization, before the body's
+    /// types are read back.
+    pub fn close_residual_effect(&mut self, param_tys: &[SolveTy]) {
+        let mut forwarded: FxHashSet<crate::ty::EffRowVarId> = FxHashSet::default();
+        for p in param_tys {
+            self.cx.collect_effect_vars(p, &mut forwarded);
+        }
+        if let Some(v) = self.cx.effect_open_tail(&self.cur_effect)
+            && !forwarded.contains(&v)
+        {
+            self.cx.close_effect_var(v);
+        }
     }
 
     /// Binds a parameter pattern to fresh local types and returns its type.
@@ -452,14 +471,48 @@ impl<E: Env> Walker<'_, E> {
         let head = cur;
 
         let head_ty = self.infer_expr(head);
-        let arg_tys: Vec<SolveTy> = args.iter().map(|&a| self.infer_expr(a)).collect();
+        let raw_arg_tys: Vec<SolveTy> = args.iter().map(|&a| self.infer_expr(a)).collect();
         let result = self.cx.fresh();
         // The saturating (innermost) arrow carries a fresh effect tail; the outer
         // arrows are pure (a partial application does no work).
         let eff = SolveEffect { atoms: Vec::new(), tail: EffTail::Open(self.cx.fresh_effect()) };
         let span = self.module.expr(outer).span;
+
+        // For a *function* argument, decouple its top arrow's effect with a fresh
+        // variable in the expected type, then subsume the real effect into that
+        // variable afterwards. This lets several function arguments that flow into
+        // one parameter effect variable (as in `f >> g`) *union* their effects
+        // rather than be forced equal (which would reject differing effects).
+        let mut subsume: Vec<(SolveEffect, SolveEffect)> = Vec::new();
+        let arg_tys: Vec<SolveTy> = raw_arg_tys
+            .iter()
+            .map(|arg_ty| match self.cx.resolve_shallow(arg_ty) {
+                SolveTy::Arrow(p, r, e) => {
+                    let fresh = SolveEffect {
+                        atoms: Vec::new(),
+                        tail: EffTail::Open(self.cx.fresh_effect()),
+                    };
+                    subsume.push((e, fresh.clone()));
+                    SolveTy::arrow_eff((*p).clone(), (*r).clone(), fresh)
+                }
+                _ => arg_ty.clone(),
+            })
+            .collect();
+
         let expected = SolveTy::arrows_solver_eff(arg_tys, result.clone(), eff.clone());
         self.unify_at(span, &head_ty, &expected, "function application");
+        for (real, into) in &subsume {
+            if self.cx.subsume_effects(real, into) != UnifyResult::Ok {
+                let used = crate::ty::render_effect(&self.cx.reify_effect_standalone(real));
+                self.mismatch(
+                    span,
+                    format!(
+                        "a function argument performs the effect `{used}`, which is not permitted \
+                         here"
+                    ),
+                );
+            }
+        }
         self.incur_effect(&eff);
 
         // Record each intermediate application node's type (the suffix after the

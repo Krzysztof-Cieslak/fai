@@ -361,11 +361,30 @@ fn wrong_effect_annotation_is_an_error() {
 }
 
 #[test]
+fn subsumption_unions_effects_through_a_shared_var_combiner() {
+    // `run2` shares one effect variable across both function parameters. Passing
+    // a console-using and a clock-using closure makes that variable the *union*
+    // of their effects (subsumption), rather than rejecting the second one.
+    let src = indoc! {"
+        interface Console = writeLine : String -> Unit / { Console }
+        interface Clock = now : Unit -> Int / { Clock }
+        public run2 : (Unit -> 'a / 'e) -> (Unit -> 'b / 'e) -> 'b / 'e
+        let run2 f g =
+          let a = f ()
+          g ()
+        public both : Console -> Clock -> Int / { Clock, Console }
+        let both c k = run2 (fun u -> c.writeLine \"x\") (fun u -> k.now ())
+    "};
+    assert!(!codes(src).contains(&"FAI5001".to_owned()), "got {:?}", codes(src));
+    assert_eq!(effect_atoms(src, "both"), vec!["Clock".to_owned(), "Console".to_owned()]);
+}
+
+#[test]
 fn mixed_effect_branches_do_not_unify() {
-    // Without subsumption, two closures with *different* concrete effects cannot
-    // unify (here in the branches of an `if`), so the effect is reported as a
-    // mismatch rather than silently laundered to one of them. A lambda whose body
-    // performs both is the way to combine them.
+    // Subsumption applies only at argument positions; everywhere else effects
+    // unify strictly. So two closures with *different* concrete effects in the
+    // branches of an `if` are a mismatch rather than silently laundered to one of
+    // them. A lambda whose body performs both is the way to combine them.
     let src = indoc! {"
         interface Console = writeLine : String -> Unit / { Console }
         interface Clock = now : Unit -> Int / { Clock }

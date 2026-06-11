@@ -471,10 +471,8 @@ impl InferCtx {
     }
 
     /// Unifies two effect rows by row unification (atoms as a set; no payloads).
-    ///
-    /// Phase note: this is plain unification. Use-site *subsumption* (the bipolar
-    /// effect bounds) layers on top of this base when effect inference lands; until
-    /// then every arrow carries the pure effect, so this only ever sees `{} ~ {}`.
+    /// Strict unless lenient mode is set (see [`lenient_effects`]); directional
+    /// `⊆` is [`subsume_effects`].
     fn unify_effects(&mut self, e1: &SolveEffect, e2: &SolveEffect) -> UnifyResult {
         let e1 = self.expand_effect(e1);
         let e2 = self.expand_effect(e2);
@@ -548,6 +546,92 @@ impl InferCtx {
             }
         };
         SolveEffect { atoms, tail }
+    }
+
+    /// Directional effect subsumption: constrains `sub ⊆ sup` (every capability
+    /// `sub` performs is permitted by `sup`). When `sup` is an open variable its
+    /// tail grows to admit `sub`'s atoms — so several arguments subsumed into one
+    /// effect variable *union* (the key to composing functions with different
+    /// effects, e.g. `f >> g`). A variable `sub` falls back to unification (the
+    /// common single-forward case, where the two variables become one).
+    pub fn subsume_effects(&mut self, sub: &SolveEffect, sup: &SolveEffect) -> UnifyResult {
+        let sub = self.expand_effect(sub);
+        let sup = self.expand_effect(sup);
+        // A variable (or atoms-with-tail) on the `sub` side: forwarding. Equating
+        // it with `sup` is sound and the common case (single function argument).
+        if let EffTail::Open(_) = sub.tail {
+            return self.unify_effects(&sub, &sup);
+        }
+        // `sub` is closed: each of its atoms must be in `sup`, growing `sup`'s
+        // open tail to admit the ones it lacks.
+        let missing: Vec<InterfaceRef> =
+            sub.atoms.iter().filter(|a| !sup.atoms.contains(a)).copied().collect();
+        if missing.is_empty() {
+            return UnifyResult::Ok;
+        }
+        match sup.tail {
+            EffTail::Open(v) => {
+                let fresh = self.fresh_effect();
+                self.bind_effect(v, SolveEffect { atoms: missing, tail: EffTail::Open(fresh) })
+            }
+            EffTail::Closed => {
+                if self.lenient_effects {
+                    UnifyResult::Ok
+                } else {
+                    UnifyResult::Mismatch
+                }
+            }
+        }
+    }
+
+    /// The free open-tail variable of an effect row, if any (following bound
+    /// tails). Used to find a subsumption residual to close.
+    #[must_use]
+    pub fn effect_open_tail(&self, eff: &SolveEffect) -> Option<EffRowVarId> {
+        match self.expand_effect(eff).tail {
+            EffTail::Open(v) => Some(v),
+            EffTail::Closed => None,
+        }
+    }
+
+    /// Closes a free effect-row variable to the empty (pure) effect — used to
+    /// discharge a residual open tail left by subsumption that is not a forwarded
+    /// (parameter) effect, so it does not spuriously generalize to `'e`.
+    pub fn close_effect_var(&mut self, v: EffRowVarId) {
+        if let EffState::Free = &self.effects[v.0 as usize] {
+            self.effects[v.0 as usize] =
+                EffState::Bound(SolveEffect { atoms: Vec::new(), tail: EffTail::Closed });
+        }
+    }
+
+    /// Collects the free effect-row variables anywhere in `ty` (following bound
+    /// tails to their free representative).
+    pub fn collect_effect_vars(&self, ty: &SolveTy, out: &mut rustc_hash::FxHashSet<EffRowVarId>) {
+        match self.resolve_shallow(ty) {
+            SolveTy::Arrow(from, to, eff) => {
+                if let EffTail::Open(v) = self.expand_effect(&eff).tail {
+                    out.insert(v);
+                }
+                self.collect_effect_vars(&from, out);
+                self.collect_effect_vars(&to, out);
+            }
+            SolveTy::App(f, a) => {
+                self.collect_effect_vars(&f, out);
+                self.collect_effect_vars(&a, out);
+            }
+            SolveTy::Tuple(elems) => {
+                for e in &elems {
+                    self.collect_effect_vars(e, out);
+                }
+            }
+            SolveTy::Record(row) => {
+                let row = self.expand_row(&row);
+                for (_, t) in &row.fields {
+                    self.collect_effect_vars(t, out);
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Reifies a solver effect row into an immutable [`EffectRow`] standalone (a

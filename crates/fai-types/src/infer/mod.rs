@@ -213,10 +213,12 @@ pub fn infer_scc(
             })
             .collect();
         let body_ty = walker.infer_expr(body);
+        // Discharge any subsumption residual before reading the body effect back.
+        walker.close_residual_effect(&param_tys);
         // The body's latent effect rides the function's saturating arrow.
         let body_eff = walker.body_effect_solve();
-        let inferred_effect = walker.body_effect();
-        let fn_ty = SolveTy::arrows_solver_eff(param_tys, body_ty.clone(), body_eff);
+        let fn_ty = SolveTy::arrows_solver_eff(param_tys, body_ty.clone(), body_eff.clone());
+        let inferred_effect = cx.reify_effect_standalone(&body_eff);
 
         // Effect enforcement (required on every signatured binding): the
         // capabilities the body uses must be exactly those the signature
@@ -411,6 +413,7 @@ pub fn infer_local_types(
             })
             .collect();
         let body_ty = walker.infer_expr(body);
+        walker.close_residual_effect(&param_tys);
         let fn_ty = SolveTy::arrows_solver(param_tys, body_ty);
         let _ = walker.cx.unify(&fn_ty, &member_ty);
         walker.collect_local_types()
@@ -462,8 +465,8 @@ pub fn infer_def_effect(
             None => walker.bind_param(p),
         })
         .collect();
-    let _ = param_tys;
     let _ = walker.infer_expr(body);
+    walker.close_residual_effect(&param_tys);
     walker.body_effect()
 }
 
@@ -518,6 +521,7 @@ pub fn infer_body_types(
         })
         .collect();
     let body_ty = walker.infer_expr(body);
+    walker.close_residual_effect(&param_tys);
     let fn_ty = SolveTy::arrows_solver(param_tys, body_ty);
     let _ = walker.cx.unify(&fn_ty, &member_ty);
     let exprs = walker.collect_expr_types();
