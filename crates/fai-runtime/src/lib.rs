@@ -39,6 +39,7 @@
 
 use std::alloc::Layout;
 use std::cell::Cell;
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 // The leak/allocation counters are the only users of these atomics, and they are
 // compiled in only under `debug_assertions`, so the import is gated to match (a
@@ -214,6 +215,17 @@ unsafe fn desc_kind(desc: *const Descriptor) -> u64 {
     unsafe { (*desc).kind }
 }
 
+/// The scalar-slot bitmap of the descriptor at `desc` (zero for any kind without
+/// unboxed `f64` fields). Bit `i` set ⇒ data slot `i` holds a raw `f64`.
+///
+/// # Safety
+/// `desc` must point to a valid [`Descriptor`].
+#[inline]
+unsafe fn desc_scalar_bitmap(desc: *const Descriptor) -> u64 {
+    // SAFETY: the caller guarantees `desc` is a valid descriptor pointer.
+    unsafe { (*desc).scalar_bitmap }
+}
+
 /// The descriptor of a live boxed object.
 ///
 /// # Safety
@@ -229,6 +241,49 @@ unsafe fn obj_descriptor(p: *const u8) -> *const Descriptor {
 /// uninitialized, so the child scan and structural ops touch only `0..length`.
 #[unsafe(no_mangle)]
 pub static FAI_ARRAY_DESC: Descriptor = descriptor(KIND_ARRAY, "Array");
+
+/// Whether data slot `index` of the cell at `p` holds an unboxed `f64` (per its
+/// descriptor's scalar bitmap). Slots at index ≥ 64 are always uniform (the bitmap
+/// caps at 64; wider cells fall back to all-uniform at construction).
+///
+/// # Safety
+/// `p` must point to a valid live data object.
+#[inline]
+unsafe fn slot_is_scalar(p: *const u8, index: usize) -> bool {
+    if index >= 64 {
+        return false;
+    }
+    // SAFETY: `p` is a live data object with a valid descriptor.
+    let bitmap = unsafe { desc_scalar_bitmap(obj_descriptor(p)) };
+    bitmap & (1u64 << index) != 0
+}
+
+/// The interned per-shape data descriptors, keyed by scalar bitmap. A
+/// row-polymorphic record update whose result changes a field's float-ness needs a
+/// descriptor for the new bitmap that no generated static provides; it is created
+/// here once per bitmap and leaked (descriptors live for the process). Kind
+/// dispatch is by `kind`, not address, so an interned descriptor and a generated
+/// one with the same bitmap are interchangeable.
+static INTERNED_DATA_DESCRIPTORS: Mutex<BTreeMap<u64, &'static Descriptor>> =
+    Mutex::new(BTreeMap::new());
+
+/// Returns a `KIND_DATA` descriptor with the given scalar bitmap: the shared
+/// [`FAI_DATA_DESC`] when empty, else an interned per-shape descriptor.
+fn intern_data_descriptor(scalar_bitmap: u64) -> *const Descriptor {
+    if scalar_bitmap == 0 {
+        return &raw const FAI_DATA_DESC;
+    }
+    let mut map = INTERNED_DATA_DESCRIPTORS.lock().expect("descriptor table");
+    let desc = map.entry(scalar_bitmap).or_insert_with(|| {
+        Box::leak(Box::new(Descriptor {
+            kind: KIND_DATA,
+            scalar_bitmap,
+            name_ptr: std::ptr::null(),
+            name_len: 0,
+        }))
+    });
+    std::ptr::from_ref::<Descriptor>(desc)
+}
 
 // ---------------------------------------------------------------------------
 // Tagging helpers.
@@ -704,7 +759,12 @@ unsafe fn scan_push(p: *mut u8, work: &mut DropWork) {
         if desc_kind(desc) == KIND_DATA {
             let size = read_u64(p, SIZE_OFFSET) as usize;
             let nfields = (size - DATA_FIELDS_OFFSET) / 8;
+            // Scalar (`f64`) slots carry no reference count, so they are skipped.
+            let scalar = desc_scalar_bitmap(desc);
             for i in 0..nfields {
+                if i < 64 && scalar & (1u64 << i) != 0 {
+                    continue;
+                }
                 let field = read_i64(p, DATA_FIELDS_OFFSET + i * 8);
                 if is_boxed(field) {
                     work.push(field);
@@ -804,6 +864,35 @@ pub unsafe extern "C" fn fai_make_data(tag: i64, nfields: i64, fields: *const i6
     from_obj(p)
 }
 
+/// Allocates a data value `{ tag, fields… }` carrying the per-shape descriptor
+/// `desc` (whose scalar bitmap marks which slots are raw `f64`), copying `nfields`
+/// words from `fields`. A scalar slot's word is raw float bits (no reference
+/// count); a uniform slot's is an owned value (ownership transfers in). The plain
+/// [`fai_make_data`] handles the all-uniform case.
+///
+/// # Safety
+/// `desc` is a valid `KIND_DATA` descriptor whose bitmap matches the field layout;
+/// `fields` points to `nfields` words, each owned unless its slot is scalar.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fai_make_data_scalar(
+    desc: *const Descriptor,
+    tag: i64,
+    nfields: i64,
+    fields: *const i64,
+) -> Value {
+    let n = nfields as usize;
+    let size = DATA_FIELDS_OFFSET + n * 8;
+    let p = alloc_obj(size, desc);
+    // SAFETY: `p` has room for the tag and `n` fields; `fields` points to `n`.
+    unsafe {
+        write_u64(p, DATA_TAG_OFFSET, tag as u64);
+        for i in 0..n {
+            write_i64(p, DATA_FIELDS_OFFSET + i * 8, *fields.add(i));
+        }
+    }
+    from_obj(p)
+}
+
 /// The number of fields in a boxed data value.
 unsafe fn data_field_count(v: Value) -> usize {
     // SAFETY: `v` is a boxed data value.
@@ -828,48 +917,104 @@ pub extern "C" fn fai_data_tag(v: Value) -> Value {
 /// Projects field `index` of a data value, returning an owned reference to it and
 /// **borrowing** `v` (the base is not released here — its owner drops it once at
 /// its last use; the projected field is duplicated so it outlives that drop).
+///
+/// A scalar `f64` slot holds raw bits, not a uniform value, so this generic
+/// projection (reached only when the caller's static type does not know the field
+/// is `Float`) boxes the bits into a fresh `Float` — the uniform value the caller
+/// expects. A concrete `Float` projection reads the bits directly in generated
+/// code and never calls here.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_data_field(v: Value, index: i64) -> Value {
+    let i = index as usize;
     // SAFETY: `v` is a boxed data value with at least `index + 1` fields.
-    let field = unsafe { read_i64(as_obj(v), DATA_FIELDS_OFFSET + index as usize * 8) };
-    fai_dup(field);
-    field
+    unsafe {
+        let bits = read_i64(as_obj(v), DATA_FIELDS_OFFSET + i * 8);
+        if slot_is_scalar(as_obj(v), i) {
+            // A fresh box (rc = 1) owned by the caller; the cell keeps its bits.
+            fai_box_float(bits)
+        } else {
+            fai_dup(bits);
+            bits
+        }
+    }
 }
 
 /// Row-polymorphic record update with the field at `index` (an immediate `Int`
 /// slot) replaced by `value`. When `record` is the unique owner, the field is
 /// overwritten **in place** (no allocation, no copying); otherwise a fresh copy is
 /// built. Consumes `record` and `value`; the replaced field is released.
+///
+/// Descriptor-aware: `value` arrives uniform (boxed). If it is a `Float`, the
+/// updated slot must be scalar (an unboxed `f64`) to keep the cell's invariant
+/// that a `Float` field is raw, so its bits are stored and its box consumed; a
+/// non-`Float` value is stored as the uniform word. The replaced field is released
+/// only when its slot was uniform (a scalar slot carries no reference count). When
+/// the update changes the slot's float-ness (a type-changing `{ r with x = v }`),
+/// the result carries a descriptor for the new bitmap (the shared
+/// [`FAI_DATA_DESC`] when none remain scalar, else an interned per-shape one).
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_record_update(record: Value, index: Value, value: Value) -> Value {
     let slot = unbox_int(index) as usize;
     // SAFETY: `record` is a boxed data value; `slot` is a valid field index.
     unsafe {
         let p = as_obj(record);
+        let old_bitmap = desc_scalar_bitmap(obj_descriptor(p));
+        let old_slot_scalar = slot < 64 && old_bitmap & (1u64 << slot) != 0;
+        // The new field is scalar iff the replacement is a `Float` (and the slot is
+        // representable in the bitmap).
+        let new_slot_scalar =
+            slot < 64 && is_boxed(value) && desc_kind(obj_descriptor(as_obj(value))) == KIND_FLOAT;
+        let new_bitmap = if new_slot_scalar {
+            old_bitmap | (1u64 << slot)
+        } else if slot < 64 {
+            old_bitmap & !(1u64 << slot)
+        } else {
+            old_bitmap
+        };
+        // The word to store: a scalar slot takes the float's raw bits (consuming the
+        // box); a uniform slot takes the value word itself. Computed once.
+        let stored = if new_slot_scalar {
+            let bits = read_i64(as_obj(value), FLOAT_VALUE_OFFSET);
+            fai_drop(value);
+            bits
+        } else {
+            value
+        };
+
         // Unique owner: overwrite the field in place, releasing the old one.
         if read_u64(p, RC_OFFSET) == 1 {
             let old = read_i64(p, DATA_FIELDS_OFFSET + slot * 8);
-            write_i64(p, DATA_FIELDS_OFFSET + slot * 8, value);
-            fai_drop(old);
+            write_i64(p, DATA_FIELDS_OFFSET + slot * 8, stored);
+            // A scalar (raw) old field carries no reference count.
+            if !old_slot_scalar {
+                fai_drop(old);
+            }
+            if new_bitmap != old_bitmap {
+                write_ptr(p, DESC_OFFSET, intern_data_descriptor(new_bitmap).cast());
+            }
             return record;
         }
-        // Shared: copy the record with the field replaced.
+        // Shared: copy the record with the field replaced, under the new bitmap.
         let tag = read_u64(p, DATA_TAG_OFFSET) as i64;
         let n = data_field_count(record);
         let size = DATA_FIELDS_OFFSET + n * 8;
-        let q = alloc_obj(size, &FAI_DATA_DESC);
+        let q = alloc_obj(size, intern_data_descriptor(new_bitmap));
         write_u64(q, DATA_TAG_OFFSET, tag as u64);
         for i in 0..n {
             if i == slot {
-                write_i64(q, DATA_FIELDS_OFFSET + i * 8, value);
+                write_i64(q, DATA_FIELDS_OFFSET + i * 8, stored);
             } else {
                 let field = read_i64(p, DATA_FIELDS_OFFSET + i * 8);
-                fai_dup(field);
+                // A scalar (raw) field is copied as bits; a uniform one is dup'd.
+                if !(i < 64 && old_bitmap & (1u64 << i) != 0) {
+                    fai_dup(field);
+                }
                 write_i64(q, DATA_FIELDS_OFFSET + i * 8, field);
             }
         }
-        // Release this reference; dropping it releases the copied-out fields once
-        // (balancing the dups) and the replaced field once.
+        // Release this reference; dropping it releases the copied-out uniform fields
+        // once (balancing the dups), skips scalar slots, and releases the replaced
+        // field once when it was uniform.
         fai_drop(record);
         from_obj(q)
     }
@@ -1192,6 +1337,50 @@ pub unsafe extern "C" fn fai_reuse(
     }
     // SAFETY: `fields` points to `n` owned values.
     unsafe { fai_make_data(tag, nfields, fields) }
+}
+
+/// Builds a data value carrying the per-shape descriptor `desc` (scalar bitmap),
+/// reusing `token`'s memory in place when it is a non-null token of exactly the
+/// right size, else allocating fresh. The scalar peer of [`fai_reuse`]: a reused
+/// cell's descriptor is overwritten with `desc`, so a token from a differently
+/// shaped (same-size) cell rebuilds correctly. Scalar slots in `fields` are raw
+/// `f64` bits; uniform slots are owned values.
+///
+/// # Safety
+/// As [`fai_reuse`]; `desc` is a valid `KIND_DATA` descriptor matching the layout.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fai_reuse_scalar(
+    desc: *const Descriptor,
+    token: Value,
+    tag: i64,
+    nfields: i64,
+    fields: *const i64,
+) -> Value {
+    let n = nfields as usize;
+    let size = DATA_FIELDS_OFFSET + n * 8;
+    if token != NO_REUSE {
+        let p = token as usize as *mut u8;
+        // SAFETY: `token` is a reset object's memory; its size header is valid.
+        let cell_size = unsafe { read_u64(p, SIZE_OFFSET) } as usize;
+        if cell_size == size {
+            // SAFETY: `p` has room for the header, tag, and `n` fields; its children
+            // were already released by `fai_drop_reuse` (per the old descriptor).
+            unsafe {
+                write_u64(p, RC_OFFSET, 1);
+                write_ptr(p, DESC_OFFSET, desc.cast());
+                write_u64(p, DATA_TAG_OFFSET, tag as u64);
+                for i in 0..n {
+                    write_i64(p, DATA_FIELDS_OFFSET + i * 8, *fields.add(i));
+                }
+            }
+            return from_obj(p);
+        }
+        // Wrong size: the token's children are gone, so just reclaim its memory.
+        // SAFETY: `p` is a reset object's memory.
+        unsafe { free_obj(p) };
+    }
+    // SAFETY: `fields` points to `n` words (owned unless scalar).
+    unsafe { fai_make_data_scalar(desc, tag, nfields, fields) }
 }
 
 /// Frees a reuse token produced by [`fai_drop_reuse`] that no [`fai_reuse`] will
@@ -1928,7 +2117,9 @@ fn values_equal(a: Value, b: Value) -> bool {
     }
 }
 
-/// Structural equality of two boxed data values (same tag and equal fields).
+/// Structural equality of two boxed data values (same tag and equal fields). A
+/// scalar `f64` slot is compared by its bits (the same equality a boxed `Float`
+/// uses); a uniform slot recurses through [`values_equal`].
 unsafe fn data_equal(a: Value, b: Value) -> bool {
     // SAFETY: `a` and `b` are boxed data values.
     unsafe {
@@ -1939,10 +2130,18 @@ unsafe fn data_equal(a: Value, b: Value) -> bool {
         if n != data_field_count(b) {
             return false;
         }
+        // Both values share a type, hence a scalar bitmap; read it from `a`.
+        let scalar = desc_scalar_bitmap(obj_descriptor(as_obj(a)));
         for i in 0..n {
             let fa = read_i64(as_obj(a), DATA_FIELDS_OFFSET + i * 8);
             let fb = read_i64(as_obj(b), DATA_FIELDS_OFFSET + i * 8);
-            if !values_equal(fa, fb) {
+            if i < 64 && scalar & (1u64 << i) != 0 {
+                // Scalar float slot: compare the raw bits (a boxed `Float` compares
+                // the same way).
+                if fa != fb {
+                    return false;
+                }
+            } else if !values_equal(fa, fb) {
                 return false;
             }
         }
@@ -2007,10 +2206,19 @@ fn values_compare(a: Value, b: Value) -> std::cmp::Ordering {
                     // SAFETY: both are boxed data values with equal field counts.
                     unsafe {
                         let n = data_field_count(a);
+                        // Both share a type, hence a scalar bitmap; read it from `a`.
+                        let scalar = desc_scalar_bitmap(obj_descriptor(as_obj(a)));
                         for i in 0..n {
                             let fa = read_i64(as_obj(a), DATA_FIELDS_OFFSET + i * 8);
                             let fb = read_i64(as_obj(b), DATA_FIELDS_OFFSET + i * 8);
-                            match values_compare(fa, fb) {
+                            let ord = if i < 64 && scalar & (1u64 << i) != 0 {
+                                // Scalar float slot: compare as `f64` (a boxed
+                                // `Float` uses the same `total_cmp`).
+                                f64::from_bits(fa as u64).total_cmp(&f64::from_bits(fb as u64))
+                            } else {
+                                values_compare(fa, fb)
+                            };
+                            match ord {
                                 Ordering::Equal => {}
                                 other => return other,
                             }
@@ -2403,5 +2611,7 @@ mod array_tests;
 mod proptests;
 #[cfg(test)]
 mod reuse_tests;
+#[cfg(test)]
+mod scalar_tests;
 #[cfg(test)]
 mod tests;
