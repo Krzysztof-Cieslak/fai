@@ -2102,10 +2102,11 @@ Editor integration:
     so a parameterized interface compiles to the same dictionary as any other.
   - **Future work.** Subsumption is applied at *argument* positions only; *joining*
     differently-effecting `if`/`match` branches to their union (a least-upper-bound
-    at merge points) is a separate, deferred feature, as is subsumption through a
-    general ADT's argument (which would need variance inference). Deep subsumption
-    through arrows (with variance), tuples, records, lists, and interface effect
-    arguments, and effect-parameterized interfaces, are done — see above.
+    at merge points) is a separate, deferred feature (#107), as is subsumption
+    through a general ADT's argument (which would need variance inference, #108).
+    Deep subsumption through arrows (with variance), tuples, records, lists, and
+    interface effect arguments, and effect-parameterized interfaces, are done — see
+    above.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.
