@@ -2108,5 +2108,68 @@ Editor integration:
     interface effect arguments, and effect-parameterized interfaces, are done — see
     above.
 
+- **D119 Unboxed monomorphic `Int` (untagged `i64`; the `Int` peer of D113).** A
+  value whose static type is exactly `Int` is carried as a **raw, untagged
+  `i64`** in registers and locals — not the 63-bit low-bit-tagged immediate — so
+  the hot integer primitives compile to **bare** native ops (`iadd`/`isub`/`imul`/
+  shifts/bitwise/`icmp`) with no immediate guard, no 63-bit fit check, and no
+  boxing, and a value beyond the immediate range flows untagged rather than
+  heap-boxing every step. This removes both costs the tagged representation paid in
+  integer-heavy loops: the per-op guard tax (`fib`/`collatz`/`ackermann`) and the
+  64-bit per-step boxing (`prng_xorshift`). A raw `Int` is tagged (or boxed on
+  >63-bit overflow) only where it crosses a *uniform slot* — a data/record/tuple
+  field, a closure environment, an `apply_n`/first-class argument or result, or a
+  generic (type-variable) position — and untagged/unboxed when read back out, the
+  same boundary rule as D113.
+  - **Representation is a side-set, not the Cranelift type.** D113 distinguishes a
+    boxed `Float` (an `i64` pointer) from an unboxed one by the Cranelift value
+    type (`F64` vs `I64`). A raw `Int` and a tagged immediate are **both `I64`**, so
+    raw-ness cannot live in the type: codegen tracks it explicitly (a set of the
+    Cranelift values known to be raw, the analogue of the free `is_f64` test) and,
+    per local, a `every observation is Int` classification (the analogue of the
+    unboxed-float local rule). Representation **follows the value, not the node's
+    static type** at branch/loop merges (a desugared `match` types its arms
+    `Error`), and `define_var` is the single coercion point reconciling a value
+    with its target local's representation.
+  - **Calling convention — register ABI only.** `Int` parameters and results are
+    untagged only on the **register (direct-call) ABI**, where a direct caller
+    receives them raw and skips the round-trip. Uniform (row-polymorphic / nullary)
+    entries are reached only through `apply_n`, which boxes everything, so they keep
+    ints **tagged** — a tagged immediate is already a valid uniform word (unlike a
+    `Float`, which must unbox on both ABIs), so unboxing them would be a pure
+    wrapper round-trip with no direct-call beneficiary. The first-class form keeps
+    the uniform representation, bridged by the same wrapper as D113 (which now also
+    untags incoming int arguments and re-tags/boxes a raw int result). Because the
+    Cranelift parameter type is `i64` either way, raw-ness is **conventional**, so
+    it is part of the object-cache key (the fingerprint records the int ABI, just as
+    a monomorphic-`Float` callee is distinguished from a generic one instantiated at
+    `Float`). Offset-evidence parameters stay tagged immediates.
+  - **Reference counting & safety.** A raw `Int` carries no reference count, so a
+    raw-int local's `Dup`/`Drop` are **no-ops** — gated on the raw classification,
+    **not** the `Int` type, because a tagged int local genuinely may be a heap box.
+    This is safety-critical: a raw int with an even value (low bit clear) would pass
+    a tag-check as "boxed" and dereference the integer as a cell. `fai-rc` stays
+    representation-agnostic (it inserts the dup/drop; codegen discards them),
+    mirroring `Float`.
+  - **Wrapping/fault semantics preserved.** Native `iadd`/`imul`/shifts wrap like
+    the runtime's `wrapping_*` (Cranelift masks a dynamic shift modulo 64). Raw
+    division/remainder, whose operands are now full 64-bit, add a `b == -1` branch
+    yielding `0 - a` / `0` to match `wrapping_div`/`wrapping_rem` and dodge
+    Cranelift `sdiv`/`srem`'s `i64::MIN / -1` hardware trap (the tagged path never
+    saw `i64::MIN`), and a zero divisor still routes to the located runtime fault.
+  - **Mutual recursion stays tagged.** The combined loop of a mutual-recursion
+    group shares padded uniform slots, so it **erases `Int`** (as it already erased
+    `Float`) to keep ints tagged; its integer arithmetic takes the tagged guarded
+    path with the runtime fallback retained — the surviving use of that path.
+  - **Boundary-box release at borrowed scalar arguments (a fix spanning D113).** A
+    scalar (raw `Int` or unboxed `Float`) boxed at a direct-call boundary for a
+    **borrowed** parameter is a caller-owned temporary the callee inspects but does
+    not consume; it is not a named local whose drop would free it (and a raw scalar
+    local's drop is a no-op), so the caller now releases it after the call, using
+    the callee's borrow signature. This also fixes a latent `Float` leak from D113.
+  - **Scope.** Only a *scalar* `Int` is unboxed; an `Int` nested in a
+    record/tuple/list/ADT stays a tagged/boxed field (the `Int` peer of the
+    scalarization deferred for `Float`).
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.
