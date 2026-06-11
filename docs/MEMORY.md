@@ -1945,16 +1945,13 @@ Editor integration:
     shape — its recursion is *embedded in the constructor* (`DictNode s (map f l) k
     (f k v) (map f r)`), so the reuse pass (D77) resets the matched cell **before**
     the recursive call and a uniquely-owned `map` recycles every node in place
-    (pinned by a differential allocation-count test). `insert`/`remove`, however,
-    bind the recursion first (`let l2 = insert … l` then `if rotate … else build`),
-    so the reset lands **after** the recursive call; the recursed-into child is
-    still shared at that point, so the recursion **path-copies** and a unique build
-    is **O(n log n) allocations**, not O(n). This is a reference-counting
-    limitation, not a code-shape one (inlining the rotations does not change it —
-    measured), and it affects the whole class of "recursive rebuild then decide"
-    functions. Making the reuse pass reset before a `let`-bound recursion whose
-    construction is in a following branch is **future work** (tracked separately);
-    the time win (O(n²)→O(n log n)) is independent of it.
+    (pinned by a differential allocation-count test). `insert`/`remove` originally
+    did **not**: they bind the recursion first (`let l2 = insert … l` then `if rotate
+    … else build`), so the reset landed **after** the recursive call, the
+    recursed-into child was still shared, and a unique build path-copied at
+    **O(n log n) allocations**. That reset-placement limitation is now resolved (see
+    D120), so a uniquely-owned `insert`/`remove` build is O(n); the time win
+    (O(n²)→O(n log n)) was always independent of it.
   - **Two constraints the rewrite had to respect.** (1) The contract generator
     only honors a *monomorphic* `Arbitrary T` override, not a parametric combinator,
     so a synthesized `Dict`/`Set` value carries a meaningless cached `size` (a law
@@ -2170,6 +2167,48 @@ Editor integration:
   - **Scope.** Only a *scalar* `Int` is unboxed; an `Int` nested in a
     record/tuple/list/ADT stays a tagged/boxed field (the `Int` peer of the
     scalarization deferred for `Float`).
+
+- **D120 Reset before a `let`-bound recursion, so "recurse-then-rebalance" rebuilds
+  in place (resolves the D116 reuse gap).** The reuse pass (D77) recycled a matched
+  cell only when a construction sat on a single straight-line path after the cell's
+  death, so it reset the cell **before** the recursion only for a constructor that
+  *embeds* the recursion (`Dict.map`). A balanced-tree `insert`/`remove` instead
+  binds the recursion in a `let` and reconstructs in a *following branch* (`let l2 =
+  insert … l` then `if … then balance l2 … else DictNode … l2 …`), so the reset was
+  pushed past the recursion into the branches; the recursed-into child stayed
+  shared, the recursion path-copied, and a unique build cost O(n log n)
+  allocations.
+  - **Fix.** The reuse pass now recognizes a construction reachable through the
+    body's straight-line bindings **and** `if` branches (`reaches_construction`,
+    generalizing the former straight-line predicate), resets the dead cell at its
+    death point — *before* the `let`-bound recursion — and threads the reuse token
+    to the construction on each path (`thread_or_free`). The matched children were
+    duplicated when projected (`fai_data_field`), so resetting the cell early only
+    releases the cell's own references: the recursion's copy of the child becomes
+    uniquely owned and is rebuilt in place, cascading down the search path. A
+    uniquely-owned `Dict`/`Set` build is now O(n) (a build-linearity allocation test
+    guards it; the per-element cost is flat where it previously rose ~log n).
+  - **Freeing an unconsumed token.** Resetting before a *branch* means a branch that
+    builds nothing into the token (a rebalance that tail-calls `balance`) must still
+    consume it exactly once. A new Core node `FreeReuse { token, body }` (lowered to
+    the runtime `fai_free_reuse`, a guarded `free_obj` that no-ops the null token)
+    reclaims such a token; `thread_or_free` emits it on every non-constructing leaf.
+    The soundness interpreter treats it as consuming the token, so an `if` whose one
+    arm reuses and whose other frees leaves a consistent reference state. It is
+    **transparent to the tail-call transform** (handled like `Reset`/`Dup`/`Drop`),
+    so a token-free wrapping a tail self-call does not defeat flattening.
+  - **`Set.insert`'s equal branch rebuilds the node.** Returning the matched value
+    unchanged (`else s`) forces it to be shared (duplicated) on every insert, so its
+    reset yields a null token and the path cannot be recycled. `Set.insert` now
+    rebuilds an identical node (`SetNode n l y r`, mirroring `Dict.insert`'s equal
+    branch), keeping the matched node uniquely owned. The equal branch is off the
+    hot build path (distinct keys never take it), so this only changes a
+    duplicate-key insert on a shared set (one extra copy, already the shared case).
+  - **Blast radius.** Generalizing the predicate/threader (rather than adding a
+    narrow special case) also moves the reset earlier for any function with a
+    top-level `if` reaching a construction (e.g. list `filter`'s
+    `if p then x :: rest else rest`); the emitted IR changes but the allocation
+    counts do not (the existing reuse differentials are unchanged).
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

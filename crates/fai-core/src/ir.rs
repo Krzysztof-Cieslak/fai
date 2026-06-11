@@ -252,6 +252,7 @@ fn collect_globals(expr: &CExpr, out: &mut Vec<DefId>) {
             collect_globals(value, out);
             collect_globals(body, out);
         }
+        ExprKind::FreeReuse { body, .. } => collect_globals(body, out),
         ExprKind::Dup { body, .. } | ExprKind::Drop { body, .. } => collect_globals(body, out),
         ExprKind::Join { body, .. } => collect_globals(body, out),
         ExprKind::Recur { args } => {
@@ -725,6 +726,17 @@ pub enum ExprKind {
         /// The data value to release (consumed); a local after A-normal form.
         value: Box<CExpr>,
         /// The reuse token bound for `body`.
+        token: LocalId,
+        /// The continuation.
+        body: Box<CExpr>,
+    },
+    /// Free an unconsumed reuse `token` (from a [`ExprKind::Reset`]) on a path that
+    /// builds nothing into it: reclaim the held cell's memory — a no-op on the null
+    /// token — then evaluate `body`. Inserted by `fai-rc` when a reset cell's token
+    /// reaches a branch with no reusing construction (so every path still consumes
+    /// the token exactly once). The token is consumed here.
+    FreeReuse {
+        /// The reuse token to free (consumed).
         token: LocalId,
         /// The continuation.
         body: Box<CExpr>,

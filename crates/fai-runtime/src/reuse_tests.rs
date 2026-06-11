@@ -183,6 +183,44 @@ fn dropreuse_zero_field_cell_round_trips() {
 }
 
 // ===========================================================================
+// fai_free_reuse: free a token no construction will consume (a branch that
+// rebuilds nothing), or a no-op on the null token.
+// ===========================================================================
+
+#[test]
+fn free_reuse_null_token_is_a_noop() {
+    let _g = lock();
+    let base = live_count();
+    fai_free_reuse(NO_REUSE);
+    assert_eq!(live_count(), base, "freeing the null token does nothing");
+}
+
+#[test]
+fn free_reuse_reclaims_a_unique_tokens_memory() {
+    let _g = lock();
+    let base = live_count();
+    let cell = data(0, &[imm_int(1), imm_int(2)]);
+    let token = fai_drop_reuse(cell);
+    assert_eq!(live_count(), base + 1, "the reset cell is still held as the token");
+    fai_free_reuse(token);
+    assert_eq!(live_count(), base, "freeing the token reclaims the held cell");
+}
+
+#[test]
+fn free_reuse_after_a_shared_drop_reuse_is_a_noop() {
+    let _g = lock();
+    let base = live_count();
+    let cell = data(0, &[imm_int(1)]);
+    fai_dup(cell); // shared: rc = 2
+    let token = fai_drop_reuse(cell); // decrements only; null token
+    assert_eq!(token, NO_REUSE, "a shared cell yields no token");
+    fai_free_reuse(token); // no-op on the null token
+    assert_eq!(live_count(), base + 1, "the still-shared cell survives");
+    fai_drop(cell);
+    assert_eq!(live_count(), base);
+}
+
+// ===========================================================================
 // fai_reuse: rebuild into a token in place, or allocate when it cannot.
 // ===========================================================================
 

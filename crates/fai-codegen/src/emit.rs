@@ -1109,6 +1109,13 @@ impl<M: Module> Translator<'_, M> {
                 self.define_var(*token, tok);
                 self.expr(body)
             }
+            ExprKind::FreeReuse { token, body } => {
+                // A branch that builds nothing into the token frees its held cell.
+                let tok = self.use_var(*token);
+                let f = self.runtime("fai_free_reuse", 1, false);
+                self.builder.ins().call(f, &[tok]);
+                self.expr(body)
+            }
             ExprKind::Dup { local, body } => {
                 // The dup is inlined per the local's static type; see `dup_local`
                 // (immediate no-op / unconditional / tag-checked increment).
@@ -2546,6 +2553,12 @@ impl<M: Module> Translator<'_, M> {
                 self.define_var(*token, tok);
                 self.expr_tail(body);
             }
+            ExprKind::FreeReuse { token, body } => {
+                let tok = self.use_var(*token);
+                let f = self.runtime("fai_free_reuse", 1, false);
+                self.builder.ins().call(f, &[tok]);
+                self.expr_tail(body);
+            }
             ExprKind::Dup { local, body } => {
                 self.dup_local(*local);
                 self.expr_tail(body);
@@ -2678,6 +2691,7 @@ fn collect_local_types(e: &CExpr, out: &mut FxHashMap<usize, Ty>) {
             collect_local_types(value, out);
             collect_local_types(body, out);
         }
+        ExprKind::FreeReuse { body, .. } => collect_local_types(body, out),
         ExprKind::Dup { body, .. } | ExprKind::Drop { body, .. } => collect_local_types(body, out),
         ExprKind::Join { body, .. } | ExprKind::HoleStart { body, .. } => {
             collect_local_types(body, out);
@@ -2736,6 +2750,9 @@ fn collect_float_observations(
         }
         ExprKind::Reset { value, body, .. } => {
             collect_float_observations(value, float_seen, other_seen);
+            collect_float_observations(body, float_seen, other_seen);
+        }
+        ExprKind::FreeReuse { body, .. } => {
             collect_float_observations(body, float_seen, other_seen);
         }
         ExprKind::Dup { body, .. } | ExprKind::Drop { body, .. } => {
@@ -2807,6 +2824,9 @@ fn collect_int_observations(
         }
         ExprKind::Reset { value, body, .. } => {
             collect_int_observations(value, int_seen, other_seen);
+            collect_int_observations(body, int_seen, other_seen);
+        }
+        ExprKind::FreeReuse { body, .. } => {
             collect_int_observations(body, int_seen, other_seen);
         }
         ExprKind::Dup { body, .. } | ExprKind::Drop { body, .. } => {

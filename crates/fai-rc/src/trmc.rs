@@ -167,6 +167,7 @@ pub(crate) fn fuse_evidence_self_calls(e: CExpr, self_def: DefId, evidence: &[Lo
         // The reference-counting and tail-call nodes do not exist yet; pass through
         // for exhaustiveness.
         K::Reset { .. }
+        | K::FreeReuse { .. }
         | K::Dup { .. }
         | K::Drop { .. }
         | K::Join { .. }
@@ -234,7 +235,7 @@ fn check_tail(
             !contains_self(value, self_def)
                 && check_tail(body, self_def, arity, is_pure_total, uses_hole, found_tail)
         }
-        K::Dup { body, .. } | K::Drop { body, .. } => {
+        K::FreeReuse { body, .. } | K::Dup { body, .. } | K::Drop { body, .. } => {
             check_tail(body, self_def, arity, is_pure_total, uses_hole, found_tail)
         }
         // A bare tail self-call (no surrounding constructor) is plain tail
@@ -290,6 +291,10 @@ fn check_cons_wrap(
         K::Reset { value, body, .. } => {
             count_uses(value, rec) == 0
                 && !contains_self(value, self_def)
+                && check_cons_wrap(rec, body, self_def, is_pure_total, uses_hole, found_tail)
+        }
+        K::FreeReuse { token, body } => {
+            *token != rec
                 && check_cons_wrap(rec, body, self_def, is_pure_total, uses_hole, found_tail)
         }
         K::Dup { local, body } | K::Drop { local, body } => {
@@ -351,6 +356,10 @@ fn rewrite_tail(
         K::Reset { value, token, body } => {
             let body = rewrite_tail(*body, hole, self_def, arity, next);
             CExpr::new(K::Reset { value, token, body: Box::new(body) }, ty)
+        }
+        K::FreeReuse { token, body } => {
+            let body = rewrite_tail(*body, hole, self_def, arity, next);
+            CExpr::new(K::FreeReuse { token, body: Box::new(body) }, ty)
         }
         K::Dup { local, body } => {
             let body = rewrite_tail(*body, hole, self_def, arity, next);
@@ -439,6 +448,10 @@ fn collect_chain(
         K::Reset { value, token, body } => {
             let body = collect_chain(rec, *body, hole, sargs, chain, next);
             CExpr::new(K::Reset { value, token, body: Box::new(body) }, ty)
+        }
+        K::FreeReuse { token, body } => {
+            let body = collect_chain(rec, *body, hole, sargs, chain, next);
+            CExpr::new(K::FreeReuse { token, body: Box::new(body) }, ty)
         }
         K::Dup { local, body } => {
             let body = collect_chain(rec, *body, hole, sargs, chain, next);
@@ -656,6 +669,12 @@ fn count_local(e: &CExpr, x: LocalId, n: &mut usize) {
             count_local(value, x, n);
             count_local(body, x, n);
         }
+        K::FreeReuse { token, body } => {
+            if *token == x {
+                *n += 1;
+            }
+            count_local(body, x, n);
+        }
         K::Dup { local, body } | K::Drop { local, body } => {
             if *local == x {
                 *n += 1;
@@ -728,6 +747,7 @@ fn walk(e: &CExpr, f: &mut impl FnMut(&CExpr)) {
         K::DataTag(base) | K::DataField { base, .. } => walk(base, f),
         K::Dup { body, .. }
         | K::Drop { body, .. }
+        | K::FreeReuse { body, .. }
         | K::Join { body, .. }
         | K::HoleStart { body, .. } => walk(body, f),
         K::HoleFill { cell, .. } => walk(cell, f),

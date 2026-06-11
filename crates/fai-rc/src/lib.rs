@@ -200,6 +200,10 @@ fn max_local(e: &CExpr, max: &mut usize) {
             max_local(value, max);
             max_local(body, max);
         }
+        K::FreeReuse { token, body } => {
+            bump(*token, max);
+            max_local(body, max);
+        }
         K::Dup { local, body } | K::Drop { local, body } => {
             bump(*local, max);
             max_local(body, max);
@@ -299,6 +303,9 @@ fn anf_op(e: CExpr, binds: &mut Vec<(LocalId, CExpr)>, next: &mut usize) -> CExp
             },
             ty,
         ),
+        K::FreeReuse { token, body } => {
+            CExpr::new(K::FreeReuse { token, body: Box::new(anf(*body, next)) }, ty)
+        }
         K::Dup { local, body } => {
             CExpr::new(K::Dup { local, body: Box::new(anf(*body, next)) }, ty)
         }
@@ -414,6 +421,10 @@ fn collect_fv(e: &CExpr, captures: &Locals, bound: &mut Locals, out: &mut Locals
             if added {
                 bound.remove(token);
             }
+        }
+        K::FreeReuse { token, body } => {
+            note(*token, bound, out);
+            collect_fv(body, captures, bound, out);
         }
         K::Dup { local, body } | K::Drop { local, body } => {
             note(*local, bound, out);
@@ -543,6 +554,10 @@ impl Rc<'_> {
             K::Reset { value, token, body } => {
                 let body = self.owned(*body, live);
                 CExpr::new(K::Reset { value, token, body: Box::new(body) }, ty)
+            }
+            K::FreeReuse { token, body } => {
+                let body = self.owned(*body, live);
+                CExpr::new(K::FreeReuse { token, body: Box::new(body) }, ty)
             }
             // Lowering never emits these; pass through.
             K::Dup { local, body } => dup_(local, self.owned(*body, live)),
@@ -837,6 +852,7 @@ fn collect_data_locals(e: &CExpr, out: &mut Locals) {
             collect_data_locals(value, out);
             collect_data_locals(body, out);
         }
+        K::FreeReuse { body, .. } => collect_data_locals(body, out),
         K::Dup { body, .. } | K::Drop { body, .. } => collect_data_locals(body, out),
         // The tail-call transform runs after reuse analysis; handled defensively.
         K::Join { body, .. } | K::HoleStart { body, .. } => collect_data_locals(body, out),
@@ -891,6 +907,9 @@ fn reuse_pass(e: CExpr, data: &Locals, next: &mut usize) -> CExpr {
         K::Reset { value, token, body } => {
             CExpr::new(K::Reset { value, token, body: Box::new(reuse_pass(*body, data, next)) }, ty)
         }
+        K::FreeReuse { token, body } => {
+            CExpr::new(K::FreeReuse { token, body: Box::new(reuse_pass(*body, data, next)) }, ty)
+        }
         K::Prim { op, args } => CExpr::new(
             K::Prim { op, args: args.into_iter().map(|a| reuse_pass(a, data, next)).collect() },
             ty,
@@ -929,25 +948,32 @@ fn reuse_pass(e: CExpr, data: &Locals, next: &mut usize) -> CExpr {
 
 /// Places the release of the dead cell `s` into `expr`, recycling its memory for a
 /// construction where possible. `s`'s memory is reset at the **death point** (the
-/// start of `expr`, before any recursive call) when `expr` reaches a construction
-/// on a single straight-line path — so the cell's fields become unique for that
-/// call — with the token threaded forward to that construction. When a branch
-/// intervenes, the responsibility is pushed into the branches (each resets and
-/// reuses, or drops, on its own). A path with no construction keeps a plain drop.
-/// `expr` never uses `s` (it is already dead).
+/// start of `expr`, before any recursive call) when a construction is reachable
+/// through `expr`'s straight-line bindings *and* `if` branches — so the cell's
+/// fields become unique for a recursive call bound in a `let`, the case a
+/// "recurse-then-rebalance" function (`insert`/`remove`) needs. The token is
+/// threaded forward to the construction on each path; a branch that builds nothing
+/// frees it (so every path still consumes the token exactly once). When no
+/// construction is thread-reachable (e.g. one nested in a call argument), the
+/// release is pushed into the branches, each of which drops on its own. A path
+/// with no construction at all keeps a plain drop. `expr` never uses `s` (it is
+/// already dead).
 fn release(s: LocalId, expr: CExpr, next: &mut usize) -> CExpr {
     if !has_construction(&expr) {
         // Nothing to recycle into: drop early, as plain reference counting would.
         return drop_(s, expr);
     }
-    if linear_construction(&expr) {
-        // A construction post-dominates on one path: reset now (freeing the cell's
-        // fields for any recursive call) and thread the token to it.
+    if reaches_construction(&expr) {
+        // A construction post-dominates along every threaded path (through lets and
+        // `if` branches): reset now — freeing the cell's fields ahead of any
+        // recursive call bound before the branch — and thread the token to each
+        // branch's construction, freeing it on any branch that builds nothing.
         let token = fresh(next);
-        return reset_(s, token, thread_token(expr, token));
+        return reset_(s, token, thread_or_free(expr, token));
     }
-    // A branch precedes the construction: peel straight-line lets and push the
-    // release into each branch, which decides reset-and-reuse or drop on its own.
+    // A construction exists but is not thread-reachable (e.g. nested in a call
+    // argument): peel straight-line lets and push the release into each branch,
+    // which decides reset-and-reuse or drop on its own.
     let CExpr { kind, ty } = expr;
     match kind {
         K::If { cond, then, els } => CExpr::new(
@@ -985,6 +1011,7 @@ fn has_construction(e: &CExpr) -> bool {
             has_construction(cond) || has_construction(then) || has_construction(els)
         }
         K::Reset { value, body, .. } => has_construction(value) || has_construction(body),
+        K::FreeReuse { body, .. } => has_construction(body),
         K::Dup { body, .. } | K::Drop { body, .. } => has_construction(body),
         K::Prim { args, .. } => args.iter().any(has_construction),
         K::App { func, args } => has_construction(func) || args.iter().any(has_construction),
@@ -999,22 +1026,29 @@ fn has_construction(e: &CExpr) -> bool {
     }
 }
 
-/// Whether a non-nullary construction is reached on a single straight-line path
-/// (through `let`/`dup`/`drop`/`reset`), with no `if` before it.
-fn linear_construction(e: &CExpr) -> bool {
+/// Whether a non-nullary construction is reachable by threading a reuse token
+/// through `e` — along its straight-line bindings (`let`/`dup`/`drop`/`reset`) and
+/// into **both** arms of an `if`. The token's reuse target is the first such
+/// construction on each path; a reuse-target `let` value counts (the token attaches
+/// to it). A construction nested in a call argument is *not* threadable.
+fn reaches_construction(e: &CExpr) -> bool {
     match &e.kind {
         K::MakeData { args, reuse, .. } => reuse.is_none() && !args.is_empty(),
-        K::Let { value, body, .. } => is_reuse_target(value) || linear_construction(body),
+        K::Let { value, body, .. } => is_reuse_target(value) || reaches_construction(body),
+        K::If { then, els, .. } => reaches_construction(then) || reaches_construction(els),
         K::Dup { body, .. } | K::Drop { body, .. } | K::Reset { body, .. } => {
-            linear_construction(body)
+            reaches_construction(body)
         }
         _ => false,
     }
 }
 
-/// Attaches `token` to the first construction on the straight-line path (assumes
-/// [`linear_construction`]).
-fn thread_token(e: CExpr, token: LocalId) -> CExpr {
+/// Threads `token` to the first construction on every path of `e` — attaching it
+/// there (so the build recycles the reset cell) and recursing into both arms of an
+/// `if` — and, on any path that reaches no construction, frees the token with a
+/// [`K::FreeReuse`]. Every path therefore consumes the token exactly once (reuse or
+/// free). Assumes [`reaches_construction`] held for at least one path.
+fn thread_or_free(e: CExpr, token: LocalId) -> CExpr {
     let CExpr { kind, ty } = e;
     match kind {
         K::MakeData { tag, args, reuse: None } if !args.is_empty() => {
@@ -1025,21 +1059,30 @@ fn thread_token(e: CExpr, token: LocalId) -> CExpr {
                 let value = Box::new(attach_reuse(*value, token));
                 CExpr::new(K::Let { local, value, body }, ty)
             } else {
-                let body = Box::new(thread_token(*body, token));
+                let body = Box::new(thread_or_free(*body, token));
                 CExpr::new(K::Let { local, value, body }, ty)
             }
         }
-        K::Dup { local, body } => {
-            CExpr::new(K::Dup { local, body: Box::new(thread_token(*body, token)) }, ty)
-        }
-        K::Drop { local, body } => {
-            CExpr::new(K::Drop { local, body: Box::new(thread_token(*body, token)) }, ty)
-        }
-        K::Reset { value, token: tok, body } => CExpr::new(
-            K::Reset { value, token: tok, body: Box::new(thread_token(*body, token)) },
+        K::If { cond, then, els } => CExpr::new(
+            K::If {
+                cond,
+                then: Box::new(thread_or_free(*then, token)),
+                els: Box::new(thread_or_free(*els, token)),
+            },
             ty,
         ),
-        other => CExpr::new(other, ty),
+        K::Dup { local, body } => {
+            CExpr::new(K::Dup { local, body: Box::new(thread_or_free(*body, token)) }, ty)
+        }
+        K::Drop { local, body } => {
+            CExpr::new(K::Drop { local, body: Box::new(thread_or_free(*body, token)) }, ty)
+        }
+        K::Reset { value, token: tok, body } => CExpr::new(
+            K::Reset { value, token: tok, body: Box::new(thread_or_free(*body, token)) },
+            ty,
+        ),
+        // A leaf with no construction (a call, projection, or atom): free the token.
+        other => free_reuse_(token, CExpr::new(other, ty)),
     }
 }
 
@@ -1064,6 +1107,12 @@ fn reset_(s: LocalId, token: LocalId, body: CExpr) -> CExpr {
     let ty = body.ty.clone();
     let value = Box::new(CExpr::new(K::Local(s), Ty::Error));
     CExpr::new(K::Reset { value, token, body: Box::new(body) }, ty)
+}
+
+/// `free-reuse token; body` (releasing a token no construction consumes).
+fn free_reuse_(token: LocalId, body: CExpr) -> CExpr {
+    let ty = body.ty.clone();
+    CExpr::new(K::FreeReuse { token, body: Box::new(body) }, ty)
 }
 
 /// The owned locals a projection borrows: its base, plus row-polymorphic offset

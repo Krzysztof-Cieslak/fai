@@ -11,10 +11,9 @@ module Dict
 // re-exports the name `Dict` so it stays usable unqualified.
 //
 // `insert`/`remove` rebuild the search path (immutable, so a shared tree is
-// copied); `map` preserves the tree shape, so reference counting recycles a
-// uniquely-owned tree's nodes in place. Recycling the path of a uniquely-owned
-// `insert`/`remove` in place (so a unique build allocates O(n) rather than
-// O(n log n)) needs a reference-counting improvement and is future work.
+// copied); on a uniquely-owned tree reference counting recycles that path in
+// place — the matched node is reset before the recursive call, so a unique build
+// allocates O(n), not O(n log n). `map` likewise recycles a unique tree's nodes.
 public opaque type Dict 'k 'v =
   | DictEmpty
   | DictNode Int (Dict 'k 'v) 'k 'v (Dict 'k 'v)

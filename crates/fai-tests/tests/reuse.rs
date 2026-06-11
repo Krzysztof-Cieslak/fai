@@ -495,12 +495,92 @@ fn dict_map_recycles_a_unique_tree() {
     // constructor, so the reuse pass resets each matched node before recursing: a
     // uniquely-owned map recycles all `n` cells (zero fresh) while a shared map
     // copies them. The gap is exactly the `n` recycled nodes — the guard that
-    // weight-balanced nodes are reused in place. (`insert`/`remove` bind the
-    // recursion before a rebalancing branch, so the reset lands after it and they
-    // path-copy instead; reusing those is a reference-counting improvement noted as
-    // future work.)
+    // weight-balanced nodes are reused in place.
     let u = allocs(&dict_prog("Dict.size (Dict.map (fun k v -> v + 1) d)", 50), "50");
     let s =
         allocs(&dict_prog("Dict.size (Dict.map (fun k v -> v + 1) d) + Dict.size d", 50), "100");
     assert_eq!(s - u, 50, "a unique Dict.map must recycle all 50 nodes (shared copies them)");
+}
+
+/// A program building an `n`-element `Set Int` (unique accumulator) and printing
+/// its size.
+fn set_prog(use_body: &str, n: i32) -> String {
+    formatdoc! {r#"
+        module M
+
+        fillS : Int -> Set Int -> Set Int
+        let fillS k s = if k <= 0 then s else fillS (k - 1) (Set.insert k s)
+
+        let use s = {use_body}
+
+        public main : Runtime -> Unit / {{ Console }}
+        let main rt = rt.console.writeLine (Int.toString (use (fillS {n} Set.empty)))
+    "#}
+}
+
+/// The build cost (cumulative allocations net of the fixed program overhead) of
+/// constructing the `n`-entry collection `prog(n)` prints, whose output is `n`.
+#[track_caller]
+fn build_cost(prog: impl Fn(i32) -> String, n: i32) -> i64 {
+    let base = allocs(&prog(0), "0");
+    let at_n = allocs(&prog(n), &n.to_string());
+    at_n - base
+}
+
+/// A uniquely-owned `insert` build resets each matched node *before* the recursive
+/// call, so the search path is rebuilt in place: per-element allocation is flat and
+/// the whole build is O(n). Were the reset left after the recursion (the child
+/// shared, so the recursion path-copies), the build would be O(n log n) — its
+/// per-element cost rising with the tree depth. The guard: doubling `n` at most
+/// doubles the build (ratio ≤ 2.1), which the O(n log n) build (ratio ≈ 2.25 at
+/// these sizes) fails. Allocation counts are deterministic, so this is not flaky.
+#[track_caller]
+fn build_is_linear(prog: impl Fn(i32) -> String, label: &str) {
+    let n = 512;
+    let c1 = build_cost(&prog, n);
+    let c2 = build_cost(&prog, 2 * n);
+    assert!(
+        c2 * 10 <= c1 * 21,
+        "{label} build is not O(n): cost({n})={c1}, cost({})={c2} (ratio {:.3}); \
+         a path-copying O(n log n) build would be ~2.25x",
+        2 * n,
+        c2 as f64 / c1 as f64,
+    );
+}
+
+#[test]
+fn dict_build_allocates_linearly() {
+    build_is_linear(|n| dict_prog("Dict.size d", n), "Dict.insert");
+}
+
+#[test]
+fn set_build_allocates_linearly() {
+    build_is_linear(|n| set_prog("Set.size s", n), "Set.insert");
+}
+
+#[test]
+fn unique_dict_insert_build_is_correct_and_leak_free() {
+    // The in-place insert path is exercised on a uniquely-owned accumulator built
+    // by `fillD`, then observed through `toList`: a clean exit confirms leak-free
+    // reference counting (every reset cell is reused or freed exactly once), and
+    // the output confirms the rebuilt tree holds the right ordered entries.
+    let src = formatdoc! {r#"
+        module M
+
+        fillD : Int -> Dict Int Int -> Dict Int Int
+        let fillD k d = if k <= 0 then d else fillD (k - 1) (Dict.insert k (k * 10) d)
+
+        sumKeys : List (Int * Int) -> Int
+        let sumKeys pairs =
+          match pairs with
+          | [] -> 0
+          | (k, v) :: rest -> k + v + sumKeys rest
+
+        public main : Runtime -> Unit / {{ Console }}
+        let main rt =
+          let d = fillD 100 Dict.empty
+          rt.console.writeLine (Int.toString (sumKeys (Dict.toList d)))
+    "#};
+    // keys 1..100 sum to 5050; values are key*10, so total = 5050 + 50500 = 55550.
+    outputs(&src, "55550");
 }
