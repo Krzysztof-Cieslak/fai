@@ -696,16 +696,6 @@ pub fn resolve_interface(db: &dyn Db, file: SourceFile, name: Symbol) -> Option<
     None
 }
 
-/// The number of parameters of the interface `iref`.
-#[must_use]
-pub fn interface_param_count(db: &dyn Db, iref: InterfaceRef) -> usize {
-    db.source_file(iref.file)
-        .and_then(|file| {
-            interface_decls(db, file).interface_named(iref.name).map(|i| i.params.len())
-        })
-        .unwrap_or(0)
-}
-
 /// The kind of an interface parameter, inferred from how the interface's methods
 /// use it: as an ordinary type (`'a`) or as an effect row (`/ 'e`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

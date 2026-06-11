@@ -234,6 +234,12 @@ pub struct InferCtx {
     /// where a disagreement is reported once as the dedicated effect mismatch
     /// (FAI5001) instead of a generic type mismatch.
     lenient_effects: bool,
+    /// When set, effect-row unification is a complete no-op (it neither fails nor
+    /// binds). Used to unify an interface instance method's body type against the
+    /// declared method type *without* touching effects, which are constrained
+    /// separately by subsumption (so several methods can grow a shared effect
+    /// parameter to the union of their bodies' effects).
+    ignore_effects: bool,
     /// The current binding depth, bumped around a generalizable `let` right-hand
     /// side. A variable generalizes only if its level exceeds the enclosing one.
     current_level: u32,
@@ -254,6 +260,7 @@ impl InferCtx {
             rows: Vec::new(),
             effects: Vec::new(),
             lenient_effects: false,
+            ignore_effects: false,
             current_level: 0,
         }
     }
@@ -263,6 +270,21 @@ impl InferCtx {
     /// once as FAI5001 rather than also as a generic type mismatch.
     pub fn set_lenient_effects(&mut self, value: bool) {
         self.lenient_effects = value;
+    }
+
+    /// Toggles no-op effect unification (see the `ignore_effects` field). Enabled
+    /// around an interface instance method's type unification, whose effects are
+    /// constrained separately by subsumption.
+    pub fn set_ignore_effects(&mut self, value: bool) {
+        self.ignore_effects = value;
+    }
+
+    /// Constrains the effect-row variable `v` to admit at least `eff` (the
+    /// directional `eff ⊆ v`), growing its open tail. Used at interface dispatch
+    /// to bind a method's effect parameter to the value's effect argument.
+    pub fn unify_effect_var(&mut self, v: EffRowVarId, eff: &SolveEffect) -> UnifyResult {
+        let probe = SolveEffect { atoms: Vec::new(), tail: EffTail::Open(v) };
+        self.unify_effects(&probe, eff)
     }
 
     /// Enters a deeper binding level (around a generalizable `let` right-hand
@@ -478,6 +500,11 @@ impl InferCtx {
     /// Strict unless lenient mode is set (see [`lenient_effects`]); directional
     /// `⊆` is [`subsume_effects`].
     fn unify_effects(&mut self, e1: &SolveEffect, e2: &SolveEffect) -> UnifyResult {
+        // Instance method type-unification handles effects separately (by
+        // subsumption), so here it is a complete no-op.
+        if self.ignore_effects {
+            return UnifyResult::Ok;
+        }
         let e1 = self.expand_effect(e1);
         let e2 = self.expand_effect(e2);
 
@@ -1110,17 +1137,52 @@ impl InferCtx {
         }
     }
 
-    /// Instantiates a scheme, binding its first `prefix.len()` quantified
-    /// variables to the given solver variables (the rest get fresh ones). Used to
-    /// share an interface's parameter variables across all of an instance's
-    /// methods.
-    pub fn instantiate_sharing(&mut self, scheme: &Scheme, prefix: &[TyVarId]) -> SolveTy {
+    /// Instantiates a scheme, binding its leading quantified type variables to
+    /// `type_prefix` and its leading quantified effect variables to `eff_prefix`
+    /// (the rest get fresh ones). Used to share an interface's parameters — type
+    /// *and* effect — across all of an instance's methods.
+    pub fn instantiate_sharing(
+        &mut self,
+        scheme: &Scheme,
+        type_prefix: &[TyVarId],
+        eff_prefix: &[EffRowVarId],
+    ) -> SolveTy {
         let mut map = InstMap::default();
         for (i, &v) in scheme.vars.iter().enumerate() {
-            let id = if i < prefix.len() { prefix[i] } else { self.fresh_var_id() };
+            let id = if i < type_prefix.len() { type_prefix[i] } else { self.fresh_var_id() };
             map.types.insert(v, id);
         }
+        for (i, &v) in scheme.effect_vars.iter().enumerate() {
+            if i < eff_prefix.len() {
+                map.effects.insert(v, eff_prefix[i]);
+            }
+        }
         self.instantiate_solve(&scheme.ty, &mut map)
+    }
+
+    /// Instantiates an interface method scheme with fresh variables, returning the
+    /// fresh *type* variables (aligned to `scheme.vars`) and fresh *effect*
+    /// variables (aligned to `scheme.effect_vars`). At dispatch the leading ones
+    /// are the interface's parameters, unified against the value's arguments.
+    pub fn instantiate_method(
+        &mut self,
+        scheme: &Scheme,
+    ) -> (SolveTy, Vec<TyVarId>, Vec<EffRowVarId>) {
+        let mut map = InstMap::default();
+        let mut fresh_types = Vec::with_capacity(scheme.vars.len());
+        for &v in &scheme.vars {
+            let id = self.fresh_var_id();
+            map.types.insert(v, id);
+            fresh_types.push(id);
+        }
+        let mut fresh_effects = Vec::with_capacity(scheme.effect_vars.len());
+        for &v in &scheme.effect_vars {
+            let id = self.fresh_effect();
+            map.effects.insert(v, id);
+            fresh_effects.push(id);
+        }
+        let solved = self.instantiate_solve(&scheme.ty, &mut map);
+        (solved, fresh_types, fresh_effects)
     }
 
     /// Instantiates a scheme with fresh variables (no constraints recorded; M2
