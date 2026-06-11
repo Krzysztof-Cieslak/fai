@@ -121,50 +121,114 @@ const ALIGN: usize = 8;
 
 /// A heap-type descriptor: a static record identifying a boxed value's kind.
 /// Referenced by address from every object header (and, for static objects, from
-/// generated code), so a value's kind is recovered by comparing its descriptor
-/// pointer against these statics. Releasing an object's reference-counted children
-/// is driven by kind in [`scan_push`] (see [`fai_drop`]).
+/// generated code). A value's kind is recovered from the descriptor's [`kind`]
+/// tag (not its address), so generated code may emit *per-shape* data descriptors
+/// — each carrying a [`scalar_bitmap`] of which data slots hold an unboxed `f64`
+/// rather than a uniform word — without breaking kind dispatch. Releasing an
+/// object's reference-counted children is driven by kind in [`scan_push`] (see
+/// [`fai_drop`]).
+///
+/// [`kind`]: Descriptor::kind
+/// [`scalar_bitmap`]: Descriptor::scalar_bitmap
 #[repr(C)]
 pub struct Descriptor {
-    /// A human-readable kind name (used in leak/debug reporting).
-    pub name: &'static str,
+    /// The object kind (`KIND_*`), the discriminant used to recover a value's
+    /// representation. Compared by value, so distinct descriptors of the same kind
+    /// (e.g. per-shape data descriptors) dispatch identically.
+    pub kind: u64,
+    /// For a `KIND_DATA` descriptor, the set of field slots stored as a raw,
+    /// unboxed `f64` (bit `i` set ⇒ slot `i` is a scalar float, carrying no
+    /// reference count): generic walkers skip these in reference counting and
+    /// compare them as floats. Zero for every other kind and for data cells with
+    /// no scalar fields (the shared [`FAI_DATA_DESC`]).
+    pub scalar_bitmap: u64,
+    /// A human-readable kind name (used in leak/debug reporting). A raw pointer +
+    /// length rather than a `&'static str` so a generated descriptor may leave it
+    /// null (it is never dereferenced by runtime logic).
+    pub name_ptr: *const u8,
+    /// The length of [`name_ptr`](Descriptor::name_ptr).
+    pub name_len: usize,
 }
 
-// SAFETY: a `Descriptor` holds only a `&'static str`, which is `Sync`; it carries
-// no interior mutability.
+// SAFETY: a `Descriptor` is immutable (all fields written once at definition) and
+// its `name_ptr` points either to a `'static` string or is null; it carries no
+// interior mutability, so sharing it across threads is sound.
 unsafe impl Sync for Descriptor {}
+
+/// `String` objects (leaf: inline bytes, no children).
+pub const KIND_STRING: u64 = 0;
+/// Boxed (overflowed) `Int` objects (leaf).
+pub const KIND_INT: u64 = 1;
+/// Boxed `Float` objects (leaf).
+pub const KIND_FLOAT: u64 = 2;
+/// Closures (children: the captured environment slots).
+pub const KIND_CLOSURE: u64 = 3;
+/// Partial applications (children: the target plus stored args).
+pub const KIND_PAP: u64 = 4;
+/// Data values — constructors, records, and tuples (children: the non-scalar
+/// fields, per the descriptor's [`Descriptor::scalar_bitmap`]).
+pub const KIND_DATA: u64 = 5;
+/// Contiguous arrays (children: the boxed element slots).
+pub const KIND_ARRAY: u64 = 6;
+
+/// Builds a runtime-static descriptor with no scalar fields.
+const fn descriptor(kind: u64, name: &'static str) -> Descriptor {
+    Descriptor { kind, scalar_bitmap: 0, name_ptr: name.as_ptr(), name_len: name.len() }
+}
 
 /// Descriptor for `String` objects (leaf: inline bytes, no children).
 #[unsafe(no_mangle)]
-pub static FAI_STRING_DESC: Descriptor = Descriptor { name: "String" };
+pub static FAI_STRING_DESC: Descriptor = descriptor(KIND_STRING, "String");
 
 /// Descriptor for boxed (overflowed) `Int` objects (leaf).
 #[unsafe(no_mangle)]
-pub static FAI_INT_DESC: Descriptor = Descriptor { name: "Int" };
+pub static FAI_INT_DESC: Descriptor = descriptor(KIND_INT, "Int");
 
 /// Descriptor for closures (children: the captured environment slots).
 #[unsafe(no_mangle)]
-pub static FAI_CLOSURE_DESC: Descriptor = Descriptor { name: "Closure" };
+pub static FAI_CLOSURE_DESC: Descriptor = descriptor(KIND_CLOSURE, "Closure");
 
 /// Descriptor for partial applications (children: the target plus stored args).
 #[unsafe(no_mangle)]
-pub static FAI_PAP_DESC: Descriptor = Descriptor { name: "Pap" };
+pub static FAI_PAP_DESC: Descriptor = descriptor(KIND_PAP, "Pap");
 
 /// Descriptor for boxed `Float` objects (leaf).
 #[unsafe(no_mangle)]
-pub static FAI_FLOAT_DESC: Descriptor = Descriptor { name: "Float" };
+pub static FAI_FLOAT_DESC: Descriptor = descriptor(KIND_FLOAT, "Float");
 
-/// Descriptor for data values — constructors, records, and tuples (children: all
-/// fields). A single descriptor serves every shape; the field count is derived
-/// from the object's size.
+/// Descriptor for data values with no scalar fields — the shared descriptor for
+/// every constructor, record, and tuple whose slots are all uniform words. Cells
+/// with one or more unboxed `f64` fields instead point at a per-shape descriptor
+/// (generated, or runtime-interned) carrying the scalar bitmap; the field count is
+/// always derived from the object's size.
 #[unsafe(no_mangle)]
-pub static FAI_DATA_DESC: Descriptor = Descriptor { name: "Data" };
+pub static FAI_DATA_DESC: Descriptor = descriptor(KIND_DATA, "Data");
+
+/// The kind tag of the descriptor at `desc`.
+///
+/// # Safety
+/// `desc` must point to a valid [`Descriptor`].
+#[inline]
+unsafe fn desc_kind(desc: *const Descriptor) -> u64 {
+    // SAFETY: the caller guarantees `desc` is a valid descriptor pointer.
+    unsafe { (*desc).kind }
+}
+
+/// The descriptor of a live boxed object.
+///
+/// # Safety
+/// `p` must point to a valid live heap object.
+#[inline]
+unsafe fn obj_descriptor(p: *const u8) -> *const Descriptor {
+    // SAFETY: a live object stores its descriptor pointer at `DESC_OFFSET`.
+    unsafe { read_ptr(p, DESC_OFFSET).cast::<Descriptor>() }
+}
 
 /// Descriptor for `Array` objects — a contiguous, growable sequence (children:
 /// the live element slots `0..length`). Capacity beyond `length` is spare and
 /// uninitialized, so the child scan and structural ops touch only `0..length`.
 #[unsafe(no_mangle)]
-pub static FAI_ARRAY_DESC: Descriptor = Descriptor { name: "Array" };
+pub static FAI_ARRAY_DESC: Descriptor = descriptor(KIND_ARRAY, "Array");
 
 // ---------------------------------------------------------------------------
 // Tagging helpers.
@@ -629,15 +693,15 @@ impl DropWork {
 
 /// Pushes the boxed, reference-counted children of the live object `p` onto
 /// `work` (immediates carry no count and are skipped). The child layout is
-/// recovered from the object's kind, identified by its descriptor address.
+/// recovered from the object's kind, identified by its descriptor's kind tag.
 ///
 /// # Safety
 /// `p` is a live object pointer.
 unsafe fn scan_push(p: *mut u8, work: &mut DropWork) {
     // SAFETY: `p` is a live object; its descriptor and fields are in bounds.
     unsafe {
-        let desc = read_ptr(p, DESC_OFFSET).cast::<Descriptor>();
-        if std::ptr::eq(desc, &FAI_DATA_DESC) {
+        let desc = obj_descriptor(p);
+        if desc_kind(desc) == KIND_DATA {
             let size = read_u64(p, SIZE_OFFSET) as usize;
             let nfields = (size - DATA_FIELDS_OFFSET) / 8;
             for i in 0..nfields {
@@ -646,7 +710,7 @@ unsafe fn scan_push(p: *mut u8, work: &mut DropWork) {
                     work.push(field);
                 }
             }
-        } else if std::ptr::eq(desc, &FAI_CLOSURE_DESC) {
+        } else if desc_kind(desc) == KIND_CLOSURE {
             let env_count = read_u64(p, CLOSURE_ENV_COUNT_OFFSET) as usize;
             for i in 0..env_count {
                 let slot = read_i64(p, CLOSURE_ENV_OFFSET + i * 8);
@@ -654,7 +718,7 @@ unsafe fn scan_push(p: *mut u8, work: &mut DropWork) {
                     work.push(slot);
                 }
             }
-        } else if std::ptr::eq(desc, &FAI_PAP_DESC) {
+        } else if desc_kind(desc) == KIND_PAP {
             let func = read_i64(p, PAP_FUNC_OFFSET);
             if is_boxed(func) {
                 work.push(func);
@@ -666,7 +730,7 @@ unsafe fn scan_push(p: *mut u8, work: &mut DropWork) {
                     work.push(arg);
                 }
             }
-        } else if std::ptr::eq(desc, &FAI_ARRAY_DESC) {
+        } else if desc_kind(desc) == KIND_ARRAY {
             // An array's children are its live element slots (`0..length`); the
             // spare capacity beyond `length` is uninitialized and not scanned.
             let len = read_u64(p, ARRAY_LEN_OFFSET) as usize;
@@ -1729,9 +1793,9 @@ pub unsafe extern "C" fn fai_apply_n(callee: Value, argc: u64, args: *const i64)
     }
     let p = as_obj(callee);
     // SAFETY: `callee` is boxed.
-    let desc = unsafe { read_ptr(p, DESC_OFFSET).cast::<Descriptor>() };
+    let desc = unsafe { obj_descriptor(p) };
 
-    if std::ptr::eq(desc, &FAI_PAP_DESC) {
+    if unsafe { desc_kind(desc) } == KIND_PAP {
         // Take owned references to the stored target and arguments, then release
         // this reference to the shell. Dropping (rather than unconditionally
         // freeing) is correct when the partial application is shared: a dup'd PAP
@@ -1753,7 +1817,7 @@ pub unsafe extern "C" fn fai_apply_n(callee: Value, argc: u64, args: *const i64)
         }
     }
 
-    if !std::ptr::eq(desc, &FAI_CLOSURE_DESC) {
+    if unsafe { desc_kind(desc) } != KIND_CLOSURE {
         fai_panic("application of a non-function value (bad descriptor)");
     }
 
@@ -1813,8 +1877,8 @@ fn is_function_value(v: Value) -> bool {
         return false;
     }
     // SAFETY: `v` is boxed.
-    let desc = unsafe { read_ptr(as_obj(v), DESC_OFFSET).cast::<Descriptor>() };
-    std::ptr::eq(desc, &FAI_CLOSURE_DESC) || std::ptr::eq(desc, &FAI_PAP_DESC)
+    let kind = unsafe { desc_kind(obj_descriptor(as_obj(v))) };
+    kind == KIND_CLOSURE || kind == KIND_PAP
 }
 
 /// Aborts if either operand is a function value: equality/ordering is undefined
@@ -1834,24 +1898,27 @@ fn values_equal(a: Value, b: Value) -> bool {
         (true, true) => {
             // SAFETY: both are boxed values.
             unsafe {
-                let da = read_ptr(as_obj(a), DESC_OFFSET).cast::<Descriptor>();
-                let db = read_ptr(as_obj(b), DESC_OFFSET).cast::<Descriptor>();
-                if !std::ptr::eq(da, db) {
+                let ka = desc_kind(obj_descriptor(as_obj(a)));
+                let kb = desc_kind(obj_descriptor(as_obj(b)));
+                // Different kinds are never equal (comparison is between same-typed
+                // values, so two data cells share a kind regardless of per-shape
+                // descriptor identity).
+                if ka != kb {
                     return false;
                 }
-                if std::ptr::eq(da, &FAI_STRING_DESC) {
-                    string_bytes(a) == string_bytes(b)
-                } else if std::ptr::eq(da, &FAI_INT_DESC) {
-                    read_i64(as_obj(a), INT_VALUE_OFFSET) == read_i64(as_obj(b), INT_VALUE_OFFSET)
-                } else if std::ptr::eq(da, &FAI_FLOAT_DESC) {
-                    read_u64(as_obj(a), FLOAT_VALUE_OFFSET)
-                        == read_u64(as_obj(b), FLOAT_VALUE_OFFSET)
-                } else if std::ptr::eq(da, &FAI_DATA_DESC) {
-                    data_equal(a, b)
-                } else if std::ptr::eq(da, &FAI_ARRAY_DESC) {
-                    array_equal(a, b)
-                } else {
-                    false
+                match ka {
+                    KIND_STRING => string_bytes(a) == string_bytes(b),
+                    KIND_INT => {
+                        read_i64(as_obj(a), INT_VALUE_OFFSET)
+                            == read_i64(as_obj(b), INT_VALUE_OFFSET)
+                    }
+                    KIND_FLOAT => {
+                        read_u64(as_obj(a), FLOAT_VALUE_OFFSET)
+                            == read_u64(as_obj(b), FLOAT_VALUE_OFFSET)
+                    }
+                    KIND_DATA => data_equal(a, b),
+                    KIND_ARRAY => array_equal(a, b),
+                    _ => false,
                 }
             }
         }
@@ -1918,19 +1985,19 @@ fn values_compare(a: Value, b: Value) -> std::cmp::Ordering {
     // Otherwise identify the kind from a boxed operand (both share a type).
     let boxed = if is_boxed(a) { a } else { b };
     // SAFETY: `boxed` is a boxed value.
-    let desc = unsafe { read_ptr(as_obj(boxed), DESC_OFFSET).cast::<Descriptor>() };
-    if std::ptr::eq(desc, &FAI_FLOAT_DESC) {
+    let kind = unsafe { desc_kind(obj_descriptor(as_obj(boxed))) };
+    if kind == KIND_FLOAT {
         return unbox_float(a).total_cmp(&unbox_float(b));
     }
-    if std::ptr::eq(desc, &FAI_STRING_DESC) {
+    if kind == KIND_STRING {
         // SAFETY: both are boxed `String`s.
         return unsafe { string_bytes(a).cmp(string_bytes(b)) };
     }
-    if std::ptr::eq(desc, &FAI_ARRAY_DESC) {
+    if kind == KIND_ARRAY {
         // SAFETY: both are boxed arrays (same type).
         return unsafe { array_compare(a, b) };
     }
-    if std::ptr::eq(desc, &FAI_DATA_DESC) {
+    if kind == KIND_DATA {
         let ta = data_tag(a) >> 1;
         let tb = data_tag(b) >> 1;
         match ta.cmp(&tb) {
