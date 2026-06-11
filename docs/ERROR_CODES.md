@@ -330,6 +330,12 @@ An opaque type's representation (its record fields or alias body) is accessed fr
 
 An interface type parameter (`'a`) is used in type position in one method and as an effect row (after `/`) in another. A parameter is one kind or the other — give the type use and the effect use separate parameters.
 
+### FAI3020 — wrong kind of interface argument
+
+**Severity:** error
+
+An interface argument has the wrong kind: an effect row (`{ Console }`) was supplied for a type parameter, a type for an effect parameter, or an effect row was written somewhere other than an interface argument. Supply the kind the parameter expects.
+
 ## FAI4xxx — Exhaustiveness & patterns
 
 ### FAI4001 — non-exhaustive match

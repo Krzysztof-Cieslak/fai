@@ -1340,6 +1340,82 @@ fn parameter_used_as_both_type_and_effect_is_an_error() {
 }
 
 #[test]
+fn closed_effect_argument_lowers_and_renders() {
+    let src = indoc! {r#"
+        module M
+
+        public interface Console =
+          writeLine : String -> Unit / { Console }
+
+        public interface Logger 'e =
+          log : String -> Unit / 'e
+
+        public hold : Logger { Console } -> Logger { Console }
+        let hold l = l
+    "#};
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+    assert_eq!(type_of(&db, f[0], "hold"), "Logger { Console } -> Logger { Console }");
+}
+
+#[test]
+fn polymorphic_effect_argument_lowers_and_renders() {
+    let src = indoc! {r#"
+        module M
+
+        public interface Logger 'e =
+          log : String -> Unit / 'e
+
+        public hold : Logger 'e -> Logger 'e
+        let hold l = l
+    "#};
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+    assert_eq!(type_of(&db, f[0], "hold"), "Logger 'e -> Logger 'e");
+}
+
+#[test]
+fn type_for_an_effect_parameter_is_a_kind_error() {
+    let src = indoc! {r#"
+        module M
+
+        public interface Logger 'e =
+          log : String -> Unit / 'e
+
+        public bad : Logger Int -> Unit
+        let bad l = ()
+    "#};
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert!(
+        check_codes(&db, f[0]).contains(&"FAI3020".to_owned()),
+        "got {:?}",
+        check_codes(&db, f[0])
+    );
+}
+
+#[test]
+fn effect_row_for_a_type_parameter_is_a_kind_error() {
+    let src = indoc! {r#"
+        module M
+
+        public interface Console =
+          writeLine : String -> Unit / { Console }
+
+        public interface Box 'a =
+          get : Unit -> 'a
+
+        public bad : Box { Console } -> Unit
+        let bad b = ()
+    "#};
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert!(
+        check_codes(&db, f[0]).contains(&"FAI3020".to_owned()),
+        "got {:?}",
+        check_codes(&db, f[0])
+    );
+}
+
+#[test]
 fn instance_missing_a_method_is_an_error() {
     let src = indoc! {r#"
         module M

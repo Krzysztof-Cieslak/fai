@@ -84,6 +84,10 @@ pub const OPAQUE_ACCESS: DiagnosticCode = DiagnosticCode::new("FAI3018");
 /// An interface type parameter is used as both a type and an effect row across
 /// its methods (an ill-kinded parameter).
 pub const INTERFACE_PARAM_KIND: DiagnosticCode = DiagnosticCode::new("FAI3019");
+/// An interface argument has the wrong kind — an effect row where a type is
+/// expected (or vice versa), or an effect row written outside an interface
+/// argument.
+pub const EFFECT_ARG_KIND: DiagnosticCode = DiagnosticCode::new("FAI3020");
 /// A `match` does not cover every possible value.
 pub const NON_EXHAUSTIVE_MATCH: DiagnosticCode = DiagnosticCode::new("FAI4001");
 /// A `match` arm can never be reached (an earlier arm already covers it).
@@ -235,6 +239,15 @@ pub const CODES: &[CodeInfo] = &[
         explanation: "An interface type parameter (`'a`) is used in type position in one method \
                       and as an effect row (after `/`) in another. A parameter is one kind or the \
                       other — give the type use and the effect use separate parameters.",
+    },
+    CodeInfo {
+        code: EFFECT_ARG_KIND,
+        title: "wrong kind of interface argument",
+        default_severity: Severity::Error,
+        explanation: "An interface argument has the wrong kind: an effect row (`{ Console }`) was \
+                      supplied for a type parameter, a type for an effect parameter, or an effect \
+                      row was written somewhere other than an interface argument. Supply the kind \
+                      the parameter expects.",
     },
     CodeInfo {
         code: NON_EXHAUSTIVE_MATCH,
