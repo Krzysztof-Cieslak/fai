@@ -25,5 +25,5 @@ public run : Int -> Int
 let run n = sumFrom 0 n
 example: run 6 = 23
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console }
 let main runtime = runtime.console.writeLine (Int.toString (run 60000))
