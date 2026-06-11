@@ -110,7 +110,16 @@
 > incremental (range sync + `didSave`), with client position-encoding negotiation
 > (UTF-8/UTF-16), range and on-type formatting (a newline reformats the construct
 > just completed), and diagnostics re-published for every open file so a
-> cross-module edit refreshes its dependents. Later
+> cross-module edit refreshes its dependents. **Type-level effect rows** over the
+> capability model are built: every arrow carries an effect row of the
+> host-capability interfaces applying it *uses* (`a -> b / { Console | 'e }`; a
+> bare arrow is pure), inferred and **required on every public signature** (a
+> binding that performs an undeclared capability — or declares an unused one — is
+> **`FAI5001`**), so a function's reach is visible in its type. Effects close the
+> closure-laundering hole (a captured capability rides the closure's arrow),
+> propagate through the standard combinators (`List.map`, `>>`, …), unify strictly
+> (mixed effects are not laundered), and are erased at runtime; deep subsumption
+> and effect-parameterized interfaces remain future work. Later
 > milestones (performance tuning at scale, …) define the *intended* interface we
 > build toward. The design is locked (see the decision table below).
 
@@ -184,10 +193,10 @@ table **and** the decision log in `docs/MEMORY.md`).
 | Tuples | **Structural**; values `(a, b)`, type `'a * 'b` (`*` binds tighter than `->`) |
 | Records | **Structural with row polymorphism**; no duplicate labels (lacks constraints); `{ x = 1.0, y = 2.0 }`; dot access; `{ r with ... }` update; field punning in patterns; `type Point = { ... }` is a **transparent alias** (unless `opaque`); **closed by default** `{ x : T }`, anonymous-open `{ x : T \| _ }`, named-open `{ x : T \| 'r }` (named only to thread the tail to the result); **patterns mirror this** — `{ ... }` closed (names all fields), `{ ... \| _ }` open (ignore rest; required for row-poly scrutinees); extension/restriction (incl. binding a pattern tail) is future work (tracked as a proposal) |
 | Opacity | A **`public opaque type`** exports the type's name but **not** its definition — a union's constructors / an alias's underlying type. **File-scoped**: transparent within its declaring file (build, match, project freely), abstract everywhere else (named, held, passed, compared structurally, but not constructed, deconstructed, or seen through). `opaque` requires `public`. Cross-file use of a hidden constructor is **`FAI2018`**; of a hidden representation (field access, record construction, `{ r with … }`) is **`FAI3018`**. `Dict`/`Set` use this to hide their node constructors |
-| Inference | Hindley–Milner + let-generalization + **rows / row unification / lacks constraints**; exhaustiveness checking for `match` |
+| Inference | Hindley–Milner + let-generalization + **rows / row unification / lacks constraints** + **effect rows** (a parallel effect-row union-find over arrows, strict by default with the signature-vs-body check lenient); exhaustiveness checking for `match` |
 | Generics | **Uniform boxed representation + dictionary passing** (no monomorphization by default) |
 | Interfaces | Compiled to **dictionaries**; instances (`{ Name with ... }`) are existential values |
-| Effects | **Capabilities as explicit values** (interface instances flowing from `main`); **row-polymorphic capability records give least authority**; type-level effect rows are future work (tracked as a proposal) |
+| Effects | **Capabilities as explicit values** (interface instances flowing from `main`); **row-polymorphic capability records give least authority**. **Type-level effect rows** layer over this: every arrow carries an effect row of the host-capability **interfaces it uses** (`a -> b / { Console, FileSystem \| 'e }`; a bare arrow is pure), inferred and **required on every public signature** — a binding that performs a capability it does not declare (or declares one it never uses) is **`FAI5001`**, so a function's reach is visible in its type. Effects are **used, not held** (calling a method incurs its interface's effect; holding/forwarding a capability is pure), close the closure-laundering hole (a captured capability rides the closure's arrow), propagate through the standard combinators (`List.map : ('a -> 'b / 'e) -> List 'a -> List 'b / 'e`, …), and are **erased at runtime**. Unification is strict (mixed effects are not laundered); deep subsumption (unioning different effects point-free) and **effect-parameterized interfaces** (`Logger 'e`) are future work |
 | Contracts | **First-class `example` / `forall` declarations** (`example: e` / `forall xs: e`; peers of `let`/`type`), resolved in module scope, type-checked to `Bool`, run by `fai test` (closed `example`s are also evaluated eagerly by `fai check`, reported as `FAI6001`); `///` is human prose only |
 | Backend | **Cranelift** native code generation |
 | Memory | **Perceus-style reference counting** (pure + strict ⇒ acyclic heaps ⇒ no cycle collector); reuse analysis enables in-place updates incl. `{ r with ... }` |
@@ -203,7 +212,8 @@ table **and** the decision log in `docs/MEMORY.md`).
 ```fai
 module Hello
 
-public main : Runtime -> Unit
+// `main` declares the capability it uses; a bare arrow would be pure.
+public main : Runtime -> Unit / { Console }
 let main runtime =
   runtime.console.writeLine "Hello, Fai!"
 ```
@@ -211,8 +221,10 @@ let main runtime =
 ```fai
 module Collections
 
-/// Apply f to every element.
-public map : ('a -> 'b) -> List 'a -> List 'b
+/// Apply f to every element. The effect variable `'e` forwards whatever effect
+/// `f` performs, so `map` is pure on a pure function and effectful on an
+/// effectful one.
+public map : ('a -> 'b / 'e) -> List 'a -> List 'b / 'e
 let map f xs =
   match xs with
   | [] -> []
