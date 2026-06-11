@@ -6,3 +6,13 @@
 # everyone who runs the test benefits from these saved cases.
 cc 1a47fdf435dac6c748fe979dc17b09ff9b8df3a4d740ad4e4d10858b049cda14 # shrinks to a = ([("b", 0)], 0), b = ([("b", 0), ("d", 0)], 1)
 cc 775fdbe2d2280084e2405199b835112eaceaac7669e6a3107a67b5b8165ab5f1 # shrinks to e = X, x = 0
+cc 714b945c94b94b040de6c128cae7b19b8fec403213bd975e81fed2ba866d025a # shrinks to spec = ([1, 1], ['+'])
+cc f65d4fa3a266af685b37895ae458a31e8039dbf0de144ffea1c4f3d9064982c5 # shrinks to x = 0, d = 1
+cc 90a672381a6a96f1371758444060b666c3b3b93c54939f13de13b75f0cf7dde6 # shrinks to a = 0, b = 1
+cc da8f821230e9c7bcdf703424da32671586ae2be66c9ff10127419e58276d2e97 # shrinks to spec = ([("g", 0)], 0)
+cc 106914eb508ba6f6df2d44db26885af3a662ab78cd1104e05221e2473238056f # shrinks to e = Bin('+', Comp(Lit(3)), Bin('+', Lit(792), Lit(455))), x = 6504279590443731508
+cc 1c55bc146fd686de5a2ef6dc28fd4a47435e8a55788b45323a4905dc709ef258 # shrinks to b = Not(Cmp("<", Bit("and", Bin('+', X, Lit(167)), If("<=", Lit(416), Lit(79), If(">=", X, X, X, Lit(718)), X)), Comp(Bin('*', X, Lit(127))))), x = 5482211605602825042
+cc 443a19c7732c0df76d8e80c2536082014a93c1ed2de01112a48909a8b6681fbd # shrinks to e = If("<", X, X, X, Bit("xor", Lit(854), X)), x = 5341448513236384829
+cc 478f1140dd1a2f50cd4acf7cf67fa71d078121a5c939f12ac6d468755ee4a5cf # shrinks to spec = ([("h", 30)], 0)
+cc 40a5901c9affd92f0f8b068821980aca6fac1d8a4da09afe38f3b1e7d9000ae2 # shrinks to e = Bin('+', Bin('+', Comp(Lit(21)), If(">", Lit(476), X, Lit(778), Lit(969))), If("<>", X, X, Lit(405), Lit(83))), x = -458803404994023826, y = -760
+cc dc2e6f0976d8441bc3b7573b7d5f14610f3afa158037cd36241769ca4d02e70a # shrinks to a = ([("c", 0), ("d", 0), ("e", 0), ("f", 0), ("g", 0), ("h", 10)], 1), b = ([("a", 868), ("c", 220), ("f", 971)], 2)

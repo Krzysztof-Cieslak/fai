@@ -41,7 +41,7 @@ use fai_diagnostics::{Diagnostic, DiagnosticCode, SCHEMA_VERSION, Severity, rend
 use fai_rc::{BorrowSig, rc, rc_lowered};
 use fai_resolve::{DefId, ModuleName, module_name};
 use fai_span::{Span, SpanResolver};
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 use wait_timeout::ChildExt;
 
@@ -763,7 +763,10 @@ fn run_contracts(rebuilt: &RebuiltTest, start_index: usize, sink: &mut dyn FnMut
     let namer = |d: DefId| mangle(labels.get(&d.file).map_or("M", String::as_str), d.name.as_str());
     let arity = |d: DefId| arities.get(&d).copied().unwrap_or(0);
     let abi = |d: DefId| abis.get(&d).cloned().unwrap_or_default();
-    let mut program = JitProgram::compile(&rebuilt.defs, &namer, &arity, &abi);
+    let borrows: FxHashMap<DefId, Vec<bool>> =
+        rebuilt.defs.iter().map(|d| (d.def, d.entry_borrowed.clone())).collect();
+    let borrow = |d: DefId| borrows.get(&d).cloned().unwrap_or_default();
+    let mut program = JitProgram::compile(&rebuilt.defs, &namer, &arity, &abi, &borrow);
     for position in start_index..rebuilt.contracts.len() {
         let c = &rebuilt.contracts[position];
         // The live-object counter is compiled in only under `debug_assertions`, so

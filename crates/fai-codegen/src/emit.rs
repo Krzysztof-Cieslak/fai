@@ -60,9 +60,10 @@ pub fn compile_def<M: Module>(
     namer: &dyn Fn(DefId) -> String,
     arity_of: &dyn Fn(DefId) -> usize,
     signature_of: &dyn Fn(DefId) -> FnAbi,
+    borrows_of: &dyn Fn(DefId) -> Vec<bool>,
 ) {
     let mut jobs = Vec::new();
-    build_def(module, lowered, namer, arity_of, signature_of, &mut jobs);
+    build_def(module, lowered, namer, arity_of, signature_of, borrows_of, &mut jobs);
     for (id, mut ctx) in jobs {
         module.define_function(id, &mut ctx).expect("define function");
     }
@@ -80,6 +81,7 @@ pub(crate) fn build_def<M: Module>(
     namer: &dyn Fn(DefId) -> String,
     arity_of: &dyn Fn(DefId) -> usize,
     signature_of: &dyn Fn(DefId) -> FnAbi,
+    borrows_of: &dyn Fn(DefId) -> Vec<bool>,
     jobs: &mut Vec<(FuncId, Context)>,
 ) {
     let base = namer(lowered.def);
@@ -106,8 +108,19 @@ pub(crate) fn build_def<M: Module>(
 
     // Build each function body into its own (uncompiled) context.
     for (i, f) in lowered.fns.iter().enumerate() {
-        let ctx =
-            build_fn(module, f, lowered, namer, arity_of, signature_of, &abi, &fn_ids, &base, i);
+        let ctx = build_fn(
+            module,
+            f,
+            lowered,
+            namer,
+            arity_of,
+            signature_of,
+            borrows_of,
+            &abi,
+            &fn_ids,
+            &base,
+            i,
+        );
         jobs.push((fn_ids[i], ctx));
     }
 
@@ -131,18 +144,73 @@ pub(crate) fn build_def<M: Module>(
     define_static_closure(module, closure_data, closure_code, arity as u64);
 }
 
+/// Block-based unbox of an owned `Int` value to a raw `i64`, releasing a box (the
+/// bridging wrapper has no `Translator`, so this mirrors
+/// [`Translator::unbox_int_to_raw`] on a bare builder).
+fn wrapper_unbox_int_to_raw(builder: &mut FunctionBuilder, drop_ref: FuncRef, v: Value) -> Value {
+    let imm_b = builder.create_block();
+    let box_b = builder.create_block();
+    let merge_b = builder.create_block();
+    builder.append_block_param(merge_b, types::I64);
+    let bit = builder.ins().band_imm(v, 1);
+    builder.ins().brif(bit, imm_b, &[], box_b, &[]);
+
+    builder.switch_to_block(imm_b);
+    builder.seal_block(imm_b);
+    let imm = builder.ins().sshr_imm(v, 1);
+    builder.ins().jump(merge_b, &[imm.into()]);
+
+    builder.switch_to_block(box_b);
+    builder.seal_block(box_b);
+    let off = i32::try_from(rt::INT_VALUE_OFFSET).expect("int value offset");
+    let val = builder.ins().load(types::I64, MemFlags::trusted(), v, off);
+    builder.ins().call(drop_ref, &[v]);
+    builder.ins().jump(merge_b, &[val.into()]);
+
+    builder.switch_to_block(merge_b);
+    builder.seal_block(merge_b);
+    builder.block_params(merge_b)[0]
+}
+
+/// Block-based tag/box of a raw `i64` to the uniform `Int` representation (mirrors
+/// [`Translator::box_or_tag_int`] on a bare builder).
+fn wrapper_box_or_tag_int(
+    builder: &mut FunctionBuilder,
+    box_int_ref: FuncRef,
+    raw: Value,
+) -> Value {
+    let box_b = builder.create_block();
+    let merge_b = builder.create_block();
+    builder.append_block_param(merge_b, types::I64);
+    let (shifted, overflow) = builder.ins().sadd_overflow(raw, raw);
+    let tagged = builder.ins().bor_imm(shifted, 1);
+    builder.ins().brif(overflow, box_b, &[], merge_b, &[tagged.into()]);
+
+    builder.switch_to_block(box_b);
+    builder.seal_block(box_b);
+    let call = builder.ins().call(box_int_ref, &[raw]);
+    let boxed = builder.inst_results(call)[0];
+    builder.ins().jump(merge_b, &[boxed.into()]);
+
+    builder.switch_to_block(merge_b);
+    builder.seal_block(merge_b);
+    builder.block_params(merge_b)[0]
+}
+
 /// Builds the uniform-ABI wrapper bridging the static-closure / `apply_n` path
 /// (all arguments boxed and owned, in the `args` array) to a specialized entry,
-/// then drops the borrowed (non-float) arguments the entry left untouched and
-/// boxes a float result.
+/// then drops the borrowed (non-unboxed) arguments the entry left untouched and
+/// re-boxes/tags an unboxed result.
 ///
-/// For a **register** entry it loads each boxed argument and passes it in a
-/// register — a scalar float unboxed to an `f64` (releasing the box), every other
-/// argument the word itself — and calls `entry(env, a0, …)`. For a **uniform**
-/// entry (a row-polymorphic or nullary definition that still has an unboxed-float
-/// slot) it passes the argument array, replacing each unboxed-float slot with the
-/// box's raw bits in a fresh array (releasing the box). Returns the uncompiled
-/// context (the caller compiles and defines it).
+/// For a **register** entry it loads each boxed/tagged argument and passes it in a
+/// register — a scalar float unboxed to an `f64` and a monomorphic int untagged to
+/// a raw `i64` (both releasing any box), every other argument the word itself — and
+/// calls `entry(env, a0, …)`, boxing/tagging an unboxed-float/int result back to
+/// the uniform word. For a **uniform** entry (a row-polymorphic or nullary
+/// definition that still has an unboxed-float slot — ints stay tagged on the
+/// uniform ABI) it passes the argument array, replacing each unboxed-float slot
+/// with the box's raw bits in a fresh array (releasing the box). Returns the
+/// uncompiled context (the caller compiles and defines it).
 fn build_owned_wrapper<M: Module>(
     module: &mut M,
     entry: FuncId,
@@ -171,8 +239,9 @@ fn build_owned_wrapper<M: Module>(
         let entry_ref = module.declare_func_in_func(entry, builder.func);
 
         let mut result = if abi.register_abi {
-            // Register entry: load each boxed argument and pass it in a register —
-            // a scalar float unboxed to `f64` (releasing the box), else the word.
+            // Register entry: load each boxed/tagged argument and pass it in a
+            // register — a scalar float unboxed to `f64`, a monomorphic int untagged
+            // to a raw `i64` (both releasing any box), else the word.
             let mut call_args = Vec::with_capacity(arity + 1);
             call_args.push(env);
             for i in 0..arity {
@@ -182,6 +251,8 @@ fn build_owned_wrapper<M: Module>(
                     let bits = builder.ins().load(types::I64, MemFlags::trusted(), orig, float_off);
                     builder.ins().call(drop_ref, &[orig]);
                     builder.ins().bitcast(types::F64, MemFlags::new(), bits)
+                } else if abi.int_param(i) {
+                    wrapper_unbox_int_to_raw(&mut builder, drop_ref, orig)
                 } else {
                     orig
                 };
@@ -221,10 +292,10 @@ fn build_owned_wrapper<M: Module>(
             builder.inst_results(call)[0]
         };
 
-        // Drop the borrowed arguments the entry left untouched; an unboxed-float
-        // argument's box was already released above.
+        // Drop the borrowed arguments the entry left untouched; an unboxed-float or
+        // untagged-int argument's box was already released above.
         for (i, &borrowed) in borrowed.iter().enumerate() {
-            if borrowed && !abi.float_param(i) {
+            if borrowed && !abi.float_param(i) && !abi.int_param(i) {
                 let offset = i32::try_from(i * 8).expect("arg offset");
                 let v = builder.ins().load(types::I64, MemFlags::trusted(), args, offset);
                 builder.ins().call(drop_ref, &[v]);
@@ -248,6 +319,19 @@ fn build_owned_wrapper<M: Module>(
             let box_ref = module.declare_func_in_func(box_id, builder.func);
             let boxed = builder.ins().call(box_ref, &[bits]);
             result = builder.inst_results(boxed)[0];
+        }
+
+        // Tag/box a raw int result (a register int entry returns it untagged) back
+        // into the uniform representation. Only the register ABI carries raw ints.
+        if abi.int_return {
+            let mut box_sig = module.make_signature();
+            box_sig.params.push(AbiParam::new(types::I64));
+            box_sig.returns.push(AbiParam::new(types::I64));
+            let box_id = module
+                .declare_function("fai_box_int", Linkage::Import, &box_sig)
+                .expect("declare box int");
+            let box_int_ref = module.declare_func_in_func(box_id, builder.func);
+            result = wrapper_box_or_tag_int(&mut builder, box_int_ref, result);
         }
 
         builder.ins().return_(&[result]);
@@ -302,6 +386,7 @@ fn build_fn<M: Module>(
     namer: &dyn Fn(DefId) -> String,
     arity_of: &dyn Fn(DefId) -> usize,
     signature_of: &dyn Fn(DefId) -> FnAbi,
+    borrows_of: &dyn Fn(DefId) -> Vec<bool>,
     abi: &FnAbi,
     fn_ids: &[FuncId],
     base: &str,
@@ -341,6 +426,7 @@ fn build_fn<M: Module>(
             namer,
             arity_of,
             signature_of,
+            borrows_of,
             fn_ids,
             lowered,
             base,
@@ -348,6 +434,8 @@ fn build_fn<M: Module>(
             vars: FxHashMap::default(),
             var_tys: FxHashMap::default(),
             f64_locals: FxHashSet::default(),
+            int_locals: FxHashSet::default(),
+            raw_int_values: FxHashSet::default(),
             runtime: FxHashMap::default(),
             string_counter: 0,
             loop_ctx: None,
@@ -362,20 +450,39 @@ fn build_fn<M: Module>(
         // raw-bits float parameters are unboxed by the ABI, so they are included
         // even when otherwise unobserved (e.g. an unused parameter).
         tr.collect_f64_locals(&core_fn.body);
+        // Decide which locals are untagged raw `Int`s (see `int_locals`).
+        tr.collect_int_locals(&core_fn.body);
         if is_entry {
+            // Reconcile the entry's parameters to its ABI. A scalar-`Float`
+            // parameter is forced unboxed (its `F64` variable). An `Int` parameter
+            // the register ABI passes untagged is forced raw; an int-typed parameter
+            // the ABI passes tagged — offset evidence, or any int parameter of a
+            // uniform entry (which keeps ints tagged) — is forced out, so its in-body
+            // uses read the tagged word.
             for (i, &p) in core_fn.params.iter().enumerate() {
                 if abi.float_param(i) {
                     tr.f64_locals.insert(p.index());
+                }
+                if abi.int_param(i) {
+                    tr.int_locals.insert(p.index());
+                } else if matches!(tr.var_ty(p), Some(Ty::Con(Con::Int))) {
+                    tr.int_locals.remove(&p.index());
                 }
             }
         }
 
         if register_entry {
-            // Register entry: parameters arrive in registers, already in their
-            // final representation (an `f64` for a scalar float, else the word). A
-            // direct-callable (top-level) entry captures nothing.
+            // Register entry: parameters arrive in registers, already in their final
+            // representation (an `f64` for a scalar float, a raw untagged word for an
+            // `int_param`, else the boxed/tagged word). A direct-callable (top-level)
+            // entry captures nothing.
             for (i, &p) in core_fn.params.iter().enumerate() {
-                tr.define_var(p, reg_params[i]);
+                let v = reg_params[i];
+                if abi.int_param(i) {
+                    // The register value is already untagged; record it raw.
+                    tr.mark_raw(v);
+                }
+                tr.define_var(p, v);
             }
             debug_assert!(core_fn.captures.is_empty(), "a register entry captures nothing");
         } else {
@@ -383,13 +490,18 @@ fn build_fn<M: Module>(
             //  - a uniform entry's raw-bits float parameter is reinterpreted to `f64`;
             //  - any other boxed-`Float` parameter arrives boxed and owned, so its
             //    box is released after its bits are read;
-            //  - a captured float is borrowed (the closure still owns the environment).
+            //  - a raw-`Int` parameter (a lifted lambda whose body uses it as `Int`)
+            //    arrives as an owned tagged/boxed word, unboxed to raw (box released);
+            //  - a captured float/int is borrowed (the closure still owns the env).
             for (i, &p) in core_fn.params.iter().enumerate() {
                 let raw = tr.load_slot(args, i);
                 let v = if is_entry && abi.float_param(i) {
                     tr.i64_to_f64(raw)
                 } else if tr.is_f64_local(p) {
                     tr.owning_unbox(raw)
+                } else if tr.is_int_local(p) {
+                    let r = tr.unbox_int_to_raw(raw);
+                    tr.mark_raw(r)
                 } else {
                     raw
                 };
@@ -397,16 +509,26 @@ fn build_fn<M: Module>(
             }
             for (i, &c) in core_fn.captures.iter().enumerate() {
                 let raw = tr.load_slot(env, i);
-                let v = if tr.is_f64_local(c) { tr.borrowing_unbox(raw) } else { raw };
+                let v = if tr.is_f64_local(c) {
+                    tr.borrowing_unbox(raw)
+                } else if tr.is_int_local(c) {
+                    let r = tr.borrow_unbox_int_to_raw(raw);
+                    tr.mark_raw(r)
+                } else {
+                    raw
+                };
                 tr.define_var(c, v);
             }
         }
 
         let result = tr.expr(&core_fn.body);
-        // The entry returns: an `f64` register for a register float entry; raw float
-        // bits for a uniform float entry; otherwise the uniform (boxed) word.
+        // The entry returns: an `f64` register for a register float entry; a raw
+        // untagged `i64` for a register int entry; raw float bits for a uniform float
+        // entry; otherwise the uniform (boxed/tagged) word (which tags a raw int).
         let ret = if register_entry && abi.float_return {
             tr.f64_return(result)
+        } else if register_entry && abi.int_return {
+            tr.as_raw_int(result)
         } else if is_entry && abi.float_return {
             tr.raw_float_return(result)
         } else {
@@ -461,6 +583,10 @@ struct Translator<'a, M: Module> {
     namer: &'a dyn Fn(DefId) -> String,
     arity_of: &'a dyn Fn(DefId) -> usize,
     signature_of: &'a dyn Fn(DefId) -> FnAbi,
+    /// A callee's per-parameter borrow flags (its `entry_borrowed`). A borrowed
+    /// parameter is lent by a direct caller and not dropped by the callee, so the
+    /// caller drops a box it freshly created for a scalar argument after the call.
+    borrows_of: &'a dyn Fn(DefId) -> Vec<bool>,
     fn_ids: &'a [FuncId],
     lowered: &'a LoweredDef,
     base: &'a str,
@@ -479,6 +605,22 @@ struct Translator<'a, M: Module> {
     /// Built from the recorded local types (and, for the entry, its unboxed-float
     /// parameters); see [`Translator::collect_f64_locals`].
     f64_locals: FxHashSet<usize>,
+    /// Locals represented as an **untagged** `i64` (a raw machine integer, not a
+    /// low-bit-tagged immediate or heap box): a monomorphic `Int` local whose
+    /// *every* observation is `Int`. A raw int flows in registers/locals and
+    /// carries no reference count (its `Dup`/`Drop` are no-ops); it is tagged (or
+    /// boxed on >63-bit overflow) only where it crosses a uniform slot. The
+    /// Cranelift variable is still `I64` — indistinguishable from a tagged word by
+    /// type — so raw-ness of individual values is tracked separately in
+    /// [`Self::raw_int_values`]. Built from the recorded local types (and, for the
+    /// entry, reconciled to the parameter ABI); see [`Translator::collect_int_locals`].
+    int_locals: FxHashSet<usize>,
+    /// The Cranelift values currently known to hold a **raw, untagged `Int`** (the
+    /// explicit analogue of the free [`Self::is_f64`] type test, which cannot
+    /// distinguish a raw `i64` from a tagged one). Every site that produces a raw
+    /// int records it here (see [`Self::mark_raw`]); boundary, merge, and inline
+    /// arithmetic sites query [`Self::is_raw_int`].
+    raw_int_values: FxHashSet<Value>,
     runtime: FxHashMap<&'static str, FuncRef>,
     string_counter: usize,
     /// The enclosing tail-call loop, while translating a `Join` body: where
@@ -497,6 +639,10 @@ struct LoopCtx {
     exit: Block,
     /// The loop-carried locals, reassigned (in order) by each `Recur`.
     params: Vec<LocalId>,
+    /// Whether the loop result is a raw untagged `Int`, fixed by the first tail
+    /// value that reaches the exit (see [`Translator::jump_to_exit`]); the exit
+    /// block parameter is recorded raw accordingly.
+    exit_raw: bool,
 }
 
 impl<M: Module> Translator<'_, M> {
@@ -536,9 +682,85 @@ impl<M: Module> Translator<'_, M> {
         self.f64_locals = float_seen.difference(&other_seen).copied().collect();
     }
 
+    /// Whether `local` is represented as an untagged raw `i64` (see
+    /// [`Self::int_locals`]).
+    fn is_int_local(&self, local: LocalId) -> bool {
+        self.int_locals.contains(&local.index())
+    }
+
+    /// Records which locals are untagged raw `i64`s: a local is raw only when
+    /// **every** observation of its type is `Int` (the same conservative rule as
+    /// [`Self::collect_f64_locals`]). A local seen with both `Int` and another (or
+    /// unknown) type stays tagged, so its variable and the values bound into it
+    /// agree. Parameters are reconciled afterwards to the entry's `Int` ABI (see
+    /// where the parameter ABI is consulted): an `int_param` is forced raw, and a
+    /// tagged-`Int` parameter — i.e. offset evidence — is forced out.
+    fn collect_int_locals(&mut self, body: &CExpr) {
+        let mut int_seen = FxHashSet::default();
+        let mut other_seen = FxHashSet::default();
+        collect_int_observations(body, &mut int_seen, &mut other_seen);
+        self.int_locals = int_seen.difference(&other_seen).copied().collect();
+    }
+
     /// Whether the Cranelift value `v` is an unboxed `f64`.
     fn is_f64(&self, v: Value) -> bool {
         self.builder.func.dfg.value_type(v) == types::F64
+    }
+
+    /// Whether the Cranelift value `v` holds a raw, untagged `Int` (recorded in
+    /// [`Self::raw_int_values`]). The explicit analogue of [`Self::is_f64`], needed
+    /// because a raw `i64` and a tagged immediate share the Cranelift `I64` type.
+    fn is_raw_int(&self, v: Value) -> bool {
+        self.raw_int_values.contains(&v)
+    }
+
+    /// Records `v` as a raw, untagged `Int` and returns it (for chaining at a
+    /// raw-producing site).
+    fn mark_raw(&mut self, v: Value) -> Value {
+        self.raw_int_values.insert(v);
+        v
+    }
+
+    /// Coerces an owned value to a raw, untagged `Int`: a value already known raw
+    /// passes through; any other (a tagged immediate or a boxed `Int`) is untagged
+    /// or unboxed-and-released ([`Self::unbox_int_to_raw`]) and recorded raw. For an
+    /// **owned** int value (a `let`/argument/return result, or a consumed
+    /// `apply_n`/forced-global result).
+    fn as_raw_int(&mut self, v: Value) -> Value {
+        if self.is_raw_int(v) {
+            v
+        } else {
+            let raw = self.unbox_int_to_raw(v);
+            self.mark_raw(raw)
+        }
+    }
+
+    /// Reads an `Int` field/slot word as a raw `i64` **without** releasing it (a
+    /// borrow — the owning cell is dropped later): an immediate (low bit set) is
+    /// untagged; a boxed (large) `Int` is read from its value field. Mirrors
+    /// [`Self::borrowing_unbox`] for floats.
+    fn borrow_unbox_int_to_raw(&mut self, v: Value) -> Value {
+        let imm_b = self.builder.create_block();
+        let box_b = self.builder.create_block();
+        let merge_b = self.builder.create_block();
+        self.builder.append_block_param(merge_b, types::I64);
+        let bit = self.builder.ins().band_imm(v, 1);
+        self.builder.ins().brif(bit, imm_b, &[], box_b, &[]);
+
+        self.builder.switch_to_block(imm_b);
+        self.builder.seal_block(imm_b);
+        let imm = self.builder.ins().sshr_imm(v, 1);
+        self.builder.ins().jump(merge_b, &[imm.into()]);
+
+        self.builder.switch_to_block(box_b);
+        self.builder.seal_block(box_b);
+        let off = i32::try_from(rt::INT_VALUE_OFFSET).expect("int value offset");
+        let val = self.builder.ins().load(types::I64, MemFlags::trusted(), v, off);
+        self.builder.ins().jump(merge_b, &[val.into()]);
+
+        self.builder.switch_to_block(merge_b);
+        self.builder.seal_block(merge_b);
+        self.builder.block_params(merge_b)[0]
     }
 
     /// Reinterprets an `f64`'s bits as an `i64` (no conversion).
@@ -575,9 +797,16 @@ impl<M: Module> Translator<'_, M> {
     }
 
     /// Coerces a value into the uniform boxed/immediate representation: an unboxed
-    /// `f64` is boxed; anything else is already a tagged word.
+    /// `f64` is boxed; a raw untagged `Int` is tagged (or boxed on >63-bit
+    /// overflow); anything else is already a tagged word.
     fn ensure_boxed(&mut self, v: Value) -> Value {
-        if self.is_f64(v) { self.box_float(v) } else { v }
+        if self.is_f64(v) {
+            self.box_float(v)
+        } else if self.is_raw_int(v) {
+            self.box_or_tag_int(v)
+        } else {
+            v
+        }
     }
 
     /// Evaluates `e` and coerces the result into the uniform representation, for a
@@ -610,14 +839,34 @@ impl<M: Module> Translator<'_, M> {
         self.f64_to_i64(f)
     }
 
+    /// Binds `local` to `value`, the single coercion point reconciling an owned
+    /// value's representation with the local's classification. A raw-`Int` local
+    /// takes the value untagged ([`Self::as_raw_int`]); a uniform local takes a raw
+    /// int tagged/boxed; an `f64` local relies on Cranelift's `F64` type match (a
+    /// mismatch panics, surfacing a bug). A no-op in the common cases (raw→raw in a
+    /// normal function, tagged→tagged in a combined function); only a
+    /// conflicting-observation local actually converts.
     fn define_var(&mut self, local: LocalId, value: Value) {
         let var = self.var(local);
+        let value = if self.is_int_local(local) {
+            self.as_raw_int(value)
+        } else if !self.is_f64_local(local) && self.is_raw_int(value) {
+            self.box_or_tag_int(value)
+        } else {
+            value
+        };
         self.builder.def_var(var, value);
     }
 
     fn use_var(&mut self, local: LocalId) -> Value {
         let var = self.var(local);
-        self.builder.use_var(var)
+        let v = self.builder.use_var(var);
+        // A raw-`Int` local's value is untagged; record it so consumers treat it
+        // raw (the variable's `I64` type cannot convey this).
+        if self.is_int_local(local) {
+            self.mark_raw(v);
+        }
+        v
     }
 
     /// `local`'s known static type, if recorded (see the `var_tys` pre-pass).
@@ -625,18 +874,28 @@ impl<M: Module> Translator<'_, M> {
         self.var_tys.get(&local.index())
     }
 
-    /// How to inline a `Dup` of `local`: from its static type ([`dup_class`]), or
-    /// a tag-checked increment when the type is unknown (the safe default).
+    /// How to inline a `Dup` of `local`: a no-op for a raw untagged `Int` local (it
+    /// carries no reference count, and its bit pattern is not a tag — a tag-check
+    /// could misfire and dereference the integer as a pointer); otherwise from its
+    /// static type ([`dup_class`]), or a tag-checked increment when the type is
+    /// unknown (the safe default).
     fn dup_plan(&self, local: LocalId) -> DupPlan {
+        if self.is_int_local(local) {
+            return DupPlan::NoOp;
+        }
         match self.var_ty(local) {
             Some(ty) => dup_class(ty),
             None => DupPlan::Incr { tag_check: true },
         }
     }
 
-    /// How to inline a `Drop` of `local`: from its static type ([`drop_class`]),
-    /// or the runtime drop when the type is unknown (the polymorphic fallback).
+    /// How to inline a `Drop` of `local`: a no-op for a raw untagged `Int` local
+    /// (see [`Self::dup_plan`]); otherwise from its static type ([`drop_class`]), or
+    /// the runtime drop when the type is unknown (the polymorphic fallback).
     fn drop_plan(&self, local: LocalId) -> DropPlan {
+        if self.is_int_local(local) {
+            return DropPlan::NoOp;
+        }
         match self.var_ty(local) {
             Some(ty) => drop_class(ty),
             None => DropPlan::Runtime,
@@ -816,7 +1075,7 @@ impl<M: Module> Translator<'_, M> {
 
     fn expr(&mut self, e: &CExpr) -> Value {
         match &e.kind {
-            ExprKind::Lit(lit) => self.literal(lit),
+            ExprKind::Lit(lit) => self.literal(lit, &e.ty),
             ExprKind::Local(local) => self.use_var(*local),
             ExprKind::Global(def) => self.global_value(*def, &e.ty),
             ExprKind::Prim { op, args } => self.prim(*op, args, &e.ty),
@@ -831,7 +1090,17 @@ impl<M: Module> Translator<'_, M> {
             ExprKind::MakeData { tag, args, reuse } => self.make_data(*tag, args, *reuse),
             ExprKind::DataTag(base) => {
                 let v = self.expr(base);
-                self.call1("fai_data_tag", v)
+                let tagged = self.call1("fai_data_tag", v);
+                // The tag is a small immediate `Int`. Where the node is monomorphic
+                // `Int` (the normal match desugaring), deliver it raw so the tag test
+                // is a bare comparison against the raw constructor-tag literal; in an
+                // erased/uniform context (a combined function) keep it tagged.
+                if matches!(e.ty, Ty::Con(Con::Int)) {
+                    let raw = self.untag(tagged);
+                    self.mark_raw(raw)
+                } else {
+                    tagged
+                }
             }
             ExprKind::DataField { base, index } => self.data_field(base, *index, &e.ty),
             ExprKind::Reset { value, token, body } => {
@@ -879,10 +1148,18 @@ impl<M: Module> Translator<'_, M> {
         }
     }
 
-    fn literal(&mut self, lit: &Lit) -> Value {
+    fn literal(&mut self, lit: &Lit, ty: &Ty) -> Value {
         match lit {
             Lit::Int(n) => {
-                if fits_immediate(*n) {
+                if matches!(ty, Ty::Con(Con::Int)) {
+                    // A monomorphic `Int` literal is a raw untagged `i64` — no tag and
+                    // no boxing, even beyond the 63-bit immediate range (it is
+                    // tagged/boxed only where it crosses a uniform slot).
+                    let v = self.builder.ins().iconst(types::I64, *n);
+                    self.mark_raw(v)
+                } else if fits_immediate(*n) {
+                    // An erased/uniform context (e.g. a mutual-recursion combined
+                    // function): the tagged immediate, the uniform representation.
                     self.builder.ins().iconst(types::I64, (n << 1) | 1)
                 } else {
                     let raw = self.builder.ins().iconst(types::I64, *n);
@@ -940,30 +1217,57 @@ impl<M: Module> Translator<'_, M> {
         }
     }
 
+    /// The raw slot index of a row-polymorphic field: the statically known
+    /// preceding-field count plus the offset-evidence local's value. Evidence is
+    /// normally a tagged immediate (untagged here); a raw evidence local (a captured
+    /// evidence used as `Int` in a nested lambda) is read directly.
+    fn evidence_slot(&mut self, off: u32, evidence: LocalId) -> Value {
+        let ev = self.use_var(evidence);
+        let base =
+            if self.is_int_local(evidence) { ev } else { self.builder.ins().sshr_imm(ev, 1) };
+        self.builder.ins().iadd_imm(base, i64::from(off))
+    }
+
     /// Projects a field of a data value (consuming `base`). A constant slot is an
     /// immediate; a row-polymorphic slot is `base + evidence` computed at runtime
     /// from a leading offset-evidence parameter.
     fn data_field(&mut self, base: &CExpr, index: FieldIndex, result_ty: &Ty) -> Value {
-        // A scalar `Float` field is read **unboxed**: the field box's bits are read
-        // in place without duplicating it (a borrow — `base` outlives the read in
-        // A-normal form, and dropping `base` later releases the field box once).
+        // A scalar `Float` field is read **unboxed**, and a monomorphic `Int` field
+        // is read **untagged**: the field's bits are read in place without
+        // duplicating the box (a borrow — `base` outlives the read in A-normal form,
+        // and dropping `base` later releases the field once).
         if matches!(result_ty, Ty::Con(Con::Float)) {
             return self.float_data_field(base, index);
+        }
+        if matches!(result_ty, Ty::Con(Con::Int)) {
+            return self.int_data_field(base, index);
         }
         let v = self.expr(base);
         let idx = match index {
             FieldIndex::Const(n) => self.builder.ins().iconst(types::I64, i64::from(n)),
-            FieldIndex::Dyn { base: off, evidence } => {
-                // Evidence is an immediate `Int` local; read it (a borrow), strip
-                // the tag, and add the statically known preceding-field count.
-                let ev = self.use_var(evidence);
-                let unboxed = self.builder.ins().sshr_imm(ev, 1);
-                self.builder.ins().iadd_imm(unboxed, i64::from(off))
-            }
+            FieldIndex::Dyn { base: off, evidence } => self.evidence_slot(off, evidence),
         };
         let f = self.runtime("fai_data_field", 2, true);
         let call = self.builder.ins().call(f, &[v, idx]);
         self.builder.inst_results(call)[0]
+    }
+
+    /// The byte address of a field slot within a data cell at `base_v`.
+    fn field_slot_addr(&mut self, base_v: Value, index: FieldIndex) -> Value {
+        match index {
+            FieldIndex::Const(n) => {
+                let off =
+                    i64::try_from(rt::DATA_FIELDS_OFFSET + n as usize * 8).expect("field off");
+                self.builder.ins().iadd_imm(base_v, off)
+            }
+            FieldIndex::Dyn { base: off, evidence } => {
+                let fields_off = i64::try_from(rt::DATA_FIELDS_OFFSET).expect("fields offset");
+                let slot = self.evidence_slot(off, evidence);
+                let byte = self.builder.ins().imul_imm(slot, 8);
+                let byte = self.builder.ins().iadd_imm(byte, fields_off);
+                self.builder.ins().iadd(base_v, byte)
+            }
+        }
     }
 
     /// Reads a scalar `Float` field as an unboxed `f64`: load the field slot's box
@@ -971,24 +1275,20 @@ impl<M: Module> Translator<'_, M> {
     /// bits without touching its reference count (a borrow).
     fn float_data_field(&mut self, base: &CExpr, index: FieldIndex) -> Value {
         let base_v = self.expr(base);
-        let fields_off = i64::try_from(rt::DATA_FIELDS_OFFSET).expect("fields offset");
-        let boxed = match index {
-            FieldIndex::Const(n) => {
-                let off =
-                    i32::try_from(rt::DATA_FIELDS_OFFSET + n as usize * 8).expect("field off");
-                self.builder.ins().load(types::I64, MemFlags::trusted(), base_v, off)
-            }
-            FieldIndex::Dyn { base: off, evidence } => {
-                let ev = self.use_var(evidence);
-                let slot = self.builder.ins().sshr_imm(ev, 1);
-                let slot = self.builder.ins().iadd_imm(slot, i64::from(off));
-                let byte = self.builder.ins().imul_imm(slot, 8);
-                let byte = self.builder.ins().iadd_imm(byte, fields_off);
-                let addr = self.builder.ins().iadd(base_v, byte);
-                self.builder.ins().load(types::I64, MemFlags::trusted(), addr, 0)
-            }
-        };
+        let addr = self.field_slot_addr(base_v, index);
+        let boxed = self.builder.ins().load(types::I64, MemFlags::trusted(), addr, 0);
         self.borrowing_unbox(boxed)
+    }
+
+    /// Reads a monomorphic `Int` field as a raw untagged `i64`: load the field slot
+    /// word (a tagged immediate or a boxed-`Int` pointer) and untag/unbox it without
+    /// releasing it (a borrow — the cell is dropped later).
+    fn int_data_field(&mut self, base: &CExpr, index: FieldIndex) -> Value {
+        let base_v = self.expr(base);
+        let addr = self.field_slot_addr(base_v, index);
+        let word = self.builder.ins().load(types::I64, MemFlags::trusted(), addr, 0);
+        let raw = self.borrow_unbox_int_to_raw(word);
+        self.mark_raw(raw)
     }
 
     /// Emits an immortal static `String` object and yields its address.
@@ -1036,11 +1336,13 @@ impl<M: Module> Translator<'_, M> {
             let f = self.runtime("fai_apply_n", 3, true);
             let call = self.builder.ins().call(f, &[closure, argc, null]);
             let forced = self.builder.inst_results(call)[0];
-            // A forced `Float` value binding comes back boxed and owned; unbox it.
-            if matches!(result_ty, Ty::Con(Con::Float)) {
-                self.owning_unbox(forced)
-            } else {
-                forced
+            // A forced value binding comes back in the uniform representation and
+            // owned: a `Float` is unboxed to `f64`, a monomorphic `Int` is untagged
+            // to a raw `i64` (releasing any box), both consuming the owned result.
+            match result_ty {
+                Ty::Con(Con::Float) => self.owning_unbox(forced),
+                Ty::Con(Con::Int) => self.as_raw_int(forced),
+                _ => forced,
             }
         } else {
             closure
@@ -1154,7 +1456,7 @@ impl<M: Module> Translator<'_, M> {
     fn int_to_float(&mut self, op: Prim, args: &[CExpr], result_ty: &Ty) -> Value {
         if matches!(result_ty, Ty::Con(Con::Float)) {
             let n = self.expr(&args[0]);
-            let raw = self.unbox_int_to_raw(n);
+            let raw = self.as_raw_int(n);
             self.builder.ins().fcvt_from_sint(types::F64, raw)
         } else {
             let n = self.expr_boxed(&args[0]);
@@ -1168,7 +1470,8 @@ impl<M: Module> Translator<'_, M> {
         let a = self.expr(&args[0]);
         if self.is_f64(a) {
             let raw = self.builder.ins().fcvt_to_sint_sat(types::I64, a);
-            self.box_or_tag_int(raw)
+            // The `Int` result flows on raw (tagged/boxed only at a uniform slot).
+            self.mark_raw(raw)
         } else {
             let a = self.ensure_boxed(a);
             self.prim_runtime_call(op, &[a])
@@ -1180,7 +1483,7 @@ impl<M: Module> Translator<'_, M> {
     fn float_from_bits(&mut self, op: Prim, args: &[CExpr], result_ty: &Ty) -> Value {
         if matches!(result_ty, Ty::Con(Con::Float)) {
             let n = self.expr(&args[0]);
-            let raw = self.unbox_int_to_raw(n);
+            let raw = self.as_raw_int(n);
             self.i64_to_f64(raw)
         } else {
             let n = self.expr_boxed(&args[0]);
@@ -1194,7 +1497,8 @@ impl<M: Module> Translator<'_, M> {
         let a = self.expr(&args[0]);
         if self.is_f64(a) {
             let raw = self.f64_to_i64(a);
-            self.box_or_tag_int(raw)
+            // The `Int` result flows on raw (tagged/boxed only at a uniform slot).
+            self.mark_raw(raw)
         } else {
             let a = self.ensure_boxed(a);
             self.prim_runtime_call(op, &[a])
@@ -1362,16 +1666,40 @@ impl<M: Module> Translator<'_, M> {
         self.builder.block_params(merge_b)[0]
     }
 
-    /// Inlines an arithmetic or shift primitive: untag, native op, then re-tag
+    /// Emits the bare native arithmetic/shift op on raw operands. The result stays a
+    /// raw, untagged `i64` — no tag, no 63-bit fit check, no boxing — so a full
+    /// 64-bit value flows on. Wrapping matches the runtime's `wrapping_*`, and
+    /// Cranelift masks a dynamic shift amount modulo the 64-bit width (matching the
+    /// runtime's `& 63`).
+    fn raw_arith(&mut self, fop: FitsOp, xa: Value, xb: Value) -> Value {
+        let r = match fop {
+            FitsOp::Add => self.builder.ins().iadd(xa, xb),
+            FitsOp::Sub => self.builder.ins().isub(xa, xb),
+            FitsOp::Mul => self.builder.ins().imul(xa, xb),
+            FitsOp::Shl => self.builder.ins().ishl(xa, xb),
+            FitsOp::Shr => self.builder.ins().sshr(xa, xb),
+            FitsOp::Ushr => self.builder.ins().ushr(xa, xb),
+        };
+        self.mark_raw(r)
+    }
+
+    /// Inlines an arithmetic or shift primitive. With **raw untagged** operands
+    /// (the common case in a normal function) it is a single bare native op
+    /// ([`Self::raw_arith`]) — no guard, no fit check, no boxing. Otherwise (tagged
+    /// operands: a mutual-recursion combined function, or a conflicting-observation
+    /// local) it takes the tagged guarded path: untag, native op, then re-tag
     /// guarded by a 63-bit fit check. `sadd_overflow(r, r)` computes `r << 1` and
-    /// flags overflow exactly when `r` no longer fits the immediate (its top two
-    /// bits differ) — the precise `fai_box_int` boundary — so an out-of-range
-    /// result falls back to the runtime, which boxes it. The native multiply and
-    /// shifts wrap like the runtime's `wrapping_mul` / masked shifts (Cranelift
-    /// masks a dynamic shift amount modulo the 64-bit width, matching `& 63`).
+    /// flags overflow exactly when `r` no longer fits the immediate — the precise
+    /// `fai_box_int` boundary — so an out-of-range result falls back to the runtime,
+    /// which boxes it.
     fn inline_arith(&mut self, op: Prim, args: &[CExpr], fop: FitsOp) -> Value {
         let a = self.expr(&args[0]);
         let b = self.expr(&args[1]);
+        if self.is_raw_int(a) && self.is_raw_int(b) {
+            return self.raw_arith(fop, a, b);
+        }
+        let a = self.ensure_boxed(a);
+        let b = self.ensure_boxed(b);
         let anded = self.builder.ins().band(a, b);
         self.guard_immediate(
             anded,
@@ -1410,37 +1738,136 @@ impl<M: Module> Translator<'_, M> {
     ///   general path: a both-operands-immediate guard, a zero-divisor branch to
     ///   the runtime fault, and — for division — the immediate fit check.
     fn inline_divrem(&mut self, op: Prim, args: &[CExpr], is_div: bool) -> Value {
+        let a = self.expr(&args[0]);
         if let ExprKind::Lit(Lit::Int(d)) = args[1].kind {
             if d == 0 {
                 // A literal zero divisor always faults; keep the out-of-line call
                 // so the located message is raised rather than a hardware trap.
-                let a = self.expr(&args[0]);
                 let b = self.expr(&args[1]);
+                let a = self.ensure_boxed(a);
+                let b = self.ensure_boxed(b);
                 return self.prim_runtime_call(op, &[a, b]);
             }
             if d >= 1 && fits_immediate(d) {
-                if d > 1 && (d & (d - 1)) == 0 {
-                    return self.inline_divrem_pow2(
-                        op,
-                        args,
-                        is_div,
-                        i64::from(d.trailing_zeros()),
-                    );
+                let k = i64::from(d.trailing_zeros());
+                let pow2 = d > 1 && (d & (d - 1)) == 0;
+                // A literal divisor is statically nonzero and never `-1`, so a raw
+                // dividend divides with no zero/`-1`/fit guards at all.
+                if self.is_raw_int(a) {
+                    return if pow2 {
+                        self.raw_divrem_pow2(a, is_div, k)
+                    } else {
+                        let b = self.builder.ins().iconst(types::I64, d);
+                        self.raw_divrem_const(a, b, is_div)
+                    };
                 }
-                return self.inline_divrem_const(op, args, is_div);
+                let a = self.ensure_boxed(a);
+                let b = self.expr(&args[1]);
+                return if pow2 {
+                    self.tagged_divrem_pow2(op, a, b, is_div, k)
+                } else {
+                    self.tagged_divrem_const(op, a, b, is_div)
+                };
             }
         }
-        self.inline_divrem_general(op, args, is_div)
+        // Variable divisor (or a constant too large to be immediate).
+        let b = self.expr(&args[1]);
+        if self.is_raw_int(a) && self.is_raw_int(b) {
+            return self.raw_divrem_general(op, a, b, is_div);
+        }
+        let a = self.ensure_boxed(a);
+        let b = self.ensure_boxed(b);
+        self.tagged_divrem_general(op, a, b, is_div)
     }
 
-    /// The general division/remainder path (a variable divisor, or a constant too
-    /// large to be immediate): a both-operands-immediate guard, then a zero-divisor
-    /// branch to the runtime fault, the native `sdiv`/`srem`, and — for division —
-    /// the immediate fit check. A boxed operand or a zero divisor takes the runtime
-    /// fallback, which consumes both operands and raises the located fault on zero.
-    fn inline_divrem_general(&mut self, op: Prim, args: &[CExpr], is_div: bool) -> Value {
-        let a = self.expr(&args[0]);
-        let b = self.expr(&args[1]);
+    /// The raw division/remainder path for a **variable** divisor: a zero-divisor
+    /// branch to the runtime located fault, then a `b == -1` branch producing
+    /// `0 - a` (division) or `0` (remainder) to match `wrapping_div`/`wrapping_rem`
+    /// while dodging Cranelift `sdiv`/`srem`'s `i64::MIN / -1` hardware trap, else
+    /// the native op. The result stays a raw `i64` — no fit check (a raw value holds
+    /// the full 64-bit result).
+    fn raw_divrem_general(&mut self, op: Prim, a: Value, b: Value, is_div: bool) -> Value {
+        let merge = self.builder.create_block();
+        self.builder.append_block_param(merge, types::I64);
+        let nonzero = self.builder.create_block();
+        let zero = self.builder.create_block();
+        let is_zero = self.builder.ins().icmp_imm(IntCC::Equal, b, 0);
+        self.builder.ins().brif(is_zero, zero, &[], nonzero, &[]);
+
+        // Zero divisor: raise the located fault via the runtime, which needs the
+        // operands in the uniform representation. The divisor is statically `0` here
+        // and the runtime faults on it before using the dividend, so a plain re-tag
+        // (no fit check or boxing) suffices; the call aborts, so its result is dead.
+        self.builder.switch_to_block(zero);
+        self.builder.seal_block(zero);
+        let ta = self.tag_int(a);
+        let tb = self.tag_int(b);
+        let dead = self.prim_runtime_call(op, &[ta, tb]);
+        self.builder.ins().jump(merge, &[dead.into()]);
+
+        self.builder.switch_to_block(nonzero);
+        self.builder.seal_block(nonzero);
+        let neg1 = self.builder.create_block();
+        let normal = self.builder.create_block();
+        let is_neg1 = self.builder.ins().icmp_imm(IntCC::Equal, b, -1);
+        self.builder.ins().brif(is_neg1, neg1, &[], normal, &[]);
+
+        self.builder.switch_to_block(neg1);
+        self.builder.seal_block(neg1);
+        let special = if is_div {
+            // `a / -1 = -a` (wrapping: `i64::MIN / -1 = i64::MIN`).
+            let zero_c = self.builder.ins().iconst(types::I64, 0);
+            self.builder.ins().isub(zero_c, a)
+        } else {
+            // `a % -1 = 0`.
+            self.builder.ins().iconst(types::I64, 0)
+        };
+        self.builder.ins().jump(merge, &[special.into()]);
+
+        self.builder.switch_to_block(normal);
+        self.builder.seal_block(normal);
+        let r = if is_div { self.builder.ins().sdiv(a, b) } else { self.builder.ins().srem(a, b) };
+        self.builder.ins().jump(merge, &[r.into()]);
+
+        self.builder.switch_to_block(merge);
+        self.builder.seal_block(merge);
+        let result = self.builder.block_params(merge)[0];
+        self.mark_raw(result)
+    }
+
+    /// Raw division/remainder by a constant, statically nonzero, in-range divisor
+    /// that is not a power of two: a bare native op (the constant strength-reduces in
+    /// the backend), result raw. The divisor is `>= 1`, so it is never `0` nor `-1`.
+    fn raw_divrem_const(&mut self, a: Value, b: Value, is_div: bool) -> Value {
+        let r = if is_div { self.builder.ins().sdiv(a, b) } else { self.builder.ins().srem(a, b) };
+        self.mark_raw(r)
+    }
+
+    /// Raw strength-reduced division/remainder by a constant power of two `2^k`
+    /// (`k >= 1`) on a raw operand, result raw. Truncation toward zero needs a bias,
+    /// since an arithmetic shift floors: `bias = (x < 0) ? 2^k - 1 : 0`, so
+    /// `q = (x + bias) >> k` and the remainder is `x - (q << k)`.
+    fn raw_divrem_pow2(&mut self, x: Value, is_div: bool, k: i64) -> Value {
+        let sign = self.builder.ins().sshr_imm(x, 63);
+        let bias = self.builder.ins().ushr_imm(sign, 64 - k);
+        let adj = self.builder.ins().iadd(x, bias);
+        let q = self.builder.ins().sshr_imm(adj, k);
+        let r = if is_div {
+            q
+        } else {
+            let qk = self.builder.ins().ishl_imm(q, k);
+            self.builder.ins().isub(x, qk)
+        };
+        self.mark_raw(r)
+    }
+
+    /// The tagged general division/remainder path (a variable divisor with tagged
+    /// operands — a combined function or a conflicting-observation local): a
+    /// both-operands-immediate guard, then a zero-divisor branch to the runtime
+    /// fault, the native `sdiv`/`srem`, and — for division — the immediate fit
+    /// check. A boxed operand or a zero divisor takes the runtime fallback, which
+    /// consumes both operands and raises the located fault on zero.
+    fn tagged_divrem_general(&mut self, op: Prim, a: Value, b: Value, is_div: bool) -> Value {
         let anded = self.builder.ins().band(a, b);
         self.guard_immediate(
             anded,
@@ -1474,15 +1901,14 @@ impl<M: Module> Translator<'_, M> {
         )
     }
 
-    /// Division/remainder by a constant, statically nonzero, in-range divisor that
-    /// is not a power of two (handled by [`Self::inline_divrem_pow2`]). A literal
-    /// divisor is non-negative, so it is never `0` (handled in [`Self::inline_divrem`])
-    /// nor `-1`: with `|d| >= 1` the quotient and remainder always fit the
-    /// immediate, so neither the zero guard nor the division fit check is needed.
-    /// Only the dividend is guarded; a boxed dividend falls back to the runtime.
-    fn inline_divrem_const(&mut self, op: Prim, args: &[CExpr], is_div: bool) -> Value {
-        let a = self.expr(&args[0]);
-        let b = self.expr(&args[1]);
+    /// Tagged division/remainder by a constant, statically nonzero, in-range divisor
+    /// that is not a power of two (the tagged peer of [`Self::raw_divrem_const`]). A
+    /// literal divisor is non-negative, so it is never `0` (handled in
+    /// [`Self::inline_divrem`]) nor `-1`: with `|d| >= 1` the quotient and remainder
+    /// always fit the immediate, so neither the zero guard nor the fit check is
+    /// needed. Only the dividend is guarded; a boxed dividend falls back to the
+    /// runtime.
+    fn tagged_divrem_const(&mut self, op: Prim, a: Value, b: Value, is_div: bool) -> Value {
         self.guard_immediate(
             a,
             |s| s.prim_runtime_call(op, &[a, b]),
@@ -1502,18 +1928,11 @@ impl<M: Module> Translator<'_, M> {
         )
     }
 
-    /// Strength-reduces division/remainder by a constant power of two `2^k`
-    /// (`k >= 1`) to a signed, truncating shift — no zero or overflow guard (the
-    /// divisor is a known nonzero power of two and the result always fits). Only
-    /// the dividend is guarded; a boxed dividend falls back to the runtime.
-    ///
-    /// Truncation toward zero needs a bias, since an arithmetic shift floors:
-    /// `bias = (x < 0) ? 2^k - 1 : 0`, so `q = (x + bias) >> k` and the remainder
-    /// is `x - (q << k)`. The bias is `(x >> 63) >>u (64 - k)` — all-ones to `2^k-1`
-    /// for a negative `x`, zero otherwise.
-    fn inline_divrem_pow2(&mut self, op: Prim, args: &[CExpr], is_div: bool, k: i64) -> Value {
-        let a = self.expr(&args[0]);
-        let b = self.expr(&args[1]); // the constant divisor; used only by the fallback
+    /// Tagged strength-reduced division/remainder by a constant power of two `2^k`
+    /// (`k >= 1`) (the tagged peer of [`Self::raw_divrem_pow2`]): no zero or overflow
+    /// guard. Only the dividend is guarded; a boxed dividend falls back to the
+    /// runtime.
+    fn tagged_divrem_pow2(&mut self, op: Prim, a: Value, b: Value, is_div: bool, k: i64) -> Value {
         self.guard_immediate(
             a,
             |s| s.prim_runtime_call(op, &[a, b]),
@@ -1542,6 +1961,16 @@ impl<M: Module> Translator<'_, M> {
     fn inline_bitwise(&mut self, op: Prim, args: &[CExpr], bop: BitOp) -> Value {
         let a = self.expr(&args[0]);
         let b = self.expr(&args[1]);
+        if self.is_raw_int(a) && self.is_raw_int(b) {
+            let r = match bop {
+                BitOp::And => self.builder.ins().band(a, b),
+                BitOp::Or => self.builder.ins().bor(a, b),
+                BitOp::Xor => self.builder.ins().bxor(a, b),
+            };
+            return self.mark_raw(r);
+        }
+        let a = self.ensure_boxed(a);
+        let b = self.ensure_boxed(b);
         let anded = self.builder.ins().band(a, b);
         self.guard_immediate(
             anded,
@@ -1565,6 +1994,11 @@ impl<M: Module> Translator<'_, M> {
     /// falls back to the runtime.
     fn inline_complement(&mut self, op: Prim, args: &[CExpr]) -> Value {
         let a = self.expr(&args[0]);
+        if self.is_raw_int(a) {
+            let r = self.builder.ins().bnot(a);
+            return self.mark_raw(r);
+        }
+        let a = self.ensure_boxed(a);
         self.guard_immediate(
             a,
             |s| s.prim_runtime_call(op, &[a]),
@@ -1577,10 +2011,17 @@ impl<M: Module> Translator<'_, M> {
         )
     }
 
-    /// Inlines an integer comparison: untag, native `icmp`, tag the `Bool` result.
+    /// Inlines an integer comparison: with raw operands a bare native `icmp` and a
+    /// tagged `Bool`; otherwise the tagged guarded path (untag, `icmp`, tag).
     fn inline_cmp(&mut self, op: Prim, args: &[CExpr], cc: IntCC) -> Value {
         let a = self.expr(&args[0]);
         let b = self.expr(&args[1]);
+        if self.is_raw_int(a) && self.is_raw_int(b) {
+            let c = self.builder.ins().icmp(cc, a, b);
+            return self.tag_bool(c);
+        }
+        let a = self.ensure_boxed(a);
+        let b = self.ensure_boxed(b);
         let anded = self.builder.ins().band(a, b);
         self.guard_immediate(
             anded,
@@ -1619,6 +2060,13 @@ impl<M: Module> Translator<'_, M> {
         } else if matches!(oty, Ty::Con(Con::Int)) {
             let a = self.expr(&args[0]);
             let b = self.expr(&args[1]);
+            // Raw operands: a bare `icmp eq` (raw word equality is value equality).
+            if self.is_raw_int(a) && self.is_raw_int(b) {
+                let c = self.builder.ins().icmp(IntCC::Equal, a, b);
+                return Some(self.tag_bool(c));
+            }
+            let a = self.ensure_boxed(a);
+            let b = self.ensure_boxed(b);
             let anded = self.builder.ins().band(a, b);
             Some(self.guard_immediate(
                 anded,
@@ -1650,12 +2098,23 @@ impl<M: Module> Translator<'_, M> {
     fn inline_compare(&mut self, op: Prim, args: &[CExpr]) -> Option<Value> {
         let oty = &args[0].ty;
         if is_immediate_ty(oty) {
+            // `Bool`/`Char`/`Unit` operands are tagged immediates; untag to raw and
+            // produce the raw `-1`/`0`/`1` (this branch never runs in an erased
+            // combined function, whose operand types are not immediate).
             let a = self.expr(&args[0]);
             let b = self.expr(&args[1]);
-            Some(self.compare_three_way(a, b))
+            let xa = self.untag(a);
+            let xb = self.untag(b);
+            Some(self.compare_three_way_raw(xa, xb))
         } else if matches!(oty, Ty::Con(Con::Int)) {
             let a = self.expr(&args[0]);
             let b = self.expr(&args[1]);
+            // Raw operands: the raw `-1`/`0`/`1` from a bare two-comparison form.
+            if self.is_raw_int(a) && self.is_raw_int(b) {
+                return Some(self.compare_three_way_raw(a, b));
+            }
+            let a = self.ensure_boxed(a);
+            let b = self.ensure_boxed(b);
             let anded = self.builder.ins().band(a, b);
             Some(self.guard_immediate(
                 anded,
@@ -1695,6 +2154,17 @@ impl<M: Module> Translator<'_, M> {
         self.tag_int(cmp)
     }
 
+    /// As [`Self::compare_three_way`] but on raw operands, producing the raw
+    /// `-1`/`0`/`1`: `(a > b) - (a < b)`. The two-comparison form cannot overflow.
+    fn compare_three_way_raw(&mut self, xa: Value, xb: Value) -> Value {
+        let gt = self.builder.ins().icmp(IntCC::SignedGreaterThan, xa, xb);
+        let lt = self.builder.ins().icmp(IntCC::SignedLessThan, xa, xb);
+        let gtw = self.builder.ins().uextend(types::I64, gt);
+        let ltw = self.builder.ins().uextend(types::I64, lt);
+        let cmp = self.builder.ins().isub(gtw, ltw);
+        self.mark_raw(cmp)
+    }
+
     fn application(&mut self, func: &CExpr, args: &[CExpr], result_ty: &Ty) -> Value {
         // A saturated application of a known top-level function calls its code
         // symbol directly, passing the value arguments in registers per the callee's
@@ -1712,11 +2182,16 @@ impl<M: Module> Translator<'_, M> {
             }
         }
         // Otherwise route through `apply_n`, whose slots are uniform `i64`: float
-        // arguments are boxed in and a `Float` result comes back boxed and owned.
+        // and raw-int arguments are boxed/tagged in, and a `Float`/`Int` result comes
+        // back boxed/tagged and owned, unboxed to its raw representation.
         let callee = self.expr(func);
         let vals: Vec<Value> = args.iter().map(|a| self.expr_boxed(a)).collect();
         let boxed = self.apply_n(callee, &vals);
-        if matches!(result_ty, Ty::Con(Con::Float)) { self.owning_unbox(boxed) } else { boxed }
+        match result_ty {
+            Ty::Con(Con::Float) => self.owning_unbox(boxed),
+            Ty::Con(Con::Int) => self.as_raw_int(boxed),
+            _ => boxed,
+        }
     }
 
     /// Applies an already-evaluated callee value to boxed arguments through the
@@ -1730,30 +2205,57 @@ impl<M: Module> Translator<'_, M> {
     }
 
     /// Marshals `args` into registers per `def`'s [`FnAbi`] (a scalar-float argument
-    /// in an `f64` register, every other as the boxed/immediate word, behind the
-    /// leading null environment) and direct-calls it, yielding the raw result (an
-    /// `f64` register when the callee returns a scalar float, else the uniform word).
+    /// in an `f64` register, a monomorphic-int argument as a raw untagged `i64`,
+    /// every other as the boxed/immediate word, behind the leading null environment)
+    /// and direct-calls it, yielding the raw result (an `f64` register for a scalar
+    /// float, a raw `i64` recorded raw for a monomorphic int, else the uniform word).
     fn direct_call_value(&mut self, def: DefId, args: &[CExpr]) -> Value {
         let abi = (self.signature_of)(def);
+        let borrowed = (self.borrows_of)(def);
         let null_env = self.builder.ins().iconst(types::I64, 0);
         let mut call_args = Vec::with_capacity(args.len() + 1);
         call_args.push(null_env);
+        // Boxes freshly created from an unboxed scalar for a **borrowed** uniform
+        // parameter: the callee inspects but does not drop them, and they are
+        // caller-owned temporaries (not a named local the reference-count pass would
+        // drop), so the caller releases them after the call.
+        let mut lent_boxes = Vec::new();
         for (i, a) in args.iter().enumerate() {
             let v = if abi.float_param(i) {
                 let v = self.expr(a);
                 if self.is_f64(v) { v } else { self.owning_unbox(v) }
+            } else if abi.int_param(i) {
+                let v = self.expr(a);
+                self.as_raw_int(v)
             } else {
-                self.expr_boxed(a)
+                // A uniform parameter: box an unboxed scalar argument. A box created
+                // here (distinct from the evaluated value) for a borrowed parameter
+                // is a temporary the caller must release after the call.
+                let raw = self.expr(a);
+                let boxed = self.ensure_boxed(raw);
+                if boxed != raw && borrowed.get(i).copied().unwrap_or(false) {
+                    lent_boxes.push(boxed);
+                }
+                boxed
             };
             call_args.push(v);
         }
-        self.direct_call(def, args.len(), &abi, &call_args)
+        let result = self.direct_call(def, args.len(), &abi, &call_args);
+        for b in lent_boxes {
+            self.call_drop(b);
+        }
+        // A register int result arrives untagged; record it raw so callers treat it
+        // so (its `I64` type cannot convey this).
+        if abi.int_return {
+            self.mark_raw(result);
+        }
+        result
     }
 
     /// A saturated direct call to top-level `def`. The raw result
     /// ([`Self::direct_call_value`]) is coerced to `result_ty`'s representation (the
-    /// invariant: `f64` iff a scalar `Float`), unboxing a generic callee's boxed
-    /// `Float`.
+    /// invariant: `f64` iff a scalar `Float`, a raw `i64` iff a monomorphic `Int`),
+    /// unboxing a generic callee's boxed `Float`/`Int`.
     fn direct_application(&mut self, def: DefId, args: &[CExpr], result_ty: &Ty) -> Value {
         let result = self.direct_call_value(def, args);
         self.as_repr_of(result, result_ty)
@@ -1775,17 +2277,27 @@ impl<M: Module> Translator<'_, M> {
         let callee = self.ensure_boxed(f_result);
         let vals: Vec<Value> = overflow.iter().map(|a| self.expr_boxed(a)).collect();
         let boxed = self.apply_n(callee, &vals);
-        if matches!(result_ty, Ty::Con(Con::Float)) { self.owning_unbox(boxed) } else { boxed }
+        match result_ty {
+            Ty::Con(Con::Float) => self.owning_unbox(boxed),
+            Ty::Con(Con::Int) => self.as_raw_int(boxed),
+            _ => boxed,
+        }
     }
 
     /// Coerces `v` to the representation of `ty` (the invariant: `f64` iff a scalar
-    /// `Float`, else a tagged `i64`), boxing or owning-unboxing as needed.
+    /// `Float`, a raw untagged `i64` iff a monomorphic `Int`, else the uniform
+    /// boxed/tagged word), unboxing/untagging or boxing/tagging as needed.
     fn as_repr_of(&mut self, v: Value, ty: &Ty) -> Value {
-        let want_f64 = matches!(ty, Ty::Con(Con::Float));
-        match (want_f64, self.is_f64(v)) {
-            (true, true) | (false, false) => v,
-            (true, false) => self.owning_unbox(v),
-            (false, true) => self.box_float(v),
+        match ty {
+            Ty::Con(Con::Float) => {
+                if self.is_f64(v) {
+                    v
+                } else {
+                    self.owning_unbox(v)
+                }
+            }
+            Ty::Con(Con::Int) => self.as_raw_int(v),
+            _ => self.ensure_boxed(v),
         }
     }
 
@@ -1867,6 +2379,11 @@ impl<M: Module> Translator<'_, M> {
         let merge_b = self.builder.create_block();
         let merge_ty = self.builder.func.dfg.value_type(tv);
         self.builder.append_block_param(merge_b, merge_ty);
+        // The merge representation follows the then-branch value (a desugared
+        // `match`'s `<error>` fall-through is always in the else position, so the
+        // then value is reliable): `f64` for an unboxed float, a raw untagged word
+        // for an unboxed int (recorded below), else the uniform word.
+        let merge_raw = self.is_raw_int(tv);
         self.builder.ins().jump(merge_b, &[tv.into()]);
 
         self.builder.switch_to_block(else_b);
@@ -1874,13 +2391,20 @@ impl<M: Module> Translator<'_, M> {
         let ev = self.expr(els);
         // The two branches share a type, so they share a representation — except a
         // desugared `match`'s unreachable fall-through (`<error>`), which is a bare
-        // word; reinterpret it to the merge type (its value is never observed).
+        // word; reinterpret it to the merge type (its value is never observed). The
+        // raw-int distinction is the same Cranelift `I64` type, so it needs no
+        // bitcast here — the merge parameter's raw-ness is recorded from the then
+        // value.
         let ev = self.coerce_repr(ev, merge_ty);
         self.builder.ins().jump(merge_b, &[ev.into()]);
 
         self.builder.switch_to_block(merge_b);
         self.builder.seal_block(merge_b);
-        self.builder.block_params(merge_b)[0]
+        let result = self.builder.block_params(merge_b)[0];
+        if merge_raw {
+            self.mark_raw(result);
+        }
+        result
     }
 
     /// Reinterprets `v`'s bits to Cranelift type `ty` if they differ. Used only to
@@ -1919,8 +2443,16 @@ impl<M: Module> Translator<'_, M> {
         // The header stays unsealed: its `Recur` back-edge predecessors are still
         // to be emitted while translating the body.
 
-        let prev = self.loop_ctx.replace(LoopCtx { header, exit, params: params.to_vec() });
+        let prev = self.loop_ctx.replace(LoopCtx {
+            header,
+            exit,
+            params: params.to_vec(),
+            exit_raw: false,
+        });
         self.expr_tail(body);
+        // Capture whether the loop result is raw (set by the tail values) before
+        // restoring the enclosing loop context.
+        let exit_raw = self.loop_ctx.as_ref().is_some_and(|c| c.exit_raw);
         self.loop_ctx = prev;
 
         self.builder.seal_block(header);
@@ -1933,7 +2465,11 @@ impl<M: Module> Translator<'_, M> {
         }
         self.builder.switch_to_block(exit);
         self.builder.seal_block(exit);
-        self.builder.block_params(exit)[0]
+        let result = self.builder.block_params(exit)[0];
+        if exit_raw {
+            self.mark_raw(result);
+        }
+        result
     }
 
     /// Jumps to the enclosing loop's exit with `v`. The first such jump fixes the
@@ -1946,6 +2482,13 @@ impl<M: Module> Translator<'_, M> {
         let v = if self.builder.func.dfg.block_params(exit).is_empty() {
             let ty = self.builder.func.dfg.value_type(v);
             self.builder.append_block_param(exit, ty);
+            // Fix the loop result's raw-ness from this first tail value (a raw
+            // untagged int is `I64`, indistinguishable from a tagged word by type).
+            if self.is_raw_int(v)
+                && let Some(ctx) = self.loop_ctx.as_mut()
+            {
+                ctx.exit_raw = true;
+            }
             v
         } else {
             let exit_ty = self.builder.func.dfg.block_params(exit)[0];
@@ -2209,6 +2752,77 @@ fn collect_float_observations(
         }
         ExprKind::HoleClose { base, .. } => {
             collect_float_observations(base, float_seen, other_seen);
+        }
+    }
+}
+
+/// Records, across the body, which locals are observed as `Int` (`int_seen`) and
+/// which as any other (or unknown) type (`other_seen`), at the same points
+/// [`collect_local_types`] reads: every `Local` use and each `let` binding. A
+/// local is an untagged raw `i64` only when it is in `int_seen` and not in
+/// `other_seen` (see [`Translator::collect_int_locals`]). Offset-evidence locals
+/// used only inside a `FieldIndex::Dyn` (never as a bare `Local` node) are not
+/// observed here, so they are not classified raw — and entry evidence parameters
+/// are forced out regardless during ABI reconciliation.
+fn collect_int_observations(
+    e: &CExpr,
+    int_seen: &mut FxHashSet<usize>,
+    other_seen: &mut FxHashSet<usize>,
+) {
+    fn note(
+        local: LocalId,
+        ty: &Ty,
+        int_seen: &mut FxHashSet<usize>,
+        other: &mut FxHashSet<usize>,
+    ) {
+        if matches!(ty, Ty::Con(Con::Int)) {
+            int_seen.insert(local.index());
+        } else {
+            other.insert(local.index());
+        }
+    }
+    match &e.kind {
+        ExprKind::Local(l) => note(*l, &e.ty, int_seen, other_seen),
+        ExprKind::Lit(_) | ExprKind::Global(_) | ExprKind::MakeClosure { .. } | ExprKind::Error => {
+        }
+        ExprKind::Prim { args, .. } | ExprKind::MakeData { args, .. } => {
+            args.iter().for_each(|a| collect_int_observations(a, int_seen, other_seen));
+        }
+        ExprKind::App { func, args } => {
+            collect_int_observations(func, int_seen, other_seen);
+            args.iter().for_each(|a| collect_int_observations(a, int_seen, other_seen));
+        }
+        ExprKind::If { cond, then, els } => {
+            collect_int_observations(cond, int_seen, other_seen);
+            collect_int_observations(then, int_seen, other_seen);
+            collect_int_observations(els, int_seen, other_seen);
+        }
+        ExprKind::Let { local, value, body } => {
+            note(*local, &value.ty, int_seen, other_seen);
+            collect_int_observations(value, int_seen, other_seen);
+            collect_int_observations(body, int_seen, other_seen);
+        }
+        ExprKind::DataTag(base) | ExprKind::DataField { base, .. } => {
+            collect_int_observations(base, int_seen, other_seen);
+        }
+        ExprKind::Reset { value, body, .. } => {
+            collect_int_observations(value, int_seen, other_seen);
+            collect_int_observations(body, int_seen, other_seen);
+        }
+        ExprKind::Dup { body, .. } | ExprKind::Drop { body, .. } => {
+            collect_int_observations(body, int_seen, other_seen);
+        }
+        ExprKind::Join { body, .. } | ExprKind::HoleStart { body, .. } => {
+            collect_int_observations(body, int_seen, other_seen);
+        }
+        ExprKind::Recur { args } => {
+            args.iter().for_each(|a| collect_int_observations(a, int_seen, other_seen));
+        }
+        ExprKind::HoleFill { cell, .. } => {
+            collect_int_observations(cell, int_seen, other_seen);
+        }
+        ExprKind::HoleClose { base, .. } => {
+            collect_int_observations(base, int_seen, other_seen);
         }
     }
 }

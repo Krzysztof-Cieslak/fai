@@ -59,9 +59,10 @@ pub fn object_for_def(
     namer: &dyn Fn(DefId) -> String,
     arity_of: &dyn Fn(DefId) -> usize,
     signature_of: &dyn Fn(DefId) -> FnAbi,
+    borrows_of: &dyn Fn(DefId) -> Vec<bool>,
 ) -> Vec<u8> {
     let mut module = object_module("fai");
-    compile_def(&mut module, lowered, namer, arity_of, signature_of);
+    compile_def(&mut module, lowered, namer, arity_of, signature_of, borrows_of);
     module.finish().emit().expect("emit object")
 }
 
@@ -75,10 +76,19 @@ pub(crate) fn function_ir_text(
     namer: &dyn Fn(DefId) -> String,
     arity_of: &dyn Fn(DefId) -> usize,
     signature_of: &dyn Fn(DefId) -> FnAbi,
+    borrows_of: &dyn Fn(DefId) -> Vec<bool>,
 ) -> Vec<String> {
     let mut module = object_module("fai_ir_test");
     let mut jobs = Vec::new();
-    crate::emit::build_def(&mut module, lowered, namer, arity_of, signature_of, &mut jobs);
+    crate::emit::build_def(
+        &mut module,
+        lowered,
+        namer,
+        arity_of,
+        signature_of,
+        borrows_of,
+        &mut jobs,
+    );
     jobs.iter().map(|(_, ctx)| ctx.func.display().to_string()).collect()
 }
 

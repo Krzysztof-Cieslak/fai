@@ -139,10 +139,11 @@ fn compile_module(
     namer: &dyn Fn(DefId) -> String,
     arity_of: &dyn Fn(DefId) -> usize,
     signature_of: &dyn Fn(DefId) -> FnAbi,
+    borrows_of: &dyn Fn(DefId) -> Vec<bool>,
 ) {
     let mut jobs: Vec<(FuncId, Context)> = Vec::new();
     for def in defs {
-        build_def(module, def, namer, arity_of, signature_of, &mut jobs);
+        build_def(module, def, namer, arity_of, signature_of, borrows_of, &mut jobs);
     }
 
     // Code-generate each function in parallel; only the read-only ISA is shared.
@@ -185,9 +186,10 @@ impl JitProgram {
         namer: &dyn Fn(DefId) -> String,
         arity_of: &dyn Fn(DefId) -> usize,
         signature_of: &dyn Fn(DefId) -> FnAbi,
+        borrows_of: &dyn Fn(DefId) -> Vec<bool>,
     ) -> JitProgram {
         let mut module = jit_module();
-        compile_module(&mut module, defs, namer, arity_of, signature_of);
+        compile_module(&mut module, defs, namer, arity_of, signature_of, borrows_of);
         module.finalize_definitions().expect("finalize");
         JitProgram { module }
     }
@@ -216,9 +218,10 @@ pub fn jit_run(
     namer: &dyn Fn(DefId) -> String,
     arity_of: &dyn Fn(DefId) -> usize,
     signature_of: &dyn Fn(DefId) -> FnAbi,
+    borrows_of: &dyn Fn(DefId) -> Vec<bool>,
 ) -> i32 {
     let mut module = jit_module();
-    compile_module(&mut module, defs, namer, arity_of, signature_of);
+    compile_module(&mut module, defs, namer, arity_of, signature_of, borrows_of);
     module.finalize_definitions().expect("finalize");
 
     let entry_id = module
