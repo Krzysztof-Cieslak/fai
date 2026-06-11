@@ -1938,17 +1938,20 @@ Editor integration:
   `remove`/`update`/`keys`/`values`/`map`/`filter`/`foldl`/`foldr`/`union`/
   `intersection`/`difference` for `Dict` (plus `isSubset` for `Set`), the bulk
   set operations built on `join`/`split`.
-  - **FBIP on the hot path.** `insert`/`remove` keep their non-rotating
-    reconstruction *in the function body* (not a smart-constructor or `balance`
-    helper), so reference-count reuse (D77) recycles the matched node in place when
-    the tree is uniquely owned: a unique build allocates no spine, a shared one
-    copies. `Dict.map` preserves shape, so it too is rewritten in place. The
-    (amortized O(1)) rebalancing rotations route through the separate `balance`,
-    which allocates — so a sorted build is O(n) allocations, not the O(1)-per-op a
-    fully-in-place rotation would give. Inlining the rotations to recycle their
-    cells too needs either a Core inliner or inter-procedural reuse-token passing
-    (both tracked as future work); the time win (O(n²)→O(n log n)) is independent of
-    it. A differential allocation-count test pins the in-place `Dict.map`.
+  - **Reuse status (what is and isn't in-place).** `Dict.map` preserves the tree
+    shape — its recursion is *embedded in the constructor* (`DictNode s (map f l) k
+    (f k v) (map f r)`), so the reuse pass (D77) resets the matched cell **before**
+    the recursive call and a uniquely-owned `map` recycles every node in place
+    (pinned by a differential allocation-count test). `insert`/`remove`, however,
+    bind the recursion first (`let l2 = insert … l` then `if rotate … else build`),
+    so the reset lands **after** the recursive call; the recursed-into child is
+    still shared at that point, so the recursion **path-copies** and a unique build
+    is **O(n log n) allocations**, not O(n). This is a reference-counting
+    limitation, not a code-shape one (inlining the rotations does not change it —
+    measured), and it affects the whole class of "recursive rebuild then decide"
+    functions. Making the reuse pass reset before a `let`-bound recursion whose
+    construction is in a following branch is **future work** (tracked separately);
+    the time win (O(n²)→O(n log n)) is independent of it.
   - **Two constraints the rewrite had to respect.** (1) The contract generator
     only honors a *monomorphic* `Arbitrary T` override, not a parametric combinator,
     so a synthesized `Dict`/`Set` value carries a meaningless cached `size` (a law

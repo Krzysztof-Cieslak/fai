@@ -9,10 +9,10 @@ module Set
 // are built and queried only through these operations. `Prelude` re-exports the
 // name `Set` so it stays usable unqualified.
 //
-// `insert`/`remove` keep their non-rotating reconstruction *in this function's
-// body*, so reference-count reuse recycles the matched node in place when the set
-// is uniquely owned (a unique build allocates no spine, a shared one copies). The
-// amortized O(1) rebalancing rotations go through `balance`, which allocates.
+// `insert`/`remove` rebuild the search path (immutable, so a shared set is
+// copied). Recycling the path of a uniquely-owned `insert`/`remove` in place (so
+// a unique build allocates O(n) rather than O(n log n)) needs a reference-counting
+// improvement and is future work.
 public opaque type Set 'a =
   | SetEmpty
   | SetNode Int (Set 'a) 'a (Set 'a)
@@ -84,8 +84,7 @@ let isEmpty s =
 example: isEmpty empty
 example: isEmpty (singleton 1) = false
 
-/// Add an element. The non-rotating rebuild is inline, so a uniquely owned set is
-/// updated in place; only an unbalancing insert rotates.
+/// Add an element, rebalancing as needed (O(log n)).
 public insert : 'a -> Set 'a -> Set 'a
 let insert x s =
   match s with
@@ -136,7 +135,7 @@ let join2 l r =
       match takeMin rl ry rr with
       | (r2, m) -> balance l m r2
 
-/// Remove an element if present. The non-rotating rebuild is inline (reused in place).
+/// Remove an element if present, rebalancing as needed (O(log n)).
 public remove : 'a -> Set 'a -> Set 'a
 let remove x s =
   match s with
