@@ -491,11 +491,14 @@ fn dict_prog(use_body: &str, n: i32) -> String {
 
 #[test]
 fn dict_map_recycles_a_unique_tree() {
-    // `Dict.map` preserves the tree shape, so each matched node is rebuilt as a
-    // same-size node: a uniquely-owned map recycles all `n` cells (zero fresh),
-    // while a shared map must copy them. The gap is exactly the `n` recycled
-    // nodes — the guard that weight-balanced nodes are reused in place. (`Set`
-    // shares the identical node/insert/balance machinery.)
+    // `Dict.map` preserves the tree shape and embeds its recursion in the
+    // constructor, so the reuse pass resets each matched node before recursing: a
+    // uniquely-owned map recycles all `n` cells (zero fresh) while a shared map
+    // copies them. The gap is exactly the `n` recycled nodes — the guard that
+    // weight-balanced nodes are reused in place. (`insert`/`remove` bind the
+    // recursion before a rebalancing branch, so the reset lands after it and they
+    // path-copy instead; reusing those is a reference-counting improvement noted as
+    // future work.)
     let u = allocs(&dict_prog("Dict.size (Dict.map (fun k v -> v + 1) d)", 50), "50");
     let s =
         allocs(&dict_prog("Dict.size (Dict.map (fun k v -> v + 1) d) + Dict.size d", 50), "100");
