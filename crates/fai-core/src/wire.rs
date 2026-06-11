@@ -313,6 +313,10 @@ pub fn project_ty(ty: &Ty) -> WireTy {
         Ty::Con(Con::List) => WireTy::List,
         Ty::Adt(_) => WireTy::Adt,
         Ty::Interface(_) => WireTy::Interface,
+        // An effect argument is erased and never a value on its own (it appears
+        // only as a child of an interface application); the runtime-drop `Var`
+        // fallback is always safe.
+        Ty::EffectArg(_) => WireTy::Var,
         Ty::Arrow(..) => WireTy::Arrow,
         Ty::Tuple(elems) => WireTy::Tuple(elems.iter().map(project_ty).collect()),
         Ty::Record(row) => WireTy::Record {

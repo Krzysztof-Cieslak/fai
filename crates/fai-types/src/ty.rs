@@ -106,6 +106,10 @@ pub enum Ty {
     /// A nominal interface type (its values are dictionaries), applied via
     /// [`Ty::App`] for any type parameters.
     Interface(InterfaceRef),
+    /// An effect row used as an *interface argument* — the argument supplied for
+    /// an interface's effect parameter (`Logger { Console }`). Appears only as a
+    /// child of an interface [`Ty::App`]; erased after the front end.
+    EffectArg(EffectRow),
     /// Type application, e.g. `List a` is `App(List, a)`.
     App(Arc<Ty>, Arc<Ty>),
     /// A function type `from -> to / effect`. The effect row records the host
@@ -378,6 +382,14 @@ fn collect_eff_vars(ty: &Ty, out: &mut Vec<EffRowVarId>) {
                 collect_eff_vars(t, out);
             }
         }
+        // An effect argument's own tail variable is an effect-row variable.
+        Ty::EffectArg(eff) => {
+            if let EffEnd::Open(v) = eff.tail
+                && !out.contains(&v)
+            {
+                out.push(v);
+            }
+        }
         Ty::Var(_) | Ty::Con(_) | Ty::Adt(_) | Ty::Interface(_) | Ty::Unit | Ty::Error => {}
     }
 }
@@ -408,7 +420,7 @@ fn collect_vars(ty: &Ty, out: &mut Vec<TyVarId>) {
                 collect_vars(t, out);
             }
         }
-        Ty::Con(_) | Ty::Adt(_) | Ty::Interface(_) | Ty::Unit | Ty::Error => {}
+        Ty::Con(_) | Ty::Adt(_) | Ty::Interface(_) | Ty::EffectArg(_) | Ty::Unit | Ty::Error => {}
     }
 }
 
@@ -540,6 +552,9 @@ fn write_ty(out: &mut String, ty: &Ty, names: &VarNames, prec: Prec) {
         Ty::Interface(i) => {
             let _ = out.write_str(i.name.as_str());
         }
+        // An effect supplied as an interface argument (`Logger { Console }`).
+        // Self-delimiting (`{ … }`) or a bare variable, so it never parenthesizes.
+        Ty::EffectArg(effect) => write_effect_arg(out, effect, names),
         Ty::Unit => {
             let _ = out.write_str("()");
         }
@@ -629,6 +644,33 @@ fn write_effect(out: &mut String, effect: &EffectRow, names: &VarNames) {
         return;
     }
     let _ = out.write_str(" / {");
+    for (i, atom) in effect.labels.iter().enumerate() {
+        let _ = out.write_str(if i == 0 { " " } else { ", " });
+        let _ = out.write_str(atom.name.as_str());
+    }
+    if let EffEnd::Open(ev) = effect.tail {
+        let _ = write!(out, " | {}", names.get_eff(ev));
+    }
+    let _ = out.write_str(" }");
+}
+
+/// Renders an effect row in *interface-argument* position (`Logger { Console }`):
+/// a lone open tail as the bare variable `'e`, the pure row as `{}`, otherwise
+/// `{ Atom, … | tail }`. Unlike [`write_effect`] there is no leading ` / ` and
+/// the pure row is explicit (it is a written argument, not an arrow's effect).
+fn write_effect_arg(out: &mut String, effect: &EffectRow, names: &VarNames) {
+    if effect.labels.is_empty() {
+        match effect.tail {
+            EffEnd::Open(ev) => {
+                let _ = out.write_str(&names.get_eff(ev));
+            }
+            EffEnd::Closed => {
+                let _ = out.write_str("{}");
+            }
+        }
+        return;
+    }
+    let _ = out.write_char('{');
     for (i, atom) in effect.labels.iter().enumerate() {
         let _ = out.write_str(if i == 0 { " " } else { ", " });
         let _ = out.write_str(atom.name.as_str());

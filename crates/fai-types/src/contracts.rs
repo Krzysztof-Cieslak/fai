@@ -152,7 +152,15 @@ fn capabilities_in_ty(db: &dyn Db, ty: &Ty) -> Vec<Symbol> {
             }
             Ty::Tuple(ts) => ts.iter().for_each(|t| walk(db, t, out)),
             Ty::Record(row) => row.fields.iter().for_each(|(_, t)| walk(db, t, out)),
-            Ty::Var(_) | Ty::Con(_) | Ty::Adt(_) | Ty::Interface(_) | Ty::Unit | Ty::Error => {}
+            // An effect *argument* is a type-level effect row (erased), not a
+            // capability value the runtime must provide.
+            Ty::Var(_)
+            | Ty::Con(_)
+            | Ty::Adt(_)
+            | Ty::Interface(_)
+            | Ty::EffectArg(_)
+            | Ty::Unit
+            | Ty::Error => {}
         }
     }
     let mut out = Vec::new();

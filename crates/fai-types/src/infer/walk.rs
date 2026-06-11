@@ -1200,6 +1200,7 @@ fn subst(
         other @ (SolveTy::Con(_)
         | SolveTy::Adt(_)
         | SolveTy::Interface(_)
+        | SolveTy::EffectArg(_)
         | SolveTy::Unit
         | SolveTy::Error) => other,
     }

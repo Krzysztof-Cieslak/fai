@@ -40,6 +40,8 @@ fn to_solve(ty: &Ty) -> SolveTy {
         Ty::Interface(i) => SolveTy::Interface(*i),
         Ty::Unit => SolveTy::Unit,
         Ty::Error => SolveTy::Error,
+        // The generator never produces interface effect arguments.
+        Ty::EffectArg(_) => unreachable!("generator never produces effect arguments"),
         Ty::App(f, a) => SolveTy::App(std::rc::Rc::new(to_solve(f)), std::rc::Rc::new(to_solve(a))),
         // The generator never produces effects; arrows convert as pure.
         Ty::Arrow(f, a, _) => SolveTy::arrow(to_solve(f), to_solve(a)),
