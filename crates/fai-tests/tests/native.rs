@@ -540,6 +540,30 @@ fn effect_parameterized_interface_runs() {
 }
 
 #[test]
+fn deep_effect_subsumption_runs() {
+    // `apply0` expects a maker whose returned function may use the console. Passing
+    // a maker that returns a *pure* function type-checks only by deep subsumption
+    // (the nested arrow's `{} ⊆ { Console }`); effects are erased, so it runs.
+    let src = indoc! {r#"
+        module Main
+
+        public apply0 : (Unit -> (Unit -> Unit / { Console })) -> Unit / { Console }
+        let apply0 make =
+          let f = make ()
+          f ()
+
+        public main : Runtime -> Unit / { Console }
+        let main runtime =
+          let c = runtime.console
+          let a = apply0 (fun u -> fun v -> ())
+          c.writeLine "ok"
+    "#};
+    let (out, code) = build_and_run(src);
+    assert_eq!(out, "ok\n");
+    assert_eq!(code, Some(0));
+}
+
+#[test]
 fn builtin_operator_as_value_runs() {
     // `(+)` passed first-class to a fold.
     let src = indoc! {r#"

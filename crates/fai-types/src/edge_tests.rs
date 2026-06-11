@@ -565,6 +565,103 @@ fn compose_builds_function() {
     assert_eq!(ty("let inc x = x + 1\nlet f = inc >> inc", "f"), "Int -> Int");
 }
 
+// ---- deep (contravariant, under-arrow) subsumption -------------------------
+
+#[test]
+fn deep_subsumption_under_a_nested_arrow() {
+    // A maker returning a pure function is accepted where one returning a
+    // Console-or-less function is expected: the nested arrow's `{} ⊆ { Console }`.
+    let src = indoc! {"
+        interface Console = writeLine : String -> Unit / { Console }
+        public run : (Unit -> (Int -> Unit / { Console })) -> Unit
+        let run maker = ()
+        public pureMaker : Unit -> (Int -> Unit)
+        let pureMaker u = fun n -> ()
+        public useIt : Unit
+        let useIt = run pureMaker
+    "};
+    assert!(codes(src).is_empty(), "got {:?}", codes(src));
+}
+
+#[test]
+fn deep_subsumption_is_contravariant_in_a_parameter() {
+    // A handler that accepts a Console callback can be used where one accepting a
+    // pure callback is expected (it accepts pure callbacks too: `{} ⊆ { Console }`
+    // on the contravariant callback).
+    let src = indoc! {"
+        interface Console = writeLine : String -> Unit / { Console }
+        public runHandler : ((Int -> Unit) -> Unit) -> Unit
+        let runHandler h = ()
+        public consoleHandler : (Int -> Unit / { Console }) -> Unit
+        let consoleHandler cb = ()
+        public useIt : Unit
+        let useIt = runHandler consoleHandler
+    "};
+    assert!(codes(src).is_empty(), "got {:?}", codes(src));
+}
+
+#[test]
+fn deep_subsumption_rejects_an_under_demanding_handler() {
+    // The contravariant direction the other way: a handler that accepts only pure
+    // callbacks cannot stand in for one that must accept a Console callback.
+    let src = indoc! {"
+        interface Console = writeLine : String -> Unit / { Console }
+        public runHandler : ((Int -> Unit / { Console }) -> Unit) -> Unit
+        let runHandler h = ()
+        public pureHandler : (Int -> Unit) -> Unit
+        let pureHandler cb = ()
+        public useIt : Unit
+        let useIt = runHandler pureHandler
+    "};
+    assert!(codes(src).contains(&"FAI3001".to_owned()), "got {:?}", codes(src));
+}
+
+#[test]
+fn deep_subsumption_still_rejects_effectful_where_pure_required() {
+    // The key guarantee survives: a Console-using function is rejected where a
+    // pure one is required.
+    let src = indoc! {"
+        interface Console = writeLine : String -> Unit / { Console }
+        public needsPure : (Int -> Unit) -> Unit
+        let needsPure f = ()
+        public bad : Console -> Unit
+        let bad c = needsPure (fun n -> c.writeLine \"x\")
+    "};
+    assert!(codes(src).contains(&"FAI3001".to_owned()), "got {:?}", codes(src));
+}
+
+#[test]
+fn deep_subsumption_unions_effects_inside_a_tuple() {
+    // Two differently-effecting functions inside a tuple flow into one shared
+    // effect variable and union (covariant tuple element).
+    let src = indoc! {"
+        interface Console = writeLine : String -> Unit / { Console }
+        interface Clock = now : Unit -> Int / { Clock }
+        public bothInTuple : ((Unit -> 'a / 'e) * (Unit -> 'b / 'e)) -> Unit / 'e
+        let bothInTuple pair = ()
+        public useIt : Console -> Clock -> Unit / { Clock, Console }
+        let useIt c k = bothInTuple ((fun u -> c.writeLine \"x\"), (fun u -> k.now ()))
+    "};
+    assert!(codes(src).is_empty(), "got {:?}", codes(src));
+    assert_eq!(effect_atoms(src, "useIt"), vec!["Clock".to_owned(), "Console".to_owned()]);
+}
+
+#[test]
+fn deep_subsumption_through_a_list_element() {
+    // A list of pure functions is accepted where a list of Console-or-less
+    // functions is expected (covariant list element).
+    let src = indoc! {"
+        interface Console = writeLine : String -> Unit / { Console }
+        public runAll : List (Int -> Unit / { Console }) -> Unit
+        let runAll fs = ()
+        public pures : List (Int -> Unit)
+        let pures = [fun n -> (), fun n -> ()]
+        public useIt : Unit
+        let useIt = runAll pures
+    "};
+    assert!(codes(src).is_empty(), "got {:?}", codes(src));
+}
+
 // ---- required signatures & mismatches --------------------------------------
 
 #[test]

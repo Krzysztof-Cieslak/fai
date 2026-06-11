@@ -157,48 +157,63 @@ impl<E: Env> Walker<'_, E> {
     fn unify_at(&mut self, range: fai_span::TextRange, a: &SolveTy, b: &SolveTy, what: &str) {
         match self.cx.unify(a, b) {
             UnifyResult::Ok => {}
-            UnifyResult::Occurs => {
-                emit(
-                    self.db,
-                    Diagnostic::error(
-                        OCCURS_CHECK,
-                        format!("infinite type while checking {what}"),
-                        self.span(range),
-                    ),
-                );
-            }
-            UnifyResult::Mismatch | UnifyResult::BadConstraint => {
-                let a_re = self.cx.reify(a);
-                let b_re = self.cx.reify(b);
-                // Using an opaque type's value as a structural record — a field
-                // access, `{ … }` construction, or `{ r with … }` update — surfaces
-                // here as a record-shape-vs-opaque-`Adt` mismatch. Report it as
-                // such rather than as a bare type mismatch.
-                let opaque = match (&a_re, &b_re) {
-                    (crate::ty::Ty::Record(_), other) | (other, crate::ty::Ty::Record(_)) => {
-                        self.opaque_adt_name(other)
-                    }
-                    _ => None,
-                };
-                if let Some(name) = opaque {
-                    emit(
-                        self.db,
-                        Diagnostic::error(
-                            OPAQUE_ACCESS,
-                            format!(
-                                "the type `{name}` is opaque; its fields are not accessible \
-                                 from this file"
-                            ),
-                            self.span(range),
-                        ),
-                    );
-                    return;
-                }
-                let a_ty = crate::ty::render(&a_re, &crate::ty::VarNames::new());
-                let b_ty = crate::ty::render(&b_re, &crate::ty::VarNames::new());
-                self.mismatch(range, format!("type mismatch in {what}: `{a_ty}` vs `{b_ty}`"));
-            }
+            other => self.report_unify_failure(range, other, a, b, what),
         }
+    }
+
+    /// Reports a non-`Ok` unification (or subsumption) outcome between `a` and `b`
+    /// as a diagnostic: an occurs-check failure, an opaque-representation access,
+    /// or a plain type mismatch.
+    fn report_unify_failure(
+        &mut self,
+        range: fai_span::TextRange,
+        result: UnifyResult,
+        a: &SolveTy,
+        b: &SolveTy,
+        what: &str,
+    ) {
+        if result == UnifyResult::Ok {
+            return;
+        }
+        if result == UnifyResult::Occurs {
+            emit(
+                self.db,
+                Diagnostic::error(
+                    OCCURS_CHECK,
+                    format!("infinite type while checking {what}"),
+                    self.span(range),
+                ),
+            );
+            return;
+        }
+        let a_re = self.cx.reify(a);
+        let b_re = self.cx.reify(b);
+        // Using an opaque type's value as a structural record — a field access,
+        // `{ … }` construction, or `{ r with … }` update — surfaces here as a
+        // record-shape-vs-opaque-`Adt` mismatch. Report it as such rather than as
+        // a bare type mismatch.
+        let opaque = match (&a_re, &b_re) {
+            (crate::ty::Ty::Record(_), other) | (other, crate::ty::Ty::Record(_)) => {
+                self.opaque_adt_name(other)
+            }
+            _ => None,
+        };
+        if let Some(name) = opaque {
+            emit(
+                self.db,
+                Diagnostic::error(
+                    OPAQUE_ACCESS,
+                    format!(
+                        "the type `{name}` is opaque; its fields are not accessible from this file"
+                    ),
+                    self.span(range),
+                ),
+            );
+            return;
+        }
+        let a_ty = crate::ty::render(&a_re, &crate::ty::VarNames::new());
+        let b_ty = crate::ty::render(&b_re, &crate::ty::VarNames::new());
+        self.mismatch(range, format!("type mismatch in {what}: `{a_ty}` vs `{b_ty}`"));
     }
 
     /// If `ty`'s head is an opaque type (possibly applied to arguments), its name.
@@ -468,33 +483,21 @@ impl<E: Env> Walker<'_, E> {
     ) -> SolveTy {
         let result = self.cx.fresh();
         let eff = SolveEffect { atoms: Vec::new(), tail: EffTail::Open(self.cx.fresh_effect()) };
-        let mut subsume: Vec<(SolveEffect, SolveEffect)> = Vec::new();
-        let decoupled: Vec<SolveTy> = arg_tys
-            .iter()
-            .map(|arg_ty| match self.cx.resolve_shallow(arg_ty) {
-                SolveTy::Arrow(p, r, e) => {
-                    let fresh = SolveEffect {
-                        atoms: Vec::new(),
-                        tail: EffTail::Open(self.cx.fresh_effect()),
-                    };
-                    subsume.push((e, fresh.clone()));
-                    SolveTy::arrow_eff((*p).clone(), (*r).clone(), fresh)
-                }
-                _ => arg_ty.clone(),
-            })
-            .collect();
-        let expected = SolveTy::arrows_solver_eff(decoupled, result.clone(), eff.clone());
+        // Build the function shape with fresh parameter variables, so unifying it
+        // with the head fixes the parameters' types (and reports an arity or
+        // not-a-function error) without forcing the arguments' effects.
+        let params: Vec<SolveTy> = (0..arg_tys.len()).map(|_| self.cx.fresh()).collect();
+        let expected = SolveTy::arrows_solver_eff(params.clone(), result.clone(), eff.clone());
         self.unify_at(span, head_ty, &expected, what);
-        for (real, into) in &subsume {
-            if self.cx.subsume_effects(real, into) != UnifyResult::Ok {
-                let used = crate::ty::render_effect(&self.cx.reify_effect_standalone(real));
-                self.mismatch(
-                    span,
-                    format!(
-                        "a function argument performs the effect `{used}`, which is not permitted \
-                         here"
-                    ),
-                );
+        // Each argument is then related to its parameter by *deep* subsumption: an
+        // argument's effects (at every arrow depth, with variance) need only be
+        // admitted by the parameter's, so arguments sharing one parameter effect
+        // variable union their effects and a less-effectful function is accepted
+        // where a more-effectful one is expected.
+        for (arg_ty, param) in arg_tys.iter().zip(&params) {
+            let r = self.cx.subsume_types(arg_ty, param, true);
+            if r != UnifyResult::Ok {
+                self.report_unify_failure(span, r, arg_ty, param, what);
             }
         }
         self.incur_effect(&eff);
