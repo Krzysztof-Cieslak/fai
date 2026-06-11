@@ -324,6 +324,12 @@ The operator interfaces (`Num`/`Eq`/`Ord`) are sealed to their built-in instance
 
 An opaque type's representation (its record fields or alias body) is accessed from another file — a field access, record construction, or `{ r with … }` update. An opaque type exports its name but not its structure, so build and inspect its values through the functions its module provides.
 
+### FAI3019 — interface parameter used as both a type and an effect
+
+**Severity:** error
+
+An interface type parameter (`'a`) is used in type position in one method and as an effect row (after `/`) in another. A parameter is one kind or the other — give the type use and the effect use separate parameters.
+
 ## FAI4xxx — Exhaustiveness & patterns
 
 ### FAI4001 — non-exhaustive match

@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use fai_db::{Db, SourceFile, emit};
 use fai_diagnostics::{Diagnostic, Label, Suggestion};
-use fai_resolve::{DefId, module_defs, module_sccs, resolve};
+use fai_resolve::{DefId, InterfaceRef, module_defs, module_sccs, qualify, resolve};
 use fai_span::{ByteOffset, Span, TextRange};
 use fai_syntax::Symbol;
 use fai_syntax::ast::ExprId;
@@ -20,9 +20,13 @@ use rustc_hash::FxHashMap;
 use crate::ty::Ty;
 
 use crate::infer::{declared_scheme, error_scheme, infer_scc};
+use crate::lower::{ParamKind, interface_param_usage, seed_interface_params};
 use crate::std_lib;
 use crate::ty::Scheme;
-use crate::{EFFECT_MISMATCH, MISSING_PUBLIC_SIGNATURE, OPAQUE_ACCESS, SIGNATURE_MISMATCH};
+use crate::{
+    EFFECT_MISMATCH, INTERFACE_PARAM_KIND, MISSING_PUBLIC_SIGNATURE, OPAQUE_ACCESS,
+    SIGNATURE_MISMATCH,
+};
 
 /// The inferred schemes of the SCC at `scc_index` in `file`.
 #[salsa::tracked]
@@ -257,12 +261,35 @@ fn validate_decls(
                     }
                 }
             },
-            fai_syntax::ast::ItemKind::Interface { methods, params, .. } => {
+            fai_syntax::ast::ItemKind::Interface { methods, params, name, .. } => {
+                let iref = InterfaceRef::new(file.source(db), qualify(scope, *name));
+                // Infer each parameter's kind from its use across the methods; a
+                // parameter used as both a type and an effect row is ill-kinded.
+                let usage = interface_param_usage(db, iref);
+                let kinds: Vec<ParamKind> = usage
+                    .iter()
+                    .map(|&(t, e)| if e && !t { ParamKind::Effect } else { ParamKind::Type })
+                    .collect();
+                for (i, &(ty_used, eff_used)) in usage.iter().enumerate() {
+                    if ty_used && eff_used {
+                        let span = module.items[id.index()].span;
+                        emit(
+                            db,
+                            Diagnostic::error(
+                                INTERFACE_PARAM_KIND,
+                                format!(
+                                    "interface parameter `{}` of `{name}` is used as both a type \
+                                     and an effect",
+                                    params[i]
+                                ),
+                                Span::new(file.source(db), span),
+                            ),
+                        );
+                    }
+                }
                 for m in methods {
                     let mut vars = crate::lower::LowerVars::default();
-                    for &p in params {
-                        vars.var(p);
-                    }
+                    seed_interface_params(&mut vars, params, &kinds);
                     let _ = crate::lower::lower_type_in(db, file, module, scope, m.ty, &mut vars);
                 }
             }

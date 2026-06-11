@@ -1259,6 +1259,86 @@ fn parameterized_interface_method_access() {
     assert_eq!(type_of(&db, f[0], "unwrap"), "Box Int -> Int");
 }
 
+/// The inferred kinds of an interface's parameters (by its unqualified name).
+fn param_kinds(db: &dyn Db, file: SourceFile, iface: &str) -> Vec<crate::lower::ParamKind> {
+    crate::lower::interface_param_kinds(
+        db,
+        fai_resolve::InterfaceRef::new(file.source(db), fai_syntax::Symbol::intern(iface)),
+    )
+}
+
+#[test]
+fn effect_parameter_inferred_from_method_use() {
+    use crate::lower::ParamKind;
+    let src = indoc! {r#"
+        module M
+
+        public interface Logger 'e =
+          log : String -> Unit / 'e
+    "#};
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert_eq!(param_kinds(&db, f[0], "Logger"), vec![ParamKind::Effect]);
+}
+
+#[test]
+fn type_parameter_inferred_from_method_use() {
+    use crate::lower::ParamKind;
+    let src = indoc! {r#"
+        module M
+
+        public interface Box 'a =
+          get : Unit -> 'a
+    "#};
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert_eq!(param_kinds(&db, f[0], "Box"), vec![ParamKind::Type]);
+}
+
+#[test]
+fn mixed_type_and_effect_parameters_are_inferred() {
+    use crate::lower::ParamKind;
+    let src = indoc! {r#"
+        module M
+
+        public interface Cache 'k 'v 'e =
+          get : 'k -> 'v / 'e
+    "#};
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert_eq!(
+        param_kinds(&db, f[0], "Cache"),
+        vec![ParamKind::Type, ParamKind::Type, ParamKind::Effect]
+    );
+}
+
+#[test]
+fn unused_parameter_defaults_to_type() {
+    use crate::lower::ParamKind;
+    let src = indoc! {r#"
+        module M
+
+        public interface Tag 'a =
+          name : Unit -> String
+    "#};
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert_eq!(param_kinds(&db, f[0], "Tag"), vec![ParamKind::Type]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+}
+
+#[test]
+fn parameter_used_as_both_type_and_effect_is_an_error() {
+    let src = indoc! {r#"
+        module M
+
+        public interface Weird 'a =
+          run : 'a -> Unit / 'a
+    "#};
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert!(
+        check_codes(&db, f[0]).contains(&"FAI3019".to_owned()),
+        "got {:?}",
+        check_codes(&db, f[0])
+    );
+}
+
 #[test]
 fn instance_missing_a_method_is_an_error() {
     let src = indoc! {r#"
