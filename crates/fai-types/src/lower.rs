@@ -167,6 +167,10 @@ impl Lowerer<'_> {
             // `Con` is handled by `lower`; `App` was peeled into the spine.
             TypeKind::Con(name) => self.lower_con_app(*name, &[], self.module.ty(ty).span, vars),
             TypeKind::App { .. } => self.lower(ty, vars),
+            // An effect row is meaningful only as an interface effect argument,
+            // which interface-application lowering consumes directly; reaching a
+            // bare one here means it was written in a non-argument position.
+            TypeKind::EffectRow { .. } => Ty::Error,
             TypeKind::Error => Ty::Error,
         }
     }
@@ -708,6 +712,13 @@ fn scan_var_usage(
             }
         }
         TypeKind::Paren(inner) => scan_var_usage(module, *inner, type_used, eff_used),
+        // An effect row written as an interface argument: its tail is an effect
+        // variable use.
+        TypeKind::EffectRow { tail, .. } => {
+            if let RowTail::Named(name) = tail {
+                eff_used.insert(*name);
+            }
+        }
         TypeKind::Con(_) | TypeKind::Unit | TypeKind::Error => {}
     }
 }

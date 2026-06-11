@@ -333,6 +333,30 @@ fn arrow_effect_lone_named_tail_normalizes_to_sugar() {
 }
 
 #[test]
+fn interface_effect_argument_is_canonical() {
+    formats_with(
+        "module M\npublic run : Logger { Console } -> Unit\nlet run l = ()",
+        "run : Logger { Console } -> Unit",
+    );
+}
+
+#[test]
+fn interface_effect_argument_atoms_are_sorted() {
+    formats_with(
+        "module M\npublic run : Logger { FileSystem, Console } -> Unit\nlet run l = ()",
+        "run : Logger { Console, FileSystem } -> Unit",
+    );
+}
+
+#[test]
+fn interface_effect_argument_with_tail_is_canonical() {
+    formats_with(
+        "module M\npublic run : Logger { Console | 'e } -> Unit\nlet run l = ()",
+        "run : Logger { Console | 'e } -> Unit",
+    );
+}
+
+#[test]
 fn cons_and_concat_spaced() {
     formats_with("module M\nlet b = c ++ d :: e", "c ++ d :: e");
 }
@@ -829,6 +853,15 @@ fn shape_type(m: &Module, id: TypeId) -> String {
                 RowTail::Named(r) => format!(" | {}", r.as_str()),
             };
             format!("(trecord [{fs}]{t})")
+        }
+        TypeKind::EffectRow { labels, tail } => {
+            let ls = labels.iter().map(|l| l.as_str()).collect::<Vec<_>>().join(", ");
+            let t = match tail {
+                RowTail::Closed => String::new(),
+                RowTail::Open => " | _".to_owned(),
+                RowTail::Named(r) => format!(" | {}", r.as_str()),
+            };
+            format!("(teffect [{ls}]{t})")
         }
         TypeKind::Unit => "(tunit)".to_owned(),
         TypeKind::Paren(inner) => format!("(tparen {})", shape_type(m, *inner)),

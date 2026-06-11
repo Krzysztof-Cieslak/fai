@@ -536,10 +536,31 @@ impl Printer<'_> {
                 concat(parts)
             }
             TypeKind::Record { fields, tail } => self.record_type_doc(fields, *tail),
+            TypeKind::EffectRow { labels, tail } => self.effect_arg_doc(labels, *tail),
             TypeKind::Unit => text("()"),
             TypeKind::Paren(inner) => concat(vec![text("("), self.type_doc(*inner), text(")")]),
             TypeKind::Error => text(self.span_src(ty.span)),
         }
+    }
+
+    /// Renders an effect row used as an interface argument (`Logger { Console }`):
+    /// atoms sorted, with the row's tail. Unlike [`Self::effect_doc`] there is no
+    /// leading ` / ` and the row is never omitted (it is a written argument).
+    fn effect_arg_doc(&self, labels: &[fai_syntax::Symbol], tail: RowTail) -> Doc {
+        let mut order: Vec<&fai_syntax::Symbol> = labels.iter().collect();
+        order.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        let mut parts = vec![text("{")];
+        for (index, label) in order.iter().enumerate() {
+            parts.push(text(if index == 0 { " " } else { ", " }));
+            parts.push(text(label.as_str()));
+        }
+        match tail {
+            RowTail::Closed => {}
+            RowTail::Open => parts.push(text(" | _")),
+            RowTail::Named(r) => parts.push(text(format!(" | {}", r.as_str()))),
+        }
+        parts.push(text(" }"));
+        concat(parts)
     }
 
     /// Renders an arrow's effect annotation canonically: atoms sorted by name,
