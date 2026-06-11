@@ -23,7 +23,9 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::infer::ctx::{
     Constraint, EffTail, InferCtx, RowTail, SolveEffect, SolveRow, SolveTy, UnifyResult,
 };
-use crate::lower::{build_interface_method_scheme, interface_param_count, resolve_interface};
+use crate::lower::{
+    ParamKind, build_interface_method_scheme, interface_param_kinds, resolve_interface,
+};
 use crate::ty::Scheme;
 use crate::{
     EQUALITY_ON_FUNCTION, INSTANCE_METHOD_SET, NOT_AN_INTERFACE, OCCURS_CHECK, OPAQUE_ACCESS,
@@ -450,6 +452,55 @@ impl<E: Env> Walker<'_, E> {
         }
     }
 
+    /// Applies a function-typed `head_ty` to argument types, returning the result.
+    /// The effect lands on the saturating (innermost) arrow; intermediate
+    /// (partial-application) arrows stay pure. Each *function* argument's top arrow
+    /// effect is decoupled into a fresh variable and the real effect *subsumed*
+    /// into it, so several function arguments flowing into one parameter effect
+    /// variable (as in `f >> g`) *union* their effects rather than be forced equal.
+    /// Shared by curried application and user-defined operator application.
+    fn apply_to_args(
+        &mut self,
+        head_ty: &SolveTy,
+        arg_tys: &[SolveTy],
+        span: fai_span::TextRange,
+        what: &str,
+    ) -> SolveTy {
+        let result = self.cx.fresh();
+        let eff = SolveEffect { atoms: Vec::new(), tail: EffTail::Open(self.cx.fresh_effect()) };
+        let mut subsume: Vec<(SolveEffect, SolveEffect)> = Vec::new();
+        let decoupled: Vec<SolveTy> = arg_tys
+            .iter()
+            .map(|arg_ty| match self.cx.resolve_shallow(arg_ty) {
+                SolveTy::Arrow(p, r, e) => {
+                    let fresh = SolveEffect {
+                        atoms: Vec::new(),
+                        tail: EffTail::Open(self.cx.fresh_effect()),
+                    };
+                    subsume.push((e, fresh.clone()));
+                    SolveTy::arrow_eff((*p).clone(), (*r).clone(), fresh)
+                }
+                _ => arg_ty.clone(),
+            })
+            .collect();
+        let expected = SolveTy::arrows_solver_eff(decoupled, result.clone(), eff.clone());
+        self.unify_at(span, head_ty, &expected, what);
+        for (real, into) in &subsume {
+            if self.cx.subsume_effects(real, into) != UnifyResult::Ok {
+                let used = crate::ty::render_effect(&self.cx.reify_effect_standalone(real));
+                self.mismatch(
+                    span,
+                    format!(
+                        "a function argument performs the effect `{used}`, which is not permitted \
+                         here"
+                    ),
+                );
+            }
+        }
+        self.incur_effect(&eff);
+        result
+    }
+
     /// Infers a (curried) application by its whole spine, so the effect lands on
     /// the *saturating* arrow and the intermediate (partial-application) arrows
     /// stay pure. Handling one argument at a time cannot tell a partial from a
@@ -472,48 +523,8 @@ impl<E: Env> Walker<'_, E> {
 
         let head_ty = self.infer_expr(head);
         let raw_arg_tys: Vec<SolveTy> = args.iter().map(|&a| self.infer_expr(a)).collect();
-        let result = self.cx.fresh();
-        // The saturating (innermost) arrow carries a fresh effect tail; the outer
-        // arrows are pure (a partial application does no work).
-        let eff = SolveEffect { atoms: Vec::new(), tail: EffTail::Open(self.cx.fresh_effect()) };
         let span = self.module.expr(outer).span;
-
-        // For a *function* argument, decouple its top arrow's effect with a fresh
-        // variable in the expected type, then subsume the real effect into that
-        // variable afterwards. This lets several function arguments that flow into
-        // one parameter effect variable (as in `f >> g`) *union* their effects
-        // rather than be forced equal (which would reject differing effects).
-        let mut subsume: Vec<(SolveEffect, SolveEffect)> = Vec::new();
-        let arg_tys: Vec<SolveTy> = raw_arg_tys
-            .iter()
-            .map(|arg_ty| match self.cx.resolve_shallow(arg_ty) {
-                SolveTy::Arrow(p, r, e) => {
-                    let fresh = SolveEffect {
-                        atoms: Vec::new(),
-                        tail: EffTail::Open(self.cx.fresh_effect()),
-                    };
-                    subsume.push((e, fresh.clone()));
-                    SolveTy::arrow_eff((*p).clone(), (*r).clone(), fresh)
-                }
-                _ => arg_ty.clone(),
-            })
-            .collect();
-
-        let expected = SolveTy::arrows_solver_eff(arg_tys, result.clone(), eff.clone());
-        self.unify_at(span, &head_ty, &expected, "function application");
-        for (real, into) in &subsume {
-            if self.cx.subsume_effects(real, into) != UnifyResult::Ok {
-                let used = crate::ty::render_effect(&self.cx.reify_effect_standalone(real));
-                self.mismatch(
-                    span,
-                    format!(
-                        "a function argument performs the effect `{used}`, which is not permitted \
-                         here"
-                    ),
-                );
-            }
-        }
-        self.incur_effect(&eff);
+        let result = self.apply_to_args(&head_ty, &raw_arg_tys, span, "function application");
 
         // Record each intermediate application node's type (the suffix after the
         // arguments applied so far), so `body_types` covers them. The outermost
@@ -656,11 +667,31 @@ impl<E: Env> Walker<'_, E> {
             );
             return SolveTy::Error;
         };
-        let (method_ty, fresh, _) = self.cx.instantiate_tracked(&scheme);
-        // The leading fresh variables correspond to the interface parameters.
-        let n = interface_param_count(self.db, iref);
-        for (param_instance, arg) in fresh.iter().take(n).zip(args) {
-            self.unify_at(span, &SolveTy::Var(*param_instance), arg, "an interface type argument");
+        let (method_ty, fresh_types, fresh_effects) = self.cx.instantiate_method(&scheme);
+        // The leading fresh variables correspond to the interface parameters, in
+        // declaration order; each is unified against the value's argument by kind
+        // (a type for a type parameter, an effect row for an effect parameter, so
+        // a method's effect parameter takes the value's actual effect).
+        let kinds = interface_param_kinds(self.db, iref);
+        let (mut ti, mut ei) = (0, 0);
+        for (i, kind) in kinds.iter().enumerate() {
+            let Some(arg) = args.get(i) else { break };
+            match kind {
+                ParamKind::Type => {
+                    if let Some(&pv) = fresh_types.get(ti) {
+                        self.unify_at(span, &SolveTy::Var(pv), arg, "an interface type argument");
+                    }
+                    ti += 1;
+                }
+                ParamKind::Effect => {
+                    if let (Some(&pe), SolveTy::EffectArg(e)) =
+                        (fresh_effects.get(ei), self.cx.resolve_shallow(arg))
+                    {
+                        self.cx.unify_effect_var(pe, &e);
+                    }
+                    ei += 1;
+                }
+            }
         }
         method_ty
     }
@@ -708,8 +739,20 @@ impl<E: Env> Walker<'_, E> {
             );
         }
 
-        let n = interface_param_count(self.db, iref);
-        let param_fresh: Vec<crate::ty::TyVarId> = (0..n).map(|_| self.cx.fresh_var_id()).collect();
+        // Allocate a shared instance per interface parameter, by kind: a type
+        // variable for a type parameter, an effect-row variable for an effect
+        // parameter (which the methods' bodies grow to the union of their
+        // effects). The two prefixes align with the method scheme's leading type
+        // and effect variables for positional sharing.
+        let kinds = interface_param_kinds(self.db, iref);
+        let mut type_prefix: Vec<crate::ty::TyVarId> = Vec::new();
+        let mut eff_prefix: Vec<crate::ty::EffRowVarId> = Vec::new();
+        for kind in &kinds {
+            match kind {
+                ParamKind::Type => type_prefix.push(self.cx.fresh_var_id()),
+                ParamKind::Effect => eff_prefix.push(self.cx.fresh_effect()),
+            }
+        }
 
         let declared: Vec<Symbol> = self
             .db
@@ -731,17 +774,40 @@ impl<E: Env> Walker<'_, E> {
             let saved = std::mem::replace(&mut self.cur_effect, SolveEffect::pure());
             let body_ty = self.infer_expr(m.body);
             let method_eff = std::mem::replace(&mut self.cur_effect, saved);
-            let impl_ty = SolveTy::arrows_solver_eff(param_tys, body_ty, method_eff);
+            let impl_ty = SolveTy::arrows_solver_eff(param_tys, body_ty, method_eff.clone());
             match build_interface_method_scheme(self.db, iref, m.name) {
                 Some(scheme) => {
-                    let expected = self.cx.instantiate_sharing(&scheme, &param_fresh);
-                    // A method body may perform *fewer* effects than the interface
-                    // declares (the declared effect is an upper bound — a pure
-                    // instance of an effectful interface is fine), so effect
-                    // unification is lenient here.
-                    self.cx.set_lenient_effects(true);
+                    let expected = self.cx.instantiate_sharing(&scheme, &type_prefix, &eff_prefix);
+                    // Unify the body's *type* against the declared method type with
+                    // effects set aside; the effect is constrained separately by
+                    // subsumption below.
+                    self.cx.set_ignore_effects(true);
                     self.unify_at(m.span, &impl_ty, &expected, "an interface method");
-                    self.cx.set_lenient_effects(false);
+                    self.cx.set_ignore_effects(false);
+                    // The body's effect must be admitted by the declared method
+                    // effect (`body ⊆ declared`): performing *fewer* is fine (the
+                    // declared effect is an upper bound), performing *more* than a
+                    // concrete declared effect is an error, and an effect
+                    // *parameter* grows to admit it — forwarding the body's effect.
+                    if let Some(declared_eff) =
+                        self.saturating_arrow_effect(&expected, m.params.len())
+                        && self.cx.subsume_effects(&method_eff, &declared_eff) != UnifyResult::Ok
+                    {
+                        let used =
+                            crate::ty::render_effect(&self.cx.reify_effect_standalone(&method_eff));
+                        emit(
+                            self.db,
+                            Diagnostic::error(
+                                crate::EFFECT_MISMATCH,
+                                format!(
+                                    "the body of method `{}` performs the effect `{used}`, which \
+                                     `{name}` does not declare",
+                                    m.name
+                                ),
+                                self.span(m.span),
+                            ),
+                        );
+                    }
                     implemented.push(m.name);
                 }
                 None => emit(
@@ -768,12 +834,51 @@ impl<E: Env> Walker<'_, E> {
             );
         }
 
-        // The instance's type is the interface applied to the (inferred) args.
+        // The effect parameters keep their open (subsumption) tails: when the
+        // binding has a declared type they are pinned by unifying against it
+        // (`Logger { Console }` closes the tail; `Logger 'e` keeps it the
+        // forwarded variable), and otherwise generalize like any row.
+        //
+        // The instance's type is the interface applied to its arguments by kind: a
+        // type variable for each type parameter, the (grown) effect-row variable
+        // for each effect parameter.
         let mut t = SolveTy::Interface(iref);
-        for &p in &param_fresh {
-            t = SolveTy::App(Rc::new(t), Rc::new(SolveTy::Var(p)));
+        let (mut ti, mut ei) = (0, 0);
+        for kind in &kinds {
+            let arg = match kind {
+                ParamKind::Type => {
+                    let v = type_prefix[ti];
+                    ti += 1;
+                    SolveTy::Var(v)
+                }
+                ParamKind::Effect => {
+                    let pe = eff_prefix[ei];
+                    ei += 1;
+                    SolveTy::EffectArg(SolveEffect { atoms: Vec::new(), tail: EffTail::Open(pe) })
+                }
+            };
+            t = SolveTy::App(Rc::new(t), Rc::new(arg));
         }
         t
+    }
+
+    /// The effect on the `n`th arrow of `ty` — the saturating arrow of an
+    /// `n`-parameter method. `None` for `n == 0` or a shorter chain.
+    fn saturating_arrow_effect(&self, ty: &SolveTy, n: usize) -> Option<SolveEffect> {
+        if n == 0 {
+            return None;
+        }
+        let mut cur = self.cx.resolve_shallow(ty);
+        for _ in 0..n - 1 {
+            match cur {
+                SolveTy::Arrow(_, to, _) => cur = self.cx.resolve_shallow(&to),
+                _ => return None,
+            }
+        }
+        match cur {
+            SolveTy::Arrow(_, _, e) => Some(e),
+            _ => None,
+        }
     }
 
     /// Emits [`crate::DUPLICATE_FIELD`] for any repeated label among `fields`.
@@ -878,14 +983,13 @@ impl<E: Env> Walker<'_, E> {
             return self.infer_builtin_binary(binop, lhs, rhs, span);
         }
         // A user-defined operator (or a shadowed built-in): a curried application
-        // of the resolved operator function to its two operands.
+        // of the resolved operator function to its two operands — through the same
+        // path as application, so a function operand's effect is subsumed (making
+        // point-free composition of differently-effecting functions type-check).
         let op_ty = self.infer_expr(op);
         let lt = self.infer_expr(lhs);
         let rt = self.infer_expr(rhs);
-        let result = self.cx.fresh();
-        let expected = SolveTy::arrow(lt, SolveTy::arrow(rt, result.clone()));
-        self.unify_at(span, &op_ty, &expected, "an operator application");
-        result
+        self.apply_to_args(&op_ty, &[lt, rt], span, "an operator application")
     }
 
     fn infer_builtin_binary(

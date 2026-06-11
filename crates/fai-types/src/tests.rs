@@ -1416,6 +1416,106 @@ fn effect_row_for_a_type_parameter_is_a_kind_error() {
 }
 
 #[test]
+fn effect_parameter_forwards_the_instance_effect() {
+    let src = indoc! {r#"
+        module M
+
+        public interface Console =
+          writeLine : String -> Unit / { Console }
+
+        public interface Logger 'e =
+          log : String -> Unit / 'e
+
+        public consoleLogger : Console -> Logger { Console }
+        let consoleLogger c = { Logger with log msg = c.writeLine msg }
+
+        public greet : Logger { Console } -> Unit / { Console }
+        let greet l = l.log "hi"
+    "#};
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+    assert_eq!(type_of(&db, f[0], "consoleLogger"), "Console -> Logger { Console }");
+    assert_eq!(type_of(&db, f[0], "greet"), "Logger { Console } -> () / { Console }");
+}
+
+#[test]
+fn effect_parameter_is_inferred_polymorphic_when_forwarded() {
+    // A function generic over the logger's effect forwards it via `'e`.
+    let src = indoc! {r#"
+        module M
+
+        public interface Logger 'e =
+          log : String -> Unit / 'e
+
+        public twice : Logger 'e -> Unit / 'e
+        let twice l =
+          let a = l.log "a"
+          l.log "b"
+    "#};
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+    assert_eq!(type_of(&db, f[0], "twice"), "Logger 'e -> () / 'e");
+}
+
+#[test]
+fn instance_performing_an_undeclared_effect_is_an_error() {
+    // The masking hole, closed: a pure-declared method whose body performs an
+    // effect is rejected (use an effect parameter to forward it).
+    let src = indoc! {r#"
+        module M
+
+        public interface Console =
+          writeLine : String -> Unit / { Console }
+
+        public interface PureLog =
+          log : String -> Unit
+
+        public bad : Console -> PureLog
+        let bad c = { PureLog with log msg = c.writeLine msg }
+    "#};
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert!(
+        check_codes(&db, f[0]).contains(&"FAI5001".to_owned()),
+        "got {:?}",
+        check_codes(&db, f[0])
+    );
+}
+
+#[test]
+fn pure_effect_argument_is_the_empty_row() {
+    // `{}` supplied for an effect parameter is the pure effect.
+    let src = indoc! {r#"
+        module M
+
+        public interface Logger 'e =
+          log : String -> Unit / 'e
+
+        public silent : Logger {}
+        let silent = { Logger with log msg = () }
+    "#};
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+    assert_eq!(type_of(&db, f[0], "silent"), "Logger {}");
+}
+
+#[test]
+fn instance_may_perform_fewer_effects_than_declared() {
+    // The declared method effect is an upper bound: a pure body for an
+    // effectful-declared method is fine.
+    let src = indoc! {r#"
+        module M
+
+        public interface Console =
+          writeLine : String -> Unit / { Console }
+
+        public quiet : Console
+        let quiet = { Console with writeLine msg = () }
+    "#};
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+}
+
+#[test]
 fn instance_missing_a_method_is_an_error() {
     let src = indoc! {r#"
         module M

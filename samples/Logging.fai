@@ -1,12 +1,17 @@
 module Logging
 
-interface Logger =
-  log : String -> Unit
+// An effect-parameterized interface: a `Logger 'e` performs the effect `'e`
+// whenever a message is logged, so its reach is visible in its type rather than
+// masked at the dictionary boundary.
+interface Logger 'e =
+  log : String -> Unit / 'e
 
-// Build a Logger from another Logger by prefixing every message.
-public withPrefix : String -> Logger -> Logger
+// Build a Logger from another Logger by prefixing every message. The prefixed
+// logger forwards the inner logger's effect.
+public withPrefix : String -> Logger 'e -> Logger 'e
 let withPrefix prefix inner = { Logger with log msg = inner.log (prefix ++ msg) }
 
-// Adapt a Console capability into a Logger.
-public consoleLogger : Console -> Logger
+// Adapt a Console capability into a Logger that uses the console: its effect
+// argument is `{ Console }`, forwarded from the body of `log`.
+public consoleLogger : Console -> Logger { Console }
 let consoleLogger console = { Logger with log msg = console.writeLine msg }
