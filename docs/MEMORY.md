@@ -1546,9 +1546,10 @@ Editor integration:
   `+ - *`, the `< <= > >=` comparisons, the bitwise `and/or/xor`, the shifts,
   unary `complement`, boolean `not`, and structural `=`/`compare` **on
   immediate-representable operands** — compile to inline machine code instead of an
-  out-of-line runtime call per operation. Division and remainder stay calls (they
-  guard against zero); the `Float` operations stay calls (a boxed `Float` would add
-  a heap box and operand drops, so inlining waits on unboxing them).
+  out-of-line runtime call per operation. Division and remainder were left as calls
+  here (they fault on a zero divisor) but are inlined by a later refinement (see
+  D117); the `Float` operations stay calls (a boxed `Float` would add a heap box and
+  operand drops, so inlining waits on unboxing them).
   - **What it emits.** The fast path mirrors the runtime (`unbox_int` / operate /
     `fai_box_int`): a both-operands-immediate guard (`(a & b) & 1`), then untag
     (`sshr` by one), the native operation, and re-tag (`value << 1 | 1`). For the
@@ -1960,6 +1961,65 @@ Editor integration:
     `size`. (2) A balanced tree's structural equality is shape-sensitive (two maps
     with the same entries built differently are unequal), so laws compare via
     `toList`, never `=` on a map/set.
+
+- **D117 Inline integer division and remainder (extends D108).** `/` and `%` on
+  `Int` were the last arithmetic primitives compiled as out-of-line runtime calls
+  (`fai_int_div`/`fai_int_rem`); D108 left them out because they fault on a zero
+  divisor. They now compile inline, which removes the per-operation call from
+  integer code — the bottleneck for `collatz` (`if n % 2 = 0 then n / 2 else
+  3 * n + 1`) once register direct calls (D115) erased the call overhead. The
+  runtime fallbacks are retained unchanged for the cases the fast paths exclude, so
+  the fault behavior and `wrapping_div`/`wrapping_rem` overflow semantics are
+  preserved exactly.
+  - **Shape chosen from the divisor.** A literal divisor is always non-negative —
+    a negation lowers to `0 - n`, never a negative literal — so a literal `d` is
+    `0` or a positive constant, and three constant shapes plus a general path
+    cover everything:
+    - **`d == 0`** keeps the plain runtime call, so a literal `10 / 0` still aborts
+      with the located message (a native `sdiv`/`srem` by zero is a raw hardware
+      trap with no message).
+    - **`d` a positive power of two `2^k`** (immediate) **strength-reduces to a
+      shift**: `q = (x + bias) >> k` with `bias = (x >> 63) >>u (64 - k)` (the
+      signed-truncation correction — an arithmetic shift alone floors), and the
+      remainder is `x - (q << k)`. No zero or overflow guard is needed (the divisor
+      is a known nonzero power of two and the result always fits the immediate).
+    - **any other in-range positive constant** divides with the native
+      `sdiv`/`srem` and **no zero guard and no fit check** — the divisor is
+      statically nonzero and never `-1`, and with `|d| >= 1` the result always fits
+      (the backend further strength-reduces a constant divide to a multiply).
+    - **a variable divisor** (or a constant too large to be immediate) takes the
+      **general path**: a both-operands-immediate guard, then a zero-divisor branch
+      to the runtime fault, the native op, and — for division only — the immediate
+      fit check.
+  - **The fit check is division-only and lives only in the general path.** With two
+    immediate operands the hardware `INT_MIN / -1` overflow trap is unreachable
+    (an immediate untags to `[-2^62, 2^62-1]`, never `i64::MIN`), so only a zero
+    divisor must be guarded before the native op. The one quotient that overflows
+    the *immediate* is `(-2^62) / -1 = 2^62`; the existing `sadd_overflow(r, r)`
+    fit check (shared with `inline_arith`) routes that lone case to the fallback,
+    which boxes it. A remainder is always strictly smaller in magnitude than the
+    divisor, so it never needs a fit check.
+  - **Reference counting and the IR are unchanged.** As with D108 this is purely a
+    code-generation lowering — the Core `Prim` node is untouched, so the
+    reference-count soundness interpreter and the reorder-safety analysis (which
+    already treats a non-literal/zero divisor as fault-capable) are unaffected. In
+    every fast path the dividend is an immediate, so its drop is a no-op and is
+    correctly omitted; a boxed dividend takes the fallback, which consumes the
+    operands. The constant paths gate on the divisor fitting the immediate so an
+    unused-in-the-fast-path divisor is never a heap box that could leak.
+  - **Cache invalidation.** The generated object changes for identical
+    IR/target/compiler-version, so the codegen-config stamp gains a
+    `divrem-inlined` token; a cache warmed before the change cannot serve a
+    pre-inlining object.
+  - **Acceptance.** IR-inspection tests pin each shape — the general `sdiv`+fit
+    check, the `srem` with no fit check, the power-of-two strength reduction (no
+    native op, the sign-bias `ushr`), the guard-elided constant divide, and the
+    bare `x / 0` call; behavior tests cover truncation and remainder sign for both
+    operand signs across the paths, the overflow-to-box, and boxed-operand
+    fallbacks; two JIT-vs-Rust property tests (variable and constant divisors)
+    check agreement with `wrapping_div`/`wrapping_rem` over arbitrary operands; and
+    end-to-end tests confirm a variable zero divisor and a remainder by zero still
+    abort with the located fault.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

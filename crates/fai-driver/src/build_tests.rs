@@ -219,6 +219,62 @@ fn division_by_zero_aborts_at_runtime() {
 }
 
 #[test]
+fn division_by_a_variable_zero_aborts_at_runtime() {
+    // A variable (non-literal) zero divisor exercises the inlined zero-divisor
+    // guard branching to the runtime fallback — distinct from the constant `10/0`
+    // bare-call path above, and the only thing that drives that branch (the
+    // property tests exclude a zero divisor).
+    let src = indoc! {r#"
+        module M
+
+        divide : Int -> Int -> Int
+        let divide a b = a / b
+
+        public main : Runtime -> Unit
+        let main runtime = runtime.console.writeLine (Int.toString (divide 10 0))
+    "#};
+    let (db, files) = db_with(&[("M.fai", src)]);
+    let exe = temp_exe();
+    let outcome = build_native(&db, files[0], &exe);
+    assert!(outcome.ok, "division by zero is a runtime fault, not a compile error");
+
+    let output = std::process::Command::new(exe.as_std_path()).output().expect("run");
+    assert!(!output.status.success(), "the program should fault");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("division by zero"),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn remainder_by_zero_aborts_at_runtime() {
+    // The remainder fault path mirrors division: a zero divisor aborts with the
+    // located message rather than a silent wrong answer or a raw hardware trap.
+    let src = indoc! {r#"
+        module M
+
+        rem : Int -> Int -> Int
+        let rem a b = a % b
+
+        public main : Runtime -> Unit
+        let main runtime = runtime.console.writeLine (Int.toString (rem 10 0))
+    "#};
+    let (db, files) = db_with(&[("M.fai", src)]);
+    let exe = temp_exe();
+    let outcome = build_native(&db, files[0], &exe);
+    assert!(outcome.ok, "remainder by zero is a runtime fault, not a compile error");
+
+    let output = std::process::Command::new(exe.as_std_path()).output().expect("run");
+    assert!(!output.status.success(), "the program should fault");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("by zero"),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn object_code_is_deterministic() {
     let src = indoc! {r#"
         module M
