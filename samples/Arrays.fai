@@ -1,0 +1,26 @@
+module Arrays
+
+// The contiguous, growable `Array` complements the linked `List`: O(1) indexing,
+// in-place update when uniquely owned, and an array-literal syntax `[| … |]`. Its
+// API mirrors `List` (collection-last), so it pipes the same way.
+/// Double every element and sum — one contiguous buffer per stage, no cons cells.
+public doubleSum : Array Int -> Int
+let doubleSum xs = Array.sum (Array.map (fun x -> x * 2) xs)
+example: doubleSum [| 1, 2, 3 |] = 12
+example: doubleSum [||] = 0
+
+/// Safe indexing returns `Option`; an out-of-range index is `None`.
+public second : Array Int -> Option Int
+let second xs = Array.get 1 xs
+example: second [| 10, 20, 30 |] = Some 20
+example: second [| 7 |] = None
+
+/// Build an array by index, then sort it (the standard in-place quicksort).
+public sortedSquares : Int -> Array Int
+let sortedSquares n = Array.sort (Array.init n (fun i -> (n - i) * (n - i)))
+example: Array.toList (sortedSquares 3) = [1, 4, 9]
+
+/// `Array` and `List` interconvert; round-tripping preserves the elements.
+public roundTrip : List Int -> List Int
+let roundTrip xs = Array.toList (Array.fromList xs)
+forall xs: roundTrip xs = xs

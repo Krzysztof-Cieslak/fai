@@ -97,10 +97,16 @@ impl Layouter<'_> {
             }
 
             match token.kind {
-                TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => {
+                TokenKind::LParen
+                | TokenKind::LBracket
+                | TokenKind::LArrayBracket
+                | TokenKind::LBrace => {
                     self.bracket_depth += 1;
                 }
-                TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => {
+                TokenKind::RParen
+                | TokenKind::RBracket
+                | TokenKind::RArrayBracket
+                | TokenKind::RBrace => {
                     self.bracket_depth = self.bracket_depth.saturating_sub(1);
                 }
                 _ => {}

@@ -1,16 +1,16 @@
 module MapSumShared
 
-// The shared-list twin of `MapSum`: because `xs` is used again by `List.sum xs`
-// after `List.map` consumes it, the list is shared (reference count > 1), so
-// reuse analysis cannot recycle its cells in place and `List.map` must allocate a
-// fresh spine — the copying fallback. Contrast `MapSum`, whose unique list is
-// recycled. Used by the Rust-vs-Fai runtime benchmark.
-/// The benchmark workload: sum of doubling [0, n) plus the sum of [0, n) (the
-/// shared list forces the copying path), which equals 3 * sum [0, n).
+// The shared twin of `MapSum`: `xs` is used again by `Array.sum xs` after
+// `Array.map`, so the array is shared (reference count > 1). `Array.map` builds a
+// fresh buffer either way (it does not yet recycle a unique input), so this
+// measures a shared-array traversal against Rust's `Vec`. Used by the Rust-vs-Fai
+// runtime benchmark.
+/// The benchmark workload: sum of doubling [0, n) plus the sum of [0, n), which
+/// equals 3 * sum [0, n).
 public run : Int -> Int
 let run n =
-  let xs = List.range 0 n
-  List.sum (List.map (fun x -> x * 2) xs) + List.sum xs
+  let xs = Array.range 0 n
+  Array.sum (Array.map (fun x -> x * 2) xs) + Array.sum xs
 example: run 4 = 18
 
 public main : Runtime -> Unit / { Console }

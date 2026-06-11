@@ -177,6 +177,9 @@ impl<'a> ArbBuilder<'a> {
             Ty::Con(Con::List) if args.len() == 1 => {
                 Ok(app(self.test("list")?, vec![self.arb_for(args[0])?]))
             }
+            Ty::Con(Con::Array) if args.len() == 1 => {
+                Ok(app(self.test("array")?, vec![self.arb_for(args[0])?]))
+            }
             Ty::Adt(adt) => match (adt.name.as_str(), args.len()) {
                 ("Option", 1) => Ok(app(self.test("option")?, vec![self.arb_for(args[0])?])),
                 ("Result", 2) => Ok(app(
@@ -217,9 +220,9 @@ impl<'a> ArbBuilder<'a> {
     /// elements; every other field uses its ordinary arbitrary.
     fn field_arb(&mut self, field_ty: &Ty, target: &Ty) -> Result<(CExpr, bool), NotRunnable> {
         let recursive = self.can_reach(field_ty, target);
-        if recursive && let Some(elem) = list_element(field_ty) {
+        if recursive && let Some((elem, rec_combinator)) = sequence_element(field_ty) {
             let elem_arb = self.arb_for(elem)?;
-            return Ok((app(self.test("recList")?, vec![elem_arb]), true));
+            return Ok((app(self.test(rec_combinator)?, vec![elem_arb]), true));
         }
         Ok((self.arb_for(field_ty)?, recursive))
     }
@@ -272,7 +275,9 @@ impl<'a> ArbBuilder<'a> {
             _ => {
                 let (head, args) = peel_app(ty);
                 match head {
-                    Ty::Con(Con::List) => args.iter().any(|a| self.reaches(a, target, visited)),
+                    Ty::Con(Con::List | Con::Array) => {
+                        args.iter().any(|a| self.reaches(a, target, visited))
+                    }
                     Ty::Adt(adt) if is_builtin_adt(*adt) => {
                         args.iter().any(|a| self.reaches(a, target, visited))
                     }
@@ -655,11 +660,13 @@ fn is_builtin_adt(adt: AdtRef) -> bool {
     matches!(adt.name.as_str(), "Option" | "Result")
 }
 
-/// The element type of a `List T`, if `ty` is one.
-fn list_element(ty: &Ty) -> Option<&Ty> {
+/// The element type of a sequence (`List T` or `Array T`) and the budget-splitting
+/// generator combinator to use for a recursive field of that type.
+fn sequence_element(ty: &Ty) -> Option<(&Ty, &'static str)> {
     let (head, args) = peel_app(ty);
     match (head, args.as_slice()) {
-        (Ty::Con(Con::List), [elem]) => Some(elem),
+        (Ty::Con(Con::List), [elem]) => Some((elem, "recList")),
+        (Ty::Con(Con::Array), [elem]) => Some((elem, "recArray")),
         _ => None,
     }
 }
@@ -778,7 +785,7 @@ fn rank_of(ranks: &FxHashMap<Ty, u32>, custom: &FxHashMap<Ty, DefId>, ty: &Ty) -
         _ => {
             let (head, args) = peel_app(ty);
             match head {
-                Ty::Con(Con::List) => Some(0),
+                Ty::Con(Con::List | Con::Array) => Some(0),
                 Ty::Adt(adt) if adt.name.as_str() == "Option" => Some(0),
                 Ty::Adt(adt) if adt.name.as_str() == "Result" => {
                     args.first().and_then(|ok| rank_of(ranks, custom, ok))
@@ -848,7 +855,7 @@ fn collect_adts(
         _ => {
             let (head, args) = peel_app(ty);
             match head {
-                Ty::Con(Con::List) => {
+                Ty::Con(Con::List | Con::Array) => {
                     args.iter().for_each(|a| collect_adts(db, custom, a, out, seen));
                 }
                 Ty::Adt(adt) if is_builtin_adt(*adt) => {
@@ -1089,16 +1096,16 @@ mod tests {
     }
 
     #[test]
-    fn list_element_unwraps_a_list() {
-        let lst = Ty::list(user_adt("Rose"));
+    fn sequence_element_unwraps_list_and_array() {
         let elem = user_adt("Rose");
-        assert_eq!(list_element(&lst), Some(&elem));
+        assert_eq!(sequence_element(&Ty::list(user_adt("Rose"))), Some((&elem, "recList")));
+        assert_eq!(sequence_element(&Ty::array(user_adt("Rose"))), Some((&elem, "recArray")));
     }
 
     #[test]
-    fn list_element_rejects_a_non_list() {
-        assert_eq!(list_element(&Ty::int()), None);
-        assert_eq!(list_element(&user_adt("Rose")), None);
+    fn sequence_element_rejects_a_non_sequence() {
+        assert_eq!(sequence_element(&Ty::int()), None);
+        assert_eq!(sequence_element(&user_adt("Rose")), None);
     }
 
     #[test]

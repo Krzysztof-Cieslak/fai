@@ -214,13 +214,13 @@ Reading peak RSS:
   linked runtime/std, code pages, allocator slack — that **dominates the small-heap
   workloads** (`fib`, `collatz`, `pi` bottom out near the runtime's baseline, and
   the Fai binary can even read *lower* than Rust there). The **heap-heavy**
-  workloads carry the real signal: `map_sum` builds a 1.5M-element `List` (a large
+  workloads carry the real signal: `map_sum` builds a 1.5M-element `Array` (a large
   transient heap) where idiomatic Rust runs an allocation-free loop, so its ratio
-  is large and expected; `merge_sort` sorts a linked `List` vs a `Vec`;
-  `binary_trees` builds a comparably large structure on both sides, so its peak is
-  near-even. As with the timing benches this is a **progress metric, not a fair
-  fight** (boxed, reference-counted values vs unboxed) — watch whether the gap
-  shrinks as the backend improves.
+  is large and expected; `merge_sort` sorts an `Array` vs a `Vec`; `binary_trees`
+  builds a comparably large structure on both sides, so its peak is near-even. As
+  with the timing benches this is a **progress metric, not a fair fight** (boxed,
+  reference-counted values vs unboxed) — watch whether the gap shrinks as the
+  backend improves.
 - **Linux-only.** Peak RSS is read from `/proc`, so the table is populated by the
   Linux Benchmarks workflow; on other platforms (and on Windows, which also skips
   the build/link + spawn path) the bench prints a skip note and reports no rows.
@@ -286,10 +286,18 @@ is closest to the pure size factor.
   "how fast is a *delivered Fai binary* vs a *delivered Rust binary*, end to end."
 - Even within a bench it is a **progress metric, not a fair fight**: Fai runs a
   uniform **boxed**, **reference-counted** representation (Cranelift), while Rust
-  is unboxed and optimized by LLVM. Some gaps are intentional and idiomatic —
-  `MapSum`'s Rust loop allocates nothing where Fai builds and folds a `List`, and
-  `MergeSort` sorts a `Vec` where Fai sorts a linked `List`. The number to watch
-  is whether the gap **shrinks** as the backend improves.
+  is unboxed and optimized by LLVM. The number to watch is whether the gap
+  **shrinks** as the backend improves.
+- **Match the data representation.** A benchmark should compare *like with like*,
+  so the ratio reflects the compiler/runtime/std rather than a fundamental
+  data-structure difference that holds in any language (a linked list pointer-chases
+  where an array is contiguous — true of Rust's own `LinkedList` vs `Vec`). The
+  sequence workloads therefore use Fai's contiguous **`Array`** against Rust's
+  `Vec` (`MapSum`/`MapSumShared` build-map-fold an `Array`; `MergeSort` uses the
+  standard `Array.sort`; `QuickSort` is a hand-written in-place array quicksort;
+  `MatrixMultiply`/`Levenshtein` use array-of-array and array-row DP;
+  `SpectralNorm` uses `Array Float`). `List`-vs-`Vec` rows are deliberately
+  avoided — they would measure the representation gap, not Fai.
 
 ### Keeping the two sides in lockstep
 

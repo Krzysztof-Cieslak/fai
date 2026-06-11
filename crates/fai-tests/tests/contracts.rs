@@ -469,6 +469,34 @@ fn full_corpus_report() {
 }
 
 #[test]
+fn array_binder_contract_runs() {
+    // A `forall` over `Array Int` generates arrays via the synthesized `array`
+    // combinator and runs cleanly.
+    let src = "module A\npublic rev2 : Array Int -> Array Int\n\
+               let rev2 xs = Array.reverse (Array.reverse xs)\nforall xs: rev2 xs = xs\n";
+    let outcome = run(&[("A.fai", src)]);
+    assert!(outcome.ok, "diagnostics: {:?}", outcome.diagnostics);
+    assert_eq!(outcome.passed, 1);
+    assert_eq!(outcome.not_run, 0);
+    assert_eq!(outcome.leaked, 0);
+}
+
+#[test]
+fn recursive_array_field_type_generates() {
+    // A type that recurses through an `Array` field generates via the synthesized
+    // `recArray` (budget-splitting), with the empty array as the base case.
+    let src = "module R\npublic type Rose =\n  | Rose Int (Array Rose)\n\
+               public count : Rose -> Int\n\
+               let count r =\n  match r with\n  | Rose _ kids -> 1 + Array.sum (Array.map count kids)\n\
+               forall r: count r >= 1\n";
+    let outcome = run(&[("R.fai", src)]);
+    assert!(outcome.ok, "diagnostics: {:?}", outcome.diagnostics);
+    assert_eq!(outcome.passed, 1);
+    assert_eq!(outcome.not_run, 0);
+    assert_eq!(outcome.leaked, 0);
+}
+
+#[test]
 fn record_binder_contract_runs() {
     let src = "module R\npublic type Point = { x : Int, y : Int }\n\
                public swap : Point -> Point\nlet swap p = { x = p.y, y = p.x }\n\

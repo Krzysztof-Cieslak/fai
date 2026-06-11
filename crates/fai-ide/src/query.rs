@@ -1149,7 +1149,7 @@ fn collect_body_refs(
             }
         }
         ExprKind::Paren(inner) => collect_body_refs(module, resolved, *inner, out),
-        ExprKind::Tuple(xs) | ExprKind::List(xs) => {
+        ExprKind::Tuple(xs) | ExprKind::List(xs) | ExprKind::Array(xs) => {
             for &x in xs {
                 collect_body_refs(module, resolved, x, out);
             }

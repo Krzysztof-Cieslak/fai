@@ -6013,3 +6013,94 @@ fn reset_precedes_a_let_bound_recursion() {
     assert!(out.contains("data@%"), "the rebuild branch reuses the token:\n{out}");
     assert!(out.contains("free-reuse %"), "the helper branch frees the token:\n{out}");
 }
+
+// ===========================================================================
+// Arrays: the public `Array` API is reference-count sound (build, traverse,
+// in-place update, sort, and boxed elements all balance dup/drop on every path).
+// ===========================================================================
+
+#[test]
+fn array_build_and_sum() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f n = Array.sum (Array.map (fun x -> x * 2) (Array.range 0 n))
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn array_filter() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f xs = Array.filter (fun x -> x > 0) xs
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn array_set_then_get() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f xs = Array.set 0 9 xs
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn array_push_fold() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f xs = Array.foldl (fun acc x -> Array.push x acc) Array.empty xs
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn array_sort() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f xs = Array.sort xs
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn array_of_boxed_elements() {
+    // Elements that are themselves heap values (strings) exercise per-element
+    // dup/drop in the array intrinsics.
+    sound(
+        indoc! {r#"
+            module M
+
+            let f xs = Array.reverse (Array.map (fun s -> s ++ "!") xs)
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn array_literal_is_sound() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x = Array.sum [| x, x, x |]
+        "#},
+        "f",
+    );
+}

@@ -2624,10 +2624,19 @@ fn is_immediate_ty(ty: &Ty) -> bool {
 /// small value is an immediate), discriminated unions and `List` (a nullary
 /// constructor is an immediate), the empty record, and type variables / unknowns.
 fn is_always_boxed_ty(ty: &Ty) -> bool {
+    // An `Array` (applied as `App(Con::Array, elem)`) is always a heap object —
+    // even an empty one — so it never needs the maybe-immediate tag check.
+    fn array_head(ty: &Ty) -> bool {
+        match ty {
+            Ty::Con(Con::Array) => true,
+            Ty::App(h, _) => array_head(h),
+            _ => false,
+        }
+    }
     match ty {
         Ty::Con(Con::String | Con::Float) | Ty::Tuple(_) | Ty::Interface(_) | Ty::Arrow(..) => true,
         Ty::Record(row) => !row.fields.is_empty(),
-        _ => false,
+        _ => array_head(ty),
     }
 }
 

@@ -79,6 +79,13 @@ pub const STRING_LEN_OFFSET: usize = HEADER_SIZE;
 /// Byte offset of a `String`'s first content byte.
 pub const STRING_BYTES_OFFSET: usize = HEADER_SIZE + 8;
 
+/// Byte offset of an `Array`'s element count (the live length).
+pub const ARRAY_LEN_OFFSET: usize = HEADER_SIZE;
+/// Byte offset of an `Array`'s first element slot. Capacity is derived from the
+/// object's allocation size (`(size - ARRAY_ELEMS_OFFSET) / 8`), so only slots
+/// `0..length` are ever live; the rest is spare capacity for in-place growth.
+pub const ARRAY_ELEMS_OFFSET: usize = HEADER_SIZE + 8;
+
 /// Byte offset of a closure's code pointer.
 pub const CLOSURE_CODE_OFFSET: usize = HEADER_SIZE;
 /// Byte offset of a closure's arity.
@@ -152,6 +159,12 @@ pub static FAI_FLOAT_DESC: Descriptor = Descriptor { name: "Float" };
 /// from the object's size.
 #[unsafe(no_mangle)]
 pub static FAI_DATA_DESC: Descriptor = Descriptor { name: "Data" };
+
+/// Descriptor for `Array` objects — a contiguous, growable sequence (children:
+/// the live element slots `0..length`). Capacity beyond `length` is spare and
+/// uninitialized, so the child scan and structural ops touch only `0..length`.
+#[unsafe(no_mangle)]
+pub static FAI_ARRAY_DESC: Descriptor = Descriptor { name: "Array" };
 
 // ---------------------------------------------------------------------------
 // Tagging helpers.
@@ -653,6 +666,16 @@ unsafe fn scan_push(p: *mut u8, work: &mut DropWork) {
                     work.push(arg);
                 }
             }
+        } else if std::ptr::eq(desc, &FAI_ARRAY_DESC) {
+            // An array's children are its live element slots (`0..length`); the
+            // spare capacity beyond `length` is uninitialized and not scanned.
+            let len = read_u64(p, ARRAY_LEN_OFFSET) as usize;
+            for i in 0..len {
+                let elem = read_i64(p, ARRAY_ELEMS_OFFSET + i * 8);
+                if is_boxed(elem) {
+                    work.push(elem);
+                }
+            }
         }
         // Leaf kinds (`String`, boxed `Int`/`Float`) have no children.
     }
@@ -785,6 +808,248 @@ pub extern "C" fn fai_record_update(record: Value, index: Value, value: Value) -
         // (balancing the dups) and the replaced field once.
         fai_drop(record);
         from_obj(q)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Arrays: a contiguous, growable sequence.
+// ---------------------------------------------------------------------------
+//
+// Layout: the object header, then `length` (the live element count) at
+// `ARRAY_LEN_OFFSET`, then the element slots at `ARRAY_ELEMS_OFFSET`. Capacity —
+// the number of slots the allocation holds — is *derived* from the object's size
+// (`(size - ARRAY_ELEMS_OFFSET) / 8`), not stored, so a unique array grows in
+// place into its spare capacity. Only slots `0..length` are live (initialized,
+// reference-counted, compared); the slots beyond are uninitialized spare.
+//
+// Mutation follows the same uniqueness rule as `fai_record_update`: the unique
+// owner mutates in place, a shared array is copied. An out-of-bounds index aborts
+// (a value error, like division by zero); the standard library's safe `get`/`set`
+// bounds-check first and never reach that path.
+
+/// An array's live element count.
+///
+/// # Safety
+/// `v` is a boxed `Array`.
+unsafe fn array_len(v: Value) -> usize {
+    // SAFETY: a boxed array stores its length at `ARRAY_LEN_OFFSET`.
+    unsafe { read_u64(as_obj(v), ARRAY_LEN_OFFSET) as usize }
+}
+
+/// An array's capacity (element slots the allocation holds), derived from its size.
+///
+/// # Safety
+/// `v` is a boxed `Array`.
+unsafe fn array_cap(v: Value) -> usize {
+    // SAFETY: a boxed array stores its allocation size in the header.
+    let size = unsafe { read_u64(as_obj(v), SIZE_OFFSET) } as usize;
+    (size - ARRAY_ELEMS_OFFSET) / 8
+}
+
+/// Allocates an array object of `length` live slots within `cap` total capacity
+/// (slots past `length` are left uninitialized for in-place growth). `cap` must be
+/// at least `length`.
+fn alloc_array(length: usize, cap: usize) -> *mut u8 {
+    debug_assert!(cap >= length);
+    let p = alloc_obj(ARRAY_ELEMS_OFFSET + cap * 8, &FAI_ARRAY_DESC);
+    // SAFETY: `p` has room for the length field and `cap` slots.
+    unsafe { write_u64(p, ARRAY_LEN_OFFSET, length as u64) };
+    p
+}
+
+/// The capacity to grow to so an array of capacity `cap` can hold `needed`
+/// elements: double from a small base until it fits.
+fn grow_cap(cap: usize, needed: usize) -> usize {
+    let mut c = if cap == 0 { 4 } else { cap };
+    while c < needed {
+        c *= 2;
+    }
+    c
+}
+
+/// Builds an empty array with room for `cap` elements (`Array.withCapacity`).
+/// Capacity is a hint: pushes within it append in place, beyond it grow. Consumes
+/// the immediate `cap`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_array_with_capacity(cap: Value) -> Value {
+    let cap = unbox_int(cap).max(0) as usize;
+    from_obj(alloc_array(0, cap))
+}
+
+/// An array's length as an immediate `Int` (operand consumed).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_array_length(arr: Value) -> Value {
+    // SAFETY: `arr` is a boxed array (guaranteed by typing).
+    let len = unsafe { array_len(arr) };
+    fai_drop(arr);
+    imm_int(len as i64)
+}
+
+/// An array's length, *borrowing* the operand (the caller releases it).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_array_length_borrowed(arr: Value) -> Value {
+    // SAFETY: `arr` is a boxed array.
+    imm_int(unsafe { array_len(arr) } as i64)
+}
+
+/// Aborts on an out-of-bounds array index — a value error the well-typed safe API
+/// guards against (the unchecked fast path and standard-library internals reach
+/// this only on a genuine bug, never from user code).
+fn array_bounds_check(index: usize, len: usize) {
+    if index >= len {
+        fai_panic("array index out of bounds");
+    }
+}
+
+/// Element `index`, returning an owned reference and consuming `arr` (the element
+/// is duplicated so it outlives `arr`'s drop). Out-of-bounds aborts.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_array_get(arr: Value, index: Value) -> Value {
+    let index = unbox_int(index) as usize;
+    // SAFETY: `arr` is a boxed array; the slot is in bounds after the check.
+    let elem = unsafe {
+        array_bounds_check(index, array_len(arr));
+        read_i64(as_obj(arr), ARRAY_ELEMS_OFFSET + index * 8)
+    };
+    fai_dup(elem);
+    fai_drop(arr);
+    elem
+}
+
+/// Element `index`, *borrowing* `arr` (the caller releases it); the element is
+/// duplicated so the returned reference is owned independently. Out-of-bounds
+/// aborts.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_array_get_borrowed(arr: Value, index: Value) -> Value {
+    let index = unbox_int(index) as usize;
+    // SAFETY: `arr` is a boxed array; the slot is in bounds after the check.
+    let elem = unsafe {
+        array_bounds_check(index, array_len(arr));
+        read_i64(as_obj(arr), ARRAY_ELEMS_OFFSET + index * 8)
+    };
+    fai_dup(elem)
+}
+
+/// Replaces element `index` with `value`, consuming `arr` and `value`. The unique
+/// owner overwrites in place (releasing the old element); a shared array is copied
+/// with the element replaced. Out-of-bounds aborts.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_array_set(arr: Value, index: Value, value: Value) -> Value {
+    let index = unbox_int(index) as usize;
+    // SAFETY: `arr` is a boxed array; the slot is in bounds after the check.
+    unsafe {
+        let len = array_len(arr);
+        array_bounds_check(index, len);
+        let p = as_obj(arr);
+        // Unique owner: overwrite the slot in place, releasing the old element.
+        if read_u64(p, RC_OFFSET) == 1 {
+            let old = read_i64(p, ARRAY_ELEMS_OFFSET + index * 8);
+            write_i64(p, ARRAY_ELEMS_OFFSET + index * 8, value);
+            fai_drop(old);
+            return arr;
+        }
+        // Shared: copy the live elements with the one at `index` replaced.
+        let q = alloc_array(len, len);
+        for i in 0..len {
+            if i == index {
+                write_i64(q, ARRAY_ELEMS_OFFSET + i * 8, value);
+            } else {
+                let e = read_i64(p, ARRAY_ELEMS_OFFSET + i * 8);
+                fai_dup(e);
+                write_i64(q, ARRAY_ELEMS_OFFSET + i * 8, e);
+            }
+        }
+        // Release this reference: drops the copied-out elements once (balancing the
+        // dups) and the replaced old element once.
+        fai_drop(arr);
+        from_obj(q)
+    }
+}
+
+/// Appends `value`, consuming `arr` and `value`. The unique owner appends in place
+/// when it has spare capacity and grows (reallocates) when full; a shared array is
+/// copied with room for the new element.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_array_push(arr: Value, value: Value) -> Value {
+    // SAFETY: `arr` is a boxed array.
+    unsafe {
+        let len = array_len(arr);
+        let cap = array_cap(arr);
+        let p = as_obj(arr);
+        let unique = read_u64(p, RC_OFFSET) == 1;
+        if unique && len < cap {
+            // In place: write the spare slot and bump the length.
+            write_i64(p, ARRAY_ELEMS_OFFSET + len * 8, value);
+            write_u64(p, ARRAY_LEN_OFFSET, (len + 1) as u64);
+            return arr;
+        }
+        let q = alloc_array(len + 1, grow_cap(cap, len + 1));
+        if unique {
+            // Unique but full: move the elements into the larger buffer (no
+            // dup/drop — ownership transfers) and reclaim the old memory directly.
+            std::ptr::copy_nonoverlapping(
+                p.add(ARRAY_ELEMS_OFFSET),
+                q.add(ARRAY_ELEMS_OFFSET),
+                len * 8,
+            );
+            write_i64(q, ARRAY_ELEMS_OFFSET + len * 8, value);
+            free_obj(p);
+        } else {
+            // Shared: copy the elements (dup each — now shared with the original),
+            // then release this reference (balancing the dups).
+            for i in 0..len {
+                let e = read_i64(p, ARRAY_ELEMS_OFFSET + i * 8);
+                fai_dup(e);
+                write_i64(q, ARRAY_ELEMS_OFFSET + i * 8, e);
+            }
+            write_i64(q, ARRAY_ELEMS_OFFSET + len * 8, value);
+            fai_drop(arr);
+        }
+        from_obj(q)
+    }
+}
+
+/// Structural equality of two boxed arrays (equal length, elementwise equal).
+///
+/// # Safety
+/// `a` and `b` are boxed arrays.
+unsafe fn array_equal(a: Value, b: Value) -> bool {
+    // SAFETY: both are boxed arrays; only `0..length` is live.
+    unsafe {
+        let n = array_len(a);
+        if n != array_len(b) {
+            return false;
+        }
+        for i in 0..n {
+            let ea = read_i64(as_obj(a), ARRAY_ELEMS_OFFSET + i * 8);
+            let eb = read_i64(as_obj(b), ARRAY_ELEMS_OFFSET + i * 8);
+            if !values_equal(ea, eb) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// Lexicographic ordering of two boxed arrays — element by element, and on a
+/// shared prefix the shorter array is less (matching `List`/`String`).
+///
+/// # Safety
+/// `a` and `b` are boxed arrays.
+unsafe fn array_compare(a: Value, b: Value) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    // SAFETY: both are boxed arrays; only `0..length` is live.
+    unsafe {
+        let (na, nb) = (array_len(a), array_len(b));
+        for i in 0..na.min(nb) {
+            let ea = read_i64(as_obj(a), ARRAY_ELEMS_OFFSET + i * 8);
+            let eb = read_i64(as_obj(b), ARRAY_ELEMS_OFFSET + i * 8);
+            match values_compare(ea, eb) {
+                Ordering::Equal => {}
+                other => return other,
+            }
+        }
+        na.cmp(&nb)
     }
 }
 
@@ -1583,6 +1848,8 @@ fn values_equal(a: Value, b: Value) -> bool {
                         == read_u64(as_obj(b), FLOAT_VALUE_OFFSET)
                 } else if std::ptr::eq(da, &FAI_DATA_DESC) {
                     data_equal(a, b)
+                } else if std::ptr::eq(da, &FAI_ARRAY_DESC) {
+                    array_equal(a, b)
                 } else {
                     false
                 }
@@ -1658,6 +1925,10 @@ fn values_compare(a: Value, b: Value) -> std::cmp::Ordering {
     if std::ptr::eq(desc, &FAI_STRING_DESC) {
         // SAFETY: both are boxed `String`s.
         return unsafe { string_bytes(a).cmp(string_bytes(b)) };
+    }
+    if std::ptr::eq(desc, &FAI_ARRAY_DESC) {
+        // SAFETY: both are boxed arrays (same type).
+        return unsafe { array_compare(a, b) };
     }
     if std::ptr::eq(desc, &FAI_DATA_DESC) {
         let ta = data_tag(a) >> 1;
@@ -2059,6 +2330,8 @@ fn verify_payload(p: *const u8, size: usize, byte: u8) {
 
 #[cfg(test)]
 mod alloc_tests;
+#[cfg(test)]
+mod array_tests;
 #[cfg(test)]
 mod proptests;
 #[cfg(test)]

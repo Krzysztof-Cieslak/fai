@@ -392,6 +392,22 @@ impl Lexer<'_> {
 
     fn operator_or_unknown(&mut self, start: usize) {
         let Some(c) = self.bump() else { return };
+        // Two-character array-literal brackets `[|` and `|]`, taken by maximal munch
+        // before the single `[`/`|` tokens. `[` precedes `|` only at an array
+        // literal's open, and `|` precedes `]` only at its close, so neither
+        // conflicts with `|>`, `||`, or a `|` match arm.
+        if c == '[' && self.peek() == Some('|') {
+            self.pos += 1;
+            let range = self.range_from(start);
+            self.push(TokenKind::LArrayBracket, range);
+            return;
+        }
+        if c == '|' && self.peek() == Some(']') {
+            self.pos += 1;
+            let range = self.range_from(start);
+            self.push(TokenKind::RArrayBracket, range);
+            return;
+        }
         // Single-character grouping and punctuation (none are operator chars).
         let punct = match c {
             '(' => Some(TokenKind::LParen),
@@ -531,6 +547,62 @@ mod tests {
             kinds("true false"),
             vec![TokenKind::LowerIdent, TokenKind::LowerIdent, TokenKind::Eof,]
         );
+    }
+
+    #[test]
+    fn array_brackets_are_maximal_munch() {
+        assert_eq!(
+            kinds("[| 1 |]"),
+            vec![
+                TokenKind::LArrayBracket,
+                TokenKind::Int,
+                TokenKind::RArrayBracket,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_array_brackets_adjacent() {
+        // `[||]` is `[|` then `|]`, with no `||` (or) token between.
+        assert_eq!(
+            kinds("[||]"),
+            vec![TokenKind::LArrayBracket, TokenKind::RArrayBracket, TokenKind::Eof]
+        );
+    }
+
+    #[test]
+    fn nested_array_brackets() {
+        assert_eq!(
+            kinds("[|[||]|]"),
+            vec![
+                TokenKind::LArrayBracket,
+                TokenKind::LArrayBracket,
+                TokenKind::RArrayBracket,
+                TokenKind::RArrayBracket,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn array_brackets_do_not_disturb_list_pipe_or_or() {
+        // A list literal is still `[` `]`.
+        assert_eq!(
+            kinds("[1]"),
+            vec![TokenKind::LBracket, TokenKind::Int, TokenKind::RBracket, TokenKind::Eof]
+        );
+        // `|>` and `||` are unaffected (different second char than `|]`).
+        assert_eq!(
+            kinds("a |> b"),
+            vec![TokenKind::LowerIdent, TokenKind::Operator, TokenKind::LowerIdent, TokenKind::Eof,]
+        );
+        assert_eq!(
+            kinds("a || b"),
+            vec![TokenKind::LowerIdent, TokenKind::Operator, TokenKind::LowerIdent, TokenKind::Eof,]
+        );
+        // A `|` match arm followed by `]`-free context still lexes as `Pipe`.
+        assert_eq!(kinds("| x"), vec![TokenKind::Pipe, TokenKind::LowerIdent, TokenKind::Eof]);
     }
 
     #[test]

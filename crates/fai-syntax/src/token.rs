@@ -65,6 +65,10 @@ pub enum TokenKind {
     RParen,
     LBracket,
     RBracket,
+    /// `[|` — opens an array literal.
+    LArrayBracket,
+    /// `|]` — closes an array literal.
+    RArrayBracket,
     LBrace,
     RBrace,
     Comma,

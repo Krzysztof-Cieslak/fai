@@ -1,65 +1,52 @@
 module Levenshtein
 
 // The edit distance between two integer sequences via the classic two-row dynamic
-// program: each row is a `List Int` rebuilt from the previous one. This exercises
-// list-based DP with a left-to-right scan carrying the diagonal and left
-// neighbours. (Integer sequences stand in for strings; the standard library has
-// no character indexing.) Used by the Rust-vs-Fai runtime benchmark.
-seqA : Int -> List Int
-let seqA n = List.map (fun i -> i % 7) (List.range 0 n)
+// program, with each row an `Array Int` built left to right with O(1) neighbour
+// access. (Integer sequences stand in for strings; the standard library has no
+// character indexing.) Matched against Rust's `Vec`-row DP. Used by the
+// Rust-vs-Fai runtime benchmark.
+seqA : Int -> Array Int
+let seqA n = Array.init n (fun i -> i % 7)
 
-seqB : Int -> List Int
-let seqB n = List.map (fun i -> i * 3 % 7) (List.range 0 n)
+seqB : Int -> Array Int
+let seqB n = Array.init n (fun i -> i * 3 % 7)
 
 min3 : Int -> Int -> Int -> Int
 let min3 a b c =
   let m = if a < b then a else b
   if m < c then m else c
 
-// Fill the rest of a new DP row. `ai` is the current left element; `diag` is the
-// previous row's value one column back; `left` is the new row's previous value;
-// `bs` and `olds` are the remaining right elements and previous-row values.
-fillRow : Int -> Int -> Int -> List Int -> List Int -> List Int
-let fillRow ai diag left bs olds =
-  match bs with
-  | [] -> []
-  | bj :: brest ->
-    match olds with
-    | [] -> []
-    | up :: orest ->
-      let cost = if ai = bj then 0 else 1
-      let here = min3 (left + 1) (up + 1) (diag + cost)
-      here :: fillRow ai up here brest orest
+// Build the new DP row for left element `ai` (1-based row index `idx`): `new[0]`
+// is `idx`, then each cell is the min of its left, up, and diagonal neighbours.
+// `old` is the previous row (length m+1) and `bs` the right sequence (length m).
+fillRow : Int -> Int -> Array Int -> Array Int -> Array Int
+let fillRow ai idx bs old =
+  fillFrom ai bs old 1 (Array.push idx (Array.withCapacity (Array.length old)))
 
-// Produce the new DP row for left element `ai` with 1-based index `idx`.
-stepRow : Int -> Int -> List Int -> List Int -> List Int
-let stepRow idx ai bs oldRow =
-  match oldRow with
-  | [] -> []
-  | first :: orest -> idx :: fillRow ai first idx bs orest
+let fillFrom ai bs old j new =
+  if j >= Array.length old then
+    new
+  else
+    let cost = if ai = Array.unsafeGet (j - 1) bs then 0 else 1
+    let here =
+      min3 (Array.unsafeGet (j - 1) new + 1) (Array.unsafeGet j old + 1) (Array.unsafeGet (j - 1) old + cost)
+    fillFrom ai bs old (j + 1) (Array.push here new)
 
 // Fold over the left sequence, advancing one DP row per element.
-runRows : Int -> List Int -> List Int -> List Int -> List Int
-let runRows idx alist bs oldRow =
-  match alist with
-  | [] -> oldRow
-  | ai :: arest -> runRows (idx + 1) arest bs (stepRow idx ai bs oldRow)
-
-lastOf : List Int -> Int
-let lastOf xs =
-  match xs with
-  | [] -> 0
-  | x :: rest ->
-    match rest with
-    | [] -> x
-    | _ :: _ -> lastOf rest
+runRows : Int -> Array Int -> Array Int -> Array Int -> Array Int
+let runRows idx a bs old =
+  if idx > Array.length a then
+    old
+  else
+    runRows (idx + 1) a bs (fillRow (Array.unsafeGet (idx - 1) a) idx bs old)
 
 /// The benchmark workload: the edit distance between two length-n sequences.
 public run : Int -> Int
 let run n =
   let a = seqA n
   let b = seqB n
-  lastOf (runRows 1 a b (List.range 0 (List.length b + 1)))
+  let final = runRows 1 a b (Array.range 0 (Array.length b + 1))
+  Array.unsafeGet (Array.length final - 1) final
 example: run 3 = 2
 
 public main : Runtime -> Unit / { Console }

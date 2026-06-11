@@ -295,6 +295,22 @@ fn arithmetic_operators_spaced() {
 }
 
 #[test]
+fn array_literal_canonical_spacing() {
+    // Inner spaces and comma-spacing are normalized to `[| a, b, c |]`.
+    formats_with("module M\nlet a = [|1,2,3|]", "[| 1, 2, 3 |]");
+}
+
+#[test]
+fn empty_array_literal_has_no_inner_space() {
+    formats_with("module M\nlet a = Array.length [|  |]", "[||]");
+}
+
+#[test]
+fn nested_array_literal_formats() {
+    formats_with("module M\nlet a = [| [|1|], [|2|] |]", "[| [| 1 |], [| 2 |] |]");
+}
+
+#[test]
 fn arrow_effect_closed_is_canonical() {
     formats_with(
         "module M\npublic save : String -> Unit / { Console }\nlet save x = x",
@@ -713,6 +729,7 @@ fn shape_expr(m: &Module, id: ExprId) -> String {
         ExprKind::Paren(inner) => format!("(paren {})", shape_expr(m, *inner)),
         ExprKind::Tuple(xs) => format!("(tuple {})", shape_exprs(m, xs)),
         ExprKind::List(xs) => format!("(list {})", shape_exprs(m, xs)),
+        ExprKind::Array(xs) => format!("(array {})", shape_exprs(m, xs)),
         ExprKind::Match { scrutinee, arms } => {
             let arms = arms
                 .iter()

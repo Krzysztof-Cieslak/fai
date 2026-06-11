@@ -408,6 +408,16 @@ pub enum Prim {
     /// Row-polymorphic record update: clone a record (by runtime size), replacing
     /// the field at a runtime index. Internal to lowering, never a source name.
     RecordUpdate,
+    /// `Array.withCapacity`: a fresh empty array with room for `n` elements.
+    ArrayWithCapacity,
+    /// `Array` length (the live element count).
+    ArrayLength,
+    /// `Array` element access by index (unchecked; out-of-bounds aborts).
+    ArrayGet,
+    /// `Array` element update by index (in place when unique; out-of-bounds aborts).
+    ArraySet,
+    /// `Array` append (in place when unique with spare capacity, else grows/copies).
+    ArrayPush,
 }
 
 /// Whether values of `ty` are boxed, reference-counted heap values, so lending
@@ -417,7 +427,7 @@ pub enum Prim {
 fn is_boxed_rc(ty: &Ty) -> bool {
     fn boxed_head(ty: &Ty) -> bool {
         match ty {
-            Ty::Adt(_) | Ty::Interface(_) | Ty::Con(Con::List) => true,
+            Ty::Adt(_) | Ty::Interface(_) | Ty::Con(Con::List | Con::Array) => true,
             Ty::App(head, _) => boxed_head(head),
             _ => false,
         }
@@ -451,6 +461,8 @@ impl Prim {
                 | Prim::StrConcat
                 | Prim::StringSplit
                 | Prim::StringJoin
+                | Prim::ArrayLength
+                | Prim::ArrayGet
         ) && is_boxed_rc(operand_ty)
     }
 
@@ -468,6 +480,8 @@ impl Prim {
             Prim::Trim => Some("fai_trim_borrowed"),
             Prim::StrConcat => Some("fai_string_concat_borrowed"),
             Prim::StringSplit => Some("fai_string_split_borrowed"),
+            Prim::ArrayLength => Some("fai_array_length_borrowed"),
+            Prim::ArrayGet => Some("fai_array_get_borrowed"),
             Prim::StringJoin => Some("fai_string_join_borrowed"),
             _ => None,
         }
@@ -531,6 +545,11 @@ impl Prim {
             Prim::EnvGet => "fai_env_get",
             Prim::EnvArgs => "fai_env_args",
             Prim::RecordUpdate => "fai_record_update",
+            Prim::ArrayWithCapacity => "fai_array_with_capacity",
+            Prim::ArrayLength => "fai_array_length",
+            Prim::ArrayGet => "fai_array_get",
+            Prim::ArraySet => "fai_array_set",
+            Prim::ArrayPush => "fai_array_push",
         }
     }
 
@@ -560,8 +579,10 @@ impl Prim {
             | Prim::EnvGet
             | Prim::EnvArgs
             | Prim::IntComplement
+            | Prim::ArrayWithCapacity
+            | Prim::ArrayLength
             | Prim::FileRead => 1,
-            Prim::RecordUpdate => 3,
+            Prim::RecordUpdate | Prim::ArraySet => 3,
             _ => 2,
         }
     }
@@ -605,6 +626,11 @@ impl Prim {
             "fileWrite" => Prim::FileWrite,
             "envGet" => Prim::EnvGet,
             "envArgs" => Prim::EnvArgs,
+            "arrayWithCapacity" => Prim::ArrayWithCapacity,
+            "arrayLength" => Prim::ArrayLength,
+            "arrayGet" => Prim::ArrayGet,
+            "arraySet" => Prim::ArraySet,
+            "arrayPush" => Prim::ArrayPush,
             _ => return None,
         })
     }

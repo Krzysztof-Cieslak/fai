@@ -1,33 +1,59 @@
 module QuickSort
 
-// Quicksort over a linked `List`: partition the tail around the head pivot with
-// two filters, sort each side, and concatenate. A position-weighted checksum of
-// the sorted list (Σ i * x[i]) detects any ordering error, so the result really
-// depends on the sort. A different allocation/partition pattern than the merge
-// sort in `MergeSort`. Used by the Rust-vs-Fai runtime benchmark.
-quicksort : List Int -> List Int
-let quicksort xs =
-  match xs with
-  | [] -> []
-  | pivot :: rest ->
-    let smaller = List.filter (fun x -> x < pivot) rest
-    let greaterEq = List.filter (fun x -> x >= pivot) rest
-    List.append (quicksort smaller) (pivot :: quicksort greaterEq)
+// A hand-written, in-place quicksort over an `Array Int`, demonstrating the
+// `unsafeGet`/`unsafeSet` idiom: a unique array is partitioned and swapped in
+// place (no fresh allocation per partition). A position-weighted checksum of the
+// sorted array (Σ i * x[i]) detects any ordering error, so the result really
+// depends on the sort. Distinct from the standard `Array.sort` (which `MergeSort`
+// exercises) and from a copying functional partition. Used by the Rust-vs-Fai
+// runtime benchmark.
+// Swap elements `i` and `j` in place (the array is unique through the sort).
+swap : Int -> Int -> Array Int -> Array Int
+let swap i j a =
+  let vi = Array.unsafeGet i a
+  let vj = Array.unsafeGet j a
+  Array.unsafeSet j vi (Array.unsafeSet i vj a)
+
+// Lomuto partition of `[lo, hi)` with the pivot at `hi-1`: pack the elements
+// `< pivot` below `store`, then drop the pivot at `store`. Returns the pivot's
+// final index and the partitioned array.
+partition : Int -> Int -> Int -> Array Int -> (Int * Array Int)
+let partition hi j store a =
+  if j >= hi - 1 then
+    (store, swap store (hi - 1) a)
+  else if Array.unsafeGet j a < Array.unsafeGet (hi - 1) a then
+    partition hi (j + 1) (store + 1) (swap store j a)
+  else
+    partition hi (j + 1) store a
+
+// Sort `[lo, hi)` in place, recursing into the smaller side and tail-calling the
+// larger so the recursion depth stays logarithmic.
+qsort : Int -> Int -> Array Int -> Array Int
+let qsort lo hi a =
+  if hi - lo <= 1 then
+    a
+  else
+    match partition hi lo lo a with
+    | (p, a2) ->
+      if p - lo < hi - p - 1 then
+        qsort (p + 1) hi (qsort lo p a2)
+      else
+        qsort lo p (qsort (p + 1) hi a2)
 
 // A scrambled input of n values via a multiplicative hash modulo n.
-gen : Int -> List Int
-let gen n = List.map (fun k -> (k * 2654435761 + 12345) % n) (List.range 0 n)
+gen : Int -> Array Int
+let gen n = Array.init n (fun k -> (k * 2654435761 + 12345) % n)
 
 // Σ i * x[i], accumulated left to right.
-checksum : Int -> Int -> List Int -> Int
-let checksum i acc xs =
-  match xs with
-  | [] -> acc
-  | x :: rest -> checksum (i + 1) (acc + i * x) rest
+checksum : Int -> Int -> Int -> Array Int -> Int
+let checksum i acc n a =
+  if i >= n then acc else checksum (i + 1) (acc + i * Array.unsafeGet i a) n a
 
 /// The benchmark workload: the position-weighted checksum of the sorted input.
 public run : Int -> Int
-let run n = checksum 0 0 (quicksort (gen n))
+let run n =
+  let sorted = qsort 0 n (gen n)
+  checksum 0 0 n sorted
 example: run 3 = 5
 
 public main : Runtime -> Unit / { Console }

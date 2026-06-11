@@ -254,6 +254,8 @@ pub enum ExprKind {
     Tuple(Vec<ExprId>),
     /// A list literal `[a, b, …]`.
     List(Vec<ExprId>),
+    /// An array literal `[| a, b, … |]`.
+    Array(Vec<ExprId>),
     /// An unparseable expression (recovered).
     Error,
 }

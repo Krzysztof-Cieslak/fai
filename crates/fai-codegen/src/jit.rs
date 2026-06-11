@@ -101,6 +101,13 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_env_get", rt::fai_env_get);
     sym!("fai_env_args", rt::fai_env_args);
     sym!("fai_record_update", rt::fai_record_update);
+    sym!("fai_array_with_capacity", rt::fai_array_with_capacity);
+    sym!("fai_array_length", rt::fai_array_length);
+    sym!("fai_array_length_borrowed", rt::fai_array_length_borrowed);
+    sym!("fai_array_get", rt::fai_array_get);
+    sym!("fai_array_get_borrowed", rt::fai_array_get_borrowed);
+    sym!("fai_array_set", rt::fai_array_set);
+    sym!("fai_array_push", rt::fai_array_push);
     sym!("fai_apply_n", rt::fai_apply_n);
     sym!("fai_make_closure", rt::fai_make_closure);
     sym!("fai_run_main", rt::fai_run_main);
@@ -110,6 +117,7 @@ fn register_runtime(builder: &mut JITBuilder) {
     builder.symbol("FAI_PAP_DESC", (&raw const rt::FAI_PAP_DESC).cast());
     builder.symbol("FAI_FLOAT_DESC", (&raw const rt::FAI_FLOAT_DESC).cast());
     builder.symbol("FAI_DATA_DESC", (&raw const rt::FAI_DATA_DESC).cast());
+    builder.symbol("FAI_ARRAY_DESC", (&raw const rt::FAI_ARRAY_DESC).cast());
 }
 
 fn jit_module() -> JITModule {

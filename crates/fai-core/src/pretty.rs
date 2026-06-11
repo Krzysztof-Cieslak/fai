@@ -78,6 +78,11 @@ fn prim_name(op: Prim) -> &'static str {
         Prim::EnvGet => "envGet",
         Prim::EnvArgs => "envArgs",
         Prim::RecordUpdate => "recordUpdate",
+        Prim::ArrayWithCapacity => "arrayWithCapacity",
+        Prim::ArrayLength => "arrayLength",
+        Prim::ArrayGet => "arrayGet",
+        Prim::ArraySet => "arraySet",
+        Prim::ArrayPush => "arrayPush",
     }
 }
 

@@ -159,6 +159,11 @@ impl SolveTy {
         SolveTy::App(Rc::new(SolveTy::Con(Con::List)), Rc::new(elem))
     }
 
+    /// An `Array t`.
+    pub fn array(elem: SolveTy) -> SolveTy {
+        SolveTy::App(Rc::new(SolveTy::Con(Con::Array)), Rc::new(elem))
+    }
+
     /// A nominal ADT head applied to `args` (e.g. `Option a`).
     pub fn adt(adt: AdtRef, args: Vec<SolveTy>) -> SolveTy {
         let mut ty = SolveTy::Adt(adt);
