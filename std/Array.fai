@@ -1,0 +1,351 @@
+module Array
+
+// Operations on the built-in `Array` type: a contiguous, growable sequence with
+// O(1) indexing. Reach them qualified: `Array.map`, `Array.foldl`, and so on.
+//
+// `Array` complements the linked `List`: prefer it for indexed access, in-place
+// updates, and sorting; prefer `List` for head/tail recursion and pattern
+// matching. The few operations that touch the raw buffer are Rust intrinsics
+// (`Prim.array*`); everything else is defined here in terms of them. A unique
+// array is mutated in place (`set`/`push` recycle its buffer); a shared one is
+// copied, so values stay immutable.
+/// An empty array (length 0). Pushes grow it.
+public empty : Array 'a
+let empty = Prim.arrayWithCapacity 0
+example: Array.length empty = 0
+
+/// An empty array pre-sized for `n` elements: the first `n` pushes append in place
+/// without reallocating. The capacity is a hint; the length starts at 0.
+public withCapacity : Int -> Array 'a
+let withCapacity n = Prim.arrayWithCapacity n
+example: Array.length (withCapacity 8) = 0
+
+/// The number of elements in an array.
+public length : Array 'a -> Int
+let length xs = Prim.arrayLength xs
+example: length (fromList [1, 2, 3]) = 3
+
+/// Whether an array has no elements.
+public isEmpty : Array 'a -> Bool
+let isEmpty xs = Prim.arrayLength xs = 0
+example: isEmpty empty
+example: isEmpty (fromList [1]) = false
+
+/// Append an element, returning the extended array. The unique owner appends in
+/// place (growing only when full); a shared array is copied.
+public push : 'a -> Array 'a -> Array 'a
+let push x xs = Prim.arrayPush xs x
+example: toList (push 3 (fromList [1, 2])) = [1, 2, 3]
+
+/// A one-element array.
+public singleton : 'a -> Array 'a
+let singleton x = Prim.arrayPush (Prim.arrayWithCapacity 1) x
+example: toList (singleton 7) = [7]
+
+/// Element `i`, or `None` when `i` is out of bounds.
+public get : Int -> Array 'a -> Option 'a
+let get i xs =
+  if i >= 0 then if i < Prim.arrayLength xs then Some (Prim.arrayGet xs i) else None else None
+example: get 1 (fromList [1, 2, 3]) = Some 2
+example: get 5 (fromList [1, 2, 3]) = None
+example: get 0 empty = None
+
+/// Element `i` without a bounds check (out of bounds aborts). For loops whose
+/// index is in range by construction; prefer `get` for an untrusted index.
+public unsafeGet : Int -> Array 'a -> 'a
+let unsafeGet i xs = Prim.arrayGet xs i
+example: unsafeGet 1 (fromList [1, 2, 3]) = 2
+
+/// Replace element `i` with `x`, or `None` when `i` is out of bounds. The unique
+/// owner updates in place; a shared array is copied.
+public set : Int -> 'a -> Array 'a -> Option (Array 'a)
+let set i x xs =
+  if i >= 0 then if i < Prim.arrayLength xs then Some (Prim.arraySet xs i x) else None else None
+example: Option.map toList (set 1 9 (fromList [1, 2, 3])) = Some [1, 9, 3]
+example: set 5 9 (fromList [1, 2, 3]) = None
+
+/// Replace element `i` with `x` without a bounds check (out of bounds aborts).
+/// For loops whose index is in range by construction; prefer `set` otherwise.
+public unsafeSet : Int -> 'a -> Array 'a -> Array 'a
+let unsafeSet i x xs = Prim.arraySet xs i x
+example: toList (unsafeSet 1 9 (fromList [1, 2, 3])) = [1, 9, 3]
+
+/// Build an array of `n` elements, element `i` being `f i`.
+public init : Int -> (Int -> 'a / 'e) -> Array 'a / 'e
+let init n f = initFrom f n 0 (Prim.arrayWithCapacity n)
+
+let initFrom f n i acc = if i >= n then acc else initFrom f n (i + 1) (Prim.arrayPush acc (f i))
+example: toList (init 3 (fun i -> i * i)) = [0, 1, 4]
+
+/// An array of `n` copies of `x`.
+public repeat : Int -> 'a -> Array 'a
+let repeat n x = init n (fun _ -> x)
+example: toList (repeat 3 0) = [0, 0, 0]
+
+/// The integers `[lo, lo+1, …, hi-1]`.
+public range : Int -> Int -> Array Int
+let range lo hi = init (hi - lo) (fun i -> lo + i)
+example: toList (range 0 3) = [0, 1, 2]
+example: toList (range 3 0) = []
+
+/// Convert a `List` to an array.
+public fromList : List 'a -> Array 'a
+let fromList xs =
+  List.foldl (fun acc x -> Prim.arrayPush acc x) (Prim.arrayWithCapacity (List.length xs)) xs
+example: toList (fromList [1, 2, 3]) = [1, 2, 3]
+
+/// Convert an array to a `List`.
+public toList : Array 'a -> List 'a
+let toList xs = toListFrom xs (Prim.arrayLength xs - 1) []
+
+let toListFrom xs i acc = if i < 0 then acc else toListFrom xs (i - 1) (Prim.arrayGet xs i :: acc)
+example: toList (fromList [1, 2, 3]) = [1, 2, 3]
+forall xs: toList (fromList xs) = xs
+
+/// The first element, if any.
+public head : Array 'a -> Option 'a
+let head xs = get 0 xs
+example: head (fromList [1, 2]) = Some 1
+example: head empty = None
+
+/// The last element, if any.
+public last : Array 'a -> Option 'a
+let last xs = get (Prim.arrayLength xs - 1) xs
+example: last (fromList [1, 2, 3]) = Some 3
+example: last empty = None
+
+/// Apply `f` to every element, preserving order (building a fresh array).
+public map : ('a -> 'b / 'e) -> Array 'a -> Array 'b / 'e
+let map f xs = mapInto f xs (Prim.arrayLength xs) 0 (Prim.arrayWithCapacity (Prim.arrayLength xs))
+
+let mapInto f xs n i acc =
+  if i >= n then acc else mapInto f xs n (i + 1) (Prim.arrayPush acc (f (Prim.arrayGet xs i)))
+example: toList (map (fun x -> x + 1) (fromList [1, 2, 3])) = [2, 3, 4]
+forall xs: toList (map (fun x -> x) (fromList xs)) = xs
+
+/// Keep the elements satisfying `keep`.
+public filter : ('a -> Bool / 'e) -> Array 'a -> Array 'a / 'e
+let filter keep xs =
+  filterInto keep xs (Prim.arrayLength xs) 0 (Prim.arrayWithCapacity (Prim.arrayLength xs))
+
+let filterInto keep xs n i acc =
+  if i >= n then
+    acc
+  else
+    let x = Prim.arrayGet xs i
+    if keep x then
+      filterInto keep xs n (i + 1) (Prim.arrayPush acc x)
+    else
+      filterInto keep xs n (i + 1) acc
+example: toList (filter (fun x -> x > 1) (fromList [1, 2, 3])) = [2, 3]
+
+/// Left fold: `foldl f acc [a, b] = f (f acc a) b`.
+public foldl : ('acc -> 'a -> 'acc / 'e) -> 'acc -> Array 'a -> 'acc / 'e
+let foldl f acc xs = foldlFrom f xs (Prim.arrayLength xs) 0 acc
+
+let foldlFrom f xs n i acc =
+  if i >= n then acc else foldlFrom f xs n (i + 1) (f acc (Prim.arrayGet xs i))
+example: foldl (fun acc x -> acc + x) 0 (fromList [1, 2, 3]) = 6
+
+/// Right fold: `foldr f acc [a, b] = f a (f b acc)`. Walks high index to low, so
+/// it allocates nothing and runs in constant native stack space.
+public foldr : ('a -> 'acc -> 'acc / 'e) -> 'acc -> Array 'a -> 'acc / 'e
+let foldr f acc xs = foldrFrom f xs (Prim.arrayLength xs - 1) acc
+
+let foldrFrom f xs i acc =
+  if i < 0 then acc else foldrFrom f xs (i - 1) (f (Prim.arrayGet xs i) acc)
+example: foldr (fun x acc -> x + acc) 0 (fromList [1, 2, 3]) = 6
+
+/// Sum an array of integers.
+public sum : Array Int -> Int
+let sum xs = foldl (fun acc x -> acc + x) 0 xs
+example: sum (fromList [1, 2, 3]) = 6
+example: sum empty = 0
+
+/// Reverse an array. The unique owner reverses in place by swapping ends.
+public reverse : Array 'a -> Array 'a
+let reverse xs = reverseSwap xs 0 (Prim.arrayLength xs - 1)
+
+let reverseSwap xs i j = if i >= j then xs else reverseSwap (swap i j xs) (i + 1) (j - 1)
+example: toList (reverse (fromList [1, 2, 3])) = [3, 2, 1]
+
+/// Swap elements `i` and `j` (in place when the array is unique).
+let swap i j xs =
+  let vi = Prim.arrayGet xs i
+  let vj = Prim.arrayGet xs j
+  Prim.arraySet (Prim.arraySet xs i vj) j vi
+
+/// Push every element of `src` onto `acc`, in order.
+let pushAll acc src = foldl (fun a x -> Prim.arrayPush a x) acc src
+
+/// Concatenate two arrays.
+public append : Array 'a -> Array 'a -> Array 'a
+let append xs ys =
+  pushAll (pushAll (Prim.arrayWithCapacity (Prim.arrayLength xs + Prim.arrayLength ys)) xs) ys
+example: toList (append (fromList [1, 2]) (fromList [3])) = [1, 2, 3]
+
+/// Flatten an array of arrays.
+public concat : Array (Array 'a) -> Array 'a
+let concat xss = foldl pushAll (Prim.arrayWithCapacity 0) xss
+example: toList (concat (fromList [fromList [1, 2], fromList [3]])) = [1, 2, 3]
+
+/// Map each element to an array and concatenate the results.
+public concatMap : ('a -> Array 'b / 'e) -> Array 'a -> Array 'b / 'e
+let concatMap f xs = foldl (fun acc x -> pushAll acc (f x)) (Prim.arrayWithCapacity 0) xs
+example: toList (concatMap (fun x -> fromList [x, x]) (fromList [1, 2])) = [1, 1, 2, 2]
+
+/// The first `n` elements (fewer if the array is shorter).
+public take : Int -> Array 'a -> Array 'a
+let take n xs =
+  let m = clamp n (Prim.arrayLength xs)
+  takeInto xs m 0 (Prim.arrayWithCapacity m)
+
+let takeInto xs m i acc =
+  if i >= m then acc else takeInto xs m (i + 1) (Prim.arrayPush acc (Prim.arrayGet xs i))
+
+let clamp n len = if n < 0 then 0 else if n > len then len else n
+example: toList (take 2 (fromList [1, 2, 3])) = [1, 2]
+
+/// All but the first `n` elements.
+public drop : Int -> Array 'a -> Array 'a
+let drop n xs =
+  let len = Prim.arrayLength xs
+  let start = clamp n len
+  dropInto xs len start (Prim.arrayWithCapacity (len - start))
+
+let dropInto xs len i acc =
+  if i >= len then acc else dropInto xs len (i + 1) (Prim.arrayPush acc (Prim.arrayGet xs i))
+example: toList (drop 2 (fromList [1, 2, 3])) = [3]
+
+/// Pair up corresponding elements (truncating to the shorter array).
+public zip : Array 'a -> Array 'b -> Array ('a * 'b)
+let zip xs ys =
+  let n = minInt (Prim.arrayLength xs) (Prim.arrayLength ys)
+  zipInto xs ys n 0 (Prim.arrayWithCapacity n)
+
+let zipInto xs ys n i acc =
+  if i >= n then
+    acc
+  else
+    zipInto xs ys n (i + 1) (Prim.arrayPush acc (Prim.arrayGet xs i, Prim.arrayGet ys i))
+
+let minInt a b = if a < b then a else b
+example: toList (zip (fromList [1, 2]) (fromList [3, 4])) = [(1, 3), (2, 4)]
+
+/// The first element satisfying `pred`, if any.
+public find : ('a -> Bool / 'e) -> Array 'a -> Option 'a / 'e
+let find pred xs = findFrom pred xs (Prim.arrayLength xs) 0
+
+let findFrom pred xs n i =
+  if i >= n then
+    None
+  else
+    let x = Prim.arrayGet xs i
+    if pred x then Some x else findFrom pred xs n (i + 1)
+example: find (fun x -> x > 1) (fromList [1, 2, 3]) = Some 2
+example: find (fun x -> x > 9) (fromList [1, 2, 3]) = None
+
+/// Whether `target` is an element of the array.
+public member : 'a -> Array 'a -> Bool
+let member target xs = memberFrom target xs (Prim.arrayLength xs) 0
+
+let memberFrom target xs n i =
+  if i >= n then
+    false
+  else if Prim.arrayGet xs i = target then true else memberFrom target xs n (i + 1)
+example: member 2 (fromList [1, 2, 3])
+example: member 9 (fromList [1, 2, 3]) = false
+
+/// Whether every element satisfies `pred`.
+public all : ('a -> Bool / 'e) -> Array 'a -> Bool / 'e
+let all pred xs = allFrom pred xs (Prim.arrayLength xs) 0
+
+let allFrom pred xs n i =
+  if i >= n then true else if pred (Prim.arrayGet xs i) then allFrom pred xs n (i + 1) else false
+example: all (fun x -> x > 0) (fromList [1, 2, 3])
+example: all (fun x -> x > 1) (fromList [1, 2]) = false
+
+/// Whether any element satisfies `pred`.
+public any : ('a -> Bool / 'e) -> Array 'a -> Bool / 'e
+let any pred xs = anyFrom pred xs (Prim.arrayLength xs) 0
+
+let anyFrom pred xs n i =
+  if i >= n then false else if pred (Prim.arrayGet xs i) then true else anyFrom pred xs n (i + 1)
+example: any (fun x -> x > 2) (fromList [1, 2, 3])
+example: any (fun x -> x > 9) (fromList [1, 2]) = false
+
+/// Split into the elements satisfying `pred` and those that do not.
+public partition : ('a -> Bool / 'e) -> Array 'a -> Array 'a * Array 'a / 'e
+let partition pred xs =
+  let n = Prim.arrayLength xs
+  partitionInto pred xs n 0 (Prim.arrayWithCapacity n) (Prim.arrayWithCapacity 0)
+
+let partitionInto pred xs n i yes no =
+  if i >= n then
+    (yes, no)
+  else
+    let x = Prim.arrayGet xs i
+    if pred x then
+      partitionInto pred xs n (i + 1) (Prim.arrayPush yes x) no
+    else
+      partitionInto pred xs n (i + 1) yes (Prim.arrayPush no x)
+example: partitionToLists (partition (fun x -> x > 1) (fromList [1, 2, 3])) = ([2, 3], [1])
+
+// Render a partition result as a pair of lists, for the example above.
+let partitionToLists p =
+  match p with
+  | (yes, no) -> (toList yes, toList no)
+
+/// Sort under a comparator (`cmp a b < 0` means `a` comes first), in place when
+/// the array is unique. An unstable median-of-three quicksort: ties may be
+/// reordered (unlike `List.sortBy`); the structural `sort` is unaffected because
+/// equal values are identical.
+public sortBy : ('a -> 'a -> Int / 'e) -> Array 'a -> Array 'a / 'e
+let sortBy cmp xs = qsort cmp 0 (Prim.arrayLength xs) xs
+
+let qsort cmp lo hi arr =
+  if hi - lo <= 1 then
+    arr
+  else
+    qsortSplit cmp lo hi (partitionRange cmp hi lo lo (pivotToEnd cmp lo hi arr))
+
+// Recurse into the smaller side and tail-call the larger, so the recursion depth
+// stays logarithmic.
+let qsortSplit cmp lo hi split =
+  match split with
+  | (p, arr) ->
+    if p - lo < hi - p - 1 then
+      qsort cmp (p + 1) hi (qsort cmp lo p arr)
+    else
+      qsort cmp lo p (qsort cmp (p + 1) hi arr)
+
+// Place the median of the first/middle/last elements at `hi-1` (the pivot slot),
+// so a sorted or reverse-sorted run does not degrade to quadratic time. Sorts the
+// three positions, then moves the median (now at `mid`) to `hi-1`.
+let pivotToEnd cmp lo hi arr =
+  let mid = lo + (hi - lo) / 2
+  let hi1 = hi - 1
+  let a1 = if cmp (Prim.arrayGet arr lo) (Prim.arrayGet arr mid) > 0 then swap lo mid arr else arr
+  let a2 = if cmp (Prim.arrayGet a1 mid) (Prim.arrayGet a1 hi1) > 0 then swap mid hi1 a1 else a1
+  let a3 = if cmp (Prim.arrayGet a2 lo) (Prim.arrayGet a2 mid) > 0 then swap lo mid a2 else a2
+  swap mid hi1 a3
+
+// Lomuto partition of `[lo, hi)` with the pivot at `hi-1`: scan with `j`, keeping
+// the elements `<= pivot` packed below `store`, then put the pivot at `store`.
+// Returns the pivot's final index and the partitioned array.
+let partitionRange cmp hi j store arr =
+  let hi1 = hi - 1
+  if j >= hi1 then
+    (store, swap store hi1 arr)
+  else if cmp (Prim.arrayGet arr j) (Prim.arrayGet arr hi1) <= 0 then
+    partitionRange cmp hi (j + 1) (store + 1) (swap store j arr)
+  else
+    partitionRange cmp hi (j + 1) store arr
+example: toList (sortBy compare (fromList [3, 1, 2])) = [1, 2, 3]
+example: toList (sortBy compare (fromList [5, 4, 3, 2, 1])) = [1, 2, 3, 4, 5]
+
+/// Sort an array into ascending order by the structural comparison.
+public sort : Array 'a -> Array 'a
+let sort xs = sortBy compare xs
+example: toList (sort (fromList [3, 1, 2])) = [1, 2, 3]
+forall xs: toList (sort (fromList xs)) = List.sort xs

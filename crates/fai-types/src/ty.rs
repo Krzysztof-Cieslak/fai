@@ -140,6 +140,9 @@ pub enum Con {
     Char,
     /// `List` (a unary constructor, applied via [`Ty::App`]).
     List,
+    /// `Array` — a contiguous, growable sequence (a unary constructor, applied
+    /// via [`Ty::App`]).
+    Array,
 }
 
 impl Con {
@@ -153,6 +156,7 @@ impl Con {
             Con::String => "String",
             Con::Char => "Char",
             Con::List => "List",
+            Con::Array => "Array",
         }
     }
 
@@ -166,6 +170,7 @@ impl Con {
             "String" => Con::String,
             "Char" => Con::Char,
             "List" => Con::List,
+            "Array" => Con::Array,
             _ => return None,
         })
     }
@@ -195,6 +200,12 @@ impl Ty {
     #[must_use]
     pub fn list(elem: Ty) -> Ty {
         Ty::App(Arc::new(Ty::Con(Con::List)), Arc::new(elem))
+    }
+
+    /// An `Array t` type.
+    #[must_use]
+    pub fn array(elem: Ty) -> Ty {
+        Ty::App(Arc::new(Ty::Con(Con::Array)), Arc::new(elem))
     }
 
     /// A pure function type `from -> to` (empty effect).

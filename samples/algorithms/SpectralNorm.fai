@@ -2,48 +2,44 @@ module SpectralNorm
 
 // The spectral norm of the infinite matrix A(i, j) = 1 / ((i+j)(i+j+1)/2 + i + 1)
 // by ten rounds of power iteration: v = AᵀA u then u = AᵀA v. The vectors are
-// `List Float`, so this is a float-heavy reduction with a final `sqrt`. All sums
-// accumulate left to right (tail-recursive) to match the reference exactly. Used
-// by the Rust-vs-Fai runtime benchmark.
+// `Array Float`, so this is a float-heavy reduction with a final `sqrt` over
+// contiguous storage with O(1) access. All sums accumulate left to right
+// (tail-recursive) to match the reference exactly. (The `Float` elements are still
+// individually boxed; an unboxed `Array Float` is future work.) Used by the
+// Rust-vs-Fai runtime benchmark.
 evalA : Int -> Int -> Float
 let evalA i j =
   let s = i + j
   1.0 / Int.toFloat (s * (s + 1) / 2 + i + 1)
 
 // Σ_j A(i, j) * u[j], accumulated left to right.
-rowTimes : Int -> Int -> Float -> List Float -> Float
+rowTimes : Int -> Int -> Float -> Array Float -> Float
 let rowTimes i j acc u =
-  match u with
-  | [] -> acc
-  | uj :: rest -> rowTimes i (j + 1) (acc + evalA i j * uj) rest
+  if j >= Array.length u then acc else rowTimes i (j + 1) (acc + evalA i j * Array.unsafeGet j u) u
 
 // Σ_j A(j, i) * u[j] — the transpose, accumulated left to right.
-colTimes : Int -> Int -> Float -> List Float -> Float
+colTimes : Int -> Int -> Float -> Array Float -> Float
 let colTimes i j acc u =
-  match u with
-  | [] -> acc
-  | uj :: rest -> colTimes i (j + 1) (acc + evalA j i * uj) rest
+  if j >= Array.length u then acc else colTimes i (j + 1) (acc + evalA j i * Array.unsafeGet j u) u
 
-mulAv : Int -> List Float -> List Float
-let mulAv n u = List.map (fun i -> rowTimes i 0 0.0 u) (List.range 0 n)
+mulAv : Int -> Array Float -> Array Float
+let mulAv n u = Array.init n (fun i -> rowTimes i 0 0.0 u)
 
-mulAtv : Int -> List Float -> List Float
-let mulAtv n u = List.map (fun i -> colTimes i 0 0.0 u) (List.range 0 n)
+mulAtv : Int -> Array Float -> Array Float
+let mulAtv n u = Array.init n (fun i -> colTimes i 0 0.0 u)
 
-mulAtAv : Int -> List Float -> List Float
+mulAtAv : Int -> Array Float -> Array Float
 let mulAtAv n u = mulAtv n (mulAv n u)
 
-dot : Float -> List Float -> List Float -> Float
-let dot acc xs ys =
-  match xs with
-  | [] -> acc
-  | x :: xrest ->
-    match ys with
-    | [] -> acc
-    | y :: yrest -> dot (acc + x * y) xrest yrest
+dot : Int -> Float -> Array Float -> Array Float -> Float
+let dot i acc xs ys =
+  if i >= Array.length xs then
+    acc
+  else
+    dot (i + 1) (acc + Array.unsafeGet i xs * Array.unsafeGet i ys) xs ys
 
 // Carry (u, v) through k power-iteration rounds: v = AᵀA u, then u = AᵀA v.
-rounds : Int -> Int -> List Float -> List Float -> List Float * List Float
+rounds : Int -> Int -> Array Float -> Array Float -> Array Float * Array Float
 let rounds n k u v =
   if k <= 0 then
     (u, v)
@@ -55,9 +51,9 @@ let rounds n k u v =
 /// The benchmark workload: the spectral norm estimate for an n-vector.
 public runF : Int -> Float
 let runF n =
-  let u0 = List.map (fun i -> 1.0) (List.range 0 n)
+  let u0 = Array.repeat n 1.0
   match rounds n 10 u0 u0 with
-  | (u, v) -> Float.sqrt (dot 0.0 u v / dot 0.0 v v)
+  | (u, v) -> Float.sqrt (dot 0 0.0 u v / dot 0 0.0 v v)
 example: runF 1 = 1.0
 
 public main : Runtime -> Unit / { Console }

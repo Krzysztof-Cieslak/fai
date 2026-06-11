@@ -463,6 +463,14 @@ impl<E: Env> Walker<'_, E> {
                 }
                 SolveTy::list(elem_ty)
             }
+            ExprKind::Array(elems) => {
+                let elem_ty = self.cx.fresh();
+                for &e in elems {
+                    let t = self.infer_expr(e);
+                    self.unify_at(self.module.expr(e).span, &elem_ty, &t, "an array element");
+                }
+                SolveTy::array(elem_ty)
+            }
             ExprKind::Error => SolveTy::Error,
         }
     }
@@ -1272,7 +1280,7 @@ fn is_syntactic_value(module: &Module, expr: ExprId) -> bool {
         | ExprKind::Char(_)
         | ExprKind::Unit => true,
         ExprKind::Paren(inner) => is_syntactic_value(module, *inner),
-        ExprKind::Tuple(elems) | ExprKind::List(elems) => {
+        ExprKind::Tuple(elems) | ExprKind::List(elems) | ExprKind::Array(elems) => {
             elems.iter().all(|&e| is_syntactic_value(module, e))
         }
         _ => false,

@@ -555,7 +555,7 @@ impl Resolver<'_> {
                 self.scope.pop();
             }
             ExprKind::Paren(inner) => self.resolve_expr(*inner),
-            ExprKind::Tuple(elems) | ExprKind::List(elems) => {
+            ExprKind::Tuple(elems) | ExprKind::List(elems) | ExprKind::Array(elems) => {
                 for &e in elems {
                     self.resolve_expr(e);
                 }

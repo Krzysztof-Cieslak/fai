@@ -41,6 +41,12 @@ pub const INTRINSICS: &[&str] = &[
     "stringConcat",
     "split",
     "join",
+    // Array primitives (the standard library's `Array` module wraps these).
+    "arrayWithCapacity",
+    "arrayLength",
+    "arrayGet",
+    "arraySet",
+    "arrayPush",
     // Capability hosts (reached only through the `Runtime` built in `Prelude`).
     "consoleWriteLine",
     "clockNow",

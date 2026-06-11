@@ -755,6 +755,7 @@ impl Parser<'_> {
             TokenKind::LowerIdent | TokenKind::UpperIdent => ExprKind::Var(self.bump_symbol()),
             TokenKind::LParen => return self.parse_paren(start),
             TokenKind::LBracket => return self.parse_list(start),
+            TokenKind::LArrayBracket => return self.parse_array(start),
             TokenKind::Fun => return self.parse_lambda(start),
             TokenKind::If => return self.parse_if(start),
             TokenKind::LayoutOpen => return self.parse_block(start),
@@ -810,6 +811,19 @@ impl Parser<'_> {
         }
         self.expect(TokenKind::RBracket, "`]` to close the list");
         self.alloc_expr(ExprKind::List(elems), self.span_from(start))
+    }
+
+    fn parse_array(&mut self, start: ByteOffset) -> ExprId {
+        self.bump(); // `[|`
+        let mut elems = Vec::new();
+        if !self.at(TokenKind::RArrayBracket) {
+            elems.push(self.parse_expr());
+            while self.eat(TokenKind::Comma) {
+                elems.push(self.parse_expr());
+            }
+        }
+        self.expect(TokenKind::RArrayBracket, "`|]` to close the array");
+        self.alloc_expr(ExprKind::Array(elems), self.span_from(start))
     }
 
     /// Parses a record literal `{ x = a, … }` or update `{ base with x = a, … }`.
@@ -1424,6 +1438,7 @@ fn can_start_arg(kind: TokenKind) -> bool {
             | TokenKind::UpperIdent
             | TokenKind::LParen
             | TokenKind::LBracket
+            | TokenKind::LArrayBracket
             | TokenKind::LBrace
     )
 }
@@ -1550,6 +1565,7 @@ mod tests {
             ExprKind::Paren(inner) => format!("(paren {})", dump_expr(m, *inner)),
             ExprKind::Tuple(xs) => format!("(tuple {})", dump_exprs(m, xs)),
             ExprKind::List(xs) => format!("(list {})", dump_exprs(m, xs)),
+            ExprKind::Array(xs) => format!("(array {})", dump_exprs(m, xs)),
             ExprKind::Error => "(expr-error)".to_owned(),
         }
     }
@@ -1869,6 +1885,16 @@ mod tests {
         assert_eq!(expr("[]"), "(list )");
         assert_eq!(expr("()"), "(unit)");
         assert_eq!(expr("(a)"), "(paren (var a))");
+    }
+
+    #[test]
+    fn array_literals() {
+        assert_eq!(expr("[| 1, 2, 3 |]"), "(array (int 1) (int 2) (int 3))");
+        assert_eq!(expr("[||]"), "(array )");
+        // An array literal is an application argument without parentheses, and
+        // nests.
+        assert_eq!(expr("f [| 1 |]"), "(app (var f) (array (int 1)))");
+        assert_eq!(expr("[| [| 1 |] |]"), "(array (array (int 1)))");
     }
 
     #[test]
@@ -2685,7 +2711,9 @@ mod proptests {
                 walk_expr(m, *tail);
             }
             ExprKind::Field { base, .. } => walk_expr(m, *base),
-            ExprKind::Tuple(xs) | ExprKind::List(xs) => xs.iter().for_each(|x| walk_expr(m, *x)),
+            ExprKind::Tuple(xs) | ExprKind::List(xs) | ExprKind::Array(xs) => {
+                xs.iter().for_each(|x| walk_expr(m, *x))
+            }
             ExprKind::Match { scrutinee, arms } => {
                 walk_expr(m, *scrutinee);
                 for arm in arms {

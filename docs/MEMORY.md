@@ -2102,8 +2102,71 @@ Editor integration:
     at merge points) is a separate, deferred feature (#107), as is subsumption
     through a general ADT's argument (which would need variance inference, #108).
     Deep subsumption through arrows (with variance), tuples, records, lists, and
-    interface effect arguments, and effect-parameterized interfaces, are done — see
-    above.
+     interface effect arguments, and effect-parameterized interfaces, are done — see
+     above.
+
+- **D119 Array-backed sequence type (`Array 'a`; closes the linked-`List`
+  representation gap).** A contiguous, growable sequence alongside the linked
+  `List`, so indexed/contiguous/sorted code has cache-friendly O(1) storage and the
+  sequence benchmarks compare a *matched* representation against Rust's `Vec`
+  rather than a linked-vs-array fundamental.
+  - **Lineage.** Semantics follow Haskell's `Data.Vector` (0-based `Int` index,
+    length not `Ix`/bounds, contiguous), with the name `Array` per the ML/F#/OCaml
+    family (and to avoid colliding with the `Vec2`/`Vec3` math records in
+    `samples/`). The distinguishing choice: where Haskell needs `ST`/`freeze`/`thaw`
+    for in-place mutation and Elm uses an RRB tree (no uniqueness to exploit), Fai's
+    Perceus reference counting gives **in-place update when unique** inside a pure
+    interface — contiguous *and* mutable-when-unique.
+  - **Representation.** A built-in `Con` (recognized globally by `con_or_unit` like
+    `List`, no import; `Array` is a reserved module name). The runtime object is a
+    header + `length` + inline element slots; **capacity is derived from the
+    allocation size** (not stored), so a unique array grows into its spare capacity.
+    **Always boxed** (even empty allocates a header — simpler/faster dup/drop than a
+    `Nil`-style immediate; `is_always_boxed_ty` includes it). Only slots
+    `0..length` are live; the child scan, equality, and ordering touch only those.
+    Capacity is invisible to semantics (equal elements ⇒ equal regardless of
+    capacity). Equality is length + elementwise; ordering is **lexicographic,
+    shorter-prefix-first** (matching `List`/`String`), so arrays sort and serve as
+    `Dict`/`Set` keys. Elements are boxed uniform slots — an unboxed `Array
+    Float`/`Int` is future work (the array peer of D113/#86).
+  - **Five intrinsics, the rest pure Fai.** `Prim.array{WithCapacity,Length,Get,
+    Set,Push}` (the first *polymorphic* builtins, quantified over the element type
+    and instantiated per use); `withCapacity`/`length`/`get` borrow, `set`/`push`
+    mutate in place when unique and copy when shared (the `fai_record_update`
+    model), growing by doubling. Everything else — `empty`/`init`/`map`/`filter`/
+    `foldl`/`foldr`/`reverse`/`append`/`zip`/`sort`/… — is `std/Array.fai` in Fai,
+    collection-last like `List`. Unknown-size combinators (`filter`/`partition`/…)
+    are single-pass `push`-builders (one predicate call per element, effect-correct).
+  - **Access is total via `Option`, with partial fast paths.** `get : Int -> Array
+    'a -> Option 'a` and `set : Int -> 'a -> Array 'a -> Option (Array 'a)` are
+    total; `unsafeGet`/`unsafeSet` return the bare value/array and **abort on
+    out-of-bounds** (the division-by-zero model, surfaced by contracts as
+    `FAI6003`) for in-bounds-by-construction hot loops. The intrinsics themselves
+    bounds-check-and-abort for memory safety, so a std bug can never read past the
+    buffer.
+  - **Sort is an in-place median-of-three quicksort, unstable.** `sortBy` recurses
+    into the smaller side and tail-calls the larger (logarithmic depth); the
+    median-of-three pivot keeps sorted/reverse-sorted input O(n log n). It diverges
+    from `List.sortBy`'s stability, but only observably for `sortBy` with a
+    *custom partial-key* comparator — `sort = sortBy compare` is unaffected (equal
+    values are structurally identical). A faster *List* sort would not come from
+    quicksort (a linked list has no O(1) swap); it is a bottom-up merge sort (#104),
+    out of scope here.
+  - **Literals `[| a, b, c |]`** (empty `[||]`), expression-only (no array
+    patterns). The lexer takes `[|`/`|]` by maximal munch (no conflict with
+    `|>`/`||`/`|`); lowering emits a pre-sized `withCapacity` + in-place `push`
+    chain (one buffer, no transient `List`).
+  - **`map` builds a fresh buffer** (one allocation), not yet recycling a unique
+    input the way `List.map` recycles a unique spine — generic in-place-when-unique
+    `map` (which a type-changing `'a -> 'b` cannot express in well-typed Fai without
+    a reuse pass or a type-reinterpreting intrinsic) is future work, pinned by a
+    test.
+  - **Benchmarks use the matched representation.** `MapSum`/`MapSumShared`/
+    `MergeSort` (std sort), the hand-written in-place `QuickSort`,
+    `MatrixMultiply`/`Levenshtein` (array-of-array / array-row DP), and
+    `SpectralNorm` (`Array Float`) are rewritten to `Array`; the Rust oracles
+    (`Vec`) are unchanged. No `List`-vs-`Vec` rows — they would measure the
+    representation fundamental, not Fai.
 
 - **D119 Unboxed monomorphic `Int` (untagged `i64`; the `Int` peer of D113).** A
   value whose static type is exactly `Int` is carried as a **raw, untagged

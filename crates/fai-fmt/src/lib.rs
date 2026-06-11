@@ -344,6 +344,7 @@ impl Printer<'_> {
             ExprKind::Paren(inner) => concat(vec![text("("), self.expr_doc(*inner), text(")")]),
             ExprKind::Tuple(xs) => self.delimited("(", ")", xs),
             ExprKind::List(xs) => self.delimited("[", "]", xs),
+            ExprKind::Array(xs) => self.array_delimited(xs),
             ExprKind::Error => text(self.span_src(expr.span)),
         }
     }
@@ -423,6 +424,23 @@ impl Printer<'_> {
             parts.push(self.expr_doc(x));
         }
         parts.push(text(close.to_owned()));
+        concat(parts)
+    }
+
+    /// Formats an array literal as `[| a, b, c |]` (or `[||]` when empty) — the
+    /// inner spaces distinguish it at a glance from the `[a, b, c]` list literal.
+    fn array_delimited(&self, xs: &[ExprId]) -> Doc {
+        if xs.is_empty() {
+            return text("[||]");
+        }
+        let mut parts = vec![text("[| ")];
+        for (index, &x) in xs.iter().enumerate() {
+            if index > 0 {
+                parts.push(text(", "));
+            }
+            parts.push(self.expr_doc(x));
+        }
+        parts.push(text(" |]"));
         concat(parts)
     }
 

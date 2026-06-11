@@ -1,40 +1,40 @@
 module MatrixMultiply
 
 // Multiply two n-by-n integer matrices (built deterministically from their
-// indices) and checksum the product. Matrices are lists of lists, so this
-// exercises nested data structures and arithmetic-heavy folds. The left matrix is
-// stored as rows and the right as columns, so an entry is the dot product of a
-// row and a column. Used by the Rust-vs-Fai runtime benchmark.
-// Dot product of two equal-length integer vectors.
-dot : List Int -> List Int -> Int
-let dot xs ys =
-  match xs with
-  | [] -> 0
-  | x :: xrest ->
-    match ys with
-    | [] -> 0
-    | y :: yrest -> x * y + dot xrest yrest
+// indices) and checksum the product. Matrices are arrays of arrays, so this
+// exercises nested contiguous storage and arithmetic-heavy folds with O(1)
+// element access. The left matrix is stored as rows and the right as columns, so
+// an entry is the dot product of a row and a column. Used by the Rust-vs-Fai
+// runtime benchmark.
+// Dot product of two equal-length integer vectors, by index.
+dot : Int -> Int -> Array Int -> Array Int -> Int
+let dot i acc xs ys =
+  if i >= Array.length xs then
+    acc
+  else
+    dot (i + 1) (acc + Array.unsafeGet i xs * Array.unsafeGet i ys) xs ys
 
 // Row i of the left matrix: a[i][j] = (i + j) % 7.
-row : Int -> Int -> List Int
-let row n i = List.map (fun j -> (i + j) % 7) (List.range 0 n)
+row : Int -> Int -> Array Int
+let row n i = Array.init n (fun j -> (i + j) % 7)
 
 // Column j of the right matrix: b[i][j] = (i * j + 1) % 5.
-col : Int -> Int -> List Int
-let col n j = List.map (fun i -> (i * j + 1) % 5) (List.range 0 n)
+col : Int -> Int -> Array Int
+let col n j = Array.init n (fun i -> (i * j + 1) % 5)
 
-rows : Int -> List (List Int)
-let rows n = List.map (fun i -> row n i) (List.range 0 n)
+rows : Int -> Array (Array Int)
+let rows n = Array.init n (fun i -> row n i)
 
-cols : Int -> List (List Int)
-let cols n = List.map (fun j -> col n j) (List.range 0 n)
+cols : Int -> Array (Array Int)
+let cols n = Array.init n (fun j -> col n j)
 
 /// The benchmark workload: the sum of all entries of the n-by-n product.
 public run : Int -> Int
 let run n =
   let a = rows n
   let b = cols n
-  List.foldl (fun acc arow -> acc + List.foldl (fun inner bcol -> inner + dot arow bcol) 0 b) 0 a
+  Array.foldl (fun acc arow ->
+    acc + Array.foldl (fun inner bcol -> inner + dot 0 0 arow bcol) 0 b) 0 a
 example: run 2 = 11
 
 public main : Runtime -> Unit / { Console }

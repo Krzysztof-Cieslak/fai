@@ -1,12 +1,14 @@
 module MapSum
 
-// Build a list, map over it, and sum the result: an allocation- and
-// reference-counting-heavy workload. Because the freshly built list is unique,
-// `List.map` recycles its cells in place rather than allocating new ones. Used
-// by the Rust-vs-Fai runtime benchmark.
+// Build an array, map over it, and sum the result: an allocation- and
+// reference-counting-light workload on contiguous storage. `Array.range` fills one
+// buffer in place, `Array.map` builds a second, and `Array.sum` folds with no
+// allocation — no per-element cons cell. The matched representation against Rust's
+// `Vec`, so the ratio reflects the compiler/runtime, not a linked-vs-array
+// difference. Used by the Rust-vs-Fai runtime benchmark.
 /// The benchmark workload: sum of doubling every element of [0, n).
 public run : Int -> Int
-let run n = List.sum (List.map (fun x -> x * 2) (List.range 0 n))
+let run n = Array.sum (Array.map (fun x -> x * 2) (Array.range 0 n))
 example: run 4 = 12
 
 public main : Runtime -> Unit / { Console }

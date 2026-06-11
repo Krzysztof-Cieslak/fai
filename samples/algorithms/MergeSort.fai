@@ -1,11 +1,15 @@
 module MergeSort
 
-// Sort a descending list into ascending order with the standard library's merge
-// sort, then sum it: recursion plus heavy allocation over a linked list. Used by
+// Sort a descending array into ascending order with the standard library's sort,
+// then sum it. `Array.sort` is an in-place median-of-three quicksort, so the
+// descending input (quicksort's classic worst case) stays O(n log n). Matched
+// against Rust's `Vec::sort`, so the ratio reflects the compiler/runtime rather
+// than a linked-vs-array difference. (The module name refers to the workload and
+// the Rust oracle's merge sort; the Fai side is the standard array sort.) Used by
 // the Rust-vs-Fai runtime benchmark.
-/// The benchmark workload: sort the descending list [n-1, …, 0] and sum it.
+/// The benchmark workload: sort the descending array [n-1, …, 0] and sum it.
 public run : Int -> Int
-let run n = List.sum (List.sort (List.reverse (List.range 0 n)))
+let run n = Array.sum (Array.sort (Array.reverse (Array.range 0 n)))
 example: run 5 = 10
 
 public main : Runtime -> Unit / { Console }

@@ -327,6 +327,7 @@ impl Lowerer<'_> {
                 K::MakeData { tag: 0, args, reuse: None }
             }
             ExprKind::List(elems) => return self.lower_list(elems, ty),
+            ExprKind::Array(elems) => return self.lower_array(elems, ty),
             ExprKind::Error => K::Error,
         };
         CExpr::new(kind, ty)
@@ -678,6 +679,21 @@ impl Lowerer<'_> {
             );
         }
         list
+    }
+
+    /// Lowers an array literal `[| a, b, … |]` to a pre-sized builder: one
+    /// `withCapacity n` followed by an in-place `push` per element (no
+    /// intermediate `List`). The capacity matches the length, so the pushes never
+    /// reallocate; building a fresh array, they are all in place.
+    fn lower_array(&mut self, elems: &[ExprId], ty: Ty) -> CExpr {
+        let n = i64::try_from(elems.len()).unwrap_or(0);
+        let mut arr =
+            CExpr::new(K::Prim { op: Prim::ArrayWithCapacity, args: vec![int_lit(n)] }, ty.clone());
+        for &e in elems {
+            let value = self.lower_expr(e);
+            arr = CExpr::new(K::Prim { op: Prim::ArrayPush, args: vec![arr, value] }, ty.clone());
+        }
+        arr
     }
 
     /// Lowers a builtin reference used as a value: booleans become literals and

@@ -152,6 +152,8 @@ pub enum WireTy {
     },
     /// A `List` (maybe-immediate data: `[]` is an immediate).
     List,
+    /// An `Array` (always boxed; the runtime drop scans its live elements).
+    Array,
     /// A discriminated union (maybe-immediate data: nullary constructors are
     /// immediates).
     Adt,
@@ -318,6 +320,7 @@ pub fn project_ty(ty: &Ty) -> WireTy {
         Ty::Con(Con::String) => WireTy::Str,
         Ty::Con(Con::Char) => WireTy::Char,
         Ty::Con(Con::List) => WireTy::List,
+        Ty::Con(Con::Array) => WireTy::Array,
         Ty::Adt(_) => WireTy::Adt,
         Ty::Interface(_) => WireTy::Interface,
         // An effect argument is erased and never a value on its own (it appears
@@ -340,6 +343,7 @@ pub fn project_ty(ty: &Ty) -> WireTy {
 fn project_app_head(head: &Ty) -> WireTy {
     match head {
         Ty::Con(Con::List) => WireTy::List,
+        Ty::Con(Con::Array) => WireTy::Array,
         Ty::Adt(_) => WireTy::Adt,
         Ty::Interface(_) => WireTy::Interface,
         Ty::App(inner, _) => project_app_head(inner),
@@ -371,6 +375,7 @@ pub fn reconstruct_ty(w: &WireTy) -> Ty {
             tail: if *closed { RowEnd::Closed } else { RowEnd::Open(RowVarId(0)) },
         }),
         WireTy::List => Ty::list(Ty::Error),
+        WireTy::Array => Ty::array(Ty::Error),
         WireTy::Adt => Ty::Adt(AdtRef::new(SourceId::new(0), Symbol::intern("_Adt"))),
         WireTy::Interface => {
             Ty::Interface(InterfaceRef::new(SourceId::new(0), Symbol::intern("_Interface")))

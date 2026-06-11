@@ -237,6 +237,28 @@ let recList elem =
     buildList elem.gen (size / (n + 1)) n s2
   { gen = g, show = showList elem.show, shrink = shrinkList elem.shrink }
 
+// Bridge a `List` arbitrary to an `Array` one (generate/shrink the list, convert
+// via `Array.fromList`/`Array.toList`; render as the reconstructing `Array.fromList
+// [..]`). The signature is explicit so `la` is the closed `Arbitrary` record.
+arrayVia : Arbitrary (List 'a) -> Arbitrary (Array 'a)
+let arrayVia la =
+  let g size seed =
+    let (xs, s2) = la.gen size seed
+    (Array.fromList xs, s2)
+  let sh a = List.map Array.fromList (la.shrink (Array.toList a))
+  let sho a = "Array.fromList " ++ la.show (Array.toList a)
+  { gen = g, show = sho, shrink = sh }
+
+/// Generates arrays (length up to the size) of the element arbitrary.
+public array : Arbitrary 'a -> Arbitrary (Array 'a)
+let array elem = arrayVia (list elem)
+example: (array int).show (Array.fromList [1, 2]) = "Array.fromList [1, 2]"
+
+// The budget-splitting array generator, for a recursive field of array type (the
+// `Array` peer of `recList`); referenced by the compiler as a synthesized call.
+recArray : Arbitrary 'a -> Arbitrary (Array 'a)
+let recArray elem = arrayVia (recList elem)
+
 /// Generates pairs, shrinking each component in turn.
 public tuple2 : Arbitrary 'a -> Arbitrary 'b -> Arbitrary ('a * 'b)
 let tuple2 a b =
