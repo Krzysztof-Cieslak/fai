@@ -2050,26 +2050,32 @@ Editor integration:
     capability used but undeclared, or declared but unused). The whole standard
     library, samples, and test corpus carry accurate effects; the std combinators
     forward `'e`, so mapping/folding a capability-using closure reflects it.
-  - **Subsumption at arguments; strict elsewhere (sound, not complete).** At a
-    function *application* each function-typed argument's effect is *subsumed*
-    (`⊆`) into the parameter's effect variable rather than unified: the variable's
-    open tail grows to admit the argument's atoms. Several arguments flowing into
-    one shared effect variable therefore *union* their effects, so point-free
-    composition through an effect-polymorphic combinator type-checks —
-    `consoleFn >> clockFn` (with `(>>) : (b -> c / 'e) -> (a -> b / 'e) -> a -> c /
-    'e`) is `… / { Console, Clock }` rather than rejected. User-defined operator
-    application takes the **same path** as function application, so a function
-    operand's effect is subsumed too. A residual open tail left by subsuming a
-    concrete effect into a fresh variable is **closed to pure** at body
-    finalization (unless it is forwarded from a parameter, which must stay
-    polymorphic), so composing pure functions — or merely using capabilities — does
-    not generalize a spurious `'e`. Everywhere *other* than an argument, effect
-    unification stays strict: differently-effecting `if`/`match` branches do not
-    silently unify (no laundering), and passing an effectful function where a pure
-    one is required is still a type mismatch. Lenient only at the signature-vs-body
-    check (so a disagreement is the single `FAI5001`, not a generic mismatch);
-    interface instance methods are checked by **subsumption** against the declared
-    method effect (see *Effect-parameterized interfaces* below), not leniently.
+  - **Deep subsumption at arguments; strict elsewhere (sound, not complete).** At a
+    function *application* each argument is related to its parameter by a directional
+    `subsume_types` (`sub ⊆ sup`) rather than unified. It walks both types in
+    lockstep — **unifying** the non-effect structure — and relates effect rows by
+    `⊆` with **variance**: covariant under arrow results, tuple elements, record
+    fields, list elements (`List` is immutable), and an interface's effect argument;
+    **contravariant** under arrow parameters (the relation flips). A general
+    type-constructor (ADT) argument and a leaf are invariant (unified), their
+    variance not being tracked. So a less-effectful function is accepted where a
+    more-effectful one is expected at *any* depth (a maker returning a pure function
+    where one returning a `{ Console }` function is expected), and several arguments
+    flowing into one shared effect variable *union* their effects — point-free
+    composition (`consoleFn >> clockFn : … / { Console, Clock }`), including the
+    tuple/list cases. User-defined operator application takes the **same path** as
+    function application. A residual open tail left by subsuming a concrete effect
+    into a variable that appears only *covariantly* in a definition's type is
+    **closed to pure** at finalization (variables in a parameter position stay
+    polymorphic), so `let f = inc >> inc` is pure while `let g = List.map` stays
+    effect-polymorphic. Everywhere *other* than an argument, effect unification
+    stays strict: differently-effecting `if`/`match` branches do not silently unify
+    (no laundering — joining them is separate, deferred work), and passing an
+    effectful function where a pure one is required is still a type mismatch.
+    Lenient only at the signature-vs-body check (so a disagreement is the single
+    `FAI5001`, not a generic mismatch); interface instance methods are checked by
+    subsumption against the declared method effect (see *Effect-parameterized
+    interfaces* below), not leniently.
   - **Surface & tooling.** Syntax mirrors the record row — `/ { A, B | 'e }`,
     lone-`'e` sugar, bare = pure — bound to the innermost arrow; `fai fmt` sorts
     the atoms and drops `/ {}`. Interface effect arguments and `fai query caps`
@@ -2094,11 +2100,12 @@ Editor integration:
     it. At dispatch the value's effect argument is unified into the method's effect
     parameter, so calling the method incurs it. Effects are erased before codegen,
     so a parameterized interface compiles to the same dictionary as any other.
-  - **Future work.** *Deep* effect subsumption — full bidirectional bounds that
-    also subsume under nested arrows and in non-argument positions — remains; the
-    design is recorded in the issue tracker. (Covariant subsumption at argument
-    positions, including through user-defined operators, and effect-parameterized
-    interfaces are done — see above.)
+  - **Future work.** Subsumption is applied at *argument* positions only; *joining*
+    differently-effecting `if`/`match` branches to their union (a least-upper-bound
+    at merge points) is a separate, deferred feature, as is subsumption through a
+    general ADT's argument (which would need variance inference). Deep subsumption
+    through arrows (with variance), tuples, records, lists, and interface effect
+    arguments, and effect-parameterized interfaces, are done — see above.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

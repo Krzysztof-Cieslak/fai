@@ -402,6 +402,13 @@ impl InferCtx {
                 }
             }
         }
+        self.reconcile_row_tails(&r1, &r2)
+    }
+
+    /// Reconciles two (already field-related) rows' extra fields and tails, the
+    /// shared remainder of [`unify_rows`] and record subsumption. The rows must be
+    /// expanded; only the tails and the fields unique to each side are handled.
+    fn reconcile_row_tails(&mut self, r1: &SolveRow, r2: &SolveRow) -> UnifyResult {
         let only1: Vec<(Symbol, SolveTy)> = r1
             .fields
             .iter()
@@ -415,7 +422,7 @@ impl InferCtx {
             .cloned()
             .collect();
 
-        match (r1.tail, r2.tail) {
+        match (r1.tail.clone(), r2.tail.clone()) {
             (RowTail::Closed, RowTail::Closed) => {
                 if only1.is_empty() && only2.is_empty() {
                     UnifyResult::Ok
@@ -613,6 +620,96 @@ impl InferCtx {
                 }
             }
         }
+    }
+
+    /// *Deep* directional subsumption between two types of the same shape: a value
+    /// of type `sub` is usable where `sup` is expected (when `pos`). The non-effect
+    /// structure is unified, while effect rows are related by `⊆` with variance —
+    /// covariant under arrow results, tuples, records, list elements, and an
+    /// interface's effect argument; **contravariant** under arrow parameters. A
+    /// general type-constructor (ADT) argument and a leaf are invariant (unified),
+    /// since their variance is not tracked. `pos = false` flips the relation, for
+    /// a contravariant position.
+    pub fn subsume_types(&mut self, sub: &SolveTy, sup: &SolveTy, pos: bool) -> UnifyResult {
+        let sub = self.resolve_shallow(sub);
+        let sup = self.resolve_shallow(sup);
+        match (&sub, &sup) {
+            // A variable on either side carries no effect of its own to refine, so
+            // plain unification is exact.
+            (SolveTy::Var(_), _) | (_, SolveTy::Var(_)) => self.unify(&sub, &sup),
+            (SolveTy::Arrow(a1, b1, e1), SolveTy::Arrow(a2, b2, e2)) => {
+                let (a1, b1, e1) = ((**a1).clone(), (**b1).clone(), e1.clone());
+                let (a2, b2, e2) = ((**a2).clone(), (**b2).clone(), e2.clone());
+                let ra = self.subsume_types(&a1, &a2, !pos); // parameter: contravariant
+                let rb = self.subsume_types(&b1, &b2, pos); // result: covariant
+                let re = self.subsume_effects_dir(&e1, &e2, pos);
+                worst(worst(ra, rb), re)
+            }
+            (SolveTy::Tuple(xs), SolveTy::Tuple(ys)) if xs.len() == ys.len() => {
+                let pairs: Vec<(SolveTy, SolveTy)> =
+                    xs.iter().cloned().zip(ys.iter().cloned()).collect();
+                let mut r = UnifyResult::Ok;
+                for (x, y) in &pairs {
+                    r = worst(r, self.subsume_types(x, y, pos));
+                }
+                r
+            }
+            (SolveTy::Record(r1), SolveTy::Record(r2)) => {
+                let (r1, r2) = (r1.clone(), r2.clone());
+                self.subsume_rows(&r1, &r2, pos)
+            }
+            // An interface's effect argument is covariant.
+            (SolveTy::EffectArg(e1), SolveTy::EffectArg(e2)) => {
+                let (e1, e2) = (e1.clone(), e2.clone());
+                self.subsume_effects_dir(&e1, &e2, pos)
+            }
+            (SolveTy::App(f1, a1), SolveTy::App(f2, a2)) => {
+                let (f1, a1) = ((**f1).clone(), (**a1).clone());
+                let (f2, a2) = ((**f2).clone(), (**a2).clone());
+                let rf = self.subsume_types(&f1, &f2, pos);
+                // A list element and an interface effect argument subsume
+                // covariantly; any other constructor argument is invariant.
+                let covariant = matches!(self.resolve_shallow(&f1), SolveTy::Con(Con::List))
+                    || matches!(self.resolve_shallow(&a1), SolveTy::EffectArg(_));
+                let ra = if covariant {
+                    self.subsume_types(&a1, &a2, pos)
+                } else {
+                    self.unify(&a1, &a2)
+                };
+                worst(rf, ra)
+            }
+            _ => self.unify(&sub, &sup),
+        }
+    }
+
+    /// [`subsume_effects`] in the direction set by a position's polarity: in a
+    /// positive (covariant) position `sub`'s effect must be admitted by `sup`'s; in
+    /// a negative (contravariant) position the relation flips.
+    fn subsume_effects_dir(
+        &mut self,
+        e_sub: &SolveEffect,
+        e_sup: &SolveEffect,
+        pos: bool,
+    ) -> UnifyResult {
+        if pos { self.subsume_effects(e_sub, e_sup) } else { self.subsume_effects(e_sup, e_sub) }
+    }
+
+    /// Subsumes two record rows: the common fields' types subsume (a field is
+    /// covariant in its type), and the remaining fields and tails reconcile as in
+    /// unification.
+    fn subsume_rows(&mut self, r1: &SolveRow, r2: &SolveRow, pos: bool) -> UnifyResult {
+        let r1 = self.expand_row(r1);
+        let r2 = self.expand_row(r2);
+        for (label, t1) in &r1.fields {
+            if let Some((_, t2)) = r2.fields.iter().find(|(l, _)| l == label) {
+                let (t1, t2) = (t1.clone(), t2.clone());
+                match self.subsume_types(&t1, &t2, pos) {
+                    UnifyResult::Ok => {}
+                    other => return other,
+                }
+            }
+        }
+        self.reconcile_row_tails(&r1, &r2)
     }
 
     /// The free open-tail variable of an effect row, if any (following bound
@@ -1384,6 +1481,12 @@ struct InstMap {
     types: rustc_hash::FxHashMap<TyVarId, TyVarId>,
     rows: rustc_hash::FxHashMap<RowVarId, RowVarId>,
     effects: rustc_hash::FxHashMap<EffRowVarId, EffRowVarId>,
+}
+
+/// The "worse" of two unification outcomes: the first non-`Ok` (so a deep
+/// subsumption reports a failure if any of its parts fails).
+fn worst(a: UnifyResult, b: UnifyResult) -> UnifyResult {
+    if a == UnifyResult::Ok { b } else { a }
 }
 
 /// Removes duplicate effect atoms in place, preserving first-appearance order.
