@@ -46,5 +46,5 @@ public run : Int -> Int
 let run n = maxFlips 0 (perms (List.range 1 (n + 1)))
 example: run 3 = 2
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console }
 let main runtime = runtime.console.writeLine (Int.toString (run 8))

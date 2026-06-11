@@ -37,5 +37,5 @@ let run n =
   List.foldl (fun acc arow -> acc + List.foldl (fun inner bcol -> inner + dot arow bcol) 0 b) 0 a
 example: run 2 = 11
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console }
 let main runtime = runtime.console.writeLine (Int.toString (run 90))

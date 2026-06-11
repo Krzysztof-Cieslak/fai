@@ -165,7 +165,7 @@ fn main_printing(expr: &str) -> String {
     formatdoc! {r#"
         module M
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / {{ Console }}
         let main runtime = runtime.console.writeLine ({expr})
     "#}
 }
@@ -206,7 +206,7 @@ fn cross_definition_call() {
 
         let double x = x + x
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime = runtime.console.writeLine (Int.toString (double 21))
     "#};
     let (code, out) = run(src);
@@ -221,7 +221,7 @@ fn saturated_curried_call() {
 
         let add x y = x + y
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime = runtime.console.writeLine (Int.toString (add 40 2))
     "#};
     let (code, out) = run(src);
@@ -401,7 +401,7 @@ fn partial_application_via_zero_arity_binding() {
 
         let inc = add 1
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime = runtime.console.writeLine (Int.toString (inc 41))
     "#};
     let (code, out) = run(src);
@@ -418,7 +418,7 @@ fn higher_order_with_closure_capture() {
 
         let adder n = fun m -> n + m
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime = runtime.console.writeLine (Int.toString (apply (adder 40) 2))
     "#};
     let (code, out) = run(src);
@@ -465,7 +465,7 @@ fn nested_conditionals() {
 
         let sign n = if n < 0 then "neg" else if n = 0 then "zero" else "pos"
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r = r.console.writeLine (sign (0 - 3))
     "#};
     let (code, out) = run(src);
@@ -483,7 +483,7 @@ fn let_block_in_body() {
           let plus1 = doubled + 1
           plus1 * 2
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r = r.console.writeLine (Int.toString (compute 10))
     "#};
     let (code, out) = run(src);
@@ -515,7 +515,7 @@ fn adt_constructor_and_match() {
           | Circle r -> 3 * r * r
           | Rect w h -> w * h
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r = r.console.writeLine (Int.toString (area (Rect 3 4)))
     "#};
     let (code, out) = run(src);
@@ -534,7 +534,7 @@ fn nullary_constructor_match() {
           | None -> "none"
           | Some n -> Int.toString n
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r = r.console.writeLine (describe None)
     "#};
     let (code, out) = run(src);
@@ -547,7 +547,7 @@ fn list_map_and_fold() {
     let src = indoc! {r#"
         module M
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r =
           let xs = [1, 2, 3, 4]
           let ys = List.map (fun x -> x * x) xs
@@ -563,7 +563,7 @@ fn cons_and_recursive_length() {
     let src = indoc! {r#"
         module M
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r = r.console.writeLine (Int.toString (List.length (1 :: 2 :: 3 :: [])))
     "#};
     let (code, out) = run(src);
@@ -582,7 +582,7 @@ fn list_pattern_match() {
           | [] -> d
           | x :: _ -> x
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r = r.console.writeLine (Int.toString (firstOr 0 [7, 8, 9]))
     "#};
     let (code, out) = run(src);
@@ -620,7 +620,7 @@ fn unboxed_float_loop_allocates_independently_of_iterations() {
             let sumFrom acc i n =
               if i >= n then acc else sumFrom (acc + Int.toFloat i) (i + 1) n
 
-            public main : Runtime -> Unit
+            public main : Runtime -> Unit / {{ Console }}
             let main runtime = runtime.console.writeLine (Float.toString (sumFrom 0.0 0 {n}))
         "#}
     };
@@ -672,7 +672,7 @@ fn char_pattern_match() {
           | 'z' -> "last"
           | _ -> "other"
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r = r.console.writeLine (classify 'z')
     "#};
     let (code, out) = run(src);
@@ -685,7 +685,7 @@ fn char_unicode_escape_literal() {
     let src = indoc! {r#"
         module M
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r = r.console.writeLine (if '\u{1F600}' = '\u{1F600}' then "eq" else "ne")
     "#};
     let (code, out) = run(src);
@@ -745,7 +745,7 @@ fn char_as_dict_key() {
     let src = indoc! {r#"
         module M
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r =
           let d = Dict.insert 'b' "two" (Dict.insert 'a' "one" Dict.empty)
           r.console.writeLine (Option.withDefault "?" (Dict.get 'b' d))
@@ -760,7 +760,7 @@ fn char_tuple_destructuring_runs() {
     let src = indoc! {r#"
         module M
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r =
           let (a, b) = ('x', 'y')
           r.console.writeLine (Char.toString a ++ Char.toString b)
@@ -782,7 +782,7 @@ fn multi_arm_char_match_with_escape_runs() {
           | ' ' -> "space"
           | _ -> "other"
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r =
           r.console.writeLine (name '\n' ++ "," ++ name ' ' ++ "," ++ name 'a' ++ "," ++ name 'q')
     "#};
@@ -796,7 +796,7 @@ fn tuple_construction_and_destructuring() {
     let src = indoc! {r#"
         module M
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r =
           let pair = (40, 2)
           let (a, b) = pair
@@ -812,7 +812,7 @@ fn dict_runs() {
     let src = indoc! {r#"
         module M
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r =
           let d = Dict.insert 1 10 (Dict.insert 3 30 (Dict.insert 2 20 Dict.empty))
           r.console.writeLine (Int.toString (Option.withDefault 0 (Dict.get 2 d) + Dict.size d))
@@ -827,7 +827,7 @@ fn string_ops_run() {
     let src = indoc! {r#"
         module M
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r = r.console.writeLine (String.join "-" (List.map String.toUpper (String.split " " "hi there world")))
     "#};
     let (code, out) = run(src);
@@ -840,7 +840,7 @@ fn sort_runs() {
     let src = indoc! {r#"
         module M
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r =
           let xs = List.sort [3, 1, 2]
           r.console.writeLine (Int.toString (List.foldl (fun acc x -> acc * 10 + x) 0 xs))
@@ -855,7 +855,7 @@ fn record_literal_and_field_access() {
     let src = indoc! {r#"
         module M
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r =
           let p = { x = 1, y = 2 }
           r.console.writeLine (Int.toString (p.x + p.y))
@@ -875,7 +875,7 @@ fn record_update_runs() {
         public shift : P -> P
         let shift p = { p with a = p.a + 10 }
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r =
           let q = shift { a = 1, b = 2 }
           r.console.writeLine (Int.toString (q.a + q.b))
@@ -898,7 +898,7 @@ fn record_pattern_and_punning() {
           | { x = 0, y } -> y
           | { x, y } -> x + y
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r = r.console.writeLine (Int.toString (describe { x = 0, y = 5 }))
     "#};
     let (code, out) = run(src);
@@ -911,7 +911,7 @@ fn record_destructuring_let() {
     let src = indoc! {r#"
         module M
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r =
           let p = { a = 40, b = 2 }
           let { a, b } = p
@@ -933,7 +933,7 @@ fn nested_match_and_or_patterns() {
           | 0 | 1 -> "small"
           | _ -> "big"
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r = r.console.writeLine (classify 1)
     "#};
     let (code, out) = run(src);
@@ -953,7 +953,7 @@ fn float_sort_orders_ascending() {
     let src = indoc! {r#"
         module M
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r =
           let xs = List.sort [3.0, 1.0, 2.0]
           r.console.writeLine (String.join " " (List.map Float.toString xs))
@@ -1035,7 +1035,7 @@ fn structural_ordering_sorts_constructors_by_declaration_order() {
           | Mid -> "M"
           | High -> "H"
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r = r.console.writeLine (String.join "" (List.map name (List.sort [High, Low, Mid, Low])))
     "#};
     let (code, out) = run(src);
@@ -1070,7 +1070,7 @@ fn recursive_tree_fold() {
           | Leaf -> 0
           | Node l x rt -> sumTree l + x + sumTree rt
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r = r.console.writeLine (Int.toString (sumTree (Node (Node Leaf 1 Leaf) 2 (Node Leaf 3 Leaf))))
     "#};
     let (code, out) = run(src);
@@ -1089,7 +1089,7 @@ fn result_pattern_match() {
           | Ok n -> Int.toString n
           | Err e -> e
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r = r.console.writeLine (describe (Ok 5) ++ describe (Err "boom"))
     "#};
     let (code, out) = run(src);
@@ -1102,7 +1102,7 @@ fn set_dedups_elements() {
     let src = indoc! {r#"
         module M
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r =
           let s = Set.insert 3 (Set.insert 1 (Set.insert 3 Set.empty))
           r.console.writeLine (Int.toString (Set.size s))
@@ -1121,7 +1121,7 @@ fn nested_record_field_access() {
 
         type Seg = { dest : Vec, src : Vec }
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r =
           let s = { src = { x = 1, y = 2 }, dest = { x = 3, y = 4 } }
           r.console.writeLine (Int.toString (s.src.x + s.dest.y))
@@ -1143,7 +1143,7 @@ fn nested_constructor_patterns() {
           | Some None -> 0
           | None -> 0
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r = r.console.writeLine (Int.toString (unwrap (Some (Some 7))))
     "#};
     let (code, out) = run(src);
@@ -1185,7 +1185,7 @@ fn shared_partial_application_is_applied_safely() {
 
         let applyIt g = g 10
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r = r.console.writeLine (Int.toString (applyIt (add 5)))
     "#};
     let (code, out) = run(src);
@@ -1202,7 +1202,7 @@ fn row_polymorphic_field_access_runs() {
         pick : { a : Int | 'r } -> Int
         let pick rec = rec.a
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r = r.console.writeLine (Int.toString (pick { a = 7, b = 9 }))
     "#};
     let (code, out) = run(src);
@@ -1220,7 +1220,7 @@ fn row_polymorphic_offset_differs_per_call_site() {
         sumAC : { a : Int, c : Int | 'r } -> Int
         let sumAC rec = rec.a + rec.c
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r =
           r.console.writeLine (Int.toString (sumAC { a = 1, b = 2, c = 3 } + sumAC { a = 10, c = 20, z = 9 }))
     "#};
@@ -1241,7 +1241,7 @@ fn row_polymorphic_evidence_threads_through_calls() {
         greet : { console : Console | 'r } -> Unit
         let greet env = emit env "hi"
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r = greet r
     "#};
     let (code, out) = run(src);
@@ -1261,7 +1261,7 @@ fn row_polymorphic_function_passed_first_class() {
         applyRec : ({ a : Int, b : Int } -> Int) -> Int
         let applyRec f = f { a = 5, b = 7 }
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r = r.console.writeLine (Int.toString (applyRec getA))
     "#};
     let (code, out) = run(src);
@@ -1277,7 +1277,7 @@ fn row_polymorphic_record_update_runs() {
         bump : { score : Int | 'r } -> { score : Int | 'r }
         let bump rec = { rec with score = rec.score + 100 }
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r =
           let bumped = bump { name = "x", score = 5 }
           r.console.writeLine (Int.toString bumped.score)
@@ -1296,7 +1296,7 @@ fn row_polymorphic_access_of_last_sorting_field() {
         get : { z : Int | 'r } -> Int
         let get rec = rec.z
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r = r.console.writeLine (Int.toString (get { a = 1, b = 2, z = 99 }))
     "#};
     let (code, out) = run(src);
@@ -1314,7 +1314,7 @@ fn row_polymorphic_outer_with_monomorphic_inner_record() {
         getInner : { p : { x : Int, y : Int } | 'r } -> Int
         let getInner rec = rec.p.x + rec.p.y
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r =
           r.console.writeLine (Int.toString (getInner { tag = 0, p = { x = 3, y = 4 } }))
     "#};
@@ -1331,7 +1331,7 @@ fn interface_value_in_a_record_field_dispatches() {
         interface Greeter =
           greet : String -> String
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r =
           let g = { Greeter with greet n = n ++ "!" }
           let rec = { count = 1, greeter = g }
@@ -1350,7 +1350,7 @@ fn row_polymorphic_update_preserves_the_other_fields() {
         bump : { n : Int | 'r } -> { n : Int | 'r }
         let bump rec = { rec with n = rec.n + 1 }
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r =
           let rec = { a = 1, b = 2, c = 3, n = 10, z = 99 }
           let rec2 = bump rec
@@ -1368,7 +1368,7 @@ fn file_system_write_then_read_runs() {
     let src = formatdoc! {r#"
         module M
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / {{ Console, FileSystem }}
         let main r =
           match r.fs.writeFile "{path}" "round-trip" with
           | Err e -> r.console.writeLine e
@@ -1389,7 +1389,7 @@ fn env_get_unset_variable_runs() {
     let src = indoc! {r#"
         module M
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console, Env }
         let main r =
           match r.env.get "FAI_DEFINITELY_UNSET_PROBE_XYZ" with
           | Some v -> r.console.writeLine v
@@ -1410,7 +1410,7 @@ fn runtime_threaded_through_signatured_helper() {
         emit : Runtime -> String -> Unit
         let emit runtime msg = runtime.console.writeLine msg
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime = emit runtime "hi"
     "#};
     let (code, out) = run(src);
@@ -1441,7 +1441,7 @@ fn reuse_program(use_body: &str) -> String {
 
         let use xs = {use_body}
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / {{ Console }}
         let main rt = rt.console.writeLine (Int.toString (use (build 50)))
     "#}
 }
@@ -1464,7 +1464,7 @@ fn record_update_is_in_place_for_a_unique_record() {
             getN : R -> Int
             let getN rec = rec.n
 
-            public main : Runtime -> Unit
+            public main : Runtime -> Unit / {{ Console }}
             let main rt = rt.console.writeLine (Int.toString (getN (bumpN {k} {{ a = 0, n = 0 }})))
         "#}
     };
@@ -1498,7 +1498,7 @@ fn record_update_copies_a_shared_record() {
             use : R -> Int
             let use rec = {body}
 
-            public main : Runtime -> Unit
+            public main : Runtime -> Unit / {{ Console }}
             let main rt = rt.console.writeLine (Int.toString (use {{ a = 0, n = 10 }}))
         "#}
     };
@@ -1667,7 +1667,7 @@ fn inlined_drop_frees_a_records_boxed_child() {
         make : String -> R
         let make s = { name = s, n = 5 }
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r =
           let rec = make "hello"
           r.console.writeLine (Int.toString rec.n)
@@ -1681,7 +1681,7 @@ fn inlined_drop_of_a_tuple_with_a_boxed_element() {
     let src = indoc! {r#"
         module M
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r =
           let t = ("hi", 5)
           let (s, n) = t
@@ -1703,7 +1703,7 @@ fn inlined_drop_of_an_all_immediate_record() {
         mkFlags : Bool -> Flags
         let mkFlags x = { a = x, b = x }
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r =
           let f = mkFlags true
           r.console.writeLine (if f.a then "yes" else "no")
@@ -1722,7 +1722,7 @@ fn inlined_drop_of_a_nested_record_releases_the_inner_cell() {
         type Inner = { s : String }
         type Outer = { inner : Inner, k : Int }
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r =
           let o = { inner = { s = "deep" }, k = 1 }
           r.console.writeLine o.inner.s
@@ -1747,7 +1747,7 @@ fn inlined_drop_in_tail_position_of_a_loop() {
             let p = { a = n, b = n }
             sumR (n - 1) (acc + p.a)
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r = r.console.writeLine (Int.toString (sumR 5 0))
     "#};
     let (code, out) = run(src);
@@ -1763,7 +1763,7 @@ fn inlined_drop_of_a_shared_record_decrements_without_freeing() {
 
         type R = { a : Int, b : Int }
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r =
           let p = { a = 10, b = 20 }
           let q = p
@@ -1785,7 +1785,7 @@ fn inlined_drop_of_a_list_frees_cells_and_elements() {
     let src = indoc! {r#"
         module M
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r =
           let xs = ["a", "b", "c"]
           r.console.writeLine "ok"
@@ -1800,7 +1800,7 @@ fn inlined_drop_of_an_adt_value() {
     let src = indoc! {r#"
         module M
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r =
           let x = Some "wrapped"
           r.console.writeLine "ok"
@@ -1819,7 +1819,7 @@ fn inlined_drop_of_a_nullary_constructor_is_a_no_op() {
         none : Option String
         let none = None
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r =
           let x = none
           r.console.writeLine "ok"
@@ -1836,7 +1836,7 @@ fn unused_float_local_is_unboxed_and_leak_free() {
     let with_float = indoc! {r#"
         module M
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r =
           let x = 1.5
           r.console.writeLine "ok"
@@ -1844,7 +1844,7 @@ fn unused_float_local_is_unboxed_and_leak_free() {
     let baseline = indoc! {r#"
         module M
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r =
           r.console.writeLine "ok"
     "#};
@@ -1866,7 +1866,7 @@ fn first_class_float_param_function_is_leak_free() {
         isPositive : Float -> Bool
         let isPositive x = x > 0.0
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime =
           let check = isPositive
           runtime.console.writeLine (if check 1.5 then "yes" else "no")
@@ -1880,7 +1880,7 @@ fn inlined_drop_of_a_string_leaf() {
     let src = indoc! {r#"
         module M
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r =
           let s = Int.toString 42
           r.console.writeLine "ok"
@@ -1912,7 +1912,7 @@ fn inlined_drop_of_a_recursive_adt_parameter() {
           | Leaf -> 0
           | Node l r -> 1 + count l + count r
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r = r.console.writeLine (Int.toString (count (build 5)))
     "#};
     let (code, out) = run(src);
@@ -1926,7 +1926,7 @@ fn inlined_drop_of_a_shared_list_does_not_double_free() {
     let src = indoc! {r#"
         module M
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r =
           let xs = ["x", "y"]
           let ys = xs
@@ -1944,7 +1944,7 @@ fn inlined_drop_of_a_deep_list_is_stack_safe() {
     let src = indoc! {r#"
         module M
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r =
           let xs = List.range 0 200000
           r.console.writeLine "ok"

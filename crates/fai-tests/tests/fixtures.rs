@@ -32,6 +32,20 @@ fn typed_fixtures_typecheck_clean() {
 }
 
 #[test]
+fn native_fixtures_typecheck_clean() {
+    // The runnable fixtures are output-checked elsewhere; they must also
+    // typecheck clean, which (with effects required on public) includes
+    // declaring the capabilities each program uses.
+    let files = fixtures("native");
+    assert!(!files.is_empty(), "expected native fixtures");
+    for path in files {
+        let label = path.file_name().unwrap().to_str().unwrap().to_owned();
+        let src = std::fs::read_to_string(&path).unwrap();
+        run_annotated(&label, &src);
+    }
+}
+
+#[test]
 fn error_fixtures_report_expected_diagnostics() {
     let files = fixtures("errors");
     assert!(!files.is_empty(), "expected error fixtures");

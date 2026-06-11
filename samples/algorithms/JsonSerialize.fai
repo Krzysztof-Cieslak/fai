@@ -49,5 +49,5 @@ public run : Int -> Int
 let run n = String.length (serialize (build 0 n))
 example: run 1 = 4
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console }
 let main runtime = runtime.console.writeLine (Int.toString (run 30000))

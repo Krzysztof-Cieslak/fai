@@ -26,7 +26,7 @@ const SRC: &str = indoc! {r#"
 
     let double x = x + x
 
-    public main : Runtime -> Unit
+    public main : Runtime -> Unit / { Console }
     let main runtime = runtime.console.writeLine (Int.toString (double 21))
 "#};
 
@@ -92,7 +92,7 @@ fn second_cold_build_reuses_cached_objects() {
 const SRC_99: &str = indoc! {r#"
     module Main
 
-    public main : Runtime -> Unit
+    public main : Runtime -> Unit / { Console }
     let main runtime = runtime.console.writeLine (Int.toString (33 + 66))
 "#};
 

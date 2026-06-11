@@ -8,7 +8,7 @@ let pow base exp =
   else if exp % 2 = 0 then square (pow base (exp / 2))
   else base * pow base (exp - 1)
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console }
 let main runtime =
   let a = runtime.console.writeLine (Int.toString (pow 2 10))
   let b = runtime.console.writeLine (Int.toString (pow 3 4))

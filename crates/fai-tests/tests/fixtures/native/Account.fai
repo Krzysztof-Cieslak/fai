@@ -6,7 +6,7 @@ module Account
 deposit : Int -> { balance : Int | 'r } -> { balance : Int | 'r }
 let deposit amount acc = { acc with balance = acc.balance + amount }
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console }
 let main runtime =
   let acc = { owner = "alice", balance = 100 }
   let acc2 = deposit 50 (deposit 25 acc)

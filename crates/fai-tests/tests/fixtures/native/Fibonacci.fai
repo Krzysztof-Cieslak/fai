@@ -8,7 +8,7 @@ let fibIter i a b = if i = 0 then a else fibIter (i - 1) b (a + b)
 
 let fastFib n = fibIter n 0 1
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console }
 let main runtime =
   let a = runtime.console.writeLine (Int.toString (fib 10))
   let b = runtime.console.writeLine (Int.toString (fastFib 20))

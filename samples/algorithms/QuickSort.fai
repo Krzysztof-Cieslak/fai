@@ -30,5 +30,5 @@ public run : Int -> Int
 let run n = checksum 0 0 (quicksort (gen n))
 example: run 3 = 5
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console }
 let main runtime = runtime.console.writeLine (Int.toString (run 20000))

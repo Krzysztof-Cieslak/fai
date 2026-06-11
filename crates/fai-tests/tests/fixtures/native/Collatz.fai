@@ -6,7 +6,7 @@ let steps n acc = if n <= 1 then acc else steps (step n) (acc + 1)
 
 let collatz n = steps n 0
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console }
 let main runtime =
   let a = runtime.console.writeLine (Int.toString (collatz 6))
   let b = runtime.console.writeLine (Int.toString (collatz 27))

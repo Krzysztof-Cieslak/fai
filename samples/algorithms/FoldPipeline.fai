@@ -18,5 +18,5 @@ public run : Int -> Int
 let run n = List.foldl (fun acc x -> acc + transform x) 0 (List.range 0 n)
 example: run 3 = 21
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console }
 let main runtime = runtime.console.writeLine (Int.toString (run 800000))

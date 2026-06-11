@@ -366,15 +366,17 @@ fn console_writeline_via_runtime_typechecks() {
     let src = indoc! {r#"
         module Hello
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime = runtime.console.writeLine "Hi"
     "#};
     let (db, f) = db_with_std(&[("Hello.fai", src)]);
     assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
-    // `Runtime` is a transparent alias, so the signature renders expanded.
+    // `Runtime` is a transparent alias, so the signature renders expanded; the
+    // effect row records the console capability the body uses.
     assert_eq!(
         type_of(&db, f[0], "main"),
-        "{ clock : Clock, console : Console, env : Env, fs : FileSystem, random : Random } -> ()"
+        "{ clock : Clock, console : Console, env : Env, fs : FileSystem, random : Random } -> () \
+         / { Console }"
     );
 }
 
@@ -383,7 +385,7 @@ fn console_write_line_rejects_a_non_string() {
     let src = indoc! {r#"
         module M
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime = runtime.console.writeLine 5
     "#};
     let (db, f) = db_with_std(&[("M.fai", src)]);

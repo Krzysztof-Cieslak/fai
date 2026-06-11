@@ -7,14 +7,14 @@ let classify n =
   else Int.toString n
 
 // A recursive print loop threading the runtime capability.
-loop : Runtime -> Int -> Int -> Unit
+loop : Runtime -> Int -> Int -> Unit / { Console }
 let loop runtime i n =
   if i > n then ()
   else
     let printed = runtime.console.writeLine (classify i)
     loop runtime (i + 1) n
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console }
 let main runtime = loop runtime 1 15
 
 //~ OUTPUT 1

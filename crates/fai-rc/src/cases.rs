@@ -2104,7 +2104,7 @@ fn cap_main() {
         indoc! {r#"
             module M
 
-            public main : Runtime -> Unit
+            public main : Runtime -> Unit / { Console }
             let main r = r.console.writeLine "hi"
         "#},
         "main",
@@ -2117,7 +2117,7 @@ fn cap_announce() {
         indoc! {r#"
             module M
 
-            public announce : { console : Console | 'r } -> String -> Unit
+            public announce : { console : Console | 'r } -> String -> Unit / { Console }
             let announce env msg = env.console.writeLine msg
         "#},
         "announce",
@@ -2130,7 +2130,7 @@ fn cap_greetall() {
         indoc! {r#"
             module M
 
-            public greetAll : { console : Console | 'r } -> Unit
+            public greetAll : { console : Console | 'r } -> Unit / { Console }
             let greetAll env =
               let _ = env.console.writeLine "a"
               env.console.writeLine "b"
@@ -5801,7 +5801,7 @@ fn not_pure_total_capability_effect() {
         indoc! {r#"
             module M
 
-            public shout : Runtime -> Unit
+            public shout : Runtime -> Unit / { Console }
             let shout rt = rt.console.writeLine "hi"
         "#},
         "shout",

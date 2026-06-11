@@ -37,5 +37,5 @@ public run : Int -> Int
 let run n = countRoots 0 n (build 1 n Dict.empty) Set.empty
 example: run 4 = 1
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console }
 let main runtime = runtime.console.writeLine (Int.toString (run 30000))

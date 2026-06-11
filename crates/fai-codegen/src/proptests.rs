@@ -264,7 +264,7 @@ proptest! {
         let src = formatdoc! {r#"
             module M
 
-            public main : Runtime -> Unit
+            public main : Runtime -> Unit / {{ Console }}
             let main r = r.console.writeLine (Int.toString ({expr}))
         "#};
         let (code, out) = run(&src);
@@ -285,7 +285,7 @@ proptest! {
             getField : {{ {name} : Int | _ }} -> Int
             let getField rec = rec.{name}
 
-            public main : Runtime -> Unit
+            public main : Runtime -> Unit / {{ Console }}
             let main r = r.console.writeLine (Int.toString (getField {record}))
         "#};
         let (code, out) = run(&src);
@@ -316,7 +316,7 @@ proptest! {
             getField : {{ {name} : Int | _ }} -> Int
             let getField rec = rec.{name}
 
-            public main : Runtime -> Unit
+            public main : Runtime -> Unit / {{ Console }}
             let main r = r.console.writeLine (Int.toString (getField {ra} + getField {rb}))
         "#};
         let (code, out) = run(&src);
@@ -348,7 +348,7 @@ proptest! {
 
             let inst = {{ Thing with {impls} }}
 
-            public main : Runtime -> Unit
+            public main : Runtime -> Unit / {{ Console }}
             let main r = r.console.writeLine (Int.toString (inst.{name} ()))
         "#};
         let (code, out) = run(&src);
@@ -367,7 +367,7 @@ proptest! {
 
             let f x = {}
 
-            public main : Runtime -> Unit
+            public main : Runtime -> Unit / {{ Console }}
             let main r = r.console.writeLine (Int.toString (f {}))
         "#,
             render(&e),
@@ -390,7 +390,7 @@ proptest! {
 
             let f x = if {} then 1 else 0
 
-            public main : Runtime -> Unit
+            public main : Runtime -> Unit / {{ Console }}
             let main r = r.console.writeLine (Int.toString (f {}))
         "#,
             render_b(&b),

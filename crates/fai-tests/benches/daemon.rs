@@ -23,10 +23,10 @@ fn main() {
 }
 
 /// A small program (a single arithmetic `main`).
-const SMALL: &str = "module M\n\npublic main : Runtime -> Unit\nlet main r = r.console.writeLine (Int.toString (1 + 2 * 3))\n";
+const SMALL: &str = "module M\n\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (1 + 2 * 3))\n";
 
 /// A medium program: a helper chain plus higher-order use.
-const MEDIUM: &str = "module M\n\nlet inc x = x + 1\n\nlet double x = x + x\n\nlet apply f x = f x\n\nlet step x = double (inc x)\n\npublic main : Runtime -> Unit\nlet main r = r.console.writeLine (Int.toString (apply step (step 10)))\n";
+const MEDIUM: &str = "module M\n\nlet inc x = x + 1\n\nlet double x = x + x\n\nlet apply f x = f x\n\nlet step x = double (inc x)\n\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (apply step (step 10)))\n";
 
 /// A fresh database holding `src` (and the prelude), warmed through inference.
 fn fresh(src: &str) -> (FaiDatabase, SourceFile) {

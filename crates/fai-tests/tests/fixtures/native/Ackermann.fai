@@ -6,7 +6,7 @@ let ack m n =
   else if n = 0 then ack (m - 1) 1
   else ack (m - 1) (ack m (n - 1))
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console }
 let main runtime =
   let a = runtime.console.writeLine (Int.toString (ack 2 3))
   let b = runtime.console.writeLine (Int.toString (ack 3 3))

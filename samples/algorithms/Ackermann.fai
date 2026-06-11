@@ -12,5 +12,5 @@ public run : Int -> Int
 let run n = ack 3 n
 example: run 3 = 61
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console }
 let main runtime = runtime.console.writeLine (Int.toString (run 9))

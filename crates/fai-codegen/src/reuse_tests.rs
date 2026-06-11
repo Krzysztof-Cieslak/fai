@@ -35,7 +35,7 @@ fn prog(defs: &str, use_body: &str, n: i32) -> String {
 
         let use xs = {use_body}
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / {{ Console }}
         let main rt = rt.console.writeLine (Int.toString (use (build {n})))
     "#}
 }
@@ -178,7 +178,7 @@ fn string_reader_borrows_its_operand() {
 
         let twice s = String.length s + String.length s
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / {{ Console }}
         let main rt = rt.console.writeLine (Int.toString (twice "abcde"))
     "#};
     outputs(&src, "10");
@@ -194,7 +194,7 @@ fn string_builders_borrow_their_operand() {
 
         let twice s = String.length (String.toUpper s) + String.length (String.trim s)
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / {{ Console }}
         let main rt = rt.console.writeLine (Int.toString (twice "  Hi  "))
     "#};
     // toUpper "  Hi  " -> "  HI  " (length 6); trim "  Hi  " -> "Hi" (length 2).
@@ -210,7 +210,7 @@ fn string_split_join_borrow_the_separator() {
 
         let roundtrip sep s = String.join sep (String.split sep s)
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / {{ Console }}
         let main rt = rt.console.writeLine (roundtrip "," "a,b,c")
     "#};
     outputs(&src, "a,b,c");
@@ -237,7 +237,7 @@ fn record_update_three_field_in_place_is_constant() {
             getC : R -> Int
             let getC rec = rec.c
 
-            public main : Runtime -> Unit
+            public main : Runtime -> Unit / {{ Console }}
             let main rt = rt.console.writeLine (Int.toString (getC (bumpN {k} {{ a = 0, b = 0, c = 0 }})))
         "#}
     };
@@ -256,7 +256,7 @@ fn record_update_row_polymorphic_output() {
         bump : {{ n : Int | 'r }} -> {{ n : Int | 'r }}
         let bump rec = {{ rec with n = rec.n + 1 }}
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / {{ Console }}
         let main rt =
           let r = bump {{ n = 41, tag = 1 }}
           rt.console.writeLine (Int.toString r.n)
@@ -281,7 +281,7 @@ fn record_update_copies_when_shared() {
             use : R -> Int
             let use rec = {body}
 
-            public main : Runtime -> Unit
+            public main : Runtime -> Unit / {{ Console }}
             let main rt = rt.console.writeLine (Int.toString (use {{ a = 0, n = 10 }}))
         "#}
     };
@@ -347,7 +347,7 @@ fn correct_adt_tree_rebuild_output() {
           | Leaf n -> n
           | Node l r -> sumT l + sumT r
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / {{ Console }}
         let main rt =
           let t = Node (Node (Leaf 1) (Leaf 2)) (Leaf 3)
           rt.console.writeLine (Int.toString (sumT (incT t)))
@@ -372,7 +372,7 @@ fn correct_option_rebuild_output() {
           | Non -> d
           | Som x -> x
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / {{ Console }}
         let main rt = rt.console.writeLine (Int.toString (get 0 (bump (Som 41))))
     "#};
     outputs(&src, "42");
@@ -387,7 +387,7 @@ fn correct_record_update_output() {
 
         let shift p = {{ p with x = p.x + 1 }}
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / {{ Console }}
         let main rt =
           let p = shift {{ x = 41, y = 0 }}
           rt.console.writeLine (Int.toString p.x)

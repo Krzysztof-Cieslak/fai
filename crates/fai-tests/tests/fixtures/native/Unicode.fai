@@ -6,7 +6,7 @@ let banner = "héllo, 世界 \u{1F600}"
 
 let line s = "<< " ++ s ++ " >>"
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console }
 let main runtime =
   let a = runtime.console.writeLine banner
   runtime.console.writeLine (line "café")

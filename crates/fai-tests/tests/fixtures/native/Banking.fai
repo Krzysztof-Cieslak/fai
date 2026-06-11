@@ -4,7 +4,7 @@ module Banking
 let grow balance years =
   if years = 0 then balance else grow (balance + balance / 10) (years - 1)
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console }
 let main runtime =
   let a = runtime.console.writeLine (Int.toString (grow 1000 0))
   let b = runtime.console.writeLine (Int.toString (grow 1000 1))

@@ -40,5 +40,5 @@ public runF : Int -> Float
 let runF n = total (simulate 0 n initial)
 example: runF 0 = 35.0
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console }
 let main runtime = runtime.console.writeLine (Float.toString (runF 100000))

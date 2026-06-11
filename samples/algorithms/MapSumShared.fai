@@ -13,5 +13,5 @@ let run n =
   List.sum (List.map (fun x -> x * 2) xs) + List.sum xs
 example: run 4 = 18
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console }
 let main runtime = runtime.console.writeLine (Int.toString (run 1500000))

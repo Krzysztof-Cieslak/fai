@@ -670,8 +670,15 @@ impl<E: Env> Walker<'_, E> {
         for m in methods {
             let param_tys: Vec<SolveTy> =
                 m.params.iter().map(|&p| self.bind_pattern_into(p)).collect();
+            // A method body's effect belongs to the *dictionary entry*, not to
+            // the code building the instance, so it is scoped (like a lambda):
+            // constructing an interface value is pure even if its methods are
+            // effectful. The method's own effect rides its arrow so it is checked
+            // against the interface's declared method effect.
+            let saved = std::mem::replace(&mut self.cur_effect, SolveEffect::pure());
             let body_ty = self.infer_expr(m.body);
-            let impl_ty = SolveTy::arrows_solver(param_tys, body_ty);
+            let method_eff = std::mem::replace(&mut self.cur_effect, saved);
+            let impl_ty = SolveTy::arrows_solver_eff(param_tys, body_ty, method_eff);
             match build_interface_method_scheme(self.db, iref, m.name) {
                 Some(scheme) => {
                     let expected = self.cx.instantiate_sharing(&scheme, &param_fresh);

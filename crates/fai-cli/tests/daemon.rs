@@ -332,7 +332,7 @@ fn warm_check_reflects_an_edit() {
 const HELLO: &str = indoc! {r#"
     module Hello
 
-    public main : Runtime -> Unit
+    public main : Runtime -> Unit / { Console }
     let main runtime = runtime.console.writeLine "hi from run"
 "#};
 
@@ -353,7 +353,7 @@ fn run_timeout_is_reaped_and_daemon_survives() {
 
         let fib n = if n < 2 then n else fib (n - 1) + fib (n - 2)
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime = runtime.console.writeLine (Int.toString (fib 40))
     "#};
     let daemon = Daemon::new("timeout", &[("Main.fai", fib)]).with_run_timeout(500);
@@ -386,7 +386,7 @@ fn run_memory_limit_is_enforced_and_daemon_survives() {
 
         let build n acc = if n = 0 then acc else build (n - 1) (n :: acc)
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime =
           runtime.console.writeLine (Int.toString (List.length (build 100000000 [])))
     "#};
@@ -579,7 +579,7 @@ fn run_compile_error_exits_four_via_daemon() {
     let bad = indoc! {r#"
         module Main
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main r = r.console.writeLine (1 + 2)
     "#};
     let daemon = Daemon::new("runbad", &[("Main.fai", bad)]);
@@ -597,7 +597,7 @@ fn build_via_daemon_produces_a_runnable_binary() {
     let src = indoc! {r#"
         module Calc
 
-        public main : Runtime -> Unit
+        public main : Runtime -> Unit / { Console }
         let main runtime = runtime.console.writeLine (Int.toString (40 + 2))
     "#};
     let daemon = Daemon::new("build", &[("Calc.fai", src)]);

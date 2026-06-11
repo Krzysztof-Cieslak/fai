@@ -39,7 +39,7 @@ fn run(src: &str) -> (i32, String) {
 /// Wraps an expression that consumes a long list in a `main` that prints it.
 fn program(expr: &str) -> String {
     format!(
-        "module M\n\npublic main : Runtime -> Unit\nlet main rt = rt.console.writeLine (Int.toString ({expr}))\n"
+        "module M\n\npublic main : Runtime -> Unit / {{ Console }}\nlet main rt = rt.console.writeLine (Int.toString ({expr}))\n"
     )
 }
 

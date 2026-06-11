@@ -317,7 +317,7 @@ fn object_code_runs_after_helper_edit(fillers: usize) -> usize {
         indoc! {r#"
             module Main
 
-            public main : Runtime -> Unit
+            public main : Runtime -> Unit / { Console }
             let main r = r.console.writeLine (Int.toString (Helper.helper 1))
         "#}
         .to_owned(),
