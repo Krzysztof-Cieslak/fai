@@ -3,7 +3,7 @@ module Option
 // Operations on the auto-imported `Option` type. Reach them qualified:
 // `Option.map`, `Option.withDefault`, …
 /// Map over the value inside an `Option`.
-public map : ('a -> 'b) -> Option 'a -> Option 'b
+public map : ('a -> 'b / 'e) -> Option 'a -> Option 'b / 'e
 let map f opt =
   match opt with
   | None -> None
@@ -40,7 +40,7 @@ example: isNone None
 forall o: isNone o = not (isSome o)
 
 /// Chain a fallible computation over an `Option`.
-public andThen : ('a -> Option 'b) -> Option 'a -> Option 'b
+public andThen : ('a -> Option 'b / 'e) -> Option 'a -> Option 'b / 'e
 let andThen f opt =
   match opt with
   | None -> None

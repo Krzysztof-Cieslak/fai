@@ -3,7 +3,7 @@ module Result
 // Operations on the auto-imported `Result` type. Reach them qualified:
 // `Result.map`, `Result.mapError`, …
 /// Map over the success value of a `Result`.
-public map : ('a -> 'b) -> Result 'a 'err -> Result 'b 'err
+public map : ('a -> 'b / 'e) -> Result 'a 'err -> Result 'b 'err / 'e
 let map f result =
   match result with
   | Ok x -> Ok (f x)
@@ -12,7 +12,7 @@ example: map (fun x -> x + 1) (Ok 1) = Ok 2
 forall r: map identity r = r
 
 /// Map over the error value of a `Result`.
-public mapError : ('a -> 'b) -> Result 'ok 'a -> Result 'ok 'b
+public mapError : ('a -> 'b / 'e) -> Result 'ok 'a -> Result 'ok 'b / 'e
 let mapError f result =
   match result with
   | Ok x -> Ok x

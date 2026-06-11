@@ -123,12 +123,12 @@ let defaultRuntime =
   { clock = stdClock, console = stdConsole, env = stdEnv, fs = stdFs, random = stdRandom }
 
 /// Forward application: `x |> f` is `f x`.
-public (|>) : 'a -> ('a -> 'b) -> 'b
+public (|>) : 'a -> ('a -> 'b / 'e) -> 'b / 'e
 let (|>) x f = f x
 example: (|>) 5 identity = 5
 
 /// Left-to-right composition: `(f >> g) x` is `g (f x)`.
-public (>>) : ('a -> 'b) -> ('b -> 'c) -> 'a -> 'c
+public (>>) : ('a -> 'b / 'e) -> ('b -> 'c / 'e) -> 'a -> 'c / 'e
 let (>>) f g = fun x -> g (f x)
 example: (>>) identity identity 0 = 0
 

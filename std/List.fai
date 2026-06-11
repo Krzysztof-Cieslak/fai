@@ -52,7 +52,7 @@ example: append [1, 2] [3] = [1, 2, 3]
 forall xs: append [] xs = xs
 
 /// Apply `f` to every element, preserving order.
-public map : ('a -> 'b) -> List 'a -> List 'b
+public map : ('a -> 'b / 'e) -> List 'a -> List 'b / 'e
 let map f xs =
   match xs with
   | [] -> []
@@ -61,7 +61,7 @@ example: map (fun x -> x + 1) [1, 2, 3] = [2, 3, 4]
 forall xs: map identity xs = xs
 
 /// Keep the elements satisfying `keep`.
-public filter : ('a -> Bool) -> List 'a -> List 'a
+public filter : ('a -> Bool / 'e) -> List 'a -> List 'a / 'e
 let filter keep xs =
   match xs with
   | [] -> []
@@ -69,7 +69,7 @@ let filter keep xs =
 example: filter (fun x -> x > 1) [1, 2, 3] = [2, 3]
 
 /// Left fold: `foldl f acc [a, b] = f (f acc a) b`.
-public foldl : ('acc -> 'a -> 'acc) -> 'acc -> List 'a -> 'acc
+public foldl : ('acc -> 'a -> 'acc / 'e) -> 'acc -> List 'a -> 'acc / 'e
 let foldl f acc xs =
   match xs with
   | [] -> acc
@@ -81,7 +81,7 @@ example: foldl (fun acc x -> acc + x) 0 [1, 2, 3] = 6
 // native stack space (a direct `f x (foldr … rest)` would recurse per element).
 // Reversing then folding left with the arguments flipped preserves both the
 // result and the right-to-left evaluation order.
-public foldr : ('a -> 'acc -> 'acc) -> 'acc -> List 'a -> 'acc
+public foldr : ('a -> 'acc -> 'acc / 'e) -> 'acc -> List 'a -> 'acc / 'e
 let foldr f acc xs = foldl (fun a x -> f x a) acc (reverse xs)
 example: foldr (fun x acc -> x + acc) 0 [1, 2, 3] = 6
 
@@ -103,7 +103,7 @@ example: sum [1, 2, 3] = 6
 example: sum [] = 0
 
 /// Whether every element satisfies `pred`.
-public all : ('a -> Bool) -> List 'a -> Bool
+public all : ('a -> Bool / 'e) -> List 'a -> Bool / 'e
 let all pred xs =
   match xs with
   | [] -> true
@@ -112,7 +112,7 @@ example: all (fun x -> x > 0) [1, 2, 3]
 example: all (fun x -> x > 1) [1, 2] = false
 
 /// Whether any element satisfies `pred`.
-public any : ('a -> Bool) -> List 'a -> Bool
+public any : ('a -> Bool / 'e) -> List 'a -> Bool / 'e
 let any pred xs =
   match xs with
   | [] -> false
@@ -162,7 +162,7 @@ let zip xs ys =
 example: zip [1, 2] [3, 4] = [(1, 3), (2, 4)]
 
 /// The first element satisfying `pred`, if any.
-public find : ('a -> Bool) -> List 'a -> Option 'a
+public find : ('a -> Bool / 'e) -> List 'a -> Option 'a / 'e
 let find pred xs =
   match xs with
   | [] -> None
@@ -171,7 +171,7 @@ example: find (fun x -> x > 1) [1, 2, 3] = Some 2
 example: find (fun x -> x > 9) [1, 2, 3] = None
 
 /// Split a list into the elements satisfying `pred` and those that do not.
-public partition : ('a -> Bool) -> List 'a -> List 'a * List 'a
+public partition : ('a -> Bool / 'e) -> List 'a -> List 'a * List 'a / 'e
 let partition pred xs =
   match xs with
   | [] -> ([], [])
@@ -181,7 +181,7 @@ let partition pred xs =
 example: partition (fun x -> x > 1) [1, 2, 3] = ([2, 3], [1])
 
 /// The longest prefix of elements satisfying `pred`.
-public takeWhile : ('a -> Bool) -> List 'a -> List 'a
+public takeWhile : ('a -> Bool / 'e) -> List 'a -> List 'a / 'e
 let takeWhile pred xs =
   match xs with
   | [] -> []
@@ -189,7 +189,7 @@ let takeWhile pred xs =
 example: takeWhile (fun x -> x < 3) [1, 2, 3, 1] = [1, 2]
 
 /// The remainder after the longest prefix satisfying `pred`.
-public dropWhile : ('a -> Bool) -> List 'a -> List 'a
+public dropWhile : ('a -> Bool / 'e) -> List 'a -> List 'a / 'e
 let dropWhile pred xs =
   match xs with
   | [] -> []
@@ -197,7 +197,7 @@ let dropWhile pred xs =
 example: dropWhile (fun x -> x < 3) [1, 2, 3, 1] = [3, 1]
 
 /// Map each element to a list and concatenate the results.
-public concatMap : ('a -> List 'b) -> List 'a -> List 'b
+public concatMap : ('a -> List 'b / 'e) -> List 'a -> List 'b / 'e
 let concatMap f xs = concat (map f xs)
 example: concatMap (fun x -> [x, x]) [1, 2] = [1, 1, 2, 2]
 
@@ -212,7 +212,7 @@ let mergeBy cmp xs ys =
 example: mergeBy compare [1, 3] [2, 4] = [1, 2, 3, 4]
 
 /// Stable merge sort under a comparator (`cmp a b < 0` means `a` comes first).
-public sortBy : ('a -> 'a -> Int) -> List 'a -> List 'a
+public sortBy : ('a -> 'a -> Int / 'e) -> List 'a -> List 'a / 'e
 let sortBy cmp xs =
   match xs with
   | [] -> []
