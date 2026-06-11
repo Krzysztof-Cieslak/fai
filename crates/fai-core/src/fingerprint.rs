@@ -41,10 +41,12 @@ pub fn fingerprint_def(
         let _ = writeln!(out, "borrow {:?}", def.entry_borrowed);
     }
     // The calling convention likewise changes the emitted code. The register ABI
-    // (a direct-callable entry: `fn(env, a0, …) -> ret`) and the unboxed-float slot
-    // representation must both be keyed, so a definition's own shape distinguishes
-    // it from a same-bodied one with a different convention (e.g. a row-polymorphic
-    // entry, which keeps the uniform array ABI, vs a non-row-polymorphic one).
+    // (a direct-callable entry: `fn(env, a0, …) -> ret`) and the unboxed-slot
+    // representation (raw `f64` for `Float`, untagged `i64` for `Int`) must all be
+    // keyed, so a definition's own shape distinguishes it from a same-bodied one
+    // with a different convention (e.g. a row-polymorphic entry, which keeps the
+    // uniform array ABI, vs a non-row-polymorphic one; or a monomorphic-`Int`
+    // callee vs a generic one instantiated at `Int`, which share a call-site type).
     let self_abi = abi_of(def.def);
     if self_abi.register_abi {
         let _ = writeln!(out, "regabi");
@@ -62,11 +64,16 @@ pub fn fingerprint_def(
     out
 }
 
-/// Renders a non-uniform [`FnAbi`] compactly (parameter float flags and the
-/// result flag), for the cache key.
+/// Renders a non-uniform [`FnAbi`] compactly (per-parameter float and untagged-int
+/// flags and the result flags), for the cache key.
 fn abi_tag(abi: &FnAbi) -> String {
-    let params: String = abi.float_params.iter().map(|&f| if f { '1' } else { '0' }).collect();
-    format!("p[{params}]r{}", u8::from(abi.float_return))
+    let fparams: String = abi.float_params.iter().map(|&f| if f { '1' } else { '0' }).collect();
+    let iparams: String = abi.int_params.iter().map(|&f| if f { '1' } else { '0' }).collect();
+    format!(
+        "fp[{fparams}]fr{} ip[{iparams}]ir{}",
+        u8::from(abi.float_return),
+        u8::from(abi.int_return)
+    )
 }
 
 fn write_expr(
@@ -100,8 +107,9 @@ fn write_expr(
             // Module-qualified symbol + arity: exactly what codegen emits for a
             // call, so the key is stable across processes (no DefId/SourceId). The
             // callee's ABI (rendered only when non-uniform) decides whether a
-            // direct call marshals floats as raw bits, independently of this
-            // reference's instantiated type, so it is part of the key too.
+            // direct call marshals a parameter/result as raw `f64` bits or an
+            // untagged `i64`, independently of this reference's instantiated type,
+            // so it is part of the key too.
             let _ = write!(out, "@{}/{}", namer(*def), arity_of(*def));
             let abi = abi_of(*def);
             if !abi.is_uniform() {
@@ -364,9 +372,30 @@ mod tests {
         let float = fingerprint_def(&g, &namer, &|_| 1, &|_| FnAbi {
             float_params: vec![true],
             float_return: true,
+            int_params: vec![false],
+            int_return: false,
             register_abi: true,
         });
         assert_ne!(uniform, float);
+    }
+
+    #[test]
+    fn definition_int_abi_is_part_of_the_key() {
+        // A definition's own untagged-`Int` calling convention changes its emitted
+        // code (raw `i64` parameters/result, the bridging wrapper, and bare inline
+        // arithmetic), so it must be keyed even when the body and types match a
+        // generic (tagged) version with the same register transport.
+        let (_db, g) = caller();
+        let namer = |d: DefId| format!("fai_M_{}", d.name);
+        let tagged = fingerprint_def(&g, &namer, &|_| 1, &|_| FnAbi::register_uniform(1));
+        let raw = fingerprint_def(&g, &namer, &|_| 1, &|_| FnAbi {
+            float_params: vec![false],
+            float_return: false,
+            int_params: vec![true],
+            int_return: true,
+            register_abi: true,
+        });
+        assert_ne!(tagged, raw);
     }
 
     #[test]
@@ -391,12 +420,42 @@ mod tests {
         let namer = |d: DefId| format!("fai_M_{}", d.name);
         let helper_uniform = fingerprint_def(&g, &namer, &|_| 1, &|d: DefId| {
             if d.name.as_str() == "helper" {
-                FnAbi { float_params: vec![true], float_return: true, register_abi: true }
+                FnAbi {
+                    float_params: vec![true],
+                    float_return: true,
+                    int_params: vec![false],
+                    int_return: false,
+                    register_abi: true,
+                }
             } else {
                 FnAbi::default()
             }
         });
         let all_uniform = fingerprint_def(&g, &namer, &|_| 1, &|_| FnAbi::default());
         assert_ne!(helper_uniform, all_uniform);
+    }
+
+    #[test]
+    fn callee_int_abi_is_part_of_the_key() {
+        // A callee that is monomorphic `Int` (untagged raw `i64` ABI) vs generic
+        // (tagged/uniform) flips the caller's marshalling even when the
+        // instantiated call-site type is identical, so the callee's ABI is keyed.
+        let (_db, g) = caller(); // `g` calls `helper`
+        let namer = |d: DefId| format!("fai_M_{}", d.name);
+        let helper_raw = fingerprint_def(&g, &namer, &|_| 1, &|d: DefId| {
+            if d.name.as_str() == "helper" {
+                FnAbi {
+                    float_params: vec![false],
+                    float_return: false,
+                    int_params: vec![true],
+                    int_return: true,
+                    register_abi: true,
+                }
+            } else {
+                FnAbi::register_uniform(1)
+            }
+        });
+        let all_tagged = fingerprint_def(&g, &namer, &|_| 1, &|_| FnAbi::register_uniform(1));
+        assert_ne!(helper_raw, all_tagged);
     }
 }
