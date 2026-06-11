@@ -14,5 +14,5 @@ public same : Opaque.Counter -> Opaque.Counter -> Bool
 let same a b = a = b
 example: same (twice Opaque.zero) (twice Opaque.zero)
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console }
 let main runtime = runtime.console.writeLine (Int.toString (Opaque.value (twice Opaque.zero)))

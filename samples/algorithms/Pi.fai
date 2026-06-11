@@ -18,5 +18,5 @@ public runF : Int -> Float
 let runF n = 4.0 * sumFrom 0.0 0 n
 example: runF 1 = 4.0
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console }
 let main runtime = runtime.console.writeLine (Float.toString (runF 800000))

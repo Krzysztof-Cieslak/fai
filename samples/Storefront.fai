@@ -9,7 +9,7 @@ let describe line = Catalog.label line.product ++ ": " ++ Float.toString (Orders
 public lineRenderer : Renderer
 let lineRenderer = { Renderer with render line = describe line }
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console }
 let main runtime =
   let sample =
     { discount = Pricing.Percent 10.0, product = { category = Catalog.Food, name = "Apple", price = 0.5, sku = "A1" }, qty = 4 }

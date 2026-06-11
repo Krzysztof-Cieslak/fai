@@ -10,7 +10,7 @@ example: subtotal { name = "pen", price = 1.5, qty = 2 } = 3.0
 public total : List Item -> Float
 let total items = items |> List.map subtotal |> List.foldl (fun acc x -> acc + x) 0.0
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console }
 let main runtime =
   let cart = [{ name = "pen", price = 1.5, qty = 2 }, { name = "pad", price = 3.0, qty = 1 }]
   let due = total cart

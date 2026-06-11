@@ -25,5 +25,5 @@ public run : Int -> Int
 let run depth = count (buildTree depth)
 example: run 3 = 7
 
-public main : Runtime -> Unit
+public main : Runtime -> Unit / { Console }
 let main runtime = runtime.console.writeLine (Int.toString (run 21))
