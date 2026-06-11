@@ -357,10 +357,12 @@ fn remap_member(
 ) -> CExpr {
     // The combined function shares padded positional slots across members, so a
     // slot can hold a `Float` value in one branch and an integer (or padding) in
-    // another. It therefore uses the uniform boxed representation for floats:
-    // erasing `Float` from each node's type keeps code generation from unboxing a
-    // shared slot, and its float primitives fall back to the runtime float calls.
-    let ty = erase_floats(&e.ty);
+    // another. It therefore uses the uniform boxed/tagged representation for the
+    // unboxed scalars: erasing `Float` and `Int` from each node's type keeps code
+    // generation from unboxing a shared slot, so its float primitives fall back to
+    // the runtime float calls and its integer primitives take the tagged guarded
+    // path (a tagged immediate is a valid uniform word).
+    let ty = erase_unboxed(&e.ty);
     match &e.kind {
         K::Local(l) => CExpr::new(K::Local(remap_local(*l, subst, next)), ty),
         K::Lit(_) | K::Global(_) | K::Error => CExpr::new(e.kind.clone(), ty),
@@ -450,21 +452,23 @@ fn global(def: DefId) -> CExpr {
     CExpr::new(K::Global(def), Ty::Error)
 }
 
-/// Replaces every `Float` in a type with the error marker, so the combined
-/// function treats floats in the uniform boxed representation (its shared,
-/// padded parameter slots cannot carry an unboxed `f64`). Recurses through
-/// composite types; the marker stays in the same code-generation class as
-/// `Float` for a boxed *field* (both release as a boxed child).
-fn erase_floats(ty: &Ty) -> Ty {
+/// Replaces every unboxed scalar (`Float` and `Int`) in a type with the error
+/// marker, so the combined function treats them in the uniform boxed/tagged
+/// representation (its shared, padded parameter slots cannot carry an unboxed
+/// `f64` and must not carry an untagged `i64`). Recurses through composite types;
+/// the marker stays in the same code-generation class as the erased type for a
+/// boxed *field* (both release as a boxed child), and an erased local takes the
+/// runtime drop fallback (a no-op on an immediate, a free on a boxed cell).
+fn erase_unboxed(ty: &Ty) -> Ty {
     match ty {
-        Ty::Con(Con::Float) => Ty::Error,
-        Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(erase_floats).collect()),
+        Ty::Con(Con::Float | Con::Int) => Ty::Error,
+        Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(erase_unboxed).collect()),
         Ty::Record(row) => Ty::Record(RecordRow {
-            fields: row.fields.iter().map(|(l, t)| (*l, erase_floats(t))).collect(),
+            fields: row.fields.iter().map(|(l, t)| (*l, erase_unboxed(t))).collect(),
             tail: row.tail,
         }),
-        Ty::App(head, arg) => Ty::App(Arc::new(erase_floats(head)), Arc::new(erase_floats(arg))),
-        Ty::Arrow(from, to, e) => Ty::arrow_eff(erase_floats(from), erase_floats(to), e.clone()),
+        Ty::App(head, arg) => Ty::App(Arc::new(erase_unboxed(head)), Arc::new(erase_unboxed(arg))),
+        Ty::Arrow(from, to, e) => Ty::arrow_eff(erase_unboxed(from), erase_unboxed(to), e.clone()),
         other => other.clone(),
     }
 }

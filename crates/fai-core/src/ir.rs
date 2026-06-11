@@ -42,6 +42,16 @@ impl FnId {
 ///   A scalar `Float` parameter or result is unboxed: in the register ABI it is an
 ///   `f64` register; in the uniform ABI it is raw `f64` bits in the argument slot /
 ///   return word.
+/// * **`Int` representation** ([`FnAbi::int_params`]/[`FnAbi::int_return`]). A
+///   monomorphic `Int` parameter or result is carried **untagged** (a raw `i64`,
+///   not a low-bit-tagged immediate) — but only on the **register ABI**, where a
+///   direct caller receives it raw and skips the tag/box round-trip. Uniform
+///   (row-polymorphic / nullary) entries are reached only through `apply_n`, which
+///   boxes everything, so they keep ints tagged: a tagged immediate is already a
+///   valid uniform word (unlike a `Float`), so unboxing them would be a pure
+///   wrapper round-trip with no direct-call beneficiary. The Cranelift parameter
+///   type is `i64` either way — raw-ness is conventional, so it is part of the
+///   cache key (see the fingerprint).
 ///
 /// Direct, saturated callers marshal arguments per this shape; the first-class
 /// form (`apply_n` / the static closure) always uses the uniform all-boxed array
@@ -54,6 +64,15 @@ pub struct FnAbi {
     pub float_params: Vec<bool>,
     /// Whether the result is an unboxed `Float`.
     pub float_return: bool,
+    /// One flag per runtime parameter (parallel to [`Self::float_params`]), `true`
+    /// when that parameter is an **untagged `Int`** (a raw `i64`). Non-empty only
+    /// on the register ABI; uniform entries keep ints tagged, so theirs are all
+    /// `false` (offset-evidence parameters are always `false` — they stay tagged
+    /// immediates).
+    pub int_params: Vec<bool>,
+    /// Whether the result is an untagged `Int` (a raw `i64`). Set only on the
+    /// register ABI.
+    pub int_return: bool,
     /// Whether the entry uses the register-passing calling convention
     /// (`fn(env, a0, …, aN) -> ret`, value arguments in registers) instead of the
     /// uniform spilled-array entry (`fn(env, args) -> ret`). `true` exactly for a
@@ -68,20 +87,23 @@ pub struct FnAbi {
 impl FnAbi {
     /// Derives the calling-convention shape from a definition's type `scheme` and
     /// its `source_params` count (the syntactic `let f a b = …` binders). The
-    /// leading offset-evidence parameters (integers) are non-float; each source
-    /// parameter is unboxed when its declared type is exactly `Float`, and the
-    /// result is unboxed when the residual return type is exactly `Float`. Reading
-    /// the *signature* (not the body) keeps a caller's compiled code independent of
-    /// a callee's body.
+    /// leading offset-evidence parameters (integers) are non-float and non-raw;
+    /// each source parameter is unboxed when its declared type is exactly `Float`
+    /// (a raw `f64`) or exactly `Int` (a raw `i64`), and the result likewise.
+    /// Untagged-`Int` flags are kept only for the register ABI (a uniform entry,
+    /// reached only via `apply_n`, keeps ints tagged). Reading the *signature* (not
+    /// the body) keeps a caller's compiled code independent of a callee's body.
     #[must_use]
     pub fn from_scheme(scheme: &fai_types::Scheme, source_params: usize) -> FnAbi {
         let evidence = fai_types::evidence_count(scheme);
         let mut float_params = vec![false; evidence];
+        let mut int_params = vec![false; evidence];
         let mut ty = &scheme.ty;
         for _ in 0..source_params {
             match ty {
                 Ty::Arrow(from, to, _) => {
                     float_params.push(matches!(from.as_ref(), Ty::Con(Con::Float)));
+                    int_params.push(matches!(from.as_ref(), Ty::Con(Con::Int)));
                     ty = to;
                 }
                 // Fewer arrows than declared source parameters cannot happen for a
@@ -92,7 +114,21 @@ impl FnAbi {
         // Direct-callable iff non-row-polymorphic (no evidence) with a parameter:
         // exactly the definitions a saturated call reaches as a bare `Global` head.
         let register_abi = evidence == 0 && source_params > 0;
-        FnAbi { float_params, float_return: matches!(ty, Ty::Con(Con::Float)), register_abi }
+        let mut int_return = matches!(ty, Ty::Con(Con::Int));
+        // Ints are unboxed only on the register ABI; a uniform entry keeps them
+        // tagged (a tagged immediate is a valid uniform word), so clear its raw
+        // flags. Floats stay unboxed on both ABIs (a float is never a uniform word).
+        if !register_abi {
+            int_params.iter_mut().for_each(|f| *f = false);
+            int_return = false;
+        }
+        FnAbi {
+            float_params,
+            float_return: matches!(ty, Ty::Con(Con::Float)),
+            int_params,
+            int_return,
+            register_abi,
+        }
     }
 
     /// The calling-convention shape of a non-source synthetic definition (a
@@ -101,7 +137,13 @@ impl FnAbi {
     /// runtime parameter count.
     #[must_use]
     pub fn register_uniform(arity: usize) -> FnAbi {
-        FnAbi { float_params: vec![false; arity], float_return: false, register_abi: arity > 0 }
+        FnAbi {
+            float_params: vec![false; arity],
+            float_return: false,
+            int_params: vec![false; arity],
+            int_return: false,
+            register_abi: arity > 0,
+        }
     }
 
     /// Whether runtime parameter `i` is passed as an unboxed `Float` (raw bits).
@@ -110,11 +152,21 @@ impl FnAbi {
         self.float_params.get(i).copied().unwrap_or(false)
     }
 
-    /// Whether the entry uses the plain uniform ABI (no unboxed float parameter or
-    /// result), so direct calls need no float marshalling and no bridging wrapper.
+    /// Whether runtime parameter `i` is passed as an untagged `Int` (a raw `i64`).
+    #[must_use]
+    pub fn int_param(&self, i: usize) -> bool {
+        self.int_params.get(i).copied().unwrap_or(false)
+    }
+
+    /// Whether the entry uses the plain uniform ABI (no unboxed `Float` or untagged
+    /// `Int` parameter or result), so direct calls need no marshalling and no
+    /// bridging wrapper.
     #[must_use]
     pub fn is_uniform(&self) -> bool {
-        !self.float_return && self.float_params.iter().all(|&f| !f)
+        !self.float_return
+            && !self.int_return
+            && self.float_params.iter().all(|&f| !f)
+            && self.int_params.iter().all(|&f| !f)
     }
 }
 
