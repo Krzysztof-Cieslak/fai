@@ -170,7 +170,17 @@ impl Lowerer<'_> {
             // An effect row is meaningful only as an interface effect argument,
             // which interface-application lowering consumes directly; reaching a
             // bare one here means it was written in a non-argument position.
-            TypeKind::EffectRow { .. } => Ty::Error,
+            TypeKind::EffectRow { .. } => {
+                emit(
+                    self.db,
+                    Diagnostic::error(
+                        crate::EFFECT_ARG_KIND,
+                        "an effect row is only valid as an interface effect argument",
+                        Span::new(self.file.source(self.db), self.module.ty(ty).span),
+                    ),
+                );
+                Ty::Error
+            }
             TypeKind::Error => Ty::Error,
         }
     }
@@ -180,23 +190,87 @@ impl Lowerer<'_> {
     /// `None` is the pure effect. An atom that does not name a visible interface
     /// is dropped for now (a dedicated diagnostic lands with enforcement).
     fn lower_effect(&mut self, annot: Option<&EffectAnnot>, vars: &mut LowerVars) -> EffectRow {
-        let Some(annot) = annot else {
-            return EffectRow::pure();
-        };
-        let mut labels = Vec::new();
-        for &name in &annot.labels {
+        match annot {
+            None => EffectRow::pure(),
+            Some(annot) => self.lower_effect_row(&annot.labels, annot.tail, vars),
+        }
+    }
+
+    /// Lowers an effect row's atoms and tail (shared by an arrow's effect
+    /// annotation and an interface effect argument). Each atom resolves to its
+    /// canonical [`InterfaceRef`]; an atom that names no visible interface is
+    /// dropped for now (a dedicated diagnostic lands with enforcement).
+    fn lower_effect_row(
+        &mut self,
+        labels: &[Symbol],
+        tail: RowTail,
+        vars: &mut LowerVars,
+    ) -> EffectRow {
+        let mut out = Vec::new();
+        for &name in labels {
             if let Some((decl_file, info)) = self.lookup_interface(name) {
-                labels.push(InterfaceRef::new(decl_file.source(self.db), info.name));
+                out.push(InterfaceRef::new(decl_file.source(self.db), info.name));
             }
         }
-        labels.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
-        labels.dedup();
-        let tail = match annot.tail {
+        out.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+        out.dedup();
+        let tail = match tail {
             RowTail::Closed => EffEnd::Closed,
             RowTail::Open => EffEnd::Open(vars.eff_anon()),
             RowTail::Named(name) => EffEnd::Open(vars.eff_named(name)),
         };
-        EffectRow { labels, tail }
+        EffectRow { labels: out, tail }
+    }
+
+    /// Lowers one interface argument according to its parameter's [`ParamKind`]: a
+    /// type parameter takes an ordinary type; an effect parameter takes an effect
+    /// row (an `{ … }` literal, a lone variable `'e`, or `{}` for the pure
+    /// effect), reified as a [`Ty::EffectArg`]. A kind mismatch is `FAI3020`.
+    fn lower_interface_arg(&mut self, arg: TypeId, kind: ParamKind, vars: &mut LowerVars) -> Ty {
+        let node = self.module.ty(arg);
+        match kind {
+            ParamKind::Type => {
+                if let TypeKind::EffectRow { .. } = &node.kind {
+                    emit(
+                        self.db,
+                        Diagnostic::error(
+                            crate::EFFECT_ARG_KIND,
+                            "expected a type argument, found an effect row",
+                            Span::new(self.file.source(self.db), node.span),
+                        ),
+                    );
+                    return Ty::Error;
+                }
+                self.lower(arg, vars)
+            }
+            ParamKind::Effect => {
+                let eff = match &node.kind {
+                    TypeKind::EffectRow { labels, tail } => {
+                        self.lower_effect_row(labels, *tail, vars)
+                    }
+                    // A lone variable `'e` is an open effect tail.
+                    TypeKind::Var(name) => {
+                        EffectRow { labels: Vec::new(), tail: EffEnd::Open(vars.eff_named(*name)) }
+                    }
+                    // `{}` (an empty closed record) reads as the pure effect.
+                    TypeKind::Record { fields, tail: RowTail::Closed } if fields.is_empty() => {
+                        EffectRow::pure()
+                    }
+                    _ => {
+                        emit(
+                            self.db,
+                            Diagnostic::error(
+                                crate::EFFECT_ARG_KIND,
+                                "expected an effect row for an effect parameter",
+                                Span::new(self.file.source(self.db), node.span),
+                            ),
+                        );
+                        EffectRow::pure()
+                    }
+                };
+                Ty::EffectArg(eff)
+            }
+        }
     }
 
     /// Lowers a (possibly applied) type-constructor name.
@@ -224,7 +298,7 @@ impl Lowerer<'_> {
                     Diagnostic::error(
                         TYPE_ARITY,
                         format!(
-                            "`{name}` takes {} type argument(s), but {} were given",
+                            "`{name}` takes {} argument(s), but {} were given",
                             info.params.len(),
                             args.len()
                         ),
@@ -234,9 +308,15 @@ impl Lowerer<'_> {
             }
             // Identify the interface by its canonical (resolved) qualified name,
             // not the as-written reference, so nested/cross-file spellings unify.
-            let mut t = Ty::Interface(InterfaceRef::new(decl_file.source(self.db), info.name));
-            for &a in args {
-                t = Ty::App(Arc::new(t), Arc::new(self.lower(a, vars)));
+            let iref = InterfaceRef::new(decl_file.source(self.db), info.name);
+            // Each argument is lowered according to its parameter's kind: a type
+            // for a type parameter, an effect row (as a `Ty::EffectArg`) for an
+            // effect parameter. The application spine keeps them in order.
+            let kinds = interface_param_kinds(self.db, iref);
+            let mut t = Ty::Interface(iref);
+            for (i, &a) in args.iter().enumerate() {
+                let kind = kinds.get(i).copied().unwrap_or(ParamKind::Type);
+                t = Ty::App(Arc::new(t), Arc::new(self.lower_interface_arg(a, kind, vars)));
             }
             return t;
         }
