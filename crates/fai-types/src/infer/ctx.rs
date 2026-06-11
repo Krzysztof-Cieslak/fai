@@ -661,7 +661,28 @@ impl InferCtx {
                     self.collect_effect_vars(t, out);
                 }
             }
+            // An effect argument's own tail is an effect-row variable.
+            SolveTy::EffectArg(e) => {
+                if let EffTail::Open(v) = self.expand_effect(&e).tail {
+                    out.insert(v);
+                }
+            }
             _ => {}
+        }
+    }
+
+    /// The effect-row variables in a *parameter* (contravariant) position of `ty`
+    /// — forwarded from a caller, so they must stay polymorphic. An effect
+    /// variable that appears only covariantly (a subsumption leftover, or a body's
+    /// latent effect) is a residual to default to pure.
+    pub fn contravariant_effect_vars(
+        &self,
+        ty: &SolveTy,
+        out: &mut rustc_hash::FxHashSet<EffRowVarId>,
+    ) {
+        if let SolveTy::Arrow(from, to, _) = self.resolve_shallow(ty) {
+            self.collect_effect_vars(&from, out);
+            self.contravariant_effect_vars(&to, out);
         }
     }
 
