@@ -11,6 +11,11 @@ let logTime env message =
   let now = env.clock.now ()
   env.console.writeLine (message ++ " @ " ++ Int.toString now)
 
+// Effects propagate through the standard combinators: mapping a console-using
+// closure over a list reflects `Console` here, rather than laundering it away.
+public logAll : Console -> List String -> List Unit / { Console }
+let logAll console lines = List.map (fun line -> console.writeLine line) lines
+
 // A pure function performs no effect, so its arrow is bare (no `/`).
 public shout : String -> String
 let shout s = String.toUpper s ++ "!"
