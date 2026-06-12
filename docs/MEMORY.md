@@ -1424,16 +1424,31 @@ Editor integration:
     lexer change that the grammar does not track breaks CI. Stronger golden token
     snapshots were rejected to keep maintenance low.
 
-- **D104 Informational CI benchmark report (non-gating).** The wall-clock benches
-  now run in CI, but only to **publish a report**, never to gate. A separate
-  `Benchmarks` workflow (`.github/workflows/bench.yml`) runs `cargo bench` on
-  `main` and on demand (a single Linux runner, `DIVAN_MAX_TIME` bounding the heavy
-  cases), renders a Markdown summary onto the run page, and uploads the raw output
-  plus a parsed `bench-results.json` as artifacts. The deterministic guard tests
-  remain the **sole** performance gate (shared runners are too noisy to gate on
-  timings); every other CI run still merely compiles the benches to prevent
-  bitrot. Trend-over-time tracking is deliberately left to the artifacts (no
+- **D104 Informational CI benchmark report (non-gating; runs on every pull
+  request).** The wall-clock benches run in CI to **publish a report**, never to
+  gate on timings. A separate `Benchmarks` workflow (`.github/workflows/bench.yml`)
+  runs `cargo bench` on **every pull request**, on `main`, and on demand (a single
+  Linux runner, `DIVAN_MAX_TIME` bounding the heavy cases), renders a Markdown
+  summary onto the run page, and uploads the raw output plus a parsed
+  `bench-results.json` as artifacts. The deterministic guard tests remain the
+  **sole** performance gate (shared runners are too noisy to gate on timings);
+  every other CI run still merely compiles the benches to prevent bitrot.
+  Trend-over-time tracking is deliberately left to the artifacts (no
   gh-pages/threshold automation) to keep the anti-flakiness stance intact.
+  - **Pull-request runs use a short settle time, so running them is cheap.** A
+    pull-request run sets `DIVAN_MAX_TIME=1` (vs `120` on `main`/on demand), so the
+    whole suite finishes in roughly the test job's wall time — measured at about
+    three and a half minutes from a cold build, dominated by the release compile —
+    rather than the long settle the steady-median main report needs. A PR run still
+    **executes** every benchmark, so it fails (via `pipefail`) when a benchmark
+    crashes, fails to build-and-run, or — for the Fai-vs-Rust algorithm benches,
+    which assert the compiled result against the Rust oracle in untimed setup —
+    produces a wrong result; it never fails on a timing. A push to a PR supersedes
+    its in-flight run (`cancel-in-progress` on the `pull_request` event only), and
+    a tighter `timeout-minutes` fails a hung PR bench fast; the `main`/on-demand
+    run is never cancelled so its long report always completes. This makes a perf
+    change visible on the PR that introduced it (and catches bench bitrot before
+    merge) while keeping timings strictly non-gating.
   - **Parsing divan, not a new harness.** divan has no machine-readable output,
     so a small in-tree tool (`fai-tests`' `bench_summary` module + `bench-summary`
     bin, unit-tested over a captured fixture) parses its Unicode-tree text. Writing
