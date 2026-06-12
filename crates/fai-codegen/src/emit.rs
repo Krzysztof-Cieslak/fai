@@ -1385,7 +1385,19 @@ impl<M: Module> Translator<'_, M> {
         // returns a value.
         let f = self.runtime(symbol, op.arity(), true);
         let call = self.builder.ins().call(f, &vals);
-        self.builder.inst_results(call)[0]
+        let result = self.builder.inst_results(call)[0];
+        // A primitive that yields a scalar `Float` through the uniform runtime ABI
+        // (`arrayGet` of a `Float` element) returns a boxed word; unbox it to the
+        // `f64` an unboxed-`Float` context expects, mirroring the result coercion a
+        // direct call applies to a generic callee's boxed `Float`. This matters once
+        // such a primitive appears at a monomorphic-`Float` call site (an inlined
+        // `Array.unsafeGet` on an `Array Float`). `Int` needs no coercion — raw and
+        // tagged are both `i64`, so there is no Cranelift type mismatch.
+        if matches!(result_ty, Ty::Con(Con::Float)) && !self.is_f64(result) {
+            self.owning_unbox(result)
+        } else {
+            result
+        }
     }
 
     /// Compiles a `Float` primitive. With unboxed `f64` operands these are inline

@@ -559,8 +559,9 @@ Standard library & operators:
   `Prim.<name>`, and only from inside `std/` modules (`FAI2014` otherwise); the
   standard library re-exports the user-facing ones under clean qualified names
   (`Int.toString` wraps `Prim.intToString`, `String.split` wraps `Prim.split`,
-  `Prelude.not` wraps `Prim.not`, …), adding one call of indirection per
-  intrinsic (an inliner is tracked as a proposal, #40). New resolution
+  `Prelude.not` wraps `Prim.not`, …). A saturated call to such a wrapper is
+  collapsed back to the primitive by the intrinsic inliner (D121), so the
+  re-export adds no call of indirection at a use site. New resolution
   diagnostics: **`FAI2013`** (a
   name exported by more than one auto-imported module — contributor-facing,
   detected by the auto-import merge so it stays unit-testable even while the
@@ -2272,6 +2273,50 @@ Editor integration:
     top-level `if` reaching a construction (e.g. list `filter`'s
     `if p then x :: rest else rest`); the emitted IR changes but the allocation
     counts do not (the existing reuse differentials are unchanged).
+- **D121 Intrinsic inliner: a saturated call to a primitive re-export wrapper
+  becomes the primitive (removes the per-`Prim.*` indirection of D74).** Each
+  standard-library re-export is a one-line eta-expansion of an intrinsic
+  (`let toString n = Prim.intToString n`, `let push x xs = Prim.arrayPush xs x`),
+  so a use site was two calls deep (caller → wrapper → runtime primitive). A new
+  `fai-core` pass removes the wrapper hop:
+  - **Recognizer (`prim_wrapper`, a per-definition query).** Reports a definition
+    that is exactly `fun p0 … pk -> Prim.op <a permutation of p0 … pk>`: a single
+    function (no lifted lambdas), no captures, a body that is one primitive whose
+    operands are a *bijection* of the parameters, with `op.arity()` equal to the
+    parameter count. This is shape-based, so a user one-liner that eta-expands an
+    operator (which lowers to a primitive, e.g. `let add a b = a + b`) is
+    recognized too; it excludes nullary constant wrappers (`Array.empty`, a
+    literal operand), nested bodies (`Array.isEmpty`), and row-polymorphic
+    definitions (leading offset-evidence parameters are not operands). The result
+    is a tiny value, so editing a wrapper's body ripples to its callers only when
+    the recognized primitive or permutation actually changes (salsa early cutoff).
+  - **Inliner (`core_inlined`, a per-definition query).** Rewrites every
+    *saturated* `App` of a recognized wrapper to the primitive. An identity
+    permutation splices the arguments straight into the operands; a non-identity
+    one (`Array.push`/`unsafeGet`/`unsafeSet`) binds the arguments to fresh locals
+    in source order and references them through the permutation, so evaluation
+    (hence trap) order is preserved. A wrapper used first-class (not in a saturated
+    call) keeps its `Global` reference and stays compiled; one reached only through
+    now-inlined calls is dead-code-eliminated.
+  - **Runs before reference counting.** `rc`, `borrow_signature`, the
+    mutual-recursion combined loop, and reachability all read `core_inlined`
+    rather than the raw `core`, so reference counting balances the resulting
+    primitive directly: a borrowing primitive (`stringLength`, `arrayGet`) borrows
+    its operand exactly as the wrapper's borrow signature did, so an owned argument
+    is still dropped at the call site (a codegen-only rewrite would have leaked it).
+    Inlining is correctness-neutral and always on; the raw `core` query is
+    unchanged for inspection. Purity/totality reasoning still reads `core` — a
+    wrapper call and its primitive are equally pure, and the tail-call transform
+    already judges a primitive's reorder safety, so the decision is unaffected.
+  - **Codegen.** A primitive that yields a scalar `Float` through the uniform
+    runtime ABI (`arrayGet` of an `Array Float` element) now unboxes its boxed
+    result to the `f64` an unboxed-`Float` context expects, mirroring the result
+    coercion a direct call already applied to a generic callee's boxed `Float`.
+    (Before inlining, such a primitive only ever appeared at a generic `'a` result
+    type inside the wrapper, so no coercion was needed.)
+  - **General inlining** of small non-recursive helpers (relaxing the recognizer
+    beyond pure eta-primitive wrappers) remains future work; this pass is the
+    narrow, always-beneficial case.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

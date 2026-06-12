@@ -13,9 +13,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use fai_codegen::{JitProgram, main_object, object_for_def};
-use fai_core::core;
 use fai_core::ir::{FnAbi, LoweredDef};
 use fai_core::wire::{WireBundle, WireDef, WireDefId, def_to_wire, from_wire};
+use fai_core::{core, core_inlined};
 use fai_db::{Db, Diag, SourceFile};
 use fai_diagnostics::wire::{DiagnosticWire, to_wire};
 use fai_diagnostics::{Diagnostic, SCHEMA_VERSION, Severity, render_human};
@@ -211,7 +211,7 @@ pub fn reachable_defs(db: &dyn Db, file: SourceFile) -> Vec<DefId> {
         }
         order.push(def);
         if let Some(file) = db.source_file(def.file) {
-            for callee in core(db, file, def.name).referenced_globals() {
+            for callee in core_inlined(db, file, def.name).referenced_globals() {
                 if !seen.contains(&callee) {
                     stack.push(callee);
                 }
@@ -239,7 +239,7 @@ pub(crate) fn reachable_from_roots(
         }
         order.push(def);
         if let Some(file) = db.source_file(def.file) {
-            for callee in core(db, file, def.name).referenced_globals() {
+            for callee in core_inlined(db, file, def.name).referenced_globals() {
                 if !seen.contains(&callee) {
                     stack.push(callee);
                 }

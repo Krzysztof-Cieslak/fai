@@ -477,6 +477,88 @@ fn borrow_signature_change_ripples_only_to_forwarding_caller() {
     );
 }
 
+/// Builds `Dep` and `Caller` (which calls `Dep`'s definition) plus `fillers`
+/// independent modules; warms every definition's `object_code`; edits `Dep`'s body
+/// either preserving its intrinsic-inliner classification (a non-wrapper helper
+/// `x + 1` -> `x + 2`, still not an eta-prim-wrapper) or changing it (a wrapper
+/// `a + b` -> `a - b`, whose recognized primitive flips `IntAdd` -> `IntSub`); then
+/// recompiles and returns how many `object_code` queries re-ran. Both edits leave
+/// the borrow signature unchanged, so only the inliner dependency is exercised.
+fn inliner_firewall_object_reruns(fillers: usize, wrapper_op_change: bool) -> usize {
+    let mut db = FaiDatabase::new();
+    fai_types::std_lib::load_std(&mut db);
+    let dep_src = if wrapper_op_change {
+        "module Dep\n\npublic dep : Int -> Int -> Int\nlet dep a b = a + b\n"
+    } else {
+        "module Dep\n\npublic dep : Int -> Int\nlet dep x = x + 1\n"
+    };
+    let dep_id = db.add_source("Dep.fai".into(), dep_src.to_owned());
+    let caller_src = if wrapper_op_change {
+        // A saturated call to the wrapper, which the inliner replaces with the
+        // wrapper's primitive — so `Caller` depends on `prim_wrapper(dep)`.
+        "module Caller\n\npublic call : Int -> Int\nlet call x = Dep.dep x x\n"
+    } else {
+        "module Caller\n\npublic call : Int -> Int\nlet call x = Dep.dep x\n"
+    };
+    let caller_id = db.add_source("Caller.fai".into(), caller_src.to_owned());
+    let mut filler: Vec<(SourceFile, Symbol)> = Vec::new();
+    for i in 0..fillers {
+        let src = formatdoc! {r#"
+            module F{i}
+
+            public g{i} : Int -> Int
+            let g{i} x = x + {i}
+        "#};
+        let id = db.add_source(format!("F{i}.fai").into(), src);
+        filler.push((db.source_file(id).unwrap(), Symbol::intern(&format!("g{i}"))));
+    }
+
+    let caller = db.source_file(caller_id).unwrap();
+    let dep = db.source_file(dep_id).unwrap();
+    let warm = |db: &FaiDatabase| {
+        object_code(db, caller, Symbol::intern("call"));
+        object_code(db, dep, Symbol::intern("dep"));
+        for (f, g) in &filler {
+            object_code(db, *f, *g);
+        }
+    };
+    warm(&db);
+
+    db.enable_event_log();
+    let edited = if wrapper_op_change {
+        "module Dep\n\npublic dep : Int -> Int -> Int\nlet dep a b = a - b\n"
+    } else {
+        "module Dep\n\npublic dep : Int -> Int\nlet dep x = x + 2\n"
+    };
+    dep.set_text(&mut db).to(edited.to_owned());
+    warm(&db);
+    count(&db.take_events(), "object_code")
+}
+
+#[test]
+fn inliner_firewall_is_independent_of_workspace_size() {
+    // Editing a non-wrapper callee's body re-runs `prim_wrapper(dep)` (the new
+    // dependency the inliner adds at `Caller`), which still reports "not a wrapper"
+    // — so the result is unchanged and `Caller` is cut off. Only the callee's own
+    // object is recompiled, the same whether the workspace has 5 modules or 50.
+    let small = inliner_firewall_object_reruns(5, false);
+    let large = inliner_firewall_object_reruns(50, false);
+    assert_eq!(small, large, "inliner firewall must not grow with workspace size");
+    assert_eq!(small, 1, "a classification-preserving callee edit recompiles only the callee");
+}
+
+#[test]
+fn inliner_wrapper_change_ripples_only_to_direct_caller() {
+    // Non-vacuity: changing a user wrapper's recognized primitive (`+` -> `-`)
+    // changes `prim_wrapper(dep)`, so the caller that inlines it re-runs its
+    // `object_code` too — and only that one caller (plus the callee), independent of
+    // workspace size. This is the bounded firewall widening for the inliner.
+    let small = inliner_firewall_object_reruns(5, true);
+    let large = inliner_firewall_object_reruns(50, true);
+    assert_eq!(small, large, "the ripple must not grow with workspace size");
+    assert_eq!(small, 2, "a wrapper-primitive change re-runs the callee and the inlining caller");
+}
+
 /// Warms four definitions' `object_code` under the given cache capacity, bumps a
 /// revision (so any over-capacity blobs are evicted), then re-accesses all four
 /// and returns how many had to be regenerated.

@@ -10,6 +10,8 @@
 //! constructs outside the native subset use the backend `FAI7xxx` range.
 
 pub mod fingerprint;
+#[allow(unsafe_code)]
+pub mod inline;
 pub mod ir;
 mod lit;
 #[allow(unsafe_code)]
@@ -23,6 +25,7 @@ mod proptests;
 mod tests;
 
 pub use fingerprint::fingerprint_def;
+pub use inline::{PrimWrapper, core_inlined, prim_wrapper};
 pub use ir::{CExpr, CoreFn, ExprKind, FnAbi, FnId, Lit, LoweredDef, Prim};
 pub use lit::{decode_char, decode_float, decode_int, decode_string};
 pub use lower::{LoweredBody, core, lower_params_body};
