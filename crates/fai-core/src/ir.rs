@@ -659,6 +659,7 @@ impl Prim {
             "split" => Prim::StringSplit,
             "join" => Prim::StringJoin,
             "not" => Prim::Not,
+            "compare" => Prim::Compare,
             "consoleWriteLine" => Prim::ConsoleWriteLine,
             "clockNow" => Prim::ClockNow,
             "randomNextInt" => Prim::RandomNextInt,

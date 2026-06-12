@@ -640,6 +640,16 @@ mod inline {
     }
 
     #[test]
+    fn inlines_the_compare_prelude_wrapper() {
+        // `Prelude.compare` is `let compare a b = Prim.compare a b`, so a saturated
+        // `compare a b` inlines to the comparison primitive — at codegen, one
+        // inline immediate compare on a known-immediate operand — not a call into
+        // the wrapper.
+        let src = "module M\n\nlet f a b = compare a b\n";
+        assert_eq!(inlined(src, "f"), "fn0(%0, %1) = (compare %0 %1)\n");
+    }
+
+    #[test]
     fn inlines_permuted_wrapper_with_order_preserving_lets() {
         // `Array.push x xs = Prim.arrayPush xs x` reverses its operands. The call's
         // arguments are bound in source order (%2 = x, %3 = xs) and referenced

@@ -33,6 +33,10 @@ pub const INTRINSICS: &[&str] = &[
     "charFromCode",
     "isValidCharCode",
     "not",
+    // Structural three-way comparison (`Prelude.compare` wraps it). The only
+    // intrinsic that is a primitive on *any* comparable type; exposing it lets the
+    // wrapper inline to the primitive at every use site.
+    "compare",
     "stringLength",
     "toUpper",
     "toLower",

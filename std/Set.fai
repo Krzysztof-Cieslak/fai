@@ -92,10 +92,11 @@ let insert x s =
   match s with
   | SetEmpty -> singleton x
   | SetNode n l y r ->
-    if x < y then
+    let c = compare x y
+    if c < 0 then
       let l2 = insert x l
       if size l2 > delta * size r then balance l2 y r else bin l2 y r
-    else if x > y then
+    else if c > 0 then
       let r2 = insert x r
       if size r2 > delta * size l then balance l y r2 else bin l y r2
     else
@@ -108,7 +109,9 @@ public member : 'a -> Set 'a -> Bool
 let member x s =
   match s with
   | SetEmpty -> false
-  | SetNode _ l y r -> if x < y then member x l else if x > y then member x r else true
+  | SetNode _ l y r ->
+    let c = compare x y
+    if c < 0 then member x l else if c > 0 then member x r else true
 example: member 2 (insert 2 (insert 1 empty))
 forall x: member x empty = false
 
@@ -142,10 +145,11 @@ let remove x s =
   match s with
   | SetEmpty -> SetEmpty
   | SetNode n l y r ->
-    if x < y then
+    let c = compare x y
+    if c < 0 then
       let l2 = remove x l
       if size r > delta * size l2 then balance l2 y r else bin l2 y r
-    else if x > y then
+    else if c > 0 then
       let r2 = remove x r
       if size l > delta * size r2 then balance l y r2 else bin l y r2
     else
@@ -174,10 +178,11 @@ let splitMember x s =
   match s with
   | SetEmpty -> (SetEmpty, false, SetEmpty)
   | SetNode _ l y r ->
-    if x < y then
+    let c = compare x y
+    if c < 0 then
       match splitMember x l with
       | (ll, present, lr) -> (ll, present, join lr y r)
-    else if x > y then
+    else if c > 0 then
       match splitMember x r with
       | (rl, present, rr) -> (join l y rl, present, rr)
     else

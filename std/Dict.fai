@@ -97,10 +97,11 @@ let insert key value d =
   match d with
   | DictEmpty -> singleton key value
   | DictNode s l k v r ->
-    if key < k then
+    let c = compare key k
+    if c < 0 then
       let l2 = insert key value l
       if size l2 > delta * size r then balance l2 k v r else bin l2 k v r
-    else if key > k then
+    else if c > 0 then
       let r2 = insert key value r
       if size r2 > delta * size l then balance l k v r2 else bin l k v r2
     else
@@ -113,7 +114,9 @@ public get : 'k -> Dict 'k 'v -> Option 'v
 let get key d =
   match d with
   | DictEmpty -> None
-  | DictNode _ l k v r -> if key < k then get key l else if key > k then get key r else Some v
+  | DictNode _ l k v r ->
+    let c = compare key k
+    if c < 0 then get key l else if c > 0 then get key r else Some v
 example: get 2 (insert 1 10 (insert 2 20 empty)) = Some 20
 forall k: get k empty = None
 
@@ -155,10 +158,11 @@ let remove key d =
   match d with
   | DictEmpty -> DictEmpty
   | DictNode s l k v r ->
-    if key < k then
+    let c = compare key k
+    if c < 0 then
       let l2 = remove key l
       if size r > delta * size l2 then balance l2 k v r else bin l2 k v r
-    else if key > k then
+    else if c > 0 then
       let r2 = remove key r
       if size l > delta * size r2 then balance l k v r2 else bin l k v r2
     else
@@ -197,10 +201,11 @@ let splitMember key d =
   match d with
   | DictEmpty -> (DictEmpty, false, DictEmpty)
   | DictNode _ l k v r ->
-    if key < k then
+    let c = compare key k
+    if c < 0 then
       match splitMember key l with
       | (ll, present, lr) -> (ll, present, join lr k v r)
-    else if key > k then
+    else if c > 0 then
       match splitMember key r with
       | (rl, present, rr) -> (join l k v rl, present, rr)
     else

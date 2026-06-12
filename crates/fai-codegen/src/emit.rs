@@ -1766,6 +1766,23 @@ impl<M: Module> Translator<'_, M> {
         self.builder.inst_results(call)[0]
     }
 
+    /// The out-of-line fallback for an inspect-only primitive (`=`/`compare`)
+    /// whose inline immediate fast path missed, selecting the non-consuming
+    /// (borrowed) runtime variant when reference counting lent the operands —
+    /// exactly the choice [`Self::prim`]'s out-of-line path makes. A type-variable
+    /// operand is owned (so the consuming `fai_compare`/`fai_equal` runs and frees
+    /// it), a reference-counted union/`List` operand is borrowed (the caller drops
+    /// it at its last use); the immediate fast path drops nothing either way.
+    fn prim_runtime_call_borrowing(&mut self, op: Prim, borrowed: bool, args: &[Value]) -> Value {
+        let symbol = match op.borrowed_runtime_symbol() {
+            Some(b) if borrowed => b,
+            _ => op.runtime_symbol(),
+        };
+        let f = self.runtime(symbol, args.len(), true);
+        let call = self.builder.ins().call(f, args);
+        self.builder.inst_results(call)[0]
+    }
+
     /// Emits the immediate-operand guard. When `tagbits`'s low bit is set (every
     /// operand is an immediate), `fast` runs in a fast block — it produces the
     /// result and jumps to the returned merge block, and may itself branch to the
@@ -2185,7 +2202,11 @@ impl<M: Module> Translator<'_, M> {
     /// injective immediate tag makes word equality value equality). `Int` adds the
     /// immediate guard and the `fai_equal` fallback — a small immediate `Int` is
     /// never equal to a boxed (overflowed) one, so the fallback's mixed case is
-    /// already correct. Other types keep the out-of-line structural path.
+    /// already correct. A [`is_maybe_immediate_ty`] operand (a type variable, or a
+    /// possibly-nullary union/`List`/empty record) takes the same immediate guard
+    /// over the structural fallback, so a generic `=` whose runtime value is an
+    /// immediate (the common case) avoids the call. The always-boxed types keep
+    /// the out-of-line structural path.
     fn inline_eq(&mut self, op: Prim, args: &[CExpr]) -> Option<Value> {
         let oty = &args[0].ty;
         if is_immediate_ty(oty) {
@@ -2222,6 +2243,27 @@ impl<M: Module> Translator<'_, M> {
             let bb = self.f64_to_i64(b);
             let c = self.builder.ins().icmp(IntCC::Equal, ab, bb);
             Some(self.tag_bool(c))
+        } else if is_maybe_immediate_ty(oty) {
+            // A type-variable (or possibly-nullary union/`List`/empty-record)
+            // operand may be an immediate at runtime. Guard on both being
+            // immediate — then word equality is value equality (the tag is
+            // injective), inline — and otherwise fall back to the structural
+            // runtime call, which a small immediate can never equal a boxed value
+            // through, so the mixed case is already correct. The fallback honours
+            // the borrow decision reference counting made for this operand type.
+            let a = self.expr(&args[0]);
+            let b = self.expr(&args[1]);
+            let anded = self.builder.ins().band(a, b);
+            let borrowed = op.borrows_operand(oty);
+            Some(self.guard_immediate(
+                anded,
+                move |s| s.prim_runtime_call_borrowing(op, borrowed, &[a, b]),
+                |s, _slow, merge| {
+                    let c = s.builder.ins().icmp(IntCC::Equal, a, b);
+                    let tagged = s.tag_bool(c);
+                    s.builder.ins().jump(merge, &[tagged.into()]);
+                },
+            ))
         } else {
             None
         }
@@ -2229,8 +2271,12 @@ impl<M: Module> Translator<'_, M> {
 
     /// Inlines structural ordering when the operands are immediate-representable,
     /// producing the same `-1`/`0`/`1` as `fai_compare`. `Bool`/`Char`/`Unit`
-    /// compare bare; `Int` adds the guard and the `fai_compare` fallback. Other
-    /// types keep the out-of-line structural path.
+    /// compare bare; `Int` adds the guard and the `fai_compare` fallback; a
+    /// [`is_maybe_immediate_ty`] operand (a type variable, or a possibly-nullary
+    /// union/`List`/empty record) takes the same guard over the structural
+    /// fallback, so a generic `<`/`>`/`compare` whose runtime value is an immediate
+    /// avoids the call. The always-boxed types keep the out-of-line structural
+    /// path.
     fn inline_compare(&mut self, op: Prim, args: &[CExpr]) -> Option<Value> {
         let oty = &args[0].ty;
         if is_immediate_ty(oty) {
@@ -2270,6 +2316,27 @@ impl<M: Module> Translator<'_, M> {
             let f = self.runtime("fai_float_compare_bits", 2, true);
             let call = self.builder.ins().call(f, &[ab, bb]);
             Some(self.builder.inst_results(call)[0])
+        } else if is_maybe_immediate_ty(oty) {
+            // A type-variable (or possibly-nullary union/`List`/empty-record)
+            // operand may be an immediate at runtime. Guard on both being
+            // immediate — then the ordering is the raw payload compare (matching
+            // the runtime's immediate fast path `(a >> 1).cmp(b >> 1)`), inline —
+            // and otherwise fall back to the structural runtime call. The fallback
+            // honours the borrow decision reference counting made for this operand
+            // type (a type variable owned, a reference-counted union/`List`
+            // borrowed); the immediate fast arm drops nothing either way.
+            let a = self.expr(&args[0]);
+            let b = self.expr(&args[1]);
+            let anded = self.builder.ins().band(a, b);
+            let borrowed = op.borrows_operand(oty);
+            Some(self.guard_immediate(
+                anded,
+                move |s| s.prim_runtime_call_borrowing(op, borrowed, &[a, b]),
+                |s, _slow, merge| {
+                    let tagged = s.compare_three_way(a, b);
+                    s.builder.ins().jump(merge, &[tagged.into()]);
+                },
+            ))
         } else {
             None
         }
@@ -2767,6 +2834,26 @@ fn is_always_boxed_ty(ty: &Ty) -> bool {
         Ty::Record(row) => !row.fields.is_empty(),
         _ => array_head(ty),
     }
+}
+
+/// Whether a value of `ty` *may* be an immediate at runtime even though the type
+/// is not statically a known immediate or scalar: a **type variable** (the
+/// instantiation is unknown, and is very often `Int`/`Char`/a nullary tag), or a
+/// discriminated union / `List` / empty record (whose nullary constructors are
+/// immediates). For these, structural `=`/`compare` is lowered with an inline
+/// immediate fast path that guards the out-of-line structural fallback, so the
+/// common immediate case (e.g. `Int` keys in a generic `Dict`, or sorting an
+/// `Int` list) is an inline word compare rather than a runtime call.
+///
+/// Excludes the statically immediate types (handled bare), the scalar `Int`/
+/// `Float` (handled by their own branches), every [`is_always_boxed_ty`] type
+/// (always boxed, so the guard would always miss — keep the direct structural
+/// call), and `Ty::Error` (an erased mutual-recursion combined function or an
+/// ill-typed program — keep the conservative call).
+fn is_maybe_immediate_ty(ty: &Ty) -> bool {
+    !is_immediate_ty(ty)
+        && !is_always_boxed_ty(ty)
+        && !matches!(ty, Ty::Con(Con::Int) | Ty::Con(Con::Float) | Ty::Error)
 }
 
 /// Whether `ty` is a boxed *leaf* — a heap object with no reference-counted

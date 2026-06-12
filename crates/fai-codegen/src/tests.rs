@@ -1070,6 +1070,174 @@ fn structural_equality_on_records() {
     assert_eq!(out, "ne\n");
 }
 
+// --- Inline immediate fast path for polymorphic / maybe-immediate compare -----
+// Structural `=`/`compare` on a type-variable (or nullary-bearing union/`List`/
+// empty-record) operand compiles to an inline immediate guard over the structural
+// runtime fallback, so the common immediate case (e.g. `Int` keys in a generic
+// collection) is an inline word compare instead of an out-of-line call. The shape
+// tests read the entry IR; the behavioral tests pin correctness and (via a clean,
+// leak-free exit) reference-count balance across the owned/borrowed matrix.
+
+#[test]
+fn polymorphic_equality_emits_the_immediate_guard() {
+    // `a = b` on a type variable is a bare `Prim::Eq`. The immediate guard ANDs
+    // the two operand words (`band`) to test both-immediate before branching to the
+    // inline fast arm; the old unconditional call had no such operand AND. The
+    // `fai_equal` fallback is still present for the boxed case.
+    let src = indoc! {r#"
+        module M
+
+        eqv : 'a -> 'a -> Bool
+        let eqv a b = a = b
+    "#};
+    let ir = entry_ir(src, "eqv");
+    // The guard: AND the operand words, branch on both-immediate, with the
+    // structural call in the slow block. (Runtime symbols render as numeric refs,
+    // so the call is matched by `call`, not by name.)
+    assert!(ir.contains("band"), "the immediate guard ANDs the operand tags:\n{ir}");
+    assert!(ir.contains("brif"), "the guard branches:\n{ir}");
+    assert!(ir.contains("call"), "the structural fallback call is still present:\n{ir}");
+}
+
+#[test]
+fn polymorphic_compare_emits_the_immediate_guard() {
+    // `compare a b` inlines (the `Prelude.compare` prim-wrapper) to a bare
+    // `Prim::Compare`; on a type variable that takes the same immediate guard over
+    // the structural fallback as `=` does — proving Item 1 and the `compare`
+    // wrapper compose to one inline compare.
+    let src = indoc! {r#"
+        module M
+
+        cmp : 'a -> 'a -> Int
+        let cmp a b = compare a b
+    "#};
+    let ir = entry_ir(src, "cmp");
+    assert!(ir.contains("band"), "the immediate guard ANDs the operand tags:\n{ir}");
+    assert!(ir.contains("brif"), "the guard branches:\n{ir}");
+    assert!(ir.contains("call"), "the structural fallback call is still present:\n{ir}");
+}
+
+#[test]
+fn equality_on_an_always_boxed_type_keeps_the_direct_call() {
+    // `String` is always boxed, so the immediate guard would always miss: keep the
+    // direct (borrowed) structural call with no guard branch.
+    let src = indoc! {r#"
+        module M
+
+        seq : String -> String -> Bool
+        let seq a b = a = b
+    "#};
+    let ir = entry_ir(src, "seq");
+    // No operand-AND guard (the only branches here are the inlined parameter
+    // drops); the structural call is made directly.
+    assert!(!ir.contains("band"), "no immediate guard for an always-boxed operand:\n{ir}");
+    assert!(ir.contains("call"), "the structural call is used directly:\n{ir}");
+}
+
+#[test]
+fn generic_equality_runs_on_immediate_and_boxed_instantiations() {
+    let src = indoc! {r#"
+        module M
+
+        eqv : 'a -> 'a -> Bool
+        let eqv a b = a = b
+
+        public main : Runtime -> Unit / { Console }
+        let main r =
+          let ints = eqv 5 5 && not (eqv 5 6)
+          let strs = eqv "abc" "abc" && not (eqv "abc" "abd")
+          r.console.writeLine (if ints && strs then "ok" else "bad")
+    "#};
+    // The `Int` calls take the inline fast path; the `String` calls take the owned
+    // fallback (boxed operands the prim consumes). A clean exit proves both are
+    // reference-count balanced.
+    let (code, out) = run(src);
+    assert_eq!(code, 0, "leak-free");
+    assert_eq!(out, "ok\n");
+}
+
+#[test]
+fn generic_three_way_compare_on_int() {
+    let src = indoc! {r#"
+        module M
+
+        cmp3 : 'a -> 'a -> String
+        let cmp3 a b = if a < b then "lt" else if a > b then "gt" else "eq"
+
+        public main : Runtime -> Unit / { Console }
+        let main r = r.console.writeLine (String.join "" [cmp3 1 2, cmp3 2 2, cmp3 3 2])
+    "#};
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "lteqgt\n");
+}
+
+#[test]
+fn generic_equality_on_an_enum_takes_the_immediate_path() {
+    // Every constructor is nullary, so every value is an immediate: the guard's
+    // fast arm always runs.
+    let src = indoc! {r#"
+        module M
+
+        type Color =
+          | Red
+          | Green
+          | Blue
+
+        eqv : 'a -> 'a -> Bool
+        let eqv a b = a = b
+
+        public main : Runtime -> Unit / { Console }
+        let main r = r.console.writeLine (if eqv Red Red && not (eqv Red Blue) then "ok" else "bad")
+    "#};
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "ok\n");
+}
+
+#[test]
+fn generic_equality_on_lists_mixes_immediate_and_boxed() {
+    // `[]` is immediate (fast arm); a cons cell is boxed (owned fallback). A clean
+    // exit confirms the boxed operands are consumed exactly once.
+    let src = indoc! {r#"
+        module M
+
+        eqv : 'a -> 'a -> Bool
+        let eqv a b = a = b
+
+        public main : Runtime -> Unit / { Console }
+        let main r =
+          let conses = eqv [1, 2, 3] [1, 2, 3] && not (eqv [1, 2] [1, 3])
+          let mixed = not (eqv [1] [])
+          r.console.writeLine (if conses && mixed then "ok" else "bad")
+    "#};
+    // `[1]` vs `[]` mixes a boxed and an immediate operand (the guard goes slow,
+    // and `fai_equal` handles the mismatch); a clean exit confirms each boxed
+    // operand is consumed exactly once.
+    let (code, out) = run(src);
+    assert_eq!(code, 0, "leak-free");
+    assert_eq!(out, "ok\n");
+}
+
+#[test]
+fn monomorphic_list_compare_is_borrow_balanced() {
+    // The borrowed fallback path end-to-end: non-empty lists never hit the fast
+    // arm, so every comparison borrows; a clean exit proves the caller's drops and
+    // the runtime's non-consumption agree.
+    let src = indoc! {r#"
+        module M
+
+        leq : List Int -> List Int -> Bool
+        let leq xs ys = xs <= ys
+
+        public main : Runtime -> Unit / { Console }
+        let main r = r.console.writeLine (if leq [1, 2] [1, 3] && not (leq [2] [1]) then "ok" else "bad")
+    "#};
+    let (code, out) = run(src);
+    assert_eq!(code, 0, "leak-free");
+    assert_eq!(out, "ok\n");
+}
+
 #[test]
 fn recursive_tree_fold() {
     let src = indoc! {r#"
