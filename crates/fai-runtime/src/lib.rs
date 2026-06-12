@@ -393,6 +393,18 @@ static ALLOCATIONS: AtomicI64 = AtomicI64::new(0);
 #[cfg(debug_assertions)]
 static ARRAY_COPIES: AtomicI64 = AtomicI64::new(0);
 
+/// The cumulative number of times [`fai_string_concat`] duplicated the whole
+/// left-operand buffer because it was *shared* (`rc != 1`) at the concatenation
+/// point — the uniqueness-loss copies. Like [`ARRAY_COPIES`], distinct from
+/// [`ALLOCATIONS`]: each such copy is a single allocation but does O(length)
+/// byte work, so a per-step re-copy regression (the O(n²) string build) is
+/// invisible to the allocation *count* yet shows up here as copies that scale
+/// with the build. The amortized capacity growth of a *unique* builder (the
+/// grow-and-double path) is not a uniqueness-loss copy and is not counted.
+/// Never decreases until reset.
+#[cfg(debug_assertions)]
+static STRING_COPIES: AtomicI64 = AtomicI64::new(0);
+
 /// Records one heap allocation in the debug counters. Compiled to nothing in a
 /// release build (the counters are absent there).
 #[inline(always)]
@@ -410,6 +422,15 @@ fn note_alloc() {
 fn note_array_copy() {
     #[cfg(debug_assertions)]
     ARRAY_COPIES.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Records one shared-string buffer copy (a uniqueness-loss duplication in
+/// [`fai_string_concat`]). Compiled to nothing in a release build (the counter is
+/// absent there).
+#[inline(always)]
+fn note_string_copy() {
+    #[cfg(debug_assertions)]
+    STRING_COPIES.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Records one heap free in the debug counters. Compiled to nothing in a release
@@ -463,13 +484,30 @@ pub fn array_copies() -> i64 {
     }
 }
 
-/// Resets the cumulative allocation and array-copy counters (tests/benchmarks). A
-/// no-op in a release build, where the counters are compiled out.
+/// Returns the cumulative count of shared-string buffer copies (uniqueness-loss
+/// duplications in `fai_string_concat`). Always zero in a release build, where the
+/// counter is compiled out.
+#[must_use]
+pub fn string_copies() -> i64 {
+    #[cfg(debug_assertions)]
+    {
+        STRING_COPIES.load(Ordering::Relaxed)
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        0
+    }
+}
+
+/// Resets the cumulative allocation, array-copy, and string-copy counters
+/// (tests/benchmarks). A no-op in a release build, where the counters are compiled
+/// out.
 pub fn reset_allocations() {
     #[cfg(debug_assertions)]
     {
         ALLOCATIONS.store(0, Ordering::Relaxed);
         ARRAY_COPIES.store(0, Ordering::Relaxed);
+        STRING_COPIES.store(0, Ordering::Relaxed);
     }
 }
 
@@ -1728,16 +1766,26 @@ pub extern "C" fn fai_is_valid_char_code(n: Value) -> Value {
 // Strings.
 // ---------------------------------------------------------------------------
 
-/// Allocates a `String` object from `bytes` (rc = 1).
+/// Allocates a `String` object of `len` live bytes within `cap_bytes` of inline
+/// capacity (rc = 1). The spare past `len` is left uninitialized, available for
+/// in-place append (like an `Array`'s spare slots). `cap_bytes` must be at least
+/// `len`. The allocation is rounded up to the heap alignment, so even a tight
+/// string carries a few bytes of slack that its length never reflects.
+fn alloc_string(len: usize, cap_bytes: usize) -> *mut u8 {
+    debug_assert!(cap_bytes >= len);
+    let size = (STRING_BYTES_OFFSET + cap_bytes + ALIGN - 1) & !(ALIGN - 1);
+    let p = alloc_obj(size.max(STRING_BYTES_OFFSET), &FAI_STRING_DESC);
+    // SAFETY: `p` has room for the length field and `cap_bytes` content bytes.
+    unsafe { write_u64(p, STRING_LEN_OFFSET, len as u64) };
+    p
+}
+
+/// Allocates a tight `String` object from `bytes` (rc = 1).
 fn make_string(bytes: &[u8]) -> Value {
     let len = bytes.len();
-    let size = (STRING_BYTES_OFFSET + len + ALIGN - 1) & !(ALIGN - 1);
-    let p = alloc_obj(size.max(STRING_BYTES_OFFSET), &FAI_STRING_DESC);
-    // SAFETY: `p` has room for the length field and `len` content bytes.
-    unsafe {
-        write_u64(p, STRING_LEN_OFFSET, len as u64);
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), p.add(STRING_BYTES_OFFSET), len);
-    }
+    let p = alloc_string(len, len);
+    // SAFETY: `p` has room for `len` content bytes.
+    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), p.add(STRING_BYTES_OFFSET), len) };
     from_obj(p)
 }
 
@@ -1751,36 +1799,88 @@ unsafe fn string_bytes<'a>(v: Value) -> &'a [u8] {
     }
 }
 
-/// Concatenates two `String`s into a fresh one (operands consumed).
-#[unsafe(no_mangle)]
-pub extern "C" fn fai_string_concat(a: Value, b: Value) -> Value {
-    // SAFETY: `a` and `b` are boxed `String`s (guaranteed by typing).
-    let out = unsafe {
-        let (ab, bb) = (string_bytes(a), string_bytes(b));
-        let mut out = Vec::with_capacity(ab.len() + bb.len());
-        out.extend_from_slice(ab);
-        out.extend_from_slice(bb);
-        out
-    };
-    let result = make_string(&out);
-    fai_drop(a);
-    fai_drop(b);
-    result
+/// A boxed `String`'s inline byte capacity (the content bytes the allocation can
+/// hold), derived from its size header. Bytes `0..length` are live; the rest is
+/// spare for in-place append.
+///
+/// # Safety
+/// `v` is a boxed `String`.
+unsafe fn string_cap(v: Value) -> usize {
+    // SAFETY: a boxed string stores its allocation size in the header.
+    let size = unsafe { read_u64(as_obj(v), SIZE_OFFSET) } as usize;
+    size - STRING_BYTES_OFFSET
 }
 
-/// Concatenates two `String`s, *borrowing* both operands (the caller releases
-/// them at their last use).
+/// Concatenates two `String`s (both operands consumed). When the left operand is
+/// uniquely owned this appends in place — into its spare capacity, or, when full,
+/// into a freshly grown (doubled) buffer whose old memory is then reclaimed — so
+/// building a string by repeated concatenation onto a unique accumulator is
+/// amortized O(total length) rather than re-copying the whole accumulator at each
+/// step. A *shared* left operand is forked into a fresh tight buffer (a
+/// uniqueness-loss copy). Concatenation with the empty string returns the other
+/// operand without copying.
 #[unsafe(no_mangle)]
-pub extern "C" fn fai_string_concat_borrowed(a: Value, b: Value) -> Value {
-    // SAFETY: `a` and `b` are boxed `String`s (guaranteed by typing).
-    let out = unsafe {
-        let (ab, bb) = (string_bytes(a), string_bytes(b));
-        let mut out = Vec::with_capacity(ab.len() + bb.len());
-        out.extend_from_slice(ab);
-        out.extend_from_slice(bb);
-        out
-    };
-    make_string(&out)
+pub extern "C" fn fai_string_concat(a: Value, b: Value) -> Value {
+    // SAFETY: `a` and `b` are boxed `String`s (guaranteed by typing). A uniquely
+    // owned left operand is a distinct allocation from `b` (aliasing would make it
+    // shared, rc != 1), so the in-place append never overlaps `b`.
+    unsafe {
+        let (pa, pb) = (as_obj(a), as_obj(b));
+        let la = read_u64(pa, STRING_LEN_OFFSET) as usize;
+        let lb = read_u64(pb, STRING_LEN_OFFSET) as usize;
+
+        // Empty operand: the result is the other operand (release the empty one).
+        if lb == 0 {
+            fai_drop(b);
+            return a;
+        }
+        if la == 0 {
+            fai_drop(a);
+            return b;
+        }
+
+        let unique = read_u64(pa, RC_OFFSET) == 1;
+        let cap = string_cap(a);
+        let need = la + lb;
+        if unique && need <= cap {
+            // In place: append `b`'s bytes after `a`'s and bump the length. No
+            // allocation, and `a`'s bytes are not re-copied.
+            std::ptr::copy_nonoverlapping(
+                pb.add(STRING_BYTES_OFFSET),
+                pa.add(STRING_BYTES_OFFSET + la),
+                lb,
+            );
+            write_u64(pa, STRING_LEN_OFFSET, need as u64);
+            fai_drop(b);
+            return a;
+        }
+
+        let q = if unique {
+            // Unique but full: grow into a doubled buffer so further appends
+            // amortize. Expected growth, not a uniqueness-loss copy — uncounted.
+            alloc_string(need, grow_cap(cap, need))
+        } else {
+            // Shared: fork a fresh tight buffer. A uniqueness-loss copy (counted),
+            // since the build could not extend the shared accumulator in place.
+            note_string_copy();
+            alloc_string(need, need)
+        };
+        std::ptr::copy_nonoverlapping(pa.add(STRING_BYTES_OFFSET), q.add(STRING_BYTES_OFFSET), la);
+        std::ptr::copy_nonoverlapping(
+            pb.add(STRING_BYTES_OFFSET),
+            q.add(STRING_BYTES_OFFSET + la),
+            lb,
+        );
+        if unique {
+            // Ownership of `a`'s bytes moved into `q`; reclaim its old memory
+            // directly (no child scan — a string is a leaf).
+            free_obj(pa);
+        } else {
+            fai_drop(a);
+        }
+        fai_drop(b);
+        from_obj(q)
+    }
 }
 
 /// Renders an `Int` as a `String` (operand consumed).
@@ -2657,5 +2757,7 @@ mod proptests;
 mod reuse_tests;
 #[cfg(test)]
 mod scalar_tests;
+#[cfg(test)]
+mod string_tests;
 #[cfg(test)]
 mod tests;

@@ -119,6 +119,18 @@ pub fn word_count(n: i64) -> i64 {
     text.split(' ').map(|w| w.chars().count() as i64).sum()
 }
 
+/// The length of the string built by appending the literal `"ab"` onto `"0"` a
+/// total of `n` times — an incremental string-building workload. The Fai version
+/// builds it with `++`, exercising the runtime's in-place amortized append.
+#[must_use]
+pub fn string_build(n: i64) -> i64 {
+    let mut s = 0.to_string();
+    for _ in 0..n {
+        s.push_str("ab");
+    }
+    s.chars().count() as i64
+}
+
 /// The sum of doubling `[0, n)` plus the sum of `[0, n)` — the shared-list twin of
 /// [`map_sum`], which equals `3 * sum [0, n)`. `black_box` per element defeats
 /// LLVM's scalar-evolution collapse of this arithmetic series to a closed form, so
@@ -889,6 +901,13 @@ pub const ALGORITHMS: &[Algorithm] = &[
         aot_size: 30_000,
         oracle: Oracle::Int(json_serialize),
     },
+    Algorithm {
+        module: "StringBuild",
+        entry: "run",
+        jit_size: 20_000,
+        aot_size: 1_000_000,
+        oracle: Oracle::Int(string_build),
+    },
 ];
 
 /// Looks up an algorithm by its sample module name.
@@ -932,6 +951,7 @@ pub fn source(module: &str) -> &'static str {
         "Fannkuch" => include_str!("../../../samples/algorithms/Fannkuch.fai"),
         "UnionFind" => include_str!("../../../samples/algorithms/UnionFind.fai"),
         "JsonSerialize" => include_str!("../../../samples/algorithms/JsonSerialize.fai"),
+        "StringBuild" => include_str!("../../../samples/algorithms/StringBuild.fai"),
         other => panic!("unknown algorithm module: {other}"),
     }
 }

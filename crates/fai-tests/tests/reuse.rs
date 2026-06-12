@@ -650,6 +650,116 @@ fn float_record_fields_allocate_no_boxes() {
 }
 
 // ===========================================================================
+// String building: `++` onto a uniquely-owned accumulator appends in place
+// (amortized O(total length)), so a unique builder forks zero times and allocates
+// only its O(log n) doublings — the structural acceptance signal for the in-place
+// append. `string_copies()` counts uniqueness-loss forks (a shared accumulator
+// copied); it stays zero while the accumulator is unique.
+// ===========================================================================
+
+/// Compiles and JIT-runs `src`, returning `(exit_code, output, string_copies)` —
+/// the number of uniqueness-loss string forks the run performed.
+fn run_string_copies(src: &str) -> (i32, String, i64) {
+    let _g = lock();
+    let mut db = FaiDatabase::new();
+    fai_types::std_lib::load_std(&mut db);
+    let id = db.add_source("M.fai".into(), src.to_owned());
+    let file = db.source_file(id).unwrap();
+    rt::capture_start();
+    rt::reset_allocations();
+    let outcome = jit_run_program(&db, file);
+    let copies = rt::string_copies();
+    let out = rt::capture_take();
+    (outcome.exit_code, out, copies)
+}
+
+/// A program that builds a string by appending the literal `"ab"` onto a fresh
+/// `Int.toString 0` accumulator `n` times, printing the result's length.
+fn string_build_prog(n: i32) -> String {
+    formatdoc! {r#"
+        module M
+
+        let build n acc = if n <= 0 then acc else build (n - 1) (acc ++ "ab")
+
+        public main : Runtime -> Unit / {{ Console }}
+        let main rt =
+          rt.console.writeLine (Int.toString (String.length (build {n} (Int.toString 0))))
+    "#}
+}
+
+#[test]
+fn unique_string_builder_never_forks() {
+    // A recursive append onto a uniquely-owned accumulator extends it in place; the
+    // build never loses uniqueness, so it forks (copies) zero times.
+    let (code, out, copies) = run_string_copies(&string_build_prog(1000));
+    assert_eq!(code, 0, "clean (leak-free) exit");
+    assert_eq!(out.trim(), "2001", "\"0\" plus 1000 copies of \"ab\" is 2001 bytes");
+    assert_eq!(copies, 0, "a unique builder appends in place, never forking");
+}
+
+#[test]
+fn unique_string_builder_allocates_sublinearly() {
+    // The in-place builder allocates only its O(log n) capacity doublings (the
+    // literal `"ab"` is an immortal static, allocating nothing per step), so
+    // doubling n adds only a small constant number of allocations. A per-step-copy
+    // regression (the O(n²) build this replaces) would make the build's allocation
+    // count scale with n, so the delta would scale with n too.
+    let cost = |n: i32| -> i64 { allocs(&string_build_prog(n), &(1 + 2 * n).to_string()) };
+    let c = cost(2000);
+    let c2 = cost(4000);
+    assert!(
+        c2 - c <= 4,
+        "doubling n adds about one grow, not ~n copies (cost(2000)={c}, cost(4000)={c2})"
+    );
+}
+
+#[test]
+fn foldl_concat_builder_never_forks() {
+    // `List.foldl (++) "" parts` passes `(++)` first-class (through its wrapper
+    // closure, not the intrinsic-inlined form). The accumulator stays uniquely
+    // owned across iterations — the empty seed returns the first (fresh) element,
+    // and every later append extends that unique buffer in place — so the build
+    // never forks.
+    let src = formatdoc! {r#"
+        module M
+
+        let parts k = if k <= 0 then [] else Int.toString k :: parts (k - 1)
+
+        public main : Runtime -> Unit / {{ Console }}
+        let main rt =
+          rt.console.writeLine (Int.toString (String.length (List.foldl (++) "" (parts 500))))
+    "#};
+    let (code, out, copies) = run_string_copies(&src);
+    assert_eq!(code, 0, "clean (leak-free) exit");
+    // The digit lengths of 1..=500 sum to 9*1 + 90*2 + 401*3 = 1392.
+    assert_eq!(out.trim(), "1392");
+    assert_eq!(copies, 0, "a first-class foldl (++) build keeps the accumulator unique");
+}
+
+#[test]
+fn concat_chain_reassociation_preserves_effect_order() {
+    // A `++` chain of effectful operands evaluates them left to right; left-
+    // reassociation must keep that order. `logged` prints its argument and returns
+    // it, so the operands' prints appear in source order before the joined result.
+    let src = formatdoc! {r#"
+        module M
+
+        logged : Runtime -> String -> String / {{ Console }}
+        let logged rt s =
+          let u = rt.console.writeLine s
+          s
+
+        public main : Runtime -> Unit / {{ Console }}
+        let main rt =
+          let combined = logged rt "a" ++ logged rt "b" ++ logged rt "c"
+          rt.console.writeLine combined
+    "#};
+    let (code, out, _) = run_counted(&src);
+    assert_eq!(code, 0, "clean (leak-free) exit");
+    assert_eq!(out.trim(), "a\nb\nc\nabc", "operands evaluate left to right, then the join");
+}
+
+// ===========================================================================
 // Property: destructure-and-recurse over user ADTs stays correct and leak-free.
 //
 // A recursive function that matches a value, projects a field, and recurses while

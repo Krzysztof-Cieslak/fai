@@ -1,0 +1,18 @@
+module StringBuild
+
+// Build a string by repeatedly appending a small literal onto an accumulator,
+// then measure the result's length: an incremental string-building workload that
+// exercises the runtime's in-place amortized append. `++` onto a uniquely-owned
+// buffer extends it in place (growing by doubling when full) rather than
+// re-copying the whole accumulator at each step, so the build is O(total length)
+// rather than O(n²). Used by the Rust-vs-Fai runtime benchmark.
+build : Int -> String -> String
+let build n acc = if n <= 0 then acc else build (n - 1) (acc ++ "ab")
+
+/// The benchmark workload: the length of "0" followed by `n` copies of "ab".
+public run : Int -> Int
+let run n = String.length (build n (Int.toString 0))
+example: run 3 = 7
+
+public main : Runtime -> Unit / { Console }
+let main runtime = runtime.console.writeLine (Int.toString (run 1000000))

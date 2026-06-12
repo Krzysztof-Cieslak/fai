@@ -19,6 +19,7 @@ mod lit;
 #[allow(unsafe_code)]
 mod lower;
 pub mod pretty;
+pub mod reassoc;
 pub mod wire;
 
 #[cfg(test)]
@@ -33,6 +34,7 @@ pub use ir::{CExpr, CoreFn, ExprKind, FnAbi, FnId, Lit, LoweredDef, Prim, Repr};
 pub use lit::{decode_char, decode_float, decode_int, decode_string};
 pub use lower::{LoweredBody, core, lower_params_body};
 pub use pretty::pretty_def;
+pub use reassoc::reassociate_concat;
 pub use wire::{
     Rebuilt, RebuiltTest, TestContract, TestWireBundle, WireBundle, WireContract, WireDef,
     WireDefId, from_wire, from_wire_test,

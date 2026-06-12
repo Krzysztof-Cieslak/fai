@@ -208,6 +208,17 @@ fn string_concat() {
 }
 
 #[test]
+fn string_concat_chain_of_many_pieces() {
+    // A longer right-associative `++` chain (with a mid-chain empty piece) is
+    // left-reassociated and built in one growing buffer; the bytes come out in
+    // source order.
+    let (code, out) =
+        run(&main_printing("\"a\" ++ \"bc\" ++ \"def\" ++ \"\" ++ \"ghij\" ++ \"k\""));
+    assert_eq!(code, 0);
+    assert_eq!(out, "abcdefghijk\n");
+}
+
+#[test]
 fn conditional() {
     let (code, out) = run(&main_printing("if 1 < 2 then \"yes\" else \"no\""));
     assert_eq!(code, 0);

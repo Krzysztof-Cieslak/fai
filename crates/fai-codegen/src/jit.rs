@@ -78,7 +78,6 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_data_tag", rt::fai_data_tag);
     sym!("fai_data_field", rt::fai_data_field);
     sym!("fai_string_concat", rt::fai_string_concat);
-    sym!("fai_string_concat_borrowed", rt::fai_string_concat_borrowed);
     sym!("fai_int_to_string", rt::fai_int_to_string);
     sym!("fai_string_length", rt::fai_string_length);
     sym!("fai_string_length_borrowed", rt::fai_string_length_borrowed);
