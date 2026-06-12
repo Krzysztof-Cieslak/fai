@@ -147,9 +147,12 @@ fn inline_expr(db: &dyn Db, e: &CExpr, next: &mut usize, changed: &mut bool) -> 
             let args = args.iter().map(|a| inline_expr(db, a, next, changed)).collect();
             CExpr::new(K::Prim { op: *op, args }, ty)
         }
-        K::MakeData { tag, args, reuse, scalars } => {
+        K::MakeData { tag, args, reuse, scalars, niche } => {
             let args = args.iter().map(|a| inline_expr(db, a, next, changed)).collect();
-            CExpr::new(K::MakeData { tag: *tag, args, reuse: *reuse, scalars: *scalars }, ty)
+            CExpr::new(
+                K::MakeData { tag: *tag, args, reuse: *reuse, scalars: *scalars, niche: *niche },
+                ty,
+            )
         }
         K::If { cond, then, els } => CExpr::new(
             K::If {
@@ -167,14 +170,16 @@ fn inline_expr(db: &dyn Db, e: &CExpr, next: &mut usize, changed: &mut bool) -> 
             },
             ty,
         ),
-        K::DataTag(base) => {
-            CExpr::new(K::DataTag(Box::new(inline_expr(db, base, next, changed))), ty)
-        }
-        K::DataField { base, index, scalar } => CExpr::new(
+        K::DataTag { base, niche } => CExpr::new(
+            K::DataTag { base: Box::new(inline_expr(db, base, next, changed)), niche: *niche },
+            ty,
+        ),
+        K::DataField { base, index, scalar, niche } => CExpr::new(
             K::DataField {
                 base: Box::new(inline_expr(db, base, next, changed)),
                 index: *index,
                 scalar: *scalar,
+                niche: *niche,
             },
             ty,
         ),
@@ -312,7 +317,7 @@ fn max_local(e: &CExpr, max: &mut usize) {
             max_local(body, max);
         }
         K::MakeClosure { captures, .. } => captures.iter().for_each(|c| bump(*c, max)),
-        K::DataTag(base) => max_local(base, max),
+        K::DataTag { base, .. } => max_local(base, max),
         K::DataField { base, index, .. } => {
             max_local(base, max);
             if let FieldIndex::Dyn { evidence, .. } = index {

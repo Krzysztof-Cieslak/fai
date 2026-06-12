@@ -15,6 +15,7 @@ use fai_resolve::DefId;
 use fai_types::render_canonical;
 
 use crate::ir::{CExpr, ExprKind, FieldIndex, FnAbi, Lit, LoweredDef, Prim, Repr};
+use crate::niche::NicheKind;
 
 /// Builds a portable, deterministic fingerprint string for `def`.
 ///
@@ -74,6 +75,16 @@ fn abi_tag(abi: &FnAbi) -> String {
     };
     let params: String = abi.params.iter().map(repr).collect();
     format!("p[{params}]r{}", repr(&abi.ret))
+}
+
+/// The niche-scheme suffix for a data node's fingerprint (empty for a standard
+/// node), so a niche `Option`'s wrapper-free representation is part of the key.
+fn niche_tag(niche: Option<NicheKind>) -> &'static str {
+    match niche {
+        None => "",
+        Some(NicheKind::A) => "/na",
+        Some(NicheKind::B) => "/nb",
+    }
 }
 
 fn write_expr(
@@ -163,15 +174,17 @@ fn write_expr(
             let caps: Vec<String> = captures.iter().map(|c| format!("%{}", c.index())).collect();
             let _ = write!(out, "(clo fn{} [{}])", func.index(), caps.join(","));
         }
-        ExprKind::MakeData { tag, args, reuse, scalars } => {
+        ExprKind::MakeData { tag, args, reuse, scalars, niche } => {
             // The scalar bitmap selects the descriptor and box/raw field handling,
-            // so it is part of the cache key.
+            // and the niche scheme selects the wrapper-free representation, so both
+            // are part of the cache key.
+            let n = niche_tag(*niche);
             match reuse {
                 Some(t) => {
-                    let _ = write!(out, "(data@%{} {tag}/s{scalars}", t.index());
+                    let _ = write!(out, "(data@%{} {tag}/s{scalars}{n}", t.index());
                 }
                 None => {
-                    let _ = write!(out, "(data {tag}/s{scalars}");
+                    let _ = write!(out, "(data {tag}/s{scalars}{n}");
                 }
             }
             for a in args {
@@ -180,19 +193,20 @@ fn write_expr(
             }
             out.push(')');
         }
-        ExprKind::DataTag(base) => {
-            out.push_str("(tag ");
+        ExprKind::DataTag { base, niche } => {
+            let _ = write!(out, "(tag{} ", niche_tag(*niche));
             write_expr(out, base, namer, arity_of, abi_of);
             out.push(')');
         }
-        ExprKind::DataField { base, index, scalar } => {
+        ExprKind::DataField { base, index, scalar, niche } => {
             let s = if *scalar { "f" } else { "" };
+            let nq = niche_tag(*niche);
             match index {
                 FieldIndex::Const(n) => {
-                    let _ = write!(out, "(field{s} {n} ");
+                    let _ = write!(out, "(field{s}{nq} {n} ");
                 }
                 FieldIndex::Dyn { base: off, evidence } => {
-                    let _ = write!(out, "(field{s} {off}+%{} ", evidence.index());
+                    let _ = write!(out, "(field{s}{nq} {off}+%{} ", evidence.index());
                 }
             }
             write_expr(out, base, namer, arity_of, abi_of);

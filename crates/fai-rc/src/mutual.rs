@@ -203,7 +203,7 @@ fn refs_group(e: &CExpr, group: &FxHashSet<DefId>) -> bool {
             refs_group(cond, group) || refs_group(then, group) || refs_group(els, group)
         }
         K::Let { value, body, .. } => refs_group(value, group) || refs_group(body, group),
-        K::DataTag(base) | K::DataField { base, .. } => refs_group(base, group),
+        K::DataTag { base, .. } | K::DataField { base, .. } => refs_group(base, group),
         // The reference-counting and tail-call nodes do not exist in the pre-count
         // body this analysis runs on.
         _ => false,
@@ -409,9 +409,12 @@ fn remap_member(
             let args = args.iter().map(|a| remap_member(a, subst, next, group)).collect();
             CExpr::new(K::Prim { op: *op, args }, ty)
         }
-        K::MakeData { tag, args, reuse, scalars } => {
+        K::MakeData { tag, args, reuse, scalars, niche } => {
             let args = args.iter().map(|a| remap_member(a, subst, next, group)).collect();
-            CExpr::new(K::MakeData { tag: *tag, args, reuse: *reuse, scalars: *scalars }, ty)
+            CExpr::new(
+                K::MakeData { tag: *tag, args, reuse: *reuse, scalars: *scalars, niche: *niche },
+                ty,
+            )
         }
         K::If { cond, then, els } => CExpr::new(
             K::If {
@@ -428,10 +431,11 @@ fn remap_member(
             let body = Box::new(remap_member(body, subst, next, group));
             CExpr::new(K::Let { local, value, body }, ty)
         }
-        K::DataTag(base) => {
-            CExpr::new(K::DataTag(Box::new(remap_member(base, subst, next, group))), ty)
-        }
-        K::DataField { base, index, scalar } => {
+        K::DataTag { base, niche } => CExpr::new(
+            K::DataTag { base: Box::new(remap_member(base, subst, next, group)), niche: *niche },
+            ty,
+        ),
+        K::DataField { base, index, scalar, niche } => {
             let index = match index {
                 FieldIndex::Dyn { base: off, evidence } => {
                     FieldIndex::Dyn { base: *off, evidence: remap_local(*evidence, subst, next) }
@@ -443,6 +447,7 @@ fn remap_member(
                     base: Box::new(remap_member(base, subst, next, group)),
                     index,
                     scalar: *scalar,
+                    niche: *niche,
                 },
                 ty,
             )

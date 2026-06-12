@@ -124,6 +124,7 @@ pub fn synthesize(
                     base: Box::new(local_expr(tuple)),
                     index: FieldIndex::Const(u32::try_from(i).unwrap_or(0)),
                     scalar: false,
+                    niche: None,
                 },
                 Ty::Error,
             );

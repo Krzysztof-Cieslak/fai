@@ -171,7 +171,7 @@ impl Checker<'_> {
                     self.consume(c, refs)?;
                 }
             }
-            ExprKind::DataTag(base) => self.borrow_atom(base, refs)?,
+            ExprKind::DataTag { base, .. } => self.borrow_atom(base, refs)?,
             ExprKind::DataField { base, index, .. } => {
                 self.borrow_atom(base, refs)?;
                 if let FieldIndex::Dyn { evidence, .. } = index {

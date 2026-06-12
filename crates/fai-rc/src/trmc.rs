@@ -154,13 +154,15 @@ pub(crate) fn fuse_evidence_self_calls(e: CExpr, self_def: DefId, evidence: &[Lo
         K::Prim { op, args } => {
             CExpr::new(K::Prim { op, args: args.into_iter().map(sub).collect() }, ty)
         }
-        K::MakeData { tag, args, reuse, scalars } => CExpr::new(
-            K::MakeData { tag, args: args.into_iter().map(sub).collect(), reuse, scalars },
+        K::MakeData { tag, args, reuse, scalars, niche } => CExpr::new(
+            K::MakeData { tag, args: args.into_iter().map(sub).collect(), reuse, scalars, niche },
             ty,
         ),
-        K::DataTag(base) => CExpr::new(K::DataTag(Box::new(sub(*base))), ty),
-        K::DataField { base, index, scalar } => {
-            CExpr::new(K::DataField { base: Box::new(sub(*base)), index, scalar }, ty)
+        K::DataTag { base, niche } => {
+            CExpr::new(K::DataTag { base: Box::new(sub(*base)), niche }, ty)
+        }
+        K::DataField { base, index, scalar, niche } => {
+            CExpr::new(K::DataField { base: Box::new(sub(*base)), index, scalar, niche }, ty)
         }
         // No self-calls live inside these before reference counting (a lifted
         // lambda is referenced by id, not inlined); return them unchanged.
@@ -464,10 +466,10 @@ fn collect_chain(
             let body = collect_chain(rec, *body, hole, sargs, chain, next);
             CExpr::new(K::Drop { local, body: Box::new(body) }, ty)
         }
-        K::MakeData { tag, args, reuse, scalars } => {
+        K::MakeData { tag, args, reuse, scalars, niche } => {
             // The outermost (tail) constructor completes the chain.
             let (cell, field) =
-                hole_cell(CExpr::new(K::MakeData { tag, args, reuse, scalars }, ty), rec);
+                hole_cell(CExpr::new(K::MakeData { tag, args, reuse, scalars, niche }, ty), rec);
             chain.push(ChainLink { cell, field });
             emit_holefill_chain(std::mem::take(chain), hole, sargs, next)
         }
@@ -491,11 +493,11 @@ fn hole_cell(value: CExpr, rec: LocalId) -> (CExpr, usize) {
             let (body, field) = hole_cell(*body, rec);
             (CExpr::new(K::Drop { local, body: Box::new(body) }, ty), field)
         }
-        K::MakeData { tag, mut args, reuse, scalars } => {
+        K::MakeData { tag, mut args, reuse, scalars, niche } => {
             let field =
                 args.iter().position(|a| is_local(a, rec)).expect("recursive field present");
             args[field] = CExpr::new(K::Lit(Lit::Unit), Ty::Error);
-            (CExpr::new(K::MakeData { tag, args, reuse, scalars }, ty), field)
+            (CExpr::new(K::MakeData { tag, args, reuse, scalars, niche }, ty), field)
         }
         // `check_cons_wrap` guaranteed the construction under any dup/drop.
         _ => unreachable!("a chain link is a construction"),
@@ -665,7 +667,7 @@ fn count_local(e: &CExpr, x: LocalId, n: &mut usize) {
                 }
             }
         }
-        K::DataTag(base) => count_local(base, x, n),
+        K::DataTag { base, .. } => count_local(base, x, n),
         K::DataField { base, index, .. } => {
             count_local(base, x, n);
             if let FieldIndex::Dyn { evidence, .. } = index
@@ -753,7 +755,7 @@ fn walk(e: &CExpr, f: &mut impl FnMut(&CExpr)) {
             walk(value, f);
             walk(body, f);
         }
-        K::DataTag(base) | K::DataField { base, .. } => walk(base, f),
+        K::DataTag { base, .. } | K::DataField { base, .. } => walk(base, f),
         K::Dup { body, .. }
         | K::Drop { body, .. }
         | K::FreeReuse { body, .. }

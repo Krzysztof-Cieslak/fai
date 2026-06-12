@@ -1191,10 +1191,10 @@ impl<M: Module> Translator<'_, M> {
                 self.expr(body)
             }
             ExprKind::MakeClosure { func, captures } => self.make_closure(*func, captures),
-            ExprKind::MakeData { tag, args, reuse, scalars } => {
+            ExprKind::MakeData { tag, args, reuse, scalars, niche: _ } => {
                 self.make_data(*tag, args, *reuse, *scalars)
             }
-            ExprKind::DataTag(base) => {
+            ExprKind::DataTag { base, niche: _ } => {
                 let v = self.expr(base);
                 let tagged = self.call1("fai_data_tag", v);
                 // The tag is a small immediate `Int`. Where the node is monomorphic
@@ -1208,7 +1208,7 @@ impl<M: Module> Translator<'_, M> {
                     tagged
                 }
             }
-            ExprKind::DataField { base, index, scalar } => {
+            ExprKind::DataField { base, index, scalar, niche: _ } => {
                 self.data_field(base, *index, *scalar, &e.ty)
             }
             ExprKind::Reset { value, token, body } => {
@@ -3090,7 +3090,7 @@ fn collect_local_types(e: &CExpr, out: &mut FxHashMap<usize, Ty>) {
             collect_local_types(value, out);
             collect_local_types(body, out);
         }
-        ExprKind::DataTag(base) => collect_local_types(base, out),
+        ExprKind::DataTag { base, .. } => collect_local_types(base, out),
         ExprKind::DataField { base, .. } => collect_local_types(base, out),
         ExprKind::Reset { value, body, .. } => {
             collect_local_types(value, out);
@@ -3150,7 +3150,7 @@ fn collect_float_observations(
             collect_float_observations(value, float_seen, other_seen);
             collect_float_observations(body, float_seen, other_seen);
         }
-        ExprKind::DataTag(base) | ExprKind::DataField { base, .. } => {
+        ExprKind::DataTag { base, .. } | ExprKind::DataField { base, .. } => {
             collect_float_observations(base, float_seen, other_seen);
         }
         ExprKind::Reset { value, body, .. } => {
@@ -3224,7 +3224,7 @@ fn collect_int_observations(
             collect_int_observations(value, int_seen, other_seen);
             collect_int_observations(body, int_seen, other_seen);
         }
-        ExprKind::DataTag(base) | ExprKind::DataField { base, .. } => {
+        ExprKind::DataTag { base, .. } | ExprKind::DataField { base, .. } => {
             collect_int_observations(base, int_seen, other_seen);
         }
         ExprKind::Reset { value, body, .. } => {

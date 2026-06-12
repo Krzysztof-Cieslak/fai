@@ -989,7 +989,7 @@ fn if_(cond: CExpr, then: CExpr, els: CExpr) -> CExpr {
 }
 
 fn data_tag(base: CExpr) -> CExpr {
-    CExpr::new(K::DataTag(Box::new(base)), Ty::Error)
+    CExpr::new(K::DataTag { base: Box::new(base), niche: None }, Ty::Error)
 }
 
 fn local(l: LocalId) -> CExpr {
@@ -1001,7 +1001,9 @@ fn app(func: CExpr, args: Vec<CExpr>) -> CExpr {
 }
 
 fn make_data(tag: u32, args: Vec<CExpr>, scalars: u64) -> CExpr {
-    CExpr::new(K::MakeData { tag, args, reuse: None, scalars }, Ty::Error)
+    // Generated values use the standard boxed representation; the contract harness
+    // converts to a niche `Option` at the property's call boundary if needed.
+    CExpr::new(K::MakeData { tag, args, reuse: None, scalars, niche: None }, Ty::Error)
 }
 
 /// Projects a field, always as a uniform read: a scalar `f64` slot of a generated
@@ -1009,7 +1011,12 @@ fn make_data(tag: u32, args: Vec<CExpr>, scalars: u64) -> CExpr {
 /// machinery (typed over a type variable) expects.
 fn field(base: CExpr, index: u32) -> CExpr {
     CExpr::new(
-        K::DataField { base: Box::new(base), index: FieldIndex::Const(index), scalar: false },
+        K::DataField {
+            base: Box::new(base),
+            index: FieldIndex::Const(index),
+            scalar: false,
+            niche: None,
+        },
         Ty::Error,
     )
 }

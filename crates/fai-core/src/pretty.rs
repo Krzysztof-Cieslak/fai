@@ -3,6 +3,16 @@
 use std::fmt::Write as _;
 
 use crate::ir::{CExpr, ExprKind, FieldIndex, Lit, LoweredDef, Prim};
+use crate::niche::NicheKind;
+
+/// The niche-scheme suffix shown on a data node (empty for a standard node).
+fn niche_suffix(niche: Option<NicheKind>) -> &'static str {
+    match niche {
+        None => "",
+        Some(NicheKind::A) => "~a",
+        Some(NicheKind::B) => "~b",
+    }
+}
 
 /// Renders a lowered definition as a compact, deterministic string.
 #[must_use]
@@ -152,7 +162,7 @@ fn write_expr(out: &mut String, e: &CExpr) {
             let caps: Vec<String> = captures.iter().map(|c| format!("%{}", c.index())).collect();
             let _ = write!(out, "(closure fn{} [{}])", func.index(), caps.join(", "));
         }
-        ExprKind::MakeData { tag, args, reuse, scalars } => {
+        ExprKind::MakeData { tag, args, reuse, scalars, niche } => {
             match reuse {
                 Some(t) => {
                     let _ = write!(out, "(data@%{} {tag}", t.index());
@@ -165,23 +175,26 @@ fn write_expr(out: &mut String, e: &CExpr) {
             if *scalars != 0 {
                 let _ = write!(out, "!{scalars}");
             }
+            out.push_str(niche_suffix(*niche));
             write_args(out, args);
             out.push(')');
         }
-        ExprKind::DataTag(base) => {
-            out.push_str("(tag ");
+        ExprKind::DataTag { base, niche } => {
+            let _ = write!(out, "(tag{} ", niche_suffix(*niche));
             write_expr(out, base);
             out.push(')');
         }
-        ExprKind::DataField { base, index, scalar } => {
-            // A scalar (unboxed `f64`) slot reads as `fieldf`.
+        ExprKind::DataField { base, index, scalar, niche } => {
+            // A scalar (unboxed `f64`) slot reads as `fieldf`; a niche `Option`
+            // projection appends its scheme.
             let kw = if *scalar { "fieldf" } else { "field" };
+            let nq = niche_suffix(*niche);
             match index {
                 FieldIndex::Const(n) => {
-                    let _ = write!(out, "({kw} {n} ");
+                    let _ = write!(out, "({kw}{nq} {n} ");
                 }
                 FieldIndex::Dyn { base: off, evidence } => {
-                    let _ = write!(out, "({kw} {off}+%{} ", evidence.index());
+                    let _ = write!(out, "({kw}{nq} {off}+%{} ", evidence.index());
                 }
             }
             write_expr(out, base);

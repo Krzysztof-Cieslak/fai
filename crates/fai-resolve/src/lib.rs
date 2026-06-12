@@ -33,7 +33,7 @@ pub use module::{
     DefInfo, DuplicateExport, Export, ExportKind, ModuleDefs, ModuleInterface, ModuleName,
     PRELUDE_MODULE, PreludeExports, duplicate_module_files, emit_duplicate_module_errors,
     emit_duplicate_prelude_export_errors, merge_auto_imports, module_defs, module_file,
-    module_interface, module_name, prelude_exports, prelude_module_file, std_files,
+    module_interface, module_name, prelude_exports, prelude_module_file, prelude_source, std_files,
 };
 pub use scc::{ModuleSccs, Scc, def_deps, module_sccs, recursive_defs};
 

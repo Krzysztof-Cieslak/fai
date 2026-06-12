@@ -18,6 +18,7 @@ pub mod ir;
 mod lit;
 #[allow(unsafe_code)]
 mod lower;
+pub mod niche;
 pub mod pretty;
 pub mod reassoc;
 pub mod wire;
@@ -33,6 +34,7 @@ pub use inline::{PrimWrapper, core_inlined, prim_wrapper};
 pub use ir::{CExpr, CoreFn, ExprKind, FnAbi, FnId, Lit, LoweredDef, Prim, Repr};
 pub use lit::{decode_char, decode_float, decode_int, decode_string};
 pub use lower::{LoweredBody, core, lower_params_body};
+pub use niche::{NicheKind, niche_scheme};
 pub use pretty::pretty_def;
 pub use reassoc::reassociate_concat;
 pub use wire::{

@@ -325,7 +325,13 @@ impl Lowerer<'_> {
             ExprKind::Paren(inner) => return self.lower_expr(*inner),
             ExprKind::Tuple(elems) => {
                 let args = elems.iter().map(|&e| self.lower_expr(e)).collect();
-                K::MakeData { tag: 0, args, reuse: None, scalars: record_tuple_scalars(&ty) }
+                K::MakeData {
+                    tag: 0,
+                    args,
+                    reuse: None,
+                    scalars: record_tuple_scalars(&ty),
+                    niche: None,
+                }
             }
             ExprKind::List(elems) => return self.lower_list(elems, ty),
             ExprKind::Array(elems) => return self.lower_array(elems, ty),
@@ -368,6 +374,12 @@ impl Lowerer<'_> {
         }
     }
 
+    /// The niche scheme of `ty` if it is a niche-eligible monomorphic `Option`,
+    /// else `None` (a standard boxed value). See [`crate::niche`].
+    fn niche_scheme(&self, ty: &Ty) -> Option<crate::niche::NicheKind> {
+        crate::niche::niche_scheme(self.db, ty)
+    }
+
     /// The tag and arity of a data constructor, from its declaring file.
     fn ctor_tag_arity(&self, ctor: CtorRef) -> Option<(u32, usize)> {
         let file = self.db.source_file(ctor.file)?;
@@ -403,12 +415,22 @@ impl Lowerer<'_> {
     fn lower_ctor_value(&mut self, ctor: CtorRef, ty: Ty) -> CExpr {
         let (tag, arity) = self.ctor_tag_arity(ctor).unwrap_or((0, 0));
         if arity == 0 {
-            return CExpr::new(K::MakeData { tag, args: Vec::new(), reuse: None, scalars: 0 }, ty);
+            // A nullary constructor used as a value: a niche `None` (when its type
+            // is a niche `Option`) carries its scheme so codegen emits the sentinel.
+            let niche = self.niche_scheme(&ty);
+            return CExpr::new(
+                K::MakeData { tag, args: Vec::new(), reuse: None, scalars: 0, niche },
+                ty,
+            );
         }
+        // The first-class (curried) form is reached through `apply_n`, the uniform
+        // ABI, so it always builds a standard cell (niche is a monomorphic-only,
+        // register-ABI optimization): keep `niche` `None` here.
         let scalars = self.ctor_scalars(ctor);
         let params: Vec<LocalId> = (0..arity).map(|_| self.fresh_local()).collect();
         let args = params.iter().map(|&p| CExpr::new(K::Local(p), Ty::Error)).collect();
-        let body = CExpr::new(K::MakeData { tag, args, reuse: None, scalars }, Ty::Error);
+        let body =
+            CExpr::new(K::MakeData { tag, args, reuse: None, scalars, niche: None }, Ty::Error);
         let fn_id = self.push_fn(CoreFn { params, captures: Vec::new(), body });
         CExpr::new(K::MakeClosure { func: fn_id, captures: Vec::new() }, ty)
     }
@@ -451,6 +473,7 @@ impl Lowerer<'_> {
                             base: Box::new(b),
                             index: FieldIndex::Const(index),
                             scalar: false,
+                            niche: None,
                         },
                         ty,
                     )
@@ -465,7 +488,12 @@ impl Lowerer<'_> {
                 let scalar = field_is_scalar(&ty);
                 let b = self.lower_expr(base);
                 CExpr::new(
-                    K::DataField { base: Box::new(b), index: FieldIndex::Const(index), scalar },
+                    K::DataField {
+                        base: Box::new(b),
+                        index: FieldIndex::Const(index),
+                        scalar,
+                        niche: None,
+                    },
                     ty,
                 )
             }
@@ -495,7 +523,7 @@ impl Lowerer<'_> {
             // fields the evidence offsets past.
             let scalar = field_is_scalar(&ty);
             let b = self.lower_expr(base);
-            return CExpr::new(K::DataField { base: Box::new(b), index, scalar }, ty);
+            return CExpr::new(K::DataField { base: Box::new(b), index, scalar, niche: None }, ty);
         }
         self.unsupported_row_poly(span, "row-polymorphic record field access")
     }
@@ -600,7 +628,7 @@ impl Lowerer<'_> {
             })
             .collect();
         // A dictionary's slots are method closures/values, never scalar floats.
-        CExpr::new(K::MakeData { tag: 0, args, reuse: None, scalars: 0 }, ty)
+        CExpr::new(K::MakeData { tag: 0, args, reuse: None, scalars: 0, niche: None }, ty)
     }
 
     /// Lowers a record literal to a tagless composite, fields in canonical
@@ -610,7 +638,13 @@ impl Lowerer<'_> {
         sorted.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
         let args = sorted.iter().map(|f| self.lower_expr(f.value)).collect();
         CExpr::new(
-            K::MakeData { tag: 0, args, reuse: None, scalars: record_tuple_scalars(ty) },
+            K::MakeData {
+                tag: 0,
+                args,
+                reuse: None,
+                scalars: record_tuple_scalars(ty),
+                niche: None,
+            },
             ty.clone(),
         )
     }
@@ -652,13 +686,19 @@ impl Lowerer<'_> {
                 let scalar = field_is_scalar(field_ty);
                 let base = Box::new(CExpr::new(K::Local(base_local), Ty::Error));
                 args.push(CExpr::new(
-                    K::DataField { base, index: FieldIndex::Const(i), scalar },
+                    K::DataField { base, index: FieldIndex::Const(i), scalar, niche: None },
                     field_ty.clone(),
                 ));
             }
         }
         let make = CExpr::new(
-            K::MakeData { tag: 0, args, reuse: None, scalars: record_tuple_scalars(ty) },
+            K::MakeData {
+                tag: 0,
+                args,
+                reuse: None,
+                scalars: record_tuple_scalars(ty),
+                niche: None,
+            },
             ty.clone(),
         );
         match wrap {
@@ -720,13 +760,19 @@ impl Lowerer<'_> {
         // A `Cons` cell's fields are the element (declared `'a`) and the tail
         // (`List 'a`), neither scalar — `List Float` keeps its elements boxed.
         let mut list = CExpr::new(
-            K::MakeData { tag: NIL_TAG, args: Vec::new(), reuse: None, scalars: 0 },
+            K::MakeData { tag: NIL_TAG, args: Vec::new(), reuse: None, scalars: 0, niche: None },
             ty.clone(),
         );
         for &e in elems.iter().rev() {
             let head = self.lower_expr(e);
             list = CExpr::new(
-                K::MakeData { tag: CONS_TAG, args: vec![head, list], reuse: None, scalars: 0 },
+                K::MakeData {
+                    tag: CONS_TAG,
+                    args: vec![head, list],
+                    reuse: None,
+                    scalars: 0,
+                    niche: None,
+                },
                 ty.clone(),
             );
         }
@@ -828,8 +874,9 @@ impl Lowerer<'_> {
             && arity == args.len()
         {
             let scalars = self.ctor_scalars(ctor);
+            let niche = self.niche_scheme(&ty);
             let args = args.iter().map(|&a| self.lower_expr(a)).collect();
-            return CExpr::new(K::MakeData { tag, args, reuse: None, scalars }, ty);
+            return CExpr::new(K::MakeData { tag, args, reuse: None, scalars, niche }, ty);
         }
         let func = Box::new(self.lower_expr(head));
         let args = args.iter().map(|&a| self.lower_expr(a)).collect();
@@ -935,7 +982,10 @@ impl Lowerer<'_> {
             // `x :: xs` builds a `Cons` cell (element `'a` and tail, neither scalar).
             BinOp::Cons => {
                 let args = vec![self.lower_expr(lhs), self.lower_expr(rhs)];
-                CExpr::new(K::MakeData { tag: CONS_TAG, args, reuse: None, scalars: 0 }, ty)
+                CExpr::new(
+                    K::MakeData { tag: CONS_TAG, args, reuse: None, scalars: 0, niche: None },
+                    ty,
+                )
             }
             _ => error_expr(),
         }
@@ -1063,7 +1113,7 @@ impl Lowerer<'_> {
                 // both the per-slot scalar-ness and the sub-pattern types.
                 let elem_tys = tuple_elem_tys(value_ty, elems.len());
                 let scalars = crate::ir::scalar_field_mask(elem_tys.iter());
-                self.compile_fields(value_local, &elems, &elem_tys, scalars, success, &fail)
+                self.compile_fields(value_local, &elems, &elem_tys, scalars, None, success, &fail)
             }
             PatKind::List(elems) => {
                 let elems = elems.clone();
@@ -1075,8 +1125,8 @@ impl Lowerer<'_> {
                 let elem = list_elem_ty(value_ty);
                 let fields = [*head, *tail];
                 let tys = [elem, value_ty.clone()];
-                let bind = self.compile_fields(value_local, &fields, &tys, 0, success, &fail);
-                self.test_tag(value_local, CONS_TAG, bind, fail)
+                let bind = self.compile_fields(value_local, &fields, &tys, 0, None, success, &fail);
+                self.test_tag(value_local, CONS_TAG, None, bind, fail)
             }
             PatKind::Constructor { args, .. } => {
                 let (tag, scalars) = match self.resolved.pat_res(pat) {
@@ -1085,6 +1135,9 @@ impl Lowerer<'_> {
                     }
                     _ => (0, 0),
                 };
+                // A niche `Option` scrutinee carries its scheme so the tag test and
+                // the `Some` projection use the niche encoding.
+                let niche = self.niche_scheme(value_ty);
                 let args = args.clone();
                 // The constructor's field types are nominal; the bound patterns'
                 // inferred types are the instantiated ones (used for sub-patterns).
@@ -1092,8 +1145,9 @@ impl Lowerer<'_> {
                     .iter()
                     .map(|&a| self.types.pat_type(a).cloned().unwrap_or(Ty::Error))
                     .collect();
-                let bind = self.compile_fields(value_local, &args, &tys, scalars, success, &fail);
-                self.test_tag(value_local, tag, bind, fail)
+                let bind =
+                    self.compile_fields(value_local, &args, &tys, scalars, niche, success, &fail);
+                self.test_tag(value_local, tag, niche, bind, fail)
             }
             PatKind::Or(alts) => {
                 let alts = alts.clone();
@@ -1160,6 +1214,7 @@ impl Lowerer<'_> {
                         base: Box::new(CExpr::new(K::Local(value_local), Ty::Error)),
                         index: FieldIndex::Const(index),
                         scalar,
+                        niche: None,
                     },
                     field_ty.clone(),
                 )
@@ -1196,10 +1251,19 @@ impl Lowerer<'_> {
         )
     }
 
-    /// `if tag(value_local) = <tag> then success else fail`.
-    fn test_tag(&mut self, value_local: LocalId, tag: u32, success: CExpr, fail: CExpr) -> CExpr {
+    /// `if tag(value_local) = <tag> then success else fail`. `niche` is the
+    /// scrutinee's niche scheme (non-`None` only for a niche `Option`), so the tag
+    /// read can use the niche encoding.
+    fn test_tag(
+        &mut self,
+        value_local: LocalId,
+        tag: u32,
+        niche: Option<crate::niche::NicheKind>,
+        success: CExpr,
+        fail: CExpr,
+    ) -> CExpr {
         let read = CExpr::new(
-            K::DataTag(Box::new(CExpr::new(K::Local(value_local), Ty::Error))),
+            K::DataTag { base: Box::new(CExpr::new(K::Local(value_local), Ty::Error)), niche },
             Ty::int(),
         );
         let tag_lit = CExpr::new(K::Lit(Lit::Int(i64::from(tag))), Ty::int());
@@ -1215,13 +1279,16 @@ impl Lowerer<'_> {
     /// fields' concrete types (for the projection type and sub-pattern), and
     /// `scalars` marks which slots are a raw `f64` (bit `i` ⇒ field `i`): for an ADT
     /// the constructor's *declared* float fields (a polymorphic field instantiated
-    /// to `Float` stays boxed); for a tuple the structural float fields.
+    /// to `Float` stays boxed); for a tuple the structural float fields. `niche` is
+    /// the scrutinee's niche scheme (a niche `Option` `Some` projection).
+    #[allow(clippy::too_many_arguments)]
     fn compile_fields(
         &mut self,
         value_local: LocalId,
         fields: &[PatId],
         field_tys: &[Ty],
         scalars: u64,
+        niche: Option<crate::niche::NicheKind>,
         success: CExpr,
         fail: &CExpr,
     ) -> CExpr {
@@ -1245,6 +1312,7 @@ impl Lowerer<'_> {
                         base: Box::new(CExpr::new(K::Local(value_local), Ty::Error)),
                         index: FieldIndex::Const(index),
                         scalar,
+                        niche,
                     },
                     field_ty.clone(),
                 )
@@ -1284,7 +1352,7 @@ impl Lowerer<'_> {
     ) -> CExpr {
         let Some((&head, rest)) = elems.split_first() else {
             // `[]` matches the `Nil` tag.
-            return self.test_tag(value_local, NIL_TAG, success, fail);
+            return self.test_tag(value_local, NIL_TAG, None, success, fail);
         };
         // A `Cons` cell: head = field 0, tail matches the rest of the list.
         let tail_local = self.fresh_local();
@@ -1298,6 +1366,7 @@ impl Lowerer<'_> {
                         base: Box::new(CExpr::new(K::Local(value_local), Ty::Error)),
                         index: FieldIndex::Const(1),
                         scalar: false,
+                        niche: None,
                     },
                     Ty::Error,
                 )),
@@ -1307,8 +1376,9 @@ impl Lowerer<'_> {
         );
         // A list element (`'a`) is never a scalar slot; its concrete type threads on.
         let elem = list_elem_ty(value_ty);
-        let head_bind = self.compile_fields(value_local, &[head], &[elem], 0, tail_bind, &fail);
-        self.test_tag(value_local, CONS_TAG, head_bind, fail)
+        let head_bind =
+            self.compile_fields(value_local, &[head], &[elem], 0, None, tail_bind, &fail);
+        self.test_tag(value_local, CONS_TAG, None, head_bind, fail)
     }
 
     fn lower_block(&mut self, stmts: &[fai_syntax::ast::LetStmt], tail: ExprId) -> CExpr {
@@ -1477,7 +1547,7 @@ fn collect_free(expr: &CExpr, bound: &mut FxHashSet<LocalId>, out: &mut FxHashSe
                 collect_free(a, bound, out);
             }
         }
-        K::DataTag(base) => collect_free(base, bound, out),
+        K::DataTag { base, .. } => collect_free(base, bound, out),
         K::DataField { base, .. } => collect_free(base, bound, out),
         // Lowering runs before reference counting inserts reuse tokens, so `reuse`
         // is always empty here.

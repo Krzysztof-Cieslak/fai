@@ -922,7 +922,7 @@ fn has_error_node(def: &LoweredDef) -> bool {
                 scan(value) || scan(body)
             }
             ExprKind::FreeReuse { body, .. } => scan(body),
-            ExprKind::DataTag(b) | ExprKind::DataField { base: b, .. } => scan(b),
+            ExprKind::DataTag { base: b, .. } | ExprKind::DataField { base: b, .. } => scan(b),
             ExprKind::Dup { body, .. } | ExprKind::Drop { body, .. } => scan(body),
             ExprKind::Join { body, .. } | ExprKind::HoleStart { body, .. } => scan(body),
             ExprKind::Recur { args } => args.iter().any(scan),
