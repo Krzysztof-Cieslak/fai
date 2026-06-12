@@ -37,3 +37,31 @@ let isErr result =
   | Err _ -> true
 example: isErr (Err 1)
 example: isErr (Ok 1) = false
+
+/// The success value, or `fallback` for an `Err`.
+public withDefault : 'ok -> Result 'ok 'err -> 'ok
+let withDefault fallback result =
+  match result with
+  | Ok x -> x
+  | Err _ -> fallback
+example: withDefault 0 (Ok 5) = 5
+example: withDefault 0 (Err 1) = 0
+
+/// The success value, or `recover e` applied to the error of an `Err` — recovers
+/// using the error payload (computed only on an `Err`).
+public getOrElse : ('err -> 'ok / 'e) -> Result 'ok 'err -> 'ok / 'e
+let getOrElse recover result =
+  match result with
+  | Ok x -> x
+  | Err e -> recover e
+example: getOrElse (fun _ -> 0) (Ok 5) = 5
+example: getOrElse (fun e -> e + 1) (Err 1) = 2
+
+/// Discard the error, turning `Ok x` into `Some x` and `Err _` into `None`.
+public toOption : Result 'ok 'err -> Option 'ok
+let toOption result =
+  match result with
+  | Ok x -> Some x
+  | Err _ -> None
+example: toOption (Ok 5) = Some 5
+example: toOption (Err 1) = None

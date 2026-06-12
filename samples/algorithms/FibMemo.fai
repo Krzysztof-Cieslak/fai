@@ -5,19 +5,21 @@ module FibMemo
 // This exercises `Dict` get/insert inside recursion and contrasts the naive,
 // exponential `Fib`. Sums wrap on overflow (two's complement), like the reference.
 // Used by the Rust-vs-Fai runtime benchmark.
-// Return fib(k) and the (possibly extended) memo.
+// Return fib(k) and the (possibly extended) memo. A hit reads the cached value
+// with `member` + `getOr` (no `Option` materialized, and the borrowing lookups
+// leave the memo uniquely owned so a miss's inserts recycle it in place); the
+// `getOr` default is never used because `member` already confirmed the key.
 fibMemo : Int -> Dict Int Int -> (Int * Dict Int Int)
 let fibMemo k memo =
   if k < 2 then
     (k, memo)
+  else if Dict.member k memo then
+    (Dict.getOr 0 k memo, memo)
   else
-    match Dict.get k memo with
-    | Some v -> (v, memo)
-    | None ->
-      match fibMemo (k - 1) memo with
-      | (a, m1) ->
-        match fibMemo (k - 2) m1 with
-        | (b, m2) -> (a + b, Dict.insert k (a + b) m2)
+    match fibMemo (k - 1) memo with
+    | (a, m1) ->
+      match fibMemo (k - 2) m1 with
+      | (b, m2) -> (a + b, Dict.insert k (a + b) m2)
 
 /// The benchmark workload: the nth Fibonacci number (wrapping), memoized.
 public run : Int -> Int
