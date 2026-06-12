@@ -68,7 +68,7 @@ fn expr_pure_total(db: &dyn Db, e: &CExpr) -> bool {
         }
         // A call is pure and total only when its target is a statically known
         // top-level function that is itself pure and total.
-        K::App { func, args } => {
+        K::App { func, args, .. } => {
             let target_ok = match &func.kind {
                 K::Global(def) => {
                     db.source_file(def.file).is_some_and(|f| is_pure_total(db, f, def.name))

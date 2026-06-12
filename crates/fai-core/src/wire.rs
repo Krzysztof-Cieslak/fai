@@ -89,6 +89,13 @@ pub struct WireDef {
     pub fns: Vec<WireFn>,
     /// Per-entry-parameter borrow flags.
     pub entry_borrowed: Vec<bool>,
+    /// The token-taking specialized entry, when this definition accepts forwarded
+    /// reuse tokens; its leading parameters are the reuse-token slots.
+    pub reuse_entry: Option<WireFn>,
+    /// The size class (field count) of each reuse-token slot the specialized entry
+    /// accepts, in slot order; empty when there is no `reuse_entry`. The worker
+    /// reconstructs the reuse signature (and so the `{base}__reuse` ABI) from this.
+    pub reuse_sig: Vec<u32>,
 }
 
 /// One function in wire form.
@@ -194,6 +201,8 @@ pub enum WireExprKind {
         func: Box<WireExpr>,
         /// The arguments.
         args: Vec<WireExpr>,
+        /// Reuse-token slots forwarded to the callee's token-taking entry.
+        reuse: Vec<u32>,
     },
     /// A conditional.
     If {
@@ -391,13 +400,16 @@ pub fn reconstruct_ty(w: &WireTy) -> Ty {
 /// Converts a lowered definition to wire form. `module_of` maps any referenced
 /// definition to its module label (resolved by the caller, which has the
 /// database); `abi` is its native calling-convention shape (computed warm from
-/// the signature, so the worker marshals direct calls identically).
+/// the signature, so the worker marshals direct calls identically); `reuse_sig`
+/// is the size class of each reuse-token slot its specialized entry accepts (the
+/// worker has no database, so it reconstructs the reuse signature from this).
 #[must_use]
 pub fn def_to_wire(
     lowered: &LoweredDef,
     module_of: &dyn Fn(DefId) -> String,
     arity: usize,
     abi: FnAbi,
+    reuse_sig: Vec<u32>,
 ) -> WireDef {
     WireDef {
         id: wire_id(lowered.def, module_of),
@@ -405,6 +417,8 @@ pub fn def_to_wire(
         abi,
         fns: lowered.fns.iter().map(|f| fn_to_wire(f, module_of)).collect(),
         entry_borrowed: lowered.entry_borrowed.clone(),
+        reuse_entry: lowered.reuse_entry.as_ref().map(|f| fn_to_wire(f, module_of)),
+        reuse_sig,
     }
 }
 
@@ -451,9 +465,10 @@ fn expr_to_wire(e: &CExpr, module_of: &dyn Fn(DefId) -> String) -> WireExpr {
             op: *op,
             args: args.iter().map(|a| expr_to_wire(a, module_of)).collect(),
         },
-        ExprKind::App { func, args } => WireExprKind::App {
+        ExprKind::App { func, args, reuse } => WireExprKind::App {
             func: Box::new(expr_to_wire(func, module_of)),
             args: args.iter().map(|a| expr_to_wire(a, module_of)).collect(),
+            reuse: reuse.iter().map(|&t| slot(t)).collect(),
         },
         ExprKind::If { cond, then, els } => WireExprKind::If {
             cond: Box::new(expr_to_wire(cond, module_of)),
@@ -620,6 +635,7 @@ fn defs_from_wire(
             def: def_id,
             fns: wire.fns.iter().map(|f| fn_from_wire(f, sources)).collect(),
             entry_borrowed: wire.entry_borrowed.clone(),
+            reuse_entry: wire.reuse_entry.as_ref().map(|f| fn_from_wire(f, sources)),
         });
     }
     (defs, arities, abis)
@@ -665,9 +681,10 @@ fn expr_from_wire(e: &WireExpr, sources: &mut SourceAssigner) -> CExpr {
             op: *op,
             args: args.iter().map(|a| expr_from_wire(a, sources)).collect(),
         },
-        WireExprKind::App { func, args } => ExprKind::App {
+        WireExprKind::App { func, args, reuse } => ExprKind::App {
             func: Box::new(expr_from_wire(func, sources)),
             args: args.iter().map(|a| expr_from_wire(a, sources)).collect(),
+            reuse: reuse.iter().map(|&i| LocalId::from_index(i as usize)).collect(),
         },
         WireExprKind::If { cond, then, els } => ExprKind::If {
             cond: Box::new(expr_from_wire(cond, sources)),
@@ -757,8 +774,13 @@ mod tests {
         let lowered = core(&db, file, Symbol::intern(name));
 
         let module_of = |_d: DefId| "M".to_owned();
-        let wire =
-            def_to_wire(&lowered, &module_of, lowered.entry().params.len(), FnAbi::default());
+        let wire = def_to_wire(
+            &lowered,
+            &module_of,
+            lowered.entry().params.len(),
+            FnAbi::default(),
+            Vec::new(),
+        );
         let bundle =
             WireBundle { entry: wire.id.clone(), runtime: wire.id.clone(), defs: vec![wire] };
         let rebuilt = from_wire(&bundle);
@@ -829,9 +851,10 @@ mod tests {
             def,
             fns: vec![CoreFn { params: vec![cell], captures: Vec::new(), body }],
             entry_borrowed: Vec::new(),
+            reuse_entry: None,
         };
 
-        let wire = def_to_wire(&lowered, &|_| "M".to_owned(), 1, FnAbi::default());
+        let wire = def_to_wire(&lowered, &|_| "M".to_owned(), 1, FnAbi::default(), Vec::new());
         let json = serde_json::to_string(&wire).unwrap();
         let decoded: WireDef = serde_json::from_str(&json).unwrap();
         let bundle = WireBundle {
@@ -877,9 +900,10 @@ mod tests {
             def,
             fns: vec![CoreFn { params: vec![cell], captures: Vec::new(), body }],
             entry_borrowed: Vec::new(),
+            reuse_entry: None,
         };
 
-        let wire = def_to_wire(&lowered, &|_| "M".to_owned(), 1, FnAbi::default());
+        let wire = def_to_wire(&lowered, &|_| "M".to_owned(), 1, FnAbi::default(), Vec::new());
         let json = serde_json::to_string(&wire).unwrap();
         let decoded: WireDef = serde_json::from_str(&json).unwrap();
         let bundle = WireBundle {
@@ -952,9 +976,10 @@ mod tests {
             def,
             fns: vec![CoreFn { params: vec![xs], captures: Vec::new(), body }],
             entry_borrowed: Vec::new(),
+            reuse_entry: None,
         };
 
-        let wire = def_to_wire(&lowered, &|_| "M".to_owned(), 1, FnAbi::default());
+        let wire = def_to_wire(&lowered, &|_| "M".to_owned(), 1, FnAbi::default(), Vec::new());
         let json = serde_json::to_string(&wire).unwrap();
         let decoded: WireDef = serde_json::from_str(&json).unwrap();
         let bundle = WireBundle {
@@ -981,7 +1006,7 @@ mod tests {
         let id = db.add_source("M.fai".into(), "module M\n\nlet f x = x + 1\n".to_owned());
         let file = db.source_file(id).unwrap();
         let lowered = core(&db, file, Symbol::intern("f"));
-        let wire = def_to_wire(&lowered, &|_| "M".to_owned(), 1, FnAbi::default());
+        let wire = def_to_wire(&lowered, &|_| "M".to_owned(), 1, FnAbi::default(), Vec::new());
         let bundle =
             WireBundle { entry: wire.id.clone(), runtime: wire.id.clone(), defs: vec![wire] };
 
@@ -1032,7 +1057,7 @@ mod tests {
         let id = db.add_source("M.fai".into(), "module M\n\nlet f x = x + 1\n".to_owned());
         let file = db.source_file(id).unwrap();
         let lowered = core(&db, file, Symbol::intern("f"));
-        let wire = def_to_wire(&lowered, &|_| "M".to_owned(), 1, FnAbi::default());
+        let wire = def_to_wire(&lowered, &|_| "M".to_owned(), 1, FnAbi::default(), Vec::new());
         let bundle = TestWireBundle {
             contracts: vec![WireContract {
                 id: wire.id.clone(),
@@ -1070,6 +1095,8 @@ mod tests {
                 body: WireExpr { kind: WireExprKind::Lit(Lit::Unit), ty: WireTy::Unit },
             }],
             entry_borrowed: Vec::new(),
+            reuse_entry: None,
+            reuse_sig: Vec::new(),
         };
         let b = WireDef {
             id: WireDefId { module: "B".to_owned(), name: "f".to_owned() },
@@ -1081,6 +1108,8 @@ mod tests {
                 body: WireExpr { kind: WireExprKind::Lit(Lit::Unit), ty: WireTy::Unit },
             }],
             entry_borrowed: Vec::new(),
+            reuse_entry: None,
+            reuse_sig: Vec::new(),
         };
         let bundle = WireBundle { entry: a.id.clone(), runtime: a.id.clone(), defs: vec![a, b] };
         let rebuilt = from_wire(&bundle);

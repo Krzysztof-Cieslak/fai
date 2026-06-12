@@ -334,7 +334,9 @@ impl Analyzer<'_> {
                     self.consume_local(c);
                 }
             }
-            K::App { func, args } => {
+            // Borrow inference runs on the pre-count body, before reuse tokens are
+            // forwarded, so `reuse` is always empty here.
+            K::App { func, args, .. } => {
                 self.scan(func, false);
                 self.consume(func);
                 // A saturated self-call in tail position owns its arguments. A lent

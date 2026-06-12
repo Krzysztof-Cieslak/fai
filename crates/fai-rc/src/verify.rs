@@ -120,7 +120,7 @@ impl Checker<'_> {
                     self.consume(*t, refs)?; // the reuse token is consumed here
                 }
             }
-            ExprKind::App { func, args } => {
+            ExprKind::App { func, args, reuse } => {
                 self.eval(func, refs)?;
                 let borrows = match &func.kind {
                     ExprKind::Global(def) => (self.arg_borrows)(*def, args.len()),
@@ -128,6 +128,11 @@ impl Checker<'_> {
                 };
                 for (i, a) in args.iter().enumerate() {
                     self.operand(a, borrows.get(i).copied().unwrap_or(false), refs)?;
+                }
+                // Each forwarded reuse token is consumed by the call (the callee
+                // reuses or frees it), exactly like a `MakeData` reuse token.
+                for t in reuse {
+                    self.consume(*t, refs)?;
                 }
             }
             ExprKind::MakeClosure { captures, .. } => {

@@ -144,7 +144,7 @@ fn collect_tail_calls(
             collect_tail_calls(els, same_file, arity, out);
         }
         K::Let { body, .. } => collect_tail_calls(body, same_file, arity, out),
-        K::App { func, args } => {
+        K::App { func, args, .. } => {
             if let K::Global(def) = &func.kind
                 && same_file.contains(def)
                 && arity.get(def) == Some(&args.len())
@@ -169,7 +169,7 @@ fn group_tail_ok(e: &CExpr, group: &FxHashSet<DefId>, arity: &FxHashMap<DefId, u
         K::Let { value, body, .. } => {
             !refs_group(value, group) && group_tail_ok(body, group, arity)
         }
-        K::App { func, args } => {
+        K::App { func, args, .. } => {
             if let K::Global(def) = &func.kind
                 && group.contains(def)
             {
@@ -196,7 +196,7 @@ fn refs_group(e: &CExpr, group: &FxHashSet<DefId>) -> bool {
         K::Prim { args, .. } | K::MakeData { args, .. } => {
             args.iter().any(|a| refs_group(a, group))
         }
-        K::App { func, args } => {
+        K::App { func, args, .. } => {
             refs_group(func, group) || args.iter().any(|a| refs_group(a, group))
         }
         K::If { cond, then, els } => {
@@ -327,6 +327,7 @@ pub fn combined_lowered(db: &dyn Db, file: SourceFile, group: &Group) -> Lowered
         def: group.combined,
         fns: vec![CoreFn { params, captures: Vec::new(), body }],
         entry_borrowed: Vec::new(),
+        reuse_entry: None,
     }
 }
 
@@ -343,11 +344,15 @@ pub fn member_wrapper(db: &dyn Db, file: SourceFile, member: DefId, group: &Grou
     while args.len() < group.arity {
         args.push(int_lit(0));
     }
-    let body = CExpr::new(K::App { func: Box::new(global(group.combined)), args }, Ty::Error);
+    let body = CExpr::new(
+        K::App { func: Box::new(global(group.combined)), args, reuse: Vec::new() },
+        Ty::Error,
+    );
     LoweredDef {
         def: member,
         fns: vec![CoreFn { params, captures: Vec::new(), body }],
         entry_borrowed: Vec::new(),
+        reuse_entry: None,
     }
 }
 
@@ -372,7 +377,9 @@ fn remap_member(
     match &e.kind {
         K::Local(l) => CExpr::new(K::Local(remap_local(*l, subst, next)), ty),
         K::Lit(_) | K::Global(_) | K::Error => CExpr::new(e.kind.clone(), ty),
-        K::App { func, args } => {
+        // A mutual group is detected and combined before reference counting, so
+        // member bodies carry no forwarded reuse tokens (`reuse` is empty).
+        K::App { func, args, reuse } => {
             if let K::Global(def) = &func.kind
                 && let Some(target_tag) = group.tag_of(*def)
             {
@@ -383,11 +390,19 @@ fn remap_member(
                 while new_args.len() < group.arity {
                     new_args.push(int_lit(0));
                 }
-                CExpr::new(K::App { func: Box::new(global(group.combined)), args: new_args }, ty)
+                CExpr::new(
+                    K::App {
+                        func: Box::new(global(group.combined)),
+                        args: new_args,
+                        reuse: Vec::new(),
+                    },
+                    ty,
+                )
             } else {
                 let func = Box::new(remap_member(func, subst, next, group));
                 let args = args.iter().map(|a| remap_member(a, subst, next, group)).collect();
-                CExpr::new(K::App { func, args }, ty)
+                let reuse = reuse.iter().map(|&t| remap_local(t, subst, next)).collect();
+                CExpr::new(K::App { func, args, reuse }, ty)
             }
         }
         K::Prim { op, args } => {

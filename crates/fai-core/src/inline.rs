@@ -113,7 +113,12 @@ pub fn core_inlined(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredD
     if !changed {
         return lowered;
     }
-    Arc::new(LoweredDef { def: lowered.def, fns, entry_borrowed: lowered.entry_borrowed.clone() })
+    Arc::new(LoweredDef {
+        def: lowered.def,
+        fns,
+        entry_borrowed: lowered.entry_borrowed.clone(),
+        reuse_entry: lowered.reuse_entry.clone(),
+    })
 }
 
 /// Rewrites a single expression, inlining every saturated eta-prim-wrapper call it
@@ -121,7 +126,9 @@ pub fn core_inlined(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredD
 fn inline_expr(db: &dyn Db, e: &CExpr, next: &mut usize, changed: &mut bool) -> CExpr {
     let ty = e.ty.clone();
     match &e.kind {
-        K::App { func, args } => {
+        // The intrinsic inliner runs before reference counting inserts reuse
+        // tokens, so `reuse` is always empty here; it is carried through verbatim.
+        K::App { func, args, reuse } => {
             if let K::Global(def) = &func.kind
                 && let Some(callee_file) = db.source_file(def.file)
                 && let Some(pw) = prim_wrapper(db, callee_file, def.name)
@@ -134,7 +141,7 @@ fn inline_expr(db: &dyn Db, e: &CExpr, next: &mut usize, changed: &mut bool) -> 
             }
             let func = Box::new(inline_expr(db, func, next, changed));
             let args = args.iter().map(|a| inline_expr(db, a, next, changed)).collect();
-            CExpr::new(K::App { func, args }, ty)
+            CExpr::new(K::App { func, args, reuse: reuse.clone() }, ty)
         }
         K::Prim { op, args } => {
             let args = args.iter().map(|a| inline_expr(db, a, next, changed)).collect();
@@ -289,9 +296,10 @@ fn max_local(e: &CExpr, max: &mut usize) {
         K::Prim { args, .. } | K::MakeData { args, .. } | K::Recur { args } => {
             args.iter().for_each(|a| max_local(a, max));
         }
-        K::App { func, args } => {
+        K::App { func, args, reuse } => {
             max_local(func, max);
             args.iter().for_each(|a| max_local(a, max));
+            reuse.iter().for_each(|&t| bump(t, max));
         }
         K::If { cond, then, els } => {
             max_local(cond, max);

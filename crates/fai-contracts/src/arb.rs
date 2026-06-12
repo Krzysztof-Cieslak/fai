@@ -406,6 +406,7 @@ impl<'a> ArbBuilder<'a> {
                 def,
                 fns: vec![CoreFn { params: vec![r, v], captures: Vec::new(), body }],
                 entry_borrowed: Vec::new(),
+                reuse_entry: None,
             },
             2,
         ));
@@ -613,6 +614,7 @@ impl<'a> ArbBuilder<'a> {
                 def,
                 fns: vec![CoreFn { params: vec![v, new], captures: Vec::new(), body }],
                 entry_borrowed: Vec::new(),
+                reuse_entry: None,
             },
             2,
         ));
@@ -641,6 +643,7 @@ impl<'a> ArbBuilder<'a> {
                 def,
                 fns: vec![entry, gen_fn, show_fn, shrink_fn],
                 entry_borrowed: Vec::new(),
+                reuse_entry: None,
             },
             0,
         ));
@@ -994,7 +997,7 @@ fn local(l: LocalId) -> CExpr {
 }
 
 fn app(func: CExpr, args: Vec<CExpr>) -> CExpr {
-    CExpr::new(K::App { func: Box::new(func), args }, Ty::Error)
+    CExpr::new(K::App { func: Box::new(func), args, reuse: Vec::new() }, Ty::Error)
 }
 
 fn make_data(tag: u32, args: Vec<CExpr>, scalars: u64) -> CExpr {

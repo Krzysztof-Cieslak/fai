@@ -137,7 +137,8 @@ pub fn synthesize(
     let prop_arity = prop_params.len();
     let mut prop_fns = vec![CoreFn { params: prop_params, captures: Vec::new(), body: prop_body }];
     prop_fns.extend(lowered.lifted);
-    let prop = LoweredDef { def: prop_def, fns: prop_fns, entry_borrowed: Vec::new() };
+    let prop =
+        LoweredDef { def: prop_def, fns: prop_fns, entry_borrowed: Vec::new(), reuse_entry: None };
 
     // Build the harness entry `fun seed trials size -> Test.check… …`.
     let seed = fresh(&mut next);
@@ -161,6 +162,7 @@ pub fn synthesize(
             body: entry_body,
         }],
         entry_borrowed: Vec::new(),
+        reuse_entry: None,
     };
 
     Ok(SynthContract { entry, entry_arity: 3, prop, prop_arity, extra })
@@ -189,7 +191,7 @@ fn local_expr(local: LocalId) -> CExpr {
 
 /// A (possibly over-saturated) application, routed through `apply_n`.
 fn app(func: CExpr, args: Vec<CExpr>) -> CExpr {
-    CExpr::new(K::App { func: Box::new(func), args }, Ty::Error)
+    CExpr::new(K::App { func: Box::new(func), args, reuse: Vec::new() }, Ty::Error)
 }
 
 /// Allocates a fresh local slot.

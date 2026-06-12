@@ -153,7 +153,7 @@ pub fn rc_lowered(db: &dyn Db, lowered: &LoweredDef, self_sig: &BorrowSig) -> Lo
         }
         fns.push(CoreFn { params: f.params.clone(), captures: f.captures.clone(), body });
     }
-    LoweredDef { def: lowered.def, fns, entry_borrowed: self_sig.0.clone() }
+    LoweredDef { def: lowered.def, fns, entry_borrowed: self_sig.0.clone(), reuse_entry: None }
 }
 
 // ---------------------------------------------------------------------------
@@ -184,9 +184,10 @@ fn max_local(e: &CExpr, max: &mut usize) {
         K::Prim { args, .. } | K::MakeData { args, .. } => {
             args.iter().for_each(|a| max_local(a, max));
         }
-        K::App { func, args } => {
+        K::App { func, args, reuse } => {
             max_local(func, max);
             args.iter().for_each(|a| max_local(a, max));
+            reuse.iter().for_each(|&t| bump(t, max));
         }
         K::If { cond, then, els } => {
             max_local(cond, max);
@@ -279,10 +280,12 @@ fn anf_op(e: CExpr, binds: &mut Vec<(LocalId, CExpr)>, next: &mut usize) -> CExp
             let args = args.into_iter().map(|a| atomize(a, binds, next)).collect();
             CExpr::new(K::MakeData { tag, args, reuse, scalars }, ty)
         }
-        K::App { func, args } => {
+        // A-normal form runs before reference counting forwards reuse tokens, so
+        // `reuse` is empty here; it is carried through verbatim.
+        K::App { func, args, reuse } => {
             let func = Box::new(atomize(*func, binds, next));
             let args = args.into_iter().map(|a| atomize(a, binds, next)).collect();
-            CExpr::new(K::App { func, args }, ty)
+            CExpr::new(K::App { func, args, reuse }, ty)
         }
         K::DataTag(base) => CExpr::new(K::DataTag(Box::new(to_local(*base, binds, next))), ty),
         K::DataField { base, index, scalar } => CExpr::new(
@@ -399,7 +402,9 @@ fn collect_fv(e: &CExpr, captures: &Locals, bound: &mut Locals, out: &mut Locals
         K::Prim { args, .. } | K::MakeData { args, .. } => {
             args.iter().for_each(|a| collect_fv(a, captures, bound, out));
         }
-        K::App { func, args } => {
+        // Reuse tokens are not reference-counted values (they are consumed once by
+        // the callee), so they are not free *owned* variables; `reuse` is ignored.
+        K::App { func, args, .. } => {
             collect_fv(func, captures, bound, out);
             args.iter().for_each(|a| collect_fv(a, captures, bound, out));
         }
@@ -516,7 +521,10 @@ impl Rc<'_> {
                     move |args| CExpr::new(K::MakeData { tag, args, reuse, scalars }, ty.clone());
                 self.operands_rc(args, &borrows, live, rebuilt)
             }
-            K::App { func, args } => {
+            // Reference counting runs before reuse tokens are forwarded, so `reuse`
+            // is empty here; it is carried through verbatim (tokens are not
+            // reference-counted operands).
+            K::App { func, args, reuse } => {
                 // The callee value is consumed; arguments at a saturated direct
                 // call to a top-level definition follow its borrow signature.
                 let nargs = args.len();
@@ -530,9 +538,9 @@ impl Rc<'_> {
                 let mut operands = Vec::with_capacity(nargs + 1);
                 operands.push(*func);
                 operands.extend(args);
-                let rebuilt = |mut ops: Vec<CExpr>| {
+                let rebuilt = move |mut ops: Vec<CExpr>| {
                     let func = Box::new(ops.remove(0));
-                    CExpr::new(K::App { func, args: ops }, ty.clone())
+                    CExpr::new(K::App { func, args: ops, reuse }, ty.clone())
                 };
                 self.operands_rc(operands, &borrows, live, rebuilt)
             }
@@ -849,7 +857,7 @@ fn collect_data_locals(e: &CExpr, out: &mut Locals) {
         K::Prim { args, .. } | K::MakeData { args, .. } => {
             args.iter().for_each(|a| collect_data_locals(a, out));
         }
-        K::App { func, args } => {
+        K::App { func, args, .. } => {
             collect_data_locals(func, out);
             args.iter().for_each(|a| collect_data_locals(a, out));
         }
@@ -936,10 +944,11 @@ fn reuse_pass(e: CExpr, data: &Locals, next: &mut usize) -> CExpr {
             },
             ty,
         ),
-        K::App { func, args } => CExpr::new(
+        K::App { func, args, reuse } => CExpr::new(
             K::App {
                 func: Box::new(reuse_pass(*func, data, next)),
                 args: args.into_iter().map(|a| reuse_pass(a, data, next)).collect(),
+                reuse,
             },
             ty,
         ),
@@ -1029,7 +1038,7 @@ fn has_construction(e: &CExpr) -> bool {
         K::FreeReuse { body, .. } => has_construction(body),
         K::Dup { body, .. } | K::Drop { body, .. } => has_construction(body),
         K::Prim { args, .. } => args.iter().any(has_construction),
-        K::App { func, args } => has_construction(func) || args.iter().any(has_construction),
+        K::App { func, args, .. } => has_construction(func) || args.iter().any(has_construction),
         K::DataTag(base) => has_construction(base),
         K::DataField { base, .. } => has_construction(base),
         // The tail-call transform runs after reuse analysis; handled defensively.

@@ -115,9 +115,11 @@ pub(crate) fn fuse_evidence_self_calls(e: CExpr, self_def: DefId, evidence: &[Lo
     let CExpr { kind, ty } = e;
     let sub = |e: CExpr| fuse_evidence_self_calls(e, self_def, evidence);
     match kind {
-        K::App { func, args } => {
+        // Evidence fusion runs before reference counting forwards reuse tokens, so
+        // `reuse` is always empty here.
+        K::App { func, args, reuse } => {
             // `self` partially applied to its evidence, then to the real arguments.
-            if let K::App { func: inner, args: ev } = &func.kind
+            if let K::App { func: inner, args: ev, .. } = &func.kind
                 && let K::Global(def) = &inner.kind
                 && *def == self_def
                 && ev.len() == evidence.len()
@@ -126,11 +128,11 @@ pub(crate) fn fuse_evidence_self_calls(e: CExpr, self_def: DefId, evidence: &[Lo
                 let head = (**inner).clone(); // `Global(self)` with its own type
                 let mut new_args: Vec<CExpr> = ev.clone();
                 new_args.extend(args.into_iter().map(sub));
-                CExpr::new(K::App { func: Box::new(head), args: new_args }, ty)
+                CExpr::new(K::App { func: Box::new(head), args: new_args, reuse }, ty)
             } else {
                 let func = Box::new(fuse_evidence_self_calls(*func, self_def, evidence));
                 let args = args.into_iter().map(sub).collect();
-                CExpr::new(K::App { func, args }, ty)
+                CExpr::new(K::App { func, args, reuse }, ty)
             }
         }
         K::If { cond, then, els } => CExpr::new(
@@ -562,9 +564,13 @@ fn emit_holefill_chain(
 // Predicates.
 // ---------------------------------------------------------------------------
 
-/// The arguments of `e` if it is a saturated direct call to `self_def`.
+/// The arguments of `e` if it is a saturated direct call to `self_def`. A call
+/// that forwards reuse tokens is never treated as a flattenable self-call (the
+/// reuse pass never forwards into a self-tail-call; this keeps the loop transform
+/// and token forwarding disjoint even if that ever changed).
 fn self_call_args(e: &CExpr, self_def: DefId, arity: usize) -> Option<&[CExpr]> {
-    if let K::App { func, args } = &e.kind
+    if let K::App { func, args, reuse } = &e.kind
+        && reuse.is_empty()
         && let K::Global(def) = &func.kind
         && *def == self_def
         && args.len() == arity
@@ -638,9 +644,10 @@ fn count_local(e: &CExpr, x: LocalId, n: &mut usize) {
         K::Prim { args, .. } | K::MakeData { args, .. } | K::Recur { args } => {
             args.iter().for_each(|a| count_local(a, x, n));
         }
-        K::App { func, args } => {
+        K::App { func, args, reuse } => {
             count_local(func, x, n);
             args.iter().for_each(|a| count_local(a, x, n));
+            *n += reuse.iter().filter(|&&t| t == x).count();
         }
         K::If { cond, then, els } => {
             count_local(cond, x, n);
@@ -729,7 +736,7 @@ fn walk(e: &CExpr, f: &mut impl FnMut(&CExpr)) {
         K::Prim { args, .. } | K::MakeData { args, .. } | K::Recur { args } => {
             args.iter().for_each(|a| walk(a, f));
         }
-        K::App { func, args } => {
+        K::App { func, args, .. } => {
             walk(func, f);
             args.iter().for_each(|a| walk(a, f));
         }
