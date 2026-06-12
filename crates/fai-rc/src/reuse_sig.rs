@@ -23,7 +23,6 @@
 //! feeds the codegen firewall: early cutoff on the small signature bounds the
 //! ripple of a callee edit to callers that actually forward to it.
 
-use fai_core::core;
 use fai_core::ir::{CExpr, CoreFn, ExprKind as K, LoweredDef};
 use fai_db::{Db, SourceFile};
 use fai_resolve::{DefId, LocalId};
@@ -395,7 +394,11 @@ pub(crate) fn forward_target(
     if evidence > 0 {
         return None;
     }
-    let arity = core(db, gfile, g.name).entry().params.len();
+    // The callee's entry arity from its borrow signature (one flag per parameter) —
+    // a firewall-stable value with early cutoff, so a callee *body* edit that leaves
+    // the arity unchanged does not ripple here (reading the callee's full lowering
+    // for the count would couple every caller to every callee body edit).
+    let arity = crate::borrow_signature(db, gfile, g.name).0.len();
     if arity == 0 || nargs != arity {
         return None;
     }
