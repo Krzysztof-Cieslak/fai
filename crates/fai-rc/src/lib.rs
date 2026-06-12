@@ -38,7 +38,7 @@
 
 use std::sync::Arc;
 
-use fai_core::core_inlined;
+use fai_core::helper_inlined;
 use fai_core::ir::{CExpr, CoreFn, ExprKind as K, FieldIndex, LoweredDef};
 use fai_db::{Db, SourceFile};
 use fai_resolve::{DefId, LocalId};
@@ -62,11 +62,12 @@ type Locals = FxHashSet<LocalId>;
 /// Inserts reference-count operations into `name`'s lowered definition.
 #[salsa::tracked]
 pub fn rc(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
-    // Read the intrinsic-inlined Core: saturated calls to primitive re-export
-    // wrappers are already replaced by the primitive, so reference counting
-    // balances those primitives directly (and self-/callee borrow signatures,
+    // Read the fully-inlined Core: primitive re-export wrappers and small
+    // non-recursive helpers are already folded in, so reference counting balances
+    // the merged body directly and reuse analysis can recycle a freed cell into a
+    // construction that came from a helper (and self-/callee borrow signatures,
     // read from the same inlined form below, stay consistent with this body).
-    let lowered = core_inlined(db, file, name);
+    let lowered = helper_inlined(db, file, name);
     // The borrow signature of `name` itself (the entry function's parameters): a
     // borrowed parameter is treated like a capture — never dropped, duplicated on
     // a consuming use. Lifted lambdas are reached only via `apply_n`, so their

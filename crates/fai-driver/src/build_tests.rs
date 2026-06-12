@@ -93,10 +93,12 @@ fn unsupported_construct_blocks_the_build() {
 
 #[test]
 fn reachability_includes_used_definitions_and_excludes_unused() {
+    // `used` is recursive, so it stays a distinct reachable definition (a small
+    // non-recursive callee would be inlined into `main` and dead-code-eliminated).
     let src = indoc! {r#"
         module M
 
-        let used x = x + 1
+        let used x = if x <= 0 then 0 else used (x - 1)
 
         let unused x = x + 2
 
@@ -373,6 +375,8 @@ fn jit_compile_applies_a_named_function() {
         "#},
     )]);
 
+    // `jit_compile` roots the file's public API, so `double` is fetchable as a
+    // standalone closure even though `main`'s saturated call inlines it away.
     let mut program = crate::jit_compile(&db, files[0]).expect("compiles");
     let closure = program.function(fai_syntax::Symbol::intern("double")).expect("double exists");
     // Applying consumes one reference of the immortal static closure; dup so the

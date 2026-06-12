@@ -11,6 +11,8 @@
 
 pub mod fingerprint;
 #[allow(unsafe_code)]
+pub mod helper_inline;
+#[allow(unsafe_code)]
 pub mod inline;
 pub mod ir;
 mod lit;
@@ -25,6 +27,7 @@ mod proptests;
 mod tests;
 
 pub use fingerprint::fingerprint_def;
+pub use helper_inline::{helper_inlined, inline_summary};
 pub use inline::{PrimWrapper, core_inlined, prim_wrapper};
 pub use ir::{CExpr, CoreFn, ExprKind, FnAbi, FnId, Lit, LoweredDef, Prim, Repr};
 pub use lit::{decode_char, decode_float, decode_int, decode_string};

@@ -8,7 +8,7 @@ use fai_syntax::ast::Visibility;
 use indoc::indoc;
 
 use crate::ids::{DefId, Res};
-use crate::{module_defs, module_interface, module_sccs, resolve};
+use crate::{module_defs, module_interface, module_sccs, recursive_defs, resolve};
 
 /// Builds a database from `(path, text)` files and returns them in order.
 fn db_with(files: &[(&str, &str)]) -> (FaiDatabase, Vec<SourceFile>) {
@@ -269,6 +269,71 @@ fn signatured_def_is_singleton_scc() {
     let sccs = module_sccs(&db, files[0]);
     // f has a signature => its own singleton; g is sig-less singleton too.
     assert!(sccs.sccs.iter().all(|s| s.members.len() == 1), "got {:?}", sccs.sccs);
+}
+
+#[test]
+fn recursive_defs_finds_signatured_self_recursion() {
+    // The case `module_sccs` misses: a self-recursive binding *with a signature*
+    // (its edge would be cut, and its self-edge dropped, by the inference SCCs).
+    let (db, files) = db_with(&[(
+        "M.fai",
+        indoc! {r#"
+            module M
+
+            public fac : Int -> Int
+            let fac n = if n <= 0 then 1 else n * fac (n - 1)
+
+            public helper : Int -> Int
+            let helper x = x + 1
+        "#},
+    )]);
+    let rec = recursive_defs(&db, files[0]);
+    let src = files[0].source(&db);
+    assert!(rec.contains(&DefId::new(src, Symbol::intern("fac"))), "fac is self-recursive");
+    assert!(!rec.contains(&DefId::new(src, Symbol::intern("helper"))), "helper is not recursive");
+}
+
+#[test]
+fn recursive_defs_finds_mutual_recursion() {
+    let (db, files) = db_with(&[(
+        "M.fai",
+        indoc! {r#"
+            module M
+
+            public isEven : Int -> Bool
+            let isEven n = if n <= 0 then true else isOdd (n - 1)
+
+            public isOdd : Int -> Bool
+            let isOdd n = if n <= 0 then false else isEven (n - 1)
+        "#},
+    )]);
+    let rec = recursive_defs(&db, files[0]);
+    let src = files[0].source(&db);
+    assert!(rec.contains(&DefId::new(src, Symbol::intern("isEven"))));
+    assert!(rec.contains(&DefId::new(src, Symbol::intern("isOdd"))));
+}
+
+#[test]
+fn recursive_defs_excludes_a_helper_chain() {
+    // A non-recursive call chain (`top` -> `mid` -> `leaf`) is not recursive, even
+    // though every binding has a signature.
+    let (db, files) = db_with(&[(
+        "M.fai",
+        indoc! {r#"
+            module M
+
+            public top : Int -> Int
+            let top x = mid x
+
+            mid : Int -> Int
+            let mid x = leaf x
+
+            leaf : Int -> Int
+            let leaf x = x + 1
+        "#},
+    )]);
+    let rec = recursive_defs(&db, files[0]);
+    assert!(rec.is_empty(), "an acyclic chain has no recursive defs, got {rec:?}");
 }
 
 #[test]

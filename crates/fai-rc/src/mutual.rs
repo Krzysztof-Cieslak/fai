@@ -24,7 +24,7 @@
 use std::sync::Arc;
 
 use fai_core::ir::{CExpr, CoreFn, ExprKind as K, FieldIndex, Lit, LoweredDef, Prim};
-use fai_core::{core, core_inlined};
+use fai_core::{core, helper_inlined};
 use fai_db::{Db, SourceFile};
 use fai_resolve::{DefId, LocalId, module_defs};
 use fai_syntax::Symbol;
@@ -294,11 +294,13 @@ pub fn combined_lowered(db: &dyn Db, file: SourceFile, group: &Group) -> Lowered
 
     let mut branches: Vec<CExpr> = Vec::new();
     for member in &group.members {
-        // Splice the intrinsic-inlined member body so a member of a mutual group
-        // gets the same wrapper inlining as any other definition. The SCC detection
-        // and arities above read the raw `core` — inlining only removes cross-file
-        // wrapper-call edges and never changes arity, so they are unaffected.
-        let lowered = core_inlined(db, file, member.name);
+        // Splice the fully-inlined member body so a member of a mutual group gets
+        // the same wrapper and helper inlining as any other definition. The SCC
+        // detection and arities above read the raw `core`; inlining only folds in
+        // non-recursive helpers (a fellow member is recursive, so never inlined,
+        // leaving the inter-member calls intact for the tag dispatch) and never
+        // changes arity, so they are unaffected.
+        let lowered = helper_inlined(db, file, member.name);
         let entry = lowered.entry();
         let mut subst: FxHashMap<LocalId, LocalId> = FxHashMap::default();
         for (i, &q) in entry.params.iter().enumerate() {

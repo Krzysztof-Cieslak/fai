@@ -7,7 +7,7 @@
 //! correctness of `core`/`rc`/`object_code` invalidation (object code must be
 //! deterministic for this to hold).
 
-use fai_core::{core, pretty_def};
+use fai_core::{core, helper_inlined, pretty_def};
 use fai_db::Db;
 use fai_driver::object_code;
 use fai_rc::rc;
@@ -65,6 +65,58 @@ fn backend_queries_are_incrementally_correct() {
             (*object_code(db, helper, h)).clone(),
             pretty_def(&core(db, main, m)),
             pretty_def(&rc(db, helper, h)),
+        )
+    });
+}
+
+// An intra-module helper (`mk`) folded into its caller (`top`). Editing `mk`'s body
+// must invalidate the inlined `top` correctly: from-scratch and incremental builds
+// must agree on the folded Core, the reference-counted IR, and the object code.
+const LIB_MK1: &str = indoc! {r#"
+    module Lib
+
+    mk : Int -> Int
+    let mk x = x + x
+
+    public top : Int -> Int
+    let top x = mk x + 1
+"#};
+const LIB_MK2: &str = indoc! {r#"
+    module Lib
+
+    mk : Int -> Int
+    let mk x = x + x + x
+
+    public top : Int -> Int
+    let top x = mk x + 1
+"#};
+const LIB_MK_COMMENT: &str = indoc! {r#"
+    module Lib
+
+    // shift byte offsets without changing the folded body
+    mk : Int -> Int
+    let mk x = x + x + x
+
+    public top : Int -> Int
+    let top x = mk x + 1
+"#};
+
+#[test]
+fn inlined_helper_is_incrementally_correct() {
+    let r0: &[(&str, &str)] = &[("Lib.fai", LIB_MK1)];
+    let r1: &[(&str, &str)] = &[("Lib.fai", LIB_MK2)];
+    let r2: &[(&str, &str)] = &[("Lib.fai", LIB_MK_COMMENT)];
+    let r3: &[(&str, &str)] = &[("Lib.fai", LIB_MK1)];
+    let revisions: &[Revision] = &[r0, r1, r2, r3];
+
+    assert_incremental_matches_clean(revisions, |db, ids| {
+        let lib = db.source_file(ids[0]).unwrap();
+        let (top, mk) = (Symbol::intern("top"), Symbol::intern("mk"));
+        (
+            (*object_code(db, lib, top)).clone(),
+            pretty_def(&helper_inlined(db, lib, top)),
+            pretty_def(&rc(db, lib, top)),
+            pretty_def(&helper_inlined(db, lib, mk)),
         )
     });
 }

@@ -201,6 +201,35 @@ proptest! {
         prop_assert!(r.is_ok(), "{}\n{src}", r.unwrap_err());
     }
 
+    // A structure-rebuilding recursion whose cons goes through a small,
+    // non-recursive "smart constructor" helper, so the helper inliner folds it back
+    // into the caller before reference counting. The folded body must still balance
+    // dup/drop on a recycled spine (soundness), and the call must actually be
+    // inlined (non-vacuity), across random element expressions.
+    #[test]
+    fn inlined_smart_constructor_rebuild_is_sound(head in int_e(), cond in int_e(), keep in any::<bool>()) {
+        let arm = if keep {
+            format!("if {} < 0 then f t else cons ({}) (f t)",
+                render_int(&cond, &["h"]), render_int(&head, &["h"]))
+        } else {
+            format!("cons ({}) (f t)", render_int(&head, &["h"]))
+        };
+        let src = formatdoc! {r#"
+            module M
+
+            let cons h t = h :: t
+
+            let f xs =
+              match xs with
+              | [] -> []
+              | h :: t -> {arm}
+        "#};
+        let r = check_program(&src, "f");
+        prop_assert!(r.is_ok(), "{}\n{src}", r.unwrap_err());
+        let out = crate::tests::rc_checked(&src, "f");
+        prop_assert!(!out.contains("@cons"), "the smart constructor must be inlined:\n{out}");
+    }
+
     // Deeply nested `let` bindings that reuse earlier names, stressing the
     // duplicate-when-still-live path: each binding may be used many times later.
     #[test]

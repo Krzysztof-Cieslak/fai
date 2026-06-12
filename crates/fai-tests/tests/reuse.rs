@@ -139,6 +139,23 @@ fn reuse_std_map_unique_vs_shared() {
     assert_eq!(s - u, 50, "List.map recycles a unique spine (u={u}, s={s})");
 }
 
+/// A rebuild whose cons goes through a user-written smart constructor `cons`. The
+/// helper inliner folds `cons` back into the caller, so the matched cell is still
+/// recycled in place — a unique spine reuses (zero fresh), a shared one copies
+/// (+50), exactly as the hand-written `(x + 1) :: mapInc rest` would.
+const CONS_MAP: &str = "let cons h t = h :: t\n\nlet mapInc xs =\n  match xs with\n  | [] -> []\n  | x :: rest -> cons (x + 1) (mapInc rest)";
+
+#[test]
+fn reuse_through_a_user_smart_constructor() {
+    let u = allocs(&prog(CONS_MAP, "sum (mapInc xs)", 50), "1325");
+    let s = allocs(&prog(CONS_MAP, "sum (mapInc xs) + sum xs", 50), "2600");
+    assert_eq!(
+        s - u,
+        50,
+        "a unique rebuild through a smart constructor recycles 50 cells (u={u}, s={s})"
+    );
+}
+
 #[test]
 fn reuse_nested_stutter_unique_vs_shared() {
     // A two-deep rebuild (`x :: x :: stutter rest`) produces two cons cells per

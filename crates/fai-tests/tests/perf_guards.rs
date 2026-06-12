@@ -367,6 +367,91 @@ fn codegen_firewall_is_independent_of_workspace_size() {
     assert_eq!(small, 1, "only the edited module's object is recompiled");
 }
 
+/// Builds `Lib` (an eligible helper `mk` plus a public `top` that calls it, so
+/// `top` inlines `mk` *within the module*), `Main` (which calls `Lib.top` across a
+/// module boundary, where the inliner never reaches), and `fillers` independent
+/// modules; warms every object; edits `mk`'s body (its signature unchanged); then
+/// recompiles and returns how many objects were re-emitted.
+fn helper_inline_object_reruns(fillers: usize) -> usize {
+    let mut db = FaiDatabase::new();
+    fai_types::std_lib::load_std(&mut db);
+    let lib_id = db.add_source(
+        "Lib.fai".into(),
+        indoc! {r#"
+            module Lib
+
+            mk : Int -> Int
+            let mk x = x + x
+
+            public top : Int -> Int
+            let top x = mk x + 1
+        "#}
+        .to_owned(),
+    );
+    let main_id = db.add_source(
+        "Main.fai".into(),
+        indoc! {r#"
+            module Main
+
+            public main : Runtime -> Unit / { Console }
+            let main r = r.console.writeLine (Int.toString (Lib.top 1))
+        "#}
+        .to_owned(),
+    );
+    let mut filler: Vec<(SourceFile, Symbol)> = Vec::new();
+    for i in 0..fillers {
+        let src = formatdoc! {r#"
+            module F{i}
+
+            public g{i} : Int -> Int
+            let g{i} x = x + {i}
+        "#};
+        let id = db.add_source(format!("F{i}.fai").into(), src);
+        filler.push((db.source_file(id).unwrap(), Symbol::intern(&format!("g{i}"))));
+    }
+
+    let lib = db.source_file(lib_id).unwrap();
+    let main = db.source_file(main_id).unwrap();
+    let warm = |db: &FaiDatabase| {
+        object_code(db, main, Symbol::intern("main"));
+        object_code(db, lib, Symbol::intern("top"));
+        object_code(db, lib, Symbol::intern("mk"));
+        for (f, g) in &filler {
+            object_code(db, *f, *g);
+        }
+    };
+    warm(&db);
+
+    db.enable_event_log();
+    // Edit `mk`'s body, preserving its signature. `top` inlines `mk`, so `top`
+    // re-emits; `Main` calls `top` across a module boundary (the inliner never
+    // crosses it) and depends only on `top`'s signature, so it is cut off.
+    lib.set_text(&mut db).to(indoc! {r#"
+        module Lib
+
+        mk : Int -> Int
+        let mk x = x + x + x
+
+        public top : Int -> Int
+        let top x = mk x + 1
+    "#}
+    .to_owned());
+    warm(&db);
+    count(&db.take_events(), "object_code")
+}
+
+#[test]
+fn helper_inliner_preserves_the_cross_module_firewall() {
+    // Intra-module helper inlining must not ripple across a module boundary: editing
+    // a module whose body folds in a helper re-emits only that module's objects, the
+    // same whether the workspace has 5 other modules or 50. (`Main`, which calls the
+    // module's public function across the boundary, and the fillers stay cached.)
+    let small = helper_inline_object_reruns(5);
+    let large = helper_inline_object_reruns(50);
+    assert_eq!(small, large, "intra-module inlining must not grow re-codegen with workspace size");
+    assert_eq!(small, 2, "only the edited module's own objects (mk + top) recompile");
+}
+
 /// Builds `Helper.helper`, `Probe.probe` (which only *forwards* its parameter to
 /// `Helper.helper`, so inter-procedural inference makes `borrow_signature(probe)`
 /// depend on `borrow_signature(helper)`), and `fillers` independent modules; warms
