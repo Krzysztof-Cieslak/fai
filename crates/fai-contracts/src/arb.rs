@@ -11,7 +11,9 @@
 
 use std::sync::Arc;
 
-use fai_core::ir::{CExpr, CoreFn, ExprKind as K, FieldIndex, Lit, LoweredDef, Prim};
+use fai_core::ir::{
+    CExpr, CoreFn, ExprKind as K, FieldIndex, Lit, LoweredDef, Prim, scalar_field_mask,
+};
 use fai_db::{Db, SourceFile};
 use fai_resolve::{AdtRef, DefId, LocalId, ModuleName, module_defs, module_file, type_decls};
 use fai_span::SourceId;
@@ -314,7 +316,8 @@ impl<'a> ArbBuilder<'a> {
             row.fields.iter().map(|(_, t)| self.field_arb(t, ty)).collect::<Result<_, _>>()?;
         let field_arbs: Vec<CExpr> = fields.iter().map(|(a, _)| a.clone()).collect();
 
-        let gen_fn = self.record_gen(&fields);
+        let scalars = scalar_field_mask(row.fields.iter().map(|(_, t)| t));
+        let gen_fn = self.record_gen(&fields, scalars);
         let show_fn = self.record_show(row, &field_arbs);
         let shrink_fn = self.record_shrink(ty, row, &field_arbs)?;
         self.push_arbitrary(arb_def, gen_fn, show_fn, shrink_fn);
@@ -324,7 +327,7 @@ impl<'a> ArbBuilder<'a> {
     /// `fun size seed -> let (v0, s1) = a0.gen <b0> seed in … ({ … }, sN)`, where a
     /// recursive field's budget `<bi>` is the size split across the recursive
     /// fields (so the record stays within the fuel budget).
-    fn record_gen(&mut self, fields: &[(CExpr, bool)]) -> CoreFn {
+    fn record_gen(&mut self, fields: &[(CExpr, bool)], scalars: u64) -> CoreFn {
         let mut next = 2; // 0 = size, 1 = seed
         let size = LocalId::from_index(0);
         let mut seed = LocalId::from_index(1);
@@ -342,8 +345,8 @@ impl<'a> ArbBuilder<'a> {
             values.push(local(value));
             seed = next_seed;
         }
-        let record = make_data(0, values);
-        let result = make_data(0, vec![record, local(seed)]);
+        let record = make_data(0, values, scalars);
+        let result = make_data(0, vec![record, local(seed)], 0);
         let body = lets(binds, result);
         CoreFn { params: vec![size, LocalId::from_index(1)], captures: Vec::new(), body }
     }
@@ -375,7 +378,7 @@ impl<'a> ArbBuilder<'a> {
         let list_append = self.std("List", "append")?;
         let n = row.fields.len();
         // Build each field's shrink list, then append them (right-fold onto []).
-        let mut acc = make_data(0, Vec::new()); // []
+        let mut acc = make_data(0, Vec::new(), 0); // []
         for i in (0..n).rev() {
             let setter = self.record_setter(ty, row, i);
             let idx = u32::try_from(i).unwrap_or(0);
@@ -397,7 +400,7 @@ impl<'a> ArbBuilder<'a> {
         let fields: Vec<CExpr> = (0..row.fields.len())
             .map(|j| if j == i { local(v) } else { field(local(r), u32::try_from(j).unwrap_or(0)) })
             .collect();
-        let body = make_data(0, fields);
+        let body = make_data(0, fields, scalar_field_mask(row.fields.iter().map(|(_, t)| t)));
         self.defs.push((
             LoweredDef {
                 def,
@@ -509,7 +512,7 @@ impl<'a> ArbBuilder<'a> {
         next: &mut usize,
     ) -> Result<CExpr, NotRunnable> {
         if ctor.fields.is_empty() {
-            return Ok(make_data(0, vec![make_data(ctor.tag, Vec::new()), local(seed)]));
+            return Ok(make_data(0, vec![make_data(ctor.tag, Vec::new(), 0), local(seed)], 0));
         }
         let fields: Vec<(CExpr, bool)> =
             ctor.fields.iter().map(|ft| self.field_arb(ft, ty)).collect::<Result<_, _>>()?;
@@ -528,8 +531,8 @@ impl<'a> ArbBuilder<'a> {
             values.push(local(value));
             cur = next_seed;
         }
-        let made = make_data(ctor.tag, values);
-        Ok(lets(binds, make_data(0, vec![made, local(cur)])))
+        let made = make_data(ctor.tag, values, scalar_field_mask(ctor.fields.iter()));
+        Ok(lets(binds, make_data(0, vec![made, local(cur)], 0)))
     }
 
     /// `fun v -> if tag v = t0 then "C0 …" else …`.
@@ -567,9 +570,9 @@ impl<'a> ArbBuilder<'a> {
         let v = LocalId::from_index(0);
         let list_map = self.std("List", "map")?;
         let list_append = self.std("List", "append")?;
-        let mut chain = make_data(0, Vec::new()); // []
+        let mut chain = make_data(0, Vec::new(), 0); // []
         for ctor in ctors.iter().rev() {
-            let mut acc = make_data(0, Vec::new());
+            let mut acc = make_data(0, Vec::new(), 0);
             for i in (0..ctor.fields.len()).rev() {
                 let setter = self.ctor_setter(ctor, i);
                 let idx = u32::try_from(i).unwrap_or(0);
@@ -583,7 +586,7 @@ impl<'a> ArbBuilder<'a> {
             for i in (0..ctor.fields.len()).rev() {
                 if ctor.fields[i] == *ty {
                     let sub = field(local(v), u32::try_from(i).unwrap_or(0));
-                    acc = make_data(1, vec![sub, acc]); // sub :: acc
+                    acc = make_data(1, vec![sub, acc], 0); // sub :: acc
                 }
             }
             let cond = prim(Prim::Eq, vec![data_tag(local(v)), int(i64::from(ctor.tag))]);
@@ -604,7 +607,7 @@ impl<'a> ArbBuilder<'a> {
                     if j == i { local(new) } else { field(local(v), u32::try_from(j).unwrap_or(0)) }
                 })
                 .collect();
-        let body = make_data(ctor.tag, fields);
+        let body = make_data(ctor.tag, fields, scalar_field_mask(ctor.fields.iter()));
         self.defs.push((
             LoweredDef {
                 def,
@@ -630,6 +633,7 @@ impl<'a> ArbBuilder<'a> {
                     make_closure(2), // show (field 1)
                     make_closure(3), // shrink (field 2)
                 ],
+                0,
             ),
         };
         self.defs.push((
@@ -993,12 +997,18 @@ fn app(func: CExpr, args: Vec<CExpr>) -> CExpr {
     CExpr::new(K::App { func: Box::new(func), args }, Ty::Error)
 }
 
-fn make_data(tag: u32, args: Vec<CExpr>) -> CExpr {
-    CExpr::new(K::MakeData { tag, args, reuse: None }, Ty::Error)
+fn make_data(tag: u32, args: Vec<CExpr>, scalars: u64) -> CExpr {
+    CExpr::new(K::MakeData { tag, args, reuse: None, scalars }, Ty::Error)
 }
 
+/// Projects a field, always as a uniform read: a scalar `f64` slot of a generated
+/// value is boxed by the runtime, giving the uniform value the generic `Gen`/`Show`
+/// machinery (typed over a type variable) expects.
 fn field(base: CExpr, index: u32) -> CExpr {
-    CExpr::new(K::DataField { base: Box::new(base), index: FieldIndex::Const(index) }, Ty::Error)
+    CExpr::new(
+        K::DataField { base: Box::new(base), index: FieldIndex::Const(index), scalar: false },
+        Ty::Error,
+    )
 }
 
 fn make_closure(func: u32) -> CExpr {

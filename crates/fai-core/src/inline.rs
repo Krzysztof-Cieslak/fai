@@ -140,9 +140,9 @@ fn inline_expr(db: &dyn Db, e: &CExpr, next: &mut usize, changed: &mut bool) -> 
             let args = args.iter().map(|a| inline_expr(db, a, next, changed)).collect();
             CExpr::new(K::Prim { op: *op, args }, ty)
         }
-        K::MakeData { tag, args, reuse } => {
+        K::MakeData { tag, args, reuse, scalars } => {
             let args = args.iter().map(|a| inline_expr(db, a, next, changed)).collect();
-            CExpr::new(K::MakeData { tag: *tag, args, reuse: *reuse }, ty)
+            CExpr::new(K::MakeData { tag: *tag, args, reuse: *reuse, scalars: *scalars }, ty)
         }
         K::If { cond, then, els } => CExpr::new(
             K::If {
@@ -163,8 +163,12 @@ fn inline_expr(db: &dyn Db, e: &CExpr, next: &mut usize, changed: &mut bool) -> 
         K::DataTag(base) => {
             CExpr::new(K::DataTag(Box::new(inline_expr(db, base, next, changed))), ty)
         }
-        K::DataField { base, index } => CExpr::new(
-            K::DataField { base: Box::new(inline_expr(db, base, next, changed)), index: *index },
+        K::DataField { base, index, scalar } => CExpr::new(
+            K::DataField {
+                base: Box::new(inline_expr(db, base, next, changed)),
+                index: *index,
+                scalar: *scalar,
+            },
             ty,
         ),
         // Leaves, and nodes with no expression children, are copied unchanged. A
@@ -301,7 +305,7 @@ fn max_local(e: &CExpr, max: &mut usize) {
         }
         K::MakeClosure { captures, .. } => captures.iter().for_each(|c| bump(*c, max)),
         K::DataTag(base) => max_local(base, max),
-        K::DataField { base, index } => {
+        K::DataField { base, index, .. } => {
             max_local(base, max);
             if let FieldIndex::Dyn { evidence, .. } = index {
                 bump(*evidence, max);

@@ -584,3 +584,49 @@ fn unique_dict_insert_build_is_correct_and_leak_free() {
     // keys 1..100 sum to 5050; values are key*10, so total = 5050 + 50500 = 55550.
     outputs(&src, "55550");
 }
+
+// ===========================================================================
+// Scalar float fields: a record of `Float`s allocates only its cell — the
+// `Float` fields are raw unboxed slots, not separate boxed cells. A
+// structurally identical record of immediate `Int`s is the baseline; the two
+// allocate the same number of objects (before scalarization the float version
+// allocated two extra boxes per record).
+// ===========================================================================
+
+#[test]
+fn float_record_fields_allocate_no_boxes() {
+    // Build n two-field records in a list and sum the first field. The float and
+    // int programs share their list/record structure and final `Int.toString`,
+    // so any allocation difference is exactly the float fields' boxes.
+    // Both fields are used (so the record type is monomorphic `Float`, not
+    // generalized over an unused field) — exactly the scalarized layout under test.
+    let floats = formatdoc! {r#"
+        module M
+        let mk k = {{ x = Int.toFloat k, y = Int.toFloat k }}
+        let build k = if k <= 0 then [] else mk k :: build (k - 1)
+        let total xs =
+          match xs with
+          | [] -> 0.0
+          | v :: rest ->
+            let {{ x, y }} = v
+            x + y + total rest
+        public main : Runtime -> Unit / {{ Console }}
+        let main rt = rt.console.writeLine (Int.toString (Float.toInt (total (build 10))))
+    "#};
+    let ints = formatdoc! {r#"
+        module M
+        let mk k = {{ x = k, y = k }}
+        let build k = if k <= 0 then [] else mk k :: build (k - 1)
+        let total xs =
+          match xs with
+          | [] -> 0
+          | v :: rest ->
+            let {{ x, y }} = v
+            x + y + total rest
+        public main : Runtime -> Unit / {{ Console }}
+        let main rt = rt.console.writeLine (Int.toString (total (build 10)))
+    "#};
+    let af = allocs(&floats, "110");
+    let ai = allocs(&ints, "110");
+    assert_eq!(af, ai, "float-field records allocate no field boxes (float={af}, int={ai})");
+}

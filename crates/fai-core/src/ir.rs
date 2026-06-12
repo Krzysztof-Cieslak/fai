@@ -15,6 +15,22 @@
 use fai_resolve::{DefId, LocalId};
 use fai_types::{Con, Ty};
 
+/// The unboxed-`f64` field bitmap for a sequence of **declared** field types in
+/// layout order: bit `i` set when field `i`'s type is a monomorphic `Float` (not a
+/// type variable instantiated to `Float`). Bounded at 64 fields — a wider cell
+/// stays all-uniform. The single definition of "which fields scalarize", shared by
+/// lowering (records/tuples/constructors) and the contract value generators.
+#[must_use]
+pub fn scalar_field_mask<'a>(field_types: impl IntoIterator<Item = &'a Ty>) -> u64 {
+    let mut mask = 0u64;
+    for (i, t) in field_types.into_iter().enumerate() {
+        if i < 64 && matches!(t, Ty::Con(Con::Float)) {
+            mask |= 1u64 << i;
+        }
+    }
+    mask
+}
+
 /// Identifies a [`CoreFn`] within a [`LoweredDef`] (index into its `fns`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FnId(pub u32);
@@ -733,6 +749,13 @@ pub enum ExprKind {
         /// place when it is non-null and the right size, instead of allocating
         /// (inserted by `fai-rc`). The token is consumed here.
         reuse: Option<LocalId>,
+        /// Which fields are stored as a raw unboxed `f64` (bit `i` ⇒ field `i`):
+        /// the constructor's fields **declared** `Float` (a record/tuple field of
+        /// type `Float`, or a constructor field declared `Float` — not a type
+        /// variable instantiated to `Float`). Computed during lowering so the
+        /// representation is consistent everywhere the constructor is used; zero
+        /// for an all-uniform cell.
+        scalars: u64,
     },
     /// Reads the tag of a data value (consuming `base`), as an immediate `Int`.
     DataTag(Box<CExpr>),
@@ -743,6 +766,10 @@ pub enum ExprKind {
         base: Box<CExpr>,
         /// The field slot (constant, or row-polymorphic `base + evidence`).
         index: FieldIndex,
+        /// Whether the projected slot is a raw unboxed `f64` (the field is declared
+        /// `Float`), so the projection reads its bits directly rather than a uniform
+        /// word. Mirrors the producing constructor's [`MakeData::scalars`] bit.
+        scalar: bool,
     },
     /// Release `value` for reuse: drop its reference-counted children and, if it
     /// was unique, bind `token` to its raw memory (else to a null token); then

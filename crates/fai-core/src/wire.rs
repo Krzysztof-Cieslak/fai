@@ -228,6 +228,8 @@ pub enum WireExprKind {
         args: Vec<WireExpr>,
         /// An optional reuse-token slot to build into in place.
         reuse: Option<u32>,
+        /// The unboxed-`f64` field bitmap (see [`crate::ir::ExprKind::MakeData`]).
+        scalars: u64,
     },
     /// Read a data value's tag.
     DataTag(Box<WireExpr>),
@@ -237,6 +239,8 @@ pub enum WireExprKind {
         base: Box<WireExpr>,
         /// The field slot.
         index: WireFieldIndex,
+        /// Whether the projected slot is an unboxed `f64`.
+        scalar: bool,
     },
     /// Release a data value for reuse, binding a token.
     Reset {
@@ -465,15 +469,17 @@ fn expr_to_wire(e: &CExpr, module_of: &dyn Fn(DefId) -> String) -> WireExpr {
             func: func.0,
             captures: captures.iter().map(|c| slot(*c)).collect(),
         },
-        ExprKind::MakeData { tag, args, reuse } => WireExprKind::MakeData {
+        ExprKind::MakeData { tag, args, reuse, scalars } => WireExprKind::MakeData {
             tag: *tag,
             args: args.iter().map(|a| expr_to_wire(a, module_of)).collect(),
             reuse: reuse.map(slot),
+            scalars: *scalars,
         },
         ExprKind::DataTag(base) => WireExprKind::DataTag(Box::new(expr_to_wire(base, module_of))),
-        ExprKind::DataField { base, index } => WireExprKind::DataField {
+        ExprKind::DataField { base, index, scalar } => WireExprKind::DataField {
             base: Box::new(expr_to_wire(base, module_of)),
             index: field_index_to_wire(*index),
+            scalar: *scalar,
         },
         ExprKind::Reset { value, token, body } => WireExprKind::Reset {
             value: Box::new(expr_to_wire(value, module_of)),
@@ -677,15 +683,17 @@ fn expr_from_wire(e: &WireExpr, sources: &mut SourceAssigner) -> CExpr {
             func: FnId(*func),
             captures: captures.iter().map(|&i| LocalId::from_index(i as usize)).collect(),
         },
-        WireExprKind::MakeData { tag, args, reuse } => ExprKind::MakeData {
+        WireExprKind::MakeData { tag, args, reuse, scalars } => ExprKind::MakeData {
             tag: *tag,
             args: args.iter().map(|a| expr_from_wire(a, sources)).collect(),
             reuse: reuse.map(|i| LocalId::from_index(i as usize)),
+            scalars: *scalars,
         },
         WireExprKind::DataTag(base) => ExprKind::DataTag(Box::new(expr_from_wire(base, sources))),
-        WireExprKind::DataField { base, index } => ExprKind::DataField {
+        WireExprKind::DataField { base, index, scalar } => ExprKind::DataField {
             base: Box::new(expr_from_wire(base, sources)),
             index: field_index_from_wire(index),
+            scalar: *scalar,
         },
         WireExprKind::Reset { value, token, body } => ExprKind::Reset {
             value: Box::new(expr_from_wire(value, sources)),
@@ -805,6 +813,7 @@ mod tests {
                 tag: 1,
                 args: vec![CExpr::new(ExprKind::Lit(Lit::Int(7)), Ty::Error)],
                 reuse: Some(token),
+                scalars: 0,
             },
             Ty::Error,
         );
@@ -900,7 +909,7 @@ mod tests {
         let h2 = LocalId::from_index(2);
         let lit = || CExpr::new(ExprKind::Lit(Lit::Int(0)), Ty::Error);
         let cell = CExpr::new(
-            ExprKind::MakeData { tag: 1, args: vec![lit(), lit()], reuse: None },
+            ExprKind::MakeData { tag: 1, args: vec![lit(), lit()], reuse: None, scalars: 0 },
             Ty::Error,
         );
         // let h2 = holefill hole 1 cell; recur xs h2

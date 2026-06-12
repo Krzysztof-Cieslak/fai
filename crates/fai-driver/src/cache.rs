@@ -39,7 +39,8 @@ use crate::backend::{abi_of, arity_of, object_code, symbol_base};
 /// remainder compiling to inline machine code (with a constant power-of-two
 /// strength-reduced to a shift), so a cache warmed before that change can never
 /// serve a pre-inlining object.
-const CODEGEN_CONFIG: &str = "opt=speed;int-prims-inlined;reg-direct-call;divrem-inlined";
+const CODEGEN_CONFIG: &str =
+    "opt=speed;int-prims-inlined;reg-direct-call;divrem-inlined;scalar-float-fields";
 
 /// An explicit cache-directory override (set by embedders/tests), taking
 /// precedence over `$FAI_CACHE_DIR`. `None` (the default) falls back to the
