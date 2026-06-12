@@ -78,7 +78,7 @@ fn expr_pure_total(db: &dyn Db, e: &CExpr) -> bool {
             target_ok && args.iter().all(|a| expr_pure_total(db, a))
         }
         K::MakeData { args, .. } => args.iter().all(|a| expr_pure_total(db, a)),
-        K::DataTag(base) => expr_pure_total(db, base),
+        K::DataTag { base, .. } => expr_pure_total(db, base),
         K::DataField { base, .. } => expr_pure_total(db, base),
         K::If { cond, then, els } => {
             expr_pure_total(db, cond) && expr_pure_total(db, then) && expr_pure_total(db, els)

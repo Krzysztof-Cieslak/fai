@@ -15,6 +15,8 @@
 use fai_resolve::{DefId, LocalId};
 use fai_types::{Con, Ty};
 
+use crate::niche::NicheKind;
+
 /// The unboxed-`f64` field bitmap for a sequence of **declared** field types in
 /// layout order: bit `i` set when field `i`'s type is a monomorphic `Float` (not a
 /// type variable instantiated to `Float`). Bounded at 64 fields — a wider cell
@@ -279,7 +281,7 @@ fn collect_globals(expr: &CExpr, out: &mut Vec<DefId>) {
                 collect_globals(a, out);
             }
         }
-        ExprKind::DataTag(base) => collect_globals(base, out),
+        ExprKind::DataTag { base, .. } => collect_globals(base, out),
         ExprKind::DataField { base, .. } => collect_globals(base, out),
         ExprKind::App { func, args, .. } => {
             collect_globals(func, out);
@@ -807,9 +809,21 @@ pub enum ExprKind {
         /// representation is consistent everywhere the constructor is used; zero
         /// for an all-uniform cell.
         scalars: u64,
+        /// The niche scheme when this constructs a niche `Option` (`Some`/`None`),
+        /// else `None` for a standard data value. A niche `Some` is built without a
+        /// wrapper cell (its argument *is* the value); a niche `None` is the scheme's
+        /// sentinel. Decided at lowering (see [`crate::niche`]).
+        niche: Option<NicheKind>,
     },
     /// Reads the tag of a data value (consuming `base`), as an immediate `Int`.
-    DataTag(Box<CExpr>),
+    DataTag {
+        /// The data value (consumed).
+        base: Box<CExpr>,
+        /// The niche scheme when `base` is a niche `Option`, so the tag is computed
+        /// from the niche encoding (sentinel vs payload) rather than a header read;
+        /// `None` for a standard data value.
+        niche: Option<NicheKind>,
+    },
     /// Projects field `index` of a data value, consuming `base` and yielding an
     /// owned reference to the field.
     DataField {
@@ -821,6 +835,10 @@ pub enum ExprKind {
         /// `Float`), so the projection reads its bits directly rather than a uniform
         /// word. Mirrors the producing constructor's [`MakeData::scalars`] bit.
         scalar: bool,
+        /// The niche scheme when `base` is a niche `Option` (so a `Some` projection
+        /// is the identity — the value already *is* the payload); `None` for a
+        /// standard data value.
+        niche: Option<NicheKind>,
     },
     /// Release `value` for reuse: drop its reference-counted children and, if it
     /// was unique, bind `token` to its raw memory (else to a null token); then

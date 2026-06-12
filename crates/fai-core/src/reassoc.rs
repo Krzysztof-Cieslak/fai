@@ -92,15 +92,16 @@ fn map_children(e: &CExpr, f: fn(&CExpr) -> CExpr) -> CExpr {
         K::Let { local, value, body } => {
             K::Let { local: *local, value: Box::new(f(value)), body: Box::new(f(body)) }
         }
-        K::MakeData { tag, args, reuse, scalars } => K::MakeData {
+        K::MakeData { tag, args, reuse, scalars, niche } => K::MakeData {
             tag: *tag,
             args: args.iter().map(f).collect(),
             reuse: *reuse,
             scalars: *scalars,
+            niche: *niche,
         },
-        K::DataTag(base) => K::DataTag(Box::new(f(base))),
-        K::DataField { base, index, scalar } => {
-            K::DataField { base: Box::new(f(base)), index: *index, scalar: *scalar }
+        K::DataTag { base, niche } => K::DataTag { base: Box::new(f(base)), niche: *niche },
+        K::DataField { base, index, scalar, niche } => {
+            K::DataField { base: Box::new(f(base)), index: *index, scalar: *scalar, niche: *niche }
         }
         K::Reset { value, token, body } => {
             K::Reset { value: Box::new(f(value)), token: *token, body: Box::new(f(body)) }

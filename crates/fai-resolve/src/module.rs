@@ -414,6 +414,15 @@ pub fn prelude_module_file(db: &dyn Db) -> Option<SourceFile> {
     std_files(db).into_iter().find(|&f| module_name(db, f) == Some(name))
 }
 
+/// The [`SourceId`] of the auto-imported `Prelude` module — where `Option` and
+/// `Result` are declared — or `None` if the standard library is not loaded.
+/// Tracked so a representation classifier can identify the prelude `Option` (and
+/// distinguish it from a user-defined `Option`) without rescanning the source set.
+#[salsa::tracked]
+pub fn prelude_source(db: &dyn Db) -> Option<fai_span::SourceId> {
+    prelude_module_file(db).map(|f| f.source(db))
+}
+
 /// Which namespace a duplicated auto-imported export lives in (for its message).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExportKind {

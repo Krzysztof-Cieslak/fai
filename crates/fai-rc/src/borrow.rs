@@ -355,7 +355,7 @@ impl Analyzer<'_> {
             }
             // Projections read (borrow) their base; they do not consume it, but
             // they do *match* the base (its cell could be reused).
-            K::DataTag(base) => {
+            K::DataTag { base, .. } => {
                 self.record_match(base);
                 self.scan(base, false);
             }
@@ -400,7 +400,7 @@ impl Analyzer<'_> {
                 self.record_match(base);
                 self.scan(base, false);
             }
-            K::DataTag(base) => {
+            K::DataTag { base, .. } => {
                 self.record_match(base);
                 self.scan(base, false);
             }

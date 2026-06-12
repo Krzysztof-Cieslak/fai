@@ -172,9 +172,12 @@ fn inline_expr(
             let args = args.iter().map(|a| go(a, next, changed)).collect();
             CExpr::new(K::Prim { op: *op, args }, ty)
         }
-        K::MakeData { tag, args, reuse, scalars } => {
+        K::MakeData { tag, args, reuse, scalars, niche } => {
             let args = args.iter().map(|a| go(a, next, changed)).collect();
-            CExpr::new(K::MakeData { tag: *tag, args, reuse: *reuse, scalars: *scalars }, ty)
+            CExpr::new(
+                K::MakeData { tag: *tag, args, reuse: *reuse, scalars: *scalars, niche: *niche },
+                ty,
+            )
         }
         K::If { cond, then, els } => CExpr::new(
             K::If {
@@ -192,12 +195,15 @@ fn inline_expr(
             },
             ty,
         ),
-        K::DataTag(base) => CExpr::new(K::DataTag(Box::new(go(base, next, changed))), ty),
-        K::DataField { base, index, scalar } => CExpr::new(
+        K::DataTag { base, niche } => {
+            CExpr::new(K::DataTag { base: Box::new(go(base, next, changed)), niche: *niche }, ty)
+        }
+        K::DataField { base, index, scalar, niche } => CExpr::new(
             K::DataField {
                 base: Box::new(go(base, next, changed)),
                 index: *index,
                 scalar: *scalar,
+                niche: *niche,
             },
             ty,
         ),
@@ -302,11 +308,12 @@ fn remap_expr(e: &CExpr, subst: &mut FxHashMap<LocalId, LocalId>, next: &mut usi
         K::Prim { op, args } => {
             K::Prim { op: *op, args: args.iter().map(|a| remap_expr(a, subst, next)).collect() }
         }
-        K::MakeData { tag, args, reuse, scalars } => K::MakeData {
+        K::MakeData { tag, args, reuse, scalars, niche } => K::MakeData {
             tag: *tag,
             args: args.iter().map(|a| remap_expr(a, subst, next)).collect(),
             reuse: reuse.map(|t| remap_local(t, subst, next)),
             scalars: *scalars,
+            niche: *niche,
         },
         K::App { func, args, reuse } => K::App {
             func: Box::new(remap_expr(func, subst, next)),
@@ -324,15 +331,22 @@ fn remap_expr(e: &CExpr, subst: &mut FxHashMap<LocalId, LocalId>, next: &mut usi
             let local = remap_local(*local, subst, next);
             K::Let { local, value, body: Box::new(remap_expr(body, subst, next)) }
         }
-        K::DataTag(base) => K::DataTag(Box::new(remap_expr(base, subst, next))),
-        K::DataField { base, index, scalar } => {
+        K::DataTag { base, niche } => {
+            K::DataTag { base: Box::new(remap_expr(base, subst, next)), niche: *niche }
+        }
+        K::DataField { base, index, scalar, niche } => {
             let index = match index {
                 FieldIndex::Dyn { base: off, evidence } => {
                     FieldIndex::Dyn { base: *off, evidence: remap_local(*evidence, subst, next) }
                 }
                 c => *c,
             };
-            K::DataField { base: Box::new(remap_expr(base, subst, next)), index, scalar: *scalar }
+            K::DataField {
+                base: Box::new(remap_expr(base, subst, next)),
+                index,
+                scalar: *scalar,
+                niche: *niche,
+            }
         }
         // An eligible callee is a single function, so its body has no `MakeClosure`
         // (and no reference-counting or tail-call node, which are inserted later);
@@ -409,7 +423,7 @@ fn node_count(e: &CExpr) -> usize {
         K::App { func, args, .. } => node_count(func) + kids(args),
         K::If { cond, then, els } => node_count(cond) + node_count(then) + node_count(els),
         K::Let { value, body, .. } => node_count(value) + node_count(body),
-        K::DataTag(base) | K::DataField { base, .. } => node_count(base),
+        K::DataTag { base, .. } | K::DataField { base, .. } => node_count(base),
         K::Reset { value, body, .. } => node_count(value) + node_count(body),
         K::FreeReuse { body, .. } | K::Dup { body, .. } | K::Drop { body, .. } => node_count(body),
         K::Join { body, .. } | K::HoleStart { body, .. } => node_count(body),
