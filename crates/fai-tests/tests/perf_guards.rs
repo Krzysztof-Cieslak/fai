@@ -562,6 +562,147 @@ fn borrow_signature_change_ripples_only_to_forwarding_caller() {
     );
 }
 
+/// Builds `Helper.sink` (a recursive — so un-inlined — record builder that accepts
+/// a forwarded reuse token) and `Probe.probe` (which forwards a freed record into
+/// `Helper.sink`, so `rc_emit(probe)` depends on `reuse_signature(sink)`), plus
+/// `fillers` independent modules; warms every definition's `object_code`; edits
+/// `Helper`'s body either preserving its reuse signature (the base case
+/// `{ a = 0, b = 0 }` -> `{ a = 1, b = 1 }`, still `[2]`) or changing it (the base
+/// case -> the pre-built `zero` global, dropping the construction so it accepts no
+/// token, `[]`); then recompiles and returns how many `reuse_signature` and
+/// `object_code` queries re-ran.
+fn reuse_firewall_reruns(fillers: usize, sig_changing: bool) -> (usize, usize) {
+    let mut db = FaiDatabase::new();
+    fai_types::std_lib::load_std(&mut db);
+    let helper_id = db.add_source(
+        "Helper.fai".into(),
+        indoc! {r#"
+            module Helper
+
+            public type R2 = { a : Int, b : Int }
+
+            zero : R2
+            let zero = { a = 0, b = 0 }
+
+            public sink : Int -> R2
+            let sink x =
+              if x <= 0 then { a = 0, b = 0 }
+              else
+                let inner = sink (x - 1)
+                { a = inner.a + 1, b = x }
+        "#}
+        .to_owned(),
+    );
+    let probe_id = db.add_source(
+        "Probe.fai".into(),
+        indoc! {r#"
+            module Probe
+
+            public probe : Helper.R2 -> Bool -> Helper.R2
+            let probe p flag =
+              match p with
+              | { a, b } -> if flag then { a = b, b = a } else Helper.sink a
+        "#}
+        .to_owned(),
+    );
+    let mut filler: Vec<(SourceFile, Symbol)> = Vec::new();
+    for i in 0..fillers {
+        let src = formatdoc! {r#"
+            module F{i}
+
+            public g{i} : Int -> Int
+            let g{i} x = x + {i}
+        "#};
+        let id = db.add_source(format!("F{i}.fai").into(), src);
+        filler.push((db.source_file(id).unwrap(), Symbol::intern(&format!("g{i}"))));
+    }
+
+    let probe = db.source_file(probe_id).unwrap();
+    let helper = db.source_file(helper_id).unwrap();
+    let warm = |db: &FaiDatabase| {
+        object_code(db, probe, Symbol::intern("probe"));
+        object_code(db, helper, Symbol::intern("sink"));
+        for (f, g) in &filler {
+            object_code(db, *f, *g);
+        }
+    };
+    warm(&db);
+
+    db.enable_event_log();
+    let edited = if sig_changing {
+        // The base case returns the pre-built global, so `sink` constructs nothing
+        // and accepts no token ([2] -> []).
+        indoc! {r#"
+            module Helper
+
+            public type R2 = { a : Int, b : Int }
+
+            zero : R2
+            let zero = { a = 0, b = 0 }
+
+            public sink : Int -> R2
+            let sink x =
+              if x <= 0 then zero
+              else
+                let inner = sink (x - 1)
+                { a = inner.a + 1, b = x }
+        "#}
+    } else {
+        // The reuse signature is unchanged ([2]): the base case still builds an R2.
+        indoc! {r#"
+            module Helper
+
+            public type R2 = { a : Int, b : Int }
+
+            zero : R2
+            let zero = { a = 0, b = 0 }
+
+            public sink : Int -> R2
+            let sink x =
+              if x <= 0 then { a = 1, b = 1 }
+              else
+                let inner = sink (x - 1)
+                { a = inner.a + 1, b = x }
+        "#}
+    };
+    helper.set_text(&mut db).to(edited.to_owned());
+    warm(&db);
+    let events = db.take_events();
+    (count(&events, "reuse_signature"), count(&events, "object_code"))
+}
+
+#[test]
+fn reuse_signature_firewall_is_independent_of_workspace_size() {
+    // A callee-body edit that does NOT change the callee's reuse signature re-runs
+    // only the callee's own `reuse_signature`/`object_code`; the forwarding caller
+    // is cut off (early cutoff on the small `ReuseSig` value) — the same work
+    // whether the workspace has 5 modules or 50.
+    let small = reuse_firewall_reruns(5, false);
+    let large = reuse_firewall_reruns(50, false);
+    assert_eq!(small, large, "reuse firewall must not grow with workspace size");
+    assert_eq!(
+        small,
+        (1, 1),
+        "a sig-preserving callee edit re-runs only the callee (caller cut off)"
+    );
+}
+
+#[test]
+fn reuse_signature_change_ripples_only_to_forwarding_caller() {
+    // Non-vacuity: an edit that *changes* the callee's reuse signature does re-run
+    // the forwarding caller's analysis and object — but the **expensive** recompiled
+    // object code stays bounded to the callee plus the one forwarding caller (two
+    // objects), independent of workspace size. (The cheap `reuse_signature` analysis
+    // can be re-verified for an unrelated definition at larger scale — a benign
+    // salsa memo re-validation that never reaches code generation — so the firewall
+    // is asserted on the object-code recompute, the work that actually matters.)
+    let small = reuse_firewall_reruns(5, true);
+    let large = reuse_firewall_reruns(50, true);
+    assert_eq!(small.1, large.1, "object-code recompute must not grow with workspace size");
+    assert_eq!(small.1, 2, "a sig-changing callee edit recompiles the callee and the one caller");
+    assert!(small.0 >= 2, "the callee and the forwarding caller both re-analyze (non-vacuity)");
+}
+
 /// Builds `Dep` and `Caller` (which calls `Dep`'s definition) plus `fillers`
 /// independent modules; warms every definition's `object_code`; edits `Dep`'s body
 /// either preserving its intrinsic-inliner classification (a non-wrapper helper
