@@ -311,7 +311,7 @@ fn remap_expr(e: &CExpr, subst: &mut FxHashMap<LocalId, LocalId>, next: &mut usi
         K::App { func, args, reuse } => K::App {
             func: Box::new(remap_expr(func, subst, next)),
             args: args.iter().map(|a| remap_expr(a, subst, next)).collect(),
-            reuse: reuse.iter().map(|&t| remap_local(t, subst, next)).collect(),
+            reuse: reuse.iter().map(|t| t.map(|l| remap_local(l, subst, next))).collect(),
         },
         K::If { cond, then, els } => K::If {
             cond: Box::new(remap_expr(cond, subst, next)),

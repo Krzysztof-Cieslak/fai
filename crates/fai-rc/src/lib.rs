@@ -191,7 +191,7 @@ fn max_local(e: &CExpr, max: &mut usize) {
         K::App { func, args, reuse } => {
             max_local(func, max);
             args.iter().for_each(|a| max_local(a, max));
-            reuse.iter().for_each(|&t| bump(t, max));
+            reuse.iter().flatten().for_each(|&t| bump(t, max));
         }
         K::If { cond, then, els } => {
             max_local(cond, max);

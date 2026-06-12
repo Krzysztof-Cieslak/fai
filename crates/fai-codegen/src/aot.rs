@@ -66,6 +66,34 @@ pub fn object_for_def(
     module.finish().emit().expect("emit object")
 }
 
+/// Compiles one definition's token-taking specialized entry (`{base}__reuse`) to a
+/// relocatable object file. Emitted separately from [`object_for_def`] and linked
+/// only where a caller forwards reuse tokens to the definition.
+#[must_use]
+pub fn reuse_object_for_def(
+    lowered: &LoweredDef,
+    namer: &dyn Fn(DefId) -> String,
+    arity_of: &dyn Fn(DefId) -> usize,
+    signature_of: &dyn Fn(DefId) -> FnAbi,
+    borrows_of: &dyn Fn(DefId) -> Vec<bool>,
+) -> Vec<u8> {
+    let mut module = object_module("fai_reuse");
+    let mut jobs = Vec::new();
+    crate::emit::build_reuse_object(
+        &mut module,
+        lowered,
+        namer,
+        arity_of,
+        signature_of,
+        borrows_of,
+        &mut jobs,
+    );
+    for (id, mut ctx) in jobs {
+        module.define_function(id, &mut ctx).expect("define reuse entry");
+    }
+    module.finish().emit().expect("emit reuse object")
+}
+
 /// Builds (without compiling) each function of `lowered` and returns its Cranelift
 /// IR as text, entry first. Used by tests that inspect the emitted code shape
 /// (e.g. that a known data cell's drop is inlined rather than dispatched). The IR

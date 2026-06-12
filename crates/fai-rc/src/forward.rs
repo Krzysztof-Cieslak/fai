@@ -145,14 +145,20 @@ fn thread_token(db: &dyn Db, self_def: DefId, e: CExpr, token: LocalId) -> CExpr
         K::MakeData { tag, args, reuse: None, scalars } if !args.is_empty() => {
             CExpr::new(K::MakeData { tag, args, reuse: Some(token), scalars }, ty)
         }
-        // A forwardable call with a free slot: forward the token into it.
+        // A forwardable call with a free slot: forward the token into it. The reuse
+        // list has one entry per callee token slot (`None` = a null-token pad); the
+        // token lands in the first free slot, leaving the rest padded.
         K::App { func, args, mut reuse } => {
             let slots = forward_target(db, self_def, &func, args.len()).map_or(0, |s| s.len());
-            if reuse.len() < slots {
-                reuse.push(token);
-                CExpr::new(K::App { func, args, reuse }, ty)
-            } else {
-                free_reuse_(token, CExpr::new(K::App { func, args, reuse }, ty))
+            if reuse.is_empty() {
+                reuse = vec![None; slots];
+            }
+            match reuse.iter().position(Option::is_none) {
+                Some(slot) => {
+                    reuse[slot] = Some(token);
+                    CExpr::new(K::App { func, args, reuse }, ty)
+                }
+                None => free_reuse_(token, CExpr::new(K::App { func, args, reuse }, ty)),
             }
         }
         K::Let { local, value, body } => {

@@ -132,9 +132,13 @@ fn write_expr(
                 write_expr(out, a, namer, arity_of, abi_of);
             }
             // Forwarded reuse tokens select the callee's token-taking entry and the
-            // per-slot marshalling, so they are part of the cache key.
+            // per-slot marshalling (slot count and which slots are padded), so they
+            // are part of the cache key.
             if !reuse.is_empty() {
-                let toks: Vec<String> = reuse.iter().map(|t| format!("%{}", t.index())).collect();
+                let toks: Vec<String> = reuse
+                    .iter()
+                    .map(|t| t.map_or_else(|| "_".to_owned(), |l| format!("%{}", l.index())))
+                    .collect();
                 let _ = write!(out, " @[{}]", toks.join(","));
             }
             out.push(')');

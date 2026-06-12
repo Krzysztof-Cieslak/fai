@@ -123,7 +123,12 @@ fn write_expr(out: &mut String, e: &CExpr) {
             write_expr(out, func);
             write_args(out, args);
             for t in reuse {
-                let _ = write!(out, " @%{}", t.index());
+                match t {
+                    Some(l) => {
+                        let _ = write!(out, " @%{}", l.index());
+                    }
+                    None => out.push_str(" @_"),
+                }
             }
             out.push(')');
         }

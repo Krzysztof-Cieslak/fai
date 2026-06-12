@@ -757,10 +757,12 @@ pub enum ExprKind {
         args: Vec<CExpr>,
         /// Reuse tokens forwarded into the callee's token-taking entry (inserted by
         /// `fai-rc` at a saturated direct call whose callee accepts them). Empty for
-        /// an ordinary call. Each token is consumed here (the callee reuses it in a
-        /// construction or frees it). A non-empty list means the call targets the
-        /// callee's `{base}__reuse` entry, which takes these as leading parameters.
-        reuse: Vec<LocalId>,
+        /// an ordinary call. A non-empty list means the call targets the callee's
+        /// `{base}__reuse` entry: its length is the callee's token-slot count, each
+        /// slot either a forwarded token (`Some`, consumed here — the callee reuses
+        /// it in a construction or frees it) or a null-token pad (`None`) for a slot
+        /// this caller has no cell for.
+        reuse: Vec<Option<LocalId>>,
     },
     /// A conditional.
     If {

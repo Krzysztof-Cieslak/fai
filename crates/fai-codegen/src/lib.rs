@@ -16,8 +16,8 @@ mod aot;
 mod emit;
 mod jit;
 
-pub use aot::{main_object, object_for_def};
-pub use emit::{closure_symbol, code_symbol};
+pub use aot::{main_object, object_for_def, reuse_object_for_def};
+pub use emit::{closure_symbol, code_symbol, reuse_symbol};
 pub use jit::{JitProgram, jit_run};
 
 #[cfg(test)]

@@ -160,8 +160,9 @@ impl Checker<'_> {
                     self.operand(a, borrows.get(i).copied().unwrap_or(false), refs)?;
                 }
                 // Each forwarded reuse token is consumed by the call (the callee
-                // reuses or frees it), exactly like a `MakeData` reuse token.
-                for t in reuse {
+                // reuses or frees it), exactly like a `MakeData` reuse token; a
+                // null-token pad (`None`) is no value, so it is skipped.
+                for t in reuse.iter().flatten() {
                     self.consume(*t, refs)?;
                 }
             }

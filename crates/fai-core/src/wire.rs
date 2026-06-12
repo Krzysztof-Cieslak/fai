@@ -201,8 +201,9 @@ pub enum WireExprKind {
         func: Box<WireExpr>,
         /// The arguments.
         args: Vec<WireExpr>,
-        /// Reuse-token slots forwarded to the callee's token-taking entry.
-        reuse: Vec<u32>,
+        /// Reuse-token slots forwarded to the callee's token-taking entry (one per
+        /// slot; `None` is a null-token pad).
+        reuse: Vec<Option<u32>>,
     },
     /// A conditional.
     If {
@@ -468,7 +469,7 @@ fn expr_to_wire(e: &CExpr, module_of: &dyn Fn(DefId) -> String) -> WireExpr {
         ExprKind::App { func, args, reuse } => WireExprKind::App {
             func: Box::new(expr_to_wire(func, module_of)),
             args: args.iter().map(|a| expr_to_wire(a, module_of)).collect(),
-            reuse: reuse.iter().map(|&t| slot(t)).collect(),
+            reuse: reuse.iter().map(|t| t.map(slot)).collect(),
         },
         ExprKind::If { cond, then, els } => WireExprKind::If {
             cond: Box::new(expr_to_wire(cond, module_of)),
@@ -684,7 +685,7 @@ fn expr_from_wire(e: &WireExpr, sources: &mut SourceAssigner) -> CExpr {
         WireExprKind::App { func, args, reuse } => ExprKind::App {
             func: Box::new(expr_from_wire(func, sources)),
             args: args.iter().map(|a| expr_from_wire(a, sources)).collect(),
-            reuse: reuse.iter().map(|&i| LocalId::from_index(i as usize)).collect(),
+            reuse: reuse.iter().map(|i| i.map(|i| LocalId::from_index(i as usize))).collect(),
         },
         WireExprKind::If { cond, then, els } => ExprKind::If {
             cond: Box::new(expr_from_wire(cond, sources)),

@@ -401,7 +401,7 @@ fn remap_member(
             } else {
                 let func = Box::new(remap_member(func, subst, next, group));
                 let args = args.iter().map(|a| remap_member(a, subst, next, group)).collect();
-                let reuse = reuse.iter().map(|&t| remap_local(t, subst, next)).collect();
+                let reuse = reuse.iter().map(|t| t.map(|l| remap_local(l, subst, next))).collect();
                 CExpr::new(K::App { func, args, reuse }, ty)
             }
         }
