@@ -75,10 +75,18 @@ pub const DATA_TAG_OFFSET: usize = HEADER_SIZE;
 /// Byte offset of a data value's first field.
 pub const DATA_FIELDS_OFFSET: usize = HEADER_SIZE + 8;
 
-/// Byte offset of a `String`'s byte length.
+/// Byte offset of a `String`'s byte length. A borrowing slice
+/// ([`KIND_STRING_SLICE`]) stores its byte length at the same offset, so reading a
+/// string's length is uniform across the inline and slice representations.
 pub const STRING_LEN_OFFSET: usize = HEADER_SIZE;
-/// Byte offset of a `String`'s first content byte.
+/// Byte offset of an *inline* `String`'s first content byte.
 pub const STRING_BYTES_OFFSET: usize = HEADER_SIZE + 8;
+
+/// Byte offset of a string slice's base (the inline `String` it views; a slice
+/// always points at an inline base, never another slice).
+pub const SLICE_BASE_OFFSET: usize = HEADER_SIZE + 8;
+/// Byte offset of a string slice's start, in bytes into the base's content.
+pub const SLICE_OFFSET_OFFSET: usize = HEADER_SIZE + 16;
 
 /// Byte offset of an `Array`'s element count (the live length).
 pub const ARRAY_LEN_OFFSET: usize = HEADER_SIZE;
@@ -171,6 +179,8 @@ pub const KIND_PAP: u64 = 4;
 pub const KIND_DATA: u64 = 5;
 /// Contiguous arrays (children: the boxed element slots).
 pub const KIND_ARRAY: u64 = 6;
+/// A borrowing substring view (child: the inline base `String` it slices).
+pub const KIND_STRING_SLICE: u64 = 7;
 
 /// Builds a runtime-static descriptor with no scalar fields.
 const fn descriptor(kind: u64, name: &'static str) -> Descriptor {
@@ -180,6 +190,11 @@ const fn descriptor(kind: u64, name: &'static str) -> Descriptor {
 /// Descriptor for `String` objects (leaf: inline bytes, no children).
 #[unsafe(no_mangle)]
 pub static FAI_STRING_DESC: Descriptor = descriptor(KIND_STRING, "String");
+
+/// Descriptor for string slices — a borrowing substring view (one child: the
+/// inline base `String` it views).
+#[unsafe(no_mangle)]
+pub static FAI_STRING_SLICE_DESC: Descriptor = descriptor(KIND_STRING_SLICE, "StringSlice");
 
 /// Descriptor for boxed (overflowed) `Int` objects (leaf).
 #[unsafe(no_mangle)]
@@ -405,6 +420,16 @@ static ARRAY_COPIES: AtomicI64 = AtomicI64::new(0);
 #[cfg(debug_assertions)]
 static STRING_COPIES: AtomicI64 = AtomicI64::new(0);
 
+/// The cumulative number of borrowing substring **views** created (the zero-copy
+/// slice path in `substring`/`take`/`drop`/`split`), as opposed to the small
+/// pieces those operations copy. Allocation *count* cannot distinguish a view from
+/// a copy — both are one allocation — but a view is a small fixed-size header that
+/// shares the base's bytes, where a copy allocates and writes the piece's bytes;
+/// this counter is the observable signal that the borrowing path was taken. Never
+/// decreases until reset.
+#[cfg(debug_assertions)]
+static STRING_VIEWS: AtomicI64 = AtomicI64::new(0);
+
 /// Records one heap allocation in the debug counters. Compiled to nothing in a
 /// release build (the counters are absent there).
 #[inline(always)]
@@ -431,6 +456,14 @@ fn note_array_copy() {
 fn note_string_copy() {
     #[cfg(debug_assertions)]
     STRING_COPIES.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Records one borrowing substring view created (the zero-copy slice path).
+/// Compiled to nothing in a release build (the counter is absent there).
+#[inline(always)]
+fn note_string_view() {
+    #[cfg(debug_assertions)]
+    STRING_VIEWS.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Records one heap free in the debug counters. Compiled to nothing in a release
@@ -499,15 +532,31 @@ pub fn string_copies() -> i64 {
     }
 }
 
-/// Resets the cumulative allocation, array-copy, and string-copy counters
-/// (tests/benchmarks). A no-op in a release build, where the counters are compiled
-/// out.
+/// Returns the cumulative count of borrowing substring views created (the
+/// zero-copy slice path). Always zero in a release build, where the counter is
+/// compiled out.
+#[must_use]
+pub fn string_views() -> i64 {
+    #[cfg(debug_assertions)]
+    {
+        STRING_VIEWS.load(Ordering::Relaxed)
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        0
+    }
+}
+
+/// Resets the cumulative allocation, array-copy, string-copy, and string-view
+/// counters (tests/benchmarks). A no-op in a release build, where the counters are
+/// compiled out.
 pub fn reset_allocations() {
     #[cfg(debug_assertions)]
     {
         ALLOCATIONS.store(0, Ordering::Relaxed);
         ARRAY_COPIES.store(0, Ordering::Relaxed);
         STRING_COPIES.store(0, Ordering::Relaxed);
+        STRING_VIEWS.store(0, Ordering::Relaxed);
     }
 }
 
@@ -875,8 +924,14 @@ unsafe fn scan_push(p: *mut u8, work: &mut DropWork) {
                     work.push(elem);
                 }
             }
+        } else if desc_kind(desc) == KIND_STRING_SLICE {
+            // A slice's one child is the inline base `String` it views.
+            let base = read_i64(p, SLICE_BASE_OFFSET);
+            if is_boxed(base) {
+                work.push(base);
+            }
         }
-        // Leaf kinds (`String`, boxed `Int`/`Float`) have no children.
+        // Leaf kinds (inline `String`, boxed `Int`/`Float`) have no children.
     }
 }
 
@@ -1789,13 +1844,37 @@ fn make_string(bytes: &[u8]) -> Value {
     from_obj(p)
 }
 
-/// Borrows a boxed `String` value as a byte slice.
+/// Whether `kind` is one of the two `String` representations — an inline string or
+/// a borrowing slice — which compare and order by content regardless of layout.
+fn is_string_kind(kind: u64) -> bool {
+    kind == KIND_STRING || kind == KIND_STRING_SLICE
+}
+
+/// Whether `v` is a borrowing substring view rather than an inline `String`.
+///
+/// # Safety
+/// `v` is a boxed string-like value (an inline `String` or a slice).
+unsafe fn is_string_slice(v: Value) -> bool {
+    // SAFETY: `v` is a live boxed value with a valid descriptor.
+    unsafe { desc_kind(obj_descriptor(as_obj(v))) == KIND_STRING_SLICE }
+}
+
+/// Borrows a boxed string value as a byte slice: an inline `String`'s own bytes,
+/// or, for a borrowing slice, the viewed window of its (inline) base's bytes. The
+/// byte length is at `STRING_LEN_OFFSET` for both representations.
 unsafe fn string_bytes<'a>(v: Value) -> &'a [u8] {
     let p = as_obj(v);
-    // SAFETY: `v` is a boxed `String`; its length and bytes are inline.
+    // SAFETY: `v` is a boxed string-like value; its length is inline at
+    // `STRING_LEN_OFFSET`, and a slice's base is an inline string.
     unsafe {
         let len = read_u64(p, STRING_LEN_OFFSET) as usize;
-        std::slice::from_raw_parts(p.add(STRING_BYTES_OFFSET), len)
+        if desc_kind(obj_descriptor(p)) == KIND_STRING_SLICE {
+            let base = as_obj(read_i64(p, SLICE_BASE_OFFSET));
+            let off = read_u64(p, SLICE_OFFSET_OFFSET) as usize;
+            std::slice::from_raw_parts(base.add(STRING_BYTES_OFFSET + off), len)
+        } else {
+            std::slice::from_raw_parts(p.add(STRING_BYTES_OFFSET), len)
+        }
     }
 }
 
@@ -1839,47 +1918,181 @@ pub extern "C" fn fai_string_concat(a: Value, b: Value) -> Value {
             return b;
         }
 
-        let unique = read_u64(pa, RC_OFFSET) == 1;
-        let cap = string_cap(a);
+        // Both operands' bytes, resolved uniformly (either may be a slice view).
+        let (a_ptr, b_ptr) = (string_bytes(a).as_ptr(), string_bytes(b).as_ptr());
         let need = la + lb;
-        if unique && need <= cap {
-            // In place: append `b`'s bytes after `a`'s and bump the length. No
-            // allocation, and `a`'s bytes are not re-copied.
-            std::ptr::copy_nonoverlapping(
-                pb.add(STRING_BYTES_OFFSET),
-                pa.add(STRING_BYTES_OFFSET + la),
-                lb,
-            );
+        // In place only when the left operand is an inline, uniquely-owned buffer
+        // with spare capacity: a slice views a shared base and owns no extensible
+        // buffer, so it can never be appended into.
+        let inline_unique = !is_string_slice(a) && read_u64(pa, RC_OFFSET) == 1;
+        if inline_unique && need <= string_cap(a) {
+            // Append `b`'s bytes after `a`'s and bump the length — no allocation,
+            // `a`'s bytes not re-copied.
+            std::ptr::copy_nonoverlapping(b_ptr, pa.add(STRING_BYTES_OFFSET + la), lb);
             write_u64(pa, STRING_LEN_OFFSET, need as u64);
             fai_drop(b);
             return a;
         }
 
-        let q = if unique {
-            // Unique but full: grow into a doubled buffer so further appends
+        let q = if inline_unique {
+            // Unique inline but full: grow into a doubled buffer so further appends
             // amortize. Expected growth, not a uniqueness-loss copy — uncounted.
-            alloc_string(need, grow_cap(cap, need))
+            alloc_string(need, grow_cap(string_cap(a), need))
         } else {
-            // Shared: fork a fresh tight buffer. A uniqueness-loss copy (counted),
-            // since the build could not extend the shared accumulator in place.
+            // Shared, or a slice (which never owns extensible capacity): fork a
+            // fresh tight buffer. A uniqueness-loss copy (counted).
             note_string_copy();
             alloc_string(need, need)
         };
-        std::ptr::copy_nonoverlapping(pa.add(STRING_BYTES_OFFSET), q.add(STRING_BYTES_OFFSET), la);
-        std::ptr::copy_nonoverlapping(
-            pb.add(STRING_BYTES_OFFSET),
-            q.add(STRING_BYTES_OFFSET + la),
-            lb,
-        );
-        if unique {
+        std::ptr::copy_nonoverlapping(a_ptr, q.add(STRING_BYTES_OFFSET), la);
+        std::ptr::copy_nonoverlapping(b_ptr, q.add(STRING_BYTES_OFFSET + la), lb);
+        if inline_unique {
             // Ownership of `a`'s bytes moved into `q`; reclaim its old memory
-            // directly (no child scan — a string is a leaf).
+            // directly (no child scan — an inline string is a leaf).
             free_obj(pa);
         } else {
+            // Drop the old left: a shared inline operand decrements; a slice's drop
+            // also releases its base child.
             fai_drop(a);
         }
         fai_drop(b);
         from_obj(q)
+    }
+}
+
+/// The smallest piece (in bytes) worth a borrowing view: below this a copy is
+/// cheaper than a view header plus the base it pins.
+const SLICE_MIN_VIEW_BYTES: usize = 32;
+/// A piece is viewed only when it is at least `1 / SLICE_VIEW_RATIO` of its base,
+/// so a viewed piece retains at most `SLICE_VIEW_RATIO`× its own bytes; a small
+/// piece of a large base is copied (never pinning it).
+const SLICE_VIEW_RATIO: usize = 4;
+
+/// Whether a `byte_len`-byte piece of a `base_byte_len`-byte base should be a
+/// borrowing view (large enough, both absolutely and as a fraction of the base)
+/// rather than an owned copy.
+fn should_view(byte_len: usize, base_byte_len: usize) -> bool {
+    byte_len >= SLICE_MIN_VIEW_BYTES && byte_len.saturating_mul(SLICE_VIEW_RATIO) >= base_byte_len
+}
+
+/// The byte offset of the `char_idx`-th character of `s`, clamped to `[0, len]`
+/// (an index at or past the character count yields the byte length; a negative
+/// index yields 0). Used to turn the char-indexed slice API into a byte range.
+fn char_byte_offset(s: &str, char_idx: i64) -> usize {
+    if char_idx <= 0 {
+        return 0;
+    }
+    // `nth(k)` yields the k-th char's byte index, or `None` once exhausted.
+    s.char_indices().nth(char_idx as usize).map_or(s.len(), |(i, _)| i)
+}
+
+/// Builds a borrowing slice viewing `byte_len` bytes of `base` from byte offset
+/// `byte_off`. `base` is **borrowed**: the slice takes its own reference to the
+/// inline base it ends up viewing. Slicing a slice flattens to the underlying
+/// inline base (adding the offsets), so a slice's base is always an inline
+/// `String` and [`string_bytes`] never recurses. Counts one view.
+///
+/// # Safety
+/// `base` is a boxed string-like value; `byte_off + byte_len` is within its bytes.
+unsafe fn make_string_slice(base: Value, byte_off: usize, byte_len: usize) -> Value {
+    note_string_view();
+    // SAFETY: `base` is string-like; a slice's base field is an inline string.
+    unsafe {
+        let (inline_base, total_off) = if is_string_slice(base) {
+            let pb = as_obj(base);
+            (read_i64(pb, SLICE_BASE_OFFSET), read_u64(pb, SLICE_OFFSET_OFFSET) as usize + byte_off)
+        } else {
+            (base, byte_off)
+        };
+        fai_dup(inline_base); // the slice holds its own reference to the inline base
+        let p = alloc_obj(SLICE_OFFSET_OFFSET + 8, &FAI_STRING_SLICE_DESC);
+        write_u64(p, STRING_LEN_OFFSET, byte_len as u64);
+        write_i64(p, SLICE_BASE_OFFSET, inline_base);
+        write_u64(p, SLICE_OFFSET_OFFSET, total_off as u64);
+        from_obj(p)
+    }
+}
+
+/// Builds the `byte_off..byte_off+byte_len` piece of `base` (borrowed): a borrowing
+/// view when the piece is large relative to the ultimate inline base, else an owned
+/// copy. The retention ratio is measured against the inline base that a view would
+/// pin, so slicing an existing slice does not view a tiny window of a huge buffer.
+///
+/// # Safety
+/// `base` is a boxed string-like value; the byte range is within its bytes.
+unsafe fn make_piece(base: Value, byte_off: usize, byte_len: usize) -> Value {
+    // SAFETY: `base` is string-like; the range is valid.
+    unsafe {
+        let inline_base_len = if is_string_slice(base) {
+            read_u64(as_obj(read_i64(as_obj(base), SLICE_BASE_OFFSET)), STRING_LEN_OFFSET) as usize
+        } else {
+            read_u64(as_obj(base), STRING_LEN_OFFSET) as usize
+        };
+        if should_view(byte_len, inline_base_len) {
+            make_string_slice(base, byte_off, byte_len)
+        } else {
+            make_string(&string_bytes(base)[byte_off..byte_off + byte_len])
+        }
+    }
+}
+
+/// `String.substring`: the `len`-character substring of `s` starting at character
+/// `start` (both clamped). A large piece is a borrowing view; a small one is
+/// copied. Operand `s` consumed.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_string_substring(start: Value, len: Value, s: Value) -> Value {
+    let (cstart, clen) = (unbox_int(start), unbox_int(len));
+    // SAFETY: `s` is a boxed string-like value of valid UTF-8.
+    unsafe {
+        let str = string_str(s);
+        let total = str.len();
+        let b0 = char_byte_offset(str, cstart);
+        let b1 = if clen <= 0 { b0 } else { char_byte_offset(str, cstart.saturating_add(clen)) };
+        if b0 == 0 && b1 == total {
+            return s; // the whole string: hand the operand back
+        }
+        let piece = make_piece(s, b0, b1 - b0);
+        fai_drop(s);
+        piece
+    }
+}
+
+/// `String.take`: the first `n` characters of `s` (a large prefix is a view, a
+/// small one is copied). Operand consumed.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_string_take(n: Value, s: Value) -> Value {
+    let n = unbox_int(n);
+    // SAFETY: `s` is a boxed string-like value of valid UTF-8.
+    unsafe {
+        let end = char_byte_offset(string_str(s), n);
+        if end >= string_bytes(s).len() {
+            return s; // n >= length: the whole string
+        }
+        let piece = make_piece(s, 0, end);
+        fai_drop(s);
+        piece
+    }
+}
+
+/// `String.drop`: all but the first `n` characters of `s` (the kept suffix is a
+/// view when large). Operand consumed.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_string_drop(n: Value, s: Value) -> Value {
+    let n = unbox_int(n);
+    // SAFETY: `s` is a boxed string-like value of valid UTF-8.
+    unsafe {
+        let total = string_bytes(s).len();
+        let start = char_byte_offset(string_str(s), n);
+        if start == 0 {
+            return s; // n <= 0: drop nothing
+        }
+        if start >= total {
+            fai_drop(s);
+            return make_string(b""); // n >= length: dropped everything
+        }
+        let piece = make_piece(s, start, total - start);
+        fai_drop(s);
+        piece
     }
 }
 
@@ -2008,16 +2221,29 @@ pub extern "C" fn fai_string_split(sep: Value, s: Value) -> Value {
 }
 
 /// Splits `s` on `sep` into a `List String`, *borrowing* both operands (the
-/// caller releases them at their last use).
+/// caller releases them at their last use). Each piece is built with [`make_piece`]
+/// — a borrowing view sharing `s`'s buffer when it is large enough, an owned copy
+/// otherwise — so splitting into a few large pieces avoids copying their bytes
+/// (many small pieces, e.g. words, fall below the threshold and are copied).
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_string_split_borrowed(sep: Value, s: Value) -> Value {
-    // SAFETY: both are boxed `String`s.
+    // SAFETY: both are boxed string-like values; the computed byte ranges of the
+    // pieces lie within `s`'s bytes.
     let pieces: Vec<Value> = unsafe {
         let (sep_s, src) = (string_str(sep), string_str(s));
         if sep_s.is_empty() {
-            src.chars().map(|c| make_string(c.to_string().as_bytes())).collect()
+            // Each character is its own piece (always tiny, hence copied).
+            src.char_indices().map(|(i, c)| make_piece(s, i, c.len_utf8())).collect()
         } else {
-            src.split(sep_s).map(|piece| make_string(piece.as_bytes())).collect()
+            // The spans between (and around) the separators, by byte offset.
+            let mut pieces = Vec::new();
+            let mut start = 0;
+            for (idx, _) in src.match_indices(sep_s) {
+                pieces.push(make_piece(s, start, idx - start));
+                start = idx + sep_s.len();
+            }
+            pieces.push(make_piece(s, start, src.len() - start));
+            pieces
         }
     };
     list_of_strings(&pieces)
@@ -2233,6 +2459,12 @@ fn values_equal(a: Value, b: Value) -> bool {
             unsafe {
                 let ka = desc_kind(obj_descriptor(as_obj(a)));
                 let kb = desc_kind(obj_descriptor(as_obj(b)));
+                // An inline `String` and a borrowing slice are both `String` values:
+                // compare them by content regardless of representation (so a sliced
+                // `"abc"` equals an inline `"abc"`, e.g. as `Dict` keys).
+                if is_string_kind(ka) && is_string_kind(kb) {
+                    return string_bytes(a) == string_bytes(b);
+                }
                 // Different kinds are never equal (comparison is between same-typed
                 // values, so two data cells share a kind regardless of per-shape
                 // descriptor identity).
@@ -2240,7 +2472,6 @@ fn values_equal(a: Value, b: Value) -> bool {
                     return false;
                 }
                 match ka {
-                    KIND_STRING => string_bytes(a) == string_bytes(b),
                     KIND_INT => {
                         read_i64(as_obj(a), INT_VALUE_OFFSET)
                             == read_i64(as_obj(b), INT_VALUE_OFFSET)
@@ -2332,8 +2563,9 @@ fn values_compare(a: Value, b: Value) -> std::cmp::Ordering {
     if kind == KIND_FLOAT {
         return unbox_float(a).total_cmp(&unbox_float(b));
     }
-    if kind == KIND_STRING {
-        // SAFETY: both are boxed `String`s.
+    if is_string_kind(kind) {
+        // SAFETY: both are boxed string-like values; ordering is by content,
+        // regardless of inline-vs-slice representation.
         return unsafe { string_bytes(a).cmp(string_bytes(b)) };
     }
     if kind == KIND_ARRAY {

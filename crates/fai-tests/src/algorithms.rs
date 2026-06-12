@@ -131,6 +131,20 @@ pub fn string_build(n: i64) -> i64 {
     s.chars().count() as i64
 }
 
+/// The total length of 200 half-length substrings of a length-`n` base — a
+/// slice-heavy workload. The Fai version takes borrowing slice views (no per-piece
+/// copy); the Rust reference takes `&str` prefixes.
+#[must_use]
+pub fn string_slice(n: i64) -> i64 {
+    let base: String = "a".repeat(n.max(0) as usize);
+    let half = (n / 2).max(0) as usize;
+    let mut acc = 0i64;
+    for _ in 0..200 {
+        acc += base.chars().take(half).count() as i64;
+    }
+    acc
+}
+
 /// The sum of doubling `[0, n)` plus the sum of `[0, n)` — the shared-list twin of
 /// [`map_sum`], which equals `3 * sum [0, n)`. `black_box` per element defeats
 /// LLVM's scalar-evolution collapse of this arithmetic series to a closed form, so
@@ -908,6 +922,13 @@ pub const ALGORITHMS: &[Algorithm] = &[
         aot_size: 1_000_000,
         oracle: Oracle::Int(string_build),
     },
+    Algorithm {
+        module: "StringSlice",
+        entry: "run",
+        jit_size: 2_000,
+        aot_size: 20_000,
+        oracle: Oracle::Int(string_slice),
+    },
 ];
 
 /// Looks up an algorithm by its sample module name.
@@ -952,6 +973,7 @@ pub fn source(module: &str) -> &'static str {
         "UnionFind" => include_str!("../../../samples/algorithms/UnionFind.fai"),
         "JsonSerialize" => include_str!("../../../samples/algorithms/JsonSerialize.fai"),
         "StringBuild" => include_str!("../../../samples/algorithms/StringBuild.fai"),
+        "StringSlice" => include_str!("../../../samples/algorithms/StringSlice.fai"),
         other => panic!("unknown algorithm module: {other}"),
     }
 }

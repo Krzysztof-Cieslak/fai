@@ -137,6 +137,26 @@ fn prelude_contracts_pass() {
 }
 
 #[test]
+fn std_modules_contracts_pass() {
+    // Every embedded standard-library module (not just `Prelude`) runs its own
+    // `example`/`forall` contracts — so e.g. `String.substring`/`take`/`drop`'s
+    // examples are executed, not merely required to exist.
+    let _g = lock();
+    let mut db = FaiDatabase::new();
+    let std_ids = fai_types::std_lib::load_std(&mut db);
+    let files: Vec<SourceFile> = std_ids.iter().filter_map(|&id| db.source_file(id)).collect();
+    let outcome = test(&db, &files, None, TestConfig::default());
+    assert!(
+        outcome.ok,
+        "std contracts should pass; diagnostics: {:?}",
+        outcome.diagnostics.iter().map(|d| (d.code.as_str(), &d.message)).collect::<Vec<_>>()
+    );
+    assert!(outcome.total > 0);
+    assert_eq!(outcome.passed, outcome.total, "every std contract passes");
+    assert_eq!(outcome.leaked, 0, "running std contracts must not leak");
+}
+
+#[test]
 fn store_app_contracts_pass() {
     // The real-world sample app (the language-server bench fixture) carries
     // `example`/`forall` contracts across its modules; run them together (the

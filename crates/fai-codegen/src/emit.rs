@@ -2858,9 +2858,12 @@ fn is_maybe_immediate_ty(ty: &Ty) -> bool {
 
 /// Whether `ty` is a boxed *leaf* — a heap object with no reference-counted
 /// children — so a dead one is freed directly, with no child release. The boxed
-/// `Int`, `Float`, and `String` kinds are leaves.
+/// `Int` and `Float` kinds are leaves. `String` is **not**: a `String` value may be
+/// a borrowing slice whose one child is the base it views, so a dead string is
+/// released through the child-scanning runtime drop (which is a direct free for the
+/// inline representation and releases the base for a slice).
 fn is_leaf_boxed_ty(ty: &Ty) -> bool {
-    matches!(ty, Ty::Con(Con::Int | Con::Float | Con::String))
+    matches!(ty, Ty::Con(Con::Int | Con::Float))
 }
 
 /// Whether `ty` is a data type that may also be an immediate — a discriminated

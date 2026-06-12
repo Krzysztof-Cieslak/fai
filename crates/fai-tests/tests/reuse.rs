@@ -760,6 +760,110 @@ fn concat_chain_reassociation_preserves_effect_order() {
 }
 
 // ===========================================================================
+// Borrowing slice views: a large substring/take/drop shares the base buffer (a
+// view), a small one is copied. `string_views()` counts the views; a viewed
+// result still exits leak-free (the shared base is released when the views die).
+// ===========================================================================
+
+/// Compiles and JIT-runs `src`, returning `(exit_code, output, string_views)`.
+fn run_string_views(src: &str) -> (i32, String, i64) {
+    let _g = lock();
+    let mut db = FaiDatabase::new();
+    fai_types::std_lib::load_std(&mut db);
+    let id = db.add_source("M.fai".into(), src.to_owned());
+    let file = db.source_file(id).unwrap();
+    rt::capture_start();
+    rt::reset_allocations();
+    let outcome = jit_run_program(&db, file);
+    let views = rt::string_views();
+    let out = rt::capture_take();
+    (outcome.exit_code, out, views)
+}
+
+/// A program that builds an `n`-character base and prints the length of a slice of
+/// it produced by `slice_expr` (in terms of `base`).
+fn slice_prog(slice_expr: &str, n: i32) -> String {
+    formatdoc! {r#"
+        module M
+
+        let mk k acc = if k <= 0 then acc else mk (k - 1) (acc ++ "a")
+
+        public main : Runtime -> Unit / {{ Console }}
+        let main rt =
+          let base = mk {n} ""
+          rt.console.writeLine (Int.toString (String.length ({slice_expr})))
+    "#}
+}
+
+#[test]
+fn large_take_is_a_view_and_leak_free() {
+    let (code, out, views) = run_string_views(&slice_prog("String.take 150 base", 200));
+    assert_eq!(code, 0, "clean (leak-free) exit");
+    assert_eq!(out.trim(), "150");
+    assert_eq!(views, 1, "a large prefix is a borrowing view");
+}
+
+#[test]
+fn small_take_is_a_copy() {
+    let (code, out, views) = run_string_views(&slice_prog("String.take 8 base", 200));
+    assert_eq!(code, 0, "clean (leak-free) exit");
+    assert_eq!(out.trim(), "8");
+    assert_eq!(views, 0, "a small prefix is copied, not viewed");
+}
+
+#[test]
+fn drop_keeps_large_suffix_as_a_view() {
+    let (code, out, views) = run_string_views(&slice_prog("String.drop 10 base", 200));
+    assert_eq!(code, 0, "clean (leak-free) exit");
+    assert_eq!(out.trim(), "190");
+    assert_eq!(views, 1);
+}
+
+#[test]
+fn a_slice_view_is_a_string_like_any_other() {
+    // A view feeds back into the string API (equality and re-slicing) and the run
+    // exits leak-free: the borrowing representation is transparent to user code.
+    let src = formatdoc! {r#"
+        module M
+
+        let mk k acc = if k <= 0 then acc else mk (k - 1) (acc ++ "x")
+
+        public main : Runtime -> Unit / {{ Console }}
+        let main rt =
+          let base = mk 100 ""
+          let view = String.drop 10 base
+          let again = String.take 20 view
+          let u = rt.console.writeLine (if view = String.drop 10 base then "eq" else "ne")
+          rt.console.writeLine (Int.toString (String.length again))
+    "#};
+    let (code, out, views) = run_string_views(&src);
+    assert_eq!(code, 0, "clean (leak-free) exit");
+    assert_eq!(out.trim(), "eq\n20");
+    assert!(views >= 1, "the drop produced a view");
+}
+
+#[test]
+fn split_into_few_large_pieces_views_them() {
+    // Split a base into two large halves; both pieces are views sharing the base.
+    let src = formatdoc! {r#"
+        module M
+
+        let mk k acc = if k <= 0 then acc else mk (k - 1) (acc ++ "a")
+
+        public main : Runtime -> Unit / {{ Console }}
+        let main rt =
+          let half = mk 80 ""
+          let text = half ++ "|" ++ half
+          let parts = String.split "|" text
+          rt.console.writeLine (Int.toString (List.sum (List.map String.length parts)))
+    "#};
+    let (code, out, views) = run_string_views(&src);
+    assert_eq!(code, 0, "clean (leak-free) exit");
+    assert_eq!(out.trim(), "160", "two 80-character pieces");
+    assert_eq!(views, 2, "both large split pieces are views");
+}
+
+// ===========================================================================
 // Property: destructure-and-recurse over user ADTs stays correct and leak-free.
 //
 // A recursive function that matches a value, projects a field, and recurses while

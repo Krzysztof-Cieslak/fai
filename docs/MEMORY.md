@@ -2516,5 +2516,47 @@ Editor integration:
     (borrowing slice views for `split`; the array-backed sequence work). The win
     here is structural: any heavy `++`/accumulator builder is now O(n).
 
+- **D125 Borrowing `String` slice views, large-piece-only (closes the slicing half
+  of #101).** Substring/`split` previously materialized an owned copy per piece. A
+  new heap kind, **`KIND_STRING_SLICE`** (header + byte length + base pointer + byte
+  offset, 48 B), is a borrowing view sharing an inline base's bytes; `String.take`,
+  `String.drop`, `String.substring`, and `String.split` return one when the piece is
+  large, an owned copy when small.
+  - **Char-indexed, view-large / copy-small.** The new ops index by **character**
+    (consistent with `String.length`; a byte index could split a code point), so a
+    slice scans O(position) to the byte boundary then makes an O(1) view. A piece is
+    a view iff `byte_len >= 32 && byte_len*4 >= base_byte_len` — the absolute floor
+    skips pieces too small to be worth a 48 B header, and the quarter-of-the-base
+    ratio bounds retention (a view pins at most ~4× its own bytes), so a small piece
+    of a large base is copied rather than pinning it. The ratio is measured against
+    the **ultimate inline base** (slicing a slice flattens to that base and adds the
+    offsets, so a slice's base is always inline and the byte reader never recurses).
+    `split` into a few large pieces views them; many small pieces (words) are copied
+    — so `word_count` is unchanged (its per-piece *allocation* is the cost, not the
+    byte copy; addressed by the array-backed sequence work).
+  - **Transparent to the rest of the language.** A `String` value is inline or a
+    slice at runtime; the distinction is invisible to types and to user code. The
+    byte length lives at the same offset for both, so length reads are uniform;
+    every `String` reader goes through one byte accessor that branches on the kind;
+    **equality and ordering treat the two kinds as one "string-like" category** (a
+    sliced `"abc"` equals and orders identically to an inline `"abc"`, e.g. as a
+    `Dict` key); and the drop child-scan releases a slice's base. Because a `String`
+    value may now own a child, **code generation no longer treats `String` as a
+    child-free leaf on drop** (only boxed `Int`/`Float` are): a dead string is
+    released through the child-scanning runtime drop — a direct free for the inline
+    case, a base release for a slice. `++` still appends in place only into a unique
+    *inline* left operand (a slice owns no extensible buffer, so it forks).
+  - **Proven by a view counter, not by `word_count`.** A `string_views()` debug
+    counter (the peer of `string_copies()`) records the zero-copy slice path —
+    allocation *count* cannot tell a view from a copy (both are one allocation). The
+    deterministic gates assert a large slice is a view (`string_views` increments)
+    and a small one a copy, that a view exits leak-free (the shared base released
+    when the views die), and that the standard library's own `take`/`drop`/
+    `substring` examples run. A `StringSlice` registry algorithm (200 large
+    substrings of a base) is the informational Fai-vs-Rust bench (runtime and peak
+    memory). Char-indexing means the win is *no byte copy* — asymptotic for `drop`
+    (the kept suffix is neither scanned nor copied), a constant factor for the
+    scanning ops.
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

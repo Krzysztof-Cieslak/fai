@@ -264,6 +264,11 @@ fn string_build_sample_is_valid() {
     validate("StringBuild");
 }
 
+#[test]
+fn string_slice_sample_is_valid() {
+    validate("StringSlice");
+}
+
 /// The four hand-maintained algorithm lists must not drift from the registry: the
 /// two runtime benches (`algorithms_jit`/`algorithms_aot`) name each module in a
 /// `algorithm_benches!` row, and this file declares a `validate` test per module.
