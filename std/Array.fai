@@ -344,8 +344,46 @@ let partitionRange cmp hi j store arr =
 example: toList (sortBy compare (fromList [3, 1, 2])) = [1, 2, 3]
 example: toList (sortBy compare (fromList [5, 4, 3, 2, 1])) = [1, 2, 3, 4, 5]
 
-/// Sort an array into ascending order by the structural comparison.
+// The default sort's quicksort: the comparator-free peers of `qsort` and friends,
+// comparing elements with the structural `<`/`>`/`<=` directly (an inline
+// immediate compare on a known-immediate element). So the default `sort` pays no
+// `apply_n` per comparison the way `sortBy compare` would — the only reason to
+// duplicate the quicksort body rather than reuse `sortBy compare`.
+let qsortOrd lo hi arr =
+  if hi - lo <= 1 then
+    arr
+  else
+    qsortSplitOrd lo hi (partitionRangeOrd hi lo lo (pivotToEndOrd lo hi arr))
+
+let qsortSplitOrd lo hi split =
+  match split with
+  | (p, arr) ->
+    if p - lo < hi - p - 1 then
+      qsortOrd (p + 1) hi (qsortOrd lo p arr)
+    else
+      qsortOrd lo p (qsortOrd (p + 1) hi arr)
+
+let pivotToEndOrd lo hi arr =
+  let mid = lo + (hi - lo) / 2
+  let hi1 = hi - 1
+  let a1 = if Prim.arrayGet arr lo > Prim.arrayGet arr mid then swap lo mid arr else arr
+  let a2 = if Prim.arrayGet a1 mid > Prim.arrayGet a1 hi1 then swap mid hi1 a1 else a1
+  let a3 = if Prim.arrayGet a2 lo > Prim.arrayGet a2 mid then swap lo mid a2 else a2
+  swap mid hi1 a3
+
+let partitionRangeOrd hi j store arr =
+  let hi1 = hi - 1
+  if j >= hi1 then
+    (store, swap store hi1 arr)
+  else if Prim.arrayGet arr j <= Prim.arrayGet arr hi1 then
+    partitionRangeOrd hi (j + 1) (store + 1) (swap store j arr)
+  else
+    partitionRangeOrd hi (j + 1) store arr
+
+/// Sort an array into ascending order by the structural comparison, in place when
+/// the array is unique.
 public sort : Array 'a -> Array 'a
-let sort xs = sortBy compare xs
+let sort xs = qsortOrd 0 (Prim.arrayLength xs) xs
 example: toList (sort (fromList [3, 1, 2])) = [1, 2, 3]
+example: toList (sort (fromList [5, 4, 3, 2, 1])) = [1, 2, 3, 4, 5]
 forall xs: toList (sort (fromList xs)) = List.sort xs

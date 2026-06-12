@@ -42,9 +42,12 @@ use crate::backend::{abi_of, arity_of, object_code, symbol_base};
 /// drop is emitted before its continuation rather than after — a change to the
 /// emitted machine code that leaves the reference-counted IR (and so the
 /// fingerprint) untouched, so a cache warmed before it must not serve a stale
-/// drop-after object.
-const CODEGEN_CONFIG: &str =
-    "opt=speed;int-prims-inlined;reg-direct-call;divrem-inlined;scalar-float-fields;early-drop";
+/// drop-after object. The `poly-cmp-inlined` token marks structural `=`/`compare`
+/// on a possibly-immediate operand (a type variable, or a nullary-bearing
+/// union/`List`/empty record) compiling to an inline immediate fast path over the
+/// structural runtime fallback, so a cache warmed before that change can never
+/// serve a pre-inlining object.
+const CODEGEN_CONFIG: &str = "opt=speed;int-prims-inlined;reg-direct-call;divrem-inlined;scalar-float-fields;early-drop;poly-cmp-inlined";
 
 /// An explicit cache-directory override (set by embedders/tests), taking
 /// precedence over `$FAI_CACHE_DIR`. `None` (the default) falls back to the

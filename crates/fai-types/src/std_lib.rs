@@ -90,6 +90,11 @@ pub fn builtin_scheme(name: Symbol) -> Option<Scheme> {
         "charFromCode" => Scheme::mono(Ty::arrow(Ty::int(), Ty::Con(Con::Char))),
         "isValidCharCode" => Scheme::mono(Ty::arrow(Ty::int(), Ty::bool())),
         "not" => Scheme::mono(Ty::arrow(Ty::bool(), Ty::bool())),
+        // Structural three-way comparison, polymorphic over any (comparable) type
+        // — `Prelude.compare` wraps it. Like the other structural operators it
+        // carries no surface constraint; a non-comparable instantiation (a
+        // function type) is a runtime guard, not a type error.
+        "compare" => single_var_scheme(|a| Ty::arrows([a.clone(), a], Ty::int())),
         // String operations.
         "stringLength" => Scheme::mono(Ty::arrow(Ty::Con(Con::String), Ty::int())),
         "toUpper" | "toLower" | "trim" => {
@@ -115,23 +120,24 @@ pub fn builtin_scheme(name: Symbol) -> Option<Scheme> {
         // library's `Array` module wraps these (reordering to collection-last and
         // adding bounds checks); the runtime takes the array operand first, so the
         // intrinsic types match the `fai_array_*` calling convention.
-        "arrayWithCapacity" => array_scheme(|a| Ty::arrow(Ty::int(), Ty::array(a))),
-        "arrayLength" => array_scheme(|a| Ty::arrow(Ty::array(a), Ty::int())),
-        "arrayGet" => array_scheme(|a| Ty::arrows([Ty::array(a.clone()), Ty::int()], a)),
-        "arraySet" => {
-            array_scheme(|a| Ty::arrows([Ty::array(a.clone()), Ty::int(), a.clone()], Ty::array(a)))
-        }
+        "arrayWithCapacity" => single_var_scheme(|a| Ty::arrow(Ty::int(), Ty::array(a))),
+        "arrayLength" => single_var_scheme(|a| Ty::arrow(Ty::array(a), Ty::int())),
+        "arrayGet" => single_var_scheme(|a| Ty::arrows([Ty::array(a.clone()), Ty::int()], a)),
+        "arraySet" => single_var_scheme(|a| {
+            Ty::arrows([Ty::array(a.clone()), Ty::int(), a.clone()], Ty::array(a))
+        }),
         "arrayPush" => {
-            array_scheme(|a| Ty::arrows([Ty::array(a.clone()), a.clone()], Ty::array(a)))
+            single_var_scheme(|a| Ty::arrows([Ty::array(a.clone()), a.clone()], Ty::array(a)))
         }
         _ => return None,
     })
 }
 
-/// Builds a scheme quantified over a single element type variable `'a`, given a
-/// function from that variable to the intrinsic's type. The element type is the
-/// canonical first quantified variable, freshened at each instantiation.
-fn array_scheme(build: impl FnOnce(Ty) -> Ty) -> Scheme {
+/// Builds a scheme quantified over a single type variable `'a` (an array element,
+/// or the operand of `compare`), given a function from that variable to the
+/// intrinsic's type. The variable is the canonical first quantified variable,
+/// freshened at each instantiation.
+fn single_var_scheme(build: impl FnOnce(Ty) -> Ty) -> Scheme {
     let var = TyVarId(0);
     Scheme::new(vec![var], build(Ty::Var(var)))
 }

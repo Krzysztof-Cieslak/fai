@@ -224,8 +224,27 @@ let sortBy cmp xs =
       mergeBy cmp (sortBy cmp (take half xs)) (sortBy cmp (drop half xs))
 example: sortBy compare [3, 1, 2] = [1, 2, 3]
 
+// Merge two ascending lists by the structural ordering: the comparator-free peer
+// of `mergeBy` that `sort` uses, so the default sort compares with an inline `<=`
+// rather than an `apply_n` into a passed comparator.
+let merge xs ys =
+  match xs with
+  | [] -> ys
+  | x :: xrest ->
+    match ys with
+    | [] -> xs
+    | y :: yrest -> if x <= y then x :: merge xrest ys else y :: merge xs yrest
+
 /// Sort a list into ascending order by the structural comparison.
 public sort : List 'a -> List 'a
-let sort xs = sortBy compare xs
+let sort xs =
+  match xs with
+  | [] -> []
+  | _ :: rest ->
+    match rest with
+    | [] -> xs
+    | _ :: _ ->
+      let half = length xs / 2
+      merge (sort (take half xs)) (sort (drop half xs))
 example: sort [3, 1, 2] = [1, 2, 3]
 forall xs: sort (sort xs) = sort xs

@@ -2414,5 +2414,57 @@ Editor integration:
     test (folds exercise the drop path, maps the reset path) asserting result and
     leak-freedom.
 
+- **D123 Specialize structural `=`/`compare` for known-immediate operands
+  (extends D108).** Polymorphic structural comparison — `=`/`<>` and `< <= > >=`/
+  `compare` on a *type variable* — previously always called the runtime
+  `fai_equal`/`fai_compare`, even when the value at runtime is an immediate (an
+  `Int`/`Char`/`Bool` or a nullary constructor), which is the common case for the
+  keys of a generic `Dict`/`Set` and the elements of a generic sort. Three changes
+  make that common case an inline word compare with no monomorphization.
+  - **Inline immediate fast path for maybe-immediate operands (codegen).** D108
+    inlined `=`/`compare` only on statically immediate or scalar (`Int`/`Float`)
+    operands. Code generation now also emits the immediate guard — both operands
+    immediate ⇒ inline word equality / raw three-way, else the structural runtime
+    call — for an operand whose type *may* be an immediate at runtime but is not
+    statically known: a **type variable**, or a discriminated union / `List` /
+    empty record (whose nullary constructors are immediates). The always-boxed
+    types (`String`, tuples, non-empty records, arrays, interfaces, functions)
+    keep the direct structural call (the guard would always miss). The fallback
+    honours the borrow decision reference counting made for the operand type — the
+    *owned* `fai_compare`/`fai_equal` for a type variable (`is_boxed_rc` is false),
+    the *borrowed* variant for a reference-counted union/`List` — so the emitted
+    (non-)consumption agrees with the runtime variant; the immediate fast arm drops
+    nothing (immediates), sound in both modes. Purely a code-generation lowering of
+    the unchanged `Prim::Eq`/`Prim::Compare` node, so reference counting and the
+    object-cache fingerprint are untouched; the codegen-config stamp gains a
+    `poly-cmp-inlined` token so a cache warmed before the change cannot serve a
+    pre-inlining object. The fallback remains exactly the prior behavior, so the
+    fast path is a pure optimization.
+  - **`compare` is a primitive wrapper.** `Prelude.compare` was ordinary Fai
+    (`if a < b … else if a > b …`, two structural comparisons). It is now the
+    one-line wrapper `let compare a b = Prim.compare a b` over a new prelude-private
+    `Prim.compare` intrinsic (the structural three-way primitive, the first
+    polymorphic non-array intrinsic, typed `'a -> 'a -> Int`). The intrinsic
+    inliner folds a saturated `compare x y` to the bare primitive (one inline
+    immediate compare), and `compare`'s own first-class body drops from two
+    comparisons to one. `Dict`/`Set` now compute `let c = compare key k` once per
+    node and branch on `c` (the search-tree three-way is one comparison, not the
+    two of `key < k` then `key > k`) — halving both the per-node comparison work
+    and, for boxed keys, the per-node key duplications, while preserving the
+    in-place reuse of `insert`/`remove`.
+  - **Default-ordering sorts compare directly.** `List.sort`/`Array.sort` went
+    through `sortBy compare`, so every comparison was an `apply_n` into a passed
+    comparator. Each now has a comparator-free recursion (`List.merge`; `Array`'s
+    `qsortOrd` family) that compares with the structural `<`/`>`/`<=` directly — an
+    inline immediate compare with no `apply_n`. `sortBy`/`mergeBy` keep the
+    comparator path for a caller-supplied order (whose `apply_n` is inherent to
+    passing a function); the `Array` quicksort body is duplicated for the default
+    sort, the deliberate cost of removing the indirection without monomorphization.
+  - **Ceiling.** A *boxed* monomorphic key (`String`/record/tuple — e.g. a
+    tuple-keyed dictionary) still takes the structural runtime call (the operand is
+    always boxed, so the guard misses), and a custom `sortBy` comparator still pays
+    its `apply_n`. Inlining those needs specialization at a concrete instantiation
+    (opt-in monomorphization), noted as future work.
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.
