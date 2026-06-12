@@ -115,6 +115,39 @@ pub(crate) fn std_reuse_sig(module: &str, name: &str) -> Vec<u32> {
     crate::reuse_signature(&db, file, Symbol::intern(name)).0
 }
 
+/// Loads std and returns a database plus the `SourceFile` of module `module`.
+fn std_db(module: &str) -> (FaiDatabase, SourceFile) {
+    let mut db = FaiDatabase::new();
+    let ids = fai_types::std_lib::load_std(&mut db);
+    let want = Symbol::intern(module);
+    let file = ids
+        .into_iter()
+        .filter_map(|id| db.source_file(id))
+        .find(|&f| fai_resolve::module_name(&db, f).is_some_and(|m| m.0 == want))
+        .expect("std module is loaded");
+    (db, file)
+}
+
+/// The pretty-printed emit-ready lowering of `name` in std module `module`.
+pub(crate) fn std_emit_pretty(module: &str, name: &str) -> String {
+    let (db, file) = std_db(module);
+    pretty_def(&crate::rc_emit(&db, file, Symbol::intern(name)))
+}
+
+/// Checks the emit-ready lowering of `name` in std module `module` is reference-
+/// count sound, returning the first violation if any.
+pub(crate) fn std_emit_sound(module: &str, name: &str) -> Result<(), String> {
+    let (db, file) = std_db(module);
+    let def = crate::rc_emit(&db, file, Symbol::intern(name));
+    check_sound(&db, &def)
+}
+
+/// Whether `name` in std module `module` has a token-taking specialized entry.
+pub(crate) fn std_has_reuse_entry(module: &str, name: &str) -> bool {
+    let (db, file) = std_db(module);
+    crate::rc_emit(&db, file, Symbol::intern(name)).reuse_entry.is_some()
+}
+
 /// Fails if `file` has any error-severity diagnostic. A program that does not
 /// typecheck lowers to `Error` nodes that the soundness oracle accepts trivially,
 /// so the corpus and generators must reject it explicitly.
@@ -215,6 +248,70 @@ fn reuse_class_of_a_list_is_a_cons_cell() {
     let db = FaiDatabase::new();
     let ty = fai_types::Ty::list(fai_types::Ty::int());
     assert_eq!(crate::reuse_class(&db, &ty), Some(2));
+}
+
+// ---------------------------------------------------------------------------
+// Emit-ready lowering: forwarded reuse tokens and specialized entries.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn balance_gets_a_specialized_entry() {
+    // `balance` accepts a token, so its emit-ready lowering carries a token-taking
+    // entry for callers to forward into.
+    assert!(std_has_reuse_entry("Dict", "balance"));
+    assert!(std_has_reuse_entry("Set", "balance"));
+}
+
+#[test]
+fn a_pure_source_gets_no_specialized_entry() {
+    // `union`/`insert` accept no token, so no specialized entry is built.
+    assert!(!std_has_reuse_entry("Dict", "union"));
+    assert!(!std_has_reuse_entry("Dict", "insert"));
+}
+
+#[test]
+fn insert_forwards_its_freed_node_to_balance() {
+    // The rebalance branch used to free the matched search-path node (`free-reuse`)
+    // and call `balance`; the emit-ready lowering forwards that token into the call
+    // (recorded as `@balance … @%token`) instead, so `balance` recycles it.
+    let pretty = std_emit_pretty("Dict", "insert");
+    // Every `balance` call is a forwarding call: `(app @balance <args> @%token)`,
+    // its argument list ending in a forwarded reuse token (`@%n`) rather than the
+    // token being freed before the call. (Local slot numbers are not pinned, as
+    // they shift with unrelated lowering changes.)
+    assert!(pretty.contains("@balance"), "insert should call balance:\n{pretty}");
+    for (i, _) in pretty.match_indices("@balance") {
+        let call = pretty[i..].split(')').next().unwrap_or_default();
+        assert!(
+            call.contains("@%"),
+            "the balance call should carry a forwarded reuse token: `{call}`\n{pretty}"
+        );
+    }
+}
+
+#[test]
+fn rc_emit_insert_is_sound() {
+    std_emit_sound("Dict", "insert").unwrap();
+}
+
+#[test]
+fn rc_emit_balance_is_sound() {
+    std_emit_sound("Dict", "balance").unwrap();
+}
+
+#[test]
+fn rc_emit_remove_is_sound() {
+    std_emit_sound("Dict", "remove").unwrap();
+}
+
+#[test]
+fn rc_emit_union_is_sound() {
+    std_emit_sound("Dict", "union").unwrap();
+}
+
+#[test]
+fn rc_emit_set_insert_is_sound() {
+    std_emit_sound("Set", "insert").unwrap();
 }
 
 // ---------------------------------------------------------------------------

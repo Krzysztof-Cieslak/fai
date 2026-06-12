@@ -47,11 +47,13 @@ use fai_types::{Con, Ty};
 use rustc_hash::FxHashSet;
 
 pub use borrow::{BorrowSig, borrow_signature};
+pub use forward::rc_emit;
 pub use mutual::{Group, MutualGroups, combined_lowered, member_wrapper, mutual_groups};
 pub use reuse_sig::{ReuseSig, forwards_to, reuse_class, reuse_signature};
 pub use verify::check_rc;
 
 mod borrow;
+mod forward;
 mod mutual;
 mod purity;
 mod reuse_sig;
@@ -164,7 +166,7 @@ pub fn rc_lowered(db: &dyn Db, lowered: &LoweredDef, self_sig: &BorrowSig) -> Lo
 
 /// The first local slot not used anywhere in `lowered` (so synthesized binders —
 /// A-normal-form temporaries and projection results — never collide).
-fn next_free_local(lowered: &LoweredDef) -> usize {
+pub(crate) fn next_free_local(lowered: &LoweredDef) -> usize {
     let mut max = 0usize;
     for f in &lowered.fns {
         for &p in &f.params {
@@ -251,7 +253,7 @@ fn is_atom(e: &CExpr) -> bool {
     matches!(e.kind, K::Lit(_) | K::Local(_) | K::Global(_) | K::Error)
 }
 
-fn fresh(next: &mut usize) -> LocalId {
+pub(crate) fn fresh(next: &mut usize) -> LocalId {
     let id = LocalId::from_index(*next);
     *next += 1;
     id
@@ -802,7 +804,7 @@ fn dup_(local: LocalId, body: CExpr) -> CExpr {
     CExpr::new(K::Dup { local, body: Box::new(body) }, ty)
 }
 
-fn drop_(local: LocalId, body: CExpr) -> CExpr {
+pub(crate) fn drop_(local: LocalId, body: CExpr) -> CExpr {
     let ty = body.ty.clone();
     CExpr::new(K::Drop { local, body: Box::new(body) }, ty)
 }
@@ -1113,12 +1115,12 @@ fn thread_or_free(e: CExpr, token: LocalId) -> CExpr {
 }
 
 /// Whether `e` is a non-nullary construction with no reuse token yet.
-fn is_reuse_target(e: &CExpr) -> bool {
+pub(crate) fn is_reuse_target(e: &CExpr) -> bool {
     matches!(&e.kind, K::MakeData { args, reuse: None, .. } if !args.is_empty())
 }
 
 /// Attaches a reuse `token` to a construction (assumes [`is_reuse_target`]).
-fn attach_reuse(e: CExpr, token: LocalId) -> CExpr {
+pub(crate) fn attach_reuse(e: CExpr, token: LocalId) -> CExpr {
     let CExpr { kind, ty } = e;
     match kind {
         K::MakeData { tag, args, reuse: None, scalars } => {
@@ -1129,14 +1131,14 @@ fn attach_reuse(e: CExpr, token: LocalId) -> CExpr {
 }
 
 /// `reset s = Local(s); body` (binding the reuse `token`).
-fn reset_(s: LocalId, token: LocalId, body: CExpr) -> CExpr {
+pub(crate) fn reset_(s: LocalId, token: LocalId, body: CExpr) -> CExpr {
     let ty = body.ty.clone();
     let value = Box::new(CExpr::new(K::Local(s), Ty::Error));
     CExpr::new(K::Reset { value, token, body: Box::new(body) }, ty)
 }
 
 /// `free-reuse token; body` (releasing a token no construction consumes).
-fn free_reuse_(token: LocalId, body: CExpr) -> CExpr {
+pub(crate) fn free_reuse_(token: LocalId, body: CExpr) -> CExpr {
     let ty = body.ty.clone();
     CExpr::new(K::FreeReuse { token, body: Box::new(body) }, ty)
 }

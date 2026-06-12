@@ -47,6 +47,36 @@ pub fn check_rc(
             }
         }
     }
+    // The token-taking specialized entry, when present: its leading parameters are
+    // the reuse tokens (linear, like reset tokens — consumed exactly once per path
+    // by a construction, a forwarding call, or a free), followed by the same source
+    // parameters as the entry (which carry its borrow signature).
+    if let Some(re) = &def.reuse_entry {
+        let source = def.fns[0].params.len();
+        let tokens = re.params.len().saturating_sub(source);
+        let mut captures: std::collections::HashSet<LocalId> =
+            re.captures.iter().copied().collect();
+        let mut refs: HashMap<LocalId, i64> = HashMap::new();
+        for (pos, &p) in re.params.iter().enumerate() {
+            // The source parameters begin after the leading token parameters and
+            // carry the entry's borrow flags.
+            if pos >= tokens && def.entry_param_borrowed(pos - tokens) {
+                captures.insert(p);
+            } else {
+                refs.insert(p, 1);
+            }
+        }
+        let mut ck = Checker { captures: &captures, fn_index: usize::MAX, arg_borrows };
+        ck.eval(&re.body, &mut refs)?;
+        for (l, n) in &refs {
+            if *n != 0 {
+                return Err(format!(
+                    "reuse entry: local %{} left with {n} refs at exit",
+                    l.index()
+                ));
+            }
+        }
+    }
     Ok(())
 }
 
