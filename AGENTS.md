@@ -517,14 +517,20 @@ cache plus a fast linker (mold/lld).
   primitives; `stress.rs` covers pathological scenarios. The deterministic
   [`fai-corpus`](crates/fai-corpus) generator backs the corpus benches and the
   guards.
-- These benches are **not** a CI gate (shared runners are noisy). Every CI run
-  still **compiles** them (`build --all-targets`) to prevent bitrot, and a
-  separate **`Benchmarks` workflow** (`.github/workflows/bench.yml`) **runs** them
-  on `main` and on demand to publish an **informational** report — a Markdown
-  summary on the run page plus the raw and parsed (`bench-results.json`) results
-  as artifacts — rendered by the `bench-summary` tool
-   (`crates/fai-tests/src/bench_summary.rs`). It never fails the build on timings;
-   the deterministic guards remain the sole performance gate. The Fai-vs-Rust
+- These benches' **timings are not a CI gate** (shared runners are noisy). The
+  `CI` workflow still **compiles** them (`build --all-targets`) to prevent bitrot,
+  and a separate **`Benchmarks` workflow** (`.github/workflows/bench.yml`) **runs**
+  every benchmark on **every pull request**, on `main`, and on demand, publishing
+  an **informational** report — a Markdown summary on the run page plus the raw and
+  parsed (`bench-results.json`) results as artifacts — rendered by the
+  `bench-summary` tool (`crates/fai-tests/src/bench_summary.rs`). A pull-request
+  run uses a short per-benchmark settle time (`DIVAN_MAX_TIME=1`), so the whole
+  suite runs in roughly the test job's time; it still **executes** every
+  benchmark, so it fails the build only when a benchmark **crashes or its
+  Fai-vs-Rust result diverges from its oracle** (a bug, not a perf regression),
+  never on a timing. The `main`/on-demand run keeps the long settle time for steady
+  medians. It never fails the build on timings; the deterministic guards remain the
+  sole performance gate. The Fai-vs-Rust
    comparison spans **runtime** (the `algorithms_jit`/`algorithms_aot` benches) and
    **peak memory** (the `algorithms_mem` bench: each delivered binary self-reports
    its peak resident set size, rendered as a "Fai vs Rust (peak RSS)" table). The
