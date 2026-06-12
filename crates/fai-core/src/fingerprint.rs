@@ -14,7 +14,7 @@ use std::fmt::Write as _;
 use fai_resolve::DefId;
 use fai_types::render_canonical;
 
-use crate::ir::{CExpr, ExprKind, FieldIndex, FnAbi, Lit, LoweredDef, Prim};
+use crate::ir::{CExpr, ExprKind, FieldIndex, FnAbi, Lit, LoweredDef, Prim, Repr};
 
 /// Builds a portable, deterministic fingerprint string for `def`.
 ///
@@ -64,16 +64,16 @@ pub fn fingerprint_def(
     out
 }
 
-/// Renders a non-uniform [`FnAbi`] compactly (per-parameter float and untagged-int
-/// flags and the result flags), for the cache key.
+/// Renders a non-uniform [`FnAbi`] compactly (each parameter's representation and
+/// the result's), for the cache key.
 fn abi_tag(abi: &FnAbi) -> String {
-    let fparams: String = abi.float_params.iter().map(|&f| if f { '1' } else { '0' }).collect();
-    let iparams: String = abi.int_params.iter().map(|&f| if f { '1' } else { '0' }).collect();
-    format!(
-        "fp[{fparams}]fr{} ip[{iparams}]ir{}",
-        u8::from(abi.float_return),
-        u8::from(abi.int_return)
-    )
+    let repr = |r: &Repr| match r {
+        Repr::Uniform => 'u',
+        Repr::ScalarFloat => 'f',
+        Repr::ScalarInt => 'i',
+    };
+    let params: String = abi.params.iter().map(repr).collect();
+    format!("p[{params}]r{}", repr(&abi.ret))
 }
 
 fn write_expr(
@@ -378,10 +378,8 @@ mod tests {
         let namer = |d: DefId| format!("fai_M_{}", d.name);
         let uniform = fingerprint_def(&g, &namer, &|_| 1, &|_| FnAbi::default());
         let float = fingerprint_def(&g, &namer, &|_| 1, &|_| FnAbi {
-            float_params: vec![true],
-            float_return: true,
-            int_params: vec![false],
-            int_return: false,
+            params: vec![Repr::ScalarFloat],
+            ret: Repr::ScalarFloat,
             register_abi: true,
         });
         assert_ne!(uniform, float);
@@ -397,10 +395,8 @@ mod tests {
         let namer = |d: DefId| format!("fai_M_{}", d.name);
         let tagged = fingerprint_def(&g, &namer, &|_| 1, &|_| FnAbi::register_uniform(1));
         let raw = fingerprint_def(&g, &namer, &|_| 1, &|_| FnAbi {
-            float_params: vec![false],
-            float_return: false,
-            int_params: vec![true],
-            int_return: true,
+            params: vec![Repr::ScalarInt],
+            ret: Repr::ScalarInt,
             register_abi: true,
         });
         assert_ne!(tagged, raw);
@@ -429,10 +425,8 @@ mod tests {
         let helper_uniform = fingerprint_def(&g, &namer, &|_| 1, &|d: DefId| {
             if d.name.as_str() == "helper" {
                 FnAbi {
-                    float_params: vec![true],
-                    float_return: true,
-                    int_params: vec![false],
-                    int_return: false,
+                    params: vec![Repr::ScalarFloat],
+                    ret: Repr::ScalarFloat,
                     register_abi: true,
                 }
             } else {
@@ -452,13 +446,7 @@ mod tests {
         let namer = |d: DefId| format!("fai_M_{}", d.name);
         let helper_raw = fingerprint_def(&g, &namer, &|_| 1, &|d: DefId| {
             if d.name.as_str() == "helper" {
-                FnAbi {
-                    float_params: vec![false],
-                    float_return: false,
-                    int_params: vec![true],
-                    int_return: true,
-                    register_abi: true,
-                }
+                FnAbi { params: vec![Repr::ScalarInt], ret: Repr::ScalarInt, register_abi: true }
             } else {
                 FnAbi::register_uniform(1)
             }
