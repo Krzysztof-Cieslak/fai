@@ -48,11 +48,13 @@ use rustc_hash::FxHashSet;
 
 pub use borrow::{BorrowSig, borrow_signature};
 pub use mutual::{Group, MutualGroups, combined_lowered, member_wrapper, mutual_groups};
+pub use reuse_sig::{ReuseSig, forwards_to, reuse_class, reuse_signature};
 pub use verify::check_rc;
 
 mod borrow;
 mod mutual;
 mod purity;
+mod reuse_sig;
 mod trmc;
 mod verify;
 
@@ -829,7 +831,7 @@ fn is_projection(e: &CExpr) -> bool {
 /// projection base (`DataField`/`DataTag`) is necessarily a data value (a match
 /// scrutinee or a record being read/updated), and any local bound to a value of a
 /// boxed data type also qualifies (e.g. a freshly constructed record).
-fn data_typed_locals(e: &CExpr) -> Locals {
+pub(crate) fn data_typed_locals(e: &CExpr) -> Locals {
     let mut out = Locals::default();
     collect_data_locals(e, &mut out);
     out
@@ -887,7 +889,7 @@ fn collect_data_locals(e: &CExpr, out: &mut Locals) {
 /// Whether values of `ty` are boxed data cells (so resetting one yields a usable
 /// reuse token). Records, tuples, ADTs, lists, and interface dictionaries qualify;
 /// scalars, strings, floats, functions, and type variables do not.
-fn is_boxed_data_ty(ty: &Ty) -> bool {
+pub(crate) fn is_boxed_data_ty(ty: &Ty) -> bool {
     fn is_data_head(ty: &Ty) -> bool {
         match ty {
             Ty::Adt(_) | Ty::Interface(_) | Ty::Con(Con::List) => true,
