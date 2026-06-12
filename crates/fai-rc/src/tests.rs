@@ -93,6 +93,28 @@ pub(crate) fn mutual_combined(src: &str, member: &str) -> (bool, bool, bool) {
     (sound, flattened, wrappers_sound)
 }
 
+/// The reuse signature (accepted token size classes) of `name` in `src`.
+pub(crate) fn reuse_sig(src: &str, name: &str) -> Vec<u32> {
+    let (db, file) = db_with(src);
+    assert_well_typed(&db, file).unwrap_or_else(|e| panic!("`{name}` {e}\n{src}"));
+    crate::reuse_signature(&db, file, Symbol::intern(name)).0
+}
+
+/// The reuse signature of `name` in the embedded standard-library module `module`
+/// (e.g. `Dict`, `Set`), so the analysis is exercised against the real
+/// weight-balanced-tree sources rather than only synthetic shapes.
+pub(crate) fn std_reuse_sig(module: &str, name: &str) -> Vec<u32> {
+    let mut db = FaiDatabase::new();
+    let ids = fai_types::std_lib::load_std(&mut db);
+    let want = Symbol::intern(module);
+    let file = ids
+        .into_iter()
+        .filter_map(|id| db.source_file(id))
+        .find(|&f| fai_resolve::module_name(&db, f).is_some_and(|m| m.0 == want))
+        .expect("std module is loaded");
+    crate::reuse_signature(&db, file, Symbol::intern(name)).0
+}
+
 /// Fails if `file` has any error-severity diagnostic. A program that does not
 /// typecheck lowers to `Error` nodes that the soundness oracle accepts trivially,
 /// so the corpus and generators must reject it explicitly.
@@ -104,6 +126,95 @@ pub(crate) fn assert_well_typed(db: &dyn Db, file: SourceFile) -> Result<(), Str
         .map(|d| d.0.code.as_str())
         .collect();
     if codes.is_empty() { Ok(()) } else { Err(format!("does not typecheck: {codes:?}")) }
+}
+
+// ---------------------------------------------------------------------------
+// Reuse signatures: which forwarded reuse tokens a specialized entry accepts.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn balance_accepts_one_token() {
+    // The weight-balanced rebalancer builds up to three same-size nodes (via the
+    // inlined `bin`); a double rotation matches and resets all of its own children,
+    // filling those, so a shorter rotation leaves exactly one construction free for
+    // a token a caller (the search-path parent `insert`/`remove`) forwards.
+    assert_eq!(std_reuse_sig("Dict", "balance"), vec![5]);
+}
+
+#[test]
+fn set_balance_accepts_one_token() {
+    // A `Set` node has four fields (size, left, element, right) rather than five.
+    assert_eq!(std_reuse_sig("Set", "balance"), vec![4]);
+}
+
+#[test]
+fn join_accepts_one_token() {
+    // `join` builds a node on its small-difference branches, which a caller's token
+    // can fill; its rebalancing branches forward to `balance` net of its own freed
+    // child — one slot either way.
+    assert_eq!(std_reuse_sig("Dict", "join"), vec![5]);
+}
+
+#[test]
+fn union_is_a_pure_source() {
+    // `union` builds nothing locally; it forwards its freed node to `join`, fully
+    // spending `join`'s one slot, so it accepts no incoming token of its own.
+    assert_eq!(std_reuse_sig("Dict", "union"), Vec::<u32>::new());
+}
+
+#[test]
+fn intersection_is_a_pure_source() {
+    assert_eq!(std_reuse_sig("Dict", "intersection"), Vec::<u32>::new());
+}
+
+#[test]
+fn insert_fills_its_own_constructions() {
+    // `insert` threads its freed search-path node into every construction it makes
+    // (the empty/equal rebuild, the non-rebalancing `bin`) and forwards it on the
+    // rebalance branch, so no slot is left for a caller's token — and nothing
+    // forwards to `insert` anyway, so it gets no specialized entry.
+    assert_eq!(std_reuse_sig("Dict", "insert"), Vec::<u32>::new());
+}
+
+#[test]
+fn a_record_builder_accepts_its_field_class() {
+    // A function whose tail builds a two-field record can recycle a forwarded
+    // two-field cell.
+    let src = indoc! {r#"
+        module M
+
+        type R = { a : Int, b : Int }
+
+        mk : Int -> R
+        let mk x = { a = x, b = x + 1 }
+    "#};
+    assert_eq!(reuse_sig(src, "mk"), vec![2]);
+}
+
+#[test]
+fn a_non_constructing_function_accepts_nothing() {
+    // `size`-style readers build nothing, so they accept no forwarded token.
+    assert_eq!(std_reuse_sig("Dict", "size"), Vec::<u32>::new());
+}
+
+#[test]
+fn reuse_class_of_a_tuple_is_its_arity() {
+    let db = FaiDatabase::new();
+    let ty = fai_types::Ty::Tuple(vec![fai_types::Ty::int(), fai_types::Ty::int()]);
+    assert_eq!(crate::reuse_class(&db, &ty), Some(2));
+}
+
+#[test]
+fn reuse_class_of_a_scalar_is_none() {
+    let db = FaiDatabase::new();
+    assert_eq!(crate::reuse_class(&db, &fai_types::Ty::int()), None);
+}
+
+#[test]
+fn reuse_class_of_a_list_is_a_cons_cell() {
+    let db = FaiDatabase::new();
+    let ty = fai_types::Ty::list(fai_types::Ty::int());
+    assert_eq!(crate::reuse_class(&db, &ty), Some(2));
 }
 
 // ---------------------------------------------------------------------------
