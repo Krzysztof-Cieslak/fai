@@ -54,11 +54,11 @@ impl FnId {
 ///   `fn(env, a0, …, aN) -> ret`. Every other definition (row-polymorphic, which
 ///   is only ever reached curried through `apply_n`, and nullary value bindings)
 ///   keeps the uniform spilled-array entry `fn(env, args) -> ret`.
-/// * **`Float` representation** ([`FnAbi::float_params`]/[`FnAbi::float_return`]).
-///   A scalar `Float` parameter or result is unboxed: in the register ABI it is an
-///   `f64` register; in the uniform ABI it is raw `f64` bits in the argument slot /
-///   return word.
-/// * **`Int` representation** ([`FnAbi::int_params`]/[`FnAbi::int_return`]). A
+/// * **`Float` representation** ([`Repr::ScalarFloat`] in [`FnAbi::params`]/
+///   [`FnAbi::ret`]). A scalar `Float` parameter or result is unboxed: in the
+///   register ABI it is an `f64` register; in the uniform ABI it is raw `f64` bits
+///   in the argument slot / return word.
+/// * **`Int` representation** ([`Repr::ScalarInt`]). A
 ///   monomorphic `Int` parameter or result is carried **untagged** (a raw `i64`,
 ///   not a low-bit-tagged immediate) — but only on the **register ABI**, where a
 ///   direct caller receives it raw and skips the tag/box round-trip. Uniform
@@ -75,20 +75,11 @@ impl FnId {
 /// body-edit-independent.
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct FnAbi {
-    /// One flag per runtime parameter (offset-evidence parameters first, then
-    /// source parameters), `true` when that parameter is an unboxed `Float`.
-    pub float_params: Vec<bool>,
-    /// Whether the result is an unboxed `Float`.
-    pub float_return: bool,
-    /// One flag per runtime parameter (parallel to [`Self::float_params`]), `true`
-    /// when that parameter is an **untagged `Int`** (a raw `i64`). Non-empty only
-    /// on the register ABI; uniform entries keep ints tagged, so theirs are all
-    /// `false` (offset-evidence parameters are always `false` — they stay tagged
-    /// immediates).
-    pub int_params: Vec<bool>,
-    /// Whether the result is an untagged `Int` (a raw `i64`). Set only on the
-    /// register ABI.
-    pub int_return: bool,
+    /// The representation of each runtime parameter (offset-evidence parameters
+    /// first, then source parameters).
+    pub params: Vec<Repr>,
+    /// The representation of the result.
+    pub ret: Repr,
     /// Whether the entry uses the register-passing calling convention
     /// (`fn(env, a0, …, aN) -> ret`, value arguments in registers) instead of the
     /// uniform spilled-array entry (`fn(env, args) -> ret`). `true` exactly for a
@@ -96,30 +87,44 @@ pub struct FnAbi {
     /// with at least one parameter. Row-polymorphic and nullary definitions are
     /// reached only through `apply_n`, so a register entry would add a wrapper hop
     /// for no benefit; they keep the uniform ABI (and the raw-bits `Float`
-    /// representation above).
+    /// representation).
     pub register_abi: bool,
+}
+
+/// The native representation of one entry parameter or result. Mutually exclusive
+/// by construction (a slot can't be both a scalar float and a raw int).
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum Repr {
+    /// A uniform tagged/boxed 64-bit word.
+    #[default]
+    Uniform,
+    /// An unboxed scalar `Float`: an `f64` register on the register ABI, raw `f64`
+    /// bits in the slot/return word on the uniform ABI.
+    ScalarFloat,
+    /// An untagged scalar `Int` (a raw `i64`). Register ABI only — a uniform entry
+    /// (reached via `apply_n`) keeps ints tagged, since a tagged immediate is a
+    /// valid uniform word.
+    ScalarInt,
 }
 
 impl FnAbi {
     /// Derives the calling-convention shape from a definition's type `scheme` and
     /// its `source_params` count (the syntactic `let f a b = …` binders). The
-    /// leading offset-evidence parameters (integers) are non-float and non-raw;
-    /// each source parameter is unboxed when its declared type is exactly `Float`
-    /// (a raw `f64`) or exactly `Int` (a raw `i64`), and the result likewise.
-    /// Untagged-`Int` flags are kept only for the register ABI (a uniform entry,
-    /// reached only via `apply_n`, keeps ints tagged). Reading the *signature* (not
-    /// the body) keeps a caller's compiled code independent of a callee's body.
+    /// leading offset-evidence parameters (integers) are uniform; each source
+    /// parameter is unboxed when its declared type is exactly `Float` (a raw `f64`)
+    /// or exactly `Int` (a raw `i64`), and the result likewise. Untagged-`Int` is
+    /// kept only for the register ABI (a uniform entry, reached only via `apply_n`,
+    /// keeps ints tagged). Reading the *signature* (not the body) keeps a caller's
+    /// compiled code independent of a callee's body.
     #[must_use]
     pub fn from_scheme(scheme: &fai_types::Scheme, source_params: usize) -> FnAbi {
         let evidence = fai_types::evidence_count(scheme);
-        let mut float_params = vec![false; evidence];
-        let mut int_params = vec![false; evidence];
+        let mut params = vec![Repr::Uniform; evidence];
         let mut ty = &scheme.ty;
         for _ in 0..source_params {
             match ty {
                 Ty::Arrow(from, to, _) => {
-                    float_params.push(matches!(from.as_ref(), Ty::Con(Con::Float)));
-                    int_params.push(matches!(from.as_ref(), Ty::Con(Con::Int)));
+                    params.push(scalar_repr(from));
                     ty = to;
                 }
                 // Fewer arrows than declared source parameters cannot happen for a
@@ -130,21 +135,21 @@ impl FnAbi {
         // Direct-callable iff non-row-polymorphic (no evidence) with a parameter:
         // exactly the definitions a saturated call reaches as a bare `Global` head.
         let register_abi = evidence == 0 && source_params > 0;
-        let mut int_return = matches!(ty, Ty::Con(Con::Int));
+        let mut ret = scalar_repr(ty);
         // Ints are unboxed only on the register ABI; a uniform entry keeps them
-        // tagged (a tagged immediate is a valid uniform word), so clear its raw
-        // flags. Floats stay unboxed on both ABIs (a float is never a uniform word).
+        // tagged (a tagged immediate is a valid uniform word). Floats stay unboxed
+        // on both ABIs (a float is never a uniform word).
         if !register_abi {
-            int_params.iter_mut().for_each(|f| *f = false);
-            int_return = false;
+            for p in &mut params {
+                if *p == Repr::ScalarInt {
+                    *p = Repr::Uniform;
+                }
+            }
+            if ret == Repr::ScalarInt {
+                ret = Repr::Uniform;
+            }
         }
-        FnAbi {
-            float_params,
-            float_return: matches!(ty, Ty::Con(Con::Float)),
-            int_params,
-            int_return,
-            register_abi,
-        }
+        FnAbi { params, ret, register_abi }
     }
 
     /// The calling-convention shape of a non-source synthetic definition (a
@@ -153,25 +158,37 @@ impl FnAbi {
     /// runtime parameter count.
     #[must_use]
     pub fn register_uniform(arity: usize) -> FnAbi {
-        FnAbi {
-            float_params: vec![false; arity],
-            float_return: false,
-            int_params: vec![false; arity],
-            int_return: false,
-            register_abi: arity > 0,
-        }
+        FnAbi { params: vec![Repr::Uniform; arity], ret: Repr::Uniform, register_abi: arity > 0 }
     }
 
     /// Whether runtime parameter `i` is passed as an unboxed `Float` (raw bits).
     #[must_use]
     pub fn float_param(&self, i: usize) -> bool {
-        self.float_params.get(i).copied().unwrap_or(false)
+        matches!(self.params.get(i), Some(Repr::ScalarFloat))
     }
 
     /// Whether runtime parameter `i` is passed as an untagged `Int` (a raw `i64`).
     #[must_use]
     pub fn int_param(&self, i: usize) -> bool {
-        self.int_params.get(i).copied().unwrap_or(false)
+        matches!(self.params.get(i), Some(Repr::ScalarInt))
+    }
+
+    /// Whether the result is an unboxed `Float`.
+    #[must_use]
+    pub fn float_return(&self) -> bool {
+        self.ret == Repr::ScalarFloat
+    }
+
+    /// Whether the result is an untagged `Int` (a raw `i64`).
+    #[must_use]
+    pub fn int_return(&self) -> bool {
+        self.ret == Repr::ScalarInt
+    }
+
+    /// Whether any parameter is an unboxed `Float` (raw bits in its slot).
+    #[must_use]
+    pub fn any_float_param(&self) -> bool {
+        self.params.contains(&Repr::ScalarFloat)
     }
 
     /// Whether the entry uses the plain uniform ABI (no unboxed `Float` or untagged
@@ -179,10 +196,17 @@ impl FnAbi {
     /// bridging wrapper.
     #[must_use]
     pub fn is_uniform(&self) -> bool {
-        !self.float_return
-            && !self.int_return
-            && self.float_params.iter().all(|&f| !f)
-            && self.int_params.iter().all(|&f| !f)
+        self.ret == Repr::Uniform && self.params.iter().all(|r| *r == Repr::Uniform)
+    }
+}
+
+/// The scalar representation of a parameter/result type: an unboxed `Float`, an
+/// untagged `Int`, or a uniform word.
+fn scalar_repr(ty: &Ty) -> Repr {
+    match ty {
+        Ty::Con(Con::Float) => Repr::ScalarFloat,
+        Ty::Con(Con::Int) => Repr::ScalarInt,
+        _ => Repr::Uniform,
     }
 }
 

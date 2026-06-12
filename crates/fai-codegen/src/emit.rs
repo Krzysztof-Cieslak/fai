@@ -264,7 +264,7 @@ fn build_owned_wrapper<M: Module>(
             // Uniform entry: pass the argument array. For unboxed-float parameters,
             // replace the boxed argument with its raw bits in a fresh array and
             // release the box; other slots pass through.
-            let entry_args = if abi.float_params.iter().any(|&f| f) {
+            let entry_args = if abi.any_float_param() {
                 let size = u32::try_from(arity * 8).expect("array size");
                 let slot = builder.create_sized_stack_slot(StackSlotData::new(
                     StackSlotKind::ExplicitSlot,
@@ -304,7 +304,7 @@ fn build_owned_wrapper<M: Module>(
 
         // Box a float result back into the uniform representation: a register entry
         // returns an `f64`, a uniform entry returns its raw bits.
-        if abi.float_return {
+        if abi.float_return() {
             let bits = if abi.register_abi {
                 builder.ins().bitcast(types::I64, MemFlags::new(), result)
             } else {
@@ -323,7 +323,7 @@ fn build_owned_wrapper<M: Module>(
 
         // Tag/box a raw int result (a register int entry returns it untagged) back
         // into the uniform representation. Only the register ABI carries raw ints.
-        if abi.int_return {
+        if abi.int_return() {
             let mut box_sig = module.make_signature();
             box_sig.params.push(AbiParam::new(types::I64));
             box_sig.returns.push(AbiParam::new(types::I64));
@@ -370,7 +370,7 @@ fn entry_signature<M: Module>(
         let ty = if abi.float_param(i) { types::F64 } else { types::I64 };
         sig.params.push(AbiParam::new(ty));
     }
-    let ret = if abi.float_return { types::F64 } else { types::I64 };
+    let ret = if abi.float_return() { types::F64 } else { types::I64 };
     sig.returns.push(AbiParam::new(ret));
     sig
 }
@@ -526,11 +526,11 @@ fn build_fn<M: Module>(
         // The entry returns: an `f64` register for a register float entry; a raw
         // untagged `i64` for a register int entry; raw float bits for a uniform float
         // entry; otherwise the uniform (boxed/tagged) word (which tags a raw int).
-        let ret = if register_entry && abi.float_return {
+        let ret = if register_entry && abi.float_return() {
             tr.f64_return(result)
-        } else if register_entry && abi.int_return {
+        } else if register_entry && abi.int_return() {
             tr.as_raw_int(result)
-        } else if is_entry && abi.float_return {
+        } else if is_entry && abi.float_return() {
             tr.raw_float_return(result)
         } else {
             tr.boxed_return(result)
@@ -2376,7 +2376,7 @@ impl<M: Module> Translator<'_, M> {
         }
         // A register int result arrives untagged; record it raw so callers treat it
         // so (its `I64` type cannot convey this).
-        if abi.int_return {
+        if abi.int_return() {
             self.mark_raw(result);
         }
         result
