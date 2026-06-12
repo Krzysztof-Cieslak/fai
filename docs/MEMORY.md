@@ -2412,9 +2412,71 @@ Editor integration:
     codegen IR tests assert only instruction *presence*, not order. New coverage:
     the array copy-count tests, a random-input sort property test (both
     `Array.sort` and a hand-written quicksort: exactly sorted vs a Rust oracle,
-    leak-free, zero copies), and a generated-tree destructure-and-recurse property
-    test (folds exercise the drop path, maps the reset path) asserting result and
-    leak-freedom.
+     leak-free, zero copies), and a generated-tree destructure-and-recurse property
+     test (folds exercise the drop path, maps the reset path) asserting result and
+     leak-freedom.
+
+- **D123 Inter-procedural reuse-token passing (forwarding a freed cell into an
+  accepting callee).** Reuse (D77) is intra-function: a freed cell can only be
+  recycled by a construction in the same body, so a rebuild that happens in a
+  *called* function (a non-inlined helper) cannot reuse the caller's freed cell.
+  The headline victim was the weight-balanced `Dict`/`Set` rebalancer: `insert`/
+  `remove` free the matched search-path node, but the rotation branch calls the
+  large, non-inlined `balance`, so on a rotation the node was freed and `balance`
+  allocated fresh — a rotation-heavy unique build cost ~3 cells per entry instead
+  of one. Reuse tokens are already plain `i64` values with a runtime null/wrong-
+  size fallback, so a token can cross a call boundary.
+  - **Two sides.** *Source:* a freed reuse token the intra-function pass could not
+    home locally (it would `FreeReuse` it) is **forwarded** into a saturated direct
+    call on its path whose callee accepts a token, recorded in the call's reuse
+    list (`App.reuse`). *Sink:* a function that can consume incoming tokens gets a
+    **token-taking specialized entry** (`{base}__reuse`) whose leading parameters
+    are reuse tokens, threaded into its leftover sinks (a construction its own
+    resets did not fill, or another forwardable call). Both reuse the intra-
+    function first-sink-per-path threading, generalized so a *sink* is a
+    construction **or** a forwardable call.
+  - **Reuse signature (the seam, modeled on borrow inference D79/D100).**
+    `reuse_signature(def)` is the size-classed (field-count) token slots a
+    function accepts: the sinks reachable by threading, **net of the function's own
+    dying cells**, per-class max across paths. It is inter-procedural via
+    forward-through (a forward sink contributes the callee's full capacity), so it
+    is a monotone salsa fixpoint — acyclic call graphs resolve as ordinary
+    dependencies, a mutual-builder cycle resolves through cycle recovery (start
+    empty, grow to the least fixpoint, capped). Early cutoff on the small signature
+    bounds a callee edit's ripple to callers that forward to it; the entry **arity**
+    needed to test saturation is read from the callee's *borrow signature* (also a
+    firewall-stable small value), never its full lowering, so a body edit that
+    leaves the arity unchanged does not ripple.
+  - **Calling convention & ABI.** `App.reuse` is a `Vec<Option<LocalId>>`, one
+    entry per callee slot — a forwarded token (`Some`) or a null-token pad
+    (`None`) — so the slot count travels in the IR (and the cache fingerprint),
+    needing no extra cross-crate plumbing. A forwarded call passes one leading
+    `i64` register per slot (the token, or the null token `0`) ahead of the value
+    arguments, to `{base}__reuse`. Tokens are raw `i64`s, never reference-counted.
+    The specialized entry is emitted as a **separate object**, so the per-
+    definition primary object stays a pure function of the definition (the cache
+    firewall); the driver links it only for definitions a reachable caller actually
+    forwards to (AOT, JIT, and the daemon-run wire bundle alike), so an
+    accepting-but-never-forwarded-to definition costs no extra code generation.
+  - **Soundness.** The reference-count oracle (D76) models the new edges: a
+    forwarded token is consumed by the call (exactly like a `MakeData` reuse
+    token), and a specialized entry's leading token parameters are linear (born at
+    entry, consumed once per path). The runtime null/wrong-size check (D77) makes
+    any pairing correct, so the analysis is a pure performance choice. A self-tail-
+    call is **never** a forward target — the tail-call transform (D99) owns per-
+    iteration loop reuse via its destination hole, keeping the two token mechanisms
+    disjoint.
+  - **Result.** A rotation-heavy unique `Dict`/`Set` build now allocates exactly
+    one cell per entry (every rebuilt path, including the `balance` rotations,
+    recycled in place); a unique `remove` recycles its rebalanced path. Guarded by
+    allocation differentials and a reuse-signature firewall guard (a
+    signature-preserving callee edit re-runs only the callee; a signature-changing
+    edit recompiles the callee and the one forwarding caller — both independent of
+    workspace size). Forwarding currently fires where the freed token reaches a
+    *tail* accepting call (the `insert`/`remove` → `balance` shape); extending it to
+    the bulk operations (`union`/`intersection`/`difference` → `join`/`split`,
+    whose freed operand is plain-dropped rather than freed-for-reuse) is noted as
+    future work, as is class-precise multi-slot caller marshalling.
 
 - **D123 Specialize structural `=`/`compare` for known-immediate operands
   (extends D108).** Polymorphic structural comparison — `=`/`<>` and `< <= > >=`/

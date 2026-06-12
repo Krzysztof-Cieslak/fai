@@ -70,7 +70,18 @@
 > stays a cycle-free DAG) — so `Dict`/`Set` `insert`/`remove`, written through a
 > `bin` smart constructor (and `singleton`/all-`bin` `balance`) rather than
 > hand-inlined nodes, still recycle a unique tree's cells in place, while the larger
-> rotating `balance` stays a shared call. `{ r with … }`
+> rotating `balance` stays a shared call. **Inter-procedural reuse-token passing**
+> then lets a freed cell cross that call: a function records, per definition, the
+> size-classed reuse tokens it can consume (its `reuse_signature`, a monotone
+> fixpoint over the call graph with early cutoff, like borrow inference) and gets a
+> **token-taking specialized entry** `{base}__reuse`; a caller forwards a cell it
+> freed but could not recycle locally into such a call (passing the token in a
+> leading register, with a runtime null/wrong-size fallback). So `insert`/`remove`
+> hand the matched search-path node they free to `balance`, which recycles it — a
+> rotation-heavy unique build now allocates one cell per entry rather than ~3. The
+> specialized entry is a separate object linked only where a reachable caller
+> forwards to it, so the per-definition primary object (the cache firewall) is
+> unchanged. `{ r with … }`
  > updates a unique record in place, and **argument borrowing** lends
 > inspect-only parameters at direct calls (with an owned-ABI wrapper for the
 > first-class value form). Borrow inference is **inter-procedural**: a parameter
