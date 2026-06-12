@@ -382,6 +382,17 @@ static LIVE: AtomicI64 = AtomicI64::new(0);
 #[cfg(debug_assertions)]
 static ALLOCATIONS: AtomicI64 = AtomicI64::new(0);
 
+/// The cumulative number of times an array operation duplicated the whole buffer
+/// because the array was *shared* (`rc != 1`) at the mutation point — the
+/// uniqueness-loss copies in [`fai_array_set`]/[`fai_array_push`]. Distinct from
+/// [`ALLOCATIONS`]: each such copy is a single `alloc_array` call (one allocation)
+/// but does O(length) element work, so a per-element copy regression is invisible
+/// to the allocation *count* yet shows up here as copies that scale with the
+/// length. The expected, amortized capacity growth of a *unique* array is not a
+/// copy and is not counted. Never decreases until reset.
+#[cfg(debug_assertions)]
+static ARRAY_COPIES: AtomicI64 = AtomicI64::new(0);
+
 /// Records one heap allocation in the debug counters. Compiled to nothing in a
 /// release build (the counters are absent there).
 #[inline(always)]
@@ -391,6 +402,14 @@ fn note_alloc() {
         LIVE.fetch_add(1, Ordering::Relaxed);
         ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
     }
+}
+
+/// Records one shared-array buffer copy (a uniqueness-loss duplication). Compiled
+/// to nothing in a release build (the counter is absent there).
+#[inline(always)]
+fn note_array_copy() {
+    #[cfg(debug_assertions)]
+    ARRAY_COPIES.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Records one heap free in the debug counters. Compiled to nothing in a release
@@ -429,11 +448,29 @@ pub fn allocations() -> i64 {
     }
 }
 
-/// Resets the cumulative allocation counter (tests/benchmarks). A no-op in a
-/// release build, where the counter is compiled out.
+/// Returns the cumulative count of shared-array buffer copies (uniqueness-loss
+/// duplications in `set`/`push`). Always zero in a release build, where the
+/// counter is compiled out.
+#[must_use]
+pub fn array_copies() -> i64 {
+    #[cfg(debug_assertions)]
+    {
+        ARRAY_COPIES.load(Ordering::Relaxed)
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        0
+    }
+}
+
+/// Resets the cumulative allocation and array-copy counters (tests/benchmarks). A
+/// no-op in a release build, where the counters are compiled out.
 pub fn reset_allocations() {
     #[cfg(debug_assertions)]
-    ALLOCATIONS.store(0, Ordering::Relaxed);
+    {
+        ALLOCATIONS.store(0, Ordering::Relaxed);
+        ARRAY_COPIES.store(0, Ordering::Relaxed);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1157,7 +1194,11 @@ pub extern "C" fn fai_array_set(arr: Value, index: Value, value: Value) -> Value
             fai_drop(old);
             return arr;
         }
-        // Shared: copy the live elements with the one at `index` replaced.
+        // Shared: copy the live elements with the one at `index` replaced. This is
+        // a uniqueness-loss buffer duplication (O(length) work), counted so a
+        // mutation driven through code that fails to keep the array unique is
+        // observable even though it is a single allocation.
+        note_array_copy();
         let q = alloc_array(len, len);
         for i in 0..len {
             if i == index {
@@ -1205,7 +1246,10 @@ pub extern "C" fn fai_array_push(arr: Value, value: Value) -> Value {
             free_obj(p);
         } else {
             // Shared: copy the elements (dup each — now shared with the original),
-            // then release this reference (balancing the dups).
+            // then release this reference (balancing the dups). A uniqueness-loss
+            // buffer duplication (counted), as opposed to the unique-but-full grow
+            // above, which is expected amortized growth.
+            note_array_copy();
             for i in 0..len {
                 let e = read_i64(p, ARRAY_ELEMS_OFFSET + i * 8);
                 fai_dup(e);
