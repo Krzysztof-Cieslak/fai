@@ -126,7 +126,12 @@ pub fn helper_inlined(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<Lowere
     if !changed {
         return base;
     }
-    Arc::new(LoweredDef { def: base.def, fns, entry_borrowed: base.entry_borrowed.clone() })
+    Arc::new(LoweredDef {
+        def: base.def,
+        fns,
+        entry_borrowed: base.entry_borrowed.clone(),
+        reuse_entry: base.reuse_entry.clone(),
+    })
 }
 
 /// Rewrites a single expression, folding every eligible same-file helper call it
@@ -145,7 +150,9 @@ fn inline_expr(
         inline_expr(db, file, source, c, next, changed)
     };
     match &e.kind {
-        K::App { func, args } => {
+        // Helper inlining runs before reference counting inserts reuse tokens, so
+        // `reuse` is always empty here; it is carried through verbatim.
+        K::App { func, args, reuse } => {
             let func = go(func, next, changed);
             let args: Vec<CExpr> = args.iter().map(|a| go(a, next, changed)).collect();
             // A saturated (or over-applied) direct call to an eligible same-file
@@ -159,7 +166,7 @@ fn inline_expr(
                 *changed = true;
                 return build_inline(folded.entry(), args, arity, ty, next);
             }
-            CExpr::new(K::App { func: Box::new(func), args }, ty)
+            CExpr::new(K::App { func: Box::new(func), args, reuse: reuse.clone() }, ty)
         }
         K::Prim { op, args } => {
             let args = args.iter().map(|a| go(a, next, changed)).collect();
@@ -272,7 +279,7 @@ fn build_inline(
             .zip(&arg_tys[arity..])
             .map(|(&l, t)| CExpr::new(K::Local(l), t.clone()))
             .collect();
-        CExpr::new(K::App { func: Box::new(body), args: surplus }, call_ty)
+        CExpr::new(K::App { func: Box::new(body), args: surplus, reuse: Vec::new() }, call_ty)
     } else {
         body
     };
@@ -301,9 +308,10 @@ fn remap_expr(e: &CExpr, subst: &mut FxHashMap<LocalId, LocalId>, next: &mut usi
             reuse: reuse.map(|t| remap_local(t, subst, next)),
             scalars: *scalars,
         },
-        K::App { func, args } => K::App {
+        K::App { func, args, reuse } => K::App {
             func: Box::new(remap_expr(func, subst, next)),
             args: args.iter().map(|a| remap_expr(a, subst, next)).collect(),
+            reuse: reuse.iter().map(|&t| remap_local(t, subst, next)).collect(),
         },
         K::If { cond, then, els } => K::If {
             cond: Box::new(remap_expr(cond, subst, next)),
@@ -398,7 +406,7 @@ fn node_count(e: &CExpr) -> usize {
     1 + match &e.kind {
         K::Lit(_) | K::Local(_) | K::Global(_) | K::Error | K::MakeClosure { .. } => 0,
         K::Prim { args, .. } | K::MakeData { args, .. } | K::Recur { args } => kids(args),
-        K::App { func, args } => node_count(func) + kids(args),
+        K::App { func, args, .. } => node_count(func) + kids(args),
         K::If { cond, then, els } => node_count(cond) + node_count(then) + node_count(els),
         K::Let { value, body, .. } => node_count(value) + node_count(body),
         K::DataTag(base) | K::DataField { base, .. } => node_count(base),

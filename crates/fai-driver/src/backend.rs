@@ -673,7 +673,7 @@ pub fn build_run_bundle(db: &dyn Db, file: SourceFile) -> RunBundleResult {
             let def_file = db.source_file(d.file)?;
             let lowered = rc(db, def_file, d.name);
             let module_of = |x: DefId| module_label(db, x);
-            Some(def_to_wire(&lowered, &module_of, arity_of(db, *d), abi_of(db, *d)))
+            Some(def_to_wire(&lowered, &module_of, arity_of(db, *d), abi_of(db, *d), Vec::new()))
         })
         .collect::<Vec<Option<WireDef>>>()
         .into_iter()
@@ -683,14 +683,26 @@ pub fn build_run_bundle(db: &dyn Db, file: SourceFile) -> RunBundleResult {
     for (member, wrapper) in &groups.wrappers {
         // The wrapper is emitted at the member's symbol, so it presents the
         // member's native ABI to direct callers.
-        defs.push(def_to_wire(wrapper, &module_of, arity_of(db, *member), abi_of(db, *member)));
+        defs.push(def_to_wire(
+            wrapper,
+            &module_of,
+            arity_of(db, *member),
+            abi_of(db, *member),
+            Vec::new(),
+        ));
     }
     for combined in &groups.combined {
         // The synthetic combined loop shares padded positional slots across members
         // (the uniform boxed representation), but it is **direct-called** by the
         // member wrappers, so it takes the register ABI with all-boxed slots.
         let arity = groups.arity.get(&combined.def).copied().unwrap_or(0);
-        defs.push(def_to_wire(combined, &module_of, arity, FnAbi::register_uniform(arity)));
+        defs.push(def_to_wire(
+            combined,
+            &module_of,
+            arity,
+            FnAbi::register_uniform(arity),
+            Vec::new(),
+        ));
     }
 
     let entry = DefId::new(file.source(db), Symbol::intern(ENTRY));

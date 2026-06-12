@@ -466,12 +466,18 @@ fn build_plan(
         // Synthesized harnesses/generators/properties have no source signature;
         // they are reached only via `apply_n`, so the uniform (boxed) ABI is both
         // correct and what that path requires.
-        defs.push(def_to_wire(lowered, &module_of, *arity, FnAbi::default()));
+        defs.push(def_to_wire(lowered, &module_of, *arity, FnAbi::default(), Vec::new()));
     }
     for def in &reachable {
         if let Some(file) = db.source_file(def.file) {
             let lowered = rc(db, file, def.name);
-            defs.push(def_to_wire(&lowered, &module_of, arity_of(db, *def), abi_of(db, *def)));
+            defs.push(def_to_wire(
+                &lowered,
+                &module_of,
+                arity_of(db, *def),
+                abi_of(db, *def),
+                Vec::new(),
+            ));
         }
     }
 
@@ -910,7 +916,7 @@ fn has_error_node(def: &LoweredDef) -> bool {
         match &e.kind {
             ExprKind::Error => true,
             ExprKind::Prim { args, .. } | ExprKind::MakeData { args, .. } => args.iter().any(scan),
-            ExprKind::App { func, args } => scan(func) || args.iter().any(scan),
+            ExprKind::App { func, args, .. } => scan(func) || args.iter().any(scan),
             ExprKind::If { cond, then, els } => scan(cond) || scan(then) || scan(els),
             ExprKind::Let { value, body, .. } | ExprKind::Reset { value, body, .. } => {
                 scan(value) || scan(body)

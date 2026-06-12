@@ -124,12 +124,18 @@ fn write_expr(
             }
             out.push(')');
         }
-        ExprKind::App { func, args } => {
+        ExprKind::App { func, args, reuse } => {
             out.push_str("(app ");
             write_expr(out, func, namer, arity_of, abi_of);
             for a in args {
                 out.push(' ');
                 write_expr(out, a, namer, arity_of, abi_of);
+            }
+            // Forwarded reuse tokens select the callee's token-taking entry and the
+            // per-slot marshalling, so they are part of the cache key.
+            if !reuse.is_empty() {
+                let toks: Vec<String> = reuse.iter().map(|t| format!("%{}", t.index())).collect();
+                let _ = write!(out, " @[{}]", toks.join(","));
             }
             out.push(')');
         }

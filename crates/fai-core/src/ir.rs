@@ -222,6 +222,14 @@ pub struct LoweredDef {
     /// parameter is lent by direct callers and not dropped here. Empty before
     /// reference counting (and means all-owned). Lifted lambdas are always owned.
     pub entry_borrowed: Vec<bool>,
+    /// A token-taking specialized entry, when this definition can recycle reuse
+    /// tokens forwarded by a caller (set by reference counting when its
+    /// [`reuse_signature`](../../fai_rc/fn.reuse_signature.html) is non-empty). Its
+    /// leading parameters are the reuse tokens (one per accepted size-class slot,
+    /// not reference-counted), followed by the same source parameters as the entry.
+    /// Code generation emits it as `{base}__reuse`; `None` when the definition
+    /// accepts no tokens.
+    pub reuse_entry: Option<CoreFn>,
 }
 
 impl LoweredDef {
@@ -273,7 +281,7 @@ fn collect_globals(expr: &CExpr, out: &mut Vec<DefId>) {
         }
         ExprKind::DataTag(base) => collect_globals(base, out),
         ExprKind::DataField { base, .. } => collect_globals(base, out),
-        ExprKind::App { func, args } => {
+        ExprKind::App { func, args, .. } => {
             collect_globals(func, out);
             for a in args {
                 collect_globals(a, out);
@@ -747,6 +755,12 @@ pub enum ExprKind {
         func: Box<CExpr>,
         /// The arguments (consumed).
         args: Vec<CExpr>,
+        /// Reuse tokens forwarded into the callee's token-taking entry (inserted by
+        /// `fai-rc` at a saturated direct call whose callee accepts them). Empty for
+        /// an ordinary call. Each token is consumed here (the callee reuses it in a
+        /// construction or frees it). A non-empty list means the call targets the
+        /// callee's `{base}__reuse` entry, which takes these as leading parameters.
+        reuse: Vec<LocalId>,
     },
     /// A conditional.
     If {

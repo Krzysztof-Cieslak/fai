@@ -118,10 +118,13 @@ fn write_expr(out: &mut String, e: &CExpr) {
             write_args(out, args);
             out.push(')');
         }
-        ExprKind::App { func, args } => {
+        ExprKind::App { func, args, reuse } => {
             out.push_str("(app ");
             write_expr(out, func);
             write_args(out, args);
+            for t in reuse {
+                let _ = write!(out, " @%{}", t.index());
+            }
             out.push(')');
         }
         ExprKind::If { cond, then, els } => {

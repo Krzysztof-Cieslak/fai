@@ -1084,7 +1084,7 @@ impl<M: Module> Translator<'_, M> {
             ExprKind::Local(local) => self.use_var(*local),
             ExprKind::Global(def) => self.global_value(*def, &e.ty),
             ExprKind::Prim { op, args } => self.prim(*op, args, &e.ty),
-            ExprKind::App { func, args } => self.application(func, args, &e.ty),
+            ExprKind::App { func, args, .. } => self.application(func, args, &e.ty),
             ExprKind::If { cond, then, els } => self.conditional(cond, then, els),
             ExprKind::Let { local, value, body } => {
                 let v = self.expr(value);
@@ -2899,7 +2899,7 @@ fn collect_local_types(e: &CExpr, out: &mut FxHashMap<usize, Ty>) {
         ExprKind::Prim { args, .. } | ExprKind::MakeData { args, .. } => {
             args.iter().for_each(|a| collect_local_types(a, out));
         }
-        ExprKind::App { func, args } => {
+        ExprKind::App { func, args, .. } => {
             collect_local_types(func, out);
             args.iter().for_each(|a| collect_local_types(a, out));
         }
@@ -2959,7 +2959,7 @@ fn collect_float_observations(
         ExprKind::Prim { args, .. } | ExprKind::MakeData { args, .. } => {
             args.iter().for_each(|a| collect_float_observations(a, float_seen, other_seen));
         }
-        ExprKind::App { func, args } => {
+        ExprKind::App { func, args, .. } => {
             collect_float_observations(func, float_seen, other_seen);
             args.iter().for_each(|a| collect_float_observations(a, float_seen, other_seen));
         }
@@ -3033,7 +3033,7 @@ fn collect_int_observations(
         ExprKind::Prim { args, .. } | ExprKind::MakeData { args, .. } => {
             args.iter().for_each(|a| collect_int_observations(a, int_seen, other_seen));
         }
-        ExprKind::App { func, args } => {
+        ExprKind::App { func, args, .. } => {
             collect_int_observations(func, int_seen, other_seen);
             args.iter().for_each(|a| collect_int_observations(a, int_seen, other_seen));
         }

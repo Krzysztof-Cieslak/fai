@@ -50,6 +50,7 @@ pub fn core(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
             def,
             fns: vec![CoreFn { params: Vec::new(), captures: Vec::new(), body: error_expr() }],
             entry_borrowed: Vec::new(),
+            reuse_entry: None,
         });
     };
 
@@ -75,7 +76,7 @@ pub fn core(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
     let mut all_params = evidence_params;
     all_params.extend(param_locals);
     lowerer.fns[0] = CoreFn { params: all_params, captures: Vec::new(), body };
-    Arc::new(LoweredDef { def, fns: lowerer.fns, entry_borrowed: Vec::new() })
+    Arc::new(LoweredDef { def, fns: lowerer.fns, entry_borrowed: Vec::new(), reuse_entry: None })
 }
 
 /// The lowered pieces of a `(params, body)` form, for callers that assemble their
@@ -363,7 +364,7 @@ impl Lowerer<'_> {
         if args.is_empty() {
             global
         } else {
-            CExpr::new(K::App { func: Box::new(global), args }, ty)
+            CExpr::new(K::App { func: Box::new(global), args, reuse: Vec::new() }, ty)
         }
     }
 
@@ -832,7 +833,7 @@ impl Lowerer<'_> {
         }
         let func = Box::new(self.lower_expr(head));
         let args = args.iter().map(|&a| self.lower_expr(a)).collect();
-        CExpr::new(K::App { func, args }, ty)
+        CExpr::new(K::App { func, args, reuse: Vec::new() }, ty)
     }
 
     /// The operator symbol held in an operator `Var` node.
@@ -1478,7 +1479,9 @@ fn collect_free(expr: &CExpr, bound: &mut FxHashSet<LocalId>, out: &mut FxHashSe
         }
         K::DataTag(base) => collect_free(base, bound, out),
         K::DataField { base, .. } => collect_free(base, bound, out),
-        K::App { func, args } => {
+        // Lowering runs before reference counting inserts reuse tokens, so `reuse`
+        // is always empty here.
+        K::App { func, args, .. } => {
             collect_free(func, bound, out);
             for a in args {
                 collect_free(a, bound, out);
