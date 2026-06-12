@@ -392,9 +392,9 @@ fn remap_member(
             let args = args.iter().map(|a| remap_member(a, subst, next, group)).collect();
             CExpr::new(K::Prim { op: *op, args }, ty)
         }
-        K::MakeData { tag, args, reuse } => {
+        K::MakeData { tag, args, reuse, scalars } => {
             let args = args.iter().map(|a| remap_member(a, subst, next, group)).collect();
-            CExpr::new(K::MakeData { tag: *tag, args, reuse: *reuse }, ty)
+            CExpr::new(K::MakeData { tag: *tag, args, reuse: *reuse, scalars: *scalars }, ty)
         }
         K::If { cond, then, els } => CExpr::new(
             K::If {
@@ -414,7 +414,7 @@ fn remap_member(
         K::DataTag(base) => {
             CExpr::new(K::DataTag(Box::new(remap_member(base, subst, next, group))), ty)
         }
-        K::DataField { base, index } => {
+        K::DataField { base, index, scalar } => {
             let index = match index {
                 FieldIndex::Dyn { base: off, evidence } => {
                     FieldIndex::Dyn { base: *off, evidence: remap_local(*evidence, subst, next) }
@@ -422,7 +422,11 @@ fn remap_member(
                 c => *c,
             };
             CExpr::new(
-                K::DataField { base: Box::new(remap_member(base, subst, next, group)), index },
+                K::DataField {
+                    base: Box::new(remap_member(base, subst, next, group)),
+                    index,
+                    scalar: *scalar,
+                },
                 ty,
             )
         }

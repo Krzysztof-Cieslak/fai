@@ -136,7 +136,7 @@ impl Checker<'_> {
                 }
             }
             ExprKind::DataTag(base) => self.borrow_atom(base, refs)?,
-            ExprKind::DataField { base, index } => {
+            ExprKind::DataField { base, index, .. } => {
                 self.borrow_atom(base, refs)?;
                 if let FieldIndex::Dyn { evidence, .. } = index {
                     self.borrow(*evidence, refs)?;

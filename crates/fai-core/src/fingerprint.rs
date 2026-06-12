@@ -153,13 +153,15 @@ fn write_expr(
             let caps: Vec<String> = captures.iter().map(|c| format!("%{}", c.index())).collect();
             let _ = write!(out, "(clo fn{} [{}])", func.index(), caps.join(","));
         }
-        ExprKind::MakeData { tag, args, reuse } => {
+        ExprKind::MakeData { tag, args, reuse, scalars } => {
+            // The scalar bitmap selects the descriptor and box/raw field handling,
+            // so it is part of the cache key.
             match reuse {
                 Some(t) => {
-                    let _ = write!(out, "(data@%{} {tag}", t.index());
+                    let _ = write!(out, "(data@%{} {tag}/s{scalars}", t.index());
                 }
                 None => {
-                    let _ = write!(out, "(data {tag}");
+                    let _ = write!(out, "(data {tag}/s{scalars}");
                 }
             }
             for a in args {
@@ -173,13 +175,14 @@ fn write_expr(
             write_expr(out, base, namer, arity_of, abi_of);
             out.push(')');
         }
-        ExprKind::DataField { base, index } => {
+        ExprKind::DataField { base, index, scalar } => {
+            let s = if *scalar { "f" } else { "" };
             match index {
                 FieldIndex::Const(n) => {
-                    let _ = write!(out, "(field {n} ");
+                    let _ = write!(out, "(field{s} {n} ");
                 }
                 FieldIndex::Dyn { base: off, evidence } => {
-                    let _ = write!(out, "(field {off}+%{} ", evidence.index());
+                    let _ = write!(out, "(field{s} {off}+%{} ", evidence.index());
                 }
             }
             write_expr(out, base, namer, arity_of, abi_of);

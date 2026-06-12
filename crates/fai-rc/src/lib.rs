@@ -193,7 +193,7 @@ fn max_local(e: &CExpr, max: &mut usize) {
         }
         K::MakeClosure { captures, .. } => captures.iter().for_each(|c| bump(*c, max)),
         K::DataTag(base) => max_local(base, max),
-        K::DataField { base, index } => {
+        K::DataField { base, index, .. } => {
             max_local(base, max);
             if let FieldIndex::Dyn { evidence, .. } = index {
                 bump(*evidence, max);
@@ -268,9 +268,9 @@ fn anf_op(e: CExpr, binds: &mut Vec<(LocalId, CExpr)>, next: &mut usize) -> CExp
             let args = args.into_iter().map(|a| atomize(a, binds, next)).collect();
             CExpr::new(K::Prim { op, args }, ty)
         }
-        K::MakeData { tag, args, reuse } => {
+        K::MakeData { tag, args, reuse, scalars } => {
             let args = args.into_iter().map(|a| atomize(a, binds, next)).collect();
-            CExpr::new(K::MakeData { tag, args, reuse }, ty)
+            CExpr::new(K::MakeData { tag, args, reuse, scalars }, ty)
         }
         K::App { func, args } => {
             let func = Box::new(atomize(*func, binds, next));
@@ -278,9 +278,10 @@ fn anf_op(e: CExpr, binds: &mut Vec<(LocalId, CExpr)>, next: &mut usize) -> CExp
             CExpr::new(K::App { func, args }, ty)
         }
         K::DataTag(base) => CExpr::new(K::DataTag(Box::new(to_local(*base, binds, next))), ty),
-        K::DataField { base, index } => {
-            CExpr::new(K::DataField { base: Box::new(to_local(*base, binds, next)), index }, ty)
-        }
+        K::DataField { base, index, scalar } => CExpr::new(
+            K::DataField { base: Box::new(to_local(*base, binds, next)), index, scalar },
+            ty,
+        ),
         // Branches keep their own scopes (a binding in one branch must not escape).
         K::If { cond, then, els } => CExpr::new(
             K::If {
@@ -412,7 +413,7 @@ fn collect_fv(e: &CExpr, captures: &Locals, bound: &mut Locals, out: &mut Locals
             caps.iter().for_each(|c| note(*c, bound, out));
         }
         K::DataTag(base) => collect_fv(base, captures, bound, out),
-        K::DataField { base, index } => {
+        K::DataField { base, index, .. } => {
             collect_fv(base, captures, bound, out);
             if let FieldIndex::Dyn { evidence, .. } = index {
                 note(*evidence, bound, out);
@@ -501,10 +502,11 @@ impl Rc<'_> {
                 let rebuilt = |args| CExpr::new(K::Prim { op, args }, ty.clone());
                 self.operands_rc(args, &borrows, live, rebuilt)
             }
-            K::MakeData { tag, args, reuse } => {
+            K::MakeData { tag, args, reuse, scalars } => {
                 // Constructor fields are stored (consumed); none are borrowed.
                 let borrows = vec![false; args.len()];
-                let rebuilt = move |args| CExpr::new(K::MakeData { tag, args, reuse }, ty.clone());
+                let rebuilt =
+                    move |args| CExpr::new(K::MakeData { tag, args, reuse, scalars }, ty.clone());
                 self.operands_rc(args, &borrows, live, rebuilt)
             }
             K::App { func, args } => {
@@ -542,8 +544,8 @@ impl Rc<'_> {
             }
             // Borrowing projections in tail position: read the field/tag, then
             // drop any owned base/evidence that dies here (drop-early).
-            K::DataField { base, index } => {
-                let proj = CExpr::new(K::DataField { base, index }, ty);
+            K::DataField { base, index, scalar } => {
+                let proj = CExpr::new(K::DataField { base, index, scalar }, ty);
                 let borrows = projection_borrows(&proj);
                 self.borrow_tail(proj, borrows, live)
             }
@@ -918,11 +920,12 @@ fn reuse_pass(e: CExpr, data: &Locals, next: &mut usize) -> CExpr {
             K::Prim { op, args: args.into_iter().map(|a| reuse_pass(a, data, next)).collect() },
             ty,
         ),
-        K::MakeData { tag, args, reuse } => CExpr::new(
+        K::MakeData { tag, args, reuse, scalars } => CExpr::new(
             K::MakeData {
                 tag,
                 args: args.into_iter().map(|a| reuse_pass(a, data, next)).collect(),
                 reuse,
+                scalars,
             },
             ty,
         ),
@@ -934,9 +937,10 @@ fn reuse_pass(e: CExpr, data: &Locals, next: &mut usize) -> CExpr {
             ty,
         ),
         K::DataTag(base) => CExpr::new(K::DataTag(Box::new(reuse_pass(*base, data, next))), ty),
-        K::DataField { base, index } => {
-            CExpr::new(K::DataField { base: Box::new(reuse_pass(*base, data, next)), index }, ty)
-        }
+        K::DataField { base, index, scalar } => CExpr::new(
+            K::DataField { base: Box::new(reuse_pass(*base, data, next)), index, scalar },
+            ty,
+        ),
         // The tail-call transform consumes the output of reuse analysis, so its
         // nodes are never present here.
         K::Join { .. }
@@ -1055,8 +1059,8 @@ fn reaches_construction(e: &CExpr) -> bool {
 fn thread_or_free(e: CExpr, token: LocalId) -> CExpr {
     let CExpr { kind, ty } = e;
     match kind {
-        K::MakeData { tag, args, reuse: None } if !args.is_empty() => {
-            CExpr::new(K::MakeData { tag, args, reuse: Some(token) }, ty)
+        K::MakeData { tag, args, reuse: None, scalars } if !args.is_empty() => {
+            CExpr::new(K::MakeData { tag, args, reuse: Some(token), scalars }, ty)
         }
         K::Let { local, value, body } => {
             if is_reuse_target(&value) {
@@ -1099,8 +1103,8 @@ fn is_reuse_target(e: &CExpr) -> bool {
 fn attach_reuse(e: CExpr, token: LocalId) -> CExpr {
     let CExpr { kind, ty } = e;
     match kind {
-        K::MakeData { tag, args, reuse: None } => {
-            CExpr::new(K::MakeData { tag, args, reuse: Some(token) }, ty)
+        K::MakeData { tag, args, reuse: None, scalars } => {
+            CExpr::new(K::MakeData { tag, args, reuse: Some(token), scalars }, ty)
         }
         _ => unreachable!("attach_reuse on a non-target construction"),
     }
@@ -1129,7 +1133,7 @@ fn projection_borrows(e: &CExpr) -> Vec<LocalId> {
                 out.push(s);
             }
         }
-        K::DataField { base, index } => {
+        K::DataField { base, index, .. } => {
             if let K::Local(s) = base.kind {
                 out.push(s);
             }

@@ -70,8 +70,10 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_equal", rt::fai_equal);
     sym!("fai_equal_borrowed", rt::fai_equal_borrowed);
     sym!("fai_make_data", rt::fai_make_data);
+    sym!("fai_make_data_scalar", rt::fai_make_data_scalar);
     sym!("fai_drop_reuse", rt::fai_drop_reuse);
     sym!("fai_reuse", rt::fai_reuse);
+    sym!("fai_reuse_scalar", rt::fai_reuse_scalar);
     sym!("fai_free_reuse", rt::fai_free_reuse);
     sym!("fai_data_tag", rt::fai_data_tag);
     sym!("fai_data_field", rt::fai_data_field);

@@ -25,7 +25,7 @@ use fai_syntax::ast::{
     classify_op, classify_prefix,
 };
 use fai_types::{
-    BodyTypes, Con, RecordRow, RowEnd, RowVarId, Scheme, Ty, body_types,
+    BodyTypes, Con, RecordRow, RowEnd, RowVarId, Scheme, Ty, body_types, constructor_scheme,
     declared_or_inferred_scheme, evidence_requirements,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -324,7 +324,7 @@ impl Lowerer<'_> {
             ExprKind::Paren(inner) => return self.lower_expr(*inner),
             ExprKind::Tuple(elems) => {
                 let args = elems.iter().map(|&e| self.lower_expr(e)).collect();
-                K::MakeData { tag: 0, args, reuse: None }
+                K::MakeData { tag: 0, args, reuse: None, scalars: record_tuple_scalars(&ty) }
             }
             ExprKind::List(elems) => return self.lower_list(elems, ty),
             ExprKind::Array(elems) => return self.lower_array(elems, ty),
@@ -375,16 +375,39 @@ impl Lowerer<'_> {
         Some((info.tag, info.arity))
     }
 
+    /// The scalar bitmap of a constructor: bit `i` set when its `i`-th field is
+    /// **declared** `Float` (a monomorphic field, not a type variable), in
+    /// declaration order (the slot order). A polymorphic field (`Some : 'a -> …`,
+    /// `Cons : 'a -> …`) is never scalar, so its slot stays a uniform word — the
+    /// representation generic code over that constructor reads. Read from the
+    /// constructor's declared scheme (`field0 -> … -> Result`).
+    fn ctor_scalars(&self, ctor: CtorRef) -> u64 {
+        let Some(file) = self.db.source_file(ctor.file) else { return 0 };
+        let Some(scheme) = constructor_scheme(self.db, file, ctor.name) else { return 0 };
+        let mut mask = 0u64;
+        let mut ty = &scheme.ty;
+        let mut i = 0usize;
+        while let Ty::Arrow(from, to, _) = ty {
+            if i < 64 && field_is_scalar(from) {
+                mask |= 1u64 << i;
+            }
+            ty = to;
+            i += 1;
+        }
+        mask
+    }
+
     /// Lowers a constructor used as a *value*: a nullary constructor is its data
     /// immediately; an n-ary one becomes a closure `fun a0 … -> MakeData …`.
     fn lower_ctor_value(&mut self, ctor: CtorRef, ty: Ty) -> CExpr {
         let (tag, arity) = self.ctor_tag_arity(ctor).unwrap_or((0, 0));
         if arity == 0 {
-            return CExpr::new(K::MakeData { tag, args: Vec::new(), reuse: None }, ty);
+            return CExpr::new(K::MakeData { tag, args: Vec::new(), reuse: None, scalars: 0 }, ty);
         }
+        let scalars = self.ctor_scalars(ctor);
         let params: Vec<LocalId> = (0..arity).map(|_| self.fresh_local()).collect();
         let args = params.iter().map(|&p| CExpr::new(K::Local(p), Ty::Error)).collect();
-        let body = CExpr::new(K::MakeData { tag, args, reuse: None }, Ty::Error);
+        let body = CExpr::new(K::MakeData { tag, args, reuse: None, scalars }, Ty::Error);
         let fn_id = self.push_fn(CoreFn { params, captures: Vec::new(), body });
         CExpr::new(K::MakeClosure { func: fn_id, captures: Vec::new() }, ty)
     }
@@ -423,7 +446,11 @@ impl Lowerer<'_> {
                 Some(index) => {
                     let b = self.lower_expr(base);
                     CExpr::new(
-                        K::DataField { base: Box::new(b), index: FieldIndex::Const(index) },
+                        K::DataField {
+                            base: Box::new(b),
+                            index: FieldIndex::Const(index),
+                            scalar: false,
+                        },
                         ty,
                     )
                 }
@@ -432,8 +459,14 @@ impl Lowerer<'_> {
         }
         match record_field_index(&base_ty, field) {
             Some(index) => {
+                // A record's field type travels in the result type, so a `Float`
+                // field is a scalar slot read raw.
+                let scalar = field_is_scalar(&ty);
                 let b = self.lower_expr(base);
-                CExpr::new(K::DataField { base: Box::new(b), index: FieldIndex::Const(index) }, ty)
+                CExpr::new(
+                    K::DataField { base: Box::new(b), index: FieldIndex::Const(index), scalar },
+                    ty,
+                )
             }
             None => self.row_poly_field(base, &base_ty, field, span, ty),
         }
@@ -456,8 +489,12 @@ impl Lowerer<'_> {
         {
             let preceding = row.fields.iter().filter(|(l, _)| l.as_str() < field.as_str()).count();
             let index = FieldIndex::Dyn { base: u32::try_from(preceding).unwrap_or(0), evidence };
+            // The accessed field's type is known in the row (concrete `Float` ⇒ a
+            // scalar slot; a type variable ⇒ uniform), independent of the hidden
+            // fields the evidence offsets past.
+            let scalar = field_is_scalar(&ty);
             let b = self.lower_expr(base);
-            return CExpr::new(K::DataField { base: Box::new(b), index }, ty);
+            return CExpr::new(K::DataField { base: Box::new(b), index, scalar }, ty);
         }
         self.unsupported_row_poly(span, "row-polymorphic record field access")
     }
@@ -561,7 +598,8 @@ impl Lowerer<'_> {
                 }
             })
             .collect();
-        CExpr::new(K::MakeData { tag: 0, args, reuse: None }, ty)
+        // A dictionary's slots are method closures/values, never scalar floats.
+        CExpr::new(K::MakeData { tag: 0, args, reuse: None, scalars: 0 }, ty)
     }
 
     /// Lowers a record literal to a tagless composite, fields in canonical
@@ -570,7 +608,10 @@ impl Lowerer<'_> {
         let mut sorted: Vec<&FieldInit> = fields.iter().collect();
         sorted.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
         let args = sorted.iter().map(|f| self.lower_expr(f.value)).collect();
-        CExpr::new(K::MakeData { tag: 0, args, reuse: None }, ty.clone())
+        CExpr::new(
+            K::MakeData { tag: 0, args, reuse: None, scalars: record_tuple_scalars(ty) },
+            ty.clone(),
+        )
     }
 
     /// Lowers `{ base with x = v, … }` to a fresh record copying the unchanged
@@ -600,19 +641,25 @@ impl Lowerer<'_> {
         };
         let row_fields = row.fields.clone();
         let mut args = Vec::with_capacity(row_fields.len());
-        for (index, (label, _)) in row_fields.iter().enumerate() {
+        for (index, (label, field_ty)) in row_fields.iter().enumerate() {
             if let Some(f) = fields.iter().find(|f| f.name == *label) {
                 args.push(self.lower_expr(f.value));
             } else {
+                // Copy an unchanged field, reading a `Float` slot raw so it flows
+                // straight back into the rebuilt cell's scalar slot.
                 let i = u32::try_from(index).unwrap_or(0);
+                let scalar = field_is_scalar(field_ty);
                 let base = Box::new(CExpr::new(K::Local(base_local), Ty::Error));
                 args.push(CExpr::new(
-                    K::DataField { base, index: FieldIndex::Const(i) },
-                    Ty::Error,
+                    K::DataField { base, index: FieldIndex::Const(i), scalar },
+                    field_ty.clone(),
                 ));
             }
         }
-        let make = CExpr::new(K::MakeData { tag: 0, args, reuse: None }, ty.clone());
+        let make = CExpr::new(
+            K::MakeData { tag: 0, args, reuse: None, scalars: record_tuple_scalars(ty) },
+            ty.clone(),
+        );
         match wrap {
             Some(base_c) => CExpr::new(
                 K::Let { local: base_local, value: Box::new(base_c), body: Box::new(make) },
@@ -669,12 +716,16 @@ impl Lowerer<'_> {
 
     /// Lowers a list literal `[a, b, …]` to nested `Cons`/`Nil` data.
     fn lower_list(&mut self, elems: &[ExprId], ty: Ty) -> CExpr {
-        let mut list =
-            CExpr::new(K::MakeData { tag: NIL_TAG, args: Vec::new(), reuse: None }, ty.clone());
+        // A `Cons` cell's fields are the element (declared `'a`) and the tail
+        // (`List 'a`), neither scalar — `List Float` keeps its elements boxed.
+        let mut list = CExpr::new(
+            K::MakeData { tag: NIL_TAG, args: Vec::new(), reuse: None, scalars: 0 },
+            ty.clone(),
+        );
         for &e in elems.iter().rev() {
             let head = self.lower_expr(e);
             list = CExpr::new(
-                K::MakeData { tag: CONS_TAG, args: vec![head, list], reuse: None },
+                K::MakeData { tag: CONS_TAG, args: vec![head, list], reuse: None, scalars: 0 },
                 ty.clone(),
             );
         }
@@ -775,8 +826,9 @@ impl Lowerer<'_> {
             && let Some((tag, arity)) = self.ctor_tag_arity(ctor)
             && arity == args.len()
         {
+            let scalars = self.ctor_scalars(ctor);
             let args = args.iter().map(|&a| self.lower_expr(a)).collect();
-            return CExpr::new(K::MakeData { tag, args, reuse: None }, ty);
+            return CExpr::new(K::MakeData { tag, args, reuse: None, scalars }, ty);
         }
         let func = Box::new(self.lower_expr(head));
         let args = args.iter().map(|&a| self.lower_expr(a)).collect();
@@ -879,10 +931,10 @@ impl Lowerer<'_> {
                 let els = Box::new(self.lower_expr(rhs));
                 CExpr::new(K::If { cond, then, els }, ty)
             }
-            // `x :: xs` builds a `Cons` cell.
+            // `x :: xs` builds a `Cons` cell (element `'a` and tail, neither scalar).
             BinOp::Cons => {
                 let args = vec![self.lower_expr(lhs), self.lower_expr(rhs)];
-                CExpr::new(K::MakeData { tag: CONS_TAG, args, reuse: None }, ty)
+                CExpr::new(K::MakeData { tag: CONS_TAG, args, reuse: None, scalars: 0 }, ty)
             }
             _ => error_expr(),
         }
@@ -948,20 +1000,26 @@ impl Lowerer<'_> {
     /// guarantees the final fallthrough is unreachable.
     fn lower_match(&mut self, scrutinee: ExprId, arms: &[MatchArm], ty: Ty) -> CExpr {
         let sval = self.lower_expr(scrutinee);
+        let sty = self.ty_of(scrutinee);
         let s = self.fresh_local();
         let mut chain = error_expr();
         for arm in arms.iter().rev() {
             let body = self.lower_expr(arm.body);
-            chain = self.compile_pattern(s, arm.pat, body, chain);
+            chain = self.compile_pattern(s, &sty, arm.pat, body, chain);
         }
         CExpr::new(K::Let { local: s, value: Box::new(sval), body: Box::new(chain) }, ty)
     }
 
-    /// Compiles a single pattern match of `value_local` against `pat`: on success
-    /// it binds the pattern's variables and evaluates `success`; otherwise `fail`.
+    /// Compiles a single pattern match of `value_local` (whose **concrete** type is
+    /// `value_ty`) against `pat`: on success it binds the pattern's variables and
+    /// evaluates `success`; otherwise `fail`. `value_ty` is the scrutinee value's
+    /// type (not the pattern's, whose field types are unsubstituted variables), so a
+    /// scalar `Float` field is projected unboxed and decomposed types thread into
+    /// sub-patterns.
     fn compile_pattern(
         &mut self,
         value_local: LocalId,
+        value_ty: &Ty,
         pat: PatId,
         success: CExpr,
         fail: CExpr,
@@ -978,7 +1036,7 @@ impl Lowerer<'_> {
             }
             PatKind::Paren(inner) => {
                 let inner = *inner;
-                self.compile_pattern(value_local, inner, success, fail)
+                self.compile_pattern(value_local, value_ty, inner, success, fail)
             }
             PatKind::Unit => success,
             PatKind::Bool(b) => self.test_lit(value(), Lit::Bool(*b), success, fail),
@@ -1000,31 +1058,48 @@ impl Lowerer<'_> {
             }
             PatKind::Tuple(elems) => {
                 let elems = elems.clone();
-                self.compile_fields(value_local, &elems, success, &fail)
+                // A tuple is structural: its element types (from the scrutinee) give
+                // both the per-slot scalar-ness and the sub-pattern types.
+                let elem_tys = tuple_elem_tys(value_ty, elems.len());
+                let scalars = crate::ir::scalar_field_mask(elem_tys.iter());
+                self.compile_fields(value_local, &elems, &elem_tys, scalars, success, &fail)
             }
             PatKind::List(elems) => {
                 let elems = elems.clone();
-                self.compile_list_pattern(value_local, &elems, success, fail)
+                self.compile_list_pattern(value_local, value_ty, &elems, success, fail)
             }
             PatKind::Cons { head, tail } => {
+                // A `Cons` cell's fields are the element (declared `'a`) and the tail,
+                // neither a scalar slot; the element's concrete type threads on.
+                let elem = list_elem_ty(value_ty);
                 let fields = [*head, *tail];
-                let bind = self.compile_fields(value_local, &fields, success, &fail);
+                let tys = [elem, value_ty.clone()];
+                let bind = self.compile_fields(value_local, &fields, &tys, 0, success, &fail);
                 self.test_tag(value_local, CONS_TAG, bind, fail)
             }
             PatKind::Constructor { args, .. } => {
-                let tag = match self.resolved.pat_res(pat) {
-                    Some(Res::Ctor(ctor)) => self.ctor_tag_arity(ctor).map_or(0, |(t, _)| t),
-                    _ => 0,
+                let (tag, scalars) = match self.resolved.pat_res(pat) {
+                    Some(Res::Ctor(ctor)) => {
+                        (self.ctor_tag_arity(ctor).map_or(0, |(t, _)| t), self.ctor_scalars(ctor))
+                    }
+                    _ => (0, 0),
                 };
                 let args = args.clone();
-                let bind = self.compile_fields(value_local, &args, success, &fail);
+                // The constructor's field types are nominal; the bound patterns'
+                // inferred types are the instantiated ones (used for sub-patterns).
+                let tys: Vec<Ty> = args
+                    .iter()
+                    .map(|&a| self.types.pat_type(a).cloned().unwrap_or(Ty::Error))
+                    .collect();
+                let bind = self.compile_fields(value_local, &args, &tys, scalars, success, &fail);
                 self.test_tag(value_local, tag, bind, fail)
             }
             PatKind::Or(alts) => {
                 let alts = alts.clone();
                 let mut chain = fail;
                 for &alt in alts.iter().rev() {
-                    chain = self.compile_pattern(value_local, alt, success.clone(), chain);
+                    chain =
+                        self.compile_pattern(value_local, value_ty, alt, success.clone(), chain);
                 }
                 chain
             }
@@ -1037,11 +1112,11 @@ impl Lowerer<'_> {
                     K::Let { local, value: Box::new(value()), body: Box::new(success) },
                     Ty::Error,
                 );
-                self.compile_pattern(value_local, inner, bound, fail)
+                self.compile_pattern(value_local, value_ty, inner, bound, fail)
             }
             PatKind::Record { fields, .. } => {
                 let fields: Vec<(Symbol, PatId)> = fields.iter().map(|f| (f.name, f.pat)).collect();
-                self.compile_record_pattern(value_local, pat, &fields, success, fail)
+                self.compile_record_pattern(value_local, value_ty, &fields, success, fail)
             }
         }
     }
@@ -1052,31 +1127,38 @@ impl Lowerer<'_> {
     fn compile_record_pattern(
         &mut self,
         value_local: LocalId,
-        pat: PatId,
+        value_ty: &Ty,
         fields: &[(Symbol, PatId)],
         success: CExpr,
         fail: CExpr,
     ) -> CExpr {
-        let Some(Ty::Record(row)) = self.types.pat_type(pat).cloned() else {
-            return self.unsupported_row_poly(self.module.pat(pat).span, "record pattern");
+        // The scrutinee's concrete record type gives the field offsets *and* their
+        // resolved types (the pattern's own field types are unsubstituted variables).
+        let Ty::Record(row) = value_ty else {
+            return self.unsupported_row_poly(TextRange::default(), "record pattern");
         };
         if row.tail != RowEnd::Closed {
             return self
-                .unsupported_row_poly(self.module.pat(pat).span, "row-polymorphic record pattern");
+                .unsupported_row_poly(TextRange::default(), "row-polymorphic record pattern");
         }
         let mut inner = success;
         for &(name, fpat) in fields.iter().rev() {
-            let Some(index) = row.fields.iter().position(|(l, _)| *l == name) else {
+            let Some(pos) = row.fields.iter().position(|(l, _)| *l == name) else {
                 continue;
             };
-            let index = u32::try_from(index).unwrap_or(0);
-            // Carry the field's real type so a scalar `Float` field stays unboxed.
-            let field_ty = self.types.pat_type(fpat).cloned().unwrap_or(Ty::Error);
+            let index = u32::try_from(pos).unwrap_or(0);
+            // A record is structural, so its field type (from the scrutinee's row, not
+            // the bound pattern's inferred type) decides the slot's scalar-ness —
+            // robust even for an unused binder. Carry that type so the projection
+            // flows unboxed and threads into a nested sub-pattern.
+            let field_ty = row.fields[pos].1.clone();
+            let scalar = field_is_scalar(&field_ty);
             let projection = || {
                 CExpr::new(
                     K::DataField {
                         base: Box::new(CExpr::new(K::Local(value_local), Ty::Error)),
                         index: FieldIndex::Const(index),
+                        scalar,
                     },
                     field_ty.clone(),
                 )
@@ -1092,7 +1174,7 @@ impl Lowerer<'_> {
                 }
                 _ => {
                     let f = self.fresh_local();
-                    let matched = self.compile_pattern(f, fpat, inner, fail.clone());
+                    let matched = self.compile_pattern(f, &field_ty, fpat, inner, fail.clone());
                     inner = CExpr::new(
                         K::Let { local: f, value: Box::new(projection()), body: Box::new(matched) },
                         Ty::Error,
@@ -1128,26 +1210,40 @@ impl Lowerer<'_> {
     }
 
     /// Projects and matches each field of a data value, threading `success`
-    /// through the fields and `fail` out of any sub-match.
+    /// through the fields and `fail` out of any sub-match. `field_tys` are the
+    /// fields' concrete types (for the projection type and sub-pattern), and
+    /// `scalars` marks which slots are a raw `f64` (bit `i` ⇒ field `i`): for an ADT
+    /// the constructor's *declared* float fields (a polymorphic field instantiated
+    /// to `Float` stays boxed); for a tuple the structural float fields.
     fn compile_fields(
         &mut self,
         value_local: LocalId,
         fields: &[PatId],
+        field_tys: &[Ty],
+        scalars: u64,
         success: CExpr,
         fail: &CExpr,
     ) -> CExpr {
         let mut inner = success;
         for (i, &fp) in fields.iter().enumerate().rev() {
             let index = u32::try_from(i).unwrap_or(0);
-            // The projection carries the field's real type (the bound pattern's
-            // type), so a scalar `Float` field flows unboxed rather than being
-            // reclassified as a boxed value downstream.
-            let field_ty = self.types.pat_type(fp).cloned().unwrap_or(Ty::Error);
+            // The slot's scalar-ness comes from `scalars` (a constructor's declared
+            // float fields), which can differ from the instantiated field type. The
+            // projection carries the field's concrete type so it flows unboxed; a
+            // scalar slot is forced to `Float` so even an *unused* binder classifies
+            // as a raw `f64` rather than a boxed read.
+            let scalar = i < 64 && scalars & (1u64 << i) != 0;
+            let field_ty = if scalar {
+                Ty::Con(Con::Float)
+            } else {
+                field_tys.get(i).cloned().unwrap_or(Ty::Error)
+            };
             let projection = || {
                 CExpr::new(
                     K::DataField {
                         base: Box::new(CExpr::new(K::Local(value_local), Ty::Error)),
                         index: FieldIndex::Const(index),
+                        scalar,
                     },
                     field_ty.clone(),
                 )
@@ -1164,7 +1260,7 @@ impl Lowerer<'_> {
                 }
                 _ => {
                     let f = self.fresh_local();
-                    let matched = self.compile_pattern(f, fp, inner, fail.clone());
+                    let matched = self.compile_pattern(f, &field_ty, fp, inner, fail.clone());
                     inner = CExpr::new(
                         K::Let { local: f, value: Box::new(projection()), body: Box::new(matched) },
                         Ty::Error,
@@ -1175,10 +1271,12 @@ impl Lowerer<'_> {
         inner
     }
 
-    /// Matches a list pattern `[p0, p1, …]` as nested `Cons`/`Nil`.
+    /// Matches a list pattern `[p0, p1, …]` as nested `Cons`/`Nil`. `value_ty` is
+    /// the list's concrete type, so a sub-pattern on an element gets its type.
     fn compile_list_pattern(
         &mut self,
         value_local: LocalId,
+        value_ty: &Ty,
         elems: &[PatId],
         success: CExpr,
         fail: CExpr,
@@ -1189,7 +1287,8 @@ impl Lowerer<'_> {
         };
         // A `Cons` cell: head = field 0, tail matches the rest of the list.
         let tail_local = self.fresh_local();
-        let tail_match = self.compile_list_pattern(tail_local, rest, success, fail.clone());
+        let tail_match =
+            self.compile_list_pattern(tail_local, value_ty, rest, success, fail.clone());
         let tail_bind = CExpr::new(
             K::Let {
                 local: tail_local,
@@ -1197,6 +1296,7 @@ impl Lowerer<'_> {
                     K::DataField {
                         base: Box::new(CExpr::new(K::Local(value_local), Ty::Error)),
                         index: FieldIndex::Const(1),
+                        scalar: false,
                     },
                     Ty::Error,
                 )),
@@ -1204,7 +1304,9 @@ impl Lowerer<'_> {
             },
             Ty::Error,
         );
-        let head_bind = self.compile_fields(value_local, &[head], tail_bind, &fail);
+        // A list element (`'a`) is never a scalar slot; its concrete type threads on.
+        let elem = list_elem_ty(value_ty);
+        let head_bind = self.compile_fields(value_local, &[head], &[elem], 0, tail_bind, &fail);
         self.test_tag(value_local, CONS_TAG, head_bind, fail)
     }
 
@@ -1252,8 +1354,10 @@ impl Lowerer<'_> {
             let local = self.param_local(stmt.pat);
             CExpr::new(K::Let { local, value: Box::new(value), body: Box::new(body) }, ty)
         } else {
+            // The destructured value's concrete type drives field scalar-ness.
+            let value_ty = self.ty_of(stmt.value);
             let s = self.fresh_local();
-            let matched = self.compile_pattern(s, stmt.pat, body, error_expr());
+            let matched = self.compile_pattern(s, &value_ty, stmt.pat, body, error_expr());
             CExpr::new(K::Let { local: s, value: Box::new(value), body: Box::new(matched) }, ty)
         }
     }
@@ -1300,6 +1404,39 @@ fn record_field_index(ty: &Ty, field: Symbol) -> Option<u32> {
             .map(|i| u32::try_from(i).unwrap_or(0));
     }
     None
+}
+
+/// Whether a field of declared type `ty` is stored as a raw unboxed `f64` — a
+/// monomorphic `Float`, not a type variable instantiated to `Float`.
+fn field_is_scalar(ty: &Ty) -> bool {
+    matches!(ty, Ty::Con(Con::Float))
+}
+
+/// The scalar bitmap of a record or tuple type: bit `i` set when field `i` (in
+/// canonical layout order — records sorted by label, tuples positional) is
+/// declared `Float`. Zero for any other type.
+fn record_tuple_scalars(ty: &Ty) -> u64 {
+    match ty {
+        Ty::Tuple(elems) => crate::ir::scalar_field_mask(elems.iter()),
+        Ty::Record(row) => crate::ir::scalar_field_mask(row.fields.iter().map(|(_, t)| t)),
+        _ => 0,
+    }
+}
+
+/// The element types of a tuple type, or `n` unknowns if `ty` is not a tuple.
+fn tuple_elem_tys(ty: &Ty, n: usize) -> Vec<Ty> {
+    match ty {
+        Ty::Tuple(elems) if elems.len() == n => elems.clone(),
+        _ => vec![Ty::Error; n],
+    }
+}
+
+/// The element type of a `List 'a` type, or the unknown type otherwise.
+fn list_elem_ty(ty: &Ty) -> Ty {
+    match ty {
+        Ty::App(head, elem) if matches!(head.as_ref(), Ty::Con(Con::List)) => (**elem).clone(),
+        _ => Ty::Error,
+    }
 }
 
 /// The captured variables of a lifted function: the free locals of its body that

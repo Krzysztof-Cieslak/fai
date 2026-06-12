@@ -116,10 +116,14 @@ pub fn synthesize(
         let tuple = fresh(&mut next);
         let mut body = lowered.body;
         for (i, &local) in lowered.param_locals.iter().enumerate().rev() {
+            // The binder tuple is built by the generic `Test.tupleN` combinator, so
+            // its slots are uniform (boxed) words — a plain projection, even for a
+            // `Float` binder.
             let field = CExpr::new(
                 K::DataField {
                     base: Box::new(local_expr(tuple)),
                     index: FieldIndex::Const(u32::try_from(i).unwrap_or(0)),
+                    scalar: false,
                 },
                 Ty::Error,
             );
