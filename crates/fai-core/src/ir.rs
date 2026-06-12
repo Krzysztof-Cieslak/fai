@@ -429,6 +429,12 @@ pub enum Prim {
     StringSplit,
     /// `join`
     StringJoin,
+    /// `substring` (a `len`-char substring from a char index; a view or a copy)
+    StringSubstring,
+    /// `take` (the first `n` chars; a view or a copy)
+    StringTake,
+    /// `drop` (all but the first `n` chars; a view or a copy)
+    StringDrop,
     /// `not`
     Not,
     /// `Console.writeLine`: write a line (the host for the `Console` capability).
@@ -574,6 +580,9 @@ impl Prim {
             Prim::StringContains => "fai_string_contains",
             Prim::StringSplit => "fai_string_split",
             Prim::StringJoin => "fai_string_join",
+            Prim::StringSubstring => "fai_string_substring",
+            Prim::StringTake => "fai_string_take",
+            Prim::StringDrop => "fai_string_drop",
             Prim::Not => "fai_not",
             Prim::ConsoleWriteLine => "fai_console_write_line",
             Prim::ClockNow => "fai_clock_now",
@@ -620,7 +629,7 @@ impl Prim {
             | Prim::ArrayWithCapacity
             | Prim::ArrayLength
             | Prim::FileRead => 1,
-            Prim::RecordUpdate | Prim::ArraySet => 3,
+            Prim::RecordUpdate | Prim::ArraySet | Prim::StringSubstring => 3,
             _ => 2,
         }
     }
@@ -656,6 +665,9 @@ impl Prim {
             "stringConcat" => Prim::StrConcat,
             "split" => Prim::StringSplit,
             "join" => Prim::StringJoin,
+            "substring" => Prim::StringSubstring,
+            "take" => Prim::StringTake,
+            "drop" => Prim::StringDrop,
             "not" => Prim::Not,
             "compare" => Prim::Compare,
             "consoleWriteLine" => Prim::ConsoleWriteLine,

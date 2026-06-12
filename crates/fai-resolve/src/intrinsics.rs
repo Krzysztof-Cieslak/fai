@@ -45,6 +45,9 @@ pub const INTRINSICS: &[&str] = &[
     "stringConcat",
     "split",
     "join",
+    "substring",
+    "take",
+    "drop",
     // Array primitives (the standard library's `Array` module wraps these).
     "arrayWithCapacity",
     "arrayLength",

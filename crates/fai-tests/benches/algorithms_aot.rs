@@ -136,4 +136,5 @@ algorithm_benches! {
     union_find => "UnionFind",
     json_serialize => "JsonSerialize",
     string_build => "StringBuild",
+    string_slice => "StringSlice",
 }

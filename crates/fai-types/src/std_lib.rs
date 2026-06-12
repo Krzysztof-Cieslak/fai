@@ -115,6 +115,15 @@ pub fn builtin_scheme(name: Symbol) -> Option<Scheme> {
             [Ty::Con(Con::String), Ty::list(Ty::Con(Con::String))],
             Ty::Con(Con::String),
         )),
+        // Substring views: char-indexed start/length, source string last (matching
+        // the `fai_string_*` calling convention).
+        "substring" => Scheme::mono(Ty::arrows(
+            [Ty::int(), Ty::int(), Ty::Con(Con::String)],
+            Ty::Con(Con::String),
+        )),
+        "take" | "drop" => {
+            Scheme::mono(Ty::arrows([Ty::int(), Ty::Con(Con::String)], Ty::Con(Con::String)))
+        }
         // Array primitives — the only *polymorphic* intrinsics, quantified over the
         // element type `'a` (instantiated fresh at each use). The standard
         // library's `Array` module wraps these (reordering to collection-last and

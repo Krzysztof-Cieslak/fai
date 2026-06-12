@@ -34,6 +34,24 @@ public split : String -> String -> List String
 let split sep s = Prim.split sep s
 example: split "," "a,b,c" = ["a", "b", "c"]
 
+/// The `len`-character substring of `s` starting at character index `start`
+/// (indices are clamped to the string's bounds).
+public substring : Int -> Int -> String -> String
+let substring start len s = Prim.substring start len s
+example: substring 1 3 "abcdef" = "bcd"
+example: substring 0 0 "abc" = ""
+
+/// The first `n` characters of `s` (the whole string if `n` exceeds its length).
+public take : Int -> String -> String
+let take n s = Prim.take n s
+example: take 3 "abcdef" = "abc"
+
+/// All but the first `n` characters of `s` (the empty string if `n` exceeds its
+/// length).
+public drop : Int -> String -> String
+let drop n s = Prim.drop n s
+example: drop 2 "abcdef" = "cdef"
+
 /// Join the strings in `parts`, inserting `sep` between them.
 public join : String -> List String -> String
 let join sep parts = Prim.join sep parts

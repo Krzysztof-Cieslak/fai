@@ -1,0 +1,23 @@
+module StringSlice
+
+// Build a base string of `n` characters, then take many large substrings of it and
+// sum their lengths. Each substring is a borrowing slice view that shares the
+// base's bytes (no per-substring copy), so producing and holding many of them costs
+// one base buffer plus small view headers rather than many full copies. Used by the
+// Rust-vs-Fai runtime benchmark (both runtime and peak memory).
+buildBase : Int -> String -> String
+let buildBase n acc = if n <= 0 then acc else buildBase (n - 1) (acc ++ "a")
+
+views : Int -> Int -> String -> List String
+let views i n base = if i <= 0 then [] else String.take (n / 2) base :: views (i - 1) n base
+
+/// The benchmark workload: the total length of 200 half-length substrings of a
+/// length-n base.
+public run : Int -> Int
+let run n =
+  let base = buildBase n ""
+  List.sum (List.map String.length (views 200 n base))
+example: run 4 = 400
+
+public main : Runtime -> Unit / { Console }
+let main runtime = runtime.console.writeLine (Int.toString (run 20000))

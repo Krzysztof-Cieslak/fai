@@ -156,6 +156,47 @@ fn prop_unique_concat_fold_matches_naive_and_never_copies() {
 }
 
 #[test]
+fn prop_take_matches_char_prefix_and_is_leak_free() {
+    // `String.take n` over an arbitrary Unicode string yields the first `n`
+    // characters (a view or a copy), landing on character boundaries, and the run
+    // is reference-count balanced.
+    let strat = (proptest::collection::vec(any::<char>(), 0..40), 0usize..50);
+    check(strat, |(chars, n)| {
+        let base = live_count();
+        let text: String = chars.into_iter().collect();
+        let s = make_string(text.as_bytes());
+        let r = fai_string_take(imm_int(n as i64), s);
+        // SAFETY: `r` is a live string-like value of valid UTF-8.
+        let got = unsafe { string_str(r) }.to_owned();
+        let expected: String = text.chars().take(n).collect();
+        prop_assert_eq!(got, expected);
+        fai_drop(r);
+        prop_assert_eq!(live_count(), base);
+        Ok(())
+    });
+}
+
+#[test]
+fn prop_drop_matches_char_suffix_and_is_leak_free() {
+    // `String.drop n` yields all but the first `n` characters; a slice view shares
+    // the base and equals the same suffix as an inline string.
+    let strat = (proptest::collection::vec(any::<char>(), 0..40), 0usize..50);
+    check(strat, |(chars, n)| {
+        let base = live_count();
+        let text: String = chars.into_iter().collect();
+        let s = make_string(text.as_bytes());
+        let r = fai_string_drop(imm_int(n as i64), s);
+        // SAFETY: `r` is a live string-like value of valid UTF-8.
+        let got = unsafe { string_str(r) }.to_owned();
+        let expected: String = text.chars().skip(n).collect();
+        prop_assert_eq!(got, expected);
+        fai_drop(r);
+        prop_assert_eq!(live_count(), base);
+        Ok(())
+    });
+}
+
+#[test]
 fn prop_string_equality_matches_bytes() {
     let bytes = || proptest::collection::vec(any::<u8>(), 0..32);
     check((bytes(), bytes()), |(a, b)| {
