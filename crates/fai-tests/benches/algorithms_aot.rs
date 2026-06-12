@@ -135,4 +135,5 @@ algorithm_benches! {
     fannkuch => "Fannkuch",
     union_find => "UnionFind",
     json_serialize => "JsonSerialize",
+    string_build => "StringBuild",
 }

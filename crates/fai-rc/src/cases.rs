@@ -4102,6 +4102,49 @@ fn std_sif_shoutupper() {
 }
 
 #[test]
+fn std_concat_consumes_both_operands() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f a b = a ++ b
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_concat_reused_operand_is_duplicated() {
+    // `a` is consumed by the (owning) `++` and used again in the pair, so reference
+    // counting must duplicate it before the concatenation — the soundness check
+    // that concat's operands are owned, not borrowed.
+    sound(
+        indoc! {r#"
+            module M
+
+            let f a b =
+              let g = a ++ b
+              (a, g)
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn std_concat_recursive_builder_is_sound() {
+    // A tail-recursive accumulator appended each step: the accumulator threads as
+    // the owned left operand of `++` (the in-place builder shape).
+    sound(
+        indoc! {r#"
+            module M
+
+            let build n acc = if n <= 0 then acc else build (n - 1) (acc ++ "x")
+        "#},
+        "build",
+    );
+}
+
+#[test]
 fn std_dictset_insert() {
     sound(
         indoc! {r#"

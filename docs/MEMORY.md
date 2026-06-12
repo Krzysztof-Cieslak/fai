@@ -1061,7 +1061,9 @@ program output are unchanged, guarded by the full type/golden suite):
   the runtime, forcing a caller to duplicate a value it still needed (and, by
   sharing it, defeating in-place reuse). They now have **non-consuming runtime
   variants** (`fai_equal_borrowed`, `fai_to_upper_borrowed`, …), and the operands
-  are **borrowed when boxed**. One predicate — `Prim::borrows_operand`, on the
+  are **borrowed when boxed**. (`++` was later removed from this borrowing set: it
+  **owns** both operands so it can append into a uniquely-owned left buffer in
+  place — see D124.) One predicate — `Prim::borrows_operand`, on the
   operand type, in `fai-core` — drives reference counting, the RC soundness
   interpreter, and code generation's choice of runtime symbol, so the caller's
   drop and the runtime's (non-)consumption always agree by construction.
@@ -2465,6 +2467,54 @@ Editor integration:
     always boxed, so the guard misses), and a custom `sortBy` comparator still pays
     its `apply_n`. Inlining those needs specialization at a concrete instantiation
     (opt-in monomorphization), noted as future work.
+
+- **D124 In-place amortized `String` append, with `++` chains left-reassociated
+  (closes the concatenation half of #101).** `String` was an immutable contiguous
+  byte buffer whose concatenation always allocated a fresh buffer and copied *both*
+  operands, so building a string by repeated `++` was O(n²) copying. Two changes
+  make incremental construction amortized O(total length), with no surface, type,
+  or representation change (the on-disk string layout is unchanged).
+  - **`fai_string_concat` appends in place into a unique left operand.** It now
+    **owns both** operands (the `Array.push` model — `Prim::StrConcat` dropped from
+    the inspect-only borrow set, so reference counting consumes both and an operand
+    reused after the concat is duplicated first). Capacity is derived from the
+    `size` header (`string_cap = size − STRING_BYTES_OFFSET`), exactly as `Array`
+    derives element capacity, so no field is added and the codegen static-literal
+    emission is untouched. When the left operand is uniquely owned (`rc == 1`) it
+    appends `b`'s bytes into the spare capacity and bumps the length; when unique
+    but full it grows into a **doubled** buffer and reclaims the old memory; when
+    **shared** it forks a fresh **tight** buffer (a counted uniqueness-loss copy).
+    Concatenating the empty string returns the other operand without copying. Leaf
+    constructors (`make_string`, `Int.toString`, …) allocate tight: only the
+    unique-but-full grow path over-allocates, so a one-shot `a ++ b` wastes nothing
+    while a builder amortizes. A new `string_copies()` debug counter (the peer of
+    `array_copies()`) records uniqueness-loss forks; a unique builder forks zero
+    times.
+  - **`++` chains are left-reassociated before reference counting.** `++` is
+    right-associative, so a source chain `a ++ b ++ c` is a right-leaning tree of
+    `StrConcat` nodes (after the prim/helper inliners), whose left operand at each
+    step is a fresh small piece — the in-place append never fires, and a long chain
+    re-copies the growing suffix (O(n²)). A `fai-core` transform
+    (`reassociate_concat`) rewrites a maximal `StrConcat` tree to **left-nested**
+    form so the growing prefix is the unique left accumulator. It runs in
+    `rc_lowered` (so it also normalizes synthesized harnesses), reads the
+    pre-reference-counting body, and is **behavior-preserving**: concatenation is
+    pure and associative, and code generation evaluates a primitive's operands left
+    to right, so flattening the tree to its ordered leaves and rebuilding it
+    left-nested keeps operand evaluation (hence effect) order. Borrow signatures and
+    purity read the un-reassociated inlined body (the rewrite changes neither), so
+    only reference counting and codegen observe it.
+  - **Proven structurally, not by the named bellwethers.** The acceptance signal is
+    a deterministic gate — a `string_build` registry algorithm (a recursive
+    literal-append builder) whose allocations stay sub-linear (only the O(log n)
+    doublings) and whose `string_copies()` is zero — plus a folded `++` property and
+    a first-class `List.foldl (++)` build that likewise never forks. The issue's two
+    named cases stay roughly flat in this change: `json_serialize` is dominated by
+    `String.join` and the recursive re-copy of subtree strings (already single-pass;
+    not a `++` chain or a single accumulator), and `word_count` by `split`'s
+    per-piece allocation and list/closure overhead — both addressed elsewhere
+    (borrowing slice views for `split`; the array-backed sequence work). The win
+    here is structural: any heavy `++`/accumulator builder is now O(n).
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

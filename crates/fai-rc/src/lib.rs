@@ -38,8 +38,8 @@
 
 use std::sync::Arc;
 
-use fai_core::helper_inlined;
 use fai_core::ir::{CExpr, CoreFn, ExprKind as K, FieldIndex, LoweredDef};
+use fai_core::{helper_inlined, reassociate_concat};
 use fai_db::{Db, SourceFile};
 use fai_resolve::{DefId, LocalId};
 use fai_syntax::Symbol;
@@ -82,6 +82,12 @@ pub fn rc(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
 /// which pass an all-owned signature).
 #[must_use]
 pub fn rc_lowered(db: &dyn Db, lowered: &LoweredDef, self_sig: &BorrowSig) -> LoweredDef {
+    // Left-reassociate `++` chains first, so the runtime's in-place append into a
+    // unique left accumulator fires for a (right-associative) source chain, and
+    // reference counting balances the rewritten tree. Behavior-preserving (string
+    // concatenation is pure and associative; operand evaluation order is kept).
+    let reassociated = reassociate_concat(lowered);
+    let lowered = &reassociated;
     let mut next = next_free_local(lowered);
 
     // Per-call argument borrowing: a saturated direct call to a known top-level

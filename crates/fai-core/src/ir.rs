@@ -498,7 +498,6 @@ impl Prim {
                 | Prim::ToUpper
                 | Prim::ToLower
                 | Prim::Trim
-                | Prim::StrConcat
                 | Prim::StringSplit
                 | Prim::StringJoin
                 | Prim::ArrayLength
@@ -518,7 +517,6 @@ impl Prim {
             Prim::ToUpper => Some("fai_to_upper_borrowed"),
             Prim::ToLower => Some("fai_to_lower_borrowed"),
             Prim::Trim => Some("fai_trim_borrowed"),
-            Prim::StrConcat => Some("fai_string_concat_borrowed"),
             Prim::StringSplit => Some("fai_string_split_borrowed"),
             Prim::ArrayLength => Some("fai_array_length_borrowed"),
             Prim::ArrayGet => Some("fai_array_get_borrowed"),

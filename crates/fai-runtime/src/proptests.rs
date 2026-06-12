@@ -131,6 +131,31 @@ fn prop_string_concat_preserves_bytes() {
 }
 
 #[test]
+fn prop_unique_concat_fold_matches_naive_and_never_copies() {
+    // Building a string by folding `++` onto a uniquely-owned accumulator yields
+    // the same bytes as a one-shot concatenation, and — because the accumulator is
+    // never shared — does so without a single uniqueness-loss copy, whatever the
+    // number and sizes of the pieces (the amortized in-place builder).
+    let pieces = proptest::collection::vec(proptest::collection::vec(any::<u8>(), 0..16), 1..32);
+    check(pieces, |pieces| {
+        let base = live_count();
+        reset_allocations();
+        let mut acc = make_string(&pieces[0]);
+        for piece in &pieces[1..] {
+            acc = fai_string_concat(acc, make_string(piece));
+        }
+        // SAFETY: `acc` is a live boxed string; copy out before dropping it.
+        let got = unsafe { string_bytes(acc) }.to_vec();
+        let expected: Vec<u8> = pieces.concat();
+        prop_assert_eq!(got, expected);
+        prop_assert_eq!(string_copies(), 0, "a unique builder never forks");
+        fai_drop(acc);
+        prop_assert_eq!(live_count(), base);
+        Ok(())
+    });
+}
+
+#[test]
 fn prop_string_equality_matches_bytes() {
     let bytes = || proptest::collection::vec(any::<u8>(), 0..32);
     check((bytes(), bytes()), |(a, b)| {
