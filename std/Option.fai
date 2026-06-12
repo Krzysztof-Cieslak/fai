@@ -21,6 +21,16 @@ let withDefault fallback opt =
 example: withDefault 0 (Some 5) = 5
 forall d: withDefault d None = d
 
+/// The contained value, or the result of `fallback ()` for `None` — like
+/// `withDefault`, but the default is computed only when the `Option` is empty.
+public getOrElse : (Unit -> 'a / 'e) -> Option 'a -> 'a / 'e
+let getOrElse fallback opt =
+  match opt with
+  | None -> fallback ()
+  | Some x -> x
+example: getOrElse (fun _ -> 0) (Some 5) = 5
+forall d: getOrElse (fun _ -> d) None = d
+
 /// Whether an `Option` holds a value.
 public isSome : Option 'a -> Bool
 let isSome opt =

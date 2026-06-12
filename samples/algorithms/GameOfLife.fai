@@ -14,7 +14,7 @@ let neighbors cell =
 
 // Add one to a cell's neighbour count.
 bump : Dict (Int * Int) Int -> (Int * Int) -> Dict (Int * Int) Int
-let bump d cell = Dict.insert cell (Option.withDefault 0 (Dict.get cell d) + 1) d
+let bump d cell = Dict.insert cell (Dict.getOr 0 cell d + 1) d
 
 // Tally neighbour counts contributed by every live cell.
 countNeighbors : List (Int * Int) -> Dict (Int * Int) Int

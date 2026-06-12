@@ -15,7 +15,7 @@ let tally i n d =
     d
   else
     let key = i % buckets
-    let current = Option.withDefault 0 (Dict.get key d)
+    let current = Dict.getOr 0 key d
     tally (i + 1) n (Dict.insert key (current + 1) d)
 
 // Weigh one (key, count) entry into the running total: an order-independent sum.

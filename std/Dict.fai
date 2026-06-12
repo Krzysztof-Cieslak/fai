@@ -120,9 +120,38 @@ let get key d =
 example: get 2 (insert 1 10 (insert 2 20 empty)) = Some 20
 forall k: get k empty = None
 
+/// The value for `key`, or `fallback` if it is absent. Walks the tree directly
+/// and returns the value, never materializing the `Option` a `get` would.
+public getOr : 'v -> 'k -> Dict 'k 'v -> 'v
+let getOr fallback key d =
+  match d with
+  | DictEmpty -> fallback
+  | DictNode _ l k v r ->
+    let c = compare key k
+    if c < 0 then getOr fallback key l else if c > 0 then getOr fallback key r else v
+example: getOr 0 2 (insert 2 20 empty) = 20
+forall k: getOr 0 k empty = 0
+
+/// The value for `key`, or the result of `fallback ()` if it is absent — like
+/// `getOr`, but the default is computed only on a miss.
+public getOrElse : (Unit -> 'v / 'e) -> 'k -> Dict 'k 'v -> 'v / 'e
+let getOrElse fallback key d =
+  match d with
+  | DictEmpty -> fallback ()
+  | DictNode _ l k v r ->
+    let c = compare key k
+    if c < 0 then getOrElse fallback key l else if c > 0 then getOrElse fallback key r else v
+example: getOrElse (fun _ -> 0) 2 (insert 2 20 empty) = 20
+forall k: getOrElse (fun _ -> 7) k empty = 7
+
 /// Whether `key` is present.
 public member : 'k -> Dict 'k 'v -> Bool
-let member key d = Option.isSome (get key d)
+let member key d =
+  match d with
+  | DictEmpty -> false
+  | DictNode _ l k v r ->
+    let c = compare key k
+    if c < 0 then member key l else if c > 0 then member key r else true
 example: member 2 (insert 2 20 empty)
 forall k: member k empty = false
 

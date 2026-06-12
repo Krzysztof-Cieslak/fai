@@ -6,11 +6,11 @@ module UnionFind
 // lookup in a different access pattern than the other map workloads. Used by the
 // Rust-vs-Fai runtime benchmark.
 // The root of x: follow parents until a node maps to nothing (or to itself).
+// An absent node is its own root, so a missing entry defaults to `x` itself.
 find : Dict Int Int -> Int -> Int
 let find parent x =
-  match Dict.get x parent with
-  | None -> x
-  | Some p -> if p = x then x else find parent p
+  let p = Dict.getOr x x parent
+  if p = x then x else find parent p
 
 // Union a and b: point a's root at b's root (unless already joined).
 union : Dict Int Int -> Int -> Int -> Dict Int Int

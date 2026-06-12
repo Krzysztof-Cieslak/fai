@@ -16,8 +16,8 @@ let coinPass coin a amount ways =
   if a > amount then
     ways
   else
-    let cur = Option.withDefault 0 (Dict.get a ways)
-    let prev = Option.withDefault 0 (Dict.get (a - coin) ways)
+    let cur = Dict.getOr 0 a ways
+    let prev = Dict.getOr 0 (a - coin) ways
     coinPass coin (a + 1) amount (Dict.insert a ((cur + prev) % modulus) ways)
 
 // Apply every coin's pass in turn.
@@ -29,7 +29,7 @@ let allCoins cs amount ways =
 
 /// The benchmark workload: the number of ways to make n (modulo a large prime).
 public run : Int -> Int
-let run n = Option.withDefault 0 (Dict.get n (allCoins coins n (Dict.insert 0 1 Dict.empty)))
+let run n = Dict.getOr 0 n (allCoins coins n (Dict.insert 0 1 Dict.empty))
 example: run 5 = 4
 
 public main : Runtime -> Unit / { Console }

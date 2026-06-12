@@ -26,7 +26,7 @@ let bfs g frontier visited =
   match frontier with
   | [] -> visited
   | _ :: _ ->
-    let expanded = List.concatMap (fun node -> Option.withDefault [] (Dict.get node g)) frontier
+    let expanded = List.concatMap (fun node -> Dict.getOr [] node g) frontier
     match List.foldl visit (visited, []) expanded with
     | (visited2, next) -> bfs g next visited2
 
