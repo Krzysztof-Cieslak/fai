@@ -6104,3 +6104,89 @@ fn array_literal_is_sound() {
         "f",
     );
 }
+
+// Intrinsic inlining replaces a saturated call to a primitive re-export wrapper
+// with the primitive itself before reference counting, so these exercise the RC
+// soundness of the *inlined* primitive — in particular that a borrowing primitive
+// (`stringLength`, `arrayGet`) still drops an owned operand at the call site, and
+// that the order-preserving `let`s of a permuted wrapper stay balanced.
+
+#[test]
+fn inlined_string_reader_borrows_its_operand() {
+    // `String.length s` inlines to `(stringLength s)`, which borrows `s`; the owned
+    // parameter must therefore be dropped after the read, not leaked.
+    sound(
+        indoc! {r#"
+            module M
+
+            let f s = String.length s
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn inlined_string_reader_then_reuses_operand() {
+    // The borrow must not consume `s`: it is read by the inlined `stringLength` and
+    // then returned, so it stays live across the primitive.
+    sound(
+        indoc! {r#"
+            module M
+
+            let f s = (String.length s, s)
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn inlined_string_reader_used_twice() {
+    // `s` flows into two inlined readers, so it is duplicated once and dropped once.
+    sound(
+        indoc! {r#"
+            module M
+
+            let f s = String.length s + String.length s
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn inlined_int_to_string_is_sound() {
+    sound(
+        indoc! {r#"
+            module M
+
+            let f n = Int.toString n
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn inlined_permuted_array_reader_is_sound() {
+    // `Array.unsafeGet i xs` is a permuted wrapper over `arrayGet`, which borrows
+    // the array; inlining binds the arguments in order and reads the element.
+    sound(
+        indoc! {r#"
+            module M
+
+            let f xs = Array.unsafeGet 0 xs
+        "#},
+        "f",
+    );
+}
+
+#[test]
+fn inlined_permuted_array_push_is_sound() {
+    // `Array.push x xs` is a permuted wrapper over the consuming `arrayPush`.
+    sound(
+        indoc! {r#"
+            module M
+
+            let f x xs = Array.push x xs
+        "#},
+        "f",
+    );
+}

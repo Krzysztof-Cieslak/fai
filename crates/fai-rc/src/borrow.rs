@@ -29,8 +29,8 @@
 //! callee's body only ripples to callers when its borrow signature actually
 //! changes (early cutoff on the small [`BorrowSig`] value).
 
-use fai_core::core;
 use fai_core::ir::{CExpr, CoreFn, ExprKind as K};
+use fai_core::{core, core_inlined};
 use fai_db::{Db, SourceFile};
 use fai_resolve::{DefId, LocalId};
 use fai_syntax::Symbol;
@@ -74,7 +74,10 @@ impl BorrowSig {
 /// monotone fixpoint declared here ([`borrow_initial`]/[`borrow_recover`]).
 #[salsa::tracked(cycle_fn = borrow_recover, cycle_initial = borrow_initial)]
 pub fn borrow_signature(db: &dyn Db, file: SourceFile, name: Symbol) -> BorrowSig {
-    let lowered = core(db, file, name);
+    // Analyze the intrinsic-inlined body, the same form `rc` reference-counts, so
+    // the signature stays consistent with how the parameters are actually used
+    // after a primitive re-export wrapper is inlined to its primitive.
+    let lowered = core_inlined(db, file, name);
     let entry = lowered.entry();
     let n = entry.params.len();
     if n == 0 {

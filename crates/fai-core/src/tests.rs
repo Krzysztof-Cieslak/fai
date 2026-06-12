@@ -542,3 +542,143 @@ fn lowering_invariants_calls_helper_and_capability() {
         "main",
     );
 }
+
+// ── Intrinsic inlining ───────────────────────────────────────────────────────
+
+mod inline {
+    use fai_syntax::Symbol;
+
+    use super::db_with;
+    use crate::ir::Prim;
+    use crate::{PrimWrapper, core, core_inlined, pretty_def, prim_wrapper};
+
+    /// The recognizer's verdict on `name` in `src`.
+    fn wrapper(src: &str, name: &str) -> Option<PrimWrapper> {
+        let (db, file) = db_with(src);
+        prim_wrapper(&db, file, Symbol::intern(name))
+    }
+
+    /// `name`'s Core after intrinsic inlining, rendered compactly.
+    fn inlined(src: &str, name: &str) -> String {
+        let (db, file) = db_with(src);
+        pretty_def(&core_inlined(&db, file, Symbol::intern(name)))
+    }
+
+    /// `name`'s Core before inlining, rendered compactly.
+    fn raw(src: &str, name: &str) -> String {
+        let (db, file) = db_with(src);
+        pretty_def(&core(&db, file, Symbol::intern(name)))
+    }
+
+    // The recognizer (`prim_wrapper`). It is shape-based, so a user one-liner that
+    // eta-expands an operator (which lowers to a primitive) is recognized too.
+
+    #[test]
+    fn recognizes_identity_operator_wrapper() {
+        let src = "module M\n\nlet myAdd a b = a + b\n";
+        assert_eq!(
+            wrapper(src, "myAdd"),
+            Some(PrimWrapper { op: Prim::IntAdd, slots: vec![0, 1] })
+        );
+    }
+
+    #[test]
+    fn recognizes_permuted_operator_wrapper() {
+        // `b - a` reverses the operands, so the slots are the swapping permutation.
+        let src = "module M\n\nlet rsub a b = b - a\n";
+        assert_eq!(wrapper(src, "rsub"), Some(PrimWrapper { op: Prim::IntSub, slots: vec![1, 0] }));
+    }
+
+    #[test]
+    fn rejects_partial_arity_wrapper() {
+        // One parameter, a two-operand primitive (a literal fills the other slot):
+        // not an eta-expansion of the primitive over its parameters.
+        let src = "module M\n\nlet inc x = x + 1\n";
+        assert_eq!(wrapper(src, "inc"), None);
+    }
+
+    #[test]
+    fn rejects_nested_body() {
+        let src = "module M\n\nlet f a b = (a + b) + 1\n";
+        assert_eq!(wrapper(src, "f"), None);
+    }
+
+    #[test]
+    fn rejects_non_bijection_duplicate_parameter() {
+        let src = "module M\n\nlet dbl a = a + a\n";
+        assert_eq!(wrapper(src, "dbl"), None);
+    }
+
+    #[test]
+    fn rejects_non_wrapper_definition() {
+        let src = "module M\n\nlet f x = if x then 1 else 2\n";
+        assert_eq!(wrapper(src, "f"), None);
+    }
+
+    // The inliner (`core_inlined`).
+
+    #[test]
+    fn inlines_identity_std_wrapper() {
+        // `Int.toString x` is a saturated call to a re-export wrapper; it becomes
+        // the primitive directly (the wrapper hop is gone).
+        let src = "module M\n\nlet f x = Int.toString x\n";
+        assert_eq!(raw(src, "f"), "fn0(%0) = (app @toString %0)\n");
+        assert_eq!(inlined(src, "f"), "fn0(%0) = (intToString %0)\n");
+    }
+
+    #[test]
+    fn inlines_into_nested_argument() {
+        let src = "module M\n\nlet f x = Int.toString (x + 1)\n";
+        assert_eq!(inlined(src, "f"), "fn0(%0) = (intToString (+ %0 1))\n");
+    }
+
+    #[test]
+    fn inlines_identity_user_wrapper() {
+        // `myAdd`'s parameters take locals %0/%1, so `f`'s `x` is %2.
+        let src = "module M\n\nlet myAdd a b = a + b\n\nlet f x = myAdd x 1\n";
+        assert_eq!(inlined(src, "f"), "fn0(%2) = (+ %2 1)\n");
+    }
+
+    #[test]
+    fn inlines_permuted_wrapper_with_order_preserving_lets() {
+        // `Array.push x xs = Prim.arrayPush xs x` reverses its operands. The call's
+        // arguments are bound in source order (%2 = x, %3 = xs) and referenced
+        // through the permutation, so evaluation order is preserved.
+        let src = "module M\n\nlet f x xs = Array.push x xs\n";
+        assert_eq!(
+            inlined(src, "f"),
+            "fn0(%0, %1) = (let %2 = %0; (let %3 = %1; (arrayPush %3 %2)))\n"
+        );
+    }
+
+    #[test]
+    fn does_not_inline_first_class_use() {
+        // The wrapper is used as a value, not in a saturated call, so it keeps its
+        // `Global` reference (and stays compiled for first-class use).
+        let src = "module M\n\nlet f = Int.toString\n";
+        assert_eq!(inlined(src, "f"), raw(src, "f"));
+    }
+
+    #[test]
+    fn does_not_inline_partial_application() {
+        let src = "module M\n\nlet myAdd a b = a + b\n\nlet f = myAdd 1\n";
+        assert_eq!(inlined(src, "f"), raw(src, "f"));
+    }
+
+    #[test]
+    fn does_not_inline_non_wrapper_call() {
+        // `g`'s parameter takes local %0, so `f`'s `x` is %1.
+        let src = "module M\n\nlet g x = x + 1\n\nlet f x = g x\n";
+        assert_eq!(inlined(src, "f"), "fn0(%1) = (app @g %1)\n");
+    }
+
+    #[test]
+    fn inlines_inside_a_lifted_lambda() {
+        // The wrapper call lives in a lifted lambda (`fun x -> Int.toString x`),
+        // which `core_inlined` rewrites just like the entry function.
+        let src = "module M\n\nlet f = fun x -> Int.toString x\n";
+        let out = inlined(src, "f");
+        assert!(out.contains("(intToString %"), "expected inlined prim in the lambda:\n{out}");
+        assert!(!out.contains("@toString"), "wrapper call should be gone:\n{out}");
+    }
+}
