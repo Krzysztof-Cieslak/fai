@@ -34,10 +34,11 @@ The [divan] benches under `crates/fai-tests/benches/` (and
 are **not a CI pass/fail gate** — shared runners are too noisy for that, which is
 precisely why the deterministic guards above exist.
 
-To keep them from bitrotting, every CI run still **compiles** them
+To keep them from bitrotting, the `CI` workflow still **compiles** them
 (`build --all-targets`), and a separate **Benchmarks workflow** *runs* them on
-`main` and on demand to publish an informational report (see below). It never
-fails the build on timings.
+**every pull request**, on `main`, and on demand to publish an informational
+report (see below). It never fails the build on timings — only when a benchmark
+crashes or (for the Fai-vs-Rust algorithm benches) computes a wrong result.
 
 ## Running the benches
 
@@ -47,16 +48,20 @@ cargo bench -p fai-tests --bench inference    # one suite
 cargo bench -p fai-cli   --bench test_loop    # the end-to-end fai test loop
 ```
 
-`DIVAN_MAX_TIME=<seconds>` caps the wall time per benchmarked function (CI uses
-`120`). The report is informational and non-gating, so the cap is set generously
-— enough that even the process-spawn benches (`algorithms_aot`, the daemon e2e,
-the `fai test` loop) reach divan's full ~100-sample target for steady medians,
-while still bounding any pathological function.
+`DIVAN_MAX_TIME=<seconds>` caps the wall time per benchmarked function. The
+`main`/on-demand CI run uses `120` — generous enough that even the process-spawn
+benches (`algorithms_aot`, the daemon e2e, the `fai test` loop) reach divan's full
+~100-sample target for steady medians, while still bounding any pathological
+function. A **pull-request** run uses `1` instead, so the whole suite finishes in
+roughly the test job's time (about three and a half minutes from a cold build,
+dominated by the release compile) — the report is informational and non-gating, so
+rough medians are fine there.
 
 ## The CI Benchmarks workflow
 
-`.github/workflows/bench.yml` runs on every push to `main` and on
-`workflow_dispatch`. It runs `cargo bench --workspace --benches`, then renders the
+`.github/workflows/bench.yml` runs on every **pull request**, every push to
+`main`, and on `workflow_dispatch`. It runs `cargo bench --workspace --benches`
+(at `DIVAN_MAX_TIME=1` on a pull request, `120` otherwise), then renders the
 output with the `bench-summary` tool
 (`crates/fai-tests/src/bench_summary.rs`):
 
