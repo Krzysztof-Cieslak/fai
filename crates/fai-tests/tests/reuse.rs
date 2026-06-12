@@ -996,3 +996,54 @@ proptest! {
         prop_assert_eq!(out.trim(), expected.to_string(), "map/fold oracle mismatch for {:?}", t);
     }
 }
+
+/// A rotation-heavy unique build (descending inserts force frequent rebalancing)
+/// allocates **one cell per entry** — every rebuilt search path, *including the
+/// `balance` rotations*, is recycled in place. Without inter-procedural reuse-token
+/// passing the rotation branch frees the matched node and `balance` allocates
+/// fresh, so the build costs ~3 cells per entry; the guard at ≤ 1.5 fails that.
+#[track_caller]
+fn build_recycles_balance_paths(prog: impl Fn(i32) -> String, label: &str) {
+    let n = 512;
+    let cost = build_cost(&prog, n);
+    assert!(
+        cost <= i64::from(n) * 3 / 2,
+        "{label}: a unique rebalancing build should recycle the balance paths in place \
+         (cost({n})={cost}, per-entry {:.3}); without forwarding it is ~3x",
+        cost as f64 / f64::from(n),
+    );
+}
+
+#[test]
+fn dict_insert_recycles_balance_rotations() {
+    build_recycles_balance_paths(|n| dict_prog("Dict.size d", n), "Dict.insert");
+}
+
+#[test]
+fn set_insert_recycles_balance_rotations() {
+    build_recycles_balance_paths(|n| set_prog("Set.size s", n), "Set.insert");
+}
+
+#[test]
+fn unique_remove_recycles_vs_shared_copies() {
+    // Removing a key from a unique tree rebuilds (and rebalances) its path in place;
+    // a shared tree must copy it. The positive differential confirms the rebalanced
+    // path — reached through the `balance` call — is recycled, and both exit
+    // leak-free with the right size.
+    let prog = |body: &str| {
+        formatdoc! {r#"
+            module M
+            fillD : Int -> Dict Int Int -> Dict Int Int
+            let fillD k d = if k <= 0 then d else fillD (k - 1) (Dict.insert k k d)
+            let use d = {body}
+            public main : Runtime -> Unit / {{ Console }}
+            let main rt = rt.console.writeLine (Int.toString (use (fillD 64 Dict.empty)))
+        "#}
+    };
+    let u = allocs(&prog("Dict.size (Dict.remove 32 d)"), "63");
+    let s = allocs(&prog("Dict.size (Dict.remove 32 d) + Dict.size d"), "127");
+    assert!(
+        s > u,
+        "a unique remove recycles its rebalanced path, a shared one copies (u={u}, s={s})"
+    );
+}

@@ -29,7 +29,7 @@ use cranelift_codegen::ir::{AbiParam, Block, FuncRef, InstBuilder, MemFlags, Val
 use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
-use fai_core::ir::{CExpr, CoreFn, ExprKind, FieldIndex, FnAbi, Lit, LoweredDef, Prim};
+use fai_core::ir::{CExpr, CoreFn, ExprKind, FieldIndex, FnAbi, Lit, LoweredDef, Prim, Repr};
 use fai_resolve::{DefId, LocalId};
 use fai_runtime as rt;
 use fai_types::{Con, RowEnd, Ty};
@@ -45,6 +45,13 @@ pub fn code_symbol(namer: &dyn Fn(DefId) -> String, def: DefId) -> String {
 #[must_use]
 pub fn closure_symbol(namer: &dyn Fn(DefId) -> String, def: DefId) -> String {
     format!("{}__closure", namer(def))
+}
+
+/// Builds the symbol of a definition's token-taking specialized entry (the target
+/// of a forwarded saturated direct call).
+#[must_use]
+pub fn reuse_symbol(namer: &dyn Fn(DefId) -> String, def: DefId) -> String {
+    format!("{}__reuse", namer(def))
 }
 
 /// Compiles one lowered definition into `module`: its functions, its static
@@ -142,6 +149,72 @@ pub(crate) fn build_def<M: Module>(
         fn_ids[0]
     };
     define_static_closure(module, closure_data, closure_code, arity as u64);
+}
+
+/// Declares and builds a definition's token-taking specialized entry
+/// (`{base}__reuse`), pushing its uncompiled body onto `jobs`. A no-op for a
+/// definition that accepts no forwarded tokens (no [`LoweredDef::reuse_entry`]).
+///
+/// The entry's calling convention prepends `k` reuse-token registers to the
+/// primary entry's value parameters (`fn(env, t0, …, a0, …)`); its body is the
+/// forwarded primary body with those tokens threaded into its leftover sinks (set
+/// by reference counting). Emitted separately from [`build_def`] so the per-
+/// definition primary object stays a pure function of the definition while the
+/// driver links a reuse entry only where a caller actually forwards to it.
+pub(crate) fn build_reuse_object<M: Module>(
+    module: &mut M,
+    lowered: &LoweredDef,
+    namer: &dyn Fn(DefId) -> String,
+    arity_of: &dyn Fn(DefId) -> usize,
+    signature_of: &dyn Fn(DefId) -> FnAbi,
+    borrows_of: &dyn Fn(DefId) -> Vec<bool>,
+    jobs: &mut Vec<(FuncId, Context)>,
+) {
+    let Some(reuse_entry) = &lowered.reuse_entry else { return };
+    let base = namer(lowered.def);
+    let abi = signature_of(lowered.def);
+    let source_arity = lowered.entry().params.len();
+    let tokens = reuse_entry.params.len().saturating_sub(source_arity);
+
+    // The specialized ABI: `k` leading uniform (`i64`) token parameters, then the
+    // primary entry's value-parameter representations; register-passing.
+    let mut params = vec![Repr::Uniform; tokens];
+    params.extend(abi.params.iter().cloned());
+    let reuse_abi = FnAbi { params, ret: abi.ret.clone(), register_abi: true };
+
+    let uniform_sig = code_signature(module);
+    let entry_sig = reuse_entry_signature(module, tokens, source_arity, &abi);
+
+    // The reuse entry is `fn0`; lifted lambdas it references are imported from the
+    // primary object (same `{base}__fn{i}` symbols).
+    let mut fn_ids = Vec::with_capacity(lowered.fns.len());
+    fn_ids.push(
+        module
+            .declare_function(&reuse_symbol(namer, lowered.def), Linkage::Export, &entry_sig)
+            .expect("declare reuse entry"),
+    );
+    for i in 1..lowered.fns.len() {
+        fn_ids.push(
+            module
+                .declare_function(&format!("{base}__fn{i}"), Linkage::Import, &uniform_sig)
+                .expect("declare lambda import"),
+        );
+    }
+
+    let ctx = build_fn(
+        module,
+        reuse_entry,
+        lowered,
+        namer,
+        arity_of,
+        signature_of,
+        borrows_of,
+        &reuse_abi,
+        &fn_ids,
+        &base,
+        0,
+    );
+    jobs.push((fn_ids[0], ctx));
 }
 
 /// Block-based unbox of an owned `Int` value to a raw `i64`, releasing a box (the
@@ -367,6 +440,32 @@ fn entry_signature<M: Module>(
     let mut sig = module.make_signature();
     sig.params.push(AbiParam::new(types::I64)); // env (unused: a top-level entry captures nothing)
     for i in 0..arity {
+        let ty = if abi.float_param(i) { types::F64 } else { types::I64 };
+        sig.params.push(AbiParam::new(ty));
+    }
+    let ret = if abi.float_return() { types::F64 } else { types::I64 };
+    sig.returns.push(AbiParam::new(ret));
+    sig
+}
+
+/// The calling convention of a token-taking specialized entry: `fn(env, t0, …,
+/// t_{k-1}, a0, …, aN) -> ret`, where each `t` is an `i64` reuse token and the
+/// `a`/`ret` follow the primary entry's `abi` (a scalar `Float` in an `f64`
+/// register). Built identically by the callee (defining `{base}__reuse`) and a
+/// forwarding caller, so both agree on the signature from the slot count and the
+/// callee's ABI.
+fn reuse_entry_signature<M: Module>(
+    module: &M,
+    tokens: usize,
+    source_arity: usize,
+    abi: &FnAbi,
+) -> cranelift_codegen::ir::Signature {
+    let mut sig = module.make_signature();
+    sig.params.push(AbiParam::new(types::I64)); // env (unused: captures nothing)
+    for _ in 0..tokens {
+        sig.params.push(AbiParam::new(types::I64)); // a reuse token (raw i64)
+    }
+    for i in 0..source_arity {
         let ty = if abi.float_param(i) { types::F64 } else { types::I64 };
         sig.params.push(AbiParam::new(ty));
     }
@@ -1084,7 +1183,7 @@ impl<M: Module> Translator<'_, M> {
             ExprKind::Local(local) => self.use_var(*local),
             ExprKind::Global(def) => self.global_value(*def, &e.ty),
             ExprKind::Prim { op, args } => self.prim(*op, args, &e.ty),
-            ExprKind::App { func, args, .. } => self.application(func, args, &e.ty),
+            ExprKind::App { func, args, reuse } => self.application(func, args, reuse, &e.ty),
             ExprKind::If { cond, then, els } => self.conditional(cond, then, els),
             ExprKind::Let { local, value, body } => {
                 let v = self.expr(value);
@@ -2368,7 +2467,13 @@ impl<M: Module> Translator<'_, M> {
         self.mark_raw(cmp)
     }
 
-    fn application(&mut self, func: &CExpr, args: &[CExpr], result_ty: &Ty) -> Value {
+    fn application(
+        &mut self,
+        func: &CExpr,
+        args: &[CExpr],
+        reuse: &[Option<LocalId>],
+        result_ty: &Ty,
+    ) -> Value {
         // A saturated application of a known top-level function calls its code
         // symbol directly, passing the value arguments in registers per the callee's
         // ABI, skipping `apply_n` and the static closure. (Top-level functions
@@ -2377,6 +2482,12 @@ impl<M: Module> Translator<'_, M> {
         if let ExprKind::Global(def) = func.kind {
             let arity = (self.arity_of)(def);
             if arity > 0 && args.len() >= arity {
+                // A forwarded saturated call targets the callee's token-taking
+                // `{base}__reuse` entry, passing the reuse tokens in leading
+                // registers. Reuse is set only at exactly-saturated direct calls.
+                if !reuse.is_empty() && args.len() == arity {
+                    return self.direct_reuse_application(def, args, reuse, result_ty);
+                }
                 return if args.len() == arity {
                     self.direct_application(def, args, result_ty)
                 } else {
@@ -2514,6 +2625,72 @@ impl<M: Module> Translator<'_, M> {
         let fref = self.module.declare_func_in_func(id, self.builder.func);
         let call = self.builder.ins().call(fref, call_args);
         self.builder.inst_results(call)[0]
+    }
+
+    /// A saturated direct call forwarding reuse tokens to the callee's token-taking
+    /// `{base}__reuse` entry: the leading null environment, then one register per
+    /// token slot (a forwarded token value, or the null token `0` for a padded
+    /// slot), then the value arguments in registers per the callee's ABI. The
+    /// result is coerced to `result_ty`'s representation, as for a plain direct
+    /// call.
+    fn direct_reuse_application(
+        &mut self,
+        def: DefId,
+        args: &[CExpr],
+        reuse: &[Option<LocalId>],
+        result_ty: &Ty,
+    ) -> Value {
+        let abi = (self.signature_of)(def);
+        let borrowed = (self.borrows_of)(def);
+        let null_env = self.builder.ins().iconst(types::I64, 0);
+        let mut call_args = Vec::with_capacity(1 + reuse.len() + args.len());
+        call_args.push(null_env);
+        // One leading register per reuse-token slot: the forwarded token value, or
+        // the null token for a padded slot (the runtime treats it as "allocate
+        // fresh"). Tokens are raw `i64` words, never reference-counted.
+        for slot in reuse {
+            let v = match slot {
+                Some(t) => self.use_var(*t),
+                // The null reuse token (`0`): the runtime allocates fresh for it.
+                None => self.builder.ins().iconst(types::I64, 0),
+            };
+            call_args.push(v);
+        }
+        // The value arguments follow, marshalled exactly as a plain direct call.
+        let mut lent_boxes = Vec::new();
+        for (i, a) in args.iter().enumerate() {
+            let v = if abi.float_param(i) {
+                let v = self.expr(a);
+                if self.is_f64(v) { v } else { self.owning_unbox(v) }
+            } else if abi.int_param(i) {
+                let v = self.expr(a);
+                self.as_raw_int(v)
+            } else {
+                let raw = self.expr(a);
+                let boxed = self.ensure_boxed(raw);
+                if boxed != raw && borrowed.get(i).copied().unwrap_or(false) {
+                    lent_boxes.push(boxed);
+                }
+                boxed
+            };
+            call_args.push(v);
+        }
+        let name = reuse_symbol(self.namer, def);
+        let sig = reuse_entry_signature(self.module, reuse.len(), args.len(), &abi);
+        let id = self
+            .module
+            .declare_function(&name, Linkage::Import, &sig)
+            .expect("declare reuse entry");
+        let fref = self.module.declare_func_in_func(id, self.builder.func);
+        let call = self.builder.ins().call(fref, &call_args);
+        let result = self.builder.inst_results(call)[0];
+        for b in lent_boxes {
+            self.call_drop(b);
+        }
+        if abi.int_return() {
+            self.mark_raw(result);
+        }
+        self.as_repr_of(result, result_ty)
     }
 
     fn make_closure(&mut self, func: fai_core::ir::FnId, captures: &[LocalId]) -> Value {

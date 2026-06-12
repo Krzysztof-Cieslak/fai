@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use camino::{Utf8Path, Utf8PathBuf};
-use fai_codegen::{JitProgram, main_object, object_for_def};
+use fai_codegen::{JitProgram, main_object, object_for_def, reuse_object_for_def};
 use fai_core::ir::{FnAbi, LoweredDef};
 use fai_core::wire::{WireBundle, WireDef, WireDefId, def_to_wire, from_wire};
 use fai_core::{core, helper_inlined};
@@ -20,7 +20,8 @@ use fai_db::{Db, Diag, SourceFile};
 use fai_diagnostics::wire::{DiagnosticWire, to_wire};
 use fai_diagnostics::{Diagnostic, SCHEMA_VERSION, Severity, render_human};
 use fai_rc::{
-    BorrowSig, borrow_signature, combined_lowered, member_wrapper, mutual_groups, rc, rc_lowered,
+    BorrowSig, borrow_signature, combined_lowered, forwards_to, member_wrapper, mutual_groups,
+    rc_emit, rc_lowered, reuse_signature,
 };
 use fai_resolve::{DefId, ModuleName, module_defs, module_name};
 use fai_span::SpanResolver;
@@ -170,12 +171,49 @@ pub(crate) fn borrows_of(db: &dyn Db, def: DefId) -> Vec<bool> {
 /// cache (or regenerated), so eviction only trades memory for that lookup.
 #[salsa::tracked(lru = 0)]
 pub fn object_code(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<Vec<u8>> {
-    let lowered = rc(db, file, name);
+    // The emit-ready lowering: reuse tokens forwarded into accepting callees. The
+    // primary object never includes the token-taking entry (that is a separate,
+    // forward-reachability-gated object), so it stays a pure function of the
+    // definition (the cache firewall).
+    let lowered = rc_emit(db, file, name);
     let namer = |d: DefId| symbol_base(db, d);
     let arity = |d: DefId| arity_of(db, d);
     let abi = |d: DefId| abi_of(db, d);
     let borrows = |d: DefId| borrows_of(db, d);
     Arc::new(object_for_def(&lowered, &namer, &arity, &abi, &borrows))
+}
+
+/// The cached relocatable object holding only a definition's token-taking
+/// specialized entry (`{base}__reuse`). A separate cache unit from
+/// [`object_code`] so the primary object stays forwarding-independent; linked
+/// only where a reachable caller forwards reuse tokens to this definition.
+#[salsa::tracked(lru = 0)]
+pub fn reuse_object_code(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<Vec<u8>> {
+    let lowered = rc_emit(db, file, name);
+    let namer = |d: DefId| symbol_base(db, d);
+    let arity = |d: DefId| arity_of(db, d);
+    let abi = |d: DefId| abi_of(db, d);
+    let borrows = |d: DefId| borrows_of(db, d);
+    Arc::new(reuse_object_for_def(&lowered, &namer, &arity, &abi, &borrows))
+}
+
+/// The definitions a reachable caller forwards reuse tokens to — the definitions
+/// whose token-taking specialized entry must be emitted and linked. Computed from
+/// the emit-ready lowerings of the reachable set (each forwarding call records its
+/// callee), so a definition that accepts tokens but is never forwarded to gets no
+/// specialized entry. Deterministically ordered.
+fn forward_targets(db: &dyn Db, reachable: &[DefId]) -> Vec<DefId> {
+    let mut seen = FxHashSet::default();
+    let mut order = Vec::new();
+    for &def in reachable {
+        let Some(file) = db.source_file(def.file) else { continue };
+        for callee in forwards_to(&rc_emit(db, file, def.name)) {
+            if seen.insert(callee) {
+                order.push(callee);
+            }
+        }
+    }
+    order
 }
 
 /// Bounds the number of cached [`object_code`] blobs the database keeps in
@@ -441,6 +479,16 @@ pub fn build_native(db: &dyn Db, file: SourceFile, out: &Utf8Path) -> BuildOutco
             object_for_def(combined, &namer, &arity, &abi, &borrows),
         ));
     }
+    // Link a token-taking specialized entry for each definition a reachable caller
+    // forwards reuse tokens to (a separate cache unit from the primary object).
+    for target in forward_targets(db, &reachable) {
+        if let Some(tf) = db.source_file(target.file) {
+            objects.push((
+                fai_codegen::reuse_symbol(&namer, target),
+                (*reuse_object_code(db, tf, target.name)).clone(),
+            ));
+        }
+    }
 
     let entry = DefId::new(file.source(db), Symbol::intern(ENTRY));
     let runtime = runtime_root(db).expect("standard library defines the Runtime value binding");
@@ -494,8 +542,9 @@ pub fn jit_run_program(db: &dyn Db, file: SourceFile) -> RunOutcome {
     let groups = program_groups(db, &reachable);
     let members: FxHashSet<DefId> = groups.wrappers.keys().copied().collect();
 
-    // Lower + reference-count each ordinary reachable def in parallel (independent
-    // queries); the JIT compile that follows is serial (one shared module).
+    // Lower + reference-count (emit-ready, with reuse forwarding) each ordinary
+    // reachable def in parallel (independent queries); the JIT compile that follows
+    // is serial (one shared module).
     let mut defs: Vec<LoweredDef> = reachable
         .par_iter()
         .map_with(db.clone_box(), |dbh, def| {
@@ -503,12 +552,20 @@ pub fn jit_run_program(db: &dyn Db, file: SourceFile) -> RunOutcome {
                 return None; // a group member compiles to its wrapper, added below
             }
             let db: &dyn Db = &**dbh;
-            db.source_file(def.file).map(|f| (*rc(db, f, def.name)).clone())
+            db.source_file(def.file).map(|f| (*rc_emit(db, f, def.name)).clone())
         })
         .collect::<Vec<Option<LoweredDef>>>()
         .into_iter()
         .flatten()
         .collect();
+    // Keep a token-taking specialized entry only where a reachable caller forwards
+    // to it; clearing it elsewhere stops the JIT emitting an unused entry.
+    let targets: FxHashSet<DefId> = forward_targets(db, &reachable).into_iter().collect();
+    for d in &mut defs {
+        if !targets.contains(&d.def) {
+            d.reuse_entry = None;
+        }
+    }
     defs.extend(groups.wrappers.into_values());
     defs.extend(groups.combined);
 
@@ -595,18 +652,25 @@ pub fn jit_compile(db: &dyn Db, file: SourceFile) -> Result<CompiledProgram, Vec
         return Err(diagnostics);
     }
 
-    // Lower + reference-count each reachable def in parallel (independent
-    // queries), as the JIT runner does, then build one finalized image.
-    let defs: Vec<LoweredDef> = reachable
+    // Lower + reference-count (emit-ready, with reuse forwarding) each reachable
+    // def in parallel (independent queries), as the JIT runner does, then build one
+    // finalized image.
+    let mut defs: Vec<LoweredDef> = reachable
         .par_iter()
         .map_with(db.clone_box(), |dbh, def| {
             let db: &dyn Db = &**dbh;
-            db.source_file(def.file).map(|f| (*rc(db, f, def.name)).clone())
+            db.source_file(def.file).map(|f| (*rc_emit(db, f, def.name)).clone())
         })
         .collect::<Vec<Option<LoweredDef>>>()
         .into_iter()
         .flatten()
         .collect();
+    let targets: FxHashSet<DefId> = forward_targets(db, &reachable).into_iter().collect();
+    for d in &mut defs {
+        if !targets.contains(&d.def) {
+            d.reuse_entry = None;
+        }
+    }
 
     let names: FxHashMap<DefId, String> =
         reachable.iter().map(|&d| (d, symbol_base(db, d))).collect();
@@ -661,8 +725,14 @@ pub fn build_run_bundle(db: &dyn Db, file: SourceFile) -> RunBundleResult {
     let groups = program_groups(db, &reachable);
     let members: FxHashSet<DefId> = groups.wrappers.keys().copied().collect();
 
-    // Lower + reference-count + serialize each ordinary reachable def in parallel
-    // (independent queries), preserving order so the bundle is deterministic.
+    // Definitions a reachable caller forwards reuse tokens to: only these ship
+    // their token-taking specialized entry (and its slot classes), so the worker
+    // emits a reuse entry exactly where it is used.
+    let targets: FxHashSet<DefId> = forward_targets(db, &reachable).into_iter().collect();
+
+    // Lower + reference-count (emit-ready) + serialize each ordinary reachable def
+    // in parallel (independent queries), preserving order so the bundle is
+    // deterministic.
     let mut defs: Vec<WireDef> = reachable
         .par_iter()
         .map_with(db.clone_box(), |dbh, d| {
@@ -671,9 +741,20 @@ pub fn build_run_bundle(db: &dyn Db, file: SourceFile) -> RunBundleResult {
             }
             let db: &dyn Db = &**dbh;
             let def_file = db.source_file(d.file)?;
-            let lowered = rc(db, def_file, d.name);
             let module_of = |x: DefId| module_label(db, x);
-            Some(def_to_wire(&lowered, &module_of, arity_of(db, *d), abi_of(db, *d), Vec::new()))
+            let lowered = rc_emit(db, def_file, d.name);
+            // Ship the specialized entry and its slot classes only for a forward
+            // target; otherwise drop it so the worker emits no unused entry.
+            let (lowered, reuse_sig) = if targets.contains(d) {
+                (lowered, reuse_signature(db, def_file, d.name).classes().to_vec())
+            } else if lowered.reuse_entry.is_some() {
+                let mut owned = (*lowered).clone();
+                owned.reuse_entry = None;
+                (Arc::new(owned), Vec::new())
+            } else {
+                (lowered, Vec::new())
+            };
+            Some(def_to_wire(&lowered, &module_of, arity_of(db, *d), abi_of(db, *d), reuse_sig))
         })
         .collect::<Vec<Option<WireDef>>>()
         .into_iter()

@@ -647,7 +647,7 @@ fn count_local(e: &CExpr, x: LocalId, n: &mut usize) {
         K::App { func, args, reuse } => {
             count_local(func, x, n);
             args.iter().for_each(|a| count_local(a, x, n));
-            *n += reuse.iter().filter(|&&t| t == x).count();
+            *n += reuse.iter().filter(|&&t| t == Some(x)).count();
         }
         K::If { cond, then, els } => {
             count_local(cond, x, n);

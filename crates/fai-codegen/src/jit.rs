@@ -157,6 +157,18 @@ fn compile_module(
     let mut jobs: Vec<(FuncId, Context)> = Vec::new();
     for def in defs {
         build_def(module, def, namer, arity_of, signature_of, borrows_of, &mut jobs);
+        // A token-taking specialized entry, when the definition carries one (the
+        // driver clears it on definitions no reachable caller forwards to, so this
+        // emits a reuse entry only where it is actually used).
+        crate::emit::build_reuse_object(
+            module,
+            def,
+            namer,
+            arity_of,
+            signature_of,
+            borrows_of,
+            &mut jobs,
+        );
     }
 
     // Code-generate each function in parallel; only the read-only ISA is shared.
