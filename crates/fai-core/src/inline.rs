@@ -267,7 +267,7 @@ fn build_prim(pw: &PrimWrapper, args: Vec<CExpr>, ty: Ty, next: &mut usize) -> C
 /// The first local slot unused anywhere in `lowered`, so the bindings the inliner
 /// synthesizes for a permuted wrapper never collide with an existing local (and
 /// reference counting, which scans the same way, continues above them).
-fn next_free_local(lowered: &LoweredDef) -> usize {
+pub(crate) fn next_free_local(lowered: &LoweredDef) -> usize {
     let mut max = 0usize;
     for f in &lowered.fns {
         for &p in &f.params {

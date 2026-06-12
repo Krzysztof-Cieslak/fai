@@ -61,8 +61,16 @@
 > when the reconstruction lives in a following branch — so a "recurse, then
 > rebalance" function (a balanced-tree `insert`/`remove`) rebuilds a uniquely-owned
 > search path in place (an O(n) build, not O(n log n)); the reuse token is threaded
-> to each branch's construction and **freed** on a branch that builds nothing.
-> `{ r with … }`
+> to each branch's construction and **freed** on a branch that builds nothing. So
+> that factored code reuses too, a **general helper inliner** (`helper_inlined`,
+> layered on the intrinsic prim inliner) folds **small, non-recursive, intra-file
+> helpers** into their callers before reference counting (transitively, binding each
+> argument so representation is coerced as at a call boundary; non-recursive callees
+> are found via a full intra-file reference-graph SCC analysis, so the inlined graph
+> stays a cycle-free DAG) — so `Dict`/`Set` `insert`/`remove`, written through a
+> `bin` smart constructor (and `singleton`/all-`bin` `balance`) rather than
+> hand-inlined nodes, still recycle a unique tree's cells in place, while the larger
+> rotating `balance` stays a shared call. `{ r with … }`
  > updates a unique record in place, and **argument borrowing** lends
 > inspect-only parameters at direct calls (with an owned-ABI wrapper for the
 > first-class value form). Borrow inference is **inter-procedural**: a parameter
@@ -623,7 +631,14 @@ A change is done when:
 
 1. `cargo build` is clean and `cargo clippy --all-targets -- -D warnings` passes.
 2. `cargo fmt --all -- --check` passes (Rust side).
-3. `cargo test` passes, including golden/snapshot and e2e tests.
+3. The tests pass, including golden/snapshot and e2e tests. **Do not run the whole
+   `cargo test` workspace suite locally as a finalization gate — it is too slow
+   (the AOT/native, algorithms, daemon, and LSP e2e suites alone take many
+   minutes).** Locally, run only the **affected** crates and integration targets
+   (e.g. `cargo test -p fai-core`, `cargo test -p fai-tests --test reuse`) plus any
+   suite a change plausibly touches; the **full suite is CI's job** (the
+   `.github/workflows/` gates run it). Prefer fast, targeted feedback over a local
+   full run.
 4. New behavior has tests at the appropriate levels (see §13); new diagnostics
    have codes + catalog entries.
 5. Any surface-language change is reflected in `AGENTS.md`, `docs/MEMORY.md`

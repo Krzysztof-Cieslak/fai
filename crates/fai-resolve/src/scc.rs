@@ -130,6 +130,64 @@ pub fn module_sccs(db: &dyn Db, file: SourceFile) -> Arc<ModuleSccs> {
     Arc::new(ModuleSccs { sccs, index_of })
 }
 
+/// The definitions in `file` that are part of a recursion cycle: a member of a
+/// strongly-connected component of size > 1 (mutual recursion), or a definition
+/// that references itself (direct self-recursion).
+///
+/// Unlike [`module_sccs`] — which deliberately cuts signatured edges and drops
+/// self-edges because it bounds *inference* — this is the full intra-file
+/// reference graph (every definition is a node, every same-file reference an edge,
+/// self-edges kept). It answers "is this definition genuinely recursive", which a
+/// transform that must never duplicate a recursive body (the helper inliner) keys
+/// on. The result is a small set, so a body edit that does not change the
+/// recursion structure rips no dependents (salsa early cutoff).
+#[salsa::tracked]
+pub fn recursive_defs(db: &dyn Db, file: SourceFile) -> Arc<FxHashSet<DefId>> {
+    let defs = module_defs(db, file);
+    let resolved = resolve(db, file);
+    let source = file.source(db);
+
+    // Every same-file definition is a node; an edge is a reference to another
+    // same-file definition — or to itself (self-recursion), which the graph keeps.
+    let nodes: FxHashSet<DefId> = defs.defs.iter().map(|d| DefId::new(source, d.name)).collect();
+    let mut graph: FxHashMap<DefId, Vec<DefId>> = FxHashMap::default();
+    let mut self_loops: FxHashSet<DefId> = FxHashSet::default();
+    for &node in &nodes {
+        let mut edges: Vec<DefId> = Vec::new();
+        for &target in resolved.deps_of(node) {
+            if !nodes.contains(&target) {
+                continue; // cross-module edges never close an intra-file cycle
+            }
+            if target == node {
+                self_loops.insert(node);
+            }
+            edges.push(target);
+        }
+        edges.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+        edges.dedup();
+        graph.insert(node, edges);
+    }
+
+    // Tarjan over the full graph; a component of size > 1 is mutual recursion.
+    let mut tarjan = Tarjan::new(&graph);
+    // Deterministic visit order (graph key order is unspecified).
+    let mut order: Vec<DefId> = graph.keys().copied().collect();
+    order.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+    for node in order {
+        if !tarjan.indices.contains_key(&node) {
+            tarjan.connect(node);
+        }
+    }
+
+    let mut recursive: FxHashSet<DefId> = self_loops;
+    for component in tarjan.components {
+        if component.len() > 1 {
+            recursive.extend(component);
+        }
+    }
+    Arc::new(recursive)
+}
+
 /// Tarjan's strongly-connected-components algorithm over the dependency graph.
 struct Tarjan<'a> {
     graph: &'a FxHashMap<DefId, Vec<DefId>>,

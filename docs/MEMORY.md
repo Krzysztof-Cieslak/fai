@@ -2313,9 +2313,7 @@ Editor integration:
     (hence trap) order is preserved. A wrapper used first-class (not in a saturated
     call) keeps its `Global` reference and stays compiled; one reached only through
     now-inlined calls is dead-code-eliminated.
-  - **Runs before reference counting.** `rc`, `borrow_signature`, the
-    mutual-recursion combined loop, and reachability all read `core_inlined`
-    rather than the raw `core`, so reference counting balances the resulting
+  - **Runs before reference counting.** Reference counting balances the resulting
     primitive directly: a borrowing primitive (`stringLength`, `arrayGet`) borrows
     its operand exactly as the wrapper's borrow signature did, so an owned argument
     is still dropped at the call site (a codegen-only rewrite would have leaked it).
@@ -2329,9 +2327,49 @@ Editor integration:
     coercion a direct call already applied to a generic callee's boxed `Float`.
     (Before inlining, such a primitive only ever appeared at a generic `'a` result
     type inside the wrapper, so no coercion was needed.)
-  - **General inlining** of small non-recursive helpers (relaxing the recognizer
-    beyond pure eta-primitive wrappers) remains future work; this pass is the
-    narrow, always-beneficial case.
+
+- **General helper inlining (`helper_inlined`, layered on `core_inlined`).** A
+  second `fai-core` pass folds **small, non-recursive, intra-file helpers** into
+  their callers before reference counting, so factored code (smart constructors,
+  a shared `balance`) still gets Perceus reuse — a construction that lived inside a
+  *called* helper can now recycle the caller's freed cell. `rc`, `borrow_signature`,
+  the mutual-recursion combined loop, and reachability read `helper_inlined` (which
+  itself reads `core_inlined`), so it is the back end's view of Core.
+  - **Eligibility (`inline_summary`).** A callee is inlined when it is
+    **non-recursive** (excluded via `fai_resolve::recursive_defs`, a full intra-file
+    reference-graph SCC analysis — *not* the inference `module_sccs`, which cuts
+    signatured edges and so would miss a signatured self-recursion), a single
+    function with no captures (so no lifted lambda to renumber), non-row-polymorphic
+    (no offset evidence), with ≥1 parameter, and whose prim-folded body is at most a
+    node budget (currently 64 — admits `bin`/`singleton`, excludes the larger
+    `balance`). Inlining is **transitive** (a caller splices the callee's own
+    `helper_inlined` body, already folded) and cycle-free precisely because the
+    eligible-callee graph over non-recursive nodes is a DAG; the recursion check is
+    done **before** reading `helper_inlined`, so a self-call resolves to "not
+    inlinable" without forming a query cycle.
+  - **Substitution.** A saturated (or over-applied) direct call binds **every**
+    argument to a fresh local and remaps the callee's locals to fresh slots; binding
+    (not splicing) routes each argument through code generation's single
+    representation-coercion point (`define_var`), so a raw scalar flowing into a
+    generic position is tagged exactly as the call boundary would have, and the
+    callee body's own types are kept verbatim (no instantiation needed under the
+    uniform representation). An over-application applies the surplus arguments to the
+    inlined result.
+  - **Intra-file only.** Only same-file callees are inlined, which keeps the
+    cross-module firewall intact (a body edit never crosses a module boundary, and a
+    caller's object never depends on another module's body) and keeps an opaque
+    type transparent at the splice site. Cross-module general inlining is future work.
+  - **Incrementality.** `inline_summary` returns a tiny value (the arity, or
+    "not inlinable"), so a callee body edit ripples to its callers only when its
+    *eligibility* changes (early cutoff) — for the common non-helper callee it stays
+    "not inlinable" and the caller is cut off. An eligible helper's body edit ripples
+    only to its same-file callers, never across modules.
+  - **The standard library is written with helpers.** `Dict`/`Set` `insert`/`remove`
+    rebuild through the `bin` smart constructor (and `singleton` on the empty branch,
+    and an all-`bin` `balance`) rather than hand-inlined `DictNode`/`SetNode`; the
+    inliner folds `bin` back in, so the non-rotating spine still recycles a unique
+    tree's cells in place. The rotating `balance` stays a shared call (over budget),
+    so rebalancing allocates fresh — the cost model the reuse differential pins.
 
 - **D122 A dead value's drop is emitted before its continuation (codegen
   ordering; restores in-place mutation through a recursive destructure).** Code

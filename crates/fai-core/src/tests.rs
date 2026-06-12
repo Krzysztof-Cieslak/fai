@@ -682,3 +682,169 @@ mod inline {
         assert!(!out.contains("@toString"), "wrapper call should be gone:\n{out}");
     }
 }
+
+// ── General helper inlining ──────────────────────────────────────────────────
+
+mod helper_inline {
+    use fai_syntax::Symbol;
+
+    use super::db_with;
+    use crate::{core_inlined, helper_inlined, inline_summary, pretty_def};
+
+    /// `name`'s Core after general helper inlining, rendered compactly.
+    fn folded(src: &str, name: &str) -> String {
+        let (db, file) = db_with(src);
+        pretty_def(&helper_inlined(&db, file, Symbol::intern(name)))
+    }
+
+    /// `name`'s Core after only intrinsic (prim) inlining, rendered compactly.
+    fn prim_only(src: &str, name: &str) -> String {
+        let (db, file) = db_with(src);
+        pretty_def(&core_inlined(&db, file, Symbol::intern(name)))
+    }
+
+    /// The inliner's eligibility verdict for `name` (its arity when inlinable).
+    fn summary(src: &str, name: &str) -> Option<usize> {
+        let (db, file) = db_with(src);
+        inline_summary(&db, file, Symbol::intern(name))
+    }
+
+    // Eligibility (`inline_summary`).
+
+    #[test]
+    fn small_non_recursive_helper_is_eligible() {
+        // `inc x = x + 1` is not a prim wrapper (the `1` operand is not a parameter),
+        // so the intrinsic inliner leaves it; the helper inliner admits it (arity 1).
+        let src = "module M\n\nlet inc x = x + 1\n";
+        assert_eq!(summary(src, "inc"), Some(1));
+    }
+
+    #[test]
+    fn self_recursive_helper_is_ineligible() {
+        let src = "module M\n\nlet loop n = if n <= 0 then 0 else loop (n - 1)\n";
+        assert_eq!(summary(src, "loop"), None);
+    }
+
+    #[test]
+    fn mutually_recursive_helper_is_ineligible() {
+        let src = "module M\n\nlet ping n = if n <= 0 then 0 else pong (n - 1)\n\n\
+                   let pong n = if n <= 0 then 1 else ping (n - 1)\n";
+        assert_eq!(summary(src, "ping"), None);
+        assert_eq!(summary(src, "pong"), None);
+    }
+
+    #[test]
+    fn nullary_binding_is_ineligible() {
+        // A 0-arg constant is referenced as a bare global, not a call; out of scope.
+        let src = "module M\n\nlet answer = 42\n";
+        assert_eq!(summary(src, "answer"), None);
+    }
+
+    #[test]
+    fn lambda_carrying_helper_is_ineligible() {
+        // A nested lambda lifts to a second function; a multi-function definition is
+        // not inlined (its `MakeClosure` would reference a sibling that is not copied).
+        let src = "module M\n\nlet adder x = fun y -> x + y\n";
+        assert_eq!(summary(src, "adder"), None);
+    }
+
+    #[test]
+    fn oversized_helper_is_ineligible() {
+        // A long sum chain exceeds the node budget; a short one does not.
+        let big_terms = vec!["x"; 60].join(" + ");
+        let big = format!("module M\n\nlet big x = {big_terms}\n");
+        assert_eq!(summary(&big, "big"), None, "a >64-node body is over budget");
+        let small = "module M\n\nlet small x = x + x + x\n";
+        assert_eq!(summary(small, "small"), Some(1));
+    }
+
+    // The inliner (`helper_inlined`).
+
+    #[test]
+    fn inlines_a_small_helper_call() {
+        // `f`'s call to `inc` becomes the bound-and-folded body; `inc`'s parameter
+        // (%0) is remapped to a fresh local (%2) bound to the argument (%1).
+        let src = "module M\n\nlet inc x = x + 1\n\nlet f y = inc y\n";
+        assert_eq!(prim_only(src, "f"), "fn0(%1) = (app @inc %1)\n");
+        assert_eq!(folded(src, "f"), "fn0(%1) = (let %2 = %1; (+ %2 1))\n");
+    }
+
+    #[test]
+    fn folds_transitively_through_a_chain() {
+        // `outer` calls `inner`; `f` calls `outer`. The folded `f` contains neither
+        // call: `inner` was folded into `outer`, and that folded `outer` into `f`.
+        let src = "module M\n\nlet inner x = x + 1\n\n\
+                   let outer y = inner y + 10\n\n\
+                   let f z = outer z\n";
+        let out = folded(src, "f");
+        assert!(!out.contains("@outer"), "outer should be folded into f:\n{out}");
+        assert!(!out.contains("@inner"), "inner should be folded transitively:\n{out}");
+    }
+
+    #[test]
+    fn does_not_inline_a_recursive_call() {
+        // `loop` is recursive, so a caller keeps the call (the body is not unrolled).
+        let src = "module M\n\nlet loop n = if n <= 0 then 0 else loop (n - 1)\n\n\
+                   let f x = loop x\n";
+        let out = folded(src, "f");
+        assert!(out.contains("@loop"), "a recursive callee stays a call:\n{out}");
+    }
+
+    #[test]
+    fn does_not_inline_a_first_class_use() {
+        // `inc` is used as a value, not in a call, so it keeps its `Global` reference.
+        let src = "module M\n\nlet inc x = x + 1\n\nlet f = inc\n";
+        assert_eq!(folded(src, "f"), prim_only(src, "f"));
+    }
+
+    #[test]
+    fn does_not_inline_a_partial_application() {
+        // An under-saturated call is a closure, not a saturated direct call.
+        let src = "module M\n\nlet add a b = a + b + 0\n\nlet f = add 1\n";
+        assert_eq!(folded(src, "f"), prim_only(src, "f"));
+    }
+
+    #[test]
+    fn inlines_the_prefix_of_an_over_application() {
+        // `pick` (arity 1) returns a function; `pick true x` over-applies it. The
+        // prefix is inlined and the surplus argument applied to the result, so the
+        // call to `pick` is gone but the returned functions remain referenced.
+        let src = "module M\n\nlet twice n = n + n\n\nlet thrice n = n + n + n\n\n\
+                   let pick b = if b then twice else thrice\n\n\
+                   let f x = pick true x\n";
+        let out = folded(src, "f");
+        assert!(!out.contains("@pick"), "pick's prefix should be inlined:\n{out}");
+        assert!(out.contains("(if "), "the inlined body keeps its conditional:\n{out}");
+        assert!(out.contains("@twice") && out.contains("@thrice"), "branches stay:\n{out}");
+    }
+
+    #[test]
+    fn unchanged_definition_returns_the_prim_inlined_form() {
+        // A definition with no inlinable calls is returned as-is (the early-cutoff
+        // fast path), identical to its intrinsic-inlined form.
+        let src = "module M\n\nlet f x = x + 1\n";
+        assert_eq!(folded(src, "f"), prim_only(src, "f"));
+    }
+
+    /// The eligibility verdict for `name` in the standard-library module `module`.
+    fn std_summary(module: &str, name: &str) -> Option<usize> {
+        let (db, _m) = db_with("module M\n");
+        let file = fai_resolve::module_file(&db, fai_resolve::ModuleName(Symbol::intern(module)))
+            .expect("the standard library module is embedded");
+        inline_summary(&db, file, Symbol::intern(name))
+    }
+
+    #[test]
+    fn dict_smart_constructors_inline_but_balance_does_not() {
+        // The reuse-critical smart constructors are small enough to fold in, so a
+        // hot-spine `bin`/`singleton` call recycles the matched cell. The rotating
+        // `balance` stays a shared call (well over the budget), so rebalancing
+        // allocates fresh — exactly the cost model the acceptance pins.
+        assert!(std_summary("Dict", "bin").is_some(), "Dict.bin must inline");
+        assert!(std_summary("Dict", "singleton").is_some(), "Dict.singleton must inline");
+        assert_eq!(std_summary("Dict", "balance"), None, "Dict.balance must stay a call");
+        assert!(std_summary("Set", "bin").is_some(), "Set.bin must inline");
+        assert!(std_summary("Set", "singleton").is_some(), "Set.singleton must inline");
+        assert_eq!(std_summary("Set", "balance"), None, "Set.balance must stay a call");
+    }
+}

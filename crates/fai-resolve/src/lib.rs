@@ -35,7 +35,7 @@ pub use module::{
     emit_duplicate_prelude_export_errors, merge_auto_imports, module_defs, module_file,
     module_interface, module_name, prelude_exports, prelude_module_file, std_files,
 };
-pub use scc::{ModuleSccs, Scc, def_deps, module_sccs};
+pub use scc::{ModuleSccs, Scc, def_deps, module_sccs, recursive_defs};
 
 use fai_diagnostics::{CodeInfo, DiagnosticCode, Severity};
 

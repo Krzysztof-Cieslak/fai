@@ -15,7 +15,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use fai_codegen::{JitProgram, main_object, object_for_def};
 use fai_core::ir::{FnAbi, LoweredDef};
 use fai_core::wire::{WireBundle, WireDef, WireDefId, def_to_wire, from_wire};
-use fai_core::{core, core_inlined};
+use fai_core::{core, helper_inlined};
 use fai_db::{Db, Diag, SourceFile};
 use fai_diagnostics::wire::{DiagnosticWire, to_wire};
 use fai_diagnostics::{Diagnostic, SCHEMA_VERSION, Severity, render_human};
@@ -25,7 +25,7 @@ use fai_rc::{
 use fai_resolve::{DefId, ModuleName, module_defs, module_name};
 use fai_span::SpanResolver;
 use fai_syntax::Symbol;
-use fai_syntax::ast::ItemKind;
+use fai_syntax::ast::{ItemKind, Visibility};
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Serialize;
@@ -211,7 +211,7 @@ pub fn reachable_defs(db: &dyn Db, file: SourceFile) -> Vec<DefId> {
         }
         order.push(def);
         if let Some(file) = db.source_file(def.file) {
-            for callee in core_inlined(db, file, def.name).referenced_globals() {
+            for callee in helper_inlined(db, file, def.name).referenced_globals() {
                 if !seen.contains(&callee) {
                     stack.push(callee);
                 }
@@ -239,7 +239,7 @@ pub(crate) fn reachable_from_roots(
         }
         order.push(def);
         if let Some(file) = db.source_file(def.file) {
-            for callee in core_inlined(db, file, def.name).referenced_globals() {
+            for callee in helper_inlined(db, file, def.name).referenced_globals() {
                 if !seen.contains(&callee) {
                     stack.push(callee);
                 }
@@ -571,7 +571,25 @@ pub fn jit_compile(db: &dyn Db, file: SourceFile) -> Result<CompiledProgram, Vec
     if !has_main(db, file) {
         return Err(vec![no_entry_point()]);
     }
-    let reachable = reachable_defs(db, file);
+    // A `jit_compile` image is *fetchable* by name (see [`CompiledProgram::function`]),
+    // so it compiles `main`'s closure plus the file's whole public API as additional
+    // roots — a public binding stays a standalone function even when it is inlined
+    // into (and so dead-code-eliminated from) `main`'s own closure. The minimal AOT
+    // path ([`build_native`]) keeps the tighter main-only reachability.
+    let source = file.source(db);
+    let mut roots = vec![DefId::new(source, Symbol::intern(ENTRY))];
+    if let Some(runtime) = runtime_root(db) {
+        roots.push(runtime);
+    }
+    let mut public: Vec<DefId> = module_defs(db, file)
+        .defs
+        .iter()
+        .filter(|d| d.visibility == Visibility::Public)
+        .map(|d| DefId::new(source, d.name))
+        .collect();
+    public.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+    roots.extend(public);
+    let reachable = reachable_from_roots(db, &roots, &FxHashSet::default());
     let diagnostics = precompile_diagnostics(db, &reachable);
     if diagnostics.iter().any(|d| d.severity == Severity::Error) {
         return Err(diagnostics);
@@ -594,7 +612,6 @@ pub fn jit_compile(db: &dyn Db, file: SourceFile) -> Result<CompiledProgram, Vec
         reachable.iter().map(|&d| (d, symbol_base(db, d))).collect();
     let arities: FxHashMap<DefId, usize> =
         reachable.iter().map(|&d| (d, arity_of(db, d))).collect();
-    let source = file.source(db);
     let entry_defs: FxHashMap<Symbol, DefId> =
         reachable.iter().filter(|d| d.file == source).map(|&d| (d.name, d)).collect();
 
