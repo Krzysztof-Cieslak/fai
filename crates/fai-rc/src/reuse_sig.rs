@@ -379,7 +379,12 @@ impl Cx<'_> {
 /// forwardable saturated direct call: a non-self, non-row-polymorphic top-level
 /// function whose parameters this call saturates and which accepts tokens. (A
 /// self-call is excluded — the tail-call transform owns per-iteration loop reuse.)
-fn forward_target(db: &dyn Db, self_def: DefId, func: &CExpr, nargs: usize) -> Option<ReuseSig> {
+pub(crate) fn forward_target(
+    db: &dyn Db,
+    self_def: DefId,
+    func: &CExpr,
+    nargs: usize,
+) -> Option<ReuseSig> {
     let K::Global(g) = &func.kind else { return None };
     if *g == self_def {
         return None;
