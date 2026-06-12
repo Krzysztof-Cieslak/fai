@@ -1132,11 +1132,17 @@ impl<M: Module> Translator<'_, M> {
                 self.expr(body)
             }
             ExprKind::Drop { local, body } => {
-                let result = self.expr(body);
-                // The drop follows the body (its last use); see `drop_local` for
-                // the immediate / inlined-cell / runtime-dispatch choice.
+                // Release the local *before* its continuation. Reference counting
+                // only drops a value that is dead in `body` (the soundness
+                // interpreter verifies exactly this), so dropping first is correct
+                // and releases the value as early as the model intends — matching
+                // the tail path (`expr_tail`) and `Reset`. Dropping after `body`
+                // would keep a matched cell (and any boxed field projected from it,
+                // e.g. an `Array` threaded through a tuple-returning recursive sort)
+                // shared across the continuation, defeating in-place mutation. See
+                // `drop_local` for the immediate / inlined-cell / runtime choice.
                 self.drop_local(*local);
-                result
+                self.expr(body)
             }
             ExprKind::Join { params, body } => self.join(params, body, &e.ty),
             ExprKind::HoleStart { hole, body } => {

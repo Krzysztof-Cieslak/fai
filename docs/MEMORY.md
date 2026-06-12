@@ -2318,5 +2318,48 @@ Editor integration:
     beyond pure eta-primitive wrappers) remains future work; this pass is the
     narrow, always-beneficial case.
 
+- **D122 A dead value's drop is emitted before its continuation (codegen
+  ordering; restores in-place mutation through a recursive destructure).** Code
+  generation lowered a non-tail `Drop { local, body }` (D101 governs *what* the
+  drop emits; this is *when*) by emitting `body` first and the release after it.
+  Reference counting only ever drops a value that is **dead in `body`** — the
+  abstract soundness interpreter (D76) enforces exactly this, and the tail path
+  and `Reset` already release before their continuation — so the late release was
+  sound but kept the value alive across the continuation needlessly. Where the
+  value is a **matched cell** whose boxed field was projected out and is mutated
+  in the continuation, that defeats in-place update: the cell still references the
+  field, so the field is shared (`rc > 1`) during the recursion. The headline
+  victim was an `Array` threaded through a tuple-returning recursive sort
+  (`match partition … with | (p, a2) -> … qsort … a2`): the result tuple was
+  dropped only *after* the recursive sort, so the array was copied once per
+  recursion frame — O(n) full-buffer copies, i.e. O(n²) work, making the
+  contiguous `Array` sorts slower than the linked-`List` sorts they replaced.
+  - **Fix.** Emit the release **before** `body` (`drop_local` then the
+    continuation), matching the tail path (`expr_tail`), `Reset` (which already
+    calls `fai_drop_reuse` before its body), and the soundness interpreter's
+    consume-then-body model. The matched cell is freed at its death point, so a
+    field projected from it (duplicated when projected) becomes uniquely owned for
+    the recursion and is mutated in place. `Array.sort` and a hand-written
+    in-place quicksort now copy the buffer **zero** times on a uniquely-owned
+    array (an allocation-/copy-count test guards it via a debug-only array-copy
+    counter that, unlike the allocation count, makes a per-element copy visible —
+    each copy is one allocation but O(length) work).
+  - **Soundness.** Purely a code-generation reordering of the existing `Drop`
+    node; the reference-counted IR (and so the object-cache fingerprint) is
+    unchanged. Releasing a dead value earlier is unobservable in a pure
+    reference-counted language (no finalizers; free order is invisible) and can
+    only improve allocator reuse. The cache key carries an `early-drop` token in
+    its codegen-config stamp so a cache warmed before this change cannot serve a
+    stale drop-after object (the fingerprint alone would not distinguish them).
+  - **Blast radius.** Global (every non-tail drop releases earlier), but the
+    existing reuse differentials and allocation-independence tests are unchanged
+    (they share genuinely, so the timing does not make a value unique), and the
+    codegen IR tests assert only instruction *presence*, not order. New coverage:
+    the array copy-count tests, a random-input sort property test (both
+    `Array.sort` and a hand-written quicksort: exactly sorted vs a Rust oracle,
+    leak-free, zero copies), and a generated-tree destructure-and-recurse property
+    test (folds exercise the drop path, maps the reset path) asserting result and
+    leak-freedom.
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.
