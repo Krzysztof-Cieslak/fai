@@ -838,6 +838,54 @@ mod tests {
         assert!(original.contains("'\\n'"), "expected a char literal in {original}");
     }
 
+    /// Lowers `name`, wires it, serializes to JSON and back (the real wire form),
+    /// rebuilds, and returns the original and rebuilt pretty renderings.
+    fn wire_json_and_back(src: &str, name: &str) -> (String, String) {
+        let mut db = FaiDatabase::new();
+        fai_types::std_lib::load_std(&mut db);
+        let id = db.add_source("M.fai".into(), src.to_owned());
+        let file = db.source_file(id).unwrap();
+        let lowered = core(&db, file, Symbol::intern(name));
+
+        let module_of = |_d: DefId| "M".to_owned();
+        let wire =
+            def_to_wire(&lowered, &module_of, lowered.entry().params.len(), FnAbi::default());
+        let json = serde_json::to_string(&wire).unwrap();
+        let decoded: WireDef = serde_json::from_str(&json).unwrap();
+        let bundle = WireBundle {
+            entry: decoded.id.clone(),
+            runtime: decoded.id.clone(),
+            defs: vec![decoded],
+        };
+        let rebuilt = from_wire(&bundle);
+        (pretty_def(&lowered), pretty_def(&rebuilt.defs[0]))
+    }
+
+    #[test]
+    fn round_trip_niche_option_b() {
+        // A monomorphic `Option Int` is the immediate-payload niche scheme (`~b`):
+        // the constructed value, its tag test, and its field projection all carry
+        // the scheme, and the JSON wire form must preserve it.
+        let (original, rebuilt) = wire_json_and_back(
+            "module M\n\nlet f x = match (if x < 1 then None else Some x) with | None -> 0 | Some y -> y\n",
+            "f",
+        );
+        assert_eq!(rebuilt, original);
+        assert!(original.contains("~b"), "expected a Scheme-B niche marker in {original}");
+    }
+
+    #[test]
+    fn round_trip_niche_option_a() {
+        // A monomorphic `Option String` has an always-boxed payload, the `~a` niche
+        // scheme; the wire form must preserve it too.
+        let (original, rebuilt) = wire_json_and_back(
+            "module M\n\nlet f x = match (if x < 1 then None else Some \"hi\") with | None -> 0 | Some y -> String.length y\n",
+            "f",
+        );
+        assert_eq!(rebuilt, original);
+        assert!(original.contains("~a"), "expected a Scheme-A niche marker in {original}");
+    }
+
     #[test]
     fn round_trip_reset_and_reuse() {
         // Reset + a reuse-tokened construction are inserted by reference counting,
