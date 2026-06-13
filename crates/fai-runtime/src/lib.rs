@@ -1475,6 +1475,15 @@ fn array_bounds_check(index: usize, len: usize) {
     }
 }
 
+/// Aborts with the located out-of-bounds message. Called from inlined `Array`
+/// element access (`Prim.arrayGet`) when its own bounds check fails, so an
+/// out-of-bounds unchecked access aborts exactly as the runtime path does rather
+/// than reading past the buffer. Never returns.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_array_index_panic() {
+    fai_panic("array index out of bounds");
+}
+
 /// Element `index`, returning an owned reference and consuming `arr` (the element
 /// is duplicated so it outlives `arr`'s drop). Out-of-bounds aborts.
 #[unsafe(no_mangle)]
