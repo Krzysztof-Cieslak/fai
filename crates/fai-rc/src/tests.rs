@@ -290,6 +290,22 @@ fn insert_forwards_its_freed_node_to_balance() {
 }
 
 #[test]
+fn reverse_recycles_a_unique_spine() {
+    // `List.reverse` delegates to the tail-recursive `reverseOnto`, which builds
+    // `x :: acc` from the cell it just matched (`x :: rest`). The emit-ready
+    // lowering resets that dead cell and reuses it for the new cons
+    // (`reset % … ; data@% …`), so reversing a uniquely-owned list allocates no
+    // fresh spine — which is what keeps `List.foldr` allocation-free on a unique
+    // list (it folds left over `reverse xs`).
+    let pretty = std_emit_pretty("List", "reverseOnto");
+    assert!(pretty.contains("reset %"), "reverseOnto should reset the matched cell:\n{pretty}");
+    assert!(
+        pretty.contains("data@%"),
+        "reverseOnto should reuse the reset cell for `x :: acc`:\n{pretty}"
+    );
+}
+
+#[test]
 fn rc_emit_insert_is_sound() {
     std_emit_sound("Dict", "insert").unwrap();
 }
