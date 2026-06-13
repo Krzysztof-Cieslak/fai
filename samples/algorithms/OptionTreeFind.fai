@@ -1,0 +1,55 @@
+module OptionTreeFind
+
+// Binary-search-tree lookup. `find` returns the niche `Option Int` — a `Some`
+// value carries a bare `Int` with no heap cell — up through the recursion: `None`
+// when the key is absent, `Some value` when found. A balanced tree of `m` keys is
+// built once, then queried at keys that miss half the time.
+type Tree =
+  | Leaf
+  | Node Tree Int Int Tree
+
+// Insert (or overwrite) a key/value, keeping the search order.
+insert : Int -> Int -> Tree -> Tree
+let insert key value tree =
+  match tree with
+  | Leaf -> Node Leaf key value Leaf
+  | Node l k v r ->
+    if key < k then
+      Node (insert key value l) k v r
+    else if key > k then Node l k v (insert key value r) else Node l k value r
+
+// Look up a key, returning the niche `Option Int`.
+find : Int -> Tree -> Option Int
+let find key tree =
+  match tree with
+  | Leaf -> None
+  | Node l k v r -> if key < k then find key l else if key > k then find key r else Some v
+
+// Insert the keys `[lo, hi)` midpoint-first, building a balanced tree; each key
+// `k` maps to `k * 3`.
+buildBalanced : Int -> Int -> Tree -> Tree
+let buildBalanced lo hi tree =
+  if lo >= hi then
+    tree
+  else
+    let mid = (lo + hi) / 2
+    buildBalanced (mid + 1) hi (buildBalanced lo mid (insert mid (mid * 3) tree))
+
+// Sum the found values over the queries `i % (m * 2)` for `i` in `[0, n)`; half
+// the queries miss (the key is out of range).
+sumFinds : Tree -> Int -> Int -> Int -> Int
+let sumFinds tree i n acc =
+  if i >= n then
+    acc
+  else
+    match find (i % 2000) tree with
+    | None -> sumFinds tree (i + 1) n acc
+    | Some v -> sumFinds tree (i + 1) n (acc + v)
+
+/// The benchmark workload: sum `n` lookups into a 1000-key balanced tree.
+public run : Int -> Int
+let run n = sumFinds (buildBalanced 0 1000 Leaf) 0 n 0
+example: run 4 = 18
+
+public main : Runtime -> Unit / { Console }
+let main runtime = runtime.console.writeLine (Int.toString (run 100000))

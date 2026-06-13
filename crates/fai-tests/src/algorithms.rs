@@ -665,6 +665,82 @@ pub fn json_serialize(n: i64) -> i64 {
     ser(&build(0, n)).chars().count() as i64
 }
 
+/// Safe integer division: `None` on a zero divisor. The shared helper for the
+/// `OptionEval` workload, whose Fai twin threads the resulting `Option Int` — a
+/// monomorphic `Option` whose payload is a bare `Int`, stored without a `Some`
+/// cell — through a chain of these.
+fn safe_div(a: i64, b: i64) -> Option<i64> {
+    if b == 0 { None } else { Some(a / b) }
+}
+
+/// Evaluate `i*i`, then divide by `i%3`, the quotient by `i%4`, and the sum of
+/// the two quotients by `i%5`, short-circuiting to `None` at any zero divisor.
+fn eval_chain(i: i64) -> Option<i64> {
+    let x = safe_div(i * i, i % 3)?;
+    let y = safe_div(x, i % 4)?;
+    safe_div(x + y, i % 5)
+}
+
+/// Sum the safe-evaluation results over `[0, n)`, taking the chain at `i` or, when
+/// it fails, the one at `i + 1` (an `Option` fallback); a pair that both fail
+/// contributes nothing. Exercises the niche `Option Int` as a function result and
+/// an (owned) argument.
+#[must_use]
+pub fn option_eval(n: i64) -> i64 {
+    let mut acc = 0i64;
+    for i in 0..n {
+        if let Some(v) = eval_chain(i).or(eval_chain(i + 1)) {
+            acc += v;
+        }
+    }
+    acc
+}
+
+/// Follow "next pointer" chains through a lookup table, summing visited keys. The
+/// `HashMap` stands in for the Fai linear association list (keys are unique, so
+/// the looked-up value is identical); a missing key is the niche `None`, ending
+/// the walk, and a per-walk fuel bounds the (cyclic) table so it terminates.
+#[must_use]
+pub fn option_path(n: i64) -> i64 {
+    let size = 100i64;
+    let table: HashMap<i64, i64> = (0..size).map(|i| (i, (i * 2 + 1) % size)).collect();
+    let mut total = 0i64;
+    for i in 0..n {
+        let mut key = i % (size * 2);
+        let mut fuel = size;
+        let mut acc = 0i64;
+        while fuel > 0 {
+            match table.get(&key) {
+                None => break,
+                Some(&next) => {
+                    acc += key;
+                    key = next;
+                    fuel -= 1;
+                }
+            }
+        }
+        total += acc;
+    }
+    total
+}
+
+/// Binary-search-tree `find`, summing the hits. The `BTreeMap` of `key -> key*3`
+/// for `key` in `[0, m)` mirrors the balanced BST the Fai version builds; queries
+/// at `i % (2m)` miss half the time (the niche `None`), and `find` returns the
+/// niche `Option Int` up through the recursion.
+#[must_use]
+pub fn option_tree_find(n: i64) -> i64 {
+    let m = 1000i64;
+    let tree: BTreeMap<i64, i64> = (0..m).map(|k| (k, k * 3)).collect();
+    let mut total = 0i64;
+    for i in 0..n {
+        if let Some(&v) = tree.get(&(i % (m * 2))) {
+            total += v;
+        }
+    }
+    total
+}
+
 /// The Rust reference for an algorithm: a function of one size argument returning
 /// either an integer or a floating-point result.
 #[derive(Clone, Copy)]
@@ -929,6 +1005,27 @@ pub const ALGORITHMS: &[Algorithm] = &[
         aot_size: 20_000,
         oracle: Oracle::Int(string_slice),
     },
+    Algorithm {
+        module: "OptionEval",
+        entry: "run",
+        jit_size: 5_000,
+        aot_size: 100_000,
+        oracle: Oracle::Int(option_eval),
+    },
+    Algorithm {
+        module: "OptionPath",
+        entry: "run",
+        jit_size: 500,
+        aot_size: 4_000,
+        oracle: Oracle::Int(option_path),
+    },
+    Algorithm {
+        module: "OptionTreeFind",
+        entry: "run",
+        jit_size: 5_000,
+        aot_size: 100_000,
+        oracle: Oracle::Int(option_tree_find),
+    },
 ];
 
 /// Looks up an algorithm by its sample module name.
@@ -974,6 +1071,9 @@ pub fn source(module: &str) -> &'static str {
         "JsonSerialize" => include_str!("../../../samples/algorithms/JsonSerialize.fai"),
         "StringBuild" => include_str!("../../../samples/algorithms/StringBuild.fai"),
         "StringSlice" => include_str!("../../../samples/algorithms/StringSlice.fai"),
+        "OptionEval" => include_str!("../../../samples/algorithms/OptionEval.fai"),
+        "OptionPath" => include_str!("../../../samples/algorithms/OptionPath.fai"),
+        "OptionTreeFind" => include_str!("../../../samples/algorithms/OptionTreeFind.fai"),
         other => panic!("unknown algorithm module: {other}"),
     }
 }

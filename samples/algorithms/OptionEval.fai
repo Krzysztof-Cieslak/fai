@@ -1,0 +1,50 @@
+module OptionEval
+
+// A safe arithmetic evaluator: every division can fail (a zero divisor), so the
+// intermediate results are `Option Int` threaded through a chain of binds. The
+// payload is a bare `Int`, so `Some` needs no heap cell — the niche `Option`
+// representation this benchmark exercises against Rust.
+// Integer division that fails on a zero divisor.
+safeDiv : Int -> Int -> Option Int
+let safeDiv a b = if b = 0 then None else Some (a / b)
+
+// Prefer the first success, else the second (a strict `orElse`); passes the niche
+// `Option Int` as an owned argument.
+orElse : Option Int -> Option Int -> Option Int
+let orElse a b =
+  match a with
+  | None -> b
+  | Some x -> Some x
+
+// Evaluate `i * i`, divide by `i % 3`, that quotient by `i % 4`, and the sum of
+// the two quotients by `i % 5`; any zero divisor short-circuits to `None`.
+evalChain : Int -> Option Int
+let evalChain i =
+  match safeDiv (i * i) (i % 3) with
+  | None -> None
+  | Some x ->
+    match safeDiv x (i % 4) with
+    | None -> None
+    | Some y -> safeDiv (x + y) (i % 5)
+
+// The result at `i`, falling back to `i + 1` when the first chain fails.
+evalAt : Int -> Option Int
+let evalAt i = orElse (evalChain i) (evalChain (i + 1))
+
+// Sum the successful results over `[0, n)`, skipping pairs that both fail.
+sumOk : Int -> Int -> Int -> Int
+let sumOk i n acc =
+  if i >= n then
+    acc
+  else
+    match evalAt i with
+    | None -> sumOk (i + 1) n acc
+    | Some v -> sumOk (i + 1) n (acc + v)
+
+/// The benchmark workload: the safe-evaluation sum over `[0, n)`.
+public run : Int -> Int
+let run n = sumOk 0 n 0
+example: run 10 = 69
+
+public main : Runtime -> Unit / { Console }
+let main runtime = runtime.console.writeLine (Int.toString (run 100000))
