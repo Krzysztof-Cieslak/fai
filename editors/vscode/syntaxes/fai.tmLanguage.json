@@ -10,8 +10,11 @@
     { "include": "#numbers" },
     { "include": "#keywords" },
     { "include": "#module-qualifier" },
+    { "include": "#builtin-capability" },
+    { "include": "#builtin-type" },
     { "include": "#constructor" },
     { "include": "#identifier" },
+    { "include": "#array-delimiters" },
     { "include": "#operators" },
     { "include": "#punctuation" }
   ],
@@ -143,7 +146,8 @@
           "name": "storage.type.fai"
         },
         {
-          "match": "\\bpublic\\b",
+          "comment": "`opaque` only appears before a `public` type, but is highlighted as a modifier wherever it occurs.",
+          "match": "\\b(?:public|opaque)\\b",
           "name": "storage.modifier.fai"
         },
         {
@@ -162,6 +166,16 @@
       "match": "\\b[A-Z][A-Za-z0-9_]*(?=\\.)",
       "name": "entity.name.namespace.fai"
     },
+    "builtin-capability": {
+      "comment": "The host-capability interfaces and the `Runtime` bundle (source of truth: std/Prelude.fai). Tried after #module-qualifier (so `Console.foo` keeps `Console` as a namespace) and before #constructor (so these win over the generic upper-case rule).",
+      "match": "\\b(?:Console|Clock|Random|FileSystem|Env|Runtime)\\b",
+      "name": "support.type.capability.fai"
+    },
+    "builtin-type": {
+      "comment": "The prelude types and operator interfaces (source of truth: std/Prelude.fai, plus the built-in List/Array/String/Int/Float/Char/Bool/Unit). Same ordering as #builtin-capability: after #module-qualifier, before #constructor.",
+      "match": "\\b(?:Option|Result|List|Array|Dict|Set|String|Int|Float|Char|Bool|Unit|Num|Eq|Ord)\\b",
+      "name": "support.type.fai"
+    },
     "constructor": {
       "comment": "Other upper-case identifiers are constructors or types (the lexer does not distinguish them).",
       "match": "\\b[A-Z][A-Za-z0-9_]*\\b",
@@ -170,6 +184,13 @@
     "identifier": {
       "match": "\\b[a-z_][A-Za-z0-9_]*\\b",
       "name": "variable.other.fai"
+    },
+    "array-delimiters": {
+      "comment": "Array-literal brackets `[|` and `|]` are dedicated two-char tokens (lexer maximal munch). Tried before #operators and #punctuation so they win over `[`/`|`/`]`, handling `[| … |]`, empty `[||]`, and nested `[|[||]|]`.",
+      "patterns": [
+        { "match": "\\[\\|", "name": "punctuation.section.array.begin.fai" },
+        { "match": "\\|\\]", "name": "punctuation.section.array.end.fai" }
+      ]
     },
     "operators": {
       "comment": "Operators are a maximal run of operator characters. The five lexemes the lexer reserves as syntax (-> :: = | :) get specific scopes, but only when they are the whole run (not a prefix of a longer operator).",
@@ -193,6 +214,11 @@
         {
           "match": ":(?![!$%&*+\\-/:<=>?@^|~])",
           "name": "punctuation.separator.colon.fai"
+        },
+        {
+          "comment": "The effect-row separator: a lone `/` followed by an effect row (`/ { Console }`, `/ 'e`, `/ {}`). Plain division (`a / b`) and operator runs (`/=`, `</>`) fail the lookahead and fall to the general operator below.",
+          "match": "/(?=\\s*[{'])",
+          "name": "keyword.operator.effect.fai"
         },
         {
           "match": "[!$%&*+\\-/:<=>?@^|~]+",

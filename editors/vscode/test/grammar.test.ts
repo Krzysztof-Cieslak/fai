@@ -96,3 +96,74 @@ for (const sample of samples) {
     check(grammar, sample, fs.readFileSync(path.join(samplesDir, sample), "utf8"));
   });
 }
+
+// Focused scope assertions for the constructs the drift test cannot catch (it
+// only checks that every token has *some* non-root scope): array-literal
+// delimiters, the `opaque` modifier, capability/built-in types, and the
+// effect-row `/`. Each snippet is a single line.
+
+interface Tok {
+  text: string;
+  scopes: string[];
+}
+
+// Arrow functions (not hoisted `function` declarations) so they inherit the
+// non-null narrowing of the `const grammar` above, as the sample loop does.
+const scopesOf = (snippet: string): Tok[] => {
+  const result = grammar.tokenizeLine(snippet, vsctm.INITIAL);
+  return result.tokens.map((t) => ({
+    text: snippet.slice(t.startIndex, t.endIndex),
+    scopes: t.scopes,
+  }));
+};
+
+// The scopes of the first token whose text is exactly `fragment`.
+const scopeOf = (snippet: string, fragment: string): string[] => {
+  const tok = scopesOf(snippet).find((t) => t.text === fragment);
+  assert.ok(tok !== undefined, `no token exactly '${fragment}' in '${snippet}'`);
+  return tok.scopes;
+};
+
+test("array literal: '[| 1 |]' delimiters scope as array begin/end", () => {
+  assert.ok(scopeOf("[| 1 |]", "[|").includes("punctuation.section.array.begin.fai"));
+  assert.ok(scopeOf("[| 1 |]", "|]").includes("punctuation.section.array.end.fai"));
+});
+
+test("empty array '[||]' is begin+end, not a stray '||' operator", () => {
+  const toks = scopesOf("[||]");
+  assert.ok(scopeOf("[||]", "[|").includes("punctuation.section.array.begin.fai"));
+  assert.ok(scopeOf("[||]", "|]").includes("punctuation.section.array.end.fai"));
+  assert.ok(!toks.some((t) => t.text === "||"), "'[||]' must not produce a '||' token");
+});
+
+test("nested array '[|[||]|]' tokenizes as begin, begin, end, end", () => {
+  const delimiters = scopesOf("[|[||]|]").filter((t) => t.text === "[|" || t.text === "|]");
+  assert.deepEqual(
+    delimiters.map((t) => t.text),
+    ["[|", "[|", "|]", "|]"],
+  );
+});
+
+test("'opaque' is a storage modifier", () => {
+  assert.ok(scopeOf("public opaque type", "opaque").includes("storage.modifier.fai"));
+});
+
+test("effect row 'Unit / { Console }': '/' is the effect operator, 'Console' a capability", () => {
+  assert.ok(scopeOf("Unit / { Console }", "/").includes("keyword.operator.effect.fai"));
+  assert.ok(scopeOf("Unit / { Console }", "Console").includes("support.type.capability.fai"));
+});
+
+test("'List Int' scopes both names as built-in types", () => {
+  assert.ok(scopeOf("List Int", "List").includes("support.type.fai"));
+  assert.ok(scopeOf("List Int", "Int").includes("support.type.fai"));
+});
+
+test("module qualifier wins: 'List' in 'List.map' stays a namespace", () => {
+  assert.ok(scopeOf("List.map", "List").includes("entity.name.namespace.fai"));
+});
+
+test("plain division 'a / b': '/' stays a generic operator, not the effect one", () => {
+  const slash = scopeOf("a / b", "/");
+  assert.ok(slash.includes("keyword.operator.fai"));
+  assert.ok(!slash.includes("keyword.operator.effect.fai"));
+});
