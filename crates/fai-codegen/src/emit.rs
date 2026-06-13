@@ -1548,7 +1548,9 @@ impl<M: Module> Translator<'_, M> {
             ExprKind::Local(local) => self.use_var(*local),
             ExprKind::Global(def) => self.global_value(*def, &e.ty),
             ExprKind::Prim { op, args } => self.prim(*op, args, &e.ty),
-            ExprKind::App { func, args, reuse } => self.application(func, args, reuse, &e.ty),
+            ExprKind::App { func, args, reuse, alloc } => {
+                self.application(func, args, reuse, *alloc, &e.ty)
+            }
             ExprKind::If { cond, then, els } => self.conditional(cond, then, els),
             ExprKind::Let { local, value, body } => {
                 let v = self.expr(value);
@@ -2940,6 +2942,7 @@ impl<M: Module> Translator<'_, M> {
         func: &CExpr,
         args: &[CExpr],
         reuse: &[Option<LocalId>],
+        alloc: ClosureAlloc,
         result_ty: &Ty,
     ) -> Value {
         // A saturated application of a known top-level function calls its code
@@ -2961,6 +2964,12 @@ impl<M: Module> Translator<'_, M> {
                 } else {
                     self.over_application(def, arity, args, result_ty)
                 };
+            }
+            // An under-application of a known function builds a partial application.
+            // When escape analysis proved it does not outlive the frame, build that
+            // cell on the stack instead of the heap.
+            if arity > 0 && args.len() < arity && matches!(alloc, ClosureAlloc::Stack) {
+                return self.stack_pap(def, args);
             }
         }
         // Otherwise route through `apply_n`, whose slots are uniform `i64`: float
@@ -3305,6 +3314,53 @@ impl<M: Module> Translator<'_, M> {
             self.module.declare_data(name, Linkage::Import, false, false).expect("runtime data");
         let gv = self.module.declare_data_in_func(id, self.builder.func);
         self.builder.ins().symbol_value(ptr, gv)
+    }
+
+    /// Builds an under-applied call to a known function as a stack-allocated partial
+    /// application — the [`stack_closure`](Self::stack_closure) analogue for a PAP.
+    /// Escape analysis has proven the partial application does not outlive the frame,
+    /// so its cell lives here (tagged `KIND_STACK_PAP`); the runtime applies it,
+    /// `dup`s it, and scans its children exactly as for a heap PAP, but releases its
+    /// children without freeing the cell when it dies. The target is the callee's
+    /// immortal static closure, the stored arguments are owned (uniform `i64`).
+    fn stack_pap(&mut self, def: DefId, args: &[CExpr]) -> Value {
+        let n = args.len();
+        let size = rt::PAP_ARGS_OFFSET + n * 8;
+        let ptr = self.ptr();
+
+        // Evaluate the boxed arguments before reserving the cell.
+        let arg_vals: Vec<Value> = args.iter().map(|a| self.expr_boxed(a)).collect();
+
+        let slot = self.builder.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            u32::try_from(size).expect("pap cell size"),
+            3, // 8-byte alignment: a function value is a tagged pointer.
+        ));
+        let addr = self.builder.ins().stack_addr(ptr, slot, 0);
+
+        // Header: rc = 1, descriptor = &FAI_STACK_PAP_DESC, size.
+        let one = self.builder.ins().iconst(types::I64, 1);
+        self.store_field(addr, rt::RC_OFFSET, one);
+        let desc = self.runtime_data_addr("FAI_STACK_PAP_DESC");
+        self.store_field(addr, rt::DESC_OFFSET, desc);
+        let size_v = self.builder.ins().iconst(types::I64, size as i64);
+        self.store_field(addr, rt::SIZE_OFFSET, size_v);
+
+        // Target function: the callee's immortal static closure (its value form).
+        let name = closure_symbol(self.namer, def);
+        let data_id = self
+            .module
+            .declare_data(&name, Linkage::Import, false, false)
+            .expect("pap target closure");
+        let gv = self.module.declare_data_in_func(data_id, self.builder.func);
+        let func_val = self.builder.ins().symbol_value(ptr, gv);
+        self.store_field(addr, rt::PAP_FUNC_OFFSET, func_val);
+        let nargs_v = self.builder.ins().iconst(types::I64, n as i64);
+        self.store_field(addr, rt::PAP_NARGS_OFFSET, nargs_v);
+        for (i, &v) in arg_vals.iter().enumerate() {
+            self.store_field(addr, rt::PAP_ARGS_OFFSET + i * 8, v);
+        }
+        addr
     }
 
     /// Spills values to a stack array and yields its address (for `apply_n` /

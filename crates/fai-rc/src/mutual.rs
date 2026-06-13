@@ -23,7 +23,7 @@
 
 use std::sync::Arc;
 
-use fai_core::ir::{CExpr, CoreFn, ExprKind as K, FieldIndex, Lit, LoweredDef, Prim};
+use fai_core::ir::{CExpr, ClosureAlloc, CoreFn, ExprKind as K, FieldIndex, Lit, LoweredDef, Prim};
 use fai_core::{core, helper_inlined};
 use fai_db::{Db, SourceFile};
 use fai_resolve::{DefId, LocalId, module_defs};
@@ -345,7 +345,12 @@ pub fn member_wrapper(db: &dyn Db, file: SourceFile, member: DefId, group: &Grou
         args.push(int_lit(0));
     }
     let body = CExpr::new(
-        K::App { func: Box::new(global(group.combined)), args, reuse: Vec::new() },
+        K::App {
+            func: Box::new(global(group.combined)),
+            args,
+            reuse: Vec::new(),
+            alloc: ClosureAlloc::Heap,
+        },
         Ty::Error,
     );
     LoweredDef {
@@ -379,7 +384,7 @@ fn remap_member(
         K::Lit(_) | K::Global(_) | K::Error => CExpr::new(e.kind.clone(), ty),
         // A mutual group is detected and combined before reference counting, so
         // member bodies carry no forwarded reuse tokens (`reuse` is empty).
-        K::App { func, args, reuse } => {
+        K::App { func, args, reuse, alloc } => {
             if let K::Global(def) = &func.kind
                 && let Some(target_tag) = group.tag_of(*def)
             {
@@ -395,6 +400,7 @@ fn remap_member(
                         func: Box::new(global(group.combined)),
                         args: new_args,
                         reuse: Vec::new(),
+                        alloc: ClosureAlloc::Heap,
                     },
                     ty,
                 )
@@ -402,7 +408,7 @@ fn remap_member(
                 let func = Box::new(remap_member(func, subst, next, group));
                 let args = args.iter().map(|a| remap_member(a, subst, next, group)).collect();
                 let reuse = reuse.iter().map(|t| t.map(|l| remap_local(l, subst, next))).collect();
-                CExpr::new(K::App { func, args, reuse }, ty)
+                CExpr::new(K::App { func, args, reuse, alloc: *alloc }, ty)
             }
         }
         K::Prim { op, args } => {

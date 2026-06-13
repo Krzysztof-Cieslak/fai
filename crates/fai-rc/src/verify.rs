@@ -150,7 +150,7 @@ impl Checker<'_> {
                     self.consume(*t, refs)?; // the reuse token is consumed here
                 }
             }
-            ExprKind::App { func, args, reuse } => {
+            ExprKind::App { func, args, reuse, .. } => {
                 self.eval(func, refs)?;
                 let borrows = match &func.kind {
                     ExprKind::Global(def) => (self.arg_borrows)(*def, args.len()),

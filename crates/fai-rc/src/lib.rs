@@ -197,7 +197,7 @@ fn max_local(e: &CExpr, max: &mut usize) {
         K::Prim { args, .. } | K::MakeData { args, .. } => {
             args.iter().for_each(|a| max_local(a, max));
         }
-        K::App { func, args, reuse } => {
+        K::App { func, args, reuse, .. } => {
             max_local(func, max);
             args.iter().for_each(|a| max_local(a, max));
             reuse.iter().flatten().for_each(|&t| bump(t, max));
@@ -295,10 +295,10 @@ fn anf_op(e: CExpr, binds: &mut Vec<(LocalId, CExpr)>, next: &mut usize) -> CExp
         }
         // A-normal form runs before reference counting forwards reuse tokens, so
         // `reuse` is empty here; it is carried through verbatim.
-        K::App { func, args, reuse } => {
+        K::App { func, args, reuse, alloc } => {
             let func = Box::new(atomize(*func, binds, next));
             let args = args.into_iter().map(|a| atomize(a, binds, next)).collect();
-            CExpr::new(K::App { func, args, reuse }, ty)
+            CExpr::new(K::App { func, args, reuse, alloc }, ty)
         }
         K::DataTag { base, niche } => {
             CExpr::new(K::DataTag { base: Box::new(to_local(*base, binds, next)), niche }, ty)
@@ -542,7 +542,7 @@ impl Rc<'_> {
             // Reference counting runs before reuse tokens are forwarded, so `reuse`
             // is empty here; it is carried through verbatim (tokens are not
             // reference-counted operands).
-            K::App { func, args, reuse } => {
+            K::App { func, args, reuse, alloc } => {
                 // The callee value is consumed; arguments at a saturated direct
                 // call to a top-level definition follow its borrow signature.
                 let nargs = args.len();
@@ -558,7 +558,7 @@ impl Rc<'_> {
                 operands.extend(args);
                 let rebuilt = move |mut ops: Vec<CExpr>| {
                     let func = Box::new(ops.remove(0));
-                    CExpr::new(K::App { func, args: ops, reuse }, ty.clone())
+                    CExpr::new(K::App { func, args: ops, reuse, alloc }, ty.clone())
                 };
                 self.operands_rc(operands, &borrows, live, rebuilt)
             }
@@ -964,11 +964,12 @@ fn reuse_pass(e: CExpr, data: &Locals, next: &mut usize) -> CExpr {
             },
             ty,
         ),
-        K::App { func, args, reuse } => CExpr::new(
+        K::App { func, args, reuse, alloc } => CExpr::new(
             K::App {
                 func: Box::new(reuse_pass(*func, data, next)),
                 args: args.into_iter().map(|a| reuse_pass(a, data, next)).collect(),
                 reuse,
+                alloc,
             },
             ty,
         ),

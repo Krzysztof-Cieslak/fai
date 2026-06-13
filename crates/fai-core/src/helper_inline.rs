@@ -42,7 +42,7 @@ use rustc_hash::FxHashMap;
 
 use crate::core_inlined;
 use crate::inline::next_free_local;
-use crate::ir::{CExpr, CoreFn, ExprKind as K, FieldIndex, LoweredDef};
+use crate::ir::{CExpr, ClosureAlloc, CoreFn, ExprKind as K, FieldIndex, LoweredDef};
 
 /// The largest a callee's (prim-folded) body may be, in Core nodes, to be inlined.
 /// Comfortably admits the standard smart constructors (`bin`/`singleton`, a few
@@ -152,7 +152,7 @@ fn inline_expr(
     match &e.kind {
         // Helper inlining runs before reference counting inserts reuse tokens, so
         // `reuse` is always empty here; it is carried through verbatim.
-        K::App { func, args, reuse } => {
+        K::App { func, args, reuse, alloc } => {
             let func = go(func, next, changed);
             let args: Vec<CExpr> = args.iter().map(|a| go(a, next, changed)).collect();
             // A saturated (or over-applied) direct call to an eligible same-file
@@ -166,7 +166,10 @@ fn inline_expr(
                 *changed = true;
                 return build_inline(folded.entry(), args, arity, ty, next);
             }
-            CExpr::new(K::App { func: Box::new(func), args, reuse: reuse.clone() }, ty)
+            CExpr::new(
+                K::App { func: Box::new(func), args, reuse: reuse.clone(), alloc: *alloc },
+                ty,
+            )
         }
         K::Prim { op, args } => {
             let args = args.iter().map(|a| go(a, next, changed)).collect();
@@ -285,7 +288,15 @@ fn build_inline(
             .zip(&arg_tys[arity..])
             .map(|(&l, t)| CExpr::new(K::Local(l), t.clone()))
             .collect();
-        CExpr::new(K::App { func: Box::new(body), args: surplus, reuse: Vec::new() }, call_ty)
+        CExpr::new(
+            K::App {
+                func: Box::new(body),
+                args: surplus,
+                reuse: Vec::new(),
+                alloc: ClosureAlloc::Heap,
+            },
+            call_ty,
+        )
     } else {
         body
     };
@@ -315,10 +326,11 @@ fn remap_expr(e: &CExpr, subst: &mut FxHashMap<LocalId, LocalId>, next: &mut usi
             scalars: *scalars,
             niche: *niche,
         },
-        K::App { func, args, reuse } => K::App {
+        K::App { func, args, reuse, alloc } => K::App {
             func: Box::new(remap_expr(func, subst, next)),
             args: args.iter().map(|a| remap_expr(a, subst, next)).collect(),
             reuse: reuse.iter().map(|t| t.map(|l| remap_local(l, subst, next))).collect(),
+            alloc: *alloc,
         },
         K::If { cond, then, els } => K::If {
             cond: Box::new(remap_expr(cond, subst, next)),

@@ -372,7 +372,15 @@ impl Lowerer<'_> {
         if args.is_empty() {
             global
         } else {
-            CExpr::new(K::App { func: Box::new(global), args, reuse: Vec::new() }, ty)
+            CExpr::new(
+                K::App {
+                    func: Box::new(global),
+                    args,
+                    reuse: Vec::new(),
+                    alloc: ClosureAlloc::Heap,
+                },
+                ty,
+            )
         }
     }
 
@@ -888,7 +896,7 @@ impl Lowerer<'_> {
         }
         let func = Box::new(self.lower_expr(head));
         let args = args.iter().map(|&a| self.lower_expr(a)).collect();
-        CExpr::new(K::App { func, args, reuse: Vec::new() }, ty)
+        CExpr::new(K::App { func, args, reuse: Vec::new(), alloc: ClosureAlloc::Heap }, ty)
     }
 
     /// The operator symbol held in an operator `Var` node.

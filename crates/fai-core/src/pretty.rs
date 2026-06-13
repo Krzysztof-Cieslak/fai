@@ -128,8 +128,13 @@ fn write_expr(out: &mut String, e: &CExpr) {
             write_args(out, args);
             out.push(')');
         }
-        ExprKind::App { func, args, reuse } => {
+        ExprKind::App { func, args, reuse, alloc } => {
             out.push_str("(app ");
+            // Only a stack-allocated partial application is annotated, so an ordinary
+            // call prints unchanged.
+            if matches!(alloc, ClosureAlloc::Stack) {
+                out.push_str("stack ");
+            }
             write_expr(out, func);
             write_args(out, args);
             for t in reuse {

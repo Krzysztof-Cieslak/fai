@@ -110,8 +110,13 @@ fn forward_pass(db: &dyn Db, self_def: DefId, e: CExpr) -> CExpr {
             K::MakeData { tag, args: args.into_iter().map(sub).collect(), reuse, scalars, niche },
             ty,
         ),
-        K::App { func, args, reuse } => CExpr::new(
-            K::App { func: Box::new(sub(*func)), args: args.into_iter().map(sub).collect(), reuse },
+        K::App { func, args, reuse, alloc } => CExpr::new(
+            K::App {
+                func: Box::new(sub(*func)),
+                args: args.into_iter().map(sub).collect(),
+                reuse,
+                alloc,
+            },
             ty,
         ),
         K::DataTag { base, niche } => {
@@ -157,7 +162,7 @@ fn thread_token(db: &dyn Db, self_def: DefId, e: CExpr, token: LocalId) -> CExpr
         // A forwardable call with a free slot: forward the token into it. The reuse
         // list has one entry per callee token slot (`None` = a null-token pad); the
         // token lands in the first free slot, leaving the rest padded.
-        K::App { func, args, mut reuse } => {
+        K::App { func, args, mut reuse, alloc } => {
             let slots = forward_target(db, self_def, &func, args.len()).map_or(0, |s| s.len());
             if reuse.is_empty() {
                 reuse = vec![None; slots];
@@ -165,9 +170,9 @@ fn thread_token(db: &dyn Db, self_def: DefId, e: CExpr, token: LocalId) -> CExpr
             match reuse.iter().position(Option::is_none) {
                 Some(slot) => {
                     reuse[slot] = Some(token);
-                    CExpr::new(K::App { func, args, reuse }, ty)
+                    CExpr::new(K::App { func, args, reuse, alloc }, ty)
                 }
-                None => free_reuse_(token, CExpr::new(K::App { func, args, reuse }, ty)),
+                None => free_reuse_(token, CExpr::new(K::App { func, args, reuse, alloc }, ty)),
             }
         }
         K::Let { local, value, body } => {
@@ -215,7 +220,7 @@ fn thread_token(db: &dyn Db, self_def: DefId, e: CExpr, token: LocalId) -> CExpr
 
 /// Whether `e` is a saturated direct call to a callee that accepts a token.
 fn is_forwardable_call(db: &dyn Db, self_def: DefId, e: &CExpr) -> bool {
-    if let K::App { func, args, reuse } = &e.kind {
+    if let K::App { func, args, reuse, .. } = &e.kind {
         let slots = forward_target(db, self_def, func, args.len()).map_or(0, |s| s.len());
         return reuse.len() < slots;
     }

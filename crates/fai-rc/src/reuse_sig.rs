@@ -423,7 +423,7 @@ pub fn forwards_to(lowered: &LoweredDef) -> Vec<DefId> {
 
 fn collect_forwards(e: &CExpr, out: &mut Vec<DefId>) {
     match &e.kind {
-        K::App { func, args, reuse } => {
+        K::App { func, args, reuse, .. } => {
             if reuse.iter().any(Option::is_some)
                 && let K::Global(g) = &func.kind
             {

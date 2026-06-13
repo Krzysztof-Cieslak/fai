@@ -105,11 +105,11 @@ pub const CLOSURE_ENV_COUNT_OFFSET: usize = HEADER_SIZE + 16;
 pub const CLOSURE_ENV_OFFSET: usize = HEADER_SIZE + 24;
 
 /// Byte offset of a partial application's target function.
-const PAP_FUNC_OFFSET: usize = HEADER_SIZE;
+pub const PAP_FUNC_OFFSET: usize = HEADER_SIZE;
 /// Byte offset of a partial application's stored-argument count.
-const PAP_NARGS_OFFSET: usize = HEADER_SIZE + 8;
+pub const PAP_NARGS_OFFSET: usize = HEADER_SIZE + 8;
 /// Byte offset of a partial application's first stored argument.
-const PAP_ARGS_OFFSET: usize = HEADER_SIZE + 16;
+pub const PAP_ARGS_OFFSET: usize = HEADER_SIZE + 16;
 
 /// The reference count given to statically-emitted (immortal) objects — string
 /// literals and top-level function closures. So large that balanced dup/drop
@@ -192,6 +192,10 @@ pub const KIND_NONE: u64 = 8;
 /// reclaims it on return). Only emitted for a closure escape analysis proves does
 /// not outlive its frame.
 pub const KIND_STACK_CLOSURE: u64 = 9;
+/// Stack-allocated partial applications: the [`KIND_PAP`] peer of
+/// [`KIND_STACK_CLOSURE`] — same layout and children, but the cell lives in its
+/// creating frame and is not freed when its reference count reaches zero.
+pub const KIND_STACK_PAP: u64 = 10;
 
 /// Builds a runtime-static descriptor with no scalar fields.
 const fn descriptor(kind: u64, name: &'static str) -> Descriptor {
@@ -262,6 +266,12 @@ pub static FAI_STACK_CLOSURE_DESC: Descriptor = descriptor(KIND_STACK_CLOSURE, "
 /// Descriptor for partial applications (children: the target plus stored args).
 #[unsafe(no_mangle)]
 pub static FAI_PAP_DESC: Descriptor = descriptor(KIND_PAP, "Pap");
+
+/// Descriptor for stack-allocated partial applications (children as for
+/// [`FAI_PAP_DESC`]). Distinguished only so the dead-cell path releases the
+/// children without freeing the cell (it lives in a stack frame).
+#[unsafe(no_mangle)]
+pub static FAI_STACK_PAP_DESC: Descriptor = descriptor(KIND_STACK_PAP, "StackPap");
 
 /// Descriptor for boxed `Float` objects (leaf).
 #[unsafe(no_mangle)]
@@ -494,6 +504,13 @@ static STRING_VIEWS: AtomicI64 = AtomicI64::new(0);
 #[cfg(debug_assertions)]
 static CLOSURE_ALLOCS: AtomicI64 = AtomicI64::new(0);
 
+/// The cumulative number of partial-application cells heap-allocated by
+/// [`make_pap`]. A non-escaping under-application builds its cell on the stack and
+/// allocates nothing, so this isolates the partial applications that were
+/// heap-allocated rather than elided. Never decreases until reset.
+#[cfg(debug_assertions)]
+static PAP_ALLOCS: AtomicI64 = AtomicI64::new(0);
+
 /// Records one heap allocation in the debug counters. Compiled to nothing in a
 /// release build (the counters are absent there).
 #[inline(always)]
@@ -511,6 +528,14 @@ fn note_alloc() {
 fn note_closure_alloc() {
     #[cfg(debug_assertions)]
     CLOSURE_ALLOCS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Records one partial-application-cell heap allocation. Compiled to nothing in a
+/// release build (the counter is absent there).
+#[inline(always)]
+fn note_pap_alloc() {
+    #[cfg(debug_assertions)]
+    PAP_ALLOCS.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Records one shared-array buffer copy (a uniqueness-loss duplication). Compiled
@@ -634,6 +659,21 @@ pub fn closure_allocations() -> i64 {
     }
 }
 
+/// Returns the cumulative count of partial-application cells heap-allocated (a
+/// non-escaping under-application stack-allocates and is not counted). Always zero
+/// in a release build, where the counter is compiled out.
+#[must_use]
+pub fn pap_allocations() -> i64 {
+    #[cfg(debug_assertions)]
+    {
+        PAP_ALLOCS.load(Ordering::Relaxed)
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        0
+    }
+}
+
 /// Resets the cumulative allocation, array-copy, string-copy, string-view, and
 /// closure-allocation counters (tests/benchmarks). A no-op in a release build,
 /// where the counters are compiled out.
@@ -645,6 +685,7 @@ pub fn reset_allocations() {
         STRING_COPIES.store(0, Ordering::Relaxed);
         STRING_VIEWS.store(0, Ordering::Relaxed);
         CLOSURE_ALLOCS.store(0, Ordering::Relaxed);
+        PAP_ALLOCS.store(0, Ordering::Relaxed);
     }
 }
 
@@ -897,11 +938,12 @@ unsafe fn release_dead(p: *mut u8) {
     unsafe {
         let mut work = DropWork::new();
         scan_push(p, &mut work);
-        // A stack-allocated closure's cell lives in its creating frame, not the
-        // heap: release its captured children but never free the cell (its pointer
-        // was never returned by `alloc_obj`, so it must not reach `free_obj`/the
-        // pool). The frame reclaims the slot on return.
-        if desc_kind(obj_descriptor(p)) != KIND_STACK_CLOSURE {
+        // A stack-allocated closure or partial application lives in its creating
+        // frame, not the heap: release its children but never free the cell (its
+        // pointer was never returned by `alloc_obj`, so it must not reach
+        // `free_obj`/the pool). The frame reclaims the slot on return.
+        let kind = desc_kind(obj_descriptor(p));
+        if kind != KIND_STACK_CLOSURE && kind != KIND_STACK_PAP {
             free_obj(p);
         }
         drain(&mut work);
@@ -996,7 +1038,7 @@ unsafe fn scan_push(p: *mut u8, work: &mut DropWork) {
                     work.push(slot);
                 }
             }
-        } else if desc_kind(desc) == KIND_PAP {
+        } else if desc_kind(desc) == KIND_PAP || desc_kind(desc) == KIND_STACK_PAP {
             let func = read_i64(p, PAP_FUNC_OFFSET);
             if is_boxed(func) {
                 work.push(func);
@@ -2521,6 +2563,7 @@ pub unsafe extern "C" fn fai_make_closure(
 unsafe fn make_pap(func: Value, args: *const i64, nargs: u64) -> Value {
     let size = PAP_ARGS_OFFSET + nargs as usize * 8;
     let p = alloc_obj(size, &FAI_PAP_DESC);
+    note_pap_alloc();
     // SAFETY: `p` has room for the fields and `nargs` slots; `args` points to
     // `nargs` values.
     unsafe {
@@ -2548,12 +2591,13 @@ pub unsafe extern "C" fn fai_apply_n(callee: Value, argc: u64, args: *const i64)
     // SAFETY: `callee` is boxed.
     let desc = unsafe { obj_descriptor(p) };
 
-    if unsafe { desc_kind(desc) } == KIND_PAP {
+    if unsafe { desc_kind(desc) } == KIND_PAP || unsafe { desc_kind(desc) } == KIND_STACK_PAP {
         // Take owned references to the stored target and arguments, then release
-        // this reference to the shell. Dropping (rather than unconditionally
+        // this reference to the shell (a stack partial application releases its
+        // children but is not freed). Dropping (rather than unconditionally
         // freeing) is correct when the partial application is shared: a dup'd PAP
         // applied here must not free storage another reference still holds.
-        // SAFETY: `p` is a partial application.
+        // SAFETY: `p` is a partial application (heap or stack — identical layout).
         unsafe {
             let func = fai_dup(read_i64(p, PAP_FUNC_OFFSET));
             let stored = read_u64(p, PAP_NARGS_OFFSET);
@@ -2633,7 +2677,7 @@ fn is_function_value(v: Value) -> bool {
     }
     // SAFETY: `v` is boxed.
     let kind = unsafe { desc_kind(obj_descriptor(as_obj(v))) };
-    kind == KIND_CLOSURE || kind == KIND_STACK_CLOSURE || kind == KIND_PAP
+    kind == KIND_CLOSURE || kind == KIND_STACK_CLOSURE || kind == KIND_PAP || kind == KIND_STACK_PAP
 }
 
 /// Aborts if either operand is a function value: equality/ordering is undefined
