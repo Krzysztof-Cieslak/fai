@@ -137,4 +137,7 @@ algorithm_benches! {
     json_serialize => "JsonSerialize",
     string_build => "StringBuild",
     string_slice => "StringSlice",
+    option_eval => "OptionEval",
+    option_path => "OptionPath",
+    option_tree_find => "OptionTreeFind",
 }
