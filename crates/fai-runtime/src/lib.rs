@@ -181,10 +181,53 @@ pub const KIND_DATA: u64 = 5;
 pub const KIND_ARRAY: u64 = 6;
 /// A borrowing substring view (child: the inline base `String` it slices).
 pub const KIND_STRING_SLICE: u64 = 7;
+/// The niche `Option`'s `None` sentinel (a single immortal object; a leaf with no
+/// children). A Scheme-B niche `Option` represents `None` as the shared sentinel
+/// and `Some x` as `x`, so the sentinel's distinct kind keeps `None` unequal to —
+/// and ordered before — any `Some` payload in the generic equality/ordering walks.
+pub const KIND_NONE: u64 = 8;
 
 /// Builds a runtime-static descriptor with no scalar fields.
 const fn descriptor(kind: u64, name: &'static str) -> Descriptor {
     Descriptor { kind, scalar_bitmap: 0, name_ptr: name.as_ptr(), name_len: name.len() }
+}
+
+/// Descriptor for the niche `None` sentinel (a childless leaf).
+static FAI_NONE_DESC: Descriptor = descriptor(KIND_NONE, "None");
+
+/// A boxed heap object's fixed header, for the leaked sentinel object.
+#[repr(C)]
+struct ObjHeader {
+    rc: u64,
+    descriptor: *const Descriptor,
+    size: u64,
+}
+
+/// The address of the single niche `None` sentinel object, allocated once on
+/// first use (stored as a `usize`, which is `Sync`).
+static NONE_SENTINEL: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
+/// The Scheme-B niche `None` value: a shared, immortal, childless heap object's
+/// address (a boxed pointer). Code generation calls this to build a `None` and to
+/// test for it.
+///
+/// The object is a leaked `Box` (writable heap memory, so the generic
+/// reference-count operations may touch its count without faulting — unlike a
+/// read-only static) that is **not** routed through the object allocator, so it
+/// neither counts toward the live-object leak check nor is ever recycled. Its
+/// immortal count means it is never reclaimed, so the same object backs every
+/// `None` and all `None`s are pointer-equal.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_none_value() -> Value {
+    let addr = *NONE_SENTINEL.get_or_init(|| {
+        let header = Box::new(ObjHeader {
+            rc: IMMORTAL_RC,
+            descriptor: &raw const FAI_NONE_DESC,
+            size: HEADER_SIZE as u64,
+        });
+        Box::leak(header) as *mut ObjHeader as usize
+    });
+    addr as Value
 }
 
 /// Descriptor for `String` objects (leaf: inline bytes, no children).
@@ -1055,6 +1098,60 @@ pub extern "C" fn fai_std_to_niche_a(o: Value) -> Value {
     let p = as_obj(o);
     // SAFETY: a boxed standard `Option` is a `Some` cell with one field (the
     // payload); reading the count and field is in bounds.
+    unsafe {
+        let payload = read_i64(p, DATA_FIELDS_OFFSET);
+        let rc = read_u64(p, RC_OFFSET);
+        if rc == 1 {
+            free_obj(p);
+        } else {
+            fai_dup(payload);
+            write_u64(p, RC_OFFSET, rc - 1);
+        }
+        payload
+    }
+}
+
+/// Whether `v` is the niche `None` sentinel (a boxed `KIND_NONE` object).
+fn is_none_sentinel(v: Value) -> bool {
+    // SAFETY: a boxed value has a valid descriptor pointer.
+    is_boxed(v) && unsafe { desc_kind(obj_descriptor(as_obj(v))) == KIND_NONE }
+}
+
+/// Converts a niche Scheme-B `Option` (`None` is the sentinel, `Some x` is `x` in
+/// its uniform representation) to the standard boxed representation, consuming `v`.
+/// `None` becomes the immediate `1`; a `Some` wraps the payload in a `{ Some, x }`
+/// cell. Used where a niche value flows into a uniform slot.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_niche_b_to_std(v: Value) -> Value {
+    if is_none_sentinel(v) {
+        // Standard `None` is the nullary tag-0 immediate `(0 << 1) | 1`. The owned
+        // `None`'s reference to the sentinel is consumed, so release it (the count
+        // stays balanced; the immortal sentinel is never actually reclaimed).
+        fai_drop(v);
+        return 1;
+    }
+    let p = alloc_obj(DATA_FIELDS_OFFSET + 8, &FAI_DATA_DESC);
+    // SAFETY: `p` has room for the tag and one field; the payload moves in.
+    unsafe {
+        write_u64(p, DATA_TAG_OFFSET, 1); // `Some` is tag 1 of `Option`.
+        write_i64(p, DATA_FIELDS_OFFSET, v);
+    }
+    from_obj(p)
+}
+
+/// Converts a standard boxed `Option` to the niche Scheme-B representation,
+/// consuming `o`. A standard `None` (immediate `1`) becomes the sentinel; a
+/// standard `Some` cell yields its payload (freeing/duplicating the wrapper as in
+/// [`fai_std_to_niche_a`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_std_to_niche_b(o: Value) -> Value {
+    if !is_boxed(o) {
+        // Standard `None` (immediate, no count) → an owned niche `None`: take a
+        // reference to the sentinel (balanced by the matching drop).
+        return fai_dup(fai_none_value());
+    }
+    let p = as_obj(o);
+    // SAFETY: a boxed standard `Option` is a `Some` cell with one field.
     unsafe {
         let payload = read_i64(p, DATA_FIELDS_OFFSET);
         let rc = read_u64(p, RC_OFFSET);
@@ -2527,6 +2624,9 @@ fn values_equal(a: Value, b: Value) -> bool {
                     }
                     KIND_DATA => data_equal(a, b),
                     KIND_ARRAY => array_equal(a, b),
+                    // Two niche `None` sentinels (the single shared object): equal.
+                    // A `None` and a `Some` differ in kind, handled by `ka != kb`.
+                    KIND_NONE => true,
                     _ => false,
                 }
             }
@@ -2600,6 +2700,17 @@ fn values_compare(a: Value, b: Value) -> std::cmp::Ordering {
     // Both immediates: compare payloads (Int values, Bool, or nullary tags).
     if !is_boxed(a) && !is_boxed(b) {
         return (a >> 1).cmp(&(b >> 1));
+    }
+    // A niche Scheme-B `None` (the sentinel) sorts before any `Some` (matching the
+    // constructor-tag order None=0 < Some=1); two `None`s are equal.
+    let a_none = is_none_sentinel(a);
+    let b_none = is_none_sentinel(b);
+    if a_none || b_none {
+        return match (a_none, b_none) {
+            (true, true) => Ordering::Equal,
+            (true, false) => Ordering::Less,
+            (false, _) => Ordering::Greater,
+        };
     }
     // Otherwise identify the kind from a boxed operand (both share a type).
     let boxed = if is_boxed(a) { a } else { b };

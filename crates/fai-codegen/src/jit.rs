@@ -73,6 +73,9 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_make_data_scalar", rt::fai_make_data_scalar);
     sym!("fai_niche_a_to_std", rt::fai_niche_a_to_std);
     sym!("fai_std_to_niche_a", rt::fai_std_to_niche_a);
+    sym!("fai_niche_b_to_std", rt::fai_niche_b_to_std);
+    sym!("fai_std_to_niche_b", rt::fai_std_to_niche_b);
+    sym!("fai_none_value", rt::fai_none_value);
     sym!("fai_drop_reuse", rt::fai_drop_reuse);
     sym!("fai_reuse", rt::fai_reuse);
     sym!("fai_reuse_scalar", rt::fai_reuse_scalar);

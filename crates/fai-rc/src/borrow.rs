@@ -114,6 +114,22 @@ pub fn borrow_signature(db: &dyn Db, file: SourceFile, name: Symbol) -> BorrowSi
             break;
         }
     }
+    // A niche `Option` parameter is always owned. Its wrapper-free representation
+    // has no borrowing conversion at a call boundary (a borrowed niche argument
+    // would force the caller to convert a duplicate); keeping it owned lets the
+    // callee drop it — cheaply: an immediate `Some`, or the immortal `None`
+    // sentinel — and the caller simply pass ownership. (At `evidence > 0` the
+    // function already returned all-owned above.)
+    if let Some(scheme) = fai_types::declared_or_inferred_scheme(db, def) {
+        let mut ty = &scheme.ty;
+        for s in &mut sig {
+            let fai_types::Ty::Arrow(from, to, _) = ty else { break };
+            if fai_core::niche_scheme(db, from).is_some() {
+                *s = false;
+            }
+            ty = to;
+        }
+    }
     BorrowSig(sig)
 }
 

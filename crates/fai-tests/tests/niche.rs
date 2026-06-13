@@ -138,6 +138,63 @@ fn niche_used_first_class() {
 }
 
 #[test]
+fn niche_b_int_payload() {
+    // Scheme B: an `Option Int` (immediate payload) threaded monomorphically.
+    let defs = "mk : Int -> Option Int\n\
+                let mk n = if n > 0 then Some n else None\n\
+                use : Option Int -> Int\n\
+                let use o = match o with | Some x -> x * 2 | None -> -1";
+    outputs(defs, "use (mk 7)", "14");
+    outputs(defs, "use (mk 0)", "-1");
+}
+
+#[test]
+fn niche_b_list_payload() {
+    // Scheme B with a `List` payload: `None`=sentinel, `Some []`=immediate, `Some
+    // (x :: xs)`=a cons pointer — all distinct.
+    let defs = "mk : Int -> Option (List Int)\n\
+                let mk n = if n > 0 then Some [n, n + 1] else (if n = 0 then Some [] else None)\n\
+                use : Option (List Int) -> Int\n\
+                let use o = match o with | Some xs -> List.length xs | None -> -1";
+    outputs(defs, "use (mk 3)", "2");
+    outputs(defs, "use (mk 0)", "0");
+    outputs(defs, "use (mk (0 - 1))", "-1");
+}
+
+#[test]
+fn niche_b_equality_and_ordering() {
+    // Scheme B equality and ordering work directly on the niche encoding (the
+    // `KIND_NONE` sentinel), with no conversion.
+    let defs = "a : Option Int\n\
+                let a = Some 1\n\
+                b : Option Int\n\
+                let b = Some 2\n\
+                n : Option Int\n\
+                let n = None";
+    outputs(defs, "if a = a then 1 else 0", "1");
+    outputs(defs, "if a = b then 1 else 0", "0");
+    outputs(defs, "if a = n then 1 else 0", "0");
+    outputs(defs, "if n = n then 1 else 0", "1");
+    outputs(defs, "if n < a then 1 else 0", "1");
+    outputs(defs, "if a < b then 1 else 0", "1");
+    outputs(defs, "if b < a then 1 else 0", "0");
+    outputs(defs, "if a < n then 1 else 0", "0");
+}
+
+#[test]
+fn niche_b_converts_through_generic() {
+    // A Scheme-B niche `Option Int` through generic `Option.withDefault` and
+    // `Option.map` (converted to standard at the boundary, back on return).
+    let defs = "mk : Int -> Option Int\n\
+                let mk n = if n > 0 then Some n else None\n\
+                bump : Option Int -> Option Int\n\
+                let bump o = Option.map (fun x -> x + 100) o";
+    outputs(defs, "Option.withDefault 0 (mk 9)", "9");
+    outputs(defs, "Option.withDefault 0 (mk 0)", "0");
+    outputs(defs, "match bump (mk 5) with | Some x -> x | None -> -1", "105");
+}
+
+#[test]
 fn niche_equality_and_ordering() {
     // Structural `=` works directly on the niche representation; ordering converts
     // to standard. Both must agree with the standard semantics.

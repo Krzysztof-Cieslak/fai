@@ -33,9 +33,7 @@ fn abi_of_def(db: &FaiDatabase, def: DefId, nparams: usize) -> fai_core::ir::FnA
     match fai_types::declared_or_inferred_scheme(db, def) {
         Some(scheme) => {
             let source = nparams.saturating_sub(fai_types::evidence_count(&scheme));
-            let niche = |ty: &fai_types::Ty| {
-                fai_core::niche_scheme(db, ty).filter(|k| *k == fai_core::NicheKind::A)
-            };
+            let niche = |ty: &fai_types::Ty| fai_core::niche_scheme(db, ty);
             fai_core::ir::FnAbi::from_scheme(&scheme, source, &niche)
         }
         None => fai_core::ir::FnAbi::default(),

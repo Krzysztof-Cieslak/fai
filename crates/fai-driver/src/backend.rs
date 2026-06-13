@@ -146,11 +146,8 @@ pub fn float_abi(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<FnAbi> {
         return Arc::new(FnAbi::default());
     };
     // A niche `Option` parameter/result is carried wrapper-free across a direct
-    // call. Only Scheme A (always-boxed payload) is realized at present; a Scheme-B
-    // type keeps the uniform (standard) ABI.
-    let niche = |ty: &fai_types::Ty| {
-        fai_core::niche_scheme(db, ty).filter(|k| *k == fai_core::NicheKind::A)
-    };
+    // call (both schemes).
+    let niche = |ty: &fai_types::Ty| fai_core::niche_scheme(db, ty);
     Arc::new(FnAbi::from_scheme(&scheme, source_param_count(db, file, name), &niche))
 }
 
