@@ -107,6 +107,11 @@ pub enum Repr {
     /// (reached via `apply_n`) keeps ints tagged, since a tagged immediate is a
     /// valid uniform word.
     ScalarInt,
+    /// A niche `Option` carried without its `Some` wrapper (one `i64` word: the
+    /// payload, or the scheme's `None` sentinel). Register ABI only — a uniform
+    /// entry, reached via `apply_n`, keeps the standard boxed `Option` (the
+    /// wrapper converts at the bridge). See [`crate::niche`].
+    Niche(NicheKind),
 }
 
 impl FnAbi {
@@ -119,14 +124,18 @@ impl FnAbi {
     /// keeps ints tagged). Reading the *signature* (not the body) keeps a caller's
     /// compiled code independent of a callee's body.
     #[must_use]
-    pub fn from_scheme(scheme: &fai_types::Scheme, source_params: usize) -> FnAbi {
+    pub fn from_scheme(
+        scheme: &fai_types::Scheme,
+        source_params: usize,
+        niche: &dyn Fn(&Ty) -> Option<NicheKind>,
+    ) -> FnAbi {
         let evidence = fai_types::evidence_count(scheme);
         let mut params = vec![Repr::Uniform; evidence];
         let mut ty = &scheme.ty;
         for _ in 0..source_params {
             match ty {
                 Ty::Arrow(from, to, _) => {
-                    params.push(scalar_repr(from));
+                    params.push(scalar_repr(from, niche));
                     ty = to;
                 }
                 // Fewer arrows than declared source parameters cannot happen for a
@@ -137,17 +146,18 @@ impl FnAbi {
         // Direct-callable iff non-row-polymorphic (no evidence) with a parameter:
         // exactly the definitions a saturated call reaches as a bare `Global` head.
         let register_abi = evidence == 0 && source_params > 0;
-        let mut ret = scalar_repr(ty);
-        // Ints are unboxed only on the register ABI; a uniform entry keeps them
-        // tagged (a tagged immediate is a valid uniform word). Floats stay unboxed
-        // on both ABIs (a float is never a uniform word).
+        let mut ret = scalar_repr(ty, niche);
+        // Untagged ints and niche `Option`s are carried only on the register ABI; a
+        // uniform entry (reached via `apply_n`) keeps a tagged immediate / a
+        // standard boxed `Option` — both valid uniform words — bridged by the
+        // wrapper. Floats stay unboxed on both ABIs (a float is never a uniform word).
         if !register_abi {
             for p in &mut params {
-                if *p == Repr::ScalarInt {
+                if matches!(p, Repr::ScalarInt | Repr::Niche(_)) {
                     *p = Repr::Uniform;
                 }
             }
-            if ret == Repr::ScalarInt {
+            if matches!(ret, Repr::ScalarInt | Repr::Niche(_)) {
                 ret = Repr::Uniform;
             }
         }
@@ -187,6 +197,24 @@ impl FnAbi {
         self.ret == Repr::ScalarInt
     }
 
+    /// The niche `Option` scheme of runtime parameter `i`, if it is one.
+    #[must_use]
+    pub fn niche_param(&self, i: usize) -> Option<NicheKind> {
+        match self.params.get(i) {
+            Some(Repr::Niche(k)) => Some(*k),
+            _ => None,
+        }
+    }
+
+    /// The niche `Option` scheme of the result, if it is one.
+    #[must_use]
+    pub fn niche_return(&self) -> Option<NicheKind> {
+        match self.ret {
+            Repr::Niche(k) => Some(k),
+            _ => None,
+        }
+    }
+
     /// Whether any parameter is an unboxed `Float` (raw bits in its slot).
     #[must_use]
     pub fn any_float_param(&self) -> bool {
@@ -202,13 +230,16 @@ impl FnAbi {
     }
 }
 
-/// The scalar representation of a parameter/result type: an unboxed `Float`, an
-/// untagged `Int`, or a uniform word.
-fn scalar_repr(ty: &Ty) -> Repr {
+/// The native representation of a parameter/result type: an unboxed `Float`, an
+/// untagged `Int`, a niche `Option` (per `niche`), or a uniform word.
+fn scalar_repr(ty: &Ty, niche: &dyn Fn(&Ty) -> Option<NicheKind>) -> Repr {
     match ty {
         Ty::Con(Con::Float) => Repr::ScalarFloat,
         Ty::Con(Con::Int) => Repr::ScalarInt,
-        _ => Repr::Uniform,
+        _ => match niche(ty) {
+            Some(k) => Repr::Niche(k),
+            None => Repr::Uniform,
+        },
     }
 }
 

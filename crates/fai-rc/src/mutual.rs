@@ -409,10 +409,13 @@ fn remap_member(
             let args = args.iter().map(|a| remap_member(a, subst, next, group)).collect();
             CExpr::new(K::Prim { op: *op, args }, ty)
         }
-        K::MakeData { tag, args, reuse, scalars, niche } => {
+        K::MakeData { tag, args, reuse, scalars, niche: _ } => {
+            // The combined loop is schemeless (uniform ABI), so niche `Option`s are
+            // erased to the standard representation here — just as the unboxed scalar
+            // types are erased — and the member wrappers convert at their boundary.
             let args = args.iter().map(|a| remap_member(a, subst, next, group)).collect();
             CExpr::new(
-                K::MakeData { tag: *tag, args, reuse: *reuse, scalars: *scalars, niche: *niche },
+                K::MakeData { tag: *tag, args, reuse: *reuse, scalars: *scalars, niche: None },
                 ty,
             )
         }
@@ -431,11 +434,11 @@ fn remap_member(
             let body = Box::new(remap_member(body, subst, next, group));
             CExpr::new(K::Let { local, value, body }, ty)
         }
-        K::DataTag { base, niche } => CExpr::new(
-            K::DataTag { base: Box::new(remap_member(base, subst, next, group)), niche: *niche },
+        K::DataTag { base, niche: _ } => CExpr::new(
+            K::DataTag { base: Box::new(remap_member(base, subst, next, group)), niche: None },
             ty,
         ),
-        K::DataField { base, index, scalar, niche } => {
+        K::DataField { base, index, scalar, niche: _ } => {
             let index = match index {
                 FieldIndex::Dyn { base: off, evidence } => {
                     FieldIndex::Dyn { base: *off, evidence: remap_local(*evidence, subst, next) }
@@ -447,7 +450,7 @@ fn remap_member(
                     base: Box::new(remap_member(base, subst, next, group)),
                     index,
                     scalar: *scalar,
-                    niche: *niche,
+                    niche: None,
                 },
                 ty,
             )

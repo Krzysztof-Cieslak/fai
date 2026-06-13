@@ -71,6 +71,8 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_equal_borrowed", rt::fai_equal_borrowed);
     sym!("fai_make_data", rt::fai_make_data);
     sym!("fai_make_data_scalar", rt::fai_make_data_scalar);
+    sym!("fai_niche_a_to_std", rt::fai_niche_a_to_std);
+    sym!("fai_std_to_niche_a", rt::fai_std_to_niche_a);
     sym!("fai_drop_reuse", rt::fai_drop_reuse);
     sym!("fai_reuse", rt::fai_reuse);
     sym!("fai_reuse_scalar", rt::fai_reuse_scalar);
