@@ -1512,6 +1512,14 @@ impl<M: Module> Translator<'_, M> {
     /// omits the guard entirely. Leaves the builder in the continuation block.
     fn emit_rc_incr(&mut self, local: LocalId, tag_check: bool) {
         let cell = self.use_var(local);
+        self.emit_rc_incr_value(cell, tag_check);
+    }
+
+    /// Value-keyed core of [`Self::emit_rc_incr`]: increments `cell`'s reference
+    /// count in place (with the optional immediate tag-check). Used both for a
+    /// local dup and to dup a value with no backing local — an element read from an
+    /// array slot. Leaves the builder in the continuation block.
+    fn emit_rc_incr_value(&mut self, cell: Value, tag_check: bool) {
         let rc_off = i32::try_from(rt::RC_OFFSET).expect("rc offset");
         if !tag_check {
             let rc = self.builder.ins().load(types::I64, MemFlags::trusted(), cell, rc_off);
@@ -1547,6 +1555,19 @@ impl<M: Module> Translator<'_, M> {
         dead: impl FnOnce(&mut Self, Value),
     ) {
         let cell = self.use_var(local);
+        self.emit_rc_dec_then_value(cell, tag_check, dead);
+    }
+
+    /// Value-keyed core of [`Self::emit_rc_dec_then`]: decrements `cell` and runs
+    /// `dead` when it reaches zero. Used both for a local drop and to release a
+    /// value with no backing local — the old element overwritten by an in-place
+    /// array `set`. Leaves the builder in the continuation block.
+    fn emit_rc_dec_then_value(
+        &mut self,
+        cell: Value,
+        tag_check: bool,
+        dead: impl FnOnce(&mut Self, Value),
+    ) {
         let cont_b = self.builder.create_block();
         let dead_b = self.builder.create_block();
 
@@ -1587,7 +1608,15 @@ impl<M: Module> Translator<'_, M> {
     /// cell is freed last: the heap is acyclic, so dropping a child can never
     /// reach the parent, and the field pointers are loaded before the free.
     fn emit_inline_drop(&mut self, local: LocalId, fields: &[FieldDrop]) {
-        self.emit_rc_dec_then(local, false, |s, cell| {
+        let cell = self.use_var(local);
+        self.emit_inline_drop_value(cell, fields);
+    }
+
+    /// Value-keyed core of [`Self::emit_inline_drop`]: releases the fixed-shape
+    /// cell `cell`. Used both for a local drop and to release a value with no
+    /// backing local — a record/tuple old element overwritten by an array `set`.
+    fn emit_inline_drop_value(&mut self, cell: Value, fields: &[FieldDrop]) {
+        self.emit_rc_dec_then_value(cell, false, |s, cell| {
             for (i, class) in fields.iter().enumerate() {
                 if matches!(class, FieldDrop::Boxed) {
                     let off = i32::try_from(rt::DATA_FIELDS_OFFSET + i * 8).expect("field offset");
@@ -1598,6 +1627,59 @@ impl<M: Module> Translator<'_, M> {
             let free = s.runtime("fai_free", 1, false);
             s.builder.ins().call(free, &[cell]);
         });
+    }
+
+    /// Duplicates a uniform-representation value `v` of static type `ty` inline,
+    /// for a value with no backing local — an element read from a borrowed array
+    /// slot whose returned reference must outlive the array's drop. Mirrors
+    /// [`Self::dup_local`]/[`dup_class`]: a no-op for an immediate, an
+    /// unconditional increment for an always-boxed value, else a tag-checked one.
+    fn dup_value(&mut self, v: Value, ty: &Ty) {
+        match dup_class(ty) {
+            DupPlan::NoOp => {}
+            DupPlan::Incr { tag_check } => self.emit_rc_incr_value(v, tag_check),
+        }
+    }
+
+    /// Releases a uniform-representation value `v` of static type `ty` inline, for
+    /// a value with no backing local — the old element overwritten by an in-place
+    /// array `set`. Uses [`uniform_drop_class`] (which, unlike [`drop_class`],
+    /// treats a `Float` as the boxed cell it is in a slot rather than a scalar): a
+    /// no-op for an immediate, an inlined leaf/fixed-cell/data release, or a
+    /// tag-checked runtime drop for an unknown type (so an immediate element — e.g.
+    /// an `Int` behind a type variable in a generic `set` — skips the call).
+    fn drop_value(&mut self, v: Value, ty: &Ty) {
+        match uniform_drop_class(ty) {
+            DropPlan::NoOp => {}
+            DropPlan::Fixed(fields) => self.emit_inline_drop_value(v, &fields),
+            DropPlan::Leaf { tag_check } => {
+                self.emit_rc_dec_then_value(v, tag_check, |s, cell| {
+                    let free = s.runtime("fai_free", 1, false);
+                    s.builder.ins().call(free, &[cell]);
+                });
+            }
+            DropPlan::Data { tag_check } => {
+                self.emit_rc_dec_then_value(v, tag_check, |s, cell| {
+                    let f = s.runtime("fai_drop_dead", 1, false);
+                    s.builder.ins().call(f, &[cell]);
+                });
+            }
+            DropPlan::Runtime => {
+                // An unknown type: guard the runtime drop with an immediate
+                // tag-check so a generic immediate element (an `Int` behind a type
+                // variable in a generic `set`) skips the call entirely.
+                let cont_b = self.builder.create_block();
+                let drop_b = self.builder.create_block();
+                let bit = self.builder.ins().band_imm(v, 1);
+                self.builder.ins().brif(bit, cont_b, &[], drop_b, &[]);
+                self.builder.switch_to_block(drop_b);
+                self.builder.seal_block(drop_b);
+                self.call_drop(v);
+                self.builder.ins().jump(cont_b, &[]);
+                self.builder.switch_to_block(cont_b);
+                self.builder.seal_block(cont_b);
+            }
+        }
     }
 
     fn expr(&mut self, e: &CExpr) -> Value {
@@ -2079,6 +2161,13 @@ impl<M: Module> Translator<'_, M> {
         if let Some(v) = self.inline_prim(op, args) {
             return v;
         }
+        // `Array` length/get/set/push on a statically-recognized array operand
+        // compile to inline loads/stores (with an inline bounds check + located
+        // abort), removing the per-access call + index unbox + dup/drop. A
+        // non-array/erased operand falls through to the runtime call below.
+        if let Some(v) = self.array_prim(op, args, result_ty) {
+            return v;
+        }
         // A float operand of a non-float primitive (e.g. `{ r with x = … }`'s new
         // value) crosses a uniform `i64` boundary, so it is boxed in.
         let vals: Vec<Value> = args.iter().map(|a| self.expr_boxed(a)).collect();
@@ -2108,6 +2197,221 @@ impl<M: Module> Translator<'_, M> {
         } else {
             result
         }
+    }
+
+    /// Compiles an `Array` length/get/set/push whose operand is a statically
+    /// recognized array (`App(Con::Array, elem)`) to inline loads/stores, returning
+    /// `None` for any other primitive or an unrecognized operand type (a bare
+    /// `Ty::Error`, a non-array prim) — which then takes the runtime call. The
+    /// element type drives only the get result representation and the set
+    /// old-element release; length/push are element-type agnostic. A type-variable
+    /// or erased (`App(Con::Array, Error)`, the combined mutual-recursion function)
+    /// element takes the uniform path, so concrete *and* generic sites inline.
+    fn array_prim(&mut self, op: Prim, args: &[CExpr], result_ty: &Ty) -> Option<Value> {
+        // Gate on the operand being a recognizable array. Only the head survives the
+        // object-cache wire form (an `App`'s argument is projected away, so a cached
+        // `Array Float` operand reconstructs as `App(Array, Error)`); the *element*
+        // representation is therefore read from a wire-preserved standalone type —
+        // the get's result type and the set's value-argument type — never the
+        // operand's (possibly erased) element.
+        array_elem(&args[0].ty)?;
+        match op {
+            Prim::ArrayLength => Some(self.array_length_inline(args)),
+            Prim::ArrayGet => Some(self.array_get_inline(args, result_ty)),
+            Prim::ArraySet => Some(self.array_set_inline(args)),
+            Prim::ArrayPush => Some(self.array_push_inline(args)),
+            _ => None,
+        }
+    }
+
+    /// `Array.length`: an inline load of the length field as a raw `Int`. The array
+    /// is borrowed (length read without consuming), so nothing is dropped.
+    fn array_length_inline(&mut self, args: &[CExpr]) -> Value {
+        let base = self.expr(&args[0]);
+        let off = i32::try_from(rt::ARRAY_LEN_OFFSET).expect("array length offset");
+        let len = self.builder.ins().load(types::I64, MemFlags::trusted(), base, off);
+        self.mark_raw(len)
+    }
+
+    /// Reads the index operand as a raw `i64` without consuming it (matching the
+    /// runtime's non-consuming `unbox_int`): a raw value passes through, a tagged
+    /// immediate is untagged, a boxed `Int` is read (not released).
+    fn array_index_raw(&mut self, idx: &CExpr) -> Value {
+        let v = self.expr(idx);
+        if self.is_raw_int(v) { v } else { self.borrow_unbox_int_to_raw(v) }
+    }
+
+    /// The byte address of element `raw_idx` in array `base`
+    /// (`base + ARRAY_ELEMS_OFFSET + raw_idx * 8`), returned with the constant
+    /// `ARRAY_ELEMS_OFFSET` to fold into the load/store instruction.
+    fn array_elem_addr(&mut self, base: Value, raw_idx: Value) -> (Value, i32) {
+        let elem_off = self.builder.ins().ishl_imm(raw_idx, 3);
+        let addr = self.builder.ins().iadd(base, elem_off);
+        let slot_off = i32::try_from(rt::ARRAY_ELEMS_OFFSET).expect("array elems offset");
+        (addr, slot_off)
+    }
+
+    /// `Array.unsafeGet`: an inline bounds-checked slot load. The array is borrowed.
+    /// An `Int` element is read raw and a `Float` element to an `f64` (no dup/drop);
+    /// any other element is the slot word with an inline tag-checked dup, so the
+    /// returned reference outlives the borrowed array's drop. An out-of-bounds index
+    /// aborts with the located message (the cold `fai_array_index_panic` branch),
+    /// matching the runtime's checked behavior. `elem` is the get's **result type**
+    /// (the element type) — a standalone type the wire form preserves, unlike the
+    /// operand's projected-away `App` element.
+    fn array_get_inline(&mut self, args: &[CExpr], elem: &Ty) -> Value {
+        let base = self.expr(&args[0]);
+        let raw_idx = self.array_index_raw(&args[1]);
+
+        let len_off = i32::try_from(rt::ARRAY_LEN_OFFSET).expect("array length offset");
+        let len = self.builder.ins().load(types::I64, MemFlags::trusted(), base, len_off);
+        // An unsigned compare, so a negative index (a huge unsigned value) is out of
+        // bounds, matching the runtime's `usize` cast.
+        let in_bounds = self.builder.ins().icmp(IntCC::UnsignedLessThan, raw_idx, len);
+
+        let is_float = matches!(elem, Ty::Con(Con::Float));
+        let fast_b = self.builder.create_block();
+        let oob_b = self.builder.create_block();
+        let merge_b = self.builder.create_block();
+        let merge_ty = if is_float { types::F64 } else { types::I64 };
+        self.builder.append_block_param(merge_b, merge_ty);
+        self.builder.ins().brif(in_bounds, fast_b, &[], oob_b, &[]);
+
+        // Out of bounds: the located abort (never returns); a dead value of the
+        // merge type satisfies the edge.
+        self.builder.switch_to_block(oob_b);
+        self.builder.seal_block(oob_b);
+        let panic = self.runtime("fai_array_index_panic", 0, false);
+        self.builder.ins().call(panic, &[]);
+        let dead = if is_float {
+            self.builder.ins().f64const(Ieee64::with_float(0.0))
+        } else {
+            self.builder.ins().iconst(types::I64, 0)
+        };
+        self.builder.ins().jump(merge_b, &[dead.into()]);
+
+        // In bounds: load the slot and bring the element to its scalar/uniform form.
+        self.builder.switch_to_block(fast_b);
+        self.builder.seal_block(fast_b);
+        let (addr, slot_off) = self.array_elem_addr(base, raw_idx);
+        let word = self.builder.ins().load(types::I64, MemFlags::trusted(), addr, slot_off);
+        let value = match elem {
+            Ty::Con(Con::Int) => self.borrow_unbox_int_to_raw(word),
+            Ty::Con(Con::Float) => self.borrowing_unbox(word),
+            _ => {
+                self.dup_value(word, elem);
+                word
+            }
+        };
+        self.builder.ins().jump(merge_b, &[value.into()]);
+
+        self.builder.switch_to_block(merge_b);
+        self.builder.seal_block(merge_b);
+        let result = self.builder.block_params(merge_b)[0];
+        // An `Int` element flows raw; a `Float` is the f64 merge param; anything
+        // else is the owned uniform word.
+        if matches!(elem, Ty::Con(Con::Int)) { self.mark_raw(result) } else { result }
+    }
+
+    /// `Array.unsafeSet`: an inline in-place store when the array is uniquely owned
+    /// and the index is in bounds; otherwise the runtime `fai_array_set`, which
+    /// copies a shared array and aborts (located) on an out-of-bounds index. The
+    /// array and the new value are consumed (their ownership flows into the result /
+    /// the slot); the overwritten old element is released inline (classified by the
+    /// new value's type — the element type, which the wire form preserves as a
+    /// standalone type, unlike the operand's projected-away `App` element).
+    fn array_set_inline(&mut self, args: &[CExpr]) -> Value {
+        let elem = args[2].ty.clone();
+        let base = self.expr(&args[0]);
+        let raw_idx = self.array_index_raw(&args[1]);
+        let value = self.expr_boxed(&args[2]);
+
+        let len_off = i32::try_from(rt::ARRAY_LEN_OFFSET).expect("array length offset");
+        let rc_off = i32::try_from(rt::RC_OFFSET).expect("rc offset");
+        let len = self.builder.ins().load(types::I64, MemFlags::trusted(), base, len_off);
+        let rc = self.builder.ins().load(types::I64, MemFlags::trusted(), base, rc_off);
+        let in_bounds = self.builder.ins().icmp(IntCC::UnsignedLessThan, raw_idx, len);
+        let unique = self.builder.ins().icmp_imm(IntCC::Equal, rc, 1);
+        let fast = self.builder.ins().band(in_bounds, unique);
+
+        let fast_b = self.builder.create_block();
+        let slow_b = self.builder.create_block();
+        let merge_b = self.builder.create_block();
+        self.builder.append_block_param(merge_b, types::I64);
+        self.builder.ins().brif(fast, fast_b, &[], slow_b, &[]);
+
+        // Fast path: overwrite the slot in place, releasing the old element.
+        self.builder.switch_to_block(fast_b);
+        self.builder.seal_block(fast_b);
+        let (addr, slot_off) = self.array_elem_addr(base, raw_idx);
+        let old = self.builder.ins().load(types::I64, MemFlags::trusted(), addr, slot_off);
+        self.builder.ins().store(MemFlags::trusted(), value, addr, slot_off);
+        self.drop_value(old, &elem);
+        self.builder.ins().jump(merge_b, &[base.into()]);
+
+        // Slow path: the runtime copies a shared array and aborts on a bad index.
+        self.builder.switch_to_block(slow_b);
+        self.builder.seal_block(slow_b);
+        let tagged_idx = self.box_or_tag_int(raw_idx);
+        let f = self.runtime("fai_array_set", 3, true);
+        let call = self.builder.ins().call(f, &[base, tagged_idx, value]);
+        let copied = self.builder.inst_results(call)[0];
+        self.builder.ins().jump(merge_b, &[copied.into()]);
+
+        self.builder.switch_to_block(merge_b);
+        self.builder.seal_block(merge_b);
+        self.builder.block_params(merge_b)[0]
+    }
+
+    /// `Array.push`: an inline in-place append when the array is uniquely owned and
+    /// has spare capacity; otherwise the runtime `fai_array_push`, which grows a
+    /// full unique array and copies a shared one. The array and value are consumed.
+    /// Capacity is derived from the allocation size (`(size - ELEMS) / 8`).
+    fn array_push_inline(&mut self, args: &[CExpr]) -> Value {
+        let base = self.expr(&args[0]);
+        let value = self.expr_boxed(&args[1]);
+
+        let len_off = i32::try_from(rt::ARRAY_LEN_OFFSET).expect("array length offset");
+        let rc_off = i32::try_from(rt::RC_OFFSET).expect("rc offset");
+        let size_off = i32::try_from(rt::SIZE_OFFSET).expect("size offset");
+        let elems_bytes = i64::try_from(rt::ARRAY_ELEMS_OFFSET).expect("array elems offset");
+
+        let len = self.builder.ins().load(types::I64, MemFlags::trusted(), base, len_off);
+        let rc = self.builder.ins().load(types::I64, MemFlags::trusted(), base, rc_off);
+        let size = self.builder.ins().load(types::I64, MemFlags::trusted(), base, size_off);
+        // cap = (size - ARRAY_ELEMS_OFFSET) / 8
+        let usable = self.builder.ins().iadd_imm(size, -elems_bytes);
+        let cap = self.builder.ins().ushr_imm(usable, 3);
+        let has_room = self.builder.ins().icmp(IntCC::UnsignedLessThan, len, cap);
+        let unique = self.builder.ins().icmp_imm(IntCC::Equal, rc, 1);
+        let fast = self.builder.ins().band(unique, has_room);
+
+        let fast_b = self.builder.create_block();
+        let slow_b = self.builder.create_block();
+        let merge_b = self.builder.create_block();
+        self.builder.append_block_param(merge_b, types::I64);
+        self.builder.ins().brif(fast, fast_b, &[], slow_b, &[]);
+
+        // Fast path: write the spare slot at `len` and bump the length.
+        self.builder.switch_to_block(fast_b);
+        self.builder.seal_block(fast_b);
+        let (addr, slot_off) = self.array_elem_addr(base, len);
+        self.builder.ins().store(MemFlags::trusted(), value, addr, slot_off);
+        let len1 = self.builder.ins().iadd_imm(len, 1);
+        self.builder.ins().store(MemFlags::trusted(), len1, base, len_off);
+        self.builder.ins().jump(merge_b, &[base.into()]);
+
+        // Slow path: the runtime grows (unique-but-full) or copies (shared).
+        self.builder.switch_to_block(slow_b);
+        self.builder.seal_block(slow_b);
+        let f = self.runtime("fai_array_push", 2, true);
+        let call = self.builder.ins().call(f, &[base, value]);
+        let grown = self.builder.inst_results(call)[0];
+        self.builder.ins().jump(merge_b, &[grown.into()]);
+
+        self.builder.switch_to_block(merge_b);
+        self.builder.seal_block(merge_b);
+        self.builder.block_params(merge_b)[0]
     }
 
     /// Compiles a `Float` primitive. With unboxed `f64` operands these are inline
@@ -4062,6 +4366,29 @@ fn drop_class(ty: &Ty) -> DropPlan {
         return DropPlan::Data { tag_check: !always_boxed };
     }
     DropPlan::Runtime
+}
+
+/// The inlined drop strategy for a value in *uniform* (boxed/tagged) representation
+/// — an element read from an array slot, where a `Float` is the boxed cell it is in
+/// the slot rather than the unboxed scalar a `Float` *local* is. Identical to
+/// [`drop_class`] except a `Float` is released as an always-boxed leaf, not skipped.
+fn uniform_drop_class(ty: &Ty) -> DropPlan {
+    if matches!(ty, Ty::Con(Con::Float)) {
+        return DropPlan::Leaf { tag_check: false };
+    }
+    drop_class(ty)
+}
+
+/// The element type of an `Array` operand (`App(Con::Array, elem)`), or `None` when
+/// the type is not a recognizable array — a bare `Ty::Error` operand or a non-array
+/// type — so the caller keeps the out-of-line runtime call. An erased
+/// `App(Con::Array, Error)` (the combined mutual-recursion function) still matches,
+/// with `Error` as its element, handled by the uniform inline path.
+fn array_elem(ty: &Ty) -> Option<&Ty> {
+    match ty {
+        Ty::App(head, elem) if matches!(head.as_ref(), Ty::Con(Con::Array)) => Some(elem),
+        _ => None,
+    }
 }
 
 /// How an inlined `Dup` of a known-typed local increments its reference count.

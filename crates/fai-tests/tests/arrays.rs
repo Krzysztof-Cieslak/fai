@@ -14,7 +14,7 @@ use std::sync::{Mutex, MutexGuard};
 use fai_db::{Db, FaiDatabase};
 use fai_driver::jit_run_program;
 use fai_runtime as rt;
-use indoc::formatdoc;
+use indoc::{formatdoc, indoc};
 use proptest::prelude::*;
 
 static LOCK: Mutex<()> = Mutex::new(());
@@ -217,6 +217,78 @@ fn unique_set_is_in_place() {
         "499600",
     );
     assert_eq!(small, big, "a unique set is in place (no buffer copy that scales with length)");
+}
+
+// ===========================================================================
+// Inlined element access: get/length/set/push compile to inline loads/stores
+// (see the codegen IR-shape tests). These exercise the result representations
+// end-to-end — a raw `Int`, an unboxed `f64`, and a boxed element duplicated
+// inline — and the generic (type-variable element) path, asserting correctness
+// and a leak-free exit.
+// ===========================================================================
+
+#[test]
+fn float_array_unsafe_get_reads_inline_and_is_leak_free() {
+    // A hand-written read loop over a concrete `Array Float`: each `unsafeGet`
+    // inlines to a slot load unboxed to an `f64` (no per-element call or box). The
+    // sum is correct and the run is leak-free (a clean exit).
+    let src = indoc! {r#"
+        module M
+
+        dot : Int -> Float -> Array Float -> Int -> Float
+        let dot i acc xs n =
+          if i >= n then acc else dot (i + 1) (acc + Array.unsafeGet i xs) xs n
+
+        public main : Runtime -> Unit / { Console }
+        let main rt =
+          let xs = Array.map Int.toFloat (Array.range 0 5)
+          rt.console.writeLine (Float.toString (dot 0 0.0 xs (Array.length xs)))
+    "#};
+    let (code, out, _, _) = run_counted(src);
+    assert_eq!(code, 0, "clean (leak-free) exit:\n{out}");
+    assert_eq!(out.trim(), "10.0", "0.0+1.0+2.0+3.0+4.0");
+}
+
+#[test]
+fn boxed_element_array_unsafe_get_dups_inline_and_is_leak_free() {
+    // A read loop over a concrete `Array String`: each `unsafeGet` inlines to a slot
+    // load plus an inline tag-checked dup of the boxed element, so the returned
+    // reference outlives the borrowed array's drop. Concatenation is correct and
+    // leak-free (a mismatched dup/drop would leak or double-free).
+    let src = indoc! {r#"
+        module M
+
+        cat : Int -> String -> Array String -> Int -> String
+        let cat i acc xs n =
+          if i >= n then acc else cat (i + 1) (acc ++ Array.unsafeGet i xs) xs n
+
+        public main : Runtime -> Unit / { Console }
+        let main rt =
+          let xs = Array.fromList ["a", "b", "c"]
+          rt.console.writeLine (cat 0 "" xs (Array.length xs))
+    "#};
+    let (code, out, _, _) = run_counted(src);
+    assert_eq!(code, 0, "clean (leak-free) exit:\n{out}");
+    assert_eq!(out.trim(), "abc");
+}
+
+#[test]
+fn generic_sort_over_boxed_elements_is_correct_and_leak_free() {
+    // `Array.sort` is compiled once at a type variable, so its `unsafeGet`/
+    // `unsafeSet` inline via the uniform path — a tag-checked dup on read and a
+    // tag-checked release of the overwritten element. Sorting boxed `String`
+    // elements exercises that path: the order is correct and the run is leak-free.
+    let src = indoc! {r#"
+        module M
+
+        public main : Runtime -> Unit / { Console }
+        let main rt =
+          let xs = Array.sort (Array.fromList ["banana", "apple", "cherry"])
+          rt.console.writeLine (Option.withDefault "?" (Array.get 0 xs))
+    "#};
+    let (code, out, _, _) = run_counted(src);
+    assert_eq!(code, 0, "clean (leak-free) exit:\n{out}");
+    assert_eq!(out.trim(), "apple", "the lexicographically least string sorts first");
 }
 
 // ===========================================================================

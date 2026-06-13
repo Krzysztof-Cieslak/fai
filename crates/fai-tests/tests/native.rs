@@ -40,6 +40,40 @@ fn build_and_run(src: &str) -> (String, Option<i32>) {
     (String::from_utf8_lossy(&run.stdout).into_owned(), run.status.code())
 }
 
+/// Builds `src` and runs it, returning `(stdout, stderr, exit_code)`. For a test
+/// that asserts a runtime abort (a located fault), which writes to stderr and exits
+/// non-zero — with no exit code on a Unix signal abort (`None`).
+fn build_and_run_captured(src: &str) -> (String, String, Option<i32>) {
+    let dir = unique_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("Main.fai"), src).unwrap();
+    let exe = dir.join("prog");
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let code = fai_cli::run(
+        [
+            "fai",
+            "build",
+            "--no-daemon",
+            "-C",
+            dir.to_str().unwrap(),
+            "Main.fai",
+            "--out",
+            exe.to_str().unwrap(),
+        ],
+        &mut out,
+        &mut err,
+    );
+    assert_eq!(code, 0, "build failed: {}", String::from_utf8_lossy(&err));
+    let produced = exe.with_extension(std::env::consts::EXE_EXTENSION);
+    let run = Command::new(&produced).output().unwrap();
+    (
+        String::from_utf8_lossy(&run.stdout).into_owned(),
+        String::from_utf8_lossy(&run.stderr).into_owned(),
+        run.status.code(),
+    )
+}
+
 fn unique_dir() -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     std::env::temp_dir().join(format!(
@@ -768,4 +802,24 @@ fn deforested_list_fold_builds_and_runs_via_aot() {
     let (out, code) = build_and_run(src);
     assert_eq!(code, Some(0), "clean (leak-free) exit");
     assert_eq!(out.trim(), "499500");
+}
+
+#[test]
+fn out_of_bounds_unsafe_get_aborts_with_a_located_message() {
+    // The inlined `unsafeGet` keeps an inline bounds check: an out-of-bounds index
+    // aborts with the located "array index out of bounds" message (the runtime's
+    // checked behavior, "aborts like /"), rather than reading past the buffer. The
+    // process aborts, so it does not exit cleanly (no exit code on a Unix signal
+    // abort), and the message reaches stderr.
+    let src = indoc! {r#"
+        module Main
+
+        public main : Runtime -> Unit / { Console }
+        let main runtime =
+          let xs = Array.range 0 3
+          runtime.console.writeLine (Int.toString (Array.unsafeGet 5 xs))
+    "#};
+    let (_out, err, code) = build_and_run_captured(src);
+    assert_ne!(code, Some(0), "an out-of-bounds unsafeGet must not exit cleanly (stderr: {err})");
+    assert!(err.contains("array index out of bounds"), "located out-of-bounds message: {err}");
 }

@@ -3219,3 +3219,103 @@ fn int_contract_is_checked_eagerly() {
     let (code, out) = run(src);
     assert_eq!((code, out.as_str()), (0, "49\n"));
 }
+
+// --- Inlined Array access: get/set/length/push compile to inline loads/stores ---
+//
+// The Cranelift IR text references imported runtime functions by index (`fn0 =
+// u0:1`), not by symbol name, so these assert the inline *shape* via opcodes only
+// the inline path emits — the inline bounds check (`icmp ult`), the unique-owner
+// check (`icmp_imm eq … 1`), the capacity-from-size (`ushr_imm`) — never a name. A
+// runtime-call lowering would emit a bare `call` with none of these. The located
+// out-of-bounds abort and the leak/allocation behavior are covered end-to-end (the
+// `native`/`arrays` suites). `call fn` is the call *instruction* (the Windows
+// `windows_fastcall` signature text contains "call" but never "call fn").
+
+/// Counts call instructions in a function's IR text (robust to the platform's
+/// calling-convention name appearing in signature lines).
+fn call_count(ir: &str) -> usize {
+    ir.matches("call fn").count()
+}
+
+#[test]
+fn array_int_get_inlines_a_bounds_checked_slot_load() {
+    // `Array.unsafeGet` on an `Array Int` inlines to an unsigned bounds check + a
+    // slot load brought to a raw `Int` — not a runtime call.
+    let src = indoc! {r#"
+        module M
+
+        g : Int -> Array Int -> Int
+        let g i a = Array.unsafeGet i a
+    "#};
+    let ir = entry_ir(src, "g");
+    assert!(ir.contains(" ult "), "inline unsigned bounds check:\n{ir}");
+    assert!(ir.contains("load"), "inline slot load:\n{ir}");
+}
+
+#[test]
+fn array_float_get_inlines_a_bounds_checked_slot_load() {
+    // `Array.unsafeGet` on an `Array Float` inlines the bounds check + slot load and
+    // unboxes the (boxed) element to an `f64`; the function returns in an `f64`
+    // register, so its result is unboxed inline rather than via a runtime call.
+    let src = indoc! {r#"
+        module M
+
+        g : Int -> Array Float -> Float
+        let g i a = Array.unsafeGet i a
+    "#};
+    let ir = entry_ir(src, "g");
+    assert!(ir.contains(" ult "), "inline unsigned bounds check:\n{ir}");
+    assert!(ir.contains("load"), "inline slot load:\n{ir}");
+    // The boxed `Float` slot is unboxed to an `f64` inline (a bit-reinterpret),
+    // confirming the float branch rather than a boxed-element dup.
+    assert!(ir.contains("bitcast"), "inline unbox of the boxed Float to f64:\n{ir}");
+}
+
+#[test]
+fn array_length_inlines_a_field_load_with_no_length_call() {
+    // `Array.length` inlines to a single load of the length field. The only call in
+    // the function is the array parameter's own drop at exit (one `call`); a
+    // runtime-call lowering would add a second call for the length itself.
+    let src = indoc! {r#"
+        module M
+
+        n : Array Int -> Int
+        let n a = Array.length a
+    "#};
+    let ir = entry_ir(src, "n");
+    assert!(ir.contains("load"), "inline length-field load:\n{ir}");
+    assert_eq!(call_count(&ir), 1, "only the array's own drop is a call (no length call):\n{ir}");
+}
+
+#[test]
+fn array_int_set_inlines_the_unique_store_fast_path() {
+    // `Array.unsafeSet` on an `Array Int` inlines the unique-owner fast path: an
+    // unsigned bounds check, a reference-count == 1 check, and an inline slot store.
+    let src = indoc! {r#"
+        module M
+
+        s : Int -> Array Int -> Array Int
+        let s i a = Array.unsafeSet i 0 a
+    "#};
+    let ir = entry_ir(src, "s");
+    assert!(ir.contains(" ult "), "inline unsigned bounds check:\n{ir}");
+    assert!(ir.contains("icmp_imm"), "inline unique-owner (rc == 1) check:\n{ir}");
+    assert!(ir.contains("store"), "inline slot store:\n{ir}");
+}
+
+#[test]
+fn array_int_push_inlines_the_append_fast_path() {
+    // `Array.push` onto a unique `Array Int` inlines the in-place append fast path:
+    // a reference-count == 1 check and a capacity check derived from the allocation
+    // size (`ushr_imm` for the `/ 8`), then an inline slot store + length bump.
+    let src = indoc! {r#"
+        module M
+
+        p : Int -> Array Int -> Array Int
+        let p x a = Array.push x a
+    "#};
+    let ir = entry_ir(src, "p");
+    assert!(ir.contains("icmp_imm"), "inline unique-owner (rc == 1) check:\n{ir}");
+    assert!(ir.contains("ushr_imm"), "inline capacity-from-size:\n{ir}");
+    assert!(ir.contains("store"), "inline slot store + length bump:\n{ir}");
+}

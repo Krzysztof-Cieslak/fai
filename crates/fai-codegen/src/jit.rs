@@ -123,6 +123,7 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_array_get_borrowed", rt::fai_array_get_borrowed);
     sym!("fai_array_set", rt::fai_array_set);
     sym!("fai_array_push", rt::fai_array_push);
+    sym!("fai_array_index_panic", rt::fai_array_index_panic);
     sym!("fai_apply_n", rt::fai_apply_n);
     sym!("fai_make_closure", rt::fai_make_closure);
     sym!("fai_run_main", rt::fai_run_main);

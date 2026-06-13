@@ -2814,6 +2814,59 @@ Editor integration:
     across the menu, the `algorithms` oracle suite (`MapSum`/`MapSumShared`/
     `FoldPipeline`/`SpectralNorm`), and the firewall/edit-churn `perf_guards` test.
     The deforestation half of #85 (the array-backed representation half was #111).
+- **D129 Inline `Array` element access (get/set/length/push):** every `Array`
+  element operation used to compile to an out-of-line runtime call, so a hot index
+  loop over an `Array Int`/`Array Float` paid a call + index-unbox + dup/drop per
+  touch where Rust emits one load/store. Codegen now compiles `Prim.array{Length,
+  Get,Set,Push}` **inline** when the array operand is a statically recognized
+  `App(Con::Array, elem)` (`array_prim` in `fai-codegen`'s `emit`, after the
+  int/float inliners), returning `None` to keep the runtime call only for an
+  unrecognized (bare `Ty::Error`) operand.
+  - **Representations.** `length` is a field load yielding a raw `Int`. `unsafeGet`
+    is an inline unsigned bounds check + a slot load: an `Int` element read to a raw
+    `i64` and a `Float` to an unboxed `f64` (both borrow the array — no dup/drop),
+    any other element (a concrete boxed type, a **type variable**, or an erased
+    `App(Con::Array, Error)`) the slot word with an inline tag-checked dup, so the
+    returned reference outlives the borrowed array. `unsafeSet`/`push` inline the
+    unique-owner (`rc == 1`) fast path — an in-place slot store (set releasing the
+    overwritten element via a uniform-representation drop; push bumping the length,
+    capacity derived as `(size − ELEMS) / 8`) — and fall back to the runtime
+    `fai_array_set`/`fai_array_push` for the shared-copy / grow case (set's fallback
+    also serves the out-of-bounds abort).
+  - **Generic too (not just monomorphic).** Inlining keys off the operand being an
+    array, not a concrete element, so the generic std combinators (compiled once at a
+    type variable — `Array.foldl`/`map`/`sort`/`swap`) inline as well; an immediate
+    element behind the type variable skips its tag-checked dup/drop at runtime. This
+    is what speeds up the std `Array.sort` (the `MergeSort` workload), which never
+    sees a concrete element. The `unsafeGet` wrapper is intrinsic-inlined to
+    `Prim.arrayGet` carrying the call-site operand's concrete type, so a direct
+    `Array.unsafeGet i (xs : Array Int)` reaches codegen at `Int`.
+  - **Out-of-bounds still aborts (a located fault, "like `/`").** The inline get's
+    bounds check, on failure, calls a new `fai_array_index_panic` runtime symbol
+    (`fai_panic("array index out of bounds")`) on a cold branch, preserving the
+    documented abort. The bounds check is kept unconditionally (`unsafeGet`/`get`
+    lower to the same `Prim`, so it can't be selectively skipped), so the safe `get`/
+    `set` pay a redundant second check — bounds-check elimination is future work.
+  - **rc helpers.** The local-keyed inline reference-count emitters were refactored
+    to value-keyed cores (`emit_rc_incr_value`/`emit_rc_dec_then_value`/
+    `emit_inline_drop_value`) so an array element (a value with no backing local) can
+    be dup'd/dropped inline; `uniform_drop_class` is `drop_class` except a slot
+    `Float` is the boxed leaf it is in a slot, not the unboxed scalar a `Float` local
+    is.
+  - **Cache.** A codegen-only change does not move the rc'd-IR fingerprint, so the
+    `CODEGEN_CONFIG` stamp gains an `array-access-inlined` token to invalidate stale
+    cached objects.
+  - **Standing notes.** A `Float` `set` still **boxes** the new value (array slots
+    hold boxed `Float`s; inline `f64` slots are #112), so a Float-array write loop is
+    not yet allocation-free — only reads and `Int` writes are. The redundant
+    safe-path bounds check awaits bounds-check elimination. `withCapacity`/`split`/
+    `join` stay runtime calls (their cost is the irreducible allocation/string work).
+  - **Validated** by codegen IR-shape tests (the inline bounds/unique checks and slot
+    load/store, not a runtime call), `arrays` e2e tests (`Int`/`Float`/boxed/generic
+    correctness + leak-free, in-place preserved), the array generate-and-run oracle
+    proptest, and a `native` subprocess test asserting an out-of-bounds `unsafeGet`
+    aborts with the located message. Issue #138 (under #136); complements #112
+    (`Array Float` storage) and #120 (aggregate SROA).
 
 - **D129 Hash-based associative containers (`HashDict`/`HashSet`) over a structural
   hash primitive, open-addressed and `Array`-backed.** std's only map/set was the
