@@ -30,7 +30,9 @@ use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use fai_core::NicheKind;
-use fai_core::ir::{CExpr, CoreFn, ExprKind, FieldIndex, FnAbi, Lit, LoweredDef, Prim, Repr};
+use fai_core::ir::{
+    CExpr, ClosureAlloc, CoreFn, ExprKind, FieldIndex, FnAbi, FnId, Lit, LoweredDef, Prim, Repr,
+};
 use fai_resolve::{DefId, LocalId};
 use fai_runtime as rt;
 use fai_types::{Con, RowEnd, Ty};
@@ -1553,7 +1555,9 @@ impl<M: Module> Translator<'_, M> {
                 self.define_var(*local, v);
                 self.expr(body)
             }
-            ExprKind::MakeClosure { func, captures } => self.make_closure(*func, captures),
+            ExprKind::MakeClosure { func, captures, alloc } => {
+                self.make_closure(*func, captures, *alloc)
+            }
             ExprKind::MakeData { tag, args, reuse, scalars, niche } => {
                 self.make_data(*tag, args, *reuse, *scalars, *niche)
             }
@@ -3189,22 +3193,79 @@ impl<M: Module> Translator<'_, M> {
         self.as_repr_of(result, result_ty)
     }
 
-    fn make_closure(&mut self, func: fai_core::ir::FnId, captures: &[LocalId]) -> Value {
-        // A non-capturing lambda has no per-activation environment, so it shares
-        // one immortal static closure (declared/defined by `build_def`) rather
-        // than allocating a cell at every evaluation — exactly like a top-level
-        // function referenced as a value. Reference-counting never adds captures
-        // to a `MakeClosure`, so an empty `captures` is precisely a non-capturing
-        // lambda; the immortal reference count makes the shared cell's `dup`/`drop`
-        // balance harmlessly (it is never freed).
-        if captures.is_empty() {
-            let data =
-                self.lambda_closures[func.index()].expect("non-capturing lambda static closure");
-            let ptr = self.ptr();
-            let gv = self.module.declare_data_in_func(data, self.builder.func);
-            return self.builder.ins().symbol_value(ptr, gv);
+    fn make_closure(&mut self, func: FnId, captures: &[LocalId], alloc: ClosureAlloc) -> Value {
+        match alloc {
+            ClosureAlloc::Static => self.static_closure(func),
+            ClosureAlloc::Stack => self.stack_closure(func, captures),
+            ClosureAlloc::Heap => self.heap_closure(func, captures),
         }
+    }
 
+    /// A non-capturing lambda has no per-activation environment, so it shares one
+    /// immortal static closure (declared/defined by `build_def`) rather than
+    /// allocating a cell at every evaluation — exactly like a top-level function
+    /// referenced as a value. The immortal reference count makes the shared cell's
+    /// `dup`/`drop` balance harmlessly (it is never freed).
+    fn static_closure(&mut self, func: FnId) -> Value {
+        let data = self.lambda_closures[func.index()].expect("non-capturing lambda static closure");
+        let ptr = self.ptr();
+        let gv = self.module.declare_data_in_func(data, self.builder.func);
+        self.builder.ins().symbol_value(ptr, gv)
+    }
+
+    /// A capturing lambda that provably does not escape its creating activation:
+    /// the closure cell lives in this stack frame instead of the heap. It is laid
+    /// out exactly like a heap closure (so `apply_n`, `dup`, and the env scan are
+    /// unchanged) but tagged with the stack descriptor, so when its reference count
+    /// reaches zero the runtime releases its captures yet does *not* free the cell
+    /// (the frame reclaims the slot on return). Escape analysis guarantees no
+    /// reference outlives the frame, so the stack pointer never dangles.
+    fn stack_closure(&mut self, func: FnId, captures: &[LocalId]) -> Value {
+        let arity = self.lowered.fns[func.index()].params.len() as i64;
+        let n = captures.len();
+        let size = rt::CLOSURE_ENV_OFFSET + n * 8;
+        let ptr = self.ptr();
+
+        let slot = self.builder.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            u32::try_from(size).expect("closure cell size"),
+            3, // 8-byte alignment: a closure value is a tagged pointer (low bits clear).
+        ));
+        let addr = self.builder.ins().stack_addr(ptr, slot, 0);
+
+        // Header: rc = 1, descriptor = &FAI_STACK_CLOSURE_DESC, size.
+        let one = self.builder.ins().iconst(types::I64, 1);
+        self.store_field(addr, rt::RC_OFFSET, one);
+        let desc = self.runtime_data_addr("FAI_STACK_CLOSURE_DESC");
+        self.store_field(addr, rt::DESC_OFFSET, desc);
+        let size_v = self.builder.ins().iconst(types::I64, size as i64);
+        self.store_field(addr, rt::SIZE_OFFSET, size_v);
+
+        // Code pointer, arity, env count.
+        let code_id = self.fn_ids[func.index()];
+        let fref = self.module.declare_func_in_func(code_id, self.builder.func);
+        let code_ptr = self.builder.ins().func_addr(ptr, fref);
+        self.store_field(addr, rt::CLOSURE_CODE_OFFSET, code_ptr);
+        let arity_v = self.builder.ins().iconst(types::I64, arity);
+        self.store_field(addr, rt::CLOSURE_ARITY_OFFSET, arity_v);
+        let count_v = self.builder.ins().iconst(types::I64, n as i64);
+        self.store_field(addr, rt::CLOSURE_ENV_COUNT_OFFSET, count_v);
+
+        // Captured environment slots. The reference-count pass has already
+        // duplicated each capture where it is still live afterward (`MakeClosure`
+        // consumes its captures). Slots are uniform `i64`, so a captured float is
+        // boxed in.
+        for (i, &c) in captures.iter().enumerate() {
+            let v = self.use_var(c);
+            let boxed = self.ensure_boxed(v);
+            self.store_field(addr, rt::CLOSURE_ENV_OFFSET + i * 8, boxed);
+        }
+        addr
+    }
+
+    /// A capturing lambda that may escape: a heap-allocated, reference-counted cell
+    /// built by the runtime.
+    fn heap_closure(&mut self, func: FnId, captures: &[LocalId]) -> Value {
         let arity = self.lowered.fns[func.index()].params.len() as i64;
         let code_id = self.fn_ids[func.index()];
         let ptr = self.ptr();
@@ -3228,6 +3289,22 @@ impl<M: Module> Translator<'_, M> {
         let f = self.runtime("fai_make_closure", 4, true);
         let call = self.builder.ins().call(f, &[code_ptr, arity_v, count_v, env_ptr]);
         self.builder.inst_results(call)[0]
+    }
+
+    /// Stores `value` at byte `offset` of the object at `addr` (a trusted,
+    /// 8-aligned heap/stack cell write).
+    fn store_field(&mut self, addr: Value, offset: usize, value: Value) {
+        let off = i32::try_from(offset).expect("field offset");
+        self.builder.ins().store(MemFlags::trusted(), value, addr, off);
+    }
+
+    /// The address of an imported runtime data symbol (e.g. a static descriptor).
+    fn runtime_data_addr(&mut self, name: &str) -> Value {
+        let ptr = self.ptr();
+        let id =
+            self.module.declare_data(name, Linkage::Import, false, false).expect("runtime data");
+        let gv = self.module.declare_data_in_func(id, self.builder.func);
+        self.builder.ins().symbol_value(ptr, gv)
     }
 
     /// Spills values to a stack array and yields its address (for `apply_n` /

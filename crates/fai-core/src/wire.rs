@@ -20,7 +20,9 @@ use fai_types::{Con, RecordRow, RowEnd, RowVarId, Ty, TyVarId};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
-use crate::ir::{CExpr, CoreFn, ExprKind, FieldIndex, FnAbi, FnId, Lit, LoweredDef, Prim};
+use crate::ir::{
+    CExpr, ClosureAlloc, CoreFn, ExprKind, FieldIndex, FnAbi, FnId, Lit, LoweredDef, Prim,
+};
 use crate::niche::NicheKind;
 
 /// A complete program ready to JIT: an entry definition, the `Runtime` value
@@ -122,6 +124,17 @@ pub enum WireFieldIndex {
         /// The evidence slot.
         evidence: u32,
     },
+}
+
+/// How a closure is allocated, in wire form (mirrors [`crate::ir::ClosureAlloc`]).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum WireClosureAlloc {
+    /// A shared immortal static closure (no captures).
+    Static,
+    /// A stack-allocated, non-escaping closure.
+    Stack,
+    /// A heap-allocated, reference-counted closure.
+    Heap,
 }
 
 /// A type in wire form: a projection of [`Ty`] that keeps only the
@@ -230,6 +243,8 @@ pub enum WireExprKind {
         func: u32,
         /// The captured slots.
         captures: Vec<u32>,
+        /// How the closure is allocated.
+        alloc: WireClosureAlloc,
     },
     /// A data construction (constructor/record/tuple).
     MakeData {
@@ -491,9 +506,14 @@ fn expr_to_wire(e: &CExpr, module_of: &dyn Fn(DefId) -> String) -> WireExpr {
             value: Box::new(expr_to_wire(value, module_of)),
             body: Box::new(expr_to_wire(body, module_of)),
         },
-        ExprKind::MakeClosure { func, captures } => WireExprKind::MakeClosure {
+        ExprKind::MakeClosure { func, captures, alloc } => WireExprKind::MakeClosure {
             func: func.0,
             captures: captures.iter().map(|c| slot(*c)).collect(),
+            alloc: match alloc {
+                ClosureAlloc::Static => WireClosureAlloc::Static,
+                ClosureAlloc::Stack => WireClosureAlloc::Stack,
+                ClosureAlloc::Heap => WireClosureAlloc::Heap,
+            },
         },
         ExprKind::MakeData { tag, args, reuse, scalars, niche } => WireExprKind::MakeData {
             tag: *tag,
@@ -711,9 +731,14 @@ fn expr_from_wire(e: &WireExpr, sources: &mut SourceAssigner) -> CExpr {
             value: Box::new(expr_from_wire(value, sources)),
             body: Box::new(expr_from_wire(body, sources)),
         },
-        WireExprKind::MakeClosure { func, captures } => ExprKind::MakeClosure {
+        WireExprKind::MakeClosure { func, captures, alloc } => ExprKind::MakeClosure {
             func: FnId(*func),
             captures: captures.iter().map(|&i| LocalId::from_index(i as usize)).collect(),
+            alloc: match alloc {
+                WireClosureAlloc::Static => ClosureAlloc::Static,
+                WireClosureAlloc::Stack => ClosureAlloc::Stack,
+                WireClosureAlloc::Heap => ClosureAlloc::Heap,
+            },
         },
         WireExprKind::MakeData { tag, args, reuse, scalars, niche } => ExprKind::MakeData {
             tag: *tag,

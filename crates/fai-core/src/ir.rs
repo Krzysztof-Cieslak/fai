@@ -766,6 +766,24 @@ pub enum FieldIndex {
     },
 }
 
+/// How a [`ExprKind::MakeClosure`] is realized at code generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClosureAlloc {
+    /// A non-capturing lambda: it shares one immortal static closure (no
+    /// per-activation environment), so it allocates nothing. Fixed at lowering
+    /// from an empty capture list.
+    Static,
+    /// A capturing lambda that provably does not escape its creating activation:
+    /// a stack-allocated cell, reclaimed when the frame returns. Reference
+    /// counting still releases its captures when it dies (the cell itself is not
+    /// freed). Set by escape analysis; never escapes, so a stack pointer is never
+    /// stored anywhere outliving the frame.
+    Stack,
+    /// A capturing lambda that may escape: a heap-allocated, reference-counted
+    /// cell (the conservative default).
+    Heap,
+}
+
 /// The forms of a Core expression.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExprKind {
@@ -821,6 +839,9 @@ pub enum ExprKind {
         func: FnId,
         /// The captured slots, in the lifted function's `captures` order.
         captures: Vec<LocalId>,
+        /// How the closure is allocated: a shared static cell (no captures), a
+        /// stack cell (captures, non-escaping), or a heap cell (the default).
+        alloc: ClosureAlloc,
     },
     /// Constructs a data value (constructor, record, or tuple): a tag plus its
     /// fields. A nullary constructor (no fields) is an immediate carrying its tag.

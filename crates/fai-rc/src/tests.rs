@@ -51,6 +51,14 @@ pub(crate) fn borrow_sig(src: &str, name: &str) -> Vec<bool> {
     crate::borrow_signature(&db, file, Symbol::intern(name)).0
 }
 
+/// The inferred escape signature of `name` in `src` (per-parameter: escapes its
+/// activation vs. confined to it). Asserts the program typechecks first.
+pub(crate) fn escape_sig(src: &str, name: &str) -> Vec<bool> {
+    let (db, file) = db_with(src);
+    assert_well_typed(&db, file).unwrap_or_else(|e| panic!("`{name}` {e}\n{src}"));
+    crate::escape_signature(&db, file, Symbol::intern(name)).0
+}
+
 /// Whether calling `name` in `src` is pure and total. Asserts the program
 /// typechecks first.
 pub(crate) fn pure_total(src: &str, name: &str) -> bool {
@@ -406,9 +414,10 @@ fn captures_dup_on_use_and_are_never_dropped() {
     // `f` moves into the closure env (no dup at the last use). In the lifted
     // body, A-normal form names the inner `f x`; the captured `f` is duplicated
     // per use and never dropped, and `x`/the temporary are consumed.
+    // The closure is returned (escapes), so it stays a heap cell.
     assert_eq!(
         got,
-        "fn0(%0) = (closure fn1 [%0])\n\
+        "fn0(%0) = (closure/heap fn1 [%0])\n\
          fn1(%1) [caps %0] = (let %2 = (dup %0; (app %0 %1)); (dup %0; (app %0 %2)))\n"
     );
 }
@@ -473,6 +482,87 @@ pub(crate) fn check_sound(db: &dyn Db, def: &LoweredDef) -> Result<(), String> {
         if sig.exploitable_at(nargs) { sig.0.clone() } else { vec![false; nargs] }
     };
     crate::check_rc(def, &borrows)
+}
+
+// ---------------------------------------------------------------------------
+// Closure escape inference.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn higher_order_param_only_applied_does_not_escape() {
+    // `f` is only applied (the apply-callee position is dropped, not stored), so it
+    // does not escape; `x` is passed as an argument to a first-class call, which may
+    // capture it, so it escapes.
+    assert_eq!(escape_sig("module M\nlet apply f x = f x", "apply"), [false, true]);
+}
+
+#[test]
+fn map_like_combinator_param_does_not_escape() {
+    // The defining case: `map`'s function is only applied and forwarded to the
+    // recursive call (the converged fixpoint keeps it confined), so a lambda handed
+    // to it can be stack-allocated. The list parameter escapes (an element flows
+    // into the first-class call).
+    let src = indoc! {r#"
+        module M
+
+        let map f xs =
+          match xs with
+          | [] -> []
+          | x :: rest -> f x :: map f rest
+    "#};
+    assert_eq!(escape_sig(src, "map"), [false, true]);
+}
+
+#[test]
+fn fold_like_accumulator_param_does_not_escape_the_function() {
+    // `f` is only applied/forwarded (confined); `acc` and `xs` escape (the
+    // accumulator flows into the first-class call, a list element likewise).
+    let src = indoc! {r#"
+        module M
+
+        let foldl f acc xs =
+          match xs with
+          | [] -> acc
+          | x :: rest -> foldl f (f acc x) rest
+    "#};
+    assert_eq!(escape_sig(src, "foldl"), [false, true, true]);
+}
+
+#[test]
+fn captured_into_a_returned_closure_escapes() {
+    // `compose` returns a closure capturing both parameters, so each escapes (the
+    // closure outlives the call).
+    assert_eq!(escape_sig("module M\nlet compose g f = fun x -> g (f x)", "compose"), [true, true]);
+}
+
+#[test]
+fn returned_parameter_escapes() {
+    // A parameter returned directly escapes its activation.
+    assert_eq!(escape_sig("module M\nlet id x = x", "id"), [true]);
+}
+
+#[test]
+fn parameter_stored_in_a_constructor_escapes() {
+    // A parameter placed in a constructed value (which may outlive the call)
+    // escapes.
+    assert_eq!(escape_sig("module M\nlet dup x = (x, x)", "dup"), [true]);
+}
+
+#[test]
+fn inspected_parameter_does_not_escape() {
+    // A parameter only read by a projection (not stored) does not escape. The
+    // signature pins the record closed (monomorphic field access); without it
+    // inference generalizes to a row-polymorphic open record, which — only ever
+    // called curried — is conservatively all-escape.
+    let src = indoc! {r#"
+        module M
+
+        type Box = { v : Int }
+
+        unwrap : Box -> Int
+        let unwrap b = b.v
+    "#};
+    assert_eq!(escape_sig(src, "unwrap"), [false]);
 }
 
 /// Every definition transitively reachable from a program's `main` (including the

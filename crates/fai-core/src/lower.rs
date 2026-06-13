@@ -30,7 +30,9 @@ use fai_types::{
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::ir::{CExpr, CoreFn, ExprKind as K, FieldIndex, FnId, Lit, LoweredDef, Prim};
+use crate::ir::{
+    CExpr, ClosureAlloc, CoreFn, ExprKind as K, FieldIndex, FnId, Lit, LoweredDef, Prim,
+};
 use crate::{ROW_POLY_UNSUPPORTED, UNSUPPORTED_NATIVE};
 
 /// The built-in `List` constructor tags: `[]` is `Nil`, `x :: xs` is `Cons`.
@@ -432,7 +434,10 @@ impl Lowerer<'_> {
         let body =
             CExpr::new(K::MakeData { tag, args, reuse: None, scalars, niche: None }, Ty::Error);
         let fn_id = self.push_fn(CoreFn { params, captures: Vec::new(), body });
-        CExpr::new(K::MakeClosure { func: fn_id, captures: Vec::new() }, ty)
+        CExpr::new(
+            K::MakeClosure { func: fn_id, captures: Vec::new(), alloc: ClosureAlloc::Static },
+            ty,
+        )
     }
 
     /// Reports a row-polymorphic record operation (deferred to a later milestone)
@@ -843,7 +848,10 @@ impl Lowerer<'_> {
         let args = params.iter().map(|&p| CExpr::new(K::Local(p), Ty::Error)).collect();
         let body = CExpr::new(K::Prim { op: prim, args }, Ty::Error);
         let fn_id = self.push_fn(CoreFn { params, captures: Vec::new(), body });
-        CExpr::new(K::MakeClosure { func: fn_id, captures: Vec::new() }, ty)
+        CExpr::new(
+            K::MakeClosure { func: fn_id, captures: Vec::new(), alloc: ClosureAlloc::Static },
+            ty,
+        )
     }
 
     /// Collects an application spine `f a b c` into its head and arguments.
@@ -1041,8 +1049,12 @@ impl Lowerer<'_> {
     /// computing its captures, and yields a `MakeClosure` at its position.
     fn lift_lambda(&mut self, params: Vec<LocalId>, body: CExpr, ty: Ty) -> CExpr {
         let captures = captures_of(&body, &params);
+        // A non-capturing lambda needs no environment, so it lowers to a shared
+        // static closure; a capturing one defaults to a heap cell (escape analysis
+        // may later mark it `Stack`).
+        let alloc = if captures.is_empty() { ClosureAlloc::Static } else { ClosureAlloc::Heap };
         let fn_id = self.push_fn(CoreFn { params, captures: captures.clone(), body });
-        CExpr::new(K::MakeClosure { func: fn_id, captures }, ty)
+        CExpr::new(K::MakeClosure { func: fn_id, captures, alloc }, ty)
     }
 
     /// Lowers `match scrutinee with | p -> b …` to a decision over the scrutinee:

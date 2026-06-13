@@ -2,7 +2,7 @@
 
 use std::fmt::Write as _;
 
-use crate::ir::{CExpr, ExprKind, FieldIndex, Lit, LoweredDef, Prim};
+use crate::ir::{CExpr, ClosureAlloc, ExprKind, FieldIndex, Lit, LoweredDef, Prim};
 use crate::niche::NicheKind;
 
 /// The niche-scheme suffix shown on a data node (empty for a standard node).
@@ -158,9 +158,14 @@ fn write_expr(out: &mut String, e: &CExpr) {
             write_expr(out, body);
             out.push(')');
         }
-        ExprKind::MakeClosure { func, captures } => {
+        ExprKind::MakeClosure { func, captures, alloc } => {
             let caps: Vec<String> = captures.iter().map(|c| format!("%{}", c.index())).collect();
-            let _ = write!(out, "(closure fn{} [{}])", func.index(), caps.join(", "));
+            let kind = match alloc {
+                ClosureAlloc::Static => "static",
+                ClosureAlloc::Stack => "stack",
+                ClosureAlloc::Heap => "heap",
+            };
+            let _ = write!(out, "(closure/{kind} fn{} [{}])", func.index(), caps.join(", "));
         }
         ExprKind::MakeData { tag, args, reuse, scalars, niche } => {
             match reuse {

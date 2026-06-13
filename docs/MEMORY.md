@@ -355,8 +355,8 @@ Native backend (Core IR, reference counting, codegen, runtime, object cache):
    entry) instead of calling `fai_make_closure` at every evaluation, so a
    `fun`-literal that closes over nothing allocates no cell even in a hot loop.
    The immortal reference count makes the shared cell's `dup`/`drop` balance
-   harmlessly (it is never freed); a capturing lambda still allocates (a
-   non-escaping one stack-allocates as later work). Primitives lower to runtime
+   harmlessly (it is never freed); a capturing lambda heap-allocates unless escape
+   analysis proves it stack-safe (D127). Primitives lower to runtime
    calls. Every operation **consumes** its operands, so RC insertion reduces to
    dup-at-use + one drop per owned binding (no reuse; precise reuse layered on
    later, D76–D79).
@@ -2674,6 +2674,47 @@ Editor integration:
     evaluator threading `Option Int` through binds), `OptionPath` (association-list
     next-pointer walks), and `OptionTreeFind` (binary-search-tree lookups) — bench
     the Scheme-B path against Rust.
+- **D127 Stack-allocate non-escaping closures (closure escape analysis, the
+  `MakeClosure` facet of #103).** Every `fun … ->` previously heap-allocated a
+  reference-counted cell, even a non-capturing one and even a lambda that is merely
+  handed to `List.map`/`foldl` and dropped at the end of the call. A `MakeClosure`
+  now carries a **`ClosureAlloc`** (`Static` / `Stack` / `Heap`) choosing its cell.
+  - **`Static` (no captures).** A non-capturing lambda has no per-activation
+    environment, so it references one immortal static closure (D51) — no allocation,
+    set at lowering, always sound (it captures nothing and is never freed).
+  - **`Stack` (captures, non-escaping).** A capturing lambda that provably does not
+    outlive its creating frame is built in a stack cell, laid out exactly like a
+    heap closure but tagged **`KIND_STACK_CLOSURE`**: `apply_n`, `dup`, and the env
+    child-scan are unchanged, but when its reference count reaches zero the runtime
+    releases its captures yet does **not** free the cell (the frame reclaims the slot
+    on return). Reference counting is therefore *identical* to the heap case — only
+    the cell's storage and the elided free differ — so the single new soundness
+    obligation is that the closure never escapes the frame.
+  - **`Heap` (may escape).** The conservative default, the prior behavior.
+  - **Escape analysis** (`fai-rc/escape.rs`) establishes non-escape. A value escapes
+    when it is returned, stored in a constructor/record or a storing primitive,
+    captured into another closure, or passed to a callee parameter that itself
+    escapes; crucially **applying** a closure (the callee position) does *not* escape
+    it (the runtime calls and drops it), which is the precision a borrow view lacks
+    and what lets a combinator's lambda stack-allocate. A per-parameter
+    **`escape_signature`** (consulted at a saturated direct call to relate a closure
+    argument to the callee's parameter) is an inter-procedural monotone fixpoint —
+    optimistic (nothing escapes), a self-call uses the in-progress signature, a
+    cross-function call reads the callee's signature, mutual recursion a salsa cycle
+    — mirroring `borrow_signature`; a row-polymorphic definition (only ever called
+    curried) is conservatively all-escape. A context-aware marking pass then restamps
+    each non-escaping capturing `MakeClosure` `Stack`, deciding an inline closure by
+    the position it occupies and a `let`-bound one by whether its local reaches an
+    escaping sink. Unknown (first-class) callees, primitive operands, and captures
+    are conservatively escaping.
+  - **Validated** by a `closure_allocations()` debug counter (the peer of
+    `string_copies()`/`string_views()`: a non-capturing or non-escaping lambda built
+    per loop iteration adds zero heap closure cells, an escaping one adds one each),
+    by the runtime leak check (a stack closure's captures are released and its cell
+    is never freed), and by the closure-heavy algorithm benches running correctly.
+    *Not* fully addressed by this alone: a closure returned from a CAF (e.g.
+    `FoldPipeline`'s `transform`) escapes its definition and needs inlining to
+    confine it; stack PAPs and direct-calling let-bound lambdas are follow-on work.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

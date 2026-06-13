@@ -14,7 +14,7 @@ use std::fmt::Write as _;
 use fai_resolve::DefId;
 use fai_types::render_canonical;
 
-use crate::ir::{CExpr, ExprKind, FieldIndex, FnAbi, Lit, LoweredDef, Prim, Repr};
+use crate::ir::{CExpr, ClosureAlloc, ExprKind, FieldIndex, FnAbi, Lit, LoweredDef, Prim, Repr};
 use crate::niche::NicheKind;
 
 /// Builds a portable, deterministic fingerprint string for `def`.
@@ -172,9 +172,16 @@ fn write_expr(
             write_expr(out, body, namer, arity_of, abi_of);
             out.push(')');
         }
-        ExprKind::MakeClosure { func, captures } => {
+        ExprKind::MakeClosure { func, captures, alloc } => {
+            // The allocation kind selects the cell representation (static / stack /
+            // heap), so it is part of the cache key.
             let caps: Vec<String> = captures.iter().map(|c| format!("%{}", c.index())).collect();
-            let _ = write!(out, "(clo fn{} [{}])", func.index(), caps.join(","));
+            let a = match alloc {
+                ClosureAlloc::Static => 's',
+                ClosureAlloc::Stack => 'k',
+                ClosureAlloc::Heap => 'h',
+            };
+            let _ = write!(out, "(clo{a} fn{} [{}])", func.index(), caps.join(","));
         }
         ExprKind::MakeData { tag, args, reuse, scalars, niche } => {
             // The scalar bitmap selects the descriptor and box/raw field handling,

@@ -123,6 +123,7 @@ fn register_runtime(builder: &mut JITBuilder) {
     builder.symbol("FAI_STRING_DESC", (&raw const rt::FAI_STRING_DESC).cast());
     builder.symbol("FAI_INT_DESC", (&raw const rt::FAI_INT_DESC).cast());
     builder.symbol("FAI_CLOSURE_DESC", (&raw const rt::FAI_CLOSURE_DESC).cast());
+    builder.symbol("FAI_STACK_CLOSURE_DESC", (&raw const rt::FAI_STACK_CLOSURE_DESC).cast());
     builder.symbol("FAI_PAP_DESC", (&raw const rt::FAI_PAP_DESC).cast());
     builder.symbol("FAI_FLOAT_DESC", (&raw const rt::FAI_FLOAT_DESC).cast());
     builder.symbol("FAI_DATA_DESC", (&raw const rt::FAI_DATA_DESC).cast());
