@@ -140,4 +140,5 @@ algorithm_benches! {
     option_eval => "OptionEval",
     option_path => "OptionPath",
     option_tree_find => "OptionTreeFind",
+    list_sort => "ListSort",
 }

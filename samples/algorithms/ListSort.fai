@@ -1,0 +1,26 @@
+module ListSort
+
+// Sort a scrambled linked list with the standard library's stable `List.sortBy`,
+// then form a position-weighted checksum (Σ i * x[i]) so the result depends on the
+// order. This is the linked-`List` counterpart to `MergeSort` (which sorts an
+// `Array`): pairing them isolates the linked-vs-array sort gap, while the explicit
+// comparator exercises `sortBy`'s `apply_n` dispatch. Used by the Rust-vs-Fai
+// runtime benchmark.
+// A scrambled input of n values via a multiplicative hash modulo n.
+gen : Int -> List Int
+let gen n = List.map (fun k -> (k * 2654435761 + 12345) % n) (List.range 0 n)
+
+// Σ i * x[i], accumulated left to right.
+checksum : Int -> Int -> List Int -> Int
+let checksum i acc xs =
+  match xs with
+  | [] -> acc
+  | x :: rest -> checksum (i + 1) (acc + i * x) rest
+
+/// The benchmark workload: the position-weighted checksum of the sorted input.
+public run : Int -> Int
+let run n = checksum 0 0 (List.sortBy (fun a b -> a - b) (gen n))
+example: run 3 = 5
+
+public main : Runtime -> Unit / { Console }
+let main runtime = runtime.console.writeLine (Int.toString (run 20000))
