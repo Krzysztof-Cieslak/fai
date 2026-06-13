@@ -2689,7 +2689,11 @@ Editor integration:
     releases its captures yet does **not** free the cell (the frame reclaims the slot
     on return). Reference counting is therefore *identical* to the heap case — only
     the cell's storage and the elided free differ — so the single new soundness
-    obligation is that the closure never escapes the frame.
+    obligation is that the closure never escapes the frame. **Partial applications
+    get the same treatment:** an under-application of a known function that does not
+    escape carries `Stack` on its `App` node and builds its cell — the target's
+    static closure plus the stored arguments — in a stack slot tagged
+    **`KIND_STACK_PAP`** (the `KIND_PAP` peer), again released-not-freed at death.
   - **`Heap` (may escape).** The conservative default, the prior behavior.
   - **Escape analysis** (`fai-rc/escape.rs`) establishes non-escape. A value escapes
     when it is returned, stored in a constructor/record or a storing primitive,
@@ -2707,14 +2711,17 @@ Editor integration:
     the position it occupies and a `let`-bound one by whether its local reaches an
     escaping sink. Unknown (first-class) callees, primitive operands, and captures
     are conservatively escaping.
-  - **Validated** by a `closure_allocations()` debug counter (the peer of
-    `string_copies()`/`string_views()`: a non-capturing or non-escaping lambda built
-    per loop iteration adds zero heap closure cells, an escaping one adds one each),
-    by the runtime leak check (a stack closure's captures are released and its cell
-    is never freed), and by the closure-heavy algorithm benches running correctly.
-    *Not* fully addressed by this alone: a closure returned from a CAF (e.g.
-    `FoldPipeline`'s `transform`) escapes its definition and needs inlining to
-    confine it; stack PAPs and direct-calling let-bound lambdas are follow-on work.
+  - **Validated** by `closure_allocations()`/`pap_allocations()` debug counters (the
+    peers of `string_copies()`/`string_views()`: a non-capturing or non-escaping
+    lambda — or partial application — built per loop iteration adds zero heap cells,
+    an escaping one adds one each), by the runtime leak check (a stack cell's
+    children are released and the cell is never freed), and by the closure-heavy
+    algorithm benches running correctly. *Not* addressed: a closure returned from a
+    CAF (e.g. `FoldPipeline`'s `transform`) escapes its definition and needs inlining
+    to confine it; and direct-calling a let-bound lambda in scope (skipping
+    `apply_n`) would need reference counting to *borrow* the closure at the call
+    rather than consume it — a deeper change whose clean cases the Core inliner
+    already removes, so it is left as follow-on work.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.
