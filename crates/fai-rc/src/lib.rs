@@ -39,7 +39,7 @@
 use std::sync::Arc;
 
 use fai_core::ir::{CExpr, CoreFn, ExprKind as K, FieldIndex, LoweredDef};
-use fai_core::{helper_inlined, reassociate_concat};
+use fai_core::{NicheKind, helper_inlined, reassociate_concat};
 use fai_db::{Db, SourceFile};
 use fai_resolve::{DefId, LocalId};
 use fai_syntax::Symbol;
@@ -1037,8 +1037,9 @@ fn release(s: LocalId, expr: CExpr, next: &mut usize) -> CExpr {
 /// Whether `e` contains a non-nullary construction with no reuse token yet.
 fn has_construction(e: &CExpr) -> bool {
     match &e.kind {
-        K::MakeData { args, reuse, .. } => {
-            (reuse.is_none() && !args.is_empty()) || args.iter().any(has_construction)
+        K::MakeData { args, reuse, niche, .. } => {
+            (reuse.is_none() && !args.is_empty() && !niche_wrapper_free(*niche))
+                || args.iter().any(has_construction)
         }
         K::Let { value, body, .. } => has_construction(value) || has_construction(body),
         K::If { cond, then, els } => {
@@ -1067,7 +1068,9 @@ fn has_construction(e: &CExpr) -> bool {
 /// to it). A construction nested in a call argument is *not* threadable.
 fn reaches_construction(e: &CExpr) -> bool {
     match &e.kind {
-        K::MakeData { args, reuse, .. } => reuse.is_none() && !args.is_empty(),
+        K::MakeData { args, reuse, niche, .. } => {
+            reuse.is_none() && !args.is_empty() && !niche_wrapper_free(*niche)
+        }
         K::Let { value, body, .. } => is_reuse_target(value) || reaches_construction(body),
         K::If { then, els, .. } => reaches_construction(then) || reaches_construction(els),
         K::Dup { body, .. } | K::Drop { body, .. } | K::Reset { body, .. } => {
@@ -1085,7 +1088,9 @@ fn reaches_construction(e: &CExpr) -> bool {
 fn thread_or_free(e: CExpr, token: LocalId) -> CExpr {
     let CExpr { kind, ty } = e;
     match kind {
-        K::MakeData { tag, args, reuse: None, scalars, niche } if !args.is_empty() => {
+        K::MakeData { tag, args, reuse: None, scalars, niche }
+            if !args.is_empty() && !niche_wrapper_free(niche) =>
+        {
             CExpr::new(K::MakeData { tag, args, reuse: Some(token), scalars, niche }, ty)
         }
         K::Let { local, value, body } => {
@@ -1120,9 +1125,19 @@ fn thread_or_free(e: CExpr, token: LocalId) -> CExpr {
     }
 }
 
-/// Whether `e` is a non-nullary construction with no reuse token yet.
+/// Whether a `MakeData`'s niche scheme makes it **wrapper-free** — a niche `Some`
+/// is its payload itself, allocating no cell — so it is neither a heap
+/// construction nor a reuse target. Only Scheme A is realized in code generation
+/// at present (a Scheme-B constructor still builds a standard cell, so it remains
+/// a normal reuse target).
+fn niche_wrapper_free(niche: Option<NicheKind>) -> bool {
+    niche == Some(NicheKind::A)
+}
+
+/// Whether `e` is a non-nullary, non-niche construction with no reuse token yet.
 pub(crate) fn is_reuse_target(e: &CExpr) -> bool {
-    matches!(&e.kind, K::MakeData { args, reuse: None, .. } if !args.is_empty())
+    matches!(&e.kind, K::MakeData { args, reuse: None, niche, .. }
+        if !args.is_empty() && !niche_wrapper_free(*niche))
 }
 
 /// Attaches a reuse `token` to a construction (assumes [`is_reuse_target`]).

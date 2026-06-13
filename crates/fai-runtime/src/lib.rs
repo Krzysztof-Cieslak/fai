@@ -1023,6 +1023,51 @@ pub unsafe extern "C" fn fai_make_data_scalar(
     from_obj(p)
 }
 
+/// Converts a niche Scheme-A `Option` (`None` is the immediate `1`, `Some p` is
+/// the payload pointer `p`) to the standard boxed representation, consuming `v`. A
+/// `None` is already `1` in both forms; a `Some` wraps the payload in a fresh
+/// `{ Some, p }` cell (the payload's ownership transfers in). Used at a boundary
+/// where a niche value flows into a uniform slot.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_niche_a_to_std(v: Value) -> Value {
+    if !is_boxed(v) {
+        return v;
+    }
+    let p = alloc_obj(DATA_FIELDS_OFFSET + 8, &FAI_DATA_DESC);
+    // SAFETY: `p` has room for the tag and one field; the payload moves in.
+    unsafe {
+        write_u64(p, DATA_TAG_OFFSET, 1); // `Some` is tag 1 of `Option`.
+        write_i64(p, DATA_FIELDS_OFFSET, v);
+    }
+    from_obj(p)
+}
+
+/// Converts a standard boxed `Option` to the niche Scheme-A representation,
+/// consuming `o`. A standard `None` (immediate `1`) is already the niche `None`; a
+/// standard `Some` cell yields its payload — freeing the wrapper shell directly
+/// when unique (handing its payload ref to the caller), else duplicating the
+/// payload and decrementing the still-shared wrapper.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_std_to_niche_a(o: Value) -> Value {
+    if !is_boxed(o) {
+        return o;
+    }
+    let p = as_obj(o);
+    // SAFETY: a boxed standard `Option` is a `Some` cell with one field (the
+    // payload); reading the count and field is in bounds.
+    unsafe {
+        let payload = read_i64(p, DATA_FIELDS_OFFSET);
+        let rc = read_u64(p, RC_OFFSET);
+        if rc == 1 {
+            free_obj(p);
+        } else {
+            fai_dup(payload);
+            write_u64(p, RC_OFFSET, rc - 1);
+        }
+        payload
+    }
+}
+
 /// The number of fields in a boxed data value.
 unsafe fn data_field_count(v: Value) -> usize {
     // SAFETY: `v` is a boxed data value.

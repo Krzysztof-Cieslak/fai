@@ -72,6 +72,8 @@ fn abi_tag(abi: &FnAbi) -> String {
         Repr::Uniform => 'u',
         Repr::ScalarFloat => 'f',
         Repr::ScalarInt => 'i',
+        Repr::Niche(NicheKind::A) => 'a',
+        Repr::Niche(NicheKind::B) => 'b',
     };
     let params: String = abi.params.iter().map(repr).collect();
     format!("p[{params}]r{}", repr(&abi.ret))
