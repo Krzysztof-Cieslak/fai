@@ -155,6 +155,29 @@ fn comparisons() {
     assert_eq!(fai_int_ge(imm_int(2), imm_int(3)), FALSE);
 }
 
+#[test]
+fn niche_none_sentinel_equality() {
+    // The Scheme-B `None` sentinel: two `None`s are equal, a `None` and a `Some`
+    // (an immediate `Int` payload) are not. (`fai_equal` consumes its operands; the
+    // sentinel is immortal and an immediate carries no count.)
+    let _g = lock();
+    assert_eq!(fai_equal(fai_none_value(), fai_none_value()), TRUE);
+    assert_eq!(fai_equal(fai_none_value(), imm_int(5)), FALSE);
+    assert_eq!(fai_equal(imm_int(5), fai_none_value()), FALSE);
+}
+
+#[test]
+fn niche_none_sentinel_ordering() {
+    // `None` sorts before any `Some`; two `None`s are equal (matching the
+    // constructor-tag order None=0 < Some=1).
+    let _g = lock();
+    assert_eq!(fai_compare(fai_none_value(), imm_int(5)), imm_int(-1));
+    assert_eq!(fai_compare(imm_int(5), fai_none_value()), imm_int(1));
+    assert_eq!(fai_compare(fai_none_value(), fai_none_value()), imm_int(0));
+    // Also against a boxed (overflowed) `Int` payload.
+    assert_eq!(fai_compare(fai_none_value(), fai_box_int(i64::MAX)), imm_int(-1));
+}
+
 // Division/remainder by zero aborts the process (`fai_panic`), which a unit test
 // cannot catch; it is exercised by the driver's end-to-end error tests instead.
 

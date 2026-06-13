@@ -455,7 +455,7 @@ fn wrapper_convert<M: Module>(
 }
 
 /// Converts a standard `Option` to the niche representation of scheme `k` in the
-/// wrapper (Scheme A; Scheme B is realized later).
+/// wrapper.
 fn wrapper_std_to_niche<M: Module>(
     module: &mut M,
     builder: &mut FunctionBuilder,
@@ -464,12 +464,12 @@ fn wrapper_std_to_niche<M: Module>(
 ) -> Value {
     match k {
         NicheKind::A => wrapper_convert(module, builder, "fai_std_to_niche_a", v),
-        NicheKind::B => v,
+        NicheKind::B => wrapper_convert(module, builder, "fai_std_to_niche_b", v),
     }
 }
 
 /// Converts a niche `Option` of scheme `k` back to the standard representation in
-/// the wrapper (Scheme A; Scheme B is realized later).
+/// the wrapper.
 fn wrapper_niche_to_std<M: Module>(
     module: &mut M,
     builder: &mut FunctionBuilder,
@@ -478,7 +478,7 @@ fn wrapper_niche_to_std<M: Module>(
 ) -> Value {
     match k {
         NicheKind::A => wrapper_convert(module, builder, "fai_niche_a_to_std", v),
-        NicheKind::B => v,
+        NicheKind::B => wrapper_convert(module, builder, "fai_niche_b_to_std", v),
     }
 }
 
@@ -967,8 +967,8 @@ impl<M: Module> Translator<'_, M> {
     fn collect_niche_uses(&self, e: &CExpr, out: &mut FxHashMap<usize, NicheKind>) {
         let note =
             |base: &CExpr, niche: Option<NicheKind>, out: &mut FxHashMap<usize, NicheKind>| {
-                if let (ExprKind::Local(l), Some(NicheKind::A)) = (&base.kind, niche) {
-                    out.insert(l.index(), NicheKind::A);
+                if let (ExprKind::Local(l), Some(k)) = (&base.kind, niche) {
+                    out.insert(l.index(), k);
                 }
             };
         match &e.kind {
@@ -1055,21 +1055,18 @@ impl<M: Module> Translator<'_, M> {
         }
     }
 
-    /// The niche scheme a sub-expression's result holds, if any (Scheme A only at
-    /// present): a niche construction, a niche-returning saturated direct call, an
-    /// alias of a niche local, or the result of an `if`/`let` whose value is niche.
+    /// The niche scheme a sub-expression's result holds, if any: a niche
+    /// construction, a niche-returning saturated direct call, an alias of a niche
+    /// local, or the result of an `if`/`let` whose value is niche.
     fn expr_niche_kind(&self, e: &CExpr, map: &FxHashMap<usize, NicheKind>) -> Option<NicheKind> {
         match &e.kind {
-            ExprKind::MakeData { niche: Some(NicheKind::A), .. } => Some(NicheKind::A),
+            ExprKind::MakeData { niche, .. } => *niche,
             ExprKind::Local(l) => map.get(&l.index()).copied(),
             ExprKind::App { func, args } => {
                 if let ExprKind::Global(def) = func.kind {
                     let arity = (self.arity_of)(def);
                     if arity > 0 && args.len() == arity {
-                        return match (self.signature_of)(def).niche_return() {
-                            Some(NicheKind::A) => Some(NicheKind::A),
-                            _ => None,
-                        };
+                        return (self.signature_of)(def).niche_return();
                     }
                 }
                 None
@@ -1089,8 +1086,7 @@ impl<M: Module> Translator<'_, M> {
     fn niche_to_std(&mut self, v: Value, k: NicheKind) -> Value {
         match k {
             NicheKind::A => self.call1("fai_niche_a_to_std", v),
-            // Scheme B is realized later; never produced here yet.
-            NicheKind::B => v,
+            NicheKind::B => self.call1("fai_niche_b_to_std", v),
         }
     }
 
@@ -1098,13 +1094,12 @@ impl<M: Module> Translator<'_, M> {
     /// scheme `k`, recording it niche. A value read from a uniform slot into a
     /// niche local passes through here.
     fn std_to_niche(&mut self, v: Value, k: NicheKind) -> Value {
-        match k {
-            NicheKind::A => {
-                let r = self.call1("fai_std_to_niche_a", v);
-                self.mark_niche(r, k)
-            }
-            NicheKind::B => self.mark_niche(v, k),
-        }
+        let sym = match k {
+            NicheKind::A => "fai_std_to_niche_a",
+            NicheKind::B => "fai_std_to_niche_b",
+        };
+        let r = self.call1(sym, v);
+        self.mark_niche(r, k)
     }
 
     /// Coerces `v` to the niche representation of scheme `k`: a value already niche
@@ -1338,6 +1333,13 @@ impl<M: Module> Translator<'_, M> {
     fn call1(&mut self, name: &'static str, a: Value) -> Value {
         let f = self.runtime(name, 1, true);
         let call = self.builder.ins().call(f, &[a]);
+        self.builder.inst_results(call)[0]
+    }
+
+    /// Calls a no-argument runtime function returning a value.
+    fn call0(&mut self, name: &'static str) -> Value {
+        let f = self.runtime(name, 0, true);
+        let call = self.builder.ins().call(f, &[]);
         self.builder.inst_results(call)[0]
     }
 
@@ -1616,16 +1618,26 @@ impl<M: Module> Translator<'_, M> {
         scalars: u64,
         niche: Option<NicheKind>,
     ) -> Value {
-        // A niche Scheme-A `Some` is its payload pointer itself — no wrapper cell.
-        // (A niche `None` is the nullary path's immediate `1`, which equals the
-        // standard `None`; it is marked niche so a niche scrutinee stays niche.)
-        if niche == Some(NicheKind::A) && !args.is_empty() {
+        // A niche `Some` (either scheme) is its payload in uniform representation —
+        // no wrapper cell.
+        if let Some(k) = niche
+            && !args.is_empty()
+        {
             debug_assert!(reuse.is_none(), "a niche `Some` allocates nothing to reuse");
             let v = self.expr_boxed(&args[0]);
-            return self.mark_niche(v, NicheKind::A);
+            return self.mark_niche(v, k);
         }
         if args.is_empty() {
             debug_assert!(reuse.is_none(), "nullary constructor cannot reuse a cell");
+            // A niche `None`: Scheme A is the nullary immediate `1` (the standard
+            // encoding); Scheme B is the shared boxed sentinel — an owned `None`
+            // holds one reference to it, so duplicate it (the immortal count then
+            // stays balanced against the matching drop).
+            if niche == Some(NicheKind::B) {
+                let s = self.call0("fai_none_value");
+                let s = self.call1("fai_dup", s);
+                return self.mark_niche(s, NicheKind::B);
+            }
             let imm = (i64::from(tag) << 1) | 1;
             let v = self.builder.ins().iconst(types::I64, imm);
             if niche == Some(NicheKind::A) {
@@ -1750,9 +1762,22 @@ impl<M: Module> Translator<'_, M> {
     /// tag is `(v & 1) ^ 1` (0 for `None`, 1 for `Some`) — rather than a header read.
     fn data_tag(&mut self, base: &CExpr, niche: Option<NicheKind>, result_ty: &Ty) -> Value {
         let v = self.expr(base);
-        if niche == Some(NicheKind::A) {
-            let lowbit = self.builder.ins().band_imm(v, 1);
-            let raw = self.builder.ins().bxor_imm(lowbit, 1);
+        if let Some(k) = niche {
+            // The tag is 0 for `None`, 1 for `Some`. Scheme A: `None` is the
+            // immediate `1` (low bit set), `Some` a boxed pointer (clear), so the tag
+            // is `(v & 1) ^ 1`. Scheme B: `None` is the sentinel, so the tag is
+            // `v != sentinel`.
+            let raw = match k {
+                NicheKind::A => {
+                    let lowbit = self.builder.ins().band_imm(v, 1);
+                    self.builder.ins().bxor_imm(lowbit, 1)
+                }
+                NicheKind::B => {
+                    let sentinel = self.call0("fai_none_value");
+                    let is_some = self.builder.ins().icmp(IntCC::NotEqual, v, sentinel);
+                    self.builder.ins().uextend(types::I64, is_some)
+                }
+            };
             return if matches!(result_ty, Ty::Con(Con::Int)) {
                 self.mark_raw(raw)
             } else {
@@ -1781,13 +1806,18 @@ impl<M: Module> Translator<'_, M> {
         niche: Option<NicheKind>,
         result_ty: &Ty,
     ) -> Value {
-        if niche == Some(NicheKind::A) {
-            // Niche Scheme-A `Some` projection: the value *is* the payload, so the
-            // projection is the identity. Borrow the base and duplicate it (the
-            // field outlives the base's drop), as the generic read does — but with
-            // no header load. The result is the payload (standard), not a niche
-            // value, so it is left unmarked.
+        if let Some(k) = niche {
+            // A niche `Some` projection: the value *is* the payload, so the
+            // projection is the identity (no header load). The result is the payload
+            // (standard), not a niche value. A Scheme-B `Int` payload is read raw,
+            // borrowing the base (the base's later drop releases any box); every
+            // other payload is duplicated (it outlives the base's drop), as the
+            // generic field read does.
             let v = self.expr(base);
+            if k == NicheKind::B && matches!(result_ty, Ty::Con(Con::Int)) {
+                let raw = self.borrow_unbox_int_to_raw(v);
+                return self.mark_raw(raw);
+            }
             return self.call1("fai_dup", v);
         }
         if scalar {
@@ -2695,6 +2725,17 @@ impl<M: Module> Translator<'_, M> {
             // the borrow decision reference counting made for this operand type.
             let a = self.expr(&args[0]);
             let b = self.expr(&args[1]);
+            // A niche `Option` operand cannot be compared on its wrapper-free
+            // encoding against a *standard* one of the same type (a niche `Some`
+            // is the payload; a standard `Some` is a wrapper cell), and the two
+            // representations both occur for one type (e.g. a niche local vs a
+            // generic combinator's standard result). Convert both operands to
+            // standard temporaries and compare those (consuming them).
+            if self.niche_of(a).is_some() || self.niche_of(b).is_some() {
+                let a2 = self.comparison_std_operand(a);
+                let b2 = self.comparison_std_operand(b);
+                return Some(self.prim_runtime_call(op, &[a2, b2]));
+            }
             let anded = self.builder.ins().band(a, b);
             let borrowed = op.borrows_operand(oty);
             Some(self.guard_immediate(
@@ -2769,11 +2810,11 @@ impl<M: Module> Translator<'_, M> {
             // borrowed); the immediate fast arm drops nothing either way.
             let a = self.expr(&args[0]);
             let b = self.expr(&args[1]);
-            // A niche `Option` operand cannot be ordered on its wrapper-free
-            // encoding (the runtime would read the payload's tag, not `Some`'s), so
-            // ordering converts each operand to a standard temporary and compares
-            // those (consuming them). Equality is unaffected — it works on the niche
-            // encoding directly — so only ordering takes this path.
+            // A niche `Option` operand is compared by converting each operand to a
+            // standard temporary (consuming them): a niche value and a standard one
+            // of the same type (e.g. a niche local vs a generic combinator's
+            // standard result) have incomparable encodings, and Scheme A's `None`=`1`
+            // is in any case indistinguishable from a tuple's tag.
             if self.niche_of(a).is_some() || self.niche_of(b).is_some() {
                 let a2 = self.comparison_std_operand(a);
                 let b2 = self.comparison_std_operand(b);
@@ -2908,20 +2949,39 @@ impl<M: Module> Translator<'_, M> {
                 let v = self.expr(a);
                 self.as_raw_int(v)
             } else if let Some(k) = abi.niche_param(i) {
-                // A niche parameter: pass the wrapper-free encoding (converting a
-                // standard argument). A niche value is never a borrowed-box temporary.
+                // A niche parameter passes the wrapper-free encoding (converting a
+                // standard argument). Niche parameters are always owned (see the
+                // borrow signature), so the value is consumed here — no borrowing
+                // conversion is needed.
                 let v = self.expr(a);
                 self.ensure_niche(v, k)
             } else {
-                // A uniform parameter: box an unboxed scalar argument. A box created
-                // here (distinct from the evaluated value) for a borrowed parameter
-                // is a temporary the caller must release after the call.
+                // A uniform parameter: box an unboxed scalar / convert a niche
+                // argument to a standard cell. A cell created here (distinct from the
+                // evaluated value) for a **borrowed** parameter is a temporary the
+                // caller releases after the call.
                 let raw = self.expr(a);
-                let boxed = self.ensure_boxed(raw);
-                if boxed != raw && borrowed.get(i).copied().unwrap_or(false) {
-                    lent_boxes.push(boxed);
+                let is_borrowed = borrowed.get(i).copied().unwrap_or(false);
+                if let Some(k) = self.niche_of(raw) {
+                    // A niche value flowing into a uniform slot becomes a standard
+                    // cell. A borrowed parameter must not consume the (borrowed) niche
+                    // value, so convert a *duplicate* and release it after the call;
+                    // an owned parameter converts (consumes) the value directly.
+                    if is_borrowed {
+                        let dup = self.call1("fai_dup", raw);
+                        let std = self.niche_to_std(dup, k);
+                        lent_boxes.push(std);
+                        std
+                    } else {
+                        self.niche_to_std(raw, k)
+                    }
+                } else {
+                    let boxed = self.ensure_boxed(raw);
+                    if boxed != raw && is_borrowed {
+                        lent_boxes.push(boxed);
+                    }
+                    boxed
                 }
-                boxed
             };
             call_args.push(v);
         }
