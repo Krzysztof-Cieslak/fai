@@ -95,6 +95,10 @@ pub fn builtin_scheme(name: Symbol) -> Option<Scheme> {
         // carries no surface constraint; a non-comparable instantiation (a
         // function type) is a runtime guard, not a type error.
         "compare" => single_var_scheme(|a| Ty::arrows([a.clone(), a], Ty::int())),
+        // Structural hash, polymorphic over any (hashable) type — the `HashDict`/
+        // `HashSet` containers wrap it. Like `compare` it carries no surface
+        // constraint; a function-typed instantiation is a runtime guard.
+        "hash" => single_var_scheme(|a| Ty::arrow(a, Ty::int())),
         // String operations.
         "stringLength" => Scheme::mono(Ty::arrow(Ty::Con(Con::String), Ty::int())),
         "toUpper" | "toLower" | "trim" => {

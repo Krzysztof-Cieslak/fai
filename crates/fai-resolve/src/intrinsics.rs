@@ -37,6 +37,9 @@ pub const INTRINSICS: &[&str] = &[
     // intrinsic that is a primitive on *any* comparable type; exposing it lets the
     // wrapper inline to the primitive at every use site.
     "compare",
+    // Structural hash, polymorphic over any (hashable) type, agreeing with
+    // structural equality. The hash containers (`HashDict`/`HashSet`) build on it.
+    "hash",
     "stringLength",
     "toUpper",
     "toLower",

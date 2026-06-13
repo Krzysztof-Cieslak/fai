@@ -1,0 +1,250 @@
+module HashSet
+
+// An unordered set of any hashable type, backed by a flat open-addressing hash
+// table (a power-of-two `Array` of slots, linear probing, backward-shift
+// deletion). Operations are O(1) on average — a structural `hash` of the element
+// picks a bucket and probing resolves collisions — so membership and insertion do
+// not pay the O(log n) `compare` walk an ordered `Set` does.
+//
+// The type is opaque: its node constructors are private to this module, so sets
+// are built and queried only through these operations. `Prelude` re-exports the
+// name `HashSet` so it stays usable unqualified.
+//
+// Like `Array`, a `HashSet` keeps value semantics by copy-on-share: a uniquely
+// owned table is mutated in place (`insert` writes a slot and reuses the wrapper,
+// so a threaded build allocates only the per-element cell), while a shared one is
+// copied. Unlike the ordered `Set`, iteration order is unspecified (hash/probe
+// order) though deterministic for a given sequence of operations; use `Set` when
+// you need sorted iteration or range scans. Container equality compares the
+// representation, not the contents, so compare two sets by their sorted `toList`.
+public opaque type HashSet 'a =
+  | HS Int (Array (Slot 'a))
+
+// A table slot: empty, or holding one element. `Empty` is a nullary constructor
+// (an immediate), so a fresh table is `Array.repeat cap Empty` with no heap cell
+// per empty slot, and one `Full` cell per live element.
+type Slot 'a =
+  | Empty
+  | Full 'a
+
+// The bucket count a non-empty table starts at (a power of two; grows by
+// doubling). The empty set holds a zero-length array and allocates this on its
+// first insert.
+initialCapacity : Int
+let initialCapacity = 8
+
+// The element count at which the table doubles: load factor 3/4 (kept low so
+// probe chains stay short). Tested as `count * 4 >= cap * 3`.
+loadNumerator : Int
+let loadNumerator = 3
+
+loadDenominator : Int
+let loadDenominator = 4
+
+// The bucket for `x` in a table of `cap` buckets (a power of two): the low bits of
+// its structural hash, masked rather than taken modulo.
+indexFor : Int -> 'a -> Int
+let indexFor cap x = Int.and (Prim.hash x) (cap - 1)
+
+// The next bucket in the probe sequence, wrapping at `cap` (a power of two).
+next : Int -> Int -> Int
+let next cap i = Int.and (i + 1) (cap - 1)
+
+/// The empty set. Holds no buckets; the first insert allocates the table.
+public empty : HashSet 'a
+let empty = HS 0 Array.empty
+
+/// The number of elements in the set, in O(1).
+public size : HashSet 'a -> Int
+let size s =
+  match s with
+  | HS count _ -> count
+example: size (insert 1 empty) = 1
+
+/// Whether the set has no elements.
+public isEmpty : HashSet 'a -> Bool
+let isEmpty s = size s = 0
+example: isEmpty empty
+example: isEmpty (insert 1 empty) = false
+
+// Probe from bucket `i` for `x`: `false` at the first empty slot, `true` on a
+// match.
+memberFrom : 'a -> Array (Slot 'a) -> Int -> Int -> Bool
+let memberFrom x slots cap i =
+  match Array.unsafeGet i slots with
+  | Empty -> false
+  | Full y -> if x = y then true else memberFrom x slots cap (next cap i)
+
+/// Whether an element is present (O(1) average).
+public member : 'a -> HashSet 'a -> Bool
+let member x s =
+  match s with
+  | HS _ slots ->
+    let cap = Array.length slots
+    if cap = 0 then false else memberFrom x slots cap (indexFor cap x)
+example: member 2 (insert 2 (insert 1 empty))
+forall x: member x empty = false
+
+// Insert `x` into a table known to have a free slot, from bucket `i`: overwrite a
+// matching element (count unchanged) or claim the first empty slot (count + 1).
+insertFrom : 'a -> Array (Slot 'a) -> Int -> Int -> Int -> HashSet 'a
+let insertFrom x slots cap i count =
+  match Array.unsafeGet i slots with
+  | Empty -> HS (count + 1) (Array.unsafeSet i (Full x) slots)
+  | Full y -> if x = y then HS count slots else insertFrom x slots cap (next cap i) count
+
+// Place `x` (known absent, e.g. during a rehash) at the first empty slot from
+// bucket `i`, returning the updated slots array.
+place : 'a -> Array (Slot 'a) -> Int -> Int -> Array (Slot 'a)
+let place x slots cap i =
+  match Array.unsafeGet i slots with
+  | Empty -> Array.unsafeSet i (Full x) slots
+  | Full _ -> place x slots cap (next cap i)
+
+// Copy every element of the old slots array into a fresh, larger one.
+rehash : Array (Slot 'a) -> Int -> Int -> Array (Slot 'a) -> Int -> Array (Slot 'a)
+let rehash old cap i newSlots newCap =
+  if i >= cap then
+    newSlots
+  else
+    match Array.unsafeGet i old with
+    | Empty -> rehash old cap (i + 1) newSlots newCap
+    | Full y -> rehash old cap (i + 1) (place y newSlots newCap (indexFor newCap y)) newCap
+
+// Double the table and re-place every element into it.
+grow : Array (Slot 'a) -> Int -> Array (Slot 'a)
+let grow slots cap = rehash slots cap 0 (Array.repeat (cap * 2) Empty) (cap * 2)
+
+/// Add an element (O(1) average; the table doubles when it passes 3/4 full).
+public insert : 'a -> HashSet 'a -> HashSet 'a
+let insert x s =
+  match s with
+  | HS count slots ->
+    let cap = Array.length slots
+    if cap = 0 then
+      insertFrom x (Array.repeat initialCapacity Empty) initialCapacity (indexFor initialCapacity x) 0
+    else if count * loadDenominator >= cap * loadNumerator then
+      let bigger = grow slots cap
+      let cap2 = cap * 2
+      insertFrom x bigger cap2 (indexFor cap2 x) count
+    else
+      insertFrom x slots cap (indexFor cap x) count
+example: member 2 (insert 2 empty)
+example: size (insert 1 (insert 1 empty)) = 1
+
+/// A set of one element.
+public singleton : 'a -> HashSet 'a
+let singleton x = insert x empty
+example: size (singleton 1) = 1
+
+// Whether bucket `k` lies cyclically in the half-open run `(hole, j]`, i.e. the
+// element now at `j` must stay (moving it back to `hole` would break its probe
+// chain). When it does not, the element can slide back to fill the hole.
+keepInPlace : Int -> Int -> Int -> Bool
+let keepInPlace hole k j = if hole <= j then hole < k && k <= j else hole < k || k <= j
+
+// Backward-shift the run after a removed element so the table stays tombstone-free
+// (a hole at `hole`, scanning from `j`): close the hole at the first empty slot,
+// else pull back an element whose probe chain allows it and move the hole forward.
+shiftBack : Array (Slot 'a) -> Int -> Int -> Int -> Array (Slot 'a)
+let shiftBack slots cap hole j =
+  match Array.unsafeGet j slots with
+  | Empty -> Array.unsafeSet hole Empty slots
+  | Full y ->
+    if keepInPlace hole (indexFor cap y) j then
+      shiftBack slots cap hole (next cap j)
+    else
+      shiftBack (Array.unsafeSet hole (Full y) slots) cap j (next cap j)
+
+// The bucket holding `x`, or `None` if a probe from its home bucket hits an empty
+// slot first.
+findSlot : 'a -> Array (Slot 'a) -> Int -> Int -> Option Int
+let findSlot x slots cap i =
+  match Array.unsafeGet i slots with
+  | Empty -> None
+  | Full y -> if x = y then Some i else findSlot x slots cap (next cap i)
+
+/// Remove an element if present (O(1) average), shifting later collisions back so
+/// no tombstone is left behind.
+public remove : 'a -> HashSet 'a -> HashSet 'a
+let remove x s =
+  match s with
+  | HS count slots ->
+    let cap = Array.length slots
+    if cap = 0 then
+      HS count slots
+    else
+      match findSlot x slots cap (indexFor cap x) with
+      | None -> HS count slots
+      | Some i -> HS (count - 1) (shiftBack slots cap i (next cap i))
+example: member 2 (remove 2 (insert 2 (insert 1 empty))) = false
+example: size (remove 1 (insert 1 empty)) = 0
+
+// Collect the live elements (in unspecified slot order) onto an accumulator.
+collectFrom : Array (Slot 'a) -> Int -> Int -> List 'a -> List 'a
+let collectFrom slots n i acc =
+  if i >= n then
+    acc
+  else
+    match Array.unsafeGet i slots with
+    | Empty -> collectFrom slots n (i + 1) acc
+    | Full y -> collectFrom slots n (i + 1) (y :: acc)
+
+/// The elements, in unspecified (hash/probe) order. Sort the result if you need a
+/// canonical ordering.
+public toList : HashSet 'a -> List 'a
+let toList s =
+  match s with
+  | HS _ slots -> collectFrom slots (Array.length slots) 0 []
+example: List.sort (toList (fromList [2, 1, 3])) = [1, 2, 3]
+
+/// Build a set from a list (duplicates collapse).
+public fromList : List 'a -> HashSet 'a
+let fromList xs = List.foldl (fun s x -> insert x s) empty xs
+example: size (fromList [1, 2, 1, 3]) = 3
+
+/// Fold the elements in unspecified order.
+public foldl : ('a -> 'acc -> 'acc / 'e) -> 'acc -> HashSet 'a -> 'acc / 'e
+let foldl f acc s = List.foldl (fun a x -> f x a) acc (toList s)
+example: foldl (fun x acc -> acc + x) 0 (fromList [1, 2, 3]) = 6
+
+/// Map a function over the elements (rebuilding, since it may collide or merge).
+public map : ('a -> 'b / 'e) -> HashSet 'a -> HashSet 'b / 'e
+let map f s = fromList (List.map f (toList s))
+example: List.sort (toList (map (fun x -> x * 2) (fromList [1, 2, 3]))) = [2, 4, 6]
+
+/// Keep the elements satisfying `keep`.
+public filter : ('a -> Bool / 'e) -> HashSet 'a -> HashSet 'a / 'e
+let filter keep s = fromList (List.filter keep (toList s))
+example: size (filter (fun x -> x > 1) (fromList [1, 2, 3])) = 2
+
+/// The union: every element of either set.
+public union : HashSet 'a -> HashSet 'a -> HashSet 'a
+let union a b = List.foldl (fun s x -> insert x s) a (toList b)
+example: size (union (singleton 1) (singleton 2)) = 2
+example: member 1 (union (singleton 1) (singleton 2))
+
+/// The intersection: elements present in both sets.
+public intersection : HashSet 'a -> HashSet 'a -> HashSet 'a
+let intersection a b = fromList (List.filter (fun x -> member x b) (toList a))
+example: size (intersection (singleton 1) (singleton 2)) = 0
+example: member 1 (intersection (insert 2 (singleton 1)) (singleton 1))
+
+/// The difference: the left set's elements absent from the right.
+public difference : HashSet 'a -> HashSet 'a -> HashSet 'a
+let difference a b = fromList (List.filter (fun x -> not (member x b)) (toList a))
+example: size (difference (insert 2 (singleton 1)) (singleton 1)) = 1
+
+/// Whether every element of `a` is also in `b`.
+public isSubset : HashSet 'a -> HashSet 'a -> Bool
+let isSubset a b = List.all (fun x -> member x b) (toList a)
+example: isSubset (singleton 1) (insert 2 (singleton 1))
+example: isSubset (singleton 3) (singleton 1) = false
+// Laws over sets built through the public API (membership-based, so they do not
+// depend on the unspecified iteration order).
+forall xs x: member x (insert x (fromList xs))
+forall xs x: member x (remove x (fromList xs)) = false
+forall xs: size (fromList xs) = List.length (toList (fromList xs))
+forall a b x: member x (union (fromList a) (fromList b)) = (member x (fromList a) || member x (fromList b))
+forall a b x: member x (intersection (fromList a) (fromList b)) = (member x (fromList a) && member x (fromList b))
+forall a b x: member x (difference (fromList a) (fromList b)) = (member x (fromList a) && not (member x (fromList b)))

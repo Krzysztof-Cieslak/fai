@@ -67,6 +67,8 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_is_valid_char_code", rt::fai_is_valid_char_code);
     sym!("fai_compare", rt::fai_compare);
     sym!("fai_compare_borrowed", rt::fai_compare_borrowed);
+    sym!("fai_hash", rt::fai_hash);
+    sym!("fai_hash_borrowed", rt::fai_hash_borrowed);
     sym!("fai_equal", rt::fai_equal);
     sym!("fai_equal_borrowed", rt::fai_equal_borrowed);
     sym!("fai_make_data", rt::fai_make_data);

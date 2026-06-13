@@ -430,6 +430,9 @@ pub enum Prim {
     FloatGe,
     /// Structural ordering: returns `-1`/`0`/`1` (used for non-numeric `< <= > >=`).
     Compare,
+    /// Structural hash: returns a non-negative `Int` (the `HashDict`/`HashSet`
+    /// containers build on it). Agrees with `Eq`.
+    Hash,
     /// `=` (structural equality)
     Eq,
     /// `++` (string concatenation)
@@ -544,6 +547,7 @@ impl Prim {
             self,
             Prim::Eq
                 | Prim::Compare
+                | Prim::Hash
                 | Prim::StringLength
                 | Prim::StringContains
                 | Prim::ToUpper
@@ -565,6 +569,7 @@ impl Prim {
         match self {
             Prim::Eq => Some("fai_equal_borrowed"),
             Prim::Compare => Some("fai_compare_borrowed"),
+            Prim::Hash => Some("fai_hash_borrowed"),
             Prim::StringLength => Some("fai_string_length_borrowed"),
             Prim::StringContains => Some("fai_string_contains_borrowed"),
             Prim::ToUpper => Some("fai_to_upper_borrowed"),
@@ -609,6 +614,7 @@ impl Prim {
             Prim::FloatGt => "fai_float_gt",
             Prim::FloatGe => "fai_float_ge",
             Prim::Compare => "fai_compare",
+            Prim::Hash => "fai_hash",
             Prim::Eq => "fai_equal",
             Prim::StrConcat => "fai_string_concat",
             Prim::IntToString => "fai_int_to_string",
@@ -677,6 +683,7 @@ impl Prim {
             | Prim::EnvGet
             | Prim::EnvArgs
             | Prim::IntComplement
+            | Prim::Hash
             | Prim::ArrayWithCapacity
             | Prim::ArrayLength
             | Prim::FileRead => 1,
@@ -721,6 +728,7 @@ impl Prim {
             "drop" => Prim::StringDrop,
             "not" => Prim::Not,
             "compare" => Prim::Compare,
+            "hash" => Prim::Hash,
             "consoleWriteLine" => Prim::ConsoleWriteLine,
             "clockNow" => Prim::ClockNow,
             "randomNextInt" => Prim::RandomNextInt,

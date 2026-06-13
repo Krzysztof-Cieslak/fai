@@ -1,0 +1,358 @@
+module HashDict
+
+// An unordered map keyed by any hashable type, backed by a flat open-addressing
+// hash table (a power-of-two `Array` of slots, linear probing, backward-shift
+// deletion). Operations are O(1) on average — a structural `hash` of the key picks
+// a bucket and probing resolves collisions — so lookup and insertion do not pay
+// the O(log n) `compare` walk an ordered `Dict` does.
+//
+// The type is opaque: its node constructors are private to this module, so
+// dictionaries are built and queried only through these operations. `Prelude`
+// re-exports the name `HashDict` so it stays usable unqualified.
+//
+// Like `Array`, a `HashDict` keeps value semantics by copy-on-share: a uniquely
+// owned table is mutated in place (`insert` writes a slot and reuses the wrapper,
+// so a threaded build allocates only the per-entry cell), while a shared one is
+// copied. The inspect-only `get`/`getOr`/`member` borrow the table, so a
+// `get`-then-`insert` step on a unique table updates it in place. Unlike the
+// ordered `Dict`, iteration order is unspecified (hash/probe order) though
+// deterministic for a given sequence of operations; use `Dict` when you need
+// sorted iteration or range scans. Container equality compares the
+// representation, not the contents, so compare two maps by their sorted `toList`.
+public opaque type HashDict 'k 'v =
+  | HD Int (Array (Slot 'k 'v))
+
+// A table slot: empty, or holding one key/value entry. `Empty` is a nullary
+// constructor (an immediate), so a fresh table is `Array.repeat cap Empty` with no
+// heap cell per empty slot, and one `Full` cell per live entry.
+type Slot 'k 'v =
+  | Empty
+  | Full 'k 'v
+
+// The bucket count a non-empty table starts at (a power of two; grows by
+// doubling). The empty map holds a zero-length array and allocates this on its
+// first insert.
+initialCapacity : Int
+let initialCapacity = 8
+
+// The entry count at which the table doubles: load factor 3/4 (kept low so probe
+// chains stay short). Tested as `count * 4 >= cap * 3`.
+loadNumerator : Int
+let loadNumerator = 3
+
+loadDenominator : Int
+let loadDenominator = 4
+
+// The bucket for `key` in a table of `cap` buckets (a power of two): the low bits
+// of its structural hash, masked rather than taken modulo.
+indexFor : Int -> 'k -> Int
+let indexFor cap key = Int.and (Prim.hash key) (cap - 1)
+
+// The next bucket in the probe sequence, wrapping at `cap` (a power of two).
+next : Int -> Int -> Int
+let next cap i = Int.and (i + 1) (cap - 1)
+
+/// The empty dictionary. Holds no buckets; the first insert allocates the table.
+public empty : HashDict 'k 'v
+let empty = HD 0 Array.empty
+
+/// The number of entries, in O(1).
+public size : HashDict 'k 'v -> Int
+let size d =
+  match d with
+  | HD count _ -> count
+example: size (insert 1 10 empty) = 1
+
+/// Whether the dictionary has no entries.
+public isEmpty : HashDict 'k 'v -> Bool
+let isEmpty d = size d = 0
+example: isEmpty empty
+example: isEmpty (insert 1 10 empty) = false
+
+// Probe from bucket `i` for `key`, returning its value or `None` at the first
+// empty slot.
+getFrom : 'k -> Array (Slot 'k 'v) -> Int -> Int -> Option 'v
+let getFrom key slots cap i =
+  match Array.unsafeGet i slots with
+  | Empty -> None
+  | Full k v -> if key = k then Some v else getFrom key slots cap (next cap i)
+
+/// Look up the value for `key` (O(1) average).
+public get : 'k -> HashDict 'k 'v -> Option 'v
+let get key d =
+  match d with
+  | HD _ slots ->
+    let cap = Array.length slots
+    if cap = 0 then None else getFrom key slots cap (indexFor cap key)
+example: get 2 (insert 1 10 (insert 2 20 empty)) = Some 20
+forall k: get k empty = None
+
+// Probe from bucket `i`, returning the matched value or `fallback`.
+getOrFrom : 'v -> 'k -> Array (Slot 'k 'v) -> Int -> Int -> 'v
+let getOrFrom fallback key slots cap i =
+  match Array.unsafeGet i slots with
+  | Empty -> fallback
+  | Full k v -> if key = k then v else getOrFrom fallback key slots cap (next cap i)
+
+/// The value for `key`, or `fallback` if it is absent. Returns the value directly,
+/// never materializing the `Option` a `get` would.
+public getOr : 'v -> 'k -> HashDict 'k 'v -> 'v
+let getOr fallback key d =
+  match d with
+  | HD _ slots ->
+    let cap = Array.length slots
+    if cap = 0 then fallback else getOrFrom fallback key slots cap (indexFor cap key)
+example: getOr 0 2 (insert 2 20 empty) = 20
+forall k: getOr 0 k empty = 0
+
+// Probe from bucket `i`, returning the matched value or the result of `fallback ()`
+// (computed only on a miss).
+getOrElseFrom : (Unit -> 'v / 'e) -> 'k -> Array (Slot 'k 'v) -> Int -> Int -> 'v / 'e
+let getOrElseFrom fallback key slots cap i =
+  match Array.unsafeGet i slots with
+  | Empty -> fallback ()
+  | Full k v -> if key = k then v else getOrElseFrom fallback key slots cap (next cap i)
+
+/// The value for `key`, or the result of `fallback ()` if it is absent — like
+/// `getOr`, but the default is computed only on a miss.
+public getOrElse : (Unit -> 'v / 'e) -> 'k -> HashDict 'k 'v -> 'v / 'e
+let getOrElse fallback key d =
+  match d with
+  | HD _ slots ->
+    let cap = Array.length slots
+    if cap = 0 then fallback () else getOrElseFrom fallback key slots cap (indexFor cap key)
+example: getOrElse (fun _ -> 0) 2 (insert 2 20 empty) = 20
+forall k: getOrElse (fun _ -> 7) k empty = 7
+
+// Probe from bucket `i` for `key`, returning whether it is present.
+memberFrom : 'k -> Array (Slot 'k 'v) -> Int -> Int -> Bool
+let memberFrom key slots cap i =
+  match Array.unsafeGet i slots with
+  | Empty -> false
+  | Full k v -> if key = k then true else memberFrom key slots cap (next cap i)
+
+/// Whether `key` is present (O(1) average).
+public member : 'k -> HashDict 'k 'v -> Bool
+let member key d =
+  match d with
+  | HD _ slots ->
+    let cap = Array.length slots
+    if cap = 0 then false else memberFrom key slots cap (indexFor cap key)
+example: member 2 (insert 2 20 empty)
+forall k: member k empty = false
+
+// Insert into a table known to have a free slot, from bucket `i`: overwrite a
+// matching key's value (count unchanged) or claim the first empty slot (count + 1).
+insertFrom : 'k -> 'v -> Array (Slot 'k 'v) -> Int -> Int -> Int -> HashDict 'k 'v
+let insertFrom key value slots cap i count =
+  match Array.unsafeGet i slots with
+  | Empty -> HD (count + 1) (Array.unsafeSet i (Full key value) slots)
+  | Full k v ->
+    if key = k then
+      HD count (Array.unsafeSet i (Full key value) slots)
+    else
+      insertFrom key value slots cap (next cap i) count
+
+// Place an entry (key known absent, e.g. during a rehash) at the first empty slot
+// from bucket `i`, returning the updated slots array.
+place : 'k -> 'v -> Array (Slot 'k 'v) -> Int -> Int -> Array (Slot 'k 'v)
+let place key value slots cap i =
+  match Array.unsafeGet i slots with
+  | Empty -> Array.unsafeSet i (Full key value) slots
+  | Full _ _ -> place key value slots cap (next cap i)
+
+// Copy every entry of the old slots array into a fresh, larger one.
+rehash : Array (Slot 'k 'v) -> Int -> Int -> Array (Slot 'k 'v) -> Int -> Array (Slot 'k 'v)
+let rehash old cap i newSlots newCap =
+  if i >= cap then
+    newSlots
+  else
+    match Array.unsafeGet i old with
+    | Empty -> rehash old cap (i + 1) newSlots newCap
+    | Full k v -> rehash old cap (i + 1) (place k v newSlots newCap (indexFor newCap k)) newCap
+
+// Double the table and re-place every entry into it.
+grow : Array (Slot 'k 'v) -> Int -> Array (Slot 'k 'v)
+let grow slots cap = rehash slots cap 0 (Array.repeat (cap * 2) Empty) (cap * 2)
+
+/// Insert or replace the value for `key` (O(1) average; the table doubles when it
+/// passes 3/4 full).
+public insert : 'k -> 'v -> HashDict 'k 'v -> HashDict 'k 'v
+let insert key value d =
+  match d with
+  | HD count slots ->
+    let cap = Array.length slots
+    if cap = 0 then
+      insertFrom key value (Array.repeat initialCapacity Empty) initialCapacity (indexFor initialCapacity key) 0
+    else if count * loadDenominator >= cap * loadNumerator then
+      let bigger = grow slots cap
+      let cap2 = cap * 2
+      insertFrom key value bigger cap2 (indexFor cap2 key) count
+    else
+      insertFrom key value slots cap (indexFor cap key) count
+example: get 2 (insert 2 20 empty) = Some 20
+example: size (insert 1 10 (insert 1 99 empty)) = 1
+
+/// A dictionary of one entry.
+public singleton : 'k -> 'v -> HashDict 'k 'v
+let singleton key value = insert key value empty
+example: size (singleton 1 10) = 1
+
+// Whether bucket `k` lies cyclically in the half-open run `(hole, j]`, i.e. the
+// entry now at `j` must stay (moving it back to `hole` would break its probe
+// chain). When it does not, the entry can slide back to fill the hole.
+keepInPlace : Int -> Int -> Int -> Bool
+let keepInPlace hole k j = if hole <= j then hole < k && k <= j else hole < k || k <= j
+
+// Backward-shift the run after a removed entry so the table stays tombstone-free
+// (a hole at `hole`, scanning from `j`): close the hole at the first empty slot,
+// else pull back an entry whose probe chain allows it and move the hole forward.
+shiftBack : Array (Slot 'k 'v) -> Int -> Int -> Int -> Array (Slot 'k 'v)
+let shiftBack slots cap hole j =
+  match Array.unsafeGet j slots with
+  | Empty -> Array.unsafeSet hole Empty slots
+  | Full k v ->
+    if keepInPlace hole (indexFor cap k) j then
+      shiftBack slots cap hole (next cap j)
+    else
+      shiftBack (Array.unsafeSet hole (Full k v) slots) cap j (next cap j)
+
+// The bucket holding `key`, or `None` if a probe from its home bucket hits an
+// empty slot first.
+findSlot : 'k -> Array (Slot 'k 'v) -> Int -> Int -> Option Int
+let findSlot key slots cap i =
+  match Array.unsafeGet i slots with
+  | Empty -> None
+  | Full k v -> if key = k then Some i else findSlot key slots cap (next cap i)
+
+/// Remove `key` if present (O(1) average), shifting later collisions back so no
+/// tombstone is left behind.
+public remove : 'k -> HashDict 'k 'v -> HashDict 'k 'v
+let remove key d =
+  match d with
+  | HD count slots ->
+    let cap = Array.length slots
+    if cap = 0 then
+      HD count slots
+    else
+      match findSlot key slots cap (indexFor cap key) with
+      | None -> HD count slots
+      | Some i -> HD (count - 1) (shiftBack slots cap i (next cap i))
+example: get 2 (remove 2 (insert 2 20 (insert 1 10 empty))) = None
+example: size (remove 1 (insert 1 10 empty)) = 0
+
+/// Apply `f` to the value at `key` (if any); the absence/presence it returns
+/// decides whether to set or clear the entry.
+public update : 'k -> (Option 'v -> Option 'v) -> HashDict 'k 'v -> HashDict 'k 'v
+let update key f d =
+  match f (get key d) with
+  | None -> remove key d
+  | Some v -> insert key v d
+example: get 1 (update 1 (fun _ -> Some 5) empty) = Some 5
+
+// Collect the live entries (in unspecified slot order) onto an accumulator.
+collectFrom : Array (Slot 'k 'v) -> Int -> Int -> List ('k * 'v) -> List ('k * 'v)
+let collectFrom slots n i acc =
+  if i >= n then
+    acc
+  else
+    match Array.unsafeGet i slots with
+    | Empty -> collectFrom slots n (i + 1) acc
+    | Full k v -> collectFrom slots n (i + 1) ((k, v) :: acc)
+
+/// The entries, in unspecified (hash/probe) order. Sort the result if you need a
+/// canonical ordering.
+public toList : HashDict 'k 'v -> List ('k * 'v)
+let toList d =
+  match d with
+  | HD _ slots -> collectFrom slots (Array.length slots) 0 []
+example: List.sort (toList (fromList [(2, 20), (1, 10)])) = [(1, 10), (2, 20)]
+
+insertPair : HashDict 'k 'v -> ('k * 'v) -> HashDict 'k 'v
+let insertPair d pair =
+  match pair with
+  | (k, v) -> insert k v d
+
+/// Build a dictionary from key/value pairs (later pairs win on a repeated key).
+public fromList : List ('k * 'v) -> HashDict 'k 'v
+let fromList pairs = List.foldl insertPair empty pairs
+example: size (fromList [(1, 10), (2, 20), (1, 99)]) = 2
+
+first : ('a * 'b) -> 'a
+let first pair =
+  match pair with
+  | (a, _) -> a
+
+second : ('a * 'b) -> 'b
+let second pair =
+  match pair with
+  | (_, b) -> b
+
+/// The keys, in unspecified order.
+public keys : HashDict 'k 'v -> List 'k
+let keys d = List.map first (toList d)
+example: List.sort (keys (fromList [(2, 20), (1, 10)])) = [1, 2]
+
+/// The values, in unspecified order.
+public values : HashDict 'k 'v -> List 'v
+let values d = List.map second (toList d)
+example: List.sort (values (fromList [(2, 20), (1, 10)])) = [10, 20]
+
+/// Fold the entries in unspecified order.
+public foldl : ('k -> 'v -> 'acc -> 'acc / 'e) -> 'acc -> HashDict 'k 'v -> 'acc / 'e
+let foldl f acc d = List.foldl (fun a pair -> f (first pair) (second pair) a) acc (toList d)
+example: foldl (fun k v acc -> acc + v) 0 (fromList [(1, 10), (2, 20)]) = 30
+
+/// Transform every value (with its key); the keys (and so the layout) are
+/// preserved, building a map of the same shape.
+public map : ('k -> 'v -> 'w) -> HashDict 'k 'v -> HashDict 'k 'w
+let map f d =
+  match d with
+  | HD count slots ->
+    HD count (mapInto f slots (Array.length slots) 0 (Array.withCapacity (Array.length slots)))
+
+mapInto : ('k -> 'v -> 'w) -> Array (Slot 'k 'v) -> Int -> Int -> Array (Slot 'k 'w) -> Array (Slot 'k 'w)
+let mapInto f old n i acc =
+  if i >= n then
+    acc
+  else
+    match Array.unsafeGet i old with
+    | Empty -> mapInto f old n (i + 1) (Array.push Empty acc)
+    | Full k v -> mapInto f old n (i + 1) (Array.push (Full k (f k v)) acc)
+example: get 1 (map (fun k v -> k + v) (singleton 1 10)) = Some 11
+
+/// Keep the entries whose key/value satisfies `keep`.
+public filter : ('k -> 'v -> Bool) -> HashDict 'k 'v -> HashDict 'k 'v
+let filter keep d =
+  List.foldl (fun acc pair ->
+    if keep (first pair) (second pair) then insertPair acc pair else acc) empty (toList d)
+example: size (filter (fun k v -> v > 15) (fromList [(1, 10), (2, 20)])) = 1
+
+/// The left-biased union: every key of either map, keeping the left map's value
+/// where both have a key.
+public union : HashDict 'k 'v -> HashDict 'k 'v -> HashDict 'k 'v
+let union a b =
+  List.foldl (fun d pair -> if member (first pair) d then d else insertPair d pair) a (toList b)
+example: get 1 (union (singleton 1 10) (singleton 1 99)) = Some 10
+example: size (union (singleton 1 10) (singleton 2 20)) = 2
+
+/// The intersection: keys present in both, keeping the left map's value.
+public intersection : HashDict 'k 'v -> HashDict 'k 'v -> HashDict 'k 'v
+let intersection a b =
+  List.foldl (fun d pair -> if member (first pair) b then insertPair d pair else d) empty (toList a)
+example: size (intersection (singleton 1 10) (singleton 2 20)) = 0
+example: get 1 (intersection (insert 2 20 (singleton 1 10)) (singleton 1 99)) = Some 10
+
+/// The difference: the left map's entries whose keys are absent from the right.
+public difference : HashDict 'k 'v -> HashDict 'k 'v -> HashDict 'k 'v
+let difference a b =
+  List.foldl (fun d pair -> if member (first pair) b then d else insertPair d pair) empty (toList a)
+example: size (difference (insert 2 20 (singleton 1 10)) (singleton 1 99)) = 1
+// Laws over maps built through the public API (membership/value-based, so they do
+// not depend on the unspecified iteration order).
+forall kvs k v: get k (insert k v (fromList kvs)) = Some v
+forall kvs k: get k (remove k (fromList kvs)) = None
+forall kvs: size (fromList kvs) = List.length (toList (fromList kvs))
+forall a b k: member k (union (fromList a) (fromList b)) = (member k (fromList a) || member k (fromList b))
+forall a b k: member k (intersection (fromList a) (fromList b)) = (member k (fromList a) && member k (fromList b))
+forall a b k: member k (difference (fromList a) (fromList b)) = (member k (fromList a) && not (member k (fromList b)))
