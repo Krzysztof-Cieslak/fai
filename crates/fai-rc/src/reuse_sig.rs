@@ -200,7 +200,7 @@ fn e_children(e: &CExpr, f: &mut impl FnMut(&CExpr)) {
         | K::Drop { body, .. }
         | K::Join { body, .. }
         | K::HoleStart { body, .. } => f(body),
-        K::DataTag(base) | K::HoleClose { base, .. } => f(base),
+        K::DataTag { base, .. } | K::HoleClose { base, .. } => f(base),
         K::DataField { base, .. } => f(base),
         K::HoleFill { cell, .. } => f(cell),
         K::Local(_) | K::Lit(_) | K::Global(_) | K::MakeClosure { .. } | K::Error => {}
@@ -453,7 +453,7 @@ fn collect_forwards(e: &CExpr, out: &mut Vec<DefId>) {
         | K::Drop { body, .. }
         | K::Join { body, .. }
         | K::HoleStart { body, .. } => collect_forwards(body, out),
-        K::DataTag(base) | K::HoleClose { base, .. } => collect_forwards(base, out),
+        K::DataTag { base, .. } | K::HoleClose { base, .. } => collect_forwards(base, out),
         K::DataField { base, .. } => collect_forwards(base, out),
         K::HoleFill { cell, .. } => collect_forwards(cell, out),
         K::Local(_) | K::Lit(_) | K::Global(_) | K::MakeClosure { .. } | K::Error => {}

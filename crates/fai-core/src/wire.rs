@@ -848,8 +848,13 @@ mod tests {
         let lowered = core(&db, file, Symbol::intern(name));
 
         let module_of = |_d: DefId| "M".to_owned();
-        let wire =
-            def_to_wire(&lowered, &module_of, lowered.entry().params.len(), FnAbi::default());
+        let wire = def_to_wire(
+            &lowered,
+            &module_of,
+            lowered.entry().params.len(),
+            FnAbi::default(),
+            Vec::new(),
+        );
         let json = serde_json::to_string(&wire).unwrap();
         let decoded: WireDef = serde_json::from_str(&json).unwrap();
         let bundle = WireBundle {

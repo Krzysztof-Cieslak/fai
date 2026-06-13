@@ -988,7 +988,7 @@ impl<M: Module> Translator<'_, M> {
             ExprKind::Prim { args, .. }
             | ExprKind::MakeData { args, .. }
             | ExprKind::Recur { args } => args.iter().for_each(|a| self.collect_niche_uses(a, out)),
-            ExprKind::App { func, args } => {
+            ExprKind::App { func, args, .. } => {
                 self.collect_niche_uses(func, out);
                 args.iter().for_each(|a| self.collect_niche_uses(a, out));
             }
@@ -1030,7 +1030,7 @@ impl<M: Module> Translator<'_, M> {
             ExprKind::Prim { args, .. }
             | ExprKind::MakeData { args, .. }
             | ExprKind::Recur { args } => args.iter().for_each(|a| self.collect_niche_defs(a, out)),
-            ExprKind::App { func, args } => {
+            ExprKind::App { func, args, .. } => {
                 self.collect_niche_defs(func, out);
                 args.iter().for_each(|a| self.collect_niche_defs(a, out));
             }
@@ -1062,7 +1062,7 @@ impl<M: Module> Translator<'_, M> {
         match &e.kind {
             ExprKind::MakeData { niche, .. } => *niche,
             ExprKind::Local(l) => map.get(&l.index()).copied(),
-            ExprKind::App { func, args } => {
+            ExprKind::App { func, args, .. } => {
                 if let ExprKind::Global(def) = func.kind {
                     let arity = (self.arity_of)(def);
                     if arity > 0 && args.len() == arity {
