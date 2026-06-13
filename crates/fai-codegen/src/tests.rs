@@ -76,12 +76,26 @@ pub(crate) fn run_pap_counted(src: &str) -> (i32, String, i64) {
     (code, out, paps)
 }
 
+/// JIT-runs `src` added at a `<std>/…` path, so its body may reach the
+/// prelude-private `Prim.*` intrinsics (e.g. `Prim.hash`), returning
+/// `(exit_code, output)`.
+pub(crate) fn run_std(src: &str) -> (i32, String) {
+    let (code, out, _allocs, _closures, _paps) = run_all_counted_at("<std>/M.fai", src);
+    (code, out)
+}
+
 /// Lowers and JIT-runs `src`, returning `(exit_code, output, allocations,
 /// closure_allocations, pap_allocations)`.
 fn run_all_counted(src: &str) -> (i32, String, i64, i64, i64) {
+    run_all_counted_at("M.fai", src)
+}
+
+/// As [`run_all_counted`], but adds the entry source at `path` — pass a `<std>/…`
+/// path for a program that reaches the prelude-private `Prim.*` intrinsics.
+fn run_all_counted_at(path: &str, src: &str) -> (i32, String, i64, i64, i64) {
     let mut db = FaiDatabase::new();
     fai_types::std_lib::load_std(&mut db);
-    let id = db.add_source("M.fai".into(), src.to_owned());
+    let id = db.add_source(path.into(), src.to_owned());
     let user = db.source_file(id).unwrap();
 
     // Resolve every source id to its file and module label up front — this is
@@ -167,9 +181,15 @@ fn run_all_counted(src: &str) -> (i32, String, i64, i64, i64) {
 /// cell's drop is inlined (a reference-count branch, hence a `brif`) rather than
 /// dispatched to the runtime (a plain `fai_drop` call, no branch).
 fn function_ir(src: &str, def_name: &str) -> Vec<String> {
+    function_ir_at("M.fai", src, def_name)
+}
+
+/// As [`function_ir`], but adds the source at `path` — pass a `<std>/…` path for a
+/// definition that reaches the prelude-private `Prim.*` intrinsics.
+fn function_ir_at(path: &str, src: &str, def_name: &str) -> Vec<String> {
     let mut db = FaiDatabase::new();
     fai_types::std_lib::load_std(&mut db);
-    let id = db.add_source("M.fai".into(), src.to_owned());
+    let id = db.add_source(path.into(), src.to_owned());
     let user = db.source_file(id).unwrap();
 
     let mut files: HashMap<SourceId, SourceFile> = HashMap::new();
@@ -220,6 +240,12 @@ fn function_ir(src: &str, def_name: &str) -> Vec<String> {
 /// whose tag/box guards would otherwise pollute a whole-definition IR scan.)
 fn entry_ir(src: &str, def_name: &str) -> String {
     function_ir(src, def_name).into_iter().next().expect("entry function IR")
+}
+
+/// As [`entry_ir`], but adds the source at a `<std>/…` path so the definition may
+/// call the prelude-private `Prim.*` intrinsics (e.g. `Prim.hash`).
+fn entry_ir_std(src: &str, def_name: &str) -> String {
+    function_ir_at("<std>/M.fai", src, def_name).into_iter().next().expect("entry function IR")
 }
 
 fn main_printing(expr: &str) -> String {
@@ -3318,4 +3344,180 @@ fn array_int_push_inlines_the_append_fast_path() {
     assert!(ir.contains("icmp_imm"), "inline unique-owner (rc == 1) check:\n{ir}");
     assert!(ir.contains("ushr_imm"), "inline capacity-from-size:\n{ir}");
     assert!(ir.contains("store"), "inline slot store + length bump:\n{ir}");
+}
+
+// --- Inline structural hash (`Prim.hash`) ----------------------------------
+//
+// `Prim.hash` of an immediate/`Int`/`Float` operand compiles to an inline
+// splitmix64 finalizer (bit-identical to the runtime's `mix64`) over the immediate
+// fast path, keeping the out-of-line `fai_hash` only for boxed operands and the
+// niche carve-out. These programs live in a `<std>/` module (via `run_std`/
+// `entry_ir_std`) so the prelude-private `Prim.*` intrinsics resolve.
+
+/// The immediate `Int` encoding (`n << 1 | 1`), the runtime's `imm_int`.
+fn imm(n: i64) -> rt::Value {
+    (n << 1) | 1
+}
+
+/// JIT-runs `Prim.hash <lit>` and asserts the printed hash equals the runtime
+/// `fai_hash` of the value `make_input` builds (untagged from its immediate-`Int`
+/// result) — pinning the inline splitmix64 against the runtime's, bit for bit.
+/// `make_input` is invoked **under the shared lock, after the run**, so a boxed
+/// input it allocates is created and consumed in one locked window — never held
+/// across the run, where it would inflate the program's exit-time live count.
+#[track_caller]
+fn assert_hash_matches_runtime(lit: &str, make_input: impl FnOnce() -> rt::Value) {
+    let src = formatdoc! {r#"
+        module M
+
+        public main : Runtime -> Unit / {{ Console }}
+        let main rt = rt.console.writeLine (Int.toString (Prim.hash {lit}))
+    "#};
+    let (code, out) = run_std(&src);
+    assert_eq!(code, 0, "clean (leak-free) exit for Prim.hash {lit}");
+    let expected = {
+        let _g = lock();
+        rt::fai_hash(make_input()) >> 1
+    };
+    assert_eq!(out.trim(), expected.to_string(), "inline hash of {lit} matches fai_hash");
+}
+
+#[test]
+fn hash_int_zero_matches_runtime() {
+    assert_hash_matches_runtime("0", || imm(0));
+}
+
+#[test]
+fn hash_int_one_matches_runtime() {
+    assert_hash_matches_runtime("1", || imm(1));
+}
+
+#[test]
+fn hash_int_negative_matches_runtime() {
+    // Parenthesized: `Prim.hash -1` would parse as the infix `Prim.hash - 1`.
+    assert_hash_matches_runtime("(-1)", || imm(-1));
+}
+
+#[test]
+fn hash_int_max_immediate_matches_runtime() {
+    // 2^62 - 1: the largest value that still fits the 63-bit immediate.
+    assert_hash_matches_runtime("4611686018427387903", || imm(4611686018427387903));
+}
+
+#[test]
+fn hash_int_min_immediate_matches_runtime() {
+    // -2^62: the smallest value that still fits the immediate.
+    assert_hash_matches_runtime("(-4611686018427387904)", || imm(-4611686018427387904));
+}
+
+#[test]
+fn hash_int_boxed_overflow_matches_runtime() {
+    // 2^62 overflows the immediate, so the runtime hashes it as a boxed `Int`
+    // (`fai_box_int`); the inline path mixes the same full 64-bit value, so the two
+    // agree.
+    assert_hash_matches_runtime("4611686018427387904", || rt::fai_box_int(4611686018427387904));
+}
+
+/// JIT-runs `Prim.hash <lit> = hashAny <lit>`, where `hashAny : 'a -> Int` forces
+/// the operand through the boxed, out-of-line runtime path (a type variable is
+/// never the scalar-`Float` inline arm), asserting the inline `Float` hash agrees
+/// with it.
+#[track_caller]
+fn assert_float_hash_matches_out_of_line(lit: &str) {
+    let src = formatdoc! {r#"
+        module M
+
+        hashAny : 'a -> Int
+        let hashAny x = Prim.hash x
+
+        public main : Runtime -> Unit / {{ Console }}
+        let main rt =
+          let same = Prim.hash {lit} = hashAny {lit}
+          rt.console.writeLine (if same then "ok" else "BAD")
+    "#};
+    let (code, out) = run_std(&src);
+    assert_eq!(code, 0, "clean (leak-free) exit for float hash {lit}");
+    assert_eq!(out.trim(), "ok", "inline Float hash of {lit} matches the boxed out-of-line hash");
+}
+
+#[test]
+fn hash_float_matches_out_of_line() {
+    assert_float_hash_matches_out_of_line("1.5");
+}
+
+#[test]
+fn hash_float_zero_matches_out_of_line() {
+    assert_float_hash_matches_out_of_line("0.0");
+}
+
+#[test]
+fn hash_float_negative_matches_out_of_line() {
+    // Parenthesized: `Prim.hash -273.15` would parse as the infix `Prim.hash - 273.15`.
+    assert_float_hash_matches_out_of_line("(-273.15)");
+}
+
+#[test]
+fn hash_niche_option_uses_standard_form() {
+    // A niche `Option String` (`Some "foo"` is the bare string pointer) must be
+    // hashed in its *standard* `Some` form — matching how it is hashed once stored
+    // in a uniform slot — not as the bare payload string. `identity` launders the
+    // value into standard form; the two hashes agree only if the inline path takes
+    // the niche carve-out (converting to standard before hashing).
+    let src = indoc! {r#"
+        module M
+
+        public main : Runtime -> Unit / { Console }
+        let main rt =
+          let same = Prim.hash (Some "foo") = Prim.hash (identity (Some "foo"))
+          rt.console.writeLine (if same then "ok" else "BAD")
+    "#};
+    let (code, out) = run_std(src);
+    assert_eq!(code, 0, "clean (leak-free) exit");
+    assert_eq!(out.trim(), "ok", "a niche Some hashes as its standard form");
+}
+
+#[test]
+fn hash_int_key_inlines_the_splitmix_finalizer() {
+    // `Prim.hash` of an `Int` inlines the splitmix64 finalizer (two multiplies)
+    // over the immediate fast path — no runtime `fai_hash` call.
+    let src = indoc! {r#"
+        module M
+
+        h : Int -> Int
+        let h k = Prim.hash k
+    "#};
+    let ir = entry_ir_std(src, "h");
+    assert!(ir.contains("imul"), "inline splitmix64 multiplies:\n{ir}");
+    assert_eq!(call_count(&ir), 0, "a raw-Int hash is fully inline (no fai_hash call):\n{ir}");
+}
+
+#[test]
+fn hash_float_key_inlines_the_splitmix_finalizer() {
+    // `Prim.hash` of a `Float` reinterprets the bits (`bitcast`) and inlines the
+    // finalizer — no runtime call.
+    let src = indoc! {r#"
+        module M
+
+        h : Float -> Int
+        let h k = Prim.hash k
+    "#};
+    let ir = entry_ir_std(src, "h");
+    assert!(ir.contains("bitcast"), "inline f64->i64 bit reinterpret:\n{ir}");
+    assert!(ir.contains("imul"), "inline splitmix64 multiplies:\n{ir}");
+    assert_eq!(call_count(&ir), 0, "a scalar-Float hash is fully inline (no fai_hash call):\n{ir}");
+}
+
+#[test]
+fn hash_boxed_key_stays_out_of_line() {
+    // `Prim.hash` of an always-boxed operand (a `String`) keeps the out-of-line
+    // structural runtime call — no inline finalizer.
+    let src = indoc! {r#"
+        module M
+
+        h : String -> Int
+        let h k = Prim.hash k
+    "#};
+    let ir = entry_ir_std(src, "h");
+    assert!(!ir.contains("imul"), "no inline finalizer for a boxed operand:\n{ir}");
+    assert!(call_count(&ir) >= 1, "the structural hash is a runtime call:\n{ir}");
 }

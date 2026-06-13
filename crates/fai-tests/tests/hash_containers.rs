@@ -261,3 +261,66 @@ fn set_ops_match_hashset() {
         assert_eq!(run(&src), set_checksum(&result), "HashSet.{op}");
     }
 }
+
+// --- Niche `Option`-typed keys ---------------------------------------------
+//
+// `Option String` is niche-encoded (Scheme A: `Some s` is the bare string
+// pointer, `None` an immediate), so these exercise hashing and membership of
+// niche keys end-to-end: a key is standardized when stored in a uniform `Array`
+// slot, so a lookup must hash it the same way. The inline hash path's niche
+// carve-out is what keeps the two consistent (its unit pin is the codegen
+// `hash_niche_option_uses_standard_form` test); here the whole container must
+// agree against a Rust reference.
+
+#[test]
+fn set_option_string_keys_round_trip() {
+    // A `Some`/`None` mix with a duplicate `Some "a"`: four distinct keys, every
+    // inserted key found, an absent `Some` and the absent... (there is no second
+    // `None`) reported absent.
+    let src = "module M\n\n\
+         public main : Runtime -> Unit / { Console }\n\
+         let main rt =\n  \
+           let s = HashSet.fromList [Some \"a\", Some \"b\", None, Some \"a\", Some \"c\"]\n  \
+           let present =\n    \
+             HashSet.member (Some \"a\") s && HashSet.member (Some \"b\") s\n      \
+             && HashSet.member None s && HashSet.member (Some \"c\") s\n  \
+           let absent = not (HashSet.member (Some \"z\") s)\n  \
+           rt.console.writeLine\n    \
+             (Int.toString (HashSet.size s) ++ \" \" ++ (if present && absent then \"ok\" else \"bad\"))\n";
+    assert_eq!(run(src), "4 ok", "HashSet of Option String keys round-trips");
+}
+
+#[test]
+fn dict_option_string_keys_round_trip() {
+    // `Some "a"` inserted twice (later value wins), `None` a key in its own right,
+    // an absent key falling back to the default.
+    let src = "module M\n\n\
+         public main : Runtime -> Unit / { Console }\n\
+         let main rt =\n  \
+           let d = HashDict.fromList [(Some \"a\", 1), (Some \"b\", 2), (None, 3), (Some \"a\", 9)]\n  \
+           let va = HashDict.getOr 0 (Some \"a\") d\n  \
+           let vn = HashDict.getOr 0 None d\n  \
+           let vz = HashDict.getOr 0 (Some \"z\") d\n  \
+           rt.console.writeLine\n    \
+             (Int.toString (HashDict.size d) ++ \" \" ++ Int.toString va\n      \
+              ++ \" \" ++ Int.toString vn ++ \" \" ++ Int.toString vz)\n";
+    // size 3 (Some a, Some b, None); a -> 9 (later wins); None -> 3; z -> 0 default.
+    assert_eq!(run(src), "3 9 3 0", "HashDict of Option String keys round-trips");
+}
+
+#[test]
+fn set_option_string_keys_scale() {
+    // 500 distinct `Some "<n>"` keys (forcing several doublings/rehashes of niche
+    // keys), plus probing for present and absent keys including `None`.
+    let src = "module M\n\n\
+         public main : Runtime -> Unit / { Console }\n\
+         let main rt =\n  \
+           let s = HashSet.fromList (List.map (fun k -> Some (Int.toString k)) (List.range 0 500))\n  \
+           let present =\n    \
+             HashSet.member (Some \"0\") s && HashSet.member (Some \"250\") s\n      \
+             && HashSet.member (Some \"499\") s\n  \
+           let absent = not (HashSet.member (Some \"500\") s) && not (HashSet.member None s)\n  \
+           rt.console.writeLine\n    \
+             (Int.toString (HashSet.size s) ++ \" \" ++ (if present && absent then \"ok\" else \"bad\"))\n";
+    assert_eq!(run(src), "500 ok", "HashSet of Option String keys scales");
+}

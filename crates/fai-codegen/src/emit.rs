@@ -2631,6 +2631,7 @@ impl<M: Module> Translator<'_, M> {
             Prim::Not => Some(self.inline_not(args)),
             Prim::Eq => self.inline_eq(op, args),
             Prim::Compare => self.inline_compare(op, args),
+            Prim::Hash => self.inline_hash(op, args),
             _ => None,
         }
     }
@@ -3260,10 +3261,95 @@ impl<M: Module> Translator<'_, M> {
         }
     }
 
+    /// Inlines the structural hash when the operand is immediate-representable,
+    /// producing the same non-negative immediate `Int` as `fai_hash`: the
+    /// splitmix64 finalizer of the value's payload, masked to 62 bits.
+    /// `Bool`/`Char`/`Unit` untag to their payload and mix it bare; `Int` adds the
+    /// immediate guard and the `fai_hash` fallback (a boxed/overflowed `Int` hashes
+    /// its full 64-bit value out of line); a scalar `Float` mixes its raw bits
+    /// (matching the runtime's boxed-`Float` hash); a [`is_maybe_immediate_ty`]
+    /// operand (a type variable, or a possibly-nullary union/`List`/empty record)
+    /// takes the same guard over the structural fallback, so a generic `hash` whose
+    /// runtime value is an immediate (the common case — `Int` keys in a generic
+    /// `HashDict`) avoids the call. The always-boxed types keep the out-of-line
+    /// structural path.
+    fn inline_hash(&mut self, op: Prim, args: &[CExpr]) -> Option<Value> {
+        let oty = &args[0].ty;
+        if is_immediate_ty(oty) {
+            // `Bool`/`Char`/`Unit`: untag to the raw payload (matching the
+            // runtime's immediate `(v >> 1)`) and mix it; the result is a raw
+            // non-negative `Int`.
+            let a = self.expr(&args[0]);
+            let xa = self.untag(a);
+            let p = self.hash_payload_raw(xa);
+            Some(self.mark_raw(p))
+        } else if matches!(oty, Ty::Con(Con::Int)) {
+            let a = self.expr(&args[0]);
+            // A raw operand is already the logical payload; mix it directly.
+            if self.is_raw_int(a) {
+                let p = self.hash_payload_raw(a);
+                return Some(self.mark_raw(p));
+            }
+            // A tagged immediate inlines (untag, mix, re-tag); a boxed (overflowed)
+            // `Int` falls back to the consuming `fai_hash`, which hashes its full
+            // 64-bit value and frees it.
+            let a = self.ensure_boxed(a);
+            Some(self.guard_immediate(
+                a,
+                |s| s.prim_runtime_call(op, &[a]),
+                |s, _slow, merge| {
+                    let xa = s.untag(a);
+                    let p = s.hash_payload_raw(xa);
+                    let tagged = s.tag_int(p);
+                    s.builder.ins().jump(merge, &[tagged.into()]);
+                },
+            ))
+        } else if matches!(oty, Ty::Con(Con::Float)) {
+            // Unboxed operand: reinterpret the `f64` bits as `i64` and mix them,
+            // matching the runtime's boxed-`Float` hash (`mix64` of the raw bits),
+            // so a `Float` hashes identically whether unboxed here or boxed at the
+            // runtime fallback.
+            let a = self.expr(&args[0]);
+            let bits = self.f64_to_i64(a);
+            let p = self.hash_payload_raw(bits);
+            Some(self.mark_raw(p))
+        } else if is_maybe_immediate_ty(oty) {
+            let a = self.expr(&args[0]);
+            // A niche `Option` operand must be hashed in its *standard* form: a key
+            // stored in a uniform slot (an `Array` slot) is standardized, so
+            // hashing the bare niche payload (`Some x` is the payload `x`) would
+            // land in a different bucket and never be found. Convert an owned
+            // standard temporary and hash that (consuming it), leaving the borrowed
+            // operand for its binder to drop — mirroring [`Self::inline_compare`].
+            if self.niche_of(a).is_some() {
+                let a2 = self.comparison_std_operand(a);
+                return Some(self.prim_runtime_call(op, &[a2]));
+            }
+            // Guard on the operand being an immediate — then mix its untagged
+            // payload inline — and otherwise fall back to the structural runtime
+            // call, honouring the borrow decision reference counting made for this
+            // operand type (a type variable owned, a reference-counted union/`List`
+            // borrowed); the immediate fast arm drops nothing either way.
+            let borrowed = op.borrows_operand(oty);
+            Some(self.guard_immediate(
+                a,
+                move |s| s.prim_runtime_call_borrowing(op, borrowed, &[a]),
+                |s, _slow, merge| {
+                    let xa = s.untag(a);
+                    let p = s.hash_payload_raw(xa);
+                    let tagged = s.tag_int(p);
+                    s.builder.ins().jump(merge, &[tagged.into()]);
+                },
+            ))
+        } else {
+            None
+        }
+    }
+
     /// Produces an **owned** standard-`Option` temporary for `v` to feed a
-    /// consuming structural comparison, leaving the (borrowed) operand `v`
+    /// consuming structural comparison or hash, leaving the (borrowed) operand `v`
     /// untouched: a niche value's payload is duplicated into a fresh `Some` cell
-    /// (or `None` passes through), a standard value is duplicated. The comparison
+    /// (or `None` passes through), a standard value is duplicated. The consumer
     /// then drops the temporary; the operand's owner drops `v` at its last use.
     fn comparison_std_operand(&mut self, v: Value) -> Value {
         let owned = self.call1("fai_dup", v);
@@ -3297,6 +3383,37 @@ impl<M: Module> Translator<'_, M> {
         let ltw = self.builder.ins().uextend(types::I64, lt);
         let cmp = self.builder.ins().isub(gtw, ltw);
         self.mark_raw(cmp)
+    }
+
+    /// The splitmix64 avalanche finalizer, emitted inline and **bit-identical** to
+    /// the runtime's `mix64` (`crates/fai-runtime/src/lib.rs`) so the inline and
+    /// out-of-line hash paths agree (`hash` over an immediate must equal `fai_hash`
+    /// over the same boxed value). Operates on the raw 64-bit payload; the shifts
+    /// are logical (the runtime mixes a `u64`) and the multiplies wrap.
+    fn mix64(&mut self, z: Value) -> Value {
+        // z = (z ^ (z >> 30)) * 0xBF58_476D_1CE4_E5B9
+        let s = self.builder.ins().ushr_imm(z, 30);
+        let z = self.builder.ins().bxor(z, s);
+        let c1 = self.builder.ins().iconst(types::I64, 0xBF58_476D_1CE4_E5B9u64 as i64);
+        let z = self.builder.ins().imul(z, c1);
+        // z = (z ^ (z >> 27)) * 0x94D0_49BB_1331_11EB
+        let s = self.builder.ins().ushr_imm(z, 27);
+        let z = self.builder.ins().bxor(z, s);
+        let c2 = self.builder.ins().iconst(types::I64, 0x94D0_49BB_1331_11EBu64 as i64);
+        let z = self.builder.ins().imul(z, c2);
+        // z ^ (z >> 31)
+        let s = self.builder.ins().ushr_imm(z, 31);
+        self.builder.ins().bxor(z, s)
+    }
+
+    /// `mix64(payload)` masked to 62 bits — the raw, non-negative hash an immediate
+    /// operand produces, matching the runtime's `hash_to_imm(mix64(payload))`
+    /// before the immediate tag. The mask keeps the result inside the 63-bit
+    /// immediate range (so a subsequent `tag_int` never overflows) and
+    /// non-negative (so a container can mask/modulo it directly).
+    fn hash_payload_raw(&mut self, payload: Value) -> Value {
+        let h = self.mix64(payload);
+        self.builder.ins().band_imm(h, 0x3FFF_FFFF_FFFF_FFFF)
     }
 
     fn application(

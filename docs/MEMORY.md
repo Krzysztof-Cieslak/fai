@@ -2923,8 +2923,55 @@ Editor integration:
     and leak-free exit; an allocation test pinning the unique-build-is-in-place
     (zero copy-on-write) contract; and the nine migrated `algorithms` oracles. Adds
     `Prim.hash` across resolve/types/core/codegen/runtime, `std/HashDict.fai` and
-    `std/HashSet.fai`, and the `Prelude` re-exports. The hash-container half of the
-    associative-container cluster (#137).
+  `std/HashSet.fai`, and the `Prelude` re-exports. The hash-container half of the
+  associative-container cluster (#137).
+
+- **D130 Inline the structural hash (`Prim.hash`) for immediate/`Int`/`Float`
+  operands.** The hash containers (D129) compute a bucket on every
+  `insert`/`get`/`member`/probe via `indexFor cap key = Int.and (Prim.hash key)
+  (cap - 1)`, but `Prim.hash` always lowered to an out-of-line
+  `fai_hash`/`fai_hash_borrowed` call — one call per operation whose body is just a
+  splitmix64 finalizer. Codegen now compiles `Prim.hash` of an immediate-shaped
+  operand **inline** (`inline_hash` in `fai-codegen`'s `emit`, the peer of
+  `inline_compare`/`inline_eq`), mirroring their operand ladder: a `Bool`/`Char`/
+  `Unit` untags its payload and mixes it bare; an `Int` mixes a raw operand
+  directly and guards a tagged immediate over the `fai_hash` fallback (a boxed,
+  overflowed `Int` hashes its full 64-bit value out of line); a scalar `Float`
+  reinterprets its bits and mixes them (matching the runtime's boxed-`Float` hash);
+  a possibly-immediate operand (a type variable, nullary-bearing union, `List`,
+  empty record — the generic container's key) guards the immediate fast path over
+  the structural call, honouring the same borrow decision reference counting made;
+  and an always-boxed operand (`String`, record, tuple, `Array`, interface) keeps
+  the out-of-line call.
+  - **Bit-identity is the contract.** The inline finalizer (`mix64`/
+    `hash_payload_raw`) is emitted instruction-for-instruction equal to the
+    runtime's `mix64` — the splitmix64 avalanche (logical shifts, wrapping
+    multiplies) masked to 62 bits, then tagged — so the inline and out-of-line
+    paths agree (a key hashed inline at insert finds the same bucket as one hashed
+    out of line elsewhere). The result is a non-negative immediate `Int`.
+  - **Niche carve-out (the correctness pitfall).** A niche `Option` operand is
+    *never* hashed on its wrapper-free encoding: a niche `Some x` is the bare
+    payload, but a key stored in a uniform `Array` slot is standardized (hashed as
+    `tag + field`), so hashing the bare payload would land in a different bucket and
+    never be found. The inline path converts an owned standard temporary and hashes
+    that (consuming it), exactly as `inline_compare` does. Through the generic
+    containers the key is a type variable (standardized at the boundary), so this
+    branch is defensive parity rather than a path the containers reach.
+  - **Cache.** A codegen-only change leaves the rc'd-IR fingerprint untouched, so
+    the `CODEGEN_CONFIG` stamp gains a `hash-inlined` token to invalidate stale
+    cached objects.
+  - **Float in scope (unlike the issue's initial sketch).** A scalar `Float`
+    operand inlines too (no box + call), since the bit-reinterpret machinery
+    already exists for `=`/`compare`.
+  - **Validated** by JIT bit-identity tests (an immediate/boxed `Int`'s inline hash
+    equals the runtime `fai_hash` of the same value, bit for bit, including
+    negatives), a `Float` agreement test (inline equals the boxed out-of-line
+    path), a niche carve-out pin (a niche `Some "…"` hashes as its standard form,
+    matching a laundered copy), codegen IR-shape tests (the inline finalizer for
+    `Int`/`Float`, the runtime call kept for a `String`), and `HashDict`/`HashSet`
+    round-trips over niche `Option String` keys alongside the existing
+    Fai-vs-Rust scale suite. Issue #173 (under #136); complements #138 (inline
+    `Array` access), the sibling per-operation call in the same loop.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.
