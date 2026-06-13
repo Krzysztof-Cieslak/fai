@@ -1,37 +1,37 @@
 module Sieve
 
-// The Sieve of Eratosthenes by collecting composite numbers into an ordered `Set`,
-// then counting the survivors in [2, n). This exercises `Set` insertion and
-// membership in a number-theoretic access pattern. Used by the Rust-vs-Fai runtime
-// benchmark.
+// The Sieve of Eratosthenes by collecting composite numbers into a `HashSet`,
+// then counting the survivors in [2, n). This exercises O(1)-average `HashSet`
+// insertion and membership in a number-theoretic access pattern. Used by the
+// Rust-vs-Fai runtime benchmark.
 // Mark p's multiples from m up to n into the composite set. Tail-recursive.
-markFrom : Int -> Int -> Int -> Set Int -> Set Int
+markFrom : Int -> Int -> Int -> HashSet Int -> HashSet Int
 let markFrom m p n composites =
-  if m >= n then composites else markFrom (m + p) p n (Set.insert m composites)
+  if m >= n then composites else markFrom (m + p) p n (HashSet.insert m composites)
 
 // Sieve from p: if p is still prime, mark its multiples from p², then continue.
-sieveFrom : Int -> Int -> Set Int -> Set Int
+sieveFrom : Int -> Int -> HashSet Int -> HashSet Int
 let sieveFrom p n composites =
   if p * p >= n then
     composites
-  else if Set.member p composites then
+  else if HashSet.member p composites then
     sieveFrom (p + 1) n composites
   else
     sieveFrom (p + 1) n (markFrom (p * p) p n composites)
 
 // Count the numbers in [i, n) absent from the composite set. Tail-recursive.
-countFrom : Int -> Int -> Set Int -> Int -> Int
+countFrom : Int -> Int -> HashSet Int -> Int -> Int
 let countFrom i n composites acc =
   if i >= n then
     acc
-  else if Set.member i composites then
+  else if HashSet.member i composites then
     countFrom (i + 1) n composites acc
   else
     countFrom (i + 1) n composites (acc + 1)
 
 /// The benchmark workload: the number of primes below n.
 public run : Int -> Int
-let run n = countFrom 2 n (sieveFrom 2 n Set.empty) 0
+let run n = countFrom 2 n (sieveFrom 2 n HashSet.empty) 0
 example: run 10 = 4
 
 public main : Runtime -> Unit / { Console }

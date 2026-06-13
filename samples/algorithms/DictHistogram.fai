@@ -1,22 +1,22 @@
 module DictHistogram
 
-// Tally `n` keys into an ordered `Dict` (a balanced-ish binary search tree),
-// incrementing each bucket's count, then weigh the result. Every insert walks the
-// tree comparing keys structurally, so this measures `Dict` build/query and the
-// `compare` hot path. Used by the Rust-vs-Fai runtime benchmark.
+// Tally `n` keys into a `HashDict`, incrementing each bucket's count, then weigh
+// the result. Each get+insert hashes the key to a bucket in O(1) average, so this
+// measures `HashDict` build/query and the hash hot path. Used by the Rust-vs-Fai
+// runtime benchmark.
 buckets : Int
 let buckets = 256
 
 // Insert i % buckets for i in [0, n), accumulating a count per bucket. The
 // recursion threads the dictionary and is tail-recursive, so it compiles to a loop.
-tally : Int -> Int -> Dict Int Int -> Dict Int Int
+tally : Int -> Int -> HashDict Int Int -> HashDict Int Int
 let tally i n d =
   if i >= n then
     d
   else
     let key = i % buckets
-    let current = Dict.getOr 0 key d
-    tally (i + 1) n (Dict.insert key (current + 1) d)
+    let current = HashDict.getOr 0 key d
+    tally (i + 1) n (HashDict.insert key (current + 1) d)
 
 // Weigh one (key, count) entry into the running total: an order-independent sum.
 addWeight : Int -> (Int * Int) -> Int
@@ -26,7 +26,7 @@ let addWeight acc entry =
 
 /// The benchmark workload: the count-weighted sum of an n-key histogram.
 public run : Int -> Int
-let run n = List.foldl addWeight 0 (Dict.toList (tally 0 n Dict.empty))
+let run n = List.foldl addWeight 0 (HashDict.toList (tally 0 n HashDict.empty))
 example: run 3 = 3
 
 public main : Runtime -> Unit / { Console }

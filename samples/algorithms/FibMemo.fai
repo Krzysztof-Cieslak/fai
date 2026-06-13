@@ -1,31 +1,31 @@
 module FibMemo
 
-// Fibonacci by top-down memoization: results are cached in a `Dict` threaded
+// Fibonacci by top-down memoization: results are cached in a `HashDict` threaded
 // through the recursion, so each value is computed once and looked up thereafter.
-// This exercises `Dict` get/insert inside recursion and contrasts the naive,
-// exponential `Fib`. Sums wrap on overflow (two's complement), like the reference.
-// Used by the Rust-vs-Fai runtime benchmark.
+// This exercises O(1)-average `HashDict` get/insert inside recursion and contrasts
+// the naive, exponential `Fib`. Sums wrap on overflow (two's complement), like the
+// reference. Used by the Rust-vs-Fai runtime benchmark.
 // Return fib(k) and the (possibly extended) memo. A hit reads the cached value
-// with a single `Dict.get`; its niche `Option Int` result allocates no wrapper,
-// and the borrowing lookup leaves the memo uniquely owned so a miss's inserts
-// recycle it in place.
-fibMemo : Int -> Dict Int Int -> (Int * Dict Int Int)
+// with a single `HashDict.get`; its niche `Option Int` result allocates no
+// wrapper, and the borrowing lookup leaves the memo uniquely owned so a miss's
+// inserts recycle it in place.
+fibMemo : Int -> HashDict Int Int -> (Int * HashDict Int Int)
 let fibMemo k memo =
   if k < 2 then
     (k, memo)
   else
-    match Dict.get k memo with
+    match HashDict.get k memo with
     | Some v -> (v, memo)
     | None ->
       match fibMemo (k - 1) memo with
       | (a, m1) ->
         match fibMemo (k - 2) m1 with
-        | (b, m2) -> (a + b, Dict.insert k (a + b) m2)
+        | (b, m2) -> (a + b, HashDict.insert k (a + b) m2)
 
 /// The benchmark workload: the nth Fibonacci number (wrapping), memoized.
 public run : Int -> Int
 let run n =
-  match fibMemo n Dict.empty with
+  match fibMemo n HashDict.empty with
   | (v, _) -> v
 example: run 10 = 55
 

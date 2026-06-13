@@ -1,23 +1,26 @@
 module OptionPath
 
-// Following "next pointer" chains through a lookup table. The table is an
-// association list; `lookup` returns the niche `Option Int` (a bare-`Int`
-// payload, so `Some` needs no heap cell) — `None` at a dead end, `Some next`
-// otherwise. A per-walk fuel bounds the (cyclic) table so every walk terminates.
-// Linear association-list lookup.
-lookup : Int -> List (Int * Int) -> Option Int
-let lookup key pairs =
-  match pairs with
-  | [] -> None
-  | (k, v) :: rest -> if k = key then Some v else lookup key rest
+// Following "next pointer" chains through a lookup table. The table is a
+// `HashDict`; `lookup` returns the niche `Option Int` (a bare-`Int` payload, so
+// `Some` needs no heap cell) — `None` at a dead end, `Some next` otherwise — in
+// O(1) average rather than the linear scan an association list would pay. A
+// per-walk fuel bounds the (cyclic) table so every walk terminates. Used by the
+// Rust-vs-Fai runtime benchmark.
+// O(1)-average table lookup.
+lookup : Int -> HashDict Int Int -> Option Int
+let lookup key table = HashDict.get key table
 
 // Build the table: key `i` points to `(i * 2 + 1) % size`, for `i` in `[0, size)`.
-buildTable : Int -> Int -> List (Int * Int)
-let buildTable i size = if i >= size then [] else (i, (i * 2 + 1) % size) :: buildTable (i + 1) size
+buildTable : Int -> Int -> HashDict Int Int -> HashDict Int Int
+let buildTable i size table =
+  if i >= size then
+    table
+  else
+    buildTable (i + 1) size (HashDict.insert i ((i * 2 + 1) % size) table)
 
 // Walk from `key`, summing visited keys, until the fuel runs out or a key is
 // missing (the niche `None`).
-walk : List (Int * Int) -> Int -> Int -> Int -> Int
+walk : HashDict Int Int -> Int -> Int -> Int -> Int
 let walk table key fuel acc =
   if fuel <= 0 then
     acc
@@ -28,14 +31,14 @@ let walk table key fuel acc =
 
 // Sum the walk totals from each start `i % (size * 2)` over `[0, n)`; half the
 // starts are out of range and stop immediately.
-sumWalks : List (Int * Int) -> Int -> Int -> Int -> Int
+sumWalks : HashDict Int Int -> Int -> Int -> Int -> Int
 let sumWalks table i n acc =
   if i >= n then acc else sumWalks table (i + 1) n (acc + walk table (i % 200) 100 0)
 
 /// The benchmark workload: the total of `n` bounded next-pointer walks over a
 /// 100-entry table.
 public run : Int -> Int
-let run n = sumWalks (buildTable 0 100) 0 n 0
+let run n = sumWalks (buildTable 0 100 HashDict.empty) 0 n 0
 example: run 4 = 19350
 
 public main : Runtime -> Unit / { Console }
