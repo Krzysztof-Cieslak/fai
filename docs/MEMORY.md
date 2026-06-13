@@ -2619,6 +2619,53 @@ Editor integration:
     memory). Char-indexing means the win is *no byte copy* — asymptotic for `drop`
     (the kept suffix is neither scanned nor copied), a constant factor for the
     scanning ops.
+- **D126 Niche (wrapper-free) representation for a monomorphic `Option`, plus
+  fused get-or-default accessors (closes #102).** `Some x` previously always
+  allocated a one-field cell. A **monomorphic** `Option` is now encoded without it,
+  by one of two schemes decided from the payload type at lowering:
+  - **Scheme A — always-boxed payload** (`String`, a tuple, a record, another
+    boxed ADT): `None` is the immediate `1` and `Some x` is the payload pointer
+    unchanged. A boxed payload is never an immediate, so the two never collide.
+  - **Scheme B — the payload may itself be an immediate** (`Int`, `Bool`, `Char`,
+    `List`, a nullary-bearing union, …): `Some x` is `x` in its uniform
+    representation and `None` is a single **immortal, shared sentinel object** of a
+    new `KIND_NONE` heap kind (so all `None`s are pointer-equal). The sentinel is a
+    leaked, uncounted, writable allocation (`fai_none_value`) — not a Rust `static`
+    (reference-count mutation would fault read-only memory) and not a normal
+    allocation (it must not trip the leak counter).
+
+  The scheme is carried on the IR's data nodes (`MakeData`/`DataTag`/`DataField`
+  gain a `niche` field), so it **survives the object cache's wire form** and is
+  part of the content-addressed fingerprint (a niche and a standard def must not
+  share an object). It is **erased where the value crosses a uniform slot** — a
+  generic position, a closure environment, an `apply_n`/first-class argument or
+  result — via runtime conversions (`fai_niche_{a,b}_to_std` /
+  `fai_std_to_niche_{a,b}`); the first-class wrapper bridges the ABI.
+  - **Owned, not borrowed.** A niche `Option` parameter is always passed **owned**
+    (the borrow signature never borrows one): a borrowed niche argument would force
+    the caller to convert a *duplicate* (the conversion consumes its input), so
+    keeping it owned lets the callee drop it cheaply — an immediate `Some`, or the
+    immortal sentinel. A niche value flowing into a *generic* function's borrowed
+    parameter still converts a duplicate.
+  - **Comparison converts first.** A niche value and a standard value of the same
+    type have incomparable encodings, so `=`/`compare` convert a niche operand to
+    the standard form before comparing; `KIND_NONE` also gets runtime equality and
+    ordering cases (`None = None`; `None` sorts before any `Some`, matching the
+    declaration order). The reuse pass excludes a niche `Some` (it is wrapper-free,
+    so there is no cell to reset).
+  - **Scope.** **Nesting is not niche-encoded** (an `Option (Option …)` payload
+    uses the standard representation) — which is why a single global sentinel
+    suffices rather than per-type ones. **`Result` keeps its standard two-cell
+    representation**; instead, the lookup-and-default idioms get **fused
+    get-or-default accessors** that never materialize the intermediate `Option`:
+    `Dict.getOr`/`getOrElse`/`member`, `Option.getOrElse`, and
+    `Result.withDefault`/`getOrElse`/`toOption`. (A `getOrCompute` taking a thunk
+    was considered and dropped: a cross-file callback overflowed the stack on deep
+    memoization; `FibMemo` uses `member` + `getOr` instead.)
+  - **Measured.** Three Option-heavy registry algorithms — `OptionEval` (a safe
+    evaluator threading `Option Int` through binds), `OptionPath` (association-list
+    next-pointer walks), and `OptionTreeFind` (binary-search-tree lookups) — bench
+    the Scheme-B path against Rust.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.
