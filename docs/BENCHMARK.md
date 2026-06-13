@@ -126,19 +126,20 @@ performance change is measured broadly rather than against a handful of cases:
   fallback), `merge_sort`, `quicksort`, `matrix_multiply` (nested lists),
   `fold_pipeline` (closures / first-class calls), `nqueens` and `fannkuch`
   (backtracking / permutations);
-- **persistent maps & sets** — `dict_histogram`, `set_dedup`, `sieve`,
-  `graph_bfs` (`Dict`+`Set`+`List`), `union_find`, `game_of_life` (`(Int*Int)`
-  tuple keys);
+- **hash maps & sets** — `dict_histogram`, `set_dedup`, `sieve`, `option_path`,
+  `graph_bfs` (`HashDict`+`HashSet`+`List`), `union_find`, `game_of_life`
+  (`(Int*Int)` tuple keys); all over the unordered `HashDict`/`HashSet`;
 - **strings & ADTs** — `word_count`, `json_serialize`, `expr_eval` (a recursive
   parser/evaluator threading `Option`);
 - **records & floats** — `particles` and `nbody` (records + `{ r with … }`),
   `spectral_norm` and `mandelbrot` (float reductions);
-- **dynamic programming** — `levenshtein`, `coin_change`, `fib_memo` (`Dict` memo);
+- **dynamic programming** — `levenshtein`, `coin_change`, `fib_memo` (`HashDict` memo);
 - **interface dispatch** — `interface_dispatch`.
 
-Some `Dict`/`Set` workloads insert keys in sorted order, which the unbalanced
-binary-search-tree backing `std/Dict`/`std/Set` degenerates into a linear chain
-(O(n²)); their sizes are kept modest for that reason.
+The associative-container workloads use the unordered `HashDict`/`HashSet`
+(O(1)-average open-addressing tables), so they no longer degenerate on sorted
+insertion the way the ordered BST-backed `Dict`/`Set` would; their sizes are kept
+modest only for stable medians.
 
 ### "JIT" and "AOT" describe how *Fai* is compiled — not Rust
 
@@ -252,8 +253,7 @@ subset; the registry is the full list):
 
 The sizes vary widely by algorithm: a few (`nqueens`, `ackermann`, `fannkuch`,
 `matrix_multiply`) are tens, not thousands, because their cost grows steeply, and
-the sorted-key `Dict`/`Set` workloads are kept modest because the unbalanced tree
-degenerates on sorted input.
+the hash-container workloads are kept modest only for stable medians.
 
 **2. Different measurement scope.** `algorithms_jit` times a **pure in-process
 function call**; `algorithms_aot` **spawns a whole subprocess** (fork/exec +
@@ -321,9 +321,9 @@ is closest to the pure size factor.
   `Vec` oracle *on purpose* — it sorts a Fai `List` against the same `Vec` baseline
   as `MergeSort`'s `Array`, so the gap between the two samples' ratios isolates the
   in-Fai linked-vs-array sort cost; and **`JsonSerialize`** (2-element ADT children
-  joined into a string) and **`GraphBFS`** (the cost is the `Dict`/`Set`; the `List`
-  is only the BFS frontier) keep a `List` whose container is immaterial because
-  another structure dominates.
+  joined into a string) and **`GraphBFS`** (the cost is the `HashDict`/`HashSet`; the
+  `List` is only the BFS frontier) keep a `List` whose container is immaterial
+  because another structure dominates.
 
 ### Keeping the two sides in lockstep
 
@@ -339,7 +339,6 @@ directly, so they pick up the new algorithm automatically; the
 `registry_is_fully_covered` test guards the hand-maintained lists — it fails if a
 registered algorithm is missing from either runtime bench or from the validation
 tests. Keep `aot_size` small enough that running `main` once stays fast (the
-validation test runs it under the JIT), especially for super-linear or
-sorted-key-`Dict` workloads.
+validation test runs it under the JIT), especially for super-linear workloads.
 
 [divan]: https://docs.rs/divan
