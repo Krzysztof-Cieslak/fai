@@ -2815,5 +2815,63 @@ Editor integration:
     `FoldPipeline`/`SpectralNorm`), and the firewall/edit-churn `perf_guards` test.
     The deforestation half of #85 (the array-backed representation half was #111).
 
+- **D129 Hash-based associative containers (`HashDict`/`HashSet`) over a structural
+  hash primitive, open-addressed and `Array`-backed.** std's only map/set was the
+  O(log n) weight-balanced BST (D116); the associative-container benchmarks (a
+  whole cluster of the Fai-vs-Rust gap) were dominated by that algorithmic +
+  representation gap against Rust's flat `HashMap`. Add an unordered O(1)-average
+  family alongside the ordered one.
+  - **Hashing is a structural primitive, not an interface.** A new `Prim.hash`
+    (runtime `fai_hash`/`fai_hash_borrowed`) mirrors `Prim.compare`/`fai_equal`: a
+    borrowing recursive walk over the uniform value representation, kind-dispatched
+    on the descriptor, that **agrees with structural equality** (`a = b` ⇒
+    `hash a = hash b`) — Ints by logical value, `Float`/scalar slots by raw bits,
+    inline-and-slice strings by content, data cells by tag + fields, arrays by
+    length + elements, the niche `None` sentinel like a standard `None`. It returns
+    a non-negative immediate `Int` (a splitmix64 finalizer, masked to 62 bits so it
+    never boxes). Chosen over a user-facing `Hash` interface for the same reasons
+    `Dict`/`Set` use structural `compare` rather than an `Ord` dictionary:
+    consistency, no per-key-type instance burden, and it works on tuple/ADT keys
+    with no user code. Prelude-private (`Prim.*`, std-only), consumed by the
+    containers; `borrows_operand` so hashing a key does not consume it.
+  - **Open addressing, `Array`-backed, copy-on-share — "like `Array`", not a
+    persistent trie.** Each container is an opaque single-constructor wrapper of a
+    live count and a power-of-two `Array` of slots (`HD Int (Array (Slot 'k 'v))`),
+    with a private `Slot = Empty | Full …`. Linear probing; backward-shift deletion
+    (so the slot type stays two-state — no tombstones touching the hot paths).
+    Index is `hash & (cap-1)`; grow (double, rehash) past load 3/4; the empty
+    container holds a zero-length array and allocates on first insert. Value
+    semantics come for free from `Array`: a uniquely-owned table mutates slots in
+    place (a threaded build allocates only the per-entry `Full` cell), a shared one
+    copies. The inspect-only `get`/`getOr`/`member` only read slots, so borrow
+    inference lends the table — a `get`-then-`insert` step stays in place. A HAMT
+    was rejected: worse constant factors and it does not match the Perceus in-place
+    model the benchmarks reward.
+  - **`Slot` (one boxed cell per entry) over parallel arrays.** `Empty` is a
+    nameable nullary immediate, so the backing array is `Array.repeat cap Empty`
+    with no per-empty-slot heap cell and RC-clean drops; an occupied slot is one
+    `Full` cell (tag + key [+ value]) — one allocation per entry, cheaper than a
+    5-field `DictNode`. The alternative (parallel `keys`/`vals`/control arrays with
+    no per-entry box) needs a generic "array of a chosen immediate" intrinsic and
+    delicate RC for the uninitialized slots; left as **future work** (it intersects
+    the "scalarize `Array` elements" and inline-array-access items), since the
+    boxed-`Slot` form already turns O(log n)-with-`compare` into O(1)-with-`hash`.
+  - **Iteration order is unspecified but deterministic** (slot/probe order, a pure
+    function of the operation sequence — no per-run seed or pointer addresses), so
+    `HashDict`/`HashSet` omit the ordered-only operations (`foldr`, range, a sorted
+    `toList`); the ordered `Dict`/`Set` remain for those. Container `=` compares
+    the representation, not the contents, for both families (different layouts/balances
+    of the same entries differ), so contents are compared via a canonical form
+    (sorted `toList`); the laws are membership-based to avoid order.
+  - **Validation.** Runtime unit tests for the hash/equality agreement across every
+    kind; the containers' own `example`/`forall` laws (insert/remove/member, size,
+    set ops) under property testing; a scale suite vs Rust `HashMap`/`HashSet`
+    (sorted/reverse/scrambled, removal, set ops) with order-independent checksums
+    and leak-free exit; an allocation test pinning the unique-build-is-in-place
+    (zero copy-on-write) contract; and the nine migrated `algorithms` oracles. Adds
+    `Prim.hash` across resolve/types/core/codegen/runtime, `std/HashDict.fai` and
+    `std/HashSet.fai`, and the `Prelude` re-exports. The hash-container half of the
+    associative-container cluster (#137).
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.
