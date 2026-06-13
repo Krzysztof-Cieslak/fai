@@ -39,7 +39,7 @@
 use std::sync::Arc;
 
 use fai_core::ir::{CExpr, CoreFn, ExprKind as K, FieldIndex, LoweredDef};
-use fai_core::{NicheKind, helper_inlined, reassociate_concat};
+use fai_core::{NicheKind, fuse_def, reassociate_concat};
 use fai_db::{Db, SourceFile};
 use fai_resolve::{DefId, LocalId};
 use fai_syntax::Symbol;
@@ -68,18 +68,20 @@ type Locals = FxHashSet<LocalId>;
 /// Inserts reference-count operations into `name`'s lowered definition.
 #[salsa::tracked]
 pub fn rc(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
-    // Read the fully-inlined Core: primitive re-export wrappers and small
-    // non-recursive helpers are already folded in, so reference counting balances
-    // the merged body directly and reuse analysis can recycle a freed cell into a
-    // construction that came from a helper (and self-/callee borrow signatures,
-    // read from the same inlined form below, stay consistent with this body).
-    let lowered = helper_inlined(db, file, name);
+    // Read the fused, fully-inlined Core: primitive re-export wrappers and small
+    // non-recursive helpers are folded in, and recognized combinator pipelines are
+    // rewritten to calls to synthesized loops (the loops themselves are emitted by
+    // the driver, like a mutual-recursion combined loop). Reference counting
+    // balances the merged body directly and reuse analysis can recycle a freed cell
+    // into a construction that came from a helper (and self-/callee borrow
+    // signatures, read from the same inlined form below, stay consistent).
+    let lowered = fuse_def(db, file, name);
     // Mark each non-escaping capturing closure for stack allocation before
     // reference counting (which preserves the allocation flag). Escape analysis
     // leaves reference counting unchanged — only the cell's storage and whether it
     // is freed differ — so this is a representation choice layered on the same
     // dup/drop discipline.
-    let mut lowered = (*lowered).clone();
+    let mut lowered = lowered.body.clone();
     mark_escaping_closures(db, &mut lowered);
     // The borrow signature of `name` itself (the entry function's parameters): a
     // borrowed parameter is treated like a capture — never dropped, duplicated on

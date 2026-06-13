@@ -180,10 +180,30 @@ pub fn object_code(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<Vec<u8>> 
     // definition (the cache firewall).
     let lowered = rc_emit(db, file, name);
     let namer = |d: DefId| symbol_base(db, d);
-    let arity = |d: DefId| arity_of(db, d);
-    let abi = |d: DefId| abi_of(db, d);
-    let borrows = |d: DefId| borrows_of(db, d);
+    // This def's body may direct-call its synthesized deforestation loops; those
+    // are external symbols (emitted separately by the driver), so the call must be
+    // marshalled with the loop's real arity/ABI rather than the (absent) source
+    // signature's.
+    let floops = fusion_loop_abis(db, file, name);
+    let arity = |d: DefId| floops.get(&d).map_or_else(|| arity_of(db, d), |x| x.0);
+    let abi = |d: DefId| floops.get(&d).map_or_else(|| abi_of(db, d), |x| x.1.clone());
+    let borrows = |d: DefId| if floops.contains_key(&d) { Vec::new() } else { borrows_of(db, d) };
     Arc::new(object_for_def(&lowered, &namer, &arity, &abi, &borrows))
+}
+
+/// The arity and ABI of each synthesized deforestation loop a definition's body
+/// direct-calls (its own `fuse#…` loops), so the cached object marshals those
+/// register-ABI calls correctly.
+fn fusion_loop_abis(
+    db: &dyn Db,
+    file: SourceFile,
+    name: Symbol,
+) -> FxHashMap<DefId, (usize, FnAbi)> {
+    fai_core::fuse_def(db, file, name)
+        .loops
+        .iter()
+        .map(|fl| (fl.lowered.def, (fl.arity, fl.abi.clone())))
+        .collect()
 }
 
 /// The cached relocatable object holding only a definition's token-taking
@@ -194,9 +214,10 @@ pub fn object_code(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<Vec<u8>> 
 pub fn reuse_object_code(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<Vec<u8>> {
     let lowered = rc_emit(db, file, name);
     let namer = |d: DefId| symbol_base(db, d);
-    let arity = |d: DefId| arity_of(db, d);
-    let abi = |d: DefId| abi_of(db, d);
-    let borrows = |d: DefId| borrows_of(db, d);
+    let floops = fusion_loop_abis(db, file, name);
+    let arity = |d: DefId| floops.get(&d).map_or_else(|| arity_of(db, d), |x| x.0);
+    let abi = |d: DefId| floops.get(&d).map_or_else(|| abi_of(db, d), |x| x.1.clone());
+    let borrows = |d: DefId| if floops.contains_key(&d) { Vec::new() } else { borrows_of(db, d) };
     Arc::new(reuse_object_for_def(&lowered, &namer, &arity, &abi, &borrows))
 }
 
@@ -319,6 +340,40 @@ impl ProgramGroups {
 fn rc_owned(db: &dyn Db, lowered: &LoweredDef) -> LoweredDef {
     let n = lowered.entry().params.len();
     rc_lowered(db, lowered, &BorrowSig(vec![false; n]))
+}
+
+/// The synthesized deforestation loops for a reachable set: one self-tail-recursive
+/// loop per fused pipeline, reference-counted in memory (like the mutual-recursion
+/// combined loops) and emitted at assembly time. They have no source binding, so
+/// they are invisible to source-level reachability and carried here instead.
+pub(crate) struct ProgramFusion {
+    /// The reference-counted loops (deduplicated), in discovery order.
+    pub(crate) loops: Vec<LoweredDef>,
+    /// Each loop's native ABI (raw scalars for `Int`/`Float` state), for direct
+    /// callers and code generation.
+    pub(crate) abi: FxHashMap<DefId, FnAbi>,
+    /// Each loop's runtime arity.
+    pub(crate) arity: FxHashMap<DefId, usize>,
+}
+
+/// Gathers the synthesized fusion loops introduced when compiling a reachable set:
+/// each reachable definition contributes the loops its pipelines fused to.
+pub(crate) fn program_fusion(db: &dyn Db, reachable: &[DefId]) -> ProgramFusion {
+    let mut loops = Vec::new();
+    let mut abi = FxHashMap::default();
+    let mut arity = FxHashMap::default();
+    let mut seen = FxHashSet::default();
+    for &def in reachable {
+        let Some(file) = db.source_file(def.file) else { continue };
+        for fl in &fai_core::fuse_def(db, file, def.name).loops {
+            if seen.insert(fl.lowered.def) {
+                loops.push(rc_owned(db, &fl.lowered));
+                abi.insert(fl.lowered.def, fl.abi.clone());
+                arity.insert(fl.lowered.def, fl.arity);
+            }
+        }
+    }
+    ProgramFusion { loops, abi, arity }
 }
 
 /// Computes the mutual-recursion flattening for a reachable set: the wrappers for
@@ -455,20 +510,38 @@ pub fn build_native(db: &dyn Db, file: SourceFile, out: &Utf8Path) -> BuildOutco
     // combined loop per group (built here, like the `fai_main` trampoline, so the
     // cached `object_code` path stays untouched for ordinary definitions).
     let groups = program_groups(db, &reachable);
+    // Synthesized deforestation loops (one per fused pipeline), emitted here like
+    // the combined loops so the cached `object_code` path stays untouched.
+    let fusion = program_fusion(db, &reachable);
     let normal: Vec<DefId> = reachable.iter().copied().filter(|d| !groups.is_member(*d)).collect();
     let mut objects = build_objects(db, &normal);
     let namer = |d: DefId| symbol_base(db, d);
-    let arity = |d: DefId| groups.arity.get(&d).copied().unwrap_or_else(|| arity_of(db, d));
-    // A member's wrapper presents the member's ABI; the synthetic combined loop is
-    // schemeless but **direct-called** by member wrappers, so it takes the register
-    // ABI with all-boxed (uniform `i64`) slots.
-    let abi = |d: DefId| {
-        groups.arity.get(&d).map_or_else(|| abi_of(db, d), |&n| FnAbi::register_uniform(n))
+    let arity = |d: DefId| {
+        (groups.arity.get(&d))
+            .or_else(|| fusion.arity.get(&d))
+            .copied()
+            .unwrap_or_else(|| arity_of(db, d))
     };
-    // A synthetic combined loop has no source binding, so it borrows nothing; every
-    // other callee reports its real borrow signature.
+    // A member's wrapper presents the member's ABI; the synthetic combined loop is
+    // schemeless but **direct-called** by member wrappers (register ABI, all-boxed
+    // slots); a fusion loop reports its own raw-scalar register ABI.
+    let abi = |d: DefId| {
+        if let Some(&n) = groups.arity.get(&d) {
+            FnAbi::register_uniform(n)
+        } else if let Some(a) = fusion.abi.get(&d) {
+            a.clone()
+        } else {
+            abi_of(db, d)
+        }
+    };
+    // A synthetic combined or fusion loop has no source binding, so it borrows
+    // nothing; every other callee reports its real borrow signature.
     let borrows = |d: DefId| {
-        if groups.arity.contains_key(&d) { Vec::new() } else { borrows_of(db, d) }
+        if groups.arity.contains_key(&d) || fusion.arity.contains_key(&d) {
+            Vec::new()
+        } else {
+            borrows_of(db, d)
+        }
     };
     for (member, wrapper) in &groups.wrappers {
         objects.push((
@@ -480,6 +553,12 @@ pub fn build_native(db: &dyn Db, file: SourceFile, out: &Utf8Path) -> BuildOutco
         objects.push((
             symbol_base(db, combined.def),
             object_for_def(combined, &namer, &arity, &abi, &borrows),
+        ));
+    }
+    for fused in &fusion.loops {
+        objects.push((
+            symbol_base(db, fused.def),
+            object_for_def(fused, &namer, &arity, &abi, &borrows),
         ));
     }
     // Link a token-taking specialized entry for each definition a reachable caller
@@ -543,6 +622,7 @@ pub fn jit_run_program(db: &dyn Db, file: SourceFile) -> RunOutcome {
     // Flatten mutual-recursion groups (members → wrappers, plus a combined loop
     // per group); the member set is consulted in the parallel lowering below.
     let groups = program_groups(db, &reachable);
+    let fusion = program_fusion(db, &reachable);
     let members: FxHashSet<DefId> = groups.wrappers.keys().copied().collect();
 
     // Lower + reference-count (emit-ready, with reuse forwarding) each ordinary
@@ -571,18 +651,35 @@ pub fn jit_run_program(db: &dyn Db, file: SourceFile) -> RunOutcome {
     }
     defs.extend(groups.wrappers.into_values());
     defs.extend(groups.combined);
+    defs.extend(fusion.loops.iter().cloned());
 
     let entry = DefId::new(file.source(db), Symbol::intern(ENTRY));
     let runtime = runtime_root(db).expect("standard library defines the Runtime value binding");
     let namer = |d: DefId| symbol_base(db, d);
-    let arity = |d: DefId| groups.arity.get(&d).copied().unwrap_or_else(|| arity_of(db, d));
+    let arity = |d: DefId| {
+        (groups.arity.get(&d))
+            .or_else(|| fusion.arity.get(&d))
+            .copied()
+            .unwrap_or_else(|| arity_of(db, d))
+    };
     // The synthetic combined loop is direct-called by member wrappers (register ABI,
-    // all-boxed slots); every other def reports its own ABI.
+    // all-boxed slots); a fusion loop reports its own raw-scalar register ABI; every
+    // other def reports its own ABI.
     let abi = |d: DefId| {
-        groups.arity.get(&d).map_or_else(|| abi_of(db, d), |&n| FnAbi::register_uniform(n))
+        if let Some(&n) = groups.arity.get(&d) {
+            FnAbi::register_uniform(n)
+        } else if let Some(a) = fusion.abi.get(&d) {
+            a.clone()
+        } else {
+            abi_of(db, d)
+        }
     };
     let borrows = |d: DefId| {
-        if groups.arity.contains_key(&d) { Vec::new() } else { borrows_of(db, d) }
+        if groups.arity.contains_key(&d) || fusion.arity.contains_key(&d) {
+            Vec::new()
+        } else {
+            borrows_of(db, d)
+        }
     };
     let exit_code = fai_codegen::jit_run(&defs, entry, runtime, &namer, &arity, &abi, &borrows);
     RunOutcome { exit_code, diagnostics }
@@ -674,18 +771,27 @@ pub fn jit_compile(db: &dyn Db, file: SourceFile) -> Result<CompiledProgram, Vec
             d.reuse_entry = None;
         }
     }
+    // The reachable bodies (via `rc_emit` → fusion) call synthesized loops, so the
+    // loops must be compiled into the same image.
+    let fusion = program_fusion(db, &reachable);
+    defs.extend(fusion.loops.iter().cloned());
 
-    let names: FxHashMap<DefId, String> =
+    let mut names: FxHashMap<DefId, String> =
         reachable.iter().map(|&d| (d, symbol_base(db, d))).collect();
-    let arities: FxHashMap<DefId, usize> =
+    let mut arities: FxHashMap<DefId, usize> =
         reachable.iter().map(|&d| (d, arity_of(db, d))).collect();
+    for fused in &fusion.loops {
+        names.insert(fused.def, symbol_base(db, fused.def));
+        arities.insert(fused.def, fusion.arity.get(&fused.def).copied().unwrap_or(0));
+    }
     let entry_defs: FxHashMap<Symbol, DefId> =
         reachable.iter().filter(|d| d.file == source).map(|&d| (d.name, d)).collect();
 
     let namer = |d: DefId| names[&d].clone();
     let arity = |d: DefId| arities[&d];
-    let abi = |d: DefId| abi_of(db, d);
-    let borrows = |d: DefId| borrows_of(db, d);
+    let abi = |d: DefId| fusion.abi.get(&d).cloned().unwrap_or_else(|| abi_of(db, d));
+    let borrows =
+        |d: DefId| if fusion.arity.contains_key(&d) { Vec::new() } else { borrows_of(db, d) };
     let program = JitProgram::compile(&defs, &namer, &arity, &abi, &borrows);
     Ok(CompiledProgram { program, names, entry_defs })
 }
@@ -787,6 +893,15 @@ pub fn build_run_bundle(db: &dyn Db, file: SourceFile) -> RunBundleResult {
             FnAbi::register_uniform(arity),
             Vec::new(),
         ));
+    }
+    // The synthesized deforestation loops the reachable bodies call: shipped with
+    // their own raw-scalar register ABI so the worker marshals direct calls into
+    // them identically.
+    let fusion = program_fusion(db, &reachable);
+    for fused in &fusion.loops {
+        let arity = fusion.arity.get(&fused.def).copied().unwrap_or(0);
+        let abi = fusion.abi.get(&fused.def).cloned().unwrap_or_default();
+        defs.push(def_to_wire(fused, &module_of, arity, abi, Vec::new()));
     }
 
     let entry = DefId::new(file.source(db), Symbol::intern(ENTRY));

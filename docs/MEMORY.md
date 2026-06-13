@@ -2743,5 +2743,77 @@ Editor integration:
     CAF (e.g. `FoldPipeline`'s `transform`) escapes its definition and needs inlining
     to confine it.
 
+- **D128 Deforest `List`/`Array` combinator pipelines (a Core-level fusion pass):**
+  a pipeline of directly-nested standard combinators — a producer, transformers,
+  then a consumer (`Array.sum (Array.map f (Array.range 0 n))`) — builds one
+  intermediate sequence per stage only to walk it once. A new pass (`fai-core`'s
+  `fuse_def`) recognizes such a chain and rewrites it to a single synthesized loop
+  that materializes no intermediate, eliminating the buffers/spines between stages.
+  - **Where/how it recognizes.** Run just before reference counting (the
+    `reassociate_concat` slot), on the `helper_inlined` body, where a recursive
+    combinator call is still a `Call` to its resolved std symbol. Recognition is by
+    **resolved `DefId`** (a `fusion_defs` resolver reads only module headers), never
+    by reading a combinator's body — so editing a combinator's body never changes
+    what fuses (the cross-module firewall; guarded by a `perf_guards` test).
+  - **Menu.** Producers `range`/`Array.init`/`Array.repeat` and a syntactic
+    list/array literal; transformers `map`/`filter`; consumers
+    `foldl`/`foldr`/`sum`/`length`/`all`/`any`/`find`/`member` and a terminal
+    `map`/`filter` builder — for both `List` and `Array`, and over any
+    `List`/`Array`-typed *value* source (a Local, a call result, or a fusion
+    barrier's output like `reverse`).
+  - **What it emits.** One synthesized self-tail-recursive top-level loop (a
+    `fuse#…` name, sharing no name with a source binding) — a numeric index loop for
+    a range/`init`/`repeat`, an indexed loop for an `Array` value, a spine walk for a
+    `List` value, a `foldr` driving downward, a `List` builder via
+    tail-recursion-modulo-cons. The loop is emitted exactly like the
+    mutual-recursion combined loop: the consuming definition's `fuse_def` result
+    carries both the rewritten body and the loops; the driver reference-counts them
+    in memory (`rc_owned`) and code-generates them at assembly across every path
+    (AOT, JIT, run-bundle, `jit_compile`, the contract harness). The loop takes the
+    **raw-scalar register ABI** (untagged `Int` index/accumulator), so a pure
+    arithmetic pipeline (`map_sum`) becomes a register loop. A **small literal** is
+    instead **unrolled** to straight-line code under a node budget (no loop, the
+    literal's cells gone), falling back to walking it as a value source when over
+    budget. A **literal element lambda is inlined** into the loop (lifting its
+    captures to loop parameters), so `map_sum` has no per-element dispatch; a
+    non-literal element function (e.g. `FoldPipeline`'s composed `transform`) is
+    passed and applied via `apply_n` (the residual dispatch is #94/#103, not this
+    pass). `find` builds a niche-correct `Option`. Dead lifted lambdas left after
+    inlining are pruned (renumbering `FnId`s).
+  - **Behavior-preserving.** Only directly-nested applications fuse, so every
+    intermediate is an unnamed temporary consumed exactly once (a shared/`let`-bound
+    value is the loop's *source*, never fused away — `map_sum_shared`); and a stage
+    fuses only when its element function is **pure**, so reordering element
+    applications (including which element a trap falls on) is unobservable. Purity is
+    decided structurally (a lambda is impure if it performs a capability `Prim` or
+    makes an indirect call; a named function is pure iff its *scheme*'s arrows are
+    pure) because the lowered Core's types erase a polymorphic effect variable to
+    pure — the body types cannot be trusted for an effect-polymorphic stage.
+  - **Carve-outs.** `foldr` over a non-reversible `List` value is left unfused (a
+    single tail loop is impossible without a reverse pass or unsafe deep recursion,
+    which std itself avoids); a pipeline inside a **mutual-recursion group member**
+    is not fused (the combined loop is built from the pre-fusion body); fusion is
+    skipped entirely inside the standard library (so the combinators stay tested by
+    their own contracts). Deferred (per #116): `zip`/`concat`/`concatMap`,
+    `take`/`drop`/`takeWhile`/`dropWhile`, the `toList`/`fromList` bridge, and
+    fusing across an effectful stage.
+  - **Rationale (over alternatives).** A bounded, symbol-keyed Core rewrite wins the
+    target shapes now, fits the salsa firewall, and has a direct precedent
+    (`reassociate_concat` + the mutual-recursion machinery). foldr/build and stream
+    fusion both rely on inlining/eliding per-element step closures, which the
+    uniform-boxed, `apply_n`-dispatched runtime does not yet do (#94/#103), so they
+    would pessimize. The synthesized-loop form (over rewriting to existing
+    combinators + a composed closure) has the higher performance ceiling — a fully
+    inlined literal-lambda pipeline reaches a zero-allocation, zero-dispatch register
+    loop — at the cost of threading synthetic definitions through the driver, as the
+    mutual-recursion combined loops already do.
+  - **Validated** by allocation tests (`map_sum` over a range allocates the same as
+    a pure-arithmetic baseline — zero buffers; a `List` pipeline's allocation count
+    is independent of `n`), IR-shape unit tests (which chains fuse, which are barred
+    — the effect barrier, the shared-source materialization), AOT/JIT e2e tests
+    across the menu, the `algorithms` oracle suite (`MapSum`/`MapSumShared`/
+    `FoldPipeline`/`SpectralNorm`), and the firewall/edit-churn `perf_guards` test.
+    The deforestation half of #85 (the array-backed representation half was #111).
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.
