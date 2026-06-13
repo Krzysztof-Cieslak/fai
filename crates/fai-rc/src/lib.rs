@@ -47,12 +47,14 @@ use fai_types::{Con, Ty};
 use rustc_hash::FxHashSet;
 
 pub use borrow::{BorrowSig, borrow_signature};
+pub use escape::{EscapeSig, escape_signature, mark_escaping_closures};
 pub use forward::rc_emit;
 pub use mutual::{Group, MutualGroups, combined_lowered, member_wrapper, mutual_groups};
 pub use reuse_sig::{ReuseSig, forwards_to, reuse_class, reuse_signature};
 pub use verify::check_rc;
 
 mod borrow;
+mod escape;
 mod forward;
 mod mutual;
 mod purity;
@@ -72,6 +74,13 @@ pub fn rc(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
     // construction that came from a helper (and self-/callee borrow signatures,
     // read from the same inlined form below, stay consistent with this body).
     let lowered = helper_inlined(db, file, name);
+    // Mark each non-escaping capturing closure for stack allocation before
+    // reference counting (which preserves the allocation flag). Escape analysis
+    // leaves reference counting unchanged — only the cell's storage and whether it
+    // is freed differ — so this is a representation choice layered on the same
+    // dup/drop discipline.
+    let mut lowered = (*lowered).clone();
+    mark_escaping_closures(db, &mut lowered);
     // The borrow signature of `name` itself (the entry function's parameters): a
     // borrowed parameter is treated like a capture — never dropped, duplicated on
     // a consuming use. Lifted lambdas are reached only via `apply_n`, so their
@@ -314,7 +323,9 @@ fn anf_op(e: CExpr, binds: &mut Vec<(LocalId, CExpr)>, next: &mut usize) -> CExp
             anf_op(*body, binds, next)
         }
         // Captures are locals already; no compound operands.
-        K::MakeClosure { func, captures } => CExpr::new(K::MakeClosure { func, captures }, ty),
+        K::MakeClosure { func, captures, alloc } => {
+            CExpr::new(K::MakeClosure { func, captures, alloc }, ty)
+        }
         // Not produced by lowering; handled defensively for exhaustiveness.
         K::Reset { value, token, body } => CExpr::new(
             K::Reset {
@@ -551,8 +562,9 @@ impl Rc<'_> {
                 };
                 self.operands_rc(operands, &borrows, live, rebuilt)
             }
-            K::MakeClosure { func, captures } => {
-                let inner = CExpr::new(K::MakeClosure { func, captures: captures.clone() }, ty);
+            K::MakeClosure { func, captures, alloc } => {
+                let inner =
+                    CExpr::new(K::MakeClosure { func, captures: captures.clone(), alloc }, ty);
                 // Each capture's reference moves into the new environment; dup it
                 // when it is a borrowed slot or still needed afterward.
                 let mut result = inner;

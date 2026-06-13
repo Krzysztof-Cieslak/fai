@@ -352,9 +352,10 @@ fn remap_expr(e: &CExpr, subst: &mut FxHashMap<LocalId, LocalId>, next: &mut usi
         // (and no reference-counting or tail-call node, which are inserted later);
         // these arms keep the remap total. A `MakeClosure`'s `FnId` would dangle, so
         // its presence would be a bug upstream — but eligibility forbids it.
-        K::MakeClosure { func, captures } => K::MakeClosure {
+        K::MakeClosure { func, captures, alloc } => K::MakeClosure {
             func: *func,
             captures: captures.iter().map(|c| remap_local(*c, subst, next)).collect(),
+            alloc: *alloc,
         },
         K::Reset { value, token, body } => K::Reset {
             value: Box::new(remap_expr(value, subst, next)),

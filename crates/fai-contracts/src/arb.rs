@@ -1022,7 +1022,14 @@ fn field(base: CExpr, index: u32) -> CExpr {
 }
 
 fn make_closure(func: u32) -> CExpr {
-    CExpr::new(K::MakeClosure { func: fai_core::ir::FnId(func), captures: Vec::new() }, Ty::Error)
+    CExpr::new(
+        K::MakeClosure {
+            func: fai_core::ir::FnId(func),
+            captures: Vec::new(),
+            alloc: fai_core::ir::ClosureAlloc::Static,
+        },
+        Ty::Error,
+    )
 }
 
 fn str_lit(s: &str) -> CExpr {

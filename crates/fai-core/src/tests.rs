@@ -159,7 +159,9 @@ fn lowers_lambda_with_capture() {
         let adder x = fun y -> x + y
     "#};
     let got = lower(src, "adder");
-    assert_eq!(got, "fn0(%0) = (closure fn1 [%0])\nfn1(%1) [caps %0] = (+ %0 %1)\n");
+    // Lowering marks a capturing lambda `heap`; escape analysis may later restamp
+    // a non-escaping one as `stack`.
+    assert_eq!(got, "fn0(%0) = (closure/heap fn1 [%0])\nfn1(%1) [caps %0] = (+ %0 %1)\n");
 }
 
 #[test]

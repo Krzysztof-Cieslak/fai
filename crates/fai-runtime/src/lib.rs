@@ -186,6 +186,12 @@ pub const KIND_STRING_SLICE: u64 = 7;
 /// and `Some x` as `x`, so the sentinel's distinct kind keeps `None` unequal to —
 /// and ordered before — any `Some` payload in the generic equality/ordering walks.
 pub const KIND_NONE: u64 = 8;
+/// Stack-allocated closures: same layout and children as [`KIND_CLOSURE`], but the
+/// cell lives in its creating stack frame, so when its reference count reaches
+/// zero its captures are released yet the cell itself is **not** freed (the frame
+/// reclaims it on return). Only emitted for a closure escape analysis proves does
+/// not outlive its frame.
+pub const KIND_STACK_CLOSURE: u64 = 9;
 
 /// Builds a runtime-static descriptor with no scalar fields.
 const fn descriptor(kind: u64, name: &'static str) -> Descriptor {
@@ -246,6 +252,12 @@ pub static FAI_INT_DESC: Descriptor = descriptor(KIND_INT, "Int");
 /// Descriptor for closures (children: the captured environment slots).
 #[unsafe(no_mangle)]
 pub static FAI_CLOSURE_DESC: Descriptor = descriptor(KIND_CLOSURE, "Closure");
+
+/// Descriptor for stack-allocated closures (children: the captured environment
+/// slots, as for [`FAI_CLOSURE_DESC`]). Distinguished only so the dead-cell path
+/// releases the captures without freeing the cell (it lives in a stack frame).
+#[unsafe(no_mangle)]
+pub static FAI_STACK_CLOSURE_DESC: Descriptor = descriptor(KIND_STACK_CLOSURE, "StackClosure");
 
 /// Descriptor for partial applications (children: the target plus stored args).
 #[unsafe(no_mangle)]
@@ -885,7 +897,13 @@ unsafe fn release_dead(p: *mut u8) {
     unsafe {
         let mut work = DropWork::new();
         scan_push(p, &mut work);
-        free_obj(p);
+        // A stack-allocated closure's cell lives in its creating frame, not the
+        // heap: release its captured children but never free the cell (its pointer
+        // was never returned by `alloc_obj`, so it must not reach `free_obj`/the
+        // pool). The frame reclaims the slot on return.
+        if desc_kind(obj_descriptor(p)) != KIND_STACK_CLOSURE {
+            free_obj(p);
+        }
         drain(&mut work);
     }
 }
@@ -970,7 +988,7 @@ unsafe fn scan_push(p: *mut u8, work: &mut DropWork) {
                     work.push(field);
                 }
             }
-        } else if desc_kind(desc) == KIND_CLOSURE {
+        } else if desc_kind(desc) == KIND_CLOSURE || desc_kind(desc) == KIND_STACK_CLOSURE {
             let env_count = read_u64(p, CLOSURE_ENV_COUNT_OFFSET) as usize;
             for i in 0..env_count {
                 let slot = read_i64(p, CLOSURE_ENV_OFFSET + i * 8);
@@ -2552,11 +2570,13 @@ pub unsafe extern "C" fn fai_apply_n(callee: Value, argc: u64, args: *const i64)
         }
     }
 
-    if unsafe { desc_kind(desc) } != KIND_CLOSURE {
+    if unsafe { desc_kind(desc) } != KIND_CLOSURE
+        && unsafe { desc_kind(desc) } != KIND_STACK_CLOSURE
+    {
         fai_panic("application of a non-function value (bad descriptor)");
     }
 
-    // SAFETY: `p` is a closure.
+    // SAFETY: `p` is a closure (heap or stack — identical layout).
     let (arity, code) =
         unsafe { (read_u64(p, CLOSURE_ARITY_OFFSET), read_ptr(p, CLOSURE_CODE_OFFSET)) };
     let env = {
@@ -2613,7 +2633,7 @@ fn is_function_value(v: Value) -> bool {
     }
     // SAFETY: `v` is boxed.
     let kind = unsafe { desc_kind(obj_descriptor(as_obj(v))) };
-    kind == KIND_CLOSURE || kind == KIND_PAP
+    kind == KIND_CLOSURE || kind == KIND_STACK_CLOSURE || kind == KIND_PAP
 }
 
 /// Aborts if either operand is a function value: equality/ordering is undefined

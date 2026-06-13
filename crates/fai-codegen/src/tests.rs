@@ -470,8 +470,8 @@ fn higher_order_with_closure_capture() {
 }
 
 /// A loop that builds a one-argument lambda each iteration and applies it through
-/// a higher-order callee (`applyLam`), so the lambda is a genuinely first-class,
-/// non-escaping value. `cap` is the lambda body: `x + 1` captures nothing, `x + n`
+/// a higher-order callee, so the lambda is a genuinely first-class value that does
+/// not escape the loop. `cap` is the lambda body: `x + 1` captures nothing, `x + n`
 /// captures the loop variable.
 fn closure_loop_prog(cap: &str, n: i32) -> String {
     formatdoc! {r#"
@@ -489,6 +489,27 @@ fn closure_loop_prog(cap: &str, n: i32) -> String {
     "#}
 }
 
+/// A loop that conses a fresh capturing lambda onto an accumulator list, so each
+/// closure *escapes* (it is stored in the returned list); `main` then applies them.
+fn escaping_closure_prog(n: i32) -> String {
+    formatdoc! {r#"
+        module M
+
+        collect : Int -> List (Int -> Int) -> List (Int -> Int)
+        let collect n acc =
+          if n <= 0 then acc else collect (n - 1) ((fun x -> x + n) :: acc)
+
+        sumApply : List (Int -> Int) -> Int
+        let sumApply fs =
+          match fs with
+          | [] -> 0
+          | f :: r -> f 10 + sumApply r
+
+        public main : Runtime -> Unit / {{ Console }}
+        let main rt = rt.console.writeLine (Int.toString (sumApply (collect {n} [])))
+    "#}
+}
+
 #[test]
 fn non_capturing_lambda_allocates_no_closure_cell() {
     // `fun x -> x + 1` captures nothing, so it compiles to a shared immortal static
@@ -499,19 +520,15 @@ fn non_capturing_lambda_allocates_no_closure_cell() {
     let (code_b, out_b, closures_b) = run_closure_counted(&prog(100));
     assert_eq!((code_a, out_a.trim()), (0, "1325"), "clean exit, correct sum");
     assert_eq!((code_b, out_b.trim()), (0, "5150"), "clean exit, correct sum");
-    assert_eq!(
-        closures_b - closures_a,
-        0,
-        "a non-capturing lambda allocates no closure cell per iteration",
-    );
+    assert_eq!(closures_b - closures_a, 0, "a non-capturing lambda allocates no closure cell");
 }
 
 #[test]
-fn capturing_lambda_still_heap_allocates_per_iteration() {
-    // The baseline counterpart: `fun x -> x + n` captures the loop variable, so it
-    // still heap-allocates one closure cell per iteration — 50 extra iterations add
-    // exactly 50 closure allocations. (Stack-allocating this non-escaping case is a
-    // later step; here it pins the current, correct behavior.)
+fn non_escaping_capturing_lambda_stack_allocates_no_heap_cell() {
+    // `fun x -> x + n` captures the loop variable but does not escape (it is only
+    // applied), so escape analysis stack-allocates it: no *heap* closure cell per
+    // iteration. A clean (leak-free) exit proves the captures are still released
+    // and the stack cell is never freed.
     let prog = |n| closure_loop_prog("x + n", n);
     let (code_a, out_a, closures_a) = run_closure_counted(&prog(50));
     let (code_b, out_b, closures_b) = run_closure_counted(&prog(100));
@@ -519,18 +536,32 @@ fn capturing_lambda_still_heap_allocates_per_iteration() {
     assert_eq!((code_b, out_b.trim()), (0, "10100"), "clean exit, correct sum");
     assert_eq!(
         closures_b - closures_a,
+        0,
+        "a non-escaping capturing lambda allocates no heap closure cell",
+    );
+}
+
+#[test]
+fn escaping_capturing_lambda_heap_allocates_per_iteration() {
+    // The contrast: a capturing lambda consed into a returned list escapes, so it
+    // stays a heap cell — 50 extra iterations add exactly 50 closure allocations.
+    let (code_a, out_a, closures_a) = run_closure_counted(&escaping_closure_prog(50));
+    let (code_b, out_b, closures_b) = run_closure_counted(&escaping_closure_prog(100));
+    assert_eq!((code_a, out_a.trim()), (0, "1775"), "clean exit, correct sum");
+    assert_eq!((code_b, out_b.trim()), (0, "6050"), "clean exit, correct sum");
+    assert_eq!(
+        closures_b - closures_a,
         50,
-        "a capturing lambda heap-allocates one closure cell per iteration",
+        "an escaping capturing lambda heap-allocates one cell per iteration",
     );
 }
 
 #[test]
 fn non_capturing_lambda_value_emits_no_make_closure_call() {
     // A non-capturing lambda passed to a non-inlinable combinator (`List.map`)
-    // stays a first-class value but references its shared static-closure symbol
-    // instead of calling `fai_make_closure`. (A directly-applied or inlinable-callee
-    // lambda is elided to a direct call by the helper inliner instead, so the
-    // combinator keeps the lambda genuinely first-class for this assertion.)
+    // stays first-class but references its shared static-closure symbol: it neither
+    // takes a code address (`func_addr`) nor calls `fai_make_closure` (the
+    // 4-argument runtime call).
     let src = indoc! {r#"
         module M
 
@@ -538,16 +569,16 @@ fn non_capturing_lambda_value_emits_no_make_closure_call() {
         let useIt xs = List.map (fun x -> x + 1) xs
     "#};
     let ir = function_ir(src, "useIt").join("\n");
-    // The heap path takes the lambda's code address (`func_addr`) to store in a
-    // fresh cell; the static path references the closure data symbol instead.
     assert!(ir.contains("symbol_value"), "references the static closure symbol:\n{ir}");
-    assert!(!ir.contains("func_addr"), "no heap closure is built:\n{ir}");
+    assert!(!ir.contains("func_addr"), "no closure cell is built:\n{ir}");
+    assert!(!ir.contains("(i64, i64, i64, i64) -> i64"), "no fai_make_closure call:\n{ir}");
 }
 
 #[test]
-fn capturing_lambda_value_emits_a_make_closure_call() {
-    // The contrast: a capturing lambda passed to the same combinator still
-    // allocates a closure cell via `fai_make_closure`.
+fn non_escaping_capturing_lambda_emits_stack_cell_not_make_closure() {
+    // A capturing lambda passed to `List.map` does not escape (map only applies
+    // it), so it is built in a stack cell: the code address is taken (`func_addr`),
+    // but `fai_make_closure` (its 4-argument signature) is not called.
     let src = indoc! {r#"
         module M
 
@@ -555,8 +586,29 @@ fn capturing_lambda_value_emits_a_make_closure_call() {
         let useIt k xs = List.map (fun x -> x + k) xs
     "#};
     let ir = function_ir(src, "useIt").join("\n");
-    // The heap path takes the lambda's code address (`func_addr`) to build the cell.
-    assert!(ir.contains("func_addr"), "a capturing lambda builds a heap closure:\n{ir}");
+    assert!(ir.contains("func_addr"), "a stack closure cell stores the code address:\n{ir}");
+    assert!(
+        !ir.contains("(i64, i64, i64, i64) -> i64"),
+        "a stack closure does not call fai_make_closure:\n{ir}",
+    );
+}
+
+#[test]
+fn escaping_capturing_lambda_emits_make_closure_call() {
+    // The contrast: a capturing lambda consed into a returned list escapes, so it
+    // is built on the heap via `fai_make_closure` (its 4-argument signature).
+    let src = indoc! {r#"
+        module M
+
+        collect : Int -> List (Int -> Int) -> List (Int -> Int)
+        let collect n acc =
+          if n <= 0 then acc else collect (n - 1) ((fun x -> x + n) :: acc)
+    "#};
+    let ir = function_ir(src, "collect").join("\n");
+    assert!(
+        ir.contains("(i64, i64, i64, i64) -> i64"),
+        "an escaping capturing lambda calls fai_make_closure:\n{ir}",
+    );
 }
 
 #[test]
