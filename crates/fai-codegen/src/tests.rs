@@ -8,9 +8,10 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, MutexGuard};
 
+use fai_core::fuse_def;
 use fai_core::ir::LoweredDef;
 use fai_db::{Db, FaiDatabase, SourceFile};
-use fai_rc::rc;
+use fai_rc::{BorrowSig, rc, rc_lowered};
 use fai_resolve::{DefId, module_name};
 use fai_runtime as rt;
 use fai_span::SourceId;
@@ -115,6 +116,25 @@ fn run_all_counted(src: &str) -> (i32, String, i64, i64, i64) {
             continue;
         }
         let Some(&file) = files.get(&def.file) else { continue };
+        // Synthesized deforestation loops this definition's pipelines fused to.
+        // They have no source binding (so they must not be `rc`'d as a source —
+        // the fused body references them as `Global`s, which the worklist would
+        // otherwise pick up and compile to an empty placeholder). Mark them seen so
+        // that reference is skipped, and add the reference-counted loop directly,
+        // mirroring the driver's `program_fusion`.
+        for fl in &fuse_def(&db, file, def.name).loops {
+            if seen.insert(fl.lowered.def) {
+                let rcd = rc_lowered(&db, &fl.lowered, &BorrowSig(vec![false; fl.arity]));
+                arity.insert(fl.lowered.def, fl.arity);
+                abi.insert(fl.lowered.def, fl.abi.clone());
+                borrows.insert(fl.lowered.def, Vec::new());
+                // A loop may reference an element function directly (e.g. a `Global`
+                // passed to `map`), so follow its globals too. (The driver instead
+                // walks the unfused body, which still names them.)
+                worklist.extend(rcd.referenced_globals());
+                defs.push(rcd);
+            }
+        }
         let lowered = rc(&db, file, def.name);
         let nparams = lowered.entry().params.len();
         arity.insert(def, nparams);
@@ -585,14 +605,22 @@ fn non_capturing_lambda_value_emits_no_make_closure_call() {
 
 #[test]
 fn non_escaping_capturing_lambda_emits_stack_cell_not_make_closure() {
-    // A capturing lambda passed to `List.map` does not escape (map only applies
-    // it), so it is built in a stack cell: the code address is taken (`func_addr`),
-    // but `fai_make_closure` (its 4-argument signature) is not called.
+    // A capturing lambda passed to a higher-order function that only applies it
+    // does not escape, so it is built in a stack cell: the code address is taken
+    // (`func_addr`), but `fai_make_closure` (its 4-argument signature) is not
+    // called. A user `myMap` is used (rather than `List.map`, which deforests and
+    // would inline the lambda away) so the escape-analysis behavior is exercised.
     let src = indoc! {r#"
         module M
 
+        myMap : (Int -> Int) -> List Int -> List Int
+        let myMap f xs =
+          match xs with
+          | [] -> []
+          | x :: r -> f x :: myMap f r
+
         useIt : Int -> List Int -> List Int
-        let useIt k xs = List.map (fun x -> x + k) xs
+        let useIt k xs = myMap (fun x -> x + k) xs
     "#};
     let ir = function_ir(src, "useIt").join("\n");
     assert!(ir.contains("func_addr"), "a stack closure cell stores the code address:\n{ir}");
@@ -605,11 +633,20 @@ fn non_escaping_capturing_lambda_emits_stack_cell_not_make_closure() {
 /// A loop that maps a *partially applied* function (`add k`) over a small list, so
 /// the partial application is first-class but does not escape the loop.
 fn pap_map_loop_prog(n: i32) -> String {
+    // `myMap` is a user higher-order function (not `List.map`, which would deforest
+    // and consume the partial application differently), so the escape analysis of a
+    // non-escaping partial application passed to a HOF is exercised directly.
     formatdoc! {r#"
         module M
 
         add : Int -> Int -> Int
         let add a b = a + b
+
+        myMap : (Int -> Int) -> List Int -> List Int
+        let myMap f xs =
+          match xs with
+          | [] -> []
+          | x :: r -> f x :: myMap f r
 
         sumList : List Int -> Int
         let sumList xs =
@@ -619,7 +656,7 @@ fn pap_map_loop_prog(n: i32) -> String {
 
         go : Int -> Int -> Int
         let go n acc =
-          if n <= 0 then acc else go (n - 1) (acc + sumList (List.map (add n) [1, 2, 3]))
+          if n <= 0 then acc else go (n - 1) (acc + sumList (myMap (add n) [1, 2, 3]))
 
         public main : Runtime -> Unit / {{ Console }}
         let main rt = rt.console.writeLine (Int.toString (go {n} 0))

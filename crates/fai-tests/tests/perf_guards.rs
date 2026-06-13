@@ -1004,3 +1004,50 @@ fn chain_resolution_work_is_linear() {
         "chain resolution clones must stay sub-quadratic (n=100: {small}, n=200: {large})"
     );
 }
+
+/// Warms a fusing user definition's `object_code`, edits the body of a standard
+/// combinator it deforests (a behavior-preserving tweak inside `Array.mapInto`),
+/// and returns how many `object_code` queries re-ran.
+fn fusion_firewall_object_reruns(edit_user: bool) -> usize {
+    let mut db = FaiDatabase::new();
+    fai_types::std_lib::load_std(&mut db);
+    let user = db.add_source(
+        "M.fai".into(),
+        "module M\n\npublic run : Int -> Int\nlet run n = Array.sum (Array.map (fun x -> x * 2) (Array.range 0 n))\n".into(),
+    );
+    let m = db.source_file(user).unwrap();
+    object_code(&db, m, Symbol::intern("run"));
+
+    db.enable_event_log();
+    if edit_user {
+        // Non-vacuity: editing the fusing definition's own body recompiles it.
+        m.set_text(&mut db).to(
+            "module M\n\npublic run : Int -> Int\nlet run n = Array.sum (Array.map (fun x -> x * 3) (Array.range 0 n))\n".into(),
+        );
+    } else {
+        // Edit `Array.mapInto`'s body (the combinator the pipeline deforests):
+        // `if i >= n` -> `if n <= i`, behavior-preserving. Recognition is by
+        // definition id, so the fused user object must not re-run.
+        let array = db
+            .all_source_files()
+            .into_iter()
+            .find(|f| f.path(&db).ends_with("Array.fai"))
+            .expect("std Array module");
+        let edited = array
+            .text(&db)
+            .replace("if i >= n then acc else mapInto", "if n <= i then acc else mapInto");
+        assert_ne!(&edited, array.text(&db), "the combinator-body edit must change Array.fai");
+        array.set_text(&mut db).to(edited);
+    }
+    object_code(&db, m, Symbol::intern("run"));
+    count(&db.take_events(), "object_code")
+}
+
+#[test]
+fn fusion_is_firewalled_from_combinator_body_edits() {
+    // Editing a deforested combinator's body never recompiles the fused user
+    // object (recognition is by definition id, not the combinator's body).
+    assert_eq!(fusion_firewall_object_reruns(false), 0, "fused object is body-independent");
+    // Non-vacuity: the user definition's own body edit does recompile it.
+    assert_eq!(fusion_firewall_object_reruns(true), 1, "editing the fusing body recompiles it");
+}

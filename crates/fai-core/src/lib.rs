@@ -11,6 +11,8 @@
 
 pub mod fingerprint;
 #[allow(unsafe_code)]
+pub mod fuse;
+#[allow(unsafe_code)]
 pub mod helper_inline;
 #[allow(unsafe_code)]
 pub mod inline;
@@ -29,6 +31,7 @@ mod proptests;
 mod tests;
 
 pub use fingerprint::fingerprint_def;
+pub use fuse::{FuseResult, FusedLoop, fuse_def, fusion_defs};
 pub use helper_inline::{helper_inlined, inline_summary};
 pub use inline::{PrimWrapper, core_inlined, prim_wrapper};
 pub use ir::{CExpr, CoreFn, ExprKind, FnAbi, FnId, Lit, LoweredDef, Prim, Repr};

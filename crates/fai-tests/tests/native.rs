@@ -734,3 +734,38 @@ fn user_supplied_console_instance_runs() {
     assert_eq!(out, "");
     assert_eq!(code, Some(0));
 }
+
+#[test]
+fn deforested_pipeline_builds_and_runs_via_aot() {
+    // A fused pipeline compiles through the cached AOT object path (object_code),
+    // whose call into the synthesized loop must be marshalled with the loop's real
+    // register ABI. Sum of doubling [0, 1000) = 999000.
+    let src = indoc! {r#"
+        module Main
+
+        public run : Int -> Int
+        let run n = Array.sum (Array.map (fun x -> x * 2) (Array.range 0 n))
+
+        public main : Runtime -> Unit / { Console }
+        let main rt = rt.console.writeLine (Int.toString (run 1000))
+    "#};
+    let (out, code) = build_and_run(src);
+    assert_eq!(code, Some(0), "clean (leak-free) exit");
+    assert_eq!(out.trim(), "999000");
+}
+
+#[test]
+fn deforested_list_fold_builds_and_runs_via_aot() {
+    let src = indoc! {r#"
+        module Main
+
+        public run : Int -> Int
+        let run n = List.foldl (fun acc x -> acc + x) 0 (List.range 0 n)
+
+        public main : Runtime -> Unit / { Console }
+        let main rt = rt.console.writeLine (Int.toString (run 1000))
+    "#};
+    let (out, code) = build_and_run(src);
+    assert_eq!(code, Some(0), "clean (leak-free) exit");
+    assert_eq!(out.trim(), "499500");
+}

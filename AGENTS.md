@@ -94,7 +94,29 @@
 > prefix and `apply_n`s the rest, and a `let g = f` function alias is
 > copy-propagated to a direct call; the first-class form keeps the uniform
 > spilled-array ABI via the wrapper, and row-polymorphic/nullary entries stay
-> uniform (proper tail calls are future work). Contracts (M7) are
+> uniform (proper tail calls are future work). **Combinator pipelines are
+> deforested**: a maximal chain of *directly-nested* standard combinators — a
+> producer (`range`/`Array.init`/`Array.repeat`/a list-or-array literal),
+> transformers (`map`/`filter`), and a consumer (`foldl`/`foldr`/`sum`/`length`/
+> `all`/`any`/`find`/`member` or a terminal `map`/`filter` builder), for `List`
+> and `Array` — is recognized **by resolved symbol identity** (just before
+> reference counting, so editing a combinator's body never changes what fuses) and
+> rewritten to **one synthesized self-tail-recursive loop** that materializes no
+> intermediate sequence (a small literal is **unrolled** to straight-line code
+> instead). The loop is reference-counted and tail-flattened by the ordinary back
+> end (so a unique producer is still recycled and it runs in constant stack), takes
+> the raw-scalar register ABI, and **inlines a literal element lambda** (so
+> `Array.sum (Array.map (fun x -> x*2) (Array.range 0 n))` becomes a zero-alloc,
+> zero-dispatch register loop); a non-literal element function (e.g. a composed
+> `transform`) is still applied via `apply_n` (the residual dispatch is separate
+> work). It is **behavior-preserving** — only directly-nested intermediates fuse
+> (a shared/`let`-bound sequence stays materialized, walked by the loop) and a
+> stage fuses only when its element function is **pure** (an effectful stage is a
+> barrier), so cross-stage reordering is unobservable. The synthesized loops are
+> emitted like the mutual-recursion combined loop (the driver gathers and
+> code-generates them across the AOT/JIT/bundle/contract paths); fusion is skipped
+> inside the standard library itself (so the combinators stay tested by their own
+> contracts). Contracts (M7) are
 > built: **`fai test` runs the first-class `example`/`forall` declarations**, and
 > **`fai check` eagerly evaluates the closed `example`s** (reporting a failing one
 > as the located `FAI6001` without a separate `fai test`, in the same isolated

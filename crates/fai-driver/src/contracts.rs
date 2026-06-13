@@ -480,6 +480,15 @@ fn build_plan(
             ));
         }
     }
+    // The reachable bodies call synthesized deforestation loops (introduced by
+    // fusion in `rc`), so the harness must carry them too — with their own
+    // raw-scalar register ABI so direct calls into them marshal correctly.
+    let fusion = crate::backend::program_fusion(db, &reachable);
+    for fused in &fusion.loops {
+        let arity = fusion.arity.get(&fused.def).copied().unwrap_or(0);
+        let abi = fusion.abi.get(&fused.def).cloned().unwrap_or_default();
+        defs.push(def_to_wire(fused, &module_of, arity, abi, Vec::new()));
+    }
 
     // The contract entries to apply, parallel to their render-side metadata.
     let mut contracts = Vec::with_capacity(runnable.len());
