@@ -54,6 +54,9 @@ pub const INTRINSICS: &[&str] = &[
     "arrayGet",
     "arraySet",
     "arrayPush",
+    // The contiguous twins of `split`/`join` (`Array String` rather than `List`).
+    "arraySplit",
+    "arrayJoin",
     // Capability hosts (reached only through the `Runtime` built in `Prelude`).
     "consoleWriteLine",
     "clockNow",

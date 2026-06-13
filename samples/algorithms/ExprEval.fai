@@ -1,10 +1,13 @@
 module ExprEval
 
 // A recursive-descent parser and evaluator for arithmetic expressions: a token
-// list is parsed into an `Expr` tree honouring `*` over `+`/`-`, then evaluated.
+// `List` is parsed into an `Expr` tree honouring `*` over `+`/`-`, then evaluated.
 // The parser threads `Option` results through the token stream, building a nested
-// algebraic data type. (Tokens are generated programmatically — the standard
-// library has no string-to-int parsing.) Used by the Rust-vs-Fai runtime benchmark.
+// algebraic data type — a linked `List` is the structure a recursive-descent
+// parser naturally consumes (head/tail), so the Rust baseline parses the same way
+// over a cons-list rather than folding a `Vec`. (Tokens are generated
+// programmatically — the standard library has no string-to-int parsing.) Used by
+// the Rust-vs-Fai runtime benchmark.
 type Token =
   | TNum Int
   | TPlus

@@ -296,13 +296,34 @@ is closest to the pure size factor.
 - **Match the data representation.** A benchmark should compare *like with like*,
   so the ratio reflects the compiler/runtime/std rather than a fundamental
   data-structure difference that holds in any language (a linked list pointer-chases
-  where an array is contiguous — true of Rust's own `LinkedList` vs `Vec`). The
-  sequence workloads therefore use Fai's contiguous **`Array`** against Rust's
-  `Vec` (`MapSum`/`MapSumShared` build-map-fold an `Array`; `MergeSort` uses the
-  standard `Array.sort`; `QuickSort` is a hand-written in-place array quicksort;
-  `MatrixMultiply`/`Levenshtein` use array-of-array and array-row DP;
-  `SpectralNorm` uses `Array Float`). `List`-vs-`Vec` rows are deliberately
-  avoided — they would measure the representation gap, not Fai.
+  where an array is contiguous — true of Rust's own `LinkedList` vs `Vec`). So each
+  sample and its oracle use the **same** representation, matched in whichever
+  direction fits the workload — the test being whether switching would make the
+  *Fai* side faster:
+  - **Contiguous** where access is index-, iterate-, or build-then-traverse-heavy
+    (an `Array` is then also the better Fai structure): Fai's **`Array`** against
+    Rust's `Vec`. `MapSum`/`MapSumShared` build-map-fold an `Array`; `MergeSort`
+    uses the standard `Array.sort`; `QuickSort` is a hand-written in-place array
+    quicksort; `MatrixMultiply`/`Levenshtein` use array-of-array and array-row DP;
+    `SpectralNorm` uses `Array Float`; `NBody`/`Particles` hold their bodies in an
+    `Array`; `WordCount` splits and joins through `Array String`
+    (`String.splitArray`/`joinArray`).
+  - **Persistent linked** where the workload is naturally persistent and a `List`
+    is the better Fai structure — prepend-and-share backtracking, or a token stream
+    a recursive-descent parser consumes head/tail, where an `Array` would copy on
+    every step: Fai's **`List`** against an **`Rc`-based persistent cons-list** in
+    Rust (`PList` in `algorithms.rs`), *not* `std::collections::LinkedList` (which
+    is cache-hostile and would unfairly slow Rust). `NQueens` (a backtracking
+    stack), `Fannkuch` (permutation generation + reversal), and `ExprEval` (a
+    parser building an `Expr` tree) match this way.
+  A bare `List`-vs-`Vec` mismatch is avoided — it would measure the representation
+  gap, not Fai. Two further cases are noted exceptions: **`ListSort`** keeps a
+  `Vec` oracle *on purpose* — it sorts a Fai `List` against the same `Vec` baseline
+  as `MergeSort`'s `Array`, so the gap between the two samples' ratios isolates the
+  in-Fai linked-vs-array sort cost; and **`JsonSerialize`** (2-element ADT children
+  joined into a string) and **`GraphBFS`** (the cost is the `Dict`/`Set`; the `List`
+  is only the BFS frontier) keep a `List` whose container is immaterial because
+  another structure dominates.
 
 ### Keeping the two sides in lockstep
 

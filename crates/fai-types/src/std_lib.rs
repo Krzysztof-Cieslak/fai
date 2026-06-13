@@ -115,6 +115,16 @@ pub fn builtin_scheme(name: Symbol) -> Option<Scheme> {
             [Ty::Con(Con::String), Ty::list(Ty::Con(Con::String))],
             Ty::Con(Con::String),
         )),
+        // The contiguous twins of `split`/`join` (monomorphic over `Array String`):
+        // they build / consume an `Array` rather than a `List`.
+        "arraySplit" => Scheme::mono(Ty::arrows(
+            [Ty::Con(Con::String), Ty::Con(Con::String)],
+            Ty::array(Ty::Con(Con::String)),
+        )),
+        "arrayJoin" => Scheme::mono(Ty::arrows(
+            [Ty::Con(Con::String), Ty::array(Ty::Con(Con::String))],
+            Ty::Con(Con::String),
+        )),
         // Substring views: char-indexed start/length, source string last (matching
         // the `fai_string_*` calling convention).
         "substring" => Scheme::mono(Ty::arrows(

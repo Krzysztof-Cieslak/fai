@@ -762,6 +762,37 @@ fn string_contains_split_and_join() {
 }
 
 #[test]
+fn array_split_and_join() {
+    let _g = lock();
+    let base = live_count();
+    // Split on spaces into an `Array String`, then join with commas — the same
+    // round trip as the `List` version, through the contiguous representation.
+    let parts = fai_array_split(make_string(b" "), make_string(b"a b c"));
+    assert!(int_eq(fai_array_length_borrowed(parts), 3));
+    let joined = fai_array_join(make_string(b","), parts);
+    assert_eq!(unsafe { string_str(joined) }, "a,b,c");
+    fai_drop(joined);
+    assert_eq!(live_count(), base);
+}
+
+#[test]
+fn array_join_empty_and_single() {
+    let _g = lock();
+    let base = live_count();
+    // An empty array joins to the empty string.
+    let empty = fai_array_with_capacity(imm_int(0));
+    let j0 = fai_array_join(make_string(b","), empty);
+    assert_eq!(unsafe { string_str(j0) }, "");
+    fai_drop(j0);
+    // A single element joins to itself, with no separator inserted.
+    let one = fai_array_push(fai_array_with_capacity(imm_int(1)), make_string(b"solo"));
+    let j1 = fai_array_join(make_string(b","), one);
+    assert_eq!(unsafe { string_str(j1) }, "solo");
+    fai_drop(j1);
+    assert_eq!(live_count(), base);
+}
+
+#[test]
 fn record_update_in_place_when_unique() {
     let _g = lock();
     let base = live_count();

@@ -2446,25 +2446,31 @@ fn list_of_strings(pieces: &[Value]) -> Value {
     list
 }
 
-/// Splits `s` on the separator `sep` into a `List String` (both consumed).
-#[unsafe(no_mangle)]
-pub extern "C" fn fai_string_split(sep: Value, s: Value) -> Value {
-    let list = fai_string_split_borrowed(sep, s);
-    fai_drop(sep);
-    fai_drop(s);
-    list
+/// Builds a Fai `Array` value from owned string pieces, packed contiguously.
+fn array_of_strings(pieces: &[Value]) -> Value {
+    let n = pieces.len();
+    let p = alloc_array(n, n);
+    // SAFETY: `p` has room for `n` element slots; ownership of each piece transfers.
+    unsafe {
+        for (i, &piece) in pieces.iter().enumerate() {
+            write_i64(p, ARRAY_ELEMS_OFFSET + i * 8, piece);
+        }
+    }
+    from_obj(p)
 }
 
-/// Splits `s` on `sep` into a `List String`, *borrowing* both operands (the
-/// caller releases them at their last use). Each piece is built with [`make_piece`]
-/// — a borrowing view sharing `s`'s buffer when it is large enough, an owned copy
-/// otherwise — so splitting into a few large pieces avoids copying their bytes
-/// (many small pieces, e.g. words, fall below the threshold and are copied).
-#[unsafe(no_mangle)]
-pub extern "C" fn fai_string_split_borrowed(sep: Value, s: Value) -> Value {
-    // SAFETY: both are boxed string-like values; the computed byte ranges of the
-    // pieces lie within `s`'s bytes.
-    let pieces: Vec<Value> = unsafe {
+/// The owned string pieces of `s` split on `sep` (both borrowed). Each piece is
+/// built with [`make_piece`] — a borrowing view sharing `s`'s buffer when it is
+/// large enough, an owned copy otherwise — so splitting into a few large pieces
+/// avoids copying their bytes (many small pieces, e.g. words, fall below the
+/// threshold and are copied). Shared by the `List`- and `Array`-returning splits.
+///
+/// # Safety
+/// `sep` and `s` are boxed string-like values; the computed piece byte ranges lie
+/// within `s`'s bytes.
+unsafe fn split_pieces(sep: Value, s: Value) -> Vec<Value> {
+    // SAFETY: the caller guarantees both are boxed string-like values.
+    unsafe {
         let (sep_s, src) = (string_str(sep), string_str(s));
         if sep_s.is_empty() {
             // Each character is its own piece (always tiny, hence copied).
@@ -2480,8 +2486,42 @@ pub extern "C" fn fai_string_split_borrowed(sep: Value, s: Value) -> Value {
             pieces.push(make_piece(s, start, src.len() - start));
             pieces
         }
-    };
-    list_of_strings(&pieces)
+    }
+}
+
+/// Splits `s` on the separator `sep` into a `List String` (both consumed).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_string_split(sep: Value, s: Value) -> Value {
+    let list = fai_string_split_borrowed(sep, s);
+    fai_drop(sep);
+    fai_drop(s);
+    list
+}
+
+/// Splits `s` on `sep` into a `List String`, *borrowing* both operands (the
+/// caller releases them at their last use).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_string_split_borrowed(sep: Value, s: Value) -> Value {
+    // SAFETY: both are boxed string-like values.
+    list_of_strings(&unsafe { split_pieces(sep, s) })
+}
+
+/// Splits `s` on the separator `sep` into an `Array String` (both consumed).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_array_split(sep: Value, s: Value) -> Value {
+    let arr = fai_array_split_borrowed(sep, s);
+    fai_drop(sep);
+    fai_drop(s);
+    arr
+}
+
+/// Splits `s` on `sep` into an `Array String`, *borrowing* both operands (the
+/// caller releases them at their last use). The contiguous twin of
+/// [`fai_string_split_borrowed`]; the pieces follow the same view-or-copy rule.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_array_split_borrowed(sep: Value, s: Value) -> Value {
+    // SAFETY: both are boxed string-like values.
+    array_of_strings(&unsafe { split_pieces(sep, s) })
 }
 
 /// Joins a `List String` with the separator `sep` (both consumed).
@@ -2512,6 +2552,37 @@ pub extern "C" fn fai_string_join_borrowed(sep: Value, list: Value) -> Value {
             first = false;
             out.push_str(string_str(head));
             cur = read_i64(p, DATA_FIELDS_OFFSET + 8);
+        }
+        out
+    };
+    make_string(out.as_bytes())
+}
+
+/// Joins an `Array String` with the separator `sep` (both consumed).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_array_join(sep: Value, arr: Value) -> Value {
+    let result = fai_array_join_borrowed(sep, arr);
+    fai_drop(sep);
+    fai_drop(arr);
+    result
+}
+
+/// Joins an `Array String` with `sep`, *borrowing* both operands (the caller
+/// releases them at their last use). The contiguous twin of
+/// [`fai_string_join_borrowed`].
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_array_join_borrowed(sep: Value, arr: Value) -> Value {
+    // SAFETY: `sep` is a `String`; `arr` is an `Array String`, so only slots
+    // `0..length` are live boxed strings.
+    let out = unsafe {
+        let sep_s = string_str(sep);
+        let mut out = String::new();
+        let n = array_len(arr);
+        for i in 0..n {
+            if i != 0 {
+                out.push_str(sep_s);
+            }
+            out.push_str(string_str(read_i64(as_obj(arr), ARRAY_ELEMS_OFFSET + i * 8)));
         }
         out
     };

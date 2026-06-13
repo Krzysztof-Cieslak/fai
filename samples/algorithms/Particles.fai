@@ -1,9 +1,11 @@
 module Particles
 
 // Integrate a small set of particles under a central spring force for n steps,
-// rebuilding each body with `{ b with ... }` every step. This exercises record
-// construction and in-place update, field projection, and boxed `Float` fields
-// (a `Float` inside a record is boxed). Used by the Rust-vs-Fai runtime benchmark.
+// rebuilding each body with `{ b with ... }` every step. The bodies live in an
+// `Array` (matching the Rust `Vec` baseline); each step maps over it. This
+// exercises record construction and in-place update, field projection, and boxed
+// `Float` fields (a `Float` inside a record is boxed). Used by the Rust-vs-Fai
+// runtime benchmark.
 type Body = { vx : Float, vy : Float, x : Float, y : Float }
 
 dt : Float
@@ -20,20 +22,20 @@ let advance b =
 makeBody : Int -> Body
 let makeBody k = { vx = 0.0, vy = 0.0, x = Int.toFloat k + 1.0, y = Int.toFloat k + 2.0 }
 
-initial : List Body
-let initial = List.map makeBody (List.range 0 5)
+initial : Array Body
+let initial = Array.init 5 makeBody
 
 // Advance every body one step.
-step : List Body -> List Body
-let step bodies = List.map advance bodies
+step : Array Body -> Array Body
+let step bodies = Array.map advance bodies
 
 // Run n steps, tail-recursively.
-simulate : Int -> Int -> List Body -> List Body
+simulate : Int -> Int -> Array Body -> Array Body
 let simulate i n bodies = if i >= n then bodies else simulate (i + 1) n (step bodies)
 
 // Sum of every body's x and y — an order-stable checksum of the final state.
-total : List Body -> Float
-let total bodies = List.foldl (fun acc b -> acc + b.x + b.y) 0.0 bodies
+total : Array Body -> Float
+let total bodies = Array.foldl (fun acc b -> acc + b.x + b.y) 0.0 bodies
 
 /// The benchmark workload: the position checksum after n integration steps.
 public runF : Int -> Float

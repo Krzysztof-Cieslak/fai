@@ -2187,12 +2187,25 @@ Editor integration:
     `map` (which a type-changing `'a -> 'b` cannot express in well-typed Fai without
     a reuse pass or a type-reinterpreting intrinsic) is future work, pinned by a
     test.
-  - **Benchmarks use the matched representation.** `MapSum`/`MapSumShared`/
+  - **Benchmarks use a matched representation, in both directions.** A sample and
+    its Rust oracle use the same data structure, so the ratio reflects the
+    runtime/codegen rather than a linked-vs-array fundamental; the test is whether
+    switching would make the *Fai* side faster. Where contiguous access wins for
+    Fai too, the sample uses `Array` against Rust's `Vec`: `MapSum`/`MapSumShared`,
     `MergeSort` (std sort), the hand-written in-place `QuickSort`,
-    `MatrixMultiply`/`Levenshtein` (array-of-array / array-row DP), and
-    `SpectralNorm` (`Array Float`) are rewritten to `Array`; the Rust oracles
-    (`Vec`) are unchanged. No `List`-vs-`Vec` rows — they would measure the
-    representation fundamental, not Fai.
+    `MatrixMultiply`/`Levenshtein` (array-of-array / array-row DP), `SpectralNorm`
+    (`Array Float`), `NBody`/`Particles` (record simulations), and `WordCount`
+    (split/join through `Array String` via the `String.splitArray`/`joinArray`
+    intrinsics). Where a persistent `List` is the better Fai structure —
+    prepend-and-share backtracking, or a parser consuming a token stream head/tail,
+    where an `Array` would copy on every step — the *Rust oracle* is matched to an
+    `Rc` persistent cons-list (`PList` in `algorithms.rs`), not
+    `std::collections::LinkedList` (cache-hostile, would unfairly slow Rust):
+    `NQueens`, `Fannkuch`, `ExprEval`. `ListSort` keeps a `Vec` oracle on purpose
+    (the shared baseline that, against `MergeSort`'s `Array`, isolates the in-Fai
+    linked-vs-array sort cost); `JsonSerialize` and `GraphBFS` keep a `List` whose
+    container is immaterial (the cost is the string / `Dict` / `Set`). A bare
+    `List`-vs-`Vec` mismatch is still avoided.
 
 - **D119 Unboxed monomorphic `Int` (untagged `i64`; the `Int` peer of D113).** A
   value whose static type is exactly `Int` is carried as a **raw, untagged

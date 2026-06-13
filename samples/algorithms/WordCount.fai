@@ -2,15 +2,16 @@ module WordCount
 
 // Build a space-separated string of the numbers [0, n), split it back into words,
 // and sum their lengths: an allocation-heavy workload over heap `String`s that
-// exercises `String.join`/`String.split` and the runtime string representation.
-// Used by the Rust-vs-Fai runtime benchmark.
+// exercises `String.joinArray`/`String.splitArray` and the runtime string
+// representation. The words live in a contiguous `Array` (matching the Rust
+// `Vec<String>` baseline). Used by the Rust-vs-Fai runtime benchmark.
 /// The benchmark workload: total length of the words in "0 1 2 … n-1".
 public run : Int -> Int
 let run n =
-  let words = List.map Int.toString (List.range 0 n)
-  let text = String.join " " words
-  let parts = String.split " " text
-  List.sum (List.map String.length parts)
+  let words = Array.init n Int.toString
+  let text = String.joinArray " " words
+  let parts = String.splitArray " " text
+  Array.sum (Array.map String.length parts)
 example: run 3 = 3
 
 public main : Runtime -> Unit / { Console }

@@ -1,9 +1,12 @@
 module NQueens
 
 // Count the solutions to the n-queens puzzle by backtracking: the placement so
-// far is a list of chosen columns (most recent first), and each row tries every
-// safe column. This exercises recursion, list allocation, and higher-order
-// filtering. Used by the Rust-vs-Fai runtime benchmark.
+// far is a `List` of chosen columns (most recent first), and each row tries every
+// safe column. A persistent linked `List` is the right shape here — `c :: placed`
+// shares the tail in O(1), where an `Array` would copy it on every branch — so the
+// Rust baseline matches it with a persistent cons-list rather than a `Vec`. This
+// exercises recursion, list allocation, and a scan per placement. Used by the
+// Rust-vs-Fai runtime benchmark.
 // Whether a queen in column c is safe against the placed queens, where d is the
 // row distance to the nearest placed queen (1 for the immediately previous row).
 safeFrom : Int -> Int -> List Int -> Bool

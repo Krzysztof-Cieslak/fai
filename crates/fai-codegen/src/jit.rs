@@ -98,6 +98,10 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_string_split_borrowed", rt::fai_string_split_borrowed);
     sym!("fai_string_join", rt::fai_string_join);
     sym!("fai_string_join_borrowed", rt::fai_string_join_borrowed);
+    sym!("fai_array_split", rt::fai_array_split);
+    sym!("fai_array_split_borrowed", rt::fai_array_split_borrowed);
+    sym!("fai_array_join", rt::fai_array_join);
+    sym!("fai_array_join_borrowed", rt::fai_array_join_borrowed);
     sym!("fai_string_substring", rt::fai_string_substring);
     sym!("fai_string_take", rt::fai_string_take);
     sym!("fai_string_drop", rt::fai_string_drop);
