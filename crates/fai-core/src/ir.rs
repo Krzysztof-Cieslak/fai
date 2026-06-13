@@ -505,6 +505,10 @@ pub enum Prim {
     ArraySet,
     /// `Array` append (in place when unique with spare capacity, else grows/copies).
     ArrayPush,
+    /// `arraySplit`: split a `String` on a separator into an `Array String`.
+    ArraySplit,
+    /// `arrayJoin`: join an `Array String` with a separator into a `String`.
+    ArrayJoin,
 }
 
 /// Whether values of `ty` are boxed, reference-counted heap values, so lending
@@ -549,6 +553,8 @@ impl Prim {
                 | Prim::StringJoin
                 | Prim::ArrayLength
                 | Prim::ArrayGet
+                | Prim::ArraySplit
+                | Prim::ArrayJoin
         ) && is_boxed_rc(operand_ty)
     }
 
@@ -568,6 +574,8 @@ impl Prim {
             Prim::ArrayLength => Some("fai_array_length_borrowed"),
             Prim::ArrayGet => Some("fai_array_get_borrowed"),
             Prim::StringJoin => Some("fai_string_join_borrowed"),
+            Prim::ArraySplit => Some("fai_array_split_borrowed"),
+            Prim::ArrayJoin => Some("fai_array_join_borrowed"),
             _ => None,
         }
     }
@@ -638,6 +646,8 @@ impl Prim {
             Prim::ArrayGet => "fai_array_get",
             Prim::ArraySet => "fai_array_set",
             Prim::ArrayPush => "fai_array_push",
+            Prim::ArraySplit => "fai_array_split",
+            Prim::ArrayJoin => "fai_array_join",
         }
     }
 
@@ -723,6 +733,8 @@ impl Prim {
             "arrayGet" => Prim::ArrayGet,
             "arraySet" => Prim::ArraySet,
             "arrayPush" => Prim::ArrayPush,
+            "arraySplit" => Prim::ArraySplit,
+            "arrayJoin" => Prim::ArrayJoin,
             _ => return None,
         })
     }

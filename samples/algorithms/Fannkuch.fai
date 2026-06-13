@@ -2,8 +2,11 @@ module Fannkuch
 
 // Fannkuch-redux: over every permutation of [1, n], repeatedly reverse the first
 // p[0] elements until the head is 1, and report the maximum number of reversals.
-// This is permutation-generation and list-reversal heavy (linked-list indexing is
-// O(n), so the size is kept small). Used by the Rust-vs-Fai runtime benchmark.
+// This is permutation-generation and list-reversal heavy, working the linked
+// `List` (head read, take/reverse/append of a leading run); the Rust baseline runs
+// the same algorithm on a persistent cons-list, not a `Vec`. The size is kept
+// small because the work is n! permutations. Used by the Rust-vs-Fai runtime
+// benchmark.
 // Reverse the first k elements of a list.
 reverseFirst : Int -> List Int -> List Int
 let reverseFirst k xs = List.append (List.reverse (List.take k xs)) (List.drop k xs)

@@ -2,14 +2,34 @@
 //! benchmarks compare against Fai, plus the registry tying each to its Fai sample
 //! module and workload sizes.
 //!
-//! The implementations are **idiomatic Rust** (unboxed scalars, `Vec`,
-//! iterators): the benchmark measures the real end-to-end gap against Fai's
-//! boxed, reference-counted values, not a representation-matched one. They are
-//! shared by the in-process JIT bench (the Rust side and the correctness
+//! Each implementation **matches its Fai sample's data representation**, so the
+//! benchmark measures the runtime/codegen gap (Fai's boxed, reference-counted
+//! values vs Rust's, both via their native backends) rather than an incidental
+//! data-structure difference: a workload that iterates or indexes uses a
+//! contiguous `Vec` against Fai's `Array`, and one that is naturally persistent —
+//! backtracking, or a cons-pattern-matched parser — uses the [`PList`] cons-list
+//! (the faithful twin of Fai's linked `List`) against Fai's `List`. The code is
+//! otherwise idiomatic within that representation (unboxed scalars, iterators).
+//! They are shared by the in-process JIT bench (the Rust side and the correctness
 //! oracle), the `algo-baseline` binary (the Rust side of the subprocess AOT
 //! bench), and the sample validation tests.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::rc::Rc;
+
+/// A persistent, reference-counted singly-linked list — the faithful Rust twin of
+/// Fai's `List` (immutable cons cells shared through `Rc`, refcounted like Fai's,
+/// so prepending is O(1) and sharing is free). The backtracking and parser oracles
+/// hold their data in one of these rather than a contiguous `Vec`, matching their
+/// Fai samples: prepend-and-scan stacks (`nqueens`), permutation generation and
+/// reversal (`fannkuch`), and a token stream consumed by a recursive-descent
+/// parser (`expr_eval`).
+enum PList<T> {
+    /// The empty list.
+    Nil,
+    /// A head element and the (shared) tail.
+    Cons(T, Rc<PList<T>>),
+}
 
 /// Naive recursive Fibonacci: function-call and integer overhead, no allocation.
 #[must_use]
@@ -46,9 +66,9 @@ pub fn map_sum(n: i64) -> i64 {
     acc
 }
 
-/// Sum of the descending list `[n-1, …, 0]` after sorting it ascending. Idiomatic
-/// Rust uses a `Vec` and `Vec::sort` (a stable merge sort), where Fai sorts a
-/// linked `List`.
+/// Sum of the descending sequence `[n-1, …, 0]` after sorting it ascending.
+/// Idiomatic Rust uses a `Vec` and `Vec::sort`; the Fai sample matches it with an
+/// `Array` and the standard `Array.sort`.
 #[must_use]
 pub fn merge_sort_sum(n: i64) -> i64 {
     let mut v: Vec<i64> = (0..n).rev().collect();
@@ -220,34 +240,39 @@ pub fn particles(n: i64) -> f64 {
     acc
 }
 
-/// The number of solutions to the `n`-queens puzzle (backtracking count).
+/// The number of solutions to the `n`-queens puzzle (backtracking count). The
+/// placement so far is a persistent cons-list of chosen columns (most recent
+/// first), matching the Fai sample: `c :: placed` shares the tail in O(1), where a
+/// `Vec` would copy, so backtracking is the linked structure's natural shape.
 #[must_use]
 pub fn nqueens(n: i64) -> i64 {
-    fn safe(c: i64, placed: &[i64]) -> bool {
-        placed.iter().enumerate().all(|(i, &q)| {
-            let d = i as i64 + 1;
-            q != c && q - c != d && c - q != d
-        })
+    use PList::{Cons, Nil};
+    // Whether column `c` is safe against the placed queens, `d` rows away from the
+    // nearest (1 for the immediately previous row).
+    fn safe_from(c: i64, d: i64, placed: &PList<i64>) -> bool {
+        match placed {
+            Nil => true,
+            Cons(q, rest) => *q != c && q - c != d && c - q != d && safe_from(c, d + 1, rest),
+        }
     }
-    fn solve(size: i64, row: i64, placed: &mut Vec<i64>) -> i64 {
+    fn solve(size: i64, row: i64, placed: &Rc<PList<i64>>) -> i64 {
         if row >= size {
             return 1;
         }
         let mut count = 0;
         for c in 0..size {
-            if safe(c, placed) {
-                placed.insert(0, c);
-                count += solve(size, row + 1, placed);
-                placed.remove(0);
+            if safe_from(c, 1, placed) {
+                count += solve(size, row + 1, &Rc::new(Cons(c, Rc::clone(placed))));
             }
         }
         count
     }
-    solve(n, 0, &mut Vec::new())
+    solve(n, 0, &Rc::new(Nil))
 }
 
 /// The sum of all entries of the `n`-by-`n` product `A·B`, with `A(i,j)=(i+j)%7`
-/// and `B(i,j)=(i*j+1)%5`. The Fai version uses lists of lists.
+/// and `B(i,j)=(i*j+1)%5`. Both sides use an array of rows (Fai `Array (Array
+/// Int)` against Rust `Vec<Vec<i64>>`).
 #[must_use]
 pub fn matrix_multiply(n: i64) -> i64 {
     let rows: Vec<Vec<i64>> = (0..n).map(|i| (0..n).map(|j| (i + j) % 7).collect()).collect();
@@ -391,32 +416,135 @@ pub fn prng_xorshift(n: i64) -> i64 {
 }
 
 /// The value of a generated `n`-number arithmetic expression, evaluated with `*`
-/// binding tighter than `+`/`-` (the precedence the Fai parser implements).
+/// binding tighter than `+`/`-`. Mirrors the Fai sample exactly: a token cons-list
+/// is parsed by recursive descent into an `Expr` tree (threading the remaining
+/// tokens through `Option`, the linked structure a parser naturally consumes) and
+/// then evaluated — rather than a contiguous two-pass fold — so the comparison is
+/// matched in both representation and algorithm.
 #[must_use]
 pub fn expr_eval(n: i64) -> i64 {
-    if n <= 0 {
-        return 0;
+    use PList::{Cons, Nil};
+    type TokList = Rc<PList<Token>>;
+    type Parsed = Option<(Expr, TokList)>;
+
+    enum Token {
+        Num(i64),
+        Plus,
+        Minus,
+        Star,
     }
-    let num = |i: i64| i % 9 + 1;
-    // Pass 1: fold the multiplicative operator (`i % 3 == 1`) into the current term.
-    let mut terms = vec![num(0)];
-    let mut add_ops = Vec::new();
-    for i in 0..(n - 1) {
-        let rhs = num(i + 1);
-        if i % 3 == 1 {
-            let last = terms.last_mut().expect("a term is always present");
-            *last = last.wrapping_mul(rhs);
-        } else {
-            add_ops.push(i % 3);
-            terms.push(rhs);
+    enum Expr {
+        Num(i64),
+        Add(Box<Expr>, Box<Expr>),
+        Sub(Box<Expr>, Box<Expr>),
+        Mul(Box<Expr>, Box<Expr>),
+    }
+
+    // The number at position `i` (1..9).
+    fn num(i: i64) -> i64 {
+        i % 9 + 1
+    }
+    // The operator between numbers `i` and `i+1`, cycling +, *, -.
+    fn op_for(i: i64) -> Token {
+        match i % 3 {
+            0 => Token::Plus,
+            1 => Token::Star,
+            _ => Token::Minus,
         }
     }
-    // Pass 2: fold the additive operators left to right.
-    let mut acc = terms[0];
-    for (k, &op) in add_ops.iter().enumerate() {
-        acc = if op == 0 { acc.wrapping_add(terms[k + 1]) } else { acc.wrapping_sub(terms[k + 1]) };
+    // `count` numbers separated by cycling operators: the list the Fai `genTokens`
+    // builds, assembled back-to-front so a long stream does not recurse.
+    fn gen_tokens(count: i64) -> TokList {
+        let mut list = Rc::new(Nil);
+        let mut i = count - 1;
+        while i >= 0 {
+            list = Rc::new(Cons(Token::Num(num(i)), list));
+            if i > 0 {
+                list = Rc::new(Cons(op_for(i - 1), list));
+            }
+            i -= 1;
+        }
+        list
     }
-    acc
+
+    // A factor is a single number.
+    fn parse_factor(tokens: &TokList) -> Parsed {
+        match &**tokens {
+            Cons(Token::Num(k), rest) => Some((Expr::Num(*k), Rc::clone(rest))),
+            _ => None,
+        }
+    }
+    // A term is a factor followed by zero or more `* factor`. The Fai writes the
+    // tail recursively; the cycling operators make the input long, so the tail is
+    // a loop here (the parse result, an `Expr` tree over a token cons-list, is the
+    // same).
+    fn parse_term(tokens: &TokList) -> Parsed {
+        let (mut left, mut rest) = parse_factor(tokens)?;
+        loop {
+            let more = match &*rest {
+                Cons(Token::Star, more) => Rc::clone(more),
+                _ => return Some((left, rest)),
+            };
+            let (right, rest2) = parse_factor(&more)?;
+            left = Expr::Mul(Box::new(left), Box::new(right));
+            rest = rest2;
+        }
+    }
+    // An expression is a term followed by zero or more `(+|-) term`.
+    fn parse_expr(tokens: &TokList) -> Parsed {
+        let (mut left, mut rest) = parse_term(tokens)?;
+        loop {
+            let (subtract, more) = match &*rest {
+                Cons(Token::Plus, more) => (false, Rc::clone(more)),
+                Cons(Token::Minus, more) => (true, Rc::clone(more)),
+                _ => return Some((left, rest)),
+            };
+            let (right, rest2) = parse_term(&more)?;
+            let (l, r) = (Box::new(left), Box::new(right));
+            left = if subtract { Expr::Sub(l, r) } else { Expr::Add(l, r) };
+            rest = rest2;
+        }
+    }
+    // Evaluate the tree. The left-leaning additive spine can be thousands deep, so
+    // the walk uses an explicit work stack rather than native recursion.
+    fn eval(root: &Expr) -> i64 {
+        enum Work<'a> {
+            Eval(&'a Expr),
+            Apply(fn(i64, i64) -> i64),
+        }
+        // Queue the combine beneath both operands, so popping yields them in order.
+        fn push_binary<'a>(
+            work: &mut Vec<Work<'a>>,
+            f: fn(i64, i64) -> i64,
+            a: &'a Expr,
+            b: &'a Expr,
+        ) {
+            work.push(Work::Apply(f));
+            work.push(Work::Eval(a));
+            work.push(Work::Eval(b));
+        }
+        let mut work = vec![Work::Eval(root)];
+        let mut vals: Vec<i64> = Vec::new();
+        while let Some(item) = work.pop() {
+            match item {
+                Work::Eval(Expr::Num(k)) => vals.push(*k),
+                Work::Eval(Expr::Add(a, b)) => push_binary(&mut work, i64::wrapping_add, a, b),
+                Work::Eval(Expr::Sub(a, b)) => push_binary(&mut work, i64::wrapping_sub, a, b),
+                Work::Eval(Expr::Mul(a, b)) => push_binary(&mut work, i64::wrapping_mul, a, b),
+                Work::Apply(f) => {
+                    let a = vals.pop().expect("left operand");
+                    let b = vals.pop().expect("right operand");
+                    vals.push(f(a, b));
+                }
+            }
+        }
+        vals.pop().expect("a single result")
+    }
+
+    match parse_expr(&gen_tokens(n)) {
+        Some((e, _)) => eval(&e),
+        None => 0,
+    }
 }
 
 /// The number of nodes reachable from `0` in the deterministic `n`-node graph
@@ -567,36 +695,135 @@ pub fn nbody(n: i64) -> f64 {
 }
 
 /// The maximum pancake-flip count over every permutation of `[1, n]`
-/// (fannkuch-redux, the max-flips figure).
+/// (fannkuch-redux, the max-flips figure). Mirrors the Fai sample on the
+/// persistent cons-list: permutations and the permutation collection are linked
+/// lists, and a flip is a take/reverse/append of the leading run — so both sides
+/// pay the same linked traversal cost. The size stays small because the work is
+/// `n!` permutations, not because of the representation.
 #[must_use]
 pub fn fannkuch(n: i64) -> i64 {
-    fn flips(mut p: Vec<i64>) -> i64 {
-        let mut count = 0;
-        while p[0] > 1 {
-            let k = p[0] as usize;
-            p[..k].reverse();
-            count += 1;
+    use PList::{Cons, Nil};
+    type Perm = Rc<PList<i64>>;
+    type Perms = Rc<PList<Perm>>;
+
+    fn take(k: i64, xs: &Perm) -> Perm {
+        match &**xs {
+            Cons(h, t) if k > 0 => Rc::new(Cons(*h, take(k - 1, t))),
+            _ => Rc::new(Nil),
         }
-        count
     }
-    fn perms(xs: &[i64]) -> Vec<Vec<i64>> {
-        if xs.is_empty() {
-            return vec![Vec::new()];
+    fn drop(k: i64, xs: &Perm) -> Perm {
+        match &**xs {
+            Cons(_, t) if k > 0 => drop(k - 1, t),
+            _ => Rc::clone(xs),
         }
-        let mut out = Vec::new();
-        for (i, &x) in xs.iter().enumerate() {
-            let mut rest = xs.to_vec();
-            rest.remove(i);
-            for mut p in perms(&rest) {
-                let mut whole = vec![x];
-                whole.append(&mut p);
-                out.push(whole);
+    }
+    fn reverse(xs: &Perm) -> Perm {
+        let mut acc = Rc::new(Nil);
+        let mut cur = Rc::clone(xs);
+        loop {
+            let next = match &*cur {
+                Nil => break,
+                Cons(h, t) => {
+                    acc = Rc::new(Cons(*h, acc));
+                    Rc::clone(t)
+                }
+            };
+            cur = next;
+        }
+        acc
+    }
+    fn append(xs: &Perm, ys: &Perm) -> Perm {
+        match &**xs {
+            Nil => Rc::clone(ys),
+            Cons(h, t) => Rc::new(Cons(*h, append(t, ys))),
+        }
+    }
+    // Reverse the first `k` elements: `reverse (take k xs) ++ drop k xs`.
+    fn reverse_first(k: i64, xs: &Perm) -> Perm {
+        append(&reverse(&take(k, xs)), &drop(k, xs))
+    }
+    // Flip the leading run until the head reaches 1, counting the flips.
+    fn flips_from(acc: i64, perm: &Perm) -> i64 {
+        match &**perm {
+            Cons(first, _) if *first > 1 => flips_from(acc + 1, &reverse_first(*first, perm)),
+            _ => acc,
+        }
+    }
+    // Remove the first occurrence of `y`.
+    fn remove_first(y: i64, xs: &Perm) -> Perm {
+        match &**xs {
+            Nil => Rc::new(Nil),
+            Cons(x, rest) => {
+                if *x == y {
+                    Rc::clone(rest)
+                } else {
+                    Rc::new(Cons(*x, remove_first(y, rest)))
+                }
             }
         }
-        out
     }
-    let base: Vec<i64> = (1..=n).collect();
-    perms(&base).into_iter().map(flips).max().unwrap_or(0)
+    // Prepend `x` to every permutation in `ps`.
+    fn prepend_each(x: i64, ps: &Perms) -> Perms {
+        match &**ps {
+            Nil => Rc::new(Nil),
+            Cons(p, rest) => Rc::new(Cons(Rc::new(Cons(x, Rc::clone(p))), prepend_each(x, rest))),
+        }
+    }
+    fn concat(xss: &Perms, ys: &Perms) -> Perms {
+        match &**xss {
+            Nil => Rc::clone(ys),
+            Cons(p, rest) => Rc::new(Cons(Rc::clone(p), concat(rest, ys))),
+        }
+    }
+    // Every permutation of `xs`: for each element, prepend it to every permutation
+    // of the rest, concatenating the results (the Fai `concatMap`).
+    fn perms(xs: &Perm) -> Perms {
+        match &**xs {
+            Nil => Rc::new(Cons(Rc::new(Nil), Rc::new(Nil))),
+            Cons(_, _) => {
+                let mut elems = Vec::new();
+                let mut cur = Rc::clone(xs);
+                loop {
+                    let next = match &*cur {
+                        Nil => break,
+                        Cons(h, t) => {
+                            elems.push(*h);
+                            Rc::clone(t)
+                        }
+                    };
+                    cur = next;
+                }
+                let mut out = Rc::new(Nil);
+                for &x in elems.iter().rev() {
+                    out = concat(&prepend_each(x, &perms(&remove_first(x, xs))), &out);
+                }
+                out
+            }
+        }
+    }
+    fn range(lo: i64, hi: i64) -> Perm {
+        let mut xs = Rc::new(Nil);
+        for v in (lo..hi).rev() {
+            xs = Rc::new(Cons(v, xs));
+        }
+        xs
+    }
+    // Fold the maximum flip count over the permutations (a loop, so the 40k-long
+    // permutation list does not recurse).
+    let mut acc = 0;
+    let mut cur = perms(&range(1, n + 1));
+    loop {
+        let next = match &*cur {
+            Nil => break,
+            Cons(p, rest) => {
+                acc = acc.max(flips_from(0, p));
+                Rc::clone(rest)
+            }
+        };
+        cur = next;
+    }
+    acc
 }
 
 /// The number of connected components among `n` nodes after linking each `i` (not

@@ -96,6 +96,8 @@ fn prim_name(op: Prim) -> &'static str {
         Prim::ArrayGet => "arrayGet",
         Prim::ArraySet => "arraySet",
         Prim::ArrayPush => "arrayPush",
+        Prim::ArraySplit => "arraySplit",
+        Prim::ArrayJoin => "arrayJoin",
     }
 }
 
