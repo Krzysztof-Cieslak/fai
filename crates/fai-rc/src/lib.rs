@@ -1127,8 +1127,9 @@ fn thread_or_free(e: CExpr, token: LocalId) -> CExpr {
 
 /// Whether a `MakeData`'s niche scheme makes it **wrapper-free** — a niche `Some`
 /// (either scheme) is its payload itself, allocating no cell — so it is neither a
-/// heap construction nor a reuse target.
-fn niche_wrapper_free(niche: Option<NicheKind>) -> bool {
+/// heap construction nor a reuse target (inter-procedural forwarding excludes one
+/// too).
+pub(crate) fn niche_wrapper_free(niche: Option<NicheKind>) -> bool {
     niche.is_some()
 }
 

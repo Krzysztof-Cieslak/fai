@@ -32,7 +32,10 @@ use fai_resolve::{DefId, LocalId};
 use fai_syntax::Symbol;
 
 use crate::reuse_sig::forward_target;
-use crate::{attach_reuse, free_reuse_, fresh, is_reuse_target, next_free_local, reuse_signature};
+use crate::{
+    attach_reuse, free_reuse_, fresh, is_reuse_target, next_free_local, niche_wrapper_free,
+    reuse_signature,
+};
 
 /// The emit-ready lowering of `name`: the reference-counted body with reuse tokens
 /// forwarded into accepting callees, plus a token-taking specialized entry when
@@ -103,17 +106,19 @@ fn forward_pass(db: &dyn Db, self_def: DefId, e: CExpr) -> CExpr {
         K::Prim { op, args } => {
             CExpr::new(K::Prim { op, args: args.into_iter().map(sub).collect() }, ty)
         }
-        K::MakeData { tag, args, reuse, scalars } => CExpr::new(
-            K::MakeData { tag, args: args.into_iter().map(sub).collect(), reuse, scalars },
+        K::MakeData { tag, args, reuse, scalars, niche } => CExpr::new(
+            K::MakeData { tag, args: args.into_iter().map(sub).collect(), reuse, scalars, niche },
             ty,
         ),
         K::App { func, args, reuse } => CExpr::new(
             K::App { func: Box::new(sub(*func)), args: args.into_iter().map(sub).collect(), reuse },
             ty,
         ),
-        K::DataTag(base) => CExpr::new(K::DataTag(Box::new(sub(*base))), ty),
-        K::DataField { base, index, scalar } => {
-            CExpr::new(K::DataField { base: Box::new(sub(*base)), index, scalar }, ty)
+        K::DataTag { base, niche } => {
+            CExpr::new(K::DataTag { base: Box::new(sub(*base)), niche }, ty)
+        }
+        K::DataField { base, index, scalar, niche } => {
+            CExpr::new(K::DataField { base: Box::new(sub(*base)), index, scalar, niche }, ty)
         }
         K::Join { params, body } => CExpr::new(K::Join { params, body: Box::new(sub(*body)) }, ty),
         K::Recur { args } => CExpr::new(K::Recur { args: args.into_iter().map(sub).collect() }, ty),
@@ -141,9 +146,13 @@ fn thread_token(db: &dyn Db, self_def: DefId, e: CExpr, token: LocalId) -> CExpr
     let CExpr { kind, ty } = e;
     let rebuild_ty = ty.clone();
     match kind {
-        // A construction with no token yet: recycle it in place.
-        K::MakeData { tag, args, reuse: None, scalars } if !args.is_empty() => {
-            CExpr::new(K::MakeData { tag, args, reuse: Some(token), scalars }, ty)
+        // A construction with no token yet: recycle it in place. A wrapper-free
+        // niche `Some` allocates no cell, so it is not a sink (mirrors the
+        // intra-function `is_reuse_target`); the token frees on this path instead.
+        K::MakeData { tag, args, reuse: None, scalars, niche }
+            if !args.is_empty() && !niche_wrapper_free(niche) =>
+        {
+            CExpr::new(K::MakeData { tag, args, reuse: Some(token), scalars, niche }, ty)
         }
         // A forwardable call with a free slot: forward the token into it. The reuse
         // list has one entry per callee token slot (`None` = a null-token pad); the
