@@ -21,7 +21,7 @@ use fai_driver::{TestConfig, jit_run_program, test};
 use fai_runtime as rt;
 use fai_span::SourceId;
 use fai_syntax::parse_module;
-use fai_tests::algorithms::{ALGORITHMS, Oracle, by_module};
+use fai_tests::algorithms::{ALGORITHMS, Oracle, by_module, expr_eval};
 use fai_tests::check_source_diagnostics;
 
 static LOCK: Mutex<()> = Mutex::new(());
@@ -212,6 +212,23 @@ fn prng_xorshift_sample_is_valid() {
 #[test]
 fn expr_eval_sample_is_valid() {
     validate("ExprEval");
+}
+
+/// The `expr_eval` oracle parses a thousands-long token list into a deep `Expr`
+/// tree; building, evaluating, or freeing either one with native recursion would
+/// overflow a small stack (a Windows test process runs on a ~1 MiB main-thread
+/// stack, where an earlier recursive version did overflow). Run it on a
+/// deliberately tiny stack to guard against reintroducing that recursion — it must
+/// keep its deep work on the heap.
+#[test]
+fn expr_eval_oracle_uses_no_deep_recursion() {
+    let on_small_stack = std::thread::Builder::new()
+        .stack_size(128 * 1024)
+        .spawn(|| expr_eval(4_000))
+        .expect("spawn worker")
+        .join()
+        .expect("expr_eval must not overflow a 128 KiB stack");
+    assert_eq!(on_small_stack, expr_eval(4_000));
 }
 
 #[test]

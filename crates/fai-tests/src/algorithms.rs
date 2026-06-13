@@ -31,6 +31,20 @@ enum PList<T> {
     Cons(T, Rc<PList<T>>),
 }
 
+/// Release a long, uniquely-owned `PList` iteratively. The compiler's default drop
+/// recurses one frame per cons cell, which overflows a small stack (e.g. a Windows
+/// test thread) on a list thousands long; peeling it with `try_unwrap` frees one
+/// node per loop iteration instead. A still-shared tail is left to its other
+/// owners (it is not this caller's to free).
+fn drop_list<T>(mut link: Rc<PList<T>>) {
+    while let Ok(node) = Rc::try_unwrap(link) {
+        match node {
+            PList::Cons(_, rest) => link = rest,
+            PList::Nil => return,
+        }
+    }
+}
+
 /// Naive recursive Fibonacci: function-call and integer overhead, no allocation.
 #[must_use]
 pub fn fib(n: i64) -> i64 {
@@ -506,31 +520,28 @@ pub fn expr_eval(n: i64) -> i64 {
         }
     }
     // Evaluate the tree. The left-leaning additive spine can be thousands deep, so
-    // the walk uses an explicit work stack rather than native recursion.
-    fn eval(root: &Expr) -> i64 {
-        enum Work<'a> {
-            Eval(&'a Expr),
+    // the walk uses an explicit work stack rather than native recursion — and it
+    // *consumes* the tree (moving each child out of its `Box`), so nothing deeply
+    // nested is left for the compiler's recursive drop to overflow on.
+    fn eval(root: Expr) -> i64 {
+        enum Work {
+            Node(Expr),
             Apply(fn(i64, i64) -> i64),
         }
         // Queue the combine beneath both operands, so popping yields them in order.
-        fn push_binary<'a>(
-            work: &mut Vec<Work<'a>>,
-            f: fn(i64, i64) -> i64,
-            a: &'a Expr,
-            b: &'a Expr,
-        ) {
+        fn push_binary(work: &mut Vec<Work>, f: fn(i64, i64) -> i64, a: Expr, b: Expr) {
             work.push(Work::Apply(f));
-            work.push(Work::Eval(a));
-            work.push(Work::Eval(b));
+            work.push(Work::Node(a));
+            work.push(Work::Node(b));
         }
-        let mut work = vec![Work::Eval(root)];
+        let mut work = vec![Work::Node(root)];
         let mut vals: Vec<i64> = Vec::new();
         while let Some(item) = work.pop() {
             match item {
-                Work::Eval(Expr::Num(k)) => vals.push(*k),
-                Work::Eval(Expr::Add(a, b)) => push_binary(&mut work, i64::wrapping_add, a, b),
-                Work::Eval(Expr::Sub(a, b)) => push_binary(&mut work, i64::wrapping_sub, a, b),
-                Work::Eval(Expr::Mul(a, b)) => push_binary(&mut work, i64::wrapping_mul, a, b),
+                Work::Node(Expr::Num(k)) => vals.push(k),
+                Work::Node(Expr::Add(a, b)) => push_binary(&mut work, i64::wrapping_add, *a, *b),
+                Work::Node(Expr::Sub(a, b)) => push_binary(&mut work, i64::wrapping_sub, *a, *b),
+                Work::Node(Expr::Mul(a, b)) => push_binary(&mut work, i64::wrapping_mul, *a, *b),
                 Work::Apply(f) => {
                     let a = vals.pop().expect("left operand");
                     let b = vals.pop().expect("right operand");
@@ -541,10 +552,15 @@ pub fn expr_eval(n: i64) -> i64 {
         vals.pop().expect("a single result")
     }
 
-    match parse_expr(&gen_tokens(n)) {
-        Some((e, _)) => eval(&e),
+    // `eval` consumes the AST (no deep tree is left to drop); the token list is
+    // freed iteratively, since it can be thousands of nodes long.
+    let tokens = gen_tokens(n);
+    let result = match parse_expr(&tokens) {
+        Some((e, _)) => eval(e),
         None => 0,
-    }
+    };
+    drop_list(tokens);
+    result
 }
 
 /// The number of nodes reachable from `0` in the deterministic `n`-node graph
