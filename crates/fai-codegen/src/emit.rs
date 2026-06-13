@@ -113,6 +113,14 @@ pub(crate) fn build_def<M: Module>(
         .declare_data(&closure_symbol(namer, lowered.def), Linkage::Export, true, false)
         .expect("declare closure data");
 
+    // A non-capturing lifted lambda needs no per-activation environment, so it
+    // shares one immortal static closure (like a top-level function's value form)
+    // rather than allocating a cell at every `MakeClosure`. Declare that data
+    // symbol for each such lambda (exported so the definition's reuse entry, a
+    // separate object, can reference the same cell; defined below once the bodies
+    // are built). A capturing lambda — and the entry (index 0) — is `None`.
+    let lambda_closures = lambda_closure_data(module, lowered, &base, Linkage::Export);
+
     // Build each function body into its own (uncompiled) context.
     for (i, f) in lowered.fns.iter().enumerate() {
         let ctx = build_fn(
@@ -125,10 +133,20 @@ pub(crate) fn build_def<M: Module>(
             borrows_of,
             &abi,
             &fn_ids,
+            &lambda_closures,
             &base,
             i,
         );
         jobs.push((fn_ids[i], ctx));
+    }
+
+    // Define each non-capturing lambda's immortal static closure, now that its
+    // code symbol is built: `{ rc = IMMORTAL, &CLOSURE_DESC, size, code, arity,
+    // env_count = 0 }` — the same shape as a definition's value closure.
+    for (i, data) in lambda_closures.iter().enumerate() {
+        if let Some(data) = data {
+            define_static_closure(module, *data, fn_ids[i], lowered.fns[i].params.len() as u64);
+        }
     }
 
     // The static closure (the first-class value form, reached via `apply_n`) must
@@ -201,6 +219,10 @@ pub(crate) fn build_reuse_object<M: Module>(
         );
     }
 
+    // A non-capturing lambda's immortal static closure is defined in the primary
+    // object; the reuse entry imports the same symbol (it shares one cell).
+    let lambda_closures = lambda_closure_data(module, lowered, &base, Linkage::Import);
+
     let ctx = build_fn(
         module,
         reuse_entry,
@@ -211,6 +233,7 @@ pub(crate) fn build_reuse_object<M: Module>(
         borrows_of,
         &reuse_abi,
         &fn_ids,
+        &lambda_closures,
         &base,
         0,
     );
@@ -488,6 +511,7 @@ fn build_fn<M: Module>(
     borrows_of: &dyn Fn(DefId) -> Vec<bool>,
     abi: &FnAbi,
     fn_ids: &[FuncId],
+    lambda_closures: &[Option<DataId>],
     base: &str,
     fn_index: usize,
 ) -> Context {
@@ -527,6 +551,7 @@ fn build_fn<M: Module>(
             signature_of,
             borrows_of,
             fn_ids,
+            lambda_closures,
             lowered,
             base,
             fn_index,
@@ -641,6 +666,32 @@ fn build_fn<M: Module>(
     ctx
 }
 
+/// Declares the static-closure data symbol for each lifted function that captures
+/// nothing, parallel to a definition's function list (`Some` ⇒ a non-capturing
+/// lambda; the entry at index 0 and every capturing lambda are `None`). The
+/// caller defines the `Some` entries with [`define_static_closure`] (the primary
+/// object) or declares them `Import` (the reuse-entry object, which shares the
+/// primary's cells).
+fn lambda_closure_data<M: Module>(
+    module: &mut M,
+    lowered: &LoweredDef,
+    base: &str,
+    linkage: Linkage,
+) -> Vec<Option<DataId>> {
+    lowered
+        .fns
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            (i != 0 && f.captures.is_empty()).then(|| {
+                module
+                    .declare_data(&format!("{base}__fn{i}__closure"), linkage, true, false)
+                    .expect("declare lambda closure data")
+            })
+        })
+        .collect()
+}
+
 /// Defines a definition's immortal static closure:
 /// `{ rc = IMMORTAL, descriptor = &CLOSURE_DESC, size, code = &entry, arity, env_count = 0 }`.
 fn define_static_closure<M: Module>(module: &mut M, data: DataId, entry: FuncId, arity: u64) {
@@ -688,6 +739,12 @@ struct Translator<'a, M: Module> {
     /// caller drops a box it freshly created for a scalar argument after the call.
     borrows_of: &'a dyn Fn(DefId) -> Vec<bool>,
     fn_ids: &'a [FuncId],
+    /// The static-closure data symbol for each lifted function that captures
+    /// nothing (`Some` ⇒ non-capturing), parallel to [`Self::fn_ids`]. A
+    /// non-capturing lambda needs no per-activation environment, so its
+    /// `MakeClosure` references this shared immortal closure instead of allocating
+    /// a cell. A capturing lambda (and the entry, index 0) is `None`.
+    lambda_closures: &'a [Option<DataId>],
     lowered: &'a LoweredDef,
     base: &'a str,
     fn_index: usize,
@@ -2694,6 +2751,21 @@ impl<M: Module> Translator<'_, M> {
     }
 
     fn make_closure(&mut self, func: fai_core::ir::FnId, captures: &[LocalId]) -> Value {
+        // A non-capturing lambda has no per-activation environment, so it shares
+        // one immortal static closure (declared/defined by `build_def`) rather
+        // than allocating a cell at every evaluation — exactly like a top-level
+        // function referenced as a value. Reference-counting never adds captures
+        // to a `MakeClosure`, so an empty `captures` is precisely a non-capturing
+        // lambda; the immortal reference count makes the shared cell's `dup`/`drop`
+        // balance harmlessly (it is never freed).
+        if captures.is_empty() {
+            let data =
+                self.lambda_closures[func.index()].expect("non-capturing lambda static closure");
+            let ptr = self.ptr();
+            let gv = self.module.declare_data_in_func(data, self.builder.func);
+            return self.builder.ins().symbol_value(ptr, gv);
+        }
+
         let arity = self.lowered.fns[func.index()].params.len() as i64;
         let code_id = self.fn_ids[func.index()];
         let ptr = self.ptr();

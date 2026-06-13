@@ -54,6 +54,21 @@ pub(crate) fn run(src: &str) -> (i32, String) {
 /// As [`run`], but also returns the number of heap allocations performed during
 /// execution (for reuse measurement).
 pub(crate) fn run_counted(src: &str) -> (i32, String, i64) {
+    let (code, out, allocs, _closures) = run_all_counted(src);
+    (code, out, allocs)
+}
+
+/// As [`run`], but also returns the number of closure cells heap-allocated (a
+/// non-capturing lambda shares an immortal static closure and allocates none, so
+/// this isolates the closures that were *not* elided).
+pub(crate) fn run_closure_counted(src: &str) -> (i32, String, i64) {
+    let (code, out, _allocs, closures) = run_all_counted(src);
+    (code, out, closures)
+}
+
+/// Lowers and JIT-runs `src`, returning `(exit_code, output, allocations,
+/// closure_allocations)`.
+fn run_all_counted(src: &str) -> (i32, String, i64, i64) {
     let mut db = FaiDatabase::new();
     fai_types::std_lib::load_std(&mut db);
     let id = db.add_source("M.fai".into(), src.to_owned());
@@ -111,8 +126,9 @@ pub(crate) fn run_counted(src: &str) -> (i32, String, i64) {
     rt::reset_allocations();
     let code = jit_run(&defs, entry, runtime, &namer, &arity_of, &signature_of, &borrows_of);
     let allocs = rt::allocations();
+    let closures = rt::closure_allocations();
     let out = rt::capture_take();
-    (code, out, allocs)
+    (code, out, allocs, closures)
 }
 
 /// Lowers `def_name` from `src` (plus, for direct-call arity, the globals it
@@ -450,6 +466,96 @@ fn higher_order_with_closure_capture() {
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "42\n");
+}
+
+/// A loop that builds a one-argument lambda each iteration and applies it through
+/// a higher-order callee (`applyLam`), so the lambda is a genuinely first-class,
+/// non-escaping value. `cap` is the lambda body: `x + 1` captures nothing, `x + n`
+/// captures the loop variable.
+fn closure_loop_prog(cap: &str, n: i32) -> String {
+    formatdoc! {r#"
+        module M
+
+        applyLam : (Int -> Int) -> Int -> Int
+        let applyLam f v = f v
+
+        go : Int -> Int -> Int
+        let go n acc =
+          if n <= 0 then acc else go (n - 1) (acc + applyLam (fun x -> {cap}) n)
+
+        public main : Runtime -> Unit / {{ Console }}
+        let main rt = rt.console.writeLine (Int.toString (go {n} 0))
+    "#}
+}
+
+#[test]
+fn non_capturing_lambda_allocates_no_closure_cell() {
+    // `fun x -> x + 1` captures nothing, so it compiles to a shared immortal static
+    // closure: building it on every loop iteration allocates no closure cell, so
+    // the closure-allocation count is independent of the iteration count.
+    let prog = |n| closure_loop_prog("x + 1", n);
+    let (code_a, out_a, closures_a) = run_closure_counted(&prog(50));
+    let (code_b, out_b, closures_b) = run_closure_counted(&prog(100));
+    assert_eq!((code_a, out_a.trim()), (0, "1325"), "clean exit, correct sum");
+    assert_eq!((code_b, out_b.trim()), (0, "5150"), "clean exit, correct sum");
+    assert_eq!(
+        closures_b - closures_a,
+        0,
+        "a non-capturing lambda allocates no closure cell per iteration",
+    );
+}
+
+#[test]
+fn capturing_lambda_still_heap_allocates_per_iteration() {
+    // The baseline counterpart: `fun x -> x + n` captures the loop variable, so it
+    // still heap-allocates one closure cell per iteration — 50 extra iterations add
+    // exactly 50 closure allocations. (Stack-allocating this non-escaping case is a
+    // later step; here it pins the current, correct behavior.)
+    let prog = |n| closure_loop_prog("x + n", n);
+    let (code_a, out_a, closures_a) = run_closure_counted(&prog(50));
+    let (code_b, out_b, closures_b) = run_closure_counted(&prog(100));
+    assert_eq!((code_a, out_a.trim()), (0, "2550"), "clean exit, correct sum");
+    assert_eq!((code_b, out_b.trim()), (0, "10100"), "clean exit, correct sum");
+    assert_eq!(
+        closures_b - closures_a,
+        50,
+        "a capturing lambda heap-allocates one closure cell per iteration",
+    );
+}
+
+#[test]
+fn non_capturing_lambda_value_emits_no_make_closure_call() {
+    // A non-capturing lambda passed to a non-inlinable combinator (`List.map`)
+    // stays a first-class value but references its shared static-closure symbol
+    // instead of calling `fai_make_closure`. (A directly-applied or inlinable-callee
+    // lambda is elided to a direct call by the helper inliner instead, so the
+    // combinator keeps the lambda genuinely first-class for this assertion.)
+    let src = indoc! {r#"
+        module M
+
+        useIt : List Int -> List Int
+        let useIt xs = List.map (fun x -> x + 1) xs
+    "#};
+    let ir = function_ir(src, "useIt").join("\n");
+    // The heap path takes the lambda's code address (`func_addr`) to store in a
+    // fresh cell; the static path references the closure data symbol instead.
+    assert!(ir.contains("symbol_value"), "references the static closure symbol:\n{ir}");
+    assert!(!ir.contains("func_addr"), "no heap closure is built:\n{ir}");
+}
+
+#[test]
+fn capturing_lambda_value_emits_a_make_closure_call() {
+    // The contrast: a capturing lambda passed to the same combinator still
+    // allocates a closure cell via `fai_make_closure`.
+    let src = indoc! {r#"
+        module M
+
+        useIt : Int -> List Int -> List Int
+        let useIt k xs = List.map (fun x -> x + k) xs
+    "#};
+    let ir = function_ir(src, "useIt").join("\n");
+    // The heap path takes the lambda's code address (`func_addr`) to build the cell.
+    assert!(ir.contains("func_addr"), "a capturing lambda builds a heap closure:\n{ir}");
 }
 
 #[test]
