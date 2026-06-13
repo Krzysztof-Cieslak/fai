@@ -671,6 +671,47 @@ fn escaping_partial_application_heap_allocates_per_iteration() {
 }
 
 #[test]
+fn let_bound_lambda_applied_in_scope_is_direct_called() {
+    // `f` is a let-bound lambda applied twice in scope (the inliner keeps a
+    // multiply-used local value), so each saturated application is a direct call to
+    // the lifted function — no `fai_apply_n` dispatch (its 3-argument signature is
+    // absent) — reading the captured `k` from the closure's own cell.
+    let src = indoc! {r#"
+        module M
+
+        useTwice : Int -> Int
+        let useTwice k =
+          let f = fun x -> x + k
+          f 10 + f 20
+    "#};
+    let ir = function_ir(src, "useTwice").join("\n");
+    assert!(
+        !ir.contains("(i64, i64, i64) -> i64"),
+        "a saturated closure-local call is direct, not via fai_apply_n:\n{ir}",
+    );
+}
+
+#[test]
+fn let_bound_lambda_direct_call_is_correct_and_leak_free() {
+    // The same shape, run end to end: a clean (leak-free) exit proves the direct
+    // call consumes the closure exactly as `apply_n` would (its captures released,
+    // the stack cell never freed), and the arithmetic is correct.
+    let src = indoc! {r#"
+        module M
+
+        useTwice : Int -> Int
+        let useTwice k =
+          let f = fun x -> x + k
+          f 10 + f 20
+
+        public main : Runtime -> Unit / { Console }
+        let main rt = rt.console.writeLine (Int.toString (useTwice 5))
+    "#};
+    let (code, out) = run(src);
+    assert_eq!((code, out.as_str()), (0, "40\n"), "(10 + 5) + (20 + 5)");
+}
+
+#[test]
 fn escaping_capturing_lambda_emits_make_closure_call() {
     // The contrast: a capturing lambda consed into a returned list escapes, so it
     // is built on the heap via `fai_make_closure` (its 4-argument signature).
