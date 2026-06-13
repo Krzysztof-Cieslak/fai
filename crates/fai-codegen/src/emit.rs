@@ -623,6 +623,7 @@ fn build_fn<M: Module>(
             borrows_of,
             fn_ids,
             lambda_closures,
+            closure_locals: closure_local_funcs(&core_fn.body),
             lowered,
             base,
             fn_index,
@@ -752,6 +753,57 @@ fn build_fn<M: Module>(
     ctx
 }
 
+/// Maps each local bound directly to a `MakeClosure` to its lifted function — the
+/// closures a saturated application can direct-call (see
+/// [`Translator::closure_locals`]). Reference counting preserves the `let f =
+/// MakeClosure …` binding, so this scan of the emit-ready body finds them all.
+fn closure_local_funcs(body: &CExpr) -> FxHashMap<usize, fai_core::ir::FnId> {
+    fn go(e: &CExpr, map: &mut FxHashMap<usize, fai_core::ir::FnId>) {
+        match &e.kind {
+            ExprKind::Let { local, value, body } => {
+                if let ExprKind::MakeClosure { func, .. } = &value.kind {
+                    map.insert(local.index(), *func);
+                }
+                go(value, map);
+                go(body, map);
+            }
+            ExprKind::If { cond, then, els } => {
+                go(cond, map);
+                go(then, map);
+                go(els, map);
+            }
+            ExprKind::App { func, args, .. } => {
+                go(func, map);
+                args.iter().for_each(|a| go(a, map));
+            }
+            ExprKind::Prim { args, .. } | ExprKind::MakeData { args, .. } => {
+                args.iter().for_each(|a| go(a, map));
+            }
+            ExprKind::Recur { args } => args.iter().for_each(|a| go(a, map)),
+            ExprKind::DataTag { base: b, .. } | ExprKind::DataField { base: b, .. } => go(b, map),
+            ExprKind::Reset { value, body, .. } => {
+                go(value, map);
+                go(body, map);
+            }
+            ExprKind::FreeReuse { body, .. }
+            | ExprKind::Dup { body, .. }
+            | ExprKind::Drop { body, .. }
+            | ExprKind::Join { body, .. }
+            | ExprKind::HoleStart { body, .. } => go(body, map),
+            ExprKind::HoleFill { cell, .. } => go(cell, map),
+            ExprKind::HoleClose { base, .. } => go(base, map),
+            ExprKind::Lit(_)
+            | ExprKind::Local(_)
+            | ExprKind::Global(_)
+            | ExprKind::MakeClosure { .. }
+            | ExprKind::Error => {}
+        }
+    }
+    let mut map = FxHashMap::default();
+    go(body, &mut map);
+    map
+}
+
 /// Declares the static-closure data symbol for each lifted function that captures
 /// nothing, parallel to a definition's function list (`Some` ⇒ a non-capturing
 /// lambda; the entry at index 0 and every capturing lambda are `None`). The
@@ -831,6 +883,12 @@ struct Translator<'a, M: Module> {
     /// `MakeClosure` references this shared immortal closure instead of allocating
     /// a cell. A capturing lambda (and the entry, index 0) is `None`.
     lambda_closures: &'a [Option<DataId>],
+    /// Each local bound directly to a `MakeClosure`, mapped to its lifted function.
+    /// A saturated application of such a local is a **direct call** to that lifted
+    /// function (its environment read from the closure cell), skipping the runtime
+    /// `apply_n` dispatch — the same machine call `apply_n` would make, minus the
+    /// descriptor/arity checks and the indirect code pointer.
+    closure_locals: FxHashMap<usize, fai_core::ir::FnId>,
     lowered: &'a LoweredDef,
     base: &'a str,
     fn_index: usize,
@@ -2972,6 +3030,16 @@ impl<M: Module> Translator<'_, M> {
                 return self.stack_pap(def, args);
             }
         }
+        // A saturated application of a local bound to a known `MakeClosure` is a
+        // direct call to that lifted function — its environment read from the
+        // closure cell, the closure consumed afterward exactly as `apply_n` would —
+        // skipping the runtime dispatch (descriptor/arity checks, indirect code).
+        if let ExprKind::Local(f) = func.kind
+            && let Some(&fnid) = self.closure_locals.get(&f.index())
+            && args.len() == self.lowered.fns[fnid.index()].params.len()
+        {
+            return self.direct_closure_call(f, fnid, args, result_ty);
+        }
         // Otherwise route through `apply_n`, whose slots are uniform `i64`: float
         // and raw-int arguments are boxed/tagged in, and a `Float`/`Int` result comes
         // back boxed/tagged and owned, unboxed to its raw representation.
@@ -2993,6 +3061,38 @@ impl<M: Module> Translator<'_, M> {
         let f = self.runtime("fai_apply_n", 3, true);
         let call = self.builder.ins().call(f, &[callee, argc, args_ptr]);
         self.builder.inst_results(call)[0]
+    }
+
+    /// Direct-calls the lifted function a closure local is bound to: its environment
+    /// is the closure cell's env region (borrowed during the call), its arguments are
+    /// boxed into the uniform slot array, and the closure is dropped afterward — the
+    /// same machine call `fai_apply_n` makes for a saturated closure, minus the
+    /// dispatch (descriptor/arity checks and the indirect code pointer). The closure
+    /// may be static, stack, or heap: the env pointer and the final drop are uniform
+    /// across all three.
+    fn direct_closure_call(
+        &mut self,
+        f: LocalId,
+        fnid: FnId,
+        args: &[CExpr],
+        result_ty: &Ty,
+    ) -> Value {
+        let closure = self.use_var(f);
+        let vals: Vec<Value> = args.iter().map(|a| self.expr_boxed(a)).collect();
+        let args_ptr = self.spill(&vals);
+        let env = self.builder.ins().iadd_imm(closure, rt::CLOSURE_ENV_OFFSET as i64);
+        let code_id = self.fn_ids[fnid.index()];
+        let fref = self.module.declare_func_in_func(code_id, self.builder.func);
+        let call = self.builder.ins().call(fref, &[env, args_ptr]);
+        let boxed = self.builder.inst_results(call)[0];
+        // Consume the closure exactly as `fai_apply_n` does — after the call, the
+        // environment having been borrowed during it.
+        self.call_drop(closure);
+        match result_ty {
+            Ty::Con(Con::Float) => self.owning_unbox(boxed),
+            Ty::Con(Con::Int) => self.as_raw_int(boxed),
+            _ => boxed,
+        }
     }
 
     /// Marshals `args` into registers per `def`'s [`FnAbi`] (a scalar-float argument

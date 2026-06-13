@@ -2711,6 +2711,16 @@ Editor integration:
     the position it occupies and a `let`-bound one by whether its local reaches an
     escaping sink. Unknown (first-class) callees, primitive operands, and captures
     are conservatively escaping.
+  - **Direct-calling a known closure.** A saturated application of a local bound to
+    a `MakeClosure` (a `let f = fun … -> …` applied in scope, which the inliner keeps
+    when `f` is used more than once) is code-generated as a **direct call** to the
+    lifted function — its environment read from the closure cell, its arguments in
+    the uniform slot array — then the closure dropped, exactly the machine call
+    `apply_n` makes for a saturated closure, minus the dispatch (descriptor/arity
+    checks and the indirect code pointer). Reference counting is unchanged (the
+    closure is still *consumed* at the call, the drop replacing `apply_n`'s), so this
+    needed no borrow analysis; it works uniformly for a static, stack, or heap
+    closure local.
   - **Validated** by `closure_allocations()`/`pap_allocations()` debug counters (the
     peers of `string_copies()`/`string_views()`: a non-capturing or non-escaping
     lambda — or partial application — built per loop iteration adds zero heap cells,
@@ -2718,10 +2728,7 @@ Editor integration:
     children are released and the cell is never freed), and by the closure-heavy
     algorithm benches running correctly. *Not* addressed: a closure returned from a
     CAF (e.g. `FoldPipeline`'s `transform`) escapes its definition and needs inlining
-    to confine it; and direct-calling a let-bound lambda in scope (skipping
-    `apply_n`) would need reference counting to *borrow* the closure at the call
-    rather than consume it — a deeper change whose clean cases the Core inliner
-    already removes, so it is left as follow-on work.
+    to confine it.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.
