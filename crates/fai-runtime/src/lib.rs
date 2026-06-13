@@ -2947,6 +2947,133 @@ fn data_tag(v: Value) -> Value {
 }
 
 // ---------------------------------------------------------------------------
+// Structural hashing.
+// ---------------------------------------------------------------------------
+
+/// A 64-bit avalanche finalizer (the splitmix64 mix step, the same constants the
+/// standard library's pseudo-random source uses). It spreads structured or
+/// sequential inputs across the whole word, so masking the low bits for a bucket
+/// index distributes well.
+fn mix64(z: u64) -> u64 {
+    let z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    let z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// Folds a child hash into the accumulator order-sensitively (a rotation keeps a
+/// field's position significant, matching the field-by-field structural
+/// equality), then avalanches the result.
+fn hash_combine(acc: u64, child: u64) -> u64 {
+    mix64(acc.rotate_left(5) ^ child)
+}
+
+/// FNV-1a over the bytes, then avalanched, so two strings of equal content hash
+/// the same whether each is an inline buffer or a borrowing slice view.
+fn hash_bytes(bytes: &[u8]) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325; // FNV-1a 64-bit offset basis.
+    for &b in bytes {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3); // FNV-1a 64-bit prime.
+    }
+    mix64(h)
+}
+
+/// A structural hash of `v`, mirroring [`values_equal`] exactly so that equal
+/// values hash equally (`a = b` ⇒ `hash a = hash b`). Undefined on functions
+/// (rejected by the type checker; this guards the residual polymorphic case).
+fn values_hash(v: Value) -> u64 {
+    if is_function_value(v) {
+        eprintln!("fai: hashing is not defined on functions");
+        std::process::exit(71);
+    }
+    if !is_boxed(v) {
+        // An immediate: an `Int` that fits the 63-bit payload, a `Bool`, a `Char`,
+        // or a nullary constructor (whose payload is its tag). A value small enough
+        // to be immediate is never also boxed, so hashing the decoded payload
+        // agrees with a boxed `Int` of the same logical value (hashed via
+        // `unbox_int` below).
+        return mix64((v >> 1) as u64);
+    }
+    // SAFETY: `v` is boxed, so it has a valid descriptor.
+    let kind = unsafe { desc_kind(obj_descriptor(as_obj(v))) };
+    if is_string_kind(kind) {
+        // SAFETY: `v` is a boxed string-like value (inline buffer or slice view).
+        return hash_bytes(unsafe { string_bytes(v) });
+    }
+    match kind {
+        // A boxed (overflowed) `Int`: hash the logical 64-bit value.
+        KIND_INT => mix64(unbox_int(v) as u64),
+        // A boxed `Float` compares by its raw bits, so hash the same bits.
+        // SAFETY: `v` is a boxed float.
+        KIND_FLOAT => mix64(unsafe { read_u64(as_obj(v), FLOAT_VALUE_OFFSET) }),
+        KIND_DATA => {
+            // SAFETY: `v` is a boxed data value.
+            unsafe {
+                let tag = read_u64(as_obj(v), DATA_TAG_OFFSET);
+                let n = data_field_count(v);
+                // Both equal values share a type, hence a scalar bitmap.
+                let scalar = desc_scalar_bitmap(obj_descriptor(as_obj(v)));
+                // Seed with the tag and arity so two constructors of the same type
+                // with differently-positioned identical fields do not collide.
+                let mut h = mix64(tag ^ (n as u64).rotate_left(32));
+                for i in 0..n {
+                    let f = read_i64(as_obj(v), DATA_FIELDS_OFFSET + i * 8);
+                    let fh = if i < 64 && scalar & (1u64 << i) != 0 {
+                        // Scalar float slot: hash its raw bits (the same equality a
+                        // boxed `Float` uses).
+                        mix64(f as u64)
+                    } else {
+                        values_hash(f)
+                    };
+                    h = hash_combine(h, fh);
+                }
+                h
+            }
+        }
+        KIND_ARRAY => {
+            // SAFETY: `v` is a boxed array.
+            unsafe {
+                let n = array_len(v);
+                let mut h = mix64((n as u64).rotate_left(17) ^ 0xA5A5_A5A5_A5A5_A5A5);
+                for i in 0..n {
+                    let e = read_i64(as_obj(v), ARRAY_ELEMS_OFFSET + i * 8);
+                    h = hash_combine(h, values_hash(e));
+                }
+                h
+            }
+        }
+        // The niche `None` sentinel must hash identically to a standard `None`
+        // (the immediate nullary tag-0, which hits the immediate path above as
+        // `mix64(0)`), since the two compare equal.
+        KIND_NONE => mix64(0),
+        _ => mix64(0),
+    }
+}
+
+/// Reduces a 64-bit hash to a non-negative immediate `Int`. Masking to 62 bits
+/// keeps it inside the immediate range (`imm_int` shifts left by one), so a hash
+/// never boxes, and non-negativity lets the container mask/modulo it directly.
+fn hash_to_imm(h: u64) -> Value {
+    imm_int((h & 0x3FFF_FFFF_FFFF_FFFF) as i64)
+}
+
+/// Structural hash of `v` as a non-negative immediate `Int` (operand consumed).
+/// Agrees with [`fai_equal`]: equal values hash equally.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_hash(v: Value) -> Value {
+    let h = values_hash(v);
+    fai_drop(v);
+    hash_to_imm(h)
+}
+
+/// Structural hash that *borrows* its operand (the caller retains ownership and
+/// releases it at its last use), mirroring [`fai_equal_borrowed`].
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_hash_borrowed(v: Value) -> Value {
+    hash_to_imm(values_hash(v))
+}
+
+// ---------------------------------------------------------------------------
 // The Console capability and its redirectable sink.
 // ---------------------------------------------------------------------------
 
@@ -3308,6 +3435,8 @@ fn verify_payload(p: *const u8, size: usize, byte: u8) {
 mod alloc_tests;
 #[cfg(test)]
 mod array_tests;
+#[cfg(test)]
+mod hash_tests;
 #[cfg(test)]
 mod proptests;
 #[cfg(test)]

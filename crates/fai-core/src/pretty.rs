@@ -59,6 +59,7 @@ fn prim_name(op: Prim) -> &'static str {
         Prim::FloatGt => ">.",
         Prim::FloatGe => ">=.",
         Prim::Compare => "compare",
+        Prim::Hash => "hash",
         Prim::Eq => "=",
         Prim::StrConcat => "++",
         Prim::IntToString => "intToString",
