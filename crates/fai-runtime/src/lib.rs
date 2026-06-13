@@ -473,6 +473,15 @@ static STRING_COPIES: AtomicI64 = AtomicI64::new(0);
 #[cfg(debug_assertions)]
 static STRING_VIEWS: AtomicI64 = AtomicI64::new(0);
 
+/// The cumulative number of closure cells heap-allocated by [`fai_make_closure`].
+/// A non-capturing lambda compiles to a shared immortal static closure and
+/// allocates nothing, so this counter is the observable signal of the closures
+/// that were heap-allocated rather than elided. Distinct from [`ALLOCATIONS`],
+/// which counts every object kind; this isolates closure cells. Never decreases
+/// until reset.
+#[cfg(debug_assertions)]
+static CLOSURE_ALLOCS: AtomicI64 = AtomicI64::new(0);
+
 /// Records one heap allocation in the debug counters. Compiled to nothing in a
 /// release build (the counters are absent there).
 #[inline(always)]
@@ -482,6 +491,14 @@ fn note_alloc() {
         LIVE.fetch_add(1, Ordering::Relaxed);
         ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
     }
+}
+
+/// Records one closure-cell heap allocation. Compiled to nothing in a release
+/// build (the counter is absent there).
+#[inline(always)]
+fn note_closure_alloc() {
+    #[cfg(debug_assertions)]
+    CLOSURE_ALLOCS.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Records one shared-array buffer copy (a uniqueness-loss duplication). Compiled
@@ -590,9 +607,24 @@ pub fn string_views() -> i64 {
     }
 }
 
-/// Resets the cumulative allocation, array-copy, string-copy, and string-view
-/// counters (tests/benchmarks). A no-op in a release build, where the counters are
-/// compiled out.
+/// Returns the cumulative count of closure cells heap-allocated (a non-capturing
+/// lambda elides its cell and is not counted). Always zero in a release build,
+/// where the counter is compiled out.
+#[must_use]
+pub fn closure_allocations() -> i64 {
+    #[cfg(debug_assertions)]
+    {
+        CLOSURE_ALLOCS.load(Ordering::Relaxed)
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        0
+    }
+}
+
+/// Resets the cumulative allocation, array-copy, string-copy, string-view, and
+/// closure-allocation counters (tests/benchmarks). A no-op in a release build,
+/// where the counters are compiled out.
 pub fn reset_allocations() {
     #[cfg(debug_assertions)]
     {
@@ -600,6 +632,7 @@ pub fn reset_allocations() {
         ARRAY_COPIES.store(0, Ordering::Relaxed);
         STRING_COPIES.store(0, Ordering::Relaxed);
         STRING_VIEWS.store(0, Ordering::Relaxed);
+        CLOSURE_ALLOCS.store(0, Ordering::Relaxed);
     }
 }
 
@@ -2451,6 +2484,7 @@ pub unsafe extern "C" fn fai_make_closure(
 ) -> Value {
     let size = CLOSURE_ENV_OFFSET + env_count as usize * 8;
     let p = alloc_obj(size, &FAI_CLOSURE_DESC);
+    note_closure_alloc();
     // SAFETY: `p` has room for the closure fields and `env_count` slots; `env`
     // points to `env_count` values.
     unsafe {
