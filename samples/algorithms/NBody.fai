@@ -2,12 +2,12 @@ module NBody
 
 // An all-pairs gravitational n-body simulation over a small set of bodies for n
 // steps: each step accumulates the pairwise inverse-square forces (with a `sqrt`
-// for the distance), updates velocities, then positions. This exercises records
-// with boxed `Float` fields, a record accumulator, and floating-point math. Used
-// by the Rust-vs-Fai runtime benchmark.
+// for the distance), updates velocities, then positions. The bodies live in an
+// `Array` for O(1) indexed access (matching the Rust `Vec` baseline), and each is
+// a record with boxed `Float` fields. Used by the Rust-vs-Fai runtime benchmark.
 type Body = { mass : Float, vx : Float, vy : Float, vz : Float, x : Float, y : Float, z : Float }
 
-type Accel = { ax : Float, ay : Float, az : Float, idx : Int }
+type Accel = { ax : Float, ay : Float, az : Float }
 
 dt : Float
 let dt = 0.01
@@ -17,49 +17,50 @@ makeBody : Int -> Body
 let makeBody i =
   { mass = 1.0 + Int.toFloat (i % 5), vx = 0.0, vy = 0.0, vz = 0.0, x = Int.toFloat i, y = Int.toFloat (i * i % 7), z = Int.toFloat (i % 3) }
 
-initial : List Body
-let initial = List.map makeBody (List.range 0 5)
+initial : Array Body
+let initial = Array.init 5 makeBody
 
-// Add the acceleration on `me` from one other body, skipping `me` itself (the
-// body whose index equals `meIdx`). The accumulator carries the running index.
-addAccel : Int -> Body -> Accel -> Body -> Accel
-let addAccel meIdx me acc o =
-  if acc.idx = meIdx then
-    { acc with idx = acc.idx + 1 }
+// Add the acceleration on `me` from one other body `o`.
+addAccel : Body -> Accel -> Body -> Accel
+let addAccel me acc o =
+  let dx = o.x - me.x
+  let dy = o.y - me.y
+  let dz = o.z - me.z
+  let d2 = dx * dx + dy * dy + dz * dz
+  let f = o.mass / (d2 * Float.sqrt d2)
+  { ax = acc.ax + f * dx, ay = acc.ay + f * dy, az = acc.az + f * dz }
+
+// Sum the pairwise accelerations on the body at `meIdx` from every other body,
+// scanning by index and skipping `meIdx` itself.
+sumAccel : Array Body -> Int -> Body -> Int -> Accel -> Accel
+let sumAccel bodies meIdx me j acc =
+  if j >= Array.length bodies then
+    acc
+  else if j = meIdx then
+    sumAccel bodies meIdx me (j + 1) acc
   else
-    let dx = o.x - me.x
-    let dy = o.y - me.y
-    let dz = o.z - me.z
-    let d2 = dx * dx + dy * dy + dz * dz
-    let f = o.mass / (d2 * Float.sqrt d2)
-    { ax = acc.ax + f * dx, ay = acc.ay + f * dy, az = acc.az + f * dz, idx = acc.idx + 1 }
-
-bodyAt : List Body -> Int -> Body
-let bodyAt bodies i =
-  match bodies with
-  | [] -> makeBody 0
-  | b :: rest -> if i <= 0 then b else bodyAt rest (i - 1)
+    sumAccel bodies meIdx me (j + 1) (addAccel me acc (Array.unsafeGet j bodies))
 
 // New velocity of the body at index meIdx after summing all pairwise forces.
-newVel : List Body -> Int -> Body
+newVel : Array Body -> Int -> Body
 let newVel bodies meIdx =
-  let me = bodyAt bodies meIdx
-  let a = List.foldl (addAccel meIdx me) { ax = 0.0, ay = 0.0, az = 0.0, idx = 0 } bodies
+  let me = Array.unsafeGet meIdx bodies
+  let a = sumAccel bodies meIdx me 0 { ax = 0.0, ay = 0.0, az = 0.0 }
   { me with vx = me.vx + dt * a.ax, vy = me.vy + dt * a.ay, vz = me.vz + dt * a.az }
 
 advancePos : Body -> Body
 let advancePos b = { b with x = b.x + dt * b.vx, y = b.y + dt * b.vy, z = b.z + dt * b.vz }
 
-// One step: update every velocity from the current state, then every position.
-advance : List Body -> List Body
-let advance bodies =
-  List.map advancePos (List.map (fun i -> newVel bodies i) (List.range 0 (List.length bodies)))
+// One step: give each body its new velocity, then advance its position. Each new
+// body reads only the old `bodies`, so every update sees the same snapshot.
+advance : Array Body -> Array Body
+let advance bodies = Array.init (Array.length bodies) (fun i -> advancePos (newVel bodies i))
 
-simulate : Int -> Int -> List Body -> List Body
+simulate : Int -> Int -> Array Body -> Array Body
 let simulate i n bodies = if i >= n then bodies else simulate (i + 1) n (advance bodies)
 
-total : List Body -> Float
-let total bodies = List.foldl (fun acc b -> acc + b.x + b.y + b.z) 0.0 bodies
+total : Array Body -> Float
+let total bodies = Array.foldl (fun acc b -> acc + b.x + b.y + b.z) 0.0 bodies
 
 /// The benchmark workload: the position checksum after n simulation steps.
 public runF : Int -> Float
