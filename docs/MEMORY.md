@@ -345,13 +345,21 @@ Native backend (Core IR, reference counting, codegen, runtime, object cache):
 - **D50 Heap layout:** a descriptor-pointer header `{ rc, descriptor, size }`;
   static per-type descriptors carry a children-scan used at drop. Extensible to
   ADTs/records (later realized).
-- **D51 Function model:** closures `{ code, arity, env… }` with a uniform
-  `apply_n` eval/apply handling exact, partial (a PAP object), and
-  over-application. Top-level functions are static **immortal** closures (a
-  zero-arity binding — a value, not a function — is forced on reference).
-  Primitives lower to runtime calls. Every operation **consumes** its operands,
-  so RC insertion reduces to dup-at-use + one drop per owned binding (no reuse;
-  precise reuse layered on later, D76–D79).
+ - **D51 Function model:** closures `{ code, arity, env… }` with a uniform
+   `apply_n` eval/apply handling exact, partial (a PAP object), and
+   over-application. Top-level functions are static **immortal** closures (a
+   zero-arity binding — a value, not a function — is forced on reference). A
+   **non-capturing lambda** shares the same treatment: with no per-activation
+   environment it references one immortal static closure (emitted per lifted
+   function, defined in the definition's primary object and imported by its reuse
+   entry) instead of calling `fai_make_closure` at every evaluation, so a
+   `fun`-literal that closes over nothing allocates no cell even in a hot loop.
+   The immortal reference count makes the shared cell's `dup`/`drop` balance
+   harmlessly (it is never freed); a capturing lambda still allocates (a
+   non-escaping one stack-allocates as later work). Primitives lower to runtime
+   calls. Every operation **consumes** its operands, so RC insertion reduces to
+   dup-at-use + one drop per owned binding (no reuse; precise reuse layered on
+   later, D76–D79).
 - **D52 Typed Core IR:** `fai-core` carries a `Ty` on every node, from a new
   `body_types` query, so the later record-field-offset work need not retrofit
   types — even though the thin-slice codegen leans on tagging and uses the types
