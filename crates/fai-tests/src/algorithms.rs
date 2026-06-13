@@ -485,6 +485,18 @@ pub fn quicksort_sum(n: i64) -> i64 {
     v.iter().enumerate().fold(0i64, |acc, (i, &x)| acc.wrapping_add(i as i64 * x))
 }
 
+/// The same position-weighted checksum as [`quicksort_sum`], but standing in for
+/// the Fai version that sorts a linked `List` with the standard library's stable
+/// `List.sortBy` — the linked counterpart to `merge_sort`'s `Array` sort. Sorting
+/// is order-total, so the checksum is independent of stability.
+#[must_use]
+pub fn list_sort_sum(n: i64) -> i64 {
+    let mut v: Vec<i64> =
+        (0..n).map(|k| (k.wrapping_mul(2_654_435_761).wrapping_add(12345)) % n).collect();
+    v.sort();
+    v.iter().enumerate().fold(0i64, |acc, (i, &x)| acc.wrapping_add(i as i64 * x))
+}
+
 /// The number of primes below `n` (Sieve of Eratosthenes).
 #[must_use]
 pub fn sieve(n: i64) -> i64 {
@@ -1026,6 +1038,13 @@ pub const ALGORITHMS: &[Algorithm] = &[
         aot_size: 100_000,
         oracle: Oracle::Int(option_tree_find),
     },
+    Algorithm {
+        module: "ListSort",
+        entry: "run",
+        jit_size: 2_000,
+        aot_size: 20_000,
+        oracle: Oracle::Int(list_sort_sum),
+    },
 ];
 
 /// Looks up an algorithm by its sample module name.
@@ -1074,6 +1093,7 @@ pub fn source(module: &str) -> &'static str {
         "OptionEval" => include_str!("../../../samples/algorithms/OptionEval.fai"),
         "OptionPath" => include_str!("../../../samples/algorithms/OptionPath.fai"),
         "OptionTreeFind" => include_str!("../../../samples/algorithms/OptionTreeFind.fai"),
+        "ListSort" => include_str!("../../../samples/algorithms/ListSort.fai"),
         other => panic!("unknown algorithm module: {other}"),
     }
 }
