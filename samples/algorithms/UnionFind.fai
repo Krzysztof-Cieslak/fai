@@ -1,40 +1,43 @@
 module UnionFind
 
-// Connected components by union-find over a `Dict` parent map: nodes are linked
-// into a shallow forest, then the distinct roots are counted. `find` follows
-// parent pointers in tail position (so it loops, not recurses), exercising `Dict`
-// lookup in a different access pattern than the other map workloads. Used by the
-// Rust-vs-Fai runtime benchmark.
+// Connected components by union-find over a `HashDict` parent map: nodes are linked
+// into a shallow forest, then the distinct roots are counted. `find` follows parent
+// pointers in tail position (so it loops, not recurses), exercising O(1)-average
+// `HashDict` lookup in a different access pattern than the other map workloads. Used
+// by the Rust-vs-Fai runtime benchmark.
 // The root of x: follow parents until a node maps to nothing (or to itself).
 // An absent node is its own root, so a missing entry defaults to `x` itself.
-find : Dict Int Int -> Int -> Int
+find : HashDict Int Int -> Int -> Int
 let find parent x =
-  let p = Dict.getOr x x parent
+  let p = HashDict.getOr x x parent
   if p = x then x else find parent p
 
 // Union a and b: point a's root at b's root (unless already joined).
-union : Dict Int Int -> Int -> Int -> Dict Int Int
+union : HashDict Int Int -> Int -> Int -> HashDict Int Int
 let union parent a b =
   let ra = find parent a
   let rb = find parent b
-  if ra = rb then parent else Dict.insert ra rb parent
+  if ra = rb then parent else HashDict.insert ra rb parent
 
 // Link node i to i/2 for i in [1, n), skipping multiples of 5 (which seed new
 // components). The i/2 structure keeps the forest shallow.
-build : Int -> Int -> Dict Int Int -> Dict Int Int
+build : Int -> Int -> HashDict Int Int -> HashDict Int Int
 let build i n parent =
   if i >= n then
     parent
   else if i % 5 = 0 then build (i + 1) n parent else build (i + 1) n (union parent i (i / 2))
 
 // Count the distinct roots over [0, n), accumulating them in a set.
-countRoots : Int -> Int -> Dict Int Int -> Set Int -> Int
+countRoots : Int -> Int -> HashDict Int Int -> HashSet Int -> Int
 let countRoots i n parent seen =
-  if i >= n then Set.size seen else countRoots (i + 1) n parent (Set.insert (find parent i) seen)
+  if i >= n then
+    HashSet.size seen
+  else
+    countRoots (i + 1) n parent (HashSet.insert (find parent i) seen)
 
 /// The benchmark workload: the number of connected components among n nodes.
 public run : Int -> Int
-let run n = countRoots 0 n (build 1 n Dict.empty) Set.empty
+let run n = countRoots 0 n (build 1 n HashDict.empty) HashSet.empty
 example: run 4 = 1
 
 public main : Runtime -> Unit / { Console }

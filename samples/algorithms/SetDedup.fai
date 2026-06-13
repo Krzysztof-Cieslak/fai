@@ -1,19 +1,19 @@
 module SetDedup
 
-// Insert [0, n) modulo a bucket count into an ordered `Set`, collapsing
-// duplicates, then sum the distinct elements: an order-independent reduction that
-// exercises `Set` insertion and membership churn over a binary search tree. Used
-// by the Rust-vs-Fai runtime benchmark.
+// Insert [0, n) modulo a bucket count into a `HashSet`, collapsing duplicates,
+// then sum the distinct elements: an order-independent reduction that exercises
+// O(1)-average `HashSet` insertion and membership churn. Used by the Rust-vs-Fai
+// runtime benchmark.
 buckets : Int
 let buckets = 1000
 
 // Insert i % buckets for i in [0, n). Tail-recursive, so it compiles to a loop.
-fill : Int -> Int -> Set Int -> Set Int
-let fill i n s = if i >= n then s else fill (i + 1) n (Set.insert (i % buckets) s)
+fill : Int -> Int -> HashSet Int -> HashSet Int
+let fill i n s = if i >= n then s else fill (i + 1) n (HashSet.insert (i % buckets) s)
 
 /// The benchmark workload: the sum of the distinct values among [0, n) % buckets.
 public run : Int -> Int
-let run n = List.sum (Set.toList (fill 0 n Set.empty))
+let run n = List.sum (HashSet.toList (fill 0 n HashSet.empty))
 example: run 5 = 10
 
 public main : Runtime -> Unit / { Console }

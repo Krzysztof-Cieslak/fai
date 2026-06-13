@@ -1,9 +1,9 @@
 module CoinChange
 
 // Count the ways to make amount n from a fixed coin set by dynamic programming
-// over a `Dict` keyed by sub-amount, taking each result modulo a large prime so it
-// stays exact. This exercises `Dict` get/insert in a tight nested loop. Used by
-// the Rust-vs-Fai runtime benchmark.
+// over a `HashDict` keyed by sub-amount, taking each result modulo a large prime so
+// it stays exact. This exercises O(1)-average `HashDict` get/insert in a tight
+// nested loop. Used by the Rust-vs-Fai runtime benchmark.
 modulus : Int
 let modulus = 1000000007
 
@@ -11,17 +11,17 @@ coins : List Int
 let coins = [1, 2, 5, 10, 25, 50]
 
 // One coin's pass: for a in [coin, amount], add ways[a - coin] into ways[a].
-coinPass : Int -> Int -> Int -> Dict Int Int -> Dict Int Int
+coinPass : Int -> Int -> Int -> HashDict Int Int -> HashDict Int Int
 let coinPass coin a amount ways =
   if a > amount then
     ways
   else
-    let cur = Dict.getOr 0 a ways
-    let prev = Dict.getOr 0 (a - coin) ways
-    coinPass coin (a + 1) amount (Dict.insert a ((cur + prev) % modulus) ways)
+    let cur = HashDict.getOr 0 a ways
+    let prev = HashDict.getOr 0 (a - coin) ways
+    coinPass coin (a + 1) amount (HashDict.insert a ((cur + prev) % modulus) ways)
 
 // Apply every coin's pass in turn.
-allCoins : List Int -> Int -> Dict Int Int -> Dict Int Int
+allCoins : List Int -> Int -> HashDict Int Int -> HashDict Int Int
 let allCoins cs amount ways =
   match cs with
   | [] -> ways
@@ -29,7 +29,7 @@ let allCoins cs amount ways =
 
 /// The benchmark workload: the number of ways to make n (modulo a large prime).
 public run : Int -> Int
-let run n = Dict.getOr 0 n (allCoins coins n (Dict.insert 0 1 Dict.empty))
+let run n = HashDict.getOr 0 n (allCoins coins n (HashDict.insert 0 1 HashDict.empty))
 example: run 5 = 4
 
 public main : Runtime -> Unit / { Console }

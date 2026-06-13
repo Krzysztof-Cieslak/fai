@@ -14,7 +14,7 @@
 //! oracle), the `algo-baseline` binary (the Rust side of the subprocess AOT
 //! bench), and the sample validation tests.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
 /// A persistent, reference-counted singly-linked list — the faithful Rust twin of
@@ -131,13 +131,13 @@ pub fn pi(terms: i64) -> f64 {
     4.0 * acc
 }
 
-/// The count-weighted sum of a histogram of `n` keys (`i % 256`) tallied into an
-/// ordered map: an order-independent reduction that exercises map build/query and
-/// the structural comparison hot path. The Fai version builds a `Dict`.
+/// The count-weighted sum of a histogram of `n` keys (`i % 256`) tallied into a
+/// hash map: an order-independent reduction that exercises map build/query and the
+/// hash hot path. The Fai version builds a `HashDict`.
 #[must_use]
 pub fn dict_histogram(n: i64) -> i64 {
     let buckets = 256;
-    let mut counts: BTreeMap<i64, i64> = BTreeMap::new();
+    let mut counts: HashMap<i64, i64> = HashMap::new();
     for i in 0..n {
         *counts.entry(i % buckets).or_insert(0) += 1;
     }
@@ -194,11 +194,11 @@ pub fn map_sum_shared(n: i64) -> i64 {
 }
 
 /// The sum of the distinct values among `[0, n)` reduced modulo a bucket count,
-/// collected into an ordered set. The Fai version builds a `Set`.
+/// collected into a hash set. The Fai version builds a `HashSet`.
 #[must_use]
 pub fn set_dedup(n: i64) -> i64 {
     let buckets = 1000;
-    let distinct: BTreeSet<i64> = (0..n).map(|i| i % buckets).collect();
+    let distinct: HashSet<i64> = (0..n).map(|i| i % buckets).collect();
     distinct.iter().sum()
 }
 
