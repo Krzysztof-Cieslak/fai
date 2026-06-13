@@ -814,6 +814,12 @@ pub enum ExprKind {
         /// it in a construction or frees it) or a null-token pad (`None`) for a slot
         /// this caller has no cell for.
         reuse: Vec<Option<LocalId>>,
+        /// How a partial application built by this call is allocated: `Stack` when
+        /// the call **under-applies** a known function and the resulting closure
+        /// provably does not escape (escape analysis), else `Heap` (the default).
+        /// Ignored for a saturated or over-application (which builds no partial
+        /// application). `Static` is never used here.
+        alloc: ClosureAlloc,
     },
     /// A conditional.
     If {

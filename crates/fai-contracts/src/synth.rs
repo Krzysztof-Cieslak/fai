@@ -192,7 +192,15 @@ fn local_expr(local: LocalId) -> CExpr {
 
 /// A (possibly over-saturated) application, routed through `apply_n`.
 fn app(func: CExpr, args: Vec<CExpr>) -> CExpr {
-    CExpr::new(K::App { func: Box::new(func), args, reuse: Vec::new() }, Ty::Error)
+    CExpr::new(
+        K::App {
+            func: Box::new(func),
+            args,
+            reuse: Vec::new(),
+            alloc: fai_core::ir::ClosureAlloc::Heap,
+        },
+        Ty::Error,
+    )
 }
 
 /// Allocates a fresh local slot.

@@ -137,6 +137,24 @@ pub enum WireClosureAlloc {
     Heap,
 }
 
+/// Projects an allocation kind to wire form.
+fn alloc_to_wire(a: ClosureAlloc) -> WireClosureAlloc {
+    match a {
+        ClosureAlloc::Static => WireClosureAlloc::Static,
+        ClosureAlloc::Stack => WireClosureAlloc::Stack,
+        ClosureAlloc::Heap => WireClosureAlloc::Heap,
+    }
+}
+
+/// Rebuilds an allocation kind from wire form.
+fn alloc_from_wire(a: WireClosureAlloc) -> ClosureAlloc {
+    match a {
+        WireClosureAlloc::Static => ClosureAlloc::Static,
+        WireClosureAlloc::Stack => ClosureAlloc::Stack,
+        WireClosureAlloc::Heap => ClosureAlloc::Heap,
+    }
+}
+
 /// A type in wire form: a projection of [`Ty`] that keeps only the
 /// reference-count-relevant *shape* code generation distinguishes. ADT/interface
 /// identity, record labels, and arrow operand types are dropped;
@@ -218,6 +236,8 @@ pub enum WireExprKind {
         /// Reuse-token slots forwarded to the callee's token-taking entry (one per
         /// slot; `None` is a null-token pad).
         reuse: Vec<Option<u32>>,
+        /// How a partial application built by this call is allocated.
+        alloc: WireClosureAlloc,
     },
     /// A conditional.
     If {
@@ -491,10 +511,11 @@ fn expr_to_wire(e: &CExpr, module_of: &dyn Fn(DefId) -> String) -> WireExpr {
             op: *op,
             args: args.iter().map(|a| expr_to_wire(a, module_of)).collect(),
         },
-        ExprKind::App { func, args, reuse } => WireExprKind::App {
+        ExprKind::App { func, args, reuse, alloc } => WireExprKind::App {
             func: Box::new(expr_to_wire(func, module_of)),
             args: args.iter().map(|a| expr_to_wire(a, module_of)).collect(),
             reuse: reuse.iter().map(|t| t.map(slot)).collect(),
+            alloc: alloc_to_wire(*alloc),
         },
         ExprKind::If { cond, then, els } => WireExprKind::If {
             cond: Box::new(expr_to_wire(cond, module_of)),
@@ -509,11 +530,7 @@ fn expr_to_wire(e: &CExpr, module_of: &dyn Fn(DefId) -> String) -> WireExpr {
         ExprKind::MakeClosure { func, captures, alloc } => WireExprKind::MakeClosure {
             func: func.0,
             captures: captures.iter().map(|c| slot(*c)).collect(),
-            alloc: match alloc {
-                ClosureAlloc::Static => WireClosureAlloc::Static,
-                ClosureAlloc::Stack => WireClosureAlloc::Stack,
-                ClosureAlloc::Heap => WireClosureAlloc::Heap,
-            },
+            alloc: alloc_to_wire(*alloc),
         },
         ExprKind::MakeData { tag, args, reuse, scalars, niche } => WireExprKind::MakeData {
             tag: *tag,
@@ -716,10 +733,11 @@ fn expr_from_wire(e: &WireExpr, sources: &mut SourceAssigner) -> CExpr {
             op: *op,
             args: args.iter().map(|a| expr_from_wire(a, sources)).collect(),
         },
-        WireExprKind::App { func, args, reuse } => ExprKind::App {
+        WireExprKind::App { func, args, reuse, alloc } => ExprKind::App {
             func: Box::new(expr_from_wire(func, sources)),
             args: args.iter().map(|a| expr_from_wire(a, sources)).collect(),
             reuse: reuse.iter().map(|i| i.map(|i| LocalId::from_index(i as usize))).collect(),
+            alloc: alloc_from_wire(*alloc),
         },
         WireExprKind::If { cond, then, els } => ExprKind::If {
             cond: Box::new(expr_from_wire(cond, sources)),
@@ -734,11 +752,7 @@ fn expr_from_wire(e: &WireExpr, sources: &mut SourceAssigner) -> CExpr {
         WireExprKind::MakeClosure { func, captures, alloc } => ExprKind::MakeClosure {
             func: FnId(*func),
             captures: captures.iter().map(|&i| LocalId::from_index(i as usize)).collect(),
-            alloc: match alloc {
-                WireClosureAlloc::Static => ClosureAlloc::Static,
-                WireClosureAlloc::Stack => ClosureAlloc::Stack,
-                WireClosureAlloc::Heap => ClosureAlloc::Heap,
-            },
+            alloc: alloc_from_wire(*alloc),
         },
         WireExprKind::MakeData { tag, args, reuse, scalars, niche } => ExprKind::MakeData {
             tag: *tag,

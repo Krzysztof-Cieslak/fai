@@ -137,8 +137,14 @@ fn write_expr(
             }
             out.push(')');
         }
-        ExprKind::App { func, args, reuse } => {
+        ExprKind::App { func, args, reuse, alloc } => {
             out.push_str("(app ");
+            // A stack-allocated partial application selects a distinct cell, so the
+            // allocation kind is part of the cache key (only `Stack` differs from
+            // the default; emitted compactly to avoid churn on the common call).
+            if matches!(alloc, ClosureAlloc::Stack) {
+                out.push_str("stack ");
+            }
             write_expr(out, func, namer, arity_of, abi_of);
             for a in args {
                 out.push(' ');

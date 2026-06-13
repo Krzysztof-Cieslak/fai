@@ -128,7 +128,7 @@ fn inline_expr(db: &dyn Db, e: &CExpr, next: &mut usize, changed: &mut bool) -> 
     match &e.kind {
         // The intrinsic inliner runs before reference counting inserts reuse
         // tokens, so `reuse` is always empty here; it is carried through verbatim.
-        K::App { func, args, reuse } => {
+        K::App { func, args, reuse, alloc } => {
             if let K::Global(def) = &func.kind
                 && let Some(callee_file) = db.source_file(def.file)
                 && let Some(pw) = prim_wrapper(db, callee_file, def.name)
@@ -141,7 +141,7 @@ fn inline_expr(db: &dyn Db, e: &CExpr, next: &mut usize, changed: &mut bool) -> 
             }
             let func = Box::new(inline_expr(db, func, next, changed));
             let args = args.iter().map(|a| inline_expr(db, a, next, changed)).collect();
-            CExpr::new(K::App { func, args, reuse: reuse.clone() }, ty)
+            CExpr::new(K::App { func, args, reuse: reuse.clone(), alloc: *alloc }, ty)
         }
         K::Prim { op, args } => {
             let args = args.iter().map(|a| inline_expr(db, a, next, changed)).collect();
@@ -301,7 +301,7 @@ fn max_local(e: &CExpr, max: &mut usize) {
         K::Prim { args, .. } | K::MakeData { args, .. } | K::Recur { args } => {
             args.iter().for_each(|a| max_local(a, max));
         }
-        K::App { func, args, reuse } => {
+        K::App { func, args, reuse, .. } => {
             max_local(func, max);
             args.iter().for_each(|a| max_local(a, max));
             reuse.iter().flatten().for_each(|&t| bump(t, max));

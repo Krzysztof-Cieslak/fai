@@ -55,7 +55,7 @@ pub(crate) fn run(src: &str) -> (i32, String) {
 /// As [`run`], but also returns the number of heap allocations performed during
 /// execution (for reuse measurement).
 pub(crate) fn run_counted(src: &str) -> (i32, String, i64) {
-    let (code, out, allocs, _closures) = run_all_counted(src);
+    let (code, out, allocs, _closures, _paps) = run_all_counted(src);
     (code, out, allocs)
 }
 
@@ -63,13 +63,21 @@ pub(crate) fn run_counted(src: &str) -> (i32, String, i64) {
 /// non-capturing lambda shares an immortal static closure and allocates none, so
 /// this isolates the closures that were *not* elided).
 pub(crate) fn run_closure_counted(src: &str) -> (i32, String, i64) {
-    let (code, out, _allocs, closures) = run_all_counted(src);
+    let (code, out, _allocs, closures, _paps) = run_all_counted(src);
     (code, out, closures)
 }
 
+/// As [`run`], but also returns the number of partial-application cells
+/// heap-allocated (a non-escaping under-application stack-allocates and is not
+/// counted), isolating the partial applications that were *not* elided.
+pub(crate) fn run_pap_counted(src: &str) -> (i32, String, i64) {
+    let (code, out, _allocs, _closures, paps) = run_all_counted(src);
+    (code, out, paps)
+}
+
 /// Lowers and JIT-runs `src`, returning `(exit_code, output, allocations,
-/// closure_allocations)`.
-fn run_all_counted(src: &str) -> (i32, String, i64, i64) {
+/// closure_allocations, pap_allocations)`.
+fn run_all_counted(src: &str) -> (i32, String, i64, i64, i64) {
     let mut db = FaiDatabase::new();
     fai_types::std_lib::load_std(&mut db);
     let id = db.add_source("M.fai".into(), src.to_owned());
@@ -128,8 +136,9 @@ fn run_all_counted(src: &str) -> (i32, String, i64, i64) {
     let code = jit_run(&defs, entry, runtime, &namer, &arity_of, &signature_of, &borrows_of);
     let allocs = rt::allocations();
     let closures = rt::closure_allocations();
+    let paps = rt::pap_allocations();
     let out = rt::capture_take();
-    (code, out, allocs, closures)
+    (code, out, allocs, closures, paps)
 }
 
 /// Lowers `def_name` from `src` (plus, for direct-call arity, the globals it
@@ -591,6 +600,74 @@ fn non_escaping_capturing_lambda_emits_stack_cell_not_make_closure() {
         !ir.contains("(i64, i64, i64, i64) -> i64"),
         "a stack closure does not call fai_make_closure:\n{ir}",
     );
+}
+
+/// A loop that maps a *partially applied* function (`add k`) over a small list, so
+/// the partial application is first-class but does not escape the loop.
+fn pap_map_loop_prog(n: i32) -> String {
+    formatdoc! {r#"
+        module M
+
+        add : Int -> Int -> Int
+        let add a b = a + b
+
+        sumList : List Int -> Int
+        let sumList xs =
+          match xs with
+          | [] -> 0
+          | x :: r -> x + sumList r
+
+        go : Int -> Int -> Int
+        let go n acc =
+          if n <= 0 then acc else go (n - 1) (acc + sumList (List.map (add n) [1, 2, 3]))
+
+        public main : Runtime -> Unit / {{ Console }}
+        let main rt = rt.console.writeLine (Int.toString (go {n} 0))
+    "#}
+}
+
+#[test]
+fn non_escaping_partial_application_stack_allocates_no_heap_cell() {
+    // `add n` partially applies a known function and is passed to `List.map`, which
+    // only applies it — so escape analysis stack-allocates the partial application:
+    // no heap PAP cell per iteration, and a clean (leak-free) exit.
+    let (code_a, out_a, paps_a) = run_pap_counted(&pap_map_loop_prog(50));
+    let (code_b, out_b, paps_b) = run_pap_counted(&pap_map_loop_prog(100));
+    // sum([1+n, 2+n, 3+n]) = 6 + 3n, summed over n = 1..N.
+    assert_eq!((code_a, out_a.trim()), (0, "4125"), "clean exit, correct sum");
+    assert_eq!((code_b, out_b.trim()), (0, "15750"), "clean exit, correct sum");
+    assert_eq!(paps_b - paps_a, 0, "a non-escaping partial application allocates no heap cell");
+}
+
+#[test]
+fn escaping_partial_application_heap_allocates_per_iteration() {
+    // The contrast: a partial application consed into a returned list escapes, so it
+    // stays a heap cell — 50 extra iterations add exactly 50 PAP allocations.
+    let prog = |n: i32| {
+        formatdoc! {r#"
+            module M
+
+            add : Int -> Int -> Int
+            let add a b = a + b
+
+            collect : Int -> List (Int -> Int) -> List (Int -> Int)
+            let collect n acc = if n <= 0 then acc else collect (n - 1) (add n :: acc)
+
+            sumApply : List (Int -> Int) -> Int
+            let sumApply fs =
+              match fs with
+              | [] -> 0
+              | f :: r -> f 10 + sumApply r
+
+            public main : Runtime -> Unit / {{ Console }}
+            let main rt = rt.console.writeLine (Int.toString (sumApply (collect {n} [])))
+        "#}
+    };
+    let (code_a, _out_a, paps_a) = run_pap_counted(&prog(50));
+    let (code_b, _out_b, paps_b) = run_pap_counted(&prog(100));
+    assert_eq!(code_a, 0, "clean exit");
+    assert_eq!(code_b, 0, "clean exit");
+    assert_eq!(paps_b - paps_a, 50, "an escaping partial application heap-allocates per iteration");
 }
 
 #[test]

@@ -997,7 +997,15 @@ fn local(l: LocalId) -> CExpr {
 }
 
 fn app(func: CExpr, args: Vec<CExpr>) -> CExpr {
-    CExpr::new(K::App { func: Box::new(func), args, reuse: Vec::new() }, Ty::Error)
+    CExpr::new(
+        K::App {
+            func: Box::new(func),
+            args,
+            reuse: Vec::new(),
+            alloc: fai_core::ir::ClosureAlloc::Heap,
+        },
+        Ty::Error,
+    )
 }
 
 fn make_data(tag: u32, args: Vec<CExpr>, scalars: u64) -> CExpr {

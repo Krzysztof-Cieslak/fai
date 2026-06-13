@@ -162,18 +162,6 @@ pub fn mark_escaping_closures(db: &dyn Db, lowered: &mut LoweredDef) {
     }
 }
 
-/// If `e` is a capturing closure, mark it stack-allocated when `non_escaping`. A
-/// non-capturing closure is already `Static`; an escaping one keeps its `Heap`
-/// default.
-fn set_stack_if(e: &mut CExpr, non_escaping: bool) {
-    if let K::MakeClosure { captures, alloc, .. } = &mut e.kind
-        && non_escaping
-        && !captures.is_empty()
-    {
-        *alloc = ClosureAlloc::Stack;
-    }
-}
-
 /// The context-aware closure marker: decides each `MakeClosure`'s allocation from
 /// the position it occupies, recursing through the body.
 struct Marker<'a> {
@@ -182,24 +170,59 @@ struct Marker<'a> {
 }
 
 impl Marker<'_> {
+    /// Marks a closure or partial-application *value* stack-allocated when it does
+    /// not escape its position. A capturing `MakeClosure` becomes `Stack` (a
+    /// non-capturing one is already `Static`); an **under-application** of a known
+    /// function becomes `Stack` so code generation builds its partial application in
+    /// a stack cell. A saturated or over-application builds no partial application,
+    /// so it is left alone (keeping the allocation flag meaningful — only a genuine
+    /// stack cell carries `Stack`). An escaping value keeps its `Heap` default.
+    fn set_stack_if(&self, e: &mut CExpr, non_escaping: bool) {
+        if !non_escaping {
+            return;
+        }
+        // Decide under-application up front (an immutable read) so the arity query
+        // does not overlap the mutable borrow below.
+        let under_applied = match &e.kind {
+            K::App { func, args, .. } => match func.kind {
+                K::Global(def) => args.len() < self.callee_arity(def),
+                _ => false,
+            },
+            _ => false,
+        };
+        match &mut e.kind {
+            K::MakeClosure { captures, alloc, .. } if !captures.is_empty() => {
+                *alloc = ClosureAlloc::Stack;
+            }
+            K::App { alloc, .. } if under_applied => *alloc = ClosureAlloc::Stack,
+            _ => {}
+        }
+    }
+
+    /// The runtime arity (entry parameter count) of a callee, read off its escape
+    /// signature (whose length is exactly that count); zero for an unresolved def.
+    fn callee_arity(&self, def: DefId) -> usize {
+        self.db.source_file(def.file).map_or(0, |f| escape_signature(self.db, f, def.name).0.len())
+    }
+
     fn mark(&self, e: &mut CExpr, escaped: &FxHashSet<LocalId>) {
         match &mut e.kind {
             // A `let`-bound closure stack-allocates iff its local never escapes.
             K::Let { local, value, body } => {
-                set_stack_if(value, !escaped.contains(local));
+                self.set_stack_if(value, !escaped.contains(local));
                 self.mark(value, escaped);
                 self.mark(body, escaped);
             }
             K::App { func, args, .. } => {
                 // The callee position is *applied*, not stored, so an inline
                 // closure there does not escape.
-                set_stack_if(func, true);
+                self.set_stack_if(func, true);
                 self.mark(func, escaped);
                 // An inline closure argument escapes iff the callee's matching
                 // parameter does.
                 let esc = call_arg_escapes(self.db, self.self_def, None, func, args.len());
                 for (i, a) in args.iter_mut().enumerate() {
-                    set_stack_if(a, !esc.get(i).copied().unwrap_or(true));
+                    self.set_stack_if(a, !esc.get(i).copied().unwrap_or(true));
                     self.mark(a, escaped);
                 }
             }
