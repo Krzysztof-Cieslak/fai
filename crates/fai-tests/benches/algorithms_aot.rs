@@ -138,6 +138,7 @@ algorithm_benches! {
     string_build => "StringBuild",
     string_slice => "StringSlice",
     option_eval => "OptionEval",
+    int_eval => "IntEval",
     option_path => "OptionPath",
     option_tree_find => "OptionTreeFind",
     list_sort => "ListSort",
