@@ -4995,10 +4995,7 @@ mod classifier_tests {
     #[test]
     fn mixed_immediate_int_boxed_tuple_classifies_each_field() {
         let ty = Ty::Tuple(vec![Ty::bool(), Ty::int(), Ty::Con(Con::String)]);
-        assert_eq!(
-            inline_aggregate_fields(&ty, WIDE),
-            Some(vec![AggImmediate, AggInt, AggBoxed])
-        );
+        assert_eq!(inline_aggregate_fields(&ty, WIDE), Some(vec![AggImmediate, AggInt, AggBoxed]));
     }
 
     #[test]
