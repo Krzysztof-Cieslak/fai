@@ -2844,9 +2844,10 @@ Editor integration:
   - **Out-of-bounds still aborts (a located fault, "like `/`").** The inline get's
     bounds check, on failure, calls a new `fai_array_index_panic` runtime symbol
     (`fai_panic("array index out of bounds")`) on a cold branch, preserving the
-    documented abort. The bounds check is kept unconditionally (`unsafeGet`/`get`
-    lower to the same `Prim`, so it can't be selectively skipped), so the safe `get`/
-    `set` pay a redundant second check — bounds-check elimination is future work.
+     documented abort. The bounds check was kept unconditionally (`unsafeGet`/`get`
+     lower to the same `Prim`, so it can't be selectively skipped at the primitive),
+     so the safe `get`/`set` paid a redundant second check — since elided by the
+     difference-bound bounds-check elimination (D131).
   - **rc helpers.** The local-keyed inline reference-count emitters were refactored
     to value-keyed cores (`emit_rc_incr_value`/`emit_rc_dec_then_value`/
     `emit_inline_drop_value`) so an array element (a value with no backing local) can
@@ -2859,8 +2860,9 @@ Editor integration:
   - **Standing notes.** A `Float` `set` still **boxes** the new value (array slots
     hold boxed `Float`s; inline `f64` slots are #112), so a Float-array write loop is
     not yet allocation-free — only reads and `Int` writes are. The redundant
-    safe-path bounds check awaits bounds-check elimination. `withCapacity`/`split`/
-    `join` stay runtime calls (their cost is the irreducible allocation/string work).
+    safe-path bounds check is since elided by bounds-check elimination (D131).
+    `withCapacity`/`split`/`join` stay runtime calls (their cost is the irreducible
+    allocation/string work).
   - **Validated** by codegen IR-shape tests (the inline bounds/unique checks and slot
     load/store, not a runtime call), `arrays` e2e tests (`Int`/`Float`/boxed/generic
     correctness + leak-free, in-place preserved), the array generate-and-run oracle
@@ -2972,6 +2974,55 @@ Editor integration:
     round-trips over niche `Option String` keys alongside the existing
     Fai-vs-Rust scale suite. Issue #173 (under #136); complements #138 (inline
     `Array` access), the sibling per-operation call in the same loop.
+
+- **D131 Bounds-check elimination for inlined `Array` access (a difference-bound
+  analysis eliding a provably-redundant inline check).** The inline `Array`
+  get/set (D124/#138) kept an *unconditional* unsigned bounds check on every
+  access, so the safe `get`/`set` (which already guard `i >= 0 && i < length`) paid
+  a second check and an `i`-from-`0 .. length` loop re-checked every iteration. A
+  small **difference-bound fact engine** (`fai-core/src/bounds.rs`) now proves an
+  index within `0 .. len`, and code generation drops the redundant check (the set
+  keeps its `rc == 1` uniqueness branch).
+  - **The domain.** A weighted graph of difference constraints `a <= b + c` over
+    terms `{0, an int local, len(an array local)}`; an inequality is entailed when
+    the shortest path's weight allows it (`i >= 0` is `0 -> i <= 0`, `i < len(a)`
+    is `i -> len(a) <= -1`). Transfer functions interpret `+`/`-` (literal and
+    var), `&` masks (`0 <= x & m <= m` for `m >= 0`, the hash-bucket idiom), `%`
+    non-negativity, and the `Array` length-producing primitives; an `if` refines
+    each branch with its dominating guard (including a disequality-from-zero bump,
+    so `cap != 0` with `cap >= 0` gives `cap >= 1`). Reference-count wrappers are
+    peeled. Soundness rests on the allocator invariant that a valid array's length
+    is far below `i64::MAX` (so an index `< len` survives `+1` without wraparound —
+    the invariant Rust's BCE relies on); a cost cap bails to no-facts on a
+    pathological definition.
+  - **Interprocedural, file-local.** A loop index passed a literal `0` start is
+    non-negative only because of its caller, so entry facts are inferred caller-
+    directed. A `private` definition's whole caller set is in its own file
+    (cross-file references can only name `public` members), so `entry_bounds` is a
+    **file-local** greatest fixpoint (`fai-rc/src/bounds_sig.rs`): the meet over
+    every in-file call site of the facts provable for the arguments, with a
+    self-call (loop back-edge) made to preserve each candidate and an
+    upward-creeping bound **widened** away to converge. A `public` or
+    first-class-used definition gets no entry facts (its callers are unknown). This
+    keeps `object_code` a pure per-definition unit (facts depend only on the
+    definition's own module), so the cross-module codegen firewall holds. So the
+    hot index loops and the `HashDict`/`HashSet` bucket probes (`h & (cap - 1)`
+    with `cap == length slots`) elide; quicksort/merge_sort still pay it (their
+    `partition`'s pivot index needs a relational *result*-fact thread, left as
+    follow-up — `result_facts` is wired through the cache/wire but currently
+    empty).
+  - **Cache & wire.** A codegen-only change leaves the rc'd-IR fingerprint
+    untouched, so the `CODEGEN_CONFIG` stamp gains a `bounds-check-elim` token and
+    the on-disk key mixes in the definition's entry facts and its callees' result
+    facts; the wire bundle carries both so a daemon worker elides identically.
+  - **Validated** by codegen IR-shape tests (the redundant `ult` gone for the safe
+    `get`/`set`, a `0 .. length` loop, and a masked bucket index; kept for an
+    unguarded or partially guarded access), a **shadow-check** soundness net (a
+    test mode retains an elided check but routes its failure to a distinct abort,
+    so a generate-and-run proptest over random array pipelines and quicksort turns
+    any over-elision into a loud failure), the array/`HashDict`/`HashSet`/algorithm
+    oracle suites, and a perf guard pinning the cross-module firewall. Issue #175
+    (under #136); follows #138 (inline `Array` access).
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.
