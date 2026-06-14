@@ -292,6 +292,11 @@ fn option_eval_sample_is_valid() {
 }
 
 #[test]
+fn int_eval_sample_is_valid() {
+    validate("IntEval");
+}
+
+#[test]
 fn option_path_sample_is_valid() {
     validate("OptionPath");
 }

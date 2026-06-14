@@ -951,6 +951,45 @@ pub fn option_eval(n: i64) -> i64 {
     acc
 }
 
+/// Integer division with a -1 failure sentinel — the `Int`-only twin of
+/// [`safe_div`] (no real non-negative quotient is -1, so the sentinel never
+/// collides with a success).
+fn safe_div_sentinel(a: i64, b: i64) -> i64 {
+    if b == 0 { -1 } else { a / b }
+}
+
+/// The `Int`-only twin of [`eval_chain`]: -1 marks failure instead of `None`.
+fn eval_chain_sentinel(i: i64) -> i64 {
+    let x = safe_div_sentinel(i * i, i % 3);
+    if x == -1 {
+        return -1;
+    }
+    let y = safe_div_sentinel(x, i % 4);
+    if y == -1 {
+        return -1;
+    }
+    safe_div_sentinel(x + y, i % 5)
+}
+
+/// The `Int`-only twin of [`option_eval`]: the same safe-evaluation sum, but
+/// failure is the sentinel -1 rather than the niche `Option`. With no `Option`
+/// there is no niche representation to preserve, so this is the baseline an
+/// `Option Int`-threading evaluator should match once its niche encoding survives
+/// the loop without per-iteration allocation. Computes the identical result to
+/// [`option_eval`].
+#[must_use]
+pub fn int_eval(n: i64) -> i64 {
+    let mut acc = 0i64;
+    for i in 0..n {
+        let first = eval_chain_sentinel(i);
+        let v = if first == -1 { eval_chain_sentinel(i + 1) } else { first };
+        if v != -1 {
+            acc += v;
+        }
+    }
+    acc
+}
+
 /// Follow "next pointer" chains through a lookup table, summing visited keys. The
 /// `HashMap` stands in for the Fai linear association list (keys are unique, so
 /// the looked-up value is identical); a missing key is the niche `None`, ending
@@ -1268,6 +1307,13 @@ pub const ALGORITHMS: &[Algorithm] = &[
         oracle: Oracle::Int(option_eval),
     },
     Algorithm {
+        module: "IntEval",
+        entry: "run",
+        jit_size: 5_000,
+        aot_size: 100_000,
+        oracle: Oracle::Int(int_eval),
+    },
+    Algorithm {
         module: "OptionPath",
         entry: "run",
         jit_size: 500,
@@ -1334,6 +1380,7 @@ pub fn source(module: &str) -> &'static str {
         "StringBuild" => include_str!("../../../samples/algorithms/StringBuild.fai"),
         "StringSlice" => include_str!("../../../samples/algorithms/StringSlice.fai"),
         "OptionEval" => include_str!("../../../samples/algorithms/OptionEval.fai"),
+        "IntEval" => include_str!("../../../samples/algorithms/IntEval.fai"),
         "OptionPath" => include_str!("../../../samples/algorithms/OptionPath.fai"),
         "OptionTreeFind" => include_str!("../../../samples/algorithms/OptionTreeFind.fai"),
         "ListSort" => include_str!("../../../samples/algorithms/ListSort.fai"),

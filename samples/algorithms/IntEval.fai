@@ -1,0 +1,47 @@
+module IntEval
+
+// An `Int`-only twin of `OptionEval`: failure is the sentinel -1 instead of
+// `None`, and a success is the bare `Int` instead of `Some`. No `Option` means no
+// niche encoding — no niche tag tests and no niche/standard conversions — so this
+// is the floor an `Option Int`-threading evaluator should approach once its niche
+// representation is preserved across the loop (no per-iteration allocation). Every
+// real quotient is non-negative, so -1 never collides with a success.
+// Integer division that fails (sentinel -1) on a zero divisor.
+safeDiv : Int -> Int -> Int
+let safeDiv a b = if b = 0 then -1 else a / b
+
+// Prefer the first success, else the second (the strict `orElse` twin).
+orElse : Int -> Int -> Int
+let orElse a b = if a = -1 then b else a
+
+// Evaluate `i * i`, divide by `i % 3`, that quotient by `i % 4`, and the sum of
+// the two quotients by `i % 5`; any zero divisor short-circuits to -1.
+evalChain : Int -> Int
+let evalChain i =
+  let x = safeDiv (i * i) (i % 3)
+  if x = -1 then
+    -1
+  else
+    let y = safeDiv x (i % 4)
+    if y = -1 then -1 else safeDiv (x + y) (i % 5)
+
+// The result at `i`, falling back to `i + 1` when the first chain fails.
+evalAt : Int -> Int
+let evalAt i = orElse (evalChain i) (evalChain (i + 1))
+
+// Sum the successful results over `[0, n)`, skipping pairs that both fail.
+sumOk : Int -> Int -> Int -> Int
+let sumOk i n acc =
+  if i >= n then
+    acc
+  else
+    let v = evalAt i
+    if v = -1 then sumOk (i + 1) n acc else sumOk (i + 1) n (acc + v)
+
+/// The benchmark workload: the safe-evaluation sum over `[0, n)`.
+public run : Int -> Int
+let run n = sumOk 0 n 0
+example: run 10 = 69
+
+public main : Runtime -> Unit / { Console }
+let main runtime = runtime.console.writeLine (Int.toString (run 100000))
