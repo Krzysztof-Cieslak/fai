@@ -20,8 +20,8 @@ use fai_db::{Db, Diag, SourceFile};
 use fai_diagnostics::wire::{DiagnosticWire, to_wire};
 use fai_diagnostics::{Diagnostic, SCHEMA_VERSION, Severity, render_human};
 use fai_rc::{
-    BorrowSig, borrow_signature, combined_lowered, forwards_to, member_wrapper, mutual_groups,
-    rc_emit, rc_lowered, reuse_signature,
+    BorrowSig, borrow_signature, combined_lowered, entry_bounds, forwards_to, member_wrapper,
+    mutual_groups, rc_emit, rc_lowered, result_facts, reuse_signature,
 };
 use fai_resolve::{DefId, ModuleName, module_defs, module_name};
 use fai_span::SpanResolver;
@@ -188,7 +188,25 @@ pub fn object_code(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<Vec<u8>> 
     let arity = |d: DefId| floops.get(&d).map_or_else(|| arity_of(db, d), |x| x.0);
     let abi = |d: DefId| floops.get(&d).map_or_else(|| abi_of(db, d), |x| x.1.clone());
     let borrows = |d: DefId| if floops.contains_key(&d) { Vec::new() } else { borrows_of(db, d) };
-    Arc::new(object_for_def(&lowered, &namer, &arity, &abi, &borrows))
+    let entry_of = |d: DefId| bounds_entry_of(db, d);
+    let result_of = |d: DefId| bounds_result_of(db, d);
+    let bce = fai_codegen::Bce { entry_of: &entry_of, result_of: &result_of, shadow: false };
+    Arc::new(object_for_def(&lowered, &namer, &arity, &abi, &borrows, &bce))
+}
+
+/// This definition's inferred entry-fact signature (empty for a synthetic loop):
+/// difference constraints over its parameters that bounds-check elimination seeds
+/// at the function entry.
+pub(crate) fn bounds_entry_of(db: &dyn Db, def: DefId) -> fai_core::BoundSig {
+    db.source_file(def.file)
+        .map_or_else(fai_core::BoundSig::default, |f| (*entry_bounds(db, f, def.name)).clone())
+}
+
+/// A definition's inferred result-fact signature (empty for a synthetic loop): its
+/// result's length/bounds relative to its parameters, consulted at a call site.
+pub(crate) fn bounds_result_of(db: &dyn Db, def: DefId) -> fai_core::ResultSig {
+    db.source_file(def.file)
+        .map_or_else(fai_core::ResultSig::default, |f| (*result_facts(db, f, def.name)).clone())
 }
 
 /// The arity and ABI of each synthesized deforestation loop a definition's body
@@ -218,7 +236,10 @@ pub fn reuse_object_code(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<Vec
     let arity = |d: DefId| floops.get(&d).map_or_else(|| arity_of(db, d), |x| x.0);
     let abi = |d: DefId| floops.get(&d).map_or_else(|| abi_of(db, d), |x| x.1.clone());
     let borrows = |d: DefId| if floops.contains_key(&d) { Vec::new() } else { borrows_of(db, d) };
-    Arc::new(reuse_object_for_def(&lowered, &namer, &arity, &abi, &borrows))
+    let entry_of = |d: DefId| bounds_entry_of(db, d);
+    let result_of = |d: DefId| bounds_result_of(db, d);
+    let bce = fai_codegen::Bce { entry_of: &entry_of, result_of: &result_of, shadow: false };
+    Arc::new(reuse_object_for_def(&lowered, &namer, &arity, &abi, &borrows, &bce))
 }
 
 /// The definitions a reachable caller forwards reuse tokens to — the definitions
@@ -543,22 +564,26 @@ pub fn build_native(db: &dyn Db, file: SourceFile, out: &Utf8Path) -> BuildOutco
             borrows_of(db, d)
         }
     };
+    // Synthetic definitions (wrappers, combined loops, fused loops) have no source
+    // file, hence no interprocedural bounds facts; intra-procedural elision still
+    // applies within them.
+    let synth_bce = fai_codegen::Bce::none();
     for (member, wrapper) in &groups.wrappers {
         objects.push((
             symbol_base(db, *member),
-            object_for_def(wrapper, &namer, &arity, &abi, &borrows),
+            object_for_def(wrapper, &namer, &arity, &abi, &borrows, &synth_bce),
         ));
     }
     for combined in &groups.combined {
         objects.push((
             symbol_base(db, combined.def),
-            object_for_def(combined, &namer, &arity, &abi, &borrows),
+            object_for_def(combined, &namer, &arity, &abi, &borrows, &synth_bce),
         ));
     }
     for fused in &fusion.loops {
         objects.push((
             symbol_base(db, fused.def),
-            object_for_def(fused, &namer, &arity, &abi, &borrows),
+            object_for_def(fused, &namer, &arity, &abi, &borrows, &synth_bce),
         ));
     }
     // Link a token-taking specialized entry for each definition a reachable caller
@@ -681,7 +706,11 @@ pub fn jit_run_program(db: &dyn Db, file: SourceFile) -> RunOutcome {
             borrows_of(db, d)
         }
     };
-    let exit_code = fai_codegen::jit_run(&defs, entry, runtime, &namer, &arity, &abi, &borrows);
+    let entry_of = |d: DefId| bounds_entry_of(db, d);
+    let result_of = |d: DefId| bounds_result_of(db, d);
+    let bce = fai_codegen::Bce { entry_of: &entry_of, result_of: &result_of, shadow: false };
+    let exit_code =
+        fai_codegen::jit_run(&defs, entry, runtime, &namer, &arity, &abi, &borrows, &bce);
     RunOutcome { exit_code, diagnostics }
 }
 
@@ -792,7 +821,10 @@ pub fn jit_compile(db: &dyn Db, file: SourceFile) -> Result<CompiledProgram, Vec
     let abi = |d: DefId| fusion.abi.get(&d).cloned().unwrap_or_else(|| abi_of(db, d));
     let borrows =
         |d: DefId| if fusion.arity.contains_key(&d) { Vec::new() } else { borrows_of(db, d) };
-    let program = JitProgram::compile(&defs, &namer, &arity, &abi, &borrows);
+    let entry_of = |d: DefId| bounds_entry_of(db, d);
+    let result_of = |d: DefId| bounds_result_of(db, d);
+    let bce = fai_codegen::Bce { entry_of: &entry_of, result_of: &result_of, shadow: false };
+    let program = JitProgram::compile(&defs, &namer, &arity, &abi, &borrows, &bce);
     Ok(CompiledProgram { program, names, entry_defs })
 }
 
@@ -863,7 +895,15 @@ pub fn build_run_bundle(db: &dyn Db, file: SourceFile) -> RunBundleResult {
             } else {
                 (lowered, Vec::new())
             };
-            Some(def_to_wire(&lowered, &module_of, arity_of(db, *d), abi_of(db, *d), reuse_sig))
+            Some(def_to_wire(
+                &lowered,
+                &module_of,
+                arity_of(db, *d),
+                abi_of(db, *d),
+                reuse_sig,
+                (*entry_bounds(db, def_file, d.name)).clone(),
+                (*result_facts(db, def_file, d.name)).clone(),
+            ))
         })
         .collect::<Vec<Option<WireDef>>>()
         .into_iter()
@@ -879,6 +919,8 @@ pub fn build_run_bundle(db: &dyn Db, file: SourceFile) -> RunBundleResult {
             arity_of(db, *member),
             abi_of(db, *member),
             Vec::new(),
+            fai_core::BoundSig::default(),
+            fai_core::ResultSig::default(),
         ));
     }
     for combined in &groups.combined {
@@ -892,6 +934,8 @@ pub fn build_run_bundle(db: &dyn Db, file: SourceFile) -> RunBundleResult {
             arity,
             FnAbi::register_uniform(arity),
             Vec::new(),
+            fai_core::BoundSig::default(),
+            fai_core::ResultSig::default(),
         ));
     }
     // The synthesized deforestation loops the reachable bodies call: shipped with
@@ -901,7 +945,15 @@ pub fn build_run_bundle(db: &dyn Db, file: SourceFile) -> RunBundleResult {
     for fused in &fusion.loops {
         let arity = fusion.arity.get(&fused.def).copied().unwrap_or(0);
         let abi = fusion.abi.get(&fused.def).cloned().unwrap_or_default();
-        defs.push(def_to_wire(fused, &module_of, arity, abi, Vec::new()));
+        defs.push(def_to_wire(
+            fused,
+            &module_of,
+            arity,
+            abi,
+            Vec::new(),
+            fai_core::BoundSig::default(),
+            fai_core::ResultSig::default(),
+        ));
     }
 
     let entry = DefId::new(file.source(db), Symbol::intern(ENTRY));
@@ -933,6 +985,12 @@ pub fn jit_run_bundle(bundle: &WireBundle) -> i32 {
     let arity = |d: DefId| arities.get(&d).copied().unwrap_or(0);
     let abi = |d: DefId| abis.get(&d).cloned().unwrap_or_default();
     let borrow = |d: DefId| borrows.get(&d).cloned().unwrap_or_default();
+    // The bundle carries each definition's inferred bounds facts (computed in the
+    // database-holding process), so the worker elides the same checks without the
+    // query database.
+    let entry_of = |d: DefId| rebuilt.bounds_entry.get(&d).cloned().unwrap_or_default();
+    let result_of = |d: DefId| rebuilt.bounds_result.get(&d).cloned().unwrap_or_default();
+    let bce = fai_codegen::Bce { entry_of: &entry_of, result_of: &result_of, shadow: false };
     fai_codegen::jit_run(
         &rebuilt.defs,
         rebuilt.entry,
@@ -941,6 +999,7 @@ pub fn jit_run_bundle(bundle: &WireBundle) -> i32 {
         &arity,
         &abi,
         &borrow,
+        &bce,
     )
 }
 

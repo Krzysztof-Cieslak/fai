@@ -1484,6 +1484,16 @@ pub extern "C" fn fai_array_index_panic() {
     fai_panic("array index out of bounds");
 }
 
+/// Aborts with a distinct message when a bounds check the compiler *elided* (as
+/// provably redundant) would in fact have failed. Reached only from the
+/// bounds-check-elimination shadow check, which generative tests enable to turn an
+/// unsound elision into a loud, located failure rather than a silent out-of-bounds
+/// access. Never emitted by normal builds. Never returns.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_bce_unsound_panic() {
+    fai_panic("bounds-check elimination unsound: index out of bounds");
+}
+
 /// Element `index`, returning an owned reference and consuming `arr` (the element
 /// is duplicated so it outlives `arr`'s drop). Out-of-bounds aborts.
 #[unsafe(no_mangle)]

@@ -99,6 +99,16 @@ pub struct WireDef {
     /// accepts, in slot order; empty when there is no `reuse_entry`. The worker
     /// reconstructs the reuse signature (and so the `{base}__reuse` ABI) from this.
     pub reuse_sig: Vec<u32>,
+    /// The inferred bounds-check-elimination **entry facts** (difference
+    /// constraints over its parameters), so the database-free worker elides the
+    /// same inline `Array` bounds checks. Empty when none were inferred.
+    #[serde(default)]
+    pub bounds_entry: crate::bounds::BoundSig,
+    /// The inferred bounds-check-elimination **result facts** (its result's
+    /// length/bounds relative to its parameters), consulted by a caller. Empty when
+    /// none were inferred.
+    #[serde(default)]
+    pub bounds_result: crate::bounds::ResultSig,
 }
 
 /// One function in wire form.
@@ -456,6 +466,8 @@ pub fn def_to_wire(
     arity: usize,
     abi: FnAbi,
     reuse_sig: Vec<u32>,
+    bounds_entry: crate::bounds::BoundSig,
+    bounds_result: crate::bounds::ResultSig,
 ) -> WireDef {
     WireDef {
         id: wire_id(lowered.def, module_of),
@@ -465,6 +477,8 @@ pub fn def_to_wire(
         entry_borrowed: lowered.entry_borrowed.clone(),
         reuse_entry: lowered.reuse_entry.as_ref().map(|f| fn_to_wire(f, module_of)),
         reuse_sig,
+        bounds_entry,
+        bounds_result,
     }
 }
 
@@ -604,6 +618,10 @@ pub struct Rebuilt {
     pub arities: FxHashMap<DefId, usize>,
     /// Definition → native calling-convention shape (for direct-call marshalling).
     pub abis: FxHashMap<DefId, FnAbi>,
+    /// Definition → inferred bounds-check-elimination entry facts.
+    pub bounds_entry: FxHashMap<DefId, crate::bounds::BoundSig>,
+    /// Definition → inferred bounds-check-elimination result facts.
+    pub bounds_result: FxHashMap<DefId, crate::bounds::ResultSig>,
 }
 
 /// Reconstructs real [`LoweredDef`]s from a wire bundle, assigning a synthetic
@@ -614,8 +632,17 @@ pub fn from_wire(bundle: &WireBundle) -> Rebuilt {
     let mut sources = SourceAssigner::default();
     let entry = sources.def_id(&bundle.entry);
     let runtime = sources.def_id(&bundle.runtime);
-    let (defs, arities, abis) = defs_from_wire(&bundle.defs, &mut sources);
-    Rebuilt { defs, entry, runtime, module_labels: sources.labels, arities, abis }
+    let d = defs_from_wire(&bundle.defs, &mut sources);
+    Rebuilt {
+        defs: d.defs,
+        entry,
+        runtime,
+        module_labels: sources.labels,
+        arities: d.arities,
+        abis: d.abis,
+        bounds_entry: d.bounds_entry,
+        bounds_result: d.bounds_result,
+    }
 }
 
 /// Reconstructed contract set: real [`LoweredDef`]s plus the contract entries to
@@ -632,6 +659,10 @@ pub struct RebuiltTest {
     pub arities: FxHashMap<DefId, usize>,
     /// Definition → native calling-convention shape (for direct-call marshalling).
     pub abis: FxHashMap<DefId, FnAbi>,
+    /// Definition → inferred bounds-check-elimination entry facts.
+    pub bounds_entry: FxHashMap<DefId, crate::bounds::BoundSig>,
+    /// Definition → inferred bounds-check-elimination result facts.
+    pub bounds_result: FxHashMap<DefId, crate::bounds::ResultSig>,
 }
 
 /// A reconstructed contract entry: the harness definition to apply and its
@@ -655,7 +686,7 @@ pub struct TestContract {
 #[must_use]
 pub fn from_wire_test(bundle: &TestWireBundle) -> RebuiltTest {
     let mut sources = SourceAssigner::default();
-    let (defs, arities, abis) = defs_from_wire(&bundle.defs, &mut sources);
+    let d = defs_from_wire(&bundle.defs, &mut sources);
     let contracts = bundle
         .contracts
         .iter()
@@ -667,22 +698,42 @@ pub fn from_wire_test(bundle: &TestWireBundle) -> RebuiltTest {
             max_size: c.max_size,
         })
         .collect();
-    RebuiltTest { defs, contracts, module_labels: sources.labels, arities, abis }
+    RebuiltTest {
+        defs: d.defs,
+        contracts,
+        module_labels: sources.labels,
+        arities: d.arities,
+        abis: d.abis,
+        bounds_entry: d.bounds_entry,
+        bounds_result: d.bounds_result,
+    }
+}
+
+/// The result of reconstructing a list of wire definitions: the real
+/// [`LoweredDef`]s plus the per-definition side tables a database-free worker needs.
+struct DefsFromWire {
+    defs: Vec<LoweredDef>,
+    arities: FxHashMap<DefId, usize>,
+    abis: FxHashMap<DefId, FnAbi>,
+    bounds_entry: FxHashMap<DefId, crate::bounds::BoundSig>,
+    bounds_result: FxHashMap<DefId, crate::bounds::ResultSig>,
 }
 
 /// Reconstructs a list of wire definitions into real [`LoweredDef`]s, recording
-/// each definition's arity. Shared by the run and test bundle reconstructions.
-fn defs_from_wire(
-    wire_defs: &[WireDef],
-    sources: &mut SourceAssigner,
-) -> (Vec<LoweredDef>, FxHashMap<DefId, usize>, FxHashMap<DefId, FnAbi>) {
+/// each definition's arity, ABI, and bounds facts. Shared by the run and test
+/// bundle reconstructions.
+fn defs_from_wire(wire_defs: &[WireDef], sources: &mut SourceAssigner) -> DefsFromWire {
     let mut defs = Vec::with_capacity(wire_defs.len());
     let mut arities = FxHashMap::default();
     let mut abis = FxHashMap::default();
+    let mut bounds_entry = FxHashMap::default();
+    let mut bounds_result = FxHashMap::default();
     for wire in wire_defs {
         let def_id = sources.def_id(&wire.id);
         arities.insert(def_id, wire.arity);
         abis.insert(def_id, wire.abi.clone());
+        bounds_entry.insert(def_id, wire.bounds_entry.clone());
+        bounds_result.insert(def_id, wire.bounds_result.clone());
         defs.push(LoweredDef {
             def: def_id,
             fns: wire.fns.iter().map(|f| fn_from_wire(f, sources)).collect(),
@@ -690,7 +741,7 @@ fn defs_from_wire(
             reuse_entry: wire.reuse_entry.as_ref().map(|f| fn_from_wire(f, sources)),
         });
     }
-    (defs, arities, abis)
+    DefsFromWire { defs, arities, abis, bounds_entry, bounds_result }
 }
 
 /// Assigns stable synthetic source ids to module labels as they are seen.
@@ -838,6 +889,8 @@ mod tests {
             lowered.entry().params.len(),
             FnAbi::default(),
             Vec::new(),
+            crate::bounds::BoundSig::default(),
+            crate::bounds::ResultSig::default(),
         );
         let bundle =
             WireBundle { entry: wire.id.clone(), runtime: wire.id.clone(), defs: vec![wire] };
@@ -893,6 +946,8 @@ mod tests {
             lowered.entry().params.len(),
             FnAbi::default(),
             Vec::new(),
+            crate::bounds::BoundSig::default(),
+            crate::bounds::ResultSig::default(),
         );
         let json = serde_json::to_string(&wire).unwrap();
         let decoded: WireDef = serde_json::from_str(&json).unwrap();
@@ -966,7 +1021,15 @@ mod tests {
             reuse_entry: None,
         };
 
-        let wire = def_to_wire(&lowered, &|_| "M".to_owned(), 1, FnAbi::default(), Vec::new());
+        let wire = def_to_wire(
+            &lowered,
+            &|_| "M".to_owned(),
+            1,
+            FnAbi::default(),
+            Vec::new(),
+            crate::bounds::BoundSig::default(),
+            crate::bounds::ResultSig::default(),
+        );
         let json = serde_json::to_string(&wire).unwrap();
         let decoded: WireDef = serde_json::from_str(&json).unwrap();
         let bundle = WireBundle {
@@ -1015,7 +1078,15 @@ mod tests {
             reuse_entry: None,
         };
 
-        let wire = def_to_wire(&lowered, &|_| "M".to_owned(), 1, FnAbi::default(), Vec::new());
+        let wire = def_to_wire(
+            &lowered,
+            &|_| "M".to_owned(),
+            1,
+            FnAbi::default(),
+            Vec::new(),
+            crate::bounds::BoundSig::default(),
+            crate::bounds::ResultSig::default(),
+        );
         let json = serde_json::to_string(&wire).unwrap();
         let decoded: WireDef = serde_json::from_str(&json).unwrap();
         let bundle = WireBundle {
@@ -1097,7 +1168,15 @@ mod tests {
             reuse_entry: None,
         };
 
-        let wire = def_to_wire(&lowered, &|_| "M".to_owned(), 1, FnAbi::default(), Vec::new());
+        let wire = def_to_wire(
+            &lowered,
+            &|_| "M".to_owned(),
+            1,
+            FnAbi::default(),
+            Vec::new(),
+            crate::bounds::BoundSig::default(),
+            crate::bounds::ResultSig::default(),
+        );
         let json = serde_json::to_string(&wire).unwrap();
         let decoded: WireDef = serde_json::from_str(&json).unwrap();
         let bundle = WireBundle {
@@ -1124,7 +1203,15 @@ mod tests {
         let id = db.add_source("M.fai".into(), "module M\n\nlet f x = x + 1\n".to_owned());
         let file = db.source_file(id).unwrap();
         let lowered = core(&db, file, Symbol::intern("f"));
-        let wire = def_to_wire(&lowered, &|_| "M".to_owned(), 1, FnAbi::default(), Vec::new());
+        let wire = def_to_wire(
+            &lowered,
+            &|_| "M".to_owned(),
+            1,
+            FnAbi::default(),
+            Vec::new(),
+            crate::bounds::BoundSig::default(),
+            crate::bounds::ResultSig::default(),
+        );
         let bundle =
             WireBundle { entry: wire.id.clone(), runtime: wire.id.clone(), defs: vec![wire] };
 
@@ -1175,7 +1262,15 @@ mod tests {
         let id = db.add_source("M.fai".into(), "module M\n\nlet f x = x + 1\n".to_owned());
         let file = db.source_file(id).unwrap();
         let lowered = core(&db, file, Symbol::intern("f"));
-        let wire = def_to_wire(&lowered, &|_| "M".to_owned(), 1, FnAbi::default(), Vec::new());
+        let wire = def_to_wire(
+            &lowered,
+            &|_| "M".to_owned(),
+            1,
+            FnAbi::default(),
+            Vec::new(),
+            crate::bounds::BoundSig::default(),
+            crate::bounds::ResultSig::default(),
+        );
         let bundle = TestWireBundle {
             contracts: vec![WireContract {
                 id: wire.id.clone(),
@@ -1215,6 +1310,8 @@ mod tests {
             entry_borrowed: Vec::new(),
             reuse_entry: None,
             reuse_sig: Vec::new(),
+            bounds_entry: crate::bounds::BoundSig::default(),
+            bounds_result: crate::bounds::ResultSig::default(),
         };
         let b = WireDef {
             id: WireDefId { module: "B".to_owned(), name: "f".to_owned() },
@@ -1228,6 +1325,8 @@ mod tests {
             entry_borrowed: Vec::new(),
             reuse_entry: None,
             reuse_sig: Vec::new(),
+            bounds_entry: crate::bounds::BoundSig::default(),
+            bounds_result: crate::bounds::ResultSig::default(),
         };
         let bundle = WireBundle { entry: a.id.clone(), runtime: a.id.clone(), defs: vec![a, b] };
         let rebuilt = from_wire(&bundle);

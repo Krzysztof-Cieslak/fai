@@ -38,7 +38,7 @@ use fai_core::{RebuiltTest, TestWireBundle, WireContract, WireDefId, from_wire_t
 use fai_db::{Db, SourceFile};
 use fai_diagnostics::wire::{DiagnosticWire, to_wire};
 use fai_diagnostics::{Diagnostic, DiagnosticCode, SCHEMA_VERSION, Severity, render_human};
-use fai_rc::{BorrowSig, rc, rc_lowered};
+use fai_rc::{BorrowSig, entry_bounds, rc, rc_lowered, result_facts};
 use fai_resolve::{DefId, ModuleName, module_name};
 use fai_span::{Span, SpanResolver};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -466,7 +466,15 @@ fn build_plan(
         // Synthesized harnesses/generators/properties have no source signature;
         // they are reached only via `apply_n`, so the uniform (boxed) ABI is both
         // correct and what that path requires.
-        defs.push(def_to_wire(lowered, &module_of, *arity, FnAbi::default(), Vec::new()));
+        defs.push(def_to_wire(
+            lowered,
+            &module_of,
+            *arity,
+            FnAbi::default(),
+            Vec::new(),
+            fai_core::BoundSig::default(),
+            fai_core::ResultSig::default(),
+        ));
     }
     for def in &reachable {
         if let Some(file) = db.source_file(def.file) {
@@ -477,6 +485,8 @@ fn build_plan(
                 arity_of(db, *def),
                 abi_of(db, *def),
                 Vec::new(),
+                (*entry_bounds(db, file, def.name)).clone(),
+                (*result_facts(db, file, def.name)).clone(),
             ));
         }
     }
@@ -487,7 +497,15 @@ fn build_plan(
     for fused in &fusion.loops {
         let arity = fusion.arity.get(&fused.def).copied().unwrap_or(0);
         let abi = fusion.abi.get(&fused.def).cloned().unwrap_or_default();
-        defs.push(def_to_wire(fused, &module_of, arity, abi, Vec::new()));
+        defs.push(def_to_wire(
+            fused,
+            &module_of,
+            arity,
+            abi,
+            Vec::new(),
+            fai_core::BoundSig::default(),
+            fai_core::ResultSig::default(),
+        ));
     }
 
     // The contract entries to apply, parallel to their render-side metadata.
@@ -781,7 +799,10 @@ fn run_contracts(rebuilt: &RebuiltTest, start_index: usize, sink: &mut dyn FnMut
     let borrows: FxHashMap<DefId, Vec<bool>> =
         rebuilt.defs.iter().map(|d| (d.def, d.entry_borrowed.clone())).collect();
     let borrow = |d: DefId| borrows.get(&d).cloned().unwrap_or_default();
-    let mut program = JitProgram::compile(&rebuilt.defs, &namer, &arity, &abi, &borrow);
+    let entry_of = |d: DefId| rebuilt.bounds_entry.get(&d).cloned().unwrap_or_default();
+    let result_of = |d: DefId| rebuilt.bounds_result.get(&d).cloned().unwrap_or_default();
+    let bce = fai_codegen::Bce { entry_of: &entry_of, result_of: &result_of, shadow: false };
+    let mut program = JitProgram::compile(&rebuilt.defs, &namer, &arity, &abi, &borrow, &bce);
     for position in start_index..rebuilt.contracts.len() {
         let c = &rebuilt.contracts[position];
         // The live-object counter is compiled in only under `debug_assertions`, so

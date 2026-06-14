@@ -30,6 +30,7 @@ use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use fai_core::NicheKind;
+use fai_core::bounds::{BoundSig, Bounds, ResultSig};
 use fai_core::ir::{
     CExpr, ClosureAlloc, CoreFn, ExprKind, FieldIndex, FnAbi, FnId, Lit, LoweredDef, Prim, Repr,
 };
@@ -57,6 +58,40 @@ pub fn reuse_symbol(namer: &dyn Fn(DefId) -> String, def: DefId) -> String {
     format!("{}__reuse", namer(def))
 }
 
+/// Bounds-check-elimination inputs for code generation: a definition's inferred
+/// entry facts (difference constraints over its parameters, used to seed the fact
+/// graph at the function entry) and each callee's result facts (consulted when a
+/// `let` binds a saturated call). `shadow` retains an "elided" check but routes
+/// its failure to a distinct abort, so generative testing turns any unsound
+/// elision into a loud failure rather than a silent out-of-bounds access.
+pub struct Bce<'a> {
+    /// A definition's entry-fact signature (facts assumable about its parameters).
+    pub entry_of: &'a dyn Fn(DefId) -> BoundSig,
+    /// A definition's result-fact signature (its result's length/bounds relative
+    /// to its parameters).
+    pub result_of: &'a dyn Fn(DefId) -> ResultSig,
+    /// Whether to emit the bounds-check-elimination shadow check (testing only).
+    pub shadow: bool,
+}
+
+fn empty_entry(_: DefId) -> BoundSig {
+    BoundSig::default()
+}
+
+fn empty_result(_: DefId) -> ResultSig {
+    ResultSig::default()
+}
+
+impl Bce<'static> {
+    /// The no-facts configuration: no entry/result facts and no shadow check, so
+    /// every inline `Array` access keeps its bounds check. Used by IR-shape tests
+    /// and any caller without the interprocedural fact queries.
+    #[must_use]
+    pub fn none() -> Self {
+        Bce { entry_of: &empty_entry, result_of: &empty_result, shadow: false }
+    }
+}
+
 /// Compiles one lowered definition into `module`: its functions, its static
 /// closure value, and its string literals.
 ///
@@ -71,9 +106,10 @@ pub fn compile_def<M: Module>(
     arity_of: &dyn Fn(DefId) -> usize,
     signature_of: &dyn Fn(DefId) -> FnAbi,
     borrows_of: &dyn Fn(DefId) -> Vec<bool>,
+    bce: &Bce,
 ) {
     let mut jobs = Vec::new();
-    build_def(module, lowered, namer, arity_of, signature_of, borrows_of, &mut jobs);
+    build_def(module, lowered, namer, arity_of, signature_of, borrows_of, bce, &mut jobs);
     for (id, mut ctx) in jobs {
         module.define_function(id, &mut ctx).expect("define function");
     }
@@ -85,6 +121,7 @@ pub fn compile_def<M: Module>(
 /// mutates `module` (declaring callees, runtime imports, and string data), so it
 /// is serial; the caller compiles the collected jobs — the expensive step —
 /// however it likes (the JIT does so in parallel, the AOT path serially).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_def<M: Module>(
     module: &mut M,
     lowered: &LoweredDef,
@@ -92,10 +129,14 @@ pub(crate) fn build_def<M: Module>(
     arity_of: &dyn Fn(DefId) -> usize,
     signature_of: &dyn Fn(DefId) -> FnAbi,
     borrows_of: &dyn Fn(DefId) -> Vec<bool>,
+    bce: &Bce,
     jobs: &mut Vec<(FuncId, Context)>,
 ) {
     let base = namer(lowered.def);
     let abi = signature_of(lowered.def);
+    // The entry's inferred bounds facts (over its source parameters), seeded into
+    // the fact graph for `fn0` only; lifted lambdas get no seed.
+    let entry_facts = (bce.entry_of)(lowered.def);
     let uniform_sig = code_signature(module);
     let arity = lowered.entry().params.len();
     // The entry (`fn0`) of a direct-callable definition uses the register ABI;
@@ -126,6 +167,9 @@ pub(crate) fn build_def<M: Module>(
 
     // Build each function body into its own (uncompiled) context.
     for (i, f) in lowered.fns.iter().enumerate() {
+        // Seed the entry facts only for the entry function (`fn0`), whose
+        // parameters are the definition's source parameters (offset 0).
+        let seed = (i == 0).then_some((&entry_facts, 0usize));
         let ctx = build_fn(
             module,
             f,
@@ -139,6 +183,8 @@ pub(crate) fn build_def<M: Module>(
             &lambda_closures,
             &base,
             i,
+            bce,
+            seed,
         );
         jobs.push((fn_ids[i], ctx));
     }
@@ -182,6 +228,7 @@ pub(crate) fn build_def<M: Module>(
 /// by reference counting). Emitted separately from [`build_def`] so the per-
 /// definition primary object stays a pure function of the definition while the
 /// driver links a reuse entry only where a caller actually forwards to it.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_reuse_object<M: Module>(
     module: &mut M,
     lowered: &LoweredDef,
@@ -189,6 +236,7 @@ pub(crate) fn build_reuse_object<M: Module>(
     arity_of: &dyn Fn(DefId) -> usize,
     signature_of: &dyn Fn(DefId) -> FnAbi,
     borrows_of: &dyn Fn(DefId) -> Vec<bool>,
+    bce: &Bce,
     jobs: &mut Vec<(FuncId, Context)>,
 ) {
     let Some(reuse_entry) = &lowered.reuse_entry else { return };
@@ -196,6 +244,9 @@ pub(crate) fn build_reuse_object<M: Module>(
     let abi = signature_of(lowered.def);
     let source_arity = lowered.entry().params.len();
     let tokens = reuse_entry.params.len().saturating_sub(source_arity);
+    // The reuse entry runs the same body as the primary entry, so its source
+    // parameters (after the leading reuse tokens) carry the same entry facts.
+    let entry_facts = (bce.entry_of)(lowered.def);
 
     // The specialized ABI: `k` leading uniform (`i64`) token parameters, then the
     // primary entry's value-parameter representations; register-passing.
@@ -239,6 +290,8 @@ pub(crate) fn build_reuse_object<M: Module>(
         &lambda_closures,
         &base,
         0,
+        bce,
+        Some((&entry_facts, tokens)),
     );
     jobs.push((fn_ids[0], ctx));
 }
@@ -585,6 +638,8 @@ fn build_fn<M: Module>(
     lambda_closures: &[Option<DataId>],
     base: &str,
     fn_index: usize,
+    bce: &Bce,
+    entry_seed: Option<(&BoundSig, usize)>,
 ) -> Context {
     let mut ctx = module.make_context();
     // The register ABI applies only to the entry (`fn0`) of a direct-callable
@@ -639,6 +694,10 @@ fn build_fn<M: Module>(
             descriptors: FxHashMap::default(),
             loop_ctx: None,
             result_slot: None,
+            bounds: Bounds::new(),
+            entry_bounds: Bounds::new(),
+            result_facts_of: bce.result_of,
+            bce_shadow: bce.shadow,
         };
 
         // Record each local's static type up front, so reference-count operations
@@ -726,6 +785,18 @@ fn build_fn<M: Module>(
                 };
                 tr.define_var(c, v);
             }
+        }
+
+        // Seed the bounds-check-elimination fact graph with this entry's inferred
+        // facts (mapping each parameter index to its local), so dominating-guard and
+        // arithmetic refinement in the body can prove indices in range. The seed is
+        // present only for the entry function; the parameter offset skips any leading
+        // reuse-token parameters of a specialized entry.
+        if let Some((sig, offset)) = entry_seed
+            && core_fn.params.len() >= offset
+        {
+            tr.bounds.seed_entry(sig, &core_fn.params[offset..]);
+            tr.entry_bounds = tr.bounds.clone();
         }
 
         let result = tr.expr(&core_fn.body);
@@ -946,6 +1017,22 @@ struct Translator<'a, M: Module> {
     /// The destination-passing result slot's address (set by `HoleStart`, read by
     /// `HoleClose`), for a loop that builds a spine.
     result_slot: Option<Value>,
+    /// The in-flight bounds-check-elimination facts at the current program point:
+    /// difference constraints established by entry facts (seeded at the entry),
+    /// `let`-bound arithmetic/lengths, and dominating guards. An `Array` access
+    /// whose index it proves within `0..len` skips its inline bounds check.
+    bounds: Bounds,
+    /// The bounds facts as seeded at the function entry (the loop invariant), reset
+    /// at a `Join` header so each loop body is analyzed from the entry facts.
+    entry_bounds: Bounds,
+    /// A callee's result facts (length/bounds of its result relative to its
+    /// parameters), consulted when a `let` binds a saturated call so the result's
+    /// length threads into the bounds graph.
+    result_facts_of: &'a dyn Fn(DefId) -> ResultSig,
+    /// When set, an elided bounds check is *retained* but routed to a distinct
+    /// abort, so generative testing turns any unsound elision into a loud, located
+    /// failure instead of a silent out-of-bounds read. Off in normal builds.
+    bce_shadow: bool,
 }
 
 /// The active tail-call loop being translated.
@@ -1695,6 +1782,7 @@ impl<M: Module> Translator<'_, M> {
             ExprKind::Let { local, value, body } => {
                 let v = self.expr(value);
                 self.define_var(*local, v);
+                self.bce_transfer(*local, value);
                 self.expr(body)
             }
             ExprKind::MakeClosure { func, captures, alloc } => {
@@ -2199,6 +2287,25 @@ impl<M: Module> Translator<'_, M> {
         }
     }
 
+    /// Applies a binding `local = value` to the bounds-check-elimination fact
+    /// graph: a saturated direct call threads the callee's result facts; everything
+    /// else (arithmetic, lengths, comparisons, projections, literals) is handled by
+    /// the value-shape transfer.
+    fn bce_transfer(&mut self, local: LocalId, value: &CExpr) {
+        // Peel any reference-count wrappers the rc pass inserted around the value.
+        let inner = fai_core::bounds::peel_rc(value);
+        if let ExprKind::App { func, args, .. } = &inner.kind
+            && let ExprKind::Global(d) = &func.kind
+        {
+            let sig = (self.result_facts_of)(*d);
+            if !sig.is_empty() {
+                self.bounds.transfer_call(local, &sig, args);
+                return;
+            }
+        }
+        self.bounds.transfer_let(local, value);
+    }
+
     /// Compiles an `Array` length/get/set/push whose operand is a statically
     /// recognized array (`App(Con::Array, elem)`) to inline loads/stores, returning
     /// `None` for any other primitive or an unrecognized operand type (a bare
@@ -2263,6 +2370,16 @@ impl<M: Module> Translator<'_, M> {
         let base = self.expr(&args[0]);
         let raw_idx = self.array_index_raw(&args[1]);
 
+        // The fact graph may prove the index is within `0..len`, so the inline
+        // bounds check is redundant (the safe `get`/`set` shape, a `0..length` loop,
+        // a hash-bucket mask). Eliding it removes a length load, a compare, and an
+        // unreachable abort branch. In shadow mode the check is *kept* but routed to
+        // a distinct abort, so generative testing catches any unsound elision.
+        let proven = self.index_proven(&args[0], &args[1]);
+        if proven && !self.bce_shadow {
+            return self.array_load_elem(base, raw_idx, elem);
+        }
+
         let len_off = i32::try_from(rt::ARRAY_LEN_OFFSET).expect("array length offset");
         let len = self.builder.ins().load(types::I64, MemFlags::trusted(), base, len_off);
         // An unsigned compare, so a negative index (a huge unsigned value) is out of
@@ -2278,10 +2395,12 @@ impl<M: Module> Translator<'_, M> {
         self.builder.ins().brif(in_bounds, fast_b, &[], oob_b, &[]);
 
         // Out of bounds: the located abort (never returns); a dead value of the
-        // merge type satisfies the edge.
+        // merge type satisfies the edge. When `proven` (only reachable in shadow
+        // mode), the abort is the distinct soundness-violation panic.
         self.builder.switch_to_block(oob_b);
         self.builder.seal_block(oob_b);
-        let panic = self.runtime("fai_array_index_panic", 0, false);
+        let panic_sym = if proven { "fai_bce_unsound_panic" } else { "fai_array_index_panic" };
+        let panic = self.runtime(panic_sym, 0, false);
         self.builder.ins().call(panic, &[]);
         let dead = if is_float {
             self.builder.ins().f64const(Ieee64::with_float(0.0))
@@ -2293,16 +2412,7 @@ impl<M: Module> Translator<'_, M> {
         // In bounds: load the slot and bring the element to its scalar/uniform form.
         self.builder.switch_to_block(fast_b);
         self.builder.seal_block(fast_b);
-        let (addr, slot_off) = self.array_elem_addr(base, raw_idx);
-        let word = self.builder.ins().load(types::I64, MemFlags::trusted(), addr, slot_off);
-        let value = match elem {
-            Ty::Con(Con::Int) => self.borrow_unbox_int_to_raw(word),
-            Ty::Con(Con::Float) => self.borrowing_unbox(word),
-            _ => {
-                self.dup_value(word, elem);
-                word
-            }
-        };
+        let value = self.array_load_elem(base, raw_idx, elem);
         self.builder.ins().jump(merge_b, &[value.into()]);
 
         self.builder.switch_to_block(merge_b);
@@ -2311,6 +2421,50 @@ impl<M: Module> Translator<'_, M> {
         // An `Int` element flows raw; a `Float` is the f64 merge param; anything
         // else is the owned uniform word.
         if matches!(elem, Ty::Con(Con::Int)) { self.mark_raw(result) } else { result }
+    }
+
+    /// Whether the bounds-check-elimination fact graph proves the `index` atom is
+    /// within `0..len(array)`, where `array` is an atom operand (a local).
+    fn index_proven(&self, array: &CExpr, index: &CExpr) -> bool {
+        matches!(&array.kind, ExprKind::Local(a) if self.bounds.index_in_bounds(*a, index))
+    }
+
+    /// Emits a standalone bounds check (shadow mode only) that aborts via the
+    /// distinct soundness-violation panic if `raw_idx` is out of `base`'s range, so
+    /// an unsound elision surfaces loudly under generative testing.
+    fn shadow_bounds_assert(&mut self, base: Value, raw_idx: Value) {
+        let len_off = i32::try_from(rt::ARRAY_LEN_OFFSET).expect("array length offset");
+        let len = self.builder.ins().load(types::I64, MemFlags::trusted(), base, len_off);
+        let in_bounds = self.builder.ins().icmp(IntCC::UnsignedLessThan, raw_idx, len);
+        let ok_b = self.builder.create_block();
+        let bad_b = self.builder.create_block();
+        self.builder.ins().brif(in_bounds, ok_b, &[], bad_b, &[]);
+        self.builder.switch_to_block(bad_b);
+        self.builder.seal_block(bad_b);
+        let panic = self.runtime("fai_bce_unsound_panic", 0, false);
+        self.builder.ins().call(panic, &[]);
+        self.builder.ins().jump(ok_b, &[]);
+        self.builder.switch_to_block(ok_b);
+        self.builder.seal_block(ok_b);
+    }
+
+    /// Loads element `raw_idx` of array `base` (no bounds check) and brings it to
+    /// its scalar/uniform form: a raw `Int`, an unboxed `Float`, or the slot word
+    /// with an inline tag-checked dup (so it outlives the borrowed array's drop).
+    fn array_load_elem(&mut self, base: Value, raw_idx: Value, elem: &Ty) -> Value {
+        let (addr, slot_off) = self.array_elem_addr(base, raw_idx);
+        let word = self.builder.ins().load(types::I64, MemFlags::trusted(), addr, slot_off);
+        match elem {
+            Ty::Con(Con::Int) => {
+                let raw = self.borrow_unbox_int_to_raw(word);
+                self.mark_raw(raw)
+            }
+            Ty::Con(Con::Float) => self.borrowing_unbox(word),
+            _ => {
+                self.dup_value(word, elem);
+                word
+            }
+        }
     }
 
     /// `Array.unsafeSet`: an inline in-place store when the array is uniquely owned
@@ -2328,11 +2482,24 @@ impl<M: Module> Translator<'_, M> {
 
         let len_off = i32::try_from(rt::ARRAY_LEN_OFFSET).expect("array length offset");
         let rc_off = i32::try_from(rt::RC_OFFSET).expect("rc offset");
-        let len = self.builder.ins().load(types::I64, MemFlags::trusted(), base, len_off);
         let rc = self.builder.ins().load(types::I64, MemFlags::trusted(), base, rc_off);
-        let in_bounds = self.builder.ins().icmp(IntCC::UnsignedLessThan, raw_idx, len);
         let unique = self.builder.ins().icmp_imm(IntCC::Equal, rc, 1);
-        let fast = self.builder.ins().band(in_bounds, unique);
+
+        // When the index is provably in range, the in-place fast path is gated on
+        // uniqueness alone; the slow runtime path then handles only the shared-copy
+        // case (its own bounds check never fires). In shadow mode the bounds check is
+        // re-asserted standalone, routing a violation to the distinct abort.
+        let proven = self.index_proven(&args[0], &args[1]);
+        if proven && self.bce_shadow {
+            self.shadow_bounds_assert(base, raw_idx);
+        }
+        let fast = if proven {
+            unique
+        } else {
+            let len = self.builder.ins().load(types::I64, MemFlags::trusted(), base, len_off);
+            let in_bounds = self.builder.ins().icmp(IntCC::UnsignedLessThan, raw_idx, len);
+            self.builder.ins().band(in_bounds, unique)
+        };
 
         let fast_b = self.builder.create_block();
         let slow_b = self.builder.create_block();
@@ -4050,6 +4217,11 @@ impl<M: Module> Translator<'_, M> {
         // because desugared `match` arms are wrapped in `If` nodes typed `Error`.
         self.builder.switch_to_block(then_b);
         self.builder.seal_block(then_b);
+        // Refine the fact graph along each branch with the dominating guard; restore
+        // the pre-branch facts afterward (neither branch's added facts survive the
+        // merge).
+        let saved_bounds = self.bounds.clone();
+        self.bounds.refine(cond, true);
         let tv = self.expr(then);
         let merge_b = self.builder.create_block();
         let merge_ty = self.builder.func.dfg.value_type(tv);
@@ -4068,6 +4240,8 @@ impl<M: Module> Translator<'_, M> {
 
         self.builder.switch_to_block(else_b);
         self.builder.seal_block(else_b);
+        self.bounds = saved_bounds.clone();
+        self.bounds.refine(cond, false);
         let ev = self.expr(els);
         // Reconcile the else value to the merge's representation: to the then
         // branch's niche scheme (converting a standard value), or to standard if the
@@ -4088,6 +4262,8 @@ impl<M: Module> Translator<'_, M> {
 
         self.builder.switch_to_block(merge_b);
         self.builder.seal_block(merge_b);
+        // Past the merge only the pre-branch facts hold.
+        self.bounds = saved_bounds;
         let result = self.builder.block_params(merge_b)[0];
         if merge_raw {
             self.mark_raw(result);
@@ -4141,6 +4317,10 @@ impl<M: Module> Translator<'_, M> {
             exit_raw: false,
             exit_niche: None,
         });
+        // The loop body is analyzed from the entry facts (the inductively-valid loop
+        // invariant): the loop-carried parameters are the function's parameters, and
+        // the fold proved the entry facts hold at every back-edge.
+        self.bounds = self.entry_bounds.clone();
         self.expr_tail(body);
         // Capture the loop result's representation (set by the tail values) before
         // restoring the enclosing loop context.
@@ -4234,16 +4414,21 @@ impl<M: Module> Translator<'_, M> {
                 let then_b = self.builder.create_block();
                 let else_b = self.builder.create_block();
                 self.builder.ins().brif(is_true, then_b, &[], else_b, &[]);
+                let saved_bounds = self.bounds.clone();
                 self.builder.switch_to_block(then_b);
                 self.builder.seal_block(then_b);
+                self.bounds.refine(cond, true);
                 self.expr_tail(then);
                 self.builder.switch_to_block(else_b);
                 self.builder.seal_block(else_b);
+                self.bounds = saved_bounds;
+                self.bounds.refine(cond, false);
                 self.expr_tail(els);
             }
             ExprKind::Let { local, value, body } => {
                 let v = self.expr(value);
                 self.define_var(*local, v);
+                self.bce_transfer(*local, value);
                 self.expr_tail(body);
             }
             ExprKind::Reset { value, token, body } => {
