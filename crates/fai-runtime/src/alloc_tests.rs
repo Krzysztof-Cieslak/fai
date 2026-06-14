@@ -134,6 +134,77 @@ fn large_allocation_round_trips_through_the_system_allocator() {
 }
 
 #[test]
+fn pool_heads_base_is_non_null_and_stable() {
+    let _g = lock();
+    // The thread-local heads base is a real address and the same on every call
+    // (the pool lives for the thread), so generated code may fetch it once and
+    // reuse it across a function body.
+    let a = fai_pool_heads();
+    let b = fai_pool_heads();
+    assert!(!a.is_null(), "the pool heads base is a real address");
+    assert_eq!(a, b, "the heads base is stable across calls");
+}
+
+#[test]
+fn pool_heads_slot_for_a_size_holds_the_freed_cell() {
+    let _g = lock();
+    let base = live_count();
+    // The inlined pop computes a class's head slot as `base + size` (= base +
+    // class * SIZE_STEP). After freeing a class-6 (48-byte) cell, that slot must
+    // hold it, and the cell's first word must be the previous free-list head (the
+    // intrusive next-pointer the inlined pop reads and stores back).
+    let p = alloc_obj(48, &FAI_INT_DESC);
+    let q = alloc_obj(48, &FAI_INT_DESC);
+    // SAFETY: fresh class-6 blocks, freed once each (LIFO: head = p, p.next = q).
+    unsafe {
+        free_obj(q);
+        free_obj(p);
+    }
+    let heads = fai_pool_heads();
+    // The slot for a 48-byte cell sits at byte 48, the same as class 6 * SIZE_STEP.
+    assert_eq!(48 / SIZE_STEP, 6, "a 48-byte cell is class 6");
+    // SAFETY: `heads` is the live heads base; the class-6 slot and the freed cell's
+    // first word are readable.
+    unsafe {
+        let slot = read_ptr(heads, 48) as *mut u8;
+        assert_eq!(slot, p, "the head slot at `base + size` holds the most-recently-freed cell");
+        let next = read_ptr(p, 0) as *mut u8;
+        assert_eq!(next, q, "the freed cell's first word is the previous free-list head");
+        // Drain both cells back out so the live counter balances.
+        let r = alloc_obj(48, &FAI_INT_DESC);
+        let s = alloc_obj(48, &FAI_INT_DESC);
+        assert_eq!((r, s), (p, q), "the inline pop order matches `pool_pop` (LIFO)");
+        free_obj(r);
+        free_obj(s);
+    }
+    assert_eq!(live_count(), base);
+}
+
+#[test]
+fn alloc_array_writes_the_array_header() {
+    let _g = lock();
+    let base = live_count();
+    // The out-of-line fallback for the inlined construction fast path: it writes
+    // the object header (rc, descriptor, size) for an exact byte size, leaving the
+    // length for the caller, and counts the allocation.
+    let size = ARRAY_ELEMS_OFFSET + 3 * 8;
+    let v = fai_alloc_array(size as Value);
+    // SAFETY: `v` is a freshly allocated array object.
+    unsafe {
+        let p = as_obj(v);
+        assert_eq!(read_u64(p, RC_OFFSET), 1, "rc starts at 1");
+        assert!(std::ptr::eq(descriptor_of(p), &FAI_ARRAY_DESC), "the array descriptor is written");
+        assert_eq!(
+            read_u64(p, SIZE_OFFSET) as usize,
+            size,
+            "the size header is the requested size"
+        );
+        free_obj(p);
+    }
+    assert_eq!(live_count(), base, "the allocation was counted and freed");
+}
+
+#[test]
 fn run_ops_is_balanced_on_a_fixed_sequence() {
     let _g = lock();
     let base = live_count();

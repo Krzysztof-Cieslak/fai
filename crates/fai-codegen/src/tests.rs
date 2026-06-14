@@ -3572,6 +3572,67 @@ fn array_int_push_inlines_the_append_fast_path() {
     assert!(ir.contains("store"), "inline slot store + length bump:\n{ir}");
 }
 
+// --- Inlined array allocation: pooled free-list pop + header writes -----------
+//
+// `Array.withCapacity` (and `empty`/`singleton`/the builders) inlines the pooled
+// fast path of the allocator rather than calling `fai_array_with_capacity`: it
+// pops a recycled cell from the thread-local free list (a `load` of the head, a
+// `store` of the next-free pointer back) and writes the object header inline (the
+// reference count, the array descriptor address via `symbol_value`, the size).
+// A runtime call lowering would emit a bare `call` with none of these. The pooled
+// gate / empty-list check is a `brif`; the runtime fallback (`fai_alloc_array`)
+// remains for an unpooled size or an empty free list.
+
+#[test]
+fn array_with_capacity_inlines_the_pooled_alloc() {
+    // A runtime capacity: the size/class are computed inline, the free-list head is
+    // popped, and the header is written inline (the descriptor `symbol_value` store
+    // is the tell-tale a runtime call lowering would not emit).
+    let src = indoc! {r#"
+        module M
+
+        n : Int -> Array Int
+        let n c = Prim.arrayWithCapacity c
+    "#};
+    let ir = entry_ir_std(src, "n");
+    assert!(ir.contains("symbol_value"), "inline header descriptor write:\n{ir}");
+    assert!(ir.contains("store"), "inline pop + header writes:\n{ir}");
+    assert!(ir.contains("brif"), "the pooled / non-empty free-list gate:\n{ir}");
+}
+
+#[test]
+fn array_with_capacity_constant_cap_inlines_the_pooled_alloc() {
+    // A constant capacity folds the size/class to constants but still inlines the
+    // pool pop + header writes (the empty `Array.empty = withCapacity 0` shape).
+    let src = indoc! {r#"
+        module M
+
+        e : Unit -> Array Int
+        let e u = Prim.arrayWithCapacity 0
+    "#};
+    let ir = entry_ir_std(src, "e");
+    assert!(ir.contains("symbol_value"), "inline header descriptor write:\n{ir}");
+    assert!(ir.contains("store"), "inline pop + header writes:\n{ir}");
+}
+
+#[test]
+fn array_push_grow_inlines_the_buffer_alloc_and_copy() {
+    // The unique-but-full grow path inlines a fresh pooled buffer (its descriptor
+    // `symbol_value` header write), the doubling capacity (`select` of 4-or-2×), and
+    // an element-move loop — rather than calling `fai_array_push` to grow. The
+    // shared case keeps the runtime copy.
+    let src = indoc! {r#"
+        module M
+
+        p : Int -> Array Int -> Array Int
+        let p x a = Array.push x a
+    "#};
+    let ir = entry_ir(src, "p");
+    assert!(ir.contains("select"), "inline doubling capacity (4 or 2x):\n{ir}");
+    assert!(ir.contains("symbol_value"), "inline grown-buffer descriptor write:\n{ir}");
+    assert!(ir.contains("store"), "inline element move + append:\n{ir}");
+}
+
 // --- Bounds-check elimination: redundant inline checks removed ---------------
 //
 // An inline `Array` access whose index a difference-bound analysis proves within
