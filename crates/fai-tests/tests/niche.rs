@@ -265,3 +265,18 @@ let sumOk i n acc =
          {allocs_a} at n=200 vs {allocs_b} at n=400"
     );
 }
+
+#[test]
+fn niche_b_boxed_overflow_payload_is_reference_counted() {
+    // A `Some` whose `Int` payload overflows 63 bits is a *boxed* niche value (not
+    // an immediate and not the sentinel), so niche dup/drop must reference-count it.
+    // Using the Option three times forces two dups and three drops of the boxed
+    // payload; a miscount would leak (nonzero exit) or double-free.
+    let defs = "pick : Option Int -> Int\n\
+                let pick opt = match opt with | Some v -> v | None -> 0\n\
+                combine : Option Int -> Int\n\
+                let combine opt = pick opt + pick opt - pick opt";
+    // 4611686018427387905 = 2^62 + 1 overflows the 63-bit immediate, so `Some` of it
+    // is a boxed cell. Two's-complement `a + a - a` is `a` despite the i64 overflow.
+    outputs(defs, "combine (Some 4611686018427387905)", "4611686018427387905");
+}

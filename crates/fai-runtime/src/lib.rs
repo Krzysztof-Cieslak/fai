@@ -1226,10 +1226,9 @@ fn is_none_sentinel(v: Value) -> bool {
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_niche_b_to_std(v: Value) -> Value {
     if is_none_sentinel(v) {
-        // Standard `None` is the nullary tag-0 immediate `(0 << 1) | 1`. The owned
-        // `None`'s reference to the sentinel is consumed, so release it (the count
-        // stays balanced; the immortal sentinel is never actually reclaimed).
-        fai_drop(v);
+        // Standard `None` is the nullary tag-0 immediate `(0 << 1) | 1`. The sentinel
+        // is immortal and never reference-counted, so consuming this `None` releases
+        // nothing.
         return 1;
     }
     let p = alloc_obj(DATA_FIELDS_OFFSET + 8, &FAI_DATA_DESC);
@@ -1248,9 +1247,9 @@ pub extern "C" fn fai_niche_b_to_std(v: Value) -> Value {
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_std_to_niche_b(o: Value) -> Value {
     if !is_boxed(o) {
-        // Standard `None` (immediate, no count) → an owned niche `None`: take a
-        // reference to the sentinel (balanced by the matching drop).
-        return fai_dup(fai_none_value());
+        // Standard `None` (immediate, no count) → the niche `None` sentinel, which is
+        // immortal and never reference-counted (so no `dup`).
+        return fai_none_value();
     }
     let p = as_obj(o);
     // SAFETY: a boxed standard `Option` is a `Some` cell with one field.

@@ -1628,6 +1628,13 @@ impl<M: Module> Translator<'_, M> {
     /// [`DupPlan`]: an immediate is a no-op, an always-boxed value increments
     /// unconditionally, and any other value guards the increment with a tag-check.
     fn dup_local(&mut self, local: LocalId) {
+        // A niche Scheme-B `Option`'s `None` is the immortal sentinel, which carries
+        // no reference count, so its dup must skip it (a `Some` immediate likewise);
+        // only a boxed `Some` payload is incremented.
+        if self.niche_local(local) == Some(NicheKind::B) {
+            self.dup_niche_b(local);
+            return;
+        }
         match self.dup_plan(local) {
             DupPlan::NoOp => {}
             DupPlan::Incr { tag_check } => self.emit_rc_incr(local, tag_check),
@@ -1639,6 +1646,13 @@ impl<M: Module> Translator<'_, M> {
     /// boxed leaf, a runtime child-release for other data, and the runtime drop as
     /// the fallback for an unknown type.
     fn drop_local(&mut self, local: LocalId) {
+        // A niche Scheme-B `Option`'s `None` is the immortal sentinel, which carries
+        // no reference count, so its drop must skip it (a `Some` immediate likewise);
+        // only a boxed `Some` payload is released.
+        if self.niche_local(local) == Some(NicheKind::B) {
+            self.drop_niche_b(local);
+            return;
+        }
         match self.drop_plan(local) {
             DropPlan::NoOp => {}
             DropPlan::Fixed(fields) => self.emit_inline_drop(local, &fields),
@@ -1664,6 +1678,78 @@ impl<M: Module> Translator<'_, M> {
                 self.call_drop(v);
             }
         }
+    }
+
+    /// Dups a niche Scheme-B `Option` local: skip an immediate (a `Some` whose
+    /// payload is itself immediate) and the immortal `None` sentinel — neither
+    /// carries a reference count — and increment only a boxed `Some` payload.
+    fn dup_niche_b(&mut self, local: LocalId) {
+        let cell = self.use_var(local);
+        let sentinel = self.runtime_data_addr("FAI_NONE_VALUE");
+        let sentinel_b = self.builder.create_block();
+        let incr_b = self.builder.create_block();
+        let cont_b = self.builder.create_block();
+        // An immediate (low bit set) carries no count.
+        let bit = self.builder.ins().band_imm(cell, 1);
+        self.builder.ins().brif(bit, cont_b, &[], sentinel_b, &[]);
+
+        // A boxed value: the immortal sentinel is skipped, any other (a boxed `Some`
+        // payload) is incremented.
+        self.builder.switch_to_block(sentinel_b);
+        self.builder.seal_block(sentinel_b);
+        let is_sentinel = self.builder.ins().icmp(IntCC::Equal, cell, sentinel);
+        self.builder.ins().brif(is_sentinel, cont_b, &[], incr_b, &[]);
+
+        self.builder.switch_to_block(incr_b);
+        self.builder.seal_block(incr_b);
+        let rc_off = i32::try_from(rt::RC_OFFSET).expect("rc offset");
+        let rc = self.builder.ins().load(types::I64, MemFlags::trusted(), cell, rc_off);
+        let inc = self.builder.ins().iadd_imm(rc, 1);
+        self.builder.ins().store(MemFlags::trusted(), inc, cell, rc_off);
+        self.builder.ins().jump(cont_b, &[]);
+
+        self.builder.switch_to_block(cont_b);
+        self.builder.seal_block(cont_b);
+    }
+
+    /// Drops a niche Scheme-B `Option` local: skip an immediate and the immortal
+    /// `None` sentinel, and release only a boxed `Some` payload (its children
+    /// recovered by kind at zero).
+    fn drop_niche_b(&mut self, local: LocalId) {
+        let cell = self.use_var(local);
+        let sentinel = self.runtime_data_addr("FAI_NONE_VALUE");
+        let sentinel_b = self.builder.create_block();
+        let dec_b = self.builder.create_block();
+        let dead_b = self.builder.create_block();
+        let cont_b = self.builder.create_block();
+        // An immediate (low bit set) carries no count.
+        let bit = self.builder.ins().band_imm(cell, 1);
+        self.builder.ins().brif(bit, cont_b, &[], sentinel_b, &[]);
+
+        // A boxed value: the immortal sentinel is skipped.
+        self.builder.switch_to_block(sentinel_b);
+        self.builder.seal_block(sentinel_b);
+        let is_sentinel = self.builder.ins().icmp(IntCC::Equal, cell, sentinel);
+        self.builder.ins().brif(is_sentinel, cont_b, &[], dec_b, &[]);
+
+        // A boxed `Some` payload: decrement, and release its children at zero.
+        self.builder.switch_to_block(dec_b);
+        self.builder.seal_block(dec_b);
+        let rc_off = i32::try_from(rt::RC_OFFSET).expect("rc offset");
+        let rc = self.builder.ins().load(types::I64, MemFlags::trusted(), cell, rc_off);
+        let dec = self.builder.ins().iadd_imm(rc, -1);
+        self.builder.ins().store(MemFlags::trusted(), dec, cell, rc_off);
+        let is_dead = self.builder.ins().icmp_imm(IntCC::Equal, dec, 0);
+        self.builder.ins().brif(is_dead, dead_b, &[], cont_b, &[]);
+
+        self.builder.switch_to_block(dead_b);
+        self.builder.seal_block(dead_b);
+        let f = self.runtime("fai_drop_dead", 1, false);
+        self.builder.ins().call(f, &[cell]);
+        self.builder.ins().jump(cont_b, &[]);
+
+        self.builder.switch_to_block(cont_b);
+        self.builder.seal_block(cont_b);
     }
 
     /// Emits an in-place reference-count increment of `local`. When `tag_check`,
@@ -1994,12 +2080,10 @@ impl<M: Module> Translator<'_, M> {
             debug_assert!(reuse.is_none(), "nullary constructor cannot reuse a cell");
             // A niche `None`: Scheme A is the nullary immediate `1` (the standard
             // encoding); Scheme B is the shared sentinel — its relocatable address,
-            // not a runtime call. An owned `None` holds one reference to it, so
-            // duplicate it (the immortal count then stays balanced against the
-            // matching drop).
+            // not a runtime call. The sentinel is immortal and never
+            // reference-counted, so a `None` is the bare address (no `dup`).
             if niche == Some(NicheKind::B) {
                 let s = self.runtime_data_addr("FAI_NONE_VALUE");
-                let s = self.call1("fai_dup", s);
                 return self.mark_niche(s, NicheKind::B);
             }
             let imm = (i64::from(tag) << 1) | 1;
