@@ -612,3 +612,61 @@ proptest! {
         prop_assert_eq!(copies, 0, "quicksort must be in place (zero buffer copies) for {:?}", xs);
     }
 }
+
+/// Runs `src` with the bounds-check-elimination **shadow check** enabled: an
+/// elided check is retained but routed to the distinct unsound-elision abort, so
+/// an over-elision aborts the run (and, in-process, the test) loudly rather than
+/// silently reading out of bounds. Returns `(exit_code, stdout)`. A `Guard` resets
+/// the toggle even on panic.
+fn run_shadow(src: &str) -> (i32, String) {
+    struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            fai_driver::set_bce_shadow(false);
+        }
+    }
+    let _g = lock();
+    fai_driver::set_bce_shadow(true);
+    let _reset = Guard;
+    let mut db = FaiDatabase::new();
+    fai_types::std_lib::load_std(&mut db);
+    let id = db.add_source("M.fai".into(), src.to_owned());
+    let file = db.source_file(id).unwrap();
+    rt::capture_start();
+    let outcome = jit_run_program(&db, file);
+    let out = rt::capture_take();
+    (outcome.exit_code, out)
+}
+
+// ===========================================================================
+// Soundness: with the shadow check on, every elided bounds check is re-verified
+// at run time. A correct program (in-bounds by construction) must still exit
+// cleanly — an over-elision would re-fail the retained check and abort. This is
+// the generative soundness net for the elimination over the same random array
+// pipelines, the standard sort, and the hand-written quicksort.
+// ===========================================================================
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 48, ..ProptestConfig::default() })]
+
+    #[test]
+    fn shadow_check_passes_on_random_array_pipelines(e in arr_expr()) {
+        let expected: i64 = eval_arr(&e).into_iter().sum();
+        let src = formatdoc! {r#"
+            module M
+
+            public main : Runtime -> Unit / {{ Console }}
+            let main rt = rt.console.writeLine (Int.toString (Array.sum {body}))
+        "#, body = render_arr(&e)};
+        let (code, out) = run_shadow(&src);
+        prop_assert_eq!(code, 0, "shadow-check soundness for:\n{}\n{}", render_arr(&e), out);
+        prop_assert_eq!(out.trim(), expected.to_string(), "oracle mismatch for {}", render_arr(&e));
+    }
+
+    #[test]
+    fn shadow_check_passes_on_random_quicksort(xs in prop::collection::vec(-20i64..20, 0..50)) {
+        let expected = sorted_csv(&xs);
+        let (code, out) = run_shadow(&quicksort_sort_prog(&render_int_array(&xs)));
+        prop_assert_eq!(code, 0, "shadow-check soundness for quicksort {:?}:\n{}", xs, out);
+        prop_assert_eq!(out.trim(), expected.as_str(), "quicksort oracle mismatch for {:?}", xs);
+    }
+}
