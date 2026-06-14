@@ -9,6 +9,7 @@ license.workspace = true
 
 [dependencies]
 fai-db.workspace = true
+fai-span.workspace = true
 fai-syntax.workspace = true
 fai-resolve.workspace = true
 fai-types.workspace = true

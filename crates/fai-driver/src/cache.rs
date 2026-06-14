@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 
 use fai_core::fingerprint_def;
 use fai_db::{Db, SourceFile};
-use fai_rc::rc;
+use fai_rc::{entry_bounds, rc, result_facts};
 use fai_resolve::DefId;
 use fai_syntax::Symbol;
 
@@ -53,8 +53,11 @@ use crate::backend::{abi_of, arity_of, object_code, symbol_base};
 /// `hash` of an immediate/`Int`/`Float` operand compiling to an inline splitmix64
 /// finalizer over the immediate fast path (with the structural runtime call kept
 /// only for boxed operands), so a cache warmed before that change can never serve a
-/// pre-inlining object.
-const CODEGEN_CONFIG: &str = "opt=speed;int-prims-inlined;reg-direct-call;divrem-inlined;scalar-float-fields;early-drop;poly-cmp-inlined;array-access-inlined;hash-inlined";
+/// pre-inlining object. The `bounds-check-elim` token marks an inline `Array`
+/// access whose index a difference-bound analysis proves in range compiling
+/// without its bounds check, so a cache warmed before that change can never serve a
+/// pre-elision object.
+const CODEGEN_CONFIG: &str = "opt=speed;int-prims-inlined;reg-direct-call;divrem-inlined;scalar-float-fields;early-drop;poly-cmp-inlined;array-access-inlined;hash-inlined;bounds-check-elim";
 
 /// An explicit cache-directory override (set by embedders/tests), taking
 /// precedence over `$FAI_CACHE_DIR`. `None` (the default) falls back to the
@@ -121,6 +124,22 @@ fn object_key(db: &dyn Db, file: SourceFile, def: DefId) -> String {
 
     let mut hasher = blake3::Hasher::new();
     hasher.update(fingerprint.as_bytes());
+    hasher.update(b"\0");
+    // Bounds-check elimination changes the emitted code from this definition's
+    // inferred entry facts and each referenced callee's result facts (both consulted
+    // at code generation), so they are part of the key.
+    hasher.update(b"bce-entry\0");
+    hasher.update(format!("{:?}", entry_bounds(db, file, def.name)).as_bytes());
+    hasher.update(b"\0bce-result\0");
+    let mut seen = rustc_hash::FxHashSet::default();
+    for callee in lowered.referenced_globals() {
+        if seen.insert(callee)
+            && let Some(cf) = db.source_file(callee.file)
+        {
+            hasher.update(format!("{:?}", result_facts(db, cf, callee.name)).as_bytes());
+            hasher.update(b"\0");
+        }
+    }
     hasher.update(b"\0");
     hasher.update(target_lexicon::HOST.to_string().as_bytes());
     hasher.update(b"\0");
