@@ -2651,14 +2651,18 @@ Editor integration:
     `List`, a nullary-bearing union, …): `Some x` is `x` in its uniform
     representation and `None` is a single **immortal, shared sentinel object** of a
     new `KIND_NONE` heap kind (so all `None`s are pointer-equal). The sentinel is a
-    **writable process-static** (`FAI_NONE_VALUE`, an `UnsafeCell` header so the
-    generic reference-count writes do not fault read-only memory), which generated
-    code references by its **relocatable address** (a `symbol_value`, as for the
-    static descriptors) rather than fetching through a `fai_none_value` runtime call
-    — so a tight `Option Int` loop pays no per-operation call for its tag tests and
-    `None` builds. It is not a normal allocation (so it must not trip the leak
-    counter); the `fai_none_value` accessor remains for the niche/standard
-    conversions.
+    **process-static** (`FAI_NONE_VALUE`) that generated code references by its
+    **relocatable address** (a `symbol_value`, as for the static descriptors) rather
+    than fetching through a `fai_none_value` runtime call — so a tight `Option Int`
+    loop pays no per-operation call for its tag tests and `None` builds. It is also
+    **never reference-counted**: a `None` is the bare address (no `dup`), niche
+    Scheme-B dup/drop skip both an immediate payload and the sentinel (counting only
+    a boxed `Some` payload), and the niche/standard conversions leave its count
+    alone — so the loop pays no per-`None` count write either. (The static is an
+    `UnsafeCell` header — writable — only so it *could* be touched; its count is in
+    fact never written, so it is effectively a constant and not a normal allocation,
+    and it never trips the leak counter.) The `fai_none_value` accessor remains for
+    the niche/standard conversions.
 
   The scheme is carried on the IR's data nodes (`MakeData`/`DataTag`/`DataField`
   gain a `niche` field), so it **survives the object cache's wire form** and is
