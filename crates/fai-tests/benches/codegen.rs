@@ -137,7 +137,10 @@ fn object_for_def_only(bencher: Bencher) {
     let arity = |_: fai_resolve::DefId| 1usize;
     let abi = |_: fai_resolve::DefId| fai_core::ir::FnAbi::default();
     let borrows = |_: fai_resolve::DefId| Vec::new();
-    bencher.bench(|| divan::black_box(object_for_def(&lowered, &namer, &arity, &abi, &borrows)));
+    bencher.bench(|| {
+        let bce = fai_codegen::Bce::none();
+        divan::black_box(object_for_def(&lowered, &namer, &arity, &abi, &borrows, &bce))
+    });
 }
 
 // ── runtime primitives ──────────────────────────────────────────────────────
