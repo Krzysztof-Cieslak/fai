@@ -1619,13 +1619,6 @@ impl<M: Module> Translator<'_, M> {
         self.builder.inst_results(call)[0]
     }
 
-    /// Calls a no-argument runtime function returning a value.
-    fn call0(&mut self, name: &'static str) -> Value {
-        let f = self.runtime(name, 0, true);
-        let call = self.builder.ins().call(f, &[]);
-        self.builder.inst_results(call)[0]
-    }
-
     fn call_drop(&mut self, value: Value) {
         let f = self.runtime("fai_drop", 1, false);
         self.builder.ins().call(f, &[value]);
@@ -2000,11 +1993,12 @@ impl<M: Module> Translator<'_, M> {
         if args.is_empty() {
             debug_assert!(reuse.is_none(), "nullary constructor cannot reuse a cell");
             // A niche `None`: Scheme A is the nullary immediate `1` (the standard
-            // encoding); Scheme B is the shared boxed sentinel — an owned `None`
-            // holds one reference to it, so duplicate it (the immortal count then
-            // stays balanced against the matching drop).
+            // encoding); Scheme B is the shared sentinel — its relocatable address,
+            // not a runtime call. An owned `None` holds one reference to it, so
+            // duplicate it (the immortal count then stays balanced against the
+            // matching drop).
             if niche == Some(NicheKind::B) {
-                let s = self.call0("fai_none_value");
+                let s = self.runtime_data_addr("FAI_NONE_VALUE");
                 let s = self.call1("fai_dup", s);
                 return self.mark_niche(s, NicheKind::B);
             }
@@ -2143,7 +2137,7 @@ impl<M: Module> Translator<'_, M> {
                     self.builder.ins().bxor_imm(lowbit, 1)
                 }
                 NicheKind::B => {
-                    let sentinel = self.call0("fai_none_value");
+                    let sentinel = self.runtime_data_addr("FAI_NONE_VALUE");
                     let is_some = self.builder.ins().icmp(IntCC::NotEqual, v, sentinel);
                     self.builder.ins().uextend(types::I64, is_some)
                 }

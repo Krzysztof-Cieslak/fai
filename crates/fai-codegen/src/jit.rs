@@ -77,7 +77,6 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_std_to_niche_a", rt::fai_std_to_niche_a);
     sym!("fai_niche_b_to_std", rt::fai_niche_b_to_std);
     sym!("fai_std_to_niche_b", rt::fai_std_to_niche_b);
-    sym!("fai_none_value", rt::fai_none_value);
     sym!("fai_drop_reuse", rt::fai_drop_reuse);
     sym!("fai_reuse", rt::fai_reuse);
     sym!("fai_reuse_scalar", rt::fai_reuse_scalar);
@@ -128,6 +127,7 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_apply_n", rt::fai_apply_n);
     sym!("fai_make_closure", rt::fai_make_closure);
     sym!("fai_run_main", rt::fai_run_main);
+    builder.symbol("FAI_NONE_VALUE", (&raw const rt::FAI_NONE_VALUE).cast());
     builder.symbol("FAI_STRING_DESC", (&raw const rt::FAI_STRING_DESC).cast());
     builder.symbol("FAI_INT_DESC", (&raw const rt::FAI_INT_DESC).cast());
     builder.symbol("FAI_CLOSURE_DESC", (&raw const rt::FAI_CLOSURE_DESC).cast());
