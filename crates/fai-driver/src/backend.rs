@@ -194,6 +194,23 @@ pub fn object_code(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<Vec<u8>> 
     Arc::new(object_for_def(&lowered, &namer, &arity, &abi, &borrows, &bce))
 }
 
+/// Whether code generation runs the bounds-check-elimination **shadow check**: an
+/// elided check is retained but routed to a distinct abort, so a generated program
+/// surfaces any unsound elision as a loud failure instead of a silent
+/// out-of-bounds access. Off in normal builds; enabled only by soundness tests
+/// (via [`set_bce_shadow`]). Read on the in-process JIT-run path, which compiles
+/// fresh (no cached objects), so toggling it never poisons the object cache.
+static BCE_SHADOW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Enables or disables the bounds-check-elimination shadow check (tests only).
+pub fn set_bce_shadow(on: bool) {
+    BCE_SHADOW.store(on, Ordering::Relaxed);
+}
+
+fn bce_shadow() -> bool {
+    BCE_SHADOW.load(Ordering::Relaxed)
+}
+
 /// This definition's inferred entry-fact signature (empty for a synthetic loop):
 /// difference constraints over its parameters that bounds-check elimination seeds
 /// at the function entry.
@@ -708,7 +725,7 @@ pub fn jit_run_program(db: &dyn Db, file: SourceFile) -> RunOutcome {
     };
     let entry_of = |d: DefId| bounds_entry_of(db, d);
     let result_of = |d: DefId| bounds_result_of(db, d);
-    let bce = fai_codegen::Bce { entry_of: &entry_of, result_of: &result_of, shadow: false };
+    let bce = fai_codegen::Bce { entry_of: &entry_of, result_of: &result_of, shadow: bce_shadow() };
     let exit_code =
         fai_codegen::jit_run(&defs, entry, runtime, &namer, &arity, &abi, &borrows, &bce);
     RunOutcome { exit_code, diagnostics }
