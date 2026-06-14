@@ -213,31 +213,40 @@ struct ObjHeader {
     size: u64,
 }
 
-/// The address of the single niche `None` sentinel object, allocated once on
-/// first use (stored as a `usize`, which is `Sync`).
-static NONE_SENTINEL: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-
-/// The Scheme-B niche `None` value: a shared, immortal, childless heap object's
-/// address (a boxed pointer). Code generation calls this to build a `None` and to
-/// test for it.
+/// A wrapper making the writable niche `None` sentinel static [`Sync`].
 ///
-/// The object is a leaked `Box` (writable heap memory, so the generic
-/// reference-count operations may touch its count without faulting — unlike a
-/// read-only static) that is **not** routed through the object allocator, so it
-/// neither counts toward the live-object leak check nor is ever recycled. Its
-/// immortal count means it is never reclaimed, so the same object backs every
-/// `None` and all `None`s are pointer-equal.
+/// The inner [`ObjHeader`] is in an [`UnsafeCell`](std::cell::UnsafeCell) so the
+/// static lands in writable memory: the generic reference-count operations write
+/// its count, which would fault a read-only static.
+#[repr(transparent)]
+pub struct NoneSentinel(std::cell::UnsafeCell<ObjHeader>);
+
+// SAFETY: the sentinel is shared only through its reference count, which is
+// immortal — never read for a decision and never driven to zero — so the (benign,
+// non-atomic) count writes are unobservable. This matches the prior process-global
+// leaked allocation it replaces; compiled Fai programs run single-threaded.
+unsafe impl Sync for NoneSentinel {}
+
+/// The Scheme-B niche `None` value: a shared, immortal, childless object. A
+/// Scheme-B niche `Option` represents `None` as this object's address and `Some x`
+/// as `x`, so all `None`s are pointer-equal. Generated code references the symbol
+/// directly (a relocatable address, no call) to build a `None` and to test for it.
+///
+/// It is a writable process-static — not a heap allocation — so it neither counts
+/// toward the live-object leak check nor is ever recycled, and its immortal count
+/// means balanced dup/drop never reclaim it.
+#[unsafe(no_mangle)]
+pub static FAI_NONE_VALUE: NoneSentinel = NoneSentinel(std::cell::UnsafeCell::new(ObjHeader {
+    rc: IMMORTAL_RC,
+    descriptor: &raw const FAI_NONE_DESC,
+    size: HEADER_SIZE as u64,
+}));
+
+/// The address of the niche `None` sentinel ([`FAI_NONE_VALUE`]). Generated code
+/// references the symbol directly; this is for the runtime's own conversions.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_none_value() -> Value {
-    let addr = *NONE_SENTINEL.get_or_init(|| {
-        let header = Box::new(ObjHeader {
-            rc: IMMORTAL_RC,
-            descriptor: &raw const FAI_NONE_DESC,
-            size: HEADER_SIZE as u64,
-        });
-        Box::leak(header) as *mut ObjHeader as usize
-    });
-    addr as Value
+    FAI_NONE_VALUE.0.get() as usize as Value
 }
 
 /// Descriptor for `String` objects (leaf: inline bytes, no children).

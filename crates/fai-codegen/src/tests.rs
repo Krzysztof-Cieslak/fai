@@ -3861,3 +3861,27 @@ fn hash_boxed_key_stays_out_of_line() {
     assert!(!ir.contains("imul"), "no inline finalizer for a boxed operand:\n{ir}");
     assert!(call_count(&ir) >= 1, "the structural hash is a runtime call:\n{ir}");
 }
+
+#[test]
+fn niche_b_option_references_the_none_sentinel_symbol_not_a_call() {
+    // A niche Scheme-B `Option Int` tests `v != None` (the match) and builds `None`
+    // from the sentinel's relocatable address — a `symbol_value`, not a
+    // `fai_none_value` runtime call. `fai_none_value` is the only nullary runtime
+    // function such code could call, so its `() -> i64` call signature must be
+    // absent and the sentinel symbol must be referenced.
+    let src = indoc! {r#"
+        module M
+
+        g : Option Int -> Option Int
+        let g o =
+          match o with
+          | None -> None
+          | Some x -> Some (x + 1)
+    "#};
+    let ir = entry_ir(src, "g");
+    assert!(ir.contains("symbol_value"), "references the None sentinel symbol:\n{ir}");
+    assert!(
+        !ir.contains("() -> i64"),
+        "the niche None is a symbol address, not a fai_none_value call:\n{ir}"
+    );
+}
