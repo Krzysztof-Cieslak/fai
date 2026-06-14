@@ -64,10 +64,11 @@ fn module_entry_facts(db: &dyn Db, file: SourceFile) -> Arc<FxHashMap<Symbol, Bo
     let source = file.source(db);
     let defs = module_defs(db, file);
 
-    // Per-definition body, parameters, and arity (the count a saturated call needs).
+    // Per-definition entry parameters and every function body (the entry plus its
+    // lifted lambdas — a call inside a closure constrains its callee too).
     struct DefData {
         params: Vec<LocalId>,
-        body: CExpr,
+        bodies: Vec<CExpr>,
     }
     let mut data: FxHashMap<Symbol, DefData> = FxHashMap::default();
     let mut order: Vec<Symbol> = Vec::new();
@@ -76,8 +77,9 @@ fn module_entry_facts(db: &dyn Db, file: SourceFile) -> Arc<FxHashMap<Symbol, Bo
         // arguments are atoms and a self-call appears as a `Recur` — the same body
         // shape code generation seeds these facts onto.
         let lowered = crate::rc(db, file, info.name);
-        let entry = lowered.entry();
-        data.insert(info.name, DefData { params: entry.params.clone(), body: entry.body.clone() });
+        let params = lowered.entry().params.clone();
+        let bodies = lowered.fns.iter().map(|f| f.body.clone()).collect();
+        data.insert(info.name, DefData { params, bodies });
         order.push(info.name);
     }
 
@@ -89,7 +91,9 @@ fn module_entry_facts(db: &dyn Db, file: SourceFile) -> Arc<FxHashMap<Symbol, Bo
         defs.defs.iter().filter(|d| d.visibility == Visibility::Private).map(|d| d.name).collect();
     for n in &order {
         if let Some(d) = data.get(n) {
-            poison_first_class(&d.body, source, &arity, &mut eligible);
+            for body in &d.bodies {
+                poison_first_class(body, source, &arity, &mut eligible);
+            }
         }
     }
 
@@ -105,24 +109,32 @@ fn module_entry_facts(db: &dyn Db, file: SourceFile) -> Arc<FxHashMap<Symbol, Bo
         let mut next: FxHashMap<Symbol, Option<SigMap>> = FxHashMap::default();
         for caller in &order {
             let Some(d) = data.get(caller) else { continue };
-            let mut seed = Bounds::new();
-            if let Some(sig) = facts.get(caller) {
-                seed.seed_entry(&to_sig(sig.clone()), &d.params);
-            }
             let caller = *caller;
-            walk(&d.body, caller, seed, &mut |b: &Bounds, callee: Symbol, args: &[CExpr]| {
-                if !eligible.contains(&callee) || args.len() != arity(callee) {
-                    return;
+            for (i, body) in d.bodies.iter().enumerate() {
+                // The entry function's parameters carry this definition's entry
+                // facts; a lifted lambda's parameters do not, so it is walked with an
+                // empty seed (it still contributes literal-argument and intra-lambda
+                // facts to the callees it calls).
+                let mut seed = Bounds::new();
+                if i == 0
+                    && let Some(sig) = facts.get(&caller)
+                {
+                    seed.seed_entry(&to_sig(sig.clone()), &d.params);
                 }
-                // Round 0 considers only external call sites (a self-call would
-                // constrain the callee by a fact not yet established).
-                if round == 0 && callee == caller {
-                    return;
-                }
-                let extracted = extract_call(b, args);
-                let slot = next.entry(callee).or_insert(None);
-                meet(slot, extracted);
-            });
+                walk(body, caller, seed, &mut |b: &Bounds, callee: Symbol, args: &[CExpr]| {
+                    if !eligible.contains(&callee) || args.len() != arity(callee) {
+                        return;
+                    }
+                    // Round 0 considers only external call sites (a self-call would
+                    // constrain the callee by a fact not yet established).
+                    if round == 0 && callee == caller {
+                        return;
+                    }
+                    let extracted = extract_call(b, args);
+                    let slot = next.entry(callee).or_insert(None);
+                    meet(slot, extracted);
+                });
+            }
         }
         let mut updated: FxHashMap<Symbol, SigMap> = FxHashMap::default();
         for (n, m) in next {
