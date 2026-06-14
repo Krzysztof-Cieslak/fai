@@ -15,7 +15,7 @@ use fai_resolve::DefId;
 use fai_runtime as rt;
 use rayon::prelude::*;
 
-use crate::emit::{build_def, closure_symbol};
+use crate::emit::{Bce, build_def, closure_symbol};
 
 /// Registers every runtime symbol the generated code may reference.
 fn register_runtime(builder: &mut JITBuilder) {
@@ -167,10 +167,11 @@ fn compile_module(
     arity_of: &dyn Fn(DefId) -> usize,
     signature_of: &dyn Fn(DefId) -> FnAbi,
     borrows_of: &dyn Fn(DefId) -> Vec<bool>,
+    bce: &Bce,
 ) {
     let mut jobs: Vec<(FuncId, Context)> = Vec::new();
     for def in defs {
-        build_def(module, def, namer, arity_of, signature_of, borrows_of, &mut jobs);
+        build_def(module, def, namer, arity_of, signature_of, borrows_of, bce, &mut jobs);
         // A token-taking specialized entry, when the definition carries one (the
         // driver clears it on definitions no reachable caller forwards to, so this
         // emits a reuse entry only where it is actually used).
@@ -181,6 +182,7 @@ fn compile_module(
             arity_of,
             signature_of,
             borrows_of,
+            bce,
             &mut jobs,
         );
     }
@@ -226,9 +228,10 @@ impl JitProgram {
         arity_of: &dyn Fn(DefId) -> usize,
         signature_of: &dyn Fn(DefId) -> FnAbi,
         borrows_of: &dyn Fn(DefId) -> Vec<bool>,
+        bce: &Bce,
     ) -> JitProgram {
         let mut module = jit_module();
-        compile_module(&mut module, defs, namer, arity_of, signature_of, borrows_of);
+        compile_module(&mut module, defs, namer, arity_of, signature_of, borrows_of, bce);
         module.finalize_definitions().expect("finalize");
         JitProgram { module }
     }
@@ -250,6 +253,7 @@ impl JitProgram {
 /// library's `Runtime` value binding, returning its exit code (0 on success, 70
 /// on a detected leak).
 #[must_use]
+#[allow(clippy::too_many_arguments)]
 pub fn jit_run(
     defs: &[LoweredDef],
     entry: DefId,
@@ -258,9 +262,10 @@ pub fn jit_run(
     arity_of: &dyn Fn(DefId) -> usize,
     signature_of: &dyn Fn(DefId) -> FnAbi,
     borrows_of: &dyn Fn(DefId) -> Vec<bool>,
+    bce: &Bce,
 ) -> i32 {
     let mut module = jit_module();
-    compile_module(&mut module, defs, namer, arity_of, signature_of, borrows_of);
+    compile_module(&mut module, defs, namer, arity_of, signature_of, borrows_of, bce);
     module.finalize_definitions().expect("finalize");
 
     let entry_id = module

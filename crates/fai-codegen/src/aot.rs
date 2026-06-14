@@ -16,7 +16,7 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 use fai_core::ir::{FnAbi, LoweredDef};
 use fai_resolve::DefId;
 
-use crate::emit::{closure_symbol, compile_def};
+use crate::emit::{Bce, closure_symbol, compile_def};
 
 /// Builds a position-independent ISA for the host target's object files.
 ///
@@ -60,9 +60,10 @@ pub fn object_for_def(
     arity_of: &dyn Fn(DefId) -> usize,
     signature_of: &dyn Fn(DefId) -> FnAbi,
     borrows_of: &dyn Fn(DefId) -> Vec<bool>,
+    bce: &Bce,
 ) -> Vec<u8> {
     let mut module = object_module("fai");
-    compile_def(&mut module, lowered, namer, arity_of, signature_of, borrows_of);
+    compile_def(&mut module, lowered, namer, arity_of, signature_of, borrows_of, bce);
     module.finish().emit().expect("emit object")
 }
 
@@ -76,6 +77,7 @@ pub fn reuse_object_for_def(
     arity_of: &dyn Fn(DefId) -> usize,
     signature_of: &dyn Fn(DefId) -> FnAbi,
     borrows_of: &dyn Fn(DefId) -> Vec<bool>,
+    bce: &Bce,
 ) -> Vec<u8> {
     let mut module = object_module("fai_reuse");
     let mut jobs = Vec::new();
@@ -86,6 +88,7 @@ pub fn reuse_object_for_def(
         arity_of,
         signature_of,
         borrows_of,
+        bce,
         &mut jobs,
     );
     for (id, mut ctx) in jobs {
@@ -105,6 +108,7 @@ pub(crate) fn function_ir_text(
     arity_of: &dyn Fn(DefId) -> usize,
     signature_of: &dyn Fn(DefId) -> FnAbi,
     borrows_of: &dyn Fn(DefId) -> Vec<bool>,
+    bce: &Bce,
 ) -> Vec<String> {
     let mut module = object_module("fai_ir_test");
     let mut jobs = Vec::new();
@@ -115,6 +119,7 @@ pub(crate) fn function_ir_text(
         arity_of,
         signature_of,
         borrows_of,
+        bce,
         &mut jobs,
     );
     jobs.iter().map(|(_, ctx)| ctx.func.display().to_string()).collect()

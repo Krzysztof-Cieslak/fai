@@ -164,10 +164,22 @@ fn run_all_counted_at(path: &str, src: &str) -> (i32, String, i64, i64, i64) {
     let signature_of = |d: DefId| abi.get(&d).cloned().unwrap_or_default();
     let borrows_of = |d: DefId| borrows.get(&d).cloned().unwrap_or_default();
 
+    let entry_of = |d: DefId| {
+        files.get(&d.file).map_or_else(fai_core::BoundSig::default, |f| {
+            (*fai_rc::entry_bounds(&db, *f, d.name)).clone()
+        })
+    };
+    let result_of = |d: DefId| {
+        files.get(&d.file).map_or_else(fai_core::ResultSig::default, |f| {
+            (*fai_rc::result_facts(&db, *f, d.name)).clone()
+        })
+    };
+    let bce = crate::Bce { entry_of: &entry_of, result_of: &result_of, shadow: false };
+
     let _g = lock();
     rt::capture_start();
     rt::reset_allocations();
-    let code = jit_run(&defs, entry, runtime, &namer, &arity_of, &signature_of, &borrows_of);
+    let code = jit_run(&defs, entry, runtime, &namer, &arity_of, &signature_of, &borrows_of, &bce);
     let allocs = rt::allocations();
     let closures = rt::closure_allocations();
     let paps = rt::pap_allocations();
@@ -230,7 +242,18 @@ fn function_ir_at(path: &str, src: &str, def_name: &str) -> Vec<String> {
     let arity_of = |d: DefId| arity.get(&d).copied().unwrap_or(1);
     let signature_of = |d: DefId| abi.get(&d).cloned().unwrap_or_default();
     let borrows_of = |d: DefId| borrows.get(&d).cloned().unwrap_or_default();
-    crate::aot::function_ir_text(&lowered, &namer, &arity_of, &signature_of, &borrows_of)
+    let entry_of = |d: DefId| {
+        files.get(&d.file).map_or_else(fai_core::BoundSig::default, |f| {
+            (*fai_rc::entry_bounds(&db, *f, d.name)).clone()
+        })
+    };
+    let result_of = |d: DefId| {
+        files.get(&d.file).map_or_else(fai_core::ResultSig::default, |f| {
+            (*fai_rc::result_facts(&db, *f, d.name)).clone()
+        })
+    };
+    let bce = crate::Bce { entry_of: &entry_of, result_of: &result_of, shadow: false };
+    crate::aot::function_ir_text(&lowered, &namer, &arity_of, &signature_of, &borrows_of, &bce)
 }
 
 /// The Cranelift IR of a definition's **entry** function alone (index 0),
@@ -3547,6 +3570,74 @@ fn array_int_push_inlines_the_append_fast_path() {
     assert!(ir.contains("icmp_imm"), "inline unique-owner (rc == 1) check:\n{ir}");
     assert!(ir.contains("ushr_imm"), "inline capacity-from-size:\n{ir}");
     assert!(ir.contains("store"), "inline slot store + length bump:\n{ir}");
+}
+
+// --- Bounds-check elimination: redundant inline checks removed ---------------
+//
+// An inline `Array` access whose index a difference-bound analysis proves within
+// `0..len` skips its `icmp ult` bounds check (and the unreachable abort branch). A
+// dominating `i >= 0` plus `i < length` (the safe `get`/`set` shape) is provable
+// intra-procedurally; an unguarded access keeps its check.
+
+#[test]
+fn dominating_guards_elide_the_get_bounds_check() {
+    // `i >= 0` and `i < length xs` both dominate the access, so `unsafeGet i xs`
+    // needs no inline `ult`: the only comparisons are the source guards (signed).
+    let src = indoc! {r#"
+        module M
+
+        g : Int -> Array Int -> Int
+        let g i xs =
+          if i >= 0 then if i < Array.length xs then Array.unsafeGet i xs else 0 else 0
+    "#};
+    let ir = entry_ir(src, "g");
+    assert!(ir.contains("load"), "the element slot is still loaded:\n{ir}");
+    assert!(!ir.contains(" ult "), "the redundant unsigned bounds check is elided:\n{ir}");
+}
+
+#[test]
+fn dominating_guards_elide_the_set_bounds_check() {
+    // The safe-`set` shape: the in-place fast path is gated on uniqueness alone
+    // (`icmp_imm eq … 1`), with no `ult` bounds term, when the index is proven.
+    let src = indoc! {r#"
+        module M
+
+        s : Int -> Array Int -> Array Int
+        let s i xs =
+          if i >= 0 then if i < Array.length xs then Array.unsafeSet i 0 xs else xs else xs
+    "#};
+    let ir = entry_ir(src, "s");
+    assert!(ir.contains("icmp_imm"), "the unique-owner (rc == 1) check is kept:\n{ir}");
+    assert!(ir.contains("store"), "the inline slot store is kept:\n{ir}");
+    assert!(!ir.contains(" ult "), "the redundant unsigned bounds check is elided:\n{ir}");
+}
+
+#[test]
+fn unguarded_access_keeps_its_bounds_check() {
+    // No dominating guard: the inline access must keep its `ult` check (it really
+    // can fault), so elision never over-fires.
+    let src = indoc! {r#"
+        module M
+
+        g : Int -> Array Int -> Int
+        let g i xs = Array.unsafeGet i xs
+    "#};
+    let ir = entry_ir(src, "g");
+    assert!(ir.contains(" ult "), "an unprovable index keeps its bounds check:\n{ir}");
+}
+
+#[test]
+fn partial_guard_keeps_the_check() {
+    // Only `i < length` (no `i >= 0`): a negative index would pass the signed guard
+    // but is out of bounds, so the unsigned check must stay.
+    let src = indoc! {r#"
+        module M
+
+        g : Int -> Array Int -> Int
+        let g i xs = if i < Array.length xs then Array.unsafeGet i xs else 0
+    "#};
+    let ir = entry_ir(src, "g");
+    assert!(ir.contains(" ult "), "without `i >= 0` the bounds check stays:\n{ir}");
 }
 
 // --- Inline structural hash (`Prim.hash`) ----------------------------------
