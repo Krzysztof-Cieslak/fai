@@ -452,6 +452,90 @@ fn helper_inliner_preserves_the_cross_module_firewall() {
     assert_eq!(small, 2, "only the edited module's own objects (mk + top) recompile");
 }
 
+/// Builds `Sum` (a module whose private `loop` over an `Array Int` index elides
+/// its bounds check via the file-local entry facts), `Main` (calling it), and
+/// `fillers` independent modules; warms every object; edits a *filler*; then
+/// recompiles and returns how many `object_code` queries re-ran. The entry-fact
+/// inference is file-local, so an edit to an unrelated module must not re-emit the
+/// array module's object.
+fn bce_firewall_object_reruns(fillers: usize) -> usize {
+    let mut db = FaiDatabase::new();
+    fai_types::std_lib::load_std(&mut db);
+    let sum_id = db.add_source(
+        "Sum.fai".into(),
+        indoc! {r#"
+            module Sum
+
+            go : Int -> Int -> Array Int -> Int
+            let go i acc xs =
+              if i >= Array.length xs then acc else go (i + 1) (acc + Array.unsafeGet i xs) xs
+
+            public total : Array Int -> Int
+            let total xs = go 0 0 xs
+        "#}
+        .to_owned(),
+    );
+    let main_id = db.add_source(
+        "Main.fai".into(),
+        indoc! {r#"
+            module Main
+
+            public main : Runtime -> Unit / { Console }
+            let main r = r.console.writeLine (Int.toString (Sum.total (Array.range 0 5)))
+        "#}
+        .to_owned(),
+    );
+    let mut filler: Vec<(SourceFile, Symbol)> = Vec::new();
+    for i in 0..fillers {
+        let src = formatdoc! {r#"
+            module F{i}
+
+            public g{i} : Int -> Int
+            let g{i} x = x + {i}
+        "#};
+        let id = db.add_source(format!("F{i}.fai").into(), src);
+        filler.push((db.source_file(id).unwrap(), Symbol::intern(&format!("g{i}"))));
+    }
+
+    let sum = db.source_file(sum_id).unwrap();
+    let main = db.source_file(main_id).unwrap();
+    let warm = |db: &FaiDatabase| {
+        object_code(db, main, Symbol::intern("main"));
+        object_code(db, sum, Symbol::intern("total"));
+        object_code(db, sum, Symbol::intern("go"));
+        for (f, g) in &filler {
+            object_code(db, *f, *g);
+        }
+    };
+    warm(&db);
+
+    db.enable_event_log();
+    // Edit the *first* filler's body; the array module's entry facts are file-local,
+    // so its objects must not re-emit.
+    let (f0, _) = filler[0];
+    f0.set_text(&mut db).to(indoc! {r#"
+        module F0
+
+        public g0 : Int -> Int
+        let g0 x = x + 100
+    "#}
+    .to_owned());
+    warm(&db);
+    count(&db.take_events(), "object_code")
+}
+
+#[test]
+fn bounds_check_elimination_preserves_the_cross_module_firewall() {
+    // The file-local entry-fact inference must not ripple across a module boundary:
+    // editing an unrelated module re-emits only that module's object (one), the same
+    // whether the workspace has 5 other modules or 50 — the array module's elision
+    // facts depend only on its own file.
+    let small = bce_firewall_object_reruns(5);
+    let large = bce_firewall_object_reruns(50);
+    assert_eq!(small, large, "BCE firewall must not grow re-codegen with workspace size");
+    assert_eq!(small, 1, "only the edited filler's own object recompiles");
+}
+
 /// Builds `Helper.helper`, `Probe.probe` (which only *forwards* its parameter to
 /// `Helper.helper`, so inter-procedural inference makes `borrow_signature(probe)`
 /// depend on `borrow_signature(helper)`), and `fillers` independent modules; warms
