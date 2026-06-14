@@ -1,37 +1,41 @@
 module Sieve
 
-// The Sieve of Eratosthenes by collecting composite numbers into a `HashSet`,
-// then counting the survivors in [2, n). This exercises O(1)-average `HashSet`
-// insertion and membership in a number-theoretic access pattern. Used by the
+// The Sieve of Eratosthenes over a flat, mutable `Array Bool`: mark each composite
+// in place, then count the survivors in [2, n). This mirrors the Rust reference's
+// `vec![bool; n]` one for one — an O(1) integer-indexed read/write with no hashing
+// — so it measures the array representation, not a hash container. The `composite`
+// array is threaded linearly, so each `unsafeSet` updates the uniquely-owned buffer
+// in place (the reference-counting reuse model), like Rust's `&mut`. Used by the
 // Rust-vs-Fai runtime benchmark.
-// Mark p's multiples from m up to n into the composite set. Tail-recursive.
-markFrom : Int -> Int -> Int -> HashSet Int -> HashSet Int
-let markFrom m p n composites =
-  if m >= n then composites else markFrom (m + p) p n (HashSet.insert m composites)
+// Mark p's multiples from m up to n as composite. Tail-recursive.
+markFrom : Int -> Int -> Int -> Array Bool -> Array Bool
+let markFrom m p n composite =
+  if m >= n then composite else markFrom (m + p) p n (Array.unsafeSet m true composite)
 
-// Sieve from p: if p is still prime, mark its multiples from p², then continue.
-sieveFrom : Int -> Int -> HashSet Int -> HashSet Int
-let sieveFrom p n composites =
+// Sieve from p: if p is still prime (unmarked), mark its multiples from p², then
+// continue.
+sieveFrom : Int -> Int -> Array Bool -> Array Bool
+let sieveFrom p n composite =
   if p * p >= n then
-    composites
-  else if HashSet.member p composites then
-    sieveFrom (p + 1) n composites
+    composite
+  else if Array.unsafeGet p composite then
+    sieveFrom (p + 1) n composite
   else
-    sieveFrom (p + 1) n (markFrom (p * p) p n composites)
+    sieveFrom (p + 1) n (markFrom (p * p) p n composite)
 
-// Count the numbers in [i, n) absent from the composite set. Tail-recursive.
-countFrom : Int -> Int -> HashSet Int -> Int -> Int
-let countFrom i n composites acc =
+// Count the numbers in [i, n) not marked composite. Tail-recursive.
+countFrom : Int -> Int -> Array Bool -> Int -> Int
+let countFrom i n composite acc =
   if i >= n then
     acc
-  else if HashSet.member i composites then
-    countFrom (i + 1) n composites acc
+  else if Array.unsafeGet i composite then
+    countFrom (i + 1) n composite acc
   else
-    countFrom (i + 1) n composites (acc + 1)
+    countFrom (i + 1) n composite (acc + 1)
 
 /// The benchmark workload: the number of primes below n.
 public run : Int -> Int
-let run n = countFrom 2 n (sieveFrom 2 n HashSet.empty) 0
+let run n = countFrom 2 n (sieveFrom 2 n (Array.repeat n false)) 0
 example: run 10 = 4
 
 public main : Runtime -> Unit / { Console }

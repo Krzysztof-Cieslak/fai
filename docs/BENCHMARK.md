@@ -126,7 +126,9 @@ performance change is measured broadly rather than against a handful of cases:
   fallback), `merge_sort`, `quicksort`, `matrix_multiply` (nested lists),
   `fold_pipeline` (closures / first-class calls), `nqueens` and `fannkuch`
   (backtracking / permutations);
-- **hash maps & sets** — `dict_histogram`, `set_dedup`, `sieve`, `option_path`,
+- **arrays** — `sieve` (a flat mutable `Array Bool`: in-place update of a
+  uniquely-owned array, mirroring the Rust `vec![bool]` reference);
+- **hash maps & sets** — `dict_histogram`, `set_dedup`, `option_path`,
   `graph_bfs` (`HashDict`+`HashSet`+`List`), `union_find`, `game_of_life`
   (`(Int*Int)` tuple keys); all over the unordered `HashDict`/`HashSet`;
 - **strings & ADTs** — `word_count`, `json_serialize`, `expr_eval` (a recursive

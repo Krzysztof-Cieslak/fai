@@ -201,7 +201,7 @@
 > array in place and allocates only the per-entry cell — with unspecified (but
 > deterministic) iteration order; the ordered `Dict`/`Set` remain for sorted
 > iteration and range use. `Prelude` re-exports the names so signatures use them
-> unqualified, and the associative-container benchmarks (`sieve`, `fib_memo`,
+> unqualified, and the associative-container benchmarks (`fib_memo`,
 > `coin_change`, `set_dedup`, `dict_histogram`, `graph_bfs`, `union_find`,
 > `option_path`, `game_of_life`) run on them. Later
 > milestones (performance tuning at scale, …) define the *intended* interface we
