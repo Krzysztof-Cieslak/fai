@@ -116,6 +116,10 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_env_args", rt::fai_env_args);
     sym!("fai_record_update", rt::fai_record_update);
     sym!("fai_array_with_capacity", rt::fai_array_with_capacity);
+    sym!("fai_alloc_array", rt::fai_alloc_array);
+    sym!("fai_pool_heads", rt::fai_pool_heads);
+    sym!("fai_note_alloc", rt::fai_note_alloc);
+    sym!("fai_note_free", rt::fai_note_free);
     sym!("fai_array_length", rt::fai_array_length);
     sym!("fai_array_length_borrowed", rt::fai_array_length_borrowed);
     sym!("fai_array_get", rt::fai_array_get);

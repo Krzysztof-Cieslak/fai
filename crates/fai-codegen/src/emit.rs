@@ -698,6 +698,7 @@ fn build_fn<M: Module>(
             entry_bounds: Bounds::new(),
             result_facts_of: bce.result_of,
             bce_shadow: bce.shadow,
+            pool_heads_base: None,
         };
 
         // Record each local's static type up front, so reference-count operations
@@ -809,6 +810,17 @@ fn build_fn<M: Module>(
         {
             tr.bounds.seed_entry(sig, &core_fn.params[offset..]);
             tr.entry_bounds = tr.bounds.clone();
+        }
+
+        // When the body constructs or grows an `Array`, fetch the thread's
+        // free-list heads base once here in the entry block (which dominates the
+        // whole body) so the inlined pooled allocation fast path reuses it with no
+        // per-allocation call. The base is loop-invariant, so a hot allocation loop
+        // pays one `fai_pool_heads` per activation rather than one per cell.
+        if body_uses_array_alloc(&core_fn.body) {
+            let heads = tr.runtime("fai_pool_heads", 0, true);
+            let call = tr.builder.ins().call(heads, &[]);
+            tr.pool_heads_base = Some(tr.builder.inst_results(call)[0]);
         }
 
         let result = tr.expr(&core_fn.body);
@@ -1045,6 +1057,13 @@ struct Translator<'a, M: Module> {
     /// abort, so generative testing turns any unsound elision into a loud, located
     /// failure instead of a silent out-of-bounds read. Off in normal builds.
     bce_shadow: bool,
+    /// The current thread's size-class free-list heads base (the result of one
+    /// `fai_pool_heads` call), computed once in the entry block when this function
+    /// inlines an `Array` allocation (construction or push-grow) — `None`
+    /// otherwise. The base is loop-invariant (execution is single-threaded), and
+    /// the entry block dominates the whole body, so the inlined pool pop/push reuse
+    /// this single value with no per-allocation call.
+    pool_heads_base: Option<Value>,
 }
 
 /// The active tail-call loop being translated.
@@ -2472,6 +2491,13 @@ impl<M: Module> Translator<'_, M> {
     /// or erased (`App(Con::Array, Error)`, the combined mutual-recursion function)
     /// element takes the uniform path, so concrete *and* generic sites inline.
     fn array_prim(&mut self, op: Prim, args: &[CExpr], result_ty: &Ty) -> Option<Value> {
+        // `Array.withCapacity` (and `empty`/`singleton`/the builders that bottom out
+        // in it) inlines the pooled allocation fast path regardless of element type
+        // — an array's slots are uniform words — so it is handled before the
+        // array-operand gate below: its operand is the capacity `Int`, not an array.
+        if op == Prim::ArrayWithCapacity {
+            return Some(self.array_with_capacity_inline(args));
+        }
         // Gate on the operand being a recognizable array. Only the head survives the
         // object-cache wire form (an `App`'s argument is projected away, so a cached
         // `Array Float` operand reconstructs as `App(Array, Error)`); the *element*
@@ -2486,6 +2512,149 @@ impl<M: Module> Translator<'_, M> {
             Prim::ArrayPush => Some(self.array_push_inline(args)),
             _ => None,
         }
+    }
+
+    /// Inlines the pooled allocation fast path for an `Array` buffer of `size`
+    /// bytes, returning the new cell with its header written (rc = 1, the array
+    /// descriptor, the size) but its length field **left unset** for the caller. If
+    /// `size`'s class is pooled and its thread-local free list is non-empty, the
+    /// recycled cell is popped inline (load the head, store the next-free pointer
+    /// back) and the header written inline; otherwise the runtime `fai_alloc_array`
+    /// fallback allocates it (system allocator / pool miss). `size` is a raw `i64`
+    /// (a byte count), and `self.pool_heads_base` is set (the body pre-scan found
+    /// the allocation). Mirrors `alloc_obj`'s pooled path.
+    fn inline_alloc_array(&mut self, size: Value) -> Value {
+        let base = self.pool_heads_base.expect("pool heads base for an inlined array allocation");
+        let max_pooled = i64::try_from(rt::MAX_POOLED_SIZE).expect("max pooled size");
+
+        // Pooled iff `0 < size <= MAX_POOLED_SIZE`; an array size is always at least
+        // the element-base offset (> 0), so an unsigned `<=` is the whole gate. The
+        // class head slot sits at `base + size` (class * SIZE_STEP == size).
+        let pooled = self.builder.ins().icmp_imm(IntCC::UnsignedLessThanOrEqual, size, max_pooled);
+        let slot = self.builder.ins().iadd(base, size);
+
+        let pooled_b = self.builder.create_block();
+        let fast_b = self.builder.create_block();
+        let slow_b = self.builder.create_block();
+        let merge_b = self.builder.create_block();
+        self.builder.append_block_param(merge_b, types::I64);
+        self.builder.ins().brif(pooled, pooled_b, &[], slow_b, &[]);
+
+        // Pooled size: take the free list's head if non-empty, else the runtime.
+        self.builder.switch_to_block(pooled_b);
+        self.builder.seal_block(pooled_b);
+        let head = self.builder.ins().load(types::I64, MemFlags::trusted(), slot, 0);
+        let hit = self.builder.ins().icmp_imm(IntCC::NotEqual, head, 0);
+        self.builder.ins().brif(hit, fast_b, &[], slow_b, &[]);
+
+        // Fast path: pop (store the cell's next-free pointer back as the new head)
+        // and write the object header inline.
+        self.builder.switch_to_block(fast_b);
+        self.builder.seal_block(fast_b);
+        let next = self.builder.ins().load(types::I64, MemFlags::trusted(), head, 0);
+        self.builder.ins().store(MemFlags::trusted(), next, slot, 0);
+        let one = self.builder.ins().iconst(types::I64, 1);
+        self.store_field(head, rt::RC_OFFSET, one);
+        let desc = self.runtime_data_addr("FAI_ARRAY_DESC");
+        self.store_field(head, rt::DESC_OFFSET, desc);
+        self.store_field(head, rt::SIZE_OFFSET, size);
+        self.note_inline_alloc();
+        self.builder.ins().jump(merge_b, &[head.into()]);
+
+        // Slow path: the runtime allocator (unpooled size, or an empty free list).
+        self.builder.switch_to_block(slow_b);
+        self.builder.seal_block(slow_b);
+        let f = self.runtime("fai_alloc_array", 1, true);
+        let call = self.builder.ins().call(f, &[size]);
+        let allocated = self.builder.inst_results(call)[0];
+        self.builder.ins().jump(merge_b, &[allocated.into()]);
+
+        self.builder.switch_to_block(merge_b);
+        self.builder.seal_block(merge_b);
+        self.builder.block_params(merge_b)[0]
+    }
+
+    /// Inlines the pooled free path for an `Array` buffer `p` of `size` bytes whose
+    /// reference-counted children have already been moved out (the push-grow case),
+    /// so it is reclaimed without a child scan. If `size`'s class is pooled the cell
+    /// is pushed back onto its free list inline (store the old head into the cell's
+    /// first word, make the cell the new head); otherwise the runtime `fai_free`
+    /// reclaims it. Mirrors `free_obj`'s pooled path.
+    fn inline_free_array(&mut self, p: Value, size: Value) {
+        let base = self.pool_heads_base.expect("pool heads base for an inlined array free");
+        let max_pooled = i64::try_from(rt::MAX_POOLED_SIZE).expect("max pooled size");
+
+        let pooled = self.builder.ins().icmp_imm(IntCC::UnsignedLessThanOrEqual, size, max_pooled);
+        let slot = self.builder.ins().iadd(base, size);
+
+        let fast_b = self.builder.create_block();
+        let slow_b = self.builder.create_block();
+        let merge_b = self.builder.create_block();
+        self.builder.ins().brif(pooled, fast_b, &[], slow_b, &[]);
+
+        // Fast path: push the cell onto its class's free list (intrusive next-pointer
+        // in the cell's first word).
+        self.builder.switch_to_block(fast_b);
+        self.builder.seal_block(fast_b);
+        let head = self.builder.ins().load(types::I64, MemFlags::trusted(), slot, 0);
+        self.builder.ins().store(MemFlags::trusted(), head, p, 0);
+        self.builder.ins().store(MemFlags::trusted(), p, slot, 0);
+        self.note_inline_free();
+        self.builder.ins().jump(merge_b, &[]);
+
+        // Slow path: the runtime reclaims an unpooled (large) buffer.
+        self.builder.switch_to_block(slow_b);
+        self.builder.seal_block(slow_b);
+        let f = self.runtime("fai_free", 1, false);
+        self.builder.ins().call(f, &[p]);
+        self.builder.ins().jump(merge_b, &[]);
+
+        self.builder.switch_to_block(merge_b);
+        self.builder.seal_block(merge_b);
+    }
+
+    /// Records, in a debug build, one heap allocation the inlined fast path made
+    /// without calling the runtime allocator, keeping the live-object and
+    /// cumulative-allocation counters balanced with the eventual release. Emitted
+    /// only under `debug_assertions` (the runtime counters exist only there, and the
+    /// compiler and runtime build under one profile), so a release build's fast path
+    /// stays call-free.
+    fn note_inline_alloc(&mut self) {
+        if cfg!(debug_assertions) {
+            let f = self.runtime("fai_note_alloc", 0, false);
+            self.builder.ins().call(f, &[]);
+        }
+    }
+
+    /// Records, in a debug build, one heap free the inlined fast path made without
+    /// calling the runtime (the counter peer of [`note_inline_alloc`]).
+    fn note_inline_free(&mut self) {
+        if cfg!(debug_assertions) {
+            let f = self.runtime("fai_note_free", 0, false);
+            self.builder.ins().call(f, &[]);
+        }
+    }
+
+    /// `Array.withCapacity`: inline the pooled allocation of an empty array with
+    /// room for `cap` elements. The capacity is clamped to non-negative (matching
+    /// the runtime's `max(0)`), the byte size derived as `ARRAY_ELEMS_OFFSET +
+    /// cap * 8`, the buffer popped from the free list (or the runtime fallback), and
+    /// the length initialized to 0. A constant capacity folds the gate and size to
+    /// constants. The capacity operand is an `Int` immediate (read raw, not
+    /// consumed).
+    fn array_with_capacity_inline(&mut self, args: &[CExpr]) -> Value {
+        let cap = self.array_index_raw(&args[0]);
+        // Clamp to non-negative: a negative capacity becomes 0 (an empty buffer),
+        // so the derived size is always a valid pooled-or-large array size.
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        let cap = self.builder.ins().smax(cap, zero);
+        let elems_off = i64::from(u32::try_from(rt::ARRAY_ELEMS_OFFSET).expect("array elems off"));
+        let bytes = self.builder.ins().ishl_imm(cap, 3);
+        let size = self.builder.ins().iadd_imm(bytes, elems_off);
+        let arr = self.inline_alloc_array(size);
+        // A fresh array starts empty (length 0).
+        self.store_field(arr, rt::ARRAY_LEN_OFFSET, zero);
+        arr
     }
 
     /// `Array.length`: an inline load of the length field as a raw `Int`. The array
@@ -2687,10 +2856,16 @@ impl<M: Module> Translator<'_, M> {
         self.builder.block_params(merge_b)[0]
     }
 
-    /// `Array.push`: an inline in-place append when the array is uniquely owned and
-    /// has spare capacity; otherwise the runtime `fai_array_push`, which grows a
-    /// full unique array and copies a shared one. The array and value are consumed.
-    /// Capacity is derived from the allocation size (`(size - ELEMS) / 8`).
+    /// `Array.push`. The array and value are consumed; capacity is derived from the
+    /// allocation size (`(size - ELEMS) / 8`). Three paths:
+    ///
+    /// - **unique, room to spare** — write the spare slot at `len` and bump the
+    ///   length, in place.
+    /// - **unique, full** — grow: inline a fresh, larger pooled buffer, move the
+    ///   elements over (ownership transfers, no dup/drop), append the new element,
+    ///   then reclaim the old buffer inline (its children moved out). The grow
+    ///   factor matches the runtime (double, from a base of 4).
+    /// - **shared** — the runtime `fai_array_push`, which copies the shared buffer.
     fn array_push_inline(&mut self, args: &[CExpr]) -> Value {
         let base = self.expr(&args[0]);
         let value = self.expr_boxed(&args[1]);
@@ -2708,34 +2883,98 @@ impl<M: Module> Translator<'_, M> {
         let cap = self.builder.ins().ushr_imm(usable, 3);
         let has_room = self.builder.ins().icmp(IntCC::UnsignedLessThan, len, cap);
         let unique = self.builder.ins().icmp_imm(IntCC::Equal, rc, 1);
-        let fast = self.builder.ins().band(unique, has_room);
+        // The new length, used by both unique paths; computed here so it dominates
+        // them (the entry block dominates the whole append).
+        let len1 = self.builder.ins().iadd_imm(len, 1);
 
+        let unique_b = self.builder.create_block();
         let fast_b = self.builder.create_block();
-        let slow_b = self.builder.create_block();
+        let grow_b = self.builder.create_block();
+        let shared_b = self.builder.create_block();
         let merge_b = self.builder.create_block();
         self.builder.append_block_param(merge_b, types::I64);
-        self.builder.ins().brif(fast, fast_b, &[], slow_b, &[]);
+        self.builder.ins().brif(unique, unique_b, &[], shared_b, &[]);
+
+        // Unique owner: append in place if there is spare capacity, else grow.
+        self.builder.switch_to_block(unique_b);
+        self.builder.seal_block(unique_b);
+        self.builder.ins().brif(has_room, fast_b, &[], grow_b, &[]);
 
         // Fast path: write the spare slot at `len` and bump the length.
         self.builder.switch_to_block(fast_b);
         self.builder.seal_block(fast_b);
         let (addr, slot_off) = self.array_elem_addr(base, len);
         self.builder.ins().store(MemFlags::trusted(), value, addr, slot_off);
-        let len1 = self.builder.ins().iadd_imm(len, 1);
         self.builder.ins().store(MemFlags::trusted(), len1, base, len_off);
         self.builder.ins().jump(merge_b, &[base.into()]);
 
-        // Slow path: the runtime grows (unique-but-full) or copies (shared).
-        self.builder.switch_to_block(slow_b);
-        self.builder.seal_block(slow_b);
+        // Grow path (unique but full, so `len == cap`): a fresh buffer of double the
+        // capacity (4 from empty), the elements moved over, the new element
+        // appended, and the old buffer reclaimed.
+        self.builder.switch_to_block(grow_b);
+        self.builder.seal_block(grow_b);
+        let is_empty = self.builder.ins().icmp_imm(IntCC::Equal, cap, 0);
+        let doubled = self.builder.ins().ishl_imm(cap, 1);
+        let four = self.builder.ins().iconst(types::I64, 4);
+        let new_cap = self.builder.ins().select(is_empty, four, doubled);
+        let new_bytes = self.builder.ins().ishl_imm(new_cap, 3);
+        let new_size = self.builder.ins().iadd_imm(new_bytes, elems_bytes);
+        let grown = self.inline_alloc_array(new_size);
+        self.copy_array_elems(base, grown, len);
+        let (gaddr, gslot) = self.array_elem_addr(grown, len);
+        self.builder.ins().store(MemFlags::trusted(), value, gaddr, gslot);
+        self.builder.ins().store(MemFlags::trusted(), len1, grown, len_off);
+        self.inline_free_array(base, size);
+        self.builder.ins().jump(merge_b, &[grown.into()]);
+
+        // Shared: the runtime copies the shared buffer with the new element.
+        self.builder.switch_to_block(shared_b);
+        self.builder.seal_block(shared_b);
         let f = self.runtime("fai_array_push", 2, true);
         let call = self.builder.ins().call(f, &[base, value]);
-        let grown = self.builder.inst_results(call)[0];
-        self.builder.ins().jump(merge_b, &[grown.into()]);
+        let copied = self.builder.inst_results(call)[0];
+        self.builder.ins().jump(merge_b, &[copied.into()]);
 
         self.builder.switch_to_block(merge_b);
         self.builder.seal_block(merge_b);
         self.builder.block_params(merge_b)[0]
+    }
+
+    /// Emits a loop copying `count` element slots from array `src` to array `dst`
+    /// (the words at `ARRAY_ELEMS_OFFSET + i*8` for `i in 0..count`), a plain word
+    /// move with no reference-count traffic — used by the push-grow path, where
+    /// ownership of the elements transfers from the old buffer to the new. Leaves
+    /// the builder positioned at the (sealed) block following the loop.
+    fn copy_array_elems(&mut self, src: Value, dst: Value, count: Value) {
+        let slot_off = i32::try_from(rt::ARRAY_ELEMS_OFFSET).expect("array elems offset");
+        let header = self.builder.create_block();
+        self.builder.append_block_param(header, types::I64);
+        let body = self.builder.create_block();
+        let after = self.builder.create_block();
+
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        self.builder.ins().jump(header, &[zero.into()]);
+
+        // Header: continue while `i < count`. Sealed only after the body's back-edge
+        // is emitted below (its two predecessors are the entry jump and that edge).
+        self.builder.switch_to_block(header);
+        let i = self.builder.block_params(header)[0];
+        let more = self.builder.ins().icmp(IntCC::UnsignedLessThan, i, count);
+        self.builder.ins().brif(more, body, &[], after, &[]);
+
+        self.builder.switch_to_block(body);
+        self.builder.seal_block(body);
+        let byte = self.builder.ins().ishl_imm(i, 3);
+        let sa = self.builder.ins().iadd(src, byte);
+        let da = self.builder.ins().iadd(dst, byte);
+        let w = self.builder.ins().load(types::I64, MemFlags::trusted(), sa, slot_off);
+        self.builder.ins().store(MemFlags::trusted(), w, da, slot_off);
+        let i1 = self.builder.ins().iadd_imm(i, 1);
+        self.builder.ins().jump(header, &[i1.into()]);
+        self.builder.seal_block(header);
+
+        self.builder.switch_to_block(after);
+        self.builder.seal_block(after);
     }
 
     /// Compiles a `Float` primitive. With unboxed `f64` operands these are inline
@@ -5038,6 +5277,51 @@ fn array_elem(ty: &Ty) -> Option<&Ty> {
     match ty {
         Ty::App(head, elem) if matches!(head.as_ref(), Ty::Con(Con::Array)) => Some(elem),
         _ => None,
+    }
+}
+
+/// Whether this (already lambda-lifted) function body contains an `Array`
+/// construction (`ArrayWithCapacity`) or append (`ArrayPush`) primitive, so its
+/// code generation inlines a pooled allocation and needs the thread's free-list
+/// heads base fetched once at entry (see [`Translator::pool_heads_base`]). A
+/// nested lambda's allocations live in its own lifted function, so they do not
+/// match here.
+fn body_uses_array_alloc(e: &CExpr) -> bool {
+    match &e.kind {
+        ExprKind::Prim { op, args, .. } => {
+            matches!(op, Prim::ArrayWithCapacity | Prim::ArrayPush)
+                || args.iter().any(body_uses_array_alloc)
+        }
+        ExprKind::Lit(_)
+        | ExprKind::Local(_)
+        | ExprKind::Global(_)
+        | ExprKind::MakeClosure { .. }
+        | ExprKind::Error => false,
+        ExprKind::MakeData { args, .. } | ExprKind::Recur { args } => {
+            args.iter().any(body_uses_array_alloc)
+        }
+        ExprKind::App { func, args, .. } => {
+            body_uses_array_alloc(func) || args.iter().any(body_uses_array_alloc)
+        }
+        ExprKind::If { cond, then, els } => {
+            body_uses_array_alloc(cond) || body_uses_array_alloc(then) || body_uses_array_alloc(els)
+        }
+        ExprKind::Let { value, body, .. } => {
+            body_uses_array_alloc(value) || body_uses_array_alloc(body)
+        }
+        ExprKind::Reset { value, body, .. } => {
+            body_uses_array_alloc(value) || body_uses_array_alloc(body)
+        }
+        ExprKind::DataTag { base, .. } | ExprKind::DataField { base, .. } => {
+            body_uses_array_alloc(base)
+        }
+        ExprKind::FreeReuse { body, .. }
+        | ExprKind::Dup { body, .. }
+        | ExprKind::Drop { body, .. }
+        | ExprKind::Join { body, .. }
+        | ExprKind::HoleStart { body, .. } => body_uses_array_alloc(body),
+        ExprKind::HoleFill { cell, .. } => body_uses_array_alloc(cell),
+        ExprKind::HoleClose { base, .. } => body_uses_array_alloc(base),
     }
 }
 

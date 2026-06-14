@@ -580,6 +580,25 @@ fn note_free() {
     LIVE.fetch_sub(1, Ordering::Relaxed);
 }
 
+/// Records one heap allocation performed *inline* by generated code (the inlined
+/// array-construction / push-grow fast path pops a pooled cell without calling the
+/// runtime allocator), keeping the debug counters balanced with the eventual
+/// release. Generated code emits this call only in a debug build; it is a no-op in
+/// a release build (the counters are absent there).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_note_alloc() {
+    note_alloc();
+}
+
+/// Records one heap free performed *inline* by generated code (the inlined
+/// push-grow fast path pushes the moved-out old buffer back onto its free list
+/// without calling the runtime), the counter peer of [`fai_note_alloc`]. A no-op
+/// in a release build (the counters are absent there).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_note_free() {
+    note_free();
+}
+
 /// Returns the number of live heap objects (used by the leak check and tests).
 /// Always zero in a release build, where the counter is compiled out.
 #[must_use]
@@ -720,13 +739,18 @@ pub fn reset_allocations() {
 // returns them to the system allocator.
 
 /// The byte granularity of a size class. Every heap object is 8-aligned and a
-/// multiple of 8 bytes, so each distinct size is its own class.
-const SIZE_STEP: usize = ALIGN;
+/// multiple of 8 bytes, so each distinct size is its own class. Public so code
+/// generation can mirror [`size_class`] when it inlines the pooled fast path of
+/// [`alloc_obj`] (the head slot of a `size`-byte cell's class is at byte `size`
+/// of the [`fai_pool_heads`] base, since `class * SIZE_STEP == size`).
+pub const SIZE_STEP: usize = ALIGN;
 
 /// The largest object served from the recycling pool; larger allocations go
 /// straight to the system allocator. Covers the small objects that dominate
-/// allocation traffic (boxes, cons cells, typical records/closures/PAPs).
-const MAX_POOLED_SIZE: usize = 512;
+/// allocation traffic (boxes, cons cells, typical records/closures/PAPs). Public
+/// so the inlined allocation fast path can gate on a pooled size (taking the
+/// runtime fallback above it), matching [`size_class`].
+pub const MAX_POOLED_SIZE: usize = 512;
 
 /// The number of size-class free lists. Class `c` (`= size.div_ceil(8)`) holds
 /// cells of capacity `c * SIZE_STEP`; the low classes below the minimum object
@@ -812,6 +836,25 @@ fn pool_pop(c: usize) -> *mut u8 {
         pool.heads[c].set(next);
         head
     })
+}
+
+/// The base address of the current thread's size-class free-list heads array, so
+/// generated code can inline the pooled fast path of [`alloc_obj`] (and the
+/// matching free path of [`free_obj`]) instead of calling the runtime: a class-`c`
+/// head slot is one pointer at byte `c * SIZE_STEP` from the base, i.e. at byte
+/// `size` for a `size`-byte cell (since `c * SIZE_STEP == size` for the 8-multiple
+/// sizes the runtime emits). The inlined code loads/stores those slots and the
+/// freed cells' intrusive next-pointers exactly as [`pool_pop`]/[`pool_push`] do.
+///
+/// The returned address is stable for the thread's lifetime (the [`Pool`] lives in
+/// thread-local storage until the thread exits), so it is sound to hold and reuse
+/// across a function body. Each cell's head slot is a [`Cell`], so the external
+/// reads and writes generated code performs through this pointer are sound — `Cell`
+/// is built on `UnsafeCell`, which permits aliased mutation — and Fai execution is
+/// single-threaded, so no other thread touches this thread's lists concurrently.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_pool_heads() -> *mut u8 {
+    POOL.with(|pool| pool.heads.as_ptr().cast::<u8>().cast_mut())
 }
 
 /// Allocates `size` bytes (8-aligned) from the system allocator, aborting on OOM.
@@ -1456,6 +1499,20 @@ fn grow_cap(cap: usize, needed: usize) -> usize {
 pub extern "C" fn fai_array_with_capacity(cap: Value) -> Value {
     let cap = unbox_int(cap).max(0) as usize;
     from_obj(alloc_array(0, cap))
+}
+
+/// Allocates an `Array` buffer of exactly `size` bytes (header + length slot +
+/// element slots), writing the object header (rc = 1, descriptor, size) and
+/// counting the allocation, with the length field left for the caller to set. The
+/// out-of-line fallback the inlined array-construction / push-grow fast path calls
+/// when the size is unpooled (larger than [`MAX_POOLED_SIZE`]) or the thread-local
+/// free list for its size class was empty; the inline fast path otherwise pops a
+/// recycled cell and writes the header itself. `size` is a raw byte count (not a
+/// tagged `Int`), at least [`ARRAY_ELEMS_OFFSET`] and a multiple of [`SIZE_STEP`],
+/// as code generation derives it from the (clamped, non-negative) capacity.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_alloc_array(size: Value) -> Value {
+    from_obj(alloc_obj(size as usize, &FAI_ARRAY_DESC))
 }
 
 /// An array's length as an immediate `Int` (operand consumed).

@@ -220,6 +220,80 @@ fn unique_set_is_in_place() {
 }
 
 // ===========================================================================
+// Inlined allocation fast path: `withCapacity` and the push-grow path pop/push a
+// pooled cell and write the header inline (see the codegen IR-shape tests). These
+// exercise that machinery end-to-end — the inlined pop interoperates with the
+// runtime free list (a freed buffer is recycled by a later inlined construction),
+// the grow path's fresh-buffer alloc + element move + old-buffer free are
+// balanced, and everything stays leak-free with the counters consistent.
+// ===========================================================================
+
+#[test]
+fn growing_a_unique_array_from_empty_does_no_uniqueness_copies() {
+    // Repeatedly pushing onto a uniquely-owned array grows it by doubling through
+    // the inlined grow path (fresh pooled buffer + element move + old-buffer free),
+    // never a uniqueness-loss copy. The result is correct and the run leak-free.
+    let src = indoc! {r#"
+        module M
+
+        build : Int -> Array Int -> Array Int
+        let build i acc = if i >= 100 then acc else build (i + 1) (Array.push i acc)
+
+        public main : Runtime -> Unit / { Console }
+        let main rt = rt.console.writeLine (Int.toString (Array.sum (build 0 Array.empty)))
+    "#};
+    // sum 0..99 = 4950.
+    let c = copies_full(src, "4950");
+    assert_eq!(c, 0, "growing a unique array by doubling is amortized growth, not a copy");
+}
+
+#[test]
+fn concat_grows_without_uniqueness_copies() {
+    // `Array.concat` accumulates into a buffer that starts empty and grows by
+    // doubling (the inlined grow path); the accumulator stays unique, so no
+    // uniqueness-loss copy occurs.
+    let c = copies(
+        "Array.sum (Array.concat (Array.fromList [Array.range 0 30, Array.range 30 60]))",
+        "1770",
+    );
+    assert_eq!(c, 0, "a unique concat accumulator grows in place, never copies");
+}
+
+#[test]
+fn repeated_construction_is_leak_free_and_pool_recycles() {
+    // Many short-lived arrays are built and dropped in a loop: each construction's
+    // inlined pool pop recycles the previous iteration's freed buffer, and each
+    // drop returns it. A wrong slot offset or unbalanced counter would crash, leak
+    // (a non-zero exit), or corrupt a recycled cell; a clean exit with the correct
+    // sum proves the inlined pop/push interoperate with the runtime free list.
+    let src = indoc! {r#"
+        module M
+
+        run : Int -> Int -> Int
+        let run i acc =
+          if i >= 500 then acc else run (i + 1) (acc + Array.sum (Array.range 0 8))
+
+        public main : Runtime -> Unit / { Console }
+        let main rt = rt.console.writeLine (Int.toString (run 0 0))
+    "#};
+    // Each `Array.range 0 8` sums to 28; 500 of them = 14000.
+    let (code, out, _, _) = run_counted(src);
+    assert_eq!(code, 0, "clean (leak-free) exit:\n{out}");
+    assert_eq!(out.trim(), "14000");
+}
+
+#[test]
+fn with_capacity_construction_is_allocation_light() {
+    // A presized builder (`withCapacity n` then in-place pushes) allocates a small
+    // constant number of buffers independent of length, now that the construction
+    // allocation is inlined (the pooled pop, with the runtime fallback). Mirrors
+    // `builder_is_allocation_light` for the explicit `withCapacity` entry point.
+    let small = allocs("Array.length (Array.init 10 (fun i -> i))", "10");
+    let big = allocs("Array.length (Array.init 1000 (fun i -> i))", "1000");
+    assert_eq!(small, big, "presized construction allocates independently of length");
+}
+
+// ===========================================================================
 // Inlined element access: get/length/set/push compile to inline loads/stores
 // (see the codegen IR-shape tests). These exercise the result representations
 // end-to-end — a raw `Int`, an unboxed `f64`, and a boxed element duplicated
