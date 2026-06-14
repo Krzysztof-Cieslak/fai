@@ -2651,9 +2651,14 @@ Editor integration:
     `List`, a nullary-bearing union, …): `Some x` is `x` in its uniform
     representation and `None` is a single **immortal, shared sentinel object** of a
     new `KIND_NONE` heap kind (so all `None`s are pointer-equal). The sentinel is a
-    leaked, uncounted, writable allocation (`fai_none_value`) — not a Rust `static`
-    (reference-count mutation would fault read-only memory) and not a normal
-    allocation (it must not trip the leak counter).
+    **writable process-static** (`FAI_NONE_VALUE`, an `UnsafeCell` header so the
+    generic reference-count writes do not fault read-only memory), which generated
+    code references by its **relocatable address** (a `symbol_value`, as for the
+    static descriptors) rather than fetching through a `fai_none_value` runtime call
+    — so a tight `Option Int` loop pays no per-operation call for its tag tests and
+    `None` builds. It is not a normal allocation (so it must not trip the leak
+    counter); the `fai_none_value` accessor remains for the niche/standard
+    conversions.
 
   The scheme is carried on the IR's data nodes (`MakeData`/`DataTag`/`DataField`
   gain a `niche` field), so it **survives the object cache's wire form** and is
@@ -2661,7 +2666,15 @@ Editor integration:
   share an object). It is **erased where the value crosses a uniform slot** — a
   generic position, a closure environment, an `apply_n`/first-class argument or
   result — via runtime conversions (`fai_niche_{a,b}_to_std` /
-  `fai_std_to_niche_{a,b}`); the first-class wrapper bridges the ABI.
+  `fai_std_to_niche_{a,b}`); the first-class wrapper bridges the ABI. *Within* a
+  function the niche encoding is **kept wrapper-free across every local, branch
+  merge, and loop carry**: codegen classifies a local niche when any value reaching
+  it (an alias, an `if`/`match` arm, a `Recur` argument, an entry parameter) is
+  niche, propagated to a fixpoint, so conversions happen only at the true erasure
+  boundaries above. Without this, a niche value flowing through a reference-count
+  wrapper or a branch merge reverted to the standard form — heap-allocating a
+  `Some` cell and converting straight back — so an `Option` threaded through a loop
+  allocated once per iteration.
   - **Owned, not borrowed.** A niche `Option` parameter is always passed **owned**
     (the borrow signature never borrows one): a borrowed niche argument would force
     the caller to convert a *duplicate* (the conversion consumes its input), so
