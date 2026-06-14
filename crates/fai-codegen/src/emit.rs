@@ -710,9 +710,21 @@ fn build_fn<M: Module>(
         tr.collect_f64_locals(&core_fn.body);
         // Decide which locals are untagged raw `Int`s (see `int_locals`).
         tr.collect_int_locals(&core_fn.body);
-        // Decide which locals hold a niche `Option` (the match scrutinees; see
-        // `niche_locals`).
-        tr.collect_niche_locals(&core_fn.body);
+        // Decide which locals hold a niche `Option` (scrutinees, plus everything a
+        // niche value propagates to; see `niche_locals`). The entry's niche
+        // parameters seed the propagation so a forwarded niche parameter is not
+        // reverted to standard at entry; a lifted lambda (uniform ABI) has none.
+        let param_niche: Vec<(usize, NicheKind)> = if is_entry {
+            core_fn
+                .params
+                .iter()
+                .enumerate()
+                .filter_map(|(i, p)| abi.niche_param(i).map(|k| (p.index(), k)))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        tr.collect_niche_locals(&core_fn.body, &param_niche);
         if is_entry {
             // Reconcile the entry's parameters to its ABI. A scalar-`Float`
             // parameter is forced unboxed (its `F64` variable). An `Int` parameter
@@ -1148,22 +1160,47 @@ impl<M: Module> Translator<'_, M> {
 
     /// Records which locals hold a niche `Option`, so [`Self::use_var`] re-marks
     /// their values niche and [`Self::define_var`] keeps them niche rather than
-    /// converting to standard. Two sources:
+    /// converting to standard. Sources, combined and then propagated to a fixpoint:
     ///
     /// * **use-based** (mandatory) — the base of every niche-annotated
     ///   `DataTag`/`DataField` (a match scrutinee): the annotation drives the tag
     ///   test / identity projection, so the base *must* be niche.
-    /// * **def-based** (an optimization) — a local bound to a niche-producing value
-    ///   (a niche construction, a niche-returning direct call, or an alias of a
-    ///   niche local): keeping it niche avoids a wasteful niche→standard→niche
-    ///   round trip when it then flows to a niche position.
+    /// * **parameter seeds** — a parameter the entry ABI passes in the niche
+    ///   encoding, so a forwarded niche parameter is not reverted at entry.
+    /// * **def-based propagation** — a local bound to (aliasing, branching to, or
+    ///   recurring with) a niche-producing value is itself niche; iterated to a
+    ///   fixpoint so an alias chain or a loop back-edge converges.
     ///
-    /// Only Scheme A is realized at present; a Scheme-B annotation is left to the
-    /// standard path.
-    fn collect_niche_locals(&mut self, body: &CExpr) {
+    /// Classification is **liberal**: keeping a niche value wrapper-free across
+    /// every local, branch merge, and loop carry avoids the niche→standard→niche
+    /// round trip (whose niche→standard half heap-allocates a `Some` cell). Both
+    /// schemes are propagated; over-classifying a local is sound because
+    /// [`Self::define_var`] (and the entry) reconcile a standard source to the niche
+    /// encoding with a non-allocating conversion.
+    fn collect_niche_locals(&mut self, body: &CExpr, param_niche: &[(usize, NicheKind)]) {
         let mut map: FxHashMap<usize, NicheKind> = FxHashMap::default();
+        // Mandatory: the base of every niche-annotated tag test / projection.
         self.collect_niche_uses(body, &mut map);
-        self.collect_niche_defs(body, &mut map);
+        // Seed parameters the entry ABI passes already in the niche encoding, so a
+        // niche parameter forwarded or merged in the body is not reverted to the
+        // standard representation at the entry.
+        for &(p, k) in param_niche {
+            map.entry(p).or_insert(k);
+        }
+        // Propagate niche-ness liberally to a fixpoint: a local bound to (aliasing,
+        // branching to, or recurring with) a niche value is itself niche. Monotone
+        // (classifications are only added), so it converges; over-classifying a
+        // local is sound because `define_var`/the entry reconcile any standard
+        // source to the niche encoding (a non-allocating `ensure_niche`). This keeps
+        // a niche `Option` wrapper-free across control-flow merges and loop carries
+        // instead of round-tripping through the standard (heap-allocated) form.
+        loop {
+            let mut changed = false;
+            self.collect_niche_defs(body, None, &mut map, &mut changed);
+            if !changed {
+                break;
+            }
+        }
         self.niche_locals = map;
     }
 
@@ -1215,42 +1252,76 @@ impl<M: Module> Translator<'_, M> {
         }
     }
 
-    /// The def-based pass (forward, so a `let` value's niche-ness is known before
-    /// its uses): record a local bound to a niche-producing value.
-    fn collect_niche_defs(&self, e: &CExpr, out: &mut FxHashMap<usize, NicheKind>) {
+    /// One monotone propagation pass for the def-based classification: a local
+    /// bound to (or a loop parameter fed by) a niche-producing value is itself
+    /// niche. `join` is the enclosing loop's parameters, so a `Recur` argument
+    /// classifies the matching loop-carried parameter. Sets `changed` when it adds
+    /// a classification, so [`Self::collect_niche_locals`] can iterate to a fixpoint
+    /// (an alias chain or a loop back-edge may need more than one pass).
+    fn collect_niche_defs(
+        &self,
+        e: &CExpr,
+        join: Option<&[LocalId]>,
+        out: &mut FxHashMap<usize, NicheKind>,
+        changed: &mut bool,
+    ) {
+        let note = |out: &mut FxHashMap<usize, NicheKind>, local: usize, k, changed: &mut bool| {
+            if let std::collections::hash_map::Entry::Vacant(slot) = out.entry(local) {
+                slot.insert(k);
+                *changed = true;
+            }
+        };
         match &e.kind {
             ExprKind::Let { local, value, body } => {
                 if let Some(k) = self.expr_niche_kind(value, out) {
-                    out.entry(local.index()).or_insert(k);
+                    note(out, local.index(), k, changed);
                 }
-                self.collect_niche_defs(value, out);
-                self.collect_niche_defs(body, out);
+                self.collect_niche_defs(value, join, out, changed);
+                self.collect_niche_defs(body, join, out, changed);
             }
             ExprKind::If { cond, then, els } => {
-                self.collect_niche_defs(cond, out);
-                self.collect_niche_defs(then, out);
-                self.collect_niche_defs(els, out);
+                self.collect_niche_defs(cond, join, out, changed);
+                self.collect_niche_defs(then, join, out, changed);
+                self.collect_niche_defs(els, join, out, changed);
             }
-            ExprKind::Prim { args, .. }
-            | ExprKind::MakeData { args, .. }
-            | ExprKind::Recur { args } => args.iter().for_each(|a| self.collect_niche_defs(a, out)),
+            ExprKind::Recur { args } => {
+                // A `Recur` argument flows into the matching loop-carried parameter,
+                // so a niche argument makes that parameter niche.
+                if let Some(params) = join {
+                    for (p, a) in params.iter().zip(args) {
+                        if let Some(k) = self.expr_niche_kind(a, out) {
+                            note(out, p.index(), k, changed);
+                        }
+                    }
+                }
+                args.iter().for_each(|a| self.collect_niche_defs(a, join, out, changed));
+            }
+            ExprKind::Prim { args, .. } | ExprKind::MakeData { args, .. } => {
+                args.iter().for_each(|a| self.collect_niche_defs(a, join, out, changed));
+            }
             ExprKind::App { func, args, .. } => {
-                self.collect_niche_defs(func, out);
-                args.iter().for_each(|a| self.collect_niche_defs(a, out));
+                self.collect_niche_defs(func, join, out, changed);
+                args.iter().for_each(|a| self.collect_niche_defs(a, join, out, changed));
             }
-            ExprKind::DataTag { base, .. } => self.collect_niche_defs(base, out),
-            ExprKind::DataField { base, .. } => self.collect_niche_defs(base, out),
+            ExprKind::DataTag { base, .. } => self.collect_niche_defs(base, join, out, changed),
+            ExprKind::DataField { base, .. } => self.collect_niche_defs(base, join, out, changed),
             ExprKind::Reset { value, body, .. } => {
-                self.collect_niche_defs(value, out);
-                self.collect_niche_defs(body, out);
+                self.collect_niche_defs(value, join, out, changed);
+                self.collect_niche_defs(body, join, out, changed);
+            }
+            // A `Join` introduces a fresh loop scope: its body's `Recur`s feed
+            // `params`, so recurse with this join's parameters as the context.
+            ExprKind::Join { params, body } => {
+                self.collect_niche_defs(body, Some(params), out, changed);
             }
             ExprKind::FreeReuse { body, .. }
             | ExprKind::Dup { body, .. }
             | ExprKind::Drop { body, .. }
-            | ExprKind::Join { body, .. }
-            | ExprKind::HoleStart { body, .. } => self.collect_niche_defs(body, out),
-            ExprKind::HoleFill { cell, .. } => self.collect_niche_defs(cell, out),
-            ExprKind::HoleClose { base, .. } => self.collect_niche_defs(base, out),
+            | ExprKind::HoleStart { body, .. } => {
+                self.collect_niche_defs(body, join, out, changed);
+            }
+            ExprKind::HoleFill { cell, .. } => self.collect_niche_defs(cell, join, out, changed),
+            ExprKind::HoleClose { base, .. } => self.collect_niche_defs(base, join, out, changed),
             ExprKind::Lit(_)
             | ExprKind::Local(_)
             | ExprKind::Global(_)
@@ -1279,6 +1350,14 @@ impl<M: Module> Translator<'_, M> {
                 self.expr_niche_kind(then, map).or_else(|| self.expr_niche_kind(els, map))
             }
             ExprKind::Let { body, .. } => self.expr_niche_kind(body, map),
+            // A reference-count or reuse wrapper leaves the wrapped value's
+            // representation unchanged: the expression's result is the body's value,
+            // so see through to it (reference counting wraps branch results in
+            // `drop`/`dup`, which must not hide a niche `Option` from classification).
+            ExprKind::Dup { body, .. }
+            | ExprKind::Drop { body, .. }
+            | ExprKind::Reset { body, .. }
+            | ExprKind::FreeReuse { body, .. } => self.expr_niche_kind(body, map),
             _ => None,
         }
     }

@@ -214,3 +214,54 @@ fn niche_equality_and_ordering() {
     outputs(defs, "if b < a then 1 else 0", "0");
     outputs(defs, "if a < a then 1 else 0", "0");
 }
+
+#[test]
+fn niche_int_threaded_loop_allocates_independently_of_iterations() {
+    // A niche `Option Int` threaded through a fallible-division chain, an `orElse`
+    // fallback, and a summing loop (the shape of the OptionEval benchmark). The
+    // niche `Some` carries no cell, and the niche representation is preserved
+    // across the `match` merges and the loop carry, so the loop allocates a fixed
+    // amount regardless of the iteration count. A per-iteration niche/standard
+    // round-trip (which heap-allocates a `Some` wrapper each iteration) would make
+    // the allocation count grow with `n`.
+    let defs = r#"safeDiv : Int -> Int -> Option Int
+let safeDiv a b = if b = 0 then None else Some (a / b)
+orElse : Option Int -> Option Int -> Option Int
+let orElse a b =
+  match a with
+  | None -> b
+  | Some x -> Some x
+evalChain : Int -> Option Int
+let evalChain i =
+  match safeDiv (i * i) (i % 3) with
+  | None -> None
+  | Some x ->
+    match safeDiv x (i % 4) with
+    | None -> None
+    | Some y -> safeDiv (x + y) (i % 5)
+evalAt : Int -> Option Int
+let evalAt i = orElse (evalChain i) (evalChain (i + 1))
+sumOk : Int -> Int -> Int -> Int
+let sumOk i n acc =
+  if i >= n then
+    acc
+  else
+    match evalAt i with
+    | None -> sumOk (i + 1) n acc
+    | Some v -> sumOk (i + 1) n (acc + v)"#;
+    let prog = |n: i64| {
+        format!(
+            "module M\n\n{defs}\n\npublic main : Runtime -> Unit / {{ Console }}\nlet main rt = rt.console.writeLine (Int.toString (sumOk 0 {n} 0))\n"
+        )
+    };
+    let (code_a, _, allocs_a) = run(&prog(200));
+    let (code_b, _, allocs_b) = run(&prog(400));
+    assert_eq!(code_a, 0, "clean (leak-free) exit at n=200");
+    assert_eq!(code_b, 0, "clean (leak-free) exit at n=400");
+    assert_eq!(
+        allocs_a, allocs_b,
+        "a niche Option Int threaded through a loop must allocate independently of \
+         the iteration count (no per-iteration niche/standard round-trip): \
+         {allocs_a} at n=200 vs {allocs_b} at n=400"
+    );
+}
