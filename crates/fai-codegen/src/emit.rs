@@ -3174,7 +3174,12 @@ impl<M: Module> Translator<'_, M> {
                 },
             ))
         } else {
-            None
+            // A fixed-shape tuple/record of immediate/`Int` (and boxed) fields:
+            // compare field-wise inline instead of one structural `fai_equal` over
+            // the boxed aggregate. A direct-`Float`-bearing shape is not eligible
+            // and keeps the runtime call.
+            inline_aggregate_fields(oty, AGG_FIELD_CAP)
+                .map(|fields| self.inline_aggregate_eq(args, &fields))
         }
     }
 
@@ -3257,7 +3262,12 @@ impl<M: Module> Translator<'_, M> {
                 },
             ))
         } else {
-            None
+            // A fixed-shape tuple/record of immediate/`Int` (and boxed) fields:
+            // compare lexicographically inline instead of one structural
+            // `fai_compare` over the boxed aggregate. A direct-`Float`-bearing shape
+            // is not eligible and keeps the runtime call.
+            inline_aggregate_fields(oty, AGG_FIELD_CAP)
+                .map(|fields| self.inline_aggregate_compare(args, &fields))
         }
     }
 
@@ -3414,6 +3424,126 @@ impl<M: Module> Translator<'_, M> {
     fn hash_payload_raw(&mut self, payload: Value) -> Value {
         let h = self.mix64(payload);
         self.builder.ins().band_imm(h, 0x3FFF_FFFF_FFFF_FFFF)
+    }
+
+    /// Loads field `i`'s uniform slot word from data cell `cell`, borrowing the
+    /// cell (no reference-count change; its owner releases it at its last use).
+    fn agg_field_word(&mut self, cell: Value, i: usize) -> Value {
+        let off = i32::try_from(rt::DATA_FIELDS_OFFSET + i * 8).expect("field offset");
+        self.builder.ins().load(types::I64, MemFlags::trusted(), cell, off)
+    }
+
+    /// Inlines `=` on a fixed-shape aggregate as a short-circuiting conjunction of
+    /// per-field comparisons in heap-layout order (matching `fai_equal`). The cells
+    /// are borrowed (loads only); a field that is unequal yields `false`
+    /// immediately. Yields a tagged `Bool`.
+    fn inline_aggregate_eq(&mut self, args: &[CExpr], fields: &[AggField]) -> Value {
+        let a = self.expr(&args[0]);
+        let b = self.expr(&args[1]);
+        let merge = self.builder.create_block();
+        self.builder.append_block_param(merge, types::I64);
+        // The immediate `Bool` `false` is `(0 << 1) | 1`.
+        let false_tag = self.builder.ins().iconst(types::I64, 1);
+        let last = fields.len() - 1;
+        for (i, kind) in fields.iter().enumerate() {
+            let ai = self.agg_field_word(a, i);
+            let bi = self.agg_field_word(b, i);
+            let eq = self.agg_field_eq(*kind, ai, bi);
+            if i == last {
+                self.builder.ins().jump(merge, &[eq.into()]);
+            } else {
+                let cont = self.builder.create_block();
+                // `true` iff the value bit (mask 2) is set (`true` = 3, `false` = 1).
+                let is_true = self.builder.ins().band_imm(eq, 2);
+                self.builder.ins().brif(is_true, cont, &[], merge, &[false_tag.into()]);
+                self.builder.switch_to_block(cont);
+                self.builder.seal_block(cont);
+            }
+        }
+        self.builder.switch_to_block(merge);
+        self.builder.seal_block(merge);
+        self.builder.block_params(merge)[0]
+    }
+
+    /// The per-field equality of [`Self::inline_aggregate_eq`], yielding a tagged
+    /// `Bool`: an immediate field is a bare word compare; an `Int` field guards on
+    /// the immediate fast path with a borrowed `fai_equal_borrowed` fallback; any
+    /// other boxed field compares through `fai_equal_borrowed`. Field words are
+    /// borrowed from the cell, so every fallback is the non-consuming variant.
+    fn agg_field_eq(&mut self, kind: AggField, a: Value, b: Value) -> Value {
+        match kind {
+            AggField::Immediate => {
+                let c = self.builder.ins().icmp(IntCC::Equal, a, b);
+                self.tag_bool(c)
+            }
+            AggField::Int => {
+                let anded = self.builder.ins().band(a, b);
+                self.guard_immediate(
+                    anded,
+                    |s| s.prim_runtime_call_borrowing(Prim::Eq, true, &[a, b]),
+                    |s, _slow, merge| {
+                        let c = s.builder.ins().icmp(IntCC::Equal, a, b);
+                        let tagged = s.tag_bool(c);
+                        s.builder.ins().jump(merge, &[tagged.into()]);
+                    },
+                )
+            }
+            AggField::Boxed => self.prim_runtime_call_borrowing(Prim::Eq, true, &[a, b]),
+        }
+    }
+
+    /// Inlines structural `compare` on a fixed-shape aggregate as a short-circuiting
+    /// lexicographic field comparison in heap-layout order (matching `fai_compare`):
+    /// the first non-equal field decides, else `0`. The cells are borrowed. Yields a
+    /// tagged `Int` (`-1`/`0`/`1`).
+    fn inline_aggregate_compare(&mut self, args: &[CExpr], fields: &[AggField]) -> Value {
+        let a = self.expr(&args[0]);
+        let b = self.expr(&args[1]);
+        let merge = self.builder.create_block();
+        self.builder.append_block_param(merge, types::I64);
+        // The immediate `Int` `0` (an equal field) is `(0 << 1) | 1`.
+        let eq_tag = self.builder.ins().iconst(types::I64, 1);
+        let last = fields.len() - 1;
+        for (i, kind) in fields.iter().enumerate() {
+            let ai = self.agg_field_word(a, i);
+            let bi = self.agg_field_word(b, i);
+            let cmp = self.agg_field_compare(*kind, ai, bi);
+            if i == last {
+                self.builder.ins().jump(merge, &[cmp.into()]);
+            } else {
+                let cont = self.builder.create_block();
+                let is_eq = self.builder.ins().icmp(IntCC::Equal, cmp, eq_tag);
+                self.builder.ins().brif(is_eq, cont, &[], merge, &[cmp.into()]);
+                self.builder.switch_to_block(cont);
+                self.builder.seal_block(cont);
+            }
+        }
+        self.builder.switch_to_block(merge);
+        self.builder.seal_block(merge);
+        self.builder.block_params(merge)[0]
+    }
+
+    /// The per-field ordering of [`Self::inline_aggregate_compare`], yielding a
+    /// tagged `-1`/`0`/`1`: an immediate or `Int` field uses the inline three-way
+    /// compare (the `Int` field guarding on the immediate fast path with a borrowed
+    /// `fai_compare_borrowed` fallback); any other boxed field compares through
+    /// `fai_compare_borrowed`. Field words are borrowed, so fallbacks do not consume.
+    fn agg_field_compare(&mut self, kind: AggField, a: Value, b: Value) -> Value {
+        match kind {
+            AggField::Immediate => self.compare_three_way(a, b),
+            AggField::Int => {
+                let anded = self.builder.ins().band(a, b);
+                self.guard_immediate(
+                    anded,
+                    |s| s.prim_runtime_call_borrowing(Prim::Compare, true, &[a, b]),
+                    |s, _slow, merge| {
+                        let tagged = s.compare_three_way(a, b);
+                        s.builder.ins().jump(merge, &[tagged.into()]);
+                    },
+                )
+            }
+            AggField::Boxed => self.prim_runtime_call_borrowing(Prim::Compare, true, &[a, b]),
+        }
     }
 
     fn application(
@@ -4229,6 +4359,67 @@ fn is_maybe_immediate_ty(ty: &Ty) -> bool {
         && !matches!(ty, Ty::Con(Con::Int) | Ty::Con(Con::Float) | Ty::Error)
 }
 
+/// The most fields a fixed-shape aggregate may have for its `=`/`compare` to be
+/// inlined field-wise; a wider cell keeps the out-of-line structural call (the
+/// runtime loop handles any width in fixed code). Every field emits inline
+/// comparison code, so this bounds generated-code growth.
+const AGG_FIELD_CAP: usize = 8;
+
+/// How a fixed-shape aggregate field is compared inline (see
+/// [`inline_aggregate_fields`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AggField {
+    /// A statically-immediate field (`Bool`/`Char`/`Unit`): the slot word is a
+    /// tagged immediate, so `=` is a bare word compare and `compare` untags and
+    /// compares the payloads.
+    Immediate,
+    /// An `Int` field: the slot word is a tagged immediate or a boxed (overflowed)
+    /// `Int`, so comparison takes the immediate guard with the borrowed structural
+    /// fallback (the scalar-`Int` path, on the borrowed field word).
+    Int,
+    /// Any other uniform field (a type variable, `String`, `List`, an ADT, or a
+    /// nested aggregate): a boxed-or-immediate value word compared through the
+    /// borrowing structural runtime call, which dispatches on the field's own
+    /// descriptor.
+    Boxed,
+}
+
+/// Classifies a fixed-shape aggregate operand for inline field-wise comparison,
+/// returning each field's [`AggField`] in heap-layout order (tuples positional,
+/// records sorted by label), or `None` when the shape is not inline-eligible: a
+/// non-aggregate, an open or empty record, a width over `cap`, a field whose type
+/// is erased (`Ty::Error`), or a **direct `Float` field**. A monomorphic `Float`
+/// field is stored as raw `f64` bits, which can be neither read soundly by static
+/// type (a generically-built cell stores the field boxed) nor passed to the
+/// structural runtime (which expects a value word, not raw bits) — so a shape with
+/// a direct `Float` field keeps the descriptor-driven runtime call. A *nested*
+/// aggregate or a `Float` reached through a boxed field is a pointer slot, so it
+/// stays eligible and is compared as [`AggField::Boxed`].
+fn inline_aggregate_fields(ty: &Ty, cap: usize) -> Option<Vec<AggField>> {
+    let field_tys: Vec<&Ty> = match ty {
+        Ty::Tuple(elems) => elems.iter().collect(),
+        Ty::Record(row) if row.tail == RowEnd::Closed && !row.fields.is_empty() => {
+            row.fields.iter().map(|(_, t)| t).collect()
+        }
+        _ => return None,
+    };
+    if field_tys.is_empty() || field_tys.len() > cap {
+        return None;
+    }
+    let mut fields = Vec::with_capacity(field_tys.len());
+    for t in field_tys {
+        let kind = match t {
+            // A raw-bits scalar `Float` or an erased field is not inline-eligible.
+            Ty::Con(Con::Float) | Ty::Error => return None,
+            _ if is_immediate_ty(t) => AggField::Immediate,
+            Ty::Con(Con::Int) => AggField::Int,
+            _ => AggField::Boxed,
+        };
+        fields.push(kind);
+    }
+    Some(fields)
+}
+
 /// Whether `ty` is a boxed *leaf* — a heap object with no reference-counted
 /// children — so a dead one is freed directly, with no child release. The boxed
 /// `Int` and `Float` kinds are leaves. `String` is **not**: a `String` value may be
@@ -4643,7 +4834,7 @@ mod classifier_tests {
     use fai_syntax::Symbol;
     use fai_types::{Con, RecordRow, RowEnd, RowVarId, Ty};
 
-    use super::{FieldDrop, fixed_shape_drop};
+    use super::{AggField, FieldDrop, fixed_shape_drop, inline_aggregate_fields};
 
     use FieldDrop::{Boxed, Immediate};
 
@@ -4781,6 +4972,97 @@ mod classifier_tests {
             Some(vec![Immediate, Immediate, Immediate, Immediate, Boxed, Boxed])
         );
     }
+
+    // --- inline_aggregate_fields: which shapes get inline field-wise comparison --
+
+    use AggField::{Boxed as AggBoxed, Immediate as AggImmediate, Int as AggInt};
+
+    #[test]
+    fn int_tuple_is_inline_comparable() {
+        let ty = Ty::Tuple(vec![Ty::int(), Ty::int()]);
+        assert_eq!(inline_aggregate_fields(&ty, WIDE), Some(vec![AggInt, AggInt]));
+    }
+
+    #[test]
+    fn record_inline_classes_follow_stored_layout_order() {
+        // A real record's fields are stored sorted by label (the heap layout); the
+        // classifier reads them in that stored order. Fields supplied here in label
+        // order (`a` before `b`) yield classes in the same order.
+        let ty = closed_record(&[("a", Ty::bool()), ("b", Ty::int())]);
+        assert_eq!(inline_aggregate_fields(&ty, WIDE), Some(vec![AggImmediate, AggInt]));
+    }
+
+    #[test]
+    fn mixed_immediate_int_boxed_tuple_classifies_each_field() {
+        let ty = Ty::Tuple(vec![Ty::bool(), Ty::int(), Ty::Con(Con::String)]);
+        assert_eq!(
+            inline_aggregate_fields(&ty, WIDE),
+            Some(vec![AggImmediate, AggInt, AggBoxed])
+        );
+    }
+
+    #[test]
+    fn direct_float_field_is_not_inline_comparable() {
+        // A monomorphic Float field is a raw-bits slot: not inline-eligible.
+        let ty = Ty::Tuple(vec![Ty::Con(Con::Float), Ty::int()]);
+        assert_eq!(inline_aggregate_fields(&ty, WIDE), None);
+    }
+
+    #[test]
+    fn nested_aggregate_field_stays_boxed_and_eligible() {
+        // A nested tuple is a pointer slot (compared via the structural call), so
+        // the outer shape is still eligible.
+        let inner = Ty::Tuple(vec![Ty::int(), Ty::int()]);
+        let ty = Ty::Tuple(vec![inner, Ty::int()]);
+        assert_eq!(inline_aggregate_fields(&ty, WIDE), Some(vec![AggBoxed, AggInt]));
+    }
+
+    #[test]
+    fn nested_float_aggregate_field_stays_eligible_as_boxed() {
+        // A nested Float-bearing aggregate is a pointer slot, so the outer shape is
+        // eligible and the nested field is compared structurally (descriptor-driven).
+        let inner = Ty::Tuple(vec![Ty::Con(Con::Float), Ty::Con(Con::Float)]);
+        let ty = Ty::Tuple(vec![Ty::int(), inner]);
+        assert_eq!(inline_aggregate_fields(&ty, WIDE), Some(vec![AggInt, AggBoxed]));
+    }
+
+    #[test]
+    fn type_variable_field_is_boxed_and_eligible() {
+        // A type-variable field is a uniform value word, compared structurally.
+        let ty = Ty::Tuple(vec![Ty::Var(fai_types::TyVarId(0)), Ty::int()]);
+        assert_eq!(inline_aggregate_fields(&ty, WIDE), Some(vec![AggBoxed, AggInt]));
+    }
+
+    #[test]
+    fn erased_field_is_not_inline_comparable() {
+        let ty = Ty::Tuple(vec![Ty::Error, Ty::int()]);
+        assert_eq!(inline_aggregate_fields(&ty, WIDE), None);
+    }
+
+    #[test]
+    fn open_record_is_not_inline_comparable() {
+        let ty = open_record(&[("a", Ty::int())]);
+        assert_eq!(inline_aggregate_fields(&ty, WIDE), None);
+    }
+
+    #[test]
+    fn empty_record_is_not_inline_comparable() {
+        assert_eq!(inline_aggregate_fields(&closed_record(&[]), WIDE), None);
+    }
+
+    #[test]
+    fn non_aggregate_is_not_inline_comparable() {
+        assert_eq!(inline_aggregate_fields(&Ty::int(), WIDE), None);
+        assert_eq!(inline_aggregate_fields(&Ty::list(Ty::int()), WIDE), None);
+        assert_eq!(inline_aggregate_fields(&adt("Color"), WIDE), None);
+    }
+
+    #[test]
+    fn width_over_cap_is_not_inline_comparable() {
+        let three = Ty::Tuple(vec![Ty::int(); 3]);
+        assert_eq!(inline_aggregate_fields(&three, 2), None, "3 fields > cap of 2");
+        assert!(inline_aggregate_fields(&three, 3).is_some(), "3 fields within cap of 3");
+    }
 }
 
 #[cfg(test)]
@@ -4804,7 +5086,7 @@ mod wire_projection_tests {
     use proptest::collection::vec;
     use proptest::prelude::*;
 
-    use super::{drop_class, dup_class};
+    use super::{AGG_FIELD_CAP, drop_class, dup_class, inline_aggregate_fields};
 
     fn adt() -> Ty {
         Ty::Adt(AdtRef::new(SourceId::new(0), Symbol::intern("T")))
@@ -4856,6 +5138,16 @@ mod wire_projection_tests {
                 Prim::Eq.borrows_operand(&ty),
                 Prim::Eq.borrows_operand(&round),
                 "borrow decision for {:?}",
+                ty
+            );
+            // The inline-aggregate comparison decision is re-derived from the
+            // operand type, so the projection must preserve it: the worker (which
+            // compiles from the wire form) must emit the same comparison code as the
+            // warm path, or the object cache would be non-deterministic.
+            prop_assert_eq!(
+                inline_aggregate_fields(&ty, AGG_FIELD_CAP),
+                inline_aggregate_fields(&round, AGG_FIELD_CAP),
+                "inline-aggregate classification for {:?}",
                 ty
             );
         }
