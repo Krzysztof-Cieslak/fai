@@ -177,6 +177,14 @@ impl Bounds {
         dist.get(&to).copied()
     }
 
+    /// The tightest known `a <= b + c` (the shortest path weight), or `None` when
+    /// no relation is entailed. Used by interprocedural inference to read a fact
+    /// between two terms (e.g. a call argument and a parameter length).
+    #[must_use]
+    pub fn bound(&self, a: Term, b: Term) -> Option<i64> {
+        self.shortest(a, b)
+    }
+
     /// Whether `a <= b + c` is entailed.
     fn entails_le(&self, a: Term, b: Term, c: i64) -> bool {
         self.shortest(a, b).is_some_and(|d| d <= c)
@@ -333,13 +341,42 @@ impl Bounds {
     pub fn refine(&mut self, cond: &CExpr, taken: bool) {
         let K::Local(c) = &cond.kind else { return };
         let Some(cond) = self.conds.get(c).copied() else { return };
-        // Normalize to the asserted relation on the taken branch.
-        let (op, lhs, rhs) = if taken {
-            (cond.op, cond.lhs, cond.rhs)
-        } else {
-            (negate(cond.op), cond.lhs, cond.rhs)
+        if cond.op == Prim::Eq {
+            // Equality's branches: `x == y` on the true side; on the false side a
+            // disequality, useful only to bump a known bound past a constant (e.g.
+            // `cap != 0` with `cap >= 0` gives `cap >= 1`, so a `cap - 1` mask is
+            // non-negative).
+            if taken {
+                self.add_eq(cond.lhs, cond.rhs, 0);
+            } else {
+                self.refine_ne(cond.lhs, cond.rhs);
+            }
+            return;
+        }
+        let op = if taken { cond.op } else { negate(cond.op) };
+        self.assert_cmp(op, cond.lhs, cond.rhs);
+    }
+
+    /// Refines on `lhs != rhs` where one side is the constant `0`: a value known
+    /// `>= 0` becomes `>= 1`, and one known `<= 0` becomes `<= -1`. (A general
+    /// disequality is not a difference constraint, so only this constant-bump case
+    /// is recorded.)
+    fn refine_ne(&mut self, lhs: Term, rhs: Term) {
+        let x = match (lhs, rhs) {
+            (Term::Zero, t) | (t, Term::Zero) => t,
+            _ => return,
         };
-        self.assert_cmp(op, lhs, rhs);
+        if x == Term::Zero {
+            return;
+        }
+        // x >= 0 known (path Zero -> x with weight <= 0) ⇒ x >= 1.
+        if self.entails_le(Term::Zero, x, 0) {
+            self.add_edge(Term::Zero, x, -1);
+        }
+        // x <= 0 known ⇒ x <= -1.
+        if self.entails_le(x, Term::Zero, 0) {
+            self.add_edge(x, Term::Zero, -1);
+        }
     }
 
     /// Records the constraint asserted by `lhs OP rhs` holding.
@@ -436,14 +473,14 @@ fn atom_term(e: &CExpr) -> Option<Term> {
     }
 }
 
-/// The complement comparison (the relation that holds on the false branch).
+/// The complement of an ordering comparison (the relation that holds on the false
+/// branch). `Eq` is handled separately (see [`Bounds::refine_ne`]).
 fn negate(op: Prim) -> Prim {
     match op {
         Prim::IntLt => Prim::IntGe,
         Prim::IntLe => Prim::IntGt,
         Prim::IntGt => Prim::IntLe,
         Prim::IntGe => Prim::IntLt,
-        // `=`'s negation (`<>`) yields no difference constraint.
         other => other,
     }
 }

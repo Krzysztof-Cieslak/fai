@@ -3640,6 +3640,52 @@ fn partial_guard_keeps_the_check() {
     assert!(ir.contains(" ult "), "without `i >= 0` the bounds check stays:\n{ir}");
 }
 
+#[test]
+fn loop_index_from_zero_elides_via_entry_facts() {
+    // A hand-written index loop whose only caller passes a literal `0` start: the
+    // entry fact `i >= 0` plus the loop guard `i >= length xs` (giving `i < length`)
+    // prove the access in range, so the per-iteration bounds check is elided.
+    let src = indoc! {r#"
+        module M
+
+        dot : Int -> Int -> Array Int -> Int
+        let dot i acc xs =
+          if i >= Array.length xs then acc
+          else dot (i + 1) (acc + Array.unsafeGet i xs) xs
+
+        public run : Array Int -> Int
+        let run xs = dot 0 0 xs
+    "#};
+    let ir = entry_ir(src, "dot");
+    assert!(ir.contains("load"), "the element slot is still loaded:\n{ir}");
+    assert!(!ir.contains(" ult "), "the per-iteration bounds check is elided:\n{ir}");
+}
+
+#[test]
+fn hash_bucket_mask_elides_via_entry_facts() {
+    // The hash-container idiom: a private probe whose index is `h & (cap - 1)` with
+    // `cap == length slots` (and `cap != 0`), so the masked index is in `0..length`
+    // and its access — and the wrap-around `& (cap-1)` recursion — need no check.
+    let src = indoc! {r#"
+        module M
+
+        type Slot = Empty | Full Int
+
+        probe : Int -> Array Slot -> Int -> Int -> Bool
+        let probe h slots cap i =
+          match Array.unsafeGet i slots with
+          | Empty -> false
+          | Full y -> if y = h then true else probe h slots cap (Int.and (i + 1) (cap - 1))
+
+        public look : Int -> Array Slot -> Bool
+        let look h slots =
+          let cap = Array.length slots
+          if cap = 0 then false else probe h slots cap (Int.and h (cap - 1))
+    "#};
+    let ir = entry_ir(src, "probe");
+    assert!(!ir.contains(" ult "), "the masked bucket access needs no bounds check:\n{ir}");
+}
+
 // --- Inline structural hash (`Prim.hash`) ----------------------------------
 //
 // `Prim.hash` of an immediate/`Int`/`Float` operand compiles to an inline

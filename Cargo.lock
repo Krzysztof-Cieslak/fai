@@ -786,6 +786,7 @@ dependencies = [
  "fai-db",
  "fai-diagnostics",
  "fai-resolve",
+ "fai-span",
  "fai-syntax",
  "fai-types",
  "indoc",
