@@ -1589,6 +1589,209 @@ fn monomorphic_list_compare_is_borrow_balanced() {
     assert_eq!(out, "ok\n");
 }
 
+// --- Inline field-wise comparison of fixed-shape tuple/record operands --------
+// A monomorphic tuple/record of immediate/`Int` fields compares field-wise inline
+// (short-circuiting in layout order) instead of one structural `fai_compare`/
+// `fai_equal` over the boxed aggregate. The shape tests read the entry IR; the
+// behavioral tests pin correctness (incl. ties, field order, large boxed `Int`)
+// and reference-count balance via a clean exit.
+
+#[test]
+fn tuple_compare_inlines_field_loads_not_one_structural_call() {
+    // `compare a b` on `(Int * Int)` lowers to inline field loads + per-field
+    // immediate guards, not a single structural call over the boxed tuple. The
+    // old path was one unconditional `fai_compare` with no operand-AND guard.
+    let src = indoc! {r#"
+        module M
+
+        cmp : (Int * Int) -> (Int * Int) -> Int
+        let cmp a b = compare a b
+    "#};
+    let ir = entry_ir(src, "cmp");
+    // Two field-0 loads + two field-1 loads (each operand, each field): at least
+    // four loads from the tuple cells.
+    let loads = ir.matches("load.i64").count();
+    assert!(loads >= 4, "field words are loaded from both cells:\n{ir}");
+    assert!(ir.contains("band"), "each `Int` field guards on the immediate fast path:\n{ir}");
+    assert!(ir.contains("brif"), "field comparisons short-circuit:\n{ir}");
+}
+
+#[test]
+fn tuple_equality_is_correct_and_leak_free() {
+    let src = indoc! {r#"
+        module M
+
+        eqp : (Int * Int) -> (Int * Int) -> Bool
+        let eqp a b = a = b
+
+        public main : Runtime -> Unit / { Console }
+        let main r =
+          let same = eqp (1, 2) (1, 2)
+          let firstDiffers = eqp (1, 2) (9, 2)
+          let secondDiffers = eqp (1, 2) (1, 9)
+          r.console.writeLine (if same && not firstDiffers && not secondDiffers then "ok" else "bad")
+    "#};
+    let (code, out) = run(src);
+    assert_eq!(code, 0, "leak-free");
+    assert_eq!(out, "ok\n");
+}
+
+#[test]
+fn tuple_ordering_is_lexicographic() {
+    let src = indoc! {r#"
+        module M
+
+        lt : (Int * Int) -> (Int * Int) -> Bool
+        let lt a b = a < b
+
+        public main : Runtime -> Unit / { Console }
+        let main r =
+          let firstDecides = lt (1, 9) (2, 0)
+          let secondTiebreak = lt (2, 1) (2, 5)
+          let equalNotLt = not (lt (2, 2) (2, 2))
+          let greaterNotLt = not (lt (3, 0) (2, 9))
+          r.console.writeLine
+            (if firstDecides && secondTiebreak && equalNotLt && greaterNotLt then "ok" else "bad")
+    "#};
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "ok\n");
+}
+
+#[test]
+fn tuple_with_large_boxed_int_field_compares_correctly() {
+    // A field that overflows the immediate boxes; the per-field immediate guard
+    // misses and falls back to the borrowed structural compare on the field word.
+    // A clean exit also proves the boxed field is neither leaked nor double-freed.
+    let src = indoc! {r#"
+        module M
+
+        eqp : (Int * Int) -> (Int * Int) -> Bool
+        let eqp a b = a = b
+
+        big : Int
+        let big = 5000000000 * 5000000000
+
+        public main : Runtime -> Unit / { Console }
+        let main r =
+          let same = eqp (big, 1) (big, 1)
+          let differ = eqp (big, 1) (big, 2)
+          r.console.writeLine (if same && not differ then "ok" else "bad")
+    "#};
+    let (code, out) = run(src);
+    assert_eq!(code, 0, "leak-free");
+    assert_eq!(out, "ok\n");
+}
+
+#[test]
+fn record_equality_compares_fields_in_label_order() {
+    // Record fields are stored sorted by label; the inline comparison must follow
+    // that layout order, not source order.
+    let src = indoc! {r#"
+        module M
+
+        type P = { x : Int, y : Int }
+
+        eqp : P -> P -> Bool
+        let eqp a b = a = b
+
+        public main : Runtime -> Unit / { Console }
+        let main r =
+          let same = eqp { x = 1, y = 2 } { x = 1, y = 2 }
+          let differ = eqp { x = 1, y = 2 } { x = 1, y = 3 }
+          r.console.writeLine (if same && not differ then "ok" else "bad")
+    "#};
+    let (code, out) = run(src);
+    assert_eq!(code, 0, "leak-free");
+    assert_eq!(out, "ok\n");
+}
+
+#[test]
+fn three_field_tuple_orders_lexicographically() {
+    let src = indoc! {r#"
+        module M
+
+        cmp : (Int * Int * Int) -> (Int * Int * Int) -> Int
+        let cmp a b = compare a b
+
+        public main : Runtime -> Unit / { Console }
+        let main r =
+          let lt = cmp (1, 2, 3) (1, 2, 4)
+          let gt = cmp (1, 3, 0) (1, 2, 9)
+          let eq = cmp (1, 2, 3) (1, 2, 3)
+          r.console.writeLine (String.join "," [Int.toString lt, Int.toString gt, Int.toString eq])
+    "#};
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, "-1,1,0\n");
+}
+
+#[test]
+fn tuple_with_bool_field_compares_correctly() {
+    // A mixed immediate/`Int` shape: the `Bool` field is a bare word compare.
+    let src = indoc! {r#"
+        module M
+
+        type Flagged = { flag : Bool, n : Int }
+
+        cmp : Flagged -> Flagged -> Int
+        let cmp a b = compare a b
+
+        public main : Runtime -> Unit / { Console }
+        let main r =
+          let byFlag = cmp { flag = false, n = 9 } { flag = true, n = 0 }
+          let byN = cmp { flag = true, n = 1 } { flag = true, n = 2 }
+          r.console.writeLine (String.join "," [Int.toString byFlag, Int.toString byN])
+    "#};
+    let (code, out) = run(src);
+    assert_eq!(code, 0);
+    // `false` (tag 0) sorts before `true` (tag 1), so the first compare is -1.
+    assert_eq!(out, "-1,-1\n");
+}
+
+#[test]
+fn tuple_with_string_field_uses_borrowed_structural_fallback() {
+    // A boxed (`String`) field is compared through the borrowing structural call;
+    // a clean exit proves the borrowed string operands are not double-freed.
+    let src = indoc! {r#"
+        module M
+
+        eqp : (Int * String) -> (Int * String) -> Bool
+        let eqp a b = a = b
+
+        public main : Runtime -> Unit / { Console }
+        let main r =
+          let same = eqp (1, "hi") (1, "hi")
+          let differ = eqp (1, "hi") (1, "no")
+          r.console.writeLine (if same && not differ then "ok" else "bad")
+    "#};
+    let (code, out) = run(src);
+    assert_eq!(code, 0, "leak-free");
+    assert_eq!(out, "ok\n");
+}
+
+#[test]
+fn float_bearing_tuple_keeps_the_runtime_call() {
+    // A direct `Float` field is a raw-bits slot, so the shape is not inline-eligible
+    // and keeps the descriptor-driven structural call. Correctness is what matters
+    // here (the representation is sound via the runtime).
+    let src = indoc! {r#"
+        module M
+
+        eqp : (Float * Int) -> (Float * Int) -> Bool
+        let eqp a b = a = b
+
+        public main : Runtime -> Unit / { Console }
+        let main r =
+          let same = eqp (1.5, 2) (1.5, 2)
+          let differ = eqp (1.5, 2) (1.5, 3)
+          r.console.writeLine (if same && not differ then "ok" else "bad")
+    "#};
+    let (code, out) = run(src);
+    assert_eq!(code, 0, "leak-free");
+    assert_eq!(out, "ok\n");
+}
+
 #[test]
 fn recursive_tree_fold() {
     let src = indoc! {r#"
