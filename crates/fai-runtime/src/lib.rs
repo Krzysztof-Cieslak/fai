@@ -2839,6 +2839,14 @@ unsafe fn data_equal(a: Value, b: Value) -> bool {
                 if fa != fb {
                     return false;
                 }
+            } else if !is_boxed(fa) && !is_boxed(fb) {
+                // Both immediate (a small `Int`, `Bool`, `Char`, or nullary tag):
+                // word equality is value equality. Inline `values_equal`'s immediate
+                // fast path here so a field of immediates costs no recursive call —
+                // the common case for tuple/record keys of `Int` coordinates.
+                if fa != fb {
+                    return false;
+                }
             } else if !values_equal(fa, fb) {
                 return false;
             }
@@ -2925,6 +2933,11 @@ fn values_compare(a: Value, b: Value) -> std::cmp::Ordering {
                                 // Scalar float slot: compare as `f64` (a boxed
                                 // `Float` uses the same `total_cmp`).
                                 f64::from_bits(fa as u64).total_cmp(&f64::from_bits(fb as u64))
+                            } else if !is_boxed(fa) && !is_boxed(fb) {
+                                // Both immediate: inline `values_compare`'s immediate
+                                // fast path so an `Int`/nullary field costs no
+                                // recursive call (the common tuple/record-key case).
+                                (fa >> 1).cmp(&(fb >> 1))
                             } else {
                                 values_compare(fa, fb)
                             };
@@ -3031,6 +3044,11 @@ fn values_hash(v: Value) -> u64 {
                         // Scalar float slot: hash its raw bits (the same equality a
                         // boxed `Float` uses).
                         mix64(f as u64)
+                    } else if !is_boxed(f) {
+                        // Immediate field: inline `values_hash`'s immediate fast path
+                        // (hash the untagged payload) so it costs no recursive call —
+                        // the common tuple/record-key case.
+                        mix64((f >> 1) as u64)
                     } else {
                         values_hash(f)
                     };
