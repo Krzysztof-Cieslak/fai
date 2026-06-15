@@ -62,18 +62,29 @@ pub struct Bounds {
     /// Maps the result local to (the callee's result signature, the call's argument
     /// locals by parameter position).
     call_results: FxHashMap<LocalId, (ResultSig, Vec<Option<LocalId>>)>,
+    /// Locals bound to a two-variable subtraction `local = a - b`, kept so a later
+    /// constant guard on `local` (e.g. `hi - lo <= 1`) can be translated to the
+    /// two-variable difference edge it implies (`lo <= hi - 2` on the false side).
+    /// A plain difference graph cannot store the three-term equality `local = a - b`
+    /// directly; this side-table recovers the relation only where a guard makes it a
+    /// difference constraint.
+    subs: FxHashMap<LocalId, (Term, Term)>,
     /// Once the term budget is exceeded the graph is poisoned: it admits no new
     /// terms and entails nothing (so elision is suppressed for the definition).
     poisoned: bool,
 }
 
-/// A comparison `lhs OP rhs` bound to a boolean local, recorded so a branch on it
-/// can be refined.
+/// A comparison `lhs + lhs_off OP rhs + rhs_off` bound to a boolean local, recorded
+/// so a branch on it can be refined. An operand is an atom term plus a constant
+/// offset, so a comparison against an integer literal (`d <= 1`) is captured as the
+/// term `d` against `Zero` with offset `1`.
 #[derive(Debug, Clone, Copy)]
 struct Cond {
     op: Prim,
     lhs: Term,
+    lhs_off: i64,
     rhs: Term,
+    rhs_off: i64,
 }
 
 impl Bounds {
@@ -282,9 +293,9 @@ impl Bounds {
             }
             Prim::IntLt | Prim::IntLe | Prim::IntGt | Prim::IntGe | Prim::Eq => {
                 if let (Some(lhs), Some(rhs)) = (args.first(), args.get(1))
-                    && let (Some(l), Some(r)) = (atom_term(lhs), atom_term(rhs))
+                    && let (Some((l, lo)), Some((r, ro))) = (atom_term_off(lhs), atom_term_off(rhs))
                 {
-                    self.conds.insert(local, Cond { op, lhs: l, rhs: r });
+                    self.conds.insert(local, Cond { op, lhs: l, lhs_off: lo, rhs: r, rhs_off: ro });
                 }
             }
             _ => {}
@@ -305,6 +316,11 @@ impl Bounds {
             (K::Lit(Lit::Int(k)), K::Local(x)) if sign == 1 => self.add_eq(lt, Term::Int(*x), *k),
             (K::Lit(Lit::Int(p)), K::Lit(Lit::Int(q))) => {
                 self.set_const(lt, p.wrapping_add(sign * q))
+            }
+            // local = x - y (two variables): not a single difference edge, but
+            // recorded so a later constant guard on `local` recovers the relation.
+            (K::Local(x), K::Local(y)) if sign == -1 => {
+                self.subs.insert(local, (Term::Int(*x), Term::Int(*y)));
             }
             _ => {}
         }
@@ -347,14 +363,15 @@ impl Bounds {
             // `cap != 0` with `cap >= 0` gives `cap >= 1`, so a `cap - 1` mask is
             // non-negative).
             if taken {
-                self.add_eq(cond.lhs, cond.rhs, 0);
-            } else {
+                // lhs + lhs_off == rhs + rhs_off  ==>  lhs == rhs + (rhs_off - lhs_off).
+                self.add_eq(cond.lhs, cond.rhs, cond.rhs_off - cond.lhs_off);
+            } else if cond.lhs_off == 0 && cond.rhs_off == 0 {
                 self.refine_ne(cond.lhs, cond.rhs);
             }
             return;
         }
         let op = if taken { cond.op } else { negate(cond.op) };
-        self.assert_cmp(op, cond.lhs, cond.rhs);
+        self.assert_cmp(op, cond.lhs, cond.lhs_off, cond.rhs, cond.rhs_off);
     }
 
     /// Refines on `lhs != rhs` where one side is the constant `0`: a value known
@@ -379,19 +396,45 @@ impl Bounds {
         }
     }
 
-    /// Records the constraint asserted by `lhs OP rhs` holding.
-    fn assert_cmp(&mut self, op: Prim, lhs: Term, rhs: Term) {
+    /// Records the constraint asserted by `lhs + lhs_off OP rhs + rhs_off` holding.
+    /// The offset difference folds into the edge weight: the relation is
+    /// `lhs OP rhs + (rhs_off - lhs_off)`.
+    fn assert_cmp(&mut self, op: Prim, lhs: Term, lhs_off: i64, rhs: Term, rhs_off: i64) {
+        let d = rhs_off - lhs_off;
         match op {
-            // lhs < rhs  ==>  lhs <= rhs - 1
-            Prim::IntLt => self.add_edge(lhs, rhs, -1),
-            // lhs <= rhs
-            Prim::IntLe => self.add_edge(lhs, rhs, 0),
-            // lhs > rhs  ==>  rhs < lhs
-            Prim::IntGt => self.add_edge(rhs, lhs, -1),
-            // lhs >= rhs  ==>  rhs <= lhs
-            Prim::IntGe => self.add_edge(rhs, lhs, 0),
-            // lhs == rhs
-            Prim::Eq => self.add_eq(lhs, rhs, 0),
+            // lhs < rhs + d  ==>  lhs <= rhs + (d - 1)
+            Prim::IntLt => self.add_edge_sub(lhs, rhs, d - 1),
+            // lhs <= rhs + d
+            Prim::IntLe => self.add_edge_sub(lhs, rhs, d),
+            // lhs > rhs + d  ==>  rhs <= lhs + (-d - 1)
+            Prim::IntGt => self.add_edge_sub(rhs, lhs, -d - 1),
+            // lhs >= rhs + d  ==>  rhs <= lhs - d
+            Prim::IntGe => self.add_edge_sub(rhs, lhs, -d),
+            // lhs == rhs + d
+            Prim::Eq => self.add_eq(lhs, rhs, d),
+            _ => {}
+        }
+    }
+
+    /// Adds a difference edge and, when it bounds a recorded two-variable
+    /// subtraction term `t = a - b` against `Zero`, also adds the implied
+    /// two-variable difference edge (so a `hi - lo <= 1` guard yields `hi <= lo + 1`,
+    /// and its false side `hi - lo >= 2` yields `lo <= hi - 2`).
+    fn add_edge_sub(&mut self, from: Term, to: Term, c: i64) {
+        self.add_edge(from, to, c);
+        match (from, to) {
+            // t <= Zero + c  ==>  a - b <= c  ==>  a <= b + c
+            (Term::Int(l), Term::Zero) => {
+                if let Some(&(a, b)) = self.subs.get(&l) {
+                    self.add_edge(a, b, c);
+                }
+            }
+            // Zero <= t + c  ==>  t >= -c  ==>  a - b >= -c  ==>  b <= a + c
+            (Term::Zero, Term::Int(l)) => {
+                if let Some(&(a, b)) = self.subs.get(&l) {
+                    self.add_edge(b, a, c);
+                }
+            }
             _ => {}
         }
     }
@@ -469,6 +512,18 @@ fn atom_term(e: &CExpr) -> Option<Term> {
         // A literal `n` is `Zero + n`; callers needing the offset handle it
         // separately, so a bare literal term is only the constant node when n == 0.
         K::Lit(Lit::Int(0)) => Some(Term::Zero),
+        _ => None,
+    }
+}
+
+/// The term and constant offset of an atom operand: a local `l` is `(Int(l), 0)`,
+/// an integer literal `n` is `(Zero, n)`. `None` for a non-atom. Lets a comparison
+/// against a non-zero literal (`d <= 1`) be recorded as the term `d` against `Zero`
+/// with offset `1`.
+fn atom_term_off(e: &CExpr) -> Option<(Term, i64)> {
+    match &e.kind {
+        K::Local(l) => Some((Term::Int(*l), 0)),
+        K::Lit(Lit::Int(n)) => Some((Term::Zero, *n)),
         _ => None,
     }
 }
@@ -712,5 +767,55 @@ mod tests {
         let a = local(0);
         let b = Bounds::new();
         assert!(!b.index_in_bounds(a, &int_lit(-1)));
+    }
+
+    #[test]
+    fn literal_constant_guard_bounds_against_constant() {
+        // A comparison against a non-zero literal: `d <= 1` gives `d <= 1` on the
+        // true side and `d >= 2` on the false side.
+        let mut b = Bounds::new();
+        // c = d <= 1   (d is local 0)
+        b.transfer_let(local(1), &prim(Prim::IntLe, vec![local_expr(0), int_lit(1)]));
+        let mut bt = b.clone();
+        bt.refine(&local_expr(1), true);
+        assert_eq!(bt.bound(Term::Int(local(0)), Term::Zero), Some(1), "d <= 1");
+        let mut bf = b.clone();
+        bf.refine(&local_expr(1), false);
+        // d >= 2  ==>  Zero <= d - 2.
+        assert_eq!(bf.bound(Term::Zero, Term::Int(local(0))), Some(-2), "d >= 2");
+    }
+
+    #[test]
+    fn two_var_subtraction_guard_relates_operands() {
+        // d = hi - lo; the false side of `d <= 1` (i.e. `hi - lo >= 2`) gives the
+        // two-variable difference `lo <= hi - 2`.
+        let mut b = Bounds::new();
+        // d = hi - lo   (hi = local 1, lo = local 2, d = local 3)
+        b.transfer_let(local(3), &prim(Prim::IntSub, vec![local_expr(1), local_expr(2)]));
+        // c = d <= 1
+        b.transfer_let(local(4), &prim(Prim::IntLe, vec![local_expr(3), int_lit(1)]));
+        b.refine(&local_expr(4), false); // hi - lo >= 2
+        assert_eq!(b.bound(Term::Int(local(2)), Term::Int(local(1))), Some(-2), "lo <= hi - 2");
+    }
+
+    #[test]
+    fn two_var_guard_proves_hi_minus_one_in_bounds() {
+        // The qsort base-case shape: `hi <= len(a)`, `lo >= 0`, and the false side of
+        // `hi - lo <= 1` together prove the partition pivot slot `hi - 1` is in range.
+        let a = local(0);
+        let mut b = Bounds::new();
+        b.add_edge(Term::Int(local(1)), Term::Len(a), 0); // hi <= len(a)
+        b.set_ge(Term::Int(local(2)), 0); // lo >= 0 (entry fact)
+        // d = hi - lo
+        b.transfer_let(local(3), &prim(Prim::IntSub, vec![local_expr(1), local_expr(2)]));
+        // c = hi - lo <= 1 ; the else branch establishes hi - lo >= 2
+        b.transfer_let(local(4), &prim(Prim::IntLe, vec![local_expr(3), int_lit(1)]));
+        b.refine(&local_expr(4), false);
+        // hi1 = hi - 1
+        b.transfer_let(local(5), &prim(Prim::IntSub, vec![local_expr(1), int_lit(1)]));
+        assert!(
+            b.index_in_bounds(a, &local_expr(5)),
+            "hi-1 in [0,len) via the two-variable guard and entry facts"
+        );
     }
 }
