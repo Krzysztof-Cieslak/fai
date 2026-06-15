@@ -213,6 +213,19 @@ fn write_expr(out: &mut String, e: &CExpr) {
             write_expr(out, base);
             out.push(')');
         }
+        ExprKind::Spread { components } => {
+            out.push_str("(spread");
+            write_args(out, components);
+            out.push(')');
+        }
+        ExprKind::LetMany { locals, value, body } => {
+            let ls: Vec<String> = locals.iter().map(|l| format!("%{}", l.index())).collect();
+            let _ = write!(out, "(letmany [{}] = ", ls.join(", "));
+            write_expr(out, value);
+            out.push_str("; ");
+            write_expr(out, body);
+            out.push(')');
+        }
         ExprKind::Reset { value, token, body } => {
             let _ = write!(out, "(reset %{} = ", token.index());
             write_expr(out, value);

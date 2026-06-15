@@ -38,6 +38,7 @@ pub fn reassociate_concat(def: &LoweredDef) -> LoweredDef {
         fns,
         entry_borrowed: def.entry_borrowed.clone(),
         reuse_entry: def.reuse_entry.clone(),
+        entry_spread_params: def.entry_spread_params.clone(),
     }
 }
 
@@ -93,6 +94,12 @@ fn map_children(e: &CExpr, f: fn(&CExpr) -> CExpr) -> CExpr {
         K::Let { local, value, body } => {
             K::Let { local: *local, value: Box::new(f(value)), body: Box::new(f(body)) }
         }
+        K::Spread { components } => K::Spread { components: components.iter().map(f).collect() },
+        K::LetMany { locals, value, body } => K::LetMany {
+            locals: locals.clone(),
+            value: Box::new(f(value)),
+            body: Box::new(f(body)),
+        },
         K::MakeData { tag, args, reuse, scalars, niche } => K::MakeData {
             tag: *tag,
             args: args.iter().map(f).collect(),

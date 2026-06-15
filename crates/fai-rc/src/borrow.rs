@@ -319,6 +319,19 @@ impl Analyzer<'_> {
                 self.scan_value(value, *local);
                 self.scan(body, tail);
             }
+            // Borrow inference runs on the pre-SROA body, so spread/letmany are not
+            // encountered; handled for exhaustiveness (their components are scalar
+            // floats, never reference-counted, so consuming them is a no-op).
+            K::Spread { components } => {
+                for a in components {
+                    self.scan(a, false);
+                    self.consume(a);
+                }
+            }
+            K::LetMany { value, body, .. } => {
+                self.scan(value, false);
+                self.scan(body, tail);
+            }
             K::If { cond, then, els } => {
                 // The condition is inspected (read), not stored, so it does not
                 // force ownership.

@@ -164,6 +164,14 @@ pub(crate) fn fuse_evidence_self_calls(e: CExpr, self_def: DefId, evidence: &[Lo
         K::DataField { base, index, scalar, niche } => {
             CExpr::new(K::DataField { base: Box::new(sub(*base)), index, scalar, niche }, ty)
         }
+        // Spread/LetMany are produced after this pre-count pass; rebuild for safety.
+        K::Spread { components } => {
+            CExpr::new(K::Spread { components: components.into_iter().map(sub).collect() }, ty)
+        }
+        K::LetMany { locals, value, body } => CExpr::new(
+            K::LetMany { locals, value: Box::new(sub(*value)), body: Box::new(sub(*body)) },
+            ty,
+        ),
         // No self-calls live inside these before reference counting (a lifted
         // lambda is referenced by id, not inlined); return them unchanged.
         K::Lit(_) | K::Local(_) | K::Global(_) | K::MakeClosure { .. } | K::Error => {
@@ -643,8 +651,15 @@ fn count_local(e: &CExpr, x: LocalId, n: &mut usize) {
             }
         }
         K::Lit(_) | K::Global(_) | K::Error => {}
-        K::Prim { args, .. } | K::MakeData { args, .. } | K::Recur { args } => {
+        K::Prim { args, .. }
+        | K::MakeData { args, .. }
+        | K::Recur { args }
+        | K::Spread { components: args } => {
             args.iter().for_each(|a| count_local(a, x, n));
+        }
+        K::LetMany { value, body, .. } => {
+            count_local(value, x, n);
+            count_local(body, x, n);
         }
         K::App { func, args, reuse, .. } => {
             count_local(func, x, n);
@@ -735,7 +750,10 @@ fn walk(e: &CExpr, f: &mut impl FnMut(&CExpr)) {
     f(e);
     match &e.kind {
         K::Lit(_) | K::Local(_) | K::Global(_) | K::MakeClosure { .. } | K::Error => {}
-        K::Prim { args, .. } | K::MakeData { args, .. } | K::Recur { args } => {
+        K::Prim { args, .. }
+        | K::MakeData { args, .. }
+        | K::Recur { args }
+        | K::Spread { components: args } => {
             args.iter().for_each(|a| walk(a, f));
         }
         K::App { func, args, .. } => {
@@ -747,11 +765,9 @@ fn walk(e: &CExpr, f: &mut impl FnMut(&CExpr)) {
             walk(then, f);
             walk(els, f);
         }
-        K::Let { value, body, .. } => {
-            walk(value, f);
-            walk(body, f);
-        }
-        K::Reset { value, body, .. } => {
+        K::Let { value, body, .. }
+        | K::Reset { value, body, .. }
+        | K::LetMany { value, body, .. } => {
             walk(value, f);
             walk(body, f);
         }

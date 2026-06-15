@@ -119,6 +119,7 @@ pub fn core_inlined(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredD
         fns,
         entry_borrowed: lowered.entry_borrowed.clone(),
         reuse_entry: lowered.reuse_entry.clone(),
+        entry_spread_params: lowered.entry_spread_params.clone(),
     })
 }
 
@@ -181,6 +182,21 @@ fn inline_expr(db: &dyn Db, e: &CExpr, next: &mut usize, changed: &mut bool) -> 
                 index: *index,
                 scalar: *scalar,
                 niche: *niche,
+            },
+            ty,
+        ),
+        // Spread/LetMany are produced after this pre-count pass; recurse for safety.
+        K::Spread { components } => CExpr::new(
+            K::Spread {
+                components: components.iter().map(|a| inline_expr(db, a, next, changed)).collect(),
+            },
+            ty,
+        ),
+        K::LetMany { locals, value, body } => CExpr::new(
+            K::LetMany {
+                locals: locals.clone(),
+                value: Box::new(inline_expr(db, value, next, changed)),
+                body: Box::new(inline_expr(db, body, next, changed)),
             },
             ty,
         ),
@@ -318,6 +334,12 @@ fn max_local(e: &CExpr, max: &mut usize) {
             max_local(body, max);
         }
         K::MakeClosure { captures, .. } => captures.iter().for_each(|c| bump(*c, max)),
+        K::Spread { components } => components.iter().for_each(|a| max_local(a, max)),
+        K::LetMany { locals, value, body } => {
+            locals.iter().for_each(|&l| bump(l, max));
+            max_local(value, max);
+            max_local(body, max);
+        }
         K::DataTag { base, .. } => max_local(base, max),
         K::DataField { base, index, .. } => {
             max_local(base, max);
@@ -429,6 +451,15 @@ pub(crate) fn remap_expr(
             let value = Box::new(remap_expr(value, locals, fns, next));
             let local = remap_local(*local, locals, next);
             K::Let { local, value, body: Box::new(remap_expr(body, locals, fns, next)) }
+        }
+        K::Spread { components } => K::Spread {
+            components: components.iter().map(|a| remap_expr(a, locals, fns, next)).collect(),
+        },
+        K::LetMany { locals: bound, value, body } => {
+            // The value is in the outer scope; remap it before binding `bound`.
+            let value = Box::new(remap_expr(value, locals, fns, next));
+            let bound = bound.iter().map(|&l| remap_local(l, locals, next)).collect();
+            K::LetMany { locals: bound, value, body: Box::new(remap_expr(body, locals, fns, next)) }
         }
         K::DataTag { base, niche } => {
             K::DataTag { base: Box::new(remap_expr(base, locals, fns, next)), niche: *niche }

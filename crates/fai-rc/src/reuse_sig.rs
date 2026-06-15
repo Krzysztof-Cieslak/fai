@@ -191,10 +191,13 @@ fn e_children(e: &CExpr, f: &mut impl FnMut(&CExpr)) {
             f(then);
             f(els);
         }
-        K::Let { value, body, .. } | K::Reset { value, body, .. } => {
+        K::Let { value, body, .. }
+        | K::Reset { value, body, .. }
+        | K::LetMany { value, body, .. } => {
             f(value);
             f(body);
         }
+        K::Spread { components } => components.iter().for_each(f),
         K::FreeReuse { body, .. }
         | K::Dup { body, .. }
         | K::Drop { body, .. }
@@ -444,10 +447,11 @@ fn collect_forwards(e: &CExpr, out: &mut Vec<DefId>) {
             collect_forwards(value, out);
             collect_forwards(body, out);
         }
-        K::Reset { value, body, .. } => {
+        K::Reset { value, body, .. } | K::LetMany { value, body, .. } => {
             collect_forwards(value, out);
             collect_forwards(body, out);
         }
+        K::Spread { components } => components.iter().for_each(|a| collect_forwards(a, out)),
         K::FreeReuse { body, .. }
         | K::Dup { body, .. }
         | K::Drop { body, .. }

@@ -945,12 +945,14 @@ fn has_error_node(def: &LoweredDef) -> bool {
     fn scan(e: &fai_core::ir::CExpr) -> bool {
         match &e.kind {
             ExprKind::Error => true,
-            ExprKind::Prim { args, .. } | ExprKind::MakeData { args, .. } => args.iter().any(scan),
+            ExprKind::Prim { args, .. }
+            | ExprKind::MakeData { args, .. }
+            | ExprKind::Spread { components: args } => args.iter().any(scan),
             ExprKind::App { func, args, .. } => scan(func) || args.iter().any(scan),
             ExprKind::If { cond, then, els } => scan(cond) || scan(then) || scan(els),
-            ExprKind::Let { value, body, .. } | ExprKind::Reset { value, body, .. } => {
-                scan(value) || scan(body)
-            }
+            ExprKind::Let { value, body, .. }
+            | ExprKind::Reset { value, body, .. }
+            | ExprKind::LetMany { value, body, .. } => scan(value) || scan(body),
             ExprKind::FreeReuse { body, .. } => scan(body),
             ExprKind::DataTag { base: b, .. } | ExprKind::DataField { base: b, .. } => scan(b),
             ExprKind::Dup { body, .. } | ExprKind::Drop { body, .. } => scan(body),

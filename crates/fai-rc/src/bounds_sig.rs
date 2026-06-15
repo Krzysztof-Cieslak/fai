@@ -529,7 +529,7 @@ fn walk_in(
                 walk_in(a, self_name, false, b, result_of, on_call, on_exit);
             }
         }
-        K::Prim { args, .. } | K::MakeData { args, .. } => {
+        K::Prim { args, .. } | K::MakeData { args, .. } | K::Spread { components: args } => {
             for a in args {
                 walk_in(a, self_name, false, b, result_of, on_call, on_exit);
             }
@@ -543,7 +543,7 @@ fn walk_in(
                 on_exit(b, e);
             }
         }
-        K::Reset { value, body, .. } => {
+        K::Reset { value, body, .. } | K::LetMany { value, body, .. } => {
             walk_in(value, self_name, false, b, result_of, on_call, on_exit);
             walk_in(body, self_name, tail, b, result_of, on_call, on_exit);
         }
@@ -734,7 +734,10 @@ fn poison_first_class(
             poison_first_class(then, source, arity, eligible);
             poison_first_class(els, source, arity, eligible);
         }
-        K::Prim { args, .. } | K::MakeData { args, .. } | K::Recur { args } => {
+        K::Prim { args, .. }
+        | K::MakeData { args, .. }
+        | K::Recur { args }
+        | K::Spread { components: args } => {
             for a in args {
                 poison_first_class(a, source, arity, eligible);
             }
@@ -742,7 +745,7 @@ fn poison_first_class(
         K::DataTag { base, .. } | K::DataField { base, .. } => {
             poison_first_class(base, source, arity, eligible);
         }
-        K::Reset { value, body, .. } => {
+        K::Reset { value, body, .. } | K::LetMany { value, body, .. } => {
             poison_first_class(value, source, arity, eligible);
             poison_first_class(body, source, arity, eligible);
         }

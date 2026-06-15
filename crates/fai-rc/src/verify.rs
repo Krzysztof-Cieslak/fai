@@ -258,6 +258,35 @@ impl Checker<'_> {
                     ));
                 }
             }
+            // A spread's components are consumed into the multi-value result/argument
+            // (scalar floats: their dup/drop are runtime no-ops, but the linear
+            // discipline still balances).
+            ExprKind::Spread { components } => {
+                for a in components {
+                    self.eval(a, refs)?;
+                }
+            }
+            // Binds the result components of a multi-result call (like a `Let`, with
+            // several freshly owned bound locals).
+            ExprKind::LetMany { locals, value, body } => {
+                self.eval(value, refs)?;
+                for l in locals {
+                    if refs.insert(*l, 1).is_some() {
+                        return Err(format!("fn{}: rebound %{}", self.fn_index, l.index()));
+                    }
+                }
+                self.eval(body, refs)?;
+                for l in locals {
+                    let n = refs.remove(l).unwrap_or(0);
+                    if n != 0 {
+                        return Err(format!(
+                            "fn{}: letmany %{} left with {n} refs",
+                            self.fn_index,
+                            l.index()
+                        ));
+                    }
+                }
+            }
             // Freeing a token consumes its one reference (like a `MakeData` that
             // reuses it would), so a path that frees and a path that reuses leave a
             // consistent state.

@@ -68,13 +68,16 @@ pub fn fingerprint_def(
 /// Renders a non-uniform [`FnAbi`] compactly (each parameter's representation and
 /// the result's), for the cache key.
 fn abi_tag(abi: &FnAbi) -> String {
-    let repr = |r: &Repr| match r {
-        Repr::Uniform => 'u',
-        Repr::ScalarFloat => 'f',
-        Repr::ScalarInt => 'i',
-        Repr::Niche(NicheKind::A) => 'a',
-        Repr::Niche(NicheKind::B) => 'b',
-    };
+    fn repr(r: &Repr) -> String {
+        match r {
+            Repr::Uniform => "u".to_owned(),
+            Repr::ScalarFloat => "f".to_owned(),
+            Repr::ScalarInt => "i".to_owned(),
+            Repr::Niche(NicheKind::A) => "a".to_owned(),
+            Repr::Niche(NicheKind::B) => "b".to_owned(),
+            Repr::Spread(c) => format!("S{}>", c.iter().map(repr).collect::<String>()),
+        }
+    }
     let params: String = abi.params.iter().map(repr).collect();
     format!("p[{params}]r{}", repr(&abi.ret))
 }
@@ -225,6 +228,22 @@ fn write_expr(
                 }
             }
             write_expr(out, base, namer, arity_of, abi_of);
+            out.push(')');
+        }
+        ExprKind::Spread { components } => {
+            out.push_str("(spread");
+            for c in components {
+                out.push(' ');
+                write_expr(out, c, namer, arity_of, abi_of);
+            }
+            out.push(')');
+        }
+        ExprKind::LetMany { locals, value, body } => {
+            let ls: Vec<String> = locals.iter().map(|l| format!("%{}", l.index())).collect();
+            let _ = write!(out, "(letmany [{}] ", ls.join(","));
+            write_expr(out, value, namer, arity_of, abi_of);
+            out.push(' ');
+            write_expr(out, body, namer, arity_of, abi_of);
             out.push(')');
         }
         ExprKind::Reset { value, token, body } => {

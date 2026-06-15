@@ -871,12 +871,14 @@ fn closure_local_funcs(body: &CExpr) -> FxHashMap<usize, fai_core::ir::FnId> {
                 go(func, map);
                 args.iter().for_each(|a| go(a, map));
             }
-            ExprKind::Prim { args, .. } | ExprKind::MakeData { args, .. } => {
+            ExprKind::Prim { args, .. }
+            | ExprKind::MakeData { args, .. }
+            | ExprKind::Spread { components: args } => {
                 args.iter().for_each(|a| go(a, map));
             }
             ExprKind::Recur { args } => args.iter().for_each(|a| go(a, map)),
             ExprKind::DataTag { base: b, .. } | ExprKind::DataField { base: b, .. } => go(b, map),
-            ExprKind::Reset { value, body, .. } => {
+            ExprKind::Reset { value, body, .. } | ExprKind::LetMany { value, body, .. } => {
                 go(value, map);
                 go(body, map);
             }
@@ -1247,7 +1249,10 @@ impl<M: Module> Translator<'_, M> {
             | ExprKind::Error => {}
             ExprKind::Prim { args, .. }
             | ExprKind::MakeData { args, .. }
-            | ExprKind::Recur { args } => args.iter().for_each(|a| self.collect_niche_uses(a, out)),
+            | ExprKind::Recur { args }
+            | ExprKind::Spread { components: args } => {
+                args.iter().for_each(|a| self.collect_niche_uses(a, out));
+            }
             ExprKind::App { func, args, .. } => {
                 self.collect_niche_uses(func, out);
                 args.iter().for_each(|a| self.collect_niche_uses(a, out));
@@ -1257,7 +1262,9 @@ impl<M: Module> Translator<'_, M> {
                 self.collect_niche_uses(then, out);
                 self.collect_niche_uses(els, out);
             }
-            ExprKind::Let { value, body, .. } | ExprKind::Reset { value, body, .. } => {
+            ExprKind::Let { value, body, .. }
+            | ExprKind::Reset { value, body, .. }
+            | ExprKind::LetMany { value, body, .. } => {
                 self.collect_niche_uses(value, out);
                 self.collect_niche_uses(body, out);
             }
@@ -1315,7 +1322,9 @@ impl<M: Module> Translator<'_, M> {
                 }
                 args.iter().for_each(|a| self.collect_niche_defs(a, join, out, changed));
             }
-            ExprKind::Prim { args, .. } | ExprKind::MakeData { args, .. } => {
+            ExprKind::Prim { args, .. }
+            | ExprKind::MakeData { args, .. }
+            | ExprKind::Spread { components: args } => {
                 args.iter().for_each(|a| self.collect_niche_defs(a, join, out, changed));
             }
             ExprKind::App { func, args, .. } => {
@@ -1324,7 +1333,8 @@ impl<M: Module> Translator<'_, M> {
             }
             ExprKind::DataTag { base, .. } => self.collect_niche_defs(base, join, out, changed),
             ExprKind::DataField { base, .. } => self.collect_niche_defs(base, join, out, changed),
-            ExprKind::Reset { value, body, .. } => {
+            // A letmany binds scalar-float result components (never a niche Option).
+            ExprKind::Reset { value, body, .. } | ExprKind::LetMany { value, body, .. } => {
                 self.collect_niche_defs(value, join, out, changed);
                 self.collect_niche_defs(body, join, out, changed);
             }
@@ -1967,6 +1977,12 @@ impl<M: Module> Translator<'_, M> {
             }
             ExprKind::MakeData { tag, args, reuse, scalars, niche } => {
                 self.make_data(*tag, args, *reuse, *scalars, *niche)
+            }
+            // The SROA pass produces these; their code generation (a spread is
+            // multi-value, a letmany binds a multi-result call) is added when that
+            // emission is enabled. They never reach here until then.
+            ExprKind::Spread { .. } | ExprKind::LetMany { .. } => {
+                unreachable!("Spread/LetMany code generation is enabled with SROA emission")
             }
             ExprKind::DataTag { base, niche } => self.data_tag(base, *niche, &e.ty),
             ExprKind::DataField { base, index, scalar, niche } => {
@@ -5270,6 +5286,17 @@ fn collect_local_types(e: &CExpr, out: &mut FxHashMap<usize, Ty>) {
             collect_local_types(value, out);
             collect_local_types(body, out);
         }
+        // A spread's components and a letmany's bound locals are scalar `Float`s.
+        ExprKind::Spread { components } => {
+            components.iter().for_each(|a| collect_local_types(a, out));
+        }
+        ExprKind::LetMany { locals, value, body } => {
+            for l in locals {
+                note(out, *l, &Ty::Con(Con::Float));
+            }
+            collect_local_types(value, out);
+            collect_local_types(body, out);
+        }
         ExprKind::DataTag { base, .. } => collect_local_types(base, out),
         ExprKind::DataField { base, .. } => collect_local_types(base, out),
         ExprKind::Reset { value, body, .. } => {
@@ -5327,6 +5354,19 @@ fn collect_float_observations(
         }
         ExprKind::Let { local, value, body } => {
             note(*local, &value.ty, float_seen, other_seen);
+            collect_float_observations(value, float_seen, other_seen);
+            collect_float_observations(body, float_seen, other_seen);
+        }
+        // A spread's components and a letmany's bound locals are scalar `Float`s, so
+        // the bound locals are observed as float even if otherwise unused (they must
+        // receive an `f64` multi-value result).
+        ExprKind::Spread { components } => {
+            components.iter().for_each(|a| collect_float_observations(a, float_seen, other_seen));
+        }
+        ExprKind::LetMany { locals, value, body } => {
+            for l in locals {
+                note(*l, &Ty::Con(Con::Float), float_seen, other_seen);
+            }
             collect_float_observations(value, float_seen, other_seen);
             collect_float_observations(body, float_seen, other_seen);
         }
@@ -5401,6 +5441,15 @@ fn collect_int_observations(
         }
         ExprKind::Let { local, value, body } => {
             note(*local, &value.ty, int_seen, other_seen);
+            collect_int_observations(value, int_seen, other_seen);
+            collect_int_observations(body, int_seen, other_seen);
+        }
+        // A spread's components and a letmany's bound locals are `Float`, never raw
+        // `Int`; recurse (the bound locals are simply not int-observed).
+        ExprKind::Spread { components } => {
+            components.iter().for_each(|a| collect_int_observations(a, int_seen, other_seen));
+        }
+        ExprKind::LetMany { value, body, .. } => {
             collect_int_observations(value, int_seen, other_seen);
             collect_int_observations(body, int_seen, other_seen);
         }
@@ -5519,19 +5568,18 @@ fn body_uses_array_alloc(e: &CExpr) -> bool {
         | ExprKind::Global(_)
         | ExprKind::MakeClosure { .. }
         | ExprKind::Error => false,
-        ExprKind::MakeData { args, .. } | ExprKind::Recur { args } => {
-            args.iter().any(body_uses_array_alloc)
-        }
+        ExprKind::MakeData { args, .. }
+        | ExprKind::Recur { args }
+        | ExprKind::Spread { components: args } => args.iter().any(body_uses_array_alloc),
         ExprKind::App { func, args, .. } => {
             body_uses_array_alloc(func) || args.iter().any(body_uses_array_alloc)
         }
         ExprKind::If { cond, then, els } => {
             body_uses_array_alloc(cond) || body_uses_array_alloc(then) || body_uses_array_alloc(els)
         }
-        ExprKind::Let { value, body, .. } => {
-            body_uses_array_alloc(value) || body_uses_array_alloc(body)
-        }
-        ExprKind::Reset { value, body, .. } => {
+        ExprKind::Let { value, body, .. }
+        | ExprKind::Reset { value, body, .. }
+        | ExprKind::LetMany { value, body, .. } => {
             body_uses_array_alloc(value) || body_uses_array_alloc(body)
         }
         ExprKind::DataTag { base, .. } | ExprKind::DataField { base, .. } => {

@@ -99,6 +99,11 @@ pub struct WireDef {
     /// accepts, in slot order; empty when there is no `reuse_entry`. The worker
     /// reconstructs the reuse signature (and so the `{base}__reuse` ABI) from this.
     pub reuse_sig: Vec<u32>,
+    /// The component slots of each spread (fixed-shape float aggregate) entry
+    /// parameter (see [`crate::ir::LoweredDef::entry_spread_params`]); empty
+    /// (all-`None`) when the definition has no spread parameters.
+    #[serde(default)]
+    pub entry_spread_params: Vec<Option<Vec<u32>>>,
     /// The inferred bounds-check-elimination **entry facts** (difference
     /// constraints over its parameters), so the database-free worker elides the
     /// same inline `Array` bounds checks. Empty when none were inferred.
@@ -275,6 +280,20 @@ pub enum WireExprKind {
         captures: Vec<u32>,
         /// How the closure is allocated.
         alloc: WireClosureAlloc,
+    },
+    /// The exploded components of a fixed-shape float aggregate (multi-value).
+    Spread {
+        /// The component values, in canonical field order.
+        components: Vec<WireExpr>,
+    },
+    /// Bind several slots from a multi-result value.
+    LetMany {
+        /// The bound slots, in order.
+        locals: Vec<u32>,
+        /// The multi-result value.
+        value: Box<WireExpr>,
+        /// The continuation.
+        body: Box<WireExpr>,
     },
     /// A data construction (constructor/record/tuple).
     MakeData {
@@ -477,6 +496,11 @@ pub fn def_to_wire(
         entry_borrowed: lowered.entry_borrowed.clone(),
         reuse_entry: lowered.reuse_entry.as_ref().map(|f| fn_to_wire(f, module_of)),
         reuse_sig,
+        entry_spread_params: lowered
+            .entry_spread_params
+            .iter()
+            .map(|o| o.as_ref().map(|v| v.iter().map(|&l| slot(l)).collect()))
+            .collect(),
         bounds_entry,
         bounds_result,
     }
@@ -545,6 +569,14 @@ fn expr_to_wire(e: &CExpr, module_of: &dyn Fn(DefId) -> String) -> WireExpr {
             func: func.0,
             captures: captures.iter().map(|c| slot(*c)).collect(),
             alloc: alloc_to_wire(*alloc),
+        },
+        ExprKind::Spread { components } => WireExprKind::Spread {
+            components: components.iter().map(|a| expr_to_wire(a, module_of)).collect(),
+        },
+        ExprKind::LetMany { locals, value, body } => WireExprKind::LetMany {
+            locals: locals.iter().map(|l| slot(*l)).collect(),
+            value: Box::new(expr_to_wire(value, module_of)),
+            body: Box::new(expr_to_wire(body, module_of)),
         },
         ExprKind::MakeData { tag, args, reuse, scalars, niche } => WireExprKind::MakeData {
             tag: *tag,
@@ -739,6 +771,13 @@ fn defs_from_wire(wire_defs: &[WireDef], sources: &mut SourceAssigner) -> DefsFr
             fns: wire.fns.iter().map(|f| fn_from_wire(f, sources)).collect(),
             entry_borrowed: wire.entry_borrowed.clone(),
             reuse_entry: wire.reuse_entry.as_ref().map(|f| fn_from_wire(f, sources)),
+            entry_spread_params: wire
+                .entry_spread_params
+                .iter()
+                .map(|o| {
+                    o.as_ref().map(|v| v.iter().map(|&i| LocalId::from_index(i as usize)).collect())
+                })
+                .collect(),
         });
     }
     DefsFromWire { defs, arities, abis, bounds_entry, bounds_result }
@@ -804,6 +843,14 @@ fn expr_from_wire(e: &WireExpr, sources: &mut SourceAssigner) -> CExpr {
             func: FnId(*func),
             captures: captures.iter().map(|&i| LocalId::from_index(i as usize)).collect(),
             alloc: alloc_from_wire(*alloc),
+        },
+        WireExprKind::Spread { components } => ExprKind::Spread {
+            components: components.iter().map(|a| expr_from_wire(a, sources)).collect(),
+        },
+        WireExprKind::LetMany { locals, value, body } => ExprKind::LetMany {
+            locals: locals.iter().map(|&i| LocalId::from_index(i as usize)).collect(),
+            value: Box::new(expr_from_wire(value, sources)),
+            body: Box::new(expr_from_wire(body, sources)),
         },
         WireExprKind::MakeData { tag, args, reuse, scalars, niche } => ExprKind::MakeData {
             tag: *tag,
@@ -1019,6 +1066,7 @@ mod tests {
             fns: vec![CoreFn { params: vec![cell], captures: Vec::new(), body }],
             entry_borrowed: Vec::new(),
             reuse_entry: None,
+            entry_spread_params: Vec::new(),
         };
 
         let wire = def_to_wire(
@@ -1076,6 +1124,7 @@ mod tests {
             fns: vec![CoreFn { params: vec![cell], captures: Vec::new(), body }],
             entry_borrowed: Vec::new(),
             reuse_entry: None,
+            entry_spread_params: Vec::new(),
         };
 
         let wire = def_to_wire(
@@ -1166,6 +1215,7 @@ mod tests {
             fns: vec![CoreFn { params: vec![xs], captures: Vec::new(), body }],
             entry_borrowed: Vec::new(),
             reuse_entry: None,
+            entry_spread_params: Vec::new(),
         };
 
         let wire = def_to_wire(
@@ -1310,6 +1360,7 @@ mod tests {
             entry_borrowed: Vec::new(),
             reuse_entry: None,
             reuse_sig: Vec::new(),
+            entry_spread_params: Vec::new(),
             bounds_entry: crate::bounds::BoundSig::default(),
             bounds_result: crate::bounds::ResultSig::default(),
         };
@@ -1325,6 +1376,7 @@ mod tests {
             entry_borrowed: Vec::new(),
             reuse_entry: None,
             reuse_sig: Vec::new(),
+            entry_spread_params: Vec::new(),
             bounds_entry: crate::bounds::BoundSig::default(),
             bounds_result: crate::bounds::ResultSig::default(),
         };

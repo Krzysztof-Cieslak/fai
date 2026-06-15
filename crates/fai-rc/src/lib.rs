@@ -172,7 +172,13 @@ pub fn rc_lowered(db: &dyn Db, lowered: &LoweredDef, self_sig: &BorrowSig) -> Lo
         }
         fns.push(CoreFn { params: f.params.clone(), captures: f.captures.clone(), body });
     }
-    LoweredDef { def: lowered.def, fns, entry_borrowed: self_sig.0.clone(), reuse_entry: None }
+    LoweredDef {
+        def: lowered.def,
+        fns,
+        entry_borrowed: self_sig.0.clone(),
+        reuse_entry: None,
+        entry_spread_params: lowered.entry_spread_params.clone(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -219,6 +225,12 @@ fn max_local(e: &CExpr, max: &mut usize) {
             max_local(body, max);
         }
         K::MakeClosure { captures, .. } => captures.iter().for_each(|c| bump(*c, max)),
+        K::Spread { components } => components.iter().for_each(|a| max_local(a, max)),
+        K::LetMany { locals, value, body } => {
+            locals.iter().for_each(|&l| bump(l, max));
+            max_local(value, max);
+            max_local(body, max);
+        }
         K::DataTag { base, .. } => max_local(base, max),
         K::DataField { base, index, .. } => {
             max_local(base, max);
@@ -306,6 +318,20 @@ fn anf_op(e: CExpr, binds: &mut Vec<(LocalId, CExpr)>, next: &mut usize) -> CExp
             let args = args.into_iter().map(|a| atomize(a, binds, next)).collect();
             CExpr::new(K::App { func, args, reuse, alloc }, ty)
         }
+        // SROA runs after A-normal form, so these are not encountered here; handled
+        // defensively (atomize a spread's components; normalize a letmany's halves).
+        K::Spread { components } => {
+            let components = components.into_iter().map(|a| atomize(a, binds, next)).collect();
+            CExpr::new(K::Spread { components }, ty)
+        }
+        K::LetMany { locals, value, body } => CExpr::new(
+            K::LetMany {
+                locals,
+                value: Box::new(anf(*value, next)),
+                body: Box::new(anf(*body, next)),
+            },
+            ty,
+        ),
         K::DataTag { base, niche } => {
             CExpr::new(K::DataTag { base: Box::new(to_local(*base, binds, next)), niche }, ty)
         }
@@ -422,7 +448,7 @@ fn collect_fv(e: &CExpr, captures: &Locals, bound: &mut Locals, out: &mut Locals
     match &e.kind {
         K::Local(x) => note(*x, bound, out),
         K::Lit(_) | K::Global(_) | K::Error => {}
-        K::Prim { args, .. } | K::MakeData { args, .. } => {
+        K::Prim { args, .. } | K::MakeData { args, .. } | K::Spread { components: args } => {
             args.iter().for_each(|a| collect_fv(a, captures, bound, out));
         }
         // Reuse tokens are not reference-counted values (they are consumed once by
@@ -442,6 +468,14 @@ fn collect_fv(e: &CExpr, captures: &Locals, bound: &mut Locals, out: &mut Locals
             collect_fv(body, captures, bound, out);
             if added {
                 bound.remove(local);
+            }
+        }
+        K::LetMany { locals, value, body } => {
+            collect_fv(value, captures, bound, out);
+            let added: Vec<LocalId> = locals.iter().copied().filter(|l| bound.insert(*l)).collect();
+            collect_fv(body, captures, bound, out);
+            for l in added {
+                bound.remove(&l);
             }
         }
         K::MakeClosure { captures: caps, .. } => {
@@ -544,6 +578,12 @@ impl Rc<'_> {
                     CExpr::new(K::MakeData { tag, args, reuse, scalars, niche }, ty.clone())
                 };
                 self.operands_rc(args, &borrows, live, rebuilt)
+            }
+            // The SROA pass produces these (a spread result/argument, and the
+            // destructuring of a spread-returning call); their counting is added
+            // when that emission is enabled. They never reach here until then.
+            K::Spread { .. } | K::LetMany { .. } => {
+                unreachable!("Spread/LetMany counting is enabled with SROA emission")
             }
             // Reference counting runs before reuse tokens are forwarded, so `reuse`
             // is empty here; it is carried through verbatim (tokens are not
@@ -879,8 +919,14 @@ fn collect_data_locals(e: &CExpr, out: &mut Locals) {
             collect_data_locals(then, out);
             collect_data_locals(els, out);
         }
-        K::Prim { args, .. } | K::MakeData { args, .. } => {
+        K::Prim { args, .. } | K::MakeData { args, .. } | K::Spread { components: args } => {
             args.iter().for_each(|a| collect_data_locals(a, out));
+        }
+        // A spread-returning call's result components are scalar floats, not boxed
+        // data, so the bound locals are never reuse candidates; recurse the halves.
+        K::LetMany { value, body, .. } => {
+            collect_data_locals(value, out);
+            collect_data_locals(body, out);
         }
         K::App { func, args, .. } => {
             collect_data_locals(func, out);
@@ -967,6 +1013,20 @@ fn reuse_pass(e: CExpr, data: &Locals, next: &mut usize) -> CExpr {
                 reuse,
                 scalars,
                 niche,
+            },
+            ty,
+        ),
+        K::Spread { components } => CExpr::new(
+            K::Spread {
+                components: components.into_iter().map(|a| reuse_pass(a, data, next)).collect(),
+            },
+            ty,
+        ),
+        K::LetMany { locals, value, body } => CExpr::new(
+            K::LetMany {
+                locals,
+                value: Box::new(reuse_pass(*value, data, next)),
+                body: Box::new(reuse_pass(*body, data, next)),
             },
             ty,
         ),
@@ -1061,6 +1121,8 @@ fn has_construction(e: &CExpr) -> bool {
                 || args.iter().any(has_construction)
         }
         K::Let { value, body, .. } => has_construction(value) || has_construction(body),
+        K::Spread { components } => components.iter().any(has_construction),
+        K::LetMany { value, body, .. } => has_construction(value) || has_construction(body),
         K::If { cond, then, els } => {
             has_construction(cond) || has_construction(then) || has_construction(els)
         }

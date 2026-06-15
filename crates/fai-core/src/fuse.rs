@@ -206,6 +206,7 @@ pub fn fuse_def(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<FuseResult> 
         fns,
         entry_borrowed: base.entry_borrowed.clone(),
         reuse_entry: base.reuse_entry.clone(),
+        entry_spread_params: base.entry_spread_params.clone(),
     });
     Arc::new(FuseResult { body, loops })
 }
@@ -527,6 +528,10 @@ impl Fuser<'_> {
             }
             K::Let { value, body, .. } => self.expr_pure(value) && self.expr_pure(body),
             K::MakeData { args, .. } => args.iter().all(|a| self.expr_pure(a)),
+            // Spread/LetMany are produced after this pre-count pass; recurse for
+            // forward-safety (a spread is component reads, a letmany a call + body).
+            K::Spread { components } => components.iter().all(|a| self.expr_pure(a)),
+            K::LetMany { value, body, .. } => self.expr_pure(value) && self.expr_pure(body),
             K::DataTag { base, .. } | K::DataField { base, .. } => self.expr_pure(base),
             // Reference-counting / tail-call nodes do not exist in this pre-count
             // body; treat conservatively by recursing where they have children.
@@ -627,6 +632,16 @@ impl Fuser<'_> {
                 index: *index,
                 scalar: *scalar,
                 niche: *niche,
+            },
+            // Spread/LetMany are produced after this pre-count pass; reconstructed
+            // with recursed children for totality.
+            K::Spread { components } => {
+                K::Spread { components: components.iter().map(|a| go(self, a)).collect() }
+            }
+            K::LetMany { locals, value, body } => K::LetMany {
+                locals: locals.clone(),
+                value: Box::new(go(self, value)),
+                body: Box::new(go(self, body)),
             },
             // Reference-counting and tail-call nodes do not exist in the pre-count
             // Core this runs on; reconstructed with recursed children for totality.
@@ -796,10 +811,13 @@ fn walk_pre(e: &CExpr, f: &mut impl FnMut(&CExpr)) {
             walk_pre(then, f);
             walk_pre(els, f);
         }
-        K::Let { value, body, .. } | K::Reset { value, body, .. } => {
+        K::Let { value, body, .. }
+        | K::Reset { value, body, .. }
+        | K::LetMany { value, body, .. } => {
             walk_pre(value, f);
             walk_pre(body, f);
         }
+        K::Spread { components } => components.iter().for_each(|a| walk_pre(a, f)),
         K::DataTag { base, .. } | K::DataField { base, .. } => walk_pre(base, f),
         K::Dup { body, .. }
         | K::Drop { body, .. }
@@ -1000,6 +1018,7 @@ impl Fuser<'_> {
             fns: vec![CoreFn { params, captures: Vec::new(), body: loop_body }],
             entry_borrowed: Vec::new(),
             reuse_entry: None,
+            entry_spread_params: Vec::new(),
         };
         self.loops.push(FusedLoop { lowered, abi, arity });
 
@@ -1930,6 +1949,7 @@ pub(crate) fn prune_dead_fns(def: LoweredDef) -> LoweredDef {
         fns,
         entry_borrowed: def.entry_borrowed,
         reuse_entry: def.reuse_entry,
+        entry_spread_params: def.entry_spread_params,
     }
 }
 
@@ -1973,6 +1993,12 @@ fn renumber_fns(e: &CExpr, remap: &FxHashMap<u32, u32>) -> CExpr {
         K::Let { local, value, body } => {
             K::Let { local: *local, value: Box::new(go(value)), body: Box::new(go(body)) }
         }
+        K::Spread { components } => K::Spread { components: components.iter().map(go).collect() },
+        K::LetMany { locals, value, body } => K::LetMany {
+            locals: locals.clone(),
+            value: Box::new(go(value)),
+            body: Box::new(go(body)),
+        },
         K::DataTag { base, niche } => K::DataTag { base: Box::new(go(base)), niche: *niche },
         K::DataField { base, index, scalar, niche } => {
             K::DataField { base: Box::new(go(base)), index: *index, scalar: *scalar, niche: *niche }

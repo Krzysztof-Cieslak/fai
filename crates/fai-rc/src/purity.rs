@@ -84,6 +84,8 @@ fn expr_pure_total(db: &dyn Db, e: &CExpr) -> bool {
             expr_pure_total(db, cond) && expr_pure_total(db, then) && expr_pure_total(db, els)
         }
         K::Let { value, body, .. } => expr_pure_total(db, value) && expr_pure_total(db, body),
+        K::Spread { components } => components.iter().all(|a| expr_pure_total(db, a)),
+        K::LetMany { value, body, .. } => expr_pure_total(db, value) && expr_pure_total(db, body),
         // A lowering error never reaches a runnable program; treat it as impure so
         // an erroneous callee never enables a reorder.
         K::Error => false,

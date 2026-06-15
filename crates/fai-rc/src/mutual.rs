@@ -328,6 +328,7 @@ pub fn combined_lowered(db: &dyn Db, file: SourceFile, group: &Group) -> Lowered
         fns: vec![CoreFn { params, captures: Vec::new(), body }],
         entry_borrowed: Vec::new(),
         reuse_entry: None,
+        entry_spread_params: Vec::new(),
     }
 }
 
@@ -358,6 +359,7 @@ pub fn member_wrapper(db: &dyn Db, file: SourceFile, member: DefId, group: &Grou
         fns: vec![CoreFn { params, captures: Vec::new(), body }],
         entry_borrowed: Vec::new(),
         reuse_entry: None,
+        entry_spread_params: Vec::new(),
     }
 }
 
