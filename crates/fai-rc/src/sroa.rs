@@ -286,9 +286,11 @@ impl Sroa<'_> {
             return locals.iter().map(|&l| local_f64(l)).collect();
         }
         // A boxed FFA value (a boxed local/param/capture, a CAF, a generic call
-        // result, a field of a larger cell): explode it with field loads.
+        // result, a field of a larger cell): explode it with field loads. The base
+        // keeps its **real** type (so reference counting drops it through the
+        // correct, descriptor-aware path — not a fabricated tuple shape).
+        let base_ty = e.ty.clone();
         let base = self.bind(e, binds);
-        let base_ty = ffa_tuple_ty(n);
         (0..n)
             .map(|i| {
                 let c = self.fresh();

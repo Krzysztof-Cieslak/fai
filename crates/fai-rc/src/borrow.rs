@@ -124,7 +124,13 @@ pub fn borrow_signature(db: &dyn Db, file: SourceFile, name: Symbol) -> BorrowSi
         let mut ty = &scheme.ty;
         for s in &mut sig {
             let fai_types::Ty::Arrow(from, to, _) = ty else { break };
-            if fai_core::niche_scheme(db, from).is_some() {
+            // A niche `Option` (see above) and a **spread** fixed-shape float
+            // aggregate are always owned: the spread boundary consumes the cell (a
+            // direct caller explodes then drops it; the first-class wrapper explodes
+            // then drops it), so a borrowing caller that lends the cell would
+            // double-free it.
+            if fai_core::niche_scheme(db, from).is_some() || fai_core::ir::ffa_arity(from).is_some()
+            {
                 *s = false;
             }
             ty = to;
