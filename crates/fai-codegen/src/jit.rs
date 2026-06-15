@@ -141,6 +141,7 @@ fn register_runtime(builder: &mut JITBuilder) {
     builder.symbol("FAI_FLOAT_DESC", (&raw const rt::FAI_FLOAT_DESC).cast());
     builder.symbol("FAI_DATA_DESC", (&raw const rt::FAI_DATA_DESC).cast());
     builder.symbol("FAI_ARRAY_DESC", (&raw const rt::FAI_ARRAY_DESC).cast());
+    builder.symbol("FAI_FLOAT_ARRAY_DESC", (&raw const rt::FAI_FLOAT_ARRAY_DESC).cast());
 }
 
 fn jit_module() -> JITModule {
