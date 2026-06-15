@@ -141,14 +141,9 @@ pub(crate) fn arity_of(db: &dyn Db, def: DefId) -> usize {
 /// independent of unrelated edits.
 #[salsa::tracked]
 pub fn float_abi(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<FnAbi> {
-    let def = DefId::new(file.source(db), name);
-    let Some(scheme) = fai_types::declared_or_inferred_scheme(db, def) else {
-        return Arc::new(FnAbi::default());
-    };
-    // A niche `Option` parameter/result is carried wrapper-free across a direct
-    // call (both schemes).
-    let niche = |ty: &fai_types::Ty| fai_core::niche_scheme(db, ty);
-    Arc::new(FnAbi::from_scheme(&scheme, source_param_count(db, file, name), &niche))
+    // The native calling-convention shape is computed once, in `fai-core`, so the
+    // SROA pass (`fai-rc`) and code generation agree on every definition's ABI.
+    fai_core::abi::abi(db, file, name)
 }
 
 pub(crate) fn abi_of(db: &dyn Db, def: DefId) -> FnAbi {

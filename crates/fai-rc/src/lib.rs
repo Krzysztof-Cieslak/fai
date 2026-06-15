@@ -38,7 +38,7 @@
 
 use std::sync::Arc;
 
-use fai_core::ir::{CExpr, CoreFn, ExprKind as K, FieldIndex, LoweredDef};
+use fai_core::ir::{CExpr, CoreFn, ExprKind as K, FieldIndex, FnAbi, LoweredDef};
 use fai_core::{NicheKind, fuse_def, reassociate_concat};
 use fai_db::{Db, SourceFile};
 use fai_resolve::{DefId, LocalId};
@@ -63,6 +63,7 @@ mod length;
 mod mutual;
 mod purity;
 mod reuse_sig;
+mod sroa;
 mod trmc;
 mod verify;
 
@@ -134,7 +135,16 @@ pub fn rc_lowered(db: &dyn Db, lowered: &LoweredDef, self_sig: &BorrowSig) -> Lo
     let evidence = fai_types::declared_or_inferred_scheme(db, lowered.def)
         .map_or(0, |s| fai_types::evidence_count(&s));
 
+    // The entry's native calling convention: a spread (fixed-shape float
+    // aggregate) parameter/result is exploded into scalar `f64` components by the
+    // SROA pass below (a lifted lambda is reached uniformly via `apply_n`, so it
+    // keeps the boxed representation).
+    let entry_abi = fai_core::abi_of(db, lowered.def);
+    let entry_has_spread = entry_abi.spread_return().is_some()
+        || (0..entry_abi.params.len()).any(|i| entry_abi.spread_param(i).is_some());
+
     let mut fns = Vec::with_capacity(lowered.fns.len());
+    let mut entry_spread_params: Vec<Option<Vec<LocalId>>> = Vec::new();
     for (i, f) in lowered.fns.iter().enumerate() {
         let mut borrowed: Locals = f.captures.iter().copied().collect();
         if i == 0 {
@@ -150,6 +160,25 @@ pub fn rc_lowered(db: &dyn Db, lowered: &LoweredDef, self_sig: &BorrowSig) -> Lo
             f.body.clone()
         };
         let body = anf(raw, &mut next);
+        // Scalar-replace fixed-shape float aggregates: a spread parameter becomes
+        // component locals, a constructed/returned aggregate its scalar components,
+        // reassembling a cell only at a boxed boundary. The entry uses the
+        // definition's spread ABI; a lifted lambda stays uniform.
+        let fn_abi = if i == 0 { (*entry_abi).clone() } else { FnAbi::default() };
+        let (body, spread_params) = sroa::sroa_fn(db, body, &fn_abi, &f.params, &mut next);
+        // A spread parameter's aggregate anchor carries no runtime value — its
+        // scalar components are bound directly from the incoming registers and the
+        // body never references the anchor — so treat it like a borrowed parameter:
+        // reference counting must not duplicate or drop it (a drop would read an
+        // unbound slot).
+        for (p, comps) in spread_params.iter().enumerate() {
+            if comps.is_some() {
+                borrowed.insert(f.params[p]);
+            }
+        }
+        if i == 0 {
+            entry_spread_params = spread_params;
+        }
         let used = fv_owned(&body, &borrowed);
         let mut cx = Rc { captures: &borrowed, next, call_borrows: &arg_borrows };
         let body = cx.owned(body, &Locals::default());
@@ -158,16 +187,20 @@ pub fn rc_lowered(db: &dyn Db, lowered: &LoweredDef, self_sig: &BorrowSig) -> Lo
         let data = data_typed_locals(&body);
         let mut body = reuse_pass(body, &data, &mut next);
         // Drop parameters that the body never mentions (drop-early, at entry) —
-        // but never a borrowed parameter (the caller owns and releases it).
-        for &p in f.params.iter().rev() {
-            if !used.contains(&p) && !borrowed.contains(&p) {
-                body = drop_(p, body);
+        // but never a borrowed parameter (the caller owns and releases it) nor a
+        // spread-parameter anchor (it carries no runtime value; its components are
+        // bound from the incoming registers and dropped as ordinary scalar locals).
+        let is_spread_anchor = |p: usize| entry_spread_params.get(p).is_some_and(Option::is_some);
+        for (p, &param) in f.params.iter().enumerate().rev() {
+            let spread_anchor = i == 0 && is_spread_anchor(p);
+            if !used.contains(&param) && !borrowed.contains(&param) && !spread_anchor {
+                body = drop_(param, body);
             }
         }
-        // Flatten self-tail-recursion in the entry function into a loop (only the
-        // entry can recurse by definition id; lifted lambdas are reached through
-        // `apply_n`). A no-op unless the body is tail-recursive.
-        if i == 0 {
+        // Flatten self-tail-recursion in the entry function into a loop. Deferred
+        // for a spread-ABI entry (loop-carried float-aggregate state is future
+        // work): it recurses via direct calls instead. A no-op unless tail-recursive.
+        if i == 0 && !entry_has_spread {
             body = trmc::flatten(body, &f.params, lowered.def, &is_pure_total, &mut next);
         }
         fns.push(CoreFn { params: f.params.clone(), captures: f.captures.clone(), body });
@@ -177,7 +210,7 @@ pub fn rc_lowered(db: &dyn Db, lowered: &LoweredDef, self_sig: &BorrowSig) -> Lo
         fns,
         entry_borrowed: self_sig.0.clone(),
         reuse_entry: None,
-        entry_spread_params: lowered.entry_spread_params.clone(),
+        entry_spread_params,
     }
 }
 
@@ -579,11 +612,84 @@ impl Rc<'_> {
                 };
                 self.operands_rc(args, &borrows, live, rebuilt)
             }
-            // The SROA pass produces these (a spread result/argument, and the
-            // destructuring of a spread-returning call); their counting is added
-            // when that emission is enabled. They never reach here until then.
-            K::Spread { .. } | K::LetMany { .. } => {
-                unreachable!("Spread/LetMany counting is enabled with SROA emission")
+            // A spread aggregate's components are scalar floats (no reference
+            // count): consumed into the multi-value result/argument, their dup/drop
+            // are runtime no-ops, but the consume discipline is kept uniform.
+            K::Spread { components } => {
+                let borrows = vec![false; components.len()];
+                let rebuilt = move |components| CExpr::new(K::Spread { components }, ty.clone());
+                self.operands_rc(components, &borrows, live, rebuilt)
+            }
+            // Binds a spread-returning call's result components (scalar floats, no
+            // reference count, so the bound locals need no drop). The call stays
+            // multi-result: its boxed arguments are reference-counted in place
+            // (`operands_rc`'s single-temporary wrapping would collapse the N
+            // results), with consumed-but-live arguments duplicated before the call
+            // and dead borrowed arguments dropped after the bind. A spread argument
+            // is a `Spread` of scalar-float components (no reference count).
+            K::LetMany { locals, value, body } => {
+                let fvb = fv_owned(&body, self.captures);
+                let mut live_after = fvb.clone();
+                for l in &locals {
+                    live_after.remove(l);
+                }
+                live_after.extend(live);
+                let body2 = self.owned(*body, live);
+                let K::App { func, args, reuse, alloc } = value.kind else {
+                    // Defensive: a spread value that is not a direct call cannot be
+                    // a multi-result bind; count it as an ordinary value.
+                    let value2 = self.owned(CExpr::new(value.kind, value.ty), &live_after);
+                    return CExpr::new(
+                        K::LetMany { locals, value: Box::new(value2), body: Box::new(body2) },
+                        ty,
+                    );
+                };
+                let nargs = args.len();
+                let borrows = match &func.kind {
+                    K::Global(def) => (self.call_borrows)(*def, nargs),
+                    _ => vec![false; nargs],
+                };
+                let is_borrow = |i: usize| borrows.get(i).copied().unwrap_or(false);
+                let consumed: Locals = args
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, a)| match a.kind {
+                        K::Local(x) if !is_borrow(i) => Some(x),
+                        _ => None,
+                    })
+                    .collect();
+                let mut dups = Vec::new();
+                let mut dead = Vec::new();
+                for (i, a) in args.iter().enumerate() {
+                    let K::Local(x) = a.kind else { continue };
+                    if is_borrow(i) {
+                        if !self.is_capture(x)
+                            && !live_after.contains(&x)
+                            && !consumed.contains(&x)
+                            && !dead.contains(&x)
+                        {
+                            dead.push(x);
+                        }
+                    } else {
+                        let later =
+                            args.iter().enumerate().skip(i + 1).any(|(j, b)| {
+                                !is_borrow(j) && matches!(b.kind, K::Local(y) if y == x)
+                            });
+                        if self.is_capture(x) || live_after.contains(&x) || later {
+                            dups.push(x);
+                        }
+                    }
+                }
+                let call = CExpr::new(K::App { func, args, reuse, alloc }, value.ty);
+                let inner = dropify(dead, body2);
+                let mut out = CExpr::new(
+                    K::LetMany { locals, value: Box::new(call), body: Box::new(inner) },
+                    ty,
+                );
+                for x in dups.into_iter().rev() {
+                    out = dup_(x, out);
+                }
+                out
             }
             // Reference counting runs before reuse tokens are forwarded, so `reuse`
             // is empty here; it is carried through verbatim (tokens are not
