@@ -1,0 +1,42 @@
+module FloatMatrixMultiply
+
+// Multiply two n-by-n Float matrices (built deterministically from their indices)
+// and checksum the product. Matrices are arrays of arrays, so this exercises
+// nested contiguous storage and float-heavy folds with O(1) element access over
+// unboxed `Array Float` rows and columns (each element an inline `f64`, not a
+// pointer to a boxed float). The left matrix is stored as rows and the right as
+// columns, so an entry is the dot product of a row and a column. The float twin of
+// the integer `MatrixMultiply`; used by the Rust-vs-Fai runtime benchmark.
+// Dot product of two equal-length float vectors, by index (raw `f64` reads).
+dot : Int -> Float -> Array Float -> Array Float -> Float
+let dot i acc xs ys =
+  if i >= Array.length xs then
+    acc
+  else
+    dot (i + 1) (acc + Array.unsafeGet i xs * Array.unsafeGet i ys) xs ys
+
+// Row i of the left matrix: a[i][j] = ((i + j) % 7) as a Float.
+row : Int -> Int -> Array Float
+let row n i = Array.init n (fun j -> Int.toFloat ((i + j) % 7))
+
+// Column j of the right matrix: b[i][j] = ((i * j + 1) % 5) as a Float.
+col : Int -> Int -> Array Float
+let col n j = Array.init n (fun i -> Int.toFloat ((i * j + 1) % 5))
+
+rows : Int -> Array (Array Float)
+let rows n = Array.init n (fun i -> row n i)
+
+cols : Int -> Array (Array Float)
+let cols n = Array.init n (fun j -> col n j)
+
+/// The benchmark workload: the sum of all entries of the n-by-n product.
+public run : Int -> Float
+let run n =
+  let a = rows n
+  let b = cols n
+  Array.foldl (fun acc arow ->
+    acc + Array.foldl (fun inner bcol -> inner + dot 0 0.0 arow bcol) 0.0 b) 0.0 a
+example: run 2 = 11.0
+
+public main : Runtime -> Unit / { Console }
+let main runtime = runtime.console.writeLine (Float.toString (run 90))

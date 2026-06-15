@@ -384,3 +384,231 @@ fn equal_arrays_compare_equal() {
     fai_drop(b);
     assert_eq!(live_count(), base);
 }
+
+// ===========================================================================
+// Unboxed `Array Float`: elements are raw `f64` slots, not pointers to boxed
+// floats. A float `push` self-tags the buffer (`FAI_FLOAT_ARRAY_DESC`); the
+// buffer is a reference-counting leaf; structural ops compare/hash by `f64` bits.
+// ===========================================================================
+
+/// A boxed `Float` carrying `f` (one heap allocation, as `fai_box_float` always
+/// boxes).
+fn boxed_float(f: f64) -> Value {
+    fai_box_float(f.to_bits() as i64)
+}
+
+/// Builds an `Array Float` from `elems` via `withCapacity` + in-place `push`es.
+/// Each element is boxed (transiently) for the push, which unboxes it and stores
+/// the raw `f64`, self-tagging the buffer — so the finished array holds **no**
+/// per-element boxes.
+fn arr_from_floats(elems: &[f64]) -> Value {
+    let mut a = fai_array_with_capacity(imm_int(elems.len() as i64));
+    for &e in elems {
+        a = fai_array_push(a, boxed_float(e));
+    }
+    a
+}
+
+/// Reads float element `i` of `a`, borrowing `a` (the borrowed get re-boxes a raw
+/// slot into a fresh owned `Float`, released here).
+fn arr_get_float(a: Value, i: i64) -> f64 {
+    let e = fai_array_get_borrowed(a, imm_int(i));
+    let f = unbox_float(e);
+    fai_drop(e);
+    f
+}
+
+#[test]
+fn float_array_stores_no_persistent_element_boxes() {
+    let _g = lock();
+    let base = live_count();
+    let a = arr_from_floats(&[1.0, 2.0, 3.0]);
+    // The headline win: only the buffer is live — the three floats are inline raw
+    // `f64` slots, not heap `Float` cells (contrast the boxed-`Int` builder, which
+    // leaves three element boxes live).
+    assert_eq!(live_count(), base + 1, "only the buffer is live; no per-element float boxes");
+    assert_eq!(len_of(a), 3);
+    fai_drop(a);
+    assert_eq!(live_count(), base, "leak-free (a float array is a drop leaf)");
+}
+
+#[test]
+fn float_array_get_reads_the_raw_value() {
+    let _g = lock();
+    let base = live_count();
+    let a = arr_from_floats(&[10.0, 20.0, 30.0]);
+    assert_eq!(arr_get_float(a, 1), 20.0);
+    assert_eq!(arr_get_float(a, 2), 30.0);
+    fai_drop(a);
+    assert_eq!(live_count(), base);
+}
+
+#[test]
+fn float_array_get_consuming_reboxes_and_frees_the_buffer() {
+    let _g = lock();
+    let base = live_count();
+    let a = arr_from_floats(&[1.5, 2.5]);
+    assert_eq!(live_count(), base + 1, "just the buffer");
+    let e = fai_array_get(a, imm_int(0));
+    assert_eq!(unbox_float(e), 1.5);
+    assert_eq!(live_count(), base + 1, "buffer freed; the re-boxed float survives");
+    fai_drop(e);
+    assert_eq!(live_count(), base);
+}
+
+#[test]
+fn float_array_set_unique_is_in_place() {
+    let _g = lock();
+    let base = live_count();
+    let a = arr_from_floats(&[1.0, 2.0, 3.0]);
+    // Box the new value before snapshotting allocations, so the counter isolates
+    // the set itself (which must not copy the buffer).
+    let v = boxed_float(20.0);
+    reset_allocations();
+    let a = fai_array_set(a, imm_int(1), v);
+    assert_eq!(allocations(), 0, "a unique float set overwrites in place (no buffer copy)");
+    assert_eq!(arr_get_float(a, 1), 20.0);
+    assert_eq!(arr_get_float(a, 0), 1.0, "other elements untouched");
+    fai_drop(a);
+    assert_eq!(live_count(), base, "the consumed value box was released");
+}
+
+#[test]
+fn float_array_set_shared_copies_raw_slots() {
+    let _g = lock();
+    let base = live_count();
+    let a = arr_from_floats(&[1.0, 2.0]);
+    fai_dup(a); // now shared (rc 2)
+    let v = boxed_float(9.0);
+    reset_allocations();
+    let b = fai_array_set(a, imm_int(0), v);
+    assert_eq!(allocations(), 1, "a shared set copies the buffer once");
+    assert_eq!(arr_get_float(b, 0), 9.0, "the copy is updated");
+    assert_eq!(arr_get_float(a, 0), 1.0, "the original is unchanged");
+    fai_drop(a);
+    fai_drop(b);
+    assert_eq!(live_count(), base);
+}
+
+#[test]
+fn float_array_push_within_capacity_is_in_place() {
+    let _g = lock();
+    let base = live_count();
+    let mut a = fai_array_with_capacity(imm_int(4));
+    a = fai_array_push(a, boxed_float(1.0));
+    a = fai_array_push(a, boxed_float(2.0));
+    assert_eq!(len_of(a), 2);
+    assert_eq!(arr_get_float(a, 1), 2.0);
+    // The buffer is the only survivor — the two transient value boxes were freed.
+    assert_eq!(live_count(), base + 1);
+    fai_drop(a);
+    assert_eq!(live_count(), base);
+}
+
+#[test]
+fn float_array_push_full_grows_and_preserves_values() {
+    let _g = lock();
+    let base = live_count();
+    let a = arr_from_floats(&[1.0, 2.0]); // cap 2, full
+    let a = fai_array_push(a, boxed_float(3.0)); // full → grow (raw word move)
+    assert_eq!(len_of(a), 3);
+    assert_eq!(arr_get_float(a, 2), 3.0);
+    assert_eq!(arr_get_float(a, 0), 1.0, "moved elements are intact");
+    assert_eq!(live_count(), base + 1, "old buffer freed; no element boxes");
+    fai_drop(a);
+    assert_eq!(live_count(), base);
+}
+
+#[test]
+fn float_array_push_shared_copies_raw_slots() {
+    let _g = lock();
+    let base = live_count();
+    let a = arr_from_floats(&[1.0, 2.0]);
+    fai_dup(a); // shared
+    let b = fai_array_push(a, boxed_float(3.0));
+    assert_eq!(len_of(a), 2, "the original keeps its length");
+    assert_eq!(len_of(b), 3, "the copy has the new element");
+    assert_eq!(arr_get_float(b, 2), 3.0);
+    assert_eq!(arr_get_float(a, 1), 2.0, "the shared original's elements are intact");
+    fai_drop(a);
+    fai_drop(b);
+    assert_eq!(live_count(), base);
+}
+
+#[test]
+fn float_arrays_are_structurally_equal_by_value() {
+    let _g = lock();
+    let base = live_count();
+    let a = arr_from_floats(&[1.0, 2.0]);
+    let b = arr_from_floats(&[1.0, 2.0]);
+    assert!(values_equal(a, b), "same float content compares equal");
+    let c = arr_from_floats(&[1.0, 9.0]);
+    assert!(!values_equal(a, c), "differing float content is unequal");
+    fai_drop(a);
+    fai_drop(b);
+    fai_drop(c);
+    assert_eq!(live_count(), base);
+}
+
+#[test]
+fn float_arrays_compare_lexicographically() {
+    let _g = lock();
+    let base = live_count();
+    let a = arr_from_floats(&[1.0, 2.0]);
+    let b = arr_from_floats(&[1.0, 3.0]);
+    assert_eq!(values_compare(a, b), std::cmp::Ordering::Less, "2.0 < 3.0 at index 1");
+    fai_drop(a);
+    fai_drop(b);
+    assert_eq!(live_count(), base);
+}
+
+#[test]
+fn float_array_compare_uses_ieee_total_order() {
+    let _g = lock();
+    let base = live_count();
+    // -0.0 and +0.0 differ in bits, so they are unequal and -0.0 sorts first —
+    // exactly the total order a boxed `Float` uses.
+    let neg = arr_from_floats(&[-0.0]);
+    let pos = arr_from_floats(&[0.0]);
+    assert!(!values_equal(neg, pos), "-0.0 and +0.0 are bit-unequal");
+    assert_eq!(values_compare(neg, pos), std::cmp::Ordering::Less, "-0.0 sorts before +0.0");
+    fai_drop(neg);
+    fai_drop(pos);
+    assert_eq!(live_count(), base);
+}
+
+#[test]
+fn equal_float_arrays_hash_equally() {
+    let _g = lock();
+    let base = live_count();
+    let a = arr_from_floats(&[1.0, 2.0, 3.0]);
+    let b = arr_from_floats(&[1.0, 2.0, 3.0]);
+    assert_eq!(values_hash(a), values_hash(b), "equal float arrays hash equally");
+    fai_drop(a);
+    fai_drop(b);
+    assert_eq!(live_count(), base);
+}
+
+#[test]
+fn empty_float_array_is_handled_as_a_plain_array() {
+    let _g = lock();
+    let base = live_count();
+    // An empty `Array Float` is never pushed, so it keeps the plain descriptor —
+    // harmless, since no walker loops over its (zero) elements.
+    let a = arr_from_floats(&[]);
+    let b = arr_from_floats(&[]);
+    assert_eq!(len_of(a), 0);
+    assert!(values_equal(a, b), "two empty arrays are equal");
+    assert_eq!(values_compare(a, b), std::cmp::Ordering::Equal);
+    let nonempty = arr_from_floats(&[1.0]);
+    assert!(!values_equal(a, nonempty), "empty differs from non-empty");
+    assert_eq!(
+        values_compare(a, nonempty),
+        std::cmp::Ordering::Less,
+        "the empty array sorts first"
+    );
+    fai_drop(a);
+    fai_drop(b);
+    fai_drop(nonempty);
+    assert_eq!(live_count(), base, "leak-free, including the plain-tagged empties");
+}

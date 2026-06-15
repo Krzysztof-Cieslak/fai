@@ -2153,8 +2153,9 @@ Editor integration:
     Capacity is invisible to semantics (equal elements ⇒ equal regardless of
     capacity). Equality is length + elementwise; ordering is **lexicographic,
     shorter-prefix-first** (matching `List`/`String`), so arrays sort and serve as
-    `Dict`/`Set` keys. Elements are boxed uniform slots — an unboxed `Array
-    Float`/`Int` is future work (the array peer of D113/#86).
+     `Dict`/`Set` keys. A boxed element is one uniform slot word; **`Array Float`
+    stores its elements as raw, inline `f64`s** (D133, the array peer of D113/#86 —
+    an unboxed `Array Int` is unnecessary, a small `Int` being an inline immediate).
   - **Five intrinsics, the rest pure Fai.** `Prim.array{WithCapacity,Length,Get,
     Set,Push}` (the first *polymorphic* builtins, quantified over the element type
     and instantiated per use); `withCapacity`/`length`/`get` borrow, `set`/`push`
@@ -2875,12 +2876,11 @@ Editor integration:
   - **Cache.** A codegen-only change does not move the rc'd-IR fingerprint, so the
     `CODEGEN_CONFIG` stamp gains an `array-access-inlined` token to invalidate stale
     cached objects.
-  - **Standing notes.** A `Float` `set` still **boxes** the new value (array slots
-    hold boxed `Float`s; inline `f64` slots are #112), so a Float-array write loop is
-    not yet allocation-free — only reads and `Int` writes are. The redundant
-    safe-path bounds check is since elided by bounds-check elimination (D131).
-    `withCapacity`/`split`/`join` stay runtime calls (their cost is the irreducible
-    allocation/string work).
+  - **Standing notes.** `Array Float` now stores raw, inline `f64`s (D133), so a
+    concrete Float-array write loop is allocation-free too — `unsafeSet`/`push` store
+    the raw bits in place, no per-element box. The redundant safe-path bounds check is
+    since elided by bounds-check elimination (D131). `withCapacity`/`split`/`join`
+    stay runtime calls (their cost is the irreducible allocation/string work).
   - **Validated** by codegen IR-shape tests (the inline bounds/unique checks and slot
     load/store, not a runtime call), `arrays` e2e tests (`Int`/`Float`/boxed/generic
     correctness + leak-free, in-place preserved), the array generate-and-run oracle
@@ -3091,6 +3091,65 @@ Editor integration:
     of `n`), an event-log guard (a CAF body edit re-simplifies its caller but does
     not re-run recognition), and rc-soundness property tests over random `>>` chains.
     Closes the `fold_pipeline` Fai-vs-Rust gap (#130, carved from #103).
+
+- **D133 Unboxed `Array Float` (raw inline `f64` slots, self-tagged, no
+  monomorphization).** An `Array Float` used to store each element as a pointer to a
+  separate heap `Float` cell (a uniform slot word), so a float-array program
+  allocated one box per element, pointer-chased on read, and freed a cell per
+  element on drop. Its elements are now **raw, inline `f64`s** in the buffer (the
+  slot stride is already 8 bytes, so capacity/length/growth math is unchanged — only
+  the *interpretation* of the slot changes). The array peer of the unboxed scalar
+  `Float` (D113); an unboxed `Array Int` is unnecessary (a small `Int` is already an
+  inline immediate, and a float is self-describing where an immediate is not — a
+  reason this is Float-only).
+  - **Self-tagging, not evidence or monomorphization.** A second runtime descriptor
+    `FAI_FLOAT_ARRAY_DESC` keeps `kind = KIND_ARRAY` (so the "same type ⇒ same kind"
+    invariant the structural equality/ordering walks rely on holds for an empty vs a
+    non-empty float array alike) and carries a non-zero `scalar_bitmap` as a
+    whole-array "raw `f64`" flag (the array analogue of a record's per-slot scalar
+    bitmap). A buffer is born plain (`FAI_ARRAY_DESC`) and **upgraded on its first
+    float `push`** — the generic runtime path detects the boxed-float value's
+    `KIND_FLOAT` descriptor, concretely typed codegen stamps it directly — so
+    *generic* construction (`Array.init`/`repeat`/`fromList`, compiled once at a type
+    variable) builds a correctly-tagged raw float array with no evidence plumbing. An
+    empty `Array Float` stays plain-tagged, which is harmless: no walker's element
+    loop runs over it.
+  - **Concrete access is the win; generic access is the ceiling.** Codegen reads the
+    element representation from a wire-preserved standalone type — the get's *result*
+    type and the set/push *value* type, never the operand's `App` element (the object
+    cache projects an `App`'s argument away). A statically-`Float` `unsafeGet` reads
+    the slot word *as* the `f64` bits (no box deref); `unsafeSet`/`push` store the raw
+    bits in place (push self-tags the buffer), the hot path allocation-free (the cold
+    shared/uniqueness-loss fallback re-boxes for the runtime). A **generic
+    (type-variable/erased) element** cannot know the representation statically, so it
+    branches on the array's (or pushed value's) runtime descriptor: a float array
+    re-boxes on read and stores-raw + self-tags on write; any other array keeps the
+    uniform-word path (a single hot, header-cache-line load + compare, so non-float
+    generic access — the common `Array Int` combinator case — is not regressed). The
+    re-box at the generic boundary is the permanent no-`#16` ceiling: generic
+    float-array *traversal* (non-fused `sort`/`toList`/`append`/… and first-class
+    folds) gains no per-element compute and adds transient allocation, but the memory
+    win (no persistent per-element boxes, O(1)-leaf drop, contiguous `f64`s) holds for
+    *all* `Array Float`, and concrete index loops + fused user pipelines are faster.
+  - **Runtime.** `scan_push` treats a float array as a leaf; `fai_array_get`/
+    `get_borrowed` re-box a raw slot; `fai_array_set`/`push` store raw bits (freeing
+    the transient value box) and self-tag, copying raw slots (no per-element dup) on a
+    shared copy and re-stamping a grown/copied buffer; `array_equal`/`array_compare`/
+    the hash arm compare/hash by `f64` bits (`total_cmp`, like a boxed `Float` and a
+    scalar float field). Arrays are excluded from the reset-reuse token mechanism and
+    the pool always rewrites the descriptor, so no stale tag survives recycling.
+  - **Cache.** A representation change to the emitted loads/stores may leave the
+    rc'd-IR fingerprint untouched, so the `CODEGEN_CONFIG` stamp gains an
+    `array-float-unboxed` token to invalidate stale boxed-element objects.
+  - **Validated** by runtime unit tests (raw-slot get/set/push/drop/equal/compare/
+    hash, the empty-array edge), codegen IR-shape tests (a float get is a slot load +
+    bit-reinterpret with no box deref; float set/push store raw bits), `arrays` e2e
+    tests (a concrete build/read allocates independently of length; the keystone
+    generic-build-then-concrete-read consistency; structural eq/ordering and
+    `Dict`/`HashDict` keys; leak-free), a float generate-and-run oracle proptest, and
+    the `SpectralNorm` + new `FloatMatrixMultiply` algorithm benches. Issue #112
+    (under #136); follows D113 (#72, unboxed scalar `Float`) and D129 (#138, inline
+    `Array` access); recommended after #86 (record/tuple float scalarization).
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

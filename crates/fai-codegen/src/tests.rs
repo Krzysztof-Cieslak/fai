@@ -3527,6 +3527,11 @@ fn call_count(ir: &str) -> usize {
     ir.matches("call fn").count()
 }
 
+/// Counts load instructions in a function's IR text (`load.i64`/`load.f64`/…).
+fn load_count(ir: &str) -> usize {
+    ir.matches("load.").count()
+}
+
 #[test]
 fn array_int_get_inlines_a_bounds_checked_slot_load() {
     // `Array.unsafeGet` on an `Array Int` inlines to an unsigned bounds check + a
@@ -3543,10 +3548,11 @@ fn array_int_get_inlines_a_bounds_checked_slot_load() {
 }
 
 #[test]
-fn array_float_get_inlines_a_bounds_checked_slot_load() {
-    // `Array.unsafeGet` on an `Array Float` inlines the bounds check + slot load and
-    // unboxes the (boxed) element to an `f64`; the function returns in an `f64`
-    // register, so its result is unboxed inline rather than via a runtime call.
+fn array_float_get_inlines_a_raw_f64_slot_load_with_no_box_deref() {
+    // `Array.unsafeGet` on an `Array Float` inlines the bounds check and reads the
+    // slot word *as* the `f64` bits (a bit-reinterpret) — the element is stored
+    // unboxed, so there is no pointer-to-box dereference. The function returns in an
+    // `f64` register.
     let src = indoc! {r#"
         module M
 
@@ -3555,10 +3561,49 @@ fn array_float_get_inlines_a_bounds_checked_slot_load() {
     "#};
     let ir = entry_ir(src, "g");
     assert!(ir.contains(" ult "), "inline unsigned bounds check:\n{ir}");
-    assert!(ir.contains("load"), "inline slot load:\n{ir}");
-    // The boxed `Float` slot is unboxed to an `f64` inline (a bit-reinterpret),
-    // confirming the float branch rather than a boxed-element dup.
-    assert!(ir.contains("bitcast"), "inline unbox of the boxed Float to f64:\n{ir}");
+    assert!(ir.contains("bitcast"), "the raw slot word is reinterpreted as f64:\n{ir}");
+    // Exactly three loads: the length (for the bounds check), the element slot, and
+    // the array's reference count (its inline drop at exit). The slot word *is* the
+    // value, so there is no fourth load dereferencing a boxed `Float` (the boxed
+    // representation loaded the slot pointer *and* the box's value word).
+    assert_eq!(load_count(&ir), 3, "one slot load, no box deref:\n{ir}");
+}
+
+#[test]
+fn array_float_set_inlines_a_raw_f64_store() {
+    // `Array.unsafeSet` of a `Float` into an `Array Float` inlines the unique-owner
+    // fast path storing the raw `f64` bits (an `f64const` reinterpreted to an `i64`
+    // and stored), not a boxed `Float` pointer.
+    let src = indoc! {r#"
+        module M
+
+        s : Int -> Array Float -> Array Float
+        let s i a = Array.unsafeSet i 1.5 a
+    "#};
+    let ir = entry_ir(src, "s");
+    assert!(ir.contains(" ult "), "inline unsigned bounds check:\n{ir}");
+    assert!(ir.contains("icmp_imm"), "inline unique-owner (rc == 1) check:\n{ir}");
+    assert!(ir.contains("f64const"), "the float literal is a raw f64:\n{ir}");
+    assert!(ir.contains("bitcast"), "the f64 is reinterpreted to raw bits for the slot:\n{ir}");
+    assert!(ir.contains("store"), "inline slot store:\n{ir}");
+}
+
+#[test]
+fn array_float_push_inlines_a_raw_f64_append() {
+    // `Array.push` of a `Float` onto a unique `Array Float` inlines the in-place
+    // append storing the raw `f64` bits (no box), and self-tags the buffer's
+    // descriptor as the float-array descriptor.
+    let src = indoc! {r#"
+        module M
+
+        p : Float -> Array Float -> Array Float
+        let p x a = Array.push x a
+    "#};
+    let ir = entry_ir(src, "p");
+    assert!(ir.contains("icmp_imm"), "inline unique-owner (rc == 1) check:\n{ir}");
+    assert!(ir.contains("ushr_imm"), "inline capacity-from-size:\n{ir}");
+    assert!(ir.contains("bitcast"), "the f64 is reinterpreted to raw bits for the slot:\n{ir}");
+    assert!(ir.contains("store"), "inline slot store (raw bits) + length bump + self-tag:\n{ir}");
 }
 
 #[test]

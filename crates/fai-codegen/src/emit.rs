@@ -2684,6 +2684,58 @@ impl<M: Module> Translator<'_, M> {
         (addr, slot_off)
     }
 
+    /// Tests at runtime whether array `base` stores raw, unboxed `f64` elements
+    /// (it carries the float-array descriptor) — the self-tag a float `push`
+    /// applied. The descriptor word (offset 8) shares the header cache line the
+    /// access already touches, so this is a hot load + compare. Used only on the
+    /// generic (type-variable element) path, where the static type cannot say.
+    fn array_is_float(&mut self, base: Value) -> Value {
+        let desc_off = i32::try_from(rt::DESC_OFFSET).expect("desc offset");
+        let desc = self.builder.ins().load(types::I64, MemFlags::trusted(), base, desc_off);
+        let float_desc = self.runtime_data_addr("FAI_FLOAT_ARRAY_DESC");
+        self.builder.ins().icmp(IntCC::Equal, desc, float_desc)
+    }
+
+    /// Tests at runtime whether the uniform value `v` is a boxed `Float` (a
+    /// `KIND_FLOAT` cell — every float box carries `FAI_FLOAT_DESC`). The
+    /// descriptor load is guarded by an immediate check, since an immediate is not
+    /// a pointer. Used by the generic `push` to self-tag an `Array Float` from the
+    /// pushed value.
+    fn value_is_boxed_float(&mut self, v: Value) -> Value {
+        let imm_b = self.builder.create_block();
+        let boxed_b = self.builder.create_block();
+        let merge_b = self.builder.create_block();
+        self.builder.append_block_param(merge_b, types::I8);
+        // An immediate has its low bit set; a boxed pointer has it clear.
+        let bit = self.builder.ins().band_imm(v, 1);
+        self.builder.ins().brif(bit, imm_b, &[], boxed_b, &[]);
+
+        self.builder.switch_to_block(imm_b);
+        self.builder.seal_block(imm_b);
+        let no = self.builder.ins().iconst(types::I8, 0);
+        self.builder.ins().jump(merge_b, &[no.into()]);
+
+        self.builder.switch_to_block(boxed_b);
+        self.builder.seal_block(boxed_b);
+        let desc_off = i32::try_from(rt::DESC_OFFSET).expect("desc offset");
+        let desc = self.builder.ins().load(types::I64, MemFlags::trusted(), v, desc_off);
+        let float_desc = self.runtime_data_addr("FAI_FLOAT_DESC");
+        let eq = self.builder.ins().icmp(IntCC::Equal, desc, float_desc);
+        self.builder.ins().jump(merge_b, &[eq.into()]);
+
+        self.builder.switch_to_block(merge_b);
+        self.builder.seal_block(merge_b);
+        self.builder.block_params(merge_b)[0]
+    }
+
+    /// Stamps array `base`'s descriptor word as the float-array descriptor — the
+    /// self-tag a float `push` applies so the generic runtime walkers (drop scan,
+    /// equality, ordering, hashing) read its slots as raw `f64`.
+    fn stamp_float_array(&mut self, base: Value) {
+        let float_desc = self.runtime_data_addr("FAI_FLOAT_ARRAY_DESC");
+        self.store_field(base, rt::DESC_OFFSET, float_desc);
+    }
+
     /// `Array.unsafeGet`: an inline bounds-checked slot load. The array is borrowed.
     /// An `Int` element is read raw and a `Float` element to an `f64` (no dup/drop);
     /// any other element is the slot word with an inline tag-checked dup, so the
@@ -2775,8 +2827,11 @@ impl<M: Module> Translator<'_, M> {
     }
 
     /// Loads element `raw_idx` of array `base` (no bounds check) and brings it to
-    /// its scalar/uniform form: a raw `Int`, an unboxed `Float`, or the slot word
-    /// with an inline tag-checked dup (so it outlives the borrowed array's drop).
+    /// its scalar/uniform form: a raw `Int`, an unboxed `Float` (read straight from
+    /// the raw slot — a float array stores `f64` inline, no box deref), or the slot
+    /// word with an inline tag-checked dup (so it outlives the borrowed array's
+    /// drop). A type-variable/erased element takes the generic path, which converts
+    /// at runtime (re-boxing a raw `f64` slot of a float array).
     fn array_load_elem(&mut self, base: Value, raw_idx: Value, elem: &Ty) -> Value {
         let (addr, slot_off) = self.array_elem_addr(base, raw_idx);
         let word = self.builder.ins().load(types::I64, MemFlags::trusted(), addr, slot_off);
@@ -2785,12 +2840,44 @@ impl<M: Module> Translator<'_, M> {
                 let raw = self.borrow_unbox_int_to_raw(word);
                 self.mark_raw(raw)
             }
-            Ty::Con(Con::Float) => self.borrowing_unbox(word),
+            // A concrete float array: the slot word *is* the `f64` bits.
+            Ty::Con(Con::Float) => self.i64_to_f64(word),
+            _ if elem_may_be_float(elem) => self.array_load_elem_generic(base, word, elem),
             _ => {
                 self.dup_value(word, elem);
                 word
             }
         }
+    }
+
+    /// The generic (type-variable/erased element) array read: the static type
+    /// cannot say whether the slot is a raw `f64` or a boxed pointer, so branch on
+    /// the array's runtime self-tag. A float array's raw slot is boxed into a fresh
+    /// owned `Float`; a boxed element is tag-checked-duped so it outlives the
+    /// borrowed array. Both yield a uniform word.
+    fn array_load_elem_generic(&mut self, base: Value, word: Value, elem: &Ty) -> Value {
+        let is_float = self.array_is_float(base);
+        let box_b = self.builder.create_block();
+        let dup_b = self.builder.create_block();
+        let merge_b = self.builder.create_block();
+        self.builder.append_block_param(merge_b, types::I64);
+        self.builder.ins().brif(is_float, box_b, &[], dup_b, &[]);
+
+        // Float array: the slot holds raw `f64` bits; box a fresh owned `Float`.
+        self.builder.switch_to_block(box_b);
+        self.builder.seal_block(box_b);
+        let boxed = self.call1("fai_box_float", word);
+        self.builder.ins().jump(merge_b, &[boxed.into()]);
+
+        // Boxed-element array: dup the slot pointer (an immediate dups as a no-op).
+        self.builder.switch_to_block(dup_b);
+        self.builder.seal_block(dup_b);
+        self.dup_value(word, elem);
+        self.builder.ins().jump(merge_b, &[word.into()]);
+
+        self.builder.switch_to_block(merge_b);
+        self.builder.seal_block(merge_b);
+        self.builder.block_params(merge_b)[0]
     }
 
     /// `Array.unsafeSet`: an inline in-place store when the array is uniquely owned
@@ -2802,9 +2889,18 @@ impl<M: Module> Translator<'_, M> {
     /// standalone type, unlike the operand's projected-away `App` element).
     fn array_set_inline(&mut self, args: &[CExpr]) -> Value {
         let elem = args[2].ty.clone();
+        let concrete_float = matches!(elem, Ty::Con(Con::Float));
+        let generic = elem_may_be_float(&elem);
         let base = self.expr(&args[0]);
         let raw_idx = self.array_index_raw(&args[1]);
-        let value = self.expr_boxed(&args[2]);
+        // A concrete float element is stored as raw `f64` bits; otherwise a uniform
+        // word (a generic element converts at runtime in the fast path).
+        let value = if concrete_float {
+            let v = self.expr(&args[2]);
+            self.float_field_bits(v)
+        } else {
+            self.expr_boxed(&args[2])
+        };
 
         let len_off = i32::try_from(rt::ARRAY_LEN_OFFSET).expect("array length offset");
         let rc_off = i32::try_from(rt::RC_OFFSET).expect("rc offset");
@@ -2833,27 +2929,79 @@ impl<M: Module> Translator<'_, M> {
         self.builder.append_block_param(merge_b, types::I64);
         self.builder.ins().brif(fast, fast_b, &[], slow_b, &[]);
 
-        // Fast path: overwrite the slot in place, releasing the old element.
+        // Fast path: overwrite the slot in place.
         self.builder.switch_to_block(fast_b);
         self.builder.seal_block(fast_b);
         let (addr, slot_off) = self.array_elem_addr(base, raw_idx);
-        let old = self.builder.ins().load(types::I64, MemFlags::trusted(), addr, slot_off);
-        self.builder.ins().store(MemFlags::trusted(), value, addr, slot_off);
-        self.drop_value(old, &elem);
+        if concrete_float {
+            // Raw `f64` store; the overwritten slot carries no reference count, so
+            // there is no old element to release.
+            self.builder.ins().store(MemFlags::trusted(), value, addr, slot_off);
+        } else if generic {
+            // The static type cannot say whether the array is raw `f64`; branch on
+            // its self-tag at runtime.
+            self.array_set_store_generic(base, addr, slot_off, value, &elem);
+        } else {
+            // A boxed/`Int` element: store the new word, releasing the old element.
+            let old = self.builder.ins().load(types::I64, MemFlags::trusted(), addr, slot_off);
+            self.builder.ins().store(MemFlags::trusted(), value, addr, slot_off);
+            self.drop_value(old, &elem);
+        }
         self.builder.ins().jump(merge_b, &[base.into()]);
 
         // Slow path: the runtime copies a shared array and aborts on a bad index.
         self.builder.switch_to_block(slow_b);
         self.builder.seal_block(slow_b);
         let tagged_idx = self.box_or_tag_int(raw_idx);
+        // The runtime expects a uniform value: a concrete float's raw bits are
+        // re-boxed here (the cold uniqueness-loss path) and the runtime re-unboxes
+        // into the float array's raw slot.
+        let arg = if concrete_float { self.call1("fai_box_float", value) } else { value };
         let f = self.runtime("fai_array_set", 3, true);
-        let call = self.builder.ins().call(f, &[base, tagged_idx, value]);
+        let call = self.builder.ins().call(f, &[base, tagged_idx, arg]);
         let copied = self.builder.inst_results(call)[0];
         self.builder.ins().jump(merge_b, &[copied.into()]);
 
         self.builder.switch_to_block(merge_b);
         self.builder.seal_block(merge_b);
         self.builder.block_params(merge_b)[0]
+    }
+
+    /// The generic (type-variable element) in-place set store: branch on the
+    /// array's runtime self-tag. A float array stores the boxed value's raw bits
+    /// (freeing the box; the old raw slot carries no count); a boxed array stores
+    /// the word and releases the old element.
+    fn array_set_store_generic(
+        &mut self,
+        base: Value,
+        addr: Value,
+        slot_off: i32,
+        value: Value,
+        elem: &Ty,
+    ) {
+        let is_float = self.array_is_float(base);
+        let float_b = self.builder.create_block();
+        let boxed_b = self.builder.create_block();
+        let cont_b = self.builder.create_block();
+        self.builder.ins().brif(is_float, float_b, &[], boxed_b, &[]);
+
+        // Float array: store the boxed value's raw bits and free the box.
+        self.builder.switch_to_block(float_b);
+        self.builder.seal_block(float_b);
+        let bits = self.float_field_bits(value);
+        self.builder.ins().store(MemFlags::trusted(), bits, addr, slot_off);
+        self.builder.ins().jump(cont_b, &[]);
+
+        // Boxed array: store the new word, releasing the old element.
+        self.builder.switch_to_block(boxed_b);
+        self.builder.seal_block(boxed_b);
+        let old = self.builder.ins().load(types::I64, MemFlags::trusted(), addr, slot_off);
+        self.builder.ins().store(MemFlags::trusted(), value, addr, slot_off);
+        self.drop_value(old, elem);
+        self.builder.ins().jump(cont_b, &[]);
+
+        self.builder.switch_to_block(cont_b);
+        self.builder.seal_block(cont_b);
     }
 
     /// `Array.push`. The array and value are consumed; capacity is derived from the
@@ -2867,8 +3015,17 @@ impl<M: Module> Translator<'_, M> {
     ///   factor matches the runtime (double, from a base of 4).
     /// - **shared** — the runtime `fai_array_push`, which copies the shared buffer.
     fn array_push_inline(&mut self, args: &[CExpr]) -> Value {
+        let concrete_float = matches!(args[1].ty, Ty::Con(Con::Float));
+        let generic = elem_may_be_float(&args[1].ty);
         let base = self.expr(&args[0]);
-        let value = self.expr_boxed(&args[1]);
+        // A concrete float element is the raw `f64` bits; otherwise a uniform word
+        // (a generic element converts at runtime in the in-place / grow paths).
+        let value = if concrete_float {
+            let v = self.expr(&args[1]);
+            self.float_field_bits(v)
+        } else {
+            self.expr_boxed(&args[1])
+        };
 
         let len_off = i32::try_from(rt::ARRAY_LEN_OFFSET).expect("array length offset");
         let rc_off = i32::try_from(rt::RC_OFFSET).expect("rc offset");
@@ -2904,7 +3061,7 @@ impl<M: Module> Translator<'_, M> {
         self.builder.switch_to_block(fast_b);
         self.builder.seal_block(fast_b);
         let (addr, slot_off) = self.array_elem_addr(base, len);
-        self.builder.ins().store(MemFlags::trusted(), value, addr, slot_off);
+        self.array_push_store(base, addr, slot_off, value, concrete_float, generic);
         self.builder.ins().store(MemFlags::trusted(), len1, base, len_off);
         self.builder.ins().jump(merge_b, &[base.into()]);
 
@@ -2922,7 +3079,7 @@ impl<M: Module> Translator<'_, M> {
         let grown = self.inline_alloc_array(new_size);
         self.copy_array_elems(base, grown, len);
         let (gaddr, gslot) = self.array_elem_addr(grown, len);
-        self.builder.ins().store(MemFlags::trusted(), value, gaddr, gslot);
+        self.array_push_store(grown, gaddr, gslot, value, concrete_float, generic);
         self.builder.ins().store(MemFlags::trusted(), len1, grown, len_off);
         self.inline_free_array(base, size);
         self.builder.ins().jump(merge_b, &[grown.into()]);
@@ -2930,14 +3087,69 @@ impl<M: Module> Translator<'_, M> {
         // Shared: the runtime copies the shared buffer with the new element.
         self.builder.switch_to_block(shared_b);
         self.builder.seal_block(shared_b);
+        // The runtime expects a uniform value: a concrete float's raw bits are
+        // re-boxed here (the cold uniqueness-loss path) and the runtime self-tags.
+        let arg = if concrete_float { self.call1("fai_box_float", value) } else { value };
         let f = self.runtime("fai_array_push", 2, true);
-        let call = self.builder.ins().call(f, &[base, value]);
+        let call = self.builder.ins().call(f, &[base, arg]);
         let copied = self.builder.inst_results(call)[0];
         self.builder.ins().jump(merge_b, &[copied.into()]);
 
         self.builder.switch_to_block(merge_b);
         self.builder.seal_block(merge_b);
         self.builder.block_params(merge_b)[0]
+    }
+
+    /// Writes a pushed element into a slot, self-tagging a float array. A concrete
+    /// float element's raw bits are stored and the array stamped; a generic element
+    /// branches on whether the pushed value is a boxed float at runtime; a concrete
+    /// boxed/`Int` element is stored as-is.
+    fn array_push_store(
+        &mut self,
+        obj: Value,
+        addr: Value,
+        slot_off: i32,
+        value: Value,
+        concrete_float: bool,
+        generic: bool,
+    ) {
+        if concrete_float {
+            // `value` is the raw `f64` bits.
+            self.builder.ins().store(MemFlags::trusted(), value, addr, slot_off);
+            self.stamp_float_array(obj);
+        } else if generic {
+            self.array_push_store_generic(obj, addr, slot_off, value);
+        } else {
+            self.builder.ins().store(MemFlags::trusted(), value, addr, slot_off);
+        }
+    }
+
+    /// The generic (type-variable element) push store: a boxed-`Float` value marks
+    /// (and self-tags) an `Array Float` — store its raw bits, free the box, and
+    /// stamp the buffer; any other value is stored as a uniform word.
+    fn array_push_store_generic(&mut self, obj: Value, addr: Value, slot_off: i32, value: Value) {
+        let is_float = self.value_is_boxed_float(value);
+        let float_b = self.builder.create_block();
+        let boxed_b = self.builder.create_block();
+        let cont_b = self.builder.create_block();
+        self.builder.ins().brif(is_float, float_b, &[], boxed_b, &[]);
+
+        // A boxed float: store its raw bits, freeing the box, and self-tag.
+        self.builder.switch_to_block(float_b);
+        self.builder.seal_block(float_b);
+        let bits = self.float_field_bits(value);
+        self.builder.ins().store(MemFlags::trusted(), bits, addr, slot_off);
+        self.stamp_float_array(obj);
+        self.builder.ins().jump(cont_b, &[]);
+
+        // Any other value: a uniform word.
+        self.builder.switch_to_block(boxed_b);
+        self.builder.seal_block(boxed_b);
+        self.builder.ins().store(MemFlags::trusted(), value, addr, slot_off);
+        self.builder.ins().jump(cont_b, &[]);
+
+        self.builder.switch_to_block(cont_b);
+        self.builder.seal_block(cont_b);
     }
 
     /// Emits a loop copying `count` element slots from array `src` to array `dst`
@@ -5278,6 +5490,16 @@ fn array_elem(ty: &Ty) -> Option<&Ty> {
         Ty::App(head, elem) if matches!(head.as_ref(), Ty::Con(Con::Array)) => Some(elem),
         _ => None,
     }
+}
+
+/// Whether an array element type might be a raw-`f64` slot at runtime — a type
+/// variable or an erased element (the combined mutual-recursion function), where
+/// the static type cannot decide. A concrete element (`Int`, `Float`, a record,
+/// `String`, …) is decided statically, so it never needs the runtime self-tag
+/// check. Drives the generic get/set/push paths, which branch on the array's (or
+/// pushed value's) descriptor at runtime.
+fn elem_may_be_float(elem: &Ty) -> bool {
+    matches!(elem, Ty::Var(_) | Ty::Error)
 }
 
 /// Whether this (already lambda-lifted) function body contains an `Array`

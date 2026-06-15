@@ -310,7 +310,8 @@ is closest to the pure size factor.
     Rust's `Vec`. `MapSum`/`MapSumShared` build-map-fold an `Array`; `MergeSort`
     uses the standard `Array.sort`; `QuickSort` is a hand-written in-place array
     quicksort; `MatrixMultiply`/`Levenshtein` use array-of-array and array-row DP;
-    `SpectralNorm` uses `Array Float`; `NBody`/`Particles` hold their bodies in an
+    `SpectralNorm` and `FloatMatrixMultiply` use unboxed `Array Float` (raw inline
+    `f64` slots); `NBody`/`Particles` hold their bodies in an
     `Array`; `WordCount` splits and joins through `Array String`
     (`String.splitArray`/`joinArray`).
   - **Persistent linked** where the workload is naturally persistent and a `List`
