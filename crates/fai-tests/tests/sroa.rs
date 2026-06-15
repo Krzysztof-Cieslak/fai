@@ -176,3 +176,57 @@ fn first_class_spread_closure_is_correct() {
     // scaled = (2,4),(6,8); sumx = 2 + 6 = 8.
     allocs(src, "8");
 }
+
+/// A scalar-returning function whose only parameter is a float aggregate is
+/// **borrow-inferred** (the parameter is merely projected), yet the spread
+/// boundary consumes its cell: passed first-class (to `List.map`), the owned
+/// wrapper explodes and drops the boxed argument exactly once. Forcing such a
+/// spread parameter owned (rather than lent) is what keeps the caller from also
+/// dropping the cell — a double-free regression guard.
+#[test]
+fn first_class_aggregate_param_scalar_result_is_correct() {
+    let src = "module M\n\
+        public type Vec2 = { x : Float, y : Float }\n\
+        public length : Vec2 -> Float\n\
+        let length v = v.x + v.y\n\
+        public sumF : List Float -> Float\n\
+        let sumF xs =\n  \
+          match xs with\n  \
+          | [] -> 0.0\n  \
+          | x :: rest -> x + sumF rest\n\
+        public main : Runtime -> Unit / { Console }\n\
+        let main rt =\n  \
+          let pts = [{ x = 1.0, y = 2.0 }, { x = 3.0, y = 4.0 }]\n  \
+          let ls = List.map length pts\n  \
+          rt.console.writeLine (Int.toString (Float.toInt (sumF ls)))\n";
+    // length = x + y → [3, 7]; sumF = 3 + 7 = 10.
+    allocs(src, "10");
+}
+
+/// `example`/`forall` contracts over an aggregate-consuming function run through
+/// the isolated contract worker (a separate wire/synthesis path from `fai run`):
+/// the spread argument is built component-wise and never materialized, and the
+/// run is leak-free. A regression guard for the contract path.
+#[test]
+fn contracts_over_aggregate_function_pass() {
+    use fai_driver::{TestConfig, test};
+    let src = "module M\n\
+        public type Vec2 = { x : Float, y : Float }\n\
+        public length : Vec2 -> Float\n\
+        let length v = Float.sqrt (v.x * v.x + v.y * v.y)\n\
+        example: length { x = 3.0, y = 4.0 } >= 0.0\n\
+        forall v: length v >= 0.0\n";
+    let _g = lock();
+    let mut db = FaiDatabase::new();
+    fai_types::std_lib::load_std(&mut db);
+    let id = db.add_source("M.fai".into(), src.to_owned());
+    let file = db.source_file(id).unwrap();
+    let o = test(&db, &[file], None, TestConfig::default());
+    assert!(
+        o.ok,
+        "contracts pass: diags={:?}",
+        o.diagnostics.iter().map(|d| d.code.as_str()).collect::<Vec<_>>()
+    );
+    assert_eq!(o.passed, o.total, "all contracts ran and passed");
+    assert_eq!(o.leaked, 0, "contract run is leak-free");
+}
