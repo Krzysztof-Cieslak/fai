@@ -660,7 +660,7 @@ fn code_signature<M: Module>(module: &M) -> cranelift_codegen::ir::Signature {
 /// uniform [`code_signature`]. `arity` is the runtime parameter count.
 fn entry_signature<M: Module>(
     module: &M,
-    _arity: usize,
+    arity: usize,
     abi: &FnAbi,
 ) -> cranelift_codegen::ir::Signature {
     if !abi.register_abi {
@@ -668,8 +668,12 @@ fn entry_signature<M: Module>(
     }
     let mut sig = module.make_signature();
     sig.params.push(AbiParam::new(types::I64)); // env (unused: a top-level entry captures nothing)
-    for r in &abi.params {
-        for t in repr_types(r) {
+    // One parameter group per runtime parameter (a spread aggregate is N `f64`s);
+    // a parameter beyond the ABI's reprs (a body with more parameters than the
+    // signature's arrows) is a uniform word, matching the binding loop.
+    for i in 0..arity {
+        let r = abi.params.get(i).cloned().unwrap_or(Repr::Uniform);
+        for t in repr_types(&r) {
             sig.params.push(AbiParam::new(t));
         }
     }
@@ -703,14 +707,14 @@ fn reuse_entry_signature<M: Module>(
     source_arity: usize,
     abi: &FnAbi,
 ) -> cranelift_codegen::ir::Signature {
-    let _ = source_arity;
     let mut sig = module.make_signature();
     sig.params.push(AbiParam::new(types::I64)); // env (unused: captures nothing)
     for _ in 0..tokens {
         sig.params.push(AbiParam::new(types::I64)); // a reuse token (raw i64)
     }
-    for r in &abi.params {
-        for t in repr_types(r) {
+    for i in 0..source_arity {
+        let r = abi.params.get(i).cloned().unwrap_or(Repr::Uniform);
+        for t in repr_types(&r) {
             sig.params.push(AbiParam::new(t));
         }
     }
