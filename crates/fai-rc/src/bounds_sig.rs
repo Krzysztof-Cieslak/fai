@@ -589,9 +589,13 @@ fn bce_transfer(
     b.transfer_let(local, value);
 }
 
-/// The full result signature of `d` to apply at a call: in-file, the current
-/// numeric facts merged with its length-preservation equalities; cross-file, the
-/// public [`result_facts`] (already merged).
+/// The full result signature of `d` to apply at a call: the numeric facts merged
+/// with its length-preservation equalities. For an in-file callee the numeric facts
+/// are the fixpoint's current in-progress map; for a cross-file callee they are read
+/// from that file's [`module_bounds_facts`] **directly** (not the [`result_facts`]
+/// projection), so the only query a cyclic cross-module call graph puts in a salsa
+/// cycle is `module_bounds_facts` itself (which iterates to a fixpoint) — never the
+/// thin `result_facts`/`entry_bounds` projections.
 fn result_sig_for(
     db: &dyn Db,
     source: SourceId,
@@ -603,7 +607,10 @@ fn result_sig_for(
         let lenpres = file_lenpres_edges(db, source, d.name);
         merge_result(numeric, lenpres)
     } else if let Some(other) = db.source_file(d.file) {
-        (*result_facts(db, other, d.name)).clone()
+        let numeric =
+            module_bounds_facts(db, other).result.get(&d.name).cloned().unwrap_or_default();
+        let lenpres = lenpres_edges(db, other, d.name);
+        merge_result(numeric, lenpres)
     } else {
         ResultSig::default()
     }
