@@ -139,6 +139,7 @@ algorithm_benches! {
     particles => "Particles",
     nqueens => "NQueens",
     matrix_multiply => "MatrixMultiply",
+    float_matrix_multiply => "FloatMatrixMultiply",
     levenshtein => "Levenshtein",
     game_of_life => "GameOfLife",
     spectral_norm => "SpectralNorm",

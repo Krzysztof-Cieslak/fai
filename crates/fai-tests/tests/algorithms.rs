@@ -180,6 +180,11 @@ fn matrix_multiply_sample_is_valid() {
 }
 
 #[test]
+fn float_matrix_multiply_sample_is_valid() {
+    validate("FloatMatrixMultiply");
+}
+
+#[test]
 fn levenshtein_sample_is_valid() {
     validate("Levenshtein");
 }

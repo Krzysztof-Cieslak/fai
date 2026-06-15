@@ -3,10 +3,10 @@ module SpectralNorm
 // The spectral norm of the infinite matrix A(i, j) = 1 / ((i+j)(i+j+1)/2 + i + 1)
 // by ten rounds of power iteration: v = AᵀA u then u = AᵀA v. The vectors are
 // `Array Float`, so this is a float-heavy reduction with a final `sqrt` over
-// contiguous storage with O(1) access. All sums accumulate left to right
-// (tail-recursive) to match the reference exactly. (The `Float` elements are still
-// individually boxed; an unboxed `Array Float` is future work.) Used by the
-// Rust-vs-Fai runtime benchmark.
+// contiguous storage with O(1) access. The `Float` elements are stored unboxed
+// (inline `f64`s), so the concrete `unsafeGet` index loops read raw words with no
+// per-element box. All sums accumulate left to right (tail-recursive) to match the
+// reference exactly. Used by the Rust-vs-Fai runtime benchmark.
 evalA : Int -> Int -> Float
 let evalA i j =
   let s = i + j

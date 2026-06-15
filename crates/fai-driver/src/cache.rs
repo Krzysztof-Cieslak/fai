@@ -56,8 +56,12 @@ use crate::backend::{abi_of, arity_of, object_code, symbol_base};
 /// pre-inlining object. The `bounds-check-elim` token marks an inline `Array`
 /// access whose index a difference-bound analysis proves in range compiling
 /// without its bounds check, so a cache warmed before that change can never serve a
-/// pre-elision object.
-const CODEGEN_CONFIG: &str = "opt=speed;int-prims-inlined;reg-direct-call;divrem-inlined;scalar-float-fields;early-drop;poly-cmp-inlined;array-access-inlined;hash-inlined;bounds-check-elim";
+/// pre-elision object. The `array-float-unboxed` token marks an `Array Float`
+/// storing its elements as raw, inline `f64`s (self-tagged at runtime) rather than
+/// pointers to boxed floats — a representation change to the emitted loads/stores
+/// that may leave the reference-counted IR (and so the fingerprint) untouched, so a
+/// cache warmed before it must not serve a stale boxed-element object.
+const CODEGEN_CONFIG: &str = "opt=speed;int-prims-inlined;reg-direct-call;divrem-inlined;scalar-float-fields;early-drop;poly-cmp-inlined;array-access-inlined;hash-inlined;bounds-check-elim;array-float-unboxed";
 
 /// An explicit cache-directory override (set by embedders/tests), taking
 /// precedence over `$FAI_CACHE_DIR`. `None` (the default) falls back to the

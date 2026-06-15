@@ -331,6 +331,30 @@ unsafe fn obj_descriptor(p: *const u8) -> *const Descriptor {
 #[unsafe(no_mangle)]
 pub static FAI_ARRAY_DESC: Descriptor = descriptor(KIND_ARRAY, "Array");
 
+/// The whole-array marker — stored in an `Array` descriptor's `scalar_bitmap` —
+/// meaning every element slot holds a raw, unboxed `f64` rather than a boxed
+/// pointer. An array's elements are uniform, so unlike a `KIND_DATA` per-slot
+/// bitmap a single non-zero flag covers the whole buffer.
+pub const ARRAY_SCALAR_FLOAT: u64 = u64::MAX;
+
+/// Descriptor for an `Array Float` whose elements are stored as raw, unboxed
+/// `f64`s — a reference-counting leaf (an `f64` carries no count). Self-tagging:
+/// an array is born with the plain [`FAI_ARRAY_DESC`] and **upgraded** to this on
+/// its first float `push` (the generic runtime path detects the boxed-float value;
+/// concretely typed code stamps it directly), so generic construction needs no
+/// evidence plumbing. An empty `Array Float` keeps the plain descriptor — it has
+/// no elements to misread. Shares `KIND_ARRAY` with the boxed descriptor so the
+/// "same type ⇒ same kind" invariant the structural equality/ordering walks rely
+/// on holds for empty vs non-empty float arrays alike; the `scalar_bitmap` flag is
+/// what distinguishes raw-`f64` storage.
+#[unsafe(no_mangle)]
+pub static FAI_FLOAT_ARRAY_DESC: Descriptor = Descriptor {
+    kind: KIND_ARRAY,
+    scalar_bitmap: ARRAY_SCALAR_FLOAT,
+    name_ptr: "Array".as_ptr(),
+    name_len: "Array".len(),
+};
+
 /// Whether data slot `index` of the cell at `p` holds an unboxed `f64` (per its
 /// descriptor's scalar bitmap). Slots at index ≥ 64 are always uniform (the bitmap
 /// caps at 64; wider cells fall back to all-uniform at construction).
@@ -345,6 +369,28 @@ unsafe fn slot_is_scalar(p: *const u8, index: usize) -> bool {
     // SAFETY: `p` is a live data object with a valid descriptor.
     let bitmap = unsafe { desc_scalar_bitmap(obj_descriptor(p)) };
     bitmap & (1u64 << index) != 0
+}
+
+/// Whether the array object at `p` stores its elements as raw, unboxed `f64`s
+/// (it carries [`FAI_FLOAT_ARRAY_DESC`]). Only meaningful for a non-empty array:
+/// an empty `Array Float` keeps the plain descriptor, but it has no element slots
+/// to interpret, so every walker's element loop is empty for it regardless.
+///
+/// # Safety
+/// `p` must point to a valid live `Array` object.
+#[inline]
+unsafe fn array_obj_is_float(p: *const u8) -> bool {
+    // SAFETY: `p` is a live array object with a valid descriptor.
+    unsafe { desc_scalar_bitmap(obj_descriptor(p)) != 0 }
+}
+
+/// Whether `v` is a boxed `Float` (a `KIND_FLOAT` cell). Used by the generic
+/// `push` to self-tag an `Array Float`: an `Array Float` only ever receives
+/// floats, so a pushed boxed-float value identifies the array as float-element.
+#[inline]
+fn value_is_boxed_float(v: Value) -> bool {
+    // SAFETY: only dereference `v`'s descriptor once it is known boxed.
+    is_boxed(v) && unsafe { desc_kind(obj_descriptor(as_obj(v))) == KIND_FLOAT }
 }
 
 /// The interned per-shape data descriptors, keyed by scalar bitmap. A
@@ -1103,13 +1149,18 @@ unsafe fn scan_push(p: *mut u8, work: &mut DropWork) {
                 }
             }
         } else if desc_kind(desc) == KIND_ARRAY {
-            // An array's children are its live element slots (`0..length`); the
-            // spare capacity beyond `length` is uninitialized and not scanned.
-            let len = read_u64(p, ARRAY_LEN_OFFSET) as usize;
-            for i in 0..len {
-                let elem = read_i64(p, ARRAY_ELEMS_OFFSET + i * 8);
-                if is_boxed(elem) {
-                    work.push(elem);
+            // A raw-`f64` array (`FAI_FLOAT_ARRAY_DESC`, a non-zero scalar bitmap)
+            // is a leaf: its slots are unboxed floats with no reference count.
+            if desc_scalar_bitmap(desc) == 0 {
+                // A boxed-element array's children are its live element slots
+                // (`0..length`); the spare capacity beyond `length` is
+                // uninitialized and not scanned.
+                let len = read_u64(p, ARRAY_LEN_OFFSET) as usize;
+                for i in 0..len {
+                    let elem = read_i64(p, ARRAY_ELEMS_OFFSET + i * 8);
+                    if is_boxed(elem) {
+                        work.push(elem);
+                    }
                 }
             }
         } else if desc_kind(desc) == KIND_STRING_SLICE {
@@ -1482,6 +1533,20 @@ fn alloc_array(length: usize, cap: usize) -> *mut u8 {
     p
 }
 
+/// Marks the array buffer at `p` as holding raw, unboxed `f64` elements
+/// ([`FAI_FLOAT_ARRAY_DESC`]) — the self-tag a float `push` applies, and what the
+/// copy/grow paths re-apply to a freshly allocated buffer that inherits a float
+/// source's elements (a new buffer is born with the plain `FAI_ARRAY_DESC`).
+///
+/// # Safety
+/// `p` must point to a valid live `Array` object.
+#[inline]
+unsafe fn stamp_float_array(p: *mut u8) {
+    // SAFETY: `p` is a live array object; overwriting its descriptor pointer with
+    // another `KIND_ARRAY` descriptor preserves its kind and layout.
+    unsafe { write_ptr(p, DESC_OFFSET, std::ptr::addr_of!(FAI_FLOAT_ARRAY_DESC).cast()) };
+}
+
 /// The capacity to grow to so an array of capacity `cap` can hold `needed`
 /// elements: double from a small base until it fits.
 fn grow_cap(cap: usize, needed: usize) -> usize {
@@ -1559,33 +1624,44 @@ pub extern "C" fn fai_bce_unsound_panic() {
     fai_panic("bounds-check elimination unsound: index out of bounds");
 }
 
-/// Element `index`, returning an owned reference and consuming `arr` (the element
-/// is duplicated so it outlives `arr`'s drop). Out-of-bounds aborts.
+/// Element `index`, returning an owned reference and consuming `arr`. A boxed
+/// element is duplicated so it outlives `arr`'s drop; a raw-`f64` element (a float
+/// array) is boxed into a fresh owned `Float`. Out-of-bounds aborts.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_array_get(arr: Value, index: Value) -> Value {
     let index = unbox_int(index) as usize;
     // SAFETY: `arr` is a boxed array; the slot is in bounds after the check.
-    let elem = unsafe {
+    unsafe {
         array_bounds_check(index, array_len(arr));
-        read_i64(as_obj(arr), ARRAY_ELEMS_OFFSET + index * 8)
-    };
-    fai_dup(elem);
-    fai_drop(arr);
-    elem
+        let p = as_obj(arr);
+        let slot = read_i64(p, ARRAY_ELEMS_OFFSET + index * 8);
+        if array_obj_is_float(p) {
+            // Raw `f64` slot: box a fresh owned `Float`; the array (a leaf) frees
+            // its buffer on drop without touching the unboxed slots.
+            let boxed = fai_box_float(slot);
+            fai_drop(arr);
+            boxed
+        } else {
+            fai_dup(slot);
+            fai_drop(arr);
+            slot
+        }
+    }
 }
 
-/// Element `index`, *borrowing* `arr` (the caller releases it); the element is
-/// duplicated so the returned reference is owned independently. Out-of-bounds
-/// aborts.
+/// Element `index`, *borrowing* `arr` (the caller releases it). A boxed element is
+/// duplicated so the returned reference is owned independently; a raw-`f64` element
+/// is boxed into a fresh owned `Float`. Out-of-bounds aborts.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_array_get_borrowed(arr: Value, index: Value) -> Value {
     let index = unbox_int(index) as usize;
     // SAFETY: `arr` is a boxed array; the slot is in bounds after the check.
-    let elem = unsafe {
+    unsafe {
         array_bounds_check(index, array_len(arr));
-        read_i64(as_obj(arr), ARRAY_ELEMS_OFFSET + index * 8)
-    };
-    fai_dup(elem)
+        let p = as_obj(arr);
+        let slot = read_i64(p, ARRAY_ELEMS_OFFSET + index * 8);
+        if array_obj_is_float(p) { fai_box_float(slot) } else { fai_dup(slot) }
+    }
 }
 
 /// Replaces element `index` with `value`, consuming `arr` and `value`. The unique
@@ -1599,30 +1675,54 @@ pub extern "C" fn fai_array_set(arr: Value, index: Value, value: Value) -> Value
         let len = array_len(arr);
         array_bounds_check(index, len);
         let p = as_obj(arr);
-        // Unique owner: overwrite the slot in place, releasing the old element.
+        // A non-empty array is already self-tagged, so its descriptor flag tells us
+        // whether the slots are raw `f64`. For a float array the incoming `value`
+        // is a boxed `Float`; store its raw bits and release the transient box.
+        let is_float = array_obj_is_float(p);
+        let stored = if is_float {
+            let bits = read_i64(as_obj(value), FLOAT_VALUE_OFFSET);
+            fai_drop(value);
+            bits
+        } else {
+            value
+        };
+        // Unique owner: overwrite the slot in place. A boxed old element is
+        // released; a raw `f64` old slot carries no count, so there is nothing to
+        // release.
         if read_u64(p, RC_OFFSET) == 1 {
-            let old = read_i64(p, ARRAY_ELEMS_OFFSET + index * 8);
-            write_i64(p, ARRAY_ELEMS_OFFSET + index * 8, value);
-            fai_drop(old);
+            if is_float {
+                write_i64(p, ARRAY_ELEMS_OFFSET + index * 8, stored);
+            } else {
+                let old = read_i64(p, ARRAY_ELEMS_OFFSET + index * 8);
+                write_i64(p, ARRAY_ELEMS_OFFSET + index * 8, stored);
+                fai_drop(old);
+            }
             return arr;
         }
         // Shared: copy the live elements with the one at `index` replaced. This is
         // a uniqueness-loss buffer duplication (O(length) work), counted so a
         // mutation driven through code that fails to keep the array unique is
-        // observable even though it is a single allocation.
+        // observable even though it is a single allocation. A float array's
+        // elements are raw bits (copied, not duped) and the new buffer is re-tagged.
         note_array_copy();
         let q = alloc_array(len, len);
+        if is_float {
+            stamp_float_array(q);
+        }
         for i in 0..len {
             if i == index {
-                write_i64(q, ARRAY_ELEMS_OFFSET + i * 8, value);
+                write_i64(q, ARRAY_ELEMS_OFFSET + i * 8, stored);
             } else {
                 let e = read_i64(p, ARRAY_ELEMS_OFFSET + i * 8);
-                fai_dup(e);
+                if !is_float {
+                    fai_dup(e);
+                }
                 write_i64(q, ARRAY_ELEMS_OFFSET + i * 8, e);
             }
         }
         // Release this reference: drops the copied-out elements once (balancing the
-        // dups) and the replaced old element once.
+        // dups) and the replaced old element once. A float array is a leaf, so this
+        // only frees the old buffer.
         fai_drop(arr);
         from_obj(q)
     }
@@ -1639,35 +1739,58 @@ pub extern "C" fn fai_array_push(arr: Value, value: Value) -> Value {
         let cap = array_cap(arr);
         let p = as_obj(arr);
         let unique = read_u64(p, RC_OFFSET) == 1;
+        // A boxed-`Float` value identifies (and self-tags) an `Array Float`: store
+        // the raw bits and release the transient box. Detected from the value (not
+        // the array) so it works on the first push, when the array is still the
+        // plain empty buffer; type safety guarantees an `Array Float` only ever
+        // receives floats, so the tag is consistent across the array's life.
+        let is_float = value_is_boxed_float(value);
+        let stored = if is_float {
+            let bits = read_i64(as_obj(value), FLOAT_VALUE_OFFSET);
+            fai_drop(value);
+            bits
+        } else {
+            value
+        };
         if unique && len < cap {
             // In place: write the spare slot and bump the length.
-            write_i64(p, ARRAY_ELEMS_OFFSET + len * 8, value);
+            write_i64(p, ARRAY_ELEMS_OFFSET + len * 8, stored);
             write_u64(p, ARRAY_LEN_OFFSET, (len + 1) as u64);
+            if is_float {
+                stamp_float_array(p);
+            }
             return arr;
         }
         let q = alloc_array(len + 1, grow_cap(cap, len + 1));
+        if is_float {
+            stamp_float_array(q);
+        }
         if unique {
             // Unique but full: move the elements into the larger buffer (no
-            // dup/drop — ownership transfers) and reclaim the old memory directly.
+            // dup/drop — ownership transfers, raw `f64` or boxed alike) and reclaim
+            // the old memory directly.
             std::ptr::copy_nonoverlapping(
                 p.add(ARRAY_ELEMS_OFFSET),
                 q.add(ARRAY_ELEMS_OFFSET),
                 len * 8,
             );
-            write_i64(q, ARRAY_ELEMS_OFFSET + len * 8, value);
+            write_i64(q, ARRAY_ELEMS_OFFSET + len * 8, stored);
             free_obj(p);
         } else {
-            // Shared: copy the elements (dup each — now shared with the original),
-            // then release this reference (balancing the dups). A uniqueness-loss
-            // buffer duplication (counted), as opposed to the unique-but-full grow
-            // above, which is expected amortized growth.
+            // Shared: copy the elements (a float array's raw bits are copied, not
+            // duped; a boxed array's are duped — now shared with the original), then
+            // release this reference (balancing the dups). A uniqueness-loss buffer
+            // duplication (counted), as opposed to the unique-but-full grow above,
+            // which is expected amortized growth.
             note_array_copy();
             for i in 0..len {
                 let e = read_i64(p, ARRAY_ELEMS_OFFSET + i * 8);
-                fai_dup(e);
+                if !is_float {
+                    fai_dup(e);
+                }
                 write_i64(q, ARRAY_ELEMS_OFFSET + i * 8, e);
             }
-            write_i64(q, ARRAY_ELEMS_OFFSET + len * 8, value);
+            write_i64(q, ARRAY_ELEMS_OFFSET + len * 8, stored);
             fai_drop(arr);
         }
         from_obj(q)
@@ -1685,10 +1808,19 @@ unsafe fn array_equal(a: Value, b: Value) -> bool {
         if n != array_len(b) {
             return false;
         }
+        // Both share a type; a non-empty array is self-tagged, so read the
+        // raw-`f64` flag from `a` (consulted only when the loop runs — n > 0 — where
+        // `a` is non-empty and therefore stamped).
+        let is_float = n > 0 && array_obj_is_float(as_obj(a));
         for i in 0..n {
             let ea = read_i64(as_obj(a), ARRAY_ELEMS_OFFSET + i * 8);
             let eb = read_i64(as_obj(b), ARRAY_ELEMS_OFFSET + i * 8);
-            if !values_equal(ea, eb) {
+            if is_float {
+                // Raw `f64` slots: compare by bits (as a boxed `Float` does).
+                if ea != eb {
+                    return false;
+                }
+            } else if !values_equal(ea, eb) {
                 return false;
             }
         }
@@ -1706,10 +1838,21 @@ unsafe fn array_compare(a: Value, b: Value) -> std::cmp::Ordering {
     // SAFETY: both are boxed arrays; only `0..length` is live.
     unsafe {
         let (na, nb) = (array_len(a), array_len(b));
-        for i in 0..na.min(nb) {
+        let m = na.min(nb);
+        // Both share a type; consult the raw-`f64` flag from a non-empty operand
+        // (the loop runs only when m > 0, where `a` has ≥ m ≥ 1 elements and is
+        // therefore self-tagged).
+        let is_float = m > 0 && array_obj_is_float(as_obj(a));
+        for i in 0..m {
             let ea = read_i64(as_obj(a), ARRAY_ELEMS_OFFSET + i * 8);
             let eb = read_i64(as_obj(b), ARRAY_ELEMS_OFFSET + i * 8);
-            match values_compare(ea, eb) {
+            let ord = if is_float {
+                // Raw `f64` slots: IEEE-754 total order (as a boxed `Float` does).
+                f64::from_bits(ea as u64).total_cmp(&f64::from_bits(eb as u64))
+            } else {
+                values_compare(ea, eb)
+            };
+            match ord {
                 Ordering::Equal => {}
                 other => return other,
             }
@@ -3136,10 +3279,14 @@ fn values_hash(v: Value) -> u64 {
             // SAFETY: `v` is a boxed array.
             unsafe {
                 let n = array_len(v);
+                // A non-empty array is self-tagged: a float array's slots are raw
+                // `f64` bits, hashed like a boxed `Float` (and a scalar float field).
+                let is_float = n > 0 && array_obj_is_float(as_obj(v));
                 let mut h = mix64((n as u64).rotate_left(17) ^ 0xA5A5_A5A5_A5A5_A5A5);
                 for i in 0..n {
                     let e = read_i64(as_obj(v), ARRAY_ELEMS_OFFSET + i * 8);
-                    h = hash_combine(h, values_hash(e));
+                    let eh = if is_float { mix64(e as u64) } else { values_hash(e) };
+                    h = hash_combine(h, eh);
                 }
                 h
             }

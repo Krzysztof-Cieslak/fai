@@ -300,6 +300,28 @@ pub fn matrix_multiply(n: i64) -> i64 {
     acc
 }
 
+/// The sum of all entries of the `n`-by-`n` product `A·B` over `Float` matrices,
+/// with `A(i,j)=(i+j)%7` and `B(i,j)=(i*j+1)%5` (each cast to `f64`). The float
+/// twin of [`matrix_multiply`], exercising unboxed `Array Float` rows/columns;
+/// folds left to match the Fai version's accumulation order. Every entry is a
+/// small integer, so the `f64` sum is exact (well within 2⁵³).
+#[must_use]
+pub fn float_matrix_multiply(n: i64) -> f64 {
+    let rows: Vec<Vec<f64>> =
+        (0..n).map(|i| (0..n).map(|j| ((i + j) % 7) as f64).collect()).collect();
+    let cols: Vec<Vec<f64>> =
+        (0..n).map(|j| (0..n).map(|i| ((i * j + 1) % 5) as f64).collect()).collect();
+    let mut acc = 0.0;
+    for arow in &rows {
+        let mut inner = 0.0;
+        for bcol in &cols {
+            inner += arow.iter().zip(bcol).fold(0.0, |d, (x, y)| d + x * y);
+        }
+        acc += inner;
+    }
+    acc
+}
+
 /// The edit distance between two length-`n` integer sequences (`i%7` and
 /// `(i*3)%7`) by the two-row dynamic program the Fai version mirrors.
 #[must_use]
@@ -1174,6 +1196,13 @@ pub const ALGORITHMS: &[Algorithm] = &[
         oracle: Oracle::Int(matrix_multiply),
     },
     Algorithm {
+        module: "FloatMatrixMultiply",
+        entry: "run",
+        jit_size: 30,
+        aot_size: 90,
+        oracle: Oracle::Float(float_matrix_multiply),
+    },
+    Algorithm {
         module: "Levenshtein",
         entry: "run",
         jit_size: 40,
@@ -1361,6 +1390,9 @@ pub fn source(module: &str) -> &'static str {
         "Particles" => include_str!("../../../samples/algorithms/Particles.fai"),
         "NQueens" => include_str!("../../../samples/algorithms/NQueens.fai"),
         "MatrixMultiply" => include_str!("../../../samples/algorithms/MatrixMultiply.fai"),
+        "FloatMatrixMultiply" => {
+            include_str!("../../../samples/algorithms/FloatMatrixMultiply.fai")
+        }
         "Levenshtein" => include_str!("../../../samples/algorithms/Levenshtein.fai"),
         "GameOfLife" => include_str!("../../../samples/algorithms/GameOfLife.fai"),
         "SpectralNorm" => include_str!("../../../samples/algorithms/SpectralNorm.fai"),

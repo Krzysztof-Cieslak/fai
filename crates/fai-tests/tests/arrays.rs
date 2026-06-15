@@ -366,6 +366,163 @@ fn generic_sort_over_boxed_elements_is_correct_and_leak_free() {
 }
 
 // ===========================================================================
+// Unboxed `Array Float`: elements are stored as raw inline `f64`, not pointers to
+// boxed floats. Concrete index loops read/write the raw slots; a generically-built
+// float array (e.g. via `Array.init`) is self-tagged so concrete reads agree;
+// structural equality/ordering/hashing compare by `f64` bits.
+// ===========================================================================
+
+#[test]
+fn float_array_concrete_build_allocates_independently_of_length() {
+    // Building an `Array Float` by concrete pushes of computed `f64` values into a
+    // pre-sized buffer stores raw bits — no per-element box. So the allocation count
+    // is independent of length (just the one buffer plus fixed overhead); the boxed
+    // representation allocated one `Float` cell per element, scaling with N.
+    let prog = |n: i64| {
+        formatdoc! {r#"
+            module M
+
+            build : Int -> Int -> Array Float -> Array Float
+            let build i n acc =
+              if i >= n then acc else build (i + 1) n (Array.push (Int.toFloat i) acc)
+
+            sumF : Int -> Float -> Array Float -> Float
+            let sumF i acc xs =
+              if i >= Array.length xs then acc else sumF (i + 1) (acc + Array.unsafeGet i xs) xs
+
+            public main : Runtime -> Unit / {{ Console }}
+            let main rt =
+              let xs = build 0 {n} (Array.withCapacity {n})
+              rt.console.writeLine (Float.toString (sumF 0 0.0 xs))
+        "#, n = n}
+    };
+    let (c1, o1, a1, _) = run_counted(&prog(100));
+    assert_eq!(c1, 0, "clean exit (small):\n{o1}");
+    assert_eq!(o1.trim(), "4950.0");
+    let (c2, o2, a2, _) = run_counted(&prog(1000));
+    assert_eq!(c2, 0, "clean exit (big):\n{o2}");
+    assert_eq!(o2.trim(), "499500.0");
+    assert_eq!(
+        a1, a2,
+        "a concrete Array Float build/read allocates no per-element box ({a1} vs {a2})"
+    );
+}
+
+#[test]
+fn float_array_generic_build_then_concrete_read_is_consistent() {
+    // The representation-consistency keystone: `Array.init` builds the float array
+    // through generic (compiled-once) code, whose runtime push self-tags it raw and
+    // stores `f64` bits; the concrete `unsafeGet` then reads those raw bits. A
+    // representation mismatch would read a pointer as a float (garbage) or crash —
+    // here the sum of i*i is exact and the run is leak-free.
+    let src = indoc! {r#"
+        module M
+
+        sumF : Int -> Float -> Array Float -> Float
+        let sumF i acc xs =
+          if i >= Array.length xs then acc else sumF (i + 1) (acc + Array.unsafeGet i xs) xs
+
+        public main : Runtime -> Unit / { Console }
+        let main rt =
+          let xs = Array.init 100 (fun i -> Int.toFloat (i * i))
+          rt.console.writeLine (Float.toString (sumF 0 0.0 xs))
+    "#};
+    let (code, out, _, _) = run_counted(src);
+    assert_eq!(code, 0, "clean (leak-free) exit:\n{out}");
+    // Σ i² for i in 0..99 = 99·100·199/6 = 328350.
+    assert_eq!(out.trim(), "328350.0");
+}
+
+#[test]
+fn float_array_unique_set_is_in_place() {
+    // A concrete `unsafeSet` of a float into a uniquely-owned `Array Float` stores
+    // raw bits in place, so the buffer-copy count is zero and independent of length.
+    let prog = |n: i64| {
+        formatdoc! {r#"
+            module M
+
+            zero : Int -> Array Float -> Array Float
+            let zero i xs =
+              if i >= Array.length xs then xs else zero (i + 1) (Array.unsafeSet i 0.0 xs)
+
+            sumF : Int -> Float -> Array Float -> Float
+            let sumF i acc xs =
+              if i >= Array.length xs then acc else sumF (i + 1) (acc + Array.unsafeGet i xs) xs
+
+            public main : Runtime -> Unit / {{ Console }}
+            let main rt =
+              let xs = zero 0 (Array.init {n} (fun i -> Int.toFloat i))
+              rt.console.writeLine (Float.toString (sumF 0 0.0 xs))
+        "#, n = n}
+    };
+    let small = copies_full(&prog(20), "0.0");
+    let big = copies_full(&prog(400), "0.0");
+    assert_eq!(small, 0, "a unique float set is in place (small)");
+    assert_eq!(big, 0, "a unique float set is in place (big)");
+}
+
+#[test]
+fn float_array_structural_equality() {
+    outputs("if (Array.fromList [1.0, 2.0]) = (Array.fromList [1.0, 2.0]) then 1 else 0", "1");
+    outputs("if (Array.fromList [1.0, 2.0]) = (Array.fromList [1.0, 3.0]) then 1 else 0", "0");
+}
+
+#[test]
+fn float_array_structural_ordering() {
+    outputs("if (Array.fromList [1.0, 2.0]) < (Array.fromList [1.0, 3.0]) then 1 else 0", "1");
+    outputs("if (Array.fromList [2.0]) < (Array.fromList [1.0, 9.0]) then 1 else 0", "0");
+}
+
+#[test]
+fn float_array_as_dict_key_uses_structural_compare() {
+    // An ordered `Dict` keyed by `Array Float` exercises `array_compare`'s float arm
+    // (raw `f64` `total_cmp`): the lookup key, an equal-content but distinct array,
+    // is found.
+    outputs(
+        "if Dict.member (Array.fromList [1.0, 2.0]) (Dict.insert (Array.fromList [1.0, 2.0]) 7 Dict.empty) then 1 else 0",
+        "1",
+    );
+}
+
+#[test]
+fn float_array_as_hashdict_key_uses_structural_hash() {
+    // A `HashDict` keyed by `Array Float` exercises `values_hash`'s float arm and
+    // `array_equal`: a distinct equal-content key hashes and compares equal.
+    outputs(
+        "HashDict.getOr 0 (Array.fromList [1.0, 2.0]) (HashDict.insert (Array.fromList [1.0, 2.0]) 9 HashDict.empty)",
+        "9",
+    );
+}
+
+#[test]
+fn array_of_option_float_is_not_mistaken_for_a_float_array() {
+    // An `Option Float` element niche-erases to a standard `Some` cell in an array
+    // slot (niche encoding is a monomorphic-only optimization, dropped where a value
+    // crosses a uniform slot), so the generic `push`'s "is this a boxed float?"
+    // self-tag check sees a `KIND_DATA` cell, not the `Some` payload's boxed float —
+    // the array is *not* mis-tagged as raw `f64`. Building and reading back is correct
+    // and leak-free.
+    let src = indoc! {r#"
+        module M
+
+        public main : Runtime -> Unit / { Console }
+        let main rt =
+          let xs = Array.fromList [Some 1.5, None, Some 2.5]
+          rt.console.writeLine (Float.toString (Option.withDefault 0.0 (Array.unsafeGet 2 xs)))
+    "#};
+    let (code, out, _, _) = run_counted(src);
+    assert_eq!(code, 0, "clean (leak-free) exit:\n{out}");
+    assert_eq!(out.trim(), "2.5");
+}
+
+#[test]
+fn empty_float_array_has_length_zero_and_is_leak_free() {
+    // Filtering every element out yields an empty (plain-tagged) `Array Float`: it
+    // has length 0 and drops leak-free (no element loop runs over it).
+    outputs("Array.length (Array.filter (fun x -> x > 9.0) (Array.fromList [1.0, 2.0, 3.0]))", "0");
+}
+
+// ===========================================================================
 // In-place sorts: a sort over a uniquely-owned array mutates the buffer in place,
 // so it duplicates the buffer a *constant* (zero) number of times regardless of
 // length. A `set`/`swap` driven through recursive, tuple-threaded code used to
@@ -505,6 +662,37 @@ fn render_arr(e: &ArrExpr) -> String {
     }
 }
 
+/// Renders the same pipeline to Fai source over `Array Float`, each integer
+/// rendered as an integer-valued float and the consumer a float `foldl`. The
+/// oracle stays [`eval_arr`] over `Vec<i64>`: every value is an exact small
+/// integer, so the `f64` arithmetic is exact (well within 2⁵³) and the sum
+/// compares exactly — exercising the unboxed `Array Float` build/read/structural
+/// paths across arbitrary pipelines without float-tolerance fuzz.
+fn render_arr_float(e: &ArrExpr) -> String {
+    match e {
+        ArrExpr::Range(lo, hi) => format!("(Array.map Int.toFloat (Array.range {lo} {hi}))"),
+        ArrExpr::Lit(xs) => {
+            if xs.is_empty() {
+                // `foldl … 0.0` fixes the element type, so a bare `[||]` is well typed.
+                "[||]".to_owned()
+            } else {
+                let elems: Vec<String> = xs.iter().map(|x| format!("{x}.0")).collect();
+                format!("[| {} |]", elems.join(", "))
+            }
+        }
+        ArrExpr::Map(k, e) => format!("(Array.map (fun x -> x + {k}.0) {})", render_arr_float(e)),
+        ArrExpr::Filter(j, e) => {
+            format!("(Array.filter (fun x -> x > {j}.0) {})", render_arr_float(e))
+        }
+        ArrExpr::Reverse(e) => format!("(Array.reverse {})", render_arr_float(e)),
+        ArrExpr::Take(n, e) => format!("(Array.take {n} {})", render_arr_float(e)),
+        ArrExpr::Sort(e) => format!("(Array.sort {})", render_arr_float(e)),
+        ArrExpr::Append(a, b) => {
+            format!("(Array.append {} {})", render_arr_float(a), render_arr_float(b))
+        }
+    }
+}
+
 /// Evaluates the pipeline over `Vec<i64>` — the independent oracle.
 fn eval_arr(e: &ArrExpr) -> Vec<i64> {
     match e {
@@ -572,6 +760,35 @@ proptest! {
         let (code, out, _, _) = run_counted(&src);
         prop_assert_eq!(code, 0, "leak-free exit for:\n{}\n{}", render_arr(&e), out);
         prop_assert_eq!(out.trim(), expected.to_string(), "oracle mismatch for {}", render_arr(&e));
+    }
+}
+
+proptest! {
+    // Each case is a full JIT compile + run under the global counter lock, so keep
+    // the case count modest.
+    #![proptest_config(ProptestConfig { cases: 48, ..ProptestConfig::default() })]
+
+    #[test]
+    fn random_float_array_pipeline_matches_oracle(e in arr_expr()) {
+        // The same pipelines over unboxed `Array Float`, summed left-to-right. Every
+        // value is an exact small integer, so the float sum equals the integer
+        // oracle exactly and prints as `N.0`.
+        let expected: i64 = eval_arr(&e).into_iter().sum();
+        let src = formatdoc! {r#"
+            module M
+
+            public main : Runtime -> Unit / {{ Console }}
+            let main rt =
+              rt.console.writeLine (Float.toString (Array.foldl (fun acc x -> acc + x) 0.0 {body}))
+        "#, body = render_arr_float(&e)};
+        let (code, out, _, _) = run_counted(&src);
+        prop_assert_eq!(code, 0, "leak-free exit for:\n{}\n{}", render_arr_float(&e), out);
+        prop_assert_eq!(
+            out.trim(),
+            format!("{expected}.0"),
+            "oracle mismatch for {}",
+            render_arr_float(&e)
+        );
     }
 }
 
