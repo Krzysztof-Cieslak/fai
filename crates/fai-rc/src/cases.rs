@@ -6273,3 +6273,256 @@ fn inlined_permuted_array_push_is_sound() {
         "f",
     );
 }
+
+// ── length preservation (the recursive in-place sorts) ───────────────────────
+
+use crate::tests::lenpres_sig;
+use fai_core::WHOLE;
+
+#[test]
+fn lenpres_swap_preserves_the_array() {
+    // An in-place swap returns the same array, so its whole result preserves the
+    // length of the array parameter (position 2).
+    assert_eq!(
+        lenpres_sig(
+            indoc! {r#"
+                module M
+
+                swap : Int -> Int -> Array Int -> Array Int
+                let swap i j a =
+                  let vi = Array.unsafeGet i a
+                  let vj = Array.unsafeGet j a
+                  Array.unsafeSet j vi (Array.unsafeSet i vj a)
+            "#},
+            "swap",
+        ),
+        vec![(WHOLE, 2)],
+    );
+}
+
+#[test]
+fn lenpres_partition_tuple_field_preserves_the_array() {
+    // Lomuto partition returns `(pivot, array)`; the array field (1) preserves the
+    // length of the array parameter (3), through the in-place swap and its own
+    // recursion (coinductive).
+    assert_eq!(
+        lenpres_sig(
+            indoc! {r#"
+                module M
+
+                swap : Int -> Int -> Array Int -> Array Int
+                let swap i j a =
+                  let vi = Array.unsafeGet i a
+                  let vj = Array.unsafeGet j a
+                  Array.unsafeSet j vi (Array.unsafeSet i vj a)
+
+                partition : Int -> Int -> Int -> Array Int -> (Int * Array Int)
+                let partition hi j store a =
+                  if j >= hi - 1 then
+                    (store, swap store (hi - 1) a)
+                  else if Array.unsafeGet j a < Array.unsafeGet (hi - 1) a then
+                    partition hi (j + 1) (store + 1) (swap store j a)
+                  else
+                    partition hi (j + 1) store a
+            "#},
+            "partition",
+        ),
+        vec![(1, 3)],
+    );
+}
+
+#[test]
+fn lenpres_qsort_is_coinductively_preserving() {
+    // `qsort` rebuilds the array through partition and two self-recursions; its
+    // whole result preserves the array parameter (2) only under the coinductive
+    // assumption (self returns the same length as its array argument).
+    assert_eq!(
+        lenpres_sig(
+            indoc! {r#"
+                module M
+
+                swap : Int -> Int -> Array Int -> Array Int
+                let swap i j a =
+                  let vi = Array.unsafeGet i a
+                  let vj = Array.unsafeGet j a
+                  Array.unsafeSet j vi (Array.unsafeSet i vj a)
+
+                partition : Int -> Int -> Int -> Array Int -> (Int * Array Int)
+                let partition hi j store a =
+                  if j >= hi - 1 then
+                    (store, swap store (hi - 1) a)
+                  else if Array.unsafeGet j a < Array.unsafeGet (hi - 1) a then
+                    partition hi (j + 1) (store + 1) (swap store j a)
+                  else
+                    partition hi (j + 1) store a
+
+                qsort : Int -> Int -> Array Int -> Array Int
+                let qsort lo hi a =
+                  if hi - lo <= 1 then
+                    a
+                  else
+                    match partition hi lo lo a with
+                    | (p, a2) ->
+                      if p - lo < hi - p - 1 then
+                        qsort (p + 1) hi (qsort lo p a2)
+                      else
+                        qsort lo p (qsort (p + 1) hi a2)
+            "#},
+            "qsort",
+        ),
+        vec![(WHOLE, 2)],
+    );
+}
+
+#[test]
+fn lenpres_map_does_not_preserve() {
+    // A fresh-building map allocates a new array, so it preserves no parameter's
+    // length (the array it returns is unrelated in length to the input).
+    assert_eq!(
+        lenpres_sig(
+            indoc! {r#"
+                module M
+
+                public double : Array Int -> Array Int
+                let double xs = Array.map (fun x -> x + x) xs
+            "#},
+            "double",
+        ),
+        vec![],
+    );
+}
+
+// ── coupled entry/result bounds facts (the recursive sorts) ──────────────────
+
+use crate::tests::{entry_edges, result_edges};
+use fai_core::{PTerm, RTerm};
+
+/// The hand-written quicksort program (the `QuickSort` sample shape).
+const QUICKSORT: &str = r#"
+module M
+
+swap : Int -> Int -> Array Int -> Array Int
+let swap i j a =
+  let vi = Array.unsafeGet i a
+  let vj = Array.unsafeGet j a
+  Array.unsafeSet j vi (Array.unsafeSet i vj a)
+
+partition : Int -> Int -> Int -> Array Int -> (Int * Array Int)
+let partition hi j store a =
+  if j >= hi - 1 then
+    (store, swap store (hi - 1) a)
+  else if Array.unsafeGet j a < Array.unsafeGet (hi - 1) a then
+    partition hi (j + 1) (store + 1) (swap store j a)
+  else
+    partition hi (j + 1) store a
+
+qsort : Int -> Int -> Array Int -> Array Int
+let qsort lo hi a =
+  if hi - lo <= 1 then
+    a
+  else
+    match partition hi lo lo a with
+    | (p, a2) ->
+      if p - lo < hi - p - 1 then
+        qsort (p + 1) hi (qsort lo p a2)
+      else
+        qsort lo p (qsort (p + 1) hi a2)
+
+gen : Int -> Array Int
+let gen n = Array.init n (fun k -> (k * 2654435761 + 12345) % n)
+
+checksum : Int -> Int -> Int -> Array Int -> Int
+let checksum i acc n a =
+  if i >= n then acc else checksum (i + 1) (acc + i * Array.unsafeGet i a) n a
+
+public run : Int -> Int
+let run n =
+  let sorted = qsort 0 n (gen n)
+  checksum 0 0 n sorted
+"#;
+
+#[test]
+fn qsort_threads_hi_below_len_coinductively() {
+    // `hi <= len(a)` (Param(1) <= LenParam(2)) holds through qsort's recursion: it
+    // needs the partition pivot result fact and qsort's own length preservation,
+    // assumed to be proved.
+    let edges = entry_edges(QUICKSORT, "qsort");
+    assert!(
+        edges.contains(&(PTerm::Param(1), PTerm::LenParam(2), 0)),
+        "qsort entry should carry hi <= len(a), got {edges:?}"
+    );
+}
+
+#[test]
+fn partition_result_pivot_is_below_hi() {
+    // The returned pivot (result component 0) is in `[0, hi)`: `ResultVal(0) <=
+    // Param(0) - 1` and `ResultVal(0) >= 0`.
+    let edges = result_edges(QUICKSORT, "partition");
+    assert!(
+        edges.contains(&(RTerm::ResultVal(0), RTerm::Param(0), -1)),
+        "partition result should carry pivot < hi, got {edges:?}"
+    );
+    assert!(
+        edges.contains(&(RTerm::Zero, RTerm::ResultVal(0), 0)),
+        "partition result should carry pivot >= 0, got {edges:?}"
+    );
+}
+
+#[test]
+fn partition_result_preserves_array_length() {
+    // The returned array (result component 1) has the same length as the array
+    // parameter (3) — the coinductive length-preservation equality.
+    let edges = result_edges(QUICKSORT, "partition");
+    assert!(
+        edges.contains(&(RTerm::ResultLen(1), RTerm::LenParam(3), 0)),
+        "partition result should carry len(result.1) == len(a), got {edges:?}"
+    );
+}
+
+#[test]
+fn gen_result_len_at_least_n() {
+    // `gen n = Array.init n …` has `len(result) >= n` (Param(0) <= ResultLen),
+    // threaded from `Array.init`'s inferred length lower bound.
+    let edges = result_edges(QUICKSORT, "gen");
+    assert!(
+        edges.contains(&(RTerm::Param(0), RTerm::ResultLen(WHOLE), 0)),
+        "gen result should carry len >= n, got {edges:?}"
+    );
+}
+
+#[test]
+fn checksum_entry_has_n_below_len() {
+    // `checksum` is called with `n` and the sorted array of length `len(gen n) >= n`,
+    // so `n <= len(a)` (Param(2) <= LenParam(3)) and `i >= 0` hold on entry.
+    let edges = entry_edges(QUICKSORT, "checksum");
+    assert!(
+        edges.contains(&(PTerm::Param(2), PTerm::LenParam(3), 0)),
+        "checksum entry should carry n <= len(a), got {edges:?}"
+    );
+    assert!(
+        edges.contains(&(PTerm::Zero, PTerm::Param(0), 0)),
+        "checksum entry should carry i >= 0, got {edges:?}"
+    );
+}
+
+#[test]
+fn loop_counter_upper_bound_does_not_drift() {
+    // A bare counting loop's index has no real upper bound; the fixpoint must not
+    // invent a (creeping) one. `count` is called externally with `0`, recurses with
+    // `i + 1`, and only `i >= 0` is a sound entry fact.
+    let src = r#"
+module M
+
+count : Int -> Int -> Int
+let count i n = if i >= n then 0 else count (i + 1) n
+
+public run : Int -> Int
+let run n = count 0 n
+"#;
+    let edges = entry_edges(src, "count");
+    assert!(edges.contains(&(PTerm::Zero, PTerm::Param(0), 0)), "i >= 0 holds, got {edges:?}");
+    assert!(
+        !edges.iter().any(|&(a, b, _)| a == PTerm::Param(0) && b == PTerm::Zero),
+        "no spurious upper bound on the loop counter, got {edges:?}"
+    );
+}

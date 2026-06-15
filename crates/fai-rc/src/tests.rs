@@ -59,6 +59,30 @@ pub(crate) fn escape_sig(src: &str, name: &str) -> Vec<bool> {
     crate::escape_signature(&db, file, Symbol::intern(name)).0
 }
 
+/// The inferred length-preservation pairs of `name` in `src` (sorted
+/// `(result-component, parameter)` pairs). Asserts the program typechecks first.
+pub(crate) fn lenpres_sig(src: &str, name: &str) -> Vec<(u32, u32)> {
+    let (db, file) = db_with(src);
+    assert_well_typed(&db, file).unwrap_or_else(|e| panic!("`{name}` {e}\n{src}"));
+    crate::length_preservation(&db, file, Symbol::intern(name)).0
+}
+
+/// The inferred entry-fact difference edges of `name` in `src`. Asserts the program
+/// typechecks first.
+pub(crate) fn entry_edges(src: &str, name: &str) -> Vec<(fai_core::PTerm, fai_core::PTerm, i64)> {
+    let (db, file) = db_with(src);
+    assert_well_typed(&db, file).unwrap_or_else(|e| panic!("`{name}` {e}\n{src}"));
+    crate::entry_bounds(&db, file, Symbol::intern(name)).edges.clone()
+}
+
+/// The inferred result-fact difference edges of `name` in `src`. Asserts the program
+/// typechecks first.
+pub(crate) fn result_edges(src: &str, name: &str) -> Vec<(fai_core::RTerm, fai_core::RTerm, i64)> {
+    let (db, file) = db_with(src);
+    assert_well_typed(&db, file).unwrap_or_else(|e| panic!("`{name}` {e}\n{src}"));
+    crate::result_facts(&db, file, Symbol::intern(name)).edges.clone()
+}
+
 /// Whether calling `name` in `src` is pure and total. Asserts the program
 /// typechecks first.
 pub(crate) fn pure_total(src: &str, name: &str) -> bool {
