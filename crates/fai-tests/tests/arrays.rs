@@ -866,6 +866,20 @@ fn quicksort_sort_prog(lit: &str) -> String {
     "#}
 }
 
+/// A program that sorts the literal `lit` with the standard library's `Array.sort`
+/// (the median-of-three quicksort) and prints the sorted elements as a
+/// comma-terminated string.
+fn array_sort_prog(lit: &str) -> String {
+    formatdoc! {r#"
+        module M
+
+        public main : Runtime -> Unit / {{ Console }}
+        let main rt =
+          let sorted = Array.sort {lit}
+          rt.console.writeLine (Array.foldl (fun acc x -> acc ++ Int.toString x ++ ",") "" sorted)
+    "#}
+}
+
 proptest! {
     // Each case is a full JIT compile + run under the global counter lock, so keep
     // the case count modest.
@@ -959,5 +973,15 @@ proptest! {
         let (code, out) = run_shadow(&quicksort_sort_prog(&render_int_array(&xs)));
         prop_assert_eq!(code, 0, "shadow-check soundness for quicksort {:?}:\n{}", xs, out);
         prop_assert_eq!(out.trim(), expected.as_str(), "quicksort oracle mismatch for {:?}", xs);
+    }
+
+    #[test]
+    fn shadow_check_passes_on_random_array_sort(xs in prop::collection::vec(-20i64..20, 0..50)) {
+        // The standard `Array.sort` (median-of-three quicksort): every elided
+        // partition/pivot bounds check is re-verified, so an over-elision aborts.
+        let expected = sorted_csv(&xs);
+        let (code, out) = run_shadow(&array_sort_prog(&render_int_array(&xs)));
+        prop_assert_eq!(code, 0, "shadow-check soundness for Array.sort {:?}:\n{}", xs, out);
+        prop_assert_eq!(out.trim(), expected.as_str(), "Array.sort oracle mismatch for {:?}", xs);
     }
 }

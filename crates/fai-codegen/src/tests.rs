@@ -3830,6 +3830,137 @@ fn hash_bucket_mask_elides_via_entry_facts() {
     assert!(!ir.contains(" ult "), "the masked bucket access needs no bounds check:\n{ir}");
 }
 
+// --- Recursive in-place sorts (result-fact / length-preservation threading) ---
+//
+// A hand-written quicksort and the median-of-three quicksort behind `Array.sort`
+// index by parameters bounded only *relationally*: the partition pivot is a result
+// fact (`pivot < hi`, returned array same length), and `hi <= len(a)` threads
+// through the recursion (coinductive length preservation). With those facts the
+// `partition`/`swap`/`checksum` accesses are proven in range and need no check.
+
+/// The hand-written in-place quicksort (the `QuickSort` sample shape): `gen` builds
+/// via `Array.init`, `qsort` partitions and recurses, `checksum` folds the sorted
+/// array. Shared by the sort elision tests below.
+const QUICKSORT_SRC: &str = r#"
+module M
+
+swap : Int -> Int -> Array Int -> Array Int
+let swap i j a =
+  let vi = Array.unsafeGet i a
+  let vj = Array.unsafeGet j a
+  Array.unsafeSet j vi (Array.unsafeSet i vj a)
+
+partition : Int -> Int -> Int -> Array Int -> (Int * Array Int)
+let partition hi j store a =
+  if j >= hi - 1 then
+    (store, swap store (hi - 1) a)
+  else if Array.unsafeGet j a < Array.unsafeGet (hi - 1) a then
+    partition hi (j + 1) (store + 1) (swap store j a)
+  else
+    partition hi (j + 1) store a
+
+qsort : Int -> Int -> Array Int -> Array Int
+let qsort lo hi a =
+  if hi - lo <= 1 then
+    a
+  else
+    match partition hi lo lo a with
+    | (p, a2) ->
+      if p - lo < hi - p - 1 then
+        qsort (p + 1) hi (qsort lo p a2)
+      else
+        qsort lo p (qsort (p + 1) hi a2)
+
+gen : Int -> Array Int
+let gen n = Array.init n (fun k -> (k * 2654435761 + 12345) % n)
+
+checksum : Int -> Int -> Int -> Array Int -> Int
+let checksum i acc n a =
+  if i >= n then acc else checksum (i + 1) (acc + i * Array.unsafeGet i a) n a
+
+public run : Int -> Int
+let run n =
+  let sorted = qsort 0 n (gen n)
+  checksum 0 0 n sorted
+"#;
+
+#[test]
+fn quicksort_partition_elides_its_bounds_checks() {
+    // `partition`'s `j` and `hi-1` accesses are proven from its entry facts
+    // (`store <= j <= hi-1`, `hi <= len(a)`, threaded from `qsort`).
+    let ir = entry_ir(QUICKSORT_SRC, "partition");
+    assert!(ir.contains("load"), "the element slots are still loaded:\n{ir}");
+    assert!(!ir.contains(" ult "), "partition's per-element bounds checks are elided:\n{ir}");
+}
+
+#[test]
+fn quicksort_checksum_elides_its_bounds_check() {
+    // `checksum`'s `i` access is in range: `i >= 0` and `i < n <= len(a)` (the array
+    // is `qsort 0 n (gen n)`, and `len(gen n) >= n` via `Array.init`).
+    let ir = entry_ir(QUICKSORT_SRC, "checksum");
+    assert!(ir.contains("load"), "the element slot is still loaded:\n{ir}");
+    assert!(!ir.contains(" ult "), "checksum's per-iteration bounds check is elided:\n{ir}");
+}
+
+/// The comparator-free median-of-three quicksort behind the standard `Array.sort`
+/// (replicated in a user module so its IR can be inspected): `sort` drives
+/// `qsortOrd`, whose `partitionRangeOrd` scan is the hot, per-element path.
+const MEDIAN_SORT_SRC: &str = r#"
+module M
+
+swap : Int -> Int -> Array Int -> Array Int
+let swap i j arr =
+  let vi = Array.unsafeGet i arr
+  let vj = Array.unsafeGet j arr
+  Array.unsafeSet j vi (Array.unsafeSet i vj arr)
+
+partitionRange : Int -> Int -> Int -> Array Int -> (Int * Array Int)
+let partitionRange hi j store arr =
+  let hi1 = hi - 1
+  if j >= hi1 then
+    (store, swap store hi1 arr)
+  else if Array.unsafeGet j arr <= Array.unsafeGet hi1 arr then
+    partitionRange hi (j + 1) (store + 1) (swap store j arr)
+  else
+    partitionRange hi (j + 1) store arr
+
+qsortOrd : Int -> Int -> Array Int -> Array Int
+let qsortOrd lo hi arr =
+  if hi - lo <= 1 then
+    arr
+  else
+    match partitionRange hi lo lo arr with
+    | (p, a2) ->
+      if p - lo < hi - p - 1 then
+        qsortOrd (p + 1) hi (qsortOrd lo p a2)
+      else
+        qsortOrd lo p (qsortOrd (p + 1) hi a2)
+
+public sort : Array Int -> Array Int
+let sort xs = qsortOrd 0 (Array.length xs) xs
+"#;
+
+#[test]
+fn median_sort_partition_scan_elides_its_bounds_checks() {
+    // The hot Lomuto scan: `hi <= len(arr)` is established directly by `sort`
+    // (`hi == Array.length xs`) and threaded through `qsortOrd`'s recursion via the
+    // pivot result fact, so the per-element `j`/`hi-1` accesses need no check.
+    let ir = entry_ir(MEDIAN_SORT_SRC, "partitionRange");
+    assert!(ir.contains("load"), "the element slots are still loaded:\n{ir}");
+    assert!(!ir.contains(" ult "), "the partition scan's bounds checks are elided:\n{ir}");
+}
+
+#[test]
+fn quicksort_unprovable_access_still_checks() {
+    // A control: an extra function indexing by a bare parameter (no facts) keeps its
+    // check, so the sort elisions are not a blanket disabling.
+    let src = format!(
+        "{QUICKSORT_SRC}\npublic peek : Int -> Array Int -> Int\nlet peek i a = Array.unsafeGet i a\n"
+    );
+    let ir = entry_ir(&src, "peek");
+    assert!(ir.contains(" ult "), "an unprovable index keeps its bounds check:\n{ir}");
+}
+
 // --- Inline structural hash (`Prim.hash`) ----------------------------------
 //
 // `Prim.hash` of an immediate/`Int`/`Float` operand compiles to an inline
