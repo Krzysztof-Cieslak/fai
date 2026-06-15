@@ -24,6 +24,8 @@ mod lower;
 pub mod niche;
 pub mod pretty;
 pub mod reassoc;
+#[allow(unsafe_code)]
+pub mod simplify;
 pub mod wire;
 
 #[cfg(test)]
@@ -42,6 +44,7 @@ pub use lower::{LoweredBody, core, lower_params_body};
 pub use niche::{NicheKind, niche_scheme};
 pub use pretty::pretty_def;
 pub use reassoc::reassociate_concat;
+pub use simplify::{CombinatorDefs, combinator_defs, simplified};
 pub use wire::{
     Rebuilt, RebuiltTest, TestContract, TestWireBundle, WireBundle, WireContract, WireDef,
     WireDefId, from_wire, from_wire_test,

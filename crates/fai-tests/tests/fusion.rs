@@ -267,6 +267,48 @@ fn fold_pipeline_builds_no_list_spine() {
     assert_eq!(small, big, "fused fold_pipeline allocations must not scale with n (no list spine)");
 }
 
+/// Compiles and JIT-runs a full module `src`, returning `(exit_code, stdout,
+/// allocations)`.
+fn run_full(src: &str) -> (i32, String, i64) {
+    let _g = lock();
+    let mut db = FaiDatabase::new();
+    fai_types::std_lib::load_std(&mut db);
+    let id = db.add_source("M.fai".into(), src.to_owned());
+    let file = db.source_file(id).unwrap();
+    rt::capture_start();
+    rt::reset_allocations();
+    let outcome = jit_run_program(&db, file);
+    let allocs = rt::allocations();
+    let out = rt::capture_take();
+    (outcome.exit_code, out, allocs)
+}
+
+#[test]
+fn composed_caf_fold_allocations_are_independent_of_n() {
+    // The real `FoldPipeline` shape: a CAF composed from `>>` and a partial
+    // application (`shift 3`), folded over a range. Confining the composition to
+    // arithmetic (then deforesting the fold) leaves nothing per element to allocate,
+    // so the total is independent of `n`. Without confinement the CAF is rebuilt
+    // per element — two `>>` closures and a `shift` partial application each — so the
+    // count would grow with `n`. run(n) = sum over [0, n) of (2x + 5) = n^2 + 4n.
+    let module = |n: i64| {
+        format!(
+            "module M\n\n\
+             let shift k x = x + k\n\n\
+             let transform = (fun x -> x + 1) >> (fun x -> x * 2) >> shift 3\n\n\
+             public run : Int -> Int\n\
+             let run n = List.foldl (fun acc x -> acc + transform x) 0 (List.range 0 n)\n\n\
+             public main : Runtime -> Unit / {{ Console }}\n\
+             let main rt = rt.console.writeLine (Int.toString (run {n}))\n",
+        )
+    };
+    let (code_s, out_s, small) = run_full(&module(10));
+    let (code_b, out_b, big) = run_full(&module(1000));
+    assert_eq!((code_s, out_s.trim()), (0, "140"), "clean exit, correct sum (n=10)");
+    assert_eq!((code_b, out_b.trim()), (0, "1004000"), "clean exit, correct sum (n=1000)");
+    assert_eq!(small, big, "composed-CAF fold allocations must not scale with n");
+}
+
 #[test]
 fn list_map_sum_builds_no_intermediate_spine() {
     let small = allocs("List.sum (List.map (fun x -> x + 1) (List.range 0 n))", 10, "55");

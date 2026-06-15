@@ -2756,9 +2756,10 @@ Editor integration:
     lambda — or partial application — built per loop iteration adds zero heap cells,
     an escaping one adds one each), by the runtime leak check (a stack cell's
     children are released and the cell is never freed), and by the closure-heavy
-    algorithm benches running correctly. *Not* addressed: a closure returned from a
-    CAF (e.g. `FoldPipeline`'s `transform`) escapes its definition and needs inlining
-    to confine it.
+    algorithm benches running correctly. A closure *returned from a CAF* (e.g.
+    `FoldPipeline`'s `transform`) escapes its definition, so escape analysis cannot
+    confine it directly; that case is instead reduced away before reference counting
+    by the simplify pass (see D132).
 
 - **D128 Deforest `List`/`Array` combinator pipelines (a Core-level fusion pass):**
   a pipeline of directly-nested standard combinators — a producer, transformers,
@@ -3040,6 +3041,56 @@ Editor integration:
     any over-elision into a loud failure), the array/`HashDict`/`HashSet`/algorithm
     oracle suites, and a perf guard pinning the cross-module firewall. Issue #175
     (under #136); follows #138 (inline `Array` access).
+
+- **D132 Confine composed/partially-applied/CAF closures by local reduction (the
+  simplify pass).** A point-free value built from `>>`/`|>`/`identity`/`const` and
+  partial application — especially one bound at a top-level value (a *constant
+  applicative form*, e.g. `let transform = (fun x -> x + 1) >> shift 3`) — otherwise
+  compiles to reference-counted heap closures called through the first-class
+  `apply_n` path. Worse, a CAF is **not memoized** (every reference re-forces its
+  static closure), so one referenced in a loop body is *rebuilt* per iteration: the
+  `fold_pipeline` workload allocated two `>>` closures and one `shift` partial
+  application per element. Escape analysis (D127) cannot help — the closure escapes
+  its CAF's definition. A new Core pass (`fai-core/src/simplify.rs`, the
+  `simplified` query) contracts these redexes before reference counting, so escape
+  analysis and fusion then see ordinary direct code.
+  - **Placement.** Layered `core_inlined → simplified → helper_inlined → fuse_def →
+    rc`: the small same-file helpers a reduced composition leaves (e.g. a
+    now-saturated `shift` call) are folded by helper inlining, and a pipeline whose
+    element function is thereby reduced to arithmetic is then deforested into a
+    register loop by fusion (D128). So `fold_pipeline`'s `transform x` becomes
+    `((x + 1) * 2) + 3`, the fold becomes a raw-`i64` loop, and `transform` is
+    dead-code-eliminated.
+  - **Four behavior-preserving rewrites**, to a fixpoint within each definition
+    (a defensive step cap keeps the query total): **CAF inlining** (a
+    saturated-or-over application of a same-file, non-recursive, nullary, small value
+    binding splices that binding's body in head position, relocating its lifted
+    lambdas into the caller with freshened local *and* function ids; only an
+    *applied* CAF, where reduction follows, never a value-position reference);
+    **combinator reduction** by the resolved `Prelude` identities (`(f >> g) x →
+    g (f x)`, `x |> f → f x`, `identity x → x`, `const a b → (let _ = b in a)`);
+    **application flattening** (`App(App(h, xs), ys) → App(h, xs ++ ys)`, collapsing a
+    curried partial application into a saturated direct call); and **beta reduction**
+    of an applied literal lambda (binding arguments to fresh locals, mapping captures
+    to the supplied locals).
+  - **Behavior-preserving.** Recognition is by **resolved identity** (a
+    `combinator_defs` resolver reads only `Prelude`'s module header, never a body),
+    so editing `>>`'s body never changes what reduces and a user-shadowed operator
+    (a different id) is left alone — the cross-module firewall. The reordered
+    operands of `>>`/`|>` must be **pure** (a structural check mirroring fusion's
+    barrier), so an effectful composition stays a heap closure; `const`'s discarded
+    operand is kept in a dead binding, preserving its strict evaluation. CAF inlining
+    is **intra-file** (a body edit never crosses a module boundary). Skipped entirely
+    inside the standard library, so the combinators and operators stay exercised by
+    their own contracts. Reference counting re-runs afterward, so it re-derives all
+    dup/drop on the reduced body.
+  - **Validated** by per-rule Core tests, an IR assertion that the `fold_pipeline`
+    shape reduces to pure arithmetic, the `closure_allocations()`/`pap_allocations()`
+    counters showing **zero** per-element heap closure/partial-application cells, an
+    end-to-end allocation-scaling test (the composed-CAF fold's total is independent
+    of `n`), an event-log guard (a CAF body edit re-simplifies its caller but does
+    not re-run recognition), and rc-soundness property tests over random `>>` chains.
+    Closes the `fold_pipeline` Fai-vs-Rust gap (#130, carved from #103).
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

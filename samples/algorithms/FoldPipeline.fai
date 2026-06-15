@@ -2,9 +2,11 @@ module FoldPipeline
 
 // Fold a composed, partially applied closure over a range: the function `f` is
 // built from `>>` composition and a partial application (`shift 3`), then applied
-// at every element through `List.foldl`'s higher-order argument. This measures
-// closure construction, composition, and the first-class call path. Used by the
-// Rust-vs-Fai runtime benchmark.
+// at every element through `List.foldl`'s higher-order argument. The compiler
+// confines these closures — inlining the `transform` value, reducing the `>>`
+// compositions, and deforesting the fold — so the workload compiles to a register
+// loop over `((x + 1) * 2) + 3` rather than per-element closure allocation and
+// first-class calls. Used by the Rust-vs-Fai runtime benchmark.
 // Add a constant (partially applied to build a closure that captures `k`).
 shift : Int -> Int -> Int
 let shift k x = x + k

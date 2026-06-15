@@ -124,8 +124,11 @@ performance change is measured broadly rather than against a handful of cases:
   `collatz` and `pi` (tail loops), `prng_xorshift` (bitwise `Int` intrinsics);
 - **lists** — `map_sum` (reuse fast path) and `map_sum_shared` (the copying
   fallback), `merge_sort`, `quicksort`, `matrix_multiply` (nested lists),
-  `fold_pipeline` (closures / first-class calls), `nqueens` and `fannkuch`
-  (backtracking / permutations);
+  `fold_pipeline` (a composed/partially-applied `transform` folded over a range —
+  the closure-confinement path: its compositions and CAF are reduced to a register
+  loop before reference counting, so it now tracks the Rust oracle rather than
+  paying per-element closure construction and first-class calls), `nqueens` and
+  `fannkuch` (backtracking / permutations);
 - **arrays** — `sieve` (a flat mutable `Array Bool`: in-place update of a
   uniquely-owned array, mirroring the Rust `vec![bool]` reference);
 - **hash maps & sets** — `dict_histogram`, `set_dedup`, `option_path`,

@@ -95,7 +95,93 @@ fn render_int(e: &IntE, vars: &[&str]) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// A composition pipeline stage (an `Int -> Int` function), for the closure
+// confinement (`simplify`) path: random `>>` chains of lambdas, partial
+// applications, and `identity`, which the simplifier reduces before reference
+// counting. The rewritten body must still be reference-count sound.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+enum Stage {
+    /// `(fun x -> x + k)` — a non-capturing lambda.
+    AddK(u16),
+    /// `(fun x -> x * k)` — a non-capturing lambda.
+    MulK(u16),
+    /// `shift k` — a partial application of a same-file binary function.
+    ShiftK(u16),
+    /// `scale k` — a partial application of a same-file binary function.
+    ScaleK(u16),
+    /// `identity` — a `Prelude` combinator.
+    Id,
+}
+
+fn stage() -> impl Strategy<Value = Stage> {
+    prop_oneof![
+        (0u16..100).prop_map(Stage::AddK),
+        (1u16..20).prop_map(Stage::MulK),
+        (0u16..100).prop_map(Stage::ShiftK),
+        (1u16..20).prop_map(Stage::ScaleK),
+        Just(Stage::Id),
+    ]
+}
+
+fn render_stage(s: &Stage) -> String {
+    match s {
+        Stage::AddK(k) => format!("(fun x -> x + {k})"),
+        Stage::MulK(k) => format!("(fun x -> x * {k})"),
+        Stage::ShiftK(k) => format!("shift {k}"),
+        Stage::ScaleK(k) => format!("scale {k}"),
+        Stage::Id => "identity".to_string(),
+    }
+}
+
+/// Renders the stages into a `>>` chain (`s1 >> s2 >> …`).
+fn render_chain(stages: &[Stage]) -> String {
+    stages.iter().map(render_stage).collect::<Vec<_>>().join(" >> ")
+}
+
 proptest! {
+    // A composed/partially-applied `transform` CAF folded over a range — the
+    // confinement path. The simplifier inlines the CAF, reduces the `>>`
+    // chain, and beta-reduces the lambdas; the resulting body must be reference-count
+    // sound for any chain shape.
+    #[test]
+    fn composed_caf_pipeline_is_sound(stages in prop::collection::vec(stage(), 1..6)) {
+        let chain = render_chain(&stages);
+        let src = formatdoc! {r#"
+            module M
+
+            let shift k x = x + k
+
+            let scale k x = x * k
+
+            let transform = {chain}
+
+            let run n = List.foldl (fun acc x -> acc + transform x) 0 (List.range 0 n)
+        "#};
+        let r = check_program(&src, "run");
+        prop_assert!(r.is_ok(), "{}\n{src}", r.unwrap_err());
+    }
+
+    // The same composition applied directly (no CAF), so the `>>` reduction and beta
+    // fire without CAF inlining. The reduced body must be sound for any chain.
+    #[test]
+    fn inline_composed_pipeline_is_sound(stages in prop::collection::vec(stage(), 1..6)) {
+        let chain = render_chain(&stages);
+        let src = formatdoc! {r#"
+            module M
+
+            let shift k x = x + k
+
+            let scale k x = x * k
+
+            let run n = List.foldl (fun acc x -> acc + ({chain}) x) 0 (List.range 0 n)
+        "#};
+        let r = check_program(&src, "run");
+        prop_assert!(r.is_ok(), "{}\n{src}", r.unwrap_err());
+    }
+
     // A left fold over `List Int`: destructure each cons, recurse on the tail,
     // and combine the head with the recursive result. Exercises list `match`,
     // recursion, and borrowing/consuming the projected head.

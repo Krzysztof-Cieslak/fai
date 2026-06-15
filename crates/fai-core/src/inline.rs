@@ -23,9 +23,10 @@ use fai_db::{Db, SourceFile};
 use fai_resolve::LocalId;
 use fai_syntax::Symbol;
 use fai_types::Ty;
+use rustc_hash::FxHashMap;
 
 use crate::core;
-use crate::ir::{CExpr, CoreFn, ExprKind as K, FieldIndex, LoweredDef, Prim};
+use crate::ir::{CExpr, CoreFn, ExprKind as K, FieldIndex, FnId, LoweredDef, Prim};
 
 /// A definition that is exactly an eta-expanded primitive: a body of the form
 /// `fun p0 … pk -> Prim.op <a permutation of p0 … pk>`.
@@ -354,4 +355,140 @@ fn max_local(e: &CExpr, max: &mut usize) {
             max_local(base, max);
         }
     }
+}
+
+/// Allocates a fresh local slot, bumping `next` (the next free slot index).
+pub(crate) fn fresh_local(next: &mut usize) -> LocalId {
+    let id = LocalId::from_index(*next);
+    *next += 1;
+    id
+}
+
+/// Maps `l` through `locals`, allocating a fresh slot the first time it is seen.
+pub(crate) fn remap_local(
+    l: LocalId,
+    locals: &mut FxHashMap<LocalId, LocalId>,
+    next: &mut usize,
+) -> LocalId {
+    if let Some(&r) = locals.get(&l) {
+        return r;
+    }
+    let r = fresh_local(next);
+    locals.insert(l, r);
+    r
+}
+
+/// Maps a lifted-function id through `fns`, leaving an id absent from the map
+/// unchanged (the identity case the helper inliner uses, where the copied body has
+/// no lifted lambda).
+fn remap_fn(f: FnId, fns: &FxHashMap<FnId, FnId>) -> FnId {
+    fns.get(&f).copied().unwrap_or(f)
+}
+
+/// Copies `e`, freshening every local through `locals` (allocating on first sight)
+/// and every `MakeClosure` lifted id through `fns`, preserving each node's type.
+///
+/// The single substitution routine shared by the inliner passes. `fns` is **empty**
+/// when the copied body has no lifted lambda (the helper inliner splices a single
+/// function), and maps each relocated lambda to its fresh id when it does (CAF
+/// inlining in `simplify` copies a definition's lifted lambdas into the caller).
+pub(crate) fn remap_expr(
+    e: &CExpr,
+    locals: &mut FxHashMap<LocalId, LocalId>,
+    fns: &FxHashMap<FnId, FnId>,
+    next: &mut usize,
+) -> CExpr {
+    let ty = e.ty.clone();
+    let kind = match &e.kind {
+        K::Local(l) => K::Local(remap_local(*l, locals, next)),
+        K::Lit(_) | K::Global(_) | K::Error => e.kind.clone(),
+        K::Prim { op, args } => K::Prim {
+            op: *op,
+            args: args.iter().map(|a| remap_expr(a, locals, fns, next)).collect(),
+        },
+        K::MakeData { tag, args, reuse, scalars, niche } => K::MakeData {
+            tag: *tag,
+            args: args.iter().map(|a| remap_expr(a, locals, fns, next)).collect(),
+            reuse: reuse.map(|t| remap_local(t, locals, next)),
+            scalars: *scalars,
+            niche: *niche,
+        },
+        K::App { func, args, reuse, alloc } => K::App {
+            func: Box::new(remap_expr(func, locals, fns, next)),
+            args: args.iter().map(|a| remap_expr(a, locals, fns, next)).collect(),
+            reuse: reuse.iter().map(|t| t.map(|l| remap_local(l, locals, next))).collect(),
+            alloc: *alloc,
+        },
+        K::If { cond, then, els } => K::If {
+            cond: Box::new(remap_expr(cond, locals, fns, next)),
+            then: Box::new(remap_expr(then, locals, fns, next)),
+            els: Box::new(remap_expr(els, locals, fns, next)),
+        },
+        K::Let { local, value, body } => {
+            // The value is in the outer scope; remap it before binding `local`.
+            let value = Box::new(remap_expr(value, locals, fns, next));
+            let local = remap_local(*local, locals, next);
+            K::Let { local, value, body: Box::new(remap_expr(body, locals, fns, next)) }
+        }
+        K::DataTag { base, niche } => {
+            K::DataTag { base: Box::new(remap_expr(base, locals, fns, next)), niche: *niche }
+        }
+        K::DataField { base, index, scalar, niche } => {
+            let index = match index {
+                FieldIndex::Dyn { base: off, evidence } => {
+                    FieldIndex::Dyn { base: *off, evidence: remap_local(*evidence, locals, next) }
+                }
+                c => *c,
+            };
+            K::DataField {
+                base: Box::new(remap_expr(base, locals, fns, next)),
+                index,
+                scalar: *scalar,
+                niche: *niche,
+            }
+        }
+        K::MakeClosure { func, captures, alloc } => K::MakeClosure {
+            func: remap_fn(*func, fns),
+            captures: captures.iter().map(|c| remap_local(*c, locals, next)).collect(),
+            alloc: *alloc,
+        },
+        K::Reset { value, token, body } => K::Reset {
+            value: Box::new(remap_expr(value, locals, fns, next)),
+            token: remap_local(*token, locals, next),
+            body: Box::new(remap_expr(body, locals, fns, next)),
+        },
+        K::FreeReuse { token, body } => K::FreeReuse {
+            token: remap_local(*token, locals, next),
+            body: Box::new(remap_expr(body, locals, fns, next)),
+        },
+        K::Dup { local, body } => K::Dup {
+            local: remap_local(*local, locals, next),
+            body: Box::new(remap_expr(body, locals, fns, next)),
+        },
+        K::Drop { local, body } => K::Drop {
+            local: remap_local(*local, locals, next),
+            body: Box::new(remap_expr(body, locals, fns, next)),
+        },
+        K::Join { params, body } => K::Join {
+            params: params.iter().map(|p| remap_local(*p, locals, next)).collect(),
+            body: Box::new(remap_expr(body, locals, fns, next)),
+        },
+        K::Recur { args } => {
+            K::Recur { args: args.iter().map(|a| remap_expr(a, locals, fns, next)).collect() }
+        }
+        K::HoleStart { hole, body } => K::HoleStart {
+            hole: remap_local(*hole, locals, next),
+            body: Box::new(remap_expr(body, locals, fns, next)),
+        },
+        K::HoleFill { hole, cell, field } => K::HoleFill {
+            hole: remap_local(*hole, locals, next),
+            cell: Box::new(remap_expr(cell, locals, fns, next)),
+            field: *field,
+        },
+        K::HoleClose { hole, base } => K::HoleClose {
+            hole: remap_local(*hole, locals, next),
+            base: Box::new(remap_expr(base, locals, fns, next)),
+        },
+    };
+    CExpr::new(kind, ty)
 }

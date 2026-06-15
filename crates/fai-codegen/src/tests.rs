@@ -756,6 +756,44 @@ fn escaping_partial_application_heap_allocates_per_iteration() {
     assert_eq!(paps_b - paps_a, 50, "an escaping partial application heap-allocates per iteration");
 }
 
+/// The `FoldPipeline` workload: a CAF composed from `>>` and a partial
+/// application (`shift k`), folded over a range. Without confinement the CAF is
+/// rebuilt per element (two `>>` closures and one `shift` partial application each);
+/// once `simplify` reduces the composition to arithmetic, fusion makes it a
+/// register loop that allocates neither.
+fn fold_pipeline_prog(n: i32) -> String {
+    formatdoc! {r#"
+        module M
+
+        shift : Int -> Int -> Int
+        let shift k x = x + k
+
+        transform : Int -> Int
+        let transform = (fun x -> x + 1) >> (fun x -> x * 2) >> shift 3
+
+        run : Int -> Int
+        let run n = List.foldl (fun acc x -> acc + transform x) 0 (List.range 0 n)
+
+        public main : Runtime -> Unit / {{ Console }}
+        let main rt = rt.console.writeLine (Int.toString (run {n}))
+    "#}
+}
+
+#[test]
+fn caf_composition_fold_allocates_no_per_element_closure_or_pap() {
+    // `transform x` reduces to `((x + 1) * 2) + 3`, so neither the `>>` closures nor
+    // the `shift 3` partial application are built — at *any* element count. Both the
+    // closure and partial-application counts are therefore independent of `n`
+    // (without confinement they would grow by 2 and 1 per element, respectively).
+    // run(n) = sum over [0, n) of (2x + 5) = n^2 + 4n.
+    let (code_a, out_a, _allocs_a, closures_a, paps_a) = run_all_counted(&fold_pipeline_prog(50));
+    let (code_b, out_b, _allocs_b, closures_b, paps_b) = run_all_counted(&fold_pipeline_prog(100));
+    assert_eq!((code_a, out_a.trim()), (0, "2700"), "clean exit, correct sum");
+    assert_eq!((code_b, out_b.trim()), (0, "10400"), "clean exit, correct sum");
+    assert_eq!(closures_b - closures_a, 0, "no per-element heap closure cell");
+    assert_eq!(paps_b - paps_a, 0, "no per-element heap partial-application cell");
+}
+
 #[test]
 fn let_bound_lambda_applied_in_scope_is_direct_called() {
     // `f` is a let-bound lambda applied twice in scope (the inliner keeps a
