@@ -170,6 +170,11 @@ fn particles_sample_is_valid() {
 }
 
 #[test]
+fn vec_mat_sample_is_valid() {
+    validate("VecMat");
+}
+
+#[test]
 fn nqueens_sample_is_valid() {
     validate("NQueens");
 }

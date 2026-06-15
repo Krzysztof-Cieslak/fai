@@ -117,6 +117,7 @@ algorithm_benches! {
     fold_pipeline => "FoldPipeline",
     interface_dispatch => "InterfaceDispatch",
     particles => "Particles",
+    vec_mat => "VecMat",
     nqueens => "NQueens",
     matrix_multiply => "MatrixMultiply",
     float_matrix_multiply => "FloatMatrixMultiply",

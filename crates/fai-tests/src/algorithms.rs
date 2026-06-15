@@ -254,6 +254,33 @@ pub fn particles(n: i64) -> f64 {
     acc
 }
 
+/// A register-resident vector/matrix kinematics loop (the SROA showcase): each
+/// step squares a 2x2 contraction matrix, applies it to the running 2-vector, and
+/// accumulates the components. Mirrors `samples/algorithms/VecMat.fai` exactly
+/// (same `f64` operation order), so the fixed-shape-float-aggregate program and
+/// this oracle agree bit-for-bit.
+#[must_use]
+pub fn vec_mat(n: i64) -> f64 {
+    let (ra, rb, rc, rd) = (0.5_f64, 0.0 - 0.25, 0.25, 0.5);
+    let (mut vx, mut vy, mut acc) = (1.0_f64, 1.0, 0.0);
+    let mut i = 0;
+    while i < n {
+        // m = mulM rot rot
+        let ma = ra * ra + rb * rc;
+        let mb = ra * rb + rb * rd;
+        let mc = rc * ra + rd * rc;
+        let md = rc * rb + rd * rd;
+        // w = apply m v
+        let wx = ma * vx + mb * vy;
+        let wy = mc * vx + md * vy;
+        acc = acc + wx + wy;
+        vx = wx;
+        vy = wy;
+        i += 1;
+    }
+    acc
+}
+
 /// The number of solutions to the `n`-queens puzzle (backtracking count). The
 /// placement so far is a persistent cons-list of chosen columns (most recent
 /// first), matching the Fai sample: `c :: placed` shares the tail in O(1), where a
@@ -1182,6 +1209,13 @@ pub const ALGORITHMS: &[Algorithm] = &[
         oracle: Oracle::Float(particles),
     },
     Algorithm {
+        module: "VecMat",
+        entry: "runF",
+        jit_size: 100_000,
+        aot_size: 2_000_000,
+        oracle: Oracle::Float(vec_mat),
+    },
+    Algorithm {
         module: "NQueens",
         entry: "run",
         jit_size: 8,
@@ -1388,6 +1422,7 @@ pub fn source(module: &str) -> &'static str {
         "FoldPipeline" => include_str!("../../../samples/algorithms/FoldPipeline.fai"),
         "InterfaceDispatch" => include_str!("../../../samples/algorithms/InterfaceDispatch.fai"),
         "Particles" => include_str!("../../../samples/algorithms/Particles.fai"),
+        "VecMat" => include_str!("../../../samples/algorithms/VecMat.fai"),
         "NQueens" => include_str!("../../../samples/algorithms/NQueens.fai"),
         "MatrixMultiply" => include_str!("../../../samples/algorithms/MatrixMultiply.fai"),
         "FloatMatrixMultiply" => {
