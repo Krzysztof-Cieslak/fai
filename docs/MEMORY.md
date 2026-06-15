@@ -3025,10 +3025,8 @@ Editor integration:
     keeps `object_code` a pure per-definition unit (facts depend only on the
     definition's own module), so the cross-module codegen firewall holds. So the
     hot index loops and the `HashDict`/`HashSet` bucket probes (`h & (cap - 1)`
-    with `cap == length slots`) elide; quicksort/merge_sort still pay it (their
-    `partition`'s pivot index needs a relational *result*-fact thread, left as
-    follow-up — `result_facts` is wired through the cache/wire but currently
-    empty).
+    with `cap == length slots`) elide. The recursive in-place sorts need the
+    relational extension layered on top (see D134).
   - **Cache & wire.** A codegen-only change leaves the rc'd-IR fingerprint
     untouched, so the `CODEGEN_CONFIG` stamp gains a `bounds-check-elim` token and
     the on-disk key mixes in the definition's entry facts and its callees' result
@@ -3150,6 +3148,68 @@ Editor integration:
     the `SpectralNorm` + new `FloatMatrixMultiply` algorithm benches. Issue #112
     (under #136); follows D113 (#72, unboxed scalar `Float`) and D129 (#138, inline
     `Array` access); recommended after #86 (record/tuple float scalarization).
+
+- **D134 Relational bounds-check elimination for the recursive in-place sorts
+  (result facts + coinductive length preservation).** D131 elides an access proven
+  from a definition's own *entry* facts, but the recursive sorts — the hand-written
+  `quicksort` and the std `Array.sort`'s median-of-three quicksort — index by
+  parameters bounded only *relationally*: `hi <= len(a)` must thread through the
+  recursion (needing the partition pivot's bound and that the threaded array keeps
+  its length), and the length relation holds *through* the recursion, so it must be
+  assumed to be proved. Three pieces close this, all behind the same `result_facts`
+  query (wired but empty at D131) and a no-monomorphization, file-local design.
+  - **Coinductive length preservation (`length_preservation`, `fai-rc/src/length.rs`).**
+    A callee-directed **greatest fixpoint** (the peer of `borrow_signature`: a salsa
+    cycle, started optimistic and demoted) over `(result-component, parameter)` pairs
+    deciding `len(result.component) == len(param k)`. It runs on the fused,
+    pre-tail-flattening body (self-recursion still an `App`), with `arraySet` the only
+    length-preserving primitive, preservation through a call read from the callee's own
+    signature, and a self-call using the in-progress assumption. It is the **sole
+    source** of result length *equalities* (so `partition` returns a same-length array,
+    `qsort` preserves its argument's length).
+  - **Coupled entry↔result fixpoint (`module_bounds_facts`, `fai-rc/src/bounds_sig.rs`).**
+    Entry facts and the numeric result facts (length *inequalities* like
+    `Array.init`'s `len >= n`, and integer bounds like a pivot in `[0, hi)`) are
+    mutually recursive, so one file-local fixpoint computes both: an outer loop grows
+    the result facts monotonically (read off each definition's return paths) while an
+    inner two-phase entry-fact fixpoint runs with the current result facts applied —
+    **phase 1** propagates a fact across the call graph external-only (so a fact that
+    arrives only once a *caller's* facts are known is seeded), **phase 2** is the
+    coinductive narrowing (assume a fact to prove it preserved by the self-recurrence;
+    widen from the second round to drop a genuine creeper). `entry_bounds`/
+    `result_facts` are thin projections; `result_facts` merges the length equalities
+    in. The coupling is internal to one query, so entry/result form no salsa cycle
+    between themselves; the only (defensive) salsa cycle is the cross-file one a cyclic
+    module-call graph would create.
+  - **Engine extensions (`fai-core/src/bounds.rs`).** Two additions let the
+    `hi - lo <= 1` base-case guard establish `lo <= hi - 2`: a **literal-constant
+    guard** (a comparison against a non-zero literal becomes a `Zero`-relative edge
+    offset) and **two-variable subtraction** (a `d = a - b` binding is recorded in a
+    side-table and, when a guard bounds `d` against a constant, emitted as the implied
+    difference edge). The core graph stays a two-term difference-constraint system, so
+    the shortest-path soundness argument is unchanged.
+  - **What elides.** `quicksort`'s `partition` (the `j`/`hi-1` scan, with `swap`
+    inlined into it) and `checksum`; the std sort's `partitionRangeOrd` scan. The
+    median-of-three `pivotToEnd`'s `mid = lo + (hi-lo)/2` access keeps its check — that
+    midpoint needs integer-division and two-variable-addition reasoning beyond a
+    difference-bound domain — but it is O(log n) (the median selection), not the
+    O(n log n) scan, so the dominant cost is elided.
+  - **Cache & wire.** The `CODEGEN_CONFIG` stamp gains a `result-bounds` token (the
+    relational extension changes emitted code for the same reference-counted IR); the
+    object-cache key already mixes in a definition's entry facts and its callees'
+    result facts, and the wire bundle already ships both, so daemon and cached builds
+    elide identically. Entry facts now carry a bounded cross-file dependency on a
+    callee's result facts (e.g. `gen` → `Array.init`), which follows the call graph
+    and is early-cutoff, so the cross-module firewall for independent modules holds.
+  - **Validated** by engine unit tests (the literal-constant and two-variable-guard
+    cases), `fai-rc` fact tests (length preservation of `swap`/`partition`/`qsort`;
+    the coupled `qsort` `hi <= len(a)`, `partition` pivot, `Array.init` `len >= n`,
+    `checksum` `n <= len(a)`; a no-drift convergence test), codegen IR-shape proofs
+    (no per-element `ult` in `partition`/`checksum` and the median-of-three partition
+    scan; an unprovable access still checks), the **shadow-check** soundness proptest
+    extended to `Array.sort` (every elided check re-verified at run time over random
+    arrays), and the array/algorithm oracle suites plus the firewall perf-guard.
+    Issue #182 (under #136); follows D131 (#181, difference-bound BCE).
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.
