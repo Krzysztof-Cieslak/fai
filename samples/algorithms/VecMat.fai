@@ -1,0 +1,44 @@
+module VecMat
+
+// A vector/matrix kinematics loop kept entirely in registers: each step squares a
+// 2x2 contraction matrix, applies it to the running 2-vector, and accumulates the
+// result's components. `Vec2`/`Mat2` are fixed-shape float aggregates, so scalar
+// replacement holds them in `f64` registers and returns them multi-value,
+// allocating no heap cell per step; the loop itself carries plain scalars, so it
+// runs in constant stack. The float-aggregate counterpart to the `Array`-resident
+// NBody/Particles benchmarks (here the aggregates never escape).
+type Vec2 = { x : Float, y : Float }
+
+type Mat2 = { a : Float, b : Float, c : Float, d : Float }
+
+apply : Mat2 -> Vec2 -> Vec2
+let apply m v = { x = m.a * v.x + m.b * v.y, y = m.c * v.x + m.d * v.y }
+
+mulM : Mat2 -> Mat2 -> Mat2
+let mulM p q =
+  let a = p.a * q.a + p.b * q.c
+  let b = p.a * q.b + p.b * q.d
+  let c = p.c * q.a + p.d * q.c
+  let d = p.c * q.b + p.d * q.d
+  { a = a, b = b, c = c, d = d }
+
+rot : Mat2
+let rot = { a = 0.5, b = 0.0 - 0.25, c = 0.25, d = 0.5 }
+
+simulate : Int -> Int -> Float -> Float -> Float -> Float
+let simulate i n vx vy acc =
+  if i >= n then
+    acc
+  else
+    let v = { x = vx, y = vy }
+    let m = mulM rot rot
+    let w = apply m v
+    simulate (i + 1) n w.x w.y (acc + w.x + w.y)
+
+/// The component checksum after `n` register-resident vector/matrix steps.
+public runF : Int -> Float
+let runF n = simulate 0 n 1.0 1.0 0.0
+example: runF 0 = 0.0
+
+public main : Runtime -> Unit / { Console }
+let main runtime = runtime.console.writeLine (Float.toString (runF 2000000))
