@@ -3211,5 +3211,75 @@ Editor integration:
     arrays), and the array/algorithm oracle suites plus the firewall perf-guard.
     Issue #182 (under #136); follows D131 (#181, difference-bound BCE).
 
+- **D135 Scalar replacement of fixed-shape float aggregates (SROA + multi-value
+  returns; the register/return half of #86, complementing D113's in-cell `Float`
+  slots).** A **fixed-shape float aggregate** (FFA) — a tuple of all-`Float`, or a
+  *closed* record of all-`Float`, with 1..=8 fields — that does not escape is held
+  as its scalar `f64` **components in registers** rather than a heap cell, and
+  crosses a direct call boundary in registers: an FFA parameter occupies N
+  consecutive `f64` registers and an FFA result is returned via a Cranelift
+  multi-result signature. So `Vec2`/`Mat2` vector-matrix algebra,
+  `(Float, Float)`-returning helpers, and intermediate aggregates in numeric
+  pipelines compute allocation-free, where D113 only unboxed a *scalar* `Float` and
+  #114 (the in-cell slot layout) only stopped per-field boxing of a *heap-resident*
+  aggregate.
+  - **Type-directed, not escape analysis.** The representation is the exact analog
+    of the scalar-`Float` rule (D113): an FFA is carried as its components and
+    **materialized into the in-cell `f64`-slot layout on demand** wherever it
+    crosses a *boxed boundary* — a field of a non-FFA cell, a closure capture, a
+    uniform/`apply_n`/generic argument, a uniform-ABI return, a `=`/`compare`/`hash`
+    operand. An FFA arriving **boxed** (a generic call result, a CAF, a boxed
+    parameter/capture, a field of a larger cell) is exploded with field loads only
+    where a spread boundary needs its components, and otherwise left boxed (the
+    descriptor-aware reader handles its slots). No global escape pass is needed;
+    soundness is the same "boxed where it crosses a uniform slot" boundary as D113,
+    so the no-monomorphization ceiling holds (a generic/row-polymorphic/opaque
+    position keeps the boxed cell — a tuple/record with a non-`Float` field, an open
+    row, or a type variable is never an FFA).
+  - **ABI is signature-derived (the firewall).** A new `Repr::Spread(components)`
+    extends the per-slot ABI representation (the groundwork #114 laid). A shared
+    `abi` query in `fai-core` derives each definition's calling convention from its
+    *signature* (the SROA pass, reference counting, and code generation all consult
+    it; the driver's `float_abi` delegates to it), so a caller's compiled object
+    depends on a callee's signature, not its body. Spread is **register-ABI only**:
+    a uniform entry (row-polymorphic / nullary, reached via `apply_n`) keeps the
+    boxed cell, bridged by the first-class wrapper, which explodes boxed arguments
+    and reassembles the spread result.
+  - **SROA pass (`fai-rc`, on the A-normal-form body before reference counting).**
+    Two new Core nodes — `Spread { components }` (the exploded components as a
+    multi-value unit: a spread result tail, or a spread call argument) and
+    `LetMany { locals, value, body }` (binding a spread-returning call's result
+    components). The pass replaces an FFA construction with its component atoms, a
+    projection with the component, a spread-returning call with a `LetMany`, and a
+    spread-result tail with a `Spread`; it reassembles a cell at most **once per
+    straight-line scope** (cache-one). A spread parameter's aggregate slot is a
+    **borrowed anchor** that carries no runtime value (reference counting must not
+    duplicate or drop it); its components are bound directly from the incoming
+    registers, recorded in `LoweredDef::entry_spread_params`.
+  - **Code generation.** Multi-value entry/return signatures (each parameter group
+    keyed on the runtime arity, a spread expanded to its `f64` registers); the
+    body's tail returns its components directly (an `if` returns from each branch,
+    so no N-value merge is needed); spread call arguments are marshalled to
+    registers; the first-class wrapper bridges `apply_n` ⇄ the spread entry. A
+    `spread-aggregate` `CODEGEN_CONFIG` token retires stale cached objects.
+  - **Deferred (accepted ceilings).** *Loop-carried* float-aggregate state is left
+    boxed: a spread-ABI entry is **not** flattened into a tail loop (it recurses via
+    direct calls), so a loop *carrying* a `Vec2` accumulator does not yet recycle —
+    but a loop whose aggregates are *intermediate* (built and consumed within the
+    body, the common case) is unaffected, since it carries plain scalars and
+    flattens normally. Structural `=`/`compare`/`hash` on an FFA **reassembles**
+    then calls the runtime (an inline component-wise compare is a follow-up).
+    Nested FFAs (a record of records, e.g. a `Body` of two `Vec2`s) are not
+    flattened. Per-#16, these are representation ceilings, not correctness gaps.
+  - **Validated** by e2e allocation tests (a non-escaping `Vec2`/`Mat2`/`(Float,
+    Float)` program allocates exactly as many cells as the equivalent scalar
+    baseline — zero aggregate cells; an escaping aggregate still boxes; first-class
+    spread closures via the wrapper are leak-free), the `algorithms` oracle suite
+    (the `Array`-resident `NBody`/`Particles` float-record programs and the new
+    register-resident `VecMat` vector/matrix benchmark run correctly), and the full
+    backend-incremental/cache round-trip (the new IR nodes and ABI survive the wire
+    form and the firewall). Issue #120 (the SROA + multi-value track of #86); D114
+    delivered the in-cell-slot half and laid the `Repr`/`FnAbi` groundwork.
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.
