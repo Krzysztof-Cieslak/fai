@@ -407,6 +407,7 @@ impl<'a> ArbBuilder<'a> {
                 fns: vec![CoreFn { params: vec![r, v], captures: Vec::new(), body }],
                 entry_borrowed: Vec::new(),
                 reuse_entry: None,
+                entry_spread_params: Vec::new(),
             },
             2,
         ));
@@ -615,6 +616,7 @@ impl<'a> ArbBuilder<'a> {
                 fns: vec![CoreFn { params: vec![v, new], captures: Vec::new(), body }],
                 entry_borrowed: Vec::new(),
                 reuse_entry: None,
+                entry_spread_params: Vec::new(),
             },
             2,
         ));
@@ -644,6 +646,7 @@ impl<'a> ArbBuilder<'a> {
                 fns: vec![entry, gen_fn, show_fn, shrink_fn],
                 entry_borrowed: Vec::new(),
                 reuse_entry: None,
+                entry_spread_params: Vec::new(),
             },
             0,
         ));

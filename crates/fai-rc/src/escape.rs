@@ -238,6 +238,17 @@ impl Marker<'_> {
                 self.mark(then, escaped);
                 self.mark(els, escaped);
             }
+            // Spread/LetMany are produced after this pass; recurse for safety (they
+            // carry no closure to restamp).
+            K::Spread { components } => {
+                for a in components {
+                    self.mark(a, escaped);
+                }
+            }
+            K::LetMany { value, body, .. } => {
+                self.mark(value, escaped);
+                self.mark(body, escaped);
+            }
             K::DataTag { base, .. } | K::DataField { base, .. } => self.mark(base, escaped),
             // A bare (tail-position) closure is returned, so it escapes; leaves and
             // reference-counting nodes (absent pre-count) carry nothing to rewrite.
@@ -364,6 +375,17 @@ impl Analyzer<'_> {
             K::Lit(_) | K::Global(_) | K::Error => {}
             K::Let { local, value, body } => {
                 self.scan_value(value, *local);
+                self.scan(body, tail);
+            }
+            // Spread/LetMany are produced after this pass; recurse for safety (their
+            // components are scalar floats — never closures — so escape is moot).
+            K::Spread { components } => {
+                for a in components {
+                    self.scan(a, false);
+                }
+            }
+            K::LetMany { value, body, .. } => {
+                self.scan(value, false);
                 self.scan(body, tail);
             }
             K::If { cond, then, els } => {

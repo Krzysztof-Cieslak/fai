@@ -73,6 +73,7 @@ pub fn rc_emit(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
         fns,
         entry_borrowed: base.entry_borrowed.clone(),
         reuse_entry,
+        entry_spread_params: base.entry_spread_params.clone(),
     })
 }
 
@@ -125,6 +126,14 @@ fn forward_pass(db: &dyn Db, self_def: DefId, e: CExpr) -> CExpr {
         K::DataField { base, index, scalar, niche } => {
             CExpr::new(K::DataField { base: Box::new(sub(*base)), index, scalar, niche }, ty)
         }
+        // Spread/LetMany carry no reuse tokens; rebuild with forwarded children.
+        K::Spread { components } => {
+            CExpr::new(K::Spread { components: components.into_iter().map(sub).collect() }, ty)
+        }
+        K::LetMany { locals, value, body } => CExpr::new(
+            K::LetMany { locals, value: Box::new(sub(*value)), body: Box::new(sub(*body)) },
+            ty,
+        ),
         K::Join { params, body } => CExpr::new(K::Join { params, body: Box::new(sub(*body)) }, ty),
         K::Recur { args } => CExpr::new(K::Recur { args: args.into_iter().map(sub).collect() }, ty),
         K::HoleStart { hole, body } => {

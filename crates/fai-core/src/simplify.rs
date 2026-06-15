@@ -142,6 +142,7 @@ pub fn simplified(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef
         fns: cx.fns,
         entry_borrowed: base.entry_borrowed.clone(),
         reuse_entry: base.reuse_entry.clone(),
+        entry_spread_params: base.entry_spread_params.clone(),
     };
     Arc::new(prune_dead_fns(lowered))
 }
@@ -219,6 +220,16 @@ impl Simplifier<'_> {
             K::DataField { base, index, scalar, niche } => {
                 K::DataField { base: Box::new(self.simplify_expr(*base)), index, scalar, niche }
             }
+            // Spread/LetMany are produced after this pre-count pass; reduced
+            // children for completeness.
+            K::Spread { components } => K::Spread {
+                components: components.into_iter().map(|a| self.simplify_expr(a)).collect(),
+            },
+            K::LetMany { locals, value, body } => K::LetMany {
+                locals,
+                value: Box::new(self.simplify_expr(*value)),
+                body: Box::new(self.simplify_expr(*body)),
+            },
             // Leaves and lifted-lambda references (the lambda's body is a separate
             // `CoreFn`, simplified by the driver loop).
             kind @ (K::Lit(_) | K::Local(_) | K::Global(_) | K::MakeClosure { .. } | K::Error) => {
@@ -570,6 +581,8 @@ fn body_has_error(e: &CExpr) -> bool {
             body_has_error(cond) || body_has_error(then) || body_has_error(els)
         }
         K::Let { value, body, .. } => body_has_error(value) || body_has_error(body),
+        K::Spread { components } => any(components),
+        K::LetMany { value, body, .. } => body_has_error(value) || body_has_error(body),
         K::DataTag { base, .. } | K::DataField { base, .. } => body_has_error(base),
         K::Reset { value, body, .. } => body_has_error(value) || body_has_error(body),
         K::FreeReuse { body, .. } | K::Dup { body, .. } | K::Drop { body, .. } => {
@@ -591,6 +604,8 @@ fn node_count(e: &CExpr) -> usize {
         K::App { func, args, .. } => node_count(func) + kids(args),
         K::If { cond, then, els } => node_count(cond) + node_count(then) + node_count(els),
         K::Let { value, body, .. } => node_count(value) + node_count(body),
+        K::Spread { components } => kids(components),
+        K::LetMany { value, body, .. } => node_count(value) + node_count(body),
         K::DataTag { base, .. } | K::DataField { base, .. } => node_count(base),
         K::Reset { value, body, .. } => node_count(value) + node_count(body),
         K::FreeReuse { body, .. } | K::Dup { body, .. } | K::Drop { body, .. } => node_count(body),

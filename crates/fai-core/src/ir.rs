@@ -13,7 +13,7 @@
 //! original lambda's position.
 
 use fai_resolve::{DefId, LocalId};
-use fai_types::{Con, Ty};
+use fai_types::{Con, RowEnd, Ty};
 
 use crate::niche::NicheKind;
 
@@ -31,6 +31,38 @@ pub fn scalar_field_mask<'a>(field_types: impl IntoIterator<Item = &'a Ty>) -> u
         }
     }
     mask
+}
+
+/// The largest field count a fixed-shape float aggregate may have and still be
+/// kept in registers / returned multi-value. A wider aggregate stays a boxed cell
+/// (the spilled return-area cost outweighs the saving past a handful of fields).
+pub const FFA_MAX_FIELDS: usize = 8;
+
+/// If `ty` is a **fixed-shape float aggregate** (FFA) — a tuple whose every
+/// element is concretely `Float`, or a *closed* record whose every field is
+/// concretely `Float`, with `1..=FFA_MAX_FIELDS` fields — returns the component
+/// count (in canonical layout order: records label-sorted, tuples positional);
+/// otherwise `None`.
+///
+/// An FFA is held as its scalar `f64` components in registers and returned via a
+/// multi-value signature rather than a heap cell (scalar replacement of
+/// aggregates). The predicate is purely structural — a type variable instantiated
+/// to `Float`, a mixed aggregate, a nested aggregate, an open/row-polymorphic
+/// record, and an opaque type (which is a nominal `Ty::Adt` from another file) all
+/// fail it, so they keep the boxed representation.
+#[must_use]
+pub fn ffa_arity(ty: &Ty) -> Option<usize> {
+    let count = match ty {
+        Ty::Tuple(elems) if elems.iter().all(|t| matches!(t, Ty::Con(Con::Float))) => elems.len(),
+        Ty::Record(row)
+            if row.tail == RowEnd::Closed
+                && row.fields.iter().all(|(_, t)| matches!(t, Ty::Con(Con::Float))) =>
+        {
+            row.fields.len()
+        }
+        _ => return None,
+    };
+    (1..=FFA_MAX_FIELDS).contains(&count).then_some(count)
 }
 
 /// Identifies a [`CoreFn`] within a [`LoweredDef`] (index into its `fns`).
@@ -112,6 +144,14 @@ pub enum Repr {
     /// entry, reached via `apply_n`, keeps the standard boxed `Option` (the
     /// wrapper converts at the bridge). See [`crate::niche`].
     Niche(NicheKind),
+    /// A **fixed-shape float aggregate** (FFA) carried as its scalar `f64`
+    /// components rather than a heap cell: a parameter occupies N consecutive
+    /// `f64` registers, a result is returned as an N-value (multi-result)
+    /// signature. The inner vector is the per-component representation (currently
+    /// always [`Repr::ScalarFloat`]; nesting is future work). Register ABI only —
+    /// a uniform entry (reached via `apply_n`) keeps the boxed cell, bridged by
+    /// the wrapper. See [`ffa_arity`] and [`crate::sroa`].
+    Spread(Vec<Repr>),
 }
 
 impl FnAbi {
@@ -153,11 +193,11 @@ impl FnAbi {
         // wrapper. Floats stay unboxed on both ABIs (a float is never a uniform word).
         if !register_abi {
             for p in &mut params {
-                if matches!(p, Repr::ScalarInt | Repr::Niche(_)) {
+                if matches!(p, Repr::ScalarInt | Repr::Niche(_) | Repr::Spread(_)) {
                     *p = Repr::Uniform;
                 }
             }
-            if matches!(ret, Repr::ScalarInt | Repr::Niche(_)) {
+            if matches!(ret, Repr::ScalarInt | Repr::Niche(_) | Repr::Spread(_)) {
                 ret = Repr::Uniform;
             }
         }
@@ -215,6 +255,26 @@ impl FnAbi {
         }
     }
 
+    /// The component representations of runtime parameter `i` if it is a spread
+    /// (fixed-shape float aggregate) parameter, else `None`.
+    #[must_use]
+    pub fn spread_param(&self, i: usize) -> Option<&[Repr]> {
+        match self.params.get(i) {
+            Some(Repr::Spread(c)) => Some(c),
+            _ => None,
+        }
+    }
+
+    /// The component representations of the result if it is a spread result, else
+    /// `None`. When `Some`, the entry returns a Cranelift multi-result signature.
+    #[must_use]
+    pub fn spread_return(&self) -> Option<&[Repr]> {
+        match &self.ret {
+            Repr::Spread(c) => Some(c),
+            _ => None,
+        }
+    }
+
     /// Whether any parameter is an unboxed `Float` (raw bits in its slot).
     #[must_use]
     pub fn any_float_param(&self) -> bool {
@@ -263,6 +323,14 @@ pub struct LoweredDef {
     /// Code generation emits it as `{base}__reuse`; `None` when the definition
     /// accepts no tokens.
     pub reuse_entry: Option<CoreFn>,
+    /// The component locals of each spread (fixed-shape float aggregate) entry
+    /// parameter, set by the SROA pass (see [`crate::sroa`]). Indexed by entry
+    /// parameter position: `Some([c0, …, cN])` for a [`Repr::Spread`] parameter
+    /// (whose N `f64` registers code generation binds to `c0 … cN`), `None` for an
+    /// ordinary parameter. Empty (all-`None`) before SROA. The aggregate's own
+    /// parameter slot in [`CoreFn::params`] stays the ABI anchor and carries no
+    /// runtime value; the body references the component locals instead.
+    pub entry_spread_params: Vec<Option<Vec<LocalId>>>,
 }
 
 impl LoweredDef {
@@ -326,6 +394,15 @@ fn collect_globals(expr: &CExpr, out: &mut Vec<DefId>) {
             collect_globals(els, out);
         }
         ExprKind::Let { value, body, .. } => {
+            collect_globals(value, out);
+            collect_globals(body, out);
+        }
+        ExprKind::Spread { components } => {
+            for c in components {
+                collect_globals(c, out);
+            }
+        }
+        ExprKind::LetMany { value, body, .. } => {
             collect_globals(value, out);
             collect_globals(body, out);
         }
@@ -855,6 +932,29 @@ pub enum ExprKind {
         /// The bound slot.
         local: LocalId,
         /// The bound value (owned).
+        value: Box<CExpr>,
+        /// The continuation.
+        body: Box<CExpr>,
+    },
+    /// The exploded components of a **fixed-shape float aggregate** (FFA), as a
+    /// multi-value unit (scalar replacement of aggregates). Produced by the SROA
+    /// pass (see [`crate::sroa`]) in two positions: a function's tail when its
+    /// result ABI is [`Repr::Spread`] (lowered to a multi-result `return`), and a
+    /// call argument whose callee parameter is spread (the components flow into
+    /// consecutive registers). `components` are atoms (component locals, each typed
+    /// `Float`) in canonical field order; the node's [`CExpr::ty`] is the FFA type.
+    Spread {
+        /// The component values, in canonical field order.
+        components: Vec<CExpr>,
+    },
+    /// Binds several slots at once from a multi-result `value`: the destructuring
+    /// of a [`Repr::Spread`]-result call. `value` is the call (an [`ExprKind::App`]
+    /// whose callee returns an FFA); `locals` receive its components in canonical
+    /// field order, then `body` is evaluated. Produced by the SROA pass.
+    LetMany {
+        /// The slots bound to the multi-result value's components, in order.
+        locals: Vec<LocalId>,
+        /// The multi-result value (a spread-returning call).
         value: Box<CExpr>,
         /// The continuation.
         body: Box<CExpr>,

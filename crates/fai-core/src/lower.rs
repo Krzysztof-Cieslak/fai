@@ -53,6 +53,7 @@ pub fn core(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
             fns: vec![CoreFn { params: Vec::new(), captures: Vec::new(), body: error_expr() }],
             entry_borrowed: Vec::new(),
             reuse_entry: None,
+            entry_spread_params: Vec::new(),
         });
     };
 
@@ -78,7 +79,13 @@ pub fn core(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
     let mut all_params = evidence_params;
     all_params.extend(param_locals);
     lowerer.fns[0] = CoreFn { params: all_params, captures: Vec::new(), body };
-    Arc::new(LoweredDef { def, fns: lowerer.fns, entry_borrowed: Vec::new(), reuse_entry: None })
+    Arc::new(LoweredDef {
+        def,
+        fns: lowerer.fns,
+        entry_borrowed: Vec::new(),
+        reuse_entry: None,
+        entry_spread_params: Vec::new(),
+    })
 }
 
 /// The lowered pieces of a `(params, body)` form, for callers that assemble their
@@ -1588,6 +1595,23 @@ fn collect_free(expr: &CExpr, bound: &mut FxHashSet<LocalId>, out: &mut FxHashSe
             collect_free(body, bound, out);
             if fresh {
                 bound.remove(local);
+            }
+        }
+        // Spread/LetMany are inserted after lowering (by the SROA pass); handled
+        // defensively for exhaustiveness.
+        K::Spread { components } => {
+            for c in components {
+                collect_free(c, bound, out);
+            }
+        }
+        K::LetMany { locals, value, body } => {
+            collect_free(value, bound, out);
+            let fresh: Vec<bool> = locals.iter().map(|l| bound.insert(*l)).collect();
+            collect_free(body, bound, out);
+            for (l, &f) in locals.iter().zip(&fresh) {
+                if f {
+                    bound.remove(l);
+                }
             }
         }
         K::Dup { local, body } | K::Drop { local, body } => {

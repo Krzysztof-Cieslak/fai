@@ -138,8 +138,13 @@ pub fn synthesize(
     let prop_arity = prop_params.len();
     let mut prop_fns = vec![CoreFn { params: prop_params, captures: Vec::new(), body: prop_body }];
     prop_fns.extend(lowered.lifted);
-    let prop =
-        LoweredDef { def: prop_def, fns: prop_fns, entry_borrowed: Vec::new(), reuse_entry: None };
+    let prop = LoweredDef {
+        def: prop_def,
+        fns: prop_fns,
+        entry_borrowed: Vec::new(),
+        reuse_entry: None,
+        entry_spread_params: Vec::new(),
+    };
 
     // Build the harness entry `fun seed trials size -> Test.check… …`.
     let seed = fresh(&mut next);
@@ -164,6 +169,7 @@ pub fn synthesize(
         }],
         entry_borrowed: Vec::new(),
         reuse_entry: None,
+        entry_spread_params: Vec::new(),
     };
 
     Ok(SynthContract { entry, entry_arity: 3, prop, prop_arity, extra })

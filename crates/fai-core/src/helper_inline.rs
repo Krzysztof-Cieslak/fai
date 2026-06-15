@@ -132,6 +132,7 @@ pub fn helper_inlined(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<Lowere
         fns,
         entry_borrowed: base.entry_borrowed.clone(),
         reuse_entry: base.reuse_entry.clone(),
+        entry_spread_params: base.entry_spread_params.clone(),
     })
 }
 
@@ -208,6 +209,19 @@ fn inline_expr(
                 index: *index,
                 scalar: *scalar,
                 niche: *niche,
+            },
+            ty,
+        ),
+        // Spread/LetMany are produced after this pre-count pass; recurse for safety.
+        K::Spread { components } => CExpr::new(
+            K::Spread { components: components.iter().map(|a| go(a, next, changed)).collect() },
+            ty,
+        ),
+        K::LetMany { locals, value, body } => CExpr::new(
+            K::LetMany {
+                locals: locals.clone(),
+                value: Box::new(go(value, next, changed)),
+                body: Box::new(go(body, next, changed)),
             },
             ty,
         ),
@@ -321,6 +335,8 @@ fn node_count(e: &CExpr) -> usize {
         K::App { func, args, .. } => node_count(func) + kids(args),
         K::If { cond, then, els } => node_count(cond) + node_count(then) + node_count(els),
         K::Let { value, body, .. } => node_count(value) + node_count(body),
+        K::Spread { components } => kids(components),
+        K::LetMany { value, body, .. } => node_count(value) + node_count(body),
         K::DataTag { base, .. } | K::DataField { base, .. } => node_count(base),
         K::Reset { value, body, .. } => node_count(value) + node_count(body),
         K::FreeReuse { body, .. } | K::Dup { body, .. } | K::Drop { body, .. } => node_count(body),
