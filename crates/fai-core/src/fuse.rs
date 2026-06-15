@@ -689,7 +689,7 @@ fn is_seq(ty: &Ty, con: Con) -> bool {
 
 /// Whether a `Prim` performs a host capability (so reordering its calls across
 /// stages would be observable).
-fn is_capability_prim(op: Prim) -> bool {
+pub(crate) fn is_capability_prim(op: Prim) -> bool {
     matches!(
         op,
         Prim::ConsoleWriteLine
@@ -1880,7 +1880,7 @@ fn repr_of(ty: &Ty) -> Repr {
 
 /// Removes lifted functions no `MakeClosure` references (left dead after their only
 /// use was inlined), renumbering the survivors' [`FnId`]s.
-fn prune_dead_fns(def: LoweredDef) -> LoweredDef {
+pub(crate) fn prune_dead_fns(def: LoweredDef) -> LoweredDef {
     if def.fns.len() <= 1 {
         return def;
     }

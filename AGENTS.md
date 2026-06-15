@@ -116,7 +116,21 @@
 > emitted like the mutual-recursion combined loop (the driver gathers and
 > code-generates them across the AOT/JIT/bundle/contract paths); fusion is skipped
 > inside the standard library itself (so the combinators stay tested by their own
-> contracts). Contracts (M7) are
+> contracts). **Composed and partially-applied closures are confined** by a local
+> reduction pass run just before reference counting: a point-free value built from
+> `>>`/`|>`/`identity`/`const` and partial application — including one bound at a
+> top-level value (a *constant applicative form* like
+> `transform = (fun x -> x + 1) >> shift 3`, which, being unmemoized, would
+> otherwise be *rebuilt* at every use) — is reduced by inlining the value, reducing
+> the compositions (`(f >> g) x → g (f x)`, recognized **by resolved identity**, so
+> a body edit or a shadowed operator never changes what reduces), flattening curried
+> partial applications into saturated direct calls, and beta-reducing applied
+> lambdas. The reordered operands of a composition must be **pure** (so an effectful
+> composition is left intact), CAF inlining is intra-file, and the pass is skipped
+> in the standard library — so the residual same-file helpers fold via the inliner
+> and a now-arithmetic pipeline deforests into a register loop (the
+> closure-construction-and-first-class-call workload becomes a zero-allocation
+> loop). Contracts (M7) are
 > built: **`fai test` runs the first-class `example`/`forall` declarations**, and
 > **`fai check` eagerly evaluates the closed `example`s** (reporting a failing one
 > as the located `FAI6001` without a separate `fai test`, in the same isolated

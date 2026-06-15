@@ -860,3 +860,262 @@ mod helper_inline {
         assert_eq!(std_summary("Set", "balance"), None, "Set.balance must stay a call");
     }
 }
+
+mod simplify {
+    use std::sync::Arc;
+
+    use fai_db::Db;
+    use fai_syntax::Symbol;
+
+    use super::db_with;
+    use crate::{core_inlined, helper_inlined, pretty_def, simplified};
+
+    /// `name`'s Core after the simplify pass, rendered compactly.
+    fn simp(src: &str, name: &str) -> String {
+        let (db, file) = db_with(src);
+        pretty_def(&simplified(&db, file, Symbol::intern(name)))
+    }
+
+    /// `name`'s Core after simplify then helper inlining, rendered compactly.
+    fn simp_helper(src: &str, name: &str) -> String {
+        let (db, file) = db_with(src);
+        pretty_def(&helper_inlined(&db, file, Symbol::intern(name)))
+    }
+
+    /// The `FoldPipeline` shape: a CAF composed from `>>` and a partial application,
+    /// folded over a range. The headline closure-confinement case.
+    const FOLD_PIPELINE: &str = "module M\n\n\
+        let shift k x = x + k\n\n\
+        let transform = (fun x -> x + 1) >> (fun x -> x * 2) >> shift 3\n\n\
+        let run n = List.foldl (fun acc x -> acc + transform x) 0 (List.range 0 n)\n";
+
+    #[test]
+    fn caf_composition_reduces_to_arithmetic() {
+        // Inlining the `transform` CAF, reducing the two `>>` compositions, and
+        // beta-reducing the two lambdas leaves a saturated `shift` call over pure
+        // arithmetic — no closure, no `>>`, no reference to the now-dead `transform`.
+        let got = simp(FOLD_PIPELINE, "run");
+        assert_eq!(
+            got,
+            "fn0(%4) = (app @foldl (closure/static fn1 []) 0 (app @range 0 %4))\n\
+             fn1(%5, %6) = (+ %5 (app @shift 3 (let %10 = (let %9 = %6; (+ %9 1)); (* %10 2))))\n",
+        );
+        assert!(!got.contains("@transform"), "the CAF is inlined away: {got}");
+        assert!(!got.contains("@>>"), "the compositions are reduced: {got}");
+        assert!(!got.contains("closure/heap"), "no heap closure remains: {got}");
+    }
+
+    #[test]
+    fn fold_pipeline_helper_inlines_shift_to_pure_arithmetic() {
+        // After simplify, the residual same-file `shift` call is folded by helper
+        // inlining, so the fold's element body is pure `+`/`*` — what fusion then
+        // turns into a register loop (no closure, no call).
+        let got = simp_helper(FOLD_PIPELINE, "run");
+        assert!(!got.contains("@shift"), "shift is helper-inlined: {got}");
+        assert!(!got.contains("@transform") && !got.contains("@>>"), "no composition: {got}");
+        assert!(!got.contains("closure/heap") && !got.contains("(app stack"), "no closure: {got}");
+        // The element body is the composed arithmetic `((x + 1) * 2) + 3`.
+        assert!(got.contains("(+ ") && got.contains("(* "), "arithmetic body: {got}");
+    }
+
+    #[test]
+    fn identity_application_reduces_to_its_argument() {
+        let src = "module M\n\nlet f x = identity x\n";
+        assert_eq!(simp(src, "f"), "fn0(%0) = %0\n");
+    }
+
+    #[test]
+    fn pipe_application_reduces_to_a_direct_call() {
+        // `x |> g` becomes `g x` — a direct application of the same-file `g`.
+        let src = "module M\n\nlet g y = y + 1\n\nlet f x = x |> g\n";
+        let got = simp(src, "f");
+        assert_eq!(got, "fn0(%1) = (app @g %1)\n");
+        assert!(!got.contains("@|>"), "the pipe operator is reduced away: {got}");
+    }
+
+    #[test]
+    fn const_application_keeps_the_discarded_operand() {
+        // `const a b` reduces to `a` but binds `b` to a dead local, so its strict
+        // evaluation (and any effect/trap) is preserved.
+        let src = "module M\n\nlet f a b = const a b\n";
+        assert_eq!(simp(src, "f"), "fn0(%0, %1) = (let %2 = %1; %0)\n");
+    }
+
+    #[test]
+    fn beta_reduces_an_applied_lambda() {
+        // `(fun y -> y + 1) x` inlines the lambda, binding its parameter to a fresh
+        // local; the lifted lambda is then dead and pruned (one function remains).
+        let src = "module M\n\nlet f x = (fun y -> y + 1) x\n";
+        let got = simp(src, "f");
+        assert_eq!(got, "fn0(%0) = (let %2 = %0; (+ %2 1))\n");
+        assert!(!got.contains("closure"), "the applied lambda is beta-reduced: {got}");
+    }
+
+    #[test]
+    fn beta_reduces_an_applied_capturing_lambda() {
+        // A capturing lambda applied in place inlines too, mapping its capture slot
+        // to the supplied local.
+        let src = "module M\n\nlet f k x = (fun y -> y + k) x\n";
+        let got = simp(src, "f");
+        assert!(!got.contains("closure"), "the capturing lambda is beta-reduced: {got}");
+        // The body adds the argument (bound fresh) to the captured `k` (%0).
+        assert!(got.contains("(+ ") && got.contains("%0"), "captured k is used: {got}");
+    }
+
+    #[test]
+    fn caf_partial_application_flattens_to_a_saturated_call() {
+        // A CAF bound to a partial application (`shift 3`) inlines and the curried
+        // application flattens to one saturated call.
+        let src = "module M\n\nlet shift k x = x + k\n\nlet add3 = shift 3\n\nlet f x = add3 x\n";
+        let got = simp(src, "f");
+        assert_eq!(got, "fn0(%2) = (app @shift 3 %2)\n");
+        assert!(!got.contains("@add3"), "the CAF is inlined: {got}");
+    }
+
+    #[test]
+    fn value_position_caf_is_not_inlined() {
+        // A CAF used as a value (passed to `List.map`), not applied, is left alone —
+        // inlining it there only relocates allocation for no benefit.
+        let src = "module M\n\n\
+            let transform = (fun x -> x + 1) >> (fun x -> x * 2)\n\n\
+            let f xs = List.map transform xs\n";
+        let got = simp(src, "f");
+        assert!(got.contains("@transform"), "a value-position CAF is kept: {got}");
+    }
+
+    #[test]
+    fn impure_compose_operand_is_not_reduced() {
+        // `(getf 0 >> double) x`: the first operand is an indirect call (through a
+        // parameter), which the purity guard treats as impure, so the composition is
+        // left intact rather than reordered.
+        let src = "module M\n\n\
+            let double y = y * 2\n\n\
+            let f getf x = (getf 0 >> double) x\n";
+        let got = simp(src, "f");
+        assert!(got.contains("@>>"), "an impure-operand composition is not reduced: {got}");
+    }
+
+    #[test]
+    fn simplify_is_skipped_in_the_standard_library() {
+        // A file classified as standard-library (its path under `<std>/`) is not
+        // simplified, so the combinators stay exercised by their own contracts. The
+        // identical construct in a user module *is* reduced.
+        let user = "module U\n\nlet g y = y + 1\n\nlet f x = x |> g\n";
+        let std = "module S\n\nlet g y = y + 1\n\nlet f x = x |> g\n";
+        let mut db = fai_db::FaiDatabase::new();
+        fai_types::std_lib::load_std(&mut db);
+        let uid = db.add_source("U.fai".into(), user.to_owned());
+        let sid = db.add_source("<std>/S.fai".into(), std.to_owned());
+        let ufile = db.source_file(uid).unwrap();
+        let sfile = db.source_file(sid).unwrap();
+        let name = Symbol::intern("f");
+
+        // The user module reduces the pipe; the std-classified one does not.
+        assert!(!pretty_def(&simplified(&db, ufile, name)).contains("@|>"), "user reduced");
+        assert!(pretty_def(&simplified(&db, sfile, name)).contains("@|>"), "std kept");
+        // The std skip returns the `core_inlined` input unchanged (pointer-equal).
+        assert!(Arc::ptr_eq(&simplified(&db, sfile, name), &core_inlined(&db, sfile, name)));
+    }
+
+    #[test]
+    fn caf_with_an_unsupported_body_is_not_inlined() {
+        // `(<)` as a first-class value is outside the native subset (a lowering
+        // error node with a diagnostic). Inlining such a CAF would move the error
+        // into the caller and make the CAF unreachable, dropping its diagnostic — so
+        // a CAF whose body contains an error is left as a call (still reachable).
+        let src = "module M\n\n\
+            public lt : Int -> Int -> Bool\n\
+            let lt = (<)\n\n\
+            public run : Int -> Bool\n\
+            let run k = lt k 2\n";
+        let got = simp(src, "run");
+        assert!(got.contains("@lt"), "an error-bodied CAF is not inlined: {got}");
+    }
+
+    #[test]
+    fn row_polymorphic_call_evidence_is_not_flattened() {
+        // A row-polymorphic function's call lowers to a nested application whose
+        // leading argument is offset *evidence* (`(app (app @shift 0) rec)`), which
+        // code generation passes as a separate partial application. Flattening must
+        // leave it intact (an unsignatured record-update helper generalizes to
+        // row-polymorphic, so this is the common case).
+        let src = "module M\n\n\
+            type P = { x : Int, y : Int }\n\n\
+            let shift p = { p with x = p.x + 1 }\n\n\
+            public run : Int -> Int\n\
+            let run k = (shift { x = k, y = 0 }).x\n";
+        let got = simp(src, "run");
+        assert!(got.contains("(app (app @shift"), "evidence application is preserved: {got}");
+    }
+
+    #[test]
+    fn cross_module_caf_is_not_inlined() {
+        // CAF inlining is intra-file (the cross-module firewall): a public CAF
+        // applied from another module is left as a call, not spliced, so a body edit
+        // never crosses a module boundary.
+        let a = "module A\n\n\
+            public transform : Int -> Int\n\
+            let transform = (fun x -> x + 1) >> (fun x -> x * 2)\n";
+        let b = "module B\n\n\
+            public run : Int -> Int\n\
+            let run x = A.transform x\n";
+        let mut db = fai_db::FaiDatabase::new();
+        fai_types::std_lib::load_std(&mut db);
+        db.add_source("A.fai".into(), a.to_owned());
+        let bid = db.add_source("B.fai".into(), b.to_owned());
+        let bfile = db.source_file(bid).unwrap();
+        let got = pretty_def(&simplified(&db, bfile, Symbol::intern("run")));
+        assert!(got.contains("@transform"), "a cross-module CAF is not inlined: {got}");
+    }
+
+    #[test]
+    fn a_user_shadowed_compose_is_not_reduced() {
+        // Recognition is by resolved identity: a module that defines its own `>>`
+        // resolves the call to *its* definition, not `Prelude`'s, so the composition
+        // is left intact (a user operator is an ordinary function).
+        let src = "module M\n\n\
+            let (>>) f g = fun x -> g (f x)\n\n\
+            let inc z = z + 1\n\n\
+            let double y = y * 2\n\n\
+            let f x = (inc >> double) x\n";
+        assert!(simp(src, "f").contains("@>>"), "a shadowed `>>` is not the recognized combinator");
+    }
+
+    #[test]
+    fn caf_body_edit_resimplifies_caller_but_not_recognition() {
+        // Editing the `transform` CAF's body re-runs `simplified` for `run` (the
+        // inlining dependency is tracked) and changes its result, but does not re-run
+        // `combinator_defs` — recognition reads only module headers, so it is
+        // firewalled from any combinator/CAF body edit.
+        let module = |k: i64| {
+            format!(
+                "module M\n\n\
+                 let shift k x = x + k\n\n\
+                 let transform = (fun x -> x + 1) >> (fun x -> x * 2) >> shift {k}\n\n\
+                 let run n = List.foldl (fun acc x -> acc + transform x) 0 (List.range 0 n)\n"
+            )
+        };
+        let mut db = fai_db::FaiDatabase::new();
+        fai_types::std_lib::load_std(&mut db);
+        let id = db.add_source("M.fai".into(), module(3));
+        let file = db.source_file(id).unwrap();
+        let run = Symbol::intern("run");
+        let before = pretty_def(&simplified(&db, file, run));
+
+        db.enable_event_log();
+        db.add_source("M.fai".into(), module(5));
+        let after = pretty_def(&simplified(&db, file, run));
+        let events = db.take_events();
+
+        assert_ne!(before, after, "a CAF body edit changes the caller's reduced body");
+        assert!(after.contains("@shift 5"), "the edited constant flows into `run`: {after}");
+        assert!(
+            events.iter().any(|e| e.contains("simplified")),
+            "`run` is re-simplified after the CAF body edit",
+        );
+        assert!(
+            !events.iter().any(|e| e.contains("combinator_defs")),
+            "recognition (combinator_defs) is firewalled from a body edit: {events:?}",
+        );
+    }
+}

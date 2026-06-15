@@ -8,13 +8,14 @@
 //! helpers back into the caller, so factored code still gets "functional but
 //! in-place" reuse without hand-inlining every construction.
 //!
-//! The inliner is **layered on [`core_inlined`]** (the intrinsic, prim-wrapper
-//! form): it folds that body, and at each eligible call site splices the callee's
-//! own [`helper_inlined`] body — already fully folded, so inlining is **transitive**
-//! (a helper that calls a smaller helper folds the whole chain). It is
-//! **intra-file**: only same-file callees are inlined, which keeps the cross-module
-//! firewall intact (a body edit never crosses a module boundary) and keeps an
-//! opaque type transparent at the splice site.
+//! The inliner is **layered on [`simplified`]** (which has already folded the
+//! intrinsic prim wrappers and reduced compositions/CAF closures): it folds that
+//! body, and at each eligible call site splices the callee's own [`helper_inlined`]
+//! body — already fully folded, so inlining is **transitive** (a helper that calls
+//! a smaller helper folds the whole chain). It is **intra-file**: only same-file
+//! callees are inlined, which keeps the cross-module firewall intact (a body edit
+//! never crosses a module boundary) and keeps an opaque type transparent at the
+//! splice site.
 //!
 //! Eligibility ([`inline_summary`]) admits a callee that is **non-recursive**
 //! (excluded via [`fai_resolve::recursive_defs`] — the guarantee that makes the
@@ -40,9 +41,9 @@ use fai_syntax::Symbol;
 use fai_types::Ty;
 use rustc_hash::FxHashMap;
 
-use crate::core_inlined;
-use crate::inline::next_free_local;
-use crate::ir::{CExpr, ClosureAlloc, CoreFn, ExprKind as K, FieldIndex, LoweredDef};
+use crate::inline::{fresh_local, next_free_local, remap_expr};
+use crate::ir::{CExpr, ClosureAlloc, CoreFn, ExprKind as K, LoweredDef};
+use crate::simplified;
 
 /// The largest a callee's (prim-folded) body may be, in Core nodes, to be inlined.
 /// Comfortably admits the standard smart constructors (`bin`/`singleton`, a few
@@ -56,10 +57,10 @@ const INLINE_NODE_BUDGET: usize = 64;
 /// The recursion check is **first and cheap** (it reads only
 /// [`fai_resolve::recursive_defs`], never [`helper_inlined`]): a recursive callee
 /// is rejected before any body is folded, which is exactly what keeps a self-call
-/// from forming a query cycle. The remaining checks read the intrinsic
-/// [`core_inlined`] body and the signature. The result is a tiny value, so editing
-/// a callee's body ripples to its callers only when its *eligibility or arity*
-/// actually changes (salsa early cutoff) — the firewall the issue requires.
+/// from forming a query cycle. The remaining checks read the [`simplified`]'d body
+/// and the signature. The result is a tiny value, so editing a callee's body
+/// ripples to its callers only when its *eligibility or arity* actually changes
+/// (salsa early cutoff) — the firewall the issue requires.
 #[salsa::tracked]
 pub fn inline_summary(db: &dyn Db, file: SourceFile, name: Symbol) -> Option<usize> {
     // A recursive callee is never inlined: unrolling it is unwanted, the tail-call
@@ -69,7 +70,7 @@ pub fn inline_summary(db: &dyn Db, file: SourceFile, name: Symbol) -> Option<usi
     if recursive_defs(db, file).contains(&def) {
         return None;
     }
-    let base = core_inlined(db, file, name);
+    let base = simplified(db, file, name);
     // A single function (no lifted lambdas, hence no `MakeClosure` to renumber) and
     // no captures (top-level helpers capture nothing), with at least one parameter
     // (a direct-callable; nullary constants are referenced as bare globals, not
@@ -108,7 +109,7 @@ pub fn inline_summary(db: &dyn Db, file: SourceFile, name: Symbol) -> Option<usi
 /// calls folded.
 #[salsa::tracked]
 pub fn helper_inlined(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
-    let base = core_inlined(db, file, name);
+    let base = simplified(db, file, name);
     let source = file.source(db);
     let mut next = next_free_local(&base);
     let mut changed = false;
@@ -271,15 +272,16 @@ fn build_inline(
     // A fresh local for every argument (prefix parameters and any surplus), in
     // source order; the surplus locals carry their argument's type for the apply.
     let arg_tys: Vec<Ty> = args.iter().map(|a| a.ty.clone()).collect();
-    let arg_locals: Vec<LocalId> = (0..args.len()).map(|_| fresh(next)).collect();
+    let arg_locals: Vec<LocalId> = (0..args.len()).map(|_| fresh_local(next)).collect();
 
     // Remap the callee's locals: each parameter to its prefix local, every other
-    // local to a fresh slot allocated on first sight.
+    // local to a fresh slot allocated on first sight. An eligible callee is a single
+    // function, so its body has no lifted lambda — the FnId map is empty.
     let mut subst: FxHashMap<LocalId, LocalId> = FxHashMap::default();
     for (i, &p) in entry.params.iter().enumerate() {
         subst.insert(p, arg_locals[i]);
     }
-    let body = remap_expr(&entry.body, &mut subst, next);
+    let body = remap_expr(&entry.body, &mut subst, &FxHashMap::default(), next);
 
     // Over-application: apply the saturated result to the surplus arguments.
     let mut result = if args.len() > arity {
@@ -307,123 +309,6 @@ fn build_inline(
         result = CExpr::new(K::Let { local, value: Box::new(value), body: Box::new(result) }, ty);
     }
     result
-}
-
-/// Copies `e`, remapping every local through `subst` (allocating a fresh slot the
-/// first time a local is seen) and keeping the node's type verbatim.
-fn remap_expr(e: &CExpr, subst: &mut FxHashMap<LocalId, LocalId>, next: &mut usize) -> CExpr {
-    let ty = e.ty.clone();
-    let kind = match &e.kind {
-        K::Local(l) => K::Local(remap_local(*l, subst, next)),
-        K::Lit(_) | K::Global(_) | K::Error => e.kind.clone(),
-        K::Prim { op, args } => {
-            K::Prim { op: *op, args: args.iter().map(|a| remap_expr(a, subst, next)).collect() }
-        }
-        K::MakeData { tag, args, reuse, scalars, niche } => K::MakeData {
-            tag: *tag,
-            args: args.iter().map(|a| remap_expr(a, subst, next)).collect(),
-            reuse: reuse.map(|t| remap_local(t, subst, next)),
-            scalars: *scalars,
-            niche: *niche,
-        },
-        K::App { func, args, reuse, alloc } => K::App {
-            func: Box::new(remap_expr(func, subst, next)),
-            args: args.iter().map(|a| remap_expr(a, subst, next)).collect(),
-            reuse: reuse.iter().map(|t| t.map(|l| remap_local(l, subst, next))).collect(),
-            alloc: *alloc,
-        },
-        K::If { cond, then, els } => K::If {
-            cond: Box::new(remap_expr(cond, subst, next)),
-            then: Box::new(remap_expr(then, subst, next)),
-            els: Box::new(remap_expr(els, subst, next)),
-        },
-        K::Let { local, value, body } => {
-            // The value is in the outer scope; remap it before binding `local`.
-            let value = Box::new(remap_expr(value, subst, next));
-            let local = remap_local(*local, subst, next);
-            K::Let { local, value, body: Box::new(remap_expr(body, subst, next)) }
-        }
-        K::DataTag { base, niche } => {
-            K::DataTag { base: Box::new(remap_expr(base, subst, next)), niche: *niche }
-        }
-        K::DataField { base, index, scalar, niche } => {
-            let index = match index {
-                FieldIndex::Dyn { base: off, evidence } => {
-                    FieldIndex::Dyn { base: *off, evidence: remap_local(*evidence, subst, next) }
-                }
-                c => *c,
-            };
-            K::DataField {
-                base: Box::new(remap_expr(base, subst, next)),
-                index,
-                scalar: *scalar,
-                niche: *niche,
-            }
-        }
-        // An eligible callee is a single function, so its body has no `MakeClosure`
-        // (and no reference-counting or tail-call node, which are inserted later);
-        // these arms keep the remap total. A `MakeClosure`'s `FnId` would dangle, so
-        // its presence would be a bug upstream — but eligibility forbids it.
-        K::MakeClosure { func, captures, alloc } => K::MakeClosure {
-            func: *func,
-            captures: captures.iter().map(|c| remap_local(*c, subst, next)).collect(),
-            alloc: *alloc,
-        },
-        K::Reset { value, token, body } => K::Reset {
-            value: Box::new(remap_expr(value, subst, next)),
-            token: remap_local(*token, subst, next),
-            body: Box::new(remap_expr(body, subst, next)),
-        },
-        K::FreeReuse { token, body } => K::FreeReuse {
-            token: remap_local(*token, subst, next),
-            body: Box::new(remap_expr(body, subst, next)),
-        },
-        K::Dup { local, body } => K::Dup {
-            local: remap_local(*local, subst, next),
-            body: Box::new(remap_expr(body, subst, next)),
-        },
-        K::Drop { local, body } => K::Drop {
-            local: remap_local(*local, subst, next),
-            body: Box::new(remap_expr(body, subst, next)),
-        },
-        K::Join { params, body } => K::Join {
-            params: params.iter().map(|p| remap_local(*p, subst, next)).collect(),
-            body: Box::new(remap_expr(body, subst, next)),
-        },
-        K::Recur { args } => {
-            K::Recur { args: args.iter().map(|a| remap_expr(a, subst, next)).collect() }
-        }
-        K::HoleStart { hole, body } => K::HoleStart {
-            hole: remap_local(*hole, subst, next),
-            body: Box::new(remap_expr(body, subst, next)),
-        },
-        K::HoleFill { hole, cell, field } => K::HoleFill {
-            hole: remap_local(*hole, subst, next),
-            cell: Box::new(remap_expr(cell, subst, next)),
-            field: *field,
-        },
-        K::HoleClose { hole, base } => K::HoleClose {
-            hole: remap_local(*hole, subst, next),
-            base: Box::new(remap_expr(base, subst, next)),
-        },
-    };
-    CExpr::new(kind, ty)
-}
-
-/// Maps `l` to its fresh slot, allocating one the first time it is seen.
-fn remap_local(l: LocalId, subst: &mut FxHashMap<LocalId, LocalId>, next: &mut usize) -> LocalId {
-    if let Some(&r) = subst.get(&l) {
-        return r;
-    }
-    let r = fresh(next);
-    subst.insert(l, r);
-    r
-}
-
-fn fresh(next: &mut usize) -> LocalId {
-    let id = LocalId::from_index(*next);
-    *next += 1;
-    id
 }
 
 /// The number of Core nodes in `e` (every [`CExpr`] counts as one, recursing into
