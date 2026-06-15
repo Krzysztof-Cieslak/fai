@@ -209,7 +209,8 @@ pub(crate) fn build_def<M: Module>(
         let wrapper = module
             .declare_function(&format!("{base}__owned"), Linkage::Local, &uniform_sig)
             .expect("declare wrapper");
-        let ctx = build_owned_wrapper(module, fn_ids[0], &lowered.entry_borrowed, &abi, arity);
+        let ctx =
+            build_owned_wrapper(module, fn_ids[0], &lowered.entry_borrowed, &abi, arity, &base);
         jobs.push((wrapper, ctx));
         wrapper
     } else {
@@ -369,7 +370,9 @@ fn build_owned_wrapper<M: Module>(
     borrowed: &[bool],
     abi: &FnAbi,
     arity: usize,
+    base: &str,
 ) -> Context {
+    let entry_sig = entry_signature(module, arity, abi);
     let mut ctx = module.make_context();
     ctx.func.signature = code_signature(module);
     let mut fbcx = FunctionBuilderContext::new();
@@ -388,20 +391,35 @@ fn build_owned_wrapper<M: Module>(
             module.declare_function("fai_drop", Linkage::Import, &drop_sig).expect("declare drop");
         let drop_ref = module.declare_func_in_func(drop_id, builder.func);
         let float_off = i32::try_from(rt::FLOAT_VALUE_OFFSET).expect("float value offset");
+        let fields_off = i32::try_from(rt::DATA_FIELDS_OFFSET).expect("data fields offset");
         let entry_ref = module.declare_func_in_func(entry, builder.func);
 
         // Niche values the wrapper converted for a borrowed niche parameter; the
         // entry borrows them, so the wrapper drops them after the call.
         let mut lent_niche: Vec<Value> = Vec::new();
-        let mut result = if abi.register_abi {
+        let spread_ret = abi.spread_return().map(<[_]>::len);
+        let results = if abi.register_abi {
             // Register entry: load each boxed/tagged argument and pass it in a
             // register — a scalar float unboxed to `f64`, a monomorphic int untagged
-            // to a raw `i64` (both releasing any box), else the word.
+            // to a raw `i64` (both releasing any box), a spread aggregate exploded
+            // into its component `f64` registers, else the word.
             let mut call_args = Vec::with_capacity(arity + 1);
             call_args.push(env);
             for i in 0..arity {
                 let offset = i32::try_from(i * 8).expect("arg offset");
                 let orig = builder.ins().load(types::I64, MemFlags::trusted(), args, offset);
+                if let Some(reprs) = abi.spread_param(i) {
+                    // Explode the boxed aggregate into its scalar-slot `f64`s, then
+                    // release the box (an owned argument the entry consumes).
+                    for j in 0..reprs.len() {
+                        let off = fields_off + i32::try_from(j * 8).expect("field offset");
+                        let bits = builder.ins().load(types::I64, MemFlags::trusted(), orig, off);
+                        let f = builder.ins().bitcast(types::F64, MemFlags::new(), bits);
+                        call_args.push(f);
+                    }
+                    builder.ins().call(drop_ref, &[orig]);
+                    continue;
+                }
                 let v = if abi.float_param(i) {
                     let bits = builder.ins().load(types::I64, MemFlags::trusted(), orig, float_off);
                     builder.ins().call(drop_ref, &[orig]);
@@ -422,8 +440,11 @@ fn build_owned_wrapper<M: Module>(
                 };
                 call_args.push(v);
             }
+            // The entry signature was rebuilt above; declare the call against it so a
+            // multi-result spread return reads all components.
+            let _ = &entry_sig;
             let call = builder.ins().call(entry_ref, &call_args);
-            builder.inst_results(call)[0]
+            builder.inst_results(call).to_vec()
         } else {
             // Uniform entry: pass the argument array. For unboxed-float parameters,
             // replace the boxed argument with its raw bits in a fresh array and
@@ -453,14 +474,19 @@ fn build_owned_wrapper<M: Module>(
                 args
             };
             let call = builder.ins().call(entry_ref, &[env, entry_args]);
-            builder.inst_results(call)[0]
+            builder.inst_results(call).to_vec()
         };
+        let mut result = results[0];
 
         // Drop the borrowed arguments the entry left untouched; an unboxed-float,
-        // untagged-int, or niche argument was already released above / is dropped
-        // via `lent_niche`.
+        // untagged-int, niche, or spread argument was already released above / is
+        // dropped via `lent_niche`.
         for (i, &borrowed) in borrowed.iter().enumerate() {
-            if borrowed && !abi.float_param(i) && !abi.int_param(i) && abi.niche_param(i).is_none()
+            if borrowed
+                && !abi.float_param(i)
+                && !abi.int_param(i)
+                && abi.niche_param(i).is_none()
+                && abi.spread_param(i).is_none()
             {
                 let offset = i32::try_from(i * 8).expect("arg offset");
                 let v = builder.ins().load(types::I64, MemFlags::trusted(), args, offset);
@@ -469,6 +495,38 @@ fn build_owned_wrapper<M: Module>(
         }
         for v in lent_niche {
             builder.ins().call(drop_ref, &[v]);
+        }
+
+        // A spread result: the entry returned N `f64` components; reassemble them
+        // into a boxed scalar-slot cell (the in-cell `f64` layout) for the uniform
+        // first-class result.
+        if let Some(n) = spread_ret {
+            let size = u32::try_from(n * 8).expect("array size");
+            let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                size,
+                3,
+            ));
+            for (j, &c) in results.iter().take(n).enumerate() {
+                let bits = builder.ins().bitcast(types::I64, MemFlags::new(), c);
+                builder.ins().stack_store(bits, slot, i32::try_from(j * 8).expect("slot offset"));
+            }
+            let ptr = builder.ins().stack_addr(types::I64, slot, 0);
+            let scalars = if n >= 64 { u64::MAX } else { (1u64 << n) - 1 };
+            let desc = wrapper_descriptor(module, &mut builder, base, scalars);
+            let tag = builder.ins().iconst(types::I64, 0);
+            let count = builder.ins().iconst(types::I64, n as i64);
+            let mut sig = module.make_signature();
+            for _ in 0..4 {
+                sig.params.push(AbiParam::new(types::I64));
+            }
+            sig.returns.push(AbiParam::new(types::I64));
+            let id = module
+                .declare_function("fai_make_data_scalar", Linkage::Import, &sig)
+                .expect("declare make_data_scalar");
+            let fref = module.declare_func_in_func(id, builder.func);
+            let call = builder.ins().call(fref, &[desc, tag, count, ptr]);
+            result = builder.inst_results(call)[0];
         }
 
         // Box a float result back into the uniform representation: a register entry
@@ -513,6 +571,30 @@ fn build_owned_wrapper<M: Module>(
         builder.finalize();
     }
     ctx
+}
+
+/// Emits a per-shape data descriptor `{ kind = Data, scalar_bitmap, name = null }`
+/// for the first-class wrapper (the bare-builder peer of
+/// [`Translator::data_descriptor`]; a distinct symbol from the entry's, but with
+/// the same content, since the runtime dispatches on content, not address).
+fn wrapper_descriptor<M: Module>(
+    module: &mut M,
+    builder: &mut FunctionBuilder,
+    base: &str,
+    bitmap: u64,
+) -> Value {
+    let name = format!("{base}__owned__desc{bitmap}");
+    let id = module.declare_data(&name, Linkage::Local, false, false).expect("declare descriptor");
+    let mut bytes = vec![0u8; 32];
+    bytes[0..8].copy_from_slice(&rt::KIND_DATA.to_le_bytes());
+    bytes[8..16].copy_from_slice(&bitmap.to_le_bytes());
+    let mut desc = DataDescription::new();
+    desc.define(bytes.into_boxed_slice());
+    desc.set_align(8);
+    module.define_data(id, &desc).expect("define descriptor");
+    let gv = module.declare_data_in_func(id, builder.func);
+    let ptr = module.target_config().pointer_type();
+    builder.ins().symbol_value(ptr, gv)
 }
 
 /// Calls a one-argument, one-result runtime conversion `name` on `v` in the bare
@@ -578,7 +660,7 @@ fn code_signature<M: Module>(module: &M) -> cranelift_codegen::ir::Signature {
 /// uniform [`code_signature`]. `arity` is the runtime parameter count.
 fn entry_signature<M: Module>(
     module: &M,
-    arity: usize,
+    _arity: usize,
     abi: &FnAbi,
 ) -> cranelift_codegen::ir::Signature {
     if !abi.register_abi {
@@ -586,13 +668,27 @@ fn entry_signature<M: Module>(
     }
     let mut sig = module.make_signature();
     sig.params.push(AbiParam::new(types::I64)); // env (unused: a top-level entry captures nothing)
-    for i in 0..arity {
-        let ty = if abi.float_param(i) { types::F64 } else { types::I64 };
-        sig.params.push(AbiParam::new(ty));
+    for r in &abi.params {
+        for t in repr_types(r) {
+            sig.params.push(AbiParam::new(t));
+        }
     }
-    let ret = if abi.float_return() { types::F64 } else { types::I64 };
-    sig.returns.push(AbiParam::new(ret));
+    for t in repr_types(&abi.ret) {
+        sig.returns.push(AbiParam::new(t));
+    }
     sig
+}
+
+/// The Cranelift register type(s) a parameter/result representation occupies: a
+/// scalar `Float` is one `f64`; a **spread** float aggregate is N `f64`s (a
+/// multi-register parameter / multi-result return); every other representation is
+/// one `i64` word.
+fn repr_types(r: &Repr) -> Vec<types::Type> {
+    match r {
+        Repr::ScalarFloat => vec![types::F64],
+        Repr::Spread(components) => components.iter().flat_map(repr_types).collect(),
+        Repr::Uniform | Repr::ScalarInt | Repr::Niche(_) => vec![types::I64],
+    }
 }
 
 /// The calling convention of a token-taking specialized entry: `fn(env, t0, …,
@@ -607,17 +703,20 @@ fn reuse_entry_signature<M: Module>(
     source_arity: usize,
     abi: &FnAbi,
 ) -> cranelift_codegen::ir::Signature {
+    let _ = source_arity;
     let mut sig = module.make_signature();
     sig.params.push(AbiParam::new(types::I64)); // env (unused: captures nothing)
     for _ in 0..tokens {
         sig.params.push(AbiParam::new(types::I64)); // a reuse token (raw i64)
     }
-    for i in 0..source_arity {
-        let ty = if abi.float_param(i) { types::F64 } else { types::I64 };
-        sig.params.push(AbiParam::new(ty));
+    for r in &abi.params {
+        for t in repr_types(r) {
+            sig.params.push(AbiParam::new(t));
+        }
     }
-    let ret = if abi.float_return() { types::F64 } else { types::I64 };
-    sig.returns.push(AbiParam::new(ret));
+    for t in repr_types(&abi.ret) {
+        sig.returns.push(AbiParam::new(t));
+    }
     sig
 }
 
@@ -661,12 +760,11 @@ fn build_fn<M: Module>(
         builder.seal_block(entry);
         let env = builder.block_params(entry)[0];
         // A register entry's value parameters follow `env` in registers; a uniform
-        // function reads them from the `args` array (the second block parameter).
-        let reg_params: Vec<Value> = if register_entry {
-            (0..core_fn.params.len()).map(|i| builder.block_params(entry)[i + 1]).collect()
-        } else {
-            Vec::new()
-        };
+        // function reads them from the `args` array (the second block parameter). A
+        // spread parameter occupies several consecutive registers, so all registers
+        // after `env` are collected and walked per the ABI below.
+        let reg_params: Vec<Value> =
+            if register_entry { builder.block_params(entry)[1..].to_vec() } else { Vec::new() };
         let args = if register_entry { env } else { builder.block_params(entry)[1] };
 
         let mut tr = Translator {
@@ -742,16 +840,39 @@ fn build_fn<M: Module>(
                 } else if matches!(tr.var_ty(p), Some(Ty::Con(Con::Int))) {
                     tr.int_locals.remove(&p.index());
                 }
+                // A spread parameter's component locals are unboxed `f64`s, forced
+                // in even if some component is unused (each must receive its
+                // register); the aggregate slot `p` itself carries no value.
+                if abi.spread_param(i).is_some()
+                    && let Some(Some(locals)) = lowered.entry_spread_params.get(i)
+                {
+                    for &c in locals {
+                        tr.f64_locals.insert(c.index());
+                    }
+                }
             }
         }
 
         if register_entry {
             // Register entry: parameters arrive in registers, already in their final
             // representation (an `f64` for a scalar float, a raw untagged word for an
-            // `int_param`, else the boxed/tagged word). A direct-callable (top-level)
-            // entry captures nothing.
+            // `int_param`, else the boxed/tagged word). A spread parameter occupies
+            // several consecutive registers, bound to its component locals. A
+            // direct-callable (top-level) entry captures nothing.
+            let mut reg = 0usize;
             for (i, &p) in core_fn.params.iter().enumerate() {
-                let v = reg_params[i];
+                if let Some(reprs) = abi.spread_param(i) {
+                    let n = reprs.len();
+                    if let Some(Some(locals)) = lowered.entry_spread_params.get(i) {
+                        for (j, &c) in locals.iter().enumerate() {
+                            tr.define_var(c, reg_params[reg + j]);
+                        }
+                    }
+                    reg += n;
+                    continue;
+                }
+                let v = reg_params[reg];
+                reg += 1;
                 if abi.int_param(i) {
                     // The register value is already untagged; record it raw.
                     tr.mark_raw(v);
@@ -823,6 +944,15 @@ fn build_fn<M: Module>(
             tr.pool_heads_base = Some(tr.builder.inst_results(call)[0]);
         }
 
+        // A spread (fixed-shape float aggregate) result is returned multi-value:
+        // the body's tail produces N `f64` components, returned directly with no
+        // heap cell (each tail of an `if` returns independently — no merge).
+        if let Some(reprs) = abi.spread_return().filter(|_| register_entry) {
+            let n = reprs.len();
+            tr.spread_return_body(&core_fn.body, n);
+            tr.builder.finalize();
+            return ctx;
+        }
         let result = tr.expr(&core_fn.body);
         // The entry returns: an `f64` register for a register float entry; a raw
         // untagged `i64` for a register int entry; raw float bits for a uniform float
@@ -1978,11 +2108,17 @@ impl<M: Module> Translator<'_, M> {
             ExprKind::MakeData { tag, args, reuse, scalars, niche } => {
                 self.make_data(*tag, args, *reuse, *scalars, *niche)
             }
-            // The SROA pass produces these; their code generation (a spread is
-            // multi-value, a letmany binds a multi-result call) is added when that
-            // emission is enabled. They never reach here until then.
-            ExprKind::Spread { .. } | ExprKind::LetMany { .. } => {
-                unreachable!("Spread/LetMany code generation is enabled with SROA emission")
+            // A `LetMany` binds a spread-returning call's result components, then
+            // continues. A `Spread` in a value position (rare — SROA normally
+            // materializes at boxed sinks) reassembles its components into a cell.
+            ExprKind::LetMany { locals, value, body } => {
+                self.bind_letmany(locals, value);
+                self.expr(body)
+            }
+            ExprKind::Spread { components } => {
+                let n = components.len();
+                let scalars = if n >= 64 { u64::MAX } else { (1u64 << n) - 1 };
+                self.make_data(0, components, None, scalars, None)
             }
             ExprKind::DataTag { base, niche } => self.data_tag(base, *niche, &e.ty),
             ExprKind::DataField { base, index, scalar, niche } => {
@@ -4359,6 +4495,13 @@ impl<M: Module> Translator<'_, M> {
                 if !reuse.is_empty() && args.len() == arity {
                     return self.direct_reuse_application(def, args, reuse, result_ty);
                 }
+                // A spread-returning callee reached as a value (rather than bound by
+                // a `LetMany`): the result aggregate crosses into a uniform position,
+                // so reassemble its components into a boxed cell.
+                if args.len() == arity && (self.signature_of)(def).spread_return().is_some() {
+                    let comps = self.spread_call_parts(def, args);
+                    return self.box_components(&comps);
+                }
                 return if args.len() == arity {
                     self.direct_application(def, args, result_ty)
                 } else {
@@ -4449,54 +4592,11 @@ impl<M: Module> Translator<'_, M> {
         let mut call_args = Vec::with_capacity(args.len() + 1);
         call_args.push(null_env);
         // Boxes freshly created from an unboxed scalar for a **borrowed** uniform
-        // parameter: the callee inspects but does not drop them, and they are
-        // caller-owned temporaries (not a named local the reference-count pass would
-        // drop), so the caller releases them after the call.
+        // parameter are caller-owned temporaries the callee inspects but does not
+        // drop, so the caller releases them after the call. A spread parameter
+        // contributes its N `f64` components (see [`Self::marshal_args`]).
         let mut lent_boxes = Vec::new();
-        for (i, a) in args.iter().enumerate() {
-            let v = if abi.float_param(i) {
-                let v = self.expr(a);
-                if self.is_f64(v) { v } else { self.owning_unbox(v) }
-            } else if abi.int_param(i) {
-                let v = self.expr(a);
-                self.as_raw_int(v)
-            } else if let Some(k) = abi.niche_param(i) {
-                // A niche parameter passes the wrapper-free encoding (converting a
-                // standard argument). Niche parameters are always owned (see the
-                // borrow signature), so the value is consumed here — no borrowing
-                // conversion is needed.
-                let v = self.expr(a);
-                self.ensure_niche(v, k)
-            } else {
-                // A uniform parameter: box an unboxed scalar / convert a niche
-                // argument to a standard cell. A cell created here (distinct from the
-                // evaluated value) for a **borrowed** parameter is a temporary the
-                // caller releases after the call.
-                let raw = self.expr(a);
-                let is_borrowed = borrowed.get(i).copied().unwrap_or(false);
-                if let Some(k) = self.niche_of(raw) {
-                    // A niche value flowing into a uniform slot becomes a standard
-                    // cell. A borrowed parameter must not consume the (borrowed) niche
-                    // value, so convert a *duplicate* and release it after the call;
-                    // an owned parameter converts (consumes) the value directly.
-                    if is_borrowed {
-                        let dup = self.call1("fai_dup", raw);
-                        let std = self.niche_to_std(dup, k);
-                        lent_boxes.push(std);
-                        std
-                    } else {
-                        self.niche_to_std(raw, k)
-                    }
-                } else {
-                    let boxed = self.ensure_boxed(raw);
-                    if boxed != raw && is_borrowed {
-                        lent_boxes.push(boxed);
-                    }
-                    boxed
-                }
-            };
-            call_args.push(v);
-        }
+        self.marshal_args(&abi, &borrowed, args, &mut call_args, &mut lent_boxes);
         let result = self.direct_call(def, args.len(), &abi, &call_args);
         for b in lent_boxes {
             self.call_drop(b);
@@ -4609,23 +4709,7 @@ impl<M: Module> Translator<'_, M> {
         }
         // The value arguments follow, marshalled exactly as a plain direct call.
         let mut lent_boxes = Vec::new();
-        for (i, a) in args.iter().enumerate() {
-            let v = if abi.float_param(i) {
-                let v = self.expr(a);
-                if self.is_f64(v) { v } else { self.owning_unbox(v) }
-            } else if abi.int_param(i) {
-                let v = self.expr(a);
-                self.as_raw_int(v)
-            } else {
-                let raw = self.expr(a);
-                let boxed = self.ensure_boxed(raw);
-                if boxed != raw && borrowed.get(i).copied().unwrap_or(false) {
-                    lent_boxes.push(boxed);
-                }
-                boxed
-            };
-            call_args.push(v);
-        }
+        self.marshal_args(&abi, &borrowed, args, &mut call_args, &mut lent_boxes);
         let name = reuse_symbol(self.namer, def);
         let sig = reuse_entry_signature(self.module, reuse.len(), args.len(), &abi);
         let id = self
@@ -4642,6 +4726,236 @@ impl<M: Module> Translator<'_, M> {
             self.mark_raw(result);
         }
         self.as_repr_of(result, result_ty)
+    }
+
+    // -----------------------------------------------------------------------
+    // Spread (fixed-shape float aggregate) calling convention.
+    // -----------------------------------------------------------------------
+
+    /// Translates the body of a spread-result function, returning its N `f64`
+    /// components multi-value at every tail. A tail `if` returns from each branch
+    /// directly (no merge); binders are emitted with their continuation recursed.
+    fn spread_return_body(&mut self, e: &CExpr, n: usize) {
+        match &e.kind {
+            ExprKind::Spread { components } => {
+                let vals: Vec<Value> = components.iter().map(|c| self.expr_f64(c)).collect();
+                self.builder.ins().return_(&vals);
+            }
+            ExprKind::If { cond, then, els } => {
+                let cv = self.expr(cond);
+                let false_v = self.builder.ins().iconst(types::I64, 1); // Bool false
+                let is_true = self.builder.ins().icmp(
+                    cranelift_codegen::ir::condcodes::IntCC::NotEqual,
+                    cv,
+                    false_v,
+                );
+                let then_b = self.builder.create_block();
+                let else_b = self.builder.create_block();
+                self.builder.ins().brif(is_true, then_b, &[], else_b, &[]);
+                self.builder.switch_to_block(then_b);
+                self.builder.seal_block(then_b);
+                self.spread_return_body(then, n);
+                self.builder.switch_to_block(else_b);
+                self.builder.seal_block(else_b);
+                self.spread_return_body(els, n);
+            }
+            ExprKind::Let { local, value, body } => {
+                let v = self.expr(value);
+                self.define_var(*local, v);
+                self.bce_transfer(*local, value);
+                self.spread_return_body(body, n);
+            }
+            ExprKind::LetMany { locals, value, body } => {
+                self.bind_letmany(locals, value);
+                self.spread_return_body(body, n);
+            }
+            ExprKind::Reset { value, token, body } => {
+                let v = self.expr(value);
+                let tok = self.call1("fai_drop_reuse", v);
+                self.define_var(*token, tok);
+                self.spread_return_body(body, n);
+            }
+            ExprKind::FreeReuse { token, body } => {
+                let tok = self.use_var(*token);
+                let f = self.runtime("fai_free_reuse", 1, false);
+                self.builder.ins().call(f, &[tok]);
+                self.spread_return_body(body, n);
+            }
+            ExprKind::Dup { local, body } => {
+                self.dup_local(*local);
+                self.spread_return_body(body, n);
+            }
+            ExprKind::Drop { local, body } => {
+                self.drop_local(*local);
+                self.spread_return_body(body, n);
+            }
+            // A boxed FFA value as the tail (defensive: SROA usually emits a
+            // `Spread`): explode it into its scalar components and return them.
+            _ => {
+                let base = self.expr(e);
+                let vals = self.explode_boxed(base, n);
+                self.call_drop(base);
+                self.builder.ins().return_(&vals);
+            }
+        }
+    }
+
+    /// Evaluates `e` to an `f64` (a component value is a scalar float; a boxed
+    /// `Float` is unboxed, consuming it).
+    fn expr_f64(&mut self, e: &CExpr) -> Value {
+        let v = self.expr(e);
+        if self.is_f64(v) { v } else { self.owning_unbox(v) }
+    }
+
+    /// Reads the N scalar-`f64` fields of a boxed FFA cell `base` (borrowing — the
+    /// caller releases `base`).
+    fn explode_boxed(&mut self, base: Value, n: usize) -> Vec<Value> {
+        (0..n)
+            .map(|i| {
+                let addr =
+                    self.field_slot_addr(base, FieldIndex::Const(u32::try_from(i).unwrap_or(0)));
+                let bits = self.builder.ins().load(types::I64, MemFlags::trusted(), addr, 0);
+                self.i64_to_f64(bits)
+            })
+            .collect()
+    }
+
+    /// Binds a `LetMany`'s locals to the components a spread-returning call yields.
+    fn bind_letmany(&mut self, locals: &[LocalId], value: &CExpr) {
+        let results = self.spread_call(value);
+        debug_assert_eq!(results.len(), locals.len());
+        for (&l, v) in locals.iter().zip(results) {
+            self.define_var(l, v);
+        }
+    }
+
+    /// Direct-calls a saturated spread-returning callee, yielding its N `f64`
+    /// result components.
+    fn spread_call(&mut self, call: &CExpr) -> Vec<Value> {
+        let ExprKind::App { func, args, .. } = &call.kind else {
+            unreachable!("spread_call on a non-App")
+        };
+        let ExprKind::Global(def) = func.kind else {
+            unreachable!("spread_call on an indirect call")
+        };
+        self.spread_call_parts(def, args)
+    }
+
+    /// Marshals `args` and direct-calls spread-returning `def`, yielding its N `f64`
+    /// result components.
+    fn spread_call_parts(&mut self, def: DefId, args: &[CExpr]) -> Vec<Value> {
+        let abi = (self.signature_of)(def);
+        let borrowed = (self.borrows_of)(def);
+        let null_env = self.builder.ins().iconst(types::I64, 0);
+        let mut call_args = vec![null_env];
+        let mut lent_boxes = Vec::new();
+        self.marshal_args(&abi, &borrowed, args, &mut call_args, &mut lent_boxes);
+        let n = abi.spread_return().map_or(1, <[_]>::len);
+        let results = self.direct_call_n(def, args.len(), &abi, &call_args, n);
+        for b in lent_boxes {
+            self.call_drop(b);
+        }
+        results
+    }
+
+    /// Reassembles `n` spread component `f64` values into a boxed scalar-slot cell
+    /// (the in-cell `f64` layout), used where a spread call's result crosses a
+    /// uniform boundary reached without a tracked local.
+    fn box_components(&mut self, comps: &[Value]) -> Value {
+        let n = comps.len();
+        let scalars = if n >= 64 { u64::MAX } else { (1u64 << n) - 1 };
+        let bits: Vec<Value> = comps.iter().map(|&c| self.float_field_bits(c)).collect();
+        let ptr = self.spill(&bits);
+        let tag_v = self.builder.ins().iconst(types::I64, 0);
+        let n_v = self.builder.ins().iconst(types::I64, n as i64);
+        let desc = self.data_descriptor(scalars);
+        let f = self.runtime("fai_make_data_scalar", 4, true);
+        let call = self.builder.ins().call(f, &[desc, tag_v, n_v, ptr]);
+        self.builder.inst_results(call)[0]
+    }
+
+    /// Marshals `args` into `call_args` per the callee `abi`: a spread parameter
+    /// contributes its N `f64` components, every other parameter one word (the same
+    /// rule as [`Self::direct_call_value`], factored for the spread paths). Boxes
+    /// created for a borrowed parameter are pushed to `lent_boxes` (released by the
+    /// caller after the call).
+    fn marshal_args(
+        &mut self,
+        abi: &FnAbi,
+        borrowed: &[bool],
+        args: &[CExpr],
+        call_args: &mut Vec<Value>,
+        lent_boxes: &mut Vec<Value>,
+    ) {
+        for (i, a) in args.iter().enumerate() {
+            if let Some(reprs) = abi.spread_param(i) {
+                for cv in self.spread_arg_values(a, reprs.len()) {
+                    call_args.push(cv);
+                }
+            } else if abi.float_param(i) {
+                let v = self.expr(a);
+                call_args.push(if self.is_f64(v) { v } else { self.owning_unbox(v) });
+            } else if abi.int_param(i) {
+                let v = self.expr(a);
+                let v = self.as_raw_int(v);
+                call_args.push(v);
+            } else if let Some(k) = abi.niche_param(i) {
+                let v = self.expr(a);
+                let v = self.ensure_niche(v, k);
+                call_args.push(v);
+            } else {
+                let raw = self.expr(a);
+                let is_borrowed = borrowed.get(i).copied().unwrap_or(false);
+                let v = if let Some(k) = self.niche_of(raw) {
+                    if is_borrowed {
+                        let dup = self.call1("fai_dup", raw);
+                        let std = self.niche_to_std(dup, k);
+                        lent_boxes.push(std);
+                        std
+                    } else {
+                        self.niche_to_std(raw, k)
+                    }
+                } else {
+                    let boxed = self.ensure_boxed(raw);
+                    if boxed != raw && is_borrowed {
+                        lent_boxes.push(boxed);
+                    }
+                    boxed
+                };
+                call_args.push(v);
+            }
+        }
+    }
+
+    /// The N `f64` component values of a spread call argument: a `Spread` node's
+    /// components evaluated, or (defensively) a boxed FFA value exploded.
+    fn spread_arg_values(&mut self, a: &CExpr, n: usize) -> Vec<Value> {
+        if let ExprKind::Spread { components } = &a.kind {
+            components.iter().map(|c| self.expr_f64(c)).collect()
+        } else {
+            let base = self.expr(a);
+            let vals = self.explode_boxed(base, n);
+            self.call_drop(base);
+            vals
+        }
+    }
+
+    /// Direct-calls `def` returning its `n` `f64` result components (the multi-result
+    /// register convention).
+    fn direct_call_n(
+        &mut self,
+        def: DefId,
+        arity: usize,
+        abi: &FnAbi,
+        call_args: &[Value],
+        n: usize,
+    ) -> Vec<Value> {
+        let name = code_symbol(self.namer, def);
+        let sig = entry_signature(self.module, arity, abi);
+        let id = self.module.declare_function(&name, Linkage::Import, &sig).expect("declare code");
+        let fref = self.module.declare_func_in_func(id, self.builder.func);
+        let call = self.builder.ins().call(fref, call_args);
+        self.builder.inst_results(call)[..n].to_vec()
     }
 
     fn make_closure(&mut self, func: FnId, captures: &[LocalId], alloc: ClosureAlloc) -> Value {
@@ -5053,6 +5367,10 @@ impl<M: Module> Translator<'_, M> {
                 let v = self.expr(value);
                 self.define_var(*local, v);
                 self.bce_transfer(*local, value);
+                self.expr_tail(body);
+            }
+            ExprKind::LetMany { locals, value, body } => {
+                self.bind_letmany(locals, value);
                 self.expr_tail(body);
             }
             ExprKind::Reset { value, token, body } => {

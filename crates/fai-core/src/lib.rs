@@ -9,6 +9,7 @@
 //! counting (`fai-rc`) and code generation (`fai-codegen`). Diagnostics for
 //! constructs outside the native subset use the backend `FAI7xxx` range.
 
+pub mod abi;
 pub mod bounds;
 pub mod fingerprint;
 #[allow(unsafe_code)]
@@ -33,6 +34,7 @@ mod proptests;
 #[cfg(test)]
 mod tests;
 
+pub use abi::abi_of;
 pub use bounds::{BoundSig, Bounds, PTerm, RTerm, ResultSig, WHOLE};
 pub use fingerprint::fingerprint_def;
 pub use fuse::{FuseResult, FusedLoop, fuse_def, fusion_defs};

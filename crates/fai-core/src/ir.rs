@@ -291,15 +291,21 @@ impl FnAbi {
 }
 
 /// The native representation of a parameter/result type: an unboxed `Float`, an
-/// untagged `Int`, a niche `Option` (per `niche`), or a uniform word.
+/// untagged `Int`, a spread of `f64` components (a fixed-shape float aggregate), a
+/// niche `Option` (per `niche`), or a uniform word.
 fn scalar_repr(ty: &Ty, niche: &dyn Fn(&Ty) -> Option<NicheKind>) -> Repr {
     match ty {
         Ty::Con(Con::Float) => Repr::ScalarFloat,
         Ty::Con(Con::Int) => Repr::ScalarInt,
-        _ => match niche(ty) {
-            Some(k) => Repr::Niche(k),
-            None => Repr::Uniform,
-        },
+        _ => {
+            if let Some(n) = ffa_arity(ty) {
+                return Repr::Spread(vec![Repr::ScalarFloat; n]);
+            }
+            match niche(ty) {
+                Some(k) => Repr::Niche(k),
+                None => Repr::Uniform,
+            }
+        }
     }
 }
 
