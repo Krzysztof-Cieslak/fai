@@ -801,6 +801,8 @@ fn build_fn<M: Module>(
             result_facts_of: bce.result_of,
             bce_shadow: bce.shadow,
             pool_heads_base: None,
+            array_float_tag: FxHashMap::default(),
+            array_tag_cacheable: false,
         };
 
         // Record each local's static type up front, so reference-count operations
@@ -942,10 +944,30 @@ fn build_fn<M: Module>(
         // whole body) so the inlined pooled allocation fast path reuses it with no
         // per-allocation call. The base is loop-invariant, so a hot allocation loop
         // pays one `fai_pool_heads` per activation rather than one per cell.
-        if body_uses_array_alloc(&core_fn.body) {
+        let uses_array_alloc = body_uses_array_alloc(&core_fn.body);
+        if uses_array_alloc {
             let heads = tr.runtime("fai_pool_heads", 0, true);
             let call = tr.builder.ins().call(heads, &[]);
             tr.pool_heads_base = Some(tr.builder.inst_results(call)[0]);
+        }
+        // A buffer's float self-tag (its descriptor word) is rewritten only by a
+        // float `push`'s self-stamp, so a body that allocates or pushes no array
+        // never re-tags one: a generic array's self-tag is then loop-invariant and
+        // can be computed once instead of on every element touch. Precompute each
+        // generic array parameter's self-tag here in the entry block (which
+        // dominates the whole body), keyed by the parameter's value so the inline
+        // accesses reuse it (see [`Self::array_float_tag`]). A tail loop reassigns
+        // its parameters, so its loop-carried arrays are (also) handled per
+        // iteration at the `Join` header (see [`Self::join`]).
+        tr.array_tag_cacheable = !uses_array_alloc;
+        if tr.array_tag_cacheable {
+            for &p in &core_fn.params {
+                if tr.var_ty(p).is_some_and(is_generic_array) {
+                    let base = tr.use_var(p);
+                    let tag = tr.array_is_float(base);
+                    tr.array_float_tag.insert(base, tag);
+                }
+            }
         }
 
         // A spread (fixed-shape float aggregate) result is returned multi-value:
@@ -1200,6 +1222,23 @@ struct Translator<'a, M: Module> {
     /// the entry block dominates the whole body, so the inlined pool pop/push reuse
     /// this single value with no per-allocation call.
     pool_heads_base: Option<Value>,
+    /// A generic (type-variable element) array's precomputed float self-tag
+    /// (`array_is_float`), keyed by the array's pointer **value** — so a generic
+    /// element access reuses one descriptor load per array value instead of
+    /// reloading it on every element touch (the hot path of a generic in-place
+    /// sort/traversal). Populated where the value is loop-invariant and dominates
+    /// its uses: at the function entry for each generic array parameter, and at a
+    /// `Join` (tail-loop) header for each loop-carried generic array parameter (its
+    /// per-iteration block-parameter value). Keyed by value rather than by local so
+    /// it hits through reference-counting aliases (a borrowed read of the parameter
+    /// keeps the parameter's own value). Only populated when the body re-tags no
+    /// buffer (it performs no `Array` allocation or `push`, the float-`push`
+    /// self-stamp being the only writer of a descriptor word).
+    array_float_tag: FxHashMap<Value, Value>,
+    /// Whether this body re-tags no buffer (no `Array` allocation or `push`), so a
+    /// generic array's self-tag is stable and may be cached in
+    /// [`Self::array_float_tag`].
+    array_tag_cacheable: bool,
 }
 
 /// The active tail-call loop being translated.
@@ -2852,6 +2891,17 @@ impl<M: Module> Translator<'_, M> {
         self.builder.ins().icmp(IntCC::Equal, desc, float_desc)
     }
 
+    /// The float self-tag for a generic array access on `base`: a precomputed
+    /// loop-invariant tag when `base` is a cached array value (see
+    /// [`Self::array_float_tag`]), reused instead of reloading the descriptor, or a
+    /// fresh inline [`Self::array_is_float`] otherwise.
+    fn array_float_tag_for(&mut self, base: Value) -> Value {
+        if let Some(&tag) = self.array_float_tag.get(&base) {
+            return tag;
+        }
+        self.array_is_float(base)
+    }
+
     /// Tests at runtime whether the uniform value `v` is a boxed `Float` (a
     /// `KIND_FLOAT` cell — every float box carries `FAI_FLOAT_DESC`). The
     /// descriptor load is guarded by an immediate check, since an immediate is not
@@ -3010,13 +3060,22 @@ impl<M: Module> Translator<'_, M> {
     /// cannot say whether the slot is a raw `f64` or a boxed pointer, so branch on
     /// the array's runtime self-tag. A float array's raw slot is boxed into a fresh
     /// owned `Float`; a boxed element is tag-checked-duped so it outlives the
-    /// borrowed array. Both yield a uniform word.
+    /// borrowed array. Both yield a uniform word. A precomputed loop-invariant
+    /// self-tag for `base` is reused when available (see [`Self::array_float_tag`]).
     fn array_load_elem_generic(&mut self, base: Value, word: Value, elem: &Ty) -> Value {
-        let is_float = self.array_is_float(base);
+        let is_float = self.array_float_tag_for(base);
         let box_b = self.builder.create_block();
         let dup_b = self.builder.create_block();
         let merge_b = self.builder.create_block();
         self.builder.append_block_param(merge_b, types::I64);
+        // The re-box arm holds an allocating call (`fai_box_float`); a generic array
+        // is far more often a boxed-element one than an (unboxed) float one, so mark
+        // it cold so the backend lays it out of line and keeps the call's clobbers off
+        // the hot boxed/immediate read path. With the self-tag hoisted out of the
+        // per-element load (see [`Self::array_float_tag`]) this tightens a generic
+        // in-place sort/traversal over a non-float array — the common case — at the
+        // cost of the rarer generic float-array read taking the out-of-line path.
+        self.builder.set_cold_block(box_b);
         self.builder.ins().brif(is_float, box_b, &[], dup_b, &[]);
 
         // Float array: the slot holds raw `f64` bits; box a fresh owned `Float`.
@@ -3135,7 +3194,7 @@ impl<M: Module> Translator<'_, M> {
         value: Value,
         elem: &Ty,
     ) {
-        let is_float = self.array_is_float(base);
+        let is_float = self.array_float_tag_for(base);
         let float_b = self.builder.create_block();
         let boxed_b = self.builder.create_block();
         let cont_b = self.builder.create_block();
@@ -5259,6 +5318,25 @@ impl<M: Module> Translator<'_, M> {
             exit_raw: false,
             exit_niche: None,
         });
+        // Precompute each loop-carried generic array parameter's float self-tag here
+        // at the header (which dominates the loop body), keyed by the header's
+        // per-iteration block-parameter value, so the body's generic element
+        // accesses reuse one descriptor load instead of one per element touch. Only
+        // when the body re-tags no buffer (see [`Self::array_float_tag`]); the key is
+        // this loop's value, so it neither conflicts with the entry cache nor leaks
+        // to post-loop code (those use other values).
+        if self.array_tag_cacheable {
+            let carried: Vec<LocalId> = params
+                .iter()
+                .copied()
+                .filter(|p| self.var_ty(*p).is_some_and(is_generic_array))
+                .collect();
+            for p in carried {
+                let base = self.use_var(p);
+                let tag = self.array_is_float(base);
+                self.array_float_tag.insert(base, tag);
+            }
+        }
         // The loop body is analyzed from the entry facts (the inductively-valid loop
         // invariant): the loop-carried parameters are the function's parameters, and
         // the fold proved the entry facts hold at every back-edge.
@@ -5871,6 +5949,13 @@ fn array_elem(ty: &Ty) -> Option<&Ty> {
 /// pushed value's) descriptor at runtime.
 fn elem_may_be_float(elem: &Ty) -> bool {
     matches!(elem, Ty::Var(_) | Ty::Error)
+}
+
+/// Whether `ty` is an `Array` whose element might be a raw-`f64` slot at runtime —
+/// i.e. a generic-element array (`Array 'a`). Such an array's element access takes
+/// the runtime self-tag path, so precomputing its self-tag once pays off.
+fn is_generic_array(ty: &Ty) -> bool {
+    array_elem(ty).is_some_and(elem_may_be_float)
 }
 
 /// Whether this (already lambda-lifted) function body contains an `Array`

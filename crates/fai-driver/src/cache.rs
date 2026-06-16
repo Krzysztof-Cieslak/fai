@@ -68,8 +68,13 @@ use crate::backend::{abi_of, arity_of, object_code, symbol_base};
 /// `spread-aggregate` token marks a fixed-shape float aggregate held in registers
 /// and returned multi-value (scalar replacement of aggregates), which changes a
 /// spread-ABI entry's and its callers' machine code, so a cache warmed before that
-/// change can never serve a pre-SROA object.
-const CODEGEN_CONFIG: &str = "opt=speed;int-prims-inlined;reg-direct-call;divrem-inlined;scalar-float-fields;early-drop;poly-cmp-inlined;array-access-inlined;hash-inlined;bounds-check-elim;result-bounds;array-float-unboxed;spread-aggregate";
+/// change can never serve a pre-SROA object. The `array-tag-hoisted` token marks a
+/// generic array's element-access self-tag computed once per array value (at the
+/// function entry or a tail-loop header) and the re-box arm laid out of line —
+/// emitted machine code that leaves the reference-counted IR (and so the
+/// fingerprint) untouched, so a cache warmed before it must not serve a stale
+/// per-access-self-tag object.
+const CODEGEN_CONFIG: &str = "opt=speed;int-prims-inlined;reg-direct-call;divrem-inlined;scalar-float-fields;early-drop;poly-cmp-inlined;array-access-inlined;hash-inlined;bounds-check-elim;result-bounds;array-float-unboxed;spread-aggregate;array-tag-hoisted";
 
 /// An explicit cache-directory override (set by embedders/tests), taking
 /// precedence over `$FAI_CACHE_DIR`. `None` (the default) falls back to the
