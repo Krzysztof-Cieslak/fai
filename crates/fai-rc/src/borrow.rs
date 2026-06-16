@@ -345,10 +345,11 @@ impl Analyzer<'_> {
                 self.scan(then, tail);
                 self.scan(els, tail);
             }
-            // A primitive inspects its operands. A whole parameter consumed by a
-            // primitive is owned (so it is not needlessly duplicated); a projected
-            // field is independent, so it does not force its parent to be owned.
-            K::Prim { args, .. } => {
+            // A primitive (or foreign call) inspects/consumes its operands. A whole
+            // parameter consumed this way is owned (so it is not needlessly
+            // duplicated); a projected field is independent, so it does not force its
+            // parent to be owned.
+            K::Prim { args, .. } | K::Foreign { args, .. } => {
                 for a in args {
                     self.scan(a, false);
                     self.inspect(a);

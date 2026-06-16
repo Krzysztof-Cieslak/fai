@@ -177,6 +177,10 @@ fn inline_expr(
             let args = args.iter().map(|a| go(a, next, changed)).collect();
             CExpr::new(K::Prim { op: *op, args }, ty)
         }
+        K::Foreign { symbol, args } => {
+            let args = args.iter().map(|a| go(a, next, changed)).collect();
+            CExpr::new(K::Foreign { symbol: *symbol, args }, ty)
+        }
         K::MakeData { tag, args, reuse, scalars, niche } => {
             let args = args.iter().map(|a| go(a, next, changed)).collect();
             CExpr::new(
@@ -331,7 +335,10 @@ fn node_count(e: &CExpr) -> usize {
     let kids = |xs: &[CExpr]| -> usize { xs.iter().map(node_count).sum() };
     1 + match &e.kind {
         K::Lit(_) | K::Local(_) | K::Global(_) | K::Error | K::MakeClosure { .. } => 0,
-        K::Prim { args, .. } | K::MakeData { args, .. } | K::Recur { args } => kids(args),
+        K::Prim { args, .. }
+        | K::Foreign { args, .. }
+        | K::MakeData { args, .. }
+        | K::Recur { args } => kids(args),
         K::App { func, args, .. } => node_count(func) + kids(args),
         K::If { cond, then, els } => node_count(cond) + node_count(then) + node_count(els),
         K::Let { value, body, .. } => node_count(value) + node_count(body),

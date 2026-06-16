@@ -193,7 +193,7 @@ fn refs_group(e: &CExpr, group: &FxHashSet<DefId>) -> bool {
     match &e.kind {
         K::Global(def) => group.contains(def),
         K::Lit(_) | K::Local(_) | K::Error | K::MakeClosure { .. } => false,
-        K::Prim { args, .. } | K::MakeData { args, .. } => {
+        K::Prim { args, .. } | K::Foreign { args, .. } | K::MakeData { args, .. } => {
             args.iter().any(|a| refs_group(a, group))
         }
         K::App { func, args, .. } => {
@@ -416,6 +416,10 @@ fn remap_member(
         K::Prim { op, args } => {
             let args = args.iter().map(|a| remap_member(a, subst, next, group)).collect();
             CExpr::new(K::Prim { op: *op, args }, ty)
+        }
+        K::Foreign { symbol, args } => {
+            let args = args.iter().map(|a| remap_member(a, subst, next, group)).collect();
+            CExpr::new(K::Foreign { symbol: *symbol, args }, ty)
         }
         K::MakeData { tag, args, reuse, scalars, niche: _ } => {
             // The combined loop is schemeless (uniform ABI), so niche `Option`s are

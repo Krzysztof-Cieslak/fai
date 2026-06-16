@@ -1028,6 +1028,7 @@ fn closure_local_funcs(body: &CExpr) -> FxHashMap<usize, fai_core::ir::FnId> {
                 args.iter().for_each(|a| go(a, map));
             }
             ExprKind::Prim { args, .. }
+            | ExprKind::Foreign { args, .. }
             | ExprKind::MakeData { args, .. }
             | ExprKind::Spread { components: args } => {
                 args.iter().for_each(|a| go(a, map));
@@ -1187,7 +1188,11 @@ struct Translator<'a, M: Module> {
     /// standard one by Cranelift type). Boundary sites query [`Self::niche_of`] to
     /// convert to the standard representation before a value crosses a uniform slot.
     niche_values: FxHashMap<Value, NicheKind>,
-    runtime: FxHashMap<&'static str, FuncRef>,
+    /// Runtime-function import cache, keyed by symbol name. An owned `String` key
+    /// (rather than `&'static str`) so an interned foreign symbol — a host
+    /// capability or a user `foreign` function — caches alongside the fixed `fai_*`
+    /// runtime symbols.
+    runtime: FxHashMap<String, FuncRef>,
     string_counter: usize,
     /// Per-shape data descriptors emitted for scalar-bearing cells, deduplicated
     /// by their scalar bitmap (one static per distinct bitmap used in this
@@ -1421,6 +1426,7 @@ impl<M: Module> Translator<'_, M> {
             | ExprKind::MakeClosure { .. }
             | ExprKind::Error => {}
             ExprKind::Prim { args, .. }
+            | ExprKind::Foreign { args, .. }
             | ExprKind::MakeData { args, .. }
             | ExprKind::Recur { args }
             | ExprKind::Spread { components: args } => {
@@ -1496,6 +1502,7 @@ impl<M: Module> Translator<'_, M> {
                 args.iter().for_each(|a| self.collect_niche_defs(a, join, out, changed));
             }
             ExprKind::Prim { args, .. }
+            | ExprKind::Foreign { args, .. }
             | ExprKind::MakeData { args, .. }
             | ExprKind::Spread { components: args } => {
                 args.iter().for_each(|a| self.collect_niche_defs(a, join, out, changed));
@@ -1796,8 +1803,10 @@ impl<M: Module> Translator<'_, M> {
         self.builder.ins().load(types::I64, MemFlags::trusted(), base, offset)
     }
 
-    /// A reference to a runtime function (cached per translation).
-    fn runtime(&mut self, name: &'static str, params: usize, returns: bool) -> FuncRef {
+    /// A reference to a runtime function (cached per translation), keyed by symbol
+    /// name. Accepts any `&str` — a fixed `fai_*` literal or an interned foreign
+    /// symbol — caching by owned key on first use.
+    fn runtime(&mut self, name: &str, params: usize, returns: bool) -> FuncRef {
         if let Some(r) = self.runtime.get(name) {
             return *r;
         }
@@ -1811,7 +1820,7 @@ impl<M: Module> Translator<'_, M> {
         let id =
             self.module.declare_function(name, Linkage::Import, &sig).expect("declare runtime");
         let r = self.module.declare_func_in_func(id, self.builder.func);
-        self.runtime.insert(name, r);
+        self.runtime.insert(name.to_owned(), r);
         r
     }
 
@@ -2135,6 +2144,7 @@ impl<M: Module> Translator<'_, M> {
             ExprKind::Local(local) => self.use_var(*local),
             ExprKind::Global(def) => self.global_value(*def, &e.ty),
             ExprKind::Prim { op, args } => self.prim(*op, args, &e.ty),
+            ExprKind::Foreign { symbol, args } => self.foreign(symbol.as_str(), args, &e.ty),
             ExprKind::App { func, args, reuse, alloc } => {
                 self.application(func, args, reuse, *alloc, &e.ty)
             }
@@ -2651,6 +2661,24 @@ impl<M: Module> Translator<'_, M> {
         // such a primitive appears at a monomorphic-`Float` call site (an inlined
         // `Array.unsafeGet` on an `Array Float`). `Int` needs no coercion — raw and
         // tagged are both `i64`, so there is no Cranelift type mismatch.
+        if matches!(result_ty, Ty::Con(Con::Float)) && !self.is_f64(result) {
+            self.owning_unbox(result)
+        } else {
+            result
+        }
+    }
+
+    /// A saturated foreign (native) call: box each operand into the uniform value
+    /// ABI, call the named runtime symbol out-of-line, and return its owned result.
+    /// The same generic out-of-line path a non-inline primitive uses — the foreign
+    /// symbol just comes from the node rather than a `Prim` enum. The host
+    /// capabilities all traffic in uniform boxed values, but a result that crosses
+    /// back as a scalar `Float` is unboxed, mirroring the primitive path.
+    fn foreign(&mut self, symbol: &str, args: &[CExpr], result_ty: &Ty) -> Value {
+        let vals: Vec<Value> = args.iter().map(|a| self.expr_boxed(a)).collect();
+        let f = self.runtime(symbol, vals.len(), true);
+        let call = self.builder.ins().call(f, &vals);
+        let result = self.builder.inst_results(call)[0];
         if matches!(result_ty, Ty::Con(Con::Float)) && !self.is_f64(result) {
             self.owning_unbox(result)
         } else {
@@ -5669,7 +5697,9 @@ fn collect_local_types(e: &CExpr, out: &mut FxHashMap<usize, Ty>) {
         ExprKind::Local(l) => note(out, *l, &e.ty),
         ExprKind::Lit(_) | ExprKind::Global(_) | ExprKind::MakeClosure { .. } | ExprKind::Error => {
         }
-        ExprKind::Prim { args, .. } | ExprKind::MakeData { args, .. } => {
+        ExprKind::Prim { args, .. }
+        | ExprKind::Foreign { args, .. }
+        | ExprKind::MakeData { args, .. } => {
             args.iter().for_each(|a| collect_local_types(a, out));
         }
         ExprKind::App { func, args, .. } => {
@@ -5740,7 +5770,9 @@ fn collect_float_observations(
         ExprKind::Local(l) => note(*l, &e.ty, float_seen, other_seen),
         ExprKind::Lit(_) | ExprKind::Global(_) | ExprKind::MakeClosure { .. } | ExprKind::Error => {
         }
-        ExprKind::Prim { args, .. } | ExprKind::MakeData { args, .. } => {
+        ExprKind::Prim { args, .. }
+        | ExprKind::Foreign { args, .. }
+        | ExprKind::MakeData { args, .. } => {
             args.iter().for_each(|a| collect_float_observations(a, float_seen, other_seen));
         }
         ExprKind::App { func, args, .. } => {
@@ -5827,7 +5859,9 @@ fn collect_int_observations(
         ExprKind::Local(l) => note(*l, &e.ty, int_seen, other_seen),
         ExprKind::Lit(_) | ExprKind::Global(_) | ExprKind::MakeClosure { .. } | ExprKind::Error => {
         }
-        ExprKind::Prim { args, .. } | ExprKind::MakeData { args, .. } => {
+        ExprKind::Prim { args, .. }
+        | ExprKind::Foreign { args, .. }
+        | ExprKind::MakeData { args, .. } => {
             args.iter().for_each(|a| collect_int_observations(a, int_seen, other_seen));
         }
         ExprKind::App { func, args, .. } => {
@@ -5975,7 +6009,8 @@ fn body_uses_array_alloc(e: &CExpr) -> bool {
         | ExprKind::Global(_)
         | ExprKind::MakeClosure { .. }
         | ExprKind::Error => false,
-        ExprKind::MakeData { args, .. }
+        ExprKind::Foreign { args, .. }
+        | ExprKind::MakeData { args, .. }
         | ExprKind::Recur { args }
         | ExprKind::Spread { components: args } => args.iter().any(body_uses_array_alloc),
         ExprKind::App { func, args, .. } => {

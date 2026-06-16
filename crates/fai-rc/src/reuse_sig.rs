@@ -179,9 +179,10 @@ fn collect_dup_bound(e: &CExpr, out: &mut FxHashSet<LocalId>) {
 /// Applies `f` to each immediate sub-expression of `e`.
 fn e_children(e: &CExpr, f: &mut impl FnMut(&CExpr)) {
     match &e.kind {
-        K::Prim { args, .. } | K::MakeData { args, .. } | K::Recur { args } => {
-            args.iter().for_each(f)
-        }
+        K::Prim { args, .. }
+        | K::Foreign { args, .. }
+        | K::MakeData { args, .. }
+        | K::Recur { args } => args.iter().for_each(f),
         K::App { func, args, .. } => {
             f(func);
             args.iter().for_each(f);
@@ -435,7 +436,10 @@ fn collect_forwards(e: &CExpr, out: &mut Vec<DefId>) {
             collect_forwards(func, out);
             args.iter().for_each(|a| collect_forwards(a, out));
         }
-        K::Prim { args, .. } | K::MakeData { args, .. } | K::Recur { args } => {
+        K::Prim { args, .. }
+        | K::Foreign { args, .. }
+        | K::MakeData { args, .. }
+        | K::Recur { args } => {
             args.iter().for_each(|a| collect_forwards(a, out));
         }
         K::If { cond, then, els } => {

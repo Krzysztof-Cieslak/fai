@@ -946,6 +946,7 @@ fn has_error_node(def: &LoweredDef) -> bool {
         match &e.kind {
             ExprKind::Error => true,
             ExprKind::Prim { args, .. }
+            | ExprKind::Foreign { args, .. }
             | ExprKind::MakeData { args, .. }
             | ExprKind::Spread { components: args } => args.iter().any(scan),
             ExprKind::App { func, args, .. } => scan(func) || args.iter().any(scan),

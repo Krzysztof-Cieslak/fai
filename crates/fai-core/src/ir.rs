@@ -13,9 +13,35 @@
 //! original lambda's position.
 
 use fai_resolve::{DefId, LocalId};
+use fai_syntax::Symbol;
 use fai_types::{Con, RowEnd, Ty};
 
 use crate::niche::NicheKind;
+
+/// The built-in host capabilities, as `(fai name, native symbol, arity)`. Each is
+/// a side-effecting Rust function in the runtime, reached by the lowered
+/// [`ExprKind::Foreign`] node rather than a dedicated [`Prim`] variant — the
+/// dispatch is a generic out-of-line call keyed by symbol, so a host buys nothing
+/// from `Prim`-enum membership. Lowering looks a saturated host builtin up here to
+/// build its `Foreign` node; the runtime symbol is linked from the embedded
+/// archive (AOT) or the JIT symbol registry.
+pub const HOST_FOREIGN: &[(&str, &str, usize)] = &[
+    ("consoleWriteLine", "fai_console_write_line", 1),
+    ("clockNow", "fai_clock_now", 1),
+    ("randomNextInt", "fai_random_next_int", 1),
+    ("fileRead", "fai_file_read", 1),
+    ("fileWrite", "fai_file_write", 2),
+    ("envGet", "fai_env_get", 1),
+    ("envArgs", "fai_env_args", 1),
+];
+
+/// The `(native symbol, arity)` of a built-in host capability named `name`, if it
+/// is one. Used by lowering to turn a saturated host-builtin application into a
+/// [`ExprKind::Foreign`] call.
+#[must_use]
+pub fn host_foreign(name: &str) -> Option<(&'static str, usize)> {
+    HOST_FOREIGN.iter().find(|(fai, _, _)| *fai == name).map(|(_, native, arity)| (*native, *arity))
+}
 
 /// The unboxed-`f64` field bitmap for a sequence of **declared** field types in
 /// layout order: bit `i` set when field `i`'s type is a monomorphic `Float` (not a
@@ -410,7 +436,7 @@ fn collect_globals(expr: &CExpr, out: &mut Vec<DefId>) {
     match &expr.kind {
         ExprKind::Global(def) => out.push(*def),
         ExprKind::Lit(_) | ExprKind::Local(_) | ExprKind::MakeClosure { .. } | ExprKind::Error => {}
-        ExprKind::Prim { args, .. } => {
+        ExprKind::Prim { args, .. } | ExprKind::Foreign { args, .. } => {
             for a in args {
                 collect_globals(a, out);
             }
@@ -598,20 +624,6 @@ pub enum Prim {
     StringDrop,
     /// `not`
     Not,
-    /// `Console.writeLine`: write a line (the host for the `Console` capability).
-    ConsoleWriteLine,
-    /// `Clock.now`: milliseconds since the epoch.
-    ClockNow,
-    /// `Random.nextInt`: a pseudo-random `Int` in `[0, n)`.
-    RandomNextInt,
-    /// `FileSystem` read host: `String -> (Bool * String)` (ok?, contents-or-error).
-    FileRead,
-    /// `FileSystem` write host: `String -> String -> (Bool * String)`.
-    FileWrite,
-    /// `Env` lookup host: `String -> (Bool * String)` (found?, value).
-    EnvGet,
-    /// `Env` arguments host: `Unit -> List String`.
-    EnvArgs,
     /// Row-polymorphic record update: clone a record (by runtime size), replacing
     /// the field at a runtime index. Internal to lowering, never a source name.
     RecordUpdate,
@@ -756,13 +768,6 @@ impl Prim {
             Prim::StringTake => "fai_string_take",
             Prim::StringDrop => "fai_string_drop",
             Prim::Not => "fai_not",
-            Prim::ConsoleWriteLine => "fai_console_write_line",
-            Prim::ClockNow => "fai_clock_now",
-            Prim::RandomNextInt => "fai_random_next_int",
-            Prim::FileRead => "fai_file_read",
-            Prim::FileWrite => "fai_file_write",
-            Prim::EnvGet => "fai_env_get",
-            Prim::EnvArgs => "fai_env_args",
             Prim::RecordUpdate => "fai_record_update",
             Prim::ArrayWithCapacity => "fai_array_with_capacity",
             Prim::ArrayLength => "fai_array_length",
@@ -794,16 +799,10 @@ impl Prim {
             | Prim::ToLower
             | Prim::Trim
             | Prim::Not
-            | Prim::ConsoleWriteLine
-            | Prim::ClockNow
-            | Prim::RandomNextInt
-            | Prim::EnvGet
-            | Prim::EnvArgs
             | Prim::IntComplement
             | Prim::Hash
             | Prim::ArrayWithCapacity
-            | Prim::ArrayLength
-            | Prim::FileRead => 1,
+            | Prim::ArrayLength => 1,
             Prim::RecordUpdate | Prim::ArraySet | Prim::StringSubstring => 3,
             _ => 2,
         }
@@ -846,13 +845,6 @@ impl Prim {
             "not" => Prim::Not,
             "compare" => Prim::Compare,
             "hash" => Prim::Hash,
-            "consoleWriteLine" => Prim::ConsoleWriteLine,
-            "clockNow" => Prim::ClockNow,
-            "randomNextInt" => Prim::RandomNextInt,
-            "fileRead" => Prim::FileRead,
-            "fileWrite" => Prim::FileWrite,
-            "envGet" => Prim::EnvGet,
-            "envArgs" => Prim::EnvArgs,
             "arrayWithCapacity" => Prim::ArrayWithCapacity,
             "arrayLength" => Prim::ArrayLength,
             "arrayGet" => Prim::ArrayGet,
@@ -935,6 +927,18 @@ pub enum ExprKind {
         /// The primitive.
         op: Prim,
         /// The operands (consumed).
+        args: Vec<CExpr>,
+    },
+    /// A saturated call to a foreign (native) function, named by its runtime
+    /// symbol. Reaches the side-effecting host capabilities (and, later,
+    /// user-declared `foreign` functions). Like [`ExprKind::Prim`] it consumes its
+    /// operands and returns an owned result, and compiles to a generic out-of-line
+    /// runtime call; unlike `Prim` it carries an interned symbol, so a foreign name
+    /// need not be a closed compiler enum.
+    Foreign {
+        /// The native runtime symbol to call (e.g. `fai_console_write_line`).
+        symbol: Symbol,
+        /// The operands (consumed), in order.
         args: Vec<CExpr>,
     },
     /// A general application, routed through the runtime `apply_n`.

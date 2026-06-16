@@ -66,6 +66,9 @@ fn expr_pure_total(db: &dyn Db, e: &CExpr) -> bool {
         K::Prim { op, args } => {
             !op_unsafe_to_reorder(*op, args) && args.iter().all(|a| expr_pure_total(db, a))
         }
+        // A foreign call performs a host capability (and may abort), so it is never
+        // pure-and-total — it must not be hoisted ahead of the recursion.
+        K::Foreign { .. } => false,
         // A call is pure and total only when its target is a statically known
         // top-level function that is itself pure and total.
         K::App { func, args, .. } => {
@@ -101,19 +104,13 @@ fn expr_pure_total(db: &dyn Db, e: &CExpr) -> bool {
     }
 }
 
-/// Whether a primitive is unsafe to hoist ahead of the recursion: a capability
-/// effect, or an integer division/remainder that could abort (a non-zero literal
-/// divisor cannot, so it is safe).
+/// Whether a primitive is unsafe to hoist ahead of the recursion: an integer
+/// division/remainder that could abort (a non-zero literal divisor cannot, so it
+/// is safe). Host capabilities are no longer primitives — they are
+/// [`ExprKind::Foreign`] calls, treated as impure where this is consulted.
 pub(crate) fn op_unsafe_to_reorder(op: Prim, args: &[CExpr]) -> bool {
     match op {
         Prim::IntDiv | Prim::IntRem => !divisor_is_nonzero_literal(args),
-        Prim::ConsoleWriteLine
-        | Prim::ClockNow
-        | Prim::RandomNextInt
-        | Prim::FileRead
-        | Prim::FileWrite
-        | Prim::EnvGet
-        | Prim::EnvArgs => true,
         _ => false,
     }
 }

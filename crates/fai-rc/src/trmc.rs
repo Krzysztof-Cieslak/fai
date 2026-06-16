@@ -154,6 +154,9 @@ pub(crate) fn fuse_evidence_self_calls(e: CExpr, self_def: DefId, evidence: &[Lo
         K::Prim { op, args } => {
             CExpr::new(K::Prim { op, args: args.into_iter().map(sub).collect() }, ty)
         }
+        K::Foreign { symbol, args } => {
+            CExpr::new(K::Foreign { symbol, args: args.into_iter().map(sub).collect() }, ty)
+        }
         K::MakeData { tag, args, reuse, scalars, niche } => CExpr::new(
             K::MakeData { tag, args: args.into_iter().map(sub).collect(), reuse, scalars, niche },
             ty,
@@ -652,6 +655,7 @@ fn count_local(e: &CExpr, x: LocalId, n: &mut usize) {
         }
         K::Lit(_) | K::Global(_) | K::Error => {}
         K::Prim { args, .. }
+        | K::Foreign { args, .. }
         | K::MakeData { args, .. }
         | K::Recur { args }
         | K::Spread { components: args } => {
@@ -739,6 +743,9 @@ fn pure_total(e: &CExpr, is_pure_total: &dyn Fn(DefId) -> bool) -> bool {
             }
         }
         K::Prim { op, args } if crate::purity::op_unsafe_to_reorder(*op, args) => ok = false,
+        // A foreign call performs a host capability (and may abort), so it is never
+        // safe to hoist ahead of the recursion.
+        K::Foreign { .. } => ok = false,
         _ => {}
     });
     ok
@@ -751,6 +758,7 @@ fn walk(e: &CExpr, f: &mut impl FnMut(&CExpr)) {
     match &e.kind {
         K::Lit(_) | K::Local(_) | K::Global(_) | K::MakeClosure { .. } | K::Error => {}
         K::Prim { args, .. }
+        | K::Foreign { args, .. }
         | K::MakeData { args, .. }
         | K::Recur { args }
         | K::Spread { components: args } => {

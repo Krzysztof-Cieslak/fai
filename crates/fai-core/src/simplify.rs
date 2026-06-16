@@ -49,7 +49,7 @@ use fai_types::Ty;
 use rustc_hash::FxHashMap;
 
 use crate::core_inlined;
-use crate::fuse::{is_capability_prim, prune_dead_fns};
+use crate::fuse::prune_dead_fns;
 use crate::inline::{fresh_local, next_free_local, remap_expr, remap_local};
 use crate::ir::{CExpr, ClosureAlloc, CoreFn, ExprKind as K, FnId, LoweredDef};
 
@@ -197,6 +197,10 @@ impl Simplifier<'_> {
             K::Prim { op, args } => {
                 K::Prim { op, args: args.into_iter().map(|a| self.simplify_expr(a)).collect() }
             }
+            K::Foreign { symbol, args } => K::Foreign {
+                symbol,
+                args: args.into_iter().map(|a| self.simplify_expr(a)).collect(),
+            },
             K::MakeData { tag, args, reuse, scalars, niche } => K::MakeData {
                 tag,
                 args: args.into_iter().map(|a| self.simplify_expr(a)).collect(),
@@ -498,7 +502,9 @@ impl Simplifier<'_> {
     fn pure(&self, e: &CExpr) -> bool {
         match &e.kind {
             K::Lit(_) | K::Local(_) | K::Global(_) | K::MakeClosure { .. } | K::Error => true,
-            K::Prim { op, args } => !is_capability_prim(*op) && args.iter().all(|a| self.pure(a)),
+            K::Prim { args, .. } => args.iter().all(|a| self.pure(a)),
+            // A foreign call performs a host capability, so it is never reorderable.
+            K::Foreign { .. } => false,
             K::App { func, args, .. } => {
                 matches!(&func.kind, K::Global(g) if self.global_apply_pure(*g, args.len()))
                     && args.iter().all(|a| self.pure(a))
@@ -575,7 +581,10 @@ fn body_has_error(e: &CExpr) -> bool {
     match &e.kind {
         K::Lit(_) | K::Local(_) | K::Global(_) | K::MakeClosure { .. } => false,
         K::Error => true,
-        K::Prim { args, .. } | K::MakeData { args, .. } | K::Recur { args } => any(args),
+        K::Prim { args, .. }
+        | K::Foreign { args, .. }
+        | K::MakeData { args, .. }
+        | K::Recur { args } => any(args),
         K::App { func, args, .. } => body_has_error(func) || any(args),
         K::If { cond, then, els } => {
             body_has_error(cond) || body_has_error(then) || body_has_error(els)
@@ -600,7 +609,10 @@ fn node_count(e: &CExpr) -> usize {
     let kids = |xs: &[CExpr]| -> usize { xs.iter().map(node_count).sum() };
     1 + match &e.kind {
         K::Lit(_) | K::Local(_) | K::Global(_) | K::Error | K::MakeClosure { .. } => 0,
-        K::Prim { args, .. } | K::MakeData { args, .. } | K::Recur { args } => kids(args),
+        K::Prim { args, .. }
+        | K::Foreign { args, .. }
+        | K::MakeData { args, .. }
+        | K::Recur { args } => kids(args),
         K::App { func, args, .. } => node_count(func) + kids(args),
         K::If { cond, then, els } => node_count(cond) + node_count(then) + node_count(els),
         K::Let { value, body, .. } => node_count(value) + node_count(body),

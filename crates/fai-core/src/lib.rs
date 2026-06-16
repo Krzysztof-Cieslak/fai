@@ -39,7 +39,7 @@ pub use bounds::{BoundSig, Bounds, PTerm, RTerm, ResultSig, WHOLE};
 pub use fingerprint::fingerprint_def;
 pub use fuse::{FuseResult, FusedLoop, fuse_def, fusion_defs};
 pub use helper_inline::{helper_inlined, inline_summary};
-pub use inline::{PrimWrapper, core_inlined, prim_wrapper};
+pub use inline::{ForeignWrapper, PrimWrapper, core_inlined, foreign_wrapper, prim_wrapper};
 pub use ir::{CExpr, CoreFn, ExprKind, FnAbi, FnId, Lit, LoweredDef, Prim, Repr};
 pub use lit::{decode_char, decode_float, decode_int, decode_string};
 pub use lower::{LoweredBody, core, lower_params_body};

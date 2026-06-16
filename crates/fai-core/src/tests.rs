@@ -70,6 +70,22 @@ fn lowers_console_capability_access() {
 }
 
 #[test]
+fn lowers_host_capability_to_a_foreign_call() {
+    // A saturated host-capability builtin (`Prim.consoleWriteLine`, reachable only
+    // inside the standard library) lowers to a generic `Foreign` call by its native
+    // runtime symbol — not to a dedicated primitive.
+    let mut db = FaiDatabase::new();
+    fai_types::std_lib::load_std(&mut db);
+    let id = db.add_source(
+        "<std>/S.fai".into(),
+        "module S\n\nlet w s = Prim.consoleWriteLine s\n".to_owned(),
+    );
+    let file = db.source_file(id).unwrap();
+    let got = pretty_def(&core(&db, file, Symbol::intern("w")));
+    assert_eq!(got, "fn0(%0) = (foreign \"fai_console_write_line\" %0)\n");
+}
+
+#[test]
 fn lowers_let_block() {
     let src = indoc! {r#"
         module M
@@ -692,6 +708,33 @@ mod inline {
         let out = inlined(src, "f");
         assert!(out.contains("(intToString %"), "expected inlined prim in the lambda:\n{out}");
         assert!(!out.contains("@toString"), "wrapper call should be gone:\n{out}");
+    }
+
+    #[test]
+    fn recognizes_and_inlines_a_foreign_wrapper() {
+        // A one-line foreign wrapper (`let w s = Prim.consoleWriteLine s`, reachable
+        // only inside the standard library) is recognized as an eta-foreign-wrapper
+        // and folded at its saturated call sites — the foreign peer of the prim
+        // wrapper — so a caller reaches the native function with no wrapper hop.
+        use fai_db::Db;
+
+        use crate::{ForeignWrapper, foreign_wrapper};
+        let mut db = fai_db::FaiDatabase::new();
+        fai_types::std_lib::load_std(&mut db);
+        let id = db.add_source(
+            "<std>/S.fai".into(),
+            "module S\n\nlet w s = Prim.consoleWriteLine s\n\nlet caller s = w s\n".to_owned(),
+        );
+        let file = db.source_file(id).unwrap();
+        assert_eq!(
+            foreign_wrapper(&db, file, Symbol::intern("w")),
+            Some(ForeignWrapper {
+                symbol: Symbol::intern("fai_console_write_line"),
+                slots: vec![0],
+            })
+        );
+        let caller = pretty_def(&core_inlined(&db, file, Symbol::intern("caller")));
+        assert_eq!(caller, "fn0(%1) = (foreign \"fai_console_write_line\" %1)\n");
     }
 }
 
