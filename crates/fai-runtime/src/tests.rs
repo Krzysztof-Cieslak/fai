@@ -855,3 +855,151 @@ fn parses_vmhwm_from_status_text() {
     assert_eq!(parse_vmhwm_kib("VmHWM:\t kB\n"), None, "no numeric field");
     assert_eq!(parse_vmhwm_kib(""), None);
 }
+
+// --- Biased (single-threaded / shared) reference counting. ----------------
+//
+// A value is single-threaded until it crosses a task boundary, when
+// `fai_mark_shared` flips it (and its reachable subgraph) to the shared state so
+// later `dup`/`drop`s on it are atomic. Immortal objects are reference-counting
+// no-ops in either state. These tests pin the encoding, the marking walk, and —
+// the point of the whole scheme — that concurrent `dup`/`drop` of a shared object
+// neither leaks nor double-frees it.
+
+#[test]
+fn single_threaded_dup_drop_keep_a_plain_count() {
+    let _g = lock();
+    let base = live_count();
+    let v = fai_box_int(BIG);
+    fai_dup(v);
+    // SAFETY: `v` is a live boxed object.
+    let rc = unsafe { read_u64(as_obj(v), RC_OFFSET) };
+    assert_eq!(rc, 2, "an unshared object keeps a plain, unflagged count");
+    fai_drop(v);
+    fai_drop(v);
+    assert_eq!(live_count(), base);
+}
+
+#[test]
+fn immortal_dup_drop_are_noops() {
+    let _g = lock();
+    let none = fai_none_value(); // the immortal niche `None` sentinel
+    // SAFETY: the sentinel is a live boxed object.
+    let before = unsafe { read_u64(as_obj(none), RC_OFFSET) };
+    assert_eq!(before, IMMORTAL_RC, "the sentinel starts immortal");
+    fai_dup(none);
+    fai_drop(none);
+    // SAFETY: still live (immortal).
+    let after = unsafe { read_u64(as_obj(none), RC_OFFSET) };
+    assert_eq!(after, before, "dup/drop leave an immortal count untouched (a true no-op)");
+}
+
+#[test]
+fn mark_shared_sets_the_flag_and_preserves_the_count() {
+    let _g = lock();
+    let base = live_count();
+    let v = fai_box_int(BIG);
+    fai_dup(v); // count 2, still single-threaded
+    fai_mark_shared(v);
+    // SAFETY: `v` is a live boxed object.
+    let rc = unsafe { read_u64(as_obj(v), RC_OFFSET) };
+    assert_ne!(rc & MT_FLAG, 0, "the shared marker bit is set");
+    assert_eq!(rc & MT_COUNT_MASK, 2, "the count is preserved across marking");
+    fai_drop(v);
+    fai_drop(v);
+    assert_eq!(live_count(), base);
+}
+
+#[test]
+fn mark_shared_marks_children_transitively() {
+    let _g = lock();
+    let base = live_count();
+    let child = fai_box_int(BIG);
+    let fields = [imm_int(7), child];
+    // SAFETY: two owned fields move into the data value.
+    let parent = unsafe { fai_make_data(0, 2, fields.as_ptr()) };
+    fai_mark_shared(parent);
+    // SAFETY: both are live boxed objects.
+    unsafe {
+        assert_ne!(read_u64(as_obj(parent), RC_OFFSET) & MT_FLAG, 0, "the parent is shared");
+        assert_ne!(
+            read_u64(as_obj(child), RC_OFFSET) & MT_FLAG,
+            0,
+            "a reachable child is shared transitively"
+        );
+    }
+    fai_drop(parent);
+    assert_eq!(live_count(), base);
+}
+
+#[test]
+fn mark_shared_is_idempotent() {
+    let _g = lock();
+    let base = live_count();
+    let v = fai_box_int(BIG);
+    fai_mark_shared(v);
+    fai_mark_shared(v); // marking again must not double-flip or alter the count
+    // SAFETY: `v` is a live boxed object.
+    let rc = unsafe { read_u64(as_obj(v), RC_OFFSET) };
+    assert_eq!(rc, MT_FLAG | 1, "still shared with the original count of 1");
+    fai_drop(v);
+    assert_eq!(live_count(), base);
+}
+
+#[test]
+fn mark_shared_walks_a_deep_structure_iteratively() {
+    let _g = lock();
+    let base = live_count();
+    // A cons list far deeper than the native stack: marking (like dropping) must
+    // use the worklist, never native recursion.
+    let n: i64 = 200_000;
+    let mut list = imm_int(0); // immediate nil tail
+    for i in 0..n {
+        let fields = [imm_int(i), list];
+        // SAFETY: owned payload + owned tail move in.
+        list = unsafe { fai_make_data(1, 2, fields.as_ptr()) };
+    }
+    fai_mark_shared(list);
+    // SAFETY: the head is a live boxed object.
+    assert_ne!(unsafe { read_u64(as_obj(list), RC_OFFSET) } & MT_FLAG, 0, "the head is shared");
+    fai_drop(list); // drops a deep *shared* structure (atomic path) iteratively
+    assert_eq!(live_count(), base, "the whole shared chain drained without leaking");
+}
+
+#[test]
+fn shared_object_survives_concurrent_dup_drop() {
+    let _g = lock();
+    let base = live_count();
+    // One shared leaf, churned by many tasks at once. A non-atomic count would
+    // lose updates here and either free it early (a crash) or leak it (the live
+    // count would not return to baseline); the atomic shared path keeps it exact.
+    let v = fai_box_int(BIG);
+    fai_mark_shared(v);
+
+    const THREADS: usize = 8;
+    const ITERS: usize = 50_000;
+    // Hand each thread one reference (atomic increments).
+    for _ in 0..THREADS {
+        fai_dup(v);
+    }
+    let handles: Vec<_> = (0..THREADS)
+        .map(|_| {
+            // `Value` is `i64` (Send); the object outlives every thread because main
+            // retains its own reference throughout.
+            let p: Value = v;
+            std::thread::spawn(move || {
+                for _ in 0..ITERS {
+                    fai_dup(p);
+                    fai_drop(p);
+                }
+                fai_drop(p); // release the handed reference
+            })
+        })
+        .collect();
+    for h in handles {
+        h.join().expect("worker thread");
+    }
+
+    assert_eq!(live_count(), base + 1, "only main's reference remains; nothing leaked or freed early");
+    fai_drop(v);
+    assert_eq!(live_count(), base, "the last reference reclaimed the shared object");
+}
