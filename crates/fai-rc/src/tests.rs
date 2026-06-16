@@ -725,3 +725,56 @@ proptest! {
         }
     }
 }
+
+/// Runs SROA on a one-line function whose body returns its fixed-shape
+/// float-aggregate parameter, under a hand-built ABI with the given result
+/// representation, and returns the rewritten body. A spread result keeps the
+/// aggregate in registers; a uniform result returns it boxed. (Exercised
+/// directly because the boxed-return path is reached only when the target's
+/// return-register budget is below the aggregate's width — host-independent here,
+/// where an end-to-end demotion would not trigger on a wide-budget host.)
+#[track_caller]
+fn sroa_return_tail(ret: fai_core::ir::Repr) -> fai_core::ir::CExpr {
+    use fai_core::ir::{CExpr, ExprKind as K, FnAbi, Repr};
+    use fai_resolve::LocalId;
+    use fai_types::{Con, Ty};
+    let abi = FnAbi {
+        params: vec![Repr::Spread(vec![Repr::ScalarFloat, Repr::ScalarFloat])],
+        ret,
+        register_abi: true,
+    };
+    let params = vec![LocalId::from_index(0)];
+    let ffa = Ty::Tuple(vec![Ty::Con(Con::Float), Ty::Con(Con::Float)]);
+    let body = CExpr::new(K::Local(LocalId::from_index(0)), ffa);
+    let db = FaiDatabase::new();
+    let mut next = 1usize;
+    let (out, spread) = crate::sroa::sroa_fn(&db, body, &abi, &params, &mut next);
+    assert_eq!(spread.len(), 1, "one parameter");
+    assert!(spread[0].is_some(), "the FFA parameter is decomposed into components");
+    out
+}
+
+#[test]
+fn boxed_return_reassembles_decomposed_aggregate() {
+    use fai_core::ir::{ExprKind as K, Repr};
+    // A result wider than the return-register budget (here forced via a uniform
+    // result ABI): the decomposed FFA in tail position is reassembled into a cell.
+    let out = sroa_return_tail(Repr::Uniform);
+    let K::Let { value, body, .. } = &out.kind else {
+        panic!("a boxed FFA return materializes a cell, got {:?}", out.kind);
+    };
+    assert!(matches!(value.kind, K::MakeData { .. }), "the tail FFA is reassembled into a cell");
+    assert!(matches!(body.kind, K::Local(_)), "the boxed cell local is returned");
+}
+
+#[test]
+fn register_return_stays_spread() {
+    use fai_core::ir::{ExprKind as K, Repr};
+    // A within-budget result is returned multi-value (a `Spread` tail), no cell.
+    let out = sroa_return_tail(Repr::Spread(vec![Repr::ScalarFloat, Repr::ScalarFloat]));
+    assert!(
+        matches!(out.kind, K::Spread { .. }),
+        "a register FFA return is a Spread, got {:?}",
+        out.kind
+    );
+}

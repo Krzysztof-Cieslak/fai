@@ -3216,9 +3216,17 @@ Editor integration:
   slots).** A **fixed-shape float aggregate** (FFA) — a tuple of all-`Float`, or a
   *closed* record of all-`Float`, with 1..=8 fields — that does not escape is held
   as its scalar `f64` **components in registers** rather than a heap cell, and
-  crosses a direct call boundary in registers: an FFA parameter occupies N
-  consecutive `f64` registers and an FFA result is returned via a Cranelift
-  multi-result signature. So `Vec2`/`Mat2` vector-matrix algebra,
+  crosses a direct call boundary in registers: an FFA **parameter** occupies N
+  consecutive `f64` registers (arguments past the argument registers spill to the
+  stack, so a parameter is register-eligible up to all 8 fields on every target),
+  and an FFA **result** is returned via a Cranelift multi-result signature **when
+  it fits the target's float return-register budget** — a wider result is returned
+  as the boxed scalar-slot cell instead, because a multi-value return must fit
+  entirely in registers (unlike arguments, returns cannot spill). The cap is the
+  host's float return-register count — **AArch64 eight, x86-64 System V two,
+  Windows x64 one** — a compile-time constant, since the compiler only ever targets
+  the host (the JIT and the AOT object path both build for the host triple, which
+  the object cache key already includes). So `Vec2`/`Mat2` vector-matrix algebra,
   `(Float, Float)`-returning helpers, and intermediate aggregates in numeric
   pipelines compute allocation-free, where D113 only unboxed a *scalar* `Float` and
   #114 (the in-cell slot layout) only stopped per-field boxing of a *heap-resident*
@@ -3273,10 +3281,15 @@ Editor integration:
     flattened. Per-#16, these are representation ceilings, not correctness gaps.
   - **Validated** by e2e allocation tests (a non-escaping `Vec2`/`Mat2`/`(Float,
     Float)` program allocates exactly as many cells as the equivalent scalar
-    baseline — zero aggregate cells; an escaping aggregate still boxes; first-class
-    spread closures via the wrapper are leak-free), the `algorithms` oracle suite
-    (the `Array`-resident `NBody`/`Particles` float-record programs and the new
-    register-resident `VecMat` vector/matrix benchmark run correctly), and the full
+    baseline — zero aggregate cells — on a target whose return-register budget fits
+    the result, and is checked for correctness/leak-freedom where a narrower-budget
+    target returns it boxed; an escaping aggregate still boxes; first-class spread
+    closures via the wrapper are leak-free; a unit test pins the boxed-return
+    reassembly directly, since it is reached only when the budget is below the
+    result's width), the `algorithms` oracle suite (the `Array`-resident
+    `NBody`/`Particles` float-record programs and the new register-resident `VecMat`
+    vector/matrix benchmark run correctly on every target — a wide return boxes
+    rather than overrunning the return registers), and the full
     backend-incremental/cache round-trip (the new IR nodes and ABI survive the wire
     form and the firewall). Issue #120 (the SROA + multi-value track of #86); D114
     delivered the in-cell-slot half and laid the `Repr`/`FnAbi` groundwork.

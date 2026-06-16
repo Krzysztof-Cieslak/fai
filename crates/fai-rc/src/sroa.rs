@@ -255,7 +255,20 @@ impl Sroa<'_> {
                 let components = self.as_components(e, n, binds);
                 CExpr::new(K::Spread { components }, ty)
             }
-            None => self.rewrite_op(e, binds),
+            // A boxed (non-spread) result: an aggregate wider than the target's
+            // return-register budget is returned as a cell. A decomposed FFA in
+            // tail position has no register home, so reassemble it into its cell;
+            // any other form (a direct construction, a boxed-returning call) lowers
+            // to a boxed value through the ordinary operation rewrite.
+            None => {
+                if let K::Local(v) = &e.kind
+                    && self.comps.contains_key(v)
+                {
+                    let b = self.materialize(*v, binds);
+                    return CExpr::new(K::Local(b), e.ty);
+                }
+                self.rewrite_op(e, binds)
+            }
         }
     }
 
