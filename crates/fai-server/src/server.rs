@@ -500,7 +500,12 @@ fn prepare_run(daemon: &Daemon, request: &RunRequest) -> Prepared {
                 request.path
             ));
         };
-        let result = fai_driver::build_run_bundle(snapshot.db(), entry);
+        // Native dependencies for user `foreign` functions (from `fai.toml`).
+        let native = match fai_driver::read_native_manifest(snapshot.root()) {
+            Ok(deps) => deps,
+            Err(message) => return Prepared::Failed(format!("error: {message}\n")),
+        };
+        let result = fai_driver::build_run_bundle_with_deps(snapshot.db(), entry, &native);
         match result.bundle {
             Some(bundle) => Prepared::Bundle(bundle),
             None => {

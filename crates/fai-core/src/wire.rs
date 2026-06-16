@@ -36,6 +36,11 @@ pub struct WireBundle {
     pub runtime: WireDefId,
     /// Every reachable definition, in discovery order.
     pub defs: Vec<WireDef>,
+    /// Native shared libraries to load before running, so a user `foreign`
+    /// function's symbol resolves in the JIT. Absolute paths, resolved warm from
+    /// the project's `fai.toml`; empty for a program with no native dependencies.
+    #[serde(default)]
+    pub libraries: Vec<String>,
 }
 
 /// A complete set of contracts ready to JIT and check in an isolated worker: the
