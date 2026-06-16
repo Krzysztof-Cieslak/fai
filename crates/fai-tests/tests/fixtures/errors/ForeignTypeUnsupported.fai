@@ -1,0 +1,8 @@
+module ForeignTypeUnsupported
+
+// A user `foreign` is marshalled across a plain native ABI, so its arguments and
+// result must be `Int`/`Float`/`Bool`/`String` (and `Unit` as a result). A `List`
+// argument cannot cross the boundary.
+//~ ERROR FAI5003
+//~ COUNT ERROR 1
+foreign "fai_sum_list" sumList : List Int -> Int / { Console }

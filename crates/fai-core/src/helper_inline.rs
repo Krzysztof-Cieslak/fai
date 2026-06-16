@@ -177,9 +177,9 @@ fn inline_expr(
             let args = args.iter().map(|a| go(a, next, changed)).collect();
             CExpr::new(K::Prim { op: *op, args }, ty)
         }
-        K::Foreign { symbol, args } => {
+        K::Foreign { symbol, args, marshalled } => {
             let args = args.iter().map(|a| go(a, next, changed)).collect();
-            CExpr::new(K::Foreign { symbol: *symbol, args }, ty)
+            CExpr::new(K::Foreign { symbol: *symbol, args, marshalled: *marshalled }, ty)
         }
         K::MakeData { tag, args, reuse, scalars, niche } => {
             let args = args.iter().map(|a| go(a, next, changed)).collect();

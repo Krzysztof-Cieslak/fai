@@ -370,6 +370,12 @@ A binding's declared effect row (the capabilities after `/`) does not match the 
 
 A `foreign` declaration calls native code, so its signature must name a capability in its effect row (e.g. `: String -> Unit / { Console }`). This keeps a function's reach visible: a caller of the foreign then surfaces that capability in its own effect, rather than laundering a native side effect as pure.
 
+### FAI5003 — foreign type cannot be marshalled
+
+**Severity:** error
+
+A user `foreign` declaration's arguments and result are marshalled across a plain native ABI, so each must be `Int`, `Float`, `Bool`, or `String` (and the result may also be `Unit`). A richer type (a list, record, tuple, function, or type variable) cannot cross the boundary; wrap the native function so its signature uses only the supported types.
+
 ## FAI6xxx — Contracts
 
 ### FAI6001 — contract failed

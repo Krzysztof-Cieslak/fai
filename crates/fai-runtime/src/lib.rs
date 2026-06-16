@@ -3547,6 +3547,71 @@ pub extern "C" fn fai_run_main(entry: Value, runtime: Value) -> i32 {
 }
 
 // ---------------------------------------------------------------------------
+// Marshalling glue for user `foreign` calls. A user foreign function uses a
+// plain native ABI rather than the raw Fai value ABI: each `Int`/`Bool` argument
+// arrives as an `int64_t`, a `Float` as a `double`, and a `String` as a borrowed
+// `(const char* ptr, int64_t len)` pair; the result is converted back. Codegen
+// emits these conversions around the call. (The built-in host capabilities are
+// not marshalled — they take/return raw Fai values directly.)
+// ---------------------------------------------------------------------------
+
+/// Marshals a Fai `Int` argument to a native `i64` (borrowing it).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_marshal_int(v: Value) -> i64 {
+    unbox_int(v)
+}
+
+/// Marshals a Fai `Float` argument to a native `f64` (borrowing it).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_marshal_float(v: Value) -> f64 {
+    unbox_float(v)
+}
+
+/// Marshals a Fai `Bool` argument to a native `i64` (`0`/`1`, borrowing it). A Fai
+/// `Bool` is the immediate `0`/`1`, so this reads the same payload as an `Int`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_marshal_bool(v: Value) -> i64 {
+    unbox_int(v)
+}
+
+/// A borrowed pointer to a Fai `String` argument's bytes, valid for the duration
+/// of the foreign call (the caller keeps the string alive and drops it after).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_marshal_string_ptr(v: Value) -> i64 {
+    // SAFETY: `v` is a boxed string-like value.
+    unsafe { string_bytes(v).as_ptr() as i64 }
+}
+
+/// The byte length of a Fai `String` argument (borrowing it).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_marshal_string_len(v: Value) -> i64 {
+    // SAFETY: `v` is a boxed string-like value.
+    unsafe { string_bytes(v).len() as i64 }
+}
+
+/// Builds a Fai `Bool` from a native `i64` result (`0` is `false`, else `true`).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_marshal_bool_result(n: i64) -> Value {
+    from_bool(n != 0)
+}
+
+/// Builds a fresh Fai `String` by **copying** `len` bytes from a native `ptr` (a
+/// foreign String result). The foreign function owns its buffer; the runtime only
+/// reads it, so the caller is responsible for freeing the native memory.
+///
+/// # Safety
+/// `ptr` must point to at least `len` readable bytes for the duration of the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fai_marshal_string_result(ptr: i64, len: i64) -> Value {
+    if ptr == 0 || len <= 0 {
+        return make_string(b"");
+    }
+    // SAFETY: the foreign contract guarantees `len` readable bytes at `ptr`.
+    let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, len as usize) };
+    make_string(bytes)
+}
+
+// ---------------------------------------------------------------------------
 // Host helpers for the in-process contract runner: build `Int` arguments and
 // decode result values without exposing the internal tagging.
 // ---------------------------------------------------------------------------

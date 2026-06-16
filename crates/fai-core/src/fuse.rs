@@ -602,9 +602,11 @@ impl Fuser<'_> {
             K::Prim { op, args } => {
                 K::Prim { op: *op, args: args.iter().map(|a| go(self, a)).collect() }
             }
-            K::Foreign { symbol, args } => {
-                K::Foreign { symbol: *symbol, args: args.iter().map(|a| go(self, a)).collect() }
-            }
+            K::Foreign { symbol, args, marshalled } => K::Foreign {
+                symbol: *symbol,
+                args: args.iter().map(|a| go(self, a)).collect(),
+                marshalled: *marshalled,
+            },
             K::App { func, args, reuse, alloc } => K::App {
                 func: Box::new(go(self, func)),
                 args: args.iter().map(|a| go(self, a)).collect(),
@@ -1966,9 +1968,11 @@ fn renumber_fns(e: &CExpr, remap: &FxHashMap<u32, u32>) -> CExpr {
         },
         K::Lit(_) | K::Local(_) | K::Global(_) | K::Error => e.kind.clone(),
         K::Prim { op, args } => K::Prim { op: *op, args: args.iter().map(go).collect() },
-        K::Foreign { symbol, args } => {
-            K::Foreign { symbol: *symbol, args: args.iter().map(go).collect() }
-        }
+        K::Foreign { symbol, args, marshalled } => K::Foreign {
+            symbol: *symbol,
+            args: args.iter().map(go).collect(),
+            marshalled: *marshalled,
+        },
         K::MakeData { tag, args, reuse, scalars, niche } => K::MakeData {
             tag: *tag,
             args: args.iter().map(go).collect(),

@@ -131,6 +131,14 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_apply_n", rt::fai_apply_n);
     sym!("fai_make_closure", rt::fai_make_closure);
     sym!("fai_run_main", rt::fai_run_main);
+    // Marshalling glue for user `foreign` calls.
+    sym!("fai_marshal_int", rt::fai_marshal_int);
+    sym!("fai_marshal_float", rt::fai_marshal_float);
+    sym!("fai_marshal_bool", rt::fai_marshal_bool);
+    sym!("fai_marshal_string_ptr", rt::fai_marshal_string_ptr);
+    sym!("fai_marshal_string_len", rt::fai_marshal_string_len);
+    sym!("fai_marshal_bool_result", rt::fai_marshal_bool_result);
+    sym!("fai_marshal_string_result", rt::fai_marshal_string_result);
     builder.symbol("FAI_NONE_VALUE", (&raw const rt::FAI_NONE_VALUE).cast());
     builder.symbol("FAI_STRING_DESC", (&raw const rt::FAI_STRING_DESC).cast());
     builder.symbol("FAI_INT_DESC", (&raw const rt::FAI_INT_DESC).cast());

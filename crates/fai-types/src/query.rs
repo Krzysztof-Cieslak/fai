@@ -17,15 +17,15 @@ use fai_syntax::Symbol;
 use fai_syntax::ast::{ExprId, ItemKind};
 use rustc_hash::FxHashMap;
 
-use crate::ty::Ty;
+use crate::ty::{Con, Ty};
 
 use crate::infer::{declared_scheme, error_scheme, infer_scc};
 use crate::lower::{ParamKind, interface_param_usage, seed_interface_params};
 use crate::std_lib;
 use crate::ty::Scheme;
 use crate::{
-    EFFECT_MISMATCH, FOREIGN_EFFECT_REQUIRED, INTERFACE_PARAM_KIND, MISSING_PUBLIC_SIGNATURE,
-    OPAQUE_ACCESS, SIGNATURE_MISMATCH,
+    EFFECT_MISMATCH, FOREIGN_EFFECT_REQUIRED, FOREIGN_TYPE_UNSUPPORTED, INTERFACE_PARAM_KIND,
+    MISSING_PUBLIC_SIGNATURE, OPAQUE_ACCESS, SIGNATURE_MISMATCH,
 };
 
 /// Whether a `foreign` declaration's scheme names at least one capability in the
@@ -42,6 +42,31 @@ fn foreign_names_a_capability(scheme: &Scheme) -> bool {
         }
     }
     innermost(&scheme.ty).is_some_and(|e| !e.labels.is_empty())
+}
+
+/// The first type in a user `foreign` declaration's signature that cannot cross
+/// the marshalled FFI boundary (rendered), or `None` if every argument and the
+/// result are marshallable. An argument must be `Int`/`Float`/`Bool`/`String`; the
+/// result may also be `Unit`. Used to report [`FOREIGN_TYPE_UNSUPPORTED`].
+fn foreign_unmarshallable_type(scheme: &Scheme) -> Option<String> {
+    // `Int`/`Float`/`Bool`/`String` marshal as values; `Unit` is the empty value
+    // (zero native arguments as a parameter, `void` as a result).
+    fn marshallable(ty: &Ty) -> bool {
+        matches!(ty, Ty::Con(Con::Int | Con::Float | Con::Bool | Con::String) | Ty::Unit)
+    }
+    fn first_bad(ty: &Ty) -> Option<&Ty> {
+        match ty {
+            Ty::Arrow(from, to, _) => {
+                if !marshallable(from) {
+                    return Some(&**from);
+                }
+                first_bad(to)
+            }
+            _ if marshallable(ty) => None,
+            other => Some(other),
+        }
+    }
+    first_bad(&scheme.ty).map(|t| crate::ty::render(t, &crate::ty::VarNames::new()))
 }
 
 /// The inferred schemes of the SCC at `scc_index` in `file`.
@@ -421,26 +446,46 @@ pub fn check_file(db: &dyn Db, file: SourceFile) {
             );
         }
 
-        // A `foreign` declaration must name a capability in its effect row (FAI5002),
-        // so a native side effect cannot be laundered as pure: any caller of the
-        // foreign then surfaces that capability through the ordinary effect check.
-        if let ItemKind::Foreign { .. } = &module.items[d.binding.index()].kind
-            && !foreign_names_a_capability(
-                &declared_scheme(db, file, d.name).unwrap_or_else(error_scheme),
-            )
-        {
-            emit(
-                db,
-                Diagnostic::error(
-                    FOREIGN_EFFECT_REQUIRED,
-                    format!(
-                        "the foreign declaration `{}` must name a capability in its effect row, \
-                         e.g. `/ {{ Console }}`",
-                        d.name
+        // `foreign` declaration checks against its declared scheme.
+        if let ItemKind::Foreign { .. } = &module.items[d.binding.index()].kind {
+            let scheme = declared_scheme(db, file, d.name).unwrap_or_else(error_scheme);
+            let span = Span::new(file.source(db), module.items[d.binding.index()].span);
+            // It must name a capability in its effect row (FAI5002), so a native
+            // side effect cannot be laundered as pure: a caller then surfaces that
+            // capability through the ordinary effect check.
+            if !foreign_names_a_capability(&scheme) {
+                emit(
+                    db,
+                    Diagnostic::error(
+                        FOREIGN_EFFECT_REQUIRED,
+                        format!(
+                            "the foreign declaration `{}` must name a capability in its effect \
+                             row, e.g. `/ {{ Console }}`",
+                            d.name
+                        ),
+                        span,
                     ),
-                    Span::new(file.source(db), module.items[d.binding.index()].span),
-                ),
-            );
+                );
+            }
+            // A user (non-std) foreign is marshalled, so every argument and the
+            // result must be a marshallable type (FAI5003).
+            if !fai_db::is_std_path(file.path(db))
+                && let Some(rendered) = foreign_unmarshallable_type(&scheme)
+            {
+                emit(
+                    db,
+                    Diagnostic::error(
+                        FOREIGN_TYPE_UNSUPPORTED,
+                        format!(
+                            "the foreign declaration `{}` uses the type `{rendered}`, which \
+                             cannot cross the FFI boundary (use `Int`, `Float`, `Bool`, or \
+                             `String`)",
+                            d.name
+                        ),
+                        span,
+                    ),
+                );
+            }
         }
     }
 

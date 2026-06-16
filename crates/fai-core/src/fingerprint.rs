@@ -140,11 +140,13 @@ fn write_expr(
             }
             out.push(')');
         }
-        ExprKind::Foreign { symbol, args } => {
+        ExprKind::Foreign { symbol, args, marshalled } => {
             // The native symbol decides which runtime function the out-of-line call
-            // links to, so it is part of the key (the interned id is process-local —
-            // hash its string).
-            let _ = write!(out, "(fgn:{}", symbol.as_str());
+            // links to, and `marshalled` decides the call's ABI (raw value vs
+            // converted scalars/strings) — both change the emitted code, so both are
+            // part of the key (the interned id is process-local — hash its string).
+            let m = if *marshalled { "m" } else { "r" };
+            let _ = write!(out, "(fgn{m}:{}", symbol.as_str());
             for a in args {
                 out.push(' ');
                 write_expr(out, a, namer, arity_of, abi_of);

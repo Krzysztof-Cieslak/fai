@@ -98,6 +98,10 @@ pub const EFFECT_MISMATCH: DiagnosticCode = DiagnosticCode::new("FAI5001");
 /// A `foreign` declaration's signature does not name a capability in its effect
 /// row (so it would launder a native side effect as pure).
 pub const FOREIGN_EFFECT_REQUIRED: DiagnosticCode = DiagnosticCode::new("FAI5002");
+/// A user `foreign` declaration's signature uses a type that cannot cross the
+/// marshalled FFI boundary (only `Int`/`Float`/`Bool`/`String`, plus `Unit` as a
+/// result, are supported).
+pub const FOREIGN_TYPE_UNSUPPORTED: DiagnosticCode = DiagnosticCode::new("FAI5003");
 
 /// Diagnostic codes owned by the type system (the `FAI3xxx` range).
 pub const CODES: &[CodeInfo] = &[
@@ -284,5 +288,15 @@ pub const CODES: &[CodeInfo] = &[
                       keeps a function's reach visible: a caller of the foreign then surfaces that \
                       capability in its own effect, rather than laundering a native side effect \
                       as pure.",
+    },
+    CodeInfo {
+        code: FOREIGN_TYPE_UNSUPPORTED,
+        title: "foreign type cannot be marshalled",
+        default_severity: Severity::Error,
+        explanation: "A user `foreign` declaration's arguments and result are marshalled across a \
+                      plain native ABI, so each must be `Int`, `Float`, `Bool`, or `String` (and \
+                      the result may also be `Unit`). A richer type (a list, record, tuple, \
+                      function, or type variable) cannot cross the boundary; wrap the native \
+                      function so its signature uses only the supported types.",
     },
 ];
