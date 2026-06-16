@@ -2838,7 +2838,10 @@ impl<M: Module> Translator<'_, M> {
         match result_ty {
             Ty::Con(Con::Int) => self.call1("fai_box_int", native_result.unwrap()),
             Ty::Con(Con::Bool) => self.call1("fai_marshal_bool_result", native_result.unwrap()),
-            Ty::Con(Con::Float) => self.box_float(native_result.unwrap()),
+            // The native result is already an unboxed `f64`; return it as such (the
+            // surrounding codegen boxes it where it crosses a uniform slot), mirroring
+            // a scalar-`Float` value from any other producer.
+            Ty::Con(Con::Float) => native_result.unwrap(),
             Ty::Con(Con::String) => {
                 let ptr = native_result.unwrap();
                 let len = self.builder.ins().stack_load(types::I64, out_len_slot.unwrap(), 0);

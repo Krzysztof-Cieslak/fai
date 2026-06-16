@@ -140,6 +140,86 @@ fn nested_module_values_types_and_ctors_run() {
     assert_eq!(code, Some(0));
 }
 
+/// Compiles `c_src` to an object with the C compiler (`$CC`, default `cc`),
+/// returning its path. Skips (returns `None`) if no C compiler is available.
+fn compile_c_object(dir: &Path, name: &str, c_src: &str) -> Option<PathBuf> {
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_owned());
+    let c_path = dir.join(format!("{name}.c"));
+    let o_path = dir.join(format!("{name}.o"));
+    std::fs::write(&c_path, c_src).unwrap();
+    let status = Command::new(&cc).arg("-c").arg(&c_path).arg("-o").arg(&o_path).status().ok()?;
+    status.success().then_some(o_path)
+}
+
+#[test]
+fn user_foreign_links_and_runs_against_a_native_object() {
+    // A user `foreign` function: its native object is declared in `fai.toml` and
+    // linked into the executable, and its scalar/string arguments and results are
+    // marshalled across the plain native ABI.
+    let dir = unique_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    let c_src = r#"
+#include <stdint.h>
+#include <string.h>
+int64_t fai_test_triple(int64_t x) { return x * 3; }
+double  fai_test_scale(double x) { return x * 1.5; }
+// Returns a static C string; writes its length through `out_len`.
+const char* fai_test_shout(const char* p, int64_t len, int64_t* out_len) {
+    static char buf[256];
+    int64_t n = len < 250 ? len : 250;
+    for (int64_t i = 0; i < n; i++) buf[i] = (p[i] >= 'a' && p[i] <= 'z') ? p[i] - 32 : p[i];
+    buf[n] = '!';
+    *out_len = n + 1;
+    return buf;
+}
+"#;
+    let Some(_obj) = compile_c_object(&dir, "nativelib", c_src) else {
+        eprintln!("skipping: no C compiler available");
+        return;
+    };
+    std::fs::write(dir.join("fai.toml"), "[native]\nobjects = [\"nativelib.o\"]\n").unwrap();
+    let src = indoc! {r#"
+        module Main
+
+        foreign "fai_test_triple" triple : Int -> Int / { Console }
+
+        foreign "fai_test_scale" scale : Float -> Float / { Console }
+
+        foreign "fai_test_shout" shout : String -> String / { Console }
+
+        public main : Runtime -> Unit / { Console }
+        let main rt =
+          let u = rt.console.writeLine (Int.toString (triple 14))
+          let v = rt.console.writeLine (Float.toString (scale 2.0))
+          rt.console.writeLine (shout "fai")
+    "#};
+    std::fs::write(dir.join("Main.fai"), src).unwrap();
+
+    let exe = dir.join("prog");
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let code = fai_cli::run(
+        [
+            "fai",
+            "build",
+            "--no-daemon",
+            "-C",
+            dir.to_str().unwrap(),
+            "Main.fai",
+            "--out",
+            exe.to_str().unwrap(),
+        ],
+        &mut out,
+        &mut err,
+    );
+    assert_eq!(code, 0, "build failed: {}", String::from_utf8_lossy(&err));
+    let produced = exe.with_extension(std::env::consts::EXE_EXTENSION);
+    let run = Command::new(&produced).output().unwrap();
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    assert_eq!(stdout, "42\n3.0\nFAI!\n", "got: {stdout}");
+    assert_eq!(run.status.code(), Some(0));
+}
+
 #[test]
 fn user_runtime_builder_extends_the_capability_bundle() {
     // The entry file defines its own `runtime` builder, so `main` receives an

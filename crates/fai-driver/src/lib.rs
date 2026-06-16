@@ -12,6 +12,7 @@ mod build_tests;
 mod cache;
 mod command;
 mod contracts;
+mod manifest;
 mod query;
 mod session;
 
@@ -29,8 +30,8 @@ use serde::Serialize;
 
 pub use backend::{
     BuildOutcome, BuildOutput, CompiledProgram, RunBundleResult, RunOutcome, build_native,
-    build_run_bundle, compile_pool, jit_compile, jit_run_bundle, jit_run_program, object_code,
-    reachable_defs, set_bce_shadow, set_object_cache_capacity,
+    build_native_with_deps, build_run_bundle, compile_pool, jit_compile, jit_run_bundle,
+    jit_run_program, object_code, reachable_defs, set_bce_shadow, set_object_cache_capacity,
 };
 pub use cache::{cache_stats, reset_stats, set_cache_dir};
 pub use command::{
@@ -44,6 +45,7 @@ pub use contracts::{
     run_test_workers, run_test_workers_with_timeout, run_tests,
 };
 pub use fai_core::{TestWireBundle, WireBundle};
+pub use manifest::{MANIFEST_NAME, NativeDeps, read_native_manifest};
 pub use query::{QueryRequest, QueryResult, run_query};
 pub use session::Session;
 

@@ -570,9 +570,23 @@ fn build_objects(db: &dyn Db, reachable: &[DefId]) -> Vec<(String, Vec<u8>)> {
 }
 
 /// Compiles the closure reachable from `file`'s `main` to a native executable at
-/// `out`, reusing cached `object_code` for unchanged definitions.
+/// `out`, reusing cached `object_code` for unchanged definitions. Links no
+/// user native dependencies (see [`build_native_with_deps`]).
 #[must_use]
 pub fn build_native(db: &dyn Db, file: SourceFile, out: &Utf8Path) -> BuildOutcome {
+    build_native_with_deps(db, file, out, &crate::manifest::NativeDeps::default())
+}
+
+/// Compiles the closure reachable from `file`'s `main` to a native executable at
+/// `out`, linking the project's declared native dependencies (`fai.toml`) so a
+/// user `foreign` function's symbol resolves.
+#[must_use]
+pub fn build_native_with_deps(
+    db: &dyn Db,
+    file: SourceFile,
+    out: &Utf8Path,
+    native: &crate::manifest::NativeDeps,
+) -> BuildOutcome {
     if !has_main(db, file) {
         return BuildOutcome { artifact: None, diagnostics: vec![no_entry_point()], ok: false };
     }
@@ -657,7 +671,7 @@ pub fn build_native(db: &dyn Db, file: SourceFile, out: &Utf8Path) -> BuildOutco
         .expect("a Runtime value binding (entry `runtime` or `defaultRuntime`) is defined");
     objects.push(("fai_main".to_owned(), main_object(entry, runtime, &namer)));
 
-    match link(&objects, out) {
+    match link(&objects, out, native) {
         Ok(artifact) => BuildOutcome { artifact: Some(artifact), diagnostics, ok: true },
         Err(message) => {
             let mut diagnostics = diagnostics;
@@ -1186,7 +1200,11 @@ pub(crate) fn apply_run_limits() {}
 /// gains a `.exe` suffix on Windows). Uses the host's system linker — `cc` on
 /// Unix, MSVC `link.exe` on Windows — with the runtime's required system
 /// libraries (captured by `build.rs`).
-fn link(objects: &[(String, Vec<u8>)], out: &Utf8Path) -> Result<Utf8PathBuf, String> {
+fn link(
+    objects: &[(String, Vec<u8>)],
+    out: &Utf8Path,
+    native: &crate::manifest::NativeDeps,
+) -> Result<Utf8PathBuf, String> {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
         "fai-build-{}-{}",
@@ -1219,13 +1237,32 @@ fn link(objects: &[(String, Vec<u8>)], out: &Utf8Path) -> Result<Utf8PathBuf, St
         out.to_owned()
     };
 
+    // The user's extra object/archive files (from `fai.toml`) link alongside the
+    // generated objects so a `foreign` function's symbol resolves.
+    for obj in &native.objects {
+        object_paths.push(obj.clone());
+    }
+
     let native_libs: Vec<&str> = RUNTIME_NATIVE_LIBS.split_whitespace().collect();
     if cfg!(target_env = "msvc") {
-        link_msvc(&object_paths, &archive, &target, &native_libs)?;
+        link_msvc(&object_paths, &archive, &target, &native_libs, native)?;
     } else {
-        link_unix(&object_paths, &archive, &target, &native_libs)?;
+        link_unix(&object_paths, &archive, &target, &native_libs, native)?;
     }
     Ok(target)
+}
+
+/// The `-L<dir>` / `-l<name>` linker flags for the project's declared native
+/// libraries (Unix `cc` syntax).
+fn native_lib_flags(native: &crate::manifest::NativeDeps) -> Vec<String> {
+    let mut flags = Vec::new();
+    for dir in &native.lib_dirs {
+        flags.push(format!("-L{}", dir.display()));
+    }
+    for lib in &native.libs {
+        flags.push(format!("-l{lib}"));
+    }
+    flags
 }
 
 /// Links with a Unix C compiler driver (`$CC`, default `cc`), which supplies the
@@ -1235,10 +1272,13 @@ fn link_unix(
     archive: &std::path::Path,
     out: &Utf8Path,
     native_libs: &[&str],
+    native: &crate::manifest::NativeDeps,
 ) -> Result<(), String> {
     let linker = std::env::var("CC").unwrap_or_else(|_| "cc".to_owned());
     let mut command = std::process::Command::new(&linker);
     command.args(objects).arg(archive).arg("-o").arg(out.as_std_path());
+    // The project's declared `-L`/`-l` native libraries.
+    command.args(native_lib_flags(native));
     if native_libs.is_empty() {
         // Fall back to the historic Linux set if the toolchain reported nothing.
         if cfg!(target_os = "linux") {
@@ -1264,11 +1304,19 @@ fn link_msvc(
     archive: &std::path::Path,
     out: &Utf8Path,
     native_libs: &[&str],
+    native: &crate::manifest::NativeDeps,
 ) -> Result<(), String> {
     let linker = std::env::var("FAI_LINKER").unwrap_or_else(|_| "link.exe".to_owned());
     let mut command = std::process::Command::new(&linker);
     command.arg("/NOLOGO").arg("/SUBSYSTEM:CONSOLE").arg(format!("/OUT:{out}"));
     command.args(objects).arg(archive).args(native_libs);
+    // The project's declared native libraries, in MSVC flag syntax.
+    for dir in &native.lib_dirs {
+        command.arg(format!("/LIBPATH:{}", dir.display()));
+    }
+    for lib in &native.libs {
+        command.arg(format!("{lib}.lib"));
+    }
     let status = command.status().map_err(|e| format!("invoking linker `{linker}`: {e}"))?;
     if !status.success() {
         return Err(format!("linker `{linker}` exited with {status}"));
