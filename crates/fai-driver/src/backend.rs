@@ -65,19 +65,32 @@ const RUNTIME_NATIVE_LIBS: &str = env!("FAI_RUNTIME_NATIVE_LIBS");
 /// The required entry-point name.
 const ENTRY: &str = "main";
 
-/// The standard library's private `Runtime` value binding, applied to `main` by
-/// the entry trampoline.
+/// The standard library's default `Runtime` value binding, applied to `main` by
+/// the entry trampoline when the entry file defines no `runtime` builder.
 const RUNTIME_VALUE: &str = "defaultRuntime";
+
+/// The optional user `Runtime` builder: a zero-arity binding named `runtime` in
+/// the entry file. When present it overrides [`RUNTIME_VALUE`], so a program can
+/// hand `main` an extended capability bundle (its own foreign-backed capabilities
+/// composed with the public defaults).
+const USER_RUNTIME: &str = "runtime";
 
 /// The `Runtime` value binding's definition, supplied to `main` by the entry
 /// trampoline. It is not referenced from `main`'s body (the trampoline injects
-/// it), so the backend seeds it as a second reachability root. `None` if the
-/// standard library does not define it.
-fn runtime_root(db: &dyn Db) -> Option<DefId> {
-    let file = fai_resolve::prelude_module_file(db)?;
+/// it), so the backend seeds it as a second reachability root.
+///
+/// Prefers a `runtime` builder in the **entry file** (a user-supplied bundle),
+/// falling back to the standard library's `defaultRuntime`. `None` only if neither
+/// exists (a standard library without `defaultRuntime`).
+fn runtime_root(db: &dyn Db, file: SourceFile) -> Option<DefId> {
+    let user = Symbol::intern(USER_RUNTIME);
+    if module_defs(db, file).get(user).is_some() {
+        return Some(DefId::new(file.source(db), user));
+    }
+    let prelude = fai_resolve::prelude_module_file(db)?;
     let name = Symbol::intern(RUNTIME_VALUE);
-    module_defs(db, file).get(name)?;
-    Some(DefId::new(file.source(db), name))
+    module_defs(db, prelude).get(name)?;
+    Some(DefId::new(prelude.source(db), name))
 }
 
 /// The mangled symbol base for a definition: `fai_<module>_<name>`.
@@ -320,7 +333,7 @@ pub fn reachable_defs(db: &dyn Db, file: SourceFile) -> Vec<DefId> {
     // `main` plus the `Runtime` value binding the entry trampoline forces and
     // applies to it; the latter is not referenced from any reachable body.
     let mut stack = vec![entry];
-    if let Some(runtime) = runtime_root(db) {
+    if let Some(runtime) = runtime_root(db, file) {
         stack.push(runtime);
     }
     while let Some(def) = stack.pop() {
@@ -640,7 +653,8 @@ pub fn build_native(db: &dyn Db, file: SourceFile, out: &Utf8Path) -> BuildOutco
     }
 
     let entry = DefId::new(file.source(db), Symbol::intern(ENTRY));
-    let runtime = runtime_root(db).expect("standard library defines the Runtime value binding");
+    let runtime = runtime_root(db, file)
+        .expect("a Runtime value binding (entry `runtime` or `defaultRuntime`) is defined");
     objects.push(("fai_main".to_owned(), main_object(entry, runtime, &namer)));
 
     match link(&objects, out) {
@@ -729,7 +743,8 @@ pub fn jit_run_program(db: &dyn Db, file: SourceFile) -> RunOutcome {
     defs.extend(fusion.loops.iter().cloned());
 
     let entry = DefId::new(file.source(db), Symbol::intern(ENTRY));
-    let runtime = runtime_root(db).expect("standard library defines the Runtime value binding");
+    let runtime = runtime_root(db, file)
+        .expect("a Runtime value binding (entry `runtime` or `defaultRuntime`) is defined");
     let namer = |d: DefId| symbol_base(db, d);
     let arity = |d: DefId| {
         (groups.arity.get(&d))
@@ -814,7 +829,7 @@ pub fn jit_compile(db: &dyn Db, file: SourceFile) -> Result<CompiledProgram, Vec
     // path ([`build_native`]) keeps the tighter main-only reachability.
     let source = file.source(db);
     let mut roots = vec![DefId::new(source, Symbol::intern(ENTRY))];
-    if let Some(runtime) = runtime_root(db) {
+    if let Some(runtime) = runtime_root(db, file) {
         roots.push(runtime);
     }
     let mut public: Vec<DefId> = module_defs(db, file)
@@ -1026,10 +1041,14 @@ pub fn build_run_bundle(db: &dyn Db, file: SourceFile) -> RunBundleResult {
     }
 
     let entry = DefId::new(file.source(db), Symbol::intern(ENTRY));
-    let runtime = runtime_root(db).expect("standard library defines the Runtime value binding");
+    let runtime = runtime_root(db, file)
+        .expect("a Runtime value binding (entry `runtime` or `defaultRuntime`) is defined");
     let bundle = WireBundle {
         entry: WireDefId { module: module_label(db, entry), name: ENTRY.to_owned() },
-        runtime: WireDefId { module: module_label(db, runtime), name: RUNTIME_VALUE.to_owned() },
+        runtime: WireDefId {
+            module: module_label(db, runtime),
+            name: runtime.name.as_str().to_owned(),
+        },
         defs,
     };
     RunBundleResult { bundle: Some(bundle), diagnostics }

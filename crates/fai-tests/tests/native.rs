@@ -141,6 +141,37 @@ fn nested_module_values_types_and_ctors_run() {
 }
 
 #[test]
+fn user_runtime_builder_extends_the_capability_bundle() {
+    // The entry file defines its own `runtime` builder, so `main` receives an
+    // extended bundle: the standard console (a public default) plus a user-defined
+    // `Banner` capability (effect-parameterized, backed by that console). The
+    // backend prefers the entry-file `runtime` over `defaultRuntime`.
+    let src = indoc! {r#"
+        module Main
+
+        public interface Banner 'e =
+          banner : String -> Unit / 'e
+
+        public bannerOverConsole : Console -> Banner { Console }
+        let bannerOverConsole console =
+          { Banner with banner title = console.writeLine ("=== " ++ title ++ " ===") }
+
+        public type AppRuntime = { banner : Banner { Console }, console : Console }
+
+        public runtime : AppRuntime
+        let runtime = { banner = bannerOverConsole stdConsole, console = stdConsole }
+
+        public main : AppRuntime -> Unit / { Console }
+        let main app =
+          let u = app.banner.banner "Welcome"
+          app.console.writeLine "Body"
+    "#};
+    let (out, code) = build_and_run(src);
+    assert_eq!(out, "=== Welcome ===\nBody\n");
+    assert_eq!(code, Some(0));
+}
+
+#[test]
 fn char_operations_run_natively() {
     // Exercises char literals, intrinsics, pattern matching, and a multibyte
     // scalar value through the AOT build path; a clean exit also proves the

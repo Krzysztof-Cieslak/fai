@@ -718,6 +718,15 @@ out-of-line mechanism the host capabilities (`Console`, `Clock`, `Random`,
 `FileSystem`, `Env`) now use — they are themselves ordinary `foreign`
 declarations in `std/Prelude.fai`, no longer a closed compiler enum.
 
+The **`Runtime` bundle `main` receives is extensible**: the default capability
+instances (`stdConsole`, …) and `defaultRuntime` are `public`, and the entry
+trampoline prefers a zero-arity **`runtime` builder defined in the entry file**
+(falling back to `defaultRuntime`). A program composes the defaults with its own
+(foreign-backed) capability instances into a fresh record and declares
+`main : R -> Unit` for that record `R`, so it can receive capabilities beyond the
+standard five without forking the compiler. (Record *extension* is future work, so
+the builder is a fresh literal, not `{ defaultRuntime with … }`.)
+
 Every language-surface change must update **all three** docs and add tests
 (parser snapshot, type golden, and/or e2e) in the same change.
 
