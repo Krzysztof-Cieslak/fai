@@ -138,7 +138,8 @@ performance change is measured broadly rather than against a handful of cases:
   parser/evaluator threading `Option`);
 - **records & floats** — `particles` and `nbody` (records + `{ r with … }`),
   `spectral_norm` and `mandelbrot` (float reductions);
-- **dynamic programming** — `levenshtein`, `coin_change`, `fib_memo` (`HashDict` memo);
+- **dynamic programming** — `levenshtein` and `coin_change` (flat mutable `Array`
+  tables, mirroring the Rust `vec` reference), `fib_memo` (`HashDict` memo);
 - **interface dispatch** — `interface_dispatch`.
 
 The associative-container workloads use the unordered `HashDict`/`HashSet`
