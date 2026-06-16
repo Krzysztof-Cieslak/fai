@@ -439,7 +439,16 @@ fn run_in_process_worker(
         return EXIT_WORKSPACE;
     };
 
-    let result = fai_driver::build_run_bundle(session.db(), entry);
+    // Native dependencies (for user `foreign` functions) come from `fai.toml` at
+    // the workspace root; absent for a pure program.
+    let native = match fai_driver::read_native_manifest(session.root()) {
+        Ok(deps) => deps,
+        Err(message) => {
+            let _ = writeln!(err, "error: {message}");
+            return EXIT_WORKSPACE;
+        }
+    };
+    let result = fai_driver::build_run_bundle_with_deps(session.db(), entry, &native);
     let Some(bundle) = result.bundle else {
         let resolver = session.resolver();
         let _ = write!(err, "{}", fai_driver::render_diagnostics(&result.diagnostics, &resolver));

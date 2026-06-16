@@ -788,8 +788,10 @@ pub fn jit_run_program(db: &dyn Db, file: SourceFile) -> RunOutcome {
     let entry_of = |d: DefId| bounds_entry_of(db, d);
     let result_of = |d: DefId| bounds_result_of(db, d);
     let bce = fai_codegen::Bce { entry_of: &entry_of, result_of: &result_of, shadow: bce_shadow() };
+    // The in-process run path is used for pure programs (no user `foreign`), so no
+    // native libraries are loaded.
     let exit_code =
-        fai_codegen::jit_run(&defs, entry, runtime, &namer, &arity, &abi, &borrows, &bce);
+        fai_codegen::jit_run(&defs, entry, runtime, &namer, &arity, &abi, &borrows, &bce, None);
     RunOutcome { exit_code, diagnostics }
 }
 
@@ -936,9 +938,22 @@ pub struct RunBundleResult {
 
 /// Builds a portable [`WireBundle`] for the closure reachable from `file`'s
 /// `main`, ready to ship to an isolated worker. The front end runs here (warm in
-/// the daemon); the worker only reconstructs and JITs.
+/// the daemon); the worker only reconstructs and JITs. Carries no native
+/// libraries (see [`build_run_bundle_with_deps`]).
 #[must_use]
 pub fn build_run_bundle(db: &dyn Db, file: SourceFile) -> RunBundleResult {
+    build_run_bundle_with_deps(db, file, &crate::manifest::NativeDeps::default())
+}
+
+/// Builds a portable [`WireBundle`], recording the project's native shared
+/// libraries (`fai.toml`) so the worker can load them before running a program
+/// that calls user `foreign` functions.
+#[must_use]
+pub fn build_run_bundle_with_deps(
+    db: &dyn Db,
+    file: SourceFile,
+    native: &crate::manifest::NativeDeps,
+) -> RunBundleResult {
     if !has_main(db, file) {
         return RunBundleResult { bundle: None, diagnostics: vec![no_entry_point()] };
     }
@@ -1064,16 +1079,60 @@ pub fn build_run_bundle(db: &dyn Db, file: SourceFile) -> RunBundleResult {
             name: runtime.name.as_str().to_owned(),
         },
         defs,
+        // The native shared libraries the worker loads before running, so a user
+        // `foreign` symbol resolves in the JIT.
+        libraries: native.dynamic_library_paths(),
     };
     RunBundleResult { bundle: Some(bundle), diagnostics }
 }
 
+/// Loads the bundle's native shared libraries and returns a symbol resolver for
+/// the JIT (the user `foreign` symbols), or `None` when there are none. The
+/// returned closure owns the library handles, so they stay loaded as long as the
+/// JIT image that may call into them. A library that cannot be loaded is an error.
+#[allow(unsafe_code)]
+fn load_foreign_libraries(paths: &[String]) -> Result<Option<fai_codegen::ForeignLookup>, String> {
+    if paths.is_empty() {
+        return Ok(None);
+    }
+    let mut libs: Vec<libloading::Library> = Vec::with_capacity(paths.len());
+    for path in paths {
+        // SAFETY: loading a user-declared native library by path; its initializers
+        // run, as for any `dlopen`. The handle is kept alive by the closure below.
+        let lib = unsafe { libloading::Library::new(path) }
+            .map_err(|e| format!("could not load native library `{path}`: {e}"))?;
+        libs.push(lib);
+    }
+    let lookup: fai_codegen::ForeignLookup = Box::new(move |name: &str| {
+        let mut symbol = name.as_bytes().to_vec();
+        symbol.push(0); // NUL-terminate for `dlsym`
+        for lib in &libs {
+            // SAFETY: resolving a symbol by name in a loaded library; the returned
+            // pointer is to that library's code/data, valid while `libs` is alive
+            // (this closure owns it).
+            if let Ok(sym) = unsafe { lib.get::<*const u8>(&symbol) } {
+                return Some(*sym);
+            }
+        }
+        None
+    });
+    Ok(Some(lookup))
+}
+
 /// Reconstructs a [`WireBundle`] and JIT-runs its entry, returning the exit code.
 /// Runs in the (database-free) worker process; applies any requested resource
-/// limits first.
+/// limits first, then loads any declared native libraries so a user `foreign`
+/// symbol resolves.
 #[must_use]
 pub fn jit_run_bundle(bundle: &WireBundle) -> i32 {
     apply_run_limits();
+    let foreign_lookup = match load_foreign_libraries(&bundle.libraries) {
+        Ok(lookup) => lookup,
+        Err(message) => {
+            eprintln!("fai: {message}");
+            return 1;
+        }
+    };
     let rebuilt = from_wire(bundle);
     let labels = rebuilt.module_labels;
     let arities = rebuilt.arities;
@@ -1102,6 +1161,7 @@ pub fn jit_run_bundle(bundle: &WireBundle) -> i32 {
         &abi,
         &borrow,
         &bce,
+        foreign_lookup,
     )
 }
 

@@ -79,6 +79,64 @@ fn cross_module_bundle_reconstructs_distinct_modules() {
     assert!(ids.len() >= 2, "Main and Lib must get distinct source ids");
 }
 
+#[cfg(unix)]
+#[test]
+fn jit_run_bundle_calls_a_user_foreign_via_a_loaded_library() {
+    // A user `foreign` resolved through the JIT: its native code is built as a
+    // shared library, declared in `fai.toml`, and loaded by the worker so the
+    // symbol resolves; the marshalled call runs through the in-process JIT.
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_owned());
+    let ext = if cfg!(target_os = "macos") { "dylib" } else { "so" };
+    let src = indoc! {r#"
+        module Main
+
+        foreign "fai_jit_triple" triple : Int -> Int / { Console }
+
+        public main : Runtime -> Unit / { Console }
+        let main r = r.console.writeLine (Int.toString (triple 14))
+    "#};
+    let manifest = "[native]\nlibrary-dirs = [\".\"]\nlibraries = [\"jitlib\"]\n";
+    let dir = workspace(&[("Main.fai", src), ("fai.toml", manifest)]);
+
+    // Build the shared library `libjitlib.<ext>` in the workspace root.
+    let c_path = dir.join("jitlib.c");
+    std::fs::write(
+        &c_path,
+        "#include <stdint.h>\nint64_t fai_jit_triple(int64_t x){return x*3;}\n",
+    )
+    .unwrap();
+    let lib_path = dir.join(format!("libjitlib.{ext}"));
+    let status = std::process::Command::new(&cc)
+        .arg("-shared")
+        .arg("-fPIC")
+        .arg(c_path.as_std_path())
+        .arg("-o")
+        .arg(lib_path.as_std_path())
+        .status();
+    match status {
+        Ok(s) if s.success() => {}
+        _ => {
+            eprintln!("skipping: could not build a shared library with `{cc}`");
+            return;
+        }
+    }
+
+    let session = Session::open(dir.clone()).unwrap();
+    let native = fai_driver::read_native_manifest(&dir).unwrap();
+    let bundle =
+        fai_driver::build_run_bundle_with_deps(session.db(), entry(&session, "Main.fai"), &native)
+            .bundle
+            .expect("a clean program yields a bundle");
+    assert!(!bundle.libraries.is_empty(), "the bundle records the native library to load");
+
+    let _guard = RUN_LOCK.lock().unwrap();
+    fai_runtime::capture_start();
+    let exit = jit_run_bundle(&bundle);
+    let output = fai_runtime::capture_take();
+    assert_eq!(exit, 0, "the foreign-calling program runs cleanly");
+    assert_eq!(output, "42\n");
+}
+
 #[test]
 fn bundle_survives_the_json_transport_hop() {
     // The daemon writes the bundle as JSON to a temp file; the worker reads it.

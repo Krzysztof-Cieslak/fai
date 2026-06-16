@@ -30,8 +30,9 @@ use serde::Serialize;
 
 pub use backend::{
     BuildOutcome, BuildOutput, CompiledProgram, RunBundleResult, RunOutcome, build_native,
-    build_native_with_deps, build_run_bundle, compile_pool, jit_compile, jit_run_bundle,
-    jit_run_program, object_code, reachable_defs, set_bce_shadow, set_object_cache_capacity,
+    build_native_with_deps, build_run_bundle, build_run_bundle_with_deps, compile_pool,
+    jit_compile, jit_run_bundle, jit_run_program, object_code, reachable_defs, set_bce_shadow,
+    set_object_cache_capacity,
 };
 pub use cache::{cache_stats, reset_stats, set_cache_dir};
 pub use command::{

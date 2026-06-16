@@ -43,6 +43,35 @@ impl NativeDeps {
     pub fn is_empty(&self) -> bool {
         self.lib_dirs.is_empty() && self.libs.is_empty() && self.objects.is_empty()
     }
+
+    /// The shared-library files to load for the JIT run path (`fai run`), one per
+    /// declared `library`, named for the host platform (`lib<name>.dylib`/`.so`,
+    /// `<name>.dll`). A library found under a `library-dir` is given its full path;
+    /// otherwise the bare file name is used (the dynamic loader's default search
+    /// applies). Object files are AOT-only (they cannot be loaded), so they are not
+    /// included — running a program whose foreign code is in an object, rather than
+    /// a shared library, is unsupported.
+    #[must_use]
+    pub fn dynamic_library_paths(&self) -> Vec<String> {
+        let (prefix, ext) = if cfg!(target_os = "windows") {
+            ("", "dll")
+        } else if cfg!(target_os = "macos") {
+            ("lib", "dylib")
+        } else {
+            ("lib", "so")
+        };
+        self.libs
+            .iter()
+            .map(|lib| {
+                let filename = format!("{prefix}{lib}.{ext}");
+                self.lib_dirs
+                    .iter()
+                    .map(|d| d.join(&filename))
+                    .find(|p| p.exists())
+                    .map_or(filename, |p| p.to_string_lossy().into_owned())
+            })
+            .collect()
+    }
 }
 
 #[derive(Deserialize, Default)]

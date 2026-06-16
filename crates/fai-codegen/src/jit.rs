@@ -152,7 +152,13 @@ fn register_runtime(builder: &mut JITBuilder) {
     builder.symbol("FAI_FLOAT_ARRAY_DESC", (&raw const rt::FAI_FLOAT_ARRAY_DESC).cast());
 }
 
-fn jit_module() -> JITModule {
+/// A fallback resolver for symbols not registered by [`register_runtime`] — the
+/// user `foreign` symbols, looked up in dynamically loaded libraries by the
+/// driver. Owns the loaded library handles, so they stay alive as long as the
+/// module that may call into them.
+pub type ForeignLookup = Box<dyn Fn(&str) -> Option<*const u8> + Send>;
+
+fn jit_module(foreign_lookup: Option<ForeignLookup>) -> JITModule {
     let mut flags = settings::builder();
     flags.set("use_colocated_libcalls", "false").expect("flag");
     flags.set("is_pic", "false").expect("flag");
@@ -164,6 +170,11 @@ fn jit_module() -> JITModule {
     let isa = isa_builder.finish(settings::Flags::new(flags)).expect("isa");
     let mut builder = JITBuilder::with_isa(isa, default_libcall_names());
     register_runtime(&mut builder);
+    // A user `foreign` symbol is resolved from the loaded native libraries (kept
+    // alive by the closure, which the module owns).
+    if let Some(lookup) = foreign_lookup {
+        builder.symbol_lookup_fn(lookup);
+    }
     JITModule::new(builder)
 }
 
@@ -244,7 +255,10 @@ impl JitProgram {
         borrows_of: &dyn Fn(DefId) -> Vec<bool>,
         bce: &Bce,
     ) -> JitProgram {
-        let mut module = jit_module();
+        // Contracts cannot call a user `foreign` (it carries a capability effect,
+        // which an impure contract is rejected for), so the test path needs no
+        // foreign symbol resolution.
+        let mut module = jit_module(None);
         compile_module(&mut module, defs, namer, arity_of, signature_of, borrows_of, bce);
         module.finalize_definitions().expect("finalize");
         JitProgram { module }
@@ -277,8 +291,9 @@ pub fn jit_run(
     signature_of: &dyn Fn(DefId) -> FnAbi,
     borrows_of: &dyn Fn(DefId) -> Vec<bool>,
     bce: &Bce,
+    foreign_lookup: Option<ForeignLookup>,
 ) -> i32 {
-    let mut module = jit_module();
+    let mut module = jit_module(foreign_lookup);
     compile_module(&mut module, defs, namer, arity_of, signature_of, borrows_of, bce);
     module.finalize_definitions().expect("finalize");
 
