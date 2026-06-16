@@ -652,20 +652,24 @@ pub fn coin_change(n: i64) -> i64 {
     ways[amount]
 }
 
-/// The `n`th Fibonacci number with two's-complement wrapping (the memoized Fai
-/// version caches the same wrapping sums).
+/// The `n`th Fibonacci number with two's-complement wrapping, computed top-down
+/// with a `HashMap` memo threaded through the recursion -- the same algorithm as
+/// the Fai sample (which threads a `HashDict`), so the benchmark compares the two
+/// associative containers under recursion rather than two different algorithms.
 #[must_use]
 pub fn fib_memo(n: i64) -> i64 {
-    if n < 2 {
-        return n;
+    fn go(k: i64, memo: &mut HashMap<i64, i64>) -> i64 {
+        if k < 2 {
+            return k;
+        }
+        if let Some(&v) = memo.get(&k) {
+            return v;
+        }
+        let v = go(k - 1, memo).wrapping_add(go(k - 2, memo));
+        memo.insert(k, v);
+        v
     }
-    let (mut a, mut b) = (0i64, 1i64);
-    for _ in 2..=n {
-        let c = a.wrapping_add(b);
-        a = b;
-        b = c;
-    }
-    b
+    go(n, &mut HashMap::new())
 }
 
 /// The position-weighted checksum `Σ i * x[i]` of a scrambled `n`-element input
