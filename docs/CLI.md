@@ -96,11 +96,31 @@ fai <command> [subcommand] [arguments] [flags]
 
 ### Workspace model (v1)
 
-The **workspace root** is the nearest ancestor directory containing a project
-marker (reserved for v2's `fai.toml`) or, failing that, the current directory.
-Sources are **all `.fai` files under the root**, excluding hidden and ignored
-directories. (A `fai.toml` manifest with explicit roots/targets/dependencies is
-deferred to v2.)
+The **workspace root** is the current directory (or `--project <dir>`). Sources
+are **all `.fai` files under the root**, excluding hidden and ignored
+directories. (A `fai.toml` manifest with explicit roots/targets is still deferred
+to v2; only the native-dependency section below is read today.)
+
+### Native dependencies (`fai.toml`)
+
+A program that calls user `foreign` functions declares the native libraries and
+object files to link (AOT `build`) and load (JIT `run`) in an **optional
+`fai.toml`** at the workspace root:
+
+```toml
+[native]
+library-dirs = ["native"]    # added as `-L` search paths (and library search)
+libraries    = ["mymath"]    # linked `-lmymath`; loaded as `libmymath.<ext>`
+objects      = ["native/extra.o"]  # extra object/archive files (AOT only)
+```
+
+Relative paths resolve against the root. `fai build` threads `-L`/`-l` and the
+object files into the system linker, producing a self-contained executable. `fai
+run` JIT-loads the shared libraries named by `libraries` (found under
+`library-dirs`), so `objects`-only dependencies work for `build` but not `run`
+(put run-reachable foreign code in a shared library). A library that cannot be
+loaded, or a malformed manifest, is a clear error. The file is absent for the
+common, pure program.
 
 ### Daemon, briefly
 

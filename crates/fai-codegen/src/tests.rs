@@ -179,7 +179,8 @@ fn run_all_counted_at(path: &str, src: &str) -> (i32, String, i64, i64, i64) {
     let _g = lock();
     rt::capture_start();
     rt::reset_allocations();
-    let code = jit_run(&defs, entry, runtime, &namer, &arity_of, &signature_of, &borrows_of, &bce);
+    let code =
+        jit_run(&defs, entry, runtime, &namer, &arity_of, &signature_of, &borrows_of, &bce, None);
     let allocs = rt::allocations();
     let closures = rt::closure_allocations();
     let paps = rt::pap_allocations();
