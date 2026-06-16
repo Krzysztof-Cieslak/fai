@@ -14,14 +14,14 @@ env:
   CARGO_TERM_COLOR: always
 
 # The suite is split into lanes that run in parallel for fast pull-request
-# feedback. `build-archive` compiles every test binary once on Linux and uploads
-# a nextest archive; the `unit` and `proptest` lanes then *run* (no recompile)
-# from that archive in parallel — `unit` is everything except the property tests,
-# `proptest` is only the property tests (run harder, see PROPTEST_CASES). The two
-# lanes are exact complements (see .config/nextest.toml), and `build-archive`
-# fails the run if they ever stop summing to the whole suite. `cross-os` covers
-# the platform-sensitive subset on macOS/Windows (the native linker path and the
-# process-control FFI); the property and heavy e2e suites run on Linux only.
+# feedback: `unit` runs everything except the property tests, `proptest` runs only
+# the property tests (run harder, see PROPTEST_CASES), and `cross-os` runs the
+# platform-sensitive subset (the native linker path and the process-control FFI)
+# on macOS/Windows — the property and heavy e2e suites run on Linux only. The
+# `unit` and `proptest` lanes are exact complements (see .config/nextest.toml);
+# the `unit` lane runs the partition guard that fails the build if they ever stop
+# summing to the whole suite. Each Linux lane builds its own test binaries (a
+# shared cache key lets warm runs reuse the prior build).
 #
 # Each OS uses its native default shell (bash on Linux/macOS, PowerShell on
 # Windows). Forcing bash on Windows puts Git's `usr/bin/link.exe` ahead of the
@@ -50,13 +50,14 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
-  build-archive:
-    name: build + archive (linux)
+  unit:
+    name: unit + e2e tests (linux)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      # Guarantee a `python3` on PATH for the lane-partition guard below.
+      # Guarantee a `python`/`python3` on PATH for the test summary and the
+      # lane-partition guard.
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -68,28 +69,22 @@ jobs:
           rustc --version
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Share the build with the `proptest` lane: both compile the same test
+          # binaries, so a warm run reuses one cache instead of two.
+          shared-key: linux-tests
 
       - name: Install nextest
         uses: taiki-e/install-action@v2
         with:
           tool: nextest
 
-      # Compile every test binary once and pack it (plus the metadata the run
-      # lanes need) into a single archive. The `unit` and `proptest` lanes run
-      # from this archive without recompiling.
-      - name: Build and archive test binaries
-        run: cargo nextest archive --workspace --locked --archive-file target/nextest-archive.tar.zst
-
-      - name: Upload test archive
-        uses: actions/upload-artifact@v4
-        with:
-          name: nextest-archive
-          path: target/nextest-archive.tar.zst
-          if-no-files-found: error
+      - name: Test (everything except property tests)
+        run: cargo nextest run --workspace --locked --profile unit
 
       - name: Doctests
         # nextest does not run doctests, so cover them separately (reusing the
-        # libraries just compiled for the archive).
+        # libraries just compiled for the test run).
         run: cargo test --workspace --locked --doc
 
       - name: Verify the unit/proptest lanes partition the suite
@@ -97,34 +92,6 @@ jobs:
         # test exactly once. Fails the build if a new test ever escapes both lanes
         # (or the property-test selection breaks). Reuses the warm build above.
         run: ./scripts/check-nextest-partition.sh
-
-  unit:
-    name: unit + e2e tests (linux)
-    needs: build-archive
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
-
-      - name: Select pinned toolchain
-        run: cargo --version
-
-      - name: Install nextest
-        uses: taiki-e/install-action@v2
-        with:
-          tool: nextest
-
-      - name: Download test archive
-        uses: actions/download-artifact@v4
-        with:
-          name: nextest-archive
-
-      - name: Test (everything except property tests)
-        run: cargo nextest run --profile unit --archive-file nextest-archive.tar.zst --workspace-remap .
 
       - name: Test summary
         if: always()
@@ -140,7 +107,6 @@ jobs:
 
   proptest:
     name: property tests (linux)
-    needs: build-archive
     runs-on: ubuntu-latest
     env:
       # Property tests run isolated in this lane, so they can run harder than the
@@ -157,20 +123,22 @@ jobs:
           python-version: '3.x'
 
       - name: Select pinned toolchain
-        run: cargo --version
+        run: |
+          cargo --version
+          rustc --version
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Share the build with the `unit` lane (same test binaries).
+          shared-key: linux-tests
 
       - name: Install nextest
         uses: taiki-e/install-action@v2
         with:
           tool: nextest
 
-      - name: Download test archive
-        uses: actions/download-artifact@v4
-        with:
-          name: nextest-archive
-
       - name: Property tests
-        run: cargo nextest run --profile proptest --archive-file nextest-archive.tar.zst --workspace-remap .
+        run: cargo nextest run --workspace --locked --profile proptest
 
       - name: Test summary
         if: always()
