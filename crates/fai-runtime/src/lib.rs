@@ -41,11 +41,17 @@ use std::alloc::Layout;
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
-// The leak/allocation counters are the only users of these atomics, and they are
-// compiled in only under `debug_assertions`, so the import is gated to match (a
-// release build references no atomics here and must not carry an unused import).
+// `AtomicU64`/`Ordering`/`fence` back the *shared* (multi-threaded) reference-count
+// path: an object marked shared across tasks has its count manipulated atomically.
+// They are always compiled (the shared `fai_*` symbols exist in every runtime
+// archive; the linker drops them from an executable that never references them, so
+// a single-threaded program pays nothing).
+use std::sync::atomic::{AtomicU64, Ordering, fence};
+// The leak/allocation counters use `AtomicI64`, compiled in only under
+// `debug_assertions` (a release build references it nowhere and must not carry an
+// unused import); `Ordering` is shared with the reference-count path above.
 #[cfg(debug_assertions)]
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::AtomicI64;
 
 /// A Fai value: a tagged 64-bit word (see the crate docs).
 pub type Value = i64;
@@ -115,6 +121,22 @@ pub const PAP_ARGS_OFFSET: usize = HEADER_SIZE + 16;
 /// literals and top-level function closures. So large that balanced dup/drop
 /// never reaches zero, so they are never freed (they are not heap-allocated).
 pub const IMMORTAL_RC: u64 = 1 << 60;
+
+/// The marker bit in an object's reference-count word meaning the object is
+/// **shared across tasks** (multi-threaded): its count lives in the low bits and
+/// is manipulated atomically. The three reference-count states are distinguished
+/// by one unsigned comparison on the hot path — `rc < IMMORTAL_RC` is the common
+/// single-threaded case (both shared, `≥ MT_FLAG`, and immortal, `= IMMORTAL_RC`,
+/// compare `≥ IMMORTAL_RC`) — then the rare branch splits shared (this bit set,
+/// atomic) from immortal (a reference-counting no-op). A shared object is produced
+/// only by [`fai_mark_shared`] when a value crosses a task boundary; a count never
+/// approaches `1 << 60`, let alone this bit, so the encoding never collides with a
+/// real count.
+pub const MT_FLAG: u64 = 1 << 63;
+
+/// The count portion of a shared (multi-threaded) reference-count word — every bit
+/// but [`MT_FLAG`]. A shared object is dead when its count portion reaches zero.
+const MT_COUNT_MASK: u64 = !MT_FLAG;
 
 /// The canonical immediate used for `Unit` and the `Runtime` capability value
 /// (payload 0, tagged). Distinct types are segregated by the type checker, so the
@@ -493,6 +515,83 @@ unsafe fn write_i64(obj: *mut u8, off: usize, val: i64) {
 unsafe fn write_ptr(obj: *mut u8, off: usize, val: *const u8) {
     // SAFETY: as `write_u64`.
     unsafe { obj.add(off).cast::<*const u8>().write(val) }
+}
+
+// ---------------------------------------------------------------------------
+// Reference-count state machine (single-threaded / shared / immortal).
+// ---------------------------------------------------------------------------
+//
+// Every reference-count site funnels through `rc_inc`/`rc_dec_is_dead` so the
+// three states (see `MT_FLAG`) are handled identically everywhere — the runtime's
+// polymorphic/builtin paths therefore reference-count a value correctly whether or
+// not it has crossed a task boundary, and code generation inlines the matching
+// branch only for programs that actually use concurrency (single-threaded code
+// keeps the plain non-atomic increment/decrement).
+
+/// The reference-count word of `p` viewed as an atomic, for a shared object.
+///
+/// # Safety
+/// `p` is a live, 8-aligned object pointer; the count is accessed atomically only
+/// while the object is in the shared (multi-threaded) state, so atomic and
+/// non-atomic accesses to it never race (the [`fai_mark_shared`] hand-off
+/// establishes the happens-before edge).
+#[inline]
+unsafe fn rc_atomic<'a>(p: *mut u8) -> &'a AtomicU64 {
+    // SAFETY: `p + RC_OFFSET` is an 8-aligned, valid `u64` for the object's life.
+    unsafe { AtomicU64::from_ptr(p.add(RC_OFFSET).cast::<u64>()) }
+}
+
+/// Increments the reference count of the live object `p`, in whatever state it is
+/// in: a plain non-atomic add when single-threaded, an atomic add when shared, and
+/// a no-op when immortal.
+///
+/// # Safety
+/// `p` is a live object pointer.
+#[inline]
+unsafe fn rc_inc(p: *mut u8) {
+    // SAFETY: `p` is live; its count word is in bounds.
+    unsafe {
+        let rc = read_u64(p, RC_OFFSET);
+        if rc < IMMORTAL_RC {
+            write_u64(p, RC_OFFSET, rc + 1);
+        } else if rc & MT_FLAG != 0 {
+            rc_atomic(p).fetch_add(1, Ordering::Relaxed);
+        }
+        // Otherwise immortal: reference counting is a no-op.
+    }
+}
+
+/// Decrements the reference count of the live object `p`, returning whether this
+/// was its last reference (so the caller must release its children and reclaim
+/// it). A plain non-atomic subtract when single-threaded; an atomic
+/// release-decrement with an acquire fence on the last reference when shared (the
+/// `Arc` discipline); always `false` when immortal.
+///
+/// # Safety
+/// `p` is a live object pointer.
+#[inline]
+unsafe fn rc_dec_is_dead(p: *mut u8) -> bool {
+    // SAFETY: `p` is live; its count word is in bounds.
+    unsafe {
+        let rc = read_u64(p, RC_OFFSET);
+        if rc < IMMORTAL_RC {
+            let n = rc - 1;
+            write_u64(p, RC_OFFSET, n);
+            n == 0
+        } else if rc & MT_FLAG != 0 {
+            // The decrement publishes this task's writes (`Release`); the task that
+            // observes the count hit zero acquires them before reclaiming.
+            let prev = rc_atomic(p).fetch_sub(1, Ordering::Release);
+            if prev & MT_COUNT_MASK == 1 {
+                fence(Ordering::Acquire);
+                true
+            } else {
+                false
+            }
+        } else {
+            false // immortal
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -984,15 +1083,12 @@ fn fai_panic(msg: &str) -> ! {
 // ---------------------------------------------------------------------------
 
 /// Increments a value's reference count, returning it. No-op for immediates.
+/// Atomic when the value is shared across tasks, plain otherwise (see [`rc_inc`]).
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_dup(v: Value) -> Value {
     if is_boxed(v) {
-        let p = as_obj(v);
-        // SAFETY: `p` is a live object pointer.
-        unsafe {
-            let rc = read_u64(p, RC_OFFSET);
-            write_u64(p, RC_OFFSET, rc + 1);
-        }
+        // SAFETY: a boxed value is a live object pointer.
+        unsafe { rc_inc(as_obj(v)) };
     }
     v
 }
@@ -1012,9 +1108,7 @@ pub extern "C" fn fai_drop(v: Value) {
     let p = as_obj(v);
     // SAFETY: `p` is a live object pointer.
     unsafe {
-        let rc = read_u64(p, RC_OFFSET) - 1;
-        write_u64(p, RC_OFFSET, rc);
-        if rc == 0 {
+        if rc_dec_is_dead(p) {
             // Dead: release its reference-counted children and reclaim its memory.
             release_dead(p);
         }
@@ -1182,9 +1276,7 @@ fn drain(work: &mut DropWork) {
         let q = as_obj(w);
         // SAFETY: `q` is a live object pointer.
         unsafe {
-            let rc = read_u64(q, RC_OFFSET) - 1;
-            write_u64(q, RC_OFFSET, rc);
-            if rc == 0 {
+            if rc_dec_is_dead(q) {
                 scan_push(q, work);
                 free_obj(q);
             }
@@ -1206,6 +1298,54 @@ pub unsafe extern "C" fn fai_free(v: Value) {
     // SAFETY: the caller guarantees `v` is a boxed, dead, child-released object,
     // so its size header is valid and its memory matches the original allocation.
     unsafe { free_obj(as_obj(v)) };
+}
+
+/// Marks `v` and its reachable boxed subgraph as **shared across tasks**, so every
+/// subsequent reference-count operation on them is atomic. Called when a value
+/// crosses a task boundary — a spawned thunk's captures, a value sent on a channel,
+/// a task's result. Returns `v` for chaining; the count is unchanged (only the
+/// representation flips). No-op for an immediate.
+///
+/// Idempotent: an already-shared or immortal object is left untouched, and its
+/// subgraph (already shared, or never reference-counted) is not revisited. The walk
+/// is iterative (a worklist) so a deep structure never overflows the native stack,
+/// and the acyclic heap guarantees it terminates. Marking runs on the owning task
+/// *before* the value is handed off, so the non-atomic writes here cannot race a
+/// consumer; the hand-off (channel/scheduler synchronization) is the happens-before
+/// edge that publishes the marks.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_mark_shared(v: Value) -> Value {
+    if is_boxed(v) {
+        let mut work = DropWork::new();
+        // SAFETY: a boxed value is a live object pointer.
+        unsafe { mark_shared_one(as_obj(v), &mut work) };
+        while let Some(w) = work.pop() {
+            // SAFETY: only boxed children are pushed onto the worklist.
+            unsafe { mark_shared_one(as_obj(w), &mut work) };
+        }
+    }
+    v
+}
+
+/// Flips one single-threaded object to shared (preserving its count) and enqueues
+/// its boxed children for the same treatment. An already-shared or immortal object
+/// is left alone and its children are not enqueued.
+///
+/// # Safety
+/// `p` is a live object pointer.
+unsafe fn mark_shared_one(p: *mut u8, work: &mut DropWork) {
+    // SAFETY: `p` is live; its count word and children are in bounds.
+    unsafe {
+        let rc = read_u64(p, RC_OFFSET);
+        if rc < IMMORTAL_RC {
+            // Single-threaded → shared: set the marker, keep the count in the low
+            // bits. `scan_push` enqueues the boxed children to mark them too.
+            write_u64(p, RC_OFFSET, rc | MT_FLAG);
+            scan_push(p, work);
+        }
+        // Already shared (`MT_FLAG` set ⇒ `rc ≥ MT_FLAG > IMMORTAL_RC`) or immortal
+        // (`rc ≥ IMMORTAL_RC`): nothing to do, and the subgraph is already covered.
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1296,12 +1436,14 @@ pub extern "C" fn fai_std_to_niche_a(o: Value) -> Value {
     // payload); reading the count and field is in bounds.
     unsafe {
         let payload = read_i64(p, DATA_FIELDS_OFFSET);
-        let rc = read_u64(p, RC_OFFSET);
-        if rc == 1 {
+        // Drop the wrapper shell: if it was the last reference, free it and the
+        // payload reference it held transfers to the caller; otherwise the shell
+        // lives on, so the caller takes its own reference. Both steps are
+        // shared-aware (atomic when the value crossed a task boundary).
+        if rc_dec_is_dead(p) {
             free_obj(p);
         } else {
             fai_dup(payload);
-            write_u64(p, RC_OFFSET, rc - 1);
         }
         payload
     }
@@ -1349,12 +1491,12 @@ pub extern "C" fn fai_std_to_niche_b(o: Value) -> Value {
     // SAFETY: a boxed standard `Option` is a `Some` cell with one field.
     unsafe {
         let payload = read_i64(p, DATA_FIELDS_OFFSET);
-        let rc = read_u64(p, RC_OFFSET);
-        if rc == 1 {
+        // As `fai_std_to_niche_a`: drop the wrapper (shared-aware), transferring or
+        // duplicating the payload reference depending on whether the shell was last.
+        if rc_dec_is_dead(p) {
             free_obj(p);
         } else {
             fai_dup(payload);
-            write_u64(p, RC_OFFSET, rc - 1);
         }
         payload
     }
@@ -1882,11 +2024,11 @@ pub extern "C" fn fai_drop_reuse(v: Value) -> Value {
     let p = as_obj(v);
     // SAFETY: `p` is a live object pointer.
     unsafe {
-        let rc = read_u64(p, RC_OFFSET) - 1;
-        write_u64(p, RC_OFFSET, rc);
-        if rc == 0 {
+        if rc_dec_is_dead(p) {
             // Release the children but keep `p`'s memory live (no `free_obj`);
-            // `fai_reuse` rebuilds into it.
+            // `fai_reuse` rebuilds into it (resetting its count to a plain `1`, so a
+            // recycled shared cell becomes single-threaded again — sound, since the
+            // last reference means no other task can reach it).
             let mut work = DropWork::new();
             scan_push(p, &mut work);
             drain(&mut work);
