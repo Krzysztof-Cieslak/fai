@@ -33,6 +33,26 @@ use serde::Serialize;
 
 use crate::{LINK_FAILED, NO_ENTRY_POINT, semantic_diagnostics, tooling_span};
 
+/// A rayon thread pool whose workers have a large stack, for the recursive
+/// compiler passes (lowering, reference counting, code generation). Those passes
+/// walk a definition's syntax/IR by native recursion, so a deeply nested
+/// expression — a long arithmetic or `++` chain flattens to hundreds of nested
+/// A-normal-form bindings — would overflow a default (2 MiB) worker stack. The
+/// passes are intricate backward analyses, not tail-recursive, so a roomy worker
+/// stack is simpler and safer than rewriting each to an explicit worklist. The
+/// per-definition codegen runs `install`ed on this pool; nested rayon work
+/// inherits it, so a single `install` at each parallel region suffices. Built
+/// once and reused (its size matches the available parallelism).
+pub fn compile_pool() -> &'static rayon::ThreadPool {
+    static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .stack_size(64 * 1024 * 1024)
+            .build()
+            .expect("build the compiler thread pool")
+    })
+}
+
 /// The runtime static archive, built by `build.rs` and linked into executables.
 const RUNTIME_ARCHIVE: &[u8] = include_bytes!(env!("FAI_RUNTIME_ARCHIVE"));
 
@@ -512,15 +532,22 @@ impl BuildOutcome {
 /// worker takes its own database handle (a cheap clone sharing the storage and
 /// memoization; salsa coordinates concurrent query execution).
 fn build_objects(db: &dyn Db, reachable: &[DefId]) -> Vec<(String, Vec<u8>)> {
-    reachable
-        .par_iter()
-        .map_with(db.clone_box(), |dbh, def| {
-            let db: &dyn Db = &**dbh;
-            let def_file = db.source_file(def.file)?;
-            let bytes = crate::cache::load_or_build_object(db, def_file, def.name);
-            Some((symbol_base(db, *def), (*bytes).clone()))
+    // Run on the large-stack compile pool: a single definition's code generation
+    // recurses on its IR depth, which a default worker stack cannot absorb for a
+    // deeply nested expression.
+    let seed = db.clone_box();
+    compile_pool()
+        .install(move || {
+            reachable
+                .par_iter()
+                .map_with(seed, |dbh, def| {
+                    let db: &dyn Db = &**dbh;
+                    let def_file = db.source_file(def.file)?;
+                    let bytes = crate::cache::load_or_build_object(db, def_file, def.name);
+                    Some((symbol_base(db, *def), (*bytes).clone()))
+                })
+                .collect::<Vec<Option<(String, Vec<u8>)>>>()
         })
-        .collect::<Vec<Option<(String, Vec<u8>)>>>()
         .into_iter()
         .flatten()
         .collect()
@@ -665,19 +692,27 @@ pub fn jit_run_program(db: &dyn Db, file: SourceFile) -> RunOutcome {
     // Lower + reference-count (emit-ready, with reuse forwarding) each ordinary
     // reachable def in parallel (independent queries); the JIT compile that follows
     // is serial (one shared module).
-    let mut defs: Vec<LoweredDef> = reachable
-        .par_iter()
-        .map_with(db.clone_box(), |dbh, def| {
-            if members.contains(def) {
-                return None; // a group member compiles to its wrapper, added below
-            }
-            let db: &dyn Db = &**dbh;
-            db.source_file(def.file).map(|f| (*rc_emit(db, f, def.name)).clone())
+    let mut defs: Vec<LoweredDef> = {
+        // Run on the large-stack compile pool (see `compile_pool`): each
+        // definition's lower + reference-count recurses on its IR depth.
+        let seed = db.clone_box();
+        let reachable: &[DefId] = &reachable;
+        compile_pool().install(move || {
+            reachable
+                .par_iter()
+                .map_with(seed, |dbh, def| {
+                    if members.contains(def) {
+                        return None; // a group member compiles to its wrapper, added below
+                    }
+                    let db: &dyn Db = &**dbh;
+                    db.source_file(def.file).map(|f| (*rc_emit(db, f, def.name)).clone())
+                })
+                .collect::<Vec<Option<LoweredDef>>>()
         })
-        .collect::<Vec<Option<LoweredDef>>>()
-        .into_iter()
-        .flatten()
-        .collect();
+    }
+    .into_iter()
+    .flatten()
+    .collect();
     // Keep a token-taking specialized entry only where a reachable caller forwards
     // to it; clearing it elsewhere stops the JIT emitting an unused entry.
     let targets: FxHashSet<DefId> = forward_targets(db, &reachable).into_iter().collect();
@@ -796,16 +831,24 @@ pub fn jit_compile(db: &dyn Db, file: SourceFile) -> Result<CompiledProgram, Vec
     // Lower + reference-count (emit-ready, with reuse forwarding) each reachable
     // def in parallel (independent queries), as the JIT runner does, then build one
     // finalized image.
-    let mut defs: Vec<LoweredDef> = reachable
-        .par_iter()
-        .map_with(db.clone_box(), |dbh, def| {
-            let db: &dyn Db = &**dbh;
-            db.source_file(def.file).map(|f| (*rc_emit(db, f, def.name)).clone())
+    let mut defs: Vec<LoweredDef> = {
+        // Run on the large-stack compile pool (see `compile_pool`): each
+        // definition's lower + reference-count recurses on its IR depth.
+        let seed = db.clone_box();
+        let reachable: &[DefId] = &reachable;
+        compile_pool().install(move || {
+            reachable
+                .par_iter()
+                .map_with(seed, |dbh, def| {
+                    let db: &dyn Db = &**dbh;
+                    db.source_file(def.file).map(|f| (*rc_emit(db, f, def.name)).clone())
+                })
+                .collect::<Vec<Option<LoweredDef>>>()
         })
-        .collect::<Vec<Option<LoweredDef>>>()
-        .into_iter()
-        .flatten()
-        .collect();
+    }
+    .into_iter()
+    .flatten()
+    .collect();
     let targets: FxHashSet<DefId> = forward_targets(db, &reachable).into_iter().collect();
     for d in &mut defs {
         if !targets.contains(&d.def) {
@@ -886,41 +929,52 @@ pub fn build_run_bundle(db: &dyn Db, file: SourceFile) -> RunBundleResult {
     // Lower + reference-count (emit-ready) + serialize each ordinary reachable def
     // in parallel (independent queries), preserving order so the bundle is
     // deterministic.
-    let mut defs: Vec<WireDef> = reachable
-        .par_iter()
-        .map_with(db.clone_box(), |dbh, d| {
-            if members.contains(d) {
-                return None; // a group member ships as its wrapper, added below
-            }
-            let db: &dyn Db = &**dbh;
-            let def_file = db.source_file(d.file)?;
-            let module_of = |x: DefId| module_label(db, x);
-            let lowered = rc_emit(db, def_file, d.name);
-            // Ship the specialized entry and its slot classes only for a forward
-            // target; otherwise drop it so the worker emits no unused entry.
-            let (lowered, reuse_sig) = if targets.contains(d) {
-                (lowered, reuse_signature(db, def_file, d.name).classes().to_vec())
-            } else if lowered.reuse_entry.is_some() {
-                let mut owned = (*lowered).clone();
-                owned.reuse_entry = None;
-                (Arc::new(owned), Vec::new())
-            } else {
-                (lowered, Vec::new())
-            };
-            Some(def_to_wire(
-                &lowered,
-                &module_of,
-                arity_of(db, *d),
-                abi_of(db, *d),
-                reuse_sig,
-                (*entry_bounds(db, def_file, d.name)).clone(),
-                (*result_facts(db, def_file, d.name)).clone(),
-            ))
+    let mut defs: Vec<WireDef> = {
+        // Run on the large-stack compile pool (see `compile_pool`): each
+        // definition's lower + reference-count + serialize recurses on its IR depth.
+        let seed = db.clone_box();
+        let reachable: &[DefId] = &reachable;
+        let members = &members;
+        let targets = &targets;
+        compile_pool().install(move || {
+            reachable
+                .par_iter()
+                .map_with(seed, |dbh, d| {
+                    if members.contains(d) {
+                        return None; // a group member ships as its wrapper, added below
+                    }
+                    let db: &dyn Db = &**dbh;
+                    let def_file = db.source_file(d.file)?;
+                    let module_of = |x: DefId| module_label(db, x);
+                    let lowered = rc_emit(db, def_file, d.name);
+                    // Ship the specialized entry and its slot classes only for a
+                    // forward target; otherwise drop it so the worker emits no unused
+                    // entry.
+                    let (lowered, reuse_sig) = if targets.contains(d) {
+                        (lowered, reuse_signature(db, def_file, d.name).classes().to_vec())
+                    } else if lowered.reuse_entry.is_some() {
+                        let mut owned = (*lowered).clone();
+                        owned.reuse_entry = None;
+                        (Arc::new(owned), Vec::new())
+                    } else {
+                        (lowered, Vec::new())
+                    };
+                    Some(def_to_wire(
+                        &lowered,
+                        &module_of,
+                        arity_of(db, *d),
+                        abi_of(db, *d),
+                        reuse_sig,
+                        (*entry_bounds(db, def_file, d.name)).clone(),
+                        (*result_facts(db, def_file, d.name)).clone(),
+                    ))
+                })
+                .collect::<Vec<Option<WireDef>>>()
         })
-        .collect::<Vec<Option<WireDef>>>()
-        .into_iter()
-        .flatten()
-        .collect();
+    }
+    .into_iter()
+    .flatten()
+    .collect();
     let module_of = |x: DefId| module_label(db, x);
     for (member, wrapper) in &groups.wrappers {
         // The wrapper is emitted at the member's symbol, so it presents the

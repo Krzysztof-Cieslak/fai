@@ -104,13 +104,19 @@ fn aot_codegen_reachable(bencher: Bencher, n: usize) {
             (db, reachable)
         })
         .bench_values(|(db, reachable)| {
-            let objs: Vec<_> = reachable
-                .par_iter()
-                .map_with(db.clone_box(), |dbh, def| {
-                    let db: &dyn Db = &**dbh;
-                    db.source_file(def.file).map(|f| object_code(db, f, def.name))
-                })
-                .collect();
+            // Code-generate on the driver's large-stack compile pool, exactly as
+            // `build_native` does, so a deep definition does not overflow a default
+            // worker stack.
+            let seed = db.clone_box();
+            let objs: Vec<_> = fai_driver::compile_pool().install(move || {
+                reachable
+                    .par_iter()
+                    .map_with(seed, |dbh, def| {
+                        let db: &dyn Db = &**dbh;
+                        db.source_file(def.file).map(|f| object_code(db, f, def.name))
+                    })
+                    .collect()
+            });
             divan::black_box(objs)
         });
 }
