@@ -1,0 +1,51 @@
+module NativeCapability
+
+// How to add a capability the standard `Runtime` does not provide — here a
+// process-id capability backed by a native C function. Defining your own
+// capability is three pieces: a capability **interface**, a **`foreign`-backed
+// instance**, and an **extended `Runtime`** that `main` receives.
+//
+// To build and run this you supply the native function and declare it in a
+// `fai.toml` beside the entry file:
+//
+//     // native/process.c
+//     #include <stdint.h>
+//     #include <unistd.h>
+//     int64_t app_getpid(void) { return (int64_t) getpid(); }
+//
+//     # fai.toml
+//     [native]
+//     library-dirs = ["native"]
+//     libraries = ["process"]   # a shared library: libprocess.so / .dylib
+// 1. The capability interface. Each method names the capability as its own effect,
+//    so any function that calls it surfaces `Process` in its effect row — the
+//    capability's reach stays visible in the types.
+public interface Process =
+  pid : Unit -> Int / { Process }
+
+// 2. The native function. A `foreign` declaration is always module-private (a raw
+//    native function is exposed only through a capability interface), and its
+//    signature must name a capability in its effect row. A user `foreign` is
+//    marshalled across a plain C ABI, so its arguments and result are
+//    `Int`/`Float`/`Bool`/`String`/`Unit`.
+foreign "app_getpid" getProcessId : Unit -> Int / { Process }
+
+// 3. The instance, bundling the native function behind the interface.
+public processCapability : Process
+let processCapability = { Process with pid u = getProcessId u }
+
+// The program's own runtime shape: the standard console plus the new capability.
+// (Record extension is future work, so this is a fresh record, not a `with`
+// update of `defaultRuntime`.)
+public type AppRuntime = { console : Console, process : Process }
+
+// The entry trampoline applies `main` to a binding named `runtime` in the entry
+// file when one is present (falling back to the standard `defaultRuntime`), so the
+// program controls the bundle `main` receives.
+public runtime : AppRuntime
+let runtime = { console = stdConsole, process = processCapability }
+
+// `main` receives the extended bundle; its effect row records both capabilities it
+// uses (the console, and the new process capability).
+public main : AppRuntime -> Unit / { Console, Process }
+let main app = app.console.writeLine ("pid = " ++ Int.toString (app.process.pid ()))
