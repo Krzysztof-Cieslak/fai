@@ -965,8 +965,12 @@ mod tests {
             crate::bounds::BoundSig::default(),
             crate::bounds::ResultSig::default(),
         );
-        let bundle =
-            WireBundle { entry: wire.id.clone(), runtime: wire.id.clone(), defs: vec![wire] };
+        let bundle = WireBundle {
+            entry: wire.id.clone(),
+            runtime: wire.id.clone(),
+            defs: vec![wire],
+            libraries: Vec::new(),
+        };
         let rebuilt = from_wire(&bundle);
         (pretty_def(&lowered), pretty_def(&rebuilt.defs[0]), rebuilt)
     }
@@ -1028,6 +1032,7 @@ mod tests {
             entry: decoded.id.clone(),
             runtime: decoded.id.clone(),
             defs: vec![decoded],
+            libraries: Vec::new(),
         };
         let rebuilt = from_wire(&bundle);
         (pretty_def(&lowered), pretty_def(&rebuilt.defs[0]))
@@ -1110,6 +1115,7 @@ mod tests {
             entry: decoded.id.clone(),
             runtime: decoded.id.clone(),
             defs: vec![decoded],
+            libraries: Vec::new(),
         };
         let rebuilt = from_wire(&bundle);
 
@@ -1168,6 +1174,7 @@ mod tests {
             entry: decoded.id.clone(),
             runtime: decoded.id.clone(),
             defs: vec![decoded],
+            libraries: Vec::new(),
         };
         let rebuilt = from_wire(&bundle);
 
@@ -1259,6 +1266,7 @@ mod tests {
             entry: decoded.id.clone(),
             runtime: decoded.id.clone(),
             defs: vec![decoded],
+            libraries: Vec::new(),
         };
         let rebuilt = from_wire(&bundle);
 
@@ -1288,8 +1296,12 @@ mod tests {
             crate::bounds::BoundSig::default(),
             crate::bounds::ResultSig::default(),
         );
-        let bundle =
-            WireBundle { entry: wire.id.clone(), runtime: wire.id.clone(), defs: vec![wire] };
+        let bundle = WireBundle {
+            entry: wire.id.clone(),
+            runtime: wire.id.clone(),
+            defs: vec![wire],
+            libraries: Vec::new(),
+        };
 
         let json = serde_json::to_string(&bundle).unwrap();
         let decoded: WireBundle = serde_json::from_str(&json).unwrap();
@@ -1441,7 +1453,12 @@ mod tests {
             bounds_entry: crate::bounds::BoundSig::default(),
             bounds_result: crate::bounds::ResultSig::default(),
         };
-        let bundle = WireBundle { entry: a.id.clone(), runtime: a.id.clone(), defs: vec![a, b] };
+        let bundle = WireBundle {
+            entry: a.id.clone(),
+            runtime: a.id.clone(),
+            defs: vec![a, b],
+            libraries: Vec::new(),
+        };
         let rebuilt = from_wire(&bundle);
         assert_eq!(rebuilt.defs.len(), 2);
         assert_ne!(rebuilt.defs[0].def.file, rebuilt.defs[1].def.file);

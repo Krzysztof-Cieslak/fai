@@ -3411,6 +3411,28 @@ Editor integration:
     reuse object imports — previously they were object-local, so the cross-object
     reference failed to link. The cache's codegen tag is bumped
     (`reuse-lambda-export`) so a warm cache cannot serve a pre-fix object.
+  - **Marshalled user-FFI ABI.** A user (non-std) `foreign` uses a **marshalled**
+    native ABI, not the raw Fai value ABI the built-in hosts use: each operand and
+    the result are converted between the Fai value and a plain native type
+    (`Int`/`Bool` ↔ `int64_t`, `Float` ↔ `double`, `String` argument ↔ a borrowed
+    `(ptr, len)` pair, `String` result ↔ a `const char*` returned with its length
+    through a trailing `int64_t* out_len` and copied into a fresh Fai `String` —
+    the foreign owns its buffer; `Unit` is the empty value). So a plain C function
+    is callable directly. A `marshalled` flag on `K::Foreign` (set at lowering from
+    the declaration's origin) selects the ABI, carried in the wire form and the
+    cache fingerprint; codegen emits the conversion glue (the `fai_marshal_*`
+    runtime helpers). A foreign signature outside the marshallable subset is
+    **FAI5003** (a type-level check, surfaced by `fai check`).
+  - **Native linking.** A program's native dependencies are declared in a
+    `fai.toml` (`[native]`: `library-dirs`/`libraries`/`objects`) at the workspace
+    root — the first project-config file (breaks the single-`Main.fai` assumption,
+    so `docs/CLI.md` documents it). **AOT** (`fai build`) threads the `-L`/`-l`
+    flags and object files into the system linker. **JIT** (`fai run`) ships the
+    resolved shared-library paths in the run bundle and the isolated worker
+    `dlopen`s them (via `libloading`), installing a JIT symbol resolver that owns
+    the handles for the run; objects are AOT-only. Contracts cannot call a foreign
+    (its capability effect makes the contract impure), so the test worker loads
+    nothing.
   - Issue #132. Builds on the type-level effect rows (D115).
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,

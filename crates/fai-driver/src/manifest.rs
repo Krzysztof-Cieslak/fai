@@ -111,3 +111,51 @@ pub fn read_native_manifest(root: &Utf8Path) -> Result<NativeDeps, String> {
         objects: manifest.native.objects.iter().map(|o| resolve(o)).collect(),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use camino::Utf8PathBuf;
+
+    use super::*;
+
+    fn temp_root() -> Utf8PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let dir = Utf8PathBuf::from_path_buf(std::env::temp_dir()).unwrap().join(format!(
+            "fai-manifest-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn absent_manifest_is_empty() {
+        let root = temp_root();
+        let deps = read_native_manifest(&root).unwrap();
+        assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn parses_native_section_and_resolves_relative_paths() {
+        let root = temp_root();
+        std::fs::write(
+            root.join(MANIFEST_NAME),
+            "[native]\nlibrary-dirs = [\"native\"]\nlibraries = [\"math\"]\nobjects = [\"a.o\"]\n",
+        )
+        .unwrap();
+        let deps = read_native_manifest(&root).unwrap();
+        assert_eq!(deps.libs, vec!["math".to_owned()]);
+        assert_eq!(deps.lib_dirs, vec![root.as_std_path().join("native")]);
+        assert_eq!(deps.objects, vec![root.as_std_path().join("a.o")]);
+    }
+
+    #[test]
+    fn malformed_manifest_is_an_error() {
+        let root = temp_root();
+        std::fs::write(root.join(MANIFEST_NAME), "[native\nlibraries = oops").unwrap();
+        assert!(read_native_manifest(&root).is_err());
+    }
+}
