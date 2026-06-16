@@ -616,6 +616,95 @@ Key facts:
 Because effects are explicit, `fai query caps <symbol>` can report exactly which
 capabilities any function transitively reaches.
 
+### Defining your own capability
+
+The five host capabilities are ordinary library code, not compiler built-ins — you
+can add your own. A capability is just an **interface whose methods carry an
+effect** plus an **instance** that implements them. There are two ways to back it.
+
+**Backed by capabilities you already have.** Effect-parameterize the interface with
+`'e`, so the instance reports the effect it actually performs:
+
+```fai
+public interface Banner 'e =
+  banner : String -> Unit / 'e
+
+// Built from the standard console, so the instance is `Banner { Console }`.
+public bannerOverConsole : Console -> Banner { Console }
+let bannerOverConsole console =
+  { Banner with banner title = console.writeLine ("=== " ++ title ++ " ===") }
+```
+
+**Backed by native code** uses a `foreign` declaration — a binding to a native
+function, with no Fai body:
+
+```fai
+public interface Process =
+  pid : Unit -> Int / { Process }
+
+// `foreign "<native symbol>" <name> : <type>`. Always module-private; its
+// signature must name a capability in its effect row. Exposed only through the
+// interface instance below.
+foreign "app_getpid" getProcessId : Unit -> Int / { Process }
+
+public stdProcess : Process
+let stdProcess = { Process with pid u = getProcessId u }
+```
+
+Rules for `foreign`:
+
+- It **cannot be `public`** (`FAI2019`) — a raw native function is reached only
+  through a capability interface instance.
+- Its signature **must name a capability** in its effect row (`FAI5002`), so the
+  native side effect is visible: every caller surfaces that capability.
+- Arguments and result are **marshalled** across a plain C ABI, so each must be
+  `Int`, `Float`, `Bool`, or `String` (and the result may also be `Unit`) — anything
+  else is `FAI5003`. The native shape is: `Int`/`Bool` ↔ `int64_t`, `Float` ↔
+  `double`, a `String` argument ↔ a borrowed `(const char* ptr, int64_t len)`, a
+  `String` result ↔ a `const char*` returned with its length through a trailing
+  `int64_t* out_len` (copied into a Fai `String`; the foreign owns its buffer), and
+  `Unit` ↔ no argument / `void`.
+
+A contract (`example`/`forall`) cannot call a capability — including your own — so
+it cannot reach a `foreign` (`FAI6004`).
+
+### Extending the `Runtime` `main` receives
+
+`main` can receive **more** than the standard five capabilities. Define a binding
+named `runtime` in your entry file; the program hands it to `main` instead of the
+default, and `main` takes whatever record it builds. The default instances
+(`stdConsole`, `stdClock`, `stdRandom`, `stdFs`, `stdEnv`) and `defaultRuntime` are
+public, so you compose them with your own:
+
+```fai
+public type AppRuntime = { console : Console, process : Process }
+
+public runtime : AppRuntime
+let runtime = { console = stdConsole, process = stdProcess }
+
+public main : AppRuntime -> Unit / { Console, Process }
+let main app = app.console.writeLine (Int.toString (app.process.pid ()))
+```
+
+Make `main`'s parameter the concrete record your `runtime` builds (constant field
+offsets); least-authority open-record subsetting still works at internal call
+boundaries. (Record *extension* is future work, so `runtime` is a fresh literal,
+not `{ defaultRuntime with … }`.)
+
+**Native dependencies** (the library or object that defines a `foreign` symbol) are
+declared in an optional `fai.toml` at the workspace root — `fai build` links them
+and `fai run` loads them:
+
+```toml
+[native]
+library-dirs = ["native"]          # -L search paths
+libraries    = ["process"]         # -lprocess; loaded as libprocess.dylib/.so by `run`
+objects      = ["native/extra.o"]  # extra objects (linked by `build`; `run` needs a shared library)
+```
+
+Full, tested examples: `samples/CustomCapability.fai` (host-backed) and
+`samples/NativeCapability.fai` (native-backed, with the C source and `fai.toml`).
+
 ---
 
 ## 11. Interfaces and instances
@@ -1029,6 +1118,9 @@ footprint). Recommended loop: `fai query api <M>` to learn a module, edit, then
 | `FAI3004` | Signature disagrees with the body | Fix the body or the signature (signatures are checked, not trusted). |
 | `FAI3005` | Ambiguous type | Add a type annotation or a conversion. |
 | `FAI5001` | Declared effect row ≠ inferred | Make the `/ { ... }` row match what the body actually does (no missing or unused capability). |
+| `FAI5002` | A `foreign` names no capability in its effect row | Add `/ { Cap }` naming the capability the native function provides. |
+| `FAI5003` | A `foreign` type cannot be marshalled | Use only `Int`/`Float`/`Bool`/`String` (and `Unit` as a result) in a `foreign` signature. |
+| `FAI2019` | A `foreign` declaration is `public` | Make it private; expose it only through a capability interface instance. |
 | `FAI4001` | Non-exhaustive `match` | Add the missing arms or a `_` catch-all. |
 | `FAI4002` | Unreachable `match` arm | Remove or reorder the arm. |
 | `FAI2001` | Unbound name | Fix the typo, or qualify it (`Module.name`); stdlib ops are qualified. |
