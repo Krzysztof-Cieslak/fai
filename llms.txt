@@ -1,0 +1,1129 @@
+# Writing Fai programs — a guide for AI agents
+
+You are about to write programs in **Fai**, a language you have probably not seen
+before. This file is a complete, self-contained guide to *writing Fai code*: the
+syntax, the type system, the effect/capability model, the standard library, the
+command-line workflow, and the mistakes that are easy to make. Read it before you
+write a single line.
+
+> This file is for **using** the language (writing `.fai` programs). It is **not**
+> the guide for working on the Fai compiler itself — that is `AGENTS.md`. If you
+> were asked to modify the compiler (the Rust crates under `crates/`), read
+> `AGENTS.md` instead.
+
+Fai source files end in `.fai`. There is exactly one canonical way to format a
+program (`fai fmt` enforces it), so prefer the shapes shown here verbatim.
+
+## Table of contents
+
+1. What Fai is
+2. Rules you must internalize first
+3. Your first programs and the inner loop
+4. Lexical basics: literals and comments
+5. Modules and visibility
+6. Functions, bindings, and locals
+7. Operators
+8. Data modeling: types, records, tuples, rows, opaque types
+9. Pattern matching
+10. Effects and capabilities
+11. Interfaces and instances
+12. Contracts: `example` and `forall`
+13. Standard library reference
+14. The command-line workflow
+15. Common errors and how to fix them
+16. A complete worked example
+17. Idioms and gotchas cheat-sheet
+
+---
+
+## 1. What Fai is
+
+Fai is a small, **strict, pure, statically typed functional language** in the
+ML / F# / Elm family, compiled ahead-of-time to native code.
+
+- **Strict**: arguments are evaluated before a call (no laziness).
+- **Pure**: nothing happens behind your back. The clock, randomness, the
+  environment, the file system, and the console are **capabilities** — ordinary
+  values passed in from `main`, never ambient globals. A function's type spells
+  out which effects it performs.
+- **Statically typed with full inference**: most types are inferred, but every
+  `public` value must carry an explicit type signature.
+- **No OOP**: no classes, inheritance, or namespaces. The one OO-flavored feature
+  is the **interface** (a named set of function signatures) whose only constructor
+  is an **interface instance** `{ Name with ... }`.
+
+What the language is designed for (and why it looks the way it does):
+
+- **Verifiable boundaries** — a module can be understood from its exported
+  signatures alone.
+- **Determinism and purity by default** — effects are visible in types.
+- **Checked intent** — `example` and `forall` declarations are real, type-checked
+  facts the toolchain runs, not comments.
+- **Low-entropy syntax** — one canonical format; one regular grammar; essentially
+  one correct way to write a given program.
+- **Machine-readable feedback** — every diagnostic has a stable `FAInnnn` code and
+  a precise span, and the whole CLI can emit JSON.
+
+---
+
+## 2. Rules you must internalize first
+
+These trip up newcomers (and language models) constantly. Internalize them before
+writing code.
+
+1. **One module per file.** Every file begins with `module Name` (upper-case),
+   then a blank line. The module name should match the file name.
+2. **Every `public` binding needs an explicit signature** on its own line
+   directly above the `let`. Private bindings may omit it (types are inferred),
+   but may include one.
+3. **Visibility lives on the signature, not the `let`.** Write `public foo : ...`
+   above `let foo = ...`. Do **not** write `public let foo`.
+4. **Indentation is significant** (the offside rule). Canonical layout is **2
+   spaces, no tabs**. Run `fai fmt` and match its output.
+5. **No `rec` keyword.** All module-level (and nested-module) bindings are
+   mutually recursive automatically. A function can call another defined later in
+   the file.
+6. **Local bindings use layout, not `in`.** Inside a body, write a sequence of
+   `let name = expr` lines followed by a final result expression. There is **no
+   `let ... in`** and no `where`. **Local bindings are not recursive** — a local
+   function cannot call itself. Recursion (and mutual recursion) works only at the
+   top level or inside a nested module, where no `rec` keyword is needed. Write a
+   "loop" as a private top-level helper with an accumulator.
+7. **Pure by default; effects are in the type.** Each arrow may carry an **effect
+   row** after a `/`, e.g. `String -> Unit / { Console }`. A bare arrow (no `/`)
+   is pure. Public signatures must declare exactly the effects the body performs.
+8. **No implicit `Int`/`Float` coercion.** `1 + 2.0` is a type error. Convert
+   explicitly with `Int.toFloat` / `Float.toInt`.
+9. **`match` must be exhaustive.** A missing case is a compile error (`FAI4001`),
+   not a runtime crash. An unreachable arm is also an error (`FAI4002`).
+10. **Negative number literals are parenthesized**: write `(-3)`, or use `0 - n`.
+    A bare `-3` in argument position is parsed as subtraction.
+11. **`=` is structural equality** (an operator), and `<>` is inequality. `let x =
+    e` binds `x`; it is not assignment. There is no mutation.
+12. **Type application is juxtaposition**, never angle brackets: `Option Int`,
+    `List 'a`, `Dict String Int`. Type variables are F#-style: `'a`, `'k`, `'v`,
+    `'acc`, `'e`.
+13. **Upper-case = types, constructors, modules, interfaces.** lower-case =
+    values, functions, fields, type-parameter slots after the tick.
+14. **Standard-library operations are qualified**: `List.map`, `Int.toString`,
+    `Dict.insert`. Only the prelude (core types, their constructors, a few free
+    functions, the operators) is available unqualified.
+
+---
+
+## 3. Your first programs and the inner loop
+
+A minimal program. `main` receives a `Runtime` (the capability bundle) and its
+type declares the effects it uses:
+
+```fai
+module Hello
+
+public main : Runtime -> Unit / { Console }
+let main runtime = runtime.console.writeLine "Hello, Fai!"
+```
+
+A pure module with checked intent (the `example` and `forall` lines are real,
+type-checked declarations — see §12):
+
+```fai
+module Collections
+
+/// Apply f to every element.
+public map : ('a -> 'b / 'e) -> List 'a -> List 'b / 'e
+let map f xs =
+  match xs with
+  | [] -> []
+  | x :: rest -> f x :: map f rest
+example: map (fun x -> x + 1) [1, 2, 3] = [2, 3, 4]
+forall xs: map (fun x -> x) xs = xs
+```
+
+The inner loop (see §14 for details):
+
+```sh
+fai check path/to/File.fai     # typecheck (fast); also runs closed `example`s
+fai fmt   path/to/File.fai     # apply the canonical format (idempotent)
+fai test  path/to/File.fai     # run example/forall contracts
+fai run   path/to/Main.fai     # build (JIT) and run
+fai build path/to/Main.fai     # produce a native executable (AOT)
+```
+
+`fai build`/`fai run` need an entry file defining `public main : Runtime -> Unit`
+(optionally with an effect row, e.g. `/ { Console }`). Missing it is `FAI0004`.
+
+---
+
+## 4. Lexical basics: literals and comments
+
+```fai
+let count = 3            // Int    (64-bit signed)
+let ratio = 3.0          // Float  (64-bit IEEE-754; written with a decimal point)
+let name = "Fai"         // String (UTF-8)
+let initial = 'F'        // Char   (a single Unicode scalar value)
+let yes = true           // Bool   (true / false)
+let nothing = ()         // Unit   (the empty tuple; the "no useful value" value)
+```
+
+- **Int** defaults for unconstrained numeric literals. 64-bit.
+- **Float** literals must contain a decimal point (`3.0`, not `3`). `+ - * /` work
+  on `Float` too, but you cannot mix `Int` and `Float` without converting.
+- **String** escapes: `\n \t \r \0 \\ \" \' \u{...}` (e.g. `"\u{1F600}"`).
+  Concatenate with `++`.
+- **Char** literal is a tick that **closes**: `'a'`, `'\n'`. A leading tick that
+  does **not** close is a **type variable**: `'a`, `'r`. This is the one lexer
+  subtlety to remember.
+- **Negative literals**: parenthesize, `(-3)`, or compute `0 - n`.
+
+Comments (three forms):
+
+```fai
+// line comment
+(* block comment,
+   may span multiple lines and may nest *)
+/// doc comment — human prose, attached to the binding directly below it.
+```
+
+`///` doc comments are surfaced to tooling (hover, `--message-format=json`). They
+are prose only; checked facts go in `example`/`forall` declarations, never in
+comments.
+
+---
+
+## 5. Modules and visibility
+
+- **One top-level module per file**, named on the first line: `module Storefront`.
+- **`public`** exports a binding across files; everything else is private to its
+  module. Every `public` binding needs a signature (`FAI3003` otherwise).
+- **Cross-file references use a dotted qualified path**: a value/constructor as
+  `Module.name`, a type as `Module.Type`. Identifiers cannot contain `.`, so a
+  qualified name is one dotted symbol.
+- **Nested modules** group declarations and are addressed by a qualified path:
+
+```fai
+module NestedModules
+
+module Internal =
+  let pi = 3.14159
+
+  public type Shape =
+    | Circle Float
+    | Rect Float Float
+
+  public area : Shape -> Float
+  let area s =
+    match s with
+    | Circle r -> pi * r * r
+    | Rect w h -> w * h
+
+public circleArea : Float -> Float
+let circleArea r = Internal.area (Internal.Circle r)
+```
+
+Within a file the enclosing module sees *every* nested member (even private ones,
+via the path, e.g. `Internal.area`). Across files only `public` members are
+visible (`NestedModules.Internal.area`). Bare names resolve outward lexically
+(inner shadows outer).
+
+**Reserved module names** (the standard library; do not define your own):
+`Prelude`, `List`, `Array`, `Option`, `Result`, `Dict`, `Set`, `HashDict`,
+`HashSet`, `String`, `Int`, `Float`, `Char`. The `Prim` namespace is
+compiler-internal and off-limits to user code (`FAI2014`).
+
+There are **no import statements**. The `Prelude` is auto-imported; everything
+else is reached by its qualified path directly.
+
+---
+
+## 6. Functions, bindings, and locals
+
+Functions are curried. The signature lists parameter types separated by `->`; the
+last is the result.
+
+```fai
+public add : Int -> Int -> Int
+let add x y = x + y
+
+public inc : Int -> Int
+let inc = add 1            // partial application: `inc` is `add` with x fixed to 1
+
+public describe : Int -> String
+let describe n = n |> inc |> Int.toString    // pipelines
+
+public twice : ('a -> 'a) -> 'a -> 'a
+let twice f = f >> f       // function composition
+```
+
+**Lambdas** use `fun`:
+
+```fai
+let doubled = Option.map (fun x -> x * 2) opt
+let reversed = List.foldl (fun acc x -> x :: acc) [] xs   // multi-arg: fun acc x -> ...
+```
+
+**Local bindings use layout** — a run of `let` lines, then a result expression. No
+`in`:
+
+```fai
+public hypotenuse : Float -> Float -> Float
+let hypotenuse a b =
+  let a2 = a * a
+  let b2 = b * b
+  Float.sqrt (a2 + b2)
+```
+
+A local can itself be a (non-recursive, multi-line) function:
+
+```fai
+public scaleAll : Int -> List Int -> List Int
+let scaleAll k xs =
+  let scale x = x * k
+  List.map scale xs
+```
+
+**Local `let` bindings are not recursive.** A local function cannot call itself,
+and locals cannot refer to each other before they are defined. A function that
+recurses must be a top-level (or nested-module) binding — those *are* mutually
+recursive (no `rec`). So write a "loop" as a private top-level helper with an
+accumulator, not a local:
+
+```fai
+// Private helper (a signature is allowed but optional for non-public bindings).
+sumFrom : Int -> Int -> Int
+let sumFrom acc i = if i <= 0 then acc else sumFrom (acc + i) (i - 1)
+
+public sumTo : Int -> Int
+let sumTo n = sumFrom 0 n
+```
+
+**Conditionals** are expressions: `if cond then a else b`. The `else` is required,
+and both branches must have the same type. Chain with `else if`:
+
+```fai
+public classify : Int -> String
+let classify n = if n < 0 then "negative" else if n = 0 then "zero" else "positive"
+```
+
+Tuple destructuring in a local binding:
+
+```fai
+let swap pair =
+  let (x, y) = pair
+  (y, x)
+```
+
+---
+
+## 7. Operators
+
+Built-in operators:
+
+| Category | Operators | Notes |
+|---|---|---|
+| Arithmetic | `+ - * / %` | Overloaded over `Int` and `Float`; unconstrained numerics default to `Int`. No mixing without conversion. |
+| Comparison | `< <= > >=` | Structural, over any non-function type. |
+| Equality | `= <>` | Structural; undefined on functions (`FAI3006`). |
+| Boolean | `&& \|\|` and `not` | `&&`/`\|\|` are short-circuit; `not` is a prelude function. |
+| Concatenation | `++` | String concatenation (and list `append` via `List.append`). |
+| Pipeline | `\|>` | `x \|> f` is `f x`. |
+| Composition | `>>` | `(f >> g) x` is `g (f x)`. |
+| List cons | `::` | `x :: rest`, right-associative. |
+
+Numbers default to `Int`. `compare : 'a -> 'a -> Int` gives a three-way structural
+comparison (negative / `0` / positive) over any non-function type.
+
+**User-defined operators** are symbolic identifiers; their precedence and
+associativity follow the leading character (F#-style), with no fixity
+declarations. Define one by naming it in parentheses; use it infix. Operators are
+ordinary values — pass `(+)` first-class.
+
+```fai
+/// A custom additive operator (leading `+` ⇒ additive precedence).
+public (+-+) : Int -> Int -> Int
+let (+-+) a b = a + b - 1
+
+/// Operators are values: `(+)` passed to a fold.
+public sumAll : List Int -> Int
+let sumAll xs = List.foldl (+) 0 xs
+```
+
+The arithmetic/equality/ordering operators are methods of the sealed prelude
+interfaces `Num` / `Eq` / `Ord` (you cannot instantiate those — `FAI3017`), but
+you use them as ordinary operators.
+
+---
+
+## 8. Data modeling: types, records, tuples, rows, opaque types
+
+### Transparent type aliases
+
+```fai
+public type Name = String
+public type Vec2 = { x : Float, y : Float }    // a record alias
+```
+
+Aliases must be acyclic (`FAI3013`). Use a union for a recursive type.
+
+### Discriminated unions
+
+```fai
+public type Shape =
+  | Circle Float
+  | Rect Float Float
+
+public type Category =
+  | Food
+  | Tool
+  | Book
+```
+
+- The leading `|` is optional but canonical (`fai fmt` adds it).
+- Constructors take zero or more type arguments: `Circle Float`,
+  `Rect Float Float`, nullary `Food`.
+- Constructor tags order by declaration (so `compare` ranks earlier constructors
+  lower).
+- **Caveat**: a single *nullary* variant needs the leading `|` to be a union:
+  `type T = | A` is a one-variant union, while `type T = A` is an **alias** to the
+  type `A`.
+
+Recursive and mutually recursive unions are fine:
+
+```fai
+public type Rose =
+  | Node Int (List Rose)
+
+public type Expr =
+  | Lit Int
+  | Block Stmts
+
+public type Stmts =
+  | Done
+  | Seq Expr Stmts
+```
+
+### Records (structural)
+
+Records are structural — a type is its set of labelled fields, with no duplicate
+labels. **Declare** fields with `:`, **construct** with `=`, **access** with `.`,
+**update** with `{ r with ... }`:
+
+```fai
+public type Product = { category : Category, name : String, price : Float, sku : String }
+
+public origin : Vec2
+let origin = { x = 0.0, y = 0.0 }
+
+public scale : Float -> Vec2 -> Vec2
+let scale k v = { v with x = v.x * k, y = v.y * k }    // update several fields
+```
+
+- `{ r with x = ... }` returns a new record; there is no mutation (when `r` is
+  uniquely owned the compiler updates in place for you).
+- **Field order is canonical: alphabetical by label.** `fai fmt` sorts them
+  (`{ category, name, price, sku }`).
+- **Punning** in patterns binds variables named after fields: `{ x, y }`.
+
+### Tuples (structural)
+
+Tuple **type** uses `*`; tuple **value** uses parentheses and commas:
+
+```fai
+public divMod : Int -> Int -> Int * Int
+let divMod a b = (a / b, a % b)
+```
+
+`*` binds tighter than `->`. Destructure with a tuple pattern (in `match` or a
+local `let`).
+
+### Row polymorphism (open records)
+
+A function can accept *any* record that has at least the fields it names:
+
+```fai
+// Any record with an `x` field, ignoring the rest.
+public getX : { x : 'a | _ } -> 'a
+let getX r = r.x
+
+// A NAMED tail `'r` threads the other fields through to the result type.
+public setX : 'a -> { x : 'b | 'r } -> { x : 'a | 'r }
+let setX v r = { r with x = v }
+```
+
+- Closed: `{ x : T }` (exactly these fields).
+- Anonymous-open: `{ x : T | _ }` (at least these; ignore the rest).
+- Named-open: `{ x : T | 'r }` (name the tail only to carry it into the result).
+
+This is exactly how least-authority capability records work (see §10).
+
+### Opaque types
+
+`public opaque type` exports a type's *name* but not its definition. It is
+**file-scoped**: transparent inside its declaring file (build, match, project
+freely), abstract everywhere else (you may name, hold, pass, and compare its
+values structurally, but not construct, deconstruct, or see through them).
+
+```fai
+public opaque type Counter =
+  | Counter Int
+
+public zero : Counter
+let zero = Counter 0          // OK here; the constructor is hidden in other files
+```
+
+Cross-file use of a hidden constructor is `FAI2018`; of a hidden field/record
+representation, `FAI3018`. The standard `Dict`/`Set`/`HashDict`/`HashSet` are
+opaque — build and query them only through their module functions.
+
+---
+
+## 9. Pattern matching
+
+```fai
+match scrutinee with
+| pattern1 -> expr1
+| pattern2 -> expr2
+```
+
+Arms align under `match`; each starts with `| `. Matches must be **exhaustive**
+(`FAI4001`); arms must be **reachable** (`FAI4002`).
+
+Pattern forms:
+
+```fai
+// literals and a wildcard catch-all
+match n with
+| 0 -> "zero"
+| _ -> "other"
+
+// or-patterns: several values share an arm
+match n with
+| 0 | 1 | 2 -> "small"
+| _ -> "big"
+
+// constructors, binding payloads
+match shape with
+| Circle r -> 3.14159 * r * r
+| Rect w h -> w * h
+
+// lists: empty and cons
+match xs with
+| [] -> 0
+| x :: rest -> x + sumList rest
+
+// tuples
+match pair with
+| (0, 0) -> "origin"
+| (x, y) -> "..."
+
+// as-pattern: bind the whole value while destructuring
+match pair with
+| (0, 0) as p -> p
+| (x, y) -> (x + y, x)
+
+// records: closed (names every field), open (| _), or punning
+match v with
+| { x = 0.0, y = 0.0 } -> "origin"      // closed
+| { x = 0.0 | _ } -> "on the y-axis"     // open: ignore the rest
+| { x, y } -> "..."                      // pun-bind x and y
+```
+
+A row-polymorphic record scrutinee **requires** the open `| _` marker in its
+patterns. `Option`/`Result` are matched with their constructors directly:
+
+```fai
+match Dict.get key table with
+| Some v -> v
+| None -> fallback
+```
+
+---
+
+## 10. Effects and capabilities
+
+This is the part most unlike other languages — read it carefully.
+
+Fai has **no ambient side effects**. The console, clock, randomness, file system,
+and environment are **capabilities**: interface instances threaded in from `main`
+as a `Runtime`. A function asks for only the capabilities it needs, so its type
+reveals its reach.
+
+The capability interfaces (defined `public` in the prelude; shown here so you know
+their methods — each method's own capability appears as its effect):
+
+```fai
+interface Console =
+  writeLine : String -> Unit / { Console }
+
+interface Clock =
+  now : Unit -> Int / { Clock }
+
+interface Random =
+  nextInt : Int -> Int / { Random }
+
+interface FileSystem =
+  readFile : String -> Result String String / { FileSystem }
+  writeFile : String -> String -> Result Unit String / { FileSystem }
+
+interface Env =
+  args : Unit -> List String / { Env }
+  get : String -> Option String / { Env }
+
+// The bundle `main` receives (an open record of all five capabilities):
+type Runtime = { clock : Clock, console : Console, env : Env, fs : FileSystem, random : Random }
+```
+
+**Effect rows.** Every arrow may carry an effect row after `/`: the set of host
+capabilities its calls reach. A **bare arrow is pure**. Effects are inferred
+everywhere and **required on every public signature** — declaring too few or too
+many is `FAI5001`.
+
+```fai
+// Uses only the console; the effect row says so.
+public greet : Console -> String -> Unit / { Console }
+let greet console name = console.writeLine ("Hello, " ++ name)
+
+// A pure function: bare arrow, no `/`.
+public shout : String -> String
+let shout s = String.toUpper s ++ "!"
+```
+
+**Least authority via open records.** Request just the fields you need; a full
+`Runtime` is accepted anywhere a smaller open record is expected:
+
+```fai
+public save : { console : Console, fs : FileSystem | _ } -> String -> String -> Unit / { Console, FileSystem }
+let save env path note =
+  match env.fs.writeFile path note with
+  | Err message -> env.console.writeLine message
+  | Ok unit -> env.console.writeLine ("saved: " ++ note)
+
+public main : Runtime -> Unit / { Console, FileSystem }
+let main runtime = save runtime "/tmp/note.txt" "hello"
+```
+
+Key facts:
+
+- **Effects are used, not held.** Holding or forwarding a capability is pure; an
+  effect is incurred only where a capability *method* is called (e.g.
+  `env.console.writeLine`, `env.clock.now ()`).
+- **Effects propagate through combinators.** `List.map` over a console-using
+  function reflects `{ Console }`; composing differently-effecting functions
+  unions their effects.
+- **Effects are erased at runtime** — they exist only in the type system.
+- **Atoms in a row are written sorted**: `/ { Clock, Console }`.
+- Call a nullary-style capability method with `()`: `env.clock.now ()`.
+
+Because effects are explicit, `fai query caps <symbol>` can report exactly which
+capabilities any function transitively reaches.
+
+---
+
+## 11. Interfaces and instances
+
+An **interface** is a named set of method signatures. An **interface instance**
+`{ Name with ... }` is its only constructor and produces an existential,
+dynamically dispatched value. Method definitions in an instance name the method
+and its parameters directly (no `fun`):
+
+```fai
+interface Renderer =
+  render : Shape -> String
+
+public boxRenderer : Renderer
+let boxRenderer = { Renderer with render shape = describe shape }
+
+// dispatch: value.method args
+let line = boxRenderer.render someShape
+```
+
+An instance must implement exactly the interface's methods — no more, no fewer
+(`FAI3014` / `FAI3015`).
+
+**Effect-parameterized interfaces.** A type parameter used after `/` in a method
+is an *effect* parameter. Supply it with an effect row (in braces):
+
+```fai
+interface Logger 'e =
+  log : String -> Unit / 'e
+
+public consoleLogger : Console -> Logger { Console }
+let consoleLogger console = { Logger with log msg = console.writeLine msg }
+
+public withPrefix : String -> Logger 'e -> Logger 'e
+let withPrefix prefix inner = { Logger with log msg = inner.log (prefix ++ msg) }
+```
+
+The capability interfaces in §10 are ordinary user-instantiable interfaces — you
+can supply your own `Console`, for instance, in a test.
+
+---
+
+## 12. Contracts: `example` and `forall`
+
+Contracts state intent the toolchain checks. They are **first-class
+declarations** (peers of `let`/`type`), placed directly under the binding they
+describe, in module scope. Their bodies are normal expressions, fully type-checked
+to `Bool`.
+
+```fai
+public double : Int -> Int
+let double n = n + n
+example: double 21 = 42          // a concrete case
+forall n: double n = n * 2       // a law over all inputs
+
+public mirror : List 'a -> List 'a
+let mirror xs = List.reverse xs
+forall xs: mirror (mirror xs) = xs
+```
+
+- `example: e` pins one concrete case. `e` must be `Bool` (often `lhs = rhs`, or a
+  bare boolean like `example: isOk result`).
+- `forall b1 b2: e` states a law over generated inputs; `fai test` checks it on
+  many random inputs and **shrinks** any counterexample to a minimal one.
+- `fai check` evaluates the closed `example`s eagerly and reports a failing one as
+  `FAI6001`; `fai test` runs everything (examples and `forall` laws).
+- Contracts must be **pure and deterministic**: referencing a capability
+  (`Console`, `Clock`, …) is `FAI6004`. A non-`Bool` body is `FAI3007`.
+- A module may consist solely of `forall` laws.
+- For a `forall` over a user record/ADT, a generator is synthesized
+  automatically; a binder whose type cannot be generated is `FAI6002`/`FAI6005`.
+  You can supply a custom `Test.Arbitrary` for a type to override it.
+
+---
+
+## 13. Standard library reference
+
+The standard library is written in Fai. The `Prelude` is auto-imported; all other
+operations are reached **qualified** (`List.map`, `Int.toString`). Higher-order
+functions carry an effect variable `/ 'e` that forwards whatever effect the passed
+function performs; plain arrows are pure. Collection functions are
+**collection-last** (the data is the final argument), which composes well with
+`|>`.
+
+### Prelude (auto-imported, unqualified)
+
+Types: `Option 'a` (`None` | `Some 'a`), `Result 'ok 'err` (`Ok 'ok` | `Err 'err`),
+`Dict 'k 'v`, `Set 'a`, `HashDict 'k 'v`, `HashSet 'a`, `Runtime`.
+Interfaces: `Num`, `Eq`, `Ord` (sealed operator interfaces); `Console`, `Clock`,
+`Random`, `FileSystem`, `Env` (capabilities).
+
+```
+identity : 'a -> 'a
+const    : 'a -> 'b -> 'a
+not      : Bool -> Bool
+compare  : 'a -> 'a -> Int                          // -, 0, + (any non-function type)
+(|>)     : 'a -> ('a -> 'b / 'e) -> 'b / 'e          // forward application
+(>>)     : ('a -> 'b / 'e) -> ('b -> 'c / 'e) -> 'a -> 'c / 'e   // composition
+(++)     : String -> String -> String                // string concatenation
+```
+
+### List — linked list `List 'a` (head/tail recursion, `::`, `[...]`)
+
+```
+length     : List 'a -> Int
+isEmpty    : List 'a -> Bool
+head       : List 'a -> Option 'a
+tail       : List 'a -> List 'a
+append     : List 'a -> List 'a -> List 'a
+map        : ('a -> 'b / 'e) -> List 'a -> List 'b / 'e
+filter     : ('a -> Bool / 'e) -> List 'a -> List 'a / 'e
+foldl      : ('acc -> 'a -> 'acc / 'e) -> 'acc -> List 'a -> 'acc / 'e
+foldr      : ('a -> 'acc -> 'acc / 'e) -> 'acc -> List 'a -> 'acc / 'e
+reverse    : List 'a -> List 'a
+concat     : List (List 'a) -> List 'a
+concatMap  : ('a -> List 'b / 'e) -> List 'a -> List 'b / 'e
+sum        : List Int -> Int
+all        : ('a -> Bool / 'e) -> List 'a -> Bool / 'e
+any        : ('a -> Bool / 'e) -> List 'a -> Bool / 'e
+member     : 'a -> List 'a -> Bool
+take       : Int -> List 'a -> List 'a
+drop       : Int -> List 'a -> List 'a
+takeWhile  : ('a -> Bool / 'e) -> List 'a -> List 'a / 'e
+dropWhile  : ('a -> Bool / 'e) -> List 'a -> List 'a / 'e
+range      : Int -> Int -> List Int                  // [lo, hi)
+zip        : List 'a -> List 'b -> List ('a * 'b)
+find       : ('a -> Bool / 'e) -> List 'a -> Option 'a / 'e
+partition  : ('a -> Bool / 'e) -> List 'a -> List 'a * List 'a / 'e
+sortBy     : ('a -> 'a -> Int / 'e) -> List 'a -> List 'a / 'e   // stable
+sort       : List 'a -> List 'a                       // ascending, structural
+```
+
+### Array — contiguous, growable `Array 'a` (O(1) index; literals `[| ... |]`)
+
+In-place update when uniquely owned; copy-on-share. Safe `get`/`set` return
+`Option`; the `unsafe*` variants skip the bounds check (out of bounds aborts).
+
+```
+empty        : Array 'a
+withCapacity : Int -> Array 'a
+length       : Array 'a -> Int
+isEmpty      : Array 'a -> Bool
+push         : 'a -> Array 'a -> Array 'a
+singleton    : 'a -> Array 'a
+get          : Int -> Array 'a -> Option 'a
+unsafeGet    : Int -> Array 'a -> 'a
+set          : Int -> 'a -> Array 'a -> Option (Array 'a)
+unsafeSet    : Int -> 'a -> Array 'a -> Array 'a
+init         : Int -> (Int -> 'a / 'e) -> Array 'a / 'e
+repeat       : Int -> 'a -> Array 'a
+range        : Int -> Int -> Array Int               // [lo, hi)
+fromList     : List 'a -> Array 'a
+toList       : Array 'a -> List 'a
+head         : Array 'a -> Option 'a
+last         : Array 'a -> Option 'a
+map          : ('a -> 'b / 'e) -> Array 'a -> Array 'b / 'e
+filter       : ('a -> Bool / 'e) -> Array 'a -> Array 'a / 'e
+foldl        : ('acc -> 'a -> 'acc / 'e) -> 'acc -> Array 'a -> 'acc / 'e
+foldr        : ('a -> 'acc -> 'acc / 'e) -> 'acc -> Array 'a -> 'acc / 'e
+sum          : Array Int -> Int
+reverse      : Array 'a -> Array 'a
+append       : Array 'a -> Array 'a -> Array 'a
+concat       : Array (Array 'a) -> Array 'a
+concatMap    : ('a -> Array 'b / 'e) -> Array 'a -> Array 'b / 'e
+take         : Int -> Array 'a -> Array 'a
+drop         : Int -> Array 'a -> Array 'a
+zip          : Array 'a -> Array 'b -> Array ('a * 'b)
+find         : ('a -> Bool / 'e) -> Array 'a -> Option 'a / 'e
+member       : 'a -> Array 'a -> Bool
+all          : ('a -> Bool / 'e) -> Array 'a -> Bool / 'e
+any          : ('a -> Bool / 'e) -> Array 'a -> Bool / 'e
+partition    : ('a -> Bool / 'e) -> Array 'a -> Array 'a * Array 'a / 'e
+sortBy       : ('a -> 'a -> Int / 'e) -> Array 'a -> Array 'a / 'e   // unstable
+sort         : Array 'a -> Array 'a
+```
+
+### Option — `Option 'a`
+
+```
+map        : ('a -> 'b / 'e) -> Option 'a -> Option 'b / 'e
+withDefault: 'a -> Option 'a -> 'a
+getOrElse  : (Unit -> 'a / 'e) -> Option 'a -> 'a / 'e   // default computed only on None
+isSome     : Option 'a -> Bool
+isNone     : Option 'a -> Bool
+andThen    : ('a -> Option 'b / 'e) -> Option 'a -> Option 'b / 'e
+```
+
+### Result — `Result 'ok 'err`
+
+```
+map        : ('a -> 'b / 'e) -> Result 'a 'err -> Result 'b 'err / 'e
+mapError   : ('a -> 'b / 'e) -> Result 'ok 'a -> Result 'ok 'b / 'e
+isOk       : Result 'ok 'err -> Bool
+isErr      : Result 'ok 'err -> Bool
+withDefault: 'ok -> Result 'ok 'err -> 'ok
+getOrElse  : ('err -> 'ok / 'e) -> Result 'ok 'err -> 'ok / 'e
+toOption   : Result 'ok 'err -> Option 'ok
+```
+
+### Dict — ordered map (balanced tree, O(log n), sorted iteration)
+
+```
+empty       : Dict 'k 'v
+singleton   : 'k -> 'v -> Dict 'k 'v
+isEmpty     : Dict 'k 'v -> Bool
+size        : Dict 'k 'v -> Int
+insert      : 'k -> 'v -> Dict 'k 'v -> Dict 'k 'v
+get         : 'k -> Dict 'k 'v -> Option 'v
+getOr       : 'v -> 'k -> Dict 'k 'v -> 'v               // value or fallback, no Option
+getOrElse   : (Unit -> 'v / 'e) -> 'k -> Dict 'k 'v -> 'v / 'e
+member      : 'k -> Dict 'k 'v -> Bool
+remove      : 'k -> Dict 'k 'v -> Dict 'k 'v
+update      : 'k -> (Option 'v -> Option 'v) -> Dict 'k 'v -> Dict 'k 'v
+union       : Dict 'k 'v -> Dict 'k 'v -> Dict 'k 'v     // left-biased
+intersection: Dict 'k 'v -> Dict 'k 'v -> Dict 'k 'v
+difference  : Dict 'k 'v -> Dict 'k 'v -> Dict 'k 'v
+fromList    : List ('k * 'v) -> Dict 'k 'v
+toList      : Dict 'k 'v -> List ('k * 'v)               // ascending key order
+keys        : Dict 'k 'v -> List 'k
+values      : Dict 'k 'v -> List 'v
+map         : ('k -> 'v -> 'w) -> Dict 'k 'v -> Dict 'k 'w
+filter      : ('k -> 'v -> Bool) -> Dict 'k 'v -> Dict 'k 'v
+foldl       : ('k -> 'v -> 'acc -> 'acc) -> 'acc -> Dict 'k 'v -> 'acc
+foldr       : ('k -> 'v -> 'acc -> 'acc) -> 'acc -> Dict 'k 'v -> 'acc
+```
+
+### Set — ordered set (balanced tree, O(log n), sorted iteration)
+
+```
+empty       : Set 'a
+singleton   : 'a -> Set 'a
+isEmpty     : Set 'a -> Bool
+size        : Set 'a -> Int
+insert      : 'a -> Set 'a -> Set 'a
+member      : 'a -> Set 'a -> Bool
+remove      : 'a -> Set 'a -> Set 'a
+union       : Set 'a -> Set 'a -> Set 'a
+intersection: Set 'a -> Set 'a -> Set 'a
+difference  : Set 'a -> Set 'a -> Set 'a
+isSubset    : Set 'a -> Set 'a -> Bool
+fromList    : List 'a -> Set 'a
+toList      : Set 'a -> List 'a                          // ascending order
+map         : ('a -> 'b) -> Set 'a -> Set 'b
+filter      : ('a -> Bool) -> Set 'a -> Set 'a
+foldl       : ('a -> 'acc -> 'acc) -> 'acc -> Set 'a -> 'acc
+foldr       : ('a -> 'acc -> 'acc) -> 'acc -> Set 'a -> 'acc
+```
+
+### HashDict — unordered map (open-addressing hash table, O(1) average)
+
+Prefer over `Dict` when iteration order does not matter. Iteration order is
+unspecified (but deterministic).
+
+```
+empty       : HashDict 'k 'v
+singleton   : 'k -> 'v -> HashDict 'k 'v
+isEmpty     : HashDict 'k 'v -> Bool
+size        : HashDict 'k 'v -> Int
+get         : 'k -> HashDict 'k 'v -> Option 'v
+getOr       : 'v -> 'k -> HashDict 'k 'v -> 'v
+getOrElse   : (Unit -> 'v / 'e) -> 'k -> HashDict 'k 'v -> 'v / 'e
+member      : 'k -> HashDict 'k 'v -> Bool
+insert      : 'k -> 'v -> HashDict 'k 'v -> HashDict 'k 'v
+remove      : 'k -> HashDict 'k 'v -> HashDict 'k 'v
+update      : 'k -> (Option 'v -> Option 'v) -> HashDict 'k 'v -> HashDict 'k 'v
+fromList    : List ('k * 'v) -> HashDict 'k 'v
+toList      : HashDict 'k 'v -> List ('k * 'v)
+keys        : HashDict 'k 'v -> List 'k
+values      : HashDict 'k 'v -> List 'v
+foldl       : ('k -> 'v -> 'acc -> 'acc / 'e) -> 'acc -> HashDict 'k 'v -> 'acc / 'e
+map         : ('k -> 'v -> 'w) -> HashDict 'k 'v -> HashDict 'k 'w
+filter      : ('k -> 'v -> Bool) -> HashDict 'k 'v -> HashDict 'k 'v
+union       : HashDict 'k 'v -> HashDict 'k 'v -> HashDict 'k 'v   // left-biased
+intersection: HashDict 'k 'v -> HashDict 'k 'v -> HashDict 'k 'v
+difference  : HashDict 'k 'v -> HashDict 'k 'v -> HashDict 'k 'v
+```
+
+### HashSet — unordered set (open-addressing hash table, O(1) average)
+
+```
+empty       : HashSet 'a
+singleton   : 'a -> HashSet 'a
+isEmpty     : HashSet 'a -> Bool
+size        : HashSet 'a -> Int
+member      : 'a -> HashSet 'a -> Bool
+insert      : 'a -> HashSet 'a -> HashSet 'a
+remove      : 'a -> HashSet 'a -> HashSet 'a
+fromList    : List 'a -> HashSet 'a
+toList      : HashSet 'a -> List 'a
+foldl       : ('a -> 'acc -> 'acc / 'e) -> 'acc -> HashSet 'a -> 'acc / 'e
+map         : ('a -> 'b / 'e) -> HashSet 'a -> HashSet 'b / 'e
+filter      : ('a -> Bool / 'e) -> HashSet 'a -> HashSet 'a / 'e
+union       : HashSet 'a -> HashSet 'a -> HashSet 'a
+intersection: HashSet 'a -> HashSet 'a -> HashSet 'a
+difference  : HashSet 'a -> HashSet 'a -> HashSet 'a
+isSubset    : HashSet 'a -> HashSet 'a -> Bool
+```
+
+### String — `String` (UTF-8; character-indexed operations)
+
+```
+length     : String -> Int
+toUpper    : String -> String
+toLower    : String -> String
+trim       : String -> String
+contains   : String -> String -> Bool                  // contains s needle
+split      : String -> String -> List String           // split sep s
+splitArray : String -> String -> Array String
+substring  : Int -> Int -> String -> String            // start, len, s (clamped)
+take       : Int -> String -> String
+drop       : Int -> String -> String
+join       : String -> List String -> String           // join sep parts
+joinArray  : String -> Array String -> String
+```
+
+(Concatenate with the prelude `++`.)
+
+### Int — `Int` (64-bit)
+
+```
+toString          : Int -> String
+toFloat           : Int -> Float
+and               : Int -> Int -> Int
+or                : Int -> Int -> Int
+xor               : Int -> Int -> Int
+complement        : Int -> Int
+shiftLeft         : Int -> Int -> Int
+shiftRight        : Int -> Int -> Int                  // arithmetic (sign-extend)
+shiftRightLogical : Int -> Int -> Int                  // zero-fill
+```
+
+### Float — `Float` (64-bit IEEE-754)
+
+```
+toString : Float -> String
+toInt    : Float -> Int                                // truncate toward zero
+sqrt     : Float -> Float
+pi       : Float
+fromBits : Int -> Float
+toBits   : Float -> Int
+```
+
+### Char — `Char` (a Unicode scalar value)
+
+```
+toString : Char -> String
+toCode   : Char -> Int
+fromCode : Int -> Option Char                          // None if not a scalar value
+```
+
+### Test — property testing (used by `forall`)
+
+You rarely call this directly, but a custom generator overrides synthesis for a
+type:
+
+```
+type Gen 'a = Size -> Seed -> ('a * Seed)
+type Arbitrary 'a = { gen : Gen 'a, show : 'a -> String, shrink : 'a -> List 'a }
+type TestResult = | Passed | Failed String
+
+int : Arbitrary Int      bool : Arbitrary Bool      float : Arbitrary Float
+char : Arbitrary Char    string : Arbitrary String  unit : Arbitrary Unit
+list   : Arbitrary 'a -> Arbitrary (List 'a)
+array  : Arbitrary 'a -> Arbitrary (Array 'a)
+option : Arbitrary 'a -> Arbitrary (Option 'a)
+result : Arbitrary 'a -> Arbitrary 'e -> Arbitrary (Result 'a 'e)
+tuple2 : Arbitrary 'a -> Arbitrary 'b -> Arbitrary ('a * 'b)
+tuple3 : Arbitrary 'a -> Arbitrary 'b -> Arbitrary 'c -> Arbitrary ('a * 'b * 'c)
+```
+
+---
+
+## 14. The command-line workflow
+
+The `fai` binary is a thin client to a per-workspace daemon that keeps the
+incremental database warm, so repeated commands are near-instant.
+
+| Command | Purpose |
+|---|---|
+| `fai check [path]` | Typecheck (fast inner loop); also evaluates closed `example`s. `--no-examples` to skip. |
+| `fai build <path>` | Compile to a native executable (AOT). `--release`, `--out <file>`. |
+| `fai run <path> [-- args]` | Build (JIT) and run with lowest latency. |
+| `fai test [path]` | Run `example`/`forall` contracts. `--match <pat>`, `--seed <n>`, `--count <n>`. |
+| `fai fmt [path]` | Apply the one canonical format. `--check` to verify without writing. |
+| `fai lsp` | Language server for editors (stdio). |
+| `fai query <q> ...` | Read-only code intelligence (see below). |
+
+- Add `--message-format=json` to any command for structured, versioned output
+  (diagnostics carry stable `FAInnnn` codes and exact spans).
+- **Exit codes**: `0` success; `1` reported failures (type errors, failing
+  contracts, `fmt --check` drift); `2` usage error; `3` workspace/IO error; `124`
+  timed out.
+- The workspace is all `.fai` files under the root (the nearest ancestor with a
+  project marker, else the current directory).
+
+**Code intelligence** — `fai query` is read-only and JSON by default. Useful
+subcommands: `api <Module>` (a module's public interface), `outline <File>`,
+`type <target>`, `def`/`refs <target>`, `callers`/`callees`, `dependents`,
+`search "<type pattern>"` (Hoogle-style by type), and `caps <symbol>` (capability
+footprint). Recommended loop: `fai query api <M>` to learn a module, edit, then
+`fai check` (incremental), then `fai test --match <M>`.
+
+---
+
+## 15. Common errors and how to fix them
+
+| Code | Means | Fix |
+|---|---|---|
+| `FAI3003` | `public` binding has no signature | Add `public name : Type` on the line above the `let`. |
+| `FAI3001` | Type mismatch | Make the types agree. For `Int`/`Float`, convert explicitly — there is **no** implicit coercion (`Int.toFloat` / `Float.toInt`). |
+| `FAI3004` | Signature disagrees with the body | Fix the body or the signature (signatures are checked, not trusted). |
+| `FAI3005` | Ambiguous type | Add a type annotation or a conversion. |
+| `FAI5001` | Declared effect row ≠ inferred | Make the `/ { ... }` row match what the body actually does (no missing or unused capability). |
+| `FAI4001` | Non-exhaustive `match` | Add the missing arms or a `_` catch-all. |
+| `FAI4002` | Unreachable `match` arm | Remove or reorder the arm. |
+| `FAI2001` | Unbound name | Fix the typo, or qualify it (`Module.name`); stdlib ops are qualified. |
+| `FAI2012` | Unbound constructor | Check spelling / the `type` declaration; constructors are upper-case. |
+| `FAI3006` | `=`/`<>`/ordering on a function | Compare results of applying the functions, not the functions. |
+| `FAI2018` / `FAI3018` | Used an opaque type's constructor / representation across files | Use that module's public functions instead. |
+| `FAI2014` | Used a `Prim.*` intrinsic | Use the public wrapper (e.g. `Int.toString`). |
+| `FAI6001` | A contract failed | Fix the code or the `example`/`forall`. |
+| `FAI6004` | A contract touches a capability | Make the contract pure/deterministic; state the law over pure values. |
+| `FAI1021` | Layout/indentation error | Run `fai fmt`; use 2-space indent, no tabs. |
+
+When in doubt, run `fai check --message-format=json` and read the `code`, `primary`
+span, `help`, and any `suggestions`.
+
+---
+
+## 16. A complete worked example
+
+A small, cohesive program exercising unions, records, `match`, `Option`/`Result`,
+pipelines, a capability `main`, and contracts. This is a good shape to imitate.
+
+```fai
+module Tasks
+
+/// How urgent a task is. Constructors order by declaration, so `Low < High`.
+public type Priority =
+  | Low
+  | Medium
+  | High
+
+public type Task = { done : Bool, priority : Priority, title : String }
+
+/// A task is urgent when it is unfinished and high priority.
+public isUrgent : Task -> Bool
+let isUrgent task =
+  match task.priority with
+  | High -> not task.done
+  | _ -> false
+example: isUrgent { done = false, priority = High, title = "ship" }
+example: not (isUrgent { done = true, priority = High, title = "ship" })
+
+/// The titles of the urgent tasks, in order.
+public urgentTitles : List Task -> List String
+let urgentTitles tasks = tasks |> List.filter isUrgent |> List.map (fun t -> t.title)
+example: urgentTitles [{ done = false, priority = High, title = "ship" }] = ["ship"]
+
+/// Mark the first task with a given title done; `Err` if none matches.
+public complete : String -> List Task -> Result (List Task) String
+let complete title tasks =
+  if List.any (fun t -> t.title = title) tasks then
+    Ok (List.map (fun t -> if t.title = title then { t with done = true } else t) tasks)
+  else
+    Err ("no task titled " ++ title)
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let tasks =
+    [{ done = false, priority = High, title = "ship" }, { done = false, priority = Low, title = "nap" }]
+  let line = String.join ", " (urgentTitles tasks)
+  runtime.console.writeLine ("urgent: " ++ line)
+```
+
+Build/run it with `fai run Tasks.fai`; check the laws with `fai test Tasks.fai`.
+
+---
+
+## 17. Idioms and gotchas cheat-sheet
+
+- **Always run `fai fmt`** and match its output; field order is alphabetical,
+  indentation is 2 spaces, and there is one canonical layout.
+- **Public API = signatures.** Every `public` binding needs a signature; put the
+  effect row on it too.
+- **`List` vs `Array`**: `List` for head/tail recursion and pattern matching;
+  `Array` for O(1) indexing and in-place update when uniquely owned (literals
+  `[| ... |]`).
+- **`Dict`/`Set` vs `HashDict`/`HashSet`**: ordered (sorted iteration, range use)
+  vs unordered (O(1) average; unspecified iteration order). Both are persistent
+  with value semantics.
+- **Avoid intermediate `Option`s**: prefer `Dict.getOr` / `getOrElse`,
+  `Option.withDefault` / `getOrElse`, `Result.withDefault` / `toOption`.
+- **Loops are recursion at the top level.** Write a tail-recursive *private
+  top-level* helper with an accumulator (local `let`s cannot recurse). The compiler
+  handles memory (Perceus reference counting reuses uniquely-owned cells in place,
+  so mapping/updating data you own can allocate nothing).
+- **"Mutation" is `{ r with field = ... }`** for records, `Array.set`/`push` for
+  arrays — both return new values (updated in place when unique).
+- **Strings**: build with `++` (amortized efficient) or `String.join`; index by
+  character with `String.take`/`drop`/`substring`/`split`.
+- **No implicit numeric coercion** — convert with `Int.toFloat` / `Float.toInt`,
+  and write `Float` literals with a decimal point.
+- **Negatives are parenthesized**: `(-3)`.
+- **Capabilities flow from `main`.** Request the least authority (an open record
+  `{ console : Console | _ }`), call methods through the value
+  (`env.console.writeLine`), and let the effect row reflect it.
+- **State intent as contracts**, not comments: `example:` for cases, `forall:` for
+  laws. They are checked.
+- **When exploring an unfamiliar module**, run `fai query api <Module>` to read its
+  public interface, or read the source under `std/` and `samples/`.

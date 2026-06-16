@@ -191,6 +191,7 @@ thin client for the `fai lsp` language server plus syntax highlighting.
 
 ## Documentation
 
+- [`llms.txt`](llms.txt) — a single, self-contained guide to **writing Fai programs**, aimed at AI agents (and humans new to the language). Point your agent here.
 - [`samples/`](samples/) — the language by example, the source of truth for the syntax.
 - [`docs/CLI.md`](docs/CLI.md) — the command-line and daemon reference.
 - [`docs/ERROR_CODES.md`](docs/ERROR_CODES.md) — the catalog of `FAInnnn` diagnostics.
