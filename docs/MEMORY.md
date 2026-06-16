@@ -3294,5 +3294,62 @@ Editor integration:
     form and the firewall). Issue #120 (the SROA + multi-value track of #86); D114
     delivered the in-cell-slot half and laid the `Repr`/`FnAbi` groundwork.
 
+- **D136 Hoist a generic array's element-access self-tag out of the per-touch path
+  (fixes a generic-traversal regression from D133).** Storing `Array Float`
+  elements unboxed (D133) made every *generic* (type-variable element) array
+  `get`/`set` branch on the array's runtime float self-tag — a descriptor load +
+  compare deciding raw-`f64`-slot vs boxed word (`array_load_elem_generic`/
+  `array_set_store_generic`). The standard `Array.sort`/`reverse`/… are compiled
+  once at `Array 'a` (no monomorphization), so they paid that self-tag load on
+  **every element touch** in their O(n log n) hot loops — where a *monomorphic*
+  `Array Int` access (a hand-written quicksort) reads the slot directly with no
+  self-tag. Measured on the `MergeSort` workload: the per-touch self-tag was the
+  **whole** of a ~36% slowdown (≈866µs vs a ≈639µs floor with the self-tag
+  removed), while the monomorphic quicksort was unaffected — the two diverged
+  exactly along the generic-vs-monomorphic line.
+  - **The tag is loop-invariant** within any body that re-tags no buffer: a
+    descriptor word is rewritten **only** by a float `push`'s self-stamp, so a body
+    that performs no `Array` allocation or `push` never changes one. Code generation
+    therefore precomputes a generic array's `array_is_float` **once** — in the entry
+    block (which dominates the whole body) for each generic array parameter, and at
+    a `Join` (tail-loop) header for each loop-carried generic array parameter — and
+    a generic element access reuses it instead of reloading the descriptor. The
+    cache is keyed by the array's **pointer value**, not its local, so it hits
+    through reference-counting aliases (a borrowed read keeps the parameter's own
+    value, and an in-place `set` returns it unchanged) and is correct for any number
+    of distinct arrays (each keyed by its own value); a value that misses (a freshly
+    duplicated/copied array) falls back to the inline load. Dominance is automatic
+    (the value is a parameter or loop block-parameter, computed where it dominates
+    its uses), and the per-iteration loop value is one SSA block parameter, so the
+    header computes it once for the whole loop.
+  - **Soundness** rests only on "no buffer is re-tagged in this body": gated on the
+    body containing no `Array` allocation/`push` (the existing `body_uses_array_alloc`
+    predicate, the sole stamp sites). A body that *may* stamp keeps the conservative
+    per-access load. The reused tag is the exact `array_is_float` of that value, so
+    reuse is a pure common-subexpression — no representation assumption beyond tag
+    stability.
+  - **The float re-box arm is marked `cold`.** A generic array is far more often a
+    boxed-element one than an (unboxed) float one, and the float arm holds an
+    allocating `fai_box_float` call; laying it out of line keeps the call's clobbers
+    off the hot boxed/immediate read path. This helps only *with* the hoist (once
+    the per-access descriptor load is gone), the two together recovering the gap to
+    ≈694µs (~77% of the regression).
+  - **Residual (accepted ceiling).** The hoist removes the per-access *load*, but a
+    generic access still *branches* on the (now loop-invariant) tag, and a
+    duplicated/copied array value re-loads it; closing the last gap to the floor
+    would need whole-loop specialization on the tag (two loop bodies), deferred as
+    not worth the code-size/risk. A concrete (monomorphic) element never had a
+    self-tag and is untouched.
+  - **Cache.** A `array-tag-hoisted` `CODEGEN_CONFIG` token retires stale cached
+    objects (the reference-counted IR fingerprint is unchanged — this is purely
+    emitted-code).
+  - **Validated** by codegen IR-shape tests (a generic two-read function emits
+    exactly one self-tag `symbol_value`, with the re-box arm `cold`; a monomorphic
+    `Array Int` emits none), the existing `arrays` e2e suite (generic/`Float`/boxed
+    correctness + leak-free, in-place preserved, the constant-buffer-copy sort guard,
+    the option-`Float`-not-mistaken-for-a-float-array guard), and the random sort /
+    pipeline proptests and their bounds-check shadow checks. Issue #144 (under #136);
+    follows D133 (`Array Float` unboxed) and D128 (inline array access).
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

@@ -3533,6 +3533,48 @@ fn load_count(ir: &str) -> usize {
 }
 
 #[test]
+fn generic_array_self_tag_is_hoisted_across_accesses() {
+    // Two `unsafeGet`s on the same generic (`Array 'a`) parameter: each element read
+    // must branch on the array's runtime float self-tag (raw `f64` slot vs boxed
+    // word), but that tag is loop-invariant, so it is computed **once** per array
+    // value and reused — not reloaded per access. The self-tag's float-array
+    // descriptor is referenced via a `symbol_value`, so exactly one appears here
+    // (rather than one per read). Its re-box arm (the rarer float-array case, which
+    // allocates) is laid out of line as a `cold` block, keeping the hot read tight.
+    let src = indoc! {r#"
+        module M
+
+        cmp2 : Array 'a -> Int -> Bool
+        let cmp2 xs i = Array.unsafeGet i xs < Array.unsafeGet (i + 1) xs
+    "#};
+    let ir = entry_ir(src, "cmp2");
+    assert_eq!(
+        ir.matches("symbol_value").count(),
+        1,
+        "the generic self-tag is computed once for both reads, not per access:\n{ir}"
+    );
+    assert!(ir.contains("cold"), "the float re-box arm is laid out of line:\n{ir}");
+}
+
+#[test]
+fn monomorphic_array_access_has_no_self_tag() {
+    // A concrete `Array Int` access reads the slot directly (raw `i64`) with no
+    // runtime float self-tag at all — so no float-array descriptor `symbol_value`.
+    let src = indoc! {r#"
+        module M
+
+        cmp2 : Array Int -> Int -> Bool
+        let cmp2 xs i = Array.unsafeGet i xs < Array.unsafeGet (i + 1) xs
+    "#};
+    let ir = entry_ir(src, "cmp2");
+    assert_eq!(
+        ir.matches("symbol_value").count(),
+        0,
+        "a monomorphic Int array needs no self-tag:\n{ir}"
+    );
+}
+
+#[test]
 fn array_int_get_inlines_a_bounds_checked_slot_load() {
     // `Array.unsafeGet` on an `Array Int` inlines to an unsigned bounds check + a
     // slot load brought to a raw `Int` — not a runtime call.
