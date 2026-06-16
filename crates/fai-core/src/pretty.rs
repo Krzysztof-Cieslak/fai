@@ -124,8 +124,9 @@ fn write_expr(out: &mut String, e: &CExpr) {
             write_args(out, args);
             out.push(')');
         }
-        ExprKind::Foreign { symbol, args } => {
-            let _ = write!(out, "(foreign {:?}", symbol.as_str());
+        ExprKind::Foreign { symbol, args, marshalled } => {
+            let tag = if *marshalled { "foreign-m" } else { "foreign" };
+            let _ = write!(out, "({tag} {:?}", symbol.as_str());
             write_args(out, args);
             out.push(')');
         }

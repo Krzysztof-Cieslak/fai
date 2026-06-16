@@ -197,9 +197,10 @@ impl Simplifier<'_> {
             K::Prim { op, args } => {
                 K::Prim { op, args: args.into_iter().map(|a| self.simplify_expr(a)).collect() }
             }
-            K::Foreign { symbol, args } => K::Foreign {
+            K::Foreign { symbol, args, marshalled } => K::Foreign {
                 symbol,
                 args: args.into_iter().map(|a| self.simplify_expr(a)).collect(),
+                marshalled,
             },
             K::MakeData { tag, args, reuse, scalars, niche } => K::MakeData {
                 tag,

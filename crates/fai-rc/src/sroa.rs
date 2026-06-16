@@ -206,9 +206,9 @@ impl Sroa<'_> {
                 let args = args.into_iter().map(|a| self.rewrite_atom(a, binds)).collect();
                 CExpr::new(K::Prim { op, args }, ty)
             }
-            K::Foreign { symbol, args } => {
+            K::Foreign { symbol, args, marshalled } => {
                 let args = args.into_iter().map(|a| self.rewrite_atom(a, binds)).collect();
-                CExpr::new(K::Foreign { symbol, args }, ty)
+                CExpr::new(K::Foreign { symbol, args, marshalled }, ty)
             }
             K::DataTag { base, niche } => {
                 let base = Box::new(self.rewrite_atom(*base, binds));

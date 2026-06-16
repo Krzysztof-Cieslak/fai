@@ -250,6 +250,8 @@ pub enum WireExprKind {
         symbol: String,
         /// The operands.
         args: Vec<WireExpr>,
+        /// Whether the call uses the marshalled ABI (a user `foreign`).
+        marshalled: bool,
     },
     /// A general application.
     App {
@@ -558,9 +560,10 @@ fn expr_to_wire(e: &CExpr, module_of: &dyn Fn(DefId) -> String) -> WireExpr {
             op: *op,
             args: args.iter().map(|a| expr_to_wire(a, module_of)).collect(),
         },
-        ExprKind::Foreign { symbol, args } => WireExprKind::Foreign {
+        ExprKind::Foreign { symbol, args, marshalled } => WireExprKind::Foreign {
             symbol: symbol.as_str().to_owned(),
             args: args.iter().map(|a| expr_to_wire(a, module_of)).collect(),
+            marshalled: *marshalled,
         },
         ExprKind::App { func, args, reuse, alloc } => WireExprKind::App {
             func: Box::new(expr_to_wire(func, module_of)),
@@ -836,9 +839,10 @@ fn expr_from_wire(e: &WireExpr, sources: &mut SourceAssigner) -> CExpr {
             op: *op,
             args: args.iter().map(|a| expr_from_wire(a, sources)).collect(),
         },
-        WireExprKind::Foreign { symbol, args } => ExprKind::Foreign {
+        WireExprKind::Foreign { symbol, args, marshalled } => ExprKind::Foreign {
             symbol: Symbol::intern(symbol),
             args: args.iter().map(|a| expr_from_wire(a, sources)).collect(),
+            marshalled: *marshalled,
         },
         WireExprKind::App { func, args, reuse, alloc } => ExprKind::App {
             func: Box::new(expr_from_wire(func, sources)),
@@ -1327,23 +1331,29 @@ mod tests {
         // the worker.
         let arg = CExpr::new(ExprKind::Local(LocalId::from_index(0)), Ty::Con(Con::String));
         let call = CExpr::new(
-            ExprKind::Foreign { symbol: Symbol::intern("fai_console_write_line"), args: vec![arg] },
+            ExprKind::Foreign {
+                symbol: Symbol::intern("fai_console_write_line"),
+                args: vec![arg],
+                marshalled: false,
+            },
             Ty::Unit,
         );
         let wire = expr_to_wire(&call, &|_| "M".to_owned());
         match &wire.kind {
-            WireExprKind::Foreign { symbol, args } => {
+            WireExprKind::Foreign { symbol, args, marshalled } => {
                 assert_eq!(symbol, "fai_console_write_line");
                 assert_eq!(args.len(), 1);
+                assert!(!marshalled);
             }
             other => panic!("expected a Foreign, got {other:?}"),
         }
         let mut sources = SourceAssigner::default();
         let back = expr_from_wire(&wire, &mut sources);
         match &back.kind {
-            ExprKind::Foreign { symbol, args } => {
+            ExprKind::Foreign { symbol, args, marshalled } => {
                 assert_eq!(symbol.as_str(), "fai_console_write_line");
                 assert_eq!(args.len(), 1);
+                assert!(!marshalled);
             }
             other => panic!("expected a Foreign, got {other:?}"),
         }

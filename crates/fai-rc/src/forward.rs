@@ -107,9 +107,10 @@ fn forward_pass(db: &dyn Db, self_def: DefId, e: CExpr) -> CExpr {
         K::Prim { op, args } => {
             CExpr::new(K::Prim { op, args: args.into_iter().map(sub).collect() }, ty)
         }
-        K::Foreign { symbol, args } => {
-            CExpr::new(K::Foreign { symbol, args: args.into_iter().map(sub).collect() }, ty)
-        }
+        K::Foreign { symbol, args, marshalled } => CExpr::new(
+            K::Foreign { symbol, args: args.into_iter().map(sub).collect(), marshalled },
+            ty,
+        ),
         K::MakeData { tag, args, reuse, scalars, niche } => CExpr::new(
             K::MakeData { tag, args: args.into_iter().map(sub).collect(), reuse, scalars, niche },
             ty,

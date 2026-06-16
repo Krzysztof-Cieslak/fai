@@ -2149,7 +2149,9 @@ impl<M: Module> Translator<'_, M> {
             ExprKind::Local(local) => self.use_var(*local),
             ExprKind::Global(def) => self.global_value(*def, &e.ty),
             ExprKind::Prim { op, args } => self.prim(*op, args, &e.ty),
-            ExprKind::Foreign { symbol, args } => self.foreign(symbol.as_str(), args, &e.ty),
+            ExprKind::Foreign { symbol, args, marshalled } => {
+                self.foreign(symbol.as_str(), args, *marshalled, &e.ty)
+            }
             ExprKind::App { func, args, reuse, alloc } => {
                 self.application(func, args, reuse, *alloc, &e.ty)
             }
@@ -2673,13 +2675,19 @@ impl<M: Module> Translator<'_, M> {
         }
     }
 
-    /// A saturated foreign (native) call: box each operand into the uniform value
-    /// ABI, call the named runtime symbol out-of-line, and return its owned result.
-    /// The same generic out-of-line path a non-inline primitive uses — the foreign
-    /// symbol just comes from the node rather than a `Prim` enum. The host
-    /// capabilities all traffic in uniform boxed values, but a result that crosses
-    /// back as a scalar `Float` is unboxed, mirroring the primitive path.
-    fn foreign(&mut self, symbol: &str, args: &[CExpr], result_ty: &Ty) -> Value {
+    /// A saturated foreign (native) call.
+    ///
+    /// A **raw** foreign (a built-in host capability) boxes each operand into the
+    /// uniform value ABI and calls the symbol out-of-line — the same generic path a
+    /// non-inline primitive uses (a scalar-`Float` result is unboxed, mirroring it).
+    ///
+    /// A **marshalled** foreign (a user `foreign`) converts each operand and the
+    /// result between the Fai value and a plain native type (see
+    /// [`Self::marshalled_foreign`]).
+    fn foreign(&mut self, symbol: &str, args: &[CExpr], marshalled: bool, result_ty: &Ty) -> Value {
+        if marshalled {
+            return self.marshalled_foreign(symbol, args, result_ty);
+        }
         let vals: Vec<Value> = args.iter().map(|a| self.expr_boxed(a)).collect();
         let f = self.runtime(symbol, vals.len(), true);
         let call = self.builder.ins().call(f, &vals);
@@ -2688,6 +2696,160 @@ impl<M: Module> Translator<'_, M> {
             self.owning_unbox(result)
         } else {
             result
+        }
+    }
+
+    /// A reference to a runtime/foreign function with an explicit native signature
+    /// (Cranelift types), for the marshalled-ABI calls whose parameters/result are
+    /// not all uniform `i64` (an `f64` `Float`, or a `void`-returning `Unit`).
+    /// Imports are deduplicated by name in the module, so this need not cache.
+    fn runtime_typed(
+        &mut self,
+        name: &str,
+        params: &[types::Type],
+        ret: Option<types::Type>,
+    ) -> FuncRef {
+        let mut sig = self.module.make_signature();
+        for &t in params {
+            sig.params.push(AbiParam::new(t));
+        }
+        if let Some(t) = ret {
+            sig.returns.push(AbiParam::new(t));
+        }
+        let id = self
+            .module
+            .declare_function(name, Linkage::Import, &sig)
+            .expect("declare typed runtime function");
+        self.module.declare_func_in_func(id, self.builder.func)
+    }
+
+    /// Calls a runtime function with an explicit native signature, returning its
+    /// single result value.
+    fn typed_call(
+        &mut self,
+        name: &str,
+        params: &[types::Type],
+        ret: types::Type,
+        args: &[Value],
+    ) -> Value {
+        let f = self.runtime_typed(name, params, Some(ret));
+        let call = self.builder.ins().call(f, args);
+        self.builder.inst_results(call)[0]
+    }
+
+    /// A saturated **marshalled** foreign call (a user `foreign`): each operand is
+    /// converted from its Fai value to a plain native value (`Int`/`Bool` → `i64`,
+    /// `Float` → `f64`, `String` → a borrowed `(ptr, len)` pair), the native symbol
+    /// is called with the derived C-style signature, and the result is converted
+    /// back. Operands are then dropped (consumed) — a `String` is borrowed only for
+    /// the duration of the call. A `String` result is returned through a trailing
+    /// out-length pointer (`const char* f(…, int64_t* out_len)`), copied into a
+    /// fresh Fai `String`. The signature's types are guaranteed marshallable by the
+    /// `FAI7003` check, so an unexpected type here is a compiler invariant.
+    fn marshalled_foreign(&mut self, symbol: &str, args: &[CExpr], result_ty: &Ty) -> Value {
+        // Evaluate operands to uniform Fai values (the marshal-in helpers take a
+        // boxed value); keep them to drop after the call.
+        let arg_vals: Vec<(Value, Ty)> =
+            args.iter().map(|a| (self.expr_boxed(a), a.ty.clone())).collect();
+
+        let mut native_args: Vec<Value> = Vec::new();
+        let mut param_types: Vec<types::Type> = Vec::new();
+        for (v, ty) in &arg_vals {
+            match ty {
+                Ty::Con(Con::Int) => {
+                    native_args.push(self.typed_call(
+                        "fai_marshal_int",
+                        &[types::I64],
+                        types::I64,
+                        &[*v],
+                    ));
+                    param_types.push(types::I64);
+                }
+                Ty::Con(Con::Bool) => {
+                    native_args.push(self.typed_call(
+                        "fai_marshal_bool",
+                        &[types::I64],
+                        types::I64,
+                        &[*v],
+                    ));
+                    param_types.push(types::I64);
+                }
+                Ty::Con(Con::Float) => {
+                    native_args.push(self.typed_call(
+                        "fai_marshal_float",
+                        &[types::I64],
+                        types::F64,
+                        &[*v],
+                    ));
+                    param_types.push(types::F64);
+                }
+                Ty::Con(Con::String) => {
+                    let ptr =
+                        self.typed_call("fai_marshal_string_ptr", &[types::I64], types::I64, &[*v]);
+                    let len =
+                        self.typed_call("fai_marshal_string_len", &[types::I64], types::I64, &[*v]);
+                    native_args.push(ptr);
+                    param_types.push(types::I64);
+                    native_args.push(len);
+                    param_types.push(types::I64);
+                }
+                // `Unit` is the empty value: it contributes no native argument (the
+                // native function is nullary in that position). The Fai value is
+                // still dropped below (a no-op for the immediate).
+                Ty::Unit => {}
+                // Everything else is rejected by FAI5003 before codegen; keep this
+                // total for an (already-reported) bad signature.
+                _ => {}
+            }
+        }
+
+        // A `String` result is returned via a trailing out-length pointer.
+        let out_len_slot = if matches!(result_ty, Ty::Con(Con::String)) {
+            let slot = self.builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                8,
+                3,
+            ));
+            let addr = self.builder.ins().stack_addr(types::I64, slot, 0);
+            native_args.push(addr);
+            param_types.push(types::I64);
+            Some(slot)
+        } else {
+            None
+        };
+
+        let ret_type = match result_ty {
+            Ty::Con(Con::Float) => Some(types::F64),
+            Ty::Unit => None,
+            _ => Some(types::I64),
+        };
+
+        let f = self.runtime_typed(symbol, &param_types, ret_type);
+        let call = self.builder.ins().call(f, &native_args);
+        let native_result = ret_type.map(|_| self.builder.inst_results(call)[0]);
+
+        // The call has returned, so the borrowed string bytes are no longer needed:
+        // drop every operand (a marshalled foreign consumes its arguments; an
+        // immediate drop is a no-op, a boxed `Float`/`String` is freed).
+        for (v, _) in &arg_vals {
+            self.call_drop(*v);
+        }
+
+        match result_ty {
+            Ty::Con(Con::Int) => self.call1("fai_box_int", native_result.unwrap()),
+            Ty::Con(Con::Bool) => self.call1("fai_marshal_bool_result", native_result.unwrap()),
+            Ty::Con(Con::Float) => self.box_float(native_result.unwrap()),
+            Ty::Con(Con::String) => {
+                let ptr = native_result.unwrap();
+                let len = self.builder.ins().stack_load(types::I64, out_len_slot.unwrap(), 0);
+                self.typed_call(
+                    "fai_marshal_string_result",
+                    &[types::I64, types::I64],
+                    types::I64,
+                    &[ptr, len],
+                )
+            }
+            _ => self.builder.ins().iconst(types::I64, rt::FAI_UNIT),
         }
     }
 

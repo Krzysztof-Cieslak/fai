@@ -52,6 +52,9 @@ pub fn core(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
     // direct-callable entry. A saturated call to it folds to a bare `Foreign` node
     // (the foreign-wrapper inliner); a first-class reference compiles this entry.
     if let Some((native, arity)) = foreign_decl(db, file, &parsed.module, name) {
+        // A user (non-std) `foreign` uses the marshalled ABI; the built-in host
+        // capabilities (declared in std) use the raw value ABI.
+        let marshalled = !fai_db::is_std_path(file.path(db));
         let mut next = first_free_local(&resolved);
         let params: Vec<LocalId> = (0..arity)
             .map(|_| {
@@ -61,7 +64,7 @@ pub fn core(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
             })
             .collect();
         let args = params.iter().map(|&p| CExpr::new(K::Local(p), Ty::Error)).collect();
-        let body = CExpr::new(K::Foreign { symbol: native, args }, Ty::Error);
+        let body = CExpr::new(K::Foreign { symbol: native, args, marshalled }, Ty::Error);
         return Arc::new(LoweredDef {
             def,
             fns: vec![CoreFn { params, captures: Vec::new(), body }],

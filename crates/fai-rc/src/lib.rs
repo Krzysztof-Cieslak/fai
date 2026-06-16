@@ -340,9 +340,9 @@ fn anf_op(e: CExpr, binds: &mut Vec<(LocalId, CExpr)>, next: &mut usize) -> CExp
             let args = args.into_iter().map(|a| atomize(a, binds, next)).collect();
             CExpr::new(K::Prim { op, args }, ty)
         }
-        K::Foreign { symbol, args } => {
+        K::Foreign { symbol, args, marshalled } => {
             let args = args.into_iter().map(|a| atomize(a, binds, next)).collect();
-            CExpr::new(K::Foreign { symbol, args }, ty)
+            CExpr::new(K::Foreign { symbol, args, marshalled }, ty)
         }
         K::MakeData { tag, args, reuse, scalars, niche } => {
             let args = args.into_iter().map(|a| atomize(a, binds, next)).collect();
@@ -613,9 +613,10 @@ impl Rc<'_> {
             }
             // A foreign call consumes every operand (no borrowing variants), like a
             // construction's fields.
-            K::Foreign { symbol, args } => {
+            K::Foreign { symbol, args, marshalled } => {
                 let borrows = vec![false; args.len()];
-                let rebuilt = move |args| CExpr::new(K::Foreign { symbol, args }, ty.clone());
+                let rebuilt =
+                    move |args| CExpr::new(K::Foreign { symbol, args, marshalled }, ty.clone());
                 self.operands_rc(args, &borrows, live, rebuilt)
             }
             K::MakeData { tag, args, reuse, scalars, niche } => {
@@ -1129,10 +1130,11 @@ fn reuse_pass(e: CExpr, data: &Locals, next: &mut usize) -> CExpr {
             K::Prim { op, args: args.into_iter().map(|a| reuse_pass(a, data, next)).collect() },
             ty,
         ),
-        K::Foreign { symbol, args } => CExpr::new(
+        K::Foreign { symbol, args, marshalled } => CExpr::new(
             K::Foreign {
                 symbol,
                 args: args.into_iter().map(|a| reuse_pass(a, data, next)).collect(),
+                marshalled,
             },
             ty,
         ),

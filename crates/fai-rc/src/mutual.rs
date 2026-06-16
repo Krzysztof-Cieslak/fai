@@ -417,9 +417,9 @@ fn remap_member(
             let args = args.iter().map(|a| remap_member(a, subst, next, group)).collect();
             CExpr::new(K::Prim { op: *op, args }, ty)
         }
-        K::Foreign { symbol, args } => {
+        K::Foreign { symbol, args, marshalled } => {
             let args = args.iter().map(|a| remap_member(a, subst, next, group)).collect();
-            CExpr::new(K::Foreign { symbol: *symbol, args }, ty)
+            CExpr::new(K::Foreign { symbol: *symbol, args, marshalled: *marshalled }, ty)
         }
         K::MakeData { tag, args, reuse, scalars, niche: _ } => {
             // The combined loop is schemeless (uniform ABI), so niche `Option`s are

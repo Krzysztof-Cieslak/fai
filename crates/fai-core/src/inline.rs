@@ -98,6 +98,8 @@ pub struct ForeignWrapper {
     /// The source-parameter index supplying each foreign operand, in operand
     /// order — a permutation of `0..arity` (every parameter used exactly once).
     pub slots: Vec<usize>,
+    /// Whether the wrapped foreign call uses the marshalled ABI.
+    pub marshalled: bool,
 }
 
 /// Whether `name`'s definition in `file` is a strict-bijection eta-foreign-wrapper.
@@ -115,10 +117,11 @@ pub fn foreign_wrapper(db: &dyn Db, file: SourceFile, name: Symbol) -> Option<Fo
     if !entry.captures.is_empty() {
         return None;
     }
-    let K::Foreign { symbol, args } = &entry.body.kind else {
+    let K::Foreign { symbol, args, marshalled } = &entry.body.kind else {
         return None;
     };
     let symbol = *symbol;
+    let marshalled = *marshalled;
     if args.len() != entry.params.len() {
         return None;
     }
@@ -135,7 +138,7 @@ pub fn foreign_wrapper(db: &dyn Db, file: SourceFile, name: Symbol) -> Option<Fo
         used[pos] = true;
         slots.push(pos);
     }
-    Some(ForeignWrapper { symbol, slots })
+    Some(ForeignWrapper { symbol, slots, marshalled })
 }
 
 /// `name`'s lowered definition with every saturated call to an eta-prim-wrapper
@@ -210,9 +213,9 @@ fn inline_expr(db: &dyn Db, e: &CExpr, next: &mut usize, changed: &mut bool) -> 
             let args = args.iter().map(|a| inline_expr(db, a, next, changed)).collect();
             CExpr::new(K::Prim { op: *op, args }, ty)
         }
-        K::Foreign { symbol, args } => {
+        K::Foreign { symbol, args, marshalled } => {
             let args = args.iter().map(|a| inline_expr(db, a, next, changed)).collect();
-            CExpr::new(K::Foreign { symbol: *symbol, args }, ty)
+            CExpr::new(K::Foreign { symbol: *symbol, args, marshalled: *marshalled }, ty)
         }
         K::MakeData { tag, args, reuse, scalars, niche } => {
             let args = args.iter().map(|a| inline_expr(db, a, next, changed)).collect();
@@ -364,7 +367,7 @@ fn build_prim(pw: &PrimWrapper, args: Vec<CExpr>, ty: Ty, next: &mut usize) -> C
 /// local first so evaluation (hence trap) order is preserved.
 fn build_foreign(fw: &ForeignWrapper, args: Vec<CExpr>, ty: Ty, next: &mut usize) -> CExpr {
     if fw.slots.iter().enumerate().all(|(j, &s)| j == s) {
-        return CExpr::new(K::Foreign { symbol: fw.symbol, args }, ty);
+        return CExpr::new(K::Foreign { symbol: fw.symbol, args, marshalled: fw.marshalled }, ty);
     }
     let locals: Vec<(LocalId, CExpr)> = args
         .into_iter()
@@ -379,7 +382,8 @@ fn build_foreign(fw: &ForeignWrapper, args: Vec<CExpr>, ty: Ty, next: &mut usize
         .iter()
         .map(|&s| CExpr::new(K::Local(locals[s].0), locals[s].1.ty.clone()))
         .collect();
-    let mut body = CExpr::new(K::Foreign { symbol: fw.symbol, args: operands }, ty);
+    let mut body =
+        CExpr::new(K::Foreign { symbol: fw.symbol, args: operands, marshalled: fw.marshalled }, ty);
     for (l, value) in locals.into_iter().rev() {
         let let_ty = body.ty.clone();
         body =
@@ -526,9 +530,10 @@ pub(crate) fn remap_expr(
             op: *op,
             args: args.iter().map(|a| remap_expr(a, locals, fns, next)).collect(),
         },
-        K::Foreign { symbol, args } => K::Foreign {
+        K::Foreign { symbol, args, marshalled } => K::Foreign {
             symbol: *symbol,
             args: args.iter().map(|a| remap_expr(a, locals, fns, next)).collect(),
+            marshalled: *marshalled,
         },
         K::MakeData { tag, args, reuse, scalars, niche } => K::MakeData {
             tag: *tag,

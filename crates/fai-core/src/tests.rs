@@ -79,9 +79,10 @@ fn lowers_foreign_decl_to_a_foreign_call() {
 
         foreign "fai_console_write_line" consoleWriteLine : String -> Unit / { Console }
     "#};
+    // A user (non-std) module's foreign uses the marshalled ABI (`foreign-m`).
     assert_eq!(
         lower(src, "consoleWriteLine"),
-        "fn0(%0) = (foreign \"fai_console_write_line\" %0)\n"
+        "fn0(%0) = (foreign-m \"fai_console_write_line\" %0)\n"
     );
 }
 
@@ -723,9 +724,14 @@ mod inline {
         let (db, file) = db_with(src);
         assert_eq!(
             foreign_wrapper(&db, file, Symbol::intern("prim")),
-            Some(ForeignWrapper { symbol: Symbol::intern("fai_x"), slots: vec![0] })
+            // A user (non-std) foreign uses the marshalled ABI.
+            Some(ForeignWrapper {
+                symbol: Symbol::intern("fai_x"),
+                slots: vec![0],
+                marshalled: true
+            })
         );
-        assert_eq!(inlined(src, "caller"), "fn0(%0) = (foreign \"fai_x\" %0)\n");
+        assert_eq!(inlined(src, "caller"), "fn0(%0) = (foreign-m \"fai_x\" %0)\n");
     }
 }
 

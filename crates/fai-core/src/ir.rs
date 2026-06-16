@@ -905,16 +905,24 @@ pub enum ExprKind {
         args: Vec<CExpr>,
     },
     /// A saturated call to a foreign (native) function, named by its runtime
-    /// symbol. Reaches the side-effecting host capabilities (and, later,
-    /// user-declared `foreign` functions). Like [`ExprKind::Prim`] it consumes its
-    /// operands and returns an owned result, and compiles to a generic out-of-line
-    /// runtime call; unlike `Prim` it carries an interned symbol, so a foreign name
-    /// need not be a closed compiler enum.
+    /// symbol. Reaches the side-effecting host capabilities and user-declared
+    /// `foreign` functions. Like [`ExprKind::Prim`] it consumes its operands and
+    /// returns an owned result, and compiles to a generic out-of-line runtime call;
+    /// unlike `Prim` it carries an interned symbol, so a foreign name need not be a
+    /// closed compiler enum.
     Foreign {
         /// The native runtime symbol to call (e.g. `fai_console_write_line`).
         symbol: Symbol,
         /// The operands (consumed), in order.
         args: Vec<CExpr>,
+        /// Whether the call uses the **marshalled** ABI (a user `foreign`): each
+        /// operand and the result are converted between the Fai value and a plain
+        /// native type (`Int`↔`i64`, `Float`↔`f64`, `Bool`↔`i64` 0/1, `String`↔a
+        /// `(ptr, len)` pair). The built-in host capabilities are **not** marshalled
+        /// (`false`): they take/return raw, reference-counted Fai values. Set at
+        /// lowering from the declaration's origin (a non-std `foreign` is
+        /// marshalled).
+        marshalled: bool,
     },
     /// A general application, routed through the runtime `apply_n`.
     App {
