@@ -3887,6 +3887,9 @@ fn verify_payload(p: *const u8, size: usize, byte: u8) {
     }
 }
 
+/// The M:N green-thread scheduler that runs a Fai program's concurrent tasks.
+mod scheduler;
+
 #[cfg(test)]
 mod alloc_tests;
 #[cfg(test)]
