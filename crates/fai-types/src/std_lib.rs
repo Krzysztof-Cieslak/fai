@@ -37,13 +37,6 @@ pub fn load_std(db: &mut FaiDatabase) -> Vec<SourceId> {
         .collect()
 }
 
-/// The host return shape `(Bool * String)` that the standard library unwraps
-/// into a `Result`/`Option`: a success/found flag and a payload (contents, value,
-/// or error message).
-fn ok_string_pair() -> Ty {
-    Ty::Tuple(vec![Ty::bool(), Ty::Con(Con::String)])
-}
-
 /// The scheme of a built-in name, if known.
 ///
 /// Covers the boolean literals, the `Console` capability member, and the
@@ -54,19 +47,6 @@ fn ok_string_pair() -> Ty {
 pub fn builtin_scheme(name: Symbol) -> Option<Scheme> {
     Some(match name.as_str() {
         "true" | "false" => Scheme::mono(Ty::bool()),
-        // Capability hosts (prelude-private `Prim.*`), reached only through the
-        // `Runtime` value the standard library builds and `main` receives.
-        "consoleWriteLine" => Scheme::mono(Ty::arrow(Ty::Con(Con::String), Ty::Unit)),
-        "clockNow" => Scheme::mono(Ty::arrow(Ty::Unit, Ty::int())),
-        "randomNextInt" => Scheme::mono(Ty::arrow(Ty::int(), Ty::int())),
-        // FileSystem/Env hosts return primitives the standard library wraps into
-        // `Result`/`Option`: a `(Bool * String)` is `(ok?/found?, payload)`.
-        "fileRead" => Scheme::mono(Ty::arrow(Ty::Con(Con::String), ok_string_pair())),
-        "fileWrite" => {
-            Scheme::mono(Ty::arrows([Ty::Con(Con::String), Ty::Con(Con::String)], ok_string_pair()))
-        }
-        "envGet" => Scheme::mono(Ty::arrow(Ty::Con(Con::String), ok_string_pair())),
-        "envArgs" => Scheme::mono(Ty::arrow(Ty::Unit, Ty::list(Ty::Con(Con::String)))),
         // Bitwise integer intrinsics.
         "intAnd"
         | "intOr"

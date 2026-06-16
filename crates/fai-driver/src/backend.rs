@@ -130,6 +130,9 @@ fn source_param_count(db: &dyn Db, file: SourceFile, name: Symbol) -> usize {
         .get(name)
         .and_then(|d| match &parsed.module.items[d.binding.index()].kind {
             ItemKind::Binding { params, .. } => Some(params.len()),
+            // A `foreign` decl has no parameter patterns; its parameter count is
+            // the arrow arity of its declared type.
+            ItemKind::Foreign { ty, .. } => Some(parsed.module.arrow_arity(*ty)),
             _ => None,
         })
         .unwrap_or(0)

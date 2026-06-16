@@ -1,0 +1,8 @@
+module ForeignEffectRequired
+
+// A `foreign` declaration calls native code, so its signature must name a
+// capability in its effect row (e.g. `/ { Clock }`). A pure signature would
+// launder the native side effect, so it is rejected.
+//~ ERROR FAI5002
+//~ COUNT ERROR 1
+foreign "fai_clock_now" now : Unit -> Int

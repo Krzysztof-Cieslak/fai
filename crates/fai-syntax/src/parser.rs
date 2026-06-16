@@ -327,6 +327,7 @@ impl Parser<'_> {
             TokenKind::Forall => self.parse_forall(),
             TokenKind::Type => self.parse_type_decl(Visibility::Private, false),
             TokenKind::Interface => self.parse_interface_decl(Visibility::Private),
+            TokenKind::Foreign => self.parse_foreign(Visibility::Private),
             TokenKind::Module => self.parse_nested_module(),
             TokenKind::Opaque => {
                 // `opaque` only marks a `public` type; written alone it is an
@@ -374,6 +375,9 @@ impl Parser<'_> {
                 }
             }
             TokenKind::Interface => self.parse_interface_decl(Visibility::Public),
+            // A `public foreign` parses (carrying its visibility) so resolution can
+            // report the dedicated "foreign cannot be public" diagnostic.
+            TokenKind::Foreign => self.parse_foreign(Visibility::Public),
             TokenKind::Module => {
                 let span = self.cur().range;
                 self.error(
@@ -450,6 +454,33 @@ impl Parser<'_> {
         self.expect(TokenKind::Colon, "`:` in the signature");
         let ty = self.parse_type();
         ItemKind::Signature { visibility, name, ty }
+    }
+
+    /// Parses a foreign declaration `foreign "native_symbol" name : ty`. The native
+    /// symbol is a string literal (stored as its raw lexeme, decoded at lowering
+    /// like any string); `name` is the bound value (a lower-case name or a
+    /// parenthesized operator). `visibility` is carried for the resolver's
+    /// "foreign cannot be public" check.
+    fn parse_foreign(&mut self, visibility: Visibility) -> ItemKind {
+        self.bump(); // `foreign`
+        if !self.at(TokenKind::String) {
+            let span = self.cur().range;
+            self.error(SYNTAX_ERROR, span, "expected a native symbol string after `foreign`");
+            return ItemKind::Error;
+        }
+        let symbol = self.bump_symbol();
+        let name = match self.parse_op_name() {
+            Some(op) => op,
+            None if self.at(TokenKind::LowerIdent) => self.bump_symbol(),
+            None => {
+                let span = self.cur().range;
+                self.error(SYNTAX_ERROR, span, "expected a name after the foreign symbol");
+                return ItemKind::Error;
+            }
+        };
+        self.expect(TokenKind::Colon, "`:` in the foreign declaration");
+        let ty = self.parse_type();
+        ItemKind::Foreign { visibility, symbol, name, ty }
     }
 
     fn parse_binding(&mut self, visibility: Visibility) -> ItemKind {
@@ -1715,6 +1746,12 @@ mod tests {
                 dump_pats(m, params),
                 dump_expr(m, *body)
             ),
+            ItemKind::Foreign { visibility, symbol, name, ty } => format!(
+                "(foreign {visibility:?} {} {} {})",
+                symbol.as_str(),
+                name.as_str(),
+                dump_type(m, *ty)
+            ),
             ItemKind::Type { visibility, opaque, name, params, def } => {
                 let ps = params.iter().map(|p| p.as_str()).collect::<Vec<_>>().join(" ");
                 let op = if *opaque { " opaque" } else { "" };
@@ -1795,6 +1832,36 @@ mod tests {
         assert_eq!(parsed.module.name.unwrap().as_str(), "Main");
         assert!(parsed.diagnostics.is_empty());
         assert_eq!(dump_module(&parsed.module), "module Main\n(let Private x [] (int 1))\n");
+    }
+
+    #[test]
+    fn parses_foreign_declaration() {
+        // `foreign "sym" name : ty` — the native symbol keeps its raw lexeme
+        // (quotes included), the name and type follow.
+        let out = dump(
+            "module M\nforeign \"fai_console_write_line\" consoleWriteLine : String -> Unit / { Console }",
+        );
+        assert!(
+            out.contains(
+                "(foreign Private \"fai_console_write_line\" consoleWriteLine (arrow (tcon String) (tcon Unit) / { Console }))"
+            ),
+            "got: {out}"
+        );
+        assert!(!out.contains("diag"), "no diagnostics expected: {out}");
+    }
+
+    #[test]
+    fn public_foreign_parses_carrying_its_visibility() {
+        // `public foreign` parses (the visibility is recorded) so name resolution
+        // can later report the dedicated "foreign cannot be public" diagnostic.
+        let out = dump("module M\npublic foreign \"fai_x\" f : Int -> Int / { Console }");
+        assert!(out.contains("(foreign Public \"fai_x\" f"), "got: {out}");
+    }
+
+    #[test]
+    fn foreign_without_a_symbol_string_is_an_error() {
+        let out = dump("module M\nforeign f : Int -> Int");
+        assert!(out.contains("diag"), "expected a diagnostic: {out}");
     }
 
     #[test]
@@ -2813,6 +2880,7 @@ mod proptests {
             for item in &parsed.module.items {
                 match &item.kind {
                     ItemKind::Signature { ty, .. } => walk_type(&parsed.module, *ty),
+                    ItemKind::Foreign { ty, .. } => walk_type(&parsed.module, *ty),
                     ItemKind::Binding { params, body, .. } => {
                         params.iter().for_each(|p| walk_pat(&parsed.module, *p));
                         walk_expr(&parsed.module, *body);

@@ -267,6 +267,26 @@ fn forall_binder_forced_to_a_capability_is_impure() {
 }
 
 #[test]
+fn contract_referencing_a_user_capability_is_impure() {
+    // A *user-declared* capability — an interface with an effect-carrying method —
+    // is rejected in a contract just like a host capability, for free: the purity
+    // check keys off the effect rows now, not a fixed list of host names.
+    let src = indoc! {r#"
+        module M
+
+        interface Logger 'e =
+          log : String -> Unit / 'e
+
+        public useLog : Logger { Console } -> Unit / { Console }
+        let useLog l = l.log "hi"
+        example: useLog
+    "#};
+    let (db, f) = db_with_std(&[("M.fai", src)]);
+    let codes = check_codes(&db, f[0]);
+    assert!(codes.contains(&"FAI6004".to_owned()), "got {codes:?}");
+}
+
+#[test]
 fn contract_over_a_user_interface_is_clean() {
     // A user-defined interface is not a capability: a contract that builds and
     // exercises one is pure and must not trip the purity diagnostic.

@@ -14,7 +14,7 @@ use fai_diagnostics::{Diagnostic, Label, Suggestion};
 use fai_resolve::{DefId, InterfaceRef, module_defs, module_sccs, qualify, resolve};
 use fai_span::{ByteOffset, Span, TextRange};
 use fai_syntax::Symbol;
-use fai_syntax::ast::ExprId;
+use fai_syntax::ast::{ExprId, ItemKind};
 use rustc_hash::FxHashMap;
 
 use crate::ty::Ty;
@@ -24,9 +24,25 @@ use crate::lower::{ParamKind, interface_param_usage, seed_interface_params};
 use crate::std_lib;
 use crate::ty::Scheme;
 use crate::{
-    EFFECT_MISMATCH, INTERFACE_PARAM_KIND, MISSING_PUBLIC_SIGNATURE, OPAQUE_ACCESS,
-    SIGNATURE_MISMATCH,
+    EFFECT_MISMATCH, FOREIGN_EFFECT_REQUIRED, INTERFACE_PARAM_KIND, MISSING_PUBLIC_SIGNATURE,
+    OPAQUE_ACCESS, SIGNATURE_MISMATCH,
 };
+
+/// Whether a `foreign` declaration's scheme names at least one capability in the
+/// effect a full application performs — the effect on the innermost arrow of its
+/// (curried) function type. A foreign that names none would launder its native
+/// side effect as pure (rejected as [`FOREIGN_EFFECT_REQUIRED`]).
+fn foreign_names_a_capability(scheme: &Scheme) -> bool {
+    fn innermost(ty: &Ty) -> Option<&crate::ty::EffectRow> {
+        match ty {
+            // A deeper arrow's effect is the saturating one; this arrow's effect is
+            // used only when its result is not itself a function.
+            Ty::Arrow(_, to, eff) => Some(innermost(to).unwrap_or(eff)),
+            _ => None,
+        }
+    }
+    innermost(&scheme.ty).is_some_and(|e| !e.labels.is_empty())
+}
 
 /// The inferred schemes of the SCC at `scc_index` in `file`.
 #[salsa::tracked]
@@ -401,6 +417,28 @@ pub fn check_file(db: &dyn Db, file: SourceFile) {
                         d.name
                     ),
                     Span::new(file.source(db), bind_span),
+                ),
+            );
+        }
+
+        // A `foreign` declaration must name a capability in its effect row (FAI5002),
+        // so a native side effect cannot be laundered as pure: any caller of the
+        // foreign then surfaces that capability through the ordinary effect check.
+        if let ItemKind::Foreign { .. } = &module.items[d.binding.index()].kind
+            && !foreign_names_a_capability(
+                &declared_scheme(db, file, d.name).unwrap_or_else(error_scheme),
+            )
+        {
+            emit(
+                db,
+                Diagnostic::error(
+                    FOREIGN_EFFECT_REQUIRED,
+                    format!(
+                        "the foreign declaration `{}` must name a capability in its effect row, \
+                         e.g. `/ {{ Console }}`",
+                        d.name
+                    ),
+                    Span::new(file.source(db), module.items[d.binding.index()].span),
                 ),
             );
         }

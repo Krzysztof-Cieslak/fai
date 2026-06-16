@@ -127,16 +127,46 @@ fn check_contract_body(
     }
 }
 
-/// The host-capability interfaces, declared in the standard `Prelude`. A
-/// contract that traffics in any of these is impure.
-const CAPABILITY_NAMES: [&str; 5] = ["Clock", "Console", "Env", "FileSystem", "Random"];
-
-/// Whether `iref` is one of the host capabilities from the standard library (the
-/// only impurity a contract can reach). Matches by name *and* origin, so a
-/// user-declared interface that happens to share a name is not mistaken for one.
+/// Whether `iref` is a capability interface: one that declares at least one
+/// **effect-carrying** method (a method whose arrow performs an effect). Effect
+/// rows make this general — the host capabilities (`Console`, …) qualify because
+/// their methods are annotated `/ { Console }` …, and a *user-declared* capability
+/// (e.g. `interface Logger 'e = log : String -> Unit / 'e`) is recognized for
+/// free. A plain interface whose methods are all pure (e.g. `Greeter`) is not a
+/// capability, so a contract may build and exercise it.
 fn is_capability_interface(db: &dyn Db, iref: InterfaceRef) -> bool {
-    CAPABILITY_NAMES.contains(&iref.name.as_str())
-        && db.source_file(iref.file).is_some_and(|f| fai_db::is_std_path(f.path(db)))
+    let Some(file) = db.source_file(iref.file) else {
+        return false;
+    };
+    let decls = fai_resolve::interface_decls(db, file);
+    let Some(info) = decls.interface_named(iref.name) else {
+        return false;
+    };
+    info.methods.clone().into_iter().any(|m| {
+        crate::lower::build_interface_method_scheme(db, iref, m)
+            .is_some_and(|scheme| ty_performs_effect(&scheme.ty))
+    })
+}
+
+/// Whether any arrow within `ty` performs an effect (a non-pure effect row),
+/// anywhere in its structure — so a method type `String -> Unit / { Console }`
+/// (and a nested `… -> … / { FileSystem }`) counts.
+fn ty_performs_effect(ty: &Ty) -> bool {
+    match ty {
+        Ty::Arrow(from, to, eff) => {
+            !eff.is_pure() || ty_performs_effect(from) || ty_performs_effect(to)
+        }
+        Ty::App(f, a) => ty_performs_effect(f) || ty_performs_effect(a),
+        Ty::Tuple(ts) => ts.iter().any(ty_performs_effect),
+        Ty::Record(row) => row.fields.iter().any(|(_, t)| ty_performs_effect(t)),
+        Ty::Var(_)
+        | Ty::Con(_)
+        | Ty::Adt(_)
+        | Ty::Interface(_)
+        | Ty::EffectArg(_)
+        | Ty::Unit
+        | Ty::Error => false,
+    }
 }
 
 /// The distinct host capabilities mentioned anywhere in `ty`, sorted by name. A

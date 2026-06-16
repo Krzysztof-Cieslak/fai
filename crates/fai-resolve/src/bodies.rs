@@ -329,10 +329,13 @@ fn resolve_items(cx: &mut Resolver, module: &Module, items: &[ItemId]) {
             }
             // Type and interface declarations introduce type-level names and
             // (for unions) constructors, resolved via `type_decls`/the types
-            // phase; they have no value body to resolve here.
+            // phase; they have no value body to resolve here. A `foreign` decl
+            // likewise has no value body — its written type is resolved when its
+            // declared scheme is lowered, exactly like a signature.
             ItemKind::Type { .. }
             | ItemKind::Interface { .. }
             | ItemKind::Signature { .. }
+            | ItemKind::Foreign { .. }
             | ItemKind::Error => {}
         }
     }

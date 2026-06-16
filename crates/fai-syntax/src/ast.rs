@@ -98,6 +98,18 @@ impl Module {
         &self.types[id.index()]
     }
 
+    /// The arrow arity of a type: the count of leading `->`, unwrapping parens
+    /// (`A -> B -> C` is 2). Used to derive a `foreign` declaration's parameter
+    /// count from its written signature (it has no parameter patterns).
+    #[must_use]
+    pub fn arrow_arity(&self, id: TypeId) -> usize {
+        match &self.ty(id).kind {
+            TypeKind::Arrow { to, .. } => 1 + self.arrow_arity(*to),
+            TypeKind::Paren(inner) => self.arrow_arity(*inner),
+            _ => 0,
+        }
+    }
+
     /// The contract items (`example`/`forall`) in source order.
     pub fn contracts(&self) -> impl Iterator<Item = &Item> {
         self.items.iter().filter(|it| it.kind.is_contract())
@@ -135,6 +147,13 @@ pub enum ItemKind {
     Signature { visibility: Visibility, name: Symbol, ty: TypeId },
     /// A value binding: `[public] let name params… = body`.
     Binding { visibility: Visibility, name: Symbol, params: Vec<PatId>, body: ExprId },
+    /// A foreign function declaration: `foreign "native_symbol" name : ty`. Binds
+    /// `name` to a native runtime function (no Fai body); `symbol` is the native
+    /// symbol the call links to. The written `ty` is the declaration's signature.
+    /// Always module-private (a raw native function is reached only through a
+    /// capability interface); `visibility` is recorded so resolution can reject a
+    /// `public foreign`.
+    Foreign { visibility: Visibility, symbol: Symbol, name: Symbol, ty: TypeId },
     /// A type declaration: `[public] [opaque] type Name 'p… = <definition>`.
     ///
     /// `opaque` exports the type's name but not its definition (a union's

@@ -18,31 +18,6 @@ use fai_types::{Con, RowEnd, Ty};
 
 use crate::niche::NicheKind;
 
-/// The built-in host capabilities, as `(fai name, native symbol, arity)`. Each is
-/// a side-effecting Rust function in the runtime, reached by the lowered
-/// [`ExprKind::Foreign`] node rather than a dedicated [`Prim`] variant — the
-/// dispatch is a generic out-of-line call keyed by symbol, so a host buys nothing
-/// from `Prim`-enum membership. Lowering looks a saturated host builtin up here to
-/// build its `Foreign` node; the runtime symbol is linked from the embedded
-/// archive (AOT) or the JIT symbol registry.
-pub const HOST_FOREIGN: &[(&str, &str, usize)] = &[
-    ("consoleWriteLine", "fai_console_write_line", 1),
-    ("clockNow", "fai_clock_now", 1),
-    ("randomNextInt", "fai_random_next_int", 1),
-    ("fileRead", "fai_file_read", 1),
-    ("fileWrite", "fai_file_write", 2),
-    ("envGet", "fai_env_get", 1),
-    ("envArgs", "fai_env_args", 1),
-];
-
-/// The `(native symbol, arity)` of a built-in host capability named `name`, if it
-/// is one. Used by lowering to turn a saturated host-builtin application into a
-/// [`ExprKind::Foreign`] call.
-#[must_use]
-pub fn host_foreign(name: &str) -> Option<(&'static str, usize)> {
-    HOST_FOREIGN.iter().find(|(fai, _, _)| *fai == name).map(|(_, native, arity)| (*native, *arity))
-}
-
 /// The unboxed-`f64` field bitmap for a sequence of **declared** field types in
 /// layout order: bit `i` set when field `i`'s type is a monomorphic `Float` (not a
 /// type variable instantiated to `Float`). Bounded at 64 fields — a wider cell

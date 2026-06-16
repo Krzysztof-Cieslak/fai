@@ -3351,5 +3351,46 @@ Editor integration:
     pipeline proptests and their bounds-check shadow checks. Issue #144 (under #136);
     follows D133 (`Array Float` unboxed) and D128 (inline array access).
 
+- **D137 Generic foreign calls + a `foreign` declaration (extensible host side).**
+  The host capabilities were a closed set: each of the seven host primitives
+  (`Console`/`Clock`/`Random`/`FileSystem`/`Env`) was a dedicated `Prim` variant
+  threaded through five synchronized tables (the resolver intrinsic allow-list, the
+  type schemes, the `Prim` enum + `from_builtin`/`runtime_symbol`/`arity`, the JIT
+  symbol registry, and the runtime implementations), so a new host meant editing
+  the compiler. Since a capability already compiled as a generic out-of-line
+  runtime call (the `Prim`-enum membership bought it nothing), the host side is now
+  extensible too — the type side already was (effect rows track interface
+  references, not a fixed enum).
+  - **One generic Core node.** A new `ExprKind::Foreign { symbol, args }` names its
+    native runtime symbol directly (an interned `Symbol`, which
+    `Prim::runtime_symbol -> &'static str` cannot carry). It consumes its operands
+    and returns an owned result like a primitive, but is a **host-effect barrier**
+    (never reordered ahead of recursion, never fused across, never borrows). It
+    serializes by symbol *name* across the run-worker wire and is part of the
+    object-cache fingerprint; codegen routes it through the existing out-of-line
+    path (the runtime-import cache rekeyed to an owned `String`). The seven host
+    `Prim` variants are removed.
+  - **A `foreign` declaration.** `foreign "native_symbol" name : Type` binds `name`
+    to a native function with no Fai body. It is modeled as a definition whose
+    synthesized entry is the un-wrapped eta-expansion `fn(p…) = Foreign{symbol, [p…]}`
+    (arity = the type's arrow count), so a saturated call folds to a bare `Foreign`
+    via the prim/foreign-wrapper inliner and a first-class reference compiles the
+    entry closure — no new resolution, calling-convention, or codegen path. Its
+    `DefInfo` points its `signature` and `binding` at the one foreign item, so the
+    written type *is* its declared scheme. Rules: a `foreign` is **always
+    module-private** (`public foreign` is **FAI2019** — a raw native function is
+    exposed only through a capability interface), and its signature **must name a
+    capability in its effect row** (**FAI5002**), closing the pure-laundering hole.
+  - **Dogfood.** The seven hosts are now ordinary `foreign` declarations in
+    `std/Prelude.fai`; the Rust name tables are deleted, leaving only the
+    symbol→pointer registry (JIT) and the linked archive (AOT). `Prim.*` is no
+    longer the path for host effects.
+  - **Contract purity (amends D14).** The contract-purity check (`FAI6004`) is
+    redefined off effect rows: an interface is a *capability* iff it declares an
+    **effect-carrying method**, so a user-declared capability is rejected in a
+    contract for free (the hardcoded host-name list is gone), while a plain pure
+    interface stays usable.
+  - Issue #132. Builds on the type-level effect rows (D115).
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

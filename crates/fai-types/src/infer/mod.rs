@@ -44,14 +44,16 @@ pub fn declared_scheme(db: &dyn Db, file: SourceFile, name: Symbol) -> Option<Sc
     let sig_item = def.signature?;
     let parsed = fai_syntax::parse(db, file);
     let module = &parsed.module;
-    if let ItemKind::Signature { ty, .. } = &module.items[sig_item.index()].kind {
-        // Resolve the signature's type names in the definition's module scope.
-        let mut scope: Vec<Symbol> = name.as_str().split('.').map(Symbol::intern).collect();
-        scope.pop();
-        Some(crate::lower::lower_signature_in(db, file, module, &scope, *ty))
-    } else {
-        None
-    }
+    // A `foreign` decl carries its own type (its `DefInfo.signature` points at the
+    // foreign item itself), so its written type *is* its declared scheme.
+    let ty = match &module.items[sig_item.index()].kind {
+        ItemKind::Signature { ty, .. } | ItemKind::Foreign { ty, .. } => *ty,
+        _ => return None,
+    };
+    // Resolve the signature's type names in the definition's module scope.
+    let mut scope: Vec<Symbol> = name.as_str().split('.').map(Symbol::intern).collect();
+    scope.pop();
+    Some(crate::lower::lower_signature_in(db, file, module, &scope, ty))
 }
 
 /// The environment used while inferring one SCC: same-SCC monomorphic types plus
