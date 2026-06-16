@@ -1,9 +1,13 @@
 module CoinChange
 
 // Count the ways to make amount n from a fixed coin set by dynamic programming
-// over a `HashDict` keyed by sub-amount, taking each result modulo a large prime so
-// it stays exact. This exercises O(1)-average `HashDict` get/insert in a tight
-// nested loop. Used by the Rust-vs-Fai runtime benchmark.
+// over a flat, mutable `Array Int` indexed by sub-amount, taking each result modulo
+// a large prime so it stays exact. This mirrors the Rust reference's
+// `vec![0i64; amount + 1]` one for one — an O(1) integer-indexed read/write with
+// no hashing — so it measures the array representation, not a hash container. The
+// `ways` array is threaded linearly, so each `unsafeSet` updates the
+// uniquely-owned buffer in place (the reference-counting reuse model), like Rust's
+// `&mut`. Used by the Rust-vs-Fai runtime benchmark.
 modulus : Int
 let modulus = 1000000007
 
@@ -11,17 +15,17 @@ coins : List Int
 let coins = [1, 2, 5, 10, 25, 50]
 
 // One coin's pass: for a in [coin, amount], add ways[a - coin] into ways[a].
-coinPass : Int -> Int -> Int -> HashDict Int Int -> HashDict Int Int
+coinPass : Int -> Int -> Int -> Array Int -> Array Int
 let coinPass coin a amount ways =
   if a > amount then
     ways
   else
-    let cur = HashDict.getOr 0 a ways
-    let prev = HashDict.getOr 0 (a - coin) ways
-    coinPass coin (a + 1) amount (HashDict.insert a ((cur + prev) % modulus) ways)
+    let cur = Array.unsafeGet a ways
+    let prev = Array.unsafeGet (a - coin) ways
+    coinPass coin (a + 1) amount (Array.unsafeSet a ((cur + prev) % modulus) ways)
 
 // Apply every coin's pass in turn.
-allCoins : List Int -> Int -> HashDict Int Int -> HashDict Int Int
+allCoins : List Int -> Int -> Array Int -> Array Int
 let allCoins cs amount ways =
   match cs with
   | [] -> ways
@@ -29,7 +33,7 @@ let allCoins cs amount ways =
 
 /// The benchmark workload: the number of ways to make n (modulo a large prime).
 public run : Int -> Int
-let run n = HashDict.getOr 0 n (allCoins coins n (HashDict.insert 0 1 HashDict.empty))
+let run n = Array.unsafeGet n (allCoins coins n (Array.unsafeSet 0 1 (Array.repeat (n + 1) 0)))
 example: run 5 = 4
 
 public main : Runtime -> Unit / { Console }
