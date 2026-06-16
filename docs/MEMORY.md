@@ -364,9 +364,14 @@ Native backend (Core IR, reference counting, codegen, runtime, object cache):
   `body_types` query, so the later record-field-offset work need not retrofit
   types — even though the thin-slice codegen leans on tagging and uses the types
   lightly.
-- **D53 Entry & scope:** the entry file must define `public main : Runtime ->
-  Unit`; the backend compiles only the transitive closure reachable from `main`
-  (over the lowered `Global` references, so prelude helpers are included).
+- **D53 Entry & scope:** the entry file must define `public main : R -> Unit`,
+  where `R` is whatever the **runtime root** produces — by default the standard
+  `defaultRuntime` (`R = Runtime`), or, when the entry file defines a `runtime`
+  builder, that builder's record (an *extended* bundle; see D137). The backend
+  compiles only the transitive closure reachable from `main` (over the lowered
+  `Global` references, so prelude helpers are included), plus the runtime root as a
+  second root (the trampoline injects it; it is not referenced from `main`'s body).
+  *(Amended by D137: the root was the fixed `defaultRuntime` before.)*
 - **D54 Runtime embedding:** `fai-runtime` is **std-only**, so the driver's build
   script compiles it to a static archive with a single `$RUSTC` invocation and
   embeds it (`include_bytes!`); produced executables are self-contained. Host
@@ -3390,6 +3395,22 @@ Editor integration:
     **effect-carrying method**, so a user-declared capability is rejected in a
     contract for free (the hardcoded host-name list is gone), while a plain pure
     interface stays usable.
+  - **Extensible `Runtime` bundle (amends D53).** The default capability instances
+    (`stdConsole`/…) and `defaultRuntime` are now `public`, so a program can compose
+    them with its own (foreign-backed) capabilities into an extended record. The
+    runtime root prefers a zero-arity `runtime` builder in the **entry file**,
+    falling back to `defaultRuntime`; the untyped trampoline forces it and applies
+    `main` to it unchanged, so `main : R -> Unit` for that `R` (a concrete record —
+    constant-offset field access; row-polymorphic least authority stays an internal
+    call-boundary feature). No trampoline-Rust change beyond which definition is
+    chosen.
+  - **Forward-target lambda linkage fix.** A definition that emits a separate
+    token-taking reuse object *and* has a lifted lambda the reuse body reconstructs
+    (a capturing capability-instance method built by a runtime builder is the
+    natural trigger) now **exports** its `{base}__fn{i}` lambda symbols, which the
+    reuse object imports — previously they were object-local, so the cross-object
+    reference failed to link. The cache's codegen tag is bumped
+    (`reuse-lambda-export`) so a warm cache cannot serve a pre-fix object.
   - Issue #132. Builds on the type-level effect rows (D115).
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,

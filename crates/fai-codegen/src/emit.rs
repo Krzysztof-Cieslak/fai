@@ -143,11 +143,16 @@ pub(crate) fn build_def<M: Module>(
     // every lifted lambda keeps the uniform array ABI (reached through `apply_n`).
     let entry_sig = entry_signature(module, arity, &abi);
 
-    // Declare every function (entry exported, lifted lambdas local).
+    // Declare every function (entry exported, lifted lambdas local). When this
+    // definition also emits a separate reuse-entry object (a forward target), that
+    // object reconstructs the same body and may reference a capturing lambda's
+    // function pointer (`{base}__fn{i}`, which it imports), so the lambdas must be
+    // exported here for the cross-object reference to link.
+    let lambdas_exported = lowered.reuse_entry.is_some();
     let mut fn_ids = Vec::with_capacity(lowered.fns.len());
     for i in 0..lowered.fns.len() {
         let name = if i == 0 { base.clone() } else { format!("{base}__fn{i}") };
-        let linkage = if i == 0 { Linkage::Export } else { Linkage::Local };
+        let linkage = if i == 0 || lambdas_exported { Linkage::Export } else { Linkage::Local };
         let sig = if i == 0 { &entry_sig } else { &uniform_sig };
         fn_ids.push(module.declare_function(&name, linkage, sig).expect("declare function"));
     }

@@ -123,12 +123,17 @@ foreign "fai_env_get" envGet : String -> (Bool * String) / { Env }
 
 foreign "fai_env_args" envArgs : Unit -> List String / { Env }
 
-// The default host capabilities, backed by the foreign primitives above. Private:
-// a program obtains them only as the `Runtime` `main` is applied to.
+// The default host capabilities, backed by the foreign primitives above. They are
+// `public` so a program can compose its own extended `Runtime` from them plus its
+// own (foreign-backed) capability instances; ordinarily a program just receives
+// them bundled in the `Runtime` `main` is applied to.
+public stdConsole : Console
 let stdConsole = { Console with writeLine s = consoleWriteLine s }
 
+public stdClock : Clock
 let stdClock = { Clock with now u = clockNow u }
 
+public stdRandom : Random
 let stdRandom = { Random with nextInt n = randomNextInt n }
 
 let readFileHost path =
@@ -143,11 +148,17 @@ let envGetHost name =
   match envGet name with
   | (found, value) -> if found then Some value else None
 
+public stdFs : FileSystem
 let stdFs = { FileSystem with readFile = readFileHost, writeFile = writeFileHost }
 
+public stdEnv : Env
 let stdEnv = { Env with args u = envArgs u, get = envGetHost }
 
-// The standard `Runtime` the entry trampoline applies `main` to.
+/// The standard `Runtime` the entry trampoline applies `main` to when the entry
+/// file defines no `runtime` builder of its own. A program may instead define its
+/// own `runtime` (composing these defaults with extra capabilities) to extend the
+/// bundle `main` receives.
+public defaultRuntime : Runtime
 let defaultRuntime =
   { clock = stdClock, console = stdConsole, env = stdEnv, fs = stdFs, random = stdRandom }
 

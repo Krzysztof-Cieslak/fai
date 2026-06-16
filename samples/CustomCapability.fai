@@ -1,0 +1,34 @@
+module CustomCapability
+
+// A program can define its **own** capability and hand it to `main` in an
+// extended `Runtime`. The capability interfaces, the default instances, and the
+// `Runtime` bundle are ordinary library code, so nothing here forks the compiler.
+// A user-defined capability. It is effect-parameterized (`'e`), like the host
+// capabilities: a method that performs the parameter effect, so an instance
+// reports the effect it actually uses (here, whatever backs the banner).
+public interface Banner 'e =
+  banner : String -> Unit / 'e
+
+// An instance backed by the standard console: writing a framed title performs the
+// console's effect, so the instance has type `Banner { Console }`.
+public bannerOverConsole : Console -> Banner { Console }
+let bannerOverConsole console =
+  { Banner with banner title = console.writeLine ("=== " ++ title ++ " ===") }
+
+// The program's own runtime shape: the standard console plus the banner. (Record
+// extension is future work, so this is a fresh record rather than `{ default with
+// … }`.)
+public type AppRuntime = { banner : Banner { Console }, console : Console }
+
+// The entry trampoline applies `main` to a binding named `runtime` in the entry
+// file when one is present (falling back to the standard `defaultRuntime`
+// otherwise). This one composes the public default console with the custom banner.
+public runtime : AppRuntime
+let runtime = { banner = bannerOverConsole stdConsole, console = stdConsole }
+
+// `main` receives the extended bundle and uses both capabilities; its effect row
+// records the console reach (the banner is backed by the console).
+public main : AppRuntime -> Unit / { Console }
+let main app =
+  let u = app.banner.banner "Welcome"
+  app.console.writeLine "Body text"
