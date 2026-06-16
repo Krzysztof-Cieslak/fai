@@ -47,6 +47,13 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Install OCaml
+        # The runtime/memory benches compare against an ocamlopt-compiled native
+        # baseline alongside the Rust one; without it those OCaml rows are simply
+        # skipped. The `ocaml` package provides the native `ocamlopt` compiler and
+        # its standard library — the baseline needs no opam packages.
+        run: sudo apt-get update && sudo apt-get install -y ocaml
+
       - name: Run benchmarks
         # `DIVAN_MAX_TIME` caps the wall time per benchmarked function. A
         # pull-request run uses a short cap (1s) so the whole suite finishes

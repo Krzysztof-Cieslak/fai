@@ -23,7 +23,7 @@ use camino::Utf8PathBuf;
 use divan::Bencher;
 use fai_db::{Db, FaiDatabase};
 use fai_driver::build_native;
-use fai_tests::algorithms::{Algorithm, by_module};
+use fai_tests::algorithms::{Algorithm, Oracle, by_module};
 
 fn main() {
     // The build/link + spawn path is skipped on Windows (see the module docs); on
@@ -81,8 +81,58 @@ fn bench_rust_binary(bencher: Bencher, module: &str) {
     bencher.bench(|| divan::black_box(spawn(Command::new(baseline).args([module, size.as_str()]))));
 }
 
-/// Declares a `mod <name> { rust; fai }` per algorithm, matching the
-/// `algorithms_jit` layout so the summary pairs the two families' rows.
+/// Times the OCaml release binary running the same workload, or skips when the
+/// `ocamlopt` toolchain is unavailable. When OCaml is absent the function returns
+/// without benching, so divan renders an empty leaf (the summary skips it) and the
+/// run still works without OCaml installed; the Benchmarks workflow installs it.
+fn bench_ocaml_binary(bencher: Bencher, module: &str) {
+    let algo = by_module(module).expect("registered algorithm");
+    let Some(exe) = fai_tests::ocaml::baseline() else {
+        return;
+    };
+    let size = algo.aot_size.to_string();
+    // Confirm it runs cleanly and agrees with the Rust oracle once (untimed), so a
+    // wrong OCaml implementation fails the bench rather than reporting a
+    // meaningless timing.
+    let first = spawn(Command::new(exe).args([module, size.as_str()]));
+    assert!(first.status.success(), "{module} ocaml binary exited with {:?}", first.status);
+    verify_ocaml(algo, &first.stdout);
+    bencher.bench(|| divan::black_box(spawn(Command::new(exe).args([module, size.as_str()]))));
+}
+
+/// Asserts the OCaml baseline's printed output agrees with the Rust oracle at the
+/// AOT size (floats within a tolerance for ocamlopt-vs-LLVM rounding).
+fn verify_ocaml(algo: &Algorithm, stdout: &[u8]) {
+    let printed = std::str::from_utf8(stdout).expect("ocaml output is UTF-8").trim();
+    match algo.oracle {
+        Oracle::Int(f) => {
+            let value: i64 = printed
+                .parse()
+                .unwrap_or_else(|_| panic!("{} ocaml printed an int: {printed:?}", algo.module));
+            assert_eq!(
+                value,
+                f(algo.aot_size),
+                "{} ocaml disagrees with the Rust oracle",
+                algo.module
+            );
+        }
+        Oracle::Float(f) => {
+            let value: f64 = printed
+                .parse()
+                .unwrap_or_else(|_| panic!("{} ocaml printed a float: {printed:?}", algo.module));
+            let expected = f(algo.aot_size);
+            let tolerance = 1e-6 * expected.abs().max(1.0);
+            assert!(
+                (value - expected).abs() < tolerance,
+                "{} ocaml {value} differs from the Rust oracle {expected}",
+                algo.module
+            );
+        }
+    }
+}
+
+/// Declares a `mod <name> { rust; fai; ocaml }` per algorithm, so the summary
+/// pairs the Fai row against its Rust and OCaml baselines.
 macro_rules! algorithm_benches {
     ($($name:ident => $module:literal),* $(,)?) => {
         $(
@@ -97,6 +147,11 @@ macro_rules! algorithm_benches {
                 #[divan::bench]
                 fn fai(bencher: Bencher) {
                     super::bench_fai_binary(bencher, $module);
+                }
+
+                #[divan::bench]
+                fn ocaml(bencher: Bencher) {
+                    super::bench_ocaml_binary(bencher, $module);
                 }
             }
         )*

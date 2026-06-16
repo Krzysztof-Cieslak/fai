@@ -178,23 +178,41 @@ impl Report {
 
             let ratios = self.ratios_for_group(group);
             if !ratios.is_empty() {
-                out.push_str("\n**Fai vs Rust** (median; lower ratio is better)\n\n");
-                out.push_str("| Benchmark | Variant | Rust | Fai | Fai/Rust |\n");
-                out.push_str("| --- | --- | --: | --: | --: |\n");
-                for r in ratios {
-                    let ratio = match r.ratio {
-                        Some(x) => format!("{x:.2}×"),
-                        None => "—".to_owned(),
-                    };
-                    let _ = writeln!(
-                        out,
-                        "| {} | {} | {} | {} | {} |",
-                        escape(&r.bench),
-                        escape(&r.variant),
-                        escape(&r.rust),
-                        escape(&r.fai),
-                        escape(&ratio),
+                let has_ocaml = ratios.iter().any(|r| !r.ocaml.is_empty());
+                if has_ocaml {
+                    out.push_str("\n**Fai vs Rust + OCaml** (median; lower ratio is better)\n\n");
+                    out.push_str(
+                        "| Benchmark | Variant | Rust | OCaml | Fai | Fai/Rust | Fai/OCaml |\n",
                     );
+                    out.push_str("| --- | --- | --: | --: | --: | --: | --: |\n");
+                    for r in ratios {
+                        let _ = writeln!(
+                            out,
+                            "| {} | {} | {} | {} | {} | {} | {} |",
+                            escape(&r.bench),
+                            escape(&r.variant),
+                            escape(&r.rust),
+                            escape(&r.ocaml),
+                            escape(&r.fai),
+                            escape(&ratio_cell(r.ratio_rust)),
+                            escape(&ratio_cell(r.ratio_ocaml)),
+                        );
+                    }
+                } else {
+                    out.push_str("\n**Fai vs Rust** (median; lower ratio is better)\n\n");
+                    out.push_str("| Benchmark | Variant | Rust | Fai | Fai/Rust |\n");
+                    out.push_str("| --- | --- | --: | --: | --: |\n");
+                    for r in ratios {
+                        let _ = writeln!(
+                            out,
+                            "| {} | {} | {} | {} | {} |",
+                            escape(&r.bench),
+                            escape(&r.variant),
+                            escape(&r.rust),
+                            escape(&r.fai),
+                            escape(&ratio_cell(r.ratio_rust)),
+                        );
+                    }
                 }
             }
 
@@ -203,25 +221,46 @@ impl Report {
 
         let memory = self.memory_ratios();
         if !memory.is_empty() {
-            out.push_str("<details><summary><b>memory: Fai vs Rust (peak RSS)</b></summary>\n\n");
+            let has_ocaml = memory.iter().any(|r| r.ocaml.is_some());
+            let title = if has_ocaml {
+                "memory: Fai vs Rust + OCaml (peak RSS)"
+            } else {
+                "memory: Fai vs Rust (peak RSS)"
+            };
+            let _ = write!(out, "<details><summary><b>{title}</b></summary>\n\n");
             out.push_str("Peak resident set size of each delivered binary at its AOT workload ");
-            out.push_str("(lower Fai/Rust is better). Small-heap rows are dominated by fixed ");
+            out.push_str("(lower ratio is better). Small-heap rows are dominated by fixed ");
             out.push_str("process overhead; the heap-heavy ones carry the signal.\n\n");
-            out.push_str("| Algorithm | Rust (KiB) | Fai (KiB) | Fai/Rust |\n");
-            out.push_str("| --- | --: | --: | --: |\n");
-            for row in memory {
-                let ratio = match row.ratio {
-                    Some(x) => format!("{x:.2}×"),
-                    None => "—".to_owned(),
-                };
-                let _ = writeln!(
-                    out,
-                    "| {} | {} | {} | {} |",
-                    escape(&row.algorithm),
-                    kib_cell(row.rust),
-                    kib_cell(row.fai),
-                    escape(&ratio),
+            if has_ocaml {
+                out.push_str(
+                    "| Algorithm | Rust (KiB) | OCaml (KiB) | Fai (KiB) | Fai/Rust | Fai/OCaml |\n",
                 );
+                out.push_str("| --- | --: | --: | --: | --: | --: |\n");
+                for row in memory {
+                    let _ = writeln!(
+                        out,
+                        "| {} | {} | {} | {} | {} | {} |",
+                        escape(&row.algorithm),
+                        kib_cell(row.rust),
+                        kib_cell(row.ocaml),
+                        kib_cell(row.fai),
+                        escape(&ratio_cell(row.ratio_rust)),
+                        escape(&ratio_cell(row.ratio_ocaml)),
+                    );
+                }
+            } else {
+                out.push_str("| Algorithm | Rust (KiB) | Fai (KiB) | Fai/Rust |\n");
+                out.push_str("| --- | --: | --: | --: |\n");
+                for row in memory {
+                    let _ = writeln!(
+                        out,
+                        "| {} | {} | {} | {} |",
+                        escape(&row.algorithm),
+                        kib_cell(row.rust),
+                        kib_cell(row.fai),
+                        escape(&ratio_cell(row.ratio_rust)),
+                    );
+                }
             }
             out.push_str("\n</details>\n\n");
         }
@@ -229,10 +268,12 @@ impl Report {
         out
     }
 
-    /// Pairs the `rust`/`fai` rows of `group` into Fai-vs-Rust ratio rows, keyed
-    /// by benchmark and variant (the case with the leading `rust`/`fai` segment
-    /// removed), in first-seen order. A benchmark whose group has no such pairs
-    /// yields nothing, so non-comparison groups are unaffected.
+    /// Pairs the `rust`/`ocaml`/`fai` rows of `group` into Fai-vs-baselines ratio
+    /// rows, keyed by benchmark and variant (the case with the leading side
+    /// segment removed), in first-seen order. A row is kept only when it has a
+    /// `fai` median and at least one baseline, so non-comparison groups yield
+    /// nothing and a group with only `rust`/`fai` (the in-process bench) keeps its
+    /// two-side shape.
     fn ratios_for_group(&self, group: &str) -> Vec<RatioRow> {
         let mut order: Vec<(String, String)> = Vec::new();
         let mut table: std::collections::HashMap<(String, String), RatioRow> =
@@ -246,33 +287,34 @@ impl Report {
                     bench: row.bench.clone(),
                     variant: variant.to_owned(),
                     rust: String::new(),
+                    ocaml: String::new(),
                     fai: String::new(),
-                    ratio: None,
+                    ratio_rust: None,
+                    ratio_ocaml: None,
                 }
             });
-            if side == "rust" {
-                entry.rust = row.median.clone();
-            } else {
-                entry.fai = row.median.clone();
+            match side {
+                "rust" => entry.rust = row.median.clone(),
+                "ocaml" => entry.ocaml = row.median.clone(),
+                _ => entry.fai = row.median.clone(),
             }
         }
         order
             .into_iter()
             .filter_map(|key| table.remove(&key))
-            .filter(|r| !r.rust.is_empty() && !r.fai.is_empty())
+            .filter(|r| !r.fai.is_empty() && (!r.rust.is_empty() || !r.ocaml.is_empty()))
             .map(|mut r| {
-                r.ratio = match (parse_duration(&r.rust), parse_duration(&r.fai)) {
-                    (Some(rust), Some(fai)) if rust > 0.0 => Some(fai / rust),
-                    _ => None,
-                };
+                r.ratio_rust = duration_ratio(&r.fai, &r.rust);
+                r.ratio_ocaml = duration_ratio(&r.fai, &r.ocaml);
                 r
             })
             .collect()
     }
 
-    /// Pairs the `fai`/`rust` peak-memory samples per algorithm into comparison
-    /// rows (in first-seen order), computing the `fai/rust` peak-RSS ratio. An
-    /// algorithm missing one side keeps a `None` for that side and no ratio.
+    /// Pairs the `fai`/`rust`/`ocaml` peak-memory samples per algorithm into
+    /// comparison rows (in first-seen order), computing the `fai/rust` and
+    /// `fai/ocaml` peak-RSS ratios. An algorithm missing a side keeps a `None` for
+    /// it and no ratio against it.
     fn memory_ratios(&self) -> Vec<MemRatioRow> {
         let mut order: Vec<String> = Vec::new();
         let mut table: std::collections::HashMap<String, MemRatioRow> =
@@ -283,24 +325,24 @@ impl Report {
                 MemRatioRow {
                     algorithm: sample.algorithm.clone(),
                     rust: None,
+                    ocaml: None,
                     fai: None,
-                    ratio: None,
+                    ratio_rust: None,
+                    ratio_ocaml: None,
                 }
             });
-            if sample.side == "rust" {
-                entry.rust = Some(sample.kib);
-            } else {
-                entry.fai = Some(sample.kib);
+            match sample.side.as_str() {
+                "rust" => entry.rust = Some(sample.kib),
+                "ocaml" => entry.ocaml = Some(sample.kib),
+                _ => entry.fai = Some(sample.kib),
             }
         }
         order
             .into_iter()
             .filter_map(|key| table.remove(&key))
             .map(|mut r| {
-                r.ratio = match (r.rust, r.fai) {
-                    (Some(rust), Some(fai)) if rust > 0 => Some(fai as f64 / rust as f64),
-                    _ => None,
-                };
+                r.ratio_rust = mem_ratio(r.fai, r.rust);
+                r.ratio_ocaml = mem_ratio(r.fai, r.ocaml);
                 r
             })
             .collect()
@@ -343,40 +385,56 @@ impl Report {
     }
 }
 
-/// One Fai-vs-Rust comparison row (a paired `rust`/`fai` measurement).
+/// One Fai-vs-baselines comparison row: the `fai` measurement paired with its
+/// `rust` and (when present) `ocaml` baselines for the same benchmark/variant.
 #[derive(Debug, Clone, PartialEq)]
 struct RatioRow {
     /// The benchmark (algorithm) name.
     bench: String,
-    /// The remaining case path after the `rust`/`fai` side (e.g. a size), or empty.
+    /// The remaining case path after the side (e.g. a size), or empty.
     variant: String,
-    /// The Rust median, as divan rendered it.
+    /// The Rust median, as divan rendered it (empty if absent).
     rust: String,
+    /// The OCaml median, as divan rendered it (empty if absent).
+    ocaml: String,
     /// The Fai median, as divan rendered it.
     fai: String,
     /// `fai / rust`, or `None` if either median could not be parsed.
-    ratio: Option<f64>,
+    ratio_rust: Option<f64>,
+    /// `fai / ocaml`, or `None` if either median could not be parsed.
+    ratio_ocaml: Option<f64>,
 }
 
-/// One Fai-vs-Rust peak-memory comparison row (paired `fai`/`rust` peak RSS).
+/// One Fai-vs-baselines peak-memory comparison row: the `fai` peak RSS paired with
+/// its `rust` and (when present) `ocaml` baselines for one algorithm.
 #[derive(Debug, Clone, PartialEq)]
 struct MemRatioRow {
     /// The algorithm (sample module) name.
     algorithm: String,
     /// The Rust binary's peak RSS in KiB, if measured.
     rust: Option<u64>,
+    /// The OCaml binary's peak RSS in KiB, if measured.
+    ocaml: Option<u64>,
     /// The Fai binary's peak RSS in KiB, if measured.
     fai: Option<u64>,
     /// `fai / rust`, or `None` if a side is missing or Rust measured zero.
-    ratio: Option<f64>,
+    ratio_rust: Option<f64>,
+    /// `fai / ocaml`, or `None` if a side is missing or OCaml measured zero.
+    ratio_ocaml: Option<f64>,
 }
 
-/// Splits a case into its leading `rust`/`fai` side and the remaining variant
-/// (the rest of the ` / `-separated path), or `None` if it names neither side.
+/// Splits a case into its leading `rust`/`ocaml`/`fai` side and the remaining
+/// variant (the rest of the ` / `-separated path), or `None` if it names none of
+/// them.
 fn split_side(case: &str) -> Option<(&str, &str)> {
     let mut parts = case.splitn(2, " / ");
     let side = parts.next()?;
-    if side == "rust" || side == "fai" { Some((side, parts.next().unwrap_or(""))) } else { None }
+    if is_side(side) { Some((side, parts.next().unwrap_or(""))) } else { None }
+}
+
+/// Whether `s` names one of the comparison sides (`fai` and its baselines).
+fn is_side(s: &str) -> bool {
+    s == "rust" || s == "ocaml" || s == "fai"
 }
 
 /// Parses a `MEMSTAT\t<algorithm>\t<side>\t<kib>` line from the `algorithms_mem`
@@ -388,7 +446,7 @@ fn parse_memstat(line: &str) -> Option<MemSample> {
     let algorithm = fields.next()?.trim();
     let side = fields.next()?.trim();
     let kib: u64 = fields.next()?.trim().parse().ok()?;
-    if algorithm.is_empty() || (side != "fai" && side != "rust") {
+    if algorithm.is_empty() || !is_side(side) {
         return None;
     }
     Some(MemSample { algorithm: algorithm.to_owned(), side: side.to_owned(), kib })
@@ -400,6 +458,32 @@ fn kib_cell(kib: Option<u64>) -> String {
     match kib {
         Some(kib) => kib.to_string(),
         None => "—".to_owned(),
+    }
+}
+
+/// `fai / baseline` peak-RSS ratio, or `None` when a side is missing or the
+/// baseline measured zero.
+fn mem_ratio(fai: Option<u64>, baseline: Option<u64>) -> Option<f64> {
+    match (fai, baseline) {
+        (Some(fai), Some(base)) if base > 0 => Some(fai as f64 / base as f64),
+        _ => None,
+    }
+}
+
+/// Formats a ratio as `1.23×`, or a dash when it could not be computed.
+fn ratio_cell(ratio: Option<f64>) -> String {
+    match ratio {
+        Some(x) => format!("{x:.2}×"),
+        None => "—".to_owned(),
+    }
+}
+
+/// `fai / baseline` from two divan durations, or `None` when either is
+/// unparseable or the baseline is missing or zero.
+fn duration_ratio(fai: &str, baseline: &str) -> Option<f64> {
+    match (parse_duration(fai), parse_duration(baseline)) {
+        (Some(fai), Some(base)) if base > 0.0 => Some(fai / base),
+        _ => None,
     }
 }
 
@@ -612,9 +696,12 @@ algorithms_jit  fastest       │ slowest       │ median        │ mean      
         assert_eq!(ratios[0].variant, "");
         assert_eq!(ratios[0].rust, "996.8 µs");
         assert_eq!(ratios[0].fai, "14.51 ms");
-        let ratio = ratios[0].ratio.expect("a ratio");
+        let ratio = ratios[0].ratio_rust.expect("a ratio");
         assert!((ratio - 14_510_000.0 / 996_800.0).abs() < 1e-6, "{ratio}");
         assert_eq!(ratios[1].bench, "pi");
+        // The in-process bench has no OCaml side, so its rows stay two-sided.
+        assert_eq!(ratios[0].ocaml, "");
+        assert_eq!(ratios[0].ratio_ocaml, None);
     }
 
     #[test]
@@ -633,6 +720,79 @@ algorithms_jit  fastest       │ slowest       │ median        │ mean      
         // The `inference`/`lsp` sample has no rust/fai pairs.
         assert!(report.ratios_for_group("inference").is_empty());
         assert!(!report.to_markdown(&LinkBase::default()).contains("**Fai vs Rust**"));
+    }
+
+    /// A three-way runtime-comparison group as `algorithms_aot` renders it once
+    /// OCaml is present: each algorithm a parent node with `rust`, `ocaml`, and
+    /// `fai` leaves.
+    const THREE_WAY: &str = "\
+     Running benches/algorithms_aot.rs (target/release/deps/algorithms_aot-1)
+algorithms_aot  fastest       │ slowest       │ median        │ mean          │ samples │ iters
+╰─ fib                        │               │               │               │         │
+   ├─ rust      10.0 ms       │ 10.2 ms       │ 10.0 ms       │ 10.0 ms       │ 100     │ 100
+   ├─ ocaml     12.0 ms       │ 12.2 ms       │ 12.0 ms       │ 12.0 ms       │ 100     │ 100
+   ╰─ fai       40.0 ms       │ 41.0 ms       │ 40.0 ms       │ 40.0 ms       │ 50      │ 50
+";
+
+    #[test]
+    fn pairs_three_sides_into_two_ratios() {
+        let report = Report::parse(THREE_WAY);
+        let ratios = report.ratios_for_group("algorithms_aot");
+        assert_eq!(ratios.len(), 1, "{ratios:#?}");
+        let r = &ratios[0];
+        assert_eq!(r.bench, "fib");
+        assert_eq!(r.rust, "10.0 ms");
+        assert_eq!(r.ocaml, "12.0 ms");
+        assert_eq!(r.fai, "40.0 ms");
+        assert_eq!(r.ratio_rust, Some(4.0)); // 40 / 10
+        assert!((r.ratio_ocaml.expect("an ocaml ratio") - 40.0 / 12.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn three_way_ratio_table_has_ocaml_columns() {
+        let report = Report::parse(THREE_WAY);
+        let md = report.to_markdown(&LinkBase::default());
+        assert!(md.contains("**Fai vs Rust + OCaml**"), "{md}");
+        assert!(
+            md.contains("| Benchmark | Variant | Rust | OCaml | Fai | Fai/Rust | Fai/OCaml |"),
+            "{md}"
+        );
+        // fib: 40/10 = 4.00×, 40/12 ≈ 3.33×.
+        assert!(md.contains("| fib |  | 10.0 ms | 12.0 ms | 40.0 ms | 4.00× | 3.33× |"), "{md}");
+    }
+
+    /// Three-way peak-memory samples (`algorithms_mem` with OCaml installed).
+    const MEMSTATS_3: &str = "\
+MEMSTAT\tfib\tfai\t8000
+MEMSTAT\tfib\trust\t2000
+MEMSTAT\tfib\tocaml\t4000
+";
+
+    #[test]
+    fn pairs_three_way_memory_samples() {
+        let report = Report::parse(MEMSTATS_3);
+        let ratios = report.memory_ratios();
+        assert_eq!(ratios.len(), 1, "{ratios:#?}");
+        let r = &ratios[0];
+        assert_eq!(r.rust, Some(2000));
+        assert_eq!(r.ocaml, Some(4000));
+        assert_eq!(r.fai, Some(8000));
+        assert_eq!(r.ratio_rust, Some(4.0)); // 8000 / 2000
+        assert_eq!(r.ratio_ocaml, Some(2.0)); // 8000 / 4000
+    }
+
+    #[test]
+    fn three_way_memory_table_has_ocaml_columns() {
+        let report = Report::parse(MEMSTATS_3);
+        let md = report.to_markdown(&LinkBase::default());
+        assert!(md.contains("memory: Fai vs Rust + OCaml (peak RSS)"), "{md}");
+        assert!(
+            md.contains(
+                "| Algorithm | Rust (KiB) | OCaml (KiB) | Fai (KiB) | Fai/Rust | Fai/OCaml |"
+            ),
+            "{md}"
+        );
+        assert!(md.contains("| fib | 2000 | 4000 | 8000 | 4.00× | 2.00× |"), "{md}");
     }
 
     /// The `algorithms_mem` bench output: tab-separated peak-RSS samples mixed
@@ -662,6 +822,11 @@ MEMSTAT\tmap_sum\trust\t3000
             parse_memstat("MEMSTAT\tfib\tfai\t4096"),
             Some(MemSample { algorithm: "fib".to_owned(), side: "fai".to_owned(), kib: 4096 })
         );
+        // The OCaml baseline is a recognized side too.
+        assert_eq!(
+            parse_memstat("MEMSTAT\tfib\tocaml\t4096"),
+            Some(MemSample { algorithm: "fib".to_owned(), side: "ocaml".to_owned(), kib: 4096 })
+        );
         // Wrong side, non-numeric size, missing fields, and unrelated lines.
         assert_eq!(parse_memstat("MEMSTAT\tfib\tboth\t4096"), None);
         assert_eq!(parse_memstat("MEMSTAT\tfib\tfai\tlots"), None);
@@ -679,9 +844,9 @@ MEMSTAT\tmap_sum\trust\t3000
         assert_eq!(ratios[0].algorithm, "fib");
         assert_eq!(ratios[0].rust, Some(2048));
         assert_eq!(ratios[0].fai, Some(4096));
-        assert_eq!(ratios[0].ratio, Some(2.0));
+        assert_eq!(ratios[0].ratio_rust, Some(2.0));
         assert_eq!(ratios[1].algorithm, "map_sum");
-        assert_eq!(ratios[1].ratio, Some(30.0));
+        assert_eq!(ratios[1].ratio_rust, Some(30.0));
     }
 
     #[test]
@@ -691,7 +856,7 @@ MEMSTAT\tmap_sum\trust\t3000
         assert_eq!(ratios.len(), 1);
         assert_eq!(ratios[0].fai, Some(4096));
         assert_eq!(ratios[0].rust, None);
-        assert_eq!(ratios[0].ratio, None);
+        assert_eq!(ratios[0].ratio_rust, None);
     }
 
     #[test]

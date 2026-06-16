@@ -368,7 +368,7 @@ fai/
 ├── docs/
 │   ├── MEMORY.md        # design memory: standing risks + locked decisions
 │   ├── CLI.md           # CLI + daemon-protocol reference
-│   └── BENCHMARK.md     # benchmarking: perf guards, suites, Fai-vs-Rust comparison
+│   └── BENCHMARK.md     # benchmarking: perf guards, suites, Fai-vs-Rust-and-OCaml comparison
 ├── Cargo.toml           # workspace manifest + shared deps/lints      (M0)
 ├── Cargo.lock           # committed (reproducible builds)             (M0)
 ├── rust-toolchain.toml  # pinned toolchain (edition 2024)            (M0)
@@ -616,20 +616,26 @@ cache plus a fast linker (mold/lld).
   Fai-vs-Rust result diverges from its oracle** (a bug, not a perf regression),
   never on a timing. The `main`/on-demand run keeps the long settle time for steady
   medians. It never fails the build on timings; the deterministic guards remain the
-  sole performance gate. The Fai-vs-Rust
+  sole performance gate. The runtime/memory
    comparison spans **runtime** (the `algorithms_jit`/`algorithms_aot` benches) and
    **peak memory** (the `algorithms_mem` bench: each delivered binary self-reports
-   its peak resident set size, rendered as a "Fai vs Rust (peak RSS)" table). The
+   its peak resident set size). The in-process JIT bench compares Fai against an
+   idiomatic **Rust** oracle; the two delivered-binary benches add a third side, an
+   **`ocamlopt`-compiled OCaml** baseline (`crates/fai-tests/ocaml/baseline.ml`, the
+   native, strict, ML-family peer — skipped, not failed, when `ocamlopt` is absent),
+   so their tables read "Fai vs Rust + OCaml". The
    benchmarked algorithms (the `ALGORITHMS` registry in
    `crates/fai-tests/src/algorithms.rs`, each a Rust oracle paired with a
-   `samples/algorithms/` module) deliberately span a wide range of runtime shapes —
+   `samples/algorithms/` module and an OCaml dispatch arm) deliberately span a wide
+   range of runtime shapes —
    arithmetic/recursion, lists, persistent `Dict`/`Set` (including tuple keys),
    strings and ADTs, records with `Float` fields, dynamic programming, closures,
    bitwise intrinsics, and interface dispatch — so a performance change is measured
    broadly rather than against a few cases; the `registry_is_fully_covered` test
-   keeps the benches and validation in sync with the registry. The full
+   keeps the benches, the OCaml baseline, and validation in sync with the registry.
+   The full
    benchmarking guide — every suite, the CI report, and the comparison methodology
-   (including why the JIT and AOT benches' Rust baselines are not comparable) — is
+   (including why the JIT and AOT benches' baselines are not comparable) — is
    **`docs/BENCHMARK.md`**.
 
 The inference solver carries always-on thread-local **work counters** (variable

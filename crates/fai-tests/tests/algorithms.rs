@@ -321,16 +321,18 @@ fn list_sort_sample_is_valid() {
     validate("ListSort");
 }
 
-/// The four hand-maintained algorithm lists must not drift from the registry: the
-/// two runtime benches (`algorithms_jit`/`algorithms_aot`) name each module in a
-/// `algorithm_benches!` row, and this file declares a `validate` test per module.
-/// `algorithms_mem` and `algo-baseline` iterate the registry directly, so they
-/// need no guard. Reading the sources keeps a future registry addition from
-/// silently skipping a bench or its validation.
+/// The hand-maintained algorithm lists must not drift from the registry: the two
+/// runtime benches (`algorithms_jit`/`algorithms_aot`) name each module in a
+/// `algorithm_benches!` row, the OCaml baseline dispatches each module by name,
+/// and this file declares a `validate` test per module. `algorithms_mem` and
+/// `algo-baseline` iterate the registry directly, so they need no guard. Reading
+/// the sources keeps a future registry addition from silently skipping a bench,
+/// the OCaml baseline, or its validation.
 #[test]
 fn registry_is_fully_covered() {
     let jit = include_str!("../benches/algorithms_jit.rs");
     let aot = include_str!("../benches/algorithms_aot.rs");
+    let ocaml = include_str!("../ocaml/baseline.ml");
     let here = include_str!("algorithms.rs");
     for algo in ALGORITHMS {
         let benched = format!("\"{}\"", algo.module);
@@ -344,6 +346,11 @@ fn registry_is_fully_covered() {
             "{} is registered but not benched in algorithms_aot.rs",
             algo.module
         );
+        assert!(
+            ocaml.contains(&benched),
+            "{} is registered but not dispatched in ocaml/baseline.ml",
+            algo.module
+        );
         let validated = format!("validate(\"{}\")", algo.module);
         assert!(
             here.contains(&validated),
@@ -351,5 +358,58 @@ fn registry_is_fully_covered() {
             algo.module,
             algo.module
         );
+    }
+}
+
+/// Each algorithm's OCaml baseline — the third delivered binary in the runtime and
+/// memory comparison — must compute the same value as the shared Rust oracle at the
+/// AOT workload size, so the comparison pits matching computations against each
+/// other. Skipped when `ocamlopt` is not installed (the OCaml comparison is
+/// optional locally; the Benchmarks workflow installs it and its bench re-checks
+/// this). One looping test, rather than 40, so the OCaml baseline compiles once;
+/// each assertion names its module, so a failure still says which one diverged.
+#[test]
+fn ocaml_baseline_matches_oracle() {
+    let Some(exe) = fai_tests::ocaml::baseline() else {
+        eprintln!("ocamlopt not found; skipping the OCaml baseline validation");
+        return;
+    };
+    for algo in ALGORITHMS {
+        let output = std::process::Command::new(exe)
+            .args([algo.module, algo.aot_size.to_string().as_str()])
+            .output()
+            .expect("spawn ocaml baseline");
+        assert!(
+            output.status.success(),
+            "{} ocaml baseline exited with {:?}",
+            algo.module,
+            output.status
+        );
+        let printed = std::str::from_utf8(&output.stdout).expect("ocaml output is UTF-8").trim();
+        match algo.oracle {
+            Oracle::Int(f) => {
+                let got: i64 = printed.parse().unwrap_or_else(|_| {
+                    panic!("{} ocaml printed an int: {printed:?}", algo.module)
+                });
+                assert_eq!(
+                    got,
+                    f(algo.aot_size),
+                    "{} ocaml disagrees with the Rust oracle",
+                    algo.module
+                );
+            }
+            Oracle::Float(f) => {
+                let got: f64 = printed.parse().unwrap_or_else(|_| {
+                    panic!("{} ocaml printed a float: {printed:?}", algo.module)
+                });
+                let expected = f(algo.aot_size);
+                let tolerance = 1e-6 * expected.abs().max(1.0);
+                assert!(
+                    (got - expected).abs() < tolerance,
+                    "{} ocaml {got} differs from the Rust oracle {expected}",
+                    algo.module
+                );
+            }
+        }
     }
 }

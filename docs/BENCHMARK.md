@@ -105,15 +105,20 @@ All under `crates/fai-tests/benches/` unless noted. None is a CI gate.
 | `daemon` | Daemon-path pieces: content-addressed cache key, run-bundle serialization, wire framing, workspace file-state sync. |
 | `lsp` | Language-server latency: warm `analysis_*` (the work to answer a request) and full `roundtrip_*` through the real server over an in-memory connection. |
 | `algorithms_jit` | Runtime comparison, in-process compute: compiled Fai code vs idiomatic Rust (see below). |
-| `algorithms_aot` | Runtime comparison, delivered binaries: a `fai build` executable vs a Rust release binary, end to end (see below). |
-| `algorithms_mem` | Memory comparison, delivered binaries: peak resident set size of the same `fai build` vs Rust binaries (see below). |
+| `algorithms_aot` | Runtime comparison, delivered binaries: a `fai build` executable vs a Rust release binary vs an `ocamlopt`-compiled OCaml binary, end to end (see below). |
+| `algorithms_mem` | Memory comparison, delivered binaries: peak resident set size of the same `fai build` vs Rust vs OCaml binaries (see below). |
 | `test_loop` (`fai-cli`) | The supervised `edit → fai test` loop through the real `fai` binary + daemon: client → daemon → worker subprocess → JIT → run → stream back. |
 
 ## Runtime comparison: Fai vs Rust
 
 Two benches compare Fai's runtime performance against an idiomatic Rust
 reference. They are the source of the most confusing numbers, so they get the
-most explanation.
+most explanation. The two *delivered-binary* benches (`algorithms_aot` and
+`algorithms_mem`) add a **third baseline — an `ocamlopt`-compiled OCaml binary** —
+a native, strict, ML-family compiler with no VM, the closest apples-to-apples
+peer for Fai's own native, strict, ML-family model (see *The OCaml baseline*
+below). The in-process `algorithms_jit` bench stays Rust-only: a foreign-language
+binary cannot be called in process, so OCaml joins only the subprocess benches.
 
 The idiomatic Rust references live in `crates/fai-tests/src/algorithms.rs`, each
 paired with its Fai sample under `samples/algorithms/` and two workload sizes in
@@ -197,6 +202,11 @@ targets a baseline ISA.)
   subprocess in the timed loop.
 - **Rust side**: spawns the `algo-baseline` release binary
   (`crates/fai-tests/src/bin/algo-baseline.rs`) as a subprocess.
+- **OCaml side**: spawns the `ocamlopt`-compiled baseline
+  (`crates/fai-tests/ocaml/baseline.ml`, compiled once in untimed setup by
+  `fai_tests::ocaml::baseline`) as a subprocess. Skipped — with no row, not a
+  failure — when `ocamlopt` is not on `PATH`, so the bench runs without OCaml
+  installed; the Benchmarks workflow installs it.
 
 Each timed iteration is a whole process: startup, the workload, print, exit.
 (Skipped on Windows, which needs the MSVC environment for the build/link + spawn
@@ -211,14 +221,17 @@ each one's **peak resident set size** at the AOT workload. It is not a divan tim
 loop (peak memory is not a per-iteration measurement); each binary is run a few
 times and the maximum peak is kept.
 
-Both sides are measured **identically by self-reporting**: with `FAI_REPORT_RSS`
-set in the child's environment, the Fai runtime (`run_entry`) and the
-`algo-baseline` binary each read their own peak RSS from `/proc/self/status`
-(`VmHWM`, the high-water mark) and print a `fai-peak-rss-kib:` line to stderr. The
-harness parses that and emits a `MEMSTAT\t<algorithm>\t<side>\t<kib>` line, which
-`bench-summary` renders into a **"memory: Fai vs Rust (peak RSS)"** table (median
-`fai/rust`; lower is better) and includes in `bench-results.json`. divan's parser
-ignores the `MEMSTAT` lines, so they ride safely in the shared output stream.
+All three sides are measured **identically by self-reporting**: with
+`FAI_REPORT_RSS` set in the child's environment, the Fai runtime (`run_entry`),
+the `algo-baseline` binary, and the OCaml baseline each read their own peak RSS
+from `/proc/self/status` (`VmHWM`, the high-water mark) and print a
+`fai-peak-rss-kib:` line to stderr. The harness parses that and emits a
+`MEMSTAT\t<algorithm>\t<side>\t<kib>` line (`<side>` one of `fai`/`rust`/`ocaml`),
+which `bench-summary` renders into a **"memory: Fai vs Rust + OCaml (peak RSS)"**
+table (the `fai/rust` and `fai/ocaml` ratios; lower is better) and includes in
+`bench-results.json`. divan's parser ignores the `MEMSTAT` lines, so they ride
+safely in the shared output stream. (The OCaml rows are absent when `ocamlopt` is
+not installed, collapsing the table back to Fai vs Rust.)
 
 Reading peak RSS:
 
@@ -237,6 +250,51 @@ Reading peak RSS:
   Linux Benchmarks workflow; on other platforms (and on Windows, which also skips
   the build/link + spawn path) the bench prints a skip note and reports no rows.
   The bench still compiles everywhere so `--all-targets` keeps it from bitrotting.
+
+### The OCaml baseline
+
+The delivered-binary benches add a third side: a single OCaml program,
+`crates/fai-tests/ocaml/baseline.ml` (the OCaml twin of `algo-baseline`), that
+dispatches on `baseline <module> <n>`, computes the algorithm, and prints the
+result. `fai_tests::ocaml::baseline` compiles it **once** with `ocamlopt` into a
+scratch directory and hands the path to both benches; the build is cached per
+process, and a present-but-broken source is a loud panic rather than a silent
+skip.
+
+**Why OCaml.** It is a native, strict, statically typed ML-family language whose
+`ocamlopt` emits native code with no VM and a sub-millisecond startup — the closest
+apples-to-apples peer to Fai's own native, strict, ML-family model, so the
+`fai/ocaml` ratio measures Fai's backend against a mature native FP compiler
+rather than against a different runtime model. The `ocaml/rust` gap visible in the
+table also anchors how a mature native FP compiler itself compares to Rust, which
+contextualizes Fai's gap.
+
+**Matched representations.** As with the Rust oracle, each OCaml implementation
+uses the data representation its Fai sample uses, so the ratio reflects the
+compiler/runtime rather than a data-structure mismatch: a contiguous `array` where
+the Fai sample uses `Array` (and `Buffer` for incremental strings), a persistent
+`list` where it uses the linked `List` (the backtracking and parser workloads —
+`nqueens`, `fannkuch`, `expr_eval`), `Hashtbl` for the hash containers, and the
+`Map`/`Set` functors for the ordered ones.
+
+**Caveats** (the comparison stays a *progress metric, not a fair fight*):
+
+- **63-bit `int`.** OCaml's native `int` is 63-bit, so the two workloads that
+  depend on full 64-bit wrapping — `prng_xorshift` (u64 bit-twiddling) and
+  `fib_memo` (i64 wrapping over thousands of Fibonacci sums) — use the boxed
+  `Int64` module to reproduce the oracle's two's-complement result. Every other
+  workload fits native `int`.
+- **Optimization level.** The baseline is built with plain `ocamlopt` (array
+  bounds checks on, matching Fai and Rust release; no flambda `-O3`), so this is
+  not OCaml's peak achievable speed — just as Fai's portable AOT build targets a
+  baseline ISA where the JIT does not.
+
+**Correctness.** Each OCaml result is checked against the Rust oracle at the AOT
+size: the `algorithms_aot` bench verifies it on the untimed first run (so a wrong
+implementation fails the Benchmarks workflow, where `ocamlopt` is installed), and
+the `ocaml_baseline_matches_oracle` test in `crates/fai-tests/tests/algorithms.rs`
+re-checks every algorithm wherever `ocamlopt` is available (skipping cleanly when
+it is not).
 
 ### Why the Rust numbers differ so much between the two benches
 
@@ -289,12 +347,14 @@ is closest to the pure size factor.
 
 ### How to read the numbers
 
-- A Rust row is a **baseline within its own bench**, paired against the Fai row
-  measured the same way in that bench. The summary's ratio table pairs them
-  per-group for exactly this reason.
+- A Rust (or OCaml) row is a **baseline within its own bench**, paired against the
+  Fai row measured the same way in that bench. The summary's ratio table pairs them
+  per-group for exactly this reason, reporting `fai/rust` and (in the
+  delivered-binary benches) `fai/ocaml`.
 - **Never compare a Rust row across benches.** `algorithms_jit` answers "how fast
   is compiled Fai *code* vs Rust *code*, in process"; `algorithms_aot` answers
-  "how fast is a *delivered Fai binary* vs a *delivered Rust binary*, end to end."
+  "how fast is a *delivered Fai binary* vs a *delivered Rust/OCaml binary*, end to
+  end."
 - Even within a bench it is a **progress metric, not a fair fight**: Fai runs a
   uniform **boxed**, **reference-counted** representation (Cranelift), while Rust
   is unboxed and optimized by LLVM. The number to watch is whether the gap
@@ -332,20 +392,22 @@ is closest to the pure size factor.
   `List` is only the BFS frontier) keep a `List` whose container is immaterial
   because another structure dominates.
 
-### Keeping the two sides in lockstep
+### Keeping the sides in lockstep
 
 Each `aot_size` must equal the literal the matching sample's `main` passes to
 `run`/`runF`; the sample-validation tests (`crates/fai-tests/tests/algorithms.rs`)
 assert this by comparing the program's output to the oracle, so the AOT bench
-compares the same workload on both sides. To add an algorithm: add the Rust
+compares the same workload on all sides. To add an algorithm: add the Rust
 reference and a registry entry in `algorithms.rs`, add the `samples/algorithms/`
-module with the matching baked size, add a `validate` test in
-`tests/algorithms.rs`, and list it in both `algorithm_benches!` macros. The
-`algorithms_mem` bench and the `algo-baseline` binary iterate the registry
-directly, so they pick up the new algorithm automatically; the
+module with the matching baked size, add a match arm in `ocaml/baseline.ml`, add a
+`validate` test in `tests/algorithms.rs`, and list it in both `algorithm_benches!`
+macros. The `algorithms_mem` bench and the `algo-baseline` binary iterate the
+registry directly, so they pick up the new algorithm automatically; the
 `registry_is_fully_covered` test guards the hand-maintained lists — it fails if a
-registered algorithm is missing from either runtime bench or from the validation
-tests. Keep `aot_size` small enough that running `main` once stays fast (the
-validation test runs it under the JIT), especially for super-linear workloads.
+registered algorithm is missing from either runtime bench, from the OCaml
+baseline's dispatch, or from the validation tests, and `ocaml_baseline_matches_oracle`
+checks the OCaml result wherever `ocamlopt` is installed. Keep `aot_size` small
+enough that running `main` once stays fast (the validation test runs it under the
+JIT), especially for super-linear workloads.
 
 [divan]: https://docs.rs/divan
