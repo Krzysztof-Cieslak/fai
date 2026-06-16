@@ -701,10 +701,22 @@ the F# rule; keep it covered by tests.
 
 **Reserved keywords include** `module`, `let`, `type`, `interface`, `match`,
 `with`, `if`, `then`, `else`, `fun`, `public`, `opaque` (the opaque-type marker,
-only before a `public` `type`), `as` (the as-pattern binder), and
+only before a `public` `type`), `as` (the as-pattern binder), **`foreign`** (the
+foreign-function declaration marker), and
 the contract-declaration keywords **`example`** and **`forall`**. Contracts are ordinary
 declarations (peers of `let`), not comment text, so the symbols inside them
 resolve through normal name resolution and are fully type-checked.
+
+A **`foreign "native_symbol" name : Type`** declaration binds `name` to a native
+runtime function (no Fai body); its written type is its signature. A `foreign`
+declaration is **always module-private** (a raw native function is exposed only
+through a capability interface — a `public foreign` is **`FAI2019`**) and its
+signature **must name a capability in its effect row** (so a native side effect
+cannot be laundered as pure — a missing effect is **`FAI5002`**). It lowers to a
+generic foreign call (`Foreign { symbol, args }` in the Core IR), the same
+out-of-line mechanism the host capabilities (`Console`, `Clock`, `Random`,
+`FileSystem`, `Env`) now use — they are themselves ordinary `foreign`
+declarations in `std/Prelude.fai`, no longer a closed compiler enum.
 
 Every language-surface change must update **all three** docs and add tests
 (parser snapshot, type golden, and/or e2e) in the same change.

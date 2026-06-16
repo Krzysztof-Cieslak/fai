@@ -76,6 +76,8 @@ pub enum ItemTreeKind {
     Signature,
     /// A value binding.
     Binding,
+    /// A `foreign` function declaration.
+    Foreign,
     /// A `type` declaration.
     Type,
     /// An `interface` declaration.
@@ -108,6 +110,9 @@ fn summarize_item(module: &Module, id: crate::ast::ItemId) -> ItemSummary {
         }
         ItemKind::Binding { visibility, name, .. } => {
             (ItemTreeKind::Binding, Some(*name), *visibility)
+        }
+        ItemKind::Foreign { visibility, name, .. } => {
+            (ItemTreeKind::Foreign, Some(*name), *visibility)
         }
         ItemKind::Type { visibility, name, def, .. } => {
             if let crate::ast::TypeDef::Union(variants) = def {

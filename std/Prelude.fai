@@ -101,32 +101,51 @@ public interface Env =
 /// record) to keep authority least.
 public type Runtime = { clock : Clock, console : Console, env : Env, fs : FileSystem, random : Random }
 
-// The default host capabilities, backed by the runtime intrinsics. Private: a
-// program obtains them only as the `Runtime` `main` is applied to.
-let stdConsole = { Console with writeLine s = Prim.consoleWriteLine s }
+// The raw host primitives, implemented as native runtime functions and reached
+// only through the capability instances below. Each `foreign` declaration names
+// its capability as an effect, so any function that calls it surfaces that
+// capability in its own effect row; they are module-private (a foreign function
+// is exposed only through a capability interface, never directly).
+foreign "fai_console_write_line" consoleWriteLine : String -> Unit / { Console }
 
-let stdClock = { Clock with now u = Prim.clockNow u }
+foreign "fai_clock_now" clockNow : Unit -> Int / { Clock }
 
-let stdRandom = { Random with nextInt n = Prim.randomNextInt n }
+foreign "fai_random_next_int" randomNextInt : Int -> Int / { Random }
 
 // The file-system and environment hosts return a `(Bool * String)` — a
 // success/found flag and a payload (contents, value, or error message) — which
-// these helpers wrap into the `Result`/`Option` the interfaces expose.
+// the helpers below wrap into the `Result`/`Option` the interfaces expose.
+foreign "fai_file_read" fileRead : String -> (Bool * String) / { FileSystem }
+
+foreign "fai_file_write" fileWrite : String -> String -> (Bool * String) / { FileSystem }
+
+foreign "fai_env_get" envGet : String -> (Bool * String) / { Env }
+
+foreign "fai_env_args" envArgs : Unit -> List String / { Env }
+
+// The default host capabilities, backed by the foreign primitives above. Private:
+// a program obtains them only as the `Runtime` `main` is applied to.
+let stdConsole = { Console with writeLine s = consoleWriteLine s }
+
+let stdClock = { Clock with now u = clockNow u }
+
+let stdRandom = { Random with nextInt n = randomNextInt n }
+
 let readFileHost path =
-  match Prim.fileRead path with
+  match fileRead path with
   | (ok, contents) -> if ok then Ok contents else Err contents
 
 let writeFileHost path contents =
-  match Prim.fileWrite path contents with
+  match fileWrite path contents with
   | (ok, message) -> if ok then Ok () else Err message
 
 let envGetHost name =
-  match Prim.envGet name with
+  match envGet name with
   | (found, value) -> if found then Some value else None
 
 let stdFs = { FileSystem with readFile = readFileHost, writeFile = writeFileHost }
 
-let stdEnv = { Env with args u = Prim.envArgs u, get = envGetHost }
+let stdEnv = { Env with args u = envArgs u, get = envGetHost }
 
 // The standard `Runtime` the entry trampoline applies `main` to.
 let defaultRuntime =

@@ -47,6 +47,30 @@ pub fn core(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
     let types = body_types(db, file, name);
     let def = DefId::new(file.source(db), name);
 
+    // A `foreign` declaration has no Fai body: synthesize its entry as the
+    // un-wrapped eta-expansion `fn(p0 … pn) = Foreign{symbol, [p0 … pn]}` — a
+    // direct-callable entry. A saturated call to it folds to a bare `Foreign` node
+    // (the foreign-wrapper inliner); a first-class reference compiles this entry.
+    if let Some((native, arity)) = foreign_decl(db, file, &parsed.module, name) {
+        let mut next = first_free_local(&resolved);
+        let params: Vec<LocalId> = (0..arity)
+            .map(|_| {
+                let l = LocalId::from_index(next);
+                next += 1;
+                l
+            })
+            .collect();
+        let args = params.iter().map(|&p| CExpr::new(K::Local(p), Ty::Error)).collect();
+        let body = CExpr::new(K::Foreign { symbol: native, args }, Ty::Error);
+        return Arc::new(LoweredDef {
+            def,
+            fns: vec![CoreFn { params, captures: Vec::new(), body }],
+            entry_borrowed: Vec::new(),
+            reuse_entry: None,
+            entry_spread_params: Vec::new(),
+        });
+    }
+
     let Some((params, body)) = binding_body(db, file, &parsed.module, name) else {
         return Arc::new(LoweredDef {
             def,
@@ -152,6 +176,27 @@ fn binding_body(
         fai_syntax::ast::ItemKind::Binding { params, body, .. } => Some((params.clone(), *body)),
         _ => None,
     }
+}
+
+/// The decoded native symbol and arrow arity of a `foreign` declaration named
+/// `name`, if it is one. The native symbol is decoded from its string literal
+/// (the AST stores its raw lexeme, like any string); the arity is the count of
+/// leading `->` in the declared type — the number of parameters the synthesized
+/// foreign body binds.
+fn foreign_decl(
+    db: &dyn Db,
+    file: SourceFile,
+    module: &Module,
+    name: Symbol,
+) -> Option<(Symbol, usize)> {
+    let binding = fai_resolve::module_defs(db, file).get(name)?.binding;
+    let fai_syntax::ast::ItemKind::Foreign { symbol, ty, .. } = &module.items[binding.index()].kind
+    else {
+        return None;
+    };
+    let decoded = crate::lit::decode_string(symbol.as_str());
+    let native = Symbol::intern(&String::from_utf8_lossy(&decoded));
+    Some((native, module.arrow_arity(*ty)))
 }
 
 /// The first `LocalId` index not used by resolution (so synthesized binders —
@@ -827,11 +872,6 @@ impl Lowerer<'_> {
         if let Some(prim) = Prim::from_builtin(name.as_str()) {
             return self.eta_expand_prim(prim, ty);
         }
-        // A host-capability builtin used as a value: eta-expand it to a closure
-        // over its foreign call.
-        if let Some((native, arity)) = crate::ir::host_foreign(name.as_str()) {
-            return self.eta_expand_foreign(Symbol::intern(native), arity, ty);
-        }
         // A built-in operator used as a value (`(+)`, `(=)`, …): eta-expand it to
         // its primitive at the use-site type.
         if classify_op(name).is_some() || classify_prefix(name).is_some() {
@@ -874,19 +914,6 @@ impl Lowerer<'_> {
         )
     }
 
-    /// Builds a closure `fun a0 … -> foreign a0 …` for a foreign function used as
-    /// a value (e.g. a bare reference to a host capability builtin).
-    fn eta_expand_foreign(&mut self, symbol: Symbol, arity: usize, ty: Ty) -> CExpr {
-        let params: Vec<LocalId> = (0..arity).map(|_| self.fresh_local()).collect();
-        let args = params.iter().map(|&p| CExpr::new(K::Local(p), Ty::Error)).collect();
-        let body = CExpr::new(K::Foreign { symbol, args }, Ty::Error);
-        let fn_id = self.push_fn(CoreFn { params, captures: Vec::new(), body });
-        CExpr::new(
-            K::MakeClosure { func: fn_id, captures: Vec::new(), alloc: ClosureAlloc::Static },
-            ty,
-        )
-    }
-
     /// Collects an application spine `f a b c` into its head and arguments.
     fn app_spine(&self, expr: ExprId) -> (ExprId, Vec<ExprId>) {
         let mut args = Vec::new();
@@ -908,15 +935,6 @@ impl Lowerer<'_> {
         {
             let args = args.iter().map(|&a| self.lower_expr(a)).collect();
             return CExpr::new(K::Prim { op: prim, args }, ty);
-        }
-        // A saturated host-capability builtin (`Prim.consoleWriteLine` …) lowers to
-        // a generic foreign call by its native runtime symbol.
-        if let Some(Res::Builtin(name)) = self.resolved.get(head)
-            && let Some((native, arity)) = crate::ir::host_foreign(name.as_str())
-            && arity == args.len()
-        {
-            let args = args.iter().map(|&a| self.lower_expr(a)).collect();
-            return CExpr::new(K::Foreign { symbol: Symbol::intern(native), args }, ty);
         }
         // A saturated constructor application builds its data directly.
         if let Some(Res::Ctor(ctor)) = self.resolved.get(head)

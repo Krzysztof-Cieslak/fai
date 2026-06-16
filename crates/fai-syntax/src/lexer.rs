@@ -1261,9 +1261,11 @@ mod proptests {
         "else",
         "fun",
         "public",
+        "opaque",
         "example",
         "forall",
         "as",
+        "foreign",
     ];
 
     proptest! {

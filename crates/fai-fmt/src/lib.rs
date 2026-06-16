@@ -108,6 +108,17 @@ impl Printer<'_> {
                 parts.push(self.body_doc(*body));
                 concat(parts)
             }
+            ItemKind::Foreign { visibility, symbol, name, ty } => concat(vec![
+                text(visibility_prefix(*visibility)),
+                text("foreign "),
+                // `symbol` is the native-symbol string literal's raw lexeme (quotes
+                // included), reproduced verbatim.
+                text(symbol.as_str().to_owned()),
+                text(" "),
+                text(var_text(name.as_str())),
+                text(" : "),
+                self.type_doc(*ty),
+            ]),
             ItemKind::Type { visibility, opaque, name, params, def } => {
                 self.type_decl_doc(*visibility, *opaque, *name, params, def)
             }

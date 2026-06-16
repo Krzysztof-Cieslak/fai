@@ -60,14 +60,6 @@ pub const INTRINSICS: &[&str] = &[
     // The contiguous twins of `split`/`join` (`Array String` rather than `List`).
     "arraySplit",
     "arrayJoin",
-    // Capability hosts (reached only through the `Runtime` built in `Prelude`).
-    "consoleWriteLine",
-    "clockNow",
-    "randomNextInt",
-    "fileRead",
-    "fileWrite",
-    "envGet",
-    "envArgs",
 ];
 
 /// The synthetic module through which standard-library code reaches intrinsics.

@@ -214,6 +214,12 @@ A qualified path resolved to a module rather than a member. Name a member of the
 
 A constructor of an `opaque` type is referenced from another file. An opaque type exports its name but not its constructors, so it can only be built and matched through the functions its module provides. Use those operations instead of the constructor.
 
+### FAI2019 — foreign declaration cannot be public
+
+**Severity:** error
+
+A `foreign` declaration binds a raw native function and is always module-private; it cannot be marked `public`. Expose its behavior through a capability interface (an instance whose methods call it) and make that public instead.
+
 ## FAI3xxx — Types & rows
 
 ### FAI3001 — type mismatch
@@ -357,6 +363,12 @@ A `match` arm can never be reached because earlier arms already cover its values
 **Severity:** error
 
 A binding's declared effect row (the capabilities after `/`) does not match the effect inferred from its body — it either performs a capability the signature omits, or declares one it never uses. Fix the body or the declared effect.
+
+### FAI5002 — foreign declaration must name a capability
+
+**Severity:** error
+
+A `foreign` declaration calls native code, so its signature must name a capability in its effect row (e.g. `: String -> Unit / { Console }`). This keeps a function's reach visible: a caller of the foreign then surfaces that capability in its own effect, rather than laundering a native side effect as pure.
 
 ## FAI6xxx — Contracts
 

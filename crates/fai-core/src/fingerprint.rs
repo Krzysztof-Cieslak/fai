@@ -360,20 +360,12 @@ mod tests {
 
     #[test]
     fn distinguishes_foreign_symbols() {
-        // Two foreign calls differing only in their native symbol must produce
-        // different cache keys, or a stale object could be reused across them.
-        // (`Prim.*` is std-only, so these are fingerprinted from a `<std>/` source.)
-        fn fp_std(src: &str, name: &str) -> String {
-            let mut db = FaiDatabase::new();
-            fai_types::std_lib::load_std(&mut db);
-            let id = db.add_source("<std>/S.fai".into(), src.to_owned());
-            let file = db.source_file(id).unwrap();
-            let lowered = core(&db, file, Symbol::intern(name));
-            fingerprint_def(&lowered, &|d| namer(&db, d), &|_| 0, &|_| FnAbi::default())
-        }
-        let console = fp_std("module S\n\nlet w s = Prim.consoleWriteLine s\n", "w");
-        let file = fp_std("module S\n\nlet w s = Prim.fileRead s\n", "w");
-        assert_ne!(console, file);
+        // Two foreign declarations differing only in their native symbol must
+        // produce different cache keys, or a stale object could be reused across
+        // them.
+        let a = fingerprint("module M\n\nforeign \"fai_a\" w : Int -> Int / { Console }\n", "w");
+        let b = fingerprint("module M\n\nforeign \"fai_b\" w : Int -> Int / { Console }\n", "w");
+        assert_ne!(a, b);
     }
 
     #[test]

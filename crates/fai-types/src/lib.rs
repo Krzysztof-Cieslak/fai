@@ -95,6 +95,9 @@ pub const UNREACHABLE_ARM: DiagnosticCode = DiagnosticCode::new("FAI4002");
 /// A binding's declared effect row disagrees with the effect inferred from its
 /// body (the capabilities it actually uses).
 pub const EFFECT_MISMATCH: DiagnosticCode = DiagnosticCode::new("FAI5001");
+/// A `foreign` declaration's signature does not name a capability in its effect
+/// row (so it would launder a native side effect as pure).
+pub const FOREIGN_EFFECT_REQUIRED: DiagnosticCode = DiagnosticCode::new("FAI5002");
 
 /// Diagnostic codes owned by the type system (the `FAI3xxx` range).
 pub const CODES: &[CodeInfo] = &[
@@ -271,5 +274,15 @@ pub const CODES: &[CodeInfo] = &[
                       the effect inferred from its body — it either performs a capability the \
                       signature omits, or declares one it never uses. Fix the body or the \
                       declared effect.",
+    },
+    CodeInfo {
+        code: FOREIGN_EFFECT_REQUIRED,
+        title: "foreign declaration must name a capability",
+        default_severity: Severity::Error,
+        explanation: "A `foreign` declaration calls native code, so its signature must name a \
+                      capability in its effect row (e.g. `: String -> Unit / { Console }`). This \
+                      keeps a function's reach visible: a caller of the foreign then surfaces that \
+                      capability in its own effect, rather than laundering a native side effect \
+                      as pure.",
     },
 ];

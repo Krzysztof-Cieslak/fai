@@ -1,0 +1,8 @@
+module PublicForeign
+
+// A `foreign` declaration binds a raw native function and is always
+// module-private; marking it `public` is rejected. Expose its behavior through a
+// capability interface instead.
+//~ ERROR FAI2019
+//~ COUNT ERROR 1
+public foreign "fai_console_write_line" consoleWriteLine : String -> Unit / { Console }

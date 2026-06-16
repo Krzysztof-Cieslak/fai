@@ -19,7 +19,7 @@ use rustc_hash::FxHashMap;
 use crate::ids::{CtorRef, DefId};
 use crate::{
     BINDING_VISIBILITY_MARKER, DUPLICATE_DEFINITION, DUPLICATE_MODULE, DUPLICATE_PRELUDE_EXPORT,
-    MODULE_NAME_CONFLICT, MULTIPLE_SIGNATURES, ORPHAN_SIGNATURE,
+    MODULE_NAME_CONFLICT, MULTIPLE_SIGNATURES, ORPHAN_SIGNATURE, PUBLIC_FOREIGN,
 };
 
 /// A module's declared header name.
@@ -200,6 +200,40 @@ fn collect_scope(
                             ),
                         );
                     }
+                }
+            }
+            ItemKind::Foreign { name, visibility, .. } => {
+                // A `foreign` decl is a value definition that carries its own
+                // signature, so it occupies both the binding and signature slots
+                // (its `DefInfo` then has `signature == binding == this item`, and
+                // the declared scheme reads its written type). It is always
+                // module-private: a `public foreign` is rejected.
+                if *visibility == Visibility::Public {
+                    emit(
+                        db,
+                        Diagnostic::error(
+                            PUBLIC_FOREIGN,
+                            format!("the foreign declaration `{name}` cannot be `public`"),
+                            Span::new(source, item.span),
+                        )
+                        .with_help(
+                            "expose a foreign function through a capability interface, \
+                             not directly",
+                        ),
+                    );
+                }
+                if binding_by_name.insert(*name, id).is_some() {
+                    emit(
+                        db,
+                        Diagnostic::error(
+                            DUPLICATE_DEFINITION,
+                            format!("`{name}` is defined more than once"),
+                            Span::new(source, item.span),
+                        ),
+                    );
+                } else {
+                    binding_order.push((*name, id));
+                    sig_by_name.insert(*name, id);
                 }
             }
             ItemKind::Type { name, def, .. } => {

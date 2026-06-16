@@ -48,6 +48,19 @@ fn hello() {
 }
 
 #[test]
+fn foreign_declaration() {
+    // A `foreign` declaration formats canonically — the keyword, the native-symbol
+    // string (reproduced verbatim), the name, then `: type` — and is idempotent.
+    let src = indoc! {r#"
+        module M
+
+        foreign "fai_clock_now" clockNow : Unit -> Int / { Clock }
+    "#};
+    assert_eq!(fmt(src), src);
+    assert_idempotent(src);
+}
+
+#[test]
 fn conformance_nested_qualified_and_as_patterns() {
     // Each snippet must format idempotently and preserve its parsed shape (so
     // formatting never drops or reshapes nested modules, qualified types, deep
@@ -642,6 +655,12 @@ fn shape_item(m: &Module, item: &Item) -> String {
             name.as_str(),
             shape_pats(m, params),
             shape_expr(m, *body),
+        ),
+        ItemKind::Foreign { visibility, symbol, name, ty } => format!(
+            "(foreign {visibility:?} {} {} {})",
+            symbol.as_str(),
+            name.as_str(),
+            shape_type(m, *ty),
         ),
         ItemKind::Type { visibility, opaque, name, params, def } => {
             let ps = params.iter().map(|p| p.as_str()).collect::<Vec<_>>().join(" ");

@@ -78,6 +78,8 @@ pub const MODULE_NAME_CONFLICT: DiagnosticCode = DiagnosticCode::new("FAI2016");
 pub const MODULE_AS_VALUE: DiagnosticCode = DiagnosticCode::new("FAI2017");
 /// A constructor of an opaque type is referenced from another file.
 pub const OPAQUE_CONSTRUCTOR: DiagnosticCode = DiagnosticCode::new("FAI2018");
+/// A `foreign` declaration is marked `public`.
+pub const PUBLIC_FOREIGN: DiagnosticCode = DiagnosticCode::new("FAI2019");
 
 /// Diagnostic codes owned by name resolution/visibility (the `FAI2xxx` range).
 pub const CODES: &[CodeInfo] = &[
@@ -213,5 +215,14 @@ pub const CODES: &[CodeInfo] = &[
                       opaque type exports its name but not its constructors, so it can only be \
                       built and matched through the functions its module provides. Use those \
                       operations instead of the constructor.",
+    },
+    CodeInfo {
+        code: PUBLIC_FOREIGN,
+        title: "foreign declaration cannot be public",
+        default_severity: Severity::Error,
+        explanation: "A `foreign` declaration binds a raw native function and is always \
+                      module-private; it cannot be marked `public`. Expose its behavior through a \
+                      capability interface (an instance whose methods call it) and make that \
+                      public instead.",
     },
 ];
