@@ -863,137 +863,141 @@ fn split_into_few_large_pieces_views_them() {
     assert_eq!(views, 2, "both large split pieces are views");
 }
 
-// ===========================================================================
-// Property: destructure-and-recurse over user ADTs stays correct and leak-free.
-//
-// A recursive function that matches a value, projects a field, and recurses while
-// the matched cell dies is reference-counted by emitting the cell's drop before
-// the continuation. Generated binary trees exercise both shapes over random
-// structure: a tree->Int *fold* (no reconstruction — the matched node is dropped,
-// the path the array sort hit) and a tree->tree *map* (reconstruction — the node
-// is reset and recycled). The tree's Node/Leaf cells are boxed children, so the
-// leak-free exit (code 0) confirms every cell is released exactly once on both
-// paths; the result is checked against an independent Rust oracle.
-// ===========================================================================
+mod proptests {
+    use super::*;
 
-/// A random binary tree with `Int` leaves.
-#[derive(Debug, Clone)]
-enum Tree {
-    Leaf(i64),
-    Node(Box<Tree>, Box<Tree>),
-}
+    // ===========================================================================
+    // Property: destructure-and-recurse over user ADTs stays correct and leak-free.
+    //
+    // A recursive function that matches a value, projects a field, and recurses while
+    // the matched cell dies is reference-counted by emitting the cell's drop before
+    // the continuation. Generated binary trees exercise both shapes over random
+    // structure: a tree->Int *fold* (no reconstruction — the matched node is dropped,
+    // the path the array sort hit) and a tree->tree *map* (reconstruction — the node
+    // is reset and recycled). The tree's Node/Leaf cells are boxed children, so the
+    // leak-free exit (code 0) confirms every cell is released exactly once on both
+    // paths; the result is checked against an independent Rust oracle.
+    // ===========================================================================
 
-fn tree_strategy() -> impl Strategy<Value = Tree> {
-    let leaf = (-20i64..20).prop_map(Tree::Leaf);
-    leaf.prop_recursive(5, 24, 2, |inner| {
-        (inner.clone(), inner).prop_map(|(l, r)| Tree::Node(Box::new(l), Box::new(r)))
-    })
-}
-
-/// Renders an `Int` literal, parenthesizing negatives so `Leaf (0 - 5)` parses as
-/// the constructor applied to a negative rather than a subtraction.
-fn render_int_lit(n: i64) -> String {
-    if n < 0 { format!("(0 - {})", -n) } else { n.to_string() }
-}
-
-/// Renders a tree as the Fai expression building it (`Node`/`Leaf` constructors).
-fn render_tree(t: &Tree) -> String {
-    match t {
-        Tree::Leaf(n) => format!("(Leaf {})", render_int_lit(*n)),
-        Tree::Node(l, r) => format!("(Node {} {})", render_tree(l), render_tree(r)),
+    /// A random binary tree with `Int` leaves.
+    #[derive(Debug, Clone)]
+    enum Tree {
+        Leaf(i64),
+        Node(Box<Tree>, Box<Tree>),
     }
-}
 
-/// The fold oracle: `Leaf n -> n + k`; `Node l r -> (fold l) op (fold r)`, wrapping
-/// (Fai `Int` is a wrapping `i64`).
-fn fold_oracle(t: &Tree, op: char, k: i64) -> i64 {
-    match t {
-        Tree::Leaf(n) => n.wrapping_add(k),
-        Tree::Node(l, r) => {
-            let (a, b) = (fold_oracle(l, op, k), fold_oracle(r, op, k));
-            match op {
-                '+' => a.wrapping_add(b),
-                '-' => a.wrapping_sub(b),
-                _ => a.wrapping_mul(b),
+    fn tree_strategy() -> impl Strategy<Value = Tree> {
+        let leaf = (-20i64..20).prop_map(Tree::Leaf);
+        leaf.prop_recursive(5, 24, 2, |inner| {
+            (inner.clone(), inner).prop_map(|(l, r)| Tree::Node(Box::new(l), Box::new(r)))
+        })
+    }
+
+    /// Renders an `Int` literal, parenthesizing negatives so `Leaf (0 - 5)` parses as
+    /// the constructor applied to a negative rather than a subtraction.
+    fn render_int_lit(n: i64) -> String {
+        if n < 0 { format!("(0 - {})", -n) } else { n.to_string() }
+    }
+
+    /// Renders a tree as the Fai expression building it (`Node`/`Leaf` constructors).
+    fn render_tree(t: &Tree) -> String {
+        match t {
+            Tree::Leaf(n) => format!("(Leaf {})", render_int_lit(*n)),
+            Tree::Node(l, r) => format!("(Node {} {})", render_tree(l), render_tree(r)),
+        }
+    }
+
+    /// The fold oracle: `Leaf n -> n + k`; `Node l r -> (fold l) op (fold r)`, wrapping
+    /// (Fai `Int` is a wrapping `i64`).
+    fn fold_oracle(t: &Tree, op: char, k: i64) -> i64 {
+        match t {
+            Tree::Leaf(n) => n.wrapping_add(k),
+            Tree::Node(l, r) => {
+                let (a, b) = (fold_oracle(l, op, k), fold_oracle(r, op, k));
+                match op {
+                    '+' => a.wrapping_add(b),
+                    '-' => a.wrapping_sub(b),
+                    _ => a.wrapping_mul(b),
+                }
             }
         }
     }
-}
 
-/// The map-then-sum oracle: map `Leaf n -> Leaf (n + k)`, then sum the leaves
-/// (wrapping).
-fn map_sum_oracle(t: &Tree, k: i64) -> i64 {
-    match t {
-        Tree::Leaf(n) => n.wrapping_add(k),
-        Tree::Node(l, r) => map_sum_oracle(l, k).wrapping_add(map_sum_oracle(r, k)),
-    }
-}
-
-proptest! {
-    // Each case is a full JIT compile + run under the global counter lock, so keep
-    // the case count modest.
-    #![proptest_config(ProptestConfig { cases: 32, ..ProptestConfig::default() })]
-
-    /// A generated tree->Int fold (the matched node is dropped, not rebuilt) over a
-    /// random tree matches the oracle and exits leak-free — the node drop emitted
-    /// before the recursive continuation must release every cell exactly once.
-    #[test]
-    fn random_tree_fold_is_correct_and_leak_free(
-        t in tree_strategy(),
-        op in prop_oneof![Just('+'), Just('-'), Just('*')],
-        k in 0i64..10,
-    ) {
-        let expected = fold_oracle(&t, op, k);
-        let src = formatdoc! {r#"
-            module M
-
-            type Tree = | Leaf Int | Node Tree Tree
-
-            fold : Tree -> Int
-            let fold t =
-              match t with
-              | Leaf n -> n + {k}
-              | Node l r -> fold l {op} fold r
-
-            public main : Runtime -> Unit / {{ Console }}
-            let main rt = rt.console.writeLine (Int.toString (fold {tree}))
-        "#, tree = render_tree(&t)};
-        let (code, out, _) = run_counted(&src);
-        prop_assert_eq!(code, 0, "leak-free exit for {:?}:\n{}", t, out);
-        prop_assert_eq!(out.trim(), expected.to_string(), "fold oracle mismatch for {:?}", t);
+    /// The map-then-sum oracle: map `Leaf n -> Leaf (n + k)`, then sum the leaves
+    /// (wrapping).
+    fn map_sum_oracle(t: &Tree, k: i64) -> i64 {
+        match t {
+            Tree::Leaf(n) => n.wrapping_add(k),
+            Tree::Node(l, r) => map_sum_oracle(l, k).wrapping_add(map_sum_oracle(r, k)),
+        }
     }
 
-    /// A generated tree->tree map (each matched node is reset and recycled) followed
-    /// by a sum fold over a random tree matches the oracle and exits leak-free.
-    #[test]
-    fn random_tree_map_then_fold_is_correct_and_leak_free(
-        t in tree_strategy(),
-        k in 0i64..10,
-    ) {
-        let expected = map_sum_oracle(&t, k);
-        let src = formatdoc! {r#"
-            module M
+    proptest! {
+        // Each case is a full JIT compile + run under the global counter lock, so keep
+        // the case count modest.
+        #![proptest_config(ProptestConfig { cases: 32, ..ProptestConfig::default() })]
 
-            type Tree = | Leaf Int | Node Tree Tree
+        /// A generated tree->Int fold (the matched node is dropped, not rebuilt) over a
+        /// random tree matches the oracle and exits leak-free — the node drop emitted
+        /// before the recursive continuation must release every cell exactly once.
+        #[test]
+        fn random_tree_fold_is_correct_and_leak_free(
+            t in tree_strategy(),
+            op in prop_oneof![Just('+'), Just('-'), Just('*')],
+            k in 0i64..10,
+        ) {
+            let expected = fold_oracle(&t, op, k);
+            let src = formatdoc! {r#"
+                module M
 
-            mapTree : Tree -> Tree
-            let mapTree t =
-              match t with
-              | Leaf n -> Leaf (n + {k})
-              | Node l r -> Node (mapTree l) (mapTree r)
+                type Tree = | Leaf Int | Node Tree Tree
 
-            sumTree : Tree -> Int
-            let sumTree t =
-              match t with
-              | Leaf n -> n
-              | Node l r -> sumTree l + sumTree r
+                fold : Tree -> Int
+                let fold t =
+                  match t with
+                  | Leaf n -> n + {k}
+                  | Node l r -> fold l {op} fold r
 
-            public main : Runtime -> Unit / {{ Console }}
-            let main rt = rt.console.writeLine (Int.toString (sumTree (mapTree {tree})))
-        "#, tree = render_tree(&t)};
-        let (code, out, _) = run_counted(&src);
-        prop_assert_eq!(code, 0, "leak-free exit for {:?}:\n{}", t, out);
-        prop_assert_eq!(out.trim(), expected.to_string(), "map/fold oracle mismatch for {:?}", t);
+                public main : Runtime -> Unit / {{ Console }}
+                let main rt = rt.console.writeLine (Int.toString (fold {tree}))
+            "#, tree = render_tree(&t)};
+            let (code, out, _) = run_counted(&src);
+            prop_assert_eq!(code, 0, "leak-free exit for {:?}:\n{}", t, out);
+            prop_assert_eq!(out.trim(), expected.to_string(), "fold oracle mismatch for {:?}", t);
+        }
+
+        /// A generated tree->tree map (each matched node is reset and recycled) followed
+        /// by a sum fold over a random tree matches the oracle and exits leak-free.
+        #[test]
+        fn random_tree_map_then_fold_is_correct_and_leak_free(
+            t in tree_strategy(),
+            k in 0i64..10,
+        ) {
+            let expected = map_sum_oracle(&t, k);
+            let src = formatdoc! {r#"
+                module M
+
+                type Tree = | Leaf Int | Node Tree Tree
+
+                mapTree : Tree -> Tree
+                let mapTree t =
+                  match t with
+                  | Leaf n -> Leaf (n + {k})
+                  | Node l r -> Node (mapTree l) (mapTree r)
+
+                sumTree : Tree -> Int
+                let sumTree t =
+                  match t with
+                  | Leaf n -> n
+                  | Node l r -> sumTree l + sumTree r
+
+                public main : Runtime -> Unit / {{ Console }}
+                let main rt = rt.console.writeLine (Int.toString (sumTree (mapTree {tree})))
+            "#, tree = render_tree(&t)};
+            let (code, out, _) = run_counted(&src);
+            prop_assert_eq!(code, 0, "leak-free exit for {:?}:\n{}", t, out);
+            prop_assert_eq!(out.trim(), expected.to_string(), "map/fold oracle mismatch for {:?}", t);
+        }
     }
 }
 

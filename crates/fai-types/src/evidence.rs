@@ -104,7 +104,7 @@ mod tests {
         Symbol::intern(s)
     }
 
-    fn open_record(fields: &[(&str, Ty)], tail: u32) -> Ty {
+    pub(super) fn open_record(fields: &[(&str, Ty)], tail: u32) -> Ty {
         let mut row: Vec<(Symbol, Ty)> = fields.iter().map(|(l, t)| (sym(l), t.clone())).collect();
         row.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
         Ty::Record(RecordRow { fields: row, tail: RowEnd::Open(RowVarId(tail)) })
@@ -156,8 +156,14 @@ mod tests {
         );
         assert_eq!(reqs(ty), vec![(0, "a".to_owned()), (0, "b".to_owned())]);
     }
+}
 
+#[cfg(test)]
+mod proptests {
     use proptest::prelude::*;
+
+    use super::tests::open_record;
+    use super::{Scheme, Ty, evidence_requirements};
 
     const LABELS: &[&str] = &["a", "b", "c", "d"];
 

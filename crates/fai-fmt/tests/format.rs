@@ -241,24 +241,28 @@ fn messy_input_is_canonicalized() {
     assert_idempotent(src);
 }
 
-proptest! {
-    #![proptest_config(regression_config())]
+mod format_proptests {
+    use super::*;
 
-    /// Formatting arbitrary input never panics.
-    #[test]
-    fn format_never_panics(input in any::<String>()) {
-        let parsed = parse_module(SourceId::new(0), &input);
-        let _ = fai_fmt::format(&parsed.module, &parsed.comments, &input);
-    }
+    proptest! {
+        #![proptest_config(regression_config())]
 
-    /// Formatting is idempotent on generated bindings.
-    #[test]
-    fn idempotent_on_generated_bindings(name in "[a-z][a-zA-Z0-9_]*", value in 0u32..100_000) {
-        prop_assume!(TokenKind::keyword(&name).is_none());
-        let src = format!("module M\nlet {name} = {value}");
-        let once = fmt(&src);
-        let twice = fmt(&once);
-        prop_assert_eq!(once, twice);
+        /// Formatting arbitrary input never panics.
+        #[test]
+        fn format_never_panics(input in any::<String>()) {
+            let parsed = parse_module(SourceId::new(0), &input);
+            let _ = fai_fmt::format(&parsed.module, &parsed.comments, &input);
+        }
+
+        /// Formatting is idempotent on generated bindings.
+        #[test]
+        fn idempotent_on_generated_bindings(name in "[a-z][a-zA-Z0-9_]*", value in 0u32..100_000) {
+            prop_assume!(TokenKind::keyword(&name).is_none());
+            let src = format!("module M\nlet {name} = {value}");
+            let once = fmt(&src);
+            let twice = fmt(&once);
+            prop_assert_eq!(once, twice);
+        }
     }
 }
 
@@ -587,19 +591,23 @@ fn equivalent_inputs_format_identically() {
     assert_eq!(fmt("module M\nlet x = a + b"), fmt("module M\n\n\nlet   x   =   a+b"));
 }
 
-proptest! {
-    #![proptest_config(regression_config())]
+mod canonical_proptests {
+    use super::*;
 
-    /// fmt output of a generated program reparses cleanly and is idempotent.
-    #[test]
-    fn generated_program_is_canonical(name in "[a-z][a-zA-Z0-9_]*", a in 0u32..1000, b in 0u32..1000) {
-        prop_assume!(TokenKind::keyword(&name).is_none());
-        let src = format!("module M\nlet {name} = {a} + {b} * {a}");
-        let once = fmt(&src);
-        let reparsed = parse_module(SourceId::new(0), &once);
-        prop_assert!(reparsed.diagnostics.is_empty());
-        prop_assert_eq!(fmt(&once), once);
-        prop_assert_eq!(item_tree_of(&src), build_item_tree(&reparsed.module));
+    proptest! {
+        #![proptest_config(regression_config())]
+
+        /// fmt output of a generated program reparses cleanly and is idempotent.
+        #[test]
+        fn generated_program_is_canonical(name in "[a-z][a-zA-Z0-9_]*", a in 0u32..1000, b in 0u32..1000) {
+            prop_assume!(TokenKind::keyword(&name).is_none());
+            let src = format!("module M\nlet {name} = {a} + {b} * {a}");
+            let once = fmt(&src);
+            let reparsed = parse_module(SourceId::new(0), &once);
+            prop_assert!(reparsed.diagnostics.is_empty());
+            prop_assert_eq!(fmt(&once), once);
+            prop_assert_eq!(item_tree_of(&src), build_item_tree(&reparsed.module));
+        }
     }
 }
 
@@ -1252,91 +1260,95 @@ fn arb_program() -> impl Strategy<Value = String> {
     })
 }
 
-proptest! {
-    #![proptest_config(regression_config())]
+mod structure_proptests {
+    use super::*;
 
-    /// Formatting preserves a program's structure: the span-free shape of the
-    /// tree is identical before and after a format round-trip, the output
-    /// reparses cleanly, and formatting is idempotent.
-    #[test]
-    fn fmt_preserves_structure(src in arb_program()) {
-        let before = parse_module(SourceId::new(0), &src);
-        prop_assume!(before.diagnostics.is_empty());
-        let once = fai_fmt::format(&before.module, &before.comments, &src);
-        let after = parse_module(SourceId::new(0), &once);
-        prop_assert!(after.diagnostics.is_empty(), "output did not reparse:\n{}", once);
-        prop_assert_eq!(
-            shape(&before.module),
-            shape(&after.module),
-            "fmt changed structure:\nsrc:\n{}\nout:\n{}", src, once,
-        );
-        let twice = fai_fmt::format(&after.module, &after.comments, &once);
-        prop_assert_eq!(&twice, &once, "fmt is not idempotent:\n{}", once);
-    }
+    proptest! {
+        #![proptest_config(regression_config())]
 
-    /// Unparenthesized operator chains keep their parse (precedence and
-    /// associativity) across a format round-trip: the formatter emits exactly
-    /// the parentheses the tree carries — no more, no fewer.
-    #[test]
-    fn operator_chains_round_trip(
-        atoms in proptest::collection::vec(arb_atom(), 2..6),
-        ops in proptest::collection::vec(proptest::sample::select(OPS.to_vec()), 1..6),
-    ) {
-        let n = atoms.len().min(ops.len() + 1);
-        let mut expr = atoms[0].clone();
-        for i in 1..n {
-            expr.push_str(&format!(" {} {}", ops[i - 1], atoms[i]));
+        /// Formatting preserves a program's structure: the span-free shape of the
+        /// tree is identical before and after a format round-trip, the output
+        /// reparses cleanly, and formatting is idempotent.
+        #[test]
+        fn fmt_preserves_structure(src in arb_program()) {
+            let before = parse_module(SourceId::new(0), &src);
+            prop_assume!(before.diagnostics.is_empty());
+            let once = fai_fmt::format(&before.module, &before.comments, &src);
+            let after = parse_module(SourceId::new(0), &once);
+            prop_assert!(after.diagnostics.is_empty(), "output did not reparse:\n{}", once);
+            prop_assert_eq!(
+                shape(&before.module),
+                shape(&after.module),
+                "fmt changed structure:\nsrc:\n{}\nout:\n{}", src, once,
+            );
+            let twice = fai_fmt::format(&after.module, &after.comments, &once);
+            prop_assert_eq!(&twice, &once, "fmt is not idempotent:\n{}", once);
         }
-        let src = format!("module M\nlet it = {expr}");
-        let before = parse_module(SourceId::new(0), &src);
-        prop_assume!(before.diagnostics.is_empty());
-        let once = fai_fmt::format(&before.module, &before.comments, &src);
-        let after = parse_module(SourceId::new(0), &once);
-        prop_assert!(after.diagnostics.is_empty(), "output did not reparse:\n{}", once);
-        prop_assert_eq!(shape(&before.module), shape(&after.module), "src: {}\nout: {}", src, once);
-    }
 
-    /// A record literal of distinct labels survives a format round-trip: it
-    /// reparses cleanly, the span-free shape is preserved (the formatter sorts
-    /// nothing and drops nothing), and formatting is idempotent.
-    #[test]
-    fn record_literals_round_trip(
-        labels in proptest::collection::hash_set("[a-z][a-z0-9]{0,3}", 1..6),
-    ) {
-        prop_assume!(labels.iter().all(|l| TokenKind::keyword(l).is_none()));
-        let fields = labels
-            .iter()
-            .enumerate()
-            .map(|(i, l)| format!("{l} = {i}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let src = format!("module M\nlet r = {{ {fields} }}");
-        let before = parse_module(SourceId::new(0), &src);
-        prop_assume!(before.diagnostics.is_empty());
-        let once = fai_fmt::format(&before.module, &before.comments, &src);
-        let after = parse_module(SourceId::new(0), &once);
-        prop_assert!(after.diagnostics.is_empty(), "output did not reparse:\n{}", once);
-        prop_assert_eq!(shape(&before.module), shape(&after.module), "src: {}\nout: {}", src, once);
-        let twice = fai_fmt::format(&after.module, &after.comments, &once);
-        prop_assert_eq!(&twice, &once, "fmt is not idempotent:\n{}", once);
-    }
+        /// Unparenthesized operator chains keep their parse (precedence and
+        /// associativity) across a format round-trip: the formatter emits exactly
+        /// the parentheses the tree carries — no more, no fewer.
+        #[test]
+        fn operator_chains_round_trip(
+            atoms in proptest::collection::vec(arb_atom(), 2..6),
+            ops in proptest::collection::vec(proptest::sample::select(OPS.to_vec()), 1..6),
+        ) {
+            let n = atoms.len().min(ops.len() + 1);
+            let mut expr = atoms[0].clone();
+            for i in 1..n {
+                expr.push_str(&format!(" {} {}", ops[i - 1], atoms[i]));
+            }
+            let src = format!("module M\nlet it = {expr}");
+            let before = parse_module(SourceId::new(0), &src);
+            prop_assume!(before.diagnostics.is_empty());
+            let once = fai_fmt::format(&before.module, &before.comments, &src);
+            let after = parse_module(SourceId::new(0), &once);
+            prop_assert!(after.diagnostics.is_empty(), "output did not reparse:\n{}", once);
+            prop_assert_eq!(shape(&before.module), shape(&after.module), "src: {}\nout: {}", src, once);
+        }
 
-    /// A union declaration of any width and a `match` covering its constructors
-    /// round-trip through the formatter with their structure intact.
-    #[test]
-    fn union_and_match_round_trip(n in 1usize..6) {
-        let variants = (0..n).map(|i| format!("  | C{i} Int")).collect::<Vec<_>>().join("\n");
-        let arms = (0..n).map(|i| format!("  | C{i} x -> x + {i}")).collect::<Vec<_>>().join("\n");
-        let src = format!(
-            "module M\ntype T =\n{variants}\npublic eval : T -> Int\nlet eval t =\n  match t with\n{arms}"
-        );
-        let before = parse_module(SourceId::new(0), &src);
-        prop_assume!(before.diagnostics.is_empty());
-        let once = fai_fmt::format(&before.module, &before.comments, &src);
-        let after = parse_module(SourceId::new(0), &once);
-        prop_assert!(after.diagnostics.is_empty(), "output did not reparse:\n{}", once);
-        prop_assert_eq!(shape(&before.module), shape(&after.module), "src:\n{}\nout:\n{}", src, once);
-        let twice = fai_fmt::format(&after.module, &after.comments, &once);
-        prop_assert_eq!(&twice, &once, "fmt is not idempotent:\n{}", once);
+        /// A record literal of distinct labels survives a format round-trip: it
+        /// reparses cleanly, the span-free shape is preserved (the formatter sorts
+        /// nothing and drops nothing), and formatting is idempotent.
+        #[test]
+        fn record_literals_round_trip(
+            labels in proptest::collection::hash_set("[a-z][a-z0-9]{0,3}", 1..6),
+        ) {
+            prop_assume!(labels.iter().all(|l| TokenKind::keyword(l).is_none()));
+            let fields = labels
+                .iter()
+                .enumerate()
+                .map(|(i, l)| format!("{l} = {i}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let src = format!("module M\nlet r = {{ {fields} }}");
+            let before = parse_module(SourceId::new(0), &src);
+            prop_assume!(before.diagnostics.is_empty());
+            let once = fai_fmt::format(&before.module, &before.comments, &src);
+            let after = parse_module(SourceId::new(0), &once);
+            prop_assert!(after.diagnostics.is_empty(), "output did not reparse:\n{}", once);
+            prop_assert_eq!(shape(&before.module), shape(&after.module), "src: {}\nout: {}", src, once);
+            let twice = fai_fmt::format(&after.module, &after.comments, &once);
+            prop_assert_eq!(&twice, &once, "fmt is not idempotent:\n{}", once);
+        }
+
+        /// A union declaration of any width and a `match` covering its constructors
+        /// round-trip through the formatter with their structure intact.
+        #[test]
+        fn union_and_match_round_trip(n in 1usize..6) {
+            let variants = (0..n).map(|i| format!("  | C{i} Int")).collect::<Vec<_>>().join("\n");
+            let arms = (0..n).map(|i| format!("  | C{i} x -> x + {i}")).collect::<Vec<_>>().join("\n");
+            let src = format!(
+                "module M\ntype T =\n{variants}\npublic eval : T -> Int\nlet eval t =\n  match t with\n{arms}"
+            );
+            let before = parse_module(SourceId::new(0), &src);
+            prop_assume!(before.diagnostics.is_empty());
+            let once = fai_fmt::format(&before.module, &before.comments, &src);
+            let after = parse_module(SourceId::new(0), &once);
+            prop_assert!(after.diagnostics.is_empty(), "output did not reparse:\n{}", once);
+            prop_assert_eq!(shape(&before.module), shape(&after.module), "src:\n{}\nout:\n{}", src, once);
+            let twice = fai_fmt::format(&after.module, &after.comments, &once);
+            prop_assert_eq!(&twice, &once, "fmt is not idempotent:\n{}", once);
+        }
     }
 }

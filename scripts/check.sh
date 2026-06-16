@@ -20,6 +20,10 @@ echo "== test =="
 if command -v cargo-nextest >/dev/null 2>&1; then
   cargo nextest run --workspace --locked
   cargo test --workspace --locked --doc
+  echo "== nextest lane partition =="
+  # CI runs the unit and property tests in separate parallel lanes; assert they
+  # still partition the suite (reuses the build above).
+  ./scripts/check-nextest-partition.sh
 else
   echo "(cargo-nextest not installed; using 'cargo test'. Install: https://nexte.st)"
   cargo test --workspace --locked

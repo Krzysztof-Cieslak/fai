@@ -620,368 +620,376 @@ fn hand_written_quicksort_is_in_place() {
     assert_eq!(small, big, "quicksort buffer copies do not scale with length");
 }
 
-// ===========================================================================
-// Generate-and-run: random array pipelines agree with a Rust `Vec` oracle and
-// run leak-free. This validates the hand-written `unsafe` array intrinsics and
-// their codegen against an independent implementation over arbitrary programs.
-// ===========================================================================
+mod proptests {
+    use super::*;
 
-/// A structural array-pipeline expression, rendered two ways: to Fai source over
-/// the public `Array` API, and to a Rust `Vec<i64>` interpreter (the oracle).
-#[derive(Debug, Clone)]
-enum ArrExpr {
-    Range(i64, i64),
-    Lit(Vec<i64>),
-    Map(i64, Box<ArrExpr>),
-    Filter(i64, Box<ArrExpr>),
-    Reverse(Box<ArrExpr>),
-    Take(i64, Box<ArrExpr>),
-    Sort(Box<ArrExpr>),
-    Append(Box<ArrExpr>, Box<ArrExpr>),
-}
+    // ===========================================================================
+    // Generate-and-run: random array pipelines agree with a Rust `Vec` oracle and
+    // run leak-free. This validates the hand-written `unsafe` array intrinsics and
+    // their codegen against an independent implementation over arbitrary programs.
+    // ===========================================================================
 
-/// Renders the pipeline to a Fai expression over the public `Array` API.
-fn render_arr(e: &ArrExpr) -> String {
-    match e {
-        ArrExpr::Range(lo, hi) => format!("(Array.range {lo} {hi})"),
-        ArrExpr::Lit(xs) => {
-            if xs.is_empty() {
-                // `sum` fixes the element type, so a bare `[||]` is well typed here.
-                "[||]".to_owned()
-            } else {
-                let elems: Vec<String> = xs.iter().map(i64::to_string).collect();
-                format!("[| {} |]", elems.join(", "))
+    /// A structural array-pipeline expression, rendered two ways: to Fai source over
+    /// the public `Array` API, and to a Rust `Vec<i64>` interpreter (the oracle).
+    #[derive(Debug, Clone)]
+    enum ArrExpr {
+        Range(i64, i64),
+        Lit(Vec<i64>),
+        Map(i64, Box<ArrExpr>),
+        Filter(i64, Box<ArrExpr>),
+        Reverse(Box<ArrExpr>),
+        Take(i64, Box<ArrExpr>),
+        Sort(Box<ArrExpr>),
+        Append(Box<ArrExpr>, Box<ArrExpr>),
+    }
+
+    /// Renders the pipeline to a Fai expression over the public `Array` API.
+    fn render_arr(e: &ArrExpr) -> String {
+        match e {
+            ArrExpr::Range(lo, hi) => format!("(Array.range {lo} {hi})"),
+            ArrExpr::Lit(xs) => {
+                if xs.is_empty() {
+                    // `sum` fixes the element type, so a bare `[||]` is well typed here.
+                    "[||]".to_owned()
+                } else {
+                    let elems: Vec<String> = xs.iter().map(i64::to_string).collect();
+                    format!("[| {} |]", elems.join(", "))
+                }
+            }
+            ArrExpr::Map(k, e) => format!("(Array.map (fun x -> x + {k}) {})", render_arr(e)),
+            ArrExpr::Filter(j, e) => format!("(Array.filter (fun x -> x > {j}) {})", render_arr(e)),
+            ArrExpr::Reverse(e) => format!("(Array.reverse {})", render_arr(e)),
+            ArrExpr::Take(n, e) => format!("(Array.take {n} {})", render_arr(e)),
+            ArrExpr::Sort(e) => format!("(Array.sort {})", render_arr(e)),
+            ArrExpr::Append(a, b) => format!("(Array.append {} {})", render_arr(a), render_arr(b)),
+        }
+    }
+
+    /// Renders the same pipeline to Fai source over `Array Float`, each integer
+    /// rendered as an integer-valued float and the consumer a float `foldl`. The
+    /// oracle stays [`eval_arr`] over `Vec<i64>`: every value is an exact small
+    /// integer, so the `f64` arithmetic is exact (well within 2⁵³) and the sum
+    /// compares exactly — exercising the unboxed `Array Float` build/read/structural
+    /// paths across arbitrary pipelines without float-tolerance fuzz.
+    fn render_arr_float(e: &ArrExpr) -> String {
+        match e {
+            ArrExpr::Range(lo, hi) => format!("(Array.map Int.toFloat (Array.range {lo} {hi}))"),
+            ArrExpr::Lit(xs) => {
+                if xs.is_empty() {
+                    // `foldl … 0.0` fixes the element type, so a bare `[||]` is well typed.
+                    "[||]".to_owned()
+                } else {
+                    let elems: Vec<String> = xs.iter().map(|x| format!("{x}.0")).collect();
+                    format!("[| {} |]", elems.join(", "))
+                }
+            }
+            ArrExpr::Map(k, e) => {
+                format!("(Array.map (fun x -> x + {k}.0) {})", render_arr_float(e))
+            }
+            ArrExpr::Filter(j, e) => {
+                format!("(Array.filter (fun x -> x > {j}.0) {})", render_arr_float(e))
+            }
+            ArrExpr::Reverse(e) => format!("(Array.reverse {})", render_arr_float(e)),
+            ArrExpr::Take(n, e) => format!("(Array.take {n} {})", render_arr_float(e)),
+            ArrExpr::Sort(e) => format!("(Array.sort {})", render_arr_float(e)),
+            ArrExpr::Append(a, b) => {
+                format!("(Array.append {} {})", render_arr_float(a), render_arr_float(b))
             }
         }
-        ArrExpr::Map(k, e) => format!("(Array.map (fun x -> x + {k}) {})", render_arr(e)),
-        ArrExpr::Filter(j, e) => format!("(Array.filter (fun x -> x > {j}) {})", render_arr(e)),
-        ArrExpr::Reverse(e) => format!("(Array.reverse {})", render_arr(e)),
-        ArrExpr::Take(n, e) => format!("(Array.take {n} {})", render_arr(e)),
-        ArrExpr::Sort(e) => format!("(Array.sort {})", render_arr(e)),
-        ArrExpr::Append(a, b) => format!("(Array.append {} {})", render_arr(a), render_arr(b)),
     }
-}
 
-/// Renders the same pipeline to Fai source over `Array Float`, each integer
-/// rendered as an integer-valued float and the consumer a float `foldl`. The
-/// oracle stays [`eval_arr`] over `Vec<i64>`: every value is an exact small
-/// integer, so the `f64` arithmetic is exact (well within 2⁵³) and the sum
-/// compares exactly — exercising the unboxed `Array Float` build/read/structural
-/// paths across arbitrary pipelines without float-tolerance fuzz.
-fn render_arr_float(e: &ArrExpr) -> String {
-    match e {
-        ArrExpr::Range(lo, hi) => format!("(Array.map Int.toFloat (Array.range {lo} {hi}))"),
-        ArrExpr::Lit(xs) => {
-            if xs.is_empty() {
-                // `foldl … 0.0` fixes the element type, so a bare `[||]` is well typed.
-                "[||]".to_owned()
-            } else {
-                let elems: Vec<String> = xs.iter().map(|x| format!("{x}.0")).collect();
-                format!("[| {} |]", elems.join(", "))
+    /// Evaluates the pipeline over `Vec<i64>` — the independent oracle.
+    fn eval_arr(e: &ArrExpr) -> Vec<i64> {
+        match e {
+            ArrExpr::Range(lo, hi) => (*lo..*hi).collect(),
+            ArrExpr::Lit(xs) => xs.clone(),
+            ArrExpr::Map(k, e) => eval_arr(e).into_iter().map(|x| x + k).collect(),
+            ArrExpr::Filter(j, e) => eval_arr(e).into_iter().filter(|&x| x > *j).collect(),
+            ArrExpr::Reverse(e) => {
+                let mut v = eval_arr(e);
+                v.reverse();
+                v
+            }
+            ArrExpr::Take(n, e) => {
+                let take = (*n).max(0) as usize;
+                eval_arr(e).into_iter().take(take).collect()
+            }
+            ArrExpr::Sort(e) => {
+                let mut v = eval_arr(e);
+                v.sort_unstable();
+                v
+            }
+            ArrExpr::Append(a, b) => {
+                let mut v = eval_arr(a);
+                v.extend(eval_arr(b));
+                v
             }
         }
-        ArrExpr::Map(k, e) => format!("(Array.map (fun x -> x + {k}.0) {})", render_arr_float(e)),
-        ArrExpr::Filter(j, e) => {
-            format!("(Array.filter (fun x -> x > {j}.0) {})", render_arr_float(e))
-        }
-        ArrExpr::Reverse(e) => format!("(Array.reverse {})", render_arr_float(e)),
-        ArrExpr::Take(n, e) => format!("(Array.take {n} {})", render_arr_float(e)),
-        ArrExpr::Sort(e) => format!("(Array.sort {})", render_arr_float(e)),
-        ArrExpr::Append(a, b) => {
-            format!("(Array.append {} {})", render_arr_float(a), render_arr_float(b))
+    }
+
+    /// A bounded generator: small ranges/literals and shallow nesting, so each
+    /// generated program JIT-compiles and runs quickly and the integer sum stays well
+    /// within the immediate range.
+    fn arr_expr() -> impl Strategy<Value = ArrExpr> {
+        let leaf = prop_oneof![
+            (0i64..20, 0i64..20).prop_map(|(lo, len)| ArrExpr::Range(lo, lo + len)),
+            prop::collection::vec(-5i64..5, 0..4).prop_map(ArrExpr::Lit),
+        ];
+        leaf.prop_recursive(3, 16, 2, |inner| {
+            prop_oneof![
+                (-5i64..5, inner.clone()).prop_map(|(k, e)| ArrExpr::Map(k, Box::new(e))),
+                (-5i64..5, inner.clone()).prop_map(|(j, e)| ArrExpr::Filter(j, Box::new(e))),
+                inner.clone().prop_map(|e| ArrExpr::Reverse(Box::new(e))),
+                (0i64..25, inner.clone()).prop_map(|(n, e)| ArrExpr::Take(n, Box::new(e))),
+                inner.clone().prop_map(|e| ArrExpr::Sort(Box::new(e))),
+                (inner.clone(), inner.clone())
+                    .prop_map(|(a, b)| ArrExpr::Append(Box::new(a), Box::new(b))),
+            ]
+        })
+    }
+
+    proptest! {
+        // Each case is a full JIT compile + run under the global counter lock, so keep
+        // the case count modest.
+        #![proptest_config(ProptestConfig { cases: 48, ..ProptestConfig::default() })]
+
+        #[test]
+        fn random_array_pipeline_matches_vec_oracle(e in arr_expr()) {
+            let expected: i64 = eval_arr(&e).into_iter().sum();
+            let src = formatdoc! {r#"
+                module M
+
+                public main : Runtime -> Unit / {{ Console }}
+                let main rt = rt.console.writeLine (Int.toString (Array.sum {body}))
+            "#, body = render_arr(&e)};
+            let (code, out, _, _) = run_counted(&src);
+            prop_assert_eq!(code, 0, "leak-free exit for:\n{}\n{}", render_arr(&e), out);
+            prop_assert_eq!(out.trim(), expected.to_string(), "oracle mismatch for {}", render_arr(&e));
         }
     }
-}
 
-/// Evaluates the pipeline over `Vec<i64>` — the independent oracle.
-fn eval_arr(e: &ArrExpr) -> Vec<i64> {
-    match e {
-        ArrExpr::Range(lo, hi) => (*lo..*hi).collect(),
-        ArrExpr::Lit(xs) => xs.clone(),
-        ArrExpr::Map(k, e) => eval_arr(e).into_iter().map(|x| x + k).collect(),
-        ArrExpr::Filter(j, e) => eval_arr(e).into_iter().filter(|&x| x > *j).collect(),
-        ArrExpr::Reverse(e) => {
-            let mut v = eval_arr(e);
-            v.reverse();
-            v
-        }
-        ArrExpr::Take(n, e) => {
-            let take = (*n).max(0) as usize;
-            eval_arr(e).into_iter().take(take).collect()
-        }
-        ArrExpr::Sort(e) => {
-            let mut v = eval_arr(e);
-            v.sort_unstable();
-            v
-        }
-        ArrExpr::Append(a, b) => {
-            let mut v = eval_arr(a);
-            v.extend(eval_arr(b));
-            v
+    proptest! {
+        // Each case is a full JIT compile + run under the global counter lock, so keep
+        // the case count modest.
+        #![proptest_config(ProptestConfig { cases: 48, ..ProptestConfig::default() })]
+
+        #[test]
+        fn random_float_array_pipeline_matches_oracle(e in arr_expr()) {
+            // The same pipelines over unboxed `Array Float`, summed left-to-right. Every
+            // value is an exact small integer, so the float sum equals the integer
+            // oracle exactly and prints as `N.0`.
+            let expected: i64 = eval_arr(&e).into_iter().sum();
+            let src = formatdoc! {r#"
+                module M
+
+                public main : Runtime -> Unit / {{ Console }}
+                let main rt =
+                  rt.console.writeLine (Float.toString (Array.foldl (fun acc x -> acc + x) 0.0 {body}))
+            "#, body = render_arr_float(&e)};
+            let (code, out, _, _) = run_counted(&src);
+            prop_assert_eq!(code, 0, "leak-free exit for:\n{}\n{}", render_arr_float(&e), out);
+            prop_assert_eq!(
+                out.trim(),
+                format!("{expected}.0"),
+                "oracle mismatch for {}",
+                render_arr_float(&e)
+            );
         }
     }
-}
 
-/// A bounded generator: small ranges/literals and shallow nesting, so each
-/// generated program JIT-compiles and runs quickly and the integer sum stays well
-/// within the immediate range.
-fn arr_expr() -> impl Strategy<Value = ArrExpr> {
-    let leaf = prop_oneof![
-        (0i64..20, 0i64..20).prop_map(|(lo, len)| ArrExpr::Range(lo, lo + len)),
-        prop::collection::vec(-5i64..5, 0..4).prop_map(ArrExpr::Lit),
-    ];
-    leaf.prop_recursive(3, 16, 2, |inner| {
-        prop_oneof![
-            (-5i64..5, inner.clone()).prop_map(|(k, e)| ArrExpr::Map(k, Box::new(e))),
-            (-5i64..5, inner.clone()).prop_map(|(j, e)| ArrExpr::Filter(j, Box::new(e))),
-            inner.clone().prop_map(|e| ArrExpr::Reverse(Box::new(e))),
-            (0i64..25, inner.clone()).prop_map(|(n, e)| ArrExpr::Take(n, Box::new(e))),
-            inner.clone().prop_map(|e| ArrExpr::Sort(Box::new(e))),
-            (inner.clone(), inner.clone())
-                .prop_map(|(a, b)| ArrExpr::Append(Box::new(a), Box::new(b))),
-        ]
-    })
-}
+    // ===========================================================================
+    // Property: over random integer arrays, an in-place sort (the standard
+    // `Array.sort` and a hand-written quicksort) produces the exactly-sorted sequence,
+    // runs leak-free, and copies the buffer zero times — the in-place guarantee that
+    // the recursive, tuple-threaded mutation must preserve, over arbitrary inputs
+    // (varied length and contents, with duplicates exercising equal-key partitions).
+    // ===========================================================================
 
-proptest! {
-    // Each case is a full JIT compile + run under the global counter lock, so keep
-    // the case count modest.
-    #![proptest_config(ProptestConfig { cases: 48, ..ProptestConfig::default() })]
+    /// Renders a `Vec<i64>` as a Fai `Array Int` literal (`[||]` when empty — its
+    /// element type is fixed to `Int` by the `Int.toString` use downstream).
+    fn render_int_array(xs: &[i64]) -> String {
+        if xs.is_empty() {
+            return "[||]".to_owned();
+        }
+        let elems: Vec<String> = xs
+            .iter()
+            .map(|x| if *x < 0 { format!("(0 - {})", -x) } else { x.to_string() })
+            .collect();
+        format!("[| {} |]", elems.join(", "))
+    }
 
-    #[test]
-    fn random_array_pipeline_matches_vec_oracle(e in arr_expr()) {
-        let expected: i64 = eval_arr(&e).into_iter().sum();
-        let src = formatdoc! {r#"
+    /// The oracle: `xs` sorted ascending and rendered as the comma-terminated string
+    /// the Fai folds below produce (`"a,b,c,"`; `""` for the empty array).
+    fn sorted_csv(xs: &[i64]) -> String {
+        let mut v = xs.to_vec();
+        v.sort_unstable();
+        let mut s = String::new();
+        for x in &v {
+            s.push_str(&x.to_string());
+            s.push(',');
+        }
+        s
+    }
+
+    /// A program that sorts the literal `lit` with the hand-written in-place quicksort
+    /// (tuple-returning partition + doubly-recursive qsort, the #115 shape) and prints
+    /// the sorted elements as a comma-terminated string.
+    fn quicksort_sort_prog(lit: &str) -> String {
+        formatdoc! {r#"
             module M
 
-            public main : Runtime -> Unit / {{ Console }}
-            let main rt = rt.console.writeLine (Int.toString (Array.sum {body}))
-        "#, body = render_arr(&e)};
-        let (code, out, _, _) = run_counted(&src);
-        prop_assert_eq!(code, 0, "leak-free exit for:\n{}\n{}", render_arr(&e), out);
-        prop_assert_eq!(out.trim(), expected.to_string(), "oracle mismatch for {}", render_arr(&e));
-    }
-}
+            swap : Int -> Int -> Array Int -> Array Int
+            let swap i j a =
+              let vi = Array.unsafeGet i a
+              let vj = Array.unsafeGet j a
+              Array.unsafeSet j vi (Array.unsafeSet i vj a)
 
-proptest! {
-    // Each case is a full JIT compile + run under the global counter lock, so keep
-    // the case count modest.
-    #![proptest_config(ProptestConfig { cases: 48, ..ProptestConfig::default() })]
-
-    #[test]
-    fn random_float_array_pipeline_matches_oracle(e in arr_expr()) {
-        // The same pipelines over unboxed `Array Float`, summed left-to-right. Every
-        // value is an exact small integer, so the float sum equals the integer
-        // oracle exactly and prints as `N.0`.
-        let expected: i64 = eval_arr(&e).into_iter().sum();
-        let src = formatdoc! {r#"
-            module M
-
-            public main : Runtime -> Unit / {{ Console }}
-            let main rt =
-              rt.console.writeLine (Float.toString (Array.foldl (fun acc x -> acc + x) 0.0 {body}))
-        "#, body = render_arr_float(&e)};
-        let (code, out, _, _) = run_counted(&src);
-        prop_assert_eq!(code, 0, "leak-free exit for:\n{}\n{}", render_arr_float(&e), out);
-        prop_assert_eq!(
-            out.trim(),
-            format!("{expected}.0"),
-            "oracle mismatch for {}",
-            render_arr_float(&e)
-        );
-    }
-}
-
-// ===========================================================================
-// Property: over random integer arrays, an in-place sort (the standard
-// `Array.sort` and a hand-written quicksort) produces the exactly-sorted sequence,
-// runs leak-free, and copies the buffer zero times — the in-place guarantee that
-// the recursive, tuple-threaded mutation must preserve, over arbitrary inputs
-// (varied length and contents, with duplicates exercising equal-key partitions).
-// ===========================================================================
-
-/// Renders a `Vec<i64>` as a Fai `Array Int` literal (`[||]` when empty — its
-/// element type is fixed to `Int` by the `Int.toString` use downstream).
-fn render_int_array(xs: &[i64]) -> String {
-    if xs.is_empty() {
-        return "[||]".to_owned();
-    }
-    let elems: Vec<String> =
-        xs.iter().map(|x| if *x < 0 { format!("(0 - {})", -x) } else { x.to_string() }).collect();
-    format!("[| {} |]", elems.join(", "))
-}
-
-/// The oracle: `xs` sorted ascending and rendered as the comma-terminated string
-/// the Fai folds below produce (`"a,b,c,"`; `""` for the empty array).
-fn sorted_csv(xs: &[i64]) -> String {
-    let mut v = xs.to_vec();
-    v.sort_unstable();
-    let mut s = String::new();
-    for x in &v {
-        s.push_str(&x.to_string());
-        s.push(',');
-    }
-    s
-}
-
-/// A program that sorts the literal `lit` with the hand-written in-place quicksort
-/// (tuple-returning partition + doubly-recursive qsort, the #115 shape) and prints
-/// the sorted elements as a comma-terminated string.
-fn quicksort_sort_prog(lit: &str) -> String {
-    formatdoc! {r#"
-        module M
-
-        swap : Int -> Int -> Array Int -> Array Int
-        let swap i j a =
-          let vi = Array.unsafeGet i a
-          let vj = Array.unsafeGet j a
-          Array.unsafeSet j vi (Array.unsafeSet i vj a)
-
-        partition : Int -> Int -> Int -> Array Int -> (Int * Array Int)
-        let partition hi j store a =
-          if j >= hi - 1 then
-            (store, swap store (hi - 1) a)
-          else if Array.unsafeGet j a < Array.unsafeGet (hi - 1) a then
-            partition hi (j + 1) (store + 1) (swap store j a)
-          else
-            partition hi (j + 1) store a
-
-        qsort : Int -> Int -> Array Int -> Array Int
-        let qsort lo hi a =
-          if hi - lo <= 1 then
-            a
-          else
-            match partition hi lo lo a with
-            | (p, a2) ->
-              if p - lo < hi - p - 1 then
-                qsort (p + 1) hi (qsort lo p a2)
+            partition : Int -> Int -> Int -> Array Int -> (Int * Array Int)
+            let partition hi j store a =
+              if j >= hi - 1 then
+                (store, swap store (hi - 1) a)
+              else if Array.unsafeGet j a < Array.unsafeGet (hi - 1) a then
+                partition hi (j + 1) (store + 1) (swap store j a)
               else
-                qsort lo p (qsort (p + 1) hi a2)
+                partition hi (j + 1) store a
 
-        public main : Runtime -> Unit / {{ Console }}
-        let main rt =
-          let arr = {lit}
-          let sorted = qsort 0 (Array.length arr) arr
-          rt.console.writeLine (Array.foldl (fun acc x -> acc ++ Int.toString x ++ ",") "" sorted)
-    "#}
-}
+            qsort : Int -> Int -> Array Int -> Array Int
+            let qsort lo hi a =
+              if hi - lo <= 1 then
+                a
+              else
+                match partition hi lo lo a with
+                | (p, a2) ->
+                  if p - lo < hi - p - 1 then
+                    qsort (p + 1) hi (qsort lo p a2)
+                  else
+                    qsort lo p (qsort (p + 1) hi a2)
 
-/// A program that sorts the literal `lit` with the standard library's `Array.sort`
-/// (the median-of-three quicksort) and prints the sorted elements as a
-/// comma-terminated string.
-fn array_sort_prog(lit: &str) -> String {
-    formatdoc! {r#"
-        module M
+            public main : Runtime -> Unit / {{ Console }}
+            let main rt =
+              let arr = {lit}
+              let sorted = qsort 0 (Array.length arr) arr
+              rt.console.writeLine (Array.foldl (fun acc x -> acc ++ Int.toString x ++ ",") "" sorted)
+        "#}
+    }
 
-        public main : Runtime -> Unit / {{ Console }}
-        let main rt =
-          let sorted = Array.sort {lit}
-          rt.console.writeLine (Array.foldl (fun acc x -> acc ++ Int.toString x ++ ",") "" sorted)
-    "#}
-}
-
-proptest! {
-    // Each case is a full JIT compile + run under the global counter lock, so keep
-    // the case count modest.
-    #![proptest_config(ProptestConfig { cases: 32, ..ProptestConfig::default() })]
-
-    /// `Array.sort` over a freshly built (unique) random array sorts correctly and
-    /// in place: the result matches the Rust oracle exactly, the run is leak-free,
-    /// and the buffer is copied zero times.
-    #[test]
-    fn random_array_sort_is_correct_and_in_place(xs in prop::collection::vec(-20i64..20, 0..50)) {
-        let lit = render_int_array(&xs);
-        let expected = sorted_csv(&xs);
-        let src = formatdoc! {r#"
+    /// A program that sorts the literal `lit` with the standard library's `Array.sort`
+    /// (the median-of-three quicksort) and prints the sorted elements as a
+    /// comma-terminated string.
+    fn array_sort_prog(lit: &str) -> String {
+        formatdoc! {r#"
             module M
 
             public main : Runtime -> Unit / {{ Console }}
             let main rt =
-              rt.console.writeLine (Array.foldl (fun acc x -> acc ++ Int.toString x ++ ",") "" (Array.sort {lit}))
-        "#};
-        let (code, out, _, copies) = run_counted(&src);
-        prop_assert_eq!(code, 0, "leak-free exit for {:?}:\n{}", xs, out);
-        prop_assert_eq!(out.trim(), expected.as_str(), "sort oracle mismatch for {:?}", xs);
-        prop_assert_eq!(copies, 0, "Array.sort must be in place (zero buffer copies) for {:?}", xs);
+              let sorted = Array.sort {lit}
+              rt.console.writeLine (Array.foldl (fun acc x -> acc ++ Int.toString x ++ ",") "" sorted)
+        "#}
     }
 
-    /// The hand-written quicksort over a random array sorts correctly and in place
-    /// — the exact recursive, tuple-threaded mutation #115 was about — over
-    /// arbitrary inputs, with zero buffer copies.
-    #[test]
-    fn random_quicksort_is_correct_and_in_place(xs in prop::collection::vec(-20i64..20, 0..50)) {
-        let expected = sorted_csv(&xs);
-        let (code, out, _, copies) = run_counted(&quicksort_sort_prog(&render_int_array(&xs)));
-        prop_assert_eq!(code, 0, "leak-free exit for {:?}:\n{}", xs, out);
-        prop_assert_eq!(out.trim(), expected.as_str(), "quicksort oracle mismatch for {:?}", xs);
-        prop_assert_eq!(copies, 0, "quicksort must be in place (zero buffer copies) for {:?}", xs);
-    }
-}
+    proptest! {
+        // Each case is a full JIT compile + run under the global counter lock, so keep
+        // the case count modest.
+        #![proptest_config(ProptestConfig { cases: 32, ..ProptestConfig::default() })]
 
-/// Runs `src` with the bounds-check-elimination **shadow check** enabled: an
-/// elided check is retained but routed to the distinct unsound-elision abort, so
-/// an over-elision aborts the run (and, in-process, the test) loudly rather than
-/// silently reading out of bounds. Returns `(exit_code, stdout)`. A `Guard` resets
-/// the toggle even on panic.
-fn run_shadow(src: &str) -> (i32, String) {
-    struct Guard;
-    impl Drop for Guard {
-        fn drop(&mut self) {
-            fai_driver::set_bce_shadow(false);
+        /// `Array.sort` over a freshly built (unique) random array sorts correctly and
+        /// in place: the result matches the Rust oracle exactly, the run is leak-free,
+        /// and the buffer is copied zero times.
+        #[test]
+        fn random_array_sort_is_correct_and_in_place(xs in prop::collection::vec(-20i64..20, 0..50)) {
+            let lit = render_int_array(&xs);
+            let expected = sorted_csv(&xs);
+            let src = formatdoc! {r#"
+                module M
+
+                public main : Runtime -> Unit / {{ Console }}
+                let main rt =
+                  rt.console.writeLine (Array.foldl (fun acc x -> acc ++ Int.toString x ++ ",") "" (Array.sort {lit}))
+            "#};
+            let (code, out, _, copies) = run_counted(&src);
+            prop_assert_eq!(code, 0, "leak-free exit for {:?}:\n{}", xs, out);
+            prop_assert_eq!(out.trim(), expected.as_str(), "sort oracle mismatch for {:?}", xs);
+            prop_assert_eq!(copies, 0, "Array.sort must be in place (zero buffer copies) for {:?}", xs);
+        }
+
+        /// The hand-written quicksort over a random array sorts correctly and in place
+        /// — the exact recursive, tuple-threaded mutation #115 was about — over
+        /// arbitrary inputs, with zero buffer copies.
+        #[test]
+        fn random_quicksort_is_correct_and_in_place(xs in prop::collection::vec(-20i64..20, 0..50)) {
+            let expected = sorted_csv(&xs);
+            let (code, out, _, copies) = run_counted(&quicksort_sort_prog(&render_int_array(&xs)));
+            prop_assert_eq!(code, 0, "leak-free exit for {:?}:\n{}", xs, out);
+            prop_assert_eq!(out.trim(), expected.as_str(), "quicksort oracle mismatch for {:?}", xs);
+            prop_assert_eq!(copies, 0, "quicksort must be in place (zero buffer copies) for {:?}", xs);
         }
     }
-    let _g = lock();
-    fai_driver::set_bce_shadow(true);
-    let _reset = Guard;
-    let mut db = FaiDatabase::new();
-    fai_types::std_lib::load_std(&mut db);
-    let id = db.add_source("M.fai".into(), src.to_owned());
-    let file = db.source_file(id).unwrap();
-    rt::capture_start();
-    let outcome = jit_run_program(&db, file);
-    let out = rt::capture_take();
-    (outcome.exit_code, out)
-}
 
-// ===========================================================================
-// Soundness: with the shadow check on, every elided bounds check is re-verified
-// at run time. A correct program (in-bounds by construction) must still exit
-// cleanly — an over-elision would re-fail the retained check and abort. This is
-// the generative soundness net for the elimination over the same random array
-// pipelines, the standard sort, and the hand-written quicksort.
-// ===========================================================================
-proptest! {
-    #![proptest_config(ProptestConfig { cases: 48, ..ProptestConfig::default() })]
-
-    #[test]
-    fn shadow_check_passes_on_random_array_pipelines(e in arr_expr()) {
-        let expected: i64 = eval_arr(&e).into_iter().sum();
-        let src = formatdoc! {r#"
-            module M
-
-            public main : Runtime -> Unit / {{ Console }}
-            let main rt = rt.console.writeLine (Int.toString (Array.sum {body}))
-        "#, body = render_arr(&e)};
-        let (code, out) = run_shadow(&src);
-        prop_assert_eq!(code, 0, "shadow-check soundness for:\n{}\n{}", render_arr(&e), out);
-        prop_assert_eq!(out.trim(), expected.to_string(), "oracle mismatch for {}", render_arr(&e));
+    /// Runs `src` with the bounds-check-elimination **shadow check** enabled: an
+    /// elided check is retained but routed to the distinct unsound-elision abort, so
+    /// an over-elision aborts the run (and, in-process, the test) loudly rather than
+    /// silently reading out of bounds. Returns `(exit_code, stdout)`. A `Guard` resets
+    /// the toggle even on panic.
+    fn run_shadow(src: &str) -> (i32, String) {
+        struct Guard;
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                fai_driver::set_bce_shadow(false);
+            }
+        }
+        let _g = lock();
+        fai_driver::set_bce_shadow(true);
+        let _reset = Guard;
+        let mut db = FaiDatabase::new();
+        fai_types::std_lib::load_std(&mut db);
+        let id = db.add_source("M.fai".into(), src.to_owned());
+        let file = db.source_file(id).unwrap();
+        rt::capture_start();
+        let outcome = jit_run_program(&db, file);
+        let out = rt::capture_take();
+        (outcome.exit_code, out)
     }
 
-    #[test]
-    fn shadow_check_passes_on_random_quicksort(xs in prop::collection::vec(-20i64..20, 0..50)) {
-        let expected = sorted_csv(&xs);
-        let (code, out) = run_shadow(&quicksort_sort_prog(&render_int_array(&xs)));
-        prop_assert_eq!(code, 0, "shadow-check soundness for quicksort {:?}:\n{}", xs, out);
-        prop_assert_eq!(out.trim(), expected.as_str(), "quicksort oracle mismatch for {:?}", xs);
-    }
+    // ===========================================================================
+    // Soundness: with the shadow check on, every elided bounds check is re-verified
+    // at run time. A correct program (in-bounds by construction) must still exit
+    // cleanly — an over-elision would re-fail the retained check and abort. This is
+    // the generative soundness net for the elimination over the same random array
+    // pipelines, the standard sort, and the hand-written quicksort.
+    // ===========================================================================
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 48, ..ProptestConfig::default() })]
 
-    #[test]
-    fn shadow_check_passes_on_random_array_sort(xs in prop::collection::vec(-20i64..20, 0..50)) {
-        // The standard `Array.sort` (median-of-three quicksort): every elided
-        // partition/pivot bounds check is re-verified, so an over-elision aborts.
-        let expected = sorted_csv(&xs);
-        let (code, out) = run_shadow(&array_sort_prog(&render_int_array(&xs)));
-        prop_assert_eq!(code, 0, "shadow-check soundness for Array.sort {:?}:\n{}", xs, out);
-        prop_assert_eq!(out.trim(), expected.as_str(), "Array.sort oracle mismatch for {:?}", xs);
+        #[test]
+        fn shadow_check_passes_on_random_array_pipelines(e in arr_expr()) {
+            let expected: i64 = eval_arr(&e).into_iter().sum();
+            let src = formatdoc! {r#"
+                module M
+
+                public main : Runtime -> Unit / {{ Console }}
+                let main rt = rt.console.writeLine (Int.toString (Array.sum {body}))
+            "#, body = render_arr(&e)};
+            let (code, out) = run_shadow(&src);
+            prop_assert_eq!(code, 0, "shadow-check soundness for:\n{}\n{}", render_arr(&e), out);
+            prop_assert_eq!(out.trim(), expected.to_string(), "oracle mismatch for {}", render_arr(&e));
+        }
+
+        #[test]
+        fn shadow_check_passes_on_random_quicksort(xs in prop::collection::vec(-20i64..20, 0..50)) {
+            let expected = sorted_csv(&xs);
+            let (code, out) = run_shadow(&quicksort_sort_prog(&render_int_array(&xs)));
+            prop_assert_eq!(code, 0, "shadow-check soundness for quicksort {:?}:\n{}", xs, out);
+            prop_assert_eq!(out.trim(), expected.as_str(), "quicksort oracle mismatch for {:?}", xs);
+        }
+
+        #[test]
+        fn shadow_check_passes_on_random_array_sort(xs in prop::collection::vec(-20i64..20, 0..50)) {
+            // The standard `Array.sort` (median-of-three quicksort): every elided
+            // partition/pivot bounds check is re-verified, so an over-elision aborts.
+            let expected = sorted_csv(&xs);
+            let (code, out) = run_shadow(&array_sort_prog(&render_int_array(&xs)));
+            prop_assert_eq!(code, 0, "shadow-check soundness for Array.sort {:?}:\n{}", xs, out);
+            prop_assert_eq!(out.trim(), expected.as_str(), "Array.sort oracle mismatch for {:?}", xs);
+        }
     }
 }

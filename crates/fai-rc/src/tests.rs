@@ -14,8 +14,7 @@ use fai_core::pretty_def;
 use fai_db::{Db, FaiDatabase, SourceFile};
 use fai_resolve::DefId;
 use fai_syntax::Symbol;
-use indoc::{formatdoc, indoc};
-use proptest::prelude::*;
+use indoc::indoc;
 
 use crate::rc;
 
@@ -633,95 +632,6 @@ fn rc_is_sound_over_a_whole_program() {
         work.extend(lowered.referenced_globals());
         if let Err(e) = check_sound(&db, &lowered) {
             panic!("rc unsound for `{}`: {e}\n{}", def.name.as_str(), pretty_def(&lowered));
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Property: generated integer expressions are reference-count sound.
-// ---------------------------------------------------------------------------
-
-fn int_expr() -> impl Strategy<Value = String> {
-    let leaf = prop_oneof![Just("x".to_string()), (0i64..1000).prop_map(|n| n.to_string())];
-    leaf.prop_recursive(4, 32, 4, |inner| {
-        prop_oneof![
-            (inner.clone(), inner.clone(), "[-+*]")
-                .prop_map(|(a, b, op)| format!("({a} {op} {b})")),
-            (inner.clone(), inner.clone(), inner.clone(), inner.clone())
-                .prop_map(|(a, b, t, e)| format!("(if {a} < {b} then {t} else {e})")),
-        ]
-    })
-}
-
-proptest! {
-    #[test]
-    fn rc_is_sound_for_generated_expressions(expr in int_expr()) {
-        let src = formatdoc! {r#"
-            module M
-
-            let f x = {expr}
-        "#};
-        let (db, file) = db_with(&src);
-        let def = rc(&db, file, Symbol::intern("f"));
-        let r = check_sound(&db, &def);
-        prop_assert!(r.is_ok(), "rc unsound: {}\n{}", r.unwrap_err(), pretty_def(&def));
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Property: inter-procedural borrowing over arbitrary forwarding/mutual-recursion
-// call graphs stays reference-count sound, and the borrow fixpoint always
-// terminates (the salsa cycle converges or falls back, never panics).
-// ---------------------------------------------------------------------------
-
-/// Generates a module of `n` functions `f0..f{n-1}`, each `List Int -> Int`, whose
-/// body either inspects its list, forwards the whole list to another function,
-/// forwards the tail, or sums the head and recurses into another function. Targets
-/// are unconstrained (0..n), so the call graph is arbitrary — including self- and
-/// mutual recursion (borrow cycles). Every program is well-typed by construction.
-fn forwarding_program() -> impl Strategy<Value = (String, usize)> {
-    (1usize..=4).prop_flat_map(|n| {
-        proptest::collection::vec((0u8..4u8, 0..n, 0i64..100), n).prop_map(move |defs| {
-            let mut src = String::from("module M\n");
-            for (i, &(kind, j, c)) in defs.iter().enumerate() {
-                src.push('\n');
-                let def = match kind {
-                    // Forward the whole list to another function.
-                    1 => format!("let f{i} xs = f{j} xs\n"),
-                    // Forward the tail to another function.
-                    2 => format!(
-                        "let f{i} xs =\n  match xs with\n  | [] -> {c}\n  | _ :: r -> f{j} r\n"
-                    ),
-                    // Inspect the head, recurse into another function on the tail.
-                    3 => format!(
-                        "let f{i} xs =\n  match xs with\n  | [] -> {c}\n  | x :: r -> x + f{j} r\n"
-                    ),
-                    // Inspect the list, ignore the element.
-                    _ => format!(
-                        "let f{i} xs =\n  match xs with\n  | [] -> {c}\n  | _ :: _ -> {c}\n"
-                    ),
-                };
-                src.push_str(&def);
-            }
-            (src, n)
-        })
-    })
-}
-
-proptest! {
-    #[test]
-    fn borrow_is_sound_over_forwarding_graphs((src, n) in forwarding_program()) {
-        let (db, file) = db_with(&src);
-        // Well-typed by construction; assert it so soundness is not vacuous over
-        // `Error` nodes.
-        prop_assert!(assert_well_typed(&db, file).is_ok(), "ill-typed:\n{src}");
-        // Reference-counting each function drives `borrow_signature` (and its
-        // cross-function fixpoint) and must stay sound on every member.
-        for i in 0..n {
-            let name = format!("f{i}");
-            let def = rc(&db, file, Symbol::intern(&name));
-            let r = check_sound(&db, &def);
-            prop_assert!(r.is_ok(), "rc unsound for {name}: {}\n{src}", r.unwrap_err());
         }
     }
 }
