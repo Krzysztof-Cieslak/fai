@@ -34,9 +34,35 @@ pub fn scalar_field_mask<'a>(field_types: impl IntoIterator<Item = &'a Ty>) -> u
 }
 
 /// The largest field count a fixed-shape float aggregate may have and still be
-/// kept in registers / returned multi-value. A wider aggregate stays a boxed cell
-/// (the spilled return-area cost outweighs the saving past a handful of fields).
+/// kept in registers / passed component-wise. A wider aggregate stays a boxed cell
+/// (the spilled cost outweighs the saving past a handful of fields). This bounds
+/// a spread **parameter**: arguments past the argument registers spill to the
+/// stack, so a spread parameter is register-eligible up to this width on every
+/// target. A spread **result** is bounded more tightly by [`max_spread_return`].
 pub const FFA_MAX_FIELDS: usize = 8;
+
+/// The largest fixed-shape-float-aggregate result returned **in registers** (a
+/// Cranelift multi-result signature); a wider result is returned as the boxed
+/// scalar-slot cell instead. Unlike arguments — which spill to the stack, so a
+/// spread parameter is register-eligible up to [`FFA_MAX_FIELDS`] — a multi-value
+/// *return* must fit entirely in the target's return registers.
+///
+/// This is the host target's floating-point return-register budget. The compiler
+/// only ever targets the host (both the JIT and the AOT object path build for the
+/// host triple), so it is a compile-time constant, and the object cache key
+/// already includes the host triple. AArch64 returns up to eight `f64`s (V0–V7);
+/// x86-64 System V returns two (XMM0–XMM1); the Windows x64 convention returns
+/// one; any other target conservatively returns one.
+#[must_use]
+pub const fn max_spread_return() -> usize {
+    if cfg!(target_arch = "aarch64") {
+        FFA_MAX_FIELDS
+    } else if cfg!(all(target_arch = "x86_64", not(target_os = "windows"))) {
+        2
+    } else {
+        1
+    }
+}
 
 /// If `ty` is a **fixed-shape float aggregate** (FFA) — a tuple whose every
 /// element is concretely `Float`, or a *closed* record whose every field is
@@ -187,6 +213,14 @@ impl FnAbi {
         // exactly the definitions a saturated call reaches as a bare `Global` head.
         let register_abi = evidence == 0 && source_params > 0;
         let mut ret = scalar_repr(ty, niche);
+        // A multi-value return must fit in the target's return registers; a wider
+        // fixed-shape float aggregate result is returned as a boxed cell instead
+        // (a spread *parameter* is unaffected — arguments spill to the stack).
+        if let Repr::Spread(c) = &ret
+            && c.len() > max_spread_return()
+        {
+            ret = Repr::Uniform;
+        }
         // Untagged ints and niche `Option`s are carried only on the register ABI; a
         // uniform entry (reached via `apply_n`) keeps a tagged immediate / a
         // standard boxed `Option` — both valid uniform words — bridged by the

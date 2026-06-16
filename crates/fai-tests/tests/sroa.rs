@@ -54,6 +54,22 @@ fn same_allocs(ffa: &str, scalar: &str, expect: &str) {
     assert_eq!(a, b, "aggregate allocates no extra cell (ffa={a}, scalar baseline={b})");
 }
 
+/// Like [`same_allocs`], but the zero-extra-allocation guarantee holds only when a
+/// result aggregate of `ret_fields` components fits the target's return-register
+/// budget. A multi-value return must fit entirely in registers (arguments spill
+/// to the stack, but returns cannot), so on a target whose budget is narrower
+/// than the result the aggregate is returned **boxed** — there only correctness
+/// and leak-freedom are asserted, not the allocation count.
+#[track_caller]
+fn same_allocs_when_register_returned(ffa: &str, scalar: &str, expect: &str, ret_fields: usize) {
+    if fai_core::ir::max_spread_return() >= ret_fields {
+        same_allocs(ffa, scalar, expect);
+    } else {
+        allocs(ffa, expect);
+        allocs(scalar, expect);
+    }
+}
+
 const VEC2: &str = "module M\n\
     public type Vec2 = { x : Float, y : Float }\n\
     public add2 : Vec2 -> Vec2 -> Vec2\n\
@@ -83,7 +99,7 @@ fn vec2_pipeline_is_allocation_free() {
           let cx = 1.0 + 2.0 * 3.0\n  \
           let cy = 2.0 + 2.0 * 4.0\n  \
           rt.console.writeLine (Float.toString (cx * cx + cy * cy))\n";
-    same_allocs(&ffa, scalar, "149.0");
+    same_allocs_when_register_returned(&ffa, scalar, "149.0", 2);
 }
 
 /// A `(Float, Float)`-returning helper consumed component-wise allocates no more
@@ -107,7 +123,7 @@ fn float_pair_returning_helper_is_allocation_free() {
         let total k = if k <= 0 then 0.0 else (Int.toFloat k) + (Int.toFloat k + 1.0) + total (k - 1)\n\
         public main : Runtime -> Unit / { Console }\n\
         let main rt = rt.console.writeLine (Int.toString (Float.toInt (total 10)))\n";
-    same_allocs(ffa, scalar, "120");
+    same_allocs_when_register_returned(ffa, scalar, "120", 2);
 }
 
 /// A `Mat2` (four-`Float` record) matrix-vector product allocates no more than the
@@ -132,7 +148,7 @@ fn mat2_apply_is_allocation_free() {
           let rx = 1.0 * 5.0 + 2.0 * 6.0\n  \
           let ry = 3.0 * 5.0 + 4.0 * 6.0\n  \
           rt.console.writeLine (Int.toString (Float.toInt (rx + ry)))\n";
-    same_allocs(ffa, scalar, "56");
+    same_allocs_when_register_returned(ffa, scalar, "56", 2);
 }
 
 /// A `Vec2` stored in a list escapes, so it is boxed (the in-cell `f64`-slot
