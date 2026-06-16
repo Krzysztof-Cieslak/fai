@@ -43,6 +43,12 @@ clap = { version = "4", features = ["derive"] }
 rustc-hash = "2"
 # Data parallelism (work-stealing pool) for per-definition codegen/lowering.
 rayon = "1"
+# Stackful coroutines: the per-task green-thread stacks + context switch for the
+# runtime's M:N scheduler (the compiled program's concurrency, not the compiler's).
+corosensei = "0.3"
+# Lock-free Chase-Lev work-stealing deques: the runtime scheduler's per-worker run
+# queues + stealing. (crossbeam-deque is already in the tree via rayon.)
+crossbeam-deque = "0.8"
 # Content hashing for the on-disk artifact cache and file-state sync.
 blake3 = "1"
 # String interning for identifiers (the non-salsa `Symbol`).

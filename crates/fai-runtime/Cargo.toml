@@ -9,10 +9,17 @@ license.workspace = true
 
 # Built as a static archive (embedded and linked into AOT executables) and as an
 # rlib (linked into the compiler so the JIT can resolve runtime symbols by
-# address). The crate is intentionally dependency-free (std only) so the AOT
-# archive can be produced by a single `$RUSTC` invocation from a build script.
+# address). The runtime's M:N concurrency scheduler needs a few native crates
+# (stackful coroutines, work-stealing deques, the IO reactor), so the archive is
+# built by a nested `cargo` invocation (see fai-driver/build.rs) rather than a
+# single `$RUSTC`; a `staticlib` bundles those dependencies into the one archive.
 [lib]
 crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+# The M:N green-thread scheduler that runs a compiled program's concurrent tasks.
+corosensei.workspace = true
+crossbeam-deque.workspace = true
 
 # Exposes the allocator fuzz harness (`run_ops`) for the out-of-workspace
 # cargo-fuzz target. Off by default and dependency-free, so the staticlib/rlib and
