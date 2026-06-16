@@ -1,9 +1,18 @@
 # cargo-nextest configuration.
 #
-# The `ci` profile is used by the GitHub workflow: it runs every test (no
-# fail-fast) so the reported summary is complete, prints failures inline and
-# again in a final recap for easy scanning of long logs, and writes a JUnit
-# report that the workflow renders into the run's job summary.
+# The CI profiles all run every selected test (no fail-fast) so the reported
+# summary is complete, print failures inline and again in a final recap for easy
+# scanning of long logs, and write a JUnit report that the workflow renders into
+# the run's job summary.
+#
+# `unit` and `proptest` partition the suite into two lanes that run in parallel:
+# every property test lives in a module path containing `proptest`/`prop_test`
+# (or in the dedicated `properties` / `proptest` test binaries), so the two
+# `default-filter`s are exact complements. Every test therefore runs in exactly
+# one lane; should a test ever be misclassified it still runs (in the other
+# lane), so coverage can never silently vanish — only its lane (and thus speed)
+# would be wrong. `scripts/check-nextest-partition.sh` asserts the two lanes sum
+# to the whole suite.
 
 [profile.ci]
 fail-fast = false
@@ -11,4 +20,38 @@ failure-output = "immediate-final"
 final-status-level = "fail"
 
 [profile.ci.junit]
+path = "junit.xml"
+
+# Fast PR-feedback lane: everything except the property tests.
+[profile.unit]
+fail-fast = false
+failure-output = "immediate-final"
+final-status-level = "fail"
+default-filter = "not (test(/proptest/) | test(/prop_test/) | binary(properties) | binary(proptest))"
+
+[profile.unit.junit]
+path = "junit.xml"
+
+# Property-test lane: only the property tests. Runs isolated and harder (a raised
+# PROPTEST_CASES in the workflow), in parallel with the `unit` lane.
+[profile.proptest]
+fail-fast = false
+failure-output = "immediate-final"
+final-status-level = "fail"
+default-filter = "test(/proptest/) | test(/prop_test/) | binary(properties) | binary(proptest)"
+
+[profile.proptest.junit]
+path = "junit.xml"
+
+# Platform coverage lane for macOS/Windows: the OS-sensitive subset — the
+# native/AOT linker path and the process-control FFI (daemon spawn, Job-Object
+# limits) — with the property tests excluded (they run on Linux only). This is a
+# deliberately reduced set; tune the allowlist as platform-specific surface moves.
+[profile.cross-os]
+fail-fast = false
+failure-output = "immediate-final"
+final-status-level = "fail"
+default-filter = "(package(fai-runtime) | package(fai-codegen) | package(fai-driver) | package(fai-server) | package(fai-cli) | binary(native) | binary(bundle) | binary(cli) | binary(samples) | binary(std_stack_safety)) - (test(/proptest/) | test(/prop_test/) | binary(properties) | binary(proptest))"
+
+[profile.cross-os.junit]
 path = "junit.xml"

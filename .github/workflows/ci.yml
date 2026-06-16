@@ -13,42 +13,32 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
+# The suite is split into lanes that run in parallel for fast pull-request
+# feedback. `build-archive` compiles every test binary once on Linux and uploads
+# a nextest archive; the `unit` and `proptest` lanes then *run* (no recompile)
+# from that archive in parallel — `unit` is everything except the property tests,
+# `proptest` is only the property tests (run harder, see PROPTEST_CASES). The two
+# lanes are exact complements (see .config/nextest.toml), and `build-archive`
+# fails the run if they ever stop summing to the whole suite. `cross-os` covers
+# the platform-sensitive subset on macOS/Windows (the native linker path and the
+# process-control FFI); the property and heavy e2e suites run on Linux only.
+#
 # Each OS uses its native default shell (bash on Linux/macOS, PowerShell on
 # Windows). Forcing bash on Windows puts Git's `usr/bin/link.exe` ahead of the
 # MSVC linker on PATH, which breaks all linking — so it is deliberately avoided.
 
 jobs:
-  check:
-    name: build / lint / test
-    strategy:
-      # Report every OS's result instead of cancelling the matrix on the first
-      # failure.
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      # The AOT linker (`fai build`) shells out to the host's system linker. On
-      # Windows that is MSVC `link.exe`, which needs the Visual Studio
-      # environment (PATH/LIB/INCLUDE) — export it for the build/test steps.
-      - name: Set up MSVC environment
-        if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
-
-      # Guarantee a `python` on PATH for the test-summary step on every runner.
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
 
       # The first cargo invocation makes rustup install the toolchain pinned by
       # rust-toolchain.toml, together with its rustfmt and clippy components.
       - name: Select pinned toolchain
         run: |
           cargo --version
-          rustc --version
           cargo clippy --version
           cargo fmt --version
 
@@ -60,32 +50,184 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
-      - name: Build
-        run: cargo build --workspace --all-targets --locked
+  build-archive:
+    name: build + archive (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Guarantee a `python3` on PATH for the lane-partition guard below.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Select pinned toolchain
+        run: |
+          cargo --version
+          rustc --version
+
+      - uses: Swatinem/rust-cache@v2
 
       - name: Install nextest
         uses: taiki-e/install-action@v2
         with:
           tool: nextest
 
-      - name: Test
-        # nextest prints a clean, scannable per-test summary and a tidy final
-        # tally instead of the default run's wall of output. The raised case
-        # count fuzzes the property tests harder than the local default (256);
-        # committed `proptest-regressions/` seeds always replay first. The `ci`
-        # profile (.config/nextest.toml) writes the JUnit report rendered below.
-        env:
-          PROPTEST_CASES: "2048"
-        run: cargo nextest run --workspace --locked --profile ci
+      # Compile every test binary once and pack it (plus the metadata the run
+      # lanes need) into a single archive. The `unit` and `proptest` lanes run
+      # from this archive without recompiling.
+      - name: Build and archive test binaries
+        run: cargo nextest archive --workspace --locked --archive-file target/nextest-archive.tar.zst
+
+      - name: Upload test archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextest-archive
+          path: target/nextest-archive.tar.zst
+          if-no-files-found: error
 
       - name: Doctests
-        # nextest does not run doctests yet, so cover them separately.
+        # nextest does not run doctests, so cover them separately (reusing the
+        # libraries just compiled for the archive).
         run: cargo test --workspace --locked --doc
 
+      - name: Verify the unit/proptest lanes partition the suite
+        # A name-based guard: the two parallel lanes must together select every
+        # test exactly once. Fails the build if a new test ever escapes both lanes
+        # (or the property-test selection breaks). Reuses the warm build above.
+        run: ./scripts/check-nextest-partition.sh
+
+  unit:
+    name: unit + e2e tests (linux)
+    needs: build-archive
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Select pinned toolchain
+        run: cargo --version
+
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
+      - name: Download test archive
+        uses: actions/download-artifact@v4
+        with:
+          name: nextest-archive
+
+      - name: Test (everything except property tests)
+        run: cargo nextest run --profile unit --archive-file nextest-archive.tar.zst --workspace-remap .
+
       - name: Test summary
-        # Render the JUnit report into the run's job summary, even on failure.
         if: always()
-        run: python scripts/junit-summary.py target/nextest/ci/junit.xml
+        run: python scripts/junit-summary.py target/nextest/unit/junit.xml
+
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-report-unit
+          path: target/nextest/unit/junit.xml
+          if-no-files-found: ignore
+
+  proptest:
+    name: property tests (linux)
+    needs: build-archive
+    runs-on: ubuntu-latest
+    env:
+      # Property tests run isolated in this lane, so they can run harder than the
+      # inline default without slowing the unit lane. Committed
+      # `proptest-regressions/` seeds always replay first. The scheduled
+      # `proptest-nightly` workflow raises this much further for deep runs.
+      PROPTEST_CASES: "4096"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Select pinned toolchain
+        run: cargo --version
+
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
+      - name: Download test archive
+        uses: actions/download-artifact@v4
+        with:
+          name: nextest-archive
+
+      - name: Property tests
+        run: cargo nextest run --profile proptest --archive-file nextest-archive.tar.zst --workspace-remap .
+
+      - name: Test summary
+        if: always()
+        run: python scripts/junit-summary.py target/nextest/proptest/junit.xml
+
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-report-proptest
+          path: target/nextest/proptest/junit.xml
+          if-no-files-found: ignore
+
+  cross-os:
+    name: platform tests
+    strategy:
+      # Report each OS's result instead of cancelling on the first failure.
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The AOT linker (`fai build`) shells out to the host's system linker. On
+      # Windows that is MSVC `link.exe`, which needs the Visual Studio
+      # environment (PATH/LIB/INCLUDE) — export it for the build/test steps.
+      - name: Set up MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Select pinned toolchain
+        run: |
+          cargo --version
+          rustc --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
+      - name: Platform-sensitive tests
+        # The OS-relevant subset (native linker path + process-control FFI), with
+        # property tests excluded — those run on Linux only. See the `cross-os`
+        # profile in .config/nextest.toml.
+        run: cargo nextest run --workspace --locked --profile cross-os
+
+      - name: Test summary
+        if: always()
+        run: python scripts/junit-summary.py target/nextest/cross-os/junit.xml
 
       - name: Upload JUnit report
         if: always()
@@ -93,5 +235,5 @@ jobs:
         with:
           # Artifact names must be unique across matrix jobs in a run.
           name: junit-report-${{ matrix.os }}
-          path: target/nextest/ci/junit.xml
+          path: target/nextest/cross-os/junit.xml
           if-no-files-found: ignore

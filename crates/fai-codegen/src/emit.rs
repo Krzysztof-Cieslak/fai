@@ -6281,7 +6281,7 @@ mod classifier_tests {
 }
 
 #[cfg(test)]
-mod wire_projection_tests {
+mod wire_projection_proptests {
     //! The worker (`fai run`/`fai test`) compiles definitions reconstructed from
     //! the wire bundle, where each node's type is a marker rebuilt from its
     //! [`fai_core::wire::WireTy`] projection. These tests pin the safety-critical

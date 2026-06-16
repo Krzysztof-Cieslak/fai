@@ -1,0 +1,71 @@
+name: proptest-nightly
+
+# Deep property-test run. The pull-request `CI` workflow runs the property tests
+# isolated but time-bounded (a moderate PROPTEST_CASES); this runs the same lane
+# with a far larger case budget on a schedule and on demand, to find the rare
+# inputs a shorter run misses. Not a merge gate — it fails only when a property
+# actually fails (a real bug), uploading the shrunk counterexample via the JUnit
+# report. A discovered failure should be committed as a `proptest-regressions/`
+# seed so the cheap PR lane replays it forever after.
+on:
+  schedule:
+    - cron: "0 5 * * *" # daily, 05:00 UTC
+  workflow_dispatch:
+    inputs:
+      cases:
+        description: "PROPTEST_CASES (per property)"
+        default: "16384"
+
+concurrency:
+  group: proptest-nightly-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  proptest-deep:
+    name: property tests (deep)
+    runs-on: ubuntu-latest
+    # A large case budget can run long; cap it so a pathological property fails
+    # fast instead of burning the whole runner budget.
+    timeout-minutes: 120
+    env:
+      PROPTEST_CASES: ${{ github.event.inputs.cases || '16384' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Select pinned toolchain
+        run: |
+          cargo --version
+          rustc --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
+      - name: Property tests (deep)
+        run: cargo nextest run --workspace --locked --profile proptest
+
+      - name: Test summary
+        if: always()
+        run: python scripts/junit-summary.py target/nextest/proptest/junit.xml
+
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-report-proptest-nightly
+          path: target/nextest/proptest/junit.xml
+          if-no-files-found: ignore

@@ -779,6 +779,16 @@ test; under-testing a phase is a defect, not a shortcut.
   blocks; `fmt` idempotence and the `parse → print → parse` / `lex → render`
   round-trips; reference-count balance. Also run the language's own
   `example`/`forall` contracts over `samples/`.
+- **Put property tests in a `proptest`-named home.** CI runs the property tests in
+  their own lane (in parallel with the rest, harder, Linux-only), selected purely
+  by name: a property test must live in a module whose path contains `proptest`
+  (e.g. `mod proptests`) or `prop_test` (e.g. `mod prop_tests`), or in a dedicated
+  `properties` / `proptest` test binary. The `unit` and `proptest` nextest
+  profiles (`.config/nextest.toml`) are exact complements, and
+  `scripts/check-nextest-partition.sh` (a CI gate) fails the build if the two
+  lanes ever stop summing to the whole suite — so a property test dropped into a
+  plain `mod tests` will trip the guard. Keep new `proptest!` blocks (and
+  `TestRunner` tests) inside such a module.
 - **Incrementality is tested, not assumed.** Whenever a query is added or changed,
   cover it with the incremental-vs-clean **verifier** and an edit-churn
   (early-cutoff) test.

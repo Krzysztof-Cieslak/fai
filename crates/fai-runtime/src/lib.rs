@@ -3691,7 +3691,7 @@ mod proptests;
 #[cfg(test)]
 mod reuse_tests;
 #[cfg(test)]
-mod scalar_tests;
+mod scalar_proptests;
 #[cfg(test)]
 mod string_tests;
 #[cfg(test)]
