@@ -218,6 +218,17 @@ pub const KIND_STACK_CLOSURE: u64 = 9;
 /// [`KIND_STACK_CLOSURE`] — same layout and children, but the cell lives in its
 /// creating frame and is not freed when its reference count reaches zero.
 pub const KIND_STACK_PAP: u64 = 10;
+/// A spawned task's handle (the `Task 'a` value). A leaf to the Fai reference-count
+/// walk: its single slot holds a raw `Arc<Handle>` pointer, not a Fai child, so it
+/// is freed via [`scheduler`]'s cleanup (which drops that `Arc`) rather than the
+/// child scan.
+pub const KIND_TASK: u64 = 11;
+/// A channel handle (the `Channel 'a` value). Like [`KIND_TASK`]: its slot holds a
+/// raw `Arc<Chan>` pointer dropped when the cell dies.
+pub const KIND_CHANNEL: u64 = 12;
+
+/// Byte offset of the raw `Arc` pointer inside a task or channel handle cell.
+pub const HANDLE_PTR_OFFSET: usize = HEADER_SIZE;
 
 /// Builds a runtime-static descriptor with no scalar fields.
 const fn descriptor(kind: u64, name: &'static str) -> Descriptor {
@@ -307,6 +318,15 @@ pub static FAI_STACK_PAP_DESC: Descriptor = descriptor(KIND_STACK_PAP, "StackPap
 /// Descriptor for boxed `Float` objects (leaf).
 #[unsafe(no_mangle)]
 pub static FAI_FLOAT_DESC: Descriptor = descriptor(KIND_FLOAT, "Float");
+
+/// Descriptor for task handles (a leaf to the Fai child scan; its `Arc` slot is
+/// released by the scheduler when the cell dies).
+#[unsafe(no_mangle)]
+pub static FAI_TASK_DESC: Descriptor = descriptor(KIND_TASK, "Task");
+
+/// Descriptor for channel handles (peer of [`FAI_TASK_DESC`]).
+#[unsafe(no_mangle)]
+pub static FAI_CHANNEL_DESC: Descriptor = descriptor(KIND_CHANNEL, "Channel");
 
 /// Descriptor for data values with no scalar fields — the shared descriptor for
 /// every constructor, record, and tuple whose slots are all uniform words. Cells
@@ -1060,6 +1080,18 @@ fn alloc_obj(size: usize, descriptor: *const Descriptor) -> *mut u8 {
 /// `p` was returned by [`alloc_obj`] and is dead (its reference count is zero and
 /// its children, if any, have been released); it must not be used afterward.
 unsafe fn free_obj(p: *mut u8) {
+    // A task/channel handle owns an `Arc` (the scheduler's state) in its slot rather
+    // than a Fai child; release it before the cell's memory is reclaimed. Every free
+    // path funnels through here, so this is the one place the `Arc` is dropped.
+    // SAFETY: `p` is a live cell with a valid descriptor; the handle slot holds the
+    // raw pointer `scheduler` stored at construction.
+    unsafe {
+        match desc_kind(obj_descriptor(p)) {
+            KIND_TASK => scheduler::drop_task_handle(read_i64(p, HANDLE_PTR_OFFSET)),
+            KIND_CHANNEL => scheduler::drop_channel_handle(read_i64(p, HANDLE_PTR_OFFSET)),
+            _ => {}
+        }
+    }
     // SAFETY: `p` was returned by `alloc_obj`, so the size field is valid.
     let size = unsafe { read_u64(p, SIZE_OFFSET) } as usize;
     match size_class(size) {

@@ -18,14 +18,13 @@
 //! so the `!Send` coroutine is wrapped in a `Send` newtype with that justification.
 //!
 //! This module is self-contained and unit-tested against a Rust task body
-//! (`Box<dyn FnOnce() -> Value>`). The `fai_*` C-ABI entry points that wrap a Fai
-//! thunk — and the reference-counted `Task`/`Channel` handle representation they
-//! hand to Fai code — are added with the `Concurrency` capability that calls them;
-//! until then this scheduler API is reached only from the tests below.
-#![allow(dead_code)]
+//! (`Box<dyn FnOnce() -> Value>`). The `fai_*` C-ABI entry points wrap a Fai thunk
+//! and expose the reference-counted `Task`/`Channel` handle values to Fai code; the
+//! `Concurrency` capability's std module binds to them.
 
 use std::cell::Cell;
 use std::collections::VecDeque;
+use std::mem::ManuallyDrop;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
@@ -262,6 +261,17 @@ pub struct Handle {
     blocker: Condvar,
 }
 
+impl Drop for Handle {
+    fn drop(&mut self) {
+        // The completed result is owned by the handle (awaiters duplicate it out),
+        // so release it when the last reference to the handle goes away.
+        let st = self.state.get_mut().expect("handle state");
+        if st.done {
+            crate::fai_drop(st.result);
+        }
+    }
+}
+
 /// Completes `handle` with `result`, waking every awaiting task and any blocked
 /// OS thread.
 fn complete(handle: &Arc<Handle>, result: Value) {
@@ -337,6 +347,17 @@ pub struct Chan {
     capacity: usize,
 }
 
+impl Drop for Chan {
+    fn drop(&mut self) {
+        // Release any values still buffered when the last reference to the channel
+        // is dropped (the channel owns them until received).
+        let st = self.state.get_mut().expect("chan state");
+        while let Some(v) = st.buf.pop_front() {
+            crate::fai_drop(v);
+        }
+    }
+}
+
 /// Creates a channel with the given capacity (at least 1).
 pub fn channel(capacity: usize) -> Arc<Chan> {
     Arc::new(Chan {
@@ -407,6 +428,136 @@ pub fn chan_close(chan: &Arc<Chan>) {
     for rx in waiters {
         schedule(rx);
     }
+}
+
+// ---------------------------------------------------------------------------
+// C-ABI entry points and the Fai `Task`/`Channel` handle representation.
+// ---------------------------------------------------------------------------
+//
+// A handle is a Fai heap cell (KIND_TASK / KIND_CHANNEL) whose single slot stores
+// a raw `Arc` pointer to scheduler state. The cell is reference-counted like any
+// Fai value; when it dies, `free_obj` calls `drop_task_handle`/`drop_channel_handle`
+// to release that `Arc`. Operations follow the runtime's uniform consume
+// convention: each consumes its handle/value operands.
+
+/// Wraps a task handle as a Fai `Task` value (a `KIND_TASK` cell owning the `Arc`).
+fn task_handle_value(h: Arc<Handle>) -> Value {
+    let raw = Arc::into_raw(h) as usize as i64;
+    let p = crate::alloc_obj(crate::HEADER_SIZE + 8, std::ptr::addr_of!(crate::FAI_TASK_DESC));
+    // SAFETY: `p` has room for the header and one slot.
+    unsafe { crate::write_i64(p, crate::HANDLE_PTR_OFFSET, raw) };
+    crate::from_obj(p)
+}
+
+/// Wraps a channel as a Fai `Channel` value (a `KIND_CHANNEL` cell owning the `Arc`).
+fn channel_handle_value(c: Arc<Chan>) -> Value {
+    let raw = Arc::into_raw(c) as usize as i64;
+    let p = crate::alloc_obj(crate::HEADER_SIZE + 8, std::ptr::addr_of!(crate::FAI_CHANNEL_DESC));
+    // SAFETY: `p` has room for the header and one slot.
+    unsafe { crate::write_i64(p, crate::HANDLE_PTR_OFFSET, raw) };
+    crate::from_obj(p)
+}
+
+/// Releases the `Arc<Handle>` a dead task cell owned (called by `free_obj`).
+pub(crate) fn drop_task_handle(raw: i64) {
+    // SAFETY: `raw` came from `Arc::into_raw` in `task_handle_value`.
+    drop(unsafe { Arc::from_raw(raw as usize as *const Handle) });
+}
+
+/// Releases the `Arc<Chan>` a dead channel cell owned (called by `free_obj`).
+pub(crate) fn drop_channel_handle(raw: i64) {
+    // SAFETY: `raw` came from `Arc::into_raw` in `channel_handle_value`.
+    drop(unsafe { Arc::from_raw(raw as usize as *const Chan) });
+}
+
+/// Borrows the `Arc<Handle>` from a `Task` value without consuming a reference (the
+/// reference stays owned by the cell, released when the cell is dropped).
+fn handle_of(task: Value) -> ManuallyDrop<Arc<Handle>> {
+    // SAFETY: `task` is a live `KIND_TASK` cell whose slot holds the `Arc` pointer.
+    let raw = unsafe { crate::read_i64(crate::as_obj(task), crate::HANDLE_PTR_OFFSET) };
+    ManuallyDrop::new(unsafe { Arc::from_raw(raw as usize as *const Handle) })
+}
+
+/// Borrows the `Arc<Chan>` from a `Channel` value without consuming a reference.
+fn chan_of(chan: Value) -> ManuallyDrop<Arc<Chan>> {
+    // SAFETY: `chan` is a live `KIND_CHANNEL` cell whose slot holds the `Arc` pointer.
+    let raw = unsafe { crate::read_i64(crate::as_obj(chan), crate::HANDLE_PTR_OFFSET) };
+    ManuallyDrop::new(unsafe { Arc::from_raw(raw as usize as *const Chan) })
+}
+
+/// Spawns `thunk` (a `Unit -> 'a` closure) as a task, returning its `Task` handle.
+/// The thunk's captured graph is marked shared (it runs on another worker) and so
+/// is the result (it returns to the awaiter's worker). Consumes `thunk`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_spawn(thunk: Value) -> Value {
+    crate::fai_mark_shared(thunk);
+    let handle = spawn(Box::new(move || {
+        let args = [crate::FAI_UNIT];
+        // SAFETY: `thunk` is an arity-1 closure; one owned `Unit` argument.
+        let result = unsafe { crate::fai_apply_n(thunk, 1, args.as_ptr()) };
+        crate::fai_mark_shared(result)
+    }));
+    task_handle_value(handle)
+}
+
+/// Awaits a task's result, parking the caller until it completes. The result is
+/// duplicated out (so another reference may await it again). Consumes the handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_await(task: Value) -> Value {
+    let result = await_handle(&handle_of(task));
+    crate::fai_drop(task);
+    result
+}
+
+/// Creates a bounded channel of the given capacity (a Fai `Int`); returns a
+/// `Channel` handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_channel(capacity: Value) -> Value {
+    channel_handle_value(channel((capacity >> 1) as usize))
+}
+
+/// Sends a value on a channel, parking while full. The value's graph is marked
+/// shared (it crosses to the receiver). Consumes both operands; returns `Unit`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_send(chan: Value, v: Value) -> Value {
+    crate::fai_mark_shared(v);
+    chan_send(&chan_of(chan), v);
+    crate::fai_drop(chan);
+    crate::FAI_UNIT
+}
+
+/// Receives a value, parking while empty. Returns a standard `Option`: `Some v`
+/// (tag 1) or `None` (tag 0, an immediate) once the channel is closed and drained.
+/// Consumes the `Channel` handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_recv(chan: Value) -> Value {
+    let received = chan_recv(&chan_of(chan));
+    crate::fai_drop(chan);
+    match received {
+        // SAFETY: one owned field moves into the `Some` cell.
+        Some(v) => unsafe { crate::fai_make_data(1, 1, [v].as_ptr()) },
+        None => 1,
+    }
+}
+
+/// Closes a channel (receivers drain, then get `None`). Consumes the handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_close(chan: Value) -> Value {
+    chan_close(&chan_of(chan));
+    crate::fai_drop(chan);
+    crate::FAI_UNIT
+}
+
+/// Runs `main_thunk` (`Unit -> a`) as the program's root task on the scheduler,
+/// blocking until it finishes. The entry trampoline uses this for a program that
+/// uses concurrency.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_block_on(main_thunk: Value) -> Value {
+    block_on(Box::new(move || {
+        let args = [crate::FAI_UNIT];
+        // SAFETY: arity-1 root closure; one owned `Unit` argument.
+        unsafe { crate::fai_apply_n(main_thunk, 1, args.as_ptr()) }
+    }))
 }
 
 #[cfg(test)]
