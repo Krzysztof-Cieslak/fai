@@ -140,6 +140,17 @@ fn write_expr(
             }
             out.push(')');
         }
+        ExprKind::Foreign { symbol, args } => {
+            // The native symbol decides which runtime function the out-of-line call
+            // links to, so it is part of the key (the interned id is process-local —
+            // hash its string).
+            let _ = write!(out, "(fgn:{}", symbol.as_str());
+            for a in args {
+                out.push(' ');
+                write_expr(out, a, namer, arity_of, abi_of);
+            }
+            out.push(')');
+        }
         ExprKind::App { func, args, reuse, alloc } => {
             out.push_str("(app ");
             // A stack-allocated partial application selects a distinct cell, so the
@@ -345,6 +356,24 @@ mod tests {
         let a = fingerprint("module M\n\nlet f x = x + 1\n", "f");
         let b = fingerprint("module M\n\nlet f x = x + 2\n", "f");
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn distinguishes_foreign_symbols() {
+        // Two foreign calls differing only in their native symbol must produce
+        // different cache keys, or a stale object could be reused across them.
+        // (`Prim.*` is std-only, so these are fingerprinted from a `<std>/` source.)
+        fn fp_std(src: &str, name: &str) -> String {
+            let mut db = FaiDatabase::new();
+            fai_types::std_lib::load_std(&mut db);
+            let id = db.add_source("<std>/S.fai".into(), src.to_owned());
+            let file = db.source_file(id).unwrap();
+            let lowered = core(&db, file, Symbol::intern(name));
+            fingerprint_def(&lowered, &|d| namer(&db, d), &|_| 0, &|_| FnAbi::default())
+        }
+        let console = fp_std("module S\n\nlet w s = Prim.consoleWriteLine s\n", "w");
+        let file = fp_std("module S\n\nlet w s = Prim.fileRead s\n", "w");
+        assert_ne!(console, file);
     }
 
     #[test]

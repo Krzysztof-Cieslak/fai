@@ -238,7 +238,7 @@ impl<'a> Analyzer<'a> {
                     self.collect(a);
                 }
             }
-            K::Prim { args, .. } | K::MakeData { args, .. } => {
+            K::Prim { args, .. } | K::Foreign { args, .. } | K::MakeData { args, .. } => {
                 for a in args {
                     self.collect(a);
                 }

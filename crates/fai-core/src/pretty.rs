@@ -84,13 +84,6 @@ fn prim_name(op: Prim) -> &'static str {
         Prim::StringTake => "take",
         Prim::StringDrop => "drop",
         Prim::Not => "not",
-        Prim::ConsoleWriteLine => "consoleWriteLine",
-        Prim::ClockNow => "clockNow",
-        Prim::RandomNextInt => "randomNextInt",
-        Prim::FileRead => "fileRead",
-        Prim::FileWrite => "fileWrite",
-        Prim::EnvGet => "envGet",
-        Prim::EnvArgs => "envArgs",
         Prim::RecordUpdate => "recordUpdate",
         Prim::ArrayWithCapacity => "arrayWithCapacity",
         Prim::ArrayLength => "arrayLength",
@@ -128,6 +121,11 @@ fn write_expr(out: &mut String, e: &CExpr) {
         }
         ExprKind::Prim { op, args } => {
             let _ = write!(out, "({}", prim_name(*op));
+            write_args(out, args);
+            out.push(')');
+        }
+        ExprKind::Foreign { symbol, args } => {
+            let _ = write!(out, "(foreign {:?}", symbol.as_str());
             write_args(out, args);
             out.push(')');
         }

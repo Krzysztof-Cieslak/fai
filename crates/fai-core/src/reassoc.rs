@@ -82,6 +82,9 @@ fn map_children(e: &CExpr, f: fn(&CExpr) -> CExpr) -> CExpr {
     let kind = match &e.kind {
         K::Lit(_) | K::Local(_) | K::Global(_) | K::MakeClosure { .. } | K::Error => e.kind.clone(),
         K::Prim { op, args } => K::Prim { op: *op, args: args.iter().map(f).collect() },
+        K::Foreign { symbol, args } => {
+            K::Foreign { symbol: *symbol, args: args.iter().map(f).collect() }
+        }
         K::App { func, args, reuse, alloc } => K::App {
             func: Box::new(f(func)),
             args: args.iter().map(f).collect(),

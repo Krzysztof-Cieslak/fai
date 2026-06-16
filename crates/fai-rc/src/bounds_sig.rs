@@ -529,7 +529,10 @@ fn walk_in(
                 walk_in(a, self_name, false, b, result_of, on_call, on_exit);
             }
         }
-        K::Prim { args, .. } | K::MakeData { args, .. } | K::Spread { components: args } => {
+        K::Prim { args, .. }
+        | K::Foreign { args, .. }
+        | K::MakeData { args, .. }
+        | K::Spread { components: args } => {
             for a in args {
                 walk_in(a, self_name, false, b, result_of, on_call, on_exit);
             }
@@ -735,6 +738,7 @@ fn poison_first_class(
             poison_first_class(els, source, arity, eligible);
         }
         K::Prim { args, .. }
+        | K::Foreign { args, .. }
         | K::MakeData { args, .. }
         | K::Recur { args }
         | K::Spread { components: args } => {

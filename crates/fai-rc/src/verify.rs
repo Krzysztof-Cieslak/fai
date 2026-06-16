@@ -142,6 +142,12 @@ impl Checker<'_> {
                     self.operand(a, borrows.get(i).copied().unwrap_or(false), refs)?;
                 }
             }
+            // A foreign call consumes every operand (no borrowing variants).
+            ExprKind::Foreign { args, .. } => {
+                for a in args {
+                    self.operand(a, false, refs)?;
+                }
+            }
             ExprKind::MakeData { args, reuse, .. } => {
                 for a in args {
                     self.eval(a, refs)?;

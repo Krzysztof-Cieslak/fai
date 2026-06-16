@@ -226,9 +226,10 @@ impl Marker<'_> {
                     self.mark(a, escaped);
                 }
             }
-            // A stored field (constructor/record) or a primitive operand may
-            // outlive the call: an inline closure there escapes (kept `Heap`).
-            K::MakeData { args, .. } | K::Prim { args, .. } => {
+            // A stored field (constructor/record), a primitive operand, or a foreign
+            // operand may outlive the call: an inline closure there escapes (kept
+            // `Heap`).
+            K::MakeData { args, .. } | K::Prim { args, .. } | K::Foreign { args, .. } => {
                 for a in args {
                     self.mark(a, escaped);
                 }
@@ -393,10 +394,11 @@ impl Analyzer<'_> {
                 self.scan(then, tail);
                 self.scan(els, tail);
             }
-            // A primitive may store its operand (an array `set`/`push`, a record
-            // update), so an operand is treated as escaping — the conservative
-            // default (arithmetic/comparison operands are rarely closures).
-            K::Prim { args, .. } => {
+            // A primitive or foreign call may store its operand (an array
+            // `set`/`push`, a record update, a host write), so an operand is treated
+            // as escaping — the conservative default (arithmetic/comparison operands
+            // are rarely closures).
+            K::Prim { args, .. } | K::Foreign { args, .. } => {
                 for a in args {
                     self.scan(a, false);
                     self.escape(a);

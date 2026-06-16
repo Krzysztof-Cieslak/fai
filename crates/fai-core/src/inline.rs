@@ -89,6 +89,55 @@ pub fn prim_wrapper(db: &dyn Db, file: SourceFile, name: Symbol) -> Option<PrimW
     Some(PrimWrapper { op, slots })
 }
 
+/// A definition that is exactly an eta-expanded foreign call: a body of the form
+/// `fun p0 … pk -> foreign <a permutation of p0 … pk>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForeignWrapper {
+    /// The wrapped foreign function's native runtime symbol.
+    pub symbol: Symbol,
+    /// The source-parameter index supplying each foreign operand, in operand
+    /// order — a permutation of `0..arity` (every parameter used exactly once).
+    pub slots: Vec<usize>,
+}
+
+/// Whether `name`'s definition in `file` is a strict-bijection eta-foreign-wrapper.
+///
+/// The foreign peer of [`prim_wrapper`]: `Some` iff the lowered definition is a
+/// single function with no captures whose body is exactly `Foreign { symbol, args }`
+/// where the operands are a permutation of the parameters (each used exactly once).
+#[salsa::tracked]
+pub fn foreign_wrapper(db: &dyn Db, file: SourceFile, name: Symbol) -> Option<ForeignWrapper> {
+    let lowered = core(db, file, name);
+    if lowered.fns.len() != 1 {
+        return None;
+    }
+    let entry = lowered.entry();
+    if !entry.captures.is_empty() {
+        return None;
+    }
+    let K::Foreign { symbol, args } = &entry.body.kind else {
+        return None;
+    };
+    let symbol = *symbol;
+    if args.len() != entry.params.len() {
+        return None;
+    }
+    let mut slots = Vec::with_capacity(args.len());
+    let mut used = vec![false; entry.params.len()];
+    for a in args {
+        let K::Local(l) = &a.kind else {
+            return None;
+        };
+        let pos = entry.params.iter().position(|p| p == l)?;
+        if used[pos] {
+            return None; // a parameter used twice — not a bijection
+        }
+        used[pos] = true;
+        slots.push(pos);
+    }
+    Some(ForeignWrapper { symbol, slots })
+}
+
 /// `name`'s lowered definition with every saturated call to an eta-prim-wrapper
 /// replaced by the wrapped primitive.
 ///
@@ -141,6 +190,18 @@ fn inline_expr(db: &dyn Db, e: &CExpr, next: &mut usize, changed: &mut bool) -> 
                     args.iter().map(|a| inline_expr(db, a, next, changed)).collect();
                 return build_prim(&pw, args, ty, next);
             }
+            // A one-line foreign wrapper (`let send s = netSend s`) folds the same
+            // way, so a use site calls the foreign function with no wrapper hop.
+            if let K::Global(def) = &func.kind
+                && let Some(callee_file) = db.source_file(def.file)
+                && let Some(fw) = foreign_wrapper(db, callee_file, def.name)
+                && args.len() == fw.slots.len()
+            {
+                *changed = true;
+                let args: Vec<CExpr> =
+                    args.iter().map(|a| inline_expr(db, a, next, changed)).collect();
+                return build_foreign(&fw, args, ty, next);
+            }
             let func = Box::new(inline_expr(db, func, next, changed));
             let args = args.iter().map(|a| inline_expr(db, a, next, changed)).collect();
             CExpr::new(K::App { func, args, reuse: reuse.clone(), alloc: *alloc }, ty)
@@ -148,6 +209,10 @@ fn inline_expr(db: &dyn Db, e: &CExpr, next: &mut usize, changed: &mut bool) -> 
         K::Prim { op, args } => {
             let args = args.iter().map(|a| inline_expr(db, a, next, changed)).collect();
             CExpr::new(K::Prim { op: *op, args }, ty)
+        }
+        K::Foreign { symbol, args } => {
+            let args = args.iter().map(|a| inline_expr(db, a, next, changed)).collect();
+            CExpr::new(K::Foreign { symbol: *symbol, args }, ty)
         }
         K::MakeData { tag, args, reuse, scalars, niche } => {
             let args = args.iter().map(|a| inline_expr(db, a, next, changed)).collect();
@@ -293,6 +358,36 @@ fn build_prim(pw: &PrimWrapper, args: Vec<CExpr>, ty: Ty, next: &mut usize) -> C
     body
 }
 
+/// Builds the foreign-call node for a saturated wrapper call, given the (already
+/// inlined) call arguments in source order. The peer of [`build_prim`]: an
+/// identity permutation splices directly; any other binds each argument to a fresh
+/// local first so evaluation (hence trap) order is preserved.
+fn build_foreign(fw: &ForeignWrapper, args: Vec<CExpr>, ty: Ty, next: &mut usize) -> CExpr {
+    if fw.slots.iter().enumerate().all(|(j, &s)| j == s) {
+        return CExpr::new(K::Foreign { symbol: fw.symbol, args }, ty);
+    }
+    let locals: Vec<(LocalId, CExpr)> = args
+        .into_iter()
+        .map(|a| {
+            let l = LocalId::from_index(*next);
+            *next += 1;
+            (l, a)
+        })
+        .collect();
+    let operands: Vec<CExpr> = fw
+        .slots
+        .iter()
+        .map(|&s| CExpr::new(K::Local(locals[s].0), locals[s].1.ty.clone()))
+        .collect();
+    let mut body = CExpr::new(K::Foreign { symbol: fw.symbol, args: operands }, ty);
+    for (l, value) in locals.into_iter().rev() {
+        let let_ty = body.ty.clone();
+        body =
+            CExpr::new(K::Let { local: l, value: Box::new(value), body: Box::new(body) }, let_ty);
+    }
+    body
+}
+
 /// The first local slot unused anywhere in `lowered`, so the bindings the inliner
 /// synthesizes for a permuted wrapper never collide with an existing local (and
 /// reference counting, which scans the same way, continues above them).
@@ -315,7 +410,10 @@ fn max_local(e: &CExpr, max: &mut usize) {
     match &e.kind {
         K::Local(x) => bump(*x, max),
         K::Lit(_) | K::Global(_) | K::Error => {}
-        K::Prim { args, .. } | K::MakeData { args, .. } | K::Recur { args } => {
+        K::Prim { args, .. }
+        | K::Foreign { args, .. }
+        | K::MakeData { args, .. }
+        | K::Recur { args } => {
             args.iter().for_each(|a| max_local(a, max));
         }
         K::App { func, args, reuse, .. } => {
@@ -426,6 +524,10 @@ pub(crate) fn remap_expr(
         K::Lit(_) | K::Global(_) | K::Error => e.kind.clone(),
         K::Prim { op, args } => K::Prim {
             op: *op,
+            args: args.iter().map(|a| remap_expr(a, locals, fns, next)).collect(),
+        },
+        K::Foreign { symbol, args } => K::Foreign {
+            symbol: *symbol,
             args: args.iter().map(|a| remap_expr(a, locals, fns, next)).collect(),
         },
         K::MakeData { tag, args, reuse, scalars, niche } => K::MakeData {

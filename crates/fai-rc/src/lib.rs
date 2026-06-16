@@ -239,7 +239,7 @@ fn max_local(e: &CExpr, max: &mut usize) {
     match &e.kind {
         K::Local(x) => bump(*x, max),
         K::Lit(_) | K::Global(_) | K::Error => {}
-        K::Prim { args, .. } | K::MakeData { args, .. } => {
+        K::Prim { args, .. } | K::Foreign { args, .. } | K::MakeData { args, .. } => {
             args.iter().for_each(|a| max_local(a, max));
         }
         K::App { func, args, reuse, .. } => {
@@ -339,6 +339,10 @@ fn anf_op(e: CExpr, binds: &mut Vec<(LocalId, CExpr)>, next: &mut usize) -> CExp
         K::Prim { op, args } => {
             let args = args.into_iter().map(|a| atomize(a, binds, next)).collect();
             CExpr::new(K::Prim { op, args }, ty)
+        }
+        K::Foreign { symbol, args } => {
+            let args = args.into_iter().map(|a| atomize(a, binds, next)).collect();
+            CExpr::new(K::Foreign { symbol, args }, ty)
         }
         K::MakeData { tag, args, reuse, scalars, niche } => {
             let args = args.into_iter().map(|a| atomize(a, binds, next)).collect();
@@ -481,7 +485,10 @@ fn collect_fv(e: &CExpr, captures: &Locals, bound: &mut Locals, out: &mut Locals
     match &e.kind {
         K::Local(x) => note(*x, bound, out),
         K::Lit(_) | K::Global(_) | K::Error => {}
-        K::Prim { args, .. } | K::MakeData { args, .. } | K::Spread { components: args } => {
+        K::Prim { args, .. }
+        | K::Foreign { args, .. }
+        | K::MakeData { args, .. }
+        | K::Spread { components: args } => {
             args.iter().for_each(|a| collect_fv(a, captures, bound, out));
         }
         // Reuse tokens are not reference-counted values (they are consumed once by
@@ -602,6 +609,13 @@ impl Rc<'_> {
             K::Prim { op, args } => {
                 let borrows = prim_borrows(op, &args);
                 let rebuilt = |args| CExpr::new(K::Prim { op, args }, ty.clone());
+                self.operands_rc(args, &borrows, live, rebuilt)
+            }
+            // A foreign call consumes every operand (no borrowing variants), like a
+            // construction's fields.
+            K::Foreign { symbol, args } => {
+                let borrows = vec![false; args.len()];
+                let rebuilt = move |args| CExpr::new(K::Foreign { symbol, args }, ty.clone());
                 self.operands_rc(args, &borrows, live, rebuilt)
             }
             K::MakeData { tag, args, reuse, scalars, niche } => {
@@ -1025,7 +1039,10 @@ fn collect_data_locals(e: &CExpr, out: &mut Locals) {
             collect_data_locals(then, out);
             collect_data_locals(els, out);
         }
-        K::Prim { args, .. } | K::MakeData { args, .. } | K::Spread { components: args } => {
+        K::Prim { args, .. }
+        | K::Foreign { args, .. }
+        | K::MakeData { args, .. }
+        | K::Spread { components: args } => {
             args.iter().for_each(|a| collect_data_locals(a, out));
         }
         // A spread-returning call's result components are scalar floats, not boxed
@@ -1110,6 +1127,13 @@ fn reuse_pass(e: CExpr, data: &Locals, next: &mut usize) -> CExpr {
         }
         K::Prim { op, args } => CExpr::new(
             K::Prim { op, args: args.into_iter().map(|a| reuse_pass(a, data, next)).collect() },
+            ty,
+        ),
+        K::Foreign { symbol, args } => CExpr::new(
+            K::Foreign {
+                symbol,
+                args: args.into_iter().map(|a| reuse_pass(a, data, next)).collect(),
+            },
             ty,
         ),
         K::MakeData { tag, args, reuse, scalars, niche } => CExpr::new(
@@ -1235,7 +1259,7 @@ fn has_construction(e: &CExpr) -> bool {
         K::Reset { value, body, .. } => has_construction(value) || has_construction(body),
         K::FreeReuse { body, .. } => has_construction(body),
         K::Dup { body, .. } | K::Drop { body, .. } => has_construction(body),
-        K::Prim { args, .. } => args.iter().any(has_construction),
+        K::Prim { args, .. } | K::Foreign { args, .. } => args.iter().any(has_construction),
         K::App { func, args, .. } => has_construction(func) || args.iter().any(has_construction),
         K::DataTag { base, .. } => has_construction(base),
         K::DataField { base, .. } => has_construction(base),

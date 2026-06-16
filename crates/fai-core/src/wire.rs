@@ -242,6 +242,15 @@ pub enum WireExprKind {
         /// The operands.
         args: Vec<WireExpr>,
     },
+    /// A saturated foreign (native) call, named by its runtime symbol (serialized
+    /// as a string; the worker re-interns it). The portable peer of
+    /// [`ExprKind::Foreign`] — the interned `Symbol` cannot cross the wire.
+    Foreign {
+        /// The native runtime symbol to call.
+        symbol: String,
+        /// The operands.
+        args: Vec<WireExpr>,
+    },
     /// A general application.
     App {
         /// The function value.
@@ -549,6 +558,10 @@ fn expr_to_wire(e: &CExpr, module_of: &dyn Fn(DefId) -> String) -> WireExpr {
             op: *op,
             args: args.iter().map(|a| expr_to_wire(a, module_of)).collect(),
         },
+        ExprKind::Foreign { symbol, args } => WireExprKind::Foreign {
+            symbol: symbol.as_str().to_owned(),
+            args: args.iter().map(|a| expr_to_wire(a, module_of)).collect(),
+        },
         ExprKind::App { func, args, reuse, alloc } => WireExprKind::App {
             func: Box::new(expr_to_wire(func, module_of)),
             args: args.iter().map(|a| expr_to_wire(a, module_of)).collect(),
@@ -821,6 +834,10 @@ fn expr_from_wire(e: &WireExpr, sources: &mut SourceAssigner) -> CExpr {
         WireExprKind::Global(id) => ExprKind::Global(sources.def_id(id)),
         WireExprKind::Prim { op, args } => ExprKind::Prim {
             op: *op,
+            args: args.iter().map(|a| expr_from_wire(a, sources)).collect(),
+        },
+        WireExprKind::Foreign { symbol, args } => ExprKind::Foreign {
+            symbol: Symbol::intern(symbol),
             args: args.iter().map(|a| expr_from_wire(a, sources)).collect(),
         },
         WireExprKind::App { func, args, reuse, alloc } => ExprKind::App {
@@ -1300,6 +1317,35 @@ mod tests {
                 assert!(op.borrows_operand(&args[0].ty), "first operand reads as boxed-rc");
             }
             other => panic!("expected a Prim, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn round_trip_foreign_call() {
+        // A foreign (native capability) call crosses the wire by symbol *name*: the
+        // interned `Symbol` cannot, so it serializes as a string and re-interns in
+        // the worker.
+        let arg = CExpr::new(ExprKind::Local(LocalId::from_index(0)), Ty::Con(Con::String));
+        let call = CExpr::new(
+            ExprKind::Foreign { symbol: Symbol::intern("fai_console_write_line"), args: vec![arg] },
+            Ty::Unit,
+        );
+        let wire = expr_to_wire(&call, &|_| "M".to_owned());
+        match &wire.kind {
+            WireExprKind::Foreign { symbol, args } => {
+                assert_eq!(symbol, "fai_console_write_line");
+                assert_eq!(args.len(), 1);
+            }
+            other => panic!("expected a Foreign, got {other:?}"),
+        }
+        let mut sources = SourceAssigner::default();
+        let back = expr_from_wire(&wire, &mut sources);
+        match &back.kind {
+            ExprKind::Foreign { symbol, args } => {
+                assert_eq!(symbol.as_str(), "fai_console_write_line");
+                assert_eq!(args.len(), 1);
+            }
+            other => panic!("expected a Foreign, got {other:?}"),
         }
     }
 

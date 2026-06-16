@@ -512,9 +512,10 @@ impl Fuser<'_> {
     /// value is not).
     fn expr_pure(&self, e: &CExpr) -> bool {
         match &e.kind {
-            K::Prim { op, args } => {
-                !is_capability_prim(*op) && args.iter().all(|a| self.expr_pure(a))
-            }
+            K::Prim { args, .. } => args.iter().all(|a| self.expr_pure(a)),
+            // A foreign call performs a host capability, so a stage containing one
+            // is an effect barrier and never fuses across.
+            K::Foreign { .. } => false,
             K::App { func, args, .. } => {
                 let callee_ok =
                     matches!(&func.kind, K::Global(g) if self.global_apply_pure(*g, args.len()));
@@ -600,6 +601,9 @@ impl Fuser<'_> {
             }
             K::Prim { op, args } => {
                 K::Prim { op: *op, args: args.iter().map(|a| go(self, a)).collect() }
+            }
+            K::Foreign { symbol, args } => {
+                K::Foreign { symbol: *symbol, args: args.iter().map(|a| go(self, a)).collect() }
             }
             K::App { func, args, reuse, alloc } => K::App {
                 func: Box::new(go(self, func)),
@@ -702,21 +706,6 @@ fn is_seq(ty: &Ty, con: Con) -> bool {
     matches!(ty, Ty::App(head, _) if matches!(head.as_ref(), Ty::Con(c) if *c == con))
 }
 
-/// Whether a `Prim` performs a host capability (so reordering its calls across
-/// stages would be observable).
-pub(crate) fn is_capability_prim(op: Prim) -> bool {
-    matches!(
-        op,
-        Prim::ConsoleWriteLine
-            | Prim::ClockNow
-            | Prim::RandomNextInt
-            | Prim::FileRead
-            | Prim::FileWrite
-            | Prim::EnvGet
-            | Prim::EnvArgs
-    )
-}
-
 /// The elements of a *complete* syntactic literal `e` of sequence kind `seq`, or
 /// `None` if `e` is not one. A List literal is a `Cons` chain ending in `Nil`; an
 /// Array literal is an `ArrayPush` chain over `ArrayWithCapacity`. A chain that
@@ -799,7 +788,10 @@ fn walk_pre(e: &CExpr, f: &mut impl FnMut(&CExpr)) {
     f(e);
     match &e.kind {
         K::Lit(_) | K::Local(_) | K::Global(_) | K::MakeClosure { .. } | K::Error => {}
-        K::Prim { args, .. } | K::MakeData { args, .. } | K::Recur { args } => {
+        K::Prim { args, .. }
+        | K::Foreign { args, .. }
+        | K::MakeData { args, .. }
+        | K::Recur { args } => {
             args.iter().for_each(|a| walk_pre(a, f));
         }
         K::App { func, args, .. } => {
@@ -1974,6 +1966,9 @@ fn renumber_fns(e: &CExpr, remap: &FxHashMap<u32, u32>) -> CExpr {
         },
         K::Lit(_) | K::Local(_) | K::Global(_) | K::Error => e.kind.clone(),
         K::Prim { op, args } => K::Prim { op: *op, args: args.iter().map(go).collect() },
+        K::Foreign { symbol, args } => {
+            K::Foreign { symbol: *symbol, args: args.iter().map(go).collect() }
+        }
         K::MakeData { tag, args, reuse, scalars, niche } => K::MakeData {
             tag: *tag,
             args: args.iter().map(go).collect(),
