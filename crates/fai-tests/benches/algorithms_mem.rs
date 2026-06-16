@@ -53,6 +53,9 @@ mod measure {
             return;
         }
         let baseline = env!("CARGO_BIN_EXE_algo-baseline");
+        // The OCaml baseline is compiled once (or absent, when `ocamlopt` is not
+        // installed — then its rows are simply skipped, like the Rust/Fai split).
+        let ocaml = fai_tests::ocaml::baseline();
         for algo in ALGORITHMS {
             let exe = build_fai_binary(algo);
             let fai = peak_rss(|| Command::new(&exe));
@@ -64,6 +67,13 @@ mod measure {
                 cmd.args([algo.module, size.as_str()]);
                 cmd
             });
+            let ocaml = ocaml.map(|exe| {
+                peak_rss(|| {
+                    let mut cmd = Command::new(exe);
+                    cmd.args([algo.module, size.as_str()]);
+                    cmd
+                })
+            });
 
             // Sentinel lines `bench-summary` parses into the memory table.
             if let Some(kib) = fai {
@@ -71,6 +81,9 @@ mod measure {
             }
             if let Some(kib) = rust {
                 println!("MEMSTAT\t{}\trust\t{kib}", algo.module);
+            }
+            if let Some(Some(kib)) = ocaml {
+                println!("MEMSTAT\t{}\tocaml\t{kib}", algo.module);
             }
         }
     }
