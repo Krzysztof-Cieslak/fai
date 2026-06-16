@@ -91,6 +91,10 @@ cranelift-object = "0.132"
 cranelift-native = "0.132"
 target-lexicon = "0.13"
 object = "0.39"
+# Native-dependency manifest (`fai.toml`) parsing for the foreign-function FFI.
+toml = "0.8"
+# Dynamic loading of user native libraries for the JIT run/test path.
+libloading = "0.8"
 
 # Internal crates (path deps, versions inherited from the workspace).
 fai-span = { path = "crates/fai-span" }

@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::query::{QueryRequest, run_query};
 use crate::session::Session;
-use crate::{build_native, check, check_examples, fmt};
+use crate::{build_native_with_deps, check, check_examples, fmt};
 
 /// Success: no errors.
 pub const EXIT_OK: i32 = 0;
@@ -222,7 +222,17 @@ fn run_build(
     };
     let artifact = if out.is_absolute() { out.to_owned() } else { session.root().join(out) };
 
-    let outcome = build_native(session.db(), entry, &artifact);
+    // Native dependencies for user `foreign` functions are declared in `fai.toml`
+    // at the workspace root (absent for the common, pure case).
+    let native = match crate::manifest::read_native_manifest(session.root()) {
+        Ok(deps) => deps,
+        Err(message) => {
+            let _ = writeln!(r.stderr, "error: {message}");
+            r.exit = EXIT_WORKSPACE;
+            return r;
+        }
+    };
+    let outcome = build_native_with_deps(session.db(), entry, &artifact, &native);
     let resolver = session.resolver();
     match opts.format {
         OutputFormat::Json => match serde_json::to_string_pretty(&outcome.to_output(&resolver)) {
