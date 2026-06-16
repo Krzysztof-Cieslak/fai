@@ -81,6 +81,68 @@ fn cross_module_bundle_reconstructs_distinct_modules() {
 
 #[cfg(unix)]
 #[test]
+fn native_capability_sample_recipe_runs() {
+    // Verify the `samples/NativeCapability.fai` recipe end to end: build the
+    // native C function it documents into the shared library its `fai.toml`
+    // names, then load and run the real sample through the JIT. Keeps the
+    // sample's documented C/`fai.toml`/Fai code from drifting out of sync.
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_owned());
+    let ext = if cfg!(target_os = "macos") { "dylib" } else { "so" };
+    let sample =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../samples/NativeCapability.fai");
+    let src = std::fs::read_to_string(&sample).expect("read the sample");
+
+    let dir = workspace(&[("Main.fai", &src)]);
+    std::fs::write(
+        dir.join("fai.toml"),
+        "[native]\nlibrary-dirs = [\"native\"]\nlibraries = [\"process\"]\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.join("native")).unwrap();
+    // The exact C source the sample's comments document.
+    std::fs::write(
+        dir.join("native/process.c"),
+        "#include <stdint.h>\n#include <unistd.h>\nint64_t app_getpid(void){return (int64_t)getpid();}\n",
+    )
+    .unwrap();
+    let lib = dir.join(format!("native/libprocess.{ext}"));
+    let built = std::process::Command::new(&cc)
+        .arg("-shared")
+        .arg("-fPIC")
+        .arg(dir.join("native/process.c").as_std_path())
+        .arg("-o")
+        .arg(lib.as_std_path())
+        .status();
+    match built {
+        Ok(s) if s.success() => {}
+        _ => {
+            eprintln!("skipping: could not build a shared library with `{cc}`");
+            return;
+        }
+    }
+
+    let session = Session::open(dir.clone()).unwrap();
+    let native = fai_driver::read_native_manifest(&dir).unwrap();
+    let bundle =
+        fai_driver::build_run_bundle_with_deps(session.db(), entry(&session, "Main.fai"), &native)
+            .bundle
+            .expect("the sample compiles to a bundle");
+
+    let _guard = RUN_LOCK.lock().unwrap();
+    fai_runtime::capture_start();
+    let exit = jit_run_bundle(&bundle);
+    let output = fai_runtime::capture_take();
+    assert_eq!(exit, 0, "the sample runs cleanly");
+    // `getpid` varies; assert the documented shape (`pid = <digits>`).
+    let pid = output.strip_prefix("pid = ").and_then(|s| s.strip_suffix('\n'));
+    assert!(
+        pid.is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())),
+        "expected `pid = <number>`, got {output:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn jit_run_bundle_calls_a_user_foreign_via_a_loaded_library() {
     // A user `foreign` resolved through the JIT: its native code is built as a
     // shared library, declared in `fai.toml`, and loaded by the worker so the
