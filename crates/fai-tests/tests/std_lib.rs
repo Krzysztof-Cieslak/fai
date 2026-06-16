@@ -37,6 +37,13 @@ fn every_public_std_function_has_an_example() {
         let examples: Vec<&str> =
             src.lines().map(str::trim_start).filter(|l| l.starts_with("example:")).collect();
 
+        // The public capability instances and the `Runtime` bundle are effectful
+        // values, not pure functions: a contract cannot reference a capability
+        // (FAI6004), so they cannot carry an `example`. They are exported only so a
+        // program can compose its own extended `Runtime`.
+        const EXAMPLE_EXEMPT: &[&str] =
+            &["stdConsole", "stdClock", "stdRandom", "stdFs", "stdEnv", "defaultRuntime"];
+
         // Public value bindings carry a `public <name> :` signature (a `public
         // type …` declaration is not a function and is skipped).
         for line in src.lines() {
@@ -46,6 +53,9 @@ fn every_public_std_function_has_an_example() {
                 continue;
             }
             let fn_name = head.trim_end_matches(':');
+            if EXAMPLE_EXEMPT.contains(&fn_name) {
+                continue;
+            }
             assert!(
                 examples.iter().any(|e| mentions(e, fn_name)),
                 "{name}: public `{fn_name}` has no `example:` (every std function needs one)"
