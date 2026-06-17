@@ -109,6 +109,13 @@ struct Scheduler {
     idle: Mutex<()>,
     signal: Condvar,
     shutdown: AtomicBool,
+    /// The number of live tasks (created but not yet fully finished, including all
+    /// of a finished task's cleanup). [`block_on`] waits for this to reach zero so
+    /// the heap is quiescent before its caller (a program's exit-time leak check)
+    /// observes it — a task's final drops run on its worker *after* the awaiter is
+    /// woken, so waiting only for the root's completion would race that cleanup.
+    active: Mutex<usize>,
+    quiescent: Condvar,
 }
 
 static SCHEDULER: OnceLock<Scheduler> = OnceLock::new();
@@ -140,6 +147,8 @@ fn build_scheduler() -> Scheduler {
         idle: Mutex::new(()),
         signal: Condvar::new(),
         shutdown: AtomicBool::new(false),
+        active: Mutex::new(0),
+        quiescent: Condvar::new(),
     }
 }
 
@@ -229,7 +238,18 @@ fn run_task(task: &Arc<Task>) {
             // Parked: the object it waits on holds an `Arc` and will re-queue it.
             // Keep the coroutine so the next resume continues it.
         }
-        CoroutineResult::Return(()) => *guard = None,
+        CoroutineResult::Return(()) => {
+            // Drop the coroutine (and its stack) now, while still on this worker, so
+            // all of the task's final cleanup happens before it is counted finished.
+            *guard = None;
+            drop(guard);
+            let sched = scheduler();
+            let mut active = sched.active.lock().expect("active lock");
+            *active -= 1;
+            if *active == 0 {
+                sched.quiescent.notify_all();
+            }
+        }
     }
 }
 
@@ -259,9 +279,6 @@ struct HandleState {
 /// A handle to a spawned task's eventual result (`Task 'a` to Fai code).
 pub struct Handle {
     state: Mutex<HandleState>,
-    /// Signals an OS thread blocked in [`block_on`] (the root task); green-task
-    /// awaiters park instead and are listed in `awaiters`.
-    blocker: Condvar,
 }
 
 impl Drop for Handle {
@@ -275,14 +292,12 @@ impl Drop for Handle {
     }
 }
 
-/// Completes `handle` with `result`, waking every awaiting task and any blocked
-/// OS thread.
+/// Completes `handle` with `result`, waking every awaiting task.
 fn complete(handle: &Arc<Handle>, result: Value) {
     let awaiters = {
         let mut st = handle.state.lock().expect("handle lock");
         st.done = true;
         st.result = result;
-        handle.blocker.notify_all();
         std::mem::take(&mut st.awaiters)
     };
     for task in awaiters {
@@ -295,8 +310,10 @@ fn complete(handle: &Arc<Handle>, result: Value) {
 pub fn spawn(body: Box<dyn FnOnce() -> Value + Send>) -> Arc<Handle> {
     let handle = Arc::new(Handle {
         state: Mutex::new(HandleState { done: false, result: 0, awaiters: Vec::new() }),
-        blocker: Condvar::new(),
     });
+    // Count the task live before it can run (a worker must not finish and
+    // decrement before this increment).
+    *scheduler().active.lock().expect("active lock") += 1;
     let done_handle = Arc::clone(&handle);
     let task = make_task(body, Box::new(move |result| complete(&done_handle, result)));
     schedule(task);
@@ -336,14 +353,24 @@ fn join_handle(handle: &Arc<Handle>) {
     suspend_current(Suspend::Park);
 }
 
-/// Runs `body` as the program's root task and blocks the calling OS thread until it
-/// finishes, returning its result. Starts the scheduler on first use.
+/// Runs `body` as the program's root task and blocks the calling OS thread until
+/// the scheduler is quiescent (every task created during the run has fully
+/// finished, including its cleanup), then returns the root's result. Starts the
+/// scheduler on first use. Waiting for quiescence — not merely the root's
+/// completion — means the caller's exit-time leak check sees a settled heap.
 pub fn block_on(body: Box<dyn FnOnce() -> Value + Send>) -> Value {
     let handle = spawn(body);
-    let mut st = handle.state.lock().expect("handle lock");
-    while !st.done {
-        st = handle.blocker.wait(st).expect("handle wait");
+    let sched = scheduler();
+    {
+        let mut active = sched.active.lock().expect("active lock");
+        while *active != 0 {
+            active = sched.quiescent.wait(active).expect("quiescent wait");
+        }
     }
+    // The root has finished (quiescence implies it), so its result is set; the
+    // handle is still alive through `handle`, so the result is not yet released.
+    let st = handle.state.lock().expect("handle lock");
+    debug_assert!(st.done, "root not done at quiescence");
     fai_dup(st.result)
 }
 
