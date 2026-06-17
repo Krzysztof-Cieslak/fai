@@ -287,6 +287,50 @@ fn tasks_each_write_to_the_console() {
 }
 
 #[test]
+fn tasks_do_file_io_concurrently() {
+    // Each task writes a distinct file and reads it back, returning the byte length
+    // of its contents; the scope joins them. The blocking file operations run on
+    // the blocking pool while the tasks park (so they never stall a worker), and
+    // each task dispatches the `fs` capability from inside a spawn thunk (a
+    // capability captured by a closure). Four 7-byte payloads sum to 28.
+    let dir = std::env::temp_dir().join(format!("fai-conc-fs-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = |i: usize| dir.join(format!("f{i}")).to_str().unwrap().replace('\\', "/");
+    let src = format!(
+        r#"module Prog
+
+doFile : {{ fs : FileSystem | _ }} -> String -> Int / {{ FileSystem }}
+let doFile env path =
+  match env.fs.writeFile path "payload" with
+  | Err e -> 0 - 1
+  | Ok w ->
+    match env.fs.readFile path with
+    | Err e -> 0 - 2
+    | Ok contents -> String.length contents
+
+one : {{ concurrency : Concurrency, fs : FileSystem | _ }} -> Nursery -> String -> Task Int / {{ Concurrency, FileSystem }}
+let one env nursery path = env.concurrency.spawn nursery (fun u -> doFile env path)
+
+body : {{ concurrency : Concurrency, fs : FileSystem | _ }} -> Nursery -> Int / {{ Concurrency, FileSystem }}
+let body env nursery =
+  let ts = List.map (one env nursery) ["{}", "{}", "{}", "{}"]
+  List.foldl (fun acc t -> acc + env.concurrency.await t) 0 ts
+
+public main : Runtime -> Unit / {{ Concurrency, Console, FileSystem }}
+let main runtime =
+  runtime.console.writeLine (Int.toString (runtime.concurrency.scope (body runtime)))
+"#,
+        path(0),
+        path(1),
+        path(2),
+        path(3),
+    );
+    let (out, code) = run(&src);
+    assert_eq!(code, 0, "clean, leak-free exit");
+    assert_eq!(out, "28\n");
+}
+
+#[test]
 fn aot_concurrent_program_runs_on_a_single_worker() {
     // Forcing one worker (`FAI_WORKERS=1`) multiplexes every task onto one OS
     // thread via the green-thread scheduler; the structured result is unchanged.
