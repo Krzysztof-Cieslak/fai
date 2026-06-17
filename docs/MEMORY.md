@@ -3563,5 +3563,35 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   `fromString` always succeeds; `toString` is guarded by a UTF-8 check (so invalid
   bytes can never masquerade as a `String`).
 
+- **D142 A readiness-based network reactor and the `Net` (TCP) capability.** The
+  host network surface is built on a **readiness** I/O model (a single reactor
+  thread running `mio`'s Poll — epoll/kqueue/IOCP) rather than a completion/callback
+  loop, because it fits the M:N work-stealing scheduler: worker threads register
+  their own sockets (the registry is `Send + Sync`) and perform the read/write
+  syscalls themselves, and the reactor only reports "this socket is readable/
+  writable" and wakes the waiting task. So the worker that owns a task does its I/O
+  and only readiness wakeups cross to the reactor thread — no socket data or
+  operation is marshalled between threads (the decisive reason **`mio` was chosen
+  over `libuv`**: libuv's single-loop, handle-affine, callback model would funnel
+  every operation through the loop thread and marshal buffers across threads, a poor
+  fit for work-stealing, and would add a C/cmake/libclang toolchain dependency for
+  capabilities — DNS, file I/O — the blocking pool already covers). A per-direction
+  readiness latch closes the lost-wake race (a readiness edge that arrives between a
+  failed syscall and the park is recorded, so the task retries rather than parking
+  forever). The reactor starts lazily on first use. **`Net` is a capability** in the
+  default `Runtime` (TCP `listen`/`localPort`/`accept`/`connect`/`send`/`recv`/
+  `close`), surfaced exactly like `Concurrency`: the interface, foreign primitives,
+  and standard instance live in `Prelude`; the opaque `Listener`/`Connection` types
+  live in a dependency-free `Net` module that `Prelude` re-exports. Payloads are
+  `Bytes`; fallible operations return `Result _ String` (built by the runtime, the
+  standard two-cell representation). Each operation runs on its task and parks on
+  the reactor at every would-block; `connect`'s hostname resolution runs on the
+  blocking pool (D140). The whole-program **execution gate** (D139) triggers on
+  `Concurrency` **or** `Net`, since a networking program must run `main` as the
+  scheduler root task so its socket operations can park — so a `Net` program runs on
+  the scheduler (and pays the biased-RC cost) just as a concurrent one does;
+  decoupling scheduler-execution from atomic reference counting for a `Net`-only,
+  spawn-free program is a possible future refinement.
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

@@ -1,0 +1,17 @@
+module Net
+
+// The opaque network socket handle types. A `Listener`/`Connection` is produced
+// and consumed only through the `Net` capability (whose interface, native
+// primitives, and standard instance live in `Prelude`, which re-exports these
+// names so they are usable unqualified). The cells are native reactor handles;
+// each placeholder constructor exists only so the type is a boxed, reference-
+// counted value (the runtime closes the underlying socket when the cell dies).
+//
+// This module deliberately has no dependency on `Prelude` (it names only the
+// built-in `Int`), so `Prelude` may re-export and build on these types without a
+// dependency cycle.
+public opaque type Listener =
+  | ListenerCell Int
+
+public opaque type Connection =
+  | ConnectionCell Int

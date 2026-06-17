@@ -1,0 +1,52 @@
+module NetDemo
+
+// TCP networking through the `Net` capability, threaded in from `main`. A program
+// that uses `Net` runs on the scheduler (like `Concurrency`): each operation parks
+// its task on the I/O reactor while it would block, so a server can handle many
+// connections by spawning a task per accept. Payloads are `Bytes`; fallible
+// operations return `Result _ String`. This demo runs a one-shot loopback echo: a
+// spawned server task accepts a connection and echoes what it reads, while the
+// client connects, sends, and reads the reply back.
+// Accept one connection and echo the bytes it sends, then let the connection close.
+serve : { net : Net | _ } -> Listener -> Unit / { Net }
+let serve env listener =
+  match env.net.accept listener with
+  | Err e -> ()
+  | Ok conn ->
+    match env.net.recv conn 1024 with
+    | Err e -> ()
+    | Ok data ->
+      let sent = env.net.send conn data
+      ()
+
+// Connect to a local port, send a message, and return the echoed reply (or the
+// error message).
+talk : { net : Net | _ } -> Int -> String / { Net }
+let talk env port =
+  match env.net.connect "127.0.0.1" port with
+  | Err e -> e
+  | Ok conn ->
+    match env.net.send conn (Bytes.fromString "hello") with
+    | Err e -> e
+    | Ok u ->
+      match env.net.recv conn 1024 with
+      | Err e -> e
+      | Ok reply ->
+        match Bytes.toString reply with
+        | Some s -> s
+        | None -> "<binary reply>"
+
+// Spawn the server into the scope's nursery, then run the client; the scope joins
+// the server before returning the client's result.
+session : { concurrency : Concurrency, net : Net | _ } -> Listener -> Int -> Nursery -> String / { Concurrency, Net }
+let session env listener port nursery =
+  let server = env.concurrency.spawn nursery (fun u -> serve env listener)
+  talk env port
+
+public main : Runtime -> Unit / { Concurrency, Console, Net }
+let main runtime =
+  match runtime.net.listen 0 with
+  | Err e -> runtime.console.writeLine ("listen failed: " ++ e)
+  | Ok listener ->
+    let port = runtime.net.localPort listener
+    runtime.console.writeLine (runtime.concurrency.scope (session runtime listener port))

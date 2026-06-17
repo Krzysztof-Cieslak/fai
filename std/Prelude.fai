@@ -35,6 +35,13 @@ public type Channel 'a = Concurrency.Channel 'a
 
 public type Nursery = Concurrency.Nursery
 
+// The network socket handle types are opaque types in the `Net` module; these
+// aliases keep their names usable unqualified. Build and consume them only through
+// the `Net` capability.
+public type Listener = Net.Listener
+
+public type Connection = Net.Connection
+
 /// The identity function.
 public identity : 'a -> 'a
 let identity x = x
@@ -120,10 +127,24 @@ public interface Concurrency =
   send : Channel 'a -> 'a -> Unit / { Concurrency }
   spawn : Nursery -> (Unit -> 'a / 'e) -> Task 'a / { Concurrency | 'e }
 
+// TCP networking. A program that uses `Net` runs on the scheduler (like
+// `Concurrency`): each operation parks its task on the I/O reactor while it would
+// block, so many connections multiplex onto the worker pool. Payloads are `Bytes`;
+// fallible operations return `Result _ String` (the error message). `localPort`
+// reports the port a `listen 0` was bound to.
+public interface Net =
+  accept : Listener -> Result Connection String / { Net }
+  close : Connection -> Unit / { Net }
+  connect : String -> Int -> Result Connection String / { Net }
+  listen : Int -> Result Listener String / { Net }
+  localPort : Listener -> Int / { Net }
+  recv : Connection -> Int -> Result Bytes String / { Net }
+  send : Connection -> Bytes -> Result Unit String / { Net }
+
 /// The capability bundle `main` receives: the host's console, clock, random,
-/// file system, environment, and concurrency. Request only the fields you need (an
-/// open record) to keep authority least.
-public type Runtime = { clock : Clock, concurrency : Concurrency, console : Console, env : Env, fs : FileSystem, random : Random }
+/// file system, environment, concurrency, and network. Request only the fields you
+/// need (an open record) to keep authority least.
+public type Runtime = { clock : Clock, concurrency : Concurrency, console : Console, env : Env, fs : FileSystem, net : Net, random : Random }
 
 // The raw host primitives, implemented as native runtime functions and reached
 // only through the capability instances below. Each `foreign` declaration names
@@ -164,6 +185,24 @@ foreign "fai_recv" recvRaw : Channel 'a -> Option 'a / { Concurrency }
 
 foreign "fai_close" closeRaw : Channel 'a -> Unit / { Concurrency }
 
+// The native reactor primitives backing the `Net` capability. Each returns the
+// `Result` it declares (built by the runtime), so the standard instance binds them
+// directly. They name `Net` as an effect, so any function that calls one surfaces
+// `Net` in its own row.
+foreign "fai_net_listen" netListen : Int -> Result Listener String / { Net }
+
+foreign "fai_net_local_port" netLocalPort : Listener -> Int / { Net }
+
+foreign "fai_net_accept" netAccept : Listener -> Result Connection String / { Net }
+
+foreign "fai_net_connect" netConnect : String -> Int -> Result Connection String / { Net }
+
+foreign "fai_net_send" netSend : Connection -> Bytes -> Result Unit String / { Net }
+
+foreign "fai_net_recv" netRecv : Connection -> Int -> Result Bytes String / { Net }
+
+foreign "fai_net_close" netClose : Connection -> Unit / { Net }
+
 // The default host capabilities, backed by the foreign primitives above. They are
 // `public` so a program can compose its own extended `Runtime` from them plus its
 // own (foreign-backed) capability instances; ordinarily a program just receives
@@ -202,13 +241,20 @@ public stdConcurrency : Concurrency
 let stdConcurrency =
   { Concurrency with await task = awaitRaw task, channel capacity = channelRaw capacity, close chan = closeRaw chan, recv chan = recvRaw chan, scope body = scopeRaw body, send chan value = sendRaw chan value, spawn nursery thunk = spawnRaw nursery thunk }
 
+/// The standard network capability, backed by the I/O reactor. `public` so a
+/// program can compose it into its own extended `Runtime`; ordinarily it arrives in
+/// the `Runtime` bundle `main` receives.
+public stdNet : Net
+let stdNet =
+  { Net with accept listener = netAccept listener, close conn = netClose conn, connect host port = netConnect host port, listen port = netListen port, localPort listener = netLocalPort listener, recv conn max = netRecv conn max, send conn bytes = netSend conn bytes }
+
 /// The standard `Runtime` the entry trampoline applies `main` to when the entry
 /// file defines no `runtime` builder of its own. A program may instead define its
 /// own `runtime` (composing these defaults with extra capabilities) to extend the
 /// bundle `main` receives.
 public defaultRuntime : Runtime
 let defaultRuntime =
-  { clock = stdClock, concurrency = stdConcurrency, console = stdConsole, env = stdEnv, fs = stdFs, random = stdRandom }
+  { clock = stdClock, concurrency = stdConcurrency, console = stdConsole, env = stdEnv, fs = stdFs, net = stdNet, random = stdRandom }
 
 /// Forward application: `x |> f` is `f x`.
 public (|>) : 'a -> ('a -> 'b / 'e) -> 'b / 'e
