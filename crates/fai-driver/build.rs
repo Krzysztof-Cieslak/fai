@@ -63,10 +63,7 @@ fn main() {
 
     let output = cmd.output().expect("failed to invoke cargo for the runtime archive");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "building the fai-runtime static archive failed:\n{stderr}"
-    );
+    assert!(output.status.success(), "building the fai-runtime static archive failed:\n{stderr}");
 
     // Name the archive for the host linker's convention: MSVC's `link.exe`
     // consumes `.lib`, every other linker consumes `.a`. Cargo writes the staticlib

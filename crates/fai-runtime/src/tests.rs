@@ -999,7 +999,11 @@ fn shared_object_survives_concurrent_dup_drop() {
         h.join().expect("worker thread");
     }
 
-    assert_eq!(live_count(), base + 1, "only main's reference remains; nothing leaked or freed early");
+    assert_eq!(
+        live_count(),
+        base + 1,
+        "only main's reference remains; nothing leaked or freed early"
+    );
     fai_drop(v);
     assert_eq!(live_count(), base, "the last reference reclaimed the shared object");
 }
