@@ -62,6 +62,22 @@ const RUNTIME_ARCHIVE: &[u8] = include_bytes!(env!("FAI_RUNTIME_ARCHIVE"));
 /// (`-lpthread …` for Unix `cc`, `kernel32.lib …` for MSVC `link.exe`).
 const RUNTIME_NATIVE_LIBS: &str = env!("FAI_RUNTIME_NATIVE_LIBS");
 
+/// Extra library search directories the runtime archive needs at link time —
+/// where its dependencies' bundled import libraries live (e.g. `windows-targets`'s
+/// `windows.<ver>.lib`). Built by `build.rs` from the dependency build scripts'
+/// `rustc-link-search` directives, joined with the platform path separator (empty
+/// on hosts that need none, such as Linux and macOS).
+const RUNTIME_LIB_DIRS: &str = env!("FAI_RUNTIME_LIB_DIRS");
+
+/// The runtime archive's extra library search directories as a list (see
+/// [`RUNTIME_LIB_DIRS`]); empty path components are skipped.
+fn runtime_lib_dirs() -> Vec<std::path::PathBuf> {
+    if RUNTIME_LIB_DIRS.is_empty() {
+        return Vec::new();
+    }
+    std::env::split_paths(RUNTIME_LIB_DIRS).filter(|p| !p.as_os_str().is_empty()).collect()
+}
+
 /// The required entry-point name.
 const ENTRY: &str = "main";
 
@@ -1337,6 +1353,10 @@ fn link_unix(
     let linker = std::env::var("CC").unwrap_or_else(|_| "cc".to_owned());
     let mut command = std::process::Command::new(&linker);
     command.args(objects).arg(archive).arg("-o").arg(out.as_std_path());
+    // Search directories for the runtime archive's bundled dependency libraries.
+    for dir in runtime_lib_dirs() {
+        command.arg(format!("-L{}", dir.display()));
+    }
     // The project's declared `-L`/`-l` native libraries.
     command.args(native_lib_flags(native));
     if native_libs.is_empty() {
@@ -1369,6 +1389,11 @@ fn link_msvc(
     let linker = std::env::var("FAI_LINKER").unwrap_or_else(|_| "link.exe".to_owned());
     let mut command = std::process::Command::new(&linker);
     command.arg("/NOLOGO").arg("/SUBSYSTEM:CONSOLE").arg(format!("/OUT:{out}"));
+    // Search directories for the runtime archive's bundled dependency libraries
+    // (e.g. `windows-targets`'s `windows.<ver>.lib`).
+    for dir in runtime_lib_dirs() {
+        command.arg(format!("/LIBPATH:{}", dir.display()));
+    }
     command.args(objects).arg(archive).args(native_libs);
     // The project's declared native libraries, in MSVC flag syntax.
     for dir in &native.lib_dirs {
