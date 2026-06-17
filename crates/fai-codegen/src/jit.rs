@@ -159,6 +159,14 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_close", rt::fai_close);
     sym!("fai_block_on", rt::fai_block_on);
     sym!("fai_mark_shared", rt::fai_mark_shared);
+    // The network reactor primitives (the `Net` capability).
+    sym!("fai_net_listen", rt::fai_net_listen);
+    sym!("fai_net_local_port", rt::fai_net_local_port);
+    sym!("fai_net_accept", rt::fai_net_accept);
+    sym!("fai_net_connect", rt::fai_net_connect);
+    sym!("fai_net_send", rt::fai_net_send);
+    sym!("fai_net_recv", rt::fai_net_recv);
+    sym!("fai_net_close", rt::fai_net_close);
     builder.symbol("FAI_NONE_VALUE", (&raw const rt::FAI_NONE_VALUE).cast());
     builder.symbol("FAI_STRING_DESC", (&raw const rt::FAI_STRING_DESC).cast());
     builder.symbol("FAI_INT_DESC", (&raw const rt::FAI_INT_DESC).cast());
