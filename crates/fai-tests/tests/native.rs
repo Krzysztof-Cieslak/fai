@@ -784,6 +784,37 @@ fn row_polymorphic_record_update_runs() {
 }
 
 #[test]
+fn row_polymorphic_field_projected_inside_a_closure_runs() {
+    // A lambda that projects a field through a row variable must capture the
+    // enclosing function's offset-evidence local, not merely the record. Regression:
+    // free-variable collection skipped the evidence local buried in the field
+    // descriptor, so the lifted lambda read a stale slot (a wrong offset) — reading
+    // a plain `Int` field crashed, and dispatching a captured capability jumped to
+    // garbage. Cover both: a value field and a dispatched capability.
+    let src = indoc! {r#"
+        module Main
+
+        pickB : { a : Int, b : Int | 'r } -> Int
+        let pickB rec =
+          let get = (fun u -> rec.b)
+          get 0
+
+        shout : { console : Console | 'r } -> String -> Unit / { Console }
+        let shout env msg =
+          let say = (fun s -> env.console.writeLine s)
+          say msg
+
+        public main : Runtime -> Unit / { Console }
+        let main runtime =
+          let _ = runtime.console.writeLine (Int.toString (pickB { a = 10, b = 20, c = 30 }))
+          shout runtime "captured"
+    "#};
+    let (out, code) = build_and_run(src);
+    assert_eq!(out, "20\ncaptured\n");
+    assert_eq!(code, Some(0));
+}
+
+#[test]
 fn all_capabilities_compose_in_one_program() {
     // Console, clock, random, file system, and environment used together. The
     // output is deterministic: `nextInt 1` is `0` and the clock reads positive.

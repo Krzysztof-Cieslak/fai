@@ -391,6 +391,31 @@ fn row_polymorphic_field_access_uses_offset_evidence() {
 }
 
 #[test]
+fn lambda_projecting_a_row_polymorphic_field_captures_its_offset_evidence() {
+    // A row-polymorphic field projection reads an offset-evidence local that is
+    // embedded in the field descriptor (a `Dyn` index), not a child expression. A
+    // lambda that projects such a field must therefore capture that evidence local
+    // alongside the record, or the lifted lambda reads a stale slot at run time (a
+    // wrong/garbage offset). Regression: free-variable collection once skipped the
+    // evidence local buried in the `Dyn` index, so the lambda captured the record
+    // but not its evidence.
+    let src = indoc! {r#"
+        module M
+
+        let pick r = fun u -> r.x
+    "#};
+    assert!(codes(src, "pick").is_empty(), "got {:?}", codes(src, "pick"));
+    let got = lower(src, "pick");
+    // `pick` takes the evidence param `%2` and the record `%0`; the lifted lambda
+    // captures BOTH (`[caps %0, %2]`) and projects `r.x` at the evidence slot
+    // `0+%2`. Without the fix the capture list would be `[%0]` only.
+    assert_eq!(
+        got,
+        "fn0(%2, %0) = (closure/heap fn1 [%0, %2])\nfn1(%1) [caps %0, %2] = (field 0+%2 %0)\n"
+    );
+}
+
+#[test]
 fn record_literal_lowers_to_sorted_data() {
     // Fields are stored in canonical (sorted-by-label) order, so `x` precedes
     // `y` regardless of how the literal is written.

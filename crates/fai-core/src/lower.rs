@@ -1623,7 +1623,18 @@ fn collect_free(expr: &CExpr, bound: &mut FxHashSet<LocalId>, out: &mut FxHashSe
             }
         }
         K::DataTag { base, .. } => collect_free(base, bound, out),
-        K::DataField { base, .. } => collect_free(base, bound, out),
+        K::DataField { base, index, .. } => {
+            collect_free(base, bound, out);
+            // A row-polymorphic field projection reads an offset-evidence local
+            // embedded in the field descriptor (not a child expression). A lambda
+            // that projects such a field must capture that evidence, so count it
+            // free here too — otherwise the lifted lambda reads a stale slot.
+            if let FieldIndex::Dyn { evidence, .. } = index
+                && !bound.contains(evidence)
+            {
+                out.insert(*evidence);
+            }
+        }
         // Lowering runs before reference counting inserts reuse tokens, so `reuse`
         // is always empty here.
         K::App { func, args, .. } => {
