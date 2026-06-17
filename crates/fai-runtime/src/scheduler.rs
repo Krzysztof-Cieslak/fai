@@ -322,6 +322,20 @@ pub fn await_handle(handle: &Arc<Handle>) -> Value {
     fai_dup(st.result)
 }
 
+/// Waits (from within a task) for a task to complete, *without* taking its result
+/// — used to join a nursery's children at scope end. Parks the caller until the
+/// awaited task is done.
+fn join_handle(handle: &Arc<Handle>) {
+    {
+        let mut st = handle.state.lock().expect("handle lock");
+        if st.done {
+            return;
+        }
+        st.awaiters.push(current_task());
+    }
+    suspend_current(Suspend::Park);
+}
+
 /// Runs `body` as the program's root task and blocks the calling OS thread until it
 /// finishes, returning its result. Starts the scheduler on first use.
 pub fn block_on(body: Box<dyn FnOnce() -> Value + Send>) -> Value {
@@ -331,6 +345,50 @@ pub fn block_on(body: Box<dyn FnOnce() -> Value + Send>) -> Value {
         st = handle.blocker.wait(st).expect("handle wait");
     }
     fai_dup(st.result)
+}
+
+// ---------------------------------------------------------------------------
+// Nurseries (structured concurrency: spawned tasks join before the scope ends).
+// ---------------------------------------------------------------------------
+
+/// A structured-concurrency scope (`Nursery` to Fai code): the tasks spawned into
+/// it, joined before the scope returns.
+pub struct Nursery {
+    children: Mutex<Vec<Arc<Handle>>>,
+}
+
+/// Opens a structured scope: runs `body` (given the nursery), then joins every task
+/// spawned into the nursery before returning `body`'s result. A task not explicitly
+/// awaited is still waited for here, so no task outlives the scope. Runs inside a
+/// task (the joins park it).
+pub fn scope(body: Box<dyn FnOnce(Arc<Nursery>) -> Value>) -> Value {
+    let nursery = Arc::new(Nursery { children: Mutex::new(Vec::new()) });
+    let result = body(Arc::clone(&nursery));
+    // Join every spawned child. Re-read the list each step: a joined child may
+    // itself have spawned more before finishing.
+    let mut joined = 0;
+    loop {
+        let next = {
+            let children = nursery.children.lock().expect("nursery lock");
+            children.get(joined).cloned()
+        };
+        match next {
+            Some(child) => {
+                join_handle(&child);
+                joined += 1;
+            }
+            None => break,
+        }
+    }
+    result
+}
+
+/// Spawns `body` into `nursery` (registering it for the scope's join) and returns
+/// its handle.
+pub fn spawn_in(nursery: &Arc<Nursery>, body: Box<dyn FnOnce() -> Value + Send>) -> Arc<Handle> {
+    let handle = spawn(body);
+    nursery.children.lock().expect("nursery lock").push(Arc::clone(&handle));
+    handle
 }
 
 // ---------------------------------------------------------------------------
@@ -467,10 +525,32 @@ pub(crate) fn drop_task_handle(raw: i64) {
     drop(unsafe { Arc::from_raw(raw as usize as *const Handle) });
 }
 
+/// Wraps a nursery as a Fai `Nursery` value (a `KIND_NURSERY` cell owning the `Arc`).
+fn nursery_handle_value(n: Arc<Nursery>) -> Value {
+    let raw = Arc::into_raw(n) as usize as i64;
+    let p = crate::alloc_obj(crate::HEADER_SIZE + 8, std::ptr::addr_of!(crate::FAI_NURSERY_DESC));
+    // SAFETY: `p` has room for the header and one slot.
+    unsafe { crate::write_i64(p, crate::HANDLE_PTR_OFFSET, raw) };
+    crate::from_obj(p)
+}
+
 /// Releases the `Arc<Chan>` a dead channel cell owned (called by `free_obj`).
 pub(crate) fn drop_channel_handle(raw: i64) {
     // SAFETY: `raw` came from `Arc::into_raw` in `channel_handle_value`.
     drop(unsafe { Arc::from_raw(raw as usize as *const Chan) });
+}
+
+/// Releases the `Arc<Nursery>` a dead nursery cell owned (called by `free_obj`).
+pub(crate) fn drop_nursery_handle(raw: i64) {
+    // SAFETY: `raw` came from `Arc::into_raw` in `nursery_handle_value`.
+    drop(unsafe { Arc::from_raw(raw as usize as *const Nursery) });
+}
+
+/// Borrows the `Arc<Nursery>` from a `Nursery` value without consuming a reference.
+fn nursery_of(nursery: Value) -> ManuallyDrop<Arc<Nursery>> {
+    // SAFETY: `nursery` is a live `KIND_NURSERY` cell whose slot holds the `Arc`.
+    let raw = unsafe { crate::read_i64(crate::as_obj(nursery), crate::HANDLE_PTR_OFFSET) };
+    ManuallyDrop::new(unsafe { Arc::from_raw(raw as usize as *const Nursery) })
 }
 
 /// Borrows the `Arc<Handle>` from a `Task` value without consuming a reference (the
@@ -488,18 +568,43 @@ fn chan_of(chan: Value) -> ManuallyDrop<Arc<Chan>> {
     ManuallyDrop::new(unsafe { Arc::from_raw(raw as usize as *const Chan) })
 }
 
-/// Spawns `thunk` (a `Unit -> 'a` closure) as a task, returning its `Task` handle.
-/// The thunk's captured graph is marked shared (it runs on another worker) and so
-/// is the result (it returns to the awaiter's worker). Consumes `thunk`.
+/// Opens a structured scope: builds a nursery, applies `body` to it, then joins
+/// every task spawned into the nursery before returning `body`'s result. Consumes
+/// `body`. Runs inside a task (the joins park it). The nursery value handed to
+/// `body` is borrowed — it lives only for the scope.
 #[unsafe(no_mangle)]
-pub extern "C" fn fai_spawn(thunk: Value) -> Value {
+pub extern "C" fn fai_scope(body: Value) -> Value {
+    scope(Box::new(move |nursery| {
+        // Hand `body` ownership of one nursery reference (the uniform consume
+        // convention: the body drops it at its last use). `scope` keeps its own
+        // `Arc<Nursery>` for the join, independent of this Fai cell.
+        let nursery_value = nursery_handle_value(nursery);
+        let args = [nursery_value];
+        // SAFETY: `body` is an arity-1 closure taking the nursery; it consumes it.
+        unsafe { crate::fai_apply_n(body, 1, args.as_ptr()) }
+    }))
+}
+
+/// Spawns `thunk` (a `Unit -> 'a` closure) into `nursery`, returning its `Task`
+/// handle. The thunk's captured graph is marked shared (it runs on another worker)
+/// and so is the result (it returns to the awaiter's worker). Consumes `nursery`
+/// (a borrowed reference passed per call) and `thunk`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_spawn(nursery: Value, thunk: Value) -> Value {
     crate::fai_mark_shared(thunk);
-    let handle = spawn(Box::new(move || {
-        let args = [crate::FAI_UNIT];
-        // SAFETY: `thunk` is an arity-1 closure; one owned `Unit` argument.
-        let result = unsafe { crate::fai_apply_n(thunk, 1, args.as_ptr()) };
-        crate::fai_mark_shared(result)
-    }));
+    let handle = {
+        let n = nursery_of(nursery);
+        spawn_in(
+            &n,
+            Box::new(move || {
+                let args = [crate::FAI_UNIT];
+                // SAFETY: `thunk` is an arity-1 closure; one owned `Unit` argument.
+                let result = unsafe { crate::fai_apply_n(thunk, 1, args.as_ptr()) };
+                crate::fai_mark_shared(result)
+            }),
+        )
+    };
+    crate::fai_drop(nursery);
     task_handle_value(handle)
 }
 
@@ -639,5 +744,29 @@ mod tests {
             imm(total)
         }));
         assert_eq!(of_imm(r), (0..100).sum::<i64>());
+    }
+
+    #[test]
+    fn scope_joins_unawaited_children() {
+        use std::sync::atomic::{AtomicI64, Ordering};
+        static RAN: AtomicI64 = AtomicI64::new(0);
+        RAN.store(0, Ordering::SeqCst);
+        let r = block_on(Box::new(|| {
+            scope(Box::new(|nursery| {
+                for _ in 0..32 {
+                    // Spawned but never explicitly awaited: the scope must join them.
+                    let _ = spawn_in(
+                        &nursery,
+                        Box::new(|| {
+                            RAN.fetch_add(1, Ordering::SeqCst);
+                            imm(0)
+                        }),
+                    );
+                }
+                imm(7)
+            }))
+        }));
+        assert_eq!(of_imm(r), 7, "the scope returns its body's result");
+        assert_eq!(RAN.load(Ordering::SeqCst), 32, "every spawned child ran before scope returned");
     }
 }

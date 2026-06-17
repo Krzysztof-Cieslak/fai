@@ -226,8 +226,13 @@ pub const KIND_TASK: u64 = 11;
 /// A channel handle (the `Channel 'a` value). Like [`KIND_TASK`]: its slot holds a
 /// raw `Arc<Chan>` pointer dropped when the cell dies.
 pub const KIND_CHANNEL: u64 = 12;
+/// A nursery handle (the `Nursery` value, the structured-concurrency scope token).
+/// Like [`KIND_TASK`]: its slot holds a raw `Arc` pointer dropped when the cell
+/// dies.
+pub const KIND_NURSERY: u64 = 13;
 
-/// Byte offset of the raw `Arc` pointer inside a task or channel handle cell.
+/// Byte offset of the raw `Arc` pointer inside a task, channel, or nursery handle
+/// cell.
 pub const HANDLE_PTR_OFFSET: usize = HEADER_SIZE;
 
 /// Builds a runtime-static descriptor with no scalar fields.
@@ -327,6 +332,10 @@ pub static FAI_TASK_DESC: Descriptor = descriptor(KIND_TASK, "Task");
 /// Descriptor for channel handles (peer of [`FAI_TASK_DESC`]).
 #[unsafe(no_mangle)]
 pub static FAI_CHANNEL_DESC: Descriptor = descriptor(KIND_CHANNEL, "Channel");
+
+/// Descriptor for nursery handles (peer of [`FAI_TASK_DESC`]).
+#[unsafe(no_mangle)]
+pub static FAI_NURSERY_DESC: Descriptor = descriptor(KIND_NURSERY, "Nursery");
 
 /// Descriptor for data values with no scalar fields — the shared descriptor for
 /// every constructor, record, and tuple whose slots are all uniform words. Cells
@@ -1089,6 +1098,7 @@ unsafe fn free_obj(p: *mut u8) {
         match desc_kind(obj_descriptor(p)) {
             KIND_TASK => scheduler::drop_task_handle(read_i64(p, HANDLE_PTR_OFFSET)),
             KIND_CHANNEL => scheduler::drop_channel_handle(read_i64(p, HANDLE_PTR_OFFSET)),
+            KIND_NURSERY => scheduler::drop_nursery_handle(read_i64(p, HANDLE_PTR_OFFSET)),
             _ => {}
         }
     }
