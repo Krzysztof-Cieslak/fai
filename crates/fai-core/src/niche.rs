@@ -93,7 +93,10 @@ fn payload_scheme(db: &dyn Db, payload: &Ty, prelude: Option<SourceId>) -> Optio
 /// the empty record, and a nullary-bearing ADT are not always boxed (Scheme B).
 fn always_boxed(db: &dyn Db, payload: &Ty) -> bool {
     match payload {
-        Ty::Con(Con::String | Con::Array) | Ty::Tuple(_) | Ty::Interface(_) | Ty::Arrow(..) => true,
+        Ty::Con(Con::String | Con::Bytes | Con::Array)
+        | Ty::Tuple(_)
+        | Ty::Interface(_)
+        | Ty::Arrow(..) => true,
         Ty::Record(row) => !row.fields.is_empty(),
         Ty::Adt(adt) => adt_all_non_nullary(db, adt),
         Ty::App(head, _) => boxed_head(db, head),

@@ -136,6 +136,9 @@ pub enum Con {
     Bool,
     /// `String`.
     String,
+    /// `Bytes` — an immutable contiguous binary byte buffer (distinct from the
+    /// UTF-8 `String`; its elements are bytes read/written as `Int` 0–255).
+    Bytes,
     /// `Char`.
     Char,
     /// `List` (a unary constructor, applied via [`Ty::App`]).
@@ -154,6 +157,7 @@ impl Con {
             Con::Float => "Float",
             Con::Bool => "Bool",
             Con::String => "String",
+            Con::Bytes => "Bytes",
             Con::Char => "Char",
             Con::List => "List",
             Con::Array => "Array",
@@ -168,6 +172,7 @@ impl Con {
             "Float" => Con::Float,
             "Bool" => Con::Bool,
             "String" => Con::String,
+            "Bytes" => Con::Bytes,
             "Char" => Con::Char,
             "List" => Con::List,
             "Array" => Con::Array,
@@ -730,7 +735,16 @@ mod tests {
 
     #[test]
     fn con_round_trips() {
-        for c in [Con::Int, Con::Float, Con::Bool, Con::String, Con::Char, Con::List] {
+        for c in [
+            Con::Int,
+            Con::Float,
+            Con::Bool,
+            Con::String,
+            Con::Bytes,
+            Con::Char,
+            Con::List,
+            Con::Array,
+        ] {
             assert_eq!(Con::from_name(c.name()), Some(c));
         }
         assert_eq!(Con::from_name("Widget"), None);

@@ -60,6 +60,17 @@ pub const INTRINSICS: &[&str] = &[
     // The contiguous twins of `split`/`join` (`Array String` rather than `List`).
     "arraySplit",
     "arrayJoin",
+    // Binary byte-buffer primitives (the standard library's `Bytes` module wraps
+    // these; bytes are read/written as `Int` 0–255).
+    "bytesLength",
+    "bytesGet",
+    "bytesConcat",
+    "bytesSlice",
+    "bytesFromList",
+    "bytesToList",
+    "bytesFromString",
+    "bytesToString",
+    "bytesIsUtf8",
 ];
 
 /// The synthetic module through which standard-library code reaches intrinsics.

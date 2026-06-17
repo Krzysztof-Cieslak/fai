@@ -784,6 +784,33 @@ fn row_polymorphic_record_update_runs() {
 }
 
 #[test]
+fn bytes_buffer_round_trips_natively() {
+    // The built-in `Bytes` type through the AOT path: build from a list and from a
+    // string, measure length, concatenate, and decode back to a `String`. Exercises
+    // the runtime `fai_bytes_*` functions and the `KIND_BYTES` descriptor linked
+    // into the executable.
+    let src = indoc! {r#"
+        module Main
+
+        public main : Runtime -> Unit / { Console }
+        let main runtime =
+          let hi = Bytes.fromList [72, 105]
+          let _ = runtime.console.writeLine (Int.toString (Bytes.length hi))
+          let greeting = Bytes.concat (Bytes.fromString "Hello, ") (Bytes.fromString "Bytes!")
+          let _ =
+            match Bytes.toString greeting with
+            | Some s -> runtime.console.writeLine s
+            | None -> runtime.console.writeLine "invalid"
+          match Bytes.toString (Bytes.fromList [255]) with
+          | Some s -> runtime.console.writeLine s
+          | None -> runtime.console.writeLine "not-utf8"
+    "#};
+    let (out, code) = build_and_run(src);
+    assert_eq!(out, "2\nHello, Bytes!\nnot-utf8\n");
+    assert_eq!(code, Some(0));
+}
+
+#[test]
 fn row_polymorphic_field_projected_inside_a_closure_runs() {
     // A lambda that projects a field through a row variable must capture the
     // enclosing function's offset-evidence local, not merely the record. Regression:

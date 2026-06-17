@@ -1,0 +1,29 @@
+module BytesDemo
+
+// `Bytes` is an immutable contiguous binary buffer, distinct from the UTF-8
+// `String`. Its elements are raw bytes read and written as `Int`s (0–255); its
+// operations are reached qualified, e.g. `Bytes.fromList`. `Bytes` is the payload
+// type for binary I/O.
+/// The bytes of a string, as a list of code units (0–255).
+public encode : String -> List Int
+let encode s = Bytes.toList (Bytes.fromString s)
+example: encode "AB" = [65, 66]
+example: encode "" = []
+
+/// Decode a list of byte values back to a string, or `None` when the bytes are
+/// not valid UTF-8.
+public decode : List Int -> Option String
+let decode xs = Bytes.toString (Bytes.fromList xs)
+example: decode [104, 105] = Some "hi"
+example: decode [255] = None
+
+/// Append two buffers and report the combined length.
+public appendedLength : Bytes -> Bytes -> Int
+let appendedLength a b = Bytes.length (Bytes.concat a b)
+example: appendedLength (Bytes.fromString "abc") (Bytes.fromString "de") = 5
+
+/// The first `n` bytes of a buffer (a fresh buffer).
+public prefix : Int -> Bytes -> Bytes
+let prefix n b = Bytes.slice 0 n b
+example: prefix 2 (Bytes.fromList [10, 20, 30]) = Bytes.fromList [10, 20]
+example: Bytes.toList (prefix 0 (Bytes.fromString "x")) = []

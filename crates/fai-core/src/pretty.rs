@@ -92,6 +92,15 @@ fn prim_name(op: Prim) -> &'static str {
         Prim::ArrayPush => "arrayPush",
         Prim::ArraySplit => "arraySplit",
         Prim::ArrayJoin => "arrayJoin",
+        Prim::BytesLength => "bytesLength",
+        Prim::BytesGet => "bytesGet",
+        Prim::BytesConcat => "bytesConcat",
+        Prim::BytesSlice => "bytesSlice",
+        Prim::BytesFromList => "bytesFromList",
+        Prim::BytesToList => "bytesToList",
+        Prim::BytesFromString => "bytesFromString",
+        Prim::BytesToString => "bytesToString",
+        Prim::BytesIsUtf8 => "bytesIsUtf8",
     }
 }
 

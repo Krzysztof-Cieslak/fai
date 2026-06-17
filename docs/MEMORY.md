@@ -3543,5 +3543,25 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   worker. The pool wake may race ahead of the park; that is safe, because the task is
   queued exactly once and resumes only after it yields (its coroutine lock serializes
   the resume against the running worker).
+- **D141 A built-in `Bytes` type — an immutable binary byte buffer.** Network (and
+  future binary) payloads need a byte sequence distinct from the UTF-8 `String`.
+  `Bytes` is its own built-in `Con` (global, no import), **not** `Array Byte`:
+  modeling it as an array would force introducing a `Byte` scalar type (its own
+  representation, literals, arithmetic, `Int` conversions) and a packed array
+  representation — large scope for no gain, and against the existing choice not to
+  pack element-typed arrays. `String` is the precedent (a distinct buffer type, not
+  `Array Char`). At runtime `Bytes` reuses the inline `String` buffer layout (length
+  then inline bytes) but carries a **distinct kind** (`KIND_BYTES`), so a binary
+  buffer is never treated as a UTF-8 `String` and the two never compare equal in a
+  generic position; equality/ordering/hash compare it by byte content. It has no
+  borrowing-slice form (slicing copies). Its elements are bytes exposed to Fai as
+  `Int`s (0–255); the `Bytes` std module wraps byte-oriented `Prim.bytes*` intrinsics
+  (`length`/`get`/`unsafeGet`, `concat`, `slice`, `fromList`/`toList`,
+  `fromString`/`toString`). The runtime primitives stay simple (they return
+  `Int`/`Bool`/`Bytes`/`List`/`String`); the `Option` results (`get`, `toString`) are
+  built in Fai, so the niche `Option` representation is unaffected. Conversions copy:
+  `fromString` always succeeds; `toString` is guarded by a UTF-8 check (so invalid
+  bytes can never masquerade as a `String`).
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

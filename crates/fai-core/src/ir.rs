@@ -616,6 +616,27 @@ pub enum Prim {
     ArraySplit,
     /// `arrayJoin`: join an `Array String` with a separator into a `String`.
     ArrayJoin,
+    /// `Bytes` length (the byte count).
+    BytesLength,
+    /// `Bytes` element access by index (the byte 0–255 as an `Int`; out-of-bounds
+    /// aborts).
+    BytesGet,
+    /// `Bytes` concatenation (a fresh buffer).
+    BytesConcat,
+    /// `Bytes` slice `start end b` — the bytes in `[start, end)`, clamped (a fresh
+    /// buffer).
+    BytesSlice,
+    /// Build `Bytes` from a `List Int` (each element truncated to a byte).
+    BytesFromList,
+    /// Explode `Bytes` to a `List Int` (one element per byte, 0–255).
+    BytesToList,
+    /// Reinterpret a `String`'s UTF-8 bytes as `Bytes` (a fresh copy).
+    BytesFromString,
+    /// Reinterpret `Bytes` as a `String` (a fresh copy); the caller guarantees the
+    /// bytes are valid UTF-8 (see [`Prim::BytesIsUtf8`]).
+    BytesToString,
+    /// Whether a `Bytes` value is valid UTF-8.
+    BytesIsUtf8,
 }
 
 /// Whether values of `ty` are boxed, reference-counted heap values, so lending
@@ -630,8 +651,10 @@ fn is_boxed_rc(ty: &Ty) -> bool {
             _ => false,
         }
     }
-    matches!(ty, Ty::Record(_) | Ty::Tuple(_) | Ty::Con(Con::String) | Ty::Con(Con::Float))
-        || boxed_head(ty)
+    matches!(
+        ty,
+        Ty::Record(_) | Ty::Tuple(_) | Ty::Con(Con::String | Con::Bytes) | Ty::Con(Con::Float)
+    ) || boxed_head(ty)
 }
 
 impl Prim {
@@ -751,6 +774,15 @@ impl Prim {
             Prim::ArrayPush => "fai_array_push",
             Prim::ArraySplit => "fai_array_split",
             Prim::ArrayJoin => "fai_array_join",
+            Prim::BytesLength => "fai_bytes_length",
+            Prim::BytesGet => "fai_bytes_get",
+            Prim::BytesConcat => "fai_bytes_concat",
+            Prim::BytesSlice => "fai_bytes_slice",
+            Prim::BytesFromList => "fai_bytes_from_list",
+            Prim::BytesToList => "fai_bytes_to_list",
+            Prim::BytesFromString => "fai_bytes_from_string",
+            Prim::BytesToString => "fai_bytes_to_string",
+            Prim::BytesIsUtf8 => "fai_bytes_is_utf8",
         }
     }
 
@@ -777,8 +809,14 @@ impl Prim {
             | Prim::IntComplement
             | Prim::Hash
             | Prim::ArrayWithCapacity
-            | Prim::ArrayLength => 1,
-            Prim::RecordUpdate | Prim::ArraySet | Prim::StringSubstring => 3,
+            | Prim::ArrayLength
+            | Prim::BytesLength
+            | Prim::BytesFromList
+            | Prim::BytesToList
+            | Prim::BytesFromString
+            | Prim::BytesToString
+            | Prim::BytesIsUtf8 => 1,
+            Prim::RecordUpdate | Prim::ArraySet | Prim::StringSubstring | Prim::BytesSlice => 3,
             _ => 2,
         }
     }
@@ -827,6 +865,15 @@ impl Prim {
             "arrayPush" => Prim::ArrayPush,
             "arraySplit" => Prim::ArraySplit,
             "arrayJoin" => Prim::ArrayJoin,
+            "bytesLength" => Prim::BytesLength,
+            "bytesGet" => Prim::BytesGet,
+            "bytesConcat" => Prim::BytesConcat,
+            "bytesSlice" => Prim::BytesSlice,
+            "bytesFromList" => Prim::BytesFromList,
+            "bytesToList" => Prim::BytesToList,
+            "bytesFromString" => Prim::BytesFromString,
+            "bytesToString" => Prim::BytesToString,
+            "bytesIsUtf8" => Prim::BytesIsUtf8,
             _ => return None,
         })
     }

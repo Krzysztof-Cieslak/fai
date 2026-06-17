@@ -132,6 +132,24 @@ pub fn builtin_scheme(name: Symbol) -> Option<Scheme> {
         "arrayPush" => {
             single_var_scheme(|a| Ty::arrows([Ty::array(a.clone()), a.clone()], Ty::array(a)))
         }
+        // Binary byte-buffer primitives (the standard library's `Bytes` module
+        // wraps these). Bytes are read/written as `Int` 0–255; slice takes
+        // start/end byte indices with the buffer last.
+        "bytesLength" => Scheme::mono(Ty::arrow(Ty::Con(Con::Bytes), Ty::int())),
+        "bytesGet" => Scheme::mono(Ty::arrows([Ty::Con(Con::Bytes), Ty::int()], Ty::int())),
+        "bytesConcat" => Scheme::mono(Ty::arrows(
+            [Ty::Con(Con::Bytes), Ty::Con(Con::Bytes)],
+            Ty::Con(Con::Bytes),
+        )),
+        "bytesSlice" => Scheme::mono(Ty::arrows(
+            [Ty::int(), Ty::int(), Ty::Con(Con::Bytes)],
+            Ty::Con(Con::Bytes),
+        )),
+        "bytesFromList" => Scheme::mono(Ty::arrow(Ty::list(Ty::int()), Ty::Con(Con::Bytes))),
+        "bytesToList" => Scheme::mono(Ty::arrow(Ty::Con(Con::Bytes), Ty::list(Ty::int()))),
+        "bytesFromString" => Scheme::mono(Ty::arrow(Ty::Con(Con::String), Ty::Con(Con::Bytes))),
+        "bytesToString" => Scheme::mono(Ty::arrow(Ty::Con(Con::Bytes), Ty::Con(Con::String))),
+        "bytesIsUtf8" => Scheme::mono(Ty::arrow(Ty::Con(Con::Bytes), Ty::bool())),
         _ => return None,
     })
 }
