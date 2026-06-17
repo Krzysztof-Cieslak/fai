@@ -72,6 +72,19 @@ fn string_concat() {
 }
 
 #[test]
+fn bytes_type_and_operations_infer() {
+    // `Bytes` is a built-in type usable without import; its qualified operations
+    // come from the embedded `std/Bytes.fai`.
+    let (db, f) = db_with_std(&[(
+        "M.fai",
+        "module M\n\nlet b = Bytes.fromString \"hi\"\nlet n = Bytes.length b\nlet s = Bytes.toString b\n",
+    )]);
+    assert_eq!(type_of(&db, f[0], "b"), "Bytes");
+    assert_eq!(type_of(&db, f[0], "n"), "Int");
+    assert_eq!(type_of(&db, f[0], "s"), "Option String");
+}
+
+#[test]
 fn if_unifies_branches() {
     let (db, f) = db_with(&[("M.fai", "module M\n\nlet f b = if b then 1 else 2\n")]);
     assert_eq!(type_of(&db, f[0], "f"), "Bool -> Int");

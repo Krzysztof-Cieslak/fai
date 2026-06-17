@@ -1,0 +1,79 @@
+module Bytes
+
+// Binary byte-buffer operations. `Bytes` is an immutable contiguous buffer of
+// raw bytes — distinct from the UTF-8 `String` — whose elements are read and
+// written as `Int`s in the range 0–255. Each function wraps a runtime primitive
+// reached through the prelude-private `Prim` module; user code calls them
+// qualified (`Bytes.fromString`).
+/// The empty buffer (length 0).
+public empty : Bytes
+let empty = Prim.bytesFromList []
+example: length empty = 0
+
+/// The number of bytes in `b`.
+public length : Bytes -> Int
+let length b = Prim.bytesLength b
+example: length (fromList [1, 2, 3]) = 3
+example: length empty = 0
+
+/// Whether `b` has no bytes.
+public isEmpty : Bytes -> Bool
+let isEmpty b = Prim.bytesLength b = 0
+example: isEmpty empty
+example: isEmpty (fromList [1]) = false
+
+/// The byte at index `i` (0–255), or `None` when `i` is out of bounds.
+public get : Int -> Bytes -> Option Int
+let get i b =
+  if i >= 0 then if i < Prim.bytesLength b then Some (Prim.bytesGet b i) else None else None
+example: get 1 (fromList [10, 20, 30]) = Some 20
+example: get 5 (fromList [1]) = None
+example: get 0 empty = None
+
+/// The byte at index `i` without a bounds check (out of bounds aborts). For loops
+/// whose index is in range by construction; prefer `get` for an untrusted index.
+public unsafeGet : Int -> Bytes -> Int
+let unsafeGet i b = Prim.bytesGet b i
+example: unsafeGet 0 (fromList [7, 8]) = 7
+
+/// `a` followed by `b` (a fresh buffer).
+public concat : Bytes -> Bytes -> Bytes
+let concat a b = Prim.bytesConcat a b
+example: concat (fromList [1, 2]) (fromList [3, 4]) = fromList [1, 2, 3, 4]
+example: concat empty (fromList [1]) = fromList [1]
+
+/// The bytes in `[start, end)`, with both indices clamped to the buffer's bounds
+/// (a fresh buffer).
+public slice : Int -> Int -> Bytes -> Bytes
+let slice start end b = Prim.bytesSlice start end b
+example: slice 1 3 (fromList [10, 20, 30, 40]) = fromList [20, 30]
+example: slice 0 0 (fromList [1, 2]) = empty
+
+/// Build a buffer from a list of byte values (each truncated to its low 8 bits).
+public fromList : List Int -> Bytes
+let fromList xs = Prim.bytesFromList xs
+example: length (fromList [1, 2, 3]) = 3
+
+/// Explode a buffer to a list of its byte values (0–255).
+public toList : Bytes -> List Int
+let toList b = Prim.bytesToList b
+example: toList (fromList [1, 2, 3]) = [1, 2, 3]
+example: toList empty = []
+
+/// The UTF-8 bytes of `s` as a `Bytes` buffer.
+public fromString : String -> Bytes
+let fromString s = Prim.bytesFromString s
+example: toList (fromString "AB") = [65, 66]
+example: length (fromString "") = 0
+
+/// Decode `b` as a UTF-8 `String`, or `None` when its bytes are not valid UTF-8.
+public toString : Bytes -> Option String
+let toString b = if Prim.bytesIsUtf8 b then Some (Prim.bytesToString b) else None
+example: toString (fromString "hi") = Some "hi"
+example: toString (fromList [255]) = None
+
+/// Whether `b`'s bytes are valid UTF-8 (so `toString` would succeed).
+public isValidUtf8 : Bytes -> Bool
+let isValidUtf8 b = Prim.bytesIsUtf8 b
+example: isValidUtf8 (fromString "hi")
+example: isValidUtf8 (fromList [255]) = false

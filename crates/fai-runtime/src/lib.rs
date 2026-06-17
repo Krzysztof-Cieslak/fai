@@ -230,6 +230,12 @@ pub const KIND_CHANNEL: u64 = 12;
 /// Like [`KIND_TASK`]: its slot holds a raw `Arc` pointer dropped when the cell
 /// dies.
 pub const KIND_NURSERY: u64 = 13;
+/// `Bytes` objects — an immutable contiguous binary byte buffer (leaf: inline
+/// bytes, no children). Same layout as an inline [`KIND_STRING`] (length at
+/// [`STRING_LEN_OFFSET`], bytes at [`STRING_BYTES_OFFSET`]) but a distinct kind, so
+/// a binary buffer is never treated as a UTF-8 `String` and the two never compare
+/// equal in a generic position. `Bytes` has no borrowing-slice form.
+pub const KIND_BYTES: u64 = 14;
 
 /// Byte offset of the raw `Arc` pointer inside a task, channel, or nursery handle
 /// cell.
@@ -295,6 +301,10 @@ pub static FAI_STRING_DESC: Descriptor = descriptor(KIND_STRING, "String");
 /// inline base `String` it views).
 #[unsafe(no_mangle)]
 pub static FAI_STRING_SLICE_DESC: Descriptor = descriptor(KIND_STRING_SLICE, "StringSlice");
+
+/// Descriptor for `Bytes` objects (leaf: inline bytes, no children).
+#[unsafe(no_mangle)]
+pub static FAI_BYTES_DESC: Descriptor = descriptor(KIND_BYTES, "Bytes");
 
 /// Descriptor for boxed (overflowed) `Int` objects (leaf).
 #[unsafe(no_mangle)]
@@ -1306,7 +1316,8 @@ unsafe fn scan_push(p: *mut u8, work: &mut DropWork) {
                 work.push(base);
             }
         }
-        // Leaf kinds (inline `String`, boxed `Int`/`Float`) have no children.
+        // Leaf kinds (inline `String`, `Bytes`, boxed `Int`/`Float`) have no
+        // children.
     }
 }
 
@@ -3004,6 +3015,192 @@ pub extern "C" fn fai_array_join_borrowed(sep: Value, arr: Value) -> Value {
 const NIL_TAG: i64 = 0;
 const CONS_TAG: i64 = 1;
 
+/// Builds a Fai `List` from owned element values (each cons cell owns its head).
+fn cons_list(elems: &[Value]) -> Value {
+    let mut list = imm_int(NIL_TAG);
+    for &e in elems.iter().rev() {
+        let p = alloc_obj(DATA_FIELDS_OFFSET + 16, &FAI_DATA_DESC);
+        // SAFETY: `p` has room for the tag and two fields; ownership of `e` transfers.
+        unsafe {
+            write_u64(p, DATA_TAG_OFFSET, CONS_TAG as u64);
+            write_i64(p, DATA_FIELDS_OFFSET, e);
+            write_i64(p, DATA_FIELDS_OFFSET + 8, list);
+        }
+        list = from_obj(p);
+    }
+    list
+}
+
+// ---------------------------------------------------------------------------
+// Bytes: an immutable contiguous binary byte buffer.
+// ---------------------------------------------------------------------------
+//
+// A `Bytes` value reuses the inline `String` buffer layout — its byte length at
+// `STRING_LEN_OFFSET`, its bytes at `STRING_BYTES_OFFSET` — but carries the
+// distinct `FAI_BYTES_DESC` (`KIND_BYTES`), so a binary buffer is never confused
+// with a UTF-8 `String` (notably in the generic equality/ordering/hash walks).
+// `Bytes` has no borrowing-slice form, so it is always a single inline buffer.
+// Its elements are bytes exposed to Fai as `Int`s (0–255).
+
+/// Allocates a tight `Bytes` object from `bytes` (rc = 1).
+fn make_bytes(bytes: &[u8]) -> Value {
+    let len = bytes.len();
+    let size = (STRING_BYTES_OFFSET + len + ALIGN - 1) & !(ALIGN - 1);
+    let p = alloc_obj(size.max(STRING_BYTES_OFFSET), &FAI_BYTES_DESC);
+    // SAFETY: `p` has room for the length field and `len` content bytes.
+    unsafe {
+        write_u64(p, STRING_LEN_OFFSET, len as u64);
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), p.add(STRING_BYTES_OFFSET), len);
+    }
+    from_obj(p)
+}
+
+/// Borrows a boxed `Bytes` value as a byte slice.
+///
+/// # Safety
+/// `v` is a live boxed `Bytes` value (`KIND_BYTES`).
+unsafe fn bytes_bytes<'a>(v: Value) -> &'a [u8] {
+    let p = as_obj(v);
+    // SAFETY: a `Bytes` cell stores its length inline at `STRING_LEN_OFFSET` and
+    // its bytes at `STRING_BYTES_OFFSET`.
+    unsafe {
+        let len = read_u64(p, STRING_LEN_OFFSET) as usize;
+        std::slice::from_raw_parts(p.add(STRING_BYTES_OFFSET), len)
+    }
+}
+
+/// `Bytes.length`: the byte count (operand consumed).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_bytes_length(b: Value) -> Value {
+    // SAFETY: `b` is a boxed `Bytes`; its length is inline at `STRING_LEN_OFFSET`.
+    let len = unsafe { read_u64(as_obj(b), STRING_LEN_OFFSET) } as i64;
+    fai_drop(b);
+    fai_box_int(len)
+}
+
+/// `Bytes.unsafeGet`: the byte at index `i` as an `Int` (0–255); aborts on an
+/// out-of-bounds index. Both operands consumed.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_bytes_get(b: Value, i: Value) -> Value {
+    let idx = unbox_int(i);
+    // SAFETY: `b` is a boxed `Bytes`. The byte is copied out before `b` is dropped.
+    let byte = unsafe {
+        let bytes = bytes_bytes(b);
+        if idx < 0 || idx as usize >= bytes.len() {
+            fai_panic("Bytes.unsafeGet: index out of bounds");
+        }
+        bytes[idx as usize] as i64
+    };
+    fai_drop(b);
+    fai_drop(i);
+    fai_box_int(byte)
+}
+
+/// `Bytes.concat`: a fresh buffer of `a` followed by `b` (both consumed).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_bytes_concat(a: Value, b: Value) -> Value {
+    // SAFETY: `a` and `b` are boxed `Bytes`; the slices are copied before either
+    // operand is dropped.
+    let result = unsafe {
+        let ba = bytes_bytes(a);
+        let bb = bytes_bytes(b);
+        let mut v = Vec::with_capacity(ba.len() + bb.len());
+        v.extend_from_slice(ba);
+        v.extend_from_slice(bb);
+        make_bytes(&v)
+    };
+    fai_drop(a);
+    fai_drop(b);
+    result
+}
+
+/// `Bytes.slice start end b`: the bytes in `[start, end)`, clamped to the buffer
+/// (a fresh copy). All operands consumed.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_bytes_slice(start: Value, end: Value, b: Value) -> Value {
+    let s = unbox_int(start);
+    let e = unbox_int(end);
+    // SAFETY: `b` is a boxed `Bytes`; the window is copied before `b` is dropped.
+    let result = unsafe {
+        let bytes = bytes_bytes(b);
+        let len = bytes.len() as i64;
+        let lo = s.clamp(0, len) as usize;
+        let hi = e.clamp(lo as i64, len) as usize;
+        make_bytes(&bytes[lo..hi])
+    };
+    fai_drop(start);
+    fai_drop(end);
+    fai_drop(b);
+    result
+}
+
+/// `Bytes.fromList`: build a buffer from a `List Int` (each element truncated to a
+/// byte). The list is consumed.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_bytes_from_list(list: Value) -> Value {
+    let mut bytes = Vec::new();
+    let mut cur = list;
+    // A `List` is `[]` (an immediate) or a boxed cons cell `{ head, tail }`.
+    while is_boxed(cur) {
+        // SAFETY: a boxed `List` value is a cons cell (tag `CONS_TAG`) whose two
+        // fields are the head element and the tail; read without consuming (the
+        // whole list is dropped once at the end).
+        let (head, tail) = unsafe {
+            let p = as_obj(cur);
+            (read_i64(p, DATA_FIELDS_OFFSET), read_i64(p, DATA_FIELDS_OFFSET + 8))
+        };
+        bytes.push((unbox_int(head) & 0xff) as u8);
+        cur = tail;
+    }
+    let result = make_bytes(&bytes);
+    fai_drop(list);
+    result
+}
+
+/// `Bytes.toList`: a `List Int` with one element (0–255) per byte. The buffer is
+/// consumed.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_bytes_to_list(b: Value) -> Value {
+    // SAFETY: `b` is a boxed `Bytes`; the bytes are read into immediates before
+    // `b` is dropped.
+    let values: Vec<Value> =
+        unsafe { bytes_bytes(b).iter().map(|&byte| imm_int(i64::from(byte))).collect() };
+    let list = cons_list(&values);
+    fai_drop(b);
+    list
+}
+
+/// `Bytes.fromString`: reinterpret a `String`'s UTF-8 bytes as `Bytes` (a fresh
+/// copy). The string is consumed.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_bytes_from_string(s: Value) -> Value {
+    // SAFETY: `s` is a boxed `String`; its bytes are copied before it is dropped.
+    let result = unsafe { make_bytes(string_bytes(s)) };
+    fai_drop(s);
+    result
+}
+
+/// `Bytes.toString` (unsafe): reinterpret `Bytes` as a `String` (a fresh copy).
+/// The caller guarantees the bytes are valid UTF-8 (the `Bytes` module guards this
+/// with [`fai_bytes_is_utf8`]). The buffer is consumed.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_bytes_to_string(b: Value) -> Value {
+    // SAFETY: `b` is a boxed `Bytes`; its bytes are copied before it is dropped.
+    let result = unsafe { make_string(bytes_bytes(b)) };
+    fai_drop(b);
+    result
+}
+
+/// `Bytes.isValidUtf8`: whether the buffer's bytes are valid UTF-8 (operand
+/// consumed).
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_bytes_is_utf8(b: Value) -> Value {
+    // SAFETY: `b` is a boxed `Bytes`.
+    let valid = unsafe { std::str::from_utf8(bytes_bytes(b)).is_ok() };
+    fai_drop(b);
+    from_bool(valid)
+}
+
 // ---------------------------------------------------------------------------
 // Closures & application.
 // ---------------------------------------------------------------------------
@@ -3204,6 +3401,9 @@ fn values_equal(a: Value, b: Value) -> bool {
                     }
                     KIND_DATA => data_equal(a, b),
                     KIND_ARRAY => array_equal(a, b),
+                    // Two `Bytes` buffers: equal byte content (both are `KIND_BYTES`
+                    // here, the `ka != kb` guard having returned for a mismatch).
+                    KIND_BYTES => bytes_bytes(a) == bytes_bytes(b),
                     // Two niche `None` sentinels (the single shared object): equal.
                     // A `None` and a `Some` differ in kind, handled by `ka != kb`.
                     KIND_NONE => true,
@@ -3311,6 +3511,10 @@ fn values_compare(a: Value, b: Value) -> std::cmp::Ordering {
         // SAFETY: both are boxed string-like values; ordering is by content,
         // regardless of inline-vs-slice representation.
         return unsafe { string_bytes(a).cmp(string_bytes(b)) };
+    }
+    if kind == KIND_BYTES {
+        // SAFETY: both are boxed `Bytes` buffers (same type); ordered by content.
+        return unsafe { bytes_bytes(a).cmp(bytes_bytes(b)) };
     }
     if kind == KIND_ARRAY {
         // SAFETY: both are boxed arrays (same type).
@@ -3423,6 +3627,11 @@ fn values_hash(v: Value) -> u64 {
     if is_string_kind(kind) {
         // SAFETY: `v` is a boxed string-like value (inline buffer or slice view).
         return hash_bytes(unsafe { string_bytes(v) });
+    }
+    if kind == KIND_BYTES {
+        // SAFETY: `v` is a boxed `Bytes` buffer; hash its content (agreeing with
+        // `Bytes` equality).
+        return hash_bytes(unsafe { bytes_bytes(v) });
     }
     match kind {
         // A boxed (overflowed) `Int`: hash the logical 64-bit value.

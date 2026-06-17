@@ -102,6 +102,7 @@ const TYPECHECK_CLEAN: &[&str] = &[
     "Algebra.fai",
     "Anon.fai",
     "Basics.fai",
+    "BytesDemo.fai",
     "Capabilities.fai",
     "Cart.fai",
     "Catalog.fai",

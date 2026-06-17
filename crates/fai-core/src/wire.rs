@@ -202,6 +202,8 @@ pub enum WireTy {
     Bool,
     /// `String`.
     Str,
+    /// `Bytes` (always boxed; a contiguous binary buffer, like `String`).
+    Bytes,
     /// `Char`.
     Char,
     /// A tuple — its element types, for fixed-shape field classification.
@@ -427,6 +429,7 @@ pub fn project_ty(ty: &Ty) -> WireTy {
         Ty::Con(Con::Float) => WireTy::Float,
         Ty::Con(Con::Bool) => WireTy::Bool,
         Ty::Con(Con::String) => WireTy::Str,
+        Ty::Con(Con::Bytes) => WireTy::Bytes,
         Ty::Con(Con::Char) => WireTy::Char,
         Ty::Con(Con::List) => WireTy::List,
         Ty::Con(Con::Array) => WireTy::Array,
@@ -473,6 +476,7 @@ pub fn reconstruct_ty(w: &WireTy) -> Ty {
         WireTy::Float => Ty::Con(Con::Float),
         WireTy::Bool => Ty::Con(Con::Bool),
         WireTy::Str => Ty::Con(Con::String),
+        WireTy::Bytes => Ty::Con(Con::Bytes),
         WireTy::Char => Ty::Con(Con::Char),
         WireTy::Tuple(elems) => Ty::Tuple(elems.iter().map(reconstruct_ty).collect()),
         WireTy::Record { fields, closed } => Ty::Record(RecordRow {

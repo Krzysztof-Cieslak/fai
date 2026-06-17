@@ -5815,7 +5815,10 @@ fn is_always_boxed_ty(ty: &Ty) -> bool {
         }
     }
     match ty {
-        Ty::Con(Con::String | Con::Float) | Ty::Tuple(_) | Ty::Interface(_) | Ty::Arrow(..) => true,
+        Ty::Con(Con::String | Con::Bytes | Con::Float)
+        | Ty::Tuple(_)
+        | Ty::Interface(_)
+        | Ty::Arrow(..) => true,
         Ty::Record(row) => !row.fields.is_empty(),
         _ => array_head(ty),
     }
