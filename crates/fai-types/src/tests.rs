@@ -257,7 +257,7 @@ fn contract_referencing_a_runtime_lists_its_capabilities() {
     assert!(
         diag.message.contains(
             "references capabilities (`Clock`, `Concurrency`, `Console`, `Env`, `FileSystem`, \
-             `Random`)"
+             `Net`, `Random`)"
         ),
         "got {:?}",
         diag.message
@@ -410,7 +410,7 @@ fn console_writeline_via_runtime_typechecks() {
     assert_eq!(
         type_of(&db, f[0], "main"),
         "{ clock : Clock, concurrency : Concurrency, console : Console, env : Env, \
-         fs : FileSystem, random : Random } -> () / { Console }"
+         fs : FileSystem, net : Net, random : Random } -> () / { Console }"
     );
 }
 
