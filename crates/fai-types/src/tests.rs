@@ -1846,3 +1846,170 @@ fn opaque_alias_is_transparent_in_declaring_file_nominal_elsewhere() {
     );
     assert!(!check_codes(&db, f[1]).is_empty(), "Id is not Int across files");
 }
+
+// --- Concurrency capability: effect-polymorphic spawn/scope, opaque handles. -
+
+#[test]
+fn spawn_of_a_pure_thunk_is_only_concurrency() {
+    let src = indoc! {r#"
+        module M
+
+        public spawnsPure : { concurrency : Concurrency | _ } -> Nursery -> Task Int / { Concurrency }
+        let spawnsPure env n = env.concurrency.spawn n (fun u -> 1)
+    "#};
+    let (db, f) = db_with_std(&[("M.fai", src)]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+    assert!(
+        type_of(&db, f[0], "spawnsPure").contains("/ { Concurrency }"),
+        "got {}",
+        type_of(&db, f[0], "spawnsPure")
+    );
+}
+
+#[test]
+fn spawning_an_effectful_thunk_unions_its_effect() {
+    // `spawn` forwards the thunk's own effect: a console-using thunk surfaces
+    // `Console` alongside `Concurrency` in the spawner's effect row.
+    let src = indoc! {r#"
+        module M
+
+        public spawnsConsole : { concurrency : Concurrency, console : Console | _ } -> Nursery -> Task Unit / { Concurrency, Console }
+        let spawnsConsole env n = env.concurrency.spawn n (fun u -> env.console.writeLine "hi")
+    "#};
+    let (db, f) = db_with_std(&[("M.fai", src)]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+    assert!(
+        type_of(&db, f[0], "spawnsConsole").contains("{ Concurrency, Console }"),
+        "got {}",
+        type_of(&db, f[0], "spawnsConsole")
+    );
+}
+
+#[test]
+fn scope_surfaces_the_body_effect() {
+    let src = indoc! {r#"
+        module M
+
+        body : { concurrency : Concurrency, console : Console | _ } -> Nursery -> Unit / { Concurrency, Console }
+        let body env n =
+          let t = env.concurrency.spawn n (fun u -> env.console.writeLine "x")
+          env.concurrency.await t
+
+        public run : { concurrency : Concurrency, console : Console | _ } -> Unit / { Concurrency, Console }
+        let run env = env.concurrency.scope (body env)
+    "#};
+    let (db, f) = db_with_std(&[("M.fai", src)]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+    assert!(
+        type_of(&db, f[0], "run").contains("{ Concurrency, Console }"),
+        "got {}",
+        type_of(&db, f[0], "run")
+    );
+}
+
+#[test]
+fn spawning_without_declaring_concurrency_is_rejected() {
+    // Declared pure, but spawning incurs `Concurrency`: a declared-vs-inferred
+    // effect mismatch (FAI5001).
+    let src = indoc! {r#"
+        module M
+
+        public bad : { concurrency : Concurrency | _ } -> Nursery -> Task Int
+        let bad env n = env.concurrency.spawn n (fun u -> 1)
+    "#};
+    let (db, f) = db_with_std(&[("M.fai", src)]);
+    assert!(
+        check_codes(&db, f[0]).contains(&"FAI5001".to_owned()),
+        "got {:?}",
+        check_codes(&db, f[0])
+    );
+}
+
+#[test]
+fn a_spawned_thunks_effect_must_be_declared() {
+    // The thunk uses `Console` but the spawner declares only `Concurrency`: the
+    // forwarded effect is not laundered away (FAI5001).
+    let src = indoc! {r#"
+        module M
+
+        public bad : { concurrency : Concurrency, console : Console | _ } -> Nursery -> Task Unit / { Concurrency }
+        let bad env n = env.concurrency.spawn n (fun u -> env.console.writeLine "hi")
+    "#};
+    let (db, f) = db_with_std(&[("M.fai", src)]);
+    assert!(
+        check_codes(&db, f[0]).contains(&"FAI5001".to_owned()),
+        "got {:?}",
+        check_codes(&db, f[0])
+    );
+}
+
+#[test]
+fn holding_concurrency_without_using_it_is_pure() {
+    let src = indoc! {r#"
+        module M
+
+        public holds : { concurrency : Concurrency | _ } -> Int
+        let holds env = 1
+    "#};
+    let (db, f) = db_with_std(&[("M.fai", src)]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+    // Pure: a bare arrow, with no `/ { … }` effect row.
+    let ty = type_of(&db, f[0], "holds");
+    assert!(!ty.contains("/ {"), "expected a pure arrow, got {ty}");
+}
+
+#[test]
+fn await_returns_the_task_payload() {
+    let src = indoc! {r#"
+        module M
+
+        public get : { concurrency : Concurrency | _ } -> Task Int -> Int / { Concurrency }
+        let get env t = env.concurrency.await t
+    "#};
+    let (db, f) = db_with_std(&[("M.fai", src)]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+    assert!(
+        type_of(&db, f[0], "get").contains("Task Int -> Int / { Concurrency }"),
+        "got {}",
+        type_of(&db, f[0], "get")
+    );
+}
+
+#[test]
+fn recv_returns_an_option() {
+    let src = indoc! {r#"
+        module M
+
+        public next : { concurrency : Concurrency | _ } -> Channel Int -> Option Int / { Concurrency }
+        let next env c = env.concurrency.recv c
+    "#};
+    let (db, f) = db_with_std(&[("M.fai", src)]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+}
+
+#[test]
+fn channel_element_type_is_checked() {
+    // Sending a `String` on a `Channel Int` is a type error.
+    let src = indoc! {r#"
+        module M
+
+        public bad : { concurrency : Concurrency | _ } -> Channel Int -> Unit / { Concurrency }
+        let bad env c = env.concurrency.send c "not an int"
+    "#};
+    let (db, f) = db_with_std(&[("M.fai", src)]);
+    assert!(!check_codes(&db, f[0]).is_empty(), "expected a type error");
+}
+
+#[test]
+fn task_handle_is_opaque() {
+    // The `Task` constructor is private to the `Concurrency` module, so a use site
+    // cannot deconstruct a task by pattern-matching its hidden representation.
+    let src = indoc! {r#"
+        module M
+
+        public peek : Task Int -> Int
+        let peek t = match t with | TaskCell n -> n
+    "#};
+    let (db, f) = db_with_std(&[("M.fai", src)]);
+    assert!(!check_codes(&db, f[0]).is_empty(), "expected an opacity/resolution error");
+}
