@@ -3563,7 +3563,7 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   `fromString` always succeeds; `toString` is guarded by a UTF-8 check (so invalid
   bytes can never masquerade as a `String`).
 
-- **D142 A readiness-based network reactor and the `Net` (TCP) capability.** The
+- **D142 A readiness-based network reactor and the `Net` (TCP/UDP) capability.** The
   host network surface is built on a **readiness** I/O model (a single reactor
   thread running `mio`'s Poll — epoll/kqueue/IOCP) rather than a completion/callback
   loop, because it fits the M:N work-stealing scheduler: worker threads register
@@ -3579,14 +3579,17 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   readiness latch closes the lost-wake race (a readiness edge that arrives between a
   failed syscall and the park is recorded, so the task retries rather than parking
   forever). The reactor starts lazily on first use. **`Net` is a capability** in the
-  default `Runtime` (TCP `listen`/`localPort`/`accept`/`connect`/`send`/`recv`/
-  `close`), surfaced exactly like `Concurrency`: the interface, foreign primitives,
-  and standard instance live in `Prelude`; the opaque `Listener`/`Connection` types
-  live in a dependency-free `Net` module that `Prelude` re-exports. Payloads are
-  `Bytes`; fallible operations return `Result _ String` (built by the runtime, the
-  standard two-cell representation). Each operation runs on its task and parks on
-  the reactor at every would-block; `connect`'s hostname resolution runs on the
-  blocking pool (D140). The whole-program **execution gate** (D139) triggers on
+  default `Runtime` — TCP `listen`/`localPort`/`accept`/`connect`/`send`/`recv`/
+  `close` and connectionless UDP `udpBind`/`udpLocalPort`/`udpSend`/`udpRecv`/
+  `udpClose` (each datagram addressed by host/port, `udpRecv` reporting the sender as
+  a `(Bytes * String * Int)` tuple) — surfaced exactly like `Concurrency`: the
+  interface, foreign primitives, and standard instance live in `Prelude`; the opaque
+  `Listener`/`Connection`/`UdpSocket` types live in a dependency-free `Net` module
+  that `Prelude` re-exports. Payloads are `Bytes`; fallible operations return
+  `Result _ String` (built by the runtime, the standard two-cell representation).
+  Each operation runs on its task and parks on the reactor at every would-block; a
+  hostname (in `connect`/`udpSend`) is resolved on the blocking pool (D140) while an
+  IP literal is parsed inline (no park). The whole-program **execution gate** (D139) triggers on
   `Concurrency` **or** `Net`, since a networking program must run `main` as the
   scheduler root task so its socket operations can park — so a `Net` program runs on
   the scheduler (and pays the biased-RC cost) just as a concurrent one does;

@@ -42,6 +42,8 @@ public type Listener = Net.Listener
 
 public type Connection = Net.Connection
 
+public type UdpSocket = Net.UdpSocket
+
 /// The identity function.
 public identity : 'a -> 'a
 let identity x = x
@@ -127,11 +129,13 @@ public interface Concurrency =
   send : Channel 'a -> 'a -> Unit / { Concurrency }
   spawn : Nursery -> (Unit -> 'a / 'e) -> Task 'a / { Concurrency | 'e }
 
-// TCP networking. A program that uses `Net` runs on the scheduler (like
+// TCP and UDP networking. A program that uses `Net` runs on the scheduler (like
 // `Concurrency`): each operation parks its task on the I/O reactor while it would
 // block, so many connections multiplex onto the worker pool. Payloads are `Bytes`;
 // fallible operations return `Result _ String` (the error message). `localPort`
-// reports the port a `listen 0` was bound to.
+// reports the port a `listen 0` was bound to. The `udp*` methods are
+// connectionless: `udpSend` addresses each datagram and `udpRecv` reports the
+// sender (its host and port) alongside the payload.
 public interface Net =
   accept : Listener -> Result Connection String / { Net }
   close : Connection -> Unit / { Net }
@@ -140,6 +144,11 @@ public interface Net =
   localPort : Listener -> Int / { Net }
   recv : Connection -> Int -> Result Bytes String / { Net }
   send : Connection -> Bytes -> Result Unit String / { Net }
+  udpBind : Int -> Result UdpSocket String / { Net }
+  udpClose : UdpSocket -> Unit / { Net }
+  udpLocalPort : UdpSocket -> Int / { Net }
+  udpRecv : UdpSocket -> Int -> Result (Bytes * String * Int) String / { Net }
+  udpSend : UdpSocket -> String -> Int -> Bytes -> Result Unit String / { Net }
 
 /// The capability bundle `main` receives: the host's console, clock, random,
 /// file system, environment, concurrency, and network. Request only the fields you
@@ -203,6 +212,16 @@ foreign "fai_net_recv" netRecv : Connection -> Int -> Result Bytes String / { Ne
 
 foreign "fai_net_close" netClose : Connection -> Unit / { Net }
 
+foreign "fai_udp_bind" udpBindRaw : Int -> Result UdpSocket String / { Net }
+
+foreign "fai_udp_local_port" udpLocalPortRaw : UdpSocket -> Int / { Net }
+
+foreign "fai_udp_send" udpSendRaw : UdpSocket -> String -> Int -> Bytes -> Result Unit String / { Net }
+
+foreign "fai_udp_recv" udpRecvRaw : UdpSocket -> Int -> Result (Bytes * String * Int) String / { Net }
+
+foreign "fai_udp_close" udpCloseRaw : UdpSocket -> Unit / { Net }
+
 // The default host capabilities, backed by the foreign primitives above. They are
 // `public` so a program can compose its own extended `Runtime` from them plus its
 // own (foreign-backed) capability instances; ordinarily a program just receives
@@ -246,7 +265,7 @@ let stdConcurrency =
 /// the `Runtime` bundle `main` receives.
 public stdNet : Net
 let stdNet =
-  { Net with accept listener = netAccept listener, close conn = netClose conn, connect host port = netConnect host port, listen port = netListen port, localPort listener = netLocalPort listener, recv conn max = netRecv conn max, send conn bytes = netSend conn bytes }
+  { Net with accept listener = netAccept listener, close conn = netClose conn, connect host port = netConnect host port, listen port = netListen port, localPort listener = netLocalPort listener, recv conn max = netRecv conn max, send conn bytes = netSend conn bytes, udpBind port = udpBindRaw port, udpClose sock = udpCloseRaw sock, udpLocalPort sock = udpLocalPortRaw sock, udpRecv sock max = udpRecvRaw sock max, udpSend sock host port bytes = udpSendRaw sock host port bytes }
 
 /// The standard `Runtime` the entry trampoline applies `main` to when the entry
 /// file defines no `runtime` builder of its own. A program may instead define its

@@ -36,6 +36,15 @@ let talk env port =
         | Some s -> s
         | None -> "<binary reply>"
 
+// Connectionless UDP: bind a socket, send a datagram to a peer port, and receive
+// one back. `udpRecv` reports the sender's host and port alongside the payload, so
+// a datagram can be replied to. (Returned here for illustration; not run by main.)
+udpExchange : { net : Net | _ } -> UdpSocket -> Int -> Result (Bytes * String * Int) String / { Net }
+let udpExchange env socket peerPort =
+  match env.net.udpSend socket "127.0.0.1" peerPort (Bytes.fromString "ping") with
+  | Err e -> Err e
+  | Ok u -> env.net.udpRecv socket 1024
+
 // Spawn the server into the scope's nursery, then run the client; the scope joins
 // the server before returning the client's result.
 session : { concurrency : Concurrency, net : Net | _ } -> Listener -> Int -> Nursery -> String / { Concurrency, Net }
