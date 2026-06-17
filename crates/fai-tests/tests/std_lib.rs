@@ -41,8 +41,15 @@ fn every_public_std_function_has_an_example() {
         // values, not pure functions: a contract cannot reference a capability
         // (FAI6004), so they cannot carry an `example`. They are exported only so a
         // program can compose its own extended `Runtime`.
-        const EXAMPLE_EXEMPT: &[&str] =
-            &["stdConsole", "stdClock", "stdRandom", "stdFs", "stdEnv", "defaultRuntime"];
+        const EXAMPLE_EXEMPT: &[&str] = &[
+            "stdConsole",
+            "stdClock",
+            "stdRandom",
+            "stdFs",
+            "stdEnv",
+            "stdConcurrency",
+            "defaultRuntime",
+        ];
 
         // Public value bindings carry a `public <name> :` signature (a `public
         // type …` declaration is not a function and is skipped).

@@ -106,6 +106,7 @@ const TYPECHECK_CLEAN: &[&str] = &[
     "Cart.fai",
     "Catalog.fai",
     "Chars.fai",
+    "ConcurrencyDemo.fai",
     "CustomCapability.fai",
     "Effects.fai",
     "Funcs.fai",

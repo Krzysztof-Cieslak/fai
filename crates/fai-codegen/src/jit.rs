@@ -139,6 +139,16 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_marshal_string_len", rt::fai_marshal_string_len);
     sym!("fai_marshal_bool_result", rt::fai_marshal_bool_result);
     sym!("fai_marshal_string_result", rt::fai_marshal_string_result);
+    // The concurrency scheduler primitives (the `Concurrency` capability).
+    sym!("fai_scope", rt::fai_scope);
+    sym!("fai_spawn", rt::fai_spawn);
+    sym!("fai_await", rt::fai_await);
+    sym!("fai_channel", rt::fai_channel);
+    sym!("fai_send", rt::fai_send);
+    sym!("fai_recv", rt::fai_recv);
+    sym!("fai_close", rt::fai_close);
+    sym!("fai_block_on", rt::fai_block_on);
+    sym!("fai_mark_shared", rt::fai_mark_shared);
     builder.symbol("FAI_NONE_VALUE", (&raw const rt::FAI_NONE_VALUE).cast());
     builder.symbol("FAI_STRING_DESC", (&raw const rt::FAI_STRING_DESC).cast());
     builder.symbol("FAI_INT_DESC", (&raw const rt::FAI_INT_DESC).cast());

@@ -3932,6 +3932,13 @@ fn verify_payload(p: *const u8, size: usize, byte: u8) {
 /// The M:N green-thread scheduler that runs a Fai program's concurrent tasks.
 mod scheduler;
 
+// The scheduler's C-ABI entry points (the `Concurrency` capability), re-exported at
+// the crate root so generated code and the JIT symbol registry reach them as
+// `fai_*` like every other runtime primitive.
+pub use scheduler::{
+    fai_await, fai_block_on, fai_channel, fai_close, fai_recv, fai_scope, fai_send, fai_spawn,
+};
+
 #[cfg(test)]
 mod alloc_tests;
 #[cfg(test)]

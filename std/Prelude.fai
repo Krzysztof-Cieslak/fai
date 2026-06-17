@@ -26,6 +26,15 @@ public type HashDict 'k 'v = HashDict.HashDict 'k 'v
 
 public type HashSet 'a = HashSet.HashSet 'a
 
+// The concurrency handle types are opaque types in the `Concurrency` module; these
+// aliases keep their names usable unqualified in signatures. Build and consume them
+// only through the `Concurrency` capability.
+public type Task 'a = Concurrency.Task 'a
+
+public type Channel 'a = Concurrency.Channel 'a
+
+public type Nursery = Concurrency.Nursery
+
 /// The identity function.
 public identity : 'a -> 'a
 let identity x = x
@@ -96,10 +105,25 @@ public interface Env =
   args : Unit -> List String / { Env }
   get : String -> Option String / { Env }
 
+// Structured concurrency: `scope` opens a nursery and joins every task spawned
+// into it before returning; `spawn`/`await` run and collect tasks; channels pass
+// values between them. `scope`/`spawn` are effect-polymorphic — `'e` forwards the
+// body's own effect, so concurrency adds `Concurrency` to a function's reach
+// without hiding the effects of what runs concurrently. The handle types are
+// re-exported by this module above.
+public interface Concurrency =
+  await : Task 'a -> 'a / { Concurrency }
+  channel : Int -> Channel 'a / { Concurrency }
+  close : Channel 'a -> Unit / { Concurrency }
+  recv : Channel 'a -> Option 'a / { Concurrency }
+  scope : (Nursery -> 'a / 'e) -> 'a / { Concurrency | 'e }
+  send : Channel 'a -> 'a -> Unit / { Concurrency }
+  spawn : Nursery -> (Unit -> 'a / 'e) -> Task 'a / { Concurrency | 'e }
+
 /// The capability bundle `main` receives: the host's console, clock, random,
-/// file system, and environment. Request only the fields you need (an open
-/// record) to keep authority least.
-public type Runtime = { clock : Clock, console : Console, env : Env, fs : FileSystem, random : Random }
+/// file system, environment, and concurrency. Request only the fields you need (an
+/// open record) to keep authority least.
+public type Runtime = { clock : Clock, concurrency : Concurrency, console : Console, env : Env, fs : FileSystem, random : Random }
 
 // The raw host primitives, implemented as native runtime functions and reached
 // only through the capability instances below. Each `foreign` declaration names
@@ -122,6 +146,23 @@ foreign "fai_file_write" fileWrite : String -> String -> (Bool * String) / { Fil
 foreign "fai_env_get" envGet : String -> (Bool * String) / { Env }
 
 foreign "fai_env_args" envArgs : Unit -> List String / { Env }
+
+// The native scheduler primitives backing the `Concurrency` capability. The
+// effect-polymorphic `'e` forwards the spawned or scoped body's own effect, so a
+// scope is exactly as effectful as what runs inside it.
+foreign "fai_scope" scopeRaw : (Nursery -> 'a / 'e) -> 'a / { Concurrency | 'e }
+
+foreign "fai_spawn" spawnRaw : Nursery -> (Unit -> 'a / 'e) -> Task 'a / { Concurrency | 'e }
+
+foreign "fai_await" awaitRaw : Task 'a -> 'a / { Concurrency }
+
+foreign "fai_channel" channelRaw : Int -> Channel 'a / { Concurrency }
+
+foreign "fai_send" sendRaw : Channel 'a -> 'a -> Unit / { Concurrency }
+
+foreign "fai_recv" recvRaw : Channel 'a -> Option 'a / { Concurrency }
+
+foreign "fai_close" closeRaw : Channel 'a -> Unit / { Concurrency }
 
 // The default host capabilities, backed by the foreign primitives above. They are
 // `public` so a program can compose its own extended `Runtime` from them plus its
@@ -154,13 +195,20 @@ let stdFs = { FileSystem with readFile = readFileHost, writeFile = writeFileHost
 public stdEnv : Env
 let stdEnv = { Env with args u = envArgs u, get = envGetHost }
 
+/// The standard concurrency capability, backed by the M:N scheduler. `public` so a
+/// program can compose it into its own extended `Runtime`; ordinarily it arrives in
+/// the `Runtime` bundle `main` receives.
+public stdConcurrency : Concurrency
+let stdConcurrency =
+  { Concurrency with await task = awaitRaw task, channel capacity = channelRaw capacity, close chan = closeRaw chan, recv chan = recvRaw chan, scope body = scopeRaw body, send chan value = sendRaw chan value, spawn nursery thunk = spawnRaw nursery thunk }
+
 /// The standard `Runtime` the entry trampoline applies `main` to when the entry
 /// file defines no `runtime` builder of its own. A program may instead define its
 /// own `runtime` (composing these defaults with extra capabilities) to extend the
 /// bundle `main` receives.
 public defaultRuntime : Runtime
 let defaultRuntime =
-  { clock = stdClock, console = stdConsole, env = stdEnv, fs = stdFs, random = stdRandom }
+  { clock = stdClock, concurrency = stdConcurrency, console = stdConsole, env = stdEnv, fs = stdFs, random = stdRandom }
 
 /// Forward application: `x |> f` is `f x`.
 public (|>) : 'a -> ('a -> 'b / 'e) -> 'b / 'e

@@ -1,0 +1,20 @@
+module Concurrency
+
+// The opaque concurrency handle types. A `Task`/`Channel`/`Nursery` is produced
+// and consumed only through the `Concurrency` capability (whose interface, native
+// primitives, and standard instance live in `Prelude`, which re-exports these
+// names so they are usable unqualified). The cells are native scheduler handles;
+// each placeholder constructor exists only so the type is a boxed, reference-
+// counted value (the runtime frees the underlying handle when the cell dies).
+//
+// This module deliberately has no dependency on `Prelude` (it names only the
+// built-in `Int`), so `Prelude` may re-export and build on these types without a
+// dependency cycle.
+public opaque type Task 'a =
+  | TaskCell Int
+
+public opaque type Channel 'a =
+  | ChannelCell Int
+
+public opaque type Nursery =
+  | NurseryCell Int
