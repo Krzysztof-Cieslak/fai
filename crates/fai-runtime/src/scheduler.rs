@@ -234,7 +234,10 @@ fn run_task(task: &Arc<Task>) {
 }
 
 /// Builds a task whose body runs `body` and stores the result via `on_done`.
-fn make_task(body: Box<dyn FnOnce() -> Value + Send>, on_done: Box<dyn FnOnce(Value) + Send>) -> Arc<Task> {
+fn make_task(
+    body: Box<dyn FnOnce() -> Value + Send>,
+    on_done: Box<dyn FnOnce(Value) + Send>,
+) -> Arc<Task> {
     let coro = Coroutine::new(move |yielder: &Yielder<(), Suspend>, ()| {
         CURRENT_YIELDER.with(|c| c.set(std::ptr::from_ref(yielder)));
         let result = body();

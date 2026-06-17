@@ -372,11 +372,16 @@ Native backend (Core IR, reference counting, codegen, runtime, object cache):
   `Global` references, so prelude helpers are included), plus the runtime root as a
   second root (the trampoline injects it; it is not referenced from `main`'s body).
   *(Amended by D137: the root was the fixed `defaultRuntime` before.)*
-- **D54 Runtime embedding:** `fai-runtime` is **std-only**, so the driver's build
-  script compiles it to a static archive with a single `$RUSTC` invocation and
-  embeds it (`include_bytes!`); produced executables are self-contained. Host
-  target only (cross-compilation is future). The runtime is also linked as an
-  `rlib` so the JIT can resolve its symbols by address.
+- **D54 Runtime embedding (amended by D139):** the driver's build script compiles
+  `fai-runtime` to a static archive and embeds it (`include_bytes!`); produced
+  executables are self-contained. Host target only (cross-compilation is future).
+  The runtime is also linked as an `rlib` so the JIT can resolve its symbols by
+  address. *Originally* `fai-runtime` was **std-only** so the archive came from a
+  single `$RUSTC` invocation; the concurrency runtime (D139) needs native crates
+  (stackful coroutines, work-stealing deques, an IO reactor), so the build script
+  now produces the archive with a **nested `cargo`** build into a private target
+  directory (a `staticlib` bundles those dependencies into the one archive). See
+  D139.
 - **D55 Backend error range & runtime ABI:** the **`FAI7xxx`** range is owned by
   the backend (`fai-core`/`fai-codegen`/`fai-runtime`): `FAI7001` "construct not
   supported by the native backend yet" (e.g. `Float`, tuples, lists), reported
@@ -3434,6 +3439,67 @@ Editor integration:
     (its capability effect makes the contract impure), so the test worker loads
     nothing.
   - Issue #132. Builds on the type-level effect rows (D115).
+
+Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
+
+- **D138 Biased reference counting (the foundation for sharing across tasks).**
+  Perceus counts (D2) are non-atomic, which is unsound once a value is reachable
+  from two tasks. Because Fai is pure, the *only* cross-task hazard on a shared
+  value is its **count word** (the payload is immutable; in-place reuse fires only
+  when uniquely owned), so the fix is confined to reference counting rather than the
+  whole heap. Each count carries one of three states, distinguished by a single
+  unsigned compare on the hot path (`rc < IMMORTAL_RC`):
+  - **single-threaded** — a plain non-atomic count, the default and the common path;
+  - **shared** — a high marker bit (`MT_FLAG = 1 << 63`) with the count in the low
+    bits, manipulated atomically (relaxed increment; release decrement with an
+    acquire fence on the last reference — the `Arc` discipline);
+  - **immortal** (`≥ IMMORTAL_RC`) — a reference-counting no-op, so sharing a static
+    across threads is race-free (and ThreadSanitizer-clean; previously immortals
+    were still incremented).
+  A value becomes shared via **`fai_mark_shared`**, which flips it and its reachable
+  boxed subgraph (iteratively, reusing the drop worklist, so a deep structure never
+  overflows the stack) when it crosses a task boundary — a spawned thunk's captures,
+  a channel send, a task result. The acyclic heap bounds the walk; the spawn/channel
+  hand-off is the happens-before edge that publishes the marks. Marking is the Lean-4
+  model. A shared cell with an atomic count of 1 is still exclusively owned (no other
+  task can hold a reference), so **in-place reuse/update still applies** to it via an
+  atomic uniqueness check, and `fai_reuse` resets a recycled cell back to the
+  single-threaded state. All runtime reference-count sites funnel through shared
+  `rc_inc`/`rc_dec_is_dead` helpers, so the polymorphic and builtin paths count
+  correctly regardless of a value's state. **Gating:** this is keyed (at code
+  generation) on whether a program uses concurrency at all — a program with no
+  `Concurrency` in any reachable effect row keeps today's exact non-atomic inline
+  reference counting, so single-threaded code and the benchmarks are unaffected (the
+  inlined-codegen branch and the cache tag for it land with the capability; the
+  runtime helpers carry the branch already, on the cold polymorphic path).
+
+- **D139 An M:N green-thread scheduler runs a program's tasks.** A task is a
+  **stackful coroutine** (`corosensei`) whose body runs compiled Fai code; a fixed
+  pool of worker OS threads runs tasks from **lock-free Chase-Lev work-stealing
+  deques** (`crossbeam-deque`), so a task can migrate between workers. Awaiting a
+  task or a blocked channel send/recv **parks** the task — freeing its worker — and a
+  completion or freed slot **wakes** it by re-queueing, so many tasks multiplex onto
+  few threads and `await` never blocks a worker. Each task's coroutine sits behind a
+  mutex held for the duration of a resume, so it can never run on two workers at
+  once; a parked task is referenced only by the one object it waits on. The
+  coroutine's yielder pointer is re-established in worker-thread-local storage after
+  every suspend, which keeps suspension correct across migration. The coroutine is
+  `!Send`, so it is wrapped in a `Send` newtype justified by the task stack holding
+  only `Send` data (Fai values are plain words, the runtime is thread-safe). The
+  pool starts **lazily** on first use, so a program that never spawns pays nothing.
+  Because these crates and (later) an IO reactor cannot be linked by a single
+  `$RUSTC`, the runtime is no longer dependency-free and its archive is built by a
+  nested `cargo` (amends D54). The reasoning behind choosing general concurrency, a
+  capability surface, structured (nursery) scope, the M:N scheduler, an IO reactor
+  with a TCP capability, and proven crates over hand-rolled coroutine/deque code is
+  recorded with the work that builds the language surface on this foundation.
+  - **Fai handles.** A `Task 'a`/`Channel 'a` value is a reference-counted Fai heap
+    cell (`KIND_TASK`/`KIND_CHANNEL`) whose slot owns a raw `Arc` to scheduler
+    state; the free path drops that `Arc`, and the handle's `Drop` releases any Fai
+    values it still owns (a task's stored result, a channel's buffered values), so
+    the whole path is leak-free. Channels are bounded MPMC with backpressure and an
+    explicit close (`recv` yields `None` once closed and drained); `await` is
+    memoized (the result is duplicated out, so a handle may be awaited again).
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.
