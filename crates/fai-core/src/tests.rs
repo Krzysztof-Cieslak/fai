@@ -57,16 +57,16 @@ fn lowers_if_and_negation() {
 #[test]
 fn lowers_console_capability_access() {
     // Console output goes through the `Runtime` record: `runtime.console` is a
-    // constant-offset projection (`console` is field 1 of the sorted
-    // `{clock, console, random}`), then `.writeLine` projects method 0 of the
-    // `Console` dictionary, applied to the string.
+    // constant-offset projection (`console` is field 2 of the sorted
+    // `{clock, concurrency, console, env, fs, random}`), then `.writeLine` projects
+    // method 0 of the `Console` dictionary, applied to the string.
     let src = indoc! {r#"
         module M
 
         public main : Runtime -> Unit / { Console }
         let main runtime = runtime.console.writeLine "Hi"
     "#};
-    assert_eq!(lower(src, "main"), "fn0(%0) = (app (field 0 (field 1 %0)) \"Hi\")\n");
+    assert_eq!(lower(src, "main"), "fn0(%0) = (app (field 0 (field 2 %0)) \"Hi\")\n");
 }
 
 #[test]
