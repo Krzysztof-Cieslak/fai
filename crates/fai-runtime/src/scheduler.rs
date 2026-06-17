@@ -94,6 +94,32 @@ pub fn in_task() -> bool {
     !CURRENT_TASK.with(Cell::get).is_null()
 }
 
+/// An opaque handle to a parked task, held by whatever it is waiting on (e.g. the
+/// network reactor) so it can be re-queued when ready. Created by
+/// [`current_parked`] inside a task and consumed by [`unpark`] from any thread.
+pub struct Parked(Arc<Task>);
+
+/// Captures the currently running task so an external waker (the reactor) can
+/// re-queue it. Must be called inside a task (see [`in_task`]). Pair it with a
+/// later [`park`] — register the [`Parked`] with the waiter, release the waiter's
+/// lock, then `park`; a wake that races ahead is safe (the task is queued once and
+/// resumes after it yields).
+pub fn current_parked() -> Parked {
+    Parked(current_task())
+}
+
+/// Suspends the current task until it is [`unpark`]ed. Must be called inside a
+/// task, after registering its [`Parked`] handle with the object it waits on.
+pub fn park() {
+    suspend_current(Suspend::Park);
+}
+
+/// Re-queues a parked task (from any thread). Idempotent against a racing
+/// self-park: the task runs once when next scheduled.
+pub fn unpark(parked: Parked) {
+    schedule(parked.0);
+}
+
 /// The currently running task (for a suspension point to re-queue itself).
 fn current_task() -> Arc<Task> {
     let p = CURRENT_TASK.with(Cell::get);

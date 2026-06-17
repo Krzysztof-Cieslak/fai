@@ -236,6 +236,10 @@ pub const KIND_NURSERY: u64 = 13;
 /// a binary buffer is never treated as a UTF-8 `String` and the two never compare
 /// equal in a generic position. `Bytes` has no borrowing-slice form.
 pub const KIND_BYTES: u64 = 14;
+/// A network socket handle (a `Listener`/`Connection`/`UdpSocket` value). Like
+/// [`KIND_TASK`]: its single slot holds a raw `Arc` pointer to reactor-side socket
+/// state, dropped (closing the socket) when the cell dies.
+pub const KIND_NET: u64 = 15;
 
 /// Byte offset of the raw `Arc` pointer inside a task, channel, or nursery handle
 /// cell.
@@ -305,6 +309,11 @@ pub static FAI_STRING_SLICE_DESC: Descriptor = descriptor(KIND_STRING_SLICE, "St
 /// Descriptor for `Bytes` objects (leaf: inline bytes, no children).
 #[unsafe(no_mangle)]
 pub static FAI_BYTES_DESC: Descriptor = descriptor(KIND_BYTES, "Bytes");
+
+/// Descriptor for a network socket handle (its slot owns a raw `Arc` to reactor
+/// socket state, released by `free_obj`).
+#[unsafe(no_mangle)]
+pub static FAI_NET_DESC: Descriptor = descriptor(KIND_NET, "Net");
 
 /// Descriptor for boxed (overflowed) `Int` objects (leaf).
 #[unsafe(no_mangle)]
@@ -1109,6 +1118,7 @@ unsafe fn free_obj(p: *mut u8) {
             KIND_TASK => scheduler::drop_task_handle(read_i64(p, HANDLE_PTR_OFFSET)),
             KIND_CHANNEL => scheduler::drop_channel_handle(read_i64(p, HANDLE_PTR_OFFSET)),
             KIND_NURSERY => scheduler::drop_nursery_handle(read_i64(p, HANDLE_PTR_OFFSET)),
+            KIND_NET => reactor::drop_net_handle(read_i64(p, HANDLE_PTR_OFFSET)),
             _ => {}
         }
     }
@@ -4195,11 +4205,22 @@ fn verify_payload(p: *const u8, size: usize, byte: u8) {
 /// The M:N green-thread scheduler that runs a Fai program's concurrent tasks.
 mod scheduler;
 
+/// The network I/O reactor (readiness-driven non-blocking sockets over `mio`).
+mod reactor;
+
 // The scheduler's C-ABI entry points (the `Concurrency` capability), re-exported at
 // the crate root so generated code and the JIT symbol registry reach them as
 // `fai_*` like every other runtime primitive.
 pub use scheduler::{
     fai_await, fai_block_on, fai_channel, fai_close, fai_recv, fai_scope, fai_send, fai_spawn,
+};
+
+// The network reactor's C-ABI entry points (the `Net` capability), re-exported at
+// the crate root so generated code and the JIT symbol registry reach them as
+// `fai_*` like every other runtime primitive.
+pub use reactor::{
+    fai_net_accept, fai_net_close, fai_net_connect, fai_net_listen, fai_net_local_port,
+    fai_net_recv, fai_net_send,
 };
 
 #[cfg(test)]
