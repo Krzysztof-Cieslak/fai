@@ -801,7 +801,14 @@ fn run_contracts(rebuilt: &RebuiltTest, start_index: usize, sink: &mut dyn FnMut
     let borrow = |d: DefId| borrows.get(&d).cloned().unwrap_or_default();
     let entry_of = |d: DefId| rebuilt.bounds_entry.get(&d).cloned().unwrap_or_default();
     let result_of = |d: DefId| rebuilt.bounds_result.get(&d).cloned().unwrap_or_default();
-    let bce = fai_codegen::Bce { entry_of: &entry_of, result_of: &result_of, shadow: false };
+    // Contracts are pure (no `Runtime`, so no capabilities), so they never use
+    // concurrency: keep the single-threaded code paths.
+    let bce = fai_codegen::Bce {
+        entry_of: &entry_of,
+        result_of: &result_of,
+        shadow: false,
+        concurrent: false,
+    };
     let mut program = JitProgram::compile(&rebuilt.defs, &namer, &arity, &abi, &borrow, &bce);
     for position in start_index..rebuilt.contracts.len() {
         let c = &rebuilt.contracts[position];

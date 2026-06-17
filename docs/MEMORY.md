@@ -3511,10 +3511,22 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     { Concurrency | 'e }`), so a function that spawns surfaces `Concurrency` without
     hiding what runs concurrently. The opaque handle types are single-constructor
     unions, so code generation never specializes their layout and drops them through
-    the runtime (which frees the `Arc`). Compiling a program that *uses* concurrency
-    to run on the scheduler — the code-generation gate that makes the inlined
-    reference counting MT-safe and runs `main` as the root task — builds on this
-    (see the work that lands it).
+    the runtime (which frees the `Arc`).
+  - **Execution gate (zero cost when unused).** Whether a program *uses* concurrency
+    is a whole-program property — `Concurrency` is in `main`'s reachable effect row
+    (merely holding the capability, which is in the default `Runtime`, does not
+    count). When set, code generation switches to the thread-safe paths: inlined
+    reference counting routes to the branchful runtime `fai_dup`/`fai_drop` (a value
+    may be shared across tasks) and inlined `Array` allocation routes to the runtime
+    allocator (the cached thread-local pool base would go stale across a task's
+    worker migration); and `main` runs as the scheduler's **root task**
+    (`fai_run_main_concurrent`, which `block_on`s it) so `scope`/`spawn`/`await` run
+    inside a task. The flag rides the code-generation config — part of the
+    `object_code` query key, the on-disk cache fingerprint, and the run-bundle wire
+    form — so a single-threaded program keeps the fully inlined fast paths byte for
+    byte (the common case pays nothing) and the two modes cache separately. Making
+    the *inlined* reference counting itself branch per-object (so a concurrent
+    program keeps inline RC rather than calling out) is a future refinement.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

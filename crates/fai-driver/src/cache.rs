@@ -114,12 +114,17 @@ pub fn reset_stats() {
 /// On a disk hit the bytes are read back without running code generation; on a
 /// miss the in-memory [`object_code`] query produces them and they are written
 /// to the cache. With no usable cache directory it falls back to [`object_code`].
-pub fn load_or_build_object(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<Vec<u8>> {
+pub fn load_or_build_object(
+    db: &dyn Db,
+    file: SourceFile,
+    name: Symbol,
+    concurrent: bool,
+) -> Arc<Vec<u8>> {
     let Some(dir) = cache_dir() else {
-        return object_code(db, file, name);
+        return object_code(db, file, name, concurrent);
     };
     let def = DefId::new(file.source(db), name);
-    let key = object_key(db, file, def);
+    let key = object_key(db, file, def, concurrent);
     let path = object_path(&dir, &key);
 
     if let Ok(bytes) = std::fs::read(&path) {
@@ -127,7 +132,7 @@ pub fn load_or_build_object(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<
         return Arc::new(bytes);
     }
 
-    let bytes = object_code(db, file, name);
+    let bytes = object_code(db, file, name, concurrent);
     MISSES.fetch_add(1, Ordering::Relaxed);
     write_atomic(&path, &bytes);
     bytes
@@ -135,7 +140,7 @@ pub fn load_or_build_object(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<
 
 /// The content key for `def`'s object: a portable fingerprint of its
 /// reference-counted IR, stamped with target, compiler version, and config.
-fn object_key(db: &dyn Db, file: SourceFile, def: DefId) -> String {
+fn object_key(db: &dyn Db, file: SourceFile, def: DefId, concurrent: bool) -> String {
     let lowered = rc(db, file, def.name);
     let namer = |d: DefId| symbol_base(db, d);
     let arity = |d: DefId| arity_of(db, d);
@@ -166,6 +171,9 @@ fn object_key(db: &dyn Db, file: SourceFile, def: DefId) -> String {
     hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
     hasher.update(b"\0");
     hasher.update(CODEGEN_CONFIG.as_bytes());
+    // Concurrent programs generate different code (branchful reference counting and
+    // runtime allocation, see `Bce::concurrent`), so the mode is part of the key.
+    hasher.update(if concurrent { b"\0concurrent" } else { b"\0single-threaded" });
     hasher.finalize().to_hex().to_string()
 }
 

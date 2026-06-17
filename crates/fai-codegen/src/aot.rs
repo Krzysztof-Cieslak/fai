@@ -126,22 +126,30 @@ pub(crate) fn function_ir_text(
 }
 
 /// Emits the program's C `main`: it hands the entry definition's static closure
-/// and the standard library's `Runtime` value binding to `fai_run_main`,
-/// returning its exit code.
+/// and the standard library's `Runtime` value binding to the runtime entry shim,
+/// returning its exit code. A `concurrent` program (its reachable effects include
+/// `Concurrency`) uses `fai_run_main_concurrent`, which runs `main` as the
+/// scheduler's root task; otherwise the direct `fai_run_main`.
 #[must_use]
-pub fn main_object(entry: DefId, runtime: DefId, namer: &dyn Fn(DefId) -> String) -> Vec<u8> {
+pub fn main_object(
+    entry: DefId,
+    runtime: DefId,
+    namer: &dyn Fn(DefId) -> String,
+    concurrent: bool,
+) -> Vec<u8> {
     let mut module = object_module("fai_main");
 
     let mut sig = module.make_signature();
     sig.returns.push(AbiParam::new(types::I32));
     let main_id = module.declare_function("main", Linkage::Export, &sig).expect("declare main");
 
+    let run_symbol = if concurrent { "fai_run_main_concurrent" } else { "fai_run_main" };
     let mut run_sig = module.make_signature();
     run_sig.params.push(AbiParam::new(types::I64));
     run_sig.params.push(AbiParam::new(types::I64));
     run_sig.returns.push(AbiParam::new(types::I32));
     let run_id =
-        module.declare_function("fai_run_main", Linkage::Import, &run_sig).expect("declare run");
+        module.declare_function(run_symbol, Linkage::Import, &run_sig).expect("declare run");
 
     let entry_id = module
         .declare_data(&closure_symbol(namer, entry), Linkage::Import, true, false)

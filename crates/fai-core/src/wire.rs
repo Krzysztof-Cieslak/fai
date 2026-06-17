@@ -41,6 +41,11 @@ pub struct WireBundle {
     /// the project's `fai.toml`; empty for a program with no native dependencies.
     #[serde(default)]
     pub libraries: Vec<String>,
+    /// Whether the program uses concurrency (its reachable effects include
+    /// `Concurrency`): the worker generates thread-safe code and runs `main` as the
+    /// scheduler's root task. `false` for a single-threaded program.
+    #[serde(default)]
+    pub concurrent: bool,
 }
 
 /// A complete set of contracts ready to JIT and check in an isolated worker: the
@@ -970,6 +975,7 @@ mod tests {
             runtime: wire.id.clone(),
             defs: vec![wire],
             libraries: Vec::new(),
+            concurrent: false,
         };
         let rebuilt = from_wire(&bundle);
         (pretty_def(&lowered), pretty_def(&rebuilt.defs[0]), rebuilt)
@@ -1033,6 +1039,7 @@ mod tests {
             runtime: decoded.id.clone(),
             defs: vec![decoded],
             libraries: Vec::new(),
+            concurrent: false,
         };
         let rebuilt = from_wire(&bundle);
         (pretty_def(&lowered), pretty_def(&rebuilt.defs[0]))
@@ -1116,6 +1123,7 @@ mod tests {
             runtime: decoded.id.clone(),
             defs: vec![decoded],
             libraries: Vec::new(),
+            concurrent: false,
         };
         let rebuilt = from_wire(&bundle);
 
@@ -1175,6 +1183,7 @@ mod tests {
             runtime: decoded.id.clone(),
             defs: vec![decoded],
             libraries: Vec::new(),
+            concurrent: false,
         };
         let rebuilt = from_wire(&bundle);
 
@@ -1267,6 +1276,7 @@ mod tests {
             runtime: decoded.id.clone(),
             defs: vec![decoded],
             libraries: Vec::new(),
+            concurrent: false,
         };
         let rebuilt = from_wire(&bundle);
 
@@ -1301,6 +1311,7 @@ mod tests {
             runtime: wire.id.clone(),
             defs: vec![wire],
             libraries: Vec::new(),
+            concurrent: false,
         };
 
         let json = serde_json::to_string(&bundle).unwrap();
@@ -1458,6 +1469,7 @@ mod tests {
             runtime: a.id.clone(),
             defs: vec![a, b],
             libraries: Vec::new(),
+            concurrent: false,
         };
         let rebuilt = from_wire(&bundle);
         assert_eq!(rebuilt.defs.len(), 2);

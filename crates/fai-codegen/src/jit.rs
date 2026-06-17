@@ -131,6 +131,7 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_apply_n", rt::fai_apply_n);
     sym!("fai_make_closure", rt::fai_make_closure);
     sym!("fai_run_main", rt::fai_run_main);
+    sym!("fai_run_main_concurrent", rt::fai_run_main_concurrent);
     // Marshalling glue for user `foreign` calls.
     sym!("fai_marshal_int", rt::fai_marshal_int);
     sym!("fai_marshal_float", rt::fai_marshal_float);
@@ -319,7 +320,13 @@ pub fn jit_run(
     let (runtime_ptr, _size) = module.get_finalized_data(runtime_id);
     let runtime_value = runtime_ptr as i64;
 
-    let code = rt::run_entry(entry_value, runtime_value);
+    // A concurrent program runs `main` as the scheduler's root task (so
+    // `scope`/`spawn`/`await` run inside a task); otherwise `main` runs directly.
+    let code = if bce.concurrent {
+        rt::run_entry_concurrent(entry_value, runtime_value)
+    } else {
+        rt::run_entry(entry_value, runtime_value)
+    };
     // Keep the JIT image alive until execution completes, then release it.
     drop(module);
     code
