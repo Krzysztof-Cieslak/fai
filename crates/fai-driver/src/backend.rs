@@ -109,19 +109,25 @@ fn runtime_root(db: &dyn Db, file: SourceFile) -> Option<DefId> {
     Some(DefId::new(prelude.source(db), name))
 }
 
-/// Whether the program rooted at `file`'s `main` **uses** concurrency — its
-/// reachable effects include `Concurrency` (it calls `spawn`/`await`/a channel op,
-/// directly or transitively). When true, code generation switches to the
-/// thread-safe paths (branchful reference counting, runtime allocation) and `main`
-/// runs as the scheduler's root task. Holding the capability without using it (it
-/// is in the default `Runtime`) does not count, so a program that never spawns
-/// keeps the fully inlined single-threaded code paths.
+/// Whether the program rooted at `file`'s `main` **uses** the scheduler — its
+/// reachable effects include `Concurrency` (it `spawn`s/`await`s/uses a channel) or
+/// `Net` (it does network I/O), directly or transitively. Both run on the M:N
+/// scheduler: a `Net` operation parks its task on the reactor while it would block,
+/// so a networking program must run `main` as the scheduler's root task just as a
+/// concurrent one does. When true, code generation switches to the thread-safe
+/// paths (branchful reference counting, runtime allocation) and `main` runs as the
+/// root task. Holding a capability without using it (both are in the default
+/// `Runtime`) does not count, so a program that uses neither keeps the fully
+/// inlined single-threaded code paths.
 pub fn uses_concurrency(db: &dyn Db, file: SourceFile) -> bool {
     let entry = Symbol::intern(ENTRY);
     if module_defs(db, file).get(entry).is_none() {
         return false;
     }
-    fai_types::def_effect(db, file, entry).labels.iter().any(|i| i.name.as_str() == "Concurrency")
+    fai_types::def_effect(db, file, entry)
+        .labels
+        .iter()
+        .any(|i| matches!(i.name.as_str(), "Concurrency" | "Net"))
 }
 
 /// The mangled symbol base for a definition: `fai_<module>_<name>`.

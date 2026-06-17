@@ -48,6 +48,7 @@ fn every_public_std_function_has_an_example() {
             "stdFs",
             "stdEnv",
             "stdConcurrency",
+            "stdNet",
             "defaultRuntime",
         ];
 
