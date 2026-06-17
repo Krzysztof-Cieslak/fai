@@ -1015,28 +1015,38 @@ unsafe extern "C" fn code_make_big(_env: *const i64, _args: *const i64) -> Value
     fai_box_int(BIG)
 }
 
-/// A root body that spawns `code_make_big` as a child task and awaits its result.
-unsafe extern "C" fn code_spawn_await(_env: *const i64, _args: *const i64) -> Value {
+/// A structured-scope body `Nursery -> Int`: spawns `code_make_big` into the
+/// nursery (arg0) and awaits its result.
+unsafe extern "C" fn code_scope_body(_env: *const i64, args: *const i64) -> Value {
+    // SAFETY: arg0 is the owned nursery value handed to the scope body.
+    let nursery = unsafe { *args };
     // SAFETY: a non-capturing arity-1 closure (no environment slots).
     let child = unsafe { fai_make_closure(code_make_big as *const u8, 1, 0, [].as_ptr()) };
-    let task = crate::scheduler::fai_spawn(child);
+    let task = crate::scheduler::fai_spawn(nursery, child); // consumes the nursery
     crate::scheduler::fai_await(task)
+}
+
+/// A root body `Unit -> Int` that opens a structured scope.
+unsafe extern "C" fn code_root_scope(_env: *const i64, _args: *const i64) -> Value {
+    // SAFETY: a non-capturing arity-1 closure (no environment slots).
+    let body = unsafe { fai_make_closure(code_scope_body as *const u8, 1, 0, [].as_ptr()) };
+    crate::scheduler::fai_scope(body)
 }
 
 #[test]
 fn spawn_await_round_trips_a_boxed_value_via_c_abi() {
     let _g = lock();
     let base = live_count();
-    // Drive the whole path through the scheduler: `fai_await` parks, so it must run
-    // inside a task — the root closure (run by `fai_block_on`) does the spawn+await.
+    // Drive the whole structured path through the scheduler: a root task opens a
+    // scope, spawns a child into the nursery, awaits it, and the scope joins.
     // SAFETY: a non-capturing arity-1 closure (no environment slots).
-    let root = unsafe { fai_make_closure(code_spawn_await as *const u8, 1, 0, [].as_ptr()) };
+    let root = unsafe { fai_make_closure(code_root_scope as *const u8, 1, 0, [].as_ptr()) };
     let result = crate::scheduler::fai_block_on(root);
     assert!(int_eq(fai_dup(result), BIG), "the awaited result is the child's value");
     fai_drop(result);
     assert_eq!(
         live_count(),
         base,
-        "spawn/await left no live objects (task cell, handle, and result all released)"
+        "scope/spawn/await left no live objects (nursery, task, handle, result released)"
     );
 }
