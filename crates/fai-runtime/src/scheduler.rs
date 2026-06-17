@@ -85,6 +85,15 @@ fn suspend_current(reason: Suspend) {
     CURRENT_YIELDER.with(|c| c.set(yielder));
 }
 
+/// Whether the calling OS thread is currently running a task (a scheduler
+/// worker, mid-resume). A host operation uses this to decide whether it may park
+/// the caller (offloading blocking work) or must run inline — a program that
+/// never uses concurrency calls host operations outside any task, with no
+/// scheduler to park on.
+pub fn in_task() -> bool {
+    !CURRENT_TASK.with(Cell::get).is_null()
+}
+
 /// The currently running task (for a suspension point to re-queue itself).
 fn current_task() -> Arc<Task> {
     let p = CURRENT_TASK.with(Cell::get);
@@ -264,6 +273,109 @@ fn make_task(
         on_done(result);
     });
     Arc::new(Task { coro: Mutex::new(Some(SendCoro(coro))) })
+}
+
+// ---------------------------------------------------------------------------
+// The blocking-work pool (off-worker I/O).
+// ---------------------------------------------------------------------------
+//
+// A host operation that blocks the OS thread — file I/O, a DNS lookup — must not
+// run on a scheduler worker, or it would stall every task multiplexed onto that
+// worker. Instead it runs on a separate pool of OS threads while its task parks,
+// and the pool wakes the task when the work finishes. The pool grows lazily (a
+// new thread only when every existing one is busy) up to a cap, so a program that
+// does no blocking work spawns none.
+
+/// A unit of blocking work: it performs the OS call and wakes its parked task.
+type BlockingJob = Box<dyn FnOnce() + Send>;
+
+struct BlockingPool {
+    inner: Mutex<BlockingInner>,
+    signal: Condvar,
+}
+
+struct BlockingInner {
+    queue: VecDeque<BlockingJob>,
+    /// Threads currently blocked waiting for a job (available to take new work).
+    idle: usize,
+    /// Threads spawned so far (idle or running).
+    threads: usize,
+}
+
+static BLOCKING_POOL: OnceLock<BlockingPool> = OnceLock::new();
+
+/// The maximum number of blocking-pool threads. Generous because these threads
+/// spend their time blocked in OS calls (not consuming CPU); overridable with
+/// `FAI_BLOCKING_THREADS`.
+fn max_blocking_threads() -> usize {
+    std::env::var("FAI_BLOCKING_THREADS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(512)
+}
+
+/// Submits a job to the blocking pool, spawning a fresh thread only when no idle
+/// thread is available and the cap has not been reached (otherwise an existing
+/// thread will pick the job up).
+fn submit_blocking(job: BlockingJob) {
+    let pool = BLOCKING_POOL.get_or_init(|| BlockingPool {
+        inner: Mutex::new(BlockingInner { queue: VecDeque::new(), idle: 0, threads: 0 }),
+        signal: Condvar::new(),
+    });
+    let mut inner = pool.inner.lock().expect("blocking pool lock");
+    inner.queue.push_back(job);
+    if inner.idle == 0 && inner.threads < max_blocking_threads() {
+        inner.threads += 1;
+        drop(inner);
+        std::thread::Builder::new()
+            .name("fai-blocking".to_owned())
+            .spawn(|| blocking_worker_loop(pool))
+            .expect("spawn a blocking-pool thread");
+    } else {
+        pool.signal.notify_one();
+    }
+}
+
+/// A blocking-pool thread: take jobs and run them, waiting (counted idle) when the
+/// queue is empty.
+fn blocking_worker_loop(pool: &'static BlockingPool) {
+    loop {
+        let job = {
+            let mut inner = pool.inner.lock().expect("blocking pool lock");
+            loop {
+                if let Some(job) = inner.queue.pop_front() {
+                    break job;
+                }
+                inner.idle += 1;
+                inner = pool.signal.wait(inner).expect("blocking pool wait");
+                inner.idle -= 1;
+            }
+        };
+        job();
+    }
+}
+
+/// Runs blocking work `f` on the blocking pool, parking the current task until it
+/// finishes, then returns its result. Must be called inside a task (see
+/// [`in_task`]); the result is a plain Rust value built off-worker, so no Fai heap
+/// allocation happens on the pool thread (the caller turns it into Fai values back
+/// on its worker).
+pub fn run_blocking<T: Send + 'static>(f: Box<dyn FnOnce() -> T + Send>) -> T {
+    debug_assert!(in_task(), "run_blocking outside a task");
+    let result: Arc<Mutex<Option<T>>> = Arc::new(Mutex::new(None));
+    let task = current_task();
+    let slot = Arc::clone(&result);
+    submit_blocking(Box::new(move || {
+        let r = f();
+        *slot.lock().expect("blocking result") = Some(r);
+        // Wake the parked task. This may race ahead of the `suspend_current`
+        // below; that is safe — the task is queued once and resumes after it
+        // yields (its coroutine lock serializes the resume against this worker).
+        schedule(task);
+    }));
+    suspend_current(Suspend::Park);
+    result.lock().expect("blocking result").take().expect("blocking result set")
 }
 
 // ---------------------------------------------------------------------------
@@ -972,5 +1084,53 @@ mod tests {
             }))
         }));
         assert_eq!(TOTAL.load(Ordering::SeqCst), (1..=100).sum::<i64>());
+    }
+
+    #[test]
+    fn run_blocking_returns_its_result() {
+        // A task offloads blocking work and gets its result back after parking.
+        let r = block_on(Box::new(|| {
+            let v: i64 = run_blocking(Box::new(|| 6 * 7));
+            imm(v)
+        }));
+        assert_eq!(of_imm(r), 42);
+    }
+
+    #[test]
+    fn blocking_work_does_not_consume_a_worker() {
+        // More simultaneously-blocking tasks than workers: each parks its task and
+        // runs on the blocking pool. A shared barrier releases only once *every*
+        // task is blocked at it at the same time, so this completes only because a
+        // blocking op does not occupy its worker — were blocking to run on the
+        // worker, at most `worker_count()` tasks could block at once and the
+        // barrier (needing them all) would deadlock.
+        use std::sync::Barrier;
+        let n = worker_count() + 4;
+        let barrier = Arc::new(Barrier::new(n));
+        let r = block_on(Box::new(move || {
+            scope(Box::new(move |nursery| {
+                let handles: Vec<_> = (0..n)
+                    .map(|_| {
+                        let b = Arc::clone(&barrier);
+                        spawn_in(
+                            &nursery,
+                            Box::new(move || {
+                                let v: i64 = run_blocking(Box::new(move || {
+                                    b.wait();
+                                    1
+                                }));
+                                imm(v)
+                            }),
+                        )
+                    })
+                    .collect();
+                let mut sum = 0;
+                for h in &handles {
+                    sum += of_imm(await_handle(h));
+                }
+                imm(sum)
+            }))
+        }));
+        assert_eq!(of_imm(r), (worker_count() + 4) as i64);
     }
 }
