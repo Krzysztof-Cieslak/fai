@@ -95,6 +95,18 @@ fn main() {
         .map(|(_, libs)| strip_ansi(libs.trim()))
         .unwrap_or_default();
 
+    // The `native-static-libs` note lists library *names* but not their search
+    // directories. A dependency that ships bundled import libraries — notably
+    // `windows-targets` (pulled in on Windows by the scheduler's coroutine crate),
+    // whose `windows.<ver>.lib` lives in the crate, not a system path — makes those
+    // names unresolvable to the driver's own link step. Collect the
+    // `rustc-link-search=native=` directories the dependency build scripts emitted
+    // (recorded in cargo's per-crate `output` files) so the driver can pass them.
+    let lib_dirs = collect_native_link_dirs(&nested_target);
+    let lib_dirs_joined = std::env::join_paths(&lib_dirs)
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
     // Re-run when any runtime source, its manifest, or the lockfile changes (a
     // dependency bump or a new module must rebuild the archive).
     rerun_if_changed_recursively(&runtime_dir.join("src"));
@@ -105,6 +117,45 @@ fn main() {
     println!("cargo:rerun-if-env-changed=CARGO_CFG_DEBUG_ASSERTIONS");
     println!("cargo:rustc-env=FAI_RUNTIME_ARCHIVE={}", archive.display());
     println!("cargo:rustc-env=FAI_RUNTIME_NATIVE_LIBS={native_libs}");
+    println!("cargo:rustc-env=FAI_RUNTIME_LIB_DIRS={lib_dirs_joined}");
+}
+
+/// Collects the `rustc-link-search=native=`/`all=`/bare directories that the
+/// nested build's dependency build scripts emitted, read from cargo's per-crate
+/// `<target>/release/build/*/output` files. These are the search paths for any
+/// bundled import libraries the runtime archive needs at link time (e.g.
+/// `windows-targets`'s `windows.<ver>.lib`); `dependency`/`framework`/`crate`
+/// kinds are not link-search dirs for system libraries and are skipped.
+fn collect_native_link_dirs(nested_target: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let build_dir = nested_target.join("release").join("build");
+    let Ok(entries) = std::fs::read_dir(&build_dir) else {
+        return dirs;
+    };
+    for entry in entries.flatten() {
+        let Ok(text) = std::fs::read_to_string(entry.path().join("output")) else {
+            continue;
+        };
+        for line in text.lines() {
+            let Some(spec) = line
+                .strip_prefix("cargo:rustc-link-search=")
+                .or_else(|| line.strip_prefix("cargo::rustc-link-search="))
+            else {
+                continue;
+            };
+            // `[KIND=]PATH`; a bare path defaults to the `native` kind.
+            let path = match spec.split_once('=') {
+                Some(("native" | "all", p)) => p,
+                Some(_) => continue, // dependency / framework / crate
+                None => spec,
+            };
+            let path = PathBuf::from(path);
+            if !dirs.contains(&path) {
+                dirs.push(path);
+            }
+        }
+    }
+    dirs
 }
 
 /// Removes ANSI escape sequences (`ESC [ … m`) from `s`. The linker library list
