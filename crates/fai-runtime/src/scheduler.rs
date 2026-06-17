@@ -25,7 +25,7 @@
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::mem::ManuallyDrop;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -59,21 +59,33 @@ unsafe impl Send for SendCoro {}
 /// wake of a finished task is a no-op.
 struct Task {
     coro: Mutex<Option<SendCoro>>,
+    /// The coroutine's yielder, published by the coroutine on its first entry and
+    /// read by [`run_task`] to re-establish the per-worker yielder before every
+    /// resume. Stable for the coroutine's life (it lives at a fixed spot on the
+    /// coroutine stack); null until the coroutine first runs. Storing it on the
+    /// task — rather than relying on a thread-local write surviving the context
+    /// switch — keeps the yielder correct when a task migrates between workers.
+    yielder: AtomicPtr<Yielder<(), Suspend>>,
 }
 
 thread_local! {
     /// The currently running task on this worker, set by [`run_task`] before each
     /// resume so a suspension point can re-queue *itself* when woken.
     static CURRENT_TASK: Cell<*const Task> = const { Cell::new(std::ptr::null()) };
-    /// The current coroutine's yielder. The worker cannot know it (it lives on the
-    /// coroutine's stack), so the coroutine sets it on entry and every suspension
-    /// re-establishes it after resuming — which may be on a different worker.
+    /// The current coroutine's yielder on this worker, set by [`run_task`] before
+    /// each resume (from the task's published yielder) and the coroutine itself on
+    /// first entry. The worker cannot know it independently — it lives on the
+    /// coroutine's stack — so it is republished per resume rather than carried in
+    /// the thread-local across a context switch (a write across the switch is not
+    /// reliable, and a task migrates between workers).
     static CURRENT_YIELDER: Cell<*const Yielder<(), Suspend>> =
         const { Cell::new(std::ptr::null()) };
 }
 
-/// Suspends the current task with `reason`, re-establishing the per-worker yielder
-/// pointer after it resumes (possibly on a different worker than it parked on).
+/// Suspends the current task with `reason`. The per-worker yielder is
+/// re-established by [`run_task`] from the task on the next resume, so this does
+/// not depend on a thread-local write surviving the context switch (which a task
+/// migrating between workers would otherwise lose).
 fn suspend_current(reason: Suspend) {
     let yielder = CURRENT_YIELDER.with(Cell::get);
     debug_assert!(!yielder.is_null(), "suspended outside a task");
@@ -81,8 +93,6 @@ fn suspend_current(reason: Suspend) {
     // coroutine's whole life and stable across resumes (it lives on the coroutine
     // stack; `resume` refreshes its parent link).
     unsafe { (*yielder).suspend(reason) };
-    // Resumed: this may be a different worker, whose TLS yielder is stale.
-    CURRENT_YIELDER.with(|c| c.set(yielder));
 }
 
 /// Whether the calling OS thread is currently running a task (a scheduler
@@ -266,7 +276,13 @@ fn run_task(task: &Arc<Task>) {
         return; // already finished (a spurious wake)
     };
     let prev = CURRENT_TASK.with(|c| c.replace(Arc::as_ptr(task)));
+    // Re-establish this worker's yielder for the (possibly migrated) task from its
+    // published yielder — null before the coroutine's first run, when it sets its
+    // own. Worker-side republication avoids depending on a thread-local write made
+    // before a suspend still being visible after the task resumes elsewhere.
+    let prev_yielder = CURRENT_YIELDER.with(|c| c.replace(task.yielder.load(Ordering::Relaxed)));
     let result = coro.0.resume(());
+    CURRENT_YIELDER.with(|c| c.set(prev_yielder));
     CURRENT_TASK.with(|c| c.set(prev));
     match result {
         CoroutineResult::Yield(Suspend::Park) => {
@@ -294,11 +310,23 @@ fn make_task(
     on_done: Box<dyn FnOnce(Value) + Send>,
 ) -> Arc<Task> {
     let coro = Coroutine::new(move |yielder: &Yielder<(), Suspend>, ()| {
-        CURRENT_YIELDER.with(|c| c.set(std::ptr::from_ref(yielder)));
+        let y = std::ptr::from_ref(yielder);
+        CURRENT_YIELDER.with(|c| c.set(y));
+        // Publish the yielder so `run_task` can re-establish it on later resumes
+        // (which may be on a different worker). `run_task` set `CURRENT_TASK` to
+        // this task before this first resume.
+        let task = CURRENT_TASK.with(Cell::get);
+        // SAFETY: `task` is the live `Task` this coroutine belongs to (set by
+        // `run_task` before the resume that entered this body); it outlives the
+        // resume, which holds an `Arc` to it.
+        unsafe { (*task).yielder.store(y.cast_mut(), Ordering::Relaxed) };
         let result = body();
         on_done(result);
     });
-    Arc::new(Task { coro: Mutex::new(Some(SendCoro(coro))) })
+    Arc::new(Task {
+        coro: Mutex::new(Some(SendCoro(coro))),
+        yielder: AtomicPtr::new(std::ptr::null_mut()),
+    })
 }
 
 // ---------------------------------------------------------------------------
