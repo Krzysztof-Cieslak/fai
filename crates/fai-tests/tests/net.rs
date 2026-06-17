@@ -118,3 +118,47 @@ fn aot_built_tcp_echo_runs() {
     assert_eq!(run.status.code(), Some(0), "the networking binary should exit cleanly");
     assert_eq!(String::from_utf8_lossy(&run.stdout), "ping\n");
 }
+
+#[test]
+fn udp_loopback_echo() {
+    // A UDP round trip over loopback: the client sends a datagram to the server
+    // socket, which receives it (with the sender's address) and echoes it back; the
+    // client then receives the echo. Datagrams are buffered, so this runs in one
+    // task — each `udpRecv` parks on the reactor until its datagram arrives.
+    // Exercises udpBind/udpLocalPort/udpSend/udpRecv and the `(Bytes, host, port)`
+    // datagram tuple.
+    let src = indoc! {r#"
+        module Prog
+
+        exchange : { net : Net | _ } -> UdpSocket -> UdpSocket -> Int -> String / { Net }
+        let exchange env server client serverPort =
+          match env.net.udpSend client "127.0.0.1" serverPort (Bytes.fromString "ping") with
+          | Err e -> "send: " ++ e
+          | Ok u ->
+            match env.net.udpRecv server 64 with
+            | Err e -> "recv: " ++ e
+            | Ok (data, host, fromPort) ->
+              match env.net.udpSend server host fromPort data with
+              | Err e -> "echo: " ++ e
+              | Ok u2 ->
+                match env.net.udpRecv client 64 with
+                | Err e -> "recv2: " ++ e
+                | Ok (reply, replyHost, replyPort) ->
+                  match Bytes.toString reply with
+                  | Some s -> s
+                  | None -> "non-utf8"
+
+        public main : Runtime -> Unit / { Console, Net }
+        let main runtime =
+          match runtime.net.udpBind 0 with
+          | Err e -> runtime.console.writeLine ("bind server: " ++ e)
+          | Ok server ->
+            let serverPort = runtime.net.udpLocalPort server
+            match runtime.net.udpBind 0 with
+            | Err e -> runtime.console.writeLine ("bind client: " ++ e)
+            | Ok client -> runtime.console.writeLine (exchange runtime server client serverPort)
+    "#};
+    let (out, code) = run(src);
+    assert_eq!(code, 0, "clean, leak-free exit");
+    assert_eq!(out, "ping\n");
+}

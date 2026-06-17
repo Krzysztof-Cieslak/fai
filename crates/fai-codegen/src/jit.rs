@@ -167,6 +167,11 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_net_send", rt::fai_net_send);
     sym!("fai_net_recv", rt::fai_net_recv);
     sym!("fai_net_close", rt::fai_net_close);
+    sym!("fai_udp_bind", rt::fai_udp_bind);
+    sym!("fai_udp_local_port", rt::fai_udp_local_port);
+    sym!("fai_udp_send", rt::fai_udp_send);
+    sym!("fai_udp_recv", rt::fai_udp_recv);
+    sym!("fai_udp_close", rt::fai_udp_close);
     builder.symbol("FAI_NONE_VALUE", (&raw const rt::FAI_NONE_VALUE).cast());
     builder.symbol("FAI_STRING_DESC", (&raw const rt::FAI_STRING_DESC).cast());
     builder.symbol("FAI_INT_DESC", (&raw const rt::FAI_INT_DESC).cast());

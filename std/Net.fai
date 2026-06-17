@@ -15,3 +15,6 @@ public opaque type Listener =
 
 public opaque type Connection =
   | ConnectionCell Int
+
+public opaque type UdpSocket =
+  | UdpSocketCell Int

@@ -179,9 +179,9 @@ fn wait(dir: &Mutex<Readiness>) {
 
 use std::io::{Read, Write};
 use std::mem::ManuallyDrop;
-use std::net::{Ipv4Addr, Shutdown, SocketAddr, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, ToSocketAddrs};
 
-use mio::net::{TcpListener, TcpStream};
+use mio::net::{TcpListener, TcpStream, UdpSocket};
 
 use crate::Value;
 
@@ -189,6 +189,7 @@ use crate::Value;
 enum NetObject {
     Listener { sock: Mutex<TcpListener>, src: Arc<IoSource> },
     Conn { sock: Mutex<TcpStream>, src: Arc<IoSource> },
+    Udp { sock: Mutex<UdpSocket>, src: Arc<IoSource> },
 }
 
 impl Drop for NetObject {
@@ -206,8 +207,28 @@ impl Drop for NetObject {
                     deregister(src, s);
                 }
             }
+            NetObject::Udp { sock, src } => {
+                if let Ok(s) = sock.get_mut() {
+                    deregister(src, s);
+                }
+            }
         }
     }
+}
+
+/// Resolves `host:port` to a socket address. An IP literal is parsed inline (no
+/// blocking); a hostname is resolved on the blocking pool (DNS may block), parking
+/// the calling task. Must be called inside a task for the hostname path.
+fn resolve_addr(host: String, port: u16) -> Result<SocketAddr, String> {
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return Ok(SocketAddr::new(ip, port));
+    }
+    crate::scheduler::run_blocking(Box::new(move || {
+        (host.as_str(), port)
+            .to_socket_addrs()
+            .map_err(|e| e.to_string())
+            .and_then(|mut addrs| addrs.next().ok_or_else(|| "no address for host".to_owned()))
+    }))
 }
 
 /// Wraps socket state as a Fai `KIND_NET` value owning the `Arc`.
@@ -274,7 +295,7 @@ pub extern "C" fn fai_net_local_port(listener: Value) -> Value {
             NetObject::Listener { sock, .. } => {
                 sock.lock().expect("listener lock").local_addr().map_or(0, |a| a.port())
             }
-            NetObject::Conn { .. } => 0,
+            NetObject::Conn { .. } | NetObject::Udp { .. } => 0,
         }
     };
     crate::fai_drop(listener);
@@ -290,7 +311,9 @@ pub extern "C" fn fai_net_accept(listener: Value) -> Value {
         let obj = net_of(listener);
         match &**obj {
             NetObject::Listener { sock, src } => accept_loop(sock, src),
-            NetObject::Conn { .. } => Err("accept: handle is not a listener".to_owned()),
+            NetObject::Conn { .. } | NetObject::Udp { .. } => {
+                Err("accept: handle is not a listener".to_owned())
+            }
         }
     };
     crate::fai_drop(listener);
@@ -315,9 +338,9 @@ fn accept_loop(sock: &Mutex<TcpListener>, src: &Arc<IoSource>) -> Result<NetObje
     }
 }
 
-/// `Net.connect`: connect to `host:port`, resolving `host` on the blocking pool and
-/// then connecting without blocking a worker. Returns `Result Connection String`.
-/// Consumes `host`; `port` is an immediate `Int`.
+/// `Net.connect`: connect to `host:port` (resolving a hostname on the blocking
+/// pool) without blocking a worker. Returns `Result Connection String`. Consumes
+/// `host`; `port` is an immediate `Int`.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_net_connect(host: Value, port: Value) -> Value {
     // SAFETY: `host` is a boxed `String`.
@@ -325,15 +348,7 @@ pub extern "C" fn fai_net_connect(host: Value, port: Value) -> Value {
     let p = crate::unbox_int(port) as u16;
     crate::fai_drop(host);
     crate::fai_drop(port);
-    // Resolve on the blocking pool (a DNS lookup may block); the task parks.
-    let resolved: Result<SocketAddr, String> =
-        crate::scheduler::run_blocking(Box::new(move || {
-            (h.as_str(), p)
-                .to_socket_addrs()
-                .map_err(|e| e.to_string())
-                .and_then(|mut addrs| addrs.next().ok_or_else(|| "no address for host".to_owned()))
-        }));
-    let addr = match resolved {
+    let addr = match resolve_addr(h, p) {
         Ok(a) => a,
         Err(e) => return err_result(&e),
     };
@@ -370,7 +385,9 @@ pub extern "C" fn fai_net_send(conn: Value, bytes: Value) -> Value {
                 let data = unsafe { crate::bytes_bytes(bytes) };
                 send_loop(sock, src, data)
             }
-            NetObject::Listener { .. } => Err("send: handle is not a connection".to_owned()),
+            NetObject::Listener { .. } | NetObject::Udp { .. } => {
+                Err("send: handle is not a connection".to_owned())
+            }
         }
     };
     crate::fai_drop(conn);
@@ -406,7 +423,9 @@ pub extern "C" fn fai_net_recv(conn: Value, max: Value) -> Value {
         let obj = net_of(conn);
         match &**obj {
             NetObject::Conn { sock, src } => recv_loop(sock, src, cap),
-            NetObject::Listener { .. } => Err("recv: handle is not a connection".to_owned()),
+            NetObject::Listener { .. } | NetObject::Udp { .. } => {
+                Err("recv: handle is not a connection".to_owned())
+            }
         }
     };
     crate::fai_drop(conn);
@@ -447,6 +466,165 @@ pub extern "C" fn fai_net_close(handle: Value) -> Value {
         }
     }
     crate::fai_drop(handle);
+    crate::FAI_UNIT
+}
+
+// ---------------------------------------------------------------------------
+// UDP sockets.
+// ---------------------------------------------------------------------------
+//
+// A `UdpSocket` Fai value is a `KIND_NET` handle like the TCP ones. UDP is
+// connectionless: `udpSend` addresses each datagram (`host`/`port`) and `udpRecv`
+// reports the sender, so there is no accept/connect. Datagrams are whole messages:
+// `udpRecv` returns one datagram (truncated to the buffer) per call.
+
+/// `Net.udpBind`: bind a UDP socket to `0.0.0.0:port` (port `0` picks a free one).
+/// Returns `Result UdpSocket String`. The port is an immediate `Int`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_udp_bind(port: Value) -> Value {
+    let p = crate::unbox_int(port) as u16;
+    crate::fai_drop(port);
+    let addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, p));
+    match UdpSocket::bind(addr) {
+        Ok(mut sock) => match register(&mut sock) {
+            Ok(src) => ok_result(net_handle_value(NetObject::Udp { sock: Mutex::new(sock), src })),
+            Err(e) => err_result(&e.to_string()),
+        },
+        Err(e) => err_result(&e.to_string()),
+    }
+}
+
+/// `Net.udpLocalPort`: the port a UDP socket is bound to (`0` if unavailable).
+/// Consumes the socket reference.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_udp_local_port(sock: Value) -> Value {
+    let port = {
+        let obj = net_of(sock);
+        match &**obj {
+            NetObject::Udp { sock, .. } => {
+                sock.lock().expect("udp lock").local_addr().map_or(0, |a| a.port())
+            }
+            NetObject::Listener { .. } | NetObject::Conn { .. } => 0,
+        }
+    };
+    crate::fai_drop(sock);
+    crate::fai_box_int(i64::from(port))
+}
+
+/// `Net.udpSend`: send `bytes` as one datagram to `host:port` (resolving a hostname
+/// on the blocking pool). Returns `Result Unit String`. Consumes `sock` and
+/// `bytes`; `host` is a boxed `String` and `port` an immediate `Int`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_udp_send(sock: Value, host: Value, port: Value, bytes: Value) -> Value {
+    // SAFETY: `host` is a boxed `String`.
+    let h = unsafe { crate::string_str(host) }.to_owned();
+    let p = crate::unbox_int(port) as u16;
+    crate::fai_drop(host);
+    crate::fai_drop(port);
+    let dest = match resolve_addr(h, p) {
+        Ok(a) => a,
+        Err(e) => {
+            crate::fai_drop(sock);
+            crate::fai_drop(bytes);
+            return err_result(&e);
+        }
+    };
+    let result = {
+        let obj = net_of(sock);
+        match &**obj {
+            NetObject::Udp { sock, src } => {
+                // SAFETY: `bytes` is a boxed `Bytes`, valid until dropped below.
+                let data = unsafe { crate::bytes_bytes(bytes) };
+                udp_send_loop(sock, src, data, dest)
+            }
+            NetObject::Listener { .. } | NetObject::Conn { .. } => {
+                Err("udpSend: handle is not a UDP socket".to_owned())
+            }
+        }
+    };
+    crate::fai_drop(sock);
+    crate::fai_drop(bytes);
+    match result {
+        Ok(()) => ok_result(crate::FAI_UNIT),
+        Err(e) => err_result(&e),
+    }
+}
+
+fn udp_send_loop(
+    sock: &Mutex<UdpSocket>,
+    src: &Arc<IoSource>,
+    data: &[u8],
+    dest: SocketAddr,
+) -> Result<(), String> {
+    loop {
+        let res = sock.lock().expect("udp lock").send_to(data, dest);
+        match res {
+            // A datagram is sent whole; a short count should not happen for UDP.
+            Ok(_) => return Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => wait_writable(src),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+}
+
+/// `Net.udpRecv`: receive one datagram (up to `max` bytes; a longer datagram is
+/// truncated), parking until one arrives. Returns `Result (Bytes * String * Int)
+/// String` — the payload and the sender's host and port. Consumes the socket
+/// reference; `max` is an `Int`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_udp_recv(sock: Value, max: Value) -> Value {
+    let cap = crate::unbox_int(max).max(0) as usize;
+    let result = {
+        let obj = net_of(sock);
+        match &**obj {
+            NetObject::Udp { sock, src } => udp_recv_loop(sock, src, cap),
+            NetObject::Listener { .. } | NetObject::Conn { .. } => {
+                Err("udpRecv: handle is not a UDP socket".to_owned())
+            }
+        }
+    };
+    crate::fai_drop(sock);
+    crate::fai_drop(max);
+    match result {
+        Ok((buf, from)) => {
+            let data = crate::make_bytes(&buf);
+            let host = crate::make_string(from.ip().to_string().as_bytes());
+            let port = crate::fai_box_int(i64::from(from.port()));
+            // A 3-tuple `(Bytes, String, Int)` is a tag-0 data value with 3 fields.
+            // SAFETY: three owned fields move into the tuple.
+            let tuple = unsafe { crate::fai_make_data(0, 3, [data, host, port].as_ptr()) };
+            ok_result(tuple)
+        }
+        Err(e) => err_result(&e),
+    }
+}
+
+fn udp_recv_loop(
+    sock: &Mutex<UdpSocket>,
+    src: &Arc<IoSource>,
+    cap: usize,
+) -> Result<(Vec<u8>, SocketAddr), String> {
+    let mut buf = vec![0u8; cap];
+    loop {
+        let res = sock.lock().expect("udp lock").recv_from(&mut buf);
+        match res {
+            Ok((n, from)) => {
+                buf.truncate(n);
+                return Ok((buf, from));
+            }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => wait_readable(src),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+}
+
+/// `Net.udpClose`: release this UDP socket reference (the fd closes once the last
+/// reference is dropped). Returns `Unit`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_udp_close(sock: Value) -> Value {
+    crate::fai_drop(sock);
     crate::FAI_UNIT
 }
 
@@ -563,5 +741,66 @@ mod tests {
             }
         }));
         assert_eq!(of_imm(result), 1, "the client received the echoed bytes");
+    }
+
+    /// Reads a `(Bytes, String, Int)` datagram tuple (`udpRecv`'s payload), dupping
+    /// each field out and dropping the tuple.
+    ///
+    /// # Safety
+    /// `t` is a boxed tag-0 data value with three fields.
+    unsafe fn read_datagram(t: Value) -> (Value, Value, Value) {
+        // SAFETY: `t` is a boxed 3-tuple; its fields are inline.
+        unsafe {
+            let p = crate::as_obj(t);
+            let data = crate::fai_dup(crate::read_i64(p, crate::DATA_FIELDS_OFFSET));
+            let host = crate::fai_dup(crate::read_i64(p, crate::DATA_FIELDS_OFFSET + 8));
+            let port = crate::fai_dup(crate::read_i64(p, crate::DATA_FIELDS_OFFSET + 16));
+            crate::fai_drop(t);
+            (data, host, port)
+        }
+    }
+
+    #[test]
+    fn udp_loopback_roundtrip_through_the_net_ops() {
+        // A UDP round trip through the runtime `fai_udp_*` operations: a client
+        // socket sends a datagram to a server socket, which receives it (with the
+        // sender's address) and echoes it back to that address; the client then
+        // receives the echo. Datagrams are buffered by the kernel, so this runs in
+        // one task — each `udpRecv` parks on the reactor until its datagram arrives.
+        let result = block_on(Box::new(|| {
+            // SAFETY: each `fai_udp_*` returns a `Result`; `unwrap_ok` extracts `Ok`.
+            unsafe {
+                let server = unwrap_ok(fai_udp_bind(imm(0)));
+                let server_port = of_imm(fai_udp_local_port(crate::fai_dup(server)));
+                let client = unwrap_ok(fai_udp_bind(imm(0)));
+
+                let host = crate::make_string(b"127.0.0.1");
+                let payload = crate::make_bytes(b"ping");
+                let _ = unwrap_ok(fai_udp_send(
+                    crate::fai_dup(client),
+                    host,
+                    imm(server_port),
+                    payload,
+                ));
+
+                // The server receives the datagram and its sender, then echoes back.
+                let (data, from_host, from_port) =
+                    read_datagram(unwrap_ok(fai_udp_recv(crate::fai_dup(server), imm(64))));
+                let _ = unwrap_ok(fai_udp_send(crate::fai_dup(server), from_host, from_port, data));
+
+                // The client receives the echo.
+                let (echo, echo_host, echo_port) =
+                    read_datagram(unwrap_ok(fai_udp_recv(crate::fai_dup(client), imm(64))));
+                let ok = crate::bytes_bytes(echo) == b"ping";
+                crate::fai_drop(echo);
+                crate::fai_drop(echo_host);
+                crate::fai_drop(echo_port);
+
+                fai_udp_close(server);
+                fai_udp_close(client);
+                imm(i64::from(ok))
+            }
+        }));
+        assert_eq!(of_imm(result), 1, "the client received the echoed datagram");
     }
 }
