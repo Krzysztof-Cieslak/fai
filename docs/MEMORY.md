@@ -3493,13 +3493,28 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   capability surface, structured (nursery) scope, the M:N scheduler, an IO reactor
   with a TCP capability, and proven crates over hand-rolled coroutine/deque code is
   recorded with the work that builds the language surface on this foundation.
-  - **Fai handles.** A `Task 'a`/`Channel 'a` value is a reference-counted Fai heap
-    cell (`KIND_TASK`/`KIND_CHANNEL`) whose slot owns a raw `Arc` to scheduler
-    state; the free path drops that `Arc`, and the handle's `Drop` releases any Fai
-    values it still owns (a task's stored result, a channel's buffered values), so
-    the whole path is leak-free. Channels are bounded MPMC with backpressure and an
-    explicit close (`recv` yields `None` once closed and drained); `await` is
-    memoized (the result is duplicated out, so a handle may be awaited again).
+  - **Fai handles.** A `Task 'a`/`Channel 'a`/`Nursery` value is a reference-counted
+    Fai heap cell (`KIND_TASK`/`KIND_CHANNEL`/`KIND_NURSERY`) whose slot owns a raw
+    `Arc` to scheduler state; the free path drops that `Arc`, and the handle's
+    `Drop` releases any Fai values it still owns (a task's stored result, a
+    channel's buffered values), so the whole path is leak-free. Channels are bounded
+    MPMC with backpressure and an explicit close (`recv` yields `None` once closed
+    and drained); `await` is memoized (the result is duplicated out, so a handle may
+    be awaited again).
+  - **Capability surface.** `Concurrency` is a capability in the default `Runtime`:
+    its interface (`scope`/`spawn`/`await`/`channel`/`send`/`recv`/`close`) and the
+    native primitives + standard instance live in `Prelude`; the opaque
+    `Task`/`Channel`/`Nursery` types live in a `Concurrency` module that depends on
+    nothing (so `Prelude` re-exports and builds on them with no cycle). `scope` and
+    `spawn` are **effect-polymorphic** — a method-local `'e` forwards the spawned or
+    scoped body's own effect (`spawn : Nursery -> (Unit -> 'a / 'e) -> Task 'a /
+    { Concurrency | 'e }`), so a function that spawns surfaces `Concurrency` without
+    hiding what runs concurrently. The opaque handle types are single-constructor
+    unions, so code generation never specializes their layout and drops them through
+    the runtime (which frees the `Arc`). Compiling a program that *uses* concurrency
+    to run on the scheduler — the code-generation gate that makes the inlined
+    reference counting MT-safe and runs `main` as the root task — builds on this
+    (see the work that lands it).
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

@@ -243,7 +243,8 @@ fn contract_referencing_a_runtime_lists_its_capabilities() {
     // A `Runtime` bundles every capability, so the message lists them (sorted).
     assert!(
         diag.message.contains(
-            "references capabilities (`Clock`, `Console`, `Env`, `FileSystem`, `Random`)"
+            "references capabilities (`Clock`, `Concurrency`, `Console`, `Env`, `FileSystem`, \
+             `Random`)"
         ),
         "got {:?}",
         diag.message
@@ -395,8 +396,8 @@ fn console_writeline_via_runtime_typechecks() {
     // effect row records the console capability the body uses.
     assert_eq!(
         type_of(&db, f[0], "main"),
-        "{ clock : Clock, console : Console, env : Env, fs : FileSystem, random : Random } -> () \
-         / { Console }"
+        "{ clock : Clock, concurrency : Concurrency, console : Console, env : Env, \
+         fs : FileSystem, random : Random } -> () / { Console }"
     );
 }
 
