@@ -3528,5 +3528,20 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     the *inlined* reference counting itself branch per-object (so a concurrent
     program keeps inline RC rather than calling out) is a future refinement.
 
+- **D140 A blocking-work thread pool keeps blocking host calls off the workers.**
+  A host operation that blocks the OS thread (file I/O; later, DNS resolution) must
+  not run on a scheduler worker, or it would stall every task multiplexed onto it.
+  The runtime grows a separate pool of OS threads (lazily — a new thread only when
+  every existing one is busy, up to a cap, `FAI_BLOCKING_THREADS`, default 512), and
+  `run_blocking` offloads a closure to it while the calling task **parks**, waking
+  the task (`schedule`) when the work completes. The offloaded closure yields a plain
+  Rust value, so no Fai heap allocation happens off-worker — the parked task builds
+  the Fai values back on its own worker after it resumes, which sidesteps any
+  cross-thread allocator/reference-count question. `FileSystem.readFile`/`writeFile`
+  use it **when called inside a task** and run inline otherwise (a program without
+  concurrency has no scheduler to park on), dispatched on whether the caller is a
+  worker. The pool wake may race ahead of the park; that is safe, because the task is
+  queued exactly once and resumes only after it yields (its coroutine lock serializes
+  the resume against the running worker).
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.
