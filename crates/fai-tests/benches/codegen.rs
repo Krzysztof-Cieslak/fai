@@ -56,7 +56,7 @@ fn reference_count(bencher: Bencher, program: (&str, &str)) {
 #[divan::bench(args = [("small", SMALL), ("medium", MEDIUM)])]
 fn aot_object(bencher: Bencher, program: (&str, &str)) {
     bencher.with_inputs(|| fresh(program.1)).bench_values(|(db, file)| {
-        divan::black_box(object_code(&db, file, Symbol::intern("main")))
+        divan::black_box(object_code(&db, file, Symbol::intern("main"), false))
     });
 }
 
@@ -113,7 +113,7 @@ fn aot_codegen_reachable(bencher: Bencher, n: usize) {
                     .par_iter()
                     .map_with(seed, |dbh, def| {
                         let db: &dyn Db = &**dbh;
-                        db.source_file(def.file).map(|f| object_code(db, f, def.name))
+                        db.source_file(def.file).map(|f| object_code(db, f, def.name, false))
                     })
                     .collect()
             });

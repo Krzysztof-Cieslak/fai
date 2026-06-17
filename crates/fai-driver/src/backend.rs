@@ -109,6 +109,21 @@ fn runtime_root(db: &dyn Db, file: SourceFile) -> Option<DefId> {
     Some(DefId::new(prelude.source(db), name))
 }
 
+/// Whether the program rooted at `file`'s `main` **uses** concurrency — its
+/// reachable effects include `Concurrency` (it calls `spawn`/`await`/a channel op,
+/// directly or transitively). When true, code generation switches to the
+/// thread-safe paths (branchful reference counting, runtime allocation) and `main`
+/// runs as the scheduler's root task. Holding the capability without using it (it
+/// is in the default `Runtime`) does not count, so a program that never spawns
+/// keeps the fully inlined single-threaded code paths.
+pub fn uses_concurrency(db: &dyn Db, file: SourceFile) -> bool {
+    let entry = Symbol::intern(ENTRY);
+    if module_defs(db, file).get(entry).is_none() {
+        return false;
+    }
+    fai_types::def_effect(db, file, entry).labels.iter().any(|i| i.name.as_str() == "Concurrency")
+}
+
 /// The mangled symbol base for a definition: `fai_<module>_<name>`.
 #[must_use]
 pub fn symbol_base(db: &dyn Db, def: DefId) -> String {
@@ -220,7 +235,7 @@ pub(crate) fn borrows_of(db: &dyn Db, def: DefId) -> Vec<bool> {
 /// not accumulate without bound. An evicted entry is re-read from the on-disk
 /// cache (or regenerated), so eviction only trades memory for that lookup.
 #[salsa::tracked(lru = 0)]
-pub fn object_code(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<Vec<u8>> {
+pub fn object_code(db: &dyn Db, file: SourceFile, name: Symbol, concurrent: bool) -> Arc<Vec<u8>> {
     // The emit-ready lowering: reuse tokens forwarded into accepting callees. The
     // primary object never includes the token-taking entry (that is a separate,
     // forward-reachability-gated object), so it stays a pure function of the
@@ -237,7 +252,8 @@ pub fn object_code(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<Vec<u8>> 
     let borrows = |d: DefId| if floops.contains_key(&d) { Vec::new() } else { borrows_of(db, d) };
     let entry_of = |d: DefId| bounds_entry_of(db, d);
     let result_of = |d: DefId| bounds_result_of(db, d);
-    let bce = fai_codegen::Bce { entry_of: &entry_of, result_of: &result_of, shadow: false };
+    let bce =
+        fai_codegen::Bce { entry_of: &entry_of, result_of: &result_of, shadow: false, concurrent };
     Arc::new(object_for_def(&lowered, &namer, &arity, &abi, &borrows, &bce))
 }
 
@@ -293,7 +309,12 @@ fn fusion_loop_abis(
 /// [`object_code`] so the primary object stays forwarding-independent; linked
 /// only where a reachable caller forwards reuse tokens to this definition.
 #[salsa::tracked(lru = 0)]
-pub fn reuse_object_code(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<Vec<u8>> {
+pub fn reuse_object_code(
+    db: &dyn Db,
+    file: SourceFile,
+    name: Symbol,
+    concurrent: bool,
+) -> Arc<Vec<u8>> {
     let lowered = rc_emit(db, file, name);
     let namer = |d: DefId| symbol_base(db, d);
     let floops = fusion_loop_abis(db, file, name);
@@ -302,7 +323,8 @@ pub fn reuse_object_code(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<Vec
     let borrows = |d: DefId| if floops.contains_key(&d) { Vec::new() } else { borrows_of(db, d) };
     let entry_of = |d: DefId| bounds_entry_of(db, d);
     let result_of = |d: DefId| bounds_result_of(db, d);
-    let bce = fai_codegen::Bce { entry_of: &entry_of, result_of: &result_of, shadow: false };
+    let bce =
+        fai_codegen::Bce { entry_of: &entry_of, result_of: &result_of, shadow: false, concurrent };
     Arc::new(reuse_object_for_def(&lowered, &namer, &arity, &abi, &borrows, &bce))
 }
 
@@ -563,7 +585,7 @@ impl BuildOutcome {
 /// linker input (and the resulting artifact) stays deterministic. Each rayon
 /// worker takes its own database handle (a cheap clone sharing the storage and
 /// memoization; salsa coordinates concurrent query execution).
-fn build_objects(db: &dyn Db, reachable: &[DefId]) -> Vec<(String, Vec<u8>)> {
+fn build_objects(db: &dyn Db, reachable: &[DefId], concurrent: bool) -> Vec<(String, Vec<u8>)> {
     // Run on the large-stack compile pool: a single definition's code generation
     // recurses on its IR depth, which a default worker stack cannot absorb for a
     // deeply nested expression.
@@ -575,7 +597,8 @@ fn build_objects(db: &dyn Db, reachable: &[DefId]) -> Vec<(String, Vec<u8>)> {
                 .map_with(seed, |dbh, def| {
                     let db: &dyn Db = &**dbh;
                     let def_file = db.source_file(def.file)?;
-                    let bytes = crate::cache::load_or_build_object(db, def_file, def.name);
+                    let bytes =
+                        crate::cache::load_or_build_object(db, def_file, def.name, concurrent);
                     Some((symbol_base(db, *def), (*bytes).clone()))
                 })
                 .collect::<Vec<Option<(String, Vec<u8>)>>>()
@@ -611,6 +634,7 @@ pub fn build_native_with_deps(
     if diagnostics.iter().any(|d| d.severity == Severity::Error) {
         return BuildOutcome { artifact: None, diagnostics, ok: false };
     }
+    let concurrent = uses_concurrency(db, file);
 
     // Flatten mutual-recursion groups: members compile to wrappers, plus one
     // combined loop per group (built here, like the `fai_main` trampoline, so the
@@ -620,7 +644,7 @@ pub fn build_native_with_deps(
     // the combined loops so the cached `object_code` path stays untouched.
     let fusion = program_fusion(db, &reachable);
     let normal: Vec<DefId> = reachable.iter().copied().filter(|d| !groups.is_member(*d)).collect();
-    let mut objects = build_objects(db, &normal);
+    let mut objects = build_objects(db, &normal, concurrent);
     let namer = |d: DefId| symbol_base(db, d);
     let arity = |d: DefId| {
         (groups.arity.get(&d))
@@ -652,7 +676,7 @@ pub fn build_native_with_deps(
     // Synthetic definitions (wrappers, combined loops, fused loops) have no source
     // file, hence no interprocedural bounds facts; intra-procedural elision still
     // applies within them.
-    let synth_bce = fai_codegen::Bce::none();
+    let synth_bce = fai_codegen::Bce::synthetic(concurrent);
     for (member, wrapper) in &groups.wrappers {
         objects.push((
             symbol_base(db, *member),
@@ -677,7 +701,7 @@ pub fn build_native_with_deps(
         if let Some(tf) = db.source_file(target.file) {
             objects.push((
                 fai_codegen::reuse_symbol(&namer, target),
-                (*reuse_object_code(db, tf, target.name)).clone(),
+                (*reuse_object_code(db, tf, target.name, concurrent)).clone(),
             ));
         }
     }
@@ -685,7 +709,7 @@ pub fn build_native_with_deps(
     let entry = DefId::new(file.source(db), Symbol::intern(ENTRY));
     let runtime = runtime_root(db, file)
         .expect("a Runtime value binding (entry `runtime` or `defaultRuntime`) is defined");
-    objects.push(("fai_main".to_owned(), main_object(entry, runtime, &namer)));
+    objects.push(("fai_main".to_owned(), main_object(entry, runtime, &namer, concurrent)));
 
     match link(&objects, out, native) {
         Ok(artifact) => BuildOutcome { artifact: Some(artifact), diagnostics, ok: true },
@@ -803,7 +827,12 @@ pub fn jit_run_program(db: &dyn Db, file: SourceFile) -> RunOutcome {
     };
     let entry_of = |d: DefId| bounds_entry_of(db, d);
     let result_of = |d: DefId| bounds_result_of(db, d);
-    let bce = fai_codegen::Bce { entry_of: &entry_of, result_of: &result_of, shadow: bce_shadow() };
+    let bce = fai_codegen::Bce {
+        entry_of: &entry_of,
+        result_of: &result_of,
+        shadow: bce_shadow(),
+        concurrent: uses_concurrency(db, file),
+    };
     // The in-process run path is used for pure programs (no user `foreign`), so no
     // native libraries are loaded.
     let exit_code =
@@ -928,7 +957,12 @@ pub fn jit_compile(db: &dyn Db, file: SourceFile) -> Result<CompiledProgram, Vec
         |d: DefId| if fusion.arity.contains_key(&d) { Vec::new() } else { borrows_of(db, d) };
     let entry_of = |d: DefId| bounds_entry_of(db, d);
     let result_of = |d: DefId| bounds_result_of(db, d);
-    let bce = fai_codegen::Bce { entry_of: &entry_of, result_of: &result_of, shadow: false };
+    let bce = fai_codegen::Bce {
+        entry_of: &entry_of,
+        result_of: &result_of,
+        shadow: false,
+        concurrent: uses_concurrency(db, file),
+    };
     let program = JitProgram::compile(&defs, &namer, &arity, &abi, &borrows, &bce);
     Ok(CompiledProgram { program, names, entry_defs })
 }
@@ -1098,6 +1132,7 @@ pub fn build_run_bundle_with_deps(
         // The native shared libraries the worker loads before running, so a user
         // `foreign` symbol resolves in the JIT.
         libraries: native.dynamic_library_paths(),
+        concurrent: uses_concurrency(db, file),
     };
     RunBundleResult { bundle: Some(bundle), diagnostics }
 }
@@ -1167,7 +1202,12 @@ pub fn jit_run_bundle(bundle: &WireBundle) -> i32 {
     // query database.
     let entry_of = |d: DefId| rebuilt.bounds_entry.get(&d).cloned().unwrap_or_default();
     let result_of = |d: DefId| rebuilt.bounds_result.get(&d).cloned().unwrap_or_default();
-    let bce = fai_codegen::Bce { entry_of: &entry_of, result_of: &result_of, shadow: false };
+    let bce = fai_codegen::Bce {
+        entry_of: &entry_of,
+        result_of: &result_of,
+        shadow: false,
+        concurrent: bundle.concurrent,
+    };
     fai_codegen::jit_run(
         &rebuilt.defs,
         rebuilt.entry,

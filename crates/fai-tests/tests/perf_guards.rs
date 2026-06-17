@@ -337,10 +337,10 @@ fn object_code_runs_after_helper_edit(fillers: usize) -> usize {
     let main = db.source_file(main_id).unwrap();
     let helper = db.source_file(helper_id).unwrap();
     let warm = |db: &FaiDatabase| {
-        object_code(db, main, Symbol::intern("main"));
-        object_code(db, helper, Symbol::intern("helper"));
+        object_code(db, main, Symbol::intern("main"), false);
+        object_code(db, helper, Symbol::intern("helper"), false);
         for (f, g) in &filler {
-            object_code(db, *f, *g);
+            object_code(db, *f, *g, false);
         }
     };
     warm(&db);
@@ -413,11 +413,11 @@ fn helper_inline_object_reruns(fillers: usize) -> usize {
     let lib = db.source_file(lib_id).unwrap();
     let main = db.source_file(main_id).unwrap();
     let warm = |db: &FaiDatabase| {
-        object_code(db, main, Symbol::intern("main"));
-        object_code(db, lib, Symbol::intern("top"));
-        object_code(db, lib, Symbol::intern("mk"));
+        object_code(db, main, Symbol::intern("main"), false);
+        object_code(db, lib, Symbol::intern("top"), false);
+        object_code(db, lib, Symbol::intern("mk"), false);
         for (f, g) in &filler {
-            object_code(db, *f, *g);
+            object_code(db, *f, *g, false);
         }
     };
     warm(&db);
@@ -500,11 +500,11 @@ fn bce_firewall_object_reruns(fillers: usize) -> usize {
     let sum = db.source_file(sum_id).unwrap();
     let main = db.source_file(main_id).unwrap();
     let warm = |db: &FaiDatabase| {
-        object_code(db, main, Symbol::intern("main"));
-        object_code(db, sum, Symbol::intern("total"));
-        object_code(db, sum, Symbol::intern("go"));
+        object_code(db, main, Symbol::intern("main"), false);
+        object_code(db, sum, Symbol::intern("total"), false);
+        object_code(db, sum, Symbol::intern("go"), false);
         for (f, g) in &filler {
-            object_code(db, *f, *g);
+            object_code(db, *f, *g, false);
         }
     };
     warm(&db);
@@ -581,10 +581,10 @@ fn borrow_firewall_reruns(fillers: usize, sig_changing: bool) -> (usize, usize) 
     let probe = db.source_file(probe_id).unwrap();
     let helper = db.source_file(helper_id).unwrap();
     let warm = |db: &FaiDatabase| {
-        object_code(db, probe, Symbol::intern("probe"));
-        object_code(db, helper, Symbol::intern("helper"));
+        object_code(db, probe, Symbol::intern("probe"), false);
+        object_code(db, helper, Symbol::intern("helper"), false);
         for (f, g) in &filler {
-            object_code(db, *f, *g);
+            object_code(db, *f, *g, false);
         }
     };
     warm(&db);
@@ -704,10 +704,10 @@ fn reuse_firewall_reruns(fillers: usize, sig_changing: bool) -> (usize, usize) {
     let probe = db.source_file(probe_id).unwrap();
     let helper = db.source_file(helper_id).unwrap();
     let warm = |db: &FaiDatabase| {
-        object_code(db, probe, Symbol::intern("probe"));
-        object_code(db, helper, Symbol::intern("sink"));
+        object_code(db, probe, Symbol::intern("probe"), false);
+        object_code(db, helper, Symbol::intern("sink"), false);
         for (f, g) in &filler {
-            object_code(db, *f, *g);
+            object_code(db, *f, *g, false);
         }
     };
     warm(&db);
@@ -826,10 +826,10 @@ fn inliner_firewall_object_reruns(fillers: usize, wrapper_op_change: bool) -> us
     let caller = db.source_file(caller_id).unwrap();
     let dep = db.source_file(dep_id).unwrap();
     let warm = |db: &FaiDatabase| {
-        object_code(db, caller, Symbol::intern("call"));
-        object_code(db, dep, Symbol::intern("dep"));
+        object_code(db, caller, Symbol::intern("call"), false);
+        object_code(db, dep, Symbol::intern("dep"), false);
         for (f, g) in &filler {
-            object_code(db, *f, *g);
+            object_code(db, *f, *g, false);
         }
     };
     warm(&db);
@@ -893,14 +893,14 @@ fn object_code_reruns_after_eviction(capacity: usize) -> usize {
 
     fai_driver::set_object_cache_capacity(&mut db, capacity);
     for (f, g) in &defs {
-        object_code(&db, *f, *g);
+        object_code(&db, *f, *g, false);
     }
 
     bump.set_text(&mut db).to("module Bump\n\npublic v : Int\nlet v = 1\n".into());
 
     db.enable_event_log();
     for (f, g) in &defs {
-        object_code(&db, *f, *g);
+        object_code(&db, *f, *g, false);
     }
     count(&db.take_events(), "object_code")
 }
@@ -1100,7 +1100,7 @@ fn fusion_firewall_object_reruns(edit_user: bool) -> usize {
         "module M\n\npublic run : Int -> Int\nlet run n = Array.sum (Array.map (fun x -> x * 2) (Array.range 0 n))\n".into(),
     );
     let m = db.source_file(user).unwrap();
-    object_code(&db, m, Symbol::intern("run"));
+    object_code(&db, m, Symbol::intern("run"), false);
 
     db.enable_event_log();
     if edit_user {
@@ -1123,7 +1123,7 @@ fn fusion_firewall_object_reruns(edit_user: bool) -> usize {
         assert_ne!(&edited, array.text(&db), "the combinator-body edit must change Array.fai");
         array.set_text(&mut db).to(edited);
     }
-    object_code(&db, m, Symbol::intern("run"));
+    object_code(&db, m, Symbol::intern("run"), false);
     count(&db.take_events(), "object_code")
 }
 

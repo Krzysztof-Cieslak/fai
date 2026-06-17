@@ -72,6 +72,15 @@ pub struct Bce<'a> {
     pub result_of: &'a dyn Fn(DefId) -> ResultSig,
     /// Whether to emit the bounds-check-elimination shadow check (testing only).
     pub shadow: bool,
+    /// Whether the whole program uses concurrency (its reachable effects include
+    /// `Concurrency`). When set, a value may be shared across tasks, so the inlined
+    /// reference counting (non-atomic) and the inlined thread-local allocator
+    /// fast-path (which caches the pool base across a task's potential migration)
+    /// are unsound: code generation routes reference-count operations to the
+    /// branchful runtime `fai_dup`/`fai_drop` and array allocation to the runtime
+    /// allocator instead. A single-threaded program (the common case) leaves this
+    /// `false` and keeps the fully inlined fast paths — zero cost when unused.
+    pub concurrent: bool,
 }
 
 fn empty_entry(_: DefId) -> BoundSig {
@@ -88,7 +97,16 @@ impl Bce<'static> {
     /// and any caller without the interprocedural fact queries.
     #[must_use]
     pub fn none() -> Self {
-        Bce { entry_of: &empty_entry, result_of: &empty_result, shadow: false }
+        Bce { entry_of: &empty_entry, result_of: &empty_result, shadow: false, concurrent: false }
+    }
+
+    /// Like [`none`](Self::none) (no interprocedural facts — for a synthetic
+    /// definition with no source binding, e.g. a combined or fused loop) but
+    /// carrying the program's `concurrent` mode, so a synthetic loop reference-counts
+    /// and allocates with the same thread-safety as the rest of the program.
+    #[must_use]
+    pub fn synthetic(concurrent: bool) -> Self {
+        Bce { entry_of: &empty_entry, result_of: &empty_result, shadow: false, concurrent }
     }
 }
 
@@ -805,6 +823,7 @@ fn build_fn<M: Module>(
             entry_bounds: Bounds::new(),
             result_facts_of: bce.result_of,
             bce_shadow: bce.shadow,
+            concurrent: bce.concurrent,
             pool_heads_base: None,
             array_float_tag: FxHashMap::default(),
             array_tag_cacheable: false,
@@ -949,7 +968,10 @@ fn build_fn<M: Module>(
         // whole body) so the inlined pooled allocation fast path reuses it with no
         // per-allocation call. The base is loop-invariant, so a hot allocation loop
         // pays one `fai_pool_heads` per activation rather than one per cell.
-        let uses_array_alloc = body_uses_array_alloc(&core_fn.body);
+        // Skip the inlined pool fast path entirely in a concurrent program (a task
+        // may migrate workers, so a base cached here would go stale): array
+        // operations take the runtime calls instead (see `array_prim`).
+        let uses_array_alloc = !tr.concurrent && body_uses_array_alloc(&core_fn.body);
         if uses_array_alloc {
             let heads = tr.runtime("fai_pool_heads", 0, true);
             let call = tr.builder.ins().call(heads, &[]);
@@ -1225,6 +1247,12 @@ struct Translator<'a, M: Module> {
     /// abort, so generative testing turns any unsound elision into a loud, located
     /// failure instead of a silent out-of-bounds read. Off in normal builds.
     bce_shadow: bool,
+    /// Whether the program uses concurrency (see [`Bce::concurrent`]): when set,
+    /// reference-count operations route to the branchful runtime `fai_dup`/
+    /// `fai_drop` and array allocation to the runtime allocator, because a value may
+    /// be shared across tasks and a task may migrate workers. Off for a
+    /// single-threaded program, which keeps the fully inlined fast paths.
+    concurrent: bool,
     /// The current thread's size-class free-list heads base (the result of one
     /// `fai_pool_heads` call), computed once in the entry block when this function
     /// inlines an `Array` allocation (construction or push-grow) — `None`
@@ -1844,6 +1872,18 @@ impl<M: Module> Translator<'_, M> {
     /// [`DupPlan`]: an immediate is a no-op, an always-boxed value increments
     /// unconditionally, and any other value guards the increment with a tag-check.
     fn dup_local(&mut self, local: LocalId) {
+        // In a concurrent program a value may be shared across tasks, so the inlined
+        // non-atomic increment is unsound: route to the branchful runtime `fai_dup`
+        // (atomic for a shared value, a no-op for an immortal one). A
+        // statically-immediate local carries no count and is still skipped; a niche
+        // `Option`'s sentinel/immediate cases are skipped by `fai_dup` itself.
+        if self.concurrent {
+            if !matches!(self.dup_plan(local), DupPlan::NoOp) {
+                let v = self.use_var(local);
+                self.call1("fai_dup", v);
+            }
+            return;
+        }
         // A niche Scheme-B `Option`'s `None` is the immortal sentinel, which carries
         // no reference count, so its dup must skip it (a `Some` immediate likewise);
         // only a boxed `Some` payload is incremented.
@@ -1862,6 +1902,18 @@ impl<M: Module> Translator<'_, M> {
     /// boxed leaf, a runtime child-release for other data, and the runtime drop as
     /// the fallback for an unknown type.
     fn drop_local(&mut self, local: LocalId) {
+        // In a concurrent program a value may be shared across tasks, so the inlined
+        // non-atomic decrement (and the inlined child-release) is unsound: route to
+        // the branchful runtime `fai_drop`, which atomically releases a shared value
+        // (and is a no-op for an immortal one and an immediate). A
+        // statically-immediate local is still skipped.
+        if self.concurrent {
+            if !matches!(self.drop_plan(local), DropPlan::NoOp) {
+                let v = self.use_var(local);
+                self.call_drop(v);
+            }
+            return;
+        }
         // A niche Scheme-B `Option`'s `None` is the immortal sentinel, which carries
         // no reference count, so its drop must skip it (a `Some` immediate likewise);
         // only a boxed `Some` payload is released.
@@ -2098,7 +2150,14 @@ impl<M: Module> Translator<'_, M> {
     fn dup_value(&mut self, v: Value, ty: &Ty) {
         match dup_class(ty) {
             DupPlan::NoOp => {}
-            DupPlan::Incr { tag_check } => self.emit_rc_incr_value(v, tag_check),
+            DupPlan::Incr { tag_check } => {
+                // Concurrent: route to the branchful runtime dup (see `dup_local`).
+                if self.concurrent {
+                    self.call1("fai_dup", v);
+                } else {
+                    self.emit_rc_incr_value(v, tag_check);
+                }
+            }
         }
     }
 
@@ -2110,7 +2169,14 @@ impl<M: Module> Translator<'_, M> {
     /// tag-checked runtime drop for an unknown type (so an immediate element — e.g.
     /// an `Int` behind a type variable in a generic `set` — skips the call).
     fn drop_value(&mut self, v: Value, ty: &Ty) {
-        match uniform_drop_class(ty) {
+        let plan = uniform_drop_class(ty);
+        // Concurrent: route any non-immediate release to the branchful runtime drop
+        // (see `drop_local`); `fai_drop` tag-checks, so an immediate is still free.
+        if self.concurrent && !matches!(plan, DropPlan::NoOp) {
+            self.call_drop(v);
+            return;
+        }
+        match plan {
             DropPlan::NoOp => {}
             DropPlan::Fixed(fields) => self.emit_inline_drop_value(v, &fields),
             DropPlan::Leaf { tag_check } => {
@@ -2884,6 +2950,15 @@ impl<M: Module> Translator<'_, M> {
     /// or erased (`App(Con::Array, Error)`, the combined mutual-recursion function)
     /// element takes the uniform path, so concrete *and* generic sites inline.
     fn array_prim(&mut self, op: Prim, args: &[CExpr], result_ty: &Ty) -> Option<Value> {
+        // In a concurrent program, the inlined allocator fast path caches the
+        // thread-local pool base across the function, which a task may invalidate by
+        // migrating workers at a suspension point; and an in-place array mutation
+        // must consult a shared array's count atomically. Take the runtime `Array`
+        // operations instead — they allocate from the current thread's pool and copy
+        // a shared array — so this whole inline path is single-threaded-only.
+        if self.concurrent {
+            return None;
+        }
         // `Array.withCapacity` (and `empty`/`singleton`/the builders that bottom out
         // in it) inlines the pooled allocation fast path regardless of element type
         // — an array's slots are uniform words — so it is handled before the

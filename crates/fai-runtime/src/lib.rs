@@ -3705,6 +3705,28 @@ pub fn run_entry(entry: Value, runtime: Value) -> i32 {
     let args = [runtime_value];
     // SAFETY: `entry` is a closure of arity 1; `args` holds one owned value.
     let result = unsafe { fai_apply_n(entry, 1, args.as_ptr()) };
+    finish_run(result)
+}
+
+/// Runs a program that uses concurrency: forces the `Runtime`, then runs `main` as
+/// the scheduler's **root task** (so `scope`/`spawn`/`await` run inside a task),
+/// blocking until the scheduler is quiescent before the leak check. Used in place
+/// of [`run_entry`] when the program's reachable effects include `Concurrency`.
+#[must_use]
+pub fn run_entry_concurrent(entry: Value, runtime: Value) -> i32 {
+    // SAFETY: `runtime` is a closure of arity 0.
+    let runtime_value = unsafe { fai_apply_n(runtime, 0, std::ptr::null()) };
+    let result = scheduler::block_on(Box::new(move || {
+        let args = [runtime_value];
+        // SAFETY: `entry` is a closure of arity 1; one owned `Runtime` argument.
+        unsafe { fai_apply_n(entry, 1, args.as_ptr()) }
+    }));
+    finish_run(result)
+}
+
+/// Drops a program's result, optionally self-reports peak RSS, and checks for
+/// leaks — the shared tail of [`run_entry`]/[`run_entry_concurrent`].
+fn finish_run(result: Value) -> i32 {
     fai_drop(result);
     // Opt-in peak-memory self-report for the Fai-vs-Rust memory comparison: the
     // benchmark harness sets `FAI_REPORT_RSS` in the spawned binary's environment
@@ -3728,6 +3750,14 @@ pub fn run_entry(entry: Value, runtime: Value) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_run_main(entry: Value, runtime: Value) -> i32 {
     run_entry(entry, runtime)
+}
+
+/// C entry shim for a concurrent program: runs `main` as the scheduler root task
+/// (see [`run_entry_concurrent`]). Generated `main` calls this instead of
+/// [`fai_run_main`] when the program uses concurrency.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_run_main_concurrent(entry: Value, runtime: Value) -> i32 {
+    run_entry_concurrent(entry, runtime)
 }
 
 // ---------------------------------------------------------------------------

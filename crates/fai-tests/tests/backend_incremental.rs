@@ -61,8 +61,8 @@ fn backend_queries_are_incrementally_correct() {
         let helper = db.source_file(ids[1]).unwrap();
         let (m, h) = (Symbol::intern("main"), Symbol::intern("helper"));
         (
-            (*object_code(db, main, m)).clone(),
-            (*object_code(db, helper, h)).clone(),
+            (*object_code(db, main, m, false)).clone(),
+            (*object_code(db, helper, h, false)).clone(),
             pretty_def(&core(db, main, m)),
             pretty_def(&rc(db, helper, h)),
         )
@@ -113,7 +113,7 @@ fn inlined_helper_is_incrementally_correct() {
         let lib = db.source_file(ids[0]).unwrap();
         let (top, mk) = (Symbol::intern("top"), Symbol::intern("mk"));
         (
-            (*object_code(db, lib, top)).clone(),
+            (*object_code(db, lib, top, false)).clone(),
             pretty_def(&helper_inlined(db, lib, top)),
             pretty_def(&rc(db, lib, top)),
             pretty_def(&helper_inlined(db, lib, mk)),

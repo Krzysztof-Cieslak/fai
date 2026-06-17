@@ -164,13 +164,13 @@ fn comment_edit_recompiles_no_objects() {
         let helper x = x + 1
     "#};
     let (mut db, files) = db_with(&[("Main.fai", main), ("Helper.fai", helper_v1)]);
-    let _ = object_code(&db, files[0], fai_syntax::Symbol::intern("main"));
-    let _ = object_code(&db, files[1], fai_syntax::Symbol::intern("helper"));
+    let _ = object_code(&db, files[0], fai_syntax::Symbol::intern("main"), false);
+    let _ = object_code(&db, files[1], fai_syntax::Symbol::intern("helper"), false);
 
     db.enable_event_log();
     files[1].set_text(&mut db).to(helper_v2.to_owned());
-    let _ = object_code(&db, files[0], fai_syntax::Symbol::intern("main"));
-    let _ = object_code(&db, files[1], fai_syntax::Symbol::intern("helper"));
+    let _ = object_code(&db, files[0], fai_syntax::Symbol::intern("main"), false);
+    let _ = object_code(&db, files[1], fai_syntax::Symbol::intern("helper"), false);
     assert_eq!(
         count(&db.take_events(), "object_code"),
         0,
@@ -286,7 +286,7 @@ fn object_code_is_deterministic() {
     "#};
     let object = |contents: &str| {
         let (db, files) = db_with(&[("M.fai", contents)]);
-        (*object_code(&db, files[0], fai_syntax::Symbol::intern("main"))).clone()
+        (*object_code(&db, files[0], fai_syntax::Symbol::intern("main"), false)).clone()
     };
     assert_eq!(object(src), object(src), "the same source must produce identical object bytes");
 }
@@ -308,11 +308,11 @@ fn editing_a_definition_recompiles_its_object() {
     "#};
     let (mut db, files) = db_with(&[("M.fai", v1)]);
     let file = files[0];
-    let _ = object_code(&db, file, fai_syntax::Symbol::intern("main"));
+    let _ = object_code(&db, file, fai_syntax::Symbol::intern("main"), false);
 
     db.enable_event_log();
     file.set_text(&mut db).to(v2.to_owned());
-    let _ = object_code(&db, file, fai_syntax::Symbol::intern("main"));
+    let _ = object_code(&db, file, fai_syntax::Symbol::intern("main"), false);
     assert_eq!(count(&db.take_events(), "object_code"), 1, "an edited definition is recompiled");
 }
 
@@ -343,14 +343,14 @@ fn editing_one_module_reuses_cached_objects_for_the_others() {
     let (main_file, helper_file) = (files[0], files[1]);
 
     // Warm the cache for both definitions.
-    let _ = object_code(&db, main_file, fai_syntax::Symbol::intern("main"));
-    let _ = object_code(&db, helper_file, fai_syntax::Symbol::intern("helper"));
+    let _ = object_code(&db, main_file, fai_syntax::Symbol::intern("main"), false);
+    let _ = object_code(&db, helper_file, fai_syntax::Symbol::intern("helper"), false);
 
     // Edit Helper's body, then recompute both objects.
     db.enable_event_log();
     helper_file.set_text(&mut db).to(helper_v2.to_owned());
-    let _ = object_code(&db, main_file, fai_syntax::Symbol::intern("main"));
-    let _ = object_code(&db, helper_file, fai_syntax::Symbol::intern("helper"));
+    let _ = object_code(&db, main_file, fai_syntax::Symbol::intern("main"), false);
+    let _ = object_code(&db, helper_file, fai_syntax::Symbol::intern("helper"), false);
     let events = db.take_events();
 
     assert_eq!(

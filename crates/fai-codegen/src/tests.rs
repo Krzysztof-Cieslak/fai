@@ -174,7 +174,8 @@ fn run_all_counted_at(path: &str, src: &str) -> (i32, String, i64, i64, i64) {
             (*fai_rc::result_facts(&db, *f, d.name)).clone()
         })
     };
-    let bce = crate::Bce { entry_of: &entry_of, result_of: &result_of, shadow: false };
+    let bce =
+        crate::Bce { entry_of: &entry_of, result_of: &result_of, shadow: false, concurrent: false };
 
     let _g = lock();
     rt::capture_start();
@@ -253,7 +254,8 @@ fn function_ir_at(path: &str, src: &str, def_name: &str) -> Vec<String> {
             (*fai_rc::result_facts(&db, *f, d.name)).clone()
         })
     };
-    let bce = crate::Bce { entry_of: &entry_of, result_of: &result_of, shadow: false };
+    let bce =
+        crate::Bce { entry_of: &entry_of, result_of: &result_of, shadow: false, concurrent: false };
     crate::aot::function_ir_text(&lowered, &namer, &arity_of, &signature_of, &borrows_of, &bce)
 }
 
