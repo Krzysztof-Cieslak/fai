@@ -55,6 +55,10 @@ fn main() {
             "CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS",
             if debug_assertions { "true" } else { "false" },
         )
+        // Force color off for the nested build: we parse the `native-static-libs`
+        // note out of stderr, and a CI that sets `CARGO_TERM_COLOR=always` would
+        // otherwise embed ANSI escapes in the library names, breaking the link.
+        .env("CARGO_TERM_COLOR", "never")
         // Pass `--print native-static-libs` through to the final rustc so we learn
         // exactly which system libraries the archive needs on this host.
         .arg("--")
@@ -88,7 +92,7 @@ fn main() {
     let native_libs = stderr
         .lines()
         .find_map(|line| line.split_once("native-static-libs:"))
-        .map(|(_, libs)| libs.trim().to_owned())
+        .map(|(_, libs)| strip_ansi(libs.trim()))
         .unwrap_or_default();
 
     // Re-run when any runtime source, its manifest, or the lockfile changes (a
@@ -101,6 +105,27 @@ fn main() {
     println!("cargo:rerun-if-env-changed=CARGO_CFG_DEBUG_ASSERTIONS");
     println!("cargo:rustc-env=FAI_RUNTIME_ARCHIVE={}", archive.display());
     println!("cargo:rustc-env=FAI_RUNTIME_NATIVE_LIBS={native_libs}");
+}
+
+/// Removes ANSI escape sequences (`ESC [ … m`) from `s`. The linker library list
+/// must be plain text; a stray escape would become part of a `-l<name>` token and
+/// the linker would fail to find the (garbled) library.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut bytes = s.bytes();
+    while let Some(b) = bytes.next() {
+        if b == 0x1b {
+            // Skip until the terminating letter of the escape sequence.
+            for c in bytes.by_ref() {
+                if c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(b as char);
+        }
+    }
+    out
 }
 
 /// Emits `cargo:rerun-if-changed` for every file under `dir`, so editing any
