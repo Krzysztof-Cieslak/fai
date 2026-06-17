@@ -1050,3 +1050,103 @@ fn spawn_await_round_trips_a_boxed_value_via_c_abi() {
         "scope/spawn/await left no live objects (nursery, task, handle, result released)"
     );
 }
+
+// --- Biased reference counting: shared structures and shared-cell reuse. ----
+
+#[test]
+fn shared_structure_concurrent_dup_drop() {
+    let _g = lock();
+    let base = live_count();
+    // A cell with a boxed child, both marked shared, churned by many tasks.
+    let child = fai_box_int(BIG);
+    let fields = [imm_int(7), child];
+    // SAFETY: two owned fields move into the data value.
+    let pairv = unsafe { fai_make_data(0, 2, fields.as_ptr()) };
+    fai_mark_shared(pairv);
+
+    const THREADS: usize = 8;
+    const ITERS: usize = 30_000;
+    for _ in 0..THREADS {
+        fai_dup(pairv);
+    }
+    let handles: Vec<_> = (0..THREADS)
+        .map(|_| {
+            let p: Value = pairv;
+            std::thread::spawn(move || {
+                for _ in 0..ITERS {
+                    fai_dup(p);
+                    fai_drop(p);
+                }
+                fai_drop(p);
+            })
+        })
+        .collect();
+    for h in handles {
+        h.join().expect("worker thread");
+    }
+    assert_eq!(live_count(), base + 2, "the shared cell and its child both survived churn");
+    fai_drop(pairv);
+    assert_eq!(live_count(), base, "the last drop reclaimed the cell and released its child");
+}
+
+#[test]
+fn shared_unique_cell_is_reused_in_place() {
+    let _g = lock();
+    let base = live_count();
+    // A uniquely-owned cell marked shared (count 1) is still exclusively owned, so
+    // drop-for-reuse hands back its memory as a token (an atomic uniqueness check).
+    let v = pair(1, 2);
+    fai_mark_shared(v);
+    let allocs = allocations();
+    let token = fai_drop_reuse(v);
+    assert_ne!(token, NO_REUSE, "a unique shared cell yields a reuse token");
+    // Rebuild into the token's memory: no fresh allocation, and the cell is now
+    // single-threaded again (`fai_reuse` resets its count to a plain 1).
+    let fields = [imm_int(7), imm_int(8)];
+    // SAFETY: `token` is a reset same-size cell; two owned immediate fields.
+    let w = unsafe { fai_reuse(token, 0, 2, fields.as_ptr()) };
+    assert_eq!(allocations(), allocs, "reuse allocated nothing");
+    assert_eq!(fai_data_field(w, 0), imm_int(7));
+    fai_drop(w);
+    assert_eq!(live_count(), base);
+}
+
+#[test]
+fn shared_cell_with_extra_owners_does_not_reuse() {
+    let _g = lock();
+    let base = live_count();
+    // A shared cell with more than one owner must copy, not reuse: drop-for-reuse
+    // just decrements (a null token).
+    let v = pair(1, 2);
+    fai_mark_shared(v);
+    fai_dup(v); // a second owner (atomic increment)
+    let token = fai_drop_reuse(v);
+    assert_eq!(token, NO_REUSE, "a shared cell with another owner does not reuse");
+    fai_drop(v);
+    assert_eq!(live_count(), base);
+}
+
+#[test]
+fn marking_an_already_shared_subgraph_is_idempotent_under_churn() {
+    let _g = lock();
+    let base = live_count();
+    let child = fai_box_int(BIG);
+    let fields = [imm_int(1), child];
+    // SAFETY: two owned fields.
+    let parent = unsafe { fai_make_data(0, 2, fields.as_ptr()) };
+    fai_mark_shared(parent);
+    // SAFETY: live boxed objects; both are now shared, with their counts preserved.
+    unsafe {
+        assert_eq!(read_u64(as_obj(parent), RC_OFFSET), MT_FLAG | 1);
+        assert_eq!(read_u64(as_obj(child), RC_OFFSET), MT_FLAG | 1);
+    }
+    // Re-marking does not change the counts.
+    fai_mark_shared(parent);
+    // SAFETY: live boxed objects.
+    unsafe {
+        assert_eq!(read_u64(as_obj(parent), RC_OFFSET), MT_FLAG | 1);
+        assert_eq!(read_u64(as_obj(child), RC_OFFSET), MT_FLAG | 1);
+    }
+    fai_drop(parent);
+    assert_eq!(live_count(), base);
+}

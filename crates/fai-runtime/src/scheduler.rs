@@ -796,4 +796,181 @@ mod tests {
         assert_eq!(of_imm(r), 7, "the scope returns its body's result");
         assert_eq!(RAN.load(Ordering::SeqCst), 32, "every spawned child ran before scope returned");
     }
+
+    #[test]
+    fn many_tasks_fan_out() {
+        // Far more tasks than workers: they multiplex onto the pool (the M:N point).
+        const N: i64 = 1000;
+        let r = block_on(Box::new(|| {
+            scope(Box::new(|nursery| {
+                let handles: Vec<_> =
+                    (0..N).map(|i| spawn_in(&nursery, Box::new(move || imm(i)))).collect();
+                let mut sum = 0;
+                for h in &handles {
+                    sum += of_imm(await_handle(h));
+                }
+                imm(sum)
+            }))
+        }));
+        assert_eq!(of_imm(r), (0..N).sum::<i64>());
+    }
+
+    #[test]
+    fn await_the_same_handle_twice_is_memoized() {
+        let r = block_on(Box::new(|| {
+            scope(Box::new(|nursery| {
+                let h = spawn_in(&nursery, Box::new(|| imm(21)));
+                let a = of_imm(await_handle(&h));
+                let b = of_imm(await_handle(&h));
+                imm(a + b)
+            }))
+        }));
+        assert_eq!(of_imm(r), 42, "a second await returns the same (memoized) result");
+    }
+
+    #[test]
+    fn empty_scope_returns_its_body() {
+        // A scope that spawns nothing is just its body's value.
+        let r = block_on(Box::new(|| scope(Box::new(|_nursery| imm(5)))));
+        assert_eq!(of_imm(r), 5);
+    }
+
+    #[test]
+    fn deeply_nested_scopes() {
+        // Each level opens a scope and spawns a task that recurses one level deeper,
+        // so scopes nest across tasks.
+        fn nest(depth: i64) -> Value {
+            if depth == 0 {
+                return imm(0);
+            }
+            scope(Box::new(move |nursery| {
+                let h = spawn_in(&nursery, Box::new(move || imm(1 + of_imm(nest(depth - 1)))));
+                await_handle(&h)
+            }))
+        }
+        let r = block_on(Box::new(|| nest(24)));
+        assert_eq!(of_imm(r), 24);
+    }
+
+    #[test]
+    fn channel_capacity_one_serializes_with_backpressure() {
+        // Capacity 1: the producer blocks after each send until the consumer drains
+        // a slot, so the two interleave one item at a time.
+        let r = block_on(Box::new(|| {
+            scope(Box::new(|nursery| {
+                let ch = channel(1);
+                {
+                    let ch = Arc::clone(&ch);
+                    let _ = spawn_in(
+                        &nursery,
+                        Box::new(move || {
+                            for i in 1..=50 {
+                                chan_send(&ch, imm(i));
+                            }
+                            chan_close(&ch);
+                            imm(0)
+                        }),
+                    );
+                }
+                let mut total = 0;
+                while let Some(v) = chan_recv(&ch) {
+                    total += of_imm(v);
+                }
+                imm(total)
+            }))
+        }));
+        assert_eq!(of_imm(r), (1..=50).sum::<i64>());
+    }
+
+    #[test]
+    fn channel_recv_receives_a_value_sent_concurrently() {
+        // The consumer may recv before the producer sends (parking on the empty
+        // channel) or after; either way it receives the value.
+        let r = block_on(Box::new(|| {
+            scope(Box::new(|nursery| {
+                let ch = channel(4);
+                {
+                    let ch = Arc::clone(&ch);
+                    let _ = spawn_in(
+                        &nursery,
+                        Box::new(move || {
+                            chan_send(&ch, imm(99));
+                            chan_close(&ch);
+                            imm(0)
+                        }),
+                    );
+                }
+                match chan_recv(&ch) {
+                    Some(v) => imm(of_imm(v)),
+                    None => imm(-1),
+                }
+            }))
+        }));
+        assert_eq!(of_imm(r), 99);
+    }
+
+    #[test]
+    fn channel_multiple_producers() {
+        // Several producers feed one consumer over a bounded channel; the consumer
+        // drains the exact total count (no close needed).
+        const PRODUCERS: i64 = 5;
+        const PER: i64 = 20;
+        let r = block_on(Box::new(|| {
+            scope(Box::new(|nursery| {
+                let ch = channel(4);
+                for _ in 0..PRODUCERS {
+                    let ch = Arc::clone(&ch);
+                    let _ = spawn_in(
+                        &nursery,
+                        Box::new(move || {
+                            for i in 1..=PER {
+                                chan_send(&ch, imm(i));
+                            }
+                            imm(0)
+                        }),
+                    );
+                }
+                let mut total = 0;
+                for _ in 0..(PRODUCERS * PER) {
+                    if let Some(v) = chan_recv(&ch) {
+                        total += of_imm(v);
+                    }
+                }
+                imm(total)
+            }))
+        }));
+        assert_eq!(of_imm(r), PRODUCERS * (1..=PER).sum::<i64>());
+    }
+
+    #[test]
+    fn channel_close_wakes_multiple_consumers() {
+        // Two consumers drain until the channel is closed and empty; `close` wakes
+        // any parked on an empty channel so they observe the end.
+        use std::sync::atomic::{AtomicI64, Ordering};
+        static TOTAL: AtomicI64 = AtomicI64::new(0);
+        TOTAL.store(0, Ordering::SeqCst);
+        block_on(Box::new(|| {
+            scope(Box::new(|nursery| {
+                let ch = channel(4);
+                for _ in 0..2 {
+                    let ch = Arc::clone(&ch);
+                    let _ = spawn_in(
+                        &nursery,
+                        Box::new(move || {
+                            while let Some(v) = chan_recv(&ch) {
+                                TOTAL.fetch_add(of_imm(v), Ordering::SeqCst);
+                            }
+                            imm(0)
+                        }),
+                    );
+                }
+                for i in 1..=100 {
+                    chan_send(&ch, imm(i));
+                }
+                chan_close(&ch);
+                imm(0)
+            }))
+        }));
+        assert_eq!(TOTAL.load(Ordering::SeqCst), (1..=100).sum::<i64>());
+    }
 }
