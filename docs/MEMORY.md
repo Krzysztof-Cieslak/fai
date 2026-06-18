@@ -3600,5 +3600,43 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   decoupling scheduler-execution from atomic reference counting for a `Net`-only,
   spawn-free program is a possible future refinement.
 
+- **D143 An `Async` combinator library — ergonomic concurrency over the structured
+  primitives.** The low-level `Concurrency` capability (D139) exposes
+  `scope`/`spawn`/`await` and channels, which are powerful but verbose used
+  directly — a nursery threaded through, a per-task `spawn`, a matching `await`.
+  `std/Async.fai` adds a high-level layer — `parallel`/`parallel2`/`parallel3`,
+  `mapConcurrent`/`iterConcurrent`, and the channel helpers
+  `collect`/`sendAll`/`produceList`/`pipe` — so the common fan-out, concurrent-map,
+  and producer/consumer patterns are a single call. It is **pure Fai over the
+  existing primitives** (no compiler or runtime change): each combinator takes the
+  `Concurrency` capability as its first argument and opens its own structured
+  `scope`, spawning every task and *then* awaiting them (the two-phase split is what
+  makes the work run concurrently rather than serialize), so the structured guarantee
+  is preserved — no task outlives the call — and the effect row still surfaces
+  `Concurrency` (forwarding the supplied work's own effect through `'e`).
+  - **Direct style, not a monad.** Fai's concurrency is direct-style: a deferred unit
+    of work is an ordinary thunk `Unit -> 'a`, `await` returns `'a`, and a blocking
+    host call parks transparently (D139/D140). So the reason F#/.NET needs a cold
+    `Async<'T>` value and `async { let! … }` computation-expression sugar — an explicit
+    continuation to sequence — does not apply here. `Async` is therefore an ordinary
+    library of functions over thunks, **not** a new type or block syntax, which keeps
+    the small, regular grammar. The one residual difference from an ambient-runtime
+    async is the explicit `Concurrency` argument; that is the capability model (a
+    function's reach stays visible in its type), reduced to one occurrence per
+    high-level call.
+  - **No contracts; tested end-to-end.** A contract may not reference a capability
+    (FAI6004), and every combinator requires the `Concurrency` capability, so they
+    carry no `example`/`forall`. The std example-coverage guard is widened to exempt
+    any public function whose signature names a capability type (keyed off the same
+    rule as FAI6004: an interface that carries an effect is a capability). The library
+    is covered instead by end-to-end tests that JIT-run real programs and assert
+    deterministic results and a leak-free exit.
+  - **Cancellation-dependent combinators deferred.** `race`/`choice`/`timeout` (and
+    cancel-siblings-on-error) are **not** provided: there is no task cancellation, and
+    `scope` joins every child unconditionally, so a race would return the winner yet
+    still block on the loser running to completion. These need a cooperative
+    cancellation primitive in the runtime (a nursery cancel plus a cancel check at the
+    park points), noted as future work.
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

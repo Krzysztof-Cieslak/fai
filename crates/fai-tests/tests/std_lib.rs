@@ -52,6 +52,15 @@ fn every_public_std_function_has_an_example() {
             "defaultRuntime",
         ];
 
+        // The capability interface types. A public function that takes (or returns)
+        // a capability — e.g. the `Async` concurrency combinators, which thread the
+        // `Concurrency` capability — cannot carry a contract either: the contract
+        // would have to reference a capability value, which is FAI6004. Such
+        // functions are covered by end-to-end tests instead. Keyed off the same rule
+        // as FAI6004 (an interface that carries an effect is a capability).
+        const CAPABILITY_TYPES: &[&str] =
+            &["Console", "Clock", "Random", "FileSystem", "Env", "Concurrency", "Net", "Runtime"];
+
         // Public value bindings carry a `public <name> :` signature (a `public
         // type …` declaration is not a function and is skipped).
         for line in src.lines() {
@@ -62,6 +71,11 @@ fn every_public_std_function_has_an_example() {
             }
             let fn_name = head.trim_end_matches(':');
             if EXAMPLE_EXEMPT.contains(&fn_name) {
+                continue;
+            }
+            // A function whose signature names a capability cannot have a (pure)
+            // contract — passing the capability would be FAI6004 — so it is exempt.
+            if CAPABILITY_TYPES.iter().any(|cap| mentions(rest, cap)) {
                 continue;
             }
             assert!(

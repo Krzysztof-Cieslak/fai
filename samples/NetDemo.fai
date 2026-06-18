@@ -45,12 +45,14 @@ let udpExchange env socket peerPort =
   | Err e -> Err e
   | Ok u -> env.net.udpRecv socket 1024
 
-// Spawn the server into the scope's nursery, then run the client; the scope joins
-// the server before returning the client's result.
-session : { concurrency : Concurrency, net : Net | _ } -> Listener -> Int -> Nursery -> String / { Concurrency, Net }
-let session env listener port nursery =
-  let server = env.concurrency.spawn nursery (fun u -> serve env listener)
-  talk env port
+// Run the server and the client concurrently and return the client's reply.
+// `Async.parallel2` spawns both, joins both, and hands back their results as a pair
+// — the nursery, explicit spawn, and scope are gone.
+session : { concurrency : Concurrency, net : Net | _ } -> Listener -> Int -> String / { Concurrency, Net }
+let session env listener port =
+  let (served, reply) =
+    Async.parallel2 env.concurrency (fun u -> serve env listener) (fun u -> talk env port)
+  reply
 
 public main : Runtime -> Unit / { Concurrency, Console, Net }
 let main runtime =
@@ -58,4 +60,4 @@ let main runtime =
   | Err e -> runtime.console.writeLine ("listen failed: " ++ e)
   | Ok listener ->
     let port = runtime.net.localPort listener
-    runtime.console.writeLine (runtime.concurrency.scope (session runtime listener port))
+    runtime.console.writeLine (session runtime listener port)
