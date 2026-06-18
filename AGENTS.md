@@ -738,8 +738,9 @@ object files are declared in an optional **`fai.toml`** (`[native]`:
 `library-dirs`/`libraries`/`objects`) at the workspace root: `fai build` links
 them (AOT) and `fai run` `dlopen`s the shared libraries (JIT). See `docs/CLI.md`.
 
-Every language-surface change must update **all three** docs and add tests
-(parser snapshot, type golden, and/or e2e) in the same change.
+Every language-surface change must update the docs — `AGENTS.md`, `docs/MEMORY.md`,
+and **`llms.txt`** (the agent-facing language guide) — and add tests (parser
+snapshot, type golden, and/or e2e) in the same change.
 
 ## 12. Definition of Done / CI
 
@@ -757,8 +758,12 @@ A change is done when:
    full run.
 4. New behavior has tests at the appropriate levels (see §13); new diagnostics
    have codes + catalog entries.
-5. Any surface-language change is reflected in `AGENTS.md`, `docs/MEMORY.md`
-   (decisions), and the `samples/` directory.
+5. Any surface-language **or standard-library** change is reflected in `AGENTS.md`,
+   `docs/MEMORY.md` (decisions), the `samples/` directory, and **`llms.txt`**.
+   **Always update `llms.txt`** (the agent-facing language guide) when a language
+   feature or a standard-library module/API is added, removed, or changed — its
+   §10 usage prose and §13 standard-library reference must stay in sync with the
+   real surface, or agents reading it will write against a stale API.
 6. Self-hosted check: every `.fai` file in `samples/` is verified by the test
    suite (parsed/formatted, and typechecked/run where applicable) so the docs
    cannot drift from the implementation.
