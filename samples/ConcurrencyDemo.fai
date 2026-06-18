@@ -1,49 +1,39 @@
 module ConcurrencyDemo
 
-// Structured concurrency: open a scope, spawn tasks into its nursery, and combine
-// their results. The scope joins every spawned task before returning, so no task
-// outlives it. `Concurrency` is a capability threaded in from `main`; a function
-// that spawns or awaits surfaces it in its effect row, and `scope`/`spawn` forward
-// the spawned body's own effect, so concurrency never hides what runs inside.
-// The scope body is a top-level helper, partially applied to the captured values
-// and handed to `scope` as a `Nursery -> Int` function. The spawned thunks are
-// pure, so the scope's effect is just `{ Concurrency }`.
-public sumDoubled : { concurrency : Concurrency | _ } -> Int -> Int -> Int / { Concurrency }
-let sumDoubled env a b = env.concurrency.scope (doubledBody env a b)
+// Structured concurrency, made ergonomic. The `Async` combinators wrap the
+// low-level `scope`/`spawn`/`await` and channel primitives, so the common patterns
+// are one-liners — no nursery to thread, no manual `await`/`recv`/`close`. The
+// `Concurrency` capability is still passed explicitly (Fai has no ambient runtime;
+// a function's reach stays visible in its type), but only once per call. Each
+// combinator opens its own structured scope, so no task outlives the call, and the
+// effect row still surfaces `Concurrency`.
+// Run two computations concurrently and combine their results. `Async.parallel2`
+// spawns both, awaits both, and returns the pair — the nursery and awaits are gone.
+public sumDoubled : Concurrency -> Int -> Int -> Int / { Concurrency }
+let sumDoubled c a b =
+  let (ra, rb) = Async.parallel2 c (fun u -> a * 2) (fun u -> b * 2)
+  ra + rb
 
-doubledBody : { concurrency : Concurrency | _ } -> Int -> Int -> Nursery -> Int / { Concurrency }
-let doubledBody env a b nursery =
-  let ta = env.concurrency.spawn nursery (fun u -> a * 2)
-  let tb = env.concurrency.spawn nursery (fun u -> b * 2)
-  env.concurrency.await ta + env.concurrency.await tb
+// Square each element concurrently — one task per element — then sum the results.
+// `Async.mapConcurrent` is a concurrent `List.map`.
+public sumSquares : Concurrency -> List Int -> Int / { Concurrency }
+let sumSquares c xs = List.sum (Async.mapConcurrent c (fun x -> x * x) xs)
 
-// A producer/consumer over a bounded channel: the producer sends each item and
-// closes the channel; the consumer folds until it drains (`recv` yields `None`).
-public sumChannel : { concurrency : Concurrency | _ } -> List Int -> Int / { Concurrency }
-let sumChannel env items = env.concurrency.scope (channelBody env items)
+// A producer/consumer over a bounded channel. `Async.pipe` opens the channel, runs
+// the producer and consumer concurrently, and returns the consumer's result. The
+// producer here is `Async.produceList` (sends each item, then closes); the consumer
+// drains the channel with `Async.collect` and sums it.
+public sumChannel : Concurrency -> List Int -> Int / { Concurrency }
+let sumChannel c items = Async.pipe c 4 (Async.produceList c items) (consume c)
 
-channelBody : { concurrency : Concurrency | _ } -> List Int -> Nursery -> Int / { Concurrency }
-let channelBody env items nursery =
-  let ch = env.concurrency.channel 4
-  let producer = env.concurrency.spawn nursery (produce env ch items)
-  drain env ch 0
-
-produce : { concurrency : Concurrency | _ } -> Channel Int -> List Int -> Unit -> Unit / { Concurrency }
-let produce env ch items u =
-  let sent = List.map (sendOne env ch) items
-  env.concurrency.close ch
-
-sendOne : { concurrency : Concurrency | _ } -> Channel Int -> Int -> Unit / { Concurrency }
-let sendOne env ch item = env.concurrency.send ch item
-
-drain : { concurrency : Concurrency | _ } -> Channel Int -> Int -> Int / { Concurrency }
-let drain env ch acc =
-  match env.concurrency.recv ch with
-  | None -> acc
-  | Some n -> drain env ch (acc + n)
+consume : Concurrency -> Channel Int -> Int / { Concurrency }
+let consume c ch = List.sum (Async.collect c ch)
 
 public main : Runtime -> Unit / { Concurrency, Console }
 let main runtime =
-  let total = sumDoubled runtime 3 4
-  let channelTotal = sumChannel runtime [1, 2, 3, 4, 5]
-  runtime.console.writeLine ("doubled sum = " ++ Int.toString total)
+  let total = sumDoubled runtime.concurrency 3 4
+  let squares = sumSquares runtime.concurrency [1, 2, 3, 4, 5]
+  let channelTotal = sumChannel runtime.concurrency [1, 2, 3, 4, 5]
+  let line1 = runtime.console.writeLine ("doubled sum = " ++ Int.toString total)
+  let line2 = runtime.console.writeLine ("sum of squares = " ++ Int.toString squares)
+  runtime.console.writeLine ("channel sum = " ++ Int.toString channelTotal)

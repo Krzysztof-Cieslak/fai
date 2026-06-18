@@ -1,0 +1,114 @@
+module Async
+
+// High-level concurrency combinators over the `Concurrency` capability's
+// structured primitives (`scope`/`spawn`/`await` and channels). Each takes the
+// `Concurrency` capability as its first argument — threaded in from `main`, e.g.
+// `Async.parallel runtime.concurrency …` — and opens its own structured scope, so
+// callers get fan-out, concurrent maps, and channel pipelines without writing
+// nurseries or manual `await`/`recv`/`close` plumbing.
+//
+// The effect variable `'e` forwards whatever the supplied work performs, so a
+// combinator is exactly as effectful as the functions it runs, plus the
+// `Concurrency` it always uses.
+//
+// Fai is direct-style: a piece of deferred work is an ordinary thunk `Unit -> 'a`,
+// and a blocking step parks its task transparently. So these combinators run plain
+// functions concurrently — they need no monadic computation value or special block
+// syntax. They never observably reorder effects beyond running the supplied work
+// concurrently, and the scope joins every task before returning, so no task
+// outlives the call.
+/// Run every thunk concurrently and collect their results in the original order.
+/// All thunks start before any result is awaited, so they run in parallel; the
+/// scope joins them all before returning.
+public parallel : Concurrency -> List (Unit -> 'a / 'e) -> List 'a / { Concurrency | 'e }
+let parallel c thunks = c.scope (parallelInScope c thunks)
+
+// Spawn every thunk into the scope's nursery, then await each. Splitting spawn from
+// await is what makes the work concurrent: the first pass starts all the tasks, the
+// second collects them (every task is already running before the first await).
+parallelInScope : Concurrency -> List (Unit -> 'a / 'e) -> Nursery -> List 'a / { Concurrency | 'e }
+let parallelInScope c thunks nursery =
+  let tasks = List.map (fun thunk -> c.spawn nursery thunk) thunks
+  List.map (fun task -> c.await task) tasks
+
+/// Run two (possibly differently typed) thunks concurrently, returning both
+/// results as a pair once they finish.
+public parallel2 : Concurrency -> (Unit -> 'a / 'e) -> (Unit -> 'b / 'e) -> ('a * 'b) / { Concurrency | 'e }
+let parallel2 c fa fb = c.scope (parallel2InScope c fa fb)
+
+parallel2InScope : Concurrency -> (Unit -> 'a / 'e) -> (Unit -> 'b / 'e) -> Nursery -> ('a * 'b) / { Concurrency | 'e }
+let parallel2InScope c fa fb nursery =
+  let ta = c.spawn nursery fa
+  let tb = c.spawn nursery fb
+  (c.await ta, c.await tb)
+
+/// Run three thunks concurrently, returning their results as a triple.
+public parallel3 : Concurrency -> (Unit -> 'a / 'e) -> (Unit -> 'b / 'e) -> (Unit -> 'c / 'e) -> ('a * 'b * 'c) / { Concurrency | 'e }
+let parallel3 c fa fb fc = c.scope (parallel3InScope c fa fb fc)
+
+parallel3InScope : Concurrency -> (Unit -> 'a / 'e) -> (Unit -> 'b / 'e) -> (Unit -> 'c / 'e) -> Nursery -> ('a * 'b * 'c) / { Concurrency | 'e }
+let parallel3InScope c fa fb fc nursery =
+  let ta = c.spawn nursery fa
+  let tb = c.spawn nursery fb
+  let tc = c.spawn nursery fc
+  (c.await ta, c.await tb, c.await tc)
+
+/// Apply `f` to every element concurrently — one task per element — collecting the
+/// results in order. A concurrent `List.map`.
+public mapConcurrent : Concurrency -> ('a -> 'b / 'e) -> List 'a -> List 'b / { Concurrency | 'e }
+let mapConcurrent c f xs = c.scope (mapConcurrentInScope c f xs)
+
+mapConcurrentInScope : Concurrency -> ('a -> 'b / 'e) -> List 'a -> Nursery -> List 'b / { Concurrency | 'e }
+let mapConcurrentInScope c f xs nursery =
+  let tasks = List.map (fun x -> c.spawn nursery (fun u -> f x)) xs
+  List.map (fun task -> c.await task) tasks
+
+/// Run `f` on every element concurrently for its effects, discarding the results.
+/// A concurrent `List`-iteration.
+public iterConcurrent : Concurrency -> ('a -> Unit / 'e) -> List 'a -> Unit / { Concurrency | 'e }
+let iterConcurrent c f xs =
+  let ran = mapConcurrent c f xs
+  ()
+
+/// Drain a channel into a list, in receive order, until it is closed and empty.
+/// Pair it with a producer that closes the channel when done (see `produceList`).
+public collect : Concurrency -> Channel 'a -> List 'a / { Concurrency }
+let collect c ch = collectOnto c ch []
+
+// Accumulate received values reversed, reversing once at the end, so draining a
+// long channel runs in constant native stack space (a tail-recursive loop).
+collectOnto : Concurrency -> Channel 'a -> List 'a -> List 'a / { Concurrency }
+let collectOnto c ch acc =
+  match c.recv ch with
+  | None -> List.reverse acc
+  | Some x -> collectOnto c ch (x :: acc)
+
+/// Send every element of a list on a channel, in order. Does not close the channel.
+public sendAll : Concurrency -> Channel 'a -> List 'a -> Unit / { Concurrency }
+let sendAll c ch xs =
+  match xs with
+  | [] -> ()
+  | x :: rest ->
+    let sent = c.send ch x
+    sendAll c ch rest
+
+/// Send every element of `xs` on the channel, then close it — a ready-made producer
+/// for `pipe` (partially apply it: `Async.produceList c xs`).
+public produceList : Concurrency -> List 'a -> Channel 'a -> Unit / { Concurrency }
+let produceList c xs ch =
+  let sent = sendAll c ch xs
+  c.close ch
+
+/// Stream values from `producer` to `consumer` over a fresh bounded channel of the
+/// given capacity, running them concurrently and returning the consumer's result.
+/// `producer` is handed the channel to send on (and should `close` it when done);
+/// `consumer` is handed the same channel to receive from (e.g. via `collect`). The
+/// producer is joined before returning, so it never outlives the call.
+public pipe : Concurrency -> Int -> (Channel 'a -> Unit / 'e) -> (Channel 'a -> 'b / 'e) -> 'b / { Concurrency | 'e }
+let pipe c capacity producer consumer = c.scope (pipeInScope c capacity producer consumer)
+
+pipeInScope : Concurrency -> Int -> (Channel 'a -> Unit / 'e) -> (Channel 'a -> 'b / 'e) -> Nursery -> 'b / { Concurrency | 'e }
+let pipeInScope c capacity producer consumer nursery =
+  let ch = c.channel capacity
+  let task = c.spawn nursery (fun u -> producer ch)
+  consumer ch

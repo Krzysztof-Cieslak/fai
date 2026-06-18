@@ -375,3 +375,151 @@ fn aot_concurrent_program_runs_on_a_single_worker() {
     assert_eq!(run.status.code(), Some(0), "single-worker run should exit cleanly");
     assert_eq!(String::from_utf8_lossy(&run.stdout), "30\n");
 }
+
+// ---------------------------------------------------------------------------
+// The `Async` combinator library (`std/Async.fai`): high-level fan-out, concurrent
+// map, and channel pipelines over the structured primitives. Same in-process JIT
+// harness — these assert the combinators' results and a clean, leak-free exit, so
+// they cover the library that the contract suite cannot (a contract may not
+// reference the `Concurrency` capability the combinators require, FAI6004).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn async_parallel_runs_thunks_and_sums_results() {
+    // `Async.parallel` spawns every thunk, awaits them all, and returns the results.
+    let src = indoc! {r#"
+        module Prog
+
+        public main : Runtime -> Unit / { Concurrency, Console }
+        let main runtime =
+          let results = Async.parallel runtime.concurrency [(fun u -> 1), (fun u -> 2), (fun u -> 3), (fun u -> 4)]
+          runtime.console.writeLine (Int.toString (List.sum results))
+    "#};
+    let (out, code) = run(src);
+    assert_eq!(code, 0, "clean, leak-free exit");
+    assert_eq!(out, "10\n");
+}
+
+#[test]
+fn async_parallel_preserves_result_order() {
+    // The results come back in the thunks' original order, even though they run
+    // concurrently — joined here into a string so order is observable.
+    let src = indoc! {r#"
+        module Prog
+
+        public main : Runtime -> Unit / { Concurrency, Console }
+        let main runtime =
+          let parts = Async.parallel runtime.concurrency [(fun u -> "a"), (fun u -> "b"), (fun u -> "c"), (fun u -> "d")]
+          runtime.console.writeLine (String.join "," parts)
+    "#};
+    let (out, code) = run(src);
+    assert_eq!(code, 0, "clean, leak-free exit");
+    assert_eq!(out, "a,b,c,d\n", "results stay in input order despite concurrent execution");
+}
+
+#[test]
+fn async_parallel2_returns_a_pair() {
+    // `Async.parallel2` runs two (here same-typed) thunks concurrently, pairing them.
+    let src = indoc! {r#"
+        module Prog
+
+        public main : Runtime -> Unit / { Concurrency, Console }
+        let main runtime =
+          let (a, b) = Async.parallel2 runtime.concurrency (fun u -> 6) (fun u -> 8)
+          runtime.console.writeLine (Int.toString (a + b))
+    "#};
+    let (out, code) = run(src);
+    assert_eq!(code, 0, "clean, leak-free exit");
+    assert_eq!(out, "14\n");
+}
+
+#[test]
+fn async_parallel3_returns_a_triple() {
+    // `Async.parallel3` runs three thunks concurrently, returning a triple.
+    let src = indoc! {r#"
+        module Prog
+
+        public main : Runtime -> Unit / { Concurrency, Console }
+        let main runtime =
+          let (a, b, c) = Async.parallel3 runtime.concurrency (fun u -> 3) (fun u -> 4) (fun u -> 5)
+          runtime.console.writeLine (Int.toString (a + b + c))
+    "#};
+    let (out, code) = run(src);
+    assert_eq!(code, 0, "clean, leak-free exit");
+    assert_eq!(out, "12\n");
+}
+
+#[test]
+fn async_map_concurrent_preserves_order() {
+    // A concurrent `List.map`: one task per element, results collected in order.
+    let src = indoc! {r#"
+        module Prog
+
+        public main : Runtime -> Unit / { Concurrency, Console }
+        let main runtime =
+          let parts = Async.mapConcurrent runtime.concurrency (fun x -> Int.toString (x * x)) [1, 2, 3, 4, 5]
+          runtime.console.writeLine (String.join "," parts)
+    "#};
+    let (out, code) = run(src);
+    assert_eq!(code, 0, "clean, leak-free exit");
+    assert_eq!(out, "1,4,9,16,25\n");
+}
+
+#[test]
+fn async_iter_concurrent_runs_an_effect_per_element() {
+    // `Async.iterConcurrent` runs an effectful function on each element for its side
+    // effects, discarding results. Console order is unspecified, so assert the set
+    // of lines (mirrors `tasks_each_write_to_the_console`).
+    let src = indoc! {r#"
+        module Prog
+
+        public main : Runtime -> Unit / { Concurrency, Console }
+        let main runtime =
+          Async.iterConcurrent runtime.concurrency (fun n -> runtime.console.writeLine (Int.toString n)) [1, 2, 3, 4, 5]
+    "#};
+    let (out, code) = run(src);
+    assert_eq!(code, 0, "clean, leak-free exit");
+    let mut lines: Vec<&str> = out.lines().collect();
+    lines.sort_unstable();
+    assert_eq!(lines, vec!["1", "2", "3", "4", "5"], "every element's effect runs exactly once");
+}
+
+#[test]
+fn async_pipe_streams_producer_to_consumer() {
+    // `Async.pipe` runs `Async.produceList` (send each item, then close) concurrently
+    // with a consumer that drains the channel via `Async.collect`. Capacity 4 with 7
+    // items forces backpressure, so a blocked, parked sender is exercised too.
+    let src = indoc! {r#"
+        module Prog
+
+        consume : Concurrency -> Channel Int -> Int / { Concurrency }
+        let consume c ch = List.sum (Async.collect c ch)
+
+        public main : Runtime -> Unit / { Concurrency, Console }
+        let main runtime =
+          let total = Async.pipe runtime.concurrency 4 (Async.produceList runtime.concurrency [1, 2, 3, 4, 5, 6, 7]) (consume runtime.concurrency)
+          runtime.console.writeLine (Int.toString total)
+    "#};
+    let (out, code) = run(src);
+    assert_eq!(code, 0, "clean, leak-free exit");
+    assert_eq!(out, "28\n");
+}
+
+#[test]
+fn async_combinators_are_deterministic_across_runs() {
+    // Pure fan-out via the combinators yields the same result regardless of
+    // scheduling: run repeatedly and require identical output every time.
+    let src = indoc! {r#"
+        module Prog
+
+        public main : Runtime -> Unit / { Concurrency, Console }
+        let main runtime =
+          let squares = Async.mapConcurrent runtime.concurrency (fun x -> x * x) [1, 2, 3, 4, 5, 6, 7, 8]
+          runtime.console.writeLine (Int.toString (List.sum squares))
+    "#};
+    for _ in 0..16 {
+        let (out, code) = run(src);
+        assert_eq!(code, 0, "clean, leak-free exit");
+        assert_eq!(out, "204\n", "a pure concurrent map/sum is deterministic");
+    }
+}
