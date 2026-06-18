@@ -1,0 +1,565 @@
+module Stream
+
+// A pull-based, lazy, effect-carrying sequence: the composable abstraction for
+// streaming data (progressive file/stdio reading, generated sequences, pipelines)
+// without materializing it all at once.
+//
+// A `Stream 'a 'e` is a suspended computation that, when forced, yields one
+// `Step`: `Done` (the end), `Yield x rest` (an element and the rest of the
+// stream), or `Fail message` (an error — e.g. a mid-stream read failure). The
+// effect parameter `'e` rides inside the suspension, so *building* a stream is
+// pure and only *consuming* one (forcing its steps) performs `'e` — every
+// transformer below has a pure (bare) arrow, while every terminal consumer carries
+// `/ 'e`.
+//
+// `Stream` is opaque (its `MkStream` constructor is hidden); build streams with
+// the construction kit (`empty`/`cons`/`defer`/`failed`/`unfold`) or the producers,
+// and observe one step at a time with `next`. Transformers thread `Fail` through
+// unchanged; terminal consumers return `Result _ String`, short-circuiting to
+// `Err` on the first `Fail`.
+//
+// A stream backed by I/O is consumed **linearly** (force each step once): forcing
+// a node runs its effect, and re-forcing an already-consumed node would repeat it.
+// Resource cleanup is automatic — a handle captured in an unforced step closes
+// when the stream value is dropped (reference counting), whether the stream is
+// fully consumed, partially consumed, or abandoned.
+public opaque type Stream 'a 'e =
+  | MkStream (Unit -> Step 'a 'e / 'e)
+
+// One observation of a stream: the end, an element with the rest, or an error.
+// Internal: `Stream` is fully opaque — build streams with the construction kit and
+// producers, and consume them with the terminal consumers (`fold`/`toList`/…),
+// which cover every use (`fold` is universal). The representation stays swappable.
+type Step 'a 'e =
+  | Done
+  | Yield 'a (Stream 'a 'e)
+  | Fail String
+
+// Forces one step of a stream: `Done`, `Yield element rest`, or `Fail message`.
+let next s =
+  match s with
+  | MkStream thunk -> thunk ()
+
+// --- Construction kit (representation-agnostic; build custom sources here) ---
+/// The empty stream.
+public empty : Stream 'a 'e
+let empty = MkStream (fun u -> Done)
+
+/// Prepends `x` to `rest` (the head is eager, the tail lazy).
+public cons : 'a -> Stream 'a 'e -> Stream 'a 'e
+let cons x rest = MkStream (fun u -> Yield x rest)
+
+/// Suspends a stream-producing computation: nothing in `f` runs until the result
+/// is forced. The laziness primitive for hand-written producers.
+public defer : (Unit -> Stream 'a 'e / 'e) -> Stream 'a 'e
+let defer f = MkStream (fun u -> next (f ()))
+
+/// A stream that fails with `message` when forced.
+public failed : String -> Stream 'a 'e
+let failed message = MkStream (fun u -> Fail message)
+
+/// Builds a stream by repeatedly applying `step` to a seed: `Some (x, seed2)`
+/// yields `x` and continues from `seed2`; `None` ends the stream.
+public unfold : ('s -> Option ('a * 's) / 'e) -> 's -> Stream 'a 'e
+let unfold step seed =
+  MkStream (fun u ->
+    match step seed with
+    | None -> Done
+    | Some (x, seed2) -> Yield x (unfold step seed2))
+
+// --- Producers ---
+/// A one-element stream.
+public singleton : 'a -> Stream 'a 'e
+let singleton x = MkStream (fun u -> Yield x empty)
+
+/// Streams the elements of a list.
+public fromList : List 'a -> Stream 'a 'e
+let fromList xs =
+  MkStream (fun u ->
+    match xs with
+    | [] -> Done
+    | x :: rest -> Yield x (fromList rest))
+
+let fromArrayFrom arr i =
+  MkStream (fun u ->
+    if i >= Array.length arr then
+      Done
+    else
+      Yield (Array.unsafeGet i arr) (fromArrayFrom arr (i + 1)))
+
+/// Streams the elements of an array (left to right).
+public fromArray : Array 'a -> Stream 'a 'e
+let fromArray arr = fromArrayFrom arr 0
+
+/// The ascending integers `lo, lo+1, …, hi-1` (empty when `lo >= hi`).
+public range : Int -> Int -> Stream Int 'e
+let range lo hi = MkStream (fun u -> if lo >= hi then Done else Yield lo (range (lo + 1) hi))
+
+/// An infinite stream repeating `x` (use with `take`).
+public repeat : 'a -> Stream 'a 'e
+let repeat x = MkStream (fun u -> Yield x (repeat x))
+
+/// The infinite stream `x, f x, f (f x), …` (use with `take`/`takeWhile`).
+public iterate : ('a -> 'a / 'e) -> 'a -> Stream 'a 'e
+let iterate f x = MkStream (fun u -> Yield x (iterate f (f x)))
+
+// --- Transformers (pure: they build a stream; `Fail` passes through) ---
+/// Applies `f` to every element.
+public map : ('a -> 'b / 'e) -> Stream 'a 'e -> Stream 'b 'e
+let map f s =
+  MkStream (fun u ->
+    match next s with
+    | Done -> Done
+    | Fail e -> Fail e
+    | Yield x rest -> Yield (f x) (map f rest))
+
+let filterStep p s =
+  match next s with
+  | Done -> Done
+  | Fail e -> Fail e
+  | Yield x rest -> if p x then Yield x (filter p rest) else filterStep p rest
+
+/// Keeps only the elements satisfying `p`.
+public filter : ('a -> Bool / 'e) -> Stream 'a 'e -> Stream 'a 'e
+let filter p s = MkStream (fun u -> filterStep p s)
+
+let filterMapStep f s =
+  match next s with
+  | Done -> Done
+  | Fail e -> Fail e
+  | Yield x rest ->
+    match f x with
+    | Some y -> Yield y (filterMap f rest)
+    | None -> filterMapStep f rest
+
+/// Applies `f`, keeping the `Some` results and dropping the `None`s.
+public filterMap : ('a -> Option 'b / 'e) -> Stream 'a 'e -> Stream 'b 'e
+let filterMap f s = MkStream (fun u -> filterMapStep f s)
+
+/// The first `n` elements (fewer if the stream ends first).
+public take : Int -> Stream 'a 'e -> Stream 'a 'e
+let take n s =
+  MkStream (fun u ->
+    if n <= 0 then
+      Done
+    else
+      match next s with
+      | Done -> Done
+      | Fail e -> Fail e
+      | Yield x rest -> Yield x (take (n - 1) rest))
+
+/// The leading elements satisfying `p` (stops at the first that does not).
+public takeWhile : ('a -> Bool / 'e) -> Stream 'a 'e -> Stream 'a 'e
+let takeWhile p s =
+  MkStream (fun u ->
+    match next s with
+    | Done -> Done
+    | Fail e -> Fail e
+    | Yield x rest -> if p x then Yield x (takeWhile p rest) else Done)
+
+let dropStep n s =
+  if n <= 0 then
+    next s
+  else
+    match next s with
+    | Done -> Done
+    | Fail e -> Fail e
+    | Yield x rest -> dropStep (n - 1) rest
+
+/// Skips the first `n` elements.
+public drop : Int -> Stream 'a 'e -> Stream 'a 'e
+let drop n s = MkStream (fun u -> dropStep n s)
+
+let dropWhileStep p s =
+  match next s with
+  | Done -> Done
+  | Fail e -> Fail e
+  | Yield x rest -> if p x then dropWhileStep p rest else Yield x rest
+
+/// Skips the leading elements satisfying `p`.
+public dropWhile : ('a -> Bool / 'e) -> Stream 'a 'e -> Stream 'a 'e
+let dropWhile p s = MkStream (fun u -> dropWhileStep p s)
+
+/// Concatenates two streams (the second follows the first; a `Fail` in the first
+/// short-circuits).
+public append : Stream 'a 'e -> Stream 'a 'e -> Stream 'a 'e
+let append xs ys =
+  MkStream (fun u ->
+    match next xs with
+    | Done -> next ys
+    | Fail e -> Fail e
+    | Yield x rest -> Yield x (append rest ys))
+
+let flatMapStep f outer inner =
+  match next inner with
+  | Yield y rest -> Yield y (MkStream (fun u -> flatMapStep f outer rest))
+  | Fail e -> Fail e
+  | Done ->
+    match next outer with
+    | Done -> Done
+    | Fail e -> Fail e
+    | Yield x outerRest -> flatMapStep f outerRest (f x)
+
+/// Maps each element to a stream and concatenates the results.
+public flatMap : ('a -> Stream 'b 'e / 'e) -> Stream 'a 'e -> Stream 'b 'e
+let flatMap f outer = MkStream (fun u -> flatMapStep f outer empty)
+
+let zipWithStep f xs ys =
+  match next xs with
+  | Done -> Done
+  | Fail e -> Fail e
+  | Yield x xrest ->
+    match next ys with
+    | Done -> Done
+    | Fail e -> Fail e
+    | Yield y yrest -> Yield (f x y) (zipWith f xrest yrest)
+
+/// Combines two streams element-wise with `f`, stopping when either ends.
+public zipWith : ('a -> 'b -> 'c / 'e) -> Stream 'a 'e -> Stream 'b 'e -> Stream 'c 'e
+let zipWith f xs ys = MkStream (fun u -> zipWithStep f xs ys)
+
+/// Pairs two streams element-wise, stopping when either ends.
+public zip : Stream 'a 'e -> Stream 'b 'e -> Stream ('a * 'b) 'e
+let zip xs ys = zipWith (fun x y -> (x, y)) xs ys
+
+let scanStep f acc s =
+  match next s with
+  | Done -> Done
+  | Fail e -> Fail e
+  | Yield x rest ->
+    let acc2 = f acc x
+    Yield acc2 (scan f acc2 rest)
+
+/// The running accumulations: yields `f acc x0`, then `f (f acc x0) x1`, ….
+public scan : ('acc -> 'a -> 'acc / 'e) -> 'acc -> Stream 'a 'e -> Stream 'acc 'e
+let scan f acc s = MkStream (fun u -> scanStep f acc s)
+
+let mapAccumStep f acc s =
+  match next s with
+  | Done -> Done
+  | Fail e -> Fail e
+  | Yield x rest ->
+    match f acc x with
+    | (acc2, y) -> Yield y (mapAccum f acc2 rest)
+
+/// Threads an accumulator left to right, yielding the mapped element each step.
+public mapAccum : ('acc -> 'a -> ('acc * 'b) / 'e) -> 'acc -> Stream 'a 'e -> Stream 'b 'e
+let mapAccum f acc s = MkStream (fun u -> mapAccumStep f acc s)
+
+let collectChunk n remaining s acc =
+  if remaining <= 0 then
+    Yield (List.reverse acc) (chunksOf n s)
+  else
+    match next s with
+    | Fail e -> Fail e
+    | Done -> if List.isEmpty acc then Done else Yield (List.reverse acc) empty
+    | Yield x rest -> collectChunk n (remaining - 1) rest (x :: acc)
+
+/// Groups elements into lists of up to `n` (the last group may be smaller).
+public chunksOf : Int -> Stream 'a 'e -> Stream (List 'a) 'e
+let chunksOf n s = if n <= 0 then empty else MkStream (fun u -> collectChunk n n s [])
+
+let enumerateFrom i s =
+  MkStream (fun u ->
+    match next s with
+    | Done -> Done
+    | Fail e -> Fail e
+    | Yield x rest -> Yield (i, x) (enumerateFrom (i + 1) rest))
+
+/// Pairs each element with its 0-based index.
+public enumerate : Stream 'a 'e -> Stream (Int * 'a) 'e
+let enumerate s = enumerateFrom 0 s
+
+let intersperseRest sep s =
+  match next s with
+  | Done -> Done
+  | Fail e -> Fail e
+  | Yield x rest -> Yield sep (cons x (MkStream (fun u -> intersperseRest sep rest)))
+
+/// Inserts `sep` between consecutive elements.
+public intersperse : 'a -> Stream 'a 'e -> Stream 'a 'e
+let intersperse sep s =
+  MkStream (fun u ->
+    match next s with
+    | Done -> Done
+    | Fail e -> Fail e
+    | Yield x rest -> Yield x (MkStream (fun u2 -> intersperseRest sep rest)))
+
+// --- Consumers (drive the effects; return `Result _ String`, `Err` on `Fail`) ---
+/// Left fold over the stream's elements.
+public fold : ('acc -> 'a -> 'acc / 'e) -> 'acc -> Stream 'a 'e -> Result 'acc String / 'e
+let fold f acc s =
+  match next s with
+  | Done -> Ok acc
+  | Fail e -> Err e
+  | Yield x rest -> fold f (f acc x) rest
+
+/// Applies `f` to every element for its effect.
+public forEach : ('a -> Unit / 'e) -> Stream 'a 'e -> Result Unit String / 'e
+let forEach f s =
+  match next s with
+  | Done -> Ok ()
+  | Fail e -> Err e
+  | Yield x rest ->
+    let done1 = f x
+    forEach f rest
+
+let toListLoop s acc =
+  match next s with
+  | Done -> Ok (List.reverse acc)
+  | Fail e -> Err e
+  | Yield x rest -> toListLoop rest (x :: acc)
+
+/// Collects every element into a list.
+public toList : Stream 'a 'e -> Result (List 'a) String / 'e
+let toList s = toListLoop s []
+
+/// Collects every element into an array.
+public toArray : Stream 'a 'e -> Result (Array 'a) String / 'e
+let toArray s =
+  match toList s with
+  | Ok xs -> Ok (Array.fromList xs)
+  | Err e -> Err e
+
+/// Consumes the stream for its effects, discarding the elements.
+public drain : Stream 'a 'e -> Result Unit String / 'e
+let drain s =
+  match next s with
+  | Done -> Ok ()
+  | Fail e -> Err e
+  | Yield x rest -> drain rest
+
+let lengthLoop s n =
+  match next s with
+  | Done -> Ok n
+  | Fail e -> Err e
+  | Yield x rest -> lengthLoop rest (n + 1)
+
+/// Counts the elements.
+public length : Stream 'a 'e -> Result Int String / 'e
+let length s = lengthLoop s 0
+
+/// The first element satisfying `p`, if any.
+public find : ('a -> Bool / 'e) -> Stream 'a 'e -> Result (Option 'a) String / 'e
+let find p s =
+  match next s with
+  | Done -> Ok None
+  | Fail e -> Err e
+  | Yield x rest -> if p x then Ok (Some x) else find p rest
+
+/// Whether any element satisfies `p` (short-circuits).
+public any : ('a -> Bool / 'e) -> Stream 'a 'e -> Result Bool String / 'e
+let any p s =
+  match next s with
+  | Done -> Ok false
+  | Fail e -> Err e
+  | Yield x rest -> if p x then Ok true else any p rest
+
+/// Whether every element satisfies `p` (short-circuits).
+public all : ('a -> Bool / 'e) -> Stream 'a 'e -> Result Bool String / 'e
+let all p s =
+  match next s with
+  | Done -> Ok true
+  | Fail e -> Err e
+  | Yield x rest -> if p x then all p rest else Ok false
+
+/// The first element, if any.
+public head : Stream 'a 'e -> Result (Option 'a) String / 'e
+let head s =
+  match next s with
+  | Done -> Ok None
+  | Fail e -> Err e
+  | Yield x rest -> Ok (Some x)
+
+let lastLoop s acc =
+  match next s with
+  | Done -> Ok acc
+  | Fail e -> Err e
+  | Yield x rest -> lastLoop rest (Some x)
+
+/// The last element, if any (traverses the whole stream).
+public last : Stream 'a 'e -> Result (Option 'a) String / 'e
+let last s = lastLoop s None
+
+// --- I/O sources (lazy: the file opens on first consumption; open and read
+//     errors both surface as `Fail`, caught by the terminal consumer's `Result`.
+//     The handle closes when the stream is dropped — reference counting). ---
+/// Streams a reader's bytes in chunks of up to `size` bytes (an empty read — end
+/// of file — ends the stream). The reader is advanced in place across steps.
+public ofReader : { fs : FileSystem | _ } -> Reader -> Int -> Stream Bytes { FileSystem }
+let ofReader env reader size =
+  MkStream (fun u ->
+    match env.fs.readChunk reader size with
+    | Err e -> Fail e
+    | Ok chunk -> if Bytes.length chunk = 0 then Done else Yield chunk (ofReader env reader size))
+
+/// Opens `path` and streams its bytes in chunks of up to `size` bytes. Pure to
+/// build; the file opens on first consumption and an open error becomes `Fail`.
+public fileBytes : { fs : FileSystem | _ } -> String -> Int -> Stream Bytes { FileSystem }
+let fileBytes env path size =
+  defer (fun u ->
+    match env.fs.openRead path with
+    | Err e -> failed e
+    | Ok reader -> ofReader env reader size)
+
+let indexOfNewline b i =
+  if i >= Bytes.length b then
+    None
+  else if Bytes.unsafeGet i b = 10 then Some i else indexOfNewline b (i + 1)
+
+// Splits a byte stream into UTF-8 text lines, buffering across chunk boundaries so
+// a multi-byte character split between chunks is decoded whole. A line that is not
+// valid UTF-8 fails the stream.
+let decodeStep src leftover =
+  match indexOfNewline leftover 0 with
+  | Some i ->
+    match Bytes.toString (Bytes.slice 0 i leftover) with
+    | None -> Fail "Stream: invalid UTF-8"
+    | Some line ->
+      Yield line (MkStream (fun u ->
+        decodeStep src (Bytes.slice (i + 1) (Bytes.length leftover) leftover)))
+  | None ->
+    match next src with
+    | Fail e -> Fail e
+    | Yield chunk rest -> decodeStep rest (Bytes.concat leftover chunk)
+    | Done ->
+      if Bytes.length leftover = 0 then
+        Done
+      else
+        match Bytes.toString leftover with
+        | None -> Fail "Stream: invalid UTF-8"
+        | Some line -> Yield line empty
+
+/// Decodes a byte stream into newline-separated UTF-8 lines (the `\n` is dropped;
+/// a final line without a trailing newline is still yielded). Buffers across chunk
+/// boundaries, so a chunk may split a multi-byte character safely.
+public decodeUtf8Lines : Stream Bytes 'e -> Stream String 'e
+let decodeUtf8Lines src = MkStream (fun u -> decodeStep src Bytes.empty)
+
+/// Opens `path` and streams its UTF-8 lines (64 KiB chunks). Lazy and resource-safe
+/// like `fileBytes`.
+public fileLines : { fs : FileSystem | _ } -> String -> Stream String { FileSystem }
+let fileLines env path = decodeUtf8Lines (fileBytes env path 65536)
+
+/// Streams lines read from standard input until end of input.
+public stdinLines : { console : Console | _ } -> Stream String { Console }
+let stdinLines env =
+  MkStream (fun u ->
+    match env.console.readLine () with
+    | Err e -> Fail e
+    | Ok None -> Done
+    | Ok (Some line) -> Yield line (stdinLines env))
+
+// --- Sinks (drive the stream into an output; `Result Unit String`, short-
+//     circuiting on a `Fail` or a write error) ---
+/// Writes every byte chunk to an open writer (the caller owns and closes it).
+public toWriter : { fs : FileSystem | _ } -> Writer -> Stream Bytes 'e -> Result Unit String / { FileSystem | 'e }
+let toWriter env writer s =
+  match next s with
+  | Done -> Ok ()
+  | Fail e -> Err e
+  | Yield chunk rest ->
+    match env.fs.writeChunk writer chunk with
+    | Err e -> Err e
+    | Ok written -> toWriter env writer rest
+
+/// Writes a byte stream to `path` (creating/truncating it), flushing and closing.
+public toFile : { fs : FileSystem | _ } -> String -> Stream Bytes 'e -> Result Unit String / { FileSystem | 'e }
+let toFile env path s =
+  match env.fs.openWrite path with
+  | Err e -> Err e
+  | Ok writer ->
+    match toWriter env writer s with
+    | Err e -> Err e
+    | Ok written -> env.fs.closeWriter writer
+
+/// Writes a byte stream to the end of `path` (creating it if absent).
+public appendToFile : { fs : FileSystem | _ } -> String -> Stream Bytes 'e -> Result Unit String / { FileSystem | 'e }
+let appendToFile env path s =
+  match env.fs.openAppend path with
+  | Err e -> Err e
+  | Ok writer ->
+    match toWriter env writer s with
+    | Err e -> Err e
+    | Ok written -> env.fs.closeWriter writer
+
+/// Writes a text stream to `path` as UTF-8 (each element written verbatim).
+public toFileText : { fs : FileSystem | _ } -> String -> Stream String 'e -> Result Unit String / { FileSystem | 'e }
+let toFileText env path s = toFile env path (map Bytes.fromString s)
+
+/// Writes a text stream to `path`, one element per line (a `\n` after each).
+public writeLinesToFile : { fs : FileSystem | _ } -> String -> Stream String 'e -> Result Unit String / { FileSystem | 'e }
+let writeLinesToFile env path s =
+  toFile env path (map (fun line -> Bytes.fromString (line ++ "\n")) s)
+
+/// Writes every element to stdout verbatim (no added newline).
+public toStdout : { console : Console | _ } -> Stream String 'e -> Result Unit String / { Console | 'e }
+let toStdout env s =
+  match next s with
+  | Done -> Ok ()
+  | Fail e -> Err e
+  | Yield line rest ->
+    let written = env.console.write line
+    toStdout env rest
+
+/// Writes every element to stdout, one per line (a `\n` after each).
+public toStdoutLines : { console : Console | _ } -> Stream String 'e -> Result Unit String / { Console | 'e }
+let toStdoutLines env s =
+  match next s with
+  | Done -> Ok ()
+  | Fail e -> Err e
+  | Yield line rest ->
+    let written = env.console.writeLine line
+    toStdoutLines env rest
+
+/// Writes every element to stderr, one per line (a `\n` after each).
+public toStderr : { console : Console | _ } -> Stream String 'e -> Result Unit String / { Console | 'e }
+let toStderr env s =
+  match next s with
+  | Done -> Ok ()
+  | Fail e -> Err e
+  | Yield line rest ->
+    let written = env.console.writeError line
+    toStderr env rest
+// --- Laws (checked by `fai test`; the closed `example`s also by `fai check`) ---
+example: toList (fromList [1, 2, 3]) = Ok [1, 2, 3]
+example: toList (range 0 4) = Ok [0, 1, 2, 3]
+example: toList (map (fun x -> x + 1) (fromList [1, 2, 3])) = Ok [2, 3, 4]
+example: toList (filter (fun x -> x > 2) (fromList [1, 2, 3, 4])) = Ok [3, 4]
+example: toList (filterMap (fun x ->
+  if x > 2 then Some (x * 10) else None) (fromList [1, 2, 3, 4])) = Ok [30, 40]
+example: toList (take 2 (range 0 100)) = Ok [0, 1]
+example: toList (takeWhile (fun x -> x < 3) (fromList [1, 2, 3, 4, 1])) = Ok [1, 2]
+example: toList (drop 2 (fromList [1, 2, 3, 4])) = Ok [3, 4]
+example: toList (dropWhile (fun x -> x < 3) (fromList [1, 2, 3, 4, 1])) = Ok [3, 4, 1]
+example: toList (append (fromList [1, 2]) (fromList [3, 4])) = Ok [1, 2, 3, 4]
+example: toList (flatMap (fun x -> fromList [x, x]) (fromList [1, 2])) = Ok [1, 1, 2, 2]
+example: toList (zip (fromList [1, 2]) (fromList [10, 20, 30])) = Ok [(1, 10), (2, 20)]
+example: toList (scan (fun acc x -> acc + x) 0 (fromList [1, 2, 3])) = Ok [1, 3, 6]
+example: toList (enumerate (fromList [7, 8])) = Ok [(0, 7), (1, 8)]
+example: toList (intersperse 0 (fromList [1, 2, 3])) = Ok [1, 0, 2, 0, 3]
+example: toList (cons 1 (cons 2 empty)) = Ok [1, 2]
+example: toList (singleton 42) = Ok [42]
+example: toList (take 3 (repeat 9)) = Ok [9, 9, 9]
+example: toList (take 4 (iterate (fun x -> x * 2) 1)) = Ok [1, 2, 4, 8]
+example: fold (fun acc x -> acc + x) 0 (range 1 5) = Ok 10
+example: length (fromList [10, 20, 30]) = Ok 3
+example: head (range 5 10) = Ok (Some 5)
+example: last (fromList [1, 2, 3]) = Ok (Some 3)
+example: find (fun x -> x > 2) (fromList [1, 2, 3, 4]) = Ok (Some 3)
+example: any (fun x -> x > 3) (fromList [1, 2, 3]) = Ok false
+example: all (fun x -> x > 0) (fromList [1, 2, 3]) = Ok true
+example: fold (fun acc x -> acc + x) 0 (failed "boom") = Err "boom"
+example: fold (fun acc x -> acc + x) 0 (append (fromList [1, 2]) (failed "boom")) = Err "boom"
+example: toList (fromArray [| 1, 2, 3 |]) = Ok [1, 2, 3]
+example: toArray (fromList [1, 2, 3]) = Ok [| 1, 2, 3 |]
+example: toList (defer (fun u -> fromList [1, 2])) = Ok [1, 2]
+example: toList (unfold (fun n -> if n > 3 then None else Some (n, n + 1)) 1) = Ok [1, 2, 3]
+example: toList (zipWith (fun a b -> a + b) (fromList [1, 2]) (fromList [10, 20])) = Ok [11, 22]
+example: toList (mapAccum (fun acc x -> (acc + x, acc)) 0 (fromList [1, 2, 3])) = Ok [0, 1, 3]
+example: toList (chunksOf 2 (fromList [1, 2, 3, 4, 5])) = Ok [[1, 2], [3, 4], [5]]
+example: toList (decodeUtf8Lines (fromList [Bytes.fromString "ab\ncd\n"])) = Ok ["ab", "cd"]
+example: drain (fromList [1, 2, 3]) = Ok ()
+example: forEach (fun x -> ()) (fromList [1, 2, 3]) = Ok ()
+forall xs: toList (fromList xs) = Ok xs
+forall xs: length (fromList xs) = Ok (List.length xs)

@@ -930,7 +930,22 @@ pub fn adt_param_kinds(db: &dyn Db, adt: AdtRef) -> Vec<ParamKind> {
 #[must_use]
 pub fn adt_param_usage(db: &dyn Db, adt: AdtRef) -> Vec<(bool, bool)> {
     let Some(file) = db.source_file(adt.file) else { return Vec::new() };
-    file_type_param_usage(db, file).get(&adt.name).cloned().unwrap_or_default()
+    file_param_usage(db, file).get(&adt.name).cloned().unwrap_or_default()
+}
+
+/// Memoized per-file parameter usage. The per-use callers — `adt_param_kinds`
+/// during lowering and `adt_param_usage` during declaration validation — would
+/// otherwise recompute the whole-file fixpoint on every type application (e.g.
+/// `Prelude`'s on every `Option`/`Result` use), which is quadratic over a program.
+/// Salsa caches it per file/revision. The fixpoint's *own* cross-file recursion
+/// uses the unmemoized [`file_type_param_usage`] directly, so this query never
+/// re-enters itself (a cross-file type cycle would otherwise be a salsa cycle).
+#[salsa::tracked]
+pub(crate) fn file_param_usage(
+    db: &dyn Db,
+    file: SourceFile,
+) -> Arc<FxHashMap<Symbol, Vec<(bool, bool)>>> {
+    Arc::new(file_type_param_usage(db, file))
 }
 
 /// Computes, for every `type`/alias in `file` at once, each parameter's
@@ -1140,13 +1155,25 @@ fn slot_kinds_of(
                     .collect();
             }
         } else {
-            return adt_param_kinds(
-                lowerer.db,
-                AdtRef::new(decl_file.source(lowerer.db), info.name),
-            )
-            .into_iter()
-            .map(SlotKind::from_param_kind)
-            .collect();
+            // Cross-file: use the unmemoized, cycle-guarded computation directly so
+            // this never re-enters the memoized `file_param_usage` query (a
+            // cross-file type cycle would otherwise be a salsa cycle). The
+            // referenced file's usage is converged, so a slot is `Effect` iff used
+            // only as an effect, else `Type`.
+            let other = file_type_param_usage(lowerer.db, decl_file);
+            return other
+                .get(&info.name)
+                .map(|flags| {
+                    flags
+                        .iter()
+                        .map(
+                            |&(ty_used, eff_used)| {
+                                if eff_used && !ty_used { SlotKind::Effect } else { SlotKind::Type }
+                            },
+                        )
+                        .collect()
+                })
+                .unwrap_or_else(|| vec![SlotKind::Type; arity]);
         }
     }
     vec![SlotKind::Type; arity]

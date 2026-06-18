@@ -26,6 +26,11 @@ public type HashDict 'k 'v = HashDict.HashDict 'k 'v
 
 public type HashSet 'a = HashSet.HashSet 'a
 
+// The lazy, effect-carrying `Stream` is an opaque type in the `Stream` module; this
+// alias keeps its name usable unqualified in signatures (the effect parameter `'e`
+// threads through). Build and consume streams through `Stream.*`.
+public type Stream 'a 'e = Stream.Stream 'a 'e
+
 // The concurrency handle types are opaque types in the `Concurrency` module; these
 // aliases keep their names usable unqualified in signatures. Build and consume them
 // only through the `Concurrency` capability.
@@ -43,6 +48,13 @@ public type Listener = Net.Listener
 public type Connection = Net.Connection
 
 public type UdpSocket = Net.UdpSocket
+
+// The opaque file-handle types are declared in the `Io` module; these aliases keep
+// their names usable unqualified. Build and consume them only through the
+// `FileSystem` capability (`openRead`/`openWrite`/…).
+public type Reader = Io.Reader
+
+public type Writer = Io.Writer
 
 /// The identity function.
 public identity : 'a -> 'a
@@ -98,6 +110,9 @@ public interface Ord 'a =
 // Each method is annotated with its own capability as an effect, so calling it
 // (directly or through a captured closure) shows up in a function's effect row.
 public interface Console =
+  readLine : Unit -> Result (Option String) String / { Console }
+  write : String -> Unit / { Console }
+  writeError : String -> Unit / { Console }
   writeLine : String -> Unit / { Console }
 
 public interface Clock =
@@ -107,7 +122,14 @@ public interface Random =
   nextInt : Int -> Int / { Random }
 
 public interface FileSystem =
+  closeReader : Reader -> Unit / { FileSystem }
+  closeWriter : Writer -> Result Unit String / { FileSystem }
+  openAppend : String -> Result Writer String / { FileSystem }
+  openRead : String -> Result Reader String / { FileSystem }
+  openWrite : String -> Result Writer String / { FileSystem }
+  readChunk : Reader -> Int -> Result Bytes String / { FileSystem }
   readFile : String -> Result String String / { FileSystem }
+  writeChunk : Writer -> Bytes -> Result Unit String / { FileSystem }
   writeFile : String -> String -> Result Unit String / { FileSystem }
 
 public interface Env =
@@ -162,6 +184,15 @@ public type Runtime = { clock : Clock, concurrency : Concurrency, console : Cons
 // is exposed only through a capability interface, never directly).
 foreign "fai_console_write_line" consoleWriteLine : String -> Unit / { Console }
 
+foreign "fai_console_write" consoleWrite : String -> Unit / { Console }
+
+foreign "fai_console_write_error" consoleWriteError : String -> Unit / { Console }
+
+// Reads one stdin line as an `(Int * String)` status pair — status `0` a line, `1`
+// end of input, `2` an error — which `readLineHost` turns into the
+// `Result (Option String) String` the interface exposes.
+foreign "fai_console_read_line" consoleReadLine : Unit -> (Int * String) / { Console }
+
 foreign "fai_clock_now" clockNow : Unit -> Int / { Clock }
 
 foreign "fai_random_next_int" randomNextInt : Int -> Int / { Random }
@@ -172,6 +203,24 @@ foreign "fai_random_next_int" randomNextInt : Int -> Int / { Random }
 foreign "fai_file_read" fileRead : String -> (Bool * String) / { FileSystem }
 
 foreign "fai_file_write" fileWrite : String -> String -> (Bool * String) / { FileSystem }
+
+// The progressive file-handle primitives. Each returns the `Result` it declares
+// (built by the runtime), so the standard instance binds them directly. A
+// blocking read/write is offloaded to the blocking pool inside a task (the task
+// parks) and run inline otherwise. `readChunk` returns an empty `Bytes` at EOF.
+foreign "fai_file_open_read" fileOpenRead : String -> Result Reader String / { FileSystem }
+
+foreign "fai_file_open_write" fileOpenWrite : String -> Result Writer String / { FileSystem }
+
+foreign "fai_file_open_append" fileOpenAppend : String -> Result Writer String / { FileSystem }
+
+foreign "fai_file_read_chunk" fileReadChunk : Reader -> Int -> Result Bytes String / { FileSystem }
+
+foreign "fai_file_write_chunk" fileWriteChunk : Writer -> Bytes -> Result Unit String / { FileSystem }
+
+foreign "fai_file_close_reader" fileCloseReader : Reader -> Unit / { FileSystem }
+
+foreign "fai_file_close_writer" fileCloseWriter : Writer -> Result Unit String / { FileSystem }
 
 foreign "fai_env_get" envGet : String -> (Bool * String) / { Env }
 
@@ -226,8 +275,17 @@ foreign "fai_udp_close" udpCloseRaw : UdpSocket -> Unit / { Net }
 // `public` so a program can compose its own extended `Runtime` from them plus its
 // own (foreign-backed) capability instances; ordinarily a program just receives
 // them bundled in the `Runtime` `main` is applied to.
+// Turns the `(Int * String)` status pair `consoleReadLine` returns into the
+// `Result (Option String) String` the `Console` interface exposes: status `0` is
+// a line, `1` end of input (`Ok None`), anything else an error.
+let readLineHost u =
+  match consoleReadLine u with
+  | (status, payload) ->
+    if status = 0 then Ok (Some payload) else if status = 1 then Ok None else Err payload
+
 public stdConsole : Console
-let stdConsole = { Console with writeLine s = consoleWriteLine s }
+let stdConsole =
+  { Console with readLine = readLineHost, write s = consoleWrite s, writeError s = consoleWriteError s, writeLine s = consoleWriteLine s }
 
 public stdClock : Clock
 let stdClock = { Clock with now u = clockNow u }
@@ -248,7 +306,8 @@ let envGetHost name =
   | (found, value) -> if found then Some value else None
 
 public stdFs : FileSystem
-let stdFs = { FileSystem with readFile = readFileHost, writeFile = writeFileHost }
+let stdFs =
+  { FileSystem with closeReader = fileCloseReader, closeWriter = fileCloseWriter, openAppend = fileOpenAppend, openRead = fileOpenRead, openWrite = fileOpenWrite, readChunk = fileReadChunk, readFile = readFileHost, writeChunk = fileWriteChunk, writeFile = writeFileHost }
 
 public stdEnv : Env
 let stdEnv = { Env with args u = envArgs u, get = envGetHost }

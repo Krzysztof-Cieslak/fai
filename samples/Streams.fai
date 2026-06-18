@@ -1,0 +1,35 @@
+module Streams
+
+// Streams: a lazy, pull-based, effect-carrying sequence for processing data
+// incrementally — generated sequences, and progressive file/stdio reading —
+// without materializing it all at once. Transformers (`map`/`filter`/…) are pure
+// and compose into a pipeline; only a terminal consumer (`fold`/`toList`/…) runs
+// the effects, returning a `Result` that is `Err` on a mid-stream failure.
+// A pure in-memory pipeline: the even squares below 10, summed. Nothing is
+// computed until `fold` drives the stream, and no intermediate list is built.
+public sumEvenSquares : Int -> Result Int String
+let sumEvenSquares n =
+  Stream.range 0 n |> Stream.filter (fun x ->
+    x % 2 = 0) |> Stream.map (fun x -> x * x) |> Stream.fold (fun acc x -> acc + x) 0
+example: sumEvenSquares 10 = Ok (0 + 4 + 16 + 36 + 64)
+
+// A `grep`: stream a file's lines, keep those containing `needle`, and write them
+// to stdout — constant memory however large the file. The file opens on first
+// consumption and closes when the stream is dropped (reference counting); an open
+// or read error becomes the `Err` of the returned `Result`.
+public grep : { console : Console, fs : FileSystem | _ } -> String -> String -> Result Unit String / { Console, FileSystem }
+let grep env needle path =
+  Stream.fileLines env path |> Stream.filter (fun line ->
+    String.contains line needle) |> Stream.toStdoutLines env
+
+// Echo standard input to standard output, numbering each line.
+public numberStdin : { console : Console | _ } -> Result Unit String / { Console }
+let numberStdin env =
+  Stream.stdinLines env |> Stream.enumerate |> Stream.map (fun (index, line) ->
+    Int.toString (index + 1) ++ "  " ++ line) |> Stream.toStdoutLines env
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  match sumEvenSquares 10 with
+  | Ok total -> runtime.console.writeLine (Int.toString total)
+  | Err message -> runtime.console.writeError message
