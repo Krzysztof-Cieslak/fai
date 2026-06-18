@@ -431,6 +431,14 @@ rendered report. Either way the daemon enforces timeouts (`FAI_RUN_TIMEOUT_MS` /
 `FAI_TEST_TIMEOUT_MS`) and a self-imposed CPU limit on each worker, so a runaway
 program can never take down the daemon.
 
+A program that uses concurrency or networking runs on the runtime's M:N scheduler.
+Its **worker-thread count** defaults to the host's available parallelism — which
+on Linux respects the process's cgroup CPU quota and scheduler affinity, so a
+containerized or CPU-pinned run scales to its budget automatically — and can be
+overridden with the **`FAI_WORKERS`** environment variable (a positive integer;
+`FAI_WORKERS=1` forces fully sequential multiplexing). Blocking host calls (file
+I/O, DNS) run on a separate pool sized up to `FAI_BLOCKING_THREADS` (default 512).
+
 ### 7.9 Errors & security
 
 - Failures use JSON-RPC `error` objects; compiler-specific failures carry

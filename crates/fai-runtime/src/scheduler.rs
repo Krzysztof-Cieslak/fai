@@ -170,10 +170,20 @@ static WORKERS_STARTED: std::sync::Once = std::sync::Once::new();
 /// be moved into its owning thread).
 static PENDING_DEQUES: Mutex<Option<Vec<Deque<Arc<Task>>>>> = Mutex::new(None);
 
-/// The number of worker threads, from `FAI_WORKERS` or the host parallelism.
+/// The number of worker threads: the `FAI_WORKERS` override, else the host's
+/// available parallelism.
 fn worker_count() -> usize {
-    std::env::var("FAI_WORKERS")
-        .ok()
+    worker_count_from(std::env::var("FAI_WORKERS").ok().as_deref())
+}
+
+/// The worker count given an optional `FAI_WORKERS` value: the override when it
+/// parses to a positive integer, otherwise the host's available parallelism
+/// (which on Linux already honors the process's cgroup CPU quota and scheduler
+/// affinity, so a containerized or pinned run scales to its CPU budget without any
+/// extra probing here), and 1 if even that is unavailable. Pure, so the policy is
+/// unit-tested without mutating the process environment.
+fn worker_count_from(fai_workers: Option<&str>) -> usize {
+    fai_workers
         .and_then(|v| v.parse::<usize>().ok())
         .filter(|&n| n > 0)
         .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
@@ -1186,5 +1196,25 @@ mod tests {
             }))
         }));
         assert_eq!(of_imm(r), (worker_count() + 4) as i64);
+    }
+
+    #[test]
+    fn worker_count_uses_a_positive_override() {
+        // A positive `FAI_WORKERS` is taken verbatim.
+        assert_eq!(worker_count_from(Some("1")), 1);
+        assert_eq!(worker_count_from(Some("4")), 4);
+        assert_eq!(worker_count_from(Some("64")), 64);
+    }
+
+    #[test]
+    fn worker_count_falls_back_to_available_parallelism() {
+        // Absent, non-numeric, zero, or negative override → the host parallelism
+        // (cgroup-/affinity-aware on Linux), which is always at least 1.
+        let host = worker_count_from(None);
+        assert!(host >= 1, "available parallelism is at least one");
+        assert_eq!(worker_count_from(Some("0")), host, "zero is not a valid worker count");
+        assert_eq!(worker_count_from(Some("-2")), host, "a negative override is ignored");
+        assert_eq!(worker_count_from(Some("abc")), host, "a non-numeric override is ignored");
+        assert_eq!(worker_count_from(Some("")), host, "an empty override is ignored");
     }
 }

@@ -3487,7 +3487,11 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   `!Send`, so it is wrapped in a `Send` newtype justified by the task stack holding
   only `Send` data (Fai values are plain words, the runtime is thread-safe). The
   pool starts **lazily** on first use, so a program that never spawns pays nothing.
-  Because these crates and (later) an IO reactor cannot be linked by a single
+  The **worker count** is the host's available parallelism — which on Linux already
+  honors the process's cgroup CPU quota and scheduler affinity, so a containerized
+  or pinned run scales to its CPU budget with no extra probing — overridable by
+  `FAI_WORKERS` (a positive integer; `=1` forces sequential multiplexing); the
+  parallel-speedup benchmark measures the scaling. Because these crates and an IO reactor cannot be linked by a single
   `$RUSTC`, the runtime is no longer dependency-free and its archive is built by a
   nested `cargo` (amends D54). The reasoning behind choosing general concurrency, a
   capability surface, structured (nursery) scope, the M:N scheduler, an IO reactor
