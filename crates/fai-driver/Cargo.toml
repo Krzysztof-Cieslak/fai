@@ -25,7 +25,9 @@ salsa.workspace = true
 rustc-hash.workspace = true
 rayon.workspace = true
 serde = { workspace = true }
-serde_json.workspace = true
+# `unbounded_depth` exposes `Deserializer::disable_recursion_limit`, used to read the
+# trusted run/test bundle (whose inlined IR can nest past serde_json's default guard).
+serde_json = { workspace = true, features = ["unbounded_depth"] }
 thiserror.workspace = true
 camino.workspace = true
 blake3.workspace = true

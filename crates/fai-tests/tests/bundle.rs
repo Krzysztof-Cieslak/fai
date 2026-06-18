@@ -286,6 +286,65 @@ fn jit_run_bundle_drops_data_cleanly_with_reconstructed_types() {
 }
 
 #[test]
+fn deeply_nested_bundle_survives_the_json_hop() {
+    // Helper inlining folds the `Async` combinators (and the std functions they call)
+    // into `main`, producing a lowered expression that nests deeper than serde_json's
+    // default recursion limit. The bundle must still round-trip the JSON transport
+    // hop: `bundle_from_slice` disables that guard for our own trusted output, where
+    // the plain `serde_json::from_slice` rejects it. (Regression: a program composing
+    // a few concurrency combinators previously failed `fai run` with "malformed run
+    // bundle: recursion limit exceeded".)
+    let src = indoc! {r#"
+        module Main
+
+        sumDoubled : Concurrency -> Int -> Int -> Int / { Concurrency }
+        let sumDoubled c a b =
+          let (ra, rb) = Async.parallel2 c (fun u -> a * 2) (fun u -> b * 2)
+          ra + rb
+
+        sumSquares : Concurrency -> List Int -> Int / { Concurrency }
+        let sumSquares c xs = List.sum (Async.mapConcurrent c (fun x -> x * x) xs)
+
+        consume : Concurrency -> Channel Int -> Int / { Concurrency }
+        let consume c ch = List.sum (Async.collect c ch)
+
+        sumChannel : Concurrency -> List Int -> Int / { Concurrency }
+        let sumChannel c items = Async.pipe c 4 (Async.produceList c items) (consume c)
+
+        public main : Runtime -> Unit / { Concurrency, Console }
+        let main runtime =
+          let a = sumDoubled runtime.concurrency 3 4
+          let b = sumSquares runtime.concurrency [1, 2, 3, 4, 5]
+          let c = sumChannel runtime.concurrency [1, 2, 3, 4, 5]
+          let d = sumDoubled runtime.concurrency 5 6
+          let e = sumSquares runtime.concurrency [6, 7, 8, 9]
+          let f = sumChannel runtime.concurrency [6, 7, 8, 9]
+          let total = a + b + c + d + e + f
+          runtime.console.writeLine ("a=" ++ Int.toString a ++ " total=" ++ Int.toString total)
+    "#};
+    let dir = workspace(&[("Main.fai", src)]);
+    let session = Session::open(dir).unwrap();
+    let bundle = build_run_bundle(session.db(), entry(&session, "Main.fai")).bundle.unwrap();
+
+    let json = serde_json::to_vec(&bundle).unwrap();
+    // The default guard rejects the deeply nested bundle (so the regression is real)...
+    assert!(
+        serde_json::from_slice::<fai_driver::WireBundle>(&json).is_err(),
+        "this program is meant to nest past serde_json's default recursion limit"
+    );
+    // ...but the recursion-limit-disabled reader (used by the run/test workers) accepts it.
+    let decoded = fai_driver::bundle_from_slice(&json).expect("trusted bundle round-trips");
+
+    let _guard = RUN_LOCK.lock().unwrap();
+    fai_runtime::capture_start();
+    let exit = jit_run_bundle(&decoded);
+    let output = fai_runtime::capture_take();
+    assert_eq!(exit, 0, "the reconstructed concurrent program runs cleanly");
+    // a=14; total = 14 + 55 + 15 + 22 + 230 + 30 = 366.
+    assert_eq!(output, "a=14 total=366\n");
+}
+
+#[test]
 fn no_main_reports_no_entry_point_and_no_bundle() {
     let dir = workspace(&[(
         "M.fai",

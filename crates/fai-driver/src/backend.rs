@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use camino::{Utf8Path, Utf8PathBuf};
 use fai_codegen::{JitProgram, main_object, object_for_def, reuse_object_for_def};
 use fai_core::ir::{FnAbi, LoweredDef};
-use fai_core::wire::{WireBundle, WireDef, WireDefId, def_to_wire, from_wire};
+use fai_core::wire::{TestWireBundle, WireBundle, WireDef, WireDefId, def_to_wire, from_wire};
 use fai_core::{core, helper_inlined};
 use fai_db::{Db, Diag, SourceFile};
 use fai_diagnostics::wire::{DiagnosticWire, to_wire};
@@ -29,7 +29,7 @@ use fai_syntax::Symbol;
 use fai_syntax::ast::{ItemKind, Visibility};
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{LINK_FAILED, NO_ENTRY_POINT, semantic_diagnostics, tooling_span};
 
@@ -1174,6 +1174,34 @@ fn load_foreign_libraries(paths: &[String]) -> Result<Option<fai_codegen::Foreig
         None
     });
     Ok(Some(lookup))
+}
+
+/// Deserializes a [`WireBundle`] from the JSON bytes the parent wrote, with
+/// serde_json's recursion-depth guard disabled.
+///
+/// The bundle is the compiler's own output (trusted, not untrusted input), so the
+/// guard — which exists only to bound the stack on hostile input — serves no purpose
+/// here, and a large program can legitimately exceed it: helper inlining folds many
+/// small functions into one caller, so a program that composes several combinators
+/// (e.g. the `Async` concurrency helpers) nests the lowered expression deeper than
+/// serde_json's default limit. Serialization has no such limit, so the bundle
+/// round-trips only with this disabled.
+pub fn bundle_from_slice(bytes: &[u8]) -> Result<WireBundle, serde_json::Error> {
+    let mut de = serde_json::Deserializer::from_slice(bytes);
+    de.disable_recursion_limit();
+    let bundle = WireBundle::deserialize(&mut de)?;
+    de.end()?;
+    Ok(bundle)
+}
+
+/// Deserializes a [`TestWireBundle`] from JSON bytes, with the recursion-depth guard
+/// disabled (see [`bundle_from_slice`] for why).
+pub fn test_bundle_from_slice(bytes: &[u8]) -> Result<TestWireBundle, serde_json::Error> {
+    let mut de = serde_json::Deserializer::from_slice(bytes);
+    de.disable_recursion_limit();
+    let bundle = TestWireBundle::deserialize(&mut de)?;
+    de.end()?;
+    Ok(bundle)
 }
 
 /// Reconstructs a [`WireBundle`] and JIT-runs its entry, returning the exit code.

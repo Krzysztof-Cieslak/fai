@@ -276,7 +276,7 @@ fn run_test_worker(bundle_path: &Utf8Path, start: usize, err: &mut dyn Write) ->
             return EXIT_WORKSPACE;
         }
     };
-    let bundle: fai_driver::TestWireBundle = match serde_json::from_slice(&bytes) {
+    let bundle: fai_driver::TestWireBundle = match fai_driver::test_bundle_from_slice(&bytes) {
         Ok(bundle) => bundle,
         Err(error) => {
             let _ = writeln!(err, "error: malformed test bundle: {error}");
@@ -516,7 +516,7 @@ fn run_worker(bundle_path: &Utf8Path, err: &mut dyn Write) -> i32 {
             return EXIT_WORKSPACE;
         }
     };
-    let bundle: fai_driver::WireBundle = match serde_json::from_slice(&bytes) {
+    let bundle: fai_driver::WireBundle = match fai_driver::bundle_from_slice(&bytes) {
         Ok(bundle) => bundle,
         Err(error) => {
             let _ = writeln!(err, "error: malformed run bundle: {error}");
