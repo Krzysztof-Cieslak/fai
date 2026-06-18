@@ -43,9 +43,9 @@ ML / F# / Elm family, compiled ahead-of-time to native code.
 
 - **Strict**: arguments are evaluated before a call (no laziness).
 - **Pure**: nothing happens behind your back. The clock, randomness, the
-  environment, the file system, and the console are **capabilities** — ordinary
-  values passed in from `main`, never ambient globals. A function's type spells
-  out which effects it performs.
+  environment, the file system, the console, concurrency, and the network are
+  **capabilities** — ordinary values passed in from `main`, never ambient globals.
+  A function's type spells out which effects it performs.
 - **Statically typed with full inference**: most types are inferred, but every
   `public` value must carry an explicit type signature.
 - **No OOP**: no classes, inheritance, or namespaces. The one OO-flavored feature
@@ -227,8 +227,8 @@ visible (`NestedModules.Internal.area`). Bare names resolve outward lexically
 
 **Reserved module names** (the standard library; do not define your own):
 `Prelude`, `List`, `Array`, `Option`, `Result`, `Dict`, `Set`, `HashDict`,
-`HashSet`, `String`, `Int`, `Float`, `Char`. The `Prim` namespace is
-compiler-internal and off-limits to user code (`FAI2014`).
+`HashSet`, `String`, `Bytes`, `Int`, `Float`, `Char`, `Concurrency`, `Net`. The
+`Prim` namespace is compiler-internal and off-limits to user code (`FAI2014`).
 
 There are **no import statements**. The `Prelude` is auto-imported; everything
 else is reached by its qualified path directly.
@@ -543,9 +543,9 @@ match Dict.get key table with
 This is the part most unlike other languages — read it carefully.
 
 Fai has **no ambient side effects**. The console, clock, randomness, file system,
-and environment are **capabilities**: interface instances threaded in from `main`
-as a `Runtime`. A function asks for only the capabilities it needs, so its type
-reveals its reach.
+environment, concurrency, and network are **capabilities**: interface instances
+threaded in from `main` as a `Runtime`. A function asks for only the capabilities
+it needs, so its type reveals its reach.
 
 The capability interfaces (defined `public` in the prelude; shown here so you know
 their methods — each method's own capability appears as its effect):
@@ -568,8 +568,33 @@ interface Env =
   args : Unit -> List String / { Env }
   get : String -> Option String / { Env }
 
-// The bundle `main` receives (an open record of all five capabilities):
-type Runtime = { clock : Clock, console : Console, env : Env, fs : FileSystem, random : Random }
+// Structured concurrency (tasks and channels) — see "Concurrency" below.
+interface Concurrency =
+  scope : (Nursery -> 'a / 'e) -> 'a / { Concurrency | 'e }
+  spawn : Nursery -> (Unit -> 'a / 'e) -> Task 'a / { Concurrency | 'e }
+  await : Task 'a -> 'a / { Concurrency }
+  channel : Int -> Channel 'a / { Concurrency }
+  send : Channel 'a -> 'a -> Unit / { Concurrency }
+  recv : Channel 'a -> Option 'a / { Concurrency }
+  close : Channel 'a -> Unit / { Concurrency }
+
+// TCP and UDP networking over `Bytes` — see "Networking" below.
+interface Net =
+  listen : Int -> Result Listener String / { Net }
+  localPort : Listener -> Int / { Net }
+  accept : Listener -> Result Connection String / { Net }
+  connect : String -> Int -> Result Connection String / { Net }
+  send : Connection -> Bytes -> Result Unit String / { Net }
+  recv : Connection -> Int -> Result Bytes String / { Net }
+  close : Connection -> Unit / { Net }
+  udpBind : Int -> Result UdpSocket String / { Net }
+  udpLocalPort : UdpSocket -> Int / { Net }
+  udpSend : UdpSocket -> String -> Int -> Bytes -> Result Unit String / { Net }
+  udpRecv : UdpSocket -> Int -> Result (Bytes * String * Int) String / { Net }
+  udpClose : UdpSocket -> Unit / { Net }
+
+// The bundle `main` receives (a record of all seven capabilities; fields sorted):
+type Runtime = { clock : Clock, concurrency : Concurrency, console : Console, env : Env, fs : FileSystem, net : Net, random : Random }
 ```
 
 **Effect rows.** Every arrow may carry an effect row after `/`: the set of host
@@ -618,8 +643,8 @@ capabilities any function transitively reaches.
 
 ### Defining your own capability
 
-The five host capabilities are ordinary library code, not compiler built-ins — you
-can add your own. A capability is just an **interface whose methods carry an
+The standard host capabilities are ordinary library code, not compiler built-ins —
+you can add your own. A capability is just an **interface whose methods carry an
 effect** plus an **instance** that implements them. There are two ways to back it.
 
 **Backed by capabilities you already have.** Effect-parameterize the interface with
@@ -670,11 +695,11 @@ it cannot reach a `foreign` (`FAI6004`).
 
 ### Extending the `Runtime` `main` receives
 
-`main` can receive **more** than the standard five capabilities. Define a binding
-named `runtime` in your entry file; the program hands it to `main` instead of the
+`main` can receive **more** than the standard capabilities. Define a binding named
+`runtime` in your entry file; the program hands it to `main` instead of the
 default, and `main` takes whatever record it builds. The default instances
-(`stdConsole`, `stdClock`, `stdRandom`, `stdFs`, `stdEnv`) and `defaultRuntime` are
-public, so you compose them with your own:
+(`stdConsole`, `stdClock`, `stdRandom`, `stdFs`, `stdEnv`, `stdConcurrency`,
+`stdNet`) and `defaultRuntime` are public, so you compose them with your own:
 
 ```fai
 public type AppRuntime = { console : Console, process : Process }
@@ -704,6 +729,91 @@ objects      = ["native/extra.o"]  # extra objects (linked by `build`; `run` nee
 
 Full, tested examples: `samples/CustomCapability.fai` (host-backed) and
 `samples/NativeCapability.fai` (native-backed, with the C source and `fai.toml`).
+
+### Concurrency
+
+`Concurrency` is a capability in the `Runtime`: **structured** tasks and bounded
+channels. A function that uses it surfaces `Concurrency` in its effect row.
+
+- **`scope (fun nursery -> ...)`** opens a structured scope and runs the body; it
+  **joins every task spawned into the nursery before returning**, so no task
+  outlives the scope. It returns the body's result.
+- **`spawn nursery (fun u -> ...)`** starts a task (a `Unit -> 'a` thunk) and
+  returns a `Task 'a`. `scope`/`spawn` are **effect-polymorphic**: the spawned
+  body's own effect is forwarded, so concurrency never hides what runs inside.
+- **`await task`** waits for a task and returns its result (memoized — you may
+  await again).
+- **`channel n`** makes a bounded `Channel 'a` (capacity `n`); `send ch v` blocks
+  while full, `recv ch` returns `Some v` or `None` once the channel is **closed
+  and drained**, and `close ch` ends it.
+
+`Task 'a`, `Channel 'a`, and `Nursery` are opaque handles (build and use them only
+through the capability). Spawned thunks must be **capture-light**: prefer a
+top-level helper partially applied to the values it needs over a closure that
+captures a lot.
+
+```fai
+// Fan out work into a scope and combine the results; the scope joins the tasks.
+public sumDoubled : { concurrency : Concurrency | _ } -> Int -> Int -> Int / { Concurrency }
+let sumDoubled env a b = env.concurrency.scope (doubledBody env a b)
+
+doubledBody : { concurrency : Concurrency | _ } -> Int -> Int -> Nursery -> Int / { Concurrency }
+let doubledBody env a b nursery =
+  let ta = env.concurrency.spawn nursery (fun u -> a * 2)
+  let tb = env.concurrency.spawn nursery (fun u -> b * 2)
+  env.concurrency.await ta + env.concurrency.await tb
+```
+
+A program that uses `Concurrency` runs on an M:N green-thread scheduler; its worker
+count defaults to the host's available parallelism (override with the `FAI_WORKERS`
+environment variable). The full tour is `samples/ConcurrencyDemo.fai`.
+
+### Networking
+
+`Net` is a capability in the `Runtime`: TCP and UDP over the same scheduler (each
+operation parks its task while it would block, so a server multiplexes many
+connections). Payloads are **`Bytes`** (see §13); fallible operations return
+`Result _ String` (the message on `Err`). A program that uses `Net` runs on the
+scheduler exactly as a concurrent one does.
+
+- **TCP**: `listen port` → `Listener` (port `0` picks a free one; `localPort`
+  reports it); `accept listener` → `Connection`; `connect host port` →
+  `Connection`; `send conn bytes`; `recv conn max` (an empty `Bytes` means the peer
+  closed); `close conn`.
+- **UDP** (connectionless): `udpBind port` → `UdpSocket`; `udpSend sock host port
+  bytes`; `udpRecv sock max` → `(payload, senderHost, senderPort)`; `udpClose
+  sock`.
+
+`Listener`, `Connection`, and `UdpSocket` are opaque handles. Typically you `spawn`
+the server loop into a `scope` and run the client alongside it:
+
+```fai
+public echoOnce : { concurrency : Concurrency, net : Net | _ } -> Listener -> Int -> Nursery -> Result Bytes String / { Concurrency, Net }
+let echoOnce env listener port nursery =
+  let server = env.concurrency.spawn nursery (fun u -> serve env listener)
+  match env.net.connect "127.0.0.1" port with
+  | Err e -> Err e
+  | Ok conn ->
+    match env.net.send conn (Bytes.fromString "ping") with
+    | Err e -> Err e
+    | Ok u ->
+      let reply = env.net.recv conn 1024
+      let closed = env.net.close conn
+      reply
+
+serve : { net : Net | _ } -> Listener -> Unit / { Net }
+let serve env listener =
+  match env.net.accept listener with
+  | Err e -> ()
+  | Ok conn ->
+    match env.net.recv conn 1024 with
+    | Err e -> ()
+    | Ok data ->
+      let sent = env.net.send conn data
+      ()
+```
+
+The full tour (TCP + UDP) is `samples/NetDemo.fai`.
 
 ---
 
@@ -792,9 +902,12 @@ function performs; plain arrows are pure. Collection functions are
 ### Prelude (auto-imported, unqualified)
 
 Types: `Option 'a` (`None` | `Some 'a`), `Result 'ok 'err` (`Ok 'ok` | `Err 'err`),
-`Dict 'k 'v`, `Set 'a`, `HashDict 'k 'v`, `HashSet 'a`, `Runtime`.
+`Dict 'k 'v`, `Set 'a`, `HashDict 'k 'v`, `HashSet 'a`, `Runtime`; the opaque
+concurrency handles `Task 'a`, `Channel 'a`, `Nursery`, and the opaque network
+handles `Listener`, `Connection`, `UdpSocket`. (`Bytes`, `String`, `Array`, `List`
+are built-in type constructors, also usable unqualified.)
 Interfaces: `Num`, `Eq`, `Ord` (sealed operator interfaces); `Console`, `Clock`,
-`Random`, `FileSystem`, `Env` (capabilities).
+`Random`, `FileSystem`, `Env`, `Concurrency`, `Net` (capabilities).
 
 ```
 identity : 'a -> 'a
@@ -1022,6 +1135,38 @@ joinArray  : String -> Array String -> String
 
 (Concatenate with the prelude `++`.)
 
+### Bytes — `Bytes` (an immutable binary byte buffer)
+
+A contiguous buffer of raw bytes, **distinct from the UTF-8 `String`** (the two
+never compare equal). Its elements are bytes read and written as `Int`s (0–255).
+It is the payload type for the `Net` capability. Build it from a list or a string;
+`toString` is guarded by a UTF-8 check (so invalid bytes can never masquerade as a
+`String`).
+
+```
+empty       : Bytes
+length      : Bytes -> Int
+isEmpty     : Bytes -> Bool
+get         : Int -> Bytes -> Option Int               // byte 0–255, or None if out of bounds
+unsafeGet   : Int -> Bytes -> Int                      // out of bounds aborts
+concat      : Bytes -> Bytes -> Bytes
+slice       : Int -> Int -> Bytes -> Bytes             // [start, end), clamped
+fromList    : List Int -> Bytes                        // each element truncated to a byte
+toList      : Bytes -> List Int
+fromString  : String -> Bytes                          // the string's UTF-8 bytes
+toString    : Bytes -> Option String                   // Some iff valid UTF-8
+isValidUtf8 : Bytes -> Bool
+```
+
+### Concurrency / Net — capabilities
+
+`Concurrency` (`scope`/`spawn`/`await`, `channel`/`send`/`recv`/`close`) and `Net`
+(TCP `listen`/`accept`/`connect`/`send`/`recv`/`close` + `localPort`, and UDP
+`udpBind`/`udpSend`/`udpRecv`/`udpClose` + `udpLocalPort`) are **capabilities**
+reached through the `Runtime`, not free functions — their methods and full
+signatures are in §10. The handle types (`Task`/`Channel`/`Nursery`,
+`Listener`/`Connection`/`UdpSocket`) are opaque.
+
 ### Int — `Int` (64-bit)
 
 ```
@@ -1215,6 +1360,12 @@ Build/run it with `fai run Tasks.fai`; check the laws with `fai test Tasks.fai`.
 - **Capabilities flow from `main`.** Request the least authority (an open record
   `{ console : Console | _ }`), call methods through the value
   (`env.console.writeLine`), and let the effect row reflect it.
+- **Concurrency is structured.** Spawn tasks into a `scope`'s nursery (which joins
+  them before returning) and combine results with `await`; pass values between
+  tasks over a bounded `channel`. Keep spawned thunks capture-light. See §10.
+- **Networking uses `Bytes`.** TCP (`listen`/`accept`/`connect`/`send`/`recv`) and
+  UDP (`udpBind`/`udpSend`/`udpRecv`) carry `Bytes`, return `Result _ String`, and
+  run on the scheduler; convert with `Bytes.fromString` / `Bytes.toString`. See §10.
 - **State intent as contracts**, not comments: `example:` for cases, `forall:` for
   laws. They are checked.
 - **When exploring an unfamiliar module**, run `fai query api <Module>` to read its
