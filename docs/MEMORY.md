@@ -2140,6 +2140,10 @@ Editor integration:
     Deep subsumption through arrows (with variance), tuples, records, lists, and
      interface effect arguments, and effect-parameterized interfaces, are done — see
      above.
+  - **Extended to user data types (see D144).** An effect parameter may now also
+    ride a user `type`/alias parameter, not just an interface's, so a plain data
+    type can carry an effectful suspension in its type (the basis for the lazy
+    `Stream`).
 
 - **D119 Array-backed sequence type (`Array 'a`; closes the linked-`List`
   representation gap).** A contiguous, growable sequence alongside the linked
@@ -3635,8 +3639,92 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     cancel-siblings-on-error) are **not** provided: there is no task cancellation, and
     `scope` joins every child unconditionally, so a race would return the winner yet
     still block on the loser running to completion. These need a cooperative
-    cancellation primitive in the runtime (a nursery cancel plus a cancel check at the
-    park points), noted as future work.
+  cancellation primitive in the runtime (a nursery cancel plus a cancel check at the
+  park points), noted as future work.
+
+- **D144 Effect-kinded parameters on user data types (extends D118).** A `type`/alias
+  parameter used only in effect position (an arrow's `/ 'e` tail, or the effect slot
+  of another type/interface it is applied to) is now an **effect** parameter — the
+  same rule interfaces already used (D118), generalized from `interface` to `type`.
+  This lets a plain data type *store an effectful suspension in its type* — the basis
+  for the lazy `Stream` (D145), and for any deferred-effect value (a thunk, a parser
+  combinator) that previously had to be smuggled through an interface existential.
+  Without it the effect annotation inside a constructor field decoupled from the type
+  parameter and **laundered to pure** (the field's `/ 'e` and the type's `'e` were
+  unrelated variables), which is unsound; this closes that gap.
+  - **Kind inference is a per-file monotone fixpoint.** Classifying a parameter as
+    type- vs effect-kinded must handle recursion: in `type Stream 'a 'e = MkStream
+    (Unit -> Step 'a 'e / 'e)` the recursive `Stream 'a 'e` makes `'e` *look*
+    type-used, but the `/ 'e` tail is an unambiguous effect anchor. So every type in
+    a file is classified together by a fixpoint that routes a recursive reference's
+    arguments by the referenced type's *current* kinds, and **defers** an immediate
+    variable in a not-yet-settled slot rather than counting it as a type use. This
+    classifies **mutually-recursive** types that both thread an effect (`Stream`
+    references `Step` and vice versa) correctly. A cross-file type cycle breaks
+    conservatively (every parameter a type).
+  - **Reuses the rest of the machinery.** The constructor scheme seeds an effect
+    parameter as an effect-row variable shared with its fields' arrows (so projecting
+    a field yields the scrutinee's effect, not a fresh one), and a use lowers the
+    effect argument to the same `Ty::EffectArg` interfaces produce. Unification, deep
+    subsumption (covariant under an effect argument), instantiation, pattern
+    projection, generalization, and the whole back end (effects are erased, D118) are
+    unchanged — they were already generic over `Ty::EffectArg`. An **alias** that
+    threads an effect parameter (the `Prelude` re-export `type Stream 'a 'e =
+    Stream.Stream 'a 'e`) substitutes effect rows in expansion, not just types.
+  - **Diagnostics.** A parameter used as *both* a type and an effect is `FAI3019`
+    (generalized from interfaces); a wrong-kind argument is `FAI3020`. The change is
+    purely additive — a parameter flips to effect-kinded only when used *solely* in
+    effect position, so no existing type is reclassified.
+
+- **D145 A lazy `Stream` and progressive file/stdio I/O.** A `Stream 'a 'e` is the
+  composable abstraction for streaming data — generated sequences and progressive
+  file/stdio reading — without materializing it. It is a **pure data type** (an
+  effect-carrying ADT, D144), not an interface or a channel: `type Stream 'a 'e =
+  MkStream (Unit -> Step 'a 'e / 'e)` with `Step = Done | Yield 'a (Stream 'a 'e) |
+  Fail String`. A suspension yields one step when forced; the effect rides inside it,
+  so **building** a stream is pure and only **consuming** it (forcing steps) performs
+  `'e`. This fits a strict, pure language: it is the strict-ML `Seq` shape with an
+  effect row, so it needs no laziness primitive beyond the explicit thunk.
+  - **API shape.** `Stream` is **fully opaque** (its `MkStream` constructor, the
+    `Step` observation type, and the `next` step function are all internal, so the
+    representation stays swappable) — consumption is through the terminal consumers
+    (`fold` is universal, so no public eliminator is needed; a public `Step` would
+    also be unexampleable, since it carries a function-bearing `Stream`). A
+    construction kit (`empty`/`cons`/`defer`/`failed`/`unfold`) builds custom sources;
+    producers (`fromList`/`range`/`iterate`/…), transformers (`map`/`filter`/`take`/
+    `flatMap`/`zip`/`scan`/…), and consumers (`fold`/`toList`/`forEach`/…) round it
+    out. Transformers are **pure** (`Stream → Stream`) and thread `Fail` through
+    unchanged; terminal consumers return **`Result _ String`**, short-circuiting to
+    `Err` on the first `Fail`. Consumers loop self-tail-recursively, so consumption is
+    constant-stack and constant-memory (consumed nodes are freed by reference
+    counting).
+  - **Errors as values (not traps).** Fai library code cannot abort with a message
+    (only the runtime can, and only with fixed messages), and every host I/O op
+    already threads errors as values — so a mid-stream failure is the structural
+    `Fail`, surfaced by consumers as `Err`. I/O sources are **lazy**: `fileLines`/
+    `ofReader`/`fileBytes` are pure to build, the file opens on first consumption, and
+    both open and read errors become `Fail`. The handle closes when the stream value
+    is dropped (reference counting) — full, partial, or zero consumption all release
+    it promptly, with no `bracket`.
+  - **The progressive I/O primitives.** `FileSystem` gains `openRead`/`openWrite`/
+    `openAppend` (returning opaque `Reader`/`Writer` handles, declared in `std/Io.fai`
+    like the `Net` handles), chunked `readChunk` (an empty `Bytes` is EOF) and
+    `writeChunk`, and `closeReader`/`closeWriter` (the latter flushes). `Console` gains
+    `write` (stdout, no newline), `writeError` (stderr), and `readLine` (stdin, an
+    `(Int * String)` status pair the standard instance wraps into `Result (Option
+    String) String`). Each blocking call runs on the blocking pool inside a task (the
+    task parks) and inline otherwise — the same dispatch `readFile` uses (D140), so
+    streaming I/O is transparently async on the scheduler with no awaitable type
+    (direct style, D143). A new `KIND_FILE` handle cell owns the `Arc` to the OS-side
+    `BufReader`/`BufWriter`, released (closing the file) by `free_obj` when the cell
+    dies, mirroring `Net` (D142). `decodeUtf8Lines` turns a byte stream into UTF-8
+    lines, buffering across chunk boundaries so a multi-byte character split between
+    chunks decodes whole.
+  - **Single-consumer, not deforested.** A stream is consumed linearly (each step
+    forced once; re-forcing an effectful node would repeat its effect). Concurrent
+    fan-out uses `Async`/channels (a `fromChannel`/`toChannel` bridge is future work).
+    The List/Array deforestation pass does not apply (a different mechanism); a stream
+    wins by *not materializing* and constant memory, not by zero-alloc-per-element.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

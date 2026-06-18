@@ -240,6 +240,10 @@ pub const KIND_BYTES: u64 = 14;
 /// [`KIND_TASK`]: its single slot holds a raw `Arc` pointer to reactor-side socket
 /// state, dropped (closing the socket) when the cell dies.
 pub const KIND_NET: u64 = 15;
+/// An open file handle (a `Reader`/`Writer` value). Like [`KIND_TASK`]: its single
+/// slot holds a raw `Arc` pointer to OS-side file state, dropped (closing the
+/// file) when the cell dies.
+pub const KIND_FILE: u64 = 16;
 
 /// Byte offset of the raw `Arc` pointer inside a task, channel, or nursery handle
 /// cell.
@@ -314,6 +318,11 @@ pub static FAI_BYTES_DESC: Descriptor = descriptor(KIND_BYTES, "Bytes");
 /// socket state, released by `free_obj`).
 #[unsafe(no_mangle)]
 pub static FAI_NET_DESC: Descriptor = descriptor(KIND_NET, "Net");
+
+/// Descriptor for an open file handle (its slot owns a raw `Arc` to OS file state,
+/// released by `free_obj`).
+#[unsafe(no_mangle)]
+pub static FAI_FILE_DESC: Descriptor = descriptor(KIND_FILE, "File");
 
 /// Descriptor for boxed (overflowed) `Int` objects (leaf).
 #[unsafe(no_mangle)]
@@ -1119,6 +1128,7 @@ unsafe fn free_obj(p: *mut u8) {
             KIND_CHANNEL => scheduler::drop_channel_handle(read_i64(p, HANDLE_PTR_OFFSET)),
             KIND_NURSERY => scheduler::drop_nursery_handle(read_i64(p, HANDLE_PTR_OFFSET)),
             KIND_NET => reactor::drop_net_handle(read_i64(p, HANDLE_PTR_OFFSET)),
+            KIND_FILE => io::drop_file_handle(read_i64(p, HANDLE_PTR_OFFSET)),
             _ => {}
         }
     }
@@ -3780,6 +3790,93 @@ pub extern "C" fn fai_console_write_line(s: Value) -> Value {
     FAI_UNIT
 }
 
+/// `Console.write`: writes a `String` to stdout with no trailing newline (for
+/// streaming text output). Consumes `s` and returns `Unit`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_console_write(s: Value) -> Value {
+    {
+        // SAFETY: `s` is a boxed `String`.
+        let bytes = unsafe { string_bytes(s) };
+        let mut guard = SINK.lock().expect("sink");
+        match &mut *guard {
+            Sink::Stdout => {
+                use std::io::Write as _;
+                let stdout = std::io::stdout();
+                let mut lock = stdout.lock();
+                let _ = lock.write_all(bytes);
+            }
+            Sink::Capture(buf) => buf.extend_from_slice(bytes),
+        }
+    }
+    fai_drop(s);
+    FAI_UNIT
+}
+
+/// `Console.writeError`: writes a `String` followed by a newline to stderr.
+/// Consumes `s` and returns `Unit`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_console_write_error(s: Value) -> Value {
+    {
+        // SAFETY: `s` is a boxed `String`.
+        let bytes = unsafe { string_bytes(s) };
+        use std::io::Write as _;
+        let stderr = std::io::stderr();
+        let mut lock = stderr.lock();
+        let _ = lock.write_all(bytes);
+        let _ = lock.write_all(b"\n");
+    }
+    fai_drop(s);
+    FAI_UNIT
+}
+
+/// Builds the `(Int * String)` status pair `Console.readLine` returns: status `0`
+/// (a line), `1` (end of input), or `2` (an error), with the line or error
+/// message as the payload. The Fai wrapper turns it into
+/// `Result (Option String) String`. Consumes `payload`.
+fn status_string_pair(status: i64, payload: Value) -> Value {
+    let fields = [fai_box_int(status), payload];
+    // SAFETY: `fields` holds two owned values, moved into the new tuple.
+    unsafe { fai_make_data(0, 2, fields.as_ptr()) }
+}
+
+/// Reads one line from stdin (without its trailing newline), `None` at end of
+/// input — a plain Rust value so it can run on the blocking pool.
+fn read_stdin_line() -> Result<Option<String>, String> {
+    use std::io::BufRead as _;
+    let mut line = String::new();
+    match std::io::stdin().lock().read_line(&mut line) {
+        Ok(0) => Ok(None),
+        Ok(_) => {
+            if line.ends_with('\n') {
+                line.pop();
+                if line.ends_with('\r') {
+                    line.pop();
+                }
+            }
+            Ok(Some(line))
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// `Console.readLine`: reads one line from stdin. Returns an `(Int * String)`
+/// status pair (see [`status_string_pair`]). Offloaded to the blocking pool inside
+/// a task, run inline otherwise. Consumes its `Unit` argument.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_console_read_line(unit: Value) -> Value {
+    fai_drop(unit);
+    let outcome = if scheduler::in_task() {
+        scheduler::run_blocking(Box::new(read_stdin_line))
+    } else {
+        read_stdin_line()
+    };
+    match outcome {
+        Ok(Some(line)) => status_string_pair(0, make_string(line.as_bytes())),
+        Ok(None) => status_string_pair(1, make_string(b"")),
+        Err(e) => status_string_pair(2, make_string(e.as_bytes())),
+    }
+}
+
 /// `Clock.now`: milliseconds since the Unix epoch as an immediate `Int`. Consumes
 /// its `Unit` argument.
 #[unsafe(no_mangle)]
@@ -4208,6 +4305,9 @@ mod scheduler;
 /// The network I/O reactor (readiness-driven non-blocking sockets over `mio`).
 mod reactor;
 
+/// File-handle capabilities (progressive reading/writing over the blocking pool).
+mod io;
+
 // The scheduler's C-ABI entry points (the `Concurrency` capability), re-exported at
 // the crate root so generated code and the JIT symbol registry reach them as
 // `fai_*` like every other runtime primitive.
@@ -4222,6 +4322,14 @@ pub use reactor::{
     fai_net_accept, fai_net_close, fai_net_connect, fai_net_listen, fai_net_local_port,
     fai_net_recv, fai_net_send, fai_udp_bind, fai_udp_close, fai_udp_local_port, fai_udp_recv,
     fai_udp_send,
+};
+
+// The file-handle C-ABI entry points (the progressive `FileSystem` operations),
+// re-exported at the crate root so generated code and the JIT symbol registry
+// reach them as `fai_*` like every other runtime primitive.
+pub use io::{
+    fai_file_close_reader, fai_file_close_writer, fai_file_open_append, fai_file_open_read,
+    fai_file_open_write, fai_file_read_chunk, fai_file_write_chunk,
 };
 
 #[cfg(test)]

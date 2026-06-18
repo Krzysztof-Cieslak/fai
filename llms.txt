@@ -227,8 +227,9 @@ visible (`NestedModules.Internal.area`). Bare names resolve outward lexically
 
 **Reserved module names** (the standard library; do not define your own):
 `Prelude`, `List`, `Array`, `Option`, `Result`, `Dict`, `Set`, `HashDict`,
-`HashSet`, `String`, `Bytes`, `Int`, `Float`, `Char`, `Concurrency`, `Net`. The
-`Prim` namespace is compiler-internal and off-limits to user code (`FAI2014`).
+`HashSet`, `String`, `Bytes`, `Int`, `Float`, `Char`, `Concurrency`, `Net`,
+`Async`, `Stream`, `Io`. The `Prim` namespace is compiler-internal and off-limits
+to user code (`FAI2014`).
 
 There are **no import statements**. The `Prelude` is auto-imported; everything
 else is reached by its qualified path directly.
@@ -552,7 +553,10 @@ their methods — each method's own capability appears as its effect):
 
 ```fai
 interface Console =
-  writeLine : String -> Unit / { Console }
+  writeLine : String -> Unit / { Console }        // stdout + newline
+  write : String -> Unit / { Console }            // stdout, no newline
+  writeError : String -> Unit / { Console }       // stderr + newline
+  readLine : Unit -> Result (Option String) String / { Console }  // stdin; Ok None = EOF
 
 interface Clock =
   now : Unit -> Int / { Clock }
@@ -563,6 +567,14 @@ interface Random =
 interface FileSystem =
   readFile : String -> Result String String / { FileSystem }
   writeFile : String -> String -> Result Unit String / { FileSystem }
+  // Progressive (chunked) handle I/O; `Reader`/`Writer` are opaque handles.
+  openRead : String -> Result Reader String / { FileSystem }
+  openWrite : String -> Result Writer String / { FileSystem }     // create/truncate
+  openAppend : String -> Result Writer String / { FileSystem }
+  readChunk : Reader -> Int -> Result Bytes String / { FileSystem }  // empty Bytes = EOF
+  writeChunk : Writer -> Bytes -> Result Unit String / { FileSystem }
+  closeReader : Reader -> Unit / { FileSystem }
+  closeWriter : Writer -> Result Unit String / { FileSystem }     // flush + close
 
 interface Env =
   args : Unit -> List String / { Env }
@@ -637,6 +649,12 @@ Key facts:
 - **Effects are erased at runtime** — they exist only in the type system.
 - **Atoms in a row are written sorted**: `/ { Clock, Console }`.
 - Call a nullary-style capability method with `()`: `env.clock.now ()`.
+- **An effect can ride your own data type, not just an interface.** A `type`/alias
+  parameter used only in effect position (after `/`, or in another type's effect
+  slot) is an *effect* parameter, so a data type can store an effectful suspension
+  — e.g. `type Lazy 'a 'e = Defer (Unit -> 'a / 'e)`. Building the value is pure;
+  forcing the stored arrow performs `'e`. This is how `Stream 'a 'e` (§13) carries
+  its effect. A parameter used as both a type and an effect is `FAI3019`.
 
 Because effects are explicit, `fai query caps <symbol>` can report exactly which
 capabilities any function transitively reaches.
@@ -1204,6 +1222,59 @@ collect        : Concurrency -> Channel 'a -> List 'a / { Concurrency }
 sendAll        : Concurrency -> Channel 'a -> List 'a -> Unit / { Concurrency }
 produceList    : Concurrency -> List 'a -> Channel 'a -> Unit / { Concurrency }
 pipe           : Concurrency -> Int -> (Channel 'a -> Unit / 'e) -> (Channel 'a -> 'b / 'e) -> 'b / { Concurrency | 'e }
+```
+
+### Stream — `Stream 'a 'e` (lazy, effect-carrying sequence)
+
+The composable abstraction for streaming data — generated sequences and
+progressive file/stdio reading — without materializing it. A `Stream 'a 'e` is a
+**pure data value** (an effect-carrying ADT) that yields one element at a time when
+forced; the effect `'e` rides inside it, so **building** a stream is pure and only
+**consuming** it (a terminal function) performs `'e`. `Stream` is fully opaque;
+build with the kit/producers and consume with the terminals (`fold` is universal).
+Transformers are pure (`Stream → Stream`) and pass a mid-stream failure through;
+terminal consumers return `Result _ String`, `Err` on the first failure. Consumed
+streams are constant-memory; an I/O handle closes when its stream is dropped
+(reference counting). Consume a stream **linearly** (force each element once).
+
+```
+// construct (qualified Stream.*)
+empty    : Stream 'a 'e
+cons     : 'a -> Stream 'a 'e -> Stream 'a 'e
+defer    : (Unit -> Stream 'a 'e / 'e) -> Stream 'a 'e    // suspend (the laziness primitive)
+failed   : String -> Stream 'a 'e                    // a stream that fails
+unfold   : ('s -> Option ('a * 's) / 'e) -> 's -> Stream 'a 'e
+// producers
+singleton : 'a -> Stream 'a 'e
+fromList  : List 'a -> Stream 'a 'e
+fromArray : Array 'a -> Stream 'a 'e
+range     : Int -> Int -> Stream Int 'e              // lo..hi-1
+repeat    : 'a -> Stream 'a 'e                        // infinite (use with take)
+iterate   : ('a -> 'a / 'e) -> 'a -> Stream 'a 'e    // infinite
+// transformers (pure)
+map / filter / filterMap / take / takeWhile / drop / dropWhile / append /
+flatMap / zip / zipWith / scan / mapAccum / chunksOf / enumerate / intersperse
+// consumers (effectful; Result _ String)
+fold : ('acc -> 'a -> 'acc / 'e) -> 'acc -> Stream 'a 'e -> Result 'acc String / 'e
+forEach / toList / toArray / drain / length / find / any / all / head / last
+// I/O sources (lazy; open + read errors become Fail; handle closes on drop)
+ofReader        : { fs : FileSystem | _ } -> Reader -> Int -> Stream Bytes { FileSystem }
+fileBytes       : { fs : FileSystem | _ } -> String -> Int -> Stream Bytes { FileSystem }
+fileLines       : { fs : FileSystem | _ } -> String -> Stream String { FileSystem }
+stdinLines      : { console : Console | _ } -> Stream String { Console }
+decodeUtf8Lines : Stream Bytes 'e -> Stream String 'e   // buffers UTF-8 across chunks
+// I/O sinks (Result Unit String)
+toWriter / toFile / appendToFile : { fs : FileSystem | _ } -> … -> Stream Bytes 'e -> Result Unit String / { FileSystem | 'e }
+toFileText / writeLinesToFile    : { fs : FileSystem | _ } -> String -> Stream String 'e -> Result Unit String / { FileSystem | 'e }
+toStdout / toStdoutLines / toStderr : { console : Console | _ } -> Stream String 'e -> Result Unit String / { Console | 'e }
+```
+
+Example — a `grep` in constant memory:
+
+```fai
+Stream.fileLines runtime "log.txt"
+  |> Stream.filter (fun line -> String.contains line needle)
+  |> Stream.toStdoutLines runtime
 ```
 
 ### Int — `Int` (64-bit)

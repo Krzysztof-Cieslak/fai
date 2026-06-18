@@ -732,7 +732,8 @@ fn derived_capability_with_least_authority_runs() {
         module Main
 
         prefixed : String -> Console -> Console
-        let prefixed tag inner = { Console with writeLine s = inner.writeLine (tag ++ s) }
+        let prefixed tag inner =
+          { Console with writeLine s = inner.writeLine (tag ++ s), write s = inner.write (tag ++ s), writeError s = inner.writeError (tag ++ s), readLine = inner.readLine }
 
         announce : { console : Console | _ } -> String -> Unit / { Console }
         let announce env msg = env.console.writeLine msg
@@ -928,7 +929,8 @@ fn user_supplied_console_instance_runs() {
         module Main
 
         silent : Console
-        let silent = { Console with writeLine s = () }
+        let silent =
+          { Console with writeLine s = (), write s = (), writeError s = (), readLine u = Ok None }
 
         public main : Runtime -> Unit / { Console }
         let main runtime = silent.writeLine "ignored"
@@ -936,6 +938,145 @@ fn user_supplied_console_instance_runs() {
     let (out, code) = build_and_run(src);
     assert_eq!(out, "");
     assert_eq!(code, Some(0));
+}
+
+#[test]
+fn progressive_file_write_then_read_round_trips() {
+    // The new FileSystem handle operations: write a file in two chunks through a
+    // Writer, flush+close it, then read it back in small chunks through a Reader.
+    // The clean (leak-free) exit also confirms the native handles are released by
+    // reference counting when their cells die (no explicit Reader close needed).
+    let path = std::env::temp_dir().join(format!("fai-stream-rt-{}.txt", std::process::id()));
+    let src = formatdoc! {r#"
+        module Main
+
+        writeAll : {{ fs : FileSystem | _ }} -> String -> Result Unit String / {{ FileSystem }}
+        let writeAll env path =
+          match env.fs.openWrite path with
+          | Err e -> Err e
+          | Ok w ->
+            match env.fs.writeChunk w (Bytes.fromString "hello\n") with
+            | Err e -> Err e
+            | Ok u1 ->
+              match env.fs.writeChunk w (Bytes.fromString "streamed\n") with
+              | Err e -> Err e
+              | Ok u2 -> env.fs.closeWriter w
+
+        readAll : {{ fs : FileSystem | _ }} -> Reader -> String -> Result String String / {{ FileSystem }}
+        let readAll env r acc =
+          match env.fs.readChunk r 4 with
+          | Err e -> Err e
+          | Ok chunk ->
+            if Bytes.length chunk = 0 then Ok acc
+            else
+              match Bytes.toString chunk with
+              | None -> Err "invalid utf-8"
+              | Some s -> readAll env r (acc ++ s)
+
+        public main : Runtime -> Unit / {{ Console, FileSystem }}
+        let main runtime =
+          let path = "{path}"
+          match writeAll runtime path with
+          | Err e -> runtime.console.writeLine ("write failed: " ++ e)
+          | Ok u ->
+            match runtime.fs.openRead path with
+            | Err e -> runtime.console.writeLine ("open failed: " ++ e)
+            | Ok r ->
+              match readAll runtime r "" with
+              | Err e -> runtime.console.writeLine ("read failed: " ++ e)
+              | Ok contents -> runtime.console.write contents
+    "#, path = path.to_str().unwrap().replace('\\', "/")};
+    let (out, code) = build_and_run(&src);
+    assert_eq!(code, Some(0), "clean (leak-free) exit");
+    assert_eq!(out, "hello\nstreamed\n");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn stream_pipeline_builds_and_runs() {
+    // The pure Stream library end to end: a lazy pipeline (range |> filter |> map)
+    // consumed by a fold, exercising the effect-carrying ADT through the whole
+    // native pipeline. Sum of (2*x) for even x in [0,10) = 2*(0+2+4+6+8) = 40.
+    let src = indoc! {r#"
+        module Main
+
+        public run : Int -> Result Int String
+        let run n =
+          Stream.fold (fun acc x -> acc + x) 0
+            (Stream.map (fun x -> x * 2)
+              (Stream.filter (fun x -> x % 2 = 0) (Stream.range 0 n)))
+
+        public main : Runtime -> Unit / { Console }
+        let main rt =
+          match run 10 with
+          | Ok total -> rt.console.writeLine (Int.toString total)
+          | Err e -> rt.console.writeLine e
+    "#};
+    let (out, code) = build_and_run(src);
+    assert_eq!(code, Some(0), "clean (leak-free) exit");
+    assert_eq!(out, "40\n");
+}
+
+#[test]
+fn stream_lines_from_file_builds_and_runs() {
+    // A Stream consuming a real file handle: read a file's bytes in a stream and
+    // count them, then a list round-trip. Validates that an effectful Stream
+    // (carrying { FileSystem }) consumes and parks correctly.
+    let path = std::env::temp_dir().join(format!("fai-stream-lines-{}.txt", std::process::id()));
+    std::fs::write(&path, "alpha\nbeta\ngamma\n").unwrap();
+    let src = formatdoc! {r#"
+        module Main
+
+        // Read the whole file as one chunk stream and concatenate, counting bytes.
+        bytesOf : {{ fs : FileSystem | _ }} -> Reader -> Stream Bytes {{ FileSystem }}
+        let bytesOf env r =
+          Stream.unfold
+            (fun reader ->
+              match env.fs.readChunk reader 8 with
+              | Err e -> None
+              | Ok chunk -> if Bytes.length chunk = 0 then None else Some (chunk, reader))
+            r
+
+        public main : Runtime -> Unit / {{ Console, FileSystem }}
+        let main runtime =
+          match runtime.fs.openRead "{path}" with
+          | Err e -> runtime.console.writeLine ("open failed: " ++ e)
+          | Ok r ->
+            match Stream.fold (fun acc b -> acc + Bytes.length b) 0 (bytesOf runtime r) with
+            | Err e -> runtime.console.writeLine ("read failed: " ++ e)
+            | Ok total -> runtime.console.writeLine (Int.toString total)
+    "#, path = path.to_str().unwrap().replace('\\', "/")};
+    let (out, code) = build_and_run(&src);
+    assert_eq!(code, Some(0), "clean (leak-free) exit");
+    assert_eq!(out, "17\n");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn file_lines_grep_pipeline_builds_and_runs() {
+    // The headline path: progressively read a file's UTF-8 lines (decoding across
+    // chunk boundaries), filter, and write matches to stdout — all lazy, constant
+    // memory, with the handle closed by reference counting. A multi-byte character
+    // exercises the cross-chunk UTF-8 decode.
+    let path = std::env::temp_dir().join(format!("fai-stream-grep-{}.txt", std::process::id()));
+    std::fs::write(&path, "alpha\nbeta\u{00e9}\ngamma\ndelta\n").unwrap();
+    let src = formatdoc! {r#"
+        module Main
+
+        public main : Runtime -> Unit / {{ Console, FileSystem }}
+        let main runtime =
+          let matches =
+            Stream.fileLines runtime "{path}"
+              |> Stream.filter (fun line -> String.contains line "e")
+              |> Stream.toStdoutLines runtime
+          match matches with
+          | Ok done1 -> ()
+          | Err message -> runtime.console.writeError message
+    "#, path = path.to_str().unwrap().replace('\\', "/")};
+    let (out, code) = build_and_run(&src);
+    assert_eq!(code, Some(0), "clean (leak-free) exit");
+    assert_eq!(out, "beta\u{00e9}\ndelta\n");
+    let _ = std::fs::remove_file(&path);
 }
 
 #[test]

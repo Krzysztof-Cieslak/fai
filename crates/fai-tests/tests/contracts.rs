@@ -119,6 +119,13 @@ fn geometry_contracts_pass() {
 }
 
 #[test]
+fn streams_contracts_pass() {
+    // A pure Stream pipeline's `example` evaluates (the effectful sources/sinks are
+    // typechecked by the samples suite; their contracts live in `std/Stream.fai`).
+    sample_contracts_pass("Streams.fai");
+}
+
+#[test]
 fn prelude_contracts_pass() {
     // `Prelude` is embedded; run its own example/forall contracts.
     let _g = lock();

@@ -3,7 +3,8 @@ module LogApp
 // A derived capability (a prefixing `Console` built from another `Console`)
 // handed to a least-authority function that requests only a console.
 prefix : String -> Console -> Console
-let prefix tag inner = { Console with writeLine s = inner.writeLine (tag ++ s) }
+let prefix tag inner =
+  { Console with writeLine s = inner.writeLine (tag ++ s), write s = inner.write (tag ++ s), writeError s = inner.writeError (tag ++ s), readLine = inner.readLine }
 
 report : { console : Console | 'r } -> Unit / { Console }
 let report env =
