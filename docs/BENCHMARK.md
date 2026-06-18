@@ -107,6 +107,7 @@ All under `crates/fai-tests/benches/` unless noted. None is a CI gate.
 | `algorithms_jit` | Runtime comparison, in-process compute: compiled Fai code vs idiomatic Rust (see below). |
 | `algorithms_aot` | Runtime comparison, delivered binaries: a `fai build` executable vs a Rust release binary vs an `ocamlopt`-compiled OCaml binary, end to end (see below). |
 | `algorithms_mem` | Memory comparison, delivered binaries: peak resident set size of the same `fai build` vs Rust vs OCaml binaries (see below). |
+| `concurrency` | Runtime concurrency/networking (Fai-only, delivered binaries): task fan-out/join throughput, bounded-channel throughput, CPU-bound **parallel speedup** (`FAI_WORKERS=1` vs the host default), and loopback TCP/UDP round-trip throughput (see below). |
 | `test_loop` (`fai-cli`) | The supervised `edit → fai test` loop through the real `fai` binary + daemon: client → daemon → worker subprocess → JIT → run → stream back. |
 
 ## Runtime comparison: Fai vs Rust
@@ -409,5 +410,35 @@ baseline's dispatch, or from the validation tests, and `ocaml_baseline_matches_o
 checks the OCaml result wherever `ocamlopt` is installed. Keep `aot_size` small
 enough that running `main` once stays fast (the validation test runs it under the
 JIT), especially for super-linear workloads.
+
+## Concurrency & networking benchmarks
+
+`crates/fai-tests/benches/concurrency.rs` measures the runtime's M:N scheduler and
+I/O reactor. Unlike the algorithm benches it has **no cross-language baseline** — a
+green-thread M:N runtime has no single "fair" peer (Rust threads, rayon, and an
+async runtime each differ in kind) — so it is **Fai-only and informational**, and
+renders as plain timing tables (the summary's ratio table only appears for
+`rust`/`fai`/`ocaml` leaves).
+
+Each workload is a small Fai program built once with `build_native` in untimed
+setup and spawned in the timed loop (the `algorithms_aot` approach), with a large
+baked size so process startup is amortized; the build also serves as the program's
+verification (a build or run failure crashes the bench). The leaves:
+
+- `spawn_await` — fan-out/join task throughput: spawn N tasks into a `scope` and
+  sum the awaits.
+- `channel` — bounded-channel throughput: one producer sends N items, the consumer
+  drains and sums them.
+- `parallel_speedup_one_worker` / `parallel_speedup_all_workers` — the **parallel
+  speedup**: the same CPU-bound, allocation-free fan-out (many tasks each summing a
+  long range) run with `FAI_WORKERS=1` and with the host's default parallelism. The
+  ratio of the two medians is the scheduler's speedup (process startup is constant,
+  so it largely cancels in the ratio).
+- `tcp_echo` / `udp_echo` — loopback request/response round-trip throughput: a
+  server task echoes a one-byte message and the client sends/reads it back N times,
+  driving the reactor's park/wake on every round-trip.
+
+Like `algorithms_aot`, the suite is skipped on Windows (the build/link + spawn
+path), still compiling there so `build --all-targets` keeps it from bitrotting.
 
 [divan]: https://docs.rs/divan

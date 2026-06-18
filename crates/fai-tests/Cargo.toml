@@ -92,5 +92,9 @@ harness = false
 name = "algorithms_mem"
 harness = false
 
+[[bench]]
+name = "concurrency"
+harness = false
+
 [lints]
 workspace = true
