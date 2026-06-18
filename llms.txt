@@ -752,17 +752,32 @@ through the capability). Spawned thunks must be **capture-light**: prefer a
 top-level helper partially applied to the values it needs over a closure that
 captures a lot.
 
-```fai
-// Fan out work into a scope and combine the results; the scope joins the tasks.
-public sumDoubled : { concurrency : Concurrency | _ } -> Int -> Int -> Int / { Concurrency }
-let sumDoubled env a b = env.concurrency.scope (doubledBody env a b)
+**Prefer the `Async` library for the common patterns.** It wraps these primitives so
+you do not thread a nursery or write per-task `spawn`/`await` by hand. Each combinator
+takes the `Concurrency` capability and opens its own structured scope:
 
-doubledBody : { concurrency : Concurrency | _ } -> Int -> Int -> Nursery -> Int / { Concurrency }
-let doubledBody env a b nursery =
-  let ta = env.concurrency.spawn nursery (fun u -> a * 2)
-  let tb = env.concurrency.spawn nursery (fun u -> b * 2)
-  env.concurrency.await ta + env.concurrency.await tb
+- **`Async.parallel c thunks`** runs a `List (Unit -> 'a)` concurrently, returning the
+  results in order; **`Async.parallel2`/`Async.parallel3`** run two/three (differently
+  typed) thunks and return a tuple.
+- **`Async.mapConcurrent c f xs`** is a concurrent `List.map`; **`Async.iterConcurrent c
+  f xs`** runs an effect on each element, discarding the results.
+- **`Async.pipe c capacity producer consumer`** streams a producer to a consumer over a
+  fresh channel; **`Async.produceList c xs`** is a ready-made producer (send each, then
+  close) and **`Async.collect c ch`** drains a channel to a list.
+
+```fai
+// Fan out two computations and combine them — no nursery, no explicit await.
+public sumDoubled : Concurrency -> Int -> Int -> Int / { Concurrency }
+let sumDoubled c a b =
+  let (ra, rb) = Async.parallel2 c (fun u -> a * 2) (fun u -> b * 2)
+  ra + rb
 ```
+
+`Async` is **direct-style**: a unit of work is an ordinary thunk `Unit -> 'a`, so there
+is no monadic value or `async { ... }` block syntax to learn — a blocking step parks its
+task transparently. Reach for the raw `scope`/`spawn`/`await` only for a custom pattern
+the combinators do not cover. There is no `race`/`timeout` yet (they would need task
+cancellation, which does not exist).
 
 A program that uses `Concurrency` runs on an M:N green-thread scheduler; its worker
 count defaults to the host's available parallelism (override with the `FAI_WORKERS`
@@ -784,13 +799,19 @@ scheduler exactly as a concurrent one does.
   bytes`; `udpRecv sock max` → `(payload, senderHost, senderPort)`; `udpClose
   sock`.
 
-`Listener`, `Connection`, and `UdpSocket` are opaque handles. Typically you `spawn`
-the server loop into a `scope` and run the client alongside it:
+`Listener`, `Connection`, and `UdpSocket` are opaque handles. Typically you run the
+server and the client concurrently with `Async.parallel2` (which joins both), or
+`spawn` the server into a `scope` for a custom pattern:
 
 ```fai
-public echoOnce : { concurrency : Concurrency, net : Net | _ } -> Listener -> Int -> Nursery -> Result Bytes String / { Concurrency, Net }
-let echoOnce env listener port nursery =
-  let server = env.concurrency.spawn nursery (fun u -> serve env listener)
+public echoOnce : { concurrency : Concurrency, net : Net | _ } -> Listener -> Int -> Result Bytes String / { Concurrency, Net }
+let echoOnce env listener port =
+  let (served, reply) =
+    Async.parallel2 env.concurrency (fun u -> serve env listener) (fun u -> talk env port)
+  reply
+
+talk : { net : Net | _ } -> Int -> Result Bytes String / { Net }
+let talk env port =
   match env.net.connect "127.0.0.1" port with
   | Err e -> Err e
   | Ok conn ->
@@ -1166,6 +1187,24 @@ isValidUtf8 : Bytes -> Bool
 reached through the `Runtime`, not free functions — their methods and full
 signatures are in §10. The handle types (`Task`/`Channel`/`Nursery`,
 `Listener`/`Connection`/`UdpSocket`) are opaque.
+
+### Async — high-level concurrency combinators (over `Concurrency`)
+
+Free functions (qualified `Async.*`) that wrap the `Concurrency` primitives. Each
+takes the capability (pass `runtime.concurrency`) and opens its own structured scope;
+`'e` forwards the supplied work's own effect.
+
+```
+parallel       : Concurrency -> List (Unit -> 'a / 'e) -> List 'a / { Concurrency | 'e }
+parallel2      : Concurrency -> (Unit -> 'a / 'e) -> (Unit -> 'b / 'e) -> ('a * 'b) / { Concurrency | 'e }
+parallel3      : Concurrency -> (Unit -> 'a / 'e) -> (Unit -> 'b / 'e) -> (Unit -> 'c / 'e) -> ('a * 'b * 'c) / { Concurrency | 'e }
+mapConcurrent  : Concurrency -> ('a -> 'b / 'e) -> List 'a -> List 'b / { Concurrency | 'e }
+iterConcurrent : Concurrency -> ('a -> Unit / 'e) -> List 'a -> Unit / { Concurrency | 'e }
+collect        : Concurrency -> Channel 'a -> List 'a / { Concurrency }
+sendAll        : Concurrency -> Channel 'a -> List 'a -> Unit / { Concurrency }
+produceList    : Concurrency -> List 'a -> Channel 'a -> Unit / { Concurrency }
+pipe           : Concurrency -> Int -> (Channel 'a -> Unit / 'e) -> (Channel 'a -> 'b / 'e) -> 'b / { Concurrency | 'e }
+```
 
 ### Int — `Int` (64-bit)
 
