@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use fai_db::{Db, SourceFile, emit};
 use fai_diagnostics::{Diagnostic, Label, Suggestion};
-use fai_resolve::{DefId, InterfaceRef, module_defs, module_sccs, qualify, resolve};
+use fai_resolve::{AdtRef, DefId, InterfaceRef, module_defs, module_sccs, qualify, resolve};
 use fai_span::{ByteOffset, Span, TextRange};
 use fai_syntax::Symbol;
 use fai_syntax::ast::{ExprId, ItemKind};
@@ -20,7 +20,9 @@ use rustc_hash::FxHashMap;
 use crate::ty::{Con, Ty};
 
 use crate::infer::{declared_scheme, error_scheme, infer_scc};
-use crate::lower::{ParamKind, interface_param_usage, seed_interface_params};
+use crate::lower::{
+    ParamKind, adt_param_kinds, adt_param_usage, interface_param_usage, seed_kinded_params,
+};
 use crate::std_lib;
 use crate::ty::Scheme;
 use crate::{
@@ -291,17 +293,45 @@ fn validate_decls(
 ) {
     for &id in items {
         match &module.items[id.index()].kind {
-            fai_syntax::ast::ItemKind::Type { def, .. } => match def {
-                fai_syntax::ast::TypeDef::Alias(ty) => {
-                    let mut vars = crate::lower::LowerVars::default();
-                    let _ = crate::lower::lower_type_in(db, file, module, scope, *ty, &mut vars);
-                }
-                fai_syntax::ast::TypeDef::Union(variants) => {
-                    for v in variants {
-                        let _ = constructor_scheme(db, file, fai_resolve::qualify(scope, v.name));
+            fai_syntax::ast::ItemKind::Type { def, name, params, .. } => {
+                // Infer each type parameter's kind (type vs effect row) from its
+                // use across the constructors/body; a parameter used as both a
+                // type and an effect is ill-kinded.
+                let aref = AdtRef::new(file.source(db), qualify(scope, *name));
+                let usage = adt_param_usage(db, aref);
+                for (i, &(ty_used, eff_used)) in usage.iter().enumerate() {
+                    if ty_used && eff_used {
+                        let span = module.items[id.index()].span;
+                        emit(
+                            db,
+                            Diagnostic::error(
+                                INTERFACE_PARAM_KIND,
+                                format!(
+                                    "type parameter `{}` of `{name}` is used as both a type and \
+                                     an effect",
+                                    params[i]
+                                ),
+                                Span::new(file.source(db), span),
+                            ),
+                        );
                     }
                 }
-            },
+                match def {
+                    fai_syntax::ast::TypeDef::Alias(ty) => {
+                        let kinds = adt_param_kinds(db, aref);
+                        let mut vars = crate::lower::LowerVars::default();
+                        seed_kinded_params(&mut vars, params, &kinds);
+                        let _ =
+                            crate::lower::lower_type_in(db, file, module, scope, *ty, &mut vars);
+                    }
+                    fai_syntax::ast::TypeDef::Union(variants) => {
+                        for v in variants {
+                            let _ =
+                                constructor_scheme(db, file, fai_resolve::qualify(scope, v.name));
+                        }
+                    }
+                }
+            }
             fai_syntax::ast::ItemKind::Interface { methods, params, name, .. } => {
                 let iref = InterfaceRef::new(file.source(db), qualify(scope, *name));
                 // Infer each parameter's kind from its use across the methods; a
@@ -330,7 +360,7 @@ fn validate_decls(
                 }
                 for m in methods {
                     let mut vars = crate::lower::LowerVars::default();
-                    seed_interface_params(&mut vars, params, &kinds);
+                    seed_kinded_params(&mut vars, params, &kinds);
                     let _ = crate::lower::lower_type_in(db, file, module, scope, m.ty, &mut vars);
                 }
             }

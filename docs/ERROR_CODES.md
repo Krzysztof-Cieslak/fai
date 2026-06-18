@@ -330,17 +330,17 @@ The operator interfaces (`Num`/`Eq`/`Ord`) are sealed to their built-in instance
 
 An opaque type's representation (its record fields or alias body) is accessed from another file — a field access, record construction, or `{ r with … }` update. An opaque type exports its name but not its structure, so build and inspect its values through the functions its module provides.
 
-### FAI3019 — interface parameter used as both a type and an effect
+### FAI3019 — parameter used as both a type and an effect
 
 **Severity:** error
 
-An interface type parameter (`'a`) is used in type position in one method and as an effect row (after `/`) in another. A parameter is one kind or the other — give the type use and the effect use separate parameters.
+A type or interface parameter (`'a`) is used in type position and also as an effect row (after `/`). A parameter is one kind or the other — give the type use and the effect use separate parameters.
 
-### FAI3020 — wrong kind of interface argument
+### FAI3020 — wrong kind of type argument
 
 **Severity:** error
 
-An interface argument has the wrong kind: an effect row (`{ Console }`) was supplied for a type parameter, a type for an effect parameter, or an effect row was written somewhere other than an interface argument. Supply the kind the parameter expects.
+A type or interface argument has the wrong kind: an effect row (`{ Console }`) was supplied for a type parameter, a type for an effect parameter, or an effect row was written somewhere other than an argument position. Supply the kind the parameter expects.
 
 ## FAI4xxx — Exhaustiveness & patterns
 

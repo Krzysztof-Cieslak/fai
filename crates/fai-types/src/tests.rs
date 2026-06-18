@@ -1491,6 +1491,163 @@ fn effect_parameter_is_inferred_polymorphic_when_forwarded() {
     assert_eq!(type_of(&db, f[0], "twice"), "Logger 'e -> () / 'e");
 }
 
+// --- Effect-kinded parameters on ADTs (effect-carrying data types) ---
+
+/// The inferred kinds of a user `type`/alias's parameters (by unqualified name).
+fn adt_kinds(db: &dyn Db, file: SourceFile, ty: &str) -> Vec<crate::lower::ParamKind> {
+    crate::lower::adt_param_kinds(
+        db,
+        fai_resolve::AdtRef::new(file.source(db), fai_syntax::Symbol::intern(ty)),
+    )
+}
+
+#[test]
+fn effect_parameter_on_a_self_recursive_adt_is_inferred() {
+    use crate::lower::ParamKind;
+    // A parameter used only as an arrow's `/ 'e` tail inside a constructor field
+    // is an effect parameter, not a (phantom) type parameter.
+    let src = indoc! {r#"
+        module M
+
+        public type Thunk 'e =
+          | Thunk (Unit -> Int / 'e)
+    "#};
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert_eq!(adt_kinds(&db, f[0], "Thunk"), vec![ParamKind::Effect]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+}
+
+#[test]
+fn constructing_an_effect_carrying_value_is_pure() {
+    // Building the cell does not run the thunk, so the constructor function is
+    // pure; the effect rides inside the returned data type.
+    let src = indoc! {r#"
+        module M
+
+        public type Thunk 'e =
+          | Thunk (Unit -> Int / 'e)
+
+        public mk : (Unit -> Int / 'e) -> Thunk 'e
+        let mk f = Thunk f
+    "#};
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+    assert_eq!(type_of(&db, f[0], "mk"), "(() -> Int / 'e) -> Thunk 'e");
+}
+
+#[test]
+fn projecting_an_effect_carrying_field_carries_the_scrutinee_effect() {
+    // The anti-laundering property: pattern-matching the cell and running its
+    // thunk performs the value's effect argument, not the pure effect.
+    let src = indoc! {r#"
+        module M
+
+        public type Thunk 'e =
+          | Thunk (Unit -> Int / 'e)
+
+        public force : Thunk 'e -> Int / 'e
+        let force t =
+          match t with
+          | Thunk f -> f ()
+    "#};
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+    assert_eq!(type_of(&db, f[0], "force"), "Thunk 'e -> Int / 'e");
+}
+
+#[test]
+fn mutually_recursive_stream_and_step_thread_the_effect() {
+    use crate::lower::ParamKind;
+    // The chosen Stream representation: two mutually-recursive types that both
+    // thread an effect parameter. Kind inference must classify both correctly,
+    // and `map` must union the element function's effect with the stream's.
+    let src = indoc! {r#"
+        module M
+
+        public type Step 'a 'e =
+          | Done
+          | Yield 'a (Stream 'a 'e)
+
+        public type Stream 'a 'e =
+          | MkStream (Unit -> Step 'a 'e / 'e)
+
+        public next : Stream 'a 'e -> Step 'a 'e / 'e
+        let next s =
+          match s with
+          | MkStream f -> f ()
+
+        public mapS : ('a -> 'b / 'e) -> Stream 'a 'e -> Stream 'b 'e
+        let mapS g s =
+          MkStream (fun u ->
+            match next s with
+            | Done -> Done
+            | Yield x rest -> Yield (g x) (mapS g rest))
+    "#};
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert_eq!(adt_kinds(&db, f[0], "Stream"), vec![ParamKind::Type, ParamKind::Effect]);
+    assert_eq!(adt_kinds(&db, f[0], "Step"), vec![ParamKind::Type, ParamKind::Effect]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+    assert_eq!(type_of(&db, f[0], "next"), "Stream 'a 'e -> Step 'a 'e / 'e");
+    assert_eq!(type_of(&db, f[0], "mapS"), "('a -> 'b / 'e) -> Stream 'a 'e -> Stream 'b 'e");
+}
+
+#[test]
+fn adt_parameter_used_as_both_type_and_effect_is_an_error() {
+    let src = indoc! {r#"
+        module M
+
+        public type Bad 'e =
+          | Bad 'e (Unit -> Unit / 'e)
+    "#};
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert!(
+        check_codes(&db, f[0]).contains(&"FAI3019".to_owned()),
+        "got {:?}",
+        check_codes(&db, f[0])
+    );
+}
+
+#[test]
+fn ordinary_adt_parameters_are_not_reclassified_as_effects() {
+    use crate::lower::ParamKind;
+    // A plain data type's parameters stay type-kinded (the feature is additive).
+    let src = indoc! {r#"
+        module M
+
+        public type Pair 'a 'b =
+          | Pair 'a 'b
+    "#};
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert_eq!(adt_kinds(&db, f[0], "Pair"), vec![ParamKind::Type, ParamKind::Type]);
+}
+
+#[test]
+fn effect_carrying_alias_passes_its_effect_through() {
+    use crate::lower::ParamKind;
+    // The `Prelude` re-export pattern: a transparent alias that threads an effect
+    // parameter into the underlying type. The alias's `'e` is effect-kinded and
+    // substitutes into the effect slot on use.
+    let src = indoc! {r#"
+        module M
+
+        public type Thunk 'e =
+          | Thunk (Unit -> Int / 'e)
+
+        public type Deferred 'e = Thunk 'e
+
+        public runDeferred : Deferred 'e -> Int / 'e
+        let runDeferred d =
+          match d with
+          | Thunk f -> f ()
+    "#};
+    let (db, f) = db_with(&[("M.fai", src)]);
+    assert_eq!(adt_kinds(&db, f[0], "Deferred"), vec![ParamKind::Effect]);
+    assert!(check_codes(&db, f[0]).is_empty(), "got {:?}", check_codes(&db, f[0]));
+    // `Deferred` is a transparent alias, so the signature renders it expanded —
+    // proving the effect parameter substitutes through the alias into `Thunk`.
+    assert_eq!(type_of(&db, f[0], "runDeferred"), "Thunk 'e -> Int / 'e");
+}
+
 #[test]
 fn instance_performing_an_undeclared_effect_is_an_error() {
     // The masking hole, closed: a pure-declared method whose body performs an
