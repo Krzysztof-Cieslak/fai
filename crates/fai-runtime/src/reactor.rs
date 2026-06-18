@@ -134,13 +134,17 @@ pub fn deregister<S: Source>(io: &Arc<IoSource>, source: &mut S) {
 }
 
 /// Parks the current task until `io` is readable. Must be called inside a task,
-/// after a syscall on the socket returned `WouldBlock`.
+/// and only **after** attempting the operation and observing it would block —
+/// never as a bare wait. An edge-triggered poll need not report readiness that
+/// predates registration, so a wait that has not first confirmed the operation
+/// would block (e.g. by a `WouldBlock` or a `NotConnected` probe) can park forever.
 pub fn wait_readable(io: &Arc<IoSource>) {
     wait(&io.read);
 }
 
 /// Parks the current task until `io` is writable (e.g. a connect completes or send
-/// buffer space frees). Must be called inside a task.
+/// buffer space frees). Must be called inside a task, and only after the operation
+/// has been attempted and would block (see [`wait_readable`]).
 pub fn wait_writable(io: &Arc<IoSource>) {
     wait(&io.write);
 }
@@ -358,13 +362,25 @@ pub extern "C" fn fai_net_connect(host: Value, port: Value) -> Value {
                 Ok(s) => s,
                 Err(e) => return err_result(&e.to_string()),
             };
-            // A non-blocking connect completes asynchronously: it is writable once
-            // done; then `take_error` reports a failed connect (e.g. refused).
-            wait_writable(&src);
-            match stream.take_error() {
-                Ok(None) => {}
-                Ok(Some(e)) => return err_result(&e.to_string()),
-                Err(e) => return err_result(&e.to_string()),
+            // A non-blocking connect completes asynchronously, signaled by the
+            // socket becoming writable. *Check completion directly* each iteration
+            // rather than only waiting for the writable edge: the connect can finish
+            // (or fail) before — or in the same instant as — registration, and an
+            // edge-triggered poll (epoll) need not re-report readiness that predates
+            // the registration, so a bare wait could park forever. `take_error`
+            // surfaces a failed connect (e.g. refused); `peer_addr` succeeds once
+            // connected and is `NotConnected` while still in progress.
+            loop {
+                match stream.take_error() {
+                    Ok(None) => {}
+                    Ok(Some(e)) => return err_result(&e.to_string()),
+                    Err(e) => return err_result(&e.to_string()),
+                }
+                match stream.peer_addr() {
+                    Ok(_) => break,
+                    Err(e) if e.kind() == io::ErrorKind::NotConnected => wait_writable(&src),
+                    Err(e) => return err_result(&e.to_string()),
+                }
             }
             ok_result(net_handle_value(NetObject::Conn { sock: Mutex::new(stream), src }))
         }
@@ -667,8 +683,16 @@ mod tests {
         let r = block_on(Box::new(move || {
             let mut client = TcpStream::connect(addr).expect("connect");
             let src = register(&mut client).expect("register");
-            // Park until the connection completes (writable).
-            wait_writable(&src);
+            // Wait for the connection to complete, checking directly each iteration
+            // (an already-completed connect's readiness can predate registration and
+            // not be re-reported by an edge-triggered poll, so a bare wait could hang).
+            loop {
+                match client.peer_addr() {
+                    Ok(_) => break,
+                    Err(e) if e.kind() == io::ErrorKind::NotConnected => wait_writable(&src),
+                    Err(e) => panic!("connect: {e}"),
+                }
+            }
             // Read the peer's byte, parking on readability until it arrives.
             let mut buf = [0u8; 1];
             let n = loop {
