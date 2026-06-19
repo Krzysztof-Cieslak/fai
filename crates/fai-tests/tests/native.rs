@@ -608,6 +608,43 @@ fn hello_sample_builds_and_runs() {
     assert_eq!(code, Some(0));
 }
 
+// The pure date/time pipeline end to end (calendar conversion, custom-pattern
+// formatting, instant rendering) — deterministic and leak-free through AOT.
+#[test]
+fn datetime_library_builds_and_runs() {
+    let src = indoc! {r#"
+        module Main
+
+        public main : Runtime -> Unit / { Console }
+        let main runtime =
+          let d = Option.withDefault (LocalDate.fromEpochDay 0) (LocalDate.of 2020 6 15)
+          runtime.console.writeLine (LocalDate.toString d ++ " " ++ DateTimeFormat.formatDate "EEEE" d ++ " " ++ Instant.toString (Instant.fromUnixTimeSeconds 90))
+    "#};
+    let (out, code) = build_and_run(src);
+    assert_eq!(out, "2020-06-15 Monday 1970-01-01T00:01:30Z\n");
+    assert_eq!(code, Some(0));
+}
+
+// The clock capability and the local-offset primitive: `Instant.now` and
+// `OffsetDateTime.now` (which also reads `Clock.localOffset`) must link and run.
+// The assertion is clock-relative (after the epoch, year past 2020), so it is
+// stable on any real system without hard-coding a moment.
+#[test]
+fn clock_now_builds_and_runs() {
+    let src = indoc! {r#"
+        module Main
+
+        public main : Runtime -> Unit / { Clock, Console }
+        let main runtime =
+          let odt = OffsetDateTime.now runtime
+          let after = Instant.isAfter (Instant.now runtime) Instant.epoch
+          runtime.console.writeLine (if after && (OffsetDateTime.year odt >= 2020) then "ok" else "bad")
+    "#};
+    let (out, code) = build_and_run(src);
+    assert_eq!(out, "ok\n");
+    assert_eq!(code, Some(0));
+}
+
 #[test]
 fn user_defined_operator_runs() {
     let src = indoc! {r#"

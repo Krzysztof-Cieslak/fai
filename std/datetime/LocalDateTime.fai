@@ -1,0 +1,191 @@
+module LocalDateTime
+
+// A date and time of day together, with no time zone — a `LocalDate` paired with a
+// `LocalTime`. Stored as an epoch-day count plus a nanosecond-of-day, so adding
+// time units carries correctly between the time and the date. Pair it with an
+// `Offset` to pin it to the timeline (`OffsetDateTime`).
+//
+// The type is opaque: build values with `of` or `ofParts` (validated) and read
+// them through the accessors. `Prelude` re-exports the name.
+public opaque type LocalDateTime =
+  | MkLocalDateTime Int Int
+
+nanosPerSecond : Int
+let nanosPerSecond = 1_000_000_000
+
+nanosPerMinute : Int
+let nanosPerMinute = 60_000_000_000
+
+nanosPerHour : Int
+let nanosPerHour = 3_600_000_000_000
+
+nanosPerDay : Int
+let nanosPerDay = 86_400_000_000_000
+
+/// Combine a date with a time of day.
+public of : LocalDate -> LocalTime -> LocalDateTime
+let of d t = MkLocalDateTime (LocalDate.toEpochDay d) (LocalTime.nanoOfDay t)
+example: date (of (LocalDate.fromEpochDay 5) LocalTime.noon) = LocalDate.fromEpochDay 5
+
+/// Build from year, month, day, hour, minute, and second, or `None` if any field
+/// is out of range for a valid date and time.
+public ofParts : Int -> Int -> Int -> Int -> Int -> Int -> Option LocalDateTime
+let ofParts y mo d h mi s =
+  match (LocalDate.of y mo d, LocalTime.of h mi s) with
+  | (Some date, Some time) -> Some (of date time)
+  | _ -> None
+example: Option.isSome (ofParts 2020 6 15 14 30 0)
+example: ofParts 2020 2 30 0 0 0 = None
+
+/// Build from a raw epoch-day and nanosecond-of-day, normalizing the nanoseconds
+/// into a single day and carrying any overflow into the date. Total.
+public fromEpochDayAndNanoOfDay : Int -> Int -> LocalDateTime
+let fromEpochDayAndNanoOfDay ed nod =
+  MkLocalDateTime (ed + Int.floorDiv nod nanosPerDay) (Int.floorMod nod nanosPerDay)
+example: nanoOfDay (fromEpochDayAndNanoOfDay 0 5) = 5
+
+/// The date part.
+public date : LocalDateTime -> LocalDate
+let date dt =
+  match dt with
+  | MkLocalDateTime ed _ -> LocalDate.fromEpochDay ed
+example: date (fromEpochDayAndNanoOfDay 7 0) = LocalDate.fromEpochDay 7
+
+/// The time-of-day part.
+public time : LocalDateTime -> LocalTime
+let time dt =
+  match dt with
+  | MkLocalDateTime _ nod -> LocalTime.fromNanoOfDay nod
+example: time (fromEpochDayAndNanoOfDay 0 0) = LocalTime.midnight
+
+/// The epoch-day of the date part.
+public epochDay : LocalDateTime -> Int
+let epochDay dt =
+  match dt with
+  | MkLocalDateTime ed _ -> ed
+example: epochDay (fromEpochDayAndNanoOfDay 7 0) = 7
+
+/// The nanosecond-of-day of the time part.
+public nanoOfDay : LocalDateTime -> Int
+let nanoOfDay dt =
+  match dt with
+  | MkLocalDateTime _ nod -> nod
+example: nanoOfDay (fromEpochDayAndNanoOfDay 0 500) = 500
+
+/// The year.
+public year : LocalDateTime -> Int
+let year dt = LocalDate.year (date dt)
+example: year (fromEpochDayAndNanoOfDay 0 0) = 1970
+
+/// The month of the year, 1–12.
+public month : LocalDateTime -> Int
+let month dt = LocalDate.month (date dt)
+example: month (fromEpochDayAndNanoOfDay 0 0) = 1
+
+/// The day of the month, 1–31.
+public day : LocalDateTime -> Int
+let day dt = LocalDate.day (date dt)
+example: day (fromEpochDayAndNanoOfDay 0 0) = 1
+
+/// The hour of the day, 0–23.
+public hour : LocalDateTime -> Int
+let hour dt = LocalTime.hour (time dt)
+example: hour (fromEpochDayAndNanoOfDay 0 (12 * 3_600_000_000_000)) = 12
+
+/// The minute of the hour, 0–59.
+public minute : LocalDateTime -> Int
+let minute dt = LocalTime.minute (time dt)
+example: minute (fromEpochDayAndNanoOfDay 0 0) = 0
+
+/// The second of the minute, 0–59.
+public second : LocalDateTime -> Int
+let second dt = LocalTime.second (time dt)
+example: second (fromEpochDayAndNanoOfDay 0 0) = 0
+
+/// The nanosecond of the second, 0–999_999_999.
+public nanoOfSecond : LocalDateTime -> Int
+let nanoOfSecond dt = LocalTime.nanoOfSecond (time dt)
+example: nanoOfSecond (fromEpochDayAndNanoOfDay 0 42) = 42
+
+/// The day of the week.
+public dayOfWeek : LocalDateTime -> DayOfWeek
+let dayOfWeek dt = LocalDate.dayOfWeek (date dt)
+example: dayOfWeek (fromEpochDayAndNanoOfDay 0 0) = DayOfWeek.Thursday
+
+/// The date-time `n` nanoseconds later, carrying into the date as needed.
+public plusNanoseconds : Int -> LocalDateTime -> LocalDateTime
+let plusNanoseconds n dt = fromEpochDayAndNanoOfDay (epochDay dt) (nanoOfDay dt + n)
+example: nanoOfSecond (plusNanoseconds 5 (fromEpochDayAndNanoOfDay 0 0)) = 5
+
+/// The date-time `n` seconds later.
+public plusSeconds : Int -> LocalDateTime -> LocalDateTime
+let plusSeconds n dt = plusNanoseconds (n * nanosPerSecond) dt
+example: second (plusSeconds 30 (fromEpochDayAndNanoOfDay 0 0)) = 30
+
+/// The date-time `n` minutes later.
+public plusMinutes : Int -> LocalDateTime -> LocalDateTime
+let plusMinutes n dt = plusNanoseconds (n * nanosPerMinute) dt
+example: minute (plusMinutes 5 (fromEpochDayAndNanoOfDay 0 0)) = 5
+
+/// The date-time `n` hours later (carrying into the date past midnight).
+public plusHours : Int -> LocalDateTime -> LocalDateTime
+let plusHours n dt = plusNanoseconds (n * nanosPerHour) dt
+example: day (plusHours 25 (fromEpochDayAndNanoOfDay 0 0)) = 2
+
+/// The date-time `n` days later.
+public plusDays : Int -> LocalDateTime -> LocalDateTime
+let plusDays n dt = MkLocalDateTime (epochDay dt + n) (nanoOfDay dt)
+example: day (plusDays 1 (fromEpochDayAndNanoOfDay 0 0)) = 2
+
+/// The date-time `n` weeks later.
+public plusWeeks : Int -> LocalDateTime -> LocalDateTime
+let plusWeeks n dt = plusDays (n * 7) dt
+example: day (plusWeeks 1 (fromEpochDayAndNanoOfDay 0 0)) = 8
+
+/// The date-time `n` calendar months later (keeping the time of day; clamping the
+/// day to the target month).
+public plusMonths : Int -> LocalDateTime -> LocalDateTime
+let plusMonths n dt = of (LocalDate.plusMonths n (date dt)) (time dt)
+example: month (plusMonths 1 (fromEpochDayAndNanoOfDay 0 0)) = 2
+
+/// The date-time `n` years later (keeping the time of day; clamping Feb 29).
+public plusYears : Int -> LocalDateTime -> LocalDateTime
+let plusYears n dt = of (LocalDate.plusYears n (date dt)) (time dt)
+example: year (plusYears 5 (fromEpochDayAndNanoOfDay 0 0)) = 1975
+
+/// Three-way chronological comparison: negative if `a` precedes `b`.
+public compare : LocalDateTime -> LocalDateTime -> Int
+let compare a b = Prim.compare a b
+example: compare (fromEpochDayAndNanoOfDay 0 0) (fromEpochDayAndNanoOfDay 0 1) < 0
+example: compare (fromEpochDayAndNanoOfDay 0 0) (fromEpochDayAndNanoOfDay 0 0) = 0
+
+/// Whether `a` is strictly before `b`.
+public isBefore : LocalDateTime -> LocalDateTime -> Bool
+let isBefore a b = compare a b < 0
+example: isBefore (fromEpochDayAndNanoOfDay 0 0) (fromEpochDayAndNanoOfDay 1 0)
+example: isBefore (fromEpochDayAndNanoOfDay 1 0) (fromEpochDayAndNanoOfDay 0 0) = false
+
+/// Whether `a` is strictly after `b`.
+public isAfter : LocalDateTime -> LocalDateTime -> Bool
+let isAfter a b = compare a b > 0
+example: isAfter (fromEpochDayAndNanoOfDay 1 0) (fromEpochDayAndNanoOfDay 0 0)
+example: isAfter (fromEpochDayAndNanoOfDay 0 0) (fromEpochDayAndNanoOfDay 1 0) = false
+
+/// Render in ISO-8601 `yyyy-MM-ddTHH:mm:ss[.fffffffff]` form.
+public toString : LocalDateTime -> String
+let toString dt = LocalDate.toString (date dt) ++ "T" ++ LocalTime.toString (time dt)
+example: toString (fromEpochDayAndNanoOfDay 0 0) = "1970-01-01T00:00:00"
+
+/// Parse an ISO-8601 `yyyy-MM-ddTHH:mm:ss[.f+]` date-time (the date and time
+/// separated by `T`). `None` if either part is malformed.
+public parse : String -> Option LocalDateTime
+let parse s =
+  match String.split "T" s with
+  | datePart :: timePart :: [] ->
+    match (LocalDate.parse datePart, LocalTime.parse timePart) with
+    | (Some d, Some t) -> Some (of d t)
+    | _ -> None
+  | _ -> None
+example: parse "1970-01-01T00:00:00" = Some (fromEpochDayAndNanoOfDay 0 0)
+example: parse "1970-01-01" = None
+forall ed nod: parse (toString (fromEpochDayAndNanoOfDay ed nod)) = Some (fromEpochDayAndNanoOfDay ed nod)

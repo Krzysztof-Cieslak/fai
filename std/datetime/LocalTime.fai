@@ -1,0 +1,176 @@
+module LocalTime
+
+// A time of day to nanosecond precision, with no date and no time zone. Stored as
+// the nanosecond of the day, always in `[0, 86_400_000_000_000)`. Arithmetic wraps
+// around midnight (there is no day to carry into — `LocalDateTime` handles that).
+//
+// The type is opaque: build times with `of`/`ofNano` (validated) and read them
+// through `hour`/`minute`/… `Prelude` re-exports the name.
+public opaque type LocalTime =
+  | MkLocalTime Int
+
+nanosPerSecond : Int
+let nanosPerSecond = 1_000_000_000
+
+nanosPerMinute : Int
+let nanosPerMinute = 60_000_000_000
+
+nanosPerHour : Int
+let nanosPerHour = 3_600_000_000_000
+
+nanosPerDay : Int
+let nanosPerDay = 86_400_000_000_000
+
+// 10 raised to a small non-negative power, for scaling a fractional-seconds field
+// to nanoseconds when parsing.
+pow10 : Int -> Int
+let pow10 k = if k <= 0 then 1 else 10 * pow10 (k - 1)
+
+/// Midnight, 00:00:00.
+public midnight : LocalTime
+let midnight = MkLocalTime 0
+example: hour midnight = 0
+
+/// Noon, 12:00:00.
+public noon : LocalTime
+let noon = MkLocalTime (12 * nanosPerHour)
+example: hour noon = 12
+
+/// A time from hour (0–23), minute (0–59), and second (0–59), or `None` if any
+/// field is out of range.
+public of : Int -> Int -> Int -> Option LocalTime
+let of h m s = ofNano h m s 0
+example: hour (Option.withDefault midnight (of 14 30 15)) = 14
+example: of 24 0 0 = None
+
+/// A time from hour, minute, second, and nanosecond-of-second (0–999_999_999), or
+/// `None` if any field is out of range.
+public ofNano : Int -> Int -> Int -> Int -> Option LocalTime
+let ofNano h m s nano =
+  if h < 0 || h > 23 || m < 0 || m > 59 || s < 0 || s > 59 || nano < 0 || nano > 999_999_999 then
+    None
+  else
+    Some (MkLocalTime (h * nanosPerHour + m * nanosPerMinute + s * nanosPerSecond + nano))
+example: nanoOfSecond (Option.withDefault midnight (ofNano 1 2 3 4)) = 4
+example: ofNano 0 0 0 1_000_000_000 = None
+
+/// The nanosecond of the day, in `[0, 86_400_000_000_000)`.
+public nanoOfDay : LocalTime -> Int
+let nanoOfDay t =
+  match t with
+  | MkLocalTime n -> n
+example: nanoOfDay midnight = 0
+
+/// The time at nanosecond `n` of the day, wrapping `n` into a single day.
+public fromNanoOfDay : Int -> LocalTime
+let fromNanoOfDay n = MkLocalTime (Int.floorMod n nanosPerDay)
+example: nanoOfDay (fromNanoOfDay 5) = 5
+
+/// The hour of the day, 0–23.
+public hour : LocalTime -> Int
+let hour t = Int.floorDiv (nanoOfDay t) nanosPerHour
+example: hour noon = 12
+
+/// The minute of the hour, 0–59.
+public minute : LocalTime -> Int
+let minute t = Int.floorMod (Int.floorDiv (nanoOfDay t) nanosPerMinute) 60
+example: minute (Option.withDefault midnight (of 14 30 0)) = 30
+
+/// The second of the minute, 0–59.
+public second : LocalTime -> Int
+let second t = Int.floorMod (Int.floorDiv (nanoOfDay t) nanosPerSecond) 60
+example: second (Option.withDefault midnight (of 14 30 15)) = 15
+
+/// The millisecond of the second, 0–999.
+public millisecond : LocalTime -> Int
+let millisecond t = Int.floorMod (Int.floorDiv (nanoOfDay t) 1_000_000) 1000
+example: millisecond (Option.withDefault midnight (ofNano 0 0 0 123_000_000)) = 123
+
+/// The nanosecond of the second, 0–999_999_999.
+public nanoOfSecond : LocalTime -> Int
+let nanoOfSecond t = Int.floorMod (nanoOfDay t) nanosPerSecond
+example: nanoOfSecond (Option.withDefault midnight (ofNano 0 0 0 42)) = 42
+
+/// The time `n` hours later, wrapping around midnight (`n` may be negative).
+public plusHours : Int -> LocalTime -> LocalTime
+let plusHours n t = fromNanoOfDay (nanoOfDay t + n * nanosPerHour)
+example: hour (plusHours 2 noon) = 14
+example: hour (plusHours 13 noon) = 1
+
+/// The time `n` minutes later, wrapping around midnight.
+public plusMinutes : Int -> LocalTime -> LocalTime
+let plusMinutes n t = fromNanoOfDay (nanoOfDay t + n * nanosPerMinute)
+example: minute (plusMinutes 45 noon) = 45
+
+/// The time `n` seconds later, wrapping around midnight.
+public plusSeconds : Int -> LocalTime -> LocalTime
+let plusSeconds n t = fromNanoOfDay (nanoOfDay t + n * nanosPerSecond)
+example: second (plusSeconds 30 noon) = 30
+
+/// The time `n` nanoseconds later, wrapping around midnight.
+public plusNanoseconds : Int -> LocalTime -> LocalTime
+let plusNanoseconds n t = fromNanoOfDay (nanoOfDay t + n)
+example: nanoOfSecond (plusNanoseconds 7 midnight) = 7
+
+/// Three-way chronological comparison: negative if `a` is earlier than `b`.
+public compare : LocalTime -> LocalTime -> Int
+let compare a b = Prim.compare a b
+example: compare midnight noon < 0
+example: compare noon noon = 0
+
+/// Whether `a` is strictly earlier than `b`.
+public isBefore : LocalTime -> LocalTime -> Bool
+let isBefore a b = compare a b < 0
+example: isBefore midnight noon
+example: isBefore noon midnight = false
+
+/// Whether `a` is strictly later than `b`.
+public isAfter : LocalTime -> LocalTime -> Bool
+let isAfter a b = compare a b > 0
+example: isAfter noon midnight
+example: isAfter midnight noon = false
+
+/// Render the time in ISO-8601 `HH:mm:ss` form, appending `.fffffffff` (nine
+/// digits) only when the nanosecond-of-second is non-zero.
+public toString : LocalTime -> String
+let toString t =
+  let base =
+    String.padStart 2 "0" (Int.toString (hour t)) ++ ":" ++ String.padStart 2 "0" (Int.toString (minute t)) ++ ":" ++ String.padStart 2 "0" (Int.toString (second t))
+  if nanoOfSecond t = 0 then
+    base
+  else
+    base ++ "." ++ String.padStart 9 "0" (Int.toString (nanoOfSecond t))
+example: toString midnight = "00:00:00"
+example: toString (Option.withDefault midnight (ofNano 1 2 3 500_000_000)) = "01:02:03.500000000"
+
+/// Parse an ISO-8601 time `HH:mm:ss` with an optional `.` and 1–9 fractional-
+/// second digits. `None` if the shape is wrong or a field is out of range.
+public parse : String -> Option LocalTime
+let parse s =
+  let n = String.length s
+  if n < 8 || String.substring 2 1 s <> ":" || String.substring 5 1 s <> ":" then
+    None
+  else
+    let hOpt = Int.fromString (String.substring 0 2 s)
+    let mOpt = Int.fromString (String.substring 3 2 s)
+    let secOpt = Int.fromString (String.substring 6 2 s)
+    match (hOpt, mOpt, secOpt) with
+    | (Some h, Some m, Some sec) ->
+      if n = 8 then
+        ofNano h m sec 0
+      else if String.substring 8 1 s = "." then
+        let frac = String.drop 9 s
+        let fracLen = String.length frac
+        if fracLen < 1 || fracLen > 9 then
+          None
+        else
+          match Int.fromString frac with
+          | Some f -> ofNano h m sec (f * pow10 (9 - fracLen))
+          | None -> None
+      else
+        None
+    | _ -> None
+example: parse "14:30:00" = of 14 30 0
+example: parse "25:00:00" = None
+example: parse "00:00:00" = Some midnight
+forall n: parse (toString (fromNanoOfDay n)) = Some (fromNanoOfDay n)

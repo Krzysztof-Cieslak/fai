@@ -121,6 +121,7 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_console_write_error", rt::fai_console_write_error);
     sym!("fai_console_read_line", rt::fai_console_read_line);
     sym!("fai_clock_now", rt::fai_clock_now);
+    sym!("fai_clock_local_offset", rt::fai_clock_local_offset);
     sym!("fai_random_next_int", rt::fai_random_next_int);
     sym!("fai_file_read", rt::fai_file_read);
     sym!("fai_file_write", rt::fai_file_write);

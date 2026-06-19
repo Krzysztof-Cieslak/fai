@@ -228,8 +228,10 @@ visible (`NestedModules.Internal.area`). Bare names resolve outward lexically
 **Reserved module names** (the standard library; do not define your own):
 `Prelude`, `List`, `Array`, `Option`, `Result`, `Dict`, `Set`, `HashDict`,
 `HashSet`, `String`, `Bytes`, `Int`, `Float`, `Char`, `Concurrency`, `Net`,
-`Async`, `Stream`, `Io`. The `Prim` namespace is compiler-internal and off-limits
-to user code (`FAI2014`).
+`Async`, `Stream`, `Io`, and the date & time modules `Instant`, `Duration`,
+`LocalDate`, `LocalTime`, `LocalDateTime`, `Offset`, `OffsetDateTime`, `Period`,
+`DayOfWeek`, `Month`, `DateTimeFormat`. The `Prim` namespace is compiler-internal
+and off-limits to user code (`FAI2014`).
 
 There are **no import statements**. The `Prelude` is auto-imported; everything
 else is reached by its qualified path directly.
@@ -1309,6 +1311,66 @@ toString : Char -> String
 toCode   : Char -> Int
 fromCode : Int -> Option Char                          // None if not a scalar value
 ```
+
+### Date & time (`std/datetime/`) — NodaTime-style, nanosecond, opaque
+
+Distinct value types, each opaque and built through its module; `Prelude`
+re-exports the type names so signatures read unqualified. Operations are
+subject-last (so they pipe: `date |> LocalDate.plusDays 3`). Everything is pure
+except `Instant.now`/`OffsetDateTime.now`, which take the `Clock` capability.
+
+- **`Instant`** — a UTC point on the timeline (nanosecond, vast range). `epoch`,
+  `now : { clock : Clock | _ } -> Instant / { Clock }`, `fromUnixTimeMillis`/
+  `fromUnixTimeSeconds`, `toUnixTimeMillis`/`toUnixTimeSeconds`,
+  `plus`/`minus : Duration -> Instant -> Instant`, `durationBetween`,
+  `compare`/`isBefore`/`isAfter`/`min`/`max`, `toString` (ISO `…Z`).
+- **`Duration`** — a fixed elapsed length (nanosecond). `zero`, `ofDays`/`ofHours`/
+  `ofMinutes`/`ofSeconds`/`ofMilliseconds`/`ofNanoseconds`, `inWhole*`, `total*`
+  (`Float`), `plus`/`minus`/`negate`/`multiply`/`abs`, `isZero`/`isNegative`,
+  `compare`.
+- **`LocalDate`** — a calendar date, no zone. `of : Int->Int->Int->Option LocalDate`,
+  `fromEpochDay`/`toEpochDay`, `year`/`month`/`day`/`monthOfYear`/`dayOfWeek`/
+  `dayOfYear`, `plusDays`/`plusWeeks`/`plusMonths`/`plusYears` (and `minus*`,
+  end-of-month clamping), `daysUntil`, `isLeapYear`, `lengthOfMonth`/`lengthOfYear`,
+  `compare`/`isBefore`/`isAfter`, `toString`/`parse` (ISO `yyyy-MM-dd`).
+- **`LocalTime`** — a time of day, no date (nanosecond, wraps at midnight). `of`/
+  `ofNano`/`midnight`/`noon`/`fromNanoOfDay`, `hour`/`minute`/`second`/
+  `millisecond`/`nanoOfSecond`/`nanoOfDay`, `plusHours`/`plusMinutes`/`plusSeconds`/
+  `plusNanoseconds`, `compare`, `toString`/`parse` (`HH:mm:ss[.fffffffff]`).
+- **`LocalDateTime`** — date + time, no zone. `of : LocalDate -> LocalTime -> …`,
+  `ofParts`, `date`/`time` and all the field accessors, `plus*` (carrying across
+  midnight), `compare`, `toString`/`parse` (ISO with `T`).
+- **`Offset`** — a fixed UTC offset (±18h). `zero`, `ofSeconds`/`ofHours`/
+  `ofHoursMinutes` (each `Option`), `seconds`/`totalMinutes`, `negate`, `compare`,
+  `toString`/`parse` (`Z` or `±HH:MM[:SS]`).
+- **`OffsetDateTime`** — a `LocalDateTime` + `Offset`. `of`, `ofInstant`,
+  `now : { clock : Clock | _ } -> OffsetDateTime / { Clock }`, `toInstant`,
+  `withOffset`, `localDateTime`/`offset` and field accessors, `compare` (by
+  instant), `toString`/`parse`.
+- **`Period`** — a calendar-aware length (years…nanoseconds). `zero`, `ofYears`/
+  `ofMonths`/`ofWeeks`/`ofDays`/`ofHours`/`ofMinutes`/`ofSeconds`/`ofNanoseconds`,
+  accessors, `add`/`negate`, `between : LocalDate -> LocalDate -> Period`,
+  `addToDate`/`addToDateTime`, `toString` (ISO `P…`).
+- **`DayOfWeek`** / **`Month`** — enums (constructors qualified, e.g.
+  `DayOfWeek.Monday`, `Month.January`). `toInt`/`fromInt`/`toString`/
+  `toShortString`; `DayOfWeek.plus`, `Month.length`.
+- **`DateTimeFormat`** — custom patterns over `LocalDateTime`. `format`/`parse`
+  (and `formatDate`/`formatTime`/`parseDate`/`parseTime`). Codes: `yyyy`/`yy`,
+  `MM`/`M`/`MMMM`/`MMM`, `dd`/`d`, `HH`/`H`/`hh`/`h`, `mm`/`m`, `ss`/`s`,
+  `fff`/`ffffff`/`fffffffff`, `tt`, `EEEE`/`EEE`; `'literal'` for literal text.
+
+```
+// "2026-06-19" + the weekday, then a custom stamp and an instant
+let d = Option.withDefault (LocalDate.fromEpochDay 0) (LocalDate.of 2020 6 15)
+LocalDate.toString d                              // "2020-06-15"
+DateTimeFormat.format "EEE, d MMM yyyy"           // "Mon, 15 Jun 2020"
+  (LocalDateTime.of d LocalTime.noon)
+Instant.toString (Instant.fromUnixTimeSeconds 90) // "1970-01-01T00:01:30Z"
+// current local time (needs the Clock capability)
+OffsetDateTime.toString (OffsetDateTime.now runtime)
+```
+
+Deferred: IANA time zones / `ZonedDateTime` with DST rules (this is offset-only).
 
 ### Test — property testing (used by `forall`)
 

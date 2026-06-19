@@ -1,0 +1,129 @@
+module Instant
+
+// A point on the global timeline — UTC, with no time zone or calendar — to
+// nanosecond precision. Stored as a whole-day count plus a nanosecond-of-day since
+// the Unix epoch (1970-01-01T00:00:00Z), the same shape as `Duration`, so the
+// range is vast and arithmetic is exact. Add or subtract a `Duration` to move
+// along the line; pair with an `Offset` (`OffsetDateTime`) to read it as a wall
+// clock.
+//
+// The type is opaque: build instants with `now`, `fromUnixTimeMillis`, … and read
+// them with `toUnixTimeMillis` or via an `OffsetDateTime`. `Prelude` re-exports the
+// name.
+public opaque type Instant =
+  | MkInstant Int Int
+
+nanosPerSecond : Int
+let nanosPerSecond = 1_000_000_000
+
+nanosPerDay : Int
+let nanosPerDay = 86_400_000_000_000
+
+millisPerDay : Int
+let millisPerDay = 86_400_000
+
+fromDayNanos : Int -> Int -> Instant
+let fromDayNanos d nanos =
+  MkInstant (d + Int.floorDiv nanos nanosPerDay) (Int.floorMod nanos nanosPerDay)
+
+/// The Unix epoch, 1970-01-01T00:00:00Z.
+public epoch : Instant
+let epoch = MkInstant 0 0
+example: toUnixTimeMillis epoch = 0
+
+/// The whole-day count of this instant since the epoch, in UTC.
+public epochDay : Instant -> Int
+let epochDay i =
+  match i with
+  | MkInstant d _ -> d
+example: epochDay (fromEpochDayAndNanoOfDay 7 0) = 7
+
+/// The nanosecond-of-day of this instant, in UTC (`[0, 86_400_000_000_000)`).
+public nanoOfDay : Instant -> Int
+let nanoOfDay i =
+  match i with
+  | MkInstant _ n -> n
+example: nanoOfDay (fromEpochDayAndNanoOfDay 0 500) = 500
+
+/// The instant at the given UTC day and nanosecond-of-day (normalizing).
+public fromEpochDayAndNanoOfDay : Int -> Int -> Instant
+let fromEpochDayAndNanoOfDay d nod = fromDayNanos d nod
+example: epochDay (fromEpochDayAndNanoOfDay 3 0) = 3
+
+/// The instant `ms` milliseconds after the Unix epoch (`ms` may be negative).
+public fromUnixTimeMillis : Int -> Instant
+let fromUnixTimeMillis ms =
+  fromDayNanos (Int.floorDiv ms millisPerDay) (Int.floorMod ms millisPerDay * 1_000_000)
+example: toUnixTimeMillis (fromUnixTimeMillis 1500) = 1500
+
+/// The instant `s` seconds after the Unix epoch.
+public fromUnixTimeSeconds : Int -> Instant
+let fromUnixTimeSeconds s =
+  fromDayNanos (Int.floorDiv s 86_400) (Int.floorMod s 86_400 * nanosPerSecond)
+example: toUnixTimeSeconds (fromUnixTimeSeconds 90) = 90
+
+/// The number of whole milliseconds from the Unix epoch to this instant.
+public toUnixTimeMillis : Instant -> Int
+let toUnixTimeMillis i = epochDay i * millisPerDay + Int.floorDiv (nanoOfDay i) 1_000_000
+example: toUnixTimeMillis (fromUnixTimeSeconds 2) = 2000
+
+/// The number of whole seconds from the Unix epoch to this instant.
+public toUnixTimeSeconds : Instant -> Int
+let toUnixTimeSeconds i = epochDay i * 86_400 + Int.floorDiv (nanoOfDay i) nanosPerSecond
+example: toUnixTimeSeconds (fromUnixTimeMillis 2500) = 2
+
+/// The instant `d` after this one.
+public plus : Duration -> Instant -> Instant
+let plus d i =
+  fromDayNanos (epochDay i + Duration.days d) (nanoOfDay i + Duration.nanosecondOfDay d)
+example: toUnixTimeMillis (plus (Duration.ofSeconds 1) epoch) = 1000
+
+/// The instant `d` before this one.
+public minus : Duration -> Instant -> Instant
+let minus d i = plus (Duration.negate d) i
+example: toUnixTimeMillis (minus (Duration.ofSeconds 1) (fromUnixTimeMillis 5000)) = 4000
+
+/// The duration from `start` to `end` (negative if `end` precedes `start`).
+public durationBetween : Instant -> Instant -> Duration
+let durationBetween start end =
+  Duration.plus (Duration.ofDays (epochDay end - epochDay start)) (Duration.ofNanoseconds (nanoOfDay end - nanoOfDay start))
+example: Duration.inWholeSeconds (durationBetween epoch (fromUnixTimeSeconds 60)) = 60
+
+/// Three-way chronological comparison: negative if `a` is earlier than `b`.
+public compare : Instant -> Instant -> Int
+let compare a b = Prim.compare a b
+example: compare epoch (fromUnixTimeMillis 1) < 0
+example: compare epoch epoch = 0
+
+/// Whether `a` is strictly earlier than `b`.
+public isBefore : Instant -> Instant -> Bool
+let isBefore a b = compare a b < 0
+example: isBefore epoch (fromUnixTimeMillis 1)
+example: isBefore (fromUnixTimeMillis 1) epoch = false
+
+/// Whether `a` is strictly later than `b`.
+public isAfter : Instant -> Instant -> Bool
+let isAfter a b = compare a b > 0
+example: isAfter (fromUnixTimeMillis 1) epoch
+example: isAfter epoch (fromUnixTimeMillis 1) = false
+
+/// The earlier of two instants.
+public min : Instant -> Instant -> Instant
+let min a b = if compare a b <= 0 then a else b
+example: min epoch (fromUnixTimeMillis 1) = epoch
+
+/// The later of two instants.
+public max : Instant -> Instant -> Instant
+let max a b = if compare a b >= 0 then a else b
+example: max epoch (fromUnixTimeMillis 1) = fromUnixTimeMillis 1
+
+/// The current instant, read from the `Clock` capability.
+public now : { clock : Clock | _ } -> Instant / { Clock }
+let now env = fromUnixTimeMillis (env.clock.now ())
+
+/// Render in ISO-8601 UTC form, e.g. `1970-01-01T00:00:00Z`.
+public toString : Instant -> String
+let toString i =
+  LocalDateTime.toString (LocalDateTime.fromEpochDayAndNanoOfDay (epochDay i) (nanoOfDay i)) ++ "Z"
+example: toString epoch = "1970-01-01T00:00:00Z"
+example: toString (fromUnixTimeSeconds 1) = "1970-01-01T00:00:01Z"

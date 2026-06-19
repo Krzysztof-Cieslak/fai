@@ -13,6 +13,25 @@ fn std_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../std")
 }
 
+/// Every `.fai` module under `std/`, recursively (so subfolders like
+/// `datetime/` are covered by the same gates), sorted for determinism.
+fn std_fai_files() -> Vec<PathBuf> {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("std/ directory exists") {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("fai") {
+                out.push(path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(&std_dir(), &mut files);
+    files.sort();
+    files
+}
+
 /// Whether `haystack` contains `name` as a whole word.
 fn mentions(haystack: &str, name: &str) -> bool {
     let boundary = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric() && c != '_');
@@ -24,14 +43,7 @@ fn mentions(haystack: &str, name: &str) -> bool {
 
 #[test]
 fn every_public_std_function_has_an_example() {
-    let mut files: Vec<PathBuf> = std::fs::read_dir(std_dir())
-        .expect("std/ directory exists")
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("fai"))
-        .collect();
-    files.sort();
-
-    for path in files {
+    for path in std_fai_files() {
         let name = path.file_name().unwrap().to_str().unwrap().to_owned();
         let src = std::fs::read_to_string(&path).unwrap();
         let examples: Vec<&str> =
@@ -88,12 +100,7 @@ fn every_public_std_function_has_an_example() {
 
 #[test]
 fn std_modules_parse_clean_and_are_canonical() {
-    let mut files: Vec<PathBuf> = std::fs::read_dir(std_dir())
-        .expect("std/ directory exists")
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("fai"))
-        .collect();
-    files.sort();
+    let files = std_fai_files();
     assert!(!files.is_empty(), "expected std/ .fai modules");
 
     for path in files {

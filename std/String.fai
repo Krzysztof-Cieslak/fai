@@ -68,3 +68,11 @@ example: join "," ["a", "b", "c"] = "a,b,c"
 public joinArray : String -> Array String -> String
 let joinArray sep parts = Prim.arrayJoin sep parts
 example: joinArray ", " [| "a", "b", "c" |] = "a, b, c"
+
+/// Left-pad `s` with copies of `pad` until it is at least `width` characters
+/// long (`s` unchanged when already that long). `pad` should be non-empty; a
+/// final copy may overshoot `width` when `pad` is more than one character.
+public padStart : Int -> String -> String -> String
+let padStart width pad s = if length s >= width then s else padStart width pad (pad ++ s)
+example: padStart 3 "0" "7" = "007"
+example: padStart 2 "0" "100" = "100"

@@ -46,3 +46,81 @@ example: shiftRight 16 2 = 4
 public shiftRightLogical : Int -> Int -> Int
 let shiftRightLogical a n = Prim.intShiftRightLogical a n
 example: shiftRightLogical 16 2 = 4
+
+/// The absolute value of `n` (`abs minInt` overflows back to `minInt`, as with
+/// the wrapping arithmetic operators).
+public abs : Int -> Int
+let abs n = if n < 0 then 0 - n else n
+example: abs 5 = 5
+example: abs (0 - 5) = 5
+example: abs 0 = 0
+
+/// Floored integer division: the quotient rounded toward negative infinity.
+/// Unlike `/` (which truncates toward zero), `floorDiv (0 - 7) 2` is `-4`, not
+/// `-3`. Division by zero aborts, as `/` does.
+public floorDiv : Int -> Int -> Int
+let floorDiv a b =
+  let q = a / b
+  let r = a % b
+  if (r <> 0) && ((r < 0) <> (b < 0)) then q - 1 else q
+example: floorDiv 7 2 = 3
+example: floorDiv (0 - 7) 2 = 0 - 4
+example: floorDiv 7 (0 - 2) = 0 - 4
+forall a: floorDiv a 1 = a
+
+/// Floored modulo: the remainder paired with `floorDiv`, so its sign follows the
+/// divisor `b` rather than the dividend. `floorMod (0 - 1) 7` is `6`. Always in
+/// the half-open range between `0` and `b`. Division by zero aborts.
+public floorMod : Int -> Int -> Int
+let floorMod a b =
+  let r = a % b
+  if (r <> 0) && ((r < 0) <> (b < 0)) then r + b else r
+example: floorMod 7 2 = 1
+example: floorMod (0 - 1) 7 = 6
+example: floorMod 7 (0 - 3) = 0 - 2
+forall a: floorMod a 1 = 0
+
+// The decimal value of a one-character string, or `None` for a non-digit.
+digitValue : String -> Option Int
+let digitValue ch =
+  match ch with
+  | "0" -> Some 0
+  | "1" -> Some 1
+  | "2" -> Some 2
+  | "3" -> Some 3
+  | "4" -> Some 4
+  | "5" -> Some 5
+  | "6" -> Some 6
+  | "7" -> Some 7
+  | "8" -> Some 8
+  | "9" -> Some 9
+  | _ -> None
+
+// Folds the decimal digits of `s` over the half-open index range `[i, n)` into
+// `acc`, or `None` on the first non-digit character.
+parseDigitsFrom : Int -> Int -> Int -> String -> Option Int
+let parseDigitsFrom i n acc s =
+  if i >= n then
+    Some acc
+  else
+    match digitValue (String.substring i 1 s) with
+    | None -> None
+    | Some d -> parseDigitsFrom (i + 1) n (acc * 10 + d) s
+
+/// Parse a base-10 integer, with an optional leading `-`. `None` if `s` is empty,
+/// is a lone `-`, or contains any non-digit character. Out-of-range values wrap to
+/// the 64-bit pattern, as the arithmetic operators do.
+public fromString : String -> Option Int
+let fromString s =
+  let n = String.length s
+  if n = 0 then
+    None
+  else if String.substring 0 1 s = "-" then
+    if n = 1 then None else Option.map (fun v -> 0 - v) (parseDigitsFrom 1 n 0 s)
+  else
+    parseDigitsFrom 0 n 0 s
+example: fromString "42" = Some 42
+example: fromString "-7" = Some (0 - 7)
+example: fromString "" = None
+example: fromString "12a" = None
+forall n: fromString (toString n) = Some n

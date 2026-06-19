@@ -1,0 +1,293 @@
+module DateTimeFormat
+
+// Formatting and parsing of local date-times with a custom pattern string, the
+// complement to each type's fixed ISO-8601 `toString`/`parse`. A pattern is a run
+// of field codes mixed with literal text; the supported codes are:
+//
+//   yyyy/yy   year (4-digit / 2-digit)        MM/M    month number
+//   MMMM/MMM  month name (full / short)       dd/d    day of month
+//   HH/H      hour, 24-hour                    hh/h    hour, 12-hour
+//   mm/m      minute                           ss/s    second
+//   fff/ffffff/fffffffff  fractional second    tt      AM/PM
+//   EEEE/EEE  weekday name (full / short)
+//
+// Any other character is a literal; wrap literal letters in single quotes
+// (`'T'`). Parsing is the inverse and is whitespace- and width-sensitive: literal
+// text in the pattern must appear verbatim in the input. Negative or >4-digit
+// years are not supported by custom patterns (use the ISO `toString`).
+type Tok =
+  | TLit String
+  | TField String Int
+
+type Parts = { ampm : Int, day : Int, h12 : Bool, hour : Int, minute : Int, month : Int, nano : Int, second : Int, year : Int }
+
+defaultParts : Parts
+let defaultParts =
+  { ampm = 0, day = 1, h12 = false, hour = 0, minute = 0, month = 1, nano = 0, second = 0, year = 1970 }
+
+monthShort : List String
+let monthShort =
+  ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+monthFull : List String
+let monthFull =
+  ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
+
+weekdayShort : List String
+let weekdayShort = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+weekdayFull : List String
+let weekdayFull = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+ampmNames : List String
+let ampmNames = ["AM", "PM"]
+
+pow10 : Int -> Int
+let pow10 k = if k <= 0 then 1 else 10 * pow10 (k - 1)
+
+// A definitely-valid date-time, for readable examples.
+dtOf : Int -> Int -> Int -> Int -> Int -> Int -> LocalDateTime
+let dtOf y mo d h mi s =
+  Option.withDefault (LocalDateTime.fromEpochDayAndNanoOfDay 0 0) (LocalDateTime.ofParts y mo d h mi s)
+
+// Whether a one-character string is an ASCII digit.
+isDigit : String -> Bool
+let isDigit c = Option.isSome (Int.fromString c)
+
+// Whether `c` begins a field code (rather than literal text).
+isFieldChar : String -> Bool
+let isFieldChar c =
+  c = "y" || c = "M" || c = "d" || c = "H" || c = "h" || c = "m" || c = "s" || c = "f" || c = "t" || c = "E"
+
+// The number of consecutive copies of `c` starting at `pos`.
+runLen : String -> Int -> Int -> String -> Int
+let runLen s pos n c =
+  if pos < n && String.substring pos 1 s = c then 1 + runLen s (pos + 1) n c else 0
+
+// The index of the next `'` at or after `pos`, or `n` if there is none.
+indexOfQuote : String -> Int -> Int -> Int
+let indexOfQuote s pos n =
+  if pos >= n then n else if String.substring pos 1 s = "'" then pos else indexOfQuote s (pos + 1) n
+
+// Tokenize a pattern string from `pos` to the end.
+scanFrom : String -> Int -> Int -> List Tok
+let scanFrom s pos n =
+  if pos >= n then
+    []
+  else
+    let c = String.substring pos 1 s
+    if c = "'" then
+      let close = indexOfQuote s (pos + 1) n
+      TLit (String.substring (pos + 1) (close - pos - 1) s) :: scanFrom s (if close < n then
+        close + 1
+      else
+        n) n
+    else if isFieldChar c then
+      let k = runLen s pos n c
+      TField c k :: scanFrom s (pos + k) n
+    else
+      TLit c :: scanFrom s (pos + 1) n
+
+scan : String -> List Tok
+let scan s = scanFrom s 0 (String.length s)
+
+// Render a numeric field, zero-padded to two digits when `k >= 2`.
+num : Int -> Int -> String
+let num k v = if k >= 2 then String.padStart 2 "0" (Int.toString v) else Int.toString v
+
+// The 12-hour clock hour (1–12) for a 24-hour hour.
+hour12 : Int -> Int
+let hour12 h24 =
+  let h0 = Int.floorMod h24 12
+  if h0 = 0 then 12 else h0
+
+monthVal : LocalDateTime -> Month
+let monthVal ldt = Option.withDefault Month.January (Month.fromInt (LocalDateTime.month ldt))
+
+// Render one field code at width `k` from a date-time.
+emitField : String -> Int -> LocalDateTime -> String
+let emitField c k ldt =
+  if c = "y" then
+    if k = 2 then
+      String.padStart 2 "0" (Int.toString (Int.floorMod (LocalDateTime.year ldt) 100))
+    else
+      String.padStart 4 "0" (Int.toString (LocalDateTime.year ldt))
+  else if c = "M" then
+    if k >= 4 then
+      Month.toString (monthVal ldt)
+    else if k = 3 then Month.toShortString (monthVal ldt) else num k (LocalDateTime.month ldt)
+  else if c = "d" then
+    num k (LocalDateTime.day ldt)
+  else if c = "H" then
+    num k (LocalDateTime.hour ldt)
+  else if c = "h" then
+    num k (hour12 (LocalDateTime.hour ldt))
+  else if c = "m" then
+    num k (LocalDateTime.minute ldt)
+  else if c = "s" then
+    num k (LocalDateTime.second ldt)
+  else if c = "f" then
+    String.take k (String.padStart 9 "0" (Int.toString (LocalDateTime.nanoOfSecond ldt)))
+  else if c = "t" then
+    if LocalDateTime.hour ldt < 12 then "AM" else "PM"
+  else if c = "E" then
+    if k >= 4 then
+      DayOfWeek.toString (LocalDateTime.dayOfWeek ldt)
+    else
+      DayOfWeek.toShortString (LocalDateTime.dayOfWeek ldt)
+  else
+    ""
+
+formatToks : List Tok -> LocalDateTime -> String
+let formatToks toks ldt =
+  match toks with
+  | [] -> ""
+  | TLit s :: rest -> s ++ formatToks rest ldt
+  | TField c k :: rest -> emitField c k ldt ++ formatToks rest ldt
+
+/// Render a date-time with a custom pattern, e.g.
+/// `format "yyyy-MM-dd HH:mm" dt`.
+public format : String -> LocalDateTime -> String
+let format pattern ldt = formatToks (scan pattern) ldt
+example: format "yyyy-MM-dd" (dtOf 2020 6 15 14 30 45) = "2020-06-15"
+example: format "h:mm tt" (dtOf 2020 6 15 14 30 0) = "2:30 PM"
+example: format "EEEE, MMM d" (dtOf 2020 6 15 0 0 0) = "Monday, Jun 15"
+example: format "fff" (LocalDateTime.plusNanoseconds 123_000_000 (LocalDateTime.fromEpochDayAndNanoOfDay 0 0)) = "123"
+
+/// Render a date with a custom pattern (time fields read as midnight).
+public formatDate : String -> LocalDate -> String
+let formatDate pattern d = format pattern (LocalDateTime.of d LocalTime.midnight)
+example: formatDate "yyyy/MM/dd" (LocalDate.fromEpochDay 0) = "1970/01/01"
+
+/// Render a time of day with a custom pattern (date fields read as 1970-01-01).
+public formatTime : String -> LocalTime -> String
+let formatTime pattern t = format pattern (LocalDateTime.of (LocalDate.fromEpochDay 0) t)
+example: formatTime "HH:mm" LocalTime.midnight = "00:00"
+
+// Whether the literal `s` appears in `input` at `pos`.
+prefixAt : String -> Int -> String -> Bool
+let prefixAt input pos s =
+  let len = String.length s
+  pos + len <= String.length input && String.substring pos len input = s
+
+// Read 1..`maxw` decimal digits at `pos`, returning the value and the new index.
+scanDigits : String -> Int -> Int -> Int
+let scanDigits input pos limit =
+  if pos < limit && isDigit (String.substring pos 1 input) then
+    scanDigits input (pos + 1) limit
+  else
+    pos
+
+readNum : String -> Int -> Int -> Option (Int * Int)
+let readNum input pos maxw =
+  let n = String.length input
+  let limit = if pos + maxw < n then pos + maxw else n
+  let endp = scanDigits input pos limit
+  if endp = pos then
+    None
+  else
+    Option.map (fun v -> (v, endp)) (Int.fromString (String.substring pos (endp - pos) input))
+
+// Match the first of `names` that appears at `pos`, returning its 1-based index.
+matchName : String -> Int -> List String -> Int -> Option (Int * Int)
+let matchName input pos names idx =
+  match names with
+  | [] -> None
+  | nm :: rest ->
+    if prefixAt input pos nm then
+      Some (idx, pos + String.length nm)
+    else
+      matchName input pos rest (idx + 1)
+
+consumeNum : String -> Int -> Int -> (Parts -> Int -> Parts) -> Parts -> Option (Int * Parts)
+let consumeNum input pos maxw set parts =
+  match readNum input pos maxw with
+  | Some (v, p2) -> Some (p2, set parts v)
+  | None -> None
+
+consumeName : String -> Int -> List String -> (Parts -> Int -> Parts) -> Parts -> Option (Int * Parts)
+let consumeName input pos names set parts =
+  match matchName input pos names 1 with
+  | Some (idx, p2) -> Some (p2, set parts idx)
+  | None -> None
+
+// Consume the input for one field code, updating the accumulated parts.
+consumeField : String -> Int -> String -> Int -> Parts -> Option (Int * Parts)
+let consumeField c k input pos parts =
+  if c = "y" then
+    consumeNum input pos (if k = 2 then
+      2
+    else
+      4) (fun p v -> { p with year = if k = 2 then 2000 + v else v }) parts
+  else if c = "M" then
+    if k >= 3 then
+      consumeName input pos (if k >= 4 then
+        monthFull
+      else
+        monthShort) (fun p i -> { p with month = i }) parts
+    else
+      consumeNum input pos 2 (fun p v -> { p with month = v }) parts
+  else if c = "d" then
+    consumeNum input pos 2 (fun p v -> { p with day = v }) parts
+  else if c = "H" then
+    consumeNum input pos 2 (fun p v -> { p with h12 = false, hour = v }) parts
+  else if c = "h" then
+    consumeNum input pos 2 (fun p v -> { p with h12 = true, hour = v }) parts
+  else if c = "m" then
+    consumeNum input pos 2 (fun p v -> { p with minute = v }) parts
+  else if c = "s" then
+    consumeNum input pos 2 (fun p v -> { p with second = v }) parts
+  else if c = "f" then
+    match readNum input pos k with
+    | Some (v, p2) -> Some (p2, { parts with nano = v * pow10 (9 - (p2 - pos)) })
+    | None -> None
+  else if c = "t" then
+    consumeName input pos ampmNames (fun p i -> { p with ampm = i }) parts
+  else if c = "E" then
+    consumeName input pos (if k >= 4 then weekdayFull else weekdayShort) (fun p i -> p) parts
+  else
+    None
+
+parseToks : List Tok -> String -> Int -> Parts -> Option (Int * Parts)
+let parseToks toks input pos parts =
+  match toks with
+  | [] -> Some (pos, parts)
+  | TLit s :: rest ->
+    if prefixAt input pos s then parseToks rest input (pos + String.length s) parts else None
+  | TField c k :: rest ->
+    match consumeField c k input pos parts with
+    | Some (p2, parts2) -> parseToks rest input p2 parts2
+    | None -> None
+
+buildDateTime : Parts -> Option LocalDateTime
+let buildDateTime parts =
+  let h0 = if parts.h12 then Int.floorMod parts.hour 12 else parts.hour
+  let hr = if parts.h12 && parts.ampm = 2 then h0 + 12 else h0
+  match (LocalDate.of parts.year parts.month parts.day, LocalTime.ofNano hr parts.minute parts.second parts.nano) with
+  | (Some d, Some t) -> Some (LocalDateTime.of d t)
+  | _ -> None
+
+/// Parse a date-time from `input` against a custom `pattern`. The whole input must
+/// be consumed and name the fields the pattern requires, or the result is `None`.
+public parse : String -> String -> Option LocalDateTime
+let parse pattern input =
+  match parseToks (scan pattern) input 0 defaultParts with
+  | Some (pos, parts) -> if pos = String.length input then buildDateTime parts else None
+  | None -> None
+example: parse "yyyy-MM-dd HH:mm:ss" "2020-06-15 14:30:45" = LocalDateTime.ofParts 2020 6 15 14 30 45
+example: parse "MMM d, yyyy" "Jun 15, 2020" = LocalDateTime.ofParts 2020 6 15 0 0 0
+example: parse "yyyy-MM-dd" "nonsense" = None
+example: parse "ss.fff" "00.123" = Some (LocalDateTime.fromEpochDayAndNanoOfDay 0 123_000_000)
+forall ed: parse "yyyy-MM-ddTHH:mm:ss" (format "yyyy-MM-ddTHH:mm:ss" (LocalDateTime.fromEpochDayAndNanoOfDay ed 0)) = Some (LocalDateTime.fromEpochDayAndNanoOfDay ed 0)
+
+/// Parse a date from `input` against a custom `pattern` (time fields default to
+/// midnight, then are dropped).
+public parseDate : String -> String -> Option LocalDate
+let parseDate pattern input = Option.map LocalDateTime.date (parse pattern input)
+example: parseDate "yyyy-MM-dd" "1970-01-01" = Some (LocalDate.fromEpochDay 0)
+
+/// Parse a time of day from `input` against a custom `pattern` (date fields are
+/// dropped).
+public parseTime : String -> String -> Option LocalTime
+let parseTime pattern input = Option.map LocalDateTime.time (parse pattern input)
+example: parseTime "HH:mm:ss" "00:00:00" = Some LocalTime.midnight
