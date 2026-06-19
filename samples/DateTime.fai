@@ -1,0 +1,43 @@
+module DateTime
+
+// A tour of the date & time library (the modules under `std/datetime/`). The value
+// types are opaque and built through their modules — `Instant`, `Duration`,
+// `LocalDate`, `LocalTime`, `LocalDateTime`, `Offset`, `OffsetDateTime`, `Period`,
+// and the `DayOfWeek`/`Month` enums — while `Prelude` re-exports the type names so
+// signatures read unqualified. Everything here is pure; only `main` touches the
+// clock.
+/// The number of whole days from one date to another.
+public daysBetween : LocalDate -> LocalDate -> Int
+let daysBetween a b = LocalDate.daysUntil a b
+example: daysBetween (LocalDate.fromEpochDay 0) (LocalDate.fromEpochDay 30) = 30
+
+/// The ISO date one week after `d`.
+public nextWeek : LocalDate -> String
+let nextWeek d = LocalDate.toString (LocalDate.plusWeeks 1 d)
+example: nextWeek (LocalDate.fromEpochDay 0) = "1970-01-08"
+
+/// The weekday name of a year/month/day (defaulting to the epoch on a bad date).
+public weekdayName : Int -> Int -> Int -> String
+let weekdayName y mo d =
+  DayOfWeek.toString (LocalDate.dayOfWeek (Option.withDefault (LocalDate.fromEpochDay 0) (LocalDate.of y mo d)))
+example: weekdayName 2020 6 15 = "Monday"
+
+/// An instant `seconds` after another, as an ISO-8601 UTC string.
+public afterSeconds : Int -> Instant -> String
+let afterSeconds seconds i = Instant.toString (Instant.plus (Duration.ofSeconds seconds) i)
+example: afterSeconds 90 Instant.epoch = "1970-01-01T00:01:30Z"
+
+/// Render a local date-time with a custom pattern.
+public stamp : LocalDateTime -> String
+let stamp dt = DateTimeFormat.format "EEE, d MMM yyyy 'at' h:mm tt" dt
+example: stamp (Option.withDefault (LocalDateTime.fromEpochDayAndNanoOfDay 0 0) (LocalDateTime.ofParts 2020 6 15 14 30 0)) = "Mon, 15 Jun 2020 at 2:30 PM"
+// Calendar arithmetic: a `Period` is calendar-aware (a month is 28–31 days), unlike
+// a fixed `Duration`. Adding one month to Jan 31 clamps to the end of February.
+example: LocalDate.toString (Period.addToDate (Period.ofMonths 1) (Option.withDefault (LocalDate.fromEpochDay 0) (LocalDate.of 2020 1 31))) = "2020-02-29"
+// An `OffsetDateTime` pins a wall-clock reading to the timeline; the same instant
+// reads differently at different offsets but compares equal.
+example: OffsetDateTime.toString (OffsetDateTime.ofInstant (Option.withDefault Offset.zero (Offset.ofHours 5)) Instant.epoch) = "1970-01-01T05:00:00+05:00"
+
+// Print the current local time, read from the clock capability.
+public main : Runtime -> Unit / { Clock, Console }
+let main runtime = runtime.console.writeLine (OffsetDateTime.toString (OffsetDateTime.now runtime))

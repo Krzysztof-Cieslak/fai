@@ -1,0 +1,188 @@
+module Period
+
+// A calendar-aware length of time: independent counts of years, months, days,
+// hours, minutes, seconds, and nanoseconds. Unlike a `Duration` (a fixed number of
+// nanoseconds), a `Period` depends on where it is applied — "one month" is 28–31
+// days depending on the starting date — so it is added to a `LocalDate` or
+// `LocalDateTime` rather than to an `Instant`.
+//
+// The type is opaque: build periods with `ofYears`/`ofMonths`/… and `add`, read
+// them through the accessors, and apply them with `addToDate`/`addToDateTime`.
+// `Prelude` re-exports the name.
+public opaque type Period =
+  | MkPeriod Int Int Int Int Int Int Int
+
+nanosPerSecond : Int
+let nanosPerSecond = 1_000_000_000
+
+nanosPerMinute : Int
+let nanosPerMinute = 60_000_000_000
+
+nanosPerHour : Int
+let nanosPerHour = 3_600_000_000_000
+
+// A definitely-valid date, for readable examples (an out-of-range day clamps).
+dateOf : Int -> Int -> Int -> LocalDate
+let dateOf y m day = Option.withDefault (LocalDate.fromEpochDay 0) (LocalDate.of y m day)
+
+// Renders `n` with its unit suffix, or the empty string when `n` is zero.
+component : Int -> String -> String
+let component n suffix = if n = 0 then "" else Int.toString n ++ suffix
+
+/// The empty period.
+public zero : Period
+let zero = MkPeriod 0 0 0 0 0 0 0
+example: toString zero = "P0D"
+
+/// A period of `n` years.
+public ofYears : Int -> Period
+let ofYears n = MkPeriod n 0 0 0 0 0 0
+example: years (ofYears 3) = 3
+
+/// A period of `n` months.
+public ofMonths : Int -> Period
+let ofMonths n = MkPeriod 0 n 0 0 0 0 0
+example: months (ofMonths 5) = 5
+
+/// A period of `n` weeks (stored as `7n` days).
+public ofWeeks : Int -> Period
+let ofWeeks n = MkPeriod 0 0 (n * 7) 0 0 0 0
+example: days (ofWeeks 2) = 14
+
+/// A period of `n` days.
+public ofDays : Int -> Period
+let ofDays n = MkPeriod 0 0 n 0 0 0 0
+example: days (ofDays 10) = 10
+
+/// A period of `n` hours.
+public ofHours : Int -> Period
+let ofHours n = MkPeriod 0 0 0 n 0 0 0
+example: hours (ofHours 4) = 4
+
+/// A period of `n` minutes.
+public ofMinutes : Int -> Period
+let ofMinutes n = MkPeriod 0 0 0 0 n 0 0
+example: minutes (ofMinutes 30) = 30
+
+/// A period of `n` seconds.
+public ofSeconds : Int -> Period
+let ofSeconds n = MkPeriod 0 0 0 0 0 n 0
+example: seconds (ofSeconds 45) = 45
+
+/// A period of `n` nanoseconds.
+public ofNanoseconds : Int -> Period
+let ofNanoseconds n = MkPeriod 0 0 0 0 0 0 n
+example: nanoseconds (ofNanoseconds 7) = 7
+
+/// The years component.
+public years : Period -> Int
+let years p =
+  match p with
+  | MkPeriod y _ _ _ _ _ _ -> y
+example: years (ofYears 3) = 3
+
+/// The months component.
+public months : Period -> Int
+let months p =
+  match p with
+  | MkPeriod _ m _ _ _ _ _ -> m
+example: months (ofMonths 5) = 5
+
+/// The days component.
+public days : Period -> Int
+let days p =
+  match p with
+  | MkPeriod _ _ d _ _ _ _ -> d
+example: days (ofDays 10) = 10
+
+/// The hours component.
+public hours : Period -> Int
+let hours p =
+  match p with
+  | MkPeriod _ _ _ h _ _ _ -> h
+example: hours (ofHours 4) = 4
+
+/// The minutes component.
+public minutes : Period -> Int
+let minutes p =
+  match p with
+  | MkPeriod _ _ _ _ mi _ _ -> mi
+example: minutes (ofMinutes 30) = 30
+
+/// The seconds component.
+public seconds : Period -> Int
+let seconds p =
+  match p with
+  | MkPeriod _ _ _ _ _ s _ -> s
+example: seconds (ofSeconds 45) = 45
+
+/// The nanoseconds component.
+public nanoseconds : Period -> Int
+let nanoseconds p =
+  match p with
+  | MkPeriod _ _ _ _ _ _ ns -> ns
+example: nanoseconds (ofNanoseconds 7) = 7
+
+/// Add two periods component by component.
+public add : Period -> Period -> Period
+let add a b =
+  MkPeriod (years a + years b) (months a + months b) (days a + days b) (hours a + hours b) (minutes a + minutes b) (seconds a + seconds b) (nanoseconds a + nanoseconds b)
+example: years (add (ofYears 1) (ofYears 2)) = 3
+example: months (add (ofYears 1) (ofMonths 2)) = 2
+
+/// Negate every component.
+public negate : Period -> Period
+let negate p =
+  MkPeriod (0 - years p) (0 - months p) (0 - days p) (0 - hours p) (0 - minutes p) (0 - seconds p) (0 - nanoseconds p)
+example: years (negate (ofYears 3)) = 0 - 3
+
+/// The period (years, months, days) from `start` to `end` such that applying it to
+/// `start` yields `end`. Negative components when `end` precedes `start`.
+public between : LocalDate -> LocalDate -> Period
+let between start end =
+  if LocalDate.compare start end > 0 then
+    negate (between end start)
+  else
+    let totalMonths =
+      (LocalDate.year end - LocalDate.year start) * 12 + (LocalDate.month end - LocalDate.month start)
+    let m = if LocalDate.day end >= LocalDate.day start then totalMonths else totalMonths - 1
+    let inter = LocalDate.plusMonths m start
+    MkPeriod (m / 12) (Int.floorMod m 12) (LocalDate.daysUntil inter end) 0 0 0 0
+example: days (between (LocalDate.fromEpochDay 0) (LocalDate.fromEpochDay 10)) = 10
+example: months (between (dateOf 2020 1 15) (dateOf 2020 3 15)) = 2
+example: years (between (dateOf 2020 1 1) (dateOf 2018 1 1)) = 0 - 2
+
+/// Apply a period's date components (years, then months, then days) to a date.
+/// Any time components are ignored.
+public addToDate : Period -> LocalDate -> LocalDate
+let addToDate p d =
+  LocalDate.plusDays (days p) (LocalDate.plusMonths (months p) (LocalDate.plusYears (years p) d))
+example: LocalDate.day (addToDate (ofMonths 1) (dateOf 2020 1 31)) = 29
+example: LocalDate.toEpochDay (addToDate (ofDays 5) (LocalDate.fromEpochDay 0)) = 5
+
+/// Apply every component of a period to a date-time (date parts first, then the
+/// time parts, carrying across midnight).
+public addToDateTime : Period -> LocalDateTime -> LocalDateTime
+let addToDateTime p dt =
+  let withDate =
+    LocalDateTime.plusDays (days p) (LocalDateTime.plusMonths (months p) (LocalDateTime.plusYears (years p) dt))
+  LocalDateTime.plusNanoseconds (hours p * nanosPerHour + minutes p * nanosPerMinute + seconds p * nanosPerSecond + nanoseconds p) withDate
+example: LocalDateTime.hour (addToDateTime (ofHours 5) (LocalDateTime.fromEpochDayAndNanoOfDay 0 0)) = 5
+example: LocalDateTime.day (addToDateTime (ofDays 1) (LocalDateTime.fromEpochDayAndNanoOfDay 0 0)) = 2
+
+/// Render in ISO-8601 period form, e.g. `P1Y2M3DT4H5M6S` (zero components are
+/// omitted; the empty period is `P0D`).
+public toString : Period -> String
+let toString p =
+  let datePart = component (years p) "Y" ++ component (months p) "M" ++ component (days p) "D"
+  let secPart =
+    if nanoseconds p = 0 then
+      component (seconds p) "S"
+    else
+      Int.toString (seconds p) ++ "." ++ String.padStart 9 "0" (Int.toString (Int.abs (nanoseconds p))) ++ "S"
+  let timePart = component (hours p) "H" ++ component (minutes p) "M" ++ secPart
+  let body = datePart ++ (if timePart = "" then "" else "T" ++ timePart)
+  if body = "" then "P0D" else "P" ++ body
+example: toString (ofDays 3) = "P3D"
+example: toString (add (ofYears 1) (ofMonths 2)) = "P1Y2M"
+example: toString (ofHours 4) = "PT4H"

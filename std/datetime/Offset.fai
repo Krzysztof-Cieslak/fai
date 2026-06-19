@@ -1,0 +1,101 @@
+module Offset
+
+// A fixed offset from UTC, in whole seconds, within ±18 hours (the range real
+// zones use). It is the difference `local - UTC`: a positive offset is east of
+// Greenwich. Combine with a `LocalDateTime` to make an `OffsetDateTime`.
+//
+// The type is opaque: build offsets with `ofHours`/`ofHoursMinutes`/`ofSeconds`
+// (each range-checked, returning `Option`) and read them with `seconds`.
+// `Prelude` re-exports the name.
+public opaque type Offset =
+  | MkOffset Int
+
+// The inclusive bound on an offset's magnitude in seconds (18 hours).
+maxSeconds : Int
+let maxSeconds = 64_800
+
+isSign : String -> Bool
+let isSign s = s = "+" || s = "-"
+
+/// The zero offset (UTC itself).
+public zero : Offset
+let zero = MkOffset 0
+example: seconds zero = 0
+
+/// An offset of `s` seconds from UTC, or `None` if `|s|` exceeds 18 hours.
+public ofSeconds : Int -> Option Offset
+let ofSeconds s = if Int.abs s > maxSeconds then None else Some (MkOffset s)
+example: ofSeconds 100_000 = None
+example: Option.isSome (ofSeconds 3600)
+
+/// An offset of `h` whole hours from UTC, or `None` if out of range.
+public ofHours : Int -> Option Offset
+let ofHours h = ofSeconds (h * 3600)
+example: Option.map seconds (ofHours 2) = Some 7200
+
+/// An offset of `h` hours and `m` minutes (both with the offset's sign), or
+/// `None` if out of range.
+public ofHoursMinutes : Int -> Int -> Option Offset
+let ofHoursMinutes h m = ofSeconds (h * 3600 + m * 60)
+example: Option.map seconds (ofHoursMinutes 5 30) = Some 19800
+
+/// The offset's total seconds from UTC (positive east of Greenwich).
+public seconds : Offset -> Int
+let seconds o =
+  match o with
+  | MkOffset s -> s
+example: seconds zero = 0
+
+/// The offset's total minutes from UTC.
+public totalMinutes : Offset -> Int
+let totalMinutes o = Int.floorDiv (seconds o) 60
+example: totalMinutes (Option.withDefault zero (ofHoursMinutes 5 30)) = 330
+
+/// The negation of the offset (east becomes west).
+public negate : Offset -> Offset
+let negate o = MkOffset (0 - seconds o)
+example: seconds (negate (Option.withDefault zero (ofHours 2))) = 0 - 7200
+
+/// Three-way comparison by seconds east of UTC.
+public compare : Offset -> Offset -> Int
+let compare a b = Prim.compare a b
+example: compare zero (Option.withDefault zero (ofHours 1)) < 0
+
+/// Render in ISO-8601 form: `Z` for UTC, otherwise `±HH:MM` (with `:SS` only when
+/// the offset is not a whole minute).
+public toString : Offset -> String
+let toString o =
+  let s = seconds o
+  if s = 0 then
+    "Z"
+  else
+    let sign = if s < 0 then "-" else "+"
+    let mag = Int.abs s
+    let base =
+      sign ++ String.padStart 2 "0" (Int.toString (mag / 3600)) ++ ":" ++ String.padStart 2 "0" (Int.toString (mag % 3600 / 60))
+    if mag % 60 = 0 then base else base ++ ":" ++ String.padStart 2 "0" (Int.toString (mag % 60))
+example: toString zero = "Z"
+example: toString (Option.withDefault zero (ofHoursMinutes 5 30)) = "+05:30"
+
+/// Parse an ISO-8601 offset: `Z` (UTC) or `±HH:MM` with an optional `:SS`. `None`
+/// if the shape is wrong or the result is out of range.
+public parse : String -> Option Offset
+let parse s =
+  let n = String.length s
+  if s = "Z" then
+    Some zero
+  else if (n <> 6 && n <> 9) || not (isSign (String.substring 0 1 s)) then
+    None
+  else if String.substring 3 1 s <> ":" || (n = 9 && String.substring 6 1 s <> ":") then
+    None
+  else
+    let sign = if String.substring 0 1 s = "-" then 0 - 1 else 1
+    let hOpt = Int.fromString (String.substring 1 2 s)
+    let mOpt = Int.fromString (String.substring 4 2 s)
+    let secOpt = if n = 6 then Some 0 else Int.fromString (String.substring 7 2 s)
+    match (hOpt, mOpt, secOpt) with
+    | (Some h, Some m, Some sec) -> ofSeconds (sign * (h * 3600 + m * 60 + sec))
+    | _ -> None
+example: parse "Z" = Some zero
+example: parse "+05:30" = ofHoursMinutes 5 30
+example: parse "bogus" = None

@@ -1,0 +1,244 @@
+module LocalDate
+
+// A date in the proleptic Gregorian calendar — a year, month, and day with no
+// time of day and no time zone. Stored as a count of days since the Unix epoch
+// (1970-01-01 is day 0), so `plusDays`, `daysUntil`, and comparison are trivial
+// integer operations and any integer is a valid date. The year/month/day are
+// derived on demand by the standard civil-from-days conversion.
+//
+// The type is opaque: build dates with `of` (validated) or `fromEpochDay`, and
+// read them through `year`/`month`/`day`/… `Prelude` re-exports the name.
+public opaque type LocalDate =
+  | MkLocalDate Int
+
+// days-from-civil: the epoch-day number for a (year, month, day). Month and day
+// must be in range; `of` validates before calling. Every division is on a
+// non-negative operand (the era adjustment keeps `yoe` non-negative), so the
+// truncating `/` is exactly the floored division the algorithm needs.
+epochDayOf : Int -> Int -> Int -> Int
+let epochDayOf year month day =
+  let y = if month <= 2 then year - 1 else year
+  let era = (if y >= 0 then y else y - 399) / 400
+  let yoe = y - era * 400
+  let mp = if month > 2 then month - 3 else month + 9
+  let doy = (153 * mp + 2) / 5 + day - 1
+  let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+  era * 146097 + doe - 719468
+
+// civil-from-days: the (year, month, day) for an epoch-day number (the inverse of
+// `epochDayOf`). Same non-negative-division reasoning.
+civilOf : Int -> (Int * Int * Int)
+let civilOf epochDay =
+  let z = epochDay + 719468
+  let era = (if z >= 0 then z else z - 146096) / 146097
+  let doe = z - era * 146097
+  let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+  let y = yoe + era * 400
+  let doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+  let mp = (5 * doy + 2) / 153
+  let d = doy - (153 * mp + 2) / 5 + 1
+  let m = if mp < 10 then mp + 3 else mp - 9
+  (if m <= 2 then y + 1 else y, m, d)
+
+/// Whether `year` is a leap year in the proleptic Gregorian calendar.
+public isLeapYear : Int -> Bool
+let isLeapYear year =
+  Int.floorMod year 4 = 0 && (Int.floorMod year 100 <> 0 || Int.floorMod year 400 = 0)
+example: isLeapYear 2020
+example: isLeapYear 1900 = false
+example: isLeapYear 2000
+
+/// The number of days in `month` (1–12) of `year` (28–31).
+public daysInMonth : Int -> Int -> Int
+let daysInMonth year month =
+  Option.withDefault 30 (Option.map (Month.length (isLeapYear year)) (Month.fromInt month))
+example: daysInMonth 2020 2 = 29
+example: daysInMonth 2021 2 = 28
+example: daysInMonth 2021 1 = 31
+
+/// A date from a year, month (1–12), and day (1–31), or `None` if the month or
+/// day is out of range for that year.
+public of : Int -> Int -> Int -> Option LocalDate
+let of year month day =
+  if month < 1 || month > 12 then
+    None
+  else if day < 1 || day > daysInMonth year month then
+    None
+  else
+    Some (MkLocalDate (epochDayOf year month day))
+example: of 2020 2 29 = Some (fromEpochDay 18321)
+example: of 2021 2 29 = None
+example: of 2020 13 1 = None
+
+// A date from a definitely-in-range (year, month, day); an out-of-range day is
+// clamped to the month's length. The basis of `plusMonths`/`plusYears` (where the
+// source day may not exist in the target month) and of readable examples.
+clamped : Int -> Int -> Int -> LocalDate
+let clamped year month day =
+  let maxDay = daysInMonth year month
+  MkLocalDate (epochDayOf year month (if day > maxDay then maxDay else day))
+
+/// The date that is `n` days after the Unix epoch (1970-01-01). Total: every
+/// integer denotes a valid date.
+public fromEpochDay : Int -> LocalDate
+let fromEpochDay n = MkLocalDate n
+example: toEpochDay (fromEpochDay 100) = 100
+
+/// The number of days from the Unix epoch (1970-01-01) to this date.
+public toEpochDay : LocalDate -> Int
+let toEpochDay d =
+  match d with
+  | MkLocalDate ed -> ed
+example: toEpochDay (fromEpochDay 0) = 0
+
+/// The (possibly negative or large) year.
+public year : LocalDate -> Int
+let year d =
+  match civilOf (toEpochDay d) with
+  | (y, _, _) -> y
+example: year (fromEpochDay 0) = 1970
+example: year (fromEpochDay 10957) = 2000
+
+/// The month of the year, 1 (January) – 12 (December).
+public month : LocalDate -> Int
+let month d =
+  match civilOf (toEpochDay d) with
+  | (_, m, _) -> m
+example: month (fromEpochDay 0) = 1
+
+/// The day of the month, 1–31.
+public day : LocalDate -> Int
+let day d =
+  match civilOf (toEpochDay d) with
+  | (_, _, dd) -> dd
+example: day (fromEpochDay 0) = 1
+
+/// The month as a `Month` value (for matching or naming).
+public monthOfYear : LocalDate -> Month
+let monthOfYear d = Option.withDefault Month.January (Month.fromInt (month d))
+example: monthOfYear (fromEpochDay 0) = Month.January
+
+/// The day of the week.
+public dayOfWeek : LocalDate -> DayOfWeek
+let dayOfWeek d =
+  Option.withDefault DayOfWeek.Thursday (DayOfWeek.fromInt (Int.floorMod (toEpochDay d + 3) 7 + 1))
+example: dayOfWeek (fromEpochDay 0) = DayOfWeek.Thursday
+example: dayOfWeek (fromEpochDay 3) = DayOfWeek.Sunday
+
+/// The day of the year, 1–366 (1 on January 1st).
+public dayOfYear : LocalDate -> Int
+let dayOfYear d = toEpochDay d - epochDayOf (year d) 1 1 + 1
+example: dayOfYear (fromEpochDay 0) = 1
+example: dayOfYear (fromEpochDay 31) = 32
+
+/// The number of days in this date's year (365, or 366 in a leap year).
+public lengthOfYear : LocalDate -> Int
+let lengthOfYear d = if isLeapYear (year d) then 366 else 365
+example: lengthOfYear (fromEpochDay 0) = 365
+
+/// The number of days in this date's month (28–31).
+public lengthOfMonth : LocalDate -> Int
+let lengthOfMonth d = daysInMonth (year d) (month d)
+example: lengthOfMonth (fromEpochDay 0) = 31
+
+/// The date `n` days later (`n` may be negative).
+public plusDays : Int -> LocalDate -> LocalDate
+let plusDays n d = fromEpochDay (toEpochDay d + n)
+example: toEpochDay (plusDays 5 (fromEpochDay 0)) = 5
+
+/// The date `n` days earlier.
+public minusDays : Int -> LocalDate -> LocalDate
+let minusDays n d = plusDays (0 - n) d
+example: toEpochDay (minusDays 5 (fromEpochDay 10)) = 5
+
+/// The date `n` weeks later.
+public plusWeeks : Int -> LocalDate -> LocalDate
+let plusWeeks n d = plusDays (n * 7) d
+example: toEpochDay (plusWeeks 1 (fromEpochDay 0)) = 7
+
+/// The date `n` calendar months later, clamping the day to the target month's
+/// length (so Jan 31 + 1 month is Feb 28/29, not an invalid date).
+public plusMonths : Int -> LocalDate -> LocalDate
+let plusMonths n d =
+  let totalMonths = year d * 12 + (month d - 1) + n
+  clamped (Int.floorDiv totalMonths 12) (Int.floorMod totalMonths 12 + 1) (day d)
+example: day (plusMonths 1 (clamped 2020 1 31)) = 29
+example: month (plusMonths 1 (clamped 2020 1 31)) = 2
+example: day (plusMonths 1 (clamped 2020 3 15)) = 15
+
+/// The date `n` calendar months earlier (clamping the day, as `plusMonths`).
+public minusMonths : Int -> LocalDate -> LocalDate
+let minusMonths n d = plusMonths (0 - n) d
+example: month (minusMonths 1 (clamped 2020 3 15)) = 2
+
+/// The date `n` years later, clamping Feb 29 to Feb 28 in a non-leap year.
+public plusYears : Int -> LocalDate -> LocalDate
+let plusYears n d = clamped (year d + n) (month d) (day d)
+example: year (plusYears 5 (clamped 2020 6 15)) = 2025
+example: day (plusYears 1 (clamped 2020 2 29)) = 28
+
+/// The date `n` years earlier (clamping Feb 29, as `plusYears`).
+public minusYears : Int -> LocalDate -> LocalDate
+let minusYears n d = plusYears (0 - n) d
+example: year (minusYears 5 (clamped 2020 6 15)) = 2015
+
+/// The number of days from `start` to `end` (negative if `end` precedes `start`).
+public daysUntil : LocalDate -> LocalDate -> Int
+let daysUntil start end = toEpochDay end - toEpochDay start
+example: daysUntil (fromEpochDay 0) (fromEpochDay 10) = 10
+example: daysUntil (fromEpochDay 10) (fromEpochDay 0) = 0 - 10
+
+/// Three-way chronological comparison: negative if `a` precedes `b`.
+public compare : LocalDate -> LocalDate -> Int
+let compare a b = Prim.compare a b
+example: compare (fromEpochDay 0) (fromEpochDay 1) < 0
+example: compare (fromEpochDay 1) (fromEpochDay 1) = 0
+
+/// Whether `a` is strictly before `b`.
+public isBefore : LocalDate -> LocalDate -> Bool
+let isBefore a b = compare a b < 0
+example: isBefore (fromEpochDay 0) (fromEpochDay 1)
+example: isBefore (fromEpochDay 1) (fromEpochDay 0) = false
+
+/// Whether `a` is strictly after `b`.
+public isAfter : LocalDate -> LocalDate -> Bool
+let isAfter a b = compare a b > 0
+example: isAfter (fromEpochDay 1) (fromEpochDay 0)
+example: isAfter (fromEpochDay 0) (fromEpochDay 1) = false
+
+/// Render the date in ISO-8601 `yyyy-MM-dd` form (year padded to at least four
+/// digits; a negative year carries a leading `-`).
+public toString : LocalDate -> String
+let toString d =
+  let y = year d
+  let yearStr =
+    if y < 0 then
+      "-" ++ String.padStart 4 "0" (Int.toString (0 - y))
+    else
+      String.padStart 4 "0" (Int.toString y)
+  yearStr ++ "-" ++ String.padStart 2 "0" (Int.toString (month d)) ++ "-" ++ String.padStart 2 "0" (Int.toString (day d))
+example: toString (fromEpochDay 0) = "1970-01-01"
+example: toString (clamped 2020 12 31) = "2020-12-31"
+
+/// Parse an ISO-8601 date `yyyy-MM-dd` (month and day exactly two digits; a
+/// leading `-` denotes a negative year). `None` if the shape is wrong or the date
+/// is invalid.
+public parse : String -> Option LocalDate
+let parse s =
+  let n = String.length s
+  if n < 8 then
+    None
+  else if String.substring (n - 3) 1 s <> "-" || String.substring (n - 6) 1 s <> "-" then
+    None
+  else
+    let yOpt = Int.fromString (String.substring 0 (n - 6) s)
+    let mOpt = Int.fromString (String.substring (n - 5) 2 s)
+    let dOpt = Int.fromString (String.substring (n - 2) 2 s)
+    match (yOpt, mOpt, dOpt) with
+    | (Some y, Some m, Some dd) -> of y m dd
+    | _ -> None
+example: parse "1970-01-01" = Some (fromEpochDay 0)
+example: parse "2020-13-01" = None
+example: parse "2020-02-30" = None
+forall e: parse (toString (fromEpochDay e)) = Some (fromEpochDay e)
+forall e: of (year (fromEpochDay e)) (month (fromEpochDay e)) (day (fromEpochDay e)) = Some (fromEpochDay e)

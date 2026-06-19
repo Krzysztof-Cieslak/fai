@@ -3726,5 +3726,50 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     The List/Array deforestation pass does not apply (a different mechanism); a stream
     wins by *not materializing* and constant memory, not by zero-alloc-per-element.
 
+- **D146 A NodaTime-style date & time library (`std/datetime/`).** A set of distinct
+  value types in the ML/NodaTime tradition, each its own module with the type name
+  re-exported by `Prelude`: `Instant` (a UTC timeline point), `Duration` (a fixed
+  elapsed length), `LocalDate`/`LocalTime`/`LocalDateTime` (calendar values with no
+  zone), `Offset` (a fixed UTC offset), `OffsetDateTime` (a local date-time pinned by
+  an offset), `Period` (a calendar-aware length), and the `DayOfWeek`/`Month` enums.
+  Operations are subject-last so they pipe (`date |> LocalDate.plusDays 3`),
+  mirroring `List.map`/`Dict.insert`.
+  - **Nanosecond precision, two-field representation.** `Instant` and `Duration` are a
+    whole-day count plus a nanosecond-of-day in `[0, 86_400_000_000_000)`; `LocalDate`
+    is an epoch-day count; `LocalTime` a nanosecond-of-day; `LocalDateTime` the two
+    counts; `Offset` whole seconds. A single `i64` of nanoseconds would cap the
+    calendar at ~1678–2262, so the split keeps the range vast while arithmetic stays
+    exact integer work. The calendar uses the standard civil↔days conversion (Howard
+    Hinnant's algorithm), which divides only non-negative operands, so the truncating
+    `/` is the floored division it needs; a shared `Int.floorDiv`/`Int.floorMod` (also
+    added) handles the genuinely-signed normalization of nanosecond-of-day and offset.
+  - **Opaque, validated value types.** Every type is `opaque` with a module-private
+    constructor; smart constructors validate and return `Option` (`LocalDate.of`,
+    `LocalTime.of`, `Offset.ofHours`), so an out-of-range date/time is unrepresentable.
+    Structural `=`/`<`/`compare` still work across files (opacity permits structural
+    comparison), and the components are laid out chronologically so the built-in order
+    is the chronological one; each type also offers explicit `compare`/`isBefore`/…
+  - **ISO-8601 everywhere + a custom pattern engine.** Each type renders and reads its
+    canonical ISO form (`toString`/`parse`, pure). `DateTimeFormat` adds a custom
+    pattern mini-language over `LocalDateTime` (`yyyy`/`yy`, `M`…`MMMM`, `dd`/`d`,
+    `HH`/`hh`, `mm`, `ss`, `fff`/`ffffff`/`fffffffff`, `tt`, `EEE`/`EEEE`, and quoted
+    literals): a tokenizer feeds a format emitter and an inverse parse consumer.
+  - **Offset-based; IANA time zones deferred.** The library is pure except
+    `Instant.now`/`OffsetDateTime.now`, which take the `Clock` capability. To read
+    *local* wall-clock time (not just UTC) the `Clock` interface gains
+    `localOffset : Unit -> Int / { Clock }` — the system UTC offset in seconds — backed
+    by a new `fai_clock_local_offset` runtime primitive that asks the C library
+    (`localtime` + `timegm`/`_mkgmtime`, declared directly so the runtime keeps no crate
+    dependencies). Full IANA `DateTimeZone`/`ZonedDateTime` with daylight-saving rules
+    is **deferred**: it needs an embedded, periodically-updated tz database; the
+    offset-based model covers fixed-offset wall-clock use without that maintenance
+    burden.
+  - **Subfolder embedding.** The modules live under `std/datetime/`; the std-embedding
+    build step and the std-scanning gates now recurse subdirectories and name each
+    embedded module by its path relative to `std/` (e.g. `datetime/Instant.fai`).
+    Module resolution is unchanged (it keys off the `module` header, not the path), and
+    `is_std_path` is a prefix check, so users still reach everything qualified
+    (`Instant.now`) with no import.
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

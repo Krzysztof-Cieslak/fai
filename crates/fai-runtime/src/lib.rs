@@ -3889,6 +3889,51 @@ pub extern "C" fn fai_clock_now(unit: Value) -> Value {
     fai_box_int(millis)
 }
 
+// The C library time helpers, declared directly (the runtime keeps no crate
+// dependencies). `localtime`/`timegm` (`_mkgmtime` on Windows) are standard C; the
+// program links the C runtime, so these resolve at link time on every target.
+unsafe extern "C" {
+    fn time(t: *mut i64) -> i64;
+    fn localtime(t: *const i64) -> *mut core::ffi::c_void;
+    #[cfg(not(windows))]
+    fn timegm(tm: *mut core::ffi::c_void) -> i64;
+    #[cfg(windows)]
+    fn _mkgmtime(tm: *mut core::ffi::c_void) -> i64;
+}
+
+/// The system's current offset from UTC in whole seconds (east of UTC positive),
+/// or `0` if it cannot be determined. Found by interpreting "now" as local time and
+/// re-encoding those broken-down fields as UTC: the gap is the offset.
+fn local_utc_offset_seconds() -> i64 {
+    // SAFETY: `time(null)` returns the current `time_t`. `localtime` returns a
+    // pointer to a static `struct tm` (in local time) or null; we forward that
+    // pointer to `timegm`/`_mkgmtime` without ever dereferencing it, so we need no
+    // knowledge of the platform's `struct tm` layout. Re-encoding the local
+    // fields as UTC and subtracting the original instant yields the offset. The
+    // shared static buffer makes this non-reentrant; a concurrent `localtime` at
+    // worst perturbs a best-effort value, never memory safety.
+    unsafe {
+        let now = time(std::ptr::null_mut());
+        let tm = localtime(&now);
+        if tm.is_null() {
+            return 0;
+        }
+        #[cfg(not(windows))]
+        let local_as_utc = timegm(tm);
+        #[cfg(windows)]
+        let local_as_utc = _mkgmtime(tm);
+        local_as_utc.wrapping_sub(now)
+    }
+}
+
+/// `Clock.localOffset`: the system's current UTC offset in whole seconds as an
+/// immediate `Int`. Consumes its `Unit` argument.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_clock_local_offset(unit: Value) -> Value {
+    fai_drop(unit);
+    fai_box_int(local_utc_offset_seconds())
+}
+
 /// `Random.nextInt`: a pseudo-random `Int` in `[0, n)` (`0` for `n <= 0`),
 /// advancing a process-global xorshift state. Consumes `n`.
 #[unsafe(no_mangle)]

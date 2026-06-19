@@ -56,6 +56,31 @@ public type Reader = Io.Reader
 
 public type Writer = Io.Writer
 
+// The date and time types live in their own modules under `datetime/`; these
+// aliases keep their names usable unqualified in signatures. The opaque value
+// types (`Instant`/`Duration`/`LocalDate`/…) are built and queried through their
+// modules' operations; the `DayOfWeek`/`Month` enum constructors stay qualified
+// (`DayOfWeek.Monday`).
+public type Instant = Instant.Instant
+
+public type Duration = Duration.Duration
+
+public type LocalDate = LocalDate.LocalDate
+
+public type LocalTime = LocalTime.LocalTime
+
+public type LocalDateTime = LocalDateTime.LocalDateTime
+
+public type Offset = Offset.Offset
+
+public type OffsetDateTime = OffsetDateTime.OffsetDateTime
+
+public type Period = Period.Period
+
+public type DayOfWeek = DayOfWeek.DayOfWeek
+
+public type Month = Month.Month
+
 /// The identity function.
 public identity : 'a -> 'a
 let identity x = x
@@ -116,6 +141,7 @@ public interface Console =
   writeLine : String -> Unit / { Console }
 
 public interface Clock =
+  localOffset : Unit -> Int / { Clock }
   now : Unit -> Int / { Clock }
 
 public interface Random =
@@ -194,6 +220,10 @@ foreign "fai_console_write_error" consoleWriteError : String -> Unit / { Console
 foreign "fai_console_read_line" consoleReadLine : Unit -> (Int * String) / { Console }
 
 foreign "fai_clock_now" clockNow : Unit -> Int / { Clock }
+
+// The system's current UTC offset in whole seconds (east of UTC positive); backs
+// `Clock.localOffset`, used to read an `Instant` as local wall-clock time.
+foreign "fai_clock_local_offset" clockLocalOffset : Unit -> Int / { Clock }
 
 foreign "fai_random_next_int" randomNextInt : Int -> Int / { Random }
 
@@ -288,7 +318,7 @@ let stdConsole =
   { Console with readLine = readLineHost, write s = consoleWrite s, writeError s = consoleWriteError s, writeLine s = consoleWriteLine s }
 
 public stdClock : Clock
-let stdClock = { Clock with now u = clockNow u }
+let stdClock = { Clock with localOffset u = clockLocalOffset u, now u = clockNow u }
 
 public stdRandom : Random
 let stdRandom = { Random with nextInt n = randomNextInt n }
