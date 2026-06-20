@@ -1410,9 +1410,14 @@ Deferred: IANA time zones / `ZonedDateTime` with DST rules (this is offset-only)
 - **`Http`** — HTTP/1.1 over `Net`, with HTTPS over `Tls` (so every entry point is
   `/ { Net, Tls }`; the URL scheme picks plain-vs-TLS at runtime). `Request 'e`/
   `Response 'e` carry a `Url`, `Headers`, and a `Stream Bytes` body. Client:
-  `get`/`post`/`request` (verify https against the bundled roots) and
+  `get`/`post`/`postForm`/`request` (verify https against the bundled roots) and
   `getWith`/`requestWith` (extra trusted roots — a private CA or self-signed server),
-  connection-per-request. Server: `serve`/`serveListener` (HTTP) and
+  connection-per-request. The client **follows redirects** up to a hop limit
+  (301/302/303 → `GET`; 307/308 only for a bodyless method; a relative `Location`
+  resolved against the request URL; `Authorization` dropped on a cross-origin hop);
+  `requestOnce` is the single-shot, no-follow escape hatch. Build an `Authorization`
+  header value with `basicAuth`/`bearer`, and a urlencoded form body with
+  `formBody`/`postForm`. Server: `serve`/`serveListener` (HTTP) and
   `serveTls`/`serveListenerTls` (HTTPS, given a PEM cert+key) — a task per
    connection; cancel the serving task to shut down. A received `resp.body` is a
    **lazy `Stream Bytes`** decoded on demand (chunked / Content-Length / read-to-EOF),
