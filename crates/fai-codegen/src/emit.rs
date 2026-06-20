@@ -301,6 +301,13 @@ pub(crate) fn build_reuse_object<M: Module>(
     // object; the reuse entry imports the same symbol (it shares one cell).
     let lambda_closures = lambda_closure_data(module, lowered, &base, Linkage::Import);
 
+    // The reuse entry's own local data (string literals, scalar-bitmap descriptors)
+    // must be named under a *distinct* prefix from the primary entry's: the two
+    // objects are separate at link time (local symbols, no clash), but the in-process
+    // JIT compiles both into one module, where `{base}__fn0__strN` would otherwise be
+    // defined twice. The lambda *references* still use the primary `base` (imported
+    // above), so only the locally-defined data is reprefixed.
+    let local_base = reuse_symbol(namer, lowered.def);
     let ctx = build_fn(
         module,
         reuse_entry,
@@ -312,7 +319,7 @@ pub(crate) fn build_reuse_object<M: Module>(
         &reuse_abi,
         &fn_ids,
         &lambda_closures,
-        &base,
+        &local_base,
         0,
         bce,
         Some((&entry_facts, tokens)),

@@ -78,6 +78,39 @@ fn awaited_boxed_result_crosses_tasks() {
 }
 
 #[test]
+fn string_bearing_reuse_entry_reachable_under_concurrency_compiles() {
+    // Regression: `Int.fromString` reaches `Int.parseDigitsFrom`, a definition that
+    // both contains a string literal and gets a reuse-token entry. Reachable from two
+    // spawned thunks (so the concurrency-gated JIT compiles it), the in-process JIT
+    // once defined that string twice — the primary entry and the reuse entry shared a
+    // local-data prefix in the single JIT module — and panicked with a
+    // `DuplicateDefinition`. The reuse entry now names its local data under a distinct
+    // prefix, so the two coexist.
+    let src = indoc! {r#"
+        module Prog
+
+        parseNum : Int -> Int
+        let parseNum n =
+          match Int.fromString (Int.toString n) with
+          | Some v -> v
+          | None -> 0
+
+        body : { concurrency : Concurrency | _ } -> Nursery -> Int / { Concurrency }
+        let body env nursery =
+          let a = env.concurrency.spawn nursery (fun u -> parseNum 12)
+          let b = env.concurrency.spawn nursery (fun u -> parseNum 30)
+          env.concurrency.await a + env.concurrency.await b
+
+        public main : Runtime -> Unit / { Concurrency, Console }
+        let main runtime =
+          runtime.console.writeLine (Int.toString (runtime.concurrency.scope (body runtime)))
+    "#};
+    let (out, code) = run(src);
+    assert_eq!(code, 0, "clean, leak-free exit (no duplicate-definition panic)");
+    assert_eq!(out, "42\n");
+}
+
+#[test]
 fn channel_producer_consumer_sums() {
     // A producer (a spawned task) sends integers over a bounded channel and closes
     // it; the consumer (the scope body) sums until the channel drains. The channel
