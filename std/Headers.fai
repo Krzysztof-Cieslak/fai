@@ -1,0 +1,98 @@
+module Headers
+
+// An opaque, case-insensitive, order- and duplicate-preserving collection of HTTP
+// header fields. Header names compare case-insensitively (per HTTP/1.1), while
+// values and insertion order are preserved — so repeated fields (several
+// `Set-Cookie`, `Via`, …) all survive and round-trip. Backed by an association list
+// of `(name, value)` pairs in insertion order; lookups are linear, which is fine for
+// the handful of fields a message carries.
+public opaque type Headers =
+  | Headers (List (String * String))
+
+// The name of a `(name, value)` field.
+headerName : (String * String) -> String
+let headerName field =
+  match field with
+  | (name, value) -> name
+
+// The value of a `(name, value)` field.
+headerValue : (String * String) -> String
+let headerValue field =
+  match field with
+  | (name, value) -> value
+
+// Whether a field's name equals `lower` (which must already be lower-cased).
+nameMatches : String -> (String * String) -> Bool
+let nameMatches lower field = String.toLower (headerName field) = lower
+
+/// The empty header set.
+public empty : Headers
+let empty = Headers []
+example: toList empty = []
+
+/// Build headers from `(name, value)` pairs, preserving their order and duplicates.
+public fromList : List (String * String) -> Headers
+let fromList fields = Headers fields
+example: toList (fromList [("A", "1")]) = [("A", "1")]
+
+/// The fields as `(name, value)` pairs, in insertion order.
+public toList : Headers -> List (String * String)
+let toList headers =
+  match headers with
+  | Headers fields -> fields
+example: toList (fromList [("A", "1"), ("B", "2")]) = [("A", "1"), ("B", "2")]
+
+// The first value whose name matches `lower` (already lower-cased), or `None`.
+firstMatch : String -> List (String * String) -> Option String
+let firstMatch lower fields =
+  match fields with
+  | [] -> None
+  | field :: rest ->
+    if nameMatches lower field then Some (headerValue field) else firstMatch lower rest
+
+/// The first value for `name` (matched case-insensitively), or `None`.
+public get : String -> Headers -> Option String
+let get name headers = firstMatch (String.toLower name) (toList headers)
+example: get "content-type" (fromList [("Content-Type", "text/plain")]) = Some "text/plain"
+
+/// Every value for `name` (matched case-insensitively), in order.
+public getAll : String -> Headers -> List String
+let getAll name headers =
+  List.map headerValue (List.filter (nameMatches (String.toLower name)) (toList headers))
+example: getAll "set-cookie" (fromList [("Set-Cookie", "a"), ("set-cookie", "b")]) = ["a", "b"]
+
+/// Whether a field named `name` is present (matched case-insensitively).
+public contains : String -> Headers -> Bool
+let contains name headers =
+  match get name headers with
+  | Some value -> true
+  | None -> false
+example: contains "x" (fromList [("X", "1")]) = true
+
+/// Whether there are no fields.
+public isEmpty : Headers -> Bool
+let isEmpty headers = List.isEmpty (toList headers)
+example: isEmpty empty = true
+
+/// Append a `(name, value)` field, keeping any existing fields of the same name (so
+/// a repeated field is added, not replaced).
+public add : String -> String -> Headers -> Headers
+let add name value headers = Headers (List.append (toList headers) [(name, value)])
+example: getAll "X" (add "X" "2" (fromList [("X", "1")])) = ["1", "2"]
+
+/// Replace every field named `name` (case-insensitive) with a single `(name,
+/// value)` appended at the end.
+public set : String -> String -> Headers -> Headers
+let set name value headers =
+  let kept = List.filter (fieldIsNot (String.toLower name)) (toList headers)
+  Headers (List.append kept [(name, value)])
+example: getAll "X" (set "X" "z" (fromList [("x", "1"), ("X", "2")])) = ["z"]
+
+// Whether a field's name does *not* match `lower` (already lower-cased).
+fieldIsNot : String -> (String * String) -> Bool
+let fieldIsNot lower field = not (nameMatches lower field)
+
+/// Remove every field named `name` (matched case-insensitively).
+public remove : String -> Headers -> Headers
+let remove name headers = Headers (List.filter (fieldIsNot (String.toLower name)) (toList headers))
+example: toList (remove "X" (fromList [("X", "1"), ("Y", "2")])) = [("Y", "2")]
