@@ -118,7 +118,11 @@ fn module_bounds_facts(db: &dyn Db, file: SourceFile) -> Arc<ModuleFacts> {
 
     let arity = |n: Symbol| data.get(&n).map_or(0, |d| d.params.len());
 
-    // Entry-fact eligibility: a private definition never used first-class.
+    // Entry-fact eligibility: a private definition never used first-class. Only
+    // `private` qualifies — its call sites are all in this module, so the
+    // specialized entry fact is sound. A `public` *or* `internal` definition can be
+    // called from other files, so it must keep the conservative ABI (an `internal`
+    // member is callable from sibling same-origin modules).
     let mut eligible: FxHashSet<Symbol> =
         defs.defs.iter().filter(|d| d.visibility == Visibility::Private).map(|d| d.name).collect();
     for n in &order {

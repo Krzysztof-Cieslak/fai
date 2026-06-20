@@ -33,7 +33,8 @@ pub use module::{
     DefInfo, DuplicateExport, Export, ExportKind, ModuleDefs, ModuleInterface, ModuleName,
     PRELUDE_MODULE, PreludeExports, duplicate_module_files, emit_duplicate_module_errors,
     emit_duplicate_prelude_export_errors, merge_auto_imports, module_defs, module_file,
-    module_interface, module_name, prelude_exports, prelude_module_file, prelude_source, std_files,
+    module_interface, module_internal_interface, module_name, prelude_exports, prelude_module_file,
+    prelude_source, std_files,
 };
 pub use scc::{ModuleSccs, Scc, def_deps, module_sccs, recursive_defs};
 
@@ -78,8 +79,11 @@ pub const MODULE_NAME_CONFLICT: DiagnosticCode = DiagnosticCode::new("FAI2016");
 pub const MODULE_AS_VALUE: DiagnosticCode = DiagnosticCode::new("FAI2017");
 /// A constructor of an opaque type is referenced from another file.
 pub const OPAQUE_CONSTRUCTOR: DiagnosticCode = DiagnosticCode::new("FAI2018");
-/// A `foreign` declaration is marked `public`.
+/// A `foreign` declaration is marked `public` or `internal`.
 pub const PUBLIC_FOREIGN: DiagnosticCode = DiagnosticCode::new("FAI2019");
+/// An `internal` member is referenced from a different origin (e.g. user code
+/// naming a standard-library `internal` binding).
+pub const INTERNAL_REFERENCE: DiagnosticCode = DiagnosticCode::new("FAI2020");
 
 /// Diagnostic codes owned by name resolution/visibility (the `FAI2xxx` range).
 pub const CODES: &[CodeInfo] = &[
@@ -145,7 +149,8 @@ pub const CODES: &[CodeInfo] = &[
         title: "visibility marker on a binding with a signature",
         default_severity: Severity::Error,
         explanation: "Visibility lives on the signature, so a `let` binding may not carry \
-                      `public` when a signature already exists. Move `public` to the signature.",
+                      `public` or `internal` when a signature already exists. Move the marker to \
+                      the signature.",
     },
     CodeInfo {
         code: SHADOWS_PRELUDE,
@@ -186,11 +191,13 @@ pub const CODES: &[CodeInfo] = &[
     },
     CodeInfo {
         code: PRIVATE_TYPE_IN_PUBLIC_SIGNATURE,
-        title: "private type exposed by a public signature",
+        title: "less-visible type exposed by an exported signature",
         default_severity: Severity::Error,
-        explanation: "A public surface (a signature, alias body, or constructor field) names a \
-                      same-file type that is not itself cross-file-accessible. Make the type \
-                      public, or make the surface private.",
+        explanation: "An exported surface (a signature, alias body, or constructor field) names a \
+                      type of narrower reach than itself — a `public` surface naming a `private` \
+                      or `internal` type, or an `internal` surface naming a `private` type — so a \
+                      reader of the surface could not name the type. Widen the type's visibility, \
+                      or narrow the surface's.",
     },
     CodeInfo {
         code: MODULE_NAME_CONFLICT,
@@ -218,11 +225,20 @@ pub const CODES: &[CodeInfo] = &[
     },
     CodeInfo {
         code: PUBLIC_FOREIGN,
-        title: "foreign declaration cannot be public",
+        title: "foreign declaration cannot be exported",
         default_severity: Severity::Error,
         explanation: "A `foreign` declaration binds a raw native function and is always \
-                      module-private; it cannot be marked `public`. Expose its behavior through a \
-                      capability interface (an instance whose methods call it) and make that \
-                      public instead.",
+                      module-private; it cannot be marked `public` or `internal`. Expose its \
+                      behavior through a capability interface (an instance whose methods call it) \
+                      and make that public instead.",
+    },
+    CodeInfo {
+        code: INTERNAL_REFERENCE,
+        title: "reference to an internal binding",
+        default_severity: Severity::Error,
+        explanation: "A qualified reference names an `internal` member of another origin — \
+                      `internal` exports a member only to files in the same origin (the standard \
+                      library, or a package), not across that boundary. Use the public API \
+                      instead, or, for your own code, mark the member `public`.",
     },
 ];

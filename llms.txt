@@ -73,11 +73,12 @@ writing code.
 
 1. **One module per file.** Every file begins with `module Name` (upper-case),
    then a blank line. The module name should match the file name.
-2. **Every `public` binding needs an explicit signature** on its own line
-   directly above the `let`. Private bindings may omit it (types are inferred),
-   but may include one.
+2. **Every exported (`public` or `internal`) binding needs an explicit signature**
+   on its own line directly above the `let`. Private bindings may omit it (types
+   are inferred), but may include one.
 3. **Visibility lives on the signature, not the `let`.** Write `public foo : ...`
-   above `let foo = ...`. Do **not** write `public let foo`.
+   (or `internal foo : ...`) above `let foo = ...`. Do **not** write
+   `public let foo`.
 4. **Indentation is significant** (the offside rule). Canonical layout is **2
    spaces, no tabs**. Run `fai fmt` and match its output.
 5. **No `rec` keyword.** All module-level (and nested-module) bindings are
@@ -193,8 +194,18 @@ comments.
 ## 5. Modules and visibility
 
 - **One top-level module per file**, named on the first line: `module Storefront`.
-- **`public`** exports a binding across files; everything else is private to its
-  module. Every `public` binding needs a signature (`FAI3003` otherwise).
+- **Three visibility tiers, `public > internal > private` (default).**
+  - **`public`** exports a binding/type/interface to every file.
+  - **`internal`** exports it only to files of the **same origin**. Today the only
+    origin boundary is the standard library vs. your code, so in your own programs
+    `internal` currently behaves like `public` (one origin); it exists for
+    forward-compatibility with a future package system. Prefer `public` for your
+    app's API and reach for `internal` only when you want a member shared across
+    your modules but excluded from a future package's surface.
+  - Everything unmarked is **private** to its module.
+  - Every **exported** (`public` *or* `internal`) binding needs a signature
+    (`FAI3003` otherwise). An exported signature may not name a type of narrower
+    reach (`FAI2015`). Referencing another origin's `internal` member is `FAI2020`.
 - **Cross-file references use a dotted qualified path**: a value/constructor as
   `Module.name`, a type as `Module.Type`. Identifiers cannot contain `.`, so a
   qualified name is one dotted symbol.
@@ -221,9 +232,10 @@ let circleArea r = Internal.area (Internal.Circle r)
 ```
 
 Within a file the enclosing module sees *every* nested member (even private ones,
-via the path, e.g. `Internal.area`). Across files only `public` members are
-visible (`NestedModules.Internal.area`). Bare names resolve outward lexically
-(inner shadows outer).
+via the path, e.g. `Internal.area`). Across files `public` members are visible
+everywhere and `internal` members only within the same origin
+(`NestedModules.Internal.area`). Bare names resolve outward lexically (inner
+shadows outer).
 
 **Reserved module names** (the standard library; do not define your own):
 `Prelude`, `List`, `Array`, `Option`, `Result`, `Dict`, `Set`, `HashDict`,

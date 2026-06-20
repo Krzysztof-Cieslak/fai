@@ -2183,3 +2183,48 @@ fn task_handle_is_opaque() {
     let (db, f) = db_with_std(&[("M.fai", src)]);
     assert!(!check_codes(&db, f[0]).is_empty(), "expected an opacity/resolution error");
 }
+
+// --- `internal` types across the origin boundary ----------------------------
+
+/// Two standard-library-origin files (synthetic `<std>/` paths), sharing an
+/// origin for the `internal` checks.
+fn std_origin_db(files: &[(&str, &str)]) -> (FaiDatabase, Vec<SourceFile>) {
+    let prefixed: Vec<(String, String)> = files
+        .iter()
+        .map(|(name, text)| (format!("{}{name}", fai_db::STD_PATH_PREFIX), (*text).to_owned()))
+        .collect();
+    let mut db = FaiDatabase::new();
+    let mut handles = Vec::new();
+    for (path, text) in &prefixed {
+        let id = db.add_source(path.clone().into(), text.clone());
+        handles.push(db.source_file(id).unwrap());
+    }
+    (db, handles)
+}
+
+#[test]
+fn internal_type_is_usable_from_a_same_origin_file() {
+    let a = "module A\n\ninternal type Box = Int\n";
+    let b = "module B\n\ng : A.Box -> A.Box\nlet g x = x\n";
+    let (db, f) = std_origin_db(&[("A.fai", a), ("B.fai", b)]);
+    let cs = check_codes(&db, f[1]);
+    assert!(cs.is_empty(), "same-origin internal type resolves cleanly: {cs:?}");
+}
+
+#[test]
+fn internal_type_is_hidden_from_another_origin() {
+    // `A` is std-origin; the user file references its `internal` type by name.
+    let a = "module A\n\ninternal type Box = Int\n";
+    let (mut db, _) = std_origin_db(&[("A.fai", a)]);
+    let id = db.add_source(
+        "User.fai".into(),
+        "module User\n\ng : A.Box -> A.Box\nlet g x = x\n".to_owned(),
+    );
+    let user = db.source_file(id).unwrap();
+    let cs = check_codes(&db, user);
+    assert!(
+        cs.contains(&"FAI2020".to_owned()),
+        "cross-origin internal type is FAI2020, got {cs:?}"
+    );
+    assert!(!cs.contains(&"FAI3008".to_owned()), "not a bare unknown-type error: {cs:?}");
+}

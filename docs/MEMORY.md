@@ -3771,5 +3771,68 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     `is_std_path` is a prefix check, so users still reach everything qualified
     (`Instant.now`) with no import.
 
+- **D147 An `internal` visibility tier (same-origin visibility).** Visibility gains a
+  middle tier between `public` and module-private: `public > internal > private`.
+  `internal` exports a binding/type/interface across files **only within the same
+  *origin***, where an origin is today the standard library vs. user code (the
+  existing `fai_db::is_std_path` `<std>/` prefix check) and becomes a package id when
+  a Fai package system lands. The motivating problem is standard-library API hygiene:
+  cooperating std modules could previously share a helper only by marking it `public`,
+  which leaked it into the user-facing API (e.g. the `datetime` modules' raw
+  `fromEpochDayAndNanoOfDay`/`fromNanoOfDay` constructors). `internal` lets std share
+  such seams among its modules while hiding them from user programs.
+  - **Same-origin rule, reused machinery.** A cross-file reference to an `internal`
+    member is allowed iff `is_std_path(referrer) == is_std_path(definer)`. The value
+    gate is in `walk_cross_file` (the referrer's origin is the resolver's existing
+    `is_std` flag); cross-file *type*/*interface* resolution gates the same way in
+    `fai-types`'s `lower.rs` (`lookup_type`/`lookup_interface`). A cross-origin
+    `internal` reference is **`FAI2020`** (one code for value/constructor/type/
+    interface, with an origin-accurate message). In user code there is a single
+    origin, so `internal` is currently observably identical to `public` — a legal,
+    forward-compatible no-op that gains teeth when packages arrive.
+  - **Purely name-level; orthogonal to `opaque`.** Because resolution hides an
+    `internal` *name* cross-origin, and the leak rule forbids a public surface from
+    naming an `internal` type, cross-origin code can never name, hold, or infer a value
+    of an `internal` type — so there is **no new types-layer (`FAI3xxx`) enforcement**,
+    unlike `opaque` (which hides a *representation* and needs `FAI3018`). The two axes
+    compose: `internal opaque type` is allowed and reuses the existing
+    visibility-independent opaque machinery (the constructor/representation hiding,
+    `FAI2018`/`FAI3018`); the cross-file gate checks **origin before opacity** (a
+    cross-origin sibling sees `FAI2020`, a same-origin sibling sees the opaque
+    `FAI2018`). `internal` is rejected on `foreign` (always module-private, **`FAI2019`**
+    generalized) and on nested modules (which carry no visibility marker, like the
+    absence of `public module`).
+  - **Required signature + visibility monotonicity.** An `internal` binding requires an
+    explicit signature, like `public` (**`FAI3003`**, generalized; its quick-fix moves
+    the keyword to a new signature line). The leak check (**`FAI2015`**, generalized from
+    "private type in a public signature") now enforces the full ordering: an exported
+    surface may not name a type of lower rank — a `public` surface naming an `internal`
+    or `private` type, or an `internal` surface naming a `private` type — and it resolves
+    *cross-module* type references (a public std surface naming a same-origin `internal`
+    type from another std file still leaks), flagging only types that are nameable here
+    (a cross-origin type is the unresolved/`FAI2020` case, not a leak).
+  - **Firewall kept public-only; tooling gets its own.** `module_interface` (the
+    cross-module incremental firewall) stays **public-only**, so all existing
+    early-cutoff guarantees and perf guards are untouched; `internal` value resolution
+    rides the body-independent `module_defs`/`type_decls` queries it already used, so an
+    `internal` edit invalidates dependents exactly like a `public` one and never a
+    cross-origin importer. A new `module_internal_interface` query (the `Internal`-tier
+    peer) feeds **origin-aware tooling** only: cross-module completion, the
+    qualify-an-unbound-name code action, and `fai query api` offer/list `internal`
+    members when the request shares the target's origin (for `fai query`, that means a
+    user module's own `internal` members, never a std module's).
+  - **Codegen/RC treat `internal` like `public` (conservatively).** `internal` is *not*
+    a whole-module-private optimization assumption: borrow-signature entry-fact
+    eligibility stays `private`-only (an `internal` member is callable from sibling
+    same-origin modules, so its call sites are not all known here). The `jit_compile`
+    image makes the entry file's exported API fetchable by name with `!= Private` (the
+    entry file is one origin, so its `internal` bindings are as fetchable as `public`
+    ones); the minimal AOT path stays main-only.
+  - **Mechanism first; std migration deferred.** This change is the language mechanism
+    only, with no standard-library behavior change. Converting the leaked `datetime`
+    constructors to `internal` (and adding clean public replacements such as a
+    `LocalDateTime.epoch`, plus a sweep of the other multi-module clusters and a
+    demonstrating sample) is a separate follow-up.
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

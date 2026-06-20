@@ -23,7 +23,7 @@ use fai_syntax::ast::{
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::decls::type_decls;
+use crate::decls::{TypeDecls, type_decls};
 use crate::ids::{CtorRef, DefId, LocalId, Res, is_upper, qualify};
 use crate::intrinsics;
 use crate::module::{
@@ -31,9 +31,9 @@ use crate::module::{
     module_file, module_interface, prelude_exports,
 };
 use crate::{
-    INTRINSIC_OUTSIDE_STD, MODULE_AS_VALUE, OPAQUE_CONSTRUCTOR, PRIVATE_REFERENCE,
-    PRIVATE_TYPE_IN_PUBLIC_SIGNATURE, SHADOWS_PRELUDE, UNBOUND_CONSTRUCTOR, UNBOUND_NAME,
-    UNRESOLVED_MODULE,
+    INTERNAL_REFERENCE, INTRINSIC_OUTSIDE_STD, MODULE_AS_VALUE, OPAQUE_CONSTRUCTOR,
+    PRIVATE_REFERENCE, PRIVATE_TYPE_IN_PUBLIC_SIGNATURE, SHADOWS_PRELUDE, UNBOUND_CONSTRUCTOR,
+    UNBOUND_NAME, UNRESOLVED_MODULE,
 };
 
 /// The resolved references of one file's bodies.
@@ -153,59 +153,126 @@ fn collect_con_refs(module: &Module, ty: TypeId, out: &mut Vec<(Symbol, TextRang
     }
 }
 
-/// Emits [`PRIVATE_TYPE_IN_PUBLIC_SIGNATURE`] for any public surface that names a
-/// same-module private type: public binding signatures, public type-alias bodies,
-/// and public union constructors' field types. Built-in, prelude, and other
-/// modules' types are never local here, so they never trip the check; a private
-/// type reached only from private surfaces is fine.
+/// The reach of a type-constructor reference named `name` *as seen from `file`*:
+/// `Some(visibility)` when the type is nameable here (a local type, a prelude/
+/// built-in, a cross-file `public` type, or a cross-file same-origin `internal`
+/// type), or `None` when it is not nameable here (a cross-origin `internal` or a
+/// cross-file `private` type — that is reported as an unresolved/internal
+/// reference, not a leak). Used to flag an exported surface that names a nameable
+/// but less-visible type.
+fn type_ref_reach(
+    db: &dyn Db,
+    file: SourceFile,
+    decls: &TypeDecls,
+    name: Symbol,
+) -> Option<Visibility> {
+    if let Some(info) = decls.types.get(&name) {
+        // A local (same-file) type is always nameable here.
+        return Some(info.visibility);
+    }
+    let text = name.as_str();
+    if !text.contains('.') {
+        // A bare, non-local type: the prelude or a built-in, both public.
+        return Some(Visibility::Public);
+    }
+    // A cross-file qualified type. Walk the leading module path, then read the
+    // member type's declared visibility in its own file.
+    let segments: Vec<Symbol> = text.split('.').map(Symbol::intern).collect();
+    let target = module_file(db, ModuleName(segments[0]))?;
+    let target_defs = module_defs(db, target);
+    let mut inner: Vec<Symbol> = Vec::new();
+    let mut i = 1;
+    while i < segments.len() {
+        let cand = qualify(&inner, segments[i]);
+        if target_defs.is_module(cand) {
+            inner.push(segments[i]);
+            i += 1;
+        } else {
+            break;
+        }
+    }
+    if i >= segments.len() {
+        return None;
+    }
+    let member = qualify(&inner, segments[i]);
+    let target_decls = type_decls(db, target);
+    let visibility = target_decls.types.get(&member)?.visibility;
+    match visibility {
+        Visibility::Public => Some(Visibility::Public),
+        // A cross-file `internal` type is nameable only within the same origin.
+        Visibility::Internal => (is_std_path(file.path(db)) == is_std_path(target.path(db)))
+            .then_some(Visibility::Internal),
+        Visibility::Private => None,
+    }
+}
+
+/// Emits [`PRIVATE_TYPE_IN_PUBLIC_SIGNATURE`] for any *exported* surface that
+/// names a type of narrower reach than itself — a `public` surface naming a
+/// `private` or `internal` type, or an `internal` surface naming a `private`
+/// type. The checked surfaces are binding signatures, type-alias bodies, and
+/// union constructors' field types. An opaque type's definition is not
+/// cross-file-visible, so it cannot leak and is skipped. A type referenced from
+/// a *private* surface is fine. The reach of a named type is its declared
+/// visibility, local or cross-file (a referenced cross-file `internal` type is
+/// necessarily same-origin, since a cross-origin one would not have resolved).
 fn emit_privacy_leaks(db: &dyn Db, file: SourceFile, module: &Module, source: SourceId) {
     let decls = type_decls(db, file);
-    // Fast path: with no private types there is nothing to leak.
-    if decls.types.values().all(|t| t.visibility == Visibility::Public) {
-        return;
-    }
 
     let mut refs: Vec<(Symbol, TextRange)> = Vec::new();
-    let check = |module: &Module, ty: TypeId, refs: &mut Vec<(Symbol, TextRange)>| {
-        refs.clear();
-        collect_con_refs(module, ty, refs);
-        for &(name, span) in refs.iter() {
-            if decls.types.get(&name).is_some_and(|t| t.visibility == Visibility::Private) {
-                emit(
-                    db,
-                    Diagnostic::error(
-                        PRIVATE_TYPE_IN_PUBLIC_SIGNATURE,
-                        format!("the public signature exposes the private type `{name}`"),
-                        Span::new(source, span),
-                    )
-                    .with_help(format!("make `{name}` public, or make this binding private")),
-                );
+    let check =
+        |module: &Module, surface: Visibility, ty: TypeId, refs: &mut Vec<(Symbol, TextRange)>| {
+            refs.clear();
+            collect_con_refs(module, ty, refs);
+            for &(name, span) in refs.iter() {
+                // Only a type nameable from this file can leak; a type not nameable
+                // here is an unresolved/internal reference reported separately.
+                let Some(ty_vis) = type_ref_reach(db, file, &decls, name) else {
+                    continue;
+                };
+                if ty_vis.rank() < surface.rank() {
+                    let surface_word =
+                        if surface == Visibility::Public { "public" } else { "internal" };
+                    let type_word =
+                        if ty_vis == Visibility::Private { "private" } else { "internal" };
+                    emit(
+                        db,
+                        Diagnostic::error(
+                            PRIVATE_TYPE_IN_PUBLIC_SIGNATURE,
+                            format!(
+                                "this {surface_word} surface exposes the {type_word} type `{name}`"
+                            ),
+                            Span::new(source, span),
+                        )
+                        .with_help(format!(
+                            "widen `{name}`'s visibility, or make this surface less visible"
+                        )),
+                    );
+                }
             }
-        }
-    };
+        };
 
     for item in &module.items {
         match &item.kind {
-            ItemKind::Signature { visibility: Visibility::Public, ty, .. } => {
-                check(module, *ty, &mut refs);
+            ItemKind::Signature { visibility, ty, .. } if visibility.is_exported() => {
+                check(module, *visibility, *ty, &mut refs);
             }
             // An opaque type's definition (alias body / constructor fields) is not
-            // cross-file-visible, so it cannot leak a private type — skip it.
-            ItemKind::Type { visibility: Visibility::Public, opaque: false, def, .. } => {
+            // cross-file-visible, so it cannot leak — skip it.
+            ItemKind::Type { visibility, opaque: false, def, .. } if visibility.is_exported() => {
                 match def {
-                    TypeDef::Alias(ty) => check(module, *ty, &mut refs),
+                    TypeDef::Alias(ty) => check(module, *visibility, *ty, &mut refs),
                     TypeDef::Union(variants) => {
                         for variant in variants {
                             for &field in &variant.fields {
-                                check(module, field, &mut refs);
+                                check(module, *visibility, field, &mut refs);
                             }
                         }
                     }
                 }
             }
-            ItemKind::Interface { visibility: Visibility::Public, methods, .. } => {
+            ItemKind::Interface { visibility, methods, .. } if visibility.is_exported() => {
                 for m in methods {
-                    check(module, m.ty, &mut refs);
+                    check(module, *visibility, m.ty, &mut refs);
                 }
             }
             _ => {}
@@ -834,8 +901,10 @@ impl Resolver<'_> {
         (res, consumed)
     }
 
-    /// Resolves the member of a cross-file (possibly nested) module path. Only
-    /// `public` members are visible across files.
+    /// Resolves the member of a cross-file (possibly nested) module path.
+    /// `public` members are visible across all files; `internal` members are
+    /// visible only to files of the same origin (the standard library, or — in
+    /// future — the same package), gated by [`is_std_path`].
     fn walk_cross_file(
         &self,
         target: SourceFile,
@@ -863,9 +932,29 @@ impl Resolver<'_> {
         let member = segments[consumed];
         let member_qual = qualify(&inner, member);
         consumed += 1;
+        // `internal` members are visible only within the same origin (std vs. user
+        // today; a package boundary later). The referrer's origin is `self.is_std`.
+        let target_is_std = is_std_path(target.path(self.db));
+        let same_origin = self.is_std == target_is_std;
+        let origin_desc = if target_is_std { "the standard library" } else { "its package" };
         match target_defs.get(member_qual) {
             Some(def) if def.visibility == Visibility::Public => {
                 return (Res::Def(DefId::new(target_source, member_qual)), consumed);
+            }
+            Some(def) if def.visibility == Visibility::Internal && same_origin => {
+                return (Res::Def(DefId::new(target_source, member_qual)), consumed);
+            }
+            Some(def) if def.visibility == Visibility::Internal => {
+                emit(
+                    self.db,
+                    Diagnostic::error(
+                        INTERNAL_REFERENCE,
+                        format!("`{member}` is internal to {origin_desc}"),
+                        self.span(span),
+                    )
+                    .with_help(format!("use the public API of `{}` instead", segments[0])),
+                );
+                return (Res::Error, consumed);
             }
             Some(_) => {
                 emit(
@@ -885,28 +974,53 @@ impl Resolver<'_> {
         }
         let target_decls = type_decls(self.db, target);
         if let Some(ctor) = target_decls.ctor(member_qual) {
-            // The constructor exists but is not exported. Distinguish an opaque
-            // type (name exported, constructors hidden) from a plain private type.
-            let opaque = target_decls.type_named(ctor.adt).is_some_and(|t| t.opaque);
-            let diagnostic = if opaque {
-                Diagnostic::error(
-                    OPAQUE_CONSTRUCTOR,
-                    format!("`{member}` is a constructor of the opaque type `{}`", ctor.adt),
-                    self.span(span),
-                )
-                .with_help(format!(
-                    "the type is opaque outside its module; build and match values through \
-                     `{}`'s operations instead",
-                    segments[0]
-                ))
-            } else {
+            // The constructor exists but is not in the public interface. Resolve it
+            // by reach, narrowest first: an `internal` type's *name* is hidden across
+            // origins (so its constructor is too); within the origin, an `opaque`
+            // type's constructors are hidden across files; a same-origin `internal`,
+            // non-opaque type's constructors are visible; otherwise it is private.
+            let info = target_decls.type_named(ctor.adt);
+            let vis = info.map_or(Visibility::Private, |t| t.visibility);
+            let opaque = info.is_some_and(|t| t.opaque);
+            if vis == Visibility::Internal && !same_origin {
+                emit(
+                    self.db,
+                    Diagnostic::error(
+                        INTERNAL_REFERENCE,
+                        format!("constructor `{member}` is internal to {origin_desc}"),
+                        self.span(span),
+                    )
+                    .with_help(format!("use the public API of `{}` instead", segments[0])),
+                );
+                return (Res::Error, consumed);
+            }
+            if opaque {
+                emit(
+                    self.db,
+                    Diagnostic::error(
+                        OPAQUE_CONSTRUCTOR,
+                        format!("`{member}` is a constructor of the opaque type `{}`", ctor.adt),
+                        self.span(span),
+                    )
+                    .with_help(format!(
+                        "the type is opaque outside its module; build and match values through \
+                         `{}`'s operations instead",
+                        segments[0]
+                    )),
+                );
+                return (Res::Error, consumed);
+            }
+            if vis == Visibility::Internal && same_origin {
+                return (Res::Ctor(CtorRef::new(target_source, member_qual)), consumed);
+            }
+            emit(
+                self.db,
                 Diagnostic::error(
                     PRIVATE_REFERENCE,
                     format!("constructor `{member}` is private to module `{}`", segments[0]),
                     self.span(span),
-                )
-            };
-            emit(self.db, diagnostic);
+                ),
+            );
             return (Res::Error, consumed);
         }
         (self.emit_no_member_named(segments[0], member, span), consumed)

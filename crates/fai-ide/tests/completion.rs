@@ -65,6 +65,32 @@ fn qualified_module_offers_public_members() {
 }
 
 #[test]
+fn qualified_module_offers_internal_members_to_a_same_origin_file() {
+    // Two user files share an origin, so completing `A.` offers A's `internal`
+    // members alongside its `public` ones.
+    let mut db = FaiDatabase::new();
+    fai_types::std_lib::load_std(&mut db);
+    let a = indoc! {r#"
+        module A
+
+        internal helper : Int -> Int
+        let helper x = x
+
+        public shown : Int -> Int
+        let shown x = x
+    "#};
+    db.add_source("A.fai".into(), a.to_owned());
+    let c = "module C\n\nlet use = A.helper\n";
+    let cid = db.add_source("C.fai".into(), c.to_owned());
+    let file = db.source_file(cid).unwrap();
+    let offset = after(c, "A.");
+    let result = completions_at(&db, file, offset);
+    let names = labels(&result.items);
+    assert!(names.contains(&"helper"), "same-origin internal member offered: {names:?}");
+    assert!(names.contains(&"shown"), "public member offered: {names:?}");
+}
+
+#[test]
 fn qualified_char_module_offers_its_members() {
     let source = indoc! {r#"
         module C

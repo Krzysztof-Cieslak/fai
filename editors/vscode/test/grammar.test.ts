@@ -148,6 +148,10 @@ test("'opaque' is a storage modifier", () => {
   assert.ok(scopeOf("public opaque type", "opaque").includes("storage.modifier.fai"));
 });
 
+test("'internal' is a storage modifier", () => {
+  assert.ok(scopeOf("internal helper", "internal").includes("storage.modifier.fai"));
+});
+
 test("effect row 'Unit / { Console }': '/' is the effect operator, 'Console' a capability", () => {
   assert.ok(scopeOf("Unit / { Console }", "/").includes("keyword.operator.effect.fai"));
   assert.ok(scopeOf("Unit / { Console }", "Console").includes("support.type.capability.fai"));

@@ -123,12 +123,41 @@ impl Module {
 }
 
 /// Visibility of a top-level binding.
+///
+/// Three tiers, ordered `Public > Internal > Private`. `Internal` is visible
+/// across files within the same *origin* (today the standard library vs. user
+/// code; a package boundary later) but hidden from other origins — so a
+/// standard-library module can share a binding with its siblings without
+/// exposing it to user programs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Visibility {
-    /// Exported (`public`).
+    /// Exported to every file (`public`).
     Public,
+    /// Exported only to same-origin files (`internal`).
+    Internal,
     /// Module-private (the default).
     Private,
+}
+
+impl Visibility {
+    /// A reach rank where a larger value is more widely visible
+    /// (`Public` = 2, `Internal` = 1, `Private` = 0). Used to compare reach,
+    /// e.g. an exported surface must not name a type of lower rank.
+    #[must_use]
+    pub fn rank(self) -> u8 {
+        match self {
+            Visibility::Public => 2,
+            Visibility::Internal => 1,
+            Visibility::Private => 0,
+        }
+    }
+
+    /// Whether a binding with this visibility is exported across files at all
+    /// (`public` or `internal`, i.e. not module-private).
+    #[must_use]
+    pub fn is_exported(self) -> bool {
+        self != Visibility::Private
+    }
 }
 
 /// A top-level declaration.

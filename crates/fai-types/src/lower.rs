@@ -10,11 +10,11 @@
 use std::cell::RefCell;
 use std::sync::Arc;
 
-use fai_db::{Db, SourceFile, emit};
+use fai_db::{Db, SourceFile, emit, is_std_path};
 use fai_diagnostics::Diagnostic;
 use fai_resolve::{
-    AdtRef, InterfaceInfo, InterfaceRef, ModuleName, TypeDeclInfo, interface_decls, module_defs,
-    module_file, prelude_exports, qualify, type_decls,
+    AdtRef, INTERNAL_REFERENCE, InterfaceInfo, InterfaceRef, ModuleName, TypeDeclInfo,
+    interface_decls, module_defs, module_file, prelude_exports, qualify, type_decls,
 };
 use fai_span::{SourceId, Span, TextRange};
 use fai_syntax::Symbol;
@@ -324,14 +324,19 @@ impl Lowerer<'_> {
         }
         // A user/prelude type.
         let Some((decl_file, info)) = self.lookup_type(name) else {
-            emit(
-                self.db,
+            // The name may be a real type hidden by its origin (an `internal` type
+            // in another origin): report that as the located internal reference,
+            // not a bare "unknown type".
+            let diagnostic = if let Some((code, message)) = self.hidden_internal_type(name) {
+                Diagnostic::error(code, message, Span::new(self.file.source(self.db), span))
+            } else {
                 Diagnostic::error(
                     UNKNOWN_TYPE_CONSTRUCTOR,
                     format!("unknown type `{name}`"),
                     Span::new(self.file.source(self.db), span),
-                ),
-            );
+                )
+            };
+            emit(self.db, diagnostic);
             return Ty::Error;
         };
         if args.len() != info.params.len() {
@@ -453,6 +458,45 @@ impl Lowerer<'_> {
         subst_ty_eff(&body_ty, &type_subst, &eff_subst)
     }
 
+    /// Whether a declaration of visibility `visibility` in `target` is reachable
+    /// from the file being lowered: `public` always, `internal` only within the
+    /// same origin (standard library vs. user code today; a package boundary
+    /// later), `private` never. The same rule resolution applies to value
+    /// references.
+    fn visible_across(&self, target: SourceFile, visibility: fai_syntax::ast::Visibility) -> bool {
+        match visibility {
+            fai_syntax::ast::Visibility::Public => true,
+            fai_syntax::ast::Visibility::Internal => {
+                is_std_path(self.file.path(self.db)) == is_std_path(target.path(self.db))
+            }
+            fai_syntax::ast::Visibility::Private => false,
+        }
+    }
+
+    /// If `name` is a cross-file qualified type that exists but is `internal` to
+    /// another origin (so it is hidden here), the located [`INTERNAL_REFERENCE`]
+    /// diagnostic to report instead of a bare "unknown type". `None` otherwise (a
+    /// genuinely unknown name, or a private one — both stay "unknown type").
+    fn hidden_internal_type(
+        &self,
+        name: Symbol,
+    ) -> Option<(fai_diagnostics::DiagnosticCode, String)> {
+        if !name.as_str().contains('.') {
+            return None;
+        }
+        let (target, member) = self.cross_file_member(name)?;
+        let decls = type_decls(self.db, target);
+        let info = decls.type_named(member)?;
+        if info.visibility != fai_syntax::ast::Visibility::Internal
+            || self.visible_across(target, info.visibility)
+        {
+            return None;
+        }
+        let origin =
+            if is_std_path(target.path(self.db)) { "the standard library" } else { "its package" };
+        Some((INTERNAL_REFERENCE, format!("the type `{name}` is internal to {origin}")))
+    }
+
     /// Finds the declaration of type `name`: same-file (up the lexical scope
     /// chain, qualifying the possibly-dotted name with each scope prefix), then
     /// the auto-imported prelude (bare names), then a cross-file qualified path.
@@ -479,7 +523,7 @@ impl Lowerer<'_> {
         let (target, member) = self.cross_file_member(name)?;
         let decls = type_decls(self.db, target);
         let info = decls.type_named(member)?;
-        (info.visibility == fai_syntax::ast::Visibility::Public).then(|| (target, info.clone()))
+        self.visible_across(target, info.visibility).then(|| (target, info.clone()))
     }
 
     /// Looks up an interface name: same-file lexical scope chain, then the
@@ -506,7 +550,7 @@ impl Lowerer<'_> {
         let (target, member) = self.cross_file_member(name)?;
         let decls = interface_decls(self.db, target);
         let info = decls.interface_named(member)?;
-        (info.visibility == fai_syntax::ast::Visibility::Public).then(|| (target, info.clone()))
+        self.visible_across(target, info.visibility).then(|| (target, info.clone()))
     }
 
     /// Resolves the file and within-file qualified member name of a cross-file

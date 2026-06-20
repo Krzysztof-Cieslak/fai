@@ -47,7 +47,7 @@ use fai_diagnostics::{CodeInfo, DiagnosticCode, Severity};
 pub const TYPE_MISMATCH: DiagnosticCode = DiagnosticCode::new("FAI3001");
 /// A type variable would have to contain itself (the occurs check failed).
 pub const OCCURS_CHECK: DiagnosticCode = DiagnosticCode::new("FAI3002");
-/// A `public` binding has no explicit signature.
+/// An exported (`public` or `internal`) binding has no explicit signature.
 pub const MISSING_PUBLIC_SIGNATURE: DiagnosticCode = DiagnosticCode::new("FAI3003");
 /// A binding's declared signature disagrees with its inferred type.
 pub const SIGNATURE_MISMATCH: DiagnosticCode = DiagnosticCode::new("FAI3004");
@@ -124,11 +124,11 @@ pub const CODES: &[CodeInfo] = &[
     },
     CodeInfo {
         code: MISSING_PUBLIC_SIGNATURE,
-        title: "missing public signature",
+        title: "missing signature on an exported binding",
         default_severity: Severity::Error,
-        explanation: "Every `public` binding must carry an explicit type signature (so a \
-                      module's API is readable from its signatures alone). Add the signature on \
-                      the line above the binding.",
+        explanation: "Every exported (`public` or `internal`) binding must carry an explicit type \
+                      signature (so a module's API is readable from its signatures alone). Add the \
+                      signature on the line above the binding.",
     },
     CodeInfo {
         code: SIGNATURE_MISMATCH,

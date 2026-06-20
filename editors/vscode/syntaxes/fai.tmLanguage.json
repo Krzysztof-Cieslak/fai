@@ -146,8 +146,8 @@
           "name": "storage.type.fai"
         },
         {
-          "comment": "`opaque` only appears before a `public` type, but is highlighted as a modifier wherever it occurs.",
-          "match": "\\b(?:public|opaque)\\b",
+          "comment": "`opaque` only appears before a `public`/`internal` type, but is highlighted as a modifier wherever it occurs.",
+          "match": "\\b(?:public|internal|opaque)\\b",
           "name": "storage.modifier.fai"
         },
         {

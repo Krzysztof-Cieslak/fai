@@ -675,6 +675,17 @@ fn public_without_signature_errors() {
 }
 
 #[test]
+fn internal_without_signature_errors() {
+    // An exported tier (`internal`, like `public`) requires an explicit signature.
+    assert!(codes("internal let f x = x").contains(&"FAI3003".to_owned()));
+}
+
+#[test]
+fn internal_with_signature_is_clean() {
+    clean("internal f : Int -> Int\nlet f x = x + 1");
+}
+
+#[test]
 fn signature_too_general_is_mismatch() {
     // Declared polymorphic but body forces Int.
     assert!(codes("public f : 'a -> 'a\nlet f x = x + 1").contains(&"FAI3004".to_owned()));

@@ -61,6 +61,25 @@ fn foreign_declaration() {
 }
 
 #[test]
+fn internal_visibility_formats_and_round_trips() {
+    // The `internal` keyword (and `internal opaque`) is emitted like `public` and
+    // survives a round trip.
+    let src = indoc! {r#"
+        module M
+
+        internal helper : Int -> Int
+        let helper x = x
+
+        internal opaque type Token =
+          | MkToken Int
+    "#};
+    let out = fmt(src);
+    assert!(out.contains("internal helper :"), "keeps the internal keyword:\n{out}");
+    assert!(out.contains("internal opaque type Token"), "keeps internal opaque:\n{out}");
+    assert_idempotent(src);
+}
+
+#[test]
 fn conformance_nested_qualified_and_as_patterns() {
     // Each snippet must format idempotently and preserve its parsed shape (so
     // formatting never drops or reshapes nested modules, qualified types, deep

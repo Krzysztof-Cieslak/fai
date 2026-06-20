@@ -542,6 +542,14 @@ mod tests {
     }
 
     #[test]
+    fn internal_is_a_keyword() {
+        assert_eq!(
+            kinds("internal public opaque"),
+            vec![TokenKind::Internal, TokenKind::Public, TokenKind::Opaque, TokenKind::Eof],
+        );
+    }
+
+    #[test]
     fn true_false_are_lower_idents() {
         assert_eq!(
             kinds("true false"),
@@ -1261,6 +1269,7 @@ mod proptests {
         "else",
         "fun",
         "public",
+        "internal",
         "opaque",
         "example",
         "forall",

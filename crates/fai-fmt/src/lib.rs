@@ -684,6 +684,7 @@ fn same_group(prev: &ItemKind, next: &ItemKind) -> bool {
 fn visibility_prefix(visibility: Visibility) -> &'static str {
     match visibility {
         Visibility::Public => "public ",
+        Visibility::Internal => "internal ",
         Visibility::Private => "",
     }
 }

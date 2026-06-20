@@ -319,7 +319,8 @@ impl Parser<'_> {
     fn parse_item(&mut self) -> Item {
         let start = self.start();
         let kind = match self.peek() {
-            TokenKind::Public => self.parse_public_item(),
+            TokenKind::Public => self.parse_exported_item(Visibility::Public, "public"),
+            TokenKind::Internal => self.parse_exported_item(Visibility::Internal, "internal"),
             TokenKind::Let => self.parse_binding(Visibility::Private),
             TokenKind::LowerIdent => self.parse_signature(Visibility::Private),
             TokenKind::LParen if self.at_op_name() => self.parse_signature(Visibility::Private),
@@ -336,7 +337,7 @@ impl Parser<'_> {
                 self.error(
                     SYNTAX_ERROR,
                     span,
-                    "an `opaque` type must be `public`; write `public opaque type`",
+                    "an `opaque` type must be `public` or `internal`; write `public opaque type`",
                 );
                 self.bump(); // `opaque`
                 if self.at(TokenKind::Type) {
@@ -357,34 +358,46 @@ impl Parser<'_> {
         Item { kind, span: self.span_from(start) }
     }
 
-    fn parse_public_item(&mut self) -> ItemKind {
-        self.bump(); // `public`
+    /// Parses an exported declaration after a `public` or `internal` keyword.
+    /// The two tiers share the same grammar: both allow `let`/signature/`type`/
+    /// `opaque type`/`interface`, both parse a `foreign` (carrying the tier) so
+    /// resolution can reject it (a foreign is always module-private), and both
+    /// reject a nested module (member-level visibility governs cross-file access).
+    fn parse_exported_item(&mut self, visibility: Visibility, keyword: &str) -> ItemKind {
+        self.bump(); // `public` / `internal`
         match self.peek() {
-            TokenKind::Let => self.parse_binding(Visibility::Public),
-            TokenKind::LowerIdent => self.parse_signature(Visibility::Public),
-            TokenKind::LParen if self.at_op_name() => self.parse_signature(Visibility::Public),
-            TokenKind::Type => self.parse_type_decl(Visibility::Public, false),
+            TokenKind::Let => self.parse_binding(visibility),
+            TokenKind::LowerIdent => self.parse_signature(visibility),
+            TokenKind::LParen if self.at_op_name() => self.parse_signature(visibility),
+            TokenKind::Type => self.parse_type_decl(visibility, false),
             TokenKind::Opaque => {
                 self.bump(); // `opaque`
                 if self.at(TokenKind::Type) {
-                    self.parse_type_decl(Visibility::Public, true)
+                    self.parse_type_decl(visibility, true)
                 } else {
                     let span = self.cur().range;
-                    self.error(SYNTAX_ERROR, span, "expected `type` after `public opaque`");
+                    self.error(
+                        SYNTAX_ERROR,
+                        span,
+                        format!("expected `type` after `{keyword} opaque`"),
+                    );
                     ItemKind::Error
                 }
             }
-            TokenKind::Interface => self.parse_interface_decl(Visibility::Public),
-            // A `public foreign` parses (carrying its visibility) so resolution can
-            // report the dedicated "foreign cannot be public" diagnostic.
-            TokenKind::Foreign => self.parse_foreign(Visibility::Public),
+            TokenKind::Interface => self.parse_interface_decl(visibility),
+            // A `public`/`internal foreign` parses (carrying its visibility) so
+            // resolution can report the dedicated "foreign must be module-private"
+            // diagnostic rather than a bare syntax error.
+            TokenKind::Foreign => self.parse_foreign(visibility),
             TokenKind::Module => {
                 let span = self.cur().range;
                 self.error(
                     SYNTAX_ERROR,
                     span,
-                    "a nested module cannot be marked `public`; mark its members `public` \
-                     to expose them across files",
+                    format!(
+                        "a nested module cannot be marked `{keyword}`; mark its members \
+                         `{keyword}` to expose them across files"
+                    ),
                 );
                 // Recover by parsing it as an ordinary (unmarked) nested module.
                 self.parse_nested_module()
@@ -394,7 +407,10 @@ impl Parser<'_> {
                 self.error(
                     SYNTAX_ERROR,
                     span,
-                    "expected `let`, a signature, `type`, `opaque type`, or `interface` after `public`",
+                    format!(
+                        "expected `let`, a signature, `type`, `opaque type`, or `interface` \
+                         after `{keyword}`"
+                    ),
                 );
                 ItemKind::Error
             }
@@ -1507,6 +1523,7 @@ mod tests {
     use super::{Parsed, parse_module};
     use crate::ast::{
         ExprId, ExprKind, Item, ItemKind, LetStmt, Module, PatId, PatKind, TypeId, TypeKind,
+        Visibility,
     };
 
     fn parse(src: &str) -> Parsed {
@@ -2645,6 +2662,68 @@ mod tests {
             ),
             "did not recover the following binding"
         );
+    }
+
+    #[test]
+    fn internal_items_parse_with_internal_visibility() {
+        let parsed = parse(indoc! {r#"
+            module M
+            internal f : Int -> Int
+            let f x = x
+            internal type T = A | B
+            internal opaque type U =
+              | MkU Int
+            internal interface I =
+              m : Int -> Int"#});
+        assert!(parsed.diagnostics.is_empty(), "clean parse: {:?}", parsed.diagnostics);
+        let item = |name: &str| {
+            parsed.module.items.iter().find_map(|i| match &i.kind {
+                ItemKind::Signature { visibility, name: n, .. } if n.as_str() == name => {
+                    Some(*visibility)
+                }
+                ItemKind::Type { visibility, name: n, .. } if n.as_str() == name => {
+                    Some(*visibility)
+                }
+                ItemKind::Interface { visibility, name: n, .. } if n.as_str() == name => {
+                    Some(*visibility)
+                }
+                _ => None,
+            })
+        };
+        assert_eq!(item("f"), Some(Visibility::Internal));
+        assert_eq!(item("T"), Some(Visibility::Internal));
+        assert_eq!(item("I"), Some(Visibility::Internal));
+        let u = parsed.module.items.iter().find_map(|i| match &i.kind {
+            ItemKind::Type { visibility, opaque, name, .. } if name.as_str() == "U" => {
+                Some((*visibility, *opaque))
+            }
+            _ => None,
+        });
+        assert_eq!(u, Some((Visibility::Internal, true)), "internal opaque type parses");
+    }
+
+    #[test]
+    fn internal_foreign_parses_carrying_visibility() {
+        // It parses (carrying its visibility) so resolution can reject it.
+        let parsed = parse(indoc! {r#"
+            module M
+            internal foreign "sym" f : Int -> Int"#});
+        assert!(
+            parsed.module.items.iter().any(|i| matches!(
+                &i.kind,
+                ItemKind::Foreign { visibility: Visibility::Internal, .. }
+            )),
+            "internal foreign parses as a Foreign item carrying Internal"
+        );
+    }
+
+    #[test]
+    fn internal_module_is_rejected() {
+        let parsed = parse(indoc! {r#"
+            module M
+            internal module Inner =
+              let x = 1"#});
+        assert!(!parsed.diagnostics.is_empty(), "a nested module cannot be `internal`");
     }
 
     // --- snapshots --------------------------------------------------------
