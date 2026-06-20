@@ -37,9 +37,17 @@ let ofParts y mo d h mi s =
 example: Option.isSome (ofParts 2020 6 15 14 30 0)
 example: ofParts 2020 2 30 0 0 0 = None
 
-/// Build from a raw epoch-day and nanosecond-of-day, normalizing the nanoseconds
-/// into a single day and carrying any overflow into the date. Total.
-public fromEpochDayAndNanoOfDay : Int -> Int -> LocalDateTime
+/// Midnight at the Unix epoch, 1970-01-01T00:00:00 — a convenient zero value.
+public epoch : LocalDateTime
+let epoch = MkLocalDateTime 0 0
+example: epoch = of (LocalDate.fromEpochDay 0) LocalTime.midnight
+
+// Build from a raw epoch-day and nanosecond-of-day, normalizing the nanoseconds
+// into a single day and carrying any overflow into the date. Total. This is the
+// storage bridge the sibling date/time modules use to convert representations; a
+// zoneless local date-time has no public epoch-day concept, so it is `internal`
+// (build values with `of`/`ofParts`/`epoch`).
+internal fromEpochDayAndNanoOfDay : Int -> Int -> LocalDateTime
 let fromEpochDayAndNanoOfDay ed nod =
   MkLocalDateTime (ed + Int.floorDiv nod nanosPerDay) (Int.floorMod nod nanosPerDay)
 example: nanoOfDay (fromEpochDayAndNanoOfDay 0 5) = 5
@@ -58,15 +66,17 @@ let time dt =
   | MkLocalDateTime _ nod -> LocalTime.fromNanoOfDay nod
 example: time (fromEpochDayAndNanoOfDay 0 0) = LocalTime.midnight
 
-/// The epoch-day of the date part.
-public epochDay : LocalDateTime -> Int
+// The epoch-day of the date part. Part of the internal storage bridge (see
+// `fromEpochDayAndNanoOfDay`); user code reads the date via `date`/`year`/… .
+internal epochDay : LocalDateTime -> Int
 let epochDay dt =
   match dt with
   | MkLocalDateTime ed _ -> ed
 example: epochDay (fromEpochDayAndNanoOfDay 7 0) = 7
 
-/// The nanosecond-of-day of the time part.
-public nanoOfDay : LocalDateTime -> Int
+// The nanosecond-of-day of the time part. Part of the internal storage bridge;
+// user code reads the time via `time`/`hour`/… .
+internal nanoOfDay : LocalDateTime -> Int
 let nanoOfDay dt =
   match dt with
   | MkLocalDateTime _ nod -> nod

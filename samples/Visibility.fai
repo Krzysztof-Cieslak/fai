@@ -1,0 +1,28 @@
+module Visibility
+
+// Three visibility tiers control what other files can name a binding, type, or
+// interface:
+//
+//   - `public`   — visible to every file.
+//   - `internal` — visible only to other files of the same *origin*: the standard
+//                  library today, a package once a package system exists. In an
+//                  ordinary single-origin program it behaves like `public`; it is
+//                  how the standard library shares a helper across its modules
+//                  without exposing it to your code. Naming another origin's
+//                  `internal` member is an error (`FAI2020`).
+//   - (unmarked) — private to this module.
+//
+// Every *exported* binding (`public` or `internal`) carries a signature, and an
+// exported signature may not name a type of narrower reach (`FAI2015`).
+// Private: only this module can call it.
+let square n = n * n
+
+// Internal: other same-origin files may call it (here, like `public`).
+internal sumOfSquares : Int -> Int -> Int
+let sumOfSquares a b = square a + square b
+example: sumOfSquares 3 4 = 25
+
+// Public: any file may call it.
+public hypotenuseSquared : Int -> Int -> Int
+let hypotenuseSquared a b = sumOfSquares a b
+example: hypotenuseSquared 3 4 = 25

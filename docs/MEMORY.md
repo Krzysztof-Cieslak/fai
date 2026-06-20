@@ -3828,11 +3828,18 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     image makes the entry file's exported API fetchable by name with `!= Private` (the
     entry file is one origin, so its `internal` bindings are as fetchable as `public`
     ones); the minimal AOT path stays main-only.
-  - **Mechanism first; std migration deferred.** This change is the language mechanism
-    only, with no standard-library behavior change. Converting the leaked `datetime`
-    constructors to `internal` (and adding clean public replacements such as a
-    `LocalDateTime.epoch`, plus a sweep of the other multi-module clusters and a
-    demonstrating sample) is a separate follow-up.
+  - **Standard-library cleanup.** The first user is `LocalDateTime`: a zoneless local
+    date-time has no meaningful public "epoch day", so its raw epoch-day/
+    nanosecond-of-day storage bridge (`fromEpochDayAndNanoOfDay` and the `epochDay`/
+    `nanoOfDay` accessors) — previously `public` only so the sibling date/time modules
+    could convert representations — is now `internal`, and a clean `public epoch`
+    replaces the idiom of `fromEpochDayAndNanoOfDay 0 0` (which a sample had reached
+    for). `Instant` (epoch-relative) and `LocalTime` (nanosecond-of-day is a first-class
+    concept) keep their decompositions public. A sweep of the other multi-module
+    clusters (`Stream`/`Io`, `Concurrency`/`Async`, `Net`, `Dict`/`Set`/`HashDict`/
+    `HashSet`) found no further leaks: they already encapsulate via opaque handle types
+    and capabilities and use each other's intended public APIs. `samples/Visibility.fai`
+    demonstrates the three tiers.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

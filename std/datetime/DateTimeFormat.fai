@@ -48,7 +48,7 @@ let pow10 k = if k <= 0 then 1 else 10 * pow10 (k - 1)
 // A definitely-valid date-time, for readable examples.
 dtOf : Int -> Int -> Int -> Int -> Int -> Int -> LocalDateTime
 let dtOf y mo d h mi s =
-  Option.withDefault (LocalDateTime.fromEpochDayAndNanoOfDay 0 0) (LocalDateTime.ofParts y mo d h mi s)
+  Option.withDefault LocalDateTime.epoch (LocalDateTime.ofParts y mo d h mi s)
 
 // Whether a one-character string is an ASCII digit.
 isDigit : String -> Bool
