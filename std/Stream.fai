@@ -67,6 +67,22 @@ let unfold step seed =
     | None -> Done
     | Some (x, seed2) -> Yield x (unfold step seed2))
 
+/// Forces one step of a stream: `Ok None` at the end, `Ok (Some (head, rest))` for
+/// the next element and the remaining stream, or `Err message` on a mid-stream
+/// failure. The low-level driver behind the consumers — and the way to thread a
+/// stream's effect into a loop whose other steps perform a *different* effect (a
+/// consumer like `fold`/`forEach` ties the element action and the stream to one
+/// effect, so it cannot, say, send each element over a network transport).
+public uncons : Stream 'a 'e -> Result (Option ('a * Stream 'a 'e)) String / 'e
+let uncons s =
+  match next s with
+  | Done -> Ok None
+  | Yield x rest -> Ok (Some (x, rest))
+  | Fail message -> Err message
+example: (match uncons (fromList [7, 8]) with
+| Ok (Some (x, rest)) -> x
+| other -> 0) = 7
+
 // --- Producers ---
 /// A one-element stream.
 public singleton : 'a -> Stream 'a 'e

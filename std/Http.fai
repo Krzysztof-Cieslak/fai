@@ -109,29 +109,83 @@ let renderField field =
   match field with
   | (name, value) -> name ++ ": " ++ value ++ "\r\n"
 
-// --- Request serialization -------------------------------------------------
-// Serialize a request to bytes: request line, headers (with Host, Content-Length,
-// and Connection: close ensured), a blank line, then the (drained) body.
-serializeRequest : Request 'e -> Result Bytes String / 'e
-let serializeRequest req =
-  match bodyBytes req.body with
-  | Err e -> Err e
-  | Ok body ->
-    let headers = ensureRequestHeaders req.headers req.url (Bytes.length body)
-    let line = methodName req.method ++ " " ++ Url.requestTarget req.url ++ " HTTP/1.1\r\n"
-    let rendered = String.join "" (List.map renderField (Headers.toList headers))
-    Ok (Bytes.concat (Bytes.fromString (line ++ rendered ++ "\r\n")) body)
+// --- Sending (head + body, with optional chunked streaming) ----------------
+// Render the start line + headers + the blank line that ends the head.
+renderHead : String -> Headers -> Bytes
+let renderHead startLine headers =
+  Bytes.fromString (startLine ++ String.join "" (List.map renderField (Headers.toList headers)) ++ "\r\n")
 
-// Ensure the framing headers a request needs: Host (if absent), Content-Length, and
-// Connection: close (this client opens a fresh connection per request).
-ensureRequestHeaders : Headers -> Url -> Int -> Headers
-let ensureRequestHeaders headers url len =
-  let withHost =
-    if Headers.contains "Host" headers then
-      headers
-    else
-      Headers.add "Host" (hostHeaderValue url) headers
-  Headers.set "Connection" "close" (Headers.set "Content-Length" (Int.toString len) withHost)
+// A single lowercase hex digit for 0..15.
+hexDigitChar : Int -> String
+let hexDigitChar d = String.substring d 1 "0123456789abcdef"
+
+// Render a non-negative Int as lowercase hex (for chunk sizes).
+intToHex : Int -> String
+let intToHex n = if n <= 0 then "0" else intToHexLoop n ""
+
+intToHexLoop : Int -> String -> String
+let intToHexLoop n acc =
+  if n <= 0 then acc else intToHexLoop (Int.floorDiv n 16) (hexDigitChar (Int.floorMod n 16) ++ acc)
+
+// Send one chunked frame: `<hex-size>\r\n<data>\r\n`. An empty chunk is skipped (a
+// zero-size frame would terminate the body prematurely).
+sendOneChunk : Transport { Net, Tls } -> Bytes -> Result Unit String / { Net, Tls }
+let sendOneChunk t chunk =
+  if Bytes.length chunk = 0 then
+    Ok ()
+  else
+    let header = Bytes.fromString (intToHex (Bytes.length chunk) ++ "\r\n")
+    t.send (Bytes.concat (Bytes.concat header chunk) (Bytes.fromString "\r\n"))
+
+// Stream a body to the transport as chunked transfer-encoding, ending with the
+// terminating zero chunk. Drives the body one element at a time with `Stream.uncons`
+// so the body's own effect `'b` and the transport's `{ Net, Tls }` *union* into the
+// result row — a `fold`/`forEach` consumer can't express this, since it ties the
+// element action and the stream to a single effect. Nothing is buffered.
+sendChunkedBody : Transport { Net, Tls } -> Stream Bytes 'b -> Result Unit String / { Net, Tls | 'b }
+let sendChunkedBody t body =
+  match Stream.uncons body with
+  | Err e -> Err e
+  | Ok step ->
+    match step with
+    | None -> t.send (Bytes.fromString "0\r\n\r\n")
+    | Some pair ->
+      match pair with
+      | (chunk, rest) ->
+        match sendOneChunk t chunk with
+        | Err e -> Err e
+        | Ok sent -> sendChunkedBody t rest
+
+// Send a message: the start line and headers, then the body. When the headers
+// select chunked transfer-encoding the body is streamed chunk by chunk without
+// buffering; otherwise it is drained to a `Content-Length` and sent. `Connection:
+// close` is always set (one message per connection).
+sendMessage : Transport { Net, Tls } -> String -> Headers -> Stream Bytes 'b -> Result Unit String / { Net, Tls | 'b }
+let sendMessage t startLine headers body =
+  if isChunkedEncoding headers then
+    match t.send (renderHead startLine (Headers.set "Connection" "close" headers)) with
+    | Err e -> Err e
+    | Ok sent -> sendChunkedBody t body
+  else
+    match bodyBytes body with
+    | Err e -> Err e
+    | Ok bytes ->
+      let hs =
+        Headers.set "Connection" "close" (Headers.set "Content-Length" (Int.toString (Bytes.length bytes)) headers)
+      t.send (Bytes.concat (renderHead startLine hs) bytes)
+
+// Add a Host header from the URL if the caller supplied none.
+ensureHost : Headers -> Url -> Headers
+let ensureHost headers url =
+  if Headers.contains "Host" headers then
+    headers
+  else
+    Headers.add "Host" (hostHeaderValue url) headers
+
+// Send a request: request line, headers (Host ensured), and body.
+sendRequest : Transport { Net, Tls } -> Request 'b -> Result Unit String / { Net, Tls | 'b }
+let sendRequest t req =
+  sendMessage t (methodName req.method ++ " " ++ Url.requestTarget req.url ++ " HTTP/1.1\r\n") (ensureHost req.headers req.url) req.body
 
 // --- Response parsing ------------------------------------------------------
 // Read from the transport until the `\r\n\r\n` header terminator (capping the
@@ -522,12 +576,9 @@ let request env req = requestWith env None req
 
 runOver : Transport { Net, Tls } -> Request 'e -> Result (Response { Net, Tls }) String / { Net, Tls | 'e }
 let runOver t req =
-  match serializeRequest req with
+  match sendRequest t req with
   | Err e -> Err e
-  | Ok bytes ->
-    match t.send bytes with
-    | Err e -> Err e
-    | Ok sent -> parseResponse t
+  | Ok sent -> parseResponse t
 
 /// GET a URL (http or https).
 public get : { net : Net, tls : Tls | 'r } -> String -> Result (Response { Net, Tls }) String / { Net, Tls }
@@ -585,6 +636,14 @@ example: (textResponse 200 "hi").status = 200
 public errorResponse : Int -> String -> Response 'e
 let errorResponse status message = textResponse status message
 example: (errorResponse 500 "boom").status = 500
+
+/// A response sent with chunked transfer-encoding: the body streams out chunk by
+/// chunk (one frame per stream element) without being buffered, for a large or
+/// unbounded response. The body's effect flows into the server's.
+public chunkedResponse : Int -> Headers -> Stream Bytes 'e -> Response 'e
+let chunkedResponse status headers body =
+  { body = body, headers = Headers.set "Transfer-Encoding" "chunked" headers, reason = reasonFor status, status = status }
+example: (chunkedResponse 200 Headers.empty emptyBody).status = 200
 
 // --- Request parsing (server side) -----------------------------------------
 methodFromString : String -> Method
@@ -644,19 +703,6 @@ let parseRequest t =
             | Err e -> Err e
             | Ok body -> Ok { body = bytesBody body, headers = headers, method = method, url = url }
 
-// Serialize a response: status line, headers (Content-Length and Connection: close
-// ensured), a blank line, then the (drained) body.
-serializeResponse : Response 'e -> Result Bytes String / 'e
-let serializeResponse resp =
-  match bodyBytes resp.body with
-  | Err e -> Err e
-  | Ok body ->
-    let headers =
-      Headers.set "Connection" "close" (Headers.set "Content-Length" (Int.toString (Bytes.length body)) resp.headers)
-    let line = "HTTP/1.1 " ++ Int.toString resp.status ++ " " ++ resp.reason ++ "\r\n"
-    let rendered = String.join "" (List.map renderField (Headers.toList headers))
-    Ok (Bytes.concat (Bytes.fromString (line ++ rendered ++ "\r\n")) body)
-
 // --- Server ----------------------------------------------------------------
 // Run the handler over a parsed request, mapping an `Err` to a 500 response.
 respond : (Request 'ein -> Result (Response 'h) String / 'h) -> Request 'ein -> Response 'h / 'h
@@ -665,16 +711,13 @@ let respond handler req =
   | Ok r -> r
   | Err message -> errorResponse 500 message
 
-// Serialize and send a response, then close the connection (one response per
-// connection).
+// Send a response (chunked-streamed or Content-Length per its headers), then close
+// the connection (one response per connection).
 sendResponse : Transport { Net, Tls } -> Response 'h -> Result Unit String / { Net, Tls | 'h }
 let sendResponse t resp =
-  match serializeResponse resp with
+  match sendMessage t ("HTTP/1.1 " ++ Int.toString resp.status ++ " " ++ resp.reason ++ "\r\n") resp.headers resp.body with
   | Err e -> Err e
-  | Ok bytes ->
-    match t.send bytes with
-    | Err e -> Err e
-    | Ok sent -> Ok (t.close ())
+  | Ok sent -> Ok (t.close ())
 
 // Handle one connection: parse the request, run the handler (Err -> 500), reply.
 handleOver : Transport { Net, Tls } -> (Request 'ein -> Result (Response 'h) String / 'h) -> Result Unit String / { Net, Tls | 'h }

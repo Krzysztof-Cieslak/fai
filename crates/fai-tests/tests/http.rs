@@ -288,3 +288,86 @@ fn server_reads_a_posted_request_body() {
     assert_eq!(code, 0, "clean, leak-free exit");
     assert_eq!(out, "echo:ping\n");
 }
+
+#[test]
+fn server_streams_a_chunked_response() {
+    // The handler returns a chunked response built from a multi-element body stream;
+    // the server sends it as chunked transfer-encoding (one frame per element, no
+    // buffering, via Stream.uncons), and the client (which decodes chunked) sees the
+    // reassembled body.
+    let src = indoc! {r#"
+        module Prog
+
+        let handle req =
+          Ok (Http.chunkedResponse 200 Headers.empty (Stream.fromList [Bytes.fromString "Hello", Bytes.fromString ", ", Bytes.fromString "world"]))
+
+        client : Runtime -> Int -> String / { Net, Tls }
+        let client runtime port =
+          match Http.get runtime ("http://127.0.0.1:" ++ Int.toString port ++ "/s") with
+          | Err e -> "error: " ++ e
+          | Ok resp ->
+            match Http.bodyText resp.body with
+            | Err e -> "body error: " ++ e
+            | Ok text -> text
+
+        body : Runtime -> Listener -> Int -> Nursery -> Unit / { Concurrency, Console, Net, Tls }
+        let body runtime listener port nursery =
+          let server = runtime.concurrency.spawn nursery (fun u -> Http.serveListener runtime listener handle)
+          let report = client runtime port
+          let cancelled = runtime.concurrency.cancel server
+          runtime.console.writeLine report
+
+        public main : Runtime -> Unit / { Concurrency, Console, Net, Tls }
+        let main runtime =
+          match runtime.net.listen 0 with
+          | Err e -> runtime.console.writeLine ("listen failed: " ++ e)
+          | Ok listener ->
+            let port = runtime.net.localPort listener
+            runtime.concurrency.scope (fun nursery -> body runtime listener port nursery)
+    "#};
+    let (out, code) = run(src);
+    assert_eq!(code, 0, "clean, leak-free exit");
+    assert_eq!(out, "Hello, world\n");
+}
+
+#[test]
+fn client_sends_a_chunked_request() {
+    // The client sends a request whose headers select chunked transfer-encoding, with
+    // a multi-element body stream; it is streamed chunk by chunk (not drained to a
+    // Content-Length). The server decodes the chunked request body and echoes it.
+    let src = indoc! {r#"
+        module Prog
+
+        let handle req =
+          match Http.bodyText req.body with
+          | Err e -> Ok (Http.textResponse 400 "bad")
+          | Ok b -> Ok (Http.textResponse 200 ("got:" ++ b))
+
+        client : Runtime -> Int -> String / { Net, Tls }
+        let client runtime port =
+          match Http.post runtime ("http://127.0.0.1:" ++ Int.toString port ++ "/u") (Headers.set "Transfer-Encoding" "chunked" Headers.empty) (Stream.fromList [Bytes.fromString "pi", Bytes.fromString "ng"]) with
+          | Err e -> "error: " ++ e
+          | Ok resp ->
+            match Http.bodyText resp.body with
+            | Err e -> "body error: " ++ e
+            | Ok text -> text
+
+        body : Runtime -> Listener -> Int -> Nursery -> Unit / { Concurrency, Console, Net, Tls }
+        let body runtime listener port nursery =
+          let server = runtime.concurrency.spawn nursery (fun u -> Http.serveListener runtime listener handle)
+          let report = client runtime port
+          let cancelled = runtime.concurrency.cancel server
+          runtime.console.writeLine report
+
+        public main : Runtime -> Unit / { Concurrency, Console, Net, Tls }
+        let main runtime =
+          match runtime.net.listen 0 with
+          | Err e -> runtime.console.writeLine ("listen failed: " ++ e)
+          | Ok listener ->
+            let port = runtime.net.localPort listener
+            runtime.concurrency.scope (fun nursery -> body runtime listener port nursery)
+    "#};
+    let (out, code) = run(src);
+    assert_eq!(code, 0, "clean, leak-free exit");
+    assert_eq!(out, "got:ping\n");
+}
