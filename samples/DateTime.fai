@@ -30,7 +30,7 @@ example: afterSeconds 90 Instant.epoch = "1970-01-01T00:01:30Z"
 /// Render a local date-time with a custom pattern.
 public stamp : LocalDateTime -> String
 let stamp dt = DateTimeFormat.format "EEE, d MMM yyyy 'at' h:mm tt" dt
-example: stamp (Option.withDefault (LocalDateTime.fromEpochDayAndNanoOfDay 0 0) (LocalDateTime.ofParts 2020 6 15 14 30 0)) = "Mon, 15 Jun 2020 at 2:30 PM"
+example: stamp (Option.withDefault LocalDateTime.epoch (LocalDateTime.ofParts 2020 6 15 14 30 0)) = "Mon, 15 Jun 2020 at 2:30 PM"
 // Calendar arithmetic: a `Period` is calendar-aware (a month is 28–31 days), unlike
 // a fixed `Duration`. Adding one month to Jan 31 clamps to the end of February.
 example: LocalDate.toString (Period.addToDate (Period.ofMonths 1) (Option.withDefault (LocalDate.fromEpochDay 0) (LocalDate.of 2020 1 31))) = "2020-02-29"
