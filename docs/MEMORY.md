@@ -3904,8 +3904,11 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     `Host`/`Content-Length`/`Transfer-Encoding`); each 3xx response is dropped before
     re-requesting (closing its connection), and `requestOnce` is the single-shot,
     no-follow path. **Auth and form helpers** round out the request side: `basicAuth`/
-    `bearer` build an `Authorization` value over a `base64Encode`, and `formBody`/
-    `postForm` build an `application/x-www-form-urlencoded` body. A **connection-pooling
+    `bearer` build an `Authorization` value over a `base64Encode`, `formBody`/`postForm`
+    build an `application/x-www-form-urlencoded` body, and `field`/`filePart` +
+    `multipartBody`/`postMultipart` build a `multipart/form-data` body (each `Part`
+    carrying an optional filename and content type, framed with a `randomBoundary` —
+    built in memory, not streamed). A **connection-pooling
     client** reuses keep-alive connections: `withClient` opens a structured scope that
     spawns a pool **actor** — a task owning the idle connections (a `HashDict` keyed by
     origin), reached over one command channel (`Checkout`/`Checkin`) — and hands the

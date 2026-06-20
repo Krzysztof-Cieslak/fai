@@ -128,6 +128,67 @@ public formBody : List (String * String) -> Stream Bytes 'e
 let formBody pairs = stringBody (String.join "&" (List.map encodeFormPair pairs))
 example: bodyText (formBody [("a", "1"), ("b", "x y")]) = Ok "a=1&b=x%20y"
 
+// --- Multipart/form-data bodies --------------------------------------------
+/// One part of a `multipart/form-data` body: a field `name`, optional `filename` and
+/// `contentType`, and the raw `content` bytes.
+public type Part = { content : Bytes, contentType : Option String, filename : Option String, name : String }
+
+/// A simple text form field (no filename or content type).
+public field : String -> String -> Part
+let field name value =
+  { content = Bytes.fromString value, contentType = None, filename = None, name = name }
+example: (field "a" "b").name = "a"
+
+/// A file part: a field `name`, the `filename` and `contentType` to report, and the
+/// file `content`.
+public filePart : String -> String -> String -> Bytes -> Part
+let filePart name filename contentType content =
+  { content = content, contentType = Some contentType, filename = Some filename, name = name }
+example: (filePart "f" "x.txt" "text/plain" (Bytes.fromString "hi")).filename = Some "x.txt"
+
+/// The `Content-Type` header value for a multipart body with the given boundary.
+public multipartContentType : String -> String
+let multipartContentType boundary = "multipart/form-data; boundary=" ++ boundary
+example: multipartContentType "abc" = "multipart/form-data; boundary=abc"
+
+// The `; filename="…"` suffix of a part's Content-Disposition, when it has one.
+filenameSuffix : Option String -> String
+let filenameSuffix fn =
+  match fn with
+  | None -> ""
+  | Some f -> "; filename=\"" ++ f ++ "\""
+
+// A part's Content-Disposition header line.
+dispositionLine : Part -> String
+let dispositionLine part =
+  "Content-Disposition: form-data; name=\"" ++ part.name ++ "\"" ++ filenameSuffix part.filename ++ "\r\n"
+
+// A part's Content-Type header line, when it declares one.
+contentTypeLine : Part -> String
+let contentTypeLine part =
+  match part.contentType with
+  | None -> ""
+  | Some ct -> "Content-Type: " ++ ct ++ "\r\n"
+
+// Render one part: its boundary delimiter, headers, a blank line, the content, CRLF.
+renderPart : String -> Part -> Bytes
+let renderPart boundary part =
+  Bytes.concat (Bytes.fromString ("--" ++ boundary ++ "\r\n" ++ dispositionLine part ++ contentTypeLine part ++ "\r\n")) (Bytes.concat part.content (Bytes.fromString "\r\n"))
+
+// Concatenate all rendered parts.
+renderAllParts : String -> List Part -> Bytes
+let renderAllParts boundary parts =
+  List.foldl (fun acc part -> Bytes.concat acc (renderPart boundary part)) Bytes.empty parts
+
+/// A `multipart/form-data` body from the given parts, framed with `boundary` (which
+/// must not occur in any part's content — use `randomBoundary` for a fresh one). The
+/// whole body is built in memory. Pair it with `multipartContentType boundary`, or use
+/// `Http.postMultipart`.
+public multipartBody : String -> List Part -> Stream Bytes 'e
+let multipartBody boundary parts =
+  bytesBody (Bytes.concat (renderAllParts boundary parts) (Bytes.fromString ("--" ++ boundary ++ "--\r\n")))
+example: bodyText (multipartBody "B" []) = Ok "--B--\r\n"
+
 // --- Method <-> wire token -------------------------------------------------
 methodName : Method -> String
 let methodName m =
@@ -752,6 +813,21 @@ let post env urlStr headers body =
 public postForm : { net : Net, tls : Tls | 'r } -> String -> List (String * String) -> Result (Response { Net, Tls }) String / { Net, Tls }
 let postForm env urlStr pairs =
   post env urlStr (Headers.set "Content-Type" "application/x-www-form-urlencoded" Headers.empty) (formBody pairs)
+
+/// A fresh, high-entropy `multipart/form-data` boundary (random, so it is very
+/// unlikely to occur in any part's content).
+public randomBoundary : { random : Random | 'r } -> String / { Random }
+let randomBoundary env =
+  let a = env.random.nextInt 1000000000
+  let b = env.random.nextInt 1000000000
+  "----FaiFormBoundary" ++ Int.toString a ++ Int.toString b
+
+/// POST a `multipart/form-data` form (a list of `Part`s) to a URL, generating a fresh
+/// random boundary and the matching `Content-Type`.
+public postMultipart : { net : Net, random : Random, tls : Tls | 'r } -> String -> List Part -> Result (Response { Net, Tls }) String / { Net, Random, Tls }
+let postMultipart env urlStr parts =
+  let boundary = randomBoundary env
+  post env urlStr (Headers.set "Content-Type" (multipartContentType boundary) Headers.empty) (multipartBody boundary parts)
 
 // --- Pooling client --------------------------------------------------------
 // A connection-pooling client keeps idle keep-alive connections and reuses them

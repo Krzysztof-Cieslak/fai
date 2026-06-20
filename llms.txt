@@ -1416,8 +1416,10 @@ Deferred: IANA time zones / `ZonedDateTime` with DST rules (this is offset-only)
   (301/302/303 → `GET`; 307/308 only for a bodyless method; a relative `Location`
   resolved against the request URL; `Authorization` dropped on a cross-origin hop);
   `requestOnce` is the single-shot, no-follow escape hatch. Build an `Authorization`
-  header value with `basicAuth`/`bearer`, and a urlencoded form body with
-  `formBody`/`postForm`. Server: `serve`/`serveListener` (HTTP) and
+  header value with `basicAuth`/`bearer`, a urlencoded form body with
+  `formBody`/`postForm`, and a `multipart/form-data` body with `field`/`filePart` +
+  `multipartBody`/`postMultipart` (a fresh `randomBoundary`). Server:
+  `serve`/`serveListener` (HTTP) and
   `serveTls`/`serveListenerTls` (HTTPS, given a PEM cert+key) — a task per
    connection; cancel the serving task to shut down. A received `resp.body` is a
    **lazy `Stream Bytes`** decoded on demand (chunked / Content-Length / read-to-EOF),
