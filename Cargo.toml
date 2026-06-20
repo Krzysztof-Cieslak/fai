@@ -53,6 +53,15 @@ crossbeam-deque = "0.8"
 # network reactor (TCP/UDP). Pure Rust, no C toolchain. `os-poll` + the `net`
 # sources are all we need.
 mio = { version = "1", features = ["os-poll", "net"] }
+# TLS for the `Tls` capability (HTTPS). A sans-I/O engine driven by Fai over the
+# existing `Net` transport; the `ring` crypto provider keeps it a Rust dependency
+# (no aws-lc-rs/cmake). `webpki-roots` is the bundled trust store; `rustls-pemfile`
+# parses cert/key PEM for the server and custom roots.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "0.26"
+rustls-pemfile = "2"
+# Dev-only: mint ephemeral self-signed certs for the HTTPS loopback tests.
+rcgen = "0.13"
 # Content hashing for the on-disk artifact cache and file-state sync.
 blake3 = "1"
 # String interning for identifiers (the non-salsa `Symbol`).

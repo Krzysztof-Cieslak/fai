@@ -20,15 +20,22 @@
 //! The reactor starts lazily on the first socket registration, so a program that
 //! does no networking never spawns it.
 
-use std::collections::HashMap;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap};
 use std::io;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use mio::event::Source;
-use mio::{Events, Interest, Poll, Registry, Token};
+use mio::{Events, Interest, Poll, Registry, Token, Waker};
 
 use crate::scheduler::{self, Parked};
+
+/// The reserved poll token for the reactor's own [`Waker`], used to break an
+/// in-progress `poll` when a newly registered timer's deadline is sooner than the
+/// current poll timeout (so it is not missed). Socket tokens start at 1.
+const WAKER_TOKEN: Token = Token(0);
 
 /// One direction's (read or write) readiness state for a registered socket.
 #[derive(Default)]
@@ -48,44 +55,151 @@ pub struct IoSource {
     write: Mutex<Readiness>,
 }
 
+/// One pending timer: a parked task to wake at `deadline`. `seq` breaks ties and
+/// identifies the entry so a cancelled sleep can remove it before it fires.
+struct TimerEntry {
+    deadline: Instant,
+    seq: u64,
+    waiter: Parked,
+}
+
+// Ordered by `(deadline, seq)` so the binary heap (wrapped in `Reverse`) yields the
+// earliest deadline first. Only the schedulable key participates; `waiter` is data.
+impl PartialEq for TimerEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.deadline == other.deadline && self.seq == other.seq
+    }
+}
+impl Eq for TimerEntry {}
+impl PartialOrd for TimerEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for TimerEntry {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.deadline.cmp(&other.deadline).then(self.seq.cmp(&other.seq))
+    }
+}
+
+/// The reactor's pending timers: a min-heap (by deadline) plus a sequence counter
+/// for stable, identifiable entries.
+struct Timers {
+    heap: BinaryHeap<Reverse<TimerEntry>>,
+    next_seq: u64,
+}
+
 /// The global reactor: a `mio::Poll` on its own thread plus a cloned `Registry`
-/// (used by workers to register their sockets) and the token→source table.
+/// (used by workers to register their sockets), a `Waker` (to interrupt a poll when
+/// a sooner timer arrives), the token→source table, and the pending timers.
 struct Reactor {
     registry: Registry,
+    waker: Waker,
     sources: Mutex<HashMap<usize, Arc<IoSource>>>,
     next_token: AtomicUsize,
+    timers: Mutex<Timers>,
 }
 
 static REACTOR: OnceLock<Reactor> = OnceLock::new();
 
-/// Returns the global reactor, starting its thread on first use.
+/// Returns the global reactor, starting its thread on first use (the first socket
+/// registration *or* the first timer, so a program that only sleeps still gets it).
 fn reactor() -> &'static Reactor {
     REACTOR.get_or_init(|| {
         let poll = Poll::new().expect("create the network reactor poll");
         let registry = poll.registry().try_clone().expect("clone the reactor registry");
+        let waker = Waker::new(poll.registry(), WAKER_TOKEN).expect("create the reactor waker");
         std::thread::Builder::new()
             .name("fai-reactor".to_owned())
             .spawn(move || reactor_loop(poll))
             .expect("spawn the network reactor thread");
-        Reactor { registry, sources: Mutex::new(HashMap::new()), next_token: AtomicUsize::new(1) }
+        Reactor {
+            registry,
+            waker,
+            sources: Mutex::new(HashMap::new()),
+            next_token: AtomicUsize::new(1),
+            timers: Mutex::new(Timers { heap: BinaryHeap::new(), next_seq: 0 }),
+        }
     })
 }
 
-/// The reactor thread: poll for readiness forever, waking the task waiting on each
-/// ready direction of each signalled socket.
+/// The duration until the earliest pending timer's deadline (zero if one is already
+/// due), or `None` if there are no timers — the poll timeout for the next iteration.
+fn next_timeout() -> Option<Duration> {
+    let timers = reactor().timers.lock().expect("reactor timers");
+    timers.heap.peek().map(|Reverse(e)| e.deadline.saturating_duration_since(Instant::now()))
+}
+
+/// Wakes every timer whose deadline has passed, removing it from the heap.
+fn fire_expired_timers() {
+    let now = Instant::now();
+    let mut due = Vec::new();
+    {
+        let mut timers = reactor().timers.lock().expect("reactor timers");
+        while let Some(Reverse(entry)) = timers.heap.peek() {
+            if entry.deadline <= now {
+                let Reverse(entry) = timers.heap.pop().expect("peeked entry");
+                due.push(entry.waiter);
+            } else {
+                break;
+            }
+        }
+    }
+    for waiter in due {
+        scheduler::unpark(waiter);
+    }
+}
+
+/// Removes the pending timer with `seq`, if it has not already fired. Used to clean
+/// up after a wake that was not this timer (a cancellation, later) so the stale
+/// entry cannot fire against a task that has moved on.
+fn remove_timer(seq: u64) {
+    let mut timers = reactor().timers.lock().expect("reactor timers");
+    timers.heap.retain(|Reverse(e)| e.seq != seq);
+}
+
+/// Parks the current task until `deadline`. Must be called inside a task. Registers
+/// a timer, wakes the reactor (so a sooner deadline preempts an in-progress poll),
+/// and parks; the reactor fires the timer at the deadline. A wake from any other
+/// source (e.g. cancellation, later) also returns — the caller re-checks its own
+/// condition — and the still-pending timer entry is removed so it cannot fire late.
+pub fn sleep_until(deadline: Instant) {
+    if Instant::now() >= deadline {
+        return;
+    }
+    let r = reactor();
+    let seq = {
+        let mut timers = r.timers.lock().expect("reactor timers");
+        let seq = timers.next_seq;
+        timers.next_seq += 1;
+        timers.heap.push(Reverse(TimerEntry { deadline, seq, waiter: scheduler::current_parked() }));
+        seq
+    };
+    let _ = r.waker.wake();
+    scheduler::park();
+    remove_timer(seq);
+}
+
+/// The reactor thread: poll for readiness (bounded by the nearest timer deadline)
+/// forever, firing due timers and waking the task waiting on each ready direction of
+/// each signalled socket.
 fn reactor_loop(mut poll: Poll) -> ! {
     let mut events = Events::with_capacity(256);
     loop {
-        if let Err(e) = poll.poll(&mut events, None) {
-            // A signal can interrupt the poll; just poll again. Any other error is
-            // not actionable here, so retry rather than abort the whole program.
-            if e.kind() == io::ErrorKind::Interrupted {
-                continue;
-            }
-            continue;
+        // Poll until a socket is ready or the nearest timer is due (whichever first);
+        // a sooner timer registered mid-poll wakes us early via the reactor's `Waker`.
+        if let Err(e) = poll.poll(&mut events, next_timeout())
+            && e.kind() != io::ErrorKind::Interrupted
+        {
+            // Not actionable here; loop to fire any due timers and poll again.
         }
+        fire_expired_timers();
         for event in events.iter() {
             let token = event.token().0;
+            if token == WAKER_TOKEN.0 {
+                // A wake to recompute the poll timeout (a new/sooner timer); no source.
+                continue;
+            }
             let source = reactor().sources.lock().expect("reactor sources").get(&token).cloned();
             let Some(source) = source else { continue };
             if event.is_readable() {
@@ -329,6 +443,9 @@ pub extern "C" fn fai_net_accept(listener: Value) -> Value {
 
 fn accept_loop(sock: &Mutex<TcpListener>, src: &Arc<IoSource>) -> Result<NetObject, String> {
     loop {
+        if scheduler::is_cancelled() {
+            return Err(scheduler::CANCELLED_MESSAGE.to_owned());
+        }
         let accepted = sock.lock().expect("listener lock").accept();
         match accepted {
             Ok((mut stream, _)) => {
@@ -371,6 +488,9 @@ pub extern "C" fn fai_net_connect(host: Value, port: Value) -> Value {
             // surfaces a failed connect (e.g. refused); `peer_addr` succeeds once
             // connected and is `NotConnected` while still in progress.
             loop {
+                if scheduler::is_cancelled() {
+                    return err_result(scheduler::CANCELLED_MESSAGE);
+                }
                 match stream.take_error() {
                     Ok(None) => {}
                     Ok(Some(e)) => return err_result(&e.to_string()),
@@ -417,6 +537,9 @@ pub extern "C" fn fai_net_send(conn: Value, bytes: Value) -> Value {
 fn send_loop(sock: &Mutex<TcpStream>, src: &Arc<IoSource>, data: &[u8]) -> Result<(), String> {
     let mut written = 0;
     while written < data.len() {
+        if scheduler::is_cancelled() {
+            return Err(scheduler::CANCELLED_MESSAGE.to_owned());
+        }
         let res = sock.lock().expect("connection lock").write(&data[written..]);
         match res {
             Ok(0) => return Err("send: connection closed".to_owned()),
@@ -455,6 +578,9 @@ pub extern "C" fn fai_net_recv(conn: Value, max: Value) -> Value {
 fn recv_loop(sock: &Mutex<TcpStream>, src: &Arc<IoSource>, cap: usize) -> Result<Vec<u8>, String> {
     let mut buf = vec![0u8; cap];
     loop {
+        if scheduler::is_cancelled() {
+            return Err(scheduler::CANCELLED_MESSAGE.to_owned());
+        }
         let res = sock.lock().expect("connection lock").read(&mut buf);
         match res {
             Ok(n) => {
@@ -573,6 +699,9 @@ fn udp_send_loop(
     dest: SocketAddr,
 ) -> Result<(), String> {
     loop {
+        if scheduler::is_cancelled() {
+            return Err(scheduler::CANCELLED_MESSAGE.to_owned());
+        }
         let res = sock.lock().expect("udp lock").send_to(data, dest);
         match res {
             // A datagram is sent whole; a short count should not happen for UDP.
@@ -623,6 +752,9 @@ fn udp_recv_loop(
 ) -> Result<(Vec<u8>, SocketAddr), String> {
     let mut buf = vec![0u8; cap];
     loop {
+        if scheduler::is_cancelled() {
+            return Err(scheduler::CANCELLED_MESSAGE.to_owned());
+        }
         let res = sock.lock().expect("udp lock").recv_from(&mut buf);
         match res {
             Ok((n, from)) => {
@@ -826,5 +958,54 @@ mod tests {
             }
         }));
         assert_eq!(of_imm(result), 1, "the client received the echoed datagram");
+    }
+
+    #[test]
+    fn sleep_until_wakes_after_its_deadline() {
+        // A task sleeps on the reactor timer and resumes only once the deadline has
+        // passed (parking, not busy-waiting): the reactor fires the timer and unparks.
+        let start = Instant::now();
+        let r = block_on(Box::new(|| {
+            sleep_until(Instant::now() + Duration::from_millis(40));
+            imm(1)
+        }));
+        assert_eq!(of_imm(r), 1);
+        assert!(start.elapsed() >= Duration::from_millis(35), "slept ~40ms, got {:?}", start.elapsed());
+    }
+
+    #[test]
+    fn sleep_with_a_past_deadline_returns_immediately() {
+        // A deadline already in the past does not register a timer or park.
+        let r = block_on(Box::new(|| {
+            sleep_until(Instant::now() - Duration::from_millis(10));
+            imm(7)
+        }));
+        assert_eq!(of_imm(r), 7);
+    }
+
+    #[test]
+    fn many_concurrent_sleeps_multiplex_on_the_timer() {
+        // Far more sleeping tasks than workers all park on the reactor timer at once
+        // and fire around the same time, so the whole batch finishes in ~one sleep
+        // duration rather than serializing — proving sleep parks (frees its worker)
+        // rather than blocking one.
+        let start = Instant::now();
+        let r = block_on(Box::new(|| {
+            let handles: Vec<_> = (0..300)
+                .map(|_| {
+                    crate::scheduler::spawn(Box::new(|| {
+                        sleep_until(Instant::now() + Duration::from_millis(40));
+                        imm(1)
+                    }))
+                })
+                .collect();
+            let mut sum = 0;
+            for h in &handles {
+                sum += of_imm(crate::scheduler::await_handle(h));
+            }
+            imm(sum)
+        }));
+        assert_eq!(of_imm(r), 300, "every sleeping task completed");
+        assert!(start.elapsed() < Duration::from_secs(2), "sleeps multiplexed, took {:?}", start.elapsed());
     }
 }

@@ -112,3 +112,49 @@ let pipeInScope c capacity producer consumer nursery =
   let ch = c.channel capacity
   let task = c.spawn nursery (fun u -> producer ch)
   consumer ch
+
+/// Run `work` with a deadline: `Some result` if it finishes within `ms`
+/// milliseconds, or `None` if the deadline passes first (in which case `work` is
+/// cancelled — its next blocking call returns a cancellation error so it unwinds and
+/// frees its resources). The work and a timer race over a one-slot channel; the
+/// loser is cancelled and the scope joins both, so nothing outlives the call.
+public timeout : Concurrency -> Clock -> Int -> (Unit -> 'a / 'e) -> Option 'a / { Clock, Concurrency | 'e }
+let timeout c clock ms work = c.scope (timeoutInScope c clock ms work)
+
+timeoutInScope : Concurrency -> Clock -> Int -> (Unit -> 'a / 'e) -> Nursery -> Option 'a / { Clock, Concurrency | 'e }
+let timeoutInScope c clock ms work nursery =
+  let ch = c.channel 1
+  let workTask = c.spawn nursery (fun u -> c.send ch (Some (work ())))
+  let timerTask = c.spawn nursery (fun u -> timeoutTimer c clock ms ch)
+  match c.recv ch with
+  | Some outcome ->
+    let cw = c.cancel workTask
+    let ct = c.cancel timerTask
+    outcome
+  | None -> None
+
+// The timer arm: sleep for the deadline, then signal expiry with `None`. If the
+// work won first this task is cancelled, so the sleep returns early and the send is
+// skipped (a cancelled send drops its value).
+timeoutTimer : Concurrency -> Clock -> Int -> Channel (Option 'a) -> Unit / { Clock, Concurrency }
+let timeoutTimer c clock ms ch =
+  let slept = clock.sleep ms
+  c.send ch None
+
+/// Run two thunks concurrently and return `Some` of whichever finishes first; the
+/// loser is cancelled. `None` only if the race itself is cancelled. Both thunks must
+/// have the same result type.
+public race : Concurrency -> (Unit -> 'a / 'e) -> (Unit -> 'a / 'e) -> Option 'a / { Concurrency | 'e }
+let race c fa fb = c.scope (raceInScope c fa fb)
+
+raceInScope : Concurrency -> (Unit -> 'a / 'e) -> (Unit -> 'a / 'e) -> Nursery -> Option 'a / { Concurrency | 'e }
+let raceInScope c fa fb nursery =
+  let ch = c.channel 1
+  let ta = c.spawn nursery (fun u -> c.send ch (fa ()))
+  let tb = c.spawn nursery (fun u -> c.send ch (fb ()))
+  match c.recv ch with
+  | Some result ->
+    let ca = c.cancel ta
+    let cb = c.cancel tb
+    Some result
+  | None -> None

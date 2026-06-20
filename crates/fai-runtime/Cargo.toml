@@ -22,6 +22,12 @@ corosensei.workspace = true
 crossbeam-deque.workspace = true
 # Cross-platform non-blocking I/O readiness for the network reactor (TCP/UDP).
 mio.workspace = true
+# TLS engine (sans-I/O) for the `Tls` capability, driven by Fai over `Net`. The
+# `ring` provider is a pure-Rust-API crate (its internal asm builds with the C
+# toolchain already required to build the compiler); no aws-lc-rs/cmake.
+rustls.workspace = true
+webpki-roots.workspace = true
+rustls-pemfile.workspace = true
 
 # Exposes the allocator fuzz harness (`run_ops`) for the out-of-workspace
 # cargo-fuzz target. Off by default and dependency-free, so the staticlib/rlib and
@@ -33,6 +39,8 @@ fuzzing = []
 # for the single-`$RUSTC` archive build.
 [dev-dependencies]
 proptest.workspace = true
+# Mint ephemeral self-signed certs for the in-process TLS handshake tests.
+rcgen.workspace = true
 
 [lints]
 workspace = true

@@ -56,6 +56,10 @@ public type Reader = Io.Reader
 
 public type Writer = Io.Writer
 
+// The TLS session handle is an opaque type in the `Tls` module; this alias keeps
+// its name usable unqualified. Build and drive it only through the `Tls` capability.
+public type TlsSession = Tls.TlsSession
+
 // The date and time types live in their own modules under `datetime/`; these
 // aliases keep their names usable unqualified in signatures. The opaque value
 // types (`Instant`/`Duration`/`LocalDate`/…) are built and queried through their
@@ -143,6 +147,7 @@ public interface Console =
 public interface Clock =
   localOffset : Unit -> Int / { Clock }
   now : Unit -> Int / { Clock }
+  sleep : Int -> Unit / { Clock }
 
 public interface Random =
   nextInt : Int -> Int / { Random }
@@ -170,6 +175,7 @@ public interface Env =
 // re-exported by this module above.
 public interface Concurrency =
   await : Task 'a -> 'a / { Concurrency }
+  cancel : Task 'a -> Unit / { Concurrency }
   channel : Int -> Channel 'a / { Concurrency }
   close : Channel 'a -> Unit / { Concurrency }
   recv : Channel 'a -> Option 'a / { Concurrency }
@@ -198,10 +204,28 @@ public interface Net =
   udpRecv : UdpSocket -> Int -> Result (Bytes * String * Int) String / { Net }
   udpSend : UdpSocket -> String -> Int -> Bytes -> Result Unit String / { Net }
 
+// The TLS engine backing HTTPS: a sans-I/O state machine driven by Fai over the
+// `Net` transport (the `Http` module wires the two together). It does no socket I/O
+// itself — Fai shuttles ciphertext between the socket and the session — so the only
+// effect is the secure randomness the handshake consumes. `client`/`server` start a
+// session; `feedIncoming`/`takeOutgoing` move ciphertext to/from the socket;
+// `readPlaintext`/`writePlaintext` move decrypted application data; `state` is a
+// bitmask (bit 0 handshaking, bit 1 wants-write, bit 2 wants-read).
+public interface Tls =
+  client : String -> Result TlsSession String / { Tls }
+  clientWithRoots : String -> Bytes -> Result TlsSession String / { Tls }
+  close : TlsSession -> Unit / { Tls }
+  feedIncoming : TlsSession -> Bytes -> Result Unit String / { Tls }
+  readPlaintext : TlsSession -> Int -> Result Bytes String / { Tls }
+  server : Bytes -> Bytes -> Result TlsSession String / { Tls }
+  state : TlsSession -> Int / { Tls }
+  takeOutgoing : TlsSession -> Result Bytes String / { Tls }
+  writePlaintext : TlsSession -> Bytes -> Result Unit String / { Tls }
+
 /// The capability bundle `main` receives: the host's console, clock, random,
-/// file system, environment, concurrency, and network. Request only the fields you
-/// need (an open record) to keep authority least.
-public type Runtime = { clock : Clock, concurrency : Concurrency, console : Console, env : Env, fs : FileSystem, net : Net, random : Random }
+/// file system, environment, concurrency, network, and TLS. Request only the fields
+/// you need (an open record) to keep authority least.
+public type Runtime = { clock : Clock, concurrency : Concurrency, console : Console, env : Env, fs : FileSystem, net : Net, random : Random, tls : Tls }
 
 // The raw host primitives, implemented as native runtime functions and reached
 // only through the capability instances below. Each `foreign` declaration names
@@ -224,6 +248,10 @@ foreign "fai_clock_now" clockNow : Unit -> Int / { Clock }
 // The system's current UTC offset in whole seconds (east of UTC positive); backs
 // `Clock.localOffset`, used to read an `Instant` as local wall-clock time.
 foreign "fai_clock_local_offset" clockLocalOffset : Unit -> Int / { Clock }
+
+// Pauses for the given number of milliseconds; backs `Clock.sleep`. On the
+// scheduler it parks the task (freeing its worker); otherwise it sleeps the thread.
+foreign "fai_sleep" clockSleep : Int -> Unit / { Clock }
 
 foreign "fai_random_next_int" randomNextInt : Int -> Int / { Random }
 
@@ -265,6 +293,10 @@ foreign "fai_spawn" spawnRaw : Nursery -> (Unit -> 'a / 'e) -> Task 'a / { Concu
 
 foreign "fai_await" awaitRaw : Task 'a -> 'a / { Concurrency }
 
+// Cancels a task and its descendant subtree; the tasks observe cancellation at
+// their next blocking call and unwind. Backs `Concurrency.cancel`.
+foreign "fai_cancel" cancelRaw : Task 'a -> Unit / { Concurrency }
+
 foreign "fai_channel" channelRaw : Int -> Channel 'a / { Concurrency }
 
 foreign "fai_send" sendRaw : Channel 'a -> 'a -> Unit / { Concurrency }
@@ -301,6 +333,27 @@ foreign "fai_udp_recv" udpRecvRaw : UdpSocket -> Int -> Result (Bytes * String *
 
 foreign "fai_udp_close" udpCloseRaw : UdpSocket -> Unit / { Net }
 
+// The native TLS-engine primitives backing the `Tls` capability (sans-I/O rustls).
+// They name `Tls` as an effect, so any function that drives a session surfaces `Tls`
+// in its own row.
+foreign "fai_tls_client" tlsClientRaw : String -> Result TlsSession String / { Tls }
+
+foreign "fai_tls_client_with_roots" tlsClientWithRootsRaw : String -> Bytes -> Result TlsSession String / { Tls }
+
+foreign "fai_tls_server" tlsServerRaw : Bytes -> Bytes -> Result TlsSession String / { Tls }
+
+foreign "fai_tls_feed_incoming" tlsFeedIncomingRaw : TlsSession -> Bytes -> Result Unit String / { Tls }
+
+foreign "fai_tls_take_outgoing" tlsTakeOutgoingRaw : TlsSession -> Result Bytes String / { Tls }
+
+foreign "fai_tls_read_plaintext" tlsReadPlaintextRaw : TlsSession -> Int -> Result Bytes String / { Tls }
+
+foreign "fai_tls_write_plaintext" tlsWritePlaintextRaw : TlsSession -> Bytes -> Result Unit String / { Tls }
+
+foreign "fai_tls_state" tlsStateRaw : TlsSession -> Int / { Tls }
+
+foreign "fai_tls_close" tlsCloseRaw : TlsSession -> Unit / { Tls }
+
 // The default host capabilities, backed by the foreign primitives above. They are
 // `public` so a program can compose its own extended `Runtime` from them plus its
 // own (foreign-backed) capability instances; ordinarily a program just receives
@@ -318,7 +371,8 @@ let stdConsole =
   { Console with readLine = readLineHost, write s = consoleWrite s, writeError s = consoleWriteError s, writeLine s = consoleWriteLine s }
 
 public stdClock : Clock
-let stdClock = { Clock with localOffset u = clockLocalOffset u, now u = clockNow u }
+let stdClock =
+  { Clock with localOffset u = clockLocalOffset u, now u = clockNow u, sleep ms = clockSleep ms }
 
 public stdRandom : Random
 let stdRandom = { Random with nextInt n = randomNextInt n }
@@ -347,7 +401,7 @@ let stdEnv = { Env with args u = envArgs u, get = envGetHost }
 /// the `Runtime` bundle `main` receives.
 public stdConcurrency : Concurrency
 let stdConcurrency =
-  { Concurrency with await task = awaitRaw task, channel capacity = channelRaw capacity, close chan = closeRaw chan, recv chan = recvRaw chan, scope body = scopeRaw body, send chan value = sendRaw chan value, spawn nursery thunk = spawnRaw nursery thunk }
+  { Concurrency with await task = awaitRaw task, cancel task = cancelRaw task, channel capacity = channelRaw capacity, close chan = closeRaw chan, recv chan = recvRaw chan, scope body = scopeRaw body, send chan value = sendRaw chan value, spawn nursery thunk = spawnRaw nursery thunk }
 
 /// The standard network capability, backed by the I/O reactor. `public` so a
 /// program can compose it into its own extended `Runtime`; ordinarily it arrives in
@@ -356,13 +410,20 @@ public stdNet : Net
 let stdNet =
   { Net with accept listener = netAccept listener, close conn = netClose conn, connect host port = netConnect host port, listen port = netListen port, localPort listener = netLocalPort listener, recv conn max = netRecv conn max, send conn bytes = netSend conn bytes, udpBind port = udpBindRaw port, udpClose sock = udpCloseRaw sock, udpLocalPort sock = udpLocalPortRaw sock, udpRecv sock max = udpRecvRaw sock max, udpSend sock host port bytes = udpSendRaw sock host port bytes }
 
+/// The standard TLS capability, backed by the rustls engine. `public` so a program
+/// can compose it into its own extended `Runtime`; ordinarily it arrives in the
+/// `Runtime` bundle `main` receives.
+public stdTls : Tls
+let stdTls =
+  { Tls with client host = tlsClientRaw host, clientWithRoots host roots = tlsClientWithRootsRaw host roots, close session = tlsCloseRaw session, feedIncoming session bytes = tlsFeedIncomingRaw session bytes, readPlaintext session max = tlsReadPlaintextRaw session max, server cert key = tlsServerRaw cert key, state session = tlsStateRaw session, takeOutgoing session = tlsTakeOutgoingRaw session, writePlaintext session bytes = tlsWritePlaintextRaw session bytes }
+
 /// The standard `Runtime` the entry trampoline applies `main` to when the entry
 /// file defines no `runtime` builder of its own. A program may instead define its
 /// own `runtime` (composing these defaults with extra capabilities) to extend the
 /// bundle `main` receives.
 public defaultRuntime : Runtime
 let defaultRuntime =
-  { clock = stdClock, concurrency = stdConcurrency, console = stdConsole, env = stdEnv, fs = stdFs, net = stdNet, random = stdRandom }
+  { clock = stdClock, concurrency = stdConcurrency, console = stdConsole, env = stdEnv, fs = stdFs, net = stdNet, random = stdRandom, tls = stdTls }
 
 /// Forward application: `x |> f` is `f x`.
 public (|>) : 'a -> ('a -> 'b / 'e) -> 'b / 'e
