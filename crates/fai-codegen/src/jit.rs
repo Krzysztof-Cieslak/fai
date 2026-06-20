@@ -122,6 +122,7 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_console_read_line", rt::fai_console_read_line);
     sym!("fai_clock_now", rt::fai_clock_now);
     sym!("fai_clock_local_offset", rt::fai_clock_local_offset);
+    sym!("fai_sleep", rt::fai_sleep);
     sym!("fai_random_next_int", rt::fai_random_next_int);
     sym!("fai_file_read", rt::fai_file_read);
     sym!("fai_file_write", rt::fai_file_write);
@@ -164,6 +165,7 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_scope", rt::fai_scope);
     sym!("fai_spawn", rt::fai_spawn);
     sym!("fai_await", rt::fai_await);
+    sym!("fai_cancel", rt::fai_cancel);
     sym!("fai_channel", rt::fai_channel);
     sym!("fai_send", rt::fai_send);
     sym!("fai_recv", rt::fai_recv);
@@ -183,6 +185,15 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_udp_send", rt::fai_udp_send);
     sym!("fai_udp_recv", rt::fai_udp_recv);
     sym!("fai_udp_close", rt::fai_udp_close);
+    sym!("fai_tls_client", rt::fai_tls_client);
+    sym!("fai_tls_client_with_roots", rt::fai_tls_client_with_roots);
+    sym!("fai_tls_server", rt::fai_tls_server);
+    sym!("fai_tls_feed_incoming", rt::fai_tls_feed_incoming);
+    sym!("fai_tls_take_outgoing", rt::fai_tls_take_outgoing);
+    sym!("fai_tls_read_plaintext", rt::fai_tls_read_plaintext);
+    sym!("fai_tls_write_plaintext", rt::fai_tls_write_plaintext);
+    sym!("fai_tls_state", rt::fai_tls_state);
+    sym!("fai_tls_close", rt::fai_tls_close);
     builder.symbol("FAI_NONE_VALUE", (&raw const rt::FAI_NONE_VALUE).cast());
     builder.symbol("FAI_STRING_DESC", (&raw const rt::FAI_STRING_DESC).cast());
     builder.symbol("FAI_INT_DESC", (&raw const rt::FAI_INT_DESC).cast());

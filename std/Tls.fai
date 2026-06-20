@@ -1,0 +1,15 @@
+module Tls
+
+// The opaque TLS session handle type. A `TlsSession` is produced and consumed only
+// through the `Tls` capability (whose interface, native primitives, and standard
+// instance live in `Prelude`, which re-exports this name so it is usable
+// unqualified). The cell is a native rustls connection driven sans-I/O by Fai over
+// the `Net` transport; the placeholder constructor exists only so the type is a
+// boxed, reference-counted value (the runtime drops the session when the cell
+// dies).
+//
+// This module deliberately has no dependency on `Prelude` (it names only the
+// built-in `Int`), so `Prelude` may re-export and build on this type without a
+// dependency cycle.
+public opaque type TlsSession =
+  | TlsSessionCell Int

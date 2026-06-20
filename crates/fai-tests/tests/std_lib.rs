@@ -61,6 +61,7 @@ fn every_public_std_function_has_an_example() {
             "stdEnv",
             "stdConcurrency",
             "stdNet",
+            "stdTls",
             "defaultRuntime",
         ];
 
@@ -70,8 +71,10 @@ fn every_public_std_function_has_an_example() {
         // would have to reference a capability value, which is FAI6004. Such
         // functions are covered by end-to-end tests instead. Keyed off the same rule
         // as FAI6004 (an interface that carries an effect is a capability).
-        const CAPABILITY_TYPES: &[&str] =
-            &["Console", "Clock", "Random", "FileSystem", "Env", "Concurrency", "Net", "Runtime"];
+        const CAPABILITY_TYPES: &[&str] = &[
+            "Console", "Clock", "Random", "FileSystem", "Env", "Concurrency", "Net", "Tls",
+            "Runtime",
+        ];
 
         // Public value bindings carry a `public <name> :` signature (a `public
         // type …` declaration is not a function and is skipped).

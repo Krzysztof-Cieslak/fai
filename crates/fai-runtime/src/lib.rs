@@ -244,6 +244,9 @@ pub const KIND_NET: u64 = 15;
 /// slot holds a raw `Arc` pointer to OS-side file state, dropped (closing the
 /// file) when the cell dies.
 pub const KIND_FILE: u64 = 16;
+/// A TLS session handle (a `Tls` value). Like [`KIND_TASK`]: its single slot holds
+/// a raw `Arc` pointer to a rustls connection, dropped when the cell dies.
+pub const KIND_TLS: u64 = 17;
 
 /// Byte offset of the raw `Arc` pointer inside a task, channel, or nursery handle
 /// cell.
@@ -323,6 +326,11 @@ pub static FAI_NET_DESC: Descriptor = descriptor(KIND_NET, "Net");
 /// released by `free_obj`).
 #[unsafe(no_mangle)]
 pub static FAI_FILE_DESC: Descriptor = descriptor(KIND_FILE, "File");
+
+/// Descriptor for a TLS session handle (its slot owns a raw `Arc` to a rustls
+/// connection, released by `free_obj`).
+#[unsafe(no_mangle)]
+pub static FAI_TLS_DESC: Descriptor = descriptor(KIND_TLS, "Tls");
 
 /// Descriptor for boxed (overflowed) `Int` objects (leaf).
 #[unsafe(no_mangle)]
@@ -1129,6 +1137,7 @@ unsafe fn free_obj(p: *mut u8) {
             KIND_NURSERY => scheduler::drop_nursery_handle(read_i64(p, HANDLE_PTR_OFFSET)),
             KIND_NET => reactor::drop_net_handle(read_i64(p, HANDLE_PTR_OFFSET)),
             KIND_FILE => io::drop_file_handle(read_i64(p, HANDLE_PTR_OFFSET)),
+            KIND_TLS => tls::drop_tls_handle(read_i64(p, HANDLE_PTR_OFFSET)),
             _ => {}
         }
     }
@@ -3934,6 +3943,22 @@ pub extern "C" fn fai_clock_local_offset(unit: Value) -> Value {
     fai_box_int(local_utc_offset_seconds())
 }
 
+/// `Clock.sleep`: pause for `millis` milliseconds, then return `Unit`. Consumes
+/// `millis`. Inside a task it parks on the reactor's timer (freeing the worker for
+/// other tasks); outside any task (no scheduler running) it sleeps the OS thread.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_sleep(millis: Value) -> Value {
+    let ms = unbox_int(millis).max(0) as u64;
+    fai_drop(millis);
+    let dur = std::time::Duration::from_millis(ms);
+    if scheduler::in_task() {
+        reactor::sleep_until(std::time::Instant::now() + dur);
+    } else {
+        std::thread::sleep(dur);
+    }
+    FAI_UNIT
+}
+
 /// `Random.nextInt`: a pseudo-random `Int` in `[0, n)` (`0` for `n <= 0`),
 /// advancing a process-global xorshift state. Consumes `n`.
 #[unsafe(no_mangle)]
@@ -4353,11 +4378,15 @@ mod reactor;
 /// File-handle capabilities (progressive reading/writing over the blocking pool).
 mod io;
 
+/// The TLS engine (sans-I/O rustls) backing the `Tls` capability.
+mod tls;
+
 // The scheduler's C-ABI entry points (the `Concurrency` capability), re-exported at
 // the crate root so generated code and the JIT symbol registry reach them as
 // `fai_*` like every other runtime primitive.
 pub use scheduler::{
-    fai_await, fai_block_on, fai_channel, fai_close, fai_recv, fai_scope, fai_send, fai_spawn,
+    fai_await, fai_block_on, fai_cancel, fai_channel, fai_close, fai_recv, fai_scope, fai_send,
+    fai_spawn,
 };
 
 // The network reactor's C-ABI entry points (the `Net` capability), re-exported at
@@ -4375,6 +4404,14 @@ pub use reactor::{
 pub use io::{
     fai_file_close_reader, fai_file_close_writer, fai_file_open_append, fai_file_open_read,
     fai_file_open_write, fai_file_read_chunk, fai_file_write_chunk,
+};
+
+// The TLS engine's C-ABI entry points (the `Tls` capability), re-exported at the
+// crate root so generated code and the JIT symbol registry reach them as `fai_*`.
+pub use tls::{
+    fai_tls_client, fai_tls_client_with_roots, fai_tls_close, fai_tls_feed_incoming,
+    fai_tls_read_plaintext, fai_tls_server, fai_tls_state, fai_tls_take_outgoing,
+    fai_tls_write_plaintext,
 };
 
 #[cfg(test)]

@@ -26,7 +26,7 @@ use std::cell::Cell;
 use std::collections::VecDeque;
 use std::mem::ManuallyDrop;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
 use corosensei::{Coroutine, CoroutineResult, Yielder};
@@ -66,6 +66,17 @@ struct Task {
     /// task — rather than relying on a thread-local write surviving the context
     /// switch — keeps the yielder correct when a task migrates between workers.
     yielder: AtomicPtr<Yielder<(), Suspend>>,
+    /// Set once a task is cancelled and never cleared (sticky). A blocking operation
+    /// checks it via [`is_cancelled`] at each park point and bails with a
+    /// cancellation result; stickiness guarantees that any retried operation keeps
+    /// failing, so the task unwinds (freeing its resources by reference counting)
+    /// rather than resuming its work.
+    cancelled: AtomicBool,
+    /// The tasks this one spawned (weakly held, pruned on use), forming the
+    /// cancellation tree: cancelling a task cancels its whole descendant subtree, so
+    /// a timeout or a server shutdown tears down everything the cancelled work
+    /// started.
+    children: Mutex<Vec<Weak<Task>>>,
 }
 
 thread_local! {
@@ -139,6 +150,74 @@ fn current_task() -> Arc<Task> {
     unsafe {
         Arc::increment_strong_count(p);
         Arc::from_raw(p)
+    }
+}
+
+/// The currently running task, or `None` outside any task (e.g. the root spawn from
+/// [`block_on`], which runs on the calling OS thread before any task exists).
+fn current_task_opt() -> Option<Arc<Task>> {
+    let p = CURRENT_TASK.with(Cell::get);
+    if p.is_null() {
+        return None;
+    }
+    // SAFETY: as in `current_task` — `p` is a live `Task` the worker keeps alive.
+    Some(unsafe {
+        Arc::increment_strong_count(p);
+        Arc::from_raw(p)
+    })
+}
+
+/// The `Result` error string a blocking operation returns when its task has been
+/// cancelled. A distinguished, documented sentinel so cancellation is recognizable;
+/// stickiness means a cancelled task keeps receiving it from every blocking call.
+pub const CANCELLED_MESSAGE: &str = "operation cancelled";
+
+/// Whether the current task has been cancelled. A blocking operation checks this at
+/// each park point and returns a cancellation result instead of resuming its work.
+/// False outside any task.
+pub fn is_cancelled() -> bool {
+    let p = CURRENT_TASK.with(Cell::get);
+    // SAFETY: `p`, when non-null, is the live current `Task`.
+    !p.is_null() && unsafe { (*p).cancelled.load(Ordering::Acquire) }
+}
+
+/// Cancels `task` and its whole descendant subtree: sets the sticky cancelled flag
+/// and re-queues the task so it observes the flag at its next park point and
+/// unwinds. Idempotent (a task is cancelled at most once). Propagating to children
+/// first means a parent's teardown reaches every task it started.
+fn cancel_task(task: &Arc<Task>) {
+    if task.cancelled.swap(true, Ordering::AcqRel) {
+        return; // already cancelled (and its subtree already visited)
+    }
+    // Snapshot live children (pruning dead weak refs), then cancel them outside the
+    // lock so the recursion never holds a `children` lock across another task's.
+    let kids: Vec<Arc<Task>> = {
+        let mut children = task.children.lock().expect("task children");
+        children.retain(|w| w.strong_count() > 0);
+        children.iter().filter_map(Weak::upgrade).collect()
+    };
+    for kid in &kids {
+        cancel_task(kid);
+    }
+    // Wake the task (if parked) so its retry loop re-checks the flag. A racing
+    // legitimate wake is harmless: the task is queued, runs once, and a stale extra
+    // schedule finds a finished or re-parking task.
+    schedule(Arc::clone(task));
+}
+
+/// Registers `child` under the current task (if any) for the cancellation tree, and
+/// — if the parent is already cancelled — cancels the child immediately so a task
+/// spawned during teardown cannot escape it.
+fn register_child(child: &Arc<Task>) {
+    if let Some(parent) = current_task_opt() {
+        {
+            let mut children = parent.children.lock().expect("task children");
+            children.retain(|w| w.strong_count() > 0);
+            children.push(Arc::downgrade(child));
+        }
+        if parent.cancelled.load(Ordering::Acquire) {
+            cancel_task(child);
+        }
     }
 }
 
@@ -336,6 +415,8 @@ fn make_task(
     Arc::new(Task {
         coro: Mutex::new(Some(SendCoro(coro))),
         yielder: AtomicPtr::new(std::ptr::null_mut()),
+        cancelled: AtomicBool::new(false),
+        children: Mutex::new(Vec::new()),
     })
 }
 
@@ -438,8 +519,16 @@ pub fn run_blocking<T: Send + 'static>(f: Box<dyn FnOnce() -> T + Send>) -> T {
         // yields (its coroutine lock serializes the resume against this worker).
         schedule(task);
     }));
-    suspend_current(Suspend::Park);
-    result.lock().expect("blocking result").take().expect("blocking result set")
+    // Park until the result is set. The off-worker job cannot be interrupted, so a
+    // cancellation (or otherwise spurious) wake that arrives before the job finishes
+    // re-parks rather than reading an absent result; the job's own wake then
+    // delivers it. The caller observes the cancellation at its next park point.
+    loop {
+        suspend_current(Suspend::Park);
+        if let Some(r) = result.lock().expect("blocking result").take() {
+            return r;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -455,6 +544,10 @@ struct HandleState {
 /// A handle to a spawned task's eventual result (`Task 'a` to Fai code).
 pub struct Handle {
     state: Mutex<HandleState>,
+    /// The task this handle was spawned for, so `cancel` can reach it from the Fai
+    /// `Task` value. Weak — the task's lifetime is the run queue / its waiters, not
+    /// the handle; a dead weak means the task already finished (nothing to cancel).
+    task: Mutex<Weak<Task>>,
 }
 
 impl Drop for Handle {
@@ -486,47 +579,75 @@ fn complete(handle: &Arc<Handle>, result: Value) {
 pub fn spawn(body: Box<dyn FnOnce() -> Value + Send>) -> Arc<Handle> {
     let handle = Arc::new(Handle {
         state: Mutex::new(HandleState { done: false, result: 0, awaiters: Vec::new() }),
+        task: Mutex::new(Weak::new()),
     });
     // Count the task live before it can run (a worker must not finish and
     // decrement before this increment).
     *scheduler().active.lock().expect("active lock") += 1;
     let done_handle = Arc::clone(&handle);
     let task = make_task(body, Box::new(move |result| complete(&done_handle, result)));
+    // Publish the task on the handle (so `cancel` can reach it) and register it in
+    // the cancellation tree (so a cancelled parent tears it down too).
+    *handle.task.lock().expect("handle task") = Arc::downgrade(&task);
+    register_child(&task);
     schedule(task);
     handle
+}
+
+/// Cancels the task behind `handle` (and its descendants), if it is still running.
+/// A finished task's weak link is dead, so this is a no-op.
+pub fn cancel_handle(handle: &Arc<Handle>) {
+    let task = handle.task.lock().expect("handle task").upgrade();
+    if let Some(task) = task {
+        cancel_task(&task);
+    }
 }
 
 /// Awaits a task's result from *within another task* (parks the caller until the
 /// awaited task completes). The result is duplicated out, so the handle may be
 /// awaited again. Must be called on a worker (inside a task).
 pub fn await_handle(handle: &Arc<Handle>) -> Value {
-    {
-        let mut st = handle.state.lock().expect("handle lock");
-        if st.done {
-            return fai_dup(st.result);
+    let mut registered = false;
+    loop {
+        {
+            let mut st = handle.state.lock().expect("handle lock");
+            if st.done {
+                return fai_dup(st.result);
+            }
+            // Register once before parking (still under the lock), so a completion
+            // that races us cannot be missed.
+            if !registered {
+                st.awaiters.push(current_task());
+                registered = true;
+            }
         }
-        // Register before parking (still under the lock), so a completion that
-        // races us cannot be missed.
-        st.awaiters.push(current_task());
+        // Loop on wake: a spurious or cancellation wake re-checks `done` rather than
+        // assuming completion. When the awaiter is cancelled, the awaited task (its
+        // descendant in structured use) is cancelled too and so completes, ending
+        // this loop with that task's (cancellation) result.
+        suspend_current(Suspend::Park);
     }
-    suspend_current(Suspend::Park);
-    let st = handle.state.lock().expect("handle lock");
-    debug_assert!(st.done, "woken before completion");
-    fai_dup(st.result)
 }
 
 /// Waits (from within a task) for a task to complete, *without* taking its result
 /// — used to join a nursery's children at scope end. Parks the caller until the
-/// awaited task is done.
+/// awaited task is done, looping past any spurious/cancellation wake so a child
+/// never outlives its scope.
 fn join_handle(handle: &Arc<Handle>) {
-    {
-        let mut st = handle.state.lock().expect("handle lock");
-        if st.done {
-            return;
+    let mut registered = false;
+    loop {
+        {
+            let mut st = handle.state.lock().expect("handle lock");
+            if st.done {
+                return;
+            }
+            if !registered {
+                st.awaiters.push(current_task());
+                registered = true;
+            }
         }
-        st.awaiters.push(current_task());
+        suspend_current(Suspend::Park);
     }
-    suspend_current(Suspend::Park);
 }
 
 /// Runs `body` as the program's root task and blocks the calling OS thread until
@@ -639,6 +760,12 @@ pub fn channel(capacity: usize) -> Arc<Chan> {
 /// transfers into the channel. Must be called inside a task.
 pub fn chan_send(chan: &Arc<Chan>, v: Value) {
     loop {
+        if is_cancelled() {
+            // Cancelled before the send could complete: drop the value (its ownership
+            // had transferred to the send) and bail; the task unwinds.
+            crate::fai_drop(v);
+            return;
+        }
         let mut st = chan.state.lock().expect("chan lock");
         if st.buf.len() < chan.capacity {
             st.buf.push_back(v);
@@ -661,6 +788,10 @@ pub fn chan_send(chan: &Arc<Chan>, v: Value) {
 /// once the channel is closed and drained. Must be called inside a task.
 pub fn chan_recv(chan: &Arc<Chan>) -> Option<Value> {
     loop {
+        if is_cancelled() {
+            // Cancelled: end the receive as if the channel closed; the task unwinds.
+            return None;
+        }
         let mut st = chan.state.lock().expect("chan lock");
         if let Some(v) = st.buf.pop_front() {
             let sx = st.send_waiters.pop();
@@ -818,6 +949,17 @@ pub extern "C" fn fai_await(task: Value) -> Value {
     let result = await_handle(&handle_of(task));
     crate::fai_drop(task);
     result
+}
+
+/// Cancels a spawned task and its descendant subtree (a no-op if it already
+/// finished): the tasks observe the sticky cancellation flag at their next park
+/// point and unwind, freeing resources by reference counting. Consumes the handle;
+/// returns `Unit`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_cancel(task: Value) -> Value {
+    cancel_handle(&handle_of(task));
+    crate::fai_drop(task);
+    crate::FAI_UNIT
 }
 
 /// Creates a bounded channel of the given capacity (a Fai `Int`); returns a
@@ -1216,5 +1358,75 @@ mod tests {
         assert_eq!(worker_count_from(Some("-2")), host, "a negative override is ignored");
         assert_eq!(worker_count_from(Some("abc")), host, "a non-numeric override is ignored");
         assert_eq!(worker_count_from(Some("")), host, "an empty override is ignored");
+    }
+
+    #[test]
+    fn cancel_unblocks_a_parked_channel_recv() {
+        // A task blocked receiving on an empty, never-closed channel would park
+        // forever; cancelling it makes `recv` return `None` so it unwinds. `block_on`
+        // reaching quiescence at all proves the cancelled task finished.
+        use std::sync::atomic::{AtomicI64, Ordering};
+        static OUTCOME: AtomicI64 = AtomicI64::new(0);
+        OUTCOME.store(0, Ordering::SeqCst);
+        block_on(Box::new(|| {
+            scope(Box::new(|nursery| {
+                let ch = channel(1);
+                let child = {
+                    let ch = Arc::clone(&ch);
+                    spawn_in(
+                        &nursery,
+                        Box::new(move || {
+                            match chan_recv(&ch) {
+                                None => OUTCOME.store(1, Ordering::SeqCst),
+                                Some(v) => {
+                                    crate::fai_drop(v);
+                                    OUTCOME.store(2, Ordering::SeqCst);
+                                }
+                            }
+                            imm(0)
+                        }),
+                    )
+                };
+                cancel_handle(&child);
+                imm(0)
+            }))
+        }));
+        assert_eq!(OUTCOME.load(Ordering::SeqCst), 1, "cancelled recv returned None and the task unwound");
+    }
+
+    #[test]
+    fn cancel_propagates_to_a_descendant_task() {
+        // Cancelling a parent cancels its whole subtree: the grandchild, blocked on a
+        // never-ready channel, is unblocked too (downward propagation). Whether the
+        // grandchild is spawned before or after the cancel, it ends up cancelled (the
+        // register-under-a-cancelled-parent path closes that race).
+        use std::sync::atomic::{AtomicI64, Ordering};
+        static REACHED: AtomicI64 = AtomicI64::new(0);
+        REACHED.store(0, Ordering::SeqCst);
+        block_on(Box::new(|| {
+            scope(Box::new(|nursery| {
+                let parent = spawn_in(
+                    &nursery,
+                    Box::new(|| {
+                        scope(Box::new(|inner| {
+                            let gc = spawn_in(
+                                &inner,
+                                Box::new(|| {
+                                    let ch = channel(1);
+                                    if chan_recv(&ch).is_none() {
+                                        REACHED.fetch_add(1, Ordering::SeqCst);
+                                    }
+                                    imm(0)
+                                }),
+                            );
+                            await_handle(&gc)
+                        }))
+                    }),
+                );
+                cancel_handle(&parent);
+                imm(0)
+            }))
+        }));
+        assert_eq!(REACHED.load(Ordering::SeqCst), 1, "the grandchild was cancelled via downward propagation");
     }
 }
