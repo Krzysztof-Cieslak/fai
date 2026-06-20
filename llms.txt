@@ -1426,7 +1426,13 @@ Deferred: IANA time zones / `ZonedDateTime` with DST rules (this is offset-only)
    body with `emptyBody`/`bytesBody`/`stringBody` (sent with Content-Length);
    responses via `response`/`textResponse`/`errorResponse`. To **stream** a sent body
    chunked (no buffering, one frame per stream element), use `chunkedResponse` (server)
-   or set `Transfer-Encoding: chunked` in a request's headers.
+   or set `Transfer-Encoding: chunked` in a request's headers. **Connection pooling:**
+   `withClient runtime (fun client -> …)` opens a structured scope holding a pool of
+   keep-alive connections; inside it `getOn`/`requestOn`/`postOn client …` reuse an idle
+   connection to the request's origin (or open a fresh one) and need
+   `{ concurrency, net, tls }`. A pooled response body returns its connection to the
+   pool when fully read, so consume it within the callback; the pool closes every
+   connection on scope exit.
 
 ```
 // GET (needs { net : Net, tls : Tls }; the URL scheme decides http vs https)
@@ -1435,6 +1441,8 @@ match Http.get runtime "https://example.test/path" with
 | Err e -> Err e
 // serve until the serving task is cancelled
 Http.serve runtime 8080 (fun req -> Ok (Http.textResponse 200 (Url.path req.url)))
+// pooled client: reuse keep-alive connections across requests to the same origin
+Http.withClient runtime (fun client -> Http.getOn runtime client "https://example.test/a")
 ```
 
 ### Test — property testing (used by `forall`)

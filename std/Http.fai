@@ -216,20 +216,21 @@ let sendChunkedBody t body =
 
 // Send a message: the start line and headers, then the body. When the headers
 // select chunked transfer-encoding the body is streamed chunk by chunk without
-// buffering; otherwise it is drained to a `Content-Length` and sent. `Connection:
-// close` is always set (one message per connection).
-sendMessage : Transport { Net, Tls } -> String -> Headers -> Stream Bytes 'b -> Result Unit String / { Net, Tls | 'b }
-let sendMessage t startLine headers body =
-  if isChunkedEncoding headers then
-    match t.send (renderHead startLine (Headers.set "Connection" "close" headers)) with
+// buffering; otherwise it is drained to a `Content-Length` and sent. `closeConn` adds
+// `Connection: close` (one message per connection); leaving it off keeps the
+// connection alive for reuse (HTTP/1.1's default).
+sendMessage : Bool -> Transport { Net, Tls } -> String -> Headers -> Stream Bytes 'b -> Result Unit String / { Net, Tls | 'b }
+let sendMessage closeConn t startLine headers body =
+  let framed = if closeConn then Headers.set "Connection" "close" headers else headers
+  if isChunkedEncoding framed then
+    match t.send (renderHead startLine framed) with
     | Err e -> Err e
     | Ok sent -> sendChunkedBody t body
   else
     match bodyBytes body with
     | Err e -> Err e
     | Ok bytes ->
-      let hs =
-        Headers.set "Connection" "close" (Headers.set "Content-Length" (Int.toString (Bytes.length bytes)) headers)
+      let hs = Headers.set "Content-Length" (Int.toString (Bytes.length bytes)) framed
       t.send (Bytes.concat (renderHead startLine hs) bytes)
 
 // Add a Host header from the URL if the caller supplied none.
@@ -240,10 +241,12 @@ let ensureHost headers url =
   else
     Headers.add "Host" (hostHeaderValue url) headers
 
-// Send a request: request line, headers (Host ensured), and body.
-sendRequest : Transport { Net, Tls } -> Request 'b -> Result Unit String / { Net, Tls | 'b }
-let sendRequest t req =
-  sendMessage t (methodName req.method ++ " " ++ Url.requestTarget req.url ++ " HTTP/1.1\r\n") (ensureHost req.headers req.url) req.body
+// Send a request: request line, headers (Host ensured), and body. `closeConn` asks
+// the server to close after responding; the pooling client passes `false` to keep the
+// connection alive for reuse.
+sendRequest : Bool -> Transport { Net, Tls } -> Request 'b -> Result Unit String / { Net, Tls | 'b }
+let sendRequest closeConn t req =
+  sendMessage closeConn t (methodName req.method ++ " " ++ Url.requestTarget req.url ++ " HTTP/1.1\r\n") (ensureHost req.headers req.url) req.body
 
 // --- Response parsing ------------------------------------------------------
 // Read from the transport until the `\r\n\r\n` header terminator (capping the
@@ -718,7 +721,7 @@ let request env req = requestWith env None req
 
 runOver : Transport { Net, Tls } -> Request 'e -> Result (Response { Net, Tls }) String / { Net, Tls | 'e }
 let runOver t req =
-  match sendRequest t req with
+  match sendRequest true t req with
   | Err e -> Err e
   | Ok sent -> parseResponse t
 
@@ -749,6 +752,259 @@ let post env urlStr headers body =
 public postForm : { net : Net, tls : Tls | 'r } -> String -> List (String * String) -> Result (Response { Net, Tls }) String / { Net, Tls }
 let postForm env urlStr pairs =
   post env urlStr (Headers.set "Content-Type" "application/x-www-form-urlencoded" Headers.empty) (formBody pairs)
+
+// --- Pooling client --------------------------------------------------------
+// A connection-pooling client keeps idle keep-alive connections and reuses them
+// across requests to the same origin. The pool is a task (an actor) reached over one
+// command channel that owns the idle connections; `withClient` opens it in a
+// structured scope and closes every connection on exit. A reused connection that
+// fails before any response is retried once on a fresh connection. A pooled response
+// body returns its connection to the pool when fully read, and closes it (drops the
+// transport) if dropped early or on a read error.
+// A message to the pool actor: check a connection out for an origin (the actor replies
+// on the supplied channel with an idle connection or `None`), or check one back in
+// (`reusable` false means the connection is spent and is dropped, closing it).
+type Command =
+  | Checkin String Bool (Transport { Net, Tls })
+  | Checkout String (Channel (Option (Transport { Net, Tls })))
+
+/// An opaque handle to a connection pool, from `withClient`, passed to `getOn`/
+/// `requestOn`/`postOn`. It is valid only inside the `withClient` scope.
+public opaque type Client =
+  | MkClient (Channel Command)
+
+// The reuse key for a connection: its origin (scheme, host, and port).
+originKey : Url -> String
+let originKey url =
+  Option.withDefault "" (Url.scheme url) ++ "|" ++ Option.withDefault "" (Url.host url) ++ "|" ++ Int.toString (Option.withDefault 0 (Url.effectivePort url))
+
+// Take an idle connection for an origin (if any), returning it and the rest.
+takeIdle : String -> HashDict String (List (Transport { Net, Tls })) -> (Option (Transport { Net, Tls }) * HashDict String (List (Transport { Net, Tls })))
+let takeIdle origin idle =
+  match HashDict.get origin idle with
+  | None -> (None, idle)
+  | Some [] -> (None, idle)
+  | Some (t :: rest) -> (Some t, HashDict.insert origin rest idle)
+
+// Return a connection to an origin's idle list.
+putIdle : String -> Transport { Net, Tls } -> HashDict String (List (Transport { Net, Tls })) -> HashDict String (List (Transport { Net, Tls }))
+let putIdle origin t idle = HashDict.insert origin (t :: HashDict.getOr [] origin idle) idle
+
+// The pool actor: serve checkout/checkin commands over the idle map until the command
+// channel closes, at which point the map — and every idle connection — is dropped.
+poolLoop : { concurrency : Concurrency | 'r } -> Channel Command -> HashDict String (List (Transport { Net, Tls })) -> Unit / { Concurrency }
+let poolLoop env commands idle =
+  match env.concurrency.recv commands with
+  | None -> ()
+  | Some cmd ->
+    match cmd with
+    | Checkout origin reply ->
+      match takeIdle origin idle with
+      | (picked, rest) ->
+        let sent = env.concurrency.send reply picked
+        poolLoop env commands rest
+    | Checkin origin reusable t ->
+      poolLoop env commands (if reusable then putIdle origin t idle else idle)
+
+// Ask the pool for an idle connection for an origin (or `None` when there is none).
+poolCheckout : { concurrency : Concurrency | 'r } -> Client -> String -> Option (Transport { Net, Tls }) / { Concurrency }
+let poolCheckout env client origin =
+  match client with
+  | MkClient commands ->
+    let reply = env.concurrency.channel 1
+    let sent = env.concurrency.send commands (Checkout origin reply)
+    match env.concurrency.recv reply with
+    | None -> None
+    | Some picked -> picked
+
+// Hand a connection back to the pool at the natural end of a response body, returning
+// the body stream's now-empty tail.
+releaseToPool : { concurrency : Concurrency | 'r } -> Client -> String -> Bool -> Transport { Net, Tls } -> Stream Bytes { Concurrency, Net, Tls } / { Concurrency }
+let releaseToPool env client origin reusable t =
+  match client with
+  | MkClient commands ->
+    let sent = env.concurrency.send commands (Checkin origin reusable t)
+    Stream.empty
+
+// Pooled body readers (Content-Length, chunked, until-EOF): like the
+// connection-per-request readers, but at the natural end they hand the connection to
+// `release` (back to the pool) instead of dropping it; an error or an early drop still
+// drops the transport, closing the connection. (Effects inferred.)
+pooledBody : (Transport { Net, Tls } -> Stream Bytes { Concurrency, Net, Tls } / { Concurrency }) -> Transport { Net, Tls } -> Bytes -> BodyFraming -> Stream Bytes { Concurrency, Net, Tls } / { Concurrency }
+let pooledBody release t leftover framing =
+  match framing with
+  | NoBody -> release t
+  | SizedBody n -> pooledSized release t leftover n
+  | Chunked -> pooledChunked release t leftover
+  | UntilEof -> pooledEof release t leftover
+
+pooledSized : (Transport { Net, Tls } -> Stream Bytes { Concurrency, Net, Tls } / { Concurrency }) -> Transport { Net, Tls } -> Bytes -> Int -> Stream Bytes { Concurrency, Net, Tls } / { Concurrency }
+let pooledSized release t buf remaining =
+  if remaining <= 0 then
+    release t
+  else if Bytes.length buf > 0 then
+    let take = minInt (Bytes.length buf) remaining
+    Stream.cons (Bytes.slice 0 take buf) (pooledSized release t (Bytes.slice take (Bytes.length buf) buf) (remaining - take))
+  else
+    Stream.defer (fun u -> pooledSizedRecv release t remaining)
+
+pooledSizedRecv : (Transport { Net, Tls } -> Stream Bytes { Concurrency, Net, Tls } / { Concurrency }) -> Transport { Net, Tls } -> Int -> Stream Bytes { Concurrency, Net, Tls } / { Concurrency, Net, Tls }
+let pooledSizedRecv release t remaining =
+  match t.recv 16384 with
+  | Err e -> Stream.failed e
+  | Ok got ->
+    if Bytes.length got = 0 then
+      Stream.failed "connection closed before end of body"
+    else
+      pooledSized release t got remaining
+
+pooledChunked : (Transport { Net, Tls } -> Stream Bytes { Concurrency, Net, Tls } / { Concurrency }) -> Transport { Net, Tls } -> Bytes -> Stream Bytes { Concurrency, Net, Tls }
+let pooledChunked release t buf = Stream.defer (fun u -> pooledChunkedNext release t buf)
+
+pooledChunkedNext : (Transport { Net, Tls } -> Stream Bytes { Concurrency, Net, Tls } / { Concurrency }) -> Transport { Net, Tls } -> Bytes -> Stream Bytes { Concurrency, Net, Tls } / { Concurrency, Net, Tls }
+let pooledChunkedNext release t buf =
+  match readLine t buf with
+  | Err e -> Stream.failed e
+  | Ok (line, afterSize) ->
+    if parseChunkSize line <= 0 then
+      release t
+    else
+      match readExact t afterSize (parseChunkSize line) with
+      | Err e -> Stream.failed e
+      | Ok (data, afterData) ->
+        match readExact t afterData 2 with
+        | Err e -> Stream.failed e
+        | Ok (crlf, afterCrlf) -> Stream.cons data (pooledChunked release t afterCrlf)
+
+pooledEof : (Transport { Net, Tls } -> Stream Bytes { Concurrency, Net, Tls } / { Concurrency }) -> Transport { Net, Tls } -> Bytes -> Stream Bytes { Concurrency, Net, Tls }
+let pooledEof release t buf =
+  if Bytes.length buf > 0 then
+    Stream.cons buf (pooledEof release t Bytes.empty)
+  else
+    Stream.defer (fun u -> pooledEofRecv release t)
+
+pooledEofRecv : (Transport { Net, Tls } -> Stream Bytes { Concurrency, Net, Tls } / { Concurrency }) -> Transport { Net, Tls } -> Stream Bytes { Concurrency, Net, Tls } / { Concurrency, Net, Tls }
+let pooledEofRecv release t =
+  match t.recv 16384 with
+  | Err e -> Stream.failed e
+  | Ok got -> if Bytes.length got = 0 then release t else pooledEof release t got
+
+// Whether a response asks the connection to close.
+hasConnectionClose : Headers -> Bool
+let hasConnectionClose headers =
+  match Headers.get "Connection" headers with
+  | None -> false
+  | Some v -> String.contains (String.toLower v) "close"
+
+// A keep-alive response (a definite length and no `Connection: close`) leaves the
+// connection reusable; an until-EOF or explicitly-closed one does not.
+isReusable : Headers -> BodyFraming -> Bool
+let isReusable headers framing =
+  match framing with
+  | UntilEof -> false
+  | _ -> not (hasConnectionClose headers)
+
+// Read and parse a response head, returning the status, reason, headers, and any
+// already-read leftover body bytes (the connection stays open for the body).
+readHead : Transport { Net, Tls } -> Result (Int * String * Headers * Bytes) String / { Net, Tls }
+let readHead t =
+  match readHeaderBlock t Bytes.empty with
+  | Err e -> Err e
+  | Ok (headBytes, leftover) ->
+    match Bytes.toString headBytes with
+    | None -> Err "response headers are not valid UTF-8"
+    | Some headText ->
+      match parseStatusAndHeaders headText with
+      | Err e -> Err e
+      | Ok (code, reason, headers) -> Ok (code, reason, headers, leftover)
+
+// Build a pooled response: a lazy body that returns its connection to the pool when
+// fully read (a reusable response) or closes it (until-EOF / `Connection: close`).
+buildPooledResponse : { concurrency : Concurrency | 'r } -> Client -> String -> Int -> String -> Headers -> Bytes -> Transport { Net, Tls } -> Response { Concurrency, Net, Tls } / { Concurrency }
+let buildPooledResponse env client origin code reason headers leftover t =
+  let framing = framingOf headers UntilEof
+  let reusable = isReusable headers framing
+  { body = pooledBody (fun conn ->
+    releaseToPool env client origin reusable conn) t leftover framing, headers = headers, reason = reason, status = code }
+
+// Open a fresh connection (TLS for an https URL) for a request, trusting the bundled
+// roots.
+connectFresh : { net : Net, tls : Tls | 'r } -> Url -> Result (Transport { Net, Tls }) String / { Net, Tls }
+let connectFresh env url =
+  match Url.host url with
+  | None -> Err "request URL has no host"
+  | Some h ->
+    match Url.effectivePort url with
+    | None -> Err "request URL has no port"
+    | Some p ->
+      match env.net.connect h p with
+      | Err e -> Err e
+      | Ok conn -> makeTransport env None conn url h
+
+// Send the request over `t` and parse the response, returning its connection to the
+// pool when the body is read. A reused connection that fails before the response head
+// is retried once on a fresh connection (`reused` guards a second retry).
+attemptPooled : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Client -> String -> Transport { Net, Tls } -> Request 'e -> Bool -> Result (Response { Concurrency, Net, Tls }) String / { Concurrency, Net, Tls | 'e }
+let attemptPooled env client origin t req reused =
+  match sendRequest false t req with
+  | Err e -> if reused then retryFresh env client origin req else Err e
+  | Ok sent ->
+    match readHead t with
+    | Err e -> if reused then retryFresh env client origin req else Err e
+    | Ok (code, reason, headers, leftover) ->
+      Ok (buildPooledResponse env client origin code reason headers leftover t)
+
+retryFresh : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Client -> String -> Request 'e -> Result (Response { Concurrency, Net, Tls }) String / { Concurrency, Net, Tls | 'e }
+let retryFresh env client origin req =
+  match connectFresh env req.url with
+  | Err e -> Err e
+  | Ok t -> attemptPooled env client origin t req false
+
+/// Send a request over the pool, reusing a kept-alive connection to the request's
+/// origin when one is idle (otherwise opening a fresh one). Frames the body like
+/// `request`; the response body returns its connection to the pool when fully read.
+public requestOn : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Client -> Request 'e -> Result (Response { Concurrency, Net, Tls }) String / { Concurrency, Net, Tls | 'e }
+let requestOn env client req =
+  let origin = originKey req.url
+  match poolCheckout env client origin with
+  | Some t -> attemptPooled env client origin t req true
+  | None ->
+    match connectFresh env req.url with
+    | Err e -> Err e
+    | Ok t -> attemptPooled env client origin t req false
+
+/// GET a URL over the pool (http or https).
+public getOn : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Client -> String -> Result (Response { Concurrency, Net, Tls }) String / { Concurrency, Net, Tls }
+let getOn env client urlStr =
+  match Url.parse urlStr with
+  | Err e -> Err e
+  | Ok url ->
+    requestOn env client { body = emptyBody, headers = Headers.empty, method = GET, url = url }
+
+/// POST a body (with caller-supplied headers) to a URL over the pool.
+public postOn : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Client -> String -> Headers -> Stream Bytes 'e -> Result (Response { Concurrency, Net, Tls }) String / { Concurrency, Net, Tls | 'e }
+let postOn env client urlStr headers body =
+  match Url.parse urlStr with
+  | Err e -> Err e
+  | Ok url -> requestOn env client { body = body, headers = headers, method = POST, url = url }
+
+// Run the pool actor in `nursery` and hand the callback a `Client`; close the command
+// channel when the callback returns so the actor exits and the scope joins it.
+runPool : { concurrency : Concurrency | 'r } -> Nursery -> (Client -> 'a / 'e) -> 'a / { Concurrency | 'e }
+let runPool env nursery callback =
+  let commands = env.concurrency.channel 64
+  let actor = env.concurrency.spawn nursery (fun u -> poolLoop env commands HashDict.empty)
+  let result = callback (MkClient commands)
+  let closed = env.concurrency.close commands
+  result
+
+/// Run `callback` with a connection pool that reuses keep-alive connections across
+/// requests to the same origin. The pool lives in a structured scope: every idle
+/// connection is closed when `callback` returns. A response from `getOn`/`requestOn`/
+/// `postOn` must be consumed within the callback (its body holds a pooled connection
+/// until fully read or dropped).
+public withClient : { concurrency : Concurrency | 'r } -> (Client -> 'a / 'e) -> 'a / { Concurrency | 'e }
+let withClient env callback = env.concurrency.scope (fun nursery -> runPool env nursery callback)
 
 // --- Response builders -----------------------------------------------------
 // The reason phrase for a few common status codes (a generic one otherwise).
@@ -862,7 +1118,7 @@ let respond handler req =
 // the connection (one response per connection).
 sendResponse : Transport { Net, Tls } -> Response 'h -> Result Unit String / { Net, Tls | 'h }
 let sendResponse t resp =
-  match sendMessage t ("HTTP/1.1 " ++ Int.toString resp.status ++ " " ++ resp.reason ++ "\r\n") resp.headers resp.body with
+  match sendMessage true t ("HTTP/1.1 " ++ Int.toString resp.status ++ " " ++ resp.reason ++ "\r\n") resp.headers resp.body with
   | Err e -> Err e
   | Ok sent -> Ok (t.close ())
 

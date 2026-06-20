@@ -3905,8 +3905,22 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     re-requesting (closing its connection), and `requestOnce` is the single-shot,
     no-follow path. **Auth and form helpers** round out the request side: `basicAuth`/
     `bearer` build an `Authorization` value over a `base64Encode`, and `formBody`/
-    `postForm` build an `application/x-www-form-urlencoded` body. A connection-pooling
-    client remains follow-up.
+    `postForm` build an `application/x-www-form-urlencoded` body. A **connection-pooling
+    client** reuses keep-alive connections: `withClient` opens a structured scope that
+    spawns a pool **actor** — a task owning the idle connections (a `HashDict` keyed by
+    origin), reached over one command channel (`Checkout`/`Checkin`) — and hands the
+    callback an opaque `Client`. `getOn`/`requestOn`/`postOn` check a connection out for
+    the request's origin (reusing an idle one or opening a fresh one), send the request
+    keep-alive (the per-request client sends `Connection: close`; the flag is threaded
+    through `sendMessage`/`sendRequest`), and the pooled response body, threaded linearly
+    through the readers, hands its connection back to the pool at the body's natural end
+    (`releaseToPool` sends a `Checkin`) — so an abandoned or errored body instead drops
+    the transport, closing it. A reused connection that fails before the response head is
+    retried once on a fresh connection (a `reused` flag guards a second retry). The actor
+    exits when `withClient` closes the command channel on scope exit, dropping the idle
+    map (closing every connection). An interface instance (the `Transport`) rides a union
+    field and a channel — validated by the runtime's uniform value representation. HTTP/2
+    and a cross-`withClient` shared pool remain follow-up.
   - **A codegen fix surfaced by this work:** a definition that both has a string
     literal and a token-taking reuse entry emitted its entry body twice in the single
     in-process JIT module (the primary and the reuse entry shared a `{base}__fn0__strN`
