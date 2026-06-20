@@ -6,9 +6,9 @@ module Http
 // channel), so it is independent of the underlying socket; `plainTransport` is the
 // instance over a plain TCP `Connection`.
 //
-// This is the plaintext client surface (connection-per-request). TLS, a pooling
-// client, redirect following, chunked transfer-encoding, and the server are layered
-// on separately.
+// The client opens a fresh connection per request (TLS for an https URL), follows
+// redirects, and supports chunked transfer-encoding; a connection-pooling client is
+// layered on separately.
 /// An HTTP request method; `Custom` carries any other verb.
 public type Method =
   | GET
@@ -608,12 +608,14 @@ makeTransport : { net : Net, tls : Tls | 'r } -> Option Bytes -> Connection -> U
 let makeTransport env extraRoots conn url host =
   if Url.isHttps url then secureClient env extraRoots conn host else Ok (plainTransport env conn)
 
-/// Send a request and read the response, with TLS options: `extraRoots` is extra
-/// trusted root certificates in PEM (for a private CA or a self-signed server),
-/// `None` to trust only the bundled roots. Opens a fresh connection (TLS for an
-/// https URL), writes the request, and parses the response (body materialized).
-public requestWith : { net : Net, tls : Tls | 'r } -> Option Bytes -> Request 'e -> Result (Response { Net, Tls }) String / { Net, Tls | 'e }
-let requestWith env extraRoots req =
+/// Send a single request and read the response **without following redirects**,
+/// with TLS options: `extraRoots` is extra trusted root certificates in PEM (for a
+/// private CA or a self-signed server), `None` to trust only the bundled roots.
+/// Opens a fresh connection (TLS for an https URL), writes the request, and parses
+/// the response (the body streams lazily). `requestWith` wraps this to follow
+/// redirects.
+public requestOnce : { net : Net, tls : Tls | 'r } -> Option Bytes -> Request 'e -> Result (Response { Net, Tls }) String / { Net, Tls | 'e }
+let requestOnce env extraRoots req =
   match Url.host req.url with
   | None -> Err "request URL has no host"
   | Some h ->
@@ -626,6 +628,88 @@ let requestWith env extraRoots req =
         match makeTransport env extraRoots conn req.url h with
         | Err e -> Err e
         | Ok t -> runOver t req
+
+// The maximum number of redirects `requestWith` follows before giving up.
+maxRedirects : Int
+let maxRedirects = 10
+
+// The 3xx statuses this client follows automatically.
+isRedirectStatus : Int -> Bool
+let isRedirectStatus s = s = 301 || s = 302 || s = 303 || s = 307 || s = 308
+
+// A method that carries no request body, so a 307/308 can be safely replayed.
+isBodyless : Method -> Bool
+let isBodyless m =
+  match m with
+  | GET -> true
+  | HEAD -> true
+  | OPTIONS -> true
+  | _ -> false
+
+// The method to use on a redirect, or `None` to stop following: 301/302/303 become
+// a `GET` (the body is dropped); a 307/308 keeps the method only when it is bodyless
+// (the consumed body cannot be replayed), otherwise stops.
+redirectMethodBody : Method -> Int -> Option Method
+let redirectMethodBody method status =
+  if status = 303 then
+    Some GET
+  else if status = 301 then
+    Some GET
+  else if status = 302 then Some GET else if isBodyless method then Some method else None
+
+// Two URLs share an origin when scheme, host, and effective port all match.
+sameOrigin : Url -> Url -> Bool
+let sameOrigin a b =
+  Url.scheme a = Url.scheme b && Url.host a = Url.host b && Url.effectivePort a = Url.effectivePort b
+
+// Carry the request headers across a redirect: drop the hop-specific `Host`,
+// `Content-Length`, and `Transfer-Encoding` (the new request reframes its empty
+// body and sets `Host` from its URL), and drop `Authorization` on a cross-origin
+// hop so a credential never leaks to another host.
+redirectHeaders : Url -> Url -> Headers -> Headers
+let redirectHeaders fromUrl toUrl headers =
+  let cleaned =
+    Headers.remove "Transfer-Encoding" (Headers.remove "Content-Length" (Headers.remove "Host" headers))
+  if sameOrigin fromUrl toUrl then cleaned else Headers.remove "Authorization" cleaned
+
+// Build the next request from a 3xx response, or `None` when there is no usable
+// `Location`, it does not resolve, or the method/status combination is not followed.
+// The redirect body is always empty (the original body was already consumed).
+redirectRequest : Request 'e -> Int -> Headers -> Option (Request 'e)
+let redirectRequest req status headers =
+  match Headers.get "Location" headers with
+  | None -> None
+  | Some loc ->
+    match Url.resolve req.url loc with
+    | Err _ -> None
+    | Ok newUrl ->
+      match redirectMethodBody req.method status with
+      | None -> None
+      | Some newMethod ->
+        Some { body = emptyBody, headers = redirectHeaders req.url newUrl req.headers, method = newMethod, url = newUrl }
+
+// Send the request and, while the response is a followable redirect with hops to
+// spare, drop it (closing its connection) and re-request the resolved `Location`.
+followRedirects : { net : Net, tls : Tls | 'r } -> Option Bytes -> Request 'e -> Int -> Result (Response { Net, Tls }) String / { Net, Tls | 'e }
+let followRedirects env extraRoots req hops =
+  match requestOnce env extraRoots req with
+  | Err e -> Err e
+  | Ok resp ->
+    if hops > 0 && isRedirectStatus resp.status then
+      match redirectRequest req resp.status resp.headers with
+      | None -> Ok resp
+      | Some next -> followRedirects env extraRoots next (hops - 1)
+    else
+      Ok resp
+
+/// Send a request and read the response, following redirects (up to `maxRedirects`
+/// hops), with TLS options: `extraRoots` is extra trusted root certificates in PEM
+/// (for a private CA or a self-signed server), `None` to trust only the bundled
+/// roots. A 301/302/303 is followed as a `GET`; a 307/308 only for a bodyless
+/// method; `Authorization` is dropped on a cross-origin hop. Use `requestOnce` to
+/// send a single request without following redirects.
+public requestWith : { net : Net, tls : Tls | 'r } -> Option Bytes -> Request 'e -> Result (Response { Net, Tls }) String / { Net, Tls | 'e }
+let requestWith env extraRoots req = followRedirects env extraRoots req maxRedirects
 
 /// Send a request and read the response (an https URL is verified against the
 /// bundled roots).
