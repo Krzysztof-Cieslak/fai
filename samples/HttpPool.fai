@@ -1,0 +1,57 @@
+module HttpPool
+
+// Connection pooling with `Http.withClient` (std/Http.fai). A pool keeps idle
+// keep-alive connections and reuses them across requests to the same origin, so a
+// burst of requests to one host avoids reconnecting each time. `withClient` opens the
+// pool in a structured scope and closes every connection when the callback returns;
+// inside it, `getOn`/`requestOn`/`postOn` take the `Client` and need
+// `{ Concurrency, Net, Tls }`.
+//
+// To show real reuse, a small loopback server answers two requests on a *single*
+// keep-alive connection (it does not close in between), so the pooled client's second
+// request reuses the first's connection.
+serveTwo : Runtime -> Listener -> Unit / { Net }
+let serveTwo runtime listener =
+  match runtime.net.accept listener with
+  | Err e -> ()
+  | Ok conn ->
+    let first = runtime.net.recv conn 4096
+    let r1 =
+      runtime.net.send conn (Bytes.fromString "HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nfirst!")
+    let second = runtime.net.recv conn 4096
+    let r2 =
+      runtime.net.send conn (Bytes.fromString "HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\nsecond!")
+    runtime.net.close conn
+
+// One pooled GET to the loopback server, rendered as its body text.
+fetchOne : Runtime -> Http.Client -> Int -> String / { Concurrency, Net, Tls }
+let fetchOne runtime client port =
+  match Http.getOn runtime client ("http://127.0.0.1:" ++ Int.toString port ++ "/data") with
+  | Err e -> "request failed: " ++ e
+  | Ok resp ->
+    match Http.bodyText resp.body with
+    | Err e -> "body failed: " ++ e
+    | Ok text -> text
+
+// Two requests to the same origin: the first opens a connection, the second reuses it.
+twoRequests : Runtime -> Http.Client -> Int -> String / { Concurrency, Net, Tls }
+let twoRequests runtime client port =
+  let a = fetchOne runtime client port
+  let b = fetchOne runtime client port
+  a ++ " " ++ b
+
+// Open a connection pool, run the two requests against the server, and report. The
+// server task finishes on its own after answering both, so the scope just joins it.
+poolThenFetch : Runtime -> Listener -> Int -> Nursery -> Unit / { Concurrency, Console, Net, Tls }
+let poolThenFetch runtime listener port nursery =
+  let server = runtime.concurrency.spawn nursery (fun u -> serveTwo runtime listener)
+  let report = Http.withClient runtime (fun client -> twoRequests runtime client port)
+  runtime.console.writeLine report
+
+public main : Runtime -> Unit / { Concurrency, Console, Net, Tls }
+let main runtime =
+  match runtime.net.listen 0 with
+  | Err e -> runtime.console.writeLine ("could not listen: " ++ e)
+  | Ok listener ->
+    let port = runtime.net.localPort listener
+    runtime.concurrency.scope (fun nursery -> poolThenFetch runtime listener port nursery)
