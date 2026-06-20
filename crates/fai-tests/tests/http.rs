@@ -505,3 +505,121 @@ fn request_once_does_not_follow_redirects() {
     assert_eq!(code, 0, "clean, leak-free exit");
     assert_eq!(out, "302\n");
 }
+
+#[test]
+fn pool_reuses_a_keep_alive_connection() {
+    // The pooling client (`Http.withClient` + `getOn`) makes two requests to the same
+    // origin. The raw server accepts exactly ONE connection and serves both requests on
+    // it (keep-alive), so a clean "one|two" proves the second request reused the first
+    // request's connection (a second request without reuse would need a second accept,
+    // which never comes). The pool tears every connection down on scope exit.
+    let src = indoc! {r#"
+        module Prog
+
+        serveKeepAlive : Runtime -> Listener -> Unit / { Net }
+        let serveKeepAlive runtime listener =
+          match runtime.net.accept listener with
+          | Err e -> ()
+          | Ok conn ->
+            let req1 = runtime.net.recv conn 4096
+            let s1 = runtime.net.send conn (Bytes.fromString "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\none")
+            let req2 = runtime.net.recv conn 4096
+            let s2 = runtime.net.send conn (Bytes.fromString "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\ntwo")
+            runtime.net.close conn
+
+        target : Int -> String
+        let target port = "http://127.0.0.1:" ++ Int.toString port ++ "/x"
+
+        twoGets : Runtime -> Http.Client -> Int -> String / { Concurrency, Net, Tls }
+        let twoGets runtime client port =
+          match Http.getOn runtime client (target port) with
+          | Err e -> "e1:" ++ e
+          | Ok r1 ->
+            match Http.bodyText r1.body with
+            | Err e -> "b1:" ++ e
+            | Ok t1 ->
+              match Http.getOn runtime client (target port) with
+              | Err e -> "e2:" ++ e
+              | Ok r2 ->
+                match Http.bodyText r2.body with
+                | Err e -> "b2:" ++ e
+                | Ok t2 -> t1 ++ "|" ++ t2
+
+        client : Runtime -> Int -> String / { Concurrency, Net, Tls }
+        let client runtime port =
+          Http.withClient runtime (fun c -> twoGets runtime c port)
+
+        public main : Runtime -> Unit / { Concurrency, Console, Net, Tls }
+        let main runtime =
+          match runtime.net.listen 0 with
+          | Err e -> runtime.console.writeLine ("listen failed: " ++ e)
+          | Ok listener ->
+            let port = runtime.net.localPort listener
+            match Async.parallel2 runtime.concurrency (fun u -> serveKeepAlive runtime listener) (fun u -> client runtime port) with
+            | (served, report) -> runtime.console.writeLine report
+    "#};
+    let (out, code) = run(src);
+    assert_eq!(code, 0, "clean, leak-free exit");
+    assert_eq!(out, "one|two\n");
+}
+
+#[test]
+fn pool_retries_a_stale_connection() {
+    // The server serves the first request then closes that connection (a server
+    // dropping an idle keep-alive connection), and serves the second request on a fresh
+    // connection. The pool reuses the first connection for the second request, finds it
+    // dead before any response, and retries once on a fresh connection — so a clean
+    // "one|two" proves the stale-connection retry.
+    let src = indoc! {r#"
+        module Prog
+
+        serveDropThenFresh : Runtime -> Listener -> Unit / { Net }
+        let serveDropThenFresh runtime listener =
+          match runtime.net.accept listener with
+          | Err e -> ()
+          | Ok conn1 ->
+            let req1 = runtime.net.recv conn1 4096
+            let s1 = runtime.net.send conn1 (Bytes.fromString "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\none")
+            let closed1 = runtime.net.close conn1
+            match runtime.net.accept listener with
+            | Err e -> ()
+            | Ok conn2 ->
+              let req2 = runtime.net.recv conn2 4096
+              let s2 = runtime.net.send conn2 (Bytes.fromString "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\ntwo")
+              runtime.net.close conn2
+
+        target : Int -> String
+        let target port = "http://127.0.0.1:" ++ Int.toString port ++ "/x"
+
+        twoGets : Runtime -> Http.Client -> Int -> String / { Concurrency, Net, Tls }
+        let twoGets runtime client port =
+          match Http.getOn runtime client (target port) with
+          | Err e -> "e1:" ++ e
+          | Ok r1 ->
+            match Http.bodyText r1.body with
+            | Err e -> "b1:" ++ e
+            | Ok t1 ->
+              match Http.getOn runtime client (target port) with
+              | Err e -> "e2:" ++ e
+              | Ok r2 ->
+                match Http.bodyText r2.body with
+                | Err e -> "b2:" ++ e
+                | Ok t2 -> t1 ++ "|" ++ t2
+
+        client : Runtime -> Int -> String / { Concurrency, Net, Tls }
+        let client runtime port =
+          Http.withClient runtime (fun c -> twoGets runtime c port)
+
+        public main : Runtime -> Unit / { Concurrency, Console, Net, Tls }
+        let main runtime =
+          match runtime.net.listen 0 with
+          | Err e -> runtime.console.writeLine ("listen failed: " ++ e)
+          | Ok listener ->
+            let port = runtime.net.localPort listener
+            match Async.parallel2 runtime.concurrency (fun u -> serveDropThenFresh runtime listener) (fun u -> client runtime port) with
+            | (served, report) -> runtime.console.writeLine report
+    "#};
+    let (out, code) = run(src);
+    assert_eq!(code, 0, "clean, leak-free exit");
+    assert_eq!(out, "one|two\n");
+}
