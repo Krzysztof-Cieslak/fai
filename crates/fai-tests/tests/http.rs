@@ -414,3 +414,94 @@ fn client_sends_basic_auth_and_a_form_body() {
     assert_eq!(code, 0, "clean, leak-free exit");
     assert_eq!(out, "Basic dTpw|x=1&y=a%20b\n");
 }
+
+#[test]
+fn client_follows_a_redirect() {
+    // The first request to /old gets a 302 with a *relative* `Location: /new`; the
+    // client resolves it against the request URL, drops the redirect response (closing
+    // its connection), and re-requests /new on a fresh connection, returning the final
+    // 200. The raw server accepts two connections in turn. Exercises Url.resolve and
+    // the whole follow loop (a 302 of a GET stays a GET).
+    let src = indoc! {r#"
+        module Prog
+
+        serveRedirect : Runtime -> Listener -> Unit / { Net }
+        let serveRedirect runtime listener =
+          match runtime.net.accept listener with
+          | Err e -> ()
+          | Ok conn1 ->
+            let req1 = runtime.net.recv conn1 4096
+            let resp1 = "HTTP/1.1 302 Found\r\nLocation: /new\r\nContent-Length: 8\r\n\r\nREDIRECT"
+            let sent1 = runtime.net.send conn1 (Bytes.fromString resp1)
+            let closed1 = runtime.net.close conn1
+            match runtime.net.accept listener with
+            | Err e -> ()
+            | Ok conn2 ->
+              let req2 = runtime.net.recv conn2 4096
+              let resp2 = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nfinal"
+              let sent2 = runtime.net.send conn2 (Bytes.fromString resp2)
+              runtime.net.close conn2
+
+        client : Runtime -> Int -> String / { Net, Tls }
+        let client runtime port =
+          match Http.get runtime ("http://127.0.0.1:" ++ Int.toString port ++ "/old") with
+          | Err e -> "error: " ++ e
+          | Ok resp ->
+            match Http.bodyText resp.body with
+            | Err e -> "body error: " ++ e
+            | Ok text -> Int.toString resp.status ++ " " ++ text
+
+        public main : Runtime -> Unit / { Concurrency, Console, Net, Tls }
+        let main runtime =
+          match runtime.net.listen 0 with
+          | Err e -> runtime.console.writeLine ("listen failed: " ++ e)
+          | Ok listener ->
+            let port = runtime.net.localPort listener
+            match Async.parallel2 runtime.concurrency (fun u -> serveRedirect runtime listener) (fun u -> client runtime port) with
+            | (served, report) -> runtime.console.writeLine report
+    "#};
+    let (out, code) = run(src);
+    assert_eq!(code, 0, "clean, leak-free exit");
+    assert_eq!(out, "200 final\n");
+}
+
+#[test]
+fn request_once_does_not_follow_redirects() {
+    // `requestOnce` is the single-shot escape hatch: it returns the 302 itself rather
+    // than following it, so the server accepts exactly one connection and the client
+    // reports status 302.
+    let src = indoc! {r#"
+        module Prog
+
+        serveOne : Runtime -> Listener -> Unit / { Net }
+        let serveOne runtime listener =
+          match runtime.net.accept listener with
+          | Err e -> ()
+          | Ok conn ->
+            let req = runtime.net.recv conn 4096
+            let resp = "HTTP/1.1 302 Found\r\nLocation: /new\r\nContent-Length: 0\r\n\r\n"
+            let sent = runtime.net.send conn (Bytes.fromString resp)
+            runtime.net.close conn
+
+        client : Runtime -> Int -> String / { Net, Tls }
+        let client runtime port =
+          match Url.parse ("http://127.0.0.1:" ++ Int.toString port ++ "/old") with
+          | Err e -> "url error: " ++ e
+          | Ok url ->
+            match Http.requestOnce runtime None { body = Http.emptyBody, headers = Headers.empty, method = Http.GET, url = url } with
+            | Err e -> "error: " ++ e
+            | Ok resp -> Int.toString resp.status
+
+        public main : Runtime -> Unit / { Concurrency, Console, Net, Tls }
+        let main runtime =
+          match runtime.net.listen 0 with
+          | Err e -> runtime.console.writeLine ("listen failed: " ++ e)
+          | Ok listener ->
+            let port = runtime.net.localPort listener
+            match Async.parallel2 runtime.concurrency (fun u -> serveOne runtime listener) (fun u -> client runtime port) with
+            | (served, report) -> runtime.console.writeLine report
+    "#};
+    let (out, code) = run(src);
+    assert_eq!(code, 0, "clean, leak-free exit");
+    assert_eq!(out, "302\n");
+}
