@@ -195,37 +195,188 @@ let addHeaderLine line acc =
   | Some (name, value) -> Headers.add (String.trim name) (String.trim value) acc
   | None -> acc
 
-// Read the body per Content-Length, or until EOF when no length is given.
-readBody : Transport 'e -> Headers -> Bytes -> Result Bytes String / 'e
-let readBody t headers leftover =
-  match Headers.get "Content-Length" headers with
-  | Some lenStr ->
-    match Int.fromString (String.trim lenStr) with
-    | Some len -> readN t leftover len
-    | None -> Err ("bad Content-Length: " ++ lenStr)
-  | None -> readToEof t leftover
+// --- Body framing & lazy reading -------------------------------------------
+// How a message body is delimited on the wire.
+type BodyFraming =
+  | Chunked
+  | SizedBody Int
+  | UntilEof
+  | NoBody
 
-readN : Transport 'e -> Bytes -> Int -> Result Bytes String / 'e
-let readN t acc need =
-  if Bytes.length acc >= need then
-    Ok (Bytes.slice 0 need acc)
+// Whether the headers select chunked transfer-encoding.
+isChunkedEncoding : Headers -> Bool
+let isChunkedEncoding headers =
+  match Headers.get "Transfer-Encoding" headers with
+  | None -> false
+  | Some te -> String.contains (String.toLower te) "chunked"
+
+// The body framing from the headers: chunked, an explicit Content-Length, or — when
+// neither is present — the supplied `fallback` (until-EOF for a response, no body
+// for a request).
+framingOf : Headers -> BodyFraming -> BodyFraming
+let framingOf headers fallback =
+  if isChunkedEncoding headers then
+    Chunked
   else
-    match t.recv 4096 with
+    match Headers.get "Content-Length" headers with
+    | None -> fallback
+    | Some lenStr ->
+      match Int.fromString (String.trim lenStr) with
+      | Some len -> SizedBody len
+      | None -> SizedBody 0
+
+// The index of the next `\r\n` in `b` at or after `i`, or `None`.
+findCrlf : Bytes -> Int -> Int -> Option Int
+let findCrlf b i n =
+  if i + 2 > n then
+    None
+  else if Bytes.unsafeGet i b = 13 && Bytes.unsafeGet (i + 1) b = 10 then
+    Some i
+  else
+    findCrlf b (i + 1) n
+
+// Read a CRLF-terminated line, returning it (without the CRLF) and the rest of the
+// buffer, pulling from the transport as needed.
+readLine : Transport 'e -> Bytes -> Result (Bytes * Bytes) String / 'e
+let readLine t buf =
+  match findCrlf buf 0 (Bytes.length buf) with
+  | Some idx -> Ok (Bytes.slice 0 idx buf, Bytes.slice (idx + 2) (Bytes.length buf) buf)
+  | None ->
+    match t.recv 16384 with
     | Err e -> Err e
-    | Ok chunk ->
-      if Bytes.length chunk = 0 then
-        Err "connection closed before end of body"
+    | Ok got ->
+      if Bytes.length got = 0 then
+        Err "connection closed mid-line"
       else
-        readN t (Bytes.concat acc chunk) need
+        readLine t (Bytes.concat buf got)
 
-readToEof : Transport 'e -> Bytes -> Result Bytes String / 'e
-let readToEof t acc =
-  match t.recv 4096 with
-  | Err e -> Err e
-  | Ok chunk -> if Bytes.length chunk = 0 then Ok acc else readToEof t (Bytes.concat acc chunk)
+// Read exactly `n` bytes, returning them and the rest of the buffer.
+readExact : Transport 'e -> Bytes -> Int -> Result (Bytes * Bytes) String / 'e
+let readExact t buf n =
+  if Bytes.length buf >= n then
+    Ok (Bytes.slice 0 n buf, Bytes.slice n (Bytes.length buf) buf)
+  else
+    match t.recv 16384 with
+    | Err e -> Err e
+    | Ok got ->
+      if Bytes.length got = 0 then
+        Err "connection closed mid-body"
+      else
+        readExact t (Bytes.concat buf got) n
 
-// Parse a full response from a transport: head + framed body (materialized).
-parseResponse : Transport 'e -> Result (Response 'r) String / 'e
+// Parse a chunk-size line (hex, ignoring any `;extension` suffix) into a length.
+parseChunkSize : Bytes -> Int
+let parseChunkSize line =
+  match Bytes.toString line with
+  | None -> 0
+  | Some s ->
+    match splitFirst ";" s with
+    | Some (h, ext) -> hexToInt (String.trim h) 0
+    | None -> hexToInt (String.trim s) 0
+
+// Fold a hex string into an Int, stopping at the first non-hex character.
+hexToInt : String -> Int -> Int
+let hexToInt s acc =
+  if String.length s = 0 then
+    acc
+  else
+    let d = hexDigitValue (String.substring 0 1 s)
+    if d < 0 then acc else hexToInt (String.drop 1 s) (acc * 16 + d)
+
+// The value 0..15 of a single hex digit, or -1 if it is not one.
+hexDigitValue : String -> Int
+let hexDigitValue c =
+  let code = firstAsciiByte c
+  if code >= 48 && code <= 57 then
+    code - 48
+  else if code >= 97 && code <= 102 then
+    code - 87
+  else if code >= 65 && code <= 70 then code - 55 else 0 - 1
+
+firstAsciiByte : String -> Int
+let firstAsciiByte c =
+  let b = Bytes.fromString c
+  if Bytes.length b > 0 then Bytes.unsafeGet 0 b else 0
+
+minInt : Int -> Int -> Int
+let minInt a b = if a < b then a else b
+
+// A lazy body stream over the transport: it pulls and decodes the body on demand
+// per the framing, so a large body is processed without being buffered whole. It
+// captures the transport, which closes when the stream is dropped (reference
+// counting). A mid-stream read or decode error becomes a `Fail` in the stream.
+bodyStream : Transport 'e -> Bytes -> BodyFraming -> Stream Bytes 'e
+let bodyStream t leftover framing =
+  match framing with
+  | NoBody -> Stream.empty
+  | SizedBody n -> sizedBody t leftover n
+  | Chunked -> chunkedBody t leftover
+  | UntilEof -> eofBody t leftover
+
+// Content-Length body: yield buffered bytes (capped at `remaining`), then pull more.
+sizedBody : Transport 'e -> Bytes -> Int -> Stream Bytes 'e
+let sizedBody t buf remaining =
+  if remaining <= 0 then
+    Stream.empty
+  else if Bytes.length buf > 0 then
+    let take = minInt (Bytes.length buf) remaining
+    Stream.cons (Bytes.slice 0 take buf) (sizedBody t (Bytes.slice take (Bytes.length buf) buf) (remaining - take))
+  else
+    Stream.defer (fun u -> sizedRecv t remaining)
+
+sizedRecv : Transport 'e -> Int -> Stream Bytes 'e
+let sizedRecv t remaining =
+  match t.recv 16384 with
+  | Err e -> Stream.failed e
+  | Ok got ->
+    if Bytes.length got = 0 then
+      Stream.failed "connection closed before end of body"
+    else
+      sizedBody t got remaining
+
+// Read-to-EOF body (a response with neither length nor chunking; Connection: close).
+eofBody : Transport 'e -> Bytes -> Stream Bytes 'e
+let eofBody t buf =
+  if Bytes.length buf > 0 then
+    Stream.cons buf (eofBody t Bytes.empty)
+  else
+    Stream.defer (fun u -> eofRecv t)
+
+eofRecv : Transport 'e -> Stream Bytes 'e
+let eofRecv t =
+  match t.recv 16384 with
+  | Err e -> Stream.failed e
+  | Ok got -> if Bytes.length got = 0 then Stream.empty else eofBody t got
+
+// Chunked body: `<hex-size>\r\n<data>\r\n` repeated, ending with `0\r\n\r\n`.
+chunkedBody : Transport 'e -> Bytes -> Stream Bytes 'e
+let chunkedBody t buf = Stream.defer (fun u -> chunkedNext t buf)
+
+chunkedNext : Transport 'e -> Bytes -> Stream Bytes 'e
+let chunkedNext t buf =
+  match readLine t buf with
+  | Err e -> Stream.failed e
+  | Ok sizeLine ->
+    match sizeLine with
+    | (line, afterSize) ->
+      if parseChunkSize line <= 0 then
+        Stream.empty
+      else
+        match readExact t afterSize (parseChunkSize line) with
+        | Err e -> Stream.failed e
+        | Ok dataRest ->
+          match dataRest with
+          | (data, afterData) ->
+            match readExact t afterData 2 with
+            | Err e -> Stream.failed e
+            | Ok crlfRest ->
+              match crlfRest with
+              | (crlf, afterCrlf) -> Stream.cons data (chunkedBody t afterCrlf)
+
+// Parse a response from a transport: the head, then a *lazy* body that streams from
+// the connection on demand (so a large response is not buffered whole). The body
+// captures the transport, which closes when the response body is dropped.
+parseResponse : Transport 'e -> Result (Response 'e) String / 'e
 let parseResponse t =
   match readHeaderBlock t Bytes.empty with
   | Err e -> Err e
@@ -240,10 +391,7 @@ let parseResponse t =
         | Ok parsed ->
           match parsed with
           | (code, reason, headers) ->
-            match readBody t headers leftover with
-            | Err e -> Err e
-            | Ok body ->
-              Ok { body = bytesBody body, headers = headers, reason = reason, status = code }
+            Ok { body = bodyStream t leftover (framingOf headers UntilEof), headers = headers, reason = reason, status = code }
 
 // --- Transport instances ---------------------------------------------------
 /// A transport over a plain TCP `Connection`. Typed `Transport { Net, Tls }`: it
@@ -352,7 +500,7 @@ let makeTransport env extraRoots conn url host =
 /// trusted root certificates in PEM (for a private CA or a self-signed server),
 /// `None` to trust only the bundled roots. Opens a fresh connection (TLS for an
 /// https URL), writes the request, and parses the response (body materialized).
-public requestWith : { net : Net, tls : Tls | 'r } -> Option Bytes -> Request 'e -> Result (Response 'b) String / { Net, Tls | 'e }
+public requestWith : { net : Net, tls : Tls | 'r } -> Option Bytes -> Request 'e -> Result (Response { Net, Tls }) String / { Net, Tls | 'e }
 let requestWith env extraRoots req =
   match Url.host req.url with
   | None -> Err "request URL has no host"
@@ -369,10 +517,10 @@ let requestWith env extraRoots req =
 
 /// Send a request and read the response (an https URL is verified against the
 /// bundled roots).
-public request : { net : Net, tls : Tls | 'r } -> Request 'e -> Result (Response 'b) String / { Net, Tls | 'e }
+public request : { net : Net, tls : Tls | 'r } -> Request 'e -> Result (Response { Net, Tls }) String / { Net, Tls | 'e }
 let request env req = requestWith env None req
 
-runOver : Transport { Net, Tls } -> Request 'e -> Result (Response 'b) String / { Net, Tls | 'e }
+runOver : Transport { Net, Tls } -> Request 'e -> Result (Response { Net, Tls }) String / { Net, Tls | 'e }
 let runOver t req =
   match serializeRequest req with
   | Err e -> Err e
@@ -382,7 +530,7 @@ let runOver t req =
     | Ok sent -> parseResponse t
 
 /// GET a URL (http or https).
-public get : { net : Net, tls : Tls | 'r } -> String -> Result (Response 'b) String / { Net, Tls }
+public get : { net : Net, tls : Tls | 'r } -> String -> Result (Response { Net, Tls }) String / { Net, Tls }
 let get env urlStr =
   match Url.parse urlStr with
   | Err e -> Err e
@@ -390,7 +538,7 @@ let get env urlStr =
 
 /// GET a URL with TLS options (extra trusted root certificates in PEM, for a
 /// private CA or a self-signed server; `None` to trust only the bundled roots).
-public getWith : { net : Net, tls : Tls | 'r } -> Option Bytes -> String -> Result (Response 'b) String / { Net, Tls }
+public getWith : { net : Net, tls : Tls | 'r } -> Option Bytes -> String -> Result (Response { Net, Tls }) String / { Net, Tls }
 let getWith env extraRoots urlStr =
   match Url.parse urlStr with
   | Err e -> Err e
@@ -398,7 +546,7 @@ let getWith env extraRoots urlStr =
     requestWith env extraRoots { body = emptyBody, headers = Headers.empty, method = GET, url = url }
 
 /// POST a body (with caller-supplied headers) to a URL (http or https).
-public post : { net : Net, tls : Tls | 'r } -> String -> Headers -> Stream Bytes 'e -> Result (Response 'b) String / { Net, Tls | 'e }
+public post : { net : Net, tls : Tls | 'r } -> String -> Headers -> Stream Bytes 'e -> Result (Response { Net, Tls }) String / { Net, Tls | 'e }
 let post env urlStr headers body =
   match Url.parse urlStr with
   | Err e -> Err e
@@ -473,7 +621,10 @@ let parseRequestHead text =
       match ml with
       | (method, url) -> Ok (method, url, parseHeaderLines headerLines Headers.empty)
 
-// Parse a full request from a transport: head + framed body (materialized).
+// Parse a request from a transport: the head, then the body read in full and
+// materialized (so the transport is free for writing the response). The body is
+// decoded per its framing — chunked, Content-Length, or absent (a request with
+// neither has no body, unlike a response, which reads to EOF).
 parseRequest : Transport 'e -> Result (Request 'r) String / 'e
 let parseRequest t =
   match readHeaderBlock t Bytes.empty with
@@ -489,7 +640,7 @@ let parseRequest t =
         | Ok parsed ->
           match parsed with
           | (method, url, headers) ->
-            match readBody t headers leftover with
+            match bodyBytes (bodyStream t leftover (framingOf headers NoBody)) with
             | Err e -> Err e
             | Ok body -> Ok { body = bytesBody body, headers = headers, method = method, url = url }
 

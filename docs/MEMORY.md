@@ -3883,10 +3883,17 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     the scheme `if` (whose branches must agree — a user data type's effect argument is
     invariant). `get`/`getWith`/`post`/`request`/`requestWith` (client, the `With`
     forms taking extra trusted roots) and `serve`/`serveTls`/`serveListener`/
-    `serveListenerTls` (server) follow. Bodies are `Stream Bytes`; the first cut
-    materializes them (Content-Length / read-to-EOF), with chunked transfer-encoding,
-    progressive streaming, a pooling client, redirect following, and auth/form helpers
-    noted as follow-up.
+    `serveListenerTls` (server) follow. Bodies are `Stream Bytes`. A **received** body
+    is a **lazy** stream decoded on demand per its framing — chunked transfer-encoding,
+    Content-Length, or read-to-EOF — so a client streams a large response without
+    buffering it (the body owns the connection, dropped to close it); a server request
+    body is drained in full so the transport is free for the response. A **sent** body
+    is drained to a `Content-Length`. Chunked/progressive *sending* (non-buffering
+    output) is blocked: the `Stream` consumers (`fold`/`forEach`) force the per-element
+    action and the stream to share one effect, but streaming a body of effect `'b`
+    while doing transport sends `{ Net, Tls }` needs the two unioned — so it waits on a
+    dual-effect stream consumer. A pooling client, redirect following, and auth/form
+    helpers also remain follow-up.
   - **A codegen fix surfaced by this work:** a definition that both has a string
     literal and a token-taking reuse entry emitted its entry body twice in the single
     in-process JIT module (the primary and the reuse entry shared a `{base}__fn0__strN`
