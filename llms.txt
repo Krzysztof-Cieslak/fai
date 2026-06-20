@@ -1414,9 +1414,13 @@ Deferred: IANA time zones / `ZonedDateTime` with DST rules (this is offset-only)
   `getWith`/`requestWith` (extra trusted roots — a private CA or self-signed server),
   connection-per-request. Server: `serve`/`serveListener` (HTTP) and
   `serveTls`/`serveListenerTls` (HTTPS, given a PEM cert+key) — a task per
-  connection; cancel the serving task to shut down. Bodies: `emptyBody`/`bytesBody`/
-  `stringBody`, drained with `bodyBytes`/`bodyText`; responses via
-  `response`/`textResponse`/`errorResponse`.
+   connection; cancel the serving task to shut down. A received `resp.body` is a
+   **lazy `Stream Bytes`** decoded on demand (chunked / Content-Length / read-to-EOF),
+   so a big download streams; consume it with `bodyBytes`/`bodyText` or the `Stream`
+   combinators, and drop the response to close the connection. Build a request/sent
+   body with `emptyBody`/`bytesBody`/`stringBody` (sent with Content-Length);
+   responses via `response`/`textResponse`/`errorResponse`. (Chunked/streaming
+   *sending* is not yet supported.)
 
 ```
 // GET (needs { net : Net, tls : Tls }; the URL scheme decides http vs https)
