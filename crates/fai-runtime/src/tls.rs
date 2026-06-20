@@ -19,7 +19,9 @@ use std::mem::ManuallyDrop;
 use std::sync::{Arc, Mutex, Once};
 
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
-use rustls::{ClientConfig, ClientConnection, Connection, RootCertStore, ServerConfig, ServerConnection};
+use rustls::{
+    ClientConfig, ClientConnection, Connection, RootCertStore, ServerConfig, ServerConnection,
+};
 
 use crate::Value;
 
@@ -65,8 +67,8 @@ fn new_client(hostname: &str, extra_roots_pem: Option<&[u8]>) -> Result<TlsObjec
     ensure_provider();
     let roots = client_roots(extra_roots_pem)?;
     let config = ClientConfig::builder().with_root_certificates(roots).with_no_client_auth();
-    let server_name =
-        ServerName::try_from(hostname.to_owned()).map_err(|e| format!("invalid server name: {e}"))?;
+    let server_name = ServerName::try_from(hostname.to_owned())
+        .map_err(|e| format!("invalid server name: {e}"))?;
     let conn = ClientConnection::new(Arc::new(config), server_name)
         .map_err(|e| format!("starting the TLS client: {e}"))?;
     Ok(TlsObject { conn: Mutex::new(Connection::Client(conn)) })
@@ -91,8 +93,8 @@ fn new_server(cert_pem: &[u8], key_pem: &[u8]) -> Result<TlsObject, String> {
         .with_no_client_auth()
         .with_single_cert(certs, key)
         .map_err(|e| format!("building the TLS server config: {e}"))?;
-    let conn =
-        ServerConnection::new(Arc::new(config)).map_err(|e| format!("starting the TLS server: {e}"))?;
+    let conn = ServerConnection::new(Arc::new(config))
+        .map_err(|e| format!("starting the TLS server: {e}"))?;
     Ok(TlsObject { conn: Mutex::new(Connection::Server(conn)) })
 }
 

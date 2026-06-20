@@ -172,7 +172,11 @@ pub fn sleep_until(deadline: Instant) {
         let mut timers = r.timers.lock().expect("reactor timers");
         let seq = timers.next_seq;
         timers.next_seq += 1;
-        timers.heap.push(Reverse(TimerEntry { deadline, seq, waiter: scheduler::current_parked() }));
+        timers.heap.push(Reverse(TimerEntry {
+            deadline,
+            seq,
+            waiter: scheduler::current_parked(),
+        }));
         seq
     };
     let _ = r.waker.wake();
@@ -970,7 +974,11 @@ mod tests {
             imm(1)
         }));
         assert_eq!(of_imm(r), 1);
-        assert!(start.elapsed() >= Duration::from_millis(35), "slept ~40ms, got {:?}", start.elapsed());
+        assert!(
+            start.elapsed() >= Duration::from_millis(35),
+            "slept ~40ms, got {:?}",
+            start.elapsed()
+        );
     }
 
     #[test]
@@ -1006,6 +1014,10 @@ mod tests {
             imm(sum)
         }));
         assert_eq!(of_imm(r), 300, "every sleeping task completed");
-        assert!(start.elapsed() < Duration::from_secs(2), "sleeps multiplexed, took {:?}", start.elapsed());
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "sleeps multiplexed, took {:?}",
+            start.elapsed()
+        );
     }
 }
