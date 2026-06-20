@@ -371,3 +371,46 @@ fn client_sends_a_chunked_request() {
     assert_eq!(code, 0, "clean, leak-free exit");
     assert_eq!(out, "got:ping\n");
 }
+
+#[test]
+fn client_sends_basic_auth_and_a_form_body() {
+    // The client POSTs a urlencoded form with a Basic-auth Authorization header; the
+    // server reads both back and echoes them, exercising basicAuth/base64 + formBody.
+    let src = indoc! {r#"
+        module Prog
+
+        let handle req =
+          let auth = Option.withDefault "none" (Headers.get "Authorization" req.headers)
+          match Http.bodyText req.body with
+          | Err e -> Ok (Http.textResponse 400 "bad")
+          | Ok b -> Ok (Http.textResponse 200 (auth ++ "|" ++ b))
+
+        client : Runtime -> Int -> String / { Net, Tls }
+        let client runtime port =
+          let headers = Headers.set "Authorization" (Http.basicAuth "u" "p") (Headers.set "Content-Type" "application/x-www-form-urlencoded" Headers.empty)
+          match Http.post runtime ("http://127.0.0.1:" ++ Int.toString port ++ "/f") headers (Http.formBody [("x", "1"), ("y", "a b")]) with
+          | Err e -> "error: " ++ e
+          | Ok resp ->
+            match Http.bodyText resp.body with
+            | Err e -> "body error: " ++ e
+            | Ok text -> text
+
+        body : Runtime -> Listener -> Int -> Nursery -> Unit / { Concurrency, Console, Net, Tls }
+        let body runtime listener port nursery =
+          let server = runtime.concurrency.spawn nursery (fun u -> Http.serveListener runtime listener handle)
+          let report = client runtime port
+          let cancelled = runtime.concurrency.cancel server
+          runtime.console.writeLine report
+
+        public main : Runtime -> Unit / { Concurrency, Console, Net, Tls }
+        let main runtime =
+          match runtime.net.listen 0 with
+          | Err e -> runtime.console.writeLine ("listen failed: " ++ e)
+          | Ok listener ->
+            let port = runtime.net.localPort listener
+            runtime.concurrency.scope (fun nursery -> body runtime listener port nursery)
+    "#};
+    let (out, code) = run(src);
+    assert_eq!(code, 0, "clean, leak-free exit");
+    assert_eq!(out, "Basic dTpw|x=1&y=a%20b\n");
+}

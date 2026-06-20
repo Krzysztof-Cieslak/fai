@@ -70,6 +70,64 @@ let bodyText body =
     | None -> Err "body is not valid UTF-8"
 example: bodyText (stringBody "abc") = Ok "abc"
 
+// --- Authorization & form bodies -------------------------------------------
+// A single base64 digit for 0..63.
+b64Digit : Int -> String
+let b64Digit n =
+  String.substring n 1 "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+// Base64-encode three bytes into four digits.
+b64Three : Int -> Int -> Int -> String
+let b64Three a b c =
+  b64Digit (Int.shiftRight a 2) ++ b64Digit (Int.or (Int.shiftLeft (Int.and a 3) 4) (Int.shiftRight b 4)) ++ b64Digit (Int.or (Int.shiftLeft (Int.and b 15) 2) (Int.shiftRight c 6)) ++ b64Digit (Int.and c 63)
+
+// Base64-encode two trailing bytes (one `=` pad).
+b64Two : Int -> Int -> String
+let b64Two a b =
+  b64Digit (Int.shiftRight a 2) ++ b64Digit (Int.or (Int.shiftLeft (Int.and a 3) 4) (Int.shiftRight b 4)) ++ b64Digit (Int.shiftLeft (Int.and b 15) 2) ++ "="
+
+// Base64-encode one trailing byte (two `=` pads).
+b64One : Int -> String
+let b64One a = b64Digit (Int.shiftRight a 2) ++ b64Digit (Int.shiftLeft (Int.and a 3) 4) ++ "=="
+
+base64From : Bytes -> Int -> Int -> String -> String
+let base64From b i n acc =
+  if i >= n then
+    acc
+  else if n - i >= 3 then
+    base64From b (i + 3) n (acc ++ b64Three (Bytes.unsafeGet i b) (Bytes.unsafeGet (i + 1) b) (Bytes.unsafeGet (i + 2) b))
+  else if n - i = 2 then
+    acc ++ b64Two (Bytes.unsafeGet i b) (Bytes.unsafeGet (i + 1) b)
+  else
+    acc ++ b64One (Bytes.unsafeGet i b)
+
+/// Standard base64 encoding (with `=` padding) of a byte buffer.
+public base64Encode : Bytes -> String
+let base64Encode b = base64From b 0 (Bytes.length b) ""
+example: base64Encode (Bytes.fromString "user:pass") = "dXNlcjpwYXNz"
+
+/// An `Authorization` header value for HTTP Basic auth: `Basic <base64(user:pass)>`.
+/// Use as `Headers.set "Authorization" (Http.basicAuth user pass) headers`.
+public basicAuth : String -> String -> String
+let basicAuth user password = "Basic " ++ base64Encode (Bytes.fromString (user ++ ":" ++ password))
+example: basicAuth "user" "pass" = "Basic dXNlcjpwYXNz"
+
+/// An `Authorization` header value for a bearer token: `Bearer <token>`.
+public bearer : String -> String
+let bearer token = "Bearer " ++ token
+example: bearer "abc123" = "Bearer abc123"
+
+encodeFormPair : (String * String) -> String
+let encodeFormPair pair =
+  match pair with
+  | (k, v) -> Url.encodeComponent k ++ "=" ++ Url.encodeComponent v
+
+/// An `application/x-www-form-urlencoded` request body from key/value pairs (each
+/// percent-encoded). Pair it with that `Content-Type` (or use `Http.postForm`).
+public formBody : List (String * String) -> Stream Bytes 'e
+let formBody pairs = stringBody (String.join "&" (List.map encodeFormPair pairs))
+example: bodyText (formBody [("a", "1"), ("b", "x y")]) = Ok "a=1&b=x%20y"
+
 // --- Method <-> wire token -------------------------------------------------
 methodName : Method -> String
 let methodName m =
@@ -602,6 +660,11 @@ let post env urlStr headers body =
   match Url.parse urlStr with
   | Err e -> Err e
   | Ok url -> request env { body = body, headers = headers, method = POST, url = url }
+
+/// POST an `application/x-www-form-urlencoded` form (key/value pairs) to a URL.
+public postForm : { net : Net, tls : Tls | 'r } -> String -> List (String * String) -> Result (Response { Net, Tls }) String / { Net, Tls }
+let postForm env urlStr pairs =
+  post env urlStr (Headers.set "Content-Type" "application/x-www-form-urlencoded" Headers.empty) (formBody pairs)
 
 // --- Response builders -----------------------------------------------------
 // The reason phrase for a few common status codes (a generic one otherwise).
