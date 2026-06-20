@@ -9,13 +9,20 @@ module Url
 //
 // The query is kept raw (faithful to the wire); `queryPairs` decodes it into
 // key/value pairs on demand, and `encodeComponent`/`decodeComponent` apply
-// percent-encoding.
-public opaque type Url = { fragment : Option String, host : Option String, path : String, port : Option Int, query : Option String, scheme : Option String, userinfo : Option String }
+// percent-encoding. The components live in a record behind a single hidden
+// constructor (an opaque union, so the type is nominal across files).
+public opaque type Url =
+  | MkUrl { fragment : Option String, host : Option String, path : String, port : Option Int, query : Option String, scheme : Option String, userinfo : Option String }
 
-// An empty origin-form URL (just an empty path); the parse fallback and the base
-// for assembling parsed pieces.
-emptyUrl : Url
-let emptyUrl =
+// Unwrap the components record.
+fields : Url -> { fragment : Option String, host : Option String, path : String, port : Option Int, query : Option String, scheme : Option String, userinfo : Option String }
+let fields url =
+  match url with
+  | MkUrl r -> r
+
+// The empty component record (an origin-form URL with just an empty path).
+emptyFields : { fragment : Option String, host : Option String, path : String, port : Option Int, query : Option String, scheme : Option String, userinfo : Option String }
+let emptyFields =
   { fragment = None, host = None, path = "", port = None, query = None, scheme = None, userinfo = None }
 
 // Whether an `Option` holds a value.
@@ -75,11 +82,12 @@ let parseAfterScheme afterScheme =
   match splitFirst "/" afterScheme with
   | None ->
     match parseAuthority afterScheme with
-    | (ui, host, port) -> { emptyUrl with host = host, path = "/", port = port, userinfo = ui }
+    | (ui, host, port) ->
+      MkUrl { emptyFields with host = host, path = "/", port = port, userinfo = ui }
   | Some (authority, rest) ->
     match parseAuthority authority with
     | (ui, host, port) ->
-      { emptyUrl with host = host, path = "/" ++ rest, port = port, userinfo = ui }
+      MkUrl { emptyFields with host = host, path = "/" ++ rest, port = port, userinfo = ui }
 
 /// Parse a URL string. Accepts an absolute URL (`scheme://host[:port]/path?query`,
 /// the scheme lower-cased) and an origin-form target (`/path?query`); a bare empty
@@ -89,8 +97,7 @@ let parse input =
   if input = "" then
     Err "empty URL"
   else
-    let withFrag = splitFirst "#" input
-    match splitTrailing withFrag input with
+    match splitTrailing (splitFirst "#" input) input with
     | (beforeFrag, fragment) ->
       match splitTrailing (splitFirst "?" beforeFrag) beforeFrag with
       | (beforeQuery, query) -> Ok (assemble beforeQuery query fragment)
@@ -110,43 +117,43 @@ assemble : String -> Option String -> Option String -> Url
 let assemble rest query fragment =
   match splitFirst "://" rest with
   | Some (scheme, afterScheme) ->
-    let base = parseAfterScheme afterScheme
-    { base with fragment = fragment, query = query, scheme = Some (String.toLower scheme) }
-  | None -> { emptyUrl with fragment = fragment, path = rest, query = query }
+    let base = fields (parseAfterScheme afterScheme)
+    MkUrl { base with fragment = fragment, query = query, scheme = Some (String.toLower scheme) }
+  | None -> MkUrl { emptyFields with fragment = fragment, path = rest, query = query }
 
 /// The scheme (lower-cased), e.g. `Some "https"`; `None` for an origin-form target.
 public scheme : Url -> Option String
-let scheme url = url.scheme
+let scheme url = (fields url).scheme
 example: scheme (orEmpty (parse "https://a.test/")) = Some "https"
 
 /// The userinfo (`user:pass`) if present.
 public userinfo : Url -> Option String
-let userinfo url = url.userinfo
+let userinfo url = (fields url).userinfo
 example: userinfo (orEmpty (parse "https://u@a.test/")) = Some "u"
 
 /// The host (a registered name or a bracketed IPv6 literal) if present.
 public host : Url -> Option String
-let host url = url.host
+let host url = (fields url).host
 example: host (orEmpty (parse "https://a.test:9/p")) = Some "a.test"
 
 /// The explicit port if one was given.
 public port : Url -> Option Int
-let port url = url.port
+let port url = (fields url).port
 example: port (orEmpty (parse "https://a.test:9/p")) = Some 9
 
 /// The path (`"/"`-rooted for an absolute URL; may be empty for a bare relative).
 public path : Url -> String
-let path url = url.path
+let path url = (fields url).path
 example: path (orEmpty (parse "https://a.test/x/y")) = "/x/y"
 
 /// The raw query string (without the leading `?`) if present.
 public query : Url -> Option String
-let query url = url.query
+let query url = (fields url).query
 example: query (orEmpty (parse "https://a.test/?a=1&b=2")) = Some "a=1&b=2"
 
 /// The fragment (without the leading `#`) if present.
 public fragment : Url -> Option String
-let fragment url = url.fragment
+let fragment url = (fields url).fragment
 example: fragment (orEmpty (parse "https://a.test/#top")) = Some "top"
 
 // Unwrap a parse result, falling back to the empty URL (for use in contracts).
@@ -154,31 +161,32 @@ orEmpty : Result Url String -> Url
 let orEmpty r =
   match r with
   | Ok u -> u
-  | Err e -> emptyUrl
+  | Err e -> MkUrl emptyFields
 
 /// The effective port: the explicit port, else the scheme default (80 for `http`,
 /// 443 for `https`), else `None`.
 public effectivePort : Url -> Option Int
 let effectivePort url =
-  match url.port with
+  match (fields url).port with
   | Some p -> Some p
   | None ->
-    if url.scheme = Some "http" then
+    if (fields url).scheme = Some "http" then
       Some 80
-    else if url.scheme = Some "https" then Some 443 else None
+    else if (fields url).scheme = Some "https" then Some 443 else None
 example: effectivePort (orEmpty (parse "https://a.test/")) = Some 443
 
 /// Whether the scheme is `https`.
 public isHttps : Url -> Bool
-let isHttps url = url.scheme = Some "https"
+let isHttps url = (fields url).scheme = Some "https"
 example: isHttps (orEmpty (parse "https://a.test/")) = true
 
 /// The origin-form request target: the path (defaulting to `/`) plus `?query`. This
 /// is what goes on the HTTP request line.
 public requestTarget : Url -> String
 let requestTarget url =
-  let p = if url.path = "" then "/" else url.path
-  match url.query with
+  let r = fields url
+  let p = if r.path = "" then "/" else r.path
+  match r.query with
   | Some q -> p ++ "?" ++ q
   | None -> p
 example: requestTarget (orEmpty (parse "https://a.test/p?x=1")) = "/p?x=1"
@@ -187,34 +195,34 @@ example: requestTarget (orEmpty (parse "https://a.test/p?x=1")) = "/p?x=1"
 /// or just path?query#frag for an origin-form URL).
 public toString : Url -> String
 let toString url =
-  let authority = renderAuthority url
+  let r = fields url
   let q =
-    match url.query with
+    match r.query with
     | Some s -> "?" ++ s
     | None -> ""
   let f =
-    match url.fragment with
+    match r.fragment with
     | Some s -> "#" ++ s
     | None -> ""
-  authority ++ url.path ++ q ++ f
+  renderAuthority r ++ r.path ++ q ++ f
 example: toString (orEmpty (parse "https://a.test:8/p?x=1#h")) = "https://a.test:8/p?x=1#h"
 
 // Render the `scheme://[userinfo@]host[:port]` prefix (empty for origin-form).
-renderAuthority : Url -> String
-let renderAuthority url =
-  match url.scheme with
+renderAuthority : { fragment : Option String, host : Option String, path : String, port : Option Int, query : Option String, scheme : Option String, userinfo : Option String } -> String
+let renderAuthority r =
+  match r.scheme with
   | None -> ""
   | Some s ->
     let ui =
-      match url.userinfo with
+      match r.userinfo with
       | Some u -> u ++ "@"
       | None -> ""
     let h =
-      match url.host with
-      | Some h -> h
+      match r.host with
+      | Some name -> name
       | None -> ""
     let p =
-      match url.port with
+      match r.port with
       | Some n -> ":" ++ Int.toString n
       | None -> ""
     s ++ "://" ++ ui ++ h ++ p
@@ -228,20 +236,24 @@ let resolve base ref =
   match parse ref with
   | Err e -> Err e
   | Ok r ->
-    if isSome r.scheme then
+    let rf = fields r
+    if isSome rf.scheme then
       Ok r
-    else if isSome r.host then Ok { r with scheme = base.scheme } else Ok (resolveRelative base r)
+    else if isSome rf.host then
+      Ok (MkUrl { rf with scheme = (fields base).scheme })
+    else
+      Ok (resolveRelative (fields base) rf)
 example: Result.map host (resolve (orEmpty (parse "https://a.test/x/")) "/y") = Ok (Some "a.test")
 
-// Resolve a reference with no authority against the base's scheme and authority,
-// merging the path.
-resolveRelative : Url -> Url -> Url
-let resolveRelative base r =
+// Resolve a reference record `rf` with no authority against the base's scheme and
+// authority, merging the path.
+resolveRelative : { fragment : Option String, host : Option String, path : String, port : Option Int, query : Option String, scheme : Option String, userinfo : Option String } -> { fragment : Option String, host : Option String, path : String, port : Option Int, query : Option String, scheme : Option String, userinfo : Option String } -> Url
+let resolveRelative base rf =
   let p =
-    if String.take 1 r.path = "/" then
-      r.path
-    else if r.path = "" then base.path else mergePath base.path r.path
-  { r with host = base.host, path = p, port = base.port, scheme = base.scheme, userinfo = base.userinfo }
+    if String.take 1 rf.path = "/" then
+      rf.path
+    else if rf.path = "" then base.path else mergePath base.path rf.path
+  MkUrl { rf with host = base.host, path = p, port = base.port, scheme = base.scheme, userinfo = base.userinfo }
 
 // Merge a relative path against the base path's directory (everything up to and
 // including the last `/`).
@@ -270,7 +282,7 @@ let dropLast xs =
 /// percent-decoding each key and value. A pair without `=` yields an empty value.
 public queryPairs : Url -> List (String * String)
 let queryPairs url =
-  match url.query with
+  match (fields url).query with
   | None -> []
   | Some q -> List.map decodePair (String.split "&" q)
 example: queryPairs (orEmpty (parse "https://a.test/?a=1&b=2")) = [("a", "1"), ("b", "2")]
