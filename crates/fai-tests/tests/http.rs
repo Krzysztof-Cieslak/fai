@@ -623,3 +623,54 @@ fn pool_retries_a_stale_connection() {
     assert_eq!(code, 0, "clean, leak-free exit");
     assert_eq!(out, "one|two\n");
 }
+
+#[test]
+fn client_posts_a_multipart_form() {
+    // `Http.postMultipart` sends a multipart/form-data body (a text field and a file
+    // part) with a random boundary. The raw server echoes the received request bytes
+    // back; the client confirms the body carries both parts' Content-Disposition lines
+    // and contents, so the multipart framing round-tripped over HTTP.
+    let src = indoc! {r#"
+        module Prog
+
+        serveEcho : Runtime -> Listener -> Unit / { Net }
+        let serveEcho runtime listener =
+          match runtime.net.accept listener with
+          | Err e -> ()
+          | Ok conn ->
+            match runtime.net.recv conn 65536 with
+            | Err e -> ()
+            | Ok received ->
+              let header = "HTTP/1.1 200 OK\r\nContent-Length: " ++ Int.toString (Bytes.length received) ++ "\r\n\r\n"
+              let sent = runtime.net.send conn (Bytes.concat (Bytes.fromString header) received)
+              runtime.net.close conn
+
+        checkContains : String -> String
+        let checkContains text =
+          if String.contains text "name=\"greeting\"" && String.contains text "hello" && String.contains text "filename=\"a.txt\"" && String.contains text "DATA" then
+            "ok"
+          else
+            "missing"
+
+        client : Runtime -> Int -> String / { Net, Random, Tls }
+        let client runtime port =
+          match Http.postMultipart runtime ("http://127.0.0.1:" ++ Int.toString port ++ "/upload") [Http.field "greeting" "hello", Http.filePart "f" "a.txt" "text/plain" (Bytes.fromString "DATA")] with
+          | Err e -> "error: " ++ e
+          | Ok resp ->
+            match Http.bodyText resp.body with
+            | Err e -> "body error: " ++ e
+            | Ok text -> checkContains text
+
+        public main : Runtime -> Unit / { Concurrency, Console, Net, Random, Tls }
+        let main runtime =
+          match runtime.net.listen 0 with
+          | Err e -> runtime.console.writeLine ("listen failed: " ++ e)
+          | Ok listener ->
+            let port = runtime.net.localPort listener
+            match Async.parallel2 runtime.concurrency (fun u -> serveEcho runtime listener) (fun u -> client runtime port) with
+            | (served, report) -> runtime.console.writeLine report
+    "#};
+    let (out, code) = run(src);
+    assert_eq!(code, 0, "clean, leak-free exit");
+    assert_eq!(out, "ok\n");
+}
