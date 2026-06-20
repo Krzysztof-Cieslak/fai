@@ -158,7 +158,7 @@ A qualified path's leading segment names no module — neither a nested module i
 
 **Severity:** error
 
-Visibility lives on the signature, so a `let` binding may not carry `public` when a signature already exists. Move `public` to the signature.
+Visibility lives on the signature, so a `let` binding may not carry `public` or `internal` when a signature already exists. Move the marker to the signature.
 
 ### FAI2010 — binding shadows a prelude name
 
@@ -190,11 +190,11 @@ More than one auto-imported module exports the same name; auto-imported modules 
 
 The prelude-private `Prim.*` intrinsics are reachable only from standard-library modules. Use the public wrapper (e.g. `Int.toString`) instead.
 
-### FAI2015 — private type exposed by a public signature
+### FAI2015 — less-visible type exposed by an exported signature
 
 **Severity:** error
 
-A public surface (a signature, alias body, or constructor field) names a same-file type that is not itself cross-file-accessible. Make the type public, or make the surface private.
+An exported surface (a signature, alias body, or constructor field) names a type of narrower reach than itself — a `public` surface naming a `private` or `internal` type, or an `internal` surface naming a `private` type — so a reader of the surface could not name the type. Widen the type's visibility, or narrow the surface's.
 
 ### FAI2016 — name already declared in this module
 
@@ -214,11 +214,17 @@ A qualified path resolved to a module rather than a member. Name a member of the
 
 A constructor of an `opaque` type is referenced from another file. An opaque type exports its name but not its constructors, so it can only be built and matched through the functions its module provides. Use those operations instead of the constructor.
 
-### FAI2019 — foreign declaration cannot be public
+### FAI2019 — foreign declaration cannot be exported
 
 **Severity:** error
 
-A `foreign` declaration binds a raw native function and is always module-private; it cannot be marked `public`. Expose its behavior through a capability interface (an instance whose methods call it) and make that public instead.
+A `foreign` declaration binds a raw native function and is always module-private; it cannot be marked `public` or `internal`. Expose its behavior through a capability interface (an instance whose methods call it) and make that public instead.
+
+### FAI2020 — reference to an internal binding
+
+**Severity:** error
+
+A qualified reference names an `internal` member of another origin — `internal` exports a member only to files in the same origin (the standard library, or a package), not across that boundary. Use the public API instead, or, for your own code, mark the member `public`.
 
 ## FAI3xxx — Types & rows
 
@@ -234,11 +240,11 @@ Two types that had to be equal could not be unified (e.g. an `Int` used where a 
 
 Unification would make a type contain itself (an infinite type), usually from a self-application or a mis-shaped recursive definition. Add a signature or fix the recursion.
 
-### FAI3003 — missing public signature
+### FAI3003 — missing signature on an exported binding
 
 **Severity:** error
 
-Every `public` binding must carry an explicit type signature (so a module's API is readable from its signatures alone). Add the signature on the line above the binding.
+Every exported (`public` or `internal`) binding must carry an explicit type signature (so a module's API is readable from its signatures alone). Add the signature on the line above the binding.
 
 ### FAI3004 — signature disagrees with inferred type
 

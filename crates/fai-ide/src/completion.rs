@@ -15,7 +15,8 @@
 
 use fai_db::{Db, SourceFile};
 use fai_resolve::{
-    ModuleName, module_defs, module_file, module_interface, prelude_exports, type_decls,
+    ModuleName, module_defs, module_file, module_interface, module_internal_interface,
+    prelude_exports, type_decls,
 };
 use fai_syntax::Symbol;
 use fai_syntax::ast::{ExprId, ExprKind, ItemKind, Module, PatId, PatKind};
@@ -212,13 +213,20 @@ fn completion_data(db: &dyn Db, file: SourceFile, name: Symbol) -> CompletionDat
 fn module_members(db: &dyn Db, file: SourceFile, path: &str) -> Vec<CompletionItem> {
     let sym = Symbol::intern(path);
     if let Some(mfile) = module_file(db, ModuleName(sym)) {
-        let interface = module_interface(db, mfile);
         let mut out = Vec::new();
-        for export in &interface.exports {
-            out.push(value_item(db, mfile, export.name, &def_type(db, mfile, export.name)));
-        }
-        for &ctor in &interface.ctors {
-            out.push(ctor_item(db, mfile, ctor));
+        let mut offer = |interface: &fai_resolve::ModuleInterface| {
+            for export in &interface.exports {
+                out.push(value_item(db, mfile, export.name, &def_type(db, mfile, export.name)));
+            }
+            for &ctor in &interface.ctors {
+                out.push(ctor_item(db, mfile, ctor));
+            }
+        };
+        offer(&module_interface(db, mfile));
+        // `internal` members are offered only within the same origin (std vs. user
+        // today), matching what name resolution will accept from this file.
+        if fai_db::is_std_path(file.path(db)) == fai_db::is_std_path(mfile.path(db)) {
+            offer(&module_internal_interface(db, mfile));
         }
         return out;
     }

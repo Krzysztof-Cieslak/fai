@@ -320,9 +320,10 @@ table **and** the decision log in `docs/MEMORY.md`).
 |---|---|
 | Family | Strict, **pure**, statically typed functional (ML/F#/Elm) |
 | OOP | None, except **interfaces** (sets of function signatures); **interface instances** `{ Name with ... }` are the only constructor (→ existentials) |
-| Modules | One top-level module per file; **nested modules** (`module Name = …`) group declarations and are addressed by a qualified path. Within a file the enclosing module sees *every* nested member (`Inner.name`); across files only `public` members are visible (`Outer.Inner.name`). Bare names resolve outward lexically (inner shadows outer) |
+| Modules | One top-level module per file; **nested modules** (`module Name = …`) group declarations and are addressed by a qualified path. Within a file the enclosing module sees *every* nested member (`Inner.name`); across files `public` members are visible everywhere and `internal` members only within the same origin (`Outer.Inner.name`). Bare names resolve outward lexically (inner shadows outer) |
 | Qualified names | A cross-module/nested member is reached by a dotted path: a **value/constructor** as `Module.name` / `Outer.Inner.name` (a field-access chain), and a **type/interface** as the same dotted form in type position (`Module.Type`, `Outer.Inner.Type`). Identifiers cannot contain `.`, so a qualified name is one interned dotted symbol |
-| Public API | Every `public` binding **requires an explicit type signature** (Haskell-style, on its own line above the definition) |
+| Visibility | Three tiers, `public > internal > private` (default). **`public`** exports a binding/type/interface to every file. **`internal`** exports it only to files of the **same origin** — today the standard library vs. user code (an embedded-std path check); a package boundary later — so std modules share helpers without leaking them to user programs, and in user code `internal` reads like `public` until a package system exists. A cross-origin `internal` reference is **`FAI2020`**. `internal` is **name-level** (orthogonal to `opaque`, which hides representation), composes with it (`internal opaque type`), and is rejected on `foreign`/nested modules (like `public`). Cross-file resolution is **purely name-level**, so cross-origin code can never name an `internal` type and no types-layer rule is needed |
+| Public API | Every **exported** (`public` or `internal`) binding **requires an explicit type signature** (Haskell-style, on its own line above the definition); a missing one is **`FAI3003`**. An exported surface may not name a type of narrower reach (a `public` signature naming an `internal`/`private` type, or an `internal` signature naming a `private` type) — **`FAI2015`** |
 | Recursion | Module-level bindings are **mutually recursive** (no `rec` keyword) |
 | Layout | **Indentation-significant** (offside rule); `fai fmt` pins exactly one canonical layout (2-space indent, no tabs) |
 | Type variables | F#-style leading tick: `'a`, `'k 'v` |
@@ -728,8 +729,9 @@ closes (`'a'`, `'\n'`) and a **type variable** otherwise (`'a`, `'r`). This is
 the F# rule; keep it covered by tests.
 
 **Reserved keywords include** `module`, `let`, `type`, `interface`, `match`,
-`with`, `if`, `then`, `else`, `fun`, `public`, `opaque` (the opaque-type marker,
-only before a `public` `type`), `as` (the as-pattern binder), **`foreign`** (the
+`with`, `if`, `then`, `else`, `fun`, `public`, `internal` (the same-origin
+visibility marker), `opaque` (the opaque-type marker, only before a `public`/
+`internal` `type`), `as` (the as-pattern binder), **`foreign`** (the
 foreign-function declaration marker), and
 the contract-declaration keywords **`example`** and **`forall`**. Contracts are ordinary
 declarations (peers of `let`), not comment text, so the symbols inside them
@@ -738,7 +740,8 @@ resolve through normal name resolution and are fully type-checked.
 A **`foreign "native_symbol" name : Type`** declaration binds `name` to a native
 runtime function (no Fai body); its written type is its signature. A `foreign`
 declaration is **always module-private** (a raw native function is exposed only
-through a capability interface — a `public foreign` is **`FAI2019`**) and its
+through a capability interface — a `public` *or* `internal foreign` is
+**`FAI2019`**) and its
 signature **must name a capability in its effect row** (so a native side effect
 cannot be laundered as pure — a missing effect is **`FAI5002`**). It lowers to a
 generic foreign call (`Foreign { symbol, args }` in the Core IR), the same

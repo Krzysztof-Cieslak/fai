@@ -61,6 +61,7 @@ fn symbol_ref(
     };
     let visibility = match def.visibility {
         AstVis::Public => Visibility::Public,
+        AstVis::Internal => Visibility::Internal,
         AstVis::Private => Visibility::Private,
     };
     let signature = Some(fai_types::render_scheme(&scheme));
@@ -1726,8 +1727,16 @@ pub fn api(
     if let Some(file) = file {
         let defs = module_defs(db, file);
         let mut by_subject = contracts_by_subject(db, file, resolver);
+        // `internal` members belong to the API of a same-origin module. A query
+        // runs as user code, so an `internal` member shows for a user module but
+        // not a standard-library one (the latter is cross-origin — and std is kept
+        // out of the query surface anyway). The `SymbolRef` carries the tier, so
+        // the JSON marks each entry `public`/`internal`.
+        let show_internal = !fai_db::is_std_path(file.path(db));
         for d in &defs.defs {
-            if d.visibility != AstVis::Public {
+            let exported = d.visibility == AstVis::Public
+                || (d.visibility == AstVis::Internal && show_internal);
+            if !exported {
                 continue;
             }
             if let Some(symbol) = symbol_ref(db, file, d.name, resolver) {

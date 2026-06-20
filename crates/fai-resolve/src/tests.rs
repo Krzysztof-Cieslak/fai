@@ -847,3 +847,271 @@ fn opaque_constructor_field_does_not_leak_a_private_type() {
     let diags = resolve_diags(&db, files[0]);
     assert!(!codes(&diags).contains(&"FAI2015"), "opaque fields don't leak: {:?}", codes(&diags));
 }
+
+// --- `internal` visibility --------------------------------------------------
+//
+// `internal` exports a member across files only within the same *origin*. In
+// these tests the origin boundary is the standard-library path prefix
+// (`fai_db::STD_PATH_PREFIX`): a file registered under that prefix is std-origin,
+// any other file is user-origin. Two std files are same-origin; a std file and a
+// user file are cross-origin.
+
+/// Builds a database whose files are all standard-library (synthetic `<std>/`)
+/// origin, so they share an origin for the `internal` checks.
+fn std_db_with(files: &[(&str, &str)]) -> (FaiDatabase, Vec<SourceFile>) {
+    let prefixed: Vec<(String, &str)> = files
+        .iter()
+        .map(|(name, text)| (format!("{}{name}", fai_db::STD_PATH_PREFIX), *text))
+        .collect();
+    let refs: Vec<(&str, &str)> = prefixed.iter().map(|(p, t)| (p.as_str(), *t)).collect();
+    db_with(&refs)
+}
+
+#[test]
+fn internal_value_is_visible_to_a_same_origin_file() {
+    let a = indoc! {r#"
+        module A
+
+        internal helper : Int -> Int
+        let helper x = x
+    "#};
+    let b = indoc! {r#"
+        module B
+
+        public use : Int -> Int
+        let use x = A.helper x
+    "#};
+    let (db, files) = std_db_with(&[("A.fai", a), ("B.fai", b)]);
+    let diags = resolve_diags(&db, files[1]);
+    assert!(diags.is_empty(), "same-origin internal use is fine: {:?}", codes(&diags));
+}
+
+#[test]
+fn internal_value_is_hidden_from_another_origin() {
+    let a = indoc! {r#"
+        module A
+
+        internal helper : Int -> Int
+        let helper x = x
+    "#};
+    let user = indoc! {r#"
+        module User
+
+        let bad = A.helper 1
+    "#};
+    // `A` is std-origin; `User` is user-origin.
+    let (mut db, _) = std_db_with(&[("A.fai", a)]);
+    let user_id = db.add_source("User.fai".into(), user.to_owned());
+    let user_file = db.source_file(user_id).unwrap();
+    let diags = resolve_diags(&db, user_file);
+    assert_eq!(codes(&diags), vec!["FAI2020"], "cross-origin internal is FAI2020");
+    assert_eq!(primary_text(user, &diags[0]), "A.helper");
+    assert!(diags[0].message.contains("internal"), "message: {}", diags[0].message);
+    assert!(
+        diags[0].message.contains("standard library"),
+        "origin-accurate message: {}",
+        diags[0].message
+    );
+}
+
+#[test]
+fn internal_value_is_visible_across_user_files() {
+    // Within user code there is one origin, so `internal` reads like `public`.
+    let a = indoc! {r#"
+        module A
+
+        internal helper : Int -> Int
+        let helper x = x
+    "#};
+    let b = indoc! {r#"
+        module B
+
+        let use = A.helper 1
+    "#};
+    let (db, files) = db_with(&[("A.fai", a), ("B.fai", b)]);
+    let diags = resolve_diags(&db, files[1]);
+    assert!(diags.is_empty(), "same-origin (user) internal use is fine: {:?}", codes(&diags));
+}
+
+#[test]
+fn internal_constructor_is_visible_to_a_same_origin_file() {
+    let a = indoc! {r#"
+        module A
+
+        internal type T =
+          | MkT Int
+    "#};
+    let b = indoc! {r#"
+        module B
+
+        let make = A.MkT 1
+    "#};
+    let (db, files) = std_db_with(&[("A.fai", a), ("B.fai", b)]);
+    let diags = resolve_diags(&db, files[1]);
+    assert!(diags.is_empty(), "same-origin internal ctor use is fine: {:?}", codes(&diags));
+}
+
+#[test]
+fn internal_constructor_is_hidden_from_another_origin() {
+    let a = indoc! {r#"
+        module A
+
+        internal type T =
+          | MkT Int
+    "#};
+    let user = indoc! {r#"
+        module User
+
+        let bad = A.MkT 1
+    "#};
+    let (mut db, _) = std_db_with(&[("A.fai", a)]);
+    let user_id = db.add_source("User.fai".into(), user.to_owned());
+    let user_file = db.source_file(user_id).unwrap();
+    let diags = resolve_diags(&db, user_file);
+    assert_eq!(codes(&diags), vec!["FAI2020"], "cross-origin internal ctor is FAI2020");
+}
+
+#[test]
+fn internal_opaque_constructor_is_opaque_even_same_origin() {
+    // `internal opaque` hides its representation across files (even same-origin),
+    // so a sibling sees FAI2018 — opacity applies within the origin.
+    let a = indoc! {r#"
+        module A
+
+        internal opaque type T =
+          | MkT Int
+    "#};
+    let b = indoc! {r#"
+        module B
+
+        let make = A.MkT 1
+    "#};
+    let (db, files) = std_db_with(&[("A.fai", a), ("B.fai", b)]);
+    let diags = resolve_diags(&db, files[1]);
+    assert_eq!(codes(&diags), vec!["FAI2018"], "same-origin internal-opaque ctor is opaque");
+}
+
+#[test]
+fn internal_opaque_constructor_is_internal_first_cross_origin() {
+    // Across origins the name is hidden before opacity matters: FAI2020, not FAI2018.
+    let a = indoc! {r#"
+        module A
+
+        internal opaque type T =
+          | MkT Int
+    "#};
+    let user = indoc! {r#"
+        module User
+
+        let bad = A.MkT 1
+    "#};
+    let (mut db, _) = std_db_with(&[("A.fai", a)]);
+    let user_id = db.add_source("User.fai".into(), user.to_owned());
+    let user_file = db.source_file(user_id).unwrap();
+    let diags = resolve_diags(&db, user_file);
+    assert_eq!(codes(&diags), vec!["FAI2020"], "origin is checked before opacity");
+}
+
+#[test]
+fn public_signature_exposing_an_internal_type_is_a_leak() {
+    let src = indoc! {r#"
+        module M
+
+        internal type Secret = Int
+
+        public f : Secret -> Int
+        let f x = x
+    "#};
+    let (db, files) = db_with(&[("M.fai", src)]);
+    let diags = resolve_diags(&db, files[0]);
+    assert_eq!(codes(&diags), vec!["FAI2015"], "public exposing internal leaks");
+    assert_eq!(primary_text(src, &diags[0]), "Secret");
+    assert!(diags[0].message.contains("internal"), "message: {}", diags[0].message);
+}
+
+#[test]
+fn internal_signature_exposing_a_private_type_is_a_leak() {
+    let src = indoc! {r#"
+        module M
+
+        type Secret = Int
+
+        internal f : Secret -> Int
+        let f x = x
+    "#};
+    let (db, files) = db_with(&[("M.fai", src)]);
+    let diags = resolve_diags(&db, files[0]);
+    assert_eq!(codes(&diags), vec!["FAI2015"], "internal exposing private leaks");
+    assert!(diags[0].message.contains("private"), "message: {}", diags[0].message);
+}
+
+#[test]
+fn internal_signature_exposing_a_public_or_internal_type_is_clean() {
+    let src = indoc! {r#"
+        module M
+
+        public type Pub = Int
+
+        internal type Inter = Int
+
+        internal f : Pub -> Inter
+        let f x = x
+    "#};
+    let (db, files) = db_with(&[("M.fai", src)]);
+    let diags = resolve_diags(&db, files[0]);
+    assert!(
+        !codes(&diags).contains(&"FAI2015"),
+        "internal may name public/internal: {:?}",
+        codes(&diags)
+    );
+}
+
+#[test]
+fn public_signature_exposing_a_cross_module_internal_type_is_a_leak() {
+    // A public surface naming a same-origin `internal` type from *another* file
+    // still leaks it across the origin boundary.
+    let a = indoc! {r#"
+        module A
+
+        internal type Secret = Int
+    "#};
+    let b = indoc! {r#"
+        module B
+
+        public f : A.Secret -> Int
+        let f x = x
+    "#};
+    let (db, files) = std_db_with(&[("A.fai", a), ("B.fai", b)]);
+    let diags = resolve_diags(&db, files[1]);
+    assert_eq!(codes(&diags), vec!["FAI2015"], "public exposing cross-module internal leaks");
+    assert_eq!(primary_text(b, &diags[0]), "A.Secret");
+}
+
+#[test]
+fn internal_marker_on_a_binding_with_a_signature_errors() {
+    let src = indoc! {r#"
+        module M
+
+        public f : Int -> Int
+        internal let f x = x
+    "#};
+    let (db, files) = db_with(&[("M.fai", src)]);
+    let _ = module_defs(&db, files[0]);
+    let diags = module_defs::accumulated::<Diag>(&db, files[0]);
+    let cs: Vec<&str> = diags.iter().map(|d| d.0.code.as_str()).collect();
+    assert!(cs.contains(&"FAI2009"), "expected FAI2009, got {cs:?}");
+}
+
+#[test]
+fn internal_foreign_is_rejected() {
+    let src = indoc! {r#"
+        module M
+
+        internal foreign "sym" f : Int -> Int
+    "#};
+    let (db, files) = db_with(&[("M.fai", src)]);
+    let _ = module_defs(&db, files[0]);
+    let diags = module_defs::accumulated::<Diag>(&db, files[0]);
+    let cs: Vec<&str> = diags.iter().map(|d| d.0.code.as_str()).collect();
+    assert!(cs.contains(&"FAI2019"), "expected FAI2019 for internal foreign, got {cs:?}");
+}

@@ -76,8 +76,10 @@ pub enum SymbolKind {
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Visibility {
-    /// Exported.
+    /// Exported to every file.
     Public,
+    /// Exported only to same-origin files.
+    Internal,
     /// Module-private.
     Private,
 }

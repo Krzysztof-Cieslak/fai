@@ -26,7 +26,7 @@ use fai_rc::{
 use fai_resolve::{DefId, ModuleName, module_defs, module_name};
 use fai_span::SpanResolver;
 use fai_syntax::Symbol;
-use fai_syntax::ast::{ItemKind, Visibility};
+use fai_syntax::ast::ItemKind;
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
@@ -890,23 +890,25 @@ pub fn jit_compile(db: &dyn Db, file: SourceFile) -> Result<CompiledProgram, Vec
         return Err(vec![no_entry_point()]);
     }
     // A `jit_compile` image is *fetchable* by name (see [`CompiledProgram::function`]),
-    // so it compiles `main`'s closure plus the file's whole public API as additional
-    // roots — a public binding stays a standalone function even when it is inlined
-    // into (and so dead-code-eliminated from) `main`'s own closure. The minimal AOT
-    // path ([`build_native`]) keeps the tighter main-only reachability.
+    // so it compiles `main`'s closure plus the file's whole exported API as additional
+    // roots — an exported (`public` or `internal`) binding stays a standalone function
+    // even when it is inlined into (and so dead-code-eliminated from) `main`'s own
+    // closure. The entry file is one origin, so an `internal` binding is as fetchable
+    // as a `public` one there. The minimal AOT path ([`build_native`]) keeps the
+    // tighter main-only reachability.
     let source = file.source(db);
     let mut roots = vec![DefId::new(source, Symbol::intern(ENTRY))];
     if let Some(runtime) = runtime_root(db, file) {
         roots.push(runtime);
     }
-    let mut public: Vec<DefId> = module_defs(db, file)
+    let mut exported: Vec<DefId> = module_defs(db, file)
         .defs
         .iter()
-        .filter(|d| d.visibility == Visibility::Public)
+        .filter(|d| d.visibility.is_exported())
         .map(|d| DefId::new(source, d.name))
         .collect();
-    public.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
-    roots.extend(public);
+    exported.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+    roots.extend(exported);
     let reachable = reachable_from_roots(db, &roots, &FxHashSet::default());
     let diagnostics = precompile_diagnostics(db, &reachable);
     if diagnostics.iter().any(|d| d.severity == Severity::Error) {

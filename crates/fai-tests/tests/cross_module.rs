@@ -38,6 +38,38 @@ fn qualified_public_reference_typechecks() {
 }
 
 #[test]
+fn internal_cross_module_reference_typechecks_in_user_code() {
+    // Within user code there is a single origin, so an `internal` member is
+    // visible across files (it gains real teeth only across an origin boundary,
+    // e.g. user code vs. the standard library).
+    let outcome = check_named(
+        "B.fai",
+        &[
+            (
+                "A.fai",
+                indoc! {r#"
+                    module A
+
+                    internal inc : Int -> Int
+                    let inc x = x + 1
+                "#},
+            ),
+            (
+                "B.fai",
+                indoc! {r#"
+                    module B
+
+                    public two : Int
+                    let two = A.inc 1
+                "#},
+            ),
+        ],
+    );
+    assert!(!outcome.has_errors(), "internal is visible same-origin: {:?}", outcome.codes());
+    assert_eq!(outcome.types.get("two").map(String::as_str), Some("Int"));
+}
+
+#[test]
 fn qualified_reference_to_private_is_error() {
     let cs = codes(
         "B.fai",

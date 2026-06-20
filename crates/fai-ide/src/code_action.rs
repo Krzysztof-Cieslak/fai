@@ -110,7 +110,14 @@ fn qualify_actions(
             continue; // `Prim` is reachable only inside the standard library
         }
         let interface = fai_resolve::module_interface(db, candidate);
-        if interface.get(sym).is_some() || interface.has_ctor(sym) {
+        let mut found = interface.get(sym).is_some() || interface.has_ctor(sym);
+        // An `internal` member is qualifiable only from a same-origin file
+        // (std vs. user today), matching what name resolution will accept.
+        if !found && fai_db::is_std_path(file.path(db)) == fai_db::is_std_path(candidate.path(db)) {
+            let internal = fai_resolve::module_internal_interface(db, candidate);
+            found = internal.get(sym).is_some() || internal.has_ctor(sym);
+        }
+        if found {
             modules.push(label);
         }
     }

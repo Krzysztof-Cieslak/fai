@@ -187,7 +187,7 @@ fn collect_scope(
                     );
                 } else {
                     binding_order.push((*name, id));
-                    if *visibility == Visibility::Public && sig_by_name.contains_key(name) {
+                    if *visibility != Visibility::Private && sig_by_name.contains_key(name) {
                         emit(
                             db,
                             Diagnostic::error(
@@ -207,13 +207,20 @@ fn collect_scope(
                 // signature, so it occupies both the binding and signature slots
                 // (its `DefInfo` then has `signature == binding == this item`, and
                 // the declared scheme reads its written type). It is always
-                // module-private: a `public foreign` is rejected.
-                if *visibility == Visibility::Public {
+                // module-private: a `public`/`internal foreign` is rejected.
+                if *visibility != Visibility::Private {
                     emit(
                         db,
                         Diagnostic::error(
                             PUBLIC_FOREIGN,
-                            format!("the foreign declaration `{name}` cannot be `public`"),
+                            format!(
+                                "the foreign declaration `{name}` cannot be `{}`",
+                                if *visibility == Visibility::Public {
+                                    "public"
+                                } else {
+                                    "internal"
+                                }
+                            ),
                             Span::new(source, item.span),
                         )
                         .with_help(
@@ -332,25 +339,49 @@ fn effective_visibility(
 /// unchanged. Exports are sorted by name text for deterministic output.
 #[salsa::tracked]
 pub fn module_interface(db: &dyn Db, file: SourceFile) -> ModuleInterface {
+    interface_at_visibility(db, file, Visibility::Public)
+}
+
+/// A module's `internal` interface — its same-origin cross-file surface.
+///
+/// The peer of [`module_interface`] for `internal` members: the bindings, types,
+/// constructors, and interfaces a same-origin file may reference. It feeds
+/// origin-aware tooling (completion, code actions, `fai query api`); name
+/// resolution gates `internal` references directly against `module_defs`/
+/// `type_decls`, so this query is not on the resolution firewall and an
+/// `internal` edit never invalidates a cross-origin importer.
+#[salsa::tracked]
+pub fn module_internal_interface(db: &dyn Db, file: SourceFile) -> ModuleInterface {
+    interface_at_visibility(db, file, Visibility::Internal)
+}
+
+/// The exported surface of `file` at exactly `visibility` (the shared body of
+/// [`module_interface`] and [`module_internal_interface`]). Derived only from
+/// signatures and visibility, sorted by name text, so private-body edits leave it
+/// unchanged.
+fn interface_at_visibility(
+    db: &dyn Db,
+    file: SourceFile,
+    visibility: Visibility,
+) -> ModuleInterface {
     let defs = module_defs(db, file);
     let mut exports: Vec<Export> = defs
         .defs
         .iter()
-        .filter(|d| d.visibility == Visibility::Public)
+        .filter(|d| d.visibility == visibility)
         .map(|d| Export { name: d.name, signature: d.signature })
         .collect();
     exports.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
 
-    // Public `type` declarations export their type name and (for unions) every
-    // constructor. Derived from `type_decls` filtered to public declarations, so
-    // a private type's edits never change this firewall value. An **opaque** type
-    // exports its name but not its constructors: it is named but not constructed,
-    // deconstructed, or seen through from other files.
+    // `type` declarations of this visibility export their type name and (for
+    // unions) every constructor. An **opaque** type exports its name but not its
+    // constructors: it is named but not constructed, deconstructed, or seen
+    // through from other files.
     let decls = crate::decls::type_decls(db, file);
     let mut types: Vec<Symbol> = Vec::new();
     let mut ctors: Vec<Symbol> = Vec::new();
     for info in decls.types.values() {
-        if info.visibility == Visibility::Public {
+        if info.visibility == visibility {
             types.push(info.name);
             if !info.opaque {
                 ctors.extend(info.ctors.iter().copied());
@@ -360,11 +391,10 @@ pub fn module_interface(db: &dyn Db, file: SourceFile) -> ModuleInterface {
     types.sort_by(|a, b| a.as_str().cmp(b.as_str()));
     ctors.sort_by(|a, b| a.as_str().cmp(b.as_str()));
 
-    // Public interfaces, derived from `interface_decls`.
     let mut interfaces: Vec<Symbol> = crate::decls::interface_decls(db, file)
         .interfaces
         .values()
-        .filter(|info| info.visibility == Visibility::Public)
+        .filter(|info| info.visibility == visibility)
         .map(|info| info.name)
         .collect();
     interfaces.sort_by(|a, b| a.as_str().cmp(b.as_str()));

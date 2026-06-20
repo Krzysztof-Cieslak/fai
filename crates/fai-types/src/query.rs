@@ -392,19 +392,27 @@ pub fn check_file(db: &dyn Db, file: SourceFile) {
 
         match d.signature {
             None => {
-                // A public binding must have a signature.
-                if d.visibility == fai_syntax::ast::Visibility::Public {
+                // An exported (`public`/`internal`) binding must have a signature.
+                if d.visibility.is_exported() {
+                    let keyword = if d.visibility == fai_syntax::ast::Visibility::Public {
+                        "public"
+                    } else {
+                        "internal"
+                    };
                     let span = module.items[d.binding.index()].span;
                     let rendered = crate::ty::render_scheme(&inferred);
                     let mut diag = Diagnostic::error(
                         MISSING_PUBLIC_SIGNATURE,
-                        format!("public binding `{}` needs a signature", d.name),
+                        format!("{keyword} binding `{}` needs a signature", d.name),
                         Span::new(file.source(db), span),
                     )
                     .with_help(format!("add a signature, e.g. `{} : {rendered}`", d.name));
                     // Offer the inferred signature as a machine-applicable fix:
-                    // move `public` onto a new signature line above the binding.
-                    if let Some(fix) = missing_signature_fix(db, file, span, d.name, &rendered) {
+                    // move the visibility keyword onto a new signature line above
+                    // the binding.
+                    if let Some(fix) =
+                        missing_signature_fix(db, file, span, d.name, &rendered, keyword)
+                    {
                         diag = diag.with_suggestion(fix);
                     }
                     emit(db, diag);
@@ -523,16 +531,18 @@ pub fn check_file(db: &dyn Db, file: SourceFile) {
     crate::contracts::check_contracts(db, file);
 }
 
-/// The machine-applicable fix for a missing public signature: replace the
-/// binding's leading `public ` keyword with a `public name : type` signature line
-/// (so visibility moves to the signature) followed by the binding's original
-/// indentation, leaving the binding itself a plain `let`.
+/// The machine-applicable fix for a missing signature on an exported binding:
+/// replace the binding's leading `public `/`internal ` keyword with a
+/// `<keyword> name : type` signature line (so visibility moves to the signature)
+/// followed by the binding's original indentation, leaving the binding itself a
+/// plain `let`.
 fn missing_signature_fix(
     db: &dyn Db,
     file: SourceFile,
     binding_span: TextRange,
     name: Symbol,
     rendered_type: &str,
+    keyword: &str,
 ) -> Option<Suggestion> {
     let text = file.text(db);
     let start = binding_span.start().to_usize();
@@ -550,5 +560,5 @@ fn missing_signature_fix(
     // The signature uses the binding's own (bare) name, even for a nested member
     // whose qualified `name` carries a module path.
     let bare = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
-    Some(Suggestion::new(prefix, format!("public {bare} : {rendered_type}\n{indent}")))
+    Some(Suggestion::new(prefix, format!("{keyword} {bare} : {rendered_type}\n{indent}")))
 }
