@@ -1,0 +1,291 @@
+module Http
+
+// An HTTP/1.1 client over the `Net` capability. Requests and responses carry a
+// streaming `Stream Bytes` body, structural `Headers`, and a parsed `Url`. The
+// framing is written against an abstract `Transport` (recv/send/close over a byte
+// channel), so it is independent of the underlying socket; `plainTransport` is the
+// instance over a plain TCP `Connection`.
+//
+// This is the plaintext client surface (connection-per-request). TLS, a pooling
+// client, redirect following, chunked transfer-encoding, and the server are layered
+// on separately.
+/// An HTTP request method; `Custom` carries any other verb.
+public type Method =
+  | GET
+  | POST
+  | PUT
+  | DELETE
+  | PATCH
+  | HEAD
+  | OPTIONS
+  | Custom String
+
+/// An HTTP request: a method, a target URL, header fields, and a streaming body.
+public type Request 'e = { body : Stream Bytes 'e, headers : Headers, method : Method, url : Url }
+
+/// An HTTP response: a status code and reason phrase, header fields, and a
+/// streaming body.
+public type Response 'e = { body : Stream Bytes 'e, headers : Headers, reason : String, status : Int }
+
+/// A bidirectional byte transport the framing is written against (a plain TCP
+/// connection, or — later — a TLS session). Mock it to unit-test framing without a
+/// socket.
+public interface Transport 'e =
+  close : Unit -> Unit / 'e
+  recv : Int -> Result Bytes String / 'e
+  send : Bytes -> Result Unit String / 'e
+
+// --- Body helpers ----------------------------------------------------------
+/// The empty body (no bytes).
+public emptyBody : Stream Bytes 'e
+let emptyBody = Stream.empty
+example: Stream.toList emptyBody = Ok []
+
+/// A body of a single `Bytes` chunk.
+public bytesBody : Bytes -> Stream Bytes 'e
+let bytesBody b = Stream.cons b Stream.empty
+example: Stream.toList (bytesBody (Bytes.fromString "hi")) = Ok [Bytes.fromString "hi"]
+
+/// A body from a string (its UTF-8 bytes).
+public stringBody : String -> Stream Bytes 'e
+let stringBody s = bytesBody (Bytes.fromString s)
+example: Stream.toList (stringBody "hi") = Ok [Bytes.fromString "hi"]
+
+/// Drain a body stream into a single `Bytes` value.
+public bodyBytes : Stream Bytes 'e -> Result Bytes String / 'e
+let bodyBytes body =
+  match Stream.toList body with
+  | Err e -> Err e
+  | Ok chunks -> Ok (List.foldl Bytes.concat Bytes.empty chunks)
+example: bodyBytes (stringBody "abc") = Ok (Bytes.fromString "abc")
+
+/// Drain a body stream and decode it as UTF-8 text.
+public bodyText : Stream Bytes 'e -> Result String String / 'e
+let bodyText body =
+  match bodyBytes body with
+  | Err e -> Err e
+  | Ok bytes ->
+    match Bytes.toString bytes with
+    | Some s -> Ok s
+    | None -> Err "body is not valid UTF-8"
+example: bodyText (stringBody "abc") = Ok "abc"
+
+// --- Method <-> wire token -------------------------------------------------
+methodName : Method -> String
+let methodName m =
+  match m with
+  | GET -> "GET"
+  | POST -> "POST"
+  | PUT -> "PUT"
+  | DELETE -> "DELETE"
+  | PATCH -> "PATCH"
+  | HEAD -> "HEAD"
+  | OPTIONS -> "OPTIONS"
+  | Custom name -> name
+
+// --- Small shared helpers --------------------------------------------------
+// Split `s` on the first occurrence of `sep`, or `None` if absent.
+splitFirst : String -> String -> Option (String * String)
+let splitFirst sep s =
+  match String.split sep s with
+  | [] -> None
+  | only :: [] -> None
+  | first :: rest -> Some (first, String.join sep rest)
+
+// The `Host` header value for a URL: host, plus `:port` when a port was explicit.
+hostHeaderValue : Url -> String
+let hostHeaderValue url =
+  let h =
+    match Url.host url with
+    | Some name -> name
+    | None -> ""
+  match Url.port url with
+  | Some p -> h ++ ":" ++ Int.toString p
+  | None -> h
+
+// Render `Name: Value\r\n` for one field.
+renderField : (String * String) -> String
+let renderField field =
+  match field with
+  | (name, value) -> name ++ ": " ++ value ++ "\r\n"
+
+// --- Request serialization -------------------------------------------------
+// Serialize a request to bytes: request line, headers (with Host, Content-Length,
+// and Connection: close ensured), a blank line, then the (drained) body.
+serializeRequest : Request 'e -> Result Bytes String / 'e
+let serializeRequest req =
+  match bodyBytes req.body with
+  | Err e -> Err e
+  | Ok body ->
+    let headers = ensureRequestHeaders req.headers req.url (Bytes.length body)
+    let line = methodName req.method ++ " " ++ Url.requestTarget req.url ++ " HTTP/1.1\r\n"
+    let rendered = String.join "" (List.map renderField (Headers.toList headers))
+    Ok (Bytes.concat (Bytes.fromString (line ++ rendered ++ "\r\n")) body)
+
+// Ensure the framing headers a request needs: Host (if absent), Content-Length, and
+// Connection: close (this client opens a fresh connection per request).
+ensureRequestHeaders : Headers -> Url -> Int -> Headers
+let ensureRequestHeaders headers url len =
+  let withHost =
+    if Headers.contains "Host" headers then
+      headers
+    else
+      Headers.add "Host" (hostHeaderValue url) headers
+  Headers.set "Connection" "close" (Headers.set "Content-Length" (Int.toString len) withHost)
+
+// --- Response parsing ------------------------------------------------------
+// Read from the transport until the `\r\n\r\n` header terminator (capping the
+// header block), returning the header bytes and any leftover body bytes.
+readHeaderBlock : Transport 'e -> Bytes -> Result (Bytes * Bytes) String / 'e
+let readHeaderBlock t acc =
+  match findBoundary acc 0 (Bytes.length acc) with
+  | Some boundary -> Ok (Bytes.slice 0 boundary acc, Bytes.slice boundary (Bytes.length acc) acc)
+  | None ->
+    if Bytes.length acc > 65536 then
+      Err "header block too large"
+    else
+      match t.recv 4096 with
+      | Err e -> Err e
+      | Ok chunk ->
+        if Bytes.length chunk = 0 then
+          Err "connection closed before end of headers"
+        else
+          readHeaderBlock t (Bytes.concat acc chunk)
+
+// The index just past the first `\r\n\r\n` in `b`, or `None`.
+findBoundary : Bytes -> Int -> Int -> Option Int
+let findBoundary b i n =
+  if i + 4 > n then None else if isHeaderEnd b i then Some (i + 4) else findBoundary b (i + 1) n
+
+isHeaderEnd : Bytes -> Int -> Bool
+let isHeaderEnd b i =
+  Bytes.unsafeGet i b = 13 && Bytes.unsafeGet (i + 1) b = 10 && Bytes.unsafeGet (i + 2) b = 13 && Bytes.unsafeGet (i + 3) b = 10
+
+// Parse a status line and header lines from the decoded header block.
+parseStatusAndHeaders : String -> Result (Int * String * Headers) String
+let parseStatusAndHeaders text =
+  match String.split "\r\n" text with
+  | [] -> Err "empty response"
+  | statusLine :: headerLines ->
+    match parseStatusLine statusLine with
+    | Err e -> Err e
+    | Ok status ->
+      match status with
+      | (code, reason) -> Ok (code, reason, parseHeaderLines headerLines Headers.empty)
+
+parseStatusLine : String -> Result (Int * String) String
+let parseStatusLine line =
+  match String.split " " line with
+  | version :: codeStr :: rest ->
+    match Int.fromString codeStr with
+    | Some code -> Ok (code, String.join " " rest)
+    | None -> Err ("bad status code: " ++ codeStr)
+  | other -> Err ("bad status line: " ++ line)
+
+parseHeaderLines : List String -> Headers -> Headers
+let parseHeaderLines lines acc =
+  match lines with
+  | [] -> acc
+  | line :: rest ->
+    if line = "" then parseHeaderLines rest acc else parseHeaderLines rest (addHeaderLine line acc)
+
+addHeaderLine : String -> Headers -> Headers
+let addHeaderLine line acc =
+  match splitFirst ":" line with
+  | Some (name, value) -> Headers.add (String.trim name) (String.trim value) acc
+  | None -> acc
+
+// Read the body per Content-Length, or until EOF when no length is given.
+readBody : Transport 'e -> Headers -> Bytes -> Result Bytes String / 'e
+let readBody t headers leftover =
+  match Headers.get "Content-Length" headers with
+  | Some lenStr ->
+    match Int.fromString (String.trim lenStr) with
+    | Some len -> readN t leftover len
+    | None -> Err ("bad Content-Length: " ++ lenStr)
+  | None -> readToEof t leftover
+
+readN : Transport 'e -> Bytes -> Int -> Result Bytes String / 'e
+let readN t acc need =
+  if Bytes.length acc >= need then
+    Ok (Bytes.slice 0 need acc)
+  else
+    match t.recv 4096 with
+    | Err e -> Err e
+    | Ok chunk ->
+      if Bytes.length chunk = 0 then
+        Err "connection closed before end of body"
+      else
+        readN t (Bytes.concat acc chunk) need
+
+readToEof : Transport 'e -> Bytes -> Result Bytes String / 'e
+let readToEof t acc =
+  match t.recv 4096 with
+  | Err e -> Err e
+  | Ok chunk -> if Bytes.length chunk = 0 then Ok acc else readToEof t (Bytes.concat acc chunk)
+
+// Parse a full response from a transport: head + framed body (materialized).
+parseResponse : Transport 'e -> Result (Response 'r) String / 'e
+let parseResponse t =
+  match readHeaderBlock t Bytes.empty with
+  | Err e -> Err e
+  | Ok block ->
+    match block with
+    | (headBytes, leftover) ->
+      match Bytes.toString headBytes with
+      | None -> Err "response headers are not valid UTF-8"
+      | Some headText ->
+        match parseStatusAndHeaders headText with
+        | Err e -> Err e
+        | Ok parsed ->
+          match parsed with
+          | (code, reason, headers) ->
+            match readBody t headers leftover with
+            | Err e -> Err e
+            | Ok body ->
+              Ok { body = bytesBody body, headers = headers, reason = reason, status = code }
+
+// --- Transport instance over a plain TCP connection ------------------------
+/// A transport over a plain TCP `Connection` (the `Net` capability).
+public plainTransport : { net : Net | 'r } -> Connection -> Transport { Net }
+let plainTransport env conn =
+  { Transport with close u = env.net.close conn, recv max = env.net.recv conn max, send bytes = env.net.send conn bytes }
+
+// --- Client ----------------------------------------------------------------
+/// Send a request and read the response. Opens a fresh TCP connection to the URL's
+/// host and port, writes the request, and parses the response (its body
+/// materialized). The URL must be absolute (have a host).
+public request : { net : Net | 'r } -> Request 'e -> Result (Response 'b) String / { Net | 'e }
+let request env req =
+  match Url.host req.url with
+  | None -> Err "request URL has no host"
+  | Some h ->
+    match Url.effectivePort req.url with
+    | None -> Err "request URL has no port"
+    | Some p ->
+      match env.net.connect h p with
+      | Err e -> Err e
+      | Ok conn -> runOver (plainTransport env conn) req
+
+runOver : Transport { Net } -> Request 'e -> Result (Response 'b) String / { Net | 'e }
+let runOver t req =
+  match serializeRequest req with
+  | Err e -> Err e
+  | Ok bytes ->
+    match t.send bytes with
+    | Err e -> Err e
+    | Ok sent -> parseResponse t
+
+/// GET a URL.
+public get : { net : Net | 'r } -> String -> Result (Response 'b) String / { Net }
+let get env urlStr =
+  match Url.parse urlStr with
+  | Err e -> Err e
+  | Ok url -> request env { body = emptyBody, headers = Headers.empty, method = GET, url = url }
+
+/// POST a body (with caller-supplied headers) to a URL.
+public post : { net : Net | 'r } -> String -> Headers -> Stream Bytes 'e -> Result (Response 'b) String / { Net | 'e }
+let post env urlStr headers body =
+  match Url.parse urlStr with
+  | Err e -> Err e
+  | Ok url -> request env { body = body, headers = headers, method = POST, url = url }

@@ -18,6 +18,14 @@ public type Dict 'k 'v = Dict.Dict 'k 'v
 
 public type Set 'a = Set.Set 'a
 
+// The HTTP header collection is an opaque type in the `Headers` module; this alias
+// keeps its name usable unqualified. Build and query it through `Headers.*`.
+public type Headers = Headers.Headers
+
+// The URL value is an opaque type in the `Url` module; this alias keeps its name
+// usable unqualified. Build and query it through `Url.*`.
+public type Url = Url.Url
+
 // The hash-based map and set are likewise opaque types in their own modules; these
 // aliases keep their names usable unqualified. Build and query them through
 // `HashDict.*`/`HashSet.*`. Prefer them for O(1) average lookup where iteration
