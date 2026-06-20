@@ -3841,5 +3841,49 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     and capabilities and use each other's intended public APIs. `samples/Visibility.fai`
     demonstrates the three tiers.
 
+- **D148 Timers, cancellation, TLS, and an HTTP stack.** Added in dependency order
+  on the existing scheduler/reactor and `Net`:
+  - **Timer & cancellation (runtime).** The `mio` reactor gains a deadline min-heap
+    and a `Waker`; `Clock.sleep` parks a task on it (or sleeps the thread when run
+    inline, so a non-scheduler program still works). Task cancellation is
+    **cooperative and sticky**: `cancel` sets a per-task flag and unparks the task;
+    every park point (sockets, channels, the blocking pool, sleep, await/join)
+    re-checks it and returns a cancellation `Err`, so the task unwinds and frees its
+    resources by reference counting. It is **structured**: cancellation propagates
+    down the task tree (a task spawned under a cancelled parent is cancelled too), so
+    a `timeout`/`race` (in `Async`) or a server shutdown tears down the whole subtree
+    while `scope` still joins. No exceptions: a task ends only by returning, so
+    cancellation surfaces as a value, never a forced unwind (which would skip RC
+    cleanup). Considered and rejected: trap-based forced termination (leaks the
+    task's live handles/memory).
+  - **TLS (native, thin).** A `Tls` capability wraps a **sans-I/O rustls** engine
+    with the **ring** provider — chosen over reimplementing TLS in Fai (impossible to
+    keep constant-time/side-channel-safe in a boxed, reference-counted language, and
+    it would need native entropy/trust-store anyway) and over `aws-lc-rs` (adds a
+    cmake/NASM build step; ring needs only the C toolchain the compiler already
+    requires via blake3). The engine steps the handshake/record layer over in-memory
+    buffers (`feedIncoming`/`takeOutgoing`/`readPlaintext`/`writePlaintext`), so Fai
+    keeps **all** the networking — it drives the handshake and shuttles ciphertext
+    over the existing async `Net`. A `KIND_TLS` handle owns the `rustls` connection;
+    trust is the bundled `webpki-roots` plus an explicit `clientWithRoots` (no
+    insecure "accept any cert" mode).
+  - **HTTP (pure Fai).** `std/Http.fai` is an HTTP/1.1 client and server over `Net`,
+    with an opaque validated `Url` (`std/Url.fai`) and a case-insensitive, order- and
+    duplicate-preserving `Headers` (`std/Headers.fai`). `Url` is an opaque **union**
+    wrapping its component record, not an opaque record: records are structural, so an
+    opaque record leaks its fields across files, whereas a single hidden constructor
+    keeps the type nominal (the date & time value-type shape). Framing is written
+    against an abstract `Transport` (recv/send/close), so it is socket-independent and
+    a TLS transport layers on later. Bodies are `Stream Bytes`; the first cut
+    materializes them (Content-Length / read-to-EOF), with chunked transfer-encoding,
+    progressive streaming, a pooling client, redirect following, and auth/form helpers
+    noted as follow-up.
+  - **A codegen fix surfaced by this work:** a definition that both has a string
+    literal and a token-taking reuse entry emitted its entry body twice in the single
+    in-process JIT module (the primary and the reuse entry shared a `{base}__fn0__strN`
+    local-data prefix), panicking with a `DuplicateDefinition`; the reuse entry now
+    names its local data under a distinct `{base}__reuse` prefix (AOT was already fine
+    — separate objects, local symbols).
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.
