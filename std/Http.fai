@@ -289,3 +289,162 @@ let post env urlStr headers body =
   match Url.parse urlStr with
   | Err e -> Err e
   | Ok url -> request env { body = body, headers = headers, method = POST, url = url }
+
+// --- Response builders -----------------------------------------------------
+// The reason phrase for a few common status codes (a generic one otherwise).
+reasonFor : Int -> String
+let reasonFor status =
+  if status = 200 then
+    "OK"
+  else if status = 201 then
+    "Created"
+  else if status = 204 then
+    "No Content"
+  else if status = 400 then
+    "Bad Request"
+  else if status = 404 then
+    "Not Found"
+  else if status = 500 then "Internal Server Error" else "Status"
+
+/// A response with the given status and body (no headers; a standard reason
+/// phrase).
+public response : Int -> Stream Bytes 'e -> Response 'e
+let response status body =
+  { body = body, headers = Headers.empty, reason = reasonFor status, status = status }
+example: (response 204 emptyBody).status = 204
+
+/// A `text/plain` response with the given status and text body.
+public textResponse : Int -> String -> Response 'e
+let textResponse status text =
+  { body = stringBody text, headers = Headers.set "Content-Type" "text/plain; charset=utf-8" Headers.empty, reason = reasonFor status, status = status }
+example: (textResponse 200 "hi").status = 200
+
+/// An error response (the message as a `text/plain` body).
+public errorResponse : Int -> String -> Response 'e
+let errorResponse status message = textResponse status message
+example: (errorResponse 500 "boom").status = 500
+
+// --- Request parsing (server side) -----------------------------------------
+methodFromString : String -> Method
+let methodFromString s =
+  if s = "GET" then
+    GET
+  else if s = "POST" then
+    POST
+  else if s = "PUT" then
+    PUT
+  else if s = "DELETE" then
+    DELETE
+  else if s = "PATCH" then
+    PATCH
+  else if s = "HEAD" then HEAD else if s = "OPTIONS" then OPTIONS else Custom s
+
+parseRequestLine : String -> Result (Method * Url) String
+let parseRequestLine line =
+  match String.split " " line with
+  | methodStr :: target :: rest ->
+    match Url.parse target with
+    | Err e -> Err e
+    | Ok url -> Ok (methodFromString methodStr, url)
+  | other -> Err ("bad request line: " ++ line)
+
+parseRequestHead : String -> Result (Method * Url * Headers) String
+let parseRequestHead text =
+  match String.split "\r\n" text with
+  | [] -> Err "empty request"
+  | requestLine :: headerLines ->
+    match parseRequestLine requestLine with
+    | Err e -> Err e
+    | Ok ml ->
+      match ml with
+      | (method, url) -> Ok (method, url, parseHeaderLines headerLines Headers.empty)
+
+// Parse a full request from a transport: head + framed body (materialized).
+parseRequest : Transport 'e -> Result (Request 'r) String / 'e
+let parseRequest t =
+  match readHeaderBlock t Bytes.empty with
+  | Err e -> Err e
+  | Ok block ->
+    match block with
+    | (headBytes, leftover) ->
+      match Bytes.toString headBytes with
+      | None -> Err "request headers are not valid UTF-8"
+      | Some headText ->
+        match parseRequestHead headText with
+        | Err e -> Err e
+        | Ok parsed ->
+          match parsed with
+          | (method, url, headers) ->
+            match readBody t headers leftover with
+            | Err e -> Err e
+            | Ok body -> Ok { body = bytesBody body, headers = headers, method = method, url = url }
+
+// Serialize a response: status line, headers (Content-Length and Connection: close
+// ensured), a blank line, then the (drained) body.
+serializeResponse : Response 'e -> Result Bytes String / 'e
+let serializeResponse resp =
+  match bodyBytes resp.body with
+  | Err e -> Err e
+  | Ok body ->
+    let headers =
+      Headers.set "Connection" "close" (Headers.set "Content-Length" (Int.toString (Bytes.length body)) resp.headers)
+    let line = "HTTP/1.1 " ++ Int.toString resp.status ++ " " ++ resp.reason ++ "\r\n"
+    let rendered = String.join "" (List.map renderField (Headers.toList headers))
+    Ok (Bytes.concat (Bytes.fromString (line ++ rendered ++ "\r\n")) body)
+
+// --- Server ----------------------------------------------------------------
+// Run the handler over a parsed request, mapping an `Err` to a 500 response.
+respond : (Request 'ein -> Result (Response 'h) String / 'h) -> Request 'ein -> Response 'h / 'h
+let respond handler req =
+  match handler req with
+  | Ok r -> r
+  | Err message -> errorResponse 500 message
+
+// Serialize and send a response, then close the connection (one response per
+// connection).
+sendResponse : Transport { Net } -> Response 'h -> Result Unit String / { Net | 'h }
+let sendResponse t resp =
+  match serializeResponse resp with
+  | Err e -> Err e
+  | Ok bytes ->
+    match t.send bytes with
+    | Err e -> Err e
+    | Ok sent -> Ok (t.close ())
+
+// Handle one connection: parse the request, run the handler (Err -> 500), reply.
+handleOver : Transport { Net } -> (Request 'ein -> Result (Response 'h) String / 'h) -> Result Unit String / { Net | 'h }
+let handleOver t handler =
+  match parseRequest t with
+  | Err e -> Err e
+  | Ok req -> sendResponse t (respond handler req)
+
+handleConnection : { net : Net | 'r } -> Connection -> (Request 'ein -> Result (Response 'h) String / 'h) -> Unit / { Net | 'h }
+let handleConnection env conn handler =
+  match handleOver (plainTransport env conn) handler with
+  | Ok done -> ()
+  | Err e -> ()
+
+// Accept connections forever, spawning an isolated task per connection (so one
+// connection's failure never affects others). Returns when `accept` fails — e.g.
+// when the serving task is cancelled (graceful shutdown) or the listener closes.
+acceptLoop : { concurrency : Concurrency, net : Net | 'r } -> Listener -> (Request 'ein -> Result (Response 'h) String / 'h) -> Nursery -> Result Unit String / { Concurrency, Net | 'h }
+let acceptLoop env listener handler nursery =
+  match env.net.accept listener with
+  | Err e -> Ok ()
+  | Ok conn ->
+    let task = env.concurrency.spawn nursery (fun u -> handleConnection env conn handler)
+    acceptLoop env listener handler nursery
+
+/// Serve HTTP on an already-bound listener: accept connections and dispatch each to
+/// `handler` on its own task. Runs until the serving task is cancelled (graceful
+/// shutdown: it stops accepting and the structured scope joins in-flight
+/// connections) or the listener errors. A handler `Err` becomes a 500 response.
+public serveListener : { concurrency : Concurrency, net : Net | 'r } -> Listener -> (Request 'ein -> Result (Response 'h) String / 'h) -> Result Unit String / { Concurrency, Net | 'h }
+let serveListener env listener handler = env.concurrency.scope (acceptLoop env listener handler)
+
+/// Serve HTTP on `0.0.0.0:port` (port `0` picks a free one). See `serveListener`.
+public serve : { concurrency : Concurrency, net : Net | 'r } -> Int -> (Request 'ein -> Result (Response 'h) String / 'h) -> Result Unit String / { Concurrency, Net | 'h }
+let serve env port handler =
+  match env.net.listen port with
+  | Err e -> Err e
+  | Ok listener -> serveListener env listener handler
