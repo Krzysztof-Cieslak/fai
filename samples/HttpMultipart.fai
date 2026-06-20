@@ -1,0 +1,47 @@
+module HttpMultipart
+
+// Uploading a `multipart/form-data` body with `Http.postMultipart` (std/Http.fai): a
+// text field and a small in-memory "file" part are posted to a loopback server, which
+// reads the request body and reports what arrived. The boundary is minted from the
+// `Random` capability, so the upload needs `{ Net, Random, Tls }`.
+//
+// Build parts with `Http.field` (a text field) and `Http.filePart` (a file, with its
+// filename and content type); `postMultipart` frames them with a fresh random boundary
+// and the matching `Content-Type` header.
+// The server handler: read the uploaded body, then report its size and whether the
+// file part is present. A handler returns `Ok response`; an `Err` becomes a 500.
+let handle req =
+  match Http.bodyText req.body with
+  | Err e -> Ok (Http.textResponse 400 ("bad upload: " ++ e))
+  | Ok body ->
+    let note = if String.contains body "filename=\"notes.txt\"" then "with file" else "no file"
+    Ok (Http.textResponse 200 ("received " ++ Int.toString (String.length body) ++ " bytes, " ++ note))
+
+// Post a multipart form (a text field and a file part) and render the response.
+upload : Runtime -> Int -> String / { Net, Random, Tls }
+let upload runtime port =
+  let parts =
+    [Http.field "title" "My Notes", Http.filePart "document" "notes.txt" "text/plain" (Bytes.fromString "hello from a file")]
+  match Http.postMultipart runtime ("http://127.0.0.1:" ++ Int.toString port ++ "/upload") parts with
+  | Err e -> "upload failed: " ++ e
+  | Ok resp ->
+    match Http.bodyText resp.body with
+    | Err e -> "body failed: " ++ e
+    | Ok text -> Int.toString resp.status ++ " " ++ text
+
+// Serve the upload handler on a background task, post the form, then stop the server.
+serveThenUpload : Runtime -> Listener -> Int -> Nursery -> Unit / { Concurrency, Console, Net, Random, Tls }
+let serveThenUpload runtime listener port nursery =
+  let server =
+    runtime.concurrency.spawn nursery (fun u -> Http.serveListener runtime listener handle)
+  let report = upload runtime port
+  let stopped = runtime.concurrency.cancel server
+  runtime.console.writeLine report
+
+public main : Runtime -> Unit / { Concurrency, Console, Net, Random, Tls }
+let main runtime =
+  match runtime.net.listen 0 with
+  | Err e -> runtime.console.writeLine ("could not listen: " ++ e)
+  | Ok listener ->
+    let port = runtime.net.localPort listener
+    runtime.concurrency.scope (fun nursery -> serveThenUpload runtime listener port nursery)
