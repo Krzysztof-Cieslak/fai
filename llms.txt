@@ -240,10 +240,10 @@ shadows outer).
 **Reserved module names** (the standard library; do not define your own):
 `Prelude`, `List`, `Array`, `Option`, `Result`, `Dict`, `Set`, `HashDict`,
 `HashSet`, `String`, `Bytes`, `Int`, `Float`, `Char`, `Concurrency`, `Net`,
-`Async`, `Stream`, `Io`, and the date & time modules `Instant`, `Duration`,
-`LocalDate`, `LocalTime`, `LocalDateTime`, `Offset`, `OffsetDateTime`, `Period`,
-`DayOfWeek`, `Month`, `DateTimeFormat`. The `Prim` namespace is compiler-internal
-and off-limits to user code (`FAI2014`).
+`Async`, `Stream`, `Io`, `Headers`, `Url`, `Http`, `Tls`, and the date & time
+modules `Instant`, `Duration`, `LocalDate`, `LocalTime`, `LocalDateTime`,
+`Offset`, `OffsetDateTime`, `Period`, `DayOfWeek`, `Month`, `DateTimeFormat`. The
+`Prim` namespace is compiler-internal and off-limits to user code (`FAI2014`).
 
 There are **no import statements**. The `Prelude` is auto-imported; everything
 else is reached by its qualified path directly.
@@ -1383,6 +1383,45 @@ OffsetDateTime.toString (OffsetDateTime.now runtime)
 ```
 
 Deferred: IANA time zones / `ZonedDateTime` with DST rules (this is offset-only).
+
+### Timers & cancellation (concurrency)
+
+- **`Clock.sleep`** `Int -> Unit / { Clock }` — pause `ms` milliseconds; parks the
+  task on the reactor timer when on the scheduler, else sleeps the thread.
+- **`Concurrency.cancel`** `Task 'a -> Unit / { Concurrency }` — cancel a task and
+  its whole descendant subtree. Cooperative & sticky: a cancelled task's next
+  blocking call returns a cancellation `Err`, so it unwinds and frees its resources.
+- **`Async.timeout`** `Concurrency -> Clock -> Int -> (Unit -> 'a / 'e) -> Option 'a / { Concurrency, Clock | 'e }`
+  — run work with a deadline; `None` if it timed out (the work is cancelled).
+- **`Async.race`** `Concurrency -> (Unit -> 'a / 'e) -> (Unit -> 'a / 'e) -> Option 'a / { Concurrency | 'e }`
+  — first finisher wins; the loser is cancelled.
+
+### HTTP — `Url`, `Headers`, `Tls`, `Http`
+
+- **`Url`** (opaque) — `parse : String -> Result Url String`, `toString`,
+  `resolve` (relative refs / redirects); accessors `scheme`/`userinfo`/`host`/
+  `port`/`effectivePort`/`path`/`query`/`fragment`/`requestTarget`/`isHttps`;
+  `queryPairs`, `encodeComponent`/`decodeComponent` (percent-encoding).
+- **`Headers`** (opaque) — case-insensitive, order- and duplicate-preserving:
+  `empty`/`fromList`/`toList`/`get`/`getAll`/`add`/`set`/`remove`/`contains`.
+- **`Tls`** capability — a sans-I/O engine (rustls/ring): `client`/`clientWithRoots`/
+  `server`, `feedIncoming`/`takeOutgoing`/`readPlaintext`/`writePlaintext`/`state`.
+  HTTPS-into-`Http` is follow-up work; today `Http` is plaintext over `Net`.
+- **`Http`** — HTTP/1.1 over `Net`. `Request 'e`/`Response 'e` carry a `Url`,
+  `Headers`, and a `Stream Bytes` body. Client: `get`/`post`/`request`
+  (connection-per-request). Server: `serve`/`serveListener` (a task per connection;
+  cancel the serving task to shut down). Bodies: `emptyBody`/`bytesBody`/
+  `stringBody`, drained with `bodyBytes`/`bodyText`; responses via
+  `response`/`textResponse`/`errorResponse`.
+
+```
+// GET (needs { net : Net } — and the URL scheme decides http; HTTPS is follow-up)
+match Http.get runtime "http://example.test/path" with
+| Ok resp -> Http.bodyText resp.body   // Ok "..."  (resp.status : Int)
+| Err e -> Err e
+// serve until the serving task is cancelled
+Http.serve runtime 8080 (fun req -> Ok (Http.textResponse 200 (Url.path req.url)))
+```
 
 ### Test — property testing (used by `forall`)
 
