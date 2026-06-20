@@ -81,7 +81,10 @@ fn every_public_std_function_has_an_example() {
         for line in src.lines() {
             let Some(rest) = line.trim_start().strip_prefix("public ") else { continue };
             let head = rest.split_whitespace().next().unwrap_or("");
-            if head == "type" || !rest.contains(':') {
+            // Skip type declarations: `public type …` and `public opaque type …` (an
+            // opaque record body carries `:` field annotations, so the no-colon
+            // heuristic alone would not catch it).
+            if head == "type" || head == "opaque" || !rest.contains(':') {
                 continue;
             }
             let fn_name = head.trim_end_matches(':');
