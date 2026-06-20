@@ -1391,7 +1391,11 @@ mod tests {
                 imm(0)
             }))
         }));
-        assert_eq!(OUTCOME.load(Ordering::SeqCst), 1, "cancelled recv returned None and the task unwound");
+        assert_eq!(
+            OUTCOME.load(Ordering::SeqCst),
+            1,
+            "cancelled recv returned None and the task unwound"
+        );
     }
 
     #[test]
@@ -1427,6 +1431,10 @@ mod tests {
                 imm(0)
             }))
         }));
-        assert_eq!(REACHED.load(Ordering::SeqCst), 1, "the grandchild was cancelled via downward propagation");
+        assert_eq!(
+            REACHED.load(Ordering::SeqCst),
+            1,
+            "the grandchild was cancelled via downward propagation"
+        );
     }
 }
