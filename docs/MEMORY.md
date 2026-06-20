@@ -3881,8 +3881,8 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     `/ { Net, Tls }`: `plainTransport` is typed `Transport { Net, Tls }` and
     over-declares the `Tls` effect it never performs, so the two transports unify in
     the scheme `if` (whose branches must agree — a user data type's effect argument is
-    invariant). `get`/`getWith`/`post`/`request`/`requestWith` (client, the `With`
-    forms taking extra trusted roots) and `serve`/`serveTls`/`serveListener`/
+    invariant). `get`/`getWith`/`post`/`postForm`/`request`/`requestWith`/`requestOnce` (client,
+    the `With` forms taking extra trusted roots) and `serve`/`serveTls`/`serveListener`/
     `serveListenerTls` (server) follow. Bodies are `Stream Bytes`. A **received** body
     is a **lazy** stream decoded on demand per its framing — chunked transfer-encoding,
     Content-Length, or read-to-EOF — so a client streams a large response without
@@ -3896,8 +3896,17 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     transport's `{ Net, Tls }` into the row `{ Net, Tls | 'b }` — a generic dual-effect
     *consumer* (`fold`/`forEach`) cannot, since it ties the element action and the
     stream to one effect, and `{ 'e | 'f }` (two effect *variables* unioned) is not an
-    expressible row, but concrete atoms plus one tail var is. A pooling client, redirect
-    following, and auth/form helpers remain follow-up.
+    expressible row, but concrete atoms plus one tail var is. The client **follows
+    redirects** automatically up to a hop limit: a 301/302/303 becomes a `GET` and a
+    307/308 is followed only for a bodyless method (the already-consumed body cannot be
+    replayed), a relative `Location` is resolved against the request URL, and
+    `Authorization` is dropped on a cross-origin hop (along with the hop-specific
+    `Host`/`Content-Length`/`Transfer-Encoding`); each 3xx response is dropped before
+    re-requesting (closing its connection), and `requestOnce` is the single-shot,
+    no-follow path. **Auth and form helpers** round out the request side: `basicAuth`/
+    `bearer` build an `Authorization` value over a `base64Encode`, and `formBody`/
+    `postForm` build an `application/x-www-form-urlencoded` body. A connection-pooling
+    client remains follow-up.
   - **A codegen fix surfaced by this work:** a definition that both has a string
     literal and a token-taking reuse entry emitted its entry body twice in the single
     in-process JIT module (the primary and the reuse entry shared a `{base}__fn0__strN`
