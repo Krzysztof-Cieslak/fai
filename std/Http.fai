@@ -245,18 +245,115 @@ let parseResponse t =
             | Ok body ->
               Ok { body = bytesBody body, headers = headers, reason = reason, status = code }
 
-// --- Transport instance over a plain TCP connection ------------------------
-/// A transport over a plain TCP `Connection` (the `Net` capability).
-public plainTransport : { net : Net | 'r } -> Connection -> Transport { Net }
+// --- Transport instances ---------------------------------------------------
+/// A transport over a plain TCP `Connection`. Typed `Transport { Net, Tls }`: it
+/// over-declares the `Tls` effect it never performs so it unifies with the TLS
+/// transport where a request picks plain-vs-secure by URL scheme at runtime (an
+/// instance may declare a wider effect than its methods use).
+public plainTransport : { net : Net | 'r } -> Connection -> Transport { Net, Tls }
 let plainTransport env conn =
   { Transport with close u = env.net.close conn, recv max = env.net.recv conn max, send bytes = env.net.send conn bytes }
 
+// Send whatever ciphertext the TLS session has queued, to the socket.
+flushOutgoing : { net : Net, tls : Tls | 'r } -> Connection -> TlsSession -> Result Unit String / { Net, Tls }
+let flushOutgoing env conn session =
+  match env.tls.takeOutgoing session with
+  | Err e -> Err e
+  | Ok out -> if Bytes.length out = 0 then Ok () else env.net.send conn out
+
+// Drive the TLS handshake to completion: flush outgoing ciphertext, and while the
+// session is still handshaking (state bit 0), read ciphertext from the socket and
+// feed it in. Works for both a client (sends first) and a server (reads first).
+handshakeDrive : { net : Net, tls : Tls | 'r } -> Connection -> TlsSession -> Result Unit String / { Net, Tls }
+let handshakeDrive env conn session =
+  match flushOutgoing env conn session with
+  | Err e -> Err e
+  | Ok flushed ->
+    if Int.and (env.tls.state session) 1 = 0 then
+      Ok ()
+    else
+      match env.net.recv conn 16384 with
+      | Err e -> Err e
+      | Ok cipher ->
+        if Bytes.length cipher = 0 then
+          Err "connection closed during TLS handshake"
+        else
+          match env.tls.feedIncoming session cipher with
+          | Err e -> Err e
+          | Ok fed -> handshakeDrive env conn session
+
+// Decrypt up to `max` plaintext bytes, pulling and feeding ciphertext as needed; an
+// empty result is end of stream (the peer closed).
+tlsRecv : { net : Net, tls : Tls | 'r } -> Connection -> TlsSession -> Int -> Result Bytes String / { Net, Tls }
+let tlsRecv env conn session max =
+  match env.tls.readPlaintext session max with
+  | Err e -> Err e
+  | Ok plain ->
+    if Bytes.length plain > 0 then
+      Ok plain
+    else
+      match env.net.recv conn 16384 with
+      | Err e -> Err e
+      | Ok cipher ->
+        if Bytes.length cipher = 0 then
+          Ok Bytes.empty
+        else
+          match env.tls.feedIncoming session cipher with
+          | Err e -> Err e
+          | Ok fed ->
+            match flushOutgoing env conn session with
+            | Err e -> Err e
+            | Ok flushed -> tlsRecv env conn session max
+
+// Encrypt and send plaintext: queue it, then flush the resulting ciphertext.
+tlsSend : { net : Net, tls : Tls | 'r } -> Connection -> TlsSession -> Bytes -> Result Unit String / { Net, Tls }
+let tlsSend env conn session bytes =
+  match env.tls.writePlaintext session bytes with
+  | Err e -> Err e
+  | Ok wrote -> flushOutgoing env conn session
+
+// Close a TLS connection: send a close-notify (best effort), then close the socket.
+tlsCloseImpl : { net : Net, tls : Tls | 'r } -> Connection -> TlsSession -> Unit / { Net, Tls }
+let tlsCloseImpl env conn session =
+  let notified = env.tls.close session
+  let flushed = flushOutgoing env conn session
+  env.net.close conn
+
+/// A transport over a TLS session on a TCP `Connection`. The handshake must already
+/// have completed (see `secureClient`).
+public tlsTransport : { net : Net, tls : Tls | 'r } -> Connection -> TlsSession -> Transport { Net, Tls }
+let tlsTransport env conn session =
+  { Transport with close u = tlsCloseImpl env conn session, recv max = tlsRecv env conn session max, send bytes = tlsSend env conn session bytes }
+
 // --- Client ----------------------------------------------------------------
-/// Send a request and read the response. Opens a fresh TCP connection to the URL's
-/// host and port, writes the request, and parses the response (its body
-/// materialized). The URL must be absolute (have a host).
-public request : { net : Net | 'r } -> Request 'e -> Result (Response 'b) String / { Net | 'e }
-let request env req =
+// Open a client TLS session (trusting the bundled roots, plus `extraRoots` PEM when
+// given) and complete the handshake, returning a ready transport.
+secureClient : { net : Net, tls : Tls | 'r } -> Option Bytes -> Connection -> String -> Result (Transport { Net, Tls }) String / { Net, Tls }
+let secureClient env extraRoots conn hostname =
+  match makeClientSession env extraRoots hostname with
+  | Err e -> Err e
+  | Ok session ->
+    match handshakeDrive env conn session with
+    | Err e -> Err e
+    | Ok done -> Ok (tlsTransport env conn session)
+
+makeClientSession : { tls : Tls | 'r } -> Option Bytes -> String -> Result TlsSession String / { Tls }
+let makeClientSession env extraRoots hostname =
+  match extraRoots with
+  | None -> env.tls.client hostname
+  | Some roots -> env.tls.clientWithRoots hostname roots
+
+// Build the transport for a URL: a completed TLS session for https, else plain.
+makeTransport : { net : Net, tls : Tls | 'r } -> Option Bytes -> Connection -> Url -> String -> Result (Transport { Net, Tls }) String / { Net, Tls }
+let makeTransport env extraRoots conn url host =
+  if Url.isHttps url then secureClient env extraRoots conn host else Ok (plainTransport env conn)
+
+/// Send a request and read the response, with TLS options: `extraRoots` is extra
+/// trusted root certificates in PEM (for a private CA or a self-signed server),
+/// `None` to trust only the bundled roots. Opens a fresh connection (TLS for an
+/// https URL), writes the request, and parses the response (body materialized).
+public requestWith : { net : Net, tls : Tls | 'r } -> Option Bytes -> Request 'e -> Result (Response 'b) String / { Net, Tls | 'e }
+let requestWith env extraRoots req =
   match Url.host req.url with
   | None -> Err "request URL has no host"
   | Some h ->
@@ -265,9 +362,17 @@ let request env req =
     | Some p ->
       match env.net.connect h p with
       | Err e -> Err e
-      | Ok conn -> runOver (plainTransport env conn) req
+      | Ok conn ->
+        match makeTransport env extraRoots conn req.url h with
+        | Err e -> Err e
+        | Ok t -> runOver t req
 
-runOver : Transport { Net } -> Request 'e -> Result (Response 'b) String / { Net | 'e }
+/// Send a request and read the response (an https URL is verified against the
+/// bundled roots).
+public request : { net : Net, tls : Tls | 'r } -> Request 'e -> Result (Response 'b) String / { Net, Tls | 'e }
+let request env req = requestWith env None req
+
+runOver : Transport { Net, Tls } -> Request 'e -> Result (Response 'b) String / { Net, Tls | 'e }
 let runOver t req =
   match serializeRequest req with
   | Err e -> Err e
@@ -276,15 +381,24 @@ let runOver t req =
     | Err e -> Err e
     | Ok sent -> parseResponse t
 
-/// GET a URL.
-public get : { net : Net | 'r } -> String -> Result (Response 'b) String / { Net }
+/// GET a URL (http or https).
+public get : { net : Net, tls : Tls | 'r } -> String -> Result (Response 'b) String / { Net, Tls }
 let get env urlStr =
   match Url.parse urlStr with
   | Err e -> Err e
   | Ok url -> request env { body = emptyBody, headers = Headers.empty, method = GET, url = url }
 
-/// POST a body (with caller-supplied headers) to a URL.
-public post : { net : Net | 'r } -> String -> Headers -> Stream Bytes 'e -> Result (Response 'b) String / { Net | 'e }
+/// GET a URL with TLS options (extra trusted root certificates in PEM, for a
+/// private CA or a self-signed server; `None` to trust only the bundled roots).
+public getWith : { net : Net, tls : Tls | 'r } -> Option Bytes -> String -> Result (Response 'b) String / { Net, Tls }
+let getWith env extraRoots urlStr =
+  match Url.parse urlStr with
+  | Err e -> Err e
+  | Ok url ->
+    requestWith env extraRoots { body = emptyBody, headers = Headers.empty, method = GET, url = url }
+
+/// POST a body (with caller-supplied headers) to a URL (http or https).
+public post : { net : Net, tls : Tls | 'r } -> String -> Headers -> Stream Bytes 'e -> Result (Response 'b) String / { Net, Tls | 'e }
 let post env urlStr headers body =
   match Url.parse urlStr with
   | Err e -> Err e
@@ -402,7 +516,7 @@ let respond handler req =
 
 // Serialize and send a response, then close the connection (one response per
 // connection).
-sendResponse : Transport { Net } -> Response 'h -> Result Unit String / { Net | 'h }
+sendResponse : Transport { Net, Tls } -> Response 'h -> Result Unit String / { Net, Tls | 'h }
 let sendResponse t resp =
   match serializeResponse resp with
   | Err e -> Err e
@@ -412,39 +526,81 @@ let sendResponse t resp =
     | Ok sent -> Ok (t.close ())
 
 // Handle one connection: parse the request, run the handler (Err -> 500), reply.
-handleOver : Transport { Net } -> (Request 'ein -> Result (Response 'h) String / 'h) -> Result Unit String / { Net | 'h }
+handleOver : Transport { Net, Tls } -> (Request 'ein -> Result (Response 'h) String / 'h) -> Result Unit String / { Net, Tls | 'h }
 let handleOver t handler =
   match parseRequest t with
   | Err e -> Err e
   | Ok req -> sendResponse t (respond handler req)
 
-handleConnection : { net : Net | 'r } -> Connection -> (Request 'ein -> Result (Response 'h) String / 'h) -> Unit / { Net | 'h }
-let handleConnection env conn handler =
-  match handleOver (plainTransport env conn) handler with
-  | Ok done -> ()
+// Complete a server-side TLS handshake on a connection, returning a TLS transport.
+secureServer : { net : Net, tls : Tls | 'r } -> Connection -> Bytes -> Bytes -> Result (Transport { Net, Tls }) String / { Net, Tls }
+let secureServer env conn cert key =
+  match env.tls.server cert key with
+  | Err e -> Err e
+  | Ok session ->
+    match handshakeDrive env conn session with
+    | Err e -> Err e
+    | Ok done -> Ok (tlsTransport env conn session)
+
+// Build the per-connection transport: TLS (handshaking with the cert/key) when
+// configured, else plain.
+buildServerTransport : { net : Net, tls : Tls | 'r } -> Connection -> Option (Bytes * Bytes) -> Result (Transport { Net, Tls }) String / { Net, Tls }
+let buildServerTransport env conn tlsConfig =
+  match tlsConfig with
+  | None -> Ok (plainTransport env conn)
+  | Some certKey ->
+    match certKey with
+    | (cert, key) -> secureServer env conn cert key
+
+handleConnection : { net : Net, tls : Tls | 'r } -> Connection -> Option (Bytes * Bytes) -> (Request 'ein -> Result (Response 'h) String / 'h) -> Unit / { Net, Tls | 'h }
+let handleConnection env conn tlsConfig handler =
+  match buildServerTransport env conn tlsConfig with
   | Err e -> ()
+  | Ok t ->
+    match handleOver t handler with
+    | Ok done -> ()
+    | Err e -> ()
 
 // Accept connections forever, spawning an isolated task per connection (so one
 // connection's failure never affects others). Returns when `accept` fails — e.g.
 // when the serving task is cancelled (graceful shutdown) or the listener closes.
-acceptLoop : { concurrency : Concurrency, net : Net | 'r } -> Listener -> (Request 'ein -> Result (Response 'h) String / 'h) -> Nursery -> Result Unit String / { Concurrency, Net | 'h }
-let acceptLoop env listener handler nursery =
+acceptLoop : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Listener -> Option (Bytes * Bytes) -> (Request 'ein -> Result (Response 'h) String / 'h) -> Nursery -> Result Unit String / { Concurrency, Net, Tls | 'h }
+let acceptLoop env listener tlsConfig handler nursery =
   match env.net.accept listener with
   | Err e -> Ok ()
   | Ok conn ->
-    let task = env.concurrency.spawn nursery (fun u -> handleConnection env conn handler)
-    acceptLoop env listener handler nursery
+    let task = env.concurrency.spawn nursery (fun u -> handleConnection env conn tlsConfig handler)
+    acceptLoop env listener tlsConfig handler nursery
 
-/// Serve HTTP on an already-bound listener: accept connections and dispatch each to
-/// `handler` on its own task. Runs until the serving task is cancelled (graceful
-/// shutdown: it stops accepting and the structured scope joins in-flight
-/// connections) or the listener errors. A handler `Err` becomes a 500 response.
-public serveListener : { concurrency : Concurrency, net : Net | 'r } -> Listener -> (Request 'ein -> Result (Response 'h) String / 'h) -> Result Unit String / { Concurrency, Net | 'h }
-let serveListener env listener handler = env.concurrency.scope (acceptLoop env listener handler)
+serveListenerWith : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Listener -> Option (Bytes * Bytes) -> (Request 'ein -> Result (Response 'h) String / 'h) -> Result Unit String / { Concurrency, Net, Tls | 'h }
+let serveListenerWith env listener tlsConfig handler =
+  env.concurrency.scope (acceptLoop env listener tlsConfig handler)
 
-/// Serve HTTP on `0.0.0.0:port` (port `0` picks a free one). See `serveListener`.
-public serve : { concurrency : Concurrency, net : Net | 'r } -> Int -> (Request 'ein -> Result (Response 'h) String / 'h) -> Result Unit String / { Concurrency, Net | 'h }
+/// Serve plaintext HTTP on an already-bound listener: accept connections and
+/// dispatch each to `handler` on its own task. Runs until the serving task is
+/// cancelled (graceful shutdown: it stops accepting and the structured scope joins
+/// in-flight connections) or the listener errors. A handler `Err` becomes a 500.
+public serveListener : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Listener -> (Request 'ein -> Result (Response 'h) String / 'h) -> Result Unit String / { Concurrency, Net, Tls | 'h }
+let serveListener env listener handler = serveListenerWith env listener None handler
+
+/// Serve HTTPS on an already-bound listener, presenting `cert` (a certificate chain
+/// in PEM) with `key` (its private key in PEM). Otherwise like `serveListener`.
+public serveListenerTls : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Listener -> Bytes -> Bytes -> (Request 'ein -> Result (Response 'h) String / 'h) -> Result Unit String / { Concurrency, Net, Tls | 'h }
+let serveListenerTls env listener cert key handler =
+  serveListenerWith env listener (Some (cert, key)) handler
+
+/// Serve plaintext HTTP on `0.0.0.0:port` (port `0` picks a free one). See
+/// `serveListener`.
+public serve : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Int -> (Request 'ein -> Result (Response 'h) String / 'h) -> Result Unit String / { Concurrency, Net, Tls | 'h }
 let serve env port handler =
   match env.net.listen port with
   | Err e -> Err e
   | Ok listener -> serveListener env listener handler
+
+/// Serve HTTPS on `0.0.0.0:port` with the given PEM certificate chain and key. See
+/// `serveListenerTls`.
+public serveTls : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Int -> Bytes -> Bytes -> (Request 'ein -> Result (Response 'h) String / 'h) -> Result Unit String / { Concurrency, Net, Tls | 'h }
+let serveTls env port cert key handler =
+  match env.net.listen port with
+  | Err e -> Err e
+  | Ok listener -> serveListenerTls env listener cert key handler

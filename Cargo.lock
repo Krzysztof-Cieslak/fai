@@ -921,6 +921,7 @@ dependencies = [
  "lsp-types",
  "proptest",
  "rayon",
+ "rcgen",
  "serde_json",
 ]
 

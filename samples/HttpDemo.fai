@@ -13,7 +13,7 @@ module HttpDemo
 let handle req = Ok (Http.textResponse 200 ("you requested " ++ Url.path req.url))
 
 // Make one request to the loopback server and render the result.
-fetch : Runtime -> Int -> String / { Net }
+fetch : Runtime -> Int -> String / { Net, Tls }
 let fetch runtime port =
   match Http.get runtime ("http://127.0.0.1:" ++ Int.toString port ++ "/hello") with
   | Err e -> "request failed: " ++ e
@@ -23,7 +23,7 @@ let fetch runtime port =
     | Ok text -> Int.toString resp.status ++ " " ++ resp.reason ++ ": " ++ text
 
 // Run the server (on its own task), make a request, then cancel the server.
-serveThenFetch : Runtime -> Listener -> Int -> Nursery -> Unit / { Concurrency, Console, Net }
+serveThenFetch : Runtime -> Listener -> Int -> Nursery -> Unit / { Concurrency, Console, Net, Tls }
 let serveThenFetch runtime listener port nursery =
   let server =
     runtime.concurrency.spawn nursery (fun u -> Http.serveListener runtime listener handle)
@@ -31,7 +31,7 @@ let serveThenFetch runtime listener port nursery =
   let stopped = runtime.concurrency.cancel server
   runtime.console.writeLine report
 
-public main : Runtime -> Unit / { Concurrency, Console, Net }
+public main : Runtime -> Unit / { Concurrency, Console, Net, Tls }
 let main runtime =
   match runtime.net.listen 0 with
   | Err e -> runtime.console.writeLine ("could not listen: " ++ e)

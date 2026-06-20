@@ -49,7 +49,7 @@ fn client_gets_a_response_from_a_raw_loopback_server() {
             let sent = runtime.net.send conn (Bytes.fromString resp)
             runtime.net.close conn
 
-        client : Runtime -> Int -> String / { Net }
+        client : Runtime -> Int -> String / { Net, Tls }
         let client runtime port =
           match Http.get runtime ("http://127.0.0.1:" ++ Int.toString port ++ "/p") with
           | Err e -> "error: " ++ e
@@ -59,7 +59,7 @@ fn client_gets_a_response_from_a_raw_loopback_server() {
             | Ok text ->
               Int.toString resp.status ++ " " ++ Option.withDefault "?" (Headers.get "server" resp.headers) ++ " " ++ text
 
-        public main : Runtime -> Unit / { Concurrency, Console, Net }
+        public main : Runtime -> Unit / { Concurrency, Console, Net, Tls }
         let main runtime =
           match runtime.net.listen 0 with
           | Err e -> runtime.console.writeLine ("listen failed: " ++ e)
@@ -84,7 +84,7 @@ fn server_and_client_round_trip_then_shut_down() {
 
         let handler req = Ok (Http.textResponse 200 ("hi " ++ Url.path req.url))
 
-        client : Runtime -> Int -> String / { Net }
+        client : Runtime -> Int -> String / { Net, Tls }
         let client runtime port =
           match Http.get runtime ("http://127.0.0.1:" ++ Int.toString port ++ "/world") with
           | Err e -> "error: " ++ e
@@ -93,14 +93,14 @@ fn server_and_client_round_trip_then_shut_down() {
             | Err e -> "body error: " ++ e
             | Ok text -> Int.toString resp.status ++ " " ++ text
 
-        body : Runtime -> Listener -> Int -> Nursery -> Unit / { Concurrency, Console, Net }
+        body : Runtime -> Listener -> Int -> Nursery -> Unit / { Concurrency, Console, Net, Tls }
         let body runtime listener port nursery =
           let server = runtime.concurrency.spawn nursery (fun u -> Http.serveListener runtime listener handler)
           let report = client runtime port
           let cancelled = runtime.concurrency.cancel server
           runtime.console.writeLine report
 
-        public main : Runtime -> Unit / { Concurrency, Console, Net }
+        public main : Runtime -> Unit / { Concurrency, Console, Net, Tls }
         let main runtime =
           match runtime.net.listen 0 with
           | Err e -> runtime.console.writeLine ("listen failed: " ++ e)
@@ -111,4 +111,57 @@ fn server_and_client_round_trip_then_shut_down() {
     let (out, code) = run(src);
     assert_eq!(code, 0, "clean, leak-free exit (server cancelled and joined)");
     assert_eq!(out, "200 hi /world\n");
+}
+
+#[test]
+fn https_client_and_server_round_trip() {
+    // A full HTTPS round trip over loopback: an `Http.serveListenerTls` server
+    // presents a fresh self-signed certificate (minted here with rcgen for the IP
+    // `127.0.0.1`), and the client GETs it over TLS, trusting that certificate via
+    // `getWith`'s extra-roots option. This drives the whole stack — the rustls
+    // handshake pumped over `Net` by the Fai `tlsTransport`, then encrypted request
+    // and response framing — end to end, then cancels the server.
+    let cert = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_owned()])
+        .expect("generate self-signed cert");
+    let cert_pem = cert.cert.pem().replace('\n', "\\n");
+    let key_pem = cert.key_pair.serialize_pem().replace('\n', "\\n");
+
+    let src = format!(
+        r#"
+        module Prog
+
+        let certPem = "{cert_pem}"
+
+        let keyPem = "{key_pem}"
+
+        let handle req = Ok (Http.textResponse 200 "secure hello")
+
+        client : Runtime -> Int -> String / {{ Net, Tls }}
+        let client runtime port =
+          match Http.getWith runtime (Some (Bytes.fromString certPem)) ("https://127.0.0.1:" ++ Int.toString port ++ "/secure") with
+          | Err e -> "error: " ++ e
+          | Ok resp ->
+            match Http.bodyText resp.body with
+            | Err e -> "body error: " ++ e
+            | Ok text -> Int.toString resp.status ++ " " ++ text
+
+        body : Runtime -> Listener -> Int -> Nursery -> Unit / {{ Concurrency, Console, Net, Tls }}
+        let body runtime listener port nursery =
+          let server = runtime.concurrency.spawn nursery (fun u -> Http.serveListenerTls runtime listener (Bytes.fromString certPem) (Bytes.fromString keyPem) handle)
+          let report = client runtime port
+          let cancelled = runtime.concurrency.cancel server
+          runtime.console.writeLine report
+
+        public main : Runtime -> Unit / {{ Concurrency, Console, Net, Tls }}
+        let main runtime =
+          match runtime.net.listen 0 with
+          | Err e -> runtime.console.writeLine ("listen failed: " ++ e)
+          | Ok listener ->
+            let port = runtime.net.localPort listener
+            runtime.concurrency.scope (fun nursery -> body runtime listener port nursery)
+    "#
+    );
+    let (out, code) = run(&src);
+    assert_eq!(code, 0, "clean, leak-free exit (TLS handshake + request/response + shutdown)");
+    assert_eq!(out, "200 secure hello\n");
 }
