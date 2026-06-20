@@ -3873,8 +3873,17 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     wrapping its component record, not an opaque record: records are structural, so an
     opaque record leaks its fields across files, whereas a single hidden constructor
     keeps the type nominal (the date & time value-type shape). Framing is written
-    against an abstract `Transport` (recv/send/close), so it is socket-independent and
-    a TLS transport layers on later. Bodies are `Stream Bytes`; the first cut
+    against an abstract `Transport` (recv/send/close), so it is socket-independent: a
+    `plainTransport` runs over a TCP `Connection`, and a `tlsTransport` drives the
+    rustls handshake and shuttles ciphertext over the same `Connection` (so HTTPS is
+    pure-Fai orchestration of the `Tls` engine over `Net`). The client picks
+    plain-vs-TLS by the URL scheme at runtime, so its whole surface is uniformly
+    `/ { Net, Tls }`: `plainTransport` is typed `Transport { Net, Tls }` and
+    over-declares the `Tls` effect it never performs, so the two transports unify in
+    the scheme `if` (whose branches must agree — a user data type's effect argument is
+    invariant). `get`/`getWith`/`post`/`request`/`requestWith` (client, the `With`
+    forms taking extra trusted roots) and `serve`/`serveTls`/`serveListener`/
+    `serveListenerTls` (server) follow. Bodies are `Stream Bytes`; the first cut
     materializes them (Content-Length / read-to-EOF), with chunked transfer-encoding,
     progressive streaming, a pooling client, redirect following, and auth/form helpers
     noted as follow-up.

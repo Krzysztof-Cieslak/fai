@@ -1406,17 +1406,21 @@ Deferred: IANA time zones / `ZonedDateTime` with DST rules (this is offset-only)
   `empty`/`fromList`/`toList`/`get`/`getAll`/`add`/`set`/`remove`/`contains`.
 - **`Tls`** capability — a sans-I/O engine (rustls/ring): `client`/`clientWithRoots`/
   `server`, `feedIncoming`/`takeOutgoing`/`readPlaintext`/`writePlaintext`/`state`.
-  HTTPS-into-`Http` is follow-up work; today `Http` is plaintext over `Net`.
-- **`Http`** — HTTP/1.1 over `Net`. `Request 'e`/`Response 'e` carry a `Url`,
-  `Headers`, and a `Stream Bytes` body. Client: `get`/`post`/`request`
-  (connection-per-request). Server: `serve`/`serveListener` (a task per connection;
-  cancel the serving task to shut down). Bodies: `emptyBody`/`bytesBody`/
+  Usually you don't call it directly — `Http` drives it for you.
+- **`Http`** — HTTP/1.1 over `Net`, with HTTPS over `Tls` (so every entry point is
+  `/ { Net, Tls }`; the URL scheme picks plain-vs-TLS at runtime). `Request 'e`/
+  `Response 'e` carry a `Url`, `Headers`, and a `Stream Bytes` body. Client:
+  `get`/`post`/`request` (verify https against the bundled roots) and
+  `getWith`/`requestWith` (extra trusted roots — a private CA or self-signed server),
+  connection-per-request. Server: `serve`/`serveListener` (HTTP) and
+  `serveTls`/`serveListenerTls` (HTTPS, given a PEM cert+key) — a task per
+  connection; cancel the serving task to shut down. Bodies: `emptyBody`/`bytesBody`/
   `stringBody`, drained with `bodyBytes`/`bodyText`; responses via
   `response`/`textResponse`/`errorResponse`.
 
 ```
-// GET (needs { net : Net } — and the URL scheme decides http; HTTPS is follow-up)
-match Http.get runtime "http://example.test/path" with
+// GET (needs { net : Net, tls : Tls }; the URL scheme decides http vs https)
+match Http.get runtime "https://example.test/path" with
 | Ok resp -> Http.bodyText resp.body   // Ok "..."  (resp.status : Int)
 | Err e -> Err e
 // serve until the serving task is cancelled
