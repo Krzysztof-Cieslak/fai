@@ -1419,8 +1419,9 @@ Deferred: IANA time zones / `ZonedDateTime` with DST rules (this is offset-only)
    so a big download streams; consume it with `bodyBytes`/`bodyText` or the `Stream`
    combinators, and drop the response to close the connection. Build a request/sent
    body with `emptyBody`/`bytesBody`/`stringBody` (sent with Content-Length);
-   responses via `response`/`textResponse`/`errorResponse`. (Chunked/streaming
-   *sending* is not yet supported.)
+   responses via `response`/`textResponse`/`errorResponse`. To **stream** a sent body
+   chunked (no buffering, one frame per stream element), use `chunkedResponse` (server)
+   or set `Transfer-Encoding: chunked` in a request's headers.
 
 ```
 // GET (needs { net : Net, tls : Tls }; the URL scheme decides http vs https)

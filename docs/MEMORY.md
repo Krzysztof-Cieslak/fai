@@ -3888,12 +3888,16 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     Content-Length, or read-to-EOF — so a client streams a large response without
     buffering it (the body owns the connection, dropped to close it); a server request
     body is drained in full so the transport is free for the response. A **sent** body
-    is drained to a `Content-Length`. Chunked/progressive *sending* (non-buffering
-    output) is blocked: the `Stream` consumers (`fold`/`forEach`) force the per-element
-    action and the stream to share one effect, but streaming a body of effect `'b`
-    while doing transport sends `{ Net, Tls }` needs the two unioned — so it waits on a
-    dual-effect stream consumer. A pooling client, redirect following, and auth/form
-    helpers also remain follow-up.
+    is drained to a `Content-Length` by default, or streamed **chunked** without
+    buffering when the headers select `Transfer-Encoding: chunked` (`chunkedResponse`,
+    or the header on a request). Chunked sending is driven by a new low-level
+    **`Stream.uncons`** (`Stream 'a 'e -> Result (Option ('a * Stream 'a 'e)) String /
+    'e`): the sender's own recursive loop unions the body's effect `'b` with the
+    transport's `{ Net, Tls }` into the row `{ Net, Tls | 'b }` — a generic dual-effect
+    *consumer* (`fold`/`forEach`) cannot, since it ties the element action and the
+    stream to one effect, and `{ 'e | 'f }` (two effect *variables* unioned) is not an
+    expressible row, but concrete atoms plus one tail var is. A pooling client, redirect
+    following, and auth/form helpers remain follow-up.
   - **A codegen fix surfaced by this work:** a definition that both has a string
     literal and a token-taking reuse entry emitted its entry body twice in the single
     in-process JIT module (the primary and the reuse entry shared a `{base}__fn0__strN`
