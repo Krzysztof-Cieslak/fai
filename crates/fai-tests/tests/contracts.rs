@@ -121,7 +121,7 @@ fn geometry_contracts_pass() {
 #[test]
 fn streams_contracts_pass() {
     // A pure Stream pipeline's `example` evaluates (the effectful sources/sinks are
-    // typechecked by the samples suite; their contracts live in `std/Stream.fai`).
+    // typechecked by the samples suite; their contracts live in `std/io/Stream.fai`).
     sample_contracts_pass("Streams.fai");
 }
 

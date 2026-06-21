@@ -1,6 +1,6 @@
 module HttpMultipart
 
-// Uploading a `multipart/form-data` body with `Http.postMultipart` (std/Http.fai): a
+// Uploading a `multipart/form-data` body with `Http.postMultipart` (std/networking/Http.fai): a
 // text field and a small in-memory "file" part are posted to a loopback server, which
 // reads the request body and reports what arrived. The boundary is minted from the
 // `Random` capability, so the upload needs `{ Net, Random, Tls }`.

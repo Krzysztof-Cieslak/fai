@@ -1,6 +1,6 @@
 module HttpDemo
 
-// An HTTP/1.1 client and server over the `Net` capability (std/Http.fai). This
+// An HTTP/1.1 client and server over the `Net` capability (std/networking/Http.fai). This
 // serves a handler on a background task, makes a real request to it over a loopback
 // connection, prints the response, then shuts the server down by cancelling its
 // task (the structured scope joins it). Both the client and the server run on the

@@ -1,4 +1,4 @@
-//! Correctness of the weight-balanced `std/Dict` and `std/Set` against Rust's
+//! Correctness of the weight-balanced `std/collections/Dict` and `std/collections/Set` against Rust's
 //! `BTreeMap`/`BTreeSet` reference, under sorted, reverse-sorted, and scrambled
 //! insertion orders (the cases that stress balancing) and at a scale a linear
 //! chain could not handle in time. Each Fai program folds the final tree in

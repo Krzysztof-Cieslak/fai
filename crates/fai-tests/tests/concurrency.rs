@@ -410,7 +410,7 @@ fn aot_concurrent_program_runs_on_a_single_worker() {
 }
 
 // ---------------------------------------------------------------------------
-// The `Async` combinator library (`std/Async.fai`): high-level fan-out, concurrent
+// The `Async` combinator library (`std/concurrency/Async.fai`): high-level fan-out, concurrent
 // map, and channel pipelines over the structured primitives. Same in-process JIT
 // harness — these assert the combinators' results and a clean, leak-free exit, so
 // they cover the library that the contract suite cannot (a contract may not

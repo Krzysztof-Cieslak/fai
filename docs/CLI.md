@@ -18,7 +18,7 @@
 > results, so warm output is byte-identical to a one-shot run. **`fai test` is
 > implemented**:
 > it collects the `example`/`forall` contracts, synthesizes a property-testing
-> harness per contract using the dogfooded `std/Test.fai` library, and checks each
+> harness per contract using the dogfooded `std/testing/Test.fai` library, and checks each
 > in a **supervised isolated worker** (the same machinery as `fai run`) — so a
 > generated input that drives a body into a runtime trap (e.g. division by zero)
 > fails *that contract* as a located **`FAI6003`** and the run continues (the
