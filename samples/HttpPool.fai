@@ -1,6 +1,6 @@
 module HttpPool
 
-// Connection pooling with `Http.withClient` (std/Http.fai). A pool keeps idle
+// Connection pooling with `Http.withClient` (std/networking/Http.fai). A pool keeps idle
 // keep-alive connections and reuses them across requests to the same origin, so a
 // burst of requests to one host avoids reconnecting each time. `withClient` opens the
 // pool in a structured scope and closes every connection when the callback returns;

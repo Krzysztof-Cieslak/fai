@@ -74,7 +74,7 @@ fn string_concat() {
 #[test]
 fn bytes_type_and_operations_infer() {
     // `Bytes` is a built-in type usable without import; its qualified operations
-    // come from the embedded `std/Bytes.fai`.
+    // come from the embedded `std/primitives/Bytes.fai`.
     let (db, f) = db_with_std(&[(
         "M.fai",
         "module M\n\nlet b = Bytes.fromString \"hi\"\nlet n = Bytes.length b\nlet s = Bytes.toString b\n",

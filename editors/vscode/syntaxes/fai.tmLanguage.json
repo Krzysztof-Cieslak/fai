@@ -167,12 +167,12 @@
       "name": "entity.name.namespace.fai"
     },
     "builtin-capability": {
-      "comment": "The host-capability interfaces and the `Runtime` bundle (source of truth: std/Prelude.fai). Tried after #module-qualifier (so `Console.foo` keeps `Console` as a namespace) and before #constructor (so these win over the generic upper-case rule).",
+      "comment": "The host-capability interfaces and the `Runtime` bundle (source of truth: std/core/Prelude.fai). Tried after #module-qualifier (so `Console.foo` keeps `Console` as a namespace) and before #constructor (so these win over the generic upper-case rule).",
       "match": "\\b(?:Console|Clock|Random|FileSystem|Env|Runtime)\\b",
       "name": "support.type.capability.fai"
     },
     "builtin-type": {
-      "comment": "The prelude types and operator interfaces (source of truth: std/Prelude.fai, plus the built-in List/Array/String/Int/Float/Char/Bool/Unit). Same ordering as #builtin-capability: after #module-qualifier, before #constructor.",
+      "comment": "The prelude types and operator interfaces (source of truth: std/core/Prelude.fai, plus the built-in List/Array/String/Int/Float/Char/Bool/Unit). Same ordering as #builtin-capability: after #module-qualifier, before #constructor.",
       "match": "\\b(?:Option|Result|List|Array|Dict|Set|String|Int|Float|Char|Bool|Unit|Num|Eq|Ord)\\b",
       "name": "support.type.fai"
     },

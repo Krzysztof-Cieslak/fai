@@ -763,8 +763,8 @@ Contracts (examples & properties):
   values, D4/D13), a QuickCheck-style library cannot pick a generator by type on
   its own — so the type→generator mapping must live in the compiler regardless of
   where the generator *code* runs. Given that, the generators/shrinkers/renderers
-  are written **in Fai** (`std/Test.fai`) for dogfooding and user extensibility,
-  and the compiler composes them. `std/Test.fai` defines `type Gen 'a = Size ->
+  are written **in Fai** (`std/testing/Test.fai`) for dogfooding and user extensibility,
+  and the compiler composes them. `std/testing/Test.fai` defines `type Gen 'a = Size ->
   Seed -> ('a * Seed)` (a pure splitmix64 over the seed — deterministic, no
   `Random` capability), `type Arbitrary 'a = { gen, shrink, show }` (a closed
   record — constant-offset access, no row evidence), `type TestResult = Passed |
@@ -1563,7 +1563,7 @@ Editor integration:
   - **Four prelude-private intrinsics.** `charToString` (a one-character
     `String`), `charToCode`/`charFromCode` (the Char/Int conversions — typed
     bitcasts, implemented as the identity at runtime since the encodings
-    coincide), and `isValidCharCode` (range/surrogate check). `std/Char.fai`
+    coincide), and `isValidCharCode` (range/surrogate check). `std/primitives/Char.fai`
     exposes `toString`, `toCode`, and a total `fromCode : Int -> Option Char`
     written as `if isValidCharCode n then Some (charFromCode n) else None` — the
     `Option` is built in Fai, keeping the runtime ADT-agnostic (the same split as
@@ -2175,7 +2175,7 @@ Editor integration:
     and instantiated per use); `withCapacity`/`length`/`get` borrow, `set`/`push`
     mutate in place when unique and copy when shared (the `fai_record_update`
     model), growing by doubling. Everything else — `empty`/`init`/`map`/`filter`/
-    `foldl`/`foldr`/`reverse`/`append`/`zip`/`sort`/… — is `std/Array.fai` in Fai,
+    `foldl`/`foldr`/`reverse`/`append`/`zip`/`sort`/… — is `std/collections/Array.fai` in Fai,
     collection-last like `List`. Unknown-size combinators (`filter`/`partition`/…)
     are single-pass `push`-builders (one predicate call per element, effect-correct).
   - **Access is total via `Option`, with partial fast paths.** `get : Int -> Array
@@ -2956,8 +2956,8 @@ Editor integration:
     (sorted/reverse/scrambled, removal, set ops) with order-independent checksums
     and leak-free exit; an allocation test pinning the unique-build-is-in-place
     (zero copy-on-write) contract; and the nine migrated `algorithms` oracles. Adds
-    `Prim.hash` across resolve/types/core/codegen/runtime, `std/HashDict.fai` and
-  `std/HashSet.fai`, and the `Prelude` re-exports. The hash-container half of the
+    `Prim.hash` across resolve/types/core/codegen/runtime, `std/collections/HashDict.fai` and
+  `std/collections/HashSet.fai`, and the `Prelude` re-exports. The hash-container half of the
   associative-container cluster (#137).
 
 - **D130 Inline the structural hash (`Prim.hash`) for immediate/`Int`/`Float`
@@ -3396,7 +3396,7 @@ Editor integration:
     exposed only through a capability interface), and its signature **must name a
     capability in its effect row** (**FAI5002**), closing the pure-laundering hole.
   - **Dogfood.** The seven hosts are now ordinary `foreign` declarations in
-    `std/Prelude.fai`; the Rust name tables are deleted, leaving only the
+    `std/core/Prelude.fai`; the Rust name tables are deleted, leaving only the
     symbol→pointer registry (JIT) and the linked archive (AOT). `Prim.*` is no
     longer the path for host effects.
   - **Contract purity (amends D14).** The contract-purity check (`FAI6004`) is
@@ -3608,7 +3608,7 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   primitives.** The low-level `Concurrency` capability (D139) exposes
   `scope`/`spawn`/`await` and channels, which are powerful but verbose used
   directly — a nursery threaded through, a per-task `spawn`, a matching `await`.
-  `std/Async.fai` adds a high-level layer — `parallel`/`parallel2`/`parallel3`,
+  `std/concurrency/Async.fai` adds a high-level layer — `parallel`/`parallel2`/`parallel3`,
   `mapConcurrent`/`iterConcurrent`, and the channel helpers
   `collect`/`sendAll`/`produceList`/`pipe` — so the common fan-out, concurrent-map,
   and producer/consumer patterns are a single call. It is **pure Fai over the
@@ -3707,7 +3707,7 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     is dropped (reference counting) — full, partial, or zero consumption all release
     it promptly, with no `bracket`.
   - **The progressive I/O primitives.** `FileSystem` gains `openRead`/`openWrite`/
-    `openAppend` (returning opaque `Reader`/`Writer` handles, declared in `std/Io.fai`
+    `openAppend` (returning opaque `Reader`/`Writer` handles, declared in `std/io/Io.fai`
     like the `Net` handles), chunked `readChunk` (an empty `Bytes` is EOF) and
     `writeChunk`, and `closeReader`/`closeWriter` (the latter flushes). `Console` gains
     `write` (stdout, no newline), `writeError` (stderr), and `readLine` (stdin, an
@@ -3867,9 +3867,9 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     over the existing async `Net`. A `KIND_TLS` handle owns the `rustls` connection;
     trust is the bundled `webpki-roots` plus an explicit `clientWithRoots` (no
     insecure "accept any cert" mode).
-  - **HTTP (pure Fai).** `std/Http.fai` is an HTTP/1.1 client and server over `Net`,
-    with an opaque validated `Url` (`std/Url.fai`) and a case-insensitive, order- and
-    duplicate-preserving `Headers` (`std/Headers.fai`). `Url` is an opaque **union**
+  - **HTTP (pure Fai).** `std/networking/Http.fai` is an HTTP/1.1 client and server over `Net`,
+    with an opaque validated `Url` (`std/networking/Url.fai`) and a case-insensitive, order- and
+    duplicate-preserving `Headers` (`std/networking/Headers.fai`). `Url` is an opaque **union**
     wrapping its component record, not an opaque record: records are structural, so an
     opaque record leaks its fields across files, whereas a single hidden constructor
     keeps the type nominal (the date & time value-type shape). Framing is written

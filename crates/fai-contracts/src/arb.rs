@@ -1,6 +1,6 @@
 //! Synthesizing an `Arbitrary` for a contract's binder types.
 //!
-//! Built-in types compose the `std/Test.fai` combinators (`Test.int`,
+//! Built-in types compose the `std/testing/Test.fai` combinators (`Test.int`,
 //! `Test.list arb`, …). A user **record** or **ADT** has no generic combinator,
 //! so the compiler synthesizes a top-level `Arbitrary` definition per type —
 //! referenced as a `Global`, so composing them needs no closures, and a recursive

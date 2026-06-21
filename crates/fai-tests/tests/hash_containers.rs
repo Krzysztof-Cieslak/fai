@@ -1,4 +1,4 @@
-//! Correctness of the open-addressing `std/HashDict` and `std/HashSet` against
+//! Correctness of the open-addressing `std/collections/HashDict` and `std/collections/HashSet` against
 //! Rust's `HashMap`/`HashSet` reference, under sorted, reverse-sorted, and
 //! scrambled insertion orders (which stress probing and resizing) and at a scale
 //! that forces many doublings. Each Fai program folds the final table into an
