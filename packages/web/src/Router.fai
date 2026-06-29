@@ -1,0 +1,214 @@
+module Router
+
+// A TokenRouter-style router: build a tree of routes from a list and match an
+// incoming request against it by walking the path one segment at a time. Static
+// segments are matched first (with a fall back to a `{name}` capture), so lookup
+// is proportional to the path length rather than the number of routes.
+//
+//   Router.router (Web.notFound "Not Found") [
+//     Router.get [
+//       Router.route "/" index,
+//       Router.route "/user/{id}" showUser
+//     ],
+//     Router.subRoute "/api" [ Router.get [ Router.route "/ping" pong ] ]
+//   ]
+//
+// A `{name}` segment in a pattern captures that path segment; the handler reads it
+// with `Web.param "name"`.
+/// A routing rule. Build rules with `route`/`subRoute` and the verb groupers
+/// (`get`, `post`, …); pass a list of them to `router`.
+public opaque type Route 'e =
+  | RouteLeaf String (Web.HttpHandler 'e)
+  | RouteScope (Option Http.Method) String (List (Route 'e))
+
+/// Route requests for `pattern` (e.g. `"/user/{id}"`) to `handler`. Matches any
+/// method unless nested inside a verb grouper.
+public route : String -> Web.HttpHandler 'e -> Route 'e
+let route pattern handler = RouteLeaf pattern handler
+
+/// Group child routes under a shared path `prefix` (e.g. `subRoute "/api" [ … ]`).
+public subRoute : String -> List (Route 'e) -> Route 'e
+let subRoute prefix children = RouteScope None prefix children
+
+/// Restrict child routes to `GET` requests.
+public get : List (Route 'e) -> Route 'e
+let get children = RouteScope (Some Http.GET) "" children
+
+/// Restrict child routes to `POST` requests.
+public post : List (Route 'e) -> Route 'e
+let post children = RouteScope (Some Http.POST) "" children
+
+/// Restrict child routes to `PUT` requests.
+public put : List (Route 'e) -> Route 'e
+let put children = RouteScope (Some Http.PUT) "" children
+
+/// Restrict child routes to `DELETE` requests.
+public delete : List (Route 'e) -> Route 'e
+let delete children = RouteScope (Some Http.DELETE) "" children
+
+/// Restrict child routes to `PATCH` requests.
+public patch : List (Route 'e) -> Route 'e
+let patch children = RouteScope (Some Http.PATCH) "" children
+
+/// Restrict child routes to `HEAD` requests.
+public head : List (Route 'e) -> Route 'e
+let head children = RouteScope (Some Http.HEAD) "" children
+
+/// Restrict child routes to `OPTIONS` requests.
+public options : List (Route 'e) -> Route 'e
+let options children = RouteScope (Some Http.OPTIONS) "" children
+
+// --- Pattern segments ------------------------------------------------------
+type Segment =
+  | StaticSeg String
+  | CaptureSeg String
+
+nonEmpty : String -> Bool
+let nonEmpty s = String.length s > 0
+
+// Split a path/pattern into its non-empty segments (so leading and trailing
+// slashes are ignored: `"/a/b/"` and `"a/b"` split alike).
+splitPath : String -> List String
+let splitPath p = List.filter nonEmpty (String.split "/" p)
+
+isCapture : String -> Bool
+let isCapture s =
+  String.length s >= 2 && String.take 1 s = "{" && String.substring (String.length s - 1) 1 s = "}"
+
+parseSegment : String -> Segment
+let parseSegment s =
+  if isCapture s then CaptureSeg (String.substring 1 (String.length s - 2) s) else StaticSeg s
+
+parsePattern : String -> List Segment
+let parsePattern p = List.map parseSegment (splitPath p)
+
+// --- The route tree --------------------------------------------------------
+// A node carries the static children (by segment), an optional capture child
+// (with its parameter name), and the terminal handlers registered here. Method
+// filtering is baked into each handler by the verb groupers (a `get` route's
+// handler skips a non-`GET` request), so a node holds plain handlers rather than
+// method-tagged ones.
+type Node 'e =
+  | MkNode { capture : Option (String * Node 'e), children : List (String * Node 'e), handlers : List (Web.HttpHandler 'e) }
+
+emptyNode : Node 'e
+let emptyNode = MkNode { capture = None, children = [], handlers = [] }
+
+let nodeFields node =
+  match node with
+  | MkNode r -> r
+
+orElse : Option 'a -> Option 'a -> Option 'a
+let orElse primary fallback =
+  match primary with
+  | Some x -> Some x
+  | None -> fallback
+
+// The child stored under static segment `s`, or the empty node.
+childOrEmpty : List (String * Node 'e) -> String -> Node 'e
+let childOrEmpty children s =
+  match children with
+  | [] -> emptyNode
+  | pair :: rest ->
+    match pair with
+    | (k, v) -> if k = s then v else childOrEmpty rest s
+
+// The child stored under static segment `s`, if any.
+childAt : List (String * Node 'e) -> String -> Option (Node 'e)
+let childAt children s =
+  match children with
+  | [] -> None
+  | pair :: rest ->
+    match pair with
+    | (k, v) -> if k = s then Some v else childAt rest s
+
+// Replace (or append) the child stored under static segment `s`.
+setChild : List (String * Node 'e) -> String -> Node 'e -> List (String * Node 'e)
+let setChild children s node =
+  match children with
+  | [] -> [(s, node)]
+  | pair :: rest ->
+    match pair with
+    | (k, v) -> if k = s then (s, node) :: rest else pair :: setChild rest s node
+
+// Insert a (method-gated) handler at the path given by `segs`.
+insertAt : Node 'e -> List Segment -> Web.HttpHandler 'e -> Node 'e
+let insertAt node segs handler =
+  let r = nodeFields node
+  match segs with
+  | [] -> MkNode { r with handlers = List.append r.handlers [handler] }
+  | seg :: rest ->
+    match seg with
+    | StaticSeg s ->
+      let updated = insertAt (childOrEmpty r.children s) rest handler
+      MkNode { r with children = setChild r.children s updated }
+    | CaptureSeg name ->
+      let existing =
+        match r.capture with
+        | Some pair ->
+          match pair with
+          | (n, c) -> c
+        | None -> emptyNode
+      MkNode { r with capture = Some (name, insertAt existing rest handler) }
+
+// Gate a handler on a method (if a verb grouper applies), so it skips a request
+// whose method does not match.
+gateOn : Option Http.Method -> Web.HttpHandler 'e -> Web.HttpHandler 'e
+let gateOn method handler =
+  match method with
+  | None -> handler
+  | Some m -> Web.chain [Web.requireMethod m, handler]
+
+// Flatten a route (with its inherited path prefix and method) into the tree.
+addRoute : Node 'e -> List Segment -> Option Http.Method -> Route 'e -> Node 'e
+let addRoute node prefix method r =
+  match r with
+  | RouteLeaf pattern handler ->
+    insertAt node (List.append prefix (parsePattern pattern)) (gateOn method handler)
+  | RouteScope m prefixPattern children ->
+    addRoutes node (List.append prefix (parsePattern prefixPattern)) (orElse m method) children
+
+// Flatten a list of routes into the tree under a shared prefix and method.
+addRoutes : Node 'e -> List Segment -> Option Http.Method -> List (Route 'e) -> Node 'e
+let addRoutes node prefix method routes =
+  match routes with
+  | [] -> node
+  | r :: rest -> addRoutes (addRoute node prefix method r) prefix method rest
+
+// --- Matching --------------------------------------------------------------
+// Walk the path segments through the tree, collecting captured parameters and
+// returning the handlers registered at the matched node. Static edges win; a
+// failed static branch falls back to the capture edge.
+lookupNode : Node 'e -> List String -> List (String * String) -> Option (List (String * String) * List (Web.HttpHandler 'e))
+let lookupNode node segs params =
+  let r = nodeFields node
+  match segs with
+  | [] -> Some (params, r.handlers)
+  | seg :: rest ->
+    let viaStatic =
+      match childAt r.children seg with
+      | Some child -> lookupNode child rest params
+      | None -> None
+    match viaStatic with
+    | Some result -> Some result
+    | None ->
+      match r.capture with
+      | Some pair ->
+        match pair with
+        | (name, child) -> lookupNode child rest (List.append params [(name, seg)])
+      | None -> None
+
+/// Build a handler that dispatches each request through `routes`, running
+/// `fallback` when no route matches the path, no registered method matches, or
+/// every matched handler skips. The matched handlers are tried in order (so a
+/// path registered for several methods picks the one matching the request).
+public router : Web.HttpHandler 'e -> List (Route 'e) -> Web.HttpHandler 'e
+let router fallback routes =
+  let tree = addRoutes emptyNode [] None routes
+  fun ctx ->
+    match lookupNode tree (splitPath (Web.path ctx)) [] with
+    | None -> fallback ctx
+    | Some result ->
+      match result with
+      | (params, handlers) ->
+        Web.choose (List.append handlers [fallback]) { ctx with params = params }
