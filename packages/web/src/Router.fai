@@ -210,5 +210,6 @@ let router fallback routes =
     | None -> fallback ctx
     | Some result ->
       match result with
-      | (params, handlers) ->
-        Web.choose (List.append handlers [fallback]) { ctx with params = params }
+      | (params, handlers) -> Web.choose (List.append handlers [
+        fallback
+      ]) { ctx with params = params }

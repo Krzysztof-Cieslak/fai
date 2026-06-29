@@ -25,7 +25,11 @@ public type Outcome 'e =
 
 /// The request being served, the response accumulated so far, and the route
 /// parameters captured by the router (e.g. `id` from `/user/{id}`).
-public type HttpContext 'e = { params : List (String * String), request : Http.Request 'e, response : Http.Response 'e }
+public type HttpContext 'e = {
+  params : List (String * String),
+  request : Http.Request 'e,
+  response : Http.Response 'e
+}
 
 /// A request handler: inspect the context and decide an `Outcome`. The effect
 /// variable `'e` forwards whatever capabilities the handler uses.
@@ -161,7 +165,10 @@ let textResponse status body =
 typedResponse : Int -> String -> String -> Http.Response 'e
 let typedResponse status contentType body =
   let base = Http.response status (Http.stringBody body)
-  { base with headers = Headers.set "Content-Type" contentType base.headers, reason = reasonPhrase status }
+  { base with
+    headers = Headers.set "Content-Type" contentType base.headers,
+    reason = reasonPhrase status
+  }
 
 /// Respond with `status` and a plain-text body, ending the pipeline.
 public respond : Int -> String -> HttpHandler 'e
@@ -179,7 +186,12 @@ let html body ctx = Halt { ctx with response = typedResponse 200 "text/html; cha
 public bytes : Bytes -> HttpHandler 'e
 let bytes payload ctx =
   let base = Http.response 200 (Http.bytesBody payload)
-  Halt { ctx with response = { base with headers = Headers.set "Content-Type" "application/octet-stream" base.headers, reason = "OK" } }
+  Halt { ctx with
+    response = { base with
+      headers = Headers.set "Content-Type" "application/octet-stream" base.headers,
+      reason = "OK"
+    }
+  }
 
 /// Respond `201 Created` with a plain-text body.
 public created : String -> HttpHandler 'e
@@ -228,7 +240,12 @@ let setHeader name value ctx =
 public redirect : String -> HttpHandler 'e
 let redirect location ctx =
   let base = Http.response 302 Http.emptyBody
-  Halt { ctx with response = { base with headers = Headers.set "Location" location base.headers, reason = "Found" } }
+  Halt { ctx with
+    response = { base with
+      headers = Headers.set "Location" location base.headers,
+      reason = "Found"
+    }
+  }
 
 // --- Testing helpers -------------------------------------------------------
 /// Build a request context for `method` and `target` (an origin-form path such as
@@ -238,8 +255,11 @@ public mockContext : Http.Method -> String -> Result (HttpContext 'e) String
 let mockContext method target =
   match Url.parse target with
   | Err e -> Err e
-  | Ok url ->
-    Ok { params = [], request = { body = Http.emptyBody, headers = Headers.empty, method = method, url = url }, response = textResponse 404 "" }
+  | Ok url -> Ok {
+    params = [],
+    request = { body = Http.emptyBody, headers = Headers.empty, method = method, url = url },
+    response = textResponse 404 ""
+  }
 
 /// The response an outcome produced (`Continue`/`Halt`), or `None` when it
 /// skipped or failed — useful for asserting on a handler's result in a contract.

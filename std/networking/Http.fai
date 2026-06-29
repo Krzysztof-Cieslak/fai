@@ -25,7 +25,12 @@ public type Request 'e = { body : Stream Bytes 'e, headers : Headers, method : M
 
 /// An HTTP response: a status code and reason phrase, header fields, and a
 /// streaming body.
-public type Response 'e = { body : Stream Bytes 'e, headers : Headers, reason : String, status : Int }
+public type Response 'e = {
+  body : Stream Bytes 'e,
+  headers : Headers,
+  reason : String,
+  status : Int
+}
 
 /// A bidirectional byte transport the framing is written against (a plain TCP
 /// connection, or — later — a TLS session). Mock it to unit-test framing without a
@@ -131,19 +136,32 @@ example: bodyText (formBody [("a", "1"), ("b", "x y")]) = Ok "a=1&b=x%20y"
 // --- Multipart/form-data bodies --------------------------------------------
 /// One part of a `multipart/form-data` body: a field `name`, optional `filename` and
 /// `contentType`, and the raw `content` bytes.
-public type Part = { content : Bytes, contentType : Option String, filename : Option String, name : String }
+public type Part = {
+  content : Bytes,
+  contentType : Option String,
+  filename : Option String,
+  name : String
+}
 
 /// A simple text form field (no filename or content type).
 public field : String -> String -> Part
-let field name value =
-  { content = Bytes.fromString value, contentType = None, filename = None, name = name }
+let field name value = {
+  content = Bytes.fromString value,
+  contentType = None,
+  filename = None,
+  name = name
+}
 example: (field "a" "b").name = "a"
 
 /// A file part: a field `name`, the `filename` and `contentType` to report, and the
 /// file `content`.
 public filePart : String -> String -> String -> Bytes -> Part
-let filePart name filename contentType content =
-  { content = content, contentType = Some contentType, filename = Some filename, name = name }
+let filePart name filename contentType content = {
+  content = content,
+  contentType = Some contentType,
+  filename = Some filename,
+  name = name
+}
 example: (filePart "f" "x.txt" "text/plain" (Bytes.fromString "hi")).filename = Some "x.txt"
 
 /// The `Content-Type` header value for a multipart body with the given boundary.
@@ -566,8 +584,12 @@ let parseResponse t =
         | Err e -> Err e
         | Ok parsed ->
           match parsed with
-          | (code, reason, headers) ->
-            Ok { body = bodyStream t leftover (framingOf headers UntilEof), headers = headers, reason = reason, status = code }
+          | (code, reason, headers) -> Ok {
+            body = bodyStream t leftover (framingOf headers UntilEof),
+            headers = headers,
+            reason = reason,
+            status = code
+          }
 
 // --- Transport instances ---------------------------------------------------
 /// A transport over a plain TCP `Connection`. Typed `Transport { Net, Tls }`: it
@@ -575,8 +597,11 @@ let parseResponse t =
 /// transport where a request picks plain-vs-secure by URL scheme at runtime (an
 /// instance may declare a wider effect than its methods use).
 public plainTransport : { net : Net | 'r } -> Connection -> Transport { Net, Tls }
-let plainTransport env conn =
-  { Transport with close u = env.net.close conn, recv max = env.net.recv conn max, send bytes = env.net.send conn bytes }
+let plainTransport env conn = { Transport with
+  close u = env.net.close conn,
+  recv max = env.net.recv conn max,
+  send bytes = env.net.send conn bytes
+}
 
 // Send whatever ciphertext the TLS session has queued, to the socket.
 flushOutgoing : { net : Net, tls : Tls | 'r } -> Connection -> TlsSession -> Result Unit String / { Net, Tls }
@@ -646,8 +671,11 @@ let tlsCloseImpl env conn session =
 /// A transport over a TLS session on a TCP `Connection`. The handshake must already
 /// have completed (see `secureClient`).
 public tlsTransport : { net : Net, tls : Tls | 'r } -> Connection -> TlsSession -> Transport { Net, Tls }
-let tlsTransport env conn session =
-  { Transport with close u = tlsCloseImpl env conn session, recv max = tlsRecv env conn session max, send bytes = tlsSend env conn session bytes }
+let tlsTransport env conn session = { Transport with
+  close u = tlsCloseImpl env conn session,
+  recv max = tlsRecv env conn session max,
+  send bytes = tlsSend env conn session bytes
+}
 
 // --- Client ----------------------------------------------------------------
 // Open a client TLS session (trusting the bundled roots, plus `extraRoots` PEM when
@@ -749,8 +777,12 @@ let redirectRequest req status headers =
     | Ok newUrl ->
       match redirectMethodBody req.method status with
       | None -> None
-      | Some newMethod ->
-        Some { body = emptyBody, headers = redirectHeaders req.url newUrl req.headers, method = newMethod, url = newUrl }
+      | Some newMethod -> Some {
+        body = emptyBody,
+        headers = redirectHeaders req.url newUrl req.headers,
+        method = newMethod,
+        url = newUrl
+      }
 
 // Send the request and, while the response is a followable redirect with hops to
 // spare, drop it (closing its connection) and re-request the resolved `Location`.
@@ -799,8 +831,12 @@ public getWith : { net : Net, tls : Tls | 'r } -> Option Bytes -> String -> Resu
 let getWith env extraRoots urlStr =
   match Url.parse urlStr with
   | Err e -> Err e
-  | Ok url ->
-    requestWith env extraRoots { body = emptyBody, headers = Headers.empty, method = GET, url = url }
+  | Ok url -> requestWith env extraRoots {
+    body = emptyBody,
+    headers = Headers.empty,
+    method = GET,
+    url = url
+  }
 
 /// POST a body (with caller-supplied headers) to a URL (http or https).
 public post : { net : Net, tls : Tls | 'r } -> String -> Headers -> Stream Bytes 'e -> Result (Response { Net, Tls }) String / { Net, Tls | 'e }
@@ -1000,8 +1036,13 @@ buildPooledResponse : { concurrency : Concurrency | 'r } -> Client -> String -> 
 let buildPooledResponse env client origin code reason headers leftover t =
   let framing = framingOf headers UntilEof
   let reusable = isReusable headers framing
-  { body = pooledBody (fun conn ->
-    releaseToPool env client origin reusable conn) t leftover framing, headers = headers, reason = reason, status = code }
+  {
+    body = pooledBody (fun conn ->
+      releaseToPool env client origin reusable conn) t leftover framing,
+    headers = headers,
+    reason = reason,
+    status = code
+  }
 
 // Open a fresh connection (TLS for an https URL) for a request, trusting the bundled
 // roots.
@@ -1054,8 +1095,12 @@ public getOn : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Clien
 let getOn env client urlStr =
   match Url.parse urlStr with
   | Err e -> Err e
-  | Ok url ->
-    requestOn env client { body = emptyBody, headers = Headers.empty, method = GET, url = url }
+  | Ok url -> requestOn env client {
+    body = emptyBody,
+    headers = Headers.empty,
+    method = GET,
+    url = url
+  }
 
 /// POST a body (with caller-supplied headers) to a URL over the pool.
 public postOn : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Client -> String -> Headers -> Stream Bytes 'e -> Result (Response { Concurrency, Net, Tls }) String / { Concurrency, Net, Tls | 'e }
@@ -1101,14 +1146,22 @@ let reasonFor status =
 /// A response with the given status and body (no headers; a standard reason
 /// phrase).
 public response : Int -> Stream Bytes 'e -> Response 'e
-let response status body =
-  { body = body, headers = Headers.empty, reason = reasonFor status, status = status }
+let response status body = {
+  body = body,
+  headers = Headers.empty,
+  reason = reasonFor status,
+  status = status
+}
 example: (response 204 emptyBody).status = 204
 
 /// A `text/plain` response with the given status and text body.
 public textResponse : Int -> String -> Response 'e
-let textResponse status text =
-  { body = stringBody text, headers = Headers.set "Content-Type" "text/plain; charset=utf-8" Headers.empty, reason = reasonFor status, status = status }
+let textResponse status text = {
+  body = stringBody text,
+  headers = Headers.set "Content-Type" "text/plain; charset=utf-8" Headers.empty,
+  reason = reasonFor status,
+  status = status
+}
 example: (textResponse 200 "hi").status = 200
 
 /// An error response (the message as a `text/plain` body).
@@ -1120,8 +1173,12 @@ example: (errorResponse 500 "boom").status = 500
 /// chunk (one frame per stream element) without being buffered, for a large or
 /// unbounded response. The body's effect flows into the server's.
 public chunkedResponse : Int -> Headers -> Stream Bytes 'e -> Response 'e
-let chunkedResponse status headers body =
-  { body = body, headers = Headers.set "Transfer-Encoding" "chunked" headers, reason = reasonFor status, status = status }
+let chunkedResponse status headers body = {
+  body = body,
+  headers = Headers.set "Transfer-Encoding" "chunked" headers,
+  reason = reasonFor status,
+  status = status
+}
 example: (chunkedResponse 200 Headers.empty emptyBody).status = 200
 
 // --- Request parsing (server side) -----------------------------------------

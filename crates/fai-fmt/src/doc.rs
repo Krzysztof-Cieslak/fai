@@ -13,6 +13,10 @@ pub enum Doc {
     Text(String),
     /// A space when flat, a newline + indent when broken.
     Line,
+    /// Nothing when flat, a newline + indent when broken. Used at the inside
+    /// edges of a collection so `[a, b]` stays tight when it fits but each
+    /// element gets its own line once the group breaks.
+    Softline,
     /// Always a newline + indent; forces the enclosing group to break.
     Hardline,
     /// Increases the indentation of its contents by `n`.
@@ -97,6 +101,14 @@ pub fn print(doc: &Doc, width: usize) -> String {
                     col = indent;
                 }
             },
+            Doc::Softline => match mode {
+                Mode::Flat => {}
+                Mode::Break => {
+                    out.push('\n');
+                    pending_indent = Some(indent);
+                    col = indent;
+                }
+            },
             Doc::Hardline => {
                 out.push('\n');
                 pending_indent = Some(indent);
@@ -161,6 +173,10 @@ fn fits(mut remaining: i32, doc: &Doc, rest: &[(usize, Mode, &Doc)]) -> bool {
                         return false;
                     }
                 }
+                Mode::Break => return true,
+            },
+            Doc::Softline => match mode {
+                Mode::Flat => {}
                 Mode::Break => return true,
             },
             // A hard line inside the group being tested (Flat) means it cannot be

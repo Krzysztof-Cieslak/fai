@@ -233,7 +233,16 @@ public interface Tls =
 /// The capability bundle `main` receives: the host's console, clock, random,
 /// file system, environment, concurrency, network, and TLS. Request only the fields
 /// you need (an open record) to keep authority least.
-public type Runtime = { clock : Clock, concurrency : Concurrency, console : Console, env : Env, fs : FileSystem, net : Net, random : Random, tls : Tls }
+public type Runtime = {
+  clock : Clock,
+  concurrency : Concurrency,
+  console : Console,
+  env : Env,
+  fs : FileSystem,
+  net : Net,
+  random : Random,
+  tls : Tls
+}
 
 // The raw host primitives, implemented as native runtime functions and reached
 // only through the capability instances below. Each `foreign` declaration names
@@ -375,12 +384,19 @@ let readLineHost u =
     if status = 0 then Ok (Some payload) else if status = 1 then Ok None else Err payload
 
 public stdConsole : Console
-let stdConsole =
-  { Console with readLine = readLineHost, write s = consoleWrite s, writeError s = consoleWriteError s, writeLine s = consoleWriteLine s }
+let stdConsole = { Console with
+  readLine = readLineHost,
+  write s = consoleWrite s,
+  writeError s = consoleWriteError s,
+  writeLine s = consoleWriteLine s
+}
 
 public stdClock : Clock
-let stdClock =
-  { Clock with localOffset u = clockLocalOffset u, now u = clockNow u, sleep ms = clockSleep ms }
+let stdClock = { Clock with
+  localOffset u = clockLocalOffset u,
+  now u = clockNow u,
+  sleep ms = clockSleep ms
+}
 
 public stdRandom : Random
 let stdRandom = { Random with nextInt n = randomNextInt n }
@@ -398,8 +414,17 @@ let envGetHost name =
   | (found, value) -> if found then Some value else None
 
 public stdFs : FileSystem
-let stdFs =
-  { FileSystem with closeReader = fileCloseReader, closeWriter = fileCloseWriter, openAppend = fileOpenAppend, openRead = fileOpenRead, openWrite = fileOpenWrite, readChunk = fileReadChunk, readFile = readFileHost, writeChunk = fileWriteChunk, writeFile = writeFileHost }
+let stdFs = { FileSystem with
+  closeReader = fileCloseReader,
+  closeWriter = fileCloseWriter,
+  openAppend = fileOpenAppend,
+  openRead = fileOpenRead,
+  openWrite = fileOpenWrite,
+  readChunk = fileReadChunk,
+  readFile = readFileHost,
+  writeChunk = fileWriteChunk,
+  writeFile = writeFileHost
+}
 
 public stdEnv : Env
 let stdEnv = { Env with args u = envArgs u, get = envGetHost }
@@ -408,30 +433,67 @@ let stdEnv = { Env with args u = envArgs u, get = envGetHost }
 /// program can compose it into its own extended `Runtime`; ordinarily it arrives in
 /// the `Runtime` bundle `main` receives.
 public stdConcurrency : Concurrency
-let stdConcurrency =
-  { Concurrency with await task = awaitRaw task, cancel task = cancelRaw task, channel capacity = channelRaw capacity, close chan = closeRaw chan, recv chan = recvRaw chan, scope body = scopeRaw body, send chan value = sendRaw chan value, spawn nursery thunk = spawnRaw nursery thunk }
+let stdConcurrency = { Concurrency with
+  await task = awaitRaw task,
+  cancel task = cancelRaw task,
+  channel capacity = channelRaw capacity,
+  close chan = closeRaw chan,
+  recv chan = recvRaw chan,
+  scope body = scopeRaw body,
+  send chan value = sendRaw chan value,
+  spawn nursery thunk = spawnRaw nursery thunk
+}
 
 /// The standard network capability, backed by the I/O reactor. `public` so a
 /// program can compose it into its own extended `Runtime`; ordinarily it arrives in
 /// the `Runtime` bundle `main` receives.
 public stdNet : Net
-let stdNet =
-  { Net with accept listener = netAccept listener, close conn = netClose conn, connect host port = netConnect host port, listen port = netListen port, localPort listener = netLocalPort listener, recv conn max = netRecv conn max, send conn bytes = netSend conn bytes, udpBind port = udpBindRaw port, udpClose sock = udpCloseRaw sock, udpLocalPort sock = udpLocalPortRaw sock, udpRecv sock max = udpRecvRaw sock max, udpSend sock host port bytes = udpSendRaw sock host port bytes }
+let stdNet = { Net with
+  accept listener = netAccept listener,
+  close conn = netClose conn,
+  connect host port = netConnect host port,
+  listen port = netListen port,
+  localPort listener = netLocalPort listener,
+  recv conn max = netRecv conn max,
+  send conn bytes = netSend conn bytes,
+  udpBind port = udpBindRaw port,
+  udpClose sock = udpCloseRaw sock,
+  udpLocalPort sock = udpLocalPortRaw sock,
+  udpRecv sock max = udpRecvRaw sock max,
+  udpSend sock host port bytes = udpSendRaw sock host port bytes
+}
 
 /// The standard TLS capability, backed by the rustls engine. `public` so a program
 /// can compose it into its own extended `Runtime`; ordinarily it arrives in the
 /// `Runtime` bundle `main` receives.
 public stdTls : Tls
-let stdTls =
-  { Tls with client host = tlsClientRaw host, clientWithRoots host roots = tlsClientWithRootsRaw host roots, close session = tlsCloseRaw session, feedIncoming session bytes = tlsFeedIncomingRaw session bytes, readPlaintext session max = tlsReadPlaintextRaw session max, server cert key = tlsServerRaw cert key, state session = tlsStateRaw session, takeOutgoing session = tlsTakeOutgoingRaw session, writePlaintext session bytes = tlsWritePlaintextRaw session bytes }
+let stdTls = { Tls with
+  client host = tlsClientRaw host,
+  clientWithRoots host roots = tlsClientWithRootsRaw host roots,
+  close session = tlsCloseRaw session,
+  feedIncoming session bytes = tlsFeedIncomingRaw session bytes,
+  readPlaintext session max = tlsReadPlaintextRaw session max,
+  server cert key = tlsServerRaw cert key,
+  state session = tlsStateRaw session,
+  takeOutgoing session = tlsTakeOutgoingRaw session,
+  writePlaintext session bytes = tlsWritePlaintextRaw session bytes
+}
 
 /// The standard `Runtime` the entry trampoline applies `main` to when the entry
 /// file defines no `runtime` builder of its own. A program may instead define its
 /// own `runtime` (composing these defaults with extra capabilities) to extend the
 /// bundle `main` receives.
 public defaultRuntime : Runtime
-let defaultRuntime =
-  { clock = stdClock, concurrency = stdConcurrency, console = stdConsole, env = stdEnv, fs = stdFs, net = stdNet, random = stdRandom, tls = stdTls }
+let defaultRuntime = {
+  clock = stdClock,
+  concurrency = stdConcurrency,
+  console = stdConsole,
+  env = stdEnv,
+  fs = stdFs,
+  net = stdNet,
+  random = stdRandom,
+  tls = stdTls
+}
 
 /// Forward application: `x |> f` is `f x`.
 public (|>) : 'a -> ('a -> 'b / 'e) -> 'b / 'e

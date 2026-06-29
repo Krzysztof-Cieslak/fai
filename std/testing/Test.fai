@@ -161,8 +161,26 @@ example: char.show 'a' = "'a'"
 example: char.show '\n' = "'\\n'"
 example: char.show '\u{1F600}' = "'\\u{1f600}'"
 
-let alphabet =
-  ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", " ", "0", "1", "2", "3"]
+let alphabet = [
+  "a",
+  "b",
+  "c",
+  "d",
+  "e",
+  "f",
+  "g",
+  "h",
+  "i",
+  "j",
+  "k",
+  "l",
+  "m",
+  " ",
+  "0",
+  "1",
+  "2",
+  "3"
+]
 
 let nthOr fallback i xs =
   match xs with

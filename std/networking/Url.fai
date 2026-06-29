@@ -22,8 +22,15 @@ let fields url =
 
 // The empty component record (an origin-form URL with just an empty path).
 emptyFields : { fragment : Option String, host : Option String, path : String, port : Option Int, query : Option String, scheme : Option String, userinfo : Option String }
-let emptyFields =
-  { fragment = None, host = None, path = "", port = None, query = None, scheme = None, userinfo = None }
+let emptyFields = {
+  fragment = None,
+  host = None,
+  path = "",
+  port = None,
+  query = None,
+  scheme = None,
+  userinfo = None
+}
 
 // Whether an `Option` holds a value.
 isSome : Option 'a -> Bool
@@ -82,12 +89,20 @@ let parseAfterScheme afterScheme =
   match splitFirst "/" afterScheme with
   | None ->
     match parseAuthority afterScheme with
-    | (ui, host, port) ->
-      MkUrl { emptyFields with host = host, path = "/", port = port, userinfo = ui }
+    | (ui, host, port) -> MkUrl { emptyFields with
+      host = host,
+      path = "/",
+      port = port,
+      userinfo = ui
+    }
   | Some (authority, rest) ->
     match parseAuthority authority with
-    | (ui, host, port) ->
-      MkUrl { emptyFields with host = host, path = "/" ++ rest, port = port, userinfo = ui }
+    | (ui, host, port) -> MkUrl { emptyFields with
+      host = host,
+      path = "/" ++ rest,
+      port = port,
+      userinfo = ui
+    }
 
 /// Parse a URL string. Accepts an absolute URL (`scheme://host[:port]/path?query`,
 /// the scheme lower-cased) and an origin-form target (`/path?query`); a bare empty
@@ -253,7 +268,13 @@ let resolveRelative base rf =
     if String.take 1 rf.path = "/" then
       rf.path
     else if rf.path = "" then base.path else mergePath base.path rf.path
-  MkUrl { rf with host = base.host, path = p, port = base.port, scheme = base.scheme, userinfo = base.userinfo }
+  MkUrl { rf with
+    host = base.host,
+    path = p,
+    port = base.port,
+    scheme = base.scheme,
+    userinfo = base.userinfo
+  }
 
 // Merge a relative path against the base path's directory (everything up to and
 // including the last `/`).

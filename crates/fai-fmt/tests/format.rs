@@ -1175,6 +1175,121 @@ fn record_expressions_format() {
     assert!(assert_canonical("module M\nlet v = r.x.y").contains("r.x.y"));
 }
 
+// --- wide collections wrap one item per line ---------------------------------
+// A collection that does not fit the 100-column width breaks: its opening
+// delimiter hugs the `=` line, each element gets its own line indented two
+// spaces, and the closing delimiter dangles back at the binding's indentation.
+
+#[test]
+fn wide_list_wraps_one_item_per_line() {
+    let src = "module M\nlet xs = [alphaItem, betaItem, gammaItem, deltaItem, epsilonItem, zetaItem, etaItem, thetaItem, iotaItem]";
+    let out = assert_canonical(src);
+    assert!(out.contains("let xs = [\n  alphaItem,\n  betaItem,\n"), "list did not wrap:\n{out}");
+    assert!(out.contains("\n  iotaItem\n]"), "list close did not dangle:\n{out}");
+}
+
+#[test]
+fn narrow_list_stays_flat() {
+    // A list that fits is untouched (no spurious wrapping).
+    assert!(assert_canonical("module M\nlet xs = [1, 2, 3]").contains("let xs = [1, 2, 3]"));
+}
+
+#[test]
+fn wide_array_wraps_one_item_per_line() {
+    let src = "module M\nlet ys = [| alphaItem, betaItem, gammaItem, deltaItem, epsilonItem, zetaItem, etaItem, thetaItem, iotaItem |]";
+    let out = assert_canonical(src);
+    assert!(out.contains("let ys = [|\n  alphaItem,\n  betaItem,\n"), "array did not wrap:\n{out}");
+    assert!(out.contains("\n  iotaItem\n|]"), "array close did not dangle:\n{out}");
+}
+
+#[test]
+fn wide_record_wraps_one_field_per_line() {
+    let src = "module M\nlet r = { alpha = 100, beta = 200, gamma = 300, delta = 400, epsilon = 500, zeta = 600, eta = 700, theta = 800 }";
+    let out = assert_canonical(src);
+    assert!(
+        out.contains("let r = {\n  alpha = 100,\n  beta = 200,\n"),
+        "record did not wrap:\n{out}"
+    );
+    assert!(out.contains("\n  zeta = 600\n}"), "record close did not dangle:\n{out}");
+}
+
+#[test]
+fn wide_record_update_keeps_with_on_opening_line() {
+    let src = "module M\nlet upd = { base with alpha = 100, beta = 200, gamma = 300, delta = 400, epsilon = 500, zeta = 600, eta = 700 }";
+    let out = assert_canonical(src);
+    assert!(
+        out.contains("{ base with\n  alpha = 100,\n"),
+        "update did not wrap after `with`:\n{out}"
+    );
+    assert!(out.contains("\n  zeta = 600\n}"), "update close did not dangle:\n{out}");
+}
+
+#[test]
+fn wide_instance_wraps_keeping_with_on_opening_line() {
+    let src = "module M\nlet inst = { Greeter with alphaMethod x = x, betaMethod x = x, gammaMethod x = x, deltaMethod x = x }";
+    let out = assert_canonical(src);
+    assert!(
+        out.contains("{ Greeter with\n  alphaMethod x = x,\n"),
+        "instance did not wrap after `with`:\n{out}"
+    );
+    assert!(out.contains("\n  gammaMethod x = x\n}"), "instance close did not dangle:\n{out}");
+}
+
+#[test]
+fn wide_record_type_wraps_one_field_per_line() {
+    let src = "module M\npublic type Big = { alpha : Int, beta : Int, gamma : Int, delta : Int, epsilon : Int, zeta : Int, eta : Int }\nlet x = 1";
+    let out = assert_canonical(src);
+    assert!(
+        out.contains("public type Big = {\n  alpha : Int,\n  beta : Int,\n"),
+        "record type did not wrap:\n{out}"
+    );
+    assert!(out.contains("\n  zeta : Int\n}"), "record type close did not dangle:\n{out}");
+}
+
+#[test]
+fn nested_wide_collections_wrap_independently() {
+    // The outer list breaks; an element that still fits stays flat, while one that
+    // does not breaks too (the routing-table shape).
+    let src = "module M\nlet app = router fallback [group [routeAlpha handlerAlpha, routeBeta handlerBeta, routeGamma handlerGamma, routeDelta handlerDelta], sub \"/api\" [pingRoute]]";
+    let out = assert_canonical(src);
+    assert!(
+        out.contains("let app = router fallback [\n  group [\n"),
+        "outer/inner did not wrap:\n{out}"
+    );
+    // The short nested list stays on one line, and the outer close dangles.
+    assert!(
+        out.contains("  sub \"/api\" [pingRoute]\n]"),
+        "short nested list should stay flat:\n{out}"
+    );
+}
+
+#[test]
+fn tuples_do_not_wrap() {
+    // Tuples are kept flat even when wide (a deliberate scope choice): the body is
+    // pushed to its own line but the tuple itself stays on one line.
+    let src = "module M\nlet t = (alphaItem, betaItem, gammaItem, deltaItem, epsilonItem, zetaItem, etaItem, thetaItem, iotaItem)";
+    let out = assert_canonical(src);
+    assert!(
+        out.contains(
+            "(alphaItem, betaItem, gammaItem, deltaItem, epsilonItem, zetaItem, etaItem, thetaItem, iotaItem)"
+        ),
+        "tuple should stay on one line:\n{out}"
+    );
+}
+
+#[test]
+fn wide_collections_preserve_structure() {
+    preserves_structure(
+        "module M\nlet xs = [alphaItem, betaItem, gammaItem, deltaItem, epsilonItem, zetaItem, etaItem, thetaItem, iotaItem]",
+    );
+    preserves_structure(
+        "module M\nlet r = { alpha = 100, beta = 200, gamma = 300, delta = 400, epsilon = 500, zeta = 600, eta = 700, theta = 800 }",
+    );
+    preserves_structure(
+        "module M\nlet upd = { base with alpha = 100, beta = 200, gamma = 300, delta = 400, epsilon = 500, zeta = 600, eta = 700 }",
+    );
+}
+
 #[test]
 fn record_types_in_signatures_format() {
     assert!(

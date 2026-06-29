@@ -19,19 +19,62 @@ type Tok =
   | TLit String
   | TField String Int
 
-type Parts = { ampm : Int, day : Int, h12 : Bool, hour : Int, minute : Int, month : Int, nano : Int, second : Int, year : Int }
+type Parts = {
+  ampm : Int,
+  day : Int,
+  h12 : Bool,
+  hour : Int,
+  minute : Int,
+  month : Int,
+  nano : Int,
+  second : Int,
+  year : Int
+}
 
 defaultParts : Parts
-let defaultParts =
-  { ampm = 0, day = 1, h12 = false, hour = 0, minute = 0, month = 1, nano = 0, second = 0, year = 1970 }
+let defaultParts = {
+  ampm = 0,
+  day = 1,
+  h12 = false,
+  hour = 0,
+  minute = 0,
+  month = 1,
+  nano = 0,
+  second = 0,
+  year = 1970
+}
 
 monthShort : List String
-let monthShort =
-  ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+let monthShort = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec"
+]
 
 monthFull : List String
-let monthFull =
-  ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
+let monthFull = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December"
+]
 
 weekdayShort : List String
 let weekdayShort = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]

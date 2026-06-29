@@ -167,7 +167,15 @@ impl Printer<'_> {
             header.push_str(p.as_str());
         }
         match def {
-            TypeDef::Alias(ty) => concat(vec![text(header), text(" = "), self.type_doc(*ty)]),
+            TypeDef::Alias(ty) => {
+                // A record type written directly as an alias body wraps when wide
+                // (e.g. the `Runtime` bundle); any other alias body stays inline.
+                let body = match &self.module.ty(*ty).kind {
+                    TypeKind::Record { fields, tail } => self.record_type_doc(fields, *tail, true),
+                    _ => self.type_doc(*ty),
+                };
+                concat(vec![text(header), text(" = "), body])
+            }
             TypeDef::Union(variants) => {
                 let mut parts = vec![text(header), text(" =")];
                 let mut arms = vec![Doc::Hardline];
@@ -219,22 +227,29 @@ impl Printer<'_> {
         concat(parts)
     }
 
+    /// Renders an interface instance `{ Name with m = …, … }` (methods sorted),
+    /// wrapping one method per line when it does not fit the line width.
     fn instance_doc(&self, name: fai_syntax::Symbol, methods: &[MethodImpl]) -> Doc {
         let mut order: Vec<&MethodImpl> = methods.iter().collect();
         order.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
-        let mut parts = vec![text("{ "), text(name.as_str()), text(" with")];
-        for (index, m) in order.iter().enumerate() {
-            parts.push(text(if index == 0 { " " } else { ", " }));
-            parts.push(text(var_text(m.name.as_str())));
-            for &p in &m.params {
-                parts.push(text(" "));
-                parts.push(self.pat_doc(p));
-            }
-            parts.push(text(" = "));
-            parts.push(self.expr_doc(m.body));
+        if order.is_empty() {
+            return concat(vec![text("{ "), text(name.as_str()), text(" with }")]);
         }
-        parts.push(text(" }"));
-        concat(parts)
+        let open = concat(vec![text("{ "), text(name.as_str()), text(" with")]);
+        let items = order
+            .iter()
+            .map(|m| {
+                let mut parts = vec![text(var_text(m.name.as_str()))];
+                for &p in &m.params {
+                    parts.push(text(" "));
+                    parts.push(self.pat_doc(p));
+                }
+                parts.push(text(" = "));
+                parts.push(self.expr_doc(m.body));
+                concat(parts)
+            })
+            .collect();
+        collection(open, items, None, "}", true)
     }
 
     /// A binding/lambda body: a forced-multiline block, or an inline-or-broken
@@ -243,7 +258,30 @@ impl Printer<'_> {
         if let Some((stmts, tail)) = self.multiline_block(id) {
             return nest(2, concat(vec![Doc::Hardline, self.block_inner(stmts, tail)]));
         }
-        group(nest(2, concat(vec![Doc::Line, self.expr_doc(self.collapsed(id))])))
+        let collapsed = self.collapsed(id);
+        // A body that is (or ends in) a collection literal keeps its opening
+        // delimiter on the `=` line and lets the literal's own group wrap — so
+        // `let xs = [ … ]` stays hugged rather than pushing the `[` to its own
+        // indented line.
+        if self.hugs_delimiter(collapsed) {
+            return concat(vec![text(" "), self.expr_doc(collapsed)]);
+        }
+        group(nest(2, concat(vec![Doc::Line, self.expr_doc(collapsed)])))
+    }
+
+    /// Whether an expression is a collection/record/instance literal, or an
+    /// application whose final argument is one. Such a body is rendered "hugged":
+    /// its opening delimiter stays on the `=` (or `->`) line.
+    fn hugs_delimiter(&self, id: ExprId) -> bool {
+        match &self.module.expr(id).kind {
+            ExprKind::List(_)
+            | ExprKind::Array(_)
+            | ExprKind::Record(_)
+            | ExprKind::RecordUpdate { .. }
+            | ExprKind::Instance { .. } => true,
+            ExprKind::App { arg, .. } => self.hugs_delimiter(*arg),
+            _ => false,
+        }
     }
 
     /// An `if` branch: shares the `if`'s break decision (no inner group).
@@ -354,7 +392,7 @@ impl Printer<'_> {
             ExprKind::Instance { name, methods } => self.instance_doc(*name, methods),
             ExprKind::Paren(inner) => concat(vec![text("("), self.expr_doc(*inner), text(")")]),
             ExprKind::Tuple(xs) => self.delimited("(", ")", xs),
-            ExprKind::List(xs) => self.delimited("[", "]", xs),
+            ExprKind::List(xs) => self.list_literal_doc(xs),
             ExprKind::Array(xs) => self.array_delimited(xs),
             ExprKind::Error => text(self.span_src(expr.span)),
         }
@@ -400,29 +438,31 @@ impl Printer<'_> {
     }
 
     /// Renders a record literal `{ x = a, … }` or update `{ base with x = a, … }`.
-    /// Fields are sorted by label (canonical, low-entropy).
+    /// Fields are sorted by label (canonical, low-entropy). Wraps one field per
+    /// line when it does not fit the line width.
     fn record_literal_doc(&self, base: Option<ExprId>, fields: &[FieldInit]) -> Doc {
         let mut order: Vec<&FieldInit> = fields.iter().collect();
         order.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
-        let mut parts = vec![text("{")];
-        if let Some(base) = base {
-            parts.push(text(" "));
-            parts.push(self.expr_doc(base));
-            parts.push(text(" with"));
+        if order.is_empty() {
+            return match base {
+                None => text("{}"),
+                Some(base) => concat(vec![text("{ "), self.expr_doc(base), text(" with }")]),
+            };
         }
-        for (index, field) in order.iter().enumerate() {
-            parts.push(text(if index == 0 { " " } else { ", " }));
-            parts.push(text(field.name.as_str()));
-            parts.push(text(" = "));
-            parts.push(self.expr_doc(field.value));
-        }
-        if base.is_none() && order.is_empty() {
-            return text("{}");
-        }
-        parts.push(text(" }"));
-        concat(parts)
+        let open = match base {
+            Some(base) => concat(vec![text("{ "), self.expr_doc(base), text(" with")]),
+            None => text("{"),
+        };
+        let items = order
+            .iter()
+            .map(|field| {
+                concat(vec![text(field.name.as_str()), text(" = "), self.expr_doc(field.value)])
+            })
+            .collect();
+        collection(open, items, None, "}", true)
     }
 
+    /// A flat (never-wrapped) delimited sequence, used for tuples `(a, b)`.
     fn delimited(&self, open: &str, close: &str, xs: &[ExprId]) -> Doc {
         if xs.is_empty() {
             return text(format!("{open}{close}"));
@@ -438,21 +478,25 @@ impl Printer<'_> {
         concat(parts)
     }
 
+    /// A list literal `[a, b, c]` (or `[]` when empty), wrapping one element per
+    /// line when it does not fit the line width.
+    fn list_literal_doc(&self, xs: &[ExprId]) -> Doc {
+        if xs.is_empty() {
+            return text("[]");
+        }
+        let items = xs.iter().map(|&x| self.expr_doc(x)).collect();
+        collection(text("["), items, None, "]", false)
+    }
+
     /// Formats an array literal as `[| a, b, c |]` (or `[||]` when empty) — the
     /// inner spaces distinguish it at a glance from the `[a, b, c]` list literal.
+    /// Wraps one element per line when it does not fit the line width.
     fn array_delimited(&self, xs: &[ExprId]) -> Doc {
         if xs.is_empty() {
             return text("[||]");
         }
-        let mut parts = vec![text("[| ")];
-        for (index, &x) in xs.iter().enumerate() {
-            if index > 0 {
-                parts.push(text(", "));
-            }
-            parts.push(self.expr_doc(x));
-        }
-        parts.push(text(" |]"));
-        concat(parts)
+        let items = xs.iter().map(|&x| self.expr_doc(x)).collect();
+        collection(text("[|"), items, None, "|]", true)
     }
 
     fn pat_doc(&self, id: PatId) -> Doc {
@@ -564,7 +608,7 @@ impl Printer<'_> {
                 }
                 concat(parts)
             }
-            TypeKind::Record { fields, tail } => self.record_type_doc(fields, *tail),
+            TypeKind::Record { fields, tail } => self.record_type_doc(fields, *tail, false),
             TypeKind::EffectRow { labels, tail } => self.effect_arg_doc(labels, *tail),
             TypeKind::Unit => text("()"),
             TypeKind::Paren(inner) => concat(vec![text("("), self.type_doc(*inner), text(")")]),
@@ -625,10 +669,28 @@ impl Printer<'_> {
         concat(parts)
     }
 
-    /// Renders a record type `{ x : T, … }` (fields sorted) with its tail.
-    fn record_type_doc(&self, fields: &[FieldType], tail: RowTail) -> Doc {
+    /// Renders a record type `{ x : T, … }` (fields sorted) with its tail. Stays
+    /// on one line everywhere except as the body of a `type` alias declaration
+    /// (`breakable`), where it wraps one field per line when it does not fit the
+    /// width — so a record type *declaration* like `Runtime` reflows, while a
+    /// small record type inside a signature stays inline.
+    fn record_type_doc(&self, fields: &[FieldType], tail: RowTail, breakable: bool) -> Doc {
         let mut order: Vec<&FieldType> = fields.iter().collect();
         order.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+        if breakable && !order.is_empty() {
+            let tail_doc = match tail {
+                RowTail::Closed => None,
+                RowTail::Open => Some(text("| _")),
+                RowTail::Named(r) => Some(text(format!("| {}", r.as_str()))),
+            };
+            let items = order
+                .iter()
+                .map(|field| {
+                    concat(vec![text(field.name.as_str()), text(" : "), self.type_doc(field.ty)])
+                })
+                .collect();
+            return collection(text("{"), items, tail_doc, "}", true);
+        }
         let mut parts = vec![text("{")];
         for (index, field) in order.iter().enumerate() {
             parts.push(text(if index == 0 { " " } else { ", " }));
@@ -679,6 +741,35 @@ fn same_group(prev: &ItemKind, next: &ItemKind) -> bool {
         }
         _ => false,
     }
+}
+
+/// The boundary just inside a collection's brackets: a `Line` (a flat space) for
+/// space-padded delimiters like `{ … }` and `[| … |]`, or a `Softline` (nothing
+/// when flat) for tight ones like `[…]`.
+fn edge(padded: bool) -> Doc {
+    if padded { Doc::Line } else { Doc::Softline }
+}
+
+/// A delimited collection that prints on one line when it fits the width and
+/// otherwise wraps one item per line, comma-separated, with the closing
+/// delimiter back at the opening line's indentation (a dangling-bracket layout
+/// with no trailing comma). `open` already carries any prefix that stays on the
+/// first line (e.g. `{ base with`); `tail` is an optional non-comma trailer (a
+/// record type's row variable). Callers handle the empty case.
+fn collection(open: Doc, items: Vec<Doc>, tail: Option<Doc>, close: &str, padded: bool) -> Doc {
+    let mut inner = vec![edge(padded)];
+    for (index, item) in items.into_iter().enumerate() {
+        if index > 0 {
+            inner.push(text(","));
+            inner.push(Doc::Line);
+        }
+        inner.push(item);
+    }
+    if let Some(tail) = tail {
+        inner.push(Doc::Line);
+        inner.push(tail);
+    }
+    group(concat(vec![open, nest(2, concat(inner)), edge(padded), text(close)]))
 }
 
 fn visibility_prefix(visibility: Visibility) -> &'static str {
