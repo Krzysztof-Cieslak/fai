@@ -1,0 +1,279 @@
+module Web
+
+// A small, Giraffe-inspired handler core layered on `std/networking/Http.fai`.
+//
+// A web application is an `HttpHandler` — a function from a request context to an
+// `Outcome`. Handlers compose with `compose`/`chain` (run in sequence while each
+// asks to `Continue`) and `choose` (try alternatives until one does not `Skip`).
+// `serve` turns a handler into a running HTTP server over the `Net` capability.
+//
+// Capabilities (a clock, a database connection, a logger, …) reach handlers by
+// ordinary closure capture: build the application inside a function that has the
+// runtime in scope, and the effect row of the resulting handler records exactly
+// which capabilities it uses. This is the functional replacement for a dependency
+// injection container.
+/// The result of running a handler over a request context:
+/// `Continue` proceeds to the next handler in a `chain` (carrying an updated
+/// context); `Halt` finishes and sends the accumulated response; `Skip` declines
+/// the request so a `choose` tries the next alternative (or the router falls back
+/// to its not-found handler); `Fail` reports an error, which becomes a 500.
+public type Outcome 'e =
+  | Continue (HttpContext 'e)
+  | Halt (HttpContext 'e)
+  | Skip
+  | Fail String
+
+/// The request being served, the response accumulated so far, and the route
+/// parameters captured by the router (e.g. `id` from `/user/{id}`).
+public type HttpContext 'e = { params : List (String * String), request : Http.Request 'e, response : Http.Response 'e }
+
+/// A request handler: inspect the context and decide an `Outcome`. The effect
+/// variable `'e` forwards whatever capabilities the handler uses.
+public type HttpHandler 'e = HttpContext 'e -> Outcome 'e / 'e
+
+// --- Combinators -----------------------------------------------------------
+/// Run `a`; if it asks to `Continue`, run `b` on the updated context; otherwise
+/// return `a`'s outcome unchanged. The building block of middleware pipelines.
+public compose : HttpHandler 'e -> HttpHandler 'e -> HttpHandler 'e
+let compose a b ctx =
+  match a ctx with
+  | Continue next -> b next
+  | other -> other
+
+/// Run the handlers left to right while each asks to `Continue`, threading the
+/// context through. Stops at the first `Halt`/`Skip`/`Fail`. An empty list (or a
+/// list whose handlers all `Continue`) yields `Continue` with the final context.
+public chain : List (HttpHandler 'e) -> HttpHandler 'e
+let chain handlers ctx =
+  match handlers with
+  | [] -> Continue ctx
+  | h :: rest ->
+    match h ctx with
+    | Continue next -> chain rest next
+    | other -> other
+
+/// Try each handler in turn until one does not `Skip`, returning that outcome.
+/// If every handler skips, the whole `choose` skips.
+public choose : List (HttpHandler 'e) -> HttpHandler 'e
+let choose handlers ctx =
+  match handlers with
+  | [] -> Skip
+  | h :: rest ->
+    match h ctx with
+    | Skip -> choose rest ctx
+    | other -> other
+
+/// A handler that always continues without changing anything (the identity of
+/// `compose`/`chain`).
+public continue : HttpHandler 'e
+let continue ctx = Continue ctx
+
+/// Require the request to use `method`, otherwise skip. Used to gate a handler on
+/// an HTTP verb.
+public requireMethod : Http.Method -> HttpHandler 'e
+let requireMethod method ctx = if ctx.request.method = method then Continue ctx else Skip
+
+// --- Request accessors -----------------------------------------------------
+// First match of `key` in an association list (case-sensitive).
+assoc : String -> List (String * String) -> Option String
+let assoc key pairs =
+  match pairs with
+  | [] -> None
+  | pair :: rest ->
+    match pair with
+    | (k, v) -> if k = key then Some v else assoc key rest
+example: assoc "a" [("a", "1"), ("b", "2")] = Some "1"
+example: assoc "b" [("a", "1"), ("b", "2")] = Some "2"
+example: assoc "x" [("a", "1")] = None
+example: assoc "x" [] = None
+
+/// The request path, e.g. `"/user/42"`.
+public path : HttpContext 'e -> String
+let path ctx = Url.path ctx.request.url
+
+/// The request method.
+public method : HttpContext 'e -> Http.Method
+let method ctx = ctx.request.method
+
+/// A route parameter captured by the router, e.g. `param "id"` for `/user/{id}`.
+public param : String -> HttpContext 'e -> Option String
+let param name ctx = assoc name ctx.params
+
+/// A route parameter parsed as an `Int`.
+public intParam : String -> HttpContext 'e -> Option Int
+let intParam name ctx =
+  match param name ctx with
+  | None -> None
+  | Some s -> Int.fromString s
+
+/// A query-string value, e.g. `query "q"` for `/search?q=fai`.
+public query : String -> HttpContext 'e -> Option String
+let query name ctx = assoc name (Url.queryPairs ctx.request.url)
+
+/// A request header value (case-insensitive name), if present.
+public header : String -> HttpContext 'e -> Option String
+let header name ctx = Headers.get name ctx.request.headers
+
+// --- Responses -------------------------------------------------------------
+/// The standard reason phrase for an HTTP status code (e.g. `404 -> "Not Found"`),
+/// falling back to `"Status"` for codes without a well-known phrase.
+public reasonPhrase : Int -> String
+let reasonPhrase status =
+  match status with
+  | 200 -> "OK"
+  | 201 -> "Created"
+  | 202 -> "Accepted"
+  | 204 -> "No Content"
+  | 301 -> "Moved Permanently"
+  | 302 -> "Found"
+  | 303 -> "See Other"
+  | 304 -> "Not Modified"
+  | 307 -> "Temporary Redirect"
+  | 308 -> "Permanent Redirect"
+  | 400 -> "Bad Request"
+  | 401 -> "Unauthorized"
+  | 403 -> "Forbidden"
+  | 404 -> "Not Found"
+  | 405 -> "Method Not Allowed"
+  | 406 -> "Not Acceptable"
+  | 409 -> "Conflict"
+  | 410 -> "Gone"
+  | 415 -> "Unsupported Media Type"
+  | 422 -> "Unprocessable Entity"
+  | 429 -> "Too Many Requests"
+  | 500 -> "Internal Server Error"
+  | 501 -> "Not Implemented"
+  | 502 -> "Bad Gateway"
+  | 503 -> "Service Unavailable"
+  | 504 -> "Gateway Timeout"
+  | other -> "Status"
+example: reasonPhrase 200 = "OK"
+example: reasonPhrase 404 = "Not Found"
+example: reasonPhrase 599 = "Status"
+
+// A text/plain response with a corrected reason phrase.
+textResponse : Int -> String -> Http.Response 'e
+let textResponse status body =
+  let base = Http.textResponse status body
+  { base with reason = reasonPhrase status }
+
+// A response carrying a single header, an explicit body, and a reason phrase.
+typedResponse : Int -> String -> String -> Http.Response 'e
+let typedResponse status contentType body =
+  let base = Http.response status (Http.stringBody body)
+  { base with headers = Headers.set "Content-Type" contentType base.headers, reason = reasonPhrase status }
+
+/// Respond with `status` and a plain-text body, ending the pipeline.
+public respond : Int -> String -> HttpHandler 'e
+let respond status body ctx = Halt { ctx with response = textResponse status body }
+
+/// Respond `200 OK` with a plain-text body.
+public text : String -> HttpHandler 'e
+let text body ctx = Halt { ctx with response = textResponse 200 body }
+
+/// Respond `200 OK` with an `text/html` body.
+public html : String -> HttpHandler 'e
+let html body ctx = Halt { ctx with response = typedResponse 200 "text/html; charset=utf-8" body }
+
+/// Respond `200 OK` with a raw `application/octet-stream` body.
+public bytes : Bytes -> HttpHandler 'e
+let bytes payload ctx =
+  let base = Http.response 200 (Http.bytesBody payload)
+  Halt { ctx with response = { base with headers = Headers.set "Content-Type" "application/octet-stream" base.headers, reason = "OK" } }
+
+/// Respond `201 Created` with a plain-text body.
+public created : String -> HttpHandler 'e
+let created body ctx = Halt { ctx with response = textResponse 201 body }
+
+/// Respond `204 No Content` with an empty body.
+public noContent : HttpHandler 'e
+let noContent ctx =
+  let base = Http.response 204 Http.emptyBody
+  Halt { ctx with response = { base with reason = "No Content" } }
+
+/// Respond `400 Bad Request` with a plain-text body.
+public badRequest : String -> HttpHandler 'e
+let badRequest body ctx = Halt { ctx with response = textResponse 400 body }
+
+/// Respond `401 Unauthorized` with a plain-text body.
+public unauthorized : String -> HttpHandler 'e
+let unauthorized body ctx = Halt { ctx with response = textResponse 401 body }
+
+/// Respond `403 Forbidden` with a plain-text body.
+public forbidden : String -> HttpHandler 'e
+let forbidden body ctx = Halt { ctx with response = textResponse 403 body }
+
+/// Respond `404 Not Found` with a plain-text body.
+public notFound : String -> HttpHandler 'e
+let notFound body ctx = Halt { ctx with response = textResponse 404 body }
+
+/// Respond `500 Internal Server Error` with a plain-text body.
+public serverError : String -> HttpHandler 'e
+let serverError body ctx = Halt { ctx with response = textResponse 500 body }
+
+/// Set the response status (and its reason phrase) and continue, so later
+/// handlers can still add headers or a body.
+public setStatus : Int -> HttpHandler 'e
+let setStatus status ctx =
+  let resp = ctx.response
+  Continue { ctx with response = { resp with reason = reasonPhrase status, status = status } }
+
+/// Add a response header and continue.
+public setHeader : String -> String -> HttpHandler 'e
+let setHeader name value ctx =
+  let resp = ctx.response
+  Continue { ctx with response = { resp with headers = Headers.add name value resp.headers } }
+
+/// Respond `302 Found` redirecting to `location`, ending the pipeline.
+public redirect : String -> HttpHandler 'e
+let redirect location ctx =
+  let base = Http.response 302 Http.emptyBody
+  Halt { ctx with response = { base with headers = Headers.set "Location" location base.headers, reason = "Found" } }
+
+// --- Testing helpers -------------------------------------------------------
+/// Build a request context for `method` and `target` (an origin-form path such as
+/// `"/user/42?x=1"`), for unit-testing handlers without opening a socket. The
+/// initial response is an empty `404`.
+public mockContext : Http.Method -> String -> Result (HttpContext 'e) String
+let mockContext method target =
+  match Url.parse target with
+  | Err e -> Err e
+  | Ok url ->
+    Ok { params = [], request = { body = Http.emptyBody, headers = Headers.empty, method = method, url = url }, response = textResponse 404 "" }
+
+/// The response an outcome produced (`Continue`/`Halt`), or `None` when it
+/// skipped or failed — useful for asserting on a handler's result in a contract.
+public outcomeResponse : Outcome 'e -> Option (Http.Response 'e)
+let outcomeResponse outcome =
+  match outcome with
+  | Continue ctx -> Some ctx.response
+  | Halt ctx -> Some ctx.response
+  | Skip -> None
+  | Fail message -> None
+
+// --- Server ----------------------------------------------------------------
+// Run an application handler over a parsed request, producing the response the
+// server sends: a `Skip` (nothing handled it) becomes a 404, and a `Fail` becomes
+// an `Err` (which the server maps to a 500).
+toHandler : HttpHandler 'e -> Http.Request 'e -> Result (Http.Response 'e) String / 'e
+let toHandler app req =
+  let ctx = { params = [], request = req, response = textResponse 404 "Not Found" }
+  match app ctx with
+  | Continue done -> Ok done.response
+  | Halt done -> Ok done.response
+  | Skip -> Ok (textResponse 404 "Not Found")
+  | Fail message -> Err message
+
+/// Serve an application on an already-bound listener. Runs until the serving task
+/// is cancelled (graceful shutdown) or the listener errors.
+public serveListener : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Listener -> HttpHandler 'e -> Result Unit String / { Concurrency, Net, Tls | 'e }
+let serveListener env listener app = Http.serveListener env listener (toHandler app)
+
+/// Serve an application on `0.0.0.0:port` (port `0` picks a free one).
+public serve : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Int -> HttpHandler 'e -> Result Unit String / { Concurrency, Net, Tls | 'e }
+let serve env port app = Http.serve env port (toHandler app)
+
+/// Serve an application over HTTPS on `0.0.0.0:port`, presenting `cert` (a PEM
+/// certificate chain) with `key` (its PEM private key).
+public serveTls : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Int -> Bytes -> Bytes -> HttpHandler 'e -> Result Unit String / { Concurrency, Net, Tls | 'e }
+let serveTls env port cert key app = Http.serveTls env port cert key (toHandler app)

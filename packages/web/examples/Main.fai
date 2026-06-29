@@ -1,0 +1,58 @@
+module Main
+
+// A small server built with the `Web`/`Router` micro-framework. It defines a few
+// routes, serves them on a background task, makes a handful of loopback requests
+// to itself, prints the results, then cancels the server (the structured scope
+// joins it). The same `app` value would be passed to `Web.serve runtime port app`
+// for a long-running server.
+// A static handler: a partially-applied response writer is itself a handler.
+home : Web.HttpHandler 'e
+let home = Web.text "Welcome to Fai web"
+
+// A handler reading a captured path parameter.
+greet : Web.HttpHandler 'e
+let greet ctx =
+  match Web.param "name" ctx with
+  | None -> Web.text "Hello, stranger" ctx
+  | Some name -> Web.text ("Hello, " ++ name) ctx
+
+// A handler reading a query-string value.
+search : Web.HttpHandler 'e
+let search ctx =
+  match Web.query "q" ctx with
+  | None -> Web.badRequest "missing ?q" ctx
+  | Some q -> Web.text ("results for " ++ q) ctx
+
+// The application: a routing table. Capabilities (a database, a logger, a clock)
+// would reach handlers by closure capture here, and their effects would show up
+// in `app`'s effect row.
+app : Web.HttpHandler 'e
+let app =
+  Router.router (Web.notFound "Not Found") [Router.get [Router.route "/" home, Router.route "/greet/{name}" greet, Router.route "/search" search], Router.subRoute "/api" [Router.get [Router.route "/ping" (Web.text "pong")]]]
+
+// Make one request to the loopback server and render the status and body.
+fetch : Runtime -> Int -> String -> String / { Net, Tls }
+let fetch runtime port target =
+  match Http.get runtime ("http://127.0.0.1:" ++ Int.toString port ++ target) with
+  | Err e -> "request failed: " ++ e
+  | Ok resp ->
+    match Http.bodyText resp.body with
+    | Err e -> "body failed: " ++ e
+    | Ok body -> Int.toString resp.status ++ " " ++ body
+
+// Serve `app` on its own task, probe a few routes, then cancel the server.
+serveThenProbe : Runtime -> Listener -> Int -> Nursery -> Unit / { Concurrency, Console, Net, Tls }
+let serveThenProbe runtime listener port nursery =
+  let server = runtime.concurrency.spawn nursery (fun u -> Web.serveListener runtime listener app)
+  let lines =
+    [fetch runtime port "/", fetch runtime port "/greet/fai", fetch runtime port "/api/ping", fetch runtime port "/search?q=ml", fetch runtime port "/missing"]
+  let stopped = runtime.concurrency.cancel server
+  List.foldl (fun u line -> runtime.console.writeLine line) () lines
+
+public main : Runtime -> Unit / { Concurrency, Console, Net, Tls }
+let main runtime =
+  match runtime.net.listen 0 with
+  | Err e -> runtime.console.writeLine ("could not listen: " ++ e)
+  | Ok listener ->
+    let port = runtime.net.localPort listener
+    runtime.concurrency.scope (fun nursery -> serveThenProbe runtime listener port nursery)

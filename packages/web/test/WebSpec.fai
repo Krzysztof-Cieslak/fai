@@ -1,0 +1,84 @@
+module WebSpec
+
+// Behavioural contracts for the handler core (`Web`) and the router (`Router`).
+// These live in their own module so the calls to `Web.*`/`Router.*` cross a
+// module boundary and are not inlined into the generated contract harness, which
+// keeps the record-bearing handler values concretely typed when the example runs.
+// The status code an outcome produced (0 when it skipped or failed).
+status : Web.Outcome 'e -> Int
+let status outcome =
+  match Web.outcomeResponse outcome with
+  | Some resp -> resp.status
+  | None -> 0
+
+// The decoded response body an outcome produced.
+bodyOf : Web.Outcome 'e -> Result String String / 'e
+let bodyOf outcome =
+  match Web.outcomeResponse outcome with
+  | Some resp -> Http.bodyText resp.body
+  | None -> Err "no response"
+
+// Run a handler over a mock request and report its status code.
+runOn : Web.HttpHandler 'e -> Http.Method -> String -> Int
+let runOn handler verb target =
+  match Web.mockContext verb target with
+  | Err e -> -1
+  | Ok ctx -> status (handler ctx)
+
+// Run a handler over a mock request and report its response body.
+bodyOn : Web.HttpHandler 'e -> Http.Method -> String -> Result String String / 'e
+let bodyOn handler verb target =
+  match Web.mockContext verb target with
+  | Err e -> Err e
+  | Ok ctx -> bodyOf (handler ctx)
+// --- Core handler behaviour ------------------------------------------------
+example: runOn (Web.text "hi") Http.GET "/x" = 200
+example: runOn (Web.html "<p>hi</p>") Http.GET "/x" = 200
+example: runOn (Web.notFound "no") Http.GET "/x" = 404
+example: runOn (Web.respond 201 "made") Http.GET "/x" = 201
+example: runOn (Web.badRequest "bad") Http.GET "/x" = 400
+example: runOn (Web.redirect "/elsewhere") Http.GET "/x" = 302
+example: bodyOn (Web.text "hello") Http.GET "/x" = Ok "hello"
+// `requireMethod` continues on a match (so the chain reaches `text`) and skips
+// otherwise (so the chain stops with no response).
+example: runOn (Web.chain [Web.requireMethod Http.GET, Web.text "ok"]) Http.GET "/x" = 200
+example: runOn (Web.chain [Web.requireMethod Http.POST, Web.text "ok"]) Http.GET "/x" = 0
+// `choose` tries alternatives until one does not skip.
+example: runOn (Web.choose [Web.requireMethod Http.POST, Web.text "fallback"]) Http.GET "/x" = 200
+
+// --- A sample application ---------------------------------------------------
+showUser : Web.HttpHandler 'e
+let showUser ctx =
+  match Web.param "id" ctx with
+  | None -> Web.notFound "no id" ctx
+  | Some id -> Web.text id ctx
+
+echoQuery : Web.HttpHandler 'e
+let echoQuery ctx =
+  match Web.query "q" ctx with
+  | None -> Web.text "none" ctx
+  | Some q -> Web.text q ctx
+
+app : Web.HttpHandler 'e
+let app =
+  Router.router (Web.notFound "Not Found") [Router.get [Router.route "/" (Web.text "index"), Router.route "/user/{id}" showUser, Router.route "/search" echoQuery], Router.post [Router.route "/submit" (Web.text "created")], Router.subRoute "/api" [Router.get [Router.route "/ping" (Web.text "pong")]]]
+// Static routes.
+example: runOn app Http.GET "/" = 200
+example: bodyOn app Http.GET "/" = Ok "index"
+example: runOn app Http.POST "/submit" = 200
+example: bodyOn app Http.POST "/submit" = Ok "created"
+// Nested routes via `subRoute`.
+example: runOn app Http.GET "/api/ping" = 200
+example: bodyOn app Http.GET "/api/ping" = Ok "pong"
+// A trailing slash is ignored.
+example: runOn app Http.GET "/api/ping/" = 200
+// Captured path parameters.
+example: bodyOn app Http.GET "/user/42" = Ok "42"
+example: bodyOn app Http.GET "/user/abc" = Ok "abc"
+// Query-string access.
+example: bodyOn app Http.GET "/search?q=fai" = Ok "fai"
+example: bodyOn app Http.GET "/search" = Ok "none"
+// Fallbacks: unknown path, and a known path with an unregistered method.
+example: runOn app Http.GET "/missing" = 404
+example: runOn app Http.POST "/" = 404
+example: runOn app Http.DELETE "/user/42" = 404
