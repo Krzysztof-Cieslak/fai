@@ -12,8 +12,9 @@ public interface Banner 'e =
 // An instance backed by the standard console: writing a framed title performs the
 // console's effect, so the instance has type `Banner { Console }`.
 public bannerOverConsole : Console -> Banner { Console }
-let bannerOverConsole console =
-  { Banner with banner title = console.writeLine ("=== " ++ title ++ " ===") }
+let bannerOverConsole console = { Banner with
+  banner title = console.writeLine ("=== " ++ title ++ " ===")
+}
 
 // The program's own runtime shape: the standard console plus the banner. (Record
 // extension is future work, so this is a fresh record rather than `{ default with

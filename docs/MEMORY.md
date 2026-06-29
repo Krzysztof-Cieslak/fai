@@ -227,14 +227,23 @@ Syntax front end (lexer, layout, parser, AST, formatter, incremental queries):
   ⇒ leading, none ⇒ dangling). In the canonical formatter an **own-line comment
   forces its surrounding group to break**, so a commented construct never
   collapses. Doc is *derived* from leading `///` entries.
-- **D32 Formatter:** `fai-fmt` is a **pure crate** (`format_module(&ParsedModule)
-  -> String`) lowering the AST to a Wadler/Prettier **document IR** printed at
-  **width 100**. It is **fully canonical** — input line breaks are ignored and
-  the AST carries no layout hints — collapsing anything that fits and using fixed
-  broken shapes otherwise (blocks always multi-line; branches via `then`/`else`
-  blocks; leading-comma lists; signature + binding + contracts grouped with
-  exactly one blank line between groups; trailing newline). Explicit parens and
-  literal spellings are preserved verbatim.
+ - **D32 Formatter:** `fai-fmt` is a **pure crate** (`format_module(&ParsedModule)
+   -> String`) lowering the AST to a Wadler/Prettier **document IR** printed at
+   **width 100**. It is **fully canonical** — input line breaks are ignored and
+   the AST carries no layout hints — collapsing anything that fits and using fixed
+   broken shapes otherwise (blocks always multi-line; branches via `then`/`else`
+   blocks; a **collection that overflows the width wraps one item per line** with
+   a dangling close delimiter and **no trailing comma** — value lists `[…]`,
+   arrays `[| … |]`, records/updates/instances `{ … }`, and a record-type **alias
+   body** like `Runtime`; tuples, effect rows, and a record type nested in a
+   signature stay flat; a binding/lambda/arm body that **is or ends in** such a
+   collection keeps its opening delimiter on the `=`/`->` line ("hugged") rather
+   than indenting it onto its own line; signature + binding + contracts grouped
+   with exactly one blank line between groups; trailing newline). Explicit parens
+   and literal spellings are preserved verbatim. (The earlier leading-comma
+   sketch was dropped in favor of the trailing-comma, dangling-bracket layout,
+   which needs no column-alignment primitive and keeps function application
+   unbroken.)
 - **D33 Front-end queries:** pure cores (`lex`/`layout`/`parse_module`/
   `build_item_tree`) wrapped by thin `#[salsa::tracked]` functions in
   `fai-syntax`. `parse(db, file) -> Arc<ParsedModule>` (AST + attached comments +

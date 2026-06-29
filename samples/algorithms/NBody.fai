@@ -14,8 +14,15 @@ let dt = 0.01
 
 // Five bodies at distinct positions (so no pair coincides), at rest.
 makeBody : Int -> Body
-let makeBody i =
-  { mass = 1.0 + Int.toFloat (i % 5), vx = 0.0, vy = 0.0, vz = 0.0, x = Int.toFloat i, y = Int.toFloat (i * i % 7), z = Int.toFloat (i % 3) }
+let makeBody i = {
+  mass = 1.0 + Int.toFloat (i % 5),
+  vx = 0.0,
+  vy = 0.0,
+  vz = 0.0,
+  x = Int.toFloat i,
+  y = Int.toFloat (i * i % 7),
+  z = Int.toFloat (i % 3)
+}
 
 initial : Array Body
 let initial = Array.init 5 makeBody

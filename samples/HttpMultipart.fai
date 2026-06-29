@@ -20,8 +20,10 @@ let handle req =
 // Post a multipart form (a text field and a file part) and render the response.
 upload : Runtime -> Int -> String / { Net, Random, Tls }
 let upload runtime port =
-  let parts =
-    [Http.field "title" "My Notes", Http.filePart "document" "notes.txt" "text/plain" (Bytes.fromString "hello from a file")]
+  let parts = [
+    Http.field "title" "My Notes",
+    Http.filePart "document" "notes.txt" "text/plain" (Bytes.fromString "hello from a file")
+  ]
   match Http.postMultipart runtime ("http://127.0.0.1:" ++ Int.toString port ++ "/upload") parts with
   | Err e -> "upload failed: " ++ e
   | Ok resp ->

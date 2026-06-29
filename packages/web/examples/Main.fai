@@ -27,8 +27,14 @@ let search ctx =
 // would reach handlers by closure capture here, and their effects would show up
 // in `app`'s effect row.
 app : Web.HttpHandler 'e
-let app =
-  Router.router (Web.notFound "Not Found") [Router.get [Router.route "/" home, Router.route "/greet/{name}" greet, Router.route "/search" search], Router.subRoute "/api" [Router.get [Router.route "/ping" (Web.text "pong")]]]
+let app = Router.router (Web.notFound "Not Found") [
+  Router.get [
+    Router.route "/" home,
+    Router.route "/greet/{name}" greet,
+    Router.route "/search" search
+  ],
+  Router.subRoute "/api" [Router.get [Router.route "/ping" (Web.text "pong")]]
+]
 
 // Make one request to the loopback server and render the status and body.
 fetch : Runtime -> Int -> String -> String / { Net, Tls }
@@ -44,8 +50,13 @@ let fetch runtime port target =
 serveThenProbe : Runtime -> Listener -> Int -> Nursery -> Unit / { Concurrency, Console, Net, Tls }
 let serveThenProbe runtime listener port nursery =
   let server = runtime.concurrency.spawn nursery (fun u -> Web.serveListener runtime listener app)
-  let lines =
-    [fetch runtime port "/", fetch runtime port "/greet/fai", fetch runtime port "/api/ping", fetch runtime port "/search?q=ml", fetch runtime port "/missing"]
+  let lines = [
+    fetch runtime port "/",
+    fetch runtime port "/greet/fai",
+    fetch runtime port "/api/ping",
+    fetch runtime port "/search?q=ml",
+    fetch runtime port "/missing"
+  ]
   let stopped = runtime.concurrency.cancel server
   List.foldl (fun u line -> runtime.console.writeLine line) () lines
 

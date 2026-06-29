@@ -60,8 +60,15 @@ let echoQuery ctx =
   | Some q -> Web.text q ctx
 
 app : Web.HttpHandler 'e
-let app =
-  Router.router (Web.notFound "Not Found") [Router.get [Router.route "/" (Web.text "index"), Router.route "/user/{id}" showUser, Router.route "/search" echoQuery], Router.post [Router.route "/submit" (Web.text "created")], Router.subRoute "/api" [Router.get [Router.route "/ping" (Web.text "pong")]]]
+let app = Router.router (Web.notFound "Not Found") [
+  Router.get [
+    Router.route "/" (Web.text "index"),
+    Router.route "/user/{id}" showUser,
+    Router.route "/search" echoQuery
+  ],
+  Router.post [Router.route "/submit" (Web.text "created")],
+  Router.subRoute "/api" [Router.get [Router.route "/ping" (Web.text "pong")]]
+]
 // Static routes.
 example: runOn app Http.GET "/" = 200
 example: bodyOn app Http.GET "/" = Ok "index"
