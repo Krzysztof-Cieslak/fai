@@ -429,15 +429,23 @@ fn full_corpus_report() {
     let mut db = FaiDatabase::new();
     let std_ids = fai_types::std_lib::load_std(&mut db);
 
-    // Load the samples too (so cross-file refs resolve).
+    // Load the samples too (so cross-file refs resolve), including the
+    // multi-module store application under `samples/store/` (a subdirectory the
+    // top-level read below does not recurse into) so its contracts run here.
     let mut sample_files: Vec<SourceFile> = Vec::new();
     let mut entries: Vec<PathBuf> = std::fs::read_dir(samples_dir())
         .expect("samples/")
         .map(|e| e.unwrap().path())
         .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("fai"))
         .collect();
+    let mut store_entries: Vec<PathBuf> = std::fs::read_dir(samples_dir().join("store"))
+        .expect("samples/store/")
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("fai"))
+        .collect();
     entries.sort();
-    for path in &entries {
+    store_entries.sort();
+    for path in entries.iter().chain(store_entries.iter()) {
         let name = path.file_name().unwrap().to_str().unwrap().to_owned();
         let src = std::fs::read_to_string(path).unwrap();
         let id = db.add_source(Utf8PathBuf::from(name), src);

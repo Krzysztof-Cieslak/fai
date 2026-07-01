@@ -1,0 +1,18 @@
+module Shipping
+
+public type Zone =
+  | Domestic
+  | International
+
+public baseCost : Zone -> Float
+let baseCost zone =
+  match zone with
+  | Domestic -> 5.0
+  | International -> 20.0
+
+public shippingCost : Zone -> Catalog.Product -> Float
+let shippingCost zone product =
+  match product.category with
+  | Catalog.Food -> baseCost zone + 2.0
+  | Catalog.Tool -> baseCost zone + 5.0
+  | Catalog.Book -> baseCost zone

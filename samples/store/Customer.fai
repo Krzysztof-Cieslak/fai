@@ -1,0 +1,25 @@
+module Customer
+
+public type Tier =
+  | Regular
+  | Gold
+  | Platinum
+
+public type Customer = { address : Address.Address, name : String, tier : Tier }
+
+public tierName : Tier -> String
+let tierName tier =
+  match tier with
+  | Regular -> "regular"
+  | Gold -> "gold"
+  | Platinum -> "platinum"
+
+public discountRate : Customer -> Float
+let discountRate customer =
+  match customer.tier with
+  | Regular -> 0.0
+  | Gold -> 5.0
+  | Platinum -> 10.0
+
+public greeting : Customer -> String
+let greeting customer = "Hello, " ++ customer.name ++ " (" ++ tierName customer.tier ++ ")"

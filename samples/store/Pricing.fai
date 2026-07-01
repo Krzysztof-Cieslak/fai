@@ -11,5 +11,6 @@ let apply discount price =
   | Percent rate -> price * (1.0 - rate / 100.0)
 example: apply NoDiscount 10.0 = 10.0
 
+/// The price of a product after applying a discount.
 public priceOf : Catalog.Product -> Discount -> Float
 let priceOf product discount = apply discount product.price

@@ -1,0 +1,16 @@
+module Money
+
+public type Currency =
+  | USD
+  | EUR
+  | GBP
+
+public symbol : Currency -> String
+let symbol currency =
+  match currency with
+  | USD -> "$"
+  | EUR -> "EUR "
+  | GBP -> "GBP "
+
+public format : Currency -> Float -> String
+let format currency amount = symbol currency ++ Float.toString amount
