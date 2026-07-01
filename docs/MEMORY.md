@@ -954,10 +954,16 @@ server:
     reuse `fai check` and formatting reuses `fai fmt`.
   - **Position-addressed queries.** Hover and go-to-definition are offset-keyed
     (an editor addresses a byte position, not a name), so `fai-ide` gains
-    `hover_at`/`definition_at`: find the innermost expression containing the
-    offset (walking outward when it carries no resolution), then report its
-    inferred type or jump to what its reference resolves to — a definition, a
-    constructor variant, or a local's binding pattern.
+    `hover_at`/`definition_at`. Both answer on a *declaration* as well as a use:
+    they consider the narrowest of the expression, the local binding, and the
+    definition whose name is under the cursor. `hover_at` reports that thing's
+    type — a subexpression's inferred type, a local `let`/parameter binder's type,
+    or a top-level definition's declared-or-inferred scheme (so hovering the name
+    in `let t = 1` shows `Int`, private and signature-less bindings included);
+    `definition_at` jumps to what a reference resolves to — a definition, a
+    constructor variant, or a local's binding pattern. The narrowest-first choice
+    makes a binder win over the block that also spans it, while use sites and
+    subexpressions are unchanged.
   - **Positions.** LSP positions are `(0-based line, 0-based column)` while Fai
     spans are UTF-8 byte offsets; a per-document line map converts both ways,
     clamping an out-of-range column to the line's content rather than spilling

@@ -431,6 +431,12 @@ impl<E: Env> Walker<'_, E> {
                     };
 
                     if is_simple_var {
+                        // Record the binder's type for the IDE (hover, inlay hints)
+                        // directly, rather than via `check_pattern`, which would
+                        // overwrite the generalized binding below with a monotype.
+                        if self.record_types {
+                            self.pat_types.insert(stmt.pat, value_ty.clone());
+                        }
                         // Generalize a simple `let v = value`: quantify the value
                         // type's free variables created in its right-hand side and
                         // not fixed by the environment (standard let-polymorphism;

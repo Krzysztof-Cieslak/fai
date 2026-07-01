@@ -52,6 +52,26 @@ fn inlay_hints_annotate_parameters_and_locals() {
 }
 
 #[test]
+fn inlay_hints_annotate_a_simple_local_let() {
+    // A value-restricted `let t = 1` (a syntactic-value right-hand side) is
+    // generalized on a special inference path; its binder type is recorded there
+    // too, so it still gets an inlay hint.
+    let source = indoc! {r#"
+        module M
+
+        public f : Int -> Int
+        let f x =
+          let t = 1
+          x + t
+    "#};
+    let (db, file, text) = workspace(source);
+    let hints = inlay_hints(&db, file, 0, text.len() as u32);
+    let t_end = at(&text, "let t") + "let t".len() as u32;
+    let t_hint = hints.iter().find(|h| h.offset == t_end).expect("hint after `t`");
+    assert_eq!(t_hint.label, ": Int", "{hints:?}");
+}
+
+#[test]
 fn inlay_hints_respect_the_requested_range() {
     let source = indoc! {r#"
         module M

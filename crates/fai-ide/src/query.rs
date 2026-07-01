@@ -197,10 +197,10 @@ pub fn type_at(db: &dyn Db, target: &str, resolver: &dyn SpanResolver) -> TypeRe
 // --- position-based queries (hover / go-to-definition) -----------------------
 //
 // `fai query` addresses a definition by name; an editor addresses a *byte offset*
-// inside a file, and wants the most specific subexpression there. These two
-// queries answer at offset granularity: they find the innermost expression
-// containing the cursor and report its type (hover) or jump to what its reference
-// resolves to (go-to-definition). They power the LSP.
+// inside a file, and wants the most specific thing there. These two queries
+// answer at offset granularity: they find the narrowest expression, local
+// binding, or definition name under the cursor and report its type (hover) or
+// jump to what it resolves to (go-to-definition). They power the LSP.
 
 /// The expressions whose span contains `offset`, smallest (innermost) first.
 ///
@@ -312,10 +312,12 @@ pub struct HoverResult {
     pub contracts: Vec<Contract>,
 }
 
-/// The type at a byte offset: the innermost expression that has an inferred type,
-/// rendered with the name it refers to when applicable. When that expression is a
-/// reference to a definition, the definition's doc prose and attached contracts
-/// are included too. Powers LSP hover.
+/// The type at a byte offset: the narrowest of the subexpression, the local
+/// binding, or the definition whose name is under the cursor, rendered with the
+/// name when applicable. When the cursor is on (a reference to) a definition, the
+/// definition's doc prose and attached contracts are included too. So it answers
+/// on a binding's *declaration* — a local `let`/parameter binder or a top-level
+/// definition name — not only on use sites. Powers LSP hover.
 #[must_use]
 pub fn hover_at(
     db: &dyn Db,
@@ -333,36 +335,99 @@ pub fn hover_at(
     };
     let parsed = fai_syntax::parse(db, file);
     let resolved = resolve(db, file);
-    let Some(types) = enclosing_def(db, file, offset).map(|d| fai_types::body_types(db, file, d))
-    else {
-        return empty();
-    };
-    for expr in exprs_containing(&parsed.module, offset) {
-        let Some(ty) = types.get(expr) else { continue };
-        let span =
-            SpanJson::resolve(Span::new(file.source(db), parsed.module.expr(expr).span), resolver);
-        // When the subexpression references a definition, surface its docs and
-        // contracts (resolving through to the defining file).
-        let (doc, contracts) = match resolved.get(expr) {
-            Some(Res::Def(d)) => match db.source_file(d.file) {
-                Some(f) => (
-                    doc_for(db, f, d.name),
-                    contracts_by_subject(db, f, resolver).remove(&d.name).unwrap_or_default(),
-                ),
-                None => (None, vec![]),
-            },
-            _ => (None, vec![]),
-        };
-        return HoverResult {
+    let types = enclosing_def(db, file, offset).map(|d| fai_types::body_types(db, file, d));
+
+    // The cursor names one of three things; the answer is the *narrowest* of them,
+    // so a binding's own name wins over the block/definition that also spans it,
+    // while a use site or an enclosing subexpression is unaffected:
+    //   * a subexpression — its inferred type, plus (for a reference to a
+    //     definition) that definition's docs and contracts;
+    //   * a local binding's own name (a `let`/parameter/lambda binder) — its type;
+    //   * a definition's own name — its declared-or-inferred scheme, docs, contracts.
+    let expr_cand = types.as_ref().and_then(|types| {
+        exprs_containing(&parsed.module, offset).into_iter().find_map(|expr| {
+            let ty = types.get(expr)?;
+            let span = parsed.module.expr(expr).span;
+            // When the subexpression references a definition, surface its docs and
+            // contracts (resolving through to the defining file).
+            let (doc, contracts) = match resolved.get(expr) {
+                Some(Res::Def(d)) => match db.source_file(d.file) {
+                    Some(f) => (
+                        doc_for(db, f, d.name),
+                        contracts_by_subject(db, f, resolver).remove(&d.name).unwrap_or_default(),
+                    ),
+                    None => (None, vec![]),
+                },
+                _ => (None, vec![]),
+            };
+            Some((
+                span.len(),
+                HoverResult {
+                    schema_version: SCHEMA_VERSION,
+                    name: reference_name(&parsed.module, &resolved, expr),
+                    ty: Some(TypeRepr { display: fai_types::render_canonical(ty) }),
+                    span: SpanJson::resolve(Span::new(file.source(db), span), resolver),
+                    doc,
+                    contracts,
+                },
+            ))
+        })
+    });
+    let pat_cand = types.as_ref().and_then(|types| {
+        pats_containing(&parsed.module, offset).into_iter().find_map(|pat| {
+            resolved.local_of(pat)?; // only a local's own binding occurrence
+            let ty = types.pat_type(pat)?;
+            let span = parsed.module.pat(pat).span;
+            let name = match &parsed.module.pat(pat).kind {
+                PatKind::Var(n) => Some(n.as_str().to_owned()),
+                _ => None,
+            };
+            Some((
+                span.len(),
+                HoverResult {
+                    schema_version: SCHEMA_VERSION,
+                    name,
+                    ty: Some(TypeRepr { display: fai_types::render_canonical(ty) }),
+                    span: SpanJson::resolve(Span::new(file.source(db), span), resolver),
+                    doc: None,
+                    contracts: vec![],
+                },
+            ))
+        })
+    });
+    let def_cand = def_name_hover(db, file, offset, resolver);
+
+    [expr_cand, pat_cand, def_cand]
+        .into_iter()
+        .flatten()
+        .min_by_key(|(width, _)| *width)
+        .map_or_else(empty, |(_, result)| result)
+}
+
+/// The hover answer when `offset` falls on a definition's own declaration name:
+/// its declared-or-inferred type scheme, labelled with the (short) name, with the
+/// definition's docs and attached contracts. Returns the name occurrence's width
+/// so it competes with the expression/pattern candidates in [`hover_at`].
+fn def_name_hover(
+    db: &dyn Db,
+    file: SourceFile,
+    offset: u32,
+    resolver: &dyn SpanResolver,
+) -> Option<(u32, HoverResult)> {
+    let (name, range) = def_name_at(db, file, offset)?;
+    let scheme = fai_types::def_type(db, file, name);
+    let short = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
+    Some((
+        range.len(),
+        HoverResult {
             schema_version: SCHEMA_VERSION,
-            name: reference_name(&parsed.module, &resolved, expr),
-            ty: Some(TypeRepr { display: fai_types::render_canonical(ty) }),
-            span,
-            doc,
-            contracts,
-        };
-    }
-    empty()
+            name: Some(short.to_owned()),
+            ty: Some(TypeRepr { display: fai_types::render_scheme(&scheme) }),
+            span: SpanJson::resolve(Span::new(file.source(db), range), resolver),
+            doc: doc_for(db, file, name),
+            contracts: contracts_by_subject(db, file, resolver).remove(&name).unwrap_or_default(),
+        },
+    ))
 }
 
 /// The definition site(s) of what the cursor names at a byte offset: a top-level
