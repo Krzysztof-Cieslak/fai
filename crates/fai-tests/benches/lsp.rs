@@ -1,73 +1,50 @@
-//! Latency benchmarks for the editor-facing language-server features:
-//! diagnostics (the edit→error loop), hover (tooltips), and go-to-definition.
+//! Per-request latency benchmarks for the editor-facing language-server
+//! features: diagnostics (the edit→error loop), hover, go-to-definition,
+//! completion (and its lazy `completionItem/resolve`), signature help,
+//! find-references, rename (and prepare-rename), document & workspace symbols,
+//! semantic tokens, inlay hints, formatting (whole-document, range, and
+//! on-type), and code actions.
 //!
 //! Two levels are measured, because both are interesting:
 //!
 //! * **`analysis_*`** — the warm analysis the server runs to answer a request,
-//!   called directly (`fai check`'s per-file diagnostics, and `fai-ide`'s
-//!   `hover_at`/`definition_at`). This is the dominant, low-noise cost and shows
-//!   how it scales with workspace size.
-//! * **`roundtrip_*`** — the same three features end to end through the real
-//!   `fai lsp` server over an in-memory connection: decode → overlay the unsaved
-//!   buffer → compute → encode → reply. This is the client-perceived latency and
-//!   includes the JSON-RPC transport and cross-thread hop on top of the analysis.
+//!   called directly (`fai check`'s per-file diagnostics, the `fai-ide` query,
+//!   or `fai-driver`'s formatter). This is the dominant, low-noise cost and
+//!   shows how it scales with workspace size.
+//! * **`roundtrip_*`** — the same feature end to end through the real `fai lsp`
+//!   server over an in-memory connection: decode → overlay the unsaved buffer →
+//!   compute → encode → reply. This is the client-perceived latency and includes
+//!   the JSON-RPC transport and cross-thread hop on top of the analysis.
+//!
+//! Each feature is exercised over both the synthetic corpus (parameterized by
+//! workspace size) and the hand-written multi-module store application
+//! (`fai-corpus::realworld`, whose `Probe` arguments link each report row to the
+//! exact source line it measured). Multi-step *scenarios* (an editing session,
+//! keystroke-incremental edits, cross-module propagation, a rename refactor)
+//! live in the companion `lsp_scenarios` bench.
 //!
 //! Local profiling only (not a CI gate; CI just compiles it).
 //! Run with `cargo bench -p fai-tests --bench lsp`.
 
 use std::cell::Cell;
-use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::thread::JoinHandle;
-use std::time::Duration;
 
-use camino::Utf8PathBuf;
 use divan::Bencher;
 use fai_corpus::realworld::{self, Op, Probe};
 use fai_corpus::{self as corpus, CorpusSpec};
-use fai_db::{DbSpanResolver, FaiDatabase, SourceFile};
+use fai_db::{DbSpanResolver, SourceFile};
 use fai_types::check_file;
-use lsp_server::{Connection, Message, Notification, Request, RequestId};
-use lsp_types::Url;
 use serde_json::{Value, json};
+
+// The corpus warmers, probe-position helpers, and the in-memory `fai lsp` client
+// are shared with the `lsp_scenarios` bench.
+mod harness;
+use harness::*;
 
 fn main() {
     divan::main();
 }
 
-/// Workspace sizes (leaf modules) for the warm-analysis benches.
-const SIZES: &[usize] = &[10, 50, 200];
-/// Smaller set for the end-to-end benches (each stands up a real server over a
-/// workspace written to disk, so setup is heavier).
-const RT_SIZES: &[usize] = &[10, 50];
-
-/// The leaf module the benches probe (one in the middle of the corpus).
-fn target_name(modules: usize) -> String {
-    format!("M{}.fai", modules / 2)
-}
-
-/// The byte offset of a cross-module call (`Core.fN`) in `text` — a reference
-/// whose hover has a type and whose definition lives in another module. The
-/// corpus is ASCII, so the byte offset doubles as the column.
-fn reference_byte(text: &str) -> usize {
-    text.find("f0 x").expect("a leaf body calls Core.f0")
-}
-
-// ── warm analysis (the work the server does per request) ─────────────────────
-
-/// A warmed in-memory corpus: every file inferred, ready to answer queries.
-fn warm_corpus(modules: usize) -> (FaiDatabase, Vec<SourceFile>) {
-    let (db, files) = corpus::build_db(&CorpusSpec::with_modules(modules));
-    for &file in &files {
-        check_file(&db, file);
-    }
-    (db, files)
-}
-
-fn target_file(db: &FaiDatabase, files: &[SourceFile], modules: usize) -> SourceFile {
-    let name = target_name(modules);
-    files.iter().copied().find(|f| f.path(db) == name.as_str()).expect("target module")
-}
+// ── warm analysis over the synthetic corpus ──────────────────────────────────
 
 /// Hover: the type at a reference on a warmed database (`fai-ide`'s `hover_at`,
 /// the call behind `textDocument/hover`).
@@ -165,25 +142,12 @@ fn analysis_document_symbols(bencher: Bencher, modules: usize) {
     bencher.bench_local(|| fai_ide::document_symbols(&db, file, &resolver));
 }
 
-// ── warm analysis over the real-world sample application ──────────────────────
+// ── warm analysis over the real-world store application ───────────────────────
 //
 // The same `fai-ide` queries, but probing the hand-written multi-module app
 // (`fai-corpus::realworld`) instead of the synthetic corpus. Each bench is
 // parameterized by a `Probe` whose `Display` is `"<path>#L<line>"`, so the
 // rendered report links every row to the exact source line it measured.
-
-/// A warmed database holding the real-world app, plus its files by path.
-fn warm_app() -> (FaiDatabase, BTreeMap<&'static str, SourceFile>) {
-    let (db, files) = realworld::load_app();
-    for &file in files.values() {
-        check_file(&db, file);
-    }
-    (db, files)
-}
-
-fn app_file(files: &BTreeMap<&'static str, SourceFile>, probe: &Probe) -> SourceFile {
-    *files.get(probe.path).unwrap_or_else(|| panic!("real-world fixture {} loaded", probe.path))
-}
 
 #[divan::bench(args = realworld::probes(Op::Hover))]
 fn analysis_hover_real(bencher: Bencher, probe: &Probe) {
@@ -260,165 +224,7 @@ fn analysis_diagnostics_real(bencher: Bencher, probe: &Probe) {
         });
 }
 
-// ── end to end through the real `fai lsp` server ─────────────────────────────
-
-/// A running server over a corpus on disk, plus the client end of its connection.
-struct Server {
-    client: Connection,
-    handle: Option<JoinHandle<()>>,
-    dir: Utf8PathBuf,
-    next_id: Cell<i32>,
-}
-
-impl Server {
-    /// Writes the corpus to a fresh temp directory, starts the server, and
-    /// completes the initialize handshake.
-    fn start(spec: &CorpusSpec) -> Self {
-        Self::start_files(corpus::generate(spec))
-    }
-
-    /// Writes `(name, source)` files to a fresh temp directory (the workspace
-    /// root), starts the server, and completes the initialize handshake.
-    fn start_files(files: Vec<(String, String)>) -> Self {
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let dir = Utf8PathBuf::from_path_buf(std::env::temp_dir()).unwrap().join(format!(
-            "fai-lsp-bench-{}-{}",
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        for (path, source) in &files {
-            std::fs::write(dir.join(path), source).unwrap();
-        }
-        let (server_conn, client) = Connection::memory();
-        let root = dir.clone();
-        let handle = std::thread::spawn(move || {
-            let _ = fai_lsp::serve(&server_conn, root);
-        });
-        let server = Self { client, handle: Some(handle), dir, next_id: Cell::new(2) };
-        server.send(Message::Request(Request::new(
-            1.into(),
-            "initialize".to_owned(),
-            json!({ "capabilities": {} }),
-        )));
-        server.await_response(&1.into());
-        server.notify("initialized", json!({}));
-        server
-    }
-
-    fn uri(&self, name: &str) -> String {
-        Url::from_file_path(self.dir.join(name).as_std_path()).unwrap().to_string()
-    }
-
-    fn send(&self, message: Message) {
-        self.client.sender.send(message).unwrap();
-    }
-
-    fn recv(&self) -> Message {
-        self.client.receiver.recv_timeout(Duration::from_secs(120)).expect("server response")
-    }
-
-    fn notify(&self, method: &str, params: Value) {
-        self.send(Message::Notification(Notification::new(method.to_owned(), params)));
-    }
-
-    /// Sends a request and returns its result, skipping any notifications.
-    fn request(&self, method: &str, params: Value) -> Value {
-        let id: RequestId = self.next_id.get().into();
-        self.next_id.set(self.next_id.get() + 1);
-        self.send(Message::Request(Request::new(id.clone(), method.to_owned(), params)));
-        self.await_response(&id)
-    }
-
-    fn await_response(&self, id: &RequestId) -> Value {
-        loop {
-            if let Message::Response(r) = self.recv()
-                && &r.id == id
-            {
-                return r.result.unwrap_or(Value::Null);
-            }
-        }
-    }
-
-    fn did_open(&self, name: &str, text: &str) -> String {
-        let uri = self.uri(name);
-        self.notify(
-            "textDocument/didOpen",
-            json!({
-                "textDocument": { "uri": uri, "languageId": "fai", "version": 1, "text": text }
-            }),
-        );
-        uri
-    }
-
-    fn did_change(&self, uri: &str, text: &str) {
-        self.notify(
-            "textDocument/didChange",
-            json!({
-                "textDocument": { "uri": uri, "version": 2 },
-                "contentChanges": [ { "text": text } ]
-            }),
-        );
-    }
-
-    /// Waits for the next `publishDiagnostics` for `uri`.
-    fn await_diagnostics(&self, uri: &str) {
-        loop {
-            if let Message::Notification(n) = self.recv()
-                && n.method == "textDocument/publishDiagnostics"
-                && n.params["uri"] == *uri
-            {
-                return;
-            }
-        }
-    }
-
-    fn shutdown(mut self) {
-        let _ = self.request("shutdown", Value::Null);
-        self.notify("exit", Value::Null);
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
-    }
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
-}
-
-/// The source the corpus generates for `name`.
-fn corpus_source(spec: &CorpusSpec, name: &str) -> String {
-    corpus::generate(spec)
-        .into_iter()
-        .find(|(path, _)| path == name)
-        .map(|(_, source)| source)
-        .expect("generated file")
-}
-
-/// The 0-based `(line, character)` of `needle` in `text` (ASCII corpus).
-fn position(text: &str, needle: &str) -> (u32, u32) {
-    let byte = text.find(needle).expect("needle present");
-    let line = text[..byte].matches('\n').count() as u32;
-    let line_start = text[..byte].rfind('\n').map_or(0, |i| i + 1);
-    (line, (byte - line_start) as u32)
-}
-
-/// An open target document with a hover/definition position, on a warm server.
-fn open_target(spec: &CorpusSpec, modules: usize) -> (Server, String, Value) {
-    let server = Server::start(spec);
-    let name = target_name(modules);
-    let text = corpus_source(spec, &name);
-    let uri = server.did_open(&name, &text);
-    server.await_diagnostics(&uri); // the file is analyzed on open (warm)
-    let (line, character) = position(&text, "f0 x");
-    let params = json!({
-        "textDocument": { "uri": uri },
-        "position": { "line": line, "character": character }
-    });
-    (server, uri, params)
-}
+// ── end to end through the real `fai lsp` server (synthetic corpus) ───────────
 
 /// Hover over a reference, full round trip through the server.
 #[divan::bench(args = RT_SIZES)]
@@ -521,34 +327,6 @@ fn roundtrip_document_symbols(bencher: Bencher, modules: usize) {
 // app written to a temp workspace. Each bench is parameterized by a `Probe`, so
 // the report links every row to the source line it measured.
 
-/// The app's `(basename, source)` files for a temp workspace (the server keys
-/// modules by their `module` declaration, so the workspace path is the basename).
-fn app_workspace() -> Vec<(String, String)> {
-    realworld::app_sources()
-        .into_iter()
-        .map(|(path, source)| (path.strip_prefix("samples/").unwrap_or(path).to_owned(), source))
-        .collect()
-}
-
-/// Stands a server over the app and opens the probe's file (analyzed on open).
-fn open_app_target(probe: &Probe) -> (Server, String) {
-    let files = app_workspace();
-    let basename = probe.path.strip_prefix("samples/").unwrap_or(probe.path).to_owned();
-    let text = files.iter().find(|(p, _)| *p == basename).map(|(_, s)| s.clone()).unwrap();
-    let server = Server::start_files(files);
-    let uri = server.did_open(&basename, &text);
-    server.await_diagnostics(&uri);
-    (server, uri)
-}
-
-/// A position request payload at the probe.
-fn app_params(probe: &Probe, uri: &str) -> Value {
-    json!({
-        "textDocument": { "uri": uri },
-        "position": { "line": probe.line, "character": probe.character }
-    })
-}
-
 #[divan::bench(args = realworld::probes(Op::Hover))]
 fn roundtrip_hover_real(bencher: Bencher, probe: &Probe) {
     let (server, uri) = open_app_target(probe);
@@ -620,5 +398,307 @@ fn roundtrip_diagnostics_real(bencher: Bencher, probe: &Probe) {
         server.did_change(&uri, edited);
         server.await_diagnostics(&uri);
     });
+    server.shutdown();
+}
+
+// ── additional editor features ───────────────────────────────────────────────
+//
+// The benches above cover the classic navigation/edit set; these measure the
+// rest of the language server's surface — the whole-file passes an editor fires
+// on nearly every change (semantic tokens, inlay hints), workspace-wide symbol
+// search, the formatter (whole-document, range, and on-type), prepare-rename,
+// lazy completion-item documentation, and code actions — each warm (the direct
+// `fai-ide`/`fai-driver` call) and, where it adds signal, end to end through the
+// server.
+
+// --- semantic tokens (textDocument/semanticTokens/full) ----------------------
+
+#[divan::bench(args = SIZES)]
+fn analysis_semantic_tokens(bencher: Bencher, modules: usize) {
+    let (db, files) = warm_corpus(modules);
+    let file = target_file(&db, &files, modules);
+    bencher.bench_local(|| fai_ide::semantic_tokens(&db, file));
+}
+
+#[divan::bench(args = realworld::probes(Op::SemanticTokens))]
+fn analysis_semantic_tokens_real(bencher: Bencher, probe: &Probe) {
+    let (db, files) = warm_app();
+    let file = app_file(&files, probe);
+    bencher.bench_local(|| fai_ide::semantic_tokens(&db, file));
+}
+
+#[divan::bench(args = RT_SIZES)]
+fn roundtrip_semantic_tokens(bencher: Bencher, modules: usize) {
+    let spec = CorpusSpec::with_modules(modules);
+    let (server, uri, _params) = open_target(&spec, modules);
+    let request = json!({ "textDocument": { "uri": uri } });
+    bencher.bench_local(|| server.request("textDocument/semanticTokens/full", request.clone()));
+    server.shutdown();
+}
+
+#[divan::bench(args = realworld::probes(Op::SemanticTokens))]
+fn roundtrip_semantic_tokens_real(bencher: Bencher, probe: &Probe) {
+    let (server, uri) = open_app_target(probe);
+    let request = json!({ "textDocument": { "uri": uri } });
+    bencher.bench_local(|| server.request("textDocument/semanticTokens/full", request.clone()));
+    server.shutdown();
+}
+
+// --- inlay hints (textDocument/inlayHint) ------------------------------------
+
+#[divan::bench(args = SIZES)]
+fn analysis_inlay_hints(bencher: Bencher, modules: usize) {
+    let (db, files) = warm_corpus(modules);
+    let file = target_file(&db, &files, modules);
+    let end = file.text(&db).len() as u32;
+    bencher.bench_local(|| fai_ide::inlay_hints(&db, file, 0, end));
+}
+
+#[divan::bench(args = realworld::probes(Op::InlayHints))]
+fn analysis_inlay_hints_real(bencher: Bencher, probe: &Probe) {
+    let (db, files) = warm_app();
+    let file = app_file(&files, probe);
+    let end = file.text(&db).len() as u32;
+    bencher.bench_local(|| fai_ide::inlay_hints(&db, file, 0, end));
+}
+
+#[divan::bench(args = RT_SIZES)]
+fn roundtrip_inlay_hints(bencher: Bencher, modules: usize) {
+    let spec = CorpusSpec::with_modules(modules);
+    let text = corpus_source(&spec, &target_name(modules));
+    let (server, uri, _params) = open_target(&spec, modules);
+    let (line, character) = end_position(&text);
+    let request = json!({
+        "textDocument": { "uri": uri },
+        "range": {
+            "start": { "line": 0, "character": 0 },
+            "end": { "line": line, "character": character }
+        }
+    });
+    bencher.bench_local(|| server.request("textDocument/inlayHint", request.clone()));
+    server.shutdown();
+}
+
+#[divan::bench(args = realworld::probes(Op::InlayHints))]
+fn roundtrip_inlay_hints_real(bencher: Bencher, probe: &Probe) {
+    let (server, uri) = open_app_target(probe);
+    let (line, character) = end_position(&realworld::read_file(probe.path));
+    let request = json!({
+        "textDocument": { "uri": uri },
+        "range": {
+            "start": { "line": 0, "character": 0 },
+            "end": { "line": line, "character": character }
+        }
+    });
+    bencher.bench_local(|| server.request("textDocument/inlayHint", request.clone()));
+    server.shutdown();
+}
+
+// --- workspace symbols (workspace/symbol) ------------------------------------
+
+/// A synthetic-corpus query matching one symbol per leaf module (`g0`), so the
+/// result set — and the scan — grows with workspace size.
+const WS_QUERY: &str = "g0";
+
+#[divan::bench(args = SIZES)]
+fn analysis_workspace_symbols(bencher: Bencher, modules: usize) {
+    let (db, files) = warm_corpus(modules);
+    let resolver = DbSpanResolver::new(&db);
+    bencher.bench_local(|| {
+        fai_ide::workspace_symbols(&db, &files, WS_QUERY, &resolver, fai_ide::ListOpts::default())
+    });
+}
+
+#[divan::bench]
+fn analysis_workspace_symbols_real(bencher: Bencher) {
+    let (db, files) = warm_app();
+    let all: Vec<SourceFile> = files.values().copied().collect();
+    let resolver = DbSpanResolver::new(&db);
+    bencher.bench_local(|| {
+        fai_ide::workspace_symbols(
+            &db,
+            &all,
+            realworld::WORKSPACE_QUERY,
+            &resolver,
+            fai_ide::ListOpts::default(),
+        )
+    });
+}
+
+#[divan::bench(args = RT_SIZES)]
+fn roundtrip_workspace_symbols(bencher: Bencher, modules: usize) {
+    let server = Server::start(&CorpusSpec::with_modules(modules));
+    let request = json!({ "query": WS_QUERY });
+    bencher.bench_local(|| server.request("workspace/symbol", request.clone()));
+    server.shutdown();
+}
+
+#[divan::bench]
+fn roundtrip_workspace_symbols_real(bencher: Bencher) {
+    let server = Server::start_files(app_workspace());
+    let request = json!({ "query": realworld::WORKSPACE_QUERY });
+    bencher.bench_local(|| server.request("workspace/symbol", request.clone()));
+    server.shutdown();
+}
+
+// --- formatting (textDocument/formatting, rangeFormatting, onTypeFormatting) --
+
+#[divan::bench(args = SIZES)]
+fn analysis_formatting(bencher: Bencher, modules: usize) {
+    let (db, files) = warm_corpus(modules);
+    let file = target_file(&db, &files, modules);
+    bencher.bench_local(|| fai_driver::fmt(&db, &[file]));
+}
+
+#[divan::bench(args = realworld::probes(Op::Formatting))]
+fn analysis_formatting_real(bencher: Bencher, probe: &Probe) {
+    let (db, files) = warm_app();
+    let file = app_file(&files, probe);
+    bencher.bench_local(|| fai_driver::fmt(&db, &[file]));
+}
+
+#[divan::bench(args = RT_SIZES)]
+fn roundtrip_formatting(bencher: Bencher, modules: usize) {
+    let spec = CorpusSpec::with_modules(modules);
+    let (server, uri, _params) = open_target(&spec, modules);
+    let request = json!({ "textDocument": { "uri": uri }, "options": fmt_options() });
+    bencher.bench_local(|| server.request("textDocument/formatting", request.clone()));
+    server.shutdown();
+}
+
+#[divan::bench(args = realworld::probes(Op::Formatting))]
+fn roundtrip_formatting_real(bencher: Bencher, probe: &Probe) {
+    let (server, uri) = open_app_target(probe);
+    let request = json!({ "textDocument": { "uri": uri }, "options": fmt_options() });
+    bencher.bench_local(|| server.request("textDocument/formatting", request.clone()));
+    server.shutdown();
+}
+
+/// "Format selection" — the whole-file formatter restricted to a range (here the
+/// whole document, so it exercises the full format plus the range filter).
+#[divan::bench(args = realworld::probes(Op::Formatting))]
+fn roundtrip_range_formatting_real(bencher: Bencher, probe: &Probe) {
+    let (server, uri) = open_app_target(probe);
+    let (line, character) = end_position(&realworld::read_file(probe.path));
+    let request = json!({
+        "textDocument": { "uri": uri },
+        "range": {
+            "start": { "line": 0, "character": 0 },
+            "end": { "line": line, "character": character }
+        },
+        "options": fmt_options()
+    });
+    bencher.bench_local(|| server.request("textDocument/rangeFormatting", request.clone()));
+    server.shutdown();
+}
+
+/// On-type formatting: a newline trigger reformats the construct just completed
+/// (the line above the cursor).
+#[divan::bench(args = realworld::probes(Op::Formatting))]
+fn roundtrip_on_type_formatting_real(bencher: Bencher, probe: &Probe) {
+    let (server, uri) = open_app_target(probe);
+    let request = json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": probe.line, "character": probe.character },
+        "ch": "\n",
+        "options": fmt_options()
+    });
+    bencher.bench_local(|| server.request("textDocument/onTypeFormatting", request.clone()));
+    server.shutdown();
+}
+
+// --- prepare rename (textDocument/prepareRename) -----------------------------
+
+#[divan::bench(args = SIZES)]
+fn analysis_prepare_rename(bencher: Bencher, modules: usize) {
+    let (db, files) = warm_corpus(modules);
+    let file = target_file(&db, &files, modules);
+    let offset = reference_byte(file.text(&db)) as u32;
+    let resolver = DbSpanResolver::new(&db);
+    bencher.bench_local(|| fai_ide::prepare_rename_at(&db, file, offset, &resolver));
+}
+
+#[divan::bench(args = realworld::probes(Op::PrepareRename))]
+fn analysis_prepare_rename_real(bencher: Bencher, probe: &Probe) {
+    let (db, files) = warm_app();
+    let file = app_file(&files, probe);
+    let resolver = DbSpanResolver::new(&db);
+    bencher.bench_local(|| fai_ide::prepare_rename_at(&db, file, probe.offset, &resolver));
+}
+
+#[divan::bench(args = RT_SIZES)]
+fn roundtrip_prepare_rename(bencher: Bencher, modules: usize) {
+    let spec = CorpusSpec::with_modules(modules);
+    let (server, _uri, params) = open_target(&spec, modules);
+    bencher.bench_local(|| server.request("textDocument/prepareRename", params.clone()));
+    server.shutdown();
+}
+
+#[divan::bench(args = realworld::probes(Op::PrepareRename))]
+fn roundtrip_prepare_rename_real(bencher: Bencher, probe: &Probe) {
+    let (server, uri) = open_app_target(probe);
+    let params = app_params(probe, &uri);
+    bencher.bench_local(|| server.request("textDocument/prepareRename", params.clone()));
+    server.shutdown();
+}
+
+// --- completion item resolve (completionItem/resolve) ------------------------
+
+/// The first completion item in `result` that carries a `data` identity (so a
+/// `completionItem/resolve` on it fetches real documentation).
+fn resolvable_completion_item(result: &Value) -> Option<Value> {
+    let items = match result.as_array() {
+        Some(array) => array.clone(),
+        None => result.get("items")?.as_array()?.clone(),
+    };
+    items.into_iter().find(|item| item.get("data").is_some_and(|d| !d.is_null()))
+}
+
+#[divan::bench]
+fn analysis_completion_resolve_real(bencher: Bencher) {
+    let (db, files) = warm_app();
+    let file = *files.get(realworld::COMPLETION_RESOLVE_FILE).expect("hub file loaded");
+    let file_u32 = file.source(&db).index() as u32;
+    let resolver = DbSpanResolver::new(&db);
+    bencher.bench_local(|| {
+        fai_ide::completion_docs(&db, file_u32, realworld::COMPLETION_RESOLVE_NAME, &resolver)
+    });
+}
+
+#[divan::bench(args = realworld::probes(Op::Completion))]
+fn roundtrip_completion_resolve_real(bencher: Bencher, probe: &Probe) {
+    let (server, uri) = open_app_target(probe);
+    let params = app_params(probe, &uri);
+    let completion = server.request("textDocument/completion", params);
+    let item = resolvable_completion_item(&completion).expect("a resolvable completion item");
+    bencher.bench_local(|| server.request("completionItem/resolve", item.clone()));
+    server.shutdown();
+}
+
+// --- code actions (textDocument/codeAction) ----------------------------------
+
+#[divan::bench(args = realworld::probes(Op::CodeAction))]
+fn analysis_code_actions_real(bencher: Bencher, probe: &Probe) {
+    let (db, files) = warm_app();
+    let file = app_file(&files, probe);
+    let all: Vec<SourceFile> = files.values().copied().collect();
+    let resolver = DbSpanResolver::new(&db);
+    bencher.bench_local(|| {
+        fai_ide::code_actions_at(&db, &all, file, probe.offset, probe.offset, &resolver)
+    });
+}
+
+#[divan::bench(args = realworld::probes(Op::CodeAction))]
+fn roundtrip_code_actions_real(bencher: Bencher, probe: &Probe) {
+    let (server, uri) = open_app_target(probe);
+    let request = json!({
+        "textDocument": { "uri": uri },
+        "range": {
+            "start": { "line": probe.line, "character": probe.character },
+            "end": { "line": probe.line, "character": probe.character }
+        },
+        "context": { "diagnostics": [] }
+    });
+    bencher.bench_local(|| server.request("textDocument/codeAction", request.clone()));
     server.shutdown();
 }

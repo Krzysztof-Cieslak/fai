@@ -630,12 +630,19 @@ cache plus a fast linker (mold/lld).
   corpus; `contracts.rs` covers the `fai test` edit→test loop (synthesize → JIT →
   run), and `fai-cli`'s `test_loop.rs` benches the same loop end-to-end through
   the real binary and its daemon (client → daemon → worker subprocess);
-  `lsp.rs` covers the language-server features (hover, go-to-definition,
-  diagnostics, completion, signature help, references, rename, document symbols)
-  both as warm analysis and as full round trips through the real server, over the
-  synthetic corpus *and* a hand-written multi-module application (under
-  `samples/`, via [`fai-corpus`](crates/fai-corpus)'s `realworld` fixtures) whose
-  rows link to the exact source line each probes; `micro.rs` covers the inference
+  `lsp.rs` covers each language-server request in isolation (hover,
+  go-to-definition, diagnostics, completion and its lazy `completionItem/resolve`,
+  signature help, references, rename and prepare-rename, document & workspace
+  symbols, semantic tokens, inlay hints, formatting — whole-document, range, and
+  on-type — and code actions) both as warm analysis and as full round trips
+  through the real server, while `lsp_scenarios.rs` covers multi-step editor
+  workflows (a keystroke-incremental typing session, the type-a-character →
+  diagnostics loop, cross-module change propagation across every open dependent,
+  a rename refactor, and a typo → quick-fix) — both over the synthetic corpus
+  *and* a hand-written multi-module store application (under `samples/store/`, via
+  [`fai-corpus`](crates/fai-corpus)'s `realworld` fixtures) whose rows link to the
+  exact source line each probes; the two benches share an in-memory `fai lsp`
+  client harness (`benches/harness/`). `micro.rs` covers the inference
   primitives; `stress.rs` covers pathological scenarios. The deterministic
   [`fai-corpus`](crates/fai-corpus) generator backs the corpus benches and the
   guards.

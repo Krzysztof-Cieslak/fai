@@ -1,0 +1,14 @@
+module Reporting
+
+public catalogReport : List Catalog.Product -> String
+let catalogReport products = products |> List.map Catalog.label |> String.join "\n"
+
+public orderSummary : List Orders.Line -> String
+let orderSummary lines = "Total: " ++ Money.format Money.USD (Orders.total lines)
+
+public itemCount : List Orders.Line -> Int
+let itemCount lines =
+  lines |> List.map (fun line -> line.qty) |> List.foldl (fun acc n -> acc + n) 0
+
+public customerLine : Customer.Customer -> String
+let customerLine customer = Customer.greeting customer

@@ -78,6 +78,10 @@ name = "lsp"
 harness = false
 
 [[bench]]
+name = "lsp_scenarios"
+harness = false
+
+[[bench]]
 name = "contracts"
 harness = false
 

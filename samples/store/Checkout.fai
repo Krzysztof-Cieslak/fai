@@ -1,0 +1,17 @@
+module Checkout
+
+public type Receipt = { shipping : Float, subtotal : Float, tax : Float, total : Float }
+
+public checkout : Tax.Tax -> Shipping.Zone -> List Orders.Line -> Receipt
+let checkout taxRate zone lines =
+  let subtotal = Orders.total lines
+  let shipping =
+    lines |> List.map (fun line ->
+      Shipping.shippingCost zone line.product) |> List.foldl (fun acc x -> acc + x) 0.0
+  let tax =
+    lines |> List.map (fun line ->
+      Tax.taxFor taxRate line.product) |> List.foldl (fun acc x -> acc + x) 0.0
+  { shipping = shipping, subtotal = subtotal, tax = tax, total = subtotal + shipping + tax }
+
+public describe : Orders.Line -> String
+let describe line = Catalog.label line.product ++ " x" ++ Int.toString line.qty

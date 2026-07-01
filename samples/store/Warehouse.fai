@@ -1,0 +1,14 @@
+module Warehouse
+
+public type Warehouse = { location : Address.Address, stock : List Inventory.Stock }
+
+public totalOnHand : Warehouse -> Int
+let totalOnHand warehouse =
+  warehouse.stock |> List.map (fun s -> s.onHand) |> List.foldl (fun acc n -> acc + n) 0
+
+public productsInStock : Warehouse -> List Catalog.Product
+let productsInStock warehouse =
+  warehouse.stock |> Inventory.available |> List.map (fun s -> s.product)
+
+public listing : Warehouse -> List String
+let listing warehouse = productsInStock warehouse |> List.map Catalog.label

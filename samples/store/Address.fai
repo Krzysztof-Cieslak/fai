@@ -1,0 +1,9 @@
+module Address
+
+public type Address = { city : String, country : String, zip : String }
+
+public format : Address -> String
+let format address = address.city ++ ", " ++ address.country ++ " " ++ address.zip
+
+public domestic : Address -> Bool
+let domestic address = address.country = "US"

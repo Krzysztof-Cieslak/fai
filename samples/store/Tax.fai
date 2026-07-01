@@ -1,0 +1,9 @@
+module Tax
+
+public type Tax = { rate : Float }
+
+public taxFor : Tax -> Catalog.Product -> Float
+let taxFor tax product = product.price * tax.rate / 100.0
+
+public withTax : Tax -> Catalog.Product -> Float
+let withTax tax product = product.price + taxFor tax product

@@ -103,7 +103,8 @@ All under `crates/fai-tests/benches/` unless noted. None is a CI gate.
 | `codegen` | The backend pipeline (lower → reference-count → Cranelift → JIT) plus a few runtime primitives. |
 | `contracts` | The in-process `fai test` loop (collect → synthesize harness → reference-count → JIT → run) over the corpus, cold and warm. |
 | `daemon` | Daemon-path pieces: content-addressed cache key, run-bundle serialization, wire framing, workspace file-state sync. |
-| `lsp` | Language-server latency: warm `analysis_*` (the work to answer a request) and full `roundtrip_*` through the real server over an in-memory connection. |
+| `lsp` | Per-request language-server latency: warm `analysis_*` (the work to answer a request) and full `roundtrip_*` through the real server over an in-memory connection, for every editor feature (see below). |
+| `lsp_scenarios` | Multi-step language-server *workflows*: a keystroke-incremental typing session, the type-a-character → diagnostics loop, cross-module change propagation, a rename refactor, and a typo → quick-fix (see below). |
 | `algorithms_jit` | Runtime comparison, in-process compute: compiled Fai code vs idiomatic Rust (see below). |
 | `algorithms_aot` | Runtime comparison, delivered binaries: a `fai build` executable vs a Rust release binary vs an `ocamlopt`-compiled OCaml binary, end to end (see below). |
 | `algorithms_mem` | Memory comparison, delivered binaries: peak resident set size of the same `fai build` vs Rust vs OCaml binaries (see below). |
@@ -440,5 +441,35 @@ verification (a build or run failure crashes the bench). The leaves:
 
 Like `algorithms_aot`, the suite is skipped on Windows (the build/link + spawn
 path), still compiling there so `build --all-targets` keeps it from bitrotting.
+
+## Language-server benchmarks
+
+Two suites measure the `fai lsp` server, at two granularities. Both are
+Fai-only and informational (plain timing tables), run over **two corpora** — the
+deterministic synthetic corpus (parameterized by workspace size) and a
+hand-written multi-module **store application** under `samples/store/` (a
+`Catalog` hub many modules depend on, a widely-referenced `Catalog.label`, and a
+layered dependency graph). Real-world rows are keyed by a `fai-corpus::realworld`
+`Probe` whose label (`<path>#Lnn`) links each report row to the exact source line
+it measured. Both benches drive the **real** server over an in-memory connection
+through a shared client harness (`crates/fai-tests/benches/harness/`), so a
+`roundtrip_*` timing includes the JSON-RPC transport and the cross-thread hop on
+top of the analysis; the `analysis_*` variants call the `fai-ide`/`fai-driver`
+query directly for the low-noise, size-scaling cost.
+
+- **`lsp`** — each request in isolation on a warm server: hover, go-to-definition,
+  diagnostics, completion (and its lazy `completionItem/resolve`), signature help,
+  find-references, rename (and prepare-rename), document & workspace symbols,
+  semantic tokens, inlay hints, formatting (whole-document, range, and on-type),
+  and code actions.
+- **`lsp_scenarios`** — multi-step workflows that capture costs the single-shot
+  benches cannot: an **editing session** (typing a binding with keystroke-level
+  incremental range edits, firing completion/signature-help/hover as it goes), the
+  **keystroke → diagnostics** loop (range-edit sync, the realistic per-keystroke
+  path), **cross-module propagation** (a breaking change to the hub's public
+  signature with every dependent open, timed until all re-diagnose — the
+  non-firewalled fan-out, in contrast to the flat firewalled private-body edit the
+  `lsp` diagnostics benches measure), a **rename refactor** (`prepareRename` →
+  `rename` of a workspace-wide symbol), and a **typo → quick-fix** cycle.
 
 [divan]: https://docs.rs/divan

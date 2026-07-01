@@ -2,6 +2,10 @@
 //! that the docs cannot drift: every implemented-surface file must parse cleanly
 //! and be canonically formatted; every other file may only fail because of
 //! not-yet-supported constructs (`FAI1030`), never a real syntax error.
+//!
+//! The traversal here is non-recursive, so files in subdirectories are skipped;
+//! they have dedicated suites (`samples/algorithms/` in `algorithms.rs`, the
+//! multi-module store application in `samples/store/` in `store_app.rs`).
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -59,7 +63,6 @@ fn samples_round_trip_or_are_future_surface() {
         "Algebra.fai",
         "Anon.fai",
         "Basics.fai",
-        "Catalog.fai",
         "Chars.fai",
         "Comments.fai",
         "CustomCapability.fai",
@@ -68,7 +71,6 @@ fn samples_round_trip_or_are_future_surface() {
         "Funcs.fai",
         "Geometry.fai",
         "Hello.fai",
-        "Inventory.fai",
         "Lists.fai",
         "Locals.fai",
         "Math.fai",
@@ -77,14 +79,11 @@ fn samples_round_trip_or_are_future_surface() {
         "Opaque.fai",
         "OpaqueClient.fai",
         "Optional.fai",
-        "Orders.fai",
         "Patterns.fai",
-        "Pricing.fai",
         "RecordMatch.fai",
         "Rows.fai",
         "Shapes.fai",
         "Status.fai",
-        "Storefront.fai",
         "Streams.fai",
         "TailLoops.fai",
         "Trees.fai",
@@ -107,7 +106,6 @@ const TYPECHECK_CLEAN: &[&str] = &[
     "BytesDemo.fai",
     "Capabilities.fai",
     "Cart.fai",
-    "Catalog.fai",
     "Chars.fai",
     "ConcurrencyDemo.fai",
     "CustomCapability.fai",
@@ -119,7 +117,6 @@ const TYPECHECK_CLEAN: &[&str] = &[
     "Hello.fai",
     "HttpMultipart.fai",
     "HttpPool.fai",
-    "Inventory.fai",
     "Lists.fai",
     "Locals.fai",
     "Logging.fai",
@@ -130,15 +127,12 @@ const TYPECHECK_CLEAN: &[&str] = &[
     "Opaque.fai",
     "OpaqueClient.fai",
     "Optional.fai",
-    "Orders.fai",
     "Patterns.fai",
-    "Pricing.fai",
     "Properties.fai",
     "RecordMatch.fai",
     "Rows.fai",
     "Shapes.fai",
     "Status.fai",
-    "Storefront.fai",
     "Streams.fai",
     "TailLoops.fai",
     "Trees.fai",

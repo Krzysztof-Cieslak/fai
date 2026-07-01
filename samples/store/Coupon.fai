@@ -1,0 +1,14 @@
+module Coupon
+
+public type Coupon =
+  | NoCoupon
+  | Rate Float
+
+public asDiscount : Coupon -> Pricing.Discount
+let asDiscount coupon =
+  match coupon with
+  | NoCoupon -> Pricing.NoDiscount
+  | Rate rate -> Pricing.Percent rate
+
+public priceAfter : Coupon -> Catalog.Product -> Float
+let priceAfter coupon product = Pricing.priceOf product (asDiscount coupon)

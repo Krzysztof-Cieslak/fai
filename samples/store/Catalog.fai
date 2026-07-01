@@ -23,5 +23,6 @@ let rank category =
   | Book -> 2
 forall c: rank c >= 0
 
+/// The product's display label, e.g. `"Apple (food)"`.
 public label : Product -> String
 let label product = product.name ++ " (" ++ categoryName product.category ++ ")"
