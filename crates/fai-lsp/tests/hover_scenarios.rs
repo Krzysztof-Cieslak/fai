@@ -72,6 +72,35 @@ fn hover_on_a_local_binding_use_shows_its_type() {
 }
 
 #[test]
+fn hover_on_a_top_level_binding_name_shows_its_type() {
+    let (mut h, uri) = sample();
+    // The cursor rests on the declared name `two`, not a use of it.
+    let text = h.hover_text(&uri, position_of(SAMPLE, "two = inc 1")).expect("hover");
+    assert!(text.contains("two : Int"), "{text}");
+    h.shutdown();
+}
+
+#[test]
+fn hover_on_a_local_binding_declaration_shows_its_type() {
+    let (mut h, uri) = sample();
+    // The cursor rests on the binder `bumped` in `let bumped = n + 1`.
+    let text = h.hover_text(&uri, position_of(SAMPLE, "bumped = n")).expect("hover");
+    assert!(text.contains("bumped : Int"), "{text}");
+    h.shutdown();
+}
+
+#[test]
+fn hover_on_a_simple_local_let_binder_shows_its_type() {
+    // A value-restricted `let t = 1` binder (recorded on a special inference
+    // path) still reports its type at the declaration through the full server.
+    let src = "module M\n\npublic f : Int -> Int\nlet f x =\n  let t = 1\n  x + t\n";
+    let (mut h, uri) = Harness::open_main("hover-simple-let", src);
+    let text = h.hover_text(&uri, position_of(src, "t = 1")).expect("hover");
+    assert!(text.contains("t : Int"), "{text}");
+    h.shutdown();
+}
+
+#[test]
 fn hover_on_a_constructor_use_shows_the_adt() {
     let (mut h, uri) = sample();
     let text = h.hover_text(&uri, position_within(SAMPLE, "= Red", 2)).expect("hover");

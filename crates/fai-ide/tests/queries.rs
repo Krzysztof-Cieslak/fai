@@ -340,6 +340,78 @@ fn hover_at_reports_a_char_literal_type() {
 }
 
 #[test]
+fn hover_at_reports_a_top_level_private_binding_name() {
+    // Hovering the *name* of a private, signature-less top-level binding reports
+    // its inferred type. Only use sites worked before this.
+    let mut db = FaiDatabase::new();
+    let src = "module M\n\nlet t = 1\n";
+    let id = db.add_source("M.fai".into(), src.to_owned());
+    let file = db.source_file(id).unwrap();
+    let r = hover_at(&db, file, at(src, "t = 1"), &DbSpanResolver::new(&db));
+    assert_eq!(r.name.as_deref(), Some("t"));
+    assert_eq!(r.ty.unwrap().display, "Int");
+    let span = r.span.unwrap();
+    assert_eq!(&src[span.byte_start as usize..span.byte_end as usize], "t");
+}
+
+#[test]
+fn hover_at_reports_a_binding_name_from_binding_and_signature() {
+    // The name occurrence in either the binding line or the signature line
+    // resolves to the definition and reports its type.
+    let mut db = FaiDatabase::new();
+    let src = "module M\n\npublic answer : Int\nlet answer = 42\n";
+    let id = db.add_source("M.fai".into(), src.to_owned());
+    let file = db.source_file(id).unwrap();
+    let at_binding = hover_at(&db, file, at(src, "answer = 42"), &DbSpanResolver::new(&db));
+    assert_eq!(at_binding.name.as_deref(), Some("answer"));
+    assert_eq!(at_binding.ty.unwrap().display, "Int");
+    let at_sig = hover_at(&db, file, at(src, "answer : Int"), &DbSpanResolver::new(&db));
+    assert_eq!(at_sig.name.as_deref(), Some("answer"));
+    assert_eq!(at_sig.ty.unwrap().display, "Int");
+}
+
+#[test]
+fn hover_at_reports_a_simple_local_let_binder() {
+    // A local `let t = 1` binder (a value-restricted simple binding, whose type
+    // the inferrer records specially) reports its type at its declaration, not
+    // the enclosing block's type.
+    let mut db = FaiDatabase::new();
+    let src = "module M\n\npublic f : Int -> Int\nlet f x =\n  let t = 1\n  x + t\n";
+    let id = db.add_source("M.fai".into(), src.to_owned());
+    let file = db.source_file(id).unwrap();
+    let r = hover_at(&db, file, at(src, "t = 1"), &DbSpanResolver::new(&db));
+    assert_eq!(r.name.as_deref(), Some("t"));
+    assert_eq!(r.ty.unwrap().display, "Int");
+    let span = r.span.unwrap();
+    assert_eq!(&src[span.byte_start as usize..span.byte_end as usize], "t");
+}
+
+#[test]
+fn hover_at_reports_a_local_binder_declaration() {
+    // Hovering the binding occurrence `let shade = …` (not a use) reports the
+    // local's type; the narrow binder wins over the block that also spans it.
+    let (db, file, text) = position_workspace();
+    let offset = at(text, "shade = tag c");
+    let r = hover_at(&db, file, offset, &DbSpanResolver::new(&db));
+    assert_eq!(r.name.as_deref(), Some("shade"));
+    assert_eq!(r.ty.unwrap().display, "Int");
+    let span = r.span.unwrap();
+    assert_eq!(&text[span.byte_start as usize..span.byte_end as usize], "shade");
+}
+
+#[test]
+fn hover_at_reports_a_parameter_binder() {
+    // Hovering a parameter at its binding site reports the parameter's type.
+    let (db, file, text) = position_workspace();
+    let offset = at(text, "paint c") + "paint ".len() as u32;
+    let r = hover_at(&db, file, offset, &DbSpanResolver::new(&db));
+    assert_eq!(r.name.as_deref(), Some("c"));
+    assert_eq!(r.ty.unwrap().display, "Color");
+    let span = r.span.unwrap();
+    assert_eq!(&text[span.byte_start as usize..span.byte_end as usize], "c");
+}
+
+#[test]
 fn definition_at_snapshot() {
     let (db, file, text) = position_workspace();
     let offset = at(text, "tag Red") + "tag ".len() as u32;
