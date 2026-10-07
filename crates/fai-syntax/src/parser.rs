@@ -114,6 +114,15 @@ impl Parser<'_> {
         }
     }
 
+    /// Reports a mistaken separator but consumes it so the body can still parse.
+    fn expect_separator(&mut self, kind: TokenKind, mistaken: TokenKind, what: &str) {
+        if !self.eat(kind) {
+            let span = self.cur().range;
+            self.error(SYNTAX_ERROR, span, format!("expected {what}"));
+            self.eat(mistaken);
+        }
+    }
+
     fn start(&self) -> ByteOffset {
         self.cur().range.start()
     }
@@ -919,12 +928,18 @@ impl Parser<'_> {
                 Symbol::intern("")
             };
             let mut params = Vec::new();
-            while !matches!(self.peek(), TokenKind::Equals | TokenKind::Comma | TokenKind::RBrace)
-                && !self.at_eof()
+            while !matches!(
+                self.peek(),
+                TokenKind::Equals | TokenKind::Arrow | TokenKind::Comma | TokenKind::RBrace
+            ) && !self.at_terminator()
             {
                 params.push(self.parse_pattern());
             }
-            self.expect(TokenKind::Equals, "`=` after the method parameters");
+            self.expect_separator(
+                TokenKind::Equals,
+                TokenKind::Arrow,
+                "`=` after the method parameters",
+            );
             let body = self.parse_expr();
             methods.push(MethodImpl { name, params, body, span: self.span_from(start) });
             if !self.eat(TokenKind::Comma) {
@@ -961,14 +976,19 @@ impl Parser<'_> {
     fn parse_lambda(&mut self, start: ByteOffset) -> ExprId {
         self.bump(); // `fun`
         let mut params = Vec::new();
-        while !self.at(TokenKind::Arrow) && !self.at_terminator() {
+        while !matches!(self.peek(), TokenKind::Arrow | TokenKind::Equals) && !self.at_terminator()
+        {
             params.push(self.parse_pattern());
         }
         if params.is_empty() {
             let span = self.cur().range;
             self.error(SYNTAX_ERROR, span, "expected a parameter after `fun`");
         }
-        self.expect(TokenKind::Arrow, "`->` after the lambda parameters");
+        self.expect_separator(
+            TokenKind::Arrow,
+            TokenKind::Equals,
+            "`->` after the lambda parameters",
+        );
         let body = self.parse_expr();
         self.alloc_expr(ExprKind::Lambda { params, body }, self.span_from(start))
     }
@@ -1517,7 +1537,7 @@ fn can_start_type_atom(kind: TokenKind) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use fai_span::SourceId;
+    use fai_span::{ByteOffset, SourceId, TextRange};
     use indoc::indoc;
 
     use super::{Parsed, parse_module};
@@ -2170,6 +2190,88 @@ mod tests {
         // spin the parameter loop; it reports a syntax error and recovers.
         let parsed = parse("module M\n\nlet h : Int\nlet h x = x");
         assert!(parsed.diagnostics.iter().any(|d| d.code == crate::SYNTAX_ERROR));
+    }
+
+    #[track_caller]
+    fn assert_parameter_recovery(src: &str, errors: &[(usize, usize, &str)], tree: &str) {
+        let parsed = parse(src);
+        let actual: Vec<_> = parsed
+            .diagnostics
+            .iter()
+            .map(|d| (d.code, d.primary.range(), d.message.as_str()))
+            .collect();
+        let expected: Vec<_> = errors
+            .iter()
+            .map(|&(start, end, message)| {
+                (
+                    crate::SYNTAX_ERROR,
+                    TextRange::new(ByteOffset::from_usize(start), ByteOffset::from_usize(end)),
+                    message,
+                )
+            })
+            .collect();
+        assert_eq!(actual, expected);
+        assert_eq!(dump_module(&parsed.module), tree);
+    }
+
+    #[test]
+    fn lambda_equals_separator_recovers_body_and_following_binding() {
+        let src = "module M\nlet f = fun x = x\nlet g = 2\n";
+        let at = src.find("= x").unwrap();
+        assert_parameter_recovery(
+            src,
+            &[(at, at + 1, "expected `->` after the lambda parameters")],
+            "module M\n(let Private f [] (fun [(pvar x)] (var x)))\n(let Private g [] (int 2))\n",
+        );
+    }
+
+    #[test]
+    fn lambda_equals_separator_without_parameters_reports_both_errors() {
+        let src = "module M\nlet f = fun = 1\nlet g = 2\n";
+        let at = src.find("= 1").unwrap();
+        assert_parameter_recovery(
+            src,
+            &[
+                (at, at + 1, "expected a parameter after `fun`"),
+                (at, at + 1, "expected `->` after the lambda parameters"),
+            ],
+            "module M\n(let Private f [] (fun [] (int 1)))\n(let Private g [] (int 2))\n",
+        );
+    }
+
+    #[test]
+    fn lambda_equals_separator_span_after_multibyte_text() {
+        let src = "module M\nlet text = \"é😀\"\nlet f = fun x = x\n";
+        let at = src.find("= x").unwrap();
+        assert_parameter_recovery(
+            src,
+            &[(at, at + 1, "expected `->` after the lambda parameters")],
+            "module M\n(let Private text [] (string \"é😀\"))\n(let Private f [] (fun [(pvar x)] (var x)))\n",
+        );
+    }
+
+    #[test]
+    fn lambda_missing_arrow_at_eof_reports_a_finite_error_list() {
+        let src = "module M\nlet f = fun x";
+        assert_parameter_recovery(
+            src,
+            &[
+                (src.len(), src.len(), "expected `->` after the lambda parameters"),
+                (src.len(), src.len(), "expected an expression"),
+            ],
+            "module M\n(let Private f [] (fun [(pvar x)] (expr-error)))\n",
+        );
+    }
+
+    #[test]
+    fn method_arrow_separator_recovers_body_and_following_method() {
+        let src = "module M\nlet i = { I with run x -> x, next y = y }\nlet g = 2\n";
+        let at = src.find("->").unwrap();
+        assert_parameter_recovery(
+            src,
+            &[(at, at + 2, "expected `=` after the method parameters")],
+            "module M\n(let Private i [] (instance I [(run [(pvar x)] (var x)), (next [(pvar y)] (var y))]))\n(let Private g [] (int 2))\n",
+        );
     }
 
     #[test]
