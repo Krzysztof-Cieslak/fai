@@ -661,6 +661,12 @@ Key facts:
 - **Effects propagate through combinators.** `List.map` over a console-using
   function reflects `{ Console }`; composing differently-effecting functions
   unions their effects.
+- **Signatures preserve latent and polymorphic effects.** A callback returned by
+  `Console -> (String -> Unit / { Console })` remains effectful when called.
+  An invoker has type `(Unit -> 'a / 'e) -> 'a / 'e`; dropping its final `/ 'e`,
+  hiding an effect inside a result, or silently merging distinct quantified
+  effect variables is `FAI3004`. A less-effectful callback can satisfy a wider
+  declared effect bound, with function parameters checked contravariantly.
 - **Effects are erased at runtime** — they exist only in the type system.
 - **Atoms in a row are written sorted**: `/ { Clock, Console }`.
 - Call a nullary-style capability method with `()`: `env.clock.now ()`.

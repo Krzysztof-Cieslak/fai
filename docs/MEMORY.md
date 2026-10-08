@@ -2121,7 +2121,7 @@ Editor integration:
     capability used but undeclared, or declared but unused). The whole standard
     library, samples, and test corpus carry accurate effects; the std combinators
     forward `'e`, so mapping/folding a capability-using closure reflects it.
-  - **Deep subsumption at arguments; strict elsewhere (sound, not complete).** At a
+  - **Deep subsumption at typed boundaries (sound, not complete).** At a
     function *application* each argument is related to its parameter by a directional
     `subsume_types` (`sub ⊆ sup`) rather than unified. It walks both types in
     lockstep — **unifying** the non-effect structure — and relates effect rows by
@@ -2139,14 +2139,25 @@ Editor integration:
     into a variable that appears only *covariantly* in a definition's type is
     **closed to pure** at finalization (variables in a parameter position stay
     polymorphic), so `let f = inc >> inc` is pure while `let g = List.map` stays
-    effect-polymorphic. Everywhere *other* than an argument, effect unification
+    effect-polymorphic. Outside arguments and signature checking, effect unification
     stays strict: differently-effecting `if`/`match` branches do not silently unify
     (no laundering — joining them is separate, deferred work), and passing an
     effectful function where a pure one is required is still a type mismatch.
-    Lenient only at the signature-vs-body check (so a disagreement is the single
-    `FAI5001`, not a generic mismatch); interface instance methods are checked by
+    Signature checking uses deep directional subsumption and checks that each
+    quantified effect tail remains arbitrary and distinct (**`FAI3004`** for
+    hidden latent effects or an erased/specialized effect variable). Only the
+    specific outer effect row already reported as `FAI5001` is skipped during
+    structural checking; nested arrows are still checked. Result residuals are
+    defaulted after connection to the signature, preserving explicitly quantified
+    result effects. Concrete call-argument residuals close after all supplied
+    arguments contribute, before union with the enclosing body's effects; an
+    origin marker keeps caller-owned variables and future-argument effects open.
+    Interface instance methods are checked by
     subsumption against the declared method effect (see *Effect-parameterized
     interfaces* below), not leniently.
+    The HTTP receive-step helpers explicitly forward their transport effect,
+    and recursive stream helpers can declare their effect-polymorphic signatures
+    to guide the conservative single-tail union solver.
   - **Surface & tooling.** Syntax mirrors the record row — `/ { A, B | 'e }`,
     lone-`'e` sugar, bare = pure — bound to the innermost arrow; `fai fmt` sorts
     the atoms and drops `/ {}`. Interface effect arguments and `fai query caps`

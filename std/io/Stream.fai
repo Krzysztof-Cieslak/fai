@@ -275,6 +275,7 @@ let collectChunk n remaining s acc =
 public chunksOf : Int -> Stream 'a 'e -> Stream (List 'a) 'e
 let chunksOf n s = if n <= 0 then empty else MkStream (fun u -> collectChunk n n s [])
 
+enumerateFrom : Int -> Stream 'a 'e -> Stream (Int * 'a) 'e
 let enumerateFrom i s =
   MkStream (fun u ->
     match next s with

@@ -23,6 +23,8 @@ mod edge_tests;
 #[cfg(test)]
 mod prop_tests;
 #[cfg(test)]
+mod signature_effect_tests;
+#[cfg(test)]
 mod tests;
 
 pub use contracts::check_contracts;

@@ -518,7 +518,7 @@ let sizedBody t buf remaining =
   else
     Stream.defer (fun u -> sizedRecv t remaining)
 
-sizedRecv : Transport 'e -> Int -> Stream Bytes 'e
+sizedRecv : Transport 'e -> Int -> Stream Bytes 'e / 'e
 let sizedRecv t remaining =
   match t.recv 16384 with
   | Err e -> Stream.failed e
@@ -536,7 +536,7 @@ let eofBody t buf =
   else
     Stream.defer (fun u -> eofRecv t)
 
-eofRecv : Transport 'e -> Stream Bytes 'e
+eofRecv : Transport 'e -> Stream Bytes 'e / 'e
 let eofRecv t =
   match t.recv 16384 with
   | Err e -> Stream.failed e
@@ -546,7 +546,7 @@ let eofRecv t =
 chunkedBody : Transport 'e -> Bytes -> Stream Bytes 'e
 let chunkedBody t buf = Stream.defer (fun u -> chunkedNext t buf)
 
-chunkedNext : Transport 'e -> Bytes -> Stream Bytes 'e
+chunkedNext : Transport 'e -> Bytes -> Stream Bytes 'e / 'e
 let chunkedNext t buf =
   match readLine t buf with
   | Err e -> Stream.failed e

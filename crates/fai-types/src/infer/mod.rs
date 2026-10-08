@@ -172,12 +172,14 @@ pub fn infer_scc(
     let mut declared: FxHashMap<DefId, Scheme> = FxHashMap::default();
     let mut declared_vars: FxHashMap<DefId, Vec<crate::ty::TyVarId>> = FxHashMap::default();
     let mut declared_rows: FxHashMap<DefId, Vec<crate::ty::RowVarId>> = FxHashMap::default();
+    let mut declared_effects: FxHashMap<DefId, Vec<crate::ty::EffRowVarId>> = FxHashMap::default();
     for m in members {
         if let Some(scheme) = declared_scheme(db, file, m.name) {
-            let (mono, vars, rows) = cx.instantiate_tracked(&scheme);
+            let (mono, vars, rows, effects) = cx.instantiate_tracked(&scheme);
             scc_types.insert(*m, mono);
             declared_vars.insert(*m, vars);
             declared_rows.insert(*m, rows);
+            declared_effects.insert(*m, effects);
             declared.insert(*m, scheme);
         } else {
             scc_types.insert(*m, cx.fresh());
@@ -219,23 +221,6 @@ pub fn infer_scc(
         let body_eff = walker.body_effect_solve();
         let fn_ty = SolveTy::arrows_solver_eff(param_tys, body_ty.clone(), body_eff.clone());
 
-        // Default every effect-row residual that appears only covariantly (a
-        // subsumption leftover, or the body's latent effect) to the pure row,
-        // keeping those in a parameter position (forwarded from a caller). This
-        // makes `let f = inc >> inc` pure while `let g = List.map` stays
-        // effect-polymorphic, and a merely capability-using body does not
-        // generalize a spurious `'e`.
-        {
-            let mut keep: FxHashSet<crate::ty::EffRowVarId> = FxHashSet::default();
-            cx.contravariant_effect_vars(&fn_ty, &mut keep);
-            let mut all: FxHashSet<crate::ty::EffRowVarId> = FxHashSet::default();
-            cx.collect_effect_vars(&fn_ty, &mut all);
-            for v in all {
-                if !keep.contains(&v) {
-                    cx.close_effect_var(v);
-                }
-            }
-        }
         let inferred_effect = cx.reify_effect_standalone(&body_eff);
 
         // Effect enforcement (required on every signatured binding): the
@@ -243,8 +228,9 @@ pub fn infer_scc(
         // declares after `/`. A bare arrow declares the pure (empty) effect, so a
         // binding that performs a capability without declaring it is an error —
         // this is what makes a function's reach visible in its type. The
-        // polymorphic tail is ignored here (a `'e` matches a `'e`); only the
-        // concrete capability atoms are compared.
+        // concrete atoms are compared here for the dedicated diagnostic. Deep
+        // signature subsumption and quantified-tail generality are checked below.
+        let mut diagnosed_arrow = None;
         if let Some(scheme) = declared.get(m)
             && let Some(declared_effect) = saturating_effect(&scheme.ty, params.len())
             && effect_atom_names(&declared_effect) != effect_atom_names(&inferred_effect)
@@ -254,14 +240,37 @@ pub fn infer_scc(
                 crate::ty::render_effect(&declared_effect),
                 crate::ty::render_effect(&inferred_effect),
             ));
+            diagnosed_arrow = Some(params.len());
         }
 
-        // The signature-vs-body check tolerates an effect disagreement (it is
-        // reported once as FAI5001 below); only the body's *internal* effect
-        // unifications are strict.
-        cx.set_lenient_effects(true);
-        let unify = cx.unify(&fn_ty, &member_ty);
-        cx.set_lenient_effects(false);
+        // A signature is an upper bound on latent effects, with deep variance.
+        // Suppress only the specific outer row diagnosed above, not nested rows.
+        let unify = if declared.contains_key(m) {
+            cx.subsume_signature(&fn_ty, &member_ty, diagnosed_arrow)
+        } else {
+            cx.unify(&fn_ty, &member_ty)
+        };
+
+        // Default covariant residual effects only after connecting the result to
+        // its signature. Otherwise a polymorphic producer used under an invariant
+        // result type (e.g. Result (Stream 'a 'e) String) is prematurely made pure.
+        let mut keep: FxHashSet<crate::ty::EffRowVarId> = FxHashSet::default();
+        cx.contravariant_effect_vars(&fn_ty, &mut keep);
+        for &v in declared_effects.values().flatten() {
+            if let Some(tail) = cx.effect_open_tail(&ctx::SolveEffect {
+                atoms: Vec::new(),
+                tail: ctx::EffTail::Open(v),
+            }) {
+                keep.insert(tail);
+            }
+        }
+        let mut all: FxHashSet<crate::ty::EffRowVarId> = FxHashSet::default();
+        cx.collect_effect_vars(&fn_ty, &mut all);
+        for v in all {
+            if !keep.contains(&v) {
+                cx.close_effect_var(v);
+            }
+        }
         // A failed unification (the body conflicts with the signature) is an
         // immediate mismatch.
         if declared.contains_key(m) && unify != UnifyResult::Ok {
@@ -300,7 +309,9 @@ pub fn infer_scc(
                 declared_vars.get(m).is_some_and(|vars| !cx.all_distinct_free(vars));
             let rows_over_general =
                 declared_rows.get(m).is_some_and(|rows| !cx.rows_gained_no_fields(rows));
-            if vars_over_general || rows_over_general {
+            let effects_over_general =
+                declared_effects.get(m).is_some_and(|effects| !cx.effects_remain_general(effects));
+            if vars_over_general || rows_over_general || effects_over_general {
                 mismatches.push(*m);
             }
         }

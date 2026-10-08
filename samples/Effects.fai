@@ -16,6 +16,15 @@ let logTime env message =
 public logAll : Console -> List String -> List Unit / { Console }
 let logAll console lines = List.map (fun line -> console.writeLine line) lines
 
+// Constructing the callback is pure; invoking it uses the captured console.
+public makeGreeter : Console -> (String -> Unit / { Console })
+let makeGreeter console = fun name -> console.writeLine name
+
+// A quantified callback effect must be forwarded on the invoker's own arrow.
+public invoke : (Unit -> 'a / 'e) -> 'a / 'e
+let invoke action = action ()
+example: invoke (fun u -> 42) = 42
+
 // Point-free composition unions the pieces' effects. `>>` threads one effect
 // variable through both functions, and each side is subsumed into it — so
 // composing a clock-reading step with a console-writing step yields a function

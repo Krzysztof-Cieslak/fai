@@ -231,14 +231,9 @@ pub struct InferCtx {
     rows: Vec<RowState>,
     /// The parallel union-find for effect-row variables (distinct from `rows`).
     effects: Vec<EffState>,
-    /// When set, effect-row unification never *fails*: a closed-vs-closed atom
-    /// difference is accepted rather than reported. Effect unification is strict
-    /// by default (so a use-site effect mismatch — e.g. composing two functions
-    /// with different effects via `>>` — is a real error rather than a silent
-    /// laundering); it is enabled only around a binding's signature-vs-body check,
-    /// where a disagreement is reported once as the dedicated effect mismatch
-    /// (FAI5001) instead of a generic type mismatch.
-    lenient_effects: bool,
+    /// Oldest variable represented by each effect tail. This distinguishes fresh
+    /// call-site residuals from effects supplied by an enclosing scope.
+    effect_origins: Vec<usize>,
     /// When set, effect-row unification is a complete no-op (it neither fails nor
     /// binds). Used to unify an interface instance method's body type against the
     /// declared method type *without* touching effects, which are constrained
@@ -264,17 +259,10 @@ impl InferCtx {
             vars: Vec::new(),
             rows: Vec::new(),
             effects: Vec::new(),
-            lenient_effects: false,
+            effect_origins: Vec::new(),
             ignore_effects: false,
             current_level: 0,
         }
-    }
-
-    /// Toggles lenient effect unification (see the field doc). Enabled briefly
-    /// around the signature-vs-body check so an effect disagreement is reported
-    /// once as FAI5001 rather than also as a generic type mismatch.
-    pub fn set_lenient_effects(&mut self, value: bool) {
-        self.lenient_effects = value;
     }
 
     /// Toggles no-op effect unification (see the `ignore_effects` field). Enabled
@@ -474,6 +462,7 @@ impl InferCtx {
     /// Allocates a fresh effect-row variable.
     pub fn fresh_effect(&mut self) -> EffRowVarId {
         let id = EffRowVarId(u32::try_from(self.effects.len()).expect("effect var overflow"));
+        self.effect_origins.push(self.effects.len());
         self.effects.push(EffState::Free);
         id
     }
@@ -504,13 +493,17 @@ impl InferCtx {
 
     /// Binds a free effect-row variable to `eff`.
     fn bind_effect(&mut self, v: EffRowVarId, eff: SolveEffect) -> UnifyResult {
+        if let EffTail::Open(tail) = self.expand_effect(&eff).tail {
+            let origin = self.effect_origins[v.0 as usize];
+            let target = &mut self.effect_origins[tail.0 as usize];
+            *target = (*target).min(origin);
+        }
         self.effects[v.0 as usize] = EffState::Bound(eff);
         UnifyResult::Ok
     }
 
     /// Unifies two effect rows by row unification (atoms as a set; no payloads).
-    /// Strict unless lenient mode is set (see [`lenient_effects`]); directional
-    /// `⊆` is [`subsume_effects`].
+    /// Directional `⊆` is [`subsume_effects`](Self::subsume_effects).
     fn unify_effects(&mut self, e1: &SolveEffect, e2: &SolveEffect) -> UnifyResult {
         // Instance method type-unification handles effects separately (by
         // subsumption), so here it is a complete no-op.
@@ -525,26 +518,22 @@ impl InferCtx {
         let only2: Vec<InterfaceRef> =
             e2.atoms.iter().filter(|a| !e1.atoms.contains(a)).copied().collect();
 
-        // In lenient mode an irreconcilable atom difference is accepted rather
-        // than reported (infer-don't-enforce); open tails are still bound so
-        // effect-polymorphic forwarding keeps threading.
-        let lenient = self.lenient_effects;
         match (e1.tail, e2.tail) {
             (EffTail::Closed, EffTail::Closed) => {
-                if only1.is_empty() && only2.is_empty() || lenient {
+                if only1.is_empty() && only2.is_empty() {
                     UnifyResult::Ok
                 } else {
                     UnifyResult::Mismatch
                 }
             }
             (EffTail::Closed, EffTail::Open(v2)) => {
-                if !only2.is_empty() && !lenient {
+                if !only2.is_empty() {
                     return UnifyResult::Mismatch;
                 }
                 self.bind_effect(v2, SolveEffect { atoms: only1, tail: EffTail::Closed })
             }
             (EffTail::Open(v1), EffTail::Closed) => {
-                if !only1.is_empty() && !lenient {
+                if !only1.is_empty() {
                     return UnifyResult::Mismatch;
                 }
                 self.bind_effect(v1, SolveEffect { atoms: only2, tail: EffTail::Closed })
@@ -617,13 +606,7 @@ impl InferCtx {
                 let fresh = self.fresh_effect();
                 self.bind_effect(v, SolveEffect { atoms: missing, tail: EffTail::Open(fresh) })
             }
-            EffTail::Closed => {
-                if self.lenient_effects {
-                    UnifyResult::Ok
-                } else {
-                    UnifyResult::Mismatch
-                }
-            }
+            EffTail::Closed => UnifyResult::Mismatch,
         }
     }
 
@@ -687,6 +670,30 @@ impl InferCtx {
         }
     }
 
+    /// Checks an inferred value against its signature with deep effect variance.
+    /// If a saturating arrow's effect already has a dedicated diagnostic, skip
+    /// only that row; nested callbacks and effect arguments remain checked.
+    pub(crate) fn subsume_signature(
+        &mut self,
+        inferred: &SolveTy,
+        declared: &SolveTy,
+        diagnosed_arrow: Option<usize>,
+    ) -> UnifyResult {
+        let Some(depth) = diagnosed_arrow.filter(|depth| *depth > 0) else {
+            return self.subsume_types(inferred, declared, true);
+        };
+        match (self.resolve_shallow(inferred), self.resolve_shallow(declared)) {
+            (SolveTy::Arrow(a1, b1, e1), SolveTy::Arrow(a2, b2, e2)) => {
+                let params = self.subsume_types(&a1, &a2, false);
+                let result = self.subsume_signature(&b1, &b2, depth.checked_sub(1));
+                let effect =
+                    if depth == 1 { UnifyResult::Ok } else { self.subsume_effects(&e1, &e2) };
+                worst(worst(params, result), effect)
+            }
+            _ => self.subsume_types(inferred, declared, true),
+        }
+    }
+
     /// [`subsume_effects`] in the direction set by a position's polarity: in a
     /// positive (covariant) position `sub`'s effect must be admitted by `sup`'s; in
     /// a negative (contravariant) position the relation flips.
@@ -734,6 +741,66 @@ impl InferCtx {
         if let EffState::Free = &self.effects[v.0 as usize] {
             self.effects[v.0 as usize] =
                 EffState::Bound(SolveEffect { atoms: Vec::new(), tail: EffTail::Closed });
+        }
+    }
+
+    /// Marks the start of a call's inference, before instantiating its head.
+    pub(crate) fn effect_checkpoint(&self) -> usize {
+        self.effects.len()
+    }
+
+    /// Closes fresh parameter-effect residuals once every supplied argument has
+    /// contributed its effects. Caller-owned effects and effects that future
+    /// arguments can still determine stay open. Closing here prevents a concrete
+    /// call's residual from merging with an unrelated quantified body effect.
+    pub(crate) fn close_application_effects(
+        &mut self,
+        since: usize,
+        params: &[SolveTy],
+        args: &[SolveTy],
+        result: &SolveTy,
+    ) {
+        let mut keep = rustc_hash::FxHashSet::default();
+        for arg in args {
+            self.collect_effect_vars(arg, &mut keep);
+        }
+        self.pending_parameter_effects(result, &mut keep);
+        let mut candidates = rustc_hash::FxHashSet::default();
+        for param in params {
+            self.collect_effect_vars(param, &mut candidates);
+        }
+        for v in candidates {
+            if self.effect_origins[v.0 as usize] >= since && !keep.contains(&v) {
+                self.close_effect_var(v);
+            }
+        }
+    }
+
+    fn pending_parameter_effects(
+        &self,
+        ty: &SolveTy,
+        out: &mut rustc_hash::FxHashSet<EffRowVarId>,
+    ) {
+        match self.resolve_shallow(ty) {
+            SolveTy::Arrow(from, to, _) => {
+                self.collect_effect_vars(&from, out);
+                self.pending_parameter_effects(&to, out);
+            }
+            SolveTy::App(f, a) => {
+                self.pending_parameter_effects(&f, out);
+                self.pending_parameter_effects(&a, out);
+            }
+            SolveTy::Tuple(elems) => {
+                for elem in elems {
+                    self.pending_parameter_effects(&elem, out);
+                }
+            }
+            SolveTy::Record(row) => {
+                for (_, field) in self.expand_row(&row).fields {
+                    self.pending_parameter_effects(&field, out);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1327,15 +1394,30 @@ impl InferCtx {
         })
     }
 
+    /// A signature's quantified effect tails must remain distinct and arbitrary:
+    /// closing a tail, requiring atoms, or merging two tails specializes a promise
+    /// that must hold for every caller-supplied effect row.
+    #[must_use]
+    pub fn effects_remain_general(&self, effects: &[EffRowVarId]) -> bool {
+        let mut seen = rustc_hash::FxHashSet::default();
+        effects.iter().all(|&v| {
+            let effect =
+                self.expand_effect(&SolveEffect { atoms: Vec::new(), tail: EffTail::Open(v) });
+            effect.atoms.is_empty()
+                && matches!(effect.tail, EffTail::Open(tail) if seen.insert(tail))
+        })
+    }
+
     /// Like [`instantiate`](InferCtx::instantiate), but also returns the fresh
-    /// variable id introduced for each of the scheme's quantified type *and* row
+    /// variable id introduced for each of the scheme's quantified type, row, and effect
     /// variables. Used to check a signature is not *more general* than the body:
     /// if a fresh type var ends up bound to a concrete type or shared with
-    /// another, or a fresh row var gains a field, the signature over-generalized.
+    /// another, a fresh row var gains a field, or an effect tail specializes, the
+    /// signature over-generalized.
     pub fn instantiate_tracked(
         &mut self,
         scheme: &Scheme,
-    ) -> (SolveTy, Vec<TyVarId>, Vec<RowVarId>) {
+    ) -> (SolveTy, Vec<TyVarId>, Vec<RowVarId>, Vec<EffRowVarId>) {
         let mut map = InstMap::default();
         let mut fresh_vars = Vec::with_capacity(scheme.vars.len());
         for &v in &scheme.vars {
@@ -1346,7 +1428,9 @@ impl InferCtx {
         }
         let solved = self.instantiate_solve(&scheme.ty, &mut map);
         let fresh_rows = scheme.row_vars.iter().filter_map(|v| map.rows.get(v).copied()).collect();
-        (solved, fresh_vars, fresh_rows)
+        let fresh_effects =
+            scheme.effect_vars.iter().filter_map(|v| map.effects.get(v).copied()).collect();
+        (solved, fresh_vars, fresh_rows, fresh_effects)
     }
 
     /// Builds a solver type from a scheme body, mapping quantified type variables
