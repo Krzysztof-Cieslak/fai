@@ -3615,6 +3615,13 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   reference counting, so single-threaded code and the benchmarks are unaffected (the
   inlined-codegen branch and the cache tag for it land with the capability; the
   runtime helpers carry the branch already, on the cold polymorphic path).
+  **Shared host PRNG.** `Random.nextInt` retains its xorshift64* seed and sequence,
+  but advances the process-global state with a compare/exchange loop. Each valid
+  draw commits exactly one transition; a contender retries from the installed
+  state. Relaxed ordering suffices because the state publishes no other memory.
+  Nonpositive bounds still return zero without advancing. A forced simultaneous-
+  read test compares the complete raw outputs and final state to the serial
+  sequence, and one/four-worker benchmarks measure contention.
 
 - **D139 An M:N green-thread scheduler runs a program's tasks.** A task is a
   **stackful coroutine** (`corosensei`) whose body runs compiled Fai code; a fixed

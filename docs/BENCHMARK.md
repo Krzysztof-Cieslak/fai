@@ -106,7 +106,7 @@ All under `crates/fai-tests/benches/` unless noted. None is a CI gate.
 | `algorithms_jit` | Runtime comparison, in-process compute: compiled Fai code vs idiomatic Rust (see below). |
 | `algorithms_aot` | Runtime comparison, delivered binaries: a `fai build` executable vs a Rust release binary vs an `ocamlopt`-compiled OCaml binary, end to end (see below). |
 | `algorithms_mem` | Memory comparison, delivered binaries: peak resident set size of the same `fai build` vs Rust vs OCaml binaries (see below). |
-| `concurrency` | Runtime concurrency/networking (Fai-only, delivered binaries): task fan-out/join throughput, bounded-channel throughput, CPU-bound **parallel speedup** (`FAI_WORKERS=1` vs the host default), and loopback TCP/UDP round-trip throughput (see below). |
+| `concurrency` | Runtime concurrency/networking (Fai-only, delivered binaries): task fan-out/join throughput, bounded-channel throughput, shared PRNG contention, CPU-bound **parallel speedup** (`FAI_WORKERS=1` vs the host default), and loopback TCP/UDP round-trip throughput (see below). |
 | `test_loop` (`fai-cli`) | The supervised `edit → fai test` loop through the real `fai` binary + daemon: client → daemon → worker subprocess → JIT → run → stream back. |
 
 ## Runtime comparison: Fai vs Rust
@@ -428,6 +428,9 @@ verification (a build or run failure crashes the bench). The leaves:
   sum the awaits.
 - `channel` — bounded-channel throughput: one producer sends N items, the consumer
   drains and sums them.
+- `random_single_worker` / `random_contended` — one million shared PRNG draws
+  across four tasks, scheduled on one worker or four. Their sum must equal the
+  serial xorshift oracle; timings show the cost of contention on the atomic state.
 - `parallel_speedup_one_worker` / `parallel_speedup_all_workers` — the **parallel
   speedup**: the same CPU-bound, allocation-free fan-out (many tasks each summing a
   long range) run with `FAI_WORKERS=1` and with the host's default parallelism. The
