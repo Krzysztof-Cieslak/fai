@@ -153,6 +153,10 @@ fai build path/to/Main.fai     # produce a native executable (AOT)
 `fai build`/`fai run` need an entry file defining `public main : Runtime -> Unit`
 (optionally with an effect row, e.g. `/ { Console }`). Missing it is `FAI0004`.
 
+`FAI0008` means a submitted daemon command lost its result. `run`, `build`, and
+writing `fmt` requests are not automatically repeated after this failure, since
+their effects may already have occurred.
+
 ---
 
 ## 4. Lexical basics: literals and comments

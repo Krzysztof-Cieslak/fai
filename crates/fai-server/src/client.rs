@@ -48,6 +48,21 @@ pub enum DaemonError {
     /// The `fai` executable could not be located for spawning.
     #[error("cannot locate the fai executable: {0}")]
     NoExecutable(io::Error),
+    /// The request may already have caused effects and must not be replayed.
+    #[error("daemon request failed after submission: {0}")]
+    Submitted(#[source] Box<DaemonError>),
+}
+
+impl DaemonError {
+    /// Whether execution may have begun before the transport failed.
+    #[must_use]
+    pub fn may_have_executed(&self) -> bool {
+        matches!(self, Self::Submitted(_))
+    }
+
+    fn submitted(self) -> Self {
+        Self::Submitted(Box::new(self))
+    }
 }
 
 /// A connected, handshaken client.
@@ -100,16 +115,30 @@ impl Client {
         opts: RenderOpts,
         dirty: Vec<DirtyFile>,
     ) -> Result<Rendered, DaemonError> {
-        match self.request(&Request::Command(CommandRequest { spec, opts, dirty }))? {
-            Response::Command(rendered) => Ok(rendered),
-            Response::Error(message) => Err(DaemonError::Protocol(message)),
-            other => Err(DaemonError::Protocol(format!("unexpected response: {other:?}"))),
-        }
+        let mutating =
+            matches!(&spec, CommandSpec::Build { .. } | CommandSpec::Fmt { check: false, .. });
+        let result =
+            (|| match self.request(&Request::Command(CommandRequest { spec, opts, dirty }))? {
+                Response::Command(rendered) => Ok(rendered),
+                Response::Error(message) => Err(DaemonError::Protocol(message)),
+                other => Err(DaemonError::Protocol(format!("unexpected response: {other:?}"))),
+            })();
+        if mutating { result.map_err(DaemonError::submitted) } else { result }
     }
 
     /// Runs a program under daemon supervision, streaming the worker's output to
     /// `out`/`err`, and returns its exit code.
     pub fn stream_run(
+        &mut self,
+        path: &str,
+        args: &[String],
+        out: &mut dyn Write,
+        err: &mut dyn Write,
+    ) -> Result<i32, DaemonError> {
+        self.stream_run_submitted(path, args, out, err).map_err(DaemonError::submitted)
+    }
+
+    fn stream_run_submitted(
         &mut self,
         path: &str,
         args: &[String],
@@ -124,12 +153,12 @@ impl Client {
         loop {
             match self.next_message()? {
                 ServerMessage::Output { stream: OutputStream::Stdout, chunk } => {
-                    let _ = out.write_all(&chunk);
-                    let _ = out.flush();
+                    out.write_all(&chunk)?;
+                    out.flush()?;
                 }
                 ServerMessage::Output { stream: OutputStream::Stderr, chunk } => {
-                    let _ = err.write_all(&chunk);
-                    let _ = err.flush();
+                    err.write_all(&chunk)?;
+                    err.flush()?;
                 }
                 // `run` produces no test events or tap frames; ignore defensively.
                 ServerMessage::TestEvent(_) | ServerMessage::TapFrame(_) => {}
@@ -414,6 +443,83 @@ fn prevent_handle_inheritance() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn lost_response(operation: impl FnOnce(&mut Client) -> DaemonError) -> DaemonError {
+        use interprocess::local_socket::traits::Listener as _;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let root = camino::Utf8PathBuf::from(format!(
+            "/fai-client-response-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let listener = transport::bind(&root).unwrap();
+        let peer = std::thread::spawn(move || {
+            let mut stream = listener.accept().unwrap();
+            let _: Request = read_frame(&mut stream).unwrap();
+        });
+        let mut client = Client::new(transport::connect(&root).unwrap(), None);
+        let error = operation(&mut client);
+        peer.join().unwrap();
+        if let Some(path) = transport::socket_path(&root) {
+            let _ = std::fs::remove_file(path);
+        }
+        error
+    }
+
+    #[test]
+    fn lost_run_response_is_not_replayable() {
+        let error = lost_response(|client| {
+            client.stream_run("Main.fai", &[], &mut Vec::new(), &mut Vec::new()).unwrap_err()
+        });
+        assert!(error.may_have_executed());
+    }
+
+    #[test]
+    fn lost_format_write_response_is_not_replayable() {
+        let error = lost_response(|client| {
+            client
+                .command(
+                    CommandSpec::Fmt { path: None, check: false },
+                    RenderOpts { format: OutputFormat::Human, color: false },
+                    vec![],
+                )
+                .unwrap_err()
+        });
+        assert!(error.may_have_executed());
+    }
+
+    #[test]
+    fn lost_build_response_is_not_replayable() {
+        let error = lost_response(|client| {
+            client
+                .command(
+                    CommandSpec::Build {
+                        path: "Main.fai".into(),
+                        out: "program".into(),
+                        release: false,
+                    },
+                    RenderOpts { format: OutputFormat::Human, color: false },
+                    vec![],
+                )
+                .unwrap_err()
+        });
+        assert!(error.may_have_executed());
+    }
+
+    #[test]
+    fn lost_read_only_response_can_use_the_fallback() {
+        let error = lost_response(|client| {
+            client
+                .command(
+                    CommandSpec::Check { path: None, examples: false },
+                    RenderOpts { format: OutputFormat::Human, color: false },
+                    vec![],
+                )
+                .unwrap_err()
+        });
+        assert!(!error.may_have_executed());
+    }
 
     /// With no daemon at the endpoint, the probe must return promptly rather than
     /// spin until the timeout — a connect to an unbound endpoint refuses at once.

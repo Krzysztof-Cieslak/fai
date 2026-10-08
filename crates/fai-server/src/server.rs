@@ -16,8 +16,8 @@ use std::io::Read;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Sender};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -28,6 +28,7 @@ use fai_driver::{
     Session, TestConfig, TestPlan, WireBundle, assemble_outcome, build_test_plan,
     catch_cancellation, run_command, run_test_workers,
 };
+use interprocess::TryClone;
 use interprocess::local_socket::Stream;
 use wait_timeout::ChildExt;
 
@@ -276,19 +277,39 @@ fn shutdown(daemon: &Daemon) -> ! {
 /// traffic without each call site remembering to broadcast.
 struct Conn<'a> {
     stream: Stream,
+    requests: Receiver<std::io::Result<Request>>,
+    disconnected: Arc<AtomicBool>,
     daemon: &'a Daemon,
     /// This connection's id, stamped onto every tapped frame.
     id: u64,
 }
 
 impl<'a> Conn<'a> {
-    fn new(stream: Stream, daemon: &'a Daemon, id: u64) -> Self {
-        Self { stream, daemon, id }
+    fn new(stream: Stream, daemon: &'a Daemon, id: u64) -> std::io::Result<Self> {
+        let mut reader = stream.try_clone()?;
+        let (tx, requests) = mpsc::sync_channel(1);
+        let disconnected = Arc::new(AtomicBool::new(false));
+        let closed = disconnected.clone();
+        std::thread::spawn(move || {
+            loop {
+                let request = read_frame(&mut reader);
+                let ended = request.is_err();
+                if ended {
+                    closed.store(true, Ordering::Release);
+                }
+                if tx.send(request).is_err() || ended {
+                    break;
+                }
+            }
+        });
+        Ok(Self { stream, requests, disconnected, daemon, id })
     }
 
     /// Reads one request, mirroring it to any tap subscribers as inbound.
     fn read(&mut self) -> std::io::Result<Request> {
-        let request: Request = read_frame(&mut self.stream)?;
+        let request = self.requests.recv().map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "client disconnected")
+        })??;
         self.broadcast(TapDirection::Inbound, &request);
         Ok(request)
     }
@@ -297,7 +318,11 @@ impl<'a> Conn<'a> {
     /// outbound (before the write, so a tap sees it even if the client has gone).
     fn send(&mut self, message: &ServerMessage) -> std::io::Result<()> {
         self.broadcast(TapDirection::Outbound, message);
-        write_frame(&mut self.stream, message)
+        let result = write_frame(&mut self.stream, message);
+        if result.is_err() {
+            self.disconnected.store(true, Ordering::Release);
+        }
+        result
     }
 
     /// Offers a frame to tap subscribers. Decoding to JSON is skipped entirely
@@ -312,10 +337,18 @@ impl<'a> Conn<'a> {
     }
 }
 
+impl Drop for Conn<'_> {
+    fn drop(&mut self) {
+        self.disconnected.store(true, Ordering::Release);
+    }
+}
+
 /// Serves requests on one connection until it closes (or a shutdown is
 /// requested, which exits the process).
 fn handle_connection(stream: Stream, daemon: &Daemon, id: u64) {
-    let mut conn = Conn::new(stream, daemon, id);
+    let Ok(mut conn) = Conn::new(stream, daemon, id) else {
+        return;
+    };
     loop {
         let request = match conn.read() {
             Ok(request) => request,
@@ -466,9 +499,9 @@ fn handle_run(conn: &mut Conn, request: &RunRequest) -> std::io::Result<()> {
         }
     };
 
-    let exit = supervise(conn, &bundle_path, &request.args)?;
+    let exit = supervise(conn, &bundle_path, &request.args);
     let _ = std::fs::remove_file(&bundle_path);
-    conn.send(&ServerMessage::Result(Response::RunExit(exit)))
+    conn.send(&ServerMessage::Result(Response::RunExit(exit?)))
 }
 
 /// The result of preparing a run: a ready bundle, or rendered failure text.
@@ -621,15 +654,30 @@ fn supervise(conn: &mut Conn, bundle_path: &Path, program_args: &[String]) -> st
 
     // Enforce the timeout off the streaming path so a silent hang is still reaped.
     let (code_tx, code_rx) = mpsc::channel::<i32>();
+    let disconnected = conn.disconnected.clone();
     std::thread::spawn(move || {
-        let code = match child.wait_timeout(timeout) {
-            Ok(Some(status)) => status.code().unwrap_or(CRASH_EXIT),
-            Ok(None) => {
+        let started = Instant::now();
+        let code = loop {
+            if disconnected.load(Ordering::Acquire) {
                 let _ = child.kill();
                 let _ = child.wait();
-                TIMEOUT_EXIT
+                break CRASH_EXIT;
             }
-            Err(_) => CRASH_EXIT,
+            let remaining = timeout.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                let _ = child.kill();
+                let _ = child.wait();
+                break TIMEOUT_EXIT;
+            }
+            match child.wait_timeout(remaining.min(Duration::from_millis(25))) {
+                Ok(Some(status)) => break status.code().unwrap_or(CRASH_EXIT),
+                Ok(None) => {}
+                Err(_) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break CRASH_EXIT;
+                }
+            }
         };
         let _ = code_tx.send(code);
     });

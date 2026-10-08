@@ -281,6 +281,12 @@ isolated worker spawned by the daemon (capabilities provided by the host).
 - **Streaming:** the program's stdout/stderr stream live; stdin is forwarded.
 - **Exit:** the program's exit code (or `124` on timeout, `4` on compile error).
 
+If the daemon is unavailable before submission, the CLI can run locally. After
+submission may have started, a lost result is `FAI0008` (exit `3`) and the program
+is not restarted. The same no-replay rule applies to `build` and writing `fmt`
+requests. A live daemon reaps a run worker when its client disconnects, including
+while the program is silent.
+
 ### `fai test [path] [--match <pat>]`
 Run the `example` / `forall` contracts (JIT). Examples are evaluated; `forall`
 laws are checked with generated inputs and shrunk on failure. Each contract runs
