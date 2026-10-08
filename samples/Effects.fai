@@ -18,7 +18,9 @@ let logAll console lines = List.map (fun line -> console.writeLine line) lines
 
 // Constructing the callback is pure; invoking it uses the captured console.
 public makeGreeter : Console -> (String -> Unit / { Console })
-let makeGreeter console = fun name -> console.writeLine name
+let makeGreeter console =
+  let log name = console.writeLine name
+  log
 
 // A quantified callback effect must be forwarded on the invoker's own arrow.
 public invoke : (Unit -> 'a / 'e) -> 'a / 'e

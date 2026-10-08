@@ -21,6 +21,8 @@ mod ty;
 #[cfg(test)]
 mod edge_tests;
 #[cfg(test)]
+mod local_function_effect_tests;
+#[cfg(test)]
 mod prop_tests;
 #[cfg(test)]
 mod signature_effect_tests;

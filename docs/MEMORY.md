@@ -2113,6 +2113,10 @@ Editor integration:
     value-flow capability model alone leaves. An interface method's declared
     arrow effect is its incurred effect; the host capabilities self-label
     (`Console.writeLine : String -> Unit / { Console }`).
+    Local function shorthand (`let log message = …`) uses the same isolated
+    latent-effect inference as `fun message -> …`: creation is pure, and the
+    body's effect rides the saturating arrow. A parameterless local value binding
+    still evaluates eagerly and contributes its effects to the enclosing body.
   - **Inferred, coupled, required on public.** A body's latent effect is the
     union of what it applies; it lands on the function's saturating arrow (so
     higher-order functions are effect-polymorphic — `List.map : ('a -> 'b / 'e)

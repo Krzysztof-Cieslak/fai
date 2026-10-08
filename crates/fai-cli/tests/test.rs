@@ -79,6 +79,21 @@ fn a_fused_search_cannot_hide_a_contract_trap() {
 }
 
 #[test]
+fn an_unused_effectful_local_function_keeps_a_contract_pure() {
+    let source = "module M\npublic retained : (Unit -> Unit / 'e) -> Int\nlet retained action =\n  let local u = action u\n  42\nexample: retained (fun u -> ()) = 42\n";
+    let dir = workspace("local-purity", &[("M.fai", source)]);
+    let output = fai().args(["test", "--no-daemon", "-C"]).arg(dir).arg("M.fai").output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{stdout}{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(stdout.contains("1 passed, 0 failed"), "{stdout}");
+}
+
+#[test]
 fn trapping_contract_streams_live_lines_in_order() {
     let dir = workspace("livelines", &[("Crash.fai", CRASH)]);
     let out =

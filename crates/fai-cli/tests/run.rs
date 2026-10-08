@@ -72,6 +72,34 @@ fn const_second_argument_trap_follows_first_argument_effect() {
 }
 
 #[test]
+fn local_function_effects_are_latent_through_the_run_bundle() {
+    let source = indoc! {r#"
+        module Main
+        public make : Console -> (String -> Unit / { Console })
+        let make c =
+          let log s = c.writeLine s
+          log
+        public main : Runtime -> Unit / { Console }
+        let main r =
+          let unusedClock u = r.clock.now ()
+          let log = make r.console
+          let _ = r.console.writeLine "created"
+          log "called"
+    "#};
+    let dir = workspace("local-effects", &[("Main.fai", source)]);
+    let output =
+        fai().args(["run", "--no-daemon", "-C"]).arg(dir).arg("Main.fai").output().unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "created\ncalled\n");
+}
+
+#[test]
 fn build_produces_a_runnable_binary() {
     let src = indoc! {r#"
         module Calc
