@@ -362,17 +362,18 @@ fn run_streams_output_via_daemon() {
 
 #[test]
 fn run_timeout_is_reaped_and_daemon_survives() {
-    // Naive fib is exponential-time but shallow-stack, so it runs well past the
-    // timeout without crashing — the daemon must reap it (exit 124) and live on.
-    let fib = indoc! {r#"
+    // A tail loop cannot finish or exhaust the stack, regardless of CPU speed.
+    // The daemon must reap it (exit 124) and continue serving requests.
+    let spin = indoc! {r#"
         module Main
 
-        let fib n = if n < 2 then n else fib (n - 1) + fib (n - 2)
+        spin : Int -> Int
+        let spin n = spin n
 
         public main : Runtime -> Unit / { Console }
-        let main runtime = runtime.console.writeLine (Int.toString (fib 40))
+        let main runtime = runtime.console.writeLine (Int.toString (spin 0))
     "#};
-    let daemon = Daemon::new("timeout", &[("Main.fai", fib)]).with_run_timeout(500);
+    let daemon = Daemon::new("timeout", &[("Main.fai", spin)]).with_run_timeout(500);
 
     let run = daemon.run(&["run"], &["Main.fai"]);
     assert_eq!(
