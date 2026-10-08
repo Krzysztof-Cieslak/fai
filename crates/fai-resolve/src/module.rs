@@ -460,11 +460,11 @@ pub const PRELUDE_MODULE: &str = "Prelude";
 const AUTO_IMPORTED: &[&str] = &[PRELUDE_MODULE];
 
 /// The embedded standard-library files currently loaded (recognized by their
-/// synthetic `<std>/` path), in [`SourceId`] order.
+/// explicit standard-library origin), in [`SourceId`] order.
 #[must_use]
 pub fn std_files(db: &dyn Db) -> Vec<SourceFile> {
     let mut files: Vec<SourceFile> =
-        db.all_source_files().into_iter().filter(|f| fai_db::is_std_path(f.path(db))).collect();
+        db.all_source_files().into_iter().filter(|f| f.is_std(db)).collect();
     files.sort_by_key(|f| f.source(db));
     files
 }

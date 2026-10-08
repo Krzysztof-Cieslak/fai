@@ -2,7 +2,7 @@
 //!
 //! The standard library is a set of `.fai` modules embedded at build time (see
 //! `build.rs`). [`load_std`] registers each as a synthetic, high-durability
-//! input under the `<std>/` path namespace; [`is_std_path`] recognizes them so
+//! input with explicit [`SourceOrigin::StandardLibrary`] metadata so
 //! the driver can keep them out of user-facing surfaces and resolution can grant
 //! them access to the prelude-private `Prim` intrinsics.
 //!
@@ -10,10 +10,10 @@
 //! definitions: the boolean literals, the `Console` capability placeholder, and
 //! the Rust-implemented intrinsics reached through `Prim`.
 //!
-//! The `<std>/` path convention itself ([`fai_db::is_std_path`]) lives in
-//! `fai-db`, shared with the lower phases that classify files by path.
+//! The `<std>/` path convention is only a display label. Embedded and disk files
+//! use separate registries even when those labels coincide.
 
-use fai_db::{Durability, FaiDatabase, STD_PATH_PREFIX};
+use fai_db::{FaiDatabase, STD_PATH_PREFIX, SourceOrigin};
 use fai_span::SourceId;
 use fai_syntax::Symbol;
 
@@ -28,10 +28,10 @@ pub fn load_std(db: &mut FaiDatabase) -> Vec<SourceId> {
     STD_SOURCES
         .iter()
         .map(|(name, source)| {
-            db.add_source_with_durability(
+            db.add_source_with_origin(
                 format!("{STD_PATH_PREFIX}{name}").into(),
                 (*source).to_owned(),
-                Durability::HIGH,
+                SourceOrigin::StandardLibrary,
             )
         })
         .collect()

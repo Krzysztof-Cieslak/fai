@@ -516,7 +516,7 @@ pub fn check_file(db: &dyn Db, file: SourceFile) {
             }
             // A user (non-std) foreign is marshalled, so every argument and the
             // result must be a marshallable type (FAI5003).
-            if !fai_db::is_std_path(file.path(db))
+            if !file.is_std(db)
                 && let Some(rendered) = foreign_unmarshallable_type(&scheme)
             {
                 emit(

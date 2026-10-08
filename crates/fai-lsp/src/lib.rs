@@ -546,7 +546,7 @@ impl Server {
         let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
         for loc in locations {
             let uri = self
-                .uri_for(&loc.span.file)
+                .uri_for_span(&loc.span)
                 .ok_or_else(|| "cannot locate a rename occurrence".to_owned())?;
             let range = self
                 .range_in_file(&loc.span)
@@ -671,7 +671,7 @@ impl Server {
                 // Group the action's edits into a workspace edit keyed by file URI.
                 let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
                 for edit in action.edits {
-                    if let Some(euri) = self.uri_for(&edit.span.file)
+                    if let Some(euri) = self.uri_for_span(&edit.span)
                         && let Some(range) = self.range_in_file(&edit.span)
                     {
                         changes
@@ -775,8 +775,8 @@ impl Server {
     /// Converts an IDE span into a range, reading the span's own file (the open
     /// buffer when present, else the database copy).
     fn range_in_file(&self, span: &fai_ide::repr::SpanJson) -> Option<Range> {
-        let text = self.file_text(&span.file)?;
-        let lines = self.line_map(&text);
+        let file = self.session.db().source_file(span.source)?;
+        let lines = self.line_map(file.text(self.session.db()));
         Some(Range {
             start: lines.position(span.byte_start as usize),
             end: lines.position(span.byte_end as usize),
@@ -906,24 +906,15 @@ impl Server {
         Some(path.strip_prefix(&self.root).ok()?.to_owned())
     }
 
-    /// The document URI for a workspace-relative path.
-    fn uri_for(&self, rel: &str) -> Option<Url> {
-        if let Some(uri) = self.standard_documents.uri(rel) {
-            return Some(uri.clone());
-        }
-        Url::from_file_path(self.root.join(rel).as_std_path()).ok()
-    }
-
-    /// The text of `rel` — the open buffer if any, else the database's copy.
-    fn file_text(&self, rel: &str) -> Option<String> {
-        if let Some(uri) = self.uri_for(rel)
-            && let Some(text) = self.open.get(&uri)
-        {
-            return Some(text.clone());
-        }
+    /// Resolves a document by source identity, so an embedded display path and
+    /// a same-named workspace file cannot be mistaken for one another.
+    fn uri_for_span(&self, span: &fai_ide::repr::SpanJson) -> Option<Url> {
         let db = self.session.db();
-        let file = db.all_source_files().into_iter().find(|f| f.path(db).as_str() == rel)?;
-        Some(file.text(db).clone())
+        let file = db.source_file(span.source)?;
+        if file.is_std(db) {
+            return self.standard_documents.uri(file.path(db)).cloned();
+        }
+        Url::from_file_path(self.root.join(file.path(db)).as_std_path()).ok()
     }
 
     /// Resolves an LSP position in a document to the database file and the byte
@@ -958,9 +949,9 @@ impl Server {
     /// Converts an IDE span (workspace-relative path + byte offsets) to an LSP
     /// location.
     fn to_lsp_location(&self, span: &fai_ide::repr::SpanJson) -> Option<LspLocation> {
-        let uri = self.uri_for(&span.file)?;
-        let text = self.file_text(&span.file)?;
-        let lines = self.line_map(&text);
+        let uri = self.uri_for_span(span)?;
+        let file = self.session.db().source_file(span.source)?;
+        let lines = self.line_map(file.text(self.session.db()));
         let range = Range {
             start: lines.position(span.byte_start as usize),
             end: lines.position(span.byte_end as usize),

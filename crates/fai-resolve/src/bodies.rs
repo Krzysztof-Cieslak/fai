@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use fai_db::{Db, SourceFile, emit, is_std_path};
+use fai_db::{Db, SourceFile, emit};
 use fai_diagnostics::Diagnostic;
 use fai_span::{SourceId, Span, TextRange};
 use fai_syntax::Symbol;
@@ -200,8 +200,9 @@ fn type_ref_reach(
     match visibility {
         Visibility::Public => Some(Visibility::Public),
         // A cross-file `internal` type is nameable only within the same origin.
-        Visibility::Internal => (is_std_path(file.path(db)) == is_std_path(target.path(db)))
-            .then_some(Visibility::Internal),
+        Visibility::Internal => {
+            (file.origin(db) == target.origin(db)).then_some(Visibility::Internal)
+        }
         Visibility::Private => None,
     }
 }
@@ -296,7 +297,7 @@ pub fn resolve(db: &dyn Db, file: SourceFile) -> Arc<ResolvedBodies> {
 
     // A standard-library module: it may reach the `Prim` intrinsics, and its own
     // bindings *define* the auto-imported names (so they never "shadow").
-    let is_std = is_std_path(file.path(db));
+    let is_std = file.is_std(db);
 
     // Every definition in the file, keyed by its qualified name.
     let def_ids: FxHashMap<Symbol, DefId> =
@@ -904,7 +905,7 @@ impl Resolver<'_> {
     /// Resolves the member of a cross-file (possibly nested) module path.
     /// `public` members are visible across all files; `internal` members are
     /// visible only to files of the same origin (the standard library, or — in
-    /// future — the same package), gated by [`is_std_path`].
+    /// future — the same package), gated by explicit source-origin metadata.
     fn walk_cross_file(
         &self,
         target: SourceFile,
@@ -934,7 +935,7 @@ impl Resolver<'_> {
         consumed += 1;
         // `internal` members are visible only within the same origin (std vs. user
         // today; a package boundary later). The referrer's origin is `self.is_std`.
-        let target_is_std = is_std_path(target.path(self.db));
+        let target_is_std = target.is_std(self.db);
         let same_origin = self.is_std == target_is_std;
         let origin_desc = if target_is_std { "the standard library" } else { "its package" };
         match target_defs.get(member_qual) {

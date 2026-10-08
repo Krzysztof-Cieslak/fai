@@ -10,7 +10,7 @@
 use std::cell::RefCell;
 use std::sync::Arc;
 
-use fai_db::{Db, SourceFile, emit, is_std_path};
+use fai_db::{Db, SourceFile, emit};
 use fai_diagnostics::Diagnostic;
 use fai_resolve::{
     AdtRef, INTERNAL_REFERENCE, InterfaceInfo, InterfaceRef, ModuleName, TypeDeclInfo,
@@ -468,7 +468,7 @@ impl Lowerer<'_> {
         match visibility {
             fai_syntax::ast::Visibility::Public => true,
             fai_syntax::ast::Visibility::Internal => {
-                is_std_path(self.file.path(self.db)) == is_std_path(target.path(self.db))
+                self.file.origin(self.db) == target.origin(self.db)
             }
             fai_syntax::ast::Visibility::Private => false,
         }
@@ -493,8 +493,7 @@ impl Lowerer<'_> {
         {
             return None;
         }
-        let origin =
-            if is_std_path(target.path(self.db)) { "the standard library" } else { "its package" };
+        let origin = if target.is_std(self.db) { "the standard library" } else { "its package" };
         Some((INTERNAL_REFERENCE, format!("the type `{name}` is internal to {origin}")))
     }
 

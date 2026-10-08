@@ -80,22 +80,27 @@ pub(crate) fn run_pap_counted(src: &str) -> (i32, String, i64) {
 /// prelude-private `Prim.*` intrinsics (e.g. `Prim.hash`), returning
 /// `(exit_code, output)`.
 pub(crate) fn run_std(src: &str) -> (i32, String) {
-    let (code, out, _allocs, _closures, _paps) = run_all_counted_at("<std>/M.fai", src);
+    let (code, out, _allocs, _closures, _paps) =
+        run_all_counted_at("<std>/M.fai", src, fai_db::SourceOrigin::StandardLibrary);
     (code, out)
 }
 
 /// Lowers and JIT-runs `src`, returning `(exit_code, output, allocations,
 /// closure_allocations, pap_allocations)`.
 fn run_all_counted(src: &str) -> (i32, String, i64, i64, i64) {
-    run_all_counted_at("M.fai", src)
+    run_all_counted_at("M.fai", src, fai_db::SourceOrigin::User)
 }
 
 /// As [`run_all_counted`], but adds the entry source at `path` — pass a `<std>/…`
 /// path for a program that reaches the prelude-private `Prim.*` intrinsics.
-fn run_all_counted_at(path: &str, src: &str) -> (i32, String, i64, i64, i64) {
+fn run_all_counted_at(
+    path: &str,
+    src: &str,
+    origin: fai_db::SourceOrigin,
+) -> (i32, String, i64, i64, i64) {
     let mut db = FaiDatabase::new();
     fai_types::std_lib::load_std(&mut db);
-    let id = db.add_source(path.into(), src.to_owned());
+    let id = db.add_source_with_origin(path.into(), src.to_owned(), origin);
     let user = db.source_file(id).unwrap();
 
     // Resolve every source id to its file and module label up front — this is
@@ -195,15 +200,20 @@ fn run_all_counted_at(path: &str, src: &str) -> (i32, String, i64, i64, i64) {
 /// cell's drop is inlined (a reference-count branch, hence a `brif`) rather than
 /// dispatched to the runtime (a plain `fai_drop` call, no branch).
 fn function_ir(src: &str, def_name: &str) -> Vec<String> {
-    function_ir_at("M.fai", src, def_name)
+    function_ir_at("M.fai", src, def_name, fai_db::SourceOrigin::User)
 }
 
 /// As [`function_ir`], but adds the source at `path` — pass a `<std>/…` path for a
 /// definition that reaches the prelude-private `Prim.*` intrinsics.
-fn function_ir_at(path: &str, src: &str, def_name: &str) -> Vec<String> {
+fn function_ir_at(
+    path: &str,
+    src: &str,
+    def_name: &str,
+    origin: fai_db::SourceOrigin,
+) -> Vec<String> {
     let mut db = FaiDatabase::new();
     fai_types::std_lib::load_std(&mut db);
-    let id = db.add_source(path.into(), src.to_owned());
+    let id = db.add_source_with_origin(path.into(), src.to_owned(), origin);
     let user = db.source_file(id).unwrap();
 
     let mut files: HashMap<SourceId, SourceFile> = HashMap::new();
@@ -271,7 +281,10 @@ fn entry_ir(src: &str, def_name: &str) -> String {
 /// As [`entry_ir`], but adds the source at a `<std>/…` path so the definition may
 /// call the prelude-private `Prim.*` intrinsics (e.g. `Prim.hash`).
 fn entry_ir_std(src: &str, def_name: &str) -> String {
-    function_ir_at("<std>/M.fai", src, def_name).into_iter().next().expect("entry function IR")
+    function_ir_at("<std>/M.fai", src, def_name, fai_db::SourceOrigin::StandardLibrary)
+        .into_iter()
+        .next()
+        .expect("entry function IR")
 }
 
 fn main_printing(expr: &str) -> String {

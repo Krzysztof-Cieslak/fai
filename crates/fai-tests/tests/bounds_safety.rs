@@ -65,20 +65,11 @@ fn bounds_worker() {
 
 #[test]
 fn wrapping_fact_edits_match_clean_inference() {
-    let paths: Vec<_> =
-        fai_types::std_lib::STD_SOURCES.iter().map(|(name, _)| format!("<std>/{name}")).collect();
-    let std: Vec<_> = paths
-        .iter()
-        .zip(fai_types::std_lib::STD_SOURCES)
-        .map(|(path, (_, source))| (path.as_str(), *source))
-        .collect();
     let safe = CROSS_CALL.replace("let j = i + 1", "let j = 0");
-    let mut original = std.clone();
-    original.push(("Main.fai", CROSS_CALL));
-    let mut revised = std.clone();
-    revised.push(("Main.fai", &safe));
+    let original = [("Main.fai", CROSS_CALL)];
+    let revised = [("Main.fai", safe.as_str())];
     let revisions = [original.as_slice(), revised.as_slice(), original.as_slice()];
-    fai_tests::assert_incremental_matches_clean(&revisions, |db, ids| {
+    fai_tests::assert_incremental_with_std_matches_clean(&revisions, |db, ids| {
         let file = db.source_file(*ids.last().unwrap()).unwrap();
         let name = fai_syntax::Symbol::intern("at");
         (fai_rc::entry_bounds(db, file, name), fai_rc::result_facts(db, file, name))

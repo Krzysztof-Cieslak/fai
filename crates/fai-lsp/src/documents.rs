@@ -21,11 +21,8 @@ impl StandardDocuments {
     }
 
     fn in_cache(db: &dyn Db, cache: &Path) -> io::Result<Self> {
-        let mut files: Vec<_> = db
-            .all_source_files()
-            .into_iter()
-            .filter(|file| fai_db::is_std_path(file.path(db)))
-            .collect();
+        let mut files: Vec<_> =
+            db.all_source_files().into_iter().filter(|file| file.is_std(db)).collect();
         files.sort_by(|a, b| a.path(db).cmp(b.path(db)));
         let mut hash = blake3::Hasher::new();
         for file in &files {
@@ -108,10 +105,18 @@ mod tests {
     fn source_content_changes_use_a_distinct_readable_location() {
         let cache = tempfile::tempdir().unwrap();
         let mut db = fai_db::FaiDatabase::new();
-        db.add_source("<std>/Lib.fai".into(), "module Lib\nlet value = 1\n".into());
+        db.add_source_with_origin(
+            "<std>/Lib.fai".into(),
+            "module Lib\nlet value = 1\n".into(),
+            fai_db::SourceOrigin::StandardLibrary,
+        );
         let first = StandardDocuments::in_cache(&db, cache.path()).unwrap();
         let first_uri = first.uri("<std>/Lib.fai").unwrap();
-        db.add_source("<std>/Lib.fai".into(), "module Lib\nlet value = 2\n".into());
+        db.add_source_with_origin(
+            "<std>/Lib.fai".into(),
+            "module Lib\nlet value = 2\n".into(),
+            fai_db::SourceOrigin::StandardLibrary,
+        );
         let second = StandardDocuments::in_cache(&db, cache.path()).unwrap();
         let second_uri = second.uri("<std>/Lib.fai").unwrap();
         assert_ne!(first_uri, second_uri);

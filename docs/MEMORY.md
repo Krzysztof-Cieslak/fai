@@ -632,9 +632,14 @@ Standard library & operators:
   the embedded library is real `.fai` modules under a top-level **`std/`**,
   embedded at build time by
   `crates/fai-types/build.rs` (a generated `include_str!` table) and loaded as
-  synthetic high-durability inputs under the `<std>/` path namespace
-  (`fai_db::is_std_path`, shared so name resolution can classify a file without
-  depending on the loader). Auto-import is **curated, Elm-style**: a single
+  synthetic high-durability inputs with explicit `SourceOrigin::StandardLibrary`
+  metadata. The `<std>/` prefix is display-only: embedded and user inputs have
+  separate identity registries, so even identical paths cannot overwrite each
+  other, and disk files never acquire intrinsic/internal/raw-FFI access by name.
+  IDE spans retain in-process source identity separately from their stable JSON
+  fields, so locations with identical display paths still navigate to the right
+  user file or embedded document.
+  Auto-import is **curated, Elm-style**: a single
   module **`Prelude`** is visible unqualified everywhere; a public type's
   constructors travel with it (except an **opaque** type, which exports its name
   only — see D113), so the core types are auto-imported. `Prelude` owns
@@ -4031,21 +4036,21 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     build step and the std-scanning gates now recurse subdirectories and name each
     embedded module by its path relative to `std/` (e.g. `datetime/Instant.fai`).
     Module resolution is unchanged (it keys off the `module` header, not the path), and
-    `is_std_path` is a prefix check, so users still reach everything qualified
+    origin is loader metadata independent of the subfolder, so users still reach everything qualified
     (`Instant.now`) with no import.
 
 - **D147 An `internal` visibility tier (same-origin visibility).** Visibility gains a
   middle tier between `public` and module-private: `public > internal > private`.
   `internal` exports a binding/type/interface across files **only within the same
-  *origin***, where an origin is today the standard library vs. user code (the
-  existing `fai_db::is_std_path` `<std>/` prefix check) and becomes a package id when
+  *origin***, where an origin is today the standard library vs. user code (explicit
+  source metadata assigned by the loader) and becomes a package id when
   a Fai package system lands. The motivating problem is standard-library API hygiene:
   cooperating std modules could previously share a helper only by marking it `public`,
   which leaked it into the user-facing API (e.g. the `datetime` modules' raw
   `fromEpochDayAndNanoOfDay`/`fromNanoOfDay` constructors). `internal` lets std share
   such seams among its modules while hiding them from user programs.
   - **Same-origin rule, reused machinery.** A cross-file reference to an `internal`
-    member is allowed iff `is_std_path(referrer) == is_std_path(definer)`. The value
+    member is allowed iff `origin(referrer) == origin(definer)`. The value
     gate is in `walk_cross_file` (the referrer's origin is the resolver's existing
     `is_std` flag); cross-file *type*/*interface* resolution gates the same way in
     `fai-types`'s `lower.rs` (`lookup_type`/`lookup_interface`). A cross-origin

@@ -956,7 +956,7 @@ impl<E: Env> Walker<'_, E> {
     /// from the standard library), which is not user-instantiable.
     fn is_sealed_interface(&self, iref: InterfaceRef) -> bool {
         matches!(iref.name.as_str(), "Num" | "Eq" | "Ord")
-            && self.db.source_file(iref.file).is_some_and(|f| fai_db::is_std_path(f.path(self.db)))
+            && self.db.source_file(iref.file).is_some_and(|f| f.is_std(self.db))
     }
 
     /// The operator symbol held in an operator `Var` node.

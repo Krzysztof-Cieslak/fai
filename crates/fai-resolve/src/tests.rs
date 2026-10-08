@@ -21,6 +21,23 @@ fn db_with(files: &[(&str, &str)]) -> (FaiDatabase, Vec<SourceFile>) {
     (db, handles)
 }
 
+/// Fixture loader whose explicitly prefixed entries request standard-library
+/// origin; ordinary `db_with` and `add_source` always register user inputs.
+fn db_with_std_fixtures(files: &[(&str, &str)]) -> (FaiDatabase, Vec<SourceFile>) {
+    let mut db = FaiDatabase::new();
+    let mut handles = Vec::new();
+    for (path, text) in files {
+        let origin = if path.starts_with(fai_db::STD_PATH_PREFIX) {
+            fai_db::SourceOrigin::StandardLibrary
+        } else {
+            fai_db::SourceOrigin::User
+        };
+        let id = db.add_source_with_origin((*path).into(), (*text).to_owned(), origin);
+        handles.push(db.source_file(id).unwrap());
+    }
+    (db, handles)
+}
+
 /// Collects the resolution diagnostics emitted for `file`.
 fn resolve_diags(db: &dyn Db, file: SourceFile) -> Vec<fai_diagnostics::Diagnostic> {
     resolve::accumulated::<Diag>(db, file).into_iter().map(|d| d.0.clone()).collect()
@@ -340,7 +357,7 @@ fn recursive_defs_excludes_a_helper_chain() {
 fn shadowing_prelude_warns() {
     // Shadow an auto-imported name: the warning needs the Prelude module present
     // (as a standard-library file) so its exports are known.
-    let (db, files) = db_with(&[
+    let (db, files) = db_with_std_fixtures(&[
         (
             "<std>/Prelude.fai",
             indoc! {r#"
@@ -367,7 +384,7 @@ fn shadowing_prelude_warns() {
 
 #[test]
 fn standard_library_module_may_use_prim() {
-    let (db, files) = db_with(&[(
+    let (db, files) = db_with_std_fixtures(&[(
         "<std>/Bool.fai",
         indoc! {r#"
             module Bool
@@ -400,7 +417,7 @@ fn prim_outside_standard_library_is_rejected() {
 
 #[test]
 fn prim_unknown_intrinsic_is_unbound() {
-    let (db, files) = db_with(&[(
+    let (db, files) = db_with_std_fixtures(&[(
         "<std>/M.fai",
         indoc! {r#"
             module M
@@ -417,7 +434,7 @@ fn prim_unknown_intrinsic_is_unbound() {
 fn duplicate_auto_imported_export_is_detected() {
     // Two auto-imported modules exporting the same name are recorded as a
     // duplicate by the merge (FAI2013 is emitted per offending file from there).
-    let (db, files) = db_with(&[
+    let (db, files) = db_with_std_fixtures(&[
         (
             "<std>/A.fai",
             indoc! {r#"
@@ -851,10 +868,8 @@ fn opaque_constructor_field_does_not_leak_a_private_type() {
 // --- `internal` visibility --------------------------------------------------
 //
 // `internal` exports a member across files only within the same *origin*. In
-// these tests the origin boundary is the standard-library path prefix
-// (`fai_db::STD_PATH_PREFIX`): a file registered under that prefix is std-origin,
-// any other file is user-origin. Two std files are same-origin; a std file and a
-// user file are cross-origin.
+// these tests the fixture loader supplies explicit source-origin metadata.
+// Two std files are same-origin; a std file and a user file are cross-origin.
 
 /// Builds a database whose files are all standard-library (synthetic `<std>/`)
 /// origin, so they share an origin for the `internal` checks.
@@ -864,7 +879,7 @@ fn std_db_with(files: &[(&str, &str)]) -> (FaiDatabase, Vec<SourceFile>) {
         .map(|(name, text)| (format!("{}{name}", fai_db::STD_PATH_PREFIX), *text))
         .collect();
     let refs: Vec<(&str, &str)> = prefixed.iter().map(|(p, t)| (p.as_str(), *t)).collect();
-    db_with(&refs)
+    db_with_std_fixtures(&refs)
 }
 
 #[test]

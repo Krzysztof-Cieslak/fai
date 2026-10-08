@@ -944,7 +944,7 @@ fn target_is_renameable(db: &dyn Db, target: RefTarget) -> bool {
                 });
         }
     };
-    db.source_file(defining).is_some_and(|f| !fai_db::is_std_path(f.path(db)))
+    db.source_file(defining).is_some_and(|f| !f.is_std(db))
 }
 
 /// Whether `new_name` is a legal replacement for `target`: a plain identifier in
@@ -1106,7 +1106,7 @@ fn rename_preserves_resolution(
     for file in db.all_source_files() {
         let mut text = file.text(db).clone();
         let mut local_edits: Vec<_> =
-            edits.iter().filter(|edit| &edit.span.file == file.path(db)).collect();
+            edits.iter().filter(|edit| edit.span.source == file.source(db)).collect();
         local_edits.sort_by_key(|edit| std::cmp::Reverse(edit.span.byte_start));
         for edit in local_edits {
             let range = edit.span.byte_start as usize..edit.span.byte_end as usize;
@@ -1116,7 +1116,8 @@ fn rename_preserves_resolution(
             text.replace_range(range, new_name);
             applied += 1;
         }
-        let id = scratch.add_source(file.path(db).clone().into(), text);
+        let id =
+            scratch.add_source_with_origin(file.path(db).clone().into(), text, file.origin(db));
         ids.insert(file.source(db), id);
         let Some(copy) = scratch.source_file(id) else {
             return false;
@@ -1127,7 +1128,7 @@ fn rename_preserves_resolution(
         return false;
     }
     for (file, copy) in copied {
-        if fai_db::is_std_path(file.path(db)) {
+        if file.is_std(db) {
             continue;
         }
         let original = resolve(db, file);
@@ -1980,7 +1981,7 @@ pub fn api(
         // not a standard-library one (the latter is cross-origin — and std is kept
         // out of the query surface anyway). The `SymbolRef` carries the tier, so
         // the JSON marks each entry `public`/`internal`.
-        let show_internal = !fai_db::is_std_path(file.path(db));
+        let show_internal = !file.is_std(db);
         for d in &defs.defs {
             let exported = d.visibility == AstVis::Public
                 || (d.visibility == AstVis::Internal && show_internal);
