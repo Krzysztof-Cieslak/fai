@@ -207,6 +207,12 @@ Syntax front end (lexer, layout, parser, AST, formatter, incremental queries):
   line); a block body must indent strictly past its enclosing block (`FAI1021`).
   Tabs count as one column (quiet) and are normalized by `fai fmt`. Not the full
   Haskell layout algorithm — the canonical formatter normalizes input.
+  Token positions use a forward-only cursor rather than rescanning each token's
+  line prefix. Line tracking visits each byte once and Unicode-scalar columns
+  are computed lazily only at relevant offside boundaries; bracketed/inline
+  tokens need no column calculation. Long lines take linear work and constant
+  position-tracking memory, guarded by deterministic scan counts and reference-
+  index properties covering Unicode and CRLF.
 - **D30 Parser & AST shapes:** Pratt expression parsing, precedence tight→loose
   `.` > application > unary `-` > `* / %` > `+ -` > `:: ++` (right) >
   comparison/equality (left) > `&&` > `||` > `>>` > `|>`. Curried `App`; flat

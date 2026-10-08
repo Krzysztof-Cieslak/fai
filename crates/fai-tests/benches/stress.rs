@@ -29,6 +29,22 @@ fn db_with(source: &str) -> (FaiDatabase, SourceFile) {
     (db, file)
 }
 
+#[divan::bench(args = [1024, 4096, 16384])]
+fn layout_long_array(bencher: Bencher, n: usize) {
+    let source = format!("module M\nlet xs = [| {}0 |]\n", "0, ".repeat(n));
+    let id = fai_span::SourceId::new(0);
+    let tokens = fai_syntax::lex(id, &source).tokens;
+    bencher.counter(ItemsCount::new(n)).bench(|| fai_syntax::layout(id, &source, &tokens));
+}
+
+#[divan::bench(args = [1024, 4096, 16384])]
+fn layout_long_application(bencher: Bencher, n: usize) {
+    let source = format!("module M\nlet value = f {}\n", "x ".repeat(n));
+    let id = fai_span::SourceId::new(0);
+    let tokens = fai_syntax::lex(id, &source).tokens;
+    bencher.counter(ItemsCount::new(n)).bench(|| fai_syntax::layout(id, &source, &tokens));
+}
+
 // ── exponential type growth ──────────────────────────────────────────────────
 // The classic HM blow-up: each step pairs the previous value with itself, so the
 // inferred type doubles in size at every level (2^depth leaves). Stresses

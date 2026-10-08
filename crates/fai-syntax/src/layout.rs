@@ -22,10 +22,15 @@
 //! * `Eof` closes every open block.
 
 use fai_diagnostics::Diagnostic;
-use fai_span::{ByteOffset, LineIndex, SourceId, Span, TextRange};
+use fai_span::{ByteOffset, SourceId, Span, TextRange};
 
 use crate::LAYOUT_ERROR;
 use crate::token::{Token, TokenKind};
+
+#[cfg(test)]
+thread_local! {
+    static POSITION_WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 /// The result of the layout pass.
 #[derive(Debug, Default)]
@@ -42,7 +47,7 @@ pub fn layout(source: SourceId, text: &str, tokens: &[Token]) -> Layout {
     Layouter {
         source,
         text,
-        line_index: LineIndex::new(text),
+        position: PositionCursor::new(),
         out: Vec::with_capacity(tokens.len()),
         diagnostics: Vec::new(),
         contexts: Vec::new(),
@@ -57,7 +62,7 @@ pub fn layout(source: SourceId, text: &str, tokens: &[Token]) -> Layout {
 struct Layouter<'a> {
     source: SourceId,
     text: &'a str,
-    line_index: LineIndex,
+    position: PositionCursor,
     out: Vec<Token>,
     diagnostics: Vec<Diagnostic>,
     /// Reference columns of the open blocks; the first is the implicit top level.
@@ -69,12 +74,49 @@ struct Layouter<'a> {
     first: bool,
 }
 
+/// A monotone position scan over lexer token offsets. Lines advance in one byte
+/// pass; Unicode-scalar columns are computed lazily, only where offside rules
+/// need them. Neither a long line nor bracketed content causes prefix rescans.
+struct PositionCursor {
+    offset: usize,
+    line: u32,
+    column: u32,
+    column_offset: usize,
+}
+
+impl PositionCursor {
+    fn new() -> Self {
+        Self { offset: 0, line: 1, column: 1, column_offset: 0 }
+    }
+
+    fn advance(&mut self, text: &str, at: ByteOffset) {
+        let next = at.to_usize();
+        for (i, &byte) in text.as_bytes()[self.offset..next].iter().enumerate() {
+            if byte == b'\n' {
+                self.line += 1;
+                self.column = 1;
+                self.column_offset = self.offset + i + 1;
+            }
+        }
+        #[cfg(test)]
+        POSITION_WORK.with(|work| work.set(work.get() + next - self.offset));
+        self.offset = next;
+    }
+
+    fn column(&mut self, text: &str) -> u32 {
+        let width = text[self.column_offset..self.offset].chars().count();
+        #[cfg(test)]
+        POSITION_WORK.with(|work| work.set(work.get() + width));
+        self.column += width as u32;
+        self.column_offset = self.offset;
+        self.column
+    }
+}
+
 impl Layouter<'_> {
     fn run(mut self, tokens: &[Token]) -> Layout {
         for &token in tokens {
             let at = token.range.start();
-            let (line, col) = self.line_col(at);
-
             if token.kind == TokenKind::Eof {
                 while self.contexts.len() > 1 {
                     self.contexts.pop();
@@ -84,14 +126,16 @@ impl Layouter<'_> {
                 break;
             }
 
+            self.position.advance(self.text, at);
+            let line = self.position.line;
             if self.first {
-                self.contexts.push(col);
+                self.contexts.push(self.position.column(self.text));
                 self.first = false;
-            } else if self.bracket_depth == 0 {
+            } else if self.bracket_depth == 0 && line > self.prev_line {
+                let col = self.position.column(self.text);
                 if self.pending_open {
-                    self.pending_open = false;
-                    self.open_or_continue(line, col, token, at);
-                } else if line > self.prev_line {
+                    self.open_block(col, token, at);
+                } else {
                     self.line_transition(col, token.kind, at);
                 }
             }
@@ -121,12 +165,8 @@ impl Layouter<'_> {
         Layout { tokens: self.out, diagnostics: self.diagnostics }
     }
 
-    /// Handles the token following a block opener (`=`/`->`/`then`/`else`).
-    fn open_or_continue(&mut self, line: u32, col: u32, token: Token, at: ByteOffset) {
-        if line <= self.prev_line {
-            // Inline body on the same line as the opener: no block.
-            return;
-        }
+    /// Handles a new-line token following a block opener (`=`/`->`/`then`/`else`).
+    fn open_block(&mut self, col: u32, token: Token, at: ByteOffset) {
         let enclosing = *self.contexts.last().expect("top-level context is always present");
         if col > enclosing {
             self.push_virtual(TokenKind::LayoutOpen, at);
@@ -151,11 +191,6 @@ impl Layouter<'_> {
         }
         // `col > reference` continues the current item; a continuation token at
         // the reference column also continues it.
-    }
-
-    fn line_col(&self, at: ByteOffset) -> (u32, u32) {
-        let line_col = self.line_index.line_col(self.text, at);
-        (line_col.line, line_col.column)
     }
 
     fn push_virtual(&mut self, kind: TokenKind, at: ByteOffset) {
@@ -668,6 +703,71 @@ mod tests {
         assert_eq!(count(src, TokenKind::LayoutOpen), 3);
         assert_eq!(count(src, TokenKind::LayoutOpen), count(src, TokenKind::LayoutClose));
     }
+
+    fn position_work(source: &str) -> usize {
+        super::POSITION_WORK.with(|work| work.set(0));
+        run(source);
+        super::POSITION_WORK.with(std::cell::Cell::get)
+    }
+
+    #[track_caller]
+    fn assert_linear_positions(source: impl Fn(usize) -> String) {
+        let small = source(1024);
+        let large = source(4096);
+        let small_work = position_work(&small);
+        let large_work = position_work(&large);
+        assert!(
+            large_work <= 2 * large.len(),
+            "position work {large_work} for {} bytes",
+            large.len()
+        );
+        assert!(
+            large_work <= 5 * small_work,
+            "quadrupling input grew work from {small_work} to {large_work}"
+        );
+    }
+
+    #[test]
+    fn long_array_layout_uses_linear_position_work() {
+        assert_linear_positions(|n| format!("module M\nlet xs = [| {}0 |]\n", "0, ".repeat(n)));
+    }
+
+    #[test]
+    fn long_application_layout_uses_linear_position_work() {
+        assert_linear_positions(|n| format!("module M\nlet value = f {}\n", "x ".repeat(n)));
+    }
+
+    #[test]
+    fn crlf_and_multiline_unicode_comments_preserve_virtual_spans() {
+        let source = "module M\r\nlet value =\r\n  (* é\r\n  *) \"λ\"\r\nlet next = 1\r\n";
+        let result = run(source);
+        assert!(result.diagnostics.is_empty());
+        let virtuals: Vec<_> = result
+            .tokens
+            .iter()
+            .filter(|token| token.range.is_empty() && token.kind != TokenKind::Eof)
+            .map(|token| (token.kind, token.range.start().raw()))
+            .collect();
+        assert_eq!(
+            virtuals,
+            vec![
+                (TokenKind::LayoutSep, 10),
+                (TokenKind::LayoutOpen, 37),
+                (TokenKind::LayoutClose, 43),
+                (TokenKind::LayoutSep, 43),
+            ]
+        );
+    }
+
+    #[test]
+    fn indentation_counts_scalars_in_the_first_token_prefix() {
+        let result = run("(* λ *)let f =\n        1");
+        assert!(result.diagnostics.is_empty());
+        assert_eq!(
+            result.tokens.iter().filter(|token| token.kind == TokenKind::LayoutOpen).count(),
+            1
+        );
+    }
 }
 
 #[cfg(test)]
@@ -675,7 +775,7 @@ mod proptests {
     use fai_span::SourceId;
     use proptest::prelude::*;
 
-    use super::layout;
+    use super::{PositionCursor, layout};
     use crate::lex;
     use crate::token::{Token, TokenKind};
 
@@ -684,6 +784,24 @@ mod proptests {
     }
 
     proptest! {
+        /// Lazy column queries and skipped bracketed text agree with the random-
+        /// access reference index for every Unicode token position.
+        #[test]
+        fn streaming_positions_match_the_line_index(input in any::<String>(), mask in any::<u8>()) {
+            let lexed = lex(SourceId::new(0), &input);
+            let index = fai_span::LineIndex::new(&input);
+            let mut cursor = PositionCursor::new();
+            for (i, token) in lexed.tokens.iter().enumerate() {
+                let at = token.range.start();
+                cursor.advance(&input, at);
+                let reference = index.line_col(&input, at);
+                prop_assert_eq!(cursor.line, reference.line);
+                if mask & (1 << (i % 8)) != 0 || token.kind == TokenKind::Eof {
+                    prop_assert_eq!(cursor.column(&input), reference.column);
+                }
+            }
+        }
+
         /// Layout only *inserts* virtual tokens: dropping them recovers the lexer
         /// output exactly (same kinds and ranges, in order).
         #[test]
