@@ -36,6 +36,7 @@ insta.workspace = true
 serde_json.workspace = true
 proptest.workspace = true
 rcgen.workspace = true
+rustls.workspace = true
 divan.workspace = true
 rayon.workspace = true
 lsp-server.workspace = true

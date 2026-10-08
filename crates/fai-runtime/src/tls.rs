@@ -33,7 +33,12 @@ const STATE_WANTS_READ: i64 = 4;
 /// The rustls connection owned by a `Tls` handle cell. Behind a `Mutex` so a handle
 /// shared across tasks/workers (biased reference counting) is safe to step.
 struct TlsObject {
-    conn: Mutex<Connection>,
+    conn: Mutex<TlsState>,
+}
+
+struct TlsState {
+    connection: Connection,
+    input_closed: bool,
 }
 
 /// Installs the `ring` crypto provider as the process default once, so the rustls
@@ -71,7 +76,9 @@ fn new_client(hostname: &str, extra_roots_pem: Option<&[u8]>) -> Result<TlsObjec
         .map_err(|e| format!("invalid server name: {e}"))?;
     let conn = ClientConnection::new(Arc::new(config), server_name)
         .map_err(|e| format!("starting the TLS client: {e}"))?;
-    Ok(TlsObject { conn: Mutex::new(Connection::Client(conn)) })
+    Ok(TlsObject {
+        conn: Mutex::new(TlsState { connection: Connection::Client(conn), input_closed: false }),
+    })
 }
 
 /// Builds a server TLS session presenting `cert_pem` (a certificate chain) with
@@ -95,28 +102,45 @@ fn new_server(cert_pem: &[u8], key_pem: &[u8]) -> Result<TlsObject, String> {
         .map_err(|e| format!("building the TLS server config: {e}"))?;
     let conn = ServerConnection::new(Arc::new(config))
         .map_err(|e| format!("starting the TLS server: {e}"))?;
-    Ok(TlsObject { conn: Mutex::new(Connection::Server(conn)) })
+    Ok(TlsObject {
+        conn: Mutex::new(TlsState { connection: Connection::Server(conn), input_closed: false }),
+    })
 }
 
 /// Feeds ciphertext (read from the socket) into the session and advances the state
-/// machine. Drains all of `data` into rustls, processing between reads.
-fn feed_incoming(obj: &TlsObject, data: &[u8]) -> Result<(), String> {
-    let mut conn = obj.conn.lock().expect("tls lock");
+/// machine. Reports the consumed prefix; plaintext backpressure leaves the suffix
+/// with the caller. Empty input records transport EOF, distinct from close-notify.
+fn feed_incoming(obj: &TlsObject, data: &[u8]) -> Result<usize, String> {
+    let mut state = obj.conn.lock().expect("tls lock");
+    if data.is_empty() {
+        state.input_closed = true;
+        return Ok(0);
+    }
+    if state.input_closed {
+        return Err("TLS ciphertext received after transport EOF".into());
+    }
+    let conn = &mut state.connection;
     let mut cursor = data;
     while !cursor.is_empty() {
-        let n = conn.read_tls(&mut cursor).map_err(|e| format!("TLS read_tls: {e}"))?;
+        let n = match conn.read_tls(&mut cursor) {
+            Ok(n) => n,
+            // A byte slice cannot fail at I/O. rustls documents Other here as
+            // its receive-buffer backpressure signal; preserve prior progress.
+            Err(e) if e.kind() == std::io::ErrorKind::Other => break,
+            Err(e) => return Err(format!("TLS read_tls: {e}")),
+        };
         if n == 0 {
             break;
         }
         conn.process_new_packets().map_err(|e| format!("TLS protocol error: {e}"))?;
     }
-    conn.process_new_packets().map_err(|e| format!("TLS protocol error: {e}"))?;
-    Ok(())
+    Ok(data.len() - cursor.len())
 }
 
 /// Drains the ciphertext the session wants to send (to be written to the socket).
 fn take_outgoing(obj: &TlsObject) -> Result<Vec<u8>, String> {
-    let mut conn = obj.conn.lock().expect("tls lock");
+    let mut state = obj.conn.lock().expect("tls lock");
+    let conn = &mut state.connection;
     let mut out = Vec::new();
     while conn.wants_write() {
         conn.write_tls(&mut out).map_err(|e| format!("TLS write_tls: {e}"))?;
@@ -124,17 +148,29 @@ fn take_outgoing(obj: &TlsObject) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-/// Reads up to `cap` bytes of decrypted application data. An empty result means none
-/// is buffered yet (feed more ciphertext) or the peer has closed cleanly.
-fn read_plaintext(obj: &TlsObject, cap: usize) -> Result<Vec<u8>, String> {
-    let mut conn = obj.conn.lock().expect("tls lock");
-    let mut buf = vec![0u8; cap];
-    match conn.reader().read(&mut buf) {
+/// Reads plaintext: None means pending, Some(empty) is authenticated close-notify,
+/// and unclean transport EOF is an error after any buffered plaintext is drained.
+fn read_plaintext(obj: &TlsObject, cap: usize) -> Result<Option<Vec<u8>>, String> {
+    if cap == 0 {
+        return Ok(None);
+    }
+    let mut state = obj.conn.lock().expect("tls lock");
+    if state.input_closed {
+        match state.connection.read_tls(&mut &[][..]) {
+            Ok(_) => {}
+            // A full plaintext buffer is drained below; EOF will be registered
+            // on the next read after that backpressure is relieved.
+            Err(e) if e.kind() == std::io::ErrorKind::Other => {}
+            Err(e) => return Err(format!("TLS transport EOF: {e}")),
+        }
+    }
+    let mut buf = vec![0u8; cap.min(65_536)];
+    match state.connection.reader().read(&mut buf) {
         Ok(n) => {
             buf.truncate(n);
-            Ok(buf)
+            Ok(Some(buf))
         }
-        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(Vec::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
         Err(e) => Err(format!("TLS read: {e}")),
     }
 }
@@ -142,14 +178,15 @@ fn read_plaintext(obj: &TlsObject, cap: usize) -> Result<Vec<u8>, String> {
 /// Queues as much plaintext as the bounded output buffer accepts. Drain
 /// [`take_outgoing`] before retrying the unaccepted suffix, including on zero.
 fn write_plaintext(obj: &TlsObject, data: &[u8]) -> Result<usize, String> {
-    let mut conn = obj.conn.lock().expect("tls lock");
-    conn.writer().write(data).map_err(|e| format!("TLS write: {e}"))
+    let mut state = obj.conn.lock().expect("tls lock");
+    state.connection.writer().write(data).map_err(|e| format!("TLS write: {e}"))
 }
 
 /// The state-flag bitmask read by the Fai pump (handshaking / wants-write /
 /// wants-read).
 fn state(obj: &TlsObject) -> i64 {
-    let conn = obj.conn.lock().expect("tls lock");
+    let state = obj.conn.lock().expect("tls lock");
+    let conn = &state.connection;
     let mut flags = 0;
     if conn.is_handshaking() {
         flags |= STATE_HANDSHAKING;
@@ -157,7 +194,7 @@ fn state(obj: &TlsObject) -> i64 {
     if conn.wants_write() {
         flags |= STATE_WANTS_WRITE;
     }
-    if conn.wants_read() {
+    if !state.input_closed && conn.wants_read() {
         flags |= STATE_WANTS_READ;
     }
     flags
@@ -253,7 +290,8 @@ pub extern "C" fn fai_tls_server(cert_pem: Value, key_pem: Value) -> Value {
 }
 
 /// `Tls.feedIncoming`: feed ciphertext (read from the socket) into the session.
-/// Returns `Result Unit String`. Consumes both operands.
+/// Returns the consumed byte count as `Result Int String`. An empty input records
+/// transport EOF. Consumes both operands.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_tls_feed_incoming(tls: Value, bytes: Value) -> Value {
     let result = {
@@ -265,7 +303,7 @@ pub extern "C" fn fai_tls_feed_incoming(tls: Value, bytes: Value) -> Value {
     crate::fai_drop(tls);
     crate::fai_drop(bytes);
     match result {
-        Ok(()) => ok_result(crate::FAI_UNIT),
+        Ok(count) => ok_result(crate::make_int(count as i64)),
         Err(e) => err_result(&e),
     }
 }
@@ -286,7 +324,8 @@ pub extern "C" fn fai_tls_take_outgoing(tls: Value) -> Value {
 }
 
 /// `Tls.readPlaintext`: read up to `max` bytes of decrypted application data.
-/// Returns `Result Bytes String` (empty when none is buffered yet). Consumes `tls`;
+/// Returns `Result (Option Bytes) String`: None is pending, Some(empty) is clean
+/// EOF, and truncation is an error. Consumes `tls`;
 /// `max` is an `Int`.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_tls_read_plaintext(tls: Value, max: Value) -> Value {
@@ -298,7 +337,12 @@ pub extern "C" fn fai_tls_read_plaintext(tls: Value, max: Value) -> Value {
     crate::fai_drop(tls);
     crate::fai_drop(max);
     match result {
-        Ok(buf) => ok_result(crate::make_bytes(&buf)),
+        Ok(Some(buf)) => {
+            let value = crate::make_bytes(&buf);
+            // SAFETY: one owned byte-buffer field moves into the Some cell.
+            ok_result(unsafe { crate::fai_make_data(1, 1, [value].as_ptr()) })
+        }
+        Ok(None) => ok_result(1),
         Err(e) => err_result(&e),
     }
 }
@@ -340,7 +384,7 @@ pub extern "C" fn fai_tls_state(tls: Value) -> Value {
 pub extern "C" fn fai_tls_close(tls: Value) -> Value {
     {
         let obj = tls_of(tls);
-        obj.conn.lock().expect("tls lock").send_close_notify();
+        obj.conn.lock().expect("tls lock").connection.send_close_notify();
     }
     crate::fai_drop(tls);
     crate::FAI_UNIT
@@ -372,16 +416,22 @@ mod tests {
             if !s2c.is_empty() {
                 feed_incoming(&client, &s2c).expect("client feed");
             }
-            if !client.conn.lock().unwrap().is_handshaking()
-                && !server.conn.lock().unwrap().is_handshaking()
+            if !client.conn.lock().unwrap().connection.is_handshaking()
+                && !server.conn.lock().unwrap().connection.is_handshaking()
                 && c2s.is_empty()
                 && s2c.is_empty()
             {
                 break;
             }
         }
-        assert!(!client.conn.lock().unwrap().is_handshaking(), "client handshake completed");
-        assert!(!server.conn.lock().unwrap().is_handshaking(), "server handshake completed");
+        assert!(
+            !client.conn.lock().unwrap().connection.is_handshaking(),
+            "client handshake completed"
+        );
+        assert!(
+            !server.conn.lock().unwrap().connection.is_handshaking(),
+            "server handshake completed"
+        );
         (client, server)
     }
 
@@ -393,7 +443,7 @@ mod tests {
         assert_eq!(write_plaintext(&client, b"hello tls").expect("write"), 9);
         let app = take_outgoing(&client).expect("client app out");
         feed_incoming(&server, &app).expect("server feed app");
-        let got = read_plaintext(&server, 64).expect("server read");
+        let got = read_plaintext(&server, 64).expect("server read").expect("ready plaintext");
         assert_eq!(&got, b"hello tls", "the server decrypted the client's data");
     }
 
@@ -415,9 +465,8 @@ mod tests {
         let mut received = Vec::new();
         // Mirror bounded socket reads, draining plaintext between input chunks.
         for chunk in cipher.chunks(16_384) {
-            feed_incoming(server, chunk).expect("feed peer");
-            loop {
-                let plain = read_plaintext(server, 4096).expect("read peer");
+            assert_eq!(feed_incoming(server, chunk).expect("feed peer"), chunk.len());
+            while let Some(plain) = read_plaintext(server, 4096).expect("read peer") {
                 if plain.is_empty() {
                     break;
                 }
@@ -462,6 +511,101 @@ mod tests {
     }
 
     #[test]
+    fn pending_plaintext_is_distinct_from_authenticated_eof() {
+        let (client, server) = connected_pair();
+        assert_eq!(read_plaintext(&server, 64).unwrap(), None);
+        client.conn.lock().unwrap().connection.send_close_notify();
+        let close = take_outgoing(&client).unwrap();
+        assert_eq!(feed_incoming(&server, &close).unwrap(), close.len());
+        assert_eq!(read_plaintext(&server, 64).unwrap(), Some(Vec::new()));
+        assert_eq!(read_plaintext(&server, 64).unwrap(), Some(Vec::new()));
+    }
+
+    #[test]
+    fn buffered_plaintext_is_drained_before_clean_eof() {
+        let (client, server) = connected_pair();
+        assert_eq!(write_plaintext(&client, b"data").unwrap(), 4);
+        client.conn.lock().unwrap().connection.send_close_notify();
+        let cipher = take_outgoing(&client).unwrap();
+        assert_eq!(feed_incoming(&server, &cipher).unwrap(), cipher.len());
+        assert_eq!(read_plaintext(&server, 2).unwrap(), Some(b"da".to_vec()));
+        assert_eq!(read_plaintext(&server, 2).unwrap(), Some(b"ta".to_vec()));
+        assert_eq!(read_plaintext(&server, 2).unwrap(), Some(Vec::new()));
+    }
+
+    #[test]
+    fn raw_transport_eof_reports_tls_truncation() {
+        let (_, server) = connected_pair();
+        assert_eq!(feed_incoming(&server, b"").unwrap(), 0);
+        assert!(read_plaintext(&server, 64).unwrap_err().contains("close_notify"));
+    }
+
+    #[test]
+    fn transport_eof_preserves_buffered_plaintext_before_reporting_truncation() {
+        let (client, server) = connected_pair();
+        write_plaintext(&client, b"data").unwrap();
+        let cipher = take_outgoing(&client).unwrap();
+        feed_incoming(&server, &cipher).unwrap();
+        feed_incoming(&server, b"").unwrap();
+        assert_eq!(read_plaintext(&server, 64).unwrap(), Some(b"data".to_vec()));
+        assert!(read_plaintext(&server, 64).is_err());
+    }
+
+    #[test]
+    fn an_incomplete_tls_record_at_eof_is_not_an_empty_stream() {
+        let (client, server) = connected_pair();
+        write_plaintext(&client, b"data").unwrap();
+        let cipher = take_outgoing(&client).unwrap();
+        feed_incoming(&server, &cipher[..cipher.len() - 1]).unwrap();
+        assert_eq!(read_plaintext(&server, 64).unwrap(), None);
+        feed_incoming(&server, b"").unwrap();
+        assert!(read_plaintext(&server, 64).is_err());
+    }
+
+    #[test]
+    fn zero_capacity_does_not_fabricate_clean_eof() {
+        let (_, server) = connected_pair();
+        assert_eq!(read_plaintext(&server, 0).unwrap(), None);
+    }
+
+    #[test]
+    fn ciphertext_after_transport_eof_is_rejected() {
+        let (client, server) = connected_pair();
+        feed_incoming(&server, b"").unwrap();
+        write_plaintext(&client, b"data").unwrap();
+        assert!(feed_incoming(&server, &take_outgoing(&client).unwrap()).is_err());
+    }
+
+    #[test]
+    fn oversized_ciphertext_batches_report_progress_and_resume_after_draining() {
+        let (client, server) = connected_pair();
+        let data: Vec<_> = (0..1_048_576).map(|i| (i % 251) as u8).collect();
+        let mut cipher = Vec::new();
+        let mut written = 0;
+        while written < data.len() {
+            written += write_plaintext(&client, &data[written..]).unwrap();
+            cipher.extend(take_outgoing(&client).unwrap());
+        }
+        let mut consumed = feed_incoming(&server, &cipher).unwrap();
+        assert!(consumed > 0 && consumed < cipher.len());
+        assert_eq!(feed_incoming(&server, &cipher[consumed..]).unwrap(), 0);
+        let mut plain = Vec::new();
+        loop {
+            while let Some(chunk) = read_plaintext(&server, 4096).unwrap() {
+                assert!(!chunk.is_empty());
+                plain.extend(chunk);
+            }
+            if consumed == cipher.len() {
+                break;
+            }
+            let accepted = feed_incoming(&server, &cipher[consumed..]).unwrap();
+            assert!(accepted > 0 && accepted <= cipher.len() - consumed);
+            consumed += accepted;
+        }
+        assert_eq!(plain, data);
+    }
+
+    #[test]
     fn full_writer_reports_zero_and_resumes_after_drain() {
         let (client, server) = connected_pair();
         let data = vec![42; 1_048_576];
@@ -485,7 +629,7 @@ mod tests {
     #[test]
     fn small_output_buffer_reports_partial_progress() {
         let (client, server) = connected_pair();
-        client.conn.lock().unwrap().set_buffer_limit(Some(1024));
+        client.conn.lock().unwrap().connection.set_buffer_limit(Some(1024));
         let data = vec![123; 65_537];
         assert_eq!(transfer(&client, &server, &data), data);
     }
@@ -502,8 +646,39 @@ mod tests {
                 capacity in 256usize..65_537,
             ) {
                 let (client, server) = connected_pair();
-                client.conn.lock().unwrap().set_buffer_limit(Some(capacity));
+                client.conn.lock().unwrap().connection.set_buffer_limit(Some(capacity));
                 prop_assert_eq!(transfer(&client, &server, &data), data);
+            }
+
+            #[test]
+            fn coalesced_ciphertext_roundtrips_with_partial_consumption(
+                data in proptest::collection::vec(any::<u8>(), 0..131_073),
+                batch in 1usize..131_073,
+                read_size in 1usize..8193,
+            ) {
+                let (client, server) = connected_pair();
+                let mut cipher = Vec::new();
+                let mut written = 0;
+                while written < data.len() {
+                    written += write_plaintext(&client, &data[written..]).unwrap();
+                    cipher.extend(take_outgoing(&client).unwrap());
+                }
+                let mut plain = Vec::new();
+                for chunk in cipher.chunks(batch) {
+                    let mut consumed = 0;
+                    while consumed < chunk.len() {
+                        let accepted = feed_incoming(&server, &chunk[consumed..]).unwrap();
+                        prop_assert!(accepted <= chunk.len() - consumed);
+                        consumed += accepted;
+                        let before = plain.len();
+                        while let Some(bytes) = read_plaintext(&server, read_size).unwrap() {
+                            prop_assert!(!bytes.is_empty());
+                            plain.extend(bytes);
+                        }
+                        prop_assert!(accepted > 0 || plain.len() > before);
+                    }
+                }
+                prop_assert_eq!(plain, data);
             }
         }
     }

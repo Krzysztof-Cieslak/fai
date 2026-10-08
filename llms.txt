@@ -937,6 +937,10 @@ HTTPS adds the `Tls` capability. Its low-level `writePlaintext session bytes`
 returns the count accepted, not necessarily the full length: drain ciphertext
 with `takeOutgoing`, send it over `Net`, then retry only the remaining plaintext.
 `Http` drives this loop with bounded chunks for you.
+`feedIncoming` similarly returns the consumed ciphertext count: drain plaintext
+before retrying an unconsumed suffix. Feed empty bytes only to report TCP EOF.
+`readPlaintext` returns `Result (Option Bytes) String`; `None` means pending,
+`Some Bytes.empty` means authenticated TLS EOF, and truncation returns `Err`.
 
 ---
 
@@ -1542,6 +1546,10 @@ Deferred: IANA time zones / `ZonedDateTime` with DST rules (this is offset-only)
   `writePlaintext : TlsSession -> Bytes -> Result Int String / { Tls }` returns
   the accepted byte count (possibly zero). Drain `takeOutgoing` before retrying
   the remaining bytes; `Http` sends bounded pieces and flushes between writes.
+  `feedIncoming` returns `Result Int String` progress; an empty feed signals TCP
+  EOF. `readPlaintext` returns `Result (Option Bytes) String`: None is pending,
+  Some(empty) is clean close-notify, and an unclean EOF is an error after queued
+  plaintext. A nonpositive read limit returns None without consuming input.
   Usually you don't call it directly — `Http` drives it for you.
 - **`Http`** — HTTP/1.1 over `Net`, with HTTPS over `Tls` (so every entry point is
   `/ { Net, Tls }`; the URL scheme picks plain-vs-TLS at runtime). `Request 'e`/
