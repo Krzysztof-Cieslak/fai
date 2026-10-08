@@ -1107,7 +1107,7 @@ impl Lowerer<'_> {
         let sval = self.lower_expr(scrutinee);
         let sty = self.ty_of(scrutinee);
         let s = self.fresh_local();
-        let mut chain = error_expr();
+        let mut chain = CExpr::new(K::Error, ty.clone());
         for arm in arms.iter().rev() {
             let body = self.lower_expr(arm.body);
             chain = self.compile_pattern(s, &sty, arm.pat, body, chain);
@@ -1129,7 +1129,8 @@ impl Lowerer<'_> {
         success: CExpr,
         fail: CExpr,
     ) -> CExpr {
-        let value = || CExpr::new(K::Local(value_local), Ty::Error);
+        let value = || CExpr::new(K::Local(value_local), value_ty.clone());
+        let result_ty = success.ty.clone();
         match &self.module.pat(pat).kind {
             PatKind::Wildcard => success,
             PatKind::Error => {
@@ -1140,7 +1141,7 @@ impl Lowerer<'_> {
                 let local = self.resolved.local_of(pat).unwrap_or_else(|| self.fresh_local());
                 CExpr::new(
                     K::Let { local, value: Box::new(value()), body: Box::new(success) },
-                    Ty::Error,
+                    result_ty,
                 )
             }
             PatKind::Paren(inner) => {
@@ -1225,7 +1226,7 @@ impl Lowerer<'_> {
                 let local = self.resolved.local_of(pat).unwrap_or_else(|| self.fresh_local());
                 let bound = CExpr::new(
                     K::Let { local, value: Box::new(value()), body: Box::new(success) },
-                    Ty::Error,
+                    result_ty,
                 );
                 self.compile_pattern(value_local, value_ty, inner, bound, fail)
             }
@@ -1256,6 +1257,7 @@ impl Lowerer<'_> {
             return self
                 .unsupported_row_poly(TextRange::default(), "row-polymorphic record pattern");
         }
+        let result_ty = success.ty.clone();
         let mut inner = success;
         for &(name, fpat) in fields.iter().rev() {
             let Some(pos) = row.fields.iter().position(|(l, _)| *l == name) else {
@@ -1285,7 +1287,7 @@ impl Lowerer<'_> {
                     let local = self.resolved.local_of(fpat).unwrap_or_else(|| self.fresh_local());
                     inner = CExpr::new(
                         K::Let { local, value: Box::new(projection()), body: Box::new(inner) },
-                        Ty::Error,
+                        result_ty.clone(),
                     );
                 }
                 _ => {
@@ -1293,7 +1295,7 @@ impl Lowerer<'_> {
                     let matched = self.compile_pattern(f, &field_ty, fpat, inner, fail.clone());
                     inner = CExpr::new(
                         K::Let { local: f, value: Box::new(projection()), body: Box::new(matched) },
-                        Ty::Error,
+                        result_ty.clone(),
                     );
                 }
             }
@@ -1303,11 +1305,12 @@ impl Lowerer<'_> {
 
     /// `if <value> = <lit> then success else fail`.
     fn test_lit(&mut self, value: CExpr, lit: Lit, success: CExpr, fail: CExpr) -> CExpr {
-        let lit = CExpr::new(K::Lit(lit), Ty::Error);
+        let result_ty = success.ty.clone();
+        let lit = CExpr::new(K::Lit(lit), value.ty.clone());
         let cond = CExpr::new(K::Prim { op: Prim::Eq, args: vec![value, lit] }, Ty::bool());
         CExpr::new(
             K::If { cond: Box::new(cond), then: Box::new(success), els: Box::new(fail) },
-            Ty::Error,
+            result_ty,
         )
     }
 
@@ -1322,6 +1325,7 @@ impl Lowerer<'_> {
         success: CExpr,
         fail: CExpr,
     ) -> CExpr {
+        let result_ty = success.ty.clone();
         let read = CExpr::new(
             K::DataTag { base: Box::new(CExpr::new(K::Local(value_local), Ty::Error)), niche },
             Ty::int(),
@@ -1330,7 +1334,7 @@ impl Lowerer<'_> {
         let cond = CExpr::new(K::Prim { op: Prim::Eq, args: vec![read, tag_lit] }, Ty::bool());
         CExpr::new(
             K::If { cond: Box::new(cond), then: Box::new(success), els: Box::new(fail) },
-            Ty::Error,
+            result_ty,
         )
     }
 
@@ -1352,6 +1356,7 @@ impl Lowerer<'_> {
         success: CExpr,
         fail: &CExpr,
     ) -> CExpr {
+        let result_ty = success.ty.clone();
         let mut inner = success;
         for (i, &fp) in fields.iter().enumerate().rev() {
             let index = u32::try_from(i).unwrap_or(0);
@@ -1384,7 +1389,7 @@ impl Lowerer<'_> {
                     let local = self.resolved.local_of(fp).unwrap_or_else(|| self.fresh_local());
                     inner = CExpr::new(
                         K::Let { local, value: Box::new(projection()), body: Box::new(inner) },
-                        Ty::Error,
+                        result_ty.clone(),
                     );
                 }
                 _ => {
@@ -1392,7 +1397,7 @@ impl Lowerer<'_> {
                     let matched = self.compile_pattern(f, &field_ty, fp, inner, fail.clone());
                     inner = CExpr::new(
                         K::Let { local: f, value: Box::new(projection()), body: Box::new(matched) },
-                        Ty::Error,
+                        result_ty.clone(),
                     );
                 }
             }
@@ -1418,6 +1423,7 @@ impl Lowerer<'_> {
         let tail_local = self.fresh_local();
         let tail_match =
             self.compile_list_pattern(tail_local, value_ty, rest, success, fail.clone());
+        let result_ty = tail_match.ty.clone();
         let tail_bind = CExpr::new(
             K::Let {
                 local: tail_local,
@@ -1428,11 +1434,11 @@ impl Lowerer<'_> {
                         scalar: false,
                         niche: None,
                     },
-                    Ty::Error,
+                    value_ty.clone(),
                 )),
                 body: Box::new(tail_match),
             },
-            Ty::Error,
+            result_ty,
         );
         // A list element (`'a`) is never a scalar slot; its concrete type threads on.
         let elem = list_elem_ty(value_ty);

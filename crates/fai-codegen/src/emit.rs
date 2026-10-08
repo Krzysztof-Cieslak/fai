@@ -1825,8 +1825,8 @@ impl<M: Module> Translator<'_, M> {
     /// Binds `local` to `value`, the single coercion point reconciling an owned
     /// value's representation with the local's classification. A raw-`Int` local
     /// takes the value untagged ([`Self::as_raw_int`]); a uniform local takes a raw
-    /// int tagged/boxed; an `f64` local relies on Cranelift's `F64` type match (a
-    /// mismatch panics, surfacing a bug). A no-op in the common cases (raw→raw in a
+    /// int tagged/boxed. A float crossing a generic local is boxed, and an `f64`
+    /// local consumes any incoming box. A no-op in the common cases (raw→raw in a
     /// normal function, tagged→tagged in a combined function); only a
     /// conflicting-observation local actually converts.
     fn define_var(&mut self, local: LocalId, value: Value) {
@@ -1841,10 +1841,10 @@ impl<M: Module> Translator<'_, M> {
             self.ensure_boxed(value)
         } else if self.is_int_local(local) {
             self.as_raw_int(value)
-        } else if !self.is_f64_local(local) && self.is_raw_int(value) {
-            self.box_or_tag_int(value)
+        } else if self.is_f64_local(local) {
+            self.f64_return(value)
         } else {
-            value
+            self.ensure_boxed(value)
         };
         self.builder.def_var(var, value);
     }

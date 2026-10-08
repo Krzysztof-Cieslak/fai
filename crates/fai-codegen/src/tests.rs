@@ -53,6 +53,18 @@ pub(crate) fn run(src: &str) -> (i32, String) {
     (code, out)
 }
 
+#[test]
+fn inlined_generic_float_pattern_releases_its_boundary_box() {
+    let source = "module M\nlet read value =\n  match value with\n  | (_ as result) -> result\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Float.toString (read 3.5))\n";
+    assert_eq!(run(source), (0, "3.5\n".into()));
+}
+
+#[test]
+fn inlined_float_constructor_match_releases_its_scrutinee() {
+    let source = "module M\ntype Wrapped = | Wrapped Float\nlet read wrapped =\n  match wrapped with\n  | Wrapped value -> value\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Float.toString (read (Wrapped 3.5)))\n";
+    assert_eq!(run(source), (0, "3.5\n".into()));
+}
+
 /// As [`run`], but also returns the number of heap allocations performed during
 /// execution (for reuse measurement).
 pub(crate) fn run_counted(src: &str) -> (i32, String, i64) {
