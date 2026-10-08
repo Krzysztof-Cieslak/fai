@@ -488,6 +488,14 @@ Daemon, persistence & protocol:
   build a bundle and spawn the same `__run-worker`. (Transferring the warm bundle
   is the realistic best-latency option; the alternatives — cold re-derive, or AOT
   re-link per edit — are slower or contradict JIT-for-run.)
+  Native symbols use `fai2_<module>__<member>` with lowercase-alphanumeric
+  components and every other UTF-8 byte escaped as `_xNN`, including underscores
+  and uppercase letters. The doubled separator cannot occur inside a component;
+  generated suffixes (`__closure`, `__fnN`, `__owned`, `__reuse`, …) therefore
+  cannot collide with source names. Canonical lowercase also prevents object-file
+  collisions on case-insensitive filesystems. The driver, run/test bundle workers,
+  and object-cache fingerprints all use the same encoder; changing this format
+  invalidates earlier native objects.
 - **D64 Run supervision:** the daemon spawns the worker with piped stdio, streams
   it back as `$/output`, and enforces a wall-clock timeout (`FAI_RUN_TIMEOUT_MS`,
   default 300s) via a `wait-timeout` waiter that kills the worker on expiry

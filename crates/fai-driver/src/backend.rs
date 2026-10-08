@@ -130,7 +130,7 @@ pub fn uses_concurrency(db: &dyn Db, file: SourceFile) -> bool {
         .any(|i| matches!(i.name.as_str(), "Concurrency" | "Net"))
 }
 
-/// The mangled symbol base for a definition: `fai_<module>_<name>`.
+/// The versioned, collision-free native symbol base for a definition.
 #[must_use]
 pub fn symbol_base(db: &dyn Db, def: DefId) -> String {
     mangle(&module_label(db, def), def.name.as_str())
@@ -148,26 +148,85 @@ pub(crate) fn module_label(db: &dyn Db, def: DefId) -> String {
 ///
 /// Both parts are sanitized: the result names a symbol *and* an on-disk object
 /// file, so it must be a valid identifier and a valid file name on every OS.
-/// Operator definitions (e.g. `>>`, `<>`) carry characters Windows forbids in
-/// file names (`<>:"/\|?*`), so each non-alphanumeric byte is escaped as `_xNN`
-/// (its hex) — injective, so distinct definitions keep distinct symbols.
+/// Each component escapes underscores and every byte except lowercase ASCII
+/// letters and digits as `_xNN`. Thus `__` occurs only at component boundaries
+/// and generated suffixes, and even case-insensitive filesystems distinguish
+/// source names that differ only in case. The `fai2_` prefix versions the format.
 pub(crate) fn mangle(module_label: &str, name: &str) -> String {
-    format!("fai_{}_{}", sanitize_ident(module_label), sanitize_ident(name))
+    format!("fai2_{}__{}", sanitize_ident(module_label), sanitize_ident(name))
 }
 
 /// Escapes a string to an identifier- and file-name-safe form: ASCII
-/// alphanumerics and `_` pass through; every other byte becomes `_xNN`.
+/// lowercase letters and digits pass through; every other byte becomes `_xNN`.
 fn sanitize_ident(s: &str) -> String {
     use std::fmt::Write as _;
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
-        if b.is_ascii_alphanumeric() || b == b'_' {
+        if b.is_ascii_lowercase() || b.is_ascii_digit() {
             out.push(b as char);
         } else {
             let _ = write!(out, "_x{b:02x}");
         }
     }
     out
+}
+
+#[cfg(test)]
+mod symbol_tests {
+    use super::*;
+
+    #[test]
+    fn operator_escape_does_not_collide_with_an_identifier() {
+        assert_ne!(mangle("A", "+"), mangle("A", "_x2b"));
+    }
+
+    #[test]
+    fn module_and_member_boundaries_are_unambiguous() {
+        assert_ne!(mangle("A_b", "c"), mangle("A", "b_c"));
+    }
+
+    #[test]
+    fn generated_suffixes_do_not_collide_with_user_names() {
+        assert_ne!(format!("{}__closure", mangle("A", "f")), mangle("A", "f__closure"));
+    }
+
+    #[test]
+    fn case_distinctions_survive_case_insensitive_filesystems() {
+        assert_ne!(mangle("A", "caseA").to_lowercase(), mangle("A", "casea").to_lowercase());
+    }
+
+    mod proptests {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        fn decode(encoded: &str) -> String {
+            let mut bytes = Vec::new();
+            let mut rest = encoded;
+            while !rest.is_empty() {
+                if rest.starts_with("_x") {
+                    bytes.push(u8::from_str_radix(&rest[2..4], 16).unwrap());
+                    rest = &rest[4..];
+                } else {
+                    bytes.push(rest.as_bytes()[0]);
+                    rest = &rest[1..];
+                }
+            }
+            String::from_utf8(bytes).unwrap()
+        }
+
+        proptest! {
+            #[test]
+            fn native_names_are_reversible_and_file_safe(module in any::<String>(), name in any::<String>()) {
+                let symbol = mangle(&module, &name);
+                prop_assert!(symbol.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'));
+                let (left, right) = symbol.strip_prefix("fai2_").unwrap().split_once("__").unwrap();
+                prop_assert_eq!(decode(left), module);
+                prop_assert_eq!(decode(right), name);
+                prop_assert!(!left.contains("__") && !right.contains("__"));
+            }
+        }
+    }
 }
 
 /// A definition's syntactic source-parameter count (the `let f a b = …` binders),

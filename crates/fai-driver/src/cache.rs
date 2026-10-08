@@ -81,7 +81,8 @@ use crate::backend::{abi_of, arity_of, object_code, symbol_base};
 /// `checked-array-capacity` guards allocation/growth sizes and consumes boxed capacities.
 /// `int-merge-repr` reconciles tagged and raw integers at branch and loop merges.
 /// `nowrap-bounds` requires an overflow proof before using arithmetic bounds facts.
-const CODEGEN_CONFIG: &str = "opt=speed;int-prims-inlined;reg-direct-call;divrem-inlined;scalar-float-fields;early-drop;poly-cmp-inlined;array-access-inlined;hash-inlined;bounds-check-elim;result-bounds;array-float-unboxed;spread-aggregate;array-tag-hoisted;reuse-lambda-export;error-trap;checked-array-capacity;int-merge-repr;nowrap-bounds";
+/// `symbols-v2` separates encoded module/member names from generated suffixes.
+const CODEGEN_CONFIG: &str = "opt=speed;int-prims-inlined;reg-direct-call;divrem-inlined;scalar-float-fields;early-drop;poly-cmp-inlined;array-access-inlined;hash-inlined;bounds-check-elim;result-bounds;array-float-unboxed;spread-aggregate;array-tag-hoisted;reuse-lambda-export;error-trap;checked-array-capacity;int-merge-repr;nowrap-bounds;symbols-v2";
 
 /// An explicit cache-directory override (set by embedders/tests), taking
 /// precedence over `$FAI_CACHE_DIR`. `None` (the default) falls back to the

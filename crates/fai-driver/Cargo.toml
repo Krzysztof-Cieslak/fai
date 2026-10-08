@@ -52,6 +52,7 @@ windows-sys = { workspace = true, features = [
 
 [dev-dependencies]
 indoc.workspace = true
+proptest.workspace = true
 
 [lints]
 workspace = true
