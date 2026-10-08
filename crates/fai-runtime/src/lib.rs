@@ -2429,12 +2429,21 @@ float_binop!(fai_float_sub, |a, b| a - b);
 float_binop!(fai_float_mul, |a, b| a * b);
 float_binop!(fai_float_div, |a, b| a / b);
 
+/// Negates a float by flipping its IEEE sign bit, preserving NaN payloads and
+/// signed zero. Consumes the operand.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_float_neg(value: Value) -> Value {
+    let bits = unbox_float(value).to_bits() ^ (1u64 << 63);
+    fai_drop(value);
+    fai_box_float(bits as i64)
+}
+
 macro_rules! float_cmp {
     ($name:ident, $op:tt) => {
         /// Float comparison primitive, returning a `Bool` (operands consumed).
         #[unsafe(no_mangle)]
         pub extern "C" fn $name(a: Value, b: Value) -> Value {
-            let r = unbox_float(a) $op unbox_float(b);
+            let r = unbox_float(a).total_cmp(&unbox_float(b)) $op std::cmp::Ordering::Equal;
             fai_drop(a);
             fai_drop(b);
             from_bool(r)

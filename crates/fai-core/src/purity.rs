@@ -163,6 +163,7 @@ pub fn op_unsafe_to_reorder(op: Prim, args: &[CExpr]) -> bool {
         | Prim::IntGe
         | Prim::FloatAdd
         | Prim::FloatSub
+        | Prim::FloatNeg
         | Prim::FloatMul
         | Prim::FloatDiv
         | Prim::FloatLt

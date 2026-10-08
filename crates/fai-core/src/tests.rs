@@ -179,6 +179,12 @@ fn overflowing_integer_pattern_keeps_an_error_placeholder() {
 }
 
 #[test]
+fn lowers_float_negation_as_a_sign_bit_operation() {
+    let source = "module M\npublic negate : Float -> Float\nlet negate x = -x\n";
+    assert_eq!(lower(source, "negate"), "fn0(%0) = (negate. %0)\n");
+}
+
+#[test]
 fn lowers_let_block() {
     let src = indoc! {r#"
         module M

@@ -298,6 +298,24 @@ fn negative_radix_patterns_and_full_width_literals_run_in_native_code() {
 }
 
 #[test]
+fn float_order_and_negation_survive_the_worker_bundle() {
+    let source = indoc! {r#"
+        module Main
+        public main : Runtime -> Unit / { Console }
+        let main runtime =
+          let negativeZero = -0.0
+          let nan = Float.fromBits 0x7ff8000000001234
+          let valid = negativeZero < 0.0 && Float.toBits negativeZero = 0x8000000000000000 && nan >= nan && Float.toBits (-nan) = 0xfff8000000001234
+          runtime.console.writeLine (if valid then "ok" else "wrong float semantics")
+    "#};
+    let dir = workspace("float-bits", &[("Main.fai", source)]);
+    let output =
+        fai().args(["run", "--no-daemon", "-C"]).arg(&dir).arg("Main.fai").output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(output.stdout, b"ok\n");
+}
+
+#[test]
 fn run_without_main_reports_no_entry_point() {
     let dir = workspace(
         "nomain",

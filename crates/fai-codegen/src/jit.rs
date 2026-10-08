@@ -48,6 +48,7 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_box_float", rt::fai_box_float);
     sym!("fai_float_add", rt::fai_float_add);
     sym!("fai_float_sub", rt::fai_float_sub);
+    sym!("fai_float_neg", rt::fai_float_neg);
     sym!("fai_float_mul", rt::fai_float_mul);
     sym!("fai_float_div", rt::fai_float_div);
     sym!("fai_float_lt", rt::fai_float_lt);

@@ -1806,9 +1806,13 @@ Editor integration:
   is retained as **`Test.floatAll`** (the old `Float.fromBits` behavior) for
   bit-level and round-trip tests; it is a building block (reachable, like any
   generator, through a user newtype's custom `Arbitrary`), since built-in scalar
-  binders are not overridable. Note that structural `=` on `Float` is **bitwise**
-  (so `-0.0 <> 0.0`), so a law expected to hold should compare with the IEEE
-  ordering operators (`>=`/`<=`/`<`/`>`), not `=`.
+  binders are not overridable. Structural `=` on `Float` is **bitwise**
+  (so `-0.0 <> 0.0`), and every ordering context uses the matching IEEE total
+  order, including NaN signs and payloads. Concrete comparisons use an inline
+  sign-adjusted integer key; generic/aggregate comparisons use the same order.
+  Unary negation flips just the sign bit (native `fneg`, or the boxed runtime
+  peer), preserving signaling/quiet NaN payloads. Numeric-equivalence laws must
+  normalize signed zeros or use a tolerance rather than assume bitwise equality.
 
 - **D110 Debug-gated leak counters (refines D77/D-era runtime).** The runtime's
   live-object and cumulative-allocation counters (`LIVE`/`ALLOCATIONS`, behind
