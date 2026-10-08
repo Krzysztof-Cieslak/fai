@@ -362,6 +362,10 @@ table **and** the decision log in `docs/MEMORY.md`).
 
 ## 4. Language at a glance
 
+Ordered `Dict`/`Set` bulk operations join arbitrarily shrunken subtrees with the
+general weight-balanced join. Ordering, cached sizes, and balance hold at every
+node; the internal tree shape can change while logical contents remain identical.
+
 ```fai
 module Hello
 

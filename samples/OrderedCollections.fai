@@ -1,0 +1,9 @@
+module OrderedCollections
+
+// Bulk filtering can shrink either side of an ordered tree by any amount.
+// The containers retain their ordering and balance for subsequent operations.
+let keep key = key < 7 || key = 13
+example: Set.toList (Set.filter keep (Set.fromList (List.range 0 14))) = [0, 1, 2, 3, 4, 5, 6, 13]
+example: Dict.keys (Dict.filter (fun key value ->
+  keep key) (Dict.fromList (List.map (fun key ->
+  (key, key)) (List.range 0 14)))) = [0, 1, 2, 3, 4, 5, 6, 13]
