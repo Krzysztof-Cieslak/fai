@@ -20,11 +20,11 @@ use std::sync::{Arc, Mutex};
 
 use fai_core::fingerprint_def;
 use fai_db::{Db, SourceFile};
-use fai_rc::{entry_bounds, rc, result_facts};
+use fai_rc::rc_emit;
 use fai_resolve::DefId;
 use fai_syntax::Symbol;
 
-use crate::backend::{abi_of, arity_of, object_code, symbol_base};
+use crate::backend::{CallMetadata, bounds_entry_of, bounds_result_of, object_code, symbol_base};
 
 /// The code-generation configuration stamp, mixed into every object's cache key
 /// so a change to how code is generated invalidates stale entries (here, the
@@ -82,7 +82,8 @@ use crate::backend::{abi_of, arity_of, object_code, symbol_base};
 /// `int-merge-repr` reconciles tagged and raw integers at branch and loop merges.
 /// `nowrap-bounds` requires an overflow proof before using arithmetic bounds facts.
 /// `symbols-v2` separates encoded module/member names from generated suffixes.
-const CODEGEN_CONFIG: &str = "opt=speed;int-prims-inlined;reg-direct-call;divrem-inlined;scalar-float-fields;early-drop;poly-cmp-inlined;array-access-inlined;hash-inlined;bounds-check-elim;result-bounds;array-float-unboxed;spread-aggregate;array-tag-hoisted;reuse-lambda-export;error-trap;checked-array-capacity;int-merge-repr;nowrap-bounds;symbols-v2";
+/// `emit-ready-key` fingerprints reuse forwarding and complete call metadata.
+const CODEGEN_CONFIG: &str = "opt=speed;int-prims-inlined;reg-direct-call;divrem-inlined;scalar-float-fields;early-drop;poly-cmp-inlined;array-access-inlined;hash-inlined;bounds-check-elim;result-bounds;array-float-unboxed;spread-aggregate;array-tag-hoisted;reuse-lambda-export;error-trap;checked-array-capacity;int-merge-repr;nowrap-bounds;symbols-v2;emit-ready-key";
 
 /// An explicit cache-directory override (set by embedders/tests), taking
 /// precedence over `$FAI_CACHE_DIR`. `None` (the default) falls back to the
@@ -144,12 +145,14 @@ pub fn load_or_build_object(
 }
 
 /// The content key for `def`'s object: a portable fingerprint of its
-/// reference-counted IR, stamped with target, compiler version, and config.
+/// emit-ready primary IR and call metadata, stamped with target, compiler
+/// version, and config. Specialized reuse bodies live in separate objects.
 fn object_key(db: &dyn Db, file: SourceFile, def: DefId, concurrent: bool) -> String {
-    let lowered = rc(db, file, def.name);
+    let lowered = rc_emit(db, file, def.name);
     let namer = |d: DefId| symbol_base(db, d);
-    let arity = |d: DefId| arity_of(db, d);
-    let abi = |d: DefId| abi_of(db, d);
+    let metadata = CallMetadata::new(db, file, def.name);
+    let arity = |d| metadata.arity(d);
+    let abi = |d| metadata.abi(d);
     let fingerprint = fingerprint_def(&lowered, &namer, &arity, &abi);
 
     let mut hasher = blake3::Hasher::new();
@@ -159,14 +162,16 @@ fn object_key(db: &dyn Db, file: SourceFile, def: DefId, concurrent: bool) -> St
     // inferred entry facts and each referenced callee's result facts (both consulted
     // at code generation), so they are part of the key.
     hasher.update(b"bce-entry\0");
-    hasher.update(format!("{:?}", entry_bounds(db, file, def.name)).as_bytes());
-    hasher.update(b"\0bce-result\0");
+    hasher.update(format!("{:?}", bounds_entry_of(db, def)).as_bytes());
+    hasher.update(b"\0callee-metadata\0");
     let mut seen = rustc_hash::FxHashSet::default();
     for callee in lowered.referenced_globals() {
-        if seen.insert(callee)
-            && let Some(cf) = db.source_file(callee.file)
-        {
-            hasher.update(format!("{:?}", result_facts(db, cf, callee.name)).as_bytes());
+        if seen.insert(callee) {
+            hasher.update(namer(callee).as_bytes());
+            hasher.update(b"\0");
+            hasher.update(format!("{:?}", metadata.borrows(callee)).as_bytes());
+            hasher.update(b"\0");
+            hasher.update(format!("{:?}", bounds_result_of(db, callee)).as_bytes());
             hasher.update(b"\0");
         }
     }
@@ -242,4 +247,72 @@ fn user_cache_root() -> Option<PathBuf> {
 #[cfg(windows)]
 fn user_cache_root() -> Option<PathBuf> {
     std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use fai_db::FaiDatabase;
+
+    use super::*;
+
+    const HELPER: &str = "module Helper\npublic type R = { a : Int, b : Int }\nlet zero = { a = 0, b = 0 }\npublic sink : Int -> R\nlet sink x =\n  if x <= 0 then { a = 0, b = 0 }\n  else\n    let inner = sink (x - 1)\n    { a = inner.a + 1, b = x }\n";
+    const CALLER: &str = "module Probe\npublic probe : Helper.R -> Bool -> Helper.R\nlet probe p flag =\n  match p with\n  | { a, b } -> if flag then { a = b, b = a } else Helper.sink a\n";
+
+    fn database(helper: &str) -> (FaiDatabase, SourceFile, DefId) {
+        let mut db = FaiDatabase::new();
+        fai_types::std_lib::load_std(&mut db);
+        db.add_source("Helper.fai".into(), helper.into());
+        let id = db.add_source("Probe.fai".into(), CALLER.into());
+        let file = db.source_file(id).unwrap();
+        (db, file, DefId::new(id, Symbol::intern("probe")))
+    }
+
+    #[test]
+    fn unchanged_reuse_metadata_preserves_the_callers_key() {
+        let (mut db, file, def) = database(HELPER);
+        let before = object_key(&db, file, def, false);
+        let object = object_code(&db, file, def.name, false);
+        db.add_source(
+            "Helper.fai".into(),
+            HELPER.replace("then { a = 0, b = 0 }", "then { a = 1, b = 1 }"),
+        );
+        assert_eq!(before, object_key(&db, file, def, false));
+        assert_eq!(object, object_code(&db, file, def.name, false));
+    }
+
+    #[test]
+    fn changed_reuse_metadata_matches_clean_key_and_object() {
+        let (mut db, file, def) = database(HELPER);
+        let before = object_key(&db, file, def, false);
+        let edited = HELPER.replace("then { a = 0, b = 0 }", "then zero");
+        db.add_source("Helper.fai".into(), edited.clone());
+        let after = object_key(&db, file, def, false);
+        assert_ne!(before, after);
+        let (clean, clean_file, clean_def) = database(&edited);
+        assert_eq!(after, object_key(&clean, clean_file, clean_def, false));
+        assert_eq!(
+            object_code(&db, file, def.name, false),
+            object_code(&clean, clean_file, clean_def.name, false)
+        );
+    }
+
+    #[test]
+    fn synthetic_calls_use_the_generated_arity_and_abi() {
+        let mut db = FaiDatabase::new();
+        fai_types::std_lib::load_std(&mut db);
+        let id = db.add_source(
+            "M.fai".into(),
+            "module M\nlet run n = Array.sum (Array.map (fun x -> x + 1) (Array.range 0 n))\n"
+                .into(),
+        );
+        let file = db.source_file(id).unwrap();
+        let name = Symbol::intern("run");
+        let fused = fai_core::fuse_def(&db, file, name);
+        assert_eq!(fused.loops.len(), 1);
+        let loop_ = &fused.loops[0];
+        let metadata = CallMetadata::new(&db, file, name);
+        assert_eq!(metadata.arity(loop_.lowered.def), loop_.arity);
+        assert_eq!(metadata.abi(loop_.lowered.def), loop_.abi);
+        assert!(metadata.borrows(loop_.lowered.def).is_empty());
+    }
 }

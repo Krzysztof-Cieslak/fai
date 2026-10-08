@@ -307,14 +307,10 @@ pub fn object_code(db: &dyn Db, file: SourceFile, name: Symbol, concurrent: bool
     // definition (the cache firewall).
     let lowered = rc_emit(db, file, name);
     let namer = |d: DefId| symbol_base(db, d);
-    // This def's body may direct-call its synthesized deforestation loops; those
-    // are external symbols (emitted separately by the driver), so the call must be
-    // marshalled with the loop's real arity/ABI rather than the (absent) source
-    // signature's.
-    let floops = fusion_loop_abis(db, file, name);
-    let arity = |d: DefId| floops.get(&d).map_or_else(|| arity_of(db, d), |x| x.0);
-    let abi = |d: DefId| floops.get(&d).map_or_else(|| abi_of(db, d), |x| x.1.clone());
-    let borrows = |d: DefId| if floops.contains_key(&d) { Vec::new() } else { borrows_of(db, d) };
+    let metadata = CallMetadata::new(db, file, name);
+    let arity = |d| metadata.arity(d);
+    let abi = |d| metadata.abi(d);
+    let borrows = |d| metadata.borrows(d);
     let entry_of = |d: DefId| bounds_entry_of(db, d);
     let result_of = |d: DefId| bounds_result_of(db, d);
     let bce =
@@ -369,6 +365,31 @@ fn fusion_loop_abis(
         .collect()
 }
 
+/// Call metadata shared by object emission and its persistent cache key. A
+/// synthetic loop has no source signature, so its generated ABI takes precedence.
+pub(crate) struct CallMetadata<'db> {
+    db: &'db dyn Db,
+    loops: FxHashMap<DefId, (usize, FnAbi)>,
+}
+
+impl<'db> CallMetadata<'db> {
+    pub(crate) fn new(db: &'db dyn Db, file: SourceFile, name: Symbol) -> Self {
+        Self { db, loops: fusion_loop_abis(db, file, name) }
+    }
+
+    pub(crate) fn arity(&self, def: DefId) -> usize {
+        self.loops.get(&def).map_or_else(|| arity_of(self.db, def), |x| x.0)
+    }
+
+    pub(crate) fn abi(&self, def: DefId) -> FnAbi {
+        self.loops.get(&def).map_or_else(|| abi_of(self.db, def), |x| x.1.clone())
+    }
+
+    pub(crate) fn borrows(&self, def: DefId) -> Vec<bool> {
+        if self.loops.contains_key(&def) { Vec::new() } else { borrows_of(self.db, def) }
+    }
+}
+
 /// The cached relocatable object holding only a definition's token-taking
 /// specialized entry (`{base}__reuse`). A separate cache unit from
 /// [`object_code`] so the primary object stays forwarding-independent; linked
@@ -382,10 +403,10 @@ pub fn reuse_object_code(
 ) -> Arc<Vec<u8>> {
     let lowered = rc_emit(db, file, name);
     let namer = |d: DefId| symbol_base(db, d);
-    let floops = fusion_loop_abis(db, file, name);
-    let arity = |d: DefId| floops.get(&d).map_or_else(|| arity_of(db, d), |x| x.0);
-    let abi = |d: DefId| floops.get(&d).map_or_else(|| abi_of(db, d), |x| x.1.clone());
-    let borrows = |d: DefId| if floops.contains_key(&d) { Vec::new() } else { borrows_of(db, d) };
+    let metadata = CallMetadata::new(db, file, name);
+    let arity = |d| metadata.arity(d);
+    let abi = |d| metadata.abi(d);
+    let borrows = |d| metadata.borrows(d);
     let entry_of = |d: DefId| bounds_entry_of(db, d);
     let result_of = |d: DefId| bounds_result_of(db, d);
     let bce =

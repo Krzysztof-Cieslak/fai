@@ -415,6 +415,14 @@ Daemon, persistence & protocol:
   override for embedding/tests), unbounded for now (GC is future work), and
   benefits **AOT `build`** only (the JIT can't consume objects). Determinism of
   `object_code` (already verified) makes it sound.
+  The fingerprint consumes the **emit-ready primary lowering** (`rc_emit`),
+  including forwarded reuse tokens, spread-parameter local mappings, and whether
+  lifted functions must be exported for a specialized reuse entry. The separate
+  reuse entry's body is not part of the primary key. Call metadata uses the same
+  synthetic-loop arity/ABI overrides as emission, and keys each callee's register
+  transport, scalar/aggregate representation, borrow flags, and result bounds,
+  plus the definition's entry bounds. Stable metadata preserves cache reuse
+  across unrelated callee-body edits.
 - **D57 Daemon concurrency (serialized — superseded by D112):** the daemon
   initially served per-connection threads but serialized **all** database access
   through one `Mutex<Session>` (true serialization, sidestepping salsa's
