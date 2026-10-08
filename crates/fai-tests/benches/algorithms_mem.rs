@@ -37,6 +37,7 @@ mod measure {
     use fai_db::{Db, FaiDatabase};
     use fai_driver::build_native;
     use fai_tests::algorithms::{ALGORITHMS, Algorithm};
+    use fai_tests::benchmark_process::{ExpectedAnswer, spawn_checked};
 
     /// How many times each binary runs. Peak RSS is a deterministic high-water
     /// mark, so a handful of repeats and the maximum absorb any scheduler or
@@ -57,18 +58,19 @@ mod measure {
         // installed — then its rows are simply skipped, like the Rust/Fai split).
         let ocaml = fai_tests::ocaml::baseline();
         for algo in ALGORITHMS {
+            let expected = ExpectedAnswer::for_algorithm(algo);
             let exe = build_fai_binary(algo);
-            let fai = peak_rss(|| Command::new(&exe));
+            let fai = peak_rss(algo.module, "fai", expected, || Command::new(&exe));
             let _ = std::fs::remove_file(&exe);
 
             let size = algo.aot_size.to_string();
-            let rust = peak_rss(|| {
+            let rust = peak_rss(algo.module, "rust", expected, || {
                 let mut cmd = Command::new(baseline);
                 cmd.args([algo.module, size.as_str()]);
                 cmd
             });
             let ocaml = ocaml.map(|exe| {
-                peak_rss(|| {
+                peak_rss(algo.module, "ocaml", expected, || {
                     let mut cmd = Command::new(exe);
                     cmd.args([algo.module, size.as_str()]);
                     cmd
@@ -91,13 +93,19 @@ mod measure {
     /// Runs `make()` `RUNS` times with `FAI_REPORT_RSS` set, parsing the peak RSS
     /// each binary prints to stderr and returning the maximum (the stable peak),
     /// or `None` if no run reported one.
-    fn peak_rss(make: impl Fn() -> Command) -> Option<u64> {
+    fn peak_rss(
+        module: &str,
+        language: &str,
+        expected: ExpectedAnswer,
+        make: impl Fn() -> Command,
+    ) -> Option<u64> {
         let mut peak: Option<u64> = None;
+        let label = format!("{module} {language}");
         for _ in 0..RUNS {
             let mut cmd = make();
             cmd.env("FAI_REPORT_RSS", "1");
-            let output = cmd.output().expect("spawn benchmark binary");
-            assert!(output.status.success(), "benchmark binary exited with {:?}", output.status);
+            let output = spawn_checked(&mut cmd).unwrap_or_else(|error| panic!("{error}"));
+            expected.verify(&label, &output).unwrap_or_else(|error| panic!("{error}"));
             if let Some(kib) = parse_rss(&output.stderr) {
                 peak = Some(peak.map_or(kib, |p| p.max(kib)));
             }

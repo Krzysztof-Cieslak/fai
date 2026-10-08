@@ -23,7 +23,8 @@ use camino::Utf8PathBuf;
 use divan::Bencher;
 use fai_db::{Db, FaiDatabase};
 use fai_driver::build_native;
-use fai_tests::algorithms::{Algorithm, Oracle, by_module};
+use fai_tests::algorithms::{Algorithm, by_module};
+use fai_tests::benchmark_process::{ExpectedAnswer, spawn_checked};
 
 fn main() {
     // The build/link + spawn path is skipped on Windows (see the module docs); on
@@ -59,16 +60,17 @@ fn build_fai_binary(algo: &Algorithm) -> Utf8PathBuf {
 /// Spawns `command` to completion, capturing its output (so nothing reaches the
 /// bench's own stdout) and returning it for `black_box`ing.
 fn spawn(command: &mut Command) -> std::process::Output {
-    command.output().expect("spawn benchmark binary")
+    spawn_checked(command).unwrap_or_else(|error| panic!("{error}"))
 }
 
 /// Times the delivered Fai binary running its baked workload.
 fn bench_fai_binary(bencher: Bencher, module: &str) {
     let algo = by_module(module).expect("registered algorithm");
     let exe = build_fai_binary(algo);
-    // Confirm it runs cleanly once (untimed); exit 0 also means leak-free.
+    // Validate the exact delivered binary and workload, with oracle computation
+    // outside timing. Every later timed process still has its exit checked.
     let first = spawn(&mut Command::new(&exe));
-    assert!(first.status.success(), "{module} fai binary exited with {:?}", first.status);
+    verify(algo, "fai", &first);
     bencher.bench(|| divan::black_box(spawn(&mut Command::new(&exe))));
     let _ = std::fs::remove_file(&exe);
 }
@@ -78,6 +80,8 @@ fn bench_rust_binary(bencher: Bencher, module: &str) {
     let algo = by_module(module).expect("registered algorithm");
     let baseline = env!("CARGO_BIN_EXE_algo-baseline");
     let size = algo.aot_size.to_string();
+    let first = spawn(Command::new(baseline).args([module, size.as_str()]));
+    verify(algo, "rust", &first);
     bencher.bench(|| divan::black_box(spawn(Command::new(baseline).args([module, size.as_str()]))));
 }
 
@@ -95,40 +99,15 @@ fn bench_ocaml_binary(bencher: Bencher, module: &str) {
     // wrong OCaml implementation fails the bench rather than reporting a
     // meaningless timing.
     let first = spawn(Command::new(exe).args([module, size.as_str()]));
-    assert!(first.status.success(), "{module} ocaml binary exited with {:?}", first.status);
-    verify_ocaml(algo, &first.stdout);
+    verify(algo, "ocaml", &first);
     bencher.bench(|| divan::black_box(spawn(Command::new(exe).args([module, size.as_str()]))));
 }
 
-/// Asserts the OCaml baseline's printed output agrees with the Rust oracle at the
-/// AOT size (floats within a tolerance for ocamlopt-vs-LLVM rounding).
-fn verify_ocaml(algo: &Algorithm, stdout: &[u8]) {
-    let printed = std::str::from_utf8(stdout).expect("ocaml output is UTF-8").trim();
-    match algo.oracle {
-        Oracle::Int(f) => {
-            let value: i64 = printed
-                .parse()
-                .unwrap_or_else(|_| panic!("{} ocaml printed an int: {printed:?}", algo.module));
-            assert_eq!(
-                value,
-                f(algo.aot_size),
-                "{} ocaml disagrees with the Rust oracle",
-                algo.module
-            );
-        }
-        Oracle::Float(f) => {
-            let value: f64 = printed
-                .parse()
-                .unwrap_or_else(|_| panic!("{} ocaml printed a float: {printed:?}", algo.module));
-            let expected = f(algo.aot_size);
-            let tolerance = 1e-6 * expected.abs().max(1.0);
-            assert!(
-                (value - expected).abs() < tolerance,
-                "{} ocaml {value} differs from the Rust oracle {expected}",
-                algo.module
-            );
-        }
-    }
+/// Uses the same answer check for every language and the memory suite.
+fn verify(algo: &Algorithm, language: &str, output: &std::process::Output) {
+    ExpectedAnswer::for_algorithm(algo)
+        .verify(&format!("{} {language}", algo.module), output)
+        .unwrap_or_else(|error| panic!("{error}"));
 }
 
 /// Declares a `mod <name> { rust; fai; ocaml }` per algorithm, so the summary

@@ -1569,6 +1569,11 @@ Editor integration:
     remain available, and the named unit/property partition is still checked.
     Intentional benchmark runs use `DIVAN_MAX_TIME=120`, fail on crashes or wrong
     results, and never gate on timings.
+  - **Delivered-binary validation.** Timing and memory suites share answer validation across Fai,
+    Rust, and available OCaml baselines. An untimed AOT run checks the exact
+    workload's answer; every timed subprocess checks its exit status. Memory
+    measurements check both answer and status before reporting, with the oracle
+    computed once outside measurements. Failure output includes stdout/stderr.
   - **Parsing divan, not a new harness.** divan has no machine-readable output,
     so a small in-tree tool (`fai-tests`' `bench_summary` module + `bench-summary`
     bin, unit-tested over a captured fixture) parses its Unicode-tree text. Writing

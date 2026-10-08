@@ -9,6 +9,7 @@
 
 pub mod algorithms;
 pub mod bench_summary;
+pub mod benchmark_process;
 mod checker;
 pub mod ocaml;
 
