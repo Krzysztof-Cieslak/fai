@@ -1,11 +1,8 @@
 module Comments
 
-// Declarations occupy separate layout lines; comments may appear between them.
-// line comment
-(* block comment,
-   spans multiple lines *)
-/// Doc comment — human prose only. Attached to the binding below and surfaced to
-/// the LSP and to `--message-format=json`. (Checked examples/laws are separate
-/// first-class declarations, never comment text.)
-public answer : Int
-let answer = 42
+let values = [
+  // Comments can document individual elements.
+  1, // The comma stays outside this comment.
+  2
+]
+example: List.sum values = 3

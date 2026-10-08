@@ -262,14 +262,18 @@ Syntax front end (lexer, layout, parser, AST, formatter, incremental queries):
    a dangling close delimiter and **no trailing comma** — value lists `[…]`,
    arrays `[| … |]`, records/updates/instances `{ … }`, and a record-type **alias
    body** like `Runtime`; tuples, effect rows, and a record type nested in a
-   signature stay flat; a binding/lambda/arm body that **is or ends in** such a
+    signature stay flat (commented tuples/parentheses may wrap); a binding/lambda/arm body that **is or ends in** such a
    collection keeps its opening delimiter on the `=`/`->` line ("hugged") rather
    than indenting it onto its own line; signature + binding + contracts grouped
    with exactly one blank line between groups; trailing newline). Explicit parens
    and literal spellings are preserved verbatim. (The earlier leading-comma
    sketch was dropped in favor of the trailing-comma, dangling-bracket layout,
    which needs no column-alignment primitive and keeps function application
-   unbroken.)
+    unbroken.) Leading expression comments survive body/block collapsing, and
+    trailing line comments are deferred suffixes: a collection's comma is
+    printed before the suffix, with a required newline before the next element
+    or closing delimiter. Tests preserve comment contents and the parsed shape
+    in addition to checking idempotence.
 - **D33 Front-end queries:** pure cores (`lex`/`layout`/`parse_module`/
   `build_item_tree`) wrapped by thin `#[salsa::tracked]` functions in
   `fai-syntax`. `parse(db, file) -> Arc<ParsedModule>` (AST + attached comments +

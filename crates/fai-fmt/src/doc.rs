@@ -11,6 +11,8 @@
 pub enum Doc {
     /// Literal text (may contain newlines, e.g. a block comment).
     Text(String),
+    /// A line comment printed after pending punctuation, before the next newline.
+    LineSuffix(String),
     /// A space when flat, a newline + indent when broken.
     Line,
     /// Nothing when flat, a newline + indent when broken. Used at the inside
@@ -25,6 +27,17 @@ pub enum Doc {
     Concat(Vec<Doc>),
     /// A group that renders flat if it fits, else broken.
     Group(Box<Doc>),
+}
+
+impl Doc {
+    pub(crate) fn has_line_suffix(&self) -> bool {
+        match self {
+            Self::LineSuffix(_) => true,
+            Self::Concat(docs) => docs.iter().any(Self::has_line_suffix),
+            Self::Nest(_, inner) | Self::Group(inner) => inner.has_line_suffix(),
+            _ => false,
+        }
+    }
 }
 
 /// Literal text.
@@ -70,9 +83,11 @@ pub fn print(doc: &Doc, width: usize) -> String {
     // by the next non-empty `Text` (or a flat `Line`). A line that ends with no
     // text written keeps no trailing spaces.
     let mut pending_indent: Option<usize> = None;
+    let mut suffixes = Vec::new();
     let mut stack: Vec<(usize, Mode, &Doc)> = vec![(0, Mode::Break, doc)];
     while let Some((indent, mode, doc)) = stack.pop() {
         match doc {
+            Doc::LineSuffix(s) => suffixes.push(s.as_str()),
             Doc::Text(s) => {
                 if !s.is_empty() {
                     flush_indent(&mut out, &mut pending_indent);
@@ -89,6 +104,12 @@ pub fn print(doc: &Doc, width: usize) -> String {
                 }
             }
             Doc::Nest(n, inner) => stack.push((indent + n, mode, inner)),
+            Doc::Line if !suffixes.is_empty() => {
+                flush_suffixes(&mut out, &mut suffixes, indent);
+                out.push('\n');
+                pending_indent = Some(indent);
+                col = indent;
+            }
             Doc::Line => match mode {
                 Mode::Flat => {
                     flush_indent(&mut out, &mut pending_indent);
@@ -101,6 +122,12 @@ pub fn print(doc: &Doc, width: usize) -> String {
                     col = indent;
                 }
             },
+            Doc::Softline if !suffixes.is_empty() => {
+                flush_suffixes(&mut out, &mut suffixes, indent);
+                out.push('\n');
+                pending_indent = Some(indent);
+                col = indent;
+            }
             Doc::Softline => match mode {
                 Mode::Flat => {}
                 Mode::Break => {
@@ -110,6 +137,7 @@ pub fn print(doc: &Doc, width: usize) -> String {
                 }
             },
             Doc::Hardline => {
+                flush_suffixes(&mut out, &mut suffixes, indent);
                 out.push('\n');
                 pending_indent = Some(indent);
                 col = indent;
@@ -121,7 +149,20 @@ pub fn print(doc: &Doc, width: usize) -> String {
             }
         }
     }
+    flush_suffixes(&mut out, &mut suffixes, 0);
     out
+}
+
+fn flush_suffixes(out: &mut String, suffixes: &mut Vec<&str>, indent: usize) {
+    for (i, suffix) in suffixes.drain(..).enumerate() {
+        if i == 0 {
+            out.push(' ');
+        } else {
+            out.push('\n');
+            out.extend(std::iter::repeat_n(' ', indent));
+        }
+        out.push_str(suffix);
+    }
 }
 
 /// Writes any deferred line indentation before real text is emitted.
@@ -150,6 +191,12 @@ fn fits(mut remaining: i32, doc: &Doc, rest: &[(usize, Mode, &Doc)]) -> bool {
             },
         };
         match doc {
+            Doc::LineSuffix(s) => {
+                remaining -= s.chars().count() as i32 + 1;
+                if remaining < 0 {
+                    return false;
+                }
+            }
             Doc::Text(s) => {
                 if s.contains('\n') {
                     return true;

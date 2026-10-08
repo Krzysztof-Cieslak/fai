@@ -15,7 +15,7 @@ use fai_syntax::ast::{
     EffectAnnot, ExprId, ExprKind, FieldInit, FieldPat, FieldType, Item, ItemId, ItemKind, LetStmt,
     MethodImpl, MethodSig, Module, PatId, PatKind, RowTail, TypeDef, TypeId, TypeKind, Visibility,
 };
-use fai_syntax::{Comment, CommentMap, NodeId, Symbol, attach_comments};
+use fai_syntax::{Comment, CommentKind, CommentMap, NodeId, Symbol, attach_comments};
 
 /// The canonical line width.
 const WIDTH: usize = 100;
@@ -255,18 +255,21 @@ impl Printer<'_> {
     /// A binding/lambda body: a forced-multiline block, or an inline-or-broken
     /// expression in its own group.
     fn body_doc(&self, id: ExprId) -> Doc {
-        if let Some((stmts, tail)) = self.multiline_block(id) {
-            return nest(2, concat(vec![Doc::Hardline, self.block_inner(stmts, tail)]));
+        if self.multiline_block(id).is_some() {
+            return nest(2, concat(vec![Doc::Hardline, self.expr_doc(id)]));
         }
         let collapsed = self.collapsed(id);
         // A body that is (or ends in) a collection literal keeps its opening
         // delimiter on the `=` line and lets the literal's own group wrap — so
         // `let xs = [ … ]` stays hugged rather than pushing the `[` to its own
         // indented line.
-        if self.hugs_delimiter(collapsed) {
-            return concat(vec![text(" "), self.expr_doc(collapsed)]);
+        if self.hugs_delimiter(collapsed)
+            && self.map.leading(NodeId::Expr(id)).is_empty()
+            && self.map.leading(NodeId::Expr(collapsed)).is_empty()
+        {
+            return concat(vec![text(" "), self.expr_doc(id)]);
         }
-        group(nest(2, concat(vec![Doc::Line, self.expr_doc(collapsed)])))
+        group(nest(2, concat(vec![Doc::Line, self.expr_doc(id)])))
     }
 
     /// Whether an expression is a collection/record/instance literal, or an
@@ -286,10 +289,10 @@ impl Printer<'_> {
 
     /// An `if` branch: shares the `if`'s break decision (no inner group).
     fn branch_doc(&self, id: ExprId) -> Doc {
-        if let Some((stmts, tail)) = self.multiline_block(id) {
-            return nest(2, concat(vec![Doc::Hardline, self.block_inner(stmts, tail)]));
+        if self.multiline_block(id).is_some() {
+            return nest(2, concat(vec![Doc::Hardline, self.expr_doc(id)]));
         }
-        nest(2, concat(vec![Doc::Line, self.expr_doc(self.collapsed(id))]))
+        nest(2, concat(vec![Doc::Line, self.expr_doc(id)]))
     }
 
     /// The statements and tail of a block with at least one local `let`. A block
@@ -331,15 +334,10 @@ impl Printer<'_> {
     }
 
     fn expr_doc(&self, id: ExprId) -> Doc {
-        let core = self.expr_core(id);
-        let trailing = self.trailing_docs(NodeId::Expr(id));
-        if trailing.is_empty() {
-            core
-        } else {
-            let mut parts = vec![core];
-            parts.extend(trailing);
-            concat(parts)
-        }
+        let mut parts = self.leading_docs(NodeId::Expr(id));
+        parts.push(self.expr_core(id));
+        parts.extend(self.trailing_docs(NodeId::Expr(id)));
+        concat(parts)
     }
 
     /// The bare operator lexeme held in an operator `Var` node (used to render an
@@ -349,6 +347,22 @@ impl Printer<'_> {
             ExprKind::Var(s) => s.as_str(),
             _ => "?",
         }
+    }
+
+    fn op_doc(&self, op: ExprId) -> Doc {
+        let mut parts = self.leading_docs(NodeId::Expr(op));
+        parts.push(text(self.op_text(op)));
+        parts.extend(self.trailing_docs(NodeId::Expr(op)));
+        concat(parts)
+    }
+
+    fn has_comments(&self, id: ExprId) -> bool {
+        let span = self.module.expr(id).span;
+        !self.map.leading(NodeId::Expr(id)).is_empty()
+            || !self.map.trailing(NodeId::Expr(id)).is_empty()
+            || self.comments.iter().any(|comment| {
+                span.start() <= comment.range.start() && comment.range.end() <= span.end()
+            })
     }
 
     fn expr_core(&self, id: ExprId) -> Doc {
@@ -365,11 +379,13 @@ impl Printer<'_> {
             }
             ExprKind::Infix { op, lhs, rhs } => concat(vec![
                 self.expr_doc(*lhs),
-                text(format!(" {} ", self.op_text(*op))),
+                text(" "),
+                self.op_doc(*op),
+                text(" "),
                 self.expr_doc(*rhs),
             ]),
             ExprKind::Prefix { op, operand } => {
-                concat(vec![text(self.op_text(*op).to_owned()), self.expr_doc(*operand)])
+                concat(vec![self.op_doc(*op), self.expr_doc(*operand)])
             }
             ExprKind::If { .. } => self.if_doc(id),
             ExprKind::Lambda { params, body } => {
@@ -383,13 +399,16 @@ impl Printer<'_> {
                 concat(parts)
             }
             ExprKind::Match { .. } => self.match_doc(id),
-            ExprKind::Block { .. } => self.body_doc(id),
+            ExprKind::Block { stmts, tail } => self.block_inner(stmts, *tail),
             ExprKind::Field { base, field } => {
                 concat(vec![self.expr_doc(*base), text("."), text(field.as_str())])
             }
             ExprKind::Record(fields) => self.record_literal_doc(None, fields),
             ExprKind::RecordUpdate { base, fields } => self.record_literal_doc(Some(*base), fields),
             ExprKind::Instance { name, methods } => self.instance_doc(*name, methods),
+            ExprKind::Paren(inner) if self.has_comments(*inner) => {
+                collection(text("("), vec![self.expr_doc(*inner)], None, ")", false)
+            }
             ExprKind::Paren(inner) => concat(vec![text("("), self.expr_doc(*inner), text(")")]),
             ExprKind::Tuple(xs) => self.delimited("(", ")", xs),
             ExprKind::List(xs) => self.list_literal_doc(xs),
@@ -402,8 +421,10 @@ impl Printer<'_> {
         let ExprKind::If { cond, then_branch, else_branch } = &self.module.expr(id).kind else {
             unreachable!("if_doc on a non-if expression");
         };
-        let else_tail = if matches!(self.module.expr(*else_branch).kind, ExprKind::If { .. }) {
-            concat(vec![text(" "), self.if_doc(*else_branch)])
+        let else_tail = if matches!(self.module.expr(*else_branch).kind, ExprKind::If { .. })
+            && self.map.leading(NodeId::Expr(*else_branch)).is_empty()
+        {
+            concat(vec![text(" "), self.expr_doc(*else_branch)])
         } else {
             self.branch_doc(*else_branch)
         };
@@ -466,6 +487,15 @@ impl Printer<'_> {
     fn delimited(&self, open: &str, close: &str, xs: &[ExprId]) -> Doc {
         if xs.is_empty() {
             return text(format!("{open}{close}"));
+        }
+        if xs.iter().any(|&x| self.has_comments(x)) {
+            return collection(
+                text(open),
+                xs.iter().map(|&x| self.expr_doc(x)).collect(),
+                None,
+                close,
+                false,
+            );
         }
         let mut parts = vec![text(open.to_owned())];
         for (index, &x) in xs.iter().enumerate() {
@@ -719,7 +749,13 @@ impl Printer<'_> {
         self.map
             .trailing(node)
             .iter()
-            .map(|&id| text(format!(" {}", self.comment_text(id))))
+            .map(|&id| {
+                if self.comments[id].kind == CommentKind::Block {
+                    text(format!(" {}", self.comment_text(id)))
+                } else {
+                    Doc::LineSuffix(self.comment_text(id).to_owned())
+                }
+            })
             .collect()
     }
 
@@ -757,7 +793,10 @@ fn edge(padded: bool) -> Doc {
 /// first line (e.g. `{ base with`); `tail` is an optional non-comma trailer (a
 /// record type's row variable). Callers handle the empty case.
 fn collection(open: Doc, items: Vec<Doc>, tail: Option<Doc>, close: &str, padded: bool) -> Doc {
-    let mut inner = vec![edge(padded)];
+    let commented =
+        items.iter().any(Doc::has_line_suffix) || tail.as_ref().is_some_and(Doc::has_line_suffix);
+    let boundary = || if commented { Doc::Hardline } else { edge(padded) };
+    let mut inner = vec![boundary()];
     for (index, item) in items.into_iter().enumerate() {
         if index > 0 {
             inner.push(text(","));
@@ -769,7 +808,7 @@ fn collection(open: Doc, items: Vec<Doc>, tail: Option<Doc>, close: &str, padded
         inner.push(Doc::Line);
         inner.push(tail);
     }
-    group(concat(vec![open, nest(2, concat(inner)), edge(padded), text(close)]))
+    group(concat(vec![open, nest(2, concat(inner)), boundary(), text(close)]))
 }
 
 fn visibility_prefix(visibility: Visibility) -> &'static str {

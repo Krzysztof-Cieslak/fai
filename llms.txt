@@ -198,6 +198,10 @@ Comments (three forms):
 are prose only; checked facts go in `example`/`forall` declarations, never in
 comments.
 
+`fai fmt` preserves comments within expressions. A collection comma stays before
+its trailing `//` comment; commented tuples and parentheses can wrap to keep the
+following element and closing delimiter outside the comment.
+
 ---
 
 ## 5. Modules and visibility

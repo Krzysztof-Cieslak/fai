@@ -14,6 +14,114 @@ fn fmt(src: &str) -> String {
     fai_fmt::format(&parsed.module, &parsed.comments, src)
 }
 
+#[track_caller]
+fn comments_roundtrip(src: &str) -> String {
+    let before = parse_module(SourceId::new(0), src);
+    assert!(before.diagnostics.is_empty(), "{:?}", before.diagnostics);
+    let out = fmt(src);
+    let after = parse_module(SourceId::new(0), &out);
+    assert!(after.diagnostics.is_empty(), "{out}\n{:?}", after.diagnostics);
+    let contents = |parsed: &fai_syntax::Parsed, source: &str| {
+        let mut texts: Vec<_> = parsed
+            .comments
+            .iter()
+            .map(|c| {
+                source[c.range.start().to_usize()..c.range.end().to_usize()].trim_end().to_owned()
+            })
+            .collect();
+        texts.sort();
+        texts
+    };
+    assert_eq!(contents(&before, src), contents(&after, &out), "{out}");
+    assert_eq!(shape(&before.module), shape(&after.module), "{out}");
+    assert_eq!(fmt(&out), out, "formatting must be idempotent");
+    out
+}
+
+#[test]
+fn leading_list_element_comment_survives() {
+    let out = comments_roundtrip("module M\nlet xs = [\n  // first🌍\n  1, 2\n]\n");
+    assert!(out.contains("// first🌍\n"));
+}
+
+#[test]
+fn trailing_list_comment_does_not_swallow_the_comma() {
+    let out = comments_roundtrip("module M\nlet xs = [1, // first\n  2]\n");
+    assert!(out.contains("1, // first\n"), "{out}");
+}
+
+#[test]
+fn final_array_comment_does_not_swallow_the_delimiter() {
+    comments_roundtrip("module M\nlet xs = [| 1, 2 // last\n|]\n");
+}
+
+#[test]
+fn tuple_element_comments_roundtrip() {
+    comments_roundtrip("module M\nlet pair = (1, // left\n  (* right *) 2)\n");
+}
+
+#[test]
+fn comments_follow_sorted_record_fields() {
+    comments_roundtrip("module M\nlet record = { z = 1, // z\n  // a\n  a = 2 }\n");
+}
+
+#[test]
+fn comments_survive_local_bindings_and_tail_blocks() {
+    comments_roundtrip(
+        "module M\nlet run u =\n  // local\n  let value = 1 // initializer\n  // tail\n  value\n",
+    );
+}
+
+#[test]
+fn comments_survive_both_conditional_branches() {
+    comments_roundtrip(
+        "module M\nlet value =\n  if true then\n    // yes\n    1\n  else\n    // no\n    2\n",
+    );
+}
+
+#[test]
+fn multiple_trailing_comments_remain_distinct() {
+    comments_roundtrip("module M\nlet value = 1 // first\n// second\n// third\n");
+}
+
+#[test]
+fn multiline_block_comment_contents_survive() {
+    comments_roundtrip("module M\nlet xs = [\n  (* 🌍\n  nested (* inner *) *)\n  1, 2]\n");
+}
+
+#[test]
+fn an_operator_trailing_comment_survives() {
+    comments_roundtrip("module M\nlet value = (1 + // sum\n  2)\n");
+}
+
+#[test]
+fn an_instance_method_body_keeps_its_comments() {
+    comments_roundtrip(
+        "module M\ninterface I = run : Int -> Int\nlet instance = { I with run x =\n  // body\n  x }\n",
+    );
+}
+
+#[test]
+fn parenthesized_comments_keep_their_attachments() {
+    comments_roundtrip("module M\nlet value = (\n  (* first *)\n  1 // last\n)\n");
+}
+
+mod comment_proptests {
+    use super::*;
+
+    proptest! {
+        #[test]
+        fn list_comments_preserve_syntax_and_contents(values in prop::collection::vec(-999i32..1000, 1..20)) {
+            let mut source = "module M\nlet xs = [\n".to_owned();
+            for (i, value) in values.iter().enumerate() {
+                source.push_str(&format!("  // before {i}🌍\n  {value}{} // after {i}\n", if i + 1 == values.len() { "" } else { "," }));
+            }
+            source.push_str("]\n");
+            comments_roundtrip(&source);
+        }
+    }
+}
+
 /// Persist proptest counterexamples in a committed, crate-local
 /// `proptest-regressions/` directory. proptest's source-parallel default cannot
 /// locate a crate root for integration tests, so it would otherwise drop the

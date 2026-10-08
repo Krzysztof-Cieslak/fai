@@ -809,6 +809,9 @@ it was dropped).
   not hide the rest.
 - Trailing significant tokens after a declaration are **`FAI1020`**, never
   silently discarded. `fai fmt` leaves files with parse errors untouched.
+- Formatting preserves nested expression comments. Collection separators print
+  before trailing line comments, and commented tuples/parentheses may wrap so
+  comments cannot absorb punctuation or closing delimiters.
 
 ## 11. Extending the compiler
 
