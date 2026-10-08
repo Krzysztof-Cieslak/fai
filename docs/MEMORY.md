@@ -3493,7 +3493,14 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   atomic uniqueness check, and `fai_reuse` resets a recycled cell back to the
   single-threaded state. All runtime reference-count sites funnel through shared
   `rc_inc`/`rc_dec_is_dead` helpers, so the polymorphic and builtin paths count
-  correctly regardless of a value's state. **Gating:** this is keyed (at code
+  correctly regardless of a value's state. Every runtime count inspection,
+  including marking and copy-on-write uniqueness checks, uses a **relaxed atomic
+  load** before choosing the local/shared/immortal path. Reading the marker with
+  a plain load would race with shared atomic updates. Plain stores remain only
+  for thread-local counts, initialization before publication, and reconstruction
+  after the final release/acquire. Focused Miri tests cover concurrent count churn,
+  re-marking, copy-on-write, immortal values, and reuse followed by republication.
+  **Gating:** this is keyed (at code
   generation) on whether a program uses concurrency at all — a program with no
   `Concurrency` in any reachable effect row keeps today's exact non-atomic inline
   reference counting, so single-threaded code and the benchmarks are unaffected (the
