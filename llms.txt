@@ -280,6 +280,10 @@ let reversed = List.foldl (fun acc x -> x :: acc) [] xs   // multi-arg: fun acc 
 **Local bindings use layout** — a run of `let` lines, then a result expression. No
 `in`:
 
+Each declaration must end at its layout boundary. Adjacent declarations on the
+same line or stray trailing tokens are `FAI1020`; `fai fmt` rejects the file and
+leaves its contents untouched.
+
 ```fai
 public hypotenuse : Float -> Float -> Float
 let hypotenuse a b =

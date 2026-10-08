@@ -119,6 +119,35 @@ fn formatter_preserves_a_file_with_an_invalid_unicode_escape() {
     assert_eq!(std::fs::read_to_string(dir.join("Bad.fai")).unwrap(), src);
 }
 
+#[track_caller]
+fn assert_trailing_tokens_preserved(name: &str, source: &str) {
+    let dir = workspace(name, &[("Bad.fai", source)]);
+    let output = fai()
+        .args(["fmt", "--no-daemon", "--message-format=json", "-C"])
+        .arg(&dir)
+        .arg("Bad.fai")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(result["changed"].as_array().unwrap().is_empty());
+    assert!(result["diagnostics"].as_array().unwrap().iter().any(|d| d["code"] == "FAI1020"));
+    assert_eq!(std::fs::read_to_string(dir.join("Bad.fai")).unwrap(), source);
+}
+
+#[test]
+fn formatter_keeps_a_same_line_declaration_in_the_original_file() {
+    assert_trailing_tokens_preserved("trailing-declaration", "module Bad\nlet x = 1 let y = 2\n");
+}
+
+#[test]
+fn formatter_keeps_a_stray_delimiter_in_a_nested_module() {
+    assert_trailing_tokens_preserved(
+        "trailing-nested",
+        "module Bad\nmodule Inner =\n  let x = \"é😀\" )\n",
+    );
+}
+
 #[test]
 fn no_examples_flag_restores_a_pure_type_check() {
     // The example is false, but `--no-examples` skips evaluating it, so the

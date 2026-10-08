@@ -216,6 +216,11 @@ Syntax front end (lexer, layout, parser, AST, formatter, incremental queries):
   added later). The binding `=` is consumed by the declaration parser, so `=`
   in expressions is always equality. **Error nodes in every category** with
   multi-level recovery (synchronize on layout `Sep`/`Close` and item keywords).
+  A successful declaration must end at a layout boundary; trailing significant
+  tokens are reported as `FAI1020` before recovery discards them. This applies to
+  nested modules, local bindings, and interface methods as well as file-level
+  declarations. The formatter refuses such malformed files without overwriting
+  them, and recovery still parses later declarations.
   `public` is accepted on signature and binding items; sig↔binding association and
   the "public needs a signature" rule belong to name resolution and the type
   system. A reserved-but-unimplemented construct (`type`, records, `match`,

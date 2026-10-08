@@ -734,6 +734,8 @@ it was dropped).
   code.
 - Parsing **recovers** and reports multiple errors per run; one mistake should
   not hide the rest.
+- Trailing significant tokens after a declaration are **`FAI1020`**, never
+  silently discarded. `fai fmt` leaves files with parse errors untouched.
 
 ## 11. Extending the compiler
 
