@@ -2742,13 +2742,9 @@ impl<M: Module> Translator<'_, M> {
         let f = self.runtime(symbol, op.arity(), true);
         let call = self.builder.ins().call(f, &vals);
         let result = self.builder.inst_results(call)[0];
-        // A primitive that yields a scalar `Float` through the uniform runtime ABI
-        // (`arrayGet` of a `Float` element) returns a boxed word; unbox it to the
-        // `f64` an unboxed-`Float` context expects, mirroring the result coercion a
-        // direct call applies to a generic callee's boxed `Float`. This matters once
-        // such a primitive appears at a monomorphic-`Float` call site (an inlined
-        // `Array.unsafeGet` on an `Array Float`). `Int` needs no coercion — raw and
-        // tagged are both `i64`, so there is no Cranelift type mismatch.
+        // Float consumers use F64 machine values. An Int result remains a tagged
+        // runtime word until its consumer converts it at a binding, merge, or
+        // ABI boundary; its lack of a raw-int marker records that distinction.
         if matches!(result_ty, Ty::Con(Con::Float)) && !self.is_f64(result) {
             self.owning_unbox(result)
         } else {
@@ -2760,7 +2756,8 @@ impl<M: Module> Translator<'_, M> {
     ///
     /// A **raw** foreign (a built-in host capability) boxes each operand into the
     /// uniform value ABI and calls the symbol out-of-line — the same generic path a
-    /// non-inline primitive uses (a scalar-`Float` result is unboxed, mirroring it).
+    /// non-inline primitive uses (a scalar `Float` result is unboxed; an `Int`
+    /// remains tagged until its consumer requires a raw value).
     ///
     /// A **marshalled** foreign (a user `foreign`) converts each operand and the
     /// result between the Fai value and a plain native type (see
@@ -5562,13 +5559,9 @@ impl<M: Module> Translator<'_, M> {
             None if self.niche_of(ev).is_some() => self.ensure_boxed(ev),
             None => ev,
         };
-        // The two branches share a type, so they share a representation — except a
-        // desugared `match`'s unreachable fall-through (`<error>`), which is a bare
-        // word; reinterpret it to the merge type (its value is never observed). The
-        // raw-int distinction is the same Cranelift `I64` type, so it needs no
-        // bitcast here — the merge parameter's raw-ness is recorded from the then
-        // value.
-        let ev = self.coerce_repr(ev, merge_ty);
+        // Reconcile tagged versus raw integers too: equal Cranelift types do not
+        // imply equal representations. The error fallthrough is never observed.
+        let ev = self.coerce_repr(ev, merge_ty, merge_raw);
         self.builder.ins().jump(merge_b, &[ev.into()]);
 
         self.builder.switch_to_block(merge_b);
@@ -5585,13 +5578,19 @@ impl<M: Module> Translator<'_, M> {
         result
     }
 
-    /// Reinterprets `v`'s bits to Cranelift type `ty` if they differ. Used only to
-    /// reconcile a desugared `match`'s unreachable `<error>` fall-through with a
-    /// branch/loop merge of a different representation; the value is never read.
-    fn coerce_repr(&mut self, v: Value, ty: types::Type) -> Value {
+    /// Reconciles a value with a branch/loop merge representation. Integer tag
+    /// conversions apply even when both machine types are `I64`; a bitcast
+    /// between machine types is only needed for an unreachable error fallthrough.
+    fn coerce_repr(&mut self, v: Value, ty: types::Type, raw_int: bool) -> Value {
         let vt = self.builder.func.dfg.value_type(v);
         if vt == ty {
-            v
+            if raw_int {
+                self.as_raw_int(v)
+            } else if self.is_raw_int(v) {
+                self.ensure_boxed(v)
+            } else {
+                v
+            }
         } else if ty == types::F64 {
             self.i64_to_f64(v)
         } else {
@@ -5709,7 +5708,8 @@ impl<M: Module> Translator<'_, M> {
             };
             let exit_ty = self.builder.func.dfg.block_params(exit)[0];
             let exit_ty = self.builder.func.dfg.value_type(exit_ty);
-            self.coerce_repr(v, exit_ty)
+            let exit_raw = self.loop_ctx.as_ref().is_some_and(|c| c.exit_raw);
+            self.coerce_repr(v, exit_ty, exit_raw)
         };
         self.builder.ins().jump(exit, &[v.into()]);
     }

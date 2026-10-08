@@ -291,6 +291,127 @@ fn unmatched_pattern_fallthrough_emits_a_trap() {
     assert!(ir.contains("trap user1"), "unmatched input must trap: {ir}");
 }
 
+#[track_caller]
+fn assert_runtime_int(body: &str, expected: &str) {
+    let source = formatdoc! {r#"
+        module M
+        public main : Runtime -> Unit / {{ Console }}
+        let main runtime =
+          let value = {body}
+          runtime.console.writeLine (Int.toString value)
+    "#};
+    let (code, out) = run(&source);
+    assert_eq!((code, out.trim()), (0, expected));
+}
+
+#[test]
+fn runtime_int_branch_untags_the_else_result() {
+    assert_runtime_int(
+        "if Bytes.isEmpty (Bytes.fromString \"a\") then 0 else Bytes.unsafeGet 0 (Bytes.fromString \"a\")",
+        "97",
+    );
+}
+
+#[test]
+fn runtime_int_branch_preserves_the_raw_else_result() {
+    assert_runtime_int(
+        "if Bytes.isEmpty (Bytes.fromString \"a\") then Bytes.length (Bytes.fromString \"xyz\") else 43",
+        "43",
+    );
+}
+
+#[test]
+fn runtime_int_string_length_in_a_conditional() {
+    assert_runtime_int("if false then 0 else String.length \"é😀\"", "2");
+}
+
+#[test]
+fn runtime_int_char_code_in_a_conditional() {
+    assert_runtime_int("if false then 0 else Char.toCode 'a'", "97");
+}
+
+#[test]
+fn runtime_int_tail_loop_exit_untags_a_primitive() {
+    let source = indoc! {r#"
+        module M
+        get : Int -> Bytes -> Int
+        let get n bytes =
+          if n < 0 then 0
+          else if n = 0 then Bytes.length bytes
+          else get (n - 1) bytes
+        public main : Runtime -> Unit / { Console }
+        let main runtime =
+          runtime.console.writeLine (Int.toString (get 4 (Bytes.fromString "abc")))
+    "#};
+    assert_eq!(run(source), (0, "3\n".into()));
+}
+
+#[test]
+fn runtime_int_tail_loop_exit_preserves_a_raw_alternative() {
+    let source = indoc! {r#"
+        module M
+        get : Int -> Bytes -> Int
+        let get n bytes =
+          if n = 0 then Bytes.length bytes
+          else if n < 0 then 43
+          else get (n - 1) bytes
+        public main : Runtime -> Unit / { Console }
+        let main runtime =
+          runtime.console.writeLine (Int.toString (get (-1) (Bytes.fromString "abc")))
+    "#};
+    assert_eq!(run(source), (0, "43\n".into()));
+}
+
+#[test]
+fn runtime_int_first_class_call_preserves_a_raw_branch() {
+    let source = indoc! {r#"
+        module M
+        choose : Bool -> Bytes -> Int
+        let choose flag bytes = if flag then Bytes.length bytes else 43
+        let apply f = f false (Bytes.fromString "abc")
+        public main : Runtime -> Unit / { Console }
+        let main runtime = runtime.console.writeLine (Int.toString (apply choose))
+    "#};
+    assert_eq!(run(source), (0, "43\n".into()));
+}
+
+#[track_caller]
+fn assert_host_int_result(arguments: &str, expected: &str) {
+    let source = formatdoc! {r#"
+        module M
+        foreign "fai_int_add" hostAdd : Int -> Int -> Int / {{ Clock }}
+        public main : Runtime -> Unit / {{ Console, Clock }}
+        let main runtime =
+          let value = if false then 0 else hostAdd {arguments}
+          runtime.console.writeLine (Int.toString value)
+    "#};
+    let (code, out) = run_std(&source);
+    assert_eq!((code, out.trim()), (0, expected));
+}
+
+#[test]
+fn runtime_int_host_result_unboxes_large_positive_values() {
+    assert_host_int_result("4611686018427387904 1", "4611686018427387905");
+}
+
+#[test]
+fn runtime_int_host_result_unboxes_large_negative_values() {
+    assert_host_int_result("(0 - 4611686018427387904) (0 - 2)", "-4611686018427387906");
+}
+
+#[test]
+fn runtime_int_merge_boxes_a_large_raw_alternative() {
+    let source = indoc! {r#"
+        module M
+        foreign "fai_int_add" hostAdd : Int -> Int -> Int / { Clock }
+        public main : Runtime -> Unit / { Console, Clock }
+        let main runtime =
+          let value = if false then hostAdd 1 2 else 4611686018427387905
+          runtime.console.writeLine (Int.toString value)
+    "#};
+    assert_eq!(run_std(source), (0, "4611686018427387905\n".into()));
+}
+
 #[test]
 fn hello_world() {
     let src = main_printing("\"Hello, Fai!\"");

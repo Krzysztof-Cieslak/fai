@@ -79,7 +79,8 @@ use crate::backend::{abi_of, arity_of, object_code, symbol_base};
 /// reconstructs), changing the primary object's symbol linkage. The `error-trap`
 /// token marks unreachable error nodes trapping instead of fabricating a value.
 /// `checked-array-capacity` guards allocation/growth sizes and consumes boxed capacities.
-const CODEGEN_CONFIG: &str = "opt=speed;int-prims-inlined;reg-direct-call;divrem-inlined;scalar-float-fields;early-drop;poly-cmp-inlined;array-access-inlined;hash-inlined;bounds-check-elim;result-bounds;array-float-unboxed;spread-aggregate;array-tag-hoisted;reuse-lambda-export;error-trap;checked-array-capacity";
+/// `int-merge-repr` reconciles tagged and raw integers at branch and loop merges.
+const CODEGEN_CONFIG: &str = "opt=speed;int-prims-inlined;reg-direct-call;divrem-inlined;scalar-float-fields;early-drop;poly-cmp-inlined;array-access-inlined;hash-inlined;bounds-check-elim;result-bounds;array-float-unboxed;spread-aggregate;array-tag-hoisted;reuse-lambda-export;error-trap;checked-array-capacity;int-merge-repr";
 
 /// An explicit cache-directory override (set by embedders/tests), taking
 /// precedence over `$FAI_CACHE_DIR`. `None` (the default) falls back to the

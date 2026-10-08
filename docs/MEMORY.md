@@ -2268,6 +2268,11 @@ Editor integration:
     static type** at branch/loop merges (a desugared `match` types its arms
     `Error`), and `define_var` is the single coercion point reconciling a value
     with its target local's representation.
+    Branch and loop merges also reconcile the raw-integer marker, not just the
+    machine type: a tagged result entering a raw merge is untagged/unboxed, and a
+    raw integer entering a uniform merge is tagged/boxed. Runtime-returned
+    integers may remain uniform until a consumer requires a raw value, avoiding
+    an unnecessary unbox/rebox when they flow straight into another uniform slot.
   - **Calling convention — register ABI only.** `Int` parameters and results are
     untagged only on the **register (direct-call) ABI**, where a direct caller
     receives them raw and skips the round-trip. Uniform (row-polymorphic / nullary)
