@@ -94,6 +94,19 @@ fn an_unused_effectful_local_function_keeps_a_contract_pure() {
 }
 
 #[test]
+fn wrapping_a_live_property_binder_in_some_preserves_its_value() {
+    let source = "module M\nforall x: Option.withDefault 0 (Some x) = x\n";
+    let dir = workspace("niche-payload", &[("M.fai", source)]);
+    let output = fai().args(["test", "--no-daemon", "-C"]).arg(dir).arg("M.fai").output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn user_option_type_gets_its_own_constructor_generator() {
     let source = indoc! {r#"
         module Main

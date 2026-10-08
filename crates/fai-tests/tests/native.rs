@@ -89,6 +89,22 @@ fn unique_dir() -> PathBuf {
     ))
 }
 
+#[test]
+fn niche_construction_preserves_uniform_integer_aliases() {
+    let library = "module Lib\npublic same : { tag : Int | _ } -> Int -> Bool\nlet same r x = r.tag = 0 && Option.withDefault 0 (Some x) = x\n";
+    let main = "module Main\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (if Lib.same { tag = 0 } 0 && Lib.same { tag = 0 } 9223372036854775807 then \"ok\" else \"failed\")\n";
+    assert_eq!(
+        build_and_run_files(&[("Lib.fai", library), ("Main.fai", main)]),
+        ("ok\n".into(), Some(0))
+    );
+}
+
+#[test]
+fn niche_construction_preserves_native_string_aliases() {
+    let source = "module Main\nkeep : String -> Bool\nlet keep x = Option.withDefault \"\" (Some x) = x\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (if keep \"hello\" then \"ok\" else \"failed\")\n";
+    assert_eq!(build_and_run(source), ("ok\n".into(), Some(0)));
+}
+
 /// Builds a multi-file program (entry is `Main.fai`) and runs it.
 fn build_and_run_files(files: &[(&str, &str)]) -> (String, Option<i32>) {
     let dir = unique_dir();
