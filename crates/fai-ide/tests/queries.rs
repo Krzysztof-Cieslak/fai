@@ -58,6 +58,63 @@ fn def_snapshot() {
 }
 
 #[test]
+fn cli_positions_count_unicode_scalars_before_a_definition() {
+    let mut db = FaiDatabase::new();
+    db.add_source("Unicode.fai".into(), "module Unicode\n(* é😀 *)let answer = 42\n".into());
+    let result = def(&db, "Unicode.fai:2:9", &DbSpanResolver::new(&db));
+    assert_eq!(result.target.expect("definition after the Unicode comment").name, "answer");
+}
+
+#[test]
+fn a_diagnostic_position_can_be_reused_as_a_query_target() {
+    use fai_span::SpanResolver;
+
+    let mut db = FaiDatabase::new();
+    fai_types::std_lib::load_std(&mut db);
+    let id = db.add_source(
+        "Unicode.fai".into(),
+        "module Unicode\n(* é😀 *)public let answer = 42\n".into(),
+    );
+    let file = db.source_file(id).unwrap();
+    let diagnostics = fai_types::check_file::accumulated::<fai_db::Diag>(&db, file);
+    let diagnostic = diagnostics.iter().find(|d| d.0.code.as_str() == "FAI3003").unwrap();
+    let resolver = DbSpanResolver::new(&db);
+    let location = resolver.resolve(diagnostic.0.primary).unwrap();
+    let target = format!("{}:{}:{}", location.path, location.start.line, location.start.column);
+    assert_eq!(def(&db, &target, &resolver).target.unwrap().name, "answer");
+}
+
+#[test]
+fn zero_query_columns_are_rejected() {
+    let (db, _) = workspace();
+    assert!(def(&db, "A.fai:3:0", &DbSpanResolver::new(&db)).target.is_none());
+}
+
+#[test]
+fn query_columns_past_eol_do_not_select_the_following_definition() {
+    let mut db = FaiDatabase::new();
+    db.add_source("M.fai".into(), "module M\nlet first = 1\nlet next = 2\n".into());
+    assert!(def(&db, "M.fai:2:1000", &DbSpanResolver::new(&db)).target.is_none());
+}
+
+#[test]
+fn unicode_position_edits_match_clean_query_results() {
+    let before = "module M\n(* é *)let value = 42\n";
+    let after = "module M\n(* 😀é *)let value = 42\n";
+    let mut db = FaiDatabase::new();
+    db.add_source("M.fai".into(), before.into());
+    assert_eq!(def(&db, "M.fai:2:8", &DbSpanResolver::new(&db)).target.unwrap().name, "value");
+    db.add_source("M.fai".into(), after.into());
+    assert!(def(&db, "M.fai:2:8", &DbSpanResolver::new(&db)).target.is_none());
+    let mut clean = FaiDatabase::new();
+    clean.add_source("M.fai".into(), after.into());
+    assert_eq!(
+        json(&def(&db, "M.fai:2:9", &DbSpanResolver::new(&db))),
+        json(&def(&clean, "M.fai:2:9", &DbSpanResolver::new(&clean)))
+    );
+}
+
+#[test]
 fn type_snapshot() {
     let (db, _files) = workspace();
     let r = type_at(&db, "A.twice", &DbSpanResolver::new(&db));

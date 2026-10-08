@@ -5,7 +5,7 @@
 
 use fai_db::{Db, SourceFile};
 use fai_resolve::{ModuleName, module_file, module_name};
-use fai_span::ByteOffset;
+use fai_span::{ByteOffset, LineCol, LineIndex};
 use fai_syntax::Symbol;
 
 /// A resolved query target: a definition in a file.
@@ -74,7 +74,12 @@ fn parse_position(target: &str) -> Option<(String, u32, u32)> {
 /// nesting depth), returning its qualified name.
 fn resolve_position(db: &dyn Db, path: &str, line: u32, col: u32) -> Option<ResolvedTarget> {
     let file = db.all_source_files().into_iter().find(|f| f.path(db) == path)?;
-    let offset = line_col_to_offset(file.text(db), line, col)?;
+    let text = file.text(db);
+    let index = LineIndex::from_line_starts(
+        fai_db::line_starts(db, file),
+        ByteOffset::from_usize(text.len()).raw(),
+    );
+    let offset = index.offset(text, LineCol { line, column: col })?.raw();
     let parsed = fai_syntax::parse(db, file);
     let defs = fai_resolve::module_defs(db, file);
     // Find the smallest enclosing definition (its binding or signature item),
@@ -92,20 +97,6 @@ fn resolve_position(db: &dyn Db, path: &str, line: u32, col: u32) -> Option<Reso
         }
     }
     best.map(|(_, name)| ResolvedTarget { file, name })
-}
-
-fn line_col_to_offset(text: &str, line: u32, col: u32) -> Option<u32> {
-    let mut idx = 0usize;
-    for (i, l) in text.split_inclusive('\n').enumerate() {
-        let cur_line = i as u32 + 1;
-        if cur_line == line {
-            let col_off = col.saturating_sub(1) as usize;
-            let bytes = l.len().min(col_off);
-            return Some(ByteOffset::from_usize(idx + bytes).raw());
-        }
-        idx += l.len();
-    }
-    None
 }
 
 /// The module name (header) of a file, or its path stem as a fallback.

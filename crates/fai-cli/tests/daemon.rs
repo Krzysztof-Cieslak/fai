@@ -438,6 +438,21 @@ fn query_via_daemon_matches_no_daemon() {
     assert_eq!(stdout(&warm), stdout(&cold), "warm query must match --no-daemon");
 }
 
+#[test]
+fn unicode_character_positions_match_through_the_daemon() {
+    let daemon = Daemon::new(
+        "unicode-query",
+        &[("Unicode.fai", "module Unicode\r\n(* é😀 *)let answer = 42\r\n")],
+    );
+    let warm = daemon.run(&["query", "def", "Unicode.fai:2:9"], &[]);
+    let cold = daemon.run(&["query", "def", "Unicode.fai:2:9", "--no-daemon"], &[]);
+    assert!(warm.status.success(), "{}{}", stdout(&warm), String::from_utf8_lossy(&warm.stderr));
+    assert!(cold.status.success());
+    assert_eq!(warm.stdout, cold.stdout);
+    let value: serde_json::Value = serde_json::from_slice(&warm.stdout).unwrap();
+    assert_eq!(value["target"]["name"], "answer");
+}
+
 const TWO_MODULES: &[(&str, &str)] = &[
     ("A.fai", "module A\n\npublic a : Int\nlet a = 1\n"),
     ("B.fai", "module B\n\npublic b : Int\nlet b = 2\n"),
