@@ -537,7 +537,9 @@ impl MatchChecker<'_> {
                     .values()
                     .find(|c| i64::from(c.tag) == *tag && c.adt == adt.name)
                     .map(|c| c.name);
-                match cname.and_then(|n| crate::query::constructor_scheme_observed(self.db, file, n, Some(self.file))) {
+                match cname.and_then(|n| {
+                    crate::query::constructor_scheme_observed(self.db, file, n, Some(self.file))
+                }) {
                     Some(scheme) => instantiate_fields(&scheme, ty, arity),
                     None => vec![Ty::Error; arity],
                 }

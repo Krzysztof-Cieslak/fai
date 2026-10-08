@@ -27,6 +27,8 @@ mod forcing_effect_tests;
 #[cfg(test)]
 mod local_function_effect_tests;
 #[cfg(test)]
+mod opaque_alias_tests;
+#[cfg(test)]
 mod prop_tests;
 #[cfg(test)]
 mod signature_effect_tests;
@@ -41,9 +43,9 @@ pub use infer::{
 };
 pub use lower::{LowerVars, expand_alias_ty, lower_signature, lower_type};
 pub use query::{
-    BodyTypes, SccTypes, body_types, check_file, constructor_scheme, contract_body_types,
-    declared_or_inferred_scheme, def_effect, def_local_types, def_type, infer_scc_query,
-    constructor_scheme_observed, signature_scheme_observed,
+    BodyTypes, SccTypes, body_types, check_file, constructor_scheme, constructor_scheme_observed,
+    contract_body_types, declared_or_inferred_scheme, def_effect, def_local_types, def_type,
+    infer_scc_query, signature_scheme_observed,
 };
 pub use ty::{
     Con, EffEnd, EffRowVarId, EffectRow, RecordRow, RowEnd, RowVarId, Scheme, Ty, TyVarId,

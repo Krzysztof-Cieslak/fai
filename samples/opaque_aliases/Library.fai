@@ -1,0 +1,52 @@
+module Library
+
+public opaque type Count = Int
+public opaque type Scalar = Float
+public opaque type Point = { x : Float, y : Float }
+public opaque type Box 'a = { content : 'a }
+public opaque type Function = Int -> Int
+public opaque type Deferred 'a 'e = Unit -> 'a / 'e
+
+public count : Int -> Count
+let count n = n
+
+public countValue : Count -> Int
+let countValue n = n
+
+public scalar : Float -> Scalar
+let scalar n = n
+
+public scalarValue : Scalar -> Float
+let scalarValue n = n
+
+public point : Float -> Float -> Point
+let point x y = { x = x, y = y }
+
+public pointSum : Point -> Float
+let pointSum p = p.x + p.y
+
+public box : 'a -> Box 'a
+let box value = { content = value }
+
+public unbox : Box 'a -> 'a
+let unbox value = value.content
+
+public function : Int -> Function
+let function increment = fun n -> increment + n
+
+public apply : Function -> Int -> Int
+let apply f n = f n
+
+public defer : (Unit -> 'a / 'e) -> Deferred 'a 'e
+let defer f = f
+
+public force : Deferred 'a 'e -> 'a / 'e
+let force f = f ()
+
+public type Wrapped = | Wrapped Scalar
+
+public interface Provider =
+  value : Unit -> Scalar
+
+public provider : Provider
+let provider = { Provider with value u = scalar 4.5 }

@@ -720,7 +720,9 @@ impl<E: Env> Walker<'_, E> {
         method: Symbol,
         span: fai_span::TextRange,
     ) -> SolveTy {
-        let Some(scheme) = build_interface_method_scheme_observed(self.db, iref, method, Some(self.file)) else {
+        let Some(scheme) =
+            build_interface_method_scheme_observed(self.db, iref, method, Some(self.file))
+        else {
             self.emit(Diagnostic::error(
                 UNKNOWN_METHOD,
                 format!("interface `{}` has no method `{method}`", iref.name),

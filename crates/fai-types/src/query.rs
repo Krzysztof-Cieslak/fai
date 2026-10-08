@@ -264,7 +264,10 @@ pub(crate) fn reference_scheme(db: &dyn Db, caller: SourceFile, def: DefId) -> O
         declared_or_inferred_scheme(db, def)
     } else {
         let file = db.source_file(def.file)?;
-        Some(signature_scheme_observed(db, file, def.name, Some(caller)).unwrap_or_else(error_scheme))
+        Some(
+            signature_scheme_observed(db, file, def.name, Some(caller))
+                .unwrap_or_else(error_scheme),
+        )
     }
 }
 

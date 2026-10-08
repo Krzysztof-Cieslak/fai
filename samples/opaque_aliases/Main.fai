@@ -1,0 +1,25 @@
+module Main
+
+public scalarValue : Facade.Scalar -> Float
+let scalarValue value = Library.scalarValue (Facade.echo value)
+
+public wrappedValue : Library.Wrapped -> Float
+let wrappedValue wrapped =
+  match wrapped with
+  | Library.Wrapped value -> scalarValue value
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let scalar = Facade.scalar 3.5
+  let scalars = Array.fromList [scalar, Library.provider.value ()]
+  let total = Array.foldl (fun sum value -> sum + scalarValue value) 0.0 scalars
+  let points = List.map (Library.point 2.0) [3.0, 4.0]
+  let pointTotal = List.foldl (fun sum point -> sum + Library.pointSum point) 0.0 points
+  let boxed = Library.box (Library.count 40)
+  let count = Library.countValue (Library.unbox boxed)
+  let deferred = Library.defer (fun u -> runtime.console.writeLine "deferred")
+  let called = Library.force deferred
+  let wroteCount = runtime.console.writeLine (Int.toString (Library.apply (Library.function 2) count))
+  let wroteScalar = runtime.console.writeLine (Float.toString total)
+  let wrotePoint = runtime.console.writeLine (Float.toString pointTotal)
+  runtime.console.writeLine (Float.toString (wrappedValue (Library.Wrapped scalar)))
