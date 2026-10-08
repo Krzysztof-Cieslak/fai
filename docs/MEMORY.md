@@ -4259,7 +4259,12 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     build an `application/x-www-form-urlencoded` body, and `field`/`filePart` +
     `multipartBody`/`postMultipart` build a `multipart/form-data` body (each `Part`
     carrying an optional filename and content type, framed with a `randomBoundary` —
-    built in memory, not streamed). A **connection-pooling
+    built in memory, not streamed). Outgoing heads are validated before any
+    transport write: token names/methods, request-target whitespace, status/reason
+    structure, and field control bytes. `multipartBody` returns a `Result` so
+    invalid boundaries or part metadata fail before transmission. Quoted
+    disposition parameters escape quotes/backslashes, and non-token boundaries
+    are quoted in Content-Type. A **connection-pooling
     client** reuses keep-alive connections: `withClient` opens a structured scope that
     spawns a pool **actor** — a task owning the idle connections (a `HashDict` keyed by
     origin), reached over one command channel (`Checkout`/`Checkin`) — and hands the

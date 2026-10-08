@@ -166,20 +166,26 @@ example: (filePart "f" "x.txt" "text/plain" (Bytes.fromString "hi")).filename = 
 
 /// The `Content-Type` header value for a multipart body with the given boundary.
 public multipartContentType : String -> String
-let multipartContentType boundary = "multipart/form-data; boundary=" ++ boundary
+let multipartContentType boundary =
+  let value = if validToken boundary then boundary else "\"" ++ quoteParameter boundary ++ "\""
+  "multipart/form-data; boundary=" ++ value
 example: multipartContentType "abc" = "multipart/form-data; boundary=abc"
+
+quoteParameter : String -> String
+let quoteParameter value =
+  String.join "\\\"" (String.split "\"" (String.join "\\\\" (String.split "\\" value)))
 
 // The `; filename="…"` suffix of a part's Content-Disposition, when it has one.
 filenameSuffix : Option String -> String
 let filenameSuffix fn =
   match fn with
   | None -> ""
-  | Some f -> "; filename=\"" ++ f ++ "\""
+  | Some f -> "; filename=\"" ++ quoteParameter f ++ "\""
 
 // A part's Content-Disposition header line.
 dispositionLine : Part -> String
 let dispositionLine part =
-  "Content-Disposition: form-data; name=\"" ++ part.name ++ "\"" ++ filenameSuffix part.filename ++ "\r\n"
+  "Content-Disposition: form-data; name=\"" ++ quoteParameter part.name ++ "\"" ++ filenameSuffix part.filename ++ "\r\n"
 
 // A part's Content-Type header line, when it declares one.
 contentTypeLine : Part -> String
@@ -201,11 +207,64 @@ let renderAllParts boundary parts =
 /// A `multipart/form-data` body from the given parts, framed with `boundary` (which
 /// must not occur in any part's content — use `randomBoundary` for a fresh one). The
 /// whole body is built in memory. Pair it with `multipartContentType boundary`, or use
-/// `Http.postMultipart`.
-public multipartBody : String -> List Part -> Stream Bytes 'e
+/// `Http.postMultipart`. Invalid boundary or header metadata returns `Err` before
+/// a request is sent. Quoted disposition parameters escape quotes and backslashes.
+public multipartBody : String -> List Part -> Result (Stream Bytes 'e) String
 let multipartBody boundary parts =
-  bytesBody (Bytes.concat (renderAllParts boundary parts) (Bytes.fromString ("--" ++ boundary ++ "--\r\n")))
-example: bodyText (multipartBody "B" []) = Ok "--B--\r\n"
+  if validBoundary boundary && List.all validPart parts then
+    Ok (bytesBody (Bytes.concat (renderAllParts boundary parts) (Bytes.fromString ("--" ++ boundary ++ "--\r\n"))))
+  else
+    Err "invalid multipart boundary or metadata"
+example: Result.map bodyText (multipartBody "B" []) = Ok (Ok "--B--\r\n")
+
+validOptionalHeaderValue : Option String -> Bool
+let validOptionalHeaderValue value =
+  match value with
+  | None -> true
+  | Some text -> validHeaderValue (Bytes.fromString text) 0
+
+validPart : Part -> Bool
+let validPart part =
+  validHeaderValue (Bytes.fromString part.name) 0 && validOptionalHeaderValue part.filename && validPartContentType part.contentType
+
+validPartContentType : Option String -> Bool
+let validPartContentType contentType =
+  match contentType with
+  | None -> true
+  | Some value ->
+    if not (validHeaderValue (Bytes.fromString value) 0) then
+      false
+    else
+      match String.split ";" value with
+      | [] -> false
+      | essence :: parameters ->
+        match String.split "/" (String.trim essence) with
+        | [kind, subtype] -> validToken kind && validToken subtype
+        | _ -> false
+
+validBoundaryByte : Int -> Bool
+let validBoundaryByte c =
+  (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || List.member c [
+    32,
+    39,
+    40,
+    41,
+    43,
+    95,
+    44,
+    45,
+    46,
+    47,
+    58,
+    61,
+    63
+  ]
+
+validBoundary : String -> Bool
+let validBoundary boundary =
+  let bytes = Bytes.fromString boundary
+  let n = Bytes.length bytes
+  n > 0 && n <= 70 && Bytes.unsafeGet (n - 1) bytes <> 32 && List.all validBoundaryByte (Bytes.toList bytes)
 
 // --- Method <-> wire token -------------------------------------------------
 methodName : Method -> String
@@ -251,6 +310,23 @@ let renderField field =
 renderHead : String -> Headers -> Bytes
 let renderHead startLine headers =
   Bytes.fromString (startLine ++ String.join "" (List.map renderField (Headers.toList headers)) ++ "\r\n")
+
+validField : (String * String) -> Bool
+let validField field =
+  match field with
+  | (name, value) -> validToken name && validHeaderValue (Bytes.fromString value) 0
+
+validHead : String -> Headers -> Bool
+let validHead startLine headers =
+  let n = String.length startLine
+  n >= 2 && String.drop (n - 2) startLine = "\r\n" && validHeaderValue (Bytes.fromString (String.take (n - 2) startLine)) 0 && List.all validField (Headers.toList headers)
+
+validTargetByte : Int -> Bool
+let validTargetByte c = c > 32 && c <> 127
+
+validRequestTarget : String -> Bool
+let validRequestTarget target =
+  target <> "" && List.all validTargetByte (Bytes.toList (Bytes.fromString target))
 
 // A single lowercase hex digit for 0..15.
 hexDigitChar : Int -> String
@@ -300,6 +376,13 @@ let sendChunkedBody t body =
 // connection alive for reuse (HTTP/1.1's default).
 sendMessage : Bool -> Transport { Net, Tls } -> String -> Headers -> Stream Bytes 'b -> Result Unit String / { Net, Tls | 'b }
 let sendMessage closeConn t startLine headers body =
+  if validHead startLine headers then
+    sendValidMessage closeConn t startLine headers body
+  else
+    Err "invalid outgoing HTTP start line or header"
+
+sendValidMessage : Bool -> Transport { Net, Tls } -> String -> Headers -> Stream Bytes 'b -> Result Unit String / { Net, Tls | 'b }
+let sendValidMessage closeConn t startLine headers body =
   let framed = if closeConn then Headers.set "Connection" "close" headers else headers
   match framingOf framed NoBody with
   | Err e -> Err e
@@ -327,7 +410,12 @@ let ensureHost headers url =
 // connection alive for reuse.
 sendRequest : Bool -> Transport { Net, Tls } -> Request 'b -> Result Unit String / { Net, Tls | 'b }
 let sendRequest closeConn t req =
-  sendMessage closeConn t (methodName req.method ++ " " ++ Url.requestTarget req.url ++ " HTTP/1.1\r\n") (ensureHost req.headers req.url) req.body
+  let method = methodName req.method
+  let target = Url.requestTarget req.url
+  if validToken method && validRequestTarget target then
+    sendMessage closeConn t (method ++ " " ++ target ++ " HTTP/1.1\r\n") (ensureHost req.headers req.url) req.body
+  else
+    Err "invalid outgoing HTTP method or request target"
 
 // --- Response parsing ------------------------------------------------------
 // Read from the transport until the `\r\n\r\n` header terminator (capping the
@@ -1089,7 +1177,10 @@ let randomBoundary env =
 public postMultipart : { net : Net, random : Random, tls : Tls | 'r } -> String -> List Part -> Result (Response { Net, Tls }) String / { Net, Random, Tls }
 let postMultipart env urlStr parts =
   let boundary = randomBoundary env
-  post env urlStr (Headers.set "Content-Type" (multipartContentType boundary) Headers.empty) (multipartBody boundary parts)
+  match multipartBody boundary parts with
+  | Err e -> Err e
+  | Ok body ->
+    post env urlStr (Headers.set "Content-Type" (multipartContentType boundary) Headers.empty) body
 
 // --- Pooling client --------------------------------------------------------
 // A connection-pooling client keeps idle keep-alive connections and reuses them
@@ -1525,7 +1616,9 @@ sendResponse : Method -> Transport { Net, Tls } -> Response 'h -> Result Unit St
 let sendResponse method t resp =
   let startLine = "HTTP/1.1 " ++ Int.toString resp.status ++ " " ++ resp.reason ++ "\r\n"
   let result =
-    if resp.status = 101 || (methodName method = "CONNECT" && resp.status >= 200 && resp.status < 300) then
+    if resp.status < 100 || resp.status > 999 || not (validHead startLine resp.headers) then
+      Err "invalid outgoing HTTP status line or header"
+    else if resp.status = 101 || (methodName method = "CONNECT" && resp.status >= 200 && resp.status < 300) then
       Err "HTTP protocol upgrades and CONNECT tunnels are not supported"
     else if responseHasBody method resp.status then
       sendMessage true t startLine resp.headers resp.body
@@ -1536,7 +1629,9 @@ let sendResponse method t resp =
           Headers.remove "Content-Length" headers
         else
           headers
-      t.send (renderHead startLine (Headers.set "Connection" "close" framed))
+      match framingOf framed NoBody with
+      | Err e -> Err e
+      | Ok framing -> t.send (renderHead startLine (Headers.set "Connection" "close" framed))
   match result with
   | Err e -> Err e
   | Ok sent -> Ok (t.close ())

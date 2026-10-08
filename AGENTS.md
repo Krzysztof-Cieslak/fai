@@ -842,6 +842,11 @@ it was dropped).
 | A new diagnostic | `fai-diagnostics` (allocate a code, document it) |
 | CLI subcommands / flags | `fai-cli` + `fai-driver` |
 
+Outgoing HTTP heads validate method/header tokens, request targets, status/reason
+lines, and control characters before any bytes are sent. `Http.multipartBody`
+returns `Result (Stream Bytes 'e) String`, validating boundary and metadata before
+construction; disposition names and filenames escape quotes and backslashes.
+
 **HTTP framing invariant:** lengths are bounded nonnegative decimal values, and
 repeated/comma-joined lengths must agree. Transfer codings are parsed as tokens;
 unsupported or ambiguous framing returns `Err`. Chunked bodies validate data

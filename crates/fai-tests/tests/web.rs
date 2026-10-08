@@ -143,3 +143,43 @@ let main r =
     assert_eq!(result.exit_code, 0, "{:?}", result.diagnostics);
     assert_eq!(output, "kept|a=1,b=2|ok\n");
 }
+
+#[test]
+fn decoded_redirect_input_cannot_write_injected_headers() {
+    let _guard = lock();
+    let mut db = FaiDatabase::new();
+    fai_types::std_lib::load_std(&mut db);
+    db.add_source("Web.fai".into(), include_str!("../../../packages/web/src/Web.fai").into());
+    let source = r#"module Main
+app : Web.HttpHandler 'e
+let app = Web.redirect (Url.decodeComponent "/safe%0D%0AX-Injected:%20yes")
+fetch : Runtime -> Int -> String / { Net }
+let fetch r port =
+  match r.net.connect "127.0.0.1" port with
+  | Err e -> e
+  | Ok connection ->
+    match r.net.send connection (Bytes.fromString "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n") with
+    | Err e -> e
+    | Ok sent ->
+      match r.net.recv connection 4096 with
+      | Err e -> e
+      | Ok bytes -> if Bytes.isEmpty bytes then "rejected" else "wrote bytes"
+serveThenFetch : Runtime -> Listener -> Int -> Nursery -> Unit / { Concurrency, Console, Net, Tls }
+let serveThenFetch r listener port nursery =
+  let server = r.concurrency.spawn nursery (fun u -> Web.serveListener r listener app)
+  let result = fetch r port
+  let stopped = r.concurrency.cancel server
+  r.console.writeLine result
+public main : Runtime -> Unit / { Concurrency, Console, Net, Tls }
+let main r =
+  match r.net.listen 0 with
+  | Err e -> r.console.writeLine e
+  | Ok listener -> r.concurrency.scope (serveThenFetch r listener (r.net.localPort listener))
+"#;
+    let id = db.add_source("Main.fai".into(), source.into());
+    fai_runtime::capture_start();
+    let result = fai_driver::jit_run_program(&db, db.source_file(id).unwrap());
+    let output = fai_runtime::capture_take();
+    assert_eq!(result.exit_code, 0, "{:?}", result.diagnostics);
+    assert_eq!(output, "rejected\n");
+}
