@@ -1125,6 +1125,10 @@ toOption   : Result 'ok 'err -> Option 'ok
 
 ### Dict — ordered map (balanced tree, O(log n), sorted iteration)
 
+`Dict` and `Set` preserve weight balance through bulk filtering, intersection,
+and difference as well as single-key edits. Their internal tree shape may change;
+compare ordered entries when testing logical content equivalence.
+
 ```
 empty       : Dict 'k 'v
 singleton   : 'k -> 'v -> Dict 'k 'v

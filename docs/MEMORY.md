@@ -2070,6 +2070,11 @@ Editor integration:
   `remove`/`update`/`keys`/`values`/`map`/`filter`/`foldl`/`foldr`/`union`/
   `intersection`/`difference` for `Dict` (plus `isSubset` for `Set`), the bulk
   set operations built on `join`/`split`.
+  Merging two surviving sides without a separator (`join2`) extracts the right
+  minimum and uses the general-size `join`, since bulk filtering/intersection/
+  difference can shrink either subtree arbitrarily. A single-change rebalance
+  is insufficient there. Structural tests validate ordering, exact cached sizes,
+  and delta balance after mixed operations, in addition to the content oracle.
   - **Reuse status (what is and isn't in-place).** `Dict.map` preserves the tree
     shape — its recursion is *embedded in the constructor* (`DictNode s (map f l) k
     (f k v) (map f r)`), so the reuse pass (D77) resets the matched cell **before**

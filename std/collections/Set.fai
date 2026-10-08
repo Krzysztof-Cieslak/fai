@@ -127,7 +127,8 @@ let takeMin l x r =
       (rest, m)
 
 // Merge two sets whose elements are all-less / all-greater (no separating
-// element), promoting the right set's minimum.
+// element), promoting the right set's minimum. Bulk removals can leave arbitrary
+// weight differences, so reconstruct with the general-size join.
 join2 : Set 'a -> Set 'a -> Set 'a
 let join2 l r =
   match l with
@@ -137,7 +138,7 @@ let join2 l r =
     | SetEmpty -> l
     | SetNode _ rl ry rr ->
       match takeMin rl ry rr with
-      | (r2, m) -> balance l m r2
+      | (r2, m) -> join l m r2
 
 /// Remove an element if present, rebalancing as needed (O(log n)).
 public remove : 'a -> Set 'a -> Set 'a

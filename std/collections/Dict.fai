@@ -169,7 +169,8 @@ let takeMin l k v r =
       (rest, mk, mv)
 
 // Merge two trees whose keys are all-less / all-greater (no separating key), by
-// promoting the right tree's minimum. Used by `remove` and `difference`.
+// promoting the right tree's minimum. Bulk operations may have removed arbitrary
+// portions of either side, so the reconstruction uses the general-size join.
 join2 : Dict 'k 'v -> Dict 'k 'v -> Dict 'k 'v
 let join2 l r =
   match l with
@@ -179,7 +180,7 @@ let join2 l r =
     | DictEmpty -> l
     | DictNode _ rl rk rv rr ->
       match takeMin rl rk rv rr with
-      | (r2, mk, mv) -> balance l mk mv r2
+      | (r2, mk, mv) -> join l mk mv r2
 
 /// Remove `key` if present, rebalancing as needed (O(log n)).
 public remove : 'k -> Dict 'k 'v -> Dict 'k 'v
