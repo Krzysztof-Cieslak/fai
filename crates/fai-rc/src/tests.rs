@@ -512,19 +512,15 @@ pub(crate) fn check_sound(db: &dyn Db, def: &LoweredDef) -> Result<(), String> {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn higher_order_param_only_applied_does_not_escape() {
-    // `f` is only applied (the apply-callee position is dropped, not stored), so it
-    // does not escape; `x` is passed as an argument to a first-class call, which may
-    // capture it, so it escapes.
-    assert_eq!(escape_sig("module M\nlet apply f x = f x", "apply"), [false, true]);
+fn higher_order_param_may_escape_through_under_application() {
+    // Unknown runtime arity may retain `f` in the returned partial application.
+    assert_eq!(escape_sig("module M\nlet apply f x = f x", "apply"), [true, true]);
 }
 
 #[test]
-fn map_like_combinator_param_does_not_escape() {
-    // The defining case: `map`'s function is only applied and forwarded to the
-    // recursive call (the converged fixpoint keeps it confined), so a lambda handed
-    // to it can be stack-allocated. The list parameter escapes (an element flows
-    // into the first-class call).
+fn map_like_combinator_param_requires_saturation_evidence() {
+    // `map` can return partial applications that retain its function. A call-site
+    // arity proof can still establish confinement for a saturated lambda.
     let src = indoc! {r#"
         module M
 
@@ -533,13 +529,12 @@ fn map_like_combinator_param_does_not_escape() {
           | [] -> []
           | x :: rest -> f x :: map f rest
     "#};
-    assert_eq!(escape_sig(src, "map"), [false, true]);
+    assert_eq!(escape_sig(src, "map"), [true, true]);
 }
 
 #[test]
-fn fold_like_accumulator_param_does_not_escape_the_function() {
-    // `f` is only applied/forwarded (confined); `acc` and `xs` escape (the
-    // accumulator flows into the first-class call, a list element likewise).
+fn fold_like_combinator_param_requires_saturation_evidence() {
+    // A function-valued accumulator may be a partial application retaining `f`.
     let src = indoc! {r#"
         module M
 
@@ -548,7 +543,7 @@ fn fold_like_accumulator_param_does_not_escape_the_function() {
           | [] -> acc
           | x :: rest -> foldl f (f acc x) rest
     "#};
-    assert_eq!(escape_sig(src, "foldl"), [false, true, true]);
+    assert_eq!(escape_sig(src, "foldl"), [true, true, true]);
 }
 
 #[test]
