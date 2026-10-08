@@ -1109,16 +1109,25 @@ mod tests {
 
     #[track_caller]
     fn assert_connect_registration_cleanup(case: &str) {
+        use wait_timeout::ChildExt;
+
         // The source table is process-global; isolate its exact cardinality from
         // other networking tests running on the test harness's threads.
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "reactor::tests::connect_registration_worker", "--nocapture"])
             .env("FAI_CONNECT_REGISTRATION_CASE", case)
-            .output()
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
             .unwrap();
+        let finished = child.wait_timeout(Duration::from_secs(30)).unwrap().is_some();
+        if !finished {
+            child.kill().unwrap();
+        }
+        let output = child.wait_with_output().unwrap();
         assert!(
-            output.status.success(),
-            "{}{}",
+            finished && output.status.success(),
+            "connect cleanup case {case} failed (finished: {finished}): {}{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
@@ -1166,11 +1175,11 @@ mod tests {
                 }));
             }
             "refused" => {
-                // Keep this port reserved on 127.0.0.1, and connect to the other
-                // loopback address where the listener is not accepting.
+                // Port zero cannot name a listening service. Using the primary
+                // loopback address avoids platform-dependent routing timeouts.
                 block_on(Box::new(move || {
                     for _ in 0..16 {
-                        let result = fai_net_connect(crate::make_string(b"127.0.0.2"), imm(port));
+                        let result = fai_net_connect(crate::make_string(b"127.0.0.1"), imm(0));
                         assert_eq!(crate::data_tag_of(result), 1);
                         crate::fai_drop(result);
                     }
