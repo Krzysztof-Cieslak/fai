@@ -1152,6 +1152,105 @@ fn record_match_wide_record_uses_only_the_tested_field() {
     ));
 }
 
+#[track_caller]
+fn assert_nested_match_missing_false(src: &str) {
+    let (db, files) = db_with(&[("M.fai", src)]);
+    let diags = check_diags(&db, files[0]);
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert_eq!(diags[0].code, crate::NON_EXHAUSTIVE_MATCH);
+    assert_eq!(diags[0].message, "this match does not cover every case");
+    assert_eq!(diags[0].help.as_deref(), Some("add arms for: false"));
+    assert_eq!(diags[0].primary.source(), files[0].source(&db));
+    let at = src.rfind("match ").unwrap() + "match ".len();
+    let len = src[at..].find(" with").unwrap();
+    assert_eq!(diags[0].primary.start().to_usize(), at);
+    assert_eq!(diags[0].primary.end().to_usize(), at + len);
+}
+
+#[test]
+fn nested_match_in_array_element_is_checked() {
+    assert_nested_match_missing_false("module M\nlet f b = [| (match b with | true -> 1) |]\n");
+}
+
+#[test]
+fn nested_match_in_record_field_is_checked() {
+    assert_nested_match_missing_false(
+        "module M\nlet f b = { value = (match b with | true -> 1) }\n",
+    );
+}
+
+#[test]
+fn nested_match_in_record_update_value_is_checked() {
+    assert_nested_match_missing_false(
+        "module M\nlet f b = { { value = 0 } with value = (match b with | true -> 1) }\n",
+    );
+}
+
+#[test]
+fn nested_match_in_record_update_base_is_checked() {
+    assert_nested_match_missing_false(
+        "module M\nlet f b = { (match b with | true -> { value = 0 }) with value = 1 }\n",
+    );
+}
+
+#[test]
+fn nested_match_in_interface_method_is_checked() {
+    assert_nested_match_missing_false(
+        "module M\ninterface Check = check : Bool -> Int\nlet checker = { Check with check b = (match b with | true -> 1) }\n",
+    );
+}
+
+#[test]
+fn nested_match_in_array_record_lambda_is_checked() {
+    assert_nested_match_missing_false(
+        "module M\n// é😀\nlet f = [| { value = (fun b -> match b with | true -> 1) } |]\n",
+    );
+}
+
+#[test]
+fn nested_match_in_example_is_checked() {
+    assert_nested_match_missing_false("module M\nexample: match true with | true -> true\n");
+}
+
+#[test]
+fn nested_match_in_forall_is_checked() {
+    assert_nested_match_missing_false("module M\nforall b: match b with | true -> true\n");
+}
+
+#[test]
+fn nested_match_in_nested_module_contract_uses_its_ordinal() {
+    assert_nested_match_missing_false(indoc! {"
+        module M
+        example: match true with | true -> true | false -> true
+        module Inner =
+          let identity x = x
+          forall b: identity (match b with | true -> true)
+    "});
+}
+
+#[test]
+fn nested_match_in_contract_reports_redundant_arm() {
+    let src = "module M\nexample: match true with | _ -> true | true -> false\n";
+    let (db, files) = db_with(&[("M.fai", src)]);
+    let diags = check_diags(&db, files[0]);
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert_eq!(diags[0].code, crate::UNREACHABLE_ARM);
+    assert_eq!(diags[0].message, "this match arm is unreachable");
+    let arm = "| true -> false";
+    let at = src.find(arm).unwrap();
+    assert_eq!(diags[0].primary.start().to_usize(), at);
+    assert_eq!(diags[0].primary.end().to_usize(), at + arm.len());
+}
+
+#[test]
+fn nested_match_is_checked_after_an_unrelated_type_error() {
+    let src = "module M\nlet bad = 1 true\nlet f b = { value = (match b with | true -> 1) }\n";
+    let (db, files) = db_with(&[("M.fai", src)]);
+    let codes = check_codes(&db, files[0]);
+    assert!(codes.contains(&"FAI3001".into()), "{codes:?}");
+    assert_eq!(codes.iter().filter(|c| c.as_str() == "FAI4001").count(), 1);
+}
+
 #[test]
 fn closed_record_pattern_missing_a_field_is_an_error() {
     // The scrutinee is a two-field record; a *closed* pattern that names only

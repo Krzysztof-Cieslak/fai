@@ -100,6 +100,32 @@ fn no_examples_flag_restores_a_pure_type_check() {
 }
 
 #[test]
+fn non_exhaustive_contract_is_rejected_with_examples_disabled() {
+    let out = check(
+        "contract-match",
+        "Bad.fai",
+        "module Bad\nexample: match true with | true -> true\n",
+        &["--no-examples"],
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "stdout: {stdout}");
+    assert!(stdout.contains("FAI4001"), "expected exhaustiveness diagnostic: {stdout}");
+}
+
+#[test]
+fn non_exhaustive_array_element_is_rejected_before_execution() {
+    let out = check(
+        "array-match",
+        "Bad.fai",
+        "module Bad\nlet value = [| (match false with | true -> 1) |]\n",
+        &[],
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "stdout: {stdout}");
+    assert!(stdout.contains("FAI4001"), "expected exhaustiveness diagnostic: {stdout}");
+}
+
+#[test]
 fn trapping_example_is_isolated_and_check_succeeds() {
     // Integer division by zero traps at runtime: it kills the isolated worker,
     // not `fai check`. Since check reports only definite failures, the trapping

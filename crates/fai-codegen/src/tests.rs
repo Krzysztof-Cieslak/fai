@@ -284,6 +284,14 @@ fn main_printing(expr: &str) -> String {
 }
 
 #[test]
+fn unmatched_pattern_fallthrough_emits_a_trap() {
+    // Deliberately bypass check_file to exercise the backend's invariant guard.
+    let ir =
+        entry_ir("module M\npublic f : Bool -> Int\nlet f b = match b with | true -> 7\n", "f");
+    assert!(ir.contains("trap user1"), "unmatched input must trap: {ir}");
+}
+
+#[test]
 fn hello_world() {
     let src = main_printing("\"Hello, Fai!\"");
     let (code, out) = run(&src);

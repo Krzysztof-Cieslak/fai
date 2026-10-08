@@ -26,7 +26,7 @@ use cranelift_codegen::Context;
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::immediates::Ieee64;
 use cranelift_codegen::ir::{AbiParam, Block, FuncRef, InstBuilder, MemFlags, Value, types};
-use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
+use cranelift_codegen::ir::{StackSlotData, StackSlotKind, TrapCode};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use fai_core::NicheKind;
@@ -2310,8 +2310,16 @@ impl<M: Module> Translator<'_, M> {
             ExprKind::Recur { .. } | ExprKind::HoleClose { .. } => {
                 unreachable!("tail-only node reached non-tail code generation")
             }
-            // Unreachable for a build that passed the FAI7001 check; yield Unit.
-            ExprKind::Error => self.builder.ins().iconst(types::I64, rt::FAI_UNIT),
+            ExprKind::Error => {
+                // An impossible match fallthrough must never fabricate a value
+                // of the result type. Keep the emitter's continuation in a dead
+                // block so enclosing expressions can still form their merges.
+                self.builder.ins().trap(TrapCode::unwrap_user(1));
+                let dead = self.builder.create_block();
+                self.builder.switch_to_block(dead);
+                self.builder.seal_block(dead);
+                self.builder.ins().iconst(types::I64, rt::FAI_UNIT)
+            }
         }
     }
 
