@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use camino::Utf8PathBuf;
-use fai_db::Diag;
+use fai_db::{Db, Diag, FaiDatabase};
 use fai_diagnostics::Severity;
 use fai_driver::{Session, TestConfig, test};
 use fai_span::SourceId;
@@ -97,4 +97,49 @@ fn web_package_contracts_pass() {
     assert_eq!(outcome.not_run, 0, "every web-package contract should be runnable");
     assert_eq!(outcome.leaked, 0, "web-package contracts leaked objects");
     assert!(outcome.ok, "web-package contracts should pass");
+}
+
+#[test]
+fn middleware_headers_reach_the_wire_through_a_router() {
+    let _guard = lock();
+    let mut db = FaiDatabase::new();
+    fai_types::std_lib::load_std(&mut db);
+    db.add_source("Web.fai".into(), include_str!("../../../packages/web/src/Web.fai").into());
+    db.add_source("Router.fai".into(), include_str!("../../../packages/web/src/Router.fai").into());
+    let source = r#"module Main
+app : Web.HttpHandler 'e
+let app = Web.chain [
+  Web.setHeader "X-Middleware" "kept",
+  Web.addHeader "Set-Cookie" "a=1",
+  Web.addHeader "Set-Cookie" "b=2",
+  Router.router (Web.notFound "missing") [Router.get [Router.route "/" (Web.text "ok")]]
+]
+fetch : Runtime -> Int -> String / { Net, Tls }
+let fetch r port =
+  match Http.get r ("http://127.0.0.1:" ++ Int.toString port ++ "/") with
+  | Err e -> e
+  | Ok response ->
+    let marker = Option.withDefault "lost" (Headers.get "X-Middleware" response.headers)
+    let cookies = String.join "," (Headers.getAll "Set-Cookie" response.headers)
+    let body = Result.withDefault "body failed" (Http.bodyText response.body)
+    marker ++ "|" ++ cookies ++ "|" ++ body
+serveThenFetch : Runtime -> Listener -> Int -> Nursery -> Unit / { Concurrency, Console, Net, Tls }
+let serveThenFetch r listener port nursery =
+  let server = r.concurrency.spawn nursery (fun u -> Web.serveListener r listener app)
+  let result = fetch r port
+  let stopped = r.concurrency.cancel server
+  r.console.writeLine result
+public main : Runtime -> Unit / { Concurrency, Console, Net, Tls }
+let main r =
+  match r.net.listen 0 with
+  | Err e -> r.console.writeLine e
+  | Ok listener -> r.concurrency.scope (serveThenFetch r listener (r.net.localPort listener))
+"#;
+    let id = db.add_source("Main.fai".into(), source.into());
+    let file = db.source_file(id).unwrap();
+    fai_runtime::capture_start();
+    let result = fai_driver::jit_run_program(&db, file);
+    let output = fai_runtime::capture_take();
+    assert_eq!(result.exit_code, 0, "{:?}", result.diagnostics);
+    assert_eq!(output, "kept|a=1,b=2|ok\n");
 }
