@@ -577,6 +577,18 @@ fn complete(handle: &Arc<Handle>, result: Value) {
 /// Spawns `body` as a task, returning its handle. The scheduler starts lazily on
 /// the first spawn.
 pub fn spawn(body: Box<dyn FnOnce() -> Value + Send>) -> Arc<Handle> {
+    spawn_tracked(body, None)
+}
+
+/// Registers structured work before it can run, keeping nursery completion
+/// tracking separate from the public handle that owns a memoized result.
+fn spawn_tracked(
+    body: Box<dyn FnOnce() -> Value + Send>,
+    nursery: Option<Arc<Nursery>>,
+) -> Arc<Handle> {
+    if let Some(nursery) = &nursery {
+        nursery.state.lock().expect("nursery lock").live += 1;
+    }
     let handle = Arc::new(Handle {
         state: Mutex::new(HandleState { done: false, result: 0, awaiters: Vec::new() }),
         task: Mutex::new(Weak::new()),
@@ -585,7 +597,18 @@ pub fn spawn(body: Box<dyn FnOnce() -> Value + Send>) -> Arc<Handle> {
     // decrement before this increment).
     *scheduler().active.lock().expect("active lock") += 1;
     let done_handle = Arc::clone(&handle);
-    let task = make_task(body, Box::new(move |result| complete(&done_handle, result)));
+    let task = make_task(
+        body,
+        Box::new(move |result| {
+            complete(&done_handle, result);
+            // A discarded public handle must not leave its result owned by the
+            // nursery. Release the task's handle before announcing completion.
+            drop(done_handle);
+            if let Some(nursery) = nursery {
+                nursery.child_finished();
+            }
+        }),
+    );
     // Publish the task on the handle (so `cancel` can reach it) and register it in
     // the cancellation tree (so a cancelled parent tears it down too).
     *handle.task.lock().expect("handle task") = Arc::downgrade(&task);
@@ -629,27 +652,6 @@ pub fn await_handle(handle: &Arc<Handle>) -> Value {
     }
 }
 
-/// Waits (from within a task) for a task to complete, *without* taking its result
-/// — used to join a nursery's children at scope end. Parks the caller until the
-/// awaited task is done, looping past any spurious/cancellation wake so a child
-/// never outlives its scope.
-fn join_handle(handle: &Arc<Handle>) {
-    let mut registered = false;
-    loop {
-        {
-            let mut st = handle.state.lock().expect("handle lock");
-            if st.done {
-                return;
-            }
-            if !registered {
-                st.awaiters.push(current_task());
-                registered = true;
-            }
-        }
-        suspend_current(Suspend::Park);
-    }
-}
-
 /// Runs `body` as the program's root task and blocks the calling OS thread until
 /// the scheduler is quiescent (every task created during the run has fully
 /// finished, including its cleanup), then returns the root's result. Starts the
@@ -676,9 +678,45 @@ pub fn block_on(body: Box<dyn FnOnce() -> Value + Send>) -> Value {
 // ---------------------------------------------------------------------------
 
 /// A structured-concurrency scope (`Nursery` to Fai code): the tasks spawned into
-/// it, joined before the scope returns.
+/// it are counted until completion and joined before the scope returns. Completed
+/// results are owned only by their public task handles, not by the nursery.
 pub struct Nursery {
-    children: Mutex<Vec<Arc<Handle>>>,
+    state: Mutex<NurseryState>,
+}
+
+#[derive(Default)]
+struct NurseryState {
+    live: usize,
+    joiner: Option<Arc<Task>>,
+}
+
+impl Nursery {
+    fn child_finished(&self) {
+        let joiner = {
+            let mut state = self.state.lock().expect("nursery lock");
+            debug_assert!(state.live > 0, "finished unregistered child");
+            state.live -= 1;
+            if state.live == 0 { state.joiner.take() } else { None }
+        };
+        if let Some(joiner) = joiner {
+            schedule(joiner);
+        }
+    }
+
+    fn join(&self) {
+        loop {
+            let mut state = self.state.lock().expect("nursery lock");
+            if state.live == 0 {
+                state.joiner = None;
+                return;
+            }
+            // The scope has one joining owner. Replace its registration after a
+            // spurious/cancellation wake rather than accumulating duplicate wakes.
+            state.joiner = Some(current_task());
+            drop(state);
+            suspend_current(Suspend::Park);
+        }
+    }
 }
 
 /// Opens a structured scope: runs `body` (given the nursery), then joins every task
@@ -686,33 +724,18 @@ pub struct Nursery {
 /// awaited is still waited for here, so no task outlives the scope. Runs inside a
 /// task (the joins park it).
 pub fn scope(body: Box<dyn FnOnce(Arc<Nursery>) -> Value>) -> Value {
-    let nursery = Arc::new(Nursery { children: Mutex::new(Vec::new()) });
+    let nursery = Arc::new(Nursery { state: Mutex::new(NurseryState::default()) });
     let result = body(Arc::clone(&nursery));
-    // Join every spawned child. Re-read the list each step: a joined child may
-    // itself have spawned more before finishing.
-    let mut joined = 0;
-    loop {
-        let next = {
-            let children = nursery.children.lock().expect("nursery lock");
-            children.get(joined).cloned()
-        };
-        match next {
-            Some(child) => {
-                join_handle(&child);
-                joined += 1;
-            }
-            None => break,
-        }
-    }
+    // A child spawning into this nursery increments the count before its own
+    // completion can decrement it, so joining includes newly registered work.
+    nursery.join();
     result
 }
 
 /// Spawns `body` into `nursery` (registering it for the scope's join) and returns
 /// its handle.
 pub fn spawn_in(nursery: &Arc<Nursery>, body: Box<dyn FnOnce() -> Value + Send>) -> Arc<Handle> {
-    let handle = spawn(body);
-    nursery.children.lock().expect("nursery lock").push(Arc::clone(&handle));
-    handle
+    spawn_tracked(body, Some(Arc::clone(nursery)))
 }
 
 // ---------------------------------------------------------------------------
@@ -1187,6 +1210,156 @@ mod tests {
         }));
         assert_eq!(of_imm(r), 7, "the scope returns its body's result");
         assert_eq!(RAN.load(Ordering::SeqCst), 32, "every spawned child ran before scope returned");
+    }
+
+    #[track_caller]
+    fn assert_completed_results_released(make_result: fn() -> Value) {
+        let _guard = crate::tests::lock();
+        let baseline = crate::live_count();
+        let gate = channel(1);
+        let (batches, completed) = std::sync::mpsc::channel();
+        let root = {
+            let gate = Arc::clone(&gate);
+            spawn(Box::new(move || {
+                scope(Box::new(move |nursery| {
+                    for _ in 0..4 {
+                        let mut observations = Vec::new();
+                        for _ in 0..16 {
+                            let child = spawn_in(
+                                &nursery,
+                                Box::new(move || crate::fai_mark_shared(make_result())),
+                            );
+                            let handle = Arc::downgrade(&child);
+                            let task = child.task.lock().unwrap().clone();
+                            crate::fai_drop(await_handle(&child));
+                            drop(child);
+                            observations.push((handle, task));
+                        }
+                        batches.send(observations).unwrap();
+                        chan_recv(&gate);
+                    }
+                    imm(0)
+                }))
+            }))
+        };
+        let mut retained = 0;
+        for _ in 0..4 {
+            let batch = completed.recv().unwrap();
+            while batch.iter().any(|(_, task)| task.strong_count() != 0) {
+                std::thread::yield_now();
+            }
+            retained += batch.iter().filter(|(handle, _)| handle.strong_count() != 0).count();
+            // Let the still-open scope continue even when an assertion will fail,
+            // so the test never strands a task on the process-global scheduler.
+            chan_send(&gate, imm(0));
+        }
+        block_on(Box::new(move || await_handle(&root)));
+        assert_eq!(crate::live_count(), baseline);
+        assert_eq!(retained, 0, "completed results were retained before scope exit");
+    }
+
+    #[test]
+    fn nursery_releases_completed_string_results_while_open() {
+        assert_completed_results_released(|| crate::make_string(&vec![b'x'; 16 * 1024]));
+    }
+
+    #[test]
+    fn nursery_releases_completed_array_results_while_open() {
+        assert_completed_results_released(|| {
+            let mut array = crate::fai_array_with_capacity(imm(1024));
+            for _ in 0..1024 {
+                array = crate::fai_array_push(array, imm(7));
+            }
+            array
+        });
+    }
+
+    #[test]
+    fn nursery_exit_keeps_results_owned_by_public_handles() {
+        let _guard = crate::tests::lock();
+        let baseline = crate::live_count();
+        let (send, receive) = std::sync::mpsc::channel();
+        block_on(Box::new(move || {
+            scope(Box::new(move |nursery| {
+                let handle = spawn_in(
+                    &nursery,
+                    Box::new(|| crate::fai_mark_shared(crate::make_string(b"kept"))),
+                );
+                send.send(handle).unwrap();
+                imm(0)
+            }))
+        }));
+        let handle = receive.recv().unwrap();
+        let result = block_on(Box::new(move || {
+            let first = await_handle(&handle);
+            let second = await_handle(&handle);
+            let equal =
+                crate::read_string(first) == b"kept" && crate::read_string(second) == b"kept";
+            crate::fai_drop(first);
+            crate::fai_drop(second);
+            imm(i64::from(equal))
+        }));
+        assert_eq!(result, imm(1));
+        assert_eq!(crate::live_count(), baseline);
+    }
+
+    #[test]
+    fn nursery_joins_descendants_spawned_while_it_is_joining() {
+        let child_gate = channel(1);
+        let grandchild_gate = channel(1);
+        let (events, received) = std::sync::mpsc::channel();
+        let (send_owner, receive_owner) = std::sync::mpsc::channel();
+        let root = {
+            let child_gate = Arc::clone(&child_gate);
+            let grandchild_gate = Arc::clone(&grandchild_gate);
+            spawn(Box::new(move || {
+                scope(Box::new(move |nursery| {
+                    let owner = Arc::clone(&nursery);
+                    let child_events = events.clone();
+                    let child = spawn_in(
+                        &nursery,
+                        Box::new(move || {
+                            chan_recv(&child_gate);
+                            spawn_in(
+                                &owner,
+                                Box::new(move || {
+                                    child_events.send("grandchild").unwrap();
+                                    chan_recv(&grandchild_gate);
+                                    imm(0)
+                                }),
+                            );
+                            imm(0)
+                        }),
+                    );
+                    send_owner
+                        .send((Arc::clone(&nursery), child.task.lock().unwrap().clone()))
+                        .unwrap();
+                    events.send("joining").unwrap();
+                    imm(42)
+                }))
+            }))
+        };
+        assert_eq!(received.recv().unwrap(), "joining");
+        let (nursery, parent_task) = receive_owner.recv().unwrap();
+        chan_send(&child_gate, imm(0));
+        assert_eq!(received.recv().unwrap(), "grandchild");
+        while parent_task.strong_count() != 0 {
+            std::thread::yield_now();
+        }
+        let waiting = loop {
+            if nursery.state.lock().unwrap().joiner.is_some() {
+                break true;
+            }
+            if root.state.lock().unwrap().done {
+                break false;
+            }
+            std::thread::yield_now();
+        };
+        let live = nursery.state.lock().unwrap().live;
+        chan_send(&grandchild_gate, imm(0));
+        assert_eq!(block_on(Box::new(move || await_handle(&root))), imm(42));
+        assert!(waiting, "the scope returned before its grandchild completed");
+        assert_eq!(live, 1, "only the blocked grandchild remains registered");
     }
 
     #[test]
