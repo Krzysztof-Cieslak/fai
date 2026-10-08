@@ -146,6 +146,50 @@ fn channel_producer_consumer_sums() {
     assert_eq!(out, "42\n");
 }
 
+#[track_caller]
+fn channel_capacity_round_trip(capacity: &str) {
+    let source = format!(
+        r#"
+        module Prog
+        roundTrip : Concurrency -> Int -> Int / {{ Concurrency }}
+        let roundTrip c capacity =
+          let channel = c.channel capacity
+          let _ = c.send channel 42
+          let result = c.recv channel
+          let _ = c.close channel
+          Option.withDefault 0 result
+        public main : Runtime -> Unit / {{ Concurrency, Console }}
+        let main runtime = runtime.console.writeLine (Int.toString (roundTrip runtime.concurrency ({capacity})))
+    "#
+    );
+    assert_eq!(run(&source), ("42\n".into(), 0));
+}
+
+#[test]
+fn zero_channel_capacity_round_trips() {
+    channel_capacity_round_trip("0");
+}
+#[test]
+fn negative_channel_capacity_round_trips() {
+    channel_capacity_round_trip("-1");
+}
+#[test]
+fn minimum_channel_capacity_is_consumed_without_a_leak() {
+    channel_capacity_round_trip("0 - 9223372036854775807 - 1");
+}
+#[test]
+fn maximum_channel_capacity_is_consumed_without_a_leak() {
+    channel_capacity_round_trip("9223372036854775807");
+}
+#[test]
+fn first_boxed_channel_capacity_round_trips() {
+    channel_capacity_round_trip("4611686018427387904");
+}
+#[test]
+fn largest_immediate_channel_capacity_round_trips() {
+    channel_capacity_round_trip("4611686018427387903");
+}
+
 #[test]
 fn closing_a_full_channel_lets_its_producer_scope_finish() {
     let src = indoc! {r#"
