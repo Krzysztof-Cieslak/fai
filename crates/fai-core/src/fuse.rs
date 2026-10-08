@@ -247,9 +247,9 @@ enum FnArg {
 
 /// The source that starts a recognized chain.
 enum Source {
-    /// `range lo hi` (List or Array): the integers `[lo, hi)`, walked numerically
-    /// with no materialized sequence.
-    Range { lo: CExpr, hi: CExpr },
+    /// A numeric range without a materialized sequence. List ranges compare the
+    /// endpoints; Array ranges use their library's wrapping `hi - lo` count.
+    Range { seq: SeqKind, lo: CExpr, hi: CExpr },
     /// `Array.init n f`: index `[0, n)` with element `f i`.
     Init { n: CExpr, f: FnArg },
     /// `Array.repeat n x`: index `[0, n)` with element `x`.
@@ -480,7 +480,7 @@ impl Fuser<'_> {
                 Comb::Range
                     if pargs.len() == 2 && pargs.iter().all(|e| self.expr_reorderable(e)) =>
                 {
-                    return Some(Source::Range { lo: pargs[0].clone(), hi: pargs[1].clone() });
+                    return Some(Source::Range { seq, lo: pargs[0].clone(), hi: pargs[1].clone() });
                 }
                 Comb::Init
                     if pargs.len() == 2
@@ -1056,28 +1056,63 @@ impl Fuser<'_> {
         base_fns: &[CoreFn],
     ) -> SourceShape {
         match source {
-            Source::Range { lo, hi } => {
+            Source::Range { seq, lo, hi } => {
                 let lo = self.rewrite(&lo, base_fns);
                 let hi = self.rewrite(&hi, base_fns);
+                let zero_based = matches!(&lo.kind, K::Lit(Lit::Int(0)));
                 // Bind both bounds in the consuming def (each used in several call
                 // arguments below) so they are evaluated once.
                 let lo_c = self.fresh_consuming();
                 let hi_c = self.fresh_consuming();
                 let lo_v = local(lo_c, Ty::int());
                 let hi_v = local(hi_c, Ty::int());
-                let outer_binds = vec![(lo_c, lo), (hi_c, hi)];
+                let mut outer_binds = vec![(lo_c, lo), (hi_c, hi)];
                 let capacity = prim(Prim::IntSub, vec![hi_v.clone(), lo_v.clone()]);
+                if seq == SeqKind::Array {
+                    // Array.range is Array.init (hi - lo) (fun i -> lo + i):
+                    // the count and element addition both use wrapping Int math.
+                    let count = self.fresh_consuming();
+                    let count_v = local(count, Ty::int());
+                    outer_binds.push((count, capacity));
+                    let lower = (!zero_based).then(|| g.add_param(Ty::int(), lo_v));
+                    let (i, advance, done) = self.index_iter(g, &count_v, reverse);
+                    let (elem, elem_binds) = match lower {
+                        Some(lower) => {
+                            let elem = g.fresh();
+                            let value = prim(
+                                Prim::IntAdd,
+                                vec![local(lower, Ty::int()), local(i, Ty::int())],
+                            );
+                            (local(elem, Ty::int()), vec![(elem, value)])
+                        }
+                        None => (local(i, Ty::int()), Vec::new()),
+                    };
+                    return SourceShape {
+                        done,
+                        elem_binds,
+                        elem,
+                        advance: vec![advance],
+                        outer_binds,
+                        capacity: count_v,
+                    };
+                }
                 let v = g.fresh();
                 if reverse {
                     let lo_p = g.add_param(Ty::int(), lo_v);
                     g.params.push((v, Ty::int()));
-                    g.call_args.push(prim(Prim::IntSub, vec![hi_v, int_lit(1)]));
+                    g.call_args.push(hi_v);
                     g.iter_locals.push(v);
+                    // Keep an exclusive upper cursor. Subtract only after proving
+                    // cursor > lo, so the final element may safely be Int.MIN.
+                    let elem = g.fresh();
                     SourceShape {
-                        done: prim(Prim::IntLt, vec![local(v, Ty::int()), local(lo_p, Ty::int())]),
-                        elem_binds: Vec::new(),
-                        elem: local(v, Ty::int()),
-                        advance: vec![prim(Prim::IntSub, vec![local(v, Ty::int()), int_lit(1)])],
+                        done: prim(Prim::IntLe, vec![local(v, Ty::int()), local(lo_p, Ty::int())]),
+                        elem_binds: vec![(
+                            elem,
+                            prim(Prim::IntSub, vec![local(v, Ty::int()), int_lit(1)]),
+                        )],
+                        elem: local(elem, Ty::int()),
+                        advance: vec![local(elem, Ty::int())],
                         outer_binds,
                         capacity,
                     }
@@ -1188,9 +1223,16 @@ impl Fuser<'_> {
     fn index_iter(&self, g: &mut LoopGen, n: &CExpr, reverse: bool) -> (LocalId, CExpr, CExpr) {
         let i = g.fresh();
         if reverse {
-            // i from n-1 downto 0; done when i < 0 (no `n` needed in the body).
+            // Negative producer counts are empty, including Int.MIN. A real
+            // array length is non-negative, so its n-1 needs no extra guard.
             g.params.push((i, Ty::int()));
-            g.call_args.push(prim(Prim::IntSub, vec![n.clone(), int_lit(1)]));
+            let last = prim(Prim::IntSub, vec![n.clone(), int_lit(1)]);
+            let start = if matches!(&n.kind, K::Prim { op: Prim::ArrayLength, .. }) {
+                last
+            } else {
+                if_(prim(Prim::IntGt, vec![n.clone(), int_lit(0)]), last, int_lit(-1), Ty::int())
+            };
+            g.call_args.push(start);
             g.iter_locals.push(i);
             (
                 i,
@@ -2164,6 +2206,25 @@ mod tests {
         fai_types::std_lib::load_std(&mut clean);
         clean.add_source("Helper.fai".into(), partial);
         let id = clean.add_source("M.fai".into(), main.into());
+        assert_eq!(after, fuse_def(&clean, clean.source_file(id).unwrap(), name));
+    }
+
+    #[test]
+    fn switching_range_kind_matches_clean_fusion() {
+        let array = "module M\nlet run lo hi = Array.sum (Array.range lo hi)\n";
+        let list = array.replace("Array.", "List.");
+        let mut db = FaiDatabase::new();
+        fai_types::std_lib::load_std(&mut db);
+        let id = db.add_source("M.fai".into(), array.into());
+        let file = db.source_file(id).unwrap();
+        let name = Symbol::intern("run");
+        let before = fuse_def(&db, file, name);
+        db.add_source("M.fai".into(), list.clone());
+        let after = fuse_def(&db, file, name);
+        assert_ne!(before, after);
+        let mut clean = FaiDatabase::new();
+        fai_types::std_lib::load_std(&mut clean);
+        let id = clean.add_source("M.fai".into(), list);
         assert_eq!(after, fuse_def(&clean, clean.source_file(id).unwrap(), name));
     }
 
