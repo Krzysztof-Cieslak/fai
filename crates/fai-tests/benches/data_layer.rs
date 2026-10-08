@@ -21,6 +21,41 @@ fn main() {
     divan::main();
 }
 
+fn sort_workload(bencher: Bencher, size: i64, expression: &str, input: impl Fn(i64) -> i64) {
+    let source = format!(
+        "module Main\nchecksum : Int -> Int -> Array Int -> Int\nlet checksum i acc xs = if i >= Array.length xs then acc else checksum (i + 1) (acc + i * Array.unsafeGet i xs) xs\npublic run : Int -> Int\nlet run n = checksum 0 0 (Array.sort (Array.init n (fun i -> {expression})))\npublic main : Runtime -> Unit\nlet main r = ()\n"
+    );
+    let (db, file) = db_with(&source);
+    let mut program = fai_driver::jit_compile(&db, file).unwrap_or_else(|d| panic!("{d:?}"));
+    let function = program.function(Symbol::intern("run")).unwrap();
+    let mut values: Vec<_> = (0..size).map(input).collect();
+    values.sort_unstable();
+    let expected: i64 = values.iter().enumerate().map(|(i, value)| i as i64 * value).sum();
+    let first = rt::apply(rt::fai_dup(function), &[rt::make_int(size)]);
+    assert_eq!(rt::read_int(first), expected);
+    rt::fai_drop(first);
+    bencher.bench(|| {
+        let result = rt::apply(rt::fai_dup(function), &[rt::make_int(size)]);
+        divan::black_box(result);
+        rt::fai_drop(result);
+    });
+}
+
+#[divan::bench(args = [512, 2048])]
+fn array_sort_all_equal(bencher: Bencher, size: i64) {
+    sort_workload(bencher, size, "7", |_| 7);
+}
+
+#[divan::bench(args = [512, 2048])]
+fn array_sort_two_keys(bencher: Bencher, size: i64) {
+    sort_workload(bencher, size, "i % 2", |i| i % 2);
+}
+
+#[divan::bench(args = [512, 2048])]
+fn array_sort_skewed(bencher: Bencher, size: i64) {
+    sort_workload(bencher, size, "if i % 97 = 0 then 1 else 0", |i| i64::from(i % 97 == 0));
+}
+
 /// A fresh database holding `src` (and the prelude), returning the file.
 fn db_with(src: &str) -> (FaiDatabase, SourceFile) {
     let mut db = FaiDatabase::new();

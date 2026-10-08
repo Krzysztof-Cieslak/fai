@@ -165,7 +165,7 @@ fn nested_array_literal() {
 }
 
 // ===========================================================================
-// Sort (in-place unstable quicksort), including the reverse-sorted worst case.
+// Sort (in-place unstable introsort), including reverse-sorted input.
 // ===========================================================================
 
 #[test]
@@ -535,7 +535,7 @@ fn empty_float_array_has_length_zero_and_is_leak_free() {
 
 #[test]
 fn array_sort_does_constant_buffer_copies() {
-    // `Array.sort` is an in-place median-of-three quicksort. Over a freshly built
+    // `Array.sort` is an in-place three-way introsort. Over a freshly built
     // (unique) input every swap updates the buffer in place, so the buffer-copy
     // count is zero and independent of the length — a uniqueness loss in the
     // recursive partition would copy once per frame, scaling with N.

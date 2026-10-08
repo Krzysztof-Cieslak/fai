@@ -1038,6 +1038,9 @@ In-place update when uniquely owned; copy-on-share. Safe `get`/`set` return
 or growth beyond the platform's allocation-size limit abort before allocation.
 `range lo hi` uses the nonnegative part of the wrapping `Int` difference
 `hi - lo` as its count; generated elements also use wrapping addition.
+`sort` and `sortBy` are unstable, in-place when uniquely owned. Three-way
+partitioning skips equal-value bands, and a depth-limited heapsort fallback bounds
+worst-case work by O(n log n); duplicate-heavy arrays avoid quadratic partitions.
 
 ```
 empty        : Array 'a
