@@ -412,7 +412,7 @@ The contract aborted while being checked: a generated input drove the body into 
 
 **Severity:** error
 
-An `example`/`forall` contract references a host capability — `Console`, `Clock`, `Random`, `FileSystem`, `Env`, or the `Runtime` that bundles them. Contracts are checked by `fai check` and run by `fai test`, so they must be deterministic and pure and cannot reach a capability. Express the law over pure values instead.
+An `example`/`forall` contract references a capability value or has a non-pure execution-effect row, including an open row whose purity cannot be established. Effects count even when a helper hides the capability in its body. Contracts are checked by `fai check` and run by `fai test`, so they must be deterministic and pure. Express the law over pure values instead.
 
 ### FAI6005 — binder type has no finite value
 

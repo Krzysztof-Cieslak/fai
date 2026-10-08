@@ -1,0 +1,10 @@
+module ContractEffects
+
+// Contracts may hold a function without running its latent effect.
+// Invoking noisy inside a contract would instead be rejected as FAI6004.
+public noisy : Int -> Int / { Console }
+let noisy n =
+  let ignored = stdConsole.writeLine "called"
+  n
+example: const true noisy
+example: List.map (fun n -> n + 1) [1, 2] = [2, 3]

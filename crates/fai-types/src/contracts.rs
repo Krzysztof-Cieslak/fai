@@ -8,11 +8,10 @@
 //! exported type; they use referenced definitions' schemes (declared where
 //! present), consistent with the firewall.
 //!
-//! Contracts must also be **pure**: a contract has no `Runtime` in scope, so the
-//! only way to reach a host capability (`Console`, `Clock`, `Random`,
-//! `FileSystem`, `Env`) is to reference an effectful binding whose type carries
-//! one. Such a reference is reported directly as [`CONTRACT_IMPURE`] at the
-//! offending expression, instead of surfacing as a downstream type mismatch.
+//! Contracts exclude capability-valued expressions and must have a provably pure
+//! execution-effect row. Closed helpers and suspensions may carry effects without
+//! exposing a capability value in their parameter/result types; their invocation
+//! is reported as [`CONTRACT_IMPURE`] at the effectful application.
 
 use fai_db::{Db, SourceFile, emit};
 use fai_diagnostics::{CONTRACT_IMPURE, Diagnostic};
@@ -97,20 +96,35 @@ fn check_contract_body(
 
     let mut walker = Walker::new(db, file, module, resolved, &mut cx, &mut env);
     walker.enable_type_recording();
+    walker.record_effect_sites();
     // Bind each `forall` binder as a fresh monomorphic parameter, so references
     // to it in the body are typed from use (and a misuse is a real type error).
-    for &pat in binders {
-        let _ = walker.bind_param(pat);
-    }
+    let param_tys: Vec<_> = binders.iter().map(|&pat| walker.bind_param(pat)).collect();
     let body_ty = walker.infer_expr(body);
+    walker.close_residual_effect(&param_tys);
+    let execution_effect = walker.body_effect();
+    let effect_sites = walker.effect_sites();
     let expr_types = walker.collect_expr_types();
 
-    // A contract is pure by construction (no `Runtime` is in scope), so any
-    // capability-typed expression means it references an effectful binding.
+    // Capability-valued expressions are excluded from contracts independently
+    // of the execution-effect check below.
     // Report that at the offending reference and skip the `Bool` check, which
     // would otherwise pile a confusing mismatch on top of the real problem.
     if let Some((id, caps)) = leftmost_capability(db, module, &expr_types) {
         emit(db, impure_diagnostic(db, file, module.expr(id).span, &caps));
+        return;
+    }
+
+    if !execution_effect.is_pure() {
+        let at = effect_sites
+            .iter()
+            .filter(|(_, effect)| !effect.is_pure())
+            .min_by_key(|(span, _)| (span.start(), span.end()))
+            .map_or(module.expr(body).span, |(span, _)| *span);
+        emit(db, Diagnostic::error(CONTRACT_IMPURE,
+            format!("a contract must be pure, but evaluating this performs the effect `{}`", crate::ty::render_effect(&execution_effect)),
+            Span::new(file.source(db), at))
+            .with_help("Move effectful calls outside the contract and state the law over their pure results. An open execution-effect row cannot establish purity."));
         return;
     }
 

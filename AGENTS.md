@@ -423,6 +423,9 @@ overrides like other user ADTs.
 Examples and properties support exhaustive `match` expressions directly, including
 inside lambdas. Lowering distinguishes their unreachable fallthroughs from actual
 unsupported constructs.
+Contracts also require a closed, empty execution-effect row: an honest effectful
+helper or an effect-carrying stream cannot hide its effects from `FAI6004`.
+Holding an unused effectful function does not invoke its latent effect.
 
 `Tls.writePlaintext` returns `Result Int String`: the accepted byte count, which
 can be zero when the output buffer is full. Callers drain `takeOutgoing` and retry
