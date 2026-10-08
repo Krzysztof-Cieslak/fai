@@ -25,7 +25,7 @@ use fai_syntax::ast::{ItemKind, PatKind};
 pub use run::{ContractOutcome, run_contract};
 pub use synth::{NotRunnable, SynthContract, synthesize};
 
-/// A contract body references a host capability and so is impure. The constant
+/// A contract references a capability value or has a non-pure execution effect. The constant
 /// is defined in `fai-diagnostics` (it is emitted by the type checker, which
 /// cannot depend on this crate) and re-exported here so the contracts layer
 /// owns every `FAI6xxx` name; its catalog entry is in [`CODES`].
@@ -84,11 +84,11 @@ pub const CODES: &[CodeInfo] = &[
         code: CONTRACT_IMPURE,
         title: "impure contract",
         default_severity: Severity::Error,
-        explanation: "An `example`/`forall` contract references a host capability — `Console`, \
-                      `Clock`, `Random`, `FileSystem`, `Env`, or the `Runtime` that bundles them. \
-                      Contracts are checked by `fai check` and run by `fai test`, so they must be \
-                      deterministic and pure and cannot reach a capability. Express the law over \
-                      pure values instead.",
+        explanation: "An `example`/`forall` contract references a capability value or has a \
+                      non-pure execution-effect row, including an open row whose purity cannot \
+                      be established. Effects count even when a helper hides the capability in \
+                      its body. Contracts are checked by `fai check` and run by `fai test`, so \
+                      they must be deterministic and pure. Express the law over pure values instead.",
     },
     CodeInfo {
         code: CONTRACT_NON_GROUNDABLE,

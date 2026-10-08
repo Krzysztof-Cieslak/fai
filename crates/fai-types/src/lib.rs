@@ -19,6 +19,8 @@ pub mod std_lib;
 mod ty;
 
 #[cfg(test)]
+mod contract_effect_tests;
+#[cfg(test)]
 mod edge_tests;
 #[cfg(test)]
 mod local_function_effect_tests;

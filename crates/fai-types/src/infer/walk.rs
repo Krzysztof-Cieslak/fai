@@ -88,6 +88,8 @@ pub struct Walker<'a, E: Env> {
     /// of every application performed. A lambda saves and resets it so the lambda
     /// carries its own body's effect, closing the capability-laundering hole.
     cur_effect: SolveEffect,
+    /// Optional execution-effect locations, excluding latent lambda/method bodies.
+    effect_sites: Option<Vec<(fai_span::TextRange, SolveEffect)>>,
 }
 
 impl<'a, E: Env> Walker<'a, E> {
@@ -112,6 +114,7 @@ impl<'a, E: Env> Walker<'a, E> {
             expr_types: FxHashMap::default(),
             pat_types: FxHashMap::default(),
             cur_effect: SolveEffect::pure(),
+            effect_sites: None,
         }
     }
 }
@@ -224,9 +227,26 @@ impl<E: Env> Walker<'_, E> {
 
     /// Records that evaluating the current expression performs effect `eff`,
     /// merging it into the body's accumulated latent effect.
-    fn incur_effect(&mut self, eff: &SolveEffect) {
+    fn incur_effect(&mut self, eff: &SolveEffect, span: fai_span::TextRange) {
         let merged = self.cx.union_effects(&self.cur_effect, eff);
         self.cur_effect = merged;
+        if let Some(sites) = &mut self.effect_sites {
+            sites.push((span, eff.clone()));
+        }
+    }
+
+    /// Records effectful applications evaluated by this body for diagnostics.
+    pub(crate) fn record_effect_sites(&mut self) {
+        self.effect_sites = Some(Vec::new());
+    }
+
+    /// Reifies recorded execution effects after inference has solved their rows.
+    pub(crate) fn effect_sites(&self) -> Vec<(fai_span::TextRange, crate::ty::EffectRow)> {
+        self.effect_sites
+            .iter()
+            .flatten()
+            .map(|(span, effect)| (*span, self.cx.reify_effect_standalone(effect)))
+            .collect()
     }
 
     /// The accumulated latent effect of the body walked so far, reified. This is
@@ -471,7 +491,9 @@ impl<E: Env> Walker<'_, E> {
     fn infer_function(&mut self, params: &[PatId], body: ExprId) -> SolveTy {
         let param_tys = params.iter().map(|&p| self.bind_pattern_into(p)).collect();
         let saved = std::mem::replace(&mut self.cur_effect, SolveEffect::pure());
+        let saved_sites = self.effect_sites.take();
         let body_ty = self.infer_expr(body);
+        self.effect_sites = saved_sites;
         let body_eff = std::mem::replace(&mut self.cur_effect, saved);
         SolveTy::arrows_solver_eff(param_tys, body_ty, body_eff)
     }
@@ -511,7 +533,7 @@ impl<E: Env> Walker<'_, E> {
             }
         }
         self.cx.close_application_effects(effect_checkpoint, &params, arg_tys, &result);
-        self.incur_effect(&eff);
+        self.incur_effect(&eff, span);
         result
     }
 
@@ -793,7 +815,9 @@ impl<E: Env> Walker<'_, E> {
             // effectful. The method's own effect rides its arrow so it is checked
             // against the interface's declared method effect.
             let saved = std::mem::replace(&mut self.cur_effect, SolveEffect::pure());
+            let saved_sites = self.effect_sites.take();
             let body_ty = self.infer_expr(m.body);
+            self.effect_sites = saved_sites;
             let method_eff = std::mem::replace(&mut self.cur_effect, saved);
             let impl_ty = SolveTy::arrows_solver_eff(param_tys, body_ty, method_eff.clone());
             match build_interface_method_scheme(self.db, iref, m.name) {

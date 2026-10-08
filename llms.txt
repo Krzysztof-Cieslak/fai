@@ -971,7 +971,10 @@ forall xs: mirror (mirror xs) = xs
 - `fai check` evaluates the closed `example`s eagerly and reports a failing one as
   `FAI6001`; `fai test` runs everything (examples and `forall` laws).
 - Contracts must be **pure and deterministic**: referencing a capability
-  (`Console`, `Clock`, …) is `FAI6004`. A non-`Bool` body is `FAI3007`.
+  (`Console`, `Clock`, …) or executing a nonempty/unknown effect row is `FAI6004`.
+  This includes calling an effectful helper or consuming an effectful stream.
+  Holding an unused effectful function does not execute it. A non-`Bool` body is
+  `FAI3007`.
 - A module may consist solely of `forall` laws.
 - Exhaustive `match` expressions work directly in examples/properties and their
   lambdas; non-exhaustive matches remain type-checking errors.

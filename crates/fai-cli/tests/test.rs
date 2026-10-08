@@ -22,6 +22,37 @@ fn workspace(name: &str, files: &[(&str, &str)]) -> PathBuf {
     dir
 }
 
+#[track_caller]
+fn impure_helper_is_not_executed(command: &str) {
+    let source = "module Main\npublic noisy : Int -> Int / { Console }\nlet noisy n =\n  let ignored = stdConsole.writeLine \"EFFECT_EXECUTED\"\n  n\nexample: noisy 1 = 1\n";
+    let dir = workspace(&format!("effect-{command}"), &[("Main.fai", source)]);
+    let output = fai()
+        .args([command, "--no-daemon", "--message-format=json", "-C"])
+        .arg(dir)
+        .arg("Main.fai")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let result: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("only protocol output");
+    assert!(
+        result["diagnostics"].as_array().unwrap().iter().any(|error| error["code"] == "FAI6004"),
+        "{result}"
+    );
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("EFFECT_EXECUTED"));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("EFFECT_EXECUTED"));
+}
+
+#[test]
+fn check_rejects_a_hidden_helper_effect_before_eager_execution() {
+    impure_helper_is_not_executed("check");
+}
+
+#[test]
+fn test_rejects_a_hidden_helper_effect_before_starting_a_worker() {
+    impure_helper_is_not_executed("test");
+}
+
 /// A passing example, a `forall` that divides by a runtime zero (`n - n`) so it
 /// aborts on the first generated input, then a passing `forall`. The middle
 /// contract must abort in isolation while the others still run.
