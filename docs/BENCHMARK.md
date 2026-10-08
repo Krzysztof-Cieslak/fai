@@ -289,12 +289,15 @@ the Fai sample uses `Array` (and `Buffer` for incremental strings), a persistent
   not OCaml's peak achievable speed — just as Fai's portable AOT build targets a
   baseline ISA where the JIT does not.
 
-**Correctness.** Each OCaml result is checked against the Rust oracle at the AOT
-size: the `algorithms_aot` bench verifies it on the untimed first run (so a wrong
-implementation fails the Benchmarks workflow, where `ocamlopt` is installed), and
-the `ocaml_baseline_matches_oracle` test in `crates/fai-tests/tests/algorithms.rs`
-re-checks every algorithm wherever `ocamlopt` is available (skipping cleanly when
-it is not).
+**Correctness.** Every delivered Fai, Rust, and available OCaml binary is checked
+against the registered Rust oracle at the AOT workload size. `algorithms_aot`
+verifies an untimed first execution, then checks the exit status of every timed
+execution. `algorithms_mem` checks the answer and status of every measurement.
+The shared validator uses exact integer equality and the existing `1e-6` scaled
+Float tolerance, rejecting malformed output and NaN/infinity. Failures report
+stdout and stderr. Oracle computation stays outside timing. The
+`ocaml_baseline_matches_oracle` integration test additionally re-checks each
+algorithm wherever `ocamlopt` is available (skipping cleanly when it is not).
 
 ### Why the Rust numbers differ so much between the two benches
 
