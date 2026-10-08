@@ -529,6 +529,11 @@ fai daemon <status|stop|…>        # manage the per-workspace daemon
 # global: --message-format=json   # structured diagnostics/output for agents/tools
 ```
 
+`Env.args ()` exposes only application arguments: those after `--` in `fai run`,
+or after the executable name in an AOT binary. Both JIT paths pass an explicit
+argument list to their worker, shared with spawned tasks; an empty list does not
+fall back to the worker's private command line.
+
 The CLI is a **thin client** to a per-workspace **daemon** that keeps the
 incremental query database hot. `fai query` is a **read-only** introspection
 surface for agents (definitions, usages, types, module APIs, capability

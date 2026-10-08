@@ -4077,12 +4077,57 @@ pub extern "C" fn fai_env_get(name: Value) -> Value {
     result
 }
 
-/// `Env.args`: the process arguments after the program name, as a `List String`.
+static PROGRAM_ARGS: Mutex<Option<Vec<String>>> = Mutex::new(None);
+
+/// Runs an isolated program with explicit arguments, shared by all its tasks.
+/// Restores the host argument source afterwards, including during unwinding.
+pub fn with_program_args<T>(args: &[String], run: impl FnOnce() -> T) -> T {
+    struct RestoreArgs(Option<Vec<String>>);
+    impl Drop for RestoreArgs {
+        fn drop(&mut self) {
+            *PROGRAM_ARGS.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = self.0.take();
+        }
+    }
+    let previous = PROGRAM_ARGS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .replace(args.to_vec());
+    let _restore = RestoreArgs(previous);
+    run()
+}
+
+#[cfg(test)]
+mod argument_tests {
+    use super::{Mutex, PROGRAM_ARGS, with_program_args};
+
+    static SERIAL: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn arguments_are_shared_with_threads_and_restored_after_unwinding() {
+        let _guard = SERIAL.lock().unwrap();
+        let previous = PROGRAM_ARGS.lock().unwrap().clone();
+        let args = vec!["".to_owned(), "two words".to_owned(), "café😀".to_owned()];
+        let panic = std::panic::catch_unwind(|| {
+            with_program_args(&args, || {
+                let child = std::thread::spawn(|| PROGRAM_ARGS.lock().unwrap().clone());
+                assert_eq!(child.join().unwrap(), Some(args.clone()));
+                panic!("unwind the argument scope");
+            });
+        });
+        assert!(panic.is_err());
+        assert_eq!(*PROGRAM_ARGS.lock().unwrap(), previous);
+    }
+}
+
+/// `Env.args`: explicit worker arguments, or native process arguments after the
+/// program name, as a `List String`.
 /// Consumes its `Unit` argument.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_env_args(unit: Value) -> Value {
     fai_drop(unit);
-    let args: Vec<Value> = std::env::args().skip(1).map(|a| make_string(a.as_bytes())).collect();
+    let supplied = PROGRAM_ARGS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    let args = supplied.unwrap_or_else(|| std::env::args().skip(1).collect());
+    let args: Vec<Value> = args.iter().map(|a| make_string(a.as_bytes())).collect();
     list_of_strings(&args)
 }
 

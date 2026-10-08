@@ -149,6 +149,9 @@ pub struct BuildArgs {
 pub struct RunWorkerArgs {
     /// Path to the serialized run bundle to JIT and execute.
     pub bundle: Utf8PathBuf,
+    /// Application arguments, separate from worker-control arguments.
+    #[arg(last = true)]
+    pub args: Vec<String>,
 }
 
 /// Arguments for the hidden `__test-worker` subcommand.

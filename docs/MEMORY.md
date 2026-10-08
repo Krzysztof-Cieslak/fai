@@ -534,6 +534,12 @@ Daemon, persistence & protocol:
   build a bundle and spawn the same `__run-worker`. (Transferring the warm bundle
   is the realistic best-latency option; the alternatives — cold re-derive, or AOT
   re-link per edit — are slower or contradict JIT-for-run.)
+  Application arguments travel separately after `__run-worker <bundle> --` and
+  initialize a scoped, process-wide runtime argument source before execution.
+  `Env.args` therefore exposes only user arguments to the main task and its
+  children, including an explicitly empty list; native executables retain their
+  host argv source. The compiled bundle and its cache identity do not depend on
+  command-line arguments.
   Native symbols use `fai2_<module>__<member>` with lowercase-alphanumeric
   components and every other UTF-8 byte escaped as `_xNN`, including underscores
   and uppercase letters. The doubled separator cannot occur inside a component;

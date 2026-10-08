@@ -841,6 +841,11 @@ A program that uses `Concurrency` runs on an M:N green-thread scheduler; its wor
 count defaults to the host's available parallelism (override with the `FAI_WORKERS`
 environment variable). The full tour is `samples/ConcurrencyDemo.fai`.
 
+`runtime.env.args ()` returns application arguments in order. `fai run Main.fai
+-- hello "two words"` exposes `["hello", "two words"]`, matching a built
+executable. Both daemon and `--no-daemon` runs exclude worker-control arguments;
+empty arguments and an empty argument list are preserved.
+
 ### Networking
 
 `Net` is a capability in the `Runtime`: TCP and UDP over the same scheduler (each
@@ -996,6 +1001,8 @@ handles `Listener`, `Connection`, `UdpSocket`. (`Bytes`, `String`, `Array`, `Lis
 are built-in type constructors, also usable unqualified.)
 Interfaces: `Num`, `Eq`, `Ord` (sealed operator interfaces); `Console`, `Clock`,
 `Random`, `FileSystem`, `Env`, `Concurrency`, `Net` (capabilities).
+`Env.args : Unit -> List String / { Env }` reads application arguments only,
+including for spawned tasks; no supplied arguments means `[]`.
 
 ```
 identity : 'a -> 'a

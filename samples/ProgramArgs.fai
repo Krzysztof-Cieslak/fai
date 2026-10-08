@@ -1,0 +1,6 @@
+module ProgramArgs
+
+// `fai run ProgramArgs.fai -- hello world` prints "hello world".
+// Native executables expose the same argument list, without launcher details.
+public main : Runtime -> Unit / { Console, Env }
+let main runtime = runtime.console.writeLine (String.join " " (runtime.env.args ()))
