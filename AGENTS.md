@@ -842,6 +842,13 @@ unsupported or ambiguous framing returns `Err`. Chunked bodies validate data
 CRLFs and consume all trailers through the final empty line before pool reuse.
 Framing lines/trailers are bounded, large chunks are streamed in bounded pieces,
 and buffered surplus travels with the pooled connection.
+HEAD, 204, and 304 responses have no body regardless of length metadata. Clients
+skip bounded informational responses before the final head; protocol upgrades
+and CONNECT tunnels return an explicit error. Servers omit forbidden payloads
+without evaluating their body streams, retaining only permitted length metadata.
+HTTP/1.0 connections require explicit keep-alive before pool reuse. Servers send
+`100 Continue` before awaiting an expected request body, and reject other
+expectations with `417` without waiting for that body.
 
 **Lexer subtlety to preserve:** a leading tick is a character literal when it
 closes (`'a'`, `'\n'`) and a **type variable** otherwise (`'a`, `'r`). This is

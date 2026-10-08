@@ -128,6 +128,198 @@ let main runtime = runtime.console.writeLine (Http.withClient runtime (two runti
     assert_eq!(out, "one|two\n");
 }
 
+#[track_caller]
+fn pooled_bodyless_response(method: &str, first_head: &'static [u8]) {
+    use std::io::Write;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let peer = std::thread::spawn(move || {
+        let mut connection = redirect_connection(&listener);
+        drop(listener);
+        read_raw_request(&mut connection);
+        connection.write_all(first_head).unwrap();
+        read_raw_request(&mut connection);
+        connection.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok").unwrap();
+    });
+    let source = format!(
+        r#"module Prog
+fetch : Runtime -> Http.Client -> String / {{ Concurrency, Net, Tls }}
+let fetch r client =
+  match Url.parse "http://127.0.0.1:{port}/" with
+  | Err e -> e
+  | Ok url ->
+    let req = {{ method = Http.{method}, url = url, headers = Headers.empty, body = Http.emptyBody }}
+    match Http.requestOn r client req with
+    | Err e -> e
+    | Ok first ->
+      let empty = Http.bodyText first.body
+      match Http.getOn r client "http://127.0.0.1:{port}/" with
+      | Err e -> e
+      | Ok second -> if empty = Ok "" then Result.withDefault "error" (Http.bodyText second.body) else "unexpected body"
+public main : Runtime -> Unit / {{ Concurrency, Console, Net, Tls }}
+let main r = r.console.writeLine (Http.withClient r (fetch r))
+"#
+    );
+    let (out, code) = run(&source);
+    peer.join().unwrap();
+    assert_eq!((out.as_str(), code), ("ok\n", 0));
+}
+
+#[test]
+fn pooled_head_response_immediately_releases_its_connection() {
+    pooled_bodyless_response("HEAD", b"HTTP/1.1 200 OK\r\nContent-Length: 500\r\n\r\n");
+}
+
+#[test]
+fn pooled_no_content_response_immediately_releases_its_connection() {
+    pooled_bodyless_response("GET", b"HTTP/1.1 204 No Content\r\n\r\n");
+}
+
+#[test]
+fn pooled_not_modified_response_immediately_releases_its_connection() {
+    pooled_bodyless_response("GET", b"HTTP/1.1 304 Not Modified\r\nContent-Length: 500\r\n\r\n");
+}
+
+#[track_caller]
+fn server_bodyless_response(method: &str, status: i32, keeps_length: bool) {
+    use fai_db::Setter;
+    use std::io::Read;
+    let _guard = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let peer = std::thread::spawn(move || {
+        let mut connection = redirect_connection(&listener);
+        connection.set_read_timeout(Some(std::time::Duration::from_secs(15))).unwrap();
+        let mut response = String::new();
+        connection.read_to_string(&mut response).unwrap();
+        response
+    });
+    let mut db = fai_db::FaiDatabase::new();
+    let ids = fai_types::std_lib::load_std(&mut db);
+    let file = ids
+        .into_iter()
+        .filter_map(|id| db.source_file(id))
+        .find(|file| file.path(&db).ends_with("/Http.fai"))
+        .unwrap();
+    let source = format!(
+        r#"{}
+testSuppressedBody : Runtime -> Unit -> Stream Bytes {{ Console }} / {{ Console }}
+let testSuppressedBody r u =
+  let forced = r.console.writeLine "BODY FORCED"
+  stringBody "payload"
+public main : Runtime -> Unit / {{ Console, Net, Tls }}
+let main r =
+  match r.net.connect "127.0.0.1" {port} with
+  | Err e -> r.console.writeLine e
+  | Ok connection ->
+    let body = Stream.defer (testSuppressedBody r)
+    let resp = {{ response {status} body with headers = Headers.fromList [("Content-Length", "99"), ("Transfer-Encoding", "chunked")] }}
+    match sendResponse {method} (plainTransport r connection) resp with
+    | Err e -> r.console.writeLine e
+    | Ok u -> ()
+"#,
+        file.text(&db)
+    );
+    file.set_text(&mut db).to(source);
+    fai_runtime::capture_start();
+    let outcome = fai_driver::jit_run_program(&db, file);
+    let out = fai_runtime::capture_take();
+    assert_eq!(outcome.exit_code, 0, "{:?}", outcome.diagnostics);
+    let wire = peer.join().unwrap();
+    assert_eq!(out, "");
+    let (head, body) = wire.split_once("\r\n\r\n").unwrap();
+    assert!(body.is_empty(), "{wire}");
+    assert!(!head.to_ascii_lowercase().contains("transfer-encoding"), "{wire}");
+    assert_eq!(head.to_ascii_lowercase().contains("content-length: 99"), keeps_length, "{wire}");
+}
+
+#[test]
+fn server_head_suppresses_body_without_forcing_it() {
+    server_bodyless_response("HEAD", 200, true);
+}
+
+#[test]
+fn server_no_content_suppresses_body_and_length_headers() {
+    server_bodyless_response("GET", 204, false);
+}
+
+#[test]
+fn server_not_modified_retains_length_metadata_without_a_body() {
+    server_bodyless_response("GET", 304, true);
+}
+
+#[track_caller]
+fn server_expectation(expectation: &str, accepted: bool) {
+    use fai_db::Setter;
+    use std::io::{Read, Write};
+    let _guard = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let head = format!(
+        "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4\r\nExpect: {expectation}\r\n\r\n"
+    );
+    let peer = std::thread::spawn(move || {
+        let mut connection = redirect_connection(&listener);
+        connection.set_read_timeout(Some(std::time::Duration::from_secs(15))).unwrap();
+        connection.write_all(head.as_bytes()).unwrap();
+        if accepted {
+            let mut interim = [0u8; 25];
+            connection.read_exact(&mut interim).unwrap();
+            assert_eq!(&interim, b"HTTP/1.1 100 Continue\r\n\r\n");
+            connection.write_all(b"data").unwrap();
+        }
+        let mut response = String::new();
+        connection.read_to_string(&mut response).unwrap();
+        response
+    });
+    let mut db = fai_db::FaiDatabase::new();
+    let ids = fai_types::std_lib::load_std(&mut db);
+    let file = ids
+        .into_iter()
+        .filter_map(|id| db.source_file(id))
+        .find(|file| file.path(&db).ends_with("/Http.fai"))
+        .unwrap();
+    let source = format!(
+        r#"{}
+public main : Runtime -> Unit / {{ Net, Tls }}
+let main r =
+  match r.net.connect "127.0.0.1" {port} with
+  | Err e -> ()
+  | Ok connection ->
+    let transport = plainTransport r connection
+    match parseRequest transport with
+    | Err e -> transport.close ()
+    | Ok request ->
+      let text = Result.withDefault "error" (bodyText request.body)
+      match sendResponse request.method transport (textResponse 200 text) with
+      | Ok u -> ()
+      | Err e -> transport.close ()
+"#,
+        file.text(&db)
+    );
+    file.set_text(&mut db).to(source);
+    let outcome = fai_driver::jit_run_program(&db, file);
+    assert_eq!(outcome.exit_code, 0, "{:?}", outcome.diagnostics);
+    let wire = peer.join().unwrap();
+    if accepted {
+        assert!(wire.starts_with("HTTP/1.1 200"), "{wire}");
+        assert!(wire.ends_with("\r\n\r\ndata"), "{wire}");
+    } else {
+        assert!(wire.starts_with("HTTP/1.1 417"), "{wire}");
+        assert!(wire.ends_with("\r\n\r\n"), "{wire}");
+    }
+}
+
+#[test]
+fn server_acknowledges_continue_before_reading_the_body() {
+    server_expectation("100-continue", true);
+}
+
+#[test]
+fn server_rejects_unsupported_expectations_without_waiting_for_a_body() {
+    server_expectation("something-else", false);
+}
+
 fn redirect_connection(listener: &std::net::TcpListener) -> std::net::TcpStream {
     listener.set_nonblocking(true).unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);

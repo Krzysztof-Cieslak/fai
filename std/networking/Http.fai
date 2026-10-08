@@ -362,7 +362,7 @@ let isHeaderEnd b i =
   Bytes.unsafeGet i b = 13 && Bytes.unsafeGet (i + 1) b = 10 && Bytes.unsafeGet (i + 2) b = 13 && Bytes.unsafeGet (i + 3) b = 10
 
 // Parse a status line and header lines from the decoded header block.
-parseStatusAndHeaders : String -> Result (Int * String * Headers) String
+parseStatusAndHeaders : String -> Result (String * Int * String * Headers) String
 let parseStatusAndHeaders text =
   match String.split "\r\n" text with
   | [] -> Err "empty response"
@@ -371,18 +371,25 @@ let parseStatusAndHeaders text =
     | Err e -> Err e
     | Ok status ->
       match status with
-      | (code, reason) ->
+      | (version, code, reason) ->
         match parseHeaderLines headerLines Headers.empty with
         | Err e -> Err e
-        | Ok headers -> Ok (code, reason, headers)
+        | Ok headers -> Ok (version, code, reason, headers)
 
-parseStatusLine : String -> Result (Int * String) String
+parseStatusLine : String -> Result (String * Int * String) String
 let parseStatusLine line =
   match String.split " " line with
   | version :: codeStr :: rest ->
-    match Int.fromString codeStr with
-    | Some code -> Ok (code, String.join " " rest)
-    | None -> Err ("bad status code: " ++ codeStr)
+    if version <> "HTTP/1.0" && version <> "HTTP/1.1" then
+      Err ("unsupported HTTP version: " ++ version)
+    else
+      match Int.fromString codeStr with
+      | Some code ->
+        if String.length codeStr = 3 && code >= 100 && code <= 999 then
+          Ok (version, code, String.join " " rest)
+        else
+          Err ("bad status code: " ++ codeStr)
+      | None -> Err ("bad status code: " ++ codeStr)
   | other -> Err ("bad status line: " ++ line)
 
 parseHeaderLines : List String -> Headers -> Result Headers String
@@ -746,29 +753,29 @@ let chunkedBody t buf = chunkedWith (fun rest -> Stream.empty) t buf
 // Parse a response from a transport: the head, then a *lazy* body that streams from
 // the connection on demand (so a large response is not buffered whole). The body
 // captures the transport, which closes when the response body is dropped.
-parseResponse : Transport 'e -> Result (Response 'e) String / 'e
-let parseResponse t =
-  match readHeaderBlock t Bytes.empty with
+parseResponse : Method -> Transport 'e -> Result (Response 'e) String / 'e
+let parseResponse method t =
+  match readHead t Bytes.empty with
   | Err e -> Err e
-  | Ok block ->
-    match block with
-    | (headBytes, leftover) ->
-      match Bytes.toString headBytes with
-      | None -> Err "response headers are not valid UTF-8"
-      | Some headText ->
-        match parseStatusAndHeaders headText with
-        | Err e -> Err e
-        | Ok parsed ->
-          match parsed with
-          | (code, reason, headers) ->
-            match framingOf headers UntilEof with
-            | Err e -> Err e
-            | Ok framing -> Ok {
-              body = bodyStream t leftover framing,
-              headers = headers,
-              reason = reason,
-              status = code
-            }
+  | Ok (version, code, reason, headers, leftover) ->
+    match responseFraming method code headers with
+    | Err e -> Err e
+    | Ok framing -> Ok {
+      body = bodyStream t leftover framing,
+      headers = headers,
+      reason = reason,
+      status = code
+    }
+
+responseHasBody : Method -> Int -> Bool
+let responseHasBody method status =
+  methodName method <> "HEAD" && not (status >= 100 && status < 200) && status <> 204 && status <> 304
+
+responseFraming : Method -> Int -> Headers -> Result BodyFraming String
+let responseFraming method status headers =
+  if methodName method = "CONNECT" && status >= 200 && status < 300 then
+    Err "CONNECT tunnels are not supported"
+  else if responseHasBody method status then framingOf headers UntilEof else Ok NoBody
 
 // --- Transport instances ---------------------------------------------------
 /// A transport over a plain TCP `Connection`. Typed `Transport { Net, Tls }`: it
@@ -1014,7 +1021,7 @@ runOver : Transport { Net, Tls } -> Request 'e -> Result (Response { Net, Tls })
 let runOver t req =
   match sendRequest true t req with
   | Err e -> Err e
-  | Ok sent -> parseResponse t
+  | Ok sent -> parseResponse req.method t
 
 /// GET a URL (http or https).
 public get : { net : Net, tls : Tls | 'r } -> String -> Result (Response { Net, Tls }) String / { Net, Tls }
@@ -1190,16 +1197,20 @@ let hasConnectionClose headers =
 
 // A keep-alive response (a definite length and no `Connection: close`) leaves the
 // connection reusable; an until-EOF or explicitly-closed one does not.
-isReusable : Headers -> BodyFraming -> Bool
-let isReusable headers framing =
+isReusable : String -> Headers -> BodyFraming -> Bool
+let isReusable version headers framing =
   match framing with
   | UntilEof -> false
-  | _ -> not (hasConnectionClose headers)
+  | _ ->
+    not (hasConnectionClose headers) && (version = "HTTP/1.1" || List.member "keep-alive" (List.map String.toLower (headerParts (Headers.getAll "Connection" headers))))
 
 // Read and parse a response head, returning the status, reason, headers, and any
 // already-read leftover body bytes (the connection stays open for the body).
-readHead : Transport { Net, Tls } -> Bytes -> Result (Int * String * Headers * Bytes) String / { Net, Tls }
-let readHead t buffered =
+readHead : Transport 'e -> Bytes -> Result (String * Int * String * Headers * Bytes) String / 'e
+let readHead t buffered = readHeadAfter t buffered 0
+
+readHeadAfter : Transport 'e -> Bytes -> Int -> Result (String * Int * String * Headers * Bytes) String / 'e
+let readHeadAfter t buffered interim =
   match readHeaderBlock t buffered with
   | Err e -> Err e
   | Ok (headBytes, leftover) ->
@@ -1208,16 +1219,25 @@ let readHead t buffered =
     | Some headText ->
       match parseStatusAndHeaders headText with
       | Err e -> Err e
-      | Ok (code, reason, headers) -> Ok (code, reason, headers, leftover)
+      | Ok (version, code, reason, headers) ->
+        if code = 101 then
+          Err "HTTP protocol upgrades are not supported"
+        else if code >= 100 && code < 200 then
+          if interim >= 32 then
+            Err "too many informational HTTP responses"
+          else
+            readHeadAfter t leftover (interim + 1)
+        else
+          Ok (version, code, reason, headers, leftover)
 
 // Build a pooled response: a lazy body that returns its connection to the pool when
 // fully read (a reusable response) or closes it (until-EOF / `Connection: close`).
-buildPooledResponse : { concurrency : Concurrency | 'r } -> Client -> String -> Int -> String -> Headers -> Bytes -> Transport { Net, Tls } -> Result (Response { Concurrency, Net, Tls }) String / { Concurrency }
-let buildPooledResponse env client origin code reason headers leftover t =
-  match framingOf headers UntilEof with
+buildPooledResponse : { concurrency : Concurrency | 'r } -> Client -> String -> Method -> String -> Int -> String -> Headers -> Bytes -> Transport { Net, Tls } -> Result (Response { Concurrency, Net, Tls }) String / { Concurrency }
+let buildPooledResponse env client origin method version code reason headers leftover t =
+  match responseFraming method code headers with
   | Err e -> Err e
   | Ok framing ->
-    let reusable = isReusable headers framing
+    let reusable = isReusable version headers framing
     Ok {
       body = pooledBody (releaseToPool env client origin reusable t) t leftover framing,
       headers = headers,
@@ -1249,8 +1269,8 @@ let attemptPooled env client origin t buffered req reused =
   | Ok sent ->
     match readHead t buffered with
     | Err e -> if reused then retryFresh env client origin req else Err e
-    | Ok (code, reason, headers, leftover) ->
-      buildPooledResponse env client origin code reason headers leftover t
+    | Ok (version, code, reason, headers, leftover) ->
+      buildPooledResponse env client origin req.method version code reason headers leftover t
 
 retryFresh : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Client -> String -> Request 'e -> Result (Response { Concurrency, Net, Tls }) String / { Concurrency, Net, Tls | 'e }
 let retryFresh env client origin req =
@@ -1377,16 +1397,19 @@ let methodFromString s =
     PATCH
   else if s = "HEAD" then HEAD else if s = "OPTIONS" then OPTIONS else Custom s
 
-parseRequestLine : String -> Result (Method * Url) String
+parseRequestLine : String -> Result (Method * Url * String) String
 let parseRequestLine line =
   match String.split " " line with
-  | methodStr :: target :: rest ->
-    match Url.parse target with
-    | Err e -> Err e
-    | Ok url -> Ok (methodFromString methodStr, url)
+  | [methodStr, target, version] ->
+    if version <> "HTTP/1.0" && version <> "HTTP/1.1" then
+      Err ("unsupported HTTP version: " ++ version)
+    else
+      match Url.parse target with
+      | Err e -> Err e
+      | Ok url -> Ok (methodFromString methodStr, url, version)
   | other -> Err ("bad request line: " ++ line)
 
-parseRequestHead : String -> Result (Method * Url * Headers) String
+parseRequestHead : String -> Result (Method * Url * Headers * String) String
 let parseRequestHead text =
   match String.split "\r\n" text with
   | [] -> Err "empty request"
@@ -1395,10 +1418,25 @@ let parseRequestHead text =
     | Err e -> Err e
     | Ok ml ->
       match ml with
-      | (method, url) ->
+      | (method, url, version) ->
         match parseHeaderLines headerLines Headers.empty with
         | Err e -> Err e
-        | Ok headers -> Ok (method, url, headers)
+        | Ok headers -> Ok (method, url, headers, version)
+
+honorExpectation : Transport 'e -> String -> Headers -> BodyFraming -> Result Unit String / 'e
+let honorExpectation t version headers framing =
+  let expectations = List.map String.toLower (headerParts (Headers.getAll "Expect" headers))
+  if List.isEmpty expectations then
+    Ok ()
+  else if version = "HTTP/1.1" && expectations = ["100-continue"] then
+    match framing with
+    | NoBody -> Ok ()
+    | SizedBody 0 -> Ok ()
+    | _ -> t.send (Bytes.fromString "HTTP/1.1 100 Continue\r\n\r\n")
+  else
+    match t.send (Bytes.fromString "HTTP/1.1 417 Expectation Failed\r\nConnection: close\r\nContent-Length: 0\r\n\r\n") with
+    | Err e -> Err e
+    | Ok sent -> Err "unsupported HTTP expectation"
 
 // Parse a request from a transport: the head, then the body read in full and
 // materialized (so the transport is free for writing the response). The body is
@@ -1418,18 +1456,21 @@ let parseRequest t =
         | Err e -> Err e
         | Ok parsed ->
           match parsed with
-          | (method, url, headers) ->
+          | (method, url, headers, version) ->
             match framingOf headers NoBody with
             | Err e -> Err e
             | Ok framing ->
-              match bodyBytes (bodyStream t leftover framing) with
+              match honorExpectation t version headers framing with
               | Err e -> Err e
-              | Ok body -> Ok {
-                body = bytesBody body,
-                headers = headers,
-                method = method,
-                url = url
-              }
+              | Ok ready ->
+                match bodyBytes (bodyStream t leftover framing) with
+                | Err e -> Err e
+                | Ok body -> Ok {
+                  body = bytesBody body,
+                  headers = headers,
+                  method = method,
+                  url = url
+                }
 
 // --- Server ----------------------------------------------------------------
 // Run the handler over a parsed request, mapping an `Err` to a 500 response.
@@ -1441,9 +1482,23 @@ let respond handler req =
 
 // Send a response (chunked-streamed or Content-Length per its headers), then close
 // the connection (one response per connection).
-sendResponse : Transport { Net, Tls } -> Response 'h -> Result Unit String / { Net, Tls | 'h }
-let sendResponse t resp =
-  match sendMessage true t ("HTTP/1.1 " ++ Int.toString resp.status ++ " " ++ resp.reason ++ "\r\n") resp.headers resp.body with
+sendResponse : Method -> Transport { Net, Tls } -> Response 'h -> Result Unit String / { Net, Tls | 'h }
+let sendResponse method t resp =
+  let startLine = "HTTP/1.1 " ++ Int.toString resp.status ++ " " ++ resp.reason ++ "\r\n"
+  let result =
+    if resp.status = 101 || (methodName method = "CONNECT" && resp.status >= 200 && resp.status < 300) then
+      Err "HTTP protocol upgrades and CONNECT tunnels are not supported"
+    else if responseHasBody method resp.status then
+      sendMessage true t startLine resp.headers resp.body
+    else
+      let headers = Headers.remove "Transfer-Encoding" resp.headers
+      let framed =
+        if resp.status = 204 || (resp.status >= 100 && resp.status < 200) then
+          Headers.remove "Content-Length" headers
+        else
+          headers
+      t.send (renderHead startLine (Headers.set "Connection" "close" framed))
+  match result with
   | Err e -> Err e
   | Ok sent -> Ok (t.close ())
 
@@ -1452,7 +1507,7 @@ handleOver : Transport { Net, Tls } -> (Request 'ein -> Result (Response 'h) Str
 let handleOver t handler =
   match parseRequest t with
   | Err e -> Err e
-  | Ok req -> sendResponse t (respond handler req)
+  | Ok req -> sendResponse req.method t (respond handler req)
 
 // Complete a server-side TLS handshake on a connection, returning a TLS transport.
 secureServer : { net : Net, tls : Tls | 'r } -> Connection -> Bytes -> Bytes -> Result (Transport { Net, Tls }) String / { Net, Tls }
