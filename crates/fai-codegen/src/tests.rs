@@ -31,7 +31,7 @@ fn lock() -> MutexGuard<'static, ()> {
 /// unboxed floats), derived from its signature — the test-harness analogue of the
 /// driver's `abi_of`. `nparams` is the runtime arity (source + evidence).
 fn abi_of_def(db: &FaiDatabase, def: DefId, nparams: usize) -> fai_core::ir::FnAbi {
-    match fai_types::declared_or_inferred_scheme(db, def) {
+    match fai_core::representation::definition_scheme(db, def) {
         Some(scheme) => {
             let source = nparams.saturating_sub(fai_types::evidence_count(&scheme));
             let niche = |ty: &fai_types::Ty| fai_core::niche_scheme(db, ty);

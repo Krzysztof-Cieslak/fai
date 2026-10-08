@@ -1,11 +1,18 @@
 module Library
 
 public opaque type Count = Int
+
 public opaque type Scalar = Float
+
 public opaque type Point = { x : Float, y : Float }
+
 public opaque type Box 'a = { content : 'a }
+
 public opaque type Function = Int -> Int
+
 public opaque type Deferred 'a 'e = Unit -> 'a / 'e
+
+public opaque type Maybe = Option Int
 
 public count : Int -> Count
 let count n = n
@@ -43,7 +50,14 @@ let defer f = f
 public force : Deferred 'a 'e -> 'a / 'e
 let force f = f ()
 
-public type Wrapped = | Wrapped Scalar
+public maybe : Int -> Maybe
+let maybe n = Some n
+
+public maybeValue : Maybe -> Int
+let maybeValue n = Option.withDefault 0 n
+
+public type Wrapped =
+  | Wrapped Scalar
 
 public interface Provider =
   value : Unit -> Scalar

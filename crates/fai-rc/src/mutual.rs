@@ -110,7 +110,7 @@ pub fn mutual_groups(db: &dyn Db, file: SourceFile) -> Arc<MutualGroups> {
         // group members only through plain saturated tail calls.
         let eligible = scc.iter().all(|m| {
             let lowered = core(db, file, m.name);
-            let evidence = fai_types::declared_or_inferred_scheme(db, *m)
+            let evidence = fai_core::representation::definition_scheme(db, *m)
                 .map_or(0, |s| fai_types::evidence_count(&s));
             evidence == 0
                 && lowered.fns.len() == 1

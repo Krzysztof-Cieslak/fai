@@ -112,7 +112,7 @@ fn escape_profile(db: &dyn Db, file: SourceFile, name: Symbol) -> Vec<EscapeUse>
     // call, so their signature is never consulted; report the conservative
     // all-escape value.
     let def = lowered.def;
-    let evidence = fai_types::declared_or_inferred_scheme(db, def)
+    let evidence = fai_core::representation::definition_scheme(db, def)
         .map_or(0, |s| fai_types::evidence_count(&s));
     if evidence > 0 {
         return vec![EscapeUse::Always; n];

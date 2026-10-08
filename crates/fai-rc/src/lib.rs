@@ -133,7 +133,7 @@ pub fn rc_lowered(db: &dyn Db, lowered: &LoweredDef, self_sig: &BorrowSig) -> Lo
     // dup/drop has been inserted (see [`trmc::fuse_evidence_self_calls`]). The
     // flattened loop then carries the evidence as an ordinary loop-carried
     // parameter, just like the real ones.
-    let evidence = fai_types::declared_or_inferred_scheme(db, lowered.def)
+    let evidence = fai_core::representation::definition_scheme(db, lowered.def)
         .map_or(0, |s| fai_types::evidence_count(&s));
 
     // The entry's native calling convention: a spread (fixed-shape float

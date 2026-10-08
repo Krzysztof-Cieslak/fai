@@ -2013,12 +2013,15 @@ Editor integration:
     No new `Ty`: a *union* is already a nominal `Ty::Adt`, so opacity only hides
     its constructors; an *opaque alias* is lowered to a nominal `Ty::Adt` (its
     own canonical name) **from another file**, suppressing expansion, while the
-    declaring file keeps expanding it transparently (the `decl_file == use_file`
-    test the alias expander already had). Chosen over a distinct representation
-    because reuse needs **zero** changes in Core/codegen/rc: values stay uniform
-    64-bit boxed words and drop is **header-driven** (a dead cell scans its own
-    descriptor's children), so an opaque value crosses a module boundary as an
-    opaque pointer with no layout knowledge required.
+    declaring file keeps expanding it transparently. Signature lowering keeps
+    the **observer** separate from the lexical declaration file and preserves it
+    through transparent aliases, constructor fields, and interface methods.
+    External clients therefore see one nominal identity and cannot infer the
+    hidden representation from a returned value. Native lowering then expands
+    aliases independently for layout, ownership, and ABI analysis: hidden scalar
+    and aggregate types use the same unboxed/spread/niche conventions on both
+    sides of the call. A representation edit leaves the abstract signature
+    stable while invalidating the affected native representation queries.
   - **Enforcement.** The hiding is one rule: `module_interface` keeps an opaque
     type's name in `types` but **omits its constructors** from `ctors`, which
     cascades through `prelude_exports`/auto-import (the constructors leave the

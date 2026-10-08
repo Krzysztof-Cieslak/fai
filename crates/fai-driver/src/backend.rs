@@ -214,7 +214,7 @@ mod symbol_tests {
 pub fn def_arity(db: &dyn Db, file: SourceFile, name: Symbol) -> usize {
     let source_params = fai_core::abi::source_param_count(db, file, name);
     let def = DefId::new(file.source(db), name);
-    let evidence = fai_types::declared_or_inferred_scheme(db, def)
+    let evidence = fai_core::representation::definition_scheme(db, def)
         .map_or(0, |scheme| fai_types::evidence_count(&scheme));
     source_params + evidence
 }
