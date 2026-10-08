@@ -116,6 +116,9 @@ impl LowerVars {
 struct Lowerer<'a> {
     db: &'a dyn Db,
     file: SourceFile,
+    /// Opacity belongs to the observing file, even while names are resolved in
+    /// another declaration's scope. `None` is the external public surface.
+    observer: Option<SourceFile>,
     module: &'a Module,
     /// The module path where the lowered type appears, for lexical (outward)
     /// resolution of a bare type/interface name.
@@ -356,7 +359,7 @@ impl Lowerer<'_> {
         // An opaque alias is transparent only within its declaring file; from
         // another file it stays nominal (its underlying type is hidden), so it
         // falls through to the `Ty::Adt` head below rather than expanding.
-        let opaque_cross_file = info.opaque && decl_file != self.file;
+        let opaque_cross_file = info.opaque && Some(decl_file) != self.observer;
         if info.is_alias && !opaque_cross_file {
             return self.expand_alias(decl_file, &info, args, span, vars);
         }
@@ -424,6 +427,7 @@ impl Lowerer<'_> {
         let mut body_lowerer = Lowerer {
             db: self.db,
             file: decl_file,
+            observer: self.observer,
             module: decl_module,
             scope: scope_of(info.name),
             expanding: Vec::new(),
@@ -676,7 +680,7 @@ pub fn lower_type_in(
     ty: TypeId,
     vars: &mut LowerVars,
 ) -> Ty {
-    let mut lowerer = Lowerer { db, file, module, scope: scope.to_vec(), expanding: Vec::new() };
+    let mut lowerer = Lowerer { db, file, observer: Some(file), module, scope: scope.to_vec(), expanding: Vec::new() };
     lowerer.lower(ty, vars)
 }
 
@@ -694,8 +698,20 @@ pub fn lower_signature_in(
     scope: &[Symbol],
     ty: TypeId,
 ) -> Scheme {
+    lower_signature_observed(db, file, Some(file), module, scope, ty)
+}
+
+pub(crate) fn lower_signature_observed(
+    db: &dyn Db,
+    file: SourceFile,
+    observer: Option<SourceFile>,
+    module: &Module,
+    scope: &[Symbol],
+    ty: TypeId,
+) -> Scheme {
     let mut vars = LowerVars::default();
-    let body = lower_type_in(db, file, module, scope, ty, &mut vars);
+    let mut lowerer = Lowerer { db, file, observer, module, scope: scope.to_vec(), expanding: Vec::new() };
+    let body = lowerer.lower(ty, &mut vars);
     Scheme::new(type_vars(&vars), body)
         .with_names(type_names(&vars))
         .with_rows(row_vars(&vars), row_names(&vars))
@@ -731,6 +747,15 @@ fn effect_names(vars: &LowerVars) -> Vec<String> {
 /// Builds the scheme of a data constructor `name` declared in `file`, e.g.
 /// `Some : 'a -> Option 'a`. Returns `None` if it is not a known constructor.
 pub fn build_constructor_scheme(db: &dyn Db, file: SourceFile, name: Symbol) -> Option<Scheme> {
+    build_constructor_scheme_observed(db, file, name, Some(file))
+}
+
+pub(crate) fn build_constructor_scheme_observed(
+    db: &dyn Db,
+    file: SourceFile,
+    name: Symbol,
+    observer: Option<SourceFile>,
+) -> Option<Scheme> {
     let decls = type_decls(db, file);
     let info = decls.ctor(name)?;
     let tinfo = decls.type_named(info.adt)?;
@@ -751,7 +776,7 @@ pub fn build_constructor_scheme(db: &dyn Db, file: SourceFile, name: Symbol) -> 
     seed_kinded_params(&mut vars, params, &kinds);
     // The constructor's field types resolve in its type's module scope.
     let mut lowerer =
-        Lowerer { db, file, module, scope: scope_of(info.adt), expanding: Vec::new() };
+        Lowerer { db, file, observer, module, scope: scope_of(info.adt), expanding: Vec::new() };
     let field_tys: Vec<Ty> = variant.fields.iter().map(|&f| lowerer.lower(f, &mut vars)).collect();
 
     let mut result = Ty::Adt(AdtRef::new(file.source(db), info.adt));
@@ -793,19 +818,27 @@ pub fn expand_alias_ty(db: &dyn Db, adt: AdtRef, args: &[Ty]) -> Option<Ty> {
     let body = *body;
     // The body lowers in its own (declaring) file, where the alias is transparent.
     let mut lowerer =
-        Lowerer { db, file, module, scope: scope_of(info.name), expanding: Vec::new() };
+        Lowerer { db, file, observer: Some(file), module, scope: scope_of(info.name), expanding: Vec::new() };
     let mut body_vars = LowerVars::default();
+    let kinds = adt_param_kinds(db, adt);
+    seed_kinded_params(&mut body_vars, &info.params, &kinds);
     let body_ty = lowerer.lower(body, &mut body_vars);
 
     let mut subst: FxHashMap<TyVarId, Ty> = FxHashMap::default();
+    let mut effect_subst = FxHashMap::default();
     for (i, param) in info.params.iter().enumerate() {
         if let Some(&id) = body_vars.by_name.get(param)
             && let Some(arg) = args.get(i)
         {
             subst.insert(id, arg.clone());
         }
+        if let Some(&id) = body_vars.effs_by_name.get(param)
+            && let Some(Ty::EffectArg(effect)) = args.get(i)
+        {
+            effect_subst.insert(id, effect.clone());
+        }
     }
-    Some(subst_ty(&body_ty, &subst))
+    Some(subst_ty_with_effects(&body_ty, &subst, &effect_subst))
 }
 
 /// Resolves an interface name to its [`InterfaceRef`] in the context of `file`
@@ -1061,7 +1094,7 @@ fn file_type_param_usage_inner(
         let mut changed = false;
         for scan in &scans {
             let lowerer =
-                Lowerer { db, file, module, scope: scan.scope.clone(), expanding: Vec::new() };
+                Lowerer { db, file, observer: Some(file), module, scope: scan.scope.clone(), expanding: Vec::new() };
             let mut type_used: FxHashSet<Symbol> = FxHashSet::default();
             let mut eff_used: FxHashSet<Symbol> = FxHashSet::default();
             for &field in &scan.fields {
@@ -1247,6 +1280,15 @@ pub fn build_interface_method_scheme(
     iref: InterfaceRef,
     method: Symbol,
 ) -> Option<Scheme> {
+    build_interface_method_scheme_observed(db, iref, method, db.source_file(iref.file))
+}
+
+pub(crate) fn build_interface_method_scheme_observed(
+    db: &dyn Db,
+    iref: InterfaceRef,
+    method: Symbol,
+    observer: Option<SourceFile>,
+) -> Option<Scheme> {
     let file = db.source_file(iref.file)?;
     let decls = interface_decls(db, file);
     let info = decls.interface_named(iref.name)?;
@@ -1264,7 +1306,7 @@ pub fn build_interface_method_scheme(
     let kinds = interface_param_kinds(db, iref);
     seed_kinded_params(&mut vars, params, &kinds);
     let mut lowerer =
-        Lowerer { db, file, module, scope: scope_of(iref.name), expanding: Vec::new() };
+        Lowerer { db, file, observer, module, scope: scope_of(iref.name), expanding: Vec::new() };
     let body = lowerer.lower(msig.ty, &mut vars);
 
     Some(

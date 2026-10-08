@@ -23,7 +23,7 @@ use crate::niche::niche_scheme;
 #[salsa::tracked]
 pub fn abi(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<FnAbi> {
     let def = DefId::new(file.source(db), name);
-    let Some(scheme) = fai_types::declared_or_inferred_scheme(db, def) else {
+    let Some(scheme) = crate::representation::definition_scheme(db, def) else {
         return Arc::new(FnAbi::default());
     };
     // A niche `Option` (and a spread float aggregate) parameter/result is carried
@@ -63,7 +63,7 @@ pub(crate) fn foreign_signature(
     name: Symbol,
 ) -> (Vec<fai_types::Ty>, fai_types::Ty) {
     let Some(scheme) =
-        fai_types::declared_or_inferred_scheme(db, DefId::new(file.source(db), name))
+        crate::representation::definition_scheme(db, DefId::new(file.source(db), name))
     else {
         return (Vec::new(), fai_types::Ty::Error);
     };

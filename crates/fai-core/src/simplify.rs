@@ -407,7 +407,7 @@ impl Simplifier<'_> {
         if !caf.entry().params.is_empty() {
             return None;
         }
-        let evidence = fai_types::declared_or_inferred_scheme(self.db, def)
+        let evidence = crate::representation::definition_scheme(self.db, def)
             .map_or(0, |s| fai_types::evidence_count(&s));
         if evidence > 0 {
             return None;
@@ -515,7 +515,7 @@ impl Simplifier<'_> {
     /// parameters). Such a function's call is a nested application whose inner
     /// arguments are evidence, which flattening must not merge.
     fn is_row_polymorphic(&self, g: DefId) -> bool {
-        fai_types::declared_or_inferred_scheme(self.db, g)
+        crate::representation::definition_scheme(self.db, g)
             .is_some_and(|s| fai_types::evidence_count(&s) > 0)
     }
 }

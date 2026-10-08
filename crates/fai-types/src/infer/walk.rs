@@ -24,7 +24,7 @@ use crate::infer::ctx::{
     Constraint, EffTail, InferCtx, RowTail, SolveEffect, SolveRow, SolveTy, UnifyResult,
 };
 use crate::lower::{
-    ParamKind, build_interface_method_scheme, interface_param_kinds, resolve_interface,
+    ParamKind, build_interface_method_scheme_observed, interface_param_kinds, resolve_interface,
 };
 use crate::ty::Scheme;
 use crate::{
@@ -60,7 +60,7 @@ pub trait Env {
     /// The scheme of a builtin/prelude name.
     fn builtin_scheme(&mut self, name: Symbol) -> Option<Scheme>;
     /// The scheme of a data constructor (`Some : 'a -> Option 'a`).
-    fn ctor_scheme(&mut self, ctor: CtorRef) -> Option<Scheme>;
+    fn ctor_scheme(&mut self, ctor: CtorRef, observer: SourceFile) -> Option<Scheme>;
 }
 
 /// A local binding's type: monomorphic (parameters, lambda binders, tuple
@@ -609,7 +609,7 @@ impl<E: Env> Walker<'_, E> {
                 None => SolveTy::Error,
             },
             Some(Res::Def(def)) => self.instantiate_def(def, span),
-            Some(Res::Ctor(ctor)) => match self.env.ctor_scheme(ctor) {
+            Some(Res::Ctor(ctor)) => match self.env.ctor_scheme(ctor, self.file) {
                 Some(scheme) => self.cx.instantiate(&scheme),
                 None => SolveTy::Error,
             },
@@ -662,7 +662,7 @@ impl<E: Env> Walker<'_, E> {
         match self.resolved.get(expr) {
             Some(Res::Def(def)) => return self.instantiate_def(def, span),
             Some(Res::Ctor(ctor)) => {
-                return match self.env.ctor_scheme(ctor) {
+                return match self.env.ctor_scheme(ctor, self.file) {
                     Some(scheme) => self.cx.instantiate(&scheme),
                     None => SolveTy::Error,
                 };
@@ -720,7 +720,7 @@ impl<E: Env> Walker<'_, E> {
         method: Symbol,
         span: fai_span::TextRange,
     ) -> SolveTy {
-        let Some(scheme) = build_interface_method_scheme(self.db, iref, method) else {
+        let Some(scheme) = build_interface_method_scheme_observed(self.db, iref, method, Some(self.file)) else {
             self.emit(Diagnostic::error(
                 UNKNOWN_METHOD,
                 format!("interface `{}` has no method `{method}`", iref.name),
@@ -832,7 +832,7 @@ impl<E: Env> Walker<'_, E> {
             self.effect_sites = saved_sites;
             let method_eff = std::mem::replace(&mut self.cur_effect, saved);
             let impl_ty = SolveTy::arrows_solver_eff(param_tys, body_ty, method_eff.clone());
-            match build_interface_method_scheme(self.db, iref, m.name) {
+            match build_interface_method_scheme_observed(self.db, iref, m.name, Some(self.file)) {
                 Some(scheme) => {
                     let expected = self.cx.instantiate_sharing(&scheme, &type_prefix, &eff_prefix);
                     // Unify the body's *type* against the declared method type with
@@ -1216,7 +1216,7 @@ impl<E: Env> Walker<'_, E> {
         span: fai_span::TextRange,
     ) {
         let ctor_ty = match self.resolved.pat_res(pat) {
-            Some(Res::Ctor(ctor)) => match self.env.ctor_scheme(ctor) {
+            Some(Res::Ctor(ctor)) => match self.env.ctor_scheme(ctor, self.file) {
                 Some(scheme) => self.cx.instantiate(&scheme),
                 None => SolveTy::Error,
             },
