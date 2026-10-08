@@ -912,24 +912,37 @@ pub struct RenameTarget {
     pub name: String,
 }
 
-/// Whether `name` is a plain identifier (a letter or `_` then letters/digits/`_`),
-/// the only form rename can safely produce.
+/// Whether `name` is exactly one identifier token, excluding boolean literals.
 fn is_plain_ident(name: &str) -> bool {
-    let mut chars = name.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    (first == '_' || first.is_ascii_alphabetic())
-        && chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+    let lexed = fai_syntax::lex(SourceId::new(0), name);
+    lexed.diagnostics.is_empty()
+        && lexed.comments.is_empty()
+        && lexed.tokens.len() == 2
+        && matches!(
+            lexed.tokens[0].kind,
+            fai_syntax::TokenKind::LowerIdent | fai_syntax::TokenKind::UpperIdent
+        )
+        && lexed.tokens[0].range.len() as usize == name.len()
+        && !matches!(name, "true" | "false")
 }
 
-/// Whether a target may be renamed: its definition must live in user code (the
-/// standard library is read-only), and a local always may.
+/// Whether a target can be renamed by token replacement: user definitions and
+/// standalone local binders, excluding patterns that also change other syntax.
 fn target_is_renameable(db: &dyn Db, target: RefTarget) -> bool {
     let defining = match target {
         RefTarget::Def(d) => d.file,
         RefTarget::Ctor(c) => c.file,
-        RefTarget::Local(..) => return true,
+        RefTarget::Local(file, local) => {
+            let parsed = fai_syntax::parse(db, file);
+            let resolved = resolve(db, file);
+            // A pun renames a field as well as a binder; an as-pattern's current
+            // reference range includes its sub-pattern. Neither is a token edit.
+            return resolved.pat_locals.iter().filter(|(_, id)| **id == local)
+                .all(|(pat, _)| matches!(parsed.module.pat(*pat).kind, PatKind::Var(_)))
+                && !parsed.module.pats.iter().any(|pat| {
+                    matches!(&pat.kind, PatKind::Record { fields, .. } if fields.iter().any(|field| field.punned && resolved.local_of(field.pat) == Some(local)))
+                });
+        }
     };
     db.source_file(defining).is_some_and(|f| !fai_db::is_std_path(f.path(db)))
 }
@@ -963,6 +976,9 @@ pub fn prepare_rename_at(
         return None;
     }
     let name = file.text(db).get(range.start().raw() as usize..range.end().raw() as usize)?;
+    if !is_plain_ident(name) {
+        return None;
+    }
     let span = SpanJson::resolve(Span::new(file.source(db), range), resolver)?;
     Some(RenameTarget { span, name: name.to_owned() })
 }
@@ -980,11 +996,178 @@ pub fn rename_at(
     new_name: &str,
     resolver: &dyn SpanResolver,
 ) -> Option<Vec<Location>> {
-    let (target, _) = target_at(db, file, offset)?;
-    if !target_is_renameable(db, target) || !valid_new_name(target, new_name) {
-        return None;
+    checked_rename_at(db, files, file, offset, new_name, resolver).ok()
+}
+
+/// Why a rename cannot be applied as a semantics-preserving token replacement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenameError {
+    /// No editable identifier is selected, or it needs syntax-aware rewriting.
+    NotRenameable,
+    /// The replacement is not an identifier in the target's namespace.
+    InvalidName,
+    /// The edited workspace would capture a reference, duplicate a declaration,
+    /// or cannot be resolved well enough to establish identity preservation.
+    ResolutionChanged,
+}
+
+impl std::fmt::Display for RenameError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::NotRenameable => "select a user-defined identifier; operators, record puns, and as-pattern binders cannot be renamed by token replacement",
+            Self::InvalidName => "the new name must be a non-keyword identifier in the same value or constructor namespace",
+            Self::ResolutionChanged => "rename would change name resolution or duplicate a declaration; all affected references must keep their binding",
+        })
     }
-    Some(collect_references(db, files, target, resolver, true))
+}
+
+impl std::error::Error for RenameError {}
+
+/// Computes rename edits only after verifying them in an independent workspace.
+/// The live database and its unsaved input buffers are never mutated.
+pub fn checked_rename_at(
+    db: &dyn Db,
+    files: &[SourceFile],
+    file: SourceFile,
+    offset: u32,
+    new_name: &str,
+    resolver: &dyn SpanResolver,
+) -> Result<Vec<Location>, RenameError> {
+    let (target, range) = target_at(db, file, offset).ok_or(RenameError::NotRenameable)?;
+    let old_name = file
+        .text(db)
+        .get(range.start().raw() as usize..range.end().raw() as usize)
+        .ok_or(RenameError::NotRenameable)?;
+    if !target_is_renameable(db, target) || !is_plain_ident(old_name) {
+        return Err(RenameError::NotRenameable);
+    }
+    if !valid_new_name(target, new_name) {
+        return Err(RenameError::InvalidName);
+    }
+    if old_name == new_name {
+        return Ok(Vec::new());
+    }
+    let edits = collect_references(db, files, target, resolver, true);
+    if !rename_preserves_resolution(db, target, old_name, new_name, &edits) {
+        return Err(RenameError::ResolutionChanged);
+    }
+    Ok(edits)
+}
+
+fn renamed_symbol(name: Symbol, new_name: &str) -> Symbol {
+    Symbol::intern(
+        &name
+            .as_str()
+            .rsplit_once('.')
+            .map_or_else(|| new_name.to_owned(), |(prefix, _)| format!("{prefix}.{new_name}")),
+    )
+}
+
+/// Reference identities are compared at stable arena indices. Only the selected
+/// global's name and the scratch database's file ids may differ.
+fn renamed_resolution(
+    original: Res,
+    target: RefTarget,
+    new_name: &str,
+    files: &FxHashMap<SourceId, SourceId>,
+) -> Option<Res> {
+    Some(match original {
+        Res::Def(def) => Res::Def(DefId::new(
+            *files.get(&def.file)?,
+            if matches!(target, RefTarget::Def(selected) if def == selected) {
+                renamed_symbol(def.name, new_name)
+            } else {
+                def.name
+            },
+        )),
+        Res::Ctor(ctor) => Res::Ctor(CtorRef::new(
+            *files.get(&ctor.file)?,
+            if matches!(target, RefTarget::Ctor(selected) if ctor == selected) {
+                renamed_symbol(ctor.name, new_name)
+            } else {
+                ctor.name
+            },
+        )),
+        other => other,
+    })
+}
+
+fn rename_preserves_resolution(
+    db: &dyn Db,
+    target: RefTarget,
+    old_name: &str,
+    new_name: &str,
+    edits: &[Location],
+) -> bool {
+    let mut scratch = fai_db::FaiDatabase::new();
+    let mut copied = Vec::new();
+    let mut ids = FxHashMap::default();
+    let mut applied = 0;
+    for file in db.all_source_files() {
+        let mut text = file.text(db).clone();
+        let mut local_edits: Vec<_> =
+            edits.iter().filter(|edit| &edit.span.file == file.path(db)).collect();
+        local_edits.sort_by_key(|edit| std::cmp::Reverse(edit.span.byte_start));
+        for edit in local_edits {
+            let range = edit.span.byte_start as usize..edit.span.byte_end as usize;
+            if text.get(range.clone()) != Some(old_name) {
+                return false;
+            }
+            text.replace_range(range, new_name);
+            applied += 1;
+        }
+        let id = scratch.add_source(file.path(db).clone().into(), text);
+        ids.insert(file.source(db), id);
+        let Some(copy) = scratch.source_file(id) else {
+            return false;
+        };
+        copied.push((file, copy));
+    }
+    if applied != edits.len() {
+        return false;
+    }
+    for (file, copy) in copied {
+        if fai_db::is_std_path(file.path(db)) {
+            continue;
+        }
+        let original = resolve(db, file);
+        let renamed = resolve(&scratch, copy);
+        // Existing unrelated errors need not block an otherwise safe edit, but
+        // the rename must not introduce or replace a resolution/parse error.
+        let errors = |db: &dyn Db, file| {
+            let mut errors: Vec<_> = resolve::accumulated::<fai_db::Diag>(db, file)
+                .iter()
+                .filter(|diagnostic| diagnostic.0.severity == fai_diagnostics::Severity::Error)
+                .map(|diagnostic| {
+                    (diagnostic.0.code.as_str().to_owned(), diagnostic.0.message.clone())
+                })
+                .collect();
+            errors.sort();
+            errors
+        };
+        if errors(db, file) != errors(&scratch, copy) {
+            return false;
+        }
+        let before = fai_syntax::parse(db, file);
+        let after = fai_syntax::parse(&scratch, copy);
+        if module_defs(db, file).defs.len() != module_defs(&scratch, copy).defs.len()
+            || type_decls(db, file).ctors.len() != type_decls(&scratch, copy).ctors.len()
+            || before.module.exprs.len() != after.module.exprs.len()
+            || before.module.pats.len() != after.module.pats.len()
+            || original.pat_locals != renamed.pat_locals
+            || original.by_expr.len() != renamed.by_expr.len()
+            || original.by_pat.len() != renamed.by_pat.len()
+            || !original.by_expr.iter().all(|(expr, resolution)| {
+                renamed.get(*expr) == renamed_resolution(*resolution, target, new_name, &ids)
+            })
+            || !original.by_pat.iter().all(|(pat, resolution)| {
+                renamed.pat_res(*pat) == renamed_resolution(*resolution, target, new_name, &ids)
+            })
+        {
+            return false;
+        }
+    }
+    true
 }
 
 /// `fai query refs`.

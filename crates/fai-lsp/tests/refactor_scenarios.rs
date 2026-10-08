@@ -115,7 +115,7 @@ fn rename_rejects_a_cross_namespace_name() {
     let src = "module M\n\npublic inc : Int -> Int\nlet inc x = x + 1\n";
     let (mut h, uri) = Harness::open_main("rn-ns", src);
     // A value cannot become an upper-case (constructor) name.
-    assert!(h.rename(&uri, position_within(src, "inc x", 0), "Inc").is_null());
+    assert_eq!(h.rename_error(&uri, position_within(src, "inc x", 0), "Inc").code, -32602);
     h.shutdown();
 }
 
@@ -123,8 +123,8 @@ fn rename_rejects_a_cross_namespace_name() {
 fn rename_rejects_a_malformed_name() {
     let src = "module M\n\npublic inc : Int -> Int\nlet inc x = x + 1\n";
     let (mut h, uri) = Harness::open_main("rn-bad", src);
-    assert!(h.rename(&uri, position_within(src, "inc x", 0), "in c").is_null());
-    assert!(h.rename(&uri, position_within(src, "inc x", 0), "").is_null());
+    assert_eq!(h.rename_error(&uri, position_within(src, "inc x", 0), "in c").code, -32602);
+    assert_eq!(h.rename_error(&uri, position_within(src, "inc x", 0), "").code, -32602);
     h.shutdown();
 }
 
@@ -151,6 +151,30 @@ fn prepare_rename_rejects_a_builtin_operator() {
     let src = "module M\n\npublic inc : Int -> Int\nlet inc x = x + 1\n";
     let (mut h, uri) = Harness::open_main("rn-op", src);
     assert!(h.prepare_rename(&uri, position_of(src, "+ 1")).is_null());
+    h.shutdown();
+}
+
+#[test]
+fn rename_reports_a_keyword_error() {
+    let src = "module M\nlet value = 1\n";
+    let (mut h, uri) = Harness::open_main("rn-keyword", src);
+    let error = h.rename_error(&uri, position_of(src, "value"), "let");
+    assert_eq!(error.code, -32602);
+    assert!(error.message.contains("non-keyword"), "{}", error.message);
+    h.shutdown();
+}
+
+#[test]
+fn rename_detects_capture_in_an_unsaved_overlay() {
+    let original = "module M\nlet f x = x + 1\n";
+    let edited = "module M\nlet f x =\n  let y = 1\n  x + y\n";
+    let (mut h, uri) = Harness::open_main("rn-overlay-capture", original);
+    h.did_change(&uri, edited);
+    let error = h.rename_error(&uri, position_of(edited, "x ="), "y");
+    assert_eq!(error.code, -32602);
+    assert!(error.message.contains("name resolution"), "{}", error.message);
+    assert!(h.diagnostics(&uri).is_empty());
+    assert!(h.hover_text(&uri, position_of(edited, "x +")).unwrap().contains("Int"));
     h.shutdown();
 }
 

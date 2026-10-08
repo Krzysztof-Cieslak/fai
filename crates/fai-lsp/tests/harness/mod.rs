@@ -182,6 +182,40 @@ impl Harness {
         )
     }
 
+    /// Sends a request expected to fail and returns its JSON-RPC error.
+    pub fn request_error(&mut self, method: &str, params: Value) -> lsp_server::ResponseError {
+        let id: RequestId = self.next_id.into();
+        self.next_id += 1;
+        self.client
+            .sender
+            .send(Message::Request(Request::new(id.clone(), method.to_owned(), params)))
+            .unwrap();
+        loop {
+            match self.recv() {
+                Message::Response(response) if response.id == id => {
+                    assert!(response.result.is_none(), "unexpected success: {response:?}");
+                    return response.error.expect("expected request error");
+                }
+                Message::Notification(_) => {}
+                other => panic!("unexpected message: {other:?}"),
+            }
+        }
+    }
+
+    pub fn rename_error(
+        &mut self,
+        uri: &str,
+        position: Value,
+        new_name: &str,
+    ) -> lsp_server::ResponseError {
+        self.request_error(
+            "textDocument/rename",
+            json!({
+                "textDocument": { "uri": uri }, "position": position, "newName": new_name
+            }),
+        )
+    }
+
     pub fn code_actions(&mut self, uri: &str, range: Value) -> Value {
         self.request(
             "textDocument/codeAction",
