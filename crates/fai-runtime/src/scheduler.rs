@@ -757,7 +757,9 @@ pub fn channel(capacity: usize) -> Arc<Chan> {
 }
 
 /// Sends a value, parking the caller while the channel is full. Ownership of `v`
-/// transfers into the channel. Must be called inside a task.
+/// transfers into the channel. If the channel is closed, drops `v` and returns;
+/// closing also releases senders already parked on a full channel. Must be called
+/// inside a task when the operation may block.
 pub fn chan_send(chan: &Arc<Chan>, v: Value) {
     loop {
         if is_cancelled() {
@@ -767,6 +769,11 @@ pub fn chan_send(chan: &Arc<Chan>, v: Value) {
             return;
         }
         let mut st = chan.state.lock().expect("chan lock");
+        if st.closed {
+            drop(st);
+            crate::fai_drop(v);
+            return;
+        }
         if st.buf.len() < chan.capacity {
             st.buf.push_back(v);
             let rx = st.recv_waiters.pop();
@@ -813,15 +820,15 @@ pub fn chan_recv(chan: &Arc<Chan>) -> Option<Value> {
 }
 
 /// Closes a channel: no more sends, and receivers drain then get `None`. Wakes all
-/// blocked receivers so they observe the close.
+/// blocked senders and receivers so they observe the close.
 pub fn chan_close(chan: &Arc<Chan>) {
-    let waiters = {
+    let (receivers, senders) = {
         let mut st = chan.state.lock().expect("chan lock");
         st.closed = true;
-        std::mem::take(&mut st.recv_waiters)
+        (std::mem::take(&mut st.recv_waiters), std::mem::take(&mut st.send_waiters))
     };
-    for rx in waiters {
-        schedule(rx);
+    for waiter in receivers.into_iter().chain(senders) {
+        schedule(waiter);
     }
 }
 
@@ -993,7 +1000,8 @@ pub extern "C" fn fai_recv(chan: Value) -> Value {
     }
 }
 
-/// Closes a channel (receivers drain, then get `None`). Consumes the handle.
+/// Closes a channel (receivers drain, then get `None`; senders discard their
+/// payloads and return). Consumes the handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_close(chan: Value) -> Value {
     chan_close(&chan_of(chan));
@@ -1225,6 +1233,95 @@ mod tests {
             }))
         }));
         assert_eq!(of_imm(r), 99);
+    }
+
+    #[test]
+    fn channel_close_rejects_later_sends_and_keeps_end_of_stream() {
+        let _guard = crate::tests::lock();
+        let base = crate::live_count();
+        let ch = channel(2);
+        chan_close(&ch);
+        assert_eq!(chan_recv(&ch), None);
+        chan_send(&ch, crate::fai_box_int(i64::MAX));
+        assert_eq!(chan_recv(&ch), None);
+        drop(ch);
+        assert_eq!(crate::live_count(), base);
+    }
+
+    /// Waits for actual waiter registration, rather than guessing how long a
+    /// scheduled producer takes to park. Called on the test's OS thread.
+    fn wait_for_channel_senders(ch: &Arc<Chan>, count: usize) {
+        while ch.state.lock().unwrap().send_waiters.len() < count {
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn channel_close_wakes_all_senders_without_draining() {
+        let _guard = crate::tests::lock();
+        let base = crate::live_count();
+        let ch = channel(1);
+        chan_send(&ch, imm(7));
+        let senders: Vec<_> = (0..2)
+            .map(|_| {
+                let ch = Arc::clone(&ch);
+                spawn(Box::new(move || {
+                    chan_send(&ch, crate::fai_box_int(i64::MAX));
+                    imm(1)
+                }))
+            })
+            .collect();
+        wait_for_channel_senders(&ch, 2);
+        chan_close(&ch);
+        let result =
+            block_on(Box::new(move || imm(senders.iter().map(|h| of_imm(await_handle(h))).sum())));
+        assert_eq!(result, imm(2));
+        assert_eq!(chan_recv(&ch), Some(imm(7)));
+        assert_eq!(chan_recv(&ch), None);
+        assert!(ch.state.lock().unwrap().send_waiters.is_empty());
+        drop(ch);
+        assert_eq!(crate::live_count(), base);
+    }
+
+    #[test]
+    fn channel_close_twice_preserves_buffered_order() {
+        let ch = channel(2);
+        chan_send(&ch, imm(1));
+        chan_send(&ch, imm(2));
+        chan_close(&ch);
+        chan_close(&ch);
+        assert_eq!(chan_recv(&ch), Some(imm(1)));
+        assert_eq!(chan_recv(&ch), Some(imm(2)));
+        assert_eq!(chan_recv(&ch), None);
+        chan_send(&ch, imm(3));
+        assert_eq!(chan_recv(&ch), None);
+    }
+
+    #[test]
+    fn channel_close_racing_cancellation_releases_pending_payload_once() {
+        let _guard = crate::tests::lock();
+        let base = crate::live_count();
+        let ch = channel(1);
+        chan_send(&ch, imm(7));
+        let sender = {
+            let ch = Arc::clone(&ch);
+            spawn(Box::new(move || {
+                chan_send(&ch, crate::fai_box_int(i64::MAX));
+                imm(1)
+            }))
+        };
+        wait_for_channel_senders(&ch, 1);
+        let canceller = {
+            let sender = Arc::clone(&sender);
+            std::thread::spawn(move || cancel_handle(&sender))
+        };
+        chan_close(&ch);
+        canceller.join().unwrap();
+        assert_eq!(block_on(Box::new(move || await_handle(&sender))), imm(1));
+        assert_eq!(chan_recv(&ch), Some(imm(7)));
+        assert_eq!(chan_recv(&ch), None);
+        drop(ch);
+        assert_eq!(crate::live_count(), base);
     }
 
     #[test]

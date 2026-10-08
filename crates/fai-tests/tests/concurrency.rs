@@ -147,6 +147,30 @@ fn channel_producer_consumer_sums() {
 }
 
 #[test]
+fn closing_a_full_channel_lets_its_producer_scope_finish() {
+    let src = indoc! {r#"
+        module Prog
+        body : Concurrency -> Nursery -> Int / { Concurrency }
+        let body c nursery =
+          let ch = c.channel 1
+          let _ = c.send ch 11
+          let sender = c.spawn nursery (fun u -> c.send ch 22)
+          let _ = c.close ch
+          let _ = c.await sender
+          let first = c.recv ch
+          let _ = c.send ch 33
+          match c.recv ch with
+          | None -> Option.withDefault 0 first
+          | Some unexpected -> unexpected
+        public main : Runtime -> Unit / { Concurrency, Console }
+        let main runtime =
+          runtime.console.writeLine (Int.toString (runtime.concurrency.scope (body runtime.concurrency)))
+    "#};
+    let (out, code) = run(src);
+    assert_eq!((out.as_str(), code), ("11\n", 0));
+}
+
+#[test]
 fn aot_built_concurrent_program_runs() {
     // The full AOT path: `fai build` (isolated to a temp dir, so only this program
     // and the embedded std load) produces a native binary whose `main` runs as the
