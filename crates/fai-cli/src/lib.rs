@@ -140,6 +140,15 @@ fn route(
     } else {
         match fai_server::run_command(root, spec.clone(), opts, Vec::new(), log) {
             Ok(rendered) => rendered,
+            Err(error) if error.may_have_executed() => {
+                return emit_error(
+                    &DriverError::CommandOutcomeUnknown(error.to_string()),
+                    format,
+                    color,
+                    out,
+                    err,
+                );
+            }
             Err(daemon_error) => {
                 let _ = writeln!(
                     err,
@@ -391,6 +400,16 @@ fn daemon_error(err: &mut dyn Write, error: &fai_server::DaemonError) -> i32 {
     EXIT_WORKSPACE
 }
 
+fn submitted_error(err: &mut dyn Write, error: &fai_server::DaemonError) -> i32 {
+    let _ = writeln!(
+        err,
+        "error [{}]: {}",
+        fai_driver::INDETERMINATE_COMMAND,
+        DriverError::CommandOutcomeUnknown(error.to_string())
+    );
+    EXIT_WORKSPACE
+}
+
 /// Exit code for a program that failed to compile.
 const EXIT_COMPILE_ERROR: i32 = 4;
 
@@ -410,6 +429,7 @@ fn run_program(
     }
     match fai_server::run(root, args.path.as_str(), &args.args, log, out, err) {
         Ok(exit) => exit,
+        Err(error) if error.may_have_executed() => submitted_error(err, &error),
         Err(daemon_error) => {
             let _ = writeln!(
                 err,
@@ -668,6 +688,24 @@ fn init_tracing(verbose: u8, quiet: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn submitted_command_errors_keep_the_json_envelope() {
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let code = emit_error(
+            &DriverError::CommandOutcomeUnknown("disconnected".into()),
+            MessageFormat::Json,
+            false,
+            &mut out,
+            &mut err,
+        );
+        assert_eq!(code, EXIT_WORKSPACE);
+        let value: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["diagnostics"][0]["code"], "FAI0008");
+        assert!(err.is_empty());
+    }
 
     fn run_capture(args: &[&str]) -> (i32, String, String) {
         let mut out = Vec::new();

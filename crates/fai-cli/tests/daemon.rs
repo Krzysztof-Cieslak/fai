@@ -559,6 +559,93 @@ fn run_streams_output_via_daemon() {
 }
 
 #[test]
+fn a_mid_run_daemon_disconnect_does_not_repeat_side_effects() {
+    use wait_timeout::ChildExt;
+    let daemon = Daemon::new("run-no-replay", &[]);
+    let counter = daemon.workspace.join("count.txt");
+    let path = serde_json::to_string(counter.to_str().unwrap()).unwrap();
+    let source = format!(
+        "module Main\npublic main : Runtime -> Unit / {{ Clock, Console, FileSystem }}\nlet main r =\n  let previous = Result.withDefault \"\" (r.fs.readFile {path})\n  let written = r.fs.writeFile {path} (previous ++ \"x\")\n  let printed = r.console.writeLine \"READY\"\n  r.clock.sleep 500\n"
+    );
+    std::fs::write(daemon.workspace.join("Main.fai"), source).unwrap();
+    let mut client = KillOnDrop(
+        daemon
+            .cmd()
+            .args(["run", "-C"])
+            .arg(&daemon.workspace)
+            .arg("Main.fai")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let lines = read_lines(client.0.stdout.take().unwrap());
+    assert_eq!(lines.recv_timeout(Duration::from_secs(15)).unwrap(), "READY");
+    assert!(daemon.run(&["daemon", "stop"], &[]).status.success());
+    let status = client
+        .0
+        .wait_timeout(Duration::from_secs(10))
+        .unwrap()
+        .expect("disconnected run terminates");
+    assert!(!status.success());
+    let mut error = String::new();
+    client.0.stderr.take().unwrap().read_to_string(&mut error).unwrap();
+    assert!(error.contains("command was not restarted"), "{error}");
+    assert!(error.contains("FAI0008"), "{error}");
+    assert_eq!(std::fs::read_to_string(counter).unwrap(), "x");
+}
+
+#[test]
+fn disconnecting_a_run_client_reaps_its_silent_worker() {
+    let source = "module Main\npublic main : Runtime -> Unit / { Clock, Console, Net }\nlet main r =\n  match r.net.listen 0 with\n  | Err e -> r.console.writeLine e\n  | Ok listener ->\n    let printed = r.console.writeLine (Int.toString (r.net.localPort listener))\n    let waited = r.clock.sleep 60000\n    r.console.writeLine (Int.toString (r.net.localPort listener))\n";
+    let daemon = Daemon::new("run-disconnect-reap", &[("Main.fai", source)]);
+    let mut client = KillOnDrop(
+        daemon
+            .cmd()
+            .args(["run", "-C"])
+            .arg(&daemon.workspace)
+            .arg("Main.fai")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let lines = read_lines(client.0.stdout.take().unwrap());
+    let port: u16 = lines.recv_timeout(Duration::from_secs(15)).unwrap().parse().unwrap();
+    client.0.kill().unwrap();
+    client.0.wait().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Ok(listener) = std::net::TcpListener::bind(("0.0.0.0", port)) {
+            drop(listener);
+            break;
+        }
+        assert!(Instant::now() < deadline, "worker retained its listener after client disconnect");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(status_pid(&daemon).is_some());
+}
+
+#[cfg(unix)]
+#[test]
+fn pre_submission_connection_failure_still_runs_the_fallback() {
+    let daemon = Daemon::new("run-pre-submit", &[("Hello.fai", HELLO)]);
+    let blocked = daemon.workspace.join("blocked-runtime-dir");
+    std::fs::write(&blocked, "not a directory").unwrap();
+    let output = daemon
+        .cmd()
+        .env("FAI_RUNTIME_DIR", blocked)
+        .args(["run", "-C"])
+        .arg(&daemon.workspace)
+        .arg("Hello.fai")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(output.stdout, b"hi from run\n");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("running in-process"));
+}
+
+#[test]
 fn run_timeout_is_reaped_and_daemon_survives() {
     // A tail loop cannot finish or exhaust the stack, regardless of CPU speed.
     // The daemon must reap it (exit 124) and continue serving requests.

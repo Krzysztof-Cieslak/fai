@@ -48,6 +48,12 @@ A program under `fai run` exceeded its wall-clock limit and was terminated (exit
 
 The program launcher must be able to force the selected zero-argument runtime value and pass it to `main`, which must return `Unit`. Check the runtime builder's arity, its type against main's argument, and any unresolved record-offset evidence. Closed and row-polymorphic runtime records are supported when their field layout can be determined.
 
+### FAI0008 — submitted command outcome is unknown
+
+**Severity:** error
+
+The daemon connection failed after an effectful command may have been accepted. The command is not automatically restarted, because doing so could repeat program or filesystem side effects. Inspect its output and resulting state before choosing whether to run it again.
+
 ## FAI1xxx — Lexing & parsing
 
 ### FAI1001 — unexpected character

@@ -70,6 +70,8 @@ pub const DAEMON_UNAVAILABLE: DiagnosticCode = DiagnosticCode::new("FAI0005");
 pub const RUN_TIMEOUT: DiagnosticCode = DiagnosticCode::new("FAI0006");
 /// The selected runtime value and main definition do not form a valid launch call.
 pub const INVALID_ENTRY_POINT: DiagnosticCode = DiagnosticCode::new("FAI0007");
+/// A submitted effectful command lost its result and cannot be safely replayed.
+pub const INDETERMINATE_COMMAND: DiagnosticCode = DiagnosticCode::new("FAI0008");
 
 /// Diagnostic codes owned by the tooling/driver layer (the `FAI0xxx` range).
 pub const CODES: &[CodeInfo] = &[
@@ -127,7 +129,16 @@ pub const CODES: &[CodeInfo] = &[
                       runtime value and pass it to `main`, which must return `Unit`. Check the \
                       runtime builder's arity, its type against main's argument, and any \
                       unresolved record-offset evidence. Closed and row-polymorphic runtime \
-                      records are supported when their field layout can be determined.",
+                       records are supported when their field layout can be determined.",
+    },
+    CodeInfo {
+        code: INDETERMINATE_COMMAND,
+        title: "submitted command outcome is unknown",
+        default_severity: Severity::Error,
+        explanation: "The daemon connection failed after an effectful command may have been \
+                      accepted. The command is not automatically restarted, because doing so \
+                      could repeat program or filesystem side effects. Inspect its output and \
+                      resulting state before choosing whether to run it again.",
     },
 ];
 
@@ -136,6 +147,9 @@ pub const CODES: &[CodeInfo] = &[
 /// These are hard failures (exit code 3), distinct from in-band diagnostics.
 #[derive(Debug, thiserror::Error)]
 pub enum DriverError {
+    /// An effectful request may have executed before its transport failed.
+    #[error("command outcome is unknown ({0}); command was not restarted")]
+    CommandOutcomeUnknown(String),
     /// An explicit command path is not a loaded source or existing workspace directory.
     #[error("no such Fai file or directory in workspace: {0}")]
     InvalidSelection(camino::Utf8PathBuf),
@@ -229,10 +243,15 @@ pub fn render_diagnostics(diagnostics: &[Diagnostic], resolver: &dyn SpanResolve
     render_human(diagnostics, resolver, false)
 }
 
-/// Builds a result describing a hard driver error (rendered as `FAI0002`).
+/// Builds a result describing a hard driver or interrupted-command error.
 #[must_use]
 pub fn error_result(error: &DriverError) -> CommandResult {
-    let diagnostic = Diagnostic::error(WORKSPACE_ERROR, error.to_string(), tooling_span());
+    let code = if matches!(error, DriverError::CommandOutcomeUnknown(_)) {
+        INDETERMINATE_COMMAND
+    } else {
+        WORKSPACE_ERROR
+    };
+    let diagnostic = Diagnostic::error(code, error.to_string(), tooling_span());
     CommandResult { diagnostics: vec![diagnostic], ok: false }
 }
 

@@ -526,8 +526,12 @@ Daemon, persistence & protocol:
   is performed by whoever runs the command — the daemon writes the formatted files
   and links the artifact (client sends absolute paths), the `--no-daemon` path
   does it locally (a documented relaxation of "the CLI does I/O" for the daemon
-  path). When the daemon is unreachable, the client warns (`FAI0005`) and runs
-  in-process, so a daemon problem never breaks a command. New tooling codes:
+  path). When the daemon is unreachable before submission, the client warns
+  (`FAI0005`) and runs in-process. A possibly submitted run/build/writing-fmt
+  request is never replayed after a lost result: it reports `FAI0008`, preserving
+  at-most-once submission. A bounded connection reader detects client EOF while
+  execution is in progress; the supervisor reaps a disconnected client's worker
+  even when it produces no output. New tooling codes:
   `FAI0005` daemon-unavailable (warning), `FAI0006` run-timeout.
 - **D63 `run` via a warm IR bundle:** rather than re-deriving in a cold worker or
   shipping a JIT image (impossible across processes), the warm daemon front end
