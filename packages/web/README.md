@@ -97,6 +97,10 @@ let app =
 
 Matching walks the path one segment at a time (static segments first, then a
 capture), so lookup cost is proportional to the path length.
+A static prefix without a terminal route is a path miss and allows a capture
+alternative: `/user/new/edit` does not hide `/user/{id}` for `/user/new`.
+A real static endpoint wins path selection; if its method gates or handlers all
+`Skip`, the configured fallback runs rather than a different capture pattern.
 
 ## Capabilities (the dependency-injection replacement)
 
