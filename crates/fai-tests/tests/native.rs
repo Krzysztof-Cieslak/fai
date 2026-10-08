@@ -454,6 +454,21 @@ fn const_preserves_native_effect_order() {
 }
 
 #[test]
+fn fused_search_keeps_strict_producer_traps() {
+    let source = indoc! {r#"
+        module Main
+        public main : Runtime -> Unit / { Console }
+        let main r =
+          let found = List.any (fun x -> x = 1) (List.map (fun n -> 1 / n) [1, 0])
+          r.console.writeLine (if found then "found" else "missing")
+    "#};
+    let (output, error, code) = build_and_run_captured(source);
+    assert_ne!(code, Some(0));
+    assert!(output.is_empty());
+    assert!(error.contains("division by zero"), "{error}");
+}
+
+#[test]
 fn cross_module_forwarder_borrows_and_runs() {
     // `Lib.sumList` borrows its list; `Main.forward` only forwards `xs` to it, so
     // inter-procedural inference borrows `xs` too. `main` lends the same list to

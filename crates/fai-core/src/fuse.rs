@@ -19,9 +19,9 @@
 //! **Behavior-preserving.** Only *directly-nested* applications fuse, so every
 //! intermediate is an unnamed temporary consumed exactly once; a `let`-bound or
 //! shared sequence is the loop's (materialized) source, never fused away. A stage
-//! fuses only when its element function is **pure** (an effectful stage ends the
-//! fusable chain), so reordering element applications across stages — including
-//! which element a trap falls on — is unobservable.
+//! fuses only when its element function is **pure and total**: it cannot perform
+//! effects, trap, or diverge. Partial stages and unsafe-to-reorder source inputs
+//! remain eager, so short-circuit consumers cannot skip required evaluation.
 //!
 //! The synthesized loop is a new top-level definition (a `fuse#…` name in the
 //! consuming file, sharing no name with a source binding), built and emitted the
@@ -357,13 +357,13 @@ impl Fuser<'_> {
         let (consumer, seq_arg) = self.consumer_of(seq, comb, cargs, base_fns)?;
         let consumer_elem_ty = seq_elem(&seq_arg.ty)?;
 
-        // Peel pure transformers from the consumer's sequence argument inward.
+        // Peel pure, total transformers from the sequence argument inward.
         let mut stages = Vec::new();
         let mut cur = seq_arg;
         while let Some((tdef, targs)) = call_target(cur) {
             match self.defs.lookup(tdef) {
                 Some((tseq, Comb::Map)) if tseq == seq && targs.len() == 2 => {
-                    if !self.arg_pure(&targs[0], 1, base_fns) {
+                    if !self.arg_reorderable(&targs[0], 1, base_fns) {
                         break;
                     }
                     let Some(out) = seq_elem(&cur.ty) else { break };
@@ -371,7 +371,7 @@ impl Fuser<'_> {
                     cur = &targs[1];
                 }
                 Some((tseq, Comb::Filter)) if tseq == seq && targs.len() == 2 => {
-                    if !self.arg_pure(&targs[0], 1, base_fns) {
+                    if !self.arg_reorderable(&targs[0], 1, base_fns) {
                         break;
                     }
                     stages.push(Stage::Filter(self.fn_arg(&targs[0], base_fns)));
@@ -401,7 +401,7 @@ impl Fuser<'_> {
 
     /// The consumer for `(seq, comb)` with arguments `args`, plus the sequence
     /// argument the chain continues from. `None` if `comb` is not a supported
-    /// consumer, the arity is wrong, or its element function is effectful.
+    /// consumer, the arity is wrong, or its work is unsafe to reorder.
     fn consumer_of<'b>(
         &self,
         seq: SeqKind,
@@ -412,67 +412,98 @@ impl Fuser<'_> {
         match comb {
             Comb::Sum if args.len() == 1 => Some((Consumer::Sum, &args[0])),
             Comb::Length if args.len() == 1 => Some((Consumer::Length, &args[0])),
-            Comb::Foldl if args.len() == 3 && self.arg_pure(&args[0], 2, base_fns) => Some((
-                Consumer::Foldl { step: self.fn_arg(&args[0], base_fns), init: args[1].clone() },
-                &args[2],
-            )),
+            Comb::Foldl
+                if args.len() == 3
+                    && self.arg_reorderable(&args[0], 2, base_fns)
+                    && self.expr_reorderable(&args[1]) =>
+            {
+                Some((
+                    Consumer::Foldl {
+                        step: self.fn_arg(&args[0], base_fns),
+                        init: args[1].clone(),
+                    },
+                    &args[2],
+                ))
+            }
             // `foldr` over a List value source cannot fuse to a single tail loop
             // (no indexing, and deep recursion would overflow); recognized only
             // when the source is reversible (handled by `source_of` returning
             // `None` for a List value, which ends recognition).
-            Comb::Foldr if args.len() == 3 && self.arg_pure(&args[0], 2, base_fns) => Some((
-                Consumer::Foldr { step: self.fn_arg(&args[0], base_fns), init: args[1].clone() },
-                &args[2],
-            )),
-            Comb::All if args.len() == 2 && self.arg_pure(&args[0], 1, base_fns) => {
+            Comb::Foldr
+                if args.len() == 3
+                    && self.arg_reorderable(&args[0], 2, base_fns)
+                    && self.expr_reorderable(&args[1]) =>
+            {
+                Some((
+                    Consumer::Foldr {
+                        step: self.fn_arg(&args[0], base_fns),
+                        init: args[1].clone(),
+                    },
+                    &args[2],
+                ))
+            }
+            Comb::All if args.len() == 2 && self.arg_reorderable(&args[0], 1, base_fns) => {
                 Some((Consumer::All(self.fn_arg(&args[0], base_fns)), &args[1]))
             }
-            Comb::Any if args.len() == 2 && self.arg_pure(&args[0], 1, base_fns) => {
+            Comb::Any if args.len() == 2 && self.arg_reorderable(&args[0], 1, base_fns) => {
                 Some((Consumer::Any(self.fn_arg(&args[0], base_fns)), &args[1]))
             }
-            Comb::Find if args.len() == 2 && self.arg_pure(&args[0], 1, base_fns) => {
+            Comb::Find if args.len() == 2 && self.arg_reorderable(&args[0], 1, base_fns) => {
                 Some((Consumer::Find(self.fn_arg(&args[0], base_fns)), &args[1]))
             }
-            Comb::Member if args.len() == 2 => Some((Consumer::Member(args[0].clone()), &args[1])),
+            Comb::Member if args.len() == 2 && self.expr_reorderable(&args[0]) => {
+                Some((Consumer::Member(args[0].clone()), &args[1]))
+            }
             // A terminal `map`/`filter`: the preceding stages fuse into this one
             // builder loop.
-            Comb::Map if args.len() == 2 && self.arg_pure(&args[0], 1, base_fns) => Some((
+            Comb::Map if args.len() == 2 && self.arg_reorderable(&args[0], 1, base_fns) => Some((
                 Consumer::Build { f: self.fn_arg(&args[0], base_fns), filter: false, seq },
                 &args[1],
             )),
-            Comb::Filter if args.len() == 2 && self.arg_pure(&args[0], 1, base_fns) => Some((
-                Consumer::Build { f: self.fn_arg(&args[0], base_fns), filter: true, seq },
-                &args[1],
-            )),
+            Comb::Filter if args.len() == 2 && self.arg_reorderable(&args[0], 1, base_fns) => {
+                Some((
+                    Consumer::Build { f: self.fn_arg(&args[0], base_fns), filter: true, seq },
+                    &args[1],
+                ))
+            }
             _ => None,
         }
     }
 
     /// Recognizes the source `cur` for a chain of sequence kind `seq`.
     fn source_of(&self, seq: SeqKind, cur: &CExpr, base_fns: &[CoreFn]) -> Option<Source> {
-        let _ = base_fns;
         if let Some((pdef, pargs)) = call_target(cur)
             && let Some((pseq, comb)) = self.defs.lookup(pdef)
             && pseq == seq
         {
             match comb {
-                Comb::Range if pargs.len() == 2 => {
+                Comb::Range
+                    if pargs.len() == 2 && pargs.iter().all(|e| self.expr_reorderable(e)) =>
+                {
                     return Some(Source::Range { lo: pargs[0].clone(), hi: pargs[1].clone() });
                 }
-                Comb::Init if pargs.len() == 2 && self.arg_pure(&pargs[1], 1, base_fns) => {
+                Comb::Init
+                    if pargs.len() == 2
+                        && self.expr_reorderable(&pargs[0])
+                        && self.arg_reorderable(&pargs[1], 1, base_fns) =>
+                {
                     return Some(Source::Init {
                         n: pargs[0].clone(),
                         f: self.fn_arg(&pargs[1], base_fns),
                     });
                 }
-                Comb::Repeat if pargs.len() == 2 => {
+                Comb::Repeat
+                    if pargs.len() == 2 && pargs.iter().all(|e| self.expr_reorderable(e)) =>
+                {
                     return Some(Source::Repeat { n: pargs[0].clone(), x: pargs[1].clone() });
                 }
                 _ => {}
             }
         }
         // A small, complete syntactic literal is unrolled to straight-line code.
-        if let Some(elems) = literal_elems(seq, cur) {
+        if let Some(elems) = literal_elems(seq, cur)
+            && elems.iter().all(|e| self.expr_reorderable(e))
+        {
             return Some(Source::Literal { elems, seq: cur.clone() });
         }
         // A value sequence the loop walks (a Local, a call result, a barrier's
@@ -488,81 +519,21 @@ impl Fuser<'_> {
         }
     }
 
-    /// Whether an element-function argument is pure when applied to `arity`
-    /// arguments, so its stage may fuse without reordering effects.
-    ///
-    /// The Core IR's types reliably carry *concrete* effect atoms but erase a
-    /// *polymorphic* effect variable to pure, so purity is decided structurally
-    /// instead: a literal lambda is pure iff its body performs no capability and
-    /// makes no indirect call (a call through a `Local`/captured value — e.g.
-    /// `fun acc x -> acc + f x` — cannot be proven pure); a named function is pure
-    /// iff its declared/inferred scheme's arrows (up to `arity`) are pure (which
-    /// keeps effects, unlike the erased body types). Anything else is conservatively
-    /// impure.
-    fn arg_pure(&self, arg: &CExpr, arity: usize, base_fns: &[CoreFn]) -> bool {
+    /// Whether a stage's application is pure and total. A pure effect row alone
+    /// cannot establish this: division, bounds checks, and recursion are barriers.
+    fn arg_reorderable(&self, arg: &CExpr, arity: usize, base_fns: &[CoreFn]) -> bool {
         match &arg.kind {
-            K::MakeClosure { func, .. } => self.expr_pure(&base_fns[func.index()].body),
-            K::Global(g) => self.global_apply_pure(*g, arity),
+            K::MakeClosure { func, .. } => base_fns.get(func.index()).is_some_and(|f| {
+                arity < f.params.len()
+                    || (arity == f.params.len() && self.expr_reorderable(&f.body))
+            }),
+            K::Global(g) => crate::purity::global_application_pure_total(self.db, *g, arity),
             _ => false,
         }
     }
 
-    /// Whether evaluating `e` performs no capability and makes no unprovable call
-    /// (a structural purity walk; building a closure is pure, applying an indirect
-    /// value is not).
-    fn expr_pure(&self, e: &CExpr) -> bool {
-        match &e.kind {
-            K::Prim { args, .. } => args.iter().all(|a| self.expr_pure(a)),
-            // A foreign call performs a host capability, so a stage containing one
-            // is an effect barrier and never fuses across.
-            K::Foreign { .. } => false,
-            K::App { func, args, .. } => {
-                let callee_ok =
-                    matches!(&func.kind, K::Global(g) if self.global_apply_pure(*g, args.len()));
-                callee_ok && args.iter().all(|a| self.expr_pure(a))
-            }
-            // Building a closure is pure; its effect (if any) rides its arrow and is
-            // checked where the closure is applied.
-            K::MakeClosure { .. } | K::Lit(_) | K::Local(_) | K::Global(_) | K::Error => true,
-            K::If { cond, then, els } => {
-                self.expr_pure(cond) && self.expr_pure(then) && self.expr_pure(els)
-            }
-            K::Let { value, body, .. } => self.expr_pure(value) && self.expr_pure(body),
-            K::MakeData { args, .. } => args.iter().all(|a| self.expr_pure(a)),
-            // Spread/LetMany are produced after this pre-count pass; recurse for
-            // forward-safety (a spread is component reads, a letmany a call + body).
-            K::Spread { components } => components.iter().all(|a| self.expr_pure(a)),
-            K::LetMany { value, body, .. } => self.expr_pure(value) && self.expr_pure(body),
-            K::DataTag { base, .. } | K::DataField { base, .. } => self.expr_pure(base),
-            // Reference-counting / tail-call nodes do not exist in this pre-count
-            // body; treat conservatively by recursing where they have children.
-            K::Reset { value, body, .. } => self.expr_pure(value) && self.expr_pure(body),
-            K::Dup { body, .. } | K::Drop { body, .. } | K::FreeReuse { body, .. } => {
-                self.expr_pure(body)
-            }
-            K::Join { body, .. } | K::HoleStart { body, .. } => self.expr_pure(body),
-            K::Recur { args } => args.iter().all(|a| self.expr_pure(a)),
-            K::HoleFill { cell, .. } => self.expr_pure(cell),
-            K::HoleClose { base, .. } => self.expr_pure(base),
-        }
-    }
-
-    /// Whether applying the named function `g` to `arity` arguments is pure: every
-    /// arrow of its scheme up to `arity` carries the pure effect. Reads the scheme
-    /// (the type), which preserves effects (the body types do not), so it is sound
-    /// for an effect-polymorphic callee and firewalled from body edits.
-    fn global_apply_pure(&self, g: DefId, arity: usize) -> bool {
-        let Some(scheme) = fai_types::declared_or_inferred_scheme(self.db, g) else {
-            return false;
-        };
-        let mut ty = &scheme.ty;
-        for _ in 0..arity {
-            match ty {
-                Ty::Arrow(_, to, eff) if eff.is_pure() => ty = to,
-                _ => return false,
-            }
-        }
-        true
+    fn expr_reorderable(&self, e: &CExpr) -> bool {
+        crate::purity::expr_pure_total(self.db, e)
     }
 
     /// Classifies a function argument as a lambda to inline or a value to apply.
@@ -736,7 +707,12 @@ fn literal_elems(seq: SeqKind, e: &CExpr) -> Option<Vec<CExpr>> {
             let mut cur = e;
             loop {
                 match &cur.kind {
-                    K::Prim { op: Prim::ArrayWithCapacity, .. } => {
+                    K::Prim { op: Prim::ArrayWithCapacity, args } => {
+                        let [capacity] = args.as_slice() else { return None };
+                        let K::Lit(Lit::Int(n)) = &capacity.kind else { return None };
+                        if usize::try_from(*n).ok() != Some(elems.len()) {
+                            return None;
+                        }
                         elems.reverse();
                         return Some(elems);
                     }
@@ -2127,6 +2103,68 @@ mod tests {
         let body = fused(src, "process");
         assert!(body.contains("@foldl"), "an effectful chain is not fused:\n{body}");
         assert!(!body.contains("@fuse#"), "no loop synthesized for an effectful chain:\n{body}");
+    }
+
+    #[test]
+    fn possibly_trapping_map_stays_materialized() {
+        let src =
+            "module M\nlet run xs = List.any (fun x -> x = 1) (List.map (fun n -> 1 / n) xs)\n";
+        let body = fused(src, "run");
+        assert!(body.contains("@map"), "strict map must finish before any: {body}");
+    }
+
+    #[test]
+    fn recursive_element_function_stays_materialized() {
+        let src = "module M\nlet spin n = if n = 0 then spin n else 1\nlet run xs = List.any (fun x -> x = 1) (List.map spin xs)\n";
+        let body = fused(src, "run");
+        assert!(body.contains("@map"), "possibly diverging map must finish before any: {body}");
+    }
+
+    #[test]
+    fn checked_array_access_is_a_fusion_barrier() {
+        let src = "module M\nlet run xs = Array.any (fun x -> x = 1) (Array.map (fun n -> Array.unsafeGet n [| 1 |]) xs)\n";
+        let body = fused(src, "run");
+        assert!(
+            body.contains("@map"),
+            "checked element access must retain strict evaluation: {body}"
+        );
+    }
+
+    #[test]
+    fn trapping_array_capacity_is_not_discarded_as_an_empty_literal() {
+        let src = "module M\nlet run u = Array.length (Array.withCapacity (1 / 0))\n";
+        let body = fused(src, "run");
+        assert!(body.contains("(/ 1 0)"), "the capacity expression must still evaluate: {body}");
+    }
+
+    #[test]
+    fn element_totality_edits_cut_off_or_update_fusion_as_needed() {
+        let helper = "module Helper\npublic step : Int -> Int\nlet step x = x + 1\n";
+        let main = "module M\nlet run xs = List.sum (List.map Helper.step xs)\n";
+        let mut db = FaiDatabase::new();
+        fai_types::std_lib::load_std(&mut db);
+        db.add_source("Helper.fai".into(), helper.into());
+        let id = db.add_source("M.fai".into(), main.into());
+        let file = db.source_file(id).unwrap();
+        let name = Symbol::intern("run");
+        let before = fuse_def(&db, file, name);
+        assert!(!pretty_def(&before.body).contains("@map"));
+
+        db.enable_event_log();
+        db.add_source("Helper.fai".into(), helper.replace("x + 1", "x + 2"));
+        assert_eq!(before, fuse_def(&db, file, name));
+        let events = db.take_events();
+        assert!(!events.iter().any(|e| e.contains("fuse_def")), "{events:?}");
+
+        let partial = helper.replace("x + 1", "1 / x");
+        db.add_source("Helper.fai".into(), partial.clone());
+        let after = fuse_def(&db, file, name);
+        assert!(pretty_def(&after.body).contains("@map"));
+        let mut clean = FaiDatabase::new();
+        fai_types::std_lib::load_std(&mut clean);
+        clean.add_source("Helper.fai".into(), partial);
+        let id = clean.add_source("M.fai".into(), main.into());
+        assert_eq!(after, fuse_def(&clean, clean.source_file(id).unwrap(), name));
     }
 
     #[test]

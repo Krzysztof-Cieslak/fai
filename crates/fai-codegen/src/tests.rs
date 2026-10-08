@@ -497,6 +497,34 @@ fn const_keeps_a_niche_option_result() {
 }
 
 #[test]
+fn fusion_preserves_initializer_before_source_effects() {
+    let source = indoc! {r#"
+        module M
+        mark : Console -> String -> 'a -> 'a / { Console }
+        let mark console text value =
+          let _ = console.writeLine text
+          value
+        public main : Runtime -> Unit / { Console }
+        let main r =
+          let value = Array.foldl (fun acc x -> acc + x) (mark r.console "init" 0) (mark r.console "source" [| 1, 2 |])
+          r.console.writeLine (Int.toString value)
+    "#};
+    assert_eq!(run(source), (0, "init\nsource\n3\n".into()));
+}
+
+#[test]
+fn partial_search_predicate_keeps_its_own_short_circuiting() {
+    let source = indoc! {r#"
+        module M
+        public main : Runtime -> Unit / { Console }
+        let main r =
+          let found = List.any (fun n -> 1 / n = 1) [1, 0]
+          r.console.writeLine (if found then "found" else "missing")
+    "#};
+    assert_eq!(run(source), (0, "found\n".into()));
+}
+
+#[test]
 fn hello_world() {
     let src = main_printing("\"Hello, Fai!\"");
     let (code, out) = run(&src);

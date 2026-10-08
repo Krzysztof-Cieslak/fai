@@ -5912,6 +5912,37 @@ fn no_trmc_reorder_recursive_call() {
     );
 }
 
+#[test]
+fn no_trmc_reorder_checked_array_access() {
+    no_trmc(
+        indoc! {r#"
+            module M
+            type Snoc = | Empty | Snoc Snoc Int
+            let bump xs array =
+              match xs with
+              | Empty -> Empty
+              | Snoc rest x -> Snoc (bump rest array) (Array.unsafeGet x array)
+        "#},
+        "bump",
+    );
+}
+
+#[test]
+fn no_trmc_reorder_a_partial_constant_value() {
+    no_trmc(
+        indoc! {r#"
+            module M
+            type Snoc = | Empty | Snoc Snoc Int
+            let value = 1 / 0
+            let bump xs =
+              match xs with
+              | Empty -> Empty
+              | Snoc rest x -> Snoc (bump rest) value
+        "#},
+        "bump",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Mutual-recursion flattening: a plain-tail-recursive group is detected, combined
 // into one tag-dispatched self-recursive loop, and each member becomes a wrapper.

@@ -1008,6 +1008,10 @@ sort       : List 'a -> List 'a                       // ascending, structural
 
 ### Array — contiguous, growable `Array 'a` (O(1) index; literals `[| ... |]`)
 
+List and array combinators remain strict. The compiler can fuse directly nested
+pipelines when moved work is provably pure and total; a short-circuiting consumer
+does not skip traps or divergence in an earlier strict map or producer.
+
 In-place update when uniquely owned; copy-on-share. Safe `get`/`set` return
 `Option`; the `unsafe*` variants skip the bounds check (out of bounds aborts).
 `withCapacity n` starts empty and clamps negative capacities to zero. Capacities

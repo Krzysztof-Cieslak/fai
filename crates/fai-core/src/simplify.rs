@@ -23,7 +23,7 @@
 //!   `identity x → x`, and `const a b → (let saved = a in let _ = b in saved)`
 //!   (both arguments keep their strict, left-to-right evaluation). The reordered
 //!   operands of `>>`/`|>` must be
-//!   **pure**, mirroring fusion's purity barrier, so an effectful composition is
+//!   **pure and total**, mirroring fusion's reorder barrier, so an unsafe composition is
 //!   left intact.
 //! * **Application flattening** — `App(App(h, xs), ys) → App(h, xs ++ ys)`,
 //!   re-normalizing spines the other rules split and collapsing a curried partial
@@ -365,7 +365,7 @@ impl Simplifier<'_> {
         if Some(def) == pipe && args.len() >= 2 {
             let x = &args[0];
             let f = &args[1];
-            if !self.pure(x) || !self.pure(f) {
+            if !self.reorderable(x) || !self.reorderable(f) {
                 return None;
             }
             let mut applied = vec![x.clone()];
@@ -378,7 +378,7 @@ impl Simplifier<'_> {
             let f = &args[0];
             let g = &args[1];
             let x = &args[2];
-            if !self.pure(f) || !self.pure(g) {
+            if !self.reorderable(f) || !self.reorderable(g) {
                 return None;
             }
             // `f x` has `f`'s result type; bail if `f` is not a concrete arrow.
@@ -505,27 +505,10 @@ impl Simplifier<'_> {
         Ok(result)
     }
 
-    /// Whether evaluating `e` performs no host capability and makes no unprovable
-    /// (indirect) call — so reordering it across a combinator reduction is
-    /// unobservable. A structural walk mirroring fusion's purity barrier; building
-    /// a closure is pure (its effect rides its arrow, checked where it is applied).
-    fn pure(&self, e: &CExpr) -> bool {
-        match &e.kind {
-            K::Lit(_) | K::Local(_) | K::Global(_) | K::MakeClosure { .. } | K::Error => true,
-            K::Prim { args, .. } => args.iter().all(|a| self.pure(a)),
-            // A foreign call performs a host capability, so it is never reorderable.
-            K::Foreign { .. } => false,
-            K::App { func, args, .. } => {
-                matches!(&func.kind, K::Global(g) if self.global_apply_pure(*g, args.len()))
-                    && args.iter().all(|a| self.pure(a))
-            }
-            K::If { cond, then, els } => self.pure(cond) && self.pure(then) && self.pure(els),
-            K::Let { value, body, .. } => self.pure(value) && self.pure(body),
-            K::MakeData { args, .. } => args.iter().all(|a| self.pure(a)),
-            K::DataTag { base, .. } | K::DataField { base, .. } => self.pure(base),
-            // Reference-counting / tail-call nodes do not occur pre-count.
-            _ => false,
-        }
+    /// Reordered operands must be effect-free and guaranteed to terminate without
+    /// a semantic trap. Sharing this analysis keeps all reorder passes consistent.
+    fn reorderable(&self, e: &CExpr) -> bool {
+        crate::purity::expr_pure_total(self.db, e)
     }
 
     /// Whether `g` is row-polymorphic (its entry takes leading offset-evidence
@@ -534,24 +517,6 @@ impl Simplifier<'_> {
     fn is_row_polymorphic(&self, g: DefId) -> bool {
         fai_types::declared_or_inferred_scheme(self.db, g)
             .is_some_and(|s| fai_types::evidence_count(&s) > 0)
-    }
-
-    /// Whether applying the named global `g` to `arity` arguments is pure: every
-    /// arrow of its scheme up to `arity` carries the pure effect. Reads the scheme
-    /// (which preserves effects), so it is sound for an effect-polymorphic callee
-    /// and firewalled from body edits.
-    fn global_apply_pure(&self, g: DefId, arity: usize) -> bool {
-        let Some(scheme) = fai_types::declared_or_inferred_scheme(self.db, g) else {
-            return false;
-        };
-        let mut ty = &scheme.ty;
-        for _ in 0..arity {
-            match ty {
-                Ty::Arrow(_, to, eff) if eff.is_pure() => ty = to,
-                _ => return false,
-            }
-        }
-        true
     }
 }
 
