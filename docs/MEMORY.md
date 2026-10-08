@@ -3944,6 +3944,14 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     pattern mini-language over `LocalDateTime` (`yyyy`/`yy`, `M`…`MMMM`, `dd`/`d`,
     `HH`/`hh`, `mm`, `ss`, `fff`/`ffffff`/`fffffffff`, `tt`, `EEE`/`EEEE`, and quoted
     literals): a tokenizer feeds a format emitter and an inverse parse consumer.
+    Parsing tracks supplied fields separately from defaults, requires exact padded
+    widths (one-letter numeric forms allow one or two digits), validates the
+    12-hour range before conversion, and checks the weekday against the built date.
+    Duplicate fields must agree, including mixed numeric/named month and 12-/24-hour
+    representations. Fractional fields use their exact one-to-nine digit width;
+    unsupported widths and unterminated quoted literals fail. Missing fields use
+    the epoch date/midnight template; a 12-hour value without a marker is AM, and
+    a lone PM marker chooses noon.
   - **Offset-based; IANA time zones deferred.** The library is pure except
     `Instant.now`/`OffsetDateTime.now`, which take the `Clock` capability. To read
     *local* wall-clock time (not just UTC) the `Clock` interface gains

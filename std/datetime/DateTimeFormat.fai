@@ -8,7 +8,7 @@ module DateTimeFormat
 //   MMMM/MMM  month name (full / short)       dd/d    day of month
 //   HH/H      hour, 24-hour                    hh/h    hour, 12-hour
 //   mm/m      minute                           ss/s    second
-//   fff/ffffff/fffffffff  fractional second    tt      AM/PM
+//   f..fffffffff  fractional second (1–9 digits)   tt  AM/PM
 //   EEEE/EEE  weekday name (full / short)
 //
 // Any other character is a literal; wrap literal letters in single quotes
@@ -18,30 +18,34 @@ module DateTimeFormat
 type Tok =
   | TLit String
   | TField String Int
+  | TInvalid String
 
+// Presence distinguishes defaults from supplied fields and detects conflicts.
 type Parts = {
-  ampm : Int,
-  day : Int,
-  h12 : Bool,
-  hour : Int,
-  minute : Int,
-  month : Int,
-  nano : Int,
-  second : Int,
-  year : Int
+  ampm : Option Int,
+  day : Option Int,
+  hour12 : Option Int,
+  hour24 : Option Int,
+  minute : Option Int,
+  month : Option Int,
+  nano : Option Int,
+  second : Option Int,
+  weekday : Option Int,
+  year : Option Int
 }
 
 defaultParts : Parts
 let defaultParts = {
-  ampm = 0,
-  day = 1,
-  h12 = false,
-  hour = 0,
-  minute = 0,
-  month = 1,
-  nano = 0,
-  second = 0,
-  year = 1970
+  ampm = None,
+  day = None,
+  hour12 = None,
+  hour24 = None,
+  minute = None,
+  month = None,
+  nano = None,
+  second = None,
+  weekday = None,
+  year = None
 }
 
 monthShort : List String
@@ -95,7 +99,9 @@ let dtOf y mo d h mi s =
 
 // Whether a one-character string is an ASCII digit.
 isDigit : String -> Bool
-let isDigit c = Option.isSome (Int.fromString c)
+let isDigit c =
+  let bytes = Bytes.fromString c
+  Bytes.length bytes = 1 && Bytes.unsafeGet 0 bytes >= 48 && Bytes.unsafeGet 0 bytes <= 57
 
 // Whether `c` begins a field code (rather than literal text).
 isFieldChar : String -> Bool
@@ -121,10 +127,10 @@ let scanFrom s pos n =
     let c = String.substring pos 1 s
     if c = "'" then
       let close = indexOfQuote s (pos + 1) n
-      TLit (String.substring (pos + 1) (close - pos - 1) s) :: scanFrom s (if close < n then
-        close + 1
+      if close < n then
+        TLit (String.substring (pos + 1) (close - pos - 1) s) :: scanFrom s (close + 1) n
       else
-        n) n
+        [TInvalid (String.drop (pos + 1) s)]
     else if isFieldChar c then
       let k = runLen s pos n c
       TField c k :: scanFrom s (pos + k) n
@@ -186,6 +192,7 @@ let formatToks toks ldt =
   match toks with
   | [] -> ""
   | TLit s :: rest -> s ++ formatToks rest ldt
+  | TInvalid s :: rest -> s ++ formatToks rest ldt
   | TField c k :: rest -> emitField c k ldt ++ formatToks rest ldt
 
 /// Render a date-time with a custom pattern, e.g.
@@ -213,7 +220,7 @@ let prefixAt input pos s =
   let len = String.length s
   pos + len <= String.length input && String.substring pos len input = s
 
-// Read 1..`maxw` decimal digits at `pos`, returning the value and the new index.
+// Read decimal digits at `pos`; callers distinguish exact and variable widths.
 scanDigits : String -> Int -> Int -> Int
 let scanDigits input pos limit =
   if pos < limit && isDigit (String.substring pos 1 input) then
@@ -221,12 +228,12 @@ let scanDigits input pos limit =
   else
     pos
 
-readNum : String -> Int -> Int -> Option (Int * Int)
-let readNum input pos maxw =
+readNum : String -> Int -> Int -> Int -> Option (Int * Int)
+let readNum input pos minw maxw =
   let n = String.length input
   let limit = if pos + maxw < n then pos + maxw else n
   let endp = scanDigits input pos limit
-  if endp = pos then
+  if endp - pos < minw then
     None
   else
     Option.map (fun v -> (v, endp)) (Int.fromString (String.substring pos (endp - pos) input))
@@ -242,52 +249,76 @@ let matchName input pos names idx =
     else
       matchName input pos rest (idx + 1)
 
-consumeNum : String -> Int -> Int -> (Parts -> Int -> Parts) -> Parts -> Option (Int * Parts)
-let consumeNum input pos maxw set parts =
-  match readNum input pos maxw with
-  | Some (v, p2) -> Some (p2, set parts v)
+agrees : Option Int -> Int -> Bool
+let agrees previous value =
+  match previous with
+  | None -> true
+  | Some old -> old = value
+
+consumeNum : String -> Int -> Int -> Int -> (Parts -> Option Int) -> (Parts -> Int -> Parts) -> Parts -> Option (Int * Parts)
+let consumeNum input pos minw maxw get set parts =
+  match readNum input pos minw maxw with
+  | Some (v, p2) -> if agrees (get parts) v then Some (p2, set parts v) else None
   | None -> None
 
-consumeName : String -> Int -> List String -> (Parts -> Int -> Parts) -> Parts -> Option (Int * Parts)
-let consumeName input pos names set parts =
+consumeName : String -> Int -> List String -> (Parts -> Option Int) -> (Parts -> Int -> Parts) -> Parts -> Option (Int * Parts)
+let consumeName input pos names get set parts =
   match matchName input pos names 1 with
-  | Some (idx, p2) -> Some (p2, set parts idx)
+  | Some (idx, p2) -> if agrees (get parts) idx then Some (p2, set parts idx) else None
   | None -> None
+
+validWidth : String -> Int -> Bool
+let validWidth c k =
+  if c = "y" then
+    k = 2 || k = 4
+  else if c = "M" then
+    k >= 1 && k <= 4
+  else if c = "f" then
+    k >= 1 && k <= 9
+  else if c = "t" then k = 2 else if c = "E" then k = 3 || k = 4 else k = 1 || k = 2
 
 // Consume the input for one field code, updating the accumulated parts.
 consumeField : String -> Int -> String -> Int -> Parts -> Option (Int * Parts)
 let consumeField c k input pos parts =
-  if c = "y" then
-    consumeNum input pos (if k = 2 then
-      2
-    else
-      4) (fun p v -> { p with year = if k = 2 then 2000 + v else v }) parts
+  if not (validWidth c k) then
+    None
+  else if c = "y" then
+    match readNum input pos k k with
+    | None -> None
+    | Some (v, p2) ->
+      let year = if k = 2 then 2000 + v else v
+      if agrees parts.year year then Some (p2, { parts with year = Some year }) else None
   else if c = "M" then
     if k >= 3 then
       consumeName input pos (if k >= 4 then
         monthFull
       else
-        monthShort) (fun p i -> { p with month = i }) parts
+        monthShort) (fun p -> p.month) (fun p i -> { p with month = Some i }) parts
     else
-      consumeNum input pos 2 (fun p v -> { p with month = v }) parts
+      consumeNum input pos k 2 (fun p -> p.month) (fun p v -> { p with month = Some v }) parts
   else if c = "d" then
-    consumeNum input pos 2 (fun p v -> { p with day = v }) parts
+    consumeNum input pos k 2 (fun p -> p.day) (fun p v -> { p with day = Some v }) parts
   else if c = "H" then
-    consumeNum input pos 2 (fun p v -> { p with h12 = false, hour = v }) parts
+    consumeNum input pos k 2 (fun p -> p.hour24) (fun p v -> { p with hour24 = Some v }) parts
   else if c = "h" then
-    consumeNum input pos 2 (fun p v -> { p with h12 = true, hour = v }) parts
+    consumeNum input pos k 2 (fun p -> p.hour12) (fun p v -> { p with hour12 = Some v }) parts
   else if c = "m" then
-    consumeNum input pos 2 (fun p v -> { p with minute = v }) parts
+    consumeNum input pos k 2 (fun p -> p.minute) (fun p v -> { p with minute = Some v }) parts
   else if c = "s" then
-    consumeNum input pos 2 (fun p v -> { p with second = v }) parts
+    consumeNum input pos k 2 (fun p -> p.second) (fun p v -> { p with second = Some v }) parts
   else if c = "f" then
-    match readNum input pos k with
-    | Some (v, p2) -> Some (p2, { parts with nano = v * pow10 (9 - (p2 - pos)) })
+    match readNum input pos k k with
+    | Some (v, p2) ->
+      let nano = v * pow10 (9 - k)
+      if agrees parts.nano nano then Some (p2, { parts with nano = Some nano }) else None
     | None -> None
   else if c = "t" then
-    consumeName input pos ampmNames (fun p i -> { p with ampm = i }) parts
+    consumeName input pos ampmNames (fun p -> p.ampm) (fun p i -> { p with ampm = Some i }) parts
   else if c = "E" then
-    consumeName input pos (if k >= 4 then weekdayFull else weekdayShort) (fun p i -> p) parts
+    consumeName input pos (if k = 4 then
+      weekdayFull
+    else
+      weekdayShort) (fun p -> p.weekday) (fun p i -> { p with weekday = Some i }) parts
   else
     None
 
@@ -297,21 +328,52 @@ let parseToks toks input pos parts =
   | [] -> Some (pos, parts)
   | TLit s :: rest ->
     if prefixAt input pos s then parseToks rest input (pos + String.length s) parts else None
+  | TInvalid s :: rest -> None
   | TField c k :: rest ->
     match consumeField c k input pos parts with
     | Some (p2, parts2) -> parseToks rest input p2 parts2
     | None -> None
 
+parsedHour : Parts -> Option Int
+let parsedHour parts =
+  let h12 = Option.withDefault 12 parts.hour12
+  let ampm = Option.withDefault 1 parts.ampm
+  if h12 < 1 || h12 > 12 || ampm < 1 || ampm > 2 then
+    None
+  else
+    let h0 = if h12 = 12 then 0 else h12
+    let hour = Option.withDefault (h0 + (if ampm = 2 then 12 else 0)) parts.hour24
+    if hour < 0 || hour > 23 || not (agrees parts.hour12 (hour12 hour)) || not (agrees parts.ampm (if hour < 12 then
+      1
+    else
+      2)) then
+      None
+    else
+      Some hour
+
 buildDateTime : Parts -> Option LocalDateTime
 let buildDateTime parts =
-  let h0 = if parts.h12 then Int.floorMod parts.hour 12 else parts.hour
-  let hr = if parts.h12 && parts.ampm = 2 then h0 + 12 else h0
-  match (LocalDate.of parts.year parts.month parts.day, LocalTime.ofNano hr parts.minute parts.second parts.nano) with
-  | (Some d, Some t) -> Some (LocalDateTime.of d t)
-  | _ -> None
+  match parsedHour parts with
+  | None -> None
+  | Some hour ->
+    let date =
+      LocalDate.of (Option.withDefault 1970 parts.year) (Option.withDefault 1 parts.month) (Option.withDefault 1 parts.day)
+    let time =
+      LocalTime.ofNano hour (Option.withDefault 0 parts.minute) (Option.withDefault 0 parts.second) (Option.withDefault 0 parts.nano)
+    match (date, time) with
+    | (Some d, Some t) ->
+      if agrees parts.weekday (DayOfWeek.toInt (LocalDate.dayOfWeek d)) then
+        Some (LocalDateTime.of d t)
+      else
+        None
+    | _ -> None
 
 /// Parse a date-time from `input` against a custom `pattern`. The whole input must
 /// be consumed and name the fields the pattern requires, or the result is `None`.
+/// Padded numeric fields and fractions have exact widths; one-letter numeric
+/// forms accept one or two digits. Repeated fields must agree, including weekday
+/// and 12-/24-hour forms. Missing date fields default to 1970-01-01 and time fields
+/// to zero; a 12-hour value defaults to AM, and a lone PM marker selects noon.
 public parse : String -> String -> Option LocalDateTime
 let parse pattern input =
   match parseToks (scan pattern) input 0 defaultParts with
@@ -334,3 +396,46 @@ example: parseDate "yyyy-MM-dd" "1970-01-01" = Some (LocalDate.fromEpochDay 0)
 public parseTime : String -> String -> Option LocalTime
 let parseTime pattern input = Option.map LocalDateTime.time (parse pattern input)
 example: parseTime "HH:mm:ss" "00:00:00" = Some LocalTime.midnight
+example: parseTime "hh:mm tt" "99:00 PM" = None
+example: parseDate "EEE yyyy-MM-dd" "Tue 2020-06-15" = None
+example: parseDate "yyyy-MM-dd" "20-6-1" = None
+example: parseTime "hh:mm tt" "00:00 AM" = None
+example: parseTime "hh:mm tt" "13:00 PM" = None
+example: parseTime "hh:mm tt" "12:00 AM" = Some LocalTime.midnight
+example: parseTime "hh:mm tt" "12:00 PM" = Some LocalTime.noon
+example: parseTime "h:m:s tt" "1:2:3 PM" = LocalTime.of 13 2 3
+example: parseTime "hh" "03" = LocalTime.of 3 0 0
+example: parseTime "tt" "PM" = Some LocalTime.noon
+example: parseTime "HH hh tt" "15 03 PM" = LocalTime.of 15 0 0
+example: parseTime "HH hh tt" "15 03 AM" = None
+example: parseTime "HH hh" "15 04" = None
+example: parseTime "HH:mm:ss" "1:02:03" = None
+example: parseTime "HH:mm:ss" "01:2:03" = None
+example: parseTime "HH:mm:ss" "01:02:3" = None
+example: parseDate "yyyy-MM-dd" "2020-6-15" = None
+example: parseDate "yyyy-MM-dd" "2020-06-5" = None
+example: parseDate "yyyy-MM-dd" "020-06-15" = None
+example: parseDate "yy-MM-dd" "0-06-15" = None
+example: parseTime "ss.fff" "00.12" = None
+example: parseTime "ss.fff" "00.1234" = None
+example: parseTime "ss.ffffff" "00.123456" = LocalTime.ofNano 0 0 0 123456000
+example: parseDate "EEE yyyy-MM-dd" "Mon 2020-06-15" = LocalDate.of 2020 6 15
+example: parseDate "yyyy MM MMM dd" "2020 06 Jun 15" = LocalDate.of 2020 6 15
+example: parseDate "yyyy MM MMM dd" "2020 06 Jul 15" = None
+example: parseDate "yyyy yyyy-MM-dd" "2020 2021-06-15" = None
+example: parseDate "yyyy yyyy-MM-dd" "2020 2020-06-15" = LocalDate.of 2020 6 15
+example: parseTime "tt tt" "AM PM" = None
+example: parseTime "HHH" "12" = None
+example: parseTime "fffffffffff" "123456789" = None
+example: parseDate "yyy-MM-dd" "2020-06-15" = None
+example: parseDate "yyyy-MMMMM-dd" "2020-June-15" = None
+example: parseDate "yyyy-MM-dd'!" "2020-06-15!" = None
+example: parseDate "yyyy-MM-dd" "2020-06-15 extra" = None
+example: parseTime "fff ffffff" "123 123000" = LocalTime.ofNano 0 0 0 123000000
+example: parseTime "fff ffffff" "123 124000" = None
+example: parseTime "HH HH" "12 13" = None
+example: parseTime "ff" "12" = LocalTime.ofNano 0 0 0 120000000
+example: parseTime "t" "PM" = None
+example: parseDate "EE" "Mon" = None
+example: parseDate "ddd" "15" = None
+example: parseDate "yyyy-MM-dd" "0000-02-29" = LocalDate.of 0 2 29

@@ -827,6 +827,12 @@ fn year_then_month_periods_round_trip_leap_day_in_native_code() {
 }
 
 #[test]
+fn custom_datetime_parsing_checks_fields_in_native_code() {
+    let source = "module Main\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let valid = DateTimeFormat.parseTime \"hh:mm tt\" \"99:00 PM\" = None && DateTimeFormat.parseDate \"EEE yyyy-MM-dd\" \"Tue 2020-06-15\" = None && DateTimeFormat.parseTime \"hh:mm tt\" \"12:00 PM\" = Some LocalTime.noon\n  r.console.writeLine (if valid then \"strict\" else \"failed\")\n";
+    assert_eq!(build_and_run(source), ("strict\n".into(), Some(0)));
+}
+
+#[test]
 fn user_defined_operator_runs() {
     let src = indoc! {r#"
         module Main
