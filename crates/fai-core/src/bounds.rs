@@ -9,12 +9,11 @@
 //! `i >= 0` is the path `Zero -> i` with weight `<= 0`, and `i < len(a)` is the
 //! path `i -> Len(a)` with weight `<= -1`.
 //!
-//! Soundness rests on the runtime invariant that a valid `Array`'s length is far
-//! below `i64::MAX` (the allocator aborts long before), so an index `< len` can be
-//! incremented without two's-complement wraparound — the same invariant Rust's
-//! bounds-check elimination relies on. Every transfer function is conservative:
-//! an unrecognized operation yields a fresh, unconstrained term, so the worst
-//! case is a missed elision, never an unsound one.
+//! Fai integers wrap, so arithmetic becomes a mathematical difference constraint
+//! only after operand bounds prove that it cannot overflow. Array lengths have
+//! an architectural upper bound (eight-byte slots within a signed-size allocation),
+//! which makes guarded index increments provably safe. Unknown arithmetic stays
+//! unconstrained; a missing proof must retain the runtime bounds check.
 //!
 //! The in-body [`Bounds`] graph is keyed by [`LocalId`]; the portable
 //! [`BoundSig`]/[`ResultSig`] signatures are keyed by *parameter index*, so a
@@ -36,6 +35,10 @@ const TERM_CAP: usize = 96;
 /// the lattice stays finite. A genuine constant beyond it is simply not recorded
 /// (sound: a missing edge only weakens the facts).
 const CONST_CAP: i64 = 1 << 40;
+
+/// A conservative length ceiling: every array slot occupies eight bytes and the
+/// complete allocation fits `isize::MAX`, which is at most `i64::MAX`.
+const ARRAY_LEN_MAX: i128 = i64::MAX as i128 / 8;
 
 /// A symbolic term in the difference-constraint graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -112,7 +115,7 @@ impl Bounds {
         if self.poisoned || from == to {
             return;
         }
-        if c.abs() > CONST_CAP {
+        if !(-CONST_CAP..=CONST_CAP).contains(&c) {
             return;
         }
         // Admit new terms only within the budget; once exceeded, poison so the
@@ -138,7 +141,9 @@ impl Bounds {
     /// Records `a == b + c` (both `a <= b + c` and `b <= a - c`).
     fn add_eq(&mut self, a: Term, b: Term, c: i64) {
         self.add_edge(a, b, c);
-        self.add_edge(b, a, -c);
+        if let Some(negative) = c.checked_neg() {
+            self.add_edge(b, a, negative);
+        }
     }
 
     /// Records the constant fact `t == n` (`t` equals the literal `n`).
@@ -149,7 +154,62 @@ impl Bounds {
     /// Records `t >= n` (a lower bound).
     fn set_ge(&mut self, t: Term, n: i64) {
         // Zero <= t + (-n)  ==>  t >= n.
-        self.add_edge(Term::Zero, t, -n);
+        if let Some(negative) = n.checked_neg() {
+            self.add_edge(Term::Zero, t, negative);
+        }
+    }
+
+    /// Absolute intervals implied by the graph and the machine/array limits.
+    /// These wider bounds are used only to justify arithmetic; they do not grow
+    /// the capped difference-constraint lattice or its portable signatures.
+    fn intervals(&self) -> FxHashMap<Term, (i128, i128)> {
+        let mut ranges = FxHashMap::default();
+        for (from, edges) in &self.edges {
+            ranges.entry(*from).or_insert_with(|| machine_interval(*from));
+            for to in edges.keys() {
+                ranges.entry(*to).or_insert_with(|| machine_interval(*to));
+            }
+        }
+        for _ in 0..ranges.len() {
+            let mut changed = false;
+            for (from, edges) in &self.edges {
+                for (to, weight) in edges {
+                    let (from_lo, from_hi) = ranges[from];
+                    let (to_lo, to_hi) = ranges[to];
+                    let hi = from_hi.min(to_hi + i128::from(*weight));
+                    let lo = to_lo.max(from_lo - i128::from(*weight));
+                    if hi < from_hi {
+                        ranges.get_mut(from).expect("known source term").1 = hi;
+                        changed = true;
+                    }
+                    if lo > to_lo {
+                        ranges.get_mut(to).expect("known target term").0 = lo;
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        ranges
+    }
+
+    fn offset_does_not_wrap(&self, term: Term, offset: i64) -> bool {
+        if offset == 0 {
+            return true;
+        }
+        let (lo, hi) =
+            self.intervals().get(&term).copied().unwrap_or_else(|| machine_interval(term));
+        lo + i128::from(offset) >= i128::from(i64::MIN)
+            && hi + i128::from(offset) <= i128::from(i64::MAX)
+    }
+
+    fn subtraction_does_not_wrap(&self, a: Term, b: Term) -> bool {
+        let ranges = self.intervals();
+        let (alo, ahi) = ranges.get(&a).copied().unwrap_or_else(|| machine_interval(a));
+        let (blo, bhi) = ranges.get(&b).copied().unwrap_or_else(|| machine_interval(b));
+        alo - bhi >= i128::from(i64::MIN) && ahi - blo <= i128::from(i64::MAX)
     }
 
     /// The minimum weight of any path `from -> to` (so `from <= to + weight`), or
@@ -228,7 +288,10 @@ impl Bounds {
             }
             K::Lit(Lit::Int(n)) => {
                 // A literal index `n >= 0` is in bounds iff `len(array) > n`.
-                *n >= 0 && self.entails_le(Term::Zero, len, -(n.saturating_add(1)))
+                *n >= 0
+                    && n.checked_add(1)
+                        .and_then(i64::checked_neg)
+                        .is_some_and(|bound| self.entails_le(Term::Zero, len, bound))
             }
             _ => false,
         }
@@ -263,8 +326,8 @@ impl Bounds {
 
     fn transfer_prim(&mut self, local: LocalId, op: Prim, args: &[CExpr]) {
         match op {
-            Prim::IntAdd => self.transfer_addsub(local, args, 1),
-            Prim::IntSub => self.transfer_addsub(local, args, -1),
+            Prim::IntAdd => self.transfer_addsub(local, args, false),
+            Prim::IntSub => self.transfer_addsub(local, args, true),
             Prim::IntAnd => self.transfer_mask(local, args),
             Prim::IntRem => self.transfer_rem(local, args),
             Prim::ArrayLength => {
@@ -304,23 +367,38 @@ impl Bounds {
         self.set_ge(Term::Len(local), 0);
     }
 
-    /// `local = a + b` (`sign = 1`) or `local = a - b` (`sign = -1`). Only a
-    /// literal second (or, for `+`, first) operand yields a difference edge.
-    fn transfer_addsub(&mut self, local: LocalId, args: &[CExpr], sign: i64) {
+    /// Records add/subtract relations only when operand ranges prove no wrapping.
+    /// Literal arithmetic itself follows the language's wrapping semantics.
+    fn transfer_addsub(&mut self, local: LocalId, args: &[CExpr], subtract: bool) {
         let (Some(a), Some(b)) = (args.first(), args.get(1)) else { return };
         let lt = Term::Int(local);
         match (&a.kind, &b.kind) {
             // local = x + k  /  local = x - k
-            (K::Local(x), K::Lit(Lit::Int(k))) => self.add_eq(lt, Term::Int(*x), sign * k),
+            (K::Local(x), K::Lit(Lit::Int(k))) => {
+                let offset = if subtract { k.checked_neg() } else { Some(*k) };
+                if let Some(offset) = offset
+                    && self.offset_does_not_wrap(Term::Int(*x), offset)
+                {
+                    self.add_eq(lt, Term::Int(*x), offset);
+                }
+            }
             // local = k + x   (addition only; subtraction `k - x` is not a diff edge)
-            (K::Lit(Lit::Int(k)), K::Local(x)) if sign == 1 => self.add_eq(lt, Term::Int(*x), *k),
+            (K::Lit(Lit::Int(k)), K::Local(x)) if !subtract => {
+                if self.offset_does_not_wrap(Term::Int(*x), *k) {
+                    self.add_eq(lt, Term::Int(*x), *k);
+                }
+            }
             (K::Lit(Lit::Int(p)), K::Lit(Lit::Int(q))) => {
-                self.set_const(lt, p.wrapping_add(sign * q))
+                self.set_const(lt, if subtract { p.wrapping_sub(*q) } else { p.wrapping_add(*q) });
             }
             // local = x - y (two variables): not a single difference edge, but
             // recorded so a later constant guard on `local` recovers the relation.
-            (K::Local(x), K::Local(y)) if sign == -1 => {
-                self.subs.insert(local, (Term::Int(*x), Term::Int(*y)));
+            (K::Local(x), K::Local(y)) if subtract => {
+                if x == y {
+                    self.set_const(lt, 0);
+                } else if self.subtraction_does_not_wrap(Term::Int(*x), Term::Int(*y)) {
+                    self.subs.insert(local, (Term::Int(*x), Term::Int(*y)));
+                }
             }
             _ => {}
         }
@@ -364,7 +442,7 @@ impl Bounds {
             // non-negative).
             if taken {
                 // lhs + lhs_off == rhs + rhs_off  ==>  lhs == rhs + (rhs_off - lhs_off).
-                self.add_eq(cond.lhs, cond.rhs, cond.rhs_off - cond.lhs_off);
+                self.assert_cmp(Prim::Eq, cond.lhs, cond.lhs_off, cond.rhs, cond.rhs_off);
             } else if cond.lhs_off == 0 && cond.rhs_off == 0 {
                 self.refine_ne(cond.lhs, cond.rhs);
             }
@@ -400,19 +478,27 @@ impl Bounds {
     /// The offset difference folds into the edge weight: the relation is
     /// `lhs OP rhs + (rhs_off - lhs_off)`.
     fn assert_cmp(&mut self, op: Prim, lhs: Term, lhs_off: i64, rhs: Term, rhs_off: i64) {
-        let d = rhs_off - lhs_off;
-        match op {
+        let d = i128::from(rhs_off) - i128::from(lhs_off);
+        let (from, to, weight) = match op {
             // lhs < rhs + d  ==>  lhs <= rhs + (d - 1)
-            Prim::IntLt => self.add_edge_sub(lhs, rhs, d - 1),
+            Prim::IntLt => (lhs, rhs, d - 1),
             // lhs <= rhs + d
-            Prim::IntLe => self.add_edge_sub(lhs, rhs, d),
+            Prim::IntLe => (lhs, rhs, d),
             // lhs > rhs + d  ==>  rhs <= lhs + (-d - 1)
-            Prim::IntGt => self.add_edge_sub(rhs, lhs, -d - 1),
+            Prim::IntGt => (rhs, lhs, -d - 1),
             // lhs >= rhs + d  ==>  rhs <= lhs - d
-            Prim::IntGe => self.add_edge_sub(rhs, lhs, -d),
+            Prim::IntGe => (rhs, lhs, -d),
             // lhs == rhs + d
-            Prim::Eq => self.add_eq(lhs, rhs, d),
-            _ => {}
+            Prim::Eq => {
+                if let Ok(d) = i64::try_from(d) {
+                    self.add_eq(lhs, rhs, d);
+                }
+                return;
+            }
+            _ => return,
+        };
+        if let Ok(weight) = i64::try_from(weight) {
+            self.add_edge_sub(from, to, weight);
         }
     }
 
@@ -488,6 +574,14 @@ impl Bounds {
             };
             self.add_edge(a, b, c);
         }
+    }
+}
+
+fn machine_interval(term: Term) -> (i128, i128) {
+    match term {
+        Term::Zero => (0, 0),
+        Term::Int(_) => (i128::from(i64::MIN), i128::from(i64::MAX)),
+        Term::Len(_) => (0, ARRAY_LEN_MAX),
     }
 }
 
@@ -770,6 +864,90 @@ mod tests {
     }
 
     #[test]
+    fn wrapping_increment_cannot_prove_an_index_nonnegative() {
+        let mut b = Bounds::new();
+        b.transfer_let(local(2), &prim(Prim::ArrayLength, vec![local_expr(0)]));
+        b.transfer_let(local(3), &prim(Prim::IntAdd, vec![local_expr(1), int_lit(1)]));
+        b.transfer_let(local(4), &prim(Prim::IntGe, vec![local_expr(1), int_lit(0)]));
+        b.refine(&local_expr(4), true);
+        b.transfer_let(local(5), &prim(Prim::IntLt, vec![local_expr(3), local_expr(2)]));
+        b.refine(&local_expr(5), true);
+        assert!(!b.index_in_bounds(local(0), &local_expr(3)));
+    }
+
+    #[test]
+    fn wrapping_decrement_cannot_prove_an_index_below_length() {
+        let mut b = Bounds::new();
+        b.transfer_let(local(2), &prim(Prim::ArrayLength, vec![local_expr(0)]));
+        b.transfer_let(local(3), &prim(Prim::IntSub, vec![local_expr(1), int_lit(1)]));
+        b.transfer_let(local(4), &prim(Prim::IntLe, vec![local_expr(1), int_lit(0)]));
+        b.refine(&local_expr(4), true);
+        b.transfer_let(local(5), &prim(Prim::IntGe, vec![local_expr(3), int_lit(0)]));
+        b.refine(&local_expr(5), true);
+        assert!(!b.index_in_bounds(local(0), &local_expr(3)));
+    }
+
+    #[test]
+    fn wrapping_variable_subtraction_does_not_relate_its_operands() {
+        let mut b = Bounds::new();
+        b.transfer_let(local(3), &prim(Prim::IntSub, vec![local_expr(1), local_expr(2)]));
+        b.transfer_let(local(4), &prim(Prim::IntLe, vec![local_expr(3), int_lit(1)]));
+        b.refine(&local_expr(4), true);
+        assert_eq!(b.bound(Term::Int(local(1)), Term::Int(local(2))), None);
+    }
+
+    #[test]
+    fn one_sided_ranges_do_not_rule_out_subtraction_underflow() {
+        let mut b = Bounds::new();
+        b.add_edge(Term::Int(local(1)), Term::Len(local(0)), 0);
+        b.set_ge(Term::Int(local(2)), 0);
+        b.transfer_let(local(3), &prim(Prim::IntSub, vec![local_expr(1), local_expr(2)]));
+        b.transfer_let(local(4), &prim(Prim::IntLe, vec![local_expr(3), int_lit(1)]));
+        b.refine(&local_expr(4), false);
+        assert_eq!(b.bound(Term::Int(local(2)), Term::Int(local(1))), None);
+    }
+
+    #[test]
+    fn guarded_increment_uses_machine_limits_without_wrapping() {
+        let mut b = Bounds::new();
+        b.set_ge(Term::Int(local(1)), 0);
+        b.add_edge(Term::Int(local(1)), Term::Int(local(2)), -1);
+        b.transfer_let(local(3), &prim(Prim::IntAdd, vec![local_expr(1), int_lit(1)]));
+        assert_eq!(b.bound(Term::Int(local(3)), Term::Int(local(1))), Some(1));
+        assert!(b.entails_nonneg(Term::Int(local(3))));
+    }
+
+    #[test]
+    fn minimum_literal_does_not_overflow_the_fact_engine() {
+        let mut b = Bounds::new();
+        b.transfer_let(local(0), &int_lit(i64::MIN));
+        assert_eq!(b.bound(Term::Int(local(0)), Term::Zero), None);
+    }
+
+    #[test]
+    fn minimum_literal_subtracted_from_itself_folds_to_zero() {
+        let mut b = Bounds::new();
+        b.transfer_let(local(0), &prim(Prim::IntSub, vec![int_lit(i64::MIN), int_lit(i64::MIN)]));
+        assert_eq!(b.bound(Term::Int(local(0)), Term::Zero), Some(0));
+        assert_eq!(b.bound(Term::Zero, Term::Int(local(0))), Some(0));
+    }
+
+    #[test]
+    fn subtracting_minimum_literal_does_not_overflow_an_offset() {
+        let mut b = Bounds::new();
+        b.transfer_let(local(1), &prim(Prim::IntSub, vec![local_expr(0), int_lit(i64::MIN)]));
+        assert_eq!(b.bound(Term::Int(local(1)), Term::Int(local(0))), None);
+    }
+
+    #[test]
+    fn extreme_guard_offsets_do_not_overflow() {
+        let mut b = Bounds::new();
+        b.transfer_let(local(0), &prim(Prim::IntLt, vec![int_lit(i64::MIN), int_lit(i64::MAX)]));
+        b.refine(&local_expr(0), true);
+        assert!(!b.index_in_bounds(local(1), &local_expr(2)));
+    }
+
+    #[test]
     fn literal_constant_guard_bounds_against_constant() {
         // A comparison against a non-zero literal: `d <= 1` gives `d <= 1` on the
         // true side and `d >= 2` on the false side.
@@ -790,6 +968,9 @@ mod tests {
         // d = hi - lo; the false side of `d <= 1` (i.e. `hi - lo >= 2`) gives the
         // two-variable difference `lo <= hi - 2`.
         let mut b = Bounds::new();
+        // Subtraction between non-negative signed integers cannot overflow.
+        b.set_ge(Term::Int(local(1)), 0);
+        b.set_ge(Term::Int(local(2)), 0);
         // d = hi - lo   (hi = local 1, lo = local 2, d = local 3)
         b.transfer_let(local(3), &prim(Prim::IntSub, vec![local_expr(1), local_expr(2)]));
         // c = d <= 1
@@ -805,6 +986,7 @@ mod tests {
         let a = local(0);
         let mut b = Bounds::new();
         b.add_edge(Term::Int(local(1)), Term::Len(a), 0); // hi <= len(a)
+        b.set_ge(Term::Int(local(1)), 0); // hi >= 0 rules out subtraction underflow
         b.set_ge(Term::Int(local(2)), 0); // lo >= 0 (entry fact)
         // d = hi - lo
         b.transfer_let(local(3), &prim(Prim::IntSub, vec![local_expr(1), local_expr(2)]));
@@ -817,5 +999,56 @@ mod tests {
             b.index_in_bounds(a, &local_expr(5)),
             "hi-1 in [0,len) via the two-variable guard and entry facts"
         );
+    }
+
+    mod proptests {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        fn boundary_value() -> impl Strategy<Value = i64> {
+            prop_oneof![
+                any::<i64>(),
+                (i64::MAX - 128)..=i64::MAX,
+                i64::MIN..=(i64::MIN + 128),
+                -128i64..128,
+            ]
+        }
+
+        proptest! {
+            #[test]
+            fn guarded_wrapping_add_never_proves_an_invalid_index(
+                value in boundary_value(), offset in -128i64..128, len in 1i64..64,
+            ) {
+                let index = value.wrapping_add(offset);
+                let mut b = Bounds::new();
+                b.set_const(Term::Len(local(0)), len);
+                b.transfer_let(local(2), &prim(Prim::IntAdd, vec![local_expr(1), int_lit(offset)]));
+                b.transfer_let(local(3), &prim(Prim::IntGe, vec![local_expr(1), int_lit(0)]));
+                b.refine(&local_expr(3), true);
+                b.transfer_let(local(4), &prim(Prim::IntLt, vec![local_expr(2), int_lit(len)]));
+                b.refine(&local_expr(4), true);
+                if value >= 0 && index < len && b.index_in_bounds(local(0), &local_expr(2)) {
+                    prop_assert!(index >= 0, "value={value}, offset={offset}, index={index}");
+                }
+            }
+
+            #[test]
+            fn guarded_wrapping_sub_never_proves_an_invalid_index(
+                value in boundary_value(), offset in -128i64..128, len in 1i64..64,
+            ) {
+                let index = value.wrapping_sub(offset);
+                let mut b = Bounds::new();
+                b.set_const(Term::Len(local(0)), len);
+                b.transfer_let(local(2), &prim(Prim::IntSub, vec![local_expr(1), int_lit(offset)]));
+                b.transfer_let(local(3), &prim(Prim::IntLe, vec![local_expr(1), int_lit(0)]));
+                b.refine(&local_expr(3), true);
+                b.transfer_let(local(4), &prim(Prim::IntGe, vec![local_expr(2), int_lit(0)]));
+                b.refine(&local_expr(4), true);
+                if value <= 0 && index >= 0 && b.index_in_bounds(local(0), &local_expr(2)) {
+                    prop_assert!(index < len, "value={value}, offset={offset}, index={index}");
+                }
+            }
+        }
     }
 }

@@ -431,12 +431,12 @@ fn extract_result(
                 continue;
             }
             if let Some(w) = graph.bound(*rt, *pt)
-                && w.abs() <= SIG_CONST_CAP
+                && w.unsigned_abs() <= SIG_CONST_CAP as u64
             {
                 tighten_result(&mut sig, *rc, *rp, w);
             }
             if let Some(w) = graph.bound(*pt, *rt)
-                && w.abs() <= SIG_CONST_CAP
+                && w.unsigned_abs() <= SIG_CONST_CAP as u64
             {
                 tighten_result(&mut sig, *rp, *rc, w);
             }
@@ -808,7 +808,7 @@ fn extract_call(b: &Bounds, args: &[CExpr]) -> SigMap {
             match (a, c) {
                 (ArgTerm::Var(pa, ta), ArgTerm::Var(pc, tc)) if pa != pc => {
                     if let Some(w) = b.bound(*ta, *tc)
-                        && w.abs() <= SIG_CONST_CAP
+                        && w.unsigned_abs() <= SIG_CONST_CAP as u64
                     {
                         tighten(&mut sig, *pa, *pc, w);
                     }
@@ -819,7 +819,7 @@ fn extract_call(b: &Bounds, args: &[CExpr]) -> SigMap {
     }
     for a in &terms {
         if let ArgTerm::Const(p, n) = a
-            && n.abs() <= SIG_CONST_CAP
+            && n.unsigned_abs() <= SIG_CONST_CAP as u64
         {
             tighten(&mut sig, *p, PTerm::Zero, *n);
             tighten(&mut sig, PTerm::Zero, *p, -*n);
@@ -935,5 +935,16 @@ fn is_array(ty: &Ty) -> bool {
         Ty::Con(Con::Array) => true,
         Ty::App(h, _) => is_array(h),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn minimum_integer_call_argument_does_not_overflow() {
+        let argument = CExpr::new(K::Lit(Lit::Int(i64::MIN)), Ty::int());
+        assert!(extract_call(&Bounds::new(), &[argument]).is_empty());
     }
 }

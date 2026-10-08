@@ -4054,7 +4054,8 @@ let checksum i acc n a =
 
 public run : Int -> Int
 let run n =
-  let sorted = qsort 0 n (gen n)
+  let input = gen n
+  let sorted = qsort 0 (Array.length input) input
   checksum 0 0 n sorted
 "#;
 
@@ -4070,7 +4071,7 @@ fn quicksort_partition_elides_its_bounds_checks() {
 #[test]
 fn quicksort_checksum_elides_its_bounds_check() {
     // `checksum`'s `i` access is in range: `i >= 0` and `i < n <= len(a)` (the array
-    // is `qsort 0 n (gen n)`, and `len(gen n) >= n` via `Array.init`).
+    // is sorted over its actual length, and `len(gen n) >= n` via `Array.init`).
     let ir = entry_ir(QUICKSORT_SRC, "checksum");
     assert!(ir.contains("load"), "the element slot is still loaded:\n{ir}");
     assert!(!ir.contains(" ult "), "checksum's per-iteration bounds check is elided:\n{ir}");

@@ -3051,10 +3051,14 @@ Editor integration:
     non-negativity, and the `Array` length-producing primitives; an `if` refines
     each branch with its dominating guard (including a disequality-from-zero bump,
     so `cap != 0` with `cap >= 0` gives `cap >= 1`). Reference-count wrappers are
-    peeled. Soundness rests on the allocator invariant that a valid array's length
-    is far below `i64::MAX` (so an index `< len` survives `+1` without wraparound —
-    the invariant Rust's BCE relies on); a cost cap bails to no-facts on a
-    pathological definition.
+    peeled. Since integers wrap, an arithmetic difference relation is admitted
+    only when operand intervals prove it cannot overflow. Those intervals use
+    the existing graph and architectural limits (a valid array's eight-byte slots
+    fit within a signed-size allocation), computed in wider arithmetic. Guard
+    offsets, negation, and constant folding handle the complete `i64` range;
+    unrepresentable facts are discarded. A cost cap bails to no-facts on a
+    pathological definition. Sort bounds should come from the actual array length,
+    including when a negative requested size creates an empty array.
   - **Interprocedural, file-local.** A loop index passed a literal `0` start is
     non-negative only because of its caller, so entry facts are inferred caller-
     directed. A `private` definition's whole caller set is in its own file

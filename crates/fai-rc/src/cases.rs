@@ -6437,7 +6437,8 @@ let checksum i acc n a =
 
 public run : Int -> Int
 let run n =
-  let sorted = qsort 0 n (gen n)
+  let input = gen n
+  let sorted = qsort 0 (Array.length input) input
   checksum 0 0 n sorted
 "#;
 

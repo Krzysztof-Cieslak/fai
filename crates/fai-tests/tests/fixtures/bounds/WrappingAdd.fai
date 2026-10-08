@@ -1,0 +1,13 @@
+module Main
+
+public read : Int -> Array Int -> Int
+let read i xs =
+  let j = i + 1
+  if i >= 0 then
+    if j < Array.length xs then Array.unsafeGet j xs else 0
+  else
+    0
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  runtime.console.writeLine (Int.toString (read 9223372036854775807 [| 10 |]))

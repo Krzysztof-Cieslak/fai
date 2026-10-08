@@ -424,6 +424,24 @@ fn runtime_integer_results_merge_as_values_not_tagged_words() {
     assert_eq!((out.as_str(), code), ("97\n", Some(0)));
 }
 
+#[track_caller]
+fn assert_native_bounds_trap(source: &str) {
+    let (out, err, code) = build_and_run_captured(source);
+    assert_ne!(code, Some(0));
+    assert!(out.is_empty(), "{out}");
+    assert!(err.contains("array index out of bounds"), "{err}");
+}
+
+#[test]
+fn wrapping_addition_keeps_the_native_bounds_check() {
+    assert_native_bounds_trap(include_str!("fixtures/bounds/WrappingAdd.fai"));
+}
+
+#[test]
+fn wrapping_subtraction_keeps_the_native_bounds_check() {
+    assert_native_bounds_trap(include_str!("fixtures/bounds/WrappingSub.fai"));
+}
+
 #[test]
 fn cross_module_forwarder_borrows_and_runs() {
     // `Lib.sumList` borrows its list; `Main.forward` only forwards `xs` to it, so
