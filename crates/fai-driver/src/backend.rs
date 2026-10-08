@@ -9,7 +9,7 @@
 //! closure in memory and runs it.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use fai_codegen::{JitProgram, main_object, object_for_def, reuse_object_for_def};
@@ -1351,19 +1351,18 @@ pub(crate) fn apply_run_limits() {}
 /// them into a native executable, returning the path actually produced (which
 /// gains a `.exe` suffix on Windows). Uses the host's system linker — `cc` on
 /// Unix, MSVC `link.exe` on Windows — with the runtime's required system
-/// libraries (captured by `build.rs`).
+/// libraries (captured by `build.rs`). The staging directory is removed after
+/// linking, including on object-write or linker errors.
 fn link(
     objects: &[(String, Vec<u8>)],
     out: &Utf8Path,
     native: &crate::manifest::NativeDeps,
 ) -> Result<Utf8PathBuf, String> {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let dir = std::env::temp_dir().join(format!(
-        "fai-build-{}-{}",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&dir).map_err(|e| format!("creating build directory: {e}"))?;
+    let staging = tempfile::Builder::new()
+        .prefix("fai-build-")
+        .tempdir()
+        .map_err(|e| format!("creating build directory: {e}"))?;
+    let dir = staging.path();
 
     // MSVC's `link.exe` wants object inputs named `.obj`; Unix linkers accept any
     // extension. The bytes are host-native objects from Cranelift either way.
@@ -1483,4 +1482,108 @@ fn link_msvc(
         return Err(format!("linker `{linker}` exited with {status}"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod link_tests {
+    use wait_timeout::ChildExt;
+
+    use super::*;
+
+    #[track_caller]
+    fn assert_staging_cleanup(case: &str) -> tempfile::TempDir {
+        let workspace = tempfile::Builder::new().prefix("fai-link-test-").tempdir().unwrap();
+        let temporary = workspace.path().join("temporary");
+        std::fs::create_dir(&temporary).unwrap();
+        let output = workspace.path().join("program");
+        let native = workspace.path().join("user.o");
+        std::fs::write(&native, b"user-owned input").unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "backend::link_tests::staging_worker", "--nocapture"])
+            .env("FAI_LINK_TEST_CASE", case)
+            .env("FAI_LINK_TEST_OUTPUT", &output)
+            .env("FAI_LINK_TEST_NATIVE", &native)
+            .env("TMPDIR", &temporary)
+            .env("TEMP", &temporary)
+            .env("TMP", &temporary)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let finished = child.wait_timeout(std::time::Duration::from_secs(60)).unwrap().is_some();
+        if !finished {
+            child.kill().unwrap();
+        }
+        let result = child.wait_with_output().unwrap();
+        assert!(
+            finished && result.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let leftovers: Vec<_> = std::fs::read_dir(&temporary)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .filter(|name| name.to_string_lossy().starts_with("fai-build-"))
+            .collect();
+        assert!(leftovers.is_empty(), "staging directories survived: {leftovers:?}");
+        assert_eq!(std::fs::read(&native).unwrap(), b"user-owned input");
+        workspace
+    }
+
+    #[test]
+    fn successful_link_removes_staging_and_keeps_the_executable() {
+        let workspace = assert_staging_cleanup("success");
+        let executable =
+            workspace.path().join("program").with_extension(std::env::consts::EXE_EXTENSION);
+        let output = std::process::Command::new(executable).output().unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "linked\n");
+    }
+
+    #[test]
+    fn failed_link_removes_staging_and_keeps_user_inputs() {
+        assert_staging_cleanup("link-error");
+    }
+
+    #[test]
+    fn object_write_failure_removes_staging() {
+        assert_staging_cleanup("write-error");
+    }
+
+    #[test]
+    fn staging_worker() {
+        let Ok(case) = std::env::var("FAI_LINK_TEST_CASE") else { return };
+        let out = Utf8PathBuf::from(std::env::var("FAI_LINK_TEST_OUTPUT").unwrap());
+        match case.as_str() {
+            "success" => {
+                let mut db = fai_db::FaiDatabase::new();
+                fai_types::std_lib::load_std(&mut db);
+                let id = db.add_source(
+                    "Main.fai".into(),
+                    "module Main\npublic main : Runtime -> Unit / { Console }\nlet main runtime = runtime.console.writeLine \"linked\"\n".into(),
+                );
+                let result = build_native(&db, db.source_file(id).unwrap(), &out);
+                assert!(result.ok, "{:?}", result.diagnostics);
+            }
+            "link-error" => {
+                let native = crate::manifest::NativeDeps {
+                    objects: vec![std::env::var("FAI_LINK_TEST_NATIVE").unwrap().into()],
+                    ..Default::default()
+                };
+                let error = link(&[("broken".into(), vec![0, 1, 2])], &out, &native).unwrap_err();
+                assert!(error.contains("linker"), "{error}");
+            }
+            "write-error" => {
+                let error = link(
+                    &[("missing/object".into(), Vec::new())],
+                    &out,
+                    &crate::manifest::NativeDeps::default(),
+                )
+                .unwrap_err();
+                assert!(error.starts_with("writing "), "{error}");
+            }
+            _ => panic!("unknown link test"),
+        }
+    }
 }

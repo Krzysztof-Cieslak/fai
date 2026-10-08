@@ -35,6 +35,7 @@ target-lexicon.workspace = true
 wait-timeout.workspace = true
 toml.workspace = true
 libloading.workspace = true
+tempfile.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true }
