@@ -101,6 +101,12 @@ are **all `.fai` files under the root**, excluding hidden and ignored
 directories. (A `fai.toml` manifest with explicit roots/targets is still deferred
 to v2; only the native-dependency section below is read today.)
 
+`check`, `fmt`, and `test` accept workspace-relative or absolute file/directory
+selections, including `./` and normalized `..` components inside the workspace.
+An explicit missing or outside-workspace selection reports `FAI0002` and exits
+with code `3` (the common hard-error JSON envelope in JSON mode). Existing empty
+directories and an empty workspace selected without a path remain valid.
+
 ### Native dependencies (`fai.toml`)
 
 A program that calls user `foreign` functions declares the native libraries and

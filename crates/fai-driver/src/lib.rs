@@ -43,7 +43,7 @@ pub use backend::{
 pub use cache::{cache_stats, reset_stats, set_cache_dir};
 pub use command::{
     CommandSpec, DirtyFile, EXIT_FAILURES, EXIT_INTERNAL, EXIT_OK, EXIT_WORKSPACE, OutputFormat,
-    RenderOpts, Rendered, run_command,
+    RenderOpts, Rendered, render_workspace_error, run_command,
 };
 pub use contracts::{
     ContractEvent, ContractResult, ContractStatus, TestConfig, TestOutcome, TestOutput, TestPlan,
@@ -136,6 +136,9 @@ pub const CODES: &[CodeInfo] = &[
 /// These are hard failures (exit code 3), distinct from in-band diagnostics.
 #[derive(Debug, thiserror::Error)]
 pub enum DriverError {
+    /// An explicit command path is not a loaded source or existing workspace directory.
+    #[error("no such Fai file or directory in workspace: {0}")]
+    InvalidSelection(camino::Utf8PathBuf),
     /// The workspace root is missing or not a directory.
     #[error("workspace root is not a directory: {0}")]
     NotADirectory(camino::Utf8PathBuf),

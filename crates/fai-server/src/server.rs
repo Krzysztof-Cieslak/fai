@@ -558,15 +558,17 @@ fn handle_test(conn: &mut Conn, request: &TestRequest) -> std::io::Result<()> {
 /// the (potentially long) test execution.
 fn prepare_test(daemon: &Daemon, request: &TestRequest) -> Result<TestPlan, Rendered> {
     with_fresh_snapshot(daemon, &request.dirty, |snapshot| {
-        let files = snapshot.select_files(request.path.as_deref().map(Utf8Path::new));
+        let files = snapshot
+            .select_files_checked(request.path.as_deref().map(Utf8Path::new))
+            .map_err(|error| fai_driver::render_workspace_error(&error, request.opts))?;
         let defaults = TestConfig::default();
         let config = TestConfig {
             seed: request.seed.unwrap_or(defaults.seed),
             trials: request.count.unwrap_or(defaults.trials),
             max_size: request.max_size.unwrap_or(defaults.max_size),
         };
-        build_test_plan(snapshot.db(), &files, request.r#match.as_deref(), config)
-    })
+        Ok(build_test_plan(snapshot.db(), &files, request.r#match.as_deref(), config))
+    })?
 }
 
 /// Renders the assembled outcome to the terminal `Rendered`, resolving spans on a

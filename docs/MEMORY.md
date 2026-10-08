@@ -497,6 +497,10 @@ Daemon, persistence & protocol:
   do not change membership. A client dirty-set (`{path, hash|content}`) is honored as a
   scan-skip fast path; the CLI does not populate it (it is for an editor/LSP
   client), and unwritten overlays remain deferred.
+  Command selections normalize path components relative to the workspace. An
+  explicit missing/outside target is `FAI0002` with exit 3, rather than an empty
+  successful check/format/test. Existing empty directories and deliberately empty
+  library selections remain valid; daemon and in-process paths share validation.
 - **D62 Routing & graceful fallback:** the routing layer sits **above**
   `fai_cli::run` (which stays the pure in-process executor, so the existing suite
   is unchanged); the daemon server calls `fai_driver` directly. `fmt`/`build` I/O

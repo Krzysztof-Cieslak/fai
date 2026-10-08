@@ -233,7 +233,10 @@ fn run_test_in_process(
         Ok(session) => session,
         Err(error) => return emit_error(&error, format, color, out, err),
     };
-    let files = session.select_files(args.path.as_deref());
+    let files = match session.select_files_checked(args.path.as_deref()) {
+        Ok(files) => files,
+        Err(error) => return emit_error(&error, format, color, out, err),
+    };
     let plan = fai_driver::build_test_plan(session.db(), &files, args.r#match.as_deref(), config);
     let results = if plan.blocked || plan.bundle.contracts.is_empty() {
         Vec::new()
