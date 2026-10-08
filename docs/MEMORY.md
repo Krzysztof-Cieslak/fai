@@ -3536,6 +3536,13 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   capability surface, structured (nursery) scope, the M:N scheduler, an IO reactor
   with a TCP capability, and proven crates over hand-rolled coroutine/deque code is
   recorded with the work that builds the language surface on this foundation.
+  - **Nursery retention.** A nursery tracks a live-child count and its joining
+    task, rather than retaining a history of task handles and their results.
+    Registration precedes scheduling; completion releases the task's private
+    result handle before decrementing the count. Public `Task` handles independently
+    keep results alive for repeatable await. A child registering more work in the
+    same nursery increments the count before it completes, so scope exit still
+    joins that work while metadata stays bounded by active work.
   - **Fai handles.** A `Task 'a`/`Channel 'a`/`Nursery` value is a reference-counted
     Fai heap cell (`KIND_TASK`/`KIND_CHANNEL`/`KIND_NURSERY`) whose slot owns a raw
     `Arc` to scheduler state; the free path drops that `Arc`, and the handle's
