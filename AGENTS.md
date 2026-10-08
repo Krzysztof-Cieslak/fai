@@ -855,6 +855,10 @@ without evaluating their body streams, retaining only permitted length metadata.
 HTTP/1.0 connections require explicit keep-alive before pool reuse. Servers send
 `100 Continue` before awaiting an expected request body, and reject other
 expectations with `417` without waiting for that body.
+Pool retries are limited to `getOn`'s known-empty GET after a reused connection
+reaches EOF before any response byte. General `requestOn`/`postOn` calls are not
+replayed; write, producer, cancellation, malformed-head, and partial-head errors
+close the failed transport and retain the original error.
 
 **Lexer subtlety to preserve:** a leading tick is a character literal when it
 closes (`'a'`, `'\n'`) and a **type variable** otherwise (`'a`, `'r`). This is

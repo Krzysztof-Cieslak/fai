@@ -4234,6 +4234,11 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     Pool reuse follows the response version (HTTP/1.0 needs explicit keep-alive).
     A server honors `Expect: 100-continue` before reading the body and responds
     with `417` to unsupported expectations without waiting for body bytes.
+    Automatic pool retry is restricted to `getOn`'s known-empty GET body and a
+    reused connection's EOF before any response byte. General requests cannot
+    establish stream replayability and are never replayed. Write/producer errors,
+    cancellation, partial or malformed heads, and errors after an informational
+    response retain their original error and discard the failed transport.
     A **sent** body is drained to a `Content-Length` by default, or streamed **chunked** without
     buffering when the headers select `Transfer-Encoding: chunked` (`chunkedResponse`,
     or the header on a request). Chunked sending is driven by a new low-level
@@ -4264,8 +4269,8 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     through `sendMessage`/`sendRequest`), and the pooled response body, threaded linearly
     through the readers, hands its connection back to the pool at the body's natural end
     (`releaseToPool` sends a `Checkin`) — so an abandoned or errored body instead drops
-    the transport, closing it. A reused connection that fails before the response head is
-    retried once on a fresh connection (a `reused` flag guards a second retry). The actor
+    the transport, closing it. `getOn` retries an empty-response EOF once on a
+    fresh connection; general requests and other errors are not replayed. The actor
     exits when `withClient` closes the command channel on scope exit, dropping the idle
     map (closing every connection). An interface instance (the `Transport`) rides a union
     field and a channel — validated by the runtime's uniform value representation. HTTP/2

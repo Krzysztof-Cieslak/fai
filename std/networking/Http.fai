@@ -333,24 +333,35 @@ let sendRequest closeConn t req =
 // Read from the transport until the `\r\n\r\n` header terminator (capping the
 // header block), returning the header bytes and any leftover body bytes.
 readHeaderBlock : Transport 'e -> Bytes -> Result (Bytes * Bytes) String / 'e
-let readHeaderBlock t acc =
+let readHeaderBlock t acc = Result.mapError headerErrorMessage (readHeaderProgress t acc)
+
+headerErrorMessage : (Bool * String) -> String
+let headerErrorMessage failure =
+  match failure with
+  | (emptyEof, message) -> message
+
+// Only a clean EOF before any response byte can identify a stale idle connection.
+// Transport errors (including cancellation), malformed data, and partial heads
+// cannot request replay.
+readHeaderProgress : Transport 'e -> Bytes -> Result (Bytes * Bytes) (Bool * String) / 'e
+let readHeaderProgress t acc =
   match findBoundary acc 0 (Bytes.length acc) with
   | Some boundary ->
     if boundary > 65536 then
-      Err "header block too large"
+      Err (false, "header block too large")
     else
       Ok (Bytes.slice 0 boundary acc, Bytes.slice boundary (Bytes.length acc) acc)
   | None ->
     if Bytes.length acc > 65536 then
-      Err "header block too large"
+      Err (false, "header block too large")
     else
       match t.recv 4096 with
-      | Err e -> Err e
+      | Err e -> Err (false, e)
       | Ok chunk ->
         if Bytes.length chunk = 0 then
-          Err "connection closed before end of headers"
+          Err (Bytes.length acc = 0, "connection closed before end of headers")
         else
-          readHeaderBlock t (Bytes.concat acc chunk)
+          readHeaderProgress t (Bytes.concat acc chunk)
 
 // The index just past the first `\r\n\r\n` in `b`, or `None`.
 findBoundary : Bytes -> Int -> Int -> Option Int
@@ -1085,7 +1096,8 @@ let postMultipart env urlStr parts =
 // across requests to the same origin. The pool is a task (an actor) reached over one
 // command channel that owns the idle connections; `withClient` opens it in a
 // structured scope and closes every connection on exit. A reused connection that
-// fails before any response is retried once on a fresh connection. A pooled response
+// reaches EOF before any response can be retried once by the bodyless getOn helper.
+// General requests and all other failures are returned without replay. A pooled response
 // body returns its connection to the pool when fully read, and closes it (drops the
 // transport) if dropped early or on a read error.
 // A message to the pool actor: check a connection out for an origin (the actor replies
@@ -1217,24 +1229,24 @@ let isReusable version headers framing =
 // Read and parse a response head, returning the status, reason, headers, and any
 // already-read leftover body bytes (the connection stays open for the body).
 readHead : Transport 'e -> Bytes -> Result (String * Int * String * Headers * Bytes) String / 'e
-let readHead t buffered = readHeadAfter t buffered 0
+let readHead t buffered = Result.mapError headerErrorMessage (readHeadAfter t buffered 0)
 
-readHeadAfter : Transport 'e -> Bytes -> Int -> Result (String * Int * String * Headers * Bytes) String / 'e
+readHeadAfter : Transport 'e -> Bytes -> Int -> Result (String * Int * String * Headers * Bytes) (Bool * String) / 'e
 let readHeadAfter t buffered interim =
-  match readHeaderBlock t buffered with
-  | Err e -> Err e
+  match readHeaderProgress t buffered with
+  | Err (emptyEof, message) -> Err (interim = 0 && emptyEof, message)
   | Ok (headBytes, leftover) ->
     match Bytes.toString headBytes with
-    | None -> Err "response headers are not valid UTF-8"
+    | None -> Err (false, "response headers are not valid UTF-8")
     | Some headText ->
       match parseStatusAndHeaders headText with
-      | Err e -> Err e
+      | Err e -> Err (false, e)
       | Ok (version, code, reason, headers) ->
         if code = 101 then
-          Err "HTTP protocol upgrades are not supported"
+          Err (false, "HTTP protocol upgrades are not supported")
         else if code >= 100 && code < 200 then
           if interim >= 32 then
-            Err "too many informational HTTP responses"
+            Err (false, "too many informational HTTP responses")
           else
             readHeadAfter t leftover (interim + 1)
         else
@@ -1271,16 +1283,25 @@ let connectFresh env url =
 
 // Send the request over `t` and parse the response, returning its connection to the
 // pool when the body is read. A reused connection that fails before the response head
-// is retried once on a fresh connection (`reused` guards a second retry).
+// can be retried only for getOn's known-empty body and an EOF before any response
+// byte. Sending/body errors, cancellation, and malformed or partial heads stay errors.
 attemptPooled : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Client -> String -> Transport { Net, Tls } -> Bytes -> Request 'e -> Bool -> Result (Response { Concurrency, Net, Tls }) String / { Concurrency, Net, Tls | 'e }
 let attemptPooled env client origin t buffered req reused =
   match sendRequest false t req with
-  | Err e -> if reused then retryFresh env client origin req else Err e
+  | Err e ->
+    let closed = t.close ()
+    Err e
   | Ok sent ->
-    match readHead t buffered with
-    | Err e -> if reused then retryFresh env client origin req else Err e
+    match readHeadAfter t buffered 0 with
+    | Err (emptyEof, message) ->
+      let closed = t.close ()
+      if reused && emptyEof then retryFresh env client origin req else Err message
     | Ok (version, code, reason, headers, leftover) ->
-      buildPooledResponse env client origin req.method version code reason headers leftover t
+      match buildPooledResponse env client origin req.method version code reason headers leftover t with
+      | Ok response -> Ok response
+      | Err e ->
+        let closed = t.close ()
+        Err e
 
 retryFresh : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Client -> String -> Request 'e -> Result (Response { Concurrency, Net, Tls }) String / { Concurrency, Net, Tls | 'e }
 let retryFresh env client origin req =
@@ -1291,27 +1312,35 @@ let retryFresh env client origin req =
 /// Send a request over the pool, reusing a kept-alive connection to the request's
 /// origin when one is idle (otherwise opening a fresh one). Frames the body like
 /// `request`; the response body returns its connection to the pool when fully read.
+/// A general request is not replayed: its body may be a one-use effectful stream.
 public requestOn : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Client -> Request 'e -> Result (Response { Concurrency, Net, Tls }) String / { Concurrency, Net, Tls | 'e }
-let requestOn env client req =
+let requestOn env client req = requestOnPolicy env client req false
+
+// Replay is granted only by getOn, which constructs a known-empty pure body.
+// General Request values can contain one-use/effectful streams, even for GET.
+requestOnPolicy : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Client -> Request 'e -> Bool -> Result (Response { Concurrency, Net, Tls }) String / { Concurrency, Net, Tls | 'e }
+let requestOnPolicy env client req replayable =
   let origin = originKey req.url
   match poolCheckout env client origin with
-  | Some (t, buffered) -> attemptPooled env client origin t buffered req true
+  | Some (t, buffered) -> attemptPooled env client origin t buffered req replayable
   | None ->
     match connectFresh env req.url with
     | Err e -> Err e
     | Ok t -> attemptPooled env client origin t Bytes.empty req false
 
-/// GET a URL over the pool (http or https).
+/// GET a URL over the pool (http or https). Its known-empty body permits one retry
+/// on a fresh connection after an EOF before any response byte on a reused one.
 public getOn : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Client -> String -> Result (Response { Concurrency, Net, Tls }) String / { Concurrency, Net, Tls }
 let getOn env client urlStr =
   match Url.parse urlStr with
   | Err e -> Err e
-  | Ok url -> requestOn env client {
-    body = emptyBody,
-    headers = Headers.empty,
-    method = GET,
-    url = url
-  }
+  | Ok url ->
+    requestOnPolicy env client {
+      body = emptyBody,
+      headers = Headers.empty,
+      method = GET,
+      url = url
+    } true
 
 /// POST a body (with caller-supplied headers) to a URL over the pool.
 public postOn : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Client -> String -> Headers -> Stream Bytes 'e -> Result (Response { Concurrency, Net, Tls }) String / { Concurrency, Net, Tls | 'e }

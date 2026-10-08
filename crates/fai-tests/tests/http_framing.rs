@@ -129,6 +129,45 @@ fn unsupported_http_versions_are_rejected() {
 }
 
 #[track_caller]
+fn header_retry_hint(buffered: &str, expected: bool) {
+    check(
+        &format!(
+            "let t = {{ Transport with close u = (), recv n = Ok Bytes.empty, send b = Ok () }}\nmatch readHeadAfter t (Bytes.fromString {buffered:?}) 0 with\n| Ok head -> false\n| Err (retry, message) -> retry = {}",
+            if expected { "true" } else { "false" }
+        ),
+        false,
+    );
+}
+
+#[test]
+fn only_an_empty_response_eof_can_hint_at_a_stale_connection() {
+    header_retry_hint("", true);
+}
+
+#[test]
+fn a_partial_response_head_is_never_a_stale_connection_hint() {
+    header_retry_hint("HTTP/1.1 200 OK\r\nContent-", false);
+}
+
+#[test]
+fn a_malformed_response_head_is_not_replayable() {
+    header_retry_hint("invalid\r\n\r\n", false);
+}
+
+#[test]
+fn an_interim_response_prevents_a_later_eof_from_requesting_replay() {
+    header_retry_hint("HTTP/1.1 100 Continue\r\n\r\n", false);
+}
+
+#[test]
+fn cancellation_never_hints_at_replay() {
+    check(
+        "let t = { Transport with close u = (), recv n = Err \"operation cancelled\", send b = Ok () }\nreadHeadAfter t Bytes.empty 0 = Err (false, \"operation cancelled\")",
+        false,
+    );
+}
+
+#[track_caller]
 fn check(body: &str, concurrent: bool) {
     let _guard = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut db = fai_db::FaiDatabase::new();

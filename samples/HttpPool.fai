@@ -1,5 +1,7 @@
 module HttpPool
 
+// getOn may retry an empty-response EOF once because its GET body is known empty.
+// requestOn/postOn preserve one-use body streams by returning failures without replay.
 // Connection pooling with `Http.withClient` (std/networking/Http.fai). A pool keeps idle
 // keep-alive connections and reuses them across requests to the same origin, so a
 // burst of requests to one host avoids reconnecting each time. `withClient` opens the
