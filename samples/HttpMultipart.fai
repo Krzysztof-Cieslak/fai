@@ -8,6 +8,11 @@ module HttpMultipart
 // Build parts with `Http.field` (a text field) and `Http.filePart` (a file, with its
 // filename and content type); `postMultipart` frames them with a fresh random boundary
 // and the matching `Content-Type` header.
+// For a chosen boundary, Http.multipartBody returns Ok body or Err metadataError.
+// Names/filenames escape quotes and backslashes; invalid controls are rejected.
+example: Result.map Http.bodyText (Http.multipartBody "B" []) = Ok (Ok "--B--\r\n")
+example: Result.isErr (Http.multipartBody "" [])
+
 // The server handler: read the uploaded body, then report its size and whether the
 // file part is present. A handler returns `Ok response`; an `Err` becomes a 500.
 let handle req =

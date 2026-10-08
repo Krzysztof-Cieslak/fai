@@ -1554,7 +1554,11 @@ Deferred: IANA time zones / `ZonedDateTime` with DST rules (this is offset-only)
   `requestOnce` is the single-shot, no-follow escape hatch. Build an `Authorization`
   header value with `basicAuth`/`bearer`, a urlencoded form body with
   `formBody`/`postForm`, and a `multipart/form-data` body with `field`/`filePart` +
-  `multipartBody`/`postMultipart` (a fresh `randomBoundary`). Server:
+  `multipartBody`/`postMultipart` (a fresh `randomBoundary`). `multipartBody` returns
+  `Result (Stream Bytes 'e) String`: match `Ok body` before using it. Invalid
+  boundaries or part metadata return `Err`; names and filenames are quoted safely.
+  Outgoing heads reject control characters, invalid tokens, and request-target
+  whitespace before sending any bytes. Server:
   `serve`/`serveListener` (HTTP) and
   `serveTls`/`serveListenerTls` (HTTPS, given a PEM cert+key) — a task per
    connection; cancel the serving task to shut down. A received `resp.body` is a
