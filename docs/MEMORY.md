@@ -3344,6 +3344,13 @@ Editor integration:
     so the no-monomorphization ceiling holds (a generic/row-polymorphic/opaque
     position keeps the boxed cell — a tuple/record with a non-`Float` field, an open
     row, or a type variable is never an FFA).
+    A generic producer may store a Float field boxed where a concrete producer
+    stores raw bits. Projections, boxed-to-spread conversion, and first-class
+    wrappers consult the actual descriptor unless local construction proves the
+    layout. Field drops likewise distinguish raw slots from owned boxes, and
+    structural comparison reads each operand's bitmap independently; hashing
+    agrees across both layouts. Generic or opaque fields that may represent a
+    Float use descriptor-aware comparison rather than uniform-slot inlining.
   - **ABI is signature-derived (the firewall).** A new `Repr::Spread(components)`
     extends the per-slot ABI representation (the groundwork #114 laid). A shared
     `abi` query in `fai-core` derives each definition's calling convention from its

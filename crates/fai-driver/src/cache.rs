@@ -84,7 +84,8 @@ use crate::backend::{CallMetadata, bounds_entry_of, bounds_result_of, object_cod
 /// `symbols-v2` separates encoded module/member names from generated suffixes.
 /// `emit-ready-key` fingerprints reuse forwarding and complete call metadata.
 /// `arity-safe-escape` tracks retained callees, partial applications, and aliases.
-const CODEGEN_CONFIG: &str = "opt=speed;int-prims-inlined;reg-direct-call;divrem-inlined;scalar-float-fields;early-drop;poly-cmp-inlined;array-access-inlined;hash-inlined;bounds-check-elim;result-bounds;array-float-unboxed;spread-aggregate;array-tag-hoisted;reuse-lambda-export;error-trap;checked-array-capacity;int-merge-repr;nowrap-bounds;symbols-v2;emit-ready-key;arity-safe-escape";
+/// `mixed-float-layouts` respects descriptors at projection, drop, and ABI boundaries.
+const CODEGEN_CONFIG: &str = "opt=speed;int-prims-inlined;reg-direct-call;divrem-inlined;scalar-float-fields;early-drop;poly-cmp-inlined;array-access-inlined;hash-inlined;bounds-check-elim;result-bounds;array-float-unboxed;spread-aggregate;array-tag-hoisted;reuse-lambda-export;error-trap;checked-array-capacity;int-merge-repr;nowrap-bounds;symbols-v2;emit-ready-key;arity-safe-escape;mixed-float-layouts";
 
 /// An explicit cache-directory override (set by embedders/tests), taking
 /// precedence over `$FAI_CACHE_DIR`. `None` (the default) falls back to the
