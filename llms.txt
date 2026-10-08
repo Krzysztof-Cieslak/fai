@@ -961,6 +961,8 @@ forall xs: mirror (mirror xs) = xs
 - For a `forall` over a user record/ADT, a generator is synthesized
   automatically; a binder whose type cannot be generated is `FAI6002`/`FAI6005`.
   You can supply a custom `Test.Arbitrary` for a type to override it.
+  A user type named `Option` or `Result` gets its own constructor-based generator;
+  only the actual Prelude types use the built-in wrapper generators.
 
 ---
 

@@ -749,6 +749,27 @@ fn custom_generator_does_not_override_builtins() {
     assert!(outcome.diagnostics.iter().any(|d| d.code.as_str() == "FAI6001"));
 }
 
+#[test]
+fn switching_between_prelude_and_user_option_matches_clean_synthesis() {
+    let before = "module C\nvalid : Option Int -> Bool\nlet valid x = true\nforall x: valid x\n";
+    let after = before.replace("module C\n", "module C\ntype Option 'a = | Only 'a\n");
+    let synth = |db: &FaiDatabase, file: SourceFile| {
+        let info = fai_contracts::contracts(db, file).remove(0);
+        let generated = fai_contracts::synthesize(db, file, &info).unwrap();
+        (generated.entry, generated.prop, generated.extra)
+    };
+    let (mut db, files) = db_with(&[("C.fai", before)]);
+    assert!(synth(&db, files[0]).2.is_empty());
+    db.add_source("C.fai".into(), after.clone());
+    let changed = synth(&db, files[0]);
+    assert!(!changed.2.is_empty());
+    let (clean, clean_files) = db_with(&[("C.fai", &after)]);
+    assert_eq!(changed, synth(&clean, clean_files[0]));
+    db.add_source("C.fai".into(), before.into());
+    let (clean, clean_files) = db_with(&[("C.fai", before)]);
+    assert_eq!(synth(&db, files[0]), synth(&clean, clean_files[0]));
+}
+
 // --- `fai check`'s eager closed-`example` evaluation (in-process) -------------
 
 /// Evaluates the closed `example` contracts in `files` the way `fai check` does,
