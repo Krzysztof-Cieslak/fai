@@ -139,12 +139,11 @@ fn read_plaintext(obj: &TlsObject, cap: usize) -> Result<Vec<u8>, String> {
     }
 }
 
-/// Queues plaintext to be encrypted (the next [`take_outgoing`] yields its
-/// ciphertext).
-fn write_plaintext(obj: &TlsObject, data: &[u8]) -> Result<(), String> {
+/// Queues as much plaintext as the bounded output buffer accepts. Drain
+/// [`take_outgoing`] before retrying the unaccepted suffix, including on zero.
+fn write_plaintext(obj: &TlsObject, data: &[u8]) -> Result<usize, String> {
     let mut conn = obj.conn.lock().expect("tls lock");
-    conn.writer().write_all(data).map_err(|e| format!("TLS write: {e}"))?;
-    Ok(())
+    conn.writer().write(data).map_err(|e| format!("TLS write: {e}"))
 }
 
 /// The state-flag bitmask read by the Fai pump (handshaking / wants-write /
@@ -304,8 +303,8 @@ pub extern "C" fn fai_tls_read_plaintext(tls: Value, max: Value) -> Value {
     }
 }
 
-/// `Tls.writePlaintext`: queue plaintext to be encrypted. Returns `Result Unit
-/// String`. Consumes both operands.
+/// `Tls.writePlaintext`: queue plaintext to be encrypted. Returns the accepted
+/// byte count as `Result Int String` (zero when full). Consumes both operands.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_tls_write_plaintext(tls: Value, bytes: Value) -> Value {
     let result = {
@@ -317,7 +316,7 @@ pub extern "C" fn fai_tls_write_plaintext(tls: Value, bytes: Value) -> Value {
     crate::fai_drop(tls);
     crate::fai_drop(bytes);
     match result {
-        Ok(()) => ok_result(crate::FAI_UNIT),
+        Ok(count) => ok_result(crate::make_int(count as i64)),
         Err(e) => err_result(&e),
     }
 }
@@ -358,12 +357,7 @@ mod tests {
         (cert.cert.pem().into_bytes(), cert.key_pair.serialize_pem().into_bytes())
     }
 
-    #[test]
-    fn client_and_server_complete_a_handshake_and_exchange_data() {
-        // Drive a full TLS handshake entirely through the sans-I/O engine: ciphertext
-        // is shuttled between an in-memory client and server (no sockets), exactly as
-        // the Fai pump does over `Net`. Then the client sends application data and the
-        // server reads it back decrypted — proving feed/take/read/write round-trip.
+    fn connected_pair() -> (TlsObject, TlsObject) {
         let (cert_pem, key_pem) = self_signed();
         let client = new_client("localhost", Some(&cert_pem)).expect("client");
         let server = new_server(&cert_pem, &key_pem).expect("server");
@@ -388,13 +382,130 @@ mod tests {
         }
         assert!(!client.conn.lock().unwrap().is_handshaking(), "client handshake completed");
         assert!(!server.conn.lock().unwrap().is_handshaking(), "server handshake completed");
+        (client, server)
+    }
+
+    #[test]
+    fn client_and_server_complete_a_handshake_and_exchange_data() {
+        let (client, server) = connected_pair();
 
         // Client writes application data; flush its ciphertext to the server.
-        write_plaintext(&client, b"hello tls").expect("write");
+        assert_eq!(write_plaintext(&client, b"hello tls").expect("write"), 9);
         let app = take_outgoing(&client).expect("client app out");
         feed_incoming(&server, &app).expect("server feed app");
         let got = read_plaintext(&server, 64).expect("server read");
         assert_eq!(&got, b"hello tls", "the server decrypted the client's data");
+    }
+
+    fn transfer(client: &TlsObject, server: &TlsObject, data: &[u8]) -> Vec<u8> {
+        let mut offset = 0;
+        let mut received = Vec::new();
+        while offset < data.len() {
+            let accepted = write_plaintext(client, &data[offset..]).expect("write progress");
+            assert!(accepted > 0 && accepted <= data.len() - offset);
+            offset += accepted;
+            let cipher = take_outgoing(client).expect("ciphertext");
+            assert!(cipher.len() <= 70_000, "outgoing data stays bounded");
+            received.extend(receive_cipher(server, &cipher));
+        }
+        received
+    }
+
+    fn receive_cipher(server: &TlsObject, cipher: &[u8]) -> Vec<u8> {
+        let mut received = Vec::new();
+        // Mirror bounded socket reads, draining plaintext between input chunks.
+        for chunk in cipher.chunks(16_384) {
+            feed_incoming(server, chunk).expect("feed peer");
+            loop {
+                let plain = read_plaintext(server, 4096).expect("read peer");
+                if plain.is_empty() {
+                    break;
+                }
+                received.extend_from_slice(&plain);
+            }
+        }
+        received
+    }
+
+    #[track_caller]
+    fn large_roundtrip(size: usize) {
+        let (client, server) = connected_pair();
+        let data: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+        assert_eq!(transfer(&client, &server, &data), data);
+    }
+
+    #[test]
+    fn writes_below_output_capacity_round_trip() {
+        large_roundtrip(65_535);
+    }
+
+    #[test]
+    fn writes_at_output_capacity_round_trip() {
+        large_roundtrip(65_536);
+    }
+
+    #[test]
+    fn writes_above_output_capacity_round_trip() {
+        large_roundtrip(65_537);
+    }
+
+    #[test]
+    fn megabyte_writes_round_trip_with_bounded_buffering() {
+        large_roundtrip(1_048_576);
+    }
+
+    #[test]
+    fn empty_write_reports_zero_without_queuing_ciphertext() {
+        let (client, _) = connected_pair();
+        assert_eq!(write_plaintext(&client, b"").unwrap(), 0);
+        assert!(take_outgoing(&client).unwrap().is_empty());
+    }
+
+    #[test]
+    fn full_writer_reports_zero_and_resumes_after_drain() {
+        let (client, server) = connected_pair();
+        let data = vec![42; 1_048_576];
+        let accepted = write_plaintext(&client, &data).unwrap();
+        assert!(accepted > 0 && accepted < data.len());
+        assert_eq!(write_plaintext(&client, &data[accepted..]).unwrap(), 0);
+        let cipher = take_outgoing(&client).unwrap();
+        assert_eq!(receive_cipher(&server, &cipher), data[..accepted]);
+        assert_eq!(transfer(&client, &server, &data[accepted..]), data[accepted..]);
+    }
+
+    #[test]
+    fn sequential_large_writes_preserve_byte_order() {
+        let (client, server) = connected_pair();
+        let first = vec![17; 131_072];
+        let second = vec![93; 131_072];
+        assert_eq!(transfer(&client, &server, &first), first);
+        assert_eq!(transfer(&client, &server, &second), second);
+    }
+
+    #[test]
+    fn small_output_buffer_reports_partial_progress() {
+        let (client, server) = connected_pair();
+        client.conn.lock().unwrap().set_buffer_limit(Some(1024));
+        let data = vec![123; 65_537];
+        assert_eq!(transfer(&client, &server, &data), data);
+    }
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(32))]
+            #[test]
+            fn bounded_writes_roundtrip_arbitrary_bytes(
+                data in proptest::collection::vec(any::<u8>(), 0..131_073),
+                capacity in 256usize..65_537,
+            ) {
+                let (client, server) = connected_pair();
+                client.conn.lock().unwrap().set_buffer_limit(Some(capacity));
+                prop_assert_eq!(transfer(&client, &server, &data), data);
+            }
+        }
     }
 
     #[test]

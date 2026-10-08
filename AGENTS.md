@@ -399,6 +399,11 @@ Contract generation recognizes Prelude `Option`/`Result` by declaration identity
 Same-spelled user types use their own constructors and support custom `Arbitrary`
 overrides like other user ADTs.
 
+`Tls.writePlaintext` returns `Result Int String`: the accepted byte count, which
+can be zero when the output buffer is full. Callers drain `takeOutgoing` and retry
+only the unaccepted suffix. `Http` does this with bounded 16 KiB pieces, flushing
+between writes so large HTTPS payloads keep bounded TLS buffering.
+
 `Url.decodeComponent` preserves unescaped Unicode and malformed percent escapes.
 It leaves `+` literal. If the decoded bytes are not valid UTF-8, it returns the
 original component unchanged; valid Unicode percent-encoding round-trips exactly.

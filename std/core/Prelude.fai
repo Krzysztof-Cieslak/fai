@@ -221,6 +221,8 @@ public interface Net =
 // session; `feedIncoming`/`takeOutgoing` move ciphertext to/from the socket;
 // `readPlaintext`/`writePlaintext` move decrypted application data; `state` is a
 // bitmask (bit 0 handshaking, bit 1 wants-write, bit 2 wants-read).
+// `writePlaintext` returns the byte count accepted by the bounded output buffer;
+// drain `takeOutgoing` before retrying the unaccepted suffix (possibly all bytes).
 public interface Tls =
   client : String -> Result TlsSession String / { Tls }
   clientWithRoots : String -> Bytes -> Result TlsSession String / { Tls }
@@ -230,7 +232,7 @@ public interface Tls =
   server : Bytes -> Bytes -> Result TlsSession String / { Tls }
   state : TlsSession -> Int / { Tls }
   takeOutgoing : TlsSession -> Result Bytes String / { Tls }
-  writePlaintext : TlsSession -> Bytes -> Result Unit String / { Tls }
+  writePlaintext : TlsSession -> Bytes -> Result Int String / { Tls }
 
 /// The capability bundle `main` receives: the host's console, clock, random,
 /// file system, environment, concurrency, network, and TLS. Request only the fields
@@ -367,7 +369,7 @@ foreign "fai_tls_take_outgoing" tlsTakeOutgoingRaw : TlsSession -> Result Bytes 
 
 foreign "fai_tls_read_plaintext" tlsReadPlaintextRaw : TlsSession -> Int -> Result Bytes String / { Tls }
 
-foreign "fai_tls_write_plaintext" tlsWritePlaintextRaw : TlsSession -> Bytes -> Result Unit String / { Tls }
+foreign "fai_tls_write_plaintext" tlsWritePlaintextRaw : TlsSession -> Bytes -> Result Int String / { Tls }
 
 foreign "fai_tls_state" tlsStateRaw : TlsSession -> Int / { Tls }
 

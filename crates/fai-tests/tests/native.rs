@@ -243,6 +243,27 @@ const char* fai_test_shout(const char* p, int64_t len, int64_t* out_len) {
 }
 
 #[test]
+fn tls_plaintext_reports_bounded_write_progress() {
+    let (out, code) = build_and_run(indoc! {r#"
+        module Main
+        public main : Runtime -> Unit / { Console, Tls }
+        let main runtime =
+          match runtime.tls.client "localhost" with
+          | Err e -> runtime.console.writeLine e
+          | Ok session ->
+            let bytes = Bytes.fromString (String.joinArray "" (Array.repeat 65536 "abcd"))
+            match runtime.tls.writePlaintext session bytes with
+            | Err e -> runtime.console.writeLine e
+            | Ok accepted ->
+              match runtime.tls.writePlaintext session bytes with
+              | Err e -> runtime.console.writeLine e
+              | Ok blocked -> runtime.console.writeLine (if accepted > 0 && accepted < Bytes.length bytes && blocked = 0 then "partial then blocked" else "wrong progress")
+    "#});
+    assert_eq!(code, Some(0));
+    assert_eq!(out, "partial then blocked\n");
+}
+
+#[test]
 fn user_runtime_builder_extends_the_capability_bundle() {
     // The entry file defines its own `runtime` builder, so `main` receives an
     // extended bundle: the standard console (a public default) plus a user-defined

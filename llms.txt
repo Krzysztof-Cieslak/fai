@@ -889,6 +889,11 @@ let serve env listener =
 
 The full tour (TCP + UDP) is `samples/NetDemo.fai`.
 
+HTTPS adds the `Tls` capability. Its low-level `writePlaintext session bytes`
+returns the count accepted, not necessarily the full length: drain ciphertext
+with `takeOutgoing`, send it over `Net`, then retry only the remaining plaintext.
+`Http` drives this loop with bounded chunks for you.
+
 ---
 
 ## 11. Interfaces and instances
@@ -1442,6 +1447,9 @@ Deferred: IANA time zones / `ZonedDateTime` with DST rules (this is offset-only)
   `empty`/`fromList`/`toList`/`get`/`getAll`/`add`/`set`/`remove`/`contains`.
 - **`Tls`** capability — a sans-I/O engine (rustls/ring): `client`/`clientWithRoots`/
   `server`, `feedIncoming`/`takeOutgoing`/`readPlaintext`/`writePlaintext`/`state`.
+  `writePlaintext : TlsSession -> Bytes -> Result Int String / { Tls }` returns
+  the accepted byte count (possibly zero). Drain `takeOutgoing` before retrying
+  the remaining bytes; `Http` sends bounded pieces and flushes between writes.
   Usually you don't call it directly — `Http` drives it for you.
 - **`Http`** — HTTP/1.1 over `Net`, with HTTPS over `Tls` (so every entry point is
   `/ { Net, Tls }`; the URL scheme picks plain-vs-TLS at runtime). `Request 'e`/
