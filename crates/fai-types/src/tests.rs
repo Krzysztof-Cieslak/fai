@@ -878,6 +878,62 @@ fn recursive_alias_is_an_error() {
     );
 }
 
+#[test]
+fn same_named_alias_in_another_file_is_not_recursive() {
+    let (db, f) = db_with(&[
+        ("A.fai", "module A\npublic type Value = B.Value\npublic value : Value\nlet value = 1\n"),
+        ("B.fai", "module B\npublic type Value = Int\n"),
+    ]);
+    assert_eq!(check_codes(&db, f[0]), Vec::<String>::new());
+    assert_eq!(type_of(&db, f[0], "value"), "Int");
+}
+
+#[test]
+fn same_named_alias_threads_arguments_through_three_files() {
+    let (db, f) = db_with(&[
+        (
+            "A.fai",
+            "module A\npublic type Value 'a = B.Value 'a\npublic value : Value Bool\nlet value = (true, 1)\n",
+        ),
+        ("B.fai", "module B\npublic type Value 'a = C.Value 'a\n"),
+        ("C.fai", "module C\npublic type Value 'a = 'a * Int\n"),
+    ]);
+    assert_eq!(check_codes(&db, f[0]), Vec::<String>::new());
+    assert_eq!(type_of(&db, f[0], "value"), "Bool * Int");
+}
+
+#[test]
+fn same_named_alias_in_nested_modules_keeps_file_identity() {
+    let (db, f) = db_with(&[
+        (
+            "A.fai",
+            "module A\nmodule Inner =\n  public type Value = B.Inner.Value\npublic value : Inner.Value\nlet value = 1\n",
+        ),
+        ("B.fai", "module B\nmodule Inner =\n  public type Value = Int\n"),
+    ]);
+    assert_eq!(check_codes(&db, f[0]), Vec::<String>::new());
+    assert_eq!(type_of(&db, f[0], "value"), "Int");
+}
+
+#[test]
+fn same_named_alias_cycle_reports_the_reference_that_closes_it() {
+    let b = "module B\npublic type Value = A.Value\n";
+    let (db, f) = db_with(&[
+        ("A.fai", "module A\npublic type Value = B.Value\npublic value : Value\nlet value = 1\n"),
+        ("B.fai", b),
+    ]);
+    let name = fai_syntax::Symbol::intern("value");
+    let diags = crate::query::signature_scheme::accumulated::<Diag>(&db, f[0], name);
+    assert_eq!(diags.len(), 1);
+    let diag = &diags[0].0;
+    assert_eq!(diag.code, crate::RECURSIVE_ALIAS);
+    assert_eq!(diag.message, "the type alias `Value` refers to itself");
+    assert_eq!(diag.primary.source(), f[1].source(&db));
+    let at = b.find("A.Value").unwrap();
+    assert_eq!(diag.primary.start().to_usize(), at);
+    assert_eq!(diag.primary.end().to_usize(), at + "A.Value".len());
+}
+
 // ── Records and row polymorphism ─────────────────────────────────────────────
 
 #[test]
