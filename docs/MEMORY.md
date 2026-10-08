@@ -3959,9 +3959,13 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     `Instant.now`/`OffsetDateTime.now`, which take the `Clock` capability. To read
     *local* wall-clock time (not just UTC) the `Clock` interface gains
     `localOffset : Unit -> Int / { Clock }` — the system UTC offset in seconds — backed
-    by a new `fai_clock_local_offset` runtime primitive that asks the C library
-    (`localtime` + `timegm`/`_mkgmtime`, declared directly so the runtime keeps no crate
-    dependencies). Full IANA `DateTimeZone`/`ZonedDateTime` with daylight-saving rules
+    by `fai_clock_local_offset`. Platform-correct `libc` bindings convert into
+    caller-owned `tm` storage (`localtime_r` on Unix, `localtime_s` on Windows).
+    Linux/macOS use `tm_gmtoff`; other targets compare owned local/UTC calendar
+    fields, handling year boundaries without a mutating `timegm` call. Conversion
+    failure yields zero. Concurrent calls never share calendar scratch storage;
+    fixed-zone tests cover daylight-saving transitions and cross-year offsets.
+    Full IANA `DateTimeZone`/`ZonedDateTime` with daylight-saving rules
     is **deferred**: it needs an embedded, periodically-updated tz database; the
     offset-based model covers fixed-offset wall-clock use without that maintenance
     burden.
