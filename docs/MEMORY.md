@@ -4175,7 +4175,13 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     insecure "accept any cert" mode).
     Plaintext writes report the number of bytes accepted by the bounded rustls
     buffer (`Result Int String`), including zero when it is full. Callers drain
-    outgoing ciphertext before retrying the remainder. HTTP writes use 16 KiB
+    outgoing ciphertext before retrying the remainder. Incoming ciphertext also
+    reports its consumed prefix as `Result Int String`, preserving progress under
+    receive backpressure. An empty feed marks transport EOF. Plaintext reads use
+    `Result (Option Bytes) String`: None is pending, Some(empty) is authenticated
+    close-notify, and truncation is an error after buffered bytes are drained.
+    HTTP returns on close-notify without waiting for TCP EOF and never accepts
+    raw EOF as a clean close-delimited TLS body. HTTP writes use 16 KiB
     slices and flush between them, preventing both a large-write `WriteZero`
     failure and quadratic copying of a whole unaccepted suffix.
   - **URL reference resolution.** Scheme and authority presence are independent:

@@ -13,6 +13,8 @@ module HttpDemo
 // Informational responses are skipped before the client's final response.
 // Direct TLS users inspect `writePlaintext`'s accepted count and retry only the
 // remaining bytes after `takeOutgoing`, rather than assuming every write is full.
+// Likewise, feedIncoming reports ciphertext progress. readPlaintext distinguishes
+// pending (None), clean TLS EOF (Some empty bytes), and truncation (Err).
 example: Url.decodeComponent "café%20😀" = "café 😀"
 example: Url.decodeComponent "%GG" = "%GG"
 

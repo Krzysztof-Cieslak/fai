@@ -930,6 +930,7 @@ dependencies = [
  "proptest",
  "rayon",
  "rcgen",
+ "rustls",
  "serde_json",
  "tempfile",
  "wait-timeout",

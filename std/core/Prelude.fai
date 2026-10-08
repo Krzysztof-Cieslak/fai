@@ -221,6 +221,9 @@ public interface Net =
 // itself — Fai shuttles ciphertext between the socket and the session — so the only
 // effect is the secure randomness the handshake consumes. `client`/`server` start a
 // session; `feedIncoming`/`takeOutgoing` move ciphertext to/from the socket;
+// `feedIncoming` reports the consumed ciphertext prefix (empty input means TCP EOF).
+// `readPlaintext` returns None while pending, Some(empty) at authenticated EOF;
+// an unclean TCP EOF is an error after buffered plaintext is drained.
 // `readPlaintext`/`writePlaintext` move decrypted application data; `state` is a
 // bitmask (bit 0 handshaking, bit 1 wants-write, bit 2 wants-read).
 // `writePlaintext` returns the byte count accepted by the bounded output buffer;
@@ -229,8 +232,8 @@ public interface Tls =
   client : String -> Result TlsSession String / { Tls }
   clientWithRoots : String -> Bytes -> Result TlsSession String / { Tls }
   close : TlsSession -> Unit / { Tls }
-  feedIncoming : TlsSession -> Bytes -> Result Unit String / { Tls }
-  readPlaintext : TlsSession -> Int -> Result Bytes String / { Tls }
+  feedIncoming : TlsSession -> Bytes -> Result Int String / { Tls }
+  readPlaintext : TlsSession -> Int -> Result (Option Bytes) String / { Tls }
   server : Bytes -> Bytes -> Result TlsSession String / { Tls }
   state : TlsSession -> Int / { Tls }
   takeOutgoing : TlsSession -> Result Bytes String / { Tls }
@@ -367,11 +370,11 @@ foreign "fai_tls_client_with_roots" tlsClientWithRootsRaw : String -> Bytes -> R
 
 foreign "fai_tls_server" tlsServerRaw : Bytes -> Bytes -> Result TlsSession String / { Tls }
 
-foreign "fai_tls_feed_incoming" tlsFeedIncomingRaw : TlsSession -> Bytes -> Result Unit String / { Tls }
+foreign "fai_tls_feed_incoming" tlsFeedIncomingRaw : TlsSession -> Bytes -> Result Int String / { Tls }
 
 foreign "fai_tls_take_outgoing" tlsTakeOutgoingRaw : TlsSession -> Result Bytes String / { Tls }
 
-foreign "fai_tls_read_plaintext" tlsReadPlaintextRaw : TlsSession -> Int -> Result Bytes String / { Tls }
+foreign "fai_tls_read_plaintext" tlsReadPlaintextRaw : TlsSession -> Int -> Result (Option Bytes) String / { Tls }
 
 foreign "fai_tls_write_plaintext" tlsWritePlaintextRaw : TlsSession -> Bytes -> Result Int String / { Tls }
 

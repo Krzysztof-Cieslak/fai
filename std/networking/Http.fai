@@ -815,27 +815,37 @@ let handshakeDrive env conn session =
         else
           match env.tls.feedIncoming session cipher with
           | Err e -> Err e
-          | Ok fed -> handshakeDrive env conn session
+          | Ok fed ->
+            if fed <> Bytes.length cipher then
+              Err "TLS handshake did not consume its bounded input"
+            else
+              handshakeDrive env conn session
 
 // Decrypt up to `max` plaintext bytes, pulling and feeding ciphertext as needed; an
 // empty result is end of stream (the peer closed).
 tlsRecv : { net : Net, tls : Tls | 'r } -> Connection -> TlsSession -> Int -> Result Bytes String / { Net, Tls }
 let tlsRecv env conn session max =
-  match env.tls.readPlaintext session max with
-  | Err e -> Err e
-  | Ok plain ->
-    if Bytes.length plain > 0 then
-      Ok plain
-    else
+  if max <= 0 then
+    Ok Bytes.empty
+  else
+    match env.tls.readPlaintext session max with
+    | Err e -> Err e
+    | Ok (Some plain) -> Ok plain
+    | Ok None ->
       match env.net.recv conn 16384 with
       | Err e -> Err e
       | Ok cipher ->
-        if Bytes.length cipher = 0 then
-          Ok Bytes.empty
-        else
-          match env.tls.feedIncoming session cipher with
-          | Err e -> Err e
-          | Ok fed ->
+        match env.tls.feedIncoming session cipher with
+        | Err e -> Err e
+        | Ok fed ->
+          if fed <> Bytes.length cipher then
+            Err "TLS reader did not consume its bounded input"
+          else if Bytes.isEmpty cipher then
+            match env.tls.readPlaintext session max with
+            | Err e -> Err e
+            | Ok (Some plain) -> Ok plain
+            | Ok None -> Err "TLS stream ended without close-notify"
+          else
             match flushOutgoing env conn session with
             | Err e -> Err e
             | Ok flushed -> tlsRecv env conn session max

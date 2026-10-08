@@ -447,6 +447,12 @@ can be zero when the output buffer is full. Callers drain `takeOutgoing` and ret
 only the unaccepted suffix. `Http` does this with bounded 16 KiB pieces, flushing
 between writes so large HTTPS payloads keep bounded TLS buffering.
 
+`Tls.feedIncoming` returns the consumed ciphertext count; on partial or zero
+progress, drain plaintext and retry only the remaining suffix. An empty input
+records transport EOF. `Tls.readPlaintext` returns `Result (Option Bytes) String`:
+`None` is pending, `Some Bytes.empty` is authenticated `close_notify`, and raw TCP
+EOF without that notification is an error after buffered plaintext is drained.
+
 `Url.decodeComponent` preserves unescaped Unicode and malformed percent escapes.
 It leaves `+` literal. If the decoded bytes are not valid UTF-8, it returns the
 original component unchanged; valid Unicode percent-encoding round-trips exactly.
