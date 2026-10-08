@@ -268,10 +268,11 @@ impl Parser<'_> {
                 break;
             }
             let before = self.pos;
+            let errors_before = self.diagnostics.len();
             let item = self.parse_item();
             let id = self.alloc_item(item);
             self.module.roots.push(id);
-            self.resync(0);
+            self.finish_declaration(errors_before);
             if self.pos == before {
                 self.bump(); // guarantee forward progress
             }
@@ -300,8 +301,10 @@ impl Parser<'_> {
     }
 
     /// Skips tokens until the next item separator at `target_depth`, balancing
-    /// nested layout blocks so a whole malformed construct is discarded.
+    /// nested layout blocks so a whole malformed construct is discarded. Callers
+    /// must report the malformed input before entering recovery.
     fn resync(&mut self, target_depth: i32) {
+        debug_assert!(!self.diagnostics.is_empty(), "recovery requires a diagnostic");
         let mut depth = 0i32;
         loop {
             match self.peek() {
@@ -321,6 +324,19 @@ impl Parser<'_> {
                 }
             }
         }
+    }
+
+    /// Successful declarations must reach a layout boundary. Recovery may skip
+    /// leftover tokens only after reporting them; otherwise formatting could
+    /// erase source that the parser incorrectly claimed was valid.
+    fn finish_declaration(&mut self, errors_before: usize) {
+        if self.at_terminator() {
+            return;
+        }
+        if self.diagnostics.len() == errors_before {
+            self.error(SYNTAX_ERROR, self.cur().range, "unexpected token after declaration");
+        }
+        self.resync(0);
     }
 
     // --- items ------------------------------------------------------------
@@ -449,10 +465,11 @@ impl Parser<'_> {
                     break;
                 }
                 let before = self.pos;
+                let errors_before = self.diagnostics.len();
                 let item = self.parse_item();
                 let id = self.alloc_item(item);
                 body.push(id);
-                self.resync(0);
+                self.finish_declaration(errors_before);
                 if self.pos == before {
                     self.bump(); // guarantee forward progress
                 }
@@ -630,8 +647,11 @@ impl Parser<'_> {
         let mut methods = Vec::new();
         if opened {
             while !matches!(self.peek(), TokenKind::LayoutClose | TokenKind::Eof) {
-                let Some(m) = self.parse_method_sig() else { break };
-                methods.push(m);
+                let errors_before = self.diagnostics.len();
+                if let Some(method) = self.parse_method_sig() {
+                    methods.push(method);
+                }
+                self.finish_declaration(errors_before);
                 while self.eat(TokenKind::LayoutSep) {}
             }
             while self.eat(TokenKind::LayoutSep) {}
@@ -1046,8 +1066,10 @@ impl Parser<'_> {
                 break;
             }
             if self.at(TokenKind::Let) {
+                let errors_before = self.diagnostics.len();
                 let stmt = self.parse_let_stmt();
                 stmts.push(stmt);
+                self.finish_declaration(errors_before);
             } else {
                 tail = Some(self.parse_expr());
                 while self.eat(TokenKind::LayoutSep) {}
@@ -2176,6 +2198,106 @@ mod tests {
 
     // --- error recovery ---------------------------------------------------
 
+    #[track_caller]
+    fn assert_trailing_token(src: &str, token: &str) {
+        let parsed = parse(src);
+        let at = src.find(token).unwrap();
+        let diagnostic = parsed
+            .diagnostics
+            .iter()
+            .find(|d| d.primary.range().start().to_usize() == at)
+            .unwrap_or_else(|| {
+                panic!("missing trailing-token diagnostic: {:?}", parsed.diagnostics)
+            });
+        assert_eq!(diagnostic.code, crate::SYNTAX_ERROR);
+        assert_eq!(diagnostic.message, "unexpected token after declaration");
+        let length = if token.starts_with("let ") { 3 } else { token.len() };
+        assert_eq!(diagnostic.primary.range().end().to_usize(), at + length);
+        assert!(
+            dump_module(&parsed.module).contains("(let Private kept [] (int 3))"),
+            "later declarations must survive recovery"
+        );
+    }
+
+    #[test]
+    fn same_line_declaration_is_reported_before_recovery() {
+        assert_trailing_token(
+            "module M\nlet first = 1 let forgotten = 2\nlet kept = 3\n",
+            "let forgotten",
+        );
+    }
+
+    #[test]
+    fn trailing_delimiter_after_unicode_has_an_exact_span() {
+        assert_trailing_token("module M\nlet first = \"é😀\" )\nlet kept = 3\n", ")");
+    }
+
+    #[test]
+    fn signature_trailing_keyword_is_reported() {
+        assert_trailing_token("module M\nfirst : Int else\nlet kept = 3\n", "else");
+    }
+
+    #[test]
+    fn union_trailing_delimiter_is_reported() {
+        assert_trailing_token("module M\ntype T = | A }\nlet kept = 3\n", "}");
+    }
+
+    #[test]
+    fn example_trailing_delimiter_is_reported() {
+        assert_trailing_token("module M\nexample: true )\nlet kept = 3\n", ")");
+    }
+
+    #[test]
+    fn nested_module_reports_trailing_tokens() {
+        assert_trailing_token(
+            "module M\nmodule Inner =\n  let first = 1 let forgotten = 2\nlet kept = 3\n",
+            "let forgotten",
+        );
+    }
+
+    #[test]
+    fn local_binding_reports_trailing_tokens() {
+        assert_trailing_token(
+            "module M\nlet first =\n  let x = 1 let forgotten = 2\n  x\nlet kept = 3\n",
+            "let forgotten",
+        );
+    }
+
+    #[test]
+    fn interface_method_recovers_after_trailing_tokens() {
+        let src = "module M\ninterface I =\n  first : Int else\n  next : Int\nlet kept = 3\n";
+        assert_trailing_token(src, "else");
+        let parsed = parse(src);
+        let ItemKind::Interface { methods, .. } = &parsed.module.items[0].kind else {
+            panic!("interface")
+        };
+        assert_eq!(methods.len(), 2);
+    }
+
+    #[test]
+    fn foreign_declaration_reports_trailing_tokens() {
+        assert_trailing_token("module M\nforeign \"native\" f : Int -> Int )\nlet kept = 3\n", ")");
+    }
+
+    #[test]
+    fn multiple_trailing_errors_preserve_following_declarations() {
+        let src = "module M\nlet a = 1 )\nlet b = 2 ]\nlet kept = 3\n";
+        let parsed = parse(src);
+        let errors: Vec<_> = parsed
+            .diagnostics
+            .iter()
+            .map(|d| (d.code, d.primary.range().start().to_usize(), d.message.as_str()))
+            .collect();
+        assert_eq!(
+            errors,
+            [
+                (crate::SYNTAX_ERROR, src.find(')').unwrap(), "unexpected token after declaration"),
+                (crate::SYNTAX_ERROR, src.find(']').unwrap(), "unexpected token after declaration"),
+            ]
+        );
+        assert_eq!(parsed.module.roots.len(), 3);
+    }
+
     #[test]
     fn missing_module_header_is_reported_but_items_still_parse() {
         let parsed = parse("let x = 1\nlet y = 2");
@@ -3145,6 +3267,15 @@ mod proptests {
             prop_assert!(m.pats.iter().all(|p| !matches!(p.kind, crate::ast::PatKind::Error)));
             prop_assert!(m.types.iter().all(|t| !matches!(t.kind, crate::ast::TypeKind::Error)));
             prop_assert!(m.items.iter().all(|i| !matches!(i.kind, ItemKind::Error)));
+        }
+
+        #[test]
+        fn trailing_tokens_after_generated_expressions_are_never_silent(expr in arb_expr()) {
+            let prefix = format!("module M\nlet value = {expr} ");
+            let src = format!("{prefix})\nlet kept = 3\n");
+            let parsed = parse_module(SourceId::new(0), &src);
+            prop_assert!(parsed.diagnostics.iter().any(|d| d.code == crate::SYNTAX_ERROR
+                && d.primary.range().start().to_usize() == prefix.len()));
         }
 
         /// A union declaration of any width plus a `match` covering every

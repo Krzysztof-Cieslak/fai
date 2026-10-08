@@ -157,3 +157,21 @@ fn item_tree_incremental_matches_clean() {
         },
     );
 }
+
+#[test]
+fn trailing_token_diagnostics_match_clean_after_edits() {
+    assert_incremental_matches_clean(
+        &[
+            &[("M.fai", "module M\nlet x = 1\n")],
+            &[("M.fai", "module M\nlet x = 1 let y = 2\n")],
+            &[("M.fai", "module M\nlet x = 1\nlet y = 2\n")],
+        ],
+        |db, ids| {
+            let file = db.source_file(ids[0]).unwrap();
+            fai_syntax::parse::accumulated::<fai_db::Diag>(db, file)
+                .iter()
+                .map(|d| (d.0.code, d.0.primary.range(), d.0.message.clone()))
+                .collect::<Vec<_>>()
+        },
+    );
+}
