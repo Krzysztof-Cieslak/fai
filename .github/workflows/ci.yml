@@ -105,6 +105,30 @@ jobs:
           path: target/nextest/unit/junit.xml
           if-no-files-found: ignore
 
+  shared-rc-miri:
+    name: shared RC (Miri)
+    runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: nightly-2026-10-08
+      # The value representation round-trips pointers through integer slots.
+      # Permissive provenance supports that model; race detection remains active.
+      MIRIFLAGS: -Zmiri-permissive-provenance
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Miri toolchain
+        run: rustup toolchain install nightly-2026-10-08 --profile minimal --component miri,rust-src
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: shared-rc-miri
+
+      - name: Prepare Miri
+        run: cargo miri setup
+
+      - name: Check shared reference-count races
+        run: cargo miri test -p fai-runtime --locked --lib shared_rc_tests -- --test-threads=1
+
   proptest:
     name: property tests (linux)
     runs-on: ubuntu-latest

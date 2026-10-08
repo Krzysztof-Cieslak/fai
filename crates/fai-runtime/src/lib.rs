@@ -291,10 +291,9 @@ struct ObjHeader {
 #[repr(transparent)]
 pub struct NoneSentinel(std::cell::UnsafeCell<ObjHeader>);
 
-// SAFETY: the sentinel is shared only through its reference count, which is
-// immortal — never read for a decision and never driven to zero — so the (benign,
-// non-atomic) count writes are unobservable. This matches the prior process-global
-// leaked allocation it replaces; compiled Fai programs run single-threaded.
+// SAFETY: the sentinel's header is initialized once and never mutated. Its
+// immortal count makes every reference-count operation a no-op; runtime count
+// inspections use atomic loads even when multiple tasks access the sentinel.
 unsafe impl Sync for NoneSentinel {}
 
 /// The Scheme-B niche `None` value: a shared, immortal, childless object. A
@@ -604,21 +603,34 @@ unsafe fn write_ptr(obj: *mut u8, off: usize, val: *const u8) {
 // Every reference-count site funnels through `rc_inc`/`rc_dec_is_dead` so the
 // three states (see `MT_FLAG`) are handled identically everywhere — the runtime's
 // polymorphic/builtin paths therefore reference-count a value correctly whether or
-// not it has crossed a task boundary, and code generation inlines the matching
-// branch only for programs that actually use concurrency (single-threaded code
-// keeps the plain non-atomic increment/decrement).
+// not it has crossed a task boundary. Concurrent programs delegate to these
+// helpers; single-threaded generated code keeps its inline non-atomic operations.
 
-/// The reference-count word of `p` viewed as an atomic, for a shared object.
+/// The reference-count word of `p` viewed as an atomic.
 ///
 /// # Safety
-/// `p` is a live, 8-aligned object pointer; the count is accessed atomically only
-/// while the object is in the shared (multi-threaded) state, so atomic and
-/// non-atomic accesses to it never race (the [`fai_mark_shared`] hand-off
-/// establishes the happens-before edge).
+/// `p` is a live, 8-aligned object pointer. Published shared objects must only
+/// access this word atomically; non-atomic stores require thread-local ownership
+/// before publication or exclusive ownership after the final release/acquire.
 #[inline]
 unsafe fn rc_atomic<'a>(p: *mut u8) -> &'a AtomicU64 {
     // SAFETY: `p + RC_OFFSET` is an 8-aligned, valid `u64` for the object's life.
     unsafe { AtomicU64::from_ptr(p.add(RC_OFFSET).cast::<u64>()) }
+}
+
+/// Reads the state and count atomically before deciding which RC path to use.
+/// Even a state inspection can race with a shared count's atomic updates, so it
+/// cannot use an ordinary read. Relaxed ordering suffices: marking is published
+/// by the task/channel hand-off, and final reclamation acquires in the decrement.
+///
+/// # Safety
+/// `p` is live, with a reference keeping it allocated. A local count is confined
+/// to its owning thread until `fai_mark_shared` and the synchronized hand-off.
+#[inline]
+unsafe fn rc_load(p: *mut u8) -> u64 {
+    // SAFETY: the live count is aligned; shared writes are atomic and local writes
+    // cannot occur concurrently with this read.
+    unsafe { rc_atomic(p).load(Ordering::Relaxed) }
 }
 
 /// Increments the reference count of the live object `p`, in whatever state it is
@@ -631,7 +643,7 @@ unsafe fn rc_atomic<'a>(p: *mut u8) -> &'a AtomicU64 {
 unsafe fn rc_inc(p: *mut u8) {
     // SAFETY: `p` is live; its count word is in bounds.
     unsafe {
-        let rc = read_u64(p, RC_OFFSET);
+        let rc = rc_load(p);
         if rc < IMMORTAL_RC {
             write_u64(p, RC_OFFSET, rc + 1);
         } else if rc & MT_FLAG != 0 {
@@ -653,7 +665,7 @@ unsafe fn rc_inc(p: *mut u8) {
 unsafe fn rc_dec_is_dead(p: *mut u8) -> bool {
     // SAFETY: `p` is live; its count word is in bounds.
     unsafe {
-        let rc = read_u64(p, RC_OFFSET);
+        let rc = rc_load(p);
         if rc < IMMORTAL_RC {
             let n = rc - 1;
             write_u64(p, RC_OFFSET, n);
@@ -1442,7 +1454,7 @@ pub extern "C" fn fai_mark_shared(v: Value) -> Value {
 unsafe fn mark_shared_one(p: *mut u8, work: &mut DropWork) {
     // SAFETY: `p` is live; its count word and children are in bounds.
     unsafe {
-        let rc = read_u64(p, RC_OFFSET);
+        let rc = rc_load(p);
         if rc < IMMORTAL_RC {
             // Single-threaded → shared: set the marker, keep the count in the low
             // bits. `scan_push` enqueues the boxed children to mark them too.
@@ -1697,7 +1709,7 @@ pub extern "C" fn fai_record_update(record: Value, index: Value, value: Value) -
         };
 
         // Unique owner: overwrite the field in place, releasing the old one.
-        if read_u64(p, RC_OFFSET) == 1 {
+        if rc_load(p) == 1 {
             let old = read_i64(p, DATA_FIELDS_OFFSET + slot * 8);
             write_i64(p, DATA_FIELDS_OFFSET + slot * 8, stored);
             // A scalar (raw) old field carries no reference count.
@@ -1951,7 +1963,7 @@ pub extern "C" fn fai_array_set(arr: Value, index: Value, value: Value) -> Value
         // Unique owner: overwrite the slot in place. A boxed old element is
         // released; a raw `f64` old slot carries no count, so there is nothing to
         // release.
-        if read_u64(p, RC_OFFSET) == 1 {
+        if rc_load(p) == 1 {
             if is_float {
                 write_i64(p, ARRAY_ELEMS_OFFSET + index * 8, stored);
             } else {
@@ -2000,7 +2012,7 @@ pub extern "C" fn fai_array_push(arr: Value, value: Value) -> Value {
         let len = array_len(arr);
         let cap = array_cap(arr);
         let p = as_obj(arr);
-        let unique = read_u64(p, RC_OFFSET) == 1;
+        let unique = rc_load(p) == 1;
         // A boxed-`Float` value identifies (and self-tags) an `Array Float`: store
         // the raw bits and release the transient box. Detected from the value (not
         // the array) so it works on the first push, when the array is still the
@@ -2649,7 +2661,7 @@ pub extern "C" fn fai_string_concat(a: Value, b: Value) -> Value {
         // In place only when the left operand is an inline, uniquely-owned buffer
         // with spare capacity: a slice views a shared base and owns no extensible
         // buffer, so it can never be appended into.
-        let inline_unique = !is_string_slice(a) && read_u64(pa, RC_OFFSET) == 1;
+        let inline_unique = !is_string_slice(a) && rc_load(pa) == 1;
         if inline_unique && need <= string_cap(a) {
             // Append `b`'s bytes after `a`'s and bump the length — no allocation,
             // `a`'s bytes not re-copied.
@@ -4469,6 +4481,8 @@ mod proptests;
 mod reuse_tests;
 #[cfg(test)]
 mod scalar_proptests;
+#[cfg(test)]
+mod shared_rc_tests;
 #[cfg(test)]
 mod string_tests;
 #[cfg(test)]
