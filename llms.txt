@@ -1396,6 +1396,9 @@ except `Instant.now`/`OffsetDateTime.now`, which take the `Clock` capability.
   `ofMonths`/`ofWeeks`/`ofDays`/`ofHours`/`ofMinutes`/`ofSeconds`/`ofNanoseconds`,
   accessors, `add`/`negate`, `between : LocalDate -> LocalDate -> Period`,
   `addToDate`/`addToDateTime`, `toString` (ISO `P…`).
+  `between` chooses maximal whole years then months without overshooting,
+  followed by residual days. Each step uses actual clamping; reversing dates
+  need not negate the resulting components.
 - **`DayOfWeek`** / **`Month`** — enums (constructors qualified, e.g.
   `DayOfWeek.Monday`, `Month.January`). `toInt`/`fromInt`/`toString`/
   `toShortString`; `DayOfWeek.plus`, `Month.length`.

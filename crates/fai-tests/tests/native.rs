@@ -787,6 +787,24 @@ fn clock_now_builds_and_runs() {
     assert_eq!(code, Some(0));
 }
 
+#[track_caller]
+fn period_round_trip(start: &str, finish: &str) {
+    let source = format!(
+        "module Main\npublic main : Runtime -> Unit / {{ Console }}\nlet main r =\n  let start = Option.withDefault (LocalDate.fromEpochDay 0) (LocalDate.parse \"{start}\")\n  let finish = Option.withDefault (LocalDate.fromEpochDay 0) (LocalDate.parse \"{finish}\")\n  r.console.writeLine (LocalDate.toString (Period.addToDate (Period.between start finish) start))\n"
+    );
+    assert_eq!(build_and_run(&source), (format!("{finish}\n"), Some(0)));
+}
+
+#[test]
+fn backwards_periods_round_trip_month_end_in_native_code() {
+    period_round_trip("2021-03-31", "2021-02-28");
+}
+
+#[test]
+fn year_then_month_periods_round_trip_leap_day_in_native_code() {
+    period_round_trip("2020-02-29", "2021-03-29");
+}
+
 #[test]
 fn user_defined_operator_runs() {
     let src = indoc! {r#"

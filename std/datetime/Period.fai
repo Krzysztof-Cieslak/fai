@@ -138,19 +138,39 @@ example: years (negate (ofYears 3)) = 0 - 3
 
 /// The period (years, months, days) from `start` to `end` such that applying it to
 /// `start` yields `end`. Negative components when `end` precedes `start`.
+/// Takes the largest whole years, then months, that do not pass the target when
+/// applied with clamping; days cover the remainder. Reversing dates need not
+/// negate the components, because calendar clamping is not reversible.
 public between : LocalDate -> LocalDate -> Period
 let between start end =
-  if LocalDate.compare start end > 0 then
-    negate (between end start)
-  else
-    let totalMonths =
-      (LocalDate.year end - LocalDate.year start) * 12 + (LocalDate.month end - LocalDate.month start)
-    let m = if LocalDate.day end >= LocalDate.day start then totalMonths else totalMonths - 1
-    let inter = LocalDate.plusMonths m start
-    MkPeriod (m / 12) (Int.floorMod m 12) (LocalDate.daysUntil inter end) 0 0 0 0
+  let direction = LocalDate.compare end start
+  let yearGuess = LocalDate.year end - LocalDate.year start
+  let y =
+    if LocalDate.compare (LocalDate.plusYears yearGuess start) end * direction > 0 then
+      yearGuess - direction
+    else
+      yearGuess
+  let afterYears = LocalDate.plusYears y start
+  let monthGuess =
+    (LocalDate.year end - LocalDate.year afterYears) * 12 + (LocalDate.month end - LocalDate.month afterYears)
+  let m =
+    if LocalDate.compare (LocalDate.plusMonths monthGuess afterYears) end * direction > 0 then
+      monthGuess - direction
+    else
+      monthGuess
+  let afterMonths = LocalDate.plusMonths m afterYears
+  MkPeriod y m (LocalDate.daysUntil afterMonths end) 0 0 0 0
 example: days (between (LocalDate.fromEpochDay 0) (LocalDate.fromEpochDay 10)) = 10
 example: months (between (dateOf 2020 1 15) (dateOf 2020 3 15)) = 2
 example: years (between (dateOf 2020 1 1) (dateOf 2018 1 1)) = 0 - 2
+example: addToDate (between (dateOf 2021 3 31) (dateOf 2021 2 28)) (dateOf 2021 3 31) = dateOf 2021 2 28
+example: addToDate (between (dateOf 2020 2 29) (dateOf 2021 3 29)) (dateOf 2020 2 29) = dateOf 2021 3 29
+example: between (dateOf 2021 3 31) (dateOf 2021 2 28) = ofMonths (0 - 1)
+example: between (dateOf 2021 1 31) (dateOf 2021 2 28) = ofMonths 1
+example: between (dateOf 2020 2 29) (dateOf 2021 3 29) = add (ofYears 1) (add (ofMonths 1) (ofDays 1))
+example: between (dateOf 2021 3 29) (dateOf 2020 2 29) = add (ofYears (0 - 1)) (ofMonths (0 - 1))
+example: between (dateOf 2020 2 29) (dateOf 2020 2 29) = zero
+example: between (dateOf 2020 12 31) (dateOf 2021 1 30) = ofDays 30
 
 /// Apply a period's date components (years, then months, then days) to a date.
 /// Any time components are ignored.

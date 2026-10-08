@@ -3919,6 +3919,12 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     Structural `=`/`<`/`compare` still work across files (opacity permits structural
     comparison), and the components are laid out chronologically so the built-in order
     is the chronological one; each type also offers explicit `compare`/`isBefore`/…
+    `Period.between` computes in the requested direction and in the same order as
+    `addToDate`: maximal whole years without passing the target, apply/clamp,
+    maximal months from that intermediate date, apply/clamp, then residual days.
+    Forward differences cannot simply be negated because month-end clamping is
+    not reversible; the add-back law is verified across a bounded proleptic
+    Gregorian domain as well as explicit leap-day and month-end boundaries.
   - **ISO-8601 everywhere + a custom pattern engine.** Each type renders and reads its
     canonical ISO form (`toString`/`parse`, pure). `DateTimeFormat` adds a custom
     pattern mini-language over `LocalDateTime` (`yyyy`/`yy`, `M`…`MMMM`, `dd`/`d`,
