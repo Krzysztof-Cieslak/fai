@@ -62,6 +62,36 @@ fn correct_example_passes_check() {
 }
 
 #[test]
+fn exported_signature_cannot_hide_effects_from_a_dependent_contract() {
+    let dir = workspace(
+        "signature-effects",
+        &[
+            (
+                "Lib.fai",
+                "module Lib\npublic invoke : (Unit -> Unit / 'e) -> Unit\nlet invoke action = action ()\n",
+            ),
+            (
+                "Main.fai",
+                "module Main\nhidden : Console -> Unit\nlet hidden c = Lib.invoke (fun u -> c.writeLine \"must not run\")\nexample: hidden stdConsole = ()\n",
+            ),
+        ],
+    );
+    let output = fai()
+        .args(["check", "--no-daemon", "--message-format=json", "-C"])
+        .arg(dir)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let diagnostics = parsed["diagnostics"].as_array().unwrap();
+    assert!(
+        diagnostics.iter().any(|d| d["code"] == "FAI3004" && d["primary"]["file"] == "Lib.fai"),
+        "{parsed}"
+    );
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("must not run"));
+}
+
+#[test]
 fn invalid_unicode_escape_is_rejected_without_running_examples() {
     let out = check(
         "unicode-scalar",

@@ -19,7 +19,7 @@ let bodyOf outcome =
   | None -> Err "no response"
 
 // Run a handler over a mock request and report its status code.
-runOn : Web.HttpHandler 'e -> Http.Method -> String -> Int
+runOn : Web.HttpHandler 'e -> Http.Method -> String -> Int / 'e
 let runOn handler verb target =
   match Web.mockContext verb target with
   | Err e -> -1

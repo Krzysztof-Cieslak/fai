@@ -494,6 +494,7 @@ impl<E: Env> Walker<'_, E> {
         arg_tys: &[SolveTy],
         span: fai_span::TextRange,
         what: &str,
+        effect_checkpoint: usize,
     ) -> SolveTy {
         let result = self.cx.fresh();
         let eff = SolveEffect { atoms: Vec::new(), tail: EffTail::Open(self.cx.fresh_effect()) };
@@ -514,6 +515,7 @@ impl<E: Env> Walker<'_, E> {
                 self.report_unify_failure(span, r, arg_ty, param, what);
             }
         }
+        self.cx.close_application_effects(effect_checkpoint, &params, arg_tys, &result);
         self.incur_effect(&eff);
         result
     }
@@ -538,10 +540,17 @@ impl<E: Env> Walker<'_, E> {
         args.reverse();
         let head = cur;
 
+        let effect_checkpoint = self.cx.effect_checkpoint();
         let head_ty = self.infer_expr(head);
         let raw_arg_tys: Vec<SolveTy> = args.iter().map(|&a| self.infer_expr(a)).collect();
         let span = self.module.expr(outer).span;
-        let result = self.apply_to_args(&head_ty, &raw_arg_tys, span, "function application");
+        let result = self.apply_to_args(
+            &head_ty,
+            &raw_arg_tys,
+            span,
+            "function application",
+            effect_checkpoint,
+        );
 
         // Record each intermediate application node's type (the suffix after the
         // arguments applied so far), so `body_types` covers them. The outermost
@@ -1003,10 +1012,11 @@ impl<E: Env> Walker<'_, E> {
         // of the resolved operator function to its two operands — through the same
         // path as application, so a function operand's effect is subsumed (making
         // point-free composition of differently-effecting functions type-check).
+        let effect_checkpoint = self.cx.effect_checkpoint();
         let op_ty = self.infer_expr(op);
         let lt = self.infer_expr(lhs);
         let rt = self.infer_expr(rhs);
-        self.apply_to_args(&op_ty, &[lt, rt], span, "an operator application")
+        self.apply_to_args(&op_ty, &[lt, rt], span, "an operator application", effect_checkpoint)
     }
 
     fn infer_builtin_binary(

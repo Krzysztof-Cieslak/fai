@@ -356,7 +356,7 @@ fn embedded_std_library_typechecks() {
             check_codes(&db, file).is_empty(),
             "{} has errors: {:?}",
             file.path(&db),
-            check_codes(&db, file)
+            check_diags(&db, file)
         );
         if file.path(&db).ends_with("Prelude.fai") {
             prelude = Some(file);
