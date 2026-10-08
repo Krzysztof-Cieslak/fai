@@ -395,6 +395,10 @@ as `let log = fun message -> body`: constructing it is pure, and calling its
 saturating arrow performs the body's effects. A parameterless local value binding
 is evaluated immediately.
 
+Contract generation recognizes Prelude `Option`/`Result` by declaration identity.
+Same-spelled user types use their own constructors and support custom `Arbitrary`
+overrides like other user ADTs.
+
 ## 5. Repository layout
 
 A single Cargo workspace. Each crate owns one compiler phase or tool.

@@ -870,8 +870,12 @@ Contracts (examples & properties):
   native type with a generator, so a `Char` binder is runnable — see D107.)
 - **D87 Per-type `Arbitrary` synthesis for records and ADTs (Stage 2).** A user
   record or ADT has no generic combinator, so the compiler synthesizes a
-  top-level `Arbitrary` *definition* per type, referenced as a `Global`. Two
-  properties make this tractable without a by-hand closure-conversion pass:
+  top-level `Arbitrary` *definition* per type, referenced as a `Global`.
+  The `Option`/`Result` combinators are selected only for the exact Prelude
+  declarations, not same-spelled user ADTs. Generation, recursive reachability,
+  groundability, and custom-override eligibility share those resolved identities.
+  User types with either name synthesize their own constructors and renderers.
+  Two properties make this tractable without a by-hand closure-conversion pass:
   (1) because each type's arbitrary is a top-level def, composing them is just
   `Global` references, and a **recursive type is a self-reference** (the def's
   generator refers to its own `Global`) guarded by the size budget — at size 0

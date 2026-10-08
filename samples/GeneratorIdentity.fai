@@ -1,0 +1,12 @@
+module GeneratorIdentity
+
+// A familiar name does not make this the Prelude type: generated test values
+// must use this declaration's Only constructor.
+type Option 'a =
+  | Only 'a
+
+valid : Option Int -> Bool
+let valid value =
+  match value with
+  | Only n -> Int.toString n <> ""
+forall value: valid value

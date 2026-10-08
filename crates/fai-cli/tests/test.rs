@@ -94,6 +94,85 @@ fn an_unused_effectful_local_function_keeps_a_contract_pure() {
 }
 
 #[test]
+fn user_option_type_gets_its_own_constructor_generator() {
+    let source = indoc! {r#"
+        module Main
+        type Option 'a = | Only 'a
+        valid : Option Int -> Bool
+        let valid value =
+          match value with
+          | Only n -> Int.toString n <> ""
+        forall value: valid value
+    "#};
+    let dir = workspace("user-option", &[("Main.fai", source)]);
+    let output =
+        fai().args(["test", "--no-daemon", "-C"]).arg(dir).arg("Main.fai").output().unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[track_caller]
+fn run_generator_case(name: &str, files: &[(&str, &str)], success: bool) -> String {
+    let dir = workspace(name, files);
+    let output =
+        fai().args(["test", "--no-daemon", "-C"]).arg(dir).arg("Main.fai").output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert_eq!(
+        output.status.success(),
+        success,
+        "{stdout}{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    stdout
+}
+
+#[test]
+fn cross_module_shadowed_option_generates_valid_values() {
+    run_generator_case(
+        "external-option",
+        &[
+            (
+                "Lib.fai",
+                "module Lib\npublic type Option 'a = | Only 'a\npublic valid : Option Int -> Bool\nlet valid x =\n  match x with\n  | Only n -> Int.toString n <> \"\"\n",
+            ),
+            ("Main.fai", "module Main\nforall x: Lib.valid x\n"),
+        ],
+        true,
+    );
+}
+
+#[test]
+fn shadowed_result_uses_its_own_tags_and_arities() {
+    let source = "module Main\ntype Result 'a 'b = | Loading | Failure 'b | Success 'a\nvalid : Result Int String -> Bool\nlet valid x =\n  match x with\n  | Loading -> x = Loading\n  | Failure message -> x = Failure message\n  | Success value -> x = Success value\nforall x: valid x\n";
+    run_generator_case("user-result", &[("Main.fai", source)], true);
+}
+
+#[test]
+fn shadowed_option_honors_custom_arbitrary() {
+    let source = "module Main\ntype Option 'a = | Only 'a\narbOnly : Test.Arbitrary (Option Int)\nlet arbOnly = { gen = fun size seed -> (Only 9, seed), show = fun x -> \"only\", shrink = fun x -> [] }\nvalid : Option Int -> Bool\nlet valid x =\n  match x with\n  | Only n -> n = 9\nforall x: valid x\n";
+    run_generator_case("user-option-override", &[("Main.fai", source)], true);
+}
+
+#[test]
+fn shadowed_option_without_a_base_case_is_not_groundable() {
+    let source = "module Main\ntype Option 'a = | Again 'a (Option 'a)\nvalid : Option Int -> Bool\nlet valid x = true\nforall x: valid x\n";
+    let out = run_generator_case("user-option-no-base", &[("Main.fai", source)], false);
+    assert!(out.contains("FAI6005"), "{out}");
+}
+
+#[test]
+fn shadowed_option_counterexample_names_the_users_constructor() {
+    let source = "module Main\ntype Option 'a = | Only 'a\nvalid : Option Int -> Bool\nlet valid x = false\nforall x: valid x\n";
+    let out = run_generator_case("user-option-counterexample", &[("Main.fai", source)], false);
+    assert!(out.contains("counterexample: x = Only 0"), "{out}");
+}
+
+#[test]
 fn trapping_contract_streams_live_lines_in_order() {
     let dir = workspace("livelines", &[("Crash.fai", CRASH)]);
     let out =
