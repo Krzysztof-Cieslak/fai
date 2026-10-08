@@ -46,6 +46,7 @@ struct Daemon {
     run_timeout_ms: Option<u64>,
     run_as_bytes: Option<u64>,
     test_hold_ms: Option<u64>,
+    idle_timeout_secs: u64,
 }
 
 impl Daemon {
@@ -62,6 +63,7 @@ impl Daemon {
             run_timeout_ms: None,
             run_as_bytes: None,
             test_hold_ms: None,
+            idle_timeout_secs: 60,
         }
     }
 
@@ -76,6 +78,11 @@ impl Daemon {
     /// overlaps and `daemon status` reports a peak concurrency > 1.
     fn with_test_hold(mut self, ms: u64) -> Self {
         self.test_hold_ms = Some(ms);
+        self
+    }
+
+    fn with_idle_timeout(mut self, seconds: u64) -> Self {
+        self.idle_timeout_secs = seconds;
         self
     }
 
@@ -94,7 +101,7 @@ impl Daemon {
         command
             .env("FAI_RUNTIME_DIR", &self.runtime_dir)
             .env("FAI_CACHE_DIR", &self.cache_dir)
-            .env("FAI_DAEMON_IDLE_TIMEOUT", "60");
+            .env("FAI_DAEMON_IDLE_TIMEOUT", self.idle_timeout_secs.to_string());
         if let Some(ms) = self.run_timeout_ms {
             command.env("FAI_RUN_TIMEOUT_MS", ms.to_string());
         }
@@ -283,6 +290,59 @@ fn warm_check_matches_no_daemon() {
 
     assert_eq!(stdout(&warm1), stdout(&cold), "warm output must equal --no-daemon output");
     assert_eq!(stdout(&warm2), stdout(&cold), "a second warm run must also match");
+}
+
+#[test]
+fn active_read_outlives_the_daemon_idle_timeout() {
+    let daemon = Daemon::new("active-read", &[("Main.fai", "module Main\nlet value = 1\n")])
+        .with_idle_timeout(1)
+        .with_test_hold(6000);
+    let output = daemon.run(&["check", "--no-examples"], &["Main.fai"]);
+    assert!(output.status.success(), "{}", stdout(&output));
+    assert!(output.stderr.is_empty(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(status_pid(&daemon).is_some(), "the daemon must survive active work");
+}
+
+#[test]
+fn a_silent_run_worker_outlives_the_daemon_idle_timeout() {
+    let source = "module Main\npublic main : Runtime -> Unit / { Clock, Console }\nlet main r =\n  let _ = r.clock.sleep 6000\n  r.console.writeLine \"finished\"\n";
+    let daemon = Daemon::new("active-run", &[("Main.fai", source)])
+        .with_idle_timeout(1)
+        .with_run_timeout(15000);
+    let output = daemon.run(&["run"], &["Main.fai"]);
+    assert!(
+        output.status.success(),
+        "{}{}",
+        stdout(&output),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(stdout(&output), "finished\n");
+    assert!(output.stderr.is_empty(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(status_pid(&daemon).is_some());
+}
+
+#[test]
+fn a_test_batch_outlives_the_daemon_idle_timeout() {
+    let source = "module Main\nlet spin n = spin (n + 1)\nexample: spin 0 = 0\nexample: true\n";
+    let daemon = Daemon::new("active-test", &[("Main.fai", source)]).with_idle_timeout(1);
+    let output = daemon
+        .cmd()
+        .env("FAI_TEST_TIMEOUT_MS", "6500")
+        .args(["test", "-C"])
+        .arg(&daemon.workspace)
+        .arg("Main.fai")
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "{}{}",
+        stdout(&output),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(stdout(&output).contains("1 passed, 1 failed"), "{}", stdout(&output));
+    assert!(output.stderr.is_empty(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(status_pid(&daemon).is_some());
 }
 
 #[test]
@@ -805,6 +865,29 @@ fn read_lines<R: Read + Send + 'static>(reader: R) -> Receiver<String> {
         }
     });
     rx
+}
+
+#[test]
+fn a_passive_tap_does_not_prevent_genuine_idle_shutdown() {
+    let daemon = Daemon::new("idle-tap", &[]).with_idle_timeout(1);
+    let mut child = daemon
+        .cmd()
+        .args(["daemon", "tap", "-C"])
+        .arg(&daemon.workspace)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let frames = read_lines(child.stdout.take().unwrap());
+    let notices = read_lines(child.stderr.take().unwrap());
+    let _tap = KillOnDrop(child);
+    let ready = notices.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert!(ready.contains("tapping daemon traffic"), "{ready}");
+    assert_eq!(
+        frames.recv_timeout(Duration::from_secs(15)),
+        Err(mpsc::RecvTimeoutError::Disconnected)
+    );
+    assert!(status_pid(&daemon).is_none());
 }
 
 #[test]

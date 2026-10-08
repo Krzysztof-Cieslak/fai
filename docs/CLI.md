@@ -327,7 +327,10 @@ fai daemon tap         # stream a JSON decode of this workspace's daemon traffic
 ```
 
 The daemon auto-spawns on the first command that needs it; `--no-daemon` bypasses
-it entirely (one-shot in-process). It shuts down after an idle timeout.
+it entirely (one-shot in-process). It shuts down after an idle timeout
+(`FAI_DAEMON_IDLE_TIMEOUT`, default 600 seconds), measured from completion of the
+last active request. Compilation, supervised workers, output streaming, and the
+final response keep it active; passive tap subscribers do not.
 
 ---
 
