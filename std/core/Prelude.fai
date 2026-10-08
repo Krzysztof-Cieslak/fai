@@ -183,6 +183,8 @@ public interface Env =
 // re-exported by this module above.
 // Closing a channel wakes blocked senders and receivers. Buffered values can
 // still be received; pending and later sends discard their value and return Unit.
+// Capacities <= 0 become 1; positive capacities clamp to the platform's index
+// range. Storage grows with queued values rather than reserving capacity up front.
 public interface Concurrency =
   await : Task 'a -> 'a / { Concurrency }
   cancel : Task 'a -> Unit / { Concurrency }

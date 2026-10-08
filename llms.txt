@@ -794,7 +794,9 @@ channels. A function that uses it surfaces `Concurrency` in its effect row.
   body's own effect is forwarded, so concurrency never hides what runs inside.
 - **`await task`** waits for a task and returns its result (memoized — you may
   await again).
-- **`channel n`** makes a bounded `Channel 'a` (capacity `n`); `send ch v` blocks
+- **`channel n`** makes a bounded `Channel 'a` (capacity `max(1, n)`, capped at
+  the platform's index limit). Storage grows with queued values; a large limit
+  does not reserve a large buffer. `send ch v` blocks
   while full, `recv ch` returns `Some v` or `None` once the channel is **closed
   and drained**, and `close ch` ends it. Closing wakes blocked senders and
   receivers. Pending and later sends discard their value and return `Unit`;

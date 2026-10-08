@@ -25,8 +25,9 @@ let sumSquares c xs = List.sum (Async.mapConcurrent c (fun x -> x * x) xs)
 // drains the channel with `Async.collect` and sums it.
 // Closing wakes blocked senders and receivers. Only values buffered before close
 // are received; pending and later sends discard their payload and return.
+// Zero and negative capacity requests become a one-slot channel.
 public sumChannel : Concurrency -> List Int -> Int / { Concurrency }
-let sumChannel c items = Async.pipe c 4 (Async.produceList c items) (consume c)
+let sumChannel c items = Async.pipe c 0 (Async.produceList c items) (consume c)
 
 consume : Concurrency -> Channel Int -> Int / { Concurrency }
 let consume c ch = List.sum (Async.collect c ch)

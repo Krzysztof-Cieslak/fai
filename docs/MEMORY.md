@@ -3658,7 +3658,10 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     Fai heap cell (`KIND_TASK`/`KIND_CHANNEL`/`KIND_NURSERY`) whose slot owns a raw
     `Arc` to scheduler state; the free path drops that `Arc`, and the handle's
     `Drop` releases any Fai values it still owns (a task's stored result, a
-    channel's buffered values), so the whole path is leak-free. Channels are bounded
+    channel's buffered values), so the whole path is leak-free. Channel capacities
+    are decoded as uniform signed Ints (consuming any box), clamped to at least
+    one before conversion, and capped at the platform's `usize` limit. The buffer
+    grows lazily, so a large limit does not allocate storage up front. Channels are bounded
     MPMC with backpressure and an explicit close (`recv` yields `None` once closed
     and drained). Closing wakes both senders and receivers; pending and later
     sends drop their owned payload and return `Unit`, preserving the existing

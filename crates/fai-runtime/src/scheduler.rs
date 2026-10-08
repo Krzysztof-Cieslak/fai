@@ -1059,10 +1059,14 @@ pub extern "C" fn fai_cancel(task: Value) -> Value {
 }
 
 /// Creates a bounded channel of the given capacity (a Fai `Int`); returns a
-/// `Channel` handle.
+/// `Channel` handle. Nonpositive capacities become one. Positive capacities
+/// clamp to the platform's `usize` range and reserve no storage up front.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_channel(capacity: Value) -> Value {
-    channel_handle_value(channel((capacity >> 1) as usize))
+    let requested = crate::unbox_int(capacity);
+    crate::fai_drop(capacity);
+    let capacity = usize::try_from(requested.max(1)).unwrap_or(usize::MAX);
+    channel_handle_value(channel(capacity))
 }
 
 /// Sends a value on a channel, parking while full. The value's graph is marked
@@ -1445,6 +1449,100 @@ mod tests {
             }))
         }));
         assert_eq!(of_imm(r), (1..=50).sum::<i64>());
+    }
+
+    #[track_caller]
+    fn assert_fai_channel_capacity(requested: i64, expected: usize) {
+        let _guard = crate::tests::lock();
+        let baseline = crate::live_count();
+        let value = fai_channel(crate::fai_box_int(requested));
+        let (actual, reserved) = {
+            let channel = chan_of(value);
+            let reserved = channel.state.lock().unwrap().buf.capacity();
+            (channel.capacity, reserved)
+        };
+        crate::fai_drop(value);
+        assert_eq!(actual, expected);
+        assert_eq!(reserved, 0, "capacity is a limit, not an eager reservation");
+        assert_eq!(crate::live_count(), baseline, "boxed capacity must be consumed");
+    }
+
+    #[test]
+    fn negative_channel_capacity_clamps_to_one() {
+        assert_fai_channel_capacity(-1, 1);
+    }
+
+    #[test]
+    fn minimum_channel_capacity_clamps_and_releases_the_box() {
+        assert_fai_channel_capacity(i64::MIN, 1);
+    }
+
+    #[test]
+    fn maximum_channel_capacity_is_decoded_without_reservation() {
+        assert_fai_channel_capacity(i64::MAX, usize::try_from(i64::MAX).unwrap_or(usize::MAX));
+    }
+
+    #[test]
+    fn zero_channel_capacity_clamps_to_one() {
+        assert_fai_channel_capacity(0, 1);
+    }
+
+    #[test]
+    fn maximum_immediate_channel_capacity_is_preserved() {
+        let maximum = (1i64 << 62) - 1;
+        assert_fai_channel_capacity(maximum, usize::try_from(maximum).unwrap_or(usize::MAX));
+    }
+
+    #[test]
+    fn first_boxed_channel_capacity_is_preserved() {
+        let capacity = 1i64 << 62;
+        assert_fai_channel_capacity(capacity, usize::try_from(capacity).unwrap_or(usize::MAX));
+    }
+
+    #[test]
+    fn minimum_immediate_channel_capacity_clamps_to_one() {
+        assert_fai_channel_capacity(-(1i64 << 62), 1);
+    }
+
+    #[test]
+    fn boxed_negative_channel_capacity_clamps_to_one() {
+        assert_fai_channel_capacity(-(1i64 << 62) - 1, 1);
+    }
+
+    #[test]
+    fn negative_capacity_enforces_backpressure_before_a_second_send() {
+        let _guard = crate::tests::lock();
+        let baseline = crate::live_count();
+        let value = fai_channel(crate::make_int(-1));
+        let channel = Arc::clone(&chan_of(value));
+        chan_send(&channel, imm(1));
+        let producer = {
+            let channel = Arc::clone(&channel);
+            spawn(Box::new(move || {
+                chan_send(&channel, imm(2));
+                imm(0)
+            }))
+        };
+        let blocked = loop {
+            if !channel.state.lock().unwrap().send_waiters.is_empty() {
+                break true;
+            }
+            if producer.state.lock().unwrap().done {
+                break false;
+            }
+            std::thread::yield_now();
+        };
+        let received = block_on(Box::new(move || {
+            let first = chan_recv(&channel).unwrap();
+            let second = chan_recv(&channel).unwrap();
+            await_handle(&producer);
+            chan_close(&channel);
+            imm(of_imm(first) * 10 + of_imm(second))
+        }));
+        crate::fai_drop(value);
+        assert!(blocked, "the second send must wait for the capacity-one slot");
+        assert_eq!(received, imm(12));
+        assert_eq!(crate::live_count(), baseline);
     }
 
     #[test]
