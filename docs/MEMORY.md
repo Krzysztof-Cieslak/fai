@@ -3643,6 +3643,10 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   `Listener`/`Connection`/`UdpSocket` types live in a dependency-free `Net` module
   that `Prelude` re-exports. Payloads are `Bytes`; fallible operations return
   `Result _ String` (built by the runtime, the standard two-cell representation).
+  A successfully registered socket immediately has a lifetime owner, including
+  while a non-blocking connection is still pending. Failure or cancellation drops
+  that owner and removes the reactor's source-table entry; successful completion
+  transfers the same owner into the connection handle.
   Each operation runs on its task and parks on the reactor at every would-block; a
   hostname (in `connect`/`udpSend`) is resolved on the blocking pool (D140) while an
   IP literal is parsed inline (no park). The whole-program **execution gate** (D139) triggers on

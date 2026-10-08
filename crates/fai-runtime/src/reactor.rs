@@ -503,32 +503,37 @@ pub extern "C" fn fai_net_connect(host: Value, port: Value) -> Value {
                 Ok(s) => s,
                 Err(e) => return err_result(&e.to_string()),
             };
-            // A non-blocking connect completes asynchronously, signaled by the
-            // socket becoming writable. *Check completion directly* each iteration
-            // rather than only waiting for the writable edge: the connect can finish
-            // (or fail) before — or in the same instant as — registration, and an
-            // edge-triggered poll (epoll) need not re-report readiness that predates
-            // the registration, so a bare wait could park forever. `take_error`
-            // surfaces a failed connect (e.g. refused); `peer_addr` succeeds once
-            // connected and is `NotConnected` while still in progress.
-            loop {
-                if scheduler::is_cancelled() {
-                    return err_result(scheduler::CANCELLED_MESSAGE);
-                }
-                match stream.take_error() {
-                    Ok(None) => {}
-                    Ok(Some(e)) => return err_result(&e.to_string()),
-                    Err(e) => return err_result(&e.to_string()),
-                }
-                match stream.peer_addr() {
-                    Ok(_) => break,
-                    Err(e) if e.kind() == io::ErrorKind::NotConnected => wait_writable(&src),
-                    Err(e) => return err_result(&e.to_string()),
-                }
+            // Install the registration's owner before any completion check can
+            // fail or cancel. Its Drop deregisters on every early return; on
+            // success the same owner moves into the public connection handle.
+            let mut connection = NetObject::Conn { sock: Mutex::new(stream), src };
+            if let NetObject::Conn { sock, src } = &mut connection
+                && let Err(error) = finish_connect(sock.get_mut().expect("connection lock"), src)
+            {
+                return err_result(&error);
             }
-            ok_result(net_handle_value(NetObject::Conn { sock: Mutex::new(stream), src }))
+            ok_result(net_handle_value(connection))
         }
         Err(e) => err_result(&e.to_string()),
+    }
+}
+
+/// Waits for a registered non-blocking connect while its caller owns the socket
+/// and registration. Probe completion before parking: an edge may predate the
+/// registration, and `take_error` surfaces an asynchronously refused connection.
+fn finish_connect(stream: &mut TcpStream, src: &Arc<IoSource>) -> Result<(), String> {
+    loop {
+        if scheduler::is_cancelled() {
+            return Err(scheduler::CANCELLED_MESSAGE.to_owned());
+        }
+        if let Some(error) = stream.take_error().map_err(|e| e.to_string())? {
+            return Err(error.to_string());
+        }
+        match stream.peer_addr() {
+            Ok(_) => return Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotConnected => wait_writable(src),
+            Err(e) => return Err(e.to_string()),
+        }
     }
 }
 
@@ -1100,6 +1105,105 @@ mod tests {
         }));
         assert_eq!(result, imm(2));
         deregister(&source, &mut *listener.lock().unwrap());
+    }
+
+    #[track_caller]
+    fn assert_connect_registration_cleanup(case: &str) {
+        // The source table is process-global; isolate its exact cardinality from
+        // other networking tests running on the test harness's threads.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "reactor::tests::connect_registration_worker", "--nocapture"])
+            .env("FAI_CONNECT_REGISTRATION_CASE", case)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn cancelled_connect_removes_its_registration() {
+        assert_connect_registration_cleanup("cancelled");
+    }
+
+    #[test]
+    fn refused_connects_do_not_accumulate_registrations() {
+        assert_connect_registration_cleanup("refused");
+    }
+
+    #[test]
+    fn successful_connect_owns_registration_until_close() {
+        assert_connect_registration_cleanup("success");
+    }
+
+    #[test]
+    fn late_readiness_does_not_restore_a_removed_registration() {
+        assert_connect_registration_cleanup("late-event");
+    }
+
+    #[test]
+    fn connect_registration_worker() {
+        let Ok(case) = std::env::var("FAI_CONNECT_REGISTRATION_CASE") else { return };
+        let baseline = reactor().sources.lock().unwrap().len();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = i64::from(listener.local_addr().unwrap().port());
+        match case.as_str() {
+            "cancelled" => {
+                block_on(Box::new(move || {
+                    let gate = scheduler::channel(1);
+                    let task = scheduler::spawn(Box::new(move || {
+                        scheduler::chan_recv(&gate);
+                        let result = fai_net_connect(crate::make_string(b"127.0.0.1"), imm(port));
+                        assert_eq!(crate::data_tag_of(result), 1);
+                        crate::fai_drop(result);
+                        imm(0)
+                    }));
+                    scheduler::cancel_handle(&task);
+                    scheduler::await_handle(&task)
+                }));
+            }
+            "refused" => {
+                // Keep this port reserved on 127.0.0.1, and connect to the other
+                // loopback address where the listener is not accepting.
+                block_on(Box::new(move || {
+                    for _ in 0..16 {
+                        let result = fai_net_connect(crate::make_string(b"127.0.0.2"), imm(port));
+                        assert_eq!(crate::data_tag_of(result), 1);
+                        crate::fai_drop(result);
+                    }
+                    imm(0)
+                }));
+            }
+            "success" | "late-event" => {
+                let late = case == "late-event";
+                block_on(Box::new(move || {
+                    // SAFETY: connect returns a standard Result; success is
+                    // expected against the live loopback listener.
+                    let connection = unsafe {
+                        unwrap_ok(fai_net_connect(crate::make_string(b"127.0.0.1"), imm(port)))
+                    };
+                    assert_eq!(reactor().sources.lock().unwrap().len(), baseline + 1);
+                    let source = {
+                        let object = net_of(connection);
+                        let NetObject::Conn { src, .. } = &**object else { panic!("connection") };
+                        Arc::clone(src)
+                    };
+                    fai_net_close(connection);
+                    if late {
+                        // The poll thread may have cloned the source just before
+                        // deregistration. Such an already-delivered event is safe.
+                        wake_direction(&source.read);
+                        wake_direction(&source.write);
+                    }
+                    imm(0)
+                }));
+            }
+            _ => panic!("unknown connect test"),
+        }
+        assert_eq!(reactor().sources.lock().unwrap().len(), baseline);
     }
 
     #[test]
