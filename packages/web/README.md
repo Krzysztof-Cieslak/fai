@@ -89,11 +89,15 @@ let app =
 
 - `route pattern handler` — a `{name}` segment captures that path segment, read
   back with `Web.param "name"`.
+  Names belong to that route: another route may share the capture position using
+  a different name, including routes distinguished only by HTTP method.
 - `subRoute prefix children` — share a path prefix.
 - `get`/`post`/`put`/`delete`/`patch`/`head`/`options` — restrict child routes to
   a method (lowercase, since `GET`/`POST` are `Http.Method` constructors).
 - `router fallback routes` — compile to a handler; `fallback` runs when no route
   matches the path, no registered method matches, or the matched handler skips.
+  Each candidate receives its own parameter names. A skipped candidate's captures
+  do not leak to another candidate or to the fallback, which receives the original context.
 
 Matching walks the path one segment at a time (static segments first, then a
 capture), so lookup cost is proportional to the path length.

@@ -1,0 +1,92 @@
+module RouterCaptureSpec
+
+bodyOn : Web.HttpHandler 'e -> Http.Method -> String -> Result String String / 'e
+let bodyOn handler method path =
+  match Web.mockContext method path with
+  | Err e -> Err e
+  | Ok ctx ->
+    match Web.outcomeResponse (handler ctx) with
+    | None -> Err "no response"
+    | Some response -> Http.bodyText response.body
+
+show : String -> Web.HttpHandler 'e
+let show name ctx = Web.text (Option.withDefault "missing" (Web.param name ctx)) ctx
+
+sharedPrefix : Web.HttpHandler 'e
+let sharedPrefix = Router.router (Web.text "fallback") [
+  Router.route "/user/{id}/view" (show "id"),
+  Router.route "/user/{slug}/edit" (show "slug")
+]
+example: bodyOn sharedPrefix Http.GET "/user/42/view" = Ok "42"
+example: bodyOn sharedPrefix Http.GET "/user/article/edit" = Ok "article"
+
+reversedPrefix : Web.HttpHandler 'e
+let reversedPrefix = Router.router (Web.text "fallback") [
+  Router.route "/user/{slug}/edit" (show "slug"),
+  Router.route "/user/{id}/view" (show "id")
+]
+example: bodyOn reversedPrefix Http.GET "/user/42/view" = Ok "42"
+example: bodyOn reversedPrefix Http.GET "/user/article/edit" = Ok "article"
+
+byMethod : Web.HttpHandler 'e
+let byMethod = Router.router (Web.text "fallback") [
+  Router.get [Router.route "/user/{id}" (show "id")],
+  Router.post [Router.route "/user/{slug}" (show "slug")]
+]
+example: bodyOn byMethod Http.GET "/user/42" = Ok "42"
+example: bodyOn byMethod Http.POST "/user/article" = Ok "article"
+
+methodsReversed : Web.HttpHandler 'e
+let methodsReversed = Router.router (Web.text "fallback") [
+  Router.post [Router.route "/user/{slug}" (show "slug")],
+  Router.get [Router.route "/user/{id}" (show "id")]
+]
+example: bodyOn methodsReversed Http.GET "/user/42" = Ok "42"
+example: bodyOn methodsReversed Http.POST "/user/article" = Ok "article"
+
+showPair : String -> String -> Web.HttpHandler 'e
+let showPair first second ctx =
+  Web.text ((Option.withDefault "missing" (Web.param first ctx)) ++ ":" ++ (Option.withDefault "missing" (Web.param second ctx))) ctx
+
+multipleCaptures : Web.HttpHandler 'e
+let multipleCaptures = Router.router (Web.text "fallback") [
+  Router.route "/pair/{a}/{b}/view" (showPair "a" "b"),
+  Router.route "/pair/{left}/{right}/edit" (showPair "left" "right")
+]
+example: bodyOn multipleCaptures Http.GET "/pair/one/two/view" = Ok "one:two"
+example: bodyOn multipleCaptures Http.GET "/pair/left/right/edit" = Ok "left:right"
+
+nestedCaptures : Web.HttpHandler 'e
+let nestedCaptures = Router.router (Web.text "fallback") [
+  Router.subRoute "/org/{org}" [Router.route "/user/{id}" (showPair "org" "id")],
+  Router.subRoute "/org/{tenant}" [Router.route "/project/{project}" (showPair "tenant" "project")]
+]
+example: bodyOn nestedCaptures Http.GET "/org/acme/user/42" = Ok "acme:42"
+example: bodyOn nestedCaptures Http.GET "/org/acme/project/fai" = Ok "acme:fai"
+
+repeatedName : Web.HttpHandler 'e
+let repeatedName = Router.router (Web.text "fallback") [Router.route "/{id}/{id}" (show "id")]
+example: bodyOn repeatedName Http.GET "/first/second" = Ok "first"
+
+skippingFirst : Web.HttpHandler 'e
+let skippingFirst = Router.router (Web.text "fallback") [
+  Router.route "/user/{id}" (fun ctx -> Web.Skip),
+  Router.route "/user/{slug}" (show "slug")
+]
+example: bodyOn skippingFirst Http.GET "/user/article" = Ok "article"
+
+noLeakedCapture : Web.HttpHandler 'e
+let noLeakedCapture ctx = Web.text (if Web.param "id" ctx = None then "clean" else "leaked") ctx
+
+fallbackContext : Web.HttpHandler 'e
+let fallbackContext = Router.router noLeakedCapture [
+  Router.route "/user/{id}" (fun ctx -> Web.Skip)
+]
+example: bodyOn fallbackContext Http.GET "/user/42" = Ok "clean"
+
+staticFirst : Web.HttpHandler 'e
+let staticFirst = Router.router (Web.text "fallback") [
+  Router.route "/user/{id}" (show "id"),
+  Router.route "/user/new" (Web.text "static")
+]
+example: bodyOn staticFirst Http.GET "/user/new" = Ok "static"
