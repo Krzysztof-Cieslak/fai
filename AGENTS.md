@@ -394,6 +394,10 @@ See the `samples/` directory for the full tour (ADTs, structural/row-polymorphic
 records, interfaces + instances, capabilities, contracts, nested modules). Each
 `.fai` file there is one self-contained module, verified by the test suite.
 
+`Stream.iterate f seed` yields its seed without running `f`; each later pull
+computes one successor. Consuming `n` elements invokes `f` at most `max(0, n - 1)`
+times, so dropping the tail never performs look-ahead effects or traps.
+
 Local function shorthand (`let log message = body`) has the same latent effects
 as `let log = fun message -> body`: constructing it is pure, and calling its
 saturating arrow performs the body's effects. A parameterless local value binding

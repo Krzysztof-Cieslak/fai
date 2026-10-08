@@ -12,6 +12,8 @@ let sumEvenSquares n =
   Stream.range 0 n |> Stream.filter (fun x ->
     x % 2 = 0) |> Stream.map (fun x -> x * x) |> Stream.fold (fun acc x -> acc + x) 0
 example: sumEvenSquares 10 = Ok (0 + 4 + 16 + 36 + 64)
+// The seed is the first element; no successor is evaluated until a later pull.
+example: Stream.head (Stream.iterate (fun n -> 1 / 0) 42) = Ok (Some 42)
 
 // A `grep`: stream a file's lines, keep those containing `needle`, and write them
 // to stdout — constant memory however large the file. The file opens on first
