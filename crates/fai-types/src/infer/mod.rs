@@ -62,6 +62,8 @@ pub struct SccEnv<'a> {
     db: &'a dyn Db,
     /// Monomorphic solver types of the SCC's members, by def.
     scc_types: &'a FxHashMap<DefId, SolveTy>,
+    /// Closed forcing-effect estimates for value bindings in this SCC.
+    forcing: Option<&'a FxHashMap<DefId, crate::ty::EffectRow>>,
     /// Resolver for an out-of-SCC definition's scheme.
     def_schemes: &'a dyn Fn(&dyn Db, DefId) -> Option<Scheme>,
     /// Resolver for a builtin/prelude name's scheme.
@@ -76,7 +78,7 @@ impl<'a> SccEnv<'a> {
         def_schemes: &'a dyn Fn(&dyn Db, DefId) -> Option<Scheme>,
         builtins: &'a dyn Fn(Symbol) -> Option<Scheme>,
     ) -> Self {
-        Self { db, scc_types, def_schemes, builtins }
+        Self { db, scc_types, forcing: None, def_schemes, builtins }
     }
 }
 
@@ -97,6 +99,10 @@ impl Env for SccEnv<'_> {
 
     fn scc_type(&mut self, def: DefId) -> Option<SolveTy> {
         self.scc_types.get(&def).cloned()
+    }
+
+    fn scc_forcing(&mut self, def: DefId) -> Option<crate::ty::EffectRow> {
+        self.forcing.and_then(|effects| effects.get(&def).cloned())
     }
 
     fn builtin_scheme(&mut self, name: Symbol) -> Option<Scheme> {
@@ -145,6 +151,8 @@ pub struct SccInference {
     /// Members whose declared (concrete) effect disagreed with the inferred
     /// effect (for FAI5001), as `(def, declared rendered, inferred rendered)`.
     pub effect_mismatches: Vec<(DefId, String, String)>,
+    /// Effects performed each time a nullary value is forced.
+    pub forcing_effects: FxHashMap<DefId, crate::ty::EffectRow>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -157,6 +165,51 @@ pub fn infer_scc(
     builtins: &dyn Fn(Symbol) -> Option<Scheme>,
 ) -> SccInference {
     let parsed = fai_syntax::parse(db, file);
+    let mut forcing: FxHashMap<_, _> = members
+        .iter()
+        .filter_map(|def| {
+            binding_body(db, file, &parsed.module, def.name)
+                .filter(|(params, _)| params.is_empty())
+                .map(|_| (*def, crate::ty::EffectRow::pure()))
+        })
+        .collect();
+    let recursive =
+        members.len() > 1 || members.iter().any(|def| resolved.deps_of(*def).contains(def));
+    if recursive && !forcing.is_empty() {
+        loop {
+            let inferred =
+                infer_scc_round(db, file, members, resolved, def_schemes, builtins, &forcing, true);
+            let mut next = forcing.clone();
+            for (def, effect) in inferred.forcing_effects {
+                let entry = next.entry(def).or_insert_with(crate::ty::EffectRow::pure);
+                for label in effect.labels {
+                    if !entry.labels.contains(&label) {
+                        entry.labels.push(label);
+                    }
+                }
+                entry.labels.sort_by_key(|label| (label.name.as_str(), label.file));
+            }
+            if next == forcing {
+                break;
+            }
+            forcing = next;
+        }
+    }
+    infer_scc_round(db, file, members, resolved, def_schemes, builtins, &forcing, false)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn infer_scc_round(
+    db: &dyn Db,
+    file: SourceFile,
+    members: &[DefId],
+    resolved: &ResolvedBodies,
+    def_schemes: &dyn Fn(&dyn Db, DefId) -> Option<Scheme>,
+    builtins: &dyn Fn(Symbol) -> Option<Scheme>,
+    forcing: &FxHashMap<DefId, crate::ty::EffectRow>,
+    quiet: bool,
+) -> SccInference {
+    let parsed = fai_syntax::parse(db, file);
     let module = &parsed.module;
 
     let mut cx = InferCtx::new();
@@ -164,6 +217,7 @@ pub fn infer_scc(
     let mut opaque_mismatches: Vec<(DefId, Symbol)> = Vec::new();
     // (def, declared effect rendered, inferred effect rendered) for FAI5001.
     let mut effect_mismatches: Vec<(DefId, String, String)> = Vec::new();
+    let mut value_effects = FxHashMap::default();
 
     // Fresh monomorphic type for each member. If a member has a declared
     // signature, instantiate it as the member's type (so the body is checked
@@ -203,8 +257,10 @@ pub fn infer_scc(
         };
 
         let env_scc = scc_types.clone();
-        let mut env = SccEnv { db, scc_types: &env_scc, def_schemes, builtins };
+        let mut env =
+            SccEnv { db, scc_types: &env_scc, forcing: Some(forcing), def_schemes, builtins };
         let mut walker = Walker::new(db, file, module, resolved, &mut cx, &mut env);
+        walker.suppress_diagnostics(quiet);
 
         // Parameters introduce local types (the declared one when known); the
         // body's type is the result.
@@ -219,6 +275,9 @@ pub fn infer_scc(
         let body_ty = walker.infer_expr(body);
         // The body's latent effect rides the function's saturating arrow.
         let body_eff = walker.body_effect_solve();
+        if params.is_empty() {
+            value_effects.insert(*m, body_eff.clone());
+        }
         let fn_ty = SolveTy::arrows_solver_eff(param_tys, body_ty.clone(), body_eff.clone());
 
         let inferred_effect = cx.reify_effect_standalone(&body_eff);
@@ -291,6 +350,22 @@ pub fn infer_scc(
         }
     }
 
+    let mut forcing_effects = FxHashMap::default();
+    for (def, effect) in value_effects {
+        if let Some(tail) = cx.effect_open_tail(&effect) {
+            cx.close_effect_var(tail);
+        }
+        let effect = cx.reify_effect_standalone(&effect);
+        if !effect.is_pure()
+            && fai_resolve::module_defs(db, file)
+                .get(def.name)
+                .is_some_and(|info| info.visibility.is_exported())
+        {
+            effect_mismatches.push((def, "{}".to_owned(), crate::ty::render_effect(&effect)));
+        }
+        forcing_effects.insert(def, effect);
+    }
+
     // Default unresolved numeric variables, then check signature generality and
     // generalize. Defaulting must happen first so that, e.g., `f : 'a -> 'a` with
     // body `x + 1` is seen as `Int -> Int` (the quantified var was forced to Int).
@@ -329,7 +404,13 @@ pub fn infer_scc(
         };
         result.insert(*m, scheme);
     }
-    SccInference { schemes: result, mismatches, opaque_mismatches, effect_mismatches }
+    SccInference {
+        schemes: result,
+        mismatches,
+        opaque_mismatches,
+        effect_mismatches,
+        forcing_effects,
+    }
 }
 
 /// Peels the first `n` parameter types from a (resolved) function type.

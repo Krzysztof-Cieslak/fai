@@ -315,6 +315,51 @@ fn float_order_and_negation_survive_the_worker_bundle() {
     assert_eq!(output.stdout, b"ok\n");
 }
 
+#[track_caller]
+fn forcing_runs(native: bool, source: &str, expected: &[u8], tag: &str) {
+    let dir = workspace(tag, &[("Main.fai", source)]);
+    let output = if native {
+        let exe = dir.join(format!("program{}", std::env::consts::EXE_SUFFIX));
+        let build = fai()
+            .args(["build", "--no-daemon", "-C"])
+            .arg(&dir)
+            .arg("Main.fai")
+            .arg("--out")
+            .arg(&exe)
+            .output()
+            .unwrap();
+        assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+        Command::new(exe).output().unwrap()
+    } else {
+        fai().args(["run", "--no-daemon", "-C"]).arg(&dir).arg("Main.fai").output().unwrap()
+    };
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(output.stdout, expected);
+}
+
+const FORCING_TWICE: &str = "module Main\nlet answer =\n  let ignored = stdConsole.writeLine \"forced\"\n  42\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (answer + answer))\n";
+const FORCING_RUNTIME: &str = "module Main\nlet seed = stdConcurrency.scope (fun nursery -> stdConcurrency.await (stdConcurrency.spawn nursery (fun u -> 42)))\nlet runtime = { console = stdConsole, answer = seed }\npublic main : { answer : Int, console : Console } -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString r.answer)\n";
+
+#[test]
+fn private_values_are_forced_at_each_jit_use() {
+    forcing_runs(false, FORCING_TWICE, b"forced\nforced\n84\n", "forcing-jit");
+}
+
+#[test]
+fn private_values_are_forced_at_each_native_use() {
+    forcing_runs(true, FORCING_TWICE, b"forced\nforced\n84\n", "forcing-native");
+}
+
+#[test]
+fn transitive_runtime_forcing_starts_the_jit_scheduler() {
+    forcing_runs(false, FORCING_RUNTIME, b"42\n", "forcing-runtime-jit");
+}
+
+#[test]
+fn transitive_runtime_forcing_starts_the_native_scheduler() {
+    forcing_runs(true, FORCING_RUNTIME, b"42\n", "forcing-runtime-native");
+}
+
 #[test]
 fn run_without_main_reports_no_entry_point() {
     let dir = workspace(

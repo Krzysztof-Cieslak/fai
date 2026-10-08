@@ -89,6 +89,7 @@ pub fn infer_scc_query(db: &dyn Db, file: SourceFile, scc_index: usize) -> Arc<S
         mismatches: inference.mismatches,
         opaque_mismatches: inference.opaque_mismatches,
         effect_mismatches: inference.effect_mismatches,
+        forcing_effects: inference.forcing_effects.into_iter().collect(),
     })
 }
 
@@ -105,6 +106,8 @@ pub struct SccTypes {
     /// Members whose declared concrete effect disagreed with the inferred effect,
     /// as `(def, declared rendered, inferred rendered)` (for FAI5001).
     pub effect_mismatches: Vec<(DefId, String, String)>,
+    /// Effects performed by evaluating nullary value initializers.
+    pub forcing_effects: Vec<(DefId, crate::ty::EffectRow)>,
 }
 
 impl SccTypes {
@@ -167,6 +170,55 @@ pub fn def_type(db: &dyn Db, file: SourceFile, name: Symbol) -> Scheme {
     infer_scc_query(db, file, idx).get(def).cloned().unwrap_or_else(error_scheme)
 }
 
+/// The effects of evaluating a value initializer, retained separately from the
+/// value's type so constructing an effectful closure stays distinct from calling it.
+#[salsa::tracked]
+pub(crate) fn value_forcing_effect(
+    db: &dyn Db,
+    file: SourceFile,
+    name: Symbol,
+) -> crate::ty::EffectRow {
+    let def = DefId::new(file.source(db), name);
+    let sccs = module_sccs(db, file);
+    let Some(&index) = sccs.index_of.get(&def) else {
+        return crate::ty::EffectRow::pure();
+    };
+    infer_scc_query(db, file, index)
+        .forcing_effects
+        .iter()
+        .find(|(id, _)| *id == def)
+        .map_or_else(crate::ty::EffectRow::pure, |(_, effect)| effect.clone())
+}
+
+#[cfg(test)]
+#[salsa::tracked]
+pub(crate) fn forcing_test_summary(db: &dyn Db, file: SourceFile, name: Symbol) -> bool {
+    value_forcing_effect(db, file, name).is_pure()
+}
+
+pub(crate) fn is_value_binding(db: &dyn Db, file: SourceFile, name: Symbol) -> bool {
+    let parsed = fai_syntax::parse(db, file);
+    module_defs(db, file).get(name).is_some_and(|info| {
+        matches!(&parsed.module.items[info.binding.index()].kind, ItemKind::Binding { params, .. } if params.is_empty())
+    })
+}
+
+/// Exported values promise pure forcing, checked on their declarations. Only
+/// same-file private values need a body-dependent forcing-effect lookup.
+pub(crate) fn reference_forcing_effect(
+    db: &dyn Db,
+    caller: SourceFile,
+    def: DefId,
+) -> crate::ty::EffectRow {
+    if def.file != caller.source(db)
+        || !is_value_binding(db, caller, def.name)
+        || module_defs(db, caller).get(def.name).is_none_or(|info| info.visibility.is_exported())
+    {
+        return crate::ty::EffectRow::pure();
+    }
+    value_forcing_effect(db, caller, def.name)
+}
+
 /// A definition's declared or inferred scheme for introspection and ABI/offset-
 /// evidence elaboration. Inference uses `reference_scheme` instead, so a missing
 /// cross-file signature cannot turn into an inferred dependency on another file.
@@ -220,6 +272,9 @@ pub fn def_local_types(
 /// where a capability method is actually invoked.
 #[must_use]
 pub fn def_effect(db: &dyn Db, file: SourceFile, name: Symbol) -> crate::ty::EffectRow {
+    if is_value_binding(db, file, name) {
+        return value_forcing_effect(db, file, name);
+    }
     let def_schemes = |db: &dyn Db, def: DefId| reference_scheme(db, file, def);
     let builtins = |n: Symbol| std_lib::builtin_scheme(n);
     crate::infer::infer_def_effect(db, file, name, &def_schemes, &builtins)
@@ -480,6 +535,13 @@ pub fn check_file(db: &dyn Db, file: SourceFile) {
             && let Some((declared, used)) = infer_scc_query(db, file, idx).effect_mismatch(def)
         {
             let bind_span = module.items[d.binding.index()].span;
+            if is_value_binding(db, file, d.name) && d.visibility.is_exported() {
+                emit(db, Diagnostic::error(EFFECT_MISMATCH,
+                    format!("exported value `{}` must initialize purely, but reading it performs `{used}`", d.name),
+                    Span::new(file.source(db), bind_span))
+                    .with_help("Expose a Unit-taking function whose effect row declares the initializer's effects."));
+                continue;
+            }
             emit(
                 db,
                 Diagnostic::error(

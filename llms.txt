@@ -580,6 +580,13 @@ environment, concurrency, and network are **capabilities**: interface instances
 threaded in from `main` as a `Runtime`. A function asks for only the capabilities
 it needs, so its type reveals its reach.
 
+A private top-level value may have a **forcing effect**: every reference runs its
+initializer and incurs that effect, even if its value type is an ordinary `Int`
+or a function. Such values are not memoized. The effect flows into callers and
+captured closures. Exported (`public`/`internal`) value initializers must be pure
+(`FAI5001`); export effectful work as `Unit -> ... / { ... }` instead. Private
+`runtime` builders may initialize effectfully, including on the scheduler.
+
 The capability interfaces (defined `public` in the prelude; shown here so you know
 their methods — each method's own capability appears as its effect):
 
