@@ -1018,6 +1018,12 @@ server:
     JSON-RPC response: invalid parameters are `-32602`, unsupported methods
     `-32601`, and result-serialization failures `-32603`. Unknown notifications
     are ignored; a bad request does not terminate the session.
+    Embedded standard-library locations are backed by actual read-only files in
+    a hidden, content-addressed source cache. The cache key covers the full set
+    of embedded paths and text, so different compiler source versions coexist
+    and different workspace roots share identical documents. URI conversion maps
+    those files back to their embedded identities for navigation, while edit/save
+    notifications cannot overwrite embedded inputs.
   - **Surface.** `textDocument` sync (incremental; see below),
     `publishDiagnostics`, `hover`, `definition`, and `formatting`, since grown
     with the features in the following notes. Open buffers are overlaid into the
