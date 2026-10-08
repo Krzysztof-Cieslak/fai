@@ -139,7 +139,9 @@
 > emitted like the mutual-recursion combined loop (the driver gathers and
 > code-generates them across the AOT/JIT/bundle/contract paths); fusion is skipped
 > inside the standard library itself (so the combinators stay tested by their own
-> contracts). **Composed and partially-applied closures are confined** by a local
+> contracts). Fused numeric sources honor each producer's count and wraparound
+> rules; reverse cursors never step past the minimum signed integer.
+> **Composed and partially-applied closures are confined** by a local
 > reduction pass run just before reference counting: a point-free value built from
 > `>>`/`|>`/`identity`/`const` and partial application — including one bound at a
 > top-level value (a *constant applicative form* like

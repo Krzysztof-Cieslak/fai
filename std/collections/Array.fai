@@ -85,10 +85,12 @@ let repeat n x = init n (fun _ -> x)
 example: toList (repeat 3 0) = [0, 0, 0]
 
 /// The integers `[lo, lo+1, …, hi-1]`.
+/// The count is `max(0, hi - lo)`, using wrapping `Int` arithmetic.
 public range : Int -> Int -> Array Int
 let range lo hi = init (hi - lo) (fun i -> lo + i)
 example: toList (range 0 3) = [0, 1, 2]
 example: toList (range 3 0) = []
+example: length (range (-1) 9223372036854775807) = 0
 
 /// Convert a `List` to an array.
 public fromList : List 'a -> Array 'a

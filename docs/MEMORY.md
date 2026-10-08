@@ -2822,6 +2822,11 @@ Editor integration:
     `map`/`filter` builder — for both `List` and `Array`, and over any
     `List`/`Array`-typed *value* source (a Local, a call result, or a fusion
     barrier's output like `reverse`).
+    Array ranges use the library's wrapping `hi - lo` count and `lo + index`
+    elements; list ranges compare endpoints directly. Reverse list-range loops
+    carry an exclusive upper cursor, and reverse indexed producers handle
+    nonpositive counts before computing their final index, so `i64::MIN` cannot
+    wrap the loop back into a nonempty range.
   - **What it emits.** One synthesized self-tail-recursive top-level loop (a
     `fuse#…` name, sharing no name with a source binding) — a numeric index loop for
     a range/`init`/`repeat`, an indexed loop for an `Array` value, a spine walk for a
