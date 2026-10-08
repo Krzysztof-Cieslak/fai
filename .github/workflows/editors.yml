@@ -1,9 +1,7 @@
 name: Editors
 
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 
 # Cancel superseded runs on the same ref.
 concurrency:
@@ -11,10 +9,8 @@ concurrency:
   cancel-in-progress: true
 
 # The VS Code extension is a self-contained npm package outside the Cargo
-# workspace. This job is intentionally separate from the Rust `CI` workflow. It
-# runs on every push/PR (not path-filtered) so it is safe to require as a status
-# check and so a `samples/` change re-runs the grammar drift test, which pins the
-# TextMate grammar against the sample corpus.
+# workspace. This optional workflow is disabled in repository settings and kept
+# manual-only so automatic CI capacity serves the required Rust checks.
 jobs:
   vscode:
     name: vscode extension
