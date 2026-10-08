@@ -29,7 +29,104 @@ let testChannel env chunks =
   let channel = env.concurrency.channel (List.length chunks + 1)
   let _ = testLoad env channel chunks
   channel
+
+testStrictRead : Runtime -> Channel Bytes -> Result Bytes String / { Concurrency }
+let testStrictRead env channel =
+  match env.concurrency.recv channel with
+  | None -> Err "unexpected body read"
+  | Some bytes -> Ok bytes
+
+testStrictTransport : Runtime -> Channel Bytes -> Transport { Concurrency }
+let testStrictTransport env channel = { Transport with close u = env.concurrency.close channel, recv max = testStrictRead env channel, send bytes = Ok () }
 "#;
+
+#[track_caller]
+fn empty_response(method: &str, wire: &str) {
+    check(
+        &format!(
+            "let channel = testChannel env {}\nmatch parseResponse {method} (testStrictTransport env channel) with\n| Err e -> false\n| Ok response -> bodyBytes response.body = Ok Bytes.empty",
+            chunks(&[wire])
+        ),
+        true,
+    );
+}
+
+#[test]
+fn head_ignores_content_length_metadata() {
+    empty_response("HEAD", "HTTP/1.1 200 OK\r\nContent-Length: 900\r\n\r\n");
+}
+
+#[test]
+fn custom_head_has_the_same_body_semantics() {
+    empty_response("(Custom \"HEAD\")", "HTTP/1.1 200 OK\r\nContent-Length: 900\r\n\r\n");
+}
+
+#[test]
+fn no_content_does_not_wait_for_connection_eof() {
+    empty_response("GET", "HTTP/1.1 204 No Content\r\n\r\n");
+}
+
+#[test]
+fn not_modified_ignores_content_length_metadata() {
+    empty_response("GET", "HTTP/1.1 304 Not Modified\r\nContent-Length: 900\r\n\r\n");
+}
+
+#[test]
+fn informational_responses_are_skipped_across_transport_chunks() {
+    check(
+        &format!(
+            "let channel = testChannel env {}\nmatch parseResponse GET (testStrictTransport env channel) with\n| Err e -> false\n| Ok response -> response.status = 200 && bodyText response.body = Ok \"ok\"",
+            chunks(&[
+                "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 103 Early Hints\r\n",
+                "Link: </asset>\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
+            ])
+        ),
+        true,
+    );
+}
+
+#[test]
+fn switching_protocols_is_explicitly_unsupported() {
+    check(
+        "let t = { Transport with close u = (), recv n = Err \"unexpected read\", send b = Ok () }\nreadHead t (Bytes.fromString \"HTTP/1.1 101 Switching Protocols\\r\\n\\r\\n\") = Err \"HTTP protocol upgrades are not supported\"",
+        false,
+    );
+}
+
+#[test]
+fn informational_response_count_is_bounded() {
+    let wire = "HTTP/1.1 100 Continue\r\n\r\n".repeat(33);
+    check(
+        &format!(
+            "let t = {{ Transport with close u = (), recv n = Err \"unexpected read\", send b = Ok () }}\nreadHead t (Bytes.fromString {wire:?}) = Err \"too many informational HTTP responses\""
+        ),
+        false,
+    );
+}
+
+#[test]
+fn successful_connect_tunnels_are_explicitly_unsupported() {
+    check(
+        "responseFraming (Custom \"CONNECT\") 200 Headers.empty = Err \"CONNECT tunnels are not supported\"",
+        false,
+    );
+}
+
+#[test]
+fn http_10_requires_explicit_keep_alive_for_pool_reuse() {
+    check(
+        "not (isReusable \"HTTP/1.0\" Headers.empty NoBody) && isReusable \"HTTP/1.0\" (Headers.fromList [(\"Connection\", \"keep-alive\")]) NoBody",
+        false,
+    );
+}
+
+#[test]
+fn unsupported_http_versions_are_rejected() {
+    check(
+        "match parseStatusLine \"HTTP/2 200 OK\" with\n| Err e -> true\n| Ok head -> false",
+        false,
+    );
+}
 
 #[track_caller]
 fn check(body: &str, concurrent: bool) {

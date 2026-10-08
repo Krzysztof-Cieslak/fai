@@ -1553,7 +1553,10 @@ Deferred: IANA time zones / `ZonedDateTime` with DST rules (this is offset-only)
    so a big download streams; consume it with `bodyBytes`/`bodyText` or the `Stream`
    combinators, and drop the response to close the connection. Build a request/sent
    body with `emptyBody`/`bytesBody`/`stringBody` (sent with Content-Length);
-   responses via `response`/`textResponse`/`errorResponse`. To **stream** a sent body
+   responses via `response`/`textResponse`/`errorResponse`.
+   HEAD, 204, and 304 responses have empty bodies; the server does not evaluate a
+   suppressed body stream. Clients skip informational 1xx responses before the
+   final response and reject unsupported upgrades/tunnels. To **stream** a body
    chunked (no buffering, one frame per stream element), use `chunkedResponse` (server)
    or set `Transfer-Encoding: chunked` in a request's headers. **Connection pooling:**
    `withClient runtime (fun client -> …)` opens a structured scope holding a pool of
@@ -1562,6 +1565,8 @@ Deferred: IANA time zones / `ZonedDateTime` with DST rules (this is offset-only)
    `{ concurrency, net, tls }`. A pooled response body returns its connection to the
    pool when fully read, so consume it within the callback; the pool closes every
    connection on scope exit.
+   HTTP/1.0 reuse requires explicit keep-alive. Servers honor `Expect: 100-continue`
+   and reject unsupported expectations with `417` before awaiting body bytes.
    Framing errors return `Err`: lengths must be bounded nonnegative decimals,
    repeated/comma-joined lengths must agree, and only an unambiguous `chunked`
    transfer coding is supported. Chunk data CRLFs and all trailers are consumed

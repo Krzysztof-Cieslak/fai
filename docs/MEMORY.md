@@ -4216,6 +4216,15 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     Framing lines cap at 8 KiB, header/trailer blocks at 64 KiB; invalid framing
     returns an error and never checks the connection back in. Buffered bytes past
     a validated boundary are stored with a pooled transport for its next response.
+    HEAD, 204, and 304 response bodies are empty by protocol, including on pooled
+    connections; their metadata does not cause body reads. Clients skip up to 32
+    informational heads, preserving buffered bytes for the final response, and
+    reject unsupported upgrades/tunnels explicitly. Servers suppress these
+    payloads without driving the body stream, stripping Transfer-Encoding and
+    retaining Content-Length only where it is valid metadata.
+    Pool reuse follows the response version (HTTP/1.0 needs explicit keep-alive).
+    A server honors `Expect: 100-continue` before reading the body and responds
+    with `417` to unsupported expectations without waiting for body bytes.
     A **sent** body is drained to a `Content-Length` by default, or streamed **chunked** without
     buffering when the headers select `Transfer-Encoding: chunked` (`chunkedResponse`,
     or the header on a request). Chunked sending is driven by a new low-level
