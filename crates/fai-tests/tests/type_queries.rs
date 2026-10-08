@@ -296,3 +296,24 @@ fn record_match_coverage_edits_match_clean_checks() {
             .collect::<Vec<_>>()
     });
 }
+
+#[test]
+fn nested_match_edits_match_clean_checks() {
+    let partial = "module M\nforall b: { value = (match b with | true -> true) }.value\n";
+    let complete =
+        "module M\nforall b: { value = (match b with | true -> true | false -> true) }.value\n";
+    let moved = "module M\n// é😀\nlet f b = [| (match b with | true -> true) |]\n";
+    let revisions: &[&[(&str, &str)]] = &[
+        &[("M.fai", partial)],
+        &[("M.fai", complete)],
+        &[("M.fai", moved)],
+        &[("M.fai", partial)],
+    ];
+    assert_incremental_matches_clean(revisions, |db, ids| {
+        let file = db.source_file(ids[0]).unwrap();
+        check_file::accumulated::<fai_db::Diag>(db, file)
+            .into_iter()
+            .map(|d| (d.0.code, d.0.primary, d.0.message.clone()))
+            .collect::<Vec<_>>()
+    });
+}

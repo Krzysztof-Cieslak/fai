@@ -18,7 +18,7 @@ use rustc_hash::FxHashMap;
 
 use crate::infer::{InferCtx, SolveTy};
 use crate::ty::{Con, RowEnd, Ty, TyVarId};
-use crate::{NON_EXHAUSTIVE_MATCH, UNREACHABLE_ARM, body_types};
+use crate::{NON_EXHAUSTIVE_MATCH, UNREACHABLE_ARM, body_types, contract_body_types};
 
 /// The built-in `List` constructor tags.
 const NIL_TAG: i64 = 0;
@@ -65,14 +65,22 @@ enum Sig {
     Infinite,
 }
 
-/// Checks every `match` in `file`'s definition bodies for exhaustiveness and
-/// redundancy.
+/// Checks every `match` in `file`'s definitions and contracts for exhaustiveness
+/// and redundancy.
 pub fn check_matches(db: &dyn Db, file: SourceFile) {
     let parsed = fai_syntax::parse(db, file);
     let module = &parsed.module;
     let resolved = resolve(db, file);
     let mut scope: Vec<fai_syntax::Symbol> = Vec::new();
     check_matches_in(db, file, module, &resolved, &mut scope, &module.roots);
+    for (ordinal, item) in module.contracts().enumerate() {
+        let (ItemKind::Example { body } | ItemKind::Forall { body, .. }) = &item.kind else {
+            continue;
+        };
+        let types = contract_body_types(db, file, ordinal);
+        let mut cx = MatchChecker { db, file, module, resolved: &resolved, types: &types };
+        cx.walk(*body);
+    }
 }
 
 /// Checks the `match`es of one module scope's bindings (by their qualified
@@ -127,11 +135,16 @@ impl MatchChecker<'_> {
                 self.walk(*func);
                 self.walk(*arg);
             }
-            ExprKind::Infix { lhs, rhs, .. } => {
+            ExprKind::Infix { op, lhs, rhs } => {
+                self.walk(*op);
                 self.walk(*lhs);
                 self.walk(*rhs);
             }
-            ExprKind::Prefix { operand, .. } | ExprKind::Paren(operand) => self.walk(*operand),
+            ExprKind::Prefix { op, operand } => {
+                self.walk(*op);
+                self.walk(*operand);
+            }
+            ExprKind::Paren(operand) => self.walk(*operand),
             ExprKind::If { cond, then_branch, else_branch } => {
                 self.walk(*cond);
                 self.walk(*then_branch);
@@ -145,8 +158,26 @@ impl MatchChecker<'_> {
                 }
                 self.walk(*tail);
             }
-            ExprKind::Tuple(xs) | ExprKind::List(xs) => xs.iter().for_each(|&x| self.walk(x)),
-            _ => {}
+            ExprKind::Tuple(xs) | ExprKind::List(xs) | ExprKind::Array(xs) => {
+                xs.iter().for_each(|&x| self.walk(x));
+            }
+            ExprKind::Record(fields) => {
+                fields.iter().for_each(|field| self.walk(field.value));
+            }
+            ExprKind::RecordUpdate { base, fields } => {
+                self.walk(*base);
+                fields.iter().for_each(|field| self.walk(field.value));
+            }
+            ExprKind::Instance { methods, .. } => {
+                methods.iter().for_each(|method| self.walk(method.body));
+            }
+            ExprKind::Int(_)
+            | ExprKind::Float(_)
+            | ExprKind::String(_)
+            | ExprKind::Char(_)
+            | ExprKind::Var(_)
+            | ExprKind::Unit
+            | ExprKind::Error => {}
         }
     }
 
