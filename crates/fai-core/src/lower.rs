@@ -100,6 +100,7 @@ pub fn core(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
         evidence: FxHashMap::default(),
         aliases: FxHashMap::default(),
         emit_unsupported: true,
+        failed: std::cell::Cell::new(false),
     };
 
     let param_locals: Vec<LocalId> = params.iter().map(|&p| lowerer.param_local(p)).collect();
@@ -133,6 +134,9 @@ pub struct LoweredBody {
     pub param_locals: Vec<LocalId>,
     /// The first local index free after lowering (for synthesizing more locals).
     pub next_local: usize,
+    /// Whether lowering encountered an invalid or unsupported construct. An
+    /// unreachable match fallthrough is not a failure, even though it traps if run.
+    pub has_errors: bool,
 }
 
 /// Lowers a `(params, body)` form (parameters as monomorphic locals, no
@@ -160,14 +164,21 @@ pub fn lower_params_body(
         evidence: FxHashMap::default(),
         aliases: FxHashMap::default(),
         // The contract synthesizer runs outside a tracked query, so it must not
-        // accumulate diagnostics; unsupported constructs become error nodes the
-        // caller detects (and reports as not-runnable).
+        // accumulate diagnostics; the explicit failure flag lets the caller
+        // reject unsupported constructs without rejecting unreachable fallthroughs.
         emit_unsupported: false,
+        failed: std::cell::Cell::new(false),
     };
     let param_locals: Vec<LocalId> = params.iter().map(|&p| lowerer.param_local(p)).collect();
     let body = lowerer.lower_expr(body);
     let lifted = lowerer.fns.split_off(1);
-    LoweredBody { body, lifted, param_locals, next_local: lowerer.next_local }
+    LoweredBody {
+        body,
+        lifted,
+        param_locals,
+        next_local: lowerer.next_local,
+        has_errors: lowerer.failed.get(),
+    }
 }
 
 /// The body item (params + body expr) of a definition with qualified `name`,
@@ -238,9 +249,10 @@ struct Lowerer<'a> {
     aliases: FxHashMap<LocalId, DefId>,
     /// Whether to accumulate unsupported-construct diagnostics. The per-definition
     /// `core` query does (it runs inside salsa); a caller outside a tracked query
-    /// (the contract synthesizer) suppresses them and detects the resulting error
-    /// placeholders instead, so it never accumulates outside an active query.
+    /// (the contract synthesizer) uses the explicit failure flag instead, so it
+    /// never accumulates outside an active query.
     emit_unsupported: bool,
+    failed: std::cell::Cell<bool>,
 }
 
 impl Lowerer<'_> {
@@ -250,6 +262,11 @@ impl Lowerer<'_> {
 
     fn ty_of(&self, expr: ExprId) -> Ty {
         self.types.get(expr).cloned().unwrap_or(Ty::Error)
+    }
+
+    fn failure(&self) -> CExpr {
+        self.failed.set(true);
+        error_expr()
     }
 
     /// Reports an unsupported construct and yields an error placeholder.
@@ -267,7 +284,7 @@ impl Lowerer<'_> {
                 ),
             );
         }
-        error_expr()
+        self.failure()
     }
 
     fn fresh_local(&mut self) -> LocalId {
@@ -354,7 +371,7 @@ impl Lowerer<'_> {
             }
             ExprKind::List(elems) => return self.lower_list(elems, ty),
             ExprKind::Array(elems) => return self.lower_array(elems, ty),
-            ExprKind::Error => K::Error,
+            ExprKind::Error => return self.failure(),
         };
         CExpr::new(kind, ty)
     }
@@ -374,7 +391,7 @@ impl Lowerer<'_> {
             Some(Res::Def(def)) => self.def_value(def, ty),
             Some(Res::Ctor(ctor)) => self.lower_ctor_value(ctor, ty),
             Some(Res::Builtin(name)) => self.lower_builtin_ref(name, ty, span),
-            Some(Res::Error) | None => error_expr(),
+            Some(Res::Error) | None => self.failure(),
         }
     }
 
@@ -465,8 +482,7 @@ impl Lowerer<'_> {
         )
     }
 
-    /// Reports a row-polymorphic record operation (deferred to a later milestone)
-    /// and yields an error placeholder.
+    /// Reports a record operation whose required layout evidence is unavailable.
     fn unsupported_row_poly(&self, range: TextRange, feature: &str) -> CExpr {
         if self.emit_unsupported {
             emit(
@@ -479,7 +495,7 @@ impl Lowerer<'_> {
                 .with_help("give the value a closed record type so the field offsets are known"),
             );
         }
-        error_expr()
+        self.failure()
     }
 
     /// Lowers `r.x`: a constant-offset projection for a monomorphic record, or a
@@ -508,7 +524,7 @@ impl Lowerer<'_> {
                         ty,
                     )
                 }
-                None => error_expr(),
+                None => self.failure(),
             };
         }
         match record_field_index(&base_ty, field) {
@@ -1019,7 +1035,7 @@ impl Lowerer<'_> {
                     ty,
                 )
             }
-            _ => error_expr(),
+            _ => self.failure(),
         }
     }
 
@@ -1113,7 +1129,11 @@ impl Lowerer<'_> {
     ) -> CExpr {
         let value = || CExpr::new(K::Local(value_local), Ty::Error);
         match &self.module.pat(pat).kind {
-            PatKind::Wildcard | PatKind::Error => success,
+            PatKind::Wildcard => success,
+            PatKind::Error => {
+                self.failed.set(true);
+                success
+            }
             PatKind::Var(_) => {
                 let local = self.resolved.local_of(pat).unwrap_or_else(|| self.fresh_local());
                 CExpr::new(

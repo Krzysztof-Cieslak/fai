@@ -107,6 +107,50 @@ fn wrapping_a_live_property_binder_in_some_preserves_its_value() {
 }
 
 #[test]
+fn direct_match_contracts_run_in_the_worker() {
+    let source = include_str!("../../../samples/MatchContracts.fai");
+    let dir = workspace("match-contracts", &[("MatchContracts.fai", source)]);
+    let output = fai()
+        .args(["test", "--no-daemon", "-C"])
+        .arg(dir)
+        .arg("MatchContracts.fai")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}{}", String::from_utf8_lossy(&output.stderr));
+    assert!(stdout.contains("2 passed, 0 failed"), "{stdout}");
+}
+
+#[test]
+fn check_evaluates_a_direct_match_example() {
+    let source = include_str!("../../../samples/MatchContracts.fai");
+    let dir = workspace("check-match", &[("MatchContracts.fai", source)]);
+    let output = fai()
+        .args(["check", "--no-daemon", "-C"])
+        .arg(dir)
+        .arg("MatchContracts.fai")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn direct_match_preserves_a_live_property_binder() {
+    let source =
+        "module M\nforall x: (match Some x with | None -> false | Some value -> value = x)\n";
+    let dir = workspace("live-match-payload", &[("M.fai", source)]);
+    let output = fai().args(["test", "--no-daemon", "-C"]).arg(dir).arg("M.fai").output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}{}", String::from_utf8_lossy(&output.stderr));
+    assert!(stdout.contains("1 passed, 0 failed"), "{stdout}");
+}
+
+#[test]
 fn user_option_type_gets_its_own_constructor_generator() {
     let source = indoc! {r#"
         module Main

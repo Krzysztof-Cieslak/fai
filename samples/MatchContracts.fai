@@ -1,0 +1,9 @@
+module MatchContracts
+
+// Exhaustive matches are ordinary expressions in examples and properties.
+example: (match Ok 42 with
+| Ok value -> value = 42
+| Err message -> false)
+forall xs: (match xs with
+| [] -> true
+| x :: rest -> List.length xs = List.length rest + 1)

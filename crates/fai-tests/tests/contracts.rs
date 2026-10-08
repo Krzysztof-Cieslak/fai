@@ -263,6 +263,106 @@ fn function_typed_binder_is_not_runnable() {
     assert!(d.message.contains("cannot be run"), "got: {}", d.message);
 }
 
+#[track_caller]
+fn passing_match_contract(source: &str) {
+    let outcome = run(&[("C.fai", source)]);
+    assert!(outcome.ok, "{:?}", outcome.diagnostics);
+    assert_eq!(outcome.passed, 1);
+    assert_eq!(outcome.not_run, 0);
+    assert_eq!(outcome.leaked, 0);
+}
+
+#[test]
+fn a_forall_can_match_an_option_directly() {
+    passing_match_contract(
+        "module C\nforall x: (match Some (x + 0) with\n| None -> false\n| Some value -> value = x)\n",
+    );
+}
+
+#[test]
+fn an_example_can_match_a_result_directly() {
+    passing_match_contract(
+        "module C\nexample: (match Ok 42 with\n| Ok value -> value = 42\n| Err message -> false)\n",
+    );
+}
+
+#[test]
+fn a_forall_can_match_a_user_union_directly() {
+    passing_match_contract(
+        "module C\ntype Choice = | Number Int | Text String\nforall value: (match value with\n| Number n -> n = n\n| Text s -> String.length s >= 0)\n",
+    );
+}
+
+#[test]
+fn a_forall_can_match_a_list_directly() {
+    passing_match_contract(
+        "module C\nforall xs: (match xs with\n| [] -> true\n| x :: rest -> List.length xs = List.length rest + 1)\n",
+    );
+}
+
+#[test]
+fn a_forall_can_match_nested_options() {
+    passing_match_contract(
+        "module C\nforall x: (match Some (Some (x + 0)) with\n| None -> false\n| Some None -> false\n| Some (Some value) -> value = x)\n",
+    );
+}
+
+#[test]
+fn a_match_inside_a_contract_lambda_is_supported() {
+    passing_match_contract(
+        "module C\nforall xs: List.all (fun value ->\n  match value with\n  | None -> true\n  | Some n -> n = n) xs\n",
+    );
+}
+
+#[test]
+fn a_failing_match_contract_reports_a_counterexample() {
+    let source = "module C\nforall x: (match Some x with\n| None -> false\n| Some n -> n > 0)\n";
+    let outcome = run(&[("C.fai", source)]);
+    assert_eq!(outcome.not_run, 0);
+    let error = outcome.diagnostics.iter().find(|d| d.code.as_str() == "FAI6001").unwrap();
+    assert_eq!(error.message, "this property does not hold");
+    assert_eq!(error.primary.start().to_usize(), source.find("forall").unwrap());
+    assert_eq!(error.primary.end().to_usize(), source.trim_end().len());
+    assert_eq!(error.help.as_deref(), Some("counterexample: x = 0"));
+}
+
+#[test]
+fn an_incomplete_contract_match_is_still_rejected() {
+    let outcome = run(&[("C.fai", "module C\nforall x: (match Some x with\n| Some n -> n = x)\n")]);
+    assert!(!outcome.ok);
+    assert_eq!(outcome.passed, 0);
+    assert!(outcome.diagnostics.iter().any(|d| d.code.as_str() == "FAI4001"));
+}
+
+#[test]
+fn a_real_unsupported_parameter_is_still_not_runnable() {
+    let outcome = run(&[("C.fai", "module C\nexample: (fun (x, y) -> x = y) (1, 1)\n")]);
+    assert!(!outcome.ok);
+    assert_eq!(outcome.not_run, 1);
+    assert!(outcome.diagnostics.iter().any(|d| d.code.as_str() == "FAI6002"));
+}
+
+#[test]
+fn editing_contract_lowering_status_matches_clean_preparation() {
+    let supported =
+        "module C\nexample: (match Some 1 with\n| None -> false\n| Some value -> value = 1)\n";
+    let unsupported = "module C\nexample: (fun (x, y) -> x = y) (1, 1)\n";
+    let prepare = |db: &FaiDatabase, file: SourceFile| {
+        let plan = fai_driver::build_test_plan(db, &[file], None, TestConfig::default());
+        (serde_json::to_value(&plan.bundle).unwrap(), plan.not_runnable.len(), plan.pre_diagnostics)
+    };
+    let (mut db, files) = db_with(&[("C.fai", supported)]);
+    assert_eq!(prepare(&db, files[0]).1, 0);
+    db.add_source("C.fai".into(), unsupported.into());
+    let changed = prepare(&db, files[0]);
+    assert_eq!(changed.1, 1);
+    let (clean, clean_files) = db_with(&[("C.fai", unsupported)]);
+    assert_eq!(changed, prepare(&clean, clean_files[0]));
+    db.add_source("C.fai".into(), supported.into());
+    let (clean, clean_files) = db_with(&[("C.fai", supported)]);
+    assert_eq!(prepare(&db, files[0]), prepare(&clean, clean_files[0]));
+}
+
 #[test]
 fn wrapping_a_contract_parameter_in_some_preserves_its_live_alias() {
     let outcome = run(&[("C.fai", "module C\nforall x: Option.withDefault 0 (Some x) = x\n")]);

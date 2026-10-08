@@ -29,10 +29,9 @@ use std::time::Duration;
 
 use fai_codegen::JitProgram;
 use fai_contracts::{
-    CONTRACT_ABORTED, CONTRACT_FAILED, CONTRACT_NOT_RUNNABLE, ContractInfo, ContractKind,
-    run_contract, synthesize,
+    CONTRACT_ABORTED, CONTRACT_FAILED, ContractInfo, ContractKind, run_contract, synthesize,
 };
-use fai_core::ir::{ExprKind, FnAbi, LoweredDef};
+use fai_core::ir::{FnAbi, LoweredDef};
 use fai_core::wire::def_to_wire;
 use fai_core::{RebuiltTest, TestWireBundle, WireContract, WireDefId, from_wire_test};
 use fai_db::{Db, SourceFile};
@@ -421,11 +420,6 @@ fn build_plan(
     for (file, info) in &items {
         let meta = contract_meta(db, *file, info, config);
         match synthesize(db, *file, info) {
-            Ok(s) if has_error_node(&s.prop) || has_error_node(&s.entry) => not_runnable.push((
-                meta,
-                "uses a construct the native backend does not support yet".to_owned(),
-                CONTRACT_NOT_RUNNABLE,
-            )),
             Ok(s) => runnable.push((s, meta)),
             Err(nr) => not_runnable.push((meta, nr.reason, nr.code)),
         }
@@ -944,37 +938,6 @@ fn matches_filter(db: &dyn Db, file: SourceFile, info: &ContractInfo, pat: Optio
         return true;
     }
     fai_resolve::module_name(db, file).is_some_and(|m| m.0.as_str().contains(pat))
-}
-
-/// Whether a lowered definition contains a lowering-error placeholder (so it
-/// reached a construct the native backend does not support).
-fn has_error_node(def: &LoweredDef) -> bool {
-    fn scan(e: &fai_core::ir::CExpr) -> bool {
-        match &e.kind {
-            ExprKind::Error => true,
-            ExprKind::Prim { args, .. }
-            | ExprKind::Foreign { args, .. }
-            | ExprKind::MakeData { args, .. }
-            | ExprKind::Spread { components: args } => args.iter().any(scan),
-            ExprKind::App { func, args, .. } => scan(func) || args.iter().any(scan),
-            ExprKind::If { cond, then, els } => scan(cond) || scan(then) || scan(els),
-            ExprKind::Let { value, body, .. }
-            | ExprKind::Reset { value, body, .. }
-            | ExprKind::LetMany { value, body, .. } => scan(value) || scan(body),
-            ExprKind::FreeReuse { body, .. } => scan(body),
-            ExprKind::DataTag { base: b, .. } | ExprKind::DataField { base: b, .. } => scan(b),
-            ExprKind::Dup { body, .. } | ExprKind::Drop { body, .. } => scan(body),
-            ExprKind::Join { body, .. } | ExprKind::HoleStart { body, .. } => scan(body),
-            ExprKind::Recur { args } => args.iter().any(scan),
-            ExprKind::HoleFill { cell, .. } => scan(cell),
-            ExprKind::HoleClose { base, .. } => scan(base),
-            ExprKind::Lit(_)
-            | ExprKind::Local(_)
-            | ExprKind::Global(_)
-            | ExprKind::MakeClosure { .. } => false,
-        }
-    }
-    def.fns.iter().any(|f| scan(&f.body))
 }
 
 /// Builds the `FAI6001` diagnostic for a failed contract.

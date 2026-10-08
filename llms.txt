@@ -968,6 +968,8 @@ forall xs: mirror (mirror xs) = xs
 - Contracts must be **pure and deterministic**: referencing a capability
   (`Console`, `Clock`, …) is `FAI6004`. A non-`Bool` body is `FAI3007`.
 - A module may consist solely of `forall` laws.
+- Exhaustive `match` expressions work directly in examples/properties and their
+  lambdas; non-exhaustive matches remain type-checking errors.
 - For a `forall` over a user record/ADT, a generator is synthesized
   automatically; a binder whose type cannot be generated is `FAI6002`/`FAI6005`.
   You can supply a custom `Test.Arbitrary` for a type to override it.

@@ -27,6 +27,45 @@ fn codes(src: &str, name: &str) -> Vec<String> {
         .collect()
 }
 
+fn contract_lowering(source: &str) -> crate::LoweredBody {
+    let (db, file) = db_with(source);
+    let parsed = fai_syntax::parse(&db, file);
+    let contract = parsed.module.contract(0).unwrap();
+    let (params, body) = match &contract.kind {
+        fai_syntax::ast::ItemKind::Example { body } => (&[][..], *body),
+        fai_syntax::ast::ItemKind::Forall { binders, body } => (binders.as_slice(), *body),
+        _ => unreachable!(),
+    };
+    let types = fai_types::contract_body_types(&db, file, 0);
+    crate::lower_params_body(&db, file, params, body, &types)
+}
+
+#[test]
+fn a_contract_match_fallthrough_is_not_a_lowering_failure() {
+    let lowered = contract_lowering(
+        "module M\nforall x: (match Some x with\n| None -> false\n| Some value -> value = x)\n",
+    );
+    assert!(!lowered.has_errors);
+}
+
+#[test]
+fn unsupported_lambda_parameters_record_a_lowering_failure() {
+    let lowered = contract_lowering("module M\nexample: (fun (x, y) -> x = y) (1, 1)\n");
+    assert!(lowered.has_errors);
+}
+
+#[test]
+fn unresolved_contract_names_record_a_lowering_failure() {
+    let lowered = contract_lowering("module M\nexample: missing\n");
+    assert!(lowered.has_errors);
+}
+
+#[test]
+fn malformed_contract_expressions_record_a_lowering_failure() {
+    let lowered = contract_lowering("module M\nexample: )\n");
+    assert!(lowered.has_errors);
+}
+
 #[test]
 fn lowers_arithmetic() {
     let src = indoc! {r#"

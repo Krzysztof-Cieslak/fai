@@ -402,6 +402,9 @@ return immediately and oversized delays use representable clock intervals.
 Contract generation recognizes Prelude `Option`/`Result` by declaration identity.
 Same-spelled user types use their own constructors and support custom `Arbitrary`
 overrides like other user ADTs.
+Examples and properties support exhaustive `match` expressions directly, including
+inside lambdas. Lowering distinguishes their unreachable fallthroughs from actual
+unsupported constructs.
 
 `Tls.writePlaintext` returns `Result Int String`: the accepted byte count, which
 can be zero when the output buffer is full. Callers drain `takeOutgoing` and retry

@@ -871,8 +871,11 @@ Contracts (examples & properties):
   and applies it via the runtime's safe `apply` wrapper, decoding the returned
   `TestResult` (`Passed`/`Failed counterexample`). After the run it asserts the
   runtime's global live-object count returned to its baseline (an RC soundness
-  guard). A contract whose reachable closure fails to compile, or whose lowered
-  body contains an error placeholder, is reported rather than run. (This
+  guard). A contract whose reachable closure fails to compile, or whose lowering
+  reports an unsupported/invalid construct, is reported rather than run. Lowering
+  carries that status explicitly: the unreachable final fallthrough of an
+  exhaustive match is valid even though it shares the backend's trap node. Direct
+  matches and matches inside contract lambdas therefore execute normally. (This
   in-process path is retained as the `fai_driver::test` library entry point and
   for the corpus tests; the CLI/daemon now check in an isolated worker — see
   D103.)
