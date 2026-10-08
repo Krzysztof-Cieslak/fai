@@ -1,6 +1,6 @@
 module Storefront
 
-interface Renderer =
+public interface Renderer =
   render : Orders.Line -> String
 
 public describe : Orders.Line -> String
