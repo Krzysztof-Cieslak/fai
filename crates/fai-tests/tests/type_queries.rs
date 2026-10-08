@@ -276,3 +276,23 @@ fn opaque_alias_coverage_changes_match_clean_checks() {
         diagnostics
     });
 }
+
+#[test]
+fn record_match_coverage_edits_match_clean_checks() {
+    let complete = "module M\nlet f r =\n  match r with\n  | { flag = true } -> 1\n  | { flag = false } -> 0\n";
+    let partial = "module M\nlet f r =\n  match r with\n  | { flag = true } -> 1\n";
+    let duplicate = "module M\nlet f r =\n  match r with\n  | { flag = true } -> 1\n  | { flag = true } -> 2\n  | _ -> 0\n";
+    let revisions: &[&[(&str, &str)]] = &[
+        &[("M.fai", complete)],
+        &[("M.fai", partial)],
+        &[("M.fai", duplicate)],
+        &[("M.fai", complete)],
+    ];
+    assert_incremental_matches_clean(revisions, |db, ids| {
+        let file = db.source_file(ids[0]).unwrap();
+        check_file::accumulated::<fai_db::Diag>(db, file)
+            .into_iter()
+            .map(|d| (d.0.code, d.0.primary, d.0.message.clone()))
+            .collect::<Vec<_>>()
+    });
+}

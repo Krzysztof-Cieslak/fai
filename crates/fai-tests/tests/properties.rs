@@ -346,6 +346,49 @@ proptest! {
         }
     }
 
+    #[test]
+    fn record_match_coverage_agrees_with_a_boolean_truth_table(
+        patterns in prop::collection::vec(
+            (prop::option::of(any::<bool>()), prop::option::of(any::<bool>()), any::<bool>()),
+            1..9,
+        ),
+    ) {
+        let mut source = String::from(
+            "module P\npublic inspect : { left : Bool, right : Bool } -> Int\nlet inspect r =\n  match r with\n"
+        );
+        let mut covered = 0u8;
+        let mut redundant = 0;
+        for (left, right, reversed) in patterns {
+            let render = |value: Option<bool>| match value {
+                Some(true) => "true",
+                Some(false) => "false",
+                None => "_",
+            };
+            let fields = if reversed {
+                format!("right = {}, left = {}", render(right), render(left))
+            } else {
+                format!("left = {}, right = {}", render(left), render(right))
+            };
+            source.push_str(&format!("  | {{ {fields} }} -> 0\n"));
+            let matched = (0..4).fold(0u8, |mask, value| {
+                if left.is_none_or(|b| b == (value & 1 != 0))
+                    && right.is_none_or(|b| b == (value & 2 != 0))
+                {
+                    mask | (1 << value)
+                } else {
+                    mask
+                }
+            });
+            redundant += usize::from(matched & !covered == 0);
+            covered |= matched;
+        }
+        let outcome = check_source(&source);
+        let codes = outcome.codes();
+        prop_assert_eq!(codes.iter().filter(|c| c.as_str() == "FAI4002").count(), redundant, "{}", source);
+        prop_assert_eq!(codes.iter().filter(|c| c.as_str() == "FAI4001").count(), usize::from(covered != 15), "{}", source);
+        prop_assert_eq!(codes.len(), redundant + usize::from(covered != 15), "{}", source);
+    }
+
     // A union written on one line *without* leading pipes
     // (`type T = C0 | C1 | …`) is the same union as the canonical form: a
     // `match` over all its constructors is clean and exhaustive (issue #27).

@@ -14,9 +14,10 @@ use fai_diagnostics::Diagnostic;
 use fai_resolve::{Res, ResolvedBodies, resolve, type_decls};
 use fai_span::Span;
 use fai_syntax::ast::{ExprId, ExprKind, ItemKind, MatchArm, Module, PatId, PatKind};
+use rustc_hash::FxHashMap;
 
 use crate::infer::{InferCtx, SolveTy};
-use crate::ty::{Con, Ty, TyVarId};
+use crate::ty::{Con, RowEnd, Ty, TyVarId};
 use crate::{NON_EXHAUSTIVE_MATCH, UNREACHABLE_ARM, body_types};
 
 /// The built-in `List` constructor tags.
@@ -30,6 +31,8 @@ enum ConKey {
     Tag(i64),
     /// A tuple of the given arity.
     Tuple,
+    /// A structural record, with fields in canonical label order.
+    Record,
     /// The unit value.
     Unit,
 }
@@ -207,8 +210,9 @@ impl MatchChecker<'_> {
         "add the missing arms, or a `_` catch-all".to_owned()
     }
 
-    /// Lowers a surface pattern to an [`IPat`] (type-independent: list literals
-    /// desugar to `Cons`/`Nil`, constructor tags come from resolution).
+    /// Lowers a surface pattern to an [`IPat`]: list literals desugar to
+    /// `Cons`/`Nil`, constructor tags come from resolution, and record fields
+    /// align with the inferred scrutinee shape.
     fn lower_pat(&self, pat: PatId) -> IPat {
         match &self.module.pat(pat).kind {
             PatKind::Var(_) | PatKind::Wildcard | PatKind::Error => IPat::Wild,
@@ -244,7 +248,7 @@ impl MatchChecker<'_> {
                 // collide with the real first constructor while carrying a
                 // different field count, leaving an arity-inconsistent matrix row.
                 // The unbound name is already reported; treat the pattern as a
-                // distinct, unmatchable value (as refutable records are below) so
+                // distinct, unmatchable value (as invalid records are below) so
                 // it neither claims coverage nor corrupts the matrix.
                 let Some((tag, arity)) = self.ctor_tag_arity(pat) else {
                     return IPat::Lit(format!("@unresolved{}", pat.index()));
@@ -256,15 +260,33 @@ impl MatchChecker<'_> {
                 IPat::Con { key: ConKey::Tag(i64::from(tag)), args: sub }
             }
             PatKind::Or(alts) => IPat::Or(alts.iter().map(|&a| self.lower_pat(a)).collect()),
-            // Records are single-constructor: an irrefutable record pattern (all
-            // sub-patterns irrefutable) acts as a wildcard; a refutable one is
-            // treated as a distinct value (sound — it under-claims coverage).
-            PatKind::Record { .. } => {
-                if self.is_irrefutable(pat) {
-                    IPat::Wild
-                } else {
-                    IPat::Lit(format!("@record{}", pat.index()))
+            PatKind::Record { fields, open } => {
+                let invalid = || IPat::Lit(format!("@record{}", pat.index()));
+                let Some(Ty::Record(row)) = self.types.pat_type(pat) else {
+                    return invalid();
+                };
+                if !open && (row.tail != RowEnd::Closed || row.fields.len() != fields.len()) {
+                    return invalid();
                 }
+                let mut by_name: FxHashMap<_, _> =
+                    fields.iter().map(|field| (field.name, field.pat)).collect();
+                if by_name.len() != fields.len() {
+                    return invalid();
+                }
+                // Open patterns ignore omitted fields and the unknown row tail.
+                // All arms use the same inferred shape, regardless of written
+                // field order or which subset an open pattern mentions.
+                let args = row
+                    .fields
+                    .iter()
+                    .map(|(name, _)| {
+                        by_name.remove(name).map_or(IPat::Wild, |field| self.lower_pat(field))
+                    })
+                    .collect();
+                if !by_name.is_empty() {
+                    return invalid();
+                }
+                IPat::Con { key: ConKey::Record, args }
             }
         }
     }
@@ -277,18 +299,6 @@ impl MatchChecker<'_> {
         let decls = type_decls(self.db, self.ctor_file(ctor.file));
         let info = decls.ctor(ctor.name)?;
         Some((info.tag, info.arity))
-    }
-
-    /// Whether a pattern always matches (binds without testing).
-    fn is_irrefutable(&self, pat: PatId) -> bool {
-        match &self.module.pat(pat).kind {
-            PatKind::Var(_) | PatKind::Wildcard | PatKind::Unit | PatKind::Error => true,
-            PatKind::Paren(inner) => self.is_irrefutable(*inner),
-            PatKind::Tuple(elems) => elems.iter().all(|&e| self.is_irrefutable(e)),
-            PatKind::Record { fields, .. } => fields.iter().all(|f| self.is_irrefutable(f.pat)),
-            PatKind::Or(alts) => alts.iter().any(|&a| self.is_irrefutable(a)),
-            _ => false,
-        }
     }
 
     fn ctor_file(&self, file: fai_span::SourceId) -> SourceFile {
@@ -436,6 +446,11 @@ impl MatchChecker<'_> {
                 name: "(…)".into(),
                 fields: elems.clone(),
             }]),
+            Ty::Record(row) => Sig::Finite(vec![SigCtor {
+                key: ConKey::Record,
+                name: "{ … }".into(),
+                fields: row.fields.iter().map(|(_, ty)| ty.clone()).collect(),
+            }]),
             Ty::Adt(adt) => {
                 let file = self.ctor_file(adt.file);
                 let decls = type_decls(self.db, file);
@@ -480,6 +495,9 @@ impl MatchChecker<'_> {
                 vec![elem.clone(), Ty::list(elem)]
             }
             (Ty::Tuple(elems), ConKey::Tuple) => elems.clone(),
+            (Ty::Record(row), ConKey::Record) => {
+                row.fields.iter().map(|(_, ty)| ty.clone()).collect()
+            }
             (Ty::Adt(adt), ConKey::Tag(tag)) => {
                 let file = self.ctor_file(adt.file);
                 let decls = type_decls(self.db, file);
