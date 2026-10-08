@@ -116,8 +116,9 @@ public repeat : 'a -> Stream 'a 'e
 let repeat x = MkStream (fun u -> Yield x (repeat x))
 
 /// The infinite stream `x, f x, f (f x), …` (use with `take`/`takeWhile`).
+/// The seed needs no call to `f`; each additional pull computes one successor.
 public iterate : ('a -> 'a / 'e) -> 'a -> Stream 'a 'e
-let iterate f x = MkStream (fun u -> Yield x (iterate f (f x)))
+let iterate f x = MkStream (fun u -> Yield x (defer (fun v -> iterate f (f x))))
 
 // --- Transformers (pure: they build a stream; `Fail` passes through) ---
 /// Applies `f` to every element.
@@ -559,6 +560,8 @@ example: toList (cons 1 (cons 2 empty)) = Ok [1, 2]
 example: toList (singleton 42) = Ok [42]
 example: toList (take 3 (repeat 9)) = Ok [9, 9, 9]
 example: toList (take 4 (iterate (fun x -> x * 2) 1)) = Ok [1, 2, 4, 8]
+example: head (iterate (fun x -> 1 / 0) 42) = Ok (Some 42)
+example: toList (take 1 (iterate (fun x -> 1 / 0) 42)) = Ok [42]
 example: fold (fun acc x -> acc + x) 0 (range 1 5) = Ok 10
 example: length (fromList [10, 20, 30]) = Ok 3
 example: head (range 5 10) = Ok (Some 5)

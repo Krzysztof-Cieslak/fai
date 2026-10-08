@@ -1309,7 +1309,7 @@ fromList  : List 'a -> Stream 'a 'e
 fromArray : Array 'a -> Stream 'a 'e
 range     : Int -> Int -> Stream Int 'e              // lo..hi-1
 repeat    : 'a -> Stream 'a 'e                        // infinite (use with take)
-iterate   : ('a -> 'a / 'e) -> 'a -> Stream 'a 'e    // infinite
+iterate   : ('a -> 'a / 'e) -> 'a -> Stream 'a 'e    // seed first; f runs on later pulls
 // transformers (pure)
 map / filter / filterMap / take / takeWhile / drop / dropWhile / append /
 flatMap / zip / zipWith / scan / mapAccum / chunksOf / enumerate / intersperse

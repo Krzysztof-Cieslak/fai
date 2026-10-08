@@ -3882,6 +3882,11 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     `Err` on the first `Fail`. Consumers loop self-tail-recursively, so consumption is
     constant-stack and constant-memory (consumed nodes are freed by reference
     counting).
+    `iterate f seed` suspends `f seed` in the tail itself: construction and the
+    first pull never invoke `f`, and each later pull invokes it once. Taking `n`
+    elements therefore makes `max(0, n - 1)` successor calls, with no look-ahead
+    effect or trap from a dropped tail. The deferred tail retains the same effect
+    parameter and is released normally by reference counting.
   - **Errors as values (not traps).** Fai library code cannot abort with a message
     (only the runtime can, and only with fixed messages), and every host I/O op
     already threads errors as values — so a mid-stream failure is the structural
