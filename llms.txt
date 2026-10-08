@@ -856,6 +856,8 @@ takes the `Concurrency` capability and opens its own structured scope:
 - **`Async.pipe c capacity producer consumer`** streams a producer to a consumer over a
   fresh channel; **`Async.produceList c xs`** is a ready-made producer (send each, then
   close) and **`Async.collect c ch`** drains a channel to a list.
+  A pipe consumer may stop early: the producer is cancelled and the channel
+  closed before the scope joins the producer. Cancellation remains cooperative.
 
 ```fai
 // Fan out two computations and combine them — no nursery, no explicit await.

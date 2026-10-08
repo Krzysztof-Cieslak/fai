@@ -3879,6 +3879,9 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   makes the work run concurrently rather than serialize), so the structured guarantee
   is preserved — no task outlives the call — and the effect row still surfaces
   `Concurrency` (forwarding the supplied work's own effect through `'e`).
+  `pipe` cancels its producer and closes the shared channel as soon as the
+  consumer returns, before joining, so a finite producer cannot remain parked
+  on a full channel after an early-returning consumer has finished.
   - **Direct style, not a monad.** Fai's concurrency is direct-style: a deferred unit
     of work is an ordinary thunk `Unit -> 'a`, `await` returns `'a`, and a blocking
     host call parks transparently (D139/D140). So the reason F#/.NET needs a cold

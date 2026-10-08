@@ -19,8 +19,9 @@ let sumDoubled c a b =
 public sumSquares : Concurrency -> List Int -> Int / { Concurrency }
 let sumSquares c xs = List.sum (Async.mapConcurrent c (fun x -> x * x) xs)
 
-// A producer/consumer over a bounded channel. `Async.pipe` opens the channel, runs
-// the producer and consumer concurrently, and returns the consumer's result. The
+// A producer/consumer over a bounded channel. `Async.pipe` runs both sides
+// concurrently and returns the consumer's result, cancelling the producer and
+// closing the channel if the consumer finishes early. The
 // producer here is `Async.produceList` (sends each item, then closes); the consumer
 // drains the channel with `Async.collect` and sums it.
 // Closing wakes blocked senders and receivers. Only values buffered before close
