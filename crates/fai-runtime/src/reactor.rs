@@ -43,8 +43,15 @@ struct Readiness {
     /// A readiness edge has arrived since it was last consumed. Set by the reactor,
     /// cleared by the waiter; lets a wake that races ahead of the park be observed.
     ready: bool,
-    /// The task parked waiting for this direction, if any.
-    waiter: Option<Parked>,
+    /// Every operation currently waiting for this direction.
+    waiters: Vec<IoWaiter>,
+}
+
+/// One park attempt, with an identity independent of the task so a cancellation
+/// or spurious wake removes exactly its own registration.
+struct IoWaiter {
+    registration: Arc<()>,
+    task: Parked,
 }
 
 /// The reactor-side state of one registered socket, shared between the worker
@@ -185,7 +192,7 @@ pub fn sleep_until(deadline: Instant) {
 }
 
 /// The reactor thread: poll for readiness (bounded by the nearest timer deadline)
-/// forever, firing due timers and waking the task waiting on each ready direction of
+/// forever, firing due timers and waking tasks waiting on each ready direction of
 /// each signalled socket.
 fn reactor_loop(mut poll: Poll) -> ! {
     let mut events = Events::with_capacity(256);
@@ -206,25 +213,27 @@ fn reactor_loop(mut poll: Poll) -> ! {
             }
             let source = reactor().sources.lock().expect("reactor sources").get(&token).cloned();
             let Some(source) = source else { continue };
-            if event.is_readable() {
+            if event.is_readable() || event.is_read_closed() || event.is_error() {
                 wake_direction(&source.read);
             }
-            if event.is_writable() {
+            if event.is_writable() || event.is_write_closed() || event.is_error() {
                 wake_direction(&source.write);
             }
         }
     }
 }
 
-/// Latches a direction ready and wakes its parked task, if any.
+/// Latches a direction ready and wakes all its current operations. Each retries
+/// its own syscall; another operation consuming the readiness simply makes it
+/// wait again with a fresh registration.
 fn wake_direction(dir: &Mutex<Readiness>) {
-    let waiter = {
+    let waiters = {
         let mut r = dir.lock().expect("reactor readiness");
         r.ready = true;
-        r.waiter.take()
+        std::mem::take(&mut r.waiters)
     };
-    if let Some(waiter) = waiter {
-        scheduler::unpark(waiter);
+    for waiter in waiters {
+        scheduler::unpark(waiter.task);
     }
 }
 
@@ -249,6 +258,8 @@ pub fn deregister<S: Source>(io: &Arc<IoSource>, source: &mut S) {
     let r = reactor();
     let _ = r.registry.deregister(source);
     r.sources.lock().expect("reactor sources").remove(&io.token);
+    wake_direction(&io.read);
+    wake_direction(&io.write);
 }
 
 /// Parks the current task until `io` is readable. Must be called inside a task,
@@ -268,10 +279,10 @@ pub fn wait_writable(io: &Arc<IoSource>) {
 }
 
 /// The shared wait for one direction: consume a pending readiness edge if one
-/// already arrived, else register as the waiter and park until the reactor wakes
+/// already arrived, else register this operation and park until the reactor wakes
 /// us. The waiter's lock is released before parking, so a racing wake is not lost.
 fn wait(dir: &Mutex<Readiness>) {
-    {
+    let registration = {
         let mut r = dir.lock().expect("reactor readiness");
         if r.ready {
             // A readiness edge already arrived (possibly between the caller's
@@ -279,12 +290,21 @@ fn wait(dir: &Mutex<Readiness>) {
             r.ready = false;
             return;
         }
-        r.waiter = Some(scheduler::current_parked());
-    }
+        let registration = Arc::new(());
+        r.waiters.push(IoWaiter {
+            registration: Arc::clone(&registration),
+            task: scheduler::current_parked(),
+        });
+        registration
+    };
     scheduler::park();
-    // Woken by the reactor, which set `ready` and took our waiter. Consume the
-    // readiness so the next `WouldBlock` parks again.
-    dir.lock().expect("reactor readiness").ready = false;
+    // A cancellation/spurious wake can leave our registration queued. Remove it
+    // before returning. Do not clear the latch: a newer edge may have arrived
+    // while this task was being scheduled, and another operation still needs it.
+    dir.lock()
+        .expect("reactor readiness")
+        .waiters
+        .retain(|w| !Arc::ptr_eq(&w.registration, &registration));
 }
 
 // ---------------------------------------------------------------------------
@@ -605,14 +625,22 @@ fn recv_loop(sock: &Mutex<TcpStream>, src: &Arc<IoSource>, cap: usize) -> Result
 pub extern "C" fn fai_net_close(handle: Value) -> Value {
     {
         let obj = net_of(handle);
-        if let NetObject::Conn { sock, .. } = &**obj
-            && let Ok(s) = sock.lock()
-        {
-            let _ = s.shutdown(Shutdown::Both);
+        if let NetObject::Conn { sock, src } = &**obj {
+            close_connection(sock, src);
         }
     }
     crate::fai_drop(handle);
     crate::FAI_UNIT
+}
+
+fn close_connection(sock: &Mutex<TcpStream>, src: &Arc<IoSource>) {
+    if let Ok(s) = sock.lock() {
+        let _ = s.shutdown(Shutdown::Both);
+    }
+    // A local shutdown may not produce another OS edge on every platform.
+    // Every parked operation must retry and observe its terminal socket result.
+    wake_direction(&src.read);
+    wake_direction(&src.write);
 }
 
 // ---------------------------------------------------------------------------
@@ -795,6 +823,283 @@ mod tests {
     }
     fn of_imm(v: crate::Value) -> i64 {
         v >> 1
+    }
+
+    fn pending_waiters(dir: &Mutex<Readiness>) -> usize {
+        dir.lock().unwrap().waiters.len()
+    }
+
+    fn wait_for_registrations(dir: &Mutex<Readiness>, count: usize) {
+        while pending_waiters(dir) < count {
+            std::thread::yield_now();
+        }
+    }
+
+    fn unregistered_source() -> Arc<IoSource> {
+        Arc::new(IoSource {
+            token: usize::MAX,
+            read: Mutex::new(Readiness::default()),
+            write: Mutex::new(Readiness::default()),
+        })
+    }
+
+    #[track_caller]
+    fn assert_two_direction_waiters(read: bool) {
+        let source = unregistered_source();
+        let wait_fn = if read { wait_readable } else { wait_writable };
+        let dir = if read { &source.read } else { &source.write };
+        let first = {
+            let source = Arc::clone(&source);
+            scheduler::spawn(Box::new(move || {
+                wait_fn(&source);
+                imm(1)
+            }))
+        };
+        wait_for_registrations(dir, 1);
+        let second = {
+            let source = Arc::clone(&source);
+            scheduler::spawn(Box::new(move || {
+                wait_fn(&source);
+                imm(2)
+            }))
+        };
+        wait_for_registrations(dir, 2);
+        wake_direction(dir);
+        let result = block_on(Box::new(move || {
+            imm(of_imm(scheduler::await_handle(&first)) + of_imm(scheduler::await_handle(&second)))
+        }));
+        assert_eq!(result, imm(3));
+        assert_eq!(pending_waiters(dir), 0);
+    }
+
+    #[test]
+    fn concurrent_read_waiters_share_one_readiness_edge() {
+        assert_two_direction_waiters(true);
+    }
+
+    #[test]
+    fn concurrent_write_waiters_share_one_readiness_edge() {
+        assert_two_direction_waiters(false);
+    }
+
+    #[test]
+    fn cancelled_readiness_waiter_unregisters_without_an_event() {
+        let source = unregistered_source();
+        let (done, completed) = std::sync::mpsc::channel();
+        let handle = {
+            let source = Arc::clone(&source);
+            scheduler::spawn(Box::new(move || {
+                wait_readable(&source);
+                done.send(()).unwrap();
+                imm(0)
+            }))
+        };
+        wait_for_registrations(&source.read, 1);
+        scheduler::cancel_handle(&handle);
+        completed.recv().unwrap();
+        assert_eq!(pending_waiters(&source.read), 0);
+        block_on(Box::new(move || scheduler::await_handle(&handle)));
+    }
+
+    #[test]
+    fn cancelling_one_readiness_waiter_preserves_the_other() {
+        let source = unregistered_source();
+        let (done, completed) = std::sync::mpsc::channel();
+        let first = {
+            let source = Arc::clone(&source);
+            let done = done.clone();
+            scheduler::spawn(Box::new(move || {
+                wait_readable(&source);
+                done.send(1).unwrap();
+                imm(1)
+            }))
+        };
+        wait_for_registrations(&source.read, 1);
+        let second = {
+            let source = Arc::clone(&source);
+            scheduler::spawn(Box::new(move || {
+                wait_readable(&source);
+                done.send(2).unwrap();
+                imm(2)
+            }))
+        };
+        wait_for_registrations(&source.read, 2);
+        scheduler::cancel_handle(&second);
+        assert_eq!(completed.recv().unwrap(), 2);
+        assert_eq!(pending_waiters(&source.read), 1);
+        wake_direction(&source.read);
+        assert_eq!(completed.recv().unwrap(), 1);
+        block_on(Box::new(move || {
+            scheduler::await_handle(&first);
+            scheduler::await_handle(&second)
+        }));
+    }
+
+    #[test]
+    fn read_and_write_readiness_are_independent() {
+        let source = unregistered_source();
+        let (done, completed) = std::sync::mpsc::channel();
+        let reader = {
+            let source = Arc::clone(&source);
+            let done = done.clone();
+            scheduler::spawn(Box::new(move || {
+                wait_readable(&source);
+                done.send("read").unwrap();
+                imm(0)
+            }))
+        };
+        let writer = {
+            let source = Arc::clone(&source);
+            scheduler::spawn(Box::new(move || {
+                wait_writable(&source);
+                done.send("write").unwrap();
+                imm(0)
+            }))
+        };
+        wait_for_registrations(&source.read, 1);
+        wait_for_registrations(&source.write, 1);
+        wake_direction(&source.read);
+        assert_eq!(completed.recv().unwrap(), "read");
+        assert_eq!(pending_waiters(&source.write), 1);
+        wake_direction(&source.write);
+        assert_eq!(completed.recv().unwrap(), "write");
+        block_on(Box::new(move || {
+            scheduler::await_handle(&reader);
+            scheduler::await_handle(&writer)
+        }));
+    }
+
+    #[test]
+    fn returning_waiter_does_not_erase_a_latched_edge() {
+        let source = unregistered_source();
+        let (done, completed) = std::sync::mpsc::channel();
+        let waiter = {
+            let source = Arc::clone(&source);
+            scheduler::spawn(Box::new(move || {
+                wait_readable(&source);
+                done.send(()).unwrap();
+                imm(0)
+            }))
+        };
+        wait_for_registrations(&source.read, 1);
+        wake_direction(&source.read);
+        completed.recv().unwrap();
+        assert!(source.read.lock().unwrap().ready);
+        block_on(Box::new(move || {
+            wait_readable(&source);
+            assert!(!source.read.lock().unwrap().ready);
+            scheduler::await_handle(&waiter)
+        }));
+    }
+
+    fn connected_pair() -> (TcpStream, std::net::TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let peer = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        stream.set_nonblocking(true).unwrap();
+        (TcpStream::from_std(stream), peer)
+    }
+
+    #[test]
+    fn concurrent_tcp_reads_complete_from_one_shared_socket() {
+        let (mut stream, mut peer) = connected_pair();
+        let source = register(&mut stream).unwrap();
+        let stream = Arc::new(Mutex::new(stream));
+        let readers: Vec<_> = (0..2)
+            .map(|_| {
+                let stream = Arc::clone(&stream);
+                let source = Arc::clone(&source);
+                scheduler::spawn(Box::new(move || {
+                    let data = recv_loop(&stream, &source, 1).unwrap();
+                    imm(i64::from(data[0]))
+                }))
+            })
+            .collect();
+        wait_for_registrations(&source.read, 2);
+        peer.write_all(b"ab").unwrap();
+        let result = block_on(Box::new(move || {
+            imm(readers.iter().map(|h| of_imm(scheduler::await_handle(h))).sum())
+        }));
+        assert_eq!(result, imm(i64::from(b'a' + b'b')));
+        deregister(&source, &mut *stream.lock().unwrap());
+    }
+
+    #[test]
+    fn closing_a_connection_wakes_all_readers() {
+        let (mut stream, _peer) = connected_pair();
+        let source = register(&mut stream).unwrap();
+        let stream = Arc::new(Mutex::new(stream));
+        let readers: Vec<_> = (0..2)
+            .map(|_| {
+                let stream = Arc::clone(&stream);
+                let source = Arc::clone(&source);
+                scheduler::spawn(Box::new(move || {
+                    let closed =
+                        recv_loop(&stream, &source, 1).map_or(true, |data| data.is_empty());
+                    imm(i64::from(closed))
+                }))
+            })
+            .collect();
+        wait_for_registrations(&source.read, 2);
+        close_connection(&stream, &source);
+        let result = block_on(Box::new(move || {
+            imm(readers.iter().map(|h| of_imm(scheduler::await_handle(h))).sum())
+        }));
+        assert_eq!(result, imm(2));
+        deregister(&source, &mut *stream.lock().unwrap());
+    }
+
+    #[test]
+    fn concurrent_udp_reads_complete_from_one_shared_socket() {
+        let mut socket = mio::net::UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let address = socket.local_addr().unwrap();
+        let source = register(&mut socket).unwrap();
+        let socket = Arc::new(Mutex::new(socket));
+        let readers: Vec<_> = (0..2)
+            .map(|_| {
+                let socket = Arc::clone(&socket);
+                let source = Arc::clone(&source);
+                scheduler::spawn(Box::new(move || {
+                    let (data, _) = udp_recv_loop(&socket, &source, 1).unwrap();
+                    imm(i64::from(data[0]))
+                }))
+            })
+            .collect();
+        wait_for_registrations(&source.read, 2);
+        let peer = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        peer.send_to(b"a", address).unwrap();
+        peer.send_to(b"b", address).unwrap();
+        let result = block_on(Box::new(move || {
+            imm(readers.iter().map(|h| of_imm(scheduler::await_handle(h))).sum())
+        }));
+        assert_eq!(result, imm(i64::from(b'a' + b'b')));
+        deregister(&source, &mut *socket.lock().unwrap());
+    }
+
+    #[test]
+    fn concurrent_accepts_complete_from_one_listener() {
+        let mut listener = mio::net::TcpListener::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let address = listener.local_addr().unwrap();
+        let source = register(&mut listener).unwrap();
+        let listener = Arc::new(Mutex::new(listener));
+        let acceptors: Vec<_> = (0..2)
+            .map(|_| {
+                let listener = Arc::clone(&listener);
+                let source = Arc::clone(&source);
+                scheduler::spawn(Box::new(move || {
+                    drop(accept_loop(&listener, &source).unwrap());
+                    imm(1)
+                }))
+            })
+            .collect();
+        wait_for_registrations(&source.read, 2);
+        let _first = std::net::TcpStream::connect(address).unwrap();
+        let _second = std::net::TcpStream::connect(address).unwrap();
+        let result = block_on(Box::new(move || {
+            imm(acceptors.iter().map(|h| of_imm(scheduler::await_handle(h))).sum())
+        }));
+        assert_eq!(result, imm(2));
+        deregister(&source, &mut *listener.lock().unwrap());
     }
 
     #[test]
