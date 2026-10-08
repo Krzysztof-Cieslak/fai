@@ -41,6 +41,118 @@ fn checks_ok(session: &Session) -> bool {
     check(session.db(), &session.select_files(None)).ok
 }
 
+const CLIENT: &str = "module A\npublic answer : Int\nlet answer = B.value\n";
+const PROVIDER: &str = "module B\npublic value : Int\nlet value = 7\n";
+
+fn check_snapshot(session: &Session) -> (bool, Vec<String>) {
+    let result = check(session.db(), &session.select_files(None));
+    let mut diagnostics: Vec<_> = result
+        .diagnostics
+        .iter()
+        .map(|diagnostic| {
+            let file = session.db().source_file(diagnostic.primary.source()).unwrap();
+            format!(
+                "{}:{}:{:?}:{}",
+                file.path(session.db()),
+                diagnostic.code.as_str(),
+                diagnostic.primary.range(),
+                diagnostic.message
+            )
+        })
+        .collect();
+    diagnostics.sort();
+    (result.ok, diagnostics)
+}
+
+#[track_caller]
+fn assert_matches_clean(session: &Session) {
+    let clean = Session::open(session.root().to_owned()).unwrap();
+    assert_eq!(check_snapshot(session), check_snapshot(&clean));
+}
+
+#[test]
+fn adding_a_missing_dependency_clears_cached_errors() {
+    let dir = workspace();
+    write(&dir, "A.fai", CLIENT);
+    let mut session = Session::open(dir.clone()).unwrap();
+    assert!(!checks_ok(&session));
+    write(&dir, "B.fai", PROVIDER);
+    session.sync_from_disk().unwrap();
+    assert!(checks_ok(&session));
+    assert_matches_clean(&session);
+}
+
+#[test]
+fn deleting_a_referenced_module_invalidates_resolution() {
+    let dir = workspace();
+    write(&dir, "A.fai", CLIENT);
+    write(&dir, "B.fai", PROVIDER);
+    let mut session = Session::open(dir.clone()).unwrap();
+    assert!(checks_ok(&session));
+    std::fs::remove_file(dir.join("B.fai")).unwrap();
+    session.sync_from_disk().unwrap();
+    assert!(!checks_ok(&session));
+    assert_matches_clean(&session);
+}
+
+#[test]
+fn renaming_a_module_does_not_leave_a_phantom_duplicate() {
+    let dir = workspace();
+    write(&dir, "A.fai", CLIENT);
+    write(&dir, "B.fai", PROVIDER);
+    let mut session = Session::open(dir.clone()).unwrap();
+    assert!(checks_ok(&session));
+    std::fs::rename(dir.join("B.fai"), dir.join("Renamed.fai")).unwrap();
+    session.sync_from_disk().unwrap();
+    let module = fai_resolve::module_file(
+        session.db(),
+        fai_resolve::ModuleName(fai_syntax::Symbol::intern("B")),
+    )
+    .unwrap();
+    assert_eq!(module.path(session.db()), "Renamed.fai");
+    assert!(checks_ok(&session));
+    assert_matches_clean(&session);
+}
+
+#[test]
+fn duplicate_module_membership_changes_match_clean_checks() {
+    let dir = workspace();
+    write(&dir, "A.fai", CLIENT);
+    write(&dir, "B.fai", PROVIDER);
+    let mut session = Session::open(dir.clone()).unwrap();
+    assert!(checks_ok(&session));
+    write(&dir, "Duplicate.fai", PROVIDER);
+    session.sync_from_disk().unwrap();
+    assert!(!checks_ok(&session));
+    assert_matches_clean(&session);
+    std::fs::remove_file(dir.join("Duplicate.fai")).unwrap();
+    session.sync_from_disk().unwrap();
+    assert!(checks_ok(&session));
+    assert_matches_clean(&session);
+}
+
+#[test]
+fn deleted_module_can_be_readded_with_its_stable_id() {
+    let dir = workspace();
+    write(&dir, "A.fai", CLIENT);
+    write(&dir, "B.fai", PROVIDER);
+    let mut session = Session::open(dir.clone()).unwrap();
+    assert!(checks_ok(&session));
+    let name = fai_resolve::ModuleName(fai_syntax::Symbol::intern("B"));
+    let original = fai_resolve::module_file(session.db(), name).unwrap().source(session.db());
+    std::fs::remove_file(dir.join("B.fai")).unwrap();
+    session.sync_from_disk().unwrap();
+    assert!(!checks_ok(&session));
+    write(&dir, "B.fai", PROVIDER);
+    session.sync_from_disk().unwrap();
+    assert!(checks_ok(&session));
+    assert_eq!(
+        fai_resolve::module_file(session.db(), name).unwrap().source(session.db()),
+        original
+    );
+    assert_matches_clean(&session);
+}
+
 #[test]
 fn new_file_is_picked_up() {
     let dir = workspace();

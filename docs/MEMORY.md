@@ -458,8 +458,12 @@ Daemon, persistence & protocol:
 - **D61 File-state sync:** before each request the daemon re-scans the workspace,
   **stat-gated** (mtime/size) and **hash-confirmed** (blake3), updating a salsa
   input only when content truly changed (so a `touch` doesn't break early cutoff).
-  New files are added; deleted files are dropped from a live set (their input
-  lingers harmlessly). A client dirty-set (`{path, hash|content}`) is honored as a
+  New files are added; deleted files leave both selection and semantic lookup.
+  Active membership is a tracked high-durability input, so additions and removals
+  invalidate cached module lookup and cancel older snapshots. Tombstoned paths
+  retain their stable source id and input for reactivation. A per-id lookup query
+  cuts off unrelated membership edits before dependent analysis, and text edits
+  do not change membership. A client dirty-set (`{path, hash|content}`) is honored as a
   scan-skip fast path; the CLI does not populate it (it is for an editor/LSP
   client), and unwritten overlays remain deferred.
 - **D62 Routing & graceful fallback:** the routing layer sits **above**
@@ -1815,10 +1819,11 @@ Editor integration:
     bounded eager-example worker of `fai check` keeps its snapshot (its 10 s cap
     already exists for this reason), and even then concurrent reads are unaffected —
     only an interleaved edit waits, normally for milliseconds.
-  - **Registry shareable for O(1) snapshots.** The non-salsa file registry
-    (`files`, `ids_by_path`) is wrapped in `Arc`, mutated copy-on-write
-    (`Arc::make_mut`), so a snapshot shares it instead of copying every path
-    string; copy-on-write only fires while a snapshot is alive.
+  - **Registry shareable for O(1) snapshots.** The historical file identities
+    (`files`, `ids_by_path`) are wrapped in `Arc`, mutated copy-on-write
+    (`Arc::make_mut`), so a snapshot shares them instead of copying every path
+    string. Active membership lives in shared salsa storage and follows the same
+    cancellation protocol as source text.
   - **Observability + tests.** The daemon tracks peak concurrent reads and reports
     it in `daemon status` (`max_concurrency`), which a test drives over a threshold
     deterministically via a test-only per-read hold (`FAI_DAEMON_TEST_HOLD_MS`).
