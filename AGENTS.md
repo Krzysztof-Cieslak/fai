@@ -427,6 +427,10 @@ field, with minutes/seconds in 00..59 and the same overall ±18-hour bound.
 teardown sleeps. Other wakes do not shorten its deadline; nonpositive delays
 return immediately and oversized delays use representable clock intervals.
 
+`Async.pipe` cancels its producer and closes its channel when the consumer
+returns, then joins the producer. Consumers may stop early without leaving a
+finite producer parked on a full channel; cancellation remains cooperative.
+
 Time-unit arithmetic splits whole days from bounded nanosecond remainders before
 multiplying or adding. `Duration.multiply` supports every `Int` factor with an
 exact fractional-day result. A genuinely out-of-range final day count wraps with

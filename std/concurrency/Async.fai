@@ -103,7 +103,8 @@ let produceList c xs ch =
 /// given capacity, running them concurrently and returning the consumer's result.
 /// `producer` is handed the channel to send on (and should `close` it when done);
 /// `consumer` is handed the same channel to receive from (e.g. via `collect`). The
-/// producer is joined before returning, so it never outlives the call.
+/// producer is cancelled and the channel closed when the consumer returns, then
+/// joined, so an early-returning consumer never strands a blocked sender.
 public pipe : Concurrency -> Int -> (Channel 'a -> Unit / 'e) -> (Channel 'a -> 'b / 'e) -> 'b / { Concurrency | 'e }
 let pipe c capacity producer consumer = c.scope (pipeInScope c capacity producer consumer)
 
@@ -111,7 +112,10 @@ pipeInScope : Concurrency -> Int -> (Channel 'a -> Unit / 'e) -> (Channel 'a -> 
 let pipeInScope c capacity producer consumer nursery =
   let ch = c.channel capacity
   let task = c.spawn nursery (fun u -> producer ch)
-  consumer ch
+  let result = consumer ch
+  let cancelled = c.cancel task
+  let closed = c.close ch
+  result
 
 /// Run `work` with a deadline: `Some result` if it finishes within `ms`
 /// milliseconds, or `None` if the deadline passes first (in which case `work` is
