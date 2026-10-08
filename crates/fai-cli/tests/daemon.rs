@@ -122,6 +122,124 @@ impl Drop for Daemon {
     }
 }
 
+#[track_caller]
+fn missing_selection(command: &str, path: &str, json: bool) {
+    let daemon = Daemon::new("missing-selection", &[]);
+    let format = if json { "--message-format=json" } else { "--message-format=human" };
+    let cold = daemon.run(&[command, "--no-daemon", format, "--color=never"], &[path]);
+    let warm = daemon.run(&[command, format, "--color=never"], &[path]);
+    assert_eq!(
+        cold.status.code(),
+        Some(3),
+        "{}{}",
+        String::from_utf8_lossy(&cold.stdout),
+        String::from_utf8_lossy(&cold.stderr)
+    );
+    assert_eq!(warm.status.code(), cold.status.code());
+    assert_eq!(warm.stdout, cold.stdout);
+    assert_eq!(warm.stderr, cold.stderr);
+    if json {
+        let output: serde_json::Value = serde_json::from_slice(&cold.stdout).unwrap();
+        assert_eq!(output["ok"], false);
+        assert_eq!(output["diagnostics"][0]["code"], "FAI0002");
+    } else {
+        assert!(String::from_utf8_lossy(&cold.stdout).contains("FAI0002"));
+    }
+}
+
+#[test]
+fn check_rejects_a_missing_file_selection() {
+    missing_selection("check", "missing.fai", true);
+}
+#[test]
+fn fmt_rejects_a_missing_file_selection() {
+    missing_selection("fmt", "missing.fai", true);
+}
+#[test]
+fn test_rejects_a_missing_file_selection() {
+    missing_selection("test", "missing.fai", true);
+}
+#[test]
+fn check_rejects_a_missing_directory_selection() {
+    missing_selection("check", "missing/", false);
+}
+#[test]
+fn fmt_rejects_a_missing_directory_selection() {
+    missing_selection("fmt", "missing/", false);
+}
+#[test]
+fn test_rejects_a_missing_directory_selection() {
+    missing_selection("test", "missing/", false);
+}
+
+#[track_caller]
+fn empty_selection(command: &str) {
+    let daemon = Daemon::new("empty-selection", &[]);
+    std::fs::create_dir(daemon.workspace.join("empty")).unwrap();
+    let cold = daemon.run(&[command, "--no-daemon"], &["./empty/"]);
+    let warm = daemon.run(&[command], &["./empty/"]);
+    assert!(
+        cold.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&cold.stdout),
+        String::from_utf8_lossy(&cold.stderr)
+    );
+    assert_eq!(warm.status.code(), cold.status.code());
+    assert_eq!(warm.stdout, cold.stdout);
+    assert_eq!(warm.stderr, cold.stderr);
+}
+
+#[test]
+fn check_accepts_an_existing_empty_selection() {
+    empty_selection("check");
+}
+#[test]
+fn fmt_accepts_an_existing_empty_selection() {
+    empty_selection("fmt");
+}
+#[test]
+fn test_accepts_an_existing_empty_selection() {
+    empty_selection("test");
+}
+
+#[test]
+fn dot_prefixed_test_selection_executes_the_contract() {
+    let daemon = Daemon::new("dot-selection", &[("Main.fai", "module Main\nexample: false\n")]);
+    let cold = daemon.run(&["test", "--no-daemon"], &["./Main.fai"]);
+    let warm = daemon.run(&["test"], &["./Main.fai"]);
+    assert_eq!(cold.status.code(), Some(1));
+    assert_eq!(warm.status.code(), cold.status.code());
+    assert_eq!(warm.stdout, cold.stdout);
+    assert!(String::from_utf8_lossy(&cold.stdout).contains("FAI6001"));
+}
+
+#[test]
+fn dot_prefixed_check_selection_reports_the_files_error() {
+    let daemon = Daemon::new("dot-check", &[("Main.fai", "module Main\nlet value = unknown\n")]);
+    let cold = daemon.run(&["check", "--no-daemon"], &["./Main.fai"]);
+    let warm = daemon.run(&["check"], &["./Main.fai"]);
+    assert_eq!(cold.status.code(), Some(1));
+    assert_eq!(warm.status.code(), cold.status.code());
+    assert_eq!(warm.stdout, cold.stdout);
+    assert!(String::from_utf8_lossy(&cold.stdout).contains("unknown"));
+}
+
+#[test]
+fn dot_prefixed_fmt_selection_reports_and_formats_the_file() {
+    let daemon = Daemon::new("dot-fmt", &[("Main.fai", "module Main\nlet value=1\n")]);
+    let cold = daemon.run(&["fmt", "--check", "--no-daemon"], &["./Main.fai"]);
+    let warm = daemon.run(&["fmt", "--check"], &["./Main.fai"]);
+    assert_eq!(cold.status.code(), Some(1));
+    assert_eq!(warm.status.code(), cold.status.code());
+    assert_eq!(warm.stdout, cold.stdout);
+    assert!(daemon.run(&["fmt"], &["./Main.fai"]).status.success());
+    assert!(
+        std::fs::read_to_string(daemon.workspace.join("Main.fai"))
+            .unwrap()
+            .contains("let value = 1")
+    );
+}
+
 fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }

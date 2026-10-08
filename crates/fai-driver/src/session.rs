@@ -220,15 +220,58 @@ impl Session {
         let Some(path) = path else {
             return files;
         };
-        let target = path.strip_prefix(&self.root).unwrap_or(path).as_str().trim_end_matches('/');
-        files
-            .into_iter()
-            .filter(|file| {
-                let rel = file.path(db).as_str();
-                rel == target || rel.strip_prefix(target).is_some_and(|rest| rest.starts_with('/'))
-            })
-            .collect()
+        let Some(target) = self.selection_path(path) else { return Vec::new() };
+        files.into_iter().filter(|file| Utf8Path::new(file.path(db)).starts_with(&target)).collect()
     }
+
+    /// Selects a command's explicit target, rejecting missing or outside-workspace
+    /// paths. An existing empty directory is valid; an absent selection still
+    /// means the whole workspace. Loaded editor overlays remain selectable.
+    pub fn select_files_checked(
+        &self,
+        path: Option<&Utf8Path>,
+    ) -> Result<Vec<SourceFile>, DriverError> {
+        let files = self.select_files(path);
+        let Some(path) = path else { return Ok(files) };
+        let directory =
+            self.selection_path(path).is_some_and(|relative| self.root.join(relative).is_dir());
+        if !files.is_empty() || directory {
+            Ok(files)
+        } else {
+            Err(DriverError::InvalidSelection(path.to_owned()))
+        }
+    }
+
+    fn selection_path(&self, path: &Utf8Path) -> Option<Utf8PathBuf> {
+        let root = if self.root.is_absolute() {
+            self.root.clone()
+        } else {
+            Utf8PathBuf::from_path_buf(std::env::current_dir().ok()?).ok()?.join(&self.root)
+        };
+        let root = normalized_path(&root);
+        let target = normalized_path(&root.join(path));
+        target.strip_prefix(&root).ok().map(Utf8Path::to_owned)
+    }
+}
+
+/// Lexical normalization preserves the workspace's symlink/overlay spelling
+/// while making dot components and either platform's separators equivalent.
+fn normalized_path(path: &Utf8Path) -> Utf8PathBuf {
+    let mut normalized = Utf8PathBuf::new();
+    for component in path.components() {
+        match component {
+            camino::Utf8Component::CurDir => {}
+            camino::Utf8Component::ParentDir => {
+                if normalized.file_name().is_some_and(|name| name != "..") {
+                    normalized.pop();
+                } else if !normalized.has_root() {
+                    normalized.push("..");
+                }
+            }
+            other => normalized.push(other.as_str()),
+        }
+    }
+    normalized
 }
 
 /// Recursively collects `.fai` files under `dir`, skipping hidden entries and
@@ -253,4 +296,80 @@ fn collect_fai_files(dir: &Utf8Path, out: &mut Vec<Utf8PathBuf>) -> Result<(), D
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn workspace() -> (tempfile::TempDir, Session) {
+        let directory = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(directory.path().to_owned()).unwrap();
+        std::fs::write(root.join("Main.fai"), "module Main\nlet value = 1\n").unwrap();
+        let session = Session::open(root).unwrap();
+        (directory, session)
+    }
+
+    #[test]
+    fn explicit_missing_file_is_an_error() {
+        let (_directory, session) = workspace();
+        assert!(matches!(
+            session.select_files_checked(Some(Utf8Path::new("missing.fai"))),
+            Err(DriverError::InvalidSelection(_))
+        ));
+    }
+
+    #[test]
+    fn explicit_missing_directory_is_an_error() {
+        let (_directory, session) = workspace();
+        assert!(session.select_files_checked(Some(Utf8Path::new("missing/"))).is_err());
+    }
+
+    #[test]
+    fn existing_empty_directory_is_a_valid_selection() {
+        let (_directory, session) = workspace();
+        std::fs::create_dir(session.root().join("empty")).unwrap();
+        assert!(session.select_files_checked(Some(Utf8Path::new("./empty/"))).unwrap().is_empty());
+    }
+
+    #[test]
+    fn dot_components_select_the_same_loaded_file() {
+        let (_directory, session) = workspace();
+        let direct = session.select_files_checked(Some(Utf8Path::new("Main.fai"))).unwrap();
+        assert_eq!(direct.len(), 1);
+        assert_eq!(
+            session.select_files_checked(Some(Utf8Path::new("./nested/../Main.fai"))).unwrap(),
+            direct
+        );
+    }
+
+    #[test]
+    fn absolute_root_selects_all_loaded_files() {
+        let (_directory, session) = workspace();
+        assert_eq!(
+            session.select_files_checked(Some(session.root())).unwrap(),
+            session.user_files()
+        );
+        assert_eq!(session.select_files_checked(Some(Utf8Path::new("."))).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn absolute_file_selection_is_normalized() {
+        let (_directory, session) = workspace();
+        let path = session.root().join("nested/../Main.fai");
+        assert_eq!(session.select_files_checked(Some(&path)).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn selections_cannot_escape_the_workspace() {
+        let (_directory, session) = workspace();
+        assert!(session.select_files_checked(Some(Utf8Path::new(".."))).is_err());
+    }
+
+    #[test]
+    fn non_source_files_are_not_successful_empty_selections() {
+        let (_directory, session) = workspace();
+        std::fs::write(session.root().join("notes.txt"), "notes").unwrap();
+        assert!(session.select_files_checked(Some(Utf8Path::new("notes.txt"))).is_err());
+    }
 }

@@ -118,13 +118,38 @@ pub fn run_command(session: &Session, spec: &CommandSpec, opts: RenderOpts) -> R
     }
 }
 
+/// Renders a hard workspace error using the common diagnostic envelope. Shared
+/// by command execution and daemon test preparation.
+#[must_use]
+pub fn render_workspace_error(error: &crate::DriverError, opts: RenderOpts) -> Rendered {
+    let result = crate::error_result(error);
+    let resolver = fai_span::SourceMap::new();
+    let stdout = match opts.format {
+        OutputFormat::Human => result.render_human(&resolver, opts.color),
+        OutputFormat::Json => match serde_json::to_string_pretty(&result.to_output(&resolver)) {
+            Ok(json) => format!("{json}\n"),
+            Err(error) => {
+                return Rendered {
+                    stdout: String::new(),
+                    stderr: format!("internal error: failed to serialize output: {error}\n"),
+                    exit: EXIT_INTERNAL,
+                };
+            }
+        },
+    };
+    Rendered { stdout, stderr: String::new(), exit: EXIT_WORKSPACE }
+}
+
 fn run_check(
     session: &Session,
     path: Option<&camino::Utf8Path>,
     examples: bool,
     opts: RenderOpts,
 ) -> Rendered {
-    let files = session.select_files(path);
+    let files = match session.select_files_checked(path) {
+        Ok(files) => files,
+        Err(error) => return render_workspace_error(&error, opts),
+    };
     let mut result = check(session.db(), &files);
     // Once the selection type-checks cleanly, evaluate its closed `example`
     // contracts and fold in any failures (located `FAI6001`). A type error skips
@@ -164,7 +189,10 @@ fn run_fmt(
     check_only: bool,
     opts: RenderOpts,
 ) -> Rendered {
-    let files = session.select_files(path);
+    let files = match session.select_files_checked(path) {
+        Ok(files) => files,
+        Err(error) => return render_workspace_error(&error, opts),
+    };
     let result = fmt(session.db(), &files);
     let mut r = Rendered::default();
 
