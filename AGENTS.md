@@ -596,7 +596,9 @@ so a new call site elsewhere doesn't invalidate its code.
 
 **Caching layers.** (1) in-memory salsa (hot, in the daemon); (2) on-disk
 **content-addressed artifact cache** — `object_code(Def)` keyed by
-`hash(rc(Def)) + target + compiler-version`, so cold runs reuse backend output;
+`hash(rc_emit(Def)) + target + compiler-build-identity + instrumentation-flags`,
+so cold runs reuse compatible backend output. The build identity fingerprints
+compiler sources, embedded std, dependencies, toolchain, and build settings;
 (3) shared/remote cache later (portable by construction).
 
 **Runtime topology.** A per-workspace **daemon** (`fai-server`) holds the live DB

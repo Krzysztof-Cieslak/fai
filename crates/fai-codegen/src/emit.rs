@@ -3188,7 +3188,7 @@ impl<M: Module> Translator<'_, M> {
     /// compiler and runtime build under one profile), so a release build's fast path
     /// stays call-free.
     fn note_inline_alloc(&mut self) {
-        if cfg!(debug_assertions) {
+        if crate::INSTRUMENT_ALLOCATIONS {
             let f = self.runtime("fai_note_alloc", 0, false);
             self.builder.ins().call(f, &[]);
         }
@@ -3197,7 +3197,7 @@ impl<M: Module> Translator<'_, M> {
     /// Records, in a debug build, one heap free the inlined fast path made without
     /// calling the runtime (the counter peer of [`note_inline_alloc`]).
     fn note_inline_free(&mut self) {
-        if cfg!(debug_assertions) {
+        if crate::INSTRUMENT_ALLOCATIONS {
             let f = self.runtime("fai_note_free", 0, false);
             self.builder.ins().call(f, &[]);
         }

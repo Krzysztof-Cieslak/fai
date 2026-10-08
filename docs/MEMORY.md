@@ -428,6 +428,13 @@ Daemon, persistence & protocol:
   transport, scalar/aggregate representation, borrow flags, and result bounds,
   plus the definition's entry bounds. Stable metadata preserves cache reuse
   across unrelated callee-body edits.
+  Compiler builds also carry a deterministic fingerprint of relevant Rust and
+  embedded-standard-library sources, manifests/lockfile, rustc version, and build
+  settings. Relative source names and sorted inputs make it independent of
+  checkout location and traversal order. Both codegen's allocation-instrumentation
+  flag and the embedded runtime's matching debug-counter mode are explicit key
+  inputs, so debug/release or same-version rebuilt compilers cannot exchange
+  incompatible objects.
 - **D57 Daemon concurrency (serialized — superseded by D112):** the daemon
   initially served per-connection threads but serialized **all** database access
   through one `Mutex<Session>` (true serialization, sidestepping salsa's

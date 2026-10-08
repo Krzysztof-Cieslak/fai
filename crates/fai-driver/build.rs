@@ -22,12 +22,16 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod build_identity;
+
 fn main() {
     let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
     let runtime_dir = Path::new(&manifest).join("../fai-runtime");
     let runtime_manifest = runtime_dir.join("Cargo.toml");
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR");
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let build_id = compiler_build_id(&Path::new(&manifest).join("../.."));
+    println!("cargo:rustc-env=FAI_COMPILER_BUILD_ID={build_id}");
 
     // A private target directory for the nested build, so its lock is independent
     // of the outer `cargo`'s lock on the shared target dir (a nested build into the
@@ -118,6 +122,84 @@ fn main() {
     println!("cargo:rustc-env=FAI_RUNTIME_ARCHIVE={}", archive.display());
     println!("cargo:rustc-env=FAI_RUNTIME_NATIVE_LIBS={native_libs}");
     println!("cargo:rustc-env=FAI_RUNTIME_LIB_DIRS={lib_dirs_joined}");
+}
+
+/// Fingerprints production compiler inputs. Relative names and contents keep
+/// identical checkouts reproducible; Cargo watches directories for new modules.
+fn compiler_build_id(root: &Path) -> String {
+    let root = root.canonicalize().expect("workspace root");
+    let mut paths =
+        vec![root.join("Cargo.toml"), root.join("Cargo.lock"), root.join("rust-toolchain.toml")];
+    for name in [
+        "fai-span",
+        "fai-diagnostics",
+        "fai-db",
+        "fai-syntax",
+        "fai-resolve",
+        "fai-types",
+        "fai-core",
+        "fai-rc",
+        "fai-codegen",
+        "fai-runtime",
+        "fai-driver",
+    ] {
+        let directory = root.join("crates").join(name);
+        paths.push(directory.join("Cargo.toml"));
+        for file in ["build.rs", "build_identity.rs"] {
+            let path = directory.join(file);
+            if path.is_file() {
+                paths.push(path);
+            }
+        }
+        collect_sources(&directory.join("src"), "rs", &mut paths);
+    }
+    collect_sources(&root.join("std"), "fai", &mut paths);
+    let files: Vec<_> = paths
+        .iter()
+        .map(|path| {
+            println!("cargo:rerun-if-changed={}", path.display());
+            let name = path
+                .strip_prefix(&root)
+                .expect("workspace source")
+                .to_string_lossy()
+                .replace('\\', "/");
+            (name, std::fs::read(path).expect("compiler source"))
+        })
+        .collect();
+    let settings: Vec<_> = std::env::vars()
+        .filter(|(name, _)| {
+            name.starts_with("CARGO_CFG_")
+                || name.starts_with("CARGO_FEATURE_")
+                || matches!(
+                    name.as_str(),
+                    "CARGO_ENCODED_RUSTFLAGS"
+                        | "OPT_LEVEL"
+                        | "PROFILE"
+                        | "DEBUG"
+                        | "TARGET"
+                        | "HOST"
+                )
+        })
+        .collect();
+    for (name, _) in &settings {
+        println!("cargo:rerun-if-env-changed={name}");
+    }
+    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    let version = Command::new(rustc).arg("-vV").output().expect("rustc version");
+    assert!(version.status.success(), "rustc -vV failed");
+    build_identity::fingerprint(&files, &settings, &String::from_utf8_lossy(&version.stdout))
+}
+
+fn collect_sources(directory: &Path, extension: &str, paths: &mut Vec<PathBuf>) {
+    println!("cargo:rerun-if-changed={}", directory.display());
+    for entry in std::fs::read_dir(directory).expect("compiler source directory") {
+        let path = entry.expect("compiler source entry").path();
+        if path.is_dir() {
+            collect_sources(&path, extension, paths);
+        } else if path.extension().is_some_and(|value| value == extension) {
+            paths.push(path);
+        }
+    }
 }
 
 /// Collects the `rustc-link-search=native=`/`all=`/bare directories that the
