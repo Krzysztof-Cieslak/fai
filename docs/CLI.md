@@ -317,6 +317,14 @@ negotiated at initialization (UTF-8 when the client offers it, else UTF-16). Ope
 buffers are analyzed as unsaved overlays, so every answer tracks the in-editor
 text.
 
+Standard-library definitions use real, read-only `file:` documents extracted
+from the running compiler's embedded sources. They are content-versioned under
+`$FAI_CACHE_DIR/.lsp-std-sources` (or a `fai` directory in the system temporary
+directory), shared across workspace roots. Navigation inside these documents
+uses their embedded source identities; editor changes never replace the
+compiler's standard library. No editor-specific virtual-document provider is
+required.
+
 On **save** (not on every keystroke), the saved file's closed `example` contracts
 are evaluated in an isolated worker and a failing one is published as `FAI6001`
 alongside its type diagnostics; the results persist across edits to other files

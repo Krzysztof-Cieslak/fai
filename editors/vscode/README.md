@@ -9,6 +9,10 @@ go-to-definition, completion, signature help, symbols, references, rename, code
 actions, inlay hints, semantic tokens, formatting) comes from the server, which
 shares the same engine as `fai check` and `fai query`.
 
+Go-to-definition on standard-library symbols opens real, read-only source files
+from a versioned cache maintained by the server. No virtual-document provider or
+additional editor configuration is needed.
+
 ## Requirements
 
 The extension launches the `fai` executable. Install it (or build it from

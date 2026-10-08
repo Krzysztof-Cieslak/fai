@@ -794,6 +794,7 @@ dependencies = [
 name = "fai-lsp"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "camino",
  "fai-db",
  "fai-diagnostics",
@@ -805,6 +806,7 @@ dependencies = [
  "serde",
  "serde_json",
  "similar",
+ "tempfile",
  "tracing",
 ]
 

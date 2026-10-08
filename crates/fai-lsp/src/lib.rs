@@ -37,7 +37,9 @@ use lsp_types::{
     TextDocumentSyncKind, TextEdit, Url, WorkspaceEdit, WorkspaceSymbolParams,
 };
 
+mod documents;
 mod position;
+use documents::StandardDocuments;
 use position::{Encoding, LineMap};
 
 /// Runs the language server over real stdio until the client shuts it down.
@@ -190,6 +192,7 @@ fn server_capabilities(encoding: Encoding) -> ServerCapabilities {
 struct Server {
     session: Session,
     root: Utf8PathBuf,
+    standard_documents: StandardDocuments,
     /// Open documents' current text, by URI.
     open: HashMap<Url, String>,
     /// The negotiated position encoding for all conversions.
@@ -211,9 +214,11 @@ impl Server {
     ) -> Result<Self, Box<dyn Error>> {
         let root = root.canonicalize_utf8().unwrap_or(root);
         let session = Session::open(root.clone())?;
+        let standard_documents = StandardDocuments::new(session.db())?;
         Ok(Self {
             session,
             root,
+            standard_documents,
             open: HashMap::new(),
             encoding,
             examples_enabled,
@@ -232,6 +237,10 @@ impl Server {
         match note.method.as_str() {
             "textDocument/didOpen" => {
                 if let Ok(p) = note.extract::<DidOpenTextDocumentParams>("textDocument/didOpen") {
+                    if self.standard_documents.file(&p.text_document.uri).is_some() {
+                        self.publish(conn, &p.text_document.uri, vec![]);
+                        return;
+                    }
                     self.open.insert(p.text_document.uri.clone(), p.text_document.text);
                     self.refresh(conn, &p.text_document.uri);
                 }
@@ -240,6 +249,9 @@ impl Server {
                 if let Ok(p) = note.extract::<DidChangeTextDocumentParams>("textDocument/didChange")
                 {
                     let uri = p.text_document.uri;
+                    if self.standard_documents.file(&uri).is_some() {
+                        return;
+                    }
                     self.apply_changes(&uri, p.content_changes);
                     // An edit invalidates the last save's example results; they
                     // are recomputed on the next save (not on every keystroke).
@@ -249,6 +261,9 @@ impl Server {
             }
             "textDocument/didSave" => {
                 if let Ok(p) = note.extract::<DidSaveTextDocumentParams>("textDocument/didSave") {
+                    if self.standard_documents.file(&p.text_document.uri).is_some() {
+                        return;
+                    }
                     // The buffer is already authoritative; just re-run diagnostics
                     // (also picking up the included text when the client sends it).
                     if let Some(text) = p.text {
@@ -260,6 +275,9 @@ impl Server {
             "textDocument/didClose" => {
                 if let Ok(p) = note.extract::<DidCloseTextDocumentParams>("textDocument/didClose") {
                     let uri = &p.text_document.uri;
+                    if self.standard_documents.file(uri).is_some() {
+                        return;
+                    }
                     self.open.remove(uri);
                     self.saved_examples.remove(uri);
                     // On close the buffer is no longer authoritative — ownership
@@ -839,14 +857,20 @@ impl Server {
     /// The workspace-relative path for a document URI (the form the database and
     /// the IDE engine key on).
     fn relative(&self, uri: &Url) -> Option<Utf8PathBuf> {
+        if let Some(file) = self.standard_documents.file(uri) {
+            return Some(file.path(self.session.db()).as_str().into());
+        }
         let path = uri.to_file_path().ok()?;
         let path = Utf8PathBuf::from_path_buf(path).ok()?;
         let path = path.canonicalize_utf8().unwrap_or(path);
-        Some(path.strip_prefix(&self.root).unwrap_or(&path).to_owned())
+        Some(path.strip_prefix(&self.root).ok()?.to_owned())
     }
 
     /// The document URI for a workspace-relative path.
     fn uri_for(&self, rel: &str) -> Option<Url> {
+        if let Some(uri) = self.standard_documents.uri(rel) {
+            return Some(uri.clone());
+        }
         Url::from_file_path(self.root.join(rel).as_std_path()).ok()
     }
 
@@ -865,6 +889,12 @@ impl Server {
     /// Resolves an LSP position in a document to the database file and the byte
     /// offset the IDE engine's position queries accept.
     fn locate(&self, uri: &Url, position: Position) -> Option<(SourceFile, u32)> {
+        if let Some(file) = self.standard_documents.file(uri) {
+            return Some((
+                file,
+                self.line_map(file.text(self.session.db())).offset(position) as u32,
+            ));
+        }
         let rel = self.relative(uri)?;
         let text = self.open.get(uri)?;
         let file = *self.session.select_files(Some(&rel)).first()?;
@@ -874,7 +904,10 @@ impl Server {
 
     /// Converts an IDE span (byte offsets) into a range within an open document.
     fn span_range(&self, uri: &Url, span: &fai_ide::repr::SpanJson) -> Option<Range> {
-        let text = self.open.get(uri)?;
+        let text = match self.standard_documents.file(uri) {
+            Some(file) => file.text(self.session.db()),
+            None => self.open.get(uri)?,
+        };
         let lines = self.line_map(text);
         Some(Range {
             start: lines.position(span.byte_start as usize),
