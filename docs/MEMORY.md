@@ -194,7 +194,9 @@ Syntax front end (lexer, layout, parser, AST, formatter, incremental queries):
   else type var" rule). Numeric grammar is full: decimal/`0x`/`0o`/`0b` integers
   with `_` separators and floats with optional fraction/exponent (a trailing
   identifier char is an invalid-suffix error). Escapes (string & char):
-  `\n \t \r \0 \\ \" \' \u{…}`. Block comments **nest**; `///` is a distinct
+  `\n \t \r \0 \\ \" \' \u{…}`. Unicode escapes are validated as scalar values
+  (U+0000–U+10FFFF excluding U+D800–U+DFFF), with invalid values reported as
+  `FAI1006` before lowering. Block comments **nest**; `///` is a distinct
   doc-comment kind.
 - **D29 Layout:** a restricted **offside pre-pass** turns indentation into
   virtual `LayoutOpen`/`LayoutSep`/`LayoutClose` tokens so the parser stays

@@ -741,6 +741,8 @@ it was dropped).
 **Lexer subtlety to preserve:** a leading tick is a character literal when it
 closes (`'a'`, `'\n'`) and a **type variable** otherwise (`'a`, `'r`). This is
 the F# rule; keep it covered by tests.
+Unicode escapes in strings and characters must name scalar values in
+U+0000–U+10FFFF, excluding U+D800–U+DFFF; invalid escapes produce `FAI1006`.
 
 **Reserved keywords include** `module`, `let`, `type`, `interface`, `match`,
 `with`, `if`, `then`, `else`, `fun`, `public`, `internal` (the same-origin

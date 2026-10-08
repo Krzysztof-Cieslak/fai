@@ -21,4 +21,5 @@ example: describe 'A' = "'A' (65)"
 public next : Char -> Option Char
 let next c = Char.fromCode (Char.toCode c + 1)
 example: next 'a' = Some 'b'
+example: next '\u{10FFFF}' = None
 forall c: Char.toCode c >= 0
