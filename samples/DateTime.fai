@@ -26,6 +26,8 @@ example: weekdayName 2020 6 15 = "Monday"
 public afterSeconds : Int -> Instant -> String
 let afterSeconds seconds i = Instant.toString (Instant.plus (Duration.ofSeconds seconds) i)
 example: afterSeconds 90 Instant.epoch = "1970-01-01T00:01:30Z"
+// Large time additions carry days before multiplying the within-day remainder.
+example: LocalDateTime.plusHours 3000000 LocalDateTime.epoch = LocalDateTime.of (LocalDate.fromEpochDay 125000) LocalTime.midnight
 
 /// Render a local date-time with a custom pattern.
 public stamp : LocalDateTime -> String

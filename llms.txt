@@ -1390,6 +1390,11 @@ re-exports the type names so signatures read unqualified. Operations are
 subject-last (so they pipe: `date |> LocalDate.plusDays 3`). Everything is pure
 except `Instant.now`/`OffsetDateTime.now`, which take the `Clock` capability.
 
+Time-unit additions split whole days from bounded remainders, and
+`Duration.multiply` supports a full-width `Int` factor without premature
+nanosecond overflow. Fractional days remain exact; an unrepresentable final day
+count wraps with `Int` arithmetic. `LocalTime` wraps modulo one day.
+
 - **`Instant`** — a UTC point on the timeline (nanosecond, vast range). `epoch`,
   `now : { clock : Clock | _ } -> Instant / { Clock }`, `fromUnixTimeMillis`/
   `fromUnixTimeSeconds`, `toUnixTimeMillis`/`toUnixTimeSeconds`,

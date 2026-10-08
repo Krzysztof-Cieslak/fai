@@ -3965,6 +3965,13 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     Hinnant's algorithm), which divides only non-negative operands, so the truncating
     `/` is the floored division it needs; a shared `Int.floorDiv`/`Int.floorMod` (also
     added) handles the genuinely-signed normalization of nanosecond-of-day and offset.
+    Time-unit additions split whole days and bounded remainders before multiplying,
+    and LocalTime reduces offsets modulo a day before addition. Duration scaling
+    computes a fractional quotient/remainder in at most five radix-32768 steps;
+    each partial product fits Int while the final whole-day field follows Int's
+    wrapping policy if out of range. Period time components use these safe additions
+    individually rather than summing overflowing nanosecond products. Wide-integer
+    oracle properties pin canonical remainders, signed carries, and final overflow.
   - **Opaque, validated value types.** Every type is `opaque` with a module-private
     constructor; smart constructors validate and return `Option` (`LocalDate.of`,
     `LocalTime.of`, `Offset.ofHours`), so an out-of-range date/time is unrepresentable.

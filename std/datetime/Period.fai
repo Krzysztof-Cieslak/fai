@@ -12,15 +12,6 @@ module Period
 public opaque type Period =
   | MkPeriod Int Int Int Int Int Int Int
 
-nanosPerSecond : Int
-let nanosPerSecond = 1_000_000_000
-
-nanosPerMinute : Int
-let nanosPerMinute = 60_000_000_000
-
-nanosPerHour : Int
-let nanosPerHour = 3_600_000_000_000
-
 // A definitely-valid date, for readable examples (an out-of-range day clamps).
 dateOf : Int -> Int -> Int -> LocalDate
 let dateOf y m day = Option.withDefault (LocalDate.fromEpochDay 0) (LocalDate.of y m day)
@@ -181,14 +172,19 @@ example: LocalDate.day (addToDate (ofMonths 1) (dateOf 2020 1 31)) = 29
 example: LocalDate.toEpochDay (addToDate (ofDays 5) (LocalDate.fromEpochDay 0)) = 5
 
 /// Apply every component of a period to a date-time (date parts first, then the
-/// time parts, carrying across midnight).
+/// time parts, carrying across midnight). Time components are normalized
+/// individually, so their nanosecond products cannot overflow before carrying.
 public addToDateTime : Period -> LocalDateTime -> LocalDateTime
 let addToDateTime p dt =
   let withDate =
     LocalDateTime.plusDays (days p) (LocalDateTime.plusMonths (months p) (LocalDateTime.plusYears (years p) dt))
-  LocalDateTime.plusNanoseconds (hours p * nanosPerHour + minutes p * nanosPerMinute + seconds p * nanosPerSecond + nanoseconds p) withDate
+  let withHours = LocalDateTime.plusHours (hours p) withDate
+  let withMinutes = LocalDateTime.plusMinutes (minutes p) withHours
+  let withSeconds = LocalDateTime.plusSeconds (seconds p) withMinutes
+  LocalDateTime.plusNanoseconds (nanoseconds p) withSeconds
 example: LocalDateTime.hour (addToDateTime (ofHours 5) (LocalDateTime.fromEpochDayAndNanoOfDay 0 0)) = 5
 example: LocalDateTime.day (addToDateTime (ofDays 1) (LocalDateTime.fromEpochDayAndNanoOfDay 0 0)) = 2
+example: LocalDateTime.epochDay (addToDateTime (ofHours 3000000) LocalDateTime.epoch) = 125000
 
 /// Render in ISO-8601 period form, e.g. `P1Y2M3DT4H5M6S` (zero components are
 /// omitted; the empty period is `P0D`).

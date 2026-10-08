@@ -124,23 +124,33 @@ example: dayOfWeek (fromEpochDayAndNanoOfDay 0 0) = DayOfWeek.Thursday
 
 /// The date-time `n` nanoseconds later, carrying into the date as needed.
 public plusNanoseconds : Int -> LocalDateTime -> LocalDateTime
-let plusNanoseconds n dt = fromEpochDayAndNanoOfDay (epochDay dt) (nanoOfDay dt + n)
+let plusNanoseconds n dt = plusUnits n nanosPerDay 1 dt
 example: nanoOfSecond (plusNanoseconds 5 (fromEpochDayAndNanoOfDay 0 0)) = 5
 
 /// The date-time `n` seconds later.
 public plusSeconds : Int -> LocalDateTime -> LocalDateTime
-let plusSeconds n dt = plusNanoseconds (n * nanosPerSecond) dt
+let plusSeconds n dt = plusUnits n 86400 nanosPerSecond dt
 example: second (plusSeconds 30 (fromEpochDayAndNanoOfDay 0 0)) = 30
 
 /// The date-time `n` minutes later.
 public plusMinutes : Int -> LocalDateTime -> LocalDateTime
-let plusMinutes n dt = plusNanoseconds (n * nanosPerMinute) dt
+let plusMinutes n dt = plusUnits n 1440 nanosPerMinute dt
 example: minute (plusMinutes 5 (fromEpochDayAndNanoOfDay 0 0)) = 5
 
 /// The date-time `n` hours later (carrying into the date past midnight).
 public plusHours : Int -> LocalDateTime -> LocalDateTime
-let plusHours n dt = plusNanoseconds (n * nanosPerHour) dt
+let plusHours n dt = plusUnits n 24 nanosPerHour dt
 example: day (plusHours 25 (fromEpochDayAndNanoOfDay 0 0)) = 2
+example: epochDay (plusHours 3000000 epoch) = 125000
+example: nanoOfDay (plusHours 3000000 epoch) = 0
+
+// Split before multiplying: only a within-day remainder becomes nanoseconds.
+// A final day count outside Int's range wraps, with the remainder still canonical.
+plusUnits : Int -> Int -> Int -> LocalDateTime -> LocalDateTime
+let plusUnits n unitsPerDay nanosPerUnit dt =
+  let wholeDays = Int.floorDiv n unitsPerDay
+  let withinDay = Int.floorMod n unitsPerDay * nanosPerUnit
+  fromEpochDayAndNanoOfDay (epochDay dt + wholeDays) (nanoOfDay dt + withinDay)
 
 /// The date-time `n` days later.
 public plusDays : Int -> LocalDateTime -> LocalDateTime
