@@ -1,38 +1,12 @@
 //! Decoding literal lexemes (kept raw by the parser) into Core values.
 
-/// Decodes an integer lexeme (`42`, `0xFF`, `0o17`, `0b1010`, `1_000`) into an
-/// `i64`. Underscores are separators; the value wraps to the 64-bit pattern when
-/// it exceeds the signed range (e.g. a full-width hex literal).
-#[must_use]
-pub fn decode_int(raw: &str) -> Option<i64> {
-    let cleaned: String = raw.chars().filter(|&c| c != '_').collect();
-    let (radix, digits) = if let Some(rest) = strip_prefix_ci(&cleaned, "0x") {
-        (16, rest)
-    } else if let Some(rest) = strip_prefix_ci(&cleaned, "0o") {
-        (8, rest)
-    } else if let Some(rest) = strip_prefix_ci(&cleaned, "0b") {
-        (2, rest)
-    } else {
-        (10, cleaned.as_str())
-    };
-    if let Ok(n) = i64::from_str_radix(digits, radix) {
-        return Some(n);
-    }
-    // A literal that fills the top bit (e.g. 0xFFFF_FFFF_FFFF_FFFF) parses as
-    // unsigned; reinterpret its bit pattern as i64.
-    u64::from_str_radix(digits, radix).ok().map(|u| u as i64)
-}
+pub use fai_syntax::decode_int_literal as decode_int;
 
 /// Decodes a float lexeme (`3.14`, `1_000.0`, `1e9`) into its IEEE-754 bits.
 #[must_use]
 pub fn decode_float(raw: &str) -> u64 {
     let cleaned: String = raw.chars().filter(|&c| c != '_').collect();
     cleaned.parse::<f64>().unwrap_or(0.0).to_bits()
-}
-
-fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
-    let lower = s.get(..prefix.len())?.to_ascii_lowercase();
-    if lower == prefix { s.get(prefix.len()..) } else { None }
 }
 
 /// Decodes a char lexeme (`'a'`, `'\n'`, `'\u{1F600}'`, including its surrounding

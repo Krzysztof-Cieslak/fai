@@ -319,7 +319,10 @@ impl Lowerer<'_> {
         let node = self.module.expr(expr);
         let kind = match &node.kind {
             ExprKind::Int(raw) => {
-                K::Lit(Lit::Int(crate::lit::decode_int(raw.as_str()).unwrap_or(0)))
+                let Some(value) = crate::lit::decode_int(raw.as_str()) else {
+                    return self.failure();
+                };
+                K::Lit(Lit::Int(value))
             }
             ExprKind::String(raw) => K::Lit(Lit::Str(crate::lit::decode_string(raw.as_str()))),
             ExprKind::Unit => K::Lit(Lit::Unit),
@@ -1148,7 +1151,9 @@ impl Lowerer<'_> {
             PatKind::Unit => success,
             PatKind::Bool(b) => self.test_lit(value(), Lit::Bool(*b), success, fail),
             PatKind::Int(raw) => {
-                let n = crate::lit::decode_int(raw.as_str()).unwrap_or(0);
+                let Some(n) = crate::lit::decode_int(raw.as_str()) else {
+                    return self.failure();
+                };
                 self.test_lit(value(), Lit::Int(n), success, fail)
             }
             PatKind::Float(raw) => {

@@ -355,11 +355,12 @@ impl Lexer<'_> {
             ok = false;
         }
 
-        if !ok {
-            let range = self.range_from(start);
-            self.error(INVALID_NUMBER, range, "invalid numeric literal");
-        }
         let range = self.range_from(start);
+        if !ok {
+            self.error(INVALID_NUMBER, range, "invalid numeric literal");
+        } else if !is_float && crate::decode_int_literal(&self.text[start..self.pos]).is_none() {
+            self.error(INVALID_NUMBER, range, "integer literal magnitude exceeds 64 bits");
+        }
         self.push(if is_float { TokenKind::Float } else { TokenKind::Int }, range);
     }
 
