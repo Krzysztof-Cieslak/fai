@@ -468,6 +468,11 @@ Daemon, persistence & protocol:
   (see AGENTS.md §8). The daemon shuts down on an explicit `Shutdown` or after an
   idle period (`FAI_DAEMON_IDLE_TIMEOUT`, default 600s), unlinking its socket on
   the way out.
+  A full-request guard covers preparation, worker execution, streaming, and the
+  final response. The idle clock starts when the last guard is released, including
+  error/disconnect/unwind exits. Request admission and the idle-shutdown decision
+  share a lock so expiry cannot race already-admitted work. Tap subscriptions
+  release their guard after acknowledgement and remain passive observers.
 - **D61 File-state sync:** before each request the daemon re-scans the workspace,
   **stat-gated** (mtime/size) and **hash-confirmed** (blake3), updating a salsa
   input only when content truly changed (so a `touch` doesn't break early cutoff).

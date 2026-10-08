@@ -9,6 +9,7 @@
 //! in-process execution when the daemon is unreachable.
 
 mod client;
+mod idle;
 pub mod protocol;
 mod server;
 mod tap;

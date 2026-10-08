@@ -31,6 +31,7 @@ use fai_driver::{
 use interprocess::local_socket::Stream;
 use wait_timeout::ChildExt;
 
+use crate::idle::{IdleTimer, RequestActivity};
 use crate::protocol::{
     CommandRequest, InitResult, OutputStream, PROTOCOL_VERSION, Request, Response, RunRequest,
     ServerMessage, StatusInfo, TapDirection, TapFrame, TestRequest, frame_to_json, read_frame,
@@ -77,8 +78,8 @@ struct Daemon {
     /// from shared borrows.)
     session: Mutex<Session>,
     start: Instant,
-    /// Epoch-ish activity clock: milliseconds since `start` of the last request.
-    last_activity_ms: AtomicU64,
+    /// Full request lifetimes, including workers and final response streaming.
+    activity: IdleTimer,
     socket_path: Option<PathBuf>,
     idle: Duration,
     /// Latency profiling for served `Command` requests (the compile path:
@@ -186,18 +187,6 @@ fn with_snapshot<T>(daemon: &Daemon, f: impl Fn(&Session) -> T) -> T {
     }
 }
 
-impl Daemon {
-    fn touch(&self) {
-        let ms = u64::try_from(self.start.elapsed().as_millis()).unwrap_or(u64::MAX);
-        self.last_activity_ms.store(ms, Ordering::Relaxed);
-    }
-
-    fn idle_for(&self) -> Duration {
-        let last = self.last_activity_ms.load(Ordering::Relaxed);
-        self.start.elapsed().saturating_sub(Duration::from_millis(last))
-    }
-}
-
 /// Runs the daemon for `root`. Returns when the listener cannot be created or the
 /// workspace cannot be opened; otherwise it serves until shutdown (which exits the
 /// process). A lost spawn race (another daemon already bound) returns `Ok(())`.
@@ -226,7 +215,7 @@ pub fn serve(root: Utf8PathBuf) -> std::io::Result<()> {
     let daemon = Arc::new(Daemon {
         session: Mutex::new(session),
         start: Instant::now(),
-        last_activity_ms: AtomicU64::new(0),
+        activity: IdleTimer::new(Instant::now()),
         socket_path: transport::socket_path(&root),
         idle,
         commands: AtomicU64::new(0),
@@ -268,9 +257,7 @@ fn spawn_idle_watchdog(daemon: Arc<Daemon>) {
     std::thread::spawn(move || {
         loop {
             std::thread::sleep(Duration::from_secs(5));
-            if daemon.idle_for() >= daemon.idle {
-                shutdown(&daemon);
-            }
+            daemon.activity.expire_if_idle(daemon.idle, || shutdown(&daemon));
         }
     });
 }
@@ -335,7 +322,7 @@ fn handle_connection(stream: Stream, daemon: &Daemon, id: u64) {
             // EOF or a malformed frame ends the connection.
             Err(_) => return,
         };
-        daemon.touch();
+        let activity = daemon.activity.begin();
 
         // `run` streams `$/output` frames before its terminal result.
         if let Request::Run(request) = request {
@@ -356,7 +343,7 @@ fn handle_connection(stream: Stream, daemon: &Daemon, id: u64) {
         // `tap` turns this connection into a passive subscriber and never returns
         // to the request loop.
         if matches!(request, Request::Tap) {
-            subscribe_and_stream(&mut conn);
+            subscribe_and_stream(&mut conn, activity);
             return;
         }
 
@@ -418,11 +405,13 @@ fn handle_connection(stream: Stream, daemon: &Daemon, id: u64) {
 ///
 /// An idle tap whose client has vanished is reaped on the next broadcast (its
 /// send fails) or when the daemon shuts down.
-fn subscribe_and_stream(conn: &mut Conn) {
+fn subscribe_and_stream(conn: &mut Conn, activity: RequestActivity<'_>) {
     let frames = conn.daemon.taps.subscribe();
     if write_frame(&mut conn.stream, &ServerMessage::Result(Response::Ok)).is_err() {
         return;
     }
+    // The handshake is complete; a passive observer does not keep a daemon alive.
+    drop(activity);
     for frame in frames {
         if write_frame(&mut conn.stream, &ServerMessage::TapFrame(frame)).is_err() {
             return;
