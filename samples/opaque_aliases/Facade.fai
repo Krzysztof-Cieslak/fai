@@ -7,3 +7,6 @@ let scalar value = Library.scalar value
 
 public echo : Scalar -> Scalar
 let echo value = value
+
+public echoMaybe : Library.Maybe -> Library.Maybe
+let echoMaybe value = value

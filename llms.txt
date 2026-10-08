@@ -507,6 +507,11 @@ This is exactly how least-authority capability records work (see §10).
 freely), abstract everywhere else (you may name, hold, pass, and compare its
 values structurally, but not construct, deconstruct, or see through them).
 
+An opaque alias stays nominal in exported function signatures, constructor
+fields, and interface methods, even through a transparent re-export in another
+module. An explicitly annotated client can pass the alias to its public API;
+receiving it never grants access to its hidden fields or function representation.
+
 ```fai
 public opaque type Counter =
   | Counter Int

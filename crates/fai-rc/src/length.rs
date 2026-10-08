@@ -23,10 +23,11 @@
 use fai_core::WHOLE;
 use fai_core::fuse_def;
 use fai_core::ir::{CExpr, CoreFn, ExprKind as K, FieldIndex, Prim};
+use fai_core::representation::definition_scheme as declared_or_inferred_scheme;
 use fai_db::{Db, SourceFile};
 use fai_resolve::{DefId, LocalId};
 use fai_syntax::Symbol;
-use fai_types::{Con, Scheme, Ty, declared_or_inferred_scheme, evidence_count};
+use fai_types::{Con, Scheme, Ty, evidence_count};
 use rustc_hash::FxHashMap;
 
 /// Whether `ty`'s head constructor is `Array` (a monomorphic or generic array).

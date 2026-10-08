@@ -411,6 +411,13 @@ be pure; expose effectful initialization through a `Unit -> … / { … }` funct
 A private custom `runtime` builder may have forcing effects, and the launcher
 starts the scheduler when those effects require it.
 
+Opaque aliases retain their nominal type in cross-file value, constructor, and
+interface-method signatures, including through transparent re-exports. Names
+resolve in their declaring scope while opacity follows the observing file.
+Native lowering separately expands the hidden representation, so scalar,
+aggregate, generic, and first-class calls agree on layout without exposing it to
+source-level type checking.
+
 `Offset` constructors validate before arithmetic: seconds stay within ±64800,
 hours within ±18, and `ofHoursMinutes` requires minutes within ±59 and matching
 signs for nonzero components. ISO parsing requires two unsigned ASCII digits per

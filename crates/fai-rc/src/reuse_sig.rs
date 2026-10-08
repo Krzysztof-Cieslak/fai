@@ -116,7 +116,7 @@ pub fn reuse_signature(db: &dyn Db, file: SourceFile, name: Symbol) -> ReuseSig 
     let def = DefId::new(file.source(db), name);
     // Row-polymorphic entries are reached only curried through `apply_n`, never as
     // a saturated direct call, so a token-taking entry could never be exploited.
-    let evidence = fai_types::declared_or_inferred_scheme(db, def)
+    let evidence = fai_core::representation::definition_scheme(db, def)
         .map_or(0, |s| fai_types::evidence_count(&s));
     if evidence > 0 {
         return ReuseSig(Vec::new());
@@ -145,7 +145,7 @@ pub fn reuse_signature(db: &dyn Db, file: SourceFile, name: Symbol) -> ReuseSig 
 fn forwardable_deaths(db: &dyn Db, def: DefId, entry: &CoreFn) -> FxHashSet<LocalId> {
     let mut deaths = crate::data_typed_locals(&entry.body);
     // Data-typed parameters (owned cells) are deaths too.
-    if let Some(scheme) = fai_types::declared_or_inferred_scheme(db, def) {
+    if let Some(scheme) = fai_core::representation::definition_scheme(db, def) {
         let mut ty = &scheme.ty;
         for &p in &entry.params {
             let Ty::Arrow(from, to, _) = ty else { break };
@@ -393,8 +393,8 @@ pub(crate) fn forward_target(
         return None;
     }
     let gfile = db.source_file(g.file)?;
-    let evidence =
-        fai_types::declared_or_inferred_scheme(db, *g).map_or(0, |s| fai_types::evidence_count(&s));
+    let evidence = fai_core::representation::definition_scheme(db, *g)
+        .map_or(0, |s| fai_types::evidence_count(&s));
     if evidence > 0 {
         return None;
     }

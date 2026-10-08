@@ -8,6 +8,11 @@ let wrappedValue wrapped =
   match wrapped with
   | Library.Wrapped value -> scalarValue value
 
+public sameScalar : Facade.Scalar -> Bool
+let sameScalar value = scalarValue value = scalarValue (Facade.echo value)
+forall value: sameScalar value
+example: scalarValue (Facade.scalar 3.5) = 3.5
+
 public main : Runtime -> Unit / { Console }
 let main runtime =
   let scalar = Facade.scalar 3.5
@@ -19,7 +24,10 @@ let main runtime =
   let count = Library.countValue (Library.unbox boxed)
   let deferred = Library.defer (fun u -> runtime.console.writeLine "deferred")
   let called = Library.force deferred
-  let wroteCount = runtime.console.writeLine (Int.toString (Library.apply (Library.function 2) count))
+  let wroteCount =
+    runtime.console.writeLine (Int.toString (Library.apply (Library.function 2) count))
   let wroteScalar = runtime.console.writeLine (Float.toString total)
   let wrotePoint = runtime.console.writeLine (Float.toString pointTotal)
-  runtime.console.writeLine (Float.toString (wrappedValue (Library.Wrapped scalar)))
+  let wroteWrapped =
+    runtime.console.writeLine (Float.toString (wrappedValue (Library.Wrapped scalar)))
+  runtime.console.writeLine (Int.toString (Library.maybeValue (Facade.echoMaybe (Library.maybe 42))))

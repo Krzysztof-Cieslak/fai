@@ -46,7 +46,9 @@ fn expand(db: &dyn Db, ty: &Ty, active: &mut Vec<AdtRef>) -> Ty {
     }
 }
 
-pub(crate) fn definition_scheme(db: &dyn Db, def: DefId) -> Option<Scheme> {
+/// A definition's scheme with all aliases expanded for native ownership,
+/// evidence, layout, and calling-convention analysis.
+pub fn definition_scheme(db: &dyn Db, def: DefId) -> Option<Scheme> {
     let mut scheme = fai_types::declared_or_inferred_scheme(db, def)?;
     scheme.ty = runtime_type(db, &scheme.ty);
     Some(scheme)

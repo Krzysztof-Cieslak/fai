@@ -87,7 +87,7 @@ pub fn borrow_signature(db: &dyn Db, file: SourceFile, name: Symbol) -> BorrowSi
     // only ever called curried (through `apply_n`), never as a saturated direct
     // call, so borrowing them would never be exploited; keep them all-owned.
     let def = lowered.def;
-    let evidence = fai_types::declared_or_inferred_scheme(db, def)
+    let evidence = fai_core::representation::definition_scheme(db, def)
         .map_or(0, |s| fai_types::evidence_count(&s));
     if evidence > 0 {
         return BorrowSig(vec![false; n]);
@@ -120,7 +120,7 @@ pub fn borrow_signature(db: &dyn Db, file: SourceFile, name: Symbol) -> BorrowSi
     // callee drop it — cheaply: an immediate `Some`, or the immortal `None`
     // sentinel — and the caller simply pass ownership. (At `evidence > 0` the
     // function already returned all-owned above.)
-    if let Some(scheme) = fai_types::declared_or_inferred_scheme(db, def) {
+    if let Some(scheme) = fai_core::representation::definition_scheme(db, def) {
         let mut ty = &scheme.ty;
         for s in &mut sig {
             let fai_types::Ty::Arrow(from, to, _) = ty else { break };

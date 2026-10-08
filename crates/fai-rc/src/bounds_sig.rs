@@ -34,12 +34,13 @@ use std::sync::Arc;
 
 use fai_core::bounds::{BoundSig, Bounds, PTerm, RTerm, ResultSig, Term, WHOLE};
 use fai_core::ir::{CExpr, ExprKind as K, Lit};
+use fai_core::representation::definition_scheme as declared_or_inferred_scheme;
 use fai_db::{Db, SourceFile};
 use fai_resolve::{DefId, LocalId, module_defs};
 use fai_span::SourceId;
 use fai_syntax::Symbol;
 use fai_syntax::ast::Visibility;
-use fai_types::{Con, Scheme, Ty, declared_or_inferred_scheme, evidence_count};
+use fai_types::{Con, Scheme, Ty, evidence_count};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::length::length_preservation;
