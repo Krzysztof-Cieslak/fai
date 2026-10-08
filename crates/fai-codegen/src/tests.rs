@@ -497,6 +497,12 @@ fn const_keeps_a_niche_option_result() {
 }
 
 #[test]
+fn niche_construction_keeps_uniform_lambda_payloads_intact() {
+    let source = "module M\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let same = List.all (fun x -> Option.withDefault 0 (Some x) = x) [0, 1, 9223372036854775807]\n  r.console.writeLine (if same then \"ok\" else \"failed\")\n";
+    assert_eq!(run_std(source), (0, "ok\n".into()));
+}
+
+#[test]
 fn fusion_preserves_initializer_before_source_effects() {
     let source = indoc! {r#"
         module M

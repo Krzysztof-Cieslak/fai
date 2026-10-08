@@ -2767,6 +2767,11 @@ Editor integration:
   wrapper or a branch merge reverted to the standard form — heap-allocating a
   `Some` cell and converting straight back — so an `Option` threaded through a loop
   allocated once per iteration.
+  Constructing `Some payload` gives the Option a distinct SSA identity before
+  recording its representation, even when its bits equal the payload's. A live
+  payload alias keeps its original interpretation at subsequent comparisons and
+  uniform boundaries. The identity instruction is optimized away after emission,
+  so this separation adds neither an allocation nor a runtime wrapper.
   - **Owned, not borrowed.** A niche `Option` parameter is always passed **owned**
     (the borrow signature never borrows one): a borrowed niche argument would force
     the caller to convert a *duplicate* (the conversion consumes its input), so

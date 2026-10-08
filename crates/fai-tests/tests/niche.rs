@@ -60,6 +60,48 @@ fn niche_some_and_none_nonrecursive() {
     outputs(defs, "use (mk 0)", "-1");
 }
 
+#[track_caller]
+fn preserves_payload_alias(ty: &str, value: &str) {
+    let defs = format!(
+        "keep : {ty} -> Int\nlet keep x = if Option.withDefault x (Some x) = x then 1 else 0\n"
+    );
+    outputs(&defs, &format!("keep ({value})"), "1");
+}
+
+#[test]
+fn niche_some_preserves_a_string_payload_alias() {
+    preserves_payload_alias("String", "\"shared string\"");
+}
+
+#[test]
+fn niche_some_preserves_a_tuple_payload_alias() {
+    preserves_payload_alias("(Int * String)", "(42, \"shared tuple\")");
+}
+
+#[test]
+fn niche_some_preserves_a_nullary_list_payload_alias() {
+    preserves_payload_alias("List Int", "[]");
+}
+
+#[test]
+fn niche_some_preserves_a_boxed_list_payload_alias() {
+    preserves_payload_alias("List Int", "[1, 2, 3]");
+}
+
+#[test]
+fn niche_some_preserves_a_float_payload_alias() {
+    preserves_payload_alias("Float", "1.5");
+}
+
+#[test]
+fn repeated_niche_wrapping_preserves_all_aliases() {
+    outputs(
+        "keep : String -> Int\nlet keep x =\n  let first = Some x\n  let second = if String.length x > 0 then Some x else None\n  if first = second && Option.withDefault \"\" second = x then 1 else 0\n",
+        "keep \"hello\"",
+        "1",
+    );
+}
+
 #[test]
 fn niche_threaded_through_mutual_recursion() {
     // `f`/`g` are mutually recursive and both return a niche `Option`; the niche

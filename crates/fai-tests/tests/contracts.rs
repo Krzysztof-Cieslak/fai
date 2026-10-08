@@ -264,6 +264,14 @@ fn function_typed_binder_is_not_runnable() {
 }
 
 #[test]
+fn wrapping_a_contract_parameter_in_some_preserves_its_live_alias() {
+    let outcome = run(&[("C.fai", "module C\nforall x: Option.withDefault 0 (Some x) = x\n")]);
+    assert!(outcome.ok, "{:?}", outcome.diagnostics);
+    assert_eq!(outcome.passed, 1);
+    assert_eq!(outcome.leaked, 0);
+}
+
+#[test]
 fn impure_contract_blocks_the_test_run() {
     // A contract that references a capability is impure: `fai test` surfaces the
     // located purity diagnostic and runs nothing (a file with errors cannot be

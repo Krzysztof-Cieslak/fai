@@ -1439,7 +1439,9 @@ impl<M: Module> Translator<'_, M> {
         v
     }
 
-    /// Records `v` as holding a niche `Option` of scheme `k` and returns it.
+    /// Records an SSA value whose semantic type is already a niche Option.
+    /// Payload-to-Option construction must first give the value a fresh identity
+    /// so this metadata does not change the interpretation of live payload aliases.
     fn mark_niche(&mut self, v: Value, k: NicheKind) -> Value {
         self.niche_values.insert(v, k);
         v
@@ -2466,7 +2468,11 @@ impl<M: Module> Translator<'_, M> {
         {
             debug_assert!(reuse.is_none(), "a niche `Some` allocates nothing to reuse");
             let v = self.expr_boxed(&args[0]);
-            return self.mark_niche(v, k);
+            // Preserve the payload's SSA interpretation for any live aliases.
+            // The bits are unchanged, and Cranelift removes this identity op
+            // after the emitter has finished representation tracking.
+            let some = self.builder.ins().iadd_imm(v, 0);
+            return self.mark_niche(some, k);
         }
         if args.is_empty() {
             debug_assert!(reuse.is_none(), "nullary constructor cannot reuse a cell");
