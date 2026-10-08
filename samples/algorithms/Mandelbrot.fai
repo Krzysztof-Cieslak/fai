@@ -13,8 +13,6 @@ escape : Float -> Float -> Float -> Float -> Int -> Float
 let escape cx cy zx zy k =
   if k <= 0 then
     let m = zx * zx + zy * zy
-    // Divergent iterates can produce either sign of NaN. Total ordering places
-    // negative NaNs below finite values, so require the full magnitude interval.
     if m >= 0.0 && m < 4.0 then m else 4.0
   else
     escape cx cy (zx * zx - zy * zy + cx) (2.0 * zx * zy + cy) (k - 1)
