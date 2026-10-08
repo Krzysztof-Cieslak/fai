@@ -4011,8 +4011,17 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     is a **lazy** stream decoded on demand per its framing — chunked transfer-encoding,
     Content-Length, or read-to-EOF — so a client streams a large response without
     buffering it (the body owns the connection, dropped to close it); a server request
-    body is drained in full so the transport is free for the response. A **sent** body
-    is drained to a `Content-Length` by default, or streamed **chunked** without
+    body is drained in full so the transport is free for the response.
+    Framing selection is fallible: decimal lengths are bounded and nonnegative,
+    all repeated/comma-joined values must agree, and only a single exact `chunked`
+    transfer coding is supported (combining it with Content-Length is rejected).
+    Header lines validate field syntax. One incremental chunk decoder serves both
+    pooled and one-shot bodies: checked hexadecimal sizes, data in at most 16 KiB
+    pieces, required data CRLFs, and trailers through the final empty line.
+    Framing lines cap at 8 KiB, header/trailer blocks at 64 KiB; invalid framing
+    returns an error and never checks the connection back in. Buffered bytes past
+    a validated boundary are stored with a pooled transport for its next response.
+    A **sent** body is drained to a `Content-Length` by default, or streamed **chunked** without
     buffering when the headers select `Transfer-Encoding: chunked` (`chunkedResponse`,
     or the header on a request). Chunked sending is driven by a new low-level
     **`Stream.uncons`** (`Stream 'a 'e -> Result (Option ('a * Stream 'a 'e)) String /

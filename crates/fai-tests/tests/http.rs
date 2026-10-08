@@ -30,6 +30,100 @@ fn run(src: &str) -> (String, i32) {
     (out, outcome.exit_code)
 }
 
+fn read_raw_request(connection: &mut std::net::TcpStream) {
+    use std::io::Read;
+    connection.set_read_timeout(Some(std::time::Duration::from_secs(15))).unwrap();
+    let mut request = Vec::new();
+    while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+        let mut bytes = [0; 1024];
+        let count = connection.read(&mut bytes).unwrap();
+        assert_ne!(count, 0, "connection ended before request headers");
+        request.extend_from_slice(&bytes[..count]);
+    }
+}
+
+#[track_caller]
+fn rejects_raw_response(response: &'static [u8]) {
+    use std::io::Write;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut connection, _) = listener.accept().unwrap();
+        drop(listener);
+        read_raw_request(&mut connection);
+        connection.write_all(response).unwrap();
+    });
+    let source = format!(
+        r#"
+module Prog
+public main : Runtime -> Unit / {{ Console, Net, Tls }}
+let main runtime =
+  match Http.get runtime "http://127.0.0.1:{port}/" with
+  | Err e -> runtime.console.writeLine "rejected"
+  | Ok response ->
+    match Http.bodyText response.body with
+    | Err e -> runtime.console.writeLine "rejected"
+    | Ok text -> runtime.console.writeLine "accepted"
+"#
+    );
+    let (out, code) = run(&source);
+    assert_eq!(code, 0, "{out}");
+    server.join().unwrap();
+    assert_eq!(out, "rejected\n");
+}
+
+#[test]
+fn raw_invalid_content_length_is_rejected() {
+    rejects_raw_response(b"HTTP/1.1 200 OK\r\nContent-Length: nope\r\n\r\n");
+}
+
+#[test]
+fn raw_invalid_chunk_size_is_rejected() {
+    rejects_raw_response(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\ng\r\n");
+}
+
+#[test]
+fn raw_truncated_chunk_trailers_are_rejected() {
+    rejects_raw_response(
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\na\r\n0\r\nX: unfinished\r\n",
+    );
+}
+
+#[test]
+fn pooled_chunked_response_retains_surplus_after_its_trailers() {
+    use std::io::Write;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut connection, _) = listener.accept().unwrap();
+        drop(listener);
+        read_raw_request(&mut connection);
+        connection.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\none\r\n0\r\nX-Note: done\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\ntwo").unwrap();
+        read_raw_request(&mut connection);
+    });
+    let source = format!(
+        r#"
+module Prog
+fetch : Runtime -> Http.Client -> String / {{ Concurrency, Net, Tls }}
+let fetch runtime client =
+  match Http.getOn runtime client "http://127.0.0.1:{port}/" with
+  | Err e -> "error: " ++ e
+  | Ok response -> Result.withDefault "body error" (Http.bodyText response.body)
+two : Runtime -> Http.Client -> String / {{ Concurrency, Net, Tls }}
+let two runtime client =
+  let first = fetch runtime client
+  let second = fetch runtime client
+  first ++ "|" ++ second
+public main : Runtime -> Unit / {{ Concurrency, Console, Net, Tls }}
+let main runtime = runtime.console.writeLine (Http.withClient runtime (two runtime))
+"#
+    );
+    let (out, code) = run(&source);
+    assert_eq!(code, 0, "{out}");
+    server.join().unwrap();
+    assert_eq!(out, "one|two\n");
+}
+
 #[test]
 fn client_gets_a_response_from_a_raw_loopback_server() {
     // The `Http` client performs a real GET against a hand-rolled TCP server (raw

@@ -1463,6 +1463,11 @@ Deferred: IANA time zones / `ZonedDateTime` with DST rules (this is offset-only)
    `{ concurrency, net, tls }`. A pooled response body returns its connection to the
    pool when fully read, so consume it within the callback; the pool closes every
    connection on scope exit.
+   Framing errors return `Err`: lengths must be bounded nonnegative decimals,
+   repeated/comma-joined lengths must agree, and only an unambiguous `chunked`
+   transfer coding is supported. Chunk data CRLFs and all trailers are consumed
+   before pool reuse. Framing lines and metadata are bounded; large wire chunks
+   are delivered in pieces of at most 16 KiB.
 
 ```
 // GET (needs { net : Net, tls : Tls }; the URL scheme decides http vs https)

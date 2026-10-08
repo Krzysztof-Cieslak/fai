@@ -753,6 +753,13 @@ it was dropped).
 | A new diagnostic | `fai-diagnostics` (allocate a code, document it) |
 | CLI subcommands / flags | `fai-cli` + `fai-driver` |
 
+**HTTP framing invariant:** lengths are bounded nonnegative decimal values, and
+repeated/comma-joined lengths must agree. Transfer codings are parsed as tokens;
+unsupported or ambiguous framing returns `Err`. Chunked bodies validate data
+CRLFs and consume all trailers through the final empty line before pool reuse.
+Framing lines/trailers are bounded, large chunks are streamed in bounded pieces,
+and buffered surplus travels with the pooled connection.
+
 **Lexer subtlety to preserve:** a leading tick is a character literal when it
 closes (`'a'`, `'\n'`) and a **type variable** otherwise (`'a`, `'r`). This is
 the F# rule; keep it covered by tests.

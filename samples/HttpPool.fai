@@ -9,7 +9,7 @@ module HttpPool
 //
 // To show real reuse, a small loopback server answers two requests on a *single*
 // keep-alive connection (it does not close in between), so the pooled client's second
-// request reuses the first's connection.
+// request reuses the first's connection after consuming its chunked trailers.
 serveTwo : Runtime -> Listener -> Unit / { Net }
 let serveTwo runtime listener =
   match runtime.net.accept listener with
@@ -17,7 +17,7 @@ let serveTwo runtime listener =
   | Ok conn ->
     let first = runtime.net.recv conn 4096
     let r1 =
-      runtime.net.send conn (Bytes.fromString "HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nfirst!")
+      runtime.net.send conn (Bytes.fromString "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n6\r\nfirst!\r\n0\r\nX-Done: yes\r\n\r\n")
     let second = runtime.net.recv conn 4096
     let r2 =
       runtime.net.send conn (Bytes.fromString "HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\nsecond!")
