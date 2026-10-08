@@ -2073,6 +2073,60 @@ fn opaque_alias_is_transparent_in_declaring_file_nominal_elsewhere() {
     assert!(!check_codes(&db, f[1]).is_empty(), "Id is not Int across files");
 }
 
+#[track_caller]
+fn assert_opaque_alias_match(representation: &str, pattern: &str) {
+    let lib = format!("module Lib\npublic opaque type Secret = {representation}\n");
+    let user = format!(
+        "module User\npublic inspect : Lib.Secret -> Int\nlet inspect secret =\n  match secret with\n  | {pattern} -> 1\n"
+    );
+    let (db, files) = db_with(&[("Lib.fai", &lib), ("User.fai", &user)]);
+    assert_eq!(check_diags(&db, files[1]), Vec::new());
+}
+
+#[test]
+fn opaque_int_alias_wildcard_is_useful_and_exhaustive() {
+    assert_opaque_alias_match("Int", "_");
+}
+
+#[test]
+fn opaque_record_alias_as_pattern_is_useful_and_exhaustive() {
+    assert_opaque_alias_match("{ value : Int }", "_ as value");
+}
+
+#[test]
+fn opaque_function_alias_variable_is_useful_and_exhaustive() {
+    assert_opaque_alias_match("Int -> Int", "value");
+}
+
+#[test]
+fn opaque_alias_in_tuple_is_not_an_empty_column() {
+    let (db, files) = db_with(&[
+        ("Lib.fai", "module Lib\npublic opaque type Secret 'a = List 'a\n"),
+        (
+            "User.fai",
+            "module User\npublic inspect : Lib.Secret Int * Bool -> Int\nlet inspect pair =\n  match pair with\n  | (_, true) -> 1\n  | (_, false) -> 0\n",
+        ),
+    ]);
+    assert_eq!(check_diags(&db, files[1]), Vec::new());
+}
+
+#[test]
+fn opaque_alias_duplicate_wildcard_reports_only_the_second_arm() {
+    let user = "module User\npublic inspect : Lib.Secret -> Int\nlet inspect secret =\n  match secret with\n  | _ -> 1\n  | _ -> 2\n";
+    let (db, files) = db_with(&[
+        ("Lib.fai", "module Lib\npublic opaque type Secret = Int\n"),
+        ("User.fai", user),
+    ]);
+    let diags = check_diags(&db, files[1]);
+    assert_eq!(diags.len(), 1);
+    assert_eq!(diags[0].code, crate::UNREACHABLE_ARM);
+    assert_eq!(diags[0].message, "this match arm is unreachable");
+    assert_eq!(diags[0].primary.source(), files[1].source(&db));
+    let at = user.find("| _ -> 2").unwrap();
+    assert_eq!(diags[0].primary.start().to_usize(), at);
+    assert_eq!(diags[0].primary.end().to_usize(), at + "| _ -> 2".len());
+}
+
 // --- Concurrency capability: effect-polymorphic spawn/scope, opaque handles. -
 
 #[test]
