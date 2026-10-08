@@ -12,11 +12,11 @@
 //! A value **escapes** when it flows somewhere that may outlive the call:
 //! returned, stored in a constructor/record/array (a `MakeData`/storing
 //! primitive), captured into another closure, or passed to a callee parameter
-//! that itself escapes. Crucially, **applying** a closure (the callee position of
-//! an application) does *not* escape it — the runtime calls it and drops it, never
-//! retaining it past the call — which is the precision a plain "is it owned?"
-//! (borrow) view lacks, and is what lets a lambda handed to `List.map`/`foldl`
-//! stack-allocate.
+//! that itself escapes. An under-application retains its callee in a partial
+//! application, so applying an unknown closure is safe only when its runtime
+//! arity is known to fit. Parameter summaries retain that arity requirement,
+//! allowing a known saturated lambda passed to `List.map`/`foldl` to stay on the
+//! stack while a possibly under-applied callback stays on the heap.
 //!
 //! Two products:
 //!
@@ -39,11 +39,38 @@ use fai_core::{core, helper_inlined};
 use fai_db::{Db, SourceFile};
 use fai_resolve::{DefId, LocalId};
 use fai_syntax::Symbol;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 
-/// Which of a function's parameters escape their activation (true), by position.
+/// Which parameters may escape without knowing their runtime arity, by position.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct EscapeSig(pub Vec<bool>);
+
+/// How a parameter may be retained. An applied-only parameter stays confined
+/// when its actual runtime arity is no greater than every application site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EscapeUse {
+    Never,
+    Applied(usize),
+    Always,
+}
+
+impl EscapeUse {
+    fn merge(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Always, _) | (_, Self::Always) => Self::Always,
+            (Self::Never, other) | (other, Self::Never) => other,
+            (Self::Applied(a), Self::Applied(b)) => Self::Applied(a.min(b)),
+        }
+    }
+
+    fn confined(self, arity: Option<usize>) -> bool {
+        match self {
+            Self::Never => true,
+            Self::Applied(n) => arity.is_some_and(|arity| arity <= n),
+            Self::Always => false,
+        }
+    }
+}
 
 impl EscapeSig {
     /// Whether parameter `i` escapes (the conservative default for an out-of-range
@@ -63,18 +90,22 @@ impl EscapeSig {
 
 /// The escape signature of `name`'s entry function.
 ///
-/// Inter-procedural: a saturated direct call to another function consults its
-/// escape signature (this query). Mutual recursion forms a salsa cycle resolved
-/// by the monotone fixpoint declared here ([`escape_initial`]/[`escape_recover`]).
-#[salsa::tracked(cycle_fn = escape_recover, cycle_initial = escape_initial)]
+/// The conservative projection of the internal arity-aware profile. Call-site
+/// marking uses the profile directly so known saturated callbacks stay confined.
+#[salsa::tracked]
 pub fn escape_signature(db: &dyn Db, file: SourceFile, name: Symbol) -> EscapeSig {
+    EscapeSig(escape_profile(db, file, name).iter().map(|use_| *use_ != EscapeUse::Never).collect())
+}
+
+#[salsa::tracked(cycle_fn = escape_recover, cycle_initial = escape_initial)]
+fn escape_profile(db: &dyn Db, file: SourceFile, name: Symbol) -> Vec<EscapeUse> {
     // Analyze the fully-inlined body, the same form `rc` reference-counts and
     // `mark_escaping_closures` rewrites, so the signature matches actual use.
     let lowered = helper_inlined(db, file, name);
     let entry = lowered.entry();
     let n = entry.params.len();
     if n == 0 {
-        return EscapeSig(Vec::new());
+        return Vec::new();
     }
     // Row-polymorphic functions take leading offset-evidence parameters and are
     // only ever called curried (through `apply_n`), never as a saturated direct
@@ -84,21 +115,24 @@ pub fn escape_signature(db: &dyn Db, file: SourceFile, name: Symbol) -> EscapeSi
     let evidence = fai_types::declared_or_inferred_scheme(db, def)
         .map_or(0, |s| fai_types::evidence_count(&s));
     if evidence > 0 {
-        return EscapeSig(vec![true; n]);
+        return vec![EscapeUse::Always; n];
     }
 
     // Local fixpoint over self-recursion: start optimistic (nothing escapes) and
     // promote a parameter to escaping once a value derived from it reaches an
     // escaping sink (using the in-progress signature for self-calls, callees'
-    // signatures for cross-function calls). Monotone, so it converges in ≤ n
-    // rounds. (Cross-function mutual recursion is the outer salsa fixpoint.)
-    let mut sig = vec![false; n];
+    // signatures for cross-function calls). Requirements only strengthen over
+    // the finite set of call-site arities. Cross-function mutual recursion is the
+    // outer salsa fixpoint.
+    let arities: Vec<_> = lowered.fns.iter().map(|f| f.params.len()).collect();
+    let mut sig = vec![EscapeUse::Never; n];
     loop {
-        let escaped = analyze(db, &entry.params, &entry.body, def, Some(&sig));
+        let analysis = analyze(db, &entry.params, &entry.body, def, Some(&sig), &arities);
         let mut changed = false;
         for (i, p) in entry.params.iter().enumerate() {
-            if !sig[i] && escaped.contains(p) {
-                sig[i] = true;
+            let use_ = sig[i].merge(analysis.escaped.get(p).copied().unwrap_or(EscapeUse::Never));
+            if sig[i] != use_ {
+                sig[i] = use_;
                 changed = true;
             }
         }
@@ -106,7 +140,7 @@ pub fn escape_signature(db: &dyn Db, file: SourceFile, name: Symbol) -> EscapeSi
             break;
         }
     }
-    EscapeSig(sig)
+    sig
 }
 
 /// Iteration count after which the cross-function escape fixpoint gives up and
@@ -118,25 +152,25 @@ const ESCAPE_FIXPOINT_BOUND: u32 = 100;
 /// The optimistic start for an escape-signature cycle: nothing escapes (the bottom
 /// of the lattice), so the monotone fixpoint converges to the least — most
 /// precise — sound signature.
-fn escape_initial(db: &dyn Db, _id: salsa::Id, file: SourceFile, name: Symbol) -> EscapeSig {
+fn escape_initial(db: &dyn Db, _id: salsa::Id, file: SourceFile, name: Symbol) -> Vec<EscapeUse> {
     let n = core(db, file, name).entry().params.len();
-    EscapeSig(vec![false; n])
+    vec![EscapeUse::Never; n]
 }
 
-/// Cycle recovery for [`escape_signature`]: accept each iteration's value (salsa
+/// Cycle recovery for [`escape_profile`]: accept each iteration's value (salsa
 /// finalizes once it stops changing). Past [`ESCAPE_FIXPOINT_BOUND`] iterations —
 /// unreachable for a monotone fixpoint over any realistic program — fall back to
 /// all-escape so the query stays total.
 fn escape_recover(
     _db: &dyn Db,
     cycle: &salsa::Cycle,
-    _last: &EscapeSig,
-    value: EscapeSig,
+    _last: &Vec<EscapeUse>,
+    value: Vec<EscapeUse>,
     _file: SourceFile,
     _name: Symbol,
-) -> EscapeSig {
+) -> Vec<EscapeUse> {
     if cycle.iteration() >= ESCAPE_FIXPOINT_BOUND {
-        return EscapeSig(vec![true; value.0.len()]);
+        return vec![EscapeUse::Always; value.len()];
     }
     value
 }
@@ -153,12 +187,13 @@ fn escape_recover(
 /// closure by whether its local reaches an escaping sink (the `escaped` set).
 pub fn mark_escaping_closures(db: &dyn Db, lowered: &mut LoweredDef) {
     let def = lowered.def;
+    let arities: Vec<_> = lowered.fns.iter().map(|f| f.params.len()).collect();
     for f in &mut lowered.fns {
         // Marking runs after the signatures are finalized, so self-calls consult
         // the memoized query (not an in-progress signature).
-        let escaped = analyze(db, &f.params, &f.body, def, None);
-        let marker = Marker { db, self_def: def };
-        marker.mark(&mut f.body, &escaped);
+        let analysis = analyze(db, &f.params, &f.body, def, None, &arities);
+        let marker = Marker { db, self_def: def, arities: &arities, locals: &analysis.arities };
+        marker.mark(&mut f.body, &analysis.escaped);
     }
 }
 
@@ -167,6 +202,8 @@ pub fn mark_escaping_closures(db: &dyn Db, lowered: &mut LoweredDef) {
 struct Marker<'a> {
     db: &'a dyn Db,
     self_def: DefId,
+    arities: &'a [usize],
+    locals: &'a FxHashMap<LocalId, usize>,
 }
 
 impl Marker<'_> {
@@ -200,29 +237,34 @@ impl Marker<'_> {
     }
 
     /// The runtime arity (entry parameter count) of a callee, read off its escape
-    /// signature (whose length is exactly that count); zero for an unresolved def.
+    /// profile (whose length is exactly that count); zero for an unresolved def.
     fn callee_arity(&self, def: DefId) -> usize {
-        self.db.source_file(def.file).map_or(0, |f| escape_signature(self.db, f, def.name).0.len())
+        self.db.source_file(def.file).map_or(0, |f| escape_profile(self.db, f, def.name).len())
     }
 
-    fn mark(&self, e: &mut CExpr, escaped: &FxHashSet<LocalId>) {
+    fn arity(&self, e: &CExpr) -> Option<usize> {
+        runtime_arity(self.db, self.self_def, None, self.arities, self.locals, e)
+    }
+
+    fn mark(&self, e: &mut CExpr, escaped: &FxHashMap<LocalId, EscapeUse>) {
         match &mut e.kind {
             // A `let`-bound closure stack-allocates iff its local never escapes.
             K::Let { local, value, body } => {
-                self.set_stack_if(value, !escaped.contains(local));
+                self.set_stack_if(value, !escaped.contains_key(local));
                 self.mark(value, escaped);
                 self.mark(body, escaped);
             }
             K::App { func, args, .. } => {
-                // The callee position is *applied*, not stored, so an inline
-                // closure there does not escape.
-                self.set_stack_if(func, true);
+                // Only a proven saturated call releases its callee rather than
+                // storing it in a potentially escaping partial application.
+                self.set_stack_if(func, self.arity(func).is_some_and(|n| n <= args.len()));
                 self.mark(func, escaped);
                 // An inline closure argument escapes iff the callee's matching
                 // parameter does.
-                let esc = call_arg_escapes(self.db, self.self_def, None, func, args.len());
+                let esc = call_arg_uses(self.db, self.self_def, None, func, args.len());
                 for (i, a) in args.iter_mut().enumerate() {
-                    self.set_stack_if(a, !esc.get(i).copied().unwrap_or(true));
+                    let use_ = esc.get(i).copied().unwrap_or(EscapeUse::Always);
+                    self.set_stack_if(a, use_.confined(self.arity(a)));
                     self.mark(a, escaped);
                 }
             }
@@ -274,22 +316,29 @@ fn analyze(
     params: &[LocalId],
     body: &CExpr,
     self_def: DefId,
-    self_sig: Option<&[bool]>,
-) -> FxHashSet<LocalId> {
-    let mut origins: FxHashMap<LocalId, LocalId> = FxHashMap::default();
+    self_sig: Option<&[EscapeUse]>,
+    arities: &[usize],
+) -> Analysis {
+    let mut origins: FxHashMap<LocalId, Vec<LocalId>> = FxHashMap::default();
     for &p in params {
-        origins.insert(p, p);
+        origins.insert(p, vec![p]);
     }
     let mut cx = Analyzer {
         db,
         self_def,
         self_sig,
         origins,
-        field: FxHashSet::default(),
-        escaped: FxHashSet::default(),
+        fn_arities: arities,
+        arities: FxHashMap::default(),
+        escaped: FxHashMap::default(),
     };
     cx.scan(body, true);
-    cx.escaped
+    Analysis { escaped: cx.escaped, arities: cx.arities }
+}
+
+struct Analysis {
+    escaped: FxHashMap<LocalId, EscapeUse>,
+    arities: FxHashMap<LocalId, usize>,
 }
 
 /// Per-argument escape flags for a call: a saturated self-call uses the in-progress
@@ -297,13 +346,13 @@ fn analyze(
 /// saturated call to another function consults its escape signature; every other
 /// call (a first-class callee, or an under-application whose closure rides into a
 /// partial application) escapes its arguments.
-fn call_arg_escapes(
+fn call_arg_uses(
     db: &dyn Db,
     self_def: DefId,
-    self_sig: Option<&[bool]>,
+    self_sig: Option<&[EscapeUse]>,
     func: &CExpr,
     nargs: usize,
-) -> Vec<bool> {
+) -> Vec<EscapeUse> {
     if let K::Global(def) = &func.kind {
         if *def == self_def {
             if let Some(sig) = self_sig {
@@ -311,19 +360,52 @@ fn call_arg_escapes(
                     return sig.to_vec();
                 }
             } else if let Some(file) = db.source_file(def.file) {
-                let sig = escape_signature(db, file, def.name);
-                if sig.usable_at(nargs) {
-                    return sig.0.clone();
+                let sig = escape_profile(db, file, def.name);
+                if !sig.is_empty() && nargs >= sig.len() {
+                    return sig;
                 }
             }
         } else if let Some(file) = db.source_file(def.file) {
-            let sig = escape_signature(db, file, def.name);
-            if sig.usable_at(nargs) {
-                return sig.0.clone();
+            let sig = escape_profile(db, file, def.name);
+            if !sig.is_empty() && nargs >= sig.len() {
+                return sig;
             }
         }
     }
-    vec![true; nargs]
+    vec![EscapeUse::Always; nargs]
+}
+
+/// Exact runtime arity where syntax or a binding proves it. Function types alone
+/// are insufficient: a polymorphic or opaque result can itself be a function.
+fn runtime_arity(
+    db: &dyn Db,
+    self_def: DefId,
+    self_sig: Option<&[EscapeUse]>,
+    fns: &[usize],
+    locals: &FxHashMap<LocalId, usize>,
+    e: &CExpr,
+) -> Option<usize> {
+    let of = |e: &CExpr| runtime_arity(db, self_def, self_sig, fns, locals, e);
+    match &e.kind {
+        K::MakeClosure { func, .. } => fns.get(func.index()).copied(),
+        K::Global(def) => {
+            let n = if *def == self_def && self_sig.is_some() {
+                self_sig?.len()
+            } else {
+                escape_profile(db, db.source_file(def.file)?, def.name).len()
+            };
+            // A nullary global is forced and may return a closure of any arity.
+            (n > 0).then_some(n)
+        }
+        K::Local(local) => locals.get(local).copied(),
+        K::App { func, args, .. } => of(func)?.checked_sub(args.len()).filter(|n| *n > 0),
+        K::If { then, els, .. } => {
+            let a = of(then)?;
+            (of(els)? == a).then_some(a)
+        }
+        K::Let { body, .. } => of(body),
+        _ => None,
+    }
 }
 
 struct Analyzer<'a> {
@@ -331,37 +413,56 @@ struct Analyzer<'a> {
     self_def: DefId,
     /// The in-progress self signature during the fixpoint (`Some`), or `None` when
     /// marking (self-calls then consult the finalized query).
-    self_sig: Option<&'a [bool]>,
-    /// The tracked root each local derives from (a parameter, or a closure-bound
-    /// local), following alias/projection chains.
-    origins: FxHashMap<LocalId, LocalId>,
-    /// Locals that are a projected field (an independent value).
-    field: FxHashSet<LocalId>,
+    self_sig: Option<&'a [EscapeUse]>,
+    /// The tracked roots each local derives from, including both arms of an
+    /// alias-producing branch and the result of a nested let expression.
+    origins: FxHashMap<LocalId, Vec<LocalId>>,
+    fn_arities: &'a [usize],
+    arities: FxHashMap<LocalId, usize>,
     /// Tracked roots whose value escapes the activation.
-    escaped: FxHashSet<LocalId>,
+    escaped: FxHashMap<LocalId, EscapeUse>,
 }
 
 impl Analyzer<'_> {
     /// The tracked root an expression's value derives from, if any.
-    fn origin(&self, e: &CExpr) -> Option<LocalId> {
+    fn origins(&self, e: &CExpr) -> Vec<LocalId> {
         match &e.kind {
-            K::Local(x) => self.origins.get(x).copied(),
-            K::DataField { base, .. } => self.origin(base),
-            _ => None,
+            K::Local(x) => self.origins.get(x).cloned().unwrap_or_default(),
+            K::DataField { base, .. } => self.origins(base),
+            K::Let { body, .. } => self.origins(body),
+            K::If { then, els, .. } => {
+                let mut roots = self.origins(then);
+                for root in self.origins(els) {
+                    if !roots.contains(&root) {
+                        roots.push(root);
+                    }
+                }
+                roots
+            }
+            _ => Vec::new(),
         }
     }
 
     /// Marks the root an expression derives from as escaping.
-    fn escape(&mut self, e: &CExpr) {
-        if let Some(p) = self.origin(e) {
-            self.escaped.insert(p);
+    fn escape(&mut self, e: &CExpr, use_: EscapeUse) {
+        for root in self.origins(e) {
+            self.escape_root(root, use_);
+        }
+    }
+
+    fn escape_root(&mut self, root: LocalId, use_: EscapeUse) {
+        if !use_.confined(self.arities.get(&root).copied()) {
+            let slot = self.escaped.entry(root).or_insert(EscapeUse::Never);
+            *slot = slot.merge(use_);
         }
     }
 
     /// Marks the root a local derives from as escaping.
     fn escape_local(&mut self, l: LocalId) {
-        if let Some(p) = self.origins.get(&l).copied() {
-            self.escaped.insert(p);
+        if let Some(roots) = self.origins.get(&l).cloned() {
+            for root in roots {
+                self.escape_root(root, EscapeUse::Always);
+            }
         }
     }
 
@@ -370,7 +471,7 @@ impl Analyzer<'_> {
             // A returned value escapes (passed to the caller).
             K::Local(_) => {
                 if tail {
-                    self.escape(e);
+                    self.escape(e, EscapeUse::Always);
                 }
             }
             K::Lit(_) | K::Global(_) | K::Error => {}
@@ -401,14 +502,14 @@ impl Analyzer<'_> {
             K::Prim { args, .. } | K::Foreign { args, .. } => {
                 for a in args {
                     self.scan(a, false);
-                    self.escape(a);
+                    self.escape(a, EscapeUse::Always);
                 }
             }
             // A constructed value may outlive the call, so every field escapes.
             K::MakeData { args, .. } => {
                 for a in args {
                     self.scan(a, false);
-                    self.escape(a);
+                    self.escape(a, EscapeUse::Always);
                 }
             }
             // A captured value rides into the new closure's environment; treat it
@@ -420,16 +521,13 @@ impl Analyzer<'_> {
                 }
             }
             K::App { func, args, .. } => {
-                // The callee position is *applied*, not stored: the runtime calls
-                // and drops it, so it does not escape.
                 self.scan(func, false);
+                self.escape(func, EscapeUse::Applied(args.len()));
                 let escapes =
-                    call_arg_escapes(self.db, self.self_def, self.self_sig, func, args.len());
+                    call_arg_uses(self.db, self.self_def, self.self_sig, func, args.len());
                 for (i, a) in args.iter().enumerate() {
                     self.scan(a, false);
-                    if escapes.get(i).copied().unwrap_or(true) {
-                        self.escape(a);
-                    }
+                    self.escape(a, escapes.get(i).copied().unwrap_or(EscapeUse::Always));
                 }
             }
             // A projection reads its base (a new value), so the base does not
@@ -451,33 +549,27 @@ impl Analyzer<'_> {
     /// Records the binding `local = value`, registering a closure local as a
     /// tracked root and propagating alias/projection origins.
     fn scan_value(&mut self, value: &CExpr, local: LocalId) {
-        match &value.kind {
-            // An alias is the same value: inherit the origin and field status.
-            K::Local(x) => {
-                if let Some(o) = self.origins.get(x).copied() {
-                    self.origins.insert(local, o);
-                }
-                if self.field.contains(x) {
-                    self.field.insert(local);
-                }
-            }
-            // A projection is an independent field of its base.
-            K::DataField { base, .. } => {
-                if let Some(o) = self.origin(base) {
-                    self.origins.insert(local, o);
-                }
-                self.field.insert(local);
-                self.scan(base, false);
-            }
-            K::DataTag { base, .. } => self.scan(base, false),
-            // A closure value is itself a tracked root; its captures escape.
-            K::MakeClosure { captures, .. } => {
-                self.origins.insert(local, local);
-                for &c in captures {
-                    self.escape_local(c);
-                }
-            }
-            _ => self.scan(value, false),
+        self.scan(value, false);
+        // A let-bound application may be a PAP. Track its own storage lifetime,
+        // just like a literal closure, even if it has no source-local origin.
+        let roots = if matches!(&value.kind, K::MakeClosure { .. } | K::App { .. }) {
+            vec![local]
+        } else {
+            self.origins(value)
+        };
+        self.origins.insert(local, roots);
+        if let Some(arity) = runtime_arity(
+            self.db,
+            self.self_def,
+            self.self_sig,
+            self.fn_arities,
+            &self.arities,
+            value,
+        ) {
+            self.arities.insert(local, arity);
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

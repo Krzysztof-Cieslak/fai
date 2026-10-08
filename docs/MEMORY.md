@@ -2812,18 +2812,22 @@ Editor integration:
   - **Escape analysis** (`fai-rc/escape.rs`) establishes non-escape. A value escapes
     when it is returned, stored in a constructor/record or a storing primitive,
     captured into another closure, or passed to a callee parameter that itself
-    escapes; crucially **applying** a closure (the callee position) does *not* escape
-    it (the runtime calls and drops it), which is the precision a borrow view lacks
-    and what lets a combinator's lambda stack-allocate. A per-parameter
-    **`escape_signature`** (consulted at a saturated direct call to relate a closure
-    argument to the callee's parameter) is an inter-procedural monotone fixpoint —
+    escapes. An under-application retains its callee in a partial application,
+    so non-escape requires a runtime-arity proof of saturation. The internal
+    per-parameter **escape profile** distinguishes unconditional retention from
+    applying a parameter to at least `n` arguments: a known callback of arity
+    at most `n` can still stack-allocate in `List.map`/`foldl`, while an unknown or
+    under-applied callback stays on the heap. The public **`escape_signature`**
+    is the conservative boolean projection. Profiles use an inter-procedural monotone fixpoint —
     optimistic (nothing escapes), a self-call uses the in-progress signature, a
     cross-function call reads the callee's signature, mutual recursion a salsa cycle
     — mirroring `borrow_signature`; a row-polymorphic definition (only ever called
     curried) is conservatively all-escape. A context-aware marking pass then restamps
     each non-escaping capturing `MakeClosure` `Stack`, deciding an inline closure by
     the position it occupies and a `let`-bound one by whether its local reaches an
-    escaping sink. Unknown (first-class) callees, primitive operands, and captures
+    escaping sink. Let-bound partial applications are tracked roots; conditional
+    aliases merge both branches' origins, including nested-let results. Unknown
+    (first-class) callees' arguments, primitive operands, and captures
     are conservatively escaping.
   - **Direct-calling a known closure.** A saturated application of a local bound to
     a `MakeClosure` (a `let f = fun … -> …` applied in scope, which the inliner keeps
