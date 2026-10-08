@@ -397,6 +397,17 @@ fn jit_compile_without_main_is_an_error() {
     assert!(err.iter().any(|d| d.code == crate::NO_ENTRY_POINT), "reports the no-entry diagnostic");
 }
 
+#[test]
+fn invalid_custom_runtime_is_rejected_during_build() {
+    let source = "module M\nlet runtime = 0\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine \"x\"\n";
+    let (db, files) = db_with(&[("M.fai", source)]);
+    let directory = tempfile::tempdir().unwrap();
+    let out = Utf8PathBuf::from_path_buf(directory.path().join("program")).unwrap();
+    let result = build_native(&db, files[0], &out);
+    assert!(!result.ok, "an incompatible launcher must be rejected");
+    assert!(result.diagnostics.iter().any(|d| d.code.as_str() == "FAI0007"));
+}
+
 fn colliding_names() -> (FaiDatabase, SourceFile) {
     let (db, files) = db_with(&[
         ("A_b.fai", "module A_b\npublic c : Int -> Int\nlet c x = x + 10\n"),

@@ -242,6 +242,12 @@ ok: 0 errors, 2 warnings
 ### `fai build <path> [--release] [--out <file>]`
 Ahead-of-time compile to a native executable (Cranelift → object cache → link).
 
+Build and run validate the runtime-to-`main` application (`FAI0007` for an invalid
+shape): the selected runtime builder takes no arguments, its value matches
+`main`'s argument, and `main` returns `Unit`. A row-polymorphic `main` receives
+generated field-offset evidence. Runtime initialization runs inside the scheduler
+when initialization or the instantiated entry requires it.
+
 - **Options:** `--release` (optimize), `--out <file>` (output path).
 - **Output (json):** `{ "schemaVersion": 1, "artifact": string, "diagnostics": [Diagnostic], "ok": bool }`
 - **Exit:** `0` on success; `1` if compilation failed.

@@ -12,6 +12,9 @@ mod build_tests;
 mod cache;
 mod command;
 mod contracts;
+mod entry;
+#[cfg(test)]
+mod entry_tests;
 mod manifest;
 mod query;
 mod session;
@@ -62,6 +65,8 @@ pub const NO_ENTRY_POINT: DiagnosticCode = DiagnosticCode::new("FAI0004");
 pub const DAEMON_UNAVAILABLE: DiagnosticCode = DiagnosticCode::new("FAI0005");
 /// A `run` worker exceeded its time limit and was terminated.
 pub const RUN_TIMEOUT: DiagnosticCode = DiagnosticCode::new("FAI0006");
+/// The selected runtime value and main definition do not form a valid launch call.
+pub const INVALID_ENTRY_POINT: DiagnosticCode = DiagnosticCode::new("FAI0007");
 
 /// Diagnostic codes owned by the tooling/driver layer (the `FAI0xxx` range).
 pub const CODES: &[CodeInfo] = &[
@@ -109,7 +114,17 @@ pub const CODES: &[CodeInfo] = &[
         default_severity: Severity::Error,
         explanation: "A program under `fai run` exceeded its wall-clock limit and was \
                       terminated (exit 124). Raise `FAI_RUN_TIMEOUT_MS` for a longer-running \
-                      program.",
+                       program.",
+    },
+    CodeInfo {
+        code: INVALID_ENTRY_POINT,
+        title: "invalid entry point or runtime",
+        default_severity: Severity::Error,
+        explanation: "The program launcher must be able to force the selected zero-argument \
+                      runtime value and pass it to `main`, which must return `Unit`. Check the \
+                      runtime builder's arity, its type against main's argument, and any \
+                      unresolved record-offset evidence. Closed and row-polymorphic runtime \
+                      records are supported when their field layout can be determined.",
     },
 ];
 

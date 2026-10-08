@@ -789,6 +789,13 @@ trampoline prefers a zero-arity **`runtime` builder defined in the entry file**
 standard five without forking the compiler. (Record *extension* is future work, so
 the builder is a fresh literal, not `{ defaultRuntime with … }`.)
 
+Build/run validates the launcher as a typed application: the selected runtime
+builder must be forceable with no arguments, and `main` must accept its value and
+return `Unit` (**`FAI0007`** otherwise). A least-authority, row-polymorphic `main`
+is supported through a generated offset-evidence adapter. Scheduler-requiring
+effects in either the runtime initializer or the instantiated `main` start the
+scheduler before the runtime initializer runs.
+
 A **user** `foreign` (one outside `std/`) uses a **marshalled** native ABI rather
 than the raw value ABI the built-in hosts use, so a plain C function is callable:
 `Int`/`Bool` ↔ `int64_t`, `Float` ↔ `double`, a `String` argument ↔ a borrowed

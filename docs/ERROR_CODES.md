@@ -42,6 +42,12 @@ The per-workspace daemon could not be reached, so the command ran in-process (co
 
 A program under `fai run` exceeded its wall-clock limit and was terminated (exit 124). Raise `FAI_RUN_TIMEOUT_MS` for a longer-running program.
 
+### FAI0007 — invalid entry point or runtime
+
+**Severity:** error
+
+The program launcher must be able to force the selected zero-argument runtime value and pass it to `main`, which must return `Unit`. Check the runtime builder's arity, its type against main's argument, and any unresolved record-offset evidence. Closed and row-polymorphic runtime records are supported when their field layout can be determined.
+
 ## FAI1xxx — Lexing & parsing
 
 ### FAI1001 — unexpected character
