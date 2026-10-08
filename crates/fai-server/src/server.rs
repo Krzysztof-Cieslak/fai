@@ -12,12 +12,12 @@
 //! is never blocked behind them. The daemon shuts down on an explicit `Shutdown`
 //! request or after an idle period, unlinking its socket on the way out.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -414,6 +414,9 @@ fn handle_connection(stream: Stream, daemon: &Daemon, id: u64) {
             Request::Run(_) | Request::Test(_) | Request::Tap => {
                 unreachable!("handled above")
             }
+            // A credited read can finish just after its worker exits. Discard
+            // that late input rather than contaminating the next response.
+            Request::Input(_) | Request::InputEof => continue,
             Request::Shutdown => {
                 let _ = conn.send(&ServerMessage::Result(Response::Ok));
                 shutdown(daemon);
@@ -641,16 +644,52 @@ fn supervise(conn: &mut Conn, bundle_path: &Path, program_args: &[String]) -> st
         .arg("--")
         .args(program_args)
         .env("FAI_RUN_CPU_SECS", cpu_secs.to_string())
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
 
     let child_stdout = child.stdout.take().expect("piped stdout");
     let child_stderr = child.stderr.take().expect("piped stderr");
-    let (tx, rx) = mpsc::channel::<(OutputStream, Vec<u8>)>();
+    let mut child_stdin = child.stdin.take().expect("piped stdin");
+    let (tx, rx) = mpsc::sync_channel::<RunEvent>(8);
     let reader_out = spawn_reader(child_stdout, OutputStream::Stdout, tx.clone());
-    let reader_err = spawn_reader(child_stderr, OutputStream::Stderr, tx);
+    let reader_err = spawn_reader(child_stderr, OutputStream::Stderr, tx.clone());
+    let (_, empty) = mpsc::channel();
+    let requests = std::mem::replace(&mut conn.requests, empty);
+    let finished = Arc::new(AtomicBool::new(false));
+    let input_finished = finished.clone();
+    let input_disconnected = conn.disconnected.clone();
+    let input = std::thread::spawn(move || {
+        let _ = tx.send(RunEvent::InputReady);
+        while !input_finished.load(Ordering::Acquire) && !input_disconnected.load(Ordering::Acquire)
+        {
+            let request = match requests.recv_timeout(Duration::from_millis(25)) {
+                Ok(Ok(request)) => request,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                _ => break,
+            };
+            let ended = match &request {
+                Request::Input(bytes)
+                    if !bytes.is_empty() && bytes.len() <= crate::protocol::INPUT_CHUNK_SIZE =>
+                {
+                    child_stdin.write_all(bytes).is_err()
+                }
+                Request::InputEof => true,
+                _ => {
+                    input_disconnected.store(true, Ordering::Release);
+                    true
+                }
+            };
+            if tx.send(RunEvent::Input(request)).is_err() || ended {
+                break;
+            }
+            if tx.send(RunEvent::InputReady).is_err() {
+                break;
+            }
+        }
+        requests
+    });
 
     // Enforce the timeout off the streaming path so a silent hang is still reaped.
     let (code_tx, code_rx) = mpsc::channel::<i32>();
@@ -679,24 +718,49 @@ fn supervise(conn: &mut Conn, bundle_path: &Path, program_args: &[String]) -> st
                 }
             }
         };
+        finished.store(true, Ordering::Release);
         let _ = code_tx.send(code);
     });
 
     // Forward output until both pipes reach EOF (the child has exited or was
     // killed). A write failure means the client disconnected.
-    for (which, chunk) in rx {
-        conn.send(&ServerMessage::Output { stream: which, chunk })?;
+    let mut failed = None;
+    for event in rx {
+        let result = match event {
+            RunEvent::Output(which, chunk) => {
+                conn.send(&ServerMessage::Output { stream: which, chunk })
+            }
+            RunEvent::InputReady => conn.send(&ServerMessage::InputReady),
+            RunEvent::Input(request) => {
+                conn.broadcast(TapDirection::Inbound, &request);
+                Ok(())
+            }
+        };
+        if let Err(error) = result {
+            failed = Some(error);
+            break;
+        }
     }
     let _ = reader_out.join();
     let _ = reader_err.join();
-    Ok(code_rx.recv().unwrap_or(CRASH_EXIT))
+    if let Ok(requests) = input.join() {
+        conn.requests = requests;
+    }
+    let code = code_rx.recv().unwrap_or(CRASH_EXIT);
+    failed.map_or(Ok(code), Err)
+}
+
+enum RunEvent {
+    Output(OutputStream, Vec<u8>),
+    InputReady,
+    Input(Request),
 }
 
 /// Reads `reader` to EOF, forwarding chunks tagged with `which`.
 fn spawn_reader<R: Read + Send + 'static>(
     mut reader: R,
     which: OutputStream,
-    tx: Sender<(OutputStream, Vec<u8>)>,
+    tx: SyncSender<RunEvent>,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {
         let mut buf = [0u8; 8192];
@@ -704,7 +768,7 @@ fn spawn_reader<R: Read + Send + 'static>(
             match reader.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
-                    if tx.send((which, buf[..n].to_vec())).is_err() {
+                    if tx.send(RunEvent::Output(which, buf[..n].to_vec())).is_err() {
                         break;
                     }
                 }

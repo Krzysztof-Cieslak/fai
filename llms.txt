@@ -157,6 +157,10 @@ fai build path/to/Main.fai     # produce a native executable (AOT)
 writing `fmt` requests are not automatically repeated after this failure, since
 their effects may already have occurred.
 
+`fai run` forwards stdin bytes and EOF in both daemon and `--no-daemon` modes.
+Input and output progress independently, so interactive prompts and pipelines
+work without buffering the entire input.
+
 ---
 
 ## 4. Lexical basics: literals and comments

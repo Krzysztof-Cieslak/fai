@@ -9,7 +9,7 @@
 //! client's stdio pipes, so a piped client returns promptly instead of blocking
 //! until the daemon's idle timeout.
 
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -617,6 +617,146 @@ fn run_streams_output_via_daemon() {
     let out = daemon.run(&["run"], &["Hello.fai"]);
     assert_eq!(stdout(&out), "hi from run\n", "stderr: {}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(out.status.code(), Some(0));
+}
+
+const STDIN_ECHO: &str = "module Main\necho : Console -> Unit / { Console }\nlet echo c =\n  match c.readLine () with\n  | Err e -> c.writeError e\n  | Ok None -> ()\n  | Ok (Some line) ->\n    let ignored = c.writeLine line\n    echo c\npublic main : Runtime -> Unit / { Console }\nlet main r = echo r.console\n";
+
+#[track_caller]
+fn input_output(daemon: &Daemon, bytes: Vec<u8>, no_daemon: bool) -> Vec<u8> {
+    let mut command = daemon.cmd();
+    command.env("FAI_RUN_TIMEOUT_MS", "20000");
+    command
+        .args(["run", "-C"])
+        .arg(&daemon.workspace)
+        .arg("Main.fai")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if no_daemon {
+        command.arg("--no-daemon");
+    }
+    let mut child = command.spawn().unwrap();
+    let mut input = child.stdin.take().unwrap();
+    let writer = std::thread::spawn(move || input.write_all(&bytes));
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    writer.join().unwrap().unwrap();
+    output.stdout
+}
+
+#[test]
+fn daemon_stdin_matches_local_unicode_lines_and_final_eof() {
+    let daemon = Daemon::new("stdin-unicode", &[("Main.fai", STDIN_ECHO)]);
+    let input = format!("{}🌍\nzażółć\nlast", "x".repeat(8191)).into_bytes();
+    let local = input_output(&daemon, input.clone(), true);
+    let warm = input_output(&daemon, input.clone(), false);
+    assert_eq!(warm, local);
+    assert_eq!(warm, [input, b"\n".to_vec()].concat());
+}
+
+#[test]
+fn daemon_stdin_empty_input_closes_the_worker_pipe() {
+    let daemon = Daemon::new("stdin-empty", &[("Main.fai", STDIN_ECHO)]);
+    assert!(input_output(&daemon, Vec::new(), false).is_empty());
+}
+
+#[test]
+fn daemon_stdin_feeds_lazy_line_streams() {
+    let source = "module Main\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  match Stream.toStdoutLines r (Stream.stdinLines r) with\n  | Ok u -> ()\n  | Err e -> r.console.writeError e\n";
+    let daemon = Daemon::new("stdin-lazy", &[("Main.fai", source)]);
+    let input = "one\n世界\nthree\n".as_bytes().to_vec();
+    assert_eq!(input_output(&daemon, input.clone(), false), input);
+}
+
+#[test]
+fn daemon_stdin_and_stdout_progress_together_for_large_streams() {
+    let daemon = Daemon::new("stdin-large", &[("Main.fai", STDIN_ECHO)]);
+    let input = ("z".repeat(8190) + "\n").repeat(64).into_bytes();
+    assert_eq!(input_output(&daemon, input.clone(), false), input);
+}
+
+#[test]
+fn daemon_stdin_is_duplex_before_eof() {
+    use wait_timeout::ChildExt;
+    let daemon = Daemon::new("stdin-duplex", &[("Main.fai", STDIN_ECHO)]);
+    let mut child = KillOnDrop(
+        daemon
+            .cmd()
+            .args(["run", "-C"])
+            .arg(&daemon.workspace)
+            .arg("Main.fai")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut input = child.0.stdin.take().unwrap();
+    let output = read_lines(child.0.stdout.take().unwrap());
+    input.write_all(b"first\n").unwrap();
+    assert_eq!(output.recv_timeout(Duration::from_secs(20)).unwrap(), "first");
+    input.write_all("second🌍\n".as_bytes()).unwrap();
+    assert_eq!(output.recv_timeout(Duration::from_secs(5)).unwrap(), "second🌍");
+    drop(input);
+    assert!(child.0.wait_timeout(Duration::from_secs(10)).unwrap().unwrap().success());
+}
+
+#[test]
+fn a_finished_run_does_not_wait_for_client_stdin() {
+    use wait_timeout::ChildExt;
+    let daemon = Daemon::new(
+        "stdin-open-exit",
+        &[("Main.fai", "module Main\npublic main : Runtime -> Unit\nlet main r = ()\n")],
+    );
+    let mut child = KillOnDrop(
+        daemon
+            .cmd()
+            .args(["run", "-C"])
+            .arg(&daemon.workspace)
+            .arg("Main.fai")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let _held_open = child.0.stdin.take().unwrap();
+    assert!(
+        child
+            .0
+            .wait_timeout(Duration::from_secs(20))
+            .unwrap()
+            .expect("stdin does not delay exit")
+            .success()
+    );
+}
+
+#[test]
+fn a_timed_out_run_does_not_wait_for_client_stdin() {
+    use wait_timeout::ChildExt;
+    let daemon = Daemon::new("stdin-open-timeout", &[("Main.fai", "module Main\nlet spin n = spin (n + 1)\npublic main : Runtime -> Unit\nlet main r = spin 0\n")]).with_run_timeout(500);
+    let mut child = KillOnDrop(
+        daemon
+            .cmd()
+            .args(["run", "-C"])
+            .arg(&daemon.workspace)
+            .arg("Main.fai")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let _held_open = child.0.stdin.take().unwrap();
+    assert_eq!(
+        child
+            .0
+            .wait_timeout(Duration::from_secs(20))
+            .unwrap()
+            .expect("stdin does not delay timeout")
+            .code(),
+        Some(124)
+    );
 }
 
 #[test]

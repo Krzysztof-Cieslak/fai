@@ -7,15 +7,21 @@
 //! so this is a defensive backstop).
 
 use std::fs::File;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
 use std::time::{Duration, Instant};
 
 use camino::Utf8Path;
 use fai_driver::{
     CommandSpec, DirtyFile, OutputFormat, RenderOpts, Rendered, render_test_event_line,
 };
+use interprocess::TryClone;
 use interprocess::local_socket::Stream;
 
 use crate::protocol::{
@@ -100,7 +106,8 @@ impl Client {
         self.send(request)?;
         loop {
             match self.next_message()? {
-                ServerMessage::Output { .. }
+                ServerMessage::InputReady
+                | ServerMessage::Output { .. }
                 | ServerMessage::TestEvent(_)
                 | ServerMessage::TapFrame(_) => {}
                 ServerMessage::Result(response) => return Ok(response),
@@ -150,8 +157,65 @@ impl Client {
             args: args.to_vec(),
             dirty: Vec::new(),
         }))?;
-        loop {
-            match self.next_message()? {
+        let mut reader = self.stream.try_clone()?;
+        let (tx, rx) = mpsc::sync_channel(8);
+        let receive_tx = tx.clone();
+        std::thread::spawn(move || {
+            loop {
+                let message: io::Result<ServerMessage> = read_frame(&mut reader);
+                let ended = matches!(&message, Ok(ServerMessage::Result(_)) | Err(_));
+                if receive_tx.send(RunEvent::Server(message)).is_err() || ended {
+                    break;
+                }
+            }
+        });
+        let (credit, credits) = mpsc::sync_channel(1);
+        let finished = Arc::new(AtomicBool::new(false));
+        let stopped = finished.clone();
+        // This reader owns no daemon socket. A terminal result can therefore
+        // close the connection even while the CLI's stdin is still waiting.
+        std::thread::spawn(move || {
+            let mut input = io::stdin();
+            let mut buffer = [0u8; crate::protocol::INPUT_CHUNK_SIZE];
+            while credits.recv().is_ok() && !stopped.load(Ordering::Acquire) {
+                let read = loop {
+                    match input.read(&mut buffer) {
+                        Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                        result => break result,
+                    }
+                };
+                if stopped.load(Ordering::Acquire) {
+                    break;
+                }
+                let ended = matches!(&read, Ok(0) | Err(_));
+                if tx.send(RunEvent::Input(read.map(|n| buffer[..n].to_vec()))).is_err() || ended {
+                    break;
+                }
+            }
+        });
+        let result = (|| loop {
+            let event = rx.recv().map_err(|_| {
+                io::Error::new(io::ErrorKind::UnexpectedEof, "run connection ended")
+            })?;
+            let message = match event {
+                RunEvent::Input(bytes) => {
+                    let bytes = bytes?;
+                    self.send(&if bytes.is_empty() {
+                        Request::InputEof
+                    } else {
+                        Request::Input(bytes)
+                    })?;
+                    continue;
+                }
+                RunEvent::Server(message) => message?,
+            };
+            self.log("<-", &frame_to_json(&message));
+            match message {
+                ServerMessage::InputReady => {
+                    credit
+                        .try_send(())
+                        .map_err(|_| DaemonError::Protocol("unexpected stdin credit".into()))?;
+                }
                 ServerMessage::Output { stream: OutputStream::Stdout, chunk } => {
                     out.write_all(&chunk)?;
                     out.flush()?;
@@ -170,7 +234,12 @@ impl Client {
                     return Err(DaemonError::Protocol(format!("unexpected response: {other:?}")));
                 }
             }
+        })();
+        finished.store(true, Ordering::Release);
+        if result.is_err() {
+            let _ = self.send(&Request::Exit);
         }
+        result
     }
 
     /// Runs `example`/`forall` contracts under daemon supervision, printing live
@@ -194,7 +263,9 @@ impl Client {
                 }
                 // `test` contracts have no capabilities, so no `$/output` is
                 // expected; ignore output and tap frames defensively.
-                ServerMessage::Output { .. } | ServerMessage::TapFrame(_) => {}
+                ServerMessage::InputReady
+                | ServerMessage::Output { .. }
+                | ServerMessage::TapFrame(_) => {}
                 ServerMessage::Result(Response::Test(rendered)) => {
                     let _ = out.write_all(rendered.stdout.as_bytes());
                     let _ = err.write_all(rendered.stderr.as_bytes());
@@ -281,6 +352,11 @@ impl Client {
             _ => Ok(HandshakeOutcome::Mismatch),
         }
     }
+}
+
+enum RunEvent {
+    Server(io::Result<ServerMessage>),
+    Input(io::Result<Vec<u8>>),
 }
 
 /// The result of a handshake attempt.

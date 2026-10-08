@@ -13,7 +13,10 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 /// The protocol version. Bumped on any incompatible wire change.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
+
+/// Maximum stdin payload granted by one input credit.
+pub const INPUT_CHUNK_SIZE: usize = 8192;
 
 /// Largest frame we will read, guarding against a corrupt length prefix (64 MiB).
 const MAX_FRAME: usize = 64 * 1024 * 1024;
@@ -29,6 +32,10 @@ pub enum Request {
     Status,
     /// Run a program under daemon supervision (streamed output, then exit code).
     Run(RunRequest),
+    /// One stdin chunk, sent only after an `InputReady` credit.
+    Input(Vec<u8>),
+    /// End of this run's stdin; closes the worker's input pipe.
+    InputEof,
     /// Run example/forall contracts under daemon supervision (streamed
     /// per-contract events, then the rendered report).
     Test(TestRequest),
@@ -111,6 +118,8 @@ pub struct TestRequest {
 /// A server→client message: streamed output/events, then a final result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ServerMessage {
+    /// The worker can accept one stdin chunk (or explicit EOF).
+    InputReady,
     /// A chunk of a supervised program's output (`$/output`).
     Output {
         /// Which stream the chunk belongs to.
@@ -303,6 +312,22 @@ mod tests {
         round_trip(&Request::Tap);
         round_trip(&Request::Shutdown);
         round_trip(&Request::Exit);
+    }
+
+    #[test]
+    fn stdin_bytes_round_trip_without_utf8_decoding() {
+        round_trip(&Request::Input(vec![0, 255, 240, 159, 140, 141]));
+    }
+
+    #[test]
+    fn stdin_eof_is_distinct_from_data() {
+        round_trip(&Request::InputEof);
+        assert_ne!(Request::InputEof, Request::Input(Vec::new()));
+    }
+
+    #[test]
+    fn stdin_credit_round_trips() {
+        round_trip(&ServerMessage::InputReady);
     }
 
     #[test]
