@@ -3537,8 +3537,12 @@ Editor integration:
     (`Int`/`Bool` ↔ `int64_t`, `Float` ↔ `double`, `String` argument ↔ a borrowed
     `(ptr, len)` pair, `String` result ↔ a `const char*` returned with its length
     through a trailing `int64_t* out_len` and copied into a fresh Fai `String` —
-    the foreign owns its buffer; `Unit` is the empty value). So a plain C function
-    is callable directly. A `marshalled` flag on `K::Foreign` (set at lowering from
+    input buffers remain alive until that copy finishes, so a result may borrow
+    an input; other returned buffers remain foreign-owned; `Unit` is the empty
+    value). Retained first-class entries carry the fully expanded declared
+    argument/result types, including signature aliases, and partial applications
+    use the same marshalling as direct calls. The driver and lowering share the
+    declared source arity. A `marshalled` flag on `K::Foreign` (set at lowering from
     the declaration's origin) selects the ABI, carried in the wire form and the
     cache fingerprint; codegen emits the conversion glue (the `fai_marshal_*`
     runtime helpers). A foreign signature outside the marshallable subset is

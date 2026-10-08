@@ -127,6 +127,12 @@ internal ABI; rebuild generated objects when updating the compiler. This replace
 the ambiguous `fai_<module>_<member>` encoding. Explicit symbol strings in
 `foreign` declarations are passed through as written.
 
+Foreign functions can be passed to higher-order helpers or partially applied;
+their expanded declared signatures determine marshalling on each call path.
+String arguments stay alive until any returned string has been copied, so a
+native result may refer to an input buffer. Other returned buffers remain owned
+by the native library.
+
 ### Daemon, briefly
 
 Most commands connect to (or auto-spawn) a **per-workspace daemon** that keeps

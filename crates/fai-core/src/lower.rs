@@ -51,20 +51,25 @@ pub fn core(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
     // un-wrapped eta-expansion `fn(p0 … pn) = Foreign{symbol, [p0 … pn]}` — a
     // direct-callable entry. A saturated call to it folds to a bare `Foreign` node
     // (the foreign-wrapper inliner); a first-class reference compiles this entry.
-    if let Some((native, arity)) = foreign_decl(db, file, &parsed.module, name) {
+    if let Some(native) = foreign_symbol(db, file, &parsed.module, name) {
         // A user (non-std) `foreign` uses the marshalled ABI; the built-in host
         // capabilities (declared in std) use the raw value ABI.
         let marshalled = !fai_db::is_std_path(file.path(db));
+        let (parameter_types, result_type) = crate::abi::foreign_signature(db, file, name);
         let mut next = first_free_local(&resolved);
-        let params: Vec<LocalId> = (0..arity)
+        let params: Vec<LocalId> = (0..parameter_types.len())
             .map(|_| {
                 let l = LocalId::from_index(next);
                 next += 1;
                 l
             })
             .collect();
-        let args = params.iter().map(|&p| CExpr::new(K::Local(p), Ty::Error)).collect();
-        let body = CExpr::new(K::Foreign { symbol: native, args, marshalled }, Ty::Error);
+        let args = params
+            .iter()
+            .zip(parameter_types)
+            .map(|(&p, ty)| CExpr::new(K::Local(p), ty))
+            .collect();
+        let body = CExpr::new(K::Foreign { symbol: native, args, marshalled }, result_type);
         return Arc::new(LoweredDef {
             def,
             fns: vec![CoreFn { params, captures: Vec::new(), body }],
@@ -181,25 +186,16 @@ fn binding_body(
     }
 }
 
-/// The decoded native symbol and arrow arity of a `foreign` declaration named
-/// `name`, if it is one. The native symbol is decoded from its string literal
-/// (the AST stores its raw lexeme, like any string); the arity is the count of
-/// leading `->` in the declared type — the number of parameters the synthesized
-/// foreign body binds.
-fn foreign_decl(
-    db: &dyn Db,
-    file: SourceFile,
-    module: &Module,
-    name: Symbol,
-) -> Option<(Symbol, usize)> {
+/// The decoded native symbol of a `foreign` declaration named `name`, if it is one.
+fn foreign_symbol(db: &dyn Db, file: SourceFile, module: &Module, name: Symbol) -> Option<Symbol> {
     let binding = fai_resolve::module_defs(db, file).get(name)?.binding;
-    let fai_syntax::ast::ItemKind::Foreign { symbol, ty, .. } = &module.items[binding.index()].kind
+    let fai_syntax::ast::ItemKind::Foreign { symbol, .. } = &module.items[binding.index()].kind
     else {
         return None;
     };
     let decoded = crate::lit::decode_string(symbol.as_str());
     let native = Symbol::intern(&String::from_utf8_lossy(&decoded));
-    Some((native, module.arrow_arity(*ty)))
+    Some(native)
 }
 
 /// The first `LocalId` index not used by resolution (so synthesized binders —
