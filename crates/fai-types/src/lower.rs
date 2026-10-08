@@ -594,23 +594,6 @@ fn peel_spine(module: &Module, ty: TypeId) -> (TypeId, Vec<TypeId>) {
     (cur, args)
 }
 
-/// Substitutes type variables in `ty` according to `map`.
-fn subst_ty(ty: &Ty, map: &FxHashMap<TyVarId, Ty>) -> Ty {
-    match ty {
-        Ty::Var(v) => map.get(v).cloned().unwrap_or(Ty::Var(*v)),
-        Ty::App(f, a) => Ty::App(Arc::new(subst_ty(f, map)), Arc::new(subst_ty(a, map))),
-        Ty::Arrow(f, a, e) => Ty::arrow_eff(subst_ty(f, map), subst_ty(a, map), e.clone()),
-        Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(|e| subst_ty(e, map)).collect()),
-        Ty::Record(row) => Ty::Record(RecordRow {
-            fields: row.fields.iter().map(|(l, t)| (*l, subst_ty(t, map))).collect(),
-            tail: row.tail,
-        }),
-        Ty::Con(_) | Ty::Adt(_) | Ty::Interface(_) | Ty::EffectArg(_) | Ty::Unit | Ty::Error => {
-            ty.clone()
-        }
-    }
-}
-
 /// Substitutes both type variables and effect-row variables in `ty` — the latter
 /// for an alias that threads an effect parameter into its body (e.g. the
 /// `Prelude` re-export `type Stream 'a 'e = Stream.Stream 'a 'e`).
@@ -680,7 +663,14 @@ pub fn lower_type_in(
     ty: TypeId,
     vars: &mut LowerVars,
 ) -> Ty {
-    let mut lowerer = Lowerer { db, file, observer: Some(file), module, scope: scope.to_vec(), expanding: Vec::new() };
+    let mut lowerer = Lowerer {
+        db,
+        file,
+        observer: Some(file),
+        module,
+        scope: scope.to_vec(),
+        expanding: Vec::new(),
+    };
     lowerer.lower(ty, vars)
 }
 
@@ -710,7 +700,8 @@ pub(crate) fn lower_signature_observed(
     ty: TypeId,
 ) -> Scheme {
     let mut vars = LowerVars::default();
-    let mut lowerer = Lowerer { db, file, observer, module, scope: scope.to_vec(), expanding: Vec::new() };
+    let mut lowerer =
+        Lowerer { db, file, observer, module, scope: scope.to_vec(), expanding: Vec::new() };
     let body = lowerer.lower(ty, &mut vars);
     Scheme::new(type_vars(&vars), body)
         .with_names(type_names(&vars))
@@ -817,8 +808,14 @@ pub fn expand_alias_ty(db: &dyn Db, adt: AdtRef, args: &[Ty]) -> Option<Ty> {
     };
     let body = *body;
     // The body lowers in its own (declaring) file, where the alias is transparent.
-    let mut lowerer =
-        Lowerer { db, file, observer: Some(file), module, scope: scope_of(info.name), expanding: Vec::new() };
+    let mut lowerer = Lowerer {
+        db,
+        file,
+        observer: Some(file),
+        module,
+        scope: scope_of(info.name),
+        expanding: Vec::new(),
+    };
     let mut body_vars = LowerVars::default();
     let kinds = adt_param_kinds(db, adt);
     seed_kinded_params(&mut body_vars, &info.params, &kinds);
@@ -838,7 +835,7 @@ pub fn expand_alias_ty(db: &dyn Db, adt: AdtRef, args: &[Ty]) -> Option<Ty> {
             effect_subst.insert(id, effect.clone());
         }
     }
-    Some(subst_ty_with_effects(&body_ty, &subst, &effect_subst))
+    Some(subst_ty_eff(&body_ty, &subst, &effect_subst))
 }
 
 /// Resolves an interface name to its [`InterfaceRef`] in the context of `file`
@@ -1093,8 +1090,14 @@ fn file_type_param_usage_inner(
     loop {
         let mut changed = false;
         for scan in &scans {
-            let lowerer =
-                Lowerer { db, file, observer: Some(file), module, scope: scan.scope.clone(), expanding: Vec::new() };
+            let lowerer = Lowerer {
+                db,
+                file,
+                observer: Some(file),
+                module,
+                scope: scan.scope.clone(),
+                expanding: Vec::new(),
+            };
             let mut type_used: FxHashSet<Symbol> = FxHashSet::default();
             let mut eff_used: FxHashSet<Symbol> = FxHashSet::default();
             for &field in &scan.fields {

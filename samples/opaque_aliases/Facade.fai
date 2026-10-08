@@ -1,0 +1,9 @@
+module Facade
+
+public type Scalar = Library.Scalar
+
+public scalar : Float -> Scalar
+let scalar value = Library.scalar value
+
+public echo : Scalar -> Scalar
+let echo value = value

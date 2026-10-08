@@ -20,9 +20,7 @@ use fai_resolve::{
 };
 use fai_syntax::Symbol;
 use fai_syntax::ast::{ExprId, ExprKind, ItemKind, Module, PatId, PatKind};
-use fai_types::{
-    Scheme, Ty, body_types, constructor_scheme, def_type, render_canonical, render_scheme,
-};
+use fai_types::{Scheme, Ty, body_types, def_type, render_canonical, render_scheme};
 use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
 
@@ -216,10 +214,13 @@ fn module_members(db: &dyn Db, file: SourceFile, path: &str) -> Vec<CompletionIt
         let mut out = Vec::new();
         let mut offer = |interface: &fai_resolve::ModuleInterface| {
             for export in &interface.exports {
-                out.push(value_item(db, mfile, export.name, &def_type(db, mfile, export.name)));
+                let scheme =
+                    fai_types::signature_scheme_observed(db, mfile, export.name, Some(file))
+                        .unwrap_or_else(|| def_type(db, mfile, export.name));
+                out.push(value_item(db, mfile, export.name, &scheme));
             }
             for &ctor in &interface.ctors {
-                out.push(ctor_item(db, mfile, ctor));
+                out.push(ctor_item(db, mfile, ctor, file));
             }
         };
         offer(&module_interface(db, mfile));
@@ -246,7 +247,7 @@ fn module_members(db: &dyn Db, file: SourceFile, path: &str) -> Vec<CompletionIt
             if let Some(child) = ctor.name.as_str().strip_prefix(&prefix)
                 && !child.contains('.')
             {
-                out.push(ctor_item(db, file, ctor.name));
+                out.push(ctor_item(db, file, ctor.name, file));
             }
         }
         return out;
@@ -255,8 +256,9 @@ fn module_members(db: &dyn Db, file: SourceFile, path: &str) -> Vec<CompletionIt
 }
 
 /// A constructor candidate (its label is the bare name; its detail the scheme).
-fn ctor_item(db: &dyn Db, file: SourceFile, name: Symbol) -> CompletionItem {
-    let detail = constructor_scheme(db, file, name).map(|s| render_scheme(&s));
+fn ctor_item(db: &dyn Db, file: SourceFile, name: Symbol, observer: SourceFile) -> CompletionItem {
+    let detail = fai_types::constructor_scheme_observed(db, file, name, Some(observer))
+        .map(|s| render_scheme(&s));
     CompletionItem {
         label: last_segment(name.as_str()).to_owned(),
         kind: CompletionKind::Constructor,
@@ -296,7 +298,7 @@ fn bare_candidates(db: &dyn Db, file: SourceFile, offset: u32) -> Vec<Completion
     let mut out = local_candidates(db, file, offset);
     out.extend(module_def_candidates(db, file, offset));
     out.extend(ctor_candidates(db, file, offset));
-    out.extend(prelude_value_candidates(db));
+    out.extend(prelude_value_candidates(db, file));
     out
 }
 
@@ -362,12 +364,12 @@ fn ctor_candidates(db: &dyn Db, file: SourceFile, offset: u32) -> Vec<Completion
     let mut out = Vec::new();
     for ctor in type_decls(db, file).ctors.values() {
         if visible_in_scope(ctor.name.as_str(), &scope) {
-            out.push(ctor_item(db, file, ctor.name));
+            out.push(ctor_item(db, file, ctor.name, file));
         }
     }
     for (name, cref) in &prelude_exports(db).ctors {
         if let Some(cfile) = db.source_file(cref.file) {
-            out.push(ctor_item(db, cfile, *name));
+            out.push(ctor_item(db, cfile, *name, file));
         }
     }
     out
@@ -375,14 +377,16 @@ fn ctor_candidates(db: &dyn Db, file: SourceFile, offset: u32) -> Vec<Completion
 
 /// The auto-imported prelude value bindings (operators excluded — their symbolic
 /// names are not completed by typing letters).
-fn prelude_value_candidates(db: &dyn Db) -> Vec<CompletionItem> {
+fn prelude_value_candidates(db: &dyn Db, observer: SourceFile) -> Vec<CompletionItem> {
     let mut out = Vec::new();
     for (name, def) in &prelude_exports(db).values {
         if !name.as_str().as_bytes().first().is_some_and(u8::is_ascii_alphabetic) {
             continue;
         }
         if let Some(dfile) = db.source_file(def.file) {
-            out.push(value_item(db, dfile, *name, &def_type(db, dfile, *name)));
+            let scheme = fai_types::signature_scheme_observed(db, dfile, *name, Some(observer))
+                .unwrap_or_else(|| def_type(db, dfile, *name));
+            out.push(value_item(db, dfile, *name, &scheme));
         }
     }
     out

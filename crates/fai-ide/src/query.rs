@@ -40,6 +40,11 @@ fn truncate<T>(mut items: Vec<T>, opts: ListOpts) -> (Vec<T>, bool) {
     (items, false)
 }
 
+fn surface_scheme(db: &dyn Db, file: SourceFile, name: Symbol) -> fai_types::Scheme {
+    fai_types::signature_scheme_observed(db, file, name, None)
+        .unwrap_or_else(|| fai_types::def_type(db, file, name))
+}
+
 /// Builds a [`SymbolRef`] for a definition.
 fn symbol_ref(
     db: &dyn Db,
@@ -53,7 +58,7 @@ fn symbol_ref(
     let module = &parsed.module;
     let span = module.items[def.binding.index()].span;
     let module_name = module_label(db, file);
-    let scheme = fai_types::def_type(db, file, name);
+    let scheme = surface_scheme(db, file, name);
     let kind = if matches!(scheme.ty, fai_types::Ty::Arrow(..)) {
         SymbolKind::Function
     } else {
@@ -186,7 +191,7 @@ pub fn type_at(db: &dyn Db, target: &str, resolver: &dyn SpanResolver) -> TypeRe
             ty: TypeRepr { display: "{unknown}".to_owned() },
         };
     };
-    let scheme = fai_types::def_type(db, t.file, t.name);
+    let scheme = surface_scheme(db, t.file, t.name);
     TypeResult {
         schema_version: SCHEMA_VERSION,
         target: symbol_ref(db, t.file, t.name, resolver),
@@ -1810,7 +1815,7 @@ pub fn search(
     let mut hits: Vec<(f64, String, SearchHit)> = Vec::new();
     for &file in files {
         for d in &module_defs(db, file).defs {
-            let scheme = fai_types::def_type(db, file, d.name);
+            let scheme = surface_scheme(db, file, d.name);
             let mut cvars = FxHashMap::default();
             let cand_shape = shape_from_ty(&scheme.ty, &mut cvars);
             let mut subst = FxHashMap::default();

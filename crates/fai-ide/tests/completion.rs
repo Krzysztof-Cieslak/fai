@@ -44,6 +44,18 @@ fn record_field_access_offers_fields_with_types() {
 }
 
 #[test]
+fn cross_file_completions_preserve_opaque_aliases() {
+    let source = "module C\nlet value = Lib.make 42\n";
+    let (mut db, file) = workspace(source);
+    db.add_source("Lib.fai".into(), "module Lib\npublic opaque type Secret = { answer : Int }\npublic make : Int -> Secret\nlet make n = { answer = n }\npublic type Wrapped = | Wrapped Secret\n".into());
+    let result = completions_at(&db, file, after(source, "Lib."));
+    let make = result.items.iter().find(|item| item.label == "make").unwrap();
+    let wrapped = result.items.iter().find(|item| item.label == "Wrapped").unwrap();
+    assert_eq!(make.detail.as_deref(), Some("Int -> Secret"));
+    assert_eq!(wrapped.detail.as_deref(), Some("Secret -> Wrapped"));
+}
+
+#[test]
 fn qualified_module_offers_public_members() {
     let source = indoc! {r#"
         module C
