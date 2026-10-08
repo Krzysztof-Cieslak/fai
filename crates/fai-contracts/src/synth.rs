@@ -84,6 +84,11 @@ pub fn synthesize(
 
     let types = contract_body_types(db, file, info.ordinal);
     let lowered = lower_params_body(db, file, &binder_pats, body_expr, &types);
+    if lowered.has_errors {
+        return Err(NotRunnable::reason(
+            "uses a construct the native backend does not support yet",
+        ));
+    }
 
     let test = |name: &str| -> Result<DefId, NotRunnable> {
         let m = module_file(db, ModuleName(Symbol::intern(TEST_MODULE)))

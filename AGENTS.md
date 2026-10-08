@@ -398,6 +398,9 @@ is evaluated immediately.
 Contract generation recognizes Prelude `Option`/`Result` by declaration identity.
 Same-spelled user types use their own constructors and support custom `Arbitrary`
 overrides like other user ADTs.
+Examples and properties support exhaustive `match` expressions directly, including
+inside lambdas. Lowering distinguishes their unreachable fallthroughs from actual
+unsupported constructs.
 
 `Url.decodeComponent` preserves unescaped Unicode and malformed percent escapes.
 It leaves `+` literal. If the decoded bytes are not valid UTF-8, it returns the
