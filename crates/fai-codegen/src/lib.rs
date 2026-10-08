@@ -17,6 +17,9 @@ mod emit;
 mod jit;
 
 pub use aot::{main_object, object_for_def, reuse_object_for_def};
+
+/// Whether generated allocation fast paths update the runtime's debug counters.
+pub const INSTRUMENT_ALLOCATIONS: bool = cfg!(debug_assertions);
 pub use emit::{Bce, closure_symbol, code_symbol, reuse_symbol};
 pub use jit::{ForeignLookup, JitProgram, jit_run};
 

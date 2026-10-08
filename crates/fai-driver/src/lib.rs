@@ -8,6 +8,9 @@
 #[allow(unsafe_code)]
 mod backend;
 #[cfg(test)]
+#[path = "../build_identity.rs"]
+mod build_identity;
+#[cfg(test)]
 mod build_tests;
 mod cache;
 mod command;

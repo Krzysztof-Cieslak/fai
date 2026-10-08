@@ -5,7 +5,7 @@
 //! output instead of re-running code generation. The cache is keyed by a portable
 //! fingerprint of the reference-counted definition (see
 //! [`fai_core::fingerprint_def`]) stamped with the target triple, the compiler
-//! version, and the code-generation configuration — so an entry is reused only
+//! build identity, and the code-generation configuration — so an entry is reused only
 //! when the produced object would be byte-identical.
 //!
 //! It deliberately lives **outside** the salsa query (which stays pure): on a
@@ -150,6 +150,33 @@ pub fn load_or_build_object(
 /// emit-ready primary IR and call metadata, stamped with target, compiler
 /// version, and config. Specialized reuse bodies live in separate objects.
 fn object_key(db: &dyn Db, file: SourceFile, def: DefId, concurrent: bool) -> String {
+    object_key_with_build(
+        db,
+        file,
+        def,
+        concurrent,
+        CompilerBuild {
+            identity: env!("FAI_COMPILER_BUILD_ID"),
+            codegen_counters: fai_codegen::INSTRUMENT_ALLOCATIONS,
+            runtime_counters: cfg!(debug_assertions),
+        },
+    )
+}
+
+#[derive(Clone, Copy)]
+struct CompilerBuild<'a> {
+    identity: &'a str,
+    codegen_counters: bool,
+    runtime_counters: bool,
+}
+
+fn object_key_with_build(
+    db: &dyn Db,
+    file: SourceFile,
+    def: DefId,
+    concurrent: bool,
+    build: CompilerBuild<'_>,
+) -> String {
     let lowered = rc_emit(db, file, def.name);
     let namer = |d: DefId| symbol_base(db, d);
     let metadata = CallMetadata::new(db, file, def.name);
@@ -183,6 +210,9 @@ fn object_key(db: &dyn Db, file: SourceFile, def: DefId, concurrent: bool) -> St
     hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
     hasher.update(b"\0");
     hasher.update(CODEGEN_CONFIG.as_bytes());
+    hasher.update(b"\0compiler-build\0");
+    hasher.update(build.identity.as_bytes());
+    hasher.update(&[0, u8::from(build.codegen_counters), u8::from(build.runtime_counters)]);
     // Concurrent programs generate different code (branchful reference counting and
     // runtime allocation, see `Bce::concurrent`), so the mode is part of the key.
     hasher.update(if concurrent { b"\0concurrent" } else { b"\0single-threaded" });
@@ -316,5 +346,102 @@ mod tests {
         assert_eq!(metadata.arity(loop_.lowered.def), loop_.arity);
         assert_eq!(metadata.abi(loop_.lowered.def), loop_.abi);
         assert!(metadata.borrows(loop_.lowered.def).is_empty());
+    }
+
+    #[test]
+    fn codegen_instrumentation_partitions_cached_objects() {
+        let (db, file, def) = database(HELPER);
+        let release = CompilerBuild {
+            identity: "same-source",
+            codegen_counters: false,
+            runtime_counters: false,
+        };
+        let instrumented = CompilerBuild { codegen_counters: true, ..release };
+        assert_ne!(
+            object_key_with_build(&db, file, def, false, release),
+            object_key_with_build(&db, file, def, false, instrumented)
+        );
+    }
+
+    #[test]
+    fn runtime_instrumentation_partitions_cached_objects() {
+        let (db, file, def) = database(HELPER);
+        let release = CompilerBuild {
+            identity: "same-source",
+            codegen_counters: false,
+            runtime_counters: false,
+        };
+        let instrumented = CompilerBuild { runtime_counters: true, ..release };
+        assert_ne!(
+            object_key_with_build(&db, file, def, false, release),
+            object_key_with_build(&db, file, def, false, instrumented)
+        );
+    }
+
+    #[test]
+    fn same_version_source_changes_partition_cached_objects() {
+        let (db, file, def) = database(HELPER);
+        let before = CompilerBuild {
+            identity: "source-before",
+            codegen_counters: false,
+            runtime_counters: false,
+        };
+        let after = CompilerBuild { identity: "source-after", ..before };
+        assert_ne!(
+            object_key_with_build(&db, file, def, false, before),
+            object_key_with_build(&db, file, def, false, after)
+        );
+    }
+
+    #[test]
+    fn incompatible_profile_cache_does_not_poison_array_allocations() {
+        use wait_timeout::ChildExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "cache::tests::opposite_profile_worker", "--nocapture"])
+            .env("FAI_CACHE_PROFILE_CASE", directory.path())
+            .env("FAI_CACHE_DIR", directory.path().join("cache"))
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let finished = child.wait_timeout(std::time::Duration::from_secs(60)).unwrap().is_some();
+        if !finished {
+            child.kill().unwrap();
+        }
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            finished && output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn opposite_profile_worker() {
+        let Some(directory) = std::env::var_os("FAI_CACHE_PROFILE_CASE") else { return };
+        let directory = std::path::PathBuf::from(directory);
+        let mut db = FaiDatabase::new();
+        fai_types::std_lib::load_std(&mut db);
+        let id = db.add_source("Main.fai".into(), "module Main\nrepeat : Int -> Int -> Int\nlet repeat n acc =\n  if n <= 0 then acc else\n    let values = Array.push n (Array.withCapacity 16)\n    repeat (n - 1) (acc + Array.length values)\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (repeat 100 0))\n".into());
+        let file = db.source_file(id).unwrap();
+        let def = DefId::new(id, Symbol::intern("repeat"));
+        let opposite = CompilerBuild {
+            identity: env!("FAI_COMPILER_BUILD_ID"),
+            codegen_counters: !fai_codegen::INSTRUMENT_ALLOCATIONS,
+            runtime_counters: !cfg!(debug_assertions),
+        };
+        let incompatible_key = object_key_with_build(&db, file, def, false, opposite);
+        let incompatible_path = object_path(&directory.join("cache"), &incompatible_key);
+        write_atomic(&incompatible_path, b"incompatible-profile-object");
+        let out = camino::Utf8PathBuf::from_path_buf(directory.join("program")).unwrap();
+        let result = crate::build_native(&db, file, &out);
+        assert!(result.ok, "{:?}", result.diagnostics);
+        let output = std::process::Command::new(result.artifact.unwrap()).output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert_eq!(output.stdout, b"100\n");
+        assert_eq!(std::fs::read(incompatible_path).unwrap(), b"incompatible-profile-object");
     }
 }
