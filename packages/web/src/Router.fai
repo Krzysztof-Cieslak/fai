@@ -83,13 +83,14 @@ parsePattern : String -> List Segment
 let parsePattern p = List.map parseSegment (splitPath p)
 
 // --- The route tree --------------------------------------------------------
-// A node carries the static children (by segment), an optional capture child
-// (with its parameter name), and the terminal handlers registered here. Method
+// A node carries static children, a structural capture child, and the terminal
+// candidates. Parameter names belong to each candidate, not the shared edge. Method
 // filtering is baked into each handler by the verb groupers (a `get` route's
-// handler skips a non-`GET` request), so a node holds plain handlers rather than
-// method-tagged ones.
+// handler skips a non-`GET` request), keeping each gate with its parameter names.
+type Candidate 'e = List String * Web.HttpHandler 'e
+
 type Node 'e =
-  | MkNode { capture : Option (String * Node 'e), children : List (String * Node 'e), handlers : List (Web.HttpHandler 'e) }
+  | MkNode { capture : Option (Node 'e), children : List (String * Node 'e), handlers : List (Candidate 'e) }
 
 emptyNode : Node 'e
 let emptyNode = MkNode { capture = None, children = [], handlers = [] }
@@ -132,24 +133,19 @@ let setChild children s node =
     | (k, v) -> if k = s then (s, node) :: rest else pair :: setChild rest s node
 
 // Insert a (method-gated) handler at the path given by `segs`.
-insertAt : Node 'e -> List Segment -> Web.HttpHandler 'e -> Node 'e
-let insertAt node segs handler =
+insertAt : Node 'e -> List Segment -> List String -> Web.HttpHandler 'e -> Node 'e
+let insertAt node segs names handler =
   let r = nodeFields node
   match segs with
-  | [] -> MkNode { r with handlers = List.append r.handlers [handler] }
+  | [] -> MkNode { r with handlers = List.append r.handlers [(List.reverse names, handler)] }
   | seg :: rest ->
     match seg with
     | StaticSeg s ->
-      let updated = insertAt (childOrEmpty r.children s) rest handler
+      let updated = insertAt (childOrEmpty r.children s) rest names handler
       MkNode { r with children = setChild r.children s updated }
     | CaptureSeg name ->
-      let existing =
-        match r.capture with
-        | Some pair ->
-          match pair with
-          | (n, c) -> c
-        | None -> emptyNode
-      MkNode { r with capture = Some (name, insertAt existing rest handler) }
+      let existing = Option.withDefault emptyNode r.capture
+      MkNode { r with capture = Some (insertAt existing rest (name :: names) handler) }
 
 // Gate a handler on a method (if a verb grouper applies), so it skips a request
 // whose method does not match.
@@ -164,7 +160,7 @@ addRoute : Node 'e -> List Segment -> Option Http.Method -> Route 'e -> Node 'e
 let addRoute node prefix method r =
   match r with
   | RouteLeaf pattern handler ->
-    insertAt node (List.append prefix (parsePattern pattern)) (gateOn method handler)
+    insertAt node (List.append prefix (parsePattern pattern)) [] (gateOn method handler)
   | RouteScope m prefixPattern children ->
     addRoutes node (List.append prefix (parsePattern prefixPattern)) (orElse m method) children
 
@@ -176,11 +172,11 @@ let addRoutes node prefix method routes =
   | r :: rest -> addRoutes (addRoute node prefix method r) prefix method rest
 
 // --- Matching --------------------------------------------------------------
-// Walk the path segments through the tree, collecting captured parameters and
-// returning the handlers registered at the matched node. Static edges win; a
+// Walk the path segments through the tree, collecting captured values in reverse
+// order and returning the candidates at the matched node. Static edges win; a
 // failed static branch falls back to the capture edge. A prefix without terminal
 // handlers is a failed path match, not an endpoint.
-lookupNode : Node 'e -> List String -> List (String * String) -> Option (List (String * String) * List (Web.HttpHandler 'e))
+lookupNode : Node 'e -> List String -> List String -> Option (List String * List (Candidate 'e))
 let lookupNode node segs params =
   let r = nodeFields node
   match segs with
@@ -194,10 +190,13 @@ let lookupNode node segs params =
     | Some result -> Some result
     | None ->
       match r.capture with
-      | Some pair ->
-        match pair with
-        | (name, child) -> lookupNode child rest (List.append params [(name, seg)])
+      | Some child -> lookupNode child rest (seg :: params)
       | None -> None
+
+withCaptured : List String -> Candidate 'e -> Web.HttpHandler 'e
+let withCaptured values candidate ctx =
+  match candidate with
+  | (names, handler) -> handler { ctx with params = List.zip names values }
 
 /// Build a handler that dispatches each request through `routes`, running
 /// `fallback` when no route matches the path, no registered method matches, or
@@ -211,6 +210,7 @@ let router fallback routes =
     | None -> fallback ctx
     | Some result ->
       match result with
-      | (params, handlers) -> Web.choose (List.append handlers [
-        fallback
-      ]) { ctx with params = params }
+      | (params, handlers) ->
+        Web.choose (List.append (List.map (withCaptured (List.reverse params)) handlers) [
+          fallback
+        ]) ctx
