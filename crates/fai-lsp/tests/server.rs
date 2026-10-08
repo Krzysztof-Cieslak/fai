@@ -238,7 +238,7 @@ fn rename_rejects_an_invalid_name() {
     let mut harness = Harness::start("rename-bad", &[("Main.fai", MAIN)]);
     let uri = harness.did_open("Main.fai", MAIN);
     // A value cannot be renamed to an upper-case (constructor) name.
-    let result = harness.request(
+    let result = harness.request_error(
         "textDocument/rename",
         json!({
             "textDocument": { "uri": uri },
@@ -246,7 +246,7 @@ fn rename_rejects_an_invalid_name() {
             "newName": "Inc"
         }),
     );
-    assert!(result.is_null(), "an invalid rename yields no edit: {result:?}");
+    assert_eq!(result.code, lsp_server::ErrorCode::InvalidParams as i32);
     harness.shutdown();
 }
 

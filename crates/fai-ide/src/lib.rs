@@ -24,9 +24,9 @@ pub use highlight::{
 pub use query::{
     ApiResult, CallEdge, CallHierarchyResult, CapsResult, CompletionDocs, DefResult,
     DependentsResult, DocsResult, HoverResult, ListOpts, OutlineNode, OutlineResult, ParamInfo,
-    RefsResult, RenameTarget, SearchHit, SearchResult, SignatureHelp, SymbolsResult, TypeResult,
-    api, callees, callers, caps, completion_docs, def, definition_at, dependents, docs,
-    document_symbols, hover_at, outline, prepare_rename_at, references_at, refs, rename_at, search,
-    signature_help_at, symbols, type_at, workspace_symbols,
+    RefsResult, RenameError, RenameTarget, SearchHit, SearchResult, SignatureHelp, SymbolsResult,
+    TypeResult, api, callees, callers, caps, checked_rename_at, completion_docs, def,
+    definition_at, dependents, docs, document_symbols, hover_at, outline, prepare_rename_at,
+    references_at, refs, rename_at, search, signature_help_at, symbols, type_at, workspace_symbols,
 };
 pub use target::{ResolvedTarget, resolve_target};

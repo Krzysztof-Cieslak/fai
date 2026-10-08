@@ -326,7 +326,7 @@ impl Server {
                 dispatch(conn, req, |params| self.prepare_rename(&params));
             }
             "textDocument/rename" => {
-                dispatch(conn, req, |params| self.rename(&params));
+                dispatch_fallible(conn, req, |params| self.rename(&params));
             }
             "textDocument/completion" => {
                 dispatch(conn, req, |params| self.completion(&params));
@@ -487,30 +487,35 @@ impl Server {
         Some(PrepareRenameResponse::RangeWithPlaceholder { range, placeholder: target.name })
     }
 
-    fn rename(&self, params: &RenameParams) -> Option<WorkspaceEdit> {
+    fn rename(&self, params: &RenameParams) -> Result<WorkspaceEdit, String> {
         let pos = &params.text_document_position;
-        let (file, offset) = self.locate(&pos.text_document.uri, pos.position)?;
-        let locations = fai_ide::rename_at(
+        let (file, offset) = self
+            .locate(&pos.text_document.uri, pos.position)
+            .ok_or_else(|| "no renameable symbol at this position".to_owned())?;
+        let locations = fai_ide::checked_rename_at(
             self.session.db(),
             &self.session.user_files(),
             file,
             offset,
             &params.new_name,
             &self.session.resolver(),
-        )?;
+        )
+        .map_err(|error| error.to_string())?;
         // Group the per-occurrence replacements by file into a workspace edit.
         let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
         for loc in locations {
-            if let Some(uri) = self.uri_for(&loc.span.file)
-                && let Some(range) = self.range_in_file(&loc.span)
-            {
-                changes
-                    .entry(uri)
-                    .or_default()
-                    .push(TextEdit { range, new_text: params.new_name.clone() });
-            }
+            let uri = self
+                .uri_for(&loc.span.file)
+                .ok_or_else(|| "cannot locate a rename occurrence".to_owned())?;
+            let range = self
+                .range_in_file(&loc.span)
+                .ok_or_else(|| "cannot locate a rename occurrence".to_owned())?;
+            changes
+                .entry(uri)
+                .or_default()
+                .push(TextEdit { range, new_text: params.new_name.clone() });
         }
-        Some(WorkspaceEdit { changes: Some(changes), ..WorkspaceEdit::default() })
+        Ok(WorkspaceEdit { changes: Some(changes), ..WorkspaceEdit::default() })
     }
 
     fn completion(&self, params: &CompletionParams) -> Option<CompletionResponse> {
@@ -935,8 +940,20 @@ fn dispatch<P: serde::de::DeserializeOwned, R: serde::Serialize>(
     req: Request,
     handler: impl FnOnce(P) -> R,
 ) {
+    dispatch_fallible(conn, req, |params| Ok(handler(params)));
+}
+
+/// Also reports semantic parameter errors produced by a request handler.
+fn dispatch_fallible<P: serde::de::DeserializeOwned, R: serde::Serialize>(
+    conn: &Connection,
+    req: Request,
+    handler: impl FnOnce(P) -> Result<R, String>,
+) {
     match serde_json::from_value(req.params) {
-        Ok(params) => respond(conn, req.id, &handler(params)),
+        Ok(params) => match handler(params) {
+            Ok(result) => respond(conn, req.id, &result),
+            Err(message) => respond_error(conn, req.id, ErrorCode::InvalidParams, message),
+        },
         Err(error) => respond_error(
             conn,
             req.id,

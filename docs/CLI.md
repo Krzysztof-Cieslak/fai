@@ -336,6 +336,12 @@ Malformed parameters return `InvalidParams` (`-32602`), unsupported methods
 return `MethodNotFound` (`-32601`), and an unserializable result returns
 `InternalError` (`-32603`). Unsupported notifications are ignored.
 
+Rename validates the replacement with the language lexer and re-resolves a
+temporary edited workspace before returning edits. It rejects keyword/wildcard
+names, declaration collisions, and reference capture with an `InvalidParams`
+error explaining the failure. Operators, record puns, and as-pattern binders are
+not offered for token-only rename. Open unsaved buffers remain authoritative.
+
 ---
 
 ## 6. Daemon commands

@@ -1086,7 +1086,15 @@ server:
     qualified `A.inc` edits only `inc`, a constructor pattern only its head). The
     new name must be a plain identifier in the symbol's casing namespace (a
     constructor stays upper-case, a value or local lower-case), so a rename can
-    never move a symbol between namespaces; an invalid name yields no edit.
+    never move a symbol between namespaces. The lexer rejects keywords, `_`, and
+    boolean literals. Before returning edits, an independent copy of the active
+    workspace is re-resolved: every expression and constructor pattern must keep
+    its original identity, apart from the selected global's renamed symbol and
+    remapped file ids. Declaration counts and error sets must agree as well.
+    This detects capture of both edited and unedited references and duplicate
+    declarations without modifying live/unsaved inputs. Operators, punned record
+    binders, and as-pattern binders require syntax-aware edits and are excluded.
+    An invalid rename returns an explanatory JSON-RPC `InvalidParams` error.
   - **Completion.** The candidate set is chosen by the context immediately before
     the cursor, determined lexically so a half-typed buffer with a trailing `.`
     still works (the parser recovers a `Field` with an empty member): after
