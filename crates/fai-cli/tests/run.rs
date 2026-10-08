@@ -40,6 +40,38 @@ fn run_prints_via_console_capability() {
 }
 
 #[test]
+fn const_first_argument_trap_prevents_second_argument_effect() {
+    let source = indoc! {r#"
+        module Main
+        public main : Runtime -> Unit / { Console }
+        let main r =
+          let value = const (1 / 0) (r.console.writeLine "must not run")
+          r.console.writeLine (Int.toString value)
+    "#};
+    let dir = workspace("const-first-trap", &[("Main.fai", source)]);
+    let output =
+        fai().args(["run", "--no-daemon", "-C"]).arg(dir).arg("Main.fai").output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("division by zero"));
+    assert!(output.stdout.is_empty(), "{}", String::from_utf8_lossy(&output.stdout));
+}
+
+#[test]
+fn const_second_argument_trap_follows_first_argument_effect() {
+    let source = indoc! {r#"
+        module Main
+        public main : Runtime -> Unit / { Console }
+        let main r = const (r.console.writeLine "first") (1 / 0)
+    "#};
+    let dir = workspace("const-second-trap", &[("Main.fai", source)]);
+    let output =
+        fai().args(["run", "--no-daemon", "-C"]).arg(dir).arg("Main.fai").output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("division by zero"));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "first\n");
+}
+
+#[test]
 fn build_produces_a_runnable_binary() {
     let src = indoc! {r#"
         module Calc

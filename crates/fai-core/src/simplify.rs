@@ -20,8 +20,9 @@
 //! * **Combinator reduction** — recognized by the resolved `Prelude` identities
 //!   (never by reading a combinator's body, so a body edit can't change what
 //!   reduces — the cross-module firewall): `(f >> g) x → g (f x)`, `x |> f → f x`,
-//!   `identity x → x`, and `const a b → (let _ = b in a)` (the discard binding
-//!   keeps `b`'s strict evaluation). The reordered operands of `>>`/`|>` must be
+//!   `identity x → x`, and `const a b → (let saved = a in let _ = b in saved)`
+//!   (both arguments keep their strict, left-to-right evaluation). The reordered
+//!   operands of `>>`/`|>` must be
 //!   **pure**, mirroring fusion's purity barrier, so an effectful composition is
 //!   left intact.
 //! * **Application flattening** — `App(App(h, xs), ys) → App(h, xs ++ ys)`,
@@ -340,15 +341,23 @@ impl Simplifier<'_> {
             let head = args[0].clone();
             return Some(apply(head, args[1..].to_vec(), result_ty.clone()));
         }
-        // `const a b rest… → (let _ = b in a) rest…` — the discard binding keeps
-        // `b`'s strict evaluation (and any effect/trap) while removing the closure.
+        // Save `a` before discarding `b`: strict evaluation includes the order of
+        // both effects and traps. Surplus arguments are applied afterward.
         if Some(def) == konst && args.len() >= 2 {
             let a = args[0].clone();
             let b = args[1].clone();
+            let saved = fresh_local(&mut self.next);
             let dead = fresh_local(&mut self.next);
             let ty = a.ty.clone();
-            let kept =
-                CExpr::new(K::Let { local: dead, value: Box::new(b), body: Box::new(a) }, ty);
+            let value = CExpr::new(K::Local(saved), ty.clone());
+            let discarded = CExpr::new(
+                K::Let { local: dead, value: Box::new(b), body: Box::new(value) },
+                ty.clone(),
+            );
+            let kept = CExpr::new(
+                K::Let { local: saved, value: Box::new(a), body: Box::new(discarded) },
+                ty,
+            );
             return Some(apply(kept, args[2..].to_vec(), result_ty.clone()));
         }
         // `x |> f rest… → f x rest…` — `x` and `f` swap evaluation order, so reduce

@@ -443,6 +443,17 @@ fn wrapping_subtraction_keeps_the_native_bounds_check() {
 }
 
 #[test]
+fn const_preserves_native_effect_order() {
+    let source = indoc! {r#"
+        module Main
+        public main : Runtime -> Unit / { Console }
+        let main r = const (r.console.writeLine "first") (r.console.writeLine "second")
+    "#};
+    let (output, code) = build_and_run(source);
+    assert_eq!((output.as_str(), code), ("first\nsecond\n", Some(0)));
+}
+
+#[test]
 fn cross_module_forwarder_borrows_and_runs() {
     // `Lib.sumList` borrows its list; `Main.forward` only forwards `xs` to it, so
     // inter-procedural inference borrows `xs` too. `main` lends the same list to

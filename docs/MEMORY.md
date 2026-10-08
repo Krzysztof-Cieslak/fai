@@ -3112,7 +3112,8 @@ Editor integration:
     lambdas into the caller with freshened local *and* function ids; only an
     *applied* CAF, where reduction follows, never a value-position reference);
     **combinator reduction** by the resolved `Prelude` identities (`(f >> g) x →
-    g (f x)`, `x |> f → f x`, `identity x → x`, `const a b → (let _ = b in a)`);
+    g (f x)`, `x |> f → f x`, `identity x → x`,
+    `const a b → (let saved = a in let _ = b in saved)`);
     **application flattening** (`App(App(h, xs), ys) → App(h, xs ++ ys)`, collapsing a
     curried partial application into a saturated direct call); and **beta reduction**
     of an applied literal lambda (binding arguments to fresh locals, mapping captures
@@ -3122,8 +3123,9 @@ Editor integration:
     so editing `>>`'s body never changes what reduces and a user-shadowed operator
     (a different id) is left alone — the cross-module firewall. The reordered
     operands of `>>`/`|>` must be **pure** (a structural check mirroring fusion's
-    barrier), so an effectful composition stays a heap closure; `const`'s discarded
-    operand is kept in a dead binding, preserving its strict evaluation. CAF inlining
+    barrier), so an effectful composition stays a heap closure; `const` first saves
+    its retained operand and then evaluates the discarded operand, preserving
+    left-to-right effects and trap ordering before any surplus arguments. CAF inlining
     is **intra-file** (a body edit never crosses a module boundary). Skipped entirely
     inside the standard library, so the combinators and operators stay exercised by
     their own contracts. Reference counting re-runs afterward, so it re-derives all
