@@ -52,6 +52,7 @@ fn prim_name(op: Prim) -> &'static str {
         Prim::IntGe => ">=",
         Prim::FloatAdd => "+.",
         Prim::FloatSub => "-.",
+        Prim::FloatNeg => "negate.",
         Prim::FloatMul => "*.",
         Prim::FloatDiv => "/.",
         Prim::FloatLt => "<.",

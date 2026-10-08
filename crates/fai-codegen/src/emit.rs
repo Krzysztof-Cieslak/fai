@@ -23,7 +23,7 @@
 //! for a value of unknown (polymorphic) type, falling back to `fai_drop`.
 
 use cranelift_codegen::Context;
-use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
+use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::immediates::Ieee64;
 use cranelift_codegen::ir::{AbiParam, Block, FuncRef, InstBuilder, MemFlags, Value, types};
 use cranelift_codegen::ir::{StackSlotData, StackSlotKind, TrapCode};
@@ -3805,7 +3805,7 @@ impl<M: Module> Translator<'_, M> {
     }
 
     /// Compiles a `Float` primitive. With unboxed `f64` operands these are inline
-    /// machine instructions (`fadd`, `fcmp`, `sqrt`, `fcvt*`, bit reinterpretation)
+    /// machine instructions (`fadd`, `fneg`, `sqrt`, `fcvt*`, bit reinterpretation)
     /// with no allocation; a boxed operand or result (the uniform fallback, e.g.
     /// the mutual-recursion combined function) routes to the out-of-line runtime
     /// float call instead. Returns `None` for non-float primitives.
@@ -3813,12 +3813,13 @@ impl<M: Module> Translator<'_, M> {
         Some(match op {
             Prim::FloatAdd => self.float_binop(op, args, FloatBinop::Add),
             Prim::FloatSub => self.float_binop(op, args, FloatBinop::Sub),
+            Prim::FloatNeg => self.float_neg(args),
             Prim::FloatMul => self.float_binop(op, args, FloatBinop::Mul),
             Prim::FloatDiv => self.float_binop(op, args, FloatBinop::Div),
-            Prim::FloatLt => self.float_compare_op(op, args, FloatCC::LessThan),
-            Prim::FloatLe => self.float_compare_op(op, args, FloatCC::LessThanOrEqual),
-            Prim::FloatGt => self.float_compare_op(op, args, FloatCC::GreaterThan),
-            Prim::FloatGe => self.float_compare_op(op, args, FloatCC::GreaterThanOrEqual),
+            Prim::FloatLt => self.float_compare_op(op, args, IntCC::SignedLessThan),
+            Prim::FloatLe => self.float_compare_op(op, args, IntCC::SignedLessThanOrEqual),
+            Prim::FloatGt => self.float_compare_op(op, args, IntCC::SignedGreaterThan),
+            Prim::FloatGe => self.float_compare_op(op, args, IntCC::SignedGreaterThanOrEqual),
             Prim::Sqrt => self.float_sqrt(op, args),
             Prim::IntToFloat => self.int_to_float(op, args, result_ty),
             Prim::FloatToInt => self.float_to_int(op, args),
@@ -3848,13 +3849,33 @@ impl<M: Module> Translator<'_, M> {
         }
     }
 
-    /// `< <= > >=` on `Float`: inline `fcmp` (tagged `Bool`) on unboxed operands;
-    /// the runtime float comparison on boxed operands.
-    fn float_compare_op(&mut self, op: Prim, args: &[CExpr], cc: FloatCC) -> Value {
+    fn float_neg(&mut self, args: &[CExpr]) -> Value {
+        let value = self.expr(&args[0]);
+        if self.is_f64(value) {
+            self.builder.ins().fneg(value)
+        } else {
+            let boxed = self.ensure_boxed(value);
+            self.prim_runtime_call(Prim::FloatNeg, &[boxed])
+        }
+    }
+
+    /// A signed integer key ordered exactly as IEEE totalOrder (`f64::total_cmp`).
+    fn float_order_key(&mut self, value: Value) -> Value {
+        let bits = self.f64_to_i64(value);
+        let sign = self.builder.ins().sshr_imm(bits, 63);
+        let mask = self.builder.ins().ushr_imm(sign, 1);
+        self.builder.ins().bxor(bits, mask)
+    }
+
+    /// `< <= > >=` on `Float`: the structural total order, including signed zeros
+    /// and NaN sign/payload bits, in both raw and boxed representations.
+    fn float_compare_op(&mut self, op: Prim, args: &[CExpr], cc: IntCC) -> Value {
         let a = self.expr(&args[0]);
         let b = self.expr(&args[1]);
         if self.is_f64(a) && self.is_f64(b) {
-            let c = self.builder.ins().fcmp(cc, a, b);
+            let a = self.float_order_key(a);
+            let b = self.float_order_key(b);
+            let c = self.builder.ins().icmp(cc, a, b);
             self.tag_bool(c)
         } else {
             let a = self.ensure_boxed(a);

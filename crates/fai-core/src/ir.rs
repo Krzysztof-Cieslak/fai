@@ -534,6 +534,8 @@ pub enum Prim {
     FloatAdd,
     /// `-` on `Float`
     FloatSub,
+    /// Unary `-` on `Float`, flipping only its sign bit.
+    FloatNeg,
     /// `*` on `Float`
     FloatMul,
     /// `/` on `Float`
@@ -734,6 +736,7 @@ impl Prim {
             Prim::IntGe => "fai_int_ge",
             Prim::FloatAdd => "fai_float_add",
             Prim::FloatSub => "fai_float_sub",
+            Prim::FloatNeg => "fai_float_neg",
             Prim::FloatMul => "fai_float_mul",
             Prim::FloatDiv => "fai_float_div",
             Prim::FloatLt => "fai_float_lt",
@@ -791,6 +794,7 @@ impl Prim {
     pub fn arity(self) -> usize {
         match self {
             Prim::IntToString
+            | Prim::FloatNeg
             | Prim::FloatToString
             | Prim::IntToFloat
             | Prim::FloatToInt

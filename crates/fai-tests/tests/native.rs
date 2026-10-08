@@ -264,6 +264,22 @@ fn tls_plaintext_reports_bounded_write_progress() {
 }
 
 #[test]
+fn float_order_and_sign_bits_are_preserved_by_native_code() {
+    let source = indoc! {r#"
+        module Main
+        public main : Runtime -> Unit / { Console }
+        let main runtime =
+          let negativeZero = -0.0
+          let nan = Float.fromBits 0x7ff8000000001234
+          let valid = negativeZero < 0.0 && Float.toBits negativeZero = 0x8000000000000000 && nan >= nan && nan <= nan && Float.toBits (-nan) = 0xfff8000000001234
+          runtime.console.writeLine (if valid then "ok" else "wrong float semantics")
+    "#};
+    let (out, code) = build_and_run(source);
+    assert_eq!(code, Some(0));
+    assert_eq!(out, "ok\n");
+}
+
+#[test]
 fn user_runtime_builder_extends_the_capability_bundle() {
     // The entry file defines its own `runtime` builder, so `main` receives an
     // extended bundle: the standard console (a public default) plus a user-defined

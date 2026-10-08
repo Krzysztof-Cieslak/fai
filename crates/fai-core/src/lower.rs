@@ -968,8 +968,7 @@ impl Lowerer<'_> {
             let is_float = matches!(self.ty_of(operand), Ty::Con(Con::Float));
             let operand = self.lower_expr(operand);
             let kind = if is_float {
-                let zero = CExpr::new(K::Lit(Lit::Float(0f64.to_bits())), Ty::Con(Con::Float));
-                K::Prim { op: Prim::FloatSub, args: vec![zero, operand] }
+                K::Prim { op: Prim::FloatNeg, args: vec![operand] }
             } else {
                 let zero = CExpr::new(K::Lit(Lit::Int(0)), Ty::int());
                 K::Prim { op: Prim::IntSub, args: vec![zero, operand] }

@@ -1,0 +1,9 @@
+module FloatBits
+
+// Structural ordering distinguishes signed zeros and orders every NaN bit pattern.
+let nan = Float.fromBits 0x7ff8000000001234
+example: -0.0 < 0.0
+example: Float.toBits (-0.0) = 0x8000000000000000
+example: nan = nan && nan <= nan && nan >= nan
+example: Float.toBits (-nan) = 0xfff8000000001234
+forall bits: Float.toBits (-(Float.fromBits bits)) = Int.xor bits 0x8000000000000000

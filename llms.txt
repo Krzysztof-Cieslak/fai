@@ -1379,6 +1379,12 @@ shiftRightLogical : Int -> Int -> Int                  // zero-fill
 
 ### Float — `Float` (64-bit IEEE-754)
 
+Equality and hashing use the exact bits. All ordering operators and `compare`
+use IEEE total order, including signed zeros (`-0.0 < 0.0`) and NaN signs/payloads,
+identically in concrete, generic, and aggregate code. Unary `-` flips only the
+sign bit, preserving NaN payloads. Normalize zeros or use a tolerance for numeric
+equivalence rather than bitwise equality.
+
 ```
 toString : Float -> String
 toInt    : Float -> Int                                // truncate toward zero
