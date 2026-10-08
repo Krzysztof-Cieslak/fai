@@ -202,3 +202,54 @@ fn private_body_edit_keeps_interface_value_stable() {
     let after = fai_resolve::module_interface(&db, a_file);
     assert_eq!(before, after, "private-body edit must not change A's interface");
 }
+
+#[test]
+fn same_named_alias_revisions_match_clean_inference() {
+    let a = "module A\npublic type Value = B.Value\npublic id : Value -> Value\nlet id x = x\n";
+    let int = "module B\npublic type Value = Int\n";
+    let cycle = "module B\npublic type Value = A.Value\n";
+    let boolean = "module B\npublic type Value = Bool\n";
+    let revisions: &[&[(&str, &str)]] = &[
+        &[("A.fai", a), ("B.fai", int)],
+        &[("A.fai", a), ("B.fai", cycle)],
+        &[("A.fai", a), ("B.fai", boolean)],
+    ];
+    assert_incremental_matches_clean(revisions, |db, ids| {
+        let file = db.source_file(ids[0]).unwrap();
+        let ty = fai_types::render_scheme(&def_type(db, file, fai_syntax::Symbol::intern("id")));
+        let diagnostics: Vec<_> = check_file::accumulated::<fai_db::Diag>(db, file)
+            .into_iter()
+            .map(|d| (d.0.code, d.0.primary, d.0.message.clone()))
+            .collect();
+        (ty, diagnostics)
+    });
+}
+
+#[test]
+fn same_named_alias_private_body_edit_keeps_consumer_inference_cached() {
+    let mut db = FaiDatabase::new();
+    db.add_source(
+        "A.fai".into(),
+        "module A\npublic type Value = B.Value\npublic id : Value -> Value\nlet id x = x\n".into(),
+    );
+    db.add_source(
+        "B.fai".into(),
+        "module B\npublic type Value = Int\nlet privateValue = 1\n".into(),
+    );
+    let consumer = db.add_source(
+        "Consumer.fai".into(),
+        "module Consumer\npublic result : Int\nlet result = A.id 1\n".into(),
+    );
+    let file = db.source_file(consumer).unwrap();
+    let name = fai_syntax::Symbol::intern("result");
+    let before = def_type(&db, file, name);
+    assert_eq!(fai_types::render_scheme(&before), "Int");
+    db.enable_event_log();
+    db.add_source(
+        "B.fai".into(),
+        "module B\npublic type Value = Int\nlet privateValue = 2\n".into(),
+    );
+    assert_eq!(before, def_type(&db, file, name));
+    let log = db.take_events();
+    assert!(!log.iter().any(|e| e.contains("infer_scc_query")), "unexpected inference: {log:?}");
+}

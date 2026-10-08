@@ -120,8 +120,8 @@ struct Lowerer<'a> {
     /// The module path where the lowered type appears, for lexical (outward)
     /// resolution of a bare type/interface name.
     scope: Vec<Symbol>,
-    /// Names of aliases currently being expanded (cycle detection).
-    expanding: Vec<Symbol>,
+    /// Resolved aliases currently being expanded (cycle detection).
+    expanding: Vec<AdtRef>,
 }
 
 impl Lowerer<'_> {
@@ -384,7 +384,8 @@ impl Lowerer<'_> {
         span: TextRange,
         vars: &mut LowerVars,
     ) -> Ty {
-        if self.expanding.contains(&info.name) {
+        let alias = AdtRef::new(decl_file.source(self.db), info.name);
+        if self.expanding.contains(&alias) {
             emit(
                 self.db,
                 Diagnostic::error(
@@ -397,7 +398,7 @@ impl Lowerer<'_> {
         }
         // Lower the arguments in the *current* variable space, each by its
         // parameter's kind (an effect parameter takes an effect row).
-        let kinds = adt_param_kinds(self.db, AdtRef::new(decl_file.source(self.db), info.name));
+        let kinds = adt_param_kinds(self.db, alias);
         let arg_tys: Vec<Ty> = args
             .iter()
             .enumerate()
@@ -428,7 +429,7 @@ impl Lowerer<'_> {
             expanding: Vec::new(),
         };
         body_lowerer.expanding = std::mem::take(&mut self.expanding);
-        body_lowerer.expanding.push(info.name);
+        body_lowerer.expanding.push(alias);
         let mut body_vars = LowerVars::default();
         seed_kinded_params(&mut body_vars, &info.params, &kinds);
         let body_ty = body_lowerer.lower(body, &mut body_vars);
