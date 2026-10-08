@@ -24,6 +24,7 @@ mod lit;
 mod lower;
 pub mod niche;
 pub mod pretty;
+pub mod purity;
 pub mod reassoc;
 #[allow(unsafe_code)]
 pub mod simplify;

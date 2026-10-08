@@ -2844,12 +2844,14 @@ Editor integration:
   - **Behavior-preserving.** Only directly-nested applications fuse, so every
     intermediate is an unnamed temporary consumed exactly once (a shared/`let`-bound
     value is the loop's *source*, never fused away — `map_sum_shared`); and a stage
-    fuses only when its element function is **pure**, so reordering element
-    applications (including which element a trap falls on) is unobservable. Purity is
-    decided structurally (a lambda is impure if it performs a capability `Prim` or
-    makes an indirect call; a named function is pure iff its *scheme*'s arrows are
-    pure) because the lowered Core's types erase a polymorphic effect variable to
-    pure — the body types cannot be trusted for an effect-polymorphic stage.
+    fuses only when its element function is **pure and provably total**. The shared
+    Core reorder-safety analysis excludes effects, potentially trapping primitives,
+    unknown calls, and recursion. A named function's arity-aware boolean query
+    inspects its body and provides early cutoff when an edit preserves totality;
+    pure effect rows alone do not establish termination or absence of traps.
+    Unsafe literal elements, fold initializers, member targets, and producer
+    arguments retain eager evaluation. Ordinary finite-allocation resource
+    exhaustion is outside the totality classification.
   - **Carve-outs.** `foldr` over a non-reversible `List` value is left unfused (a
     single tail loop is impossible without a reverse pass or unsafe deep recursion,
     which std itself avoids); a pipeline inside a **mutual-recursion group member**
@@ -3122,8 +3124,8 @@ Editor integration:
     `combinator_defs` resolver reads only `Prelude`'s module header, never a body),
     so editing `>>`'s body never changes what reduces and a user-shadowed operator
     (a different id) is left alone — the cross-module firewall. The reordered
-    operands of `>>`/`|>` must be **pure** (a structural check mirroring fusion's
-    barrier), so an effectful composition stays a heap closure; `const` first saves
+    operands of `>>`/`|>` must be **pure and total** (the shared reorder-safety
+    check), so an unsafe composition stays a closure; `const` first saves
     its retained operand and then evaluates the discarded operand, preserving
     left-to-right effects and trap ordering before any surplus arguments. CAF inlining
     is **intra-file** (a body edit never crosses a module boundary). Skipped entirely

@@ -132,8 +132,10 @@
 > `transform`) is still applied via `apply_n` (the residual dispatch is separate
 > work). It is **behavior-preserving** — only directly-nested intermediates fuse
 > (a shared/`let`-bound sequence stays materialized, walked by the loop) and a
-> stage fuses only when its element function is **pure** (an effectful stage is a
-> barrier), so cross-stage reordering is unobservable. The synthesized loops are
+> stage fuses only when its element function is **pure and provably total**
+> (effects, possible traps, and unproven termination are barriers). Literal
+> elements and producer arguments keep their strict evaluation, so cross-stage
+> reordering is unobservable. The synthesized loops are
 > emitted like the mutual-recursion combined loop (the driver gathers and
 > code-generates them across the AOT/JIT/bundle/contract paths); fusion is skipped
 > inside the standard library itself (so the combinators stay tested by their own

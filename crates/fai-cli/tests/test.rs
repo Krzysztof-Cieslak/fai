@@ -67,6 +67,18 @@ fn oversized_array_capacity_is_rejected_in_an_isolated_jit() {
 }
 
 #[test]
+fn a_fused_search_cannot_hide_a_contract_trap() {
+    let source =
+        "module Partial\nexample: List.any (fun x -> x = 1) (List.map (fun n -> 1 / n) [1, 0])\n";
+    let dir = workspace("partial-fusion", &[("Partial.fai", source)]);
+    let output =
+        fai().args(["test", "--no-daemon", "-C"]).arg(dir).arg("Partial.fai").output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(1), "{stdout}");
+    assert!(stdout.contains("FAI6003"), "{stdout}");
+}
+
+#[test]
 fn trapping_contract_streams_live_lines_in_order() {
     let dir = workspace("livelines", &[("Crash.fai", CRASH)]);
     let out =

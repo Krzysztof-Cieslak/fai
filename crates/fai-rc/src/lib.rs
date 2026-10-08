@@ -121,8 +121,9 @@ pub fn rc_lowered(db: &dyn Db, lowered: &LoweredDef, self_sig: &BorrowSig) -> Lo
     // Whether calling a top-level function is pure and total, so the tail-call
     // transform may hoist a later constructor argument that calls it ahead of the
     // back-edge. Unknown/builtin targets are conservatively impure.
-    let is_pure_total = |def: DefId| {
-        db.source_file(def.file).is_some_and(|f| purity::is_pure_total(db, f, def.name))
+    let is_pure_total = |def: DefId, arity: usize| {
+        db.source_file(def.file)
+            .is_some_and(|f| purity::application_pure_total(db, f, def.name, arity))
     };
 
     // The entry's offset-evidence-parameter count: a row-polymorphic function

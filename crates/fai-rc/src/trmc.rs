@@ -44,7 +44,7 @@ pub(crate) fn flatten(
     body: CExpr,
     params: &[LocalId],
     self_def: DefId,
-    is_pure_total: &dyn Fn(DefId) -> bool,
+    is_pure_total: &dyn Fn(DefId, usize) -> bool,
     next: &mut usize,
 ) -> CExpr {
     let arity = params.len();
@@ -206,7 +206,7 @@ fn eligible(
     body: &CExpr,
     self_def: DefId,
     arity: usize,
-    is_pure_total: &dyn Fn(DefId) -> bool,
+    is_pure_total: &dyn Fn(DefId, usize) -> bool,
 ) -> Option<bool> {
     let mut uses_hole = false;
     let mut found_tail = false;
@@ -223,7 +223,7 @@ fn check_tail(
     e: &CExpr,
     self_def: DefId,
     arity: usize,
-    is_pure_total: &dyn Fn(DefId) -> bool,
+    is_pure_total: &dyn Fn(DefId, usize) -> bool,
     uses_hole: &mut bool,
     found_tail: &mut bool,
 ) -> bool {
@@ -280,7 +280,7 @@ fn check_cons_wrap(
     rec: LocalId,
     e: &CExpr,
     self_def: DefId,
-    is_pure_total: &dyn Fn(DefId) -> bool,
+    is_pure_total: &dyn Fn(DefId, usize) -> bool,
     uses_hole: &mut bool,
     found_tail: &mut bool,
 ) -> bool {
@@ -294,6 +294,7 @@ fn check_cons_wrap(
                 // counting placed on its other field operands.
                 count_uses(value, rec) == 1
                     && is_construction(value)
+                    && pure_total(value, is_pure_total)
                     && !contains_self(value, self_def)
                     && count_uses(body, *local) == 1
                     && check_cons_wrap(*local, body, self_def, is_pure_total, uses_hole, found_tail)
@@ -321,8 +322,10 @@ fn check_cons_wrap(
         K::MakeData { args, .. } => {
             // The outermost (tail) constructor: `rec` is exactly one field (the
             // invariant guarantees its single use is here), with no other
-            // self-reference.
+            // self-reference. Even atomic fields can force a nullary global, so
+            // check their reorder safety before moving construction ahead.
             args.iter().filter(|a| is_local(a, rec)).count() == 1
+                && args.iter().all(|arg| pure_total(arg, is_pure_total))
                 && !contains_self(e, self_def)
                 && {
                     *uses_hole = true;
@@ -734,11 +737,11 @@ fn count_local(e: &CExpr, x: LocalId, n: &mut usize) {
 /// observable behavior. A call is admitted only when it is a saturated-or-partial
 /// application of a statically known top-level function that `is_pure_total`
 /// reports pure and total; any indirect or curried call is rejected.
-fn pure_total(e: &CExpr, is_pure_total: &dyn Fn(DefId) -> bool) -> bool {
+fn pure_total(e: &CExpr, is_pure_total: &dyn Fn(DefId, usize) -> bool) -> bool {
     let mut ok = true;
     walk(e, &mut |n| match &n.kind {
-        K::App { func, .. } => {
-            let safe = matches!(&func.kind, K::Global(def) if is_pure_total(*def));
+        K::App { func, args, .. } => {
+            let safe = matches!(&func.kind, K::Global(def) if is_pure_total(*def, args.len()));
             if !safe {
                 ok = false;
             }
@@ -747,6 +750,8 @@ fn pure_total(e: &CExpr, is_pure_total: &dyn Fn(DefId) -> bool) -> bool {
         // A foreign call performs a host capability (and may abort), so it is never
         // safe to hoist ahead of the recursion.
         K::Foreign { .. } => ok = false,
+        K::Global(def) if !is_pure_total(*def, 0) => ok = false,
+        K::Error | K::Recur { .. } => ok = false,
         _ => {}
     });
     ok

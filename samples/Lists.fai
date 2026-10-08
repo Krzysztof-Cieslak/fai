@@ -1,6 +1,7 @@
 module Lists
 
 /// Apply f to every element, preserving order.
+/// This is strict: a later short-circuiting consumer does not skip map's work.
 public map : ('a -> 'b) -> List 'a -> List 'b
 let map f xs =
   match xs with
