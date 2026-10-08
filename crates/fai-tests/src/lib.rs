@@ -101,12 +101,36 @@ where
     T: PartialEq + Debug,
     Q: Fn(&FaiDatabase, &[SourceId]) -> T,
 {
+    verify_revisions(revisions, query, false);
+}
+
+/// Verifies revisions with the embedded standard library loaded in both databases.
+/// Revision entries are user inputs and cannot replace the library's identities.
+pub fn assert_incremental_with_std_matches_clean<T, Q>(revisions: &[Revision], query: Q)
+where
+    T: PartialEq + Debug,
+    Q: Fn(&FaiDatabase, &[SourceId]) -> T,
+{
+    verify_revisions(revisions, query, true);
+}
+
+fn verify_revisions<T, Q>(revisions: &[Revision], query: Q, with_std: bool)
+where
+    T: PartialEq + Debug,
+    Q: Fn(&FaiDatabase, &[SourceId]) -> T,
+{
     let mut incremental = FaiDatabase::new();
+    if with_std {
+        fai_types::std_lib::load_std(&mut incremental);
+    }
     for (index, revision) in revisions.iter().enumerate() {
         let incremental_ids = load(&mut incremental, revision);
         let incremental_result = query(&incremental, &incremental_ids);
 
         let mut clean = FaiDatabase::new();
+        if with_std {
+            fai_types::std_lib::load_std(&mut clean);
+        }
         let clean_ids = load(&mut clean, revision);
         let clean_result = query(&clean, &clean_ids);
 
@@ -127,6 +151,7 @@ fn load(db: &mut FaiDatabase, revision: Revision) -> Vec<SourceId> {
     let removed: Vec<_> = db
         .all_source_files()
         .iter()
+        .filter(|file| !file.is_std(db))
         .map(|file| file.source(db))
         .filter(|id| !active.contains(id))
         .collect();

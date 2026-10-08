@@ -203,6 +203,9 @@ comments.
     forward-compatibility with a future package system. Prefer `public` for your
     app's API and reach for `internal` only when you want a member shared across
     your modules but excluded from a future package's surface.
+    Origin is assigned by the compiler's loader, not by a file or directory name.
+    Even a real `<std>` directory remains user code and cannot replace embedded
+    library sources or access their internal members.
   - Everything unmarked is **private** to its module.
   - Every **exported** (`public` *or* `internal`) binding needs a signature
     (`FAI3003` otherwise). An exported signature may not name a type of narrower
@@ -740,6 +743,8 @@ Rules for `foreign`:
   `Unit` ↔ no argument / `void`.
   Foreign functions may be passed as values or partially applied; their expanded
   declared signatures determine the same marshalling on every call path.
+  A user file always uses this ABI, including under a directory named `<std>`;
+  filesystem names cannot select the compiler's private raw host ABI.
 
 A contract (`example`/`forall`) cannot call a capability — including your own — so
 it cannot reach a `foreign` (`FAI6004`).
@@ -984,6 +989,10 @@ forall xs: mirror (mirror xs) = xs
 ---
 
 ## 13. Standard library reference
+
+The compiler loads these modules as embedded sources with a distinct origin.
+Workspace files cannot replace them by matching their display paths, and only
+embedded sources may call the private `Prim.*` intrinsics.
 
 The standard library is written in Fai. The `Prelude` is auto-imported; all other
 operations are reached **qualified** (`List.map`, `Int.toString`). Higher-order

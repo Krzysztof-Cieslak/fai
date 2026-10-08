@@ -82,6 +82,26 @@ pub struct SourceFile {
     /// The file's full text.
     #[returns(ref)]
     pub text: String,
+    /// Loader-controlled origin, independent of the display or filesystem path.
+    pub origin: SourceOrigin,
+}
+
+/// The source's semantic origin. Only the embedded-library loader assigns the
+/// trusted origin; ordinary disk files remain user code regardless of their name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SourceOrigin {
+    /// A workspace or editor-supplied source file.
+    User,
+    /// A source embedded in the compiler's standard library.
+    StandardLibrary,
+}
+
+impl SourceFile {
+    /// Whether this input was registered as embedded standard-library code.
+    #[must_use]
+    pub fn is_std(self, db: &dyn Db) -> bool {
+        self.origin(db) == SourceOrigin::StandardLibrary
+    }
 }
 
 /// Active membership indexed by stable SourceId. A tombstone retains its input
@@ -101,22 +121,9 @@ fn registered_source(db: &dyn Db, registry: SourceRegistry, id: SourceId) -> Opt
 
 /// The synthetic path namespace of the embedded standard library.
 ///
-/// Standard-library modules are loaded as synthetic inputs whose paths start
-/// with this prefix, keeping them distinct from any on-disk file (so a user's
-/// own `std/` directory can never collide) and letting every phase recognize
-/// them by path alone. The loader lives in `fai-types`; the prefix is shared
-/// here so lower crates (e.g. name resolution) can classify a file without
-/// depending on the loader.
+/// Used for display only. Semantic classification uses [`SourceFile::origin`],
+/// and embedded inputs have their own registry so a disk path cannot replace one.
 pub const STD_PATH_PREFIX: &str = "<std>/";
-
-/// Whether `path` names an embedded standard-library module.
-///
-/// Such files are kept out of user-facing surfaces (`check`, `query`) and are
-/// the only ones allowed to reach the prelude-private `Prim` intrinsics.
-#[must_use]
-pub fn is_std_path(path: &str) -> bool {
-    path.starts_with(STD_PATH_PREFIX)
-}
 
 /// An interned string key.
 ///
@@ -177,6 +184,7 @@ pub struct FaiDatabase {
     storage: salsa::Storage<Self>,
     files: Arc<Vec<SourceFile>>,
     ids_by_path: Arc<FxHashMap<Utf8PathBuf, SourceId>>,
+    std_ids_by_path: Arc<FxHashMap<Utf8PathBuf, SourceId>>,
     events: Arc<Mutex<Option<Vec<String>>>>,
 }
 
@@ -220,7 +228,13 @@ impl FaiDatabase {
                 }
             }
         })));
-        let db = Self { storage, files: Arc::default(), ids_by_path: Arc::default(), events };
+        let db = Self {
+            storage,
+            files: Arc::default(),
+            ids_by_path: Arc::default(),
+            std_ids_by_path: Arc::default(),
+            events,
+        };
         let _ = SourceRegistry::builder(Vec::new()).durability(Durability::HIGH).new(&db);
         db
     }
@@ -230,17 +244,43 @@ impl FaiDatabase {
     /// Re-registering a known path updates its text in place (reusing the id and
     /// the salsa input, so spans stay valid and dependents re-validate).
     pub fn add_source(&mut self, path: Utf8PathBuf, text: String) -> SourceId {
-        if let Some(&id) = self.ids_by_path.get(&path) {
+        self.add_source_with_origin(path, text, SourceOrigin::User)
+    }
+
+    /// Registers a source in its origin's separate identity registry. Standard
+    /// sources are high-durability; the path never selects or changes origin.
+    pub fn add_source_with_origin(
+        &mut self,
+        path: Utf8PathBuf,
+        text: String,
+        origin: SourceOrigin,
+    ) -> SourceId {
+        let registry = match origin {
+            SourceOrigin::User => &self.ids_by_path,
+            SourceOrigin::StandardLibrary => &self.std_ids_by_path,
+        };
+        let durability = match origin {
+            SourceOrigin::User => Durability::LOW,
+            SourceOrigin::StandardLibrary => Durability::HIGH,
+        };
+        if let Some(&id) = registry.get(&path) {
             let file = self.files[id.index()];
-            file.set_text(self).to(text);
+            file.set_text(self).with_durability(durability).to(text);
             self.activate_source(id, file);
             return id;
         }
         let id = SourceId::new(u32::try_from(self.files.len()).expect("too many source files"));
-        let file = SourceFile::new(&*self, id, path.as_str().to_owned(), text);
+        let file = SourceFile::builder(id, path.as_str().to_owned(), text, origin)
+            .durability(durability)
+            .new(&*self);
         // Copy-on-write: only clones the registry while a snapshot still holds it.
         Arc::make_mut(&mut self.files).push(file);
-        Arc::make_mut(&mut self.ids_by_path).insert(path, id);
+        match origin {
+            SourceOrigin::User => Arc::make_mut(&mut self.ids_by_path).insert(path, id),
+            SourceOrigin::StandardLibrary => {
+                Arc::make_mut(&mut self.std_ids_by_path).insert(path, id)
+            }
+        };
         self.activate_source(id, file);
         id
     }
@@ -289,15 +329,16 @@ impl FaiDatabase {
         removed
     }
 
-    /// Looks up the active [`SourceId`] for `path`, if any.
+    /// Looks up the active user [`SourceId`] for `path`, if any. An embedded
+    /// source with the same display path is never returned by disk lookup.
     #[must_use]
     pub fn id_for_path(&self, path: &Utf8Path) -> Option<SourceId> {
         self.ids_by_path.get(path).copied().filter(|&id| self.source_file(id).is_some())
     }
 
     /// Registers `path` at a given [`Durability`]. Use [`Durability::HIGH`] for
-    /// rarely-changing inputs (e.g. the embedded prelude) so dependents are not
-    /// needlessly revalidated.
+    /// rarely-changing user inputs so dependents are not needlessly revalidated.
+    /// Durability does not grant standard-library origin.
     pub fn add_source_with_durability(
         &mut self,
         path: Utf8PathBuf,

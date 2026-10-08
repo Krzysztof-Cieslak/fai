@@ -42,7 +42,7 @@
 
 use std::sync::Arc;
 
-use fai_db::{Db, SourceFile, is_std_path};
+use fai_db::{Db, SourceFile};
 use fai_resolve::{DefId, LocalId, ModuleName, module_file, recursive_defs};
 use fai_span::SourceId;
 use fai_syntax::Symbol;
@@ -113,7 +113,7 @@ pub fn simplified(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef
     let base = core_inlined(db, file, name);
     // Skip the standard library so the combinators and operators stay tested by
     // their own contracts (mirrors fusion).
-    if is_std_path(file.path(db)) {
+    if file.is_std(db) {
         return base;
     }
     let mut cx = Simplifier {

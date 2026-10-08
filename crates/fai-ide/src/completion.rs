@@ -225,7 +225,7 @@ fn module_members(db: &dyn Db, file: SourceFile, path: &str) -> Vec<CompletionIt
         offer(&module_interface(db, mfile));
         // `internal` members are offered only within the same origin (std vs. user
         // today), matching what name resolution will accept from this file.
-        if fai_db::is_std_path(file.path(db)) == fai_db::is_std_path(mfile.path(db)) {
+        if file.origin(db) == mfile.origin(db) {
             offer(&module_internal_interface(db, mfile));
         }
         return out;

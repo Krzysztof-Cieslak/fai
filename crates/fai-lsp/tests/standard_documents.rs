@@ -74,3 +74,33 @@ fn workspaces_share_the_same_versioned_standard_document() {
     first.shutdown();
     second.shutdown();
 }
+
+#[cfg(unix)]
+#[test]
+fn a_user_file_with_an_embedded_display_path_keeps_its_own_location() {
+    let source = "module Main\nlet values = List.map identity [1]\nlet answer = Fake.value\n";
+    let mut h = Harness::start("std-path-collision", &[("Main.fai", source)]);
+    let path = "<std>/collections/List.fai";
+    let user_uri = h.uri(path);
+    let disk = Url::parse(&user_uri).unwrap().to_file_path().unwrap();
+    std::fs::create_dir_all(disk.parent().unwrap()).unwrap();
+    let fake = "module Fake\npublic value : Int\nlet value = 42\n";
+    std::fs::write(&disk, fake).unwrap();
+    h.did_open(path, fake);
+    let main_uri = h.did_open("Main.fai", source);
+    let user = h.definition(&main_uri, position_within(source, "Fake.value", 5));
+    assert_eq!(user[0]["uri"], user_uri);
+    let standard = h.definition(&main_uri, position_within(source, "List.map", 5));
+    assert_ne!(standard[0]["uri"], user_uri);
+    let standard_uri = Url::parse(standard[0]["uri"].as_str().unwrap()).unwrap();
+    assert!(standard_uri.path().ends_with("/collections/List.fai"));
+    let rename = h.rename(&main_uri, position_within(source, "Fake.value", 5), "renamed");
+    let changes = rename["changes"].as_object().unwrap();
+    assert!(changes.contains_key(&user_uri));
+    assert!(!changes.contains_key(standard_uri.as_str()));
+    assert_eq!(
+        std::fs::read_to_string(standard_uri.to_file_path().unwrap()).unwrap(),
+        include_str!("../../../std/collections/List.fai")
+    );
+    h.shutdown();
+}

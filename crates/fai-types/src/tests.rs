@@ -2616,7 +2616,11 @@ fn std_origin_db(files: &[(&str, &str)]) -> (FaiDatabase, Vec<SourceFile>) {
     let mut db = FaiDatabase::new();
     let mut handles = Vec::new();
     for (path, text) in &prefixed {
-        let id = db.add_source(path.clone().into(), text.clone());
+        let id = db.add_source_with_origin(
+            path.clone().into(),
+            text.clone(),
+            fai_db::SourceOrigin::StandardLibrary,
+        );
         handles.push(db.source_file(id).unwrap());
     }
     (db, handles)

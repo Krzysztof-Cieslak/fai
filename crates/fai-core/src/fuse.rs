@@ -171,7 +171,7 @@ pub fn fusion_defs(db: &dyn Db) -> Option<Arc<FusionDefs>> {
 pub fn fuse_def(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<FuseResult> {
     let base = helper_inlined(db, file, name);
     let no_fuse = || Arc::new(FuseResult { body: (*base).clone(), loops: Vec::new() });
-    if fai_db::is_std_path(file.path(db)) {
+    if file.is_std(db) {
         return no_fuse();
     }
     let Some(defs) = fusion_defs(db) else { return no_fuse() };

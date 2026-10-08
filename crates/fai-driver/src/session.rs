@@ -145,7 +145,7 @@ impl Session {
             .all_source_files()
             .into_iter()
             .filter(|f| self.live.contains(&f.source(&self.db)))
-            .filter(|f| !fai_db::is_std_path(f.path(&self.db)))
+            .filter(|f| !f.is_std(&self.db))
             .collect()
     }
 

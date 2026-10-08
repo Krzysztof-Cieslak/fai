@@ -1,0 +1,8 @@
+module SourceOrigins
+
+// File and directory names do not grant standard-library privileges. User code
+// reaches library operations through their public modules, not through Prim.
+// Internal members are shared within user code, a different origin from std.
+internal asText : Int -> String
+let asText value = Int.toString value
+example: asText 42 = "42"

@@ -41,6 +41,7 @@ rayon.workspace = true
 lsp-server.workspace = true
 lsp-types.workspace = true
 wait-timeout.workspace = true
+tempfile.workspace = true
 
 [[bench]]
 name = "inference"

@@ -3,7 +3,7 @@
 //! These are the stable, versioned wire types. Spans are resolved late from a
 //! [`SpanResolver`] so semantic values stay free of byte offsets.
 
-use fai_span::{Span, SpanResolver};
+use fai_span::{SourceId, Span, SpanResolver};
 use serde::Serialize;
 
 /// The query output schema version (kept in step with the diagnostics schema).
@@ -19,8 +19,12 @@ pub struct Position {
 }
 
 /// A source range with byte offsets (CLI.md `Span`).
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Eq)]
 pub struct SpanJson {
+    /// In-process provenance for paths shared by embedded and user inputs.
+    /// It is not part of the stable JSON shape or wire-value equality.
+    #[serde(skip)]
+    pub source: SourceId,
     /// File path.
     pub file: String,
     /// Start position.
@@ -41,12 +45,23 @@ impl SpanJson {
     pub fn resolve(span: Span, resolver: &dyn SpanResolver) -> Option<SpanJson> {
         let r = resolver.resolve(span)?;
         Some(SpanJson {
+            source: span.source(),
             file: r.path.to_string(),
             start: Position { line: r.start.line, column: r.start.column },
             end: Position { line: r.end.line, column: r.end.column },
             byte_start: r.byte_start,
             byte_end: r.byte_end,
         })
+    }
+}
+
+impl PartialEq for SpanJson {
+    fn eq(&self, other: &Self) -> bool {
+        self.file == other.file
+            && self.start == other.start
+            && self.end == other.end
+            && self.byte_start == other.byte_start
+            && self.byte_end == other.byte_end
     }
 }
 

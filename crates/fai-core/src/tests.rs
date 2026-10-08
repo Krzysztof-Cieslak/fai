@@ -1165,7 +1165,7 @@ mod simplify {
 
     #[test]
     fn simplify_is_skipped_in_the_standard_library() {
-        // A file classified as standard-library (its path under `<std>/`) is not
+        // A file explicitly registered as standard-library origin is not
         // simplified, so the combinators stay exercised by their own contracts. The
         // identical construct in a user module *is* reduced.
         let user = "module U\n\nlet g y = y + 1\n\nlet f x = x |> g\n";
@@ -1173,7 +1173,11 @@ mod simplify {
         let mut db = fai_db::FaiDatabase::new();
         fai_types::std_lib::load_std(&mut db);
         let uid = db.add_source("U.fai".into(), user.to_owned());
-        let sid = db.add_source("<std>/S.fai".into(), std.to_owned());
+        let sid = db.add_source_with_origin(
+            "<std>/S.fai".into(),
+            std.to_owned(),
+            fai_db::SourceOrigin::StandardLibrary,
+        );
         let ufile = db.source_file(uid).unwrap();
         let sfile = db.source_file(sid).unwrap();
         let name = Symbol::intern("f");

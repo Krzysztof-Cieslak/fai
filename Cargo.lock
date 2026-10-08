@@ -931,6 +931,7 @@ dependencies = [
  "rayon",
  "rcgen",
  "serde_json",
+ "tempfile",
  "wait-timeout",
 ]
 

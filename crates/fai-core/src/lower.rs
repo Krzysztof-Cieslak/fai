@@ -54,7 +54,7 @@ pub fn core(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
     if let Some(native) = foreign_symbol(db, file, &parsed.module, name) {
         // A user (non-std) `foreign` uses the marshalled ABI; the built-in host
         // capabilities (declared in std) use the raw value ABI.
-        let marshalled = !fai_db::is_std_path(file.path(db));
+        let marshalled = !file.is_std(db);
         let (parameter_types, result_type) = crate::abi::foreign_signature(db, file, name);
         let mut next = first_free_local(&resolved);
         let params: Vec<LocalId> = (0..parameter_types.len())
