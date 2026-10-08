@@ -253,3 +253,26 @@ fn same_named_alias_private_body_edit_keeps_consumer_inference_cached() {
     let log = db.take_events();
     assert!(!log.iter().any(|e| e.contains("infer_scc_query")), "unexpected inference: {log:?}");
 }
+
+#[test]
+fn opaque_alias_coverage_changes_match_clean_checks() {
+    let user = "module User\npublic inspect : Lib.Secret -> Int\nlet inspect secret =\n  match secret with\n  | _ as value -> 1\n";
+    let revisions: &[&[(&str, &str)]] = &[
+        &[("Lib.fai", "module Lib\npublic opaque type Secret = Int\n"), ("User.fai", user)],
+        &[
+            ("Lib.fai", "module Lib\npublic opaque type Secret = { value : Bool }\n"),
+            ("User.fai", user),
+        ],
+        &[("Lib.fai", "module Lib\npublic type Secret = Bool\n"), ("User.fai", user)],
+        &[("Lib.fai", "module Lib\npublic opaque type Secret = Bool\n"), ("User.fai", user)],
+    ];
+    assert_incremental_matches_clean(revisions, |db, ids| {
+        let file = db.source_file(ids[1]).unwrap();
+        let diagnostics: Vec<_> = check_file::accumulated::<fai_db::Diag>(db, file)
+            .into_iter()
+            .map(|d| (d.0.code, d.0.primary, d.0.message.clone()))
+            .collect();
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        diagnostics
+    });
+}

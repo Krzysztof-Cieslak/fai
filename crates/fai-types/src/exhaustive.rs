@@ -440,6 +440,12 @@ impl MatchChecker<'_> {
                 let file = self.ctor_file(adt.file);
                 let decls = type_decls(self.db, file);
                 let Some(info) = decls.type_named(adt.name) else { return Sig::Infinite };
+                // An alias left nominal by type lowering has an abstract
+                // representation. Its absent constructors do not make it empty:
+                // only a catch-all can establish coverage without inspecting it.
+                if info.is_alias {
+                    return Sig::Infinite;
+                }
                 let ctors = info
                     .ctors
                     .iter()
