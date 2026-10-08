@@ -295,7 +295,10 @@ in a supervised isolated worker, so a body that traps on a generated input fails
 
 - **Options:** `--match <pat>` (run only contracts whose subject/module matches),
   `--seed <n>`, `--count <n>` (trials per property), `--max-size <n>`.
-- **Streaming:** per-contract pass/fail events (`$/testEvent`, from the daemon).
+- **Streaming:** each validated per-contract pass/fail event is delivered as soon
+  as its worker frame arrives (`$/testEvent`, from the daemon), before later
+  contracts finish. An acknowledged result is emitted once, including when a
+  later contract crashes or times out and the worker resumes after it.
 - **Output (json):** `{ "schemaVersion": 1, "total": int, "passed": int, "notRun": int, "seed": int, "events": [TestEvent], "diagnostics": [Diagnostic], "ok": bool }`, where a `TestEvent` is `{ "ordinal": int, "symbol": string?, "kind": "example"|"forall", "status": "passed"|"failed"|"crashed"|"timedOut"|"notRun", "counterexample": string?, "seed": int, "trials": int, "maxSize": int }`.
 - **Exit:** `0` if all pass; `1` otherwise.
 

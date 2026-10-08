@@ -417,6 +417,67 @@ fn warm_test_matches_no_daemon() {
     assert_eq!(stdout(&warm_human), stdout(&cold_human), "warm human must equal --no-daemon");
 }
 
+#[cfg(debug_assertions)]
+#[track_caller]
+fn live_contract_progress(no_daemon: bool, tag: &str) {
+    use wait_timeout::ChildExt;
+
+    struct ReleaseGate(PathBuf);
+    impl Drop for ReleaseGate {
+        fn drop(&mut self) {
+            let _ = std::fs::write(&self.0, "release");
+        }
+    }
+
+    let daemon = Daemon::new(tag, &[("Crash.fai", CRASH)]);
+    let gate = ReleaseGate(daemon.workspace.join("continue"));
+    let _ = std::fs::remove_file(&gate.0);
+    let mut command = daemon.cmd();
+    command
+        .env("FAI_TEST_EVENT_GATE", &gate.0)
+        .env("FAI_TEST_TIMEOUT_MS", "30000")
+        .args(["test", "--color=never", "-C"])
+        .arg(&daemon.workspace)
+        .arg("Crash.fai")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if no_daemon {
+        command.arg("--no-daemon");
+    }
+    let mut child = KillOnDrop(command.spawn().unwrap());
+    let lines = read_lines(child.0.stdout.take().unwrap());
+    let first = lines.recv_timeout(Duration::from_secs(20)).expect("first live contract event");
+    assert!(first.starts_with("ok    "), "{first}");
+    assert!(child.0.try_wait().unwrap().is_none(), "the worker is still gated");
+    std::fs::write(&gate.0, "release").unwrap();
+    let status = child.0.wait_timeout(Duration::from_secs(20)).unwrap().expect("test run ends");
+    assert_eq!(status.code(), Some(1));
+    let mut output = vec![first];
+    while let Ok(line) = lines.recv_timeout(Duration::from_secs(5)) {
+        output.push(line);
+    }
+    let events: Vec<_> = output
+        .iter()
+        .filter(|line| line.starts_with("ok    ") || line.starts_with("ABORT "))
+        .collect();
+    assert_eq!(events.len(), 3, "{output:?}");
+    assert!(events[1].starts_with("ABORT "), "{output:?}");
+    assert!(events[2].starts_with("ok    "), "{output:?}");
+    assert!(output.iter().any(|line| line.contains("2 passed, 1 failed")), "{output:?}");
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn daemon_contract_progress_arrives_before_the_next_contract_finishes() {
+    live_contract_progress(false, "live-contract-daemon");
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn local_contract_progress_arrives_before_the_next_contract_finishes() {
+    live_contract_progress(true, "live-contract-local");
+}
+
 #[test]
 fn daemon_survives_a_trapping_contract() {
     let daemon = Daemon::new("survive", &[("Crash.fai", CRASH)]);
