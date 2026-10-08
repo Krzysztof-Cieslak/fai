@@ -2,27 +2,16 @@ name: Benchmarks
 
 # Wall-clock benchmarks are informational, never a pass/fail gate (shared runners
 # are noisy — performance is gated by the deterministic guard tests in the `CI`
-# workflow). This job runs the divan benches on every pull request, on the main
-# branch, and on demand; it renders a report into the run summary (real-world
-# language-server rows link to the exact source line they measured) and uploads
-# the raw + parsed results. A pull-request run uses a short per-benchmark settle
-# time (see `DIVAN_MAX_TIME` below) so the whole suite finishes in roughly the
-# time the test job takes; it still executes every benchmark — catching a bench
-# that fails to build-and-run or whose Fai-vs-Rust result diverges from the
-# oracle — but its timings are a rough, human-read report, not a gate. The main /
-# on-demand run keeps the long settle time for steady medians.
+# workflow). Optional runs are manual-only and the workflow is disabled in the
+# repository settings. When explicitly enabled and dispatched, it publishes the
+# benchmark report and raw results without competing with automatic merge checks.
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
 
-# Serialize runs per ref. A new push to a pull request supersedes its in-flight
-# run (the rough PR report has no value once stale); a main / on-demand run is
-# never cancelled, so the long informational report always completes.
+# Serialize intentional manual reports without cancelling an in-flight report.
 concurrency:
   group: bench-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -34,9 +23,7 @@ jobs:
   bench:
     name: divan benchmarks
     runs-on: ubuntu-latest
-    # A pull-request run (short settle time) finishes in minutes; cap it well below
-    # the main run's generous budget so a benchmark that hangs fails fast.
-    timeout-minutes: ${{ github.event_name == 'pull_request' && 30 || 150 }}
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
 
@@ -56,9 +43,7 @@ jobs:
 
       - name: Run benchmarks
         # `DIVAN_MAX_TIME` caps the wall time per benchmarked function. A
-        # pull-request run uses a short cap (1s) so the whole suite finishes
-        # quickly while still executing every benchmark once — the value is a rough
-        # report, never a gate. The main / on-demand run uses a generous cap (120s):
+        # manual run uses a generous cap (120s):
         # enough for the process-spawn benches (algorithms_aot, the daemon e2e at
         # 200 modules, the fai test loop) to reach divan's full ~100-sample target
         # for steadier medians, while still bounding any pathological function.
@@ -66,7 +51,7 @@ jobs:
         # diverges from its oracle (a bug, not a perf regression) while still
         # capturing the output rendered below.
         env:
-          DIVAN_MAX_TIME: ${{ github.event_name == 'pull_request' && '1' || '120' }}
+          DIVAN_MAX_TIME: '120'
         run: |
           set -o pipefail
           mkdir -p target
