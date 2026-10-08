@@ -120,6 +120,94 @@ fn changed_source_is_not_served_a_stale_object() {
     set_cache_dir(None);
 }
 
+const REUSE_HELPER: &str = indoc! {r#"
+    module Helper
+    public type R2 = { a : Int, b : Int }
+    let zero = { a = 0, b = 0 }
+    public sink : Int -> R2
+    let sink x =
+      if x <= 0 then { a = 0, b = 0 }
+      else
+        let inner = sink (x - 1)
+        { a = inner.a + 1, b = x }
+"#};
+
+const REUSE_CALLER: &str = indoc! {r#"
+    module Probe
+    public probe : Helper.R2 -> Bool -> Helper.R2
+    let probe p flag =
+      match p with
+      | { a, b } -> if flag then { a = b, b = a } else Helper.sink a
+"#};
+
+#[track_caller]
+fn assert_reuse_signature_cache_change(remove_reuse: bool) {
+    let _guard = CACHE_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            set_cache_dir(None);
+        }
+    }
+    let _reset = Reset;
+    let workspace = Utf8PathBuf::from_path_buf(unique_dir("reuse-ws")).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::write(
+        workspace.join("Main.fai"),
+        indoc! {r#"
+        module Main
+        public main : Runtime -> Unit / { Console }
+        let main r =
+          let result = Probe.probe { a = 3, b = 5 } false
+          r.console.writeLine (Int.toString result.a)
+    "#},
+    )
+    .unwrap();
+    std::fs::write(workspace.join("Probe.fai"), REUSE_CALLER).unwrap();
+    let no_reuse = REUSE_HELPER.replace("then { a = 0, b = 0 }", "then zero");
+    let (before, after) = if remove_reuse {
+        (REUSE_HELPER, no_reuse.as_str())
+    } else {
+        (no_reuse.as_str(), REUSE_HELPER)
+    };
+    std::fs::write(workspace.join("Helper.fai"), before).unwrap();
+    let cache = unique_dir("reuse-cache");
+    set_cache_dir(Some(cache.clone()));
+    assert_eq!(build_and_run(&workspace, &workspace.join("before")), "3\n");
+    std::fs::write(workspace.join("Helper.fai"), after).unwrap();
+    let cached_output = build_and_run(&workspace, &workspace.join("after"));
+
+    // The cache must contain the same primary object a fresh compiler emits,
+    // including the added/removed token-taking call, not only equal output.
+    let clean = Session::open(workspace.clone()).unwrap();
+    let file = clean.select_files(Some(Utf8Path::new("Probe.fai")))[0];
+    let expected =
+        fai_driver::object_code(clean.db(), file, fai_syntax::Symbol::intern("probe"), false);
+    let has_fresh = std::fs::read_dir(cache.join("objects"))
+        .unwrap()
+        .flat_map(|shard| std::fs::read_dir(shard.unwrap().path()).unwrap())
+        .any(|file| std::fs::read(file.unwrap().path()).unwrap() == *expected);
+    assert!(has_fresh, "the disk cache retained a pre-forwarding caller object");
+
+    let clean_cache = unique_dir("reuse-clean-cache");
+    set_cache_dir(Some(clean_cache.clone()));
+    assert_eq!(cached_output, build_and_run(&workspace, &workspace.join("clean")));
+    assert_eq!(cached_output, "3\n");
+    std::fs::remove_dir_all(workspace).unwrap();
+    std::fs::remove_dir_all(cache).unwrap();
+    std::fs::remove_dir_all(clean_cache).unwrap();
+}
+
+#[test]
+fn removing_callee_reuse_invalidates_the_cached_caller() {
+    assert_reuse_signature_cache_change(true);
+}
+
+#[test]
+fn adding_callee_reuse_invalidates_the_cached_caller() {
+    assert_reuse_signature_cache_change(false);
+}
+
 /// Counts `.o` files under `dir` (recursively).
 fn walk_objects(dir: &std::path::Path) -> usize {
     let mut count = 0;

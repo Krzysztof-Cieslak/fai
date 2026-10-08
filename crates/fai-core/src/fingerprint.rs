@@ -41,6 +41,14 @@ pub fn fingerprint_def(
     if def.borrows_any() {
         let _ = writeln!(out, "borrow {:?}", def.entry_borrowed);
     }
+    // Reuse bodies are separate objects, but their presence exports this
+    // object's lifted functions for imports from the specialized entry.
+    if def.reuse_entry.is_some() {
+        let _ = writeln!(out, "export-lambdas");
+    }
+    if def.entry_spread_params.iter().any(Option::is_some) {
+        let _ = writeln!(out, "spread-params {:?}", def.entry_spread_params);
+    }
     // The calling convention likewise changes the emitted code. The register ABI
     // (a direct-callable entry: `fn(env, a0, …) -> ret`) and the unboxed-slot
     // representation (raw `f64` for `Float`, untagged `i64` for `Int`) must all be
@@ -128,6 +136,9 @@ fn write_expr(
             // so it is part of the key too.
             let _ = write!(out, "@{}/{}", namer(*def), arity_of(*def));
             let abi = abi_of(*def);
+            if abi.register_abi {
+                out.push_str("/reg");
+            }
             if !abi.is_uniform() {
                 let _ = write!(out, "/{}", abi_tag(&abi));
             }
@@ -534,5 +545,45 @@ mod tests {
         });
         let all_tagged = fingerprint_def(&g, &namer, &|_| 1, &|_| FnAbi::register_uniform(1));
         assert_ne!(helper_raw, all_tagged);
+    }
+
+    #[test]
+    fn callee_register_transport_is_part_of_the_key() {
+        let (_db, g) = caller();
+        let namer = |d: DefId| d.name.as_str().to_owned();
+        let uniform = fingerprint_def(&g, &namer, &|_| 1, &|_| FnAbi::default());
+        let register = fingerprint_def(&g, &namer, &|_| 1, &|d| {
+            if d.name.as_str() == "helper" { FnAbi::register_uniform(1) } else { FnAbi::default() }
+        });
+        assert_ne!(uniform, register);
+    }
+
+    #[test]
+    fn reuse_presence_keys_linkage_but_not_the_specialized_body() {
+        let (_db, mut g) = caller();
+        let fingerprint = |g: &LoweredDef| {
+            fingerprint_def(g, &|d| d.name.as_str().into(), &|_| 1, &|_| FnAbi::default())
+        };
+        let before = fingerprint(&g);
+        g.reuse_entry = Some(g.entry().clone());
+        let exported = fingerprint(&g);
+        assert_ne!(before, exported);
+        g.reuse_entry.as_mut().unwrap().body =
+            CExpr::new(ExprKind::Lit(Lit::Int(9)), fai_types::Ty::int());
+        assert_eq!(exported, fingerprint(&g));
+    }
+
+    #[test]
+    fn spread_component_mapping_is_part_of_the_key() {
+        let (_db, mut g) = caller();
+        let fingerprint = |g: &LoweredDef| {
+            fingerprint_def(g, &|d| d.name.as_str().into(), &|_| 1, &|_| FnAbi::default())
+        };
+        let a = fai_resolve::LocalId::from_index(1);
+        let b = fai_resolve::LocalId::from_index(2);
+        g.entry_spread_params = vec![Some(vec![a, b])];
+        let original = fingerprint(&g);
+        g.entry_spread_params = vec![Some(vec![b, a])];
+        assert_ne!(original, fingerprint(&g));
     }
 }
