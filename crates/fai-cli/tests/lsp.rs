@@ -259,3 +259,51 @@ fn examples_disabled_by_initialization_option() {
 
     lsp.shutdown();
 }
+
+#[test]
+fn external_dependency_changes_clear_cached_example_failures() {
+    let workspace = unique_workspace();
+    let source = "module Main\nexample: Dep.value = 1\n";
+    std::fs::write(workspace.join("Main.fai"), source).unwrap();
+    std::fs::write(workspace.join("Dep.fai"), "module Dep\npublic value : Int\nlet value = 2\n")
+        .unwrap();
+    let mut lsp = Lsp::start(workspace);
+    let uri = lsp.did_open("Main.fai", source);
+    assert!(lsp.await_diagnostics(&uri).is_empty());
+    lsp.did_save("Main.fai", source);
+    assert!(codes(&lsp.await_diagnostics(&uri)).contains(&"FAI6001".to_owned()));
+    std::fs::write(
+        lsp.workspace.join("Dep.fai"),
+        "module Dep\npublic value : Int\nlet value = 1\n",
+    )
+    .unwrap();
+    lsp.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({"changes": [{"uri": lsp.uri("Dep.fai"), "type": 2}]}),
+    );
+    assert!(lsp.await_diagnostics(&uri).is_empty());
+    lsp.did_save("Main.fai", source);
+    assert!(lsp.await_diagnostics(&uri).is_empty());
+    lsp.shutdown();
+}
+
+#[test]
+fn unchanged_file_events_preserve_cached_example_failures() {
+    let workspace = unique_workspace();
+    let source = "module Main\nexample: Dep.value = 1\n";
+    std::fs::write(workspace.join("Main.fai"), source).unwrap();
+    std::fs::write(workspace.join("Dep.fai"), "module Dep\npublic value : Int\nlet value = 2\n")
+        .unwrap();
+    let mut lsp = Lsp::start(workspace);
+    let uri = lsp.did_open("Main.fai", source);
+    assert!(lsp.await_diagnostics(&uri).is_empty());
+    lsp.did_save("Main.fai", source);
+    assert!(codes(&lsp.await_diagnostics(&uri)).contains(&"FAI6001".to_owned()));
+    lsp.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({"changes": [{"uri": lsp.uri("Dep.fai"), "type": 2}]}),
+    );
+    lsp.did_open("Main.fai", source);
+    assert!(codes(&lsp.await_diagnostics(&uri)).contains(&"FAI6001".to_owned()));
+    lsp.shutdown();
+}

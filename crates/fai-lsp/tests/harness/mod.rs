@@ -103,6 +103,19 @@ impl Harness {
             .unwrap();
     }
 
+    /// Receives and acknowledges a dynamic client capability registration.
+    pub fn registration(&self) -> Value {
+        let Message::Request(request) = self.recv() else {
+            panic!("expected a registration request");
+        };
+        assert_eq!(request.method, "client/registerCapability");
+        self.client
+            .sender
+            .send(Message::Response(lsp_server::Response::new_ok(request.id, Value::Null)))
+            .unwrap();
+        request.params
+    }
+
     /// Sends a request and returns the (deserialized) result value.
     pub fn request(&mut self, method: &str, params: Value) -> Value {
         let id: RequestId = self.next_id.into();
