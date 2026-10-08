@@ -8,6 +8,9 @@ module HttpDemo
 //
 // `Http` builds on `Net` (transport), `Concurrency` (a task per connection), the
 // opaque `Url` and `Headers` types, and a streaming `Stream Bytes` body.
+// HTTPS sends bounded plaintext pieces and drains TLS ciphertext between writes.
+// Direct TLS users inspect `writePlaintext`'s accepted count and retry only the
+// remaining bytes after `takeOutgoing`, rather than assuming every write is full.
 example: Url.decodeComponent "café%20😀" = "café 😀"
 example: Url.decodeComponent "%GG" = "%GG"
 

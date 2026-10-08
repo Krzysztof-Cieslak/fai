@@ -4059,6 +4059,11 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     over the existing async `Net`. A `KIND_TLS` handle owns the `rustls` connection;
     trust is the bundled `webpki-roots` plus an explicit `clientWithRoots` (no
     insecure "accept any cert" mode).
+    Plaintext writes report the number of bytes accepted by the bounded rustls
+    buffer (`Result Int String`), including zero when it is full. Callers drain
+    outgoing ciphertext before retrying the remainder. HTTP writes use 16 KiB
+    slices and flush between them, preventing both a large-write `WriteZero`
+    failure and quadratic copying of a whole unaccepted suffix.
   - **HTTP (pure Fai).** `std/networking/Http.fai` is an HTTP/1.1 client and server over `Net`,
     with an opaque validated `Url` (`std/networking/Url.fai`) and a case-insensitive, order- and
     duplicate-preserving `Headers` (`std/networking/Headers.fai`). `Url` is an opaque **union**

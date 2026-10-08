@@ -833,12 +833,31 @@ let tlsRecv env conn session max =
             | Err e -> Err e
             | Ok flushed -> tlsRecv env conn session max
 
-// Encrypt and send plaintext: queue it, then flush the resulting ciphertext.
+// Encrypt bounded pieces and flush between writes. Keep an offset into the
+// original buffer rather than repeatedly copying its entire remaining suffix.
+tlsSendFrom : { net : Net, tls : Tls | 'r } -> Connection -> TlsSession -> Bytes -> Int -> Result Unit String / { Net, Tls }
+let tlsSendFrom env conn session bytes offset =
+  let remaining = Bytes.length bytes - offset
+  if remaining = 0 then
+    Ok ()
+  else
+    let count = if remaining < 16384 then remaining else 16384
+    match env.tls.writePlaintext session (Bytes.slice offset (offset + count) bytes) with
+    | Err e -> Err e
+    | Ok accepted ->
+      if accepted <= 0 || accepted > count then
+        Err "TLS writer made invalid progress"
+      else
+        match flushOutgoing env conn session with
+        | Err e -> Err e
+        | Ok flushed -> tlsSendFrom env conn session bytes (offset + accepted)
+
+// Flush pending records first, so each bounded write has output space available.
 tlsSend : { net : Net, tls : Tls | 'r } -> Connection -> TlsSession -> Bytes -> Result Unit String / { Net, Tls }
 let tlsSend env conn session bytes =
-  match env.tls.writePlaintext session bytes with
+  match flushOutgoing env conn session with
   | Err e -> Err e
-  | Ok wrote -> flushOutgoing env conn session
+  | Ok flushed -> tlsSendFrom env conn session bytes 0
 
 // Close a TLS connection: send a close-notify (best effort), then close the socket.
 tlsCloseImpl : { net : Net, tls : Tls | 'r } -> Connection -> TlsSession -> Unit / { Net, Tls }

@@ -260,6 +260,73 @@ fn https_client_and_server_round_trip() {
     assert_eq!(out, "200 secure hello\n");
 }
 
+#[track_caller]
+fn https_large_echo(chunked: bool) {
+    let cert = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_owned()]).unwrap();
+    let cert_pem = cert.cert.pem().replace('\n', "\\n");
+    let key_pem = cert.key_pair.serialize_pem().replace('\n', "\\n");
+    let headers = if chunked {
+        "Headers.add \"Transfer-Encoding\" \"chunked\" Headers.empty"
+    } else {
+        "Headers.empty"
+    };
+    let response = if chunked {
+        "Http.chunkedResponse 200 Headers.empty (Http.stringBody text)"
+    } else {
+        "Http.textResponse 200 text"
+    };
+    let source = format!(
+        r#"
+module Prog
+let certPem = "{cert_pem}"
+let keyPem = "{key_pem}"
+let payload = String.joinArray "" (Array.repeat 65536 "0123456789abcdef")
+let handle req =
+  match Http.bodyText req.body with
+  | Err e -> Ok (Http.textResponse 500 e)
+  | Ok text -> Ok ({response})
+client : Runtime -> Int -> String / {{ Net, Tls }}
+let client runtime port =
+  let url = "https://127.0.0.1:" ++ Int.toString port ++ "/echo"
+  match Url.parse url with
+  | Err e -> e
+  | Ok parsed ->
+    let req = {{ method = Http.POST, url = parsed, headers = {headers}, body = Http.stringBody payload }}
+    match Http.requestOnce runtime (Some (Bytes.fromString certPem)) req with
+    | Err e -> "request: " ++ e
+    | Ok response ->
+      match Http.bodyText response.body with
+      | Err e -> "response: " ++ e
+      | Ok text -> if text = payload then "ok" else "corrupt"
+body : Runtime -> Listener -> Int -> Nursery -> Unit / {{ Concurrency, Console, Net, Tls }}
+let body runtime listener port nursery =
+  let server = runtime.concurrency.spawn nursery (fun u -> Http.serveListenerTls runtime listener (Bytes.fromString certPem) (Bytes.fromString keyPem) handle)
+  let first = client runtime port
+  let second = client runtime port
+  let cancelled = runtime.concurrency.cancel server
+  runtime.console.writeLine (first ++ " " ++ second)
+public main : Runtime -> Unit / {{ Concurrency, Console, Net, Tls }}
+let main runtime =
+  match runtime.net.listen 0 with
+  | Err e -> runtime.console.writeLine e
+  | Ok listener -> runtime.concurrency.scope (fun nursery -> body runtime listener (runtime.net.localPort listener) nursery)
+"#
+    );
+    let (out, code) = run(&source);
+    assert_eq!(code, 0, "clean, leak-free HTTPS echo");
+    assert_eq!(out, "ok ok\n");
+}
+
+#[test]
+fn https_megabyte_request_and_response_round_trip() {
+    https_large_echo(false);
+}
+
+#[test]
+fn https_megabyte_chunks_round_trip() {
+    https_large_echo(true);
+}
+
 #[test]
 fn client_decodes_a_chunked_response() {
     // A raw server replies with Transfer-Encoding: chunked (two chunks, then the
