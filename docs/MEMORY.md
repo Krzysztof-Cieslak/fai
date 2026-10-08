@@ -4086,6 +4086,11 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     *cross-module* type references (a public std surface naming a same-origin `internal`
     type from another std file still leaks), flagging only types that are nameable here
     (a cross-origin type is the unresolved/`FAI2020` case, not a leak).
+    The same reach check includes interfaces and named effect atoms, traverses
+    declarations with their true nested-module scope, and resolves qualified
+    same-file names locally. Effect-row diagnostics underline the individual
+    atom, including whitespace-separated qualified names. Opaque representations
+    remain hidden surfaces and may refer to private implementation types.
   - **Firewall kept public-only; tooling gets its own.** `module_interface` (the
     cross-module incremental firewall) stays **public-only**, so all existing
     early-cutoff guarantees and perf guards are untouched; `internal` value resolution

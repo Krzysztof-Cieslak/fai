@@ -401,7 +401,7 @@ fn contract_over_a_user_interface_is_clean() {
     let src = indoc! {r#"
         module M
 
-        interface Greeter =
+        public interface Greeter =
           greet : String -> String
 
         public mkGreeter : String -> Greeter

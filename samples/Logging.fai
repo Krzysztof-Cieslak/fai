@@ -3,7 +3,8 @@ module Logging
 // An effect-parameterized interface: a `Logger 'e` performs the effect `'e`
 // whenever a message is logged, so its reach is visible in its type rather than
 // masked at the dictionary boundary.
-interface Logger 'e =
+// The interface is public because it appears in the exported function types.
+public interface Logger 'e =
   log : String -> Unit / 'e
 
 // Build a Logger from another Logger by prefixing every message. The prefixed
