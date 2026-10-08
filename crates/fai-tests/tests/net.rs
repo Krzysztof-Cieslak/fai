@@ -48,10 +48,7 @@ fn concurrent_receivers_share_a_udp_socket() {
         let receive net socket u =
           match net.udpRecv socket 1 with
           | Err e -> -1000
-          | Ok (data, host, port) ->
-            if data = Bytes.fromString "a" then 97
-            else if data = Bytes.fromString "b" then 98
-            else -1000
+          | Ok (data, host, port) -> Bytes.unsafeGet 0 data
         session : Concurrency -> Net -> UdpSocket -> UdpSocket -> Int -> Nursery -> Int / { Concurrency, Net }
         let session c net server client port nursery =
           let a = c.spawn nursery (receive net server)

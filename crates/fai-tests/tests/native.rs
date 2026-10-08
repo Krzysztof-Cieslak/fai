@@ -411,6 +411,20 @@ fn array_capacity_negative_boxed_argument_is_leak_free() {
 }
 
 #[test]
+fn runtime_integer_results_merge_as_values_not_tagged_words() {
+    let source = indoc! {r#"
+        module Main
+        public main : Runtime -> Unit / { Console }
+        let main runtime =
+          let bytes = Bytes.fromString "a"
+          let value = if Bytes.isEmpty bytes then 0 else Bytes.unsafeGet 0 bytes
+          runtime.console.writeLine (Int.toString value)
+    "#};
+    let (out, code) = build_and_run(source);
+    assert_eq!((out.as_str(), code), ("97\n", Some(0)));
+}
+
+#[test]
 fn cross_module_forwarder_borrows_and_runs() {
     // `Lib.sumList` borrows its list; `Main.forward` only forwards `xs` to it, so
     // inter-procedural inference borrows `xs` too. `main` lends the same list to
