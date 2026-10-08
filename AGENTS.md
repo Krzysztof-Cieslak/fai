@@ -412,6 +412,11 @@ applying each with calendar clamping before computing residual days. Applying
 the result to the start date reaches the end date; reverse differences need not
 be component-wise negations because clamping is not reversible.
 
+`DateTimeFormat.parse` validates field widths, 12-hour ranges, weekday agreement,
+and repeated-field consistency. Single-letter numeric fields accept one or two
+digits; padded fields and fractional seconds require the specified width.
+Unsupported widths and unterminated literals return `None`.
+
 ## 5. Repository layout
 
 A single Cargo workspace. Each crate owns one compiler phase or tool.

@@ -1406,6 +1406,11 @@ except `Instant.now`/`OffsetDateTime.now`, which take the `Clock` capability.
   (and `formatDate`/`formatTime`/`parseDate`/`parseTime`). Codes: `yyyy`/`yy`,
   `MM`/`M`/`MMMM`/`MMM`, `dd`/`d`, `HH`/`H`/`hh`/`h`, `mm`/`m`, `ss`/`s`,
   `fff`/`ffffff`/`fffffffff`, `tt`, `EEEE`/`EEE`; `'literal'` for literal text.
+  Fractions support any exact width from one to nine `f`s. Padded fields require
+  their exact width; single-letter numeric forms accept one or two digits.
+  Parsing checks 12-hour values (1–12), weekday agreement, and consistent repeated
+  fields; unsupported widths and unclosed quotes fail. Omitted fields default
+  to 1970-01-01 at midnight, 12-hour forms default to AM, and a lone PM selects noon.
 
 ```
 // "2026-06-19" + the weekday, then a custom stamp and an instant
