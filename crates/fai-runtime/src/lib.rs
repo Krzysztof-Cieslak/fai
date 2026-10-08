@@ -4025,23 +4025,15 @@ pub extern "C" fn fai_sleep(millis: Value) -> Value {
 }
 
 /// `Random.nextInt`: a pseudo-random `Int` in `[0, n)` (`0` for `n <= 0`),
-/// advancing a process-global xorshift state. Consumes `n`.
+/// atomically advancing a process-global xorshift state. Consumes `n`.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_random_next_int(n: Value) -> Value {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static STATE: AtomicU64 = AtomicU64::new(0x2545_f491_4f6c_dd1d);
     let bound = unbox_int(n);
     fai_drop(n);
     if bound <= 0 {
         return fai_box_int(0);
     }
-    // xorshift64*
-    let mut x = STATE.load(Ordering::Relaxed);
-    x ^= x >> 12;
-    x ^= x << 25;
-    x ^= x >> 27;
-    STATE.store(x, Ordering::Relaxed);
-    let r = x.wrapping_mul(0x2545_f491_4f6c_dd1d);
+    let r = random::next();
     fai_box_int((r % bound as u64) as i64)
 }
 
@@ -4436,6 +4428,8 @@ fn verify_payload(p: *const u8, size: usize, byte: u8) {
 
 /// The M:N green-thread scheduler that runs a Fai program's concurrent tasks.
 mod scheduler;
+
+mod random;
 
 /// The network I/O reactor (readiness-driven non-blocking sockets over `mio`).
 mod reactor;

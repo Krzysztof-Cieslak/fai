@@ -10,6 +10,8 @@
 //! The suite covers:
 //! - `spawn_await` — fan-out/join task throughput (spawn N tasks, sum the awaits);
 //! - `channel` — bounded-channel producer/consumer throughput;
+//! - `random_single_worker` / `random_contended` — serialized PRNG draws versus
+//!   four workers contending on the shared state, checked against a serial oracle;
 //! - `parallel_speedup` — a CPU-bound fan-out run at `FAI_WORKERS=1` vs the host's
 //!   default parallelism, whose ratio is the scheduler's parallel speedup;
 //! - `tcp_echo` / `udp_echo` — loopback request/response round-trip throughput
@@ -53,7 +55,9 @@ fn build(name: &str, src: &str) -> Utf8PathBuf {
     let id = db.add_source(format!("{name}.fai").into(), src.to_owned());
     let file = db.source_file(id).expect("source registered");
     let outcome = build_native(&db, file, &unique_exe(name));
-    outcome.artifact.unwrap_or_else(|| panic!("{name} failed to build a native executable"))
+    outcome.artifact.unwrap_or_else(|| {
+        panic!("{name} failed to build a native executable: {:?}", outcome.diagnostics)
+    })
 }
 
 /// Runs `exe`, optionally pinning the scheduler's worker count, capturing output.
@@ -106,6 +110,38 @@ let main runtime =
 fn spawn_await(bencher: Bencher) {
     // Sum of 0..49999.
     bench_program(bencher, "SpawnAwait", SPAWN_AWAIT, None, Some("1249975000"));
+}
+
+const RANDOM_DRAWS: &str = r#"module Prog
+draw : Random -> Int -> Int -> Int / { Random }
+let draw random n sum =
+  if n <= 0 then sum else draw random (n - 1) (sum + random.nextInt 1000003)
+public main : Runtime -> Unit / { Concurrency, Console, Random }
+let main runtime =
+  let work = fun u -> draw runtime.random 250000 0
+  runtime.console.writeLine (Int.toString (List.sum (Async.parallel runtime.concurrency [work, work, work, work])))
+"#;
+
+fn random_draw_sum() -> String {
+    let mut state = 0x2545_f491_4f6c_dd1du64;
+    let mut sum = 0u64;
+    for _ in 0..1_000_000 {
+        state ^= state >> 12;
+        state ^= state << 25;
+        state ^= state >> 27;
+        sum += state.wrapping_mul(0x2545_f491_4f6c_dd1d) % 1_000_003;
+    }
+    sum.to_string()
+}
+
+#[divan::bench]
+fn random_single_worker(bencher: Bencher) {
+    bench_program(bencher, "RandomSingle", RANDOM_DRAWS, Some(1), Some(&random_draw_sum()));
+}
+
+#[divan::bench]
+fn random_contended(bencher: Bencher) {
+    bench_program(bencher, "RandomContended", RANDOM_DRAWS, Some(4), Some(&random_draw_sum()));
 }
 
 // ---------------------------------------------------------------------------
