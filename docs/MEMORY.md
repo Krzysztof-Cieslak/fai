@@ -3501,11 +3501,14 @@ Editor integration:
     (`stdConsole`/…) and `defaultRuntime` are now `public`, so a program can compose
     them with its own (foreign-backed) capabilities into an extended record. The
     runtime root prefers a zero-arity `runtime` builder in the **entry file**,
-    falling back to `defaultRuntime`; the untyped trampoline forces it and applies
-    `main` to it unchanged, so `main : R -> Unit` for that `R` (a concrete record —
-    constant-offset field access; row-polymorphic least authority stays an internal
-    call-boundary feature). No trampoline-Rust change beyond which definition is
-    chosen.
+    falling back to `defaultRuntime`. Before emission, the driver validates the
+    builder's zero runtime arity and checks its value against `main`'s argument,
+    with a `Unit` result; an invalid launcher is the located `FAI0007`. A
+    row-polymorphic `main` uses a synthetic one-argument adapter supplying its
+    closed offset evidence, derived by the same row matching as ordinary calls.
+    AOT, JIT, and run bundles share the validation/elaboration. The instantiated
+    main effect and the runtime initializer's actual effect choose scheduler
+    mode, and both initialization and main then run inside the root task.
   - **Forward-target lambda linkage fix.** A definition that emits a separate
     token-taking reuse object *and* has a lifted lambda the reuse body reconstructs
     (a capturing capability-instance method built by a runtime builder is the

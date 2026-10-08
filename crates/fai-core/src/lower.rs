@@ -221,40 +221,6 @@ fn int_lit(n: i64) -> CExpr {
     CExpr::new(K::Lit(Lit::Int(n)), Ty::int())
 }
 
-/// Recovers each scheme row variable's instantiation by matching a (general)
-/// scheme type against an actual instantiated type in parallel. For an open
-/// record `{ known | 'r }` matched against `{ actual… | tail }`, `'r` is bound to
-/// the actual fields not named in the scheme record, plus the actual tail — so an
-/// offset can be split into a static part and (when `tail` is another row
-/// variable) threaded caller evidence.
-fn match_rows(scheme: &Ty, actual: &Ty, out: &mut FxHashMap<RowVarId, RecordRow>) {
-    match (scheme, actual) {
-        (Ty::Record(s), Ty::Record(a)) => {
-            if let RowEnd::Open(r) = s.tail {
-                let known: FxHashSet<Symbol> = s.fields.iter().map(|(l, _)| *l).collect();
-                let extra: Vec<(Symbol, Ty)> =
-                    a.fields.iter().filter(|(l, _)| !known.contains(l)).cloned().collect();
-                out.insert(r, RecordRow { fields: extra, tail: a.tail });
-            }
-            for (label, st) in &s.fields {
-                if let Some((_, at)) = a.fields.iter().find(|(m, _)| m == label) {
-                    match_rows(st, at, out);
-                }
-            }
-        }
-        (Ty::Arrow(sf, st, _), Ty::Arrow(af, at, _)) | (Ty::App(sf, st), Ty::App(af, at)) => {
-            match_rows(sf, af, out);
-            match_rows(st, at, out);
-        }
-        (Ty::Tuple(ss), Ty::Tuple(aa)) => {
-            for (s, a) in ss.iter().zip(aa) {
-                match_rows(s, a, out);
-            }
-        }
-        _ => {}
-    }
-}
-
 /// The per-definition lowering state.
 struct Lowerer<'a> {
     db: &'a dyn Db,
@@ -626,8 +592,7 @@ impl Lowerer<'_> {
         if reqs.is_empty() {
             return Vec::new();
         }
-        let mut inst: FxHashMap<RowVarId, RecordRow> = FxHashMap::default();
-        match_rows(&scheme.ty, ref_ty, &mut inst);
+        let inst = fai_types::evidence::row_instantiations(&scheme.ty, ref_ty);
         reqs.iter().map(|req| self.evidence_value(req.row_var, req.label, &inst)).collect()
     }
 

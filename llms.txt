@@ -759,9 +759,12 @@ public main : AppRuntime -> Unit / { Console, Process }
 let main app = app.console.writeLine (Int.toString (app.process.pid ()))
 ```
 
-Make `main`'s parameter the concrete record your `runtime` builds (constant field
-offsets); least-authority open-record subsetting still works at internal call
-boundaries. (Record *extension* is future work, so `runtime` is a fresh literal,
+`main` can take the concrete record your `runtime` builds or a least-authority
+open record such as `{ console : Console | _ }`; the launcher supplies its offset
+evidence. Build/run reports `FAI0007` if the builder needs arguments, the runtime
+value does not match main's argument, or main does not return `Unit`. Effects in
+the initializer are honored too: scheduler-requiring initialization runs inside
+the scheduler. (Record *extension* is future work, so `runtime` is a fresh literal,
 not `{ defaultRuntime with … }`.)
 
 **Native dependencies** (the library or object that defines a `foreign` symbol) are

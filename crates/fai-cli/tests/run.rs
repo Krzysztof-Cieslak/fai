@@ -100,6 +100,30 @@ fn local_function_effects_are_latent_through_the_run_bundle() {
 }
 
 #[test]
+fn runtime_builder_and_open_main_run_in_the_supervised_worker() {
+    let source = indoc! {r#"
+        module Main
+        let initialize nursery = stdConcurrency.await (stdConcurrency.spawn nursery (fun u -> ()))
+        let runtime =
+          let _ = stdConcurrency.scope initialize
+          { a = 1, console = stdConsole, z = 42 }
+        public main : { console : Console, z : Int | _ } -> Unit / { Console }
+        let main r = r.console.writeLine (Int.toString r.z)
+    "#};
+    let dir = workspace("entry-adapter", &[("Main.fai", source)]);
+    let output =
+        fai().args(["run", "--no-daemon", "-C"]).arg(dir).arg("Main.fai").output().unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
+}
+
+#[test]
 fn build_produces_a_runnable_binary() {
     let src = indoc! {r#"
         module Calc

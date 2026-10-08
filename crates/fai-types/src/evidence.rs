@@ -12,11 +12,11 @@
 //! every caller derive the *same* ordered requirement list from the shared
 //! scheme and the integers line up positionally.
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use fai_syntax::Symbol;
 
-use crate::ty::{RowEnd, RowVarId, Scheme, Ty};
+use crate::ty::{RecordRow, RowEnd, RowVarId, Scheme, Ty};
 
 /// One offset-evidence requirement: the position of `label` within the otherwise
 /// unknown record standing in for `row_var`.
@@ -56,6 +56,47 @@ pub fn evidence_requirements(scheme: &Scheme) -> Vec<EvidenceReq> {
 #[must_use]
 pub fn evidence_count(scheme: &Scheme) -> usize {
     evidence_requirements(scheme).len()
+}
+
+/// Recovers each scheme row variable's instantiated fields and tail. Shared by
+/// ordinary call lowering and the program-entry adapter so both pass identical
+/// offset evidence at a typed call boundary.
+#[must_use]
+pub fn row_instantiations(scheme: &Ty, actual: &Ty) -> FxHashMap<RowVarId, RecordRow> {
+    fn collect(scheme: &Ty, actual: &Ty, out: &mut FxHashMap<RowVarId, RecordRow>) {
+        match (scheme, actual) {
+            (Ty::Record(s), Ty::Record(a)) => {
+                if let RowEnd::Open(r) = s.tail {
+                    let known: FxHashSet<_> = s.fields.iter().map(|(label, _)| *label).collect();
+                    let extra = a
+                        .fields
+                        .iter()
+                        .filter(|(label, _)| !known.contains(label))
+                        .cloned()
+                        .collect();
+                    out.insert(r, RecordRow { fields: extra, tail: a.tail });
+                }
+                for (label, st) in &s.fields {
+                    if let Some((_, at)) = a.fields.iter().find(|(name, _)| name == label) {
+                        collect(st, at, out);
+                    }
+                }
+            }
+            (Ty::Arrow(sf, st, _), Ty::Arrow(af, at, _)) | (Ty::App(sf, st), Ty::App(af, at)) => {
+                collect(sf, af, out);
+                collect(st, at, out);
+            }
+            (Ty::Tuple(ss), Ty::Tuple(aa)) => {
+                for (s, a) in ss.iter().zip(aa) {
+                    collect(s, a, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut rows = FxHashMap::default();
+    collect(scheme, actual, &mut rows);
+    rows
 }
 
 /// Walks `ty`, recording each open record's tail variable (in first-appearance

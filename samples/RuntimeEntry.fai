@@ -1,0 +1,8 @@
+module RuntimeEntry
+
+// Extra fields may precede the capabilities used by main; its entry adapter
+// supplies the field offsets for this concrete runtime record.
+let runtime = { answer = 42, console = stdConsole, greeting = "Hello from a custom runtime" }
+
+public main : { console : Console, greeting : String | _ } -> Unit / { Console }
+let main env = env.console.writeLine env.greeting

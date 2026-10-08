@@ -98,7 +98,7 @@ const USER_RUNTIME: &str = "runtime";
 /// Prefers a `runtime` builder in the **entry file** (a user-supplied bundle),
 /// falling back to the standard library's `defaultRuntime`. `None` only if neither
 /// exists (a standard library without `defaultRuntime`).
-fn runtime_root(db: &dyn Db, file: SourceFile) -> Option<DefId> {
+pub(crate) fn runtime_root(db: &dyn Db, file: SourceFile) -> Option<DefId> {
     let user = Symbol::intern(USER_RUNTIME);
     if module_defs(db, file).get(user).is_some() {
         return Some(DefId::new(file.source(db), user));
@@ -107,27 +107,6 @@ fn runtime_root(db: &dyn Db, file: SourceFile) -> Option<DefId> {
     let name = Symbol::intern(RUNTIME_VALUE);
     module_defs(db, prelude).get(name)?;
     Some(DefId::new(prelude.source(db), name))
-}
-
-/// Whether the program rooted at `file`'s `main` **uses** the scheduler — its
-/// reachable effects include `Concurrency` (it `spawn`s/`await`s/uses a channel) or
-/// `Net` (it does network I/O), directly or transitively. Both run on the M:N
-/// scheduler: a `Net` operation parks its task on the reactor while it would block,
-/// so a networking program must run `main` as the scheduler's root task just as a
-/// concurrent one does. When true, code generation switches to the thread-safe
-/// paths (branchful reference counting, runtime allocation) and `main` runs as the
-/// root task. Holding a capability without using it (both are in the default
-/// `Runtime`) does not count, so a program that uses neither keeps the fully
-/// inlined single-threaded code paths.
-pub fn uses_concurrency(db: &dyn Db, file: SourceFile) -> bool {
-    let entry = Symbol::intern(ENTRY);
-    if module_defs(db, file).get(entry).is_none() {
-        return false;
-    }
-    fai_types::def_effect(db, file, entry)
-        .labels
-        .iter()
-        .any(|i| matches!(i.name.as_str(), "Concurrency" | "Net"))
 }
 
 /// The versioned, collision-free native symbol base for a definition.
@@ -716,11 +695,18 @@ pub fn build_native_with_deps(
         return BuildOutcome { artifact: None, diagnostics: vec![no_entry_point()], ok: false };
     }
     let reachable = reachable_defs(db, file);
-    let diagnostics = precompile_diagnostics(db, &reachable);
+    let mut diagnostics = precompile_diagnostics(db, &reachable);
     if diagnostics.iter().any(|d| d.severity == Severity::Error) {
         return BuildOutcome { artifact: None, diagnostics, ok: false };
     }
-    let concurrent = uses_concurrency(db, file);
+    let launch = match crate::entry::prepare(db, file) {
+        Ok(launch) => launch,
+        Err(error) => {
+            diagnostics.push(*error);
+            return BuildOutcome { artifact: None, diagnostics, ok: false };
+        }
+    };
+    let concurrent = launch.concurrent;
 
     // Flatten mutual-recursion groups: members compile to wrappers, plus one
     // combined loop per group (built here, like the `fai_main` trampoline, so the
@@ -792,10 +778,16 @@ pub fn build_native_with_deps(
         }
     }
 
-    let entry = DefId::new(file.source(db), Symbol::intern(ENTRY));
-    let runtime = runtime_root(db, file)
-        .expect("a Runtime value binding (entry `runtime` or `defaultRuntime`) is defined");
-    objects.push(("fai_main".to_owned(), main_object(entry, runtime, &namer, concurrent)));
+    if let Some(adapter) = &launch.adapter {
+        objects.push((
+            symbol_base(db, adapter.def),
+            object_for_def(&rc_owned(db, adapter), &namer, &arity, &abi, &borrows, &synth_bce),
+        ));
+    }
+    objects.push((
+        "fai_main".to_owned(),
+        main_object(launch.entry, launch.runtime, &namer, concurrent),
+    ));
 
     match link(&objects, out, native) {
         Ok(artifact) => BuildOutcome { artifact: Some(artifact), diagnostics, ok: true },
@@ -835,10 +827,17 @@ pub fn jit_run_program(db: &dyn Db, file: SourceFile) -> RunOutcome {
         return RunOutcome { exit_code: COMPILE_ERROR_EXIT, diagnostics: vec![no_entry_point()] };
     }
     let reachable = reachable_defs(db, file);
-    let diagnostics = precompile_diagnostics(db, &reachable);
+    let mut diagnostics = precompile_diagnostics(db, &reachable);
     if diagnostics.iter().any(|d| d.severity == Severity::Error) {
         return RunOutcome { exit_code: COMPILE_ERROR_EXIT, diagnostics };
     }
+    let launch = match crate::entry::prepare(db, file) {
+        Ok(launch) => launch,
+        Err(error) => {
+            diagnostics.push(*error);
+            return RunOutcome { exit_code: COMPILE_ERROR_EXIT, diagnostics };
+        }
+    };
 
     // Flatten mutual-recursion groups (members → wrappers, plus a combined loop
     // per group); the member set is consulted in the parallel lowering below.
@@ -881,10 +880,10 @@ pub fn jit_run_program(db: &dyn Db, file: SourceFile) -> RunOutcome {
     defs.extend(groups.wrappers.into_values());
     defs.extend(groups.combined);
     defs.extend(fusion.loops.iter().cloned());
+    if let Some(adapter) = &launch.adapter {
+        defs.push(rc_owned(db, adapter));
+    }
 
-    let entry = DefId::new(file.source(db), Symbol::intern(ENTRY));
-    let runtime = runtime_root(db, file)
-        .expect("a Runtime value binding (entry `runtime` or `defaultRuntime`) is defined");
     let namer = |d: DefId| symbol_base(db, d);
     let arity = |d: DefId| {
         (groups.arity.get(&d))
@@ -917,12 +916,21 @@ pub fn jit_run_program(db: &dyn Db, file: SourceFile) -> RunOutcome {
         entry_of: &entry_of,
         result_of: &result_of,
         shadow: bce_shadow(),
-        concurrent: uses_concurrency(db, file),
+        concurrent: launch.concurrent,
     };
     // The in-process run path is used for pure programs (no user `foreign`), so no
     // native libraries are loaded.
-    let exit_code =
-        fai_codegen::jit_run(&defs, entry, runtime, &namer, &arity, &abi, &borrows, &bce, None);
+    let exit_code = fai_codegen::jit_run(
+        &defs,
+        launch.entry,
+        launch.runtime,
+        &namer,
+        &arity,
+        &abi,
+        &borrows,
+        &bce,
+        None,
+    );
     RunOutcome { exit_code, diagnostics }
 }
 
@@ -990,10 +998,17 @@ pub fn jit_compile(db: &dyn Db, file: SourceFile) -> Result<CompiledProgram, Vec
     exported.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
     roots.extend(exported);
     let reachable = reachable_from_roots(db, &roots, &FxHashSet::default());
-    let diagnostics = precompile_diagnostics(db, &reachable);
+    let mut diagnostics = precompile_diagnostics(db, &reachable);
     if diagnostics.iter().any(|d| d.severity == Severity::Error) {
         return Err(diagnostics);
     }
+    let launch = match crate::entry::prepare(db, file) {
+        Ok(launch) => launch,
+        Err(error) => {
+            diagnostics.push(*error);
+            return Err(diagnostics);
+        }
+    };
 
     // Lower + reference-count (emit-ready, with reuse forwarding) each reachable
     // def in parallel (independent queries), as the JIT runner does, then build one
@@ -1049,7 +1064,7 @@ pub fn jit_compile(db: &dyn Db, file: SourceFile) -> Result<CompiledProgram, Vec
         entry_of: &entry_of,
         result_of: &result_of,
         shadow: false,
-        concurrent: uses_concurrency(db, file),
+        concurrent: launch.concurrent,
     };
     let program = JitProgram::compile(&defs, &namer, &arity, &abi, &borrows, &bce);
     Ok(CompiledProgram { program, names, entry_defs })
@@ -1096,10 +1111,17 @@ pub fn build_run_bundle_with_deps(
         return RunBundleResult { bundle: None, diagnostics: vec![no_entry_point()] };
     }
     let reachable = reachable_defs(db, file);
-    let diagnostics = precompile_diagnostics(db, &reachable);
+    let mut diagnostics = precompile_diagnostics(db, &reachable);
     if diagnostics.iter().any(|d| d.severity == Severity::Error) {
         return RunBundleResult { bundle: None, diagnostics };
     }
+    let launch = match crate::entry::prepare(db, file) {
+        Ok(launch) => launch,
+        Err(error) => {
+            diagnostics.push(*error);
+            return RunBundleResult { bundle: None, diagnostics };
+        }
+    };
 
     // Flatten mutual-recursion groups (members → wrappers, plus a combined loop
     // per group), so the shipped bundle carries the flattened program.
@@ -1207,20 +1229,31 @@ pub fn build_run_bundle_with_deps(
         ));
     }
 
-    let entry = DefId::new(file.source(db), Symbol::intern(ENTRY));
-    let runtime = runtime_root(db, file)
-        .expect("a Runtime value binding (entry `runtime` or `defaultRuntime`) is defined");
+    if let Some(adapter) = &launch.adapter {
+        defs.push(def_to_wire(
+            &rc_owned(db, adapter),
+            &module_of,
+            1,
+            FnAbi::default(),
+            Vec::new(),
+            fai_core::BoundSig::default(),
+            fai_core::ResultSig::default(),
+        ));
+    }
     let bundle = WireBundle {
-        entry: WireDefId { module: module_label(db, entry), name: ENTRY.to_owned() },
+        entry: WireDefId {
+            module: module_label(db, launch.entry),
+            name: launch.entry.name.as_str().to_owned(),
+        },
         runtime: WireDefId {
-            module: module_label(db, runtime),
-            name: runtime.name.as_str().to_owned(),
+            module: module_label(db, launch.runtime),
+            name: launch.runtime.name.as_str().to_owned(),
         },
         defs,
         // The native shared libraries the worker loads before running, so a user
         // `foreign` symbol resolves in the JIT.
         libraries: native.dynamic_library_paths(),
-        concurrent: uses_concurrency(db, file),
+        concurrent: launch.concurrent,
     };
     RunBundleResult { bundle: Some(bundle), diagnostics }
 }

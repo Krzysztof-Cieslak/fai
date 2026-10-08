@@ -4183,15 +4183,15 @@ pub fn run_entry(entry: Value, runtime: Value) -> i32 {
     finish_run(result)
 }
 
-/// Runs a program that uses concurrency: forces the `Runtime`, then runs `main` as
-/// the scheduler's **root task** (so `scope`/`spawn`/`await` run inside a task),
+/// Runs a program that uses concurrency: forces the `Runtime` and runs `main` in
+/// the scheduler's **root task** (so either may use `scope`/`spawn`/`await`),
 /// blocking until the scheduler is quiescent before the leak check. Used in place
 /// of [`run_entry`] when the program's reachable effects include `Concurrency`.
 #[must_use]
 pub fn run_entry_concurrent(entry: Value, runtime: Value) -> i32 {
-    // SAFETY: `runtime` is a closure of arity 0.
-    let runtime_value = unsafe { fai_apply_n(runtime, 0, std::ptr::null()) };
     let result = scheduler::block_on(Box::new(move || {
+        // SAFETY: the validated runtime builder is a closure of arity 0.
+        let runtime_value = unsafe { fai_apply_n(runtime, 0, std::ptr::null()) };
         let args = [runtime_value];
         // SAFETY: `entry` is a closure of arity 1; one owned `Runtime` argument.
         unsafe { fai_apply_n(entry, 1, args.as_ptr()) }
