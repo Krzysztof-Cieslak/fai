@@ -374,20 +374,7 @@ impl<E: Env> Walker<'_, E> {
                 );
                 then_ty
             }
-            ExprKind::Lambda { params, body } => {
-                let param_tys: Vec<SolveTy> =
-                    params.iter().map(|&p| self.bind_pattern_into(p)).collect();
-                // The lambda's body has its own latent effect: save and reset the
-                // enclosing accumulator so the effect lands on the lambda's arrow
-                // (closing the closure-laundering hole), then restore it.
-                // The lambda's body has its own latent effect; it rides the
-                // lambda's arrow (closing the closure-laundering hole), so the
-                // enclosing function's accumulator is saved and restored.
-                let saved = std::mem::replace(&mut self.cur_effect, SolveEffect::pure());
-                let body_ty = self.infer_expr(*body);
-                let body_eff = std::mem::replace(&mut self.cur_effect, saved);
-                SolveTy::arrows_solver_eff(param_tys, body_ty, body_eff)
-            }
+            ExprKind::Lambda { params, body } => self.infer_function(params, *body),
             ExprKind::Match { scrutinee, arms } => {
                 let scrutinee_ty = self.infer_expr(*scrutinee);
                 let result = self.cx.fresh();
@@ -424,10 +411,7 @@ impl<E: Env> Walker<'_, E> {
                     } else if stmt.params.is_empty() {
                         self.infer_expr(stmt.value)
                     } else {
-                        let param_tys: Vec<SolveTy> =
-                            stmt.params.iter().map(|&p| self.bind_pattern_into(p)).collect();
-                        let v = self.infer_expr(stmt.value);
-                        SolveTy::arrows_solver(param_tys, v)
+                        self.infer_function(&stmt.params, stmt.value)
                     };
 
                     if is_simple_var {
@@ -479,6 +463,17 @@ impl<E: Env> Walker<'_, E> {
             }
             ExprKind::Error => SolveTy::Error,
         }
+    }
+
+    /// Infers a lambda or local function body under its own effect accumulator.
+    /// Constructing either spelling is pure; applying the saturating arrow incurs
+    /// the body's effects. Local binding/generalization is handled by the caller.
+    fn infer_function(&mut self, params: &[PatId], body: ExprId) -> SolveTy {
+        let param_tys = params.iter().map(|&p| self.bind_pattern_into(p)).collect();
+        let saved = std::mem::replace(&mut self.cur_effect, SolveEffect::pure());
+        let body_ty = self.infer_expr(body);
+        let body_eff = std::mem::replace(&mut self.cur_effect, saved);
+        SolveTy::arrows_solver_eff(param_tys, body_ty, body_eff)
     }
 
     /// Applies a function-typed `head_ty` to argument types, returning the result.

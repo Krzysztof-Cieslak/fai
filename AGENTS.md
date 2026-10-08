@@ -390,6 +390,11 @@ See the `samples/` directory for the full tour (ADTs, structural/row-polymorphic
 records, interfaces + instances, capabilities, contracts, nested modules). Each
 `.fai` file there is one self-contained module, verified by the test suite.
 
+Local function shorthand (`let log message = body`) has the same latent effects
+as `let log = fun message -> body`: constructing it is pure, and calling its
+saturating arrow performs the body's effects. A parameterless local value binding
+is evaluated immediately.
+
 ## 5. Repository layout
 
 A single Cargo workspace. Each crate owns one compiler phase or tool.

@@ -297,6 +297,11 @@ let scaleAll k xs =
   List.map scale xs
 ```
 
+`let log message = body` carries the same latent effects as
+`let log = fun message -> body`: creating the function is pure; calling it
+performs the body's effects. A local value without parameters is evaluated
+immediately.
+
 **Local `let` bindings are not recursive.** A local function cannot call itself,
 and locals cannot refer to each other before they are defined. A function that
 recurses must be a top-level (or nested-module) binding — those *are* mutually
