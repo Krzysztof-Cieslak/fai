@@ -307,6 +307,12 @@ Type system (name resolution, inference, code intelligence):
   intra-module, so SCCs are computed **per file** (`module_sccs`). An SCC is the
   inference cache unit; recursion inside a signature-less SCC is monomorphic,
   then generalized.
+  Cross-file references use only declared signatures. If an export is missing
+  its signature, callers receive an error scheme rather than recursively
+  inferring its body across files; checking the declaration still emits the
+  located `FAI3003`. The same boundary applies to expression-type, local-type,
+  effect, and contract inference, preserving recovery for malformed import cycles
+  and early cutoff even while signatures are missing.
 - **D41 Type representation:** an immutable, structural, span-free `Ty` (`Arc`
   tree) reified after solving; the mutable union-find solver is local to one
   inference call. Constrained type-variable flavors **Numeric** (Int/Float),

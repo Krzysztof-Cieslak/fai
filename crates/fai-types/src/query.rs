@@ -4,8 +4,8 @@
 //! single definition's scheme out of its SCC. `check_file` walks every definition
 //! and contract, emitting the required-signature and contract diagnostics. The
 //! firewall holds because an out-of-SCC reference resolves through
-//! [`declared_or_inferred_scheme`], which uses a declared signature where present
-//! and only otherwise reaches the callee's inferred type.
+//! [`reference_scheme`], which uses a declared signature across files and only
+//! falls back to inference for a same-file definition.
 
 use std::sync::Arc;
 
@@ -80,7 +80,7 @@ pub fn infer_scc_query(db: &dyn Db, file: SourceFile, scc_index: usize) -> Arc<S
     };
     let resolved = resolve(db, file);
 
-    let def_schemes = |db: &dyn Db, def: DefId| declared_or_inferred_scheme(db, def);
+    let def_schemes = |db: &dyn Db, def: DefId| reference_scheme(db, file, def);
     let builtins = |name: Symbol| std_lib::builtin_scheme(name);
 
     let inference = infer_scc(db, file, &scc.members, &resolved, &def_schemes, &builtins);
@@ -167,20 +167,29 @@ pub fn def_type(db: &dyn Db, file: SourceFile, name: Symbol) -> Scheme {
     infer_scc_query(db, file, idx).get(def).cloned().unwrap_or_else(error_scheme)
 }
 
-/// The scheme used for an out-of-SCC reference: a declared signature when the
-/// callee has one (cutting the dependency on its body — the firewall), else the
-/// callee's inferred type. Also drives offset-evidence elaboration in lowering,
-/// where caller and callee must agree on a function's evidence from its type.
+/// A definition's declared or inferred scheme for introspection and ABI/offset-
+/// evidence elaboration. Inference uses `reference_scheme` instead, so a missing
+/// cross-file signature cannot turn into an inferred dependency on another file.
 pub fn declared_or_inferred_scheme(db: &dyn Db, def: DefId) -> Option<Scheme> {
     let file = db.source_file(def.file)?;
     if let Some(scheme) = signature_scheme(db, file, def.name) {
         return Some(scheme);
     }
-    // Signature-less: reach the inferred type. (For a *cross-module* callee this
-    // never happens for a well-formed program, because public bindings require a
-    // signature; a signature-less public binding is an error and falls back here
-    // only in the error state.)
+    // Introspection and lowering may ask for the definition's own inferred type.
+    // Inference references use `reference_scheme` to respect file boundaries.
     Some(def_type(db, file, def.name))
+}
+
+/// The type of a reference as seen from `caller`. Cross-file inference must not
+/// chase a missing signature: the declaration reports FAI3003, and an error type
+/// lets checking continue without creating a cycle outside the file-local SCCs.
+pub(crate) fn reference_scheme(db: &dyn Db, caller: SourceFile, def: DefId) -> Option<Scheme> {
+    if def.file == caller.source(db) {
+        declared_or_inferred_scheme(db, def)
+    } else {
+        let file = db.source_file(def.file)?;
+        Some(signature_scheme(db, file, def.name).unwrap_or_else(error_scheme))
+    }
 }
 
 /// Test/introspection helper: the inferred types of the *local* bindings in
@@ -197,7 +206,7 @@ pub fn def_local_types(
     file: SourceFile,
     name: Symbol,
 ) -> Vec<(String, crate::ty::Ty)> {
-    let def_schemes = |db: &dyn Db, def: DefId| declared_or_inferred_scheme(db, def);
+    let def_schemes = |db: &dyn Db, def: DefId| reference_scheme(db, file, def);
     let builtins = |n: Symbol| std_lib::builtin_scheme(n);
     crate::infer::infer_local_types(db, file, name, &def_schemes, &builtins)
         .into_iter()
@@ -211,7 +220,7 @@ pub fn def_local_types(
 /// where a capability method is actually invoked.
 #[must_use]
 pub fn def_effect(db: &dyn Db, file: SourceFile, name: Symbol) -> crate::ty::EffectRow {
-    let def_schemes = |db: &dyn Db, def: DefId| declared_or_inferred_scheme(db, def);
+    let def_schemes = |db: &dyn Db, def: DefId| reference_scheme(db, file, def);
     let builtins = |n: Symbol| std_lib::builtin_scheme(n);
     crate::infer::infer_def_effect(db, file, name, &def_schemes, &builtins)
 }
@@ -247,7 +256,7 @@ impl BodyTypes {
 /// lowering).
 #[salsa::tracked]
 pub fn body_types(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<BodyTypes> {
-    let def_schemes = |db: &dyn Db, def: DefId| declared_or_inferred_scheme(db, def);
+    let def_schemes = |db: &dyn Db, def: DefId| reference_scheme(db, file, def);
     let builtins = |n: Symbol| std_lib::builtin_scheme(n);
     let (exprs, pats) = crate::infer::infer_body_types(db, file, name, &def_schemes, &builtins);
     Arc::new(BodyTypes {
@@ -271,7 +280,7 @@ pub fn contract_body_types(db: &dyn Db, file: SourceFile, ordinal: usize) -> Arc
         fai_syntax::ast::ItemKind::Forall { binders, body } => (binders.clone(), *body),
         _ => return Arc::new(BodyTypes::default()),
     };
-    let def_schemes = |db: &dyn Db, def: DefId| declared_or_inferred_scheme(db, def);
+    let def_schemes = |db: &dyn Db, def: DefId| reference_scheme(db, file, def);
     let builtins = |n: Symbol| std_lib::builtin_scheme(n);
     let (exprs, pats) =
         crate::infer::infer_contract_body_types(db, file, &binders, body, &def_schemes, &builtins);
