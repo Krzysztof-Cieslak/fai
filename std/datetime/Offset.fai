@@ -24,20 +24,48 @@ example: seconds zero = 0
 
 /// An offset of `s` seconds from UTC, or `None` if `|s|` exceeds 18 hours.
 public ofSeconds : Int -> Option Offset
-let ofSeconds s = if Int.abs s > maxSeconds then None else Some (MkOffset s)
+let ofSeconds s = if s < 0 - maxSeconds || s > maxSeconds then None else Some (MkOffset s)
 example: ofSeconds 100_000 = None
 example: Option.isSome (ofSeconds 3600)
+example: ofSeconds (0 - 9223372036854775807 - 1) = None
+example: ofSeconds 9223372036854775807 = None
+example: ofSeconds 64801 = None
+example: ofSeconds (0 - 64801) = None
+example: Option.map seconds (ofSeconds 64800) = Some 64800
+example: Option.map seconds (ofSeconds (0 - 64800)) = Some (0 - 64800)
 
 /// An offset of `h` whole hours from UTC, or `None` if out of range.
 public ofHours : Int -> Option Offset
-let ofHours h = ofSeconds (h * 3600)
+let ofHours h = if h < 0 - 18 || h > 18 then None else ofSeconds (h * 3600)
 example: Option.map seconds (ofHours 2) = Some 7200
+example: ofHours 4611686018427387904 = None
+example: ofHours (0 - 4611686018427387904) = None
+example: ofHours (0 - 9223372036854775807 - 1) = None
+example: ofHours 9223372036854775807 = None
+example: ofHours 19 = None
+example: ofHours (0 - 19) = None
 
 /// An offset of `h` hours and `m` minutes (both with the offset's sign), or
-/// `None` if out of range.
+/// `None` if out of range. Hours must be in -18..18, minutes in -59..59, and
+/// nonzero components must have the same sign. The total must stay within ±18h.
 public ofHoursMinutes : Int -> Int -> Option Offset
-let ofHoursMinutes h m = ofSeconds (h * 3600 + m * 60)
+let ofHoursMinutes h m =
+  if h < 0 - 18 || h > 18 || m < 0 - 59 || m > 59 then
+    None
+  else if (h < 0 && m > 0) || (h > 0 && m < 0) then None else ofSeconds (h * 3600 + m * 60)
 example: Option.map seconds (ofHoursMinutes 5 30) = Some 19800
+example: Option.map seconds (ofHoursMinutes (0 - 5) (0 - 30)) = Some (0 - 19800)
+example: Option.map seconds (ofHoursMinutes 0 (0 - 30)) = Some (0 - 1800)
+example: ofHoursMinutes 5 (0 - 30) = None
+example: ofHoursMinutes (0 - 5) 30 = None
+example: ofHoursMinutes 18 1 = None
+example: ofHoursMinutes (0 - 18) (0 - 1) = None
+example: ofHoursMinutes 0 60 = None
+example: ofHoursMinutes 0 (0 - 60) = None
+example: ofHoursMinutes 0 4611686018427387904 = None
+example: ofHoursMinutes 4611686018427387904 0 = None
+example: ofHoursMinutes 0 (0 - 9223372036854775807 - 1) = None
+example: ofHoursMinutes 0 9223372036854775807 = None
 
 /// The offset's total seconds from UTC (positive east of Greenwich).
 public seconds : Offset -> Int
@@ -78,7 +106,8 @@ example: toString zero = "Z"
 example: toString (Option.withDefault zero (ofHoursMinutes 5 30)) = "+05:30"
 
 /// Parse an ISO-8601 offset: `Z` (UTC) or `±HH:MM` with an optional `:SS`. `None`
-/// if the shape is wrong or the result is out of range.
+/// if the shape is wrong or the result is out of range. Components are exactly
+/// two unsigned ASCII digits; minutes and seconds are in 00..59.
 public parse : String -> Option Offset
 let parse s =
   let n = String.length s
@@ -90,12 +119,45 @@ let parse s =
     None
   else
     let sign = if String.substring 0 1 s = "-" then 0 - 1 else 1
-    let hOpt = Int.fromString (String.substring 1 2 s)
-    let mOpt = Int.fromString (String.substring 4 2 s)
-    let secOpt = if n = 6 then Some 0 else Int.fromString (String.substring 7 2 s)
+    let hOpt = twoDigits (String.substring 1 2 s)
+    let mOpt = twoDigits (String.substring 4 2 s)
+    let secOpt = if n = 6 then Some 0 else twoDigits (String.substring 7 2 s)
     match (hOpt, mOpt, secOpt) with
-    | (Some h, Some m, Some sec) -> ofSeconds (sign * (h * 3600 + m * 60 + sec))
+    | (Some h, Some m, Some sec) ->
+      if h > 18 || m > 59 || sec > 59 then None else ofSeconds (sign * (h * 3600 + m * 60 + sec))
     | _ -> None
 example: parse "Z" = Some zero
 example: parse "+05:30" = ofHoursMinutes 5 30
 example: parse "bogus" = None
+example: parse "+18:00" = ofHours 18
+example: parse "-18:00" = ofHours (0 - 18)
+example: parse "+18:00:01" = None
+example: parse "-18:00:01" = None
+example: parse "+00:99" = None
+example: parse "+00:00:60" = None
+example: parse "+00:-1" = None
+example: parse "+00:+1" = None
+example: parse "+-1:00" = None
+example: parse "+00:00:-1" = None
+example: parse "+00:5_" = None
+example: parse "+00:٠١" = None
+example: parse "+0:00" = None
+example: parse "-00:00:59" = ofSeconds (0 - 59)
+forall s: Option.map seconds (ofSeconds s) = (if s < 0 - maxSeconds || s > maxSeconds then
+  None
+else
+  Some s)
+forall s: Option.andThen (fun offset -> parse (toString offset)) (ofSeconds s) = ofSeconds s
+
+twoDigits : String -> Option Int
+let twoDigits text =
+  let bytes = Bytes.fromString text
+  if Bytes.length bytes <> 2 then
+    None
+  else
+    let first = Bytes.unsafeGet 0 bytes
+    let second = Bytes.unsafeGet 1 bytes
+    if first < 48 || first > 57 || second < 48 || second > 57 then
+      None
+    else
+      Some ((first - 48) * 10 + second - 48)
