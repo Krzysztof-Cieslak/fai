@@ -1672,8 +1672,8 @@ pub extern "C" fn fai_data_field(v: Value, index: i64) -> Value {
 /// built. Consumes `record` and `value`; the replaced field is released.
 ///
 /// Descriptor-aware: `value` arrives uniform (boxed). If it is a `Float`, the
-/// updated slot must be scalar (an unboxed `f64`) to keep the cell's invariant
-/// that a `Float` field is raw, so its bits are stored and its box consumed; a
+/// updated slot is made scalar (an unboxed `f64`), so its bits are stored and its
+/// box consumed; other fields keep their original physical layout. A
 /// non-`Float` value is stored as the uniform word. The replaced field is released
 /// only when its slot was uniform (a scalar slot carries no reference count). When
 /// the update changes the slot's float-ness (a type-changing `{ r with x = v }`),
@@ -3514,15 +3514,17 @@ unsafe fn data_equal(a: Value, b: Value) -> bool {
         if n != data_field_count(b) {
             return false;
         }
-        // Both values share a type, hence a scalar bitmap; read it from `a`.
-        let scalar = desc_scalar_bitmap(obj_descriptor(as_obj(a)));
+        // Generic construction can box a Float that concrete construction stores
+        // raw. Equal logical types need not share a physical scalar bitmap.
+        let scalar_a = desc_scalar_bitmap(obj_descriptor(as_obj(a)));
+        let scalar_b = desc_scalar_bitmap(obj_descriptor(as_obj(b)));
         for i in 0..n {
             let fa = read_i64(as_obj(a), DATA_FIELDS_OFFSET + i * 8);
             let fb = read_i64(as_obj(b), DATA_FIELDS_OFFSET + i * 8);
-            if i < 64 && scalar & (1u64 << i) != 0 {
-                // Scalar float slot: compare the raw bits (a boxed `Float` compares
-                // the same way).
-                if fa != fb {
+            let raw_a = i < 64 && scalar_a & (1u64 << i) != 0;
+            let raw_b = i < 64 && scalar_b & (1u64 << i) != 0;
+            if raw_a || raw_b {
+                if float_slot_bits(fa, raw_a) != float_slot_bits(fb, raw_b) {
                     return false;
                 }
             } else if !is_boxed(fa) && !is_boxed(fb) {
@@ -3539,6 +3541,12 @@ unsafe fn data_equal(a: Value, b: Value) -> bool {
         }
         true
     }
+}
+
+/// The logical bits of a Float field. If one operand's descriptor marks a Float,
+/// the matching field in the same-typed other operand is raw or a boxed Float.
+fn float_slot_bits(field: Value, scalar: bool) -> u64 {
+    if scalar { field as u64 } else { unbox_float(field).to_bits() }
 }
 
 /// Structural ordering of two values, returning `-1`/`0`/`1` as an immediate
@@ -3614,15 +3622,16 @@ fn values_compare(a: Value, b: Value) -> std::cmp::Ordering {
                     // SAFETY: both are boxed data values with equal field counts.
                     unsafe {
                         let n = data_field_count(a);
-                        // Both share a type, hence a scalar bitmap; read it from `a`.
-                        let scalar = desc_scalar_bitmap(obj_descriptor(as_obj(a)));
+                        let scalar_a = desc_scalar_bitmap(obj_descriptor(as_obj(a)));
+                        let scalar_b = desc_scalar_bitmap(obj_descriptor(as_obj(b)));
                         for i in 0..n {
                             let fa = read_i64(as_obj(a), DATA_FIELDS_OFFSET + i * 8);
                             let fb = read_i64(as_obj(b), DATA_FIELDS_OFFSET + i * 8);
-                            let ord = if i < 64 && scalar & (1u64 << i) != 0 {
-                                // Scalar float slot: compare as `f64` (a boxed
-                                // `Float` uses the same `total_cmp`).
-                                f64::from_bits(fa as u64).total_cmp(&f64::from_bits(fb as u64))
+                            let raw_a = i < 64 && scalar_a & (1u64 << i) != 0;
+                            let raw_b = i < 64 && scalar_b & (1u64 << i) != 0;
+                            let ord = if raw_a || raw_b {
+                                f64::from_bits(float_slot_bits(fa, raw_a))
+                                    .total_cmp(&f64::from_bits(float_slot_bits(fb, raw_b)))
                             } else if !is_boxed(fa) && !is_boxed(fb) {
                                 // Both immediate: inline `values_compare`'s immediate
                                 // fast path so an `Int`/nullary field costs no
@@ -3728,7 +3737,8 @@ fn values_hash(v: Value) -> u64 {
             unsafe {
                 let tag = read_u64(as_obj(v), DATA_TAG_OFFSET);
                 let n = data_field_count(v);
-                // Both equal values share a type, hence a scalar bitmap.
+                // Hash each field according to this cell's physical layout;
+                // raw and boxed Float fields contribute identical logical bits.
                 let scalar = desc_scalar_bitmap(obj_descriptor(as_obj(v)));
                 // Seed with the tag and arity so two constructors of the same type
                 // with differently-positioned identical fields do not collide.

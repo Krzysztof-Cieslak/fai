@@ -380,6 +380,63 @@ fn wrapper_box_or_tag_int(
     builder.block_params(merge_b)[0]
 }
 
+/// Tests the actual descriptor of a data cell. Slots beyond the bitmap's width
+/// are uniform; masking a shift count alone would incorrectly wrap those slots.
+fn data_slot_is_scalar(builder: &mut FunctionBuilder, base: Value, slot: Value) -> Value {
+    let desc = builder.ins().load(types::I64, MemFlags::trusted(), base, rt::DESC_OFFSET as i32);
+    let bitmap = builder.ins().load(
+        types::I64,
+        MemFlags::trusted(),
+        desc,
+        std::mem::offset_of!(rt::Descriptor, scalar_bitmap) as i32,
+    );
+    let shifted = builder.ins().ushr(bitmap, slot);
+    let bit = builder.ins().band_imm(shifted, 1);
+    let scalar = builder.ins().icmp_imm(IntCC::NotEqual, bit, 0);
+    let represented = builder.ins().icmp_imm(IntCC::UnsignedLessThan, slot, 64);
+    builder.ins().band(scalar, represented)
+}
+
+/// Borrows a logical Float field from either a raw slot or a boxed Float slot.
+/// Shared by ordinary projections, SROA boundaries, and first-class wrappers.
+fn borrow_float_field(
+    builder: &mut FunctionBuilder,
+    base: Value,
+    slot: Value,
+    known_scalar: Option<bool>,
+) -> Value {
+    let offset = builder.ins().imul_imm(slot, 8);
+    let address = builder.ins().iadd(base, offset);
+    let word =
+        builder.ins().load(types::I64, MemFlags::trusted(), address, rt::DATA_FIELDS_OFFSET as i32);
+    let bits = match known_scalar {
+        Some(true) => word,
+        Some(false) => {
+            builder.ins().load(types::I64, MemFlags::trusted(), word, rt::FLOAT_VALUE_OFFSET as i32)
+        }
+        None => {
+            let scalar = data_slot_is_scalar(builder, base, slot);
+            let boxed_b = builder.create_block();
+            let done_b = builder.create_block();
+            builder.append_block_param(done_b, types::I64);
+            builder.ins().brif(scalar, done_b, &[word.into()], boxed_b, &[]);
+            builder.switch_to_block(boxed_b);
+            builder.seal_block(boxed_b);
+            let bits = builder.ins().load(
+                types::I64,
+                MemFlags::trusted(),
+                word,
+                rt::FLOAT_VALUE_OFFSET as i32,
+            );
+            builder.ins().jump(done_b, &[bits.into()]);
+            builder.switch_to_block(done_b);
+            builder.seal_block(done_b);
+            builder.block_params(done_b)[0]
+        }
+    };
+    builder.ins().bitcast(types::F64, MemFlags::new(), bits)
+}
+
 /// Builds the uniform-ABI wrapper bridging the static-closure / `apply_n` path
 /// (all arguments boxed and owned, in the `args` array) to a specialized entry,
 /// then drops the borrowed (non-unboxed) arguments the entry left untouched and
@@ -421,7 +478,6 @@ fn build_owned_wrapper<M: Module>(
             module.declare_function("fai_drop", Linkage::Import, &drop_sig).expect("declare drop");
         let drop_ref = module.declare_func_in_func(drop_id, builder.func);
         let float_off = i32::try_from(rt::FLOAT_VALUE_OFFSET).expect("float value offset");
-        let fields_off = i32::try_from(rt::DATA_FIELDS_OFFSET).expect("data fields offset");
         let entry_ref = module.declare_func_in_func(entry, builder.func);
 
         // Niche values the wrapper converted for a borrowed niche parameter; the
@@ -439,12 +495,11 @@ fn build_owned_wrapper<M: Module>(
                 let offset = i32::try_from(i * 8).expect("arg offset");
                 let orig = builder.ins().load(types::I64, MemFlags::trusted(), args, offset);
                 if let Some(reprs) = abi.spread_param(i) {
-                    // Explode the boxed aggregate into its scalar-slot `f64`s, then
-                    // release the box (an owned argument the entry consumes).
+                    // Decode each physical field layout before passing its `f64`,
+                    // then release the owned aggregate and any boxed fields.
                     for j in 0..reprs.len() {
-                        let off = fields_off + i32::try_from(j * 8).expect("field offset");
-                        let bits = builder.ins().load(types::I64, MemFlags::trusted(), orig, off);
-                        let f = builder.ins().bitcast(types::F64, MemFlags::new(), bits);
+                        let slot = builder.ins().iconst(types::I64, j as i64);
+                        let f = borrow_float_field(&mut builder, orig, slot, None);
                         call_args.push(f);
                     }
                     builder.ins().call(drop_ref, &[orig]);
@@ -824,6 +879,7 @@ fn build_fn<M: Module>(
             runtime: FxHashMap::default(),
             string_counter: 0,
             descriptors: FxHashMap::default(),
+            data_layouts: FxHashMap::default(),
             loop_ctx: None,
             result_slot: None,
             bounds: Bounds::new(),
@@ -1232,6 +1288,9 @@ struct Translator<'a, M: Module> {
     /// by their scalar bitmap (one static per distinct bitmap used in this
     /// function). Each is a `{ kind = Data, scalar_bitmap, name = null }` static.
     descriptors: FxHashMap<u64, DataId>,
+    /// Proven layouts of data cells constructed in this function, keyed by SSA
+    /// value. Parameters and generic call results instead consult their descriptor.
+    data_layouts: FxHashMap<Value, u64>,
     /// The enclosing tail-call loop, while translating a `Join` body: where
     /// `Recur` jumps back and where the loop's result exits.
     loop_ctx: Option<LoopCtx>,
@@ -2138,7 +2197,28 @@ impl<M: Module> Translator<'_, M> {
     fn emit_inline_drop_value(&mut self, cell: Value, fields: &[FieldDrop]) {
         self.emit_rc_dec_then_value(cell, false, |s, cell| {
             for (i, class) in fields.iter().enumerate() {
-                if matches!(class, FieldDrop::Boxed) {
+                if matches!(class, FieldDrop::Immediate) {
+                    continue;
+                }
+                let known = s.known_scalar_slot(cell, FieldIndex::Const(i as u32));
+                if known == Some(true) {
+                    continue;
+                }
+                if matches!(class, FieldDrop::Dynamic) && known.is_none() {
+                    let slot = s.builder.ins().iconst(types::I64, i as i64);
+                    let scalar = data_slot_is_scalar(&mut s.builder, cell, slot);
+                    let drop_b = s.builder.create_block();
+                    let next_b = s.builder.create_block();
+                    s.builder.ins().brif(scalar, next_b, &[], drop_b, &[]);
+                    s.builder.switch_to_block(drop_b);
+                    s.builder.seal_block(drop_b);
+                    let off = i32::try_from(rt::DATA_FIELDS_OFFSET + i * 8).expect("field offset");
+                    let field = s.builder.ins().load(types::I64, MemFlags::trusted(), cell, off);
+                    s.call_drop(field);
+                    s.builder.ins().jump(next_b, &[]);
+                    s.builder.switch_to_block(next_b);
+                    s.builder.seal_block(next_b);
+                } else {
                     let off = i32::try_from(rt::DATA_FIELDS_OFFSET + i * 8).expect("field offset");
                     let field = s.builder.ins().load(types::I64, MemFlags::trusted(), cell, off);
                     s.call_drop(field);
@@ -2425,7 +2505,7 @@ impl<M: Module> Translator<'_, M> {
         // A scalar-bearing cell carries a per-shape descriptor; an all-uniform cell
         // uses the shared descriptor (the plain runtime entry points).
         let desc = if scalars != 0 { Some(self.data_descriptor(scalars)) } else { None };
-        match (reuse, desc) {
+        let result = match (reuse, desc) {
             (Some(token), Some(desc)) => {
                 let tok = self.use_var(token);
                 let f = self.runtime("fai_reuse_scalar", 5, true);
@@ -2448,7 +2528,9 @@ impl<M: Module> Translator<'_, M> {
                 let call = self.builder.ins().call(f, &[tag_v, n_v, ptr]);
                 self.builder.inst_results(call)[0]
             }
-        }
+        };
+        self.data_layouts.insert(result, scalars);
+        result
     }
 
     /// Coerces an owned value into the raw `f64` bits stored in a scalar field
@@ -2510,10 +2592,9 @@ impl<M: Module> Translator<'_, M> {
     /// immediate; a row-polymorphic slot is `base + evidence` computed at runtime
     /// from a leading offset-evidence parameter.
     ///
-    /// `scalar` marks the slot as a raw unboxed `f64` (a record/tuple/concrete-ADT
-    /// `Float` field): its bits are read directly. A non-scalar `Float` result is a
-    /// *boxed* `Float` slot (a `List`/polymorphic-ADT element instantiated at
-    /// `Float`), unboxed in place; a monomorphic `Int` result is read untagged.
+    /// `scalar` identifies a logical Float field. The producer's descriptor, not
+    /// the caller's instantiated type, determines whether its slot is raw or
+    /// boxed; a monomorphic `Int` result is read untagged.
     /// Every read borrows `base` (it outlives the read in A-normal form, and
     /// dropping `base` later releases the field once).
     /// Reads a data value's constructor tag (consuming `base`), as an `Int`. For a
@@ -2580,10 +2661,7 @@ impl<M: Module> Translator<'_, M> {
             }
             return self.call1("fai_dup", v);
         }
-        if scalar {
-            return self.scalar_float_data_field(base, index);
-        }
-        if matches!(result_ty, Ty::Con(Con::Float)) {
+        if scalar || matches!(result_ty, Ty::Con(Con::Float)) {
             return self.float_data_field(base, index);
         }
         if matches!(result_ty, Ty::Con(Con::Int)) {
@@ -2599,13 +2677,17 @@ impl<M: Module> Translator<'_, M> {
         self.builder.inst_results(call)[0]
     }
 
-    /// Reads a scalar `Float` field as an unboxed `f64`: the slot holds the raw
-    /// bits directly (no box), so load and reinterpret.
-    fn scalar_float_data_field(&mut self, base: &CExpr, index: FieldIndex) -> Value {
-        let base_v = self.expr(base);
-        let addr = self.field_slot_addr(base_v, index);
-        let bits = self.builder.ins().load(types::I64, MemFlags::trusted(), addr, 0);
-        self.i64_to_f64(bits)
+    /// A construction-proven scalar flag, independent of the instantiated type.
+    fn known_scalar_slot(&self, base: Value, index: FieldIndex) -> Option<bool> {
+        match index {
+            FieldIndex::Const(i) if i >= 64 => Some(false),
+            FieldIndex::Const(i) => {
+                self.data_layouts.get(&base).map(|bits| bits & (1u64 << i) != 0)
+            }
+            FieldIndex::Dyn { .. } => {
+                self.data_layouts.get(&base).filter(|bits| **bits == 0).map(|_| false)
+            }
+        }
     }
 
     /// The byte address of a field slot within a data cell at `base_v`.
@@ -2626,14 +2708,20 @@ impl<M: Module> Translator<'_, M> {
         }
     }
 
-    /// Reads a scalar `Float` field as an unboxed `f64`: load the field slot's box
-    /// pointer at its (constant or evidence-computed) offset, then read the box's
-    /// bits without touching its reference count (a borrow).
+    /// Reads a logical `Float` through its physical scalar-or-boxed slot layout,
+    /// borrowing the cell and any field box.
     fn float_data_field(&mut self, base: &CExpr, index: FieldIndex) -> Value {
         let base_v = self.expr(base);
-        let addr = self.field_slot_addr(base_v, index);
-        let boxed = self.builder.ins().load(types::I64, MemFlags::trusted(), addr, 0);
-        self.borrowing_unbox(boxed)
+        self.float_field_value(base_v, index)
+    }
+
+    fn float_field_value(&mut self, base: Value, index: FieldIndex) -> Value {
+        let known = self.known_scalar_slot(base, index);
+        let slot = match index {
+            FieldIndex::Const(i) => self.builder.ins().iconst(types::I64, i64::from(i)),
+            FieldIndex::Dyn { base: off, evidence } => self.evidence_slot(off, evidence),
+        };
+        borrow_float_field(&mut self.builder, base, slot, known)
     }
 
     /// Reads a monomorphic `Int` field as a raw untagged `i64`: load the field slot
@@ -5180,14 +5268,7 @@ impl<M: Module> Translator<'_, M> {
     /// Reads the N scalar-`f64` fields of a boxed FFA cell `base` (borrowing — the
     /// caller releases `base`).
     fn explode_boxed(&mut self, base: Value, n: usize) -> Vec<Value> {
-        (0..n)
-            .map(|i| {
-                let addr =
-                    self.field_slot_addr(base, FieldIndex::Const(u32::try_from(i).unwrap_or(0)));
-                let bits = self.builder.ins().load(types::I64, MemFlags::trusted(), addr, 0);
-                self.i64_to_f64(bits)
-            })
-            .collect()
+        (0..n).map(|i| self.float_field_value(base, FieldIndex::Const(i as u32))).collect()
     }
 
     /// Binds a `LetMany`'s locals to the components a spread-returning call yields.
@@ -5241,7 +5322,9 @@ impl<M: Module> Translator<'_, M> {
         let desc = self.data_descriptor(scalars);
         let f = self.runtime("fai_make_data_scalar", 4, true);
         let call = self.builder.ins().call(f, &[desc, tag_v, n_v, ptr]);
-        self.builder.inst_results(call)[0]
+        let result = self.builder.inst_results(call)[0];
+        self.data_layouts.insert(result, scalars);
+        result
     }
 
     /// Marshals `args` into `call_args` per the callee `abi`: a spread parameter
@@ -5899,8 +5982,8 @@ enum AggField {
     /// `Int`, so comparison takes the immediate guard with the borrowed structural
     /// fallback (the scalar-`Int` path, on the borrowed field word).
     Int,
-    /// Any other uniform field (a type variable, `String`, `List`, an ADT, or a
-    /// nested aggregate): a boxed-or-immediate value word compared through the
+    /// Any other provably uniform field (`String`, `List`, or a nested
+    /// aggregate): a boxed-or-immediate value word compared through the
     /// borrowing structural runtime call, which dispatches on the field's own
     /// descriptor.
     Boxed,
@@ -5910,7 +5993,7 @@ enum AggField {
 /// returning each field's [`AggField`] in heap-layout order (tuples positional,
 /// records sorted by label), or `None` when the shape is not inline-eligible: a
 /// non-aggregate, an open or empty record, a width over `cap`, a field whose type
-/// is erased (`Ty::Error`), or a **direct `Float` field**. A monomorphic `Float`
+/// may be a **direct `Float` field** after instantiation or opacity erasure. A Float
 /// field is stored as raw `f64` bits, which can be neither read soundly by static
 /// type (a generically-built cell stores the field boxed) nor passed to the
 /// structural runtime (which expects a value word, not raw bits) — so a shape with
@@ -5932,7 +6015,7 @@ fn inline_aggregate_fields(ty: &Ty, cap: usize) -> Option<Vec<AggField>> {
     for t in field_tys {
         let kind = match t {
             // A raw-bits scalar `Float` or an erased field is not inline-eligible.
-            Ty::Con(Con::Float) | Ty::Error => return None,
+            _ if may_use_scalar_slot(t) => return None,
             _ if is_immediate_ty(t) => AggField::Immediate,
             Ty::Con(Con::Int) => AggField::Int,
             _ => AggField::Boxed,
@@ -6394,9 +6477,9 @@ enum FloatBinop {
 enum FieldDrop {
     /// A statically-immediate field (no reference count): nothing to release.
     Immediate,
-    /// A scalar unboxed `f64` field (raw bits, no reference count): nothing to
-    /// release.
-    Scalar,
+    /// A Float, polymorphic, or opaque field: its descriptor decides whether the
+    /// slot is raw (no release) or uniform (release its value).
+    Dynamic,
     /// A possibly-boxed field: released with a runtime drop (a no-op at runtime if
     /// it turns out to be immediate, e.g. a small `Int`).
     Boxed,
@@ -6428,21 +6511,31 @@ fn fixed_shape_drop(ty: &Ty, max_boxed: usize) -> Option<Vec<FieldDrop>> {
         }
         _ => return None,
     };
-    let boxed = fields.iter().filter(|c| matches!(c, FieldDrop::Boxed)).count();
+    let boxed = fields.iter().filter(|c| !matches!(c, FieldDrop::Immediate)).count();
     if boxed > max_boxed { None } else { Some(fields) }
 }
 
-/// Classifies a field type for an inlined drop: a statically-immediate type and a
-/// scalar `Float` (a raw unboxed slot, in a record/tuple) carry no reference count
-/// and need no release; everything else is released with a runtime drop (itself a
-/// no-op on a value that turns out to be immediate).
+/// Classifies a field type for an inlined drop. Possible Float fields need a
+/// descriptor check unless their construction proves the physical layout;
+/// other uniform fields release their value, and immediate fields need no drop.
 fn field_drop(ty: &Ty) -> FieldDrop {
     if is_immediate_ty(ty) {
         FieldDrop::Immediate
-    } else if matches!(ty, Ty::Con(Con::Float)) {
-        FieldDrop::Scalar
+    } else if may_use_scalar_slot(ty) {
+        FieldDrop::Dynamic
     } else {
         FieldDrop::Boxed
+    }
+}
+
+/// Whether a field could physically contain a Float after instantiation or
+/// opacity erasure. Built-in containers and structural aggregates are cells,
+/// while an opaque alias may itself hide a scalar representation.
+fn may_use_scalar_slot(ty: &Ty) -> bool {
+    match ty {
+        Ty::Con(Con::Float) | Ty::Var(_) | Ty::Adt(_) | Ty::EffectArg(_) | Ty::Error => true,
+        Ty::App(head, _) => may_use_scalar_slot(head),
+        _ => false,
     }
 }
 
@@ -6647,10 +6740,10 @@ mod classifier_tests {
     }
 
     #[test]
-    fn type_variable_field_is_boxed_and_eligible() {
-        // A type-variable field is a uniform value word, compared structurally.
+    fn type_variable_field_requires_descriptor_aware_comparison() {
+        // A concrete producer may have put a raw Float in this generic field.
         let ty = Ty::Tuple(vec![Ty::Var(fai_types::TyVarId(0)), Ty::int()]);
-        assert_eq!(inline_aggregate_fields(&ty, WIDE), Some(vec![AggBoxed, AggInt]));
+        assert_eq!(inline_aggregate_fields(&ty, WIDE), None);
     }
 
     #[test]

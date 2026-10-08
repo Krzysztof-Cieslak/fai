@@ -111,6 +111,12 @@ fn diff_check(tag: i64, fa: &[Field], fb: &[Field]) -> Result<(), TestCaseError>
 
     prop_assert_eq!(eq_bool(sa, sb), eq_bool(ra, rb), "equality mismatch");
     prop_assert_eq!(cmp_ord(sa, sb), cmp_ord(ra, rb), "ordering mismatch");
+    prop_assert_eq!(eq_bool(sa, rb), eq_bool(ra, rb), "scalar/boxed equality mismatch");
+    prop_assert_eq!(eq_bool(ra, sb), eq_bool(ra, rb), "boxed/scalar equality mismatch");
+    prop_assert_eq!(cmp_ord(sa, rb), cmp_ord(ra, rb), "scalar/boxed ordering mismatch");
+    prop_assert_eq!(cmp_ord(ra, sb), cmp_ord(ra, rb), "boxed/scalar ordering mismatch");
+    prop_assert_eq!(values_hash(sa), values_hash(ra), "equal mixed layouts must hash equally");
+    prop_assert_eq!(values_hash(sb), values_hash(rb), "equal mixed layouts must hash equally");
 
     // Each field of `fa` projects to a value equal to the reference's field — a
     // scalar slot boxes to a `Float`, a uniform slot duplicates the word.
@@ -308,9 +314,8 @@ fn arb_fields() -> impl Strategy<Value = Vec<Field>> {
 }
 
 /// A pair of fields of the **same** representation but (independently) chosen
-/// values, so two cells built from these pairs share a shape — the only valid
-/// input to structural equality/ordering (comparison is between same-typed
-/// values, hence same scalar bitmap).
+/// values, so the cells share a logical type. Their physical scalar bitmaps may
+/// differ when one producer was generic or a record update promoted a slot.
 fn arb_field_pair() -> impl Strategy<Value = (Field, Field)> {
     prop_oneof![
         (any::<f64>(), any::<f64>()).prop_map(|(a, b)| (Field::Scalar(a), Field::Scalar(b))),
@@ -336,6 +341,57 @@ fn prop_scalar_cells_match_boxed_reference() {
             diff_check(tag, &fa, &fb)
         })
         .expect("scalar cells match the boxed reference");
+}
+
+#[test]
+fn independently_mixed_scalar_bitmaps_preserve_comparison_and_hashing() {
+    fn mixed(tag: i64, fields: &[Field], mask: u64) -> Value {
+        let bitmap = bitmap_of(fields) & mask;
+        let words: Vec<_> =
+            fields
+                .iter()
+                .enumerate()
+                .map(|(i, field)| {
+                    if bitmap & (1u64 << i) != 0 {
+                        scalar_word(field)
+                    } else {
+                        uniform_value(*field)
+                    }
+                })
+                .collect();
+        // SAFETY: each raw slot is identified by the descriptor; the other slots
+        // own uniform values. The live input slice contains every field.
+        unsafe {
+            fai_make_data_scalar(
+                intern_data_descriptor(bitmap),
+                tag,
+                words.len() as i64,
+                words.as_ptr(),
+            )
+        }
+    }
+    let _guard = lock();
+    TestRunner::default()
+        .run(&(arb_field_pairs(), any::<u64>(), any::<u64>()), |(fields, ma, mb)| {
+            let baseline = live_count();
+            let a: Vec<_> = fields.iter().map(|f| f.0).collect();
+            let b: Vec<_> = fields.iter().map(|f| f.1).collect();
+            let mixed_a = mixed(0, &a, ma);
+            let mixed_b = mixed(0, &b, mb);
+            let boxed_a = build_reference(0, &a);
+            let boxed_b = build_reference(0, &b);
+            prop_assert_eq!(eq_bool(mixed_a, mixed_b), eq_bool(boxed_a, boxed_b));
+            prop_assert_eq!(cmp_ord(mixed_a, mixed_b), cmp_ord(boxed_a, boxed_b));
+            prop_assert_eq!(values_hash(mixed_a), values_hash(boxed_a));
+            prop_assert_eq!(values_hash(mixed_b), values_hash(boxed_b));
+            fai_drop(mixed_a);
+            fai_drop(mixed_b);
+            fai_drop(boxed_a);
+            fai_drop(boxed_b);
+            prop_assert_eq!(live_count(), baseline);
+            Ok(())
+        })
+        .expect("mixed field layouts agree with boxed values");
 }
 
 #[test]
