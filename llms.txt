@@ -1574,6 +1574,10 @@ Deferred: IANA time zones / `ZonedDateTime` with DST rules (this is offset-only)
    `{ concurrency, net, tls }`. A pooled response body returns its connection to the
    pool when fully read, so consume it within the callback; the pool closes every
    connection on scope exit.
+   Only `getOn` automatically retries a stale reused connection: once, and only
+   on EOF before any response byte. `requestOn`/`postOn` never replay their body
+   streams. Write, body-producer, cancellation, and partial/malformed-head errors
+   are returned unchanged.
    HTTP/1.0 reuse requires explicit keep-alive. Servers honor `Expect: 100-continue`
    and reject unsupported expectations with `417` before awaiting body bytes.
    Framing errors return `Err`: lengths must be bounded nonnegative decimals,

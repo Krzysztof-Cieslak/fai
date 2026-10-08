@@ -131,6 +131,7 @@ let main runtime = runtime.console.writeLine (Http.withClient runtime (two runti
 #[track_caller]
 fn pooled_bodyless_response(method: &str, first_head: &'static [u8]) {
     use std::io::Write;
+    let _guard = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let peer = std::thread::spawn(move || {
@@ -160,7 +161,7 @@ public main : Runtime -> Unit / {{ Concurrency, Console, Net, Tls }}
 let main r = r.console.writeLine (Http.withClient r (fetch r))
 "#
     );
-    let (out, code) = run(&source);
+    let (out, code) = run_program(&source);
     peer.join().unwrap();
     assert_eq!((out.as_str(), code), ("ok\n", 0));
 }
@@ -178,6 +179,131 @@ fn pooled_no_content_response_immediately_releases_its_connection() {
 #[test]
 fn pooled_not_modified_response_immediately_releases_its_connection() {
     pooled_bodyless_response("GET", b"HTTP/1.1 304 Not Modified\r\nContent-Length: 500\r\n\r\n");
+}
+
+fn request_with_body(connection: &mut std::net::TcpStream) -> String {
+    use std::io::Read;
+    let mut request = redirect_request(connection).into_bytes();
+    let head_end = request.windows(4).position(|b| b == b"\r\n\r\n").unwrap() + 4;
+    let head = String::from_utf8_lossy(&request[..head_end]);
+    let length = head
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().unwrap())
+        })
+        .unwrap_or(0);
+    while request.len() < head_end + length {
+        let mut bytes = [0; 4096];
+        let count = connection.read(&mut bytes).unwrap();
+        assert!(count > 0);
+        request.extend_from_slice(&bytes[..count]);
+    }
+    String::from_utf8(request).unwrap()
+}
+
+#[track_caller]
+fn counted_pool_attempts(method: Option<&str>, broken_response: &'static [u8]) -> (usize, String) {
+    use std::io::Write;
+    let _guard = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (stop, stopped) = std::sync::mpsc::channel();
+    let peer = std::thread::spawn(move || {
+        let mut connection = redirect_connection(&listener);
+        request_with_body(&mut connection);
+        connection.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").unwrap();
+        let second = request_with_body(&mut connection);
+        connection.write_all(broken_response).unwrap();
+        drop(connection);
+        let mut attempts = 1;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            if stopped.try_recv().is_ok() {
+                break;
+            }
+            match listener.accept() {
+                Ok((mut retry, _)) => {
+                    retry.set_nonblocking(false).unwrap();
+                    let repeated = request_with_body(&mut retry);
+                    assert_eq!(repeated, second);
+                    attempts += 1;
+                    retry.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").unwrap();
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(std::time::Instant::now() < deadline, "pool attempt did not finish");
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                Err(error) => panic!("retry accept: {error}"),
+            }
+        }
+        attempts
+    });
+    let request = method.map_or_else(
+        || format!("Http.getOn r client \"http://127.0.0.1:{port}/\""),
+        |method| format!("Http.requestOn r client {{ method = Http.{method}, url = url, headers = Headers.empty, body = Stream.defer (payload r) }}"),
+    );
+    let source = format!(
+        r#"module Prog
+payload : Runtime -> Unit -> Stream Bytes {{ Console }} / {{ Console }}
+let payload r u =
+  let wrote = r.console.writeLine "body"
+  Http.stringBody "data"
+session : Runtime -> Http.Client -> Bool / {{ Concurrency, Console, Net, Tls }}
+let session r client =
+  let warm = Http.getOn r client "http://127.0.0.1:{port}/"
+  match Url.parse "http://127.0.0.1:{port}/" with
+  | Err e -> false
+  | Ok url ->
+    match {request} with
+    | Err e -> false
+    | Ok response -> true
+public main : Runtime -> Unit / {{ Concurrency, Console, Net, Tls }}
+let main r =
+  let accepted = Http.withClient r (session r)
+  r.console.writeLine (if accepted then "accepted" else "rejected")
+"#
+    );
+    let source = if method.is_none() {
+        source.replace(
+            "session : Runtime -> Http.Client -> Bool / { Concurrency, Console, Net, Tls }",
+            "session : Runtime -> Http.Client -> Bool / { Concurrency, Net, Tls }",
+        )
+    } else {
+        source
+    };
+    let (out, code) = run_program(&source);
+    stop.send(()).unwrap();
+    let attempts = peer.join().unwrap();
+    assert_eq!(code, 0, "{out}");
+    (attempts, out)
+}
+
+#[test]
+fn pooled_post_and_its_body_are_not_replayed_after_a_partial_head() {
+    assert_eq!(
+        counted_pool_attempts(Some("POST"), b"HTTP/1.1 200 OK\r\nContent-Length:"),
+        (1, "body\nrejected\n".into())
+    );
+}
+
+#[test]
+fn a_general_get_with_a_one_use_body_is_not_replayed() {
+    assert_eq!(counted_pool_attempts(Some("GET"), b""), (1, "body\nrejected\n".into()));
+}
+
+#[test]
+fn get_on_does_not_replay_a_partial_response_head() {
+    assert_eq!(
+        counted_pool_attempts(None, b"HTTP/1.1 200 OK\r\nContent-Length:"),
+        (1, "rejected\n".into())
+    );
+}
+
+#[test]
+fn get_on_retries_one_empty_response_eof_on_a_reused_connection() {
+    assert_eq!(counted_pool_attempts(None, b""), (2, "accepted\n".into()));
 }
 
 #[track_caller]
