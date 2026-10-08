@@ -63,6 +63,129 @@ fn with_capacity_is_empty_and_leak_free() {
     assert_eq!(live_count(), base, "leak-free");
 }
 
+#[track_caller]
+fn assert_allocation_rejected(kind: &str, argument: i64) {
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "array_tests::allocation_abort_worker", "--nocapture"])
+        .env("FAI_ALLOCATION_TEST_KIND", kind)
+        .env("FAI_ALLOCATION_TEST_ARGUMENT", argument.to_string())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "invalid allocation succeeded");
+    assert!(stderr.contains("allocation size exceeds supported range"), "{stderr}");
+}
+
+#[test]
+fn allocation_abort_worker() {
+    let Ok(kind) = std::env::var("FAI_ALLOCATION_TEST_KIND") else { return };
+    let argument = std::env::var("FAI_ALLOCATION_TEST_ARGUMENT").unwrap().parse::<i64>().unwrap();
+    match kind.as_str() {
+        "capacity" => {
+            fai_array_with_capacity(fai_box_int(argument));
+        }
+        "bytes" => {
+            fai_alloc_array(argument);
+        }
+        "growth" => {
+            grow_cap(argument as usize, argument as usize + 1, MAX_ARRAY_CAPACITY);
+        }
+        _ => panic!("unknown allocation test"),
+    }
+    std::process::exit(0);
+}
+
+#[test]
+fn allocation_capacity_wrapping_to_zero_is_rejected() {
+    assert_allocation_rejected("capacity", (1i64 << 61) - 4);
+}
+
+#[test]
+fn allocation_capacity_wrapping_below_header_is_rejected() {
+    assert_allocation_rejected("capacity", (1i64 << 61) - 3);
+}
+
+#[test]
+fn allocation_capacity_exceeding_layout_limit_is_rejected() {
+    assert_allocation_rejected("capacity", (1i64 << 60) - 4);
+}
+
+#[test]
+fn allocation_boxed_maximum_capacity_is_rejected() {
+    assert_allocation_rejected("capacity", i64::MAX);
+}
+
+#[test]
+fn allocation_raw_size_without_length_slot_is_rejected() {
+    assert_allocation_rejected("bytes", HEADER_SIZE as i64);
+}
+
+#[test]
+fn allocation_raw_unaligned_size_is_rejected() {
+    assert_allocation_rejected("bytes", ARRAY_ELEMS_OFFSET as i64 + 1);
+}
+
+#[test]
+fn allocation_negative_capacity_consumes_a_boxed_int() {
+    let _g = lock();
+    let base = live_count();
+    let array = fai_array_with_capacity(fai_box_int(i64::MIN));
+    assert_eq!(len_of(array), 0);
+    fai_drop(array);
+    assert_eq!(live_count(), base);
+}
+
+#[test]
+fn allocation_zero_capacity_includes_the_header_and_length() {
+    assert_eq!(checked_buffer_size(ARRAY_ELEMS_OFFSET, 0, 8), Some(ARRAY_ELEMS_OFFSET));
+}
+
+#[test]
+fn allocation_maximum_capacity_fits_the_layout_exactly() {
+    assert_eq!(
+        checked_buffer_size(ARRAY_ELEMS_OFFSET, MAX_ARRAY_CAPACITY, 8),
+        Some(MAX_ALLOCATION_SIZE)
+    );
+    assert_eq!(checked_buffer_size(ARRAY_ELEMS_OFFSET, MAX_ARRAY_CAPACITY + 1, 8), None);
+}
+
+#[test]
+fn allocation_byte_buffer_padding_cannot_cross_the_layout_limit() {
+    let max = MAX_ALLOCATION_SIZE - STRING_BYTES_OFFSET;
+    assert_eq!(checked_buffer_size(STRING_BYTES_OFFSET, max, 1), Some(MAX_ALLOCATION_SIZE));
+    assert_eq!(checked_buffer_size(STRING_BYTES_OFFSET, max + 1, 1), None);
+    assert_eq!(checked_buffer_size(STRING_BYTES_OFFSET, usize::MAX, 1), None);
+}
+
+#[test]
+fn allocation_growth_saturates_at_the_capacity_limit() {
+    let cap = MAX_ARRAY_CAPACITY / 2 + 1;
+    assert_eq!(grow_cap(cap, cap + 1, MAX_ARRAY_CAPACITY), MAX_ARRAY_CAPACITY);
+}
+
+#[test]
+fn allocation_growth_past_the_limit_is_rejected() {
+    assert_allocation_rejected("growth", MAX_ARRAY_CAPACITY as i64);
+}
+
+mod allocation_proptests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    proptest! {
+        #[test]
+        fn capacity_validation_agrees_with_wide_arithmetic(cap in any::<usize>()) {
+            let expected = ARRAY_ELEMS_OFFSET as u128 + cap as u128 * 8;
+            let actual = checked_buffer_size(ARRAY_ELEMS_OFFSET, cap, 8);
+            prop_assert_eq!(actual.is_some(), expected <= MAX_ALLOCATION_SIZE as u128);
+            if let Some(size) = actual {
+                prop_assert_eq!(size as u128, expected);
+            }
+        }
+    }
+}
+
 #[test]
 fn builder_allocates_once() {
     let _g = lock();

@@ -52,7 +52,10 @@
 > contiguous, growable **`Array 'a`** (Vector-style: O(1) index, in-place update
 > when uniquely owned via Perceus, an unstable in-place quicksort) complements the
 > linked `List`, built on five array intrinsics with the rest pure Fai and written
-> with `[| 1, 2, 3 |]` literals; **`Array Float` stores its elements as raw, inline
+> with `[| 1, 2, 3 |]` literals. `Array.withCapacity` clamps negative capacities
+> to zero; construction and growth check the complete allocation size before
+> allocation or pool access, aborting beyond the platform's layout limit.
+> **`Array Float` stores its elements as raw, inline
 > `f64`s** (the buffer self-tags on the first float `push`, so generic construction
 > needs no evidence), so a concrete index loop reads and writes the raw slots with
  > no per-element box and drops in O(1) — a generic (type-variable element) access

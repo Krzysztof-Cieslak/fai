@@ -2189,12 +2189,18 @@ Editor integration:
     an unboxed `Array Int` is unnecessary, a small `Int` being an inline immediate).
   - **Five intrinsics, the rest pure Fai.** `Prim.array{WithCapacity,Length,Get,
     Set,Push}` (the first *polymorphic* builtins, quantified over the element type
-    and instantiated per use); `withCapacity`/`length`/`get` borrow, `set`/`push`
+    and instantiated per use); `length`/`get` borrow the array, `set`/`push`
     mutate in place when unique and copy when shared (the `fai_record_update`
     model), growing by doubling. Everything else — `empty`/`init`/`map`/`filter`/
     `foldl`/`foldr`/`reverse`/`append`/`zip`/`sort`/… — is `std/collections/Array.fai` in Fai,
     collection-last like `List`. Unknown-size combinators (`filter`/`partition`/…)
     are single-pass `push`-builders (one predicate call per element, effect-correct).
+    `withCapacity` consumes its capacity integer, including a boxed value, and
+    clamps negative capacities to zero. Capacity and growth are checked against
+    the platform's complete-allocation layout limit before multiplication or
+    pool access; an impossible size aborts with a runtime error. Growth saturates
+    at that limit instead of overflowing its doubling step. String/byte buffers
+    likewise check their header, payload, and alignment arithmetic.
   - **Access is total via `Option`, with partial fast paths.** `get : Int -> Array
     'a -> Option 'a` and `set : Int -> 'a -> Array 'a -> Option (Array 'a)` are
     total; `unsafeGet`/`unsafeSet` return the bare value/array and **abort on

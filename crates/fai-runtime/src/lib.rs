@@ -101,6 +101,10 @@ pub const ARRAY_LEN_OFFSET: usize = HEADER_SIZE;
 /// `0..length` are ever live; the rest is spare capacity for in-place growth.
 pub const ARRAY_ELEMS_OFFSET: usize = HEADER_SIZE + 8;
 
+/// Largest array capacity whose complete aligned allocation fits Rust's layout
+/// and pointer-offset limits. Shared with generated array-allocation guards.
+pub const MAX_ARRAY_CAPACITY: usize = (MAX_ALLOCATION_SIZE - ARRAY_ELEMS_OFFSET) / 8;
+
 /// Byte offset of a closure's code pointer.
 pub const CLOSURE_CODE_OFFSET: usize = HEADER_SIZE;
 /// Byte offset of a closure's arity.
@@ -145,6 +149,17 @@ pub const FAI_UNIT: Value = 1;
 
 /// The alignment of every heap object (all fields are 64-bit).
 const ALIGN: usize = 8;
+
+/// Largest aligned allocation supported by `Layout` and pointer arithmetic.
+const MAX_ALLOCATION_SIZE: usize = (isize::MAX as usize) & !(ALIGN - 1);
+
+/// Computes an aligned buffer size without wrapping its header, payload, or
+/// alignment padding. No allocation is attempted until this succeeds.
+fn checked_buffer_size(header: usize, count: usize, element_size: usize) -> Option<usize> {
+    let bytes = header.checked_add(count.checked_mul(element_size)?)?;
+    let size = bytes.checked_add(ALIGN - 1)? & !(ALIGN - 1);
+    (HEADER_SIZE..=MAX_ALLOCATION_SIZE).contains(&size).then_some(size)
+}
 
 // ---------------------------------------------------------------------------
 // Heap header & descriptors.
@@ -1096,7 +1111,9 @@ unsafe fn system_dealloc(p: *mut u8, size: usize) {
 /// past the header are left uninitialized — every caller writes all of an object's
 /// fields. Increments the live counter.
 fn alloc_obj(size: usize, descriptor: *const Descriptor) -> *mut u8 {
-    debug_assert!(size >= HEADER_SIZE, "object smaller than its header");
+    if !(HEADER_SIZE..=MAX_ALLOCATION_SIZE).contains(&size) {
+        fai_allocation_size_panic();
+    }
     let p = match size_class(size) {
         Some(c) => {
             let recycled = pool_pop(c);
@@ -1157,6 +1174,13 @@ unsafe fn free_obj(p: *mut u8) {
 fn fai_panic(msg: &str) -> ! {
     eprintln!("fai runtime error: {msg}");
     std::process::abort()
+}
+
+/// Aborts before an invalid allocation size reaches a pool or system allocator.
+/// Also called by generated array-capacity guards. Never returns.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_allocation_size_panic() -> ! {
+    fai_panic("allocation size exceeds supported range")
 }
 
 // ---------------------------------------------------------------------------
@@ -1751,7 +1775,9 @@ unsafe fn array_cap(v: Value) -> usize {
 /// at least `length`.
 fn alloc_array(length: usize, cap: usize) -> *mut u8 {
     debug_assert!(cap >= length);
-    let p = alloc_obj(ARRAY_ELEMS_OFFSET + cap * 8, &FAI_ARRAY_DESC);
+    let size = checked_buffer_size(ARRAY_ELEMS_OFFSET, cap, 8)
+        .unwrap_or_else(|| fai_allocation_size_panic());
+    let p = alloc_obj(size, &FAI_ARRAY_DESC);
     // SAFETY: `p` has room for the length field and `cap` slots.
     unsafe { write_u64(p, ARRAY_LEN_OFFSET, length as u64) };
     p
@@ -1772,22 +1798,28 @@ unsafe fn stamp_float_array(p: *mut u8) {
 }
 
 /// The capacity to grow to so an array of capacity `cap` can hold `needed`
-/// elements: double from a small base until it fits.
-fn grow_cap(cap: usize, needed: usize) -> usize {
-    let mut c = if cap == 0 { 4 } else { cap };
+/// elements: double from a small base until it fits, saturating at the buffer's
+/// allocation limit. An impossible request fails before growth arithmetic.
+fn grow_cap(cap: usize, needed: usize, max: usize) -> usize {
+    if cap > max || needed > max {
+        fai_allocation_size_panic();
+    }
+    let mut c = if cap == 0 { 4.min(max) } else { cap };
     while c < needed {
-        c *= 2;
+        c = c.saturating_mul(2).min(max);
     }
     c
 }
 
 /// Builds an empty array with room for `cap` elements (`Array.withCapacity`).
 /// Capacity is a hint: pushes within it append in place, beyond it grow. Consumes
-/// the immediate `cap`.
+/// `cap`, including a boxed integer. Negative capacities are clamped to zero.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_array_with_capacity(cap: Value) -> Value {
-    let cap = unbox_int(cap).max(0) as usize;
-    from_obj(alloc_array(0, cap))
+    let count = unbox_int(cap).max(0);
+    fai_drop(cap);
+    let count = usize::try_from(count).unwrap_or_else(|_| fai_allocation_size_panic());
+    from_obj(alloc_array(0, count))
 }
 
 /// Allocates an `Array` buffer of exactly `size` bytes (header + length slot +
@@ -1801,7 +1833,13 @@ pub extern "C" fn fai_array_with_capacity(cap: Value) -> Value {
 /// as code generation derives it from the (clamped, non-negative) capacity.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_alloc_array(size: Value) -> Value {
-    from_obj(alloc_obj(size as usize, &FAI_ARRAY_DESC))
+    let size = usize::try_from(size).unwrap_or_else(|_| fai_allocation_size_panic());
+    if !(ARRAY_ELEMS_OFFSET..=MAX_ALLOCATION_SIZE).contains(&size)
+        || !size.is_multiple_of(SIZE_STEP)
+    {
+        fai_allocation_size_panic();
+    }
+    from_obj(alloc_obj(size, &FAI_ARRAY_DESC))
 }
 
 /// An array's length as an immediate `Int` (operand consumed).
@@ -1985,7 +2023,7 @@ pub extern "C" fn fai_array_push(arr: Value, value: Value) -> Value {
             }
             return arr;
         }
-        let q = alloc_array(len + 1, grow_cap(cap, len + 1));
+        let q = alloc_array(len + 1, grow_cap(cap, len + 1, MAX_ARRAY_CAPACITY));
         if is_float {
             stamp_float_array(q);
         }
@@ -2514,8 +2552,9 @@ pub extern "C" fn fai_is_valid_char_code(n: Value) -> Value {
 /// string carries a few bytes of slack that its length never reflects.
 fn alloc_string(len: usize, cap_bytes: usize) -> *mut u8 {
     debug_assert!(cap_bytes >= len);
-    let size = (STRING_BYTES_OFFSET + cap_bytes + ALIGN - 1) & !(ALIGN - 1);
-    let p = alloc_obj(size.max(STRING_BYTES_OFFSET), &FAI_STRING_DESC);
+    let size = checked_buffer_size(STRING_BYTES_OFFSET, cap_bytes, 1)
+        .unwrap_or_else(|| fai_allocation_size_panic());
+    let p = alloc_obj(size, &FAI_STRING_DESC);
     // SAFETY: `p` has room for the length field and `cap_bytes` content bytes.
     unsafe { write_u64(p, STRING_LEN_OFFSET, len as u64) };
     p
@@ -2606,7 +2645,7 @@ pub extern "C" fn fai_string_concat(a: Value, b: Value) -> Value {
 
         // Both operands' bytes, resolved uniformly (either may be a slice view).
         let (a_ptr, b_ptr) = (string_bytes(a).as_ptr(), string_bytes(b).as_ptr());
-        let need = la + lb;
+        let need = la.checked_add(lb).unwrap_or_else(|| fai_allocation_size_panic());
         // In place only when the left operand is an inline, uniquely-owned buffer
         // with spare capacity: a slice views a shared base and owns no extensible
         // buffer, so it can never be appended into.
@@ -2623,7 +2662,10 @@ pub extern "C" fn fai_string_concat(a: Value, b: Value) -> Value {
         let q = if inline_unique {
             // Unique inline but full: grow into a doubled buffer so further appends
             // amortize. Expected growth, not a uniqueness-loss copy — uncounted.
-            alloc_string(need, grow_cap(string_cap(a), need))
+            alloc_string(
+                need,
+                grow_cap(string_cap(a), need, MAX_ALLOCATION_SIZE - STRING_BYTES_OFFSET),
+            )
         } else {
             // Shared, or a slice (which never owns extensible capacity): fork a
             // fresh tight buffer. A uniqueness-loss copy (counted).
@@ -3074,8 +3116,9 @@ fn cons_list(elems: &[Value]) -> Value {
 /// Allocates a tight `Bytes` object from `bytes` (rc = 1).
 fn make_bytes(bytes: &[u8]) -> Value {
     let len = bytes.len();
-    let size = (STRING_BYTES_OFFSET + len + ALIGN - 1) & !(ALIGN - 1);
-    let p = alloc_obj(size.max(STRING_BYTES_OFFSET), &FAI_BYTES_DESC);
+    let size = checked_buffer_size(STRING_BYTES_OFFSET, len, 1)
+        .unwrap_or_else(|| fai_allocation_size_panic());
+    let p = alloc_obj(size, &FAI_BYTES_DESC);
     // SAFETY: `p` has room for the length field and `len` content bytes.
     unsafe {
         write_u64(p, STRING_LEN_OFFSET, len as u64);
