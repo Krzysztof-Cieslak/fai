@@ -403,6 +403,14 @@ as `let log = fun message -> body`: constructing it is pure, and calling its
 saturating arrow performs the body's effects. A parameterless local value binding
 is evaluated immediately.
 
+Private top-level values retain a separate **forcing effect**: reading one runs
+its initializer each time, and incurs that effect even when the value is a
+function or record. These effects propagate through recursive definition groups
+and into callers' arrows. Exported (`public`/`internal`) value initializers must
+be pure; expose effectful initialization through a `Unit -> … / { … }` function.
+A private custom `runtime` builder may have forcing effects, and the launcher
+starts the scheduler when those effects require it.
+
 `Offset` constructors validate before arithmetic: seconds stay within ±64800,
 hours within ±18, and `ofHoursMinutes` requires minutes within ±59 and matching
 signs for nonzero components. ISO parsing requires two unsigned ASCII digits per

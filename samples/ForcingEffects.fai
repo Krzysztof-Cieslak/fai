@@ -1,0 +1,15 @@
+module ForcingEffects
+
+// Each read runs this private initializer; its effect flows to the reader.
+let answer =
+  let ignored = stdConsole.writeLine "computing answer"
+  42
+
+public readAnswer : Unit -> Int / { Console }
+let readAnswer u = answer
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let first = readAnswer ()
+  let second = readAnswer ()
+  runtime.console.writeLine (Int.toString (first + second))

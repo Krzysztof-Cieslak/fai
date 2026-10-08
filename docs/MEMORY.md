@@ -2213,6 +2213,16 @@ Editor integration:
     latent-effect inference as `fun message -> …`: creation is pure, and the
     body's effect rides the saturating arrow. A parameterless local value binding
     still evaluates eagerly and contributes its effects to the enclosing body.
+  - **Forcing top-level values.** A private nullary definition keeps its
+    initializer's execution effect separately from the value type. Every read
+    incurs that effect (values are not memoized), including through nested data,
+    aliases, and captured closures. Recursive groups containing values solve a
+    monotone forcing-effect fixpoint before publishing diagnostics; ordinary
+    function groups keep the single inference pass. Exported value initializers
+    must be pure (`FAI5001` otherwise), preserving signature-only cross-file
+    inference; effectful exported work is an explicit Unit-taking function.
+    Private runtime builders retain initializer effects, including transitive
+    scheduler requirements, so the scheduler starts before their work executes.
   - **Inferred, coupled, required on public.** A body's latent effect is the
     union of what it applies; it lands on the function's saturating arrow (so
     higher-order functions are effect-polymorphic — `List.map : ('a -> 'b / 'e)

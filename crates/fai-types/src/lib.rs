@@ -23,6 +23,8 @@ mod contract_effect_tests;
 #[cfg(test)]
 mod edge_tests;
 #[cfg(test)]
+mod forcing_effect_tests;
+#[cfg(test)]
 mod local_function_effect_tests;
 #[cfg(test)]
 mod prop_tests;
@@ -281,9 +283,10 @@ pub const CODES: &[CodeInfo] = &[
         title: "effect disagrees with inferred effect",
         default_severity: Severity::Error,
         explanation: "A binding's declared effect row (the capabilities after `/`) does not match \
-                      the effect inferred from its body — it either performs a capability the \
-                      signature omits, or declares one it never uses. Fix the body or the \
-                      declared effect.",
+                       the effect inferred from its body — it either performs a capability the \
+                       signature omits, or declares one it never uses. Fix the body or the \
+                       declared effect. An exported value initializer must also be pure; expose \
+                       effectful initialization through a Unit-taking function instead.",
     },
     CodeInfo {
         code: FOREIGN_EFFECT_REQUIRED,

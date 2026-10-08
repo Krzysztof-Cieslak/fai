@@ -53,6 +53,10 @@ pub trait Env {
     fn def_scheme(&mut self, def: DefId) -> Option<Scheme>;
     /// The in-progress monomorphic solver type of a same-SCC definition.
     fn scc_type(&mut self, def: DefId) -> Option<SolveTy>;
+    /// The current forcing-effect estimate for a same-SCC value initializer.
+    fn scc_forcing(&mut self, _def: DefId) -> Option<crate::ty::EffectRow> {
+        None
+    }
     /// The scheme of a builtin/prelude name.
     fn builtin_scheme(&mut self, name: Symbol) -> Option<Scheme>;
     /// The scheme of a data constructor (`Some : 'a -> Option 'a`).
@@ -90,6 +94,8 @@ pub struct Walker<'a, E: Env> {
     cur_effect: SolveEffect,
     /// Optional execution-effect locations, excluding latent lambda/method bodies.
     effect_sites: Option<Vec<(fai_span::TextRange, SolveEffect)>>,
+    /// Intermediate forcing-effect rounds solve types without publishing errors.
+    quiet: bool,
 }
 
 impl<'a, E: Env> Walker<'a, E> {
@@ -115,11 +121,24 @@ impl<'a, E: Env> Walker<'a, E> {
             pat_types: FxHashMap::default(),
             cur_effect: SolveEffect::pure(),
             effect_sites: None,
+            quiet: false,
         }
     }
 }
 
 impl<E: Env> Walker<'_, E> {
+    /// Suppresses this walk's diagnostics while computing an effect fixpoint.
+    /// Dependency queries retain their own diagnostics and memoization.
+    pub(crate) fn suppress_diagnostics(&mut self, quiet: bool) {
+        self.quiet = quiet;
+    }
+
+    fn emit(&self, diagnostic: Diagnostic) {
+        if !self.quiet {
+            emit(self.db, diagnostic);
+        }
+    }
+
     /// The inferred type of every local bound so far in the current body, keyed
     /// by its [`LocalId`], in allocation order. Defaults still-free numeric
     /// variables to `Int` and reifies all locals against a *shared* renumbering,
@@ -154,7 +173,7 @@ impl<E: Env> Walker<'_, E> {
     }
 
     fn mismatch(&self, range: fai_span::TextRange, msg: impl Into<String>) {
-        emit(self.db, Diagnostic::error(TYPE_MISMATCH, msg, self.span(range)));
+        self.emit(Diagnostic::error(TYPE_MISMATCH, msg, self.span(range)));
     }
 
     fn unify_at(&mut self, range: fai_span::TextRange, a: &SolveTy, b: &SolveTy, what: &str) {
@@ -179,14 +198,11 @@ impl<E: Env> Walker<'_, E> {
             return;
         }
         if result == UnifyResult::Occurs {
-            emit(
-                self.db,
-                Diagnostic::error(
-                    OCCURS_CHECK,
-                    format!("infinite type while checking {what}"),
-                    self.span(range),
-                ),
-            );
+            self.emit(Diagnostic::error(
+                OCCURS_CHECK,
+                format!("infinite type while checking {what}"),
+                self.span(range),
+            ));
             return;
         }
         let a_re = self.cx.reify(a);
@@ -202,16 +218,13 @@ impl<E: Env> Walker<'_, E> {
             _ => None,
         };
         if let Some(name) = opaque {
-            emit(
-                self.db,
-                Diagnostic::error(
-                    OPAQUE_ACCESS,
-                    format!(
-                        "the type `{name}` is opaque; its fields are not accessible from this file"
-                    ),
-                    self.span(range),
+            self.emit(Diagnostic::error(
+                OPAQUE_ACCESS,
+                format!(
+                    "the type `{name}` is opaque; its fields are not accessible from this file"
                 ),
-            );
+                self.span(range),
+            ));
             return;
         }
         let a_ty = crate::ty::render(&a_re, &crate::ty::VarNames::new());
@@ -595,7 +608,7 @@ impl<E: Env> Walker<'_, E> {
                 Some(LocalBinding::Poly { vars, ty }) => self.instantiate_local(&vars, &ty),
                 None => SolveTy::Error,
             },
-            Some(Res::Def(def)) => self.instantiate_def(def),
+            Some(Res::Def(def)) => self.instantiate_def(def, span),
             Some(Res::Ctor(ctor)) => match self.env.ctor_scheme(ctor) {
                 Some(scheme) => self.cx.instantiate(&scheme),
                 None => SolveTy::Error,
@@ -619,7 +632,15 @@ impl<E: Env> Walker<'_, E> {
         }
     }
 
-    fn instantiate_def(&mut self, def: DefId) -> SolveTy {
+    fn instantiate_def(&mut self, def: DefId, span: fai_span::TextRange) -> SolveTy {
+        let forcing = self
+            .env
+            .scc_forcing(def)
+            .unwrap_or_else(|| crate::query::reference_forcing_effect(self.db, self.file, def));
+        if !forcing.is_pure() {
+            debug_assert_eq!(forcing.tail, crate::ty::EffEnd::Closed);
+            self.incur_effect(&SolveEffect { atoms: forcing.labels, tail: EffTail::Closed }, span);
+        }
         // Same-SCC reference: use the monomorphic in-progress type.
         if let Some(mono) = self.env.scc_type(def) {
             return mono;
@@ -639,7 +660,7 @@ impl<E: Env> Walker<'_, E> {
     ) -> SolveTy {
         // A qualified `Foo.bar` resolved to a Def/Ctor/Builtin in resolution.
         match self.resolved.get(expr) {
-            Some(Res::Def(def)) => return self.instantiate_def(def),
+            Some(Res::Def(def)) => return self.instantiate_def(def, span),
             Some(Res::Ctor(ctor)) => {
                 return match self.env.ctor_scheme(ctor) {
                     Some(scheme) => self.cx.instantiate(&scheme),
@@ -700,14 +721,11 @@ impl<E: Env> Walker<'_, E> {
         span: fai_span::TextRange,
     ) -> SolveTy {
         let Some(scheme) = build_interface_method_scheme(self.db, iref, method) else {
-            emit(
-                self.db,
-                Diagnostic::error(
-                    UNKNOWN_METHOD,
-                    format!("interface `{}` has no method `{method}`", iref.name),
-                    self.span(span),
-                ),
-            );
+            self.emit(Diagnostic::error(
+                UNKNOWN_METHOD,
+                format!("interface `{}` has no method `{method}`", iref.name),
+                self.span(span),
+            ));
             return SolveTy::Error;
         };
         let (method_ty, fresh_types, fresh_effects) = self.cx.instantiate_method(&scheme);
@@ -750,14 +768,11 @@ impl<E: Env> Walker<'_, E> {
         span: fai_span::TextRange,
     ) -> SolveTy {
         let Some(iref) = resolve_interface(self.db, self.file, name) else {
-            emit(
-                self.db,
-                Diagnostic::error(
-                    NOT_AN_INTERFACE,
-                    format!("`{name}` is not an interface"),
-                    self.span(span),
-                ),
-            );
+            self.emit(Diagnostic::error(
+                NOT_AN_INTERFACE,
+                format!("`{name}` is not an interface"),
+                self.span(span),
+            ));
             // Still type the method bodies so the rest of the body is coherent.
             for m in methods {
                 for &p in &m.params {
@@ -772,14 +787,11 @@ impl<E: Env> Walker<'_, E> {
         // operators dispatch to primitives, so a hand-written instance would be
         // dead. Reject it (but keep typing the bodies for coherence).
         if self.is_sealed_interface(iref) {
-            emit(
-                self.db,
-                Diagnostic::error(
-                    SEALED_INTERFACE,
-                    format!("`{name}` is a sealed built-in interface and cannot be instantiated"),
-                    self.span(span),
-                ),
-            );
+            self.emit(Diagnostic::error(
+                SEALED_INTERFACE,
+                format!("`{name}` is a sealed built-in interface and cannot be instantiated"),
+                self.span(span),
+            ));
         }
 
         // Allocate a shared instance per interface parameter, by kind: a type
@@ -840,43 +852,34 @@ impl<E: Env> Walker<'_, E> {
                     {
                         let used =
                             crate::ty::render_effect(&self.cx.reify_effect_standalone(&method_eff));
-                        emit(
-                            self.db,
-                            Diagnostic::error(
-                                crate::EFFECT_MISMATCH,
-                                format!(
-                                    "the body of method `{}` performs the effect `{used}`, which \
+                        self.emit(Diagnostic::error(
+                            crate::EFFECT_MISMATCH,
+                            format!(
+                                "the body of method `{}` performs the effect `{used}`, which \
                                      `{name}` does not declare",
-                                    m.name
-                                ),
-                                self.span(m.span),
+                                m.name
                             ),
-                        );
+                            self.span(m.span),
+                        ));
                     }
                     implemented.push(m.name);
                 }
-                None => emit(
-                    self.db,
-                    Diagnostic::error(
-                        UNKNOWN_METHOD,
-                        format!("interface `{name}` has no method `{}`", m.name),
-                        self.span(m.span),
-                    ),
-                ),
+                None => self.emit(Diagnostic::error(
+                    UNKNOWN_METHOD,
+                    format!("interface `{name}` has no method `{}`", m.name),
+                    self.span(m.span),
+                )),
             }
         }
 
         let missing: Vec<&Symbol> = declared.iter().filter(|d| !implemented.contains(d)).collect();
         if !missing.is_empty() {
             let names = missing.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("`, `");
-            emit(
-                self.db,
-                Diagnostic::error(
-                    INSTANCE_METHOD_SET,
-                    format!("instance of `{name}` is missing method(s): `{names}`"),
-                    self.span(span),
-                ),
-            );
+            self.emit(Diagnostic::error(
+                INSTANCE_METHOD_SET,
+                format!("instance of `{name}` is missing method(s): `{names}`"),
+                self.span(span),
+            ));
         }
 
         // The effect parameters keep their open (subsumption) tails: when the
@@ -935,14 +938,11 @@ impl<E: Env> Walker<'_, E> {
         let mut seen: Vec<Symbol> = Vec::new();
         for (name, _) in fields {
             if seen.contains(&name) {
-                emit(
-                    self.db,
-                    Diagnostic::error(
-                        crate::DUPLICATE_FIELD,
-                        format!("record field `{name}` is given more than once"),
-                        self.span(whole),
-                    ),
-                );
+                self.emit(Diagnostic::error(
+                    crate::DUPLICATE_FIELD,
+                    format!("record field `{name}` is given more than once"),
+                    self.span(whole),
+                ));
             } else {
                 seen.push(name);
             }
@@ -1072,28 +1072,22 @@ impl<E: Env> Walker<'_, E> {
                     // coherent, but don't impose the Eq constraint (which would
                     // double-report as a mismatch).
                     self.unify_at(span, &lt, &rt, "the operands of `=`");
-                    emit(
-                        self.db,
-                        Diagnostic::error(
-                            EQUALITY_ON_FUNCTION,
-                            "equality is not defined on function types",
-                            self.span(span),
-                        ),
-                    );
+                    self.emit(Diagnostic::error(
+                        EQUALITY_ON_FUNCTION,
+                        "equality is not defined on function types",
+                        self.span(span),
+                    ));
                 } else {
                     let eq = self.cx.fresh_constrained(Some(Constraint::Eq));
                     self.unify_at(span, &lt, &eq, "an equality operand");
                     self.unify_at(span, &rt, &eq, "an equality operand");
                     // A var that only later resolves to a function is caught here.
                     if matches!(self.cx.resolve_shallow(&eq), SolveTy::Arrow(..)) {
-                        emit(
-                            self.db,
-                            Diagnostic::error(
-                                EQUALITY_ON_FUNCTION,
-                                "equality is not defined on function types",
-                                self.span(span),
-                            ),
-                        );
+                        self.emit(Diagnostic::error(
+                            EQUALITY_ON_FUNCTION,
+                            "equality is not defined on function types",
+                            self.span(span),
+                        ));
                     }
                 }
                 SolveTy::bool()
@@ -1256,14 +1250,11 @@ impl<E: Env> Walker<'_, E> {
         if arity_ok {
             self.unify_at(span, expected, &cur, "a constructor pattern");
         } else {
-            emit(
-                self.db,
-                Diagnostic::error(
-                    crate::CONSTRUCTOR_ARITY,
-                    "constructor pattern has the wrong number of arguments",
-                    self.span(span),
-                ),
-            );
+            self.emit(Diagnostic::error(
+                crate::CONSTRUCTOR_ARITY,
+                "constructor pattern has the wrong number of arguments",
+                self.span(span),
+            ));
         }
     }
 
