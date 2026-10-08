@@ -4088,6 +4088,13 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     outgoing ciphertext before retrying the remainder. HTTP writes use 16 KiB
     slices and flush between them, preventing both a large-write `WriteZero`
     failure and quadratic copying of a whole unaccepted suffix.
+  - **URL reference resolution.** Scheme and authority presence are independent:
+    network-path references inherit the base scheme, relative paths merge with its
+    directory, and empty paths inherit its query unless a replacement is present.
+    `resolve` accepts an empty reference while standalone `parse` rejects an empty
+    URL. Literal dot segments normalize without decoding percent escapes or
+    collapsing repeated slashes. Authorities reject empty/malformed hosts and
+    invalid decimal ports; bracketed host spelling is preserved for rendering.
   - **HTTP (pure Fai).** `std/networking/Http.fai` is an HTTP/1.1 client and server over `Net`,
     with an opaque validated `Url` (`std/networking/Url.fai`) and a case-insensitive, order- and
     duplicate-preserving `Headers` (`std/networking/Headers.fai`). `Url` is an opaque **union**

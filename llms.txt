@@ -1471,6 +1471,10 @@ Deferred: IANA time zones / `ZonedDateTime` with DST rules (this is offset-only)
   Decoding preserves literal Unicode, malformed percent escapes, and `+`. If
   decoded bytes would be invalid UTF-8, the original component is returned
   unchanged instead of discarding text.
+  `resolve` supports empty and query/fragment-only references, `//host/path`, and
+  literal dot-segment normalization; escaped dots/slashes stay encoded. Empty
+  paths inherit the base query unless explicitly replaced. `parse` accepts
+  nonempty URI references, with nonempty authority hosts and ports in 0..65535.
 - **`Headers`** (opaque) — case-insensitive, order- and duplicate-preserving:
   `empty`/`fromList`/`toList`/`get`/`getAll`/`add`/`set`/`remove`/`contains`.
 - **`Tls`** capability — a sans-I/O engine (rustls/ring): `client`/`clientWithRoots`/

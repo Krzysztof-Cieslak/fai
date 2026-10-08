@@ -19,6 +19,10 @@ static SERIAL: Mutex<()> = Mutex::new(());
 /// Compiles and JIT-runs `src`, returning its captured stdout and exit code.
 fn run(src: &str) -> (String, i32) {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    run_program(src)
+}
+
+fn run_program(src: &str) -> (String, i32) {
     let mut db = fai_db::FaiDatabase::new();
     fai_types::std_lib::load_std(&mut db);
     let id = db.add_source("Prog.fai".into(), src.to_owned());
@@ -122,6 +126,92 @@ let main runtime = runtime.console.writeLine (Http.withClient runtime (two runti
     assert_eq!(code, 0, "{out}");
     server.join().unwrap();
     assert_eq!(out, "one|two\n");
+}
+
+fn redirect_connection(listener: &std::net::TcpListener) -> std::net::TcpStream {
+    listener.set_nonblocking(true).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        match listener.accept() {
+            Ok((connection, _)) => return connection,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(std::time::Instant::now() < deadline, "redirect connection did not arrive");
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            Err(error) => panic!("redirect accept: {error}"),
+        }
+    }
+}
+
+fn redirect_request(connection: &mut std::net::TcpStream) -> String {
+    use std::io::Read;
+    connection.set_read_timeout(Some(std::time::Duration::from_secs(30))).unwrap();
+    let mut request = Vec::new();
+    while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+        let mut bytes = [0; 1024];
+        let count = connection.read(&mut bytes).unwrap();
+        assert!(count > 0, "redirect peer closed before sending its request");
+        request.extend_from_slice(&bytes[..count]);
+    }
+    String::from_utf8(request).unwrap()
+}
+
+#[track_caller]
+fn relative_redirect(reference: &str, target: &'static str, cross_origin: bool) {
+    use std::io::Write;
+
+    let _guard = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let first = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = first.local_addr().unwrap().port();
+    let second = cross_origin.then(|| std::net::TcpListener::bind("127.0.0.1:0").unwrap());
+    let next_port = second.as_ref().map_or(port, |listener| listener.local_addr().unwrap().port());
+    let reference = reference.replace("{port}", &next_port.to_string());
+    let peer = std::thread::spawn(move || {
+        let mut initial = redirect_connection(&first);
+        let request = redirect_request(&mut initial);
+        assert!(request.to_ascii_lowercase().contains("authorization: bearer secret"));
+        initial.write_all(format!("HTTP/1.1 302 Found\r\nLocation: {reference}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).unwrap();
+        drop(initial);
+        let mut redirected = redirect_connection(second.as_ref().unwrap_or(&first));
+        let request = redirect_request(&mut redirected);
+        assert_eq!(request.lines().next().unwrap(), format!("GET {target} HTTP/1.1"));
+        assert_eq!(request.to_ascii_lowercase().contains("authorization:"), !cross_origin);
+        redirected
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+            .unwrap();
+    });
+    let source = format!(
+        r#"module Prog
+public main : Runtime -> Unit / {{ Console, Net, Tls }}
+let main r =
+  match Url.parse "http://127.0.0.1:{port}/dir/page?q=1" with
+  | Err e -> r.console.writeLine e
+  | Ok url ->
+    let request = {{ body = Http.emptyBody, headers = Headers.set "Authorization" "Bearer secret" Headers.empty, method = Http.GET, url = url }}
+    match Http.request r request with
+    | Err e -> r.console.writeLine e
+    | Ok response -> r.console.writeLine (Result.withDefault "body error" (Http.bodyText response.body))
+"#
+    );
+    let (output, code) = run_program(&source);
+    peer.join().unwrap();
+    assert_eq!(code, 0, "{output}");
+    assert_eq!(output, "ok\n");
+}
+
+#[test]
+fn network_path_redirects_change_origin_and_strip_authorization() {
+    relative_redirect("//127.0.0.1:{port}/dir/../next", "/next", true);
+}
+
+#[test]
+fn fragment_only_redirects_preserve_the_query() {
+    relative_redirect("#part", "/dir/page?q=1", false);
+}
+
+#[test]
+fn query_only_redirects_keep_the_path() {
+    relative_redirect("?next=2", "/dir/page?next=2", false);
 }
 
 #[test]

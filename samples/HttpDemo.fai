@@ -44,3 +44,8 @@ let main runtime =
   | Ok listener ->
     let port = runtime.net.localPort listener
     runtime.concurrency.scope (fun nursery -> serveThenFetch runtime listener port nursery)
+// Relative references follow URL path rules, preserving a query on fragment-only links.
+example: Result.map (fun base ->
+  Result.map Url.toString (Url.resolve base "../next")) (Url.parse "https://a.test/dir/page?q=1") = Ok (Ok "https://a.test/next")
+example: Result.map (fun base ->
+  Result.map Url.toString (Url.resolve base "#part")) (Url.parse "https://a.test/dir/page?q=1") = Ok (Ok "https://a.test/dir/page?q=1#part")
