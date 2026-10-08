@@ -155,8 +155,8 @@ fn std_modules_contracts_pass() {
     let outcome = test(&db, &files, None, TestConfig::default());
     assert!(
         outcome.ok,
-        "std contracts should pass; diagnostics: {:?}",
-        outcome.diagnostics.iter().map(|d| (d.code.as_str(), &d.message)).collect::<Vec<_>>()
+        "std contracts should pass:\n{}",
+        outcome.render_human(&fai_db::DbSpanResolver::new(&db), false)
     );
     assert!(outcome.total > 0);
     assert_eq!(outcome.passed, outcome.total, "every std contract passes");

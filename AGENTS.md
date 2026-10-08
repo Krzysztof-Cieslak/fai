@@ -438,6 +438,11 @@ and repeated-field consistency. Single-letter numeric fields accept one or two
 digits; padded fields and fractional seconds require the specified width.
 Unsupported widths and unterminated literals return `None`.
 
+`Url.resolve` accepts empty, query/fragment-only, network-path, and relative
+references, normalizing literal dot segments while preserving escaped separators.
+An empty path inherits the base query unless replaced. URL authorities require
+nonempty hosts, balanced bracket syntax, and unsigned decimal ports in 0..65535.
+
 ## 5. Repository layout
 
 A single Cargo workspace. Each crate owns one compiler phase or tool.

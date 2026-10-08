@@ -1,11 +1,11 @@
 module Url
 
-// An opaque, validated URL value (absolute or origin-form), in the style of the
+// An opaque URL/reference value (absolute, network-path, or relative), in the style of the
 // date & time value types. Parse one with `parse` and read its parts with the
 // accessors; render it with `toString`. The components cover the common subset:
 // scheme, userinfo, host (including bracketed IPv6 literals), port, path, raw
-// query, and fragment. An absolute URL has `Some` scheme and host; an origin-form
-// request target (what a server receives) has `None` scheme/host and just a path.
+// query, and fragment. Scheme and authority are independent: a network-path
+// reference has a host but no scheme, while an origin-form target has neither.
 //
 // The query is kept raw (faithful to the wire); `queryPairs` decodes it into
 // key/value pairs on demand, and `encodeComponent`/`decodeComponent` apply
@@ -49,74 +49,136 @@ let splitFirst sep s =
   | first :: rest -> Some (first, String.join sep rest)
 
 // Parse `host[:port]` (or `[ipv6][:port]`) into a host and optional port.
-parseHostPort : String -> (Option String * Option Int)
+parseHostPort : String -> Result (Option String * Option Int) String
 let parseHostPort hp =
   if String.take 1 hp = "[" then
     parseBracketHost hp
   else
     match splitFirst ":" hp with
-    | None -> (someNonEmpty hp, None)
-    | Some (h, p) -> (someNonEmpty h, Int.fromString p)
+    | None -> if validHost hp then Ok (Some hp, None) else Err "invalid URL host"
+    | Some (h, p) ->
+      if validHost h then
+        Result.map (fun port -> (Some h, Some port)) (parsePort p)
+      else
+        Err "invalid URL host"
 
 // Parse a bracketed IPv6 authority `[....](:port)?`.
-parseBracketHost : String -> (Option String * Option Int)
+parseBracketHost : String -> Result (Option String * Option Int) String
 let parseBracketHost hp =
   match splitFirst "]" hp with
-  | None -> (someNonEmpty hp, None)
+  | None -> Err "unterminated bracketed URL host"
   | Some (inside, after) ->
     let host = inside ++ "]"
-    let port = if String.take 1 after = ":" then Int.fromString (String.drop 1 after) else None
-    (Some host, port)
+    if not (validHost (String.drop 1 inside)) then
+      Err "invalid bracketed URL host"
+    else
+      let port =
+        if after = "" then
+          Ok None
+        else if String.take 1 after = ":" then
+          Result.map (fun value -> Some value) (parsePort (String.drop 1 after))
+        else
+          Err "invalid text after bracketed URL host"
+      Result.map (fun port -> (Some host, port)) port
+
+validAuthorityBytes : Bytes -> Int -> Bool
+let validAuthorityBytes bytes i =
+  if i >= Bytes.length bytes then
+    true
+  else
+    let byte = Bytes.unsafeGet i bytes
+    byte > 32 && byte <> 127 && byte <> 92 && validAuthorityBytes bytes (i + 1)
+
+validHost : String -> Bool
+let validHost host =
+  host <> "" && not (String.contains host "[") && not (String.contains host "]") && not (String.contains host "@") && validAuthorityBytes (Bytes.fromString host) 0
+
+portFrom : Bytes -> Int -> Int -> Result Int String
+let portFrom bytes i value =
+  if i >= Bytes.length bytes then
+    Ok value
+  else
+    let digit = Bytes.unsafeGet i bytes - 48
+    if digit < 0 || digit > 9 || value > (65535 - digit) / 10 then
+      Err "invalid URL port"
+    else
+      portFrom bytes (i + 1) (value * 10 + digit)
+
+parsePort : String -> Result Int String
+let parsePort text =
+  if text = "" then Err "empty URL port" else portFrom (Bytes.fromString text) 0 0
 
 // `Some s` unless `s` is empty.
 someNonEmpty : String -> Option String
 let someNonEmpty s = if s = "" then None else Some s
 
 // Parse an authority `[userinfo@]host[:port]` into its parts.
-parseAuthority : String -> (Option String * Option String * Option Int)
+parseAuthority : String -> Result (Option String * Option String * Option Int) String
 let parseAuthority authority =
   match splitFirst "@" authority with
   | None ->
     match parseHostPort authority with
-    | (host, port) -> (None, host, port)
+    | Err e -> Err e
+    | Ok (host, port) -> Ok (None, host, port)
   | Some (ui, hostport) ->
-    match parseHostPort hostport with
-    | (host, port) -> (someNonEmpty ui, host, port)
+    if not (validAuthorityBytes (Bytes.fromString ui) 0) then
+      Err "invalid URL userinfo"
+    else
+      match parseHostPort hostport with
+      | Err e -> Err e
+      | Ok (host, port) -> Ok (someNonEmpty ui, host, port)
 
-// Parse the scheme-relative remainder `authority[/path]` of an absolute URL.
-parseAfterScheme : String -> Url
-let parseAfterScheme afterScheme =
-  match splitFirst "/" afterScheme with
-  | None ->
-    match parseAuthority afterScheme with
-    | (ui, host, port) -> MkUrl { emptyFields with
-      host = host,
-      path = "/",
-      port = port,
-      userinfo = ui
-    }
-  | Some (authority, rest) ->
-    match parseAuthority authority with
-    | (ui, host, port) -> MkUrl { emptyFields with
-      host = host,
-      path = "/" ++ rest,
-      port = port,
-      userinfo = ui
-    }
+// Parse `authority[/path]` after an explicit `//` marker.
+parseAuthorityPath : String -> Result Url String
+let parseAuthorityPath remainder =
+  let (authority, path) =
+    match splitFirst "/" remainder with
+    | None -> (remainder, "/")
+    | Some (authority, rest) -> (authority, "/" ++ rest)
+  match parseAuthority authority with
+  | Err e -> Err e
+  | Ok (ui, host, port) ->
+    Ok (MkUrl { emptyFields with host = host, path = path, port = port, userinfo = ui })
 
-/// Parse a URL string. Accepts an absolute URL (`scheme://host[:port]/path?query`,
-/// the scheme lower-cased) and an origin-form target (`/path?query`); a bare empty
-/// string is an error.
+/// Parse a nonempty URL or URI reference: an absolute scheme, a `//host/path`
+/// network-path reference, or a relative/origin-form path. Schemes are lower-cased;
+/// authorities require a nonempty host and decimal ports in 0..65535.
 public parse : String -> Result Url String
-let parse input =
-  if input = "" then
-    Err "empty URL"
-  else
-    match splitTrailing (splitFirst "#" input) input with
-    | (beforeFrag, fragment) ->
-      match splitTrailing (splitFirst "?" beforeFrag) beforeFrag with
-      | (beforeQuery, query) -> Ok (assemble beforeQuery query fragment)
+let parse input = if input = "" then Err "empty URL" else parseReference input
 example: Result.map path (parse "https://example.com/p") = Ok "/p"
+
+// Unlike a standalone URL, an empty reference is meaningful during resolution.
+parseReference : String -> Result Url String
+let parseReference input =
+  match splitTrailing (splitFirst "#" input) input with
+  | (beforeFrag, fragment) ->
+    match splitTrailing (splitFirst "?" beforeFrag) beforeFrag with
+    | (beforeQuery, query) -> assemble beforeQuery query fragment
+
+isAlphaCode : Int -> Bool
+let isAlphaCode code = (code >= 65 && code <= 90) || (code >= 97 && code <= 122)
+
+schemeTail : Bytes -> Int -> Bool
+let schemeTail bytes i =
+  if i >= Bytes.length bytes then
+    true
+  else
+    let code = Bytes.unsafeGet i bytes
+    (isAlnumCode code || code = 43 || code = 45 || code = 46) && schemeTail bytes (i + 1)
+
+splitScheme : String -> Result (Option String * String) String
+let splitScheme text =
+  match splitFirst ":" text with
+  | None -> Ok (None, text)
+  | Some (prefix, rest) ->
+    if String.contains prefix "/" then
+      Ok (None, text)
+    else
+      let bytes = Bytes.fromString prefix
+      if Bytes.length bytes > 0 && isAlphaCode (Bytes.unsafeGet 0 bytes) && schemeTail bytes 1 then
+        Ok (Some (String.toLower prefix), rest)
+      else
+        Err "invalid URL scheme"
 
 // Apply a `splitFirst` result as `(head, Some tail)`, or `(whole, None)` when the
 // separator was absent.
@@ -128,13 +190,24 @@ let splitTrailing split whole =
 
 // Assemble the scheme/authority/path part with an already-extracted query and
 // fragment.
-assemble : String -> Option String -> Option String -> Url
+assemble : String -> Option String -> Option String -> Result Url String
 let assemble rest query fragment =
-  match splitFirst "://" rest with
-  | Some (scheme, afterScheme) ->
-    let base = fields (parseAfterScheme afterScheme)
-    MkUrl { base with fragment = fragment, query = query, scheme = Some (String.toLower scheme) }
-  | None -> MkUrl { emptyFields with fragment = fragment, path = rest, query = query }
+  match splitScheme rest with
+  | Err e -> Err e
+  | Ok (scheme, path) ->
+    if String.take 2 path = "//" then
+      match parseAuthorityPath (String.drop 2 path) with
+      | Err e -> Err e
+      | Ok url ->
+        let base = fields url
+        Ok (MkUrl { base with fragment = fragment, query = query, scheme = scheme })
+    else
+      Ok (MkUrl { emptyFields with
+        fragment = fragment,
+        path = path,
+        query = query,
+        scheme = scheme
+      })
 
 /// The scheme (lower-cased), e.g. `Some "https"`; `None` for an origin-form target.
 public scheme : Url -> Option String
@@ -222,43 +295,106 @@ let toString url =
   renderAuthority r ++ r.path ++ q ++ f
 example: toString (orEmpty (parse "https://a.test:8/p?x=1#h")) = "https://a.test:8/p?x=1#h"
 
-// Render the `scheme://[userinfo@]host[:port]` prefix (empty for origin-form).
+// Render independent scheme/authority prefixes (both absent for origin-form).
 renderAuthority : { fragment : Option String, host : Option String, path : String, port : Option Int, query : Option String, scheme : Option String, userinfo : Option String } -> String
 let renderAuthority r =
-  match r.scheme with
-  | None -> ""
-  | Some s ->
-    let ui =
-      match r.userinfo with
-      | Some u -> u ++ "@"
-      | None -> ""
-    let h =
-      match r.host with
-      | Some name -> name
-      | None -> ""
-    let p =
-      match r.port with
-      | Some n -> ":" ++ Int.toString n
-      | None -> ""
-    s ++ "://" ++ ui ++ h ++ p
+  let scheme =
+    match r.scheme with
+    | None -> ""
+    | Some s -> s ++ ":"
+  let authority =
+    match r.host with
+    | None -> ""
+    | Some host ->
+      let ui =
+        match r.userinfo with
+        | Some u -> u ++ "@"
+        | None -> ""
+      let port =
+        match r.port with
+        | Some n -> ":" ++ Int.toString n
+        | None -> ""
+      "//" ++ ui ++ host ++ port
+  scheme ++ authority
 
 /// Resolve a (possibly relative) reference against a base URL — for following a
-/// redirect `Location`. An absolute reference is used as-is; a network-path
-/// (`//host/…`) inherits the base scheme; an absolute-path or relative reference
-/// inherits the base scheme and authority.
+/// redirect `Location`. A network-path (`//host/…`) inherits the base scheme;
+/// an absolute-path or relative reference inherits its authority too. Literal
+/// dot segments are removed. An empty path inherits the base query unless a new
+/// query is supplied; an empty reference is valid here (but not in `parse`).
 public resolve : Url -> String -> Result Url String
 let resolve base ref =
-  match parse ref with
+  match parseReference ref with
   | Err e -> Err e
   | Ok r ->
     let rf = fields r
     if isSome rf.scheme then
-      Ok r
+      Ok (MkUrl { rf with path = removeDotSegments rf.path })
     else if isSome rf.host then
-      Ok (MkUrl { rf with scheme = (fields base).scheme })
+      Ok (MkUrl { rf with path = removeDotSegments rf.path, scheme = (fields base).scheme })
     else
       Ok (resolveRelative (fields base) rf)
 example: Result.map host (resolve (orEmpty (parse "https://a.test/x/")) "/y") = Ok (Some "a.test")
+
+// Reference-resolution examples use the base from the URI resolution algorithm.
+resolved : String -> Result String String
+let resolved reference =
+  Result.map toString (resolve (orEmpty (parse "http://a/b/c/d;p?q")) reference)
+example: resolved "g:h" = Ok "g:h"
+example: resolved "g" = Ok "http://a/b/c/g"
+example: resolved "./g" = Ok "http://a/b/c/g"
+example: resolved "g/" = Ok "http://a/b/c/g/"
+example: resolved "/g" = Ok "http://a/g"
+example: resolved "//g" = Ok "http://g/"
+example: resolved "?y" = Ok "http://a/b/c/d;p?y"
+example: resolved "g?y" = Ok "http://a/b/c/g?y"
+example: resolved "#s" = Ok "http://a/b/c/d;p?q#s"
+example: resolved "g#s" = Ok "http://a/b/c/g#s"
+example: resolved "g?y#s" = Ok "http://a/b/c/g?y#s"
+example: resolved ";x" = Ok "http://a/b/c/;x"
+example: resolved "g;x" = Ok "http://a/b/c/g;x"
+example: resolved "g;x?y#s" = Ok "http://a/b/c/g;x?y#s"
+example: resolved "" = Ok "http://a/b/c/d;p?q"
+example: resolved "." = Ok "http://a/b/c/"
+example: resolved "./" = Ok "http://a/b/c/"
+example: resolved ".." = Ok "http://a/b/"
+example: resolved "../" = Ok "http://a/b/"
+example: resolved "../g" = Ok "http://a/b/g"
+example: resolved "../.." = Ok "http://a/"
+example: resolved "../../" = Ok "http://a/"
+example: resolved "../../g" = Ok "http://a/g"
+example: resolved "../../../g" = Ok "http://a/g"
+example: resolved "../../../../g" = Ok "http://a/g"
+example: resolved "/./g" = Ok "http://a/g"
+example: resolved "/../g" = Ok "http://a/g"
+example: resolved "g." = Ok "http://a/b/c/g."
+example: resolved ".g" = Ok "http://a/b/c/.g"
+example: resolved "g.." = Ok "http://a/b/c/g.."
+example: resolved "..g" = Ok "http://a/b/c/..g"
+example: resolved "./../g" = Ok "http://a/b/g"
+example: resolved "./g/." = Ok "http://a/b/c/g/"
+example: resolved "g/./h" = Ok "http://a/b/c/g/h"
+example: resolved "g/../h" = Ok "http://a/b/c/h"
+example: resolved "g;x=1/./y" = Ok "http://a/b/c/g;x=1/y"
+example: resolved "g;x=1/../y" = Ok "http://a/b/c/y"
+example: resolved "g?y/./x" = Ok "http://a/b/c/g?y/./x"
+example: resolved "g#s/../x" = Ok "http://a/b/c/g#s/../x"
+example: resolved "http:g" = Ok "http:g"
+example: resolved "%2E%2E/g" = Ok "http://a/b/c/%2E%2E/g"
+example: resolved "g%2Fh" = Ok "http://a/b/c/g%2Fh"
+example: resolved "/g//h/../" = Ok "http://a/g//"
+example: resolved "//b.test:8080/x" = Ok "http://b.test:8080/x"
+example: resolved "//[::1]:443/x" = Ok "http://[::1]:443/x"
+example: Result.map toString (parse "//b.test/x") = Ok "//b.test/x"
+example: Result.map toString (resolve (orEmpty (parse "https://a.test/x?q#old")) "") = Ok "https://a.test/x?q"
+example: Result.isErr (parse "http://a.test:65536/")
+example: Result.isErr (parse "http://a.test:-1/")
+example: Result.isErr (parse "http://a.test:bad/")
+example: Result.isErr (parse "http://a.test:/")
+example: Result.isErr (parse "http://[::1/")
+example: Result.isErr (parse "http://[::1]extra/")
+example: Result.isErr (parse "http:///x")
+example: Result.map effectivePort (parse "http://a.test:00080/") = Ok (Some 80)
 
 // Resolve a reference record `rf` with no authority against the base's scheme and
 // authority, merging the path.
@@ -266,15 +402,44 @@ resolveRelative : { fragment : Option String, host : Option String, path : Strin
 let resolveRelative base rf =
   let p =
     if String.take 1 rf.path = "/" then
-      rf.path
-    else if rf.path = "" then base.path else mergePath base.path rf.path
+      removeDotSegments rf.path
+    else if rf.path = "" then
+      base.path
+    else if isSome base.host && base.path = "" then
+      removeDotSegments ("/" ++ rf.path)
+    else
+      removeDotSegments (mergePath base.path rf.path)
+  let query = if rf.path = "" && not (isSome rf.query) then base.query else rf.query
   MkUrl { rf with
     host = base.host,
     path = p,
     port = base.port,
+    query = query,
     scheme = base.scheme,
     userinfo = base.userinfo
   }
+
+// Normalize literal path segments without decoding escaped dots or separators.
+removeDotSegments : String -> String
+let removeDotSegments path = normalizeSegments (String.split "/" path) []
+
+popSegment : List String -> List String
+let popSegment stack =
+  match stack with
+  | [] -> []
+  | one :: [] -> [""]
+  | one :: rest -> rest
+
+normalizeSegments : List String -> List String -> String
+let normalizeSegments segments stack =
+  match segments with
+  | [] -> String.join "/" (List.reverse stack)
+  | "." :: [] -> String.join "/" (List.reverse ("" :: stack))
+  | "." :: rest -> normalizeSegments rest stack
+  | ".." :: [] -> String.join "/" (List.reverse ("" :: popSegment stack))
+  | ".." :: rest -> normalizeSegments rest (popSegment stack)
+  | segment :: rest -> normalizeSegments rest (segment :: stack)
+forall path: removeDotSegments (removeDotSegments path) = removeDotSegments path
 
 // Merge a relative path against the base path's directory (everything up to and
 // including the last `/`).
