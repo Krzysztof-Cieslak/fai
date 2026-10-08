@@ -813,6 +813,11 @@ the F# rule; keep it covered by tests.
 Unicode escapes in strings and characters must name scalar values in
 U+0000–U+10FFFF, excluding U+D800–U+DFFF; invalid escapes produce `FAI1006`.
 
+Integer literal magnitudes, in every radix, must fit an unsigned 64-bit word
+(`0..18446744073709551615`); larger magnitudes produce `FAI1005` during lexing.
+The word is interpreted as a signed `Int`, and unary minus wraps like subtraction.
+Signed patterns use the same decoder, including `-0x1`, `-0o1`, and `-0b1`.
+
 **Reserved keywords include** `module`, `let`, `type`, `interface`, `match`,
 `with`, `if`, `then`, `else`, `fun`, `public`, `internal` (the same-origin
 visibility marker), `opaque` (the opaque-type marker, only before a `public`/

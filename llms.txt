@@ -166,7 +166,11 @@ let yes = true           // Bool   (true / false)
 let nothing = ()         // Unit   (the empty tuple; the "no useful value" value)
 ```
 
-- **Int** defaults for unconstrained numeric literals. 64-bit.
+- **Int** defaults for unconstrained numeric literals. Decimal, `0x` hexadecimal,
+  `0o` octal, and `0b` binary magnitudes must fit an unsigned 64-bit word; `_`
+  separators are allowed. Larger magnitudes are `FAI1005`. The word is interpreted
+  as signed (`0xffffffffffffffff = -1`), and unary minus wraps like subtraction,
+  including in negative-radix patterns such as `-0x1`.
 - **Float** literals must contain a decimal point (`3.0`, not `3`). `+ - * /` work
   on `Float` too, but you cannot mix `Int` and `Float` without converting.
 - **String** escapes: `\n \t \r \0 \\ \" \' \u{...}` (e.g. `"\u{1F600}"`).

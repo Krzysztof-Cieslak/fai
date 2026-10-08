@@ -165,6 +165,20 @@ fn foreign_signature_alias_edits_match_clean_arity_and_lowering() {
 }
 
 #[test]
+fn overflowing_integer_lowering_keeps_an_error_placeholder() {
+    assert_eq!(
+        lower("module M\nlet invalid = 18446744073709551617\n", "invalid"),
+        "fn0() = <error>\n"
+    );
+}
+
+#[test]
+fn overflowing_integer_pattern_keeps_an_error_placeholder() {
+    let source = "module M\nlet invalid n = match n with | 18446744073709551617 -> 1 | _ -> 2\n";
+    assert!(lower(source, "invalid").contains("<error>"));
+}
+
+#[test]
 fn lowers_let_block() {
     let src = indoc! {r#"
         module M

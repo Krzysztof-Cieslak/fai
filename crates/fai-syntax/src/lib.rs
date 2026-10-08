@@ -12,6 +12,7 @@ pub mod ast;
 mod attach;
 mod layout;
 mod lexer;
+mod literal;
 mod parser;
 // salsa's `tracked`/`Update` macros emit `unsafe impl`s; this module is the only
 // place in the crate that carries them (we write no `unsafe` by hand). The scoped
@@ -24,6 +25,7 @@ mod token;
 pub use attach::{CommentId, CommentMap, NodeId, attach_comments};
 pub use layout::{Layout, layout};
 pub use lexer::{Lexed, lex};
+pub use literal::decode_int_literal;
 pub use parser::{Parsed, parse_module};
 pub use query::{
     ItemSummary, ItemTree, ItemTreeKind, ParsedModule, build_item_tree, item_tree, parse,
@@ -89,8 +91,10 @@ pub const CODES: &[CodeInfo] = &[
         code: INVALID_NUMBER,
         title: "invalid numeric literal",
         default_severity: Severity::Error,
-        explanation: "A numeric literal has invalid digits for its base or a trailing \
-                      identifier character. Check the digits and remove any stray suffix.",
+        explanation: "A numeric literal has invalid digits for its base, a trailing \
+                      identifier character, or an integer magnitude beyond 64 bits. Check the \
+                      digits and suffix; integer magnitudes must be at most 18446744073709551615 \
+                      in every radix. Full-width values are interpreted as signed bit patterns.",
     },
     CodeInfo {
         code: INVALID_ESCAPE,

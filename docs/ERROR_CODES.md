@@ -78,7 +78,7 @@ A character literal is malformed — empty, multi-character, or missing its clos
 
 **Severity:** error
 
-A numeric literal has invalid digits for its base or a trailing identifier character. Check the digits and remove any stray suffix.
+A numeric literal has invalid digits for its base, a trailing identifier character, or an integer magnitude beyond 64 bits. Check the digits and suffix; integer magnitudes must be at most 18446744073709551615 in every radix. Full-width values are interpreted as signed bit patterns.
 
 ### FAI1006 — invalid escape sequence
 

@@ -203,6 +203,11 @@ Syntax front end (lexer, layout, parser, AST, formatter, incremental queries):
   (U+0000–U+10FFFF excluding U+D800–U+DFFF), with invalid values reported as
   `FAI1006` before lowering. Block comments **nest**; `///` is a distinct
   doc-comment kind.
+  Integer magnitudes are bounded by `u64::MAX` in every radix and rejected as
+  `FAI1005` during lexing when larger. Syntax and Core share an allocation-free
+  decoder: accepted values retain their signed 64-bit bit pattern, and a leading
+  minus wraps like subtraction, including in non-decimal patterns. Failed
+  decoding in error recovery lowers to an error placeholder, never a valid zero.
 - **D29 Layout:** a restricted **offside pre-pass** turns indentation into
   virtual `LayoutOpen`/`LayoutSep`/`LayoutClose` tokens so the parser stays
   layout-agnostic. A new line at the block's reference column starts a new item

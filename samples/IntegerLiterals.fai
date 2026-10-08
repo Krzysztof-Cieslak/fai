@@ -1,0 +1,12 @@
+module IntegerLiterals
+
+// Integer literal magnitudes fit an unsigned 64-bit word; the word is interpreted
+// as a signed Int. Unary minus wraps exactly like integer subtraction.
+let isMinusOne n =
+  match n with
+  | -0x1 -> true
+  | _ -> false
+example: isMinusOne (-1) && not (isMinusOne 0)
+example: 0xffffffffffffffff = -1
+example: 18446744073709551615 = -1
+example: -18446744073709551615 = 1
