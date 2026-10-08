@@ -39,6 +39,15 @@ pub fn generalize(cx: &InferCtx, ty: &SolveTy) -> Scheme {
 /// Looks up the declared signature scheme of a definition in `file`, if it has
 /// one (lowered from the AST). Returns `None` for signature-less definitions.
 pub fn declared_scheme(db: &dyn Db, file: SourceFile, name: Symbol) -> Option<Scheme> {
+    declared_scheme_observed(db, file, name, Some(file))
+}
+
+pub(crate) fn declared_scheme_observed(
+    db: &dyn Db,
+    file: SourceFile,
+    name: Symbol,
+    observer: Option<SourceFile>,
+) -> Option<Scheme> {
     let defs = fai_resolve::module_defs(db, file);
     let def = defs.get(name)?;
     let sig_item = def.signature?;
@@ -53,7 +62,7 @@ pub fn declared_scheme(db: &dyn Db, file: SourceFile, name: Symbol) -> Option<Sc
     // Resolve the signature's type names in the definition's module scope.
     let mut scope: Vec<Symbol> = name.as_str().split('.').map(Symbol::intern).collect();
     scope.pop();
-    Some(crate::lower::lower_signature_in(db, file, module, &scope, ty))
+    Some(crate::lower::lower_signature_observed(db, file, observer, module, &scope, ty))
 }
 
 /// The environment used while inferring one SCC: same-SCC monomorphic types plus
@@ -109,9 +118,9 @@ impl Env for SccEnv<'_> {
         (self.builtins)(name)
     }
 
-    fn ctor_scheme(&mut self, ctor: fai_resolve::CtorRef) -> Option<Scheme> {
+    fn ctor_scheme(&mut self, ctor: fai_resolve::CtorRef, observer: SourceFile) -> Option<Scheme> {
         let file = self.db.source_file(ctor.file)?;
-        crate::query::constructor_scheme(self.db, file, ctor.name)
+        crate::query::constructor_scheme_observed(self.db, file, ctor.name, Some(observer))
     }
 }
 

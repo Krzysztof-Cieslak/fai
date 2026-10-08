@@ -26,7 +26,7 @@ use fai_syntax::ast::{
 };
 use fai_types::{
     BodyTypes, Con, RecordRow, RowEnd, RowVarId, Scheme, Ty, body_types, constructor_scheme,
-    declared_or_inferred_scheme, evidence_requirements,
+    evidence_requirements,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -45,6 +45,7 @@ pub fn core(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
     let parsed = fai_syntax::parse(db, file);
     let resolved = resolve(db, file);
     let types = body_types(db, file, name);
+    let types = crate::representation::body_types(db, &types);
     let def = DefId::new(file.source(db), name);
 
     // A `foreign` declaration has no Fai body: synthesize its entry as the
@@ -153,12 +154,13 @@ pub fn lower_params_body(
 ) -> LoweredBody {
     let parsed = fai_syntax::parse(db, file);
     let resolved = resolve(db, file);
+    let types = crate::representation::body_types(db, types);
     let mut lowerer = Lowerer {
         db,
         file,
         module: &parsed.module,
         resolved: &resolved,
-        types,
+        types: &types,
         next_local: first_free_local(&resolved),
         fns: vec![placeholder_fn()],
         evidence: FxHashMap::default(),
@@ -444,8 +446,9 @@ impl Lowerer<'_> {
     fn ctor_scalars(&self, ctor: CtorRef) -> u64 {
         let Some(file) = self.db.source_file(ctor.file) else { return 0 };
         let Some(scheme) = constructor_scheme(self.db, file, ctor.name) else { return 0 };
+        let repr = crate::representation::runtime_type(self.db, &scheme.ty);
         let mut mask = 0u64;
-        let mut ty = &scheme.ty;
+        let mut ty = &repr;
         let mut i = 0usize;
         while let Ty::Arrow(from, to, _) = ty {
             if i < 64 && field_is_scalar(from) {
@@ -600,7 +603,7 @@ impl Lowerer<'_> {
     /// reference has instantiated type `ref_ty`): one integer per the callee's row
     /// lacks-constraints, in the same canonical order the callee binds them.
     fn evidence_args(&self, def: DefId, ref_ty: &Ty) -> Vec<CExpr> {
-        let Some(scheme) = declared_or_inferred_scheme(self.db, def) else {
+        let Some(scheme) = crate::representation::definition_scheme(self.db, def) else {
             return Vec::new();
         };
         let reqs = evidence_requirements(&scheme);

@@ -26,6 +26,7 @@ pub mod niche;
 pub mod pretty;
 pub mod purity;
 pub mod reassoc;
+pub mod representation;
 #[allow(unsafe_code)]
 pub mod simplify;
 pub mod wire;

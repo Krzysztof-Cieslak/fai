@@ -151,12 +151,36 @@ pub fn signature_scheme(db: &dyn Db, file: SourceFile, name: Symbol) -> Option<S
     declared_scheme(db, file, name)
 }
 
+/// A declared signature with opacity determined by `observer`, while its names
+/// resolve in the declaring scope. `None` exposes the abstract public surface.
+#[salsa::tracked]
+pub fn signature_scheme_observed(
+    db: &dyn Db,
+    file: SourceFile,
+    name: Symbol,
+    observer: Option<SourceFile>,
+) -> Option<Scheme> {
+    crate::infer::declared_scheme_observed(db, file, name, observer)
+}
+
 /// The scheme of a data constructor declared in `file` (e.g. `Some : 'a ->
 /// Option 'a`). Tracked so it is computed once and stays a body-edit-stable part
 /// of the module's public interface.
 #[salsa::tracked]
 pub fn constructor_scheme(db: &dyn Db, file: SourceFile, name: Symbol) -> Option<Scheme> {
     crate::lower::build_constructor_scheme(db, file, name)
+}
+
+/// A constructor's field types as seen from the observing file. External
+/// pattern matches preserve opaque field types instead of exposing their bodies.
+#[salsa::tracked]
+pub fn constructor_scheme_observed(
+    db: &dyn Db,
+    file: SourceFile,
+    name: Symbol,
+    observer: Option<SourceFile>,
+) -> Option<Scheme> {
+    crate::lower::build_constructor_scheme_observed(db, file, name, observer)
 }
 
 /// The type scheme of a single definition.
@@ -240,7 +264,7 @@ pub(crate) fn reference_scheme(db: &dyn Db, caller: SourceFile, def: DefId) -> O
         declared_or_inferred_scheme(db, def)
     } else {
         let file = db.source_file(def.file)?;
-        Some(signature_scheme(db, file, def.name).unwrap_or_else(error_scheme))
+        Some(signature_scheme_observed(db, file, def.name, Some(caller)).unwrap_or_else(error_scheme))
     }
 }
 

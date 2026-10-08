@@ -84,7 +84,7 @@ pub fn inline_summary(db: &dyn Db, file: SourceFile, name: Symbol) -> Option<usi
     }
     // Row-polymorphic definitions take leading offset-evidence parameters and are
     // only ever called curried; leave them alone.
-    let evidence = fai_types::declared_or_inferred_scheme(db, def)
+    let evidence = crate::representation::definition_scheme(db, def)
         .map_or(0, |s| fai_types::evidence_count(&s));
     if evidence > 0 {
         return None;
