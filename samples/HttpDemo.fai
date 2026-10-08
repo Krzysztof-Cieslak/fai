@@ -8,6 +8,9 @@ module HttpDemo
 //
 // `Http` builds on `Net` (transport), `Concurrency` (a task per connection), the
 // opaque `Url` and `Headers` types, and a streaming `Stream Bytes` body.
+example: Url.decodeComponent "café%20😀" = "café 😀"
+example: Url.decodeComponent "%GG" = "%GG"
+
 // The request handler: echo the requested path back as plain text. A handler
 // returns `Ok response`; an `Err` becomes a 500.
 let handle req = Ok (Http.textResponse 200 ("you requested " ++ Url.path req.url))

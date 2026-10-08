@@ -353,22 +353,33 @@ hexDigit : Int -> String
 let hexDigit n = String.substring n 1 "0123456789ABCDEF"
 
 /// Percent-decode a string (`%XX` → the byte; `+` is left as-is). Invalid escapes
-/// pass through literally.
+/// pass through literally. If decoded bytes are not valid UTF-8, return the
+/// original component unchanged rather than losing text.
 public decodeComponent : String -> String
-let decodeComponent s = bytesToString (decodeFrom s 0 (String.length s) [])
+let decodeComponent s =
+  let bytes = Bytes.fromString s
+  match Bytes.toString (Bytes.fromList (decodeFrom bytes 0 (Bytes.length bytes) [])) with
+  | Some decoded -> decoded
+  | None -> s
 example: decodeComponent "a%20b%26c" = "a b&c"
+example: decodeComponent "café%20😀" = "café 😀"
+example: decodeComponent "%GG%2G" = "%GG%2G"
+example: decodeComponent "%41%FF" = "%41%FF"
+example: queryPairs (orEmpty (parse "/?q=café%20😀&bad=%GG")) = [("q", "café 😀"), ("bad", "%GG")]
+forall s: decodeComponent (encodeComponent s) = s
 
-// Decode `s` from index `i` to `n`, accumulating bytes (reversed) in `acc`.
-decodeFrom : String -> Int -> Int -> List Int -> List Int
+// Decode UTF-8 bytes, accumulating in reverse. A literal character keeps every
+// byte, and a '%' consumes three bytes only when both hex digits are valid.
+decodeFrom : Bytes -> Int -> Int -> List Int -> List Int
 let decodeFrom s i n acc =
   if i >= n then
     List.reverse acc
-  else if String.substring i 1 s = "%" && i + 3 <= n then
-    let hi = hexVal (String.substring (i + 1) 1 s)
-    let lo = hexVal (String.substring (i + 2) 1 s)
-    decodeFrom s (i + 3) n ((hi * 16 + lo) :: acc)
+  else if Bytes.unsafeGet i s = 37 && n - i >= 3 then
+    match (hexVal (Bytes.unsafeGet (i + 1) s), hexVal (Bytes.unsafeGet (i + 2) s)) with
+    | (Some hi, Some lo) -> decodeFrom s (i + 3) n ((hi * 16 + lo) :: acc)
+    | _ -> decodeFrom s (i + 1) n (37 :: acc)
   else
-    decodeFrom s (i + 1) n (firstByte (String.substring i 1 s) :: acc)
+    decodeFrom s (i + 1) n (Bytes.unsafeGet i s :: acc)
 
 // The first byte of a (single-character) string.
 firstByte : String -> Int
@@ -376,19 +387,11 @@ let firstByte c =
   let b = Bytes.fromString c
   if Bytes.length b > 0 then Bytes.unsafeGet 0 b else 0
 
-// The numeric value of a single hex digit (case-insensitive); 0 for a non-digit.
-hexVal : String -> Int
-let hexVal c =
-  let code = firstByte c
+// The numeric value of a hex byte (case-insensitive), or None for a non-digit.
+hexVal : Int -> Option Int
+let hexVal code =
   if code >= 48 && code <= 57 then
-    code - 48
+    Some (code - 48)
   else if code >= 97 && code <= 102 then
-    code - 87
-  else if code >= 65 && code <= 70 then code - 55 else 0
-
-// Decode a byte list (UTF-8) back to a string, lossily if not valid UTF-8.
-bytesToString : List Int -> String
-let bytesToString bytes =
-  match Bytes.toString (Bytes.fromList bytes) with
-  | Some s -> s
-  | None -> ""
+    Some (code - 87)
+  else if code >= 65 && code <= 70 then Some (code - 55) else None

@@ -84,6 +84,8 @@ example: bodyOn app Http.GET "/user/42" = Ok "42"
 example: bodyOn app Http.GET "/user/abc" = Ok "abc"
 // Query-string access.
 example: bodyOn app Http.GET "/search?q=fai" = Ok "fai"
+example: bodyOn app Http.GET "/search?q=café%20😀" = Ok "café 😀"
+example: bodyOn app Http.GET "/search?q=%GG" = Ok "%GG"
 example: bodyOn app Http.GET "/search" = Ok "none"
 // Fallbacks: unknown path, and a known path with an unregistered method.
 example: runOn app Http.GET "/missing" = 404
