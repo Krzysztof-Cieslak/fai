@@ -13,7 +13,9 @@ escape : Float -> Float -> Float -> Float -> Int -> Float
 let escape cx cy zx zy k =
   if k <= 0 then
     let m = zx * zx + zy * zy
-    if m < 4.0 then m else 4.0
+    // Divergent iterates can produce either sign of NaN. Total ordering places
+    // negative NaNs below finite values, so require the full magnitude interval.
+    if m >= 0.0 && m < 4.0 then m else 4.0
   else
     escape cx cy (zx * zx - zy * zy + cx) (2.0 * zx * zy + cy) (k - 1)
 
@@ -37,7 +39,7 @@ let gridSum n j acc =
 /// The benchmark workload: the clamped-magnitude sum over an n-by-n grid.
 public runF : Int -> Float
 let runF n = gridSum n 0 0.0
-example: runF 1 >= 0.0
+example: runF 1 = 4.0
 
 public main : Runtime -> Unit / { Console }
 let main runtime = runtime.console.writeLine (Float.toString (runF 400))
