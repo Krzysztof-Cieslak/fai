@@ -22,6 +22,7 @@ corosensei.workspace = true
 crossbeam-deque.workspace = true
 # Cross-platform non-blocking I/O readiness for the network reactor (TCP/UDP).
 mio.workspace = true
+libc.workspace = true
 # TLS engine (sans-I/O) for the `Tls` capability, driven by Fai over `Net`. The
 # `ring` provider is a pure-Rust-API crate (its internal asm builds with the C
 # toolchain already required to build the compiler); no aws-lc-rs/cmake.
