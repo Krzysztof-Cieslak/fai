@@ -168,6 +168,22 @@ fn warm_check_matches_no_daemon() {
 }
 
 #[test]
+fn warm_check_tracks_source_addition_and_removal() {
+    let daemon = Daemon::new("membership", &[("A.fai", "module A\nlet value = B.value\n")]);
+    let missing = daemon.run(&["check"], &["--message-format=json"]);
+    assert_eq!(missing.status.code(), Some(1));
+    std::fs::write(daemon.workspace.join("B.fai"), "module B\npublic value : Int\nlet value = 7\n")
+        .unwrap();
+    let added = daemon.run(&["check"], &["--message-format=json"]);
+    assert!(added.status.success(), "{}", stdout(&added));
+    std::fs::remove_file(daemon.workspace.join("B.fai")).unwrap();
+    let removed = daemon.run(&["check"], &["--message-format=json"]);
+    let clean = daemon.run(&["check", "--no-daemon"], &["--message-format=json"]);
+    assert_eq!(removed.status.code(), Some(1));
+    assert_eq!(stdout(&removed), stdout(&clean));
+}
+
+#[test]
 fn warm_check_reports_a_failing_example() {
     let daemon = Daemon::new(
         "checkexample",

@@ -33,8 +33,7 @@ pub struct Session {
     root: Utf8PathBuf,
     /// Per-file stats keyed by workspace-relative path (user files only).
     stats: FxHashMap<Utf8PathBuf, FileStat>,
-    /// The source files currently present on disk (excludes deleted files whose
-    /// salsa input lingers, and the synthetic standard library).
+    /// The active user files from the latest disk sync or dirty overlay.
     live: FxHashSet<SourceId>,
 }
 
@@ -59,7 +58,8 @@ impl Session {
 
     /// Re-scans the workspace and updates the database for files that actually
     /// changed (stat-gated, hash-confirmed). New files are added, deleted files
-    /// are dropped from the live set, and unchanged files are left untouched.
+    /// are deactivated in semantic lookup and selection, and unchanged files are
+    /// left untouched.
     pub fn sync_from_disk(&mut self) -> Result<(), DriverError> {
         let mut present = Vec::new();
         collect_fai_files(&self.root, &mut present)?;
@@ -102,8 +102,9 @@ impl Session {
             live.insert(id);
         }
 
-        // Forget stats for files that disappeared (their salsa input lingers but
-        // is excluded from the live set, so commands ignore it).
+        // Remove disappeared files from semantic lookup as well as selection.
+        // Their historical inputs remain available for stable-id reactivation.
+        self.db.remove_sources(self.live.difference(&live).copied());
         self.stats.retain(|path, _| seen_paths.contains(path));
         self.live = live;
         Ok(())

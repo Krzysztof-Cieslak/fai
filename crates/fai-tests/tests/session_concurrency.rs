@@ -221,6 +221,52 @@ fn a_pending_edit_cancels_an_inflight_snapshot_read() {
     assert!(!checks_ok(&lock(&session)), "the cancelling edit (a type error) is now visible");
 }
 
+fn membership_change_cancels_reads(add: bool) {
+    let dir = workspace();
+    write(&dir, "M.fai", CLEAN);
+    if !add {
+        write(&dir, "B.fai", "module B\nlet b = 1\n");
+    }
+    let session = Arc::new(Mutex::new(Session::open(dir.clone()).unwrap()));
+    let ready = Arc::new(Barrier::new(2));
+    std::thread::scope(|scope| {
+        let reader = {
+            let session = Arc::clone(&session);
+            let ready = Arc::clone(&ready);
+            scope.spawn(move || {
+                let snapshot = lock(&session).snapshot();
+                assert!(checks_ok(&snapshot));
+                ready.wait();
+                while catch_cancellation(std::panic::AssertUnwindSafe(|| checks_ok(&snapshot)))
+                    .is_some()
+                {
+                    std::thread::yield_now();
+                }
+            })
+        };
+        ready.wait();
+        if add {
+            write(&dir, "B.fai", "module B\nlet b = 1\n");
+        } else {
+            std::fs::remove_file(dir.join("B.fai")).unwrap();
+        }
+        lock(&session).sync_from_disk().unwrap();
+        reader.join().unwrap();
+    });
+    assert_eq!(lock(&session).user_files().len(), if add { 2 } else { 1 });
+    assert!(checks_ok(&lock(&session)));
+}
+
+#[test]
+fn adding_a_file_cancels_an_inflight_snapshot() {
+    membership_change_cancels_reads(true);
+}
+
+#[test]
+fn removing_a_file_cancels_an_inflight_snapshot() {
+    membership_change_cancels_reads(false);
+}
+
 /// Locks the shared session, recovering from a poisoned lock (a reader assertion
 /// failure should surface as that thread's panic, not as lock poisoning noise).
 fn lock(session: &Mutex<Session>) -> std::sync::MutexGuard<'_, Session> {

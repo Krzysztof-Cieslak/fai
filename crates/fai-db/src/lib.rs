@@ -41,14 +41,14 @@ pub use salsa::{Accumulator, Durability, Setter, Update};
 
 /// The database trait every query operates over.
 ///
-/// Custom (non-query) methods are added sparingly; for now just source-file
-/// lookup, which reads the non-salsa registry on [`FaiDatabase`].
+/// Source lookup and workspace enumeration read tracked active membership, so
+/// callers invalidate when files are added, removed, or reactivated.
 #[salsa::db]
 pub trait Db: salsa::Database {
-    /// Looks up a registered source file by its [`SourceId`], if any.
+    /// Looks up an active source file by its stable [`SourceId`], if any.
     fn source_file(&self, id: SourceId) -> Option<SourceFile>;
 
-    /// Returns every registered source file, in [`SourceId`] order.
+    /// Returns every active source file, in [`SourceId`] order.
     fn all_source_files(&self) -> Vec<SourceFile>;
 
     /// An independent handle to the same database, for running queries in
@@ -82,6 +82,21 @@ pub struct SourceFile {
     /// The file's full text.
     #[returns(ref)]
     pub text: String,
+}
+
+/// Active membership indexed by stable SourceId. A tombstone retains its input
+/// identity in the database's historical registry but is invisible to queries.
+#[salsa::input(singleton, debug)]
+struct SourceRegistry {
+    #[returns(ref)]
+    slots: Vec<Option<SourceFile>>,
+}
+
+/// A per-id projection lets an unrelated membership change cut off before
+/// queries that only look up an already-known source.
+#[salsa::tracked]
+fn registered_source(db: &dyn Db, registry: SourceRegistry, id: SourceId) -> Option<SourceFile> {
+    registry.slots(db).get(id.index()).copied().flatten()
 }
 
 /// The synthetic path namespace of the embedded standard library.
@@ -146,15 +161,16 @@ pub fn line_count(db: &dyn Db, file: SourceFile) -> usize {
 /// The concrete database.
 ///
 /// Beyond salsa's [`storage`](salsa::Storage) it holds a registry mapping
-/// [`SourceId`]s to [`SourceFile`] inputs (and paths back to ids), plus an
-/// optional execution-event log.
+/// stable [`SourceId`]s to historical [`SourceFile`] inputs (and paths back to
+/// ids), plus an optional execution-event log. Active membership is a separate
+/// tracked input; removals retain identities for later reactivation.
 ///
 /// The registry (`files`, `ids_by_path`) lives behind `Arc` so cloning the
 /// database — which the daemon does per read request to serve concurrent reads
 /// on independent handles — shares it in O(1) rather than copying every path
-/// string. A registry mutation (`add_source`) takes `&mut self` and updates it
-/// copy-on-write via [`Arc::make_mut`], so it only ever clones the registry while
-/// a snapshot is still alive (steady state stays in place).
+/// string. Membership mutations update the tracked registry and follow salsa's
+/// normal cancellation protocol: old snapshots must finish/drop before the
+/// mutation completes. Historical identity maps use copy-on-write storage.
 #[salsa::db]
 #[derive(Clone)]
 pub struct FaiDatabase {
@@ -170,11 +186,11 @@ impl salsa::Database for FaiDatabase {}
 #[salsa::db]
 impl Db for FaiDatabase {
     fn source_file(&self, id: SourceId) -> Option<SourceFile> {
-        self.files.get(id.index()).copied()
+        registered_source(self, SourceRegistry::get(self), id)
     }
 
     fn all_source_files(&self) -> Vec<SourceFile> {
-        self.files.as_ref().clone()
+        SourceRegistry::get(self).slots(self).iter().flatten().copied().collect()
     }
 
     fn clone_box(&self) -> Box<dyn Db> {
@@ -204,7 +220,9 @@ impl FaiDatabase {
                 }
             }
         })));
-        Self { storage, files: Arc::default(), ids_by_path: Arc::default(), events }
+        let db = Self { storage, files: Arc::default(), ids_by_path: Arc::default(), events };
+        let _ = SourceRegistry::builder(Vec::new()).durability(Durability::HIGH).new(&db);
+        db
     }
 
     /// Registers `path` with `text`, returning its [`SourceId`].
@@ -215,6 +233,7 @@ impl FaiDatabase {
         if let Some(&id) = self.ids_by_path.get(&path) {
             let file = self.files[id.index()];
             file.set_text(self).to(text);
+            self.activate_source(id, file);
             return id;
         }
         let id = SourceId::new(u32::try_from(self.files.len()).expect("too many source files"));
@@ -222,13 +241,58 @@ impl FaiDatabase {
         // Copy-on-write: only clones the registry while a snapshot still holds it.
         Arc::make_mut(&mut self.files).push(file);
         Arc::make_mut(&mut self.ids_by_path).insert(path, id);
+        self.activate_source(id, file);
         id
     }
 
-    /// Looks up the [`SourceId`] previously registered for `path`, if any.
+    fn activate_source(&mut self, id: SourceId, file: SourceFile) {
+        let registry = SourceRegistry::get(self);
+        if registry.slots(self).get(id.index()) == Some(&Some(file)) {
+            return;
+        }
+        let mut slots = registry.slots(self).clone();
+        slots.resize(slots.len().max(id.index() + 1), None);
+        slots[id.index()] = Some(file);
+        registry.set_slots(self).with_durability(Durability::HIGH).to(slots);
+    }
+
+    /// Deactivates a source while retaining its stable id and input for a later
+    /// re-add. Returns whether an active source was removed.
+    pub fn remove_source(&mut self, id: SourceId) -> bool {
+        self.remove_sources(std::iter::once(id)) != 0
+    }
+
+    /// Deactivates a batch of sources with one membership update. Unknown or
+    /// already-removed ids are ignored; returns the number newly deactivated.
+    pub fn remove_sources(&mut self, ids: impl IntoIterator<Item = SourceId>) -> usize {
+        let registry = SourceRegistry::get(self);
+        let active = registry.slots(self);
+        let ids: Vec<_> = ids
+            .into_iter()
+            .filter(|id| active.get(id.index()).is_some_and(Option::is_some))
+            .collect();
+        if ids.is_empty() {
+            return 0;
+        }
+        let mut slots = registry.slots(self).clone();
+        let mut removed = 0;
+        for id in ids {
+            if let Some(slot) = slots.get_mut(id.index())
+                && slot.take().is_some()
+            {
+                removed += 1;
+            }
+        }
+        if removed != 0 {
+            registry.set_slots(self).with_durability(Durability::HIGH).to(slots);
+        }
+        removed
+    }
+
+    /// Looks up the active [`SourceId`] for `path`, if any.
     #[must_use]
     pub fn id_for_path(&self, path: &Utf8Path) -> Option<SourceId> {
-        self.ids_by_path.get(path).copied()
+        self.ids_by_path.get(path).copied().filter(|&id| self.source_file(id).is_some())
     }
 
     /// Registers `path` at a given [`Durability`]. Use [`Durability::HIGH`] for
@@ -314,6 +378,26 @@ mod tests {
         file.text(db).len()
     }
 
+    #[salsa::tracked]
+    fn registered_count(db: &dyn Db) -> usize {
+        db.all_source_files().len()
+    }
+
+    #[salsa::tracked]
+    fn source_exists(db: &dyn Db) -> bool {
+        db.source_file(SourceId::new(0)).is_some()
+    }
+
+    #[test]
+    fn adding_a_source_invalidates_cached_membership_queries() {
+        let mut db = FaiDatabase::new();
+        assert_eq!(registered_count(&db), 0);
+        assert!(!source_exists(&db));
+        db.add_source("A.fai".into(), "module A\n".into());
+        assert_eq!(registered_count(&db), 1);
+        assert!(source_exists(&db));
+    }
+
     #[test]
     fn memoizes_reruns_and_cuts_off_early() {
         let mut db = FaiDatabase::new();
@@ -347,25 +431,68 @@ mod tests {
     }
 
     #[test]
-    fn a_clone_shares_storage_but_its_registry_is_independent() {
-        // The registry lives behind `Arc`, so a clone (the daemon's per-request
-        // read snapshot) shares it cheaply; a later `add_source` on the original
-        // is copy-on-write and must not retroactively appear in the clone's
-        // file list — the snapshot stays a consistent view of its instant.
+    fn membership_addition_cancels_an_old_snapshot() {
         let mut db = FaiDatabase::new();
         db.add_source("a.fai".into(), "a".to_owned());
         let snapshot = db.clone();
-        assert_eq!(snapshot.all_source_files().len(), 1);
-
-        // Add a file to the original after snapshotting.
+        let ready = Arc::new(std::sync::Barrier::new(2));
+        let reader_ready = Arc::clone(&ready);
+        let reader = std::thread::spawn(move || {
+            assert_eq!(registered_count(&snapshot), 1);
+            assert!(snapshot.id_for_path(Utf8Path::new("b.fai")).is_none());
+            reader_ready.wait();
+            while salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
+                registered_count(&snapshot)
+            }))
+            .is_ok()
+            {
+                std::thread::yield_now();
+            }
+        });
+        ready.wait();
         db.add_source("b.fai".into(), "b".to_owned());
-        assert_eq!(db.all_source_files().len(), 2, "the original sees the new file");
-        assert_eq!(
-            snapshot.all_source_files().len(),
-            1,
-            "the snapshot keeps its consistent view (copy-on-write)"
-        );
-        assert!(snapshot.id_for_path(Utf8Path::new("b.fai")).is_none());
+        reader.join().unwrap();
+        assert_eq!(registered_count(&db), 2);
+    }
+
+    #[test]
+    fn removal_and_reactivation_keep_the_source_identity() {
+        let mut db = FaiDatabase::new();
+        let id = db.add_source("A.fai".into(), "old".into());
+        let file = db.source_file(id).unwrap();
+        assert!(source_exists(&db));
+        assert!(db.remove_source(id));
+        assert!(!db.remove_source(id));
+        assert_eq!(registered_count(&db), 0);
+        assert!(!source_exists(&db));
+        assert!(db.id_for_path(Utf8Path::new("A.fai")).is_none());
+        let readded = db.add_source("A.fai".into(), "new".into());
+        assert_eq!(readded, id);
+        assert_eq!(db.source_file(id), Some(file));
+        assert_eq!(file.text(&db), "new");
+        assert!(source_exists(&db));
+    }
+
+    #[test]
+    fn text_edits_do_not_invalidate_membership() {
+        let mut db = FaiDatabase::new();
+        db.add_source("A.fai".into(), "old".into());
+        assert_eq!(registered_count(&db), 1);
+        db.enable_event_log();
+        db.add_source("A.fai".into(), "new".into());
+        assert_eq!(registered_count(&db), 1);
+        assert!(!db.take_events().iter().any(|e| e.contains("registered_count")));
+    }
+
+    #[test]
+    fn unrelated_addition_cuts_off_at_source_lookup() {
+        let mut db = FaiDatabase::new();
+        db.add_source("A.fai".into(), "a".into());
+        assert!(source_exists(&db));
+        db.enable_event_log();
+        db.add_source("B.fai".into(), "b".into());
+        assert!(source_exists(&db));
+        assert!(!db.take_events().iter().any(|e| e.contains("source_exists")));
     }
 
     #[test]

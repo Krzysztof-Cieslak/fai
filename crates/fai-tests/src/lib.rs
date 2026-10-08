@@ -118,10 +118,19 @@ where
 
 /// Loads a revision's files into `db`, returning their ids in order.
 fn load(db: &mut FaiDatabase, revision: Revision) -> Vec<SourceId> {
-    revision
+    let ids: Vec<_> = revision
         .iter()
         .map(|(path, text)| db.add_source(Utf8PathBuf::from(*path), (*text).to_owned()))
-        .collect()
+        .collect();
+    let active: std::collections::BTreeSet<_> = ids.iter().copied().collect();
+    let removed: Vec<_> = db
+        .all_source_files()
+        .iter()
+        .map(|file| file.source(db))
+        .filter(|id| !active.contains(id))
+        .collect();
+    db.remove_sources(removed);
+    ids
 }
 
 #[cfg(test)]
