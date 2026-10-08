@@ -1001,10 +1001,35 @@ mod simplify {
 
     #[test]
     fn const_application_keeps_the_discarded_operand() {
-        // `const a b` reduces to `a` but binds `b` to a dead local, so its strict
-        // evaluation (and any effect/trap) is preserved.
+        // Save `a` before evaluating the discarded `b`, preserving strict order.
         let src = "module M\n\nlet f a b = const a b\n";
-        assert_eq!(simp(src, "f"), "fn0(%0, %1) = (let %2 = %1; %0)\n");
+        assert_eq!(simp(src, "f"), "fn0(%0, %1) = (let %2 = %0; (let %3 = %1; %2))\n");
+    }
+
+    #[test]
+    fn const_argument_edit_matches_clean_reduction() {
+        let source = "module M\nlet f x = const (x + 1) (x + 2)\n";
+        let (mut db, file) = db_with(source);
+        let name = Symbol::intern("f");
+        let before = pretty_def(&simplified(&db, file, name));
+        let edited = source.replace("x + 1", "x + 3");
+        db.add_source("M.fai".into(), edited.clone());
+        let after = pretty_def(&simplified(&db, file, name));
+        assert_ne!(before, after);
+        assert_eq!(after, simp(&edited, "f"));
+    }
+
+    #[test]
+    fn const_comment_edit_cuts_off_before_helper_inlining() {
+        let source = "module M\nlet f x = const (x + 1) (x + 2)\n";
+        let (mut db, file) = db_with(source);
+        let name = Symbol::intern("f");
+        let before = helper_inlined(&db, file, name);
+        db.enable_event_log();
+        db.add_source("M.fai".into(), format!("{source}// comment\n"));
+        assert_eq!(before, helper_inlined(&db, file, name));
+        let events = db.take_events();
+        assert!(!events.iter().any(|e| e.contains("helper_inlined")), "{events:?}");
     }
 
     #[test]

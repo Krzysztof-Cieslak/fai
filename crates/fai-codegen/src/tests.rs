@@ -413,6 +413,90 @@ fn runtime_int_merge_boxes_a_large_raw_alternative() {
 }
 
 #[test]
+fn const_evaluates_arguments_left_to_right() {
+    let source = indoc! {r#"
+        module M
+        public main : Runtime -> Unit / { Console }
+        let main r = const (r.console.writeLine "first") (r.console.writeLine "second")
+    "#};
+    assert_eq!(run(source), (0, "first\nsecond\n".into()));
+}
+
+#[test]
+fn const_over_application_preserves_argument_and_body_order() {
+    let source = indoc! {r#"
+        module M
+        mark : Console -> String -> 'a -> 'a / { Console }
+        let mark console message value =
+          let _ = console.writeLine message
+          value
+        public main : Runtime -> Unit / { Console }
+        let main r =
+          const
+            (mark r.console "first" (fun text -> r.console.writeLine text))
+            (r.console.writeLine "second")
+            (mark r.console "third" "called")
+    "#};
+    assert_eq!(run(source), (0, "first\nsecond\nthird\ncalled\n".into()));
+}
+
+#[test]
+fn const_partial_application_keeps_one_owned_result() {
+    let source = indoc! {r#"
+        module M
+        mark : Console -> String -> String -> String / { Console }
+        let mark console message value =
+          let _ = console.writeLine message
+          value
+        public main : Runtime -> Unit / { Console }
+        let main r =
+          let keep = const (mark r.console "first" ("sa" ++ "ved"))
+          let value = keep (r.console.writeLine "second")
+          r.console.writeLine (value ++ value)
+    "#};
+    assert_eq!(run(source), (0, "first\nsecond\nsavedsaved\n".into()));
+}
+
+#[test]
+fn nested_const_applications_preserve_order() {
+    let source = indoc! {r#"
+        module M
+        public main : Runtime -> Unit / { Console }
+        let main r =
+          const
+            (const (r.console.writeLine "first") (r.console.writeLine "middle"))
+            (r.console.writeLine "last")
+    "#};
+    assert_eq!(run(source), (0, "first\nmiddle\nlast\n".into()));
+}
+
+#[test]
+fn const_keeps_a_scalar_float_result() {
+    let source = indoc! {r#"
+        module M
+        public main : Runtime -> Unit / { Console }
+        let main r =
+          let value = const 3.5 (r.console.writeLine "discard")
+          r.console.writeLine (Float.toString (value + 1.0))
+    "#};
+    assert_eq!(run(source), (0, "discard\n4.5\n".into()));
+}
+
+#[test]
+fn const_keeps_a_niche_option_result() {
+    let source = indoc! {r#"
+        module M
+        public main : Runtime -> Unit / { Console }
+        let main r =
+          let value = const (Some 3.5) (r.console.writeLine "discard")
+          match value with
+          | None -> r.console.writeLine "missing"
+          | Some number -> r.console.writeLine (Float.toString number)
+    "#};
+    assert_eq!(run(source), (0, "discard\n3.5\n".into()));
+}
+
+#[test]
 fn hello_world() {
     let src = main_printing("\"Hello, Fai!\"");
     let (code, out) = run(&src);
