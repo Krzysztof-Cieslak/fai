@@ -747,6 +747,7 @@ dependencies = [
  "indoc",
  "libloading",
  "nix",
+ "proptest",
  "rayon",
  "rustc-hash",
  "salsa",

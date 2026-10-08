@@ -396,3 +396,81 @@ fn jit_compile_without_main_is_an_error() {
     let Err(err) = crate::jit_compile(&db, files[0]) else { panic!("expected a no-main error") };
     assert!(err.iter().any(|d| d.code == crate::NO_ENTRY_POINT), "reports the no-entry diagnostic");
 }
+
+fn colliding_names() -> (FaiDatabase, SourceFile) {
+    let (db, files) = db_with(&[
+        ("A_b.fai", "module A_b\npublic c : Int -> Int\nlet c x = x + 10\n"),
+        ("A.fai", "module A\npublic b_c : Int -> Int\nlet b_c x = x + 20\n"),
+        (
+            "Names.fai",
+            indoc! {r#"
+            module Names
+            public f : Int -> Int -> Int
+            let f x = fun y -> x + y
+            public f__closure : Int -> Int
+            let f__closure x = x + 30
+            public f__owned : Int -> Int
+            let f__owned x = x + 40
+            public f__fn1 : Int -> Int
+            let f__fn1 x = x + 50
+            public f__reuse : Int -> Int
+            let f__reuse x = x + 60
+            public caseA : Int -> Int
+            let caseA x = x + 70
+            public casea : Int -> Int
+            let casea x = x + 80
+        "#},
+        ),
+        (
+            "Main.fai",
+            indoc! {r#"
+            module Main
+            let (+-+) a b = if a <= 0 then b else (a - 1) +-+ (b + 1)
+            let _x2b_x2d_x2b a b = if a <= 0 then b else _x2b_x2d_x2b (a - 1) (b + 2)
+            public run : Int -> String
+            let run x =
+              String.join "," (List.map Int.toString [A_b.c x, A.b_c x, Names.f x 2, Names.f__closure x, Names.f__owned x, Names.f__fn1 x, Names.f__reuse x, Names.caseA x, Names.casea x, x +-+ 2, _x2b_x2d_x2b x 2])
+            public main : Runtime -> Unit / { Console }
+            let main r = r.console.writeLine (run 1)
+        "#},
+        ),
+    ]);
+    (db, files[3])
+}
+
+const DISTINCT_RESULTS: &str = "11,21,3,31,41,51,61,71,81,3,4";
+
+#[test]
+fn colliding_source_names_stay_distinct_in_jit() {
+    let (db, file) = colliding_names();
+    let mut program = crate::jit_compile(&db, file).expect("compiles distinct names");
+    let function = program.function(fai_syntax::Symbol::intern("run")).unwrap();
+    let result = fai_runtime::apply(function, &[fai_runtime::make_int(1)]);
+    assert_eq!(fai_runtime::read_string(result), DISTINCT_RESULTS.as_bytes());
+    fai_runtime::fai_drop(result);
+}
+
+#[test]
+fn colliding_source_names_stay_distinct_in_native_objects() {
+    let (db, file) = colliding_names();
+    let directory = tempfile::tempdir().unwrap();
+    let out = Utf8PathBuf::from_path_buf(directory.path().join("program")).unwrap();
+    let result = build_native(&db, file, &out);
+    assert!(result.ok, "{:?}", result.diagnostics);
+    let output = std::process::Command::new(result.artifact.unwrap()).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), DISTINCT_RESULTS);
+}
+
+#[test]
+fn wire_bundle_reconstructs_distinct_native_names() {
+    let (db, file) = colliding_names();
+    let bundle = crate::build_run_bundle(&db, file).bundle.unwrap();
+    let serialized = serde_json::to_vec(&bundle).unwrap();
+    let bundle = crate::bundle_from_slice(&serialized).unwrap();
+    fai_runtime::capture_start();
+    let code = crate::jit_run_bundle(&bundle);
+    let output = fai_runtime::capture_take();
+    assert_eq!(code, 0);
+    assert_eq!(output.trim(), DISTINCT_RESULTS);
+}

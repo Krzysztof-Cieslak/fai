@@ -122,6 +122,11 @@ run` JIT-loads the shared libraries named by `libraries` (found under
 loaded, or a malformed manifest, is a clear error. The file is absent for the
 common, pure program.
 
+Compiler-generated native symbols use the versioned `fai2_` encoding and are an
+internal ABI; rebuild generated objects when updating the compiler. This replaces
+the ambiguous `fai_<module>_<member>` encoding. Explicit symbol strings in
+`foreign` declarations are passed through as written.
+
 ### Daemon, briefly
 
 Most commands connect to (or auto-spawn) a **per-workspace daemon** that keeps
