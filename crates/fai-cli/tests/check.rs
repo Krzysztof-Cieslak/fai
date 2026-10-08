@@ -62,6 +62,34 @@ fn correct_example_passes_check() {
 }
 
 #[test]
+fn invalid_unicode_escape_is_rejected_without_running_examples() {
+    let out = check(
+        "unicode-scalar",
+        "Bad.fai",
+        "module Bad\nlet value = \"\\u{110000}\"\n",
+        &["--no-examples"],
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "stdout: {stdout}");
+    assert!(stdout.contains("FAI1006"), "expected invalid-escape diagnostic: {stdout}");
+}
+
+#[test]
+fn formatter_preserves_a_file_with_an_invalid_unicode_escape() {
+    let src = "module Bad\nlet value = '\\u{D800}'\n";
+    let dir = workspace("unicode-fmt", &[("Bad.fai", src)]);
+    let out = fai()
+        .args(["fmt", "--no-daemon", "--color=never", "-C"])
+        .arg(&dir)
+        .arg("Bad.fai")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("FAI1006"));
+    assert_eq!(std::fs::read_to_string(dir.join("Bad.fai")).unwrap(), src);
+}
+
+#[test]
 fn no_examples_flag_restores_a_pure_type_check() {
     // The example is false, but `--no-examples` skips evaluating it, so the
     // type-clean file checks successfully.

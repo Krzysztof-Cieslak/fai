@@ -78,7 +78,7 @@ A numeric literal has invalid digits for its base or a trailing identifier chara
 
 **Severity:** error
 
-A string or character literal contains an unrecognized `\` escape. The supported escapes are `\n \t \r \0 \\ \" \' \u{…}`.
+A string or character literal contains an invalid `\` escape. The supported escapes are `\n \t \r \0 \\ \" \' \u{…}`. A Unicode escape must name a scalar value from U+0000 through U+10FFFF, excluding the surrogate range U+D800 through U+DFFF.
 
 ### FAI1020 — syntax error
 

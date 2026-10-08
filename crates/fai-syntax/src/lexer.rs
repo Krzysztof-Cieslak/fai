@@ -206,7 +206,7 @@ impl Lexer<'_> {
                     self.error(
                         INVALID_ESCAPE,
                         range,
-                        "invalid unicode escape; expected `\\u{...}`",
+                        "invalid unicode escape; expected `\\u{...}` containing a Unicode scalar value",
                     );
                 }
             }
@@ -222,21 +222,26 @@ impl Lexer<'_> {
         }
     }
 
-    /// Consumes `{ hex+ }` after a `\u`; returns whether it was well-formed.
+    /// Consumes `{ hex+ }` after a `\u`, validating its Unicode scalar value.
     fn unicode_escape_body(&mut self) -> bool {
         if !self.eat('{') {
             return false;
         }
         let mut any = false;
+        let mut value = Some(0u32);
         while let Some(c) = self.peek() {
-            if c.is_ascii_hexdigit() {
+            if let Some(digit) = c.to_digit(16) {
                 any = true;
+                // Continue through overflow so the diagnostic covers the full
+                // escape and the closing quote remains available for recovery.
+                value = value.and_then(|n| n.checked_mul(16)?.checked_add(digit));
                 self.pos += 1;
             } else {
                 break;
             }
         }
-        any && self.eat('}')
+        let closed = self.eat('}');
+        any && closed && value.and_then(char::from_u32).is_some()
     }
 
     // --- character literals vs type variables -----------------------------
@@ -951,6 +956,82 @@ mod tests {
         assert_eq!(lexed("\"\\u1234\"").diagnostics[0].code, crate::INVALID_ESCAPE);
         assert_eq!(lexed("\"\\u{}\"").diagnostics[0].code, crate::INVALID_ESCAPE);
         assert_eq!(lexed("\"\\u{zz}\"").diagnostics[0].code, crate::INVALID_ESCAPE);
+    }
+
+    #[track_caller]
+    fn assert_invalid_unicode_scalar(src: &str) {
+        let result = lexed(src);
+        let start = src.find("\\u{").unwrap();
+        let end = start + src[start..].find('}').unwrap() + 1;
+        let diagnostics: Vec<_> = result
+            .diagnostics
+            .iter()
+            .map(|d| (d.code, d.primary.range(), d.message.as_str()))
+            .collect();
+        assert_eq!(
+            diagnostics,
+            vec![(
+                crate::INVALID_ESCAPE,
+                range(start as u32, end as u32),
+                "invalid unicode escape; expected `\\u{...}` containing a Unicode scalar value",
+            )]
+        );
+        assert_eq!(result.tokens.len(), 2);
+        assert_eq!(lexeme(src, &result.tokens[0]), src);
+    }
+
+    #[test]
+    fn unicode_escape_rejects_first_surrogate_in_string() {
+        assert_invalid_unicode_scalar(r#""\u{D800}""#);
+    }
+
+    #[test]
+    fn unicode_escape_rejects_last_surrogate_in_string() {
+        assert_invalid_unicode_scalar(r#""\u{DFFF}""#);
+    }
+
+    #[test]
+    fn unicode_escape_rejects_surrogate_in_char() {
+        assert_invalid_unicode_scalar(r"'\u{D800}'");
+    }
+
+    #[test]
+    fn unicode_escape_rejects_value_above_unicode_range() {
+        assert_invalid_unicode_scalar(r#""\u{110000}""#);
+    }
+
+    #[test]
+    fn unicode_escape_rejects_integer_overflow() {
+        assert_invalid_unicode_scalar(r"'\u{100000041}'");
+    }
+
+    #[test]
+    fn unicode_escape_error_span_after_multibyte_text() {
+        assert_invalid_unicode_scalar(r#""é😀\u{110000}end""#);
+    }
+
+    #[test]
+    fn unicode_escape_accepts_scalar_boundaries() {
+        let result = lexed(r#""\u{0}\u{D7FF}\u{E000}\u{10FFFF}""#);
+        assert!(result.diagnostics.is_empty());
+        assert_eq!(result.tokens[0].kind, TokenKind::String);
+    }
+
+    #[test]
+    fn unicode_escape_accepts_leading_zeroes() {
+        let result = lexed(r"'\u{00000000000000001F600}'");
+        assert!(result.diagnostics.is_empty());
+        assert_eq!(result.tokens[0].kind, TokenKind::Char);
+    }
+
+    #[test]
+    fn unicode_escape_overflow_recovers_to_the_next_token() {
+        let src = r#""\u{FFFFFFFFFFFFFFFFFFFFFFFF}" next"#;
+        let result = lexed(src);
+        assert_eq!(result.diagnostics.len(), 1);
+        assert_eq!(result.diagnostics[0].code, crate::INVALID_ESCAPE);
+        assert_eq!(lexeme(src, &result.tokens[1]), "next");
+        assert_eq!(result.tokens[1].kind, TokenKind::LowerIdent);
     }
 
     #[test]

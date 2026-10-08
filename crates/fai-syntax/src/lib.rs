@@ -44,7 +44,7 @@ pub const UNTERMINATED_BLOCK_COMMENT: DiagnosticCode = DiagnosticCode::new("FAI1
 pub const INVALID_CHAR_LITERAL: DiagnosticCode = DiagnosticCode::new("FAI1004");
 /// A malformed numeric literal (bad digits or an invalid suffix).
 pub const INVALID_NUMBER: DiagnosticCode = DiagnosticCode::new("FAI1005");
-/// An unrecognized escape sequence in a string or character literal.
+/// An invalid escape sequence in a string or character literal.
 pub const INVALID_ESCAPE: DiagnosticCode = DiagnosticCode::new("FAI1006");
 /// A generic syntax error (an unexpected token, or a missing expected one).
 pub const SYNTAX_ERROR: DiagnosticCode = DiagnosticCode::new("FAI1020");
@@ -96,8 +96,10 @@ pub const CODES: &[CodeInfo] = &[
         code: INVALID_ESCAPE,
         title: "invalid escape sequence",
         default_severity: Severity::Error,
-        explanation: "A string or character literal contains an unrecognized `\\` escape. The \
-                      supported escapes are `\\n \\t \\r \\0 \\\\ \\\" \\' \\u{…}`.",
+        explanation: "A string or character literal contains an invalid `\\` escape. The \
+                      supported escapes are `\\n \\t \\r \\0 \\\\ \\\" \\' \\u{…}`. A Unicode escape \
+                      must name a scalar value from U+0000 through U+10FFFF, excluding the \
+                      surrogate range U+D800 through U+DFFF.",
     },
     CodeInfo {
         code: SYNTAX_ERROR,

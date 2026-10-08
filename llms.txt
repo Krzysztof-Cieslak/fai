@@ -170,7 +170,8 @@ let nothing = ()         // Unit   (the empty tuple; the "no useful value" value
 - **Float** literals must contain a decimal point (`3.0`, not `3`). `+ - * /` work
   on `Float` too, but you cannot mix `Int` and `Float` without converting.
 - **String** escapes: `\n \t \r \0 \\ \" \' \u{...}` (e.g. `"\u{1F600}"`).
-  Concatenate with `++`.
+  Unicode escapes in strings and chars must be U+0000–U+10FFFF, excluding
+  surrogates U+D800–U+DFFF; invalid values are `FAI1006`. Concatenate with `++`.
 - **Char** literal is a tick that **closes**: `'a'`, `'\n'`. A leading tick that
   does **not** close is a **type variable**: `'a`, `'r`. This is the one lexer
   subtlety to remember.
