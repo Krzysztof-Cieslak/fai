@@ -3984,6 +3984,11 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     Forward differences cannot simply be negated because month-end clamping is
     not reversible; the add-back law is verified across a bounded proleptic
     Gregorian domain as well as explicit leap-day and month-end boundaries.
+    Offset bounds are checked on the original signed input before multiplication
+    or absolute value. `ofHoursMinutes` requires hours in -18..18, minutes in
+    -59..59, matching signs for nonzero components, and a total within ±18h. The
+    ISO offset parser accepts only exact-width unsigned ASCII digits and rejects
+    minute/second fields outside 00..59, rather than normalizing malformed input.
   - **ISO-8601 everywhere + a custom pattern engine.** Each type renders and reads its
     canonical ISO form (`toString`/`parse`, pure). `DateTimeFormat` adds a custom
     pattern mini-language over `LocalDateTime` (`yyyy`/`yy`, `M`…`MMMM`, `dd`/`d`,

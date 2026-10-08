@@ -43,6 +43,10 @@ example: Period.addToDate (Period.between (LocalDate.fromEpochDay 18321) (LocalD
 // An `OffsetDateTime` pins a wall-clock reading to the timeline; the same instant
 // reads differently at different offsets but compares equal.
 example: OffsetDateTime.toString (OffsetDateTime.ofInstant (Option.withDefault Offset.zero (Offset.ofHours 5)) Instant.epoch) = "1970-01-01T05:00:00+05:00"
+// Offset components have matching signs; malformed ISO fields are rejected.
+example: Offset.parse "-05:30" = Offset.ofHoursMinutes (0 - 5) (0 - 30)
+example: Offset.ofHoursMinutes 5 (0 - 30) = None
+example: Offset.parse "+00:99" = None
 
 // Print the current local time, read from the clock capability.
 public main : Runtime -> Unit / { Clock, Console }

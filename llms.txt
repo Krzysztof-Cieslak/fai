@@ -1419,6 +1419,10 @@ count wraps with `Int` arithmetic. `LocalTime` wraps modulo one day.
 - **`Offset`** — a fixed UTC offset (±18h). `zero`, `ofSeconds`/`ofHours`/
   `ofHoursMinutes` (each `Option`), `seconds`/`totalMinutes`, `negate`, `compare`,
   `toString`/`parse` (`Z` or `±HH:MM[:SS]`).
+  Constructors validate before arithmetic. `ofHoursMinutes` takes signed hours
+  in -18..18 and minutes in -59..59; nonzero components must have the same sign,
+  and their total must stay within ±18h. Parsing requires unsigned two-digit
+  ASCII fields, with minutes/seconds below 60.
 - **`OffsetDateTime`** — a `LocalDateTime` + `Offset`. `of`, `ofInstant`,
   `now : { clock : Clock | _ } -> OffsetDateTime / { Clock }`, `toInstant`,
   `withOffset`, `localDateTime`/`offset` and field accessors, `compare` (by

@@ -403,6 +403,11 @@ as `let log = fun message -> body`: constructing it is pure, and calling its
 saturating arrow performs the body's effects. A parameterless local value binding
 is evaluated immediately.
 
+`Offset` constructors validate before arithmetic: seconds stay within ±64800,
+hours within ±18, and `ofHoursMinutes` requires minutes within ±59 and matching
+signs for nonzero components. ISO parsing requires two unsigned ASCII digits per
+field, with minutes/seconds in 00..59 and the same overall ±18-hour bound.
+
 `Clock.sleep` returns `Unit` early on task cancellation, including subsequent
 teardown sleeps. Other wakes do not shorten its deadline; nonpositive delays
 return immediately and oversized delays use representable clock intervals.
