@@ -31,6 +31,61 @@ let bodyOn handler verb target =
   match Web.mockContext verb target with
   | Err e -> Err e
   | Ok ctx -> bodyOf (handler ctx)
+
+headersOn : Web.HttpHandler 'e -> Http.Method -> String -> Headers / 'e
+let headersOn handler verb target =
+  match Web.mockContext verb target with
+  | Err e -> Headers.empty
+  | Ok ctx ->
+    match Web.outcomeResponse (handler ctx) with
+    | None -> Headers.empty
+    | Some response -> response.headers
+example: Headers.get "X-Request-Id" (headersOn (Web.chain [
+  Web.setHeader "X-Request-Id" "abc",
+  Web.text "ok"
+]) Http.GET "/") = Some "abc"
+example: Headers.getAll "X-Value" (headersOn (Web.chain [
+  Web.setHeader "X-Value" "old",
+  Web.setHeader "x-value" "new",
+  Web.text "ok"
+]) Http.GET "/") = ["new"]
+example: Headers.getAll "Set-Cookie" (headersOn (Web.chain [
+  Web.addHeader "Set-Cookie" "a=1",
+  Web.addHeader "set-cookie" "b=2",
+  Web.text "ok"
+]) Http.GET "/") = ["a=1", "b=2"]
+example: Headers.get "Content-Type" (headersOn (Web.chain [
+  Web.setHeader "Content-Type" "old",
+  Web.html "<p>ok</p>"
+]) Http.GET "/") = Some "text/html; charset=utf-8"
+example: Headers.get "Content-Type" (headersOn (Web.chain [
+  Web.setHeader "Content-Type" "old",
+  Web.bytes (Bytes.fromString "binary")
+]) Http.GET "/") = Some "application/octet-stream"
+example: Headers.get "Content-Length" (headersOn (Web.chain [
+  Web.setHeader "Content-Length" "999",
+  Web.text "new body"
+]) Http.GET "/") = None
+example: Headers.get "Content-Type" (headersOn (Web.chain [
+  Web.setHeader "Content-Type" "old",
+  Web.noContent
+]) Http.GET "/") = None
+example: Headers.get "X-Request-Id" (headersOn (Web.chain [
+  Web.setHeader "X-Request-Id" "abc",
+  Web.noContent
+]) Http.GET "/") = Some "abc"
+example: Headers.get "X-Request-Id" (headersOn (Web.chain [
+  Web.setHeader "X-Request-Id" "abc",
+  Web.serverError "oops"
+]) Http.GET "/") = Some "abc"
+example: Headers.get "Location" (headersOn (Web.chain [
+  Web.setHeader "Location" "/old",
+  Web.redirect "/new"
+]) Http.GET "/") = Some "/new"
+example: Headers.get "X-Request-Id" (headersOn (Web.chain [
+  Web.setHeader "X-Request-Id" "abc",
+  Web.redirect "/new"
+]) Http.GET "/") = Some "abc"
 // --- Core handler behaviour ------------------------------------------------
 example: runOn (Web.text "hi") Http.GET "/x" = 200
 example: runOn (Web.html "<p>hi</p>") Http.GET "/x" = 200
@@ -91,3 +146,7 @@ example: bodyOn app Http.GET "/search" = Ok "none"
 example: runOn app Http.GET "/missing" = 404
 example: runOn app Http.POST "/" = 404
 example: runOn app Http.DELETE "/user/42" = 404
+example: Headers.get "X-Request-Id" (headersOn (Web.chain [
+  Web.setHeader "X-Request-Id" "abc",
+  app
+]) Http.GET "/user/42") = Some "abc"

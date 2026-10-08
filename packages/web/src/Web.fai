@@ -170,58 +170,70 @@ let typedResponse status contentType body =
     reason = reasonPhrase status
   }
 
+replaceHeader : Headers -> (String * String) -> Headers
+let replaceHeader headers field =
+  match field with
+  | (name, value) -> Headers.set name value headers
+
+// A responder owns its new body's type/length and explicitly supplied headers.
+// Other middleware headers, including repeated Set-Cookie fields, survive.
+finishResponse : Http.Response 'e -> HttpHandler 'e
+let finishResponse response ctx =
+  let accumulated =
+    Headers.remove "Content-Length" (Headers.remove "Content-Type" ctx.response.headers)
+  let headers = List.foldl replaceHeader accumulated (Headers.toList response.headers)
+  Halt { ctx with response = { response with headers = headers } }
+
 /// Respond with `status` and a plain-text body, ending the pipeline.
 public respond : Int -> String -> HttpHandler 'e
-let respond status body ctx = Halt { ctx with response = textResponse status body }
+let respond status body ctx = finishResponse (textResponse status body) ctx
 
 /// Respond `200 OK` with a plain-text body.
 public text : String -> HttpHandler 'e
-let text body ctx = Halt { ctx with response = textResponse 200 body }
+let text body ctx = respond 200 body ctx
 
 /// Respond `200 OK` with an `text/html` body.
 public html : String -> HttpHandler 'e
-let html body ctx = Halt { ctx with response = typedResponse 200 "text/html; charset=utf-8" body }
+let html body ctx = finishResponse (typedResponse 200 "text/html; charset=utf-8" body) ctx
 
 /// Respond `200 OK` with a raw `application/octet-stream` body.
 public bytes : Bytes -> HttpHandler 'e
 let bytes payload ctx =
   let base = Http.response 200 (Http.bytesBody payload)
-  Halt { ctx with
-    response = { base with
-      headers = Headers.set "Content-Type" "application/octet-stream" base.headers,
-      reason = "OK"
-    }
-  }
+  finishResponse { base with
+    headers = Headers.set "Content-Type" "application/octet-stream" base.headers,
+    reason = "OK"
+  } ctx
 
 /// Respond `201 Created` with a plain-text body.
 public created : String -> HttpHandler 'e
-let created body ctx = Halt { ctx with response = textResponse 201 body }
+let created body ctx = respond 201 body ctx
 
 /// Respond `204 No Content` with an empty body.
 public noContent : HttpHandler 'e
 let noContent ctx =
   let base = Http.response 204 Http.emptyBody
-  Halt { ctx with response = { base with reason = "No Content" } }
+  finishResponse { base with reason = "No Content" } ctx
 
 /// Respond `400 Bad Request` with a plain-text body.
 public badRequest : String -> HttpHandler 'e
-let badRequest body ctx = Halt { ctx with response = textResponse 400 body }
+let badRequest body ctx = respond 400 body ctx
 
 /// Respond `401 Unauthorized` with a plain-text body.
 public unauthorized : String -> HttpHandler 'e
-let unauthorized body ctx = Halt { ctx with response = textResponse 401 body }
+let unauthorized body ctx = respond 401 body ctx
 
 /// Respond `403 Forbidden` with a plain-text body.
 public forbidden : String -> HttpHandler 'e
-let forbidden body ctx = Halt { ctx with response = textResponse 403 body }
+let forbidden body ctx = respond 403 body ctx
 
 /// Respond `404 Not Found` with a plain-text body.
 public notFound : String -> HttpHandler 'e
-let notFound body ctx = Halt { ctx with response = textResponse 404 body }
+let notFound body ctx = respond 404 body ctx
 
 /// Respond `500 Internal Server Error` with a plain-text body.
 public serverError : String -> HttpHandler 'e
-let serverError body ctx = Halt { ctx with response = textResponse 500 body }
+let serverError body ctx = respond 500 body ctx
 
 /// Set the response status (and its reason phrase) and continue, so later
 /// handlers can still add headers or a body.
@@ -230,9 +242,16 @@ let setStatus status ctx =
   let resp = ctx.response
   Continue { ctx with response = { resp with reason = reasonPhrase status, status = status } }
 
-/// Add a response header and continue.
+/// Set a response header, replacing all same-name fields case-insensitively,
+/// and continue. Use `addHeader` for repeated fields such as Set-Cookie.
 public setHeader : String -> String -> HttpHandler 'e
 let setHeader name value ctx =
+  let resp = ctx.response
+  Continue { ctx with response = { resp with headers = Headers.set name value resp.headers } }
+
+/// Append a response header and continue, preserving existing same-name fields.
+public addHeader : String -> String -> HttpHandler 'e
+let addHeader name value ctx =
   let resp = ctx.response
   Continue { ctx with response = { resp with headers = Headers.add name value resp.headers } }
 
@@ -240,12 +259,10 @@ let setHeader name value ctx =
 public redirect : String -> HttpHandler 'e
 let redirect location ctx =
   let base = Http.response 302 Http.emptyBody
-  Halt { ctx with
-    response = { base with
-      headers = Headers.set "Location" location base.headers,
-      reason = "Found"
-    }
-  }
+  finishResponse { base with
+    headers = Headers.set "Location" location base.headers,
+    reason = "Found"
+  } ctx
 
 // --- Testing helpers -------------------------------------------------------
 /// Build a request context for `method` and `target` (an origin-form path such as

@@ -27,13 +27,16 @@ let search ctx =
 // would reach handlers by closure capture here, and their effects would show up
 // in `app`'s effect row.
 app : Web.HttpHandler 'e
-let app = Router.router (Web.notFound "Not Found") [
-  Router.get [
-    Router.route "/" home,
-    Router.route "/greet/{name}" greet,
-    Router.route "/search" search
-  ],
-  Router.subRoute "/api" [Router.get [Router.route "/ping" (Web.text "pong")]]
+let app = Web.chain [
+  Web.setHeader "X-Framework" "Fai web",
+  Router.router (Web.notFound "Not Found") [
+    Router.get [
+      Router.route "/" home,
+      Router.route "/greet/{name}" greet,
+      Router.route "/search" search
+    ],
+    Router.subRoute "/api" [Router.get [Router.route "/ping" (Web.text "pong")]]
+  ]
 ]
 
 // Make one request to the loopback server and render the status and body.

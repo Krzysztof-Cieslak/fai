@@ -480,6 +480,10 @@ Each phase crate (`fai-syntax`, `fai-resolve`, `fai-types`, `fai-core`,
 `fai-rc`, `fai-codegen`) defines its phase as **salsa query groups** plugged into
 `fai-db`; see §9.
 
+The optional `packages/web` library preserves middleware headers when a terminal
+`Web` responder supplies the status/body. `Web.setHeader` replaces same-name fields
+case-insensitively; `Web.addHeader` preserves duplicates such as `Set-Cookie`.
+
 ## 6. Compiler pipeline
 
 ```

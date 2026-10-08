@@ -63,8 +63,23 @@ your own module, alias it locally: `let (>=>) = Web.compose`.
 
 `text`, `html`, `bytes`, `respond status body`, `created`, `noContent`,
 `badRequest`, `unauthorized`, `forbidden`, `notFound`, `serverError`, `redirect`
-all build a response and `Halt`. `setStatus` and `setHeader` modify the
-accumulated response and `Continue`.
+all finish the response and `Halt`, preserving unrelated headers accumulated by
+middleware. The responder supplies its status and content type (or removes the
+type for an empty response); an old `Content-Length` is cleared so HTTP framing
+can compute the new body's length. Redirects replace `Location`.
+
+`setStatus`, `setHeader`, and `addHeader` modify the accumulated response and
+`Continue`. `setHeader` replaces all same-name fields case-insensitively;
+`addHeader` appends, so repeated fields such as `Set-Cookie` remain distinct:
+
+```fai
+Web.chain [
+  Web.setHeader "X-Request-Id" "abc",
+  Web.addHeader "Set-Cookie" "a=1",
+  Web.addHeader "Set-Cookie" "b=2",
+  Web.text "ok"
+]
+```
 
 ### Reading the request
 

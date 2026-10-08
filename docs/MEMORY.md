@@ -4145,6 +4145,12 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     map (closing every connection). An interface instance (the `Transport`) rides a union
     field and a channel — validated by the runtime's uniform value representation. HTTP/2
     and a cross-`withClient` shared pool remain follow-up.
+  - **Web response accumulation.** The optional `packages/web` handler layer
+    preserves middleware headers when a terminal responder sets its status/body.
+    Responder-owned Content-Type/Location values replace prior ones, and stale
+    Content-Length is removed before HTTP framing. `setHeader` replaces all
+    same-name fields case-insensitively; `addHeader` appends, preserving duplicates
+    such as Set-Cookie through routing and response construction.
   - **A codegen fix surfaced by this work:** a definition that both has a string
     literal and a token-taking reuse entry emitted its entry body twice in the single
     in-process JIT module (the primary and the reuse entry shared a `{base}__fn0__strN`

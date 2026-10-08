@@ -1536,6 +1536,15 @@ tuple3 : Arbitrary 'a -> Arbitrary 'b -> Arbitrary 'c -> Arbitrary ('a * 'b * 'c
 
 ---
 
+### Optional web framework
+
+Including `packages/web/src` in a workspace supplies `Web` handlers and `Router`.
+Terminal responders preserve unrelated middleware headers. `Web.setHeader`
+replaces a header case-insensitively; `Web.addHeader` appends a distinct field
+(for example, multiple `Set-Cookie` values). See `packages/web/README.md`.
+
+---
+
 ## 14. The command-line workflow
 
 The `fai` binary is a thin client to a per-workspace daemon that keeps the
