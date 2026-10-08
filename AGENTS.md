@@ -671,16 +671,14 @@ cache plus a fast linker (mold/lld).
   guards.
 - These benches' **timings are not a CI gate** (shared runners are noisy). The
   `CI` workflow still **compiles** them (`build --all-targets`) to prevent bitrot,
-  and a separate **`Benchmarks` workflow** (`.github/workflows/bench.yml`) **runs**
-  every benchmark on **every pull request**, on `main`, and on demand, publishing
+  and a separate **`Benchmarks` workflow** (`.github/workflows/bench.yml`) is
+  **disabled by default and manual-only**. When explicitly enabled, it publishes
   an **informational** report — a Markdown summary on the run page plus the raw and
   parsed (`bench-results.json`) results as artifacts — rendered by the
-  `bench-summary` tool (`crates/fai-tests/src/bench_summary.rs`). A pull-request
-  run uses a short per-benchmark settle time (`DIVAN_MAX_TIME=1`), so the whole
-  suite runs in roughly the test job's time; it still **executes** every
-  benchmark, so it fails the build only when a benchmark **crashes or its
+  `bench-summary` tool (`crates/fai-tests/src/bench_summary.rs`). An intentional
+  run **executes** every benchmark, failing only when a benchmark **crashes or its
   Fai-vs-Rust result diverges from its oracle** (a bug, not a perf regression),
-  never on a timing. The `main`/on-demand run keeps the long settle time for steady
+  never on a timing. The manual run keeps the long settle time for steady
   medians. It never fails the build on timings; the deterministic guards remain the
   sole performance gate. The runtime/memory
    comparison spans **runtime** (the `algorithms_jit`/`algorithms_aot` benches) and
@@ -830,6 +828,12 @@ snapshot, type golden, and/or e2e) in the same change.
 
 ## 12. Definition of Done / CI
 
+Automatic CI runs only the four branch-protection-required checks: `fmt + clippy`,
+`unit + e2e tests (linux)`, and platform tests on macOS and Windows. The optional
+Miri/property jobs are disabled; Benchmarks, Editors, Fuzz, and deep properties
+are disabled workflows with manual-only triggers. Run affected property tests
+locally when changing their implementation or invariants.
+
 A change is done when:
 
 1. `cargo build` is clean and `cargo clippy --all-targets -- -D warnings` passes.
@@ -908,8 +912,8 @@ test; under-testing a phase is a defect, not a shortcut.
   blocks; `fmt` idempotence and the `parse → print → parse` / `lex → render`
   round-trips; reference-count balance. Also run the language's own
   `example`/`forall` contracts over `samples/`.
-- **Put property tests in a `proptest`-named home.** CI runs the property tests in
-  their own lane (in parallel with the rest, harder, Linux-only), selected purely
+- **Put property tests in a `proptest`-named home.** Property tests have
+  their own optional lane (currently disabled in automatic CI), selected purely
   by name: a property test must live in a module whose path contains `proptest`
   (e.g. `mod proptests`) or `prop_test` (e.g. `mod prop_tests`), or in a dedicated
   `properties` / `proptest` test binary. The `unit` and `proptest` nextest
