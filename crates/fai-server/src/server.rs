@@ -466,7 +466,7 @@ fn handle_run(conn: &mut Conn, request: &RunRequest) -> std::io::Result<()> {
         }
     };
 
-    let exit = supervise(conn, &bundle_path)?;
+    let exit = supervise(conn, &bundle_path, &request.args)?;
     let _ = std::fs::remove_file(&bundle_path);
     conn.send(&ServerMessage::Result(Response::RunExit(exit)))
 }
@@ -597,7 +597,7 @@ fn render_test(
 
 /// Spawns and supervises the worker, streaming its stdout/stderr as `$/output`
 /// and enforcing the wall-clock timeout. Returns the program's exit code.
-fn supervise(conn: &mut Conn, bundle_path: &Path) -> std::io::Result<i32> {
+fn supervise(conn: &mut Conn, bundle_path: &Path, program_args: &[String]) -> std::io::Result<i32> {
     let timeout = run_timeout();
     let cpu_secs = timeout.as_secs().max(1);
 
@@ -605,6 +605,8 @@ fn supervise(conn: &mut Conn, bundle_path: &Path) -> std::io::Result<i32> {
     let mut child = Command::new(exe)
         .arg("__run-worker")
         .arg(bundle_path)
+        .arg("--")
+        .args(program_args)
         .env("FAI_RUN_CPU_SECS", cpu_secs.to_string())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

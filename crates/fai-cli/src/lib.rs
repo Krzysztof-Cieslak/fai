@@ -77,7 +77,7 @@ fn dispatch(parsed: Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
 
     // Subcommands that always run in this process, never through the daemon.
     match &parsed.command {
-        Command::RunWorker(args) => return run_worker(&args.bundle, err),
+        Command::RunWorker(args) => return run_worker(&args.bundle, &args.args, err),
         Command::TestWorker(args) => return run_test_worker(&args.bundle, args.start, err),
         Command::DaemonServe => return run_daemon_serve(&parsed.global, err),
         _ => {}
@@ -465,15 +465,19 @@ fn run_in_process_worker(
             return EXIT_WORKSPACE;
         }
     };
-    let exit = spawn_worker(&bundle_path, &[], err);
+    let exit = spawn_worker(&bundle_path, program_args, &[], err);
     let _ = std::fs::remove_file(&bundle_path);
-    let _ = program_args; // program arguments are accepted but unused in this subset
     exit
 }
 
 /// Spawns the `__run-worker` subprocess on `bundle_path` with inherited stdio,
 /// applying any `env` (e.g. resource limits). Returns the program's exit code.
-fn spawn_worker(bundle_path: &std::path::Path, env: &[(&str, String)], err: &mut dyn Write) -> i32 {
+fn spawn_worker(
+    bundle_path: &std::path::Path,
+    program_args: &[String],
+    env: &[(&str, String)],
+    err: &mut dyn Write,
+) -> i32 {
     let exe = match std::env::current_exe() {
         Ok(path) => path,
         Err(error) => {
@@ -482,7 +486,7 @@ fn spawn_worker(bundle_path: &std::path::Path, env: &[(&str, String)], err: &mut
         }
     };
     let mut command = std::process::Command::new(exe);
-    command.arg("__run-worker").arg(bundle_path);
+    command.arg("__run-worker").arg(bundle_path).arg("--").args(program_args);
     for (key, value) in env {
         command.env(key, value);
     }
@@ -511,7 +515,7 @@ fn write_bundle_file(bundle: &fai_driver::WireBundle) -> Result<PathBuf, String>
 
 /// The worker side of `fai run`: reads a serialized bundle, JIT-compiles it, and
 /// runs it in this process, returning the program's exit code.
-fn run_worker(bundle_path: &Utf8Path, err: &mut dyn Write) -> i32 {
+fn run_worker(bundle_path: &Utf8Path, program_args: &[String], err: &mut dyn Write) -> i32 {
     let bytes = match std::fs::read(bundle_path) {
         Ok(bytes) => bytes,
         Err(error) => {
@@ -526,7 +530,7 @@ fn run_worker(bundle_path: &Utf8Path, err: &mut dyn Write) -> i32 {
             return EXIT_WORKSPACE;
         }
     };
-    fai_driver::jit_run_bundle(&bundle)
+    fai_driver::jit_run_bundle_with_args(&bundle, program_args)
 }
 
 /// Maps a clap `QueryCommand` to the driver's `QueryRequest`. Commands outside

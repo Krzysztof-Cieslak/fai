@@ -274,7 +274,10 @@ when initialization or the instantiated entry requires it.
 Build (via JIT) and run. Lowest edit→run latency: no linking; executed in an
 isolated worker spawned by the daemon (capabilities provided by the host).
 
-- **Arguments:** everything after `--` is passed to the program.
+- **Arguments:** everything after `--` is passed to the program as `Env.args ()`,
+  preserving empty, spaced, Unicode, and flag-like values. With no arguments it
+  returns `[]`. Worker-control arguments are excluded, in both daemon and
+  `--no-daemon` modes, matching a built executable's arguments after its name.
 - **Streaming:** the program's stdout/stderr stream live; stdin is forwarded.
 - **Exit:** the program's exit code (or `124` on timeout, `4` on compile error).
 

@@ -1300,6 +1300,13 @@ pub fn test_bundle_from_slice(bytes: &[u8]) -> Result<TestWireBundle, serde_json
     Ok(bundle)
 }
 
+/// JIT-runs a worker bundle with application arguments distinct from the worker's
+/// own command line. The arguments are visible to every task through `Env.args`.
+#[must_use]
+pub fn jit_run_bundle_with_args(bundle: &WireBundle, args: &[String]) -> i32 {
+    fai_runtime::with_program_args(args, || jit_run_bundle(bundle))
+}
+
 /// Reconstructs a [`WireBundle`] and JIT-runs its entry, returning the exit code.
 /// Runs in the (database-free) worker process; applies any requested resource
 /// limits first, then loads any declared native libraries so a user `foreign`
