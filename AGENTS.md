@@ -825,11 +825,16 @@ than the raw value ABI the built-in hosts use, so a plain C function is callable
 `Int`/`Bool` ↔ `int64_t`, `Float` ↔ `double`, a `String` argument ↔ a borrowed
 `(const char* ptr, int64_t len)` pair, a `String` result ↔ a `const char*`
 returned with its length through a trailing `int64_t* out_len` (copied into a Fai
-`String`; the foreign owns its buffer), and `Unit` is the empty value. A foreign
+`String` before releasing arguments; the pointer may borrow an input buffer, and
+any other returned buffer stays foreign-owned), and `Unit` is the empty value. A foreign
 signature outside that subset is **`FAI5003`**. A program's native libraries and
 object files are declared in an optional **`fai.toml`** (`[native]`:
 `library-dirs`/`libraries`/`objects`) at the workspace root: `fai build` links
 them (AOT) and `fai run` `dlopen`s the shared libraries (JIT). See `docs/CLI.md`.
+
+Foreign functions are first-class values and may be partially applied. Their
+retained entries use the fully expanded declared argument/result types, including
+signature aliases, so direct and first-class calls share the native ABI.
 
 Every language-surface change must update the docs — `AGENTS.md`, `docs/MEMORY.md`,
 and **`llms.txt`** (the agent-facing language guide) — and add tests (parser

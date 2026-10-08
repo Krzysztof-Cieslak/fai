@@ -88,6 +88,44 @@ fn lowers_foreign_decl_to_a_foreign_call() {
 }
 
 #[test]
+fn foreign_entries_retain_their_declared_argument_and_result_types() {
+    let (db, file) = db_with(
+        "module M\nforeign \"typed\" typed : Int -> Float -> Bool -> String -> Unit -> String / { Console }\n",
+    );
+    let lowered = core(&db, file, fai_syntax::Symbol::intern("typed"));
+    let body = &lowered.entry().body;
+    let crate::ir::ExprKind::Foreign { args, .. } = &body.kind else { panic!("foreign entry") };
+    assert_eq!(
+        args.iter().map(|arg| arg.ty.clone()).collect::<Vec<_>>(),
+        vec![
+            fai_types::Ty::int(),
+            fai_types::Ty::Con(fai_types::Con::Float),
+            fai_types::Ty::bool(),
+            fai_types::Ty::Con(fai_types::Con::String),
+            fai_types::Ty::Unit,
+        ]
+    );
+    assert_eq!(body.ty, fai_types::Ty::Con(fai_types::Con::String));
+}
+
+#[test]
+fn foreign_signature_alias_edits_match_clean_arity_and_lowering() {
+    let before =
+        "module M\ntype Native = Int -> Int / { Console }\nforeign \"native\" value : Native\n";
+    let after = "module M\ntype Native = Float -> Float -> Float / { Console }\nforeign \"native\" value : Native\n";
+    let (mut db, file) = db_with(before);
+    let name = Symbol::intern("value");
+    assert_eq!(crate::abi::source_param_count(&db, file, name), 1);
+    let _ = core(&db, file, name);
+    let _ = crate::abi::abi(&db, file, name);
+    db.add_source("M.fai".into(), after.into());
+    let (clean, clean_file) = db_with(after);
+    assert_eq!(crate::abi::source_param_count(&db, file, name), 2);
+    assert_eq!(core(&db, file, name), core(&clean, clean_file, name));
+    assert_eq!(crate::abi::abi(&db, file, name), crate::abi::abi(&clean, clean_file, name));
+}
+
+#[test]
 fn lowers_let_block() {
     let src = indoc! {r#"
         module M

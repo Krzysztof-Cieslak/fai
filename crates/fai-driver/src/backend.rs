@@ -26,7 +26,6 @@ use fai_rc::{
 use fai_resolve::{DefId, ModuleName, module_defs, module_name};
 use fai_span::SpanResolver;
 use fai_syntax::Symbol;
-use fai_syntax::ast::ItemKind;
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
@@ -208,30 +207,12 @@ mod symbol_tests {
     }
 }
 
-/// A definition's syntactic source-parameter count (the `let f a b = …` binders),
-/// excluding any offset evidence. Read from the binding, body-edit-stable.
-fn source_param_count(db: &dyn Db, file: SourceFile, name: Symbol) -> usize {
-    let parsed = fai_syntax::parse(db, file);
-    // Locate the binding by its (qualified) name via the paired definitions, so a
-    // nested definition is found by its module path rather than the local name.
-    module_defs(db, file)
-        .get(name)
-        .and_then(|d| match &parsed.module.items[d.binding.index()].kind {
-            ItemKind::Binding { params, .. } => Some(params.len()),
-            // A `foreign` decl has no parameter patterns; its parameter count is
-            // the arrow arity of its declared type.
-            ItemKind::Foreign { ty, .. } => Some(parsed.module.arrow_arity(*ty)),
-            _ => None,
-        })
-        .unwrap_or(0)
-}
-
 /// A definition's runtime arity: its source parameters plus the leading offset
 /// evidence its (row-polymorphic) type requires. Read from the binding and the
 /// signature, both body-edit-stable, so the codegen firewall stays intact.
 #[salsa::tracked]
 pub fn def_arity(db: &dyn Db, file: SourceFile, name: Symbol) -> usize {
-    let source_params = source_param_count(db, file, name);
+    let source_params = fai_core::abi::source_param_count(db, file, name);
     let def = DefId::new(file.source(db), name);
     let evidence = fai_types::declared_or_inferred_scheme(db, def)
         .map_or(0, |scheme| fai_types::evidence_count(&scheme));

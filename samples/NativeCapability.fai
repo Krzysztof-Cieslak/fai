@@ -30,9 +30,13 @@ public interface Process =
 //    `Int`/`Float`/`Bool`/`String`/`Unit`.
 foreign "app_getpid" getProcessId : Unit -> Int / { Process }
 
+// A native function is a first-class value; a helper keeps its declared ABI.
+invoke : ('a -> 'b / 'e) -> 'a -> 'b / 'e
+let invoke f x = f x
+
 // 3. The instance, bundling the native function behind the interface.
 public processCapability : Process
-let processCapability = { Process with pid u = getProcessId u }
+let processCapability = { Process with pid u = invoke getProcessId u }
 
 // The program's own runtime shape: the standard console plus the new capability.
 // (Record extension is future work, so this is a fresh record, not a `with`

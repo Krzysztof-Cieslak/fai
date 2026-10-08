@@ -735,8 +735,11 @@ Rules for `foreign`:
   else is `FAI5003`. The native shape is: `Int`/`Bool` ↔ `int64_t`, `Float` ↔
   `double`, a `String` argument ↔ a borrowed `(const char* ptr, int64_t len)`, a
   `String` result ↔ a `const char*` returned with its length through a trailing
-  `int64_t* out_len` (copied into a Fai `String`; the foreign owns its buffer), and
+  `int64_t* out_len` (copied before input buffers are released; other returned
+  buffers remain foreign-owned), and
   `Unit` ↔ no argument / `void`.
+  Foreign functions may be passed as values or partially applied; their expanded
+  declared signatures determine the same marshalling on every call path.
 
 A contract (`example`/`forall`) cannot call a capability — including your own — so
 it cannot reach a `foreign` (`FAI6004`).

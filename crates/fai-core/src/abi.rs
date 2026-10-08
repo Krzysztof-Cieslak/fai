@@ -39,9 +39,10 @@ pub fn abi_of(db: &dyn Db, def: DefId) -> Arc<FnAbi> {
     db.source_file(def.file).map_or_else(|| Arc::new(FnAbi::default()), |f| abi(db, f, def.name))
 }
 
-/// The number of syntactic source parameters of `name`'s binding (`let f a b = …`
-/// has two), or zero if it is not a function binding.
-fn source_param_count(db: &dyn Db, file: SourceFile, name: Symbol) -> usize {
+/// The source arity of a binding, or the expanded declared arity of a foreign
+/// function. Shared with the driver so aliases cannot give conflicting ABIs.
+#[must_use]
+pub fn source_param_count(db: &dyn Db, file: SourceFile, name: Symbol) -> usize {
     let parsed = fai_syntax::parse(db, file);
     module_defs(db, file)
         .get(name)
@@ -49,8 +50,28 @@ fn source_param_count(db: &dyn Db, file: SourceFile, name: Symbol) -> usize {
             ItemKind::Binding { params, .. } => Some(params.len()),
             // A `foreign` decl has no parameter patterns; its parameter count is
             // the arrow arity of its declared type.
-            ItemKind::Foreign { ty, .. } => Some(parsed.module.arrow_arity(*ty)),
+            ItemKind::Foreign { .. } => Some(foreign_signature(db, file, name).0.len()),
             _ => None,
         })
         .unwrap_or(0)
+}
+
+/// Argument/result types of a foreign's fully expanded declared signature.
+pub(crate) fn foreign_signature(
+    db: &dyn Db,
+    file: SourceFile,
+    name: Symbol,
+) -> (Vec<fai_types::Ty>, fai_types::Ty) {
+    let Some(scheme) =
+        fai_types::declared_or_inferred_scheme(db, DefId::new(file.source(db), name))
+    else {
+        return (Vec::new(), fai_types::Ty::Error);
+    };
+    let mut parameters = Vec::new();
+    let mut result = &scheme.ty;
+    while let fai_types::Ty::Arrow(from, to, _) = result {
+        parameters.push((**from).clone());
+        result = to;
+    }
+    (parameters, result.clone())
 }

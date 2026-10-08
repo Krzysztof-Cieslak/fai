@@ -3000,14 +3000,9 @@ impl<M: Module> Translator<'_, M> {
         let call = self.builder.ins().call(f, &native_args);
         let native_result = ret_type.map(|_| self.builder.inst_results(call)[0]);
 
-        // The call has returned, so the borrowed string bytes are no longer needed:
-        // drop every operand (a marshalled foreign consumes its arguments; an
-        // immediate drop is a no-op, a boxed `Float`/`String` is freed).
-        for (v, _) in &arg_vals {
-            self.call_drop(*v);
-        }
-
-        match result_ty {
+        // Copy a native string result before releasing any input: it may be a
+        // view of the borrowed input buffer, valid until those operands die.
+        let result = match result_ty {
             Ty::Con(Con::Int) => self.call1("fai_box_int", native_result.unwrap()),
             Ty::Con(Con::Bool) => self.call1("fai_marshal_bool_result", native_result.unwrap()),
             // The native result is already an unboxed `f64`; return it as such (the
@@ -3025,7 +3020,11 @@ impl<M: Module> Translator<'_, M> {
                 )
             }
             _ => self.builder.ins().iconst(types::I64, rt::FAI_UNIT),
+        };
+        for (v, _) in &arg_vals {
+            self.call_drop(*v);
         }
+        result
     }
 
     /// Applies a binding `local = value` to the bounds-check-elimination fact
