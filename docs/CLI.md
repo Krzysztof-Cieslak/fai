@@ -278,7 +278,11 @@ isolated worker spawned by the daemon (capabilities provided by the host).
   preserving empty, spaced, Unicode, and flag-like values. With no arguments it
   returns `[]`. Worker-control arguments are excluded, in both daemon and
   `--no-daemon` modes, matching a built executable's arguments after its name.
-- **Streaming:** the program's stdout/stderr stream live; stdin is forwarded.
+- **Streaming:** the program's stdout/stderr stream live; stdin bytes and EOF are
+  forwarded independently. Input uses one 8 KiB credit at a time, so a program
+  that is not reading applies backpressure. Exit, timeout, and disconnect close
+  the worker without waiting for terminal input. This is byte-pipe forwarding,
+  not PTY emulation.
 - **Exit:** the program's exit code (or `124` on timeout, `4` on compile error).
 
 If the daemon is unavailable before submission, the CLI can run locally. After
@@ -414,12 +418,12 @@ The first request is `initialize`:
 ```jsonc
 // → request
 { "method": "initialize",
-  "params": { "protocolVersion": 1, "compilerVersion": "0.1.0",
+  "params": { "protocolVersion": 2, "compilerVersion": "0.1.0",
               "schemaVersion": 1, "workspaceRoot": "/abs/path",
               "clientInfo": { "name": "fai-cli", "version": "0.1.0" } } }
 // ← response
 { "result": { "serverCapabilities": { "streaming": true, "query": true },
-              "compilerVersion": "0.1.0", "protocolVersion": 1, "schemaVersion": 1 } }
+              "compilerVersion": "0.1.0", "protocolVersion": 2, "schemaVersion": 1 } }
 ```
 
 Because the client and daemon are the **same binary**, a version mismatch means a
@@ -475,6 +479,8 @@ deferred; the request shape reserves room for them.
 | `$/diagnostic` | `{ id, diagnostic: Diagnostic }` | streamed diagnostics |
 | `$/testEvent` | `TestEvent` (per the `fai test` schema: `ordinal`, `symbol?`, `kind`, `status`, `counterexample?`, `seed`, `trials`, `maxSize`) | `test` |
 | `$/output` | `{ id, stream: "stdout"\|"stderr", chunk: bytes }` | `run` worker output |
+| `inputReady` | one credit for up to 8192 stdin bytes | server → run client |
+| `input` / `inputEof` | one credited byte chunk / terminal EOF | run client → server |
 | `$/log` | `{ level, message }` | daemon logs |
 
 A streaming command emits notifications keyed by the request `id`, then sends the
