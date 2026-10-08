@@ -13,15 +13,10 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
-# The suite is split into lanes that run in parallel for fast pull-request
-# feedback: `unit` runs everything except the property tests, `proptest` runs only
-# the property tests (run harder, see PROPTEST_CASES), and `cross-os` runs the
-# platform-sensitive subset (the native linker path and the process-control FFI)
-# on macOS/Windows — the property and heavy e2e suites run on Linux only. The
-# `unit` and `proptest` lanes are exact complements (see .config/nextest.toml);
-# the `unit` lane runs the partition guard that fails the build if they ever stop
-# summing to the whole suite. Each Linux lane builds its own test binaries (a
-# shared cache key lets warm runs reuse the prior build).
+# Automatic CI runs only the branch-protection-required jobs: lint, Linux
+# unit/e2e tests, and platform tests on macOS/Windows. Optional Miri and deep
+# property jobs are disabled to reserve the shared runner capacity. The named
+# unit/proptest profiles remain complementary and their partition is checked.
 #
 # Each OS uses its native default shell (bash on Linux/macOS, PowerShell on
 # Windows). Forcing bash on Windows puts Git's `usr/bin/link.exe` ahead of the
@@ -70,8 +65,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          # Share the build with the `proptest` lane: both compile the same test
-          # binaries, so a warm run reuses one cache instead of two.
+          # Retain the shared test cache key across CI configurations.
           shared-key: linux-tests
 
       - name: Install nextest
@@ -88,7 +82,7 @@ jobs:
         run: cargo test --workspace --locked --doc
 
       - name: Verify the unit/proptest lanes partition the suite
-        # A name-based guard: the two parallel lanes must together select every
+        # A name-based guard: the two profiles must together select every
         # test exactly once. Fails the build if a new test ever escapes both lanes
         # (or the property-test selection breaks). Reuses the warm build above.
         run: ./scripts/check-nextest-partition.sh
@@ -106,6 +100,7 @@ jobs:
           if-no-files-found: ignore
 
   shared-rc-miri:
+    if: ${{ vars.FAI_ENABLE_OPTIONAL_CI == 'true' }}
     name: shared RC (Miri)
     runs-on: ubuntu-latest
     env:
@@ -130,6 +125,7 @@ jobs:
         run: cargo miri test -p fai-runtime --locked --lib shared_rc_tests -- --test-threads=1
 
   proptest:
+    if: ${{ vars.FAI_ENABLE_OPTIONAL_CI == 'true' }}
     name: property tests (linux)
     runs-on: ubuntu-latest
     env:
