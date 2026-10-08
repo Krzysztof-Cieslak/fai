@@ -270,6 +270,8 @@ foreign "fai_clock_local_offset" clockLocalOffset : Unit -> Int / { Clock }
 
 // Pauses for the given number of milliseconds; backs `Clock.sleep`. On the
 // scheduler it parks the task (freeing its worker); otherwise it sleeps the thread.
+// Nonpositive durations return immediately. Task cancellation returns Unit early
+// and remains sticky for later sleeps; unrelated wakes do not shorten the delay.
 foreign "fai_sleep" clockSleep : Int -> Unit / { Clock }
 
 foreign "fai_random_next_int" randomNextInt : Int -> Int / { Random }

@@ -4010,14 +4010,15 @@ pub extern "C" fn fai_clock_local_offset(unit: Value) -> Value {
 
 /// `Clock.sleep`: pause for `millis` milliseconds, then return `Unit`. Consumes
 /// `millis`. Inside a task it parks on the reactor's timer (freeing the worker for
-/// other tasks); outside any task (no scheduler running) it sleeps the OS thread.
+/// other tasks) until the deadline or cancellation; outside any task (no scheduler
+/// running) it sleeps the OS thread. Nonpositive durations return immediately.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_sleep(millis: Value) -> Value {
     let ms = unbox_int(millis).max(0) as u64;
     fai_drop(millis);
     let dur = std::time::Duration::from_millis(ms);
     if scheduler::in_task() {
-        reactor::sleep_until(std::time::Instant::now() + dur);
+        reactor::sleep_for(dur);
     } else {
         std::thread::sleep(dur);
     }

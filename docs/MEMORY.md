@@ -3976,7 +3976,12 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   on the existing scheduler/reactor and `Net`:
   - **Timer & cancellation (runtime).** The `mio` reactor gains a deadline min-heap
     and a `Waker`; `Clock.sleep` parks a task on it (or sleeps the thread when run
-    inline, so a non-scheduler program still works). Task cancellation is
+    inline, so a non-scheduler program still works). A sleep checks sticky
+    cancellation before registering and after every wake, keeping its timer
+    across unrelated wakes until the actual deadline. Each registration is
+    removed on exit, and oversized durations use checked, representable intervals.
+    Cancelled sleeps return Unit immediately, including later teardown sleeps.
+    Task cancellation is
     **cooperative and sticky**: `cancel` sets a per-task flag and unparks the task;
     every park point (sockets, channels, the blocking pool, sleep, await/join)
     re-checks it and returns a cancellation `Err`, so the task unwinds and frees its

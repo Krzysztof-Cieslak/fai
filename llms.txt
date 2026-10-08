@@ -1421,6 +1421,9 @@ Deferred: IANA time zones / `ZonedDateTime` with DST rules (this is offset-only)
 
 - **`Clock.sleep`** `Int -> Unit / { Clock }` — pause `ms` milliseconds; parks the
   task on the reactor timer when on the scheduler, else sleeps the thread.
+  Nonpositive durations return immediately. Cancellation returns `Unit` early
+  and makes later sleeps return immediately too. Unrelated wakes preserve the
+  deadline; durations beyond the platform clock range use bounded intervals.
 - **`Concurrency.cancel`** `Task 'a -> Unit / { Concurrency }` — cancel a task and
   its whole descendant subtree. Cooperative & sticky: a cancelled task's next
   blocking call returns a cancellation `Err`, so it unwinds and frees its resources.

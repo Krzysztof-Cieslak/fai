@@ -395,6 +395,10 @@ as `let log = fun message -> body`: constructing it is pure, and calling its
 saturating arrow performs the body's effects. A parameterless local value binding
 is evaluated immediately.
 
+`Clock.sleep` returns `Unit` early on task cancellation, including subsequent
+teardown sleeps. Other wakes do not shorten its deadline; nonpositive delays
+return immediately and oversized delays use representable clock intervals.
+
 Contract generation recognizes Prelude `Option`/`Result` by declaration identity.
 Same-spelled user types use their own constructors and support custom `Arbitrary`
 overrides like other user ADTs.

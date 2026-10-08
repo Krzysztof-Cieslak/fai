@@ -1,0 +1,21 @@
+module SleepCancellation
+
+// Cancellation is sticky: after the receive returns None, both sleeps return
+// Unit immediately, allowing the task's cleanup and scope join to finish.
+worker : Concurrency -> Clock -> Channel Int -> Unit -> Int / { Clock, Concurrency }
+let worker c clock ch u =
+  let received = c.recv ch
+  let first = clock.sleep 60000
+  let second = clock.sleep 60000
+  42
+
+run : Runtime -> Nursery -> Int / { Clock, Concurrency }
+let run runtime nursery =
+  let channel = runtime.concurrency.channel 1
+  let task = runtime.concurrency.spawn nursery (worker runtime.concurrency runtime.clock channel)
+  let cancelled = runtime.concurrency.cancel task
+  runtime.concurrency.await task
+
+public main : Runtime -> Unit / { Clock, Concurrency, Console }
+let main runtime =
+  runtime.console.writeLine (Int.toString (runtime.concurrency.scope (run runtime)))
