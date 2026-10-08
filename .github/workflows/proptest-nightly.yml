@@ -1,15 +1,12 @@
 name: proptest-nightly
 
-# Deep property-test run. The pull-request `CI` workflow runs the property tests
-# isolated but time-bounded (a moderate PROPTEST_CASES); this runs the same lane
-# with a far larger case budget on a schedule and on demand, to find the rare
-# inputs a shorter run misses. Not a merge gate — it fails only when a property
+# Optional deep property-test run, disabled in repository settings and available
+# only for intentional manual dispatch after enabling it. Not a merge gate —
+# it fails only when a property
 # actually fails (a real bug), uploading the shrunk counterexample via the JUnit
 # report. A discovered failure should be committed as a `proptest-regressions/`
-# seed so the cheap PR lane replays it forever after.
+# seed so subsequent property runs replay it.
 on:
-  schedule:
-    - cron: "0 5 * * *" # daily, 05:00 UTC
   workflow_dispatch:
     inputs:
       cases:
