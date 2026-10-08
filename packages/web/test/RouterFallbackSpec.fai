@@ -1,0 +1,64 @@
+module RouterFallbackSpec
+
+bodyOn : Web.HttpHandler 'e -> Http.Method -> String -> Result String String / 'e
+let bodyOn handler method path =
+  match Web.mockContext method path with
+  | Err e -> Err e
+  | Ok ctx ->
+    match Web.outcomeResponse (handler ctx) with
+    | None -> Err "no response"
+    | Some response -> Http.bodyText response.body
+
+showId : Web.HttpHandler 'e
+let showId ctx = Web.text (Option.withDefault "missing id" (Web.param "id" ctx)) ctx
+
+prefixFirst : Web.HttpHandler 'e
+let prefixFirst = Router.router (Web.text "fallback") [
+  Router.route "/user/new/edit" (Web.text "edit"),
+  Router.route "/user/{id}" showId
+]
+example: bodyOn prefixFirst Http.GET "/user/new" = Ok "new"
+
+captureFirst : Web.HttpHandler 'e
+let captureFirst = Router.router (Web.text "fallback") [
+  Router.route "/user/{id}" showId,
+  Router.route "/user/new/edit" (Web.text "edit")
+]
+example: bodyOn captureFirst Http.GET "/user/new" = Ok "new"
+example: bodyOn captureFirst Http.GET "/user/new/edit" = Ok "edit"
+
+staticTerminal : Web.HttpHandler 'e
+let staticTerminal = Router.router (Web.text "fallback") [
+  Router.route "/user/{id}" showId,
+  Router.route "/user/new" (Web.text "static")
+]
+example: bodyOn staticTerminal Http.GET "/user/new" = Ok "static"
+
+showCleanId : Web.HttpHandler 'e
+let showCleanId ctx =
+  if Web.param "temporary" ctx = None then showId ctx else Web.text "leaked parameter" ctx
+
+deeperPrefix : Web.HttpHandler 'e
+let deeperPrefix = Router.router (Web.text "fallback") [
+  Router.route "/team/static/{temporary}/extra" (Web.text "extra"),
+  Router.route "/team/{id}/view" showCleanId
+]
+example: bodyOn deeperPrefix Http.GET "/team/static/view" = Ok "static"
+
+// A real static endpoint wins path selection. Its method/Skip rejection goes
+// to the configured fallback rather than changing the chosen path pattern.
+methodMismatch : Web.HttpHandler 'e
+let methodMismatch = Router.router (Web.text "fallback") [
+  Router.get [Router.route "/user/new" (Web.text "static")],
+  Router.post [Router.route "/user/{id}" showId]
+]
+example: bodyOn methodMismatch Http.POST "/user/new" = Ok "fallback"
+
+skippingTerminal : Web.HttpHandler 'e
+let skippingTerminal = Router.router (Web.text "fallback") [
+  Router.route "/user/new" (fun ctx -> Web.Skip),
+  Router.route "/user/{id}" showId
+]
+example: bodyOn skippingTerminal Http.GET "/user/new" = Ok "fallback"
+example: bodyOn prefixFirst Http.GET "/" = Ok "fallback"
+example: bodyOn deeperPrefix Http.GET "/team/other/missing" = Ok "fallback"

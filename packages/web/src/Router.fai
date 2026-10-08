@@ -178,12 +178,13 @@ let addRoutes node prefix method routes =
 // --- Matching --------------------------------------------------------------
 // Walk the path segments through the tree, collecting captured parameters and
 // returning the handlers registered at the matched node. Static edges win; a
-// failed static branch falls back to the capture edge.
+// failed static branch falls back to the capture edge. A prefix without terminal
+// handlers is a failed path match, not an endpoint.
 lookupNode : Node 'e -> List String -> List (String * String) -> Option (List (String * String) * List (Web.HttpHandler 'e))
 let lookupNode node segs params =
   let r = nodeFields node
   match segs with
-  | [] -> Some (params, r.handlers)
+  | [] -> if List.isEmpty r.handlers then None else Some (params, r.handlers)
   | seg :: rest ->
     let viaStatic =
       match childAt r.children seg with
