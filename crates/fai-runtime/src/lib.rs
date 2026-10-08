@@ -4311,6 +4311,12 @@ pub fn make_int(n: i64) -> Value {
     fai_box_int(n)
 }
 
+/// Builds an owned Fai `String` from a host UTF-8 string.
+#[must_use]
+pub fn make_str(text: &str) -> Value {
+    make_string(text.as_bytes())
+}
+
 /// Reads a Fai `Int` value as a host `i64` (borrowing it; immediate or boxed).
 #[must_use]
 pub fn read_int(v: Value) -> i64 {

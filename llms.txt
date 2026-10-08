@@ -1435,6 +1435,9 @@ Deferred: IANA time zones / `ZonedDateTime` with DST rules (this is offset-only)
   `resolve` (relative refs / redirects); accessors `scheme`/`userinfo`/`host`/
   `port`/`effectivePort`/`path`/`query`/`fragment`/`requestTarget`/`isHttps`;
   `queryPairs`, `encodeComponent`/`decodeComponent` (percent-encoding).
+  Decoding preserves literal Unicode, malformed percent escapes, and `+`. If
+  decoded bytes would be invalid UTF-8, the original component is returned
+  unchanged instead of discarding text.
 - **`Headers`** (opaque) — case-insensitive, order- and duplicate-preserving:
   `empty`/`fromList`/`toList`/`get`/`getAll`/`add`/`set`/`remove`/`contains`.
 - **`Tls`** capability — a sans-I/O engine (rustls/ring): `client`/`clientWithRoots`/

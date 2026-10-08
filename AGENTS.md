@@ -399,6 +399,10 @@ Contract generation recognizes Prelude `Option`/`Result` by declaration identity
 Same-spelled user types use their own constructors and support custom `Arbitrary`
 overrides like other user ADTs.
 
+`Url.decodeComponent` preserves unescaped Unicode and malformed percent escapes.
+It leaves `+` literal. If the decoded bytes are not valid UTF-8, it returns the
+original component unchanged; valid Unicode percent-encoding round-trips exactly.
+
 ## 5. Repository layout
 
 A single Cargo workspace. Each crate owns one compiler phase or tool.

@@ -4003,7 +4003,11 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     duplicate-preserving `Headers` (`std/networking/Headers.fai`). `Url` is an opaque **union**
     wrapping its component record, not an opaque record: records are structural, so an
     opaque record leaks its fields across files, whereas a single hidden constructor
-    keeps the type nominal (the date & time value-type shape). Framing is written
+    keeps the type nominal (the date & time value-type shape). Component decoding
+    walks UTF-8 bytes, preserving every literal byte and consuming `%XX` only when
+    both hex digits are valid. Malformed escapes remain literal; if decoded bytes
+    are not valid UTF-8, the entire original component is preserved. `+` remains
+    literal, and valid encoded Unicode round-trips exactly. Framing is written
     against an abstract `Transport` (recv/send/close), so it is socket-independent: a
     `plainTransport` runs over a TCP `Connection`, and a `tlsTransport` drives the
     rustls handshake and shuttles ciphertext over the same `Connection` (so HTTPS is
