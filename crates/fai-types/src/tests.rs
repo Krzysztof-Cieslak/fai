@@ -1035,6 +1035,123 @@ fn open_record_pattern_is_row_polymorphic_and_exhaustive() {
     assert_eq!(type_of(&db, f[0], "getX"), "{ x : 'a | _ } -> 'a");
 }
 
+#[track_caller]
+fn assert_record_match_clean(src: &str) {
+    let (db, files) = db_with(&[("M.fai", src)]);
+    assert_eq!(check_diags(&db, files[0]), Vec::new());
+}
+
+#[test]
+fn record_match_bool_fields_are_exhaustive() {
+    assert_record_match_clean(
+        "module M\nlet f r =\n  match r with\n  | { flag = true } -> 1\n  | { flag = false } -> 0\n",
+    );
+}
+
+#[test]
+fn record_match_aligns_different_field_orders() {
+    assert_record_match_clean(indoc! {"
+        module M
+        let f r =
+          match r with
+          | { left = true, right = _ } -> 1
+          | { right = true, left = false } -> 2
+          | { left = false, right = false } -> 3
+    "});
+}
+
+#[test]
+fn record_match_open_patterns_align_omitted_fields() {
+    assert_record_match_clean(indoc! {"
+        module M
+        let f r =
+          match r with
+          | { left = true | _ } -> 1
+          | { right = true | _ } -> 2
+          | { left = false, right = false | _ } -> 3
+    "});
+}
+
+#[test]
+fn record_match_nested_records_and_constructors_are_exhaustive() {
+    assert_record_match_clean(indoc! {"
+        module M
+        type Choice = | No | Yes { flag : Bool }
+        let f r =
+          match r with
+          | { inner = { choice = No } } -> 0
+          | { inner = { choice = Yes { flag = true } } } -> 1
+          | { inner = { choice = Yes { flag = false } } } -> 2
+    "});
+}
+
+#[test]
+fn record_match_or_and_as_patterns_are_exhaustive() {
+    assert_record_match_clean(indoc! {"
+        module M
+        let f r =
+          match r with
+          | { flag = (true | false) } as value -> value.flag
+    "});
+}
+
+#[test]
+fn record_match_empty_record_is_exhaustive() {
+    assert_record_match_clean("module M\nlet f r =\n  match r with\n  | {} -> 1\n");
+}
+
+#[test]
+fn record_match_missing_bool_case_reports_scrutinee_span() {
+    let src = "module M\n// é😀\nlet f r =\n  match r with\n  | { flag = true } -> 1\n";
+    let (db, files) = db_with(&[("M.fai", src)]);
+    let diags = check_diags(&db, files[0]);
+    assert_eq!(diags.len(), 1);
+    assert_eq!(diags[0].code, crate::NON_EXHAUSTIVE_MATCH);
+    assert_eq!(diags[0].message, "this match does not cover every case");
+    let at = src.find("match r").unwrap() + "match ".len();
+    assert_eq!(diags[0].primary.start().to_usize(), at);
+    assert_eq!(diags[0].primary.end().to_usize(), at + 1);
+}
+
+#[test]
+fn record_match_duplicate_refutable_arm_is_unreachable() {
+    let src = "module M\nlet f r =\n  match r with\n  | { flag = true } -> 1\n  | { flag = true } -> 2\n  | { flag = false } -> 0\n";
+    let (db, files) = db_with(&[("M.fai", src)]);
+    let diags = check_diags(&db, files[0]);
+    assert_eq!(diags.len(), 1);
+    assert_eq!(diags[0].code, crate::UNREACHABLE_ARM);
+    assert_eq!(diags[0].message, "this match arm is unreachable");
+    let arm = "| { flag = true } -> 2";
+    let at = src.find(arm).unwrap();
+    assert_eq!(diags[0].primary.start().to_usize(), at);
+    assert_eq!(diags[0].primary.end().to_usize(), at + arm.len());
+}
+
+#[test]
+fn record_match_wrong_shape_recovers_without_claiming_coverage() {
+    let src = indoc! {"
+        module M
+        public f : { flag : Bool, other : Int } -> Int
+        let f r =
+          match r with
+          | { flag = true } -> 1
+          | { unknown = false | _ } -> 2
+          | _ -> 0
+    "};
+    let (db, files) = db_with(&[("M.fai", src)]);
+    let codes = check_codes(&db, files[0]);
+    assert!(codes.iter().any(|c| c.starts_with("FAI3")), "{codes:?}");
+    assert!(!codes.iter().any(|c| c.starts_with("FAI4")), "{codes:?}");
+}
+
+#[test]
+fn record_match_wide_record_uses_only_the_tested_field() {
+    let fields = (0..128).map(|i| format!("f{i} = _")).collect::<Vec<_>>().join(", ");
+    assert_record_match_clean(&format!(
+        "module M\nlet f r =\n  match r with\n  | {{ flag = true, {fields} }} -> 1\n  | {{ {fields}, flag = false }} -> 0\n"
+    ));
+}
+
 #[test]
 fn closed_record_pattern_missing_a_field_is_an_error() {
     // The scrutinee is a two-field record; a *closed* pattern that names only

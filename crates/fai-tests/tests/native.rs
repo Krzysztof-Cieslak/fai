@@ -32,7 +32,13 @@ fn build_and_run(src: &str) -> (String, Option<i32>) {
         &mut out,
         &mut err,
     );
-    assert_eq!(code, 0, "build failed: {}", String::from_utf8_lossy(&err));
+    assert_eq!(
+        code,
+        0,
+        "build failed: {}{}",
+        String::from_utf8_lossy(&out),
+        String::from_utf8_lossy(&err)
+    );
 
     // `fai build` appends the platform executable extension (`.exe` on Windows).
     let produced = exe.with_extension(std::env::consts::EXE_EXTENSION);
@@ -340,6 +346,25 @@ fn cross_module_opaque_types_build_and_run() {
     let (out, code) = build_and_run_files(&[("Lib.fai", lib), ("Main.fai", main)]);
     assert_eq!(out, "9\n");
     assert_eq!(code, Some(0));
+}
+
+#[test]
+fn exhaustive_record_patterns_build_and_run() {
+    let src = indoc! {r#"
+        module Main
+        choose : { flag : Bool, extra : Int } -> Int
+        let choose r =
+          match r with
+          | { flag = true | _ } -> 19
+          | { flag = false | _ } -> 23
+        public main : Runtime -> Unit / { Console }
+        let main runtime =
+          let a = choose { extra = 0, flag = true }
+          let b = choose { flag = false, extra = 100 }
+          runtime.console.writeLine (Int.toString (a + b))
+    "#};
+    let (out, code) = build_and_run(src);
+    assert_eq!((out.as_str(), code), ("42\n", Some(0)));
 }
 
 #[test]
