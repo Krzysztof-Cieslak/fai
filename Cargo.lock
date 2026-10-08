@@ -637,6 +637,7 @@ dependencies = [
  "serde_json",
  "tracing",
  "tracing-subscriber",
+ "wait-timeout",
 ]
 
 [[package]]

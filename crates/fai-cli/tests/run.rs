@@ -151,6 +151,73 @@ fn build_produces_a_runnable_binary() {
     assert_eq!(run.status.code(), Some(0), "the produced binary should exit cleanly");
 }
 
+#[track_caller]
+fn cancelled_sleeps(native: bool) {
+    use std::process::Stdio;
+    use std::time::Duration;
+    use wait_timeout::ChildExt;
+
+    let source = include_str!("../../../samples/SleepCancellation.fai");
+    let dir = workspace(
+        if native { "sleep-aot" } else { "sleep-jit" },
+        &[("SleepCancellation.fai", source)],
+    );
+    let mut command = if native {
+        let exe = dir.join("sleep-cancellation");
+        let built = fai()
+            .args(["build", "--no-daemon", "-C"])
+            .arg(&dir)
+            .arg("SleepCancellation.fai")
+            .arg("--out")
+            .arg(&exe)
+            .output()
+            .unwrap();
+        assert!(
+            built.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&built.stdout),
+            String::from_utf8_lossy(&built.stderr)
+        );
+        Command::new(exe.with_extension(std::env::consts::EXE_EXTENSION))
+    } else {
+        let mut command = fai();
+        command
+            .args(["run", "--no-daemon", "-C"])
+            .arg(&dir)
+            .arg("SleepCancellation.fai")
+            .env("FAI_RUN_TIMEOUT_MS", "5000");
+        command
+    };
+    let mut child = command
+        .env("FAI_WORKERS", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let finished = child.wait_timeout(Duration::from_secs(15)).unwrap().is_some();
+    if !finished {
+        child.kill().unwrap();
+    }
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        finished && out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(out.stdout, b"42\n");
+}
+
+#[test]
+fn cancelled_sleeps_return_in_the_run_worker() {
+    cancelled_sleeps(false);
+}
+
+#[test]
+fn cancelled_sleeps_return_in_native_code() {
+    cancelled_sleeps(true);
+}
+
 #[test]
 fn run_without_main_reports_no_entry_point() {
     let dir = workspace(

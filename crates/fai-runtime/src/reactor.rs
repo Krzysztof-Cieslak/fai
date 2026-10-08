@@ -157,21 +157,26 @@ fn fire_expired_timers() {
     }
 }
 
-/// Removes the pending timer with `seq`, if it has not already fired. Used to clean
-/// up after a wake that was not this timer (a cancellation, later) so the stale
-/// entry cannot fire against a task that has moved on.
+/// Removes the pending timer with `seq`, if it has not already fired, so a
+/// cancelled sleep cannot leave a wake for a task that has moved on.
 fn remove_timer(seq: u64) {
     let mut timers = reactor().timers.lock().expect("reactor timers");
     timers.heap.retain(|Reverse(e)| e.seq != seq);
 }
 
-/// Parks the current task until `deadline`. Must be called inside a task. Registers
-/// a timer, wakes the reactor (so a sooner deadline preempts an in-progress poll),
-/// and parks; the reactor fires the timer at the deadline. A wake from any other
-/// source (e.g. cancellation, later) also returns — the caller re-checks its own
-/// condition — and the still-pending timer entry is removed so it cannot fire late.
+struct TimerRegistration(u64);
+
+impl Drop for TimerRegistration {
+    fn drop(&mut self) {
+        remove_timer(self.0);
+    }
+}
+
+/// Parks the current task until `deadline` or sticky cancellation. Unrelated
+/// wakes recheck both conditions with the same registered timer. The registration
+/// is removed on every exit, including unwinding.
 pub fn sleep_until(deadline: Instant) {
-    if Instant::now() >= deadline {
+    if scheduler::is_cancelled() || Instant::now() >= deadline {
         return;
     }
     let r = reactor();
@@ -186,9 +191,34 @@ pub fn sleep_until(deadline: Instant) {
         }));
         seq
     };
+    let _registration = TimerRegistration(seq);
     let _ = r.waker.wake();
-    scheduler::park();
-    remove_timer(seq);
+    while !scheduler::is_cancelled() && Instant::now() < deadline {
+        scheduler::park();
+    }
+}
+
+/// Sleeps for a duration inside a task. Durations beyond the platform's Instant
+/// range are split into representable intervals rather than overflowing a deadline.
+pub fn sleep_for(mut duration: Duration) {
+    while !duration.is_zero() && !scheduler::is_cancelled() {
+        let (interval, deadline) = representable_interval(Instant::now(), duration);
+        if interval.is_zero() {
+            // No later Instant is representable: saturate at the current instant.
+            return;
+        }
+        sleep_until(deadline);
+        duration -= interval;
+    }
+}
+
+fn representable_interval(now: Instant, mut duration: Duration) -> (Duration, Instant) {
+    loop {
+        if let Some(deadline) = now.checked_add(duration) {
+            return (duration, deadline);
+        }
+        duration /= 2;
+    }
 }
 
 /// The reactor thread: poll for readiness (bounded by the nearest timer deadline)
@@ -1407,6 +1437,122 @@ mod tests {
             imm(7)
         }));
         assert_eq!(of_imm(r), 7);
+    }
+
+    #[track_caller]
+    fn sleep_case(case: &str) {
+        use wait_timeout::ChildExt;
+
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "reactor::tests::sleep_worker", "--nocapture"])
+            .env("FAI_SLEEP_CASE", case)
+            .env("FAI_WORKERS", "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let finished = child.wait_timeout(Duration::from_secs(15)).unwrap().is_some();
+        if !finished {
+            child.kill().unwrap();
+        }
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            finished && output.status.success(),
+            "{case}: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn a_stale_wake_does_not_complete_a_sleep() {
+        sleep_case("stale");
+    }
+
+    #[test]
+    fn cancellation_before_sleep_is_sticky() {
+        sleep_case("before");
+    }
+
+    #[test]
+    fn cancellation_during_sleep_cleans_its_timer() {
+        sleep_case("during");
+    }
+
+    #[test]
+    fn maximum_sleep_duration_remains_cancellable() {
+        sleep_case("maximum");
+    }
+
+    #[test]
+    fn minimum_sleep_duration_is_zero_and_consumes_its_box() {
+        sleep_case("minimum");
+    }
+
+    #[test]
+    fn overflowing_deadlines_are_split_into_representable_intervals() {
+        let now = Instant::now();
+        let (interval, deadline) = representable_interval(now, Duration::MAX);
+        assert!(!interval.is_zero());
+        assert!(interval <= Duration::MAX);
+        assert_eq!(now.checked_add(interval), Some(deadline));
+    }
+
+    #[test]
+    fn sleep_worker() {
+        let Ok(case) = std::env::var("FAI_SLEEP_CASE") else { return };
+        let baseline = crate::live_count();
+        match case.as_str() {
+            "stale" => {
+                let waited = block_on(Box::new(|| {
+                    // Queue a real but unrelated wake before parking. The timer's
+                    // deadline must still be met after this notification is used.
+                    scheduler::unpark(scheduler::current_parked());
+                    let start = Instant::now();
+                    crate::fai_sleep(crate::make_int(60));
+                    imm(i64::from(start.elapsed() >= Duration::from_millis(60)))
+                }));
+                assert_eq!(waited, imm(1), "an unrelated wake must not shorten a sleep");
+            }
+            "before" => {
+                let gate = scheduler::channel(1);
+                let task = scheduler::spawn(Box::new(move || {
+                    assert_eq!(scheduler::chan_recv(&gate), None);
+                    // Cancellation only queues one wake. Repeated teardown sleeps
+                    // must observe the flag even after that wake is consumed.
+                    for _ in 0..3 {
+                        crate::fai_sleep(crate::make_int(60_000));
+                    }
+                    imm(0)
+                }));
+                scheduler::cancel_handle(&task);
+                block_on(Box::new(move || scheduler::await_handle(&task)));
+            }
+            "during" | "maximum" => {
+                let millis = if case == "maximum" { i64::MAX } else { 60_000 };
+                let task = scheduler::spawn(Box::new(move || {
+                    crate::fai_sleep(crate::make_int(millis));
+                    assert!(scheduler::is_cancelled());
+                    crate::fai_sleep(crate::make_int(millis));
+                    imm(0)
+                }));
+                while reactor().timers.lock().unwrap().heap.is_empty() {
+                    std::thread::yield_now();
+                }
+                scheduler::cancel_handle(&task);
+                block_on(Box::new(move || scheduler::await_handle(&task)));
+            }
+            "minimum" => {
+                block_on(Box::new(|| {
+                    crate::fai_sleep(crate::make_int(i64::MIN));
+                    crate::fai_sleep(crate::make_int(0));
+                    imm(0)
+                }));
+            }
+            _ => panic!("unknown sleep case"),
+        }
+        assert!(reactor().timers.lock().unwrap().heap.is_empty());
+        assert_eq!(crate::live_count(), baseline);
     }
 
     #[test]
