@@ -181,7 +181,7 @@ fn test_rejects_a_missing_directory_selection() {
 
 #[track_caller]
 fn empty_selection(command: &str) {
-    let daemon = Daemon::new("empty-selection", &[]);
+    let daemon = Daemon::new(&format!("empty-selection-{command}"), &[]);
     std::fs::create_dir(daemon.workspace.join("empty")).unwrap();
     let cold = daemon.run(&[command, "--no-daemon"], &["./empty/"]);
     let warm = daemon.run(&[command], &["./empty/"]);
