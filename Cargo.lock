@@ -877,6 +877,7 @@ name = "fai-span"
 version = "0.1.0"
 dependencies = [
  "camino",
+ "proptest",
 ]
 
 [[package]]

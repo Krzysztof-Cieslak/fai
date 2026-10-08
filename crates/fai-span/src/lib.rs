@@ -99,6 +99,66 @@ mod tests {
         assert_eq!(idx.line_col(text, ByteOffset::new(0)), LineCol { line: 1, column: 1 });
     }
 
+    fn offset(text: &str, line: u32, column: u32) -> Option<u32> {
+        LineIndex::new(text).offset(text, LineCol { line, column }).map(ByteOffset::raw)
+    }
+
+    #[test]
+    fn inverse_columns_count_bmp_scalars() {
+        assert_eq!(offset("éa", 1, 2), Some(2));
+    }
+
+    #[test]
+    fn inverse_columns_count_non_bmp_scalars() {
+        assert_eq!(offset("é😀a", 1, 3), Some(6));
+    }
+
+    #[test]
+    fn inverse_empty_file_starts_at_zero() {
+        assert_eq!(offset("", 1, 1), Some(0));
+    }
+
+    #[test]
+    fn inverse_zero_line_is_invalid() {
+        assert_eq!(offset("a", 0, 1), None);
+    }
+
+    #[test]
+    fn inverse_zero_column_is_invalid() {
+        assert_eq!(offset("a", 1, 0), None);
+    }
+
+    #[test]
+    fn inverse_line_past_eof_is_invalid() {
+        assert_eq!(offset("a", 2, 1), None);
+    }
+
+    #[test]
+    fn inverse_column_past_eol_is_invalid() {
+        assert_eq!(offset("a\nb", 1, 3), None);
+    }
+
+    #[test]
+    fn inverse_end_of_line_addresses_the_newline() {
+        assert_eq!(offset("é\nb", 1, 2), Some(2));
+    }
+
+    #[test]
+    fn inverse_eof_is_a_valid_position() {
+        assert_eq!(offset("é😀", 1, 3), Some(6));
+    }
+
+    #[test]
+    fn inverse_trailing_newline_has_an_empty_final_line() {
+        assert_eq!(offset("é\n", 2, 1), Some(3));
+    }
+
+    #[test]
+    fn inverse_crlf_matches_the_forward_mapping() {
+        assert_eq!(offset("é\r\n😀", 1, 3), Some(3));
+        assert_eq!(offset("é\r\n😀", 2, 1), Some(4));
+    }
+
     #[test]
     fn source_map_add_and_lookup() {
         let mut map = SourceMap::new();
@@ -145,5 +205,23 @@ mod tests {
         assert!(r.contains(ByteOffset::new(6)));
         assert!(!r.contains(ByteOffset::new(7)));
         assert!(TextRange::empty(ByteOffset::new(5)).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod proptests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    proptest! {
+        #[test]
+        fn line_and_column_round_trip_every_scalar_boundary(text in any::<String>()) {
+            let index = LineIndex::new(&text);
+            for offset in text.char_indices().map(|(offset, _)| offset).chain(std::iter::once(text.len())) {
+                let offset = ByteOffset::from_usize(offset);
+                prop_assert_eq!(index.offset(&text, index.line_col(&text, offset)), Some(offset));
+            }
+        }
     }
 }

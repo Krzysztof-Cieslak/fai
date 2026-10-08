@@ -154,6 +154,11 @@ Cross-cutting conventions (workspace, spans, diagnostics, the database seam):
   the **authoritative** source text; rendering resolves spans through the
   `SpanResolver` trait (impls: `SourceMap` for tests/one-shot, `DbSpanResolver`
   backed by the database). Machine output uses **workspace-relative** paths.
+  CLI position targets use the inverse of the same Unicode-scalar mapping,
+  backed by the cached line-start table. Zero and out-of-range coordinates are
+  rejected; end-of-line and EOF coordinates are valid boundaries. This keeps
+  reported diagnostic locations reusable as query targets without changing byte
+  offsets or the LSP's separately negotiated position encoding.
 - **D23 Diagnostics flow:** deeper phases emit into the salsa **accumulator**
   `Diag`; callers collect at the boundary. One model, two renderers (human +
   JSON wire schema, `schemaVersion = 1`); output is ordered deterministically by

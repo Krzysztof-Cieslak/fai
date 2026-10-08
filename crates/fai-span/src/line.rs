@@ -121,4 +121,25 @@ impl LineIndex {
         }
         LineCol { line: ByteOffset::from_usize(line).raw() + 1, column: column + 1 }
     }
+
+    /// Inverts [`Self::line_col`] at a Unicode-scalar boundary. Lines and columns
+    /// are 1-based; zero and out-of-range positions return `None` rather than
+    /// clamping. The end-of-line position addresses its `\n` (or EOF), and a
+    /// trailing newline introduces an empty final line at column one.
+    ///
+    /// As with `line_col`, a `\r` before `\n` counts as one scalar. `text` must
+    /// be the same source used to build this index.
+    #[must_use]
+    pub fn offset(&self, text: &str, position: LineCol) -> Option<ByteOffset> {
+        let line = position.line.checked_sub(1)? as usize;
+        let column = position.column.checked_sub(1)? as usize;
+        let start = *self.line_starts.get(line)? as usize;
+        let end = self.line_starts.get(line + 1).map_or(self.len, |next| next - 1) as usize;
+        let text = text.get(start..end)?;
+        text.char_indices()
+            .map(|(offset, _)| offset)
+            .chain(std::iter::once(text.len()))
+            .nth(column)
+            .map(|offset| ByteOffset::from_usize(start + offset))
+    }
 }

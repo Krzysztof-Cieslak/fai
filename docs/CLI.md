@@ -150,8 +150,14 @@ Commands that take a `<symbol>` accept either form:
 
 ### Positions & spans
 
-Positions are **1-based** `line`/`column`. Every span also carries **byte
-offsets** for exact machine use:
+Positions are **1-based** `line`/`column`; columns count Unicode scalar values,
+so both `é` and `😀` occupy one column. CLI position targets use the same mapping
+as reported diagnostics. Zero coordinates, missing lines, and columns beyond a
+line's end are rejected rather than clamped. The end-of-line/EOF coordinate is
+valid, though it may not belong to a definition. LF starts a new line; a preceding
+CR counts as one scalar, matching the diagnostic mapping.
+
+Every span also carries **byte offsets** for exact machine use:
 
 ```json
 { "file": "src/Collections.fai",
