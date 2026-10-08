@@ -3615,7 +3615,7 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   loop, because it fits the M:N work-stealing scheduler: worker threads register
   their own sockets (the registry is `Send + Sync`) and perform the read/write
   syscalls themselves, and the reactor only reports "this socket is readable/
-  writable" and wakes the waiting task. So the worker that owns a task does its I/O
+  writable" and wakes the waiting tasks. So the worker that owns a task does its I/O
   and only readiness wakeups cross to the reactor thread — no socket data or
   operation is marshalled between threads (the decisive reason **`mio` was chosen
   over `libuv`**: libuv's single-loop, handle-affine, callback model would funnel
@@ -3624,7 +3624,12 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   capabilities — DNS, file I/O — the blocking pool already covers). A per-direction
   readiness latch closes the lost-wake race (a readiness edge that arrives between a
   failed syscall and the park is recorded, so the task retries rather than parking
-  forever). The reactor starts lazily on first use. **`Net` is a capability** in the
+  forever). Each direction retains all pending operations with distinct per-park
+  registrations; readiness wakes the whole group to retry its syscalls. A resumed
+  operation removes its own registration on cancellation or a spurious wake and
+  never clears a newer latched edge. Read and write queues are independent, and
+  close/error notifications wake the affected operations. The reactor starts
+  lazily on first use. **`Net` is a capability** in the
   default `Runtime` — TCP `listen`/`localPort`/`accept`/`connect`/`send`/`recv`/
   `close` and connectionless UDP `udpBind`/`udpLocalPort`/`udpSend`/`udpRecv`/
   `udpClose` (each datagram addressed by host/port, `udpRecv` reporting the sender as

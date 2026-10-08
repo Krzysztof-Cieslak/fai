@@ -40,6 +40,41 @@ fn tcp_loopback_echo() {
     assert_eq!(out, "ping\n");
 }
 
+#[test]
+fn concurrent_receivers_share_a_udp_socket() {
+    let src = indoc! {r#"
+        module Prog
+        receive : Net -> UdpSocket -> Unit -> Int / { Net }
+        let receive net socket u =
+          match net.udpRecv socket 1 with
+          | Err e -> -1000
+          | Ok (data, host, port) ->
+            if data = Bytes.fromString "a" then 97
+            else if data = Bytes.fromString "b" then 98
+            else -1000
+        session : Concurrency -> Net -> UdpSocket -> UdpSocket -> Int -> Nursery -> Int / { Concurrency, Net }
+        let session c net server client port nursery =
+          let a = c.spawn nursery (receive net server)
+          let b = c.spawn nursery (receive net server)
+          let _ = net.udpSend client "127.0.0.1" port (Bytes.fromString "a")
+          let _ = net.udpSend client "127.0.0.1" port (Bytes.fromString "b")
+          c.await a + c.await b
+        public main : Runtime -> Unit / { Concurrency, Console, Net }
+        let main runtime =
+          match runtime.net.udpBind 0 with
+          | Err e -> runtime.console.writeLine e
+          | Ok server ->
+            match runtime.net.udpBind 0 with
+            | Err e -> runtime.console.writeLine e
+            | Ok client ->
+              let port = runtime.net.udpLocalPort server
+              let total = runtime.concurrency.scope (session runtime.concurrency runtime.net server client port)
+              runtime.console.writeLine (Int.toString total)
+    "#};
+    let (out, code) = run(src);
+    assert_eq!((out.as_str(), code), ("195\n", 0));
+}
+
 /// The echo program shared by the JIT and AOT tests.
 const ECHO_PROGRAM: &str = indoc! {r#"
     module Prog
