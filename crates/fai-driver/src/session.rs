@@ -35,6 +35,8 @@ pub struct Session {
     stats: FxHashMap<Utf8PathBuf, FileStat>,
     /// The active user files from the latest disk sync or dirty overlay.
     live: FxHashSet<SourceId>,
+    /// Editor-owned inputs that disk scans must not replace or deactivate.
+    overlays: FxHashSet<Utf8PathBuf>,
 }
 
 impl Session {
@@ -50,8 +52,13 @@ impl Session {
         // The embedded standard library is loaded first as high-durability
         // synthetic files, so their module names are reserved and rarely-changing.
         fai_types::std_lib::load_std(&mut db);
-        let mut session =
-            Self { db, root, stats: FxHashMap::default(), live: FxHashSet::default() };
+        let mut session = Self {
+            db,
+            root,
+            stats: FxHashMap::default(),
+            live: FxHashSet::default(),
+            overlays: FxHashSet::default(),
+        };
         session.sync_from_disk()?;
         Ok(session)
     }
@@ -61,15 +68,37 @@ impl Session {
     /// are deactivated in semantic lookup and selection, and unchanged files are
     /// left untouched.
     pub fn sync_from_disk(&mut self) -> Result<(), DriverError> {
+        self.sync_disk_changes().map(|_| ())
+    }
+
+    /// Refreshes explicitly changed workspace-relative paths, bypassing their
+    /// stat gate because a watcher is authoritative even if timestamps match.
+    pub fn refresh_disk_paths(&mut self, paths: &[Utf8PathBuf]) -> Result<bool, DriverError> {
+        for path in paths {
+            if !self.overlays.contains(path) {
+                self.stats.remove(path);
+            }
+        }
+        self.sync_disk_changes()
+    }
+
+    /// Synchronizes disk-backed inputs, preserving open editor overlays. Returns
+    /// whether source content or active membership changed (not just file stats).
+    pub fn sync_disk_changes(&mut self) -> Result<bool, DriverError> {
         let mut present = Vec::new();
         collect_fai_files(&self.root, &mut present)?;
         present.sort();
 
-        let mut live = FxHashSet::default();
-        let mut seen_paths = FxHashSet::default();
+        let mut live: FxHashSet<_> =
+            self.overlays.iter().filter_map(|path| self.db.id_for_path(path)).collect();
+        let mut seen_paths = self.overlays.clone();
+        let mut content_changed = false;
         for absolute in present {
             let relative = absolute.strip_prefix(&self.root).unwrap_or(&absolute).to_owned();
             seen_paths.insert(relative.clone());
+            if self.overlays.contains(&relative) {
+                continue;
+            }
 
             let metadata = std::fs::metadata(&absolute)
                 .map_err(|source| DriverError::Io { path: absolute.clone(), source })?;
@@ -94,7 +123,14 @@ impl Session {
             // so a no-op mtime bump doesn't cascade recompute.
             let changed = self.stats.get(&relative).is_none_or(|prev| prev.hash != hash);
             let id = if changed {
-                self.db.add_source(relative.clone(), text)
+                if let Some(id) = self.db.id_for_path(&relative)
+                    && self.db.source_file(id).is_some_and(|file| file.text(&self.db) == &text)
+                {
+                    id
+                } else {
+                    content_changed = true;
+                    self.db.add_source(relative.clone(), text)
+                }
             } else {
                 self.db.id_for_path(&relative).expect("known path has an id")
             };
@@ -104,10 +140,27 @@ impl Session {
 
         // Remove disappeared files from semantic lookup as well as selection.
         // Their historical inputs remain available for stable-id reactivation.
+        content_changed |= self.live != live;
         self.db.remove_sources(self.live.difference(&live).copied());
         self.stats.retain(|path, _| seen_paths.contains(path));
         self.live = live;
+        Ok(content_changed)
+    }
+
+    /// Gives the editor ownership of one source until [`Self::clear_overlay`].
+    /// Its text and active membership survive external edits and deletion.
+    pub fn set_overlay(&mut self, path: &Utf8Path, text: String) -> Result<(), DriverError> {
+        self.apply_dirty(&[DirtyFile { path: path.to_string(), hash: None, content: Some(text) }])?;
+        self.overlays.insert(path.to_owned());
         Ok(())
+    }
+
+    /// Returns an editor-owned input to the filesystem, including deactivation
+    /// when its on-disk file has been deleted.
+    pub fn clear_overlay(&mut self, path: &Utf8Path) -> Result<bool, DriverError> {
+        self.overlays.remove(path);
+        self.stats.remove(path);
+        self.sync_disk_changes()
     }
 
     /// Applies a client-supplied dirty-set as a fast path: each entry's content
@@ -177,6 +230,7 @@ impl Session {
             // so it carries none.
             stats: FxHashMap::default(),
             live: self.live.clone(),
+            overlays: self.overlays.clone(),
         }
     }
 
@@ -371,5 +425,77 @@ mod tests {
         let (_directory, session) = workspace();
         std::fs::write(session.root().join("notes.txt"), "notes").unwrap();
         assert!(session.select_files_checked(Some(Utf8Path::new("notes.txt"))).is_err());
+    }
+
+    #[test]
+    fn disk_sync_preserves_overlay_text_and_membership() {
+        let (_directory, mut session) = workspace();
+        let path = Utf8Path::new("Main.fai");
+        let overlay = "module Main\nlet value = true\n";
+        session.set_overlay(path, overlay.into()).unwrap();
+        let file = session.user_files()[0];
+        std::fs::remove_file(session.root().join(path)).unwrap();
+        assert!(!session.sync_disk_changes().unwrap());
+        assert_eq!(session.user_files(), vec![file]);
+        assert_eq!(file.text(session.db()), overlay);
+        assert!(session.clear_overlay(path).unwrap());
+        assert!(session.user_files().is_empty());
+    }
+
+    #[test]
+    fn closing_an_overlay_restores_disk_despite_unchanged_disk_stats() {
+        let (_directory, mut session) = workspace();
+        let path = Utf8Path::new("Main.fai");
+        session.set_overlay(path, "module Main\nlet value = true\n".into()).unwrap();
+        assert!(session.clear_overlay(path).unwrap());
+        assert_eq!(session.user_files()[0].text(session.db()), "module Main\nlet value = 1\n");
+    }
+
+    #[test]
+    fn no_op_disk_sync_does_not_invalidate_overlay_queries() {
+        let (_directory, mut session) = workspace();
+        session
+            .set_overlay(Utf8Path::new("Main.fai"), "module Main\nlet value = true\n".into())
+            .unwrap();
+        let file = session.user_files()[0];
+        let _ = fai_types::def_type(session.db(), file, fai_syntax::Symbol::intern("value"));
+        assert!(!session.sync_disk_changes().unwrap());
+        session.enable_event_log();
+        assert!(!session.sync_disk_changes().unwrap());
+        let _ = fai_types::def_type(session.db(), file, fai_syntax::Symbol::intern("value"));
+        let events = session.take_events();
+        assert!(events.is_empty(), "{events:?}");
+    }
+
+    #[test]
+    fn explicit_file_events_refresh_content_with_unchanged_metadata() {
+        let (_directory, mut session) = workspace();
+        let relative = Utf8PathBuf::from("Main.fai");
+        let path = session.root().join(&relative);
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let changed = "module Main\nlet value = 2\n";
+        std::fs::write(&path, changed).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        assert!(session.refresh_disk_paths(&[relative]).unwrap());
+        assert_eq!(session.user_files()[0].text(session.db()), changed);
+    }
+
+    #[test]
+    fn repeated_unchanged_events_keep_query_memoization() {
+        let (_directory, mut session) = workspace();
+        let paths = [Utf8PathBuf::from("Main.fai")];
+        let file = session.user_files()[0];
+        assert!(!session.refresh_disk_paths(&paths).unwrap());
+        let _ = fai_types::def_type(session.db(), file, fai_syntax::Symbol::intern("value"));
+        session.enable_event_log();
+        assert!(!session.refresh_disk_paths(&paths).unwrap());
+        let _ = fai_types::def_type(session.db(), file, fai_syntax::Symbol::intern("value"));
+        let events = session.take_events();
+        assert!(events.is_empty(), "{events:?}");
     }
 }

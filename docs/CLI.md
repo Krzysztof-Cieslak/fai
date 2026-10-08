@@ -325,6 +325,14 @@ uses their embedded source identities; editor changes never replace the
 compiler's standard library. No editor-specific virtual-document provider is
 required.
 
+The server registers `**/*.fai` create/change/delete watchers when the client
+supports dynamic registration, and accepts `workspace/didChangeWatchedFiles`
+notifications. Disk changes refresh closed dependencies and republish diagnostics
+for open files. Open buffers remain authoritative even if their disk file changes
+or is deleted; closing a buffer restores the current disk file or removes it.
+Real dependency changes invalidate saved example results; no-op events preserve
+the warm query state.
+
 On **save** (not on every keystroke), the saved file's closed `example` contracts
 are evaluated in an isolated worker and a failing one is published as `FAI6001`
 alongside its type diagnostics; the results persist across edits to other files

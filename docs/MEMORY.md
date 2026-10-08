@@ -1035,6 +1035,12 @@ server:
     with the features in the following notes. Open buffers are overlaid into the
     database as in-memory edits, so analysis tracks unsaved changes; diagnostics
     reuse `fai check` and formatting reuses `fai fmt`.
+    The server registers source-file watchers with capable clients and consumes
+    `workspace/didChangeWatchedFiles` events. Session overlays explicitly own
+    open inputs, so disk scans skip both their text and deletion while refreshing
+    closed dependencies. Closing releases that ownership and forces a disk read
+    (or deactivation); actual disk changes clear cached example results and
+    refresh all open diagnostics, while unchanged events keep query memoization.
   - **Position-addressed queries.** Hover and go-to-definition are offset-keyed
     (an editor addresses a byte position, not a name), so `fai-ide` gains
     `hover_at`/`definition_at`. Both answer on a *declaration* as well as a use:

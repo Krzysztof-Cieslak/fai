@@ -14,17 +14,17 @@ use std::error::Error;
 
 use camino::Utf8PathBuf;
 use fai_db::SourceFile;
-use fai_driver::{DirtyFile, Session, check, check_examples, fmt};
+use fai_driver::{Session, check, check_examples, fmt};
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
 use lsp_types::{
     CodeAction as LspCodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams,
     CodeActionProviderCapability, CodeActionResponse, CompletionItem, CompletionItemKind,
     CompletionOptions, CompletionParams, CompletionResponse, Diagnostic as LspDiagnostic,
-    DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
-    DocumentOnTypeFormattingOptions, DocumentOnTypeFormattingParams, DocumentRangeFormattingParams,
-    DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, Documentation,
-    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
+    DiagnosticSeverity, DidChangeTextDocumentParams, DidChangeWatchedFilesParams,
+    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
+    DocumentFormattingParams, DocumentOnTypeFormattingOptions, DocumentOnTypeFormattingParams,
+    DocumentRangeFormattingParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
+    Documentation, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
     HoverProviderCapability, InlayHint as LspInlayHint, InlayHintKind, InlayHintLabel,
     InlayHintParams, Location as LspLocation, MarkupContent, MarkupKind, NumberOrString, OneOf,
     ParameterInformation, ParameterLabel, Position, PositionEncodingKind, PrepareRenameResponse,
@@ -73,6 +73,21 @@ pub fn serve(connection: &Connection, root: Utf8PathBuf) -> Result<(), Box<dyn E
     let capabilities = serde_json::to_value(server_capabilities(encoding))?;
     connection.initialize_finish(id, serde_json::json!({ "capabilities": capabilities }))?;
     let mut server = Server::new(root, encoding, examples_enabled)?;
+    if init_params
+        .pointer("/capabilities/workspace/didChangeWatchedFiles/dynamicRegistration")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+    {
+        connection.sender.send(Message::Request(Request::new(
+            "fai/watch-files".to_owned().into(),
+            "client/registerCapability".to_owned(),
+            serde_json::json!({"registrations": [{
+                "id": "fai/source-files",
+                "method": "workspace/didChangeWatchedFiles",
+                "registerOptions": {"watchers": [{"globPattern": "**/*.fai", "kind": 7}]}
+            }]}),
+        )))?;
+    }
     for msg in &connection.receiver {
         match msg {
             Message::Request(req) => {
@@ -285,11 +300,37 @@ impl Server {
                     // restore the database to the on-disk content. Otherwise a file
                     // closed without saving would leave its unsaved edits in the
                     // warm session for any module that references it.
-                    self.revert_to_disk(uri);
+                    if self.revert_to_disk(uri) {
+                        self.saved_examples.clear();
+                    }
                     // Clear the closed file's diagnostics, then refresh the rest:
                     // reverting may have changed what other open files see.
                     self.publish(conn, uri, vec![]);
                     self.publish_all_open(conn);
+                }
+            }
+            "workspace/didChangeWatchedFiles" => {
+                if let Ok(params) =
+                    note.extract::<DidChangeWatchedFilesParams>("workspace/didChangeWatchedFiles")
+                {
+                    let paths: Vec<_> = params
+                        .changes
+                        .iter()
+                        .filter_map(|event| self.relative(&event.uri))
+                        .filter(|path| path.extension() == Some("fai"))
+                        .collect();
+                    if paths.is_empty() {
+                        return;
+                    }
+                    match self.session.refresh_disk_paths(&paths) {
+                        Ok(true) => {
+                            // Saved examples may depend on any changed module.
+                            self.saved_examples.clear();
+                            self.publish_all_open(conn);
+                        }
+                        Ok(false) => {}
+                        Err(error) => tracing::warn!("cannot refresh watched files: {error}"),
+                    }
                 }
             }
             _ => {}
@@ -770,8 +811,7 @@ impl Server {
     fn refresh(&mut self, conn: &Connection, uri: &Url) {
         let Some(rel) = self.relative(uri) else { return };
         let Some(text) = self.open.get(uri).cloned() else { return };
-        let dirty = [DirtyFile { path: rel.to_string(), hash: None, content: Some(text) }];
-        if self.session.apply_dirty(&dirty).is_err() {
+        if self.session.set_overlay(&rel, text).is_err() {
             return;
         }
         self.publish_all_open(conn);
@@ -784,8 +824,7 @@ impl Server {
     fn refresh_saved(&mut self, conn: &Connection, uri: &Url) {
         let Some(rel) = self.relative(uri) else { return };
         let Some(text) = self.open.get(uri).cloned() else { return };
-        let dirty = [DirtyFile { path: rel.to_string(), hash: None, content: Some(text) }];
-        if self.session.apply_dirty(&dirty).is_err() {
+        if self.session.set_overlay(&rel, text).is_err() {
             return;
         }
         self.refresh_saved_examples(uri);
@@ -841,16 +880,12 @@ impl Server {
     }
 
     /// Restores a closed document's database entry to the on-disk file, dropping
-    /// any unsaved overlay. A document with no disk copy (an unsaved, untitled
-    /// buffer) has nothing to revert to and is left as-is.
-    fn revert_to_disk(&mut self, uri: &Url) {
-        let Some(rel) = self.relative(uri) else { return };
-        if !self.root.join(&rel).exists() {
-            return;
-        }
-        // A content-less dirty entry re-reads the file from disk.
-        let dirty = [DirtyFile { path: rel.to_string(), hash: None, content: None }];
-        let _ = self.session.apply_dirty(&dirty);
+    /// any unsaved overlay. A document with no disk copy is deactivated.
+    fn revert_to_disk(&mut self, uri: &Url) -> bool {
+        let Some(rel) = self.relative(uri) else {
+            return false;
+        };
+        self.session.clear_overlay(&rel).unwrap_or(false)
     }
 
     fn publish(&self, conn: &Connection, uri: &Url, diagnostics: Vec<LspDiagnostic>) {
