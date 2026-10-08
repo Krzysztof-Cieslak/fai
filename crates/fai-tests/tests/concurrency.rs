@@ -171,6 +171,54 @@ fn closing_a_full_channel_lets_its_producer_scope_finish() {
 }
 
 #[test]
+fn cancelling_a_receiver_keeps_the_channel_live() {
+    let src = indoc! {r#"
+        module Prog
+        receive : Concurrency -> Channel Int -> Unit -> Int / { Concurrency }
+        let receive c ch u = Option.withDefault (-1) (c.recv ch)
+        body : Concurrency -> Nursery -> Int / { Concurrency }
+        let body c nursery =
+          let ch = c.channel 1
+          let live = c.spawn nursery (receive c ch)
+          let cancelled = c.spawn nursery (receive c ch)
+          let _ = c.cancel cancelled
+          let _ = c.await cancelled
+          let _ = c.send ch 42
+          c.await live
+        public main : Runtime -> Unit / { Concurrency, Console }
+        let main runtime =
+          runtime.console.writeLine (Int.toString (runtime.concurrency.scope (body runtime.concurrency)))
+    "#};
+    let (out, code) = run(src);
+    assert_eq!((out.as_str(), code), ("42\n", 0));
+}
+
+#[test]
+fn cancelling_a_sender_keeps_the_channel_live() {
+    let src = indoc! {r#"
+        module Prog
+        send : Concurrency -> Channel Int -> Int -> Unit -> Unit / { Concurrency }
+        let send c ch value u = c.send ch value
+        body : Concurrency -> Nursery -> Int / { Concurrency }
+        let body c nursery =
+          let ch = c.channel 1
+          let _ = c.send ch 7
+          let live = c.spawn nursery (send c ch 42)
+          let cancelled = c.spawn nursery (send c ch 99)
+          let _ = c.cancel cancelled
+          let _ = c.await cancelled
+          let _ = c.recv ch
+          let _ = c.await live
+          Option.withDefault (-1) (c.recv ch)
+        public main : Runtime -> Unit / { Concurrency, Console }
+        let main runtime =
+          runtime.console.writeLine (Int.toString (runtime.concurrency.scope (body runtime.concurrency)))
+    "#};
+    let (out, code) = run(src);
+    assert_eq!((out.as_str(), code), ("42\n", 0));
+}
+
+#[test]
 fn aot_built_concurrent_program_runs() {
     // The full AOT path: `fai build` (isolated to a temp dir, so only this program
     // and the embedded std load) produces a native binary whose `main` runs as the

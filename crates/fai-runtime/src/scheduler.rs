@@ -26,7 +26,7 @@ use std::cell::Cell;
 use std::collections::VecDeque;
 use std::mem::ManuallyDrop;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::Duration;
 
 use corosensei::{Coroutine, CoroutineResult, Yielder};
@@ -722,8 +722,60 @@ pub fn spawn_in(nursery: &Arc<Nursery>, body: Box<dyn FnOnce() -> Value + Send>)
 struct ChanState {
     buf: VecDeque<Value>,
     closed: bool,
-    recv_waiters: Vec<Arc<Task>>,
-    send_waiters: Vec<Arc<Task>>,
+    recv_waiters: Vec<Arc<ChannelWaiter>>,
+    send_waiters: Vec<Arc<ChannelWaiter>>,
+}
+
+/// One park attempt, distinct even when the same task waits again after a
+/// spurious wake. Inactive registrations cannot consume a later notification.
+struct ChannelWaiter {
+    task: Arc<Task>,
+    active: AtomicBool,
+}
+
+#[derive(Clone, Copy)]
+enum ChannelWaitKind {
+    Send,
+    Receive,
+}
+
+impl ChanState {
+    fn waiters(&mut self, kind: ChannelWaitKind) -> &mut Vec<Arc<ChannelWaiter>> {
+        match kind {
+            ChannelWaitKind::Send => &mut self.send_waiters,
+            ChannelWaitKind::Receive => &mut self.recv_waiters,
+        }
+    }
+}
+
+/// Takes one live registration under the channel lock, skipping cancelled tasks
+/// even if they have not yet resumed to remove their own registration.
+fn take_channel_waiter(waiters: &mut Vec<Arc<ChannelWaiter>>) -> Option<Arc<Task>> {
+    while let Some(waiter) = waiters.pop() {
+        if waiter.active.swap(false, Ordering::AcqRel)
+            && !waiter.task.cancelled.load(Ordering::Acquire)
+        {
+            return Some(Arc::clone(&waiter.task));
+        }
+    }
+    None
+}
+
+/// Registers before releasing the readiness lock, then removes the registration
+/// on every wake (including cancellation and spurious wakes). A normal notifier
+/// already removed it, so that common case avoids scanning the remaining queue.
+fn park_channel(chan: &Chan, mut state: MutexGuard<'_, ChanState>, kind: ChannelWaitKind) {
+    let waiter = Arc::new(ChannelWaiter { task: current_task(), active: AtomicBool::new(true) });
+    state.waiters(kind).push(Arc::clone(&waiter));
+    drop(state);
+    suspend_current(Suspend::Park);
+    if waiter.active.swap(false, Ordering::AcqRel) {
+        chan.state
+            .lock()
+            .expect("chan lock")
+            .waiters(kind)
+            .retain(|entry| !Arc::ptr_eq(entry, &waiter));
+    }
 }
 
 /// A bounded multi-producer/multi-consumer channel (`Channel 'a` to Fai code).
@@ -762,13 +814,22 @@ pub fn channel(capacity: usize) -> Arc<Chan> {
 /// inside a task when the operation may block.
 pub fn chan_send(chan: &Arc<Chan>, v: Value) {
     loop {
+        let mut st = chan.state.lock().expect("chan lock");
         if is_cancelled() {
-            // Cancelled before the send could complete: drop the value (its ownership
-            // had transferred to the send) and bail; the task unwinds.
+            // Cancellation can race a notifier that already selected this task.
+            // Pass a still-available slot to another sender before departing.
+            let next = if !st.closed && st.buf.len() < chan.capacity {
+                take_channel_waiter(&mut st.send_waiters)
+            } else {
+                None
+            };
+            drop(st);
+            if let Some(next) = next {
+                schedule(next);
+            }
             crate::fai_drop(v);
             return;
         }
-        let mut st = chan.state.lock().expect("chan lock");
         if st.closed {
             drop(st);
             crate::fai_drop(v);
@@ -776,7 +837,7 @@ pub fn chan_send(chan: &Arc<Chan>, v: Value) {
         }
         if st.buf.len() < chan.capacity {
             st.buf.push_back(v);
-            let rx = st.recv_waiters.pop();
+            let rx = take_channel_waiter(&mut st.recv_waiters);
             drop(st);
             // Wake one blocked receiver (outside the lock).
             if let Some(rx) = rx {
@@ -785,9 +846,7 @@ pub fn chan_send(chan: &Arc<Chan>, v: Value) {
             return;
         }
         // Full: register as a send-waiter and park; retry after a receiver frees space.
-        st.send_waiters.push(current_task());
-        drop(st);
-        suspend_current(Suspend::Park);
+        park_channel(chan, st, ChannelWaitKind::Send);
     }
 }
 
@@ -795,13 +854,20 @@ pub fn chan_send(chan: &Arc<Chan>, v: Value) {
 /// once the channel is closed and drained. Must be called inside a task.
 pub fn chan_recv(chan: &Arc<Chan>) -> Option<Value> {
     loop {
+        let mut st = chan.state.lock().expect("chan lock");
         if is_cancelled() {
-            // Cancelled: end the receive as if the channel closed; the task unwinds.
+            // If a value arrived just before cancellation, its notification may
+            // already belong to this task. Forward it while the value is ready.
+            let next =
+                if !st.buf.is_empty() { take_channel_waiter(&mut st.recv_waiters) } else { None };
+            drop(st);
+            if let Some(next) = next {
+                schedule(next);
+            }
             return None;
         }
-        let mut st = chan.state.lock().expect("chan lock");
         if let Some(v) = st.buf.pop_front() {
-            let sx = st.send_waiters.pop();
+            let sx = take_channel_waiter(&mut st.send_waiters);
             drop(st);
             // Freed a slot: wake one blocked sender.
             if let Some(sx) = sx {
@@ -813,9 +879,7 @@ pub fn chan_recv(chan: &Arc<Chan>) -> Option<Value> {
             return None;
         }
         // Empty and open: register as a receive-waiter and park.
-        st.recv_waiters.push(current_task());
-        drop(st);
-        suspend_current(Suspend::Park);
+        park_channel(chan, st, ChannelWaitKind::Receive);
     }
 }
 
@@ -828,7 +892,9 @@ pub fn chan_close(chan: &Arc<Chan>) {
         (std::mem::take(&mut st.recv_waiters), std::mem::take(&mut st.send_waiters))
     };
     for waiter in receivers.into_iter().chain(senders) {
-        schedule(waiter);
+        if waiter.active.swap(false, Ordering::AcqRel) {
+            schedule(Arc::clone(&waiter.task));
+        }
     }
 }
 
@@ -1254,6 +1320,200 @@ mod tests {
         while ch.state.lock().unwrap().send_waiters.len() < count {
             std::thread::yield_now();
         }
+    }
+
+    fn wait_for_channel_receivers(ch: &Arc<Chan>, count: usize) {
+        while ch.state.lock().unwrap().recv_waiters.len() < count {
+            std::thread::yield_now();
+        }
+    }
+
+    fn wait_for_completion(handle: &Arc<Handle>) {
+        while !handle.state.lock().unwrap().done {
+            std::thread::yield_now();
+        }
+    }
+
+    fn spawn_channel_receiver(ch: &Arc<Chan>) -> Arc<Handle> {
+        let ch = Arc::clone(ch);
+        spawn(Box::new(move || chan_recv(&ch).unwrap_or(imm(-1))))
+    }
+
+    #[test]
+    fn channel_waiters_remove_cancelled_receivers_without_a_later_send() {
+        let ch = channel(1);
+        for _ in 0..4 {
+            let receiver = spawn_channel_receiver(&ch);
+            wait_for_channel_receivers(&ch, 1);
+            cancel_handle(&receiver);
+            wait_for_completion(&receiver);
+            assert!(ch.state.lock().unwrap().recv_waiters.is_empty());
+        }
+    }
+
+    #[test]
+    fn channel_waiters_cancelled_receiver_does_not_steal_the_next_wake() {
+        let ch = channel(1);
+        let live = spawn_channel_receiver(&ch);
+        wait_for_channel_receivers(&ch, 1);
+        let cancelled = spawn_channel_receiver(&ch);
+        wait_for_channel_receivers(&ch, 2);
+        cancel_handle(&cancelled);
+        wait_for_completion(&cancelled);
+        chan_send(&ch, imm(42));
+        assert_eq!(block_on(Box::new(move || await_handle(&live))), imm(42));
+        assert!(ch.state.lock().unwrap().recv_waiters.is_empty());
+    }
+
+    #[test]
+    fn channel_waiters_cancelled_sender_does_not_steal_the_next_wake() {
+        let ch = channel(1);
+        chan_send(&ch, imm(7));
+        let live = {
+            let ch = Arc::clone(&ch);
+            spawn(Box::new(move || {
+                chan_send(&ch, imm(42));
+                imm(1)
+            }))
+        };
+        wait_for_channel_senders(&ch, 1);
+        let cancelled = {
+            let ch = Arc::clone(&ch);
+            spawn(Box::new(move || {
+                chan_send(&ch, imm(99));
+                imm(2)
+            }))
+        };
+        wait_for_channel_senders(&ch, 2);
+        cancel_handle(&cancelled);
+        wait_for_completion(&cancelled);
+        assert_eq!(chan_recv(&ch), Some(imm(7)));
+        assert_eq!(block_on(Box::new(move || await_handle(&live))), imm(1));
+        assert_eq!(chan_recv(&ch), Some(imm(42)));
+        assert!(ch.state.lock().unwrap().send_waiters.is_empty());
+    }
+
+    #[test]
+    fn channel_waiters_skip_cancelled_receiver_before_it_unregisters() {
+        let ch = channel(1);
+        let live = spawn_channel_receiver(&ch);
+        wait_for_channel_receivers(&ch, 1);
+        let cancelled = spawn_channel_receiver(&ch);
+        wait_for_channel_receivers(&ch, 2);
+        let task = cancelled.task.lock().unwrap().upgrade().unwrap();
+        let parked = task.coro.lock().unwrap();
+        cancel_handle(&cancelled);
+        chan_send(&ch, imm(42));
+        drop(parked);
+        assert_eq!(block_on(Box::new(move || await_handle(&live))), imm(42));
+    }
+
+    #[test]
+    fn channel_waiters_cancelled_selected_receiver_forwards_readiness() {
+        let ch = channel(1);
+        let live = spawn_channel_receiver(&ch);
+        wait_for_channel_receivers(&ch, 1);
+        let cancelled = spawn_channel_receiver(&ch);
+        wait_for_channel_receivers(&ch, 2);
+        let task = cancelled.task.lock().unwrap().upgrade().unwrap();
+        let parked = task.coro.lock().unwrap();
+        // Pause a send between committing the value/selecting its waiter and
+        // scheduling it. Cancellation wins after selection but before resumption.
+        let selected = {
+            let mut state = ch.state.lock().unwrap();
+            state.buf.push_back(imm(42));
+            take_channel_waiter(&mut state.recv_waiters).unwrap()
+        };
+        assert!(Arc::ptr_eq(&selected, &task));
+        cancel_handle(&cancelled);
+        schedule(selected);
+        drop(parked);
+        assert_eq!(block_on(Box::new(move || await_handle(&live))), imm(42));
+    }
+
+    #[test]
+    fn channel_waiters_cancelled_selected_sender_forwards_readiness() {
+        let ch = channel(1);
+        chan_send(&ch, imm(7));
+        let live = {
+            let ch = Arc::clone(&ch);
+            spawn(Box::new(move || {
+                chan_send(&ch, imm(42));
+                imm(1)
+            }))
+        };
+        wait_for_channel_senders(&ch, 1);
+        let cancelled = {
+            let ch = Arc::clone(&ch);
+            spawn(Box::new(move || {
+                chan_send(&ch, imm(99));
+                imm(2)
+            }))
+        };
+        wait_for_channel_senders(&ch, 2);
+        let task = cancelled.task.lock().unwrap().upgrade().unwrap();
+        let parked = task.coro.lock().unwrap();
+        // Pause a receive after freeing a slot and selecting its sender.
+        let selected = {
+            let mut state = ch.state.lock().unwrap();
+            assert_eq!(state.buf.pop_front(), Some(imm(7)));
+            take_channel_waiter(&mut state.send_waiters).unwrap()
+        };
+        assert!(Arc::ptr_eq(&selected, &task));
+        cancel_handle(&cancelled);
+        schedule(selected);
+        drop(parked);
+        assert_eq!(block_on(Box::new(move || await_handle(&live))), imm(1));
+        assert_eq!(chan_recv(&ch), Some(imm(42)));
+    }
+
+    #[test]
+    fn channel_waiters_spurious_wakes_keep_one_live_registration() {
+        let ch = channel(1);
+        let receiver = spawn_channel_receiver(&ch);
+        wait_for_channel_receivers(&ch, 1);
+        let task = receiver.task.lock().unwrap().upgrade().unwrap();
+        for _ in 0..4 {
+            let previous = Arc::clone(&ch.state.lock().unwrap().recv_waiters[0]);
+            schedule(Arc::clone(&task));
+            loop {
+                let state = ch.state.lock().unwrap();
+                if state.recv_waiters.len() == 1 && !Arc::ptr_eq(&state.recv_waiters[0], &previous)
+                {
+                    break;
+                }
+                drop(state);
+                std::thread::yield_now();
+            }
+            assert!(!previous.active.load(Ordering::Acquire));
+        }
+        cancel_handle(&receiver);
+        wait_for_completion(&receiver);
+        assert!(ch.state.lock().unwrap().recv_waiters.is_empty());
+    }
+
+    #[test]
+    fn channel_waiters_remove_cancelled_senders_without_a_later_receive() {
+        let _guard = crate::tests::lock();
+        let base = crate::live_count();
+        let ch = channel(1);
+        chan_send(&ch, imm(7));
+        for _ in 0..4 {
+            let sender = {
+                let ch = Arc::clone(&ch);
+                spawn(Box::new(move || {
+                    chan_send(&ch, crate::fai_box_int(i64::MAX));
+                    imm(1)
+                }))
+            };
+            wait_for_channel_senders(&ch, 1);
+            cancel_handle(&sender);
+            wait_for_completion(&sender);
+            assert!(ch.state.lock().unwrap().send_waiters.is_empty());
+        }
+        block_on(Box::new(|| imm(0)));
+        drop(ch);
+        assert_eq!(crate::live_count(), base);
     }
 
     #[test]

@@ -3542,6 +3542,11 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     unit-returning API, while pre-close buffered values remain receivable. A
     repeated close is a no-op. `await` is memoized (the result is duplicated out,
     so a handle may be awaited again).
+    A contended channel operation owns a one-shot waiter registration, removed
+    on every resumption (including cancellation and spurious wakes). Notifications
+    skip inactive/cancelled registrations. Cancellation after a waiter has already
+    been selected forwards any still-available value or slot to another waiter,
+    so a departed task cannot consume the channel's only readiness notification.
   - **Capability surface.** `Concurrency` is a capability in the default `Runtime`:
     its interface (`scope`/`spawn`/`await`/`channel`/`send`/`recv`/`close`) and the
     native primitives + standard instance live in `Prelude`; the opaque
