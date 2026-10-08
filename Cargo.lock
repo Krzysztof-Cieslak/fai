@@ -847,6 +847,7 @@ dependencies = [
  "rcgen",
  "rustls",
  "rustls-pemfile",
+ "wait-timeout",
  "webpki-roots 0.26.11",
 ]
 

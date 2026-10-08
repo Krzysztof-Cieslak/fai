@@ -39,6 +39,7 @@ fuzzing = []
 # for the single-`$RUSTC` archive build.
 [dev-dependencies]
 proptest.workspace = true
+wait-timeout.workspace = true
 # Mint ephemeral self-signed certs for the in-process TLS handshake tests.
 rcgen.workspace = true
 
