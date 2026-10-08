@@ -16,9 +16,11 @@ example: Array.length empty = 0
 
 /// An empty array pre-sized for `n` elements: the first `n` pushes append in place
 /// without reallocating. The capacity is a hint; the length starts at 0.
+/// Negative capacities become zero; capacities beyond the allocation limit abort.
 public withCapacity : Int -> Array 'a
 let withCapacity n = Prim.arrayWithCapacity n
 example: Array.length (withCapacity 8) = 0
+example: Array.length (withCapacity (-1)) = 0
 
 /// The number of elements in an array.
 public length : Array 'a -> Int

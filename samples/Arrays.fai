@@ -8,6 +8,7 @@ public doubleSum : Array Int -> Int
 let doubleSum xs = Array.sum (Array.map (fun x -> x * 2) xs)
 example: doubleSum [| 1, 2, 3 |] = 12
 example: doubleSum [||] = 0
+example: doubleSum (Array.withCapacity (-1)) = 0
 
 /// Safe indexing returns `Option`; an out-of-range index is `None`.
 public second : Array Int -> Option Int

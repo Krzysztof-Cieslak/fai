@@ -3123,14 +3123,15 @@ impl<M: Module> Translator<'_, M> {
     /// the runtime's `max(0)`), the byte size derived as `ARRAY_ELEMS_OFFSET +
     /// cap * 8`, the buffer popped from the free list (or the runtime fallback), and
     /// the length initialized to 0. A constant capacity folds the gate and size to
-    /// constants. The capacity operand is an `Int` immediate (read raw, not
-    /// consumed).
+    /// constants. The capacity operand is consumed, including a boxed `Int`.
     fn array_with_capacity_inline(&mut self, args: &[CExpr]) -> Value {
-        let cap = self.array_index_raw(&args[0]);
+        let cap = self.expr(&args[0]);
+        let cap = self.as_raw_int(cap);
         // Clamp to non-negative: a negative capacity becomes 0 (an empty buffer),
         // so the derived size is always a valid pooled-or-large array size.
         let zero = self.builder.ins().iconst(types::I64, 0);
         let cap = self.builder.ins().smax(cap, zero);
+        self.check_array_capacity(cap);
         let elems_off = i64::from(u32::try_from(rt::ARRAY_ELEMS_OFFSET).expect("array elems off"));
         let bytes = self.builder.ins().ishl_imm(cap, 3);
         let size = self.builder.ins().iadd_imm(bytes, elems_off);
@@ -3138,6 +3139,23 @@ impl<M: Module> Translator<'_, M> {
         // A fresh array starts empty (length 0).
         self.store_field(arr, rt::ARRAY_LEN_OFFSET, zero);
         arr
+    }
+
+    /// Rejects a capacity before its element-byte multiplication can wrap or
+    /// exceed the allocator's signed pointer-offset limit.
+    fn check_array_capacity(&mut self, cap: Value) {
+        let max = i64::try_from(rt::MAX_ARRAY_CAPACITY).expect("maximum array capacity");
+        let fits = self.builder.ins().icmp_imm(IntCC::UnsignedLessThanOrEqual, cap, max);
+        let valid = self.builder.create_block();
+        let invalid = self.builder.create_block();
+        self.builder.ins().brif(fits, valid, &[], invalid, &[]);
+        self.builder.switch_to_block(invalid);
+        self.builder.seal_block(invalid);
+        let panic = self.runtime("fai_allocation_size_panic", 0, false);
+        self.builder.ins().call(panic, &[]);
+        self.builder.ins().trap(TrapCode::unwrap_user(1));
+        self.builder.switch_to_block(valid);
+        self.builder.seal_block(valid);
     }
 
     /// `Array.length`: an inline load of the length field as a raw `Int`. The array
@@ -3573,10 +3591,14 @@ impl<M: Module> Translator<'_, M> {
         // appended, and the old buffer reclaimed.
         self.builder.switch_to_block(grow_b);
         self.builder.seal_block(grow_b);
+        self.check_array_capacity(len1);
         let is_empty = self.builder.ins().icmp_imm(IntCC::Equal, cap, 0);
         let doubled = self.builder.ins().ishl_imm(cap, 1);
         let four = self.builder.ins().iconst(types::I64, 4);
         let new_cap = self.builder.ins().select(is_empty, four, doubled);
+        let max = i64::try_from(rt::MAX_ARRAY_CAPACITY).expect("maximum array capacity");
+        let max = self.builder.ins().iconst(types::I64, max);
+        let new_cap = self.builder.ins().umin(new_cap, max);
         let new_bytes = self.builder.ins().ishl_imm(new_cap, 3);
         let new_size = self.builder.ins().iadd_imm(new_bytes, elems_bytes);
         let grown = self.inline_alloc_array(new_size);

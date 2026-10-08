@@ -1008,6 +1008,8 @@ sort       : List 'a -> List 'a                       // ascending, structural
 
 In-place update when uniquely owned; copy-on-share. Safe `get`/`set` return
 `Option`; the `unsafe*` variants skip the bounds check (out of bounds aborts).
+`withCapacity n` starts empty and clamps negative capacities to zero. Capacities
+or growth beyond the platform's allocation-size limit abort before allocation.
 
 ```
 empty        : Array 'a

@@ -367,6 +367,49 @@ fn exhaustive_record_patterns_build_and_run() {
     assert_eq!((out.as_str(), code), ("42\n", Some(0)));
 }
 
+#[track_caller]
+fn assert_array_capacity_aborts(capacity: &str) {
+    let src = formatdoc! {r#"
+        module Main
+        allocate : Int -> Int
+        let allocate n = Array.length (Array.withCapacity n)
+        public main : Runtime -> Unit / {{ Console }}
+        let main runtime = runtime.console.writeLine (Int.toString (allocate {capacity}))
+    "#};
+    let (out, err, code) = build_and_run_captured(&src);
+    assert_ne!(code, Some(0));
+    assert!(out.is_empty(), "{out}");
+    assert!(err.contains("allocation size exceeds supported range"), "{err}");
+}
+
+#[test]
+fn oversized_array_capacity_wrapping_to_zero_aborts() {
+    assert_array_capacity_aborts("2305843009213693948");
+}
+
+#[test]
+fn oversized_array_capacity_wrapping_below_header_aborts() {
+    assert_array_capacity_aborts("2305843009213693949");
+}
+
+#[test]
+fn oversized_array_capacity_exceeding_layout_limit_aborts() {
+    assert_array_capacity_aborts("1152921504606846972");
+}
+
+#[test]
+fn array_capacity_negative_boxed_argument_is_leak_free() {
+    let src = indoc! {r#"
+        module Main
+        let allocate make = Array.length (make (0 - 9223372036854775807 - 1))
+        public main : Runtime -> Unit / { Console }
+        let main runtime =
+          runtime.console.writeLine (Int.toString (allocate Array.withCapacity))
+    "#};
+    let (out, code) = build_and_run(src);
+    assert_eq!((out.as_str(), code), ("0\n", Some(0)));
+}
+
 #[test]
 fn cross_module_forwarder_borrows_and_runs() {
     // `Lib.sumList` borrows its list; `Main.forward` only forwards `xs` to it, so

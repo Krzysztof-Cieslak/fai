@@ -55,6 +55,18 @@ fn trapping_contract_is_isolated_and_the_run_continues() {
 }
 
 #[test]
+fn oversized_array_capacity_is_rejected_in_an_isolated_jit() {
+    let source = "module Large\nexample: Array.length (Array.withCapacity 2305843009213693948) = 0\nexample: true\n";
+    let dir = workspace("large-array", &[("Large.fai", source)]);
+    let out =
+        fai().args(["test", "--no-daemon", "-C"]).arg(&dir).arg("Large.fai").output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "{stdout}");
+    assert!(stdout.contains("FAI6003"), "{stdout}");
+    assert!(stdout.contains("1 passed, 1 failed"), "{stdout}");
+}
+
+#[test]
 fn trapping_contract_streams_live_lines_in_order() {
     let dir = workspace("livelines", &[("Crash.fai", CRASH)]);
     let out =
