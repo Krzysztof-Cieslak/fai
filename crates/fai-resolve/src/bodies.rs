@@ -23,7 +23,7 @@ use fai_syntax::ast::{
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::decls::{TypeDecls, type_decls};
+use crate::decls::{InterfaceDecls, TypeDecls, interface_decls, type_decls};
 use crate::ids::{CtorRef, DefId, LocalId, Res, is_upper, qualify};
 use crate::intrinsics;
 use crate::module::{
@@ -124,32 +124,81 @@ impl Scope {
 
 /// Collects every type-constructor reference (`Con`) reachable from `ty`, with
 /// its span, into `out`. Type variables, `Unit`, and error nodes contribute none.
-fn collect_con_refs(module: &Module, ty: TypeId, out: &mut Vec<(Symbol, TextRange)>) {
+fn collect_con_refs(module: &Module, source: &str, ty: TypeId, out: &mut Vec<(Symbol, TextRange)>) {
     let node = module.ty(ty);
     match &node.kind {
         TypeKind::Con(name) => out.push((*name, node.span)),
         TypeKind::App { func, arg } => {
-            collect_con_refs(module, *func, out);
-            collect_con_refs(module, *arg, out);
+            collect_con_refs(module, source, *func, out);
+            collect_con_refs(module, source, *arg, out);
         }
-        TypeKind::Arrow { from, to, .. } => {
-            collect_con_refs(module, *from, out);
-            collect_con_refs(module, *to, out);
+        TypeKind::Arrow { from, to, effect } => {
+            collect_con_refs(module, source, *from, out);
+            collect_con_refs(module, source, *to, out);
+            if let Some(effect) = effect {
+                collect_effect_refs(source, &effect.labels, effect.span, out);
+            }
         }
         TypeKind::Tuple(items) => {
             for &item in items {
-                collect_con_refs(module, item, out);
+                collect_con_refs(module, source, item, out);
             }
         }
         TypeKind::Record { fields, .. } => {
             for field in fields {
-                collect_con_refs(module, field.ty, out);
+                collect_con_refs(module, source, field.ty, out);
             }
         }
-        TypeKind::Paren(inner) => collect_con_refs(module, *inner, out),
-        // An effect row's atoms are capability names resolved during lowering (as
-        // for an arrow's effect annotation), not type-constructor references.
-        TypeKind::Var(_) | TypeKind::EffectRow { .. } | TypeKind::Unit | TypeKind::Error => {}
+        TypeKind::Paren(inner) => collect_con_refs(module, source, *inner, out),
+        TypeKind::EffectRow { labels, .. } => collect_effect_refs(source, labels, node.span, out),
+        TypeKind::Var(_) | TypeKind::Unit | TypeKind::Error => {}
+    }
+}
+
+/// Effect rows retain their labels and whole-row span; recover each label's
+/// precise token range, including qualified names separated by whitespace.
+fn collect_effect_refs(
+    source: &str,
+    labels: &[Symbol],
+    span: TextRange,
+    out: &mut Vec<(Symbol, TextRange)>,
+) {
+    use fai_syntax::TokenKind;
+    let start = span.start().to_usize();
+    let Some(text) = source.get(start..span.end().to_usize()) else {
+        return;
+    };
+    let lexed = fai_syntax::lex(SourceId::new(0), text);
+    let mut i = 0;
+    while i < lexed.tokens.len() {
+        let token = lexed.tokens[i];
+        if token.kind != TokenKind::UpperIdent {
+            i += 1;
+            continue;
+        }
+        let begin = token.range.start().to_usize();
+        let mut end = token.range.end().to_usize();
+        let mut name = text[begin..end].to_owned();
+        while lexed.tokens.get(i + 1).is_some_and(|token| token.kind == TokenKind::Dot)
+            && lexed.tokens.get(i + 2).is_some_and(|token| token.kind == TokenKind::UpperIdent)
+        {
+            i += 2;
+            let part = lexed.tokens[i].range;
+            name.push('.');
+            name.push_str(&text[part.start().to_usize()..part.end().to_usize()]);
+            end = part.end().to_usize();
+        }
+        let name = Symbol::intern(&name);
+        if labels.contains(&name) {
+            out.push((
+                name,
+                TextRange::new(
+                    fai_span::ByteOffset::from_usize(start + begin),
+                    fai_span::ByteOffset::from_usize(start + end),
+                ),
+            ));
+        }
+        i += 1;
     }
 }
 
@@ -164,11 +213,20 @@ fn type_ref_reach(
     db: &dyn Db,
     file: SourceFile,
     decls: &TypeDecls,
+    interfaces: &InterfaceDecls,
+    scope: &[Symbol],
     name: Symbol,
 ) -> Option<Visibility> {
-    if let Some(info) = decls.types.get(&name) {
-        // A local (same-file) type is always nameable here.
-        return Some(info.visibility);
+    for depth in (0..=scope.len()).rev() {
+        let candidate = qualify(&scope[..depth], name);
+        let visibility = decls
+            .types
+            .get(&candidate)
+            .map(|info| info.visibility)
+            .or_else(|| interfaces.interface_named(candidate).map(|info| info.visibility));
+        if visibility.is_some() {
+            return visibility;
+        }
     }
     let text = name.as_str();
     if !text.contains('.') {
@@ -191,12 +249,17 @@ fn type_ref_reach(
             break;
         }
     }
-    if i >= segments.len() {
+    if i + 1 != segments.len() {
         return None;
     }
     let member = qualify(&inner, segments[i]);
     let target_decls = type_decls(db, target);
-    let visibility = target_decls.types.get(&member)?.visibility;
+    let visibility = target_decls.types.get(&member).map(|info| info.visibility).or_else(|| {
+        interface_decls(db, target).interface_named(member).map(|info| info.visibility)
+    })?;
+    if target == file {
+        return Some(visibility);
+    }
     match visibility {
         Visibility::Public => Some(Visibility::Public),
         // A cross-file `internal` type is nameable only within the same origin.
@@ -218,54 +281,68 @@ fn type_ref_reach(
 /// necessarily same-origin, since a cross-origin one would not have resolved).
 fn emit_privacy_leaks(db: &dyn Db, file: SourceFile, module: &Module, source: SourceId) {
     let decls = type_decls(db, file);
+    let interfaces = interface_decls(db, file);
 
     let mut refs: Vec<(Symbol, TextRange)> = Vec::new();
-    let check =
-        |module: &Module, surface: Visibility, ty: TypeId, refs: &mut Vec<(Symbol, TextRange)>| {
-            refs.clear();
-            collect_con_refs(module, ty, refs);
-            for &(name, span) in refs.iter() {
-                // Only a type nameable from this file can leak; a type not nameable
-                // here is an unresolved/internal reference reported separately.
-                let Some(ty_vis) = type_ref_reach(db, file, &decls, name) else {
-                    continue;
-                };
-                if ty_vis.rank() < surface.rank() {
-                    let surface_word =
-                        if surface == Visibility::Public { "public" } else { "internal" };
-                    let type_word =
-                        if ty_vis == Visibility::Private { "private" } else { "internal" };
-                    emit(
-                        db,
-                        Diagnostic::error(
-                            PRIVATE_TYPE_IN_PUBLIC_SIGNATURE,
-                            format!(
-                                "this {surface_word} surface exposes the {type_word} type `{name}`"
-                            ),
-                            Span::new(source, span),
-                        )
-                        .with_help(format!(
-                            "widen `{name}`'s visibility, or make this surface less visible"
-                        )),
-                    );
-                }
+    let mut check = |scope: &[Symbol], surface: Visibility, ty: TypeId| {
+        refs.clear();
+        collect_con_refs(module, file.text(db), ty, &mut refs);
+        for &(name, span) in refs.iter() {
+            // Only a type nameable from this file can leak; a type not nameable
+            // here is an unresolved/internal reference reported separately.
+            let Some(ty_vis) = type_ref_reach(db, file, &decls, &interfaces, scope, name) else {
+                continue;
+            };
+            if ty_vis.rank() < surface.rank() {
+                let surface_word =
+                    if surface == Visibility::Public { "public" } else { "internal" };
+                let type_word = if ty_vis == Visibility::Private { "private" } else { "internal" };
+                emit(
+                    db,
+                    Diagnostic::error(
+                        PRIVATE_TYPE_IN_PUBLIC_SIGNATURE,
+                        format!(
+                            "this {surface_word} surface exposes the {type_word} type `{name}`"
+                        ),
+                        Span::new(source, span),
+                    )
+                    .with_help(format!(
+                        "widen `{name}`'s visibility, or make this surface less visible"
+                    )),
+                );
             }
-        };
+        }
+    };
 
-    for item in &module.items {
+    visit_exported_types(module, &module.roots, &mut Vec::new(), &mut check);
+}
+
+fn visit_exported_types(
+    module: &Module,
+    items: &[ItemId],
+    scope: &mut Vec<Symbol>,
+    check: &mut impl FnMut(&[Symbol], Visibility, TypeId),
+) {
+    for item in items {
+        let item = &module.items[item.index()];
         match &item.kind {
+            ItemKind::Module { name, body } => {
+                scope.push(*name);
+                visit_exported_types(module, body, scope, check);
+                scope.pop();
+            }
             ItemKind::Signature { visibility, ty, .. } if visibility.is_exported() => {
-                check(module, *visibility, *ty, &mut refs);
+                check(scope, *visibility, *ty);
             }
             // An opaque type's definition (alias body / constructor fields) is not
             // cross-file-visible, so it cannot leak — skip it.
             ItemKind::Type { visibility, opaque: false, def, .. } if visibility.is_exported() => {
                 match def {
-                    TypeDef::Alias(ty) => check(module, *visibility, *ty, &mut refs),
+                    TypeDef::Alias(ty) => check(scope, *visibility, *ty),
                     TypeDef::Union(variants) => {
                         for variant in variants {
                             for &field in &variant.fields {
-                                check(module, *visibility, field, &mut refs);
+                                check(scope, *visibility, field);
                             }
                         }
                     }
@@ -273,7 +350,7 @@ fn emit_privacy_leaks(db: &dyn Db, file: SourceFile, module: &Module, source: So
             }
             ItemKind::Interface { visibility, methods, .. } if visibility.is_exported() => {
                 for m in methods {
-                    check(module, *visibility, m.ty, &mut refs);
+                    check(scope, *visibility, m.ty);
                 }
             }
             _ => {}

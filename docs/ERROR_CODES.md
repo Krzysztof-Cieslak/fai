@@ -200,7 +200,7 @@ The prelude-private `Prim.*` intrinsics are reachable only from standard-library
 
 **Severity:** error
 
-An exported surface (a signature, alias body, or constructor field) names a type of narrower reach than itself — a `public` surface naming a `private` or `internal` type, or an `internal` surface naming a `private` type — so a reader of the surface could not name the type. Widen the type's visibility, or narrow the surface's.
+An exported surface (a signature, alias body, constructor field, or interface method) names a type, interface, or effect atom of narrower reach than itself. A `public` surface cannot name a `private` or `internal` declaration, and an `internal` surface cannot name a `private` one, including inside nested modules. Widen the declaration's visibility or narrow the surface's. Opaque representations may retain private implementation types.
 
 ### FAI2016 — name already declared in this module
 

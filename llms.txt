@@ -213,7 +213,8 @@ comments.
   - Everything unmarked is **private** to its module.
   - Every **exported** (`public` *or* `internal`) binding needs a signature
     (`FAI3003` otherwise). An exported signature may not name a type of narrower
-    reach (`FAI2015`). Referencing another origin's `internal` member is `FAI2020`.
+    reach (`FAI2015`), including interfaces and named effects under nested scopes.
+    Referencing another origin's `internal` member is `FAI2020`.
 - **Cross-file references use a dotted qualified path**: a value/constructor as
   `Module.name`, a type as `Module.Type`. Identifiers cannot contain `.`, so a
   qualified name is one dotted symbol.
@@ -923,7 +924,7 @@ dynamically dispatched value. Method definitions in an instance name the method
 and its parameters directly (no `fun`):
 
 ```fai
-interface Renderer =
+public interface Renderer =
   render : Shape -> String
 
 public boxRenderer : Renderer
@@ -940,7 +941,7 @@ An instance must implement exactly the interface's methods — no more, no fewer
 is an *effect* parameter. Supply it with an effect row (in braces):
 
 ```fai
-interface Logger 'e =
+public interface Logger 'e =
   log : String -> Unit / 'e
 
 public consoleLogger : Console -> Logger { Console }

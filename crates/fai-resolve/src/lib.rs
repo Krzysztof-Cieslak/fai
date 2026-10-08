@@ -23,6 +23,8 @@ mod module;
 mod scc;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod visibility_tests;
 
 pub use bodies::{ResolvedBodies, resolve};
 pub use decls::{
@@ -68,8 +70,8 @@ pub const UNBOUND_CONSTRUCTOR: DiagnosticCode = DiagnosticCode::new("FAI2012");
 pub const DUPLICATE_PRELUDE_EXPORT: DiagnosticCode = DiagnosticCode::new("FAI2013");
 /// The `Prim` intrinsics module is referenced outside a standard-library module.
 pub const INTRINSIC_OUTSIDE_STD: DiagnosticCode = DiagnosticCode::new("FAI2014");
-/// A public surface (signature, alias body, or constructor field) exposes a
-/// same-module private type.
+/// An exported signature, alias, constructor field, or interface method exposes
+/// a less-visible type/interface/effect name.
 pub const PRIVATE_TYPE_IN_PUBLIC_SIGNATURE: DiagnosticCode = DiagnosticCode::new("FAI2015");
 /// A nested module's name collides with another module, type, interface, or
 /// constructor declared in the same scope.
@@ -193,11 +195,12 @@ pub const CODES: &[CodeInfo] = &[
         code: PRIVATE_TYPE_IN_PUBLIC_SIGNATURE,
         title: "less-visible type exposed by an exported signature",
         default_severity: Severity::Error,
-        explanation: "An exported surface (a signature, alias body, or constructor field) names a \
-                      type of narrower reach than itself — a `public` surface naming a `private` \
-                      or `internal` type, or an `internal` surface naming a `private` type — so a \
-                      reader of the surface could not name the type. Widen the type's visibility, \
-                      or narrow the surface's.",
+        explanation: "An exported surface (a signature, alias body, constructor field, or interface \
+                      method) names a type, interface, or effect atom of narrower reach than itself. \
+                      A `public` surface cannot name a `private` or `internal` declaration, and an \
+                      `internal` surface cannot name a `private` one, including inside nested \
+                      modules. Widen the declaration's visibility or narrow the surface's. \
+                      Opaque representations may retain private implementation types.",
     },
     CodeInfo {
         code: MODULE_NAME_CONFLICT,
