@@ -833,6 +833,12 @@ fn custom_datetime_parsing_checks_fields_in_native_code() {
 }
 
 #[test]
+fn large_time_arithmetic_preserves_native_day_carries() {
+    let source = "module Main\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let date = LocalDateTime.plusHours 3000000 LocalDateTime.epoch\n  let elapsed = Duration.multiply 1000000 (Duration.ofHours 4)\n  let valid = LocalDate.toEpochDay (LocalDateTime.date date) = 125000 && LocalTime.nanoOfDay (LocalDateTime.time date) = 0 && Duration.days elapsed = 166666 && Duration.nanosecondOfDay elapsed = 57600000000000\n  r.console.writeLine (if valid then \"ok\" else \"failed\")\n";
+    assert_eq!(build_and_run(source), ("ok\n".into(), Some(0)));
+}
+
+#[test]
 fn user_defined_operator_runs() {
     let src = indoc! {r#"
         module Main

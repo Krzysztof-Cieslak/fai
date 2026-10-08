@@ -93,24 +93,27 @@ example: nanoOfSecond (Option.withDefault midnight (ofNano 0 0 0 42)) = 42
 
 /// The time `n` hours later, wrapping around midnight (`n` may be negative).
 public plusHours : Int -> LocalTime -> LocalTime
-let plusHours n t = fromNanoOfDay (nanoOfDay t + n * nanosPerHour)
+let plusHours n t = plusNanoseconds (Int.floorMod n 24 * nanosPerHour) t
 example: hour (plusHours 2 noon) = 14
 example: hour (plusHours 13 noon) = 1
+example: plusHours 3000000 noon = noon
 
 /// The time `n` minutes later, wrapping around midnight.
 public plusMinutes : Int -> LocalTime -> LocalTime
-let plusMinutes n t = fromNanoOfDay (nanoOfDay t + n * nanosPerMinute)
+let plusMinutes n t = plusNanoseconds (Int.floorMod n 1440 * nanosPerMinute) t
 example: minute (plusMinutes 45 noon) = 45
 
 /// The time `n` seconds later, wrapping around midnight.
 public plusSeconds : Int -> LocalTime -> LocalTime
-let plusSeconds n t = fromNanoOfDay (nanoOfDay t + n * nanosPerSecond)
+let plusSeconds n t = plusNanoseconds (Int.floorMod n 86400 * nanosPerSecond) t
 example: second (plusSeconds 30 noon) = 30
 
 /// The time `n` nanoseconds later, wrapping around midnight.
 public plusNanoseconds : Int -> LocalTime -> LocalTime
-let plusNanoseconds n t = fromNanoOfDay (nanoOfDay t + n)
+let plusNanoseconds n t = fromNanoOfDay (nanoOfDay t + Int.floorMod n nanosPerDay)
 example: nanoOfSecond (plusNanoseconds 7 midnight) = 7
+example: nanoOfDay (plusNanoseconds 9223372036854775807 noon) = 42436854775807
+example: nanoOfDay (plusNanoseconds (0 - 9223372036854775807 - 1) noon) = 43963145224192
 
 /// Three-way chronological comparison: negative if `a` is earlier than `b`.
 public compare : LocalTime -> LocalTime -> Int

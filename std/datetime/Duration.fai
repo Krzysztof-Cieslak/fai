@@ -8,6 +8,8 @@ module Duration
 //
 // The type is opaque: build durations through `ofHours`/`ofSeconds`/… and combine
 // them with `plus`/`minus`. `Prelude` re-exports the name `Duration`.
+// Arithmetic normalizes the fractional day exactly; a genuinely out-of-range
+// whole-day result wraps with the underlying Int arithmetic.
 public opaque type Duration =
   | MkDuration Int Int
 
@@ -144,10 +146,31 @@ public minus : Duration -> Duration -> Duration
 let minus a b = plus a (negate b)
 example: inWholeHours (minus (ofHours 5) (ofHours 2)) = 3
 
-/// The duration scaled by an integer factor.
+/// The duration scaled by an integer factor. The within-day remainder is exact;
+/// a final day count outside Int's range wraps with Int arithmetic.
 public multiply : Int -> Duration -> Duration
-let multiply k d = fromDayNanos (days d * k) (nanosecondOfDay d * k)
+let multiply k d =
+  let (carry, remainder) = fractionProduct (nanosecondOfDay d) k
+  MkDuration (days d * k + carry) remainder
 example: inWholeHours (multiply 3 (ofHours 4)) = 12
+example: days (multiply 1000000 (ofHours 4)) = 166666
+example: nanosecondOfDay (multiply 1000000 (ofHours 4)) = 57600000000000
+example: days (multiply (0 - 1000000) (ofHours 4)) = 0 - 166667
+example: nanosecondOfDay (multiply (0 - 1000000) (ofHours 4)) = 28800000000000
+
+// Quotient/remainder of `n * k` by nanosPerDay, where 0 <= n < nanosPerDay.
+// Radix 32768 bounds `remainder * radix + n * digit` below 2^63. An Int factor
+// takes at most five limbs, so the work is bounded independently of its value.
+// Quotient additions use wrapping Int arithmetic; the exact carry fits an Int.
+fractionProduct : Int -> Int -> (Int * Int)
+let fractionProduct n k =
+  if k >= 0 - 32768 && k < 32768 then
+    let product = n * k
+    (Int.floorDiv product nanosPerDay, Int.floorMod product nanosPerDay)
+  else
+    let (quotient, remainder) = fractionProduct n (Int.floorDiv k 32768)
+    let partial = remainder * 32768 + n * Int.floorMod k 32768
+    (quotient * 32768 + partial / nanosPerDay, partial % nanosPerDay)
 
 /// Whether the duration is negative (precedes the zero duration).
 public isNegative : Duration -> Bool

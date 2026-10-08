@@ -399,6 +399,11 @@ is evaluated immediately.
 teardown sleeps. Other wakes do not shorten its deadline; nonpositive delays
 return immediately and oversized delays use representable clock intervals.
 
+Time-unit arithmetic splits whole days from bounded nanosecond remainders before
+multiplying or adding. `Duration.multiply` supports every `Int` factor with an
+exact fractional-day result. A genuinely out-of-range final day count wraps with
+`Int` arithmetic; `LocalTime` wraps modulo one day.
+
 Contract generation recognizes Prelude `Option`/`Result` by declaration identity.
 Same-spelled user types use their own constructors and support custom `Arbitrary`
 overrides like other user ADTs.
