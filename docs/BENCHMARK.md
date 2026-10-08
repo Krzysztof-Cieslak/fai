@@ -95,7 +95,7 @@ All under `crates/fai-tests/benches/` unless noted. None is a CI gate.
 | `inference` | End-to-end type inference over synthetic workspaces: `cold_check` (grows with size) vs `warm_*_edit` (should stay flat — the firewall). |
 | `micro` | Inference primitives: unification on large types, deep/wide expressions, large mutually-recursive groups. |
 | `stress` | Pathological inference: exponential type growth, very wide/deep structures, instantiation- and constraint-heavy bodies, error-laden files. Also isolates layout over long single-line arrays and application chains (lexing outside the timed loop). |
-| `data_layer` | Inference/exhaustiveness over record- and union-heavy modules; lowering of `match`/records; structural runtime primitives (`compare`, `Float`, construction). |
+| `data_layer` | Inference/exhaustiveness over record- and union-heavy modules; lowering of `match`/records; structural runtime primitives (`compare`, `Float`, construction); standard Array sorting on equal, two-key, and skewed duplicate inputs. |
 | `interfaces` | Inference, lowering, and JIT execution of dictionary dispatch and offset-evidence (row-polymorphic field access / capabilities). |
 | `reuse` | Reuse / in-place update / borrowing: paired *unique* (cells recycled) vs *shared* (cells copied) rebuilds, and in-place vs copying record updates. |
 | `codegen` | The backend pipeline (lower → reference-count → Cranelift → JIT) plus a few runtime primitives. |

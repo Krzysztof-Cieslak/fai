@@ -50,7 +50,7 @@
 > (the intrinsic inliner, run before reference counting), so the wrapper adds no
 > call of indirection at a use site. A
 > contiguous, growable **`Array 'a`** (Vector-style: O(1) index, in-place update
-> when uniquely owned via Perceus, an unstable in-place quicksort) complements the
+> when uniquely owned via Perceus, an unstable in-place three-way introsort) complements the
 > linked `List`, built on five array intrinsics with the rest pure Fai and written
 > with `[| 1, 2, 3 |]` literals. `Array.withCapacity` clamps negative capacities
 > to zero; construction and growth check the complete allocation size before

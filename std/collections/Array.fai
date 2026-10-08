@@ -175,9 +175,12 @@ example: toList (reverse (fromList [1, 2, 3])) = [3, 2, 1]
 
 /// Swap elements `i` and `j` (in place when the array is unique).
 let swap i j xs =
-  let vi = Prim.arrayGet xs i
-  let vj = Prim.arrayGet xs j
-  Prim.arraySet (Prim.arraySet xs i vj) j vi
+  if i = j then
+    xs
+  else
+    let vi = Prim.arrayGet xs i
+    let vj = Prim.arrayGet xs j
+    Prim.arraySet (Prim.arraySet xs i vj) j vi
 
 /// Push every element of `src` onto `acc`, in order.
 let pushAll acc src = foldl (fun a x -> Prim.arrayPush a x) acc src
@@ -301,27 +304,35 @@ let partitionToLists p =
   | (yes, no) -> (toList yes, toList no)
 
 /// Sort under a comparator (`cmp a b < 0` means `a` comes first), in place when
-/// the array is unique. An unstable median-of-three quicksort: ties may be
+/// the array is unique. An unstable three-way introsort: ties may be
 /// reordered (unlike `List.sortBy`); the structural `sort` is unaffected because
-/// equal values are identical.
+/// equal values are identical. Equal-value bands are skipped, and a depth-limited
+/// heapsort fallback bounds worst-case work by O(n log n).
 public sortBy : ('a -> 'a -> Int / 'e) -> Array 'a -> Array 'a / 'e
-let sortBy cmp xs = qsort cmp 0 (Prim.arrayLength xs) xs
+let sortBy cmp xs =
+  let n = Prim.arrayLength xs
+  qsort cmp (depthLimit n) 0 n xs
 
-let qsort cmp lo hi arr =
+// Two partitions per binary logarithm, then use the worst-case O(n log n) heap.
+let depthLimit n = if n <= 1 then 0 else 2 + depthLimit (n / 2)
+
+let qsort cmp depth lo hi arr =
   if hi - lo <= 1 then
     arr
+  else if depth <= 0 then
+    heapSort cmp lo hi arr
   else
-    qsortSplit cmp lo hi (partitionRange cmp hi lo lo (pivotToEnd cmp lo hi arr))
+    qsortSplit cmp (depth - 1) lo hi (partitionRange cmp hi lo lo (hi - 1) (pivotToEnd cmp lo hi arr))
 
 // Recurse into the smaller side and tail-call the larger, so the recursion depth
 // stays logarithmic.
-let qsortSplit cmp lo hi split =
+let qsortSplit cmp depth lo hi split =
   match split with
-  | (p, arr) ->
-    if p - lo < hi - p - 1 then
-      qsort cmp (p + 1) hi (qsort cmp lo p arr)
+  | (equalStart, equalEnd, arr) ->
+    if equalStart - lo < hi - equalEnd then
+      qsort cmp depth equalEnd hi (qsort cmp depth lo equalStart arr)
     else
-      qsort cmp lo p (qsort cmp (p + 1) hi arr)
+      qsort cmp depth lo equalStart (qsort cmp depth equalEnd hi arr)
 
 // Place the median of the first/middle/last elements at `hi-1` (the pivot slot),
 // so a sorted or reverse-sorted run does not degrade to quadratic time. Sorts the
@@ -334,38 +345,74 @@ let pivotToEnd cmp lo hi arr =
   let a3 = if cmp (Prim.arrayGet a2 lo) (Prim.arrayGet a2 mid) > 0 then swap lo mid a2 else a2
   swap mid hi1 a3
 
-// Lomuto partition of `[lo, hi)` with the pivot at `hi-1`: scan with `j`, keeping
-// the elements `<= pivot` packed below `store`, then put the pivot at `store`.
-// Returns the pivot's final index and the partitioned array.
-let partitionRange cmp hi j store arr =
+// Three-way partition, keeping the pivot at hi-1 while scanning. Values below
+// `less` are smaller, [less,j) equal, [j,greater) unknown, and [greater,hi-1)
+// larger. Insert the pivot into the equal band and skip that entire band later.
+let partitionRange cmp hi j less greater arr =
   let hi1 = hi - 1
-  if j >= hi1 then
-    (store, swap store hi1 arr)
-  else if cmp (Prim.arrayGet arr j) (Prim.arrayGet arr hi1) <= 0 then
-    partitionRange cmp hi (j + 1) (store + 1) (swap store j arr)
+  if j >= greater then
+    (less, greater + 1, swap greater hi1 arr)
   else
-    partitionRange cmp hi (j + 1) store arr
+    let order = cmp (Prim.arrayGet arr j) (Prim.arrayGet arr hi1)
+    if order < 0 then
+      partitionRange cmp hi (j + 1) (less + 1) greater (swap less j arr)
+    else if order > 0 then
+      partitionRange cmp hi j less (greater - 1) (swap j (greater - 1) arr)
+    else
+      partitionRange cmp hi (j + 1) less greater arr
+
+let heapSort cmp lo hi arr =
+  let count = hi - lo
+  heapDrain cmp lo (count - 1) (heapBuild cmp lo count (count / 2 - 1) arr)
+
+let heapBuild cmp base count root arr =
+  if root < 0 then arr else heapBuild cmp base count (root - 1) (siftDown cmp base count root arr)
+
+let heapDrain cmp base last arr =
+  if last <= 0 then
+    arr
+  else
+    heapDrain cmp base (last - 1) (siftDown cmp base last 0 (swap base (base + last) arr))
+
+let siftDown cmp base count root arr =
+  let left = root * 2 + 1
+  if left >= count then
+    arr
+  else
+    let right = left + 1
+    let child =
+      if right < count && cmp (Prim.arrayGet arr (base + left)) (Prim.arrayGet arr (base + right)) < 0 then
+        right
+      else
+        left
+    if cmp (Prim.arrayGet arr (base + root)) (Prim.arrayGet arr (base + child)) < 0 then
+      siftDown cmp base count child (swap (base + root) (base + child) arr)
+    else
+      arr
 example: toList (sortBy compare (fromList [3, 1, 2])) = [1, 2, 3]
 example: toList (sortBy compare (fromList [5, 4, 3, 2, 1])) = [1, 2, 3, 4, 5]
+example: toList (sortBy compare (fromList [2, 1, 2, 1, 2])) = [1, 1, 2, 2, 2]
 
 // The default sort's quicksort: the comparator-free peers of `qsort` and friends,
 // comparing elements with the structural `<`/`>`/`<=` directly (an inline
 // immediate compare on a known-immediate element). So the default `sort` pays no
 // `apply_n` per comparison the way `sortBy compare` would — the only reason to
 // duplicate the quicksort body rather than reuse `sortBy compare`.
-let qsortOrd lo hi arr =
+let qsortOrd depth lo hi arr =
   if hi - lo <= 1 then
     arr
+  else if depth <= 0 then
+    heapSortOrd lo hi arr
   else
-    qsortSplitOrd lo hi (partitionRangeOrd hi lo lo (pivotToEndOrd lo hi arr))
+    qsortSplitOrd (depth - 1) lo hi (partitionRangeOrd hi lo lo (hi - 1) (pivotToEndOrd lo hi arr))
 
-let qsortSplitOrd lo hi split =
+let qsortSplitOrd depth lo hi split =
   match split with
-  | (p, arr) ->
-    if p - lo < hi - p - 1 then
-      qsortOrd (p + 1) hi (qsortOrd lo p arr)
+  | (equalStart, equalEnd, arr) ->
+    if equalStart - lo < hi - equalEnd then
+      qsortOrd depth equalEnd hi (qsortOrd depth lo equalStart arr)
     else
-      qsortOrd lo p (qsortOrd (p + 1) hi arr)
+      qsortOrd depth lo equalStart (qsortOrd depth equalEnd hi arr)
 
 let pivotToEndOrd lo hi arr =
   let mid = lo + (hi - lo) / 2
@@ -375,19 +422,55 @@ let pivotToEndOrd lo hi arr =
   let a3 = if Prim.arrayGet a2 lo > Prim.arrayGet a2 mid then swap lo mid a2 else a2
   swap mid hi1 a3
 
-let partitionRangeOrd hi j store arr =
+let partitionRangeOrd hi j less greater arr =
   let hi1 = hi - 1
-  if j >= hi1 then
-    (store, swap store hi1 arr)
-  else if Prim.arrayGet arr j <= Prim.arrayGet arr hi1 then
-    partitionRangeOrd hi (j + 1) (store + 1) (swap store j arr)
+  if j >= greater then
+    (less, greater + 1, swap greater hi1 arr)
   else
-    partitionRangeOrd hi (j + 1) store arr
+    let order = Prim.compare (Prim.arrayGet arr j) (Prim.arrayGet arr hi1)
+    if order < 0 then
+      partitionRangeOrd hi (j + 1) (less + 1) greater (swap less j arr)
+    else if order > 0 then
+      partitionRangeOrd hi j less (greater - 1) (swap j (greater - 1) arr)
+    else
+      partitionRangeOrd hi (j + 1) less greater arr
+
+let heapSortOrd lo hi arr =
+  let count = hi - lo
+  heapDrainOrd lo (count - 1) (heapBuildOrd lo count (count / 2 - 1) arr)
+
+let heapBuildOrd base count root arr =
+  if root < 0 then arr else heapBuildOrd base count (root - 1) (siftDownOrd base count root arr)
+
+let heapDrainOrd base last arr =
+  if last <= 0 then
+    arr
+  else
+    heapDrainOrd base (last - 1) (siftDownOrd base last 0 (swap base (base + last) arr))
+
+let siftDownOrd base count root arr =
+  let left = root * 2 + 1
+  if left >= count then
+    arr
+  else
+    let right = left + 1
+    let child =
+      if right < count && Prim.arrayGet arr (base + left) < Prim.arrayGet arr (base + right) then
+        right
+      else
+        left
+    if Prim.arrayGet arr (base + root) < Prim.arrayGet arr (base + child) then
+      siftDownOrd base count child (swap (base + root) (base + child) arr)
+    else
+      arr
 
 /// Sort an array into ascending order by the structural comparison, in place when
 /// the array is unique.
 public sort : Array 'a -> Array 'a
-let sort xs = qsortOrd 0 (Prim.arrayLength xs) xs
+let sort xs =
+  let n = Prim.arrayLength xs
+  qsortOrd (depthLimit n) 0 n xs
 example: toList (sort (fromList [3, 1, 2])) = [1, 2, 3]
 example: toList (sort (fromList [5, 4, 3, 2, 1])) = [1, 2, 3, 4, 5]
+example: toList (sort (fromList [2, 1, 2, 1, 2])) = [1, 1, 2, 2, 2]
 forall xs: toList (sort (fromList xs)) = List.sort xs

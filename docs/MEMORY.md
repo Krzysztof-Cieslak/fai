@@ -2287,9 +2287,12 @@ Editor integration:
     `FAI6003`) for in-bounds-by-construction hot loops. The intrinsics themselves
     bounds-check-and-abort for memory safety, so a std bug can never read past the
     buffer.
-  - **Sort is an in-place median-of-three quicksort, unstable.** `sortBy` recurses
-    into the smaller side and tail-calls the larger (logarithmic depth); the
-    median-of-three pivot keeps sorted/reverse-sorted input O(n log n). It diverges
+  - **Sort is an in-place three-way introsort, unstable.** `sortBy` recurses
+    into the smaller side and tail-calls the larger (logarithmic depth). A
+    median-of-three partition groups equal values and skips their entire band;
+    after twice the binary logarithm of the input length, an in-place heapsort
+    bounds worst-case work by O(n log n). Self-swaps are omitted, and both paths
+    preserve zero buffer copies for unique arrays. It diverges
     from `List.sortBy`'s stability, but only observably for `sortBy` with a
     *custom partial-key* comparator — `sort = sortBy compare` is unaffected (equal
     values are structurally identical). A faster *List* sort would not come from
