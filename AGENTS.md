@@ -403,6 +403,11 @@ overrides like other user ADTs.
 It leaves `+` literal. If the decoded bytes are not valid UTF-8, it returns the
 original component unchanged; valid Unicode percent-encoding round-trips exactly.
 
+`Period.between` chooses whole years, then months, in the requested direction,
+applying each with calendar clamping before computing residual days. Applying
+the result to the start date reaches the end date; reverse differences need not
+be component-wise negations because clamping is not reversible.
+
 ## 5. Repository layout
 
 A single Cargo workspace. Each crate owns one compiler phase or tool.

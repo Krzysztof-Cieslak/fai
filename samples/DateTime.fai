@@ -34,6 +34,8 @@ example: stamp (Option.withDefault LocalDateTime.epoch (LocalDateTime.ofParts 20
 // Calendar arithmetic: a `Period` is calendar-aware (a month is 28–31 days), unlike
 // a fixed `Duration`. Adding one month to Jan 31 clamps to the end of February.
 example: LocalDate.toString (Period.addToDate (Period.ofMonths 1) (Option.withDefault (LocalDate.fromEpochDay 0) (LocalDate.of 2020 1 31))) = "2020-02-29"
+// Differences apply their year/month clamping in the same order as addition.
+example: Period.addToDate (Period.between (LocalDate.fromEpochDay 18321) (LocalDate.fromEpochDay 18715)) (LocalDate.fromEpochDay 18321) = LocalDate.fromEpochDay 18715
 // An `OffsetDateTime` pins a wall-clock reading to the timeline; the same instant
 // reads differently at different offsets but compares equal.
 example: OffsetDateTime.toString (OffsetDateTime.ofInstant (Option.withDefault Offset.zero (Offset.ofHours 5)) Instant.epoch) = "1970-01-01T05:00:00+05:00"
