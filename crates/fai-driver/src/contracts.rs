@@ -20,7 +20,7 @@
 //! library entry point, which runs the batch in one process (no isolation) for
 //! callers that only test known-safe corpora.
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -626,7 +626,9 @@ pub fn run_test_workers_with_timeout(
                 .collect();
         }
     };
-    let mut spawn = |start: usize| spawn_and_read(&bundle_path, start, timeout);
+    let mut spawn = |start: usize, sink: &mut dyn FnMut(WorkerResult)| {
+        spawn_and_read(&bundle_path, start, timeout, sink)
+    };
     let mut on_result =
         |r: &ContractResult| on_event(&resolve_event(&plan.runnable_meta[r.position], r));
     let results = resume_loop(n, &mut spawn, &mut on_result);
@@ -641,38 +643,33 @@ pub fn run_test_workers_with_timeout(
 /// advances past at least one contract, so it terminates in at most `n` spawns.
 fn resume_loop(
     n: usize,
-    mut spawn: impl FnMut(usize) -> (Vec<WorkerResult>, ExitKind),
+    mut spawn: impl FnMut(usize, &mut dyn FnMut(WorkerResult)) -> ExitKind,
     on_result: &mut dyn FnMut(&ContractResult),
 ) -> Vec<ContractResult> {
-    let mut results: Vec<Option<ContractResult>> = (0..n).map(|_| None).collect();
-    let mut start = 0;
-    while start < n {
-        let (received, exit) = spawn(start);
-        for wr in received {
-            let position = wr.position;
-            if position < n && results[position].is_none() {
+    let mut results = Vec::with_capacity(n);
+    while results.len() < n {
+        let exit = spawn(results.len(), &mut |wr| {
+            // Only the next expected identity can be acknowledged. Duplicated,
+            // out-of-range, and out-of-order frames never alter earlier results.
+            if wr.position == results.len() && results.len() < n {
                 let r = ContractResult::from_worker(wr);
                 on_result(&r);
-                results[position] = Some(r);
+                results.push(r);
             }
-        }
-        match (start..n).find(|&i| results[i].is_none()) {
-            None => break,
-            Some(pos) => {
-                let status = if matches!(exit, ExitKind::Timeout) {
-                    ResultStatus::TimedOut
-                } else {
-                    ResultStatus::Crashed
-                };
-                let r =
-                    ContractResult { position: pos, status, counterexample: None, live_delta: 0 };
-                on_result(&r);
-                results[pos] = Some(r);
-                start = pos + 1;
-            }
+        });
+        if results.len() < n {
+            let pos = results.len();
+            let status = if matches!(exit, ExitKind::Timeout) {
+                ResultStatus::TimedOut
+            } else {
+                ResultStatus::Crashed
+            };
+            let r = ContractResult { position: pos, status, counterexample: None, live_delta: 0 };
+            on_result(&r);
+            results.push(r);
         }
     }
-    results.into_iter().flatten().collect()
+    results
 }
 
 /// How a worker process ended.
@@ -688,16 +685,17 @@ enum ExitKind {
 
 /// Spawns the `__test-worker` subprocess on `bundle_path` starting at contract
 /// `start`, reading its newline-delimited [`WorkerResult`] frames until it exits,
-/// and enforcing `timeout` (killing the worker on expiry). Returns the results it
-/// streamed and how it ended.
+/// and enforcing `timeout` (killing the worker on expiry). Delivers each frame
+/// immediately to `on_result`, then returns how the worker ended.
 fn spawn_and_read(
     bundle_path: &Path,
     start: usize,
     timeout: Duration,
-) -> (Vec<WorkerResult>, ExitKind) {
+    on_result: &mut dyn FnMut(WorkerResult),
+) -> ExitKind {
     let exe = match std::env::current_exe() {
         Ok(exe) => exe,
-        Err(_) => return (Vec::new(), ExitKind::Crash),
+        Err(_) => return ExitKind::Crash,
     };
     let cpu_secs = timeout.as_secs().max(1);
     let child = Command::new(exe)
@@ -711,12 +709,12 @@ fn spawn_and_read(
         .spawn();
     let mut child = match child {
         Ok(child) => child,
-        Err(_) => return (Vec::new(), ExitKind::Crash),
+        Err(_) => return ExitKind::Crash,
     };
 
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
-    let (tx, rx) = mpsc::channel::<WorkerResult>();
+    let (tx, rx) = mpsc::sync_channel::<WorkerResult>(1);
     let reader = std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines() {
             let Ok(line) = line else { break };
@@ -730,8 +728,7 @@ fn spawn_and_read(
     // Drain stderr so a chatty worker (e.g. the abort message) never blocks on a
     // full pipe; its content is diagnostic noise the supervisor discards.
     let draining = std::thread::spawn(move || {
-        let mut sink = Vec::new();
-        let _ = BufReader::new(stderr).read_to_end(&mut sink);
+        let _ = std::io::copy(&mut BufReader::new(stderr), &mut std::io::sink());
     });
 
     let (code_tx, code_rx) = mpsc::channel::<ExitKind>();
@@ -749,19 +746,21 @@ fn spawn_and_read(
                 let _ = child.wait();
                 ExitKind::Timeout
             }
-            Err(_) => ExitKind::Crash,
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                ExitKind::Crash
+            }
         };
         let _ = code_tx.send(kind);
     });
 
-    let mut received = Vec::new();
     for result in rx {
-        received.push(result);
+        on_result(result);
     }
     let _ = reader.join();
     let _ = draining.join();
-    let kind = code_rx.recv().unwrap_or(ExitKind::Crash);
-    (received, kind)
+    code_rx.recv().unwrap_or(ExitKind::Crash)
 }
 
 /// The worker side of `fai test`: reconstructs a bundle, JIT-compiles it once,
@@ -805,6 +804,8 @@ fn run_contracts(rebuilt: &RebuiltTest, start_index: usize, sink: &mut dyn FnMut
     };
     let mut program = JitProgram::compile(&rebuilt.defs, &namer, &arity, &abi, &borrow, &bce);
     for position in start_index..rebuilt.contracts.len() {
+        #[cfg(debug_assertions)]
+        wait_for_event_test_gate(position);
         let c = &rebuilt.contracts[position];
         // The live-object counter is compiled in only under `debug_assertions`, so
         // `live_count` is zero (and `live_delta` always zero) in a release-built
@@ -819,6 +820,20 @@ fn run_contracts(rebuilt: &RebuiltTest, start_index: usize, sink: &mut dyn FnMut
             counterexample: outcome.counterexample,
             live_delta,
         });
+    }
+}
+
+/// Debug-build synchronization for streaming tests: the second contract waits
+/// until the observer acknowledges receipt of the first contract's event.
+#[cfg(debug_assertions)]
+fn wait_for_event_test_gate(position: usize) {
+    if position != 1 {
+        return;
+    }
+    if let Some(path) = std::env::var_os("FAI_TEST_EVENT_GATE") {
+        while !Path::new(&path).exists() {
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 }
 
@@ -1064,8 +1079,16 @@ mod tests {
     #[test]
     fn resume_loop_clean_run_records_every_contract() {
         let received = [pass(0), pass(1), pass(2)];
-        let results =
-            resume_loop(3, |start| (received[start..].to_vec(), ExitKind::Clean), &mut nop);
+        let results = resume_loop(
+            3,
+            |start, sink| {
+                for result in &received[start..] {
+                    sink(result.clone());
+                }
+                ExitKind::Clean
+            },
+            &mut nop,
+        );
         assert_eq!(results.len(), 3);
         assert!(results.iter().all(|r| r.status == ResultStatus::Passed));
     }
@@ -1076,11 +1099,18 @@ mod tests {
         let mut spawns = 0;
         let results = resume_loop(
             4,
-            |start| {
+            |start, sink| {
                 spawns += 1;
                 match start {
-                    0 => (vec![pass(0), pass(1)], ExitKind::Crash),
-                    3 => (vec![pass(3)], ExitKind::Clean),
+                    0 => {
+                        sink(pass(0));
+                        sink(pass(1));
+                        ExitKind::Crash
+                    }
+                    3 => {
+                        sink(pass(3));
+                        ExitKind::Clean
+                    }
                     other => panic!("unexpected resume start {other}"),
                 }
             },
@@ -1097,9 +1127,12 @@ mod tests {
     fn resume_loop_crash_on_first_contract_resumes_after_it() {
         let results = resume_loop(
             2,
-            |start| match start {
-                0 => (Vec::new(), ExitKind::Crash),
-                1 => (vec![pass(1)], ExitKind::Clean),
+            |start, sink| match start {
+                0 => ExitKind::Crash,
+                1 => {
+                    sink(pass(1));
+                    ExitKind::Clean
+                }
                 other => panic!("unexpected resume start {other}"),
             },
             &mut nop,
@@ -1112,9 +1145,9 @@ mod tests {
     fn resume_loop_timeout_marks_timed_out() {
         let results = resume_loop(
             1,
-            |start| {
+            |start, _sink| {
                 assert_eq!(start, 0);
-                (Vec::new(), ExitKind::Timeout)
+                ExitKind::Timeout
             },
             &mut nop,
         );
@@ -1127,14 +1160,65 @@ mod tests {
         let mut spawns = 0;
         let results = resume_loop(
             3,
-            |_start| {
+            |_start, _sink| {
                 spawns += 1;
-                (Vec::new(), ExitKind::Crash)
+                ExitKind::Crash
             },
             &mut nop,
         );
         assert_eq!(spawns, 3);
         assert!(results.iter().all(|r| r.status == ResultStatus::Crashed));
+    }
+
+    #[test]
+    fn results_are_delivered_before_the_worker_returns() {
+        let seen = std::cell::Cell::new(0);
+        let results = resume_loop(
+            2,
+            |start, sink| {
+                assert_eq!(start, 0);
+                sink(pass(0));
+                assert_eq!(seen.get(), 1, "first event must be live");
+                sink(pass(1));
+                ExitKind::Clean
+            },
+            &mut |_| seen.set(seen.get() + 1),
+        );
+        assert_eq!(seen.get(), 2);
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn duplicate_and_out_of_order_frames_do_not_change_acknowledged_identity() {
+        let mut seen = Vec::new();
+        let results = resume_loop(
+            4,
+            |start, sink| match start {
+                0 => {
+                    sink(pass(0));
+                    sink(pass(0));
+                    sink(pass(2));
+                    sink(pass(1));
+                    ExitKind::Timeout
+                }
+                3 => {
+                    sink(pass(3));
+                    ExitKind::Clean
+                }
+                _ => panic!("unexpected resume position"),
+            },
+            &mut |result| seen.push((result.position, result.status)),
+        );
+        assert_eq!(
+            seen,
+            vec![
+                (0, ResultStatus::Passed),
+                (1, ResultStatus::Passed),
+                (2, ResultStatus::TimedOut),
+                (3, ResultStatus::Passed)
+            ]
+        );
+        assert_eq!(results.len(), 4);
     }
 
     #[test]
