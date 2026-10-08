@@ -181,6 +181,8 @@ public interface Env =
 // body's own effect, so concurrency adds `Concurrency` to a function's reach
 // without hiding the effects of what runs concurrently. The handle types are
 // re-exported by this module above.
+// Closing a channel wakes blocked senders and receivers. Buffered values can
+// still be received; pending and later sends discard their value and return Unit.
 public interface Concurrency =
   await : Task 'a -> 'a / { Concurrency }
   cancel : Task 'a -> Unit / { Concurrency }

@@ -778,7 +778,9 @@ channels. A function that uses it surfaces `Concurrency` in its effect row.
   await again).
 - **`channel n`** makes a bounded `Channel 'a` (capacity `n`); `send ch v` blocks
   while full, `recv ch` returns `Some v` or `None` once the channel is **closed
-  and drained**, and `close ch` ends it.
+  and drained**, and `close ch` ends it. Closing wakes blocked senders and
+  receivers. Pending and later sends discard their value and return `Unit`;
+  values already buffered remain available. Closing again has no effect.
 
 `Task 'a`, `Channel 'a`, and `Nursery` are opaque handles (build and use them only
 through the capability). Spawned thunks must be **capture-light**: prefer a
@@ -1222,6 +1224,8 @@ isValidUtf8 : Bytes -> Bool
 reached through the `Runtime`, not free functions — their methods and full
 signatures are in §10. The handle types (`Task`/`Channel`/`Nursery`,
 `Listener`/`Connection`/`UdpSocket`) are opaque.
+Closed channels discard pending and later sends; receivers drain already-buffered
+values before `None`.
 
 ### Async — high-level concurrency combinators (over `Concurrency`)
 

@@ -3537,8 +3537,11 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     `Drop` releases any Fai values it still owns (a task's stored result, a
     channel's buffered values), so the whole path is leak-free. Channels are bounded
     MPMC with backpressure and an explicit close (`recv` yields `None` once closed
-    and drained); `await` is memoized (the result is duplicated out, so a handle may
-    be awaited again).
+    and drained). Closing wakes both senders and receivers; pending and later
+    sends drop their owned payload and return `Unit`, preserving the existing
+    unit-returning API, while pre-close buffered values remain receivable. A
+    repeated close is a no-op. `await` is memoized (the result is duplicated out,
+    so a handle may be awaited again).
   - **Capability surface.** `Concurrency` is a capability in the default `Runtime`:
     its interface (`scope`/`spawn`/`await`/`channel`/`send`/`recv`/`close`) and the
     native primitives + standard instance live in `Prelude`; the opaque
