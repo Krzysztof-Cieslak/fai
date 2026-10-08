@@ -1011,6 +1011,10 @@ server:
     `lsp-types` crates. `lsp-types` is pinned at `0.95` because `0.97` replaced
     `Url` (with `to_file_path`/`from_file_path`) with a `Uri` type lacking
     filesystem-path helpers.
+    Request dispatch preserves the original id and returns one terminal
+    JSON-RPC response: invalid parameters are `-32602`, unsupported methods
+    `-32601`, and result-serialization failures `-32603`. Unknown notifications
+    are ignored; a bad request does not terminate the session.
   - **Surface.** `textDocument` sync (incremental; see below),
     `publishDiagnostics`, `hover`, `definition`, and `formatting`, since grown
     with the features in the following notes. Open buffers are overlaid into the

@@ -314,6 +314,11 @@ alongside its type diagnostics; the results persist across edits to other files
 and are cleared when the file itself is edited. Set the `examples` initialization
 option to `false` to disable this (the type-check is unaffected).
 
+Every request receives a terminal JSON-RPC response with its original id.
+Malformed parameters return `InvalidParams` (`-32602`), unsupported methods
+return `MethodNotFound` (`-32601`), and an unserializable result returns
+`InternalError` (`-32603`). Unsupported notifications are ignored.
+
 ---
 
 ## 6. Daemon commands

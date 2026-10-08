@@ -15,7 +15,7 @@ use std::error::Error;
 use camino::Utf8PathBuf;
 use fai_db::SourceFile;
 use fai_driver::{DirtyFile, Session, check, check_examples, fmt};
-use lsp_server::{Connection, Message, Notification, Request, RequestId, Response};
+use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
 use lsp_types::{
     CodeAction as LspCodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams,
     CodeActionProviderCapability, CodeActionResponse, CompletionItem, CompletionItemKind,
@@ -74,6 +74,15 @@ pub fn serve(connection: &Connection, root: Utf8PathBuf) -> Result<(), Box<dyn E
     for msg in &connection.receiver {
         match msg {
             Message::Request(req) => {
+                if req.method == "shutdown" && !req.params.is_null() {
+                    respond_error(
+                        connection,
+                        req.id,
+                        ErrorCode::InvalidParams,
+                        "invalid parameters for shutdown: expected null".to_owned(),
+                    );
+                    continue;
+                }
                 if connection.handle_shutdown(&req)? {
                     break;
                 }
@@ -273,108 +282,58 @@ impl Server {
 
     fn on_request(&mut self, conn: &Connection, req: Request) {
         match req.method.as_str() {
-            "textDocument/hover" => {
-                if let Ok((id, params)) = req.extract::<HoverParams>("textDocument/hover") {
-                    respond(conn, id, &self.hover(&params));
-                }
-            }
+            "textDocument/hover" => dispatch(conn, req, |params| self.hover(&params)),
             "textDocument/definition" => {
-                if let Ok((id, params)) =
-                    req.extract::<GotoDefinitionParams>("textDocument/definition")
-                {
-                    respond(conn, id, &self.definition(&params));
-                }
+                dispatch(conn, req, |params| self.definition(&params));
             }
             "textDocument/formatting" => {
-                if let Ok((id, params)) =
-                    req.extract::<DocumentFormattingParams>("textDocument/formatting")
-                {
-                    respond(conn, id, &self.formatting(&params));
-                }
+                dispatch(conn, req, |params| self.formatting(&params));
             }
             "textDocument/rangeFormatting" => {
-                if let Ok((id, params)) =
-                    req.extract::<DocumentRangeFormattingParams>("textDocument/rangeFormatting")
-                {
-                    respond(conn, id, &self.range_formatting(&params));
-                }
+                dispatch(conn, req, |params| self.range_formatting(&params));
             }
             "textDocument/onTypeFormatting" => {
-                if let Ok((id, params)) =
-                    req.extract::<DocumentOnTypeFormattingParams>("textDocument/onTypeFormatting")
-                {
-                    respond(conn, id, &self.on_type_formatting(&params));
-                }
+                dispatch(conn, req, |params| self.on_type_formatting(&params));
             }
             "textDocument/documentSymbol" => {
-                if let Ok((id, params)) =
-                    req.extract::<DocumentSymbolParams>("textDocument/documentSymbol")
-                {
-                    respond(conn, id, &self.document_symbols(&params));
-                }
+                dispatch(conn, req, |params| self.document_symbols(&params));
             }
             "workspace/symbol" => {
-                if let Ok((id, params)) = req.extract::<WorkspaceSymbolParams>("workspace/symbol") {
-                    respond(conn, id, &self.workspace_symbols(&params));
-                }
+                dispatch(conn, req, |params| self.workspace_symbols(&params));
             }
             "textDocument/references" => {
-                if let Ok((id, params)) = req.extract::<ReferenceParams>("textDocument/references")
-                {
-                    respond(conn, id, &self.references(&params));
-                }
+                dispatch(conn, req, |params| self.references(&params));
             }
             "textDocument/prepareRename" => {
-                if let Ok((id, params)) =
-                    req.extract::<TextDocumentPositionParams>("textDocument/prepareRename")
-                {
-                    respond(conn, id, &self.prepare_rename(&params));
-                }
+                dispatch(conn, req, |params| self.prepare_rename(&params));
             }
             "textDocument/rename" => {
-                if let Ok((id, params)) = req.extract::<RenameParams>("textDocument/rename") {
-                    respond(conn, id, &self.rename(&params));
-                }
+                dispatch(conn, req, |params| self.rename(&params));
             }
             "textDocument/completion" => {
-                if let Ok((id, params)) = req.extract::<CompletionParams>("textDocument/completion")
-                {
-                    respond(conn, id, &self.completion(&params));
-                }
+                dispatch(conn, req, |params| self.completion(&params));
             }
             "completionItem/resolve" => {
-                if let Ok((id, item)) = req.extract::<CompletionItem>("completionItem/resolve") {
-                    respond(conn, id, &self.resolve_completion(item));
-                }
+                dispatch(conn, req, |item| self.resolve_completion(item));
             }
             "textDocument/signatureHelp" => {
-                if let Ok((id, params)) =
-                    req.extract::<SignatureHelpParams>("textDocument/signatureHelp")
-                {
-                    respond(conn, id, &self.signature_help(&params));
-                }
+                dispatch(conn, req, |params| self.signature_help(&params));
             }
             "textDocument/codeAction" => {
-                if let Ok((id, params)) = req.extract::<CodeActionParams>("textDocument/codeAction")
-                {
-                    respond(conn, id, &self.code_actions(&params));
-                }
+                dispatch(conn, req, |params| self.code_actions(&params));
             }
             "textDocument/inlayHint" => {
-                if let Ok((id, params)) = req.extract::<InlayHintParams>("textDocument/inlayHint") {
-                    respond(conn, id, &self.inlay_hints(&params));
-                }
+                dispatch(conn, req, |params| self.inlay_hints(&params));
             }
             "textDocument/semanticTokens/full" => {
-                if let Ok((id, params)) =
-                    req.extract::<SemanticTokensParams>("textDocument/semanticTokens/full")
-                {
-                    respond(conn, id, &self.semantic_tokens(&params));
-                }
+                dispatch(conn, req, |params| self.semantic_tokens(&params));
             }
-            // An unsupported request still needs a reply so the client is not
-            // left waiting; a null result is the conventional "no answer".
-            _ => respond(conn, req.id, &serde_json::Value::Null),
+            _ => respond_error(
+                conn,
+                req.id,
+                ErrorCode::MethodNotFound,
+                format!("unsupported method: {}", req.method),
+            ),
         }
     }
 
@@ -937,10 +896,44 @@ impl Server {
     }
 }
 
-/// Sends a successful response for `id`.
+/// Decodes a known request and sends exactly one result or parameter error.
+fn dispatch<P: serde::de::DeserializeOwned, R: serde::Serialize>(
+    conn: &Connection,
+    req: Request,
+    handler: impl FnOnce(P) -> R,
+) {
+    match serde_json::from_value(req.params) {
+        Ok(params) => respond(conn, req.id, &handler(params)),
+        Err(error) => respond_error(
+            conn,
+            req.id,
+            ErrorCode::InvalidParams,
+            format!("invalid parameters for {}: {error}", req.method),
+        ),
+    }
+}
+
+fn respond_error(conn: &Connection, id: RequestId, code: ErrorCode, message: String) {
+    let _ = conn.sender.send(Message::Response(Response::new_err(id, code as i32, message)));
+}
+
+/// Sends a successful response for `id`, or an error if serialization fails.
 fn respond<T: serde::Serialize>(conn: &Connection, id: RequestId, result: &T) {
-    let value = serde_json::to_value(result).unwrap_or(serde_json::Value::Null);
-    let _ = conn.sender.send(Message::Response(Response { id, result: Some(value), error: None }));
+    match serde_json::to_value(result) {
+        Ok(value) => {
+            let _ = conn.sender.send(Message::Response(Response {
+                id,
+                result: Some(value),
+                error: None,
+            }));
+        }
+        Err(error) => respond_error(
+            conn,
+            id,
+            ErrorCode::InternalError,
+            format!("serializing response: {error}"),
+        ),
+    }
 }
 
 /// Maps a Fai diagnostic to its LSP form, using `lines` (the file's text) to
@@ -1086,5 +1079,24 @@ fn lsp_completion_kind(kind: fai_ide::CompletionKind) -> CompletionItemKind {
         fai_ide::CompletionKind::Constructor => CompletionItemKind::CONSTRUCTOR,
         fai_ide::CompletionKind::Field => CompletionItemKind::FIELD,
         fai_ide::CompletionKind::Module => CompletionItemKind::MODULE,
+    }
+}
+
+#[cfg(test)]
+mod response_tests {
+    use super::*;
+
+    #[test]
+    fn serialization_failure_returns_one_internal_error_response() {
+        let (server, client) = Connection::memory();
+        let result = std::collections::BTreeMap::from([(vec![1, 2], 3)]);
+        respond(&server, 7.into(), &result);
+        let Message::Response(response) = client.receiver.try_recv().unwrap() else {
+            panic!("response expected");
+        };
+        assert_eq!(response.id, 7.into());
+        assert!(response.result.is_none());
+        assert_eq!(response.error.unwrap().code, ErrorCode::InternalError as i32);
+        assert!(client.receiver.try_recv().is_err());
     }
 }

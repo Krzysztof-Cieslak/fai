@@ -15,7 +15,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use camino::Utf8PathBuf;
-use lsp_server::{Connection, Message, Notification, Request, RequestId};
+use lsp_server::{Connection, Message, Notification, Request, RequestId, Response};
 use lsp_types::Url;
 use serde_json::{Value, json};
 
@@ -112,6 +112,15 @@ impl Harness {
             .send(Message::Request(Request::new(id.clone(), method.to_owned(), params)))
             .unwrap();
         self.await_response(&id)
+    }
+
+    /// Sends a request with an explicit id, preserving protocol errors.
+    pub fn raw_request(&self, id: RequestId, method: &str, params: Value) -> Response {
+        self.client
+            .sender
+            .send(Message::Request(Request::new(id.clone(), method.to_owned(), params)))
+            .unwrap();
+        self.await_raw_response(&id)
     }
 
     /// A position-keyed request (`{ textDocument, position }`) — hover, definition,
@@ -282,12 +291,15 @@ impl Harness {
 
     /// Waits for the response to `id`, skipping notifications (e.g. diagnostics).
     fn await_response(&self, id: &RequestId) -> Value {
+        let response = self.await_raw_response(id);
+        assert!(response.error.is_none(), "server error: {:?}", response.error);
+        response.result.unwrap_or(Value::Null)
+    }
+
+    fn await_raw_response(&self, id: &RequestId) -> Response {
         loop {
             match self.recv() {
-                Message::Response(r) if &r.id == id => {
-                    assert!(r.error.is_none(), "server error: {:?}", r.error);
-                    return r.result.unwrap_or(Value::Null);
-                }
+                Message::Response(r) if &r.id == id => return r,
                 Message::Response(other) => panic!("unexpected response: {other:?}"),
                 Message::Request(req) => panic!("unexpected server request: {req:?}"),
                 Message::Notification(_) => {}
@@ -306,8 +318,8 @@ impl Harness {
     pub fn diagnostics(&mut self, uri: &str) -> Vec<Value> {
         let id: RequestId = self.next_id.into();
         self.next_id += 1;
-        // An unrecognized request still gets a (null) reply, which serves as the
-        // ordering barrier.
+        // An unrecognized request gets a terminal MethodNotFound response,
+        // which serves as an ordering barrier regardless of its error result.
         self.client
             .sender
             .send(Message::Request(Request::new(id.clone(), "fai/sync".to_owned(), Value::Null)))
