@@ -53,6 +53,100 @@ fn infers_identity() {
 }
 
 #[test]
+fn missing_export_signatures_do_not_form_cross_file_inference_cycles() {
+    let a = "module A\npublic let x = B.y\n";
+    let b = "module B\npublic let y = A.x\n";
+    let (db, files) = db_with(&[("A.fai", a), ("B.fai", b)]);
+    let a_diags = check_diags(&db, files[0]);
+    let b_diags = check_diags(&db, files[1]);
+    let a_error = a_diags.iter().find(|d| d.code == crate::MISSING_PUBLIC_SIGNATURE).unwrap();
+    let b_error = b_diags.iter().find(|d| d.code == crate::MISSING_PUBLIC_SIGNATURE).unwrap();
+    assert_eq!(a_error.message, "public binding `x` needs a signature");
+    assert_eq!(b_error.message, "public binding `y` needs a signature");
+    assert_eq!((a_error.primary.start().raw(), a_error.primary.end().raw()), (9, 27));
+    assert_eq!((b_error.primary.start().raw(), b_error.primary.end().raw()), (9, 27));
+}
+
+#[test]
+fn three_file_missing_internal_signatures_report_each_declaration() {
+    let (db, files) = db_with(&[
+        ("A.fai", "module A\ninternal let x = B.y\n"),
+        ("B.fai", "module B\ninternal let y = C.z\n"),
+        ("C.fai", "module C\ninternal let z = A.x\n"),
+    ]);
+    assert_eq!(check_codes(&db, files[0]), vec!["FAI3003"]);
+    assert_eq!(check_codes(&db, files[1]), vec!["FAI3003"]);
+    assert_eq!(check_codes(&db, files[2]), vec!["FAI3003"]);
+}
+
+#[test]
+fn nested_export_cycles_without_signatures_report_diagnostics() {
+    let (db, files) = db_with(&[
+        ("A.fai", "module A\nmodule Inner =\n  public let x = B.Inner.y\n"),
+        ("B.fai", "module B\nmodule Inner =\n  public let y = A.Inner.x\n"),
+    ]);
+    assert_eq!(check_codes(&db, files[0]), vec!["FAI3003"]);
+    assert_eq!(check_codes(&db, files[1]), vec!["FAI3003"]);
+    assert!(
+        !crate::body_types(&db, files[0], fai_syntax::Symbol::intern("Inner.x")).types.is_empty()
+    );
+}
+
+#[test]
+fn missing_signature_cycles_do_not_hide_independent_errors() {
+    let (db, files) = db_with(&[
+        ("A.fai", "module A\npublic let x = B.y\nlet bad = if 1 then true else false\n"),
+        ("B.fai", "module B\npublic let y = A.x\n"),
+    ]);
+    let codes = check_codes(&db, files[0]);
+    assert!(codes.iter().any(|code| code == "FAI3003"));
+    assert!(codes.iter().any(|code| code == "FAI3001"));
+}
+
+#[test]
+fn declared_cross_file_recursion_still_typechecks() {
+    let (db, files) = db_with(&[
+        (
+            "A.fai",
+            "module A\npublic even : Int -> Bool\nlet even n = if n = 0 then true else B.odd (n - 1)\n",
+        ),
+        (
+            "B.fai",
+            "module B\npublic odd : Int -> Bool\nlet odd n = if n = 0 then false else A.even (n - 1)\n",
+        ),
+    ]);
+    assert!(check_codes(&db, files[0]).is_empty());
+    assert!(check_codes(&db, files[1]).is_empty());
+}
+
+#[test]
+fn missing_external_signatures_cut_off_body_edits() {
+    let (mut db, files) =
+        db_with(&[("A.fai", "module A\nlet x = B.y\n"), ("B.fai", "module B\npublic let y = 1\n")]);
+    let before = type_of(&db, files[0], "x");
+    db.enable_event_log();
+    db.add_source("B.fai".into(), "module B\npublic let y = true\n".into());
+    assert_eq!(type_of(&db, files[0], "x"), before);
+    assert!(!db.take_events().iter().any(|event| event.contains("infer_scc_query")));
+}
+
+#[test]
+fn adding_and_removing_a_signature_matches_clean_inference() {
+    let a = "module A\npublic let x = B.y\n";
+    let without = "module B\npublic let y = A.x\n";
+    let with = "module B\npublic y : Int\nlet y = A.x\n";
+    let (mut db, files) = db_with(&[("A.fai", a), ("B.fai", without)]);
+    let original = check_diags(&db, files[0]);
+    db.add_source("B.fai".into(), with.into());
+    let (clean, clean_files) = db_with(&[("A.fai", a), ("B.fai", with)]);
+    assert_eq!(check_diags(&db, files[0]), check_diags(&clean, clean_files[0]));
+    assert_eq!(check_diags(&db, files[1]), check_diags(&clean, clean_files[1]));
+    assert_eq!(type_of(&db, files[0], "x"), "Int");
+    db.add_source("B.fai".into(), without.into());
+    assert_eq!(check_diags(&db, files[0]), original);
+}
+
+#[test]
 fn infers_closed_int_arithmetic() {
     let (db, f) = db_with(&[("M.fai", "module M\n\nlet x = 1 + 2\n")]);
     assert_eq!(type_of(&db, f[0], "x"), "Int");

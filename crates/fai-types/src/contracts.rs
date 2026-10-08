@@ -25,7 +25,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::CONTRACT_NOT_BOOL;
 use crate::infer::{InferCtx, SolveTy, Walker, contract_env};
 use crate::std_lib;
-use crate::ty::{Scheme, Ty};
+use crate::ty::Ty;
 
 /// Type-checks all contracts in `file`.
 pub fn check_contracts(db: &dyn Db, file: SourceFile) {
@@ -90,7 +90,7 @@ fn check_contract_body(
     let module = &parsed.module;
 
     let mut cx = InferCtx::new();
-    let def_schemes = |db: &dyn Db, def: DefId| scheme_for(db, def);
+    let def_schemes = |db: &dyn Db, def: DefId| crate::query::reference_scheme(db, file, def);
     let builtins = |name: Symbol| std_lib::builtin_scheme(name);
     let scc_types: FxHashMap<DefId, SolveTy> = FxHashMap::default();
     let mut env = contract_env(db, &scc_types, &def_schemes, &builtins);
@@ -243,15 +243,4 @@ fn impure_diagnostic(
          and pure — they cannot use the host capabilities (Console, Clock, Random, FileSystem, \
          Env) or the `Runtime` that bundles them. Express the law over pure values instead.",
     )
-}
-
-/// Convenience used by contracts to fetch a referenced definition's scheme.
-#[must_use]
-pub fn scheme_for(db: &dyn Db, def: DefId) -> Option<Scheme> {
-    let file = db.source_file(def.file)?;
-    if let Some(s) = crate::infer::declared_scheme(db, file, def.name) {
-        Some(s)
-    } else {
-        Some(crate::query::def_type(db, file, def.name))
-    }
 }

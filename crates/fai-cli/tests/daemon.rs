@@ -345,6 +345,26 @@ fn warm_check_reflects_an_edit() {
     assert!(stdout(&dirty).contains("FAI3004"), "got: {}", stdout(&dirty));
 }
 
+#[test]
+fn daemon_survives_a_missing_signature_cycle_and_its_repair() {
+    let a = "module A\npublic x : Int\nlet x = 1\n";
+    let b = "module B\npublic y : Int\nlet y = A.x\n";
+    let daemon = Daemon::new("missing-signatures", &[("A.fai", a), ("B.fai", b)]);
+    assert!(daemon.run(&["check", "--no-examples"], &[]).status.success());
+    let pid = status_pid(&daemon).unwrap();
+    std::fs::write(daemon.workspace.join("A.fai"), "module A\npublic let x = B.y\n").unwrap();
+    std::fs::write(daemon.workspace.join("B.fai"), "module B\npublic let y = A.x\n").unwrap();
+    let bad = daemon.run(&["check", "--no-examples", "--message-format=json"], &[]);
+    assert_eq!(bad.status.code(), Some(1));
+    assert!(bad.stderr.is_empty(), "{}", String::from_utf8_lossy(&bad.stderr));
+    assert_eq!(stdout(&bad).matches("FAI3003").count(), 2);
+    assert_eq!(status_pid(&daemon), Some(pid));
+    std::fs::write(daemon.workspace.join("A.fai"), a).unwrap();
+    std::fs::write(daemon.workspace.join("B.fai"), b).unwrap();
+    assert!(daemon.run(&["check", "--no-examples"], &[]).status.success());
+    assert_eq!(status_pid(&daemon), Some(pid));
+}
+
 const HELLO: &str = indoc! {r#"
     module Hello
 
