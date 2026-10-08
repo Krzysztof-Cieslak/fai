@@ -52,9 +52,12 @@ let checksum i acc n a =
 /// The benchmark workload: the position-weighted checksum of the sorted input.
 public run : Int -> Int
 let run n =
-  let sorted = qsort 0 n (gen n)
+  let input = gen n
+  let sorted = qsort 0 (Array.length input) input
   checksum 0 0 n sorted
 example: run 3 = 5
+example: run 0 = 0
+example: run (-1) = 0
 
 public main : Runtime -> Unit / { Console }
 let main runtime = runtime.console.writeLine (Int.toString (run 20000))
