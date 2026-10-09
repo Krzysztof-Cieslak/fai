@@ -1359,6 +1359,8 @@ program output are unchanged, guarded by the full type/golden suite):
     work are bounded, and inserted bodies are not expanded again. Argument
     bindings retain types and evaluation order. Mixed tail/non-tail recursion is
     left to loop lowering, avoiding duplicated loop branches and register pressure.
+    Generated function entries use a 32-byte minimum alignment in both AOT and
+    JIT images, reducing instruction-fetch sensitivity to unrelated object sizes.
   - **Row-polymorphic functions flatten too.** A function carrying leading
     offset-evidence parameters calls itself *curried* — lowering partially applies
     it to its evidence and then to the real arguments
