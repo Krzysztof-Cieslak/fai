@@ -7,10 +7,14 @@ module MergeSort
 // than a linked-vs-array difference. (The module name refers to the workload and
 // the Rust oracle's merge sort; the Fai side is the standard array sort.) Used by
 // the Rust-vs-Fai runtime benchmark.
-/// The benchmark workload: sort the descending array [n-1, …, 0] and sum it.
+// Position-weighted checksum: omitting the sort changes the answer.
+let checksum i acc xs =
+  if i >= Array.length xs then acc else checksum (i + 1) (acc + i * Array.unsafeGet i xs) xs
+
+/// Sort the descending array [n-1, …, 0] and checksum its order.
 public run : Int -> Int
-let run n = Array.sum (Array.sort (Array.reverse (Array.range 0 n)))
-example: run 5 = 10
+let run n = checksum 0 0 (Array.sort (Array.reverse (Array.range 0 n)))
+example: run 5 = 30
 
 public main : Runtime -> Unit / { Console }
 let main runtime = runtime.console.writeLine (Int.toString (run 80000))

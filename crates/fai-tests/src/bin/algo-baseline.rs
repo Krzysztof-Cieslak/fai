@@ -20,6 +20,10 @@ fn main() {
         .expect("usage: algo-baseline <module> <n>")
         .parse()
         .expect("n must be an integer");
+    if let Some(pattern) = fai_tests::sorting::PATTERNS.iter().position(|&name| name == module) {
+        println!("{}", fai_tests::sorting::run(pattern, n.max(0) as usize));
+        return;
+    }
     let algo = by_module(&module).unwrap_or_else(|| panic!("unknown algorithm module: {module}"));
     match algo.oracle {
         // Print the Float the same way Fai's `Float.toString` does (`{:?}`), so a

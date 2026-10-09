@@ -91,12 +91,14 @@ let map_sum n =
   done;
   !acc
 
-(* Sum of `[n-1, …, 0]` after sorting it ascending (an `array`, like the Fai
+(* Position-weighted checksum of `[n-1, …, 0]` sorted ascending (an `array`, like the Fai
    sample's `Array` and the Rust `Vec`). *)
 let merge_sort_sum n =
   let v = Array.init n (fun i -> n - 1 - i) in
   Array.sort compare v;
-  Array.fold_left ( + ) 0 v
+  let answer = ref 0 in
+  Array.iteri (fun i x -> answer := !answer + i * x) v;
+  !answer
 
 type tree =
   | Leaf
@@ -809,6 +811,28 @@ let list_sort_sum n =
   List.iteri (fun i x -> acc := !acc + (i * x)) sorted;
   !acc
 
+let sort_pattern pattern n =
+  let n = max n 0 in
+  let values = Array.init n (fun i ->
+    match pattern with
+    | 1 -> n - 1 - i
+    | 3 -> 7
+    | 4 -> i mod 4
+    | 5 -> n - min n ((i / 32 + 1) * 32) + i mod 32
+    | _ -> i) in
+  if pattern = 2 then begin
+    let state = ref 1 in
+    for i = n - 1 downto 1 do
+      state := (!state * 1664525 + 1013904223) land 2147483647;
+      let j = !state mod (i + 1) in
+      let x = values.(i) in values.(i) <- values.(j); values.(j) <- x
+    done
+  end;
+  Array.sort compare values;
+  let answer = ref 0 in
+  Array.iteri (fun i x -> answer := !answer + i * x) values;
+  !answer
+
 let () =
   let module_name = Sys.argv.(1) in
   let n = int_of_string Sys.argv.(2) in
@@ -818,6 +842,12 @@ let () =
     | "Collatz" -> I (collatz_sum n)
     | "MapSum" -> I (map_sum n)
     | "MergeSort" -> I (merge_sort_sum n)
+    | "SortAscending" -> I (sort_pattern 0 n)
+    | "SortDescending" -> I (sort_pattern 1 n)
+    | "SortShuffled" -> I (sort_pattern 2 n)
+    | "SortEqual" -> I (sort_pattern 3 n)
+    | "SortFewKeys" -> I (sort_pattern 4 n)
+    | "SortRuns" -> I (sort_pattern 5 n)
     | "BinaryTrees" -> I (tree_count n)
     | "Pi" -> F (pi n)
     | "DictHistogram" -> I (dict_histogram n)

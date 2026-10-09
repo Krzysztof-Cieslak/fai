@@ -1,0 +1,44 @@
+module SortPatterns
+
+// Distributions share a deterministic generator with the Rust and OCaml peers.
+let swap i j a =
+  let x = Array.unsafeGet i a
+  let y = Array.unsafeGet j a
+  Array.unsafeSet j x (Array.unsafeSet i y a)
+
+let shuffle i state a =
+  if i <= 0 then
+    a
+  else
+    let next = Int.and (state * 1664525 + 1013904223) 2147483647
+    shuffle (i - 1) next (swap i (next % (i + 1)) a)
+
+public generate : Int -> Int -> Array Int
+let generate pattern n =
+  if pattern = 0 then
+    Array.range 0 n
+  else if pattern = 1 then
+    Array.reverse (Array.range 0 n)
+  else if pattern = 2 then
+    shuffle (n - 1) 1 (Array.range 0 n)
+  else if pattern = 3 then
+    Array.repeat n 7
+  else if pattern = 4 then Array.init n (fun i -> i % 4) else Array.init n (runValue n)
+
+let runValue n i =
+  let end = (i / 32 + 1) * 32
+  n - (if end > n then n else end) + i % 32
+
+public sortedValues : Int -> Int -> Array Int
+let sortedValues pattern n = Array.sort (generate pattern n)
+
+let checksum i acc xs =
+  if i >= Array.length xs then acc else checksum (i + 1) (acc + i * Array.unsafeGet i xs) xs
+
+public run : Int -> Int -> Int
+let run pattern n = checksum 0 0 (sortedValues pattern n)
+example: run 1 5 = 30
+example: run 3 5 = 70
+
+public main : Runtime -> Unit / { Console }
+let main runtime = runtime.console.writeLine (Int.toString (run 1 80000))
