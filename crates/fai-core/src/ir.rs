@@ -925,6 +925,7 @@ impl Prim {
             "compare" => Prim::Compare,
             "hash" => Prim::Hash,
             "arrayWithCapacity" => Prim::ArrayWithCapacity,
+            "arrayUnique" => Prim::ArrayUnique,
             "arrayLength" => Prim::ArrayLength,
             "arrayGet" => Prim::ArrayGet,
             "arraySet" => Prim::ArraySet,

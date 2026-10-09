@@ -2464,6 +2464,10 @@ Editor integration:
     values are structurally identical). `List.sortBy` remains a stable bottom-up
     merge sort. Lists of at most 32 elements use linked runs; larger inputs use
     two private contiguous merge buffers, including both conversions in the call.
+    The second buffer is initialized with one bulk copy through the existing
+    array ownership gate, exposed only to the standard library as `Prim.arrayUnique`.
+    Retaining the source forces a separate destination without per-element Fai
+    get/push calls; comparator order and stable left-on-equality merging are unchanged.
     The run pairing and left-on-equality rule preserve the exact comparator
     schedule, including for an effectful comparator. Shared input lists remain
     unchanged.

@@ -375,8 +375,10 @@ Shared inputs keep their original contents; `sortBy` retains its effectful
 comparator order.
 
 Large `List.sortBy` calls use two private contiguous merge buffers; lists of at
-most 32 elements keep the linked merge path. Both merge adjacent runs in the same
-order and choose the left element on equality, preserving stability and the exact
+most 32 elements keep the linked merge path. The second buffer is initialized by
+one bulk copy through the standard-library-private array ownership gate.
+Both paths merge adjacent runs in the same order and choose the left element on
+equality, preserving stability and the exact
 comparator call schedule. Input/result values remain immutable linked lists.
 
 `HashDict.updateOr fallback f key dict` applies its pure updater once to the

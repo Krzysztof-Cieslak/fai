@@ -124,6 +124,7 @@ pub fn builtin_scheme(name: Symbol) -> Option<Scheme> {
         // adding bounds checks); the runtime takes the array operand first, so the
         // intrinsic types match the `fai_array_*` calling convention.
         "arrayWithCapacity" => single_var_scheme(|a| Ty::arrow(Ty::int(), Ty::array(a))),
+        "arrayUnique" => single_var_scheme(|a| Ty::arrow(Ty::array(a.clone()), Ty::array(a))),
         "arrayLength" => single_var_scheme(|a| Ty::arrow(Ty::array(a), Ty::int())),
         "arrayGet" => single_var_scheme(|a| Ty::arrows([Ty::array(a.clone()), Ty::int()], a)),
         "arraySet" => single_var_scheme(|a| {
