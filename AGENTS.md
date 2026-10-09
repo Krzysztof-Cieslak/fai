@@ -483,6 +483,12 @@ TLS sessions) compare and hash by their underlying resource identity. Aliases
 of one resource are equal; distinct live resources remain distinct, including
 inside aggregates and hash containers.
 
+Small runtime allocations are backed by demand-filled slabs beneath the existing
+thread-local size-class lists. Only issued batches touch pages. Slab ownership
+outlives allocating threads when cells cross task boundaries; the last cell or
+unfinished cursor releases the mapping. Object layouts and Perceus ownership are
+unchanged by this allocator policy.
+
 Contract generation recognizes Prelude `Option`/`Result` by declaration identity.
 Same-spelled user types use their own constructors and support custom `Arbitrary`
 overrides like other user ADTs.

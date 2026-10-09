@@ -30,6 +30,9 @@ rustls.workspace = true
 webpki-roots.workspace = true
 rustls-pemfile.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_System_Memory"] }
+
 # Exposes the allocator fuzz harness (`run_ops`) for the out-of-workspace
 # cargo-fuzz target. Off by default and dependency-free, so the staticlib/rlib and
 # the single-`$RUSTC` archive build are unaffected.
