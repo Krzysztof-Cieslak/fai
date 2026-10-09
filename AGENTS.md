@@ -444,6 +444,9 @@ self-calls before ownership insertion. Mixed tail/non-tail functions retain
 their loop lowering; the expansion keeps argument and effect order and does not
 change data ownership or generic code sharing.
 Native function entries use at least 32-byte alignment in both AOT and JIT code.
+Native executable linking removes unused code/data sections with the platform
+linker's dead-section elimination; referenced foreign symbols and native
+initialization sections remain live.
 
 Standalone `Array.range`/`repeat`/`init` and single Array maps, folds, filters,
 and searches lower to typed sequential loops. Their operands are evaluated once
