@@ -138,6 +138,9 @@ pub fn global_application_pure_total(db: &dyn Db, def: DefId, arity: usize) -> b
 pub fn op_unsafe_to_reorder(op: Prim, args: &[CExpr]) -> bool {
     match op {
         Prim::IntDiv | Prim::IntRem => !divisor_is_nonzero_literal(args),
+        Prim::Eq | Prim::Compare | Prim::Hash => {
+            args.is_empty() || args.iter().any(|arg| !comparison_is_total(&arg.ty))
+        }
         Prim::ArrayWithCapacity => {
             !matches!(args.first().map(|e| &e.kind), Some(K::Lit(Lit::Int(0))))
         }
@@ -170,9 +173,6 @@ pub fn op_unsafe_to_reorder(op: Prim, args: &[CExpr]) -> bool {
         | Prim::FloatLe
         | Prim::FloatGt
         | Prim::FloatGe
-        | Prim::Compare
-        | Prim::Hash
-        | Prim::Eq
         | Prim::StrConcat
         | Prim::IntToString
         | Prim::FloatToString
@@ -209,6 +209,24 @@ pub fn op_unsafe_to_reorder(op: Prim, args: &[CExpr]) -> bool {
     }
 }
 
+/// Structural operations can trap on a function hidden behind polymorphism or
+/// an ADT. Only closed, recursively known comparable shapes establish totality.
+fn comparison_is_total(ty: &fai_types::Ty) -> bool {
+    use fai_types::{Con, RowEnd, Ty};
+    match ty {
+        Ty::Con(Con::Int | Con::Float | Con::Bool | Con::Char | Con::String | Con::Bytes)
+        | Ty::Unit => true,
+        Ty::App(head, elem) if matches!(head.as_ref(), Ty::Con(Con::List | Con::Array)) => {
+            comparison_is_total(elem)
+        }
+        Ty::Tuple(fields) => fields.iter().all(comparison_is_total),
+        Ty::Record(row) => {
+            row.tail == RowEnd::Closed && row.fields.iter().all(|(_, ty)| comparison_is_total(ty))
+        }
+        _ => false,
+    }
+}
+
 /// Whether the divisor (second operand) is a literal integer other than zero, so
 /// the division cannot abort.
 fn divisor_is_nonzero_literal(args: &[CExpr]) -> bool {
@@ -234,6 +252,43 @@ mod tests {
     #[test]
     fn checked_array_access_is_not_total() {
         assert!(!check("module M\nlet f xs = Array.unsafeGet 0 xs\n", "f", 1));
+    }
+
+    #[test]
+    fn polymorphic_equality_is_not_total() {
+        assert!(!check("module M\nlet same x = x = x\n", "same", 1));
+    }
+
+    #[test]
+    fn monomorphic_integer_equality_is_total() {
+        assert!(check("module M\nsame : Int -> Bool\nlet same x = x = x\n", "same", 1));
+    }
+
+    #[test]
+    fn closed_scalar_record_comparison_is_total() {
+        assert!(check(
+            "module M\nsame : { x : Int, y : Float } -> Bool\nlet same r = r = r\n",
+            "same",
+            1
+        ));
+    }
+
+    #[test]
+    fn unknown_adt_fields_cannot_prove_comparison_totality() {
+        assert!(!check(
+            "module M\ntype Box = | Box (Int -> Int)\nsame : Box -> Bool\nlet same x = x = x\n",
+            "same",
+            1
+        ));
+    }
+
+    #[test]
+    fn hashing_a_type_variable_is_not_total() {
+        let value = CExpr::new(
+            K::Local(fai_resolve::LocalId::from_index(0)),
+            fai_types::Ty::Var(fai_types::TyVarId(0)),
+        );
+        assert!(op_unsafe_to_reorder(Prim::Hash, &[value]));
     }
 
     #[test]
