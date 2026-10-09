@@ -12,26 +12,26 @@ public opaque type LocalDate =
   | MkLocalDate Int
 
 // days-from-civil: the epoch-day number for a (year, month, day). Month and day
-// must be in range; `of` validates before calling. Every division is on a
-// non-negative operand (the era adjustment keeps `yoe` non-negative), so the
-// truncating `/` is exactly the floored division the algorithm needs.
+// must be in range; `of` validates before calling. Shift the bounded year-in-era
+// rather than the full year, so January/February cannot overflow at Int.MIN.
 epochDayOf : Int -> Int -> Int -> Int
 let epochDayOf year month day =
-  let y = if month <= 2 then year - 1 else year
-  let era = (if y >= 0 then y else y - 399) / 400
-  let yoe = y - era * 400
+  let yearInEra = Int.floorMod year 400 - (if month <= 2 then 1 else 0)
+  let era = Int.floorDiv year 400 - (if yearInEra < 0 then 1 else 0)
+  let yoe = if yearInEra < 0 then yearInEra + 400 else yearInEra
   let mp = if month > 2 then month - 3 else month + 9
   let doy = (153 * mp + 2) / 5 + day - 1
   let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
   era * 146097 + doe - 719468
 
 // civil-from-days: the (year, month, day) for an epoch-day number (the inverse of
-// `epochDayOf`). Same non-negative-division reasoning.
+// `epochDayOf`). Apply the epoch offset to a bounded remainder, never to the
+// full day count; the era and resulting year fit for every signed epoch day.
 civilOf : Int -> (Int * Int * Int)
 let civilOf epochDay =
-  let z = epochDay + 719468
-  let era = (if z >= 0 then z else z - 146096) / 146097
-  let doe = z - era * 146097
+  let shiftedRemainder = Int.floorMod epochDay 146097 + 719468
+  let era = Int.floorDiv epochDay 146097 + shiftedRemainder / 146097
+  let doe = shiftedRemainder % 146097
   let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
   let y = yoe + era * 400
   let doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
@@ -121,9 +121,11 @@ example: monthOfYear (fromEpochDay 0) = Month.January
 /// The day of the week.
 public dayOfWeek : LocalDate -> DayOfWeek
 let dayOfWeek d =
-  Option.withDefault DayOfWeek.Thursday (DayOfWeek.fromInt (Int.floorMod (toEpochDay d + 3) 7 + 1))
+  Option.withDefault DayOfWeek.Thursday (DayOfWeek.fromInt ((Int.floorMod (toEpochDay d) 7 + 3) % 7 + 1))
 example: dayOfWeek (fromEpochDay 0) = DayOfWeek.Thursday
 example: dayOfWeek (fromEpochDay 3) = DayOfWeek.Sunday
+example: dayOfWeek (fromEpochDay 9223372036854775807) = DayOfWeek.Thursday
+example: year (fromEpochDay 9223372036854775807) = 25252734927768524
 
 /// The day of the year, 1–366 (1 on January 1st).
 public dayOfYear : LocalDate -> Int

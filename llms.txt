@@ -1477,6 +1477,8 @@ count wraps with `Int` arithmetic. `LocalTime` wraps modulo one day.
   (`Float`), `plus`/`minus`/`negate`/`multiply`/`abs`, `isZero`/`isNegative`,
   `compare`.
 - **`LocalDate`** — a calendar date, no zone. `of : Int->Int->Int->Option LocalDate`,
+  calendar fields and weekdays support the entire signed epoch-day range without
+  overflowing their normalization offsets;
   `fromEpochDay`/`toEpochDay`, `year`/`month`/`day`/`monthOfYear`/`dayOfWeek`/
   `dayOfYear`, `plusDays`/`plusWeeks`/`plusMonths`/`plusYears` (and `minus*`,
   end-of-month clamping), `daysUntil`, `isLeapYear`, `lengthOfMonth`/`lengthOfYear`,

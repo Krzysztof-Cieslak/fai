@@ -440,6 +440,10 @@ multiplying or adding. `Duration.multiply` supports every `Int` factor with an
 exact fractional-day result. A genuinely out-of-range final day count wraps with
 `Int` arithmetic; `LocalTime` wraps modulo one day.
 
+`LocalDate` decomposes epoch days into Gregorian eras before adding the epoch
+offset, and reduces days modulo seven before weekday adjustment. Calendar fields,
+weekdays, and ISO round trips therefore support every signed `Int` epoch day.
+
 Native resource handles (tasks, channels, nurseries, sockets, file handles, and
 TLS sessions) compare and hash by their underlying resource identity. Aliases
 of one resource are equal; distinct live resources remain distinct, including

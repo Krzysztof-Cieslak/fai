@@ -1,5 +1,8 @@
 module DateTime
 
+example: LocalDate.dayOfWeek (LocalDate.fromEpochDay 9223372036854775807) = DayOfWeek.Thursday
+example: LocalDate.year (LocalDate.fromEpochDay 9223372036854775807) = 25252734927768524
+
 // A tour of the date & time library (the modules under `std/datetime/`). The value
 // types are opaque and built through their modules — `Instant`, `Duration`,
 // `LocalDate`, `LocalTime`, `LocalDateTime`, `Offset`, `OffsetDateTime`, `Period`,
