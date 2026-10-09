@@ -552,6 +552,8 @@ buffer allocation as well as in-place reuse.
 Compact data headers reduce a two-field cell from 48 to 24 bytes. Non-data buffer
 and handle layouts remain descriptor-based, and compact/extended data values
 interoperate through the same structural and ownership operations.
+Iterative destruction decodes compact shape metadata once per scan and once per
+storage release, retaining the same child order and resource-finalization paths.
 Typed locals carry conservative constructor-tag, field-count and scalar-slot
 bounds through the native cache and run bundles. Proven compact data uses direct
 tag extraction and constant field offsets; unknown/open shapes decode at runtime.

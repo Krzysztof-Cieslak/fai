@@ -1320,19 +1320,23 @@ unsafe fn free_obj(p: *mut u8) {
     // path funnels through here, so this is the one place the `Arc` is dropped.
     // SAFETY: `p` is a live cell with a valid descriptor; the handle slot holds the
     // raw pointer `scheduler` stored at construction.
-    unsafe {
-        match object_kind(p) {
-            KIND_TASK => scheduler::drop_task_handle(read_i64(p, HANDLE_PTR_OFFSET)),
-            KIND_CHANNEL => scheduler::drop_channel_handle(read_i64(p, HANDLE_PTR_OFFSET)),
-            KIND_NURSERY => scheduler::drop_nursery_handle(read_i64(p, HANDLE_PTR_OFFSET)),
-            KIND_NET => reactor::drop_net_handle(read_i64(p, HANDLE_PTR_OFFSET)),
-            KIND_FILE => io::drop_file_handle(read_i64(p, HANDLE_PTR_OFFSET)),
-            KIND_TLS => tls::drop_tls_handle(read_i64(p, HANDLE_PTR_OFFSET)),
-            _ => {}
+    let size = unsafe {
+        let header = header_word(p);
+        if header & COMPACT_DATA != 0 {
+            COMPACT_FIELDS_OFFSET + (((header >> COMPACT_FIELDS_SHIFT) & 15) as usize) * 8
+        } else {
+            match desc_kind(obj_descriptor(p)) {
+                KIND_TASK => scheduler::drop_task_handle(read_i64(p, HANDLE_PTR_OFFSET)),
+                KIND_CHANNEL => scheduler::drop_channel_handle(read_i64(p, HANDLE_PTR_OFFSET)),
+                KIND_NURSERY => scheduler::drop_nursery_handle(read_i64(p, HANDLE_PTR_OFFSET)),
+                KIND_NET => reactor::drop_net_handle(read_i64(p, HANDLE_PTR_OFFSET)),
+                KIND_FILE => io::drop_file_handle(read_i64(p, HANDLE_PTR_OFFSET)),
+                KIND_TLS => tls::drop_tls_handle(read_i64(p, HANDLE_PTR_OFFSET)),
+                _ => {}
+            }
+            read_u64(p, SIZE_OFFSET) as usize
         }
-    }
-    // SAFETY: initialized metadata records the original backing allocation size.
-    let size = unsafe { object_size(p) };
+    };
     match size_class(size) {
         // SAFETY: `p` is a dead class-`c` cell; pooling repurposes its memory.
         Some(c) => unsafe { pool_push(c, p) },
@@ -1407,12 +1411,11 @@ unsafe fn release_dead(p: *mut u8) {
     // and `free_obj` matches the original allocation.
     unsafe {
         let mut work = DropWork::new();
-        scan_push(p, &mut work);
+        let kind = scan_push(p, &mut work);
         // A stack-allocated closure or partial application lives in its creating
         // frame, not the heap: release its children but never free the cell (its
         // pointer was never returned by `alloc_obj`, so it must not reach
         // `free_obj`/the pool). The frame reclaims the slot on return.
-        let kind = object_kind(p);
         if kind != KIND_STACK_CLOSURE && kind != KIND_STACK_PAP {
             free_obj(p);
         }
@@ -1489,10 +1492,25 @@ impl DropWork {
 ///
 /// # Safety
 /// `p` is a live object pointer.
-unsafe fn scan_push(p: *mut u8, work: &mut DropWork) {
+unsafe fn scan_push(p: *mut u8, work: &mut DropWork) -> u64 {
     // SAFETY: `p` is a live object; its descriptor and fields are in bounds.
     unsafe {
-        let kind = object_kind(p);
+        let header = header_word(p);
+        if header & COMPACT_DATA != 0 {
+            let count = ((header >> COMPACT_FIELDS_SHIFT) & 15) as usize;
+            let scalars = (header >> COMPACT_SCALARS_SHIFT) & 255;
+            for i in 0..count {
+                if scalars & (1 << i) != 0 {
+                    continue;
+                }
+                let field = read_i64(p, COMPACT_FIELDS_OFFSET + i * 8);
+                if is_boxed(field) {
+                    work.push(field);
+                }
+            }
+            return KIND_DATA;
+        }
+        let kind = desc_kind(obj_descriptor(p));
         if kind == KIND_DATA {
             let nfields = data_len(p);
             let offset = data_offset(p);
@@ -1551,6 +1569,7 @@ unsafe fn scan_push(p: *mut u8, work: &mut DropWork) {
         }
         // Leaf kinds (inline `String`, `Bytes`, boxed `Int`/`Float`) have no
         // children.
+        kind
     }
 }
 
