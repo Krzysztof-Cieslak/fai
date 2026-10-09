@@ -3368,6 +3368,11 @@ Editor integration:
     per site and per definition, and captured resources keep a use at their
     original lifetime boundary. Generic interfaces and cross-file factories are
     conservative fallbacks. This changes local code shape, not the uniform ABI.
+  - **Saturated immortal closures** use a guarded uniform-entry indirect call.
+    Runtime kind, immortal state and arity are checked after evaluating operands;
+    capturing/partial/over-applied/concurrent cases keep `apply_n`. This retains
+    the boxed calling convention and generic code sharing while avoiding the
+    dispatcher for common noncapturing callbacks.
 
 - **D133 Unboxed `Array Float` (raw inline `f64` slots, self-tagged, no
   monomorphization).** An `Array Float` used to store each element as a pointer to a

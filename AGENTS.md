@@ -445,6 +445,11 @@ resource lifetimes are preserved. Unknown, polymorphic, or escaping dictionaries
 retain their representation; cross-file factory bodies remain behind the normal
 signature firewall.
 
+A runtime function value that is an immortal closure and is exactly saturated
+can use a guarded indirect call to its uniform entry, avoiding `apply_n` dispatch.
+Arguments and results still use the same boxed ABI. Capturing, partial,
+over-applied, and concurrent cases retain the runtime path.
+
 Opaque aliases retain their nominal type in cross-file value, constructor, and
 interface-method signatures, including through transparent re-exports. Names
 resolve in their declaring scope while opacity follows the observing file.
