@@ -223,6 +223,16 @@ fn function_ir_at(
     def_name: &str,
     origin: fai_db::SourceOrigin,
 ) -> Vec<String> {
+    function_ir_options(path, src, def_name, origin, false)
+}
+
+fn function_ir_options(
+    path: &str,
+    src: &str,
+    def_name: &str,
+    origin: fai_db::SourceOrigin,
+    shadow: bool,
+) -> Vec<String> {
     let mut db = FaiDatabase::new();
     fai_types::std_lib::load_std(&mut db);
     let id = db.add_source_with_origin(path.into(), src.to_owned(), origin);
@@ -276,8 +286,7 @@ fn function_ir_at(
             (*fai_rc::result_facts(&db, *f, d.name)).clone()
         })
     };
-    let bce =
-        crate::Bce { entry_of: &entry_of, result_of: &result_of, shadow: false, concurrent: false };
+    let bce = crate::Bce { entry_of: &entry_of, result_of: &result_of, shadow, concurrent: false };
     crate::aot::function_ir_text(&lowered, &namer, &arity_of, &signature_of, &borrows_of, &bce)
 }
 
@@ -337,6 +346,57 @@ fn permuted_wrapper_globals_keep_their_effect_order() {
 fn permuted_wrapper_preserves_full_width_values_and_shared_sources() {
     let src = "module M\nlet update value xs = Array.unsafeSet 0 value (Array.push value xs)\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let xs = [| 1, 2 |]\n  let value = 9223372036854775807\n  let ys = update value xs\n  let zs = Array.unsafeSet 0 (Array.unsafeGet 1 xs) xs\n  let good = Array.toList xs = [1, 2] && Array.toList ys = [value, 2, value] && Array.toList zs = [2, 2]\n  r.console.writeLine (if good then \"ok\" else \"wrong\")\n";
     assert_eq!(run(src), (0, "ok\n".into()));
+}
+
+#[track_caller]
+fn assert_terminal_fault(ir: &str) {
+    let lines: Vec<_> = ir.lines().map(str::trim).collect();
+    assert!(
+        lines.windows(2).any(|p| p[0].contains("call fn") && p[1].starts_with("trap ")),
+        "a runtime fault must be immediately terminal:\n{ir}"
+    );
+}
+
+#[test]
+fn array_fault_block_is_terminal() {
+    let ir = entry_ir(
+        "module M\npublic at : Int -> Array Float -> Float\nlet at i xs = Array.unsafeGet i xs\n",
+        "at",
+    );
+    assert_terminal_fault(&ir);
+    assert!(!ir.contains("f64const 0.0"), "no dummy Float on an impossible return edge:\n{ir}");
+}
+
+#[test]
+fn raw_division_fault_block_is_terminal() {
+    assert_terminal_fault(&entry_ir(
+        "module M\npublic divide : Int -> Int -> Int\nlet divide x y = x / y\n",
+        "divide",
+    ));
+}
+
+#[test]
+fn literal_zero_fault_continues_only_in_a_dead_block() {
+    assert_terminal_fault(&entry_ir(
+        "module M\npublic divide : Unit -> Int\nlet divide u = 1 / 0\n",
+        "divide",
+    ));
+}
+
+#[test]
+fn tagged_division_retains_only_its_real_fallback_return() {
+    let ir = entry_ir(
+        "module M\npublic divide : { value : Int | _ } -> Int -> Int\nlet divide r y = r.value / y\n",
+        "divide",
+    );
+    assert_terminal_fault(&ir);
+    assert!(call_count(&ir) >= 2, "a boxed-operand fallback may still return:\n{ir}");
+}
+
+#[test]
+fn shadow_bounds_fault_is_terminal() {
+    let ir = function_ir_options("M.fai", "module M\npublic at : Array Float -> Float\nlet at xs = if Array.length xs > 0 then Array.unsafeGet 0 xs else 1.0\n", "at", fai_db::SourceOrigin::User, true).remove(0);
+    assert_terminal_fault(&ir);
 }
 
 fn main_printing(expr: &str) -> String {
