@@ -7,12 +7,15 @@
 
 use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc;
+use std::time::Duration;
 
 use lsp_server::{Message, Notification, Request, RequestId};
 use lsp_types::Url;
 use serde_json::{Value, json};
+use wait_timeout::ChildExt;
 
 fn samples_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../samples")
@@ -41,7 +44,7 @@ fn position(text: &str, needle: &str) -> (u32, u32) {
 struct Lsp {
     child: Option<Child>,
     stdin: Option<BufWriter<ChildStdin>>,
-    stdout: BufReader<ChildStdout>,
+    messages: mpsc::Receiver<Result<Message, String>>,
     workspace: PathBuf,
     next_id: i32,
 }
@@ -65,9 +68,26 @@ impl Lsp {
             .spawn()
             .expect("spawn `fai lsp`");
         let stdin = BufWriter::new(child.stdin.take().unwrap());
-        let stdout = BufReader::new(child.stdout.take().unwrap());
+        let mut stdout = BufReader::new(child.stdout.take().unwrap());
+        let (sender, messages) = mpsc::channel();
+        std::thread::spawn(move || {
+            loop {
+                match Message::read(&mut stdout) {
+                    Ok(Some(message)) => {
+                        if sender.send(Ok(message)).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(error) => {
+                        let _ = sender.send(Err(error.to_string()));
+                        break;
+                    }
+                }
+            }
+        });
         let mut lsp =
-            Self { child: Some(child), stdin: Some(stdin), stdout, workspace, next_id: 2 };
+            Self { child: Some(child), stdin: Some(stdin), messages, workspace, next_id: 2 };
 
         lsp.send(Message::Request(Request::new(1.into(), "initialize".to_owned(), init_params)));
         lsp.read_response(&1.into());
@@ -82,7 +102,10 @@ impl Lsp {
     }
 
     fn read(&mut self) -> Message {
-        Message::read(&mut self.stdout).unwrap().expect("the server closed the stream")
+        self.messages
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the language server must respond before the test deadline")
+            .expect("valid LSP response")
     }
 
     fn notify(&mut self, method: &str, params: Value) {
@@ -160,7 +183,11 @@ impl Lsp {
         // Close stdin so the server's stdio reader hits EOF and the process exits.
         self.stdin = None;
         if let Some(mut child) = self.child.take() {
-            let status = child.wait().unwrap();
+            let Some(status) = child.wait_timeout(Duration::from_secs(30)).unwrap() else {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("the language server did not exit after shutdown");
+            };
             assert!(status.success(), "`fai lsp` should exit 0, got {status}");
         }
     }
@@ -216,8 +243,9 @@ fn codes(diags: &[Value]) -> Vec<String> {
 #[test]
 fn oversized_syntax_does_not_terminate_the_language_server() {
     let workspace = unique_workspace();
-    let mut lsp = Lsp::start(workspace);
     let text = format!("module Deep\nlet value = {}1{}\n", "(".repeat(10_000), ")".repeat(10_000));
+    std::fs::write(workspace.join("Deep.fai"), &text).unwrap();
+    let mut lsp = Lsp::start(workspace);
     let uri = lsp.did_open("Deep.fai", &text);
     assert!(codes(&lsp.await_diagnostics(&uri)).contains(&"FAI1023".to_owned()));
     lsp.did_change("Deep.fai", 2, "module Deep\nlet value = 1\n");

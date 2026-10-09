@@ -242,7 +242,7 @@ Syntax front end (lexer, layout, parser, AST, formatter, incremental queries):
   nested modules, local bindings, and interface methods as well as file-level
   declarations. The formatter refuses such malformed files without overwriting
   them, and recovery still parses later declarations.
-  Native-stack use is bounded by 128 recursive grammar layers and 512
+  Native-stack use is bounded by 128 recursive grammar layers and 256
   expression/type-tree layers, including trees built by iterative operator,
   application, and field loops. Excess depth reports `FAI1023`, skips the rest
   of the top-level declaration in linear time, and unwinds through a virtual

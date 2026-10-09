@@ -93,13 +93,13 @@ fn the_first_excessive_layer_has_an_exact_utf8_safe_location() {
 
 #[test]
 fn iterative_tree_depth_boundary_is_accepted() {
-    let text = input("infix", 511);
+    let text = input("infix", 255);
     assert!(crate::parse_module(fai_span::SourceId::new(0), &text).diagnostics.is_empty());
 }
 
 #[test]
 fn iterative_tree_depth_boundary_reports_one_error() {
-    let text = input("infix", 512);
+    let text = input("infix", 256);
     let parsed = crate::parse_module(fai_span::SourceId::new(0), &text);
     assert_eq!(parsed.diagnostics.len(), 1);
     assert_eq!(parsed.diagnostics[0].code, crate::NESTING_LIMIT);

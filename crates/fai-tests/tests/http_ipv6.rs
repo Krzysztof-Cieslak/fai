@@ -48,7 +48,8 @@ fn check(tls: bool, pooled: bool) {
         .unwrap();
     let peer = std::thread::spawn(move || {
         listener.set_nonblocking(true).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(30);
+        // This startup wait includes cold JIT compilation of the client.
+        let deadline = Instant::now() + Duration::from_secs(180);
         let stream = loop {
             match listener.accept() {
                 Ok((stream, _)) => break stream,

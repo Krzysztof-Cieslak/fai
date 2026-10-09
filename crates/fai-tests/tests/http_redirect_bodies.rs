@@ -53,7 +53,8 @@ fn check(
     let done = Arc::new(AtomicBool::new(false));
     let finished = done.clone();
     let peer = std::thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(30);
+        // This startup wait includes cold JIT compilation of the client.
+        let deadline = Instant::now() + Duration::from_secs(180);
         let mut requests = Vec::new();
         loop {
             match listener.accept() {
