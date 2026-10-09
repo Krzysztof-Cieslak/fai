@@ -813,6 +813,10 @@ Reuse & in-place update:
     path releases an owned root once. This removes per-node cursor count traffic
     while keeping zero extra heap storage and preserving early-return results.
     Primitive list-element classes survive wire erasure for the same worker path.
+    Structural equality, ordering and hashing read a data cell's tag, field count,
+    scalar bitmap and field offset together, sharing one immutable shape snapshot
+    through the field walk. Compact metadata uses one atomic header read; extended
+    cells retain their descriptor-backed layout. Hash values are unchanged.
     After borrow inference, representation-preserving local data aliases are
     coalesced before ownership insertion. Equal observed types are required and
     niche/scalar conversion bindings stay explicit. Removed bindings transfer

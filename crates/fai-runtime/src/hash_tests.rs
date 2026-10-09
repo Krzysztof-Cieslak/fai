@@ -134,6 +134,26 @@ fn data_cell_field_order_is_significant() {
 }
 
 #[test]
+fn immediate_pair_hash_keeps_its_exact_value() {
+    let _guard = lock();
+    let baseline = live_count();
+    let pair = data(0, &[imm_int(-7), imm_int(42)]);
+    assert_eq!(values_hash(pair), 0xf4e2_db67_b6a0_1715);
+    fai_drop(pair);
+    assert_eq!(live_count(), baseline);
+}
+
+#[test]
+fn full_width_pair_hash_keeps_its_exact_value() {
+    let _guard = lock();
+    let baseline = live_count();
+    let pair = data(0, &[make_int(i64::MIN), make_int(i64::MAX)]);
+    assert_eq!(values_hash(pair), 0x670b_c256_0065_38af);
+    fai_drop(pair);
+    assert_eq!(live_count(), baseline);
+}
+
+#[test]
 fn arrays_hash_structurally() {
     let _g = lock();
     let base = live_count();

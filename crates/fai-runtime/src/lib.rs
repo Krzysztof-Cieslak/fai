@@ -1790,12 +1790,6 @@ pub extern "C" fn fai_std_to_niche_b(o: Value) -> Value {
     }
 }
 
-/// The number of fields in a boxed data value.
-unsafe fn data_field_count(v: Value) -> usize {
-    // SAFETY: `v` is a boxed data value.
-    unsafe { data_len(as_obj(v)) }
-}
-
 /// Reads a data value's constructor tag (**borrowing** `v`), as an immediate
 /// `Int`. A nullary constructor is an immediate whose payload is its tag. The
 /// base is not released here; its owner drops it once at its last use.
@@ -3860,19 +3854,21 @@ fn values_equal(a: Value, b: Value) -> bool {
 unsafe fn data_equal(a: Value, b: Value) -> bool {
     // SAFETY: `a` and `b` are boxed data values.
     unsafe {
-        if object_data_tag(as_obj(a)) != object_data_tag(as_obj(b)) {
+        let shape_a = DataShape::read(as_obj(a));
+        let shape_b = DataShape::read(as_obj(b));
+        if shape_a.tag != shape_b.tag {
             return false;
         }
-        let n = data_field_count(a);
-        if n != data_field_count(b) {
+        let n = shape_a.fields;
+        if n != shape_b.fields {
             return false;
         }
         // Generic construction can box a Float that concrete construction stores
         // raw. Equal logical types need not share a physical scalar bitmap.
-        let scalar_a = data_scalars(as_obj(a));
-        let scalar_b = data_scalars(as_obj(b));
-        let offset_a = data_offset(as_obj(a));
-        let offset_b = data_offset(as_obj(b));
+        let scalar_a = shape_a.scalars;
+        let scalar_b = shape_b.scalars;
+        let offset_a = shape_a.offset;
+        let offset_b = shape_b.offset;
         for i in 0..n {
             let fa = read_i64(as_obj(a), offset_a + i * 8);
             let fb = read_i64(as_obj(b), offset_b + i * 8);
@@ -3979,11 +3975,13 @@ fn values_compare(a: Value, b: Value) -> std::cmp::Ordering {
                 if is_boxed(a) && is_boxed(b) {
                     // SAFETY: both are boxed data values with equal field counts.
                     unsafe {
-                        let n = data_field_count(a);
-                        let scalar_a = data_scalars(as_obj(a));
-                        let scalar_b = data_scalars(as_obj(b));
-                        let offset_a = data_offset(as_obj(a));
-                        let offset_b = data_offset(as_obj(b));
+                        let shape_a = DataShape::read(as_obj(a));
+                        let shape_b = DataShape::read(as_obj(b));
+                        let n = shape_a.fields;
+                        let scalar_a = shape_a.scalars;
+                        let scalar_b = shape_b.scalars;
+                        let offset_a = shape_a.offset;
+                        let offset_b = shape_b.offset;
                         for i in 0..n {
                             let fa = read_i64(as_obj(a), offset_a + i * 8);
                             let fb = read_i64(as_obj(b), offset_b + i * 8);
@@ -4095,12 +4093,13 @@ fn values_hash(v: Value) -> u64 {
         KIND_DATA => {
             // SAFETY: `v` is a boxed data value.
             unsafe {
-                let tag = object_data_tag(as_obj(v));
-                let n = data_field_count(v);
+                let shape = DataShape::read(as_obj(v));
+                let tag = shape.tag;
+                let n = shape.fields;
                 // Hash each field according to this cell's physical layout;
                 // raw and boxed Float fields contribute identical logical bits.
-                let scalar = data_scalars(as_obj(v));
-                let offset = data_offset(as_obj(v));
+                let scalar = shape.scalars;
+                let offset = shape.offset;
                 // Seed with the tag and arity so two constructors of the same type
                 // with differently-positioned identical fields do not collide.
                 let mut h = mix64(tag ^ (n as u64).rotate_left(32));
@@ -4823,8 +4822,8 @@ pub use data_header::{
     COMPACT_TAG_SHIFT, compact_data_metadata, data_header_size,
 };
 use data_header::{
-    DataLayout, data_len, data_offset, data_scalars, data_tag as object_data_tag, header_word,
-    object_kind, object_size,
+    DataLayout, DataShape, data_len, data_offset, data_scalars, data_tag as object_data_tag,
+    header_word, object_kind, object_size,
 };
 mod slab;
 

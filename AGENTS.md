@@ -577,6 +577,8 @@ and handle layouts remain descriptor-based, and compact/extended data values
 interoperate through the same structural and ownership operations.
 Iterative destruction decodes compact shape metadata once per scan and once per
 storage release, retaining the same child order and resource-finalization paths.
+Structural equality, ordering and hashing likewise share one shape snapshot per
+data operand when walking its fields, including mixed raw/boxed Float layouts.
 Typed locals carry conservative constructor-tag, field-count and scalar-slot
 bounds through the native cache and run bundles. Proven compact data uses direct
 tag extraction and constant field offsets; unknown/open shapes decode at runtime.
