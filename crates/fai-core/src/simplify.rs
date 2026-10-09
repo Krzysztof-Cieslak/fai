@@ -8,15 +8,18 @@
 //! memoized, a CAF referenced inside a loop body is even *rebuilt* per iteration.
 //!
 //! This pass contracts those redexes before reference counting, so escape analysis
-//! and fusion see ordinary direct code instead of escaping closures. Four
+//! and fusion see ordinary direct code instead of escaping closures. Five
 //! behavior-preserving rewrites, applied to a fixpoint within each definition:
 //!
 //! * **CAF inlining** — a saturated-or-over application of a same-file,
 //!   non-recursive, nullary, small value binding splices that binding's body in
 //!   head position (relocating its lifted lambdas into the caller), so the value's
-//!   construction meets its use and the remaining rules can fire. Only an *applied*
-//!   CAF is inlined (where reduction follows); a value-position reference is left
-//!   alone.
+//!   construction meets its use and the remaining rules can fire.
+//! * **Constant expansion** — a small, monomorphic, same-file literal value is
+//!   also expanded in value position. Literal aggregates and capture-free
+//!   dictionaries become visible to scalar replacement; scalar globals no longer
+//!   need a uniform call and box on each read. A separate eligibility query cuts
+//!   off dependencies on bodies that cannot be expanded.
 //! * **Combinator reduction** — recognized by the resolved `Prelude` identities
 //!   (never by reading a combinator's body, so a body edit can't change what
 //!   reduces — the cross-module firewall): `(f >> g) x → g (f x)`, `x |> f → f x`,
@@ -37,8 +40,8 @@
 //! same-file helpers a reduced composition leaves (e.g. a now-saturated `shift`
 //! call) are folded by helper inlining, and a pipeline whose element function is
 //! thereby reduced to arithmetic is then deforested into a register loop by
-//! [`fuse_def`](crate::fuse). Skipped entirely inside the standard library, so the
-//! combinators and operators stay exercised by their own contracts.
+//! [`fuse_def`](crate::fuse). Only constant expansion runs inside the standard
+//! library, so its combinators stay exercised by their own contracts.
 
 use std::sync::Arc;
 
@@ -106,16 +109,11 @@ pub fn combinator_defs(db: &dyn Db) -> Arc<CombinatorDefs> {
 /// The base [`helper_inlined`](crate::helper_inlined) reads (in place of
 /// [`core_inlined`]), so every back-end consumer sees the reduced form. Returns the
 /// input lowering unchanged when nothing reduced (an O(1) salsa early cutoff for
-/// the common definition with no composition/CAF), and is a no-op inside the
-/// standard library.
+/// the common definition with no composition/CAF). In the standard library only
+/// small literal values are expanded.
 #[salsa::tracked]
 pub fn simplified(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
     let base = core_inlined(db, file, name);
-    // Skip the standard library so the combinators and operators stay tested by
-    // their own contracts (mirrors fusion).
-    if file.is_std(db) {
-        return base;
-    }
     let mut cx = Simplifier {
         db,
         file,
@@ -125,6 +123,7 @@ pub fn simplified(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef
         next: next_free_local(&base),
         steps: 0,
         changed: false,
+        reduce_combinators: !file.is_std(db),
     };
     // Process functions by index, since CAF inlining appends relocated lambdas
     // that must themselves be simplified (and may be pruned if beta consumes them).
@@ -163,6 +162,9 @@ struct Simplifier<'a> {
     steps: u32,
     /// Whether any reduction fired (drives the early-cutoff return).
     changed: bool,
+    /// Literal-value expansion is also useful inside std; broader combinator
+    /// reduction stays disabled there so its contracts exercise the definitions.
+    reduce_combinators: bool,
 }
 
 impl Simplifier<'_> {
@@ -275,6 +277,14 @@ impl Simplifier<'_> {
     /// Attempts one top-level contraction of `e` (its children already reduced).
     /// Returns `(true, contractum)` on a hit, else `(false, e)` unchanged.
     fn try_contract(&mut self, e: CExpr) -> (bool, CExpr) {
+        if let K::Global(def) = e.kind
+            && let Some(value) = self.caf_body(def, Some(&e.ty))
+        {
+            return (true, value);
+        }
+        if !self.reduce_combinators {
+            return (false, e);
+        }
         let CExpr { kind, ty } = e;
         let K::App { func, args, reuse, alloc } = kind else {
             return (false, CExpr::new(kind, ty));
@@ -303,7 +313,7 @@ impl Simplifier<'_> {
                 if let Some(new) = self.combinator(def, &args, &ty) {
                     return (true, new);
                 }
-                if let Some(body) = self.caf_body(def) {
+                if let Some(body) = self.caf_body(def, None) {
                     let app = K::App { func: Box::new(body), args, reuse, alloc };
                     return (true, CExpr::new(app, ty));
                 }
@@ -394,14 +404,23 @@ impl Simplifier<'_> {
     /// If `def` is an inlinable nullary CAF, relocates its lifted lambdas into this
     /// definition and returns its (remapped) body — the value to splice in head
     /// position. `None` if `def` is not an eligible CAF.
-    fn caf_body(&mut self, def: DefId) -> Option<CExpr> {
+    fn caf_body(&mut self, def: DefId, value_ty: Option<&Ty>) -> Option<CExpr> {
         // Same-file (the firewall), non-recursive (so the inline graph is a DAG and
         // this query stays cycle-free), nullary, non-row-polymorphic, and small.
         if def.file != self.source {
             return None;
         }
-        if recursive_defs(self.db, self.file).contains(&def) {
-            return None;
+        if value_ty.is_some() {
+            if !constant_value_eligible(self.db, self.file, def.name) {
+                return None;
+            }
+        } else {
+            // Check arity before depending on another body's simplification.
+            if !core_inlined(self.db, self.file, def.name).entry().params.is_empty()
+                || recursive_defs(self.db, self.file).contains(&def)
+            {
+                return None;
+            }
         }
         let caf = simplified(self.db, self.file, def.name);
         if !caf.entry().params.is_empty() {
@@ -413,6 +432,11 @@ impl Simplifier<'_> {
             return None;
         }
         if total_nodes(&caf) > CAF_NODE_BUDGET {
+            return None;
+        }
+        if let Some(ty) = value_ty
+            && &caf.entry().body.ty != ty
+        {
             return None;
         }
         // A CAF whose body contains a lowering error (an unsupported construct, e.g.
@@ -517,6 +541,81 @@ impl Simplifier<'_> {
     fn is_row_polymorphic(&self, g: DefId) -> bool {
         crate::representation::definition_scheme(self.db, g)
             .is_some_and(|s| fai_types::evidence_count(&s) > 0)
+    }
+}
+
+/// Eligibility is a separate firewall: changing an ineligible initializer does
+/// not make all of its value-position users repeat the simplification pass.
+#[salsa::tracked]
+fn constant_value_eligible(db: &dyn Db, file: SourceFile, name: Symbol) -> bool {
+    let base = core_inlined(db, file, name);
+    if !base.entry().params.is_empty()
+        || recursive_defs(db, file).contains(&base.def)
+        || !ground_type(&base.entry().body.ty)
+        || crate::representation::definition_scheme(db, base.def)
+            .is_some_and(|s| fai_types::evidence_count(&s) > 0)
+    {
+        return false;
+    }
+    let reduced = simplified(db, file, name);
+    total_nodes(&reduced) <= CAF_NODE_BUDGET
+        && literal_value(&reduced.entry().body)
+        && !reduced.fns.iter().any(|f| body_has_error(&f.body))
+}
+
+/// A bounded constructor/literal expression has no forcing effects or traps.
+/// Lambdas may have latent effects; constructing a capture-free one is pure.
+fn literal_value(e: &CExpr) -> bool {
+    use crate::Prim;
+    match &e.kind {
+        K::Lit(_) | K::Local(_) => true,
+        K::MakeClosure { captures, .. } => captures.is_empty(),
+        K::MakeData { args, .. } => args.iter().all(literal_value),
+        K::Let { value, body, .. } => literal_value(value) && literal_value(body),
+        K::If { cond, then, els } => {
+            literal_value(cond) && literal_value(then) && literal_value(els)
+        }
+        K::Prim { op, args } => {
+            matches!(
+                op,
+                Prim::IntAdd
+                    | Prim::IntSub
+                    | Prim::IntMul
+                    | Prim::IntAnd
+                    | Prim::IntOr
+                    | Prim::IntXor
+                    | Prim::IntShl
+                    | Prim::IntShr
+                    | Prim::IntShrLogical
+                    | Prim::IntComplement
+                    | Prim::FloatAdd
+                    | Prim::FloatSub
+                    | Prim::FloatMul
+                    | Prim::FloatNeg
+                    | Prim::IntToFloat
+                    | Prim::FloatFromBits
+                    | Prim::FloatToBits
+                    | Prim::Not
+            ) && args.iter().all(literal_value)
+        }
+        _ => false,
+    }
+}
+
+/// Keep generic and representation-changing uses on their original value ABI.
+fn ground_type(ty: &Ty) -> bool {
+    match ty {
+        Ty::Var(_) | Ty::Error => false,
+        Ty::App(a, b) => ground_type(a) && ground_type(b),
+        Ty::Arrow(a, b, effect) => {
+            ground_type(a) && ground_type(b) && effect.tail == fai_types::EffEnd::Closed
+        }
+        Ty::Tuple(fields) => fields.iter().all(ground_type),
+        Ty::Record(row) => {
+            row.tail == fai_types::RowEnd::Closed && row.fields.iter().all(|(_, t)| ground_type(t))
+        }
+        Ty::EffectArg(row) => row.tail == fai_types::EffEnd::Closed,
+        Ty::Con(_) | Ty::Adt(_) | Ty::Interface(_) | Ty::Unit => true,
     }
 }
 

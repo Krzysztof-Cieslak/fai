@@ -32,6 +32,8 @@ pub mod simplify;
 pub mod wire;
 
 #[cfg(test)]
+mod constant_tests;
+#[cfg(test)]
 mod proptests;
 #[cfg(test)]
 mod tests;

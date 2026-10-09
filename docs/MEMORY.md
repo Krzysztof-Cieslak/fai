@@ -3294,12 +3294,11 @@ Editor integration:
     register loop by fusion (D128). So `fold_pipeline`'s `transform x` becomes
     `((x + 1) * 2) + 3`, the fold becomes a raw-`i64` loop, and `transform` is
     dead-code-eliminated.
-  - **Four behavior-preserving rewrites**, to a fixpoint within each definition
+  - **Behavior-preserving rewrites**, to a fixpoint within each definition
     (a defensive step cap keeps the query total): **CAF inlining** (a
     saturated-or-over application of a same-file, non-recursive, nullary, small value
     binding splices that binding's body in head position, relocating its lifted
-    lambdas into the caller with freshened local *and* function ids; only an
-    *applied* CAF, where reduction follows, never a value-position reference);
+    lambdas into the caller with freshened local *and* function ids);
     **combinator reduction** by the resolved `Prelude` identities (`(f >> g) x →
     g (f x)`, `x |> f → f x`, `identity x → x`,
     `const a b → (let saved = a in let _ = b in saved)`);
@@ -3315,8 +3314,8 @@ Editor integration:
     check), so an unsafe composition stays a closure; `const` first saves
     its retained operand and then evaluates the discarded operand, preserving
     left-to-right effects and trap ordering before any surplus arguments. CAF inlining
-    is **intra-file** (a body edit never crosses a module boundary). Skipped entirely
-    inside the standard library, so the combinators and operators stay exercised by
+    is **intra-file** (a body edit never crosses a module boundary). Combinator
+    reduction is skipped inside the standard library, so its operators stay exercised by
     their own contracts. Reference counting re-runs afterward, so it re-derives all
     dup/drop on the reduced body.
   - **Validated** by per-rule Core tests, an IR assertion that the `fold_pipeline`
@@ -3326,6 +3325,17 @@ Editor integration:
     of `n`), an event-log guard (a CAF body edit re-simplifies its caller but does
     not re-run recognition), and rc-soundness property tests over random `>>` chains.
     Closes the `fold_pipeline` Fai-vs-Rust gap (#130, carved from #103).
+  - **Literal values also expand in value position**, including within std.
+    A separate `constant_value_eligible` query admits monomorphic, nonrecursive
+    literal/constructor trees up to the CAF size budget, including total scalar
+    arithmetic and capture-free dictionary methods. It rejects unknown calls,
+    trapping operations, effectful initializers, and generic representations.
+    Eligible values retain exact types/bits and fresh local/function identities;
+    the ordinary scalar-replacement and RC passes handle their use sites. An
+    ineligible initializer's body edit cuts off at the eligibility result, while
+    an eligible constant edit invalidates its same-file users. This removes
+    repeated `apply_n` and Float boxes for literal globals such as time steps and
+    exposes literal bucket divisors to native constant arithmetic.
 
 - **D133 Unboxed `Array Float` (raw inline `f64` slots, self-tagged, no
   monomorphization).** An `Array Float` used to store each element as a pointer to a

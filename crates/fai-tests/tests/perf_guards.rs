@@ -658,6 +658,13 @@ fn borrow_signature_change_ripples_only_to_forwarding_caller() {
 fn reuse_firewall_reruns(fillers: usize, sig_changing: bool) -> (usize, usize) {
     let mut db = FaiDatabase::new();
     fai_types::std_lib::load_std(&mut db);
+    // Cross-file constants retain their forcing boundary, so returning this value
+    // cannot become a local constructor through literal-value expansion.
+    db.add_source(
+        "Constants.fai".into(),
+        "module Constants\npublic zero : { a : Int, b : Int }\nlet zero = { a = 0, b = 0 }\n"
+            .into(),
+    );
     let helper_id = db.add_source(
         "Helper.fai".into(),
         indoc! {r#"
@@ -666,7 +673,7 @@ fn reuse_firewall_reruns(fillers: usize, sig_changing: bool) -> (usize, usize) {
             public type R2 = { a : Int, b : Int }
 
             zero : R2
-            let zero = { a = 0, b = 0 }
+            let zero = Constants.zero
 
             public sink : Int -> R2
             let sink x =
@@ -722,7 +729,7 @@ fn reuse_firewall_reruns(fillers: usize, sig_changing: bool) -> (usize, usize) {
             public type R2 = { a : Int, b : Int }
 
             zero : R2
-            let zero = { a = 0, b = 0 }
+            let zero = Constants.zero
 
             public sink : Int -> R2
             let sink x =
@@ -739,7 +746,7 @@ fn reuse_firewall_reruns(fillers: usize, sig_changing: bool) -> (usize, usize) {
             public type R2 = { a : Int, b : Int }
 
             zero : R2
-            let zero = { a = 0, b = 0 }
+            let zero = Constants.zero
 
             public sink : Int -> R2
             let sink x =
