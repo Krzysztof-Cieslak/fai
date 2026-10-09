@@ -3852,6 +3852,8 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   `Listener`/`Connection`/`UdpSocket` types live in a dependency-free `Net` module
   that `Prelude` re-exports. Payloads are `Bytes`; fallible operations return
   `Result _ String` (built by the runtime, the standard two-cell representation).
+  TCP/UDP port arguments are decoded as full signed Ints and checked in 0..65535
+  before narrowing or doing network work. Bind/listen retain ephemeral port zero.
   A successfully registered socket immediately has a lifetime owner, including
   while a non-blocking connection is still pending. Failure or cancellation drops
   that owner and removes the reactor's source-table entry; successful completion

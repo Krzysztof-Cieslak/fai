@@ -935,6 +935,9 @@ let serve env listener =
 
 The full tour (TCP + UDP) is `samples/NetDemo.fai`.
 
+TCP/UDP port arguments are checked in `0..65535`; invalid values return `Err`
+before network activity. Zero requests an ephemeral port for listen/bind.
+
 HTTPS adds the `Tls` capability. Its low-level `writePlaintext session bytes`
 returns the count accepted, not necessarily the full length: drain ciphertext
 with `takeOutgoing`, send it over `Net`, then retry only the remaining plaintext.

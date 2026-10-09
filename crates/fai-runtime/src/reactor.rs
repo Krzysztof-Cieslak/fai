@@ -439,12 +439,21 @@ fn err_result(msg: &str) -> Value {
     unsafe { crate::fai_make_data(1, 1, [s].as_ptr()) }
 }
 
+/// Decodes and consumes a uniform Int port before any network operation.
+fn take_port(port: Value) -> Result<u16, &'static str> {
+    let value = crate::unbox_int(port);
+    crate::fai_drop(port);
+    u16::try_from(value).map_err(|_| "port must be in 0..65535")
+}
+
 /// `Net.listen`: bind and listen on `0.0.0.0:port` (port `0` picks a free one).
-/// Returns `Result Listener String`. The port is an immediate `Int`.
+/// Returns `Result Listener String`. The port is a checked uniform `Int`.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_net_listen(port: Value) -> Value {
-    let p = crate::unbox_int(port) as u16;
-    crate::fai_drop(port);
+    let p = match take_port(port) {
+        Ok(port) => port,
+        Err(error) => return err_result(error),
+    };
     let addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, p));
     match TcpListener::bind(addr) {
         Ok(mut sock) => match register(&mut sock) {
@@ -515,14 +524,16 @@ fn accept_loop(sock: &Mutex<TcpListener>, src: &Arc<IoSource>) -> Result<NetObje
 
 /// `Net.connect`: connect to `host:port` (resolving a hostname on the blocking
 /// pool) without blocking a worker. Returns `Result Connection String`. Consumes
-/// `host`; `port` is an immediate `Int`.
+/// `host`; `port` is a checked uniform `Int`.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_net_connect(host: Value, port: Value) -> Value {
     // SAFETY: `host` is a boxed `String`.
     let h = unsafe { crate::string_str(host) }.to_owned();
-    let p = crate::unbox_int(port) as u16;
     crate::fai_drop(host);
-    crate::fai_drop(port);
+    let p = match take_port(port) {
+        Ok(port) => port,
+        Err(error) => return err_result(error),
+    };
     let addr = match resolve_addr(h, p) {
         Ok(a) => a,
         Err(e) => return err_result(&e),
@@ -688,11 +699,13 @@ fn close_connection(sock: &Mutex<TcpStream>, src: &Arc<IoSource>) {
 // `udpRecv` returns one datagram (truncated to the buffer) per call.
 
 /// `Net.udpBind`: bind a UDP socket to `0.0.0.0:port` (port `0` picks a free one).
-/// Returns `Result UdpSocket String`. The port is an immediate `Int`.
+/// Returns `Result UdpSocket String`. The port is a checked uniform `Int`.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_udp_bind(port: Value) -> Value {
-    let p = crate::unbox_int(port) as u16;
-    crate::fai_drop(port);
+    let p = match take_port(port) {
+        Ok(port) => port,
+        Err(error) => return err_result(error),
+    };
     let addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, p));
     match UdpSocket::bind(addr) {
         Ok(mut sock) => match register(&mut sock) {
@@ -722,14 +735,20 @@ pub extern "C" fn fai_udp_local_port(sock: Value) -> Value {
 
 /// `Net.udpSend`: send `bytes` as one datagram to `host:port` (resolving a hostname
 /// on the blocking pool). Returns `Result Unit String`. Consumes `sock` and
-/// `bytes`; `host` is a boxed `String` and `port` an immediate `Int`.
+/// `bytes`; `host` is a boxed `String` and `port` a checked uniform `Int`.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_udp_send(sock: Value, host: Value, port: Value, bytes: Value) -> Value {
     // SAFETY: `host` is a boxed `String`.
     let h = unsafe { crate::string_str(host) }.to_owned();
-    let p = crate::unbox_int(port) as u16;
     crate::fai_drop(host);
-    crate::fai_drop(port);
+    let p = match take_port(port) {
+        Ok(port) => port,
+        Err(error) => {
+            crate::fai_drop(sock);
+            crate::fai_drop(bytes);
+            return err_result(error);
+        }
+    };
     let dest = match resolve_addr(h, p) {
         Ok(a) => a,
         Err(e) => {
@@ -852,6 +871,39 @@ mod tests {
 
     use super::*;
     use crate::scheduler::block_on;
+
+    #[track_caller]
+    fn port_case(value: i64, expected: Result<u16, &'static str>) {
+        let _guard = crate::tests::lock();
+        let base = crate::live_count();
+        assert_eq!(take_port(crate::make_int(value)), expected);
+        assert_eq!(crate::live_count(), base);
+    }
+
+    #[test]
+    fn port_zero_is_preserved() {
+        port_case(0, Ok(0));
+    }
+    #[test]
+    fn maximum_port_is_preserved() {
+        port_case(65535, Ok(65535));
+    }
+    #[test]
+    fn negative_ports_are_rejected() {
+        port_case(-1, Err("port must be in 0..65535"));
+    }
+    #[test]
+    fn oversized_ports_do_not_wrap() {
+        port_case(65536, Err("port must be in 0..65535"));
+    }
+    #[test]
+    fn maximum_boxed_port_is_released() {
+        port_case(i64::MAX, Err("port must be in 0..65535"));
+    }
+    #[test]
+    fn minimum_boxed_port_is_released() {
+        port_case(i64::MIN, Err("port must be in 0..65535"));
+    }
 
     fn imm(n: i64) -> crate::Value {
         (n << 1) | 1
