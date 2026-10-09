@@ -400,7 +400,9 @@ is closest to the pure size factor.
   gap, not Fai. Two further cases are noted exceptions: **`ListSort`** keeps a
   `Vec` oracle *on purpose* — it sorts a Fai `List` against the same `Vec` baseline
   as `MergeSort`'s `Array`, so the gap between the two samples' ratios isolates the
-  in-Fai linked-vs-array sort cost; and **`JsonSerialize`** (2-element ADT children
+   in-Fai list-vs-array API cost. `List.sortBy` uses private merge buffers for large
+   inputs; buffer construction and conversion back to the linked result remain
+   inside the timed call. **`JsonSerialize`** (2-element ADT children
   joined into a string) and **`GraphBFS`** (the cost is the `HashDict`/`HashSet`; the
   `List` is only the BFS frontier) keep a `List` whose container is immaterial
   because another structure dominates.

@@ -1097,6 +1097,10 @@ compare  : 'a -> 'a -> Int                          // -, 0, + (any non-function
 
 ### List — linked list `List 'a` (head/tail recursion, `::`, `[...]`)
 
+`sortBy` is stable: equal-key elements keep their input order. Large calls use
+private merge buffers while small lists stay on the linked path; both preserve
+the same comparator call order and leave retained input lists unchanged.
+
 ```
 length     : List 'a -> Int
 isEmpty    : List 'a -> Bool

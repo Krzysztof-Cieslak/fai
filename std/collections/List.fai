@@ -243,15 +243,75 @@ let mergeAllBy cmp runs =
   | [r] -> r
   | _ :: _ :: _ -> mergeAllBy cmp (mergePairsBy cmp runs)
 
+// Build one contiguous input, then alternate source and destination buffers.
+let sortBufferFrom xs buffer =
+  match xs with
+  | [] -> buffer
+  | x :: rest -> sortBufferFrom rest (Prim.arrayPush buffer x)
+
+let copySortBuffer source n i buffer =
+  if i >= n then
+    buffer
+  else
+    copySortBuffer source n (i + 1) (Prim.arrayPush buffer (Prim.arrayGet source i))
+
+let copySortRun source i stop out destination =
+  if i >= stop then
+    destination
+  else
+    copySortRun source (i + 1) stop (out + 1) (Prim.arraySet destination out (Prim.arrayGet source i))
+
+// The output cursor is left + right - middle; no extra loop state is needed.
+let mergeSortRunBy cmp middle high left right source destination =
+  if left >= middle then
+    copySortRun source right high (left + right - middle) destination
+  else if right >= high then
+    copySortRun source left middle (left + right - middle) destination
+  else
+    let x = Prim.arrayGet source left
+    let y = Prim.arrayGet source right
+    if cmp x y <= 0 then
+      mergeSortRunBy cmp middle high (left + 1) right source (Prim.arraySet destination (left + right - middle) x)
+    else
+      mergeSortRunBy cmp middle high left (right + 1) source (Prim.arraySet destination (left + right - middle) y)
+
+let mergeSortPassBy cmp width n low source destination =
+  if low >= n then
+    destination
+  else
+    let middle = if low + width < n then low + width else n
+    let high = if middle + width < n then middle + width else n
+    let merged = mergeSortRunBy cmp middle high low middle source destination
+    mergeSortPassBy cmp width n high source merged
+
+let mergeSortBuffersBy cmp width n source destination =
+  if width >= n then
+    source
+  else
+    let merged = mergeSortPassBy cmp width n 0 source destination
+    let nextWidth = if width >= n - width then n else width * 2
+    mergeSortBuffersBy cmp nextWidth n merged source
+
+let sortedBufferToList source i acc =
+  if i < 0 then acc else sortedBufferToList source (i - 1) (Prim.arrayGet source i :: acc)
+
 /// Stable merge sort under a comparator (`cmp a b < 0` means `a` comes first).
-// Bottom-up: merge adjacent one-element runs until one remains. Merging adjacent
-// (contiguous) runs keeps equal elements in input order (stable), and it never
-// splits, so unlike a top-down split it makes no `length`/`take`/`drop` pass.
+// Both paths merge the same adjacent runs in the same order, keeping comparison
+// effects and left-on-equality stability identical. Small lists stay linked.
 public sortBy : ('a -> 'a -> Int / 'e) -> List 'a -> List 'a / 'e
-let sortBy cmp xs = mergeAllBy cmp (singletons xs)
+let sortBy cmp xs =
+  let n = length xs
+  if n <= 32 then
+    mergeAllBy cmp (singletons xs)
+  else
+    let source = sortBufferFrom xs (Prim.arrayWithCapacity n)
+    let destination = copySortBuffer source n 0 (Prim.arrayWithCapacity n)
+    sortedBufferToList (mergeSortBuffersBy cmp 1 n source destination) (n - 1) []
 example: sortBy compare [3, 1, 2] = [1, 2, 3]
 // Stability: elements with equal keys keep their input order.
 example: sortBy (fun a b -> compare (a % 3) (b % 3)) [3, 1, 6, 4, 9, 2] = [3, 6, 9, 1, 4, 2]
+example: sortBy compare (reverse (range 0 65)) = range 0 65
+forall xs: sortBy compare xs = sort xs
 
 // Merge two ascending lists by the structural ordering: the comparator-free peer
 // of `mergeBy` that `sort` uses, so the default sort compares with an inline `<=`

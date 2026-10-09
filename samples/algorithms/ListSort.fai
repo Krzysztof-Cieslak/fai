@@ -3,8 +3,9 @@ module ListSort
 // Sort a scrambled linked list with the standard library's stable `List.sortBy`,
 // then form a position-weighted checksum (Σ i * x[i]) so the result depends on the
 // order. This is the linked-`List` counterpart to `MergeSort` (which sorts an
-// `Array`): pairing them isolates the linked-vs-array sort gap, while the explicit
-// comparator exercises `sortBy`'s `apply_n` dispatch. Used by the Rust-vs-Fai
+// `Array`): pairing them compares the public list and array sorting APIs. Private
+// merge buffers and conversions inside `List.sortBy` remain timed, and the
+// explicit comparator exercises callback dispatch. Used by the Rust-vs-Fai
 // runtime benchmark.
 // A scrambled input of n values via a multiplicative hash modulo n.
 gen : Int -> List Int
