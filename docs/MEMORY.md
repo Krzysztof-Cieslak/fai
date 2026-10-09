@@ -1932,6 +1932,9 @@ Editor integration:
     alive until their eventual owners release it. This removes per-cell system
     allocation metadata without adding a header to the Fai object. The existing
     generated pool-head pop/push ABI stays valid.
+    A fresh slab first issues eight cells; continued demand refills in batches of
+    up to 64. Cold size classes therefore touch fewer unused cells without losing
+    the amortized refill behavior of hot classes.
     Pool cleanup batches adjacent free-list cells from the same slab into one
     atomic ownership release. The process-terminal native entry shim performs
     value destruction and leak checks, then lets the OS reclaim its dead pool
