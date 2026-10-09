@@ -408,6 +408,65 @@ fn main_printing(expr: &str) -> String {
     "#}
 }
 
+#[track_caller]
+fn assert_branch_uses_comparison(source: &str, name: &str, comparison: &str) {
+    let ir = entry_ir(source, name);
+    let line = ir.lines().find(|line| line.contains(comparison)).unwrap_or_else(|| panic!("{ir}"));
+    let predicate = line.split('=').next().unwrap().trim();
+    assert!(
+        ir.contains(&format!("brif {predicate},")),
+        "branch must use the original predicate:\n{ir}"
+    );
+}
+
+#[test]
+fn direct_comparison_branches_on_its_raw_predicate() {
+    assert_branch_uses_comparison(
+        "module M\npublic choose : Int -> Int\nlet choose x = if x < 0 then 1 else 2\n",
+        "choose",
+        "icmp slt",
+    );
+}
+
+#[test]
+fn let_aliased_comparison_retains_its_raw_predicate() {
+    assert_branch_uses_comparison(
+        "module M\npublic choose : Int -> Int\nlet choose x =\n  let b = x < 0\n  let alias = b\n  if alias then 1 else 2\n",
+        "choose",
+        "icmp slt",
+    );
+}
+
+#[test]
+fn tail_loop_branches_on_the_original_predicate() {
+    assert_branch_uses_comparison(
+        "module M\npublic sum : Int -> Int -> Int\nlet sum n acc = if n <= 0 then acc else sum (n - 1) (acc + n)\n",
+        "sum",
+        "icmp sle",
+    );
+}
+
+#[test]
+fn aggregate_return_branches_on_the_original_predicate() {
+    assert_branch_uses_comparison(
+        "module M\npublic choose : Int -> (Float * Float)\nlet choose x = if x < 0 then (1.0, 2.0) else (3.0, 4.0)\n",
+        "choose",
+        "icmp slt",
+    );
+}
+
+#[test]
+fn predicate_used_as_a_value_keeps_its_bool_tag() {
+    let source = "module M\nlet choose x =\n  let b = x < 0\n  (b, if b then 1 else 2)\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let (yes, a) = choose (-1)\n  let (no, b) = choose 1\n  r.console.writeLine (if yes && not no && a = 1 && b = 2 then \"ok\" else \"wrong\")\n";
+    assert_eq!(run(source), (0, "ok\n".into()));
+}
+
+#[test]
+fn joined_and_loop_carried_bools_use_their_current_values() {
+    let source = "module M\nlet choose flag x =\n  let b = if flag then x < 0 else x > 0\n  if b then 1 else 2\nlet loop n flag acc =\n  if n <= 0 then acc else loop (n - 1) (not flag) (acc + choose flag n)\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (loop 10 true 0))\n";
+    assert_eq!(run(source), (0, "15\n".into()));
+}
+
 #[test]
 fn unmatched_pattern_fallthrough_emits_a_trap() {
     // Deliberately bypass check_file to exercise the backend's invariant guard.

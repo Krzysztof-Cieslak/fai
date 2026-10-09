@@ -874,6 +874,7 @@ fn build_fn<M: Module>(
             f64_locals: FxHashSet::default(),
             int_locals: FxHashSet::default(),
             raw_int_values: FxHashSet::default(),
+            bool_predicates: FxHashMap::default(),
             niche_locals: FxHashMap::default(),
             niche_values: FxHashMap::default(),
             runtime: FxHashMap::default(),
@@ -1266,6 +1267,9 @@ struct Translator<'a, M: Module> {
     /// int records it here (see [`Self::mark_raw`]); boundary, merge, and inline
     /// arithmetic sites query [`Self::is_raw_int`].
     raw_int_values: FxHashSet<Value>,
+    /// Tagged Bool results with a dominating raw predicate. Representation stays
+    /// uniform at value boundaries; a direct branch can reuse the original test.
+    bool_predicates: FxHashMap<Value, Value>,
     /// Locals that hold a niche `Option` (wrapper-free): the base of a niche-
     /// annotated `DataTag`/`DataField`, which must stay niche for the identity
     /// projection to be correct. Built by [`Translator::collect_niche_locals`]. A
@@ -4086,7 +4090,19 @@ impl<M: Module> Translator<'_, M> {
     /// (`false` = `1`, `true` = `3`, i.e. `value << 1 | 1`).
     fn tag_bool(&mut self, cmp: Value) -> Value {
         let wide = self.builder.ins().uextend(types::I64, cmp);
-        self.tag_int(wide)
+        let tagged = self.tag_int(wide);
+        self.bool_predicates.insert(tagged, cmp);
+        tagged
+    }
+
+    /// Resolves trivial SSA aliases without inventing facts for joins or loop
+    /// parameters. Unknown Bool values keep the ordinary tagged-value test.
+    fn truth_value(&mut self, value: Value) -> Value {
+        let value = self.builder.func.dfg.resolve_aliases(value);
+        if let Some(&predicate) = self.bool_predicates.get(&value) {
+            return predicate;
+        }
+        self.builder.ins().icmp_imm(IntCC::NotEqual, value, 1)
     }
 
     /// The out-of-line runtime call for a primitive's fallback path (a boxed
@@ -4530,6 +4546,11 @@ impl<M: Module> Translator<'_, M> {
     /// guard or fallback is needed.
     fn inline_not(&mut self, args: &[CExpr]) -> Value {
         let b = self.expr(&args[0]);
+        let value = self.builder.func.dfg.resolve_aliases(b);
+        if let Some(&predicate) = self.bool_predicates.get(&value) {
+            let negated = self.builder.ins().bxor_imm(predicate, 1);
+            return self.tag_bool(negated);
+        }
         self.builder.ins().bxor_imm(b, 2)
     }
 
@@ -5254,12 +5275,7 @@ impl<M: Module> Translator<'_, M> {
             }
             ExprKind::If { cond, then, els } => {
                 let cv = self.expr(cond);
-                let false_v = self.builder.ins().iconst(types::I64, 1); // Bool false
-                let is_true = self.builder.ins().icmp(
-                    cranelift_codegen::ir::condcodes::IntCC::NotEqual,
-                    cv,
-                    false_v,
-                );
+                let is_true = self.truth_value(cv);
                 let then_b = self.builder.create_block();
                 let else_b = self.builder.create_block();
                 self.builder.ins().brif(is_true, then_b, &[], else_b, &[]);
@@ -5647,9 +5663,7 @@ impl<M: Module> Translator<'_, M> {
 
     fn conditional(&mut self, cond: &CExpr, then: &CExpr, els: &CExpr) -> Value {
         let cv = self.expr(cond);
-        let false_v = self.builder.ins().iconst(types::I64, 1); // Bool false
-        let is_true =
-            self.builder.ins().icmp(cranelift_codegen::ir::condcodes::IntCC::NotEqual, cv, false_v);
+        let is_true = self.truth_value(cv);
 
         let then_b = self.builder.create_block();
         let else_b = self.builder.create_block();
@@ -5871,12 +5885,7 @@ impl<M: Module> Translator<'_, M> {
         match &e.kind {
             ExprKind::If { cond, then, els } => {
                 let cv = self.expr(cond);
-                let false_v = self.builder.ins().iconst(types::I64, 1); // Bool false
-                let is_true = self.builder.ins().icmp(
-                    cranelift_codegen::ir::condcodes::IntCC::NotEqual,
-                    cv,
-                    false_v,
-                );
+                let is_true = self.truth_value(cv);
                 let then_b = self.builder.create_block();
                 let else_b = self.builder.create_block();
                 self.builder.ins().brif(is_true, then_b, &[], else_b, &[]);
