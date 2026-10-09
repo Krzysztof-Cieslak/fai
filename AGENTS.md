@@ -436,6 +436,11 @@ multiplying or adding. `Duration.multiply` supports every `Int` factor with an
 exact fractional-day result. A genuinely out-of-range final day count wraps with
 `Int` arithmetic; `LocalTime` wraps modulo one day.
 
+Native resource handles (tasks, channels, nurseries, sockets, file handles, and
+TLS sessions) compare and hash by their underlying resource identity. Aliases
+of one resource are equal; distinct live resources remain distinct, including
+inside aggregates and hash containers.
+
 Contract generation recognizes Prelude `Option`/`Result` by declaration identity.
 Same-spelled user types use their own constructors and support custom `Arbitrary`
 overrides like other user ADTs.

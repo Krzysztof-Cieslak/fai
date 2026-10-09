@@ -3462,6 +3462,18 @@ fn guard_comparable(a: Value, b: Value) {
     }
 }
 
+/// Native resource handles compare by the identity of their retained resource,
+/// not by the allocation address of a particular Fai wrapper.
+fn is_resource_kind(kind: u64) -> bool {
+    matches!(kind, KIND_TASK | KIND_CHANNEL | KIND_NURSERY | KIND_NET | KIND_FILE | KIND_TLS)
+}
+
+fn resource_identity(v: Value) -> u64 {
+    // SAFETY: callers have checked the resource descriptor; each resource cell
+    // owns an Arc pointer in the common handle slot.
+    unsafe { read_u64(as_obj(v), HANDLE_PTR_OFFSET) }
+}
+
 fn values_equal(a: Value, b: Value) -> bool {
     guard_comparable(a, b);
     match (is_boxed(a), is_boxed(b)) {
@@ -3500,6 +3512,7 @@ fn values_equal(a: Value, b: Value) -> bool {
                     // Two niche `None` sentinels (the single shared object): equal.
                     // A `None` and a `Some` differ in kind, handled by `ka != kb`.
                     KIND_NONE => true,
+                    kind if is_resource_kind(kind) => resource_identity(a) == resource_identity(b),
                     _ => false,
                 }
             }
@@ -3605,6 +3618,9 @@ fn values_compare(a: Value, b: Value) -> std::cmp::Ordering {
     let boxed = if is_boxed(a) { a } else { b };
     // SAFETY: `boxed` is a boxed value.
     let kind = unsafe { desc_kind(obj_descriptor(as_obj(boxed))) };
+    if is_resource_kind(kind) {
+        return resource_identity(a).cmp(&resource_identity(b));
+    }
     if kind == KIND_FLOAT {
         return unbox_float(a).total_cmp(&unbox_float(b));
     }
@@ -3791,6 +3807,7 @@ fn values_hash(v: Value) -> u64 {
         // (the immediate nullary tag-0, which hits the immediate path above as
         // `mix64(0)`), since the two compare equal.
         KIND_NONE => mix64(0),
+        kind if is_resource_kind(kind) => mix64(resource_identity(v) ^ kind.rotate_left(32)),
         _ => mix64(0),
     }
 }

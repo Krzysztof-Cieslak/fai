@@ -1118,6 +1118,26 @@ pub extern "C" fn fai_block_on(main_thunk: Value) -> Value {
 mod tests {
     use super::*;
 
+    #[test]
+    fn resource_wrappers_share_equality_ordering_and_hash_identity() {
+        let _guard = crate::tests::lock();
+        let base = crate::live_count();
+        let channel = channel(1);
+        let a = channel_handle_value(channel.clone());
+        let b = channel_handle_value(channel);
+        let other = channel_handle_value(super::channel(1));
+        assert_ne!(a, b, "separate wrappers around one resource");
+        assert_eq!(crate::fai_equal_borrowed(a, b), 3);
+        assert_eq!(crate::fai_compare_borrowed(a, b), 1);
+        assert_eq!(crate::fai_hash_borrowed(a), crate::fai_hash_borrowed(b));
+        assert_eq!(crate::fai_equal_borrowed(a, other), 1);
+        assert_ne!(crate::fai_compare_borrowed(a, other), 1);
+        crate::fai_drop(a);
+        crate::fai_drop(b);
+        crate::fai_drop(other);
+        assert_eq!(crate::live_count(), base);
+    }
+
     // The scheduler is process-global and starts on first use; these tests share
     // one pool. Bodies return plain immediate `Value`s (`n << 1 | 1`).
     fn imm(n: i64) -> Value {

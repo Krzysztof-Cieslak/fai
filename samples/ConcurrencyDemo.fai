@@ -1,5 +1,6 @@
 module ConcurrencyDemo
 
+// Task/channel/nursery handles compare by resource identity and can be hash keys.
 // Structured concurrency, made ergonomic. The `Async` combinators wrap the
 // low-level `scope`/`spawn`/`await` and channel primitives, so the common patterns
 // are one-liners — no nursery to thread, no manual `await`/`recv`/`close`. The
