@@ -100,6 +100,7 @@ fn db_with(source: &str) -> (FaiDatabase, SourceFile) {
     fai_types::std_lib::load_std(&mut db);
     let id = db.add_source("M.fai".into(), source.to_owned());
     let file = db.source_file(id).unwrap();
+    fai_tests::benchmark_fixture::validate_db(&db, &[file], &[]);
     (db, file)
 }
 

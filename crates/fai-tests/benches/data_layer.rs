@@ -62,6 +62,7 @@ fn db_with(src: &str) -> (FaiDatabase, SourceFile) {
     fai_types::std_lib::load_std(&mut db);
     let id = db.add_source("M.fai".into(), src.to_owned());
     let file = db.source_file(id).unwrap();
+    fai_tests::benchmark_fixture::validate_db(&db, &[file], &[]);
     (db, file)
 }
 
@@ -71,23 +72,13 @@ fn db_with(src: &str) -> (FaiDatabase, SourceFile) {
 /// that sums every field — exercising row unification and constant-offset field
 /// access at inference time.
 fn record_module(fields: usize) -> String {
-    let labels: Vec<String> = (0..fields).map(|i| format!("f{i}")).collect();
-    let decl = labels.iter().map(|l| format!("{l} : Int")).collect::<Vec<_>>().join(", ");
-    let lits = labels.iter().map(|l| format!("{l} = 0")).collect::<Vec<_>>().join(", ");
-    let sum = labels.iter().map(|l| format!("r.{l}")).collect::<Vec<_>>().join(" + ");
-    format!(
-        "module M\n\ntype R = {{ {decl} }}\n\npublic mk : R\nlet mk = {{ {lits} }}\n\npublic total : R -> Int\nlet total r = {sum}\n"
-    )
+    fai_tests::benchmark_fixture::record_source(fields)
 }
 
 /// A union of `ctors` single-field constructors plus an exhaustive `match` over
 /// them — exercising constructor resolution and exhaustiveness checking.
 fn union_match_module(ctors: usize) -> String {
-    let variants = (0..ctors).map(|i| format!("  | C{i} Int")).collect::<Vec<_>>().join("\n");
-    let arms = (0..ctors).map(|i| format!("  | C{i} x -> x + {i}")).collect::<Vec<_>>().join("\n");
-    format!(
-        "module M\n\ntype T =\n{variants}\n\npublic eval : T -> Int\nlet eval t =\n  match t with\n{arms}\n"
-    )
+    fai_tests::benchmark_fixture::union_source(ctors)
 }
 
 /// A `match` over many `Int` literal arms ending in a wildcard — the literal

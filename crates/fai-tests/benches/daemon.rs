@@ -23,10 +23,10 @@ fn main() {
 }
 
 /// A small program (a single arithmetic `main`).
-const SMALL: &str = "module M\n\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (1 + 2 * 3))\n";
+use fai_tests::benchmark_fixture::SMALL_PROGRAM as SMALL;
 
 /// A medium program: a helper chain plus higher-order use.
-const MEDIUM: &str = "module M\n\nlet inc x = x + 1\n\nlet double x = x + x\n\nlet apply f x = f x\n\nlet step x = double (inc x)\n\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (apply step (step 10)))\n";
+use fai_tests::benchmark_fixture::MEDIUM_PROGRAM as MEDIUM;
 
 /// A fresh database holding `src` (and the prelude), warmed through inference.
 fn fresh(src: &str) -> (FaiDatabase, SourceFile) {
@@ -34,6 +34,7 @@ fn fresh(src: &str) -> (FaiDatabase, SourceFile) {
     fai_types::std_lib::load_std(&mut db);
     let id = db.add_source("M.fai".into(), src.to_owned());
     let file = db.source_file(id).unwrap();
+    fai_tests::benchmark_fixture::validate_db(&db, &[file], &[]);
     (db, file)
 }
 

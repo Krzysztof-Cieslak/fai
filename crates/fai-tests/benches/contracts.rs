@@ -26,6 +26,12 @@ const SIZES: &[usize] = &[10, 50, 200];
 /// module's contracts from scratch).
 const COLD_SIZES: &[usize] = &[10, 50];
 
+fn checked_corpus(spec: &CorpusSpec) -> (FaiDatabase, Vec<SourceFile>) {
+    let (db, files) = corpus::build_db(spec);
+    fai_tests::benchmark_fixture::validate_db(&db, &files, &[]);
+    (db, files)
+}
+
 /// Fewer trials than the `fai test` default (100): the benches measure the
 /// incremental compile + dispatch loop, not random-generation throughput.
 fn bench_config() -> TestConfig {
@@ -54,8 +60,10 @@ fn target_file(db: &FaiDatabase, files: &[SourceFile], modules: usize) -> Source
 #[divan::bench(args = COLD_SIZES)]
 fn cold_test(bencher: Bencher, modules: usize) {
     let spec = CorpusSpec::with_modules_and_contracts(modules);
-    bencher.with_inputs(|| corpus::build_db(&spec)).bench_values(|(db, files)| {
-        divan::black_box(test(&db, &files, None, bench_config()));
+    bencher.with_inputs(|| checked_corpus(&spec)).bench_values(|(db, files)| {
+        let outcome = test(&db, &files, None, bench_config());
+        assert!(outcome.ok, "{:?}", outcome.diagnostics);
+        divan::black_box(outcome);
         db
     });
 }
@@ -69,7 +77,7 @@ fn warm_edit_test_one_module(bencher: Bencher, modules: usize) {
     let target = target_name(modules);
     bencher
         .with_inputs(|| {
-            let (db, files) = corpus::build_db(&spec);
+            let (db, files) = checked_corpus(&spec);
             warm(&db, &files);
             let file = target_file(&db, &files, modules);
             let edited = corpus::edit_public_body(&spec, modules / 2, 1);
@@ -77,7 +85,9 @@ fn warm_edit_test_one_module(bencher: Bencher, modules: usize) {
         })
         .bench_values(|(mut db, file, edited)| {
             db.add_source(target.clone().into(), edited);
-            divan::black_box(test(&db, &[file], None, bench_config()));
+            let outcome = test(&db, &[file], None, bench_config());
+            assert!(outcome.ok, "{:?}", outcome.diagnostics);
+            divan::black_box(outcome);
             db
         });
 }
@@ -91,14 +101,16 @@ fn warm_edit_test_all(bencher: Bencher, modules: usize) {
     let target = target_name(modules);
     bencher
         .with_inputs(|| {
-            let (db, files) = corpus::build_db(&spec);
+            let (db, files) = checked_corpus(&spec);
             warm(&db, &files);
             let edited = corpus::edit_public_body(&spec, modules / 2, 1);
             (db, files, edited)
         })
         .bench_values(|(mut db, files, edited)| {
             db.add_source(target.clone().into(), edited);
-            divan::black_box(test(&db, &files, None, bench_config()));
+            let outcome = test(&db, &files, None, bench_config());
+            assert!(outcome.ok, "{:?}", outcome.diagnostics);
+            divan::black_box(outcome);
             db
         });
 }

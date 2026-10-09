@@ -88,6 +88,14 @@ gh run download <run-id> -n benchmark-results -D /tmp/bench
 
 ## The benchmark suites
 
+Compiler-source fixtures are preflighted once in a separate database by
+`fai_tests::benchmark_fixture`, including their expected diagnostic codes.
+This leaves each measured cold database unqueried. Successful-inference stress
+sizes remain below the syntax limits; oversized inputs are measured explicitly
+as `parse_rejected_nesting`. Shared backend, data-layer, and capability fixtures
+also have ordinary CI tests, so a fast error path cannot masquerade as successful
+compilation. Contract benchmarks assert their outcome succeeds.
+
 All under `crates/fai-tests/benches/` unless noted. None is a CI gate.
 
 | Suite | Measures |
