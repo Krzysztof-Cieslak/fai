@@ -17,11 +17,12 @@ let second xs = Array.get 1 xs
 example: second [| 10, 20, 30 |] = Some 20
 example: second [| 7 |] = None
 
-/// Build an array by index, then sort it (the standard in-place introsort).
+/// Build an array by index, then sort it (the adaptive in-place structural sort).
 public sortedSquares : Int -> Array Int
 let sortedSquares n = Array.sort (Array.init n (fun i -> (n - i) * (n - i)))
 example: Array.toList (sortedSquares 3) = [1, 4, 9]
 example: Array.toList (Array.sort [| 2, 1, 2, 1, 2 |]) = [1, 1, 2, 2, 2]
+example: Array.toList (Array.sort [| 3, 3, 2, 2, 1, 1 |]) = [1, 1, 2, 2, 3, 3]
 example: Array.toList (Array.sortBy (fun a b -> compare b a) [| 1, 2, 1, 2 |]) = [2, 2, 1, 1]
 
 /// `Array` and `List` interconvert; round-tripping preserves the elements.

@@ -16,6 +16,67 @@ fn database(source: String) -> (fai_db::FaiDatabase, fai_db::SourceFile) {
     (db, file)
 }
 
+// Isolate construction, sorting, and checksum costs. Input construction for the
+// sort row is untimed; releasing the sorted buffer remains in that measurement.
+mod parts {
+    use super::*;
+    use fai_runtime as rt;
+
+    fn array(values: &[i64]) -> rt::Value {
+        values
+            .iter()
+            .fold(rt::fai_array_with_capacity(rt::make_int(values.len() as i64)), |a, &v| {
+                rt::fai_array_push(a, rt::make_int(v))
+            })
+    }
+
+    fn compile() -> fai_driver::CompiledProgram {
+        let source = format!(
+            "{}\npublic sortInput : Array Int -> Array Int\nlet sortInput xs = Array.sort xs\npublic checksumInput : Array Int -> Int\nlet checksumInput xs = checksum 0 0 xs\n",
+            fai_tests::sorting::SOURCE
+        );
+        let (db, file) = database(source);
+        fai_driver::jit_compile(&db, file).unwrap_or_else(|d| panic!("{d:?}"))
+    }
+
+    #[divan::bench(args = CASES)]
+    fn build_and_drop(bencher: Bencher, case: &Case) {
+        let mut program = compile();
+        let f = program.function(fai_syntax::Symbol::intern("generate")).unwrap();
+        bencher.bench(|| {
+            rt::fai_drop(rt::apply(
+                f,
+                &[rt::make_int(case.pattern as i64), rt::make_int(case.n as i64)],
+            ))
+        });
+    }
+
+    #[divan::bench(args = CASES)]
+    fn sort_and_drop(bencher: Bencher, case: &Case) {
+        let mut program = compile();
+        let f = program.function(fai_syntax::Symbol::intern("sortInput")).unwrap();
+        let values = fai_tests::sorting::input(case.pattern, case.n);
+        bencher
+            .with_inputs(|| array(&values))
+            .bench_values(|input| rt::fai_drop(rt::apply(f, &[input])));
+    }
+
+    #[divan::bench(args = CASES)]
+    fn checksum(bencher: Bencher, case: &Case) {
+        let mut program = compile();
+        let f = program.function(fai_syntax::Symbol::intern("checksumInput")).unwrap();
+        let mut values = fai_tests::sorting::input(case.pattern, case.n);
+        values.sort();
+        let input = array(&values);
+        bencher.bench(|| {
+            let result = rt::apply(f, &[rt::fai_dup(input)]);
+            divan::black_box(rt::read_int(result));
+            rt::fai_drop(result);
+        });
+        rt::fai_drop(input);
+    }
+}
+
 mod jit {
     use super::*;
 

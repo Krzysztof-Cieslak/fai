@@ -2378,7 +2378,12 @@ Editor integration:
     `FAI6003`) for in-bounds-by-construction hot loops. The intrinsics themselves
     bounds-check-and-abort for memory safety, so a std bug can never read past the
     buffer.
-  - **Sort is an in-place three-way introsort, unstable.** `sortBy` recurses
+  - **Sort is an in-place three-way introsort, unstable.** Structural `sort`
+    first recognizes ascending, descending, and equal runs in linear work and
+    returns or reverses the input using copy-on-share semantics. It uses insertion
+    sort for partitions of at most sixteen elements; general partitions keep the
+    three-way split and depth-limited heap fallback. The scan stops at the first
+    violation, keeping random-input overhead short. `sortBy` recurses
     into the smaller side and tail-calls the larger (logarithmic depth). A
     median-of-three partition groups equal values and skips their entire band;
     after twice the binary logarithm of the input length, an in-place heapsort

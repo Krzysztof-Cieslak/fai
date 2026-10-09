@@ -102,6 +102,7 @@ fn samples_round_trip_or_are_future_surface() {
 const TYPECHECK_CLEAN: &[&str] = &[
     "Algebra.fai",
     "Anon.fai",
+    "Arrays.fai",
     "Basics.fai",
     "BytesDemo.fai",
     "Capabilities.fai",
