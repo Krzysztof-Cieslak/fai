@@ -1888,29 +1888,28 @@ Editor integration:
     pool miss takes a fresh block at the class capacity, so all cells of a class
     are interchangeable and a cell's class (hence its deallocation layout) is
     stable across reuse.
-  - **Thread-local, no synchronization.** The free lists are thread-local. This
-    is sound because Fai execution is single-threaded and a cell is always
-    allocated and freed on the same thread, so a list is only ever touched by its
-    owning thread — no atomics or locks on the hot path (the point of the change
-    was to *remove* allocation overhead, not relocate it). The list is intrusive:
+  - **Thread-local free lists.** A cell joins the pool of the thread that frees
+    it, so each free list is touched only by its owner. Slab ownership permits
+    allocation and final release on different threads. The list is intrusive:
     a dead cell's first word (its now-unused reference-count slot) holds the
     next-free pointer, so pooling allocates nothing itself, and `alloc_obj`'s
     header rewrite repurposes a recycled cell (descriptor, size, and that next
     pointer are all overwritten).
-  - **Recycled until thread exit.** Blocks are retained for reuse and returned to
-    the system allocator only when the owning thread exits (`Pool`'s drop), so
-    retention is bounded by a thread's working set. Pooled blocks are never
-    `dealloc`'d while recycling, so a freed-then-reused cell is never seen as
-    freed by memory tooling.
+  - **Demand-filled slabs.** A pool miss issues up to 64 exact-size cells from
+    an aligned 64 KiB mapping, touching only that batch. The slab owns one
+    reference per issued cell plus an unfinished cursor reference. Thread exit
+    releases its free-list cells and cursors; escaped cells keep the mapping
+    alive until their eventual owners release it. This removes per-cell system
+    allocation metadata without adding a header to the Fai object. The existing
+    generated pool-head pop/push ABI stays valid.
   - **Orthogonal to reuse analysis and the counters.** The pool sits *below*
     `alloc_obj`/`free_obj`, so it is invisible to the cumulative `ALLOCATIONS`
     counter (which counts logical `alloc_obj` calls): the differential
     allocation-count tests that pin Perceus in-place reuse (D77/D78) produce
     identical numbers. The live counter still balances (every `alloc_obj`
     increments and every `free_obj` decrements, pooled or not), so the leak check
-    is unaffected. This is a pure runtime optimization — generated code is
-    unchanged (allocation is always a runtime call) and the object cache key is
-    untouched.
+    is unaffected. Generated inlined pool access is unchanged; runtime changes
+    remain covered by the compiler build identity in the object cache key.
   - **Fuzzed and property-tested.** A custom allocator is memory-safety-sensitive,
     so one harness (`run_ops`, behind `cfg(any(test, feature = "fuzzing"))`) drives
     a decoded alloc/free sequence over sizes spanning the pooled classes and the

@@ -967,14 +967,15 @@ pub fn reset_allocations() {
 // (rare — large strings, wide records) bypass the pool and use the system
 // allocator directly.
 //
-// The free lists are **thread-local** and need no synchronization: Fai execution
-// is single-threaded, and a cell is always allocated and freed on the same thread,
-// so a list is only ever touched by its owning thread. The list is **intrusive** —
+// The free lists are **thread-local** and need no synchronization: a cell enters
+// the pool of the thread that frees it. Slab ownership keeps cells alive even
+// after their allocating thread exits. The list is **intrusive** —
 // a dead cell's own first word holds the next-free pointer — so pooling allocates
 // nothing itself. Sizes are exact 8-byte classes (capacity equals the request for
 // the 8-multiple sizes the runtime emits), so recycling carries no internal
-// fragmentation. Blocks are recycled until the thread exits, when [`Pool`]'s drop
-// returns them to the system allocator.
+// fragmentation. Fresh cells are issued in small batches from aligned slabs.
+// Thread exit releases pooled cells and the unfinished slab cursor; a slab is
+// unmapped after its final cell/cursor owner leaves.
 
 /// The byte granularity of a size class. Every heap object is 8-aligned and a
 /// multiple of 8 bytes, so each distinct size is its own class. Public so code
@@ -1010,34 +1011,86 @@ fn size_class(size: usize) -> Option<usize> {
 /// cell's first word), or null when the class is empty.
 struct Pool {
     heads: [Cell<*mut u8>; NUM_CLASSES],
+    active: [Cell<*mut slab::Slab>; NUM_CLASSES],
+    offsets: [Cell<usize>; NUM_CLASSES],
 }
 
 impl Pool {
     const fn new() -> Self {
-        Pool { heads: [const { Cell::new(std::ptr::null_mut()) }; NUM_CLASSES] }
+        Pool {
+            heads: [const { Cell::new(std::ptr::null_mut()) }; NUM_CLASSES],
+            active: [const { Cell::new(std::ptr::null_mut()) }; NUM_CLASSES],
+            offsets: [const { Cell::new(0) }; NUM_CLASSES],
+        }
+    }
+
+    fn take(&self, class: usize) -> *mut u8 {
+        let head = self.heads[class].get();
+        if head.is_null() {
+            return self.refill(class);
+        }
+        // SAFETY: head is a free cell owned by this pool, with a valid link.
+        let next = unsafe { head.cast::<*mut u8>().read() };
+        self.heads[class].set(next);
+        head
+    }
+
+    /// Refills an empty class from its unfinished slab, issuing at most 64 cells
+    /// so a small workload does not touch the entire reserved mapping.
+    fn refill(&self, class: usize) -> *mut u8 {
+        debug_assert!(self.heads[class].get().is_null());
+        let size = class * SIZE_STEP;
+        let mut active = self.active[class].get();
+        if active.is_null() {
+            active = slab::allocate();
+            self.active[class].set(active);
+            self.offsets[class].set(slab::START);
+        }
+        let offset = self.offsets[class].get();
+        let count = ((slab::BYTES - offset) / size).min(64);
+        debug_assert!(count > 0);
+        // SAFETY: this pool owns the cursor. The issued cells fit in the slab,
+        // are aligned, disjoint, and have not previously been issued.
+        unsafe {
+            slab::issue(active, count);
+            let first = active.cast::<u8>().add(offset);
+            let mut next = std::ptr::null_mut();
+            for i in (1..count).rev() {
+                let cell = first.add(i * size);
+                cell.cast::<*mut u8>().write(next);
+                next = cell;
+            }
+            self.heads[class].set(next);
+            let end = offset + count * size;
+            self.offsets[class].set(end);
+            if slab::BYTES - end < size {
+                self.active[class].set(std::ptr::null_mut());
+                slab::release(active);
+            }
+            first
+        }
     }
 }
 
 impl Drop for Pool {
-    /// Returns every pooled block to the system allocator when the owning thread
-    /// exits (so a thread's recycled memory is not stranded for the process
-    /// lifetime). A class-`c` block was allocated with capacity `c * SIZE_STEP`.
+    /// Releases pooled cell references and unfinished slab cursors. Slabs with
+    /// escaped cells survive this thread and are freed by their final owner.
     fn drop(&mut self) {
         for (class, head) in self.heads.iter().enumerate() {
-            let cap = class * SIZE_STEP;
-            if cap == 0 {
-                continue;
-            }
-            let Ok(layout) = Layout::from_size_align(cap, ALIGN) else { continue };
             let mut p = head.get();
             while !p.is_null() {
-                // SAFETY: `p` is a pooled class-`class` block; its first word holds
-                // the next-free pointer, and it was allocated with `layout`.
+                // SAFETY: `p` is an issued cell owned by this free list. Read its
+                // link before releasing the reference, which may unmap the slab.
                 unsafe {
                     let next = p.cast::<*mut u8>().read();
-                    std::alloc::dealloc(p, layout);
+                    slab::release_cell(p);
                     p = next;
                 }
+            }
+            let active = self.active[class].get();
+            if !active.is_null() {
+                // SAFETY: this pool owns the unfinished cursor reference.
+                unsafe { slab::release(active) };
             }
         }
     }
@@ -1062,18 +1115,9 @@ unsafe fn pool_push(c: usize, p: *mut u8) {
     });
 }
 
-/// Pops a recycled cell of class `c`, or null if the free list is empty.
+/// Pops a recycled cell of class `c`, refilling an empty class from its slab.
 fn pool_pop(c: usize) -> *mut u8 {
-    POOL.with(|pool| {
-        let head = pool.heads[c].get();
-        if head.is_null() {
-            return std::ptr::null_mut();
-        }
-        // SAFETY: `head` is a pooled block; its first word is the next-free pointer.
-        let next = unsafe { head.cast::<*mut u8>().read() };
-        pool.heads[c].set(next);
-        head
-    })
+    POOL.with(|pool| pool.take(c))
 }
 
 /// The base address of the current thread's size-class free-list heads array, so
@@ -1119,8 +1163,9 @@ unsafe fn system_dealloc(p: *mut u8, size: usize) {
 
 /// Allocates an object of `size` bytes with `rc = 1` and `descriptor`, returning
 /// its pointer. Recycles a same-size cell from the thread-local pool when one is
-/// available, otherwise takes a fresh block from the system allocator (at the
-/// class capacity, so every cell of a class is interchangeable). The contents
+/// available, otherwise issues a fresh cell from a demand-filled slab (at the
+/// class capacity, so every cell of a class is interchangeable). Large objects
+/// use the system allocator. The contents
 /// past the header are left uninitialized — every caller writes all of an object's
 /// fields. Increments the live counter.
 fn alloc_obj(size: usize, descriptor: *const Descriptor) -> *mut u8 {
@@ -1128,10 +1173,7 @@ fn alloc_obj(size: usize, descriptor: *const Descriptor) -> *mut u8 {
         fai_allocation_size_panic();
     }
     let p = match size_class(size) {
-        Some(c) => {
-            let recycled = pool_pop(c);
-            if recycled.is_null() { system_alloc(c * SIZE_STEP) } else { recycled }
-        }
+        Some(c) => pool_pop(c),
         None => system_alloc(size),
     };
     // SAFETY: `p` points to at least `size` writable bytes — the class capacity
@@ -4480,6 +4522,7 @@ mod scheduler;
 
 mod local_time;
 mod random;
+mod slab;
 
 /// The network I/O reactor (readiness-driven non-blocking sockets over `mio`).
 mod reactor;
