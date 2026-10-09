@@ -3756,6 +3756,9 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     unit-returning API, while pre-close buffered values remain receivable. A
     repeated close is a no-op. `await` is memoized (the result is duplicated out,
     so a handle may be awaited again).
+    Resource comparison uses the retained resource's identity, not a wrapper's
+    allocation address. Equality, ordering, and hashing agree for scheduler,
+    network, file, and TLS handles, including inside aggregates and containers.
     A contended channel operation owns a one-shot waiter registration, removed
     on every resumption (including cancellation and spurious wakes). Notifications
     skip inactive/cancelled registrations. Cancellation after a waiter has already

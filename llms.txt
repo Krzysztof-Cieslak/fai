@@ -844,6 +844,10 @@ through the capability). Spawned thunks must be **capture-light**: prefer a
 top-level helper partially applied to the values it needs over a closure that
 captures a lot.
 
+Resource handles compare by underlying resource identity: aliases are equal and
+have equal hashes; separately created resources are distinct. This applies to
+tasks, channels, nurseries, sockets, file handles, and TLS sessions.
+
 **Prefer the `Async` library for the common patterns.** It wraps these primitives so
 you do not thread a nursery or write per-task `spawn`/`await` by hand. Each combinator
 takes the `Concurrency` capability and opens its own structured scope:
