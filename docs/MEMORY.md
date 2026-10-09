@@ -3841,6 +3841,10 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   readers use atomic loads because count updates share the word. Structural
   equality/ordering/hash, projections, reuse and record update decode either form;
   a record update copies if changing its scalar bitmap changes the header size.
+  Iterative destruction decodes compact metadata once for a child scan and once
+  for reclaiming storage, avoiding repeated descriptor/shape classification.
+  Child traversal order, shared counts and native-resource finalization remain
+  governed by the same ownership protocol.
   Per-local data-shape bounds survive reference counting, cache fingerprints and
   wire erasure: maximum constructor tag, maximum field count and the union of
   possible scalar bits. Codegen uses these type-derived facts to prove a compact
