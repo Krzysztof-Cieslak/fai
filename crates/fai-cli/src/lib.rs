@@ -247,7 +247,7 @@ fn run_test_in_process(
         Err(error) => return emit_error(&error, format, color, out, err),
     };
     let plan = fai_driver::build_test_plan(session.db(), &files, args.r#match.as_deref(), config);
-    let results = if plan.blocked || plan.bundle.contracts.is_empty() {
+    let results = if plan.blocked {
         Vec::new()
     } else {
         let mut on_event = |event: &fai_driver::ContractEvent| {

@@ -92,10 +92,33 @@ pub enum ContractStatus {
     NotRun,
 }
 
+/// The loader-controlled origin of a contract's source, independent of its path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ContractSourceOrigin {
+    /// A workspace or editor-supplied source.
+    User,
+    /// A source embedded in the compiler's standard library.
+    StandardLibrary,
+}
+
+/// A portable source key. Together with a file-local ordinal this identifies a
+/// contract across filtering, worker restarts, and separate compiler processes.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractSource {
+    /// The logical source path (workspace-relative for user files, `/` separators).
+    pub file: String,
+    /// Separates embedded sources from identically spelled user paths.
+    pub origin: ContractSourceOrigin,
+}
+
 /// A per-contract result in the JSON output and the `$/testEvent` stream.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContractEvent {
+    /// The contract's source key; identity is `(source, ordinal)`, not `symbol`.
+    pub source: ContractSource,
     /// The contract's position among its file's contracts.
     pub ordinal: usize,
     /// The subject binding the contract describes (module-qualified), if any.
@@ -120,6 +143,8 @@ pub struct ContractEvent {
 /// diagnostics and event that the database-free worker does not carry.
 #[derive(Debug, Clone)]
 pub struct ContractMeta {
+    /// The contract's portable source key.
+    pub source: ContractSource,
     /// The contract's position among its file's contracts.
     pub ordinal: usize,
     /// `example` or `forall`.
@@ -610,7 +635,7 @@ pub fn assemble_outcome(plan: &TestPlan, results: &[ContractResult]) -> TestOutc
         events.push(not_run_event(meta));
     }
 
-    events.sort_by_key(|e| e.ordinal);
+    events.sort_by(|a, b| (&a.source, a.ordinal).cmp(&(&b.source, b.ordinal)));
     diagnostics.sort_by(|a, b| {
         (a.primary.start().raw(), a.code.as_str()).cmp(&(b.primary.start().raw(), b.code.as_str()))
     });
@@ -650,6 +675,9 @@ pub fn run_test_workers_with_timeout(
     timeout: Duration,
     on_event: &mut dyn FnMut(&ContractEvent),
 ) -> Vec<ContractResult> {
+    for (meta, _, _) in &plan.not_runnable {
+        on_event(&not_run_event(meta));
+    }
     let n = plan.bundle.contracts.len();
     if n == 0 {
         return Vec::new();
@@ -926,6 +954,13 @@ fn contract_meta(
         None => subject.as_str().to_owned(),
     });
     ContractMeta {
+        source: ContractSource {
+            file: file.path(db).replace(std::path::MAIN_SEPARATOR, "/"),
+            origin: match file.origin(db) {
+                fai_db::SourceOrigin::User => ContractSourceOrigin::User,
+                fai_db::SourceOrigin::StandardLibrary => ContractSourceOrigin::StandardLibrary,
+            },
+        },
         ordinal: info.ordinal,
         kind: info.kind,
         binders: info.binders.iter().map(|s| s.as_str().to_owned()).collect(),
@@ -946,6 +981,7 @@ fn resolve_event(meta: &ContractMeta, result: &ContractResult) -> ContractEvent 
         ResultStatus::TimedOut => ContractStatus::TimedOut,
     };
     ContractEvent {
+        source: meta.source.clone(),
         ordinal: meta.ordinal,
         symbol: meta.symbol.clone(),
         kind: meta.kind.keyword().to_owned(),
@@ -962,8 +998,13 @@ fn resolve_event(meta: &ContractMeta, result: &ContractResult) -> ContractEvent 
 /// warm `fai test` prints the same live lines as `--no-daemon`.
 #[must_use]
 pub fn render_test_event_line(event: &ContractEvent) -> String {
-    let label =
-        event.symbol.clone().unwrap_or_else(|| format!("{} #{}", event.kind, event.ordinal));
+    let label = event.symbol.clone().unwrap_or_else(|| {
+        let origin = match event.source.origin {
+            ContractSourceOrigin::User => "",
+            ContractSourceOrigin::StandardLibrary => "std:",
+        };
+        format!("{origin}{}: {} #{}", event.source.file, event.kind, event.ordinal)
+    });
     match event.status {
         ContractStatus::Passed => format!("ok    {label}\n"),
         ContractStatus::Failed => match &event.counterexample {
@@ -979,6 +1020,7 @@ pub fn render_test_event_line(event: &ContractEvent) -> String {
 /// The event for a contract that could not be run (an ungeneratable binder).
 fn not_run_event(meta: &ContractMeta) -> ContractEvent {
     ContractEvent {
+        source: meta.source.clone(),
         ordinal: meta.ordinal,
         symbol: meta.symbol.clone(),
         kind: meta.kind.keyword().to_owned(),
@@ -1082,6 +1124,7 @@ mod tests {
 
     fn meta(ordinal: usize) -> ContractMeta {
         ContractMeta {
+            source: ContractSource { file: "M.fai".to_owned(), origin: ContractSourceOrigin::User },
             ordinal,
             kind: ContractKind::Forall,
             binders: vec!["n".to_owned()],
@@ -1122,6 +1165,60 @@ mod tests {
     }
 
     fn nop(_: &ContractResult) {}
+
+    #[test]
+    fn resumed_events_retain_source_identity_for_each_status() {
+        let mut p = plan(4);
+        p.runnable_meta[0].source.file = "A.fai".to_owned();
+        p.runnable_meta[1].source.file = "B.fai".to_owned();
+        p.runnable_meta[2].source.file = "C.fai".to_owned();
+        p.runnable_meta[3].source.file = "D.fai".to_owned();
+        let mut events = Vec::new();
+        let results = resume_loop(
+            4,
+            |start, sink| match start {
+                0 => {
+                    sink(pass(0));
+                    ExitKind::Crash
+                }
+                2 => ExitKind::Timeout,
+                3 => {
+                    sink(WorkerResult { passed: false, ..pass(3) });
+                    ExitKind::Clean
+                }
+                _ => unreachable!(),
+            },
+            &mut |result| events.push(resolve_event(&p.runnable_meta[result.position], result)),
+        );
+        assert_eq!(events, assemble_outcome(&p, &results).events);
+        assert_eq!(
+            events.iter().map(|e| (e.source.file.as_str(), e.status)).collect::<Vec<_>>(),
+            vec![
+                ("A.fai", ContractStatus::Passed),
+                ("B.fai", ContractStatus::Crashed),
+                ("C.fai", ContractStatus::TimedOut),
+                ("D.fai", ContractStatus::Failed),
+            ]
+        );
+    }
+
+    #[test]
+    fn not_runnable_only_plans_stream_the_same_identified_event_as_the_report() {
+        let mut p = plan(0);
+        p.total = 1;
+        p.not_runnable.push((
+            meta(7),
+            "function generator unavailable".to_owned(),
+            fai_contracts::CONTRACT_NOT_RUNNABLE,
+        ));
+        let mut events = Vec::new();
+        let results = run_test_workers(&p, &mut |event| events.push(event.clone()));
+        assert!(results.is_empty());
+        assert_eq!(events, assemble_outcome(&p, &results).events);
+        assert_eq!(events[0].ordinal, 7);
+        assert_eq!(events[0].source.file, "M.fai");
+        assert_eq!(events[0].status, ContractStatus::NotRun);
+    }
 
     #[test]
     fn resume_loop_clean_run_records_every_contract() {

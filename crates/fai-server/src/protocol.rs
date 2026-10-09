@@ -13,7 +13,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 /// The protocol version. Bumped on any incompatible wire change.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Maximum stdin payload granted by one input credit.
 pub const INPUT_CHUNK_SIZE: usize = 8192;
@@ -338,6 +338,10 @@ mod tests {
         });
         round_trip(&ServerMessage::Output { stream: OutputStream::Stderr, chunk: Vec::new() });
         round_trip(&ServerMessage::TestEvent(ContractEvent {
+            source: fai_driver::ContractSource {
+                file: "M.fai".to_owned(),
+                origin: fai_driver::ContractSourceOrigin::User,
+            },
             ordinal: 0,
             symbol: Some("M.f".to_owned()),
             kind: "forall".to_owned(),

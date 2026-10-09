@@ -417,6 +417,62 @@ fn warm_test_matches_no_daemon() {
     assert_eq!(stdout(&warm_human), stdout(&cold_human), "warm human must equal --no-daemon");
 }
 
+#[test]
+fn subjectless_test_sources_survive_streaming_and_worker_resume() {
+    let daemon = Daemon::new(
+        "event-identity",
+        &[
+            ("A.fai", "module A\nexample: true\n"),
+            ("B.fai", "module B\nforall n: 1 / (n - n) = 0\nexample: true\n"),
+            (
+                "C.fai",
+                "module C\nforall f: call f\ncall : (Int -> Int) -> Bool\nlet call f = f 0 = 0\n",
+            ),
+        ],
+    );
+    let warm = daemon.run(&["test"], &["--message-format=json"]);
+    let cold = daemon.run(&["test", "--no-daemon"], &["--message-format=json"]);
+    assert_eq!(warm.status.code(), Some(1));
+    assert_eq!(stdout(&warm), stdout(&cold));
+    let report: serde_json::Value = serde_json::from_slice(&warm.stdout).unwrap();
+    let events = report["events"].as_array().unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .map(|e| (e["source"].clone(), e["ordinal"].clone(), e["status"].clone()))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                serde_json::json!({"file":"A.fai","origin":"user"}),
+                serde_json::json!(0),
+                serde_json::json!("passed")
+            ),
+            (
+                serde_json::json!({"file":"B.fai","origin":"user"}),
+                serde_json::json!(0),
+                serde_json::json!("crashed")
+            ),
+            (
+                serde_json::json!({"file":"B.fai","origin":"user"}),
+                serde_json::json!(1),
+                serde_json::json!("passed")
+            ),
+            (
+                serde_json::json!({"file":"C.fai","origin":"user"}),
+                serde_json::json!(0),
+                serde_json::json!("notRun")
+            ),
+        ]
+    );
+    let warm = daemon.run(&["test"], &[]);
+    let cold = daemon.run(&["test", "--no-daemon"], &[]);
+    let text = stdout(&warm);
+    assert_eq!(text, stdout(&cold));
+    assert!(text.contains("ok    A.fai: example #0"), "{text}");
+    assert!(text.contains("ABORT B.fai: forall #0"), "{text}");
+    assert!(text.contains("skip  C.fai: forall #0"), "{text}");
+}
+
 #[cfg(debug_assertions)]
 #[track_caller]
 fn live_contract_progress(no_daemon: bool, tag: &str) {

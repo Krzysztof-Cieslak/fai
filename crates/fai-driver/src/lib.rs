@@ -46,10 +46,10 @@ pub use command::{
     RenderOpts, Rendered, render_workspace_error, run_command,
 };
 pub use contracts::{
-    ContractEvent, ContractResult, ContractStatus, TestConfig, TestOutcome, TestOutput, TestPlan,
-    assemble_outcome, build_example_plan, build_test_plan, check_examples,
-    check_examples_in_process, example_failures, jit_test_bundle, render_test_event_line,
-    run_test_workers, run_test_workers_with_timeout, run_tests,
+    ContractEvent, ContractResult, ContractSource, ContractSourceOrigin, ContractStatus,
+    TestConfig, TestOutcome, TestOutput, TestPlan, assemble_outcome, build_example_plan,
+    build_test_plan, check_examples, check_examples_in_process, example_failures, jit_test_bundle,
+    render_test_event_line, run_test_workers, run_test_workers_with_timeout, run_tests,
 };
 pub use fai_core::{TestWireBundle, WireBundle};
 pub use manifest::{MANIFEST_NAME, NativeDeps, read_native_manifest};
