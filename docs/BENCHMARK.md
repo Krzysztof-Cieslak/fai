@@ -406,6 +406,11 @@ is closest to the pure size factor.
 
 ### Keeping the sides in lockstep
 
+`Levenshtein` uses a single in-place dynamic-programming row on all three sides,
+carrying the old diagonal in a scalar before each overwrite. Earlier Fai timings
+used a fresh row per left-sequence element and describe a different allocation
+workload, despite computing the same edit distance.
+
 Sorting results use position-weighted checksums, so removing the sort changes
 the answer. The `MergeSort` checksum changed from a plain sum to this form;
 measurements from the two workload versions must not be spliced into one trend.
