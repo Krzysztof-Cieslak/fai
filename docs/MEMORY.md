@@ -3088,6 +3088,11 @@ Editor integration:
     header and fields directly. Missing/wrong-sized tokens, shared or unknown
     cells, and concurrent execution retain runtime handling. Descendant release
     remains iterative, and immortal/shared child counts retain their protocol.
+    Fresh non-niche data constructions of up to eight fields use the same exposed
+    pool heads as array allocation, writing the header and fields inline on a hit.
+    Empty pools, wider shapes and concurrent code retain runtime construction.
+    Tail loops cache the pool base; a non-looping branch fetches it at allocation
+    so recursive leaf calls do not pay a lookup. Debug counters remain balanced.
   - **Carve-outs.** `foldr` over a non-reversible `List` value is left unfused (a
     single tail loop is impossible without a reverse pass or unsafe deep recursion,
     which std itself avoids); a pipeline inside a **mutual-recursion group member**

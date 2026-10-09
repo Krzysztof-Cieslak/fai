@@ -1027,8 +1027,8 @@ fn build_fn<M: Module>(
             tr.entry_bounds = tr.bounds.clone();
         }
 
-        // When the body constructs or grows an `Array`, fetch the thread's
-        // free-list heads base once here in the entry block (which dominates the
+        // For Array construction/growth or small-data construction in a tail loop,
+        // fetch the thread's free-list heads once in the entry block (dominating the
         // whole body) so the inlined pooled allocation fast path reuses it with no
         // per-allocation call. The base is loop-invariant, so a hot allocation loop
         // pays one `fai_pool_heads` per activation rather than one per cell.
@@ -1036,7 +1036,10 @@ fn build_fn<M: Module>(
         // may migrate workers, so a base cached here would go stale): array
         // operations take the runtime calls instead (see `array_prim`).
         let uses_array_alloc = !tr.concurrent && body_uses_array_alloc(&core_fn.body);
-        if uses_array_alloc {
+        let loop_uses_data_alloc = !tr.concurrent
+            && matches!(core_fn.body.kind, ExprKind::Join { .. } | ExprKind::HoleStart { .. })
+            && body_uses_small_data_alloc(&core_fn.body);
+        if uses_array_alloc || loop_uses_data_alloc {
             let heads = tr.runtime("fai_pool_heads", 0, true);
             let call = tr.builder.ins().call(heads, &[]);
             tr.pool_heads_base = Some(tr.builder.inst_results(call)[0]);
@@ -1325,8 +1328,9 @@ struct Translator<'a, M: Module> {
     concurrent: bool,
     /// The current thread's size-class free-list heads base (the result of one
     /// `fai_pool_heads` call), computed once in the entry block when this function
-    /// inlines an `Array` allocation (construction or push-grow) — `None`
-    /// otherwise. The base is loop-invariant (execution is single-threaded), and
+    /// inlines an Array allocation or a small-data construction in a tail loop.
+    /// Other data allocations fetch it at their use site. The cached base is
+    /// loop-invariant (execution is single-threaded), and
     /// the entry block dominates the whole body, so the inlined pool pop/push reuse
     /// this single value with no per-allocation call.
     pool_heads_base: Option<Value>,
@@ -2461,7 +2465,7 @@ impl<M: Module> Translator<'_, M> {
     }
 
     /// Builds a data value: a nullary constructor is an immediate carrying its
-    /// tag; an n-ary one builds `{ tag, fields… }` via the runtime — into a reuse
+    /// tag; an n-ary one builds `{ tag, fields… }` from the pool or runtime — into a reuse
     /// token's memory in place when one is supplied (and the right size), else
     /// freshly allocated. The reuse pass never attaches a token to a nullary
     /// constructor (which allocates nothing).
@@ -2535,6 +2539,11 @@ impl<M: Module> Translator<'_, M> {
             self.data_layouts.insert(result, scalars);
             return result;
         }
+        if reuse.is_none() && !self.concurrent && inline_data_fields(count) {
+            let result = self.fresh_data_inline(tag, &vals, desc);
+            self.data_layouts.insert(result, scalars);
+            return result;
+        }
         let ptr = self.spill(&vals);
         let tag_v = self.builder.ins().iconst(types::I64, i64::from(tag));
         let n_v = self.builder.ins().iconst(types::I64, count as i64);
@@ -2564,6 +2573,60 @@ impl<M: Module> Translator<'_, M> {
         };
         self.data_layouts.insert(result, scalars);
         result
+    }
+
+    /// Constructs a small data cell directly from a pooled block. A tail loop
+    /// caches its pool base at entry; a branch-only allocation fetches it here so
+    /// recursive leaf cases pay no lookup. Empty pools retain the constructor ABI.
+    fn fresh_data_inline(&mut self, tag: u32, fields: &[Value], desc: Option<Value>) -> Value {
+        let pool = self.pool_heads_base.unwrap_or_else(|| {
+            let function = self.runtime("fai_pool_heads", 0, true);
+            let call = self.builder.ins().call(function, &[]);
+            self.builder.inst_results(call)[0]
+        });
+        let size = (rt::DATA_FIELDS_OFFSET + fields.len() * 8) as i64;
+        let slot = self.builder.ins().iadd_imm(pool, size);
+        let cell = self.builder.ins().load(types::I64, MemFlags::trusted(), slot, 0);
+        let fast = self.builder.create_block();
+        let slow = self.builder.create_block();
+        let done = self.builder.create_block();
+        self.builder.set_cold_block(slow);
+        self.builder.append_block_param(done, types::I64);
+        self.builder.ins().brif(cell, fast, &[], slow, &[]);
+        self.builder.switch_to_block(fast);
+        self.builder.seal_block(fast);
+        let next = self.builder.ins().load(types::I64, MemFlags::trusted(), cell, 0);
+        self.builder.ins().store(MemFlags::trusted(), next, slot, 0);
+        let descriptor = desc.unwrap_or_else(|| self.runtime_data_addr("FAI_DATA_DESC"));
+        let one = self.builder.ins().iconst(types::I64, 1);
+        let bytes = self.builder.ins().iconst(types::I64, size);
+        let tag_value = self.builder.ins().iconst(types::I64, i64::from(tag));
+        self.store_field(cell, rt::RC_OFFSET, one);
+        self.store_field(cell, rt::DESC_OFFSET, descriptor);
+        self.store_field(cell, rt::SIZE_OFFSET, bytes);
+        self.store_field(cell, rt::DATA_TAG_OFFSET, tag_value);
+        for (index, &value) in fields.iter().enumerate() {
+            self.store_field(cell, rt::DATA_FIELDS_OFFSET + index * 8, value);
+        }
+        self.note_inline_alloc();
+        self.builder.ins().jump(done, &[cell.into()]);
+        self.builder.switch_to_block(slow);
+        self.builder.seal_block(slow);
+        let values = self.spill(fields);
+        let tag = self.builder.ins().iconst(types::I64, i64::from(tag));
+        let count = self.builder.ins().iconst(types::I64, fields.len() as i64);
+        let call = if let Some(desc) = desc {
+            let function = self.runtime("fai_make_data_scalar", 4, true);
+            self.builder.ins().call(function, &[desc, tag, count, values])
+        } else {
+            let function = self.runtime("fai_make_data", 3, true);
+            self.builder.ins().call(function, &[tag, count, values])
+        };
+        let allocated = self.builder.inst_results(call)[0];
+        self.builder.ins().jump(done, &[allocated.into()]);
+        self.builder.switch_to_block(done);
+        self.builder.seal_block(done);
+        self.builder.block_params(done)[0]
     }
 
     /// Resets a bounded data cell without entering the runtime on the unique
@@ -6921,6 +6984,51 @@ fn body_uses_array_alloc(e: &CExpr) -> bool {
         | ExprKind::HoleStart { body, .. } => body_uses_array_alloc(body),
         ExprKind::HoleFill { cell, .. } => body_uses_array_alloc(cell),
         ExprKind::HoleClose { base, .. } => body_uses_array_alloc(base),
+    }
+}
+
+/// Whether the bounded data construction fits an exposed pooled size class.
+fn inline_data_fields(count: usize) -> bool {
+    (1..=8).contains(&count) && rt::DATA_FIELDS_OFFSET + count * 8 <= rt::MAX_POOLED_SIZE
+}
+
+fn body_uses_small_data_alloc(e: &CExpr) -> bool {
+    match &e.kind {
+        ExprKind::MakeData { args, reuse, niche, .. } => {
+            (reuse.is_none() && niche.is_none() && inline_data_fields(args.len()))
+                || args.iter().any(body_uses_small_data_alloc)
+        }
+        ExprKind::Prim { args, .. }
+        | ExprKind::Foreign { args, .. }
+        | ExprKind::Recur { args }
+        | ExprKind::Spread { components: args } => args.iter().any(body_uses_small_data_alloc),
+        ExprKind::App { func, args, .. } => {
+            body_uses_small_data_alloc(func) || args.iter().any(body_uses_small_data_alloc)
+        }
+        ExprKind::If { cond, then, els } => {
+            body_uses_small_data_alloc(cond)
+                || body_uses_small_data_alloc(then)
+                || body_uses_small_data_alloc(els)
+        }
+        ExprKind::Let { value, body, .. }
+        | ExprKind::Reset { value, body, .. }
+        | ExprKind::LetMany { value, body, .. } => {
+            body_uses_small_data_alloc(value) || body_uses_small_data_alloc(body)
+        }
+        ExprKind::DataTag { base, .. }
+        | ExprKind::DataField { base, .. }
+        | ExprKind::HoleClose { base, .. } => body_uses_small_data_alloc(base),
+        ExprKind::FreeReuse { body, .. }
+        | ExprKind::Dup { body, .. }
+        | ExprKind::Drop { body, .. }
+        | ExprKind::Join { body, .. }
+        | ExprKind::HoleStart { body, .. } => body_uses_small_data_alloc(body),
+        ExprKind::HoleFill { cell, .. } => body_uses_small_data_alloc(cell),
+        ExprKind::Lit(_)
+        | ExprKind::Local(_)
+        | ExprKind::Global(_)
+        | ExprKind::MakeClosure { .. }
+        | ExprKind::Error => false,
     }
 }
 
