@@ -194,6 +194,19 @@ fn float_buffers_keep_total_order_and_exact_bits() {
     assert_eq!(rt::live_count(), baseline);
 }
 
+#[test]
+fn large_sort_prepares_its_scratch_buffer_with_one_bulk_copy() {
+    let mut h = Harness::new();
+    let baseline = (rt::live_count(), rt::live_bytes());
+    let array = h.array((0..128).rev().map(rt::make_int));
+    let list = h.call("fromArray", array);
+    rt::reset_allocations();
+    let result = h.call("sorted", list);
+    assert_eq!(rt::array_copies(), 1, "only the initial scratch buffer is copied");
+    assert_eq!(h.read_ints(result), (0..128).collect::<Vec<_>>());
+    assert_eq!((rt::live_count(), rt::live_bytes()), baseline);
+}
+
 mod proptests {
     use super::*;
     use proptest::prelude::*;

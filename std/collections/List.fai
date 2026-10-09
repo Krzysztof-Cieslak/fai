@@ -249,12 +249,6 @@ let sortBufferFrom xs buffer =
   | [] -> buffer
   | x :: rest -> sortBufferFrom rest (Prim.arrayPush buffer x)
 
-let copySortBuffer source n i buffer =
-  if i >= n then
-    buffer
-  else
-    copySortBuffer source n (i + 1) (Prim.arrayPush buffer (Prim.arrayGet source i))
-
 let copySortRun source i stop out destination =
   if i >= stop then
     destination
@@ -305,7 +299,7 @@ let sortBy cmp xs =
     mergeAllBy cmp (singletons xs)
   else
     let source = sortBufferFrom xs (Prim.arrayWithCapacity n)
-    let destination = copySortBuffer source n 0 (Prim.arrayWithCapacity n)
+    let destination = Prim.arrayUnique source
     sortedBufferToList (mergeSortBuffersBy cmp 1 n source destination) (n - 1) []
 example: sortBy compare [3, 1, 2] = [1, 2, 3]
 // Stability: elements with equal keys keep their input order.

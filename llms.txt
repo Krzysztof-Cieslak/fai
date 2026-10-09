@@ -1104,6 +1104,7 @@ compare  : 'a -> 'a -> Int                          // -, 0, + (any non-function
 `sortBy` is stable: equal-key elements keep their input order. Large calls use
 private merge buffers while small lists stay on the linked path; both preserve
 the same comparator call order and leave retained input lists unchanged.
+The second private buffer is initialized by one bulk copy.
 
 Folding a concatenation can avoid copying its flat spine. `concatMap` remains
 strict: all producer callbacks finish before the first fold callback, including
