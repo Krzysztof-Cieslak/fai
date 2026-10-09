@@ -9,6 +9,7 @@ module HttpDemo
 // `Http` builds on `Net` (transport), `Concurrency` (a task per connection), the
 // opaque `Url` and `Headers` types, and a streaming `Stream Bytes` body.
 // HTTPS sends bounded plaintext pieces and drains TLS ciphertext between writes.
+// IPv6 URLs use brackets (http://[::1]:8080/); TCP/TLS receive the bare address.
 // HEAD, 204, and 304 responses are bodyless; a server skips their body stream.
 // Informational responses are skipped before the client's final response.
 // Direct TLS users inspect `writePlaintext`'s accepted count and retry only the

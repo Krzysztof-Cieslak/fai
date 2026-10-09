@@ -992,6 +992,21 @@ let tlsTransport env conn session = { Transport with
 }
 
 // --- Client ----------------------------------------------------------------
+// URI brackets belong to authority rendering, not the socket/TLS hostname.
+connectionHost : Url -> Result String String
+let connectionHost url =
+  match Url.host url with
+  | None -> Err "request URL has no host"
+  | Some host ->
+    if String.take 1 host = "[" then
+      let inside = String.substring 1 (String.length host - 2) host
+      if String.contains inside ":" then Ok inside else Err "invalid bracketed IP address"
+    else
+      Ok host
+example: Result.map connectionHost (Url.parse "http://[::1]/") = Ok (Ok "::1")
+example: Result.map connectionHost (Url.parse "http://example.test/") = Ok (Ok "example.test")
+example: Result.map connectionHost (Url.parse "http://[example.test]/") = Ok (Err "invalid bracketed IP address")
+
 // Open a client TLS session (trusting the bundled roots, plus `extraRoots` PEM when
 // given) and complete the handshake, returning a ready transport.
 secureClient : { net : Net, tls : Tls | 'r } -> Option Bytes -> Connection -> String -> Result (Transport { Net, Tls }) String / { Net, Tls }
@@ -1022,9 +1037,9 @@ let makeTransport env extraRoots conn url host =
 /// redirects.
 public requestOnce : { net : Net, tls : Tls | 'r } -> Option Bytes -> Request 'e -> Result (Response { Net, Tls }) String / { Net, Tls | 'e }
 let requestOnce env extraRoots req =
-  match Url.host req.url with
-  | None -> Err "request URL has no host"
-  | Some h ->
+  match connectionHost req.url with
+  | Err e -> Err e
+  | Ok h ->
     match Url.effectivePort req.url with
     | None -> Err "request URL has no port"
     | Some p ->
@@ -1362,9 +1377,9 @@ let buildPooledResponse env client origin method version code reason headers lef
 // roots.
 connectFresh : { net : Net, tls : Tls | 'r } -> Url -> Result (Transport { Net, Tls }) String / { Net, Tls }
 let connectFresh env url =
-  match Url.host url with
-  | None -> Err "request URL has no host"
-  | Some h ->
+  match connectionHost url with
+  | Err e -> Err e
+  | Ok h ->
     match Url.effectivePort url with
     | None -> Err "request URL has no port"
     | Some p ->

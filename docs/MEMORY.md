@@ -4201,6 +4201,8 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     URL. Literal dot segments normalize without decoding percent escapes or
     collapsing repeated slashes. Authorities reject empty/malformed hosts and
     invalid decimal ports; bracketed host spelling is preserved for rendering.
+    HTTP removes IPv6 authority brackets at the socket/TLS handoff, shared by
+    one-shot and pooled connections, while retaining them in the Host header.
   - **HTTP (pure Fai).** `std/networking/Http.fai` is an HTTP/1.1 client and server over `Net`,
     with an opaque validated `Url` (`std/networking/Url.fai`) and a case-insensitive, order- and
     duplicate-preserving `Headers` (`std/networking/Headers.fai`). `Url` is an opaque **union**
