@@ -120,3 +120,36 @@ fn inlined_helper_is_incrementally_correct() {
         )
     });
 }
+
+#[test]
+fn data_layout_changes_match_clean_native_objects() {
+    let small = "module M\npublic type T = | End | C Int\npublic head : T -> Int\nlet head value = match value with | End -> 0 | C x -> x\n";
+    let wide = "module M\npublic type T = | End | C Int Float Float Float Float Float Float Float Float Float\npublic head : T -> Int\nlet head value = match value with | End -> 0 | C x _ _ _ _ _ _ _ _ _ -> x\n";
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", small)], &[("M.fai", wide)], &[("M.fai", small)]],
+        |db, files| {
+            let file = db.source_file(files[0]).unwrap();
+            let name = Symbol::intern("head");
+            ((*rc(db, file, name)).clone(), (*object_code(db, file, name, false)).clone())
+        },
+    );
+}
+
+#[test]
+fn unrelated_body_edits_preserve_data_layout_cutoff() {
+    let mut db = fai_db::FaiDatabase::new();
+    fai_types::std_lib::load_std(&mut db);
+    let a =
+        "module A\npublic type T = | End | C Int\npublic other : Int -> Int\nlet other x = x + 1\n";
+    db.add_source("A.fai".into(), a.into());
+    let b = db.add_source("B.fai".into(), "module B\npublic head : A.T -> Int\nlet head value = match value with | A.End -> 0 | A.C x -> x\n".into());
+    let file = db.source_file(b).unwrap();
+    let name = Symbol::intern("head");
+    let before = rc(&db, file, name);
+    db.add_source("A.fai".into(), a.replace("x + 1", "x + 2"));
+    let after = rc(&db, file, name);
+    assert!(
+        std::sync::Arc::ptr_eq(&before, &after),
+        "a body edit leaves the consumer's typed layout query cached"
+    );
+}

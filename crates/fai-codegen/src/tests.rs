@@ -482,6 +482,17 @@ fn generic_list_head_needs_no_scalar_descriptor() {
 }
 
 #[test]
+fn typed_adt_projections_use_the_proven_compact_header() {
+    let source = "module M\npublic type T = | Empty | Pair Bool Bool\npublic sum : T -> Bool\nlet sum value = match value with | Empty -> false | Pair x y -> x && y\n";
+    let ir = entry_ir(source, "sum");
+    assert!(
+        !ir.lines().any(|line| line.contains("load") && line.contains("+24")),
+        "a proven compact ADT needs no extended tag load:\n{ir}"
+    );
+    assert!(!ir.contains("select"), "the field prefix is constant:\n{ir}");
+}
+
+#[test]
 fn a_data_building_tail_loop_fetches_pool_heads_before_the_header() {
     let ir = entry_ir(
         "module M\nlet build n acc = if n <= 0 then acc else build (n - 1) (true :: acc)\n",

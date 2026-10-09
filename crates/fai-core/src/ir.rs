@@ -386,6 +386,22 @@ pub struct LoweredDef {
     /// parameter slot in [`CoreFn::params`] stays the ABI anchor and carries no
     /// runtime value; the body references the component locals instead.
     pub entry_spread_params: Vec<Option<Vec<LocalId>>>,
+    /// Per-function, per-local bounds on boxed data shapes, collected after
+    /// ownership insertion. Native code can prove a header form without a
+    /// runtime layout test; absent entries retain dynamic decoding.
+    pub data_shapes: Vec<Vec<(LocalId, DataShape)>>,
+}
+
+/// Bounds that hold for every boxed data value carried by one local. Nullary
+/// constructors remain immediate; these bounds describe only allocated cells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct DataShape {
+    /// Largest nonnullary constructor tag (zero for records and tuples).
+    pub max_tag: u32,
+    /// Largest field count among the possible allocated shapes.
+    pub max_fields: u32,
+    /// Union of all possible raw-Float field bitmap bits.
+    pub scalars: u64,
 }
 
 impl LoweredDef {

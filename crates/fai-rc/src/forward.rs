@@ -74,6 +74,7 @@ pub fn rc_emit(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
         entry_borrowed: base.entry_borrowed.clone(),
         reuse_entry,
         entry_spread_params: base.entry_spread_params.clone(),
+        data_shapes: base.data_shapes.clone(),
     })
 }
 

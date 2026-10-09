@@ -58,6 +58,7 @@ pub use verify::check_rc;
 mod aliases;
 mod borrow;
 mod bounds_sig;
+mod data_shapes;
 mod escape;
 mod forward;
 mod length;
@@ -147,6 +148,7 @@ pub fn rc_lowered(db: &dyn Db, lowered: &LoweredDef, self_sig: &BorrowSig) -> Lo
         || (0..entry_abi.params.len()).any(|i| entry_abi.spread_param(i).is_some());
 
     let mut fns = Vec::with_capacity(lowered.fns.len());
+    let mut data_shapes = Vec::with_capacity(lowered.fns.len());
     let mut entry_spread_params: Vec<Option<Vec<LocalId>>> = Vec::new();
     for (i, f) in lowered.fns.iter().enumerate() {
         let mut borrowed: Locals = f.captures.iter().copied().collect();
@@ -208,6 +210,7 @@ pub fn rc_lowered(db: &dyn Db, lowered: &LoweredDef, self_sig: &BorrowSig) -> Lo
         if i == 0 && !entry_has_spread {
             body = trmc::flatten(body, &f.params, lowered.def, &is_pure_total, &mut next);
         }
+        data_shapes.push(data_shapes::collect(db, &body));
         fns.push(CoreFn { params: f.params.clone(), captures: f.captures.clone(), body });
     }
     LoweredDef {
@@ -216,6 +219,7 @@ pub fn rc_lowered(db: &dyn Db, lowered: &LoweredDef, self_sig: &BorrowSig) -> Lo
         entry_borrowed: self_sig.0.clone(),
         reuse_entry: None,
         entry_spread_params,
+        data_shapes,
     }
 }
 

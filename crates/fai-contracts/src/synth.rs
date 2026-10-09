@@ -149,6 +149,7 @@ pub fn synthesize(
         entry_borrowed: Vec::new(),
         reuse_entry: None,
         entry_spread_params: Vec::new(),
+        data_shapes: Vec::new(),
     };
 
     // Build the harness entry `fun seed trials size -> Test.check… …`.
@@ -175,6 +176,7 @@ pub fn synthesize(
         entry_borrowed: Vec::new(),
         reuse_entry: None,
         entry_spread_params: Vec::new(),
+        data_shapes: Vec::new(),
     };
 
     Ok(SynthContract { entry, entry_arity: 3, prop, prop_arity, extra })

@@ -114,6 +114,10 @@ pub struct WireDef {
     /// (all-`None`) when the definition has no spread parameters.
     #[serde(default)]
     pub entry_spread_params: Vec<Option<Vec<u32>>>,
+    /// Per-function data-shape bounds, preserving local layout evidence after
+    /// nominal types have been erased by the wire projection.
+    #[serde(default)]
+    pub data_shapes: Vec<Vec<(u32, crate::ir::DataShape)>>,
     /// The inferred bounds-check-elimination **entry facts** (difference
     /// constraints over its parameters), so the database-free worker elides the
     /// same inline `Array` bounds checks. Empty when none were inferred.
@@ -528,6 +532,11 @@ pub fn def_to_wire(
             .collect(),
         bounds_entry,
         bounds_result,
+        data_shapes: lowered
+            .data_shapes
+            .iter()
+            .map(|shapes| shapes.iter().map(|&(local, shape)| (slot(local), shape)).collect())
+            .collect(),
     }
 }
 
@@ -801,6 +810,16 @@ fn defs_from_wire(wire_defs: &[WireDef], sources: &mut SourceAssigner) -> DefsFr
             fns: wire.fns.iter().map(|f| fn_from_wire(f, sources)).collect(),
             entry_borrowed: wire.entry_borrowed.clone(),
             reuse_entry: wire.reuse_entry.as_ref().map(|f| fn_from_wire(f, sources)),
+            data_shapes: wire
+                .data_shapes
+                .iter()
+                .map(|shapes| {
+                    shapes
+                        .iter()
+                        .map(|&(local, shape)| (LocalId::from_index(local as usize), shape))
+                        .collect()
+                })
+                .collect(),
             entry_spread_params: wire
                 .entry_spread_params
                 .iter()
@@ -1109,6 +1128,7 @@ mod tests {
             entry_borrowed: Vec::new(),
             reuse_entry: None,
             entry_spread_params: Vec::new(),
+            data_shapes: Vec::new(),
         };
 
         let wire = def_to_wire(
@@ -1169,6 +1189,7 @@ mod tests {
             entry_borrowed: Vec::new(),
             reuse_entry: None,
             entry_spread_params: Vec::new(),
+            data_shapes: Vec::new(),
         };
 
         let wire = def_to_wire(
@@ -1262,6 +1283,7 @@ mod tests {
             entry_borrowed: Vec::new(),
             reuse_entry: None,
             entry_spread_params: Vec::new(),
+            data_shapes: Vec::new(),
         };
 
         let wire = def_to_wire(
@@ -1322,6 +1344,44 @@ mod tests {
         let decoded: WireBundle = serde_json::from_str(&json).unwrap();
         let rebuilt = from_wire(&decoded);
         assert_eq!(pretty_def(&rebuilt.defs[0]), pretty_def(&lowered));
+    }
+
+    #[test]
+    fn data_shape_evidence_round_trips_and_changes_the_fingerprint() {
+        let mut db = FaiDatabase::new();
+        let id = db.add_source("M.fai".into(), "module M\nlet f x = x\n".into());
+        let file = db.source_file(id).unwrap();
+        let mut lowered = (*core(&db, file, Symbol::intern("f"))).clone();
+        let fingerprint = |d: &LoweredDef| {
+            crate::fingerprint_def(d, &|_| "M.f".into(), &|_| 1, &|_| FnAbi::default())
+        };
+        let original = fingerprint(&lowered);
+        lowered.data_shapes = vec![vec![(
+            lowered.entry().params[0],
+            crate::ir::DataShape { max_tag: 2, max_fields: 3, scalars: 0 },
+        )]];
+        assert_ne!(original, fingerprint(&lowered));
+        let wire = def_to_wire(
+            &lowered,
+            &|_| "M".into(),
+            1,
+            FnAbi::default(),
+            Vec::new(),
+            crate::BoundSig::default(),
+            crate::ResultSig::default(),
+        );
+        let encoded = serde_json::to_vec(&wire).unwrap();
+        let decoded: WireDef = serde_json::from_slice(&encoded).unwrap();
+        let bundle = WireBundle {
+            entry: decoded.id.clone(),
+            runtime: decoded.id.clone(),
+            defs: vec![decoded],
+            libraries: Vec::new(),
+            concurrent: false,
+        };
+        let rebuilt = from_wire(&bundle);
+        assert_eq!(rebuilt.defs[0].data_shapes, lowered.data_shapes);
+        assert_eq!(fingerprint(&rebuilt.defs[0]), fingerprint(&lowered));
     }
 
     #[test]
@@ -1449,6 +1509,7 @@ mod tests {
             reuse_entry: None,
             reuse_sig: Vec::new(),
             entry_spread_params: Vec::new(),
+            data_shapes: Vec::new(),
             bounds_entry: crate::bounds::BoundSig::default(),
             bounds_result: crate::bounds::ResultSig::default(),
         };
@@ -1465,6 +1526,7 @@ mod tests {
             reuse_entry: None,
             reuse_sig: Vec::new(),
             entry_spread_params: Vec::new(),
+            data_shapes: Vec::new(),
             bounds_entry: crate::bounds::BoundSig::default(),
             bounds_result: crate::bounds::ResultSig::default(),
         };

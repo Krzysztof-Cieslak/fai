@@ -224,6 +224,7 @@ pub fn fuse_def(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<FuseResult> 
         entry_borrowed: base.entry_borrowed.clone(),
         reuse_entry: base.reuse_entry.clone(),
         entry_spread_params: base.entry_spread_params.clone(),
+        data_shapes: base.data_shapes.clone(),
     });
     Arc::new(FuseResult { body, loops })
 }
@@ -1159,6 +1160,7 @@ impl Fuser<'_> {
             entry_borrowed: Vec::new(),
             reuse_entry: None,
             entry_spread_params: Vec::new(),
+            data_shapes: Vec::new(),
         };
         // A complete builder appends exactly one value per source element. The
         // generated entry starts at index zero with an empty buffer; recurrence
@@ -1264,6 +1266,7 @@ impl Fuser<'_> {
             entry_borrowed: Vec::new(),
             reuse_entry: None,
             entry_spread_params: Vec::new(),
+            data_shapes: Vec::new(),
         };
         let result = crate::ResultSig {
             edges: vec![
@@ -2247,6 +2250,7 @@ pub(crate) fn prune_dead_fns(def: LoweredDef) -> LoweredDef {
         entry_borrowed: def.entry_borrowed,
         reuse_entry: def.reuse_entry,
         entry_spread_params: def.entry_spread_params,
+        data_shapes: def.data_shapes,
     }
 }
 

@@ -329,6 +329,7 @@ pub fn combined_lowered(db: &dyn Db, file: SourceFile, group: &Group) -> Lowered
         entry_borrowed: Vec::new(),
         reuse_entry: None,
         entry_spread_params: Vec::new(),
+        data_shapes: Vec::new(),
     }
 }
 
@@ -360,6 +361,7 @@ pub fn member_wrapper(db: &dyn Db, file: SourceFile, member: DefId, group: &Grou
         entry_borrowed: Vec::new(),
         reuse_entry: None,
         entry_spread_params: Vec::new(),
+        data_shapes: Vec::new(),
     }
 }
 

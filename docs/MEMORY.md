@@ -3812,6 +3812,13 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   readers use atomic loads because count updates share the word. Structural
   equality/ordering/hash, projections, reuse and record update decode either form;
   a record update copies if changing its scalar bitmap changes the header size.
+  Per-local data-shape bounds survive reference counting, cache fingerprints and
+  wire erasure: maximum constructor tag, maximum field count and the union of
+  possible scalar bits. Codegen uses these type-derived facts to prove a compact
+  header and emit constant-offset reads. Generic nominal fields remain uniform;
+  structural type-variable fields may be supplied in raw-Float slots. Unknown
+  shapes retain runtime decoding, and cross-file function bodies remain behind
+  the signature firewall.
   A value becomes shared via **`fai_mark_shared`**, which flips it and its reachable
   boxed subgraph (iteratively, reusing the drop worklist, so a deep structure never
   overflows the stack) when it crosses a task boundary — a spawned thunk's captures,

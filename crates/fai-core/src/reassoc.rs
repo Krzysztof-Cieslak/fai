@@ -39,6 +39,7 @@ pub fn reassociate_concat(def: &LoweredDef) -> LoweredDef {
         entry_borrowed: def.entry_borrowed.clone(),
         reuse_entry: def.reuse_entry.clone(),
         entry_spread_params: def.entry_spread_params.clone(),
+        data_shapes: def.data_shapes.clone(),
     }
 }
 
