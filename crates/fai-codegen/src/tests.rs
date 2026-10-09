@@ -409,6 +409,44 @@ fn main_printing(expr: &str) -> String {
 }
 
 #[test]
+fn short_literal_append_has_an_inline_store_and_one_slow_call() {
+    let ir = entry_ir(
+        "module M\npublic append : String -> String\nlet append s = s ++ \"ab\"\n",
+        "append",
+    );
+    assert!(
+        ir.contains("iconst.i16") && ir.contains("store notrap"),
+        "literal bytes are stored inline:\n{ir}"
+    );
+    assert_eq!(call_count(&ir), 1, "only the concat fallback calls out:\n{ir}");
+}
+
+#[test]
+fn long_literal_append_keeps_the_runtime_path() {
+    let ir = entry_ir(
+        "module M\npublic append : String -> String\nlet append s = s ++ \"12345678901234567\"\n",
+        "append",
+    );
+    assert!(!ir.contains("store "), "long literals do not expand stores:\n{ir}");
+    assert_eq!(call_count(&ir), 1);
+}
+
+#[test]
+fn empty_literal_append_needs_no_call() {
+    let ir = entry_ir(
+        "module M\npublic append : String -> String\nlet append s = s ++ \"\"\n",
+        "append",
+    );
+    assert_eq!(call_count(&ir), 0);
+}
+
+#[test]
+fn literal_append_evaluates_its_left_operand_once() {
+    let source = "module M\nlet left =\n  let _ = stdConsole.writeLine \"left\"\n  \"prefix\"\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (left ++ \"ab\")\n";
+    assert_eq!(run(source), (0, "left\nprefixab\n".into()));
+}
+
+#[test]
 fn unmatched_pattern_fallthrough_emits_a_trap() {
     // Deliberately bypass check_file to exercise the backend's invariant guard.
     let ir =
