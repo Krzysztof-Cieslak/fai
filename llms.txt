@@ -942,6 +942,9 @@ The full tour (TCP + UDP) is `samples/NetDemo.fai`.
 TCP/UDP port arguments are checked in `0..65535`; invalid values return `Err`
 before network activity. Zero requests an ephemeral port for listen/bind.
 
+HTTP accepts bracketed IPv6 URLs such as `http://[::1]:8080/`; brackets remain
+in URL/Host rendering and are removed for socket and TLS address handling.
+
 HTTPS adds the `Tls` capability. Its low-level `writePlaintext session bytes`
 returns the count accepted, not necessarily the full length: drain ciphertext
 with `takeOutgoing`, send it over `Net`, then retry only the remaining plaintext.

@@ -488,6 +488,8 @@ Unsupported widths and unterminated literals return `None`.
 references, normalizing literal dot segments while preserving escaped separators.
 An empty path inherits the base query unless replaced. URL authorities require
 nonempty hosts, balanced bracket syntax, and unsigned decimal ports in 0..65535.
+HTTP keeps IPv6 brackets in URLs and Host headers, but passes the unbracketed
+address to TCP connection and TLS server-name construction, including pooled requests.
 
 ## 5. Repository layout
 
