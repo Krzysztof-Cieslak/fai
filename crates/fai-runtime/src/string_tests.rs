@@ -477,3 +477,54 @@ fn take_and_drop_land_on_char_boundaries() {
     fai_drop(d);
     assert_eq!(live_count(), base, "leak-free");
 }
+
+#[test]
+fn character_offset_in_an_ascii_prefix_precedes_unicode() {
+    assert_eq!(char_byte_offset("hello🙂", 5), 5);
+}
+
+#[test]
+fn character_offset_after_unicode_counts_scalars() {
+    assert_eq!(char_byte_offset("🙂hello", 3), 6);
+}
+
+#[test]
+fn character_offset_inside_a_multibyte_prefix_stays_on_a_boundary() {
+    assert_eq!(char_byte_offset("λ🙂x", 3), 7);
+}
+
+#[test]
+fn character_offset_counts_embedded_nuls() {
+    assert_eq!(char_byte_offset("a\0bc", 3), 3);
+}
+
+#[test]
+fn character_offset_clamps_a_full_width_positive_index() {
+    assert_eq!(char_byte_offset("λ🙂x", i64::MAX), 7);
+}
+
+#[test]
+fn character_offset_clamps_a_full_width_negative_index() {
+    assert_eq!(char_byte_offset("λ🙂x", i64::MIN), 0);
+}
+
+#[test]
+fn character_offset_of_an_empty_string_is_zero() {
+    assert_eq!(char_byte_offset("", 4), 0);
+}
+
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+        #[test]
+        fn character_offsets_match_unicode_scalar_prefixes(chars in prop::collection::vec(prop_oneof![Just('a'), Just('\0'), any::<char>()], 0..256), index in prop_oneof![-8i64..512, any::<i64>()]) {
+            let text: String = chars.iter().collect();
+            let count = usize::try_from(index.max(0)).unwrap_or(usize::MAX);
+            let expected: usize = chars.iter().take(count).map(|c| c.len_utf8()).sum();
+            prop_assert_eq!(char_byte_offset(&text, index), expected);
+        }
+    }
+}

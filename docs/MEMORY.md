@@ -2853,6 +2853,9 @@ Editor integration:
     Collection joins first check the complete output size and then copy parts and
     separators directly into one Fai buffer. Both list and array inputs remain
     borrowed; the two passes use constant auxiliary storage and support slice views.
+    Character-indexed slicing resolves an ASCII prefix by its byte count after a
+    wide-byte ASCII check. Non-ASCII prefixes keep the Unicode-scalar walk; negative
+    and oversized indices remain clamped without narrowing a full-width Int.
     Concatenating the empty string returns the other operand without copying. Leaf
     constructors (`make_string`, `Int.toString`, …) allocate tight: only the
     unique-but-full grow path over-allocates, so a one-shot `a ++ b` wastes nothing

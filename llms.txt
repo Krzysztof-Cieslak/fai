@@ -1358,6 +1358,8 @@ joinArray  : String -> Array String -> String
 
 (Concatenate with the prelude `++`.)
 `join` and `joinArray` copy directly into one checked, pre-sized result buffer.
+Character-indexed slicing has an ASCII-prefix fast path and preserves Unicode
+scalar boundaries for mixed text.
 
 ### Bytes — `Bytes` (an immutable binary byte buffer)
 

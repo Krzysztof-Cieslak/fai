@@ -2977,8 +2977,14 @@ fn char_byte_offset(s: &str, char_idx: i64) -> usize {
     if char_idx <= 0 {
         return 0;
     }
+    let index = usize::try_from(char_idx).unwrap_or(usize::MAX).min(s.len());
+    // A character count cannot exceed its byte count. Before a non-ASCII byte,
+    // character and byte indices coincide; validate that prefix in wide chunks.
+    if index == s.len() || s.as_bytes()[..index].is_ascii() {
+        return index;
+    }
     // `nth(k)` yields the k-th char's byte index, or `None` once exhausted.
-    s.char_indices().nth(char_idx as usize).map_or(s.len(), |(i, _)| i)
+    s.char_indices().nth(index).map_or(s.len(), |(i, _)| i)
 }
 
 /// Builds a borrowing slice viewing `byte_len` bytes of `base` from byte offset
