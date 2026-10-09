@@ -1907,6 +1907,11 @@ Editor integration:
     alive until their eventual owners release it. This removes per-cell system
     allocation metadata without adding a header to the Fai object. The existing
     generated pool-head pop/push ABI stays valid.
+    Pool cleanup batches adjacent free-list cells from the same slab into one
+    atomic ownership release. The process-terminal native entry shim performs
+    value destruction and leak checks, then lets the OS reclaim its dead pool
+    mappings instead of walking the recycling cache at process exit. Reusable
+    JIT entries and worker-thread cleanup keep the ownership-based release path.
   - **Orthogonal to reuse analysis and the counters.** The pool sits *below*
     `alloc_obj`/`free_obj`, so it is invisible to the cumulative `ALLOCATIONS`
     counter (which counts logical `alloc_obj` calls): the differential
