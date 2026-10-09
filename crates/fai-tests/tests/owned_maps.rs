@@ -15,10 +15,25 @@ public floats : Array Float -> Array Float
 let floats xs = Array.map (fun x -> x + 1.0) xs
 public same : Array 'a -> Array 'a
 let same xs = Array.map identity xs
+let localIdentity x = x
+public localSame : Array 'a -> Array 'a
+let localSame xs = Array.map localIdentity xs
+let first x y = x
+public partials : Array Int -> Array (Int -> Int)
+let partials xs = Array.map first xs
+public literalPartials : Array Int -> Array (Int -> Int)
+let literalPartials xs = Array.map (fun x y -> x + y) xs
 public records : Array { x : Int, y : Int } -> Array { x : Int, y : Int }
 let records xs = Array.map (fun p -> { p with x = p.x + 1 }) xs
 public buildRecords : Unit -> Array { x : Int, y : Int }
 let buildRecords u = [| { x = 10, y = 20 }, { x = 30, y = 40 } |]
+public type Quad = { w : Float, x : Float, y : Float, z : Float }
+advance : Quad -> Quad
+let advance q = { q with x = q.x + 1.0, y = q.y + 2.0 }
+public namedQuads : Array Quad -> Array Quad
+let namedQuads qs = Array.map advance qs
+public buildQuads : Unit -> Array Quad
+let buildQuads u = [| { w = 0.0, x = 10.0, y = 20.0, z = 30.0 } |]
 public main : Runtime -> Unit
 let main r = ()
 "#;
@@ -164,6 +179,68 @@ fn record_update_reuses_uniquely_owned_elements() {
     rt::fai_drop(x);
     rt::fai_drop(y);
     rt::fai_drop(first);
+    rt::fai_drop(output);
+    assert_eq!(rt::live_count(), baseline);
+}
+
+#[test]
+fn named_float_record_callback_retains_in_place_reuse() {
+    let mut h = Harness::new();
+    let baseline = rt::live_count();
+    let input = h.call("buildQuads", rt::FAI_UNIT);
+    rt::reset_allocations();
+    let output = h.call("namedQuads", input);
+    assert_eq!(output, input);
+    assert_eq!(rt::allocations(), 0, "the helper's boxed return boundary is gone");
+    let first = rt::fai_array_get_borrowed(output, rt::make_int(0));
+    let x = rt::fai_data_field(first, 1);
+    let y = rt::fai_data_field(first, 2);
+    assert_eq!((rt::read_float(x), rt::read_float(y)), (11.0, 22.0));
+    rt::fai_drop(x);
+    rt::fai_drop(y);
+    rt::fai_drop(first);
+    rt::fai_drop(output);
+    assert_eq!(rt::live_count(), baseline);
+}
+
+#[test]
+fn generic_named_callback_keeps_float_representation() {
+    let mut h = Harness::new();
+    let baseline = rt::live_count();
+    let bits = (-0.0f64).to_bits();
+    let input = array([rt::fai_box_float(bits as i64)]);
+    let output = h.call("localSame", input);
+    let value = rt::fai_array_get_borrowed(output, rt::make_int(0));
+    assert_eq!(rt::read_float(value).to_bits(), bits);
+    rt::fai_drop(value);
+    rt::fai_drop(output);
+    assert_eq!(rt::live_count(), baseline);
+}
+
+#[test]
+fn named_partially_applied_callback_keeps_its_remaining_parameter() {
+    let mut h = Harness::new();
+    let baseline = rt::live_count();
+    let input = array([rt::make_int(42)]);
+    let output = h.call("partials", input);
+    let function = rt::fai_array_get_borrowed(output, rt::make_int(0));
+    let value = rt::apply(function, &[rt::make_int(7)]);
+    assert_eq!(rt::read_int(value), 42);
+    rt::fai_drop(value);
+    rt::fai_drop(output);
+    assert_eq!(rt::live_count(), baseline);
+}
+
+#[test]
+fn literal_partially_applied_callback_keeps_its_remaining_parameter() {
+    let mut h = Harness::new();
+    let baseline = rt::live_count();
+    let input = array([rt::make_int(35)]);
+    let output = h.call("literalPartials", input);
+    let function = rt::fai_array_get_borrowed(output, rt::make_int(0));
+    let value = rt::apply(function, &[rt::make_int(7)]);
+    assert_eq!(rt::read_int(value), 42);
+    rt::fai_drop(value);
     rt::fai_drop(output);
     assert_eq!(rt::live_count(), baseline);
 }

@@ -3050,7 +3050,9 @@ Editor integration:
     accumulator, and source order even when they have effects or trap. Literal
     callbacks with the supported capture shape inline; other callbacks, including
     nested lifted closures, retain a first-class argument and its original function
-    identities. Known direct globals remain direct calls. The loop retains scalar
+    identities. Exactly saturated, small, non-recursive same-file helpers inline
+    under the ordinary helper budget, exposing element updates to reuse analysis;
+    other known direct globals remain direct calls. The loop retains scalar
     accumulator types and the library's capacity/count/wraparound rules.
   - **Owned same-type maps.** A direct `Array.map` with unchanged element type
     owns its materialized source buffer, copying it once when shared. Internal

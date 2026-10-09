@@ -427,7 +427,9 @@ impl Fuser<'_> {
                         hi: bound[1].clone(),
                     },
                     Comb::Repeat => Source::Repeat { n: bound[0].clone(), x: bound[1].clone() },
-                    _ => Source::Init { n: bound[0].clone(), f: self.fn_arg(&bound[1], base_fns) },
+                    _ => {
+                        Source::Init { n: bound[0].clone(), f: self.fn_arg(&bound[1], 1, base_fns) }
+                    }
                 };
                 let param = LocalId::from_index(0);
                 let identity = FnArg::Lambda {
@@ -444,7 +446,11 @@ impl Fuser<'_> {
             _ => {
                 let input = bound.last()?.clone();
                 let elem_ty = seq_elem(&input.ty)?;
-                let f = self.fn_arg(&bound[0], base_fns);
+                let f = self.fn_arg(
+                    &bound[0],
+                    if matches!(comb, Comb::Foldl | Comb::Foldr) { 2 } else { 1 },
+                    base_fns,
+                );
                 let consumer = match comb {
                     Comb::Foldl => Consumer::Foldl { step: f, init: bound[1].clone() },
                     Comb::Foldr => Consumer::Foldr { step: f, init: bound[1].clone() },
@@ -495,14 +501,14 @@ impl Fuser<'_> {
                         break;
                     }
                     let Some(out) = seq_elem(&cur.ty) else { break };
-                    stages.push(Stage::Map { f: self.fn_arg(&targs[0], base_fns), out });
+                    stages.push(Stage::Map { f: self.fn_arg(&targs[0], 1, base_fns), out });
                     cur = &targs[1];
                 }
                 Some((tseq, Comb::Filter)) if tseq == seq && targs.len() == 2 => {
                     if !self.arg_reorderable(&targs[0], 1, base_fns) {
                         break;
                     }
-                    stages.push(Stage::Filter(self.fn_arg(&targs[0], base_fns)));
+                    stages.push(Stage::Filter(self.fn_arg(&targs[0], 1, base_fns)));
                     cur = &targs[1];
                 }
                 _ => break,
@@ -547,7 +553,7 @@ impl Fuser<'_> {
             {
                 Some((
                     Consumer::Foldl {
-                        step: self.fn_arg(&args[0], base_fns),
+                        step: self.fn_arg(&args[0], 2, base_fns),
                         init: args[1].clone(),
                     },
                     &args[2],
@@ -564,20 +570,20 @@ impl Fuser<'_> {
             {
                 Some((
                     Consumer::Foldr {
-                        step: self.fn_arg(&args[0], base_fns),
+                        step: self.fn_arg(&args[0], 2, base_fns),
                         init: args[1].clone(),
                     },
                     &args[2],
                 ))
             }
             Comb::All if args.len() == 2 && self.arg_reorderable(&args[0], 1, base_fns) => {
-                Some((Consumer::All(self.fn_arg(&args[0], base_fns)), &args[1]))
+                Some((Consumer::All(self.fn_arg(&args[0], 1, base_fns)), &args[1]))
             }
             Comb::Any if args.len() == 2 && self.arg_reorderable(&args[0], 1, base_fns) => {
-                Some((Consumer::Any(self.fn_arg(&args[0], base_fns)), &args[1]))
+                Some((Consumer::Any(self.fn_arg(&args[0], 1, base_fns)), &args[1]))
             }
             Comb::Find if args.len() == 2 && self.arg_reorderable(&args[0], 1, base_fns) => {
-                Some((Consumer::Find(self.fn_arg(&args[0], base_fns)), &args[1]))
+                Some((Consumer::Find(self.fn_arg(&args[0], 1, base_fns)), &args[1]))
             }
             Comb::Member if args.len() == 2 && self.expr_reorderable(&args[0]) => {
                 Some((Consumer::Member(args[0].clone()), &args[1]))
@@ -585,12 +591,12 @@ impl Fuser<'_> {
             // A terminal `map`/`filter`: the preceding stages fuse into this one
             // builder loop.
             Comb::Map if args.len() == 2 && self.arg_reorderable(&args[0], 1, base_fns) => Some((
-                Consumer::Build { f: self.fn_arg(&args[0], base_fns), filter: false, seq },
+                Consumer::Build { f: self.fn_arg(&args[0], 1, base_fns), filter: false, seq },
                 &args[1],
             )),
             Comb::Filter if args.len() == 2 && self.arg_reorderable(&args[0], 1, base_fns) => {
                 Some((
-                    Consumer::Build { f: self.fn_arg(&args[0], base_fns), filter: true, seq },
+                    Consumer::Build { f: self.fn_arg(&args[0], 1, base_fns), filter: true, seq },
                     &args[1],
                 ))
             }
@@ -617,7 +623,7 @@ impl Fuser<'_> {
                 {
                     return Some(Source::Init {
                         n: pargs[0].clone(),
-                        f: self.fn_arg(&pargs[1], base_fns),
+                        f: self.fn_arg(&pargs[1], 1, base_fns),
                     });
                 }
                 Comb::Repeat
@@ -664,15 +670,17 @@ impl Fuser<'_> {
         crate::purity::expr_pure_total(self.db, e)
     }
 
-    /// Classifies a function argument as a lambda to inline or a value to apply.
+    /// Classifies an exactly saturated lambda or eligible same-file helper for
+    /// inlining; other function arguments remain values to apply.
     ///
     /// A literal lambda is inlined only when its body contains no nested
     /// `MakeClosure`: a nested lambda's lifted function lives in the *consuming*
     /// definition, not the synthesized loop, so splicing its `MakeClosure` into the
     /// loop would dangle the reference. Such a lambda is passed as a value (its
     /// closure, applied via `apply_n`), keeping its lifted functions intact.
-    fn fn_arg(&self, arg: &CExpr, base_fns: &[CoreFn]) -> FnArg {
+    fn fn_arg(&self, arg: &CExpr, arity: usize, base_fns: &[CoreFn]) -> FnArg {
         if let K::MakeClosure { func, captures, .. } = &arg.kind
+            && base_fns[func.index()].params.len() == arity
             && !body_has_closure(&base_fns[func.index()].body)
         {
             let cf = &base_fns[func.index()];
@@ -686,6 +694,21 @@ impl Fuser<'_> {
                 })
                 .collect();
             FnArg::Lambda { params: cf.params.clone(), body: cf.body.clone(), caps }
+        } else if let K::Global(def) = arg.kind
+            && def.file == self.source
+            && let Some(file) = self.db.source_file(def.file)
+            && crate::inline_summary(self.db, file, def.name) == Some(arity)
+        {
+            // Reuse the ordinary helper inliner's budget, cycle exclusion, and
+            // same-file boundary. Exact saturation also excludes callbacks that
+            // create a partial application rather than evaluate their body.
+            let lowered = helper_inlined(self.db, file, def.name);
+            let entry = lowered.entry();
+            FnArg::Lambda {
+                params: entry.params.clone(),
+                body: entry.body.clone(),
+                caps: Vec::new(),
+            }
         } else {
             FnArg::Value(arg.clone())
         }
@@ -2478,6 +2501,20 @@ mod tests {
         let caller = fused("module M\nlet run xs = Array.map Int.toFloat xs\n", "run");
         assert!(caller.contains("arrayWithCapacity"), "{caller}");
         assert!(!caller.contains("arrayUnique"), "{caller}");
+    }
+
+    #[test]
+    fn same_file_callback_folds_into_the_synthesized_loop() {
+        let mut db = FaiDatabase::new();
+        fai_types::std_lib::load_std(&mut db);
+        let id = db.add_source(
+            "M.fai".into(),
+            "module M\nlet step x = x + 1\nlet run xs = Array.map step xs\n".into(),
+        );
+        let result = fuse_def(&db, db.source_file(id).unwrap(), Symbol::intern("run"));
+        let body = pretty_def(&result.loops[0].lowered);
+        assert!(!body.contains("@step"), "{body}");
+        assert!(body.contains("(+ "), "{body}");
     }
 
     #[test]

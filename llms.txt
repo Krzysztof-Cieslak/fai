@@ -1150,6 +1150,8 @@ uniquely owned source buffer and pass each element to its callback without an
 extra retained reference. Shared inputs are copied once and remain unchanged,
 including when captured by the callback. Callbacks still run once per element,
 in increasing index order; this does not expose mutation to Fai programs.
+Small non-recursive same-file callbacks can inline into these loops, retaining
+the same reuse opportunities as literal lambdas.
 
 ```
 empty        : Array 'a
