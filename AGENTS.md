@@ -438,6 +438,9 @@ cell whose parent remains live is skipped, letting the actual consumed cell feed
 the reconstruction; merging unique lists therefore recycles their consumed nodes.
 Native list tag tests use the immediate bit directly, and list projections use
 the known uniform head/tail layout, including boxed Float heads.
+Representation-preserving data aliases are coalesced before ownership insertion,
+after borrow signatures are fixed. The surviving local retains its type metadata;
+generic/scalar or niche conversion bindings remain explicit.
 
 Local function shorthand (`let log message = body`) has the same latent effects
 as `let log = fun message -> body`: constructing it is pure, and calling its

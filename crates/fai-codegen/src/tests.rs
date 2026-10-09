@@ -447,6 +447,18 @@ fn list_emptiness_needs_no_constructor_tag_load() {
 }
 
 #[test]
+fn borrowed_list_match_has_no_alias_reference_count_traffic() {
+    let ir = entry_ir(
+        "module M\npublic empty : List 'a -> Bool\nlet empty xs = match xs with | [] -> true | _ :: _ -> false\n",
+        "empty",
+    );
+    assert!(
+        !ir.contains("load.") && !ir.contains("store "),
+        "an inspect-only match does not own an alias:\n{ir}"
+    );
+}
+
+#[test]
 fn generic_list_head_needs_no_scalar_descriptor() {
     let ir = entry_ir(
         "module M\npublic pick : 'a -> List 'a -> 'a\nlet pick fallback xs = match xs with | [] -> fallback | x :: _ -> x\n",
