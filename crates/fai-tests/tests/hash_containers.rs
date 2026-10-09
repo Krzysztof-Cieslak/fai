@@ -108,6 +108,12 @@ fn dict_sorted_insertion_matches_hashmap() {
 }
 
 #[test]
+fn grown_boxed_entries_keep_float_and_string_values() {
+    let source = "module M\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let pairs = List.map (fun k -> (Int.toString k, Int.toFloat k + 0.5)) (List.range 0 100)\n  let dict = HashDict.fromList pairs\n  let removed = HashDict.remove \"20\" dict\n  let changed = HashDict.insert \"10\" 100.5 removed\n  let ok = HashDict.size dict = 100 && HashDict.size changed = 99 && HashDict.getOr 0.0 \"10\" dict = 10.5 && HashDict.getOr 0.0 \"10\" changed = 100.5 && not (HashDict.member \"20\" changed)\n  r.console.writeLine (if ok then \"yes\" else \"no\")\n";
+    assert_eq!(run(source), "yes");
+}
+
+#[test]
 fn dict_reverse_insertion_matches_hashmap() {
     check_dict("List.reverse (List.range 0 2000)", &(0..2000).collect::<Vec<_>>());
 }

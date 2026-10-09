@@ -1278,6 +1278,9 @@ foldr       : ('a -> 'acc -> 'acc) -> 'acc -> Set 'a -> 'acc
 
 ### HashDict — unordered map (open-addressing hash table, O(1) average)
 
+Table growth reuses existing entry cells in the new bucket array, and retained
+dictionaries keep their original contents. `HashSet` uses the same rehash policy.
+
 Prefer over `Dict` when iteration order does not matter. Iteration order is
 unspecified (but deterministic).
 `updateOr fallback f key dict` stores `f old` on a hit or `f fallback` on a miss,

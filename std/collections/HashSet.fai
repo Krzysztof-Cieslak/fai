@@ -93,13 +93,13 @@ let insertFrom x slots cap i count =
   | Empty -> HS (count + 1) (Array.unsafeSet i (Full x) slots)
   | Full y -> if x = y then HS count slots else insertFrom x slots cap (next cap i) count
 
-// Place `x` (known absent, e.g. during a rehash) at the first empty slot from
-// bucket `i`, returning the updated slots array.
-place : 'a -> Array (Slot 'a) -> Int -> Int -> Array (Slot 'a)
-let place x slots cap i =
+// Rehashing changes the bucket address, not the entry value. Move the same Full
+// cell into the new buffer so both buffers temporarily share it without copying.
+placeEntry : Slot 'a -> Array (Slot 'a) -> Int -> Int -> Array (Slot 'a)
+let placeEntry entry slots cap i =
   match Array.unsafeGet i slots with
-  | Empty -> Array.unsafeSet i (Full x) slots
-  | Full _ -> place x slots cap (next cap i)
+  | Empty -> Array.unsafeSet i entry slots
+  | Full _ -> placeEntry entry slots cap (next cap i)
 
 // Copy every element of the old slots array into a fresh, larger one.
 rehash : Array (Slot 'a) -> Int -> Int -> Array (Slot 'a) -> Int -> Array (Slot 'a)
@@ -107,9 +107,10 @@ let rehash old cap i newSlots newCap =
   if i >= cap then
     newSlots
   else
-    match Array.unsafeGet i old with
+    let entry = Array.unsafeGet i old
+    match entry with
     | Empty -> rehash old cap (i + 1) newSlots newCap
-    | Full y -> rehash old cap (i + 1) (place y newSlots newCap (indexFor newCap y)) newCap
+    | Full y -> rehash old cap (i + 1) (placeEntry entry newSlots newCap (indexFor newCap y)) newCap
 
 // Double the table and re-place every element into it.
 grow : Array (Slot 'a) -> Int -> Array (Slot 'a)
