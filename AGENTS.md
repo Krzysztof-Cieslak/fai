@@ -881,6 +881,10 @@ Pool retries are limited to `getOn`'s known-empty GET after a reused connection
 reaches EOF before any response byte. General `requestOn`/`postOn` calls are not
 replayed; write, producer, cancellation, malformed-head, and partial-head errors
 close the failed transport and retain the original error.
+Method-preserving redirects (307/308) likewise require a known-empty body:
+`get`/`getWith` can follow them, while general `request`/`requestWith` return the
+redirect response. A 301/302/303 rewrite creates an empty GET and can safely
+follow later redirects without re-evaluating the original stream.
 
 **Lexer subtlety to preserve:** a leading tick is a character literal when it
 closes (`'a'`, `'\n'`) and a **type variable** otherwise (`'a`, `'r`). This is
