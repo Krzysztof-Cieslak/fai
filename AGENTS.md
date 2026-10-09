@@ -473,6 +473,9 @@ cell whose parent remains live is skipped, letting the actual consumed cell feed
 the reconstruction; merging unique lists therefore recycles their consumed nodes.
 Native list tag tests use the immediate bit directly, and list projections use
 the known uniform head/tail layout, including boxed Float heads.
+Allocation-free scalar-result scans over primitive-element lists may retain one
+root owner and borrow their descendant cursors. Full scans and early exits release
+that owner once; the wire form retains the primitive list-element classification.
 Representation-preserving data aliases are coalesced before ownership insertion,
 after borrow signatures are fixed. The surviving local retains its type metadata;
 generic/scalar or niche conversion bindings remain explicit.

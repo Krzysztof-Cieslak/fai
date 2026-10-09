@@ -222,6 +222,8 @@ pub enum WireTy {
     },
     /// A `List` (maybe-immediate data: `[]` is an immediate).
     List,
+    /// A list with primitive elements, retained for allocation-free cursor scans.
+    ScalarList(Box<WireTy>),
     /// An `Array` (always boxed; the runtime drop scans its live elements).
     Array,
     /// A discriminated union (maybe-immediate data: nullary constructors are
@@ -449,6 +451,15 @@ pub fn project_ty(ty: &Ty) -> WireTy {
             fields: row.fields.iter().map(|(_, t)| project_ty(t)).collect(),
             closed: matches!(row.tail, RowEnd::Closed),
         },
+        Ty::App(head, element)
+            if matches!(head.as_ref(), Ty::Con(Con::List))
+                && matches!(
+                    element.as_ref(),
+                    Ty::Unit | Ty::Con(Con::Int | Con::Float | Con::Bool | Con::Char)
+                ) =>
+        {
+            WireTy::ScalarList(Box::new(project_ty(element)))
+        }
         Ty::App(head, _) => project_app_head(head),
     }
 }
@@ -492,6 +503,7 @@ pub fn reconstruct_ty(w: &WireTy) -> Ty {
             tail: if *closed { RowEnd::Closed } else { RowEnd::Open(RowVarId(0)) },
         }),
         WireTy::List => Ty::list(Ty::Error),
+        WireTy::ScalarList(element) => Ty::list(reconstruct_ty(element)),
         WireTy::Array => Ty::array(Ty::Error),
         WireTy::Adt => Ty::Adt(AdtRef::new(SourceId::new(0), Symbol::intern("_Adt"))),
         WireTy::Interface => {

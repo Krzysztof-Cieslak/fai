@@ -15,6 +15,7 @@
 mod aot;
 mod emit;
 mod jit;
+mod list_cursor;
 
 pub use aot::{main_object, object_for_def, reuse_object_for_def};
 

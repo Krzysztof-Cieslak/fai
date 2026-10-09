@@ -807,6 +807,12 @@ Reuse & in-place update:
     Native list tag tests need only the immediate bit (`[]` is immediate, a cons
     is boxed). Cons slots are always uniform, so even generic/Float list heads
     skip scalar-descriptor checks while retaining their ordinary owned result.
+    Bounded allocation-free scalar-result loops over primitive-element lists can
+    retain one original owner through the scan and borrow descendant cursors.
+    Only numeric operations and proven descendant back-edges qualify; the final
+    path releases an owned root once. This removes per-node cursor count traffic
+    while keeping zero extra heap storage and preserving early-return results.
+    Primitive list-element classes survive wire erasure for the same worker path.
     After borrow inference, representation-preserving local data aliases are
     coalesced before ownership insertion. Equal observed types are required and
     niche/scalar conversion bindings stay explicit. Removed bindings transfer
