@@ -417,6 +417,12 @@ This single-operation lowering keeps sources and shared results materialized;
 cross-stage deforestation still requires pure, total callbacks. Literal callbacks
 with nested lifted closures retain their first-class call path.
 
+A direct same-element-type `Array.map` over a materialized source owns one
+buffer, copying it once if shared. Each slot moves into its callback and is
+restored before advancing, so uniquely owned records can update in place too.
+Callback order, captured source aliases, generic/Float slots, and value semantics
+are preserved; this ownership protocol adds no mutable source-level operation.
+
 Local function shorthand (`let log message = body`) has the same latent effects
 as `let log = fun message -> body`: constructing it is pure, and calling its
 saturating arrow performs the body's effects. A parameterless local value binding

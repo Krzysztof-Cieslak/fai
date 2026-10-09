@@ -348,7 +348,7 @@ impl Bounds {
                 }
                 self.set_ge(Term::Len(local), 0);
             }
-            Prim::ArraySet => {
+            Prim::ArraySet | Prim::ArrayUnique | Prim::ArrayPut => {
                 if let Some(K::Local(a)) = args.first().map(|e| &e.kind) {
                     // In place or copied, the length is unchanged.
                     self.add_eq(Term::Len(local), Term::Len(*a), 0);

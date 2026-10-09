@@ -48,6 +48,81 @@ fn len_of(a: Value) -> usize {
     unsafe { array_len(a) }
 }
 
+#[test]
+fn owned_map_take_transfers_the_only_element_reference() {
+    let _g = lock();
+    let base = live_count();
+    let value = make_str("owned element");
+    let array = arr_from(&[value]);
+    let owned = fai_array_unique(array);
+    assert_eq!(owned, array);
+    let taken = fai_array_take(owned, imm_int(0));
+    assert_eq!(taken, value);
+    // SAFETY: the taken string remains live; its array slot no longer owns it.
+    assert_eq!(unsafe { rc_load(as_obj(taken)) }, 1);
+    fai_drop(owned);
+    assert_eq!(live_count(), base + 1, "a hole does not drop the moved element");
+    fai_drop(taken);
+    assert_eq!(live_count(), base);
+}
+
+#[test]
+fn owned_map_copies_shared_buffers_before_taking_elements() {
+    let _g = lock();
+    let base = live_count();
+    let array = arr_from(&[big(), imm_int(2)]);
+    let original = fai_dup(array);
+    reset_allocations();
+    let owned = fai_array_unique(array);
+    assert_ne!(owned, original);
+    assert_eq!(array_copies(), 1);
+    let taken = fai_array_take(owned, imm_int(0));
+    assert_eq!(unbox_int(taken), BIG);
+    fai_drop(taken);
+    let result = fai_array_put(owned, imm_int(0), imm_int(42));
+    assert_eq!(result, owned);
+    assert_eq!(arr_get_int(original, 0), BIG);
+    assert_eq!(arr_get_int(result, 0), 42);
+    fai_drop(original);
+    fai_drop(result);
+    assert_eq!(live_count(), base);
+}
+
+#[test]
+fn owned_map_float_slots_preserve_bits_through_take_and_put() {
+    let _g = lock();
+    let base = live_count();
+    let bits = 0xfff8_1234_5678_9abcu64 as i64;
+    let array = arr_from(&[fai_box_float(bits)]);
+    let owned = fai_array_unique(array);
+    let taken = fai_array_take(owned, imm_int(0));
+    assert_eq!(read_float(taken).to_bits(), bits as u64);
+    let result = fai_array_put(owned, imm_int(0), taken);
+    let again = fai_array_get_borrowed(result, imm_int(0));
+    assert_eq!(read_float(again).to_bits(), bits as u64);
+    fai_drop(again);
+    fai_drop(result);
+    assert_eq!(live_count(), base);
+}
+
+#[test]
+fn owned_map_shared_marked_buffers_retain_the_original() {
+    let _g = lock();
+    let base = live_count();
+    let array = arr_from(&[big()]);
+    fai_mark_shared(array);
+    let original = fai_dup(array);
+    let owned = fai_array_unique(array);
+    let taken = fai_array_take(owned, imm_int(0));
+    fai_drop(taken);
+    let mapped = fai_array_put(owned, imm_int(0), imm_int(7));
+    assert_eq!(arr_get_int(original, 0), BIG);
+    assert_eq!(arr_get_int(mapped, 0), 7);
+    fai_drop(original);
+    fai_drop(mapped);
+    assert_eq!(live_count(), base);
+}
+
 // ===========================================================================
 // Construction & length.
 // ===========================================================================

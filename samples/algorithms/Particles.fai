@@ -3,9 +3,9 @@ module Particles
 // Integrate a small set of particles under a central spring force for n steps,
 // rebuilding each body with `{ b with ... }` every step. The bodies live in an
 // `Array` (matching the Rust `Vec` baseline); each step maps over it. This
-// exercises record construction and in-place update, field projection, and boxed
-// `Float` fields (a `Float` inside a record is boxed). Used by the Rust-vs-Fai
-// runtime benchmark.
+// exercises record construction and in-place update, field projection, and raw
+// `Float` slots inside records. A same-type map can reuse the array and transfer
+// each body into its callback. Used by the Rust-vs-Fai runtime benchmark.
 type Body = { vx : Float, vy : Float, x : Float, y : Float }
 
 dt : Float

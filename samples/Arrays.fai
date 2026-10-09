@@ -3,13 +3,23 @@ module Arrays
 // The contiguous, growable `Array` complements the linked `List`: O(1) indexing,
 // in-place update when uniquely owned, and an array-literal syntax `[| … |]`. Its
 // API mirrors `List` (collection-last), so it pipes the same way.
-/// Double every element and sum — one contiguous buffer per stage, no cons cells.
+/// Double every element and sum — the intermediate map fuses into the sum.
 public doubleSum : Array Int -> Int
 let doubleSum xs = Array.sum (Array.map (fun x -> x * 2) xs)
 example: doubleSum [| 1, 2, 3 |] = 12
 example: doubleSum [||] = 0
 example: doubleSum (Array.withCapacity (-1)) = 0
 example: doubleSum (Array.range (-1) 9223372036854775807) = 0
+
+/// A same-type map can reuse its unique input; shared inputs retain their values.
+public bump : Array Int -> Array Int
+let bump xs = Array.map (fun x -> x + 1) xs
+example: Array.toList (bump [| 1, 2, 3 |]) = [2, 3, 4]
+
+let keepOriginal xs =
+  let ys = bump xs
+  (Array.toList xs, Array.toList ys)
+example: keepOriginal [| 1, 2, 3 |] = ([1, 2, 3], [2, 3, 4])
 
 /// Safe indexing returns `Option`; an out-of-range index is `None`.
 public second : Array Int -> Option Int

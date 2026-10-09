@@ -56,6 +56,29 @@ fn fan_out_await_combines_immediate_results() {
 }
 
 #[test]
+fn parallel_maps_retain_shared_array_elements() {
+    let src = indoc! {r#"
+        module Prog
+
+        body : Runtime -> Array String -> Nursery -> Unit / { Concurrency, Console }
+        let body r xs nursery =
+          let a = r.concurrency.spawn nursery (fun u -> Array.map (fun s -> s ++ "1") xs)
+          let b = r.concurrency.spawn nursery (fun u -> Array.map (fun s -> s ++ "2") xs)
+          let left = r.concurrency.await a
+          let right = r.concurrency.await b
+          r.console.writeLine (String.joinArray "," left ++ ";" ++ String.joinArray "," right ++ ";" ++ String.joinArray "," xs)
+
+        public main : Runtime -> Unit / { Concurrency, Console }
+        let main r =
+          let xs = [| "a", "b" |]
+          r.concurrency.scope (body r xs)
+    "#};
+    let (out, code) = run(src);
+    assert_eq!(code, 0, "clean, leak-free exit");
+    assert_eq!(out, "a1,b1;a2,b2;a,b\n");
+}
+
+#[test]
 fn awaited_boxed_result_crosses_tasks() {
     // The task builds a `String` and returns it; it crosses back to the awaiter's
     // worker (marked shared, atomic reference counting) and is printed — exercising

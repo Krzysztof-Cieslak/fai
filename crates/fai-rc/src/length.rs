@@ -311,9 +311,8 @@ impl<'a> Analyzer<'a> {
                 }
                 self.bindings.get(l).and_then(|val| self.whole_origin(val, sig, d))
             }
-            // `arraySet` preserves its array operand's length — the only
-            // length-preserving primitive.
-            K::Prim { op: Prim::ArraySet, args } => {
+            // Updating or uniquely owning a buffer preserves its length.
+            K::Prim { op: Prim::ArraySet | Prim::ArrayUnique | Prim::ArrayPut, args } => {
                 args.first().and_then(|base| self.whole_origin(base, sig, d))
             }
             // A saturated call: the callee's whole-result preservation `(WHOLE, j)`

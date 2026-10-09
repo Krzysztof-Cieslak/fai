@@ -3052,6 +3052,14 @@ Editor integration:
     nested lifted closures, retain a first-class argument and its original function
     identities. Known direct globals remain direct calls. The loop retains scalar
     accumulator types and the library's capacity/count/wraparound rules.
+  - **Owned same-type maps.** A direct `Array.map` with unchanged element type
+    owns its materialized source buffer, copying it once when shared. Internal
+    unique/take/put operations move each element into the callback and restore its
+    result, leaving a drop-safe hole while the callback runs. This lets a unique
+    record remain unique inside the callback. Captured aliases keep the original
+    array alive and trigger the copy; generic float slots retain their self-tag
+    and re-box only at generic boundaries. Other map shapes keep the regular
+    builder/fusion paths. The operations are compiler-internal, never source names.
   - **Carve-outs.** `foldr` over a non-reversible `List` value is left unfused (a
     single tail loop is impossible without a reverse pass or unsafe deep recursion,
     which std itself avoids); a pipeline inside a **mutual-recursion group member**
