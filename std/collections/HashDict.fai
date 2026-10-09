@@ -250,6 +250,44 @@ let update key f d =
   | Some v -> insert key v d
 example: get 1 (update 1 (fun _ -> Some 5) empty) = Some 5
 
+// Retain the hit or empty-slot index after one probe chain. Returning an Int
+// keeps the probe allocation-free and leaves the wrapper available for reuse.
+updateIndex : 'k -> Array (Slot 'k 'v) -> Int -> Int -> Int
+let updateIndex key slots cap i =
+  match Array.unsafeGet i slots with
+  | Empty -> i
+  | Full k _ -> if key = k then i else updateIndex key slots cap (next cap i)
+
+/// Apply `f` exactly once to the existing value, or to `fallback` on a miss,
+/// and store the result. Uses one hash and probe chain without an intermediate
+/// `Option`; growth on an absent key re-places it using the saved hash.
+public updateOr : 'v -> ('v -> 'v) -> 'k -> HashDict 'k 'v -> HashDict 'k 'v
+let updateOr fallback f key d =
+  let hash = Prim.hash key
+  match d with
+  | HD count slots ->
+    let cap = Array.length slots
+    if cap = 0 then
+      let value = f fallback
+      let first = Array.repeat initialCapacity Empty
+      HD 1 (Array.unsafeSet (Int.and hash (initialCapacity - 1)) (Full key value) first)
+    else
+      let i = updateIndex key slots cap (Int.and hash (cap - 1))
+      match Array.unsafeGet i slots with
+      | Full _ value -> HD count (Array.unsafeSet i (Full key (f value)) slots)
+      | Empty ->
+        let value = f fallback
+        if count * loadDenominator >= cap * loadNumerator then
+          let bigger = grow slots cap
+          let cap2 = cap * 2
+          HD (count + 1) (place key value bigger cap2 (Int.and hash (cap2 - 1)))
+        else
+          HD (count + 1) (Array.unsafeSet i (Full key value) slots)
+example: get 1 (updateOr 0 (fun count -> count + 1) 1 empty) = Some 1
+example: get 1 (updateOr 0 (fun count -> count + 1) 1 (singleton 1 5)) = Some 6
+forall kvs key: List.sort (toList (updateOr 0 (fun count ->
+  count + 1) key (fromList kvs))) = List.sort (toList (insert key (getOr 0 key (fromList kvs) + 1) (fromList kvs)))
+
 // Collect the live entries (in unspecified slot order) onto an accumulator.
 collectFrom : Array (Slot 'k 'v) -> Int -> Int -> List ('k * 'v) -> List ('k * 'v)
 let collectFrom slots n i acc =

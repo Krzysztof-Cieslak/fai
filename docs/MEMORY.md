@@ -3181,6 +3181,14 @@ Editor integration:
     the representation, not the contents, for both families (different layouts/balances
     of the same entries differ), so contents are compared via a canonical form
     (sorted `toList`); the laws are membership-based to avoid order.
+  - **Value-oriented single-probe updates.** `HashDict.updateOr fallback f key d`
+    invokes its pure callback once on the existing value or fallback and stores
+    the result, without building an `Option`. The key is hashed once; hits and
+    nongrowing misses use one probe chain. Only an absent insertion can grow,
+    and placement afterward reuses the saved hash. The probe returns its slot
+    index without allocating; a unique wrapper is recycled at the final update.
+    Shared tables and independently shared values retain normal
+    value semantics. Histogram and neighbour-count samples use this operation.
   - **Validation.** Runtime unit tests for the hash/equality agreement across every
     kind; the containers' own `example`/`forall` laws (insert/remove/member, size,
     set ops) under property testing; a scale suite vs Rust `HashMap`/`HashSet`

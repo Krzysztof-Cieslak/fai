@@ -1,0 +1,9 @@
+module HashCounts
+
+/// Count each key with a single hash-table update per occurrence.
+public count : List 'k -> HashDict 'k Int
+let count keys =
+  List.foldl (fun counts key -> HashDict.updateOr 0 (fun n -> n + 1) key counts) HashDict.empty keys
+example: HashDict.getOr 0 "a" (count ["a", "b", "a"]) = 2
+example: HashDict.size (count []) = 0
+forall keys: HashDict.foldl (fun key n total -> total + n) 0 (count keys) = List.length keys

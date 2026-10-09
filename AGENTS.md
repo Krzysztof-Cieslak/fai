@@ -372,6 +372,12 @@ three-way introsort and heap fallback, with insertion sort for small partitions.
 Shared inputs keep their original contents; `sortBy` retains its effectful
 comparator order.
 
+`HashDict.updateOr fallback f key dict` applies its pure updater once to the
+existing value or fallback and stores the result. It hashes once and follows one
+probe chain without an `Option`; replacement never resizes. An absent key may
+grow the table and is then placed using the saved hash. It preserves shared
+tables and values, and recycles a unique table wrapper at the final update.
+
 ```fai
 module Hello
 
