@@ -288,12 +288,18 @@ mod tests {
 
     use super::*;
 
-    const HELPER: &str = "module Helper\npublic type R = { a : Int, b : Int }\nlet zero = { a = 0, b = 0 }\npublic sink : Int -> R\nlet sink x =\n  if x <= 0 then { a = 0, b = 0 }\n  else\n    let inner = sink (x - 1)\n    { a = inner.a + 1, b = x }\n";
+    const HELPER: &str = "module Helper\npublic type R = { a : Int, b : Int }\nlet zero = Constants.zero\npublic sink : Int -> R\nlet sink x =\n  if x <= 0 then { a = 0, b = 0 }\n  else\n    let inner = sink (x - 1)\n    { a = inner.a + 1, b = x }\n";
     const CALLER: &str = "module Probe\npublic probe : Helper.R -> Bool -> Helper.R\nlet probe p flag =\n  match p with\n  | { a, b } -> if flag then { a = b, b = a } else Helper.sink a\n";
 
     fn database(helper: &str) -> (FaiDatabase, SourceFile, DefId) {
         let mut db = FaiDatabase::new();
         fai_types::std_lib::load_std(&mut db);
+        // Keep a real forcing boundary after same-file constant expansion.
+        db.add_source(
+            "Constants.fai".into(),
+            "module Constants\npublic zero : { a : Int, b : Int }\nlet zero = { a = 0, b = 0 }\n"
+                .into(),
+        );
         db.add_source("Helper.fai".into(), helper.into());
         let id = db.add_source("Probe.fai".into(), CALLER.into());
         let file = db.source_file(id).unwrap();
