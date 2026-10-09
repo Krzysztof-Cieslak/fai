@@ -12,6 +12,26 @@
 //! in a debug build (the default for `cargo test`).
 
 use super::*;
+
+#[test]
+fn live_byte_high_water_tracks_released_and_reused_cells() {
+    let _guard = crate::tests::lock();
+    let baseline = live_bytes();
+    reset_allocations();
+    let fields = [imm_int(1), imm_int(2)];
+    // SAFETY: two owned immediate fields initialize the compact data cell.
+    let first = unsafe { fai_make_data(0, 2, fields.as_ptr()) };
+    assert_eq!(live_bytes(), baseline + 24);
+    assert_eq!(peak_live_bytes(), baseline + 24);
+    fai_drop(first);
+    assert_eq!(live_bytes(), baseline);
+    // SAFETY: the same-sized construction can reuse the pool, but is still live
+    // storage until its own reference is dropped.
+    let second = unsafe { fai_make_data(0, 2, fields.as_ptr()) };
+    assert_eq!(peak_live_bytes(), baseline + 24);
+    fai_drop(second);
+    assert_eq!(live_bytes(), baseline);
+}
 use crate::tests::lock;
 
 /// The descriptor stored in a block's header.

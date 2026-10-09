@@ -717,6 +717,13 @@ unsafe fn rc_dec_is_dead(p: *mut u8) -> bool {
 #[cfg(debug_assertions)]
 static LIVE: AtomicI64 = AtomicI64::new(0);
 
+#[cfg(debug_assertions)]
+static LIVE_BYTES: AtomicI64 = AtomicI64::new(0);
+#[cfg(debug_assertions)]
+static PEAK_LIVE: AtomicI64 = AtomicI64::new(0);
+#[cfg(debug_assertions)]
+static PEAK_LIVE_BYTES: AtomicI64 = AtomicI64::new(0);
+
 /// The cumulative number of heap allocations since the last reset. Unlike [`LIVE`]
 /// it never decreases, so reuse (which writes in place rather than allocating) is
 /// observable as allocations that did *not* happen.
@@ -775,12 +782,17 @@ static PAP_ALLOCS: AtomicI64 = AtomicI64::new(0);
 /// Records one heap allocation in the debug counters. Compiled to nothing in a
 /// release build (the counters are absent there).
 #[inline(always)]
-fn note_alloc() {
+fn note_alloc(size: usize) {
     #[cfg(debug_assertions)]
     {
-        LIVE.fetch_add(1, Ordering::Relaxed);
+        let live = LIVE.fetch_add(1, Ordering::Relaxed) + 1;
+        let bytes = LIVE_BYTES.fetch_add(size as i64, Ordering::Relaxed) + size as i64;
+        PEAK_LIVE.fetch_max(live, Ordering::Relaxed);
+        PEAK_LIVE_BYTES.fetch_max(bytes, Ordering::Relaxed);
         ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
     }
+    #[cfg(not(debug_assertions))]
+    let _ = size;
 }
 
 /// Records one closure-cell heap allocation. Compiled to nothing in a release
@@ -827,9 +839,14 @@ fn note_string_view() {
 /// Records one heap free in the debug counters. Compiled to nothing in a release
 /// build (the counters are absent there).
 #[inline(always)]
-fn note_free() {
+fn note_free(size: usize) {
     #[cfg(debug_assertions)]
-    LIVE.fetch_sub(1, Ordering::Relaxed);
+    {
+        LIVE.fetch_sub(1, Ordering::Relaxed);
+        LIVE_BYTES.fetch_sub(size as i64, Ordering::Relaxed);
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = size;
 }
 
 /// Records one heap allocation performed *inline* by generated code (the inlined
@@ -838,8 +855,8 @@ fn note_free() {
 /// release. Generated code emits this call only in a debug build; it is a no-op in
 /// a release build (the counters are absent there).
 #[unsafe(no_mangle)]
-pub extern "C" fn fai_note_alloc() {
-    note_alloc();
+pub extern "C" fn fai_note_alloc(size: usize) {
+    note_alloc(size);
 }
 
 /// Records one heap free performed *inline* by generated code (the inlined
@@ -847,8 +864,8 @@ pub extern "C" fn fai_note_alloc() {
 /// without calling the runtime), the counter peer of [`fai_note_alloc`]. A no-op
 /// in a release build (the counters are absent there).
 #[unsafe(no_mangle)]
-pub extern "C" fn fai_note_free() {
-    note_free();
+pub extern "C" fn fai_note_free(size: usize) {
+    note_free(size);
 }
 
 /// Returns the number of live heap objects (used by the leak check and tests).
@@ -858,6 +875,47 @@ pub fn live_count() -> i64 {
     #[cfg(debug_assertions)]
     {
         LIVE.load(Ordering::Relaxed)
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        0
+    }
+}
+
+/// Live object storage in bytes, excluding the allocator's free cache. Zero in
+/// release builds. Used to check bounded auxiliary memory independently of RSS.
+#[must_use]
+pub fn live_bytes() -> i64 {
+    #[cfg(debug_assertions)]
+    {
+        LIVE_BYTES.load(Ordering::Relaxed)
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        0
+    }
+}
+
+/// Maximum live object count since [`reset_allocations`]. Zero in release builds.
+#[must_use]
+pub fn peak_live_count() -> i64 {
+    #[cfg(debug_assertions)]
+    {
+        PEAK_LIVE.load(Ordering::Relaxed)
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        0
+    }
+}
+
+/// Maximum live object bytes since [`reset_allocations`]. Includes both inline
+/// native allocations and runtime fallbacks. Zero in release builds.
+#[must_use]
+pub fn peak_live_bytes() -> i64 {
+    #[cfg(debug_assertions)]
+    {
+        PEAK_LIVE_BYTES.load(Ordering::Relaxed)
     }
     #[cfg(not(debug_assertions))]
     {
@@ -955,7 +1013,8 @@ pub fn pap_allocations() -> i64 {
 }
 
 /// Resets the cumulative allocation, array-copy, string-copy, string-view, and
-/// closure-allocation counters (tests/benchmarks). A no-op in a release build,
+/// closure-allocation counters and live-memory high-water marks (tests/benchmarks).
+/// Call when no other program is running. A no-op in a release build,
 /// where the counters are compiled out.
 pub fn reset_allocations() {
     #[cfg(debug_assertions)]
@@ -966,6 +1025,8 @@ pub fn reset_allocations() {
         STRING_VIEWS.store(0, Ordering::Relaxed);
         CLOSURE_ALLOCS.store(0, Ordering::Relaxed);
         PAP_ALLOCS.store(0, Ordering::Relaxed);
+        PEAK_LIVE.store(LIVE.load(Ordering::Relaxed), Ordering::Relaxed);
+        PEAK_LIVE_BYTES.store(LIVE_BYTES.load(Ordering::Relaxed), Ordering::Relaxed);
     }
 }
 
@@ -1232,7 +1293,7 @@ fn alloc_raw(size: usize) -> *mut u8 {
         Some(class) => pool_pop(class),
         None => system_alloc(size),
     };
-    note_alloc();
+    note_alloc(size);
     p
 }
 
@@ -1268,7 +1329,7 @@ unsafe fn free_obj(p: *mut u8) {
         // SAFETY: a large block was system-allocated with this exact size.
         None => unsafe { system_dealloc(p, size) },
     }
-    note_free();
+    note_free(size);
 }
 
 /// Aborts the process with a runtime error message (only reached on conditions a

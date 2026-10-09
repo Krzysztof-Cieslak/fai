@@ -434,6 +434,12 @@ This single-operation lowering keeps sources and shared results materialized;
 cross-stage deforestation still requires pure, total callbacks. Literal callbacks
 with nested lifted closures retain their first-class call path.
 
+A fold over `List.concat` can walk the existing chunks without copying a flat
+list spine. A single-use concatenation binding gets the same treatment.
+`concatMap` still materializes all producer results before the fold starts, so
+producer effects/traps precede every consumer callback. Shared flat lists remain
+ordinary materialized values.
+
 A direct same-element-type `Array.map` over a materialized source owns one
 buffer, copying it once if shared. Each slot moves into its callback and is
 restored before advancing, so uniquely owned records can update in place too.
@@ -1170,6 +1176,10 @@ test; under-testing a phase is a defect, not a shortcut.
 - **Incrementality is tested, not assumed.** Whenever a query is added or changed,
   cover it with the incremental-vs-clean **verifier** and an edit-churn
   (early-cutoff) test.
+- **Preserve Perceus space behavior.** Ownership/reuse changes must keep bounded
+  auxiliary memory for fixed-size state as iteration counts increase. Run
+  `perceus_space` alongside affected reuse tests; it checks peak live objects and
+  bytes, allocation reuse, buffer copies, and complete release with debug counters.
 - **Every bug fix ships with a regression test** that fails before the fix and
   passes after.
 - **Tests are deterministic and reviewed.** No reliance on `HashMap` iteration

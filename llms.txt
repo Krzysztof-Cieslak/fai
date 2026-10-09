@@ -1105,6 +1105,10 @@ compare  : 'a -> 'a -> Int                          // -, 0, + (any non-function
 private merge buffers while small lists stay on the linked path; both preserve
 the same comparator call order and leave retained input lists unchanged.
 
+Folding a concatenation can avoid copying its flat spine. `concatMap` remains
+strict: all producer callbacks finish before the first fold callback, including
+when the concatenated value has a single-use `let` binding.
+
 ```
 length     : List 'a -> Int
 isEmpty    : List 'a -> Bool
