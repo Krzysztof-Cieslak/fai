@@ -33,7 +33,7 @@
 use std::sync::Arc;
 
 use fai_core::bounds::{BoundSig, Bounds, PTerm, RTerm, ResultSig, Term, WHOLE};
-use fai_core::ir::{CExpr, ExprKind as K, Lit};
+use fai_core::ir::{CExpr, ExprKind as K, Lit, Repr};
 use fai_core::representation::definition_scheme as declared_or_inferred_scheme;
 use fai_db::{Db, SourceFile};
 use fai_resolve::{DefId, LocalId, module_defs};
@@ -106,6 +106,7 @@ fn module_bounds_facts(db: &dyn Db, file: SourceFile) -> Arc<ModuleFacts> {
 
     let mut data: FxHashMap<Symbol, DefData> = FxHashMap::default();
     let mut order: Vec<Symbol> = Vec::new();
+    let mut generated = FxHashSet::default();
     for info in &defs.defs {
         // The reference-counted form (A-normal, tail-call-flattened) is the same
         // body shape code generation seeds these facts onto: call arguments are
@@ -118,6 +119,32 @@ fn module_bounds_facts(db: &dyn Db, file: SourceFile) -> Arc<ModuleFacts> {
         let (result_ty, param_kinds, evidence) = signature_shape(db, def, params.len());
         data.insert(info.name, DefData { params, bodies, result_ty, param_kinds, evidence });
         order.push(info.name);
+
+        // Fusion moves callback calls into separately emitted functions. Their
+        // callers and bodies belong to this same file-local proof graph.
+        for loop_ in &fai_core::fuse_def(db, file, info.name).loops {
+            let lowered =
+                crate::rc_lowered(db, &loop_.lowered, &crate::BorrowSig(vec![false; loop_.arity]));
+            let name = lowered.def.name;
+            let params = lowered.entry().params.clone();
+            let bodies: Vec<_> = lowered.fns.iter().map(|function| function.body.clone()).collect();
+            let mut param_kinds: Vec<_> = loop_
+                .abi
+                .params
+                .iter()
+                .map(
+                    |repr| {
+                        if *repr == Repr::ScalarInt { ParamKind::Int } else { ParamKind::Other }
+                    },
+                )
+                .collect();
+            param_kinds.resize(params.len(), ParamKind::Other);
+            mark_array_params(&lowered.entry().body, &params, &mut param_kinds);
+            let result_ty = lowered.entry().body.ty.clone();
+            data.insert(name, DefData { params, bodies, result_ty, param_kinds, evidence: 0 });
+            order.push(name);
+            generated.insert(name);
+        }
     }
 
     let arity = |n: Symbol| data.get(&n).map_or(0, |d| d.params.len());
@@ -129,6 +156,7 @@ fn module_bounds_facts(db: &dyn Db, file: SourceFile) -> Arc<ModuleFacts> {
     // member is callable from sibling same-origin modules).
     let mut eligible: FxHashSet<Symbol> =
         defs.defs.iter().filter(|d| d.visibility == Visibility::Private).map(|d| d.name).collect();
+    eligible.extend(generated);
     for n in &order {
         if let Some(d) = data.get(n) {
             for body in &d.bodies {
@@ -157,6 +185,16 @@ fn module_bounds_facts(db: &dyn Db, file: SourceFile) -> Arc<ModuleFacts> {
         entry: entry.into_iter().map(|(n, m)| (n, to_sig(m))).collect(),
         result: result.into_iter().map(|(n, m)| (n, to_result_sig(m))).collect(),
     })
+}
+
+fn mark_array_params(body: &CExpr, params: &[LocalId], kinds: &mut [ParamKind]) {
+    if let K::Local(local) = body.kind
+        && is_array(&body.ty)
+        && let Some(position) = params.iter().position(|param| *param == local)
+    {
+        kinds[position] = ParamKind::Array;
+    }
+    crate::reuse_sig::e_children(body, &mut |child| mark_array_params(child, params, kinds));
 }
 
 /// The optimistic start for a cross-module fixpoint cycle: no facts. The cycle

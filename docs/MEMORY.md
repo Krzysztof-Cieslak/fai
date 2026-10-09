@@ -3412,6 +3412,9 @@ Editor integration:
     self-call (loop back-edge) made to preserve each candidate and an
     upward-creeping bound **widened** away to converge. A `public` or
     first-class-used definition gets no entry facts (its callers are unknown). This
+    caller graph includes synthesized sequence loops with their actual parameter
+    layouts, bodies and result facts. Calls and first-class references moved into
+    those loops must constrain private helpers just like source-level callers. This
     keeps `object_code` a pure per-definition unit (facts depend only on the
     definition's own module), so the cross-module codegen firewall holds. So the
     hot index loops and the `HashDict`/`HashSet` bucket probes (`h & (cap - 1)`

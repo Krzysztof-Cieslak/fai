@@ -1,0 +1,13 @@
+module Main
+
+let at depth i xs =
+  if depth <= 0 then Array.unsafeGet i xs else at (depth - 1) i xs
+
+public main : Runtime -> Unit / { Console }
+let main r =
+  let xs = [| 42 |]
+  let first = at 0 0 xs
+  let source = Array.repeat 2 0
+  let getters = Array.map (fun _ -> at 0) source
+  let get = Array.unsafeGet 0 getters
+  r.console.writeLine (Int.toString (first + get (-1) xs))
