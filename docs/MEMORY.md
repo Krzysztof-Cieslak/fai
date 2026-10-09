@@ -3822,6 +3822,11 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   structural type-variable fields may be supplied in raw-Float slots. Unknown
   shapes retain runtime decoding, and cross-file function bodies remain behind
   the signature firewall.
+  Array slots used only for data inspection may borrow from a retained array.
+  A bounded post-ownership proof checks each read against the array's lifetime;
+  escaped slots, representation conversions and uncertain cases stay owned.
+  The internal peek operation and removed balancing drops are checked by the
+  ownership verifier, which tracks the parent required by each borrowed local.
   A value becomes shared via **`fai_mark_shared`**, which flips it and its reachable
   boxed subgraph (iteratively, reusing the drop worklist, so a deep structure never
   overflows the stack) when it crosses a task boundary — a spawned thunk's captures,

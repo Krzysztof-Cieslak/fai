@@ -89,6 +89,7 @@ fn prim_name(op: Prim) -> &'static str {
         Prim::ArrayWithCapacity => "arrayWithCapacity",
         Prim::ArrayLength => "arrayLength",
         Prim::ArrayGet => "arrayGet",
+        Prim::ArrayPeek => "arrayPeek",
         Prim::ArraySet => "arraySet",
         Prim::ArrayUnique => "arrayUnique",
         Prim::ArrayTake => "arrayTake",

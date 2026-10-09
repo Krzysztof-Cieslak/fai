@@ -640,6 +640,9 @@ pub enum Prim {
     ArrayLength,
     /// `Array` element access by index (unchecked; out-of-bounds aborts).
     ArrayGet,
+    /// Borrow a nonescaping data slot while its source array remains live.
+    /// Compiler-internal; the result is never transferred or released as owned.
+    ArrayPeek,
     /// `Array` element update by index (in place when unique; out-of-bounds aborts).
     ArraySet,
     /// Own a unique array buffer, copying shared inputs. Compiler-internal.
@@ -724,6 +727,7 @@ impl Prim {
                 | Prim::StringJoin
                 | Prim::ArrayLength
                 | Prim::ArrayGet
+                | Prim::ArrayPeek
                 | Prim::ArrayTake
                 | Prim::ArraySplit
                 | Prim::ArrayJoin
@@ -746,6 +750,7 @@ impl Prim {
             Prim::StringSplit => Some("fai_string_split_borrowed"),
             Prim::ArrayLength => Some("fai_array_length_borrowed"),
             Prim::ArrayGet => Some("fai_array_get_borrowed"),
+            Prim::ArrayPeek => Some("fai_array_peek"),
             Prim::ArrayTake => Some("fai_array_take"),
             Prim::StringJoin => Some("fai_string_join_borrowed"),
             Prim::ArraySplit => Some("fai_array_split_borrowed"),
@@ -813,6 +818,7 @@ impl Prim {
             Prim::ArrayWithCapacity => "fai_array_with_capacity",
             Prim::ArrayLength => "fai_array_length",
             Prim::ArrayGet => "fai_array_get",
+            Prim::ArrayPeek => "fai_array_peek",
             Prim::ArraySet => "fai_array_set",
             Prim::ArrayUnique => "fai_array_unique",
             Prim::ArrayTake => "fai_array_take",

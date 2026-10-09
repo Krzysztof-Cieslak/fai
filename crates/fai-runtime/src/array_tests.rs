@@ -67,6 +67,21 @@ fn owned_map_take_transfers_the_only_element_reference() {
 }
 
 #[test]
+fn borrowed_data_slot_keeps_only_its_array_reference() {
+    let _guard = lock();
+    let baseline = live_count();
+    let fields = [make_str("owned by the array")];
+    // SAFETY: the single owned String initializes the data cell.
+    let cell = unsafe { fai_make_data(1, 1, fields.as_ptr()) };
+    let array = arr_from(&[cell]);
+    assert_eq!(fai_array_peek(array, imm_int(0)), cell);
+    // SAFETY: the array retains the live cell; peeking added no reference.
+    assert_eq!(unsafe { rc_load(as_obj(cell)) }, 1);
+    fai_drop(array);
+    assert_eq!(live_count(), baseline);
+}
+
+#[test]
 fn owned_map_copies_shared_buffers_before_taking_elements() {
     let _g = lock();
     let base = live_count();

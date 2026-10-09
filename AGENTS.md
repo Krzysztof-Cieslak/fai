@@ -539,6 +539,9 @@ interoperate through the same structural and ownership operations.
 Typed locals carry conservative constructor-tag, field-count and scalar-slot
 bounds through the native cache and run bundles. Proven compact data uses direct
 tag extraction and constant field offsets; unknown/open shapes decode at runtime.
+An array data slot used only for tag/field inspection can be borrowed while its
+source array remains live. The bounded ownership proof keeps escaping slots and
+uncertain lifetimes owned; projected child values retain their own references.
 Thread-pool cleanup batches consecutive cells from one slab into one ownership
 release. Generated native `main` destroys live values and checks leaks normally,
 then leaves its dead recycling-cache mappings for process teardown by the OS;

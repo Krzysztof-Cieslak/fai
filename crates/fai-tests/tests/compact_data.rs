@@ -88,6 +88,35 @@ fn row_evidence_addresses_both_header_sizes() {
 }
 
 #[test]
+fn inspected_array_slots_keep_escaped_children_owned() {
+    let source = "module Main\ntype Slot = | Empty | Full String\nlet pick i xs =\n  if i < 0 then pick 0 xs else match Array.unsafeGet i xs with | Empty -> if i = 0 then \"empty\" else \"none\" | Full s -> if Array.length xs > i then s else \"no\"\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (pick 0 [| Full (String.join \"\" [\"hello\", \"hello\", \"hello\"]) |])\n";
+    check(source, "hellohellohello", Route::Native);
+}
+
+#[test]
+fn array_update_before_inspection_keeps_the_old_slot_alive() {
+    let source = "module Main\ntype Slot = | Full String\nlet field slot = match slot with | Full s -> s\nlet update xs =\n  let old = Array.unsafeGet 0 xs\n  let changed = Array.unsafeSet 0 (Full \"new\") xs\n  field old ++ field (Array.unsafeGet 0 changed)\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (update [| Full \"old\" |])\n";
+    check(source, "oldnew", Route::Bundle);
+}
+
+#[test]
+fn inspected_slot_body_edits_match_clean_generation() {
+    let source = "module M\ntype Slot = | Empty | Full String\nlet probe i xs = match Array.unsafeGet i xs with | Empty -> Array.length xs + i | Full s -> String.length s + Array.length xs + i\n";
+    let edited = source.replace("String.length s +", "String.length s * 2 +");
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", source)], &[("M.fai", &edited)]],
+        |db, files| {
+            (*fai_rc::rc(
+                db,
+                db.source_file(files[0]).unwrap(),
+                fai_syntax::Symbol::intern("probe"),
+            ))
+            .clone()
+        },
+    );
+}
+
+#[test]
 fn constructor_tag_outside_compact_range_uses_extended_layout() {
     let constructors = (0..=2048).map(|i| format!("| C{i} Int")).collect::<Vec<_>>().join(" ");
     let source = format!(
