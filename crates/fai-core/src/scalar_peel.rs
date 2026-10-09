@@ -32,13 +32,16 @@ pub(crate) fn peel(db: &dyn Db, source: Arc<LoweredDef>) -> Arc<LoweredDef> {
         remaining: 192,
         cost: size,
         changed: false,
+        expansions: 0,
         has_tail_call: false,
     };
     peeler.walk(&mut result.fns[0].body, true);
     // Mixed tail/non-tail recursion already has a compact native loop. Copying
     // that loop's branches into its recursive argument increases register and
     // code pressure; leave those functions to ordinary tail-call lowering.
-    if peeler.changed && !peeler.has_tail_call { Arc::new(result) } else { source }
+    // Keep linear integer recursion intact for accumulator-based tail lowering.
+    let linear_int = abi.ret == Repr::ScalarInt && peeler.expansions == 1;
+    if peeler.changed && !peeler.has_tail_call && !linear_int { Arc::new(result) } else { source }
 }
 
 struct Peeler<'a> {
@@ -48,6 +51,7 @@ struct Peeler<'a> {
     remaining: usize,
     cost: usize,
     changed: bool,
+    expansions: usize,
     has_tail_call: bool,
 }
 
@@ -88,6 +92,7 @@ impl Peeler<'_> {
         {
             self.remaining -= self.cost;
             self.changed = true;
+            self.expansions += 1;
             // Inserted bodies are not visited again, bounding both code growth
             // and compiler work independently of recursive execution depth.
             *e =

@@ -426,6 +426,9 @@ non-tail recursive calls. Those calls retain the normal stack and evaluation
 order; constructor-modulo recursion keeps its stricter reordering checks.
 Any remaining evidence-fused row-polymorphic self-call keeps the uniform slot
 ABI, including raw Float bits and the callee's argument-borrowing convention.
+An owned self-call result immediately combined with an evaluated `Int` by `+`
+can use an internal loop accumulator. Wrapping integer addition makes this exact;
+argument and effect order stay intact, and Float sums do not use this rewrite.
 Small scalar-ABI recursive definitions can peel one bounded level of non-tail
 self-calls before ownership insertion. Mixed tail/non-tail functions retain
 their loop lowering; the expansion keeps argument and effect order and does not

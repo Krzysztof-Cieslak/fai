@@ -59,6 +59,9 @@ let largeLoop n acc =
     largeLoop (n - 1) (acc + first + last)
 public largeArrays : Int -> Int
 let largeArrays n = largeLoop n 0
+let sumDown n = if n <= 0 then 0 else n + sumDown (n - 1)
+public additionLoop : Int -> Int
+let additionLoop n = sumDown n
 public main : Runtime -> Unit
 let main r = ()
 "#;
@@ -196,4 +199,14 @@ fn repeated_large_buffers_keep_peak_storage_constant() {
     );
     assert_eq!(long.array_copies, 0);
     assert!(long.peak_bytes >= 4096 * 8 && long.peak_bytes < 2 * 4096 * 8, "{long:?}");
+}
+
+#[test]
+fn addition_tail_accumulator_uses_no_heap_storage() {
+    let mut harness = Harness::new();
+    let short = harness.measure("additionLoop", 8, 36);
+    let long = harness.measure("additionLoop", 1_000_000, 500_000_500_000);
+    assert_eq!(short, long);
+    assert_eq!(long.peak_bytes, 0);
+    assert_eq!(long.allocations, 0);
 }

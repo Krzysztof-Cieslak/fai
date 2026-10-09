@@ -5350,6 +5350,24 @@ fn trmc_nested_ackermann_call_keeps_the_inner_call() {
 }
 
 #[test]
+fn wrapping_addition_carries_an_internal_tail_accumulator() {
+    trmc_plain("module M\nlet sum n = if n <= 0 then 0 else n + sum (n - 1)\n", "sum");
+}
+
+#[test]
+fn duplicated_recursive_result_is_not_an_addition_accumulator() {
+    no_trmc(
+        "module M\nlet double n = if n <= 0 then 1 else\n  let value = double (n - 1)\n  value + value\n",
+        "double",
+    );
+}
+
+#[test]
+fn float_addition_is_not_reassociated_into_an_accumulator() {
+    no_trmc("module M\nlet sum n = if n <= 0 then 0.0 else Int.toFloat n + sum (n - 1)\n", "sum");
+}
+
+#[test]
 fn trmc_self_call_in_a_condition_keeps_its_order() {
     trmc_plain(
         "module M\nlet f n = if n <= 0 then false else if f (n - 1) then true else f (n - 2)\n",
@@ -5584,11 +5602,10 @@ fn trmc_rowpoly_filter() {
 }
 
 #[test]
-fn no_trmc_rowpoly_non_tail() {
-    // `r.n + sumP rest` is not in tail position (the recursion feeds `+`), so the
-    // row-polymorphic function is left as ordinary recursion — the curried
-    // self-call is still normalized to a saturated direct call, but no loop forms.
-    no_trmc(
+fn trmc_rowpoly_wrapping_addition() {
+    // Wrapping Int addition admits an internal accumulator while offset evidence
+    // keeps supplying the row-polymorphic field access on every iteration.
+    trmc_plain(
         indoc! {r#"
             module M
 
