@@ -1935,6 +1935,12 @@ Editor integration:
     A fresh slab first issues eight cells; continued demand refills in batches of
     up to 64. Cold size classes therefore touch fewer unused cells without losing
     the amortized refill behavior of hot classes.
+    Objects of at least 16 KiB use independent OS page mappings so final drop
+    returns their pages instead of retaining them in host-allocator arenas. A
+    fixed prefix aligns the common array/string payload to 64 bytes. Smaller
+    blocks retain the existing allocation policy; Miri and unsupported platforms
+    use a matching standard-allocator fallback. Ownership and header sizes stay
+    unchanged, including cross-thread final release.
     Pool cleanup batches adjacent free-list cells from the same slab into one
     atomic ownership release. The process-terminal native entry shim performs
     value destruction and leak checks, then lets the OS reclaim its dead pool
