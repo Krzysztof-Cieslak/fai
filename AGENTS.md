@@ -422,6 +422,9 @@ buffer, copying it once if shared. Each slot moves into its callback and is
 restored before advancing, so uniquely owned records can update in place too.
 Callback order, captured source aliases, generic/Float slots, and value semantics
 are preserved; this ownership protocol adds no mutable source-level operation.
+Synthesized sequence loops inline exactly saturated, small, non-recursive
+same-file callbacks under the ordinary helper-inlining budget, so a named helper
+can retain the same element reuse as a literal lambda.
 
 Local function shorthand (`let log message = body`) has the same latent effects
 as `let log = fun message -> body`: constructing it is pure, and calling its

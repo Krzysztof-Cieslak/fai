@@ -148,6 +148,19 @@ fn same_type_map_callback_edits_match_clean_generation() {
 }
 
 #[test]
+fn named_map_callback_edits_match_clean_generation() {
+    let source = "module M\nlet step x = x + 1\nlet run xs = Array.map step xs\n";
+    let edited = source.replace("x + 1", "x + 2");
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", source)], &[("M.fai", &edited)]],
+        |db, files| {
+            (*fai_core::fuse_def(db, db.source_file(files[0]).unwrap(), Symbol::intern("run")))
+                .clone()
+        },
+    );
+}
+
+#[test]
 fn nested_lifted_closures_remain_valid() {
     check(
         "let fs = Array.init 3 (fun x -> fun y -> x + y)\nlet f = Array.unsafeGet 2 fs\nr.console.writeLine (Int.toString (f 40))",
