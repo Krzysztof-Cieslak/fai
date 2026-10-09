@@ -34,6 +34,9 @@ public namedQuads : Array Quad -> Array Quad
 let namedQuads qs = Array.map advance qs
 public buildQuads : Unit -> Array Quad
 let buildQuads u = [| { w = 0.0, x = 10.0, y = 20.0, z = 30.0 } |]
+let genericQuad a b c d = { w = a, x = b, y = c, z = d }
+public buildBoxedQuads : Unit -> Array Quad
+let buildBoxedQuads u = [| genericQuad 0.0 10.0 20.0 30.0 |]
 public main : Runtime -> Unit
 let main r = ()
 "#;
@@ -199,6 +202,42 @@ fn named_float_record_callback_retains_in_place_reuse() {
     rt::fai_drop(x);
     rt::fai_drop(y);
     rt::fai_drop(first);
+    rt::fai_drop(output);
+    assert_eq!(rt::live_count(), baseline);
+}
+
+#[test]
+fn reused_float_record_releases_old_uniform_float_slots() {
+    let mut h = Harness::new();
+    let baseline = rt::live_count();
+    let input = h.call("buildBoxedQuads", rt::FAI_UNIT);
+    let output = h.call("namedQuads", input);
+    let record = rt::fai_array_get_borrowed(output, rt::make_int(0));
+    let x = rt::fai_data_field(record, 1);
+    assert_eq!(rt::read_float(x), 11.0);
+    rt::fai_drop(x);
+    rt::fai_drop(record);
+    rt::fai_drop(output);
+    assert_eq!(rt::live_count(), baseline);
+}
+
+#[test]
+fn unique_map_keeps_a_separately_shared_record_unchanged() {
+    let mut h = Harness::new();
+    let baseline = rt::live_count();
+    let input = h.call("buildQuads", rt::FAI_UNIT);
+    let original = rt::fai_array_get_borrowed(input, rt::make_int(0));
+    let output = h.call("namedQuads", input);
+    assert_eq!(output, input);
+    let record = rt::fai_array_get_borrowed(output, rt::make_int(0));
+    assert_ne!(record, original);
+    let old_x = rt::fai_data_field(original, 1);
+    let new_x = rt::fai_data_field(record, 1);
+    assert_eq!((rt::read_float(old_x), rt::read_float(new_x)), (10.0, 11.0));
+    rt::fai_drop(old_x);
+    rt::fai_drop(new_x);
+    rt::fai_drop(record);
+    rt::fai_drop(original);
     rt::fai_drop(output);
     assert_eq!(rt::live_count(), baseline);
 }

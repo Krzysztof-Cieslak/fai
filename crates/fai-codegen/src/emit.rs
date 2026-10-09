@@ -2362,8 +2362,7 @@ impl<M: Module> Translator<'_, M> {
                 self.data_field(base, *index, *scalar, *niche, &e.ty)
             }
             ExprKind::Reset { value, token, body } => {
-                let v = self.expr(value);
-                let tok = self.call1("fai_drop_reuse", v);
+                let tok = self.reset_data(value);
                 self.define_var(*token, tok);
                 self.expr(body)
             }
@@ -2524,12 +2523,21 @@ impl<M: Module> Translator<'_, M> {
             })
             .collect();
         let count = vals.len();
-        let ptr = self.spill(&vals);
-        let tag_v = self.builder.ins().iconst(types::I64, i64::from(tag));
-        let n_v = self.builder.ins().iconst(types::I64, count as i64);
         // A scalar-bearing cell carries a per-shape descriptor; an all-uniform cell
         // uses the shared descriptor (the plain runtime entry points).
         let desc = if scalars != 0 { Some(self.data_descriptor(scalars)) } else { None };
+        if let Some(token) = reuse
+            && !self.concurrent
+            && count <= MAX_INLINE_DROP_BOXED_FIELDS
+        {
+            let token = self.use_var(token);
+            let result = self.reuse_data_inline(token, tag, &vals, desc);
+            self.data_layouts.insert(result, scalars);
+            return result;
+        }
+        let ptr = self.spill(&vals);
+        let tag_v = self.builder.ins().iconst(types::I64, i64::from(tag));
+        let n_v = self.builder.ins().iconst(types::I64, count as i64);
         let result = match (reuse, desc) {
             (Some(token), Some(desc)) => {
                 let tok = self.use_var(token);
@@ -2556,6 +2564,178 @@ impl<M: Module> Translator<'_, M> {
         };
         self.data_layouts.insert(result, scalars);
         result
+    }
+
+    /// Resets a bounded data cell without entering the runtime on the unique
+    /// path. Shared, immediate, wide, and unknown values retain the generic path.
+    fn reset_data(&mut self, value: &CExpr) -> Value {
+        let cell = self.expr(value);
+        // Reset operands introduced by ownership analysis can carry Error as a
+        // marker type; their typed uses still record the local's real shape.
+        let ty = match value.kind {
+            ExprKind::Local(id) => self.var_ty(id).unwrap_or(&value.ty),
+            _ => &value.ty,
+        };
+        let list = is_list_ty(ty);
+        let fields = if list {
+            Some(vec![FieldDrop::Boxed, FieldDrop::Boxed])
+        } else {
+            fixed_shape_drop(ty, MAX_INLINE_DROP_BOXED_FIELDS)
+                .filter(|f| !f.is_empty() && f.len() <= MAX_INLINE_DROP_BOXED_FIELDS)
+        };
+        let Some(fields) = fields.filter(|_| !self.concurrent) else {
+            return self.call1("fai_drop_reuse", cell);
+        };
+        let inspect = self.builder.create_block();
+        let unique = self.builder.create_block();
+        let slow = self.builder.create_block();
+        self.builder.set_cold_block(slow);
+        let done = self.builder.create_block();
+        self.builder.append_block_param(done, types::I64);
+        if list {
+            let immediate = self.builder.ins().band_imm(cell, 1);
+            let null = self.builder.ins().iconst(types::I64, 0);
+            self.builder.ins().brif(immediate, done, &[null.into()], inspect, &[]);
+        } else {
+            self.builder.ins().jump(inspect, &[]);
+        }
+        self.builder.switch_to_block(inspect);
+        self.builder.seal_block(inspect);
+        let rc =
+            self.builder.ins().load(types::I64, MemFlags::trusted(), cell, rt::RC_OFFSET as i32);
+        let reusable = self.builder.ins().icmp_imm(IntCC::Equal, rc, 1);
+        self.builder.ins().brif(reusable, unique, &[], slow, &[]);
+        self.builder.switch_to_block(unique);
+        self.builder.seal_block(unique);
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        self.store_field(cell, rt::RC_OFFSET, zero);
+        for (i, class) in fields.iter().enumerate() {
+            if matches!(class, FieldDrop::Immediate) {
+                continue;
+            }
+            let known = self.known_scalar_slot(cell, FieldIndex::Const(i as u32));
+            if known == Some(true) {
+                continue;
+            }
+            if matches!(class, FieldDrop::Dynamic) && known.is_none() {
+                let slot = self.builder.ins().iconst(types::I64, i as i64);
+                let scalar = data_slot_is_scalar(&mut self.builder, cell, slot);
+                let release = self.builder.create_block();
+                let next = self.builder.create_block();
+                self.builder.ins().brif(scalar, next, &[], release, &[]);
+                self.builder.switch_to_block(release);
+                self.builder.seal_block(release);
+                self.release_reset_field(cell, i);
+                self.builder.ins().jump(next, &[]);
+                self.builder.switch_to_block(next);
+                self.builder.seal_block(next);
+            } else {
+                self.release_reset_field(cell, i);
+            }
+        }
+        self.builder.ins().jump(done, &[cell.into()]);
+        self.builder.switch_to_block(slow);
+        self.builder.seal_block(slow);
+        let token = self.call1("fai_drop_reuse", cell);
+        self.builder.ins().jump(done, &[token.into()]);
+        self.builder.switch_to_block(done);
+        self.builder.seal_block(done);
+        self.builder.block_params(done)[0]
+    }
+
+    /// Releases one uniform child of a reset cell. A dying child's descendants
+    /// still drain iteratively in the runtime; shared counts and immortals use
+    /// the runtime's count protocol as well.
+    fn release_reset_field(&mut self, cell: Value, index: usize) {
+        let field = self.builder.ins().load(
+            types::I64,
+            MemFlags::trusted(),
+            cell,
+            (rt::DATA_FIELDS_OFFSET + index * 8) as i32,
+        );
+        let boxed = self.builder.create_block();
+        let ordinary = self.builder.create_block();
+        let slow = self.builder.create_block();
+        let done = self.builder.create_block();
+        let immediate = self.builder.ins().band_imm(field, 1);
+        self.builder.ins().brif(immediate, done, &[], boxed, &[]);
+        self.builder.switch_to_block(boxed);
+        self.builder.seal_block(boxed);
+        let rc =
+            self.builder.ins().load(types::I64, MemFlags::trusted(), field, rt::RC_OFFSET as i32);
+        let plain =
+            self.builder.ins().icmp_imm(IntCC::UnsignedLessThan, rc, rt::IMMORTAL_RC as i64);
+        self.builder.ins().brif(plain, ordinary, &[], slow, &[]);
+        self.builder.switch_to_block(ordinary);
+        self.builder.seal_block(ordinary);
+        self.emit_rc_dec_then_value(field, false, |s, dead| {
+            let f = s.runtime("fai_drop_dead", 1, false);
+            s.builder.ins().call(f, &[dead]);
+        });
+        self.builder.ins().jump(done, &[]);
+        self.builder.switch_to_block(slow);
+        self.builder.seal_block(slow);
+        self.call_drop(field);
+        self.builder.ins().jump(done, &[]);
+        self.builder.switch_to_block(done);
+        self.builder.seal_block(done);
+    }
+
+    /// Rebuilds directly into a size-matched token. Only the fallback spills its
+    /// fields for the runtime, which handles missing or wrong-sized storage.
+    fn reuse_data_inline(
+        &mut self,
+        token: Value,
+        tag: u32,
+        fields: &[Value],
+        desc: Option<Value>,
+    ) -> Value {
+        let size_check = self.builder.create_block();
+        let rebuild = self.builder.create_block();
+        let slow = self.builder.create_block();
+        self.builder.set_cold_block(slow);
+        let done = self.builder.create_block();
+        self.builder.append_block_param(done, types::I64);
+        self.builder.ins().brif(token, size_check, &[], slow, &[]);
+        self.builder.switch_to_block(size_check);
+        self.builder.seal_block(size_check);
+        let size =
+            self.builder.ins().load(types::I64, MemFlags::trusted(), token, rt::SIZE_OFFSET as i32);
+        let matches = self.builder.ins().icmp_imm(
+            IntCC::Equal,
+            size,
+            (rt::DATA_FIELDS_OFFSET + fields.len() * 8) as i64,
+        );
+        self.builder.ins().brif(matches, rebuild, &[], slow, &[]);
+        self.builder.switch_to_block(rebuild);
+        self.builder.seal_block(rebuild);
+        let descriptor = desc.unwrap_or_else(|| self.runtime_data_addr("FAI_DATA_DESC"));
+        let one = self.builder.ins().iconst(types::I64, 1);
+        let tag_value = self.builder.ins().iconst(types::I64, i64::from(tag));
+        self.store_field(token, rt::RC_OFFSET, one);
+        self.store_field(token, rt::DESC_OFFSET, descriptor);
+        self.store_field(token, rt::DATA_TAG_OFFSET, tag_value);
+        for (index, &value) in fields.iter().enumerate() {
+            self.store_field(token, rt::DATA_FIELDS_OFFSET + index * 8, value);
+        }
+        self.builder.ins().jump(done, &[token.into()]);
+        self.builder.switch_to_block(slow);
+        self.builder.seal_block(slow);
+        let values = self.spill(fields);
+        let tag = self.builder.ins().iconst(types::I64, i64::from(tag));
+        let count = self.builder.ins().iconst(types::I64, fields.len() as i64);
+        let call = if let Some(desc) = desc {
+            let function = self.runtime("fai_reuse_scalar", 5, true);
+            self.builder.ins().call(function, &[desc, token, tag, count, values])
+        } else {
+            let function = self.runtime("fai_reuse", 4, true);
+            self.builder.ins().call(function, &[token, tag, count, values])
+        };
+        let value = self.builder.inst_results(call)[0];
+        self.builder.ins().jump(done, &[value.into()]);
+        self.builder.switch_to_block(done);
+        self.builder.seal_block(done);
+        self.builder.block_params(done)[0]
     }
 
     /// Coerces an owned value into the raw `f64` bits stored in a scalar field
@@ -5533,8 +5713,7 @@ impl<M: Module> Translator<'_, M> {
                 self.spread_return_body(body, n);
             }
             ExprKind::Reset { value, token, body } => {
-                let v = self.expr(value);
-                let tok = self.call1("fai_drop_reuse", v);
+                let tok = self.reset_data(value);
                 self.define_var(*token, tok);
                 self.spread_return_body(body, n);
             }
@@ -6147,8 +6326,7 @@ impl<M: Module> Translator<'_, M> {
                 self.expr_tail(body);
             }
             ExprKind::Reset { value, token, body } => {
-                let v = self.expr(value);
-                let tok = self.call1("fai_drop_reuse", v);
+                let tok = self.reset_data(value);
                 self.define_var(*token, tok);
                 self.expr_tail(body);
             }
@@ -6213,6 +6391,15 @@ fn fits_immediate(n: i64) -> bool {
 /// unconditionally immediate.
 fn is_immediate_ty(ty: &Ty) -> bool {
     matches!(ty, Ty::Unit | Ty::Con(Con::Bool) | Ty::Con(Con::Char))
+}
+
+/// Lists have one nonnullary shape: two uniform cons fields, even for Floats.
+fn is_list_ty(ty: &Ty) -> bool {
+    match ty {
+        Ty::Con(Con::List) => true,
+        Ty::App(head, _) => is_list_ty(head),
+        _ => false,
+    }
 }
 
 /// Whether values of `ty` are *always* boxed heap objects (never an immediate),

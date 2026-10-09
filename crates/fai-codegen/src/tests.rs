@@ -422,6 +422,19 @@ fn unknown_function_value_has_guarded_saturated_fast_path() {
 }
 
 #[test]
+fn fixed_shape_reuse_has_a_call_free_rebuild_block() {
+    let ir = entry_ir(
+        "module M\npublic rebuild : { a : Bool, b : Bool } -> { a : Bool, b : Bool }\nlet rebuild x = { a = x.a, b = not x.b }\n",
+        "rebuild",
+    );
+    assert!(
+        ir.split("block")
+            .any(|block| block.matches("store").count() >= 5 && !block.contains("call ")),
+        "a reused cell writes its header and two fields without a runtime call:\n{ir}"
+    );
+}
+
+#[test]
 fn guarded_apply_preserves_partial_over_and_captured_calls() {
     let source = "module M\nlet apply n f x = if n = 0 then f x else apply (n - 1) f x\nlet plus a b = a + b\nlet make n = fun x -> n + x\nlet twice f x = apply 1 f (apply 1 f x)\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let partial = apply 1 plus 3\n  let captured = make 5\n  let result = partial 4 + twice captured 2 + apply 1 (fun x -> x * 2) 9\n  r.console.writeLine (Int.toString result)\n";
     assert_eq!(run(source), (0, "37\n".into()));

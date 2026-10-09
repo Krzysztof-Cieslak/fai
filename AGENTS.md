@@ -425,6 +425,9 @@ are preserved; this ownership protocol adds no mutable source-level operation.
 Synthesized sequence loops inline exactly saturated, small, non-recursive
 same-file callbacks under the ordinary helper-inlining budget, so a named helper
 can retain the same element reuse as a literal lambda.
+Bounded data-cell resets and same-size reconstructions have inline native fast
+paths. They preserve scalar-slot descriptors and release descendants iteratively;
+shared cells, incompatible tokens, and concurrent execution use runtime fallbacks.
 
 Local function shorthand (`let log message = body`) has the same latent effects
 as `let log = fun message -> body`: constructing it is pure, and calling its
