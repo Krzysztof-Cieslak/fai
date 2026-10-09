@@ -20,7 +20,8 @@
 //! a statically always-boxed type), then an in-place increment or a
 //! decrement-and-conditional-free — calling the runtime only to reclaim memory
 //! (`fai_free` for a boxed leaf, `fai_drop_dead` for a variable-shape cell) or,
-//! for a value of unknown (polymorphic) type, falling back to `fai_drop`.
+//! for a boxed value of unknown (polymorphic) type, falling back to `fai_drop`.
+//! An unknown immediate value skips that call after its tag check.
 
 use cranelift_codegen::Context;
 use cranelift_codegen::ir::condcodes::IntCC;
@@ -2015,7 +2016,7 @@ impl<M: Module> Translator<'_, M> {
 
     /// How to inline a `Drop` of `local`: a no-op for a raw untagged `Int` local
     /// (see [`Self::dup_plan`]); otherwise from its static type ([`drop_class`]), or
-    /// the runtime drop when the type is unknown (the polymorphic fallback).
+    /// a tag-checked runtime drop when the type is unknown (the polymorphic fallback).
     fn drop_plan(&self, local: LocalId) -> DropPlan {
         if self.is_int_local(local) {
             return DropPlan::NoOp;
@@ -2063,6 +2064,20 @@ impl<M: Module> Translator<'_, M> {
     fn call_drop(&mut self, value: Value) {
         let f = self.runtime("fai_drop", 1, false);
         self.builder.ins().call(f, &[value]);
+    }
+
+    /// Releases an unknown uniform value; immediates have no runtime work.
+    fn call_drop_if_boxed(&mut self, value: Value) {
+        let cont = self.builder.create_block();
+        let drop = self.builder.create_block();
+        let bit = self.builder.ins().band_imm(value, 1);
+        self.builder.ins().brif(bit, cont, &[], drop, &[]);
+        self.builder.switch_to_block(drop);
+        self.builder.seal_block(drop);
+        self.call_drop(value);
+        self.builder.ins().jump(cont, &[]);
+        self.builder.switch_to_block(cont);
+        self.builder.seal_block(cont);
     }
 
     /// Calls a runtime fault known not to return, retaining its diagnostic before
@@ -2118,7 +2133,7 @@ impl<M: Module> Translator<'_, M> {
     /// Releases `local` at its last use, per its [`DropPlan`]: a no-op for an
     /// immediate, an unrolled release for a fixed-shape cell, a direct free for a
     /// boxed leaf, a runtime child-release for other data, and the runtime drop as
-    /// the fallback for an unknown type.
+    /// the tag-checked fallback for an unknown type.
     fn drop_local(&mut self, local: LocalId) {
         if self.scalar_cursors.contains(&local) {
             return;
@@ -2164,7 +2179,7 @@ impl<M: Module> Translator<'_, M> {
             }
             DropPlan::Runtime => {
                 let v = self.use_var(local);
-                self.call_drop(v);
+                self.call_drop_if_boxed(v);
             }
         }
     }
@@ -2469,16 +2484,7 @@ impl<M: Module> Translator<'_, M> {
                 // An unknown type: guard the runtime drop with an immediate
                 // tag-check so a generic immediate element (an `Int` behind a type
                 // variable in a generic `set`) skips the call entirely.
-                let cont_b = self.builder.create_block();
-                let drop_b = self.builder.create_block();
-                let bit = self.builder.ins().band_imm(v, 1);
-                self.builder.ins().brif(bit, cont_b, &[], drop_b, &[]);
-                self.builder.switch_to_block(drop_b);
-                self.builder.seal_block(drop_b);
-                self.call_drop(v);
-                self.builder.ins().jump(cont_b, &[]);
-                self.builder.switch_to_block(cont_b);
-                self.builder.seal_block(cont_b);
+                self.call_drop_if_boxed(v);
             }
         }
     }
@@ -7425,7 +7431,7 @@ enum DropPlan {
         /// Whether to guard with an immediate tag-check (true for List/union).
         tag_check: bool,
     },
-    /// An unknown type: dispatch to the runtime drop (the polymorphic fallback).
+    /// An unknown type: tag-check, then dispatch boxed values to the runtime drop.
     Runtime,
 }
 

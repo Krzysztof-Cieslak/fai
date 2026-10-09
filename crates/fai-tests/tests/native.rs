@@ -765,6 +765,47 @@ fn string_slicing_preserves_unicode_boundaries() {
     assert_eq!(build_and_run(&source), ("hello|🙂|🙂\n".into(), Some(0)));
 }
 
+#[track_caller]
+fn generic_choice_output(main: &str, expected: &str) {
+    let choose = "module Choice\npublic choose : Bool -> 'a -> 'a -> 'a\nlet choose c a b = if c then a else b\n";
+    assert_eq!(
+        build_and_run_files(&[("Choice.fai", choose), ("Main.fai", main)]),
+        (expected.into(), Some(0)),
+    );
+}
+
+#[test]
+fn generic_drop_releases_full_width_integer_boxes() {
+    generic_choice_output(
+        "module Main\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (Choice.choose false 9223372036854775807 (-9223372036854775808)))\n",
+        "-9223372036854775808\n",
+    );
+}
+
+#[test]
+fn generic_drop_releases_float_boxes() {
+    generic_choice_output(
+        "module Main\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Float.toString (Choice.choose true 1.25 2.5))\n",
+        "1.25\n",
+    );
+}
+
+#[test]
+fn generic_drop_preserves_retained_string_aliases() {
+    generic_choice_output(
+        "module Main\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let original = Int.toString 123\n  let chosen = Choice.choose false original (original ++ \"!\")\n  let _ = r.console.writeLine original\n  r.console.writeLine chosen\n",
+        "123\n123!\n",
+    );
+}
+
+#[test]
+fn generic_drop_releases_aggregate_children() {
+    generic_choice_output(
+        "module Main\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let chosen = Choice.choose false { n = 1, text = Int.toString 123 } { n = 2, text = Int.toString 456 }\n  r.console.writeLine chosen.text\n",
+        "456\n",
+    );
+}
+
 #[test]
 fn conditional() {
     let (out, code) = build_and_run(&print_main("if 2 < 1 then \"t\" else \"f\""));

@@ -817,6 +817,9 @@ Reuse & in-place update:
     scalar bitmap and field offset together, sharing one immutable shape snapshot
     through the field walk. Compact metadata uses one atomic header read; extended
     cells retain their descriptor-backed layout. Hash values are unchanged.
+    Generic local drops share array-slot releases' immediate-tag guard, skipping
+    the runtime call for immediate values. Boxed values keep the ordinary runtime
+    release; raw scalar locals and concurrent ownership paths retain their ABI.
     After borrow inference, representation-preserving local data aliases are
     coalesced before ownership insertion. Equal observed types are required and
     niche/scalar conversion bindings stay explicit. Removed bindings transfer
