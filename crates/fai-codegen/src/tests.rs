@@ -480,6 +480,18 @@ fn non_scalar_list_elements_keep_ordinary_reference_counting() {
 }
 
 #[test]
+fn generic_local_drops_test_the_immediate_tag_before_calling_runtime() {
+    let source =
+        "module M\npublic choose : Bool -> 'a -> 'a -> 'a\nlet choose c a b = if c then a else b\n";
+    let ir = entry_ir(source, "choose");
+    assert_eq!(
+        ir.matches("band_imm").count(),
+        2,
+        "both discarded generic values are tag-checked:\n{ir}"
+    );
+}
+
+#[test]
 fn fresh_small_data_writes_its_header_and_fields_inline() {
     let ir =
         entry_ir("module M\npublic pair : Bool -> Bool * Bool\nlet pair b = (b, not b)\n", "pair");
