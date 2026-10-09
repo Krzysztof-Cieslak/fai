@@ -51,9 +51,12 @@ pub struct ResolvedBodies {
     /// Distinct outbound definition references, in first-seen order (whole file).
     pub deps: Vec<DefId>,
     /// Distinct outbound definition references, per owning top-level definition.
-    /// Contracts' references are not attributed to any def (they are checked
-    /// per-file), so they appear only in `deps`.
+    /// Contracts' references are not attributed to any value definition; they
+    /// appear in `contract_deps` as well as the whole-file `deps`.
     pub deps_by_def: FxHashMap<DefId, Vec<DefId>>,
+    /// Definitions referenced by contracts, in first-seen order. Their callers
+    /// include generated harnesses whose arguments are not ordinary value bodies.
+    pub contract_deps: Vec<DefId>,
     /// The local slot bound by each variable/wildcard pattern, so inference can
     /// type locals by the same `LocalId` resolution assigned to their uses.
     pub pat_locals: FxHashMap<PatId, LocalId>,
@@ -413,6 +416,7 @@ pub fn resolve(db: &dyn Db, file: SourceFile) -> Arc<ResolvedBodies> {
         dep_seen: FxHashMap::default(),
         current_def: None,
         deps_by_def: FxHashMap::default(),
+        contract_deps: Vec::new(),
         pat_locals: FxHashMap::default(),
         instance_scopes: FxHashMap::default(),
     };
@@ -424,6 +428,7 @@ pub fn resolve(db: &dyn Db, file: SourceFile) -> Arc<ResolvedBodies> {
         by_pat: cx.by_pat,
         deps: cx.deps,
         deps_by_def: cx.deps_by_def,
+        contract_deps: cx.contract_deps,
         pat_locals: cx.pat_locals,
         instance_scopes: cx.instance_scopes,
     })
@@ -515,6 +520,7 @@ struct Resolver<'a> {
     dep_seen: FxHashMap<DefId, ()>,
     current_def: Option<DefId>,
     deps_by_def: FxHashMap<DefId, Vec<DefId>>,
+    contract_deps: Vec<DefId>,
     pat_locals: FxHashMap<PatId, LocalId>,
     instance_scopes: FxHashMap<ExprId, Vec<Symbol>>,
 }
@@ -533,6 +539,8 @@ impl Resolver<'_> {
             if !edges.contains(&def) {
                 edges.push(def);
             }
+        } else if !self.contract_deps.contains(&def) {
+            self.contract_deps.push(def);
         }
     }
 

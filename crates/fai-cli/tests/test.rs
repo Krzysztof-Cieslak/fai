@@ -110,6 +110,43 @@ fn a_fused_search_cannot_hide_a_contract_trap() {
 }
 
 #[test]
+fn private_reader_contract_keeps_its_array_check() {
+    let source = "module Main\nlet at depth i xs = if depth <= 0 then Array.unsafeGet i xs else at (depth - 1) i xs\nlet ordinary () = at 0 0 [| 42 |]\nexample: at 0 (-1) [| 42 |] = 0\nexample: true\n";
+    let dir = workspace("contract-reader-bounds", &[("Main.fai", source)]);
+    let output =
+        fai().args(["test", "--no-daemon", "-C"]).arg(dir).arg("Main.fai").output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(1), "{stdout}");
+    assert!(stdout.contains("FAI6003"), "{stdout}");
+    assert!(stdout.contains("Main.fai:4:1"), "{stdout}");
+    assert!(stdout.contains("1 passed, 1 failed"), "{stdout}");
+}
+
+#[test]
+fn property_reader_keeps_generated_arguments_conservative() {
+    let source = "module Main\nlet at depth i xs = if depth <= 0 then Array.unsafeGet i xs else at (depth - 1) i xs\nlet ordinary () = at 0 0 [| 42 |]\nforall i: at 0 (i - i - 1) [| 42 |] = 0\nexample: true\n";
+    let dir = workspace("property-reader-bounds", &[("Main.fai", source)]);
+    let output =
+        fai().args(["test", "--no-daemon", "-C"]).arg(dir).arg("Main.fai").output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(1), "{stdout}");
+    assert!(stdout.contains("FAI6003"), "{stdout}");
+    assert!(stdout.contains("1 passed, 1 failed"), "{stdout}");
+}
+
+#[test]
+fn private_wrapper_propagates_contract_input_conservatism() {
+    let source = "module Main\nlet at depth i xs = if depth <= 0 then Array.unsafeGet i xs else at (depth - 1) i xs\nlet lookup i = at 0 i [| 42 |]\nlet ordinary () = lookup 0\nexample: lookup (-1) = 0\nexample: true\n";
+    let dir = workspace("wrapped-reader-bounds", &[("Main.fai", source)]);
+    let output =
+        fai().args(["test", "--no-daemon", "-C"]).arg(dir).arg("Main.fai").output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(1), "{stdout}");
+    assert!(stdout.contains("FAI6003"), "{stdout}");
+    assert!(stdout.contains("1 passed, 1 failed"), "{stdout}");
+}
+
+#[test]
 fn an_unused_effectful_local_function_keeps_a_contract_pure() {
     let source = "module M\npublic retained : (Unit -> Unit / 'e) -> Int\nlet retained action =\n  let local u = action u\n  42\nexample: retained (fun u -> ()) = 42\n";
     let dir = workspace("local-purity", &[("M.fai", source)]);

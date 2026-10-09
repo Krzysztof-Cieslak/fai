@@ -149,3 +149,26 @@ fn generated_caller_edits_match_clean_inference() {
         (fai_rc::entry_bounds(db, file, name), fai_rc::result_facts(db, file, name))
     });
 }
+
+#[test]
+fn contract_dependencies_remove_private_entry_assumptions() {
+    let source = "module Main\nlet at depth i xs = if depth <= 0 then Array.unsafeGet i xs else at (depth - 1) i xs\nlet ordinary () = at 0 0 [| 42 |]\nexample: at 0 0 [| 42 |] = 42\n";
+    let mut db = FaiDatabase::new();
+    fai_types::std_lib::load_std(&mut db);
+    let id = db.add_source("Main.fai".into(), source.into());
+    let facts =
+        fai_rc::entry_bounds(&db, db.source_file(id).unwrap(), fai_syntax::Symbol::intern("at"));
+    assert!(facts.is_empty(), "contract inputs are independent of ordinary callers: {facts:?}");
+}
+
+#[test]
+fn contract_dependency_edits_match_clean_bounds() {
+    let base = "module Main\nlet at depth i xs = if depth <= 0 then Array.unsafeGet i xs else at (depth - 1) i xs\nlet ordinary () = at 0 0 [| 42 |]\n";
+    let contract = format!("{base}example: at 0 0 [| 42 |] = 42\n");
+    let revisions = [[("Main.fai", base)], [("Main.fai", contract.as_str())], [("Main.fai", base)]];
+    let revisions: Vec<_> = revisions.iter().map(|revision| revision.as_slice()).collect();
+    fai_tests::assert_incremental_with_std_matches_clean(&revisions, |db, ids| {
+        let file = db.source_file(ids[0]).unwrap();
+        fai_rc::entry_bounds(db, file, fai_syntax::Symbol::intern("at"))
+    });
+}

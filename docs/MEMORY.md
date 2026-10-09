@@ -3415,7 +3415,10 @@ Editor integration:
     caller graph includes synthesized sequence loops with their actual parameter
     layouts, bodies and result facts. Calls and first-class references moved into
     those loops must constrain private helpers just like source-level callers. This
-    keeps `object_code` a pure per-definition unit (facts depend only on the
+    analysis keeps contract-referenced helpers conservative because their generated
+    harness inputs are independent of ordinary callers. Resolution retains these
+    contract dependency roots even when a value body also references the same helper.
+    It keeps `object_code` a pure per-definition unit (facts depend only on the
     definition's own module), so the cross-module codegen firewall holds. So the
     hot index loops and the `HashDict`/`HashSet` bucket probes (`h & (cap - 1)`
     with `cap == length slots`) elide. The recursive in-place sorts need the
