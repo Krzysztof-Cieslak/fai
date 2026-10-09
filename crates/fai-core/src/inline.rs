@@ -336,24 +336,27 @@ fn build_prim(pw: &PrimWrapper, args: Vec<CExpr>, ty: Ty, next: &mut usize) -> C
         return CExpr::new(K::Prim { op: pw.op, args }, ty);
     }
     // A non-identity permutation (`Array.push`/`unsafeGet`/`unsafeSet`) would
-    // reorder argument evaluation if spliced directly. Bind each argument to a
-    // fresh local in source order, then reference them through the permutation, so
-    // evaluation order (hence trap order) is preserved.
-    let locals: Vec<(LocalId, CExpr)> = args
+    // reorder computations if spliced directly. Bind those in source order, but
+    // retain already-evaluated locals: an owned alias around a borrowing array
+    // read would add a needless dup/drop pair and hide its original owner.
+    // Globals must still be bound, since reading a nullary global can have effects.
+    let mut bindings = Vec::new();
+    let values: Vec<CExpr> = args
         .into_iter()
         .map(|a| {
+            if matches!(a.kind, K::Local(_)) {
+                return a;
+            }
             let l = LocalId::from_index(*next);
             *next += 1;
-            (l, a)
+            let value = CExpr::new(K::Local(l), a.ty.clone());
+            bindings.push((l, a));
+            value
         })
         .collect();
-    let operands: Vec<CExpr> = pw
-        .slots
-        .iter()
-        .map(|&s| CExpr::new(K::Local(locals[s].0), locals[s].1.ty.clone()))
-        .collect();
+    let operands = pw.slots.iter().map(|&s| values[s].clone()).collect();
     let mut body = CExpr::new(K::Prim { op: pw.op, args: operands }, ty);
-    for (l, value) in locals.into_iter().rev() {
+    for (l, value) in bindings.into_iter().rev() {
         let let_ty = body.ty.clone();
         body =
             CExpr::new(K::Let { local: l, value: Box::new(value), body: Box::new(body) }, let_ty);
