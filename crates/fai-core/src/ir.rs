@@ -402,6 +402,10 @@ pub struct DataShape {
     pub max_fields: u32,
     /// Union of all possible raw-Float field bitmap bits.
     pub scalars: u64,
+    /// The value's reachable data contains no native resources or functions.
+    /// Unknown, opaque and generic payloads conservatively leave this false.
+    #[serde(default)]
+    pub resource_free: bool,
 }
 
 impl LoweredDef {

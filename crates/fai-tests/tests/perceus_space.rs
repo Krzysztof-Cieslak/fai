@@ -67,6 +67,21 @@ let stringPrefixLoop n acc =
     stringPrefixLoop (n - 1) (acc + String.length ("abcde" ++ Int.toString (n % 10)))
 public stringPrefixes : Int -> Int
 let stringPrefixes n = stringPrefixLoop n 0
+type SearchTree = | SearchEnd | SearchNode SearchTree Int Int SearchTree
+let treeBuild lo hi =
+  if lo >= hi then SearchEnd else
+    let mid = lo + (hi - lo) / 2
+    SearchNode (treeBuild lo mid) mid (mid * 3) (treeBuild (mid + 1) hi)
+let treeFind key tree =
+  match tree with
+  | SearchEnd -> None
+  | SearchNode l k v r -> if key < k then treeFind key l else if key > k then treeFind key r else Some v
+let searchLoop n tree acc =
+  if n <= 0 then acc else
+    let value = match treeFind (n % 32) tree with | None -> -1 | Some value -> value
+    searchLoop (n - 1) tree (acc + value)
+public treeSearches : Int -> Int
+let treeSearches n = searchLoop n (treeBuild 0 32) 0
 public main : Runtime -> Unit
 let main r = ()
 "#;
@@ -224,4 +239,9 @@ fn repeated_string_prefixes_keep_peak_storage_constant() {
     assert_eq!((long.peak_bytes, long.peak_objects), (short.peak_bytes, short.peak_objects));
     assert_eq!(long.peak_objects, 1, "concatenation reuses the freshly rendered digit");
     assert_eq!(long.allocations, 4096);
+}
+
+#[test]
+fn repeated_data_searches_keep_constant_storage() {
+    bounded_reuse("treeSearches", |n| (n / 32 * 496 + (n % 32) * (n % 32 + 1) / 2) * 3);
 }

@@ -1359,6 +1359,13 @@ mod tests {
     }
 
     #[test]
+    fn old_data_shape_metadata_never_assumes_resource_freedom() {
+        let shape: crate::ir::DataShape =
+            serde_json::from_str(r#"{"max_tag":1,"max_fields":2,"scalars":0}"#).unwrap();
+        assert!(!shape.resource_free);
+    }
+
+    #[test]
     fn data_shape_evidence_round_trips_and_changes_the_fingerprint() {
         let mut db = FaiDatabase::new();
         let id = db.add_source("M.fai".into(), "module M\nlet f x = x\n".into());
@@ -1370,9 +1377,13 @@ mod tests {
         let original = fingerprint(&lowered);
         lowered.data_shapes = vec![vec![(
             lowered.entry().params[0],
-            crate::ir::DataShape { max_tag: 2, max_fields: 3, scalars: 0 },
+            crate::ir::DataShape { max_tag: 2, max_fields: 3, scalars: 0, resource_free: true },
         )]];
         assert_ne!(original, fingerprint(&lowered));
+        let resource_free = fingerprint(&lowered);
+        lowered.data_shapes[0][0].1.resource_free = false;
+        assert_ne!(resource_free, fingerprint(&lowered));
+        lowered.data_shapes[0][0].1.resource_free = true;
         let wire = def_to_wire(
             &lowered,
             &|_| "M".into(),

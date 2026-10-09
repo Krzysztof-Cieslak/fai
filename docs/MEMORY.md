@@ -813,6 +813,12 @@ Reuse & in-place update:
     path releases an owned root once. This removes per-node cursor count traffic
     while keeping zero extra heap storage and preserving early-return results.
     Primitive list-element classes survive wire erasure for the same worker path.
+    The same retained-root proof covers data searches with scalar or niche-scalar
+    results when the reachable type contains no resources or functions. A bounded
+    type walk records this conservative fact alongside data-shape metadata, keeping
+    it in native cache keys and worker bundles; opaque/native handles and unknown
+    generic fields cannot establish it. Only proven descendant field reads borrow,
+    and calls, construction or escaping cursors retain ordinary ownership.
     Structural equality, ordering and hashing read a data cell's tag, field count,
     scalar bitmap and field offset together, sharing one immutable shape snapshot
     through the field walk. Compact metadata uses one atomic header read; extended
