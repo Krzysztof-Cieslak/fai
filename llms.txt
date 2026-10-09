@@ -1357,6 +1357,7 @@ joinArray  : String -> Array String -> String
 ```
 
 (Concatenate with the prelude `++`.)
+`join` and `joinArray` copy directly into one checked, pre-sized result buffer.
 
 ### Bytes — `Bytes` (an immutable binary byte buffer)
 

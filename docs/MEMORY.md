@@ -2850,6 +2850,9 @@ Editor integration:
     byte shift. If neither buffer fits, a unique left grows into a **doubled**
     buffer; a shared left forks a fresh **tight** buffer (a counted uniqueness-loss
     copy). Right-buffer reuse preserves shared operands and borrowing slice bases.
+    Collection joins first check the complete output size and then copy parts and
+    separators directly into one Fai buffer. Both list and array inputs remain
+    borrowed; the two passes use constant auxiliary storage and support slice views.
     Concatenating the empty string returns the other operand without copying. Leaf
     constructors (`make_string`, `Int.toString`, …) allocate tight: only the
     unique-but-full grow path over-allocates, so a one-shot `a ++ b` wastes nothing

@@ -392,6 +392,8 @@ shared snapshots keep their contents through ordinary reference counting.
 String concatenation prefers appending into a fitting unique left buffer. When
 that cannot fit, a unique inline right buffer with enough capacity can absorb the
 prefix in place. Shared operands and borrowing slices retain their contents.
+`String.join` and `String.joinArray` size their result with checked arithmetic,
+then copy into one final buffer without an intermediate growable string.
 
 ```fai
 module Hello
