@@ -1013,6 +1013,7 @@ struct Pool {
     heads: [Cell<*mut u8>; NUM_CLASSES],
     active: [Cell<*mut slab::Slab>; NUM_CLASSES],
     offsets: [Cell<usize>; NUM_CLASSES],
+    reclaim_on_drop: Cell<bool>,
 }
 
 impl Pool {
@@ -1021,6 +1022,7 @@ impl Pool {
             heads: [const { Cell::new(std::ptr::null_mut()) }; NUM_CLASSES],
             active: [const { Cell::new(std::ptr::null_mut()) }; NUM_CLASSES],
             offsets: [const { Cell::new(0) }; NUM_CLASSES],
+            reclaim_on_drop: Cell::new(true),
         }
     }
 
@@ -1076,16 +1078,39 @@ impl Drop for Pool {
     /// Releases pooled cell references and unfinished slab cursors. Slabs with
     /// escaped cells survive this thread and are freed by their final owner.
     fn drop(&mut self) {
+        // The native C-main shim has already finished the program and checked
+        // live values. Its process is exiting, so the OS reclaims these cached
+        // free cells without walking the entire pool. Reusable JIT entries and
+        // ordinary worker-thread exits retain the ownership-based cleanup.
+        if !self.reclaim_on_drop.get() {
+            return;
+        }
         for (class, head) in self.heads.iter().enumerate() {
             let mut p = head.get();
+            let mut current_slab = std::ptr::null_mut();
+            let mut count = 0;
             while !p.is_null() {
                 // SAFETY: `p` is an issued cell owned by this free list. Read its
                 // link before releasing the reference, which may unmap the slab.
                 unsafe {
                     let next = p.cast::<*mut u8>().read();
-                    slab::release_cell(p);
+                    let owner = slab::owner(p);
+                    if owner != current_slab {
+                        if count != 0 {
+                            slab::release_many(current_slab, count);
+                        }
+                        current_slab = owner;
+                        count = 0;
+                    }
+                    count += 1;
                     p = next;
                 }
+            }
+            if count != 0 {
+                // SAFETY: every counted cell was removed from this pool's free
+                // list. Consecutive cells share one ownership header, so their
+                // references can be released by one atomic decrement.
+                unsafe { slab::release_many(current_slab, count) };
             }
             let active = self.active[class].get();
             if !active.is_null() {
@@ -4368,10 +4393,14 @@ fn finish_run(result: Value) -> i32 {
 }
 
 /// C entry shim called from generated `main`: runs the entry closure against the
-/// standard library's `Runtime` value binding.
+/// standard library's `Runtime` value binding. Once value cleanup and leak checks
+/// finish, the terminating process leaves its free pool mappings to the OS.
+/// In-process embedders use [`run_entry`], which keeps ordinary pool cleanup.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_run_main(entry: Value, runtime: Value) -> i32 {
-    run_entry(entry, runtime)
+    let code = run_entry(entry, runtime);
+    POOL.with(|pool| pool.reclaim_on_drop.set(false));
+    code
 }
 
 /// C entry shim for a concurrent program: runs `main` as the scheduler root task
@@ -4379,7 +4408,9 @@ pub extern "C" fn fai_run_main(entry: Value, runtime: Value) -> i32 {
 /// [`fai_run_main`] when the program uses concurrency.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_run_main_concurrent(entry: Value, runtime: Value) -> i32 {
-    run_entry_concurrent(entry, runtime)
+    let code = run_entry_concurrent(entry, runtime);
+    POOL.with(|pool| pool.reclaim_on_drop.set(false));
+    code
 }
 
 // ---------------------------------------------------------------------------

@@ -515,6 +515,10 @@ thread-local size-class lists. Only issued batches touch pages. Slab ownership
 outlives allocating threads when cells cross task boundaries; the last cell or
 unfinished cursor releases the mapping. Object layouts and Perceus ownership are
 unchanged by this allocator policy.
+Thread-pool cleanup batches consecutive cells from one slab into one ownership
+release. Generated native `main` destroys live values and checks leaks normally,
+then leaves its dead recycling-cache mappings for process teardown by the OS;
+reusable JIT entry points and worker-thread exits retain ordinary pool cleanup.
 
 Contract generation recognizes Prelude `Option`/`Result` by declaration identity.
 Same-spelled user types use their own constructors and support custom `Arbitrary`

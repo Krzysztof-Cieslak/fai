@@ -41,9 +41,21 @@ pub(super) unsafe fn issue(slab: *mut Slab, count: usize) {
 /// # Safety
 /// The caller owns one outstanding slab reference, consumed by this operation.
 pub(super) unsafe fn release(slab: *mut Slab) -> bool {
-    // SAFETY: the caller's outstanding reference keeps the header alive until
-    // this decrement. Other owners likewise hold references while accessing it.
-    if unsafe { (*slab).remaining.fetch_sub(1, Ordering::Release) } != 1 {
+    // SAFETY: the caller transfers exactly one outstanding reference.
+    unsafe { release_many(slab, 1) }
+}
+
+/// Releases a batch of cursor/cell references, unmapping only at the last owner.
+///
+/// # Safety
+/// The caller owns `count` outstanding references, all consumed by this call.
+pub(super) unsafe fn release_many(slab: *mut Slab, count: usize) -> bool {
+    debug_assert_ne!(count, 0);
+    // SAFETY: the outstanding references keep the header live through the
+    // decrement. Other owners likewise retain it while accessing their cells.
+    let previous = unsafe { (*slab).remaining.fetch_sub(count, Ordering::Release) };
+    debug_assert!(previous >= count);
+    if previous != count {
         return false;
     }
     fence(Ordering::Acquire);
@@ -53,12 +65,18 @@ pub(super) unsafe fn release(slab: *mut Slab) -> bool {
     true
 }
 
+/// Recovers the aligned ownership header of an issued cell without dereferencing it.
+pub(super) fn owner(cell: *mut u8) -> *mut Slab {
+    cell.map_addr(|address| address & !(BYTES - 1)).cast::<Slab>()
+}
+
 /// Releases the slab reference of a cell removed from a dying thread's pool.
 ///
 /// # Safety
 /// `cell` is an issued slab cell, no longer live or linked from any free list.
+#[cfg(test)]
 pub(super) unsafe fn release_cell(cell: *mut u8) -> bool {
-    let header = cell.map_addr(|address| address & !(BYTES - 1)).cast::<Slab>();
+    let header = owner(cell);
     // SAFETY: slab alignment recovers the header within the same allocation;
     // the issued cell owns the reference being released.
     unsafe { release(header) }
@@ -182,6 +200,66 @@ mod tests {
         drop(pool);
         // SAFETY: the issued cell retains the last slab reference after the pool.
         assert!(unsafe { release_cell(cell) });
+    }
+
+    #[test]
+    fn bulk_release_keeps_an_outstanding_owner_alive() {
+        let slab = allocate();
+        // SAFETY: this test owns the cursor and all eight references it issues.
+        unsafe {
+            issue(slab, 8);
+            assert!(!release(slab));
+            assert!(!release_many(slab, 7));
+            assert!(release(slab));
+        }
+    }
+
+    #[test]
+    fn bulk_release_reclaims_the_last_group() {
+        let slab = allocate();
+        // SAFETY: after releasing the cursor, these eight references are all the
+        // remaining owners; releasing them together reclaims the mapping once.
+        unsafe {
+            issue(slab, 8);
+            assert!(!release(slab));
+            assert!(release_many(slab, 8));
+        }
+    }
+
+    #[test]
+    fn pool_exit_handles_interleaved_slab_groups() {
+        let a = Pool::new();
+        let b = Pool::new();
+        let receiver = Pool::new();
+        let class = 32 / SIZE_STEP;
+        let held_a = a.take(class);
+        let held_b = b.take(class);
+        let cells = [
+            a.take(class),
+            a.take(class),
+            b.take(class),
+            b.take(class),
+            a.take(class),
+            b.take(class),
+        ];
+        for (i, &cell) in cells.iter().enumerate() {
+            // SAFETY: each cell is uniquely owned, writable, and transferred to
+            // the receiver's free list with one acyclic link.
+            unsafe {
+                cell.cast::<*mut u8>()
+                    .write(cells.get(i + 1).copied().unwrap_or(std::ptr::null_mut()))
+            };
+        }
+        receiver.heads[class].set(cells[0]);
+        drop(a);
+        drop(b);
+        drop(receiver);
+        // SAFETY: the held cells outlive both source pools and the receiver. They
+        // are now the last reference to each slab despite interleaved groups.
+        unsafe {
+            assert!(release_cell(held_a));
+            assert!(release_cell(held_b));
+        }
     }
 
     #[test]
