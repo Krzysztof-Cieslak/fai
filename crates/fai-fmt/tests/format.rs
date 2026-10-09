@@ -169,6 +169,16 @@ fn foreign_declaration() {
 }
 
 #[test]
+fn qualified_interface_literal_roundtrips() {
+    let source = "module M\n\nlet service = { Library.Inner.Service with run x = x }\n";
+    assert_eq!(fmt(source), source);
+    assert_idempotent(source);
+    let parsed = parse_module(SourceId::new(0), source);
+    assert!(parsed.diagnostics.is_empty());
+    assert!(parsed.module.exprs.iter().any(|expr| matches!(&expr.kind, ExprKind::Instance { name, .. } if name.as_str() == "Library.Inner.Service")));
+}
+
+#[test]
 fn internal_visibility_formats_and_round_trips() {
     // The `internal` keyword (and `internal opaque`) is emitted like `public` and
     // survives a round trip.

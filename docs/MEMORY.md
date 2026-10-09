@@ -97,6 +97,8 @@ Initial design decisions (summarized in the locked table in `AGENTS.md` §3):
 - **D13 Interface instances:** construct with **`{ Name with <methods> }`** (ML
   method sugar `m args = …`); the OO `new` and the "object expression" term are
   dropped, but the braces are kept so it mirrors record update `{ r with … }`.
+  Instance names follow lexical scope and may be qualified across nested modules
+  and files; their visibility is checked just as for interface type references.
   Interfaces stay **nominal**. Rationale: reads as FP (a named dictionary of
   functions) while keeping clear identity and diagnostics; no implicit instance
   resolution exists (interfaces are explicit values), so nominal identity isn't

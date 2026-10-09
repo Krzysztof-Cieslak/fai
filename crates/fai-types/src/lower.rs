@@ -527,7 +527,8 @@ impl Lowerer<'_> {
         let (target, member) = self.cross_file_member(name)?;
         let decls = type_decls(self.db, target);
         let info = decls.type_named(member)?;
-        self.visible_across(target, info.visibility).then(|| (target, info.clone()))
+        (target == self.file || self.visible_across(target, info.visibility))
+            .then(|| (target, info.clone()))
     }
 
     /// Looks up an interface name: same-file lexical scope chain, then the
@@ -554,7 +555,8 @@ impl Lowerer<'_> {
         let (target, member) = self.cross_file_member(name)?;
         let decls = interface_decls(self.db, target);
         let info = decls.interface_named(member)?;
-        self.visible_across(target, info.visibility).then(|| (target, info.clone()))
+        (target == self.file || self.visible_across(target, info.visibility))
+            .then(|| (target, info.clone()))
     }
 
     /// Resolves the file and within-file qualified member name of a cross-file
@@ -838,23 +840,37 @@ pub fn expand_alias_ty(db: &dyn Db, adt: AdtRef, args: &[Ty]) -> Option<Ty> {
     Some(subst_ty_eff(&body_ty, &subst, &effect_subst))
 }
 
-/// Resolves an interface name to its [`InterfaceRef`] in the context of `file`
-/// (this module's interfaces, then the auto-imported prelude's).
-#[must_use]
-pub fn resolve_interface(db: &dyn Db, file: SourceFile, name: Symbol) -> Option<InterfaceRef> {
-    if interface_decls(db, file).interface_named(name).is_some() {
-        return Some(InterfaceRef::new(file.source(db), name));
+/// Resolves an instance's interface in lexical scope, then Prelude or a qualified
+/// module path, returning the visibility diagnostic when the name is hidden.
+pub fn resolve_interface(
+    db: &dyn Db,
+    file: SourceFile,
+    name: Symbol,
+    scope: &[Symbol],
+) -> Result<InterfaceRef, fai_diagnostics::DiagnosticCode> {
+    let parsed = fai_syntax::parse(db, file);
+    let lowerer = Lowerer {
+        db,
+        file,
+        observer: Some(file),
+        module: &parsed.module,
+        scope: scope.to_vec(),
+        expanding: Vec::new(),
+    };
+    if let Some((target, info)) = lowerer.lookup_interface(name) {
+        return Ok(InterfaceRef::new(target.source(db), info.name));
     }
-    let exports = prelude_exports(db);
-    if let Some(&(_, decl_file)) = exports.interfaces.iter().find(|(n, _)| *n == name)
-        && decl_file != file
-        && interface_decls(db, decl_file)
-            .interface_named(name)
-            .is_some_and(|i| i.visibility == fai_syntax::ast::Visibility::Public)
+    if name.as_str().contains('.')
+        && let Some((target, member)) = lowerer.cross_file_member(name)
+        && let Some(info) = interface_decls(db, target).interface_named(member)
     {
-        return Some(InterfaceRef::new(decl_file.source(db), name));
+        return Err(if info.visibility == fai_syntax::ast::Visibility::Internal {
+            fai_resolve::INTERNAL_REFERENCE
+        } else {
+            fai_resolve::PRIVATE_REFERENCE
+        });
     }
-    None
+    Err(crate::NOT_AN_INTERFACE)
 }
 
 /// The kind of an interface parameter, inferred from how the interface's methods

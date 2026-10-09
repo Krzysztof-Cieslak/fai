@@ -909,8 +909,8 @@ impl Parser<'_> {
             return self.alloc_expr(ExprKind::Record(Vec::new()), self.span_from(start));
         }
         // `{ Name with … }` (upper-case head) is an interface instance.
-        if self.at(TokenKind::UpperIdent) && self.peek_at(1) == TokenKind::With {
-            let name = self.bump_symbol();
+        if self.at_instance_head() {
+            let name = self.parse_dotted_upper();
             self.bump(); // `with`
             let methods = self.parse_method_impls();
             self.expect(TokenKind::RBrace, "`}` to close the interface instance");
@@ -928,6 +928,19 @@ impl Parser<'_> {
             self.expect(TokenKind::RBrace, "`}` to close the record update");
             self.alloc_expr(ExprKind::RecordUpdate { base, fields }, self.span_from(start))
         }
+    }
+
+    fn at_instance_head(&self) -> bool {
+        if !self.at(TokenKind::UpperIdent) {
+            return false;
+        }
+        let mut offset = 1;
+        while self.peek_at(offset) == TokenKind::Dot
+            && self.peek_at(offset + 1) == TokenKind::UpperIdent
+        {
+            offset += 2;
+        }
+        self.peek_at(offset) == TokenKind::With
     }
 
     /// Parses the comma-separated `m args = body` methods of an interface instance
