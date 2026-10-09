@@ -5165,8 +5165,74 @@ impl<M: Module> Translator<'_, M> {
         let args_ptr = self.spill(vals);
         let argc = self.builder.ins().iconst(types::I64, vals.len() as i64);
         let f = self.runtime("fai_apply_n", 3, true);
+        if self.concurrent {
+            let call = self.builder.ins().call(f, &[callee, argc, args_ptr]);
+            return self.builder.inst_results(call)[0];
+        }
+        // Noncapturing functions and lambdas use immortal closure cells. For an
+        // exact application their uniform entry can be called directly without
+        // runtime dispatch or a closure drop. Keep every other shape on apply_n.
+        let inspect = self.builder.create_block();
+        let arity_check = self.builder.create_block();
+        let fast = self.builder.create_block();
+        let slow = self.builder.create_block();
+        let done = self.builder.create_block();
+        self.builder.append_block_param(done, types::I64);
+        let immediate = self.builder.ins().band_imm(callee, 1);
+        self.builder.ins().brif(immediate, slow, &[], inspect, &[]);
+        self.builder.switch_to_block(inspect);
+        self.builder.seal_block(inspect);
+        let rc =
+            self.builder.ins().load(types::I64, MemFlags::trusted(), callee, rt::RC_OFFSET as i32);
+        // Shared counts have their sign bit set; one signed comparison excludes
+        // them while accepting the immortal range, including balanced inline dups.
+        let permanent = self.builder.ins().icmp_imm(
+            IntCC::SignedGreaterThanOrEqual,
+            rc,
+            rt::IMMORTAL_RC as i64,
+        );
+        let desc = self.builder.ins().load(
+            types::I64,
+            MemFlags::trusted(),
+            callee,
+            rt::DESC_OFFSET as i32,
+        );
+        let kind = self.builder.ins().load(types::I64, MemFlags::trusted(), desc, 0);
+        let closure = self.builder.ins().icmp_imm(IntCC::Equal, kind, rt::KIND_CLOSURE as i64);
+        let eligible = self.builder.ins().band(permanent, closure);
+        self.builder.ins().brif(eligible, arity_check, &[], slow, &[]);
+        self.builder.switch_to_block(arity_check);
+        self.builder.seal_block(arity_check);
+        let arity = self.builder.ins().load(
+            types::I64,
+            MemFlags::trusted(),
+            callee,
+            rt::CLOSURE_ARITY_OFFSET as i32,
+        );
+        let exact = self.builder.ins().icmp(IntCC::Equal, arity, argc);
+        self.builder.ins().brif(exact, fast, &[], slow, &[]);
+        self.builder.switch_to_block(fast);
+        self.builder.seal_block(fast);
+        let code = self.builder.ins().load(
+            types::I64,
+            MemFlags::trusted(),
+            callee,
+            rt::CLOSURE_CODE_OFFSET as i32,
+        );
+        let env = self.builder.ins().iadd_imm(callee, rt::CLOSURE_ENV_OFFSET as i64);
+        let signature = code_signature(self.module);
+        let signature = self.builder.import_signature(signature);
+        let call = self.builder.ins().call_indirect(signature, code, &[env, args_ptr]);
+        let value = self.builder.inst_results(call)[0];
+        self.builder.ins().jump(done, &[value.into()]);
+        self.builder.switch_to_block(slow);
+        self.builder.seal_block(slow);
         let call = self.builder.ins().call(f, &[callee, argc, args_ptr]);
-        self.builder.inst_results(call)[0]
+        let value = self.builder.inst_results(call)[0];
+        self.builder.ins().jump(done, &[value.into()]);
+        self.builder.switch_to_block(done);
+        self.builder.seal_block(done);
+        self.builder.block_params(done)[0]
     }
 
     /// Direct-calls the lifted function a closure local is bound to: its environment

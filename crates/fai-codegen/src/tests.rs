@@ -408,6 +408,37 @@ fn main_printing(expr: &str) -> String {
     "#}
 }
 
+#[test]
+fn unknown_function_value_has_guarded_saturated_fast_path() {
+    let ir = entry_ir(
+        "module M\npublic call : (Int -> Int) -> Int -> Int\nlet call f x = f x\n",
+        "call",
+    );
+    assert!(ir.contains("call_indirect"), "exact immortal closures call their entry:\n{ir}");
+    assert!(
+        ir.contains("icmp") && ir.contains("brif"),
+        "closure state and arity stay guarded:\n{ir}"
+    );
+}
+
+#[test]
+fn guarded_apply_preserves_partial_over_and_captured_calls() {
+    let source = "module M\nlet apply n f x = if n = 0 then f x else apply (n - 1) f x\nlet plus a b = a + b\nlet make n = fun x -> n + x\nlet twice f x = apply 1 f (apply 1 f x)\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let partial = apply 1 plus 3\n  let captured = make 5\n  let result = partial 4 + twice captured 2 + apply 1 (fun x -> x * 2) 9\n  r.console.writeLine (Int.toString result)\n";
+    assert_eq!(run(source), (0, "37\n".into()));
+}
+
+#[test]
+fn guarded_apply_preserves_unknown_over_application() {
+    let source = "module M\nlet apply n f x y = if n = 0 then f x y else apply (n - 1) f x y\nlet make n = fun x -> n + x\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (apply 1 make 20 22))\n";
+    assert_eq!(run(source), (0, "42\n".into()));
+}
+
+#[test]
+fn guarded_apply_retains_boxed_float_and_generic_results() {
+    let source = "module M\nlet apply n f x = if n = 0 then f x else apply (n - 1) f x\nlet twice x = x * 2.0\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let xs = apply 1 identity [1.25, 2.5]\n  r.console.writeLine (Float.toString (apply 1 twice (List.foldl (fun a b -> a + b) 0.0 xs)))\n";
+    assert_eq!(run(source), (0, "7.5\n".into()));
+}
+
 #[track_caller]
 fn assert_branch_uses_comparison(source: &str, name: &str, comparison: &str) {
     let ir = entry_ir(source, name);
