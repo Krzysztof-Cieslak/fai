@@ -411,6 +411,14 @@ be pure; expose effectful initialization through a `Unit -> … / { … }` funct
 A private custom `runtime` builder may have forcing effects, and the launcher
 starts the scheduler when those effects require it.
 
+Small, monomorphic, same-file literal values are expanded before reference
+counting, including inside the standard library. Scalar constants therefore
+avoid repeated uniform calls and boxing, and literal aggregates reach scalar
+replacement. The bounded rule also relocates capture-free dictionary methods;
+effectful, recursive, potentially trapping, generic, and cross-file initializers
+retain their forcing boundary. A separate eligibility query preserves early
+cutoff for values that cannot be expanded.
+
 Opaque aliases retain their nominal type in cross-file value, constructor, and
 interface-method signatures, including through transparent re-exports. Names
 resolve in their declaring scope while opacity follows the observing file.
