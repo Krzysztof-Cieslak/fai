@@ -418,6 +418,10 @@ Native lowering separately expands the hidden representation, so scalar,
 aggregate, generic, and first-class calls agree on layout without exposing it to
 source-level type checking.
 
+Interface instances accept qualified names (`{ Library.Inner.Service with … }`).
+Bare instance names resolve from the innermost module outward, matching type
+annotations and preserving public/internal/private visibility across files.
+
 `Offset` constructors validate before arithmetic: seconds stay within ±64800,
 hours within ±18, and `ofHoursMinutes` requires minutes within ±59 and matching
 signs for nonzero components. ISO parsing requires two unsigned ASCII digits per

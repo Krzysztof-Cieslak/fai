@@ -57,6 +57,8 @@ pub struct ResolvedBodies {
     /// The local slot bound by each variable/wildcard pattern, so inference can
     /// type locals by the same `LocalId` resolution assigned to their uses.
     pub pat_locals: FxHashMap<PatId, LocalId>,
+    /// Lexical module scope for each interface instance, consumed by type lookup.
+    pub instance_scopes: FxHashMap<ExprId, Vec<Symbol>>,
 }
 
 impl ResolvedBodies {
@@ -412,6 +414,7 @@ pub fn resolve(db: &dyn Db, file: SourceFile) -> Arc<ResolvedBodies> {
         current_def: None,
         deps_by_def: FxHashMap::default(),
         pat_locals: FxHashMap::default(),
+        instance_scopes: FxHashMap::default(),
     };
 
     resolve_items(&mut cx, module, &module.roots);
@@ -422,6 +425,7 @@ pub fn resolve(db: &dyn Db, file: SourceFile) -> Arc<ResolvedBodies> {
         deps: cx.deps,
         deps_by_def: cx.deps_by_def,
         pat_locals: cx.pat_locals,
+        instance_scopes: cx.instance_scopes,
     })
 }
 
@@ -512,6 +516,7 @@ struct Resolver<'a> {
     current_def: Option<DefId>,
     deps_by_def: FxHashMap<DefId, Vec<DefId>>,
     pat_locals: FxHashMap<PatId, LocalId>,
+    instance_scopes: FxHashMap<ExprId, Vec<Symbol>>,
 }
 
 impl Resolver<'_> {
@@ -724,6 +729,7 @@ impl Resolver<'_> {
             // resolved with its own parameters in scope but *without* sibling
             // methods (record semantics).
             ExprKind::Instance { methods, .. } => {
+                self.instance_scopes.insert(expr, self.current_scope.clone());
                 for m in methods {
                     self.scope.push();
                     for &p in &m.params {

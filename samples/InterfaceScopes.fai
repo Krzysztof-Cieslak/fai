@@ -1,0 +1,15 @@
+module InterfaceScopes
+
+module Inner =
+  interface Service =
+    run : Int -> Int
+
+  let service = { Service with run x = x + 1 }
+
+  public run : Int -> Int
+  let run x = service.run x
+
+let service = { Inner.Service with run x = x + 2 }
+
+public main : Runtime -> Unit / { Console }
+let main runtime = runtime.console.writeLine (Int.toString (service.run (Inner.run 39)))

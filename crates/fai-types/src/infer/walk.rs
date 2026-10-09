@@ -385,7 +385,9 @@ impl<E: Env> Walker<'_, E> {
                 self.unify_at(node.span, &base_ty, &base_shape, "a record update");
                 SolveTy::Record(SolveRow { fields: updated, tail: RowTail::Open(rho) })
             }
-            ExprKind::Instance { name, methods } => self.infer_instance(*name, methods, node.span),
+            ExprKind::Instance { name, methods } => {
+                self.infer_instance(expr, *name, methods, node.span)
+            }
             ExprKind::App { .. } => self.infer_app_spine(expr),
             ExprKind::Infix { op, lhs, rhs } => self.infer_infix(*op, *lhs, *rhs, node.span),
             ExprKind::Prefix { op, operand } => self.infer_prefix(*op, *operand, node.span),
@@ -765,24 +767,30 @@ impl<E: Env> Walker<'_, E> {
     /// declaration exactly.
     fn infer_instance(
         &mut self,
+        expr: ExprId,
         name: Symbol,
         methods: &[MethodImpl],
         span: fai_span::TextRange,
     ) -> SolveTy {
-        let Some(iref) = resolve_interface(self.db, self.file, name) else {
-            self.emit(Diagnostic::error(
-                NOT_AN_INTERFACE,
-                format!("`{name}` is not an interface"),
-                self.span(span),
-            ));
-            // Still type the method bodies so the rest of the body is coherent.
-            for m in methods {
-                for &p in &m.params {
-                    self.bind_pattern_into(p);
+        let scope = self.resolved.instance_scopes.get(&expr).map_or(&[][..], Vec::as_slice);
+        let iref = match resolve_interface(self.db, self.file, name, scope) {
+            Ok(iref) => iref,
+            Err(code) => {
+                let message = if code == NOT_AN_INTERFACE {
+                    format!("`{name}` is not an interface")
+                } else {
+                    format!("interface `{name}` is not visible from this module")
+                };
+                self.emit(Diagnostic::error(code, message, self.span(span)));
+                // Still type the method bodies so the rest of the body is coherent.
+                for m in methods {
+                    for &p in &m.params {
+                        self.bind_pattern_into(p);
+                    }
+                    self.infer_expr(m.body);
                 }
-                self.infer_expr(m.body);
+                return SolveTy::Error;
             }
-            return SolveTy::Error;
         };
 
         // The built-in constraint interfaces (`Num`/`Eq`/`Ord`) are sealed: their

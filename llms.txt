@@ -974,6 +974,11 @@ let line = boxRenderer.render someShape
 An instance must implement exactly the interface's methods — no more, no fewer
 (`FAI3014` / `FAI3015`).
 
+The name can be qualified: `{ Library.Inner.Renderer with render shape = ... }`.
+Inside nested modules, a bare name selects the nearest enclosing interface,
+including an inner declaration that shadows an outer one. Cross-file visibility
+rules apply to constructing instances as well as naming their types.
+
 **Effect-parameterized interfaces.** A type parameter used after `/` in a method
 is an *effect* parameter. Supply it with an effect row (in braces):
 
