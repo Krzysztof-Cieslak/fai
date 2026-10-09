@@ -4016,8 +4016,10 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     counts; `Offset` whole seconds. A single `i64` of nanoseconds would cap the
     calendar at ~1678–2262, so the split keeps the range vast while arithmetic stays
     exact integer work. The calendar uses the standard civil↔days conversion (Howard
-    Hinnant's algorithm), which divides only non-negative operands, so the truncating
-    `/` is the floored division it needs; a shared `Int.floorDiv`/`Int.floorMod` (also
+    Hinnant's algorithm), first splitting eras with floor division before adding
+    epoch/January offsets to bounded remainders. Its inner divisions then use
+    non-negative operands. Weekdays reduce modulo seven before adding their offset.
+    A shared `Int.floorDiv`/`Int.floorMod` (also
     added) handles the genuinely-signed normalization of nanosecond-of-day and offset.
     Time-unit additions split whole days and bounded remainders before multiplying,
     and LocalTime reduces offsets modulo a day before addition. Duration scaling
