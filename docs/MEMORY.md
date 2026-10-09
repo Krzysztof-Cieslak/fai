@@ -3062,6 +3062,11 @@ Editor integration:
     array alive and trigger the copy; generic float slots retain their self-tag
     and re-box only at generic boundaries. Other map shapes keep the regular
     builder/fusion paths. The operations are compiler-internal, never source names.
+    Bounded record/tuple and cons resets inline their unique-owner path, including
+    scalar-aware child release; rebuilding into a correctly sized token writes the
+    header and fields directly. Missing/wrong-sized tokens, shared or unknown
+    cells, and concurrent execution retain runtime handling. Descendant release
+    remains iterative, and immortal/shared child counts retain their protocol.
   - **Carve-outs.** `foldr` over a non-reversible `List` value is left unfused (a
     single tail loop is impossible without a reverse pass or unsafe deep recursion,
     which std itself avoids); a pipeline inside a **mutual-recursion group member**
