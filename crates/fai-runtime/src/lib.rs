@@ -40,6 +40,7 @@
 use std::alloc::Layout;
 use std::cell::Cell;
 use std::collections::BTreeMap;
+use std::mem::MaybeUninit;
 use std::sync::Mutex;
 // `AtomicU64`/`Ordering`/`fence` back the *shared* (multi-threaded) reference-count
 // path: an object marked shared across tasks has its count manipulated atomically.
@@ -1280,10 +1281,15 @@ pub unsafe extern "C" fn fai_drop_dead(v: Value) {
 /// A fixed inline buffer keeps shallow drops allocation-free; deeper structures
 /// spill onto the heap. Either way the walk is iterative, so no structure
 /// overflows the native stack when it is freed.
+/// Only `inline[..len]` is initialized and readable. Spill entries are newer
+/// than every inline entry and are always popped first.
+// Keep initialized bookkeeping together, ahead of the uninitialized payload, so
+// aggregate initialization does not coalesce its zero stores across the buffer.
+#[repr(C)]
 struct DropWork {
-    inline: [Value; DROP_INLINE],
     len: usize,
     spill: Vec<Value>,
+    inline: [MaybeUninit<Value>; DROP_INLINE],
 }
 
 /// The inline worklist capacity before spilling to the heap.
@@ -1291,12 +1297,12 @@ const DROP_INLINE: usize = 32;
 
 impl DropWork {
     fn new() -> Self {
-        Self { inline: [0; DROP_INLINE], len: 0, spill: Vec::new() }
+        Self { len: 0, spill: Vec::new(), inline: [MaybeUninit::uninit(); DROP_INLINE] }
     }
 
     fn push(&mut self, v: Value) {
         if self.len < DROP_INLINE {
-            self.inline[self.len] = v;
+            self.inline[self.len].write(v);
             self.len += 1;
         } else {
             self.spill.push(v);
@@ -1309,7 +1315,9 @@ impl DropWork {
         }
         if self.len > 0 {
             self.len -= 1;
-            return Some(self.inline[self.len]);
+            // SAFETY: before decrementing, this slot belonged to the initialized
+            // prefix written by push. Value is Copy and has no Rust destructor.
+            return Some(unsafe { self.inline[self.len].assume_init() });
         }
         None
     }
@@ -4519,6 +4527,8 @@ pub use tls::{
 mod alloc_tests;
 #[cfg(test)]
 mod array_tests;
+#[cfg(test)]
+mod drop_work_tests;
 #[cfg(test)]
 mod hash_tests;
 #[cfg(test)]
