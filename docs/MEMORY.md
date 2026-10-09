@@ -803,6 +803,11 @@ Reuse & in-place update:
     Native list tag tests need only the immediate bit (`[]` is immediate, a cons
     is boxed). Cons slots are always uniform, so even generic/Float list heads
     skip scalar-descriptor checks while retaining their ordinary owned result.
+    After borrow inference, representation-preserving local data aliases are
+    coalesced before ownership insertion. Equal observed types are required and
+    niche/scalar conversion bindings stay explicit. Removed bindings transfer
+    their type metadata to the surviving local's marker-typed uses, so native
+    projection, reset and drop specialization retain the original shape.
   - **Acceptance.** `map`/`filter`/`inc` over a unique list allocate zero fresh
     cells; a shared list copies (the rc==1 guard). A differential allocation-count
     test pins both, and the soundness interpreter is extended to reset/reuse

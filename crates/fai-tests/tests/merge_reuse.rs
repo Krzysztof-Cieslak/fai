@@ -78,3 +78,14 @@ fn merge_edits_match_clean_reference_counting() {
         },
     );
 }
+
+#[test]
+fn adding_a_data_alias_matches_clean_reference_counting() {
+    let edited = SOURCE.replace("  match xs with", "  let alias = xs\n  match alias with");
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("Main.fai", SOURCE)], &[("Main.fai", &edited)]],
+        |db, files| {
+            (*fai_rc::rc(db, db.source_file(files[0]).unwrap(), Symbol::intern("merge"))).clone()
+        },
+    );
+}

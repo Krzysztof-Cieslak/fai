@@ -55,6 +55,7 @@ pub use mutual::{Group, MutualGroups, combined_lowered, member_wrapper, mutual_g
 pub use reuse_sig::{ReuseSig, forwards_to, reuse_class, reuse_signature};
 pub use verify::check_rc;
 
+mod aliases;
 mod borrow;
 mod bounds_sig;
 mod escape;
@@ -162,6 +163,7 @@ pub fn rc_lowered(db: &dyn Db, lowered: &LoweredDef, self_sig: &BorrowSig) -> Lo
             f.body.clone()
         };
         let body = anf(raw, &mut next);
+        let body = aliases::coalesce(db, body);
         // Scalar-replace fixed-shape float aggregates: a spread parameter becomes
         // component locals, a constructed/returned aggregate its scalar components,
         // reassembling a cell only at a boxed boundary. The entry uses the

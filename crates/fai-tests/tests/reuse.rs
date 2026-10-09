@@ -320,6 +320,12 @@ fn correct_borrowed_inspector_read_twice() {
 }
 
 #[test]
+fn coalesced_data_aliases_keep_closure_captures_alive() {
+    let source = "module M\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let xs = List.range 0 5\n  let alias = xs\n  let count = fun u -> List.length alias\n  r.console.writeLine (Int.toString (count () + List.length xs))\n";
+    outputs(source, "10");
+}
+
+#[test]
 fn correct_borrow_alongside_rebuild() {
     outputs(&prog(INC, "sum (inc xs) + len xs", 50), "1375");
 }
