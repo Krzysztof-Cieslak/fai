@@ -305,16 +305,17 @@ impl Simplifier<'_> {
                 }
             }
             K::Let { local, value, body } => {
-                if !uses(body, *local) {
-                    let known = self
-                        .known_binding(value)
-                        .or_else(|| self.method_value(value).then(|| (**value).clone()));
-                    if known.as_ref().is_some_and(|known| {
-                        (!matches!(known.kind, K::MakeClosure { .. }) || self.method_value(known))
-                            && Self::discardable(known, body)
-                    }) {
-                        return Some((**body).clone());
-                    }
+                // Reject ordinary scalar bindings before walking their whole
+                // continuation, so long let chains do not add quadratic work.
+                let known = self
+                    .known_binding(value)
+                    .or_else(|| self.method_value(value).then(|| (**value).clone()));
+                if let Some(known) = known
+                    && (!matches!(known.kind, K::MakeClosure { .. }) || self.method_value(&known))
+                    && !uses(body, *local)
+                    && Self::discardable(&known, body)
+                {
+                    return Some((**body).clone());
                 }
                 let usage = if interface(&value.ty) { Usage::Project } else { Usage::Call };
                 if usage == Usage::Call && !matches!(value.ty, Ty::Arrow(..)) {
