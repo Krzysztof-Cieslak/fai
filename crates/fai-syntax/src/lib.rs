@@ -13,6 +13,8 @@ mod attach;
 mod layout;
 mod lexer;
 mod literal;
+#[cfg(test)]
+mod nesting_tests;
 mod parser;
 // salsa's `tracked`/`Update` macros emit `unsafe impl`s; this module is the only
 // place in the crate that carries them (we write no `unsafe` by hand). The scoped
@@ -56,6 +58,8 @@ pub const SYNTAX_ERROR: DiagnosticCode = DiagnosticCode::new("FAI1020");
 pub const LAYOUT_ERROR: DiagnosticCode = DiagnosticCode::new("FAI1021");
 /// A malformed or missing module header.
 pub const MODULE_HEADER: DiagnosticCode = DiagnosticCode::new("FAI1022");
+/// Source nesting exceeds the bounded parser or syntax-tree depth.
+pub const NESTING_LIMIT: DiagnosticCode = DiagnosticCode::new("FAI1023");
 /// A construct that is reserved but not implemented yet (`type`, records, etc.).
 pub const UNSUPPORTED: DiagnosticCode = DiagnosticCode::new("FAI1030");
 
@@ -129,6 +133,16 @@ pub const CODES: &[CodeInfo] = &[
         default_severity: Severity::Error,
         explanation: "Every file must begin with a `module Name` header naming an upper-case \
                       module; it is missing or malformed.",
+    },
+    CodeInfo {
+        code: NESTING_LIMIT,
+        title: "syntax nesting limit exceeded",
+        default_severity: Severity::Error,
+        explanation: "The source exceeds 128 recursive grammar levels or 512 expression/type-tree \
+                      levels (including operator, application, and field chains). Split deeply \
+                      nested code into named helpers or intermediate bindings. The parser skips \
+                      the rest of the enclosing top-level declaration and continues at the next \
+                      layout boundary; formatting leaves the erroneous source unchanged.",
     },
     CodeInfo {
         code: UNSUPPORTED,

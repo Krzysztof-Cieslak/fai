@@ -853,6 +853,11 @@ it was dropped).
 - Formatting preserves nested expression comments. Collection separators print
   before trailing line comments, and commented tuples/parentheses may wrap so
   comments cannot absorb punctuation or closing delimiters.
+- Source nesting is bounded: **`FAI1023`** reports more than 128 recursive grammar
+  layers or 512 expression/type-tree layers (including iterative operator,
+  application, and field chains). Layout-only wrappers do not add tree depth.
+  Recovery skips the rest of the enclosing top-level declaration and resumes at
+  the next layout boundary, keeping the daemon and language server alive.
 
 ## 11. Extending the compiler
 

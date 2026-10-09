@@ -21,6 +21,7 @@ rustc-hash.workspace = true
 indoc.workspace = true
 insta.workspace = true
 proptest.workspace = true
+wait-timeout.workspace = true
 
 [lints]
 workspace = true

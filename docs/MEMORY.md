@@ -242,6 +242,12 @@ Syntax front end (lexer, layout, parser, AST, formatter, incremental queries):
   nested modules, local bindings, and interface methods as well as file-level
   declarations. The formatter refuses such malformed files without overwriting
   them, and recovery still parses later declarations.
+  Native-stack use is bounded by 128 recursive grammar layers and 512
+  expression/type-tree layers, including trees built by iterative operator,
+  application, and field loops. Excess depth reports `FAI1023`, skips the rest
+  of the top-level declaration in linear time, and unwinds through a virtual
+  EOF before resuming. Layout-only wrappers do not consume an extra layer, so
+  canonical formatting preserves boundary acceptance.
   `public` is accepted on signature and binding items; sig↔binding association and
   the "public needs a signature" rule belong to name resolution and the type
   system. A reserved-but-unimplemented construct (`type`, records, `match`,

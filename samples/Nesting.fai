@@ -1,0 +1,9 @@
+module Nesting
+
+// Factor generated expressions into helpers instead of exceeding source nesting
+// limits (128 recursive grammar layers or 512 expression/type-tree layers).
+let step n = (n + 1) * 2
+
+public transform : Int -> Int
+let transform n = step (step n)
+example: transform 1 = 10
