@@ -1905,7 +1905,7 @@ Editor integration:
   - **Exact 8-byte classes.** Every heap object is 8-aligned and a multiple of 8
     bytes, so the class is `size.div_ceil(8)` and a class's cells have capacity
     equal to the request — no internal fragmentation, and the dominant shapes
-    (cons 48 B, `Int`/`Float` box 32 B) recycle perfectly among themselves. A
+    (compact cons 24 B, `Int`/`Float` box 32 B) recycle perfectly among themselves. A
     pool miss takes a fresh block at the class capacity, so all cells of a class
     are interchangeable and a cell's class (hence its deallocation layout) is
     stable across reuse.
@@ -3794,14 +3794,24 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   value is its **count word** (the payload is immutable; in-place reuse fires only
   when uniquely owned), so the fix is confined to reference counting rather than the
   whole heap. Each count carries one of three states, distinguished by a single
-  unsigned compare on the hot path (`rc < IMMORTAL_RC`):
+  unsigned compare after masking inline metadata (`rc < IMMORTAL_RC`):
   - **single-threaded** — a plain non-atomic count, the default and the common path;
-  - **shared** — a high marker bit (`MT_FLAG = 1 << 63`) with the count in the low
+  - **shared** — a marker bit (`MT_FLAG = 1 << 39`) with the count in the low
     bits, manipulated atomically (relaxed increment; release decrement with an
     acquire fence on the last reference — the `Arc` discipline);
   - **immortal** (`≥ IMMORTAL_RC`) — a reference-counting no-op, so sharing a static
     across threads is race-free (and ThreadSanitizer-clean; previously immortals
     were still incremented).
+  **Compact data headers** share this word without changing boxed/immediate
+  values or Perceus ownership. The high 24 bits encode the compact marker, a
+  four-bit field count, an eight-bit scalar bitmap, and an eleven-bit constructor
+  tag; the low 40 bits carry count/state (`IMMORTAL_RC = 1 << 38`). Ordinary counts
+  are guarded at 2^37 before reaching flags or metadata. A fitting data cell's
+  fields begin at byte 8, making a two-field cons/tuple 24 bytes. Larger shapes
+  retain the existing descriptor/size/tag header and fields at byte 32. Metadata
+  readers use atomic loads because count updates share the word. Structural
+  equality/ordering/hash, projections, reuse and record update decode either form;
+  a record update copies if changing its scalar bitmap changes the header size.
   A value becomes shared via **`fai_mark_shared`**, which flips it and its reachable
   boxed subgraph (iteratively, reusing the drop worklist, so a deep structure never
   overflows the stack) when it crosses a task boundary — a spawned thunk's captures,

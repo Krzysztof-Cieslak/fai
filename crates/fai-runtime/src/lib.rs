@@ -62,11 +62,11 @@ pub type Value = i64;
 // and reads these offsets).
 // ---------------------------------------------------------------------------
 
-/// Byte offset of the reference count in a heap object.
+/// Byte offset of the count/state word (also compact-data metadata) in a heap object.
 pub const RC_OFFSET: usize = 0;
-/// Byte offset of the descriptor pointer in a heap object.
+/// Byte offset of the descriptor pointer in an extended/non-data heap object.
 pub const DESC_OFFSET: usize = 8;
-/// Byte offset of the allocation size in a heap object.
+/// Byte offset of the allocation size in an extended/non-data heap object.
 pub const SIZE_OFFSET: usize = 16;
 /// Size of the object header in bytes.
 pub const HEADER_SIZE: usize = 24;
@@ -77,9 +77,9 @@ pub const INT_VALUE_OFFSET: usize = HEADER_SIZE;
 /// Byte offset of a boxed `Float`'s IEEE-754 bits.
 pub const FLOAT_VALUE_OFFSET: usize = HEADER_SIZE;
 
-/// Byte offset of a data value's constructor tag.
+/// Byte offset of an extended data value's constructor tag.
 pub const DATA_TAG_OFFSET: usize = HEADER_SIZE;
-/// Byte offset of a data value's first field.
+/// Byte offset of an extended data value's first field.
 pub const DATA_FIELDS_OFFSET: usize = HEADER_SIZE + 8;
 
 /// Byte offset of a `String`'s byte length. A borrowing slice
@@ -122,26 +122,29 @@ pub const PAP_NARGS_OFFSET: usize = HEADER_SIZE + 8;
 /// Byte offset of a partial application's first stored argument.
 pub const PAP_ARGS_OFFSET: usize = HEADER_SIZE + 16;
 
-/// The reference count given to statically-emitted (immortal) objects — string
-/// literals and top-level function closures. So large that balanced dup/drop
-/// never reaches zero, so they are never freed (they are not heap-allocated).
-pub const IMMORTAL_RC: u64 = 1 << 60;
+/// The state marker for statically emitted, immortal objects such as strings and
+/// top-level closures. Their reference-count operations are no-ops.
+pub const IMMORTAL_RC: u64 = 1 << 38;
 
 /// The marker bit in an object's reference-count word meaning the object is
 /// **shared across tasks** (multi-threaded): its count lives in the low bits and
 /// is manipulated atomically. The three reference-count states are distinguished
-/// by one unsigned comparison on the hot path — `rc < IMMORTAL_RC` is the common
+/// after masking metadata — `rc < IMMORTAL_RC` is the common
 /// single-threaded case (both shared, `≥ MT_FLAG`, and immortal, `= IMMORTAL_RC`,
 /// compare `≥ IMMORTAL_RC`) — then the rare branch splits shared (this bit set,
 /// atomic) from immortal (a reference-counting no-op). A shared object is produced
-/// only by [`fai_mark_shared`] when a value crosses a task boundary; a count never
-/// approaches `1 << 60`, let alone this bit, so the encoding never collides with a
-/// real count.
-pub const MT_FLAG: u64 = 1 << 63;
+/// only by [`fai_mark_shared`] when a value crosses a task boundary. The count
+/// overflow guard keeps real counts below the state and metadata bits.
+pub const MT_FLAG: u64 = 1 << 39;
 
-/// The count portion of a shared (multi-threaded) reference-count word — every bit
-/// but [`MT_FLAG`]. A shared object is dead when its count portion reaches zero.
-const MT_COUNT_MASK: u64 = !MT_FLAG;
+/// Count and sharing/immortality bits, excluding compact data metadata.
+pub const RC_STATE_MASK: u64 = (1 << 40) - 1;
+/// Maximum ordinary reference count. The spare range prevents concurrent
+/// increments from reaching flag/metadata bits before overflow is reported.
+pub const MAX_REFCOUNT: u64 = 1 << 37;
+
+/// The count portion, excluding sharing, immortality, and compact metadata.
+const MT_COUNT_MASK: u64 = IMMORTAL_RC - 1;
 
 /// The canonical immediate used for `Unit` and the `Runtime` capability value
 /// (payload 0, tagged). Distinct types are segregated by the type checker, so the
@@ -167,7 +170,7 @@ fn checked_buffer_size(header: usize, count: usize, element_size: usize) -> Opti
 // ---------------------------------------------------------------------------
 
 /// A heap-type descriptor: a static record identifying a boxed value's kind.
-/// Referenced by address from every object header (and, for static objects, from
+/// Referenced by address from extended/non-data headers (and static objects, from
 /// generated code). A value's kind is recovered from the descriptor's [`kind`]
 /// tag (not its address), so generated code may emit *per-shape* data descriptors
 /// — each carrying a [`scalar_bitmap`] of which data slots hold an unboxed `f64`
@@ -417,12 +420,15 @@ unsafe fn desc_scalar_bitmap(desc: *const Descriptor) -> u64 {
     unsafe { (*desc).scalar_bitmap }
 }
 
-/// The descriptor of a live boxed object.
+/// The descriptor of a live extended/non-data object.
 ///
 /// # Safety
-/// `p` must point to a valid live heap object.
+/// `p` must point to a valid live object without compact data metadata.
 #[inline]
 unsafe fn obj_descriptor(p: *const u8) -> *const Descriptor {
+    // SAFETY: inspecting the initialized header also detects accidental use of
+    // this descriptor-only accessor on a compact cell.
+    debug_assert_eq!(unsafe { header_word(p) } & COMPACT_DATA, 0);
     // SAFETY: a live object stores its descriptor pointer at `DESC_OFFSET`.
     unsafe { read_ptr(p, DESC_OFFSET).cast::<Descriptor>() }
 }
@@ -469,7 +475,7 @@ unsafe fn slot_is_scalar(p: *const u8, index: usize) -> bool {
         return false;
     }
     // SAFETY: `p` is a live data object with a valid descriptor.
-    let bitmap = unsafe { desc_scalar_bitmap(obj_descriptor(p)) };
+    let bitmap = unsafe { data_scalars(p) };
     bitmap & (1u64 << index) != 0
 }
 
@@ -492,7 +498,7 @@ unsafe fn array_obj_is_float(p: *const u8) -> bool {
 #[inline]
 fn value_is_boxed_float(v: Value) -> bool {
     // SAFETY: only dereference `v`'s descriptor once it is known boxed.
-    is_boxed(v) && unsafe { desc_kind(obj_descriptor(as_obj(v))) == KIND_FLOAT }
+    is_boxed(v) && unsafe { object_kind(as_obj(v)) == KIND_FLOAT }
 }
 
 /// The interned per-shape data descriptors, keyed by scalar bitmap. A
@@ -631,7 +637,7 @@ unsafe fn rc_atomic<'a>(p: *mut u8) -> &'a AtomicU64 {
 unsafe fn rc_load(p: *mut u8) -> u64 {
     // SAFETY: the live count is aligned; shared writes are atomic and local writes
     // cannot occur concurrently with this read.
-    unsafe { rc_atomic(p).load(Ordering::Relaxed) }
+    unsafe { header_word(p) & RC_STATE_MASK }
 }
 
 /// Increments the reference count of the live object `p`, in whatever state it is
@@ -644,11 +650,18 @@ unsafe fn rc_load(p: *mut u8) -> u64 {
 unsafe fn rc_inc(p: *mut u8) {
     // SAFETY: `p` is live; its count word is in bounds.
     unsafe {
-        let rc = rc_load(p);
+        let header = header_word(p);
+        let rc = header & RC_STATE_MASK;
         if rc < IMMORTAL_RC {
-            write_u64(p, RC_OFFSET, rc + 1);
+            if rc >= MAX_REFCOUNT {
+                fai_panic("reference count exceeds supported range");
+            }
+            write_u64(p, RC_OFFSET, header + 1);
         } else if rc & MT_FLAG != 0 {
-            rc_atomic(p).fetch_add(1, Ordering::Relaxed);
+            let previous = rc_atomic(p).fetch_add(1, Ordering::Relaxed);
+            if previous & MT_COUNT_MASK >= MAX_REFCOUNT {
+                fai_panic("reference count exceeds supported range");
+            }
         }
         // Otherwise immortal: reference counting is a no-op.
     }
@@ -666,10 +679,11 @@ unsafe fn rc_inc(p: *mut u8) {
 unsafe fn rc_dec_is_dead(p: *mut u8) -> bool {
     // SAFETY: `p` is live; its count word is in bounds.
     unsafe {
-        let rc = rc_load(p);
+        let header = header_word(p);
+        let rc = header & RC_STATE_MASK;
         if rc < IMMORTAL_RC {
             let n = rc - 1;
-            write_u64(p, RC_OFFSET, n);
+            write_u64(p, RC_OFFSET, header - 1);
             n == 0
         } else if rc & MT_FLAG != 0 {
             // The decrement publishes this task's writes (`Release`); the task that
@@ -1197,10 +1211,7 @@ fn alloc_obj(size: usize, descriptor: *const Descriptor) -> *mut u8 {
     if !(HEADER_SIZE..=MAX_ALLOCATION_SIZE).contains(&size) {
         fai_allocation_size_panic();
     }
-    let p = match size_class(size) {
-        Some(c) => pool_pop(c),
-        None => system_alloc(size),
-    };
+    let p = alloc_raw(size);
     // SAFETY: `p` points to at least `size` writable bytes — the class capacity
     // (>= size) for a pooled cell, or exactly `size` for the large path. The
     // header overwrite repurposes any recycled cell (descriptor, size, and the
@@ -1210,6 +1221,17 @@ fn alloc_obj(size: usize, descriptor: *const Descriptor) -> *mut u8 {
         write_ptr(p, DESC_OFFSET, descriptor.cast());
         write_u64(p, SIZE_OFFSET, size as u64);
     }
+    p
+}
+
+fn alloc_raw(size: usize) -> *mut u8 {
+    if !(ALIGN..=MAX_ALLOCATION_SIZE).contains(&size) {
+        fai_allocation_size_panic();
+    }
+    let p = match size_class(size) {
+        Some(class) => pool_pop(class),
+        None => system_alloc(size),
+    };
     note_alloc();
     p
 }
@@ -1228,7 +1250,7 @@ unsafe fn free_obj(p: *mut u8) {
     // SAFETY: `p` is a live cell with a valid descriptor; the handle slot holds the
     // raw pointer `scheduler` stored at construction.
     unsafe {
-        match desc_kind(obj_descriptor(p)) {
+        match object_kind(p) {
             KIND_TASK => scheduler::drop_task_handle(read_i64(p, HANDLE_PTR_OFFSET)),
             KIND_CHANNEL => scheduler::drop_channel_handle(read_i64(p, HANDLE_PTR_OFFSET)),
             KIND_NURSERY => scheduler::drop_nursery_handle(read_i64(p, HANDLE_PTR_OFFSET)),
@@ -1238,8 +1260,8 @@ unsafe fn free_obj(p: *mut u8) {
             _ => {}
         }
     }
-    // SAFETY: `p` was returned by `alloc_obj`, so the size field is valid.
-    let size = unsafe { read_u64(p, SIZE_OFFSET) } as usize;
+    // SAFETY: initialized metadata records the original backing allocation size.
+    let size = unsafe { object_size(p) };
     match size_class(size) {
         // SAFETY: `p` is a dead class-`c` cell; pooling repurposes its memory.
         Some(c) => unsafe { pool_push(c, p) },
@@ -1319,7 +1341,7 @@ unsafe fn release_dead(p: *mut u8) {
         // frame, not the heap: release its children but never free the cell (its
         // pointer was never returned by `alloc_obj`, so it must not reach
         // `free_obj`/the pool). The frame reclaims the slot on return.
-        let kind = desc_kind(obj_descriptor(p));
+        let kind = object_kind(p);
         if kind != KIND_STACK_CLOSURE && kind != KIND_STACK_PAP {
             free_obj(p);
         }
@@ -1399,22 +1421,22 @@ impl DropWork {
 unsafe fn scan_push(p: *mut u8, work: &mut DropWork) {
     // SAFETY: `p` is a live object; its descriptor and fields are in bounds.
     unsafe {
-        let desc = obj_descriptor(p);
-        if desc_kind(desc) == KIND_DATA {
-            let size = read_u64(p, SIZE_OFFSET) as usize;
-            let nfields = (size - DATA_FIELDS_OFFSET) / 8;
+        let kind = object_kind(p);
+        if kind == KIND_DATA {
+            let nfields = data_len(p);
+            let offset = data_offset(p);
             // Scalar (`f64`) slots carry no reference count, so they are skipped.
-            let scalar = desc_scalar_bitmap(desc);
+            let scalar = data_scalars(p);
             for i in 0..nfields {
                 if i < 64 && scalar & (1u64 << i) != 0 {
                     continue;
                 }
-                let field = read_i64(p, DATA_FIELDS_OFFSET + i * 8);
+                let field = read_i64(p, offset + i * 8);
                 if is_boxed(field) {
                     work.push(field);
                 }
             }
-        } else if desc_kind(desc) == KIND_CLOSURE || desc_kind(desc) == KIND_STACK_CLOSURE {
+        } else if kind == KIND_CLOSURE || kind == KIND_STACK_CLOSURE {
             let env_count = read_u64(p, CLOSURE_ENV_COUNT_OFFSET) as usize;
             for i in 0..env_count {
                 let slot = read_i64(p, CLOSURE_ENV_OFFSET + i * 8);
@@ -1422,7 +1444,7 @@ unsafe fn scan_push(p: *mut u8, work: &mut DropWork) {
                     work.push(slot);
                 }
             }
-        } else if desc_kind(desc) == KIND_PAP || desc_kind(desc) == KIND_STACK_PAP {
+        } else if kind == KIND_PAP || kind == KIND_STACK_PAP {
             let func = read_i64(p, PAP_FUNC_OFFSET);
             if is_boxed(func) {
                 work.push(func);
@@ -1434,10 +1456,10 @@ unsafe fn scan_push(p: *mut u8, work: &mut DropWork) {
                     work.push(arg);
                 }
             }
-        } else if desc_kind(desc) == KIND_ARRAY {
+        } else if kind == KIND_ARRAY {
             // A raw-`f64` array (`FAI_FLOAT_ARRAY_DESC`, a non-zero scalar bitmap)
             // is a leaf: its slots are unboxed floats with no reference count.
-            if desc_scalar_bitmap(desc) == 0 {
+            if !array_obj_is_float(p) {
                 // A boxed-element array's children are its live element slots
                 // (`0..length`); the spare capacity beyond `length` is
                 // uninitialized and not scanned.
@@ -1449,7 +1471,7 @@ unsafe fn scan_push(p: *mut u8, work: &mut DropWork) {
                     }
                 }
             }
-        } else if desc_kind(desc) == KIND_STRING_SLICE {
+        } else if kind == KIND_STRING_SLICE {
             // A slice's one child is the inline base `String` it views.
             let base = read_i64(p, SLICE_BASE_OFFSET);
             if is_boxed(base) {
@@ -1533,7 +1555,7 @@ unsafe fn mark_shared_one(p: *mut u8, work: &mut DropWork) {
         if rc < IMMORTAL_RC {
             // Single-threaded → shared: set the marker, keep the count in the low
             // bits. `scan_push` enqueues the boxed children to mark them too.
-            write_u64(p, RC_OFFSET, rc | MT_FLAG);
+            write_u64(p, RC_OFFSET, header_word(p) | MT_FLAG);
             scan_push(p, work);
         }
         // Already shared (`MT_FLAG` set ⇒ `rc ≥ MT_FLAG > IMMORTAL_RC`) or immortal
@@ -1553,17 +1575,8 @@ unsafe fn mark_shared_one(p: *mut u8, work: &mut DropWork) {
 /// `fields` must point to `nfields` owned values.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fai_make_data(tag: i64, nfields: i64, fields: *const i64) -> Value {
-    let n = nfields as usize;
-    let size = DATA_FIELDS_OFFSET + n * 8;
-    let p = alloc_obj(size, &FAI_DATA_DESC);
-    // SAFETY: `p` has room for the tag and `n` fields; `fields` points to `n`.
-    unsafe {
-        write_u64(p, DATA_TAG_OFFSET, tag as u64);
-        for i in 0..n {
-            write_i64(p, DATA_FIELDS_OFFSET + i * 8, *fields.add(i));
-        }
-    }
-    from_obj(p)
+    // SAFETY: the shared descriptor marks every supplied field as an owned word.
+    unsafe { fai_make_data_scalar(&FAI_DATA_DESC, tag, nfields, fields) }
 }
 
 /// Allocates a data value `{ tag, fields… }` carrying the per-shape descriptor
@@ -1582,14 +1595,15 @@ pub unsafe extern "C" fn fai_make_data_scalar(
     nfields: i64,
     fields: *const i64,
 ) -> Value {
-    let n = nfields as usize;
-    let size = DATA_FIELDS_OFFSET + n * 8;
-    let p = alloc_obj(size, desc);
+    let n = usize::try_from(nfields).unwrap_or_else(|_| fai_allocation_size_panic());
+    // SAFETY: the caller supplies a valid data descriptor.
+    let layout = DataLayout::new(tag, n, unsafe { desc_scalar_bitmap(desc) });
+    let p = alloc_raw(layout.size);
     // SAFETY: `p` has room for the tag and `n` fields; `fields` points to `n`.
     unsafe {
-        write_u64(p, DATA_TAG_OFFSET, tag as u64);
+        layout.initialize(p, desc, tag);
         for i in 0..n {
-            write_i64(p, DATA_FIELDS_OFFSET + i * 8, *fields.add(i));
+            write_i64(p, layout.fields_offset + i * 8, *fields.add(i));
         }
     }
     from_obj(p)
@@ -1605,13 +1619,8 @@ pub extern "C" fn fai_niche_a_to_std(v: Value) -> Value {
     if !is_boxed(v) {
         return v;
     }
-    let p = alloc_obj(DATA_FIELDS_OFFSET + 8, &FAI_DATA_DESC);
-    // SAFETY: `p` has room for the tag and one field; the payload moves in.
-    unsafe {
-        write_u64(p, DATA_TAG_OFFSET, 1); // `Some` is tag 1 of `Option`.
-        write_i64(p, DATA_FIELDS_OFFSET, v);
-    }
-    from_obj(p)
+    // SAFETY: one owned payload is transferred to a Some cell.
+    unsafe { fai_make_data(1, 1, &v) }
 }
 
 /// Converts a standard boxed `Option` to the niche Scheme-A representation,
@@ -1628,7 +1637,7 @@ pub extern "C" fn fai_std_to_niche_a(o: Value) -> Value {
     // SAFETY: a boxed standard `Option` is a `Some` cell with one field (the
     // payload); reading the count and field is in bounds.
     unsafe {
-        let payload = read_i64(p, DATA_FIELDS_OFFSET);
+        let payload = read_i64(p, data_offset(p));
         // Drop the wrapper shell: if it was the last reference, free it and the
         // payload reference it held transfers to the caller; otherwise the shell
         // lives on, so the caller takes its own reference. Both steps are
@@ -1645,7 +1654,7 @@ pub extern "C" fn fai_std_to_niche_a(o: Value) -> Value {
 /// Whether `v` is the niche `None` sentinel (a boxed `KIND_NONE` object).
 fn is_none_sentinel(v: Value) -> bool {
     // SAFETY: a boxed value has a valid descriptor pointer.
-    is_boxed(v) && unsafe { desc_kind(obj_descriptor(as_obj(v))) == KIND_NONE }
+    is_boxed(v) && unsafe { object_kind(as_obj(v)) == KIND_NONE }
 }
 
 /// Converts a niche Scheme-B `Option` (`None` is the sentinel, `Some x` is `x` in
@@ -1660,13 +1669,8 @@ pub extern "C" fn fai_niche_b_to_std(v: Value) -> Value {
         // nothing.
         return 1;
     }
-    let p = alloc_obj(DATA_FIELDS_OFFSET + 8, &FAI_DATA_DESC);
-    // SAFETY: `p` has room for the tag and one field; the payload moves in.
-    unsafe {
-        write_u64(p, DATA_TAG_OFFSET, 1); // `Some` is tag 1 of `Option`.
-        write_i64(p, DATA_FIELDS_OFFSET, v);
-    }
-    from_obj(p)
+    // SAFETY: one owned payload is transferred to a Some cell.
+    unsafe { fai_make_data(1, 1, &v) }
 }
 
 /// Converts a standard boxed `Option` to the niche Scheme-B representation,
@@ -1683,7 +1687,7 @@ pub extern "C" fn fai_std_to_niche_b(o: Value) -> Value {
     let p = as_obj(o);
     // SAFETY: a boxed standard `Option` is a `Some` cell with one field.
     unsafe {
-        let payload = read_i64(p, DATA_FIELDS_OFFSET);
+        let payload = read_i64(p, data_offset(p));
         // As `fai_std_to_niche_a`: drop the wrapper (shared-aware), transferring or
         // duplicating the payload reference depending on whether the shell was last.
         if rc_dec_is_dead(p) {
@@ -1698,8 +1702,7 @@ pub extern "C" fn fai_std_to_niche_b(o: Value) -> Value {
 /// The number of fields in a boxed data value.
 unsafe fn data_field_count(v: Value) -> usize {
     // SAFETY: `v` is a boxed data value.
-    let size = unsafe { read_u64(as_obj(v), SIZE_OFFSET) } as usize;
-    (size - DATA_FIELDS_OFFSET) / 8
+    unsafe { data_len(as_obj(v)) }
 }
 
 /// Reads a data value's constructor tag (**borrowing** `v`), as an immediate
@@ -1708,8 +1711,8 @@ unsafe fn data_field_count(v: Value) -> usize {
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_data_tag(v: Value) -> Value {
     let tag = if is_boxed(v) {
-        // SAFETY: a boxed data value stores its tag at `DATA_TAG_OFFSET`.
-        unsafe { read_u64(as_obj(v), DATA_TAG_OFFSET) as i64 }
+        // SAFETY: a boxed data value has a tag in its compact or extended header.
+        unsafe { object_data_tag(as_obj(v)) as i64 }
     } else {
         v >> 1
     };
@@ -1730,7 +1733,7 @@ pub extern "C" fn fai_data_field(v: Value, index: i64) -> Value {
     let i = index as usize;
     // SAFETY: `v` is a boxed data value with at least `index + 1` fields.
     unsafe {
-        let bits = read_i64(as_obj(v), DATA_FIELDS_OFFSET + i * 8);
+        let bits = read_i64(as_obj(v), data_offset(as_obj(v)) + i * 8);
         if slot_is_scalar(as_obj(v), i) {
             // A fresh box (rc = 1) owned by the caller; the cell keeps its bits.
             fai_box_float(bits)
@@ -1760,12 +1763,13 @@ pub extern "C" fn fai_record_update(record: Value, index: Value, value: Value) -
     // SAFETY: `record` is a boxed data value; `slot` is a valid field index.
     unsafe {
         let p = as_obj(record);
-        let old_bitmap = desc_scalar_bitmap(obj_descriptor(p));
+        let old_bitmap = data_scalars(p);
+        let old_offset = data_offset(p);
         let old_slot_scalar = slot < 64 && old_bitmap & (1u64 << slot) != 0;
         // The new field is scalar iff the replacement is a `Float` (and the slot is
         // representable in the bitmap).
         let new_slot_scalar =
-            slot < 64 && is_boxed(value) && desc_kind(obj_descriptor(as_obj(value))) == KIND_FLOAT;
+            slot < 64 && is_boxed(value) && object_kind(as_obj(value)) == KIND_FLOAT;
         let new_bitmap = if new_slot_scalar {
             old_bitmap | (1u64 << slot)
         } else if slot < 64 {
@@ -1783,35 +1787,38 @@ pub extern "C" fn fai_record_update(record: Value, index: Value, value: Value) -
             value
         };
 
-        // Unique owner: overwrite the field in place, releasing the old one.
-        if rc_load(p) == 1 {
-            let old = read_i64(p, DATA_FIELDS_OFFSET + slot * 8);
-            write_i64(p, DATA_FIELDS_OFFSET + slot * 8, stored);
+        let tag = object_data_tag(p) as i64;
+        let n = data_len(p);
+        let layout = DataLayout::new(tag, n, new_bitmap);
+        let descriptor = if layout.metadata.is_some() {
+            &raw const FAI_DATA_DESC
+        } else {
+            intern_data_descriptor(new_bitmap)
+        };
+        // A representation-changing update may need a different header size.
+        if rc_load(p) == 1 && layout.size == object_size(p) && layout.fields_offset == old_offset {
+            let old = read_i64(p, old_offset + slot * 8);
+            write_i64(p, old_offset + slot * 8, stored);
             // A scalar (raw) old field carries no reference count.
             if !old_slot_scalar {
                 fai_drop(old);
             }
-            if new_bitmap != old_bitmap {
-                write_ptr(p, DESC_OFFSET, intern_data_descriptor(new_bitmap).cast());
-            }
+            layout.initialize(p, descriptor, tag);
             return record;
         }
         // Shared: copy the record with the field replaced, under the new bitmap.
-        let tag = read_u64(p, DATA_TAG_OFFSET) as i64;
-        let n = data_field_count(record);
-        let size = DATA_FIELDS_OFFSET + n * 8;
-        let q = alloc_obj(size, intern_data_descriptor(new_bitmap));
-        write_u64(q, DATA_TAG_OFFSET, tag as u64);
+        let q = alloc_raw(layout.size);
+        layout.initialize(q, descriptor, tag);
         for i in 0..n {
             if i == slot {
-                write_i64(q, DATA_FIELDS_OFFSET + i * 8, stored);
+                write_i64(q, layout.fields_offset + i * 8, stored);
             } else {
-                let field = read_i64(p, DATA_FIELDS_OFFSET + i * 8);
+                let field = read_i64(p, old_offset + i * 8);
                 // A scalar (raw) field is copied as bits; a uniform one is dup'd.
                 if !(i < 64 && old_bitmap & (1u64 << i) != 0) {
                     fai_dup(field);
                 }
-                write_i64(q, DATA_FIELDS_OFFSET + i * 8, field);
+                write_i64(q, layout.fields_offset + i * 8, field);
             }
         }
         // Release this reference; dropping it releases the copied-out uniform fields
@@ -2330,31 +2337,8 @@ pub unsafe extern "C" fn fai_reuse(
     nfields: i64,
     fields: *const i64,
 ) -> Value {
-    let n = nfields as usize;
-    let size = DATA_FIELDS_OFFSET + n * 8;
-    if token != NO_REUSE {
-        let p = token as usize as *mut u8;
-        // SAFETY: `token` is a reset object's memory; its size header is valid.
-        let cell_size = unsafe { read_u64(p, SIZE_OFFSET) } as usize;
-        if cell_size == size {
-            // SAFETY: `p` has exactly room for the header, tag, and `n` fields;
-            // its children were already released by `fai_drop_reuse`.
-            unsafe {
-                write_u64(p, RC_OFFSET, 1);
-                write_ptr(p, DESC_OFFSET, std::ptr::addr_of!(FAI_DATA_DESC).cast());
-                write_u64(p, DATA_TAG_OFFSET, tag as u64);
-                for i in 0..n {
-                    write_i64(p, DATA_FIELDS_OFFSET + i * 8, *fields.add(i));
-                }
-            }
-            return from_obj(p);
-        }
-        // Wrong size: the token's children are gone, so just reclaim its memory.
-        // SAFETY: `p` is a reset object's memory.
-        unsafe { free_obj(p) };
-    }
-    // SAFETY: `fields` points to `n` owned values.
-    unsafe { fai_make_data(tag, nfields, fields) }
+    // SAFETY: the shared descriptor marks all supplied fields as owned words.
+    unsafe { fai_reuse_scalar(&FAI_DATA_DESC, token, tag, nfields, fields) }
 }
 
 /// Builds a data value carrying the per-shape descriptor `desc` (scalar bitmap),
@@ -2374,21 +2358,20 @@ pub unsafe extern "C" fn fai_reuse_scalar(
     nfields: i64,
     fields: *const i64,
 ) -> Value {
-    let n = nfields as usize;
-    let size = DATA_FIELDS_OFFSET + n * 8;
+    let n = usize::try_from(nfields).unwrap_or_else(|_| fai_allocation_size_panic());
+    // SAFETY: the caller guarantees a valid data descriptor.
+    let layout = DataLayout::new(tag, n, unsafe { desc_scalar_bitmap(desc) });
     if token != NO_REUSE {
         let p = token as usize as *mut u8;
         // SAFETY: `token` is a reset object's memory; its size header is valid.
-        let cell_size = unsafe { read_u64(p, SIZE_OFFSET) } as usize;
-        if cell_size == size {
+        let cell_size = unsafe { object_size(p) };
+        if cell_size == layout.size {
             // SAFETY: `p` has room for the header, tag, and `n` fields; its children
             // were already released by `fai_drop_reuse` (per the old descriptor).
             unsafe {
-                write_u64(p, RC_OFFSET, 1);
-                write_ptr(p, DESC_OFFSET, desc.cast());
-                write_u64(p, DATA_TAG_OFFSET, tag as u64);
+                layout.initialize(p, desc, tag);
                 for i in 0..n {
-                    write_i64(p, DATA_FIELDS_OFFSET + i * 8, *fields.add(i));
+                    write_i64(p, layout.fields_offset + i * 8, *fields.add(i));
                 }
             }
             return from_obj(p);
@@ -3093,14 +3076,9 @@ pub extern "C" fn fai_string_contains_borrowed(s: Value, needle: Value) -> Value
 fn list_of_strings(pieces: &[Value]) -> Value {
     let mut list = imm_int(NIL_TAG);
     for &piece in pieces.iter().rev() {
-        let p = alloc_obj(DATA_FIELDS_OFFSET + 16, &FAI_DATA_DESC);
-        // SAFETY: `p` has room for the tag and two fields.
-        unsafe {
-            write_u64(p, DATA_TAG_OFFSET, CONS_TAG as u64);
-            write_i64(p, DATA_FIELDS_OFFSET, piece);
-            write_i64(p, DATA_FIELDS_OFFSET + 8, list);
-        }
-        list = from_obj(p);
+        let fields = [piece, list];
+        // SAFETY: the owned head and tail are transferred into the cons cell.
+        list = unsafe { fai_make_data(CONS_TAG, 2, fields.as_ptr()) };
     }
     list
 }
@@ -3204,13 +3182,14 @@ pub extern "C" fn fai_string_join_borrowed(sep: Value, list: Value) -> Value {
         let mut first = true;
         while is_boxed(cur) {
             let p = as_obj(cur);
-            let head = read_i64(p, DATA_FIELDS_OFFSET);
+            let offset = data_offset(p);
+            let head = read_i64(p, offset);
             if !first {
                 out.push_str(sep_s);
             }
             first = false;
             out.push_str(string_str(head));
-            cur = read_i64(p, DATA_FIELDS_OFFSET + 8);
+            cur = read_i64(p, offset + 8);
         }
         out
     };
@@ -3256,14 +3235,9 @@ const CONS_TAG: i64 = 1;
 fn cons_list(elems: &[Value]) -> Value {
     let mut list = imm_int(NIL_TAG);
     for &e in elems.iter().rev() {
-        let p = alloc_obj(DATA_FIELDS_OFFSET + 16, &FAI_DATA_DESC);
-        // SAFETY: `p` has room for the tag and two fields; ownership of `e` transfers.
-        unsafe {
-            write_u64(p, DATA_TAG_OFFSET, CONS_TAG as u64);
-            write_i64(p, DATA_FIELDS_OFFSET, e);
-            write_i64(p, DATA_FIELDS_OFFSET + 8, list);
-        }
-        list = from_obj(p);
+        let fields = [e, list];
+        // SAFETY: the owned head and tail are transferred into the cons cell.
+        list = unsafe { fai_make_data(CONS_TAG, 2, fields.as_ptr()) };
     }
     list
 }
@@ -3385,7 +3359,8 @@ pub extern "C" fn fai_bytes_from_list(list: Value) -> Value {
         // whole list is dropped once at the end).
         let (head, tail) = unsafe {
             let p = as_obj(cur);
-            (read_i64(p, DATA_FIELDS_OFFSET), read_i64(p, DATA_FIELDS_OFFSET + 8))
+            let offset = data_offset(p);
+            (read_i64(p, offset), read_i64(p, offset + 8))
         };
         bytes.push((unbox_int(head) & 0xff) as u8);
         cur = tail;
@@ -3506,9 +3481,9 @@ pub unsafe extern "C" fn fai_apply_n(callee: Value, argc: u64, args: *const i64)
     }
     let p = as_obj(callee);
     // SAFETY: `callee` is boxed.
-    let desc = unsafe { obj_descriptor(p) };
+    let kind = unsafe { object_kind(p) };
 
-    if unsafe { desc_kind(desc) } == KIND_PAP || unsafe { desc_kind(desc) } == KIND_STACK_PAP {
+    if kind == KIND_PAP || kind == KIND_STACK_PAP {
         // Take owned references to the stored target and arguments, then release
         // this reference to the shell (a stack partial application releases its
         // children but is not freed). Dropping (rather than unconditionally
@@ -3531,9 +3506,7 @@ pub unsafe extern "C" fn fai_apply_n(callee: Value, argc: u64, args: *const i64)
         }
     }
 
-    if unsafe { desc_kind(desc) } != KIND_CLOSURE
-        && unsafe { desc_kind(desc) } != KIND_STACK_CLOSURE
-    {
+    if kind != KIND_CLOSURE && kind != KIND_STACK_CLOSURE {
         fai_panic("application of a non-function value (bad descriptor)");
     }
 
@@ -3593,7 +3566,7 @@ fn is_function_value(v: Value) -> bool {
         return false;
     }
     // SAFETY: `v` is boxed.
-    let kind = unsafe { desc_kind(obj_descriptor(as_obj(v))) };
+    let kind = unsafe { object_kind(as_obj(v)) };
     kind == KIND_CLOSURE || kind == KIND_STACK_CLOSURE || kind == KIND_PAP || kind == KIND_STACK_PAP
 }
 
@@ -3626,8 +3599,8 @@ fn values_equal(a: Value, b: Value) -> bool {
         (true, true) => {
             // SAFETY: both are boxed values.
             unsafe {
-                let ka = desc_kind(obj_descriptor(as_obj(a)));
-                let kb = desc_kind(obj_descriptor(as_obj(b)));
+                let ka = object_kind(as_obj(a));
+                let kb = object_kind(as_obj(b));
                 // An inline `String` and a borrowing slice are both `String` values:
                 // compare them by content regardless of representation (so a sliced
                 // `"abc"` equals an inline `"abc"`, e.g. as `Dict` keys).
@@ -3674,7 +3647,7 @@ fn values_equal(a: Value, b: Value) -> bool {
 unsafe fn data_equal(a: Value, b: Value) -> bool {
     // SAFETY: `a` and `b` are boxed data values.
     unsafe {
-        if read_u64(as_obj(a), DATA_TAG_OFFSET) != read_u64(as_obj(b), DATA_TAG_OFFSET) {
+        if object_data_tag(as_obj(a)) != object_data_tag(as_obj(b)) {
             return false;
         }
         let n = data_field_count(a);
@@ -3683,11 +3656,13 @@ unsafe fn data_equal(a: Value, b: Value) -> bool {
         }
         // Generic construction can box a Float that concrete construction stores
         // raw. Equal logical types need not share a physical scalar bitmap.
-        let scalar_a = desc_scalar_bitmap(obj_descriptor(as_obj(a)));
-        let scalar_b = desc_scalar_bitmap(obj_descriptor(as_obj(b)));
+        let scalar_a = data_scalars(as_obj(a));
+        let scalar_b = data_scalars(as_obj(b));
+        let offset_a = data_offset(as_obj(a));
+        let offset_b = data_offset(as_obj(b));
         for i in 0..n {
-            let fa = read_i64(as_obj(a), DATA_FIELDS_OFFSET + i * 8);
-            let fb = read_i64(as_obj(b), DATA_FIELDS_OFFSET + i * 8);
+            let fa = read_i64(as_obj(a), offset_a + i * 8);
+            let fb = read_i64(as_obj(b), offset_b + i * 8);
             let raw_a = i < 64 && scalar_a & (1u64 << i) != 0;
             let raw_b = i < 64 && scalar_b & (1u64 << i) != 0;
             if raw_a || raw_b {
@@ -3762,7 +3737,7 @@ fn values_compare(a: Value, b: Value) -> std::cmp::Ordering {
     // Otherwise identify the kind from a boxed operand (both share a type).
     let boxed = if is_boxed(a) { a } else { b };
     // SAFETY: `boxed` is a boxed value.
-    let kind = unsafe { desc_kind(obj_descriptor(as_obj(boxed))) };
+    let kind = unsafe { object_kind(as_obj(boxed)) };
     if is_resource_kind(kind) {
         return resource_identity(a).cmp(&resource_identity(b));
     }
@@ -3792,11 +3767,13 @@ fn values_compare(a: Value, b: Value) -> std::cmp::Ordering {
                     // SAFETY: both are boxed data values with equal field counts.
                     unsafe {
                         let n = data_field_count(a);
-                        let scalar_a = desc_scalar_bitmap(obj_descriptor(as_obj(a)));
-                        let scalar_b = desc_scalar_bitmap(obj_descriptor(as_obj(b)));
+                        let scalar_a = data_scalars(as_obj(a));
+                        let scalar_b = data_scalars(as_obj(b));
+                        let offset_a = data_offset(as_obj(a));
+                        let offset_b = data_offset(as_obj(b));
                         for i in 0..n {
-                            let fa = read_i64(as_obj(a), DATA_FIELDS_OFFSET + i * 8);
-                            let fb = read_i64(as_obj(b), DATA_FIELDS_OFFSET + i * 8);
+                            let fa = read_i64(as_obj(a), offset_a + i * 8);
+                            let fb = read_i64(as_obj(b), offset_b + i * 8);
                             let raw_a = i < 64 && scalar_a & (1u64 << i) != 0;
                             let raw_b = i < 64 && scalar_b & (1u64 << i) != 0;
                             let ord = if raw_a || raw_b {
@@ -3830,8 +3807,8 @@ fn values_compare(a: Value, b: Value) -> std::cmp::Ordering {
 /// Reads a data value's tag as an immediate `Int`, without consuming it.
 fn data_tag(v: Value) -> Value {
     if is_boxed(v) {
-        // SAFETY: a boxed data value stores its tag at `DATA_TAG_OFFSET`.
-        imm_int(unsafe { read_u64(as_obj(v), DATA_TAG_OFFSET) as i64 })
+        // SAFETY: a boxed data value has a tag in its compact or extended header.
+        imm_int(unsafe { object_data_tag(as_obj(v)) as i64 })
     } else {
         v
     }
@@ -3886,7 +3863,7 @@ fn values_hash(v: Value) -> u64 {
         return mix64((v >> 1) as u64);
     }
     // SAFETY: `v` is boxed, so it has a valid descriptor.
-    let kind = unsafe { desc_kind(obj_descriptor(as_obj(v))) };
+    let kind = unsafe { object_kind(as_obj(v)) };
     if is_string_kind(kind) {
         // SAFETY: `v` is a boxed string-like value (inline buffer or slice view).
         return hash_bytes(unsafe { string_bytes(v) });
@@ -3905,16 +3882,17 @@ fn values_hash(v: Value) -> u64 {
         KIND_DATA => {
             // SAFETY: `v` is a boxed data value.
             unsafe {
-                let tag = read_u64(as_obj(v), DATA_TAG_OFFSET);
+                let tag = object_data_tag(as_obj(v));
                 let n = data_field_count(v);
                 // Hash each field according to this cell's physical layout;
                 // raw and boxed Float fields contribute identical logical bits.
-                let scalar = desc_scalar_bitmap(obj_descriptor(as_obj(v)));
+                let scalar = data_scalars(as_obj(v));
+                let offset = data_offset(as_obj(v));
                 // Seed with the tag and arity so two constructors of the same type
                 // with differently-positioned identical fields do not collide.
                 let mut h = mix64(tag ^ (n as u64).rotate_left(32));
                 for i in 0..n {
-                    let f = read_i64(as_obj(v), DATA_FIELDS_OFFSET + i * 8);
+                    let f = read_i64(as_obj(v), offset + i * 8);
                     let fh = if i < 64 && scalar & (1u64 << i) != 0 {
                         // Scalar float slot: hash its raw bits (the same equality a
                         // boxed `Float` uses).
@@ -4621,8 +4599,17 @@ fn verify_payload(p: *const u8, size: usize, byte: u8) {
 /// The M:N green-thread scheduler that runs a Fai program's concurrent tasks.
 mod scheduler;
 
+mod data_header;
 mod local_time;
 mod random;
+pub use data_header::{
+    COMPACT_DATA, COMPACT_FIELDS_OFFSET, COMPACT_FIELDS_SHIFT, COMPACT_SCALARS_SHIFT,
+    COMPACT_TAG_SHIFT, compact_data_metadata, data_header_size,
+};
+use data_header::{
+    DataLayout, data_len, data_offset, data_scalars, data_tag as object_data_tag, header_word,
+    object_kind, object_size,
+};
 mod slab;
 
 /// The network I/O reactor (readiness-driven non-blocking sockets over `mio`).
