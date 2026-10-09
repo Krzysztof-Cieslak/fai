@@ -712,9 +712,10 @@ impl Prim {
     /// operand may be borrowed (the caller keeps ownership and the runtime's
     /// borrowed variant does not consume it) rather than consumed.
     ///
-    /// True only for the inspect-only primitives — `=`, structural `compare`, and
-    /// the `String` readers — and only when the operand is a reliably boxed,
-    /// reference-counted type. Immediate operands (notably the hot `match`
+    /// True only for inspect-only primitives on reliably boxed types, or for a
+    /// structural comparison/hash on a type-variable operand. The latter still
+    /// has the uniform value ABI and its runtime reader does not consume it.
+    /// Immediate operands (notably the hot `match`
     /// tag-test path) stay consumed, since lending them would only add a no-op
     /// drop. Both reference counting and code generation consult this, so they
     /// agree on whether the operand is borrowed.
@@ -738,7 +739,9 @@ impl Prim {
                 | Prim::ArrayTake
                 | Prim::ArraySplit
                 | Prim::ArrayJoin
-        ) && is_boxed_rc(operand_ty)
+        ) && (is_boxed_rc(operand_ty)
+            || (matches!(self, Prim::Eq | Prim::Compare | Prim::Hash)
+                && matches!(operand_ty, Ty::Var(_))))
     }
 
     /// The runtime symbol of this primitive's non-consuming variant, for the

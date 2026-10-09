@@ -7,13 +7,11 @@
 //! parameter that is only read, own one whose contents escape (so that, e.g., a
 //! rebuilt list keeps being reused in place).
 //!
-//! One ownership rule is not about churn but about enabling a later transform: a
-//! parameter that flows into a **saturated self-call in tail position** is owned,
-//! never borrowed. A lent argument must be dropped *after* the call, which would
-//! push the call out of tail position; owning it keeps the self-call in tail
-//! position so the recursion can be flattened into a loop (turning, e.g., an
-//! accumulator fold into constant stack space). Non-tail self-calls (`1 + f r`)
-//! are unaffected and still borrow.
+//! Parameters that change in a **saturated self-call in tail position** stay
+//! owned: otherwise a fresh argument would need releasing after the call and
+//! prevent loop lowering. An unchanged, inspect-only parameter may stay borrowed
+//! throughout the loop. Arrays that are read and reconstructed stay owned so a
+//! later in-place update can reuse their storage.
 //!
 //! The analysis is **inter-procedural**: a parameter that is only forwarded to
 //! another function's borrowing parameter is itself borrowed. A saturated direct
@@ -29,7 +27,7 @@
 //! callee's body only ripples to callers when its borrow signature actually
 //! changes (early cutoff on the small [`BorrowSig`] value).
 
-use fai_core::ir::{CExpr, CoreFn, ExprKind as K};
+use fai_core::ir::{CExpr, CoreFn, ExprKind as K, Prim};
 use fai_core::{core, helper_inlined};
 use fai_db::{Db, SourceFile};
 use fai_resolve::{DefId, LocalId};
@@ -179,14 +177,14 @@ struct Facts {
     escaped: FxHashSet<LocalId>,
     /// Parameters that are matched (a cell of theirs is projected).
     matched: FxHashSet<LocalId>,
-    /// Whether the body constructs a data value (so a matched cell can be reused).
+    /// Whether the body constructs data or array storage (which may be reused).
     reconstructs: bool,
 }
 
 /// The parameters that are *owned* under the current self signature (and callees'
 /// signatures, consulted via `db`): a value derived from the parameter (by
 /// projection or aliasing) reaches a consuming position.
-fn analyze<'a>(db: &'a dyn Db, entry: &CoreFn, self_def: DefId, self_sig: &'a [bool]) -> Facts {
+fn analyze<'a>(db: &'a dyn Db, entry: &'a CoreFn, self_def: DefId, self_sig: &'a [bool]) -> Facts {
     let mut origins: FxHashMap<LocalId, LocalId> = FxHashMap::default();
     for &p in &entry.params {
         origins.insert(p, p);
@@ -195,6 +193,7 @@ fn analyze<'a>(db: &'a dyn Db, entry: &CoreFn, self_def: DefId, self_sig: &'a [b
         db,
         self_def,
         self_sig,
+        params: &entry.params,
         origins,
         field: FxHashSet::default(),
         owned: FxHashSet::default(),
@@ -209,6 +208,7 @@ struct Analyzer<'a> {
     db: &'a dyn Db,
     self_def: DefId,
     self_sig: &'a [bool],
+    params: &'a [LocalId],
     /// The parameter each local is a projection/alias of, if any.
     origins: FxHashMap<LocalId, LocalId>,
     /// Locals that are a *projected field* (an independent value), as opposed to a
@@ -218,7 +218,7 @@ struct Analyzer<'a> {
     owned: FxHashSet<LocalId>,
     /// Parameters that are matched (a cell of theirs is projected).
     matched: FxHashSet<LocalId>,
-    /// Whether the body constructs a data value (so a matched cell can be reused).
+    /// Whether the body constructs data or array storage (which may be reused).
     reconstructs: bool,
 }
 
@@ -304,9 +304,8 @@ impl Analyzer<'_> {
     }
 
     /// Whether `func` applied to `nargs` arguments is a saturated call to this very
-    /// function. A *tail* such call can be flattened into a loop, which requires
-    /// its arguments to be owned (transferred), so we never borrow a parameter that
-    /// flows into one.
+    /// function. A tail call can retain borrowed invariant parameters, but any
+    /// changing argument must transfer ownership to keep the call in tail position.
     fn is_self_call(&self, func: &CExpr, nargs: usize) -> bool {
         matches!(&func.kind, K::Global(def) if *def == self.self_def)
             && nargs == self.self_sig.len()
@@ -349,7 +348,31 @@ impl Analyzer<'_> {
             // parameter consumed this way is owned (so it is not needlessly
             // duplicated); a projected field is independent, so it does not force its
             // parent to be owned.
-            K::Prim { args, .. } | K::Foreign { args, .. } => {
+            K::Prim { op, args } => {
+                if matches!(op, Prim::ArrayGet | Prim::ArrayPeek | Prim::ArrayTake)
+                    && let Some(array) = args.first()
+                {
+                    self.record_match(array);
+                }
+                if matches!(
+                    op,
+                    Prim::ArrayWithCapacity
+                        | Prim::ArrayPush
+                        | Prim::ArraySet
+                        | Prim::ArrayPut
+                        | Prim::ArrayUnique
+                ) {
+                    self.reconstructs = true;
+                }
+                let borrows = args.first().is_some_and(|arg| op.borrows_operand(&arg.ty));
+                for a in args {
+                    self.scan(a, false);
+                    if !borrows {
+                        self.inspect(a);
+                    }
+                }
+            }
+            K::Foreign { args, .. } => {
                 for a in args {
                     self.scan(a, false);
                     self.inspect(a);
@@ -375,16 +398,21 @@ impl Analyzer<'_> {
             K::App { func, args, .. } => {
                 self.scan(func, false);
                 self.consume(func);
-                // A saturated self-call in tail position owns its arguments. A lent
-                // argument must be dropped *after* the call, which would push the
-                // call out of tail position; owning it keeps the call in tail
-                // position so the recursion can later be flattened into a loop.
-                // Other calls (and non-tail self-calls) follow the borrow signature.
+                // Borrowed parameters may be forwarded unchanged through a loop.
+                // A changing slot must own even a fresh argument with no parameter
+                // origin, otherwise its trailing release prevents tail lowering.
                 let tail_self_call = tail && self.is_self_call(func, args.len());
                 let borrows = self.call_arg_borrows(func, args.len());
                 for (i, a) in args.iter().enumerate() {
                     self.scan(a, false);
-                    if tail_self_call || !borrows.get(i).copied().unwrap_or(false) {
+                    let unchanged = self
+                        .params
+                        .get(i)
+                        .is_some_and(|param| self.origin(a) == Some(*param) && !self.is_field(a));
+                    if tail_self_call && !unchanged {
+                        self.owned.insert(self.params[i]);
+                    }
+                    if (tail_self_call && !unchanged) || !borrows.get(i).copied().unwrap_or(false) {
                         self.consume(a);
                     }
                 }

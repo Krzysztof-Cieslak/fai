@@ -1417,11 +1417,15 @@ program output are unchanged, guarded by the full type/golden suite):
     per-definition `object_code` path untouched; reachability still finds members
     (and their callees) through their original bodies. Cross-module groups and
     constructor-wrapped ("modulo cons") mutual calls are left as ordinary recursion.
-  - **Borrowing yields to it (amends D79).** A parameter that flows into a
-    saturated tail self-call is **owned, not borrowed**: a lent argument must be
-    dropped *after* the call, which would push the call out of tail position. So an
-    accumulator fold (`sum`/`length`/`find`) is owned, runs in constant stack, and
-    frees its input cell-by-cell. Non-tail self-calls (`1 + f r`) are unaffected.
+  - **Borrowing and loop lowering.** A changing parameter of a saturated tail
+    self-call stays owned: releasing a fresh lent argument after the call would
+    defeat loop lowering. Unchanged inspect-only parameters may remain borrowed.
+    Consumed list cursors still release their cells as they advance, and arrays
+    that are read and rebuilt stay owned to preserve in-place update opportunities.
+    Structural comparisons and hashes borrow type-variable operands too; borrow
+    inference follows the primitive's actual consuming-or-borrowing convention.
+    Typed Int-array loads place the boxed full-width fallback out of the ordinary
+    immediate scan, keeping the hot loop contiguous without changing stored values.
   - **IR.** A generic loop (`Join`/`Recur`) plus, for a constructor-wrapped
     recursion, **destination passing**: a non-reference-counted "hole" token (the
     same shape as a reuse token) threads through the loop; each iteration builds its
