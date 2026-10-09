@@ -2280,6 +2280,36 @@ fn borrowed_array_scan_reads_full_width_int_slots() {
 }
 
 #[test]
+fn invariant_capturing_callback_keeps_its_environment() {
+    let source = "module M\nlet loop f n x = if n <= 0 then x else loop f (n - 1) (f x)\nlet runLoop shift = loop (fun x -> x + shift) 3 1\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (runLoop 4))\n";
+    assert_eq!(run(source), (0, "13\n".into()));
+}
+
+#[test]
+fn invariant_partial_callback_keeps_its_stored_argument() {
+    let source = "module M\nlet loop f n x = if n <= 0 then x else loop f (n - 1) (f x)\nlet shift amount value = amount + value\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (loop (shift 3) 4 1))\n";
+    assert_eq!(run(source), (0, "13\n".into()));
+}
+
+#[test]
+fn invariant_overapplication_keeps_the_runtime_path() {
+    let source = "module M\nlet curried left = fun right -> left + right\nlet loop f n x = if n <= 0 then x else loop f (n - 1) (f x 2)\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (loop curried 3 1))\n";
+    assert_eq!(run(source), (0, "7\n".into()));
+}
+
+#[test]
+fn invariant_callback_keeps_effect_order() {
+    let source = "module M\nlet loop f n x = if n <= 0 then x else loop f (n - 1) (f x)\nlet step x =\n  let _ = stdConsole.writeLine (Int.toString x)\n  x + 1\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (loop step 3 0))\n";
+    assert_eq!(run(source), (0, "0\n1\n2\n3\n".into()));
+}
+
+#[test]
+fn invariant_float_callback_keeps_the_uniform_boundary() {
+    let source = "module M\nlet loop f n x = if n <= 0 then x else loop f (n - 1) (f x)\nlet step x = x + 0.25\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Float.toString (loop step 3 0.5))\n";
+    assert_eq!(run(source), (0, "1.25\n".into()));
+}
+
+#[test]
 fn generic_equality_on_an_enum_takes_the_immediate_path() {
     // Every constructor is nullary, so every value is an immediate: the guard's
     // fast arm always runs.

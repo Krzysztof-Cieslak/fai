@@ -533,6 +533,9 @@ A runtime function value that is an immortal closure and is exactly saturated
 can use a guarded indirect call to its uniform entry, avoiding `apply_n` dispatch.
 Arguments and results still use the same boxed ABI. Capturing, partial,
 over-applied, and concurrent cases retain the runtime path.
+A bounded loop whose callback parameter never changes can test that entry once
+and reuse it. The proven immortal branch also skips duplicate-count work; changing
+callbacks and inconsistent application arities keep their ordinary dispatch.
 
 Opaque aliases retain their nominal type in cross-file value, constructor, and
 interface-method signatures, including through transparent re-exports. Names

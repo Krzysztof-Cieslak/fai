@@ -961,6 +961,7 @@ fn build_fn<M: Module>(
             unique_float_cells: FxHashSet::default(),
             borrowed_cursors: FxHashSet::default(),
             borrowed_projections: FxHashSet::default(),
+            invariant_callback: None,
             loop_ctx: None,
             result_slot: None,
             bounds: Bounds::new(),
@@ -1093,6 +1094,14 @@ fn build_fn<M: Module>(
                 };
                 tr.define_var(c, v);
             }
+        }
+
+        if !tr.concurrent
+            && let Some((local, arity)) = crate::callback_plan::invariant(core_fn, &tr.var_tys)
+        {
+            let value = tr.use_var(local);
+            let code = tr.callback_entry(value, arity);
+            tr.invariant_callback = Some((local, arity, code));
         }
 
         let retained_root = if is_entry
@@ -1415,6 +1424,8 @@ struct Translator<'a, M: Module> {
     borrowed_cursors: FxHashSet<LocalId>,
     /// Projections that borrow from the retained root.
     borrowed_projections: FxHashSet<(LocalId, u32)>,
+    /// A guarded immortal entry for a loop-invariant callback parameter.
+    invariant_callback: Option<(LocalId, usize, Value)>,
     /// The enclosing tail-call loop, while translating a `Join` body: where
     /// `Recur` jumps back and where the loop's result exits.
     loop_ctx: Option<LoopCtx>,
@@ -2117,6 +2128,24 @@ impl<M: Module> Translator<'_, M> {
     /// [`DupPlan`]: an immediate is a no-op, an always-boxed value increments
     /// unconditionally, and any other value guards the increment with a tag-check.
     fn dup_local(&mut self, local: LocalId) {
+        if let Some((callback, _, code)) = self.invariant_callback
+            && callback == local
+        {
+            let counted = self.builder.create_block();
+            let done = self.builder.create_block();
+            self.builder.ins().brif(code, done, &[], counted, &[]);
+            self.builder.switch_to_block(counted);
+            self.builder.seal_block(counted);
+            self.dup_local_counted(local);
+            self.builder.ins().jump(done, &[]);
+            self.builder.switch_to_block(done);
+            self.builder.seal_block(done);
+        } else {
+            self.dup_local_counted(local);
+        }
+    }
+
+    fn dup_local_counted(&mut self, local: LocalId) {
         if self.borrowed_cursors.contains(&local) {
             return;
         }
@@ -5803,7 +5832,14 @@ impl<M: Module> Translator<'_, M> {
         // back boxed/tagged and owned, unboxed to its raw representation.
         let callee = self.expr(func);
         let vals: Vec<Value> = args.iter().map(|a| self.expr_boxed(a)).collect();
-        let boxed = self.apply_n(callee, &vals);
+        let cached = self.invariant_callback.filter(|(local, arity, _)| {
+            *arity == vals.len() && matches!(func.kind, ExprKind::Local(value) if value == *local)
+        });
+        let boxed = if let Some((_, _, code)) = cached {
+            self.apply_cached_callback(callee, &vals, code)
+        } else {
+            self.apply_n(callee, &vals)
+        };
         match result_ty {
             Ty::Con(Con::Float) => self.owning_unbox(boxed),
             Ty::Con(Con::Int) => self.as_raw_int(boxed),
@@ -5824,52 +5860,11 @@ impl<M: Module> Translator<'_, M> {
         // Noncapturing functions and lambdas use immortal closure cells. For an
         // exact application their uniform entry can be called directly without
         // runtime dispatch or a closure drop. Keep every other shape on apply_n.
-        let inspect = self.builder.create_block();
-        let arity_check = self.builder.create_block();
         let fast = self.builder.create_block();
         let slow = self.builder.create_block();
         let done = self.builder.create_block();
         self.builder.append_block_param(done, types::I64);
-        let immediate = self.builder.ins().band_imm(callee, 1);
-        self.builder.ins().brif(immediate, slow, &[], inspect, &[]);
-        self.builder.switch_to_block(inspect);
-        self.builder.seal_block(inspect);
-        let rc =
-            self.builder.ins().load(types::I64, MemFlags::trusted(), callee, rt::RC_OFFSET as i32);
-        let classify = self.builder.create_block();
-        let compact = self.builder.ins().icmp_imm(IntCC::SignedLessThan, rc, 0);
-        self.builder.ins().brif(compact, slow, &[], classify, &[]);
-        self.builder.switch_to_block(classify);
-        self.builder.seal_block(classify);
-        let state = self.builder.ins().band_imm(rc, rt::RC_STATE_MASK as i64);
-        let immortal = self.builder.ins().icmp_imm(
-            IntCC::UnsignedGreaterThanOrEqual,
-            state,
-            rt::IMMORTAL_RC as i64,
-        );
-        let shared = self.builder.ins().band_imm(state, rt::MT_FLAG as i64);
-        let local = self.builder.ins().icmp_imm(IntCC::Equal, shared, 0);
-        let permanent = self.builder.ins().band(immortal, local);
-        let desc = self.builder.ins().load(
-            types::I64,
-            MemFlags::trusted(),
-            callee,
-            rt::DESC_OFFSET as i32,
-        );
-        let kind = self.builder.ins().load(types::I64, MemFlags::trusted(), desc, 0);
-        let closure = self.builder.ins().icmp_imm(IntCC::Equal, kind, rt::KIND_CLOSURE as i64);
-        let eligible = self.builder.ins().band(permanent, closure);
-        self.builder.ins().brif(eligible, arity_check, &[], slow, &[]);
-        self.builder.switch_to_block(arity_check);
-        self.builder.seal_block(arity_check);
-        let arity = self.builder.ins().load(
-            types::I64,
-            MemFlags::trusted(),
-            callee,
-            rt::CLOSURE_ARITY_OFFSET as i32,
-        );
-        let exact = self.builder.ins().icmp(IntCC::Equal, arity, argc);
-        self.builder.ins().brif(exact, fast, &[], slow, &[]);
+        self.branch_to_immortal_entry(callee, argc, fast, slow);
         self.builder.switch_to_block(fast);
         self.builder.seal_block(fast);
         let code = self.builder.ins().load(
@@ -5887,6 +5882,104 @@ impl<M: Module> Translator<'_, M> {
         self.builder.switch_to_block(slow);
         self.builder.seal_block(slow);
         let call = self.builder.ins().call(f, &[callee, argc, args_ptr]);
+        let value = self.builder.inst_results(call)[0];
+        self.builder.ins().jump(done, &[value.into()]);
+        self.builder.switch_to_block(done);
+        self.builder.seal_block(done);
+        self.builder.block_params(done)[0]
+    }
+
+    /// Returns an immortal closure's exact uniform entry, or null for the runtime path.
+    fn callback_entry(&mut self, callee: Value, arity: usize) -> Value {
+        let fast = self.builder.create_block();
+        let slow = self.builder.create_block();
+        let done = self.builder.create_block();
+        self.builder.append_block_param(done, types::I64);
+        let argc = self.builder.ins().iconst(types::I64, arity as i64);
+        self.branch_to_immortal_entry(callee, argc, fast, slow);
+        self.builder.switch_to_block(fast);
+        self.builder.seal_block(fast);
+        let code = self.builder.ins().load(
+            types::I64,
+            MemFlags::trusted(),
+            callee,
+            rt::CLOSURE_CODE_OFFSET as i32,
+        );
+        self.builder.ins().jump(done, &[code.into()]);
+        self.builder.switch_to_block(slow);
+        self.builder.seal_block(slow);
+        let null = self.builder.ins().iconst(types::I64, 0);
+        self.builder.ins().jump(done, &[null.into()]);
+        self.builder.switch_to_block(done);
+        self.builder.seal_block(done);
+        self.builder.block_params(done)[0]
+    }
+
+    fn branch_to_immortal_entry(&mut self, callee: Value, argc: Value, fast: Block, slow: Block) {
+        let inspect = self.builder.create_block();
+        let classify = self.builder.create_block();
+        let arity_check = self.builder.create_block();
+        let immediate = self.builder.ins().band_imm(callee, 1);
+        self.builder.ins().brif(immediate, slow, &[], inspect, &[]);
+        self.builder.switch_to_block(inspect);
+        self.builder.seal_block(inspect);
+        let rc =
+            self.builder.ins().load(types::I64, MemFlags::trusted(), callee, rt::RC_OFFSET as i32);
+        let compact = self.builder.ins().icmp_imm(IntCC::SignedLessThan, rc, 0);
+        self.builder.ins().brif(compact, slow, &[], classify, &[]);
+        self.builder.switch_to_block(classify);
+        self.builder.seal_block(classify);
+        let state = self.builder.ins().band_imm(rc, rt::RC_STATE_MASK as i64);
+        let immortal = self.builder.ins().icmp_imm(
+            IntCC::UnsignedGreaterThanOrEqual,
+            state,
+            rt::IMMORTAL_RC as i64,
+        );
+        let shared = self.builder.ins().band_imm(state, rt::MT_FLAG as i64);
+        let local = self.builder.ins().icmp_imm(IntCC::Equal, shared, 0);
+        let permanent = self.builder.ins().band(immortal, local);
+        let descriptor = self.builder.ins().load(
+            types::I64,
+            MemFlags::trusted(),
+            callee,
+            rt::DESC_OFFSET as i32,
+        );
+        let kind = self.builder.ins().load(types::I64, MemFlags::trusted(), descriptor, 0);
+        let closure = self.builder.ins().icmp_imm(IntCC::Equal, kind, rt::KIND_CLOSURE as i64);
+        let eligible = self.builder.ins().band(permanent, closure);
+        self.builder.ins().brif(eligible, arity_check, &[], slow, &[]);
+        self.builder.switch_to_block(arity_check);
+        self.builder.seal_block(arity_check);
+        let actual = self.builder.ins().load(
+            types::I64,
+            MemFlags::trusted(),
+            callee,
+            rt::CLOSURE_ARITY_OFFSET as i32,
+        );
+        let exact = self.builder.ins().icmp(IntCC::Equal, actual, argc);
+        self.builder.ins().brif(exact, fast, &[], slow, &[]);
+    }
+
+    fn apply_cached_callback(&mut self, callee: Value, values: &[Value], code: Value) -> Value {
+        let args = self.spill(values);
+        let fast = self.builder.create_block();
+        let slow = self.builder.create_block();
+        let done = self.builder.create_block();
+        self.builder.append_block_param(done, types::I64);
+        self.builder.ins().brif(code, fast, &[], slow, &[]);
+        self.builder.switch_to_block(fast);
+        self.builder.seal_block(fast);
+        let env = self.builder.ins().iadd_imm(callee, rt::CLOSURE_ENV_OFFSET as i64);
+        let signature = code_signature(self.module);
+        let signature = self.builder.import_signature(signature);
+        let call = self.builder.ins().call_indirect(signature, code, &[env, args]);
+        let value = self.builder.inst_results(call)[0];
+        self.builder.ins().jump(done, &[value.into()]);
+        self.builder.switch_to_block(slow);
+        self.builder.seal_block(slow);
+        let count = self.builder.ins().iconst(types::I64, values.len() as i64);
+        let apply = self.runtime("fai_apply_n", 3, true);
+        let call = self.builder.ins().call(apply, &[callee, count, args]);
         let value = self.builder.inst_results(call)[0];
         self.builder.ins().jump(done, &[value.into()]);
         self.builder.switch_to_block(done);

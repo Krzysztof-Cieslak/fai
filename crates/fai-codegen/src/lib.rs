@@ -13,6 +13,7 @@
 //! crate stays decoupled from the query database.
 
 mod aot;
+mod callback_plan;
 mod data_cursor;
 mod emit;
 mod jit;

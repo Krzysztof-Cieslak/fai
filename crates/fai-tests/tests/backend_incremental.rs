@@ -239,3 +239,16 @@ fn polymorphic_borrow_changes_update_callers_incrementally() {
         },
     );
 }
+
+#[test]
+fn callback_invariance_edits_match_clean_native_objects() {
+    let invariant = "module M\nlet loop f g n x = if n <= 0 then x else loop f g (n - 1) (f x)\n";
+    let changing = invariant.replace("loop f g (n - 1)", "loop g f (n - 1)");
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", invariant)], &[("M.fai", &changing)]],
+        |db, files| {
+            let file = db.source_file(files[0]).unwrap();
+            (*object_code(db, file, Symbol::intern("loop"), false)).clone()
+        },
+    );
+}

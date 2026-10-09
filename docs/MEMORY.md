@@ -3512,6 +3512,11 @@ Editor integration:
     capturing/partial/over-applied/concurrent cases keep `apply_n`. This retains
     the boxed calling convention and generic code sharing while avoiding the
     dispatcher for common noncapturing callbacks.
+    A bounded loop may cache this guarded entry for one callback parameter proven
+    unchanged at every back-edge and used at one application arity. A nonnull
+    cached entry also proves callback duplication is a no-op. Capturing, partial,
+    over-applied or changing callbacks retain ordinary dispatch; argument and
+    result conversions keep the same uniform ABI and effect order.
 
 - **D133 Unboxed `Array Float` (raw inline `f64` slots, self-tagged, no
   monomorphization).** An `Array Float` used to store each element as a pointer to a
