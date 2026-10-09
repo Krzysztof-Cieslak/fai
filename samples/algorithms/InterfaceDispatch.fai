@@ -1,9 +1,9 @@
 module InterfaceDispatch
 
 // Dispatch through an interface in a hot loop: each iteration picks one of three
-// `Scorer` instances and calls its method, so the call goes through a dictionary
-// (the compiled form of an interface instance) rather than a direct call. This
-// measures method-dispatch overhead. Used by the Rust-vs-Fai runtime benchmark.
+// `Scorer` instances and calls its method. The compiler can reduce this finite
+// known choice to branches and arithmetic; unknown instances still dispatch
+// through dictionaries. Used by the Rust-vs-Fai runtime benchmark.
 interface Scorer =
   score : Int -> Int
 

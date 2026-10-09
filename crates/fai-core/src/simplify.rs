@@ -57,6 +57,9 @@ use crate::fuse::prune_dead_fns;
 use crate::inline::{fresh_local, next_free_local, remap_expr, remap_local};
 use crate::ir::{CExpr, ClosureAlloc, CoreFn, ExprKind as K, FnId, LoweredDef};
 
+#[path = "choices.rs"]
+mod choices;
+
 /// The largest a CAF's body may be (total Core nodes across its entry and lifted
 /// lambdas) to be inlined at an applied use. Matches the helper-inliner budget so
 /// the two passes admit work of the same scale; a tunable bound, not a contract.
@@ -124,6 +127,9 @@ pub fn simplified(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef
         steps: 0,
         changed: false,
         reduce_combinators: !file.is_std(db),
+        known_values: FxHashMap::default(),
+        method_functions: Default::default(),
+        choice_growth: 4096,
     };
     // Process functions by index, since CAF inlining appends relocated lambdas
     // that must themselves be simplified (and may be pruned if beta consumes them).
@@ -165,6 +171,12 @@ struct Simplifier<'a> {
     /// Literal-value expansion is also useful inside std; broader combinator
     /// reduction stays disabled there so its contracts exercise the definitions.
     reduce_combinators: bool,
+    /// Stable lexical values available to interface projection/call reduction.
+    known_values: FxHashMap<LocalId, CExpr>,
+    /// Lifted functions exposed by a known interface projection.
+    method_functions: rustc_hash::FxHashSet<FnId>,
+    /// Remaining per-definition budget for duplicated choice continuations.
+    choice_growth: usize,
 }
 
 impl Simplifier<'_> {
@@ -217,11 +229,19 @@ impl Simplifier<'_> {
                 then: Box::new(self.simplify_expr(*then)),
                 els: Box::new(self.simplify_expr(*els)),
             },
-            K::Let { local, value, body } => K::Let {
-                local,
-                value: Box::new(self.simplify_expr(*value)),
-                body: Box::new(self.simplify_expr(*body)),
-            },
+            K::Let { local, value, body } => {
+                let value = self.simplify_expr(*value);
+                let previous = self.known_values.remove(&local);
+                if let Some(known) = self.known_binding(&value) {
+                    self.known_values.insert(local, known);
+                }
+                let body = self.simplify_expr(*body);
+                self.known_values.remove(&local);
+                if let Some(previous) = previous {
+                    self.known_values.insert(local, previous);
+                }
+                K::Let { local, value: Box::new(value), body: Box::new(body) }
+            }
             K::DataTag { base, niche } => {
                 K::DataTag { base: Box::new(self.simplify_expr(*base)), niche }
             }
@@ -284,6 +304,9 @@ impl Simplifier<'_> {
         }
         if !self.reduce_combinators {
             return (false, e);
+        }
+        if let Some(reduced) = self.contract_choice(&e) {
+            return (true, reduced);
         }
         let CExpr { kind, ty } = e;
         let K::App { func, args, reuse, alloc } = kind else {
@@ -415,8 +438,9 @@ impl Simplifier<'_> {
                 return None;
             }
         } else {
-            // Check arity before depending on another body's simplification.
-            if !core_inlined(self.db, self.file, def.name).entry().params.is_empty()
+            // The signature-derived ABI keeps ordinary function-body edits out
+            // of callers that are merely checking for a nullary CAF.
+            if !crate::abi_of(self.db, def).params.is_empty()
                 || recursive_defs(self.db, self.file).contains(&def)
             {
                 return None;
@@ -446,7 +470,13 @@ impl Simplifier<'_> {
         if caf.fns.iter().any(|f| body_has_error(&f.body)) {
             return None;
         }
-        // Relocate the CAF's lifted lambdas (`fns[1..]`) into this definition's
+        Some(self.relocated_body(&caf, &[]))
+    }
+
+    /// Copies a same-file definition into this one, retaining its argument
+    /// evaluation order and assigning fresh local and lifted-function identities.
+    fn relocated_body(&mut self, caf: &LoweredDef, args: &[CExpr]) -> CExpr {
+        // Relocate the callee's lifted lambdas (`fns[1..]`) into this definition's
         // `fns`, giving each a fresh id; the entry (`fns[0]`) is spliced as the
         // returned body, not appended. Locals are unique across a `LoweredDef`, so
         // one shared map freshens them all consistently.
@@ -456,6 +486,13 @@ impl Simplifier<'_> {
             fn_map.insert(FnId(i as u32), FnId((lifted_start + i - 1) as u32));
         }
         let mut locals: FxHashMap<LocalId, LocalId> = FxHashMap::default();
+        let bindings: Vec<_> = caf
+            .entry()
+            .params
+            .iter()
+            .zip(args)
+            .map(|(&param, value)| (remap_local(param, &mut locals, &mut self.next), value.clone()))
+            .collect();
         for f in caf.fns.iter().skip(1) {
             let params =
                 f.params.iter().map(|p| remap_local(*p, &mut locals, &mut self.next)).collect();
@@ -464,7 +501,12 @@ impl Simplifier<'_> {
             let body = remap_expr(&f.body, &mut locals, &fn_map, &mut self.next);
             self.fns.push(CoreFn { params, captures, body });
         }
-        Some(remap_expr(&caf.entry().body, &mut locals, &fn_map, &mut self.next))
+        let mut body = remap_expr(&caf.entry().body, &mut locals, &fn_map, &mut self.next);
+        for (local, value) in bindings.into_iter().rev() {
+            let ty = body.ty.clone();
+            body = CExpr::new(K::Let { local, value: Box::new(value), body: Box::new(body) }, ty);
+        }
+        body
     }
 
     /// Beta-reduces a saturated-or-over application of the lambda `fnid` (with the

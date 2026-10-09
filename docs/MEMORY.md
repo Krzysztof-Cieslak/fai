@@ -3358,6 +3358,16 @@ Editor integration:
     an eligible constant edit invalidates its same-file users. This removes
     repeated `apply_n` and Float boxes for literal globals such as time steps and
     exposes literal bucket divisors to native constant arithmetic.
+  - **Known interface choices.** A bounded same-file factory summary exposes
+    concrete interface constructions to projection reduction. The field index
+    comes from the resolved interface layout, including the logical arrow type
+    of an erased method slot. Projections and calls distribute through finite
+    choices with fresh local identities, retaining receiver/argument order and
+    branch-local captures. Non-escaping local aliases can lose their dictionary
+    cell; escaping or unknown values keep it. Continuation duplication is capped
+    per site and per definition, and captured resources keep a use at their
+    original lifetime boundary. Generic interfaces and cross-file factories are
+    conservative fallbacks. This changes local code shape, not the uniform ABI.
 
 - **D133 Unboxed `Array Float` (raw inline `f64` slots, self-tagged, no
   monomorphization).** An `Array Float` used to store each element as a pointer to a
