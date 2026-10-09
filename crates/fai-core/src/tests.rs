@@ -792,15 +792,33 @@ mod inline {
     }
 
     #[test]
-    fn inlines_permuted_wrapper_with_order_preserving_lets() {
-        // `Array.push x xs = Prim.arrayPush xs x` reverses its operands. The call's
-        // arguments are bound in source order (%2 = x, %3 = xs) and referenced
-        // through the permutation, so evaluation order is preserved.
+    fn inlines_permuted_local_operands_without_owned_aliases() {
         let src = "module M\n\nlet f x xs = Array.push x xs\n";
-        assert_eq!(
-            inlined(src, "f"),
-            "fn0(%0, %1) = (let %2 = %0; (let %3 = %1; (arrayPush %3 %2)))\n"
-        );
+        assert_eq!(inlined(src, "f"), "fn0(%0, %1) = (arrayPush %1 %0)\n");
+    }
+
+    #[test]
+    fn permuted_computations_keep_order_preserving_bindings() {
+        let src = "module M\nlet f x xs = Array.push (x + 1) (Array.reverse xs)\n";
+        let result = inlined(src, "f");
+        let first = result.find("(+ %0 1)").unwrap();
+        let second = result.find("(app @reverse %1)").unwrap();
+        assert!(first < second, "{result}");
+        assert!(result.contains("(arrayPush %3 %2)"), "{result}");
+    }
+
+    #[test]
+    fn permuted_global_values_are_still_forced_in_source_order() {
+        let src =
+            "module M\nlet item = 7\nlet values = [| 1 |]\nlet f u = Array.push item values\n";
+        let result = inlined(src, "f");
+        assert!(result.find("= @item").unwrap() < result.find("= @values").unwrap(), "{result}");
+    }
+
+    #[test]
+    fn borrowed_array_get_keeps_its_original_local() {
+        let src = "module M\nlet f i xs = Array.unsafeGet i xs\n";
+        assert_eq!(inlined(src, "f"), "fn0(%0, %1) = (arrayGet %1 %0)\n");
     }
 
     #[test]

@@ -299,6 +299,46 @@ fn entry_ir_std(src: &str, def_name: &str) -> String {
         .expect("entry function IR")
 }
 
+#[test]
+fn permuted_float_array_reads_have_no_transient_reference_counts() {
+    let ir = entry_ir(
+        "module M\npublic at : Int -> Array Float -> Float\nlet at i xs = Array.unsafeGet i xs + Array.unsafeGet (i + 1) xs\n",
+        "at",
+    );
+    assert_eq!(
+        ir.matches("store ").count(),
+        1,
+        "only the final owner release writes a count:\n{ir}"
+    );
+    assert_eq!(call_count(&ir), 3, "two bounds faults and the final owner release:\n{ir}");
+}
+
+#[test]
+fn permuted_int_array_reads_have_no_transient_reference_counts() {
+    let ir = entry_ir(
+        "module M\npublic at : Int -> Array Int -> Int\nlet at i xs = Array.unsafeGet i xs + Array.unsafeGet (i + 1) xs\n",
+        "at",
+    );
+    assert_eq!(
+        ir.matches("store ").count(),
+        1,
+        "only the final owner release writes a count:\n{ir}"
+    );
+    assert_eq!(call_count(&ir), 3, "two bounds faults and the final owner release:\n{ir}");
+}
+
+#[test]
+fn permuted_wrapper_globals_keep_their_effect_order() {
+    let src = "module M\nlet index =\n  let _ = stdConsole.writeLine \"index\"\n  0\nlet value =\n  let _ = stdConsole.writeLine \"value\"\n  \"new\"\nlet array =\n  let _ = stdConsole.writeLine \"array\"\n  [| \"old\" |]\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let xs = Array.unsafeSet index value array\n  r.console.writeLine (Array.unsafeGet 0 xs)\n";
+    assert_eq!(run(src), (0, "index\nvalue\narray\nnew\n".into()));
+}
+
+#[test]
+fn permuted_wrapper_preserves_full_width_values_and_shared_sources() {
+    let src = "module M\nlet update value xs = Array.unsafeSet 0 value (Array.push value xs)\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let xs = [| 1, 2 |]\n  let value = 9223372036854775807\n  let ys = update value xs\n  let zs = Array.unsafeSet 0 (Array.unsafeGet 1 xs) xs\n  let good = Array.toList xs = [1, 2] && Array.toList ys = [value, 2, value] && Array.toList zs = [2, 2]\n  r.console.writeLine (if good then \"ok\" else \"wrong\")\n";
+    assert_eq!(run(src), (0, "ok\n".into()));
+}
+
 fn main_printing(expr: &str) -> String {
     formatdoc! {r#"
         module M
