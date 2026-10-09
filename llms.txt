@@ -1029,6 +1029,9 @@ forall xs: mirror (mirror xs) = xs
   many random inputs and **shrinks** any counterexample to a minimal one.
 - `fai check` evaluates the closed `example`s eagerly and reports a failing one as
   `FAI6001`; `fai test` runs everything (examples and `forall` laws).
+  JSON and streamed test events identify each contract by `(source, ordinal)`:
+  `source` contains its file path and `user`/`standardLibrary` origin; `ordinal`
+  is its zero-based position in that file. An optional subject is only a label.
 - Contracts must be **pure and deterministic**: referencing a capability
   (`Console`, `Clock`, …) or executing a nonempty/unknown effect row is `FAI6004`.
   This includes calling an effectful helper or consuming an effectful stream.

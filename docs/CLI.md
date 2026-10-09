@@ -303,11 +303,19 @@ in a supervised isolated worker, so a body that traps on a generated input fails
   as its worker frame arrives (`$/testEvent`, from the daemon), before later
   contracts finish. An acknowledged result is emitted once, including when a
   later contract crashes or times out and the worker resumes after it.
+- **Output (json):** `{ "schemaVersion": 1, "total": int, "passed": int, "notRun": int, "seed": int, "events": [TestEvent], "diagnostics": [Diagnostic], "ok": bool }`, where a `TestEvent` is `{ "source": { "file": string, "origin": "user"|"standardLibrary" }, "ordinal": int, "symbol": string?, "kind": "example"|"forall", "status": "passed"|"failed"|"crashed"|"timedOut"|"notRun", "counterexample": string?, "seed": int, "trials": int, "maxSize": int }`.
+  The contract key is `(source, ordinal)`: `file` is the logical source path
+  (workspace-relative for user files, with `/` separators), `origin` distinguishes
+  embedded sources from same-spelled user paths, and `ordinal` is zero-based within
+  that file. Filtering and worker restarts preserve the key. `symbol` is only an
+  optional human label. Final events are sorted by file, origin, and ordinal;
+  streaming events arrive when known, including `notRun` before worker execution.
+  Subjectless human progress labels include the file. The `source` field is an
+  additive schema-version-1 extension; clients must tolerate unknown JSON fields.
+- **Exit:** `0` if all pass; `1` otherwise.
 
 Test diagnostic coordinates refer to the source revision compiled for that run,
 even if another daemon request edits, replaces, or removes the file meanwhile.
-- **Output (json):** `{ "schemaVersion": 1, "total": int, "passed": int, "notRun": int, "seed": int, "events": [TestEvent], "diagnostics": [Diagnostic], "ok": bool }`, where a `TestEvent` is `{ "ordinal": int, "symbol": string?, "kind": "example"|"forall", "status": "passed"|"failed"|"crashed"|"timedOut"|"notRun", "counterexample": string?, "seed": int, "trials": int, "maxSize": int }`.
-- **Exit:** `0` if all pass; `1` otherwise.
 
 ### `fai fmt [path] [--check]`
 Canonically format in place (idempotent).
@@ -425,16 +433,18 @@ The first request is `initialize`:
 ```jsonc
 // → request
 { "method": "initialize",
-  "params": { "protocolVersion": 2, "compilerVersion": "0.1.0",
+  "params": { "protocolVersion": 3, "compilerVersion": "0.1.0",
               "schemaVersion": 1, "workspaceRoot": "/abs/path",
               "clientInfo": { "name": "fai-cli", "version": "0.1.0" } } }
 // ← response
 { "result": { "serverCapabilities": { "streaming": true, "query": true },
-              "compilerVersion": "0.1.0", "protocolVersion": 2, "schemaVersion": 1 } }
+              "compilerVersion": "0.1.0", "protocolVersion": 3, "schemaVersion": 1 } }
 ```
 
 Because the client and daemon are the **same binary**, a version mismatch means a
 *stale* daemon: the client sends `exit`, then respawns and re-initializes.
+Protocol 3 requires source-qualified contract events; the version gate prevents
+a new client from receiving ambiguous events from an older daemon.
 
 ### 7.4 Session & consistency model
 
@@ -484,7 +494,7 @@ deferred; the request shape reserves room for them.
 |---|---|---|
 | `$/progress` | `{ id, message, done?, total? }` | build/check/test progress |
 | `$/diagnostic` | `{ id, diagnostic: Diagnostic }` | streamed diagnostics |
-| `$/testEvent` | `TestEvent` (per the `fai test` schema: `ordinal`, `symbol?`, `kind`, `status`, `counterexample?`, `seed`, `trials`, `maxSize`) | `test` |
+| `$/testEvent` | `TestEvent` (per the `fai test` schema: `source`, `ordinal`, `symbol?`, `kind`, `status`, `counterexample?`, `seed`, `trials`, `maxSize`) | `test` |
 | `$/output` | `{ id, stream: "stdout"\|"stderr", chunk: bytes }` | `run` worker output |
 | `inputReady` | one credit for up to 8192 stdin bytes | server → run client |
 | `input` / `inputEof` | one credited byte chunk / terminal EOF | run client → server |

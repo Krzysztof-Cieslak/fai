@@ -1534,9 +1534,13 @@ program output are unchanged, guarded by the full type/golden suite):
     `seed`/`trials`/`max_size` in the bundle (uniform — the global flags — for now;
     the structure admits a future per-property source override) and the JSON
     `TestOutput` gains a top-level `seed` and an `events` array (one `TestEvent`
-    per contract: ordinal, subject symbol, kind, status, counterexample, and the
+    per contract: source key, ordinal, subject symbol, kind, status, counterexample, and the
     config it ran with). The per-contract live-object soundness check moves into
     the worker (a nonzero delta is a located internal error).
+    Contract identity is the logical source path plus loader-controlled origin
+    and file-local ordinal; optional subjects are only labels. These keys survive
+    filtering and worker restarts, including failed and not-runnable contracts.
+    JSON adds the source key compatibly; daemon protocol 3 requires it.
   - **Wire types fix (corrects D63).** Codegen does *not* fully ignore node types:
     it reads the first operand's type to pick the borrowed vs owned runtime variant
     of an inspect-only primitive (`=`, `compare`, the `String` ops), the same

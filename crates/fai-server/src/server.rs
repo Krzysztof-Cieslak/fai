@@ -558,7 +558,7 @@ fn handle_test(conn: &mut Conn, request: &TestRequest) -> std::io::Result<()> {
         }
     };
 
-    let results = if plan.blocked || plan.bundle.contracts.is_empty() {
+    let results = if plan.blocked {
         Vec::new()
     } else {
         let mut send_err: std::io::Result<()> = Ok(());
