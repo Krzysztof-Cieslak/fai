@@ -177,7 +177,7 @@ fn collect_dup_bound(e: &CExpr, out: &mut FxHashSet<LocalId>) {
 }
 
 /// Applies `f` to each immediate sub-expression of `e`.
-fn e_children(e: &CExpr, f: &mut impl FnMut(&CExpr)) {
+pub(crate) fn e_children(e: &CExpr, f: &mut impl FnMut(&CExpr)) {
     match &e.kind {
         K::Prim { args, .. }
         | K::Foreign { args, .. }
