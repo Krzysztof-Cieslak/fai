@@ -800,6 +800,9 @@ Reuse & in-place update:
     intra-function scan leaves unknown cases to the runtime uniqueness check.
     This prevents a guaranteed-shared tail from taking the reuse slot needed by
     the consumed head cell when merging lists.
+    Native list tag tests need only the immediate bit (`[]` is immediate, a cons
+    is boxed). Cons slots are always uniform, so even generic/Float list heads
+    skip scalar-descriptor checks while retaining their ordinary owned result.
   - **Acceptance.** `map`/`filter`/`inc` over a unique list allocate zero fresh
     cells; a shared list copies (the rc==1 guard). A differential allocation-count
     test pins both, and the soundness interpreter is extended to reset/reuse
