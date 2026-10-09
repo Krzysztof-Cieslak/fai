@@ -751,7 +751,7 @@ fn entry_signature<M: Module>(
     if !abi.register_abi {
         return code_signature(module);
     }
-    let mut sig = module.make_signature();
+    let mut sig = direct_signature(module, abi);
     sig.params.push(AbiParam::new(types::I64)); // env (unused: a top-level entry captures nothing)
     // One parameter group per runtime parameter (a spread aggregate is N `f64`s);
     // a parameter beyond the ABI's reprs (a body with more parameters than the
@@ -792,7 +792,7 @@ fn reuse_entry_signature<M: Module>(
     source_arity: usize,
     abi: &FnAbi,
 ) -> cranelift_codegen::ir::Signature {
-    let mut sig = module.make_signature();
+    let mut sig = direct_signature(module, abi);
     sig.params.push(AbiParam::new(types::I64)); // env (unused: captures nothing)
     for _ in 0..tokens {
         sig.params.push(AbiParam::new(types::I64)); // a reuse token (raw i64)
@@ -807,6 +807,18 @@ fn reuse_entry_signature<M: Module>(
         sig.returns.push(AbiParam::new(t));
     }
     sig
+}
+
+/// A wide aggregate result uses Cranelift's private return-register convention.
+/// Uniform wrappers and native runtime calls keep their platform C ABI.
+fn direct_signature<M: Module>(module: &M, abi: &FnAbi) -> cranelift_codegen::ir::Signature {
+    let mut signature = module.make_signature();
+    if cfg!(target_arch = "x86_64")
+        && abi.spread_return().is_some_and(|r| r.len() > fai_core::ir::max_spread_return())
+    {
+        signature.call_conv = cranelift_codegen::isa::CallConv::Tail;
+    }
+    signature
 }
 
 /// Builds one function's Cranelift IR into a fresh, **uncompiled** context. The

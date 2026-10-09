@@ -39,10 +39,11 @@ pub fn scalar_field_mask<'a>(field_types: impl IntoIterator<Item = &'a Ty>) -> u
 /// (the spilled cost outweighs the saving past a handful of fields). This bounds
 /// a spread **parameter**: arguments past the argument registers spill to the
 /// stack, so a spread parameter is register-eligible up to this width on every
-/// target. A spread **result** is bounded more tightly by [`max_spread_return`].
+/// target. A spread **result** normally follows [`max_spread_return`]; an entry
+/// already taking spread parameters may use the private wider return convention.
 pub const FFA_MAX_FIELDS: usize = 8;
 
-/// The largest fixed-shape-float-aggregate result returned **in registers** (a
+/// The default largest fixed-shape-float-aggregate result returned **in registers** (a
 /// Cranelift multi-result signature); a wider result is returned as the boxed
 /// scalar-slot cell instead. Unlike arguments — which spill to the stack, so a
 /// spread parameter is register-eligible up to [`FFA_MAX_FIELDS`] — a multi-value
@@ -53,7 +54,9 @@ pub const FFA_MAX_FIELDS: usize = 8;
 /// host triple), so it is a compile-time constant, and the object cache key
 /// already includes the host triple. AArch64 returns up to eight `f64`s (V0–V7);
 /// x86-64 System V returns two (XMM0–XMM1); the Windows x64 convention returns
-/// one; any other target conservatively returns one.
+/// one; any other target conservatively returns one. `FnAbi::from_scheme` can
+/// select an eight-component private return ABI for x86-64 entries that already
+/// take spread aggregate parameters.
 #[must_use]
 pub const fn max_spread_return() -> usize {
     if cfg!(target_arch = "aarch64") {
@@ -214,11 +217,22 @@ impl FnAbi {
         // exactly the definitions a saturated call reaches as a bare `Global` head.
         let register_abi = evidence == 0 && source_params > 0;
         let mut ret = scalar_repr(ty, niche);
+        // An x86-64 entry that already takes spread aggregates can use the
+        // private wide-return convention without changing which recursive
+        // entries require aggregate-state handling. This remains signature-only.
+        let return_budget = if register_abi
+            && cfg!(target_arch = "x86_64")
+            && params.iter().any(|p| matches!(p, Repr::Spread(_)))
+        {
+            FFA_MAX_FIELDS
+        } else {
+            max_spread_return()
+        };
         // A multi-value return must fit in the target's return registers; a wider
         // fixed-shape float aggregate result is returned as a boxed cell instead
         // (a spread *parameter* is unaffected — arguments spill to the stack).
         if let Repr::Spread(c) = &ret
-            && c.len() > max_spread_return()
+            && c.len() > return_budget
         {
             ret = Repr::Uniform;
         }

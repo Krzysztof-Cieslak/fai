@@ -477,6 +477,10 @@ let scale k v = { v with x = v.x * k, y = v.y * k }    // update several fields
   (`{ category, name, price, sku }`).
 - **Punning** in patterns binds variables named after fields: `{ x, y }`.
 
+Direct vector helpers can pass fixed all-Float aggregates in registers. On
+x86-64, helpers already taking such aggregate arguments can also return up to
+eight components without a result box. Generic/first-class boundaries stay boxed.
+
 ### Tuples (structural)
 
 Tuple **type** uses `*`; tuple **value** uses parentheses and commas:
