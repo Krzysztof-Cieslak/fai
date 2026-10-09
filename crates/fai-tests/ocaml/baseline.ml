@@ -737,7 +737,9 @@ let option_eval n =
   in
   let acc = ref 0 in
   for i = 0 to n - 1 do
-    let r = match eval_chain i with Some _ as s -> s | None -> eval_chain (i + 1) in
+    let first = eval_chain i in
+    let second = eval_chain (i + 1) in
+    let r = match first with Some _ as s -> s | None -> second in
     match r with Some v -> acc := !acc + v | None -> ()
   done;
   !acc
@@ -756,7 +758,8 @@ let int_eval n =
   let acc = ref 0 in
   for i = 0 to n - 1 do
     let first = eval_chain i in
-    let v = if first = -1 then eval_chain (i + 1) else first in
+    let second = eval_chain (i + 1) in
+    let v = if first = -1 then second else first in
     if v <> -1 then acc := !acc + v
   done;
   !acc

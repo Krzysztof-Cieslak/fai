@@ -995,10 +995,21 @@ fn eval_chain(i: i64) -> Option<i64> {
 /// an (owned) argument.
 #[must_use]
 pub fn option_eval(n: i64) -> i64 {
+    eager_eval_pairs(n, eval_chain, |first, second| first.or(second))
+}
+
+/// Both fallback operands are evaluated in source order, matching strict Fai.
+fn eager_eval_pairs<T>(
+    n: i64,
+    mut eval: impl FnMut(i64) -> T,
+    choose: impl Fn(T, T) -> Option<i64>,
+) -> i64 {
     let mut acc = 0i64;
     for i in 0..n {
-        if let Some(v) = eval_chain(i).or(eval_chain(i + 1)) {
-            acc += v;
+        let first = eval(i);
+        let second = eval(i + 1);
+        if let Some(value) = choose(first, second) {
+            acc = acc.wrapping_add(value);
         }
     }
     acc
@@ -1032,15 +1043,46 @@ fn eval_chain_sentinel(i: i64) -> i64 {
 /// [`option_eval`].
 #[must_use]
 pub fn int_eval(n: i64) -> i64 {
-    let mut acc = 0i64;
-    for i in 0..n {
-        let first = eval_chain_sentinel(i);
-        let v = if first == -1 { eval_chain_sentinel(i + 1) } else { first };
-        if v != -1 {
-            acc += v;
-        }
+    eager_eval_pairs(n, eval_chain_sentinel, |first, second| {
+        let value = if first == -1 { second } else { first };
+        (value != -1).then_some(value)
+    })
+}
+
+#[cfg(test)]
+mod evaluator_tests {
+    use super::*;
+
+    #[test]
+    fn successful_first_results_still_evaluate_the_fallback() {
+        let mut calls = Vec::new();
+        let result = eager_eval_pairs(
+            3,
+            |i| {
+                calls.push(i);
+                Some(i)
+            },
+            |a, b| a.or(b),
+        );
+        assert_eq!(calls, vec![0, 1, 1, 2, 2, 3]);
+        assert_eq!(result, 3);
     }
-    acc
+
+    #[test]
+    fn empty_evaluation_invokes_neither_operand() {
+        assert_eq!(eager_eval_pairs::<i64>(0, |_| panic!("unexpected evaluation"), |_, _| None), 0);
+    }
+
+    #[test]
+    fn absent_first_result_chooses_the_second() {
+        assert_eq!(eager_eval_pairs(1, |i| if i == 0 { None } else { Some(7) }, |a, b| a.or(b)), 7);
+    }
+
+    #[test]
+    fn both_evaluator_representations_produce_the_same_sum() {
+        assert_eq!(option_eval(5000), int_eval(5000));
+        assert_eq!(option_eval(10), 69);
+    }
 }
 
 /// Follow "next pointer" chains through a lookup table, summing visited keys. The
