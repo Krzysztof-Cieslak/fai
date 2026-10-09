@@ -108,6 +108,46 @@ fn callback_can_capture_its_shared_source() {
 }
 
 #[test]
+fn map_callback_retains_source_without_a_later_outer_use() {
+    check(
+        "let xs = Array.range 0 4\nlet ys = Array.map (fun i -> Array.unsafeGet (3 - i) xs) xs\nr.console.writeLine (if Array.toList ys = [3, 2, 1, 0] then \"yes\" else \"no\")",
+        "yes",
+        false,
+    );
+}
+
+#[test]
+fn native_same_type_map_preserves_raw_float_results() {
+    check(
+        "let xs = Array.init 3 (fun i -> Int.toFloat i)\nlet ys = Array.map (fun x -> x + 0.5) xs\nr.console.writeLine (if Array.toList ys = [0.5, 1.5, 2.5] then \"yes\" else \"no\")",
+        "yes",
+        true,
+    );
+}
+
+#[test]
+fn map_changing_element_representation_keeps_a_fresh_buffer() {
+    check(
+        "let xs = Array.init 3 (fun i -> i)\nlet ys = Array.map (fun x -> Int.toFloat x + 0.5) xs\nr.console.writeLine (if Array.toList ys = [0.5, 1.5, 2.5] then \"yes\" else \"no\")",
+        "yes",
+        false,
+    );
+}
+
+#[test]
+fn same_type_map_callback_edits_match_clean_generation() {
+    let source = "module M\nlet run xs = Array.map (fun x -> 100 / x) xs\n";
+    let edited = source.replace("100 / x", "200 / x");
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", source)], &[("M.fai", &edited)]],
+        |db, files| {
+            (*fai_core::fuse_def(db, db.source_file(files[0]).unwrap(), Symbol::intern("run")))
+                .clone()
+        },
+    );
+}
+
+#[test]
 fn nested_lifted_closures_remain_valid() {
     check(
         "let fs = Array.init 3 (fun x -> fun y -> x + y)\nlet f = Array.unsafeGet 2 fs\nr.console.writeLine (Int.toString (f 40))",

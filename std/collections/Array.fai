@@ -118,7 +118,8 @@ let last xs = get (Prim.arrayLength xs - 1) xs
 example: last (fromList [1, 2, 3]) = Some 3
 example: last empty = None
 
-/// Apply `f` to every element, preserving order (building a fresh array).
+/// Apply `f` to every element, preserving order. Direct same-type maps can reuse
+/// a uniquely owned buffer and its elements; retained inputs keep their contents.
 public map : ('a -> 'b / 'e) -> Array 'a -> Array 'b / 'e
 let map f xs = mapInto f xs (Prim.arrayLength xs) 0 (Prim.arrayWithCapacity (Prim.arrayLength xs))
 

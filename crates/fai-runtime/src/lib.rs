@@ -1988,6 +1988,76 @@ pub extern "C" fn fai_array_get_borrowed(arr: Value, index: Value) -> Value {
     }
 }
 
+/// Consumes an array and returns a uniquely owned buffer with the same contents.
+/// The compiler uses this before moving slots through a same-type map callback.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_array_unique(arr: Value) -> Value {
+    let p = as_obj(arr);
+    // SAFETY: typing guarantees an owned array. Its live slots belong to the
+    // result directly when unique, or are duplicated into a fresh buffer.
+    unsafe {
+        if rc_load(p) == 1 {
+            return arr;
+        }
+        let len = array_len(arr);
+        let q = alloc_array(len, len);
+        let is_float = array_obj_is_float(p);
+        if is_float {
+            stamp_float_array(q);
+        }
+        note_array_copy();
+        for i in 0..len {
+            let value = read_i64(p, ARRAY_ELEMS_OFFSET + i * 8);
+            write_i64(q, ARRAY_ELEMS_OFFSET + i * 8, if is_float { value } else { fai_dup(value) });
+        }
+        fai_drop(arr);
+        from_obj(q)
+    }
+}
+
+/// Moves one element out of a uniquely owned array, borrowing the buffer. The
+/// compiler restores that slot before the buffer can be observed or shared.
+/// The empty slot is drop-safe, including if execution stops inside the callback.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_array_take(arr: Value, index: Value) -> Value {
+    let slot = unbox_int(index) as usize;
+    fai_drop(index);
+    let p = as_obj(arr);
+    // SAFETY: owned map lowering first calls array_unique, then takes and fills
+    // each in-bounds slot exactly once without publishing the buffer.
+    unsafe {
+        debug_assert_eq!(rc_load(p), 1);
+        array_bounds_check(slot, array_len(arr));
+        let value = read_i64(p, ARRAY_ELEMS_OFFSET + slot * 8);
+        write_i64(p, ARRAY_ELEMS_OFFSET + slot * 8, FAI_UNIT);
+        if array_obj_is_float(p) { fai_box_float(value) } else { value }
+    }
+}
+
+/// Restores a previously taken array slot, consuming the buffer and element.
+/// The compiler guarantees unique ownership and that the old slot is empty.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_array_put(arr: Value, index: Value, value: Value) -> Value {
+    let slot = unbox_int(index) as usize;
+    fai_drop(index);
+    let p = as_obj(arr);
+    // SAFETY: this is the restoring half of the compiler's take/put protocol;
+    // the map preserves the element type, including the raw-float self-tag.
+    unsafe {
+        debug_assert_eq!(rc_load(p), 1);
+        array_bounds_check(slot, array_len(arr));
+        let stored = if array_obj_is_float(p) {
+            let bits = read_i64(as_obj(value), FLOAT_VALUE_OFFSET);
+            fai_drop(value);
+            bits
+        } else {
+            value
+        };
+        write_i64(p, ARRAY_ELEMS_OFFSET + slot * 8, stored);
+    }
+    arr
+}
+
 /// Replaces element `index` with `value`, consuming `arr` and `value`. The unique
 /// owner overwrites in place (releasing the old element); a shared array is copied
 /// with the element replaced. Out-of-bounds aborts.

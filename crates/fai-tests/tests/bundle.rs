@@ -218,6 +218,30 @@ fn bundle_survives_the_json_transport_hop() {
 }
 
 #[test]
+fn owned_map_slots_survive_the_json_transport_hop() {
+    let source = indoc! {r#"
+        module Main
+        let bump xs = Array.map (fun x -> x + 0.5) xs
+        let same xs = Array.map identity xs
+        public main : Runtime -> Unit / { Console }
+        let main r =
+          let xs = Array.init 3 (fun i -> Int.toFloat i)
+          let ys = same (bump xs)
+          r.console.writeLine (if Array.toList ys = [0.5, 1.5, 2.5] then "yes" else "no")
+    "#};
+    let dir = workspace(&[("Main.fai", source)]);
+    let session = Session::open(dir).unwrap();
+    let bundle = build_run_bundle(session.db(), entry(&session, "Main.fai")).bundle.unwrap();
+    let json = serde_json::to_vec(&bundle).unwrap();
+    let decoded: fai_driver::WireBundle = serde_json::from_slice(&json).unwrap();
+    let _guard = RUN_LOCK.lock().unwrap();
+    fai_runtime::capture_start();
+    let exit = jit_run_bundle(&decoded);
+    assert_eq!(exit, 0);
+    assert_eq!(fai_runtime::capture_take(), "yes\n");
+}
+
+#[test]
 fn jit_run_bundle_executes_a_cross_module_program() {
     let main = indoc! {r#"
         module Main

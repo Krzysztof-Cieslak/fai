@@ -1067,6 +1067,25 @@ impl Fuser<'_> {
             other => other,
         };
 
+        // A same-type map can move every element through its callback and back
+        // into one owned buffer. A captured/shared source is copied once before
+        // any slot is taken; heterogeneous maps keep the fresh-buffer path.
+        if stages.is_empty()
+            && let Source::ArrayValue { seq } = &source
+            && let Consumer::Build { f, filter: false, seq: SeqKind::Array } = &consumer
+            && source_elem_ty != Ty::Error
+            && seq_elem(&result_ty).as_ref() == Some(&source_elem_ty)
+        {
+            return self.generate_owned_map(
+                loop_def,
+                seq,
+                f,
+                &source_elem_ty,
+                &result_ty,
+                base_fns,
+            );
+        }
+
         let mut g = LoopGen::new(loop_def, result_ty.clone());
 
         // The source: invariant inputs, iteration state, the done test, the current
@@ -1152,6 +1171,106 @@ impl Fuser<'_> {
                 CExpr::new(K::Let { local: l, value: Box::new(v), body: Box::new(result) }, ty);
         }
         result
+    }
+
+    /// Owns one same-type map buffer for the whole loop. The take/put pair is
+    /// internal: the callback receives the element, never the transient buffer.
+    fn generate_owned_map(
+        &mut self,
+        def: DefId,
+        seq: &CExpr,
+        callback: &FnArg,
+        elem_ty: &Ty,
+        result_ty: &Ty,
+        base_fns: &[CoreFn],
+    ) -> CExpr {
+        let source = self.rewrite(seq, base_fns);
+        let s = self.fresh_consuming();
+        let n = self.fresh_consuming();
+        let source_local = local(s, source.ty.clone());
+        let length = prim(Prim::ArrayLength, vec![source_local.clone()]);
+        let owned = CExpr::new(
+            K::Prim { op: Prim::ArrayUnique, args: vec![source_local] },
+            source.ty.clone(),
+        );
+        let mut g = LoopGen::new(def, result_ty.clone());
+        let array = g.add_param(result_ty.clone(), owned);
+        g.acc_local = Some(array);
+        let (index, advance, done) = self.index_iter(&mut g, &local(n, Ty::int()), false);
+        let old = g.fresh();
+        let new = g.fresh();
+        let taken = CExpr::new(
+            K::Prim {
+                op: Prim::ArrayTake,
+                args: vec![local(array, result_ty.clone()), local(index, Ty::int())],
+            },
+            elem_ty.clone(),
+        );
+        let applied =
+            apply_fn(&mut g, callback, vec![local(old, elem_ty.clone())], elem_ty.clone());
+        let restored = CExpr::new(
+            K::Prim {
+                op: Prim::ArrayPut,
+                args: vec![
+                    local(array, result_ty.clone()),
+                    local(index, Ty::int()),
+                    local(new, elem_ty.clone()),
+                ],
+            },
+            result_ty.clone(),
+        );
+        let recur = g.recur(&[advance], Some(restored));
+        let body = CExpr::new(
+            K::Let {
+                local: old,
+                value: Box::new(taken),
+                body: Box::new(CExpr::new(
+                    K::Let { local: new, value: Box::new(applied), body: Box::new(recur) },
+                    result_ty.clone(),
+                )),
+            },
+            result_ty.clone(),
+        );
+        let body = if_(done, local(array, result_ty.clone()), body, result_ty.clone());
+        let params: Vec<_> = g.params.iter().map(|(id, _)| *id).collect();
+        let arity = params.len();
+        let abi = self.loop_abi(&g, result_ty);
+        let lowered = LoweredDef {
+            def,
+            fns: vec![CoreFn { params, captures: Vec::new(), body }],
+            entry_borrowed: Vec::new(),
+            reuse_entry: None,
+            entry_spread_params: Vec::new(),
+        };
+        let result = crate::ResultSig {
+            edges: vec![
+                (crate::RTerm::LenParam(0), crate::RTerm::ResultLen(crate::WHOLE), 0),
+                (crate::RTerm::ResultLen(crate::WHOLE), crate::RTerm::LenParam(0), 0),
+            ],
+        };
+        self.loops.push(FusedLoop { lowered, abi, arity, result });
+        let call = CExpr::new(
+            K::App {
+                func: Box::new(global(def)),
+                args: g.call_args,
+                reuse: Vec::new(),
+                alloc: ClosureAlloc::Heap,
+            },
+            result_ty.clone(),
+        );
+        // Compute length before transferring the source, so that the read does
+        // not retain an extra reference across the uniqueness check.
+        CExpr::new(
+            K::Let {
+                local: s,
+                value: Box::new(source),
+                body: Box::new(CExpr::new(
+                    K::Let { local: n, value: Box::new(length), body: Box::new(call) },
+                    result_ty.clone(),
+                )),
+            },
+            result_ty.clone(),
+        )
     }
 
     /// The accumulator's type and initial (call-site) value for an accumulating
@@ -2310,7 +2429,9 @@ mod tests {
         let src = "module M\nlet run xs = Array.any (fun x -> x = 1) (Array.map (fun n -> Array.unsafeGet n [| 1 |]) xs)\n";
         let body = fused(src, "run");
         assert!(
-            body.contains("arrayWithCapacity") && body.contains("@fuse#run#1"),
+            body.contains("arrayUnique")
+                && body.contains("@fuse#run#1")
+                && body.contains("@fuse#run#0"),
             "checked element access must retain strict evaluation: {body}"
         );
     }
@@ -2332,6 +2453,31 @@ mod tests {
         assert!(pretty_def(&result.body).contains("arrayWithCapacity"));
         let body = pretty_def(&result.loops[0].lowered);
         assert!(!body.contains("closure") && !body.contains("@init"), "{body}");
+    }
+
+    #[test]
+    fn same_element_map_owns_one_buffer_and_moves_its_slots() {
+        let mut db = FaiDatabase::new();
+        fai_types::std_lib::load_std(&mut db);
+        let id = db.add_source(
+            "M.fai".into(),
+            "module M\nlet run xs = Array.map (fun x -> x + 1) xs\n".into(),
+        );
+        let result = fuse_def(&db, db.source_file(id).unwrap(), Symbol::intern("run"));
+        assert_eq!(result.loops.len(), 1);
+        let caller = pretty_def(&result.body);
+        let body = pretty_def(&result.loops[0].lowered);
+        assert!(caller.contains("arrayUnique"), "{caller}");
+        assert!(!caller.contains("arrayWithCapacity"), "{caller}");
+        assert!(body.contains("arrayTake") && body.contains("arrayPut"), "{body}");
+        assert!(!body.contains("arrayGet") && !body.contains("arrayPush"), "{body}");
+    }
+
+    #[test]
+    fn different_element_map_keeps_distinct_source_and_destination() {
+        let caller = fused("module M\nlet run xs = Array.map Int.toFloat xs\n", "run");
+        assert!(caller.contains("arrayWithCapacity"), "{caller}");
+        assert!(!caller.contains("arrayUnique"), "{caller}");
     }
 
     #[test]

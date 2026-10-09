@@ -612,6 +612,14 @@ pub enum Prim {
     ArrayGet,
     /// `Array` element update by index (in place when unique; out-of-bounds aborts).
     ArraySet,
+    /// Own a unique array buffer, copying shared inputs. Compiler-internal.
+    ArrayUnique,
+    /// Move a slot out of a unique array, leaving a drop-safe hole. Borrows the
+    /// buffer; only emitted with a matching `ArrayPut` by owned map lowering.
+    ArrayTake,
+    /// Fill a previously taken slot, consuming the unique buffer and new value.
+    /// The slot is in bounds and owns no old element. Compiler-internal.
+    ArrayPut,
     /// `Array` append (in place when unique with spare capacity, else grows/copies).
     ArrayPush,
     /// `arraySplit`: split a `String` on a separator into an `Array String`.
@@ -686,6 +694,7 @@ impl Prim {
                 | Prim::StringJoin
                 | Prim::ArrayLength
                 | Prim::ArrayGet
+                | Prim::ArrayTake
                 | Prim::ArraySplit
                 | Prim::ArrayJoin
         ) && is_boxed_rc(operand_ty)
@@ -707,6 +716,7 @@ impl Prim {
             Prim::StringSplit => Some("fai_string_split_borrowed"),
             Prim::ArrayLength => Some("fai_array_length_borrowed"),
             Prim::ArrayGet => Some("fai_array_get_borrowed"),
+            Prim::ArrayTake => Some("fai_array_take"),
             Prim::StringJoin => Some("fai_string_join_borrowed"),
             Prim::ArraySplit => Some("fai_array_split_borrowed"),
             Prim::ArrayJoin => Some("fai_array_join_borrowed"),
@@ -774,6 +784,9 @@ impl Prim {
             Prim::ArrayLength => "fai_array_length",
             Prim::ArrayGet => "fai_array_get",
             Prim::ArraySet => "fai_array_set",
+            Prim::ArrayUnique => "fai_array_unique",
+            Prim::ArrayTake => "fai_array_take",
+            Prim::ArrayPut => "fai_array_put",
             Prim::ArrayPush => "fai_array_push",
             Prim::ArraySplit => "fai_array_split",
             Prim::ArrayJoin => "fai_array_join",
@@ -814,13 +827,18 @@ impl Prim {
             | Prim::Hash
             | Prim::ArrayWithCapacity
             | Prim::ArrayLength
+            | Prim::ArrayUnique
             | Prim::BytesLength
             | Prim::BytesFromList
             | Prim::BytesToList
             | Prim::BytesFromString
             | Prim::BytesToString
             | Prim::BytesIsUtf8 => 1,
-            Prim::RecordUpdate | Prim::ArraySet | Prim::StringSubstring | Prim::BytesSlice => 3,
+            Prim::RecordUpdate
+            | Prim::ArraySet
+            | Prim::ArrayPut
+            | Prim::StringSubstring
+            | Prim::BytesSlice => 3,
             _ => 2,
         }
     }

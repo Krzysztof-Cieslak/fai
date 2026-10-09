@@ -148,6 +148,9 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_array_get", rt::fai_array_get);
     sym!("fai_array_get_borrowed", rt::fai_array_get_borrowed);
     sym!("fai_array_set", rt::fai_array_set);
+    sym!("fai_array_unique", rt::fai_array_unique);
+    sym!("fai_array_take", rt::fai_array_take);
+    sym!("fai_array_put", rt::fai_array_put);
     sym!("fai_array_push", rt::fai_array_push);
     sym!("fai_array_index_panic", rt::fai_array_index_panic);
     sym!("fai_bce_unsound_panic", rt::fai_bce_unsound_panic);

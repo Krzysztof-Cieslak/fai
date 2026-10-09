@@ -3222,6 +3222,9 @@ impl<M: Module> Translator<'_, M> {
             Prim::ArrayLength => Some(self.array_length_inline(args)),
             Prim::ArrayGet => Some(self.array_get_inline(args, result_ty)),
             Prim::ArraySet => Some(self.array_set_inline(args)),
+            Prim::ArrayUnique => Some(self.array_unique_inline(args)),
+            Prim::ArrayTake => Some(self.array_take_inline(args, result_ty)),
+            Prim::ArrayPut => Some(self.array_put_inline(args)),
             Prim::ArrayPush => Some(self.array_push_inline(args)),
             _ => None,
         }
@@ -3521,6 +3524,72 @@ impl<M: Module> Translator<'_, M> {
         self.array_load_elem(base, raw_idx, elem)
     }
 
+    /// The owned-map entry gate: only a shared source needs a runtime copy.
+    fn array_unique_inline(&mut self, args: &[CExpr]) -> Value {
+        let base = self.expr(&args[0]);
+        let rc =
+            self.builder.ins().load(types::I64, MemFlags::trusted(), base, rt::RC_OFFSET as i32);
+        let unique = self.builder.ins().icmp_imm(IntCC::Equal, rc, 1);
+        let copy = self.builder.create_block();
+        let done = self.builder.create_block();
+        self.builder.append_block_param(done, types::I64);
+        self.builder.ins().brif(unique, done, &[base.into()], copy, &[]);
+        self.builder.switch_to_block(copy);
+        self.builder.seal_block(copy);
+        let copied = self.call1("fai_array_unique", base);
+        self.builder.ins().jump(done, &[copied.into()]);
+        self.builder.switch_to_block(done);
+        self.builder.seal_block(done);
+        self.builder.block_params(done)[0]
+    }
+
+    /// Moves a slot into an owned-map callback. The synthesized loop guarantees
+    /// unique ownership and an in-bounds index; the hole owns no child value.
+    fn array_take_inline(&mut self, args: &[CExpr], elem: &Ty) -> Value {
+        let base = self.expr(&args[0]);
+        let index = self.array_index_raw(&args[1]);
+        if self.bce_shadow {
+            self.shadow_bounds_assert(base, index);
+        }
+        let (addr, offset) = self.array_elem_addr(base, index);
+        let word = self.builder.ins().load(types::I64, MemFlags::trusted(), addr, offset);
+        let hole = self.builder.ins().iconst(types::I64, rt::FAI_UNIT);
+        self.builder.ins().store(MemFlags::trusted(), hole, addr, offset);
+        match elem {
+            Ty::Con(Con::Int) => {
+                let raw = self.unbox_int_to_raw(word);
+                self.mark_raw(raw)
+            }
+            Ty::Con(Con::Float) => self.i64_to_f64(word),
+            _ if elem_may_be_float(elem) => self.array_load_elem_generic(base, word, elem, false),
+            _ => word,
+        }
+    }
+
+    /// Fills an owned-map hole. No old element remains to release, and the loop
+    /// preserves the buffer's element representation and unique ownership.
+    fn array_put_inline(&mut self, args: &[CExpr]) -> Value {
+        let elem = args[2].ty.clone();
+        let base = self.expr(&args[0]);
+        let index = self.array_index_raw(&args[1]);
+        let value = if matches!(elem, Ty::Con(Con::Float)) {
+            let value = self.expr(&args[2]);
+            self.float_field_bits(value)
+        } else {
+            self.expr_boxed(&args[2])
+        };
+        if self.bce_shadow {
+            self.shadow_bounds_assert(base, index);
+        }
+        let (addr, offset) = self.array_elem_addr(base, index);
+        if elem_may_be_float(&elem) {
+            self.array_set_store_generic(base, addr, offset, value, &elem, false);
+        } else {
+            self.builder.ins().store(MemFlags::trusted(), value, addr, offset);
+        }
+        base
+    }
+
     /// Whether the bounds-check-elimination fact graph proves the `index` atom is
     /// within `0..len(array)`, where `array` is an atom operand (a local).
     fn index_proven(&self, array: &CExpr, index: &CExpr) -> bool {
@@ -3560,7 +3629,7 @@ impl<M: Module> Translator<'_, M> {
             }
             // A concrete float array: the slot word *is* the `f64` bits.
             Ty::Con(Con::Float) => self.i64_to_f64(word),
-            _ if elem_may_be_float(elem) => self.array_load_elem_generic(base, word, elem),
+            _ if elem_may_be_float(elem) => self.array_load_elem_generic(base, word, elem, true),
             _ => {
                 self.dup_value(word, elem);
                 word
@@ -3574,7 +3643,13 @@ impl<M: Module> Translator<'_, M> {
     /// owned `Float`; a boxed element is tag-checked-duped so it outlives the
     /// borrowed array. Both yield a uniform word. A precomputed loop-invariant
     /// self-tag for `base` is reused when available (see [`Self::array_float_tag`]).
-    fn array_load_elem_generic(&mut self, base: Value, word: Value, elem: &Ty) -> Value {
+    fn array_load_elem_generic(
+        &mut self,
+        base: Value,
+        word: Value,
+        elem: &Ty,
+        borrowed: bool,
+    ) -> Value {
         let is_float = self.array_float_tag_for(base);
         let box_b = self.builder.create_block();
         let dup_b = self.builder.create_block();
@@ -3599,7 +3674,9 @@ impl<M: Module> Translator<'_, M> {
         // Boxed-element array: dup the slot pointer (an immediate dups as a no-op).
         self.builder.switch_to_block(dup_b);
         self.builder.seal_block(dup_b);
-        self.dup_value(word, elem);
+        if borrowed {
+            self.dup_value(word, elem);
+        }
         self.builder.ins().jump(merge_b, &[word.into()]);
 
         self.builder.switch_to_block(merge_b);
@@ -3667,7 +3744,7 @@ impl<M: Module> Translator<'_, M> {
         } else if generic {
             // The static type cannot say whether the array is raw `f64`; branch on
             // its self-tag at runtime.
-            self.array_set_store_generic(base, addr, slot_off, value, &elem);
+            self.array_set_store_generic(base, addr, slot_off, value, &elem, true);
         } else {
             // A boxed/`Int` element: store the new word, releasing the old element.
             let old = self.builder.ins().load(types::I64, MemFlags::trusted(), addr, slot_off);
@@ -3705,6 +3782,7 @@ impl<M: Module> Translator<'_, M> {
         slot_off: i32,
         value: Value,
         elem: &Ty,
+        release_old: bool,
     ) {
         let is_float = self.array_float_tag_for(base);
         let float_b = self.builder.create_block();
@@ -3722,9 +3800,12 @@ impl<M: Module> Translator<'_, M> {
         // Boxed array: store the new word, releasing the old element.
         self.builder.switch_to_block(boxed_b);
         self.builder.seal_block(boxed_b);
-        let old = self.builder.ins().load(types::I64, MemFlags::trusted(), addr, slot_off);
+        let old = release_old
+            .then(|| self.builder.ins().load(types::I64, MemFlags::trusted(), addr, slot_off));
         self.builder.ins().store(MemFlags::trusted(), value, addr, slot_off);
-        self.drop_value(old, elem);
+        if let Some(old) = old {
+            self.drop_value(old, elem);
+        }
         self.builder.ins().jump(cont_b, &[]);
 
         self.builder.switch_to_block(cont_b);
