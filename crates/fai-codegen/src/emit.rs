@@ -958,6 +958,7 @@ fn build_fn<M: Module>(
             token_sizes: FxHashMap::default(),
             float_layout_versioned: false,
             unique_float_cells: FxHashSet::default(),
+            scalar_cursors: FxHashSet::default(),
             loop_ctx: None,
             result_slot: None,
             bounds: Bounds::new(),
@@ -1092,6 +1093,22 @@ fn build_fn<M: Module>(
             }
         }
 
+        let retained_root = if is_entry
+            && register_entry
+            && !tr.concurrent
+            && core_fn.params == lowered.entry().params
+            && let Some(plan) = crate::list_cursor::plan(core_fn, &tr.var_tys)
+        {
+            let value = tr.use_var(plan.root);
+            let position =
+                core_fn.params.iter().position(|p| *p == plan.root).expect("cursor parameter");
+            let ty = tr.var_ty(plan.root).expect("typed scalar list").clone();
+            tr.scalar_cursors = plan.cursors;
+            (!lowered.entry_param_borrowed(position)).then_some((value, ty))
+        } else {
+            None
+        };
+
         // Seed the bounds-check-elimination fact graph with this entry's inferred
         // facts (mapping each parameter index to its local), so dominating-guard and
         // arithmetic refinement in the body can prove indices in range. The seed is
@@ -1168,6 +1185,9 @@ fn build_fn<M: Module>(
         } else {
             tr.boxed_return(result)
         };
+        if let Some((root, ty)) = retained_root {
+            tr.drop_value(root, &ty);
+        }
         tr.builder.ins().return_(&[ret]);
         tr.builder.finalize();
     }
@@ -1384,6 +1404,8 @@ struct Translator<'a, M: Module> {
     /// Guarded scalar-only cells and their nonnull reset tokens. Duplicates and
     /// calls invalidate the uniqueness proof before a later reset can reuse it.
     unique_float_cells: FxHashSet<Value>,
+    /// Read-only descendants of one scalar-list root retained across this call.
+    scalar_cursors: FxHashSet<LocalId>,
     /// The enclosing tail-call loop, while translating a `Join` body: where
     /// `Recur` jumps back and where the loop's result exits.
     loop_ctx: Option<LoopCtx>,
@@ -2065,6 +2087,9 @@ impl<M: Module> Translator<'_, M> {
     /// [`DupPlan`]: an immediate is a no-op, an always-boxed value increments
     /// unconditionally, and any other value guards the increment with a tag-check.
     fn dup_local(&mut self, local: LocalId) {
+        if self.scalar_cursors.contains(&local) {
+            return;
+        }
         // In a concurrent program a value may be shared across tasks, so the inlined
         // non-atomic increment is unsound: route to the branchful runtime `fai_dup`
         // (atomic for a shared value, a no-op for an immortal one). A
@@ -2095,6 +2120,9 @@ impl<M: Module> Translator<'_, M> {
     /// boxed leaf, a runtime child-release for other data, and the runtime drop as
     /// the fallback for an unknown type.
     fn drop_local(&mut self, local: LocalId) {
+        if self.scalar_cursors.contains(&local) {
+            return;
+        }
         // In a concurrent program a value may be shared across tasks, so the inlined
         // non-atomic decrement (and the inlined child-release) is unsound: route to
         // the branchful runtime `fai_drop`, which atomically releases a shared value
@@ -3149,6 +3177,14 @@ impl<M: Module> Translator<'_, M> {
         niche: Option<NicheKind>,
         result_ty: &Ty,
     ) -> Value {
+        if niche.is_none()
+            && index == FieldIndex::Const(1)
+            && matches!(base.kind, ExprKind::Local(local) if self.scalar_cursors.contains(&local))
+        {
+            let value = self.data_base(base);
+            let address = self.field_slot_addr(value, index);
+            return self.builder.ins().load(types::I64, MemFlags::trusted(), address, 0);
+        }
         if let Some(k) = niche {
             // A niche `Some` projection: the value *is* the payload, so the
             // projection is the identity (no header load). The result is the payload

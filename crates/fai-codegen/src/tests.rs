@@ -459,6 +459,27 @@ fn borrowed_list_match_has_no_alias_reference_count_traffic() {
 }
 
 #[test]
+fn scalar_list_scan_updates_only_the_retained_root_count() {
+    let source = "module M\npublic scan : Int -> List Int -> Int\nlet scan acc xs = match xs with | [] -> acc | x :: rest -> scan (acc + x) rest\n";
+    let ir = entry_ir(source, "scan");
+    assert_eq!(
+        ir.lines().filter(|line| line.trim_start().starts_with("store")).count(),
+        1,
+        "only final root release writes a count; cursor steps borrow:\n{ir}"
+    );
+}
+
+#[test]
+fn non_scalar_list_elements_keep_ordinary_reference_counting() {
+    let source = "module M\npublic scan : Int -> List String -> Int\nlet scan acc xs = match xs with | [] -> acc | x :: rest -> scan (acc + String.length x) rest\n";
+    let ir = entry_ir(source, "scan");
+    assert!(
+        ir.lines().filter(|line| line.trim_start().starts_with("store")).count() > 1,
+        "non-scalar elements retain the ordinary ownership path:\n{ir}"
+    );
+}
+
+#[test]
 fn fresh_small_data_writes_its_header_and_fields_inline() {
     let ir =
         entry_ir("module M\npublic pair : Bool -> Bool * Bool\nlet pair b = (b, not b)\n", "pair");

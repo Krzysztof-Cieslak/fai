@@ -166,3 +166,16 @@ fn recursive_scalar_body_edits_match_clean_native_objects() {
         },
     );
 }
+
+#[test]
+fn scalar_list_scan_edits_match_clean_native_objects() {
+    let source = "module M\nlet scan acc xs = match xs with | [] -> acc | x :: rest -> scan (acc + x) rest\n";
+    let edited = source.replace("acc + x", "acc - x");
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", source)], &[("M.fai", &edited)]],
+        |db, files| {
+            (*object_code(db, db.source_file(files[0]).unwrap(), Symbol::intern("scan"), false))
+                .clone()
+        },
+    );
+}
