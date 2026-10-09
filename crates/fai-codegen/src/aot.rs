@@ -34,6 +34,9 @@ fn host_isa() -> Arc<dyn TargetIsa> {
     // load/store elimination) at a modest compile-time cost. Cranelift's
     // optimizations are value-preserving, so this stays correctness-neutral.
     flags.set("opt_level", "speed").expect("flag");
+    // Keep hot entries on an instruction-fetch boundary rather than letting
+    // unrelated preceding functions determine their byte alignment.
+    flags.set("log2_min_function_alignment", "5").expect("flag");
 
     let mut triple = target_lexicon::Triple::host();
     if let target_lexicon::OperatingSystem::Darwin(version) = triple.operating_system {

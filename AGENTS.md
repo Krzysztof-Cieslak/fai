@@ -430,6 +430,7 @@ Small scalar-ABI recursive definitions can peel one bounded level of non-tail
 self-calls before ownership insertion. Mixed tail/non-tail functions retain
 their loop lowering; the expansion keeps argument and effect order and does not
 change data ownership or generic code sharing.
+Native function entries use at least 32-byte alignment in both AOT and JIT code.
 
 Standalone `Array.range`/`repeat`/`init` and single Array maps, folds, filters,
 and searches lower to typed sequential loops. Their operands are evaluated once
