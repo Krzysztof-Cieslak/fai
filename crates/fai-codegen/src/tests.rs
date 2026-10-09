@@ -319,7 +319,7 @@ fn permuted_float_array_reads_have_no_transient_reference_counts() {
         1,
         "only the final owner release writes a count:\n{ir}"
     );
-    assert_eq!(call_count(&ir), 4, "two bounds faults and the two owner-release paths:\n{ir}");
+    assert_eq!(call_count(&ir), 3, "two bounds faults and the final owner release:\n{ir}");
 }
 
 #[test]
@@ -333,7 +333,7 @@ fn permuted_int_array_reads_have_no_transient_reference_counts() {
         1,
         "only the final owner release writes a count:\n{ir}"
     );
-    assert_eq!(call_count(&ir), 4, "two bounds faults and the two owner-release paths:\n{ir}");
+    assert_eq!(call_count(&ir), 3, "two bounds faults and the final owner release:\n{ir}");
 }
 
 #[test]
@@ -4268,7 +4268,7 @@ fn array_length_inlines_a_field_load_with_no_length_call() {
     "#};
     let ir = entry_ir(src, "n");
     assert!(ir.contains("load"), "inline length-field load:\n{ir}");
-    assert_eq!(call_count(&ir), 2, "only the array's two drop paths call (no length call):\n{ir}");
+    assert_eq!(call_count(&ir), 1, "only the array's own drop is a call (no length call):\n{ir}");
 }
 
 #[test]
