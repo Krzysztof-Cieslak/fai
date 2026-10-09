@@ -1,7 +1,7 @@
 module TailLoops
 
 // Self-tail-recursive functions compile to loops, so they run in constant stack
-// space over arbitrarily deep lists. Two shapes appear here: a plain tail call
+// space over arbitrarily deep lists. The shapes include a plain tail call
 // (the accumulator folds) and a tail call wrapped in one or more constructors
 // (`build`/`filter` one deep, `stutter` two deep), "tail recursion modulo cons",
 // which rebuilds the spine in place. This holds for row-polymorphic functions too
@@ -14,6 +14,11 @@ public build : Int -> List Int
 let build n = if n <= 0 then [] else n :: build (n - 1)
 example: build 3 = [3, 2, 1]
 example: build 0 = []
+
+/// Wrapping integer addition can carry pending sums in a hidden loop accumulator.
+public triangular : Int -> Int
+let triangular n = if n <= 0 then 0 else n + triangular (n - 1)
+example: triangular 100 = 5050
 
 /// Keep the elements that satisfy `pred`, preserving order. The kept branch
 /// extends the spine; the dropped branch is a plain tail call — both loop.

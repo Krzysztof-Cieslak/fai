@@ -29,6 +29,8 @@ use fai_core::ir::{CExpr, ExprKind as K, FieldIndex, Lit};
 use fai_resolve::{DefId, LocalId};
 use fai_types::Ty;
 
+mod int_add;
+
 use crate::fresh;
 
 /// Flattens `body` (the entry function's body, after reference counting and reuse)
@@ -46,6 +48,9 @@ pub(crate) fn flatten(
     is_pure_total: &dyn Fn(DefId, usize) -> bool,
     next: &mut usize,
 ) -> CExpr {
+    if let Some(result) = int_add::flatten(&body, params, self_def, next) {
+        return result;
+    }
     let arity = params.len();
     // A row-polymorphic function's curried self-calls were already normalized into
     // saturated form before reference counting (see [`fuse_evidence_self_calls`]),

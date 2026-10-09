@@ -10,8 +10,14 @@ use indoc::{formatdoc, indoc};
 
 #[test]
 fn peeled_scalar_recursion_preserves_full_width_integer_results() {
-    let source = "module Main\nlet factorial n = if n <= 1 then 1 else n * factorial (n - 1)\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (factorial 30))\n";
-    let expected = (1i64..=30).fold(1i64, i64::wrapping_mul);
+    let source = "module Main\nlet f n = if n <= 1 then 1 else n * f (n - 1) + f (n - 2)\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (f 30))\n";
+    let mut previous = 1i64;
+    let mut expected = 1i64;
+    for n in 2i64..=30 {
+        let next = n.wrapping_mul(expected).wrapping_add(previous);
+        previous = expected;
+        expected = next;
+    }
     assert_eq!(build_and_run(source), (format!("{expected}\n"), Some(0)));
 }
 
@@ -148,6 +154,25 @@ fn niche_construction_preserves_native_string_aliases() {
 fn mixed_self_tail_calls_run_natively() {
     let source = "module Main\nlet ack m n = if m = 0 then n + 1 else if n = 0 then ack (m - 1) 1 else ack (m - 1) (ack m (n - 1))\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (ack 3 5))\n";
     assert_eq!(build_and_run(source), ("253\n".into(), Some(0)));
+}
+
+#[test]
+fn addition_tail_recursion_runs_deeply_with_wrapping_results() {
+    let source = "module Main\nlet sum n = if n <= 0 then 9223372036854775807 else n + sum (n - 1)\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (sum 1000000))\n";
+    let expected = i64::MAX.wrapping_add(1_000_000 * 1_000_001 / 2);
+    assert_eq!(build_and_run(source), (format!("{expected}\n"), Some(0)));
+}
+
+#[test]
+fn addition_tail_recursion_keeps_effect_order() {
+    let source = "module Main\nlet sum n =\n  let _ = stdConsole.writeLine (Int.toString n)\n  if n <= 0 then 0 else n + sum (n - 1)\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (sum 3))\n";
+    assert_eq!(build_and_run(source), ("3\n2\n1\n0\n6\n".into(), Some(0)));
+}
+
+#[test]
+fn addition_tail_recursion_preserves_row_evidence() {
+    let source = "module Main\nlet sum xs = match xs with | [] -> 0 | x :: rest -> x.value + sum rest\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (sum [{ value = 10, extra = true }, { value = 20, extra = false }]))\n";
+    assert_eq!(build_and_run(source), ("30\n".into(), Some(0)));
 }
 
 #[test]

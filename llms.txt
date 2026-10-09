@@ -1841,6 +1841,9 @@ Build/run it with `fai run Tasks.fai`; check the laws with `fai test Tasks.fai`.
   so mapping/updating data you own can allocate nothing).
   Self-tail calls can loop even alongside non-tail recursive calls; the non-tail
   calls still need stack space and retain their evaluation order.
+  A single recursive result added to an evaluated `Int` can also use a hidden
+  accumulator, relying on exact wrapping integer addition. Float sums retain
+  their original grouping.
 - **"Mutation" is `{ r with field = ... }`** for records, `Array.set`/`push` for
   arrays — both return new values (updated in place when unique).
 - **Strings**: build with `++` (amortized efficient) or `String.join`; index by

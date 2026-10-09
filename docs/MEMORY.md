@@ -1365,6 +1365,12 @@ program output are unchanged, guarded by the full type/golden suite):
     work are bounded, and inserted bodies are not expanded again. Argument
     bindings retain types and evaluation order. Mixed tail/non-tail recursion is
     left to loop lowering, avoiding duplicated loop branches and register pressure.
+    Tail recursion modulo wrapping Int addition can carry pending additions in
+    an internal join parameter without changing the public ABI. The recursive
+    result must be used once by an immediate addition with an already-evaluated
+    Int; unsupported cleanup or result uses remain ordinary calls. Other recursive
+    calls retain their order, and Float arithmetic is never reassociated. Linear
+    integer recursion stays unpeeled so this accumulator lowering can see it.
     Generated function entries use a 32-byte minimum alignment in both AOT and
     JIT images, reducing instruction-fetch sensitivity to unrelated object sizes.
   - **Row-polymorphic functions flatten too.** A function carrying leading
