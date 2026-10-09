@@ -2169,7 +2169,7 @@ impl<M: Module> Translator<'_, M> {
         // A boxed `Some` payload: decrement, and release its children at zero.
         self.builder.switch_to_block(dec_b);
         self.builder.seal_block(dec_b);
-        self.emit_rc_dec_then_value(cell, false, |s, value| {
+        self.emit_rc_dec_then_value(cell, false, true, |s, value| {
             let f = s.runtime("fai_drop_dead", 1, false);
             s.builder.ins().call(f, &[value]);
         });
@@ -2214,14 +2214,13 @@ impl<M: Module> Translator<'_, M> {
     fn increment_boxed_rc(&mut self, cell: Value) {
         let raw =
             self.builder.ins().load(types::I64, MemFlags::trusted(), cell, rt::RC_OFFSET as i32);
-        let state = self.builder.ins().band_imm(raw, rt::RC_STATE_MASK as i64);
-        let normal =
-            self.builder.ins().icmp_imm(IntCC::UnsignedLessThan, state, rt::MAX_REFCOUNT as i64);
+        let high = self.builder.ins().ushr_imm(raw, rt::MAX_REFCOUNT.trailing_zeros() as i64);
+        let special = self.builder.ins().band_imm(high, 7);
         let fast = self.builder.create_block();
         let slow = self.builder.create_block();
         let done = self.builder.create_block();
         self.builder.set_cold_block(slow);
-        self.builder.ins().brif(normal, fast, &[], slow, &[]);
+        self.builder.ins().brif(special, slow, &[], fast, &[]);
         self.builder.switch_to_block(fast);
         self.builder.seal_block(fast);
         let next = self.builder.ins().iadd_imm(raw, 1);
@@ -2246,7 +2245,9 @@ impl<M: Module> Translator<'_, M> {
         dead: impl FnOnce(&mut Self, Value),
     ) {
         let cell = self.use_var(local);
-        self.emit_rc_dec_then_value(cell, tag_check, dead);
+        let special =
+            self.niche_local(local).is_some() || self.var_ty(local).is_none_or(may_be_immortal);
+        self.emit_rc_dec_then_value(cell, tag_check, special, dead);
     }
 
     /// Value-keyed core of [`Self::emit_rc_dec_then`]: decrements `cell` and runs
@@ -2257,6 +2258,7 @@ impl<M: Module> Translator<'_, M> {
         &mut self,
         cell: Value,
         tag_check: bool,
+        special: bool,
         dead: impl FnOnce(&mut Self, Value),
     ) {
         let cont_b = self.builder.create_block();
@@ -2274,25 +2276,25 @@ impl<M: Module> Translator<'_, M> {
         // Decrement the reference count in place, then branch on whether dead.
         let rc_off = i32::try_from(rt::RC_OFFSET).expect("rc offset");
         let rc = self.builder.ins().load(types::I64, MemFlags::trusted(), cell, rc_off);
-        let state = self.builder.ins().band_imm(rc, rt::RC_STATE_MASK as i64);
-        let special = self.builder.ins().icmp_imm(
-            IntCC::UnsignedGreaterThanOrEqual,
-            state,
-            rt::IMMORTAL_RC as i64,
-        );
-        let slow = self.builder.create_block();
-        let normal = self.builder.create_block();
-        self.builder.set_cold_block(slow);
-        self.builder.ins().brif(special, slow, &[], normal, &[]);
-        self.builder.switch_to_block(slow);
-        self.builder.seal_block(slow);
-        self.call_drop(cell);
-        self.builder.ins().jump(cont_b, &[]);
-        self.builder.switch_to_block(normal);
-        self.builder.seal_block(normal);
+        if special {
+            let flags = self.builder.ins().ushr_imm(rc, rt::IMMORTAL_RC.trailing_zeros() as i64);
+            let flags = self.builder.ins().band_imm(flags, 3);
+            let slow = self.builder.create_block();
+            let normal = self.builder.create_block();
+            self.builder.set_cold_block(slow);
+            self.builder.ins().brif(flags, slow, &[], normal, &[]);
+            self.builder.switch_to_block(slow);
+            self.builder.seal_block(slow);
+            self.call_drop(cell);
+            self.builder.ins().jump(cont_b, &[]);
+            self.builder.switch_to_block(normal);
+            self.builder.seal_block(normal);
+        }
         let dec = self.builder.ins().iadd_imm(rc, -1);
         self.builder.ins().store(MemFlags::trusted(), dec, cell, rc_off);
-        let is_dead = self.builder.ins().icmp_imm(IntCC::Equal, state, 1);
+        let shift = 64 - rt::MAX_REFCOUNT.trailing_zeros();
+        let low = self.builder.ins().ishl_imm(rc, i64::from(shift));
+        let is_dead = self.builder.ins().icmp_imm(IntCC::Equal, low, (1u64 << shift) as i64);
         self.builder.ins().brif(is_dead, dead_b, &[], cont_b, &[]);
 
         self.builder.switch_to_block(dead_b);
@@ -2326,7 +2328,7 @@ impl<M: Module> Translator<'_, M> {
         if fields.len() <= 8 {
             self.data_offsets.insert(cell, rt::COMPACT_FIELDS_OFFSET);
         }
-        self.emit_rc_dec_then_value(cell, false, |s, cell| {
+        self.emit_rc_dec_then_value(cell, false, false, |s, cell| {
             for (i, class) in fields.iter().enumerate() {
                 if matches!(class, FieldDrop::Immediate) {
                     continue;
@@ -2400,13 +2402,13 @@ impl<M: Module> Translator<'_, M> {
             DropPlan::NoOp => {}
             DropPlan::Fixed(fields) => self.emit_inline_drop_value(v, &fields),
             DropPlan::Leaf { tag_check } => {
-                self.emit_rc_dec_then_value(v, tag_check, |s, cell| {
+                self.emit_rc_dec_then_value(v, tag_check, may_be_immortal(ty), |s, cell| {
                     let free = s.runtime("fai_free", 1, false);
                     s.builder.ins().call(free, &[cell]);
                 });
             }
             DropPlan::Data { tag_check } => {
-                self.emit_rc_dec_then_value(v, tag_check, |s, cell| {
+                self.emit_rc_dec_then_value(v, tag_check, may_be_immortal(ty), |s, cell| {
                     let f = s.runtime("fai_drop_dead", 1, false);
                     s.builder.ins().call(f, &[cell]);
                 });
@@ -2904,7 +2906,7 @@ impl<M: Module> Translator<'_, M> {
     fn release_reset_field(&mut self, cell: Value, index: usize) {
         let address = self.field_slot_addr(cell, FieldIndex::Const(index as u32));
         let field = self.builder.ins().load(types::I64, MemFlags::trusted(), address, 0);
-        self.emit_rc_dec_then_value(field, true, |s, dead| {
+        self.emit_rc_dec_then_value(field, true, true, |s, dead| {
             let f = s.runtime("fai_drop_dead", 1, false);
             s.builder.ins().call(f, &[dead]);
         });
@@ -6675,6 +6677,13 @@ fn fits_immediate(n: i64) -> bool {
 /// unconditionally immediate.
 fn is_immediate_ty(ty: &Ty) -> bool {
     matches!(ty, Ty::Unit | Ty::Con(Con::Bool) | Ty::Con(Con::Char))
+}
+
+/// Only literal strings and function closures have immortal heap cells. Data,
+/// arrays, numeric boxes and handles are allocated normally. Unknown types keep
+/// the state guard; niche payloads are handled separately by the caller.
+fn may_be_immortal(ty: &Ty) -> bool {
+    matches!(ty, Ty::Con(Con::String) | Ty::Arrow(..) | Ty::Var(_) | Ty::Error | Ty::EffectArg(_))
 }
 
 /// Lists have one nonnullary shape: two uniform cons fields, even for Floats.
