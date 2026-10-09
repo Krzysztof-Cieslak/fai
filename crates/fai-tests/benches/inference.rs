@@ -21,6 +21,12 @@ fn main() {
 /// Workspace sizes (number of leaf modules) the scaling benches sweep.
 const SIZES: &[usize] = &[10, 50, 200];
 
+fn checked_corpus(spec: &CorpusSpec) -> (FaiDatabase, Vec<SourceFile>) {
+    let (db, files) = corpus::build_db(spec);
+    fai_tests::benchmark_fixture::validate_db(&db, &files, &[]);
+    (db, files)
+}
+
 /// Type-checks every file, driving resolution + inference + contracts.
 fn check_all(db: &FaiDatabase, files: &[SourceFile]) {
     for &file in files {
@@ -34,7 +40,7 @@ fn cold_check(bencher: Bencher, modules: usize) {
     let spec = CorpusSpec::with_modules(modules);
     bencher
         .counter(ItemsCount::new(spec.total_defs()))
-        .with_inputs(|| corpus::build_db(&spec))
+        .with_inputs(|| checked_corpus(&spec))
         .bench_values(|(db, files)| {
             check_all(&db, &files);
             db
@@ -49,7 +55,7 @@ fn warm_private_body_edit(bencher: Bencher, modules: usize) {
     bencher
         .counter(ItemsCount::new(spec.total_defs()))
         .with_inputs(|| {
-            let (db, files) = corpus::build_db(&spec);
+            let (db, files) = checked_corpus(&spec);
             check_all(&db, &files); // warm it (untimed)
             // Pre-compute the edited source so only the edit + re-check is timed.
             let edited = corpus::edit_private_body(&spec, modules / 2, 1);
@@ -76,7 +82,7 @@ fn warm_edit_single_file_diagnostic(bencher: Bencher, modules: usize) {
     let target = format!("M{}.fai", modules / 2);
     bencher
         .with_inputs(|| {
-            let (db, files) = corpus::build_db(&spec);
+            let (db, files) = checked_corpus(&spec);
             check_all(&db, &files);
             let edited = corpus::edit_private_body(&spec, modules / 2, 1);
             let file =
@@ -100,7 +106,7 @@ fn warm_public_signature_edit(bencher: Bencher, modules: usize) {
     bencher
         .counter(ItemsCount::new(spec.total_defs()))
         .with_inputs(|| {
-            let (db, files) = corpus::build_db(&spec);
+            let (db, files) = checked_corpus(&spec);
             check_all(&db, &files);
             let edited = corpus::edit_core_signature(&spec);
             (db, files, edited)
@@ -121,7 +127,7 @@ fn warm_comment_edit(bencher: Bencher, modules: usize) {
     bencher
         .counter(ItemsCount::new(spec.total_defs()))
         .with_inputs(|| {
-            let (db, files) = corpus::build_db(&spec);
+            let (db, files) = checked_corpus(&spec);
             check_all(&db, &files);
             let edited = corpus::edit_comment(&spec, modules / 2, 1);
             (db, files, edited)

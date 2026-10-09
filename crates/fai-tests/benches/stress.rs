@@ -22,10 +22,15 @@ fn main() {
 
 /// Builds a database with the prelude and a single module `M` from `source`.
 fn db_with(source: &str) -> (FaiDatabase, SourceFile) {
+    db_with_errors(source, &[])
+}
+
+fn db_with_errors(source: &str, expected: &[&str]) -> (FaiDatabase, SourceFile) {
     let mut db = FaiDatabase::new();
     fai_types::std_lib::load_std(&mut db);
     let id = db.add_source("M.fai".into(), source.to_owned());
     let file = db.source_file(id).unwrap();
+    fai_tests::benchmark_fixture::validate_db(&db, &[file], expected);
     (db, file)
 }
 
@@ -111,14 +116,9 @@ fn long_application_chain(bencher: Bencher, n: usize) {
 // ── deep if/else decision tree ───────────────────────────────────────────────
 // A long `if … then … else if …` chain; every branch unifies against the result.
 
-#[divan::bench(args = [20, 100, 400])]
+#[divan::bench(args = fai_tests::benchmark_fixture::IF_DEPTHS)]
 fn deep_if_else_chain(bencher: Bencher, n: usize) {
-    let mut body = String::new();
-    for i in 0..n {
-        let _ = write!(body, "if x = {i} then {i} else ");
-    }
-    body.push('x');
-    let src = format!("module M\n\nlet f x = {body}\n");
+    let src = fai_tests::benchmark_fixture::if_chain(n);
     let entry = Symbol::intern("f");
 
     bencher.counter(ItemsCount::new(n)).with_inputs(|| db_with(&src)).bench_values(|(db, file)| {
@@ -152,10 +152,9 @@ fn many_polymorphic_instantiations(bencher: Bencher, n: usize) {
 // A long chain of arithmetic over one variable; stresses Numeric-constraint
 // propagation and defaulting.
 
-#[divan::bench(args = [50, 200, 800])]
+#[divan::bench(args = fai_tests::benchmark_fixture::ARITHMETIC_LENGTHS)]
 fn long_arithmetic_chain(bencher: Bencher, n: usize) {
-    let terms = (0..n).map(|i| format!("x + {i}")).collect::<Vec<_>>().join(" + ");
-    let src = format!("module M\n\nlet f x = {terms}\n");
+    let src = fai_tests::benchmark_fixture::arithmetic_chain(n);
     let entry = Symbol::intern("f");
 
     bencher.counter(ItemsCount::new(n)).with_inputs(|| db_with(&src)).bench_values(|(db, file)| {
@@ -238,8 +237,21 @@ fn many_type_errors(bencher: Bencher, n: usize) {
         let _ = writeln!(src, "let e{i} = {i} + true\n");
     }
 
-    bencher.counter(ItemsCount::new(n)).with_inputs(|| db_with(&src)).bench_values(|(db, file)| {
-        check_file(&db, file);
-        db
-    });
+    bencher
+        .counter(ItemsCount::new(n))
+        .with_inputs(|| db_with_errors(&src, &["FAI3001"]))
+        .bench_values(|(db, file)| {
+            check_file(&db, file);
+            db
+        });
+}
+
+#[divan::bench(args = [400, 1600])]
+fn parse_rejected_nesting(bencher: Bencher, n: usize) {
+    let source = fai_tests::benchmark_fixture::if_chain(n);
+    fai_tests::benchmark_fixture::validate_sources(
+        &[("M.fai".into(), source.clone())],
+        &["FAI1023"],
+    );
+    bencher.bench(|| fai_syntax::parse_module(fai_span::SourceId::new(0), &source));
 }

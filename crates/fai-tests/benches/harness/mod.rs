@@ -45,6 +45,7 @@ pub fn reference_byte(text: &str) -> usize {
 /// A warmed in-memory corpus: every file inferred, ready to answer queries.
 pub fn warm_corpus(modules: usize) -> (FaiDatabase, Vec<SourceFile>) {
     let (db, files) = corpus::build_db(&CorpusSpec::with_modules(modules));
+    fai_tests::benchmark_fixture::validate_db(&db, &files, &[]);
     for &file in &files {
         check_file(&db, file);
     }
@@ -70,6 +71,11 @@ pub fn corpus_source(spec: &CorpusSpec, name: &str) -> String {
 /// A warmed database holding the real-world app, plus its files by path.
 pub fn warm_app() -> (FaiDatabase, BTreeMap<&'static str, SourceFile>) {
     let (db, files) = realworld::load_app();
+    fai_tests::benchmark_fixture::validate_db(
+        &db,
+        &files.values().copied().collect::<Vec<_>>(),
+        &[],
+    );
     for &file in files.values() {
         check_file(&db, file);
     }
@@ -146,6 +152,7 @@ impl Server {
     /// Writes `(name, source)` files to a fresh temp directory (the workspace
     /// root), starts the server, and completes the initialize handshake.
     pub fn start_files(files: Vec<(String, String)>) -> Self {
+        fai_tests::benchmark_fixture::validate_sources(&files, &[]);
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let dir = Utf8PathBuf::from_path_buf(std::env::temp_dir()).unwrap().join(format!(
             "fai-lsp-bench-{}-{}",

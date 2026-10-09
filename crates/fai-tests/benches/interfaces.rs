@@ -27,6 +27,7 @@ fn fresh(src: &str) -> (FaiDatabase, SourceFile) {
     fai_types::std_lib::load_std(&mut db);
     let id = db.add_source("M.fai".into(), src.to_owned());
     let file = db.source_file(id).unwrap();
+    fai_tests::benchmark_fixture::validate_db(&db, &[file], &[]);
     (db, file)
 }
 
@@ -59,22 +60,7 @@ fn row_poly_module(fields: usize) -> String {
 /// A least-authority capability record threaded through `depth` helpers before
 /// it reaches the console — exercising evidence threading across call chains.
 fn capability_module(depth: usize) -> String {
-    let mut out = String::from("module M\n\n");
-    for i in 0..depth {
-        let body = if i == 0 {
-            "env.console.writeLine \"deep\"".to_owned()
-        } else {
-            format!("helper{} env", i - 1)
-        };
-        out.push_str(&format!(
-            "helper{i} : {{ console : Console | 'r }} -> Unit\nlet helper{i} env = {body}\n\n"
-        ));
-    }
-    out.push_str(&format!(
-        "public main : Runtime -> Unit / {{ Console }}\nlet main r = helper{} r\n",
-        depth - 1
-    ));
-    out
+    fai_tests::benchmark_fixture::capability_source(depth)
 }
 
 // ── inference + lowering + JIT ────────────────────────────────────────────────
