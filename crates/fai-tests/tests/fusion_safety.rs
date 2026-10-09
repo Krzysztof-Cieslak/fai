@@ -44,6 +44,26 @@ fn materialized_list_map_has_the_same_trap() {
 }
 
 #[test]
+fn strict_comparison_list_map_keeps_function_guard() {
+    assert_trap("comparison-list", "not defined on functions");
+}
+
+#[test]
+fn strict_comparison_array_map_keeps_function_guard() {
+    assert_trap("comparison-array", "not defined on functions");
+}
+
+#[test]
+fn materialized_comparison_keeps_the_same_guard() {
+    assert_trap("comparison-materialized", "not defined on functions");
+}
+
+#[test]
+fn strict_ordering_map_keeps_function_guard() {
+    assert_trap("comparison-ordering", "not defined on functions");
+}
+
+#[test]
 fn strict_array_map_traps_before_short_circuiting() {
     assert_trap("array-map", "division by zero");
 }
@@ -102,6 +122,16 @@ fn short_circuiting_does_not_skip_a_diverging_map() {
 fn fusion_worker() {
     let Ok(case) = std::env::var("FAI_FUSION_CASE") else { return };
     let body = match case.as_str() {
+        "comparison-list" => "List.any identity (List.map selfEq [None, Some (fun x -> x + 1)])",
+        "comparison-array" => {
+            "Array.any identity (Array.map selfEq [| None, Some (fun x -> x + 1) |])"
+        }
+        "comparison-materialized" => {
+            "let values = List.map selfEq [None, Some (fun x -> x + 1)]\nList.any identity values"
+        }
+        "comparison-ordering" => {
+            "List.any identity (List.map selfCompare [None, Some (fun x -> x + 1)])"
+        }
         "list-map" => "List.any (fun x -> x = 1) (List.map (fun n -> 1 / n) [1, 0])",
         "eager-list" => {
             "let values = List.map (fun n -> 1 / n) [1, 0]\nList.any (fun x -> x = 1) values"
@@ -120,7 +150,7 @@ fn fusion_worker() {
     };
     let body = body.lines().map(|line| format!("  {line}\n")).collect::<String>();
     let source = format!(
-        "module Main\nlet spin n = if n = 0 then spin n else 1\nlet bad = 1 / 0\nlet make u =\n  let _ = spin 0\n  fun x -> x\nlet probe u =\n{body}\npublic main : Runtime -> Unit / {{ Console }}\nlet main r =\n  let _ = r.console.writeLine \"__FUSION_READY__\"\n  let _ = probe ()\n  r.console.writeLine \"finished\"\n"
+        "module Main\nlet selfEq x = x = x\nlet selfCompare x = compare x x = 0\nlet spin n = if n = 0 then spin n else 1\nlet bad = 1 / 0\nlet make u =\n  let _ = spin 0\n  fun x -> x\nlet probe u =\n{body}\npublic main : Runtime -> Unit / {{ Console }}\nlet main r =\n  let _ = r.console.writeLine \"__FUSION_READY__\"\n  let _ = probe ()\n  r.console.writeLine \"finished\"\n"
     );
     let mut db = FaiDatabase::new();
     fai_types::std_lib::load_std(&mut db);
