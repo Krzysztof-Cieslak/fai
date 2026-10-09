@@ -541,9 +541,13 @@ inside aggregates and hash containers.
 Small runtime allocations are backed by demand-filled slabs beneath the existing
 thread-local size-class lists. Only issued batches touch pages: each fresh slab
 starts with eight cells, then uses batches of up to 64 as demand continues.
-Slab ownership outlives allocating threads when cells cross task boundaries; the last cell or
-unfinished cursor releases the mapping. Object layouts and Perceus ownership are
+Slab ownership outlives allocating threads when cells cross task boundaries; the
+last cell or unfinished cursor releases the mapping. Object layouts and Perceus ownership are
 unchanged by this allocator policy.
+Objects of at least 16 KiB use independent page mappings, released at final drop.
+Common array/string payloads are cache-line aligned. Smaller blocks retain the
+slab/system allocator paths, and fixed-state space guards cover repeated large
+buffer allocation as well as in-place reuse.
 Compact data headers reduce a two-field cell from 48 to 24 bytes. Non-data buffer
 and handle layouts remain descriptor-based, and compact/extended data values
 interoperate through the same structural and ownership operations.

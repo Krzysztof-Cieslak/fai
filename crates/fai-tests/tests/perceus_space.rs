@@ -39,6 +39,14 @@ let chunkLoop n chunks acc =
     chunkLoop (n - 1) chunks (acc + total)
 public chunks : Int -> Int
 let chunks n = chunkLoop n [[1, 2], [], [3, 4]] 0
+let largeLoop n acc =
+  if n <= 0 then acc else
+    let xs = Array.range 0 4096
+    let first = Array.unsafeGet 0 xs
+    let last = Array.unsafeGet 4095 xs
+    largeLoop (n - 1) (acc + first + last)
+public largeArrays : Int -> Int
+let largeArrays n = largeLoop n 0
 public main : Runtime -> Unit
 let main r = ()
 "#;
@@ -147,4 +155,18 @@ fn open_record_updates_keep_peak_storage_constant() {
         "{short:?} -> {long:?}"
     );
     assert!(long.peak_bytes > 0 && long.peak_bytes < 4096, "{long:?}");
+}
+
+#[test]
+fn repeated_large_buffers_keep_peak_storage_constant() {
+    let mut harness = Harness::new();
+    let short = harness.measure("largeArrays", 8, 8 * 4095);
+    let long = harness.measure("largeArrays", 4096, 4096 * 4095);
+    assert_eq!(
+        (long.peak_bytes, long.peak_objects),
+        (short.peak_bytes, short.peak_objects),
+        "{short:?} -> {long:?}"
+    );
+    assert_eq!(long.array_copies, 0);
+    assert!(long.peak_bytes >= 4096 * 8 && long.peak_bytes < 2 * 4096 * 8, "{long:?}");
 }

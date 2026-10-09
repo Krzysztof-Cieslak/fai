@@ -1243,6 +1243,9 @@ pub extern "C" fn fai_pool_heads() -> *mut u8 {
 
 /// Allocates `size` bytes (8-aligned) from the system allocator, aborting on OOM.
 fn system_alloc(size: usize) -> *mut u8 {
+    if size >= large_pages::THRESHOLD {
+        return large_pages::allocate(size);
+    }
     let layout = Layout::from_size_align(size, ALIGN).expect("valid layout");
     // SAFETY: `layout` has nonzero size (a class capacity or a large request) and
     // valid alignment.
@@ -1258,6 +1261,11 @@ fn system_alloc(size: usize) -> *mut u8 {
 /// # Safety
 /// `p` was returned by `system_alloc(size)` with the same size and alignment.
 unsafe fn system_dealloc(p: *mut u8, size: usize) {
+    if size >= large_pages::THRESHOLD {
+        // SAFETY: this size was allocated through the corresponding large-page path.
+        unsafe { large_pages::release(p, size) };
+        return;
+    }
     let layout = Layout::from_size_align(size, ALIGN).expect("valid layout");
     // SAFETY: `p`/`layout` match the original system allocation.
     unsafe { std::alloc::dealloc(p, layout) };
@@ -4678,6 +4686,7 @@ fn verify_payload(p: *const u8, size: usize, byte: u8) {
 mod scheduler;
 
 mod data_header;
+mod large_pages;
 mod local_time;
 mod random;
 pub use data_header::{
