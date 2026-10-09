@@ -195,7 +195,7 @@ mod tests {
         let pool = Pool::new();
         let class = 48 / SIZE_STEP;
         let cell = pool.take(class);
-        assert_eq!(pool.offsets[class].get(), START + 64 * 48);
+        assert_eq!(pool.offsets[class].get(), START + 8 * 48);
         assert!(pool.offsets[class].get() < BYTES);
         drop(pool);
         // SAFETY: the issued cell retains the last slab reference after the pool.
@@ -211,6 +211,19 @@ mod tests {
             assert!(!release(slab));
             assert!(!release_many(slab, 7));
             assert!(release(slab));
+        }
+    }
+
+    #[test]
+    fn sustained_demand_uses_full_batches_after_first_use() {
+        let pool = Pool::new();
+        let class = 48 / SIZE_STEP;
+        let cells: Vec<_> = (0..9).map(|_| pool.take(class)).collect();
+        assert_eq!(pool.offsets[class].get(), START + (8 + 64) * 48);
+        drop(pool);
+        for cell in cells {
+            // SAFETY: each issued cell retains its slab reference after pool drop.
+            unsafe { release_cell(cell) };
         }
     }
 

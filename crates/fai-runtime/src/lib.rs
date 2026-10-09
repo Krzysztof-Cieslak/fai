@@ -1112,8 +1112,9 @@ impl Pool {
         head
     }
 
-    /// Refills an empty class from its unfinished slab, issuing at most 64 cells
-    /// so a small workload does not touch the entire reserved mapping.
+    /// Refills an empty class from its unfinished slab. First use issues only
+    /// eight cells; sustained demand uses batches of 64 without touching the
+    /// entire mapping in advance.
     fn refill(&self, class: usize) -> *mut u8 {
         debug_assert!(self.heads[class].get().is_null());
         let size = class * SIZE_STEP;
@@ -1124,7 +1125,8 @@ impl Pool {
             self.offsets[class].set(slab::START);
         }
         let offset = self.offsets[class].get();
-        let count = ((slab::BYTES - offset) / size).min(64);
+        let batch = if offset == slab::START { 8 } else { 64 };
+        let count = ((slab::BYTES - offset) / size).min(batch);
         debug_assert!(count > 0);
         // SAFETY: this pool owns the cursor. The issued cells fit in the slab,
         // are aligned, disjoint, and have not previously been issued.

@@ -539,8 +539,9 @@ of one resource are equal; distinct live resources remain distinct, including
 inside aggregates and hash containers.
 
 Small runtime allocations are backed by demand-filled slabs beneath the existing
-thread-local size-class lists. Only issued batches touch pages. Slab ownership
-outlives allocating threads when cells cross task boundaries; the last cell or
+thread-local size-class lists. Only issued batches touch pages: each fresh slab
+starts with eight cells, then uses batches of up to 64 as demand continues.
+Slab ownership outlives allocating threads when cells cross task boundaries; the last cell or
 unfinished cursor releases the mapping. Object layouts and Perceus ownership are
 unchanged by this allocator policy.
 Compact data headers reduce a two-field cell from 48 to 24 bytes. Non-data buffer
