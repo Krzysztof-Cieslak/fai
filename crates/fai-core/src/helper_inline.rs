@@ -281,7 +281,7 @@ fn inline_expr(
 /// are bound, in source order, so evaluation (hence trap) order is preserved and
 /// each argument flows through the same representation coercion the call boundary
 /// would have applied.
-fn build_inline(
+pub(crate) fn build_inline(
     entry: &CoreFn,
     args: Vec<CExpr>,
     arity: usize,
@@ -332,7 +332,7 @@ fn build_inline(
 
 /// The number of Core nodes in `e` (every [`CExpr`] counts as one, recursing into
 /// its expression children). The size budget eligibility is measured against.
-fn node_count(e: &CExpr) -> usize {
+pub(crate) fn node_count(e: &CExpr) -> usize {
     let kids = |xs: &[CExpr]| -> usize { xs.iter().map(node_count).sum() };
     1 + match &e.kind {
         K::Lit(_) | K::Local(_) | K::Global(_) | K::Error | K::MakeClosure { .. } => 0,

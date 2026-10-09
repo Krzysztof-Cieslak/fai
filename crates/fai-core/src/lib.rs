@@ -27,6 +27,7 @@ pub mod pretty;
 pub mod purity;
 pub mod reassoc;
 pub mod representation;
+mod scalar_peel;
 #[allow(unsafe_code)]
 pub mod simplify;
 pub mod wire;
