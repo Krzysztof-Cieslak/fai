@@ -144,6 +144,8 @@ pub struct ContractMeta {
 /// must be clean before running, and the totals.
 #[derive(Debug, Clone)]
 pub struct TestPlan {
+    /// Immutable coordinates from the revision compiled for this run.
+    pub render_spans: TestSpans,
     /// The portable program (defs + contract entries) for the worker.
     pub bundle: TestWireBundle,
     /// Render-side metadata for each runnable contract, in bundle order.
@@ -159,6 +161,47 @@ pub struct TestPlan {
     pub seed: i64,
     /// Whether an error in `pre_diagnostics` blocks execution.
     pub blocked: bool,
+}
+
+/// A detached resolver for all spans a prepared test run can report. It does not
+/// hold a database snapshot while workers execute or while inputs are edited.
+#[derive(Debug, Clone, Default)]
+pub struct TestSpans {
+    spans: FxHashMap<Span, fai_span::ResolvedSpan>,
+}
+
+impl SpanResolver for TestSpans {
+    fn resolve(&self, span: Span) -> Option<fai_span::ResolvedSpan> {
+        self.spans.get(&span).cloned()
+    }
+}
+
+impl TestSpans {
+    fn capture(db: &dyn Db, plan: &TestPlan) -> Self {
+        let resolver = fai_db::DbSpanResolver::new(db);
+        let mut spans = FxHashMap::default();
+        let mut record = |span| {
+            if let Some(resolved) = resolver.resolve(span) {
+                spans.insert(span, resolved);
+            }
+        };
+        for meta in &plan.runnable_meta {
+            record(meta.span);
+        }
+        for (meta, _, _) in &plan.not_runnable {
+            record(meta.span);
+        }
+        for diagnostic in &plan.pre_diagnostics {
+            record(diagnostic.primary);
+            for label in &diagnostic.secondary {
+                record(label.span);
+            }
+            for suggestion in &diagnostic.suggestions {
+                record(suggestion.span);
+            }
+        }
+        Self { spans }
+    }
 }
 
 /// A single contract's outcome, as determined by the worker or the supervisor.
@@ -519,7 +562,8 @@ fn build_plan(
         runnable_meta.push(meta.clone());
     }
 
-    TestPlan {
+    let mut plan = TestPlan {
+        render_spans: TestSpans::default(),
         bundle: TestWireBundle { defs, contracts },
         runnable_meta,
         not_runnable,
@@ -527,7 +571,9 @@ fn build_plan(
         total,
         seed: config.seed,
         blocked,
-    }
+    };
+    plan.render_spans = TestSpans::capture(db, &plan);
+    plan
 }
 
 /// Assembles the final outcome from a plan and the per-contract results (empty
@@ -1049,6 +1095,7 @@ mod tests {
 
     fn plan(n: usize) -> TestPlan {
         TestPlan {
+            render_spans: TestSpans::default(),
             bundle: TestWireBundle {
                 defs: Vec::new(),
                 contracts: (0..n)

@@ -478,6 +478,48 @@ fn local_contract_progress_arrives_before_the_next_contract_finishes() {
     live_contract_progress(true, "live-contract-local");
 }
 
+#[cfg(debug_assertions)]
+#[test]
+fn test_report_keeps_the_source_revision_that_ran() {
+    use wait_timeout::ChildExt;
+    struct ReleaseGate(PathBuf);
+    impl Drop for ReleaseGate {
+        fn drop(&mut self) {
+            let _ = std::fs::write(&self.0, "release");
+        }
+    }
+    let source = "module M\nexample: true\nexample: false\n";
+    let daemon = Daemon::new("test-revision", &[("M.fai", source)]);
+    let gate = ReleaseGate(daemon.workspace.join("continue"));
+    let _ = std::fs::remove_file(&gate.0);
+    let mut child = KillOnDrop(
+        daemon
+            .cmd()
+            .env("FAI_TEST_EVENT_GATE", &gate.0)
+            .env("FAI_TEST_TIMEOUT_MS", "30000")
+            .args(["test", "--color=never", "-C"])
+            .arg(&daemon.workspace)
+            .arg("M.fai")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let lines = read_lines(child.0.stdout.take().unwrap());
+    assert!(lines.recv_timeout(Duration::from_secs(20)).unwrap().starts_with("ok    "));
+    std::fs::write(daemon.workspace.join("M.fai"), format!("// 🌍 inserted\n\n\n{source}"))
+        .unwrap();
+    assert!(daemon.run(&["check", "--no-examples"], &["M.fai"]).status.success());
+    std::fs::write(&gate.0, "release").unwrap();
+    assert_eq!(child.0.wait_timeout(Duration::from_secs(20)).unwrap().unwrap().code(), Some(1));
+    let mut output = String::new();
+    while let Ok(line) = lines.recv_timeout(Duration::from_secs(5)) {
+        output.push_str(&line);
+        output.push('\n');
+    }
+    assert!(output.contains("M.fai:3:1"), "{output}");
+}
+
 #[test]
 fn daemon_survives_a_trapping_contract() {
     let daemon = Daemon::new("survive", &[("Crash.fai", CRASH)]);
