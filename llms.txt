@@ -207,7 +207,7 @@ its trailing `//` comment; commented tuples and parentheses can wrap to keep the
 following element and closing delimiter outside the comment.
 
 Deep generated syntax is bounded: `FAI1023` reports more than 128 recursive
-grammar layers or 512 expression/type-tree layers, including long operator,
+grammar layers or 256 expression/type-tree layers, including long operator,
 application, and field chains. Split such code into named helpers or intermediate
 bindings. Formatting leaves files with this diagnostic unchanged.
 

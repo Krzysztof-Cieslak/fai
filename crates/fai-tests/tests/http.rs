@@ -448,7 +448,9 @@ fn server_rejects_unsupported_expectations_without_waiting_for_a_body() {
 
 fn redirect_connection(listener: &std::net::TcpListener) -> std::net::TcpStream {
     listener.set_nonblocking(true).unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    // The peer starts before the Fai client is JIT-compiled; allow cold debug
+    // compilation separately from the much shorter connected-I/O timeouts.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
     loop {
         match listener.accept() {
             Ok((connection, _)) => return connection,

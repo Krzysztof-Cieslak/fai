@@ -223,7 +223,8 @@ fn invalid_request_headers_write_no_bytes_to_a_real_peer() {
     let finished = done.clone();
     let peer = std::thread::spawn(move || {
         listener.set_nonblocking(true).unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        // This startup wait includes cold JIT compilation of the client.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
         let mut connection = loop {
             match listener.accept() {
                 Ok((connection, _)) => break connection,

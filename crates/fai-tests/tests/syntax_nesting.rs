@@ -35,7 +35,7 @@ fn downstream_worker() {
     };
     let body = match case.as_str() {
         "parens" => format!("let value = {}1{}", "(".repeat(126), ")".repeat(126)),
-        "infix" => format!("let value = {}0", "1 + ".repeat(511)),
+        "infix" => format!("let value = {}0", "1 + ".repeat(255)),
         "arrows" => format!("type Function = {}Int", "Int -> ".repeat(126)),
         "modules" => format!("{}let value = 0", "module Inner = ".repeat(120)),
         _ => panic!("unknown downstream case"),

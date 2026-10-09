@@ -26,7 +26,8 @@ fn response_eof(clean: bool) -> String {
     let (done, finished) = std::sync::mpsc::channel();
     let peer = std::thread::spawn(move || {
         listener.set_nonblocking(true).unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        // This startup wait includes cold JIT compilation of the client.
+        let deadline = std::time::Instant::now() + Duration::from_secs(180);
         let socket = loop {
             match listener.accept() {
                 Ok((socket, _)) => break socket,

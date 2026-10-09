@@ -1045,6 +1045,7 @@ fn solver_counts(src: String) -> fai_types::perf::Counters {
     fai_types::std_lib::load_std(&mut db);
     let id = db.add_source("M.fai".into(), src);
     let file = db.source_file(id).unwrap();
+    assert!(fai_syntax::parse::accumulated::<fai_db::Diag>(&db, file).is_empty());
     fai_types::perf::reset();
     let _ = fai_types::def_type(&db, file, Symbol::intern("f"));
     fai_types::perf::snapshot()
@@ -1077,8 +1078,8 @@ fn chain_resolution_work_is_linear() {
     // A left-nested arithmetic chain builds a result-variable chain; path
     // compression keeps re-resolving it linear (it was O(n^2)).
     let src = |n: usize| {
-        let terms = (0..n).map(|i| format!("x + {i}")).collect::<Vec<_>>().join(" + ");
-        format!("module M\n\nlet f x = {terms}\n")
+        let terms = (0..n).map(|i| i.to_string()).collect::<Vec<_>>().join(" + ");
+        format!("module M\n\nlet f x = x + {terms}\n")
     };
     let small = solver_counts(src(100)).resolve_clones;
     let large = solver_counts(src(200)).resolve_clones;

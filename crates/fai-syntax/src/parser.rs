@@ -21,7 +21,7 @@ use crate::{Comment, MODULE_HEADER, NESTING_LIMIT, SYNTAX_ERROR, Symbol, layout,
 /// Bounds recursive grammar entries before they consume the host thread stack.
 const MAX_PARSE_DEPTH: usize = 128;
 /// Also bounds trees built by iterative application, field, and operator loops.
-const MAX_TREE_DEPTH: u16 = 512;
+const MAX_TREE_DEPTH: u16 = 256;
 
 /// The result of parsing one source file.
 #[derive(Debug)]

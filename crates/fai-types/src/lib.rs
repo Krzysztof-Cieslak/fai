@@ -37,6 +37,8 @@ mod prop_tests;
 #[cfg(test)]
 mod signature_effect_tests;
 #[cfg(test)]
+mod stack_tests;
+#[cfg(test)]
 mod tests;
 
 pub use contracts::check_contracts;
