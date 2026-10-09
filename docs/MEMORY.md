@@ -800,6 +800,10 @@ Reuse & in-place update:
     intra-function scan leaves unknown cases to the runtime uniqueness check.
     This prevents a guaranteed-shared tail from taking the reuse slot needed by
     the consumed head cell when merging lists.
+    Fixed-state space guards compare short and long iteration counts using peak
+    live object and byte counters, including native inline allocation paths.
+    The counters are debug-only and exclude dead recycling-cache storage; tests
+    also check allocation reuse, buffer copies and release of the final state.
     Native list tag tests need only the immediate bit (`[]` is immediate, a cons
     is boxed). Cons slots are always uniform, so even generic/Float list heads
     skip scalar-descriptor checks while retaining their ordinary owned result.
@@ -3083,6 +3087,12 @@ Editor integration:
     under the ordinary helper budget, exposing element updates to reuse analysis;
     other known direct globals remain direct calls. The loop retains scalar
     accumulator types and the library's capacity/count/wraparound rules.
+  - **Staged concatenation folds.** A fold can walk a materialized list of chunks
+    instead of copying `List.concat`'s flattened spine, including a single-use
+    concatenation binding. `concatMap` retains a strict map stage: every producer
+    callback completes before the fold begins, so no totality assumption or
+    producer/consumer reordering is needed. Shared/escaping flat lists keep their
+    construction. The loop consumes chunk spines through ordinary Perceus rules.
   - **Owned same-type maps.** A direct `Array.map` with unchanged element type
     owns its materialized source buffer, copying it once when shared. Internal
     unique/take/put operations move each element into the callback and restore its

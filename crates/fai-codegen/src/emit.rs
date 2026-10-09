@@ -2812,7 +2812,8 @@ impl<M: Module> Translator<'_, M> {
         for (index, &value) in fields.iter().enumerate() {
             self.store_field(cell, offset + index * 8, value);
         }
-        self.note_inline_alloc();
+        let bytes = self.builder.ins().iconst(types::I64, size);
+        self.note_inline_alloc(bytes);
         self.builder.ins().jump(done, &[cell.into()]);
         self.builder.switch_to_block(slow);
         self.builder.seal_block(slow);
@@ -3732,7 +3733,7 @@ impl<M: Module> Translator<'_, M> {
         let desc = self.runtime_data_addr("FAI_ARRAY_DESC");
         self.store_field(head, rt::DESC_OFFSET, desc);
         self.store_field(head, rt::SIZE_OFFSET, size);
-        self.note_inline_alloc();
+        self.note_inline_alloc(size);
         self.builder.ins().jump(merge_b, &[head.into()]);
 
         // Slow path: the runtime allocator (unpooled size, or an empty free list).
@@ -3773,7 +3774,7 @@ impl<M: Module> Translator<'_, M> {
         let head = self.builder.ins().load(types::I64, MemFlags::trusted(), slot, 0);
         self.builder.ins().store(MemFlags::trusted(), head, p, 0);
         self.builder.ins().store(MemFlags::trusted(), p, slot, 0);
-        self.note_inline_free();
+        self.note_inline_free(size);
         self.builder.ins().jump(merge_b, &[]);
 
         // Slow path: the runtime reclaims an unpooled (large) buffer.
@@ -3793,19 +3794,19 @@ impl<M: Module> Translator<'_, M> {
     /// only under `debug_assertions` (the runtime counters exist only there, and the
     /// compiler and runtime build under one profile), so a release build's fast path
     /// stays call-free.
-    fn note_inline_alloc(&mut self) {
+    fn note_inline_alloc(&mut self, size: Value) {
         if crate::INSTRUMENT_ALLOCATIONS {
-            let f = self.runtime("fai_note_alloc", 0, false);
-            self.builder.ins().call(f, &[]);
+            let f = self.runtime("fai_note_alloc", 1, false);
+            self.builder.ins().call(f, &[size]);
         }
     }
 
     /// Records, in a debug build, one heap free the inlined fast path made without
     /// calling the runtime (the counter peer of [`note_inline_alloc`]).
-    fn note_inline_free(&mut self) {
+    fn note_inline_free(&mut self, size: Value) {
         if crate::INSTRUMENT_ALLOCATIONS {
-            let f = self.runtime("fai_note_free", 0, false);
-            self.builder.ins().call(f, &[]);
+            let f = self.runtime("fai_note_free", 1, false);
+            self.builder.ins().call(f, &[size]);
         }
     }
 

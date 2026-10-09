@@ -47,6 +47,8 @@ use crate::ir::{
     CExpr, ClosureAlloc, CoreFn, ExprKind as K, FnAbi, FnId, Lit, LoweredDef, Prim, Repr,
 };
 
+mod staged_concat;
+
 /// The `List` constructor tags (mirrors lowering's `NIL_TAG`/`CONS_TAG`).
 const NIL_TAG: u32 = 0;
 const CONS_TAG: u32 = 1;
@@ -126,6 +128,8 @@ enum Comb {
     Any,
     Find,
     Member,
+    Concat,
+    ConcatMap,
 }
 
 impl FusionDefs {
@@ -168,6 +172,8 @@ pub fn fusion_defs(db: &dyn Db) -> Option<Arc<FusionDefs>> {
     // Array-only producers.
     add(SeqKind::Array, Comb::Init, "Array", "init");
     add(SeqKind::Array, Comb::Repeat, "Array", "repeat");
+    add(SeqKind::List, Comb::Concat, "List", "concat");
+    add(SeqKind::List, Comb::ConcatMap, "List", "concatMap");
     // The `List` module is required for fusion to mean anything; if the standard
     // library is absent, recognize nothing.
     if map.is_empty() {
@@ -202,6 +208,7 @@ pub fn fuse_def(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<FuseResult> 
         loops: Vec::new(),
         chain_index: 0,
         changed: false,
+        flat_sources: FxHashMap::default(),
     };
     let fns: Vec<CoreFn> = base
         .fns
@@ -246,6 +253,9 @@ struct Fuser<'a> {
     /// Whether any pipeline was rewritten (a synthesized loop *or* an unrolled
     /// literal, which produces no loop).
     changed: bool,
+    /// Single-use concatenation bindings whose materialized chunks replace a
+    /// copied flat spine. Scoped to the binding's continuation.
+    flat_sources: FxHashMap<LocalId, CExpr>,
 }
 
 // ---------------------------------------------------------------------------
@@ -361,6 +371,10 @@ impl Fuser<'_> {
     /// with a call to a synthesized loop; otherwise recurse into the children
     /// (so a pipeline nested elsewhere still fuses).
     fn rewrite(&mut self, e: &CExpr, base_fns: &[CoreFn]) -> CExpr {
+        if let Some(result) = self.staged_concat(e, base_fns) {
+            self.changed = true;
+            return result;
+        }
         if let Some(chain) = self.recognize(e, base_fns) {
             self.changed = true;
             return self.generate(chain, base_fns);
@@ -2158,7 +2172,13 @@ fn remap(e: &CExpr, subst: &mut FxHashMap<LocalId, LocalId>, next: &mut usize) -
         }
         K::DataField { base, index, scalar, niche } => K::DataField {
             base: Box::new(r(base, subst, next)),
-            index: *index,
+            index: match *index {
+                crate::ir::FieldIndex::Const(index) => crate::ir::FieldIndex::Const(index),
+                crate::ir::FieldIndex::Dyn { base, evidence } => crate::ir::FieldIndex::Dyn {
+                    base,
+                    evidence: remap_local(evidence, subst, next),
+                },
+            },
             scalar: *scalar,
             niche: *niche,
         },
