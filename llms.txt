@@ -613,6 +613,10 @@ captured closures. Exported (`public`/`internal`) value initializers must be pur
 (`FAI5001`); export effectful work as `Unit -> ... / { ... }` instead. Private
 `runtime` builders may initialize effectfully, including on the scheduler.
 
+Collection callbacks obey their written arrows too. `HashDict.updateOr` takes a
+pure updater and invokes it exactly once on the existing value or the default;
+`HashDict.updateOr 0 (fun count -> count + 1) key counts` increments a histogram.
+
 The capability interfaces (defined `public` in the prelude; shown here so you know
 their methods — each method's own capability appears as its effect):
 
@@ -1260,6 +1264,9 @@ foldr       : ('a -> 'acc -> 'acc) -> 'acc -> Set 'a -> 'acc
 
 Prefer over `Dict` when iteration order does not matter. Iteration order is
 unspecified (but deterministic).
+`updateOr fallback f key dict` stores `f old` on a hit or `f fallback` on a miss,
+using one hash/probe chain. A replacement does not resize; adding an absent key
+may grow and re-place using the saved hash. The callback is pure and runs once.
 
 ```
 empty       : HashDict 'k 'v
@@ -1273,6 +1280,7 @@ member      : 'k -> HashDict 'k 'v -> Bool
 insert      : 'k -> 'v -> HashDict 'k 'v -> HashDict 'k 'v
 remove      : 'k -> HashDict 'k 'v -> HashDict 'k 'v
 update      : 'k -> (Option 'v -> Option 'v) -> HashDict 'k 'v -> HashDict 'k 'v
+updateOr    : 'v -> ('v -> 'v) -> 'k -> HashDict 'k 'v -> HashDict 'k 'v
 fromList    : List ('k * 'v) -> HashDict 'k 'v
 toList      : HashDict 'k 'v -> List ('k * 'v)
 keys        : HashDict 'k 'v -> List 'k

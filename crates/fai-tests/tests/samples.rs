@@ -115,6 +115,7 @@ const TYPECHECK_CLEAN: &[&str] = &[
     "Funcs.fai",
     "Geometry.fai",
     "Greet.fai",
+    "HashCounts.fai",
     "Hello.fai",
     "HttpMultipart.fai",
     "HttpPool.fai",

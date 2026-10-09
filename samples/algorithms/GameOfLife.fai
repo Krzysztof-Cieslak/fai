@@ -22,7 +22,7 @@ let neighbors cell =
 
 // Add one to a cell's neighbour count.
 bump : HashDict (Int * Int) Int -> (Int * Int) -> HashDict (Int * Int) Int
-let bump d cell = HashDict.insert cell (HashDict.getOr 0 cell d + 1) d
+let bump d cell = HashDict.updateOr 0 (fun count -> count + 1) cell d
 
 // Tally neighbour counts contributed by every live cell.
 countNeighbors : List (Int * Int) -> HashDict (Int * Int) Int
