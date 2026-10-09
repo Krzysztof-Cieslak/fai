@@ -459,6 +459,17 @@ fn borrowed_list_match_has_no_alias_reference_count_traffic() {
 }
 
 #[test]
+fn fresh_small_data_writes_its_header_and_fields_inline() {
+    let ir =
+        entry_ir("module M\npublic pair : Bool -> Bool * Bool\nlet pair b = (b, not b)\n", "pair");
+    assert!(
+        ir.split("\nblock")
+            .any(|block| block.matches("store").count() >= 6 && !block.contains("stack_store")),
+        "a pool hit writes the header and fields directly:\n{ir}"
+    );
+}
+
+#[test]
 fn generic_list_head_needs_no_scalar_descriptor() {
     let ir = entry_ir(
         "module M\npublic pick : 'a -> List 'a -> 'a\nlet pick fallback xs = match xs with | [] -> fallback | x :: _ -> x\n",
@@ -471,9 +482,35 @@ fn generic_list_head_needs_no_scalar_descriptor() {
 }
 
 #[test]
+fn a_data_building_tail_loop_fetches_pool_heads_before_the_header() {
+    let ir = entry_ir(
+        "module M\nlet build n acc = if n <= 0 then acc else build (n - 1) (true :: acc)\n",
+        "build",
+    );
+    let entry = ir.split("\nblock").nth(1).unwrap();
+    assert!(
+        entry.contains("call ") && entry.contains("jump "),
+        "the loop caches its pool base at entry:\n{ir}"
+    );
+}
+
+#[test]
 fn generic_list_float_heads_keep_boxed_slot_semantics() {
     let source = "module M\nlet pick fallback xs = match xs with | [] -> fallback | x :: _ -> x\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Float.toString (pick 0.0 [1.25, 2.0] + pick 2.5 []))\n";
     assert_eq!(run(source), (0, "3.75\n".into()));
+}
+
+#[test]
+fn a_recursive_leaf_does_not_fetch_pool_heads() {
+    let ir = entry_ir(
+        "module M\ntype Tree = | Leaf | Node Tree Tree\nlet build n = if n <= 0 then Leaf else Node (build (n - 1)) (build (n - 1))\n",
+        "build",
+    );
+    let entry = ir.split("\nblock").nth(1).unwrap();
+    assert!(
+        !entry.contains("call "),
+        "branch-only data construction fetches the pool lazily:\n{ir}"
+    );
 }
 
 #[test]
@@ -2979,9 +3016,8 @@ fn drop_of_a_string_leaf_is_inlined() {
 #[test]
 fn dup_of_an_always_boxed_value_omits_the_tag_check() {
     // `s` is used twice, so it is duplicated; a `String` is always boxed, so the
-    // increment is unconditional — no tag-check branch. The body has no `if` and
-    // builds a tuple (a runtime call, no branch), so the absence of any `brif`
-    // confirms the guard was elided.
+    // increment is unconditional. Tuple allocation may branch on a pool hit, but
+    // no operation needs to inspect a value's immediate tag bit.
     let src = indoc! {r#"
         module M
 
@@ -2989,14 +3025,14 @@ fn dup_of_an_always_boxed_value_omits_the_tag_check() {
         let g s = (s, s)
     "#};
     let ir = function_ir(src, "g").join("\n");
-    assert!(!ir.contains("brif"), "an always-boxed dup needs no tag-check branch:\n{ir}");
+    assert!(!ir.contains("band_imm"), "an always-boxed dup needs no tag-bit check:\n{ir}");
 }
 
 #[test]
 fn dup_of_a_polymorphic_value_is_tag_checked() {
     // `x` is used twice, so it is duplicated; a polymorphic value may be an
     // immediate or a boxed cell, so the increment is guarded by a tag-check
-    // (`brif`). The body has no `if`, so that branch is the inlined dup's guard. (A
+    // (`band_imm` before `brif`). (A
     // monomorphic raw `Int` local is, by contrast, a no-op dup — see
     // `raw_int_local_dup_and_drop_are_no_ops`.)
     let src = indoc! {r#"
@@ -3006,7 +3042,10 @@ fn dup_of_a_polymorphic_value_is_tag_checked() {
         let g x = (x, x)
     "#};
     let ir = function_ir(src, "g").join("\n");
-    assert!(ir.contains("brif"), "a polymorphic dup is guarded by a tag-check:\n{ir}");
+    assert!(
+        ir.contains("band_imm") && ir.contains("brif"),
+        "a polymorphic dup is guarded by a tag-check:\n{ir}"
+    );
 }
 
 // --- Drop specialization: behavioral leak/correctness matrix ----------------

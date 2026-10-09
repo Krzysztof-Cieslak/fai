@@ -433,6 +433,9 @@ can retain the same element reuse as a literal lambda.
 Bounded data-cell resets and same-size reconstructions have inline native fast
 paths. They preserve scalar-slot descriptors and release descendants iteratively;
 shared cells, incompatible tokens, and concurrent execution use runtime fallbacks.
+Small fresh data constructions also pop pooled cells and write their headers and
+fields inline. Tail loops cache the pool base once; branch-only recursive
+allocations fetch it at the construction, keeping leaf calls free of that work.
 Reuse selection includes typed parameters and follows local aliases. A projected
 cell whose parent remains live is skipped, letting the actual consumed cell feed
 the reconstruction; merging unique lists therefore recycles their consumed nodes.
