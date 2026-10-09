@@ -37,6 +37,14 @@ let buildQuads u = [| { w = 0.0, x = 10.0, y = 20.0, z = 30.0 } |]
 let genericQuad a b c d = { w = a, x = b, y = c, z = d }
 public buildBoxedQuads : Unit -> Array Quad
 let buildBoxedQuads u = [| genericQuad 0.0 10.0 20.0 30.0 |]
+shareThenUpdate : Quad -> Quad
+let shareThenUpdate q =
+  let changed = { q with x = q.x + 1.0 }
+  if changed.x > q.x then changed else { w = 0.0, x = -999.0, y = 0.0, z = 0.0 }
+public sharedInside : Array Quad -> Array Quad
+let sharedInside qs = Array.map shareThenUpdate qs
+public repeatQuads : Int -> Array Quad -> Array Quad
+let repeatQuads n qs = if n <= 0 then qs else repeatQuads (n - 1) (Array.map advance qs)
 public main : Runtime -> Unit
 let main r = ()
 "#;
@@ -238,6 +246,46 @@ fn unique_map_keeps_a_separately_shared_record_unchanged() {
     rt::fai_drop(new_x);
     rt::fai_drop(record);
     rt::fai_drop(original);
+    rt::fai_drop(output);
+    assert_eq!(rt::live_count(), baseline);
+}
+
+#[test]
+fn an_alias_created_inside_the_callback_disables_unique_reuse() {
+    let mut h = Harness::new();
+    let baseline = rt::live_count();
+    let input = h.call("buildQuads", rt::FAI_UNIT);
+    let output = h.call("sharedInside", input);
+    let record = rt::fai_array_get_borrowed(output, rt::make_int(0));
+    let x = rt::fai_data_field(record, 1);
+    assert_eq!(
+        rt::read_float(x),
+        11.0,
+        "the callback must still see the original x after constructing its update"
+    );
+    rt::fai_drop(x);
+    rt::fai_drop(record);
+    rt::fai_drop(output);
+    assert_eq!(rt::live_count(), baseline);
+}
+
+#[test]
+fn boxed_float_fields_transition_to_the_raw_loop_without_allocating() {
+    let mut h = Harness::new();
+    let baseline = rt::live_count();
+    let input = h.call("buildBoxedQuads", rt::FAI_UNIT);
+    let function = h.program.function(Symbol::intern("repeatQuads")).unwrap();
+    rt::reset_allocations();
+    let output = rt::apply(function, &[rt::make_int(1000), input]);
+    assert_eq!(output, input);
+    assert_eq!(rt::allocations(), 0);
+    let record = rt::fai_array_get_borrowed(output, rt::make_int(0));
+    let x = rt::fai_data_field(record, 1);
+    let y = rt::fai_data_field(record, 2);
+    assert_eq!((rt::read_float(x), rt::read_float(y)), (1010.0, 2020.0));
+    rt::fai_drop(x);
+    rt::fai_drop(y);
+    rt::fai_drop(record);
     rt::fai_drop(output);
     assert_eq!(rt::live_count(), baseline);
 }

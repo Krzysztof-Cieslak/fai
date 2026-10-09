@@ -454,6 +454,9 @@ buffer, copying it once if shared. Each slot moves into its callback and is
 restored before advancing, so uniquely owned records can update in place too.
 Callback order, captured source aliases, generic/Float slots, and value semantics
 are preserved; this ownership protocol adds no mutable source-level operation.
+An owned map over fixed-shape Float records can use one guarded unique/raw-layout
+path for a bounded callback body. Sharing or calls invalidate uniqueness evidence;
+boxed fields and shared records retain the generic path and value semantics.
 Synthesized sequence loops inline exactly saturated, small, non-recursive
 same-file callbacks under the ordinary helper-inlining budget, so a named helper
 can retain the same element reuse as a literal lambda.

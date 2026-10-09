@@ -955,6 +955,9 @@ fn build_fn<M: Module>(
             descriptors: FxHashMap::default(),
             data_layouts: FxHashMap::default(),
             data_offsets: FxHashMap::default(),
+            token_sizes: FxHashMap::default(),
+            float_layout_versioned: false,
+            unique_float_cells: FxHashSet::default(),
             loop_ctx: None,
             result_slot: None,
             bounds: Bounds::new(),
@@ -1374,6 +1377,13 @@ struct Translator<'a, M: Module> {
     data_layouts: FxHashMap<Value, u64>,
     /// The field prefix of a value whose construction or structural type fixes it.
     data_offsets: FxHashMap<Value, usize>,
+    /// Exact allocation sizes established by local fixed-shape resets.
+    token_sizes: FxHashMap<Value, usize>,
+    /// At most one bounded continuation is versioned per native function.
+    float_layout_versioned: bool,
+    /// Guarded scalar-only cells and their nonnull reset tokens. Duplicates and
+    /// calls invalidate the uniqueness proof before a later reset can reuse it.
+    unique_float_cells: FxHashSet<Value>,
     /// The enclosing tail-call loop, while translating a `Join` body: where
     /// `Recur` jumps back and where the loop's result exits.
     loop_ctx: Option<LoopCtx>,
@@ -2004,6 +2014,7 @@ impl<M: Module> Translator<'_, M> {
     /// name. Accepts any `&str` — a fixed `fai_*` literal or an interned foreign
     /// symbol — caching by owned key on first use.
     fn runtime(&mut self, name: &str, params: usize, returns: bool) -> FuncRef {
+        self.unique_float_cells.clear();
         if let Some(r) = self.runtime.get(name) {
             return *r;
         }
@@ -2204,6 +2215,7 @@ impl<M: Module> Translator<'_, M> {
     /// local dup and to dup a value with no backing local — an element read from an
     /// array slot. Leaves the builder in the continuation block.
     fn emit_rc_incr_value(&mut self, cell: Value, tag_check: bool) {
+        self.unique_float_cells.remove(&cell);
         if !tag_check {
             self.increment_boxed_rc(cell);
             return;
@@ -2854,6 +2866,14 @@ impl<M: Module> Translator<'_, M> {
         let Some(fields) = fields.filter(|_| !self.concurrent) else {
             return self.call1("fai_drop_reuse", cell);
         };
+        if self.unique_float_cells.remove(&cell) {
+            let header = self.builder.ins().load(types::I64, MemFlags::trusted(), cell, 0);
+            let reset = self.builder.ins().band_imm(header, !(rt::RC_STATE_MASK as i64));
+            self.store_field(cell, rt::RC_OFFSET, reset);
+            self.token_sizes.insert(cell, rt::COMPACT_FIELDS_OFFSET + fields.len() * 8);
+            self.unique_float_cells.insert(cell);
+            return cell;
+        }
         self.data_offsets.insert(cell, rt::COMPACT_FIELDS_OFFSET);
         if list {
             self.data_layouts.insert(cell, 0);
@@ -2914,7 +2934,11 @@ impl<M: Module> Translator<'_, M> {
         self.builder.ins().jump(done, &[token.into()]);
         self.builder.switch_to_block(done);
         self.builder.seal_block(done);
-        self.builder.block_params(done)[0]
+        let token = self.builder.block_params(done)[0];
+        if self.float_layout_versioned {
+            self.token_sizes.insert(token, rt::COMPACT_FIELDS_OFFSET + fields.len() * 8);
+        }
+        token
     }
 
     /// Releases one uniform child of a reset cell. A dying child's descendants
@@ -2939,6 +2963,15 @@ impl<M: Module> Translator<'_, M> {
         desc: Option<Value>,
         scalars: u64,
     ) -> Value {
+        let desired = rt::data_header_size(tag, fields.len(), scalars) + fields.len() * 8;
+        if self.unique_float_cells.remove(&token) && self.token_sizes.get(&token) == Some(&desired)
+        {
+            let offset = self.initialize_data_header(token, tag, fields.len(), scalars, desc);
+            for (index, &value) in fields.iter().enumerate() {
+                self.store_field(token, offset + index * 8, value);
+            }
+            return token;
+        }
         let size_check = self.builder.create_block();
         let rebuild = self.builder.create_block();
         let fresh = self.builder.create_block();
@@ -2949,13 +2982,13 @@ impl<M: Module> Translator<'_, M> {
         self.builder.ins().brif(token, size_check, &[], fresh, &[]);
         self.builder.switch_to_block(size_check);
         self.builder.seal_block(size_check);
-        let size = self.data_allocation_size(token);
-        let matches = self.builder.ins().icmp_imm(
-            IntCC::Equal,
-            size,
-            (rt::data_header_size(tag, fields.len(), scalars) + fields.len() * 8) as i64,
-        );
-        self.builder.ins().brif(matches, rebuild, &[], slow, &[]);
+        if let Some(&size) = self.token_sizes.get(&token) {
+            self.builder.ins().jump(if size == desired { rebuild } else { slow }, &[]);
+        } else {
+            let size = self.data_allocation_size(token);
+            let matches = self.builder.ins().icmp_imm(IntCC::Equal, size, desired as i64);
+            self.builder.ins().brif(matches, rebuild, &[], slow, &[]);
+        }
         self.builder.switch_to_block(rebuild);
         self.builder.seal_block(rebuild);
         let offset = self.initialize_data_header(token, tag, fields.len(), scalars, desc);
@@ -3507,6 +3540,7 @@ impl<M: Module> Translator<'_, M> {
         ret: types::Type,
         args: &[Value],
     ) -> Value {
+        self.unique_float_cells.clear();
         let f = self.runtime_typed(name, params, Some(ret));
         let call = self.builder.ins().call(f, args);
         self.builder.inst_results(call)[0]
@@ -5659,6 +5693,7 @@ impl<M: Module> Translator<'_, M> {
         alloc: ClosureAlloc,
         result_ty: &Ty,
     ) -> Value {
+        self.unique_float_cells.clear();
         // A saturated application of a known top-level function calls its code
         // symbol directly, passing the value arguments in registers per the callee's
         // ABI, skipping `apply_n` and the static closure. (Top-level functions
@@ -5937,6 +5972,7 @@ impl<M: Module> Translator<'_, M> {
     /// environment plus registers, or environment plus a uniform slot array.
     /// `arity`/`abi` build the matching [`entry_signature`].
     fn direct_call(&mut self, def: DefId, arity: usize, abi: &FnAbi, call_args: &[Value]) -> Value {
+        self.unique_float_cells.clear();
         let name = code_symbol(self.namer, def);
         let sig = entry_signature(self.module, arity, abi);
         let id = self.module.declare_function(&name, Linkage::Import, &sig).expect("declare code");
@@ -6206,6 +6242,7 @@ impl<M: Module> Translator<'_, M> {
         call_args: &[Value],
         n: usize,
     ) -> Vec<Value> {
+        self.unique_float_cells.clear();
         let name = code_symbol(self.namer, def);
         let sig = entry_signature(self.module, arity, abi);
         let id = self.module.declare_function(&name, Linkage::Import, &sig).expect("declare code");
@@ -6610,6 +6647,54 @@ impl<M: Module> Translator<'_, M> {
         self.field_slot_addr(cellv, FieldIndex::Const(field))
     }
 
+    /// Versions one bounded owned-map continuation after a single unique/all-Float
+    /// header test. The generic branch keeps boxed/shared interoperability; the
+    /// common branch reads and resets raw slots without repeated metadata tests.
+    fn version_float_map(&mut self, local: LocalId, value: &CExpr, body: &CExpr) -> bool {
+        if self.float_layout_versioned
+            || self.concurrent
+            || !matches!(value.kind, ExprKind::Prim { op: Prim::ArrayTake, .. })
+            || fai_core::helper_inline::node_count(body) > 256
+        {
+            return false;
+        }
+        let Some(fields) = fai_core::ir::ffa_arity(&value.ty) else { return false };
+        self.float_layout_versioned = true;
+        let result = self.expr(value);
+        self.define_var(local, result);
+        self.bce_transfer(local, value);
+        let cell = self.use_var(local);
+        if self.data_layouts.contains_key(&cell) {
+            self.expr_tail(body);
+            return true;
+        }
+        let expected = (1u64 << fields) - 1;
+        let header = self.builder.ins().atomic_load(types::I64, MemFlags::trusted(), cell);
+        let expected_header =
+            rt::compact_data_metadata(0, fields, expected).expect("bounded Float aggregate") | 1;
+        let raw = self.builder.ins().icmp_imm(IntCC::Equal, header, expected_header as i64);
+        let fast = self.builder.create_block();
+        let generic = self.builder.create_block();
+        let saved_bounds = self.bounds.clone();
+        let saved_layouts = self.data_layouts.clone();
+        let saved_unique = self.unique_float_cells.clone();
+        self.builder.ins().brif(raw, fast, &[], generic, &[]);
+        self.builder.switch_to_block(fast);
+        self.builder.seal_block(fast);
+        self.data_layouts.insert(cell, expected);
+        self.unique_float_cells.insert(cell);
+        self.expr_tail(body);
+        self.builder.switch_to_block(generic);
+        self.builder.seal_block(generic);
+        self.bounds = saved_bounds;
+        self.data_layouts = saved_layouts.clone();
+        self.unique_float_cells = saved_unique.clone();
+        self.expr_tail(body);
+        self.data_layouts = saved_layouts;
+        self.unique_float_cells = saved_unique;
+        true
+    }
+
     /// Translates an expression in tail position within a `Join` body: `Recur`
     /// jumps to the loop header, `HoleClose` and plain base values jump to the loop
     /// exit with the loop's result, control flow recurses in tail position, and
@@ -6634,6 +6719,9 @@ impl<M: Module> Translator<'_, M> {
                 self.expr_tail(els);
             }
             ExprKind::Let { local, value, body } => {
+                if self.version_float_map(*local, value, body) {
+                    return;
+                }
                 let v = self.expr(value);
                 self.define_var(*local, v);
                 self.bce_transfer(*local, value);

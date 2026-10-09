@@ -332,7 +332,7 @@ pub(crate) fn build_inline(
 
 /// The number of Core nodes in `e` (every [`CExpr`] counts as one, recursing into
 /// its expression children). The size budget eligibility is measured against.
-pub(crate) fn node_count(e: &CExpr) -> usize {
+pub fn node_count(e: &CExpr) -> usize {
     let kids = |xs: &[CExpr]| -> usize { xs.iter().map(node_count).sum() };
     1 + match &e.kind {
         K::Lit(_) | K::Local(_) | K::Global(_) | K::Error | K::MakeClosure { .. } => 0,

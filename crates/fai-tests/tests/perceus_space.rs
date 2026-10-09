@@ -20,6 +20,11 @@ let openRecords n = openLoop n { x = 0, y = 0, other = 3 }
 let arrayLoop n xs = if n <= 0 then Array.length xs else arrayLoop (n - 1) (Array.map (fun p -> { p with x = p.x + 1 }) xs)
 public arrays : Int -> Int
 let arrays n = arrayLoop n (Array.init 16 (fun i -> { x = i, y = i }))
+type FloatPoint = { w : Float, x : Float, y : Float, z : Float }
+floatArrayLoop : Int -> Array FloatPoint -> Int
+let floatArrayLoop n xs = if n <= 0 then Array.length xs else floatArrayLoop (n - 1) (Array.map (fun p -> { p with x = p.x + 1.0 }) xs)
+public floatArrays : Int -> Int
+let floatArrays n = floatArrayLoop n (Array.init 16 (fun i -> { w = 0.0, x = Int.toFloat i, y = 0.0, z = 0.0 }))
 let listLoop n xs = if n <= 0 then List.length xs else listLoop (n - 1) (List.map (fun x -> x + 1) xs)
 public lists : Int -> Int
 let lists n = listLoop n (List.range 0 32)
@@ -114,6 +119,11 @@ fn repeated_record_updates_keep_constant_storage() {
 #[test]
 fn repeated_owned_array_maps_keep_constant_storage() {
     bounded_reuse("arrays", |_| 16);
+}
+
+#[test]
+fn repeated_float_record_array_maps_keep_constant_storage() {
+    bounded_reuse("floatArrays", |_| 16);
 }
 
 #[test]
