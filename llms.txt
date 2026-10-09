@@ -1137,6 +1137,9 @@ or growth beyond the platform's allocation-size limit abort before allocation.
 `sort` and `sortBy` are unstable, in-place when uniquely owned. Three-way
 partitioning skips equal-value bands, and a depth-limited heapsort fallback bounds
 worst-case work by O(n log n); duplicate-heavy arrays avoid quadratic partitions.
+`sort` recognizes fully ascending, descending, and equal runs in linear work
+(reversing a descending run); small general partitions use insertion sort.
+The effectful comparator path `sortBy` keeps its comparison order.
 
 ```
 empty        : Array 'a

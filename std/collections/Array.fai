@@ -401,10 +401,30 @@ example: toList (sortBy compare (fromList [2, 1, 2, 1, 2])) = [1, 1, 2, 2, 2]
 let qsortOrd depth lo hi arr =
   if hi - lo <= 1 then
     arr
+  else if hi - lo <= 16 then
+    insertionSortOrd lo hi (lo + 1) arr
   else if depth <= 0 then
     heapSortOrd lo hi arr
   else
     qsortSplitOrd (depth - 1) lo hi (partitionRangeOrd hi lo lo (hi - 1) (pivotToEndOrd lo hi arr))
+
+// Small partitions avoid pivot selection and recursive partition bookkeeping.
+let insertionSortOrd lo hi i arr =
+  if i >= hi then
+    arr
+  else
+    let value = Prim.arrayGet arr i
+    insertionSortOrd lo hi (i + 1) (insertValueOrd lo i value arr)
+
+let insertValueOrd lo i value arr =
+  if i <= lo then
+    Prim.arraySet arr i value
+  else
+    let previous = Prim.arrayGet arr (i - 1)
+    if previous > value then
+      insertValueOrd lo (i - 1) value (Prim.arraySet arr i previous)
+    else
+      Prim.arraySet arr i value
 
 let qsortSplitOrd depth lo hi split =
   match split with
@@ -465,12 +485,50 @@ let siftDownOrd base count root arr =
       arr
 
 /// Sort an array into ascending order by the structural comparison, in place when
-/// the array is unique.
+/// the array is unique. Fully ascending, descending, and equal inputs take linear
+/// work; other inputs use a depth-bounded three-way introsort.
 public sort : Array 'a -> Array 'a
 let sort xs =
   let n = Prim.arrayLength xs
-  qsortOrd (depthLimit n) 0 n xs
+  if n <= 1 then
+    xs
+  else
+    let direction = runDirection 1 n xs
+    if direction > 0 then
+      xs
+    else if direction < 0 then reverse xs else qsortOrd (depthLimit n) 0 n xs
+
+// Establish direction at the first unequal pair, then stop at the first
+// violation. Random inputs therefore pay only a short prefix scan.
+let runDirection i n xs =
+  if i >= n then
+    1
+  else
+    let order = Prim.compare (Prim.arrayGet xs (i - 1)) (Prim.arrayGet xs i)
+    if order = 0 then
+      runDirection (i + 1) n xs
+    else if order < 0 then
+      if ascendingFrom (i + 1) n xs then 1 else 0
+    else if descendingFrom (i + 1) n xs then 0 - 1 else 0
+
+let ascendingFrom i n xs =
+  if i >= n then
+    true
+  else if Prim.compare (Prim.arrayGet xs (i - 1)) (Prim.arrayGet xs i) <= 0 then
+    ascendingFrom (i + 1) n xs
+  else
+    false
+
+let descendingFrom i n xs =
+  if i >= n then
+    true
+  else if Prim.compare (Prim.arrayGet xs (i - 1)) (Prim.arrayGet xs i) >= 0 then
+    descendingFrom (i + 1) n xs
+  else
+    false
 example: toList (sort (fromList [3, 1, 2])) = [1, 2, 3]
 example: toList (sort (fromList [5, 4, 3, 2, 1])) = [1, 2, 3, 4, 5]
 example: toList (sort (fromList [2, 1, 2, 1, 2])) = [1, 1, 2, 2, 2]
+example: toList (sort [| 3, 3, 2, 2, 1, 1 |]) = [1, 1, 2, 2, 3, 3]
+example: toList (sort [| 2, 2, 1, 3 |]) = [1, 2, 2, 3]
 forall xs: toList (sort (fromList xs)) = List.sort xs

@@ -92,6 +92,8 @@ impl Harness {
         if let Some(original) = original {
             assert_eq!(read_array(original), values);
             rt::fai_drop(original);
+        } else {
+            assert_eq!(sorted, array, "a unique input keeps its backing buffer");
         }
         rt::fai_drop(sorted);
         assert_eq!(rt::live_count(), baseline);
@@ -187,6 +189,119 @@ fn structural_heap_fallback_honors_partition_offsets() {
 fn comparator_heap_fallback_honors_partition_offsets() {
     let values: Vec<_> = (0..1024).map(|i| (i * 73 + 11) % 101).collect();
     assert_eq!(Harness::new().sort("limitedBy", &values, false).1, 0);
+}
+
+#[test]
+fn empty_structural_sort_keeps_its_buffer() {
+    assert_eq!(Harness::new().sort("sort", &[], false).1, 0);
+}
+
+#[test]
+fn singleton_structural_sort_keeps_its_buffer() {
+    assert_eq!(Harness::new().sort("sort", &[i64::MIN], false).1, 0);
+}
+
+#[test]
+fn shared_ascending_run_needs_no_copy() {
+    assert_eq!(Harness::new().sort("sort", &(0..512).collect::<Vec<_>>(), true).1, 0);
+}
+
+#[test]
+fn unique_descending_run_reverses_in_place() {
+    assert_eq!(Harness::new().sort("sort", &(0..512).rev().collect::<Vec<_>>(), false).1, 0);
+}
+
+#[test]
+fn shared_descending_run_preserves_its_original() {
+    assert_eq!(Harness::new().sort("sort", &(0..512).rev().collect::<Vec<_>>(), true).1, 1);
+}
+
+#[test]
+fn equal_prefix_can_start_a_descending_run() {
+    assert_eq!(Harness::new().sort("sort", &[3, 3, 2, 2, 1, 1], false).1, 0);
+}
+
+#[test]
+fn late_run_violation_falls_back_to_general_sorting() {
+    let mut values: Vec<_> = (0..128).collect();
+    values.push(-1);
+    assert_eq!(Harness::new().sort("sort", &values, false).1, 0);
+}
+
+#[test]
+fn organ_pipe_input_remains_sorted_and_in_place() {
+    let values = (0..64).chain((0..64).rev()).collect::<Vec<_>>();
+    assert_eq!(Harness::new().sort("sort", &values, false).1, 0);
+}
+
+#[test]
+fn full_width_integer_order_is_preserved() {
+    assert_eq!(Harness::new().sort("sort", &[i64::MAX, 0, i64::MIN, -1, i64::MAX], false).1, 0);
+}
+
+#[test]
+fn partition_at_insertion_threshold_is_correct() {
+    let values = (0..16).map(|i| (i * 11) % 17).collect::<Vec<_>>();
+    assert_eq!(Harness::new().sort("sort", &values, false).1, 0);
+}
+
+#[test]
+fn partition_above_insertion_threshold_is_correct() {
+    let values = (0..17).map(|i| (i * 11) % 18).collect::<Vec<_>>();
+    assert_eq!(Harness::new().sort("sort", &values, false).1, 0);
+}
+
+#[track_caller]
+fn typed_sort(body: &str) {
+    let _guard = LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut db = FaiDatabase::new();
+    fai_types::std_lib::load_std(&mut db);
+    db.add_source("Key.fai".into(), "module Key\npublic opaque type Key = | Value Int\npublic make : Int -> Key\nlet make x = Value x\npublic value : Key -> Int\nlet value k = match k with | Value x -> x\n".into());
+    let body = body.lines().map(|l| format!("  {l}\n")).collect::<String>();
+    let id = db.add_source(
+        "Main.fai".into(),
+        format!("module Main\npublic main : Runtime -> Unit / {{ Console }}\nlet main r =\n{body}"),
+    );
+    rt::capture_start();
+    let outcome = fai_driver::jit_run_program(&db, db.source_file(id).unwrap());
+    assert_eq!(outcome.exit_code, 0);
+    assert_eq!(rt::capture_take(), "ok\n");
+}
+
+#[test]
+fn float_runs_use_total_bitwise_order() {
+    typed_sort(
+        "let bits = [| 0x7ff8000000000001, 0x7ff0000000000000, 0, 0x8000000000000000, 0xfff0000000000000, 0xfff8000000000001 |]\nlet sorted = Array.toList (Array.map Float.toBits (Array.sort (Array.map Float.fromBits bits)))\nlet good = sorted = [0xfff8000000000001, 0xfff0000000000000, 0x8000000000000000, 0, 0x7ff0000000000000, 0x7ff8000000000001]\nr.console.writeLine (if good then \"ok\" else \"wrong\")",
+    );
+}
+
+#[test]
+fn boxed_records_and_retained_aliases_keep_their_contents() {
+    typed_sort(
+        "let original = [| { key = 2, text = \"two\" }, { key = 1, text = \"one\" } |]\nlet sorted = Array.sort original\nlet good = (Array.unsafeGet 0 original).text = \"two\" && (Array.unsafeGet 0 sorted).text = \"one\"\nr.console.writeLine (if good then \"ok\" else \"wrong\")",
+    );
+}
+
+#[test]
+fn opaque_comparable_values_sort_by_their_representation() {
+    typed_sort(
+        "let values = Array.map Key.make [| 3, 1, 2 |]\nlet sorted = Array.toList (Array.map Key.value (Array.sort values))\nr.console.writeLine (if sorted = [1, 2, 3] then \"ok\" else \"wrong\")",
+    );
+}
+
+#[test]
+fn standard_array_contracts_hold() {
+    let _guard = LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut db = FaiDatabase::new();
+    let ids = fai_types::std_lib::load_std(&mut db);
+    let file = ids
+        .into_iter()
+        .filter_map(|id| db.source_file(id))
+        .find(|file| file.path(&db).ends_with("/Array.fai"))
+        .unwrap();
+    let result = fai_driver::test(&db, &[file], None, fai_driver::TestConfig::default());
+    assert!(result.ok, "{:?}", result.diagnostics);
+    assert!(result.passed > 0);
 }
 
 #[test]

@@ -366,6 +366,12 @@ Ordered `Dict`/`Set` bulk operations join arbitrarily shrunken subtrees with the
 general weight-balanced join. Ordering, cached sizes, and balance hold at every
 node; the internal tree shape can change while logical contents remain identical.
 
+Structural `Array.sort` detects ascending, descending, and equal runs in linear
+work, returning or reversing the same unique buffer. General input retains the
+three-way introsort and heap fallback, with insertion sort for small partitions.
+Shared inputs keep their original contents; `sortBy` retains its effectful
+comparator order.
+
 ```fai
 module Hello
 

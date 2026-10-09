@@ -411,6 +411,9 @@ the answer. The `MergeSort` checksum changed from a plain sum to this form;
 measurements from the two workload versions must not be spliced into one trend.
 `sort_patterns` keeps distribution and size in each row. Its untimed fixture tests
 compare complete generated and sorted arrays, including partial final runs.
+Its `parts` rows separate construction, sorting, and checksum costs. Construction
+and sorting include releasing the output array; sort inputs are prepared outside
+the timer, and checksum repeatedly borrows an already sorted input.
 
 `IntEval` and `OptionEval` use the same strict fallback policy: both chains are
 evaluated before choosing the first success. Rust and OCaml spell both evaluations
