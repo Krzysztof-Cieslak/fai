@@ -80,14 +80,14 @@ pub fn map_sum(n: i64) -> i64 {
     acc
 }
 
-/// Sum of the descending sequence `[n-1, …, 0]` after sorting it ascending.
+/// Position-weighted checksum of `[n-1, …, 0]` after sorting it ascending.
 /// Idiomatic Rust uses a `Vec` and `Vec::sort`; the Fai sample matches it with an
 /// `Array` and the standard `Array.sort`.
 #[must_use]
 pub fn merge_sort_sum(n: i64) -> i64 {
     let mut v: Vec<i64> = (0..n).rev().collect();
     v.sort();
-    v.iter().sum()
+    v.iter().enumerate().map(|(i, x)| i as i64 * x).sum()
 }
 
 /// A full binary tree, mirroring the Fai sample's heap structure.

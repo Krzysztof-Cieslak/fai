@@ -106,6 +106,7 @@ All under `crates/fai-tests/benches/` unless noted. None is a CI gate.
 | `algorithms_jit` | Runtime comparison, in-process compute: compiled Fai code vs idiomatic Rust (see below). |
 | `algorithms_aot` | Runtime comparison, delivered binaries: a `fai build` executable vs a Rust release binary vs an `ocamlopt`-compiled OCaml binary, end to end (see below). |
 | `algorithms_mem` | Memory comparison, delivered binaries: peak resident set size of the same `fai build` vs Rust vs OCaml binaries (see below). |
+| `sort_patterns` | Build/sort/order-sensitive-checksum across ascending, descending, Fisher–Yates shuffled, equal, four-key, and partially sorted runs; both JIT compute (Fai/Rust) and AOT processes (Fai/Rust/OCaml), at 6,000 and 80,000 elements. |
 | `concurrency` | Runtime concurrency/networking (Fai-only, delivered binaries): task fan-out/join throughput, bounded-channel throughput, shared PRNG contention, CPU-bound **parallel speedup** (`FAI_WORKERS=1` vs the host default), and loopback TCP/UDP round-trip throughput (see below). |
 | `test_loop` (`fai-cli`) | The supervised `edit → fai test` loop through the real `fai` binary + daemon: client → daemon → worker subprocess → JIT → run → stream back. |
 
@@ -396,6 +397,12 @@ is closest to the pure size factor.
   because another structure dominates.
 
 ### Keeping the sides in lockstep
+
+Sorting results use position-weighted checksums, so removing the sort changes
+the answer. The `MergeSort` checksum changed from a plain sum to this form;
+measurements from the two workload versions must not be spliced into one trend.
+`sort_patterns` keeps distribution and size in each row. Its untimed fixture tests
+compare complete generated and sorted arrays, including partial final runs.
 
 Each `aot_size` must equal the literal the matching sample's `main` passes to
 `run`/`runF`; the sample-validation tests (`crates/fai-tests/tests/algorithms.rs`)

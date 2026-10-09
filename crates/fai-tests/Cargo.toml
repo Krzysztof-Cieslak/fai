@@ -101,6 +101,10 @@ name = "algorithms_mem"
 harness = false
 
 [[bench]]
+name = "sort_patterns"
+harness = false
+
+[[bench]]
 name = "concurrency"
 harness = false
 
