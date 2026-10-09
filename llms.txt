@@ -400,6 +400,10 @@ you use them as ordinary operators.
 
 ## 8. Data modeling: types, records, tuples, rows, opaque types
 
+Literal patterns are compared by value: `255` and `0xff`, or `'a'` and
+`'\u{61}'`, denote the same pattern and cannot form separate reachable arms.
+Float signed zeros remain distinct, matching bitwise Float equality.
+
 ### Transparent type aliases
 
 ```fai

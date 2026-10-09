@@ -25,7 +25,9 @@ mod token;
 pub use attach::{CommentId, CommentMap, NodeId, attach_comments};
 pub use layout::{Layout, layout};
 pub use lexer::{Lexed, lex};
-pub use literal::decode_int_literal;
+pub use literal::{
+    decode_char_literal, decode_float_literal, decode_int_literal, decode_string_literal,
+};
 pub use parser::{Parsed, parse_module};
 pub use query::{
     ItemSummary, ItemTree, ItemTreeKind, ParsedModule, build_item_tree, item_tree, parse,

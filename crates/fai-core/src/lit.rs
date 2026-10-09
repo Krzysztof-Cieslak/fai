@@ -5,8 +5,7 @@ pub use fai_syntax::decode_int_literal as decode_int;
 /// Decodes a float lexeme (`3.14`, `1_000.0`, `1e9`) into its IEEE-754 bits.
 #[must_use]
 pub fn decode_float(raw: &str) -> u64 {
-    let cleaned: String = raw.chars().filter(|&c| c != '_').collect();
-    cleaned.parse::<f64>().unwrap_or(0.0).to_bits()
+    fai_syntax::decode_float_literal(raw).unwrap_or(0)
 }
 
 /// Decodes a char lexeme (`'a'`, `'\n'`, `'\u{1F600}'`, including its surrounding
@@ -15,70 +14,14 @@ pub fn decode_float(raw: &str) -> u64 {
 /// out), so callers fall back to a default.
 #[must_use]
 pub fn decode_char(raw: &str) -> Option<char> {
-    let inner = raw.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')).unwrap_or(raw);
-    let mut chars = inner.chars();
-    let first = chars.next()?;
-    if first != '\\' {
-        return Some(first);
-    }
-    decode_escape(&mut chars)
+    fai_syntax::decode_char_literal(raw)
 }
 
 /// Decodes a string lexeme (including its surrounding quotes and escapes) into
 /// its UTF-8 bytes. Escapes were validated by the lexer.
 #[must_use]
 pub fn decode_string(raw: &str) -> Vec<u8> {
-    let inner = raw.strip_prefix('"').and_then(|s| s.strip_suffix('"')).unwrap_or(raw);
-    let mut out = Vec::with_capacity(inner.len());
-    let mut chars = inner.chars();
-    while let Some(c) = chars.next() {
-        if c != '\\' {
-            push_char(&mut out, c);
-            continue;
-        }
-        match decode_escape(&mut chars) {
-            Some(decoded) => push_char(&mut out, decoded),
-            None => out.push(b'\\'),
-        }
-    }
-    out
-}
-
-/// Decodes one escape sequence (the text after the backslash) into a `char`,
-/// shared by string and char literals. The lexer guarantees the escape is
-/// well-formed; an unrecognized escape yields its trailing character verbatim.
-fn decode_escape(chars: &mut std::str::Chars<'_>) -> Option<char> {
-    match chars.next()? {
-        'n' => Some('\n'),
-        't' => Some('\t'),
-        'r' => Some('\r'),
-        '0' => Some('\0'),
-        '\\' => Some('\\'),
-        '"' => Some('"'),
-        '\'' => Some('\''),
-        'u' => decode_unicode_escape(chars),
-        other => Some(other),
-    }
-}
-
-/// Decodes a `\u{XXXX}` escape (the lexer guarantees the braces and hex digits).
-fn decode_unicode_escape(chars: &mut std::str::Chars<'_>) -> Option<char> {
-    if chars.next() != Some('{') {
-        return None;
-    }
-    let mut hex = String::new();
-    for c in chars.by_ref() {
-        if c == '}' {
-            break;
-        }
-        hex.push(c);
-    }
-    u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32)
-}
-
-fn push_char(out: &mut Vec<u8>, c: char) {
-    let mut buf = [0u8; 4];
-    out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+    fai_syntax::decode_string_literal(raw).unwrap_or_default()
 }
 
 #[cfg(test)]

@@ -1,0 +1,12 @@
+module LiteralPatterns
+
+// Literal patterns compare decoded values. Adding a 255 arm after 0xff would
+// be unreachable, just like spelling a character through a Unicode escape twice.
+public select : Int -> Int
+let select value =
+  match value with
+  | 0xff -> 1
+  | 0 -> 2
+  | _ -> 3
+example: select 255 = 1
+example: select 0 = 2
