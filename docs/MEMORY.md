@@ -2395,9 +2395,12 @@ Editor integration:
     preserve zero buffer copies for unique arrays. It diverges
     from `List.sortBy`'s stability, but only observably for `sortBy` with a
     *custom partial-key* comparator — `sort = sortBy compare` is unaffected (equal
-    values are structurally identical). A faster *List* sort would not come from
-    quicksort (a linked list has no O(1) swap); it is a bottom-up merge sort (#104),
-    out of scope here.
+    values are structurally identical). `List.sortBy` remains a stable bottom-up
+    merge sort. Lists of at most 32 elements use linked runs; larger inputs use
+    two private contiguous merge buffers, including both conversions in the call.
+    The run pairing and left-on-equality rule preserve the exact comparator
+    schedule, including for an effectful comparator. Shared input lists remain
+    unchanged.
   - **Literals `[| a, b, c |]`** (empty `[||]`), expression-only (no array
     patterns). The lexer takes `[|`/`|]` by maximal munch (no conflict with
     `|>`/`||`/`|`); lowering emits a pre-sized `withCapacity` + in-place `push`
