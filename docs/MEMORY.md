@@ -638,6 +638,11 @@ Data layer (ADTs, pattern matching, structural records with rows):
   `FAI3013` (recursive alias), `FAI4001`/`FAI4002` (non-exhaustive / unreachable
   `match`); the unused `FAI3009` is retired (the catalog test allows the
   `FAI4xxx` range in `fai-types`).
+  Pattern usefulness compares decoded literals rather than their spellings:
+  integer radices/separators and equivalent string/character escapes share a
+  key. Float keys retain exact bits, including distinct signed zeros. Native
+  lowering and pattern analysis use the same decoders; diagnostics keep the
+  original arm's source span.
 
 Standard library & operators:
 

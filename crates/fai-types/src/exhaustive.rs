@@ -42,8 +42,17 @@ enum ConKey {
 enum IPat {
     Wild,
     Con { key: ConKey, args: Vec<IPat> },
-    Lit(String),
+    Lit(LiteralKey),
     Or(Vec<IPat>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LiteralKey {
+    Int(i64),
+    Float(u64),
+    String(Vec<u8>),
+    Char(char),
+    Invalid(PatId),
 }
 
 /// One constructor of a type's complete signature.
@@ -252,9 +261,26 @@ impl MatchChecker<'_> {
             // An as-pattern covers exactly what its inner pattern covers.
             PatKind::As { pat: inner, .. } => self.lower_pat(*inner),
             PatKind::Bool(b) => IPat::Con { key: ConKey::Tag(i64::from(*b)), args: Vec::new() },
-            PatKind::Int(s) | PatKind::Float(s) | PatKind::String(s) | PatKind::Char(s) => {
-                IPat::Lit(s.as_str().to_owned())
-            }
+            PatKind::Int(s) => IPat::Lit(
+                fai_syntax::decode_int_literal(s.as_str())
+                    .map(LiteralKey::Int)
+                    .unwrap_or(LiteralKey::Invalid(pat)),
+            ),
+            PatKind::Float(s) => IPat::Lit(
+                fai_syntax::decode_float_literal(s.as_str())
+                    .map(LiteralKey::Float)
+                    .unwrap_or(LiteralKey::Invalid(pat)),
+            ),
+            PatKind::String(s) => IPat::Lit(
+                fai_syntax::decode_string_literal(s.as_str())
+                    .map(LiteralKey::String)
+                    .unwrap_or(LiteralKey::Invalid(pat)),
+            ),
+            PatKind::Char(s) => IPat::Lit(
+                fai_syntax::decode_char_literal(s.as_str())
+                    .map(LiteralKey::Char)
+                    .unwrap_or(LiteralKey::Invalid(pat)),
+            ),
             PatKind::Tuple(elems) => IPat::Con {
                 key: ConKey::Tuple,
                 args: elems.iter().map(|&e| self.lower_pat(e)).collect(),
@@ -282,7 +308,7 @@ impl MatchChecker<'_> {
                 // distinct, unmatchable value (as invalid records are below) so
                 // it neither claims coverage nor corrupts the matrix.
                 let Some((tag, arity)) = self.ctor_tag_arity(pat) else {
-                    return IPat::Lit(format!("@unresolved{}", pat.index()));
+                    return IPat::Lit(LiteralKey::Invalid(pat));
                 };
                 // Normalize to the declared arity; an arity error is reported by
                 // type checking, and keeping the matrix consistent avoids panics.
@@ -292,7 +318,7 @@ impl MatchChecker<'_> {
             }
             PatKind::Or(alts) => IPat::Or(alts.iter().map(|&a| self.lower_pat(a)).collect()),
             PatKind::Record { fields, open } => {
-                let invalid = || IPat::Lit(format!("@record{}", pat.index()));
+                let invalid = || IPat::Lit(LiteralKey::Invalid(pat));
                 let Some(Ty::Record(row)) = self.types.pat_type(pat) else {
                     return invalid();
                 };
@@ -425,7 +451,7 @@ impl MatchChecker<'_> {
     }
 
     /// Literal specialization: rows with the same literal, or a wildcard.
-    fn specialize_lit(&self, matrix: &[Vec<IPat>], value: &str) -> Vec<Vec<IPat>> {
+    fn specialize_lit(&self, matrix: &[Vec<IPat>], value: &LiteralKey) -> Vec<Vec<IPat>> {
         let mut out = Vec::new();
         for row in matrix {
             // A row shorter than the column being matched can only come from an

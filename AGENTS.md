@@ -898,6 +898,9 @@ Integer literal magnitudes, in every radix, must fit an unsigned 64-bit word
 (`0..18446744073709551615`); larger magnitudes produce `FAI1005` during lexing.
 The word is interpreted as a signed `Int`, and unary minus wraps like subtraction.
 Signed patterns use the same decoder, including `-0x1`, `-0o1`, and `-0b1`.
+Pattern usefulness compares decoded literal values, including radix/separator
+variants and equivalent escapes. Float keys use exact bits, so signed zeros stay
+distinct. Redundancy diagnostics retain the original arm's source span.
 
 **Reserved keywords include** `module`, `let`, `type`, `interface`, `match`,
 `with`, `if`, `then`, `else`, `fun`, `public`, `internal` (the same-origin

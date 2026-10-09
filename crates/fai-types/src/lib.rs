@@ -27,6 +27,8 @@ mod forcing_effect_tests;
 #[cfg(test)]
 mod instance_scope_tests;
 #[cfg(test)]
+mod literal_pattern_tests;
+#[cfg(test)]
 mod local_function_effect_tests;
 #[cfg(test)]
 mod opaque_alias_tests;

@@ -1,4 +1,58 @@
-//! Shared decoding of integer literal bit patterns for syntax and lowering.
+//! Shared semantic literal decoding for analysis and native lowering.
+
+/// Decodes a float lexeme into its exact IEEE-754 bit pattern.
+#[must_use]
+pub fn decode_float_literal(raw: &str) -> Option<u64> {
+    raw.chars().filter(|&c| c != '_').collect::<String>().parse::<f64>().ok().map(f64::to_bits)
+}
+
+/// Decodes a quoted character, including a validated Unicode escape.
+#[must_use]
+pub fn decode_char_literal(raw: &str) -> Option<char> {
+    let inner = raw.strip_prefix('\'')?.strip_suffix('\'')?;
+    let mut chars = inner.chars();
+    let first = chars.next()?;
+    let value = if first == '\\' { decode_escape(&mut chars)? } else { first };
+    chars.next().is_none().then_some(value)
+}
+
+/// Decodes a quoted UTF-8 string; malformed escapes return None.
+#[must_use]
+pub fn decode_string_literal(raw: &str) -> Option<Vec<u8>> {
+    let inner = raw.strip_prefix('"')?.strip_suffix('"')?;
+    let mut chars = inner.chars();
+    let mut out = String::with_capacity(inner.len());
+    while let Some(c) = chars.next() {
+        out.push(if c == '\\' { decode_escape(&mut chars)? } else { c });
+    }
+    Some(out.into_bytes())
+}
+
+fn decode_escape(chars: &mut std::str::Chars<'_>) -> Option<char> {
+    match chars.next()? {
+        'n' => Some('\n'),
+        't' => Some('\t'),
+        'r' => Some('\r'),
+        '0' => Some('\0'),
+        '\\' => Some('\\'),
+        '"' => Some('"'),
+        '\'' => Some('\''),
+        'u' => {
+            if chars.next()? != '{' {
+                return None;
+            }
+            let mut digits = String::new();
+            for c in chars.by_ref() {
+                if c == '}' {
+                    return u32::from_str_radix(&digits, 16).ok().and_then(char::from_u32);
+                }
+                digits.push(c);
+            }
+            None
+        }
+        _ => None,
+    }
+}
 
 /// Decodes a decimal, hexadecimal, octal, or binary integer with separators.
 /// The magnitude must fit `u64`; the result is its signed 64-bit bit pattern.
