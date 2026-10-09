@@ -3293,25 +3293,20 @@ pub extern "C" fn fai_string_join(sep: Value, list: Value) -> Value {
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_string_join_borrowed(sep: Value, list: Value) -> Value {
     // SAFETY: `sep` is a `String`; `list` is a `List String`.
-    let out = unsafe {
-        let sep_s = string_str(sep);
-        let mut out = String::new();
+    unsafe {
         let mut cur = list;
-        let mut first = true;
-        while is_boxed(cur) {
+        let parts = std::iter::from_fn(move || {
+            if !is_boxed(cur) {
+                return None;
+            }
             let p = as_obj(cur);
             let offset = data_offset(p);
             let head = read_i64(p, offset);
-            if !first {
-                out.push_str(sep_s);
-            }
-            first = false;
-            out.push_str(string_str(head));
             cur = read_i64(p, offset + 8);
-        }
-        out
-    };
-    make_string(out.as_bytes())
+            Some(string_bytes(head))
+        });
+        join_string_bytes(string_bytes(sep), parts)
+    }
 }
 
 /// Joins an `Array String` with the separator `sep` (both consumed).
@@ -3330,19 +3325,49 @@ pub extern "C" fn fai_array_join(sep: Value, arr: Value) -> Value {
 pub extern "C" fn fai_array_join_borrowed(sep: Value, arr: Value) -> Value {
     // SAFETY: `sep` is a `String`; `arr` is an `Array String`, so only slots
     // `0..length` are live boxed strings.
-    let out = unsafe {
-        let sep_s = string_str(sep);
-        let mut out = String::new();
+    unsafe {
         let n = array_len(arr);
-        for i in 0..n {
-            if i != 0 {
-                out.push_str(sep_s);
+        let parts = (0..n).map(|i| string_bytes(read_i64(as_obj(arr), ARRAY_ELEMS_OFFSET + i * 8)));
+        join_string_bytes(string_bytes(sep), parts)
+    }
+}
+
+/// The complete joined length, including separators and allocation-layout limits.
+fn joined_string_len(mut lengths: impl Iterator<Item = usize>, separator: usize) -> Option<usize> {
+    let first = lengths.next().unwrap_or(0);
+    let len = lengths.try_fold(first, |len, part| len.checked_add(separator)?.checked_add(part))?;
+    checked_buffer_size(STRING_BYTES_OFFSET, len, 1)?;
+    Some(len)
+}
+
+/// Copies a replayable sequence of string bytes directly into one final buffer.
+///
+/// # Safety
+/// Cloning `parts` must produce the same immutable byte slices in the same order.
+/// The separator and every part must stay live throughout both passes.
+unsafe fn join_string_bytes<'a>(
+    sep: &[u8],
+    parts: impl Iterator<Item = &'a [u8]> + Clone,
+) -> Value {
+    let len = joined_string_len(parts.clone().map(<[u8]>::len), sep.len())
+        .unwrap_or_else(|| fai_allocation_size_panic());
+    let result = alloc_string(len, len);
+    // SAFETY: the sizing pass validated the full layout, and the replayed parts
+    // have identical lengths. The fresh output cannot overlap any input slice.
+    unsafe {
+        let mut output = result.add(STRING_BYTES_OFFSET);
+        let mut first = true;
+        for part in parts {
+            if !first {
+                std::ptr::copy_nonoverlapping(sep.as_ptr(), output, sep.len());
+                output = output.add(sep.len());
             }
-            out.push_str(string_str(read_i64(as_obj(arr), ARRAY_ELEMS_OFFSET + i * 8)));
+            first = false;
+            std::ptr::copy_nonoverlapping(part.as_ptr(), output, part.len());
+            output = output.add(part.len());
         }
-        out
-    };
-    make_string(out.as_bytes())
+    }
+    from_obj(result)
 }
 
 /// The constructor tags of the built-in `List` (shared with codegen lowering).
@@ -4855,6 +4880,8 @@ mod reuse_tests;
 mod scalar_proptests;
 #[cfg(test)]
 mod shared_rc_tests;
+#[cfg(test)]
+mod string_join_tests;
 #[cfg(test)]
 mod string_tests;
 #[cfg(test)]
