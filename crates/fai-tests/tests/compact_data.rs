@@ -117,6 +117,41 @@ fn inspected_slot_body_edits_match_clean_generation() {
 }
 
 #[test]
+fn prefix_reversal_runs_natively_without_changing_a_retained_input() {
+    let source = "module Main\nlet reverse n xs = List.append (List.reverse (List.take n xs)) (List.drop n xs)\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let xs = [1, 2, 3, 4, 5]\n  let reversed = reverse 3 xs\n  r.console.writeLine (if reversed = [3, 2, 1, 4, 5] && xs = [1, 2, 3, 4, 5] then \"yes\" else \"no\")\n";
+    check(source, "yes", Route::Native);
+}
+
+#[test]
+fn generic_float_prefix_reversal_survives_bundle_transport() {
+    let source = "module Main\nlet reverse n xs = List.append (List.reverse (List.take n xs)) (List.drop n xs)\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (if reverse 3 [1.5, 2.5, 3.5, 4.5] = [3.5, 2.5, 1.5, 4.5] then \"yes\" else \"no\")\n";
+    check(source, "yes", Route::Bundle);
+}
+
+#[test]
+fn repeated_effectful_prefix_counts_keep_both_evaluations() {
+    let source = "module Main\ncount : Console -> Int / { Console }\nlet count console =\n  let _ = console.writeLine \"count\"\n  2\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let xs = [1, 2, 3]\n  let ys = List.append (List.reverse (List.take (count r.console) xs)) (List.drop (count r.console) xs)\n  r.console.writeLine (if ys = [2, 1, 3] then \"yes\" else \"no\")\n";
+    check(source, "count\ncount\nyes", Route::Jit);
+}
+
+#[test]
+fn prefix_count_edits_match_clean_fusion() {
+    let source = "module M\nlet reverse n xs = List.append (List.reverse (List.take n xs)) (List.drop n xs)\n";
+    let edited = source.replace("List.take n", "List.take (n + 1)");
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", source)], &[("M.fai", &edited)]],
+        |db, files| {
+            (*fai_core::fuse_def(
+                db,
+                db.source_file(files[0]).unwrap(),
+                fai_syntax::Symbol::intern("reverse"),
+            ))
+            .clone()
+        },
+    );
+}
+
+#[test]
 fn constructor_tag_outside_compact_range_uses_extended_layout() {
     let constructors = (0..=2048).map(|i| format!("| C{i} Int")).collect::<Vec<_>>().join(" ");
     let source = format!(

@@ -47,6 +47,7 @@ use crate::ir::{
     CExpr, ClosureAlloc, CoreFn, ExprKind as K, FnAbi, FnId, Lit, LoweredDef, Prim, Repr,
 };
 
+mod reverse_prefix;
 mod staged_concat;
 
 /// The `List` constructor tags (mirrors lowering's `NIL_TAG`/`CONS_TAG`).
@@ -130,6 +131,10 @@ enum Comb {
     Member,
     Concat,
     ConcatMap,
+    Append,
+    Reverse,
+    Take,
+    Drop,
 }
 
 impl FusionDefs {
@@ -174,6 +179,10 @@ pub fn fusion_defs(db: &dyn Db) -> Option<Arc<FusionDefs>> {
     add(SeqKind::Array, Comb::Repeat, "Array", "repeat");
     add(SeqKind::List, Comb::Concat, "List", "concat");
     add(SeqKind::List, Comb::ConcatMap, "List", "concatMap");
+    add(SeqKind::List, Comb::Append, "List", "append");
+    add(SeqKind::List, Comb::Reverse, "List", "reverse");
+    add(SeqKind::List, Comb::Take, "List", "take");
+    add(SeqKind::List, Comb::Drop, "List", "drop");
     // The `List` module is required for fusion to mean anything; if the standard
     // library is absent, recognize nothing.
     if map.is_empty() {
@@ -372,6 +381,10 @@ impl Fuser<'_> {
     /// with a call to a synthesized loop; otherwise recurse into the children
     /// (so a pipeline nested elsewhere still fuses).
     fn rewrite(&mut self, e: &CExpr, base_fns: &[CoreFn]) -> CExpr {
+        if let Some(result) = self.reverse_prefix(e) {
+            self.changed = true;
+            return result;
+        }
         if let Some(result) = self.staged_concat(e, base_fns) {
             self.changed = true;
             return result;

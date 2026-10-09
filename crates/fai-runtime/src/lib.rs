@@ -1295,6 +1295,7 @@ fn alloc_obj(size: usize, descriptor: *const Descriptor) -> *mut u8 {
     p
 }
 
+#[inline]
 fn alloc_raw(size: usize) -> *mut u8 {
     if !(ALIGN..=MAX_ALLOCATION_SIZE).contains(&size) {
         fai_allocation_size_panic();
@@ -3347,6 +3348,70 @@ fn cons_list(elems: &[Value]) -> Value {
     list
 }
 
+/// Reverses a list prefix in one pass, consuming count and list. Unique cons
+/// cells are recycled; shared cells are copied. Every element is preserved.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_list_reverse_prefix(count: Value, mut list: Value) -> Value {
+    let mut remaining = unbox_int(count);
+    fai_drop(count);
+    let mut reversed = imm_int(0);
+    let mut first = NO_REUSE;
+    while remaining > 0 && is_boxed(list) {
+        let cell = as_obj(list);
+        // SAFETY: a boxed List is a two-uniform-field cons. With sole local
+        // ownership its head stays in place and its tail edge transfers to the
+        // loop cursor, while the previous reversed prefix transfers into the slot.
+        let tail = unsafe {
+            let header = header_word(cell);
+            let state = header & RC_STATE_MASK;
+            let offset =
+                if header & COMPACT_DATA != 0 { COMPACT_FIELDS_OFFSET } else { DATA_FIELDS_OFFSET };
+            let next = read_i64(cell, offset + 8);
+            if state == 1 {
+                write_i64(cell, offset + 8, reversed);
+                reversed = list;
+                next
+            } else {
+                let head = fai_dup(read_i64(cell, offset));
+                let tail = fai_dup(next);
+                if state < IMMORTAL_RC {
+                    // A shared local cell stays live after this reference is
+                    // released. Copy its two edges directly into a compact cons.
+                    write_u64(cell, RC_OFFSET, header - 1);
+                    let copied = alloc_raw(COMPACT_FIELDS_OFFSET + 16);
+                    let metadata = compact_data_metadata(1, 2, 0).expect("compact cons layout");
+                    write_u64(copied, RC_OFFSET, metadata | 1);
+                    write_i64(copied, COMPACT_FIELDS_OFFSET, head);
+                    write_i64(copied, COMPACT_FIELDS_OFFSET + 8, reversed);
+                    reversed = from_obj(copied);
+                } else {
+                    // Atomic and immortal counts retain the general reset path.
+                    let token = fai_drop_reuse(list);
+                    let fields = [head, reversed];
+                    reversed = fai_reuse(token, 1, 2, fields.as_ptr());
+                }
+                tail
+            }
+        };
+        if first == NO_REUSE {
+            first = reversed;
+        }
+        list = tail;
+        remaining -= 1;
+    }
+    if first == NO_REUSE {
+        return list;
+    }
+    // SAFETY: the first rebuilt cons is retained by the reversed prefix and is
+    // unique (shared input cells were copied). Its tail still holds the immediate
+    // empty-list placeholder. Transfer the untouched, owned suffix into that slot.
+    unsafe {
+        let cell = as_obj(first);
+        write_i64(cell, data_offset(cell) + 8, list);
+    }
+    reversed
+}
+
 // ---------------------------------------------------------------------------
 // Bytes: an immutable contiguous binary byte buffer.
 // ---------------------------------------------------------------------------
@@ -4707,6 +4772,8 @@ mod scheduler;
 mod data_header;
 mod large_pages;
 mod local_time;
+#[cfg(test)]
+mod prefix_tests;
 mod random;
 pub use data_header::{
     COMPACT_DATA, COMPACT_FIELDS_OFFSET, COMPACT_FIELDS_SHIFT, COMPACT_SCALARS_SHIFT,

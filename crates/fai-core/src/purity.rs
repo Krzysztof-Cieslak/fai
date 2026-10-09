@@ -209,7 +209,8 @@ pub fn op_unsafe_to_reorder(op: Prim, args: &[CExpr]) -> bool {
         | Prim::BytesFromList
         | Prim::BytesToList
         | Prim::BytesFromString
-        | Prim::BytesIsUtf8 => false,
+        | Prim::BytesIsUtf8
+        | Prim::ListReversePrefix => false,
     }
 }
 

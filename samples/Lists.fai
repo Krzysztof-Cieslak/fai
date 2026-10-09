@@ -31,3 +31,10 @@ example: List.sortBy compare (reverse (List.range 0 65)) = List.range 0 65
 public chunkSum : List (List Int) -> Int
 let chunkSum chunks = List.foldl (fun acc x -> acc + x) 0 (List.concat chunks)
 example: chunkSum [[1, 2], [], [3]] = 6
+
+/// Reverse a prefix while preserving the remaining elements.
+public reverseFirst : Int -> List 'a -> List 'a
+let reverseFirst n xs = List.append (List.reverse (List.take n xs)) (List.drop n xs)
+example: reverseFirst 3 [1, 2, 3, 4, 5] = [3, 2, 1, 4, 5]
+example: reverseFirst (-1) [1, 2] = [1, 2]
+example: reverseFirst 20 [1, 2] = [2, 1]

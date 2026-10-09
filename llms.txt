@@ -1108,6 +1108,8 @@ the same comparator call order and leave retained input lists unchanged.
 Folding a concatenation can avoid copying its flat spine. `concatMap` remains
 strict: all producer callbacks finish before the first fold callback, including
 when the concatenated value has a single-use `let` binding.
+The `append (reverse (take n xs)) (drop n xs)` prefix-reversal idiom can also
+reuse unique list cells in one pass; retained input aliases keep their contents.
 
 ```
 length     : List 'a -> Int
