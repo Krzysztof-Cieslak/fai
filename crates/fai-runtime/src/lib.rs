@@ -2020,6 +2020,21 @@ pub extern "C" fn fai_array_get_borrowed(arr: Value, index: Value) -> Value {
     }
 }
 
+/// Borrows a data-valued array slot without changing its reference count. Both
+/// operands are borrowed. The compiler proves that every use inspects the slot
+/// while the array remains live; scalar/generic Float slots do not use this ABI.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_array_peek(arr: Value, index: Value) -> Value {
+    let index = unbox_int(index) as usize;
+    // SAFETY: typing establishes an array of non-Float data values, and the
+    // bounds check validates the slot. Its owner retains the returned reference.
+    unsafe {
+        array_bounds_check(index, array_len(arr));
+        debug_assert!(!array_obj_is_float(as_obj(arr)));
+        read_i64(as_obj(arr), ARRAY_ELEMS_OFFSET + index * 8)
+    }
+}
+
 /// Consumes an array and returns a uniquely owned buffer with the same contents.
 /// The compiler uses this before moving slots through a same-type map callback.
 #[unsafe(no_mangle)]

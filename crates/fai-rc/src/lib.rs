@@ -57,6 +57,7 @@ pub use verify::check_rc;
 
 mod aliases;
 mod borrow;
+mod borrow_slots;
 mod bounds_sig;
 mod data_shapes;
 mod escape;
@@ -210,6 +211,7 @@ pub fn rc_lowered(db: &dyn Db, lowered: &LoweredDef, self_sig: &BorrowSig) -> Lo
         if i == 0 && !entry_has_spread {
             body = trmc::flatten(body, &f.params, lowered.def, &is_pure_total, &mut next);
         }
+        borrow_slots::rewrite(db, &mut body);
         data_shapes.push(data_shapes::collect(db, &body));
         fns.push(CoreFn { params: f.params.clone(), captures: f.captures.clone(), body });
     }

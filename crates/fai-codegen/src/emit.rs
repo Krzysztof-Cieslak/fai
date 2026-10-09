@@ -3677,7 +3677,8 @@ impl<M: Module> Translator<'_, M> {
         array_elem(&args[0].ty)?;
         match op {
             Prim::ArrayLength => Some(self.array_length_inline(args)),
-            Prim::ArrayGet => Some(self.array_get_inline(args, result_ty)),
+            Prim::ArrayGet => Some(self.array_get_inline(args, result_ty, false)),
+            Prim::ArrayPeek => Some(self.array_get_inline(args, result_ty, true)),
             Prim::ArraySet => Some(self.array_set_inline(args)),
             Prim::ArrayUnique => Some(self.array_unique_inline(args)),
             Prim::ArrayTake => Some(self.array_take_inline(args, result_ty)),
@@ -3947,7 +3948,7 @@ impl<M: Module> Translator<'_, M> {
     /// matching the runtime's checked behavior. `elem` is the get's **result type**
     /// (the element type) — a standalone type the wire form preserves, unlike the
     /// operand's projected-away `App` element.
-    fn array_get_inline(&mut self, args: &[CExpr], elem: &Ty) -> Value {
+    fn array_get_inline(&mut self, args: &[CExpr], elem: &Ty, borrowed: bool) -> Value {
         let base = self.expr(&args[0]);
         let raw_idx = self.array_index_raw(&args[1]);
 
@@ -3958,7 +3959,7 @@ impl<M: Module> Translator<'_, M> {
         // a distinct abort, so generative testing catches any unsound elision.
         let proven = self.index_proven(&args[0], &args[1]);
         if proven && !self.bce_shadow {
-            return self.array_load_elem(base, raw_idx, elem);
+            return self.array_get_result(base, raw_idx, elem, borrowed);
         }
 
         let len_off = i32::try_from(rt::ARRAY_LEN_OFFSET).expect("array length offset");
@@ -3981,7 +3982,16 @@ impl<M: Module> Translator<'_, M> {
         // In bounds: load the slot and bring the element to its scalar/uniform form.
         self.builder.switch_to_block(fast_b);
         self.builder.seal_block(fast_b);
-        self.array_load_elem(base, raw_idx, elem)
+        self.array_get_result(base, raw_idx, elem, borrowed)
+    }
+
+    fn array_get_result(&mut self, base: Value, index: Value, elem: &Ty, borrowed: bool) -> Value {
+        if borrowed {
+            let (address, offset) = self.array_elem_addr(base, index);
+            self.builder.ins().load(types::I64, MemFlags::trusted(), address, offset)
+        } else {
+            self.array_load_elem(base, index, elem)
+        }
     }
 
     /// The owned-map entry gate: only a shared source needs a runtime copy.

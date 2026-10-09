@@ -145,6 +145,7 @@ pub fn op_unsafe_to_reorder(op: Prim, args: &[CExpr]) -> bool {
             !matches!(args.first().map(|e| &e.kind), Some(K::Lit(Lit::Int(0))))
         }
         Prim::ArrayGet
+        | Prim::ArrayPeek
         | Prim::ArraySet
         | Prim::ArrayUnique
         | Prim::ArrayTake

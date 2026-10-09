@@ -39,7 +39,8 @@ pub fn check_rc(
                 refs.insert(p, 1);
             }
         }
-        let mut ck = Checker { captures: &captures, fn_index: i, arg_borrows };
+        let mut ck =
+            Checker { captures: &captures, fn_index: i, arg_borrows, projections: HashMap::new() };
         ck.eval(&f.body, &mut refs)?;
         for (l, n) in &refs {
             if *n != 0 {
@@ -66,7 +67,12 @@ pub fn check_rc(
                 refs.insert(p, 1);
             }
         }
-        let mut ck = Checker { captures: &captures, fn_index: usize::MAX, arg_borrows };
+        let mut ck = Checker {
+            captures: &captures,
+            fn_index: usize::MAX,
+            arg_borrows,
+            projections: HashMap::new(),
+        };
         ck.eval(&re.body, &mut refs)?;
         for (l, n) in &refs {
             if *n != 0 {
@@ -84,6 +90,8 @@ struct Checker<'a> {
     captures: &'a std::collections::HashSet<LocalId>,
     fn_index: usize,
     arg_borrows: &'a dyn Fn(DefId, usize) -> Vec<bool>,
+    /// Borrowed array slots remain valid only while their owning array is live.
+    projections: HashMap<LocalId, LocalId>,
 }
 
 impl Checker<'_> {
@@ -93,6 +101,13 @@ impl Checker<'_> {
 
     /// Consumes one owned reference of `x` (no-op for a borrowed capture).
     fn consume(&self, x: LocalId, refs: &mut HashMap<LocalId, i64>) -> Result<(), String> {
+        if self.projections.contains_key(&x) {
+            return Err(format!(
+                "fn{}: consumption of borrowed slot %{}",
+                self.fn_index,
+                x.index()
+            ));
+        }
         if !self.owned(x) {
             return Ok(());
         }
@@ -122,6 +137,9 @@ impl Checker<'_> {
 
     /// Reads `x` without consuming it (borrow); the value must still be alive.
     fn borrow(&self, x: LocalId, refs: &HashMap<LocalId, i64>) -> Result<(), String> {
+        if let Some(&parent) = self.projections.get(&x) {
+            return self.borrow(parent, refs);
+        }
         if !self.owned(x) {
             return Ok(());
         }
@@ -201,6 +219,22 @@ impl Checker<'_> {
             }
             ExprKind::Let { local, value, body } => {
                 self.eval(value, refs)?;
+                if let ExprKind::Prim { op: fai_core::Prim::ArrayPeek, args } = &value.kind
+                    && let Some(ExprKind::Local(parent)) = args.first().map(|a| &a.kind)
+                {
+                    if self.projections.insert(*local, *parent).is_some()
+                        || refs.contains_key(local)
+                    {
+                        return Err(format!(
+                            "fn{}: rebound borrowed slot %{}",
+                            self.fn_index,
+                            local.index()
+                        ));
+                    }
+                    self.eval(body, refs)?;
+                    self.projections.remove(local);
+                    return Ok(());
+                }
                 if refs.insert(*local, 1).is_some() {
                     return Err(format!("fn{}: rebound %{}", self.fn_index, local.index()));
                 }
@@ -215,6 +249,13 @@ impl Checker<'_> {
                 }
             }
             ExprKind::Dup { local, body } => {
+                if self.projections.contains_key(local) {
+                    return Err(format!(
+                        "fn{}: unexpected dup of borrowed slot %{}",
+                        self.fn_index,
+                        local.index()
+                    ));
+                }
                 if self.owned(*local) {
                     let Some(n) = refs.get_mut(local) else {
                         return Err(format!(

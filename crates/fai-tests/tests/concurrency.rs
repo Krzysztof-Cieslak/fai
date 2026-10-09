@@ -79,6 +79,12 @@ fn parallel_maps_retain_shared_array_elements() {
 }
 
 #[test]
+fn parallel_hash_reads_keep_borrowed_slots_live() {
+    let source = "module Prog\nlet read d u = HashDict.getOr 0 1 d + HashDict.getOr 0 2 d\nbody : Runtime -> HashDict Int Int -> Nursery -> Unit / { Concurrency, Console }\nlet body r d nursery =\n  let a = r.concurrency.spawn nursery (read d)\n  let b = r.concurrency.spawn nursery (read d)\n  r.console.writeLine (Int.toString (r.concurrency.await a + r.concurrency.await b))\npublic main : Runtime -> Unit / { Concurrency, Console }\nlet main r = r.concurrency.scope (body r (HashDict.fromList [(1, 10), (2, 20)]))\n";
+    assert_eq!(run(source), ("60\n".into(), 0));
+}
+
+#[test]
 fn awaited_boxed_result_crosses_tasks() {
     // The task builds a `String` and returns it; it crosses back to the awaiter's
     // worker (marked shared, atomic reference counting) and is printed — exercising
