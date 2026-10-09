@@ -257,6 +257,20 @@ fn owned_map_slots_survive_the_json_transport_hop() {
 }
 
 #[test]
+fn owned_float_record_layout_guards_survive_transport() {
+    let source = "module Main\ntype Quad = { a : Float, b : Float, c : Float, d : Float }\nlet make a b c d = { a = a, b = b, c = c, d = d }\nmove : Quad -> Quad\nlet move p = { p with b = p.b + 1.0 }\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let xs = [| make 1.0 2.0 3.0 4.0 |]\n  let ys = Array.map move xs\n  let zs = Array.map move ys\n  r.console.writeLine (Float.toString (Array.unsafeGet 0 zs).b)\n";
+    let dir = workspace(&[("Main.fai", source)]);
+    let session = Session::open(dir).unwrap();
+    let bundle = build_run_bundle(session.db(), entry(&session, "Main.fai")).bundle.unwrap();
+    let encoded = serde_json::to_vec(&bundle).unwrap();
+    let decoded: fai_driver::WireBundle = serde_json::from_slice(&encoded).unwrap();
+    let _guard = RUN_LOCK.lock().unwrap();
+    fai_runtime::capture_start();
+    assert_eq!(jit_run_bundle(&decoded), 0);
+    assert_eq!(fai_runtime::capture_take(), "4.0\n");
+}
+
+#[test]
 fn jit_run_bundle_executes_a_cross_module_program() {
     let main = indoc! {r#"
         module Main

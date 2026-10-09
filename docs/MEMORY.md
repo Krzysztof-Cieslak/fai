@@ -3123,6 +3123,11 @@ Editor integration:
     array alive and trigger the copy; generic float slots retain their self-tag
     and re-box only at generic boundaries. Other map shapes keep the regular
     builder/fusion paths. The operations are compiler-internal, never source names.
+    Bounded owned Float-record map continuations can be versioned after one
+    unique/raw-layout header check. The common path carries exact scalar metadata
+    through projections and reset, while boxed/shared inputs keep the generic
+    branch. Duplicates and calls invalidate uniqueness, and fixed-shape reset
+    tokens carry their exact allocation size to avoid redundant size decoding.
     Bounded record/tuple and cons resets inline their unique-owner path, including
     scalar-aware child release; rebuilding into a correctly sized token writes the
     header and fields directly. Missing/wrong-sized tokens, shared or unknown
