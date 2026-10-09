@@ -105,6 +105,18 @@ fn niche_construction_preserves_native_string_aliases() {
     assert_eq!(build_and_run(source), ("ok\n".into(), Some(0)));
 }
 
+#[test]
+fn mixed_self_tail_calls_run_natively() {
+    let source = "module Main\nlet ack m n = if m = 0 then n + 1 else if n = 0 then ack (m - 1) 1 else ack (m - 1) (ack m (n - 1))\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (ack 3 5))\n";
+    assert_eq!(build_and_run(source), ("253\n".into(), Some(0)));
+}
+
+#[test]
+fn mixed_row_self_calls_keep_the_uniform_float_abi() {
+    let source = "module Main\nlet f r n x = if n <= 0 then r.base + x else if n % 2 = 0 then f r (n - 1) (x + 0.5) else 1.0 + f r (n - 1) (x + 0.5)\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Float.toString (f { base = 2.25, extra = \"alive\" } 4 0.0))\n";
+    assert_eq!(build_and_run(source), ("6.25\n".into(), Some(0)));
+}
+
 /// Builds a multi-file program (entry is `Main.fai`) and runs it.
 fn build_and_run_files(files: &[(&str, &str)]) -> (String, Option<i32>) {
     let dir = unique_dir();

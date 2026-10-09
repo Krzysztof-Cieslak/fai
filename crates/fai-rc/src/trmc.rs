@@ -1,11 +1,10 @@
 //! Tail-call flattening: rewrite a self-tail-recursive entry function into a loop.
 //!
 //! Runs after dup/drop insertion and reuse analysis, so it consumes the existing
-//! `Reset`/`MakeData { reuse }` shape and preserves it. A function is eligible when
-//! **every** reference to itself is a saturated self-call in tail position — either
-//! a plain tail call or the single argument of one tail constructor (the "modulo
-//! cons" case). The whole function is transformed or left untouched; there is no
-//! partial flattening.
+//! `Reset`/`MakeData { reuse }` shape and preserves it. The full modulo-constructor
+//! rewrite requires every self-reference to fit a supported tail shape. Otherwise
+//! ordinary saturated tail calls can still become back-edges; non-tail recursive
+//! calls retain their normal entry and evaluation order.
 //!
 //! A **row-polymorphic** function (one carrying leading offset-evidence
 //! parameters) calls itself curried: lowering partially applies the function to
@@ -53,6 +52,9 @@ pub(crate) fn flatten(
     // so detection treats every function the same.
     match eligible(&body, self_def, arity, is_pure_total) {
         Some(uses_hole) => rewrite_into_loop(body, params, self_def, arity, uses_hole, next),
+        None if has_plain_tail(&body, self_def, arity) => {
+            rewrite_into_loop(body, params, self_def, arity, false, next)
+        }
         None => body,
     }
 }
@@ -198,6 +200,23 @@ pub(crate) fn fuse_evidence_self_calls(e: CExpr, self_def: DefId, evidence: &[Lo
 // ---------------------------------------------------------------------------
 // Eligibility.
 // ---------------------------------------------------------------------------
+
+/// Finds a plain saturated tail call without moving any surrounding work. Calls
+/// in conditions, bound values, and constructor fields remain ordinary calls.
+fn has_plain_tail(body: &CExpr, self_def: DefId, arity: usize) -> bool {
+    match &body.kind {
+        K::If { then, els, .. } => {
+            has_plain_tail(then, self_def, arity) || has_plain_tail(els, self_def, arity)
+        }
+        K::Let { body, .. }
+        | K::LetMany { body, .. }
+        | K::Reset { body, .. }
+        | K::FreeReuse { body, .. }
+        | K::Dup { body, .. }
+        | K::Drop { body, .. } => has_plain_tail(body, self_def, arity),
+        _ => self_call_args(body, self_def, arity).is_some(),
+    }
+}
 
 /// Whether `body` is tail-recursive and may be flattened. Returns `Some(uses_hole)`
 /// when eligible (`uses_hole` true if any tail is constructor-wrapped, so the loop
@@ -362,7 +381,9 @@ fn rewrite_tail(
             CExpr::new(K::If { cond, then: Box::new(then), els: Box::new(els) }, ty)
         }
         K::Let { local, value, body } => {
-            if let Some(sargs) = self_call_args(&value, self_def, arity) {
+            if hole.is_some()
+                && let Some(sargs) = self_call_args(&value, self_def, arity)
+            {
                 // Drop the `let v = <self-call>` binder; the recursion becomes the
                 // hole, threaded through the constructor's continuation.
                 let hole = hole.expect("constructor-wrapped recursion implies a hole");
@@ -372,6 +393,10 @@ fn rewrite_tail(
                 let body = rewrite_tail(*body, hole, self_def, arity, next);
                 CExpr::new(K::Let { local, value, body: Box::new(body) }, ty)
             }
+        }
+        K::LetMany { locals, value, body } => {
+            let body = rewrite_tail(*body, hole, self_def, arity, next);
+            CExpr::new(K::LetMany { locals, value, body: Box::new(body) }, ty)
         }
         K::Reset { value, token, body } => {
             let body = rewrite_tail(*body, hole, self_def, arity, next);

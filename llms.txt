@@ -1826,6 +1826,8 @@ Build/run it with `fai run Tasks.fai`; check the laws with `fai test Tasks.fai`.
   top-level* helper with an accumulator (local `let`s cannot recurse). The compiler
   handles memory (Perceus reference counting reuses uniquely-owned cells in place,
   so mapping/updating data you own can allocate nothing).
+  Self-tail calls can loop even alongside non-tail recursive calls; the non-tail
+  calls still need stack space and retain their evaluation order.
 - **"Mutation" is `{ r with field = ... }`** for records, `Array.set`/`push` for
   arrays — both return new values (updated in place when unique).
 - **Strings**: build with `++` (amortized efficient) or `String.join`; index by

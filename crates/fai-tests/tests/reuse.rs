@@ -326,6 +326,49 @@ fn coalesced_data_aliases_keep_closure_captures_alive() {
 }
 
 #[test]
+fn mixed_tail_recursion_preserves_effect_order() {
+    let source = "module M\nwalk : Console -> Int -> Int / { Console }\nlet walk console n =\n  let _ = console.writeLine (Int.toString n)\n  if n <= 0 then 1 else if n = 1 then 1 + walk console 0 else walk console (n - 1)\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (walk r.console 2))\n";
+    outputs(source, "2\n1\n0\n2");
+}
+
+#[test]
+fn mixed_tail_recursion_keeps_string_arguments_alive() {
+    let source = "module M\nlet f n s = if n <= 0 then String.length s else if n % 2 = 0 then f (n - 1) (s ++ \"a\") else String.length s + f (n - 1) (s ++ \"b\")\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (f 4 \"k\"))\n";
+    outputs(source, "11");
+}
+
+#[test]
+fn mixed_tail_recursion_preserves_row_evidence() {
+    let source = "module M\nlet f r n = if n <= 0 then r.value else if n % 2 = 0 then f r (n - 1) else 1 + f r (n - 1)\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (f { value = 4, extra = \"alive\" } 10))\n";
+    outputs(source, "9");
+}
+
+#[test]
+fn mixed_tail_row_calls_preserve_raw_float_slots_and_results() {
+    let source = "module M\nlet f r n x = if n <= 0 then r.base + x else if n % 2 = 0 then f r (n - 1) (x + 0.5) else 1.0 + f r (n - 1) (x + 0.5)\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Float.toString (f { base = 2.25, extra = \"alive\" } 4 0.0))\n";
+    outputs(source, "6.25");
+}
+
+#[test]
+fn mixed_constructor_and_plain_tails_keep_list_order() {
+    let source = "module M\nlet f n = if n <= 0 then [] else if n % 3 = 0 then f (n - 1) else if n % 3 = 1 then n :: f (n - 1) else List.append (f (n - 1)) [n]\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (if f 5 = [4, 1, 2, 5] then \"yes\" else \"no\")\n";
+    outputs(source, "yes");
+}
+
+#[test]
+fn mixed_tail_edits_match_clean_reference_counting() {
+    let source = "module M\nlet f n = if n <= 0 then 0 else if n = 1 then 1 + f 0 else f (n - 1)\n";
+    let edited = source.replace("1 + f 0", "2 + f 0");
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", source)], &[("M.fai", &edited)]],
+        |db, files| {
+            (*fai_rc::rc(db, db.source_file(files[0]).unwrap(), fai_syntax::Symbol::intern("f")))
+                .clone()
+        },
+    );
+}
+
+#[test]
 fn correct_borrow_alongside_rebuild() {
     outputs(&prog(INC, "sum (inc xs) + len xs", 50), "1375");
 }

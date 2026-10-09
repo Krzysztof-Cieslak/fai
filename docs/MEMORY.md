@@ -1325,7 +1325,7 @@ program output are unchanged, guarded by the full type/golden suite):
 - **D99 Flatten self-tail-recursion into a loop (tail-call/TRMC).** A transform in
   `fai-rc`, run after dup/drop and reuse, rewrites a self-tail-recursive entry
   function into a loop.
-  - **Eligibility (all-or-nothing).** Every reference to the function itself is a
+  - **Full constructor-modulo eligibility.** Every reference to the function itself is a
     **saturated self-call in tail position** — either plain (a tail-call loop) or
     threaded through a **chain of one or more tail constructors** (the "modulo cons"
     case, e.g. `x :: f r` or `x :: x :: f r`). The recursive call may sit at any
@@ -1341,7 +1341,15 @@ program output are unchanged, guarded by the full type/golden suite):
     cycle whose members resolve to "not pure-total". The recursion must flow
     *linearly* — used exactly once at each step, carried whole through each cell — so
     two self-calls in one constructor (`Node (f l) (f r)`), a non-tail self-call, or
-    any other self-reference leaves the function as ordinary recursion.
+    another self-reference prevents this constructor-modulo rewrite. A separate
+    fallback still flattens ordinary saturated tail calls: non-tail calls in
+    conditions, arguments and constructors keep their normal entries and order.
+    Thus Ackermann's outer recursive call is a back-edge while its inner argument
+    call still uses the stack. A function with no ordinary tail call remains
+    unchanged when the full constructor-modulo rule does not apply.
+    Remaining evidence-fused row-polymorphic calls use their actual uniform entry:
+    arguments are spilled, scalar Floats are raw slot bits, and borrowed operands
+    remain caller-owned. They do not take the register ABI or the owned wrapper.
   - **Row-polymorphic functions flatten too.** A function carrying leading
     offset-evidence parameters calls itself *curried* — lowering partially applies
     it to its evidence and then to the real arguments
