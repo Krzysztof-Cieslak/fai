@@ -2822,6 +2822,15 @@ impl<M: Module> Translator<'_, M> {
                 self.builder.ins().bor_imm(shifted, 1)
             };
         }
+        if self.is_list_value(base) {
+            let lowbit = self.builder.ins().band_imm(v, 1);
+            let raw = self.builder.ins().bxor_imm(lowbit, 1);
+            return if matches!(result_ty, Ty::Con(Con::Int)) {
+                self.mark_raw(raw)
+            } else {
+                self.tag_int(raw)
+            };
+        }
         let offset = rt::DATA_TAG_OFFSET as i32;
         let raw = if is_always_boxed_ty(&base.ty) {
             self.builder.ins().load(types::I64, MemFlags::trusted(), v, offset)
@@ -2880,7 +2889,7 @@ impl<M: Module> Translator<'_, M> {
         if matches!(result_ty, Ty::Con(Con::Int)) {
             return self.int_data_field(base, index);
         }
-        let v = self.expr(base);
+        let v = self.data_base(base);
         let addr = self.field_slot_addr(v, index);
         let word = self.builder.ins().load(types::I64, MemFlags::trusted(), addr, 0);
         let scalar = self.known_scalar_slot(v, index);
@@ -2927,6 +2936,21 @@ impl<M: Module> Translator<'_, M> {
         }
     }
 
+    fn is_list_value(&self, value: &CExpr) -> bool {
+        is_list_ty(&value.ty)
+            || matches!(value.kind, ExprKind::Local(id) if self.var_ty(id).is_some_and(is_list_ty))
+    }
+
+    /// List constructors always store uniform head/tail words, including when
+    /// their element type is Float. This layout fact survives generic boundaries.
+    fn data_base(&mut self, base: &CExpr) -> Value {
+        let value = self.expr(base);
+        if self.is_list_value(base) {
+            self.data_layouts.insert(value, 0);
+        }
+        value
+    }
+
     /// The byte address of a field slot within a data cell at `base_v`.
     fn field_slot_addr(&mut self, base_v: Value, index: FieldIndex) -> Value {
         match index {
@@ -2948,7 +2972,7 @@ impl<M: Module> Translator<'_, M> {
     /// Reads a logical `Float` through its physical scalar-or-boxed slot layout,
     /// borrowing the cell and any field box.
     fn float_data_field(&mut self, base: &CExpr, index: FieldIndex) -> Value {
-        let base_v = self.expr(base);
+        let base_v = self.data_base(base);
         self.float_field_value(base_v, index)
     }
 

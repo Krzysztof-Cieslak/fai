@@ -435,6 +435,36 @@ fn fixed_shape_reuse_has_a_call_free_rebuild_block() {
 }
 
 #[test]
+fn list_emptiness_needs_no_constructor_tag_load() {
+    let ir = entry_ir(
+        "module M\npublic empty : List 'a -> Bool\nlet empty xs = match xs with | [] -> true | _ :: _ -> false\n",
+        "empty",
+    );
+    assert!(
+        !ir.lines().any(|line| line.contains("load") && line.contains("+24")),
+        "list tags come from the immediate bit:\n{ir}"
+    );
+}
+
+#[test]
+fn generic_list_head_needs_no_scalar_descriptor() {
+    let ir = entry_ir(
+        "module M\npublic pick : 'a -> List 'a -> 'a\nlet pick fallback xs = match xs with | [] -> fallback | x :: _ -> x\n",
+        "pick",
+    );
+    assert!(
+        !ir.lines().any(|line| line.contains("load") && line.contains("+8")),
+        "cons fields always have uniform layout:\n{ir}"
+    );
+}
+
+#[test]
+fn generic_list_float_heads_keep_boxed_slot_semantics() {
+    let source = "module M\nlet pick fallback xs = match xs with | [] -> fallback | x :: _ -> x\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Float.toString (pick 0.0 [1.25, 2.0] + pick 2.5 []))\n";
+    assert_eq!(run(source), (0, "3.75\n".into()));
+}
+
+#[test]
 fn guarded_apply_preserves_partial_over_and_captured_calls() {
     let source = "module M\nlet apply n f x = if n = 0 then f x else apply (n - 1) f x\nlet plus a b = a + b\nlet make n = fun x -> n + x\nlet twice f x = apply 1 f (apply 1 f x)\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let partial = apply 1 plus 3\n  let captured = make 5\n  let result = partial 4 + twice captured 2 + apply 1 (fun x -> x * 2) 9\n  r.console.writeLine (Int.toString result)\n";
     assert_eq!(run(source), (0, "37\n".into()));

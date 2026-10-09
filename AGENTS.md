@@ -431,6 +431,8 @@ shared cells, incompatible tokens, and concurrent execution use runtime fallback
 Reuse selection includes typed parameters and follows local aliases. A projected
 cell whose parent remains live is skipped, letting the actual consumed cell feed
 the reconstruction; merging unique lists therefore recycles their consumed nodes.
+Native list tag tests use the immediate bit directly, and list projections use
+the known uniform head/tail layout, including boxed Float heads.
 
 Local function shorthand (`let log message = body`) has the same latent effects
 as `let log = fun message -> body`: constructing it is pure, and calling its
