@@ -2870,6 +2870,11 @@ impl<M: Module> Translator<'_, M> {
         if let Some(v) = self.array_prim(op, args, result_ty) {
             return v;
         }
+        if op == Prim::StrConcat
+            && let Some(value) = self.append_literal(args)
+        {
+            return value;
+        }
         // A float operand of a non-float primitive (e.g. `{ r with x = … }`'s new
         // value) crosses a uniform `i64` boundary, so it is boxed in.
         let vals: Vec<Value> = args.iter().map(|a| self.expr_boxed(a)).collect();
@@ -2895,6 +2900,90 @@ impl<M: Module> Translator<'_, M> {
         } else {
             result
         }
+    }
+
+    /// Appends a short literal directly into a unique inline String with room.
+    /// Shared buffers, slice views, growth, and concurrent programs keep the
+    /// runtime path. The literal is immortal, so the fast path owes it no drop.
+    fn append_literal(&mut self, args: &[CExpr]) -> Option<Value> {
+        const MAX_INLINE_BYTES: usize = 16;
+        if self.concurrent || args.len() != 2 {
+            return None;
+        }
+        let ExprKind::Lit(Lit::Str(bytes)) = &args[1].kind else { return None };
+        if bytes.len() > MAX_INLINE_BYTES {
+            return None;
+        }
+        let left = self.expr_boxed(&args[0]);
+        if bytes.is_empty() {
+            return Some(left);
+        }
+        let rc =
+            self.builder.ins().load(types::I64, MemFlags::trusted(), left, rt::RC_OFFSET as i32);
+        let unique = self.builder.ins().icmp_imm(IntCC::Equal, rc, 1);
+        let desc =
+            self.builder.ins().load(types::I64, MemFlags::trusted(), left, rt::DESC_OFFSET as i32);
+        let string_desc = self.runtime_data_addr("FAI_STRING_DESC");
+        let inline = self.builder.ins().icmp(IntCC::Equal, desc, string_desc);
+        let len = self.builder.ins().load(
+            types::I64,
+            MemFlags::trusted(),
+            left,
+            rt::STRING_LEN_OFFSET as i32,
+        );
+        let size =
+            self.builder.ins().load(types::I64, MemFlags::trusted(), left, rt::SIZE_OFFSET as i32);
+        let capacity = self.builder.ins().iadd_imm(size, -(rt::STRING_BYTES_OFFSET as i64));
+        // Valid String lengths are bounded by the signed allocation limit, so
+        // adding at most sixteen cannot wrap the unsigned machine word.
+        let need = self.builder.ins().iadd_imm(len, bytes.len() as i64);
+        let room = self.builder.ins().icmp(IntCC::UnsignedLessThanOrEqual, need, capacity);
+        let owned_inline = self.builder.ins().band(unique, inline);
+        let fast = self.builder.ins().band(owned_inline, room);
+        let fast_b = self.builder.create_block();
+        let slow_b = self.builder.create_block();
+        let done = self.builder.create_block();
+        self.builder.append_block_param(done, types::I64);
+        self.builder.ins().brif(fast, fast_b, &[], slow_b, &[]);
+
+        self.builder.switch_to_block(fast_b);
+        self.builder.seal_block(fast_b);
+        let destination = self.builder.ins().iadd(left, len);
+        let mut offset = 0;
+        for (width, ty) in [(8, types::I64), (4, types::I32), (2, types::I16), (1, types::I8)] {
+            while bytes.len() - offset >= width {
+                let chunk = &bytes[offset..offset + width];
+                let word = match width {
+                    8 => i64::from_ne_bytes(chunk.try_into().expect("eight literal bytes")),
+                    4 => {
+                        i64::from(u32::from_ne_bytes(chunk.try_into().expect("four literal bytes")))
+                    }
+                    2 => {
+                        i64::from(u16::from_ne_bytes(chunk.try_into().expect("two literal bytes")))
+                    }
+                    _ => i64::from(chunk[0]),
+                };
+                let value = self.builder.ins().iconst(ty, word);
+                self.builder.ins().store(
+                    MemFlags::new().with_notrap(),
+                    value,
+                    destination,
+                    (rt::STRING_BYTES_OFFSET + offset) as i32,
+                );
+                offset += width;
+            }
+        }
+        self.store_field(left, rt::STRING_LEN_OFFSET, need);
+        self.builder.ins().jump(done, &[left.into()]);
+
+        self.builder.switch_to_block(slow_b);
+        self.builder.seal_block(slow_b);
+        let right = self.string_literal(bytes);
+        let value = self.prim_runtime_call(Prim::StrConcat, &[left, right]);
+        self.builder.ins().jump(done, &[value.into()]);
+        self.builder.switch_to_block(done);
+        self.builder.seal_block(done);
+        Some(self.builder.block_params(done)[0])
     }
 
     /// A saturated foreign (native) call.
