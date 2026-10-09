@@ -572,6 +572,11 @@ fn wrapping_subtraction_keeps_the_native_bounds_check() {
 }
 
 #[test]
+fn generated_callers_keep_the_native_bounds_check() {
+    assert_native_bounds_trap(include_str!("fixtures/bounds/FusedCaller.fai"));
+}
+
+#[test]
 fn const_preserves_native_effect_order() {
     let source = indoc! {r#"
         module Main

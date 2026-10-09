@@ -451,6 +451,9 @@ in source order and callbacks retain their order, effects, and short-circuiting.
 This single-operation lowering keeps sources and shared results materialized;
 cross-stage deforestation still requires pure, total callbacks. Literal callbacks
 with nested lifted closures retain their first-class call path.
+Bounds inference includes the generated loops in its file-local caller graph,
+including their first-class function references. A callback moved into a loop
+therefore cannot disappear from a private helper's bounds-check proof.
 
 A fold over `List.concat` can walk the existing chunks without copying a flat
 list spine. A single-use concatenation binding gets the same treatment.
