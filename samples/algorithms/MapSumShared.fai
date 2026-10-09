@@ -1,10 +1,10 @@
 module MapSumShared
 
 // The shared twin of `MapSum`: `xs` is used again by `Array.sum xs` after
-// `Array.map`, so the array is shared (reference count > 1). `Array.map` builds a
-// fresh buffer either way (it does not yet recycle a unique input), so this
-// measures a shared-array traversal against Rust's `Vec`. Used by the Rust-vs-Fai
-// runtime benchmark.
+// `Array.map`, so the source must remain materialized through two traversals.
+// The map/sum intermediate fuses away. The Rust and OCaml peers likewise build
+// one array, fold doubled elements, then fold the original elements. Used by the
+// Rust-vs-Fai runtime benchmark.
 /// The benchmark workload: sum of doubling [0, n) plus the sum of [0, n), which
 /// equals 3 * sum [0, n).
 public run : Int -> Int

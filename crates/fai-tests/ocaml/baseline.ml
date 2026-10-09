@@ -143,14 +143,13 @@ let word_count n =
   let parts = String.split_on_char ' ' (Buffer.contents buf) in
   List.fold_left (fun acc w -> acc + String.length w) 0 parts
 
-(* The shared-list twin of `map_sum`: the sum of `2x` plus the sum of `x`. *)
+(* Two traversals of one materialized array, matching Fai's shared source.
+   The mapped intermediate is fused into its fold on all three sides. *)
 let map_sum_shared n =
-  let acc = ref 0 in
-  for x = 0 to n - 1 do
-    acc := !acc + Sys.opaque_identity (x * 2);
-    acc := !acc + Sys.opaque_identity x
-  done;
-  !acc
+  let xs = Array.init (max n 0) Fun.id in
+  let doubled = Array.fold_left (fun acc x -> acc + Sys.opaque_identity (x * 2)) 0 xs in
+  let original = Array.fold_left (fun acc x -> acc + Sys.opaque_identity x) 0 xs in
+  doubled + original
 
 (* The sum of the distinct values among `[0, n)` reduced modulo a bucket count. *)
 let set_dedup n =

@@ -179,18 +179,17 @@ pub fn string_slice(n: i64) -> i64 {
     acc
 }
 
-/// The sum of doubling `[0, n)` plus the sum of `[0, n)` — the shared-list twin of
-/// [`map_sum`], which equals `3 * sum [0, n)`. `black_box` per element defeats
-/// LLVM's scalar-evolution collapse of this arithmetic series to a closed form, so
-/// the benchmark times a real loop rather than a constant (as [`map_sum`] does).
+/// Two consumers of one materialized array: the sum of doubling `[0, n)` plus
+/// the sum of the original values. The source stays live through both traversals,
+/// matching the shared `Array` in Fai; the mapped intermediate is an iterator.
+/// `black_box` per element prevents collapsing the sums into a closed form.
 #[must_use]
 pub fn map_sum_shared(n: i64) -> i64 {
-    let mut acc: i64 = 0;
-    for x in 0..n {
-        acc = acc.wrapping_add(std::hint::black_box(x.wrapping_mul(2)));
-        acc = acc.wrapping_add(std::hint::black_box(x));
-    }
-    acc
+    let xs: Vec<i64> = (0..n).collect();
+    let doubled =
+        xs.iter().fold(0i64, |acc, &x| acc.wrapping_add(std::hint::black_box(x.wrapping_mul(2))));
+    let original = xs.into_iter().fold(0i64, |acc, x| acc.wrapping_add(std::hint::black_box(x)));
+    doubled.wrapping_add(original)
 }
 
 /// The sum of the distinct values among `[0, n)` reduced modulo a bucket count,
