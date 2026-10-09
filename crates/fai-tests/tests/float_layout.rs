@@ -77,6 +77,10 @@ fn fields_past_the_scalar_bitmap_stay_boxed() {
     check("wide", false);
 }
 #[test]
+fn generic_fields_past_the_scalar_bitmap_stay_boxed() {
+    check("generic-wide", false);
+}
+#[test]
 fn native_generic_record_float_projection() {
     check("record", true);
 }
@@ -103,9 +107,10 @@ fn float_worker() {
         "wrapper" => ("Float.toString (Maker.apply Reader.sum (Maker.pair 1.5 2.5))".into(), "4.0"),
         "return" => ("Float.toString (Reader.sum (Reader.pass (Maker.pair 1.5 2.5)))".into(), "4.0"),
         "update" => ("let original = Maker.box 1.5\nlet updated = { original with y = 4 }\nlet changed = { original with x = 2.5 }\nFloat.toString (original.x + updated.x + changed.x)".into(), "5.5"),
-        "wide" => {
+        "wide" | "generic-wide" => {
             let fields = (0..65).map(|i| format!("x{i:02} = 1.5")).collect::<Vec<_>>().join(", ");
-            (format!("let r = {{ {fields} }}\nFloat.toString r.x64"), "1.5")
+            let value = if case == "wide" { "r.x64" } else { "Wide.last r" };
+            (format!("let r = {{ {fields} }}\nFloat.toString ({value})"), "1.5")
         }
         _ => panic!("unknown float layout case"),
     };
@@ -117,6 +122,10 @@ fn float_worker() {
     fai_types::std_lib::load_std(&mut db);
     db.add_source("Maker.fai".into(), MAKER.into());
     db.add_source("Reader.fai".into(), READER.into());
+    db.add_source(
+        "Wide.fai".into(),
+        "module Wide\npublic last : { x64 : 'a | _ } -> 'a\nlet last r = r.x64\n".into(),
+    );
     let id = db.add_source("Main.fai".into(), source);
     let file = db.source_file(id).unwrap();
     let output = if std::env::var("FAI_FLOAT_LAYOUT_NATIVE").as_deref() == Ok("1") {

@@ -2594,16 +2594,7 @@ impl<M: Module> Translator<'_, M> {
         self.builder.ins().iadd_imm(base, i64::from(off))
     }
 
-    /// Projects a field of a data value (consuming `base`). A constant slot is an
-    /// immediate; a row-polymorphic slot is `base + evidence` computed at runtime
-    /// from a leading offset-evidence parameter.
-    ///
-    /// `scalar` identifies a logical Float field. The producer's descriptor, not
-    /// the caller's instantiated type, determines whether its slot is raw or
-    /// boxed; a monomorphic `Int` result is read untagged.
-    /// Every read borrows `base` (it outlives the read in A-normal form, and
-    /// dropping `base` later releases the field once).
-    /// Reads a data value's constructor tag (consuming `base`), as an `Int`. For a
+    /// Reads a data value's constructor tag, borrowing `base`, as an `Int`. For a
     /// niche Scheme-A `Option` the tag is computed from the encoding — `None` is the
     /// immediate `1` (low bit set), `Some` a boxed pointer (low bit clear), so the
     /// tag is `(v & 1) ^ 1` (0 for `None`, 1 for `Some`) — rather than a header read.
@@ -2632,19 +2623,36 @@ impl<M: Module> Translator<'_, M> {
                 self.builder.ins().bor_imm(shifted, 1)
             };
         }
-        let tagged = self.call1("fai_data_tag", v);
-        // The tag is a small immediate `Int`. Where the node is monomorphic `Int`
-        // (the normal match desugaring), deliver it raw so the tag test is a bare
-        // comparison against the raw constructor-tag literal; in an erased/uniform
-        // context (a combined function) keep it tagged.
-        if matches!(result_ty, Ty::Con(Con::Int)) {
-            let raw = self.untag(tagged);
-            self.mark_raw(raw)
+        let offset = rt::DATA_TAG_OFFSET as i32;
+        let raw = if is_always_boxed_ty(&base.ty) {
+            self.builder.ins().load(types::I64, MemFlags::trusted(), v, offset)
         } else {
-            tagged
-        }
+            let immediate = self.builder.create_block();
+            let boxed = self.builder.create_block();
+            let done = self.builder.create_block();
+            self.builder.append_block_param(done, types::I64);
+            let bit = self.builder.ins().band_imm(v, 1);
+            self.builder.ins().brif(bit, immediate, &[], boxed, &[]);
+            self.builder.switch_to_block(immediate);
+            self.builder.seal_block(immediate);
+            let tag = self.untag(v);
+            self.builder.ins().jump(done, &[tag.into()]);
+            self.builder.switch_to_block(boxed);
+            self.builder.seal_block(boxed);
+            let tag = self.builder.ins().load(types::I64, MemFlags::trusted(), v, offset);
+            self.builder.ins().jump(done, &[tag.into()]);
+            self.builder.switch_to_block(done);
+            self.builder.seal_block(done);
+            self.builder.block_params(done)[0]
+        };
+        // Match desugaring takes a raw tag; an erased consumer retains the
+        // uniform immediate representation.
+        if matches!(result_ty, Ty::Con(Con::Int)) { self.mark_raw(raw) } else { self.tag_int(raw) }
     }
 
+    /// Borrows a constant or evidence-indexed physical slot and returns an owned
+    /// field. Known uniform slots load and duplicate inline; generic and opaque
+    /// slots consult the descriptor and box raw Float bits when necessary.
     fn data_field(
         &mut self,
         base: &CExpr,
@@ -2674,13 +2682,37 @@ impl<M: Module> Translator<'_, M> {
             return self.int_data_field(base, index);
         }
         let v = self.expr(base);
+        let addr = self.field_slot_addr(v, index);
+        let word = self.builder.ins().load(types::I64, MemFlags::trusted(), addr, 0);
+        let scalar = self.known_scalar_slot(v, index);
+        if scalar == Some(false) || (scalar.is_none() && !field_may_be_float(result_ty)) {
+            self.dup_value(word, result_ty);
+            return word;
+        }
+        if scalar == Some(true) {
+            return self.call1("fai_box_float", word);
+        }
         let idx = match index {
             FieldIndex::Const(n) => self.builder.ins().iconst(types::I64, i64::from(n)),
             FieldIndex::Dyn { base: off, evidence } => self.evidence_slot(off, evidence),
         };
-        let f = self.runtime("fai_data_field", 2, true);
-        let call = self.builder.ins().call(f, &[v, idx]);
-        self.builder.inst_results(call)[0]
+        let is_scalar = data_slot_is_scalar(&mut self.builder, v, idx);
+        let boxed = self.builder.create_block();
+        let uniform = self.builder.create_block();
+        let done = self.builder.create_block();
+        self.builder.append_block_param(done, types::I64);
+        self.builder.ins().brif(is_scalar, boxed, &[], uniform, &[]);
+        self.builder.switch_to_block(boxed);
+        self.builder.seal_block(boxed);
+        let value = self.call1("fai_box_float", word);
+        self.builder.ins().jump(done, &[value.into()]);
+        self.builder.switch_to_block(uniform);
+        self.builder.seal_block(uniform);
+        self.dup_value(word, result_ty);
+        self.builder.ins().jump(done, &[word.into()]);
+        self.builder.switch_to_block(done);
+        self.builder.seal_block(done);
+        self.builder.block_params(done)[0]
     }
 
     /// A construction-proven scalar flag, independent of the instantiated type.
@@ -6377,6 +6409,16 @@ fn array_elem(ty: &Ty) -> Option<&Ty> {
 /// pushed value's) descriptor at runtime.
 fn elem_may_be_float(elem: &Ty) -> bool {
     matches!(elem, Ty::Var(_) | Ty::Error)
+}
+
+/// A nominal field can be an opaque scalar alias. Without construction evidence
+/// its physical layout is read from the descriptor, just like a generic field.
+fn field_may_be_float(ty: &Ty) -> bool {
+    match ty {
+        Ty::Var(_) | Ty::Error | Ty::Adt(_) => true,
+        Ty::App(head, _) => field_may_be_float(head),
+        _ => false,
+    }
 }
 
 /// Whether `ty` is an `Array` whose element might be a raw-`f64` slot at runtime —
