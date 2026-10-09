@@ -317,6 +317,10 @@ Canonically format in place (idempotent).
 Start the Language Server on stdio (standard LSP, JSON over `Content-Length`).
 Editors speak this; agents use `fai query` instead.
 
+Saved example diagnostics are invalidated when any effective workspace input
+changes, including an open dependency. No-op edits preserve the cached result;
+example execution remains save-driven.
+
 Supported requests: incremental `textDocument` sync (with `didSave`) and pushed
 `publishDiagnostics` (re-published for every open file, so a cross-module edit
 refreshes its dependents); `hover` (type, `///` doc prose, and attached

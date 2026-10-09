@@ -216,8 +216,7 @@ struct Server {
     /// (`initializationOptions.examples`, default on).
     examples_enabled: bool,
     /// Each open file's example failures (`FAI6001`) from its last save. Held
-    /// here so they survive the diagnostic refreshes that edits to *other* files
-    /// trigger; cleared when the file itself is edited or closed.
+    /// here until an effective input change invalidates their dependency revision.
     saved_examples: HashMap<Url, Vec<fai_diagnostics::Diagnostic>>,
 }
 
@@ -268,9 +267,6 @@ impl Server {
                         return;
                     }
                     self.apply_changes(&uri, p.content_changes);
-                    // An edit invalidates the last save's example results; they
-                    // are recomputed on the next save (not on every keystroke).
-                    self.saved_examples.remove(&uri);
                     self.refresh(conn, &uri);
                 }
             }
@@ -809,12 +805,29 @@ impl Server {
     /// diagnostics for every open document — a cross-module edit can invalidate
     /// another open file, so all of them are refreshed.
     fn refresh(&mut self, conn: &Connection, uri: &Url) {
-        let Some(rel) = self.relative(uri) else { return };
-        let Some(text) = self.open.get(uri).cloned() else { return };
-        if self.session.set_overlay(&rel, text).is_err() {
+        if !self.sync_open_document(uri) {
             return;
         }
         self.publish_all_open(conn);
+    }
+
+    fn sync_open_document(&mut self, uri: &Url) -> bool {
+        let Some(rel) = self.relative(uri) else { return false };
+        let Some(text) = self.open.get(uri).cloned() else { return false };
+        let unchanged = self
+            .session
+            .select_files(Some(&rel))
+            .first()
+            .is_some_and(|file| file.text(self.session.db()) == &text);
+        if self.session.set_overlay(&rel, text).is_err() {
+            return false;
+        }
+        if !unchanged {
+            // A saved contract can depend on any open module. Invalidate the
+            // detached results, while keeping expensive execution save-driven.
+            self.saved_examples.clear();
+        }
+        true
     }
 
     /// Like [`refresh`](Self::refresh), but additionally re-evaluates the saved
@@ -822,9 +835,7 @@ impl Server {
     /// so a wrong example surfaces in the editor without running `fai test` — and
     /// without re-running on every keystroke.
     fn refresh_saved(&mut self, conn: &Connection, uri: &Url) {
-        let Some(rel) = self.relative(uri) else { return };
-        let Some(text) = self.open.get(uri).cloned() else { return };
-        if self.session.set_overlay(&rel, text).is_err() {
+        if !self.sync_open_document(uri) {
             return;
         }
         self.refresh_saved_examples(uri);
