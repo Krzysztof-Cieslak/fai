@@ -545,7 +545,7 @@ fn prepare_run(daemon: &Daemon, request: &RunRequest) -> Prepared {
 
 /// Handles a `test` request: build the plan warm (on a snapshot), then supervise
 /// the isolated worker(s) off-lock, streaming each contract's result as a
-/// `$/testEvent`, and finally render the report (on a fresh snapshot) as the
+/// `$/testEvent`, and finally render the report with its captured coordinates as the
 /// terminal `Test` result. The worker execution — the long part — runs off-lock
 /// (and after the snapshot is dropped) so the daemon stays responsive and a
 /// concurrent edit is never blocked; a crashing contract is a separate process,
@@ -574,7 +574,7 @@ fn handle_test(conn: &mut Conn, request: &TestRequest) -> std::io::Result<()> {
         results
     };
 
-    let rendered = render_test(conn.daemon, request, &plan, &results);
+    let rendered = render_test(request, &plan, &results);
     conn.send(&ServerMessage::Result(Response::Test(rendered)))
 }
 
@@ -596,39 +596,31 @@ fn prepare_test(daemon: &Daemon, request: &TestRequest) -> Result<TestPlan, Rend
     })?
 }
 
-/// Renders the assembled outcome to the terminal `Rendered`, resolving spans on a
-/// fresh off-lock snapshot (no re-sync), using the same code path as the
-/// in-process CLI so warm output is byte-identical to `--no-daemon`.
+/// Renders the outcome using coordinates captured before worker execution, so a
+/// concurrent edit cannot reinterpret old byte spans in new source text.
 fn render_test(
-    daemon: &Daemon,
     request: &TestRequest,
     plan: &TestPlan,
     results: &[fai_driver::ContractResult],
 ) -> Rendered {
     let outcome = assemble_outcome(plan, results);
     let exit = if outcome.ok { EXIT_OK } else { EXIT_FAILURES };
-    with_snapshot(daemon, |snapshot| {
-        let resolver = snapshot.resolver();
-        match request.opts.format {
-            OutputFormat::Json => {
-                match serde_json::to_string_pretty(&outcome.to_output(&resolver)) {
-                    Ok(json) => {
-                        Rendered { stdout: format!("{json}\n"), stderr: String::new(), exit }
-                    }
-                    Err(error) => Rendered {
-                        stdout: String::new(),
-                        stderr: format!("internal error: failed to serialize output: {error}\n"),
-                        exit: EXIT_INTERNAL,
-                    },
-                }
-            }
-            OutputFormat::Human => Rendered {
-                stdout: outcome.render_human(&resolver, request.opts.color),
-                stderr: String::new(),
-                exit,
+    let resolver = &plan.render_spans;
+    match request.opts.format {
+        OutputFormat::Json => match serde_json::to_string_pretty(&outcome.to_output(resolver)) {
+            Ok(json) => Rendered { stdout: format!("{json}\n"), stderr: String::new(), exit },
+            Err(error) => Rendered {
+                stdout: String::new(),
+                stderr: format!("internal error: failed to serialize output: {error}\n"),
+                exit: EXIT_INTERNAL,
             },
-        }
-    })
+        },
+        OutputFormat::Human => Rendered {
+            stdout: outcome.render_human(resolver, request.opts.color),
+            stderr: String::new(),
+            exit,
+        },
+    }
 }
 
 /// Spawns and supervises the worker, streaming its stdout/stderr as `$/output`

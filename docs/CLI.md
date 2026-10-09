@@ -303,6 +303,9 @@ in a supervised isolated worker, so a body that traps on a generated input fails
   as its worker frame arrives (`$/testEvent`, from the daemon), before later
   contracts finish. An acknowledged result is emitted once, including when a
   later contract crashes or times out and the worker resumes after it.
+
+Test diagnostic coordinates refer to the source revision compiled for that run,
+even if another daemon request edits, replaces, or removes the file meanwhile.
 - **Output (json):** `{ "schemaVersion": 1, "total": int, "passed": int, "notRun": int, "seed": int, "events": [TestEvent], "diagnostics": [Diagnostic], "ok": bool }`, where a `TestEvent` is `{ "ordinal": int, "symbol": string?, "kind": "example"|"forall", "status": "passed"|"failed"|"crashed"|"timedOut"|"notRun", "counterexample": string?, "seed": int, "trials": int, "maxSize": int }`.
 - **Exit:** `0` if all pass; `1` otherwise.
 
