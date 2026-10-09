@@ -1,5 +1,7 @@
 module HttpDemo
 
+// get/getWith follow 307/308 with their known-empty body. General request streams
+// return those redirects instead of dropping or replaying their original content.
 // An HTTP/1.1 client and server over the `Net` capability (std/networking/Http.fai). This
 // serves a handler on a background task, makes a real request to it over a loopback
 // connection, prints the response, then shuts the server down by cancelling its

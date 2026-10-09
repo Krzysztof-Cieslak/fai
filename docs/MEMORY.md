@@ -4255,8 +4255,10 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     stream to one effect, and `{ 'e | 'f }` (two effect *variables* unioned) is not an
     expressible row, but concrete atoms plus one tail var is. The client **follows
     redirects** automatically up to a hop limit: a 301/302/303 becomes a `GET` and a
-    307/308 is followed only for a bodyless method (the already-consumed body cannot be
-    replayed), a relative `Location` is resolved against the request URL, and
+    307/308 is followed only for a known-empty body (`get`/`getWith`, or a GET
+    produced by an earlier 301/302/303 rewrite). General request streams cannot
+    establish replayability and retain an initial 307/308 response. A relative
+    `Location` is resolved against the request URL, and
     `Authorization` is dropped on a cross-origin hop (along with the hop-specific
     `Host`/`Content-Length`/`Transfer-Encoding`); each 3xx response is dropped before
     re-requesting (closing its connection), and `requestOnce` is the single-shot,

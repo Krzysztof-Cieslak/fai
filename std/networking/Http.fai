@@ -1043,25 +1043,15 @@ let maxRedirects = 10
 isRedirectStatus : Int -> Bool
 let isRedirectStatus s = s = 301 || s = 302 || s = 303 || s = 307 || s = 308
 
-// A method that carries no request body, so a 307/308 can be safely replayed.
-isBodyless : Method -> Bool
-let isBodyless m =
-  match m with
-  | GET -> true
-  | HEAD -> true
-  | OPTIONS -> true
-  | _ -> false
-
 // The method to use on a redirect, or `None` to stop following: 301/302/303 become
-// a `GET` (the body is dropped); a 307/308 keeps the method only when it is bodyless
-// (the consumed body cannot be replayed), otherwise stops.
-redirectMethodBody : Method -> Int -> Option Method
-let redirectMethodBody method status =
+// a `GET` (the body is dropped); a 307/308 requires a known-empty body.
+redirectMethodBody : Method -> Int -> Bool -> Option Method
+let redirectMethodBody method status knownEmpty =
   if status = 303 then
     Some GET
   else if status = 301 then
     Some GET
-  else if status = 302 then Some GET else if isBodyless method then Some method else None
+  else if status = 302 then Some GET else if knownEmpty then Some method else None
 
 // Two URLs share an origin when scheme, host, and effective port all match.
 sameOrigin : Url -> Url -> Bool
@@ -1081,15 +1071,15 @@ let redirectHeaders fromUrl toUrl headers =
 // Build the next request from a 3xx response, or `None` when there is no usable
 // `Location`, it does not resolve, or the method/status combination is not followed.
 // The redirect body is always empty (the original body was already consumed).
-redirectRequest : Request 'e -> Int -> Headers -> Option (Request 'e)
-let redirectRequest req status headers =
+redirectRequest : Request 'e -> Int -> Headers -> Bool -> Option (Request 'e)
+let redirectRequest req status headers knownEmpty =
   match Headers.get "Location" headers with
   | None -> None
   | Some loc ->
     match Url.resolve req.url loc with
     | Err _ -> None
     | Ok newUrl ->
-      match redirectMethodBody req.method status with
+      match redirectMethodBody req.method status knownEmpty with
       | None -> None
       | Some newMethod -> Some {
         body = emptyBody,
@@ -1100,26 +1090,26 @@ let redirectRequest req status headers =
 
 // Send the request and, while the response is a followable redirect with hops to
 // spare, drop it (closing its connection) and re-request the resolved `Location`.
-followRedirects : { net : Net, tls : Tls | 'r } -> Option Bytes -> Request 'e -> Int -> Result (Response { Net, Tls }) String / { Net, Tls | 'e }
-let followRedirects env extraRoots req hops =
+followRedirects : { net : Net, tls : Tls | 'r } -> Option Bytes -> Request 'e -> Int -> Bool -> Result (Response { Net, Tls }) String / { Net, Tls | 'e }
+let followRedirects env extraRoots req hops knownEmpty =
   match requestOnce env extraRoots req with
   | Err e -> Err e
   | Ok resp ->
     if hops > 0 && isRedirectStatus resp.status then
-      match redirectRequest req resp.status resp.headers with
+      match redirectRequest req resp.status resp.headers knownEmpty with
       | None -> Ok resp
-      | Some next -> followRedirects env extraRoots next (hops - 1)
+      | Some next -> followRedirects env extraRoots next (hops - 1) true
     else
       Ok resp
 
 /// Send a request and read the response, following redirects (up to `maxRedirects`
 /// hops), with TLS options: `extraRoots` is extra trusted root certificates in PEM
 /// (for a private CA or a self-signed server), `None` to trust only the bundled
-/// roots. A 301/302/303 is followed as a `GET`; a 307/308 only for a bodyless
-/// method; `Authorization` is dropped on a cross-origin hop. Use `requestOnce` to
+/// roots. A 301/302/303 is followed as a `GET`; an initial 307/308 is returned
+/// because a general body is not replayable. `Authorization` is dropped on a cross-origin hop. Use `requestOnce` to
 /// send a single request without following redirects.
 public requestWith : { net : Net, tls : Tls | 'r } -> Option Bytes -> Request 'e -> Result (Response { Net, Tls }) String / { Net, Tls | 'e }
-let requestWith env extraRoots req = followRedirects env extraRoots req maxRedirects
+let requestWith env extraRoots req = followRedirects env extraRoots req maxRedirects false
 
 /// Send a request and read the response (an https URL is verified against the
 /// bundled roots).
@@ -1137,7 +1127,17 @@ public get : { net : Net, tls : Tls | 'r } -> String -> Result (Response { Net, 
 let get env urlStr =
   match Url.parse urlStr with
   | Err e -> Err e
-  | Ok url -> request env { body = emptyBody, headers = Headers.empty, method = GET, url = url }
+  | Ok url -> requestEmpty env None url
+
+// These helpers create the body, so they can prove it is empty without forcing it.
+requestEmpty : { net : Net, tls : Tls | 'r } -> Option Bytes -> Url -> Result (Response { Net, Tls }) String / { Net, Tls }
+let requestEmpty env extraRoots url =
+  followRedirects env extraRoots {
+    body = emptyBody,
+    headers = Headers.empty,
+    method = GET,
+    url = url
+  } maxRedirects true
 
 /// GET a URL with TLS options (extra trusted root certificates in PEM, for a
 /// private CA or a self-signed server; `None` to trust only the bundled roots).
@@ -1145,12 +1145,7 @@ public getWith : { net : Net, tls : Tls | 'r } -> Option Bytes -> String -> Resu
 let getWith env extraRoots urlStr =
   match Url.parse urlStr with
   | Err e -> Err e
-  | Ok url -> requestWith env extraRoots {
-    body = emptyBody,
-    headers = Headers.empty,
-    method = GET,
-    url = url
-  }
+  | Ok url -> requestEmpty env extraRoots url
 
 /// POST a body (with caller-supplied headers) to a URL (http or https).
 public post : { net : Net, tls : Tls | 'r } -> String -> Headers -> Stream Bytes 'e -> Result (Response { Net, Tls }) String / { Net, Tls | 'e }
