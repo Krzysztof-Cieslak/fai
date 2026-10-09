@@ -404,6 +404,13 @@ measurements from the two workload versions must not be spliced into one trend.
 `sort_patterns` keeps distribution and size in each row. Its untimed fixture tests
 compare complete generated and sorted arrays, including partial final runs.
 
+`IntEval` and `OptionEval` use the same strict fallback policy: both chains are
+evaluated before choosing the first success. Rust and OCaml spell both evaluations
+explicitly, matching Fai; instrumented untimed checks pin the source call count.
+Optimizers may still remove provably unobservable work, so native code is the
+authority for executed work. Older lazy-Int/lazy-OCaml measurements are a different
+workload version.
+
 Each `aot_size` must equal the literal the matching sample's `main` passes to
 `run`/`runF`; the sample-validation tests (`crates/fai-tests/tests/algorithms.rs`)
 assert this by comparing the program's output to the oracle, so the AOT bench
