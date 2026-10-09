@@ -239,6 +239,41 @@ fn example_failure_appears_on_save_and_clears_on_edit() {
     lsp.shutdown();
 }
 
+#[track_caller]
+fn dependency_example_cache(changed: bool) {
+    let workspace = unique_workspace();
+    let a = "module A\nexample: B.answer = 1\n";
+    let b = "module B\npublic answer : Int\nlet answer = 0\n";
+    std::fs::write(workspace.join("A.fai"), a).unwrap();
+    std::fs::write(workspace.join("B.fai"), b).unwrap();
+    let mut lsp = Lsp::start(workspace);
+    let uri = lsp.did_open("A.fai", a);
+    lsp.await_diagnostics(&uri);
+    lsp.did_open("B.fai", b);
+    lsp.request("workspace/symbol", json!({"query":""}));
+    lsp.did_save("A.fai", a);
+    assert!(codes(&lsp.await_diagnostics(&uri)).contains(&"FAI6001".into()));
+    lsp.request("workspace/symbol", json!({"query":""}));
+    let edit = if changed { b.replace("= 0", "= 1") } else { b.to_owned() };
+    lsp.did_change("B.fai", 2, &edit);
+    let after = codes(&lsp.await_diagnostics(&uri));
+    assert_eq!(after.contains(&"FAI6001".into()), !changed, "{after:?}");
+    lsp.request("workspace/symbol", json!({"query":""}));
+    lsp.did_save("B.fai", &edit);
+    assert_eq!(codes(&lsp.await_diagnostics(&uri)).contains(&"FAI6001".into()), !changed);
+    lsp.shutdown();
+}
+
+#[test]
+fn editing_an_open_dependency_invalidates_saved_example_failures() {
+    dependency_example_cache(true);
+}
+
+#[test]
+fn no_op_dependency_edits_keep_saved_example_results() {
+    dependency_example_cache(false);
+}
+
 #[test]
 fn examples_disabled_by_initialization_option() {
     let workspace = unique_workspace();
