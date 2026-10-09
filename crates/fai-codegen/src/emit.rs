@@ -1936,6 +1936,24 @@ impl<M: Module> Translator<'_, M> {
         self.builder.ins().call(f, &[value]);
     }
 
+    /// Calls a runtime fault known not to return, retaining its diagnostic before
+    /// terminating the CFG. `returns` matches the import's ordinary ABI (integer
+    /// division has a result on other paths), not this call site's behavior.
+    fn runtime_fault(&mut self, name: &str, args: &[Value], returns: bool) {
+        let function = self.runtime(name, args.len(), returns);
+        self.builder.ins().call(function, args);
+        self.builder.ins().trap(TrapCode::unwrap_user(1));
+    }
+
+    /// Continues expression construction after a terminal instruction, in a
+    /// predecessor-free block. This placeholder has no executable incoming edge.
+    fn unreachable_value(&mut self) -> Value {
+        let dead = self.builder.create_block();
+        self.builder.switch_to_block(dead);
+        self.builder.seal_block(dead);
+        self.builder.ins().iconst(types::I64, rt::FAI_UNIT)
+    }
+
     /// Duplicates `local` (increments its reference count) inline, per its
     /// [`DupPlan`]: an immediate is a no-op, an always-boxed value increments
     /// unconditionally, and any other value guards the increment with a tag-check.
@@ -2397,10 +2415,7 @@ impl<M: Module> Translator<'_, M> {
                 // of the result type. Keep the emitter's continuation in a dead
                 // block so enclosing expressions can still form their merges.
                 self.builder.ins().trap(TrapCode::unwrap_user(1));
-                let dead = self.builder.create_block();
-                self.builder.switch_to_block(dead);
-                self.builder.seal_block(dead);
-                self.builder.ins().iconst(types::I64, rt::FAI_UNIT)
+                self.unreachable_value()
             }
         }
     }
@@ -3241,9 +3256,7 @@ impl<M: Module> Translator<'_, M> {
         self.builder.ins().brif(fits, valid, &[], invalid, &[]);
         self.builder.switch_to_block(invalid);
         self.builder.seal_block(invalid);
-        let panic = self.runtime("fai_allocation_size_panic", 0, false);
-        self.builder.ins().call(panic, &[]);
-        self.builder.ins().trap(TrapCode::unwrap_user(1));
+        self.runtime_fault("fai_allocation_size_panic", &[], false);
         self.builder.switch_to_block(valid);
         self.builder.seal_block(valid);
     }
@@ -3366,41 +3379,21 @@ impl<M: Module> Translator<'_, M> {
         // bounds, matching the runtime's `usize` cast.
         let in_bounds = self.builder.ins().icmp(IntCC::UnsignedLessThan, raw_idx, len);
 
-        let is_float = matches!(elem, Ty::Con(Con::Float));
         let fast_b = self.builder.create_block();
         let oob_b = self.builder.create_block();
-        let merge_b = self.builder.create_block();
-        let merge_ty = if is_float { types::F64 } else { types::I64 };
-        self.builder.append_block_param(merge_b, merge_ty);
         self.builder.ins().brif(in_bounds, fast_b, &[], oob_b, &[]);
 
-        // Out of bounds: the located abort (never returns); a dead value of the
-        // merge type satisfies the edge. When `proven` (only reachable in shadow
+        // Out of bounds: the located abort (never returns). When `proven` (only in shadow
         // mode), the abort is the distinct soundness-violation panic.
         self.builder.switch_to_block(oob_b);
         self.builder.seal_block(oob_b);
         let panic_sym = if proven { "fai_bce_unsound_panic" } else { "fai_array_index_panic" };
-        let panic = self.runtime(panic_sym, 0, false);
-        self.builder.ins().call(panic, &[]);
-        let dead = if is_float {
-            self.builder.ins().f64const(Ieee64::with_float(0.0))
-        } else {
-            self.builder.ins().iconst(types::I64, 0)
-        };
-        self.builder.ins().jump(merge_b, &[dead.into()]);
+        self.runtime_fault(panic_sym, &[], false);
 
         // In bounds: load the slot and bring the element to its scalar/uniform form.
         self.builder.switch_to_block(fast_b);
         self.builder.seal_block(fast_b);
-        let value = self.array_load_elem(base, raw_idx, elem);
-        self.builder.ins().jump(merge_b, &[value.into()]);
-
-        self.builder.switch_to_block(merge_b);
-        self.builder.seal_block(merge_b);
-        let result = self.builder.block_params(merge_b)[0];
-        // An `Int` element flows raw; a `Float` is the f64 merge param; anything
-        // else is the owned uniform word.
-        if matches!(elem, Ty::Con(Con::Int)) { self.mark_raw(result) } else { result }
+        self.array_load_elem(base, raw_idx, elem)
     }
 
     /// Whether the bounds-check-elimination fact graph proves the `index` atom is
@@ -3421,9 +3414,7 @@ impl<M: Module> Translator<'_, M> {
         self.builder.ins().brif(in_bounds, ok_b, &[], bad_b, &[]);
         self.builder.switch_to_block(bad_b);
         self.builder.seal_block(bad_b);
-        let panic = self.runtime("fai_bce_unsound_panic", 0, false);
-        self.builder.ins().call(panic, &[]);
-        self.builder.ins().jump(ok_b, &[]);
+        self.runtime_fault("fai_bce_unsound_panic", &[], false);
         self.builder.switch_to_block(ok_b);
         self.builder.seal_block(ok_b);
     }
@@ -4208,7 +4199,8 @@ impl<M: Module> Translator<'_, M> {
                 let b = self.expr(&args[1]);
                 let a = self.ensure_boxed(a);
                 let b = self.ensure_boxed(b);
-                return self.prim_runtime_call(op, &[a, b]);
+                self.runtime_fault(op.runtime_symbol(), &[a, b], true);
+                return self.unreachable_value();
             }
             if d >= 1 && fits_immediate(d) {
                 let k = i64::from(d.trailing_zeros());
@@ -4264,8 +4256,7 @@ impl<M: Module> Translator<'_, M> {
         self.builder.seal_block(zero);
         let ta = self.tag_int(a);
         let tb = self.tag_int(b);
-        let dead = self.prim_runtime_call(op, &[ta, tb]);
-        self.builder.ins().jump(merge, &[dead.into()]);
+        self.runtime_fault(op.runtime_symbol(), &[ta, tb], true);
 
         self.builder.switch_to_block(nonzero);
         self.builder.seal_block(nonzero);
@@ -4341,8 +4332,12 @@ impl<M: Module> Translator<'_, M> {
                 // must not see one: a zero divisor branches to the runtime call,
                 // which raises the located division-by-zero fault.
                 let nonzero = s.builder.create_block();
+                let zero = s.builder.create_block();
                 let is_zero = s.builder.ins().icmp_imm(IntCC::Equal, xb, 0);
-                s.builder.ins().brif(is_zero, slow, &[], nonzero, &[]);
+                s.builder.ins().brif(is_zero, zero, &[], nonzero, &[]);
+                s.builder.switch_to_block(zero);
+                s.builder.seal_block(zero);
+                s.runtime_fault(op.runtime_symbol(), &[a, b], true);
                 s.builder.switch_to_block(nonzero);
                 s.builder.seal_block(nonzero);
                 if is_div {
