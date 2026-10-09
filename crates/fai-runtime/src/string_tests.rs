@@ -84,7 +84,7 @@ fn concat_grows_with_doubled_capacity_when_unique_but_full() {
 // ===========================================================================
 
 #[test]
-fn concat_forks_a_copy_when_left_is_shared() {
+fn concat_reuses_a_fitting_right_when_left_is_shared() {
     let _g = lock();
     let base = live_count();
     reset_allocations();
@@ -93,14 +93,101 @@ fn concat_forks_a_copy_when_left_is_shared() {
     let b = make_string(b"de");
     let before = allocations();
     let r = fai_string_concat(a, b);
-    assert_eq!(allocations() - before, 1, "a shared concat forks one buffer");
-    assert_eq!(string_copies(), 1, "a shared concat is a counted uniqueness-loss copy");
+    assert_eq!(allocations() - before, 0, "the unique right buffer has enough spare capacity");
+    assert_eq!(string_copies(), 0);
+    assert_eq!(r, b, "the right buffer is reused for the prefix");
     assert_ne!(r, a, "the shared operand is not mutated");
     assert_eq!(contents(r), "abcde");
     assert_eq!(contents(a), "abc", "the shared left operand is left intact");
     fai_drop(a); // release the surviving owner
     fai_drop(r);
     assert_eq!(live_count(), base, "leak-free");
+}
+
+#[test]
+fn concat_forks_when_both_operands_are_shared() {
+    let _guard = lock();
+    let baseline = (live_count(), live_bytes());
+    let left = make_string(b"abc");
+    let right = make_string(b"de");
+    reset_allocations();
+    let result = fai_string_concat(fai_dup(left), fai_dup(right));
+    assert_eq!(allocations(), 1);
+    assert_eq!(contents(result), "abcde");
+    assert_eq!(contents(left), "abc");
+    assert_eq!(contents(right), "de");
+    fai_drop(left);
+    fai_drop(right);
+    fai_drop(result);
+    assert_eq!((live_count(), live_bytes()), baseline);
+}
+
+#[test]
+fn concat_prepends_multibyte_text_without_allocation() {
+    let _guard = lock();
+    let baseline = (live_count(), live_bytes());
+    let left = make_str("🙂é");
+    let retained = fai_dup(left);
+    let right = make_str("ab");
+    reset_allocations();
+    let result = fai_string_concat(left, right);
+    assert_eq!(result, right);
+    assert_eq!(allocations(), 0);
+    assert_eq!(contents(result), "🙂éab");
+    assert_eq!(contents(retained), "🙂é");
+    fai_drop(retained);
+    fai_drop(result);
+    assert_eq!((live_count(), live_bytes()), baseline);
+}
+
+#[test]
+fn concat_reuses_the_right_buffer_at_exact_capacity() {
+    let _guard = lock();
+    let baseline = (live_count(), live_bytes());
+    let right = fai_string_concat(make_string(b"abcdefgh"), make_string(b"i"));
+    let prefix = "x".repeat(cap_of(right) - len_of(right));
+    let left = make_string(prefix.as_bytes());
+    reset_allocations();
+    let result = fai_string_concat(left, right);
+    assert_eq!(result, right);
+    assert_eq!(allocations(), 0);
+    assert_eq!(len_of(result), cap_of(result));
+    assert_eq!(contents(result), format!("{prefix}abcdefghi"));
+    fai_drop(result);
+    assert_eq!((live_count(), live_bytes()), baseline);
+}
+
+#[test]
+fn concat_does_not_overrun_the_right_buffer() {
+    let _guard = lock();
+    let baseline = (live_count(), live_bytes());
+    let right = fai_string_concat(make_string(b"abcdefgh"), make_string(b"i"));
+    let prefix = "x".repeat(cap_of(right) - len_of(right) + 1);
+    let left = make_string(prefix.as_bytes());
+    reset_allocations();
+    let result = fai_string_concat(left, right);
+    assert_ne!(result, right);
+    assert_eq!(allocations(), 1);
+    assert_eq!(contents(result), format!("{prefix}abcdefghi"));
+    fai_drop(result);
+    assert_eq!((live_count(), live_bytes()), baseline);
+}
+
+#[test]
+fn concat_never_prepends_a_slice_into_its_own_base() {
+    let _guard = lock();
+    let baseline = (live_count(), live_bytes());
+    let right = fai_string_concat(make_string(&[b'a'; 64]), make_string(b"b"));
+    let left = fai_string_take(imm_int(32), fai_dup(right));
+    assert!(is_view(left));
+    assert!(cap_of(right) >= len_of(left) + len_of(right));
+    reset_allocations();
+    let result = fai_string_concat(left, right);
+    assert_ne!(result, right);
+    assert_eq!(allocations(), 1);
+    assert_eq!(contents(result), format!("{}b", "a".repeat(96)));
+    fai_drop(result);
+    assert_eq!((live_count(), live_bytes()), baseline);
 }
 
 #[test]

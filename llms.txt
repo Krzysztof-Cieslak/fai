@@ -1848,6 +1848,8 @@ Build/run it with `fai run Tasks.fai`; check the laws with `fai test Tasks.fai`.
   arrays — both return new values (updated in place when unique).
 - **Strings**: build with `++` (amortized efficient) or `String.join`; index by
   character with `String.take`/`drop`/`substring`/`split`.
+  Concatenation can reuse spare capacity in a unique operand while preserving
+  every retained alias.
 - **No implicit numeric coercion** — convert with `Int.toFloat` / `Float.toInt`,
   and write `Float` literals with a decimal point.
 - **Negatives are parenthesized**: `(-3)`.
