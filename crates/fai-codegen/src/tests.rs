@@ -470,6 +470,19 @@ fn fresh_small_data_writes_its_header_and_fields_inline() {
 }
 
 #[test]
+fn missing_reuse_tokens_have_an_inline_pool_path() {
+    let ir = entry_ir(
+        "module M\npublic rebuild : { a : Bool, b : Bool } -> { a : Bool, b : Bool }\nlet rebuild value = { a = value.a, b = not value.b }\n",
+        "rebuild",
+    );
+    assert!(
+        ir.split("\nblock")
+            .any(|block| block.matches("store").count() >= 4 && block.contains("load")),
+        "a missing token can pop a pool cell and write the header/fields directly:\n{ir}"
+    );
+}
+
+#[test]
 fn generic_list_head_needs_no_scalar_descriptor() {
     let ir = entry_ir(
         "module M\npublic pick : 'a -> List 'a -> 'a\nlet pick fallback xs = match xs with | [] -> fallback | x :: _ -> x\n",

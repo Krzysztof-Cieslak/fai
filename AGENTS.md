@@ -459,6 +459,8 @@ shared cells, incompatible tokens, and concurrent execution use runtime fallback
 Small fresh data constructions also pop pooled cells and write their headers and
 fields inline. Tail loops cache the pool base once; branch-only recursive
 allocations fetch it at the construction, keeping leaf calls free of that work.
+Reconstruction with a null reuse token also takes the inline pool path; its pool
+lookup stays on that fallback when the function otherwise needs no fresh cells.
 Reuse selection includes typed parameters and follows local aliases. A projected
 cell whose parent remains live is skipped, letting the actual consumed cell feed
 the reconstruction; merging unique lists therefore recycles their consumed nodes.

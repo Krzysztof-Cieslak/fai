@@ -2929,8 +2929,8 @@ impl<M: Module> Translator<'_, M> {
         });
     }
 
-    /// Rebuilds directly into a size-matched token. Only the fallback spills its
-    /// fields for the runtime, which handles missing or wrong-sized storage.
+    /// Rebuilds directly into a size-matched token. A missing token uses the
+    /// ordinary inline pool; only wrong-sized storage takes the reuse runtime.
     fn reuse_data_inline(
         &mut self,
         token: Value,
@@ -2941,11 +2941,12 @@ impl<M: Module> Translator<'_, M> {
     ) -> Value {
         let size_check = self.builder.create_block();
         let rebuild = self.builder.create_block();
+        let fresh = self.builder.create_block();
         let slow = self.builder.create_block();
         self.builder.set_cold_block(slow);
         let done = self.builder.create_block();
         self.builder.append_block_param(done, types::I64);
-        self.builder.ins().brif(token, size_check, &[], slow, &[]);
+        self.builder.ins().brif(token, size_check, &[], fresh, &[]);
         self.builder.switch_to_block(size_check);
         self.builder.seal_block(size_check);
         let size = self.data_allocation_size(token);
@@ -2962,6 +2963,10 @@ impl<M: Module> Translator<'_, M> {
             self.store_field(token, offset + index * 8, value);
         }
         self.builder.ins().jump(done, &[token.into()]);
+        self.builder.switch_to_block(fresh);
+        self.builder.seal_block(fresh);
+        let allocated = self.fresh_data_inline(tag, fields, desc, scalars);
+        self.builder.ins().jump(done, &[allocated.into()]);
         self.builder.switch_to_block(slow);
         self.builder.seal_block(slow);
         let values = self.spill(fields);

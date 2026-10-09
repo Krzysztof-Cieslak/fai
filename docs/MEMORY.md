@@ -3127,6 +3127,10 @@ Editor integration:
     Empty pools, wider shapes and concurrent code retain runtime construction.
     Tail loops cache the pool base; a non-looping branch fetches it at allocation
     so recursive leaf calls do not pay a lookup. Debug counters remain balanced.
+    A missing reuse token takes the same inline small-data allocation path; a
+    wrong-sized token retains runtime handling. Pool lookup stays lazy for a
+    function that otherwise only reuses cells, avoiding overhead on successful
+    unique reconstruction.
   - **Carve-outs.** `foldr` over a non-reversible `List` value is left unfused (a
     single tail loop is impossible without a reverse pass or unsafe deep recursion,
     which std itself avoids); a pipeline inside a **mutual-recursion group member**
