@@ -902,6 +902,9 @@ scheduler exactly as a concurrent one does.
   reports it); `accept listener` → `Connection`; `connect host port` →
   `Connection`; `send conn bytes`; `recv conn max` (an empty `Bytes` means the peer
   closed); `close conn`.
+  `connect` tries all DNS addresses in resolver order, closing failed candidates
+  before advancing. Cancellation stops the sequence; if none connect, the last
+  error is returned. Numeric IP addresses bypass DNS.
 - **UDP** (connectionless): `udpBind port` → `UdpSocket`; `udpSend sock host port
   bytes`; `udpRecv sock max` → `(payload, senderHost, senderPort)`; `udpClose
   sock`.

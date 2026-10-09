@@ -468,6 +468,11 @@ TCP and UDP port arguments must be in `0..65535`; invalid signed or full-width
 Ints return `Err` before network activity. Port zero still requests an ephemeral
 port for listen/bind operations.
 
+`Net.connect` retains all resolved addresses and tries them in resolver order,
+releasing each failed socket/registration before the next attempt. Cancellation
+stops the entire sequence; if all attempts fail, it returns the last error.
+Numeric IP literals bypass DNS. One-shot and pooled HTTP use this same path.
+
 `Tls.feedIncoming` returns the consumed ciphertext count; on partial or zero
 progress, drain plaintext and retry only the remaining suffix. An empty input
 records transport EOF. `Tls.readPlaintext` returns `Result (Option Bytes) String`:

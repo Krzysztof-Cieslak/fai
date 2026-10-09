@@ -202,6 +202,8 @@ public interface Concurrency =
 // reports the port a `listen 0` was bound to. The `udp*` methods are
 // connectionless: `udpSend` addresses each datagram and `udpRecv` reports the
 // sender (its host and port) alongside the payload.
+// connect tries DNS addresses in resolver order until one succeeds; each failed
+// socket is closed before the next attempt, and task cancellation stops retries.
 public interface Net =
   accept : Listener -> Result Connection String / { Net }
   close : Connection -> Unit / { Net }
