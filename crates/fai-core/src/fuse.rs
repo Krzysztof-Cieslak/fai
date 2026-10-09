@@ -65,6 +65,20 @@ pub struct FusedLoop {
     pub abi: FnAbi,
     /// The loop's runtime arity (its parameter count).
     pub arity: usize,
+    /// Result facts valid at the generated call sites. A complete builder keeps
+    /// its input count as a lower bound even when a negative count yields empty.
+    pub result: crate::ResultSig,
+}
+
+/// Result facts for a synthesized loop, located through its owning definition.
+/// The owner and ordinal are embedded in names the compiler alone can produce.
+pub fn loop_result(db: &dyn Db, file: SourceFile, name: Symbol) -> Option<crate::ResultSig> {
+    let (owner, _) = name.as_str().strip_prefix("fuse#")?.rsplit_once('#')?;
+    fuse_def(db, file, Symbol::intern(owner))
+        .loops
+        .iter()
+        .find(|l| l.lowered.def.name == name)
+        .map(|l| l.result.clone())
 }
 
 /// The result of fusing one definition: its rewritten body and the loops the
@@ -1104,7 +1118,22 @@ impl Fuser<'_> {
             reuse_entry: None,
             entry_spread_params: Vec::new(),
         };
-        self.loops.push(FusedLoop { lowered, abi, arity });
+        // A complete builder appends exactly one value per source element. The
+        // generated entry starts at index zero with an empty buffer; recurrence
+        // preserves len(buffer) == index. Retain count <= len(result) so callers
+        // keep bounds facts formerly obtained from the library's builder call.
+        let mut result_facts = crate::ResultSig::default();
+        if matches!(consumer, Consumer::Build { filter: false, seq: SeqKind::Array, .. })
+            && stages.iter().all(|s| matches!(s, Stage::Map { .. }))
+            && let Some(count) = g.call_args.iter().position(|a| a == &src.capacity)
+        {
+            result_facts.edges.push((
+                crate::RTerm::Param(count as u32),
+                crate::RTerm::ResultLen(crate::WHOLE),
+                0,
+            ));
+        }
+        self.loops.push(FusedLoop { lowered, abi, arity, result: result_facts });
 
         let call = CExpr::new(
             K::App {

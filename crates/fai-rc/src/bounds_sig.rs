@@ -81,6 +81,9 @@ pub fn entry_bounds(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<BoundSig
 /// coupled fixpoint.
 #[salsa::tracked]
 pub fn result_facts(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<ResultSig> {
+    if let Some(result) = fai_core::fuse::loop_result(db, file, name) {
+        return Arc::new(result);
+    }
     let all = module_bounds_facts(db, file);
     let numeric = all.result.get(&name).cloned().unwrap_or_default();
     let lenpres = lenpres_edges(db, file, name);
@@ -610,6 +613,11 @@ fn result_sig_for(
     d: DefId,
     result: &FxHashMap<Symbol, ResMap>,
 ) -> ResultSig {
+    if let Some(file) = db.source_file(d.file)
+        && let Some(result) = fai_core::fuse::loop_result(db, file, d.name)
+    {
+        return result;
+    }
     if d.file == source {
         let numeric = result.get(&d.name).cloned().map(to_result_sig).unwrap_or_default();
         let lenpres = file_lenpres_edges(db, source, d.name);

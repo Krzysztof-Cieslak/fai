@@ -157,3 +157,41 @@ fn contract_harness_emits_single_operation_loops() {
     assert!(result.ok, "{:?}", result.diagnostics);
     assert_eq!(result.passed, 1);
 }
+
+#[test]
+fn complete_builder_retains_its_result_length_fact() {
+    let mut db = FaiDatabase::new();
+    fai_types::std_lib::load_std(&mut db);
+    let id = db.add_source(
+        "M.fai".into(),
+        "module M\nlet build n = Array.init n (fun i -> 10 / (i + 1))\n".into(),
+    );
+    let result = fai_rc::result_facts(&db, db.source_file(id).unwrap(), Symbol::intern("build"));
+    assert!(
+        result.edges.contains(&(
+            fai_core::RTerm::Param(0),
+            fai_core::RTerm::ResultLen(fai_core::WHOLE),
+            0
+        )),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn filtering_builder_does_not_claim_the_input_length() {
+    let mut db = FaiDatabase::new();
+    fai_types::std_lib::load_std(&mut db);
+    let id = db.add_source(
+        "M.fai".into(),
+        "module M\nlet build n = Array.filter (fun i -> false) (Array.range 0 n)\n".into(),
+    );
+    let result = fai_rc::result_facts(&db, db.source_file(id).unwrap(), Symbol::intern("build"));
+    assert!(
+        !result.edges.contains(&(
+            fai_core::RTerm::Param(0),
+            fai_core::RTerm::ResultLen(fai_core::WHOLE),
+            0
+        )),
+        "{result:?}"
+    );
+}
