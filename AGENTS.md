@@ -385,6 +385,10 @@ probe chain without an `Option`; replacement never resizes. An absent key may
 grow the table and is then placed using the saved hash. It preserves shared
 tables and values, and recycles a unique table wrapper at the final update.
 
+Growing a `HashDict` or `HashSet` reuses its existing entry cells in the new
+bucket array. Rehashing allocates no replacement entry for an unchanged key/value;
+shared snapshots keep their contents through ordinary reference counting.
+
 ```fai
 module Hello
 

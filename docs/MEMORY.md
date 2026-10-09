@@ -3206,8 +3206,11 @@ Editor integration:
     with a private `Slot = Empty | Full …`. Linear probing; backward-shift deletion
     (so the slot type stays two-state — no tombstones touching the hot paths).
     Index is `hash & (cap-1)`; grow (double, rehash) past load 3/4; the empty
-    container holds a zero-length array and allocates on first insert. Value
-    semantics come for free from `Array`: a uniquely-owned table mutates slots in
+    container holds a zero-length array and allocates on first insert. Entry
+    cells are reused during rehash: the new bucket array takes a reference to each
+    existing `Full` cell rather than reconstructing its identical fields. The
+    old buffer releases its references after rehash, preserving shared snapshots.
+    Value semantics come from `Array`: a uniquely-owned table mutates slots in
     place (a threaded build allocates only the per-entry `Full` cell), a shared one
     copies. The inspect-only `get`/`getOr`/`member` only read slots, so borrow
     inference lends the table — a `get`-then-`insert` step stays in place. A HAMT

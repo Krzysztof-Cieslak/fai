@@ -161,15 +161,25 @@ let place key value slots cap i =
   | Empty -> Array.unsafeSet i (Full key value) slots
   | Full _ _ -> place key value slots cap (next cap i)
 
+// Rehashing changes only a bucket address. Retain the entry cell itself rather
+// than rebuilding its identical key/value fields in a second allocation.
+placeEntry : Slot 'k 'v -> Array (Slot 'k 'v) -> Int -> Int -> Array (Slot 'k 'v)
+let placeEntry entry slots cap i =
+  match Array.unsafeGet i slots with
+  | Empty -> Array.unsafeSet i entry slots
+  | Full _ _ -> placeEntry entry slots cap (next cap i)
+
 // Copy every entry of the old slots array into a fresh, larger one.
 rehash : Array (Slot 'k 'v) -> Int -> Int -> Array (Slot 'k 'v) -> Int -> Array (Slot 'k 'v)
 let rehash old cap i newSlots newCap =
   if i >= cap then
     newSlots
   else
-    match Array.unsafeGet i old with
+    let entry = Array.unsafeGet i old
+    match entry with
     | Empty -> rehash old cap (i + 1) newSlots newCap
-    | Full k v -> rehash old cap (i + 1) (place k v newSlots newCap (indexFor newCap k)) newCap
+    | Full k _ ->
+      rehash old cap (i + 1) (placeEntry entry newSlots newCap (indexFor newCap k)) newCap
 
 // Double the table and re-place every entry into it.
 grow : Array (Slot 'k 'v) -> Int -> Array (Slot 'k 'v)
