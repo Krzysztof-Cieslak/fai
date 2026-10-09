@@ -157,6 +157,13 @@ fn module_bounds_facts(db: &dyn Db, file: SourceFile) -> Arc<ModuleFacts> {
     let mut eligible: FxHashSet<Symbol> =
         defs.defs.iter().filter(|d| d.visibility == Visibility::Private).map(|d| d.name).collect();
     eligible.extend(generated);
+    // Contract harnesses can supply generated arguments independently of the
+    // module's value bodies. Do not assume their private entry inputs are known.
+    for def in &fai_resolve::resolve(db, file).contract_deps {
+        if def.file == source {
+            eligible.remove(&def.name);
+        }
+    }
     for n in &order {
         if let Some(d) = data.get(n) {
             for body in &d.bodies {

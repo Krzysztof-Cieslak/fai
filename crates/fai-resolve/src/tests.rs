@@ -444,6 +444,25 @@ fn prim_unknown_intrinsic_is_unbound() {
 }
 
 #[test]
+fn contracts_retain_dependencies_also_used_by_value_bodies() {
+    let source =
+        "module M\nlet helper value = value\nlet ordinary = helper true\nexample: helper true\n";
+    let (db, files) = db_with(&[("M.fai", source)]);
+    let resolved = crate::resolve(&db, files[0]);
+    let names: Vec<_> = resolved.contract_deps.iter().map(|def| def.name.as_str()).collect();
+    assert_eq!(names, ["helper"]);
+}
+
+#[test]
+fn nested_contract_dependencies_are_qualified_and_deduplicated() {
+    let source = "module M\nmodule Inner =\n  let helper value = value\n  example: helper true\n  forall value: helper value\n";
+    let (db, files) = db_with(&[("M.fai", source)]);
+    let resolved = crate::resolve(&db, files[0]);
+    let names: Vec<_> = resolved.contract_deps.iter().map(|def| def.name.as_str()).collect();
+    assert_eq!(names, ["Inner.helper"]);
+}
+
+#[test]
 fn duplicate_auto_imported_export_is_detected() {
     // Two auto-imported modules exporting the same name are recorded as a
     // duplicate by the merge (FAI2013 is emitted per offending file from there).

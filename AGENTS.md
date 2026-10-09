@@ -454,6 +454,8 @@ with nested lifted closures retain their first-class call path.
 Bounds inference includes the generated loops in its file-local caller graph,
 including their first-class function references. A callback moved into a loop
 therefore cannot disappear from a private helper's bounds-check proof.
+Helpers referenced by contracts keep conservative entry assumptions: generated
+contract inputs are independent of the module's ordinary call sites.
 
 A fold over `List.concat` can walk the existing chunks without copying a flat
 list spine. A single-use concatenation binding gets the same treatment.
