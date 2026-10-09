@@ -316,10 +316,10 @@ fn permuted_float_array_reads_have_no_transient_reference_counts() {
     );
     assert_eq!(
         ir.matches("store ").count(),
-        1,
-        "only the final owner release writes a count:\n{ir}"
+        0,
+        "the borrowed array has no reference-count writes:\n{ir}"
     );
-    assert_eq!(call_count(&ir), 3, "two bounds faults and the final owner release:\n{ir}");
+    assert_eq!(call_count(&ir), 2, "only the two bounds faults remain:\n{ir}");
 }
 
 #[test]
@@ -330,10 +330,10 @@ fn permuted_int_array_reads_have_no_transient_reference_counts() {
     );
     assert_eq!(
         ir.matches("store ").count(),
-        1,
-        "only the final owner release writes a count:\n{ir}"
+        0,
+        "the borrowed array has no reference-count writes:\n{ir}"
     );
-    assert_eq!(call_count(&ir), 3, "two bounds faults and the final owner release:\n{ir}");
+    assert_eq!(call_count(&ir), 2, "only the two bounds faults remain:\n{ir}");
 }
 
 #[test]
@@ -2249,8 +2249,8 @@ fn generic_equality_runs_on_immediate_and_boxed_instantiations() {
           let strs = eqv "abc" "abc" && not (eqv "abc" "abd")
           r.console.writeLine (if ints && strs then "ok" else "bad")
     "#};
-    // The `Int` calls take the inline fast path; the `String` calls take the owned
-    // fallback (boxed operands the prim consumes). A clean exit proves both are
+    // The `Int` calls take the inline fast path; the `String` calls take the borrowed
+    // fallback, with their owners released by the caller. A clean exit proves both are
     // reference-count balanced.
     let (code, out) = run(src);
     assert_eq!(code, 0, "leak-free");
@@ -2271,6 +2271,12 @@ fn generic_three_way_compare_on_int() {
     let (code, out) = run(src);
     assert_eq!(code, 0);
     assert_eq!(out, "lteqgt\n");
+}
+
+#[test]
+fn borrowed_array_scan_reads_full_width_int_slots() {
+    let source = "module M\nlet sum i acc xs = if i >= Array.length xs then acc else sum (i + 1) (acc + Array.unsafeGet i xs) xs\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (sum 0 0 [| 9223372036854775807, (-9223372036854775808), 7 |]))\n";
+    assert_eq!(run(source), (0, "6\n".into()));
 }
 
 #[test]
@@ -2298,8 +2304,8 @@ fn generic_equality_on_an_enum_takes_the_immediate_path() {
 
 #[test]
 fn generic_equality_on_lists_mixes_immediate_and_boxed() {
-    // `[]` is immediate (fast arm); a cons cell is boxed (owned fallback). A clean
-    // exit confirms the boxed operands are consumed exactly once.
+    // `[]` is immediate (fast arm); a cons cell is boxed (borrowed fallback). A clean
+    // exit confirms the owners of boxed operands are released exactly once.
     let src = indoc! {r#"
         module M
 
@@ -4305,11 +4311,9 @@ fn array_float_get_inlines_a_raw_f64_slot_load_with_no_box_deref() {
     let ir = entry_ir(src, "g");
     assert!(ir.contains(" ult "), "inline unsigned bounds check:\n{ir}");
     assert!(ir.contains("bitcast"), "the raw slot word is reinterpreted as f64:\n{ir}");
-    // Exactly three loads: the length (for the bounds check), the element slot, and
-    // the array's reference count (its inline drop at exit). The slot word *is* the
-    // value, so there is no fourth load dereferencing a boxed `Float` (the boxed
-    // representation loaded the slot pointer *and* the box's value word).
-    assert_eq!(load_count(&ir), 3, "one slot load, no box deref:\n{ir}");
+    // Only the length and element slot are loaded. The caller retains the array,
+    // and the slot word is the Float value rather than a pointer to a box.
+    assert_eq!(load_count(&ir), 2, "one slot load, no box deref:\n{ir}");
 }
 
 #[test]
@@ -4351,9 +4355,8 @@ fn array_float_push_inlines_a_raw_f64_append() {
 
 #[test]
 fn array_length_inlines_a_field_load_with_no_length_call() {
-    // `Array.length` inlines to a single load of the length field. The only call in
-    // the function is the array parameter's own drop at exit (one `call`); a
-    // runtime-call lowering would add a second call for the length itself.
+    // `Array.length` borrows its array and inlines to one field load. Neither a
+    // length call nor a reference-count release belongs in this entry.
     let src = indoc! {r#"
         module M
 
@@ -4362,7 +4365,7 @@ fn array_length_inlines_a_field_load_with_no_length_call() {
     "#};
     let ir = entry_ir(src, "n");
     assert!(ir.contains("load"), "inline length-field load:\n{ir}");
-    assert_eq!(call_count(&ir), 1, "only the array's own drop is a call (no length call):\n{ir}");
+    assert_eq!(call_count(&ir), 0, "a borrowed length read needs no runtime call:\n{ir}");
 }
 
 #[test]

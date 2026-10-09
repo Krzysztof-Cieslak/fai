@@ -586,6 +586,12 @@ Structural equality, ordering and hashing likewise share one shape snapshot per
 data operand when walking its fields, including mixed raw/boxed Float layouts.
 Generic local drops test the uniform immediate tag before calling the runtime,
 so discarding an immediate value in shared generic code needs no call.
+Structural comparisons and hashes also borrow polymorphic operands. Borrow
+inference follows these readers and permits unchanged inspect-only self-tail
+parameters to remain borrowed; changing or newly constructed arguments stay
+owned so loop lowering retains constant stack. Read-and-rebuilt arrays stay owned.
+Typed Int-array loads keep their full-width boxed fallback out of the immediate
+scan's hot path while supporting the same complete 64-bit value range.
 Typed locals carry conservative constructor-tag, field-count and scalar-slot
 bounds through the native cache and run bundles. Proven compact data uses direct
 tag extraction and constant field offsets; unknown/open shapes decode at runtime.
@@ -821,8 +827,46 @@ output schemas, and the daemon (MessagePack JSON-RPC) protocol.
 - **Work on feature branches — never directly on `main`.** Every change lands on a
   short-lived feature branch (`git switch -c <topic>`) and merges into `main`
   through a pull request; `main` is never committed or pushed to directly. Keep
-  the branch focused, rebase on `main` before opening the PR, and let the CI gates
-  (§12) pass before merging.
+  the branch focused, update it against `main` before opening the PR (or its
+  predecessor in a native PR stack), and let the CI gates (§12) pass before merging.
+
+### Dependent changes: native GitHub PR stacks
+
+Use GitHub's **native stacked pull requests** for dependent changes. Install
+GitHub CLI **2.90.0 or newer** and the official extension:
+
+```sh
+gh extension install github/gh-stack
+gh stack init --base main <first-branch>
+# Commit the first focused change, then create the next layer.
+gh stack add <next-branch>
+# Commit the next change, then rebase and publish the stack.
+gh stack rebase
+gh stack submit --auto --open
+gh stack view
+```
+
+To adopt an existing chain, pass its branch names to `gh stack init --base main`
+in **bottom-to-top order**. Each PR targets the branch below it; the bottom PR
+targets `main`. Use `gh stack rebase` for cascading updates, with `--upstack`
+after editing a lower layer. Resolve conflicts with `gh stack rebase --continue`,
+or restore the stack with `gh stack rebase --abort`.
+
+Watch CI in the background. Before merging, require **all four checks in §12 to
+pass on the exact current head of every PR being merged**; preserve strict branch
+protection. Then merge a contiguous ready group through its highest PR:
+
+```sh
+gh stack merge <top-ready-pr-number> --yes --rebase
+gh stack sync
+```
+
+This lands that PR and every unmerged PR below it on `main` in one atomic stack
+operation. Prefer this workflow over hand-written serial rebase/merge loops.
+Keep affected worktrees clean for rebase/sync; the extension coordinates branches
+across linked worktrees. Stacks do not support ordinary PR auto-merge.
+
+Reference: https://docs.github.com/en/pull-requests/get-started/stacked-prs-quickstart
 
 ## 9. Performance & incremental compilation
 

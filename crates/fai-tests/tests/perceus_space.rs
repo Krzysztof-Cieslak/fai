@@ -82,6 +82,9 @@ let searchLoop n tree acc =
     searchLoop (n - 1) tree (acc + value)
 public treeSearches : Int -> Int
 let treeSearches n = searchLoop n (treeBuild 0 32) 0
+let freshInputLoop n xs = if n <= 0 then Array.length xs else freshInputLoop (n - 1) (Array.singleton n)
+public freshInputs : Int -> Int
+let freshInputs n = freshInputLoop n (Array.singleton 0)
 public main : Runtime -> Unit
 let main r = ()
 "#;
@@ -244,4 +247,14 @@ fn repeated_string_prefixes_keep_peak_storage_constant() {
 #[test]
 fn repeated_data_searches_keep_constant_storage() {
     bounded_reuse("treeSearches", |n| (n / 32 * 496 + (n % 32) * (n % 32 + 1) / 2) * 3);
+}
+
+#[test]
+fn changing_recursive_inputs_keep_peak_storage_constant() {
+    let mut harness = Harness::new();
+    let short = harness.measure("freshInputs", 8, 1);
+    let long = harness.measure("freshInputs", 4096, 1);
+    assert_eq!((short.peak_objects, short.peak_bytes), (long.peak_objects, long.peak_bytes));
+    assert_eq!(long.array_copies, 0);
+    assert!(long.peak_bytes <= 128, "{long:?}");
 }

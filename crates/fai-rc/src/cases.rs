@@ -4565,6 +4565,40 @@ fn borrow_sum_acc_owns_the_list() {
 }
 
 #[test]
+fn borrow_polymorphic_equality_operands() {
+    assert_eq!(
+        crate::tests::borrow_sig("module M\nlet same a b = a = b\n", "same"),
+        vec![true, true]
+    );
+}
+
+#[test]
+fn borrow_read_only_array_loop_invariant() {
+    let source = "module M\nlet sum i acc xs = if i >= Array.length xs then acc else sum (i + 1) (acc + Array.unsafeGet i xs) xs\n";
+    assert_eq!(crate::tests::borrow_sig(source, "sum"), vec![false, false, true]);
+    trmc_plain(source, "sum");
+}
+
+#[test]
+fn changing_fresh_array_argument_stays_owned() {
+    let source = "module M\nlet loop n xs = if n <= 0 then Array.length xs else loop (n - 1) (Array.singleton n)\n";
+    assert_eq!(crate::tests::borrow_sig(source, "loop"), vec![false, false]);
+    trmc_plain(source, "loop");
+}
+
+#[test]
+fn reconstructed_array_input_stays_owned() {
+    let source = "module M\nlet mapped f xs = Array.map f xs\n";
+    assert!(!crate::tests::borrow_sig(source, "mapped")[1]);
+}
+
+#[test]
+fn swapped_loop_parameters_stay_owned() {
+    let source = "module M\nlet loop n xs ys = if n <= 0 then Array.length xs + Array.length ys else loop (n - 1) ys xs\n";
+    assert_eq!(crate::tests::borrow_sig(source, "loop"), vec![false, false, false]);
+}
+
+#[test]
 fn borrow_all_pos_owns_the_list() {
     // A tail-recursive predicate also owns its list (its self-call is the
     // then-branch tail), where the otherwise-identical non-recursive `isEmpty`

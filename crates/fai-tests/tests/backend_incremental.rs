@@ -224,3 +224,18 @@ fn unrelated_body_edits_preserve_search_cutoff() {
         "unrelated bodies do not invalidate the data-search object"
     );
 }
+
+#[test]
+fn polymorphic_borrow_changes_update_callers_incrementally() {
+    let borrowed = "module A\npublic same : 'a -> 'a -> Bool\nlet same a b = a = b\n";
+    let owned = "module A\npublic same : 'a -> 'a -> Bool\nlet same a b = (a, b) = (a, b)\n";
+    let caller = "module B\npublic same : String -> String -> Bool\nlet same a b = A.same a b\n";
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("A.fai", borrowed), ("B.fai", caller)], &[("A.fai", owned), ("B.fai", caller)]],
+        |db, files| {
+            let name = Symbol::intern("same");
+            let file = db.source_file(files[1]).unwrap();
+            ((*rc(db, file, name)).clone(), (*object_code(db, file, name, false)).clone())
+        },
+    );
+}
