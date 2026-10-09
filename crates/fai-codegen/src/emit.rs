@@ -959,7 +959,8 @@ fn build_fn<M: Module>(
             token_sizes: FxHashMap::default(),
             float_layout_versioned: false,
             unique_float_cells: FxHashSet::default(),
-            scalar_cursors: FxHashSet::default(),
+            borrowed_cursors: FxHashSet::default(),
+            borrowed_projections: FxHashSet::default(),
             loop_ctx: None,
             result_slot: None,
             bounds: Bounds::new(),
@@ -1098,13 +1099,18 @@ fn build_fn<M: Module>(
             && register_entry
             && !tr.concurrent
             && core_fn.params == lowered.entry().params
-            && let Some(plan) = crate::list_cursor::plan(core_fn, &tr.var_tys)
-        {
+            && let Some(plan) = crate::data_cursor::plan(
+                core_fn,
+                &tr.var_tys,
+                lowered.data_shapes.get(fn_index).map(Vec::as_slice).unwrap_or_default(),
+                abi.niche_return().is_some(),
+            ) {
             let value = tr.use_var(plan.root);
             let position =
                 core_fn.params.iter().position(|p| *p == plan.root).expect("cursor parameter");
-            let ty = tr.var_ty(plan.root).expect("typed scalar list").clone();
-            tr.scalar_cursors = plan.cursors;
+            let ty = tr.var_ty(plan.root).expect("typed search root").clone();
+            tr.borrowed_cursors = plan.cursors;
+            tr.borrowed_projections = plan.projections;
             (!lowered.entry_param_borrowed(position)).then_some((value, ty))
         } else {
             None
@@ -1405,8 +1411,10 @@ struct Translator<'a, M: Module> {
     /// Guarded scalar-only cells and their nonnull reset tokens. Duplicates and
     /// calls invalidate the uniqueness proof before a later reset can reuse it.
     unique_float_cells: FxHashSet<Value>,
-    /// Read-only descendants of one scalar-list root retained across this call.
-    scalar_cursors: FxHashSet<LocalId>,
+    /// Read-only descendants of one resource-free root retained across this call.
+    borrowed_cursors: FxHashSet<LocalId>,
+    /// Projections that borrow from the retained root.
+    borrowed_projections: FxHashSet<(LocalId, u32)>,
     /// The enclosing tail-call loop, while translating a `Join` body: where
     /// `Recur` jumps back and where the loop's result exits.
     loop_ctx: Option<LoopCtx>,
@@ -2102,7 +2110,7 @@ impl<M: Module> Translator<'_, M> {
     /// [`DupPlan`]: an immediate is a no-op, an always-boxed value increments
     /// unconditionally, and any other value guards the increment with a tag-check.
     fn dup_local(&mut self, local: LocalId) {
-        if self.scalar_cursors.contains(&local) {
+        if self.borrowed_cursors.contains(&local) {
             return;
         }
         // In a concurrent program a value may be shared across tasks, so the inlined
@@ -2135,7 +2143,7 @@ impl<M: Module> Translator<'_, M> {
     /// boxed leaf, a runtime child-release for other data, and the runtime drop as
     /// the tag-checked fallback for an unknown type.
     fn drop_local(&mut self, local: LocalId) {
-        if self.scalar_cursors.contains(&local) {
+        if self.borrowed_cursors.contains(&local) {
             return;
         }
         // In a concurrent program a value may be shared across tasks, so the inlined
@@ -3184,11 +3192,12 @@ impl<M: Module> Translator<'_, M> {
         result_ty: &Ty,
     ) -> Value {
         if niche.is_none()
-            && index == FieldIndex::Const(1)
-            && matches!(base.kind, ExprKind::Local(local) if self.scalar_cursors.contains(&local))
+            && let FieldIndex::Const(index) = index
+            && let ExprKind::Local(local) = base.kind
+            && self.borrowed_projections.contains(&(local, index))
         {
             let value = self.data_base(base);
-            let address = self.field_slot_addr(value, index);
+            let address = self.field_slot_addr(value, FieldIndex::Const(index));
             return self.builder.ins().load(types::I64, MemFlags::trusted(), address, 0);
         }
         if let Some(k) = niche {

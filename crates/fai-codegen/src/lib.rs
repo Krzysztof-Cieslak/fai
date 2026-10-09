@@ -13,9 +13,9 @@
 //! crate stays decoupled from the query database.
 
 mod aot;
+mod data_cursor;
 mod emit;
 mod jit;
-mod list_cursor;
 
 pub use aot::{main_object, object_for_def, reuse_object_for_def};
 

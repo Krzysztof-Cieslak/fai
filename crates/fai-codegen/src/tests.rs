@@ -492,6 +492,43 @@ fn generic_local_drops_test_the_immediate_tag_before_calling_runtime() {
 }
 
 #[test]
+fn scalar_tree_search_updates_only_the_retained_root_count() {
+    let source = "module M\ntype Tree = | End | Node Tree Int Int Tree\nlet find key tree = match tree with | End -> None | Node l k v r -> if key < k then find key l else if key > k then find key r else Some v\n";
+    let ir = entry_ir(source, "find");
+    assert_eq!(
+        ir.lines().filter(|line| line.trim_start().starts_with("store")).count(),
+        1,
+        "only the final root release writes a count:\n{ir}"
+    );
+}
+
+#[test]
+fn resource_bearing_data_keeps_incremental_cursor_release() {
+    let source = "module M\ntype Tree = | End | Node Reader Tree\nlet scan tree = match tree with | End -> true | Node _ rest -> scan rest\n";
+    let ir = entry_ir(source, "scan");
+    assert!(
+        ir.lines().filter(|line| line.trim_start().starts_with("store")).count() > 1,
+        "native resources retain their ordinary finalization points:\n{ir}"
+    );
+}
+
+#[test]
+fn escaping_tree_cursors_keep_owned_results() {
+    let source = "module M\ntype Tree = | End | Node Int Tree\nlet find key tree = match tree with | End -> End | Node value rest -> if key = value then tree else find key rest\n";
+    let ir = entry_ir(source, "find");
+    assert!(
+        ir.lines().filter(|line| line.trim_start().starts_with("store")).count() > 1,
+        "an escaping cursor needs independent ownership:\n{ir}"
+    );
+}
+
+#[test]
+fn float_tree_search_preserves_a_niche_payload_after_root_release() {
+    let source = "module M\ntype Tree = | End | Node Tree Int Float Tree\nlet find key tree = match tree with | End -> None | Node l k v r -> if key < k then find key l else if key > k then find key r else Some v\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let tree = Node End 2 (Float.fromBits 0x7ff8000000000042) End\n  let result = match find 2 tree with | None -> 0 | Some value -> Float.toBits value\n  r.console.writeLine (Int.toString result)\n";
+    assert_eq!(run(source), (0, "9221120237041090626\n".into()));
+}
+
+#[test]
 fn fresh_small_data_writes_its_header_and_fields_inline() {
     let ir =
         entry_ir("module M\npublic pair : Bool -> Bool * Bool\nlet pair b = (b, not b)\n", "pair");

@@ -192,3 +192,35 @@ fn addition_tail_recursion_edits_match_clean_native_objects() {
         },
     );
 }
+
+#[test]
+fn resource_free_search_edits_match_clean_native_objects() {
+    let source = "module M\ntype T = | End | Node Int T\nlet scan tree = match tree with | End -> true | Node _ rest -> scan rest\n";
+    let resource = source.replace("Node Int T", "Node Reader T");
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", source)], &[("M.fai", &resource)], &[("M.fai", source)]],
+        |db, files| {
+            let file = db.source_file(files[0]).unwrap();
+            let name = Symbol::intern("scan");
+            ((*rc(db, file, name)).clone(), (*object_code(db, file, name, false)).clone())
+        },
+    );
+}
+
+#[test]
+fn unrelated_body_edits_preserve_search_cutoff() {
+    let mut db = fai_db::FaiDatabase::new();
+    fai_types::std_lib::load_std(&mut db);
+    let a = "module A\npublic type T = | End | Node Int T\npublic other : Int -> Int\nlet other x = x + 1\n";
+    db.add_source("A.fai".into(), a.into());
+    let b = db.add_source("B.fai".into(), "module B\npublic scan : A.T -> Bool\nlet scan tree = match tree with | A.End -> true | A.Node _ rest -> scan rest\n".into());
+    let file = db.source_file(b).unwrap();
+    let name = Symbol::intern("scan");
+    let before = object_code(&db, file, name, false);
+    db.add_source("A.fai".into(), a.replace("x + 1", "x + 2"));
+    let after = object_code(&db, file, name, false);
+    assert!(
+        std::sync::Arc::ptr_eq(&before, &after),
+        "unrelated bodies do not invalidate the data-search object"
+    );
+}
