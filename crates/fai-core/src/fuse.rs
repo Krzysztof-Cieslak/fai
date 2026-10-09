@@ -22,6 +22,9 @@
 //! fuses only when its element function is **pure and total**: it cannot perform
 //! effects, trap, or diverge. Partial stages and unsafe-to-reorder source inputs
 //! remain eager, so short-circuit consumers cannot skip required evaluation.
+//! A separate single-operation path lowers Array builders and sequential
+//! consumers with arbitrary callbacks. Its operands are bound in source order
+//! and its input stays materialized; it never moves work across sequence stages.
 //!
 //! The synthesized loop is a new top-level definition (a `fuse#…` name in the
 //! consuming file, sharing no name with a source binding), built and emitted the
@@ -347,7 +350,118 @@ impl Fuser<'_> {
             self.changed = true;
             return self.generate(chain, base_fns);
         }
+        if let Some(result) = self.ordered_array(e, base_fns) {
+            self.changed = true;
+            return result;
+        }
         self.map_children(e, base_fns)
+    }
+
+    /// Lowers exactly one Array operation. Binding all nontrivial operands
+    /// before the loop preserves callback construction, source construction, and
+    /// initial-accumulator effects. No purity assumption is needed because the
+    /// source is not peeled into earlier stages.
+    fn ordered_array(&mut self, e: &CExpr, base_fns: &[CoreFn]) -> Option<CExpr> {
+        let (def, args) = call_target(e)?;
+        let (SeqKind::Array, comb) = self.defs.lookup(def)? else { return None };
+        let (arity, callback) = match comb {
+            Comb::Range | Comb::Repeat => (2, None),
+            Comb::Init => (2, Some((1, 1))),
+            Comb::Foldl | Comb::Foldr => (3, Some((0, 2))),
+            Comb::Map | Comb::Filter | Comb::All | Comb::Any | Comb::Find => (2, Some((0, 1))),
+            _ => return None,
+        };
+        if args.len() != arity {
+            return None;
+        }
+        // A fold whose literal callback creates another closure cannot inline
+        // that callback into this loop yet. Keep the shared library fold rather
+        // than cloning its dispatch loop; nested operations are still rewritten
+        // when the callback's original lifted function is visited.
+        if matches!(comb, Comb::Foldl | Comb::Foldr)
+            && let K::MakeClosure { func, .. } = args[0].kind
+            && body_has_closure(&base_fns[func.index()].body)
+        {
+            return None;
+        }
+        let mut binds = Vec::new();
+        let mut bound = Vec::new();
+        for (index, arg) in args.iter().enumerate() {
+            let literal_callback = callback.is_some_and(|(slot, arity)| {
+                slot == index
+                    && matches!(&arg.kind, K::MakeClosure { func, .. }
+                    if base_fns[func.index()].params.len() == arity
+                        && !body_has_closure(&base_fns[func.index()].body))
+            });
+            let known_function = callback.is_some_and(|(slot, _)| slot == index)
+                && matches!(arg.kind, K::Global(g) if crate::abi_of(self.db, g).register_abi);
+            if literal_callback || known_function || matches!(arg.kind, K::Lit(_) | K::Local(_)) {
+                bound.push(arg.clone());
+            } else {
+                let slot = self.fresh_consuming();
+                binds.push((slot, self.rewrite(arg, base_fns)));
+                bound.push(local(slot, arg.ty.clone()));
+            }
+        }
+        let (source, consumer, elem_ty) = match comb {
+            Comb::Range | Comb::Repeat | Comb::Init => {
+                let elem_ty = seq_elem(&e.ty)?;
+                let source = match comb {
+                    Comb::Range => Source::Range {
+                        seq: SeqKind::Array,
+                        lo: bound[0].clone(),
+                        hi: bound[1].clone(),
+                    },
+                    Comb::Repeat => Source::Repeat { n: bound[0].clone(), x: bound[1].clone() },
+                    _ => Source::Init { n: bound[0].clone(), f: self.fn_arg(&bound[1], base_fns) },
+                };
+                let param = LocalId::from_index(0);
+                let identity = FnArg::Lambda {
+                    params: vec![param],
+                    body: local(param, elem_ty.clone()),
+                    caps: Vec::new(),
+                };
+                (
+                    source,
+                    Consumer::Build { f: identity, filter: false, seq: SeqKind::Array },
+                    elem_ty,
+                )
+            }
+            _ => {
+                let input = bound.last()?.clone();
+                let elem_ty = seq_elem(&input.ty)?;
+                let f = self.fn_arg(&bound[0], base_fns);
+                let consumer = match comb {
+                    Comb::Foldl => Consumer::Foldl { step: f, init: bound[1].clone() },
+                    Comb::Foldr => Consumer::Foldr { step: f, init: bound[1].clone() },
+                    Comb::Map | Comb::Filter => {
+                        Consumer::Build { f, filter: comb == Comb::Filter, seq: SeqKind::Array }
+                    }
+                    Comb::All => Consumer::All(f),
+                    Comb::Any => Consumer::Any(f),
+                    Comb::Find => Consumer::Find(f),
+                    _ => unreachable!("recognized sequential Array operation"),
+                };
+                (Source::ArrayValue { seq: input }, consumer, elem_ty)
+            }
+        };
+        let chain = Chain {
+            source,
+            stages: Vec::new(),
+            consumer,
+            source_elem_ty: elem_ty.clone(),
+            consumer_elem_ty: elem_ty,
+            result_ty: e.ty.clone(),
+        };
+        let mut result = self.generate(chain, base_fns);
+        for (slot, value) in binds.into_iter().rev() {
+            let ty = result.ty.clone();
+            result = CExpr::new(
+                K::Let { local: slot, value: Box::new(value), body: Box::new(result) },
+                ty,
+            );
+        }
+        Some(result)
     }
 
     /// Recognizes a maximal chain rooted at `e` (a consumer application), or `None`.
@@ -2128,11 +2242,11 @@ mod tests {
 
     #[test]
     fn shared_value_source_keeps_the_value_materialized() {
-        // `xs` is shared, so it stays built (`@range`), while each `Array.sum` over
+        // `xs` is shared, so its buffer stays built, while each `Array.sum` over
         // it fuses (`@fuse#…`). The map-output buffer is gone (no second `@map`).
         let src = "module M\n\npublic run : Int -> Int\nlet run n =\n  let xs = Array.range 0 n\n  Array.sum (Array.map (fun x -> x * 2) xs) + Array.sum xs\n";
         let body = fused(src, "run");
-        assert!(body.contains("@range"), "the shared value stays materialized:\n{body}");
+        assert!(body.contains("arrayWithCapacity"), "the shared value stays materialized:\n{body}");
         assert!(body.contains("@fuse#"), "the adjacent map->sum fuses:\n{body}");
         assert!(!body.contains("@map"), "the map-output buffer is gone:\n{body}");
     }
@@ -2167,7 +2281,7 @@ mod tests {
         let src = "module M\nlet run xs = Array.any (fun x -> x = 1) (Array.map (fun n -> Array.unsafeGet n [| 1 |]) xs)\n";
         let body = fused(src, "run");
         assert!(
-            body.contains("@map"),
+            body.contains("arrayWithCapacity") && body.contains("@fuse#run#1"),
             "checked element access must retain strict evaluation: {body}"
         );
     }
@@ -2177,6 +2291,51 @@ mod tests {
         let src = "module M\nlet run u = Array.length (Array.withCapacity (1 / 0))\n";
         let body = fused(src, "run");
         assert!(body.contains("(/ 1 0)"), "the capacity expression must still evaluate: {body}");
+    }
+
+    #[test]
+    fn standalone_range_materializes_with_no_element_callback() {
+        let mut db = FaiDatabase::new();
+        fai_types::std_lib::load_std(&mut db);
+        let id = db.add_source("M.fai".into(), "module M\nlet run n = Array.range 0 n\n".into());
+        let result = fuse_def(&db, db.source_file(id).unwrap(), Symbol::intern("run"));
+        assert_eq!(result.loops.len(), 1);
+        assert!(pretty_def(&result.body).contains("arrayWithCapacity"));
+        let body = pretty_def(&result.loops[0].lowered);
+        assert!(!body.contains("closure") && !body.contains("@init"), "{body}");
+    }
+
+    #[test]
+    fn partial_float_fold_keeps_a_raw_accumulator() {
+        let mut db = FaiDatabase::new();
+        fai_types::std_lib::load_std(&mut db);
+        let id = db.add_source("M.fai".into(), "module M\nlet run xs = Array.foldl (fun acc i -> acc + Array.unsafeGet i [| 1.0 |]) 0.0 xs\n".into());
+        let result = fuse_def(&db, db.source_file(id).unwrap(), Symbol::intern("run"));
+        assert_eq!(result.loops.len(), 1);
+        let loop_ = &result.loops[0];
+        assert_eq!(loop_.abi.ret, crate::Repr::ScalarFloat);
+        assert!(loop_.abi.params.contains(&crate::Repr::ScalarFloat));
+        assert!(pretty_def(&loop_.lowered).contains("arrayGet"));
+    }
+
+    #[test]
+    fn ordered_callback_body_edits_keep_the_callers_loop() {
+        let helper = "module Helper\npublic step : Int -> Int\nlet step x = 10 / x\n";
+        let mut db = FaiDatabase::new();
+        fai_types::std_lib::load_std(&mut db);
+        db.add_source("Helper.fai".into(), helper.into());
+        let id = db
+            .add_source("M.fai".into(), "module M\nlet run xs = Array.map Helper.step xs\n".into());
+        let file = db.source_file(id).unwrap();
+        let name = Symbol::intern("run");
+        let before = fuse_def(&db, file, name);
+        assert_eq!(before.loops.len(), 1);
+        assert!(pretty_def(&before.loops[0].lowered).contains("@step"));
+        db.enable_event_log();
+        db.add_source("Helper.fai".into(), helper.replace("10 / x", "20 / x"));
+        assert_eq!(before, fuse_def(&db, file, name));
+        let events = db.take_events();
+        assert!(!events.iter().any(|e| e.contains("fuse_def")), "{events:?}");
     }
 
     #[test]

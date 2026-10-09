@@ -3039,6 +3039,15 @@ Editor integration:
     Unsafe literal elements, fold initializers, member targets, and producer
     arguments retain eager evaluation. Ordinary finite-allocation resource
     exhaustion is outside the totality classification.
+  - **Single-operation Array lowering** shares the typed loop generator without
+    relaxing cross-stage safety. Standalone `range`/`repeat`/`init` build their
+    arrays directly; individual maps, folds, filters, and searches walk an already
+    evaluated array. Operand bindings preserve callback construction, initial
+    accumulator, and source order even when they have effects or trap. Literal
+    callbacks with the supported capture shape inline; other callbacks, including
+    nested lifted closures, retain a first-class argument and its original function
+    identities. Known direct globals remain direct calls. The loop retains scalar
+    accumulator types and the library's capacity/count/wraparound rules.
   - **Carve-outs.** `foldr` over a non-reversible `List` value is left unfused (a
     single tail loop is impossible without a reverse pass or unsafe deep recursion,
     which std itself avoids); a pipeline inside a **mutual-recursion group member**

@@ -398,6 +398,13 @@ records, interfaces + instances, capabilities, contracts, nested modules). Each
 computes one successor. Consuming `n` elements invokes `f` at most `max(0, n - 1)`
 times, so dropping the tail never performs look-ahead effects or traps.
 
+Standalone `Array.range`/`repeat`/`init` and single Array maps, folds, filters,
+and searches lower to typed sequential loops. Their operands are evaluated once
+in source order and callbacks retain their order, effects, and short-circuiting.
+This single-operation lowering keeps sources and shared results materialized;
+cross-stage deforestation still requires pure, total callbacks. Literal callbacks
+with nested lifted closures retain their first-class call path.
+
 Local function shorthand (`let log message = body`) has the same latent effects
 as `let log = fun message -> body`: constructing it is pure, and calling its
 saturating arrow performs the body's effects. A parameterless local value binding
