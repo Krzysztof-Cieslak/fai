@@ -319,7 +319,7 @@ fn permuted_float_array_reads_have_no_transient_reference_counts() {
         1,
         "only the final owner release writes a count:\n{ir}"
     );
-    assert_eq!(call_count(&ir), 3, "two bounds faults and the final owner release:\n{ir}");
+    assert_eq!(call_count(&ir), 4, "two bounds faults and the two owner-release paths:\n{ir}");
 }
 
 #[test]
@@ -333,7 +333,7 @@ fn permuted_int_array_reads_have_no_transient_reference_counts() {
         1,
         "only the final owner release writes a count:\n{ir}"
     );
-    assert_eq!(call_count(&ir), 3, "two bounds faults and the final owner release:\n{ir}");
+    assert_eq!(call_count(&ir), 4, "two bounds faults and the two owner-release paths:\n{ir}");
 }
 
 #[test]
@@ -429,7 +429,7 @@ fn fixed_shape_reuse_has_a_call_free_rebuild_block() {
     );
     assert!(
         ir.split("block")
-            .any(|block| block.matches("store").count() >= 5 && !block.contains("call ")),
+            .any(|block| block.matches("store").count() >= 3 && !block.contains("call ")),
         "a reused cell writes its header and two fields without a runtime call:\n{ir}"
     );
 }
@@ -464,7 +464,7 @@ fn fresh_small_data_writes_its_header_and_fields_inline() {
         entry_ir("module M\npublic pair : Bool -> Bool * Bool\nlet pair b = (b, not b)\n", "pair");
     assert!(
         ir.split("\nblock")
-            .any(|block| block.matches("store").count() >= 6 && !block.contains("stack_store")),
+            .any(|block| block.matches("store").count() >= 4 && !block.contains("stack_store")),
         "a pool hit writes the header and fields directly:\n{ir}"
     );
 }
@@ -2137,7 +2137,7 @@ fn equality_on_an_always_boxed_type_keeps_the_direct_call() {
     let ir = entry_ir(src, "seq");
     // No operand-AND guard (the only branches here are the inlined parameter
     // drops); the structural call is made directly.
-    assert!(!ir.contains("band"), "no immediate guard for an always-boxed operand:\n{ir}");
+    assert!(!has_immediate_bit_test(&ir), "no immediate guard for an always-boxed operand:\n{ir}");
     assert!(ir.contains("call"), "the structural call is used directly:\n{ir}");
 }
 
@@ -3025,7 +3025,7 @@ fn dup_of_an_always_boxed_value_omits_the_tag_check() {
         let g s = (s, s)
     "#};
     let ir = function_ir(src, "g").join("\n");
-    assert!(!ir.contains("band_imm"), "an always-boxed dup needs no tag-bit check:\n{ir}");
+    assert!(!has_immediate_bit_test(&ir), "an always-boxed dup needs no tag-bit check:\n{ir}");
 }
 
 #[test]
@@ -3043,7 +3043,7 @@ fn dup_of_a_polymorphic_value_is_tag_checked() {
     "#};
     let ir = function_ir(src, "g").join("\n");
     assert!(
-        ir.contains("band_imm") && ir.contains("brif"),
+        has_immediate_bit_test(&ir) && ir.contains("brif"),
         "a polymorphic dup is guarded by a tag-check:\n{ir}"
     );
 }
@@ -4120,6 +4120,16 @@ fn int_contract_is_checked_eagerly() {
 
 /// Counts call instructions in a function's IR text (robust to the platform's
 /// calling-convention name appearing in signature lines).
+fn has_immediate_bit_test(ir: &str) -> bool {
+    ir.lines().any(|line| {
+        line.contains("band_imm")
+            && line
+                .split(';')
+                .next()
+                .is_some_and(|instruction| instruction.trim_end().ends_with(", 1"))
+    })
+}
+
 fn call_count(ir: &str) -> usize {
     ir.matches("call fn").count()
 }
@@ -4258,7 +4268,7 @@ fn array_length_inlines_a_field_load_with_no_length_call() {
     "#};
     let ir = entry_ir(src, "n");
     assert!(ir.contains("load"), "inline length-field load:\n{ir}");
-    assert_eq!(call_count(&ir), 1, "only the array's own drop is a call (no length call):\n{ir}");
+    assert_eq!(call_count(&ir), 2, "only the array's two drop paths call (no length call):\n{ir}");
 }
 
 #[test]
@@ -4466,7 +4476,7 @@ fn hash_bucket_mask_elides_via_entry_facts() {
           if cap = 0 then false else probe h slots cap (Int.and h (cap - 1))
     "#};
     let ir = entry_ir(src, "probe");
-    assert!(!ir.contains(" ult "), "the masked bucket access needs no bounds check:\n{ir}");
+    assert!(!ir.contains("icmp ult "), "the masked bucket access needs no bounds check:\n{ir}");
 }
 
 // --- Recursive in-place sorts (result-fact / length-preservation threading) ---

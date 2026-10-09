@@ -382,19 +382,68 @@ fn wrapper_box_or_tag_int(
 
 /// Tests the actual descriptor of a data cell. Slots beyond the bitmap's width
 /// are uniform; masking a shift count alone would incorrectly wrap those slots.
-fn data_slot_is_scalar(builder: &mut FunctionBuilder, base: Value, slot: Value) -> Value {
-    let desc = builder.ins().load(types::I64, MemFlags::trusted(), base, rt::DESC_OFFSET as i32);
-    let bitmap = builder.ins().load(
-        types::I64,
-        MemFlags::trusted(),
-        desc,
-        std::mem::offset_of!(rt::Descriptor, scalar_bitmap) as i32,
-    );
+fn data_slot_is_scalar(
+    builder: &mut FunctionBuilder,
+    base: Value,
+    slot: Value,
+    compact: Option<bool>,
+) -> Value {
+    let header = builder.ins().atomic_load(types::I64, MemFlags::trusted(), base);
+    let packed_bitmap = |builder: &mut FunctionBuilder| {
+        let bits = builder.ins().ushr_imm(header, rt::COMPACT_SCALARS_SHIFT as i64);
+        builder.ins().band_imm(bits, 255)
+    };
+    let legacy_bitmap = |builder: &mut FunctionBuilder| {
+        let desc =
+            builder.ins().load(types::I64, MemFlags::trusted(), base, rt::DESC_OFFSET as i32);
+        builder.ins().load(
+            types::I64,
+            MemFlags::trusted(),
+            desc,
+            std::mem::offset_of!(rt::Descriptor, scalar_bitmap) as i32,
+        )
+    };
+    let bitmap = match compact {
+        Some(true) => packed_bitmap(builder),
+        Some(false) => legacy_bitmap(builder),
+        None => {
+            let packed = builder.create_block();
+            let legacy = builder.create_block();
+            let done = builder.create_block();
+            builder.append_block_param(done, types::I64);
+            let is_packed = builder.ins().icmp_imm(IntCC::SignedLessThan, header, 0);
+            builder.ins().brif(is_packed, packed, &[], legacy, &[]);
+            builder.switch_to_block(packed);
+            builder.seal_block(packed);
+            let bits = packed_bitmap(builder);
+            builder.ins().jump(done, &[bits.into()]);
+            builder.switch_to_block(legacy);
+            builder.seal_block(legacy);
+            let bits = legacy_bitmap(builder);
+            builder.ins().jump(done, &[bits.into()]);
+            builder.switch_to_block(done);
+            builder.seal_block(done);
+            builder.block_params(done)[0]
+        }
+    };
     let shifted = builder.ins().ushr(bitmap, slot);
     let bit = builder.ins().band_imm(shifted, 1);
     let scalar = builder.ins().icmp_imm(IntCC::NotEqual, bit, 0);
     let represented = builder.ins().icmp_imm(IntCC::UnsignedLessThan, slot, 64);
     builder.ins().band(scalar, represented)
+}
+
+fn data_fields_base(builder: &mut FunctionBuilder, base: Value, known: Option<usize>) -> Value {
+    let offset = if let Some(offset) = known {
+        builder.ins().iconst(types::I64, offset as i64)
+    } else {
+        let word = builder.ins().atomic_load(types::I64, MemFlags::trusted(), base);
+        let compact = builder.ins().icmp_imm(IntCC::SignedLessThan, word, 0);
+        let small = builder.ins().iconst(types::I64, rt::COMPACT_FIELDS_OFFSET as i64);
+        let large = builder.ins().iconst(types::I64, rt::DATA_FIELDS_OFFSET as i64);
+        builder.ins().select(compact, small, large)
+    };
+    builder.ins().iadd(base, offset)
 }
 
 /// Borrows a logical Float field from either a raw slot or a boxed Float slot.
@@ -404,18 +453,24 @@ fn borrow_float_field(
     base: Value,
     slot: Value,
     known_scalar: Option<bool>,
+    known_offset: Option<usize>,
 ) -> Value {
     let offset = builder.ins().imul_imm(slot, 8);
-    let address = builder.ins().iadd(base, offset);
-    let word =
-        builder.ins().load(types::I64, MemFlags::trusted(), address, rt::DATA_FIELDS_OFFSET as i32);
+    let fields = data_fields_base(builder, base, known_offset);
+    let address = builder.ins().iadd(fields, offset);
+    let word = builder.ins().load(types::I64, MemFlags::trusted(), address, 0);
     let bits = match known_scalar {
         Some(true) => word,
         Some(false) => {
             builder.ins().load(types::I64, MemFlags::trusted(), word, rt::FLOAT_VALUE_OFFSET as i32)
         }
         None => {
-            let scalar = data_slot_is_scalar(builder, base, slot);
+            let scalar = data_slot_is_scalar(
+                builder,
+                base,
+                slot,
+                known_offset.map(|o| o == rt::COMPACT_FIELDS_OFFSET),
+            );
             let boxed_b = builder.create_block();
             let done_b = builder.create_block();
             builder.append_block_param(done_b, types::I64);
@@ -499,7 +554,13 @@ fn build_owned_wrapper<M: Module>(
                     // then release the owned aggregate and any boxed fields.
                     for j in 0..reprs.len() {
                         let slot = builder.ins().iconst(types::I64, j as i64);
-                        let f = borrow_float_field(&mut builder, orig, slot, None);
+                        let f = borrow_float_field(
+                            &mut builder,
+                            orig,
+                            slot,
+                            None,
+                            Some(rt::COMPACT_FIELDS_OFFSET),
+                        );
                         call_args.push(f);
                     }
                     builder.ins().call(drop_ref, &[orig]);
@@ -893,6 +954,7 @@ fn build_fn<M: Module>(
             string_counter: 0,
             descriptors: FxHashMap::default(),
             data_layouts: FxHashMap::default(),
+            data_offsets: FxHashMap::default(),
             loop_ctx: None,
             result_slot: None,
             bounds: Bounds::new(),
@@ -1310,6 +1372,8 @@ struct Translator<'a, M: Module> {
     /// Proven layouts of data cells constructed in this function, keyed by SSA
     /// value. Parameters and generic call results instead consult their descriptor.
     data_layouts: FxHashMap<Value, u64>,
+    /// The field prefix of a value whose construction or structural type fixes it.
+    data_offsets: FxHashMap<Value, usize>,
     /// The enclosing tail-call loop, while translating a `Join` body: where
     /// `Recur` jumps back and where the loop's result exits.
     loop_ctx: Option<LoopCtx>,
@@ -2076,10 +2140,7 @@ impl<M: Module> Translator<'_, M> {
 
         self.builder.switch_to_block(incr_b);
         self.builder.seal_block(incr_b);
-        let rc_off = i32::try_from(rt::RC_OFFSET).expect("rc offset");
-        let rc = self.builder.ins().load(types::I64, MemFlags::trusted(), cell, rc_off);
-        let inc = self.builder.ins().iadd_imm(rc, 1);
-        self.builder.ins().store(MemFlags::trusted(), inc, cell, rc_off);
+        self.increment_boxed_rc(cell);
         self.builder.ins().jump(cont_b, &[]);
 
         self.builder.switch_to_block(cont_b);
@@ -2094,7 +2155,6 @@ impl<M: Module> Translator<'_, M> {
         let sentinel = self.runtime_data_addr("FAI_NONE_VALUE");
         let sentinel_b = self.builder.create_block();
         let dec_b = self.builder.create_block();
-        let dead_b = self.builder.create_block();
         let cont_b = self.builder.create_block();
         // An immediate (low bit set) carries no count.
         let bit = self.builder.ins().band_imm(cell, 1);
@@ -2109,17 +2169,10 @@ impl<M: Module> Translator<'_, M> {
         // A boxed `Some` payload: decrement, and release its children at zero.
         self.builder.switch_to_block(dec_b);
         self.builder.seal_block(dec_b);
-        let rc_off = i32::try_from(rt::RC_OFFSET).expect("rc offset");
-        let rc = self.builder.ins().load(types::I64, MemFlags::trusted(), cell, rc_off);
-        let dec = self.builder.ins().iadd_imm(rc, -1);
-        self.builder.ins().store(MemFlags::trusted(), dec, cell, rc_off);
-        let is_dead = self.builder.ins().icmp_imm(IntCC::Equal, dec, 0);
-        self.builder.ins().brif(is_dead, dead_b, &[], cont_b, &[]);
-
-        self.builder.switch_to_block(dead_b);
-        self.builder.seal_block(dead_b);
-        let f = self.runtime("fai_drop_dead", 1, false);
-        self.builder.ins().call(f, &[cell]);
+        self.emit_rc_dec_then_value(cell, false, |s, value| {
+            let f = s.runtime("fai_drop_dead", 1, false);
+            s.builder.ins().call(f, &[value]);
+        });
         self.builder.ins().jump(cont_b, &[]);
 
         self.builder.switch_to_block(cont_b);
@@ -2139,11 +2192,8 @@ impl<M: Module> Translator<'_, M> {
     /// local dup and to dup a value with no backing local — an element read from an
     /// array slot. Leaves the builder in the continuation block.
     fn emit_rc_incr_value(&mut self, cell: Value, tag_check: bool) {
-        let rc_off = i32::try_from(rt::RC_OFFSET).expect("rc offset");
         if !tag_check {
-            let rc = self.builder.ins().load(types::I64, MemFlags::trusted(), cell, rc_off);
-            let inc = self.builder.ins().iadd_imm(rc, 1);
-            self.builder.ins().store(MemFlags::trusted(), inc, cell, rc_off);
+            self.increment_boxed_rc(cell);
             return;
         }
         let incr_b = self.builder.create_block();
@@ -2154,13 +2204,35 @@ impl<M: Module> Translator<'_, M> {
 
         self.builder.switch_to_block(incr_b);
         self.builder.seal_block(incr_b);
-        let rc = self.builder.ins().load(types::I64, MemFlags::trusted(), cell, rc_off);
-        let inc = self.builder.ins().iadd_imm(rc, 1);
-        self.builder.ins().store(MemFlags::trusted(), inc, cell, rc_off);
+        self.increment_boxed_rc(cell);
         self.builder.ins().jump(cont_b, &[]);
 
         self.builder.switch_to_block(cont_b);
         self.builder.seal_block(cont_b);
+    }
+
+    fn increment_boxed_rc(&mut self, cell: Value) {
+        let raw =
+            self.builder.ins().load(types::I64, MemFlags::trusted(), cell, rt::RC_OFFSET as i32);
+        let state = self.builder.ins().band_imm(raw, rt::RC_STATE_MASK as i64);
+        let normal =
+            self.builder.ins().icmp_imm(IntCC::UnsignedLessThan, state, rt::MAX_REFCOUNT as i64);
+        let fast = self.builder.create_block();
+        let slow = self.builder.create_block();
+        let done = self.builder.create_block();
+        self.builder.set_cold_block(slow);
+        self.builder.ins().brif(normal, fast, &[], slow, &[]);
+        self.builder.switch_to_block(fast);
+        self.builder.seal_block(fast);
+        let next = self.builder.ins().iadd_imm(raw, 1);
+        self.store_field(cell, rt::RC_OFFSET, next);
+        self.builder.ins().jump(done, &[]);
+        self.builder.switch_to_block(slow);
+        self.builder.seal_block(slow);
+        self.call1("fai_dup", cell);
+        self.builder.ins().jump(done, &[]);
+        self.builder.switch_to_block(done);
+        self.builder.seal_block(done);
     }
 
     /// Emits the inlined decrement of a boxed value `local` and runs `dead` (which
@@ -2202,9 +2274,25 @@ impl<M: Module> Translator<'_, M> {
         // Decrement the reference count in place, then branch on whether dead.
         let rc_off = i32::try_from(rt::RC_OFFSET).expect("rc offset");
         let rc = self.builder.ins().load(types::I64, MemFlags::trusted(), cell, rc_off);
+        let state = self.builder.ins().band_imm(rc, rt::RC_STATE_MASK as i64);
+        let special = self.builder.ins().icmp_imm(
+            IntCC::UnsignedGreaterThanOrEqual,
+            state,
+            rt::IMMORTAL_RC as i64,
+        );
+        let slow = self.builder.create_block();
+        let normal = self.builder.create_block();
+        self.builder.set_cold_block(slow);
+        self.builder.ins().brif(special, slow, &[], normal, &[]);
+        self.builder.switch_to_block(slow);
+        self.builder.seal_block(slow);
+        self.call_drop(cell);
+        self.builder.ins().jump(cont_b, &[]);
+        self.builder.switch_to_block(normal);
+        self.builder.seal_block(normal);
         let dec = self.builder.ins().iadd_imm(rc, -1);
         self.builder.ins().store(MemFlags::trusted(), dec, cell, rc_off);
-        let is_dead = self.builder.ins().icmp_imm(IntCC::Equal, dec, 0);
+        let is_dead = self.builder.ins().icmp_imm(IntCC::Equal, state, 1);
         self.builder.ins().brif(is_dead, dead_b, &[], cont_b, &[]);
 
         self.builder.switch_to_block(dead_b);
@@ -2235,6 +2323,9 @@ impl<M: Module> Translator<'_, M> {
     /// cell `cell`. Used both for a local drop and to release a value with no
     /// backing local — a record/tuple old element overwritten by an array `set`.
     fn emit_inline_drop_value(&mut self, cell: Value, fields: &[FieldDrop]) {
+        if fields.len() <= 8 {
+            self.data_offsets.insert(cell, rt::COMPACT_FIELDS_OFFSET);
+        }
         self.emit_rc_dec_then_value(cell, false, |s, cell| {
             for (i, class) in fields.iter().enumerate() {
                 if matches!(class, FieldDrop::Immediate) {
@@ -2246,21 +2337,23 @@ impl<M: Module> Translator<'_, M> {
                 }
                 if matches!(class, FieldDrop::Dynamic) && known.is_none() {
                     let slot = s.builder.ins().iconst(types::I64, i as i64);
-                    let scalar = data_slot_is_scalar(&mut s.builder, cell, slot);
+                    let compact =
+                        s.data_offsets.get(&cell).map(|o| *o == rt::COMPACT_FIELDS_OFFSET);
+                    let scalar = data_slot_is_scalar(&mut s.builder, cell, slot, compact);
                     let drop_b = s.builder.create_block();
                     let next_b = s.builder.create_block();
                     s.builder.ins().brif(scalar, next_b, &[], drop_b, &[]);
                     s.builder.switch_to_block(drop_b);
                     s.builder.seal_block(drop_b);
-                    let off = i32::try_from(rt::DATA_FIELDS_OFFSET + i * 8).expect("field offset");
-                    let field = s.builder.ins().load(types::I64, MemFlags::trusted(), cell, off);
+                    let address = s.field_slot_addr(cell, FieldIndex::Const(i as u32));
+                    let field = s.builder.ins().load(types::I64, MemFlags::trusted(), address, 0);
                     s.call_drop(field);
                     s.builder.ins().jump(next_b, &[]);
                     s.builder.switch_to_block(next_b);
                     s.builder.seal_block(next_b);
                 } else {
-                    let off = i32::try_from(rt::DATA_FIELDS_OFFSET + i * 8).expect("field offset");
-                    let field = s.builder.ins().load(types::I64, MemFlags::trusted(), cell, off);
+                    let address = s.field_slot_addr(cell, FieldIndex::Const(i as u32));
+                    let field = s.builder.ins().load(types::I64, MemFlags::trusted(), address, 0);
                     s.call_drop(field);
                 }
             }
@@ -2547,13 +2640,13 @@ impl<M: Module> Translator<'_, M> {
             && count <= MAX_INLINE_DROP_BOXED_FIELDS
         {
             let token = self.use_var(token);
-            let result = self.reuse_data_inline(token, tag, &vals, desc);
-            self.data_layouts.insert(result, scalars);
+            let result = self.reuse_data_inline(token, tag, &vals, desc, scalars);
+            self.record_data_layout(result, tag, count, scalars);
             return result;
         }
         if reuse.is_none() && !self.concurrent && inline_data_fields(count) {
-            let result = self.fresh_data_inline(tag, &vals, desc);
-            self.data_layouts.insert(result, scalars);
+            let result = self.fresh_data_inline(tag, &vals, desc, scalars);
+            self.record_data_layout(result, tag, count, scalars);
             return result;
         }
         let ptr = self.spill(&vals);
@@ -2583,20 +2676,108 @@ impl<M: Module> Translator<'_, M> {
                 self.builder.inst_results(call)[0]
             }
         };
-        self.data_layouts.insert(result, scalars);
+        self.record_data_layout(result, tag, count, scalars);
         result
+    }
+
+    fn record_data_layout(&mut self, value: Value, tag: u32, count: usize, scalars: u64) {
+        self.data_layouts.insert(value, scalars);
+        self.data_offsets.insert(value, rt::data_header_size(tag, count, scalars));
+    }
+
+    fn initialize_data_header(
+        &mut self,
+        cell: Value,
+        tag: u32,
+        count: usize,
+        scalars: u64,
+        desc: Option<Value>,
+    ) -> usize {
+        let offset = rt::data_header_size(tag, count, scalars);
+        if let Some(metadata) = rt::compact_data_metadata(tag, count, scalars) {
+            let header = self.builder.ins().iconst(types::I64, (metadata | 1) as i64);
+            self.store_field(cell, rt::RC_OFFSET, header);
+        } else {
+            let one = self.builder.ins().iconst(types::I64, 1);
+            let descriptor = desc.unwrap_or_else(|| self.runtime_data_addr("FAI_DATA_DESC"));
+            let bytes = self.builder.ins().iconst(types::I64, (offset + count * 8) as i64);
+            let tag = self.builder.ins().iconst(types::I64, i64::from(tag));
+            self.store_field(cell, rt::RC_OFFSET, one);
+            self.store_field(cell, rt::DESC_OFFSET, descriptor);
+            self.store_field(cell, rt::SIZE_OFFSET, bytes);
+            self.store_field(cell, rt::DATA_TAG_OFFSET, tag);
+        }
+        offset
+    }
+
+    fn data_allocation_size(&mut self, cell: Value) -> Value {
+        let header = self.builder.ins().atomic_load(types::I64, MemFlags::trusted(), cell);
+        let compact = self.builder.ins().icmp_imm(IntCC::SignedLessThan, header, 0);
+        let small = self.builder.create_block();
+        let legacy = self.builder.create_block();
+        let done = self.builder.create_block();
+        self.builder.append_block_param(done, types::I64);
+        self.builder.ins().brif(compact, small, &[], legacy, &[]);
+        self.builder.switch_to_block(small);
+        self.builder.seal_block(small);
+        let count = self.builder.ins().ushr_imm(header, rt::COMPACT_FIELDS_SHIFT as i64);
+        let count = self.builder.ins().band_imm(count, 15);
+        let bytes = self.builder.ins().imul_imm(count, 8);
+        let size = self.builder.ins().iadd_imm(bytes, rt::COMPACT_FIELDS_OFFSET as i64);
+        self.builder.ins().jump(done, &[size.into()]);
+        self.builder.switch_to_block(legacy);
+        self.builder.seal_block(legacy);
+        let size =
+            self.builder.ins().load(types::I64, MemFlags::trusted(), cell, rt::SIZE_OFFSET as i32);
+        self.builder.ins().jump(done, &[size.into()]);
+        self.builder.switch_to_block(done);
+        self.builder.seal_block(done);
+        self.builder.block_params(done)[0]
+    }
+
+    fn boxed_data_tag(&mut self, cell: Value) -> Value {
+        let header = self.builder.ins().atomic_load(types::I64, MemFlags::trusted(), cell);
+        let compact = self.builder.ins().icmp_imm(IntCC::SignedLessThan, header, 0);
+        let small = self.builder.create_block();
+        let legacy = self.builder.create_block();
+        let done = self.builder.create_block();
+        self.builder.append_block_param(done, types::I64);
+        self.builder.ins().brif(compact, small, &[], legacy, &[]);
+        self.builder.switch_to_block(small);
+        self.builder.seal_block(small);
+        let bits = self.builder.ins().ushr_imm(header, rt::COMPACT_TAG_SHIFT as i64);
+        let tag = self.builder.ins().band_imm(bits, 2047);
+        self.builder.ins().jump(done, &[tag.into()]);
+        self.builder.switch_to_block(legacy);
+        self.builder.seal_block(legacy);
+        let tag = self.builder.ins().load(
+            types::I64,
+            MemFlags::trusted(),
+            cell,
+            rt::DATA_TAG_OFFSET as i32,
+        );
+        self.builder.ins().jump(done, &[tag.into()]);
+        self.builder.switch_to_block(done);
+        self.builder.seal_block(done);
+        self.builder.block_params(done)[0]
     }
 
     /// Constructs a small data cell directly from a pooled block. A tail loop
     /// caches its pool base at entry; a branch-only allocation fetches it here so
     /// recursive leaf cases pay no lookup. Empty pools retain the constructor ABI.
-    fn fresh_data_inline(&mut self, tag: u32, fields: &[Value], desc: Option<Value>) -> Value {
+    fn fresh_data_inline(
+        &mut self,
+        tag: u32,
+        fields: &[Value],
+        desc: Option<Value>,
+        scalars: u64,
+    ) -> Value {
         let pool = self.pool_heads_base.unwrap_or_else(|| {
             let function = self.runtime("fai_pool_heads", 0, true);
             let call = self.builder.ins().call(function, &[]);
             self.builder.inst_results(call)[0]
         });
-        let size = (rt::DATA_FIELDS_OFFSET + fields.len() * 8) as i64;
+        let size = (rt::data_header_size(tag, fields.len(), scalars) + fields.len() * 8) as i64;
         let slot = self.builder.ins().iadd_imm(pool, size);
         let cell = self.builder.ins().load(types::I64, MemFlags::trusted(), slot, 0);
         let fast = self.builder.create_block();
@@ -2609,16 +2790,9 @@ impl<M: Module> Translator<'_, M> {
         self.builder.seal_block(fast);
         let next = self.builder.ins().load(types::I64, MemFlags::trusted(), cell, 0);
         self.builder.ins().store(MemFlags::trusted(), next, slot, 0);
-        let descriptor = desc.unwrap_or_else(|| self.runtime_data_addr("FAI_DATA_DESC"));
-        let one = self.builder.ins().iconst(types::I64, 1);
-        let bytes = self.builder.ins().iconst(types::I64, size);
-        let tag_value = self.builder.ins().iconst(types::I64, i64::from(tag));
-        self.store_field(cell, rt::RC_OFFSET, one);
-        self.store_field(cell, rt::DESC_OFFSET, descriptor);
-        self.store_field(cell, rt::SIZE_OFFSET, bytes);
-        self.store_field(cell, rt::DATA_TAG_OFFSET, tag_value);
+        let offset = self.initialize_data_header(cell, tag, fields.len(), scalars, desc);
         for (index, &value) in fields.iter().enumerate() {
-            self.store_field(cell, rt::DATA_FIELDS_OFFSET + index * 8, value);
+            self.store_field(cell, offset + index * 8, value);
         }
         self.note_inline_alloc();
         self.builder.ins().jump(done, &[cell.into()]);
@@ -2661,6 +2835,10 @@ impl<M: Module> Translator<'_, M> {
         let Some(fields) = fields.filter(|_| !self.concurrent) else {
             return self.call1("fai_drop_reuse", cell);
         };
+        self.data_offsets.insert(cell, rt::COMPACT_FIELDS_OFFSET);
+        if list {
+            self.data_layouts.insert(cell, 0);
+        }
         let inspect = self.builder.create_block();
         let unique = self.builder.create_block();
         let slow = self.builder.create_block();
@@ -2678,12 +2856,13 @@ impl<M: Module> Translator<'_, M> {
         self.builder.seal_block(inspect);
         let rc =
             self.builder.ins().load(types::I64, MemFlags::trusted(), cell, rt::RC_OFFSET as i32);
-        let reusable = self.builder.ins().icmp_imm(IntCC::Equal, rc, 1);
+        let state = self.builder.ins().band_imm(rc, rt::RC_STATE_MASK as i64);
+        let reusable = self.builder.ins().icmp_imm(IntCC::Equal, state, 1);
         self.builder.ins().brif(reusable, unique, &[], slow, &[]);
         self.builder.switch_to_block(unique);
         self.builder.seal_block(unique);
-        let zero = self.builder.ins().iconst(types::I64, 0);
-        self.store_field(cell, rt::RC_OFFSET, zero);
+        let metadata = self.builder.ins().band_imm(rc, !(rt::RC_STATE_MASK as i64));
+        self.store_field(cell, rt::RC_OFFSET, metadata);
         for (i, class) in fields.iter().enumerate() {
             if matches!(class, FieldDrop::Immediate) {
                 continue;
@@ -2694,7 +2873,8 @@ impl<M: Module> Translator<'_, M> {
             }
             if matches!(class, FieldDrop::Dynamic) && known.is_none() {
                 let slot = self.builder.ins().iconst(types::I64, i as i64);
-                let scalar = data_slot_is_scalar(&mut self.builder, cell, slot);
+                let compact = self.data_offsets.get(&cell).map(|o| *o == rt::COMPACT_FIELDS_OFFSET);
+                let scalar = data_slot_is_scalar(&mut self.builder, cell, slot, compact);
                 let release = self.builder.create_block();
                 let next = self.builder.create_block();
                 self.builder.ins().brif(scalar, next, &[], release, &[]);
@@ -2722,38 +2902,12 @@ impl<M: Module> Translator<'_, M> {
     /// still drain iteratively in the runtime; shared counts and immortals use
     /// the runtime's count protocol as well.
     fn release_reset_field(&mut self, cell: Value, index: usize) {
-        let field = self.builder.ins().load(
-            types::I64,
-            MemFlags::trusted(),
-            cell,
-            (rt::DATA_FIELDS_OFFSET + index * 8) as i32,
-        );
-        let boxed = self.builder.create_block();
-        let ordinary = self.builder.create_block();
-        let slow = self.builder.create_block();
-        let done = self.builder.create_block();
-        let immediate = self.builder.ins().band_imm(field, 1);
-        self.builder.ins().brif(immediate, done, &[], boxed, &[]);
-        self.builder.switch_to_block(boxed);
-        self.builder.seal_block(boxed);
-        let rc =
-            self.builder.ins().load(types::I64, MemFlags::trusted(), field, rt::RC_OFFSET as i32);
-        let plain =
-            self.builder.ins().icmp_imm(IntCC::UnsignedLessThan, rc, rt::IMMORTAL_RC as i64);
-        self.builder.ins().brif(plain, ordinary, &[], slow, &[]);
-        self.builder.switch_to_block(ordinary);
-        self.builder.seal_block(ordinary);
-        self.emit_rc_dec_then_value(field, false, |s, dead| {
+        let address = self.field_slot_addr(cell, FieldIndex::Const(index as u32));
+        let field = self.builder.ins().load(types::I64, MemFlags::trusted(), address, 0);
+        self.emit_rc_dec_then_value(field, true, |s, dead| {
             let f = s.runtime("fai_drop_dead", 1, false);
             s.builder.ins().call(f, &[dead]);
         });
-        self.builder.ins().jump(done, &[]);
-        self.builder.switch_to_block(slow);
-        self.builder.seal_block(slow);
-        self.call_drop(field);
-        self.builder.ins().jump(done, &[]);
-        self.builder.switch_to_block(done);
-        self.builder.seal_block(done);
     }
 
     /// Rebuilds directly into a size-matched token. Only the fallback spills its
@@ -2764,6 +2918,7 @@ impl<M: Module> Translator<'_, M> {
         tag: u32,
         fields: &[Value],
         desc: Option<Value>,
+        scalars: u64,
     ) -> Value {
         let size_check = self.builder.create_block();
         let rebuild = self.builder.create_block();
@@ -2774,24 +2929,18 @@ impl<M: Module> Translator<'_, M> {
         self.builder.ins().brif(token, size_check, &[], slow, &[]);
         self.builder.switch_to_block(size_check);
         self.builder.seal_block(size_check);
-        let size =
-            self.builder.ins().load(types::I64, MemFlags::trusted(), token, rt::SIZE_OFFSET as i32);
+        let size = self.data_allocation_size(token);
         let matches = self.builder.ins().icmp_imm(
             IntCC::Equal,
             size,
-            (rt::DATA_FIELDS_OFFSET + fields.len() * 8) as i64,
+            (rt::data_header_size(tag, fields.len(), scalars) + fields.len() * 8) as i64,
         );
         self.builder.ins().brif(matches, rebuild, &[], slow, &[]);
         self.builder.switch_to_block(rebuild);
         self.builder.seal_block(rebuild);
-        let descriptor = desc.unwrap_or_else(|| self.runtime_data_addr("FAI_DATA_DESC"));
-        let one = self.builder.ins().iconst(types::I64, 1);
-        let tag_value = self.builder.ins().iconst(types::I64, i64::from(tag));
-        self.store_field(token, rt::RC_OFFSET, one);
-        self.store_field(token, rt::DESC_OFFSET, descriptor);
-        self.store_field(token, rt::DATA_TAG_OFFSET, tag_value);
+        let offset = self.initialize_data_header(token, tag, fields.len(), scalars, desc);
         for (index, &value) in fields.iter().enumerate() {
-            self.store_field(token, rt::DATA_FIELDS_OFFSET + index * 8, value);
+            self.store_field(token, offset + index * 8, value);
         }
         self.builder.ins().jump(done, &[token.into()]);
         self.builder.switch_to_block(slow);
@@ -2873,7 +3022,7 @@ impl<M: Module> Translator<'_, M> {
     /// immediate `1` (low bit set), `Some` a boxed pointer (low bit clear), so the
     /// tag is `(v & 1) ^ 1` (0 for `None`, 1 for `Some`) — rather than a header read.
     fn data_tag(&mut self, base: &CExpr, niche: Option<NicheKind>, result_ty: &Ty) -> Value {
-        let v = self.expr(base);
+        let v = self.data_base(base);
         if let Some(k) = niche {
             // The tag is 0 for `None`, 1 for `Some`. Scheme A: `None` is the
             // immediate `1` (low bit set), `Some` a boxed pointer (clear), so the tag
@@ -2906,9 +3055,8 @@ impl<M: Module> Translator<'_, M> {
                 self.tag_int(raw)
             };
         }
-        let offset = rt::DATA_TAG_OFFSET as i32;
         let raw = if is_always_boxed_ty(&base.ty) {
-            self.builder.ins().load(types::I64, MemFlags::trusted(), v, offset)
+            self.boxed_data_tag(v)
         } else {
             let immediate = self.builder.create_block();
             let boxed = self.builder.create_block();
@@ -2922,7 +3070,7 @@ impl<M: Module> Translator<'_, M> {
             self.builder.ins().jump(done, &[tag.into()]);
             self.builder.switch_to_block(boxed);
             self.builder.seal_block(boxed);
-            let tag = self.builder.ins().load(types::I64, MemFlags::trusted(), v, offset);
+            let tag = self.boxed_data_tag(v);
             self.builder.ins().jump(done, &[tag.into()]);
             self.builder.switch_to_block(done);
             self.builder.seal_block(done);
@@ -2979,7 +3127,8 @@ impl<M: Module> Translator<'_, M> {
             FieldIndex::Const(n) => self.builder.ins().iconst(types::I64, i64::from(n)),
             FieldIndex::Dyn { base: off, evidence } => self.evidence_slot(off, evidence),
         };
-        let is_scalar = data_slot_is_scalar(&mut self.builder, v, idx);
+        let compact = self.data_offsets.get(&v).map(|o| *o == rt::COMPACT_FIELDS_OFFSET);
+        let is_scalar = data_slot_is_scalar(&mut self.builder, v, idx, compact);
         let boxed = self.builder.create_block();
         let uniform = self.builder.create_block();
         let done = self.builder.create_block();
@@ -3022,24 +3171,34 @@ impl<M: Module> Translator<'_, M> {
         let value = self.expr(base);
         if self.is_list_value(base) {
             self.data_layouts.insert(value, 0);
+            self.data_offsets.insert(value, rt::COMPACT_FIELDS_OFFSET);
+        } else {
+            let ty = match &base.kind {
+                ExprKind::Local(id) => self.var_ty(*id).unwrap_or(&base.ty),
+                _ => &base.ty,
+            };
+            let count = match ty {
+                Ty::Tuple(fields) => Some(fields.len()),
+                Ty::Record(row) if row.tail == RowEnd::Closed => Some(row.fields.len()),
+                _ => None,
+            };
+            if count.is_some_and(|n| (1..=8).contains(&n)) {
+                self.data_offsets.insert(value, rt::COMPACT_FIELDS_OFFSET);
+            }
         }
         value
     }
 
     /// The byte address of a field slot within a data cell at `base_v`.
     fn field_slot_addr(&mut self, base_v: Value, index: FieldIndex) -> Value {
+        let known = self.data_offsets.get(&base_v).copied();
+        let fields = data_fields_base(&mut self.builder, base_v, known);
         match index {
-            FieldIndex::Const(n) => {
-                let off =
-                    i64::try_from(rt::DATA_FIELDS_OFFSET + n as usize * 8).expect("field off");
-                self.builder.ins().iadd_imm(base_v, off)
-            }
+            FieldIndex::Const(n) => self.builder.ins().iadd_imm(fields, i64::from(n) * 8),
             FieldIndex::Dyn { base: off, evidence } => {
-                let fields_off = i64::try_from(rt::DATA_FIELDS_OFFSET).expect("fields offset");
                 let slot = self.evidence_slot(off, evidence);
                 let byte = self.builder.ins().imul_imm(slot, 8);
-                let byte = self.builder.ins().iadd_imm(byte, fields_off);
-                self.builder.ins().iadd(base_v, byte)
+                self.builder.ins().iadd(fields, byte)
             }
         }
     }
@@ -3057,14 +3216,15 @@ impl<M: Module> Translator<'_, M> {
             FieldIndex::Const(i) => self.builder.ins().iconst(types::I64, i64::from(i)),
             FieldIndex::Dyn { base: off, evidence } => self.evidence_slot(off, evidence),
         };
-        borrow_float_field(&mut self.builder, base, slot, known)
+        let offset = self.data_offsets.get(&base).copied();
+        borrow_float_field(&mut self.builder, base, slot, known, offset)
     }
 
     /// Reads a monomorphic `Int` field as a raw untagged `i64`: load the field slot
     /// word (a tagged immediate or a boxed-`Int` pointer) and untag/unbox it without
     /// releasing it (a borrow — the cell is dropped later).
     fn int_data_field(&mut self, base: &CExpr, index: FieldIndex) -> Value {
-        let base_v = self.expr(base);
+        let base_v = self.data_base(base);
         let addr = self.field_slot_addr(base_v, index);
         let word = self.builder.ins().load(types::I64, MemFlags::trusted(), addr, 0);
         let raw = self.borrow_unbox_int_to_raw(word);
@@ -3743,6 +3903,9 @@ impl<M: Module> Translator<'_, M> {
         let desc = self.builder.ins().load(types::I64, MemFlags::trusted(), v, desc_off);
         let float_desc = self.runtime_data_addr("FAI_FLOAT_DESC");
         let eq = self.builder.ins().icmp(IntCC::Equal, desc, float_desc);
+        let header = self.builder.ins().atomic_load(types::I64, MemFlags::trusted(), v);
+        let legacy = self.builder.ins().icmp_imm(IntCC::SignedGreaterThanOrEqual, header, 0);
+        let eq = self.builder.ins().band(eq, legacy);
         self.builder.ins().jump(merge_b, &[eq.into()]);
 
         self.builder.switch_to_block(merge_b);
@@ -5337,8 +5500,8 @@ impl<M: Module> Translator<'_, M> {
     /// Loads field `i`'s uniform slot word from data cell `cell`, borrowing the
     /// cell (no reference-count change; its owner releases it at its last use).
     fn agg_field_word(&mut self, cell: Value, i: usize) -> Value {
-        let off = i32::try_from(rt::DATA_FIELDS_OFFSET + i * 8).expect("field offset");
-        self.builder.ins().load(types::I64, MemFlags::trusted(), cell, off)
+        let address = self.field_slot_addr(cell, FieldIndex::Const(i as u32));
+        self.builder.ins().load(types::I64, MemFlags::trusted(), address, 0)
     }
 
     /// Inlines `=` on a fixed-shape aggregate as a short-circuiting conjunction of
@@ -5346,8 +5509,8 @@ impl<M: Module> Translator<'_, M> {
     /// are borrowed (loads only); a field that is unequal yields `false`
     /// immediately. Yields a tagged `Bool`.
     fn inline_aggregate_eq(&mut self, args: &[CExpr], fields: &[AggField]) -> Value {
-        let a = self.expr(&args[0]);
-        let b = self.expr(&args[1]);
+        let a = self.data_base(&args[0]);
+        let b = self.data_base(&args[1]);
         let merge = self.builder.create_block();
         self.builder.append_block_param(merge, types::I64);
         // The immediate `Bool` `false` is `(0 << 1) | 1`.
@@ -5405,8 +5568,8 @@ impl<M: Module> Translator<'_, M> {
     /// the first non-equal field decides, else `0`. The cells are borrowed. Yields a
     /// tagged `Int` (`-1`/`0`/`1`).
     fn inline_aggregate_compare(&mut self, args: &[CExpr], fields: &[AggField]) -> Value {
-        let a = self.expr(&args[0]);
-        let b = self.expr(&args[1]);
+        let a = self.data_base(&args[0]);
+        let b = self.data_base(&args[1]);
         let merge = self.builder.create_block();
         self.builder.append_block_param(merge, types::I64);
         // The immediate `Int` `0` (an equal field) is `(0 << 1) | 1`.
@@ -5544,13 +5707,20 @@ impl<M: Module> Translator<'_, M> {
         self.builder.seal_block(inspect);
         let rc =
             self.builder.ins().load(types::I64, MemFlags::trusted(), callee, rt::RC_OFFSET as i32);
-        // Shared counts have their sign bit set; one signed comparison excludes
-        // them while accepting the immortal range, including balanced inline dups.
-        let permanent = self.builder.ins().icmp_imm(
-            IntCC::SignedGreaterThanOrEqual,
-            rc,
+        let classify = self.builder.create_block();
+        let compact = self.builder.ins().icmp_imm(IntCC::SignedLessThan, rc, 0);
+        self.builder.ins().brif(compact, slow, &[], classify, &[]);
+        self.builder.switch_to_block(classify);
+        self.builder.seal_block(classify);
+        let state = self.builder.ins().band_imm(rc, rt::RC_STATE_MASK as i64);
+        let immortal = self.builder.ins().icmp_imm(
+            IntCC::UnsignedGreaterThanOrEqual,
+            state,
             rt::IMMORTAL_RC as i64,
         );
+        let shared = self.builder.ins().band_imm(state, rt::MT_FLAG as i64);
+        let local = self.builder.ins().icmp_imm(IntCC::Equal, shared, 0);
+        let permanent = self.builder.ins().band(immortal, local);
         let desc = self.builder.ins().load(
             types::I64,
             MemFlags::trusted(),
@@ -5922,7 +6092,7 @@ impl<M: Module> Translator<'_, M> {
         let f = self.runtime("fai_make_data_scalar", 4, true);
         let call = self.builder.ins().call(f, &[desc, tag_v, n_v, ptr]);
         let result = self.builder.inst_results(call)[0];
-        self.data_layouts.insert(result, scalars);
+        self.record_data_layout(result, 0, n, scalars);
         result
     }
 
@@ -6403,8 +6573,7 @@ impl<M: Module> Translator<'_, M> {
         self.builder.ins().store(MemFlags::trusted(), cellv, dst, 0);
         // A boxed value is its own pointer (low bit clear), so the field address is
         // a constant offset from the cell.
-        let offset = rt::DATA_FIELDS_OFFSET + field as usize * 8;
-        self.builder.ins().iadd_imm(cellv, i64::try_from(offset).expect("field offset"))
+        self.field_slot_addr(cellv, FieldIndex::Const(field))
     }
 
     /// Translates an expression in tail position within a `Join` body: `Recur`

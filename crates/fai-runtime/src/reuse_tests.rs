@@ -26,7 +26,7 @@ fn big() -> Value {
 /// The reference count of a boxed value.
 fn rc_of(v: Value) -> u64 {
     // SAFETY: `v` is a boxed object pointer.
-    unsafe { read_u64(as_obj(v), RC_OFFSET) }
+    unsafe { rc_load(as_obj(v)) }
 }
 
 /// Builds a boxed data value `{ tag, fields… }`, transferring ownership of each
@@ -757,7 +757,7 @@ fn free_after_releasing_children_balances_like_a_drop() {
     // Mirror the inlined drop's dead-cell sequence: load each boxed field and drop
     // it, then free the cell directly.
     // SAFETY: `cell` is a boxed one-field data value.
-    let child = unsafe { read_i64(as_obj(cell), DATA_FIELDS_OFFSET) };
+    let child = unsafe { read_i64(as_obj(cell), data_offset(as_obj(cell))) };
     fai_drop(child);
     // SAFETY: the cell is dead and its child released — fai_free's precondition.
     unsafe { fai_free(cell) };

@@ -659,7 +659,7 @@ fn inline_drop_boxed(v: Value) {
     unsafe {
         let rc = read_u64(as_obj(v), RC_OFFSET) - 1;
         write_u64(as_obj(v), RC_OFFSET, rc);
-        if rc == 0 {
+        if rc & RC_STATE_MASK == 0 {
             fai_drop_dead(v);
         }
     }
@@ -1137,14 +1137,14 @@ fn marking_an_already_shared_subgraph_is_idempotent_under_churn() {
     fai_mark_shared(parent);
     // SAFETY: live boxed objects; both are now shared, with their counts preserved.
     unsafe {
-        assert_eq!(read_u64(as_obj(parent), RC_OFFSET), MT_FLAG | 1);
+        assert_eq!(rc_load(as_obj(parent)), MT_FLAG | 1);
         assert_eq!(read_u64(as_obj(child), RC_OFFSET), MT_FLAG | 1);
     }
     // Re-marking does not change the counts.
     fai_mark_shared(parent);
     // SAFETY: live boxed objects.
     unsafe {
-        assert_eq!(read_u64(as_obj(parent), RC_OFFSET), MT_FLAG | 1);
+        assert_eq!(rc_load(as_obj(parent)), MT_FLAG | 1);
         assert_eq!(read_u64(as_obj(child), RC_OFFSET), MT_FLAG | 1);
     }
     fai_drop(parent);

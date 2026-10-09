@@ -1389,8 +1389,8 @@ mod tests {
         // SAFETY: a `Result` is a boxed data cell with its tag and one field inline.
         unsafe {
             let p = crate::as_obj(result);
-            let tag = crate::read_u64(p, crate::DATA_TAG_OFFSET);
-            let field = crate::read_i64(p, crate::DATA_FIELDS_OFFSET);
+            let tag = crate::object_data_tag(p);
+            let field = crate::read_i64(p, crate::data_offset(p));
             if tag != 0 {
                 let msg = String::from_utf8_lossy(crate::string_bytes(field)).into_owned();
                 panic!("expected Ok, got Err: {msg}");
@@ -1446,9 +1446,10 @@ mod tests {
         // SAFETY: `t` is a boxed 3-tuple; its fields are inline.
         unsafe {
             let p = crate::as_obj(t);
-            let data = crate::fai_dup(crate::read_i64(p, crate::DATA_FIELDS_OFFSET));
-            let host = crate::fai_dup(crate::read_i64(p, crate::DATA_FIELDS_OFFSET + 8));
-            let port = crate::fai_dup(crate::read_i64(p, crate::DATA_FIELDS_OFFSET + 16));
+            let offset = crate::data_offset(p);
+            let data = crate::fai_dup(crate::read_i64(p, offset));
+            let host = crate::fai_dup(crate::read_i64(p, offset + 8));
+            let port = crate::fai_dup(crate::read_i64(p, offset + 16));
             crate::fai_drop(t);
             (data, host, port)
         }

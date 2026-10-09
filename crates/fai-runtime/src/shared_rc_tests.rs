@@ -120,10 +120,30 @@ fn shared_cell_can_be_reused_and_published_again() {
     // SAFETY: the token is exclusively owned and has room for one field.
     let reused = unsafe { fai_reuse(token, 0, 1, fields.as_ptr()) };
     // SAFETY: the reconstructed cell is owned by this thread alone.
-    assert_eq!(unsafe { read_u64(as_obj(reused), RC_OFFSET) }, 1);
+    assert_eq!(unsafe { rc_load(as_obj(reused)) }, 1);
     churn(reused, |_| {});
     fai_drop(reused);
     assert_eq!(live_count(), base);
+}
+
+#[test]
+fn compact_metadata_can_be_read_during_shared_count_churn() {
+    let _guard = lock();
+    let baseline = live_count();
+    let fields = [make_int(11), make_int(22)];
+    // SAFETY: the two owned immediate fields initialize one compact data cell.
+    let value = unsafe { fai_make_data(123, 2, fields.as_ptr()) };
+    churn(value, |v| {
+        // SAFETY: churn retains an owning reference while other tasks update counts.
+        unsafe {
+            assert_eq!(object_kind(as_obj(v)), KIND_DATA);
+            assert_eq!(object_size(as_obj(v)), 24);
+            assert_eq!(object_data_tag(as_obj(v)), 123);
+            assert_eq!(data_len(as_obj(v)), 2);
+        }
+    });
+    fai_drop(value);
+    assert_eq!(live_count(), baseline);
 }
 
 #[test]
