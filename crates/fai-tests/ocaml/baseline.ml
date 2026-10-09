@@ -792,7 +792,7 @@ let option_path n =
 
 module IntMap = Map.Make (Int)
 
-(* Balanced-tree `find`, summing the hits; queries miss half the time. *)
+(* Map application baseline; the matched binary-node peer is in tree_lookup.ml. *)
 let option_tree_find n =
   let m = 1000 in
   let tree = ref IntMap.empty in

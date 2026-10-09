@@ -1113,8 +1113,8 @@ pub fn option_path(n: i64) -> i64 {
     total
 }
 
-/// Binary-search-tree `find`, summing the hits. The `BTreeMap` of `key -> key*3`
-/// for `key` in `[0, m)` mirrors the balanced BST the Fai version builds; queries
+/// Application-level BTreeMap alternative to the Fai binary-tree `find`, summing
+/// hits. It stores the same `key -> key*3` values for `[0, m)`; queries
 /// at `i % (2m)` miss half the time (the niche `None`), and `find` returns the
 /// niche `Option Int` up through the recursion.
 #[must_use]

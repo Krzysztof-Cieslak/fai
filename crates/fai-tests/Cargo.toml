@@ -105,6 +105,10 @@ name = "sort_patterns"
 harness = false
 
 [[bench]]
+name = "tree_lookup"
+harness = false
+
+[[bench]]
 name = "concurrency"
 harness = false
 

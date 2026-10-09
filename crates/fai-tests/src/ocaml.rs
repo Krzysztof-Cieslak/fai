@@ -31,7 +31,13 @@ const SOURCE: &str = include_str!("../ocaml/baseline.ml");
 #[must_use]
 pub fn baseline() -> Option<&'static Utf8PathBuf> {
     static BASELINE: OnceLock<Option<Utf8PathBuf>> = OnceLock::new();
-    BASELINE.get_or_init(build).as_ref()
+    BASELINE.get_or_init(|| build("baseline", SOURCE)).as_ref()
+}
+
+/// The persistent matched-tree worker and untimed OCaml shape validator.
+pub fn tree_baseline() -> Option<&'static Utf8PathBuf> {
+    static BASELINE: OnceLock<Option<Utf8PathBuf>> = OnceLock::new();
+    BASELINE.get_or_init(|| build("tree_lookup", include_str!("../ocaml/tree_lookup.ml"))).as_ref()
 }
 
 /// Whether an `ocamlopt` native compiler is available on `PATH`.
@@ -41,17 +47,17 @@ fn ocamlopt_available() -> bool {
 
 /// Compiles the embedded OCaml baseline into a native executable in a scratch
 /// directory, returning its path (or `None` when `ocamlopt` is absent).
-fn build() -> Option<Utf8PathBuf> {
+fn build(name: &str, contents: &str) -> Option<Utf8PathBuf> {
     if !ocamlopt_available() {
         return None;
     }
     let dir = Utf8PathBuf::from_path_buf(
-        std::env::temp_dir().join(format!("fai-ocaml-baseline-{}", std::process::id())),
+        std::env::temp_dir().join(format!("fai-ocaml-{name}-{}", std::process::id())),
     )
     .expect("temp dir is UTF-8");
     std::fs::create_dir_all(&dir).expect("create OCaml scratch dir");
     let source = dir.join("baseline.ml");
-    std::fs::write(&source, SOURCE).expect("write OCaml baseline source");
+    std::fs::write(&source, contents).expect("write OCaml baseline source");
 
     // ocamlopt emits its .cmi/.cmx/.o artifacts in the working directory, so
     // compile from the scratch dir to keep them out of the workspace.

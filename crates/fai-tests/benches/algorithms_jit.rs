@@ -7,14 +7,12 @@
 //! ([`fai_tests::algorithms`]). The companion `algorithms_aot` bench compares the
 //! delivered binaries (`fai build` vs a Rust release binary) end to end.
 //!
-//! Read the ratios as a progress metric, not a fair fight: Fai runs with a
-//! uniform **boxed** value representation and **reference counting**, generated
-//! by Cranelift at optimization level "speed" (with the host's native CPU
-//! features, since this is the JIT), while Rust is unboxed and optimized by LLVM
-//! at the bench profile's `-O3`. Representation gaps are intentional and
-//! idiomatic — e.g. `MapSum`'s Rust iterator allocates nothing where Fai builds a
-//! `List`, and `MergeSort` sorts a `Vec` where Fai sorts a linked `List`. The
-//! number to watch is whether the gap shrinks as the backend improves.
+//! Ratios include compiler, representation and algorithm choices. Fai combines
+//! uniform values with scalar representations, reference counting and Cranelift;
+//! Rust uses LLVM at the bench profile's `-O3`. Some application baselines also
+//! choose different containers: `OptionTreeFind` uses Rust's BTreeMap against a
+//! Fai binary tree. The focused `tree_lookup` suite provides matched node shapes
+//! and separates construction from lookup for that workload.
 //!
 //! Run with `cargo bench -p fai-tests --bench algorithms_jit`.
 

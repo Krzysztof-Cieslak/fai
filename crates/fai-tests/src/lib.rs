@@ -14,6 +14,7 @@ pub mod benchmark_process;
 mod checker;
 pub mod ocaml;
 pub mod sorting;
+pub mod tree_lookup;
 
 pub use checker::{
     CheckOutcome, check_named, check_source, local_type, local_types, run_annotated, sym, type_of,
