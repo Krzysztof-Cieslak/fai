@@ -115,6 +115,7 @@ All under `crates/fai-tests/benches/` unless noted. None is a CI gate.
 | `algorithms_aot` | Runtime comparison, delivered binaries: a `fai build` executable vs a Rust release binary vs an `ocamlopt`-compiled OCaml binary, end to end (see below). |
 | `algorithms_mem` | Memory comparison, delivered binaries: peak resident set size of the same `fai build` vs Rust vs OCaml binaries (see below). |
 | `sort_patterns` | Build/sort/order-sensitive-checksum across ascending, descending, Fisher–Yates shuffled, equal, four-key, and partially sorted runs; both JIT compute (Fai/Rust) and AOT processes (Fai/Rust/OCaml), at 6,000 and 80,000 elements. |
+| `tree_lookup` | Matched four-field binary nodes in Fai/Rust/OCaml, with explicit `rust_btree_map`/`ocaml_map` application alternatives. Separates build+lookup from lookup-only; validates full shapes and every hit/miss before timing. |
 | `concurrency` | Runtime concurrency/networking (Fai-only, delivered binaries): task fan-out/join throughput, bounded-channel throughput, shared PRNG contention, CPU-bound **parallel speedup** (`FAI_WORKERS=1` vs the host default), and loopback TCP/UDP round-trip throughput (see below). |
 | `test_loop` (`fai-cli`) | The supervised `edit → fai test` loop through the real `fai` binary + daemon: client → daemon → worker subprocess → JIT → run → stream back. |
 
@@ -405,6 +406,19 @@ is closest to the pure size factor.
   because another structure dominates.
 
 ### Keeping the sides in lockstep
+
+The historical `OptionTreeFind` row remains the application comparison of a Fai
+binary tree against Rust `BTreeMap` and OCaml `Map`. Use **`tree_lookup`** to
+isolate the matched binary-node kernel: all three insert the same 1,000 keys in
+midpoint/left/right order, with identical four logical fields, values and shape.
+It uses 5,000 and 100,000 queries (`i % 2000`) and a position-weighted checksum
+that includes misses as `-1`; its timings therefore form a separate workload
+version. In-process Fai/Rust rows measure build+lookup and lookup-only. Native
+rows use persistent workers for all three languages: lookup-only builds before
+the `ready` handshake and retains the tree across requests, while build+lookup
+rebuilds per request. Those native timings include identical line-protocol IPC
+and checksum work, but exclude process startup. The benchmark preflight compares
+preorder/null shape, height, count and every query answer with the OCaml peer too.
 
 `Levenshtein` uses a single in-place dynamic-programming row on all three sides,
 carrying the old diagonal in a scalar before each overwrite. Earlier Fai timings
