@@ -426,6 +426,10 @@ non-tail recursive calls. Those calls retain the normal stack and evaluation
 order; constructor-modulo recursion keeps its stricter reordering checks.
 Any remaining evidence-fused row-polymorphic self-call keeps the uniform slot
 ABI, including raw Float bits and the callee's argument-borrowing convention.
+Small scalar-ABI recursive definitions can peel one bounded level of non-tail
+self-calls before ownership insertion. Mixed tail/non-tail functions retain
+their loop lowering; the expansion keeps argument and effect order and does not
+change data ownership or generic code sharing.
 
 Standalone `Array.range`/`repeat`/`init` and single Array maps, folds, filters,
 and searches lower to typed sequential loops. Their operands are evaluated once

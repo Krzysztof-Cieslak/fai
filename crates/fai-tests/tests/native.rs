@@ -9,6 +9,25 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use indoc::{formatdoc, indoc};
 
 #[test]
+fn peeled_scalar_recursion_preserves_full_width_integer_results() {
+    let source = "module Main\nlet factorial n = if n <= 1 then 1 else n * factorial (n - 1)\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (factorial 30))\n";
+    let expected = (1i64..=30).fold(1i64, i64::wrapping_mul);
+    assert_eq!(build_and_run(source), (format!("{expected}\n"), Some(0)));
+}
+
+#[test]
+fn peeled_scalar_recursion_preserves_float_results() {
+    let source = "module Main\nlet f n x = if n <= 0 then x else x + f (n - 1) (x + 0.5)\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Float.toString (f 6 1.0))\n";
+    assert_eq!(build_and_run(source), ("17.5\n".into(), Some(0)));
+}
+
+#[test]
+fn peeled_scalar_recursion_preserves_effect_order() {
+    let source = "module Main\nlet f n =\n  let _ = stdConsole.writeLine (Int.toString n)\n  if n <= 1 then n else f (n - 1) + f (n - 2)\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (f 3))\n";
+    assert_eq!(build_and_run(source), ("3\n2\n1\n0\n1\n2\n".into(), Some(0)));
+}
+
+#[test]
 fn wide_float_return_crosses_the_native_first_class_wrapper() {
     let library = "module Wide\npublic type V = { x : Float, y : Float, z : Float }\npublic shift : V -> V\nlet shift v = { x = v.x + 1.0, y = v.y + 2.0, z = v.z + 3.0 }\n";
     let main = "module Main\nlet apply n f x = if n = 0 then f x else apply (n - 1) f x\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let v = apply 1 Wide.shift { x = 1.0, y = 2.0, z = 3.0 }\n  r.console.writeLine (Int.toString (Float.toInt (v.x + v.y + v.z)))\n";

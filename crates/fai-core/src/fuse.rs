@@ -193,6 +193,7 @@ pub fn fusion_defs(db: &dyn Db) -> Option<Arc<FusionDefs>> {
 #[salsa::tracked]
 pub fn fuse_def(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<FuseResult> {
     let base = helper_inlined(db, file, name);
+    let base = crate::scalar_peel::peel(db, base);
     let no_fuse = || Arc::new(FuseResult { body: (*base).clone(), loops: Vec::new() });
     if file.is_std(db) {
         return no_fuse();

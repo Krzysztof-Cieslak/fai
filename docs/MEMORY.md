@@ -1354,6 +1354,11 @@ program output are unchanged, guarded by the full type/golden suite):
     Remaining evidence-fused row-polymorphic calls use their actual uniform entry:
     arguments are spilled, scalar Floats are raw slot bits, and borrowed operands
     remain caller-owned. They do not take the register ABI or the owned wrapper.
+    Small scalar-only ABI definitions with no ordinary self-tail call can peel
+    one level of non-tail self-calls. Parameter count, source size and copied-body
+    work are bounded, and inserted bodies are not expanded again. Argument
+    bindings retain types and evaluation order. Mixed tail/non-tail recursion is
+    left to loop lowering, avoiding duplicated loop branches and register pressure.
   - **Row-polymorphic functions flatten too.** A function carrying leading
     offset-evidence parameters calls itself *curried* — lowering partially applies
     it to its evidence and then to the real arguments

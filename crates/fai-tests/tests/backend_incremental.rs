@@ -153,3 +153,16 @@ fn unrelated_body_edits_preserve_data_layout_cutoff() {
         "a body edit leaves the consumer's typed layout query cached"
     );
 }
+
+#[test]
+fn recursive_scalar_body_edits_match_clean_native_objects() {
+    let source = "module M\nlet f n = if n <= 1 then n else f (n - 1) + f (n - 2)\n";
+    let edited = source.replace("then n", "then n + 1");
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", source)], &[("M.fai", &edited)]],
+        |db, files| {
+            let file = db.source_file(files[0]).unwrap();
+            (*object_code(db, file, Symbol::intern("f"), false)).clone()
+        },
+    );
+}
