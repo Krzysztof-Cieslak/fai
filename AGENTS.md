@@ -438,6 +438,13 @@ effectful, recursive, potentially trapping, generic, and cross-file initializers
 retain their forcing boundary. A separate eligibility query preserves early
 cutoff for values that cannot be expanded.
 
+Known interface constructions and bounded same-file choices can be reduced to
+their resolved field values and branch-selected method bodies before reference
+counting. Receiver and argument evaluation order, captured environments, and
+resource lifetimes are preserved. Unknown, polymorphic, or escaping dictionaries
+retain their representation; cross-file factory bodies remain behind the normal
+signature firewall.
+
 Opaque aliases retain their nominal type in cross-file value, constructor, and
 interface-method signatures, including through transparent re-exports. Names
 resolve in their declaring scope while opacity follows the observing file.
