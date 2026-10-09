@@ -85,6 +85,9 @@ let treeSearches n = searchLoop n (treeBuild 0 32) 0
 let freshInputLoop n xs = if n <= 0 then Array.length xs else freshInputLoop (n - 1) (Array.singleton n)
 public freshInputs : Int -> Int
 let freshInputs n = freshInputLoop n (Array.singleton 0)
+let callbackLoop f n x = if n <= 0 then x else callbackLoop f (n - 1) (f x)
+public callbacks : Int -> Int
+let callbacks n = callbackLoop (fun x -> x + 1) n 0
 public main : Runtime -> Unit
 let main r = ()
 "#;
@@ -257,4 +260,14 @@ fn changing_recursive_inputs_keep_peak_storage_constant() {
     assert_eq!((short.peak_objects, short.peak_bytes), (long.peak_objects, long.peak_bytes));
     assert_eq!(long.array_copies, 0);
     assert!(long.peak_bytes <= 128, "{long:?}");
+}
+
+#[test]
+fn invariant_callback_evidence_uses_no_heap_storage() {
+    let mut harness = Harness::new();
+    let short = harness.measure("callbacks", 8, 8);
+    let long = harness.measure("callbacks", 4096, 4096);
+    assert_eq!(short, long);
+    assert_eq!(long.allocations, 0);
+    assert_eq!(long.peak_bytes, 0);
 }
