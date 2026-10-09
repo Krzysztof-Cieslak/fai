@@ -5552,11 +5552,13 @@ impl<M: Module> Translator<'_, M> {
         }
     }
 
-    /// Marshals `args` into registers per `def`'s [`FnAbi`] (a scalar-float argument
+    /// Marshals `args` per `def`'s [`FnAbi`] (a scalar-float register argument
     /// in an `f64` register, a monomorphic-int argument as a raw untagged `i64`,
     /// every other as the boxed/immediate word, behind the leading null environment)
     /// and direct-calls it, yielding the raw result (an `f64` register for a scalar
     /// float, a raw `i64` recorded raw for a monomorphic int, else the uniform word).
+    /// Uniform entries receive one spilled argument array, with scalar Float
+    /// arguments/results carried as raw bits.
     fn direct_call_value(&mut self, def: DefId, args: &[CExpr]) -> Value {
         let abi = (self.signature_of)(def);
         let borrowed = (self.borrows_of)(def);
@@ -5569,7 +5571,21 @@ impl<M: Module> Translator<'_, M> {
         // contributes its N `f64` components (see [`Self::marshal_args`]).
         let mut lent_boxes = Vec::new();
         self.marshal_args(&abi, &borrowed, args, &mut call_args, &mut lent_boxes);
-        let result = self.direct_call(def, args.len(), &abi, &call_args);
+        let result = if abi.register_abi {
+            self.direct_call(def, args.len(), &abi, &call_args)
+        } else {
+            // Evidence-fused row-polymorphic self-calls can remain non-tail.
+            // They call the borrowing entry directly, but it still takes a
+            // spilled slot array rather than register arguments. Scalar Float
+            // slots/results use raw bits on this ABI; generic slots stay boxed.
+            let slots: Vec<_> = call_args[1..]
+                .iter()
+                .map(|&value| if self.is_f64(value) { self.f64_to_i64(value) } else { value })
+                .collect();
+            let args_ptr = self.spill(&slots);
+            let value = self.direct_call(def, args.len(), &abi, &[null_env, args_ptr]);
+            if abi.float_return() { self.i64_to_f64(value) } else { value }
+        };
         for b in lent_boxes {
             self.call_drop(b);
         }
@@ -5638,9 +5654,9 @@ impl<M: Module> Translator<'_, M> {
         }
     }
 
-    /// Calls a direct-callable definition's code symbol directly with `call_args`
-    /// (the leading null environment followed by the value arguments in registers).
-    /// `arity`/`abi` build the matching register [`entry_signature`].
+    /// Calls a definition's code symbol with already-marshalled `call_args`:
+    /// environment plus registers, or environment plus a uniform slot array.
+    /// `arity`/`abi` build the matching [`entry_signature`].
     fn direct_call(&mut self, def: DefId, arity: usize, abi: &FnAbi, call_args: &[Value]) -> Value {
         let name = code_symbol(self.namer, def);
         let sig = entry_signature(self.module, arity, abi);

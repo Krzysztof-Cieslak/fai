@@ -5209,8 +5209,8 @@ fn borrow_mutual_recursion_is_sound() {
 // ===========================================================================
 // Tail-call flattening: a self-tail-recursive function becomes a loop. A
 // constructor-wrapped recursion additionally threads a destination hole; a plain
-// tail recursion is a hole-free loop; a non-tail or multiply-recursive function is
-// left as ordinary recursion. Every transformed function must stay sound.
+// tail recursion is a hole-free loop. Mixed recursion retains its ordinary calls
+// while flattening plain tail calls. Every transformed function must stay sound.
 // ===========================================================================
 
 /// Asserts `name` is sound and was flattened into a loop with a destination hole
@@ -5339,6 +5339,37 @@ fn trmc_sum_acc_is_a_plain_loop() {
               | x :: r -> sumAcc (acc + x) r
         "#},
         "sumAcc",
+    );
+}
+
+#[test]
+fn trmc_nested_ackermann_call_keeps_the_inner_call() {
+    let source = "module M\nlet ack m n = if m = 0 then n + 1 else if n = 0 then ack (m - 1) 1 else ack (m - 1) (ack m (n - 1))\n";
+    trmc_plain(source, "ack");
+    assert!(rc_checked(source, "ack").contains("(app @ack"));
+}
+
+#[test]
+fn trmc_self_call_in_a_condition_keeps_its_order() {
+    trmc_plain(
+        "module M\nlet f n = if n <= 0 then false else if f (n - 1) then true else f (n - 2)\n",
+        "f",
+    );
+}
+
+#[test]
+fn trmc_mixed_constructor_recursion_uses_only_plain_back_edges() {
+    let source = "module M\nlet f n = if n <= 0 then [] else if n % 3 = 0 then f (n - 1) else if n % 3 = 1 then n :: f (n - 1) else List.append (f (n - 1)) [n]\n";
+    trmc_plain(source, "f");
+    let ir = rc_checked(source, "f");
+    assert!(ir.contains("(app @f"), "constructor and other non-tail calls remain: {ir}");
+}
+
+#[test]
+fn trmc_mixed_row_polymorphic_recursion_keeps_evidence() {
+    trmc_plain(
+        "module M\nlet f r n = if n <= 0 then r.value else if n % 2 = 0 then f r (n - 1) else 1 + f r (n - 1)\n",
+        "f",
     );
 }
 

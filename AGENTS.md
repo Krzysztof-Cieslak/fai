@@ -415,6 +415,12 @@ records, interfaces + instances, capabilities, contracts, nested modules). Each
 computes one successor. Consuming `n` elements invokes `f` at most `max(0, n - 1)`
 times, so dropping the tail never performs look-ahead effects or traps.
 
+Ordinary self-tail calls become loop back-edges even when the function also has
+non-tail recursive calls. Those calls retain the normal stack and evaluation
+order; constructor-modulo recursion keeps its stricter reordering checks.
+Any remaining evidence-fused row-polymorphic self-call keeps the uniform slot
+ABI, including raw Float bits and the callee's argument-borrowing convention.
+
 Standalone `Array.range`/`repeat`/`init` and single Array maps, folds, filters,
 and searches lower to typed sequential loops. Their operands are evaluated once
 in source order and callbacks retain their order, effects, and short-circuiting.
