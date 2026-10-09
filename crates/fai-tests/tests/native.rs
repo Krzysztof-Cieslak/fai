@@ -758,6 +758,14 @@ fn string_concatenation() {
 }
 
 #[test]
+fn string_slicing_preserves_unicode_boundaries() {
+    let source = print_main(
+        "String.join \"|\" [String.take 5 \"hello🙂\", String.drop 5 \"hello🙂\", String.substring 1 1 \"a🙂b\"]",
+    );
+    assert_eq!(build_and_run(&source), ("hello|🙂|🙂\n".into(), Some(0)));
+}
+
+#[test]
 fn conditional() {
     let (out, code) = build_and_run(&print_main("if 2 < 1 then \"t\" else \"f\""));
     assert_eq!(out, "f\n");

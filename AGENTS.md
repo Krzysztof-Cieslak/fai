@@ -394,6 +394,8 @@ that cannot fit, a unique inline right buffer with enough capacity can absorb th
 prefix in place. Shared operands and borrowing slices retain their contents.
 `String.join` and `String.joinArray` size their result with checked arithmetic,
 then copy into one final buffer without an intermediate growable string.
+Character-indexed string slicing validates ASCII prefixes in wide byte chunks;
+non-ASCII prefixes retain Unicode-scalar indexing and all indices stay clamped.
 
 ```fai
 module Hello
