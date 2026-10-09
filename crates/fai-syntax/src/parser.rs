@@ -16,7 +16,12 @@ use crate::ast::{
     TypeId, TypeKind, Variant, Visibility,
 };
 use crate::token::{Token, TokenKind};
-use crate::{Comment, MODULE_HEADER, SYNTAX_ERROR, Symbol, layout, lex};
+use crate::{Comment, MODULE_HEADER, NESTING_LIMIT, SYNTAX_ERROR, Symbol, layout, lex};
+
+/// Bounds recursive grammar entries before they consume the host thread stack.
+const MAX_PARSE_DEPTH: usize = 128;
+/// Also bounds trees built by iterative application, field, and operator loops.
+const MAX_TREE_DEPTH: u16 = 512;
 
 /// The result of parsing one source file.
 #[derive(Debug)]
@@ -45,6 +50,11 @@ pub fn parse_module(source: SourceId, text: &str) -> Parsed {
         last_end: ByteOffset::ZERO,
         module: Module::default(),
         diagnostics,
+        nesting: 0,
+        layout_depth: 0,
+        recovering_nesting: false,
+        expr_depths: Vec::new(),
+        type_depths: Vec::new(),
     };
     parser.parse_top_level();
     Parsed { module: parser.module, comments: lexed.comments, diagnostics: parser.diagnostics }
@@ -58,21 +68,32 @@ struct Parser<'a> {
     last_end: ByteOffset,
     module: Module,
     diagnostics: Vec<Diagnostic>,
+    nesting: usize,
+    layout_depth: usize,
+    recovering_nesting: bool,
+    expr_depths: Vec<u16>,
+    type_depths: Vec<u16>,
 }
 
 impl Parser<'_> {
     // --- cursor -----------------------------------------------------------
 
     fn peek(&self) -> TokenKind {
-        self.tokens[self.pos].kind
+        self.cur().kind
     }
 
     /// The kind of the token `n` positions ahead (clamped to `Eof`).
     fn peek_at(&self, n: usize) -> TokenKind {
+        if self.recovering_nesting {
+            return TokenKind::Eof;
+        }
         self.tokens.get(self.pos + n).map_or(TokenKind::Eof, |t| t.kind)
     }
 
     fn cur(&self) -> Token {
+        if self.recovering_nesting {
+            return Token { kind: TokenKind::Eof, range: TextRange::empty(self.last_end) };
+        }
         self.tokens[self.pos]
     }
 
@@ -90,9 +111,14 @@ impl Parser<'_> {
     }
 
     fn bump(&mut self) -> Token {
-        let token = self.tokens[self.pos];
+        let token = self.cur();
         if token.kind != TokenKind::Eof {
             self.pos += 1;
+        }
+        match token.kind {
+            TokenKind::LayoutOpen => self.layout_depth += 1,
+            TokenKind::LayoutClose => self.layout_depth = self.layout_depth.saturating_sub(1),
+            _ => {}
         }
         self.last_end = token.range.end();
         token
@@ -231,12 +257,58 @@ impl Parser<'_> {
     }
 
     fn error(&mut self, code: DiagnosticCode, span: TextRange, message: impl Into<String>) {
+        if self.recovering_nesting {
+            return;
+        }
         self.diagnostics.push(Diagnostic::error(code, message, Span::new(self.source, span)));
     }
 
-    fn alloc_expr(&mut self, kind: ExprKind, span: TextRange) -> ExprId {
+    /// Unwinds the current declaration through a virtual EOF. Skipping uses the
+    /// real cursor first, so deeply nested or malformed input takes linear work
+    /// and leaves the next top-level declaration available to the outer loop.
+    fn nesting_error(&mut self, span: TextRange, limit: usize, category: &str) {
+        if self.recovering_nesting {
+            return;
+        }
+        self.error(
+            NESTING_LIMIT,
+            span,
+            format!("syntax nesting exceeds {limit} {category} levels"),
+        );
+        while !self.at_eof() {
+            if self.layout_depth == 0 && self.at(TokenKind::LayoutSep) {
+                break;
+            }
+            self.bump();
+        }
+        self.recovering_nesting = true;
+    }
+
+    fn nested<T>(&mut self, parse: impl FnOnce(&mut Self) -> T) -> Result<T, TextRange> {
+        let span = self.cur().range;
+        if self.recovering_nesting {
+            return Err(span);
+        }
+        if self.nesting >= MAX_PARSE_DEPTH {
+            self.nesting_error(span, MAX_PARSE_DEPTH, "recursive grammar");
+            return Err(span);
+        }
+        self.nesting += 1;
+        let value = parse(self);
+        self.nesting -= 1;
+        Ok(value)
+    }
+
+    fn alloc_expr(&mut self, mut kind: ExprKind, span: TextRange) -> ExprId {
+        let mut depth = self.expr_depth(&kind);
+        if depth > MAX_TREE_DEPTH {
+            self.nesting_error(span, usize::from(MAX_TREE_DEPTH), "expression tree");
+            kind = ExprKind::Error;
+            depth = 1;
+        }
         let id = ExprId::from_index(self.module.exprs.len());
         self.module.exprs.push(Expr { kind, span });
+        self.expr_depths.push(depth);
         id
     }
 
@@ -246,9 +318,16 @@ impl Parser<'_> {
         id
     }
 
-    fn alloc_ty(&mut self, kind: TypeKind, span: TextRange) -> TypeId {
+    fn alloc_ty(&mut self, mut kind: TypeKind, span: TextRange) -> TypeId {
+        let mut depth = self.type_depth(&kind);
+        if depth > MAX_TREE_DEPTH {
+            self.nesting_error(span, usize::from(MAX_TREE_DEPTH), "type tree");
+            kind = TypeKind::Error;
+            depth = 1;
+        }
         let id = TypeId::from_index(self.module.types.len());
         self.module.types.push(Type { kind, span });
+        self.type_depths.push(depth);
         id
     }
 
@@ -256,6 +335,67 @@ impl Parser<'_> {
         let id = ItemId::from_index(self.module.items.len());
         self.module.items.push(item);
         id
+    }
+
+    fn expr_depth(&self, kind: &ExprKind) -> u16 {
+        let depth = |id: &ExprId| self.expr_depths[id.index()];
+        let children = match kind {
+            ExprKind::App { func, arg } => depth(func).max(depth(arg)),
+            ExprKind::Infix { op, lhs, rhs } => depth(op).max(depth(lhs)).max(depth(rhs)),
+            ExprKind::Prefix { op, operand } => depth(op).max(depth(operand)),
+            ExprKind::If { cond, then_branch, else_branch } => {
+                depth(cond).max(depth(then_branch)).max(depth(else_branch))
+            }
+            ExprKind::Lambda { body, .. } | ExprKind::Paren(body) => depth(body),
+            ExprKind::Match { scrutinee, arms } => {
+                arms.iter().map(|arm| depth(&arm.body)).max().unwrap_or(0).max(depth(scrutinee))
+            }
+            ExprKind::Block { stmts, tail } => {
+                stmts.iter().map(|stmt| depth(&stmt.value)).max().unwrap_or(0).max(depth(tail))
+            }
+            ExprKind::Field { base, .. } => depth(base),
+            ExprKind::Record(fields) => {
+                fields.iter().map(|field| depth(&field.value)).max().unwrap_or(0)
+            }
+            ExprKind::RecordUpdate { base, fields } => {
+                fields.iter().map(|field| depth(&field.value)).max().unwrap_or(0).max(depth(base))
+            }
+            ExprKind::Instance { methods, .. } => {
+                methods.iter().map(|method| depth(&method.body)).max().unwrap_or(0)
+            }
+            ExprKind::Tuple(elems) | ExprKind::List(elems) | ExprKind::Array(elems) => {
+                elems.iter().map(depth).max().unwrap_or(0)
+            }
+            ExprKind::Int(_)
+            | ExprKind::Float(_)
+            | ExprKind::String(_)
+            | ExprKind::Char(_)
+            | ExprKind::Var(_)
+            | ExprKind::Unit
+            | ExprKind::Error => 0,
+        };
+        // Canonical formatting can wrap a single expression in a layout block;
+        // that transparent wrapper must not change whether its tree is accepted.
+        children + u16::from(!matches!(kind, ExprKind::Block { .. }))
+    }
+
+    fn type_depth(&self, kind: &TypeKind) -> u16 {
+        let depth = |id: &TypeId| self.type_depths[id.index()];
+        let children = match kind {
+            TypeKind::App { func, arg } => depth(func).max(depth(arg)),
+            TypeKind::Arrow { from, to, .. } => depth(from).max(depth(to)),
+            TypeKind::Tuple(elems) => elems.iter().map(depth).max().unwrap_or(0),
+            TypeKind::Record { fields, .. } => {
+                fields.iter().map(|field| depth(&field.ty)).max().unwrap_or(0)
+            }
+            TypeKind::Paren(inner) => depth(inner),
+            TypeKind::Var(_)
+            | TypeKind::Con(_)
+            | TypeKind::EffectRow { .. }
+            | TypeKind::Unit
+            | TypeKind::Error => 0,
+        };
+        children + 1
     }
 
     // --- top level --------------------------------------------------------
@@ -273,6 +413,7 @@ impl Parser<'_> {
             let id = self.alloc_item(item);
             self.module.roots.push(id);
             self.finish_declaration(errors_before);
+            self.recovering_nesting = false;
             if self.pos == before {
                 self.bump(); // guarantee forward progress
             }
@@ -342,6 +483,11 @@ impl Parser<'_> {
     // --- items ------------------------------------------------------------
 
     fn parse_item(&mut self) -> Item {
+        self.nested(Self::parse_item_inner)
+            .unwrap_or_else(|span| Item { kind: ItemKind::Error, span })
+    }
+
+    fn parse_item_inner(&mut self) -> Item {
         let start = self.start();
         let kind = match self.peek() {
             TokenKind::Public => self.parse_exported_item(Visibility::Public, "public"),
@@ -763,6 +909,11 @@ impl Parser<'_> {
     }
 
     fn parse_expr_bp(&mut self, min_bp: u8) -> ExprId {
+        self.nested(|parser| parser.parse_expr_bp_inner(min_bp))
+            .unwrap_or_else(|span| self.alloc_expr(ExprKind::Error, span))
+    }
+
+    fn parse_expr_bp_inner(&mut self, min_bp: u8) -> ExprId {
         let start = self.start();
         let mut lhs = self.parse_unary();
         while let Some(op_sym) = self.infix_op_symbol() {
@@ -784,7 +935,9 @@ impl Parser<'_> {
             let start = self.start();
             let op_token = self.bump();
             let op = self.alloc_expr(ExprKind::Var(op_sym), op_token.range);
-            let operand = self.parse_unary();
+            let operand = self
+                .nested(Self::parse_unary)
+                .unwrap_or_else(|span| self.alloc_expr(ExprKind::Error, span));
             self.alloc_expr(ExprKind::Prefix { op, operand }, self.span_from(start))
         } else {
             self.parse_app()
@@ -1084,7 +1237,9 @@ impl Parser<'_> {
                 stmts.push(stmt);
                 self.finish_declaration(errors_before);
             } else {
-                tail = Some(self.parse_expr());
+                // The block's tail occupies the expression layer already
+                // entered by its caller; indentation adds no semantic nesting.
+                tail = Some(self.parse_expr_bp_inner(0));
                 while self.eat(TokenKind::LayoutSep) {}
                 if !self.at(TokenKind::LayoutClose) && !self.at_eof() {
                     let span = self.cur().range;
@@ -1159,6 +1314,11 @@ impl Parser<'_> {
 
     /// `head :: tail` — right-associative cons.
     fn parse_pattern_cons(&mut self) -> PatId {
+        self.nested(Self::parse_pattern_cons_inner)
+            .unwrap_or_else(|span| self.alloc_pat(PatKind::Error, span))
+    }
+
+    fn parse_pattern_cons_inner(&mut self) -> PatId {
         let start = self.start();
         let head = self.parse_pattern_app();
         if self.eat(TokenKind::ColonColon) {
@@ -1321,6 +1481,11 @@ impl Parser<'_> {
     }
 
     fn parse_type_arrow(&mut self) -> TypeId {
+        self.nested(Self::parse_type_arrow_inner)
+            .unwrap_or_else(|span| self.alloc_ty(TypeKind::Error, span))
+    }
+
+    fn parse_type_arrow_inner(&mut self) -> TypeId {
         let start = self.start();
         let from = self.parse_type_tuple();
         if self.eat(TokenKind::Arrow) {

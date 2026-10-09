@@ -362,6 +362,22 @@ fn warm_check_tracks_source_addition_and_removal() {
 }
 
 #[test]
+fn oversized_syntax_keeps_the_daemon_alive_and_formatting_non_destructive() {
+    let text = format!("module Deep\nlet value = {}1{}\n", "(".repeat(10_000), ")".repeat(10_000));
+    let daemon = Daemon::new("deep-syntax", &[("Deep.fai", &text)]);
+    let checked = daemon.run(&["check", "--no-examples"], &["--message-format=json"]);
+    assert_eq!(checked.status.code(), Some(1));
+    assert!(stdout(&checked).contains("FAI1023"));
+    let pid = status_pid(&daemon).unwrap();
+    let formatted = daemon.run(&["fmt"], &["--message-format=json"]);
+    assert_eq!(formatted.status.code(), Some(1));
+    assert_eq!(std::fs::read_to_string(daemon.workspace.join("Deep.fai")).unwrap(), text);
+    std::fs::write(daemon.workspace.join("Deep.fai"), "module Deep\nlet value = 1\n").unwrap();
+    assert!(daemon.run(&["check", "--no-examples"], &[]).status.success());
+    assert_eq!(status_pid(&daemon), Some(pid));
+}
+
+#[test]
 fn warm_check_reports_a_failing_example() {
     let daemon = Daemon::new(
         "checkexample",

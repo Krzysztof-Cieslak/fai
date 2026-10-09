@@ -214,6 +214,18 @@ fn codes(diags: &[Value]) -> Vec<String> {
 }
 
 #[test]
+fn oversized_syntax_does_not_terminate_the_language_server() {
+    let workspace = unique_workspace();
+    let mut lsp = Lsp::start(workspace);
+    let text = format!("module Deep\nlet value = {}1{}\n", "(".repeat(10_000), ")".repeat(10_000));
+    let uri = lsp.did_open("Deep.fai", &text);
+    assert!(codes(&lsp.await_diagnostics(&uri)).contains(&"FAI1023".to_owned()));
+    lsp.did_change("Deep.fai", 2, "module Deep\nlet value = 1\n");
+    assert!(lsp.await_diagnostics(&uri).is_empty());
+    lsp.shutdown();
+}
+
+#[test]
 fn example_failure_appears_on_save_and_clears_on_edit() {
     let workspace = unique_workspace();
     let src = "module Bad\nexample: 1 = 2\n";

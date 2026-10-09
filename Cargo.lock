@@ -897,6 +897,7 @@ dependencies = [
  "proptest",
  "rustc-hash",
  "salsa",
+ "wait-timeout",
 ]
 
 [[package]]

@@ -110,6 +110,12 @@ Indentation does not fit the offside rule — typically a block body that is not
 
 Every file must begin with a `module Name` header naming an upper-case module; it is missing or malformed.
 
+### FAI1023 — syntax nesting limit exceeded
+
+**Severity:** error
+
+The source exceeds 128 recursive grammar levels or 512 expression/type-tree levels (including operator, application, and field chains). Split deeply nested code into named helpers or intermediate bindings. The parser skips the rest of the enclosing top-level declaration and continues at the next layout boundary; formatting leaves the erroneous source unchanged.
+
 ### FAI1030 — construct not yet supported
 
 **Severity:** error

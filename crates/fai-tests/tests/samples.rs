@@ -123,6 +123,7 @@ const TYPECHECK_CLEAN: &[&str] = &[
     "Math.fai",
     "NativeCapability.fai",
     "NestedModules.fai",
+    "Nesting.fai",
     "NetDemo.fai",
     "Opaque.fai",
     "OpaqueClient.fai",
