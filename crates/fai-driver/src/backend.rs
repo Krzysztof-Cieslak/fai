@@ -1529,6 +1529,11 @@ fn link_unix(
     let linker = std::env::var("CC").unwrap_or_else(|_| "cc".to_owned());
     let mut command = std::process::Command::new(&linker);
     command.args(objects).arg(archive).arg("-o").arg(out.as_std_path());
+    command.arg(if cfg!(target_vendor = "apple") {
+        "-Wl,-dead_strip"
+    } else {
+        "-Wl,--gc-sections"
+    });
     // Search directories for the runtime archive's bundled dependency libraries.
     for dir in runtime_lib_dirs() {
         command.arg(format!("-L{}", dir.display()));
@@ -1564,7 +1569,7 @@ fn link_msvc(
 ) -> Result<(), String> {
     let linker = std::env::var("FAI_LINKER").unwrap_or_else(|_| "link.exe".to_owned());
     let mut command = std::process::Command::new(&linker);
-    command.arg("/NOLOGO").arg("/SUBSYSTEM:CONSOLE").arg(format!("/OUT:{out}"));
+    command.arg("/NOLOGO").arg("/SUBSYSTEM:CONSOLE").arg("/OPT:REF").arg(format!("/OUT:{out}"));
     // Search directories for the runtime archive's bundled dependency libraries
     // (e.g. `windows-targets`'s `windows.<ver>.lib`).
     for dir in runtime_lib_dirs() {

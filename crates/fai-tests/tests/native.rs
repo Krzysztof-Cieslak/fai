@@ -318,6 +318,46 @@ const char* fai_test_shout(const char* p, int64_t len, int64_t* out_len) {
     assert_eq!(run.status.code(), Some(0));
 }
 
+#[cfg(unix)]
+#[test]
+fn native_object_initializers_survive_section_elimination() {
+    let dir = unique_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    let c_source = r#"
+#include <stdint.h>
+static int64_t initialized;
+__attribute__((constructor)) static void initialize(void) { initialized = 42; }
+int64_t fai_initialized_value(int64_t add) { return initialized + add; }
+"#;
+    let Some(_) = compile_c_object(&dir, "initializer", c_source) else {
+        eprintln!("skipping: no C compiler available");
+        return;
+    };
+    std::fs::write(dir.join("fai.toml"), "[native]\nobjects = [\"initializer.o\"]\n").unwrap();
+    std::fs::write(dir.join("Main.fai"), "module Main\nforeign \"fai_initialized_value\" initialized : Int -> Int / { Console }\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (initialized 0))\n").unwrap();
+    let executable = dir.join("program");
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let code = fai_cli::run(
+        [
+            "fai",
+            "build",
+            "--no-daemon",
+            "-C",
+            dir.to_str().unwrap(),
+            "Main.fai",
+            "--out",
+            executable.to_str().unwrap(),
+        ],
+        &mut out,
+        &mut err,
+    );
+    assert_eq!(code, 0, "{}{}", String::from_utf8_lossy(&out), String::from_utf8_lossy(&err));
+    let output = Command::new(executable).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(output.stdout, b"42\n");
+}
+
 #[test]
 fn tls_plaintext_reports_bounded_write_progress() {
     let (out, code) = build_and_run(indoc! {r#"

@@ -813,6 +813,10 @@ Reuse & in-place update:
     path releases an owned root once. This removes per-node cursor count traffic
     while keeping zero extra heap storage and preserving early-return results.
     Primitive list-element classes survive wire erasure for the same worker path.
+    Final native linking enables platform dead-section elimination (ELF/MinGW
+    section GC, Apple dead stripping and MSVC reference elimination), reducing
+    unused runtime text/data and startup memory. Referenced foreign functions and
+    native initialization sections retain their ordinary linker reachability.
     The same retained-root proof covers data searches with scalar or niche-scalar
     results when the reachable type contains no resources or functions. A bounded
     type walk records this conservative fact alongside data-shape metadata, keeping
