@@ -62,6 +62,7 @@ mod forward;
 mod length;
 mod mutual;
 mod purity;
+mod reuse_candidates;
 mod reuse_sig;
 mod sroa;
 mod trmc;
@@ -186,6 +187,7 @@ pub fn rc_lowered(db: &dyn Db, lowered: &LoweredDef, self_sig: &BorrowSig) -> Lo
         next = cx.next;
         // Recycle a dead data cell into a same-size construction where one follows.
         let data = data_typed_locals(&body);
+        let data = reuse_candidates::ReuseCandidates::new(&body, data);
         let mut body = reuse_pass(body, &data, &mut next);
         // Drop parameters that the body never mentions (drop-early, at entry) —
         // but never a borrowed parameter (the caller owns and releases it) nor a
@@ -1076,6 +1078,9 @@ fn collect_data_locals(e: &CExpr, out: &mut Locals) {
         K::Recur { args } => args.iter().for_each(|a| collect_data_locals(a, out)),
         K::HoleFill { cell, .. } => collect_data_locals(cell, out),
         K::HoleClose { base, .. } => collect_data_locals(base, out),
+        K::Local(local) if is_boxed_data_ty(&e.ty) => {
+            out.insert(*local);
+        }
         K::Local(_) | K::Lit(_) | K::Global(_) | K::MakeClosure { .. } | K::Error => {}
     }
 }
@@ -1096,10 +1101,10 @@ pub(crate) fn is_boxed_data_ty(ty: &Ty) -> bool {
 
 /// Rewrites the drop of a dead data cell into a reset whose token a same-size
 /// construction on each path reuses; paths with no construction keep a plain drop.
-fn reuse_pass(e: CExpr, data: &Locals, next: &mut usize) -> CExpr {
+fn reuse_pass(e: CExpr, data: &reuse_candidates::ReuseCandidates, next: &mut usize) -> CExpr {
     let CExpr { kind, ty } = e;
     match kind {
-        K::Drop { local, body } if data.contains(&local) => {
+        K::Drop { local, body } if data.can_reuse(local, &body) => {
             let body = reuse_pass(*body, data, next);
             release(local, body, next)
         }

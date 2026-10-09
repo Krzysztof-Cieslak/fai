@@ -428,6 +428,9 @@ can retain the same element reuse as a literal lambda.
 Bounded data-cell resets and same-size reconstructions have inline native fast
 paths. They preserve scalar-slot descriptors and release descendants iteratively;
 shared cells, incompatible tokens, and concurrent execution use runtime fallbacks.
+Reuse selection includes typed parameters and follows local aliases. A projected
+cell whose parent remains live is skipped, letting the actual consumed cell feed
+the reconstruction; merging unique lists therefore recycles their consumed nodes.
 
 Local function shorthand (`let log message = body`) has the same latent effects
 as `let log = fun message -> body`: constructing it is pure, and calling its

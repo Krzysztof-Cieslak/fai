@@ -794,7 +794,12 @@ Reuse & in-place update:
     on a path); the runtime size check makes any pairing correct, recycling in
     place only when the sizes match and otherwise falling back to allocation. Only
     data-typed cells (records, tuples, ADTs, lists, interface dictionaries) are
-    reset, recognized from `let`-binding types.
+    reset, recognized from typed bindings and local/parameter uses. Candidate
+    selection follows simple aliases and rejects a projected child while its
+    parent or an ancestor is still referenced by the continuation. The bounded
+    intra-function scan leaves unknown cases to the runtime uniqueness check.
+    This prevents a guaranteed-shared tail from taking the reuse slot needed by
+    the consumed head cell when merging lists.
   - **Acceptance.** `map`/`filter`/`inc` over a unique list allocate zero fresh
     cells; a shared list copies (the rc==1 guard). A differential allocation-count
     test pins both, and the soundness interpreter is extended to reset/reuse
