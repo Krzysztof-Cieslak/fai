@@ -1945,6 +1945,18 @@ impl<M: Module> Translator<'_, M> {
         // boundary sites convert it back to standard before a uniform slot.
         if let Some(k) = self.niche_local(local) {
             self.mark_niche(v, k);
+        } else if let Some(shapes) = self.lowered.data_shapes.get(self.fn_index)
+            && let Ok(index) = shapes.binary_search_by_key(&local.index(), |(id, _)| id.index())
+        {
+            let shape = shapes[index].1;
+            if rt::compact_data_metadata(shape.max_tag, shape.max_fields as usize, shape.scalars)
+                .is_some()
+            {
+                self.data_offsets.insert(v, rt::COMPACT_FIELDS_OFFSET);
+            }
+            if shape.scalars == 0 {
+                self.data_layouts.insert(v, 0);
+            }
         }
         v
     }
@@ -2739,6 +2751,10 @@ impl<M: Module> Translator<'_, M> {
 
     fn boxed_data_tag(&mut self, cell: Value) -> Value {
         let header = self.builder.ins().atomic_load(types::I64, MemFlags::trusted(), cell);
+        if self.data_offsets.get(&cell) == Some(&rt::COMPACT_FIELDS_OFFSET) {
+            let bits = self.builder.ins().ushr_imm(header, rt::COMPACT_TAG_SHIFT as i64);
+            return self.builder.ins().band_imm(bits, 2047);
+        }
         let compact = self.builder.ins().icmp_imm(IntCC::SignedLessThan, header, 0);
         let small = self.builder.create_block();
         let legacy = self.builder.create_block();

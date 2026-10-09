@@ -532,6 +532,9 @@ unchanged by this allocator policy.
 Compact data headers reduce a two-field cell from 48 to 24 bytes. Non-data buffer
 and handle layouts remain descriptor-based, and compact/extended data values
 interoperate through the same structural and ownership operations.
+Typed locals carry conservative constructor-tag, field-count and scalar-slot
+bounds through the native cache and run bundles. Proven compact data uses direct
+tag extraction and constant field offsets; unknown/open shapes decode at runtime.
 Thread-pool cleanup batches consecutive cells from one slab into one ownership
 release. Generated native `main` destroys live values and checks leaks normally,
 then leaves its dead recycling-cache mappings for process teardown by the OS;

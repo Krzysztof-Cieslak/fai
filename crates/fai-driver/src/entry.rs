@@ -125,6 +125,7 @@ pub(crate) fn prepare(db: &dyn Db, file: SourceFile) -> Result<Entry, Box<Diagno
         entry_borrowed: Vec::new(),
         reuse_entry: None,
         entry_spread_params: Vec::new(),
+        data_shapes: Vec::new(),
     };
     Ok(Entry { entry, runtime, adapter: Some(adapter), concurrent })
 }

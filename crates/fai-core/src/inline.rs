@@ -172,6 +172,7 @@ pub fn core_inlined(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredD
         entry_borrowed: lowered.entry_borrowed.clone(),
         reuse_entry: lowered.reuse_entry.clone(),
         entry_spread_params: lowered.entry_spread_params.clone(),
+        data_shapes: lowered.data_shapes.clone(),
     })
 }
 

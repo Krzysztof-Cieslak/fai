@@ -64,6 +64,9 @@ pub fn fingerprint_def(
         let _ = writeln!(out, "abi {}", abi_tag(&self_abi));
     }
     for (i, f) in def.fns.iter().enumerate() {
+        if let Some(shapes) = def.data_shapes.get(i).filter(|shapes| !shapes.is_empty()) {
+            let _ = writeln!(out, "data-shapes {shapes:?}");
+        }
         let params: Vec<String> = f.params.iter().map(|p| format!("%{}", p.index())).collect();
         let caps: Vec<String> = f.captures.iter().map(|c| format!("%{}", c.index())).collect();
         let _ = write!(out, "fn{i}({})[{}] = ", params.join(","), caps.join(","));

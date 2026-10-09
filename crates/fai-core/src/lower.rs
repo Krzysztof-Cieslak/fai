@@ -77,6 +77,7 @@ pub fn core(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
             entry_borrowed: Vec::new(),
             reuse_entry: None,
             entry_spread_params: Vec::new(),
+            data_shapes: Vec::new(),
         });
     }
 
@@ -87,6 +88,7 @@ pub fn core(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
             entry_borrowed: Vec::new(),
             reuse_entry: None,
             entry_spread_params: Vec::new(),
+            data_shapes: Vec::new(),
         });
     };
 
@@ -119,6 +121,7 @@ pub fn core(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
         entry_borrowed: Vec::new(),
         reuse_entry: None,
         entry_spread_params: Vec::new(),
+        data_shapes: Vec::new(),
     })
 }
 

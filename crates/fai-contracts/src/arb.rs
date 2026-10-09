@@ -410,6 +410,7 @@ impl<'a> ArbBuilder<'a> {
                 entry_borrowed: Vec::new(),
                 reuse_entry: None,
                 entry_spread_params: Vec::new(),
+                data_shapes: Vec::new(),
             },
             2,
         ));
@@ -619,6 +620,7 @@ impl<'a> ArbBuilder<'a> {
                 entry_borrowed: Vec::new(),
                 reuse_entry: None,
                 entry_spread_params: Vec::new(),
+                data_shapes: Vec::new(),
             },
             2,
         ));
@@ -649,6 +651,7 @@ impl<'a> ArbBuilder<'a> {
                 entry_borrowed: Vec::new(),
                 reuse_entry: None,
                 entry_spread_params: Vec::new(),
+                data_shapes: Vec::new(),
             },
             0,
         ));
