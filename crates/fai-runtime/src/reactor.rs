@@ -388,19 +388,23 @@ impl Drop for NetObject {
     }
 }
 
-/// Resolves `host:port` to a socket address. An IP literal is parsed inline (no
+/// Resolves `host:port` to socket addresses. An IP literal is parsed inline (no
 /// blocking); a hostname is resolved on the blocking pool (DNS may block), parking
 /// the calling task. Must be called inside a task for the hostname path.
-fn resolve_addr(host: String, port: u16) -> Result<SocketAddr, String> {
+fn resolve_addrs(host: String, port: u16) -> Result<Vec<SocketAddr>, String> {
     if let Ok(ip) = host.parse::<IpAddr>() {
-        return Ok(SocketAddr::new(ip, port));
+        return Ok(vec![SocketAddr::new(ip, port)]);
     }
-    crate::scheduler::run_blocking(Box::new(move || {
-        (host.as_str(), port)
-            .to_socket_addrs()
-            .map_err(|e| e.to_string())
-            .and_then(|mut addrs| addrs.next().ok_or_else(|| "no address for host".to_owned()))
-    }))
+    crate::scheduler::run_blocking(Box::new(move || resolve_socket_addrs((host.as_str(), port))))
+}
+
+fn resolve_socket_addrs(address: impl ToSocketAddrs) -> Result<Vec<SocketAddr>, String> {
+    address.to_socket_addrs().map(Iterator::collect).map_err(|e| e.to_string())
+}
+
+/// UDP chooses one destination; TCP retains its candidate list until connected.
+fn resolve_addr(host: String, port: u16) -> Result<SocketAddr, String> {
+    resolve_addrs(host, port)?.into_iter().next().ok_or_else(|| "no address for host".to_owned())
 }
 
 /// Wraps socket state as a Fai `KIND_NET` value owning the `Arc`.
@@ -523,8 +527,9 @@ fn accept_loop(sock: &Mutex<TcpListener>, src: &Arc<IoSource>) -> Result<NetObje
 }
 
 /// `Net.connect`: connect to `host:port` (resolving a hostname on the blocking
-/// pool) without blocking a worker. Returns `Result Connection String`. Consumes
-/// `host`; `port` is a checked uniform `Int`.
+/// pool) without blocking a worker. Tries resolved addresses in order until one
+/// connects or the task is cancelled. Returns `Result Connection String`.
+/// Consumes `host`; `port` is a checked uniform `Int`.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_net_connect(host: Value, port: Value) -> Value {
     // SAFETY: `host` is a boxed `String`.
@@ -534,29 +539,54 @@ pub extern "C" fn fai_net_connect(host: Value, port: Value) -> Value {
         Ok(port) => port,
         Err(error) => return err_result(error),
     };
-    let addr = match resolve_addr(h, p) {
-        Ok(a) => a,
-        Err(e) => return err_result(&e),
-    };
-    match TcpStream::connect(addr) {
-        Ok(mut stream) => {
-            let src = match register(&mut stream) {
-                Ok(s) => s,
-                Err(e) => return err_result(&e.to_string()),
-            };
-            // Install the registration's owner before any completion check can
-            // fail or cancel. Its Drop deregisters on every early return; on
-            // success the same owner moves into the public connection handle.
-            let mut connection = NetObject::Conn { sock: Mutex::new(stream), src };
-            if let NetObject::Conn { sock, src } = &mut connection
-                && let Err(error) = finish_connect(sock.get_mut().expect("connection lock"), src)
-            {
-                return err_result(&error);
-            }
-            ok_result(net_handle_value(connection))
-        }
-        Err(e) => err_result(&e.to_string()),
+    if scheduler::is_cancelled() {
+        return err_result(scheduler::CANCELLED_MESSAGE);
     }
+    match resolve_addrs(h, p).and_then(|addrs| connect_candidates(addrs, connect_address)) {
+        Ok(connection) => ok_result(net_handle_value(connection)),
+        Err(error) => err_result(&error),
+    }
+}
+
+/// A failed attempt has released its resources before the next begins. The
+/// caller's cancellation applies to the whole sequence, including empty results.
+fn connect_candidates<T>(
+    addresses: Vec<SocketAddr>,
+    mut connect: impl FnMut(SocketAddr) -> Result<T, String>,
+) -> Result<T, String> {
+    let mut last_error = "no address for host".to_owned();
+    for addr in addresses {
+        if scheduler::is_cancelled() {
+            return Err(scheduler::CANCELLED_MESSAGE.to_owned());
+        }
+        match connect(addr) {
+            Ok(connection) => return Ok(connection),
+            Err(error) => last_error = error,
+        }
+    }
+    if scheduler::is_cancelled() {
+        return Err(scheduler::CANCELLED_MESSAGE.to_owned());
+    }
+    Err(last_error)
+}
+
+fn connect_address(addr: SocketAddr) -> Result<NetObject, String> {
+    connect_address_with(addr, register)
+}
+
+fn connect_address_with(
+    addr: SocketAddr,
+    register_socket: impl FnOnce(&mut TcpStream) -> io::Result<Arc<IoSource>>,
+) -> Result<NetObject, String> {
+    let mut stream = TcpStream::connect(addr).map_err(|e| e.to_string())?;
+    let src = register_socket(&mut stream).map_err(|e| e.to_string())?;
+    // Install the registration's owner before any completion check can fail or
+    // cancel; dropping a failed candidate closes and deregisters it.
+    let mut connection = NetObject::Conn { sock: Mutex::new(stream), src };
+    if let NetObject::Conn { sock, src } = &mut connection {
+        finish_connect(sock.get_mut().expect("connection lock"), src)?;
+    }
+    Ok(connection)
 }
 
 /// Waits for a registered non-blocking connect while its caller owns the socket
@@ -861,6 +891,10 @@ pub extern "C" fn fai_udp_close(sock: Value) -> Value {
     crate::fai_drop(sock);
     crate::FAI_UNIT
 }
+
+#[cfg(test)]
+#[path = "connect_tests.rs"]
+mod connect_tests;
 
 #[cfg(test)]
 mod tests {

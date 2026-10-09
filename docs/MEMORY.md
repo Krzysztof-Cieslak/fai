@@ -3872,6 +3872,11 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   while a non-blocking connection is still pending. Failure or cancellation drops
   that owner and removes the reactor's source-table entry; successful completion
   transfers the same owner into the connection handle.
+  TCP connect preserves the full resolver result and attempts addresses in order,
+  closing each failed candidate before the next. Task cancellation is checked
+  before resolution and between attempts; all failures return the final error
+  (an empty result returns "no address for host"). HTTP inherits this behavior
+  through its Net capability for both one-shot and pooled connections.
   Each operation runs on its task and parks on the reactor at every would-block; a
   hostname (in `connect`/`udpSend`) is resolved on the blocking pool (D140) while an
   IP literal is parsed inline (no park). The whole-program **execution gate** (D139) triggers on

@@ -22,6 +22,8 @@ let serve env listener =
 
 // Connect to a local port, send a message, and return the echoed reply (or the
 // error message).
+// With a hostname, connect tries every resolved address until one connects,
+// unless task cancellation stops the operation. Numeric addresses bypass DNS.
 talk : { net : Net | _ } -> Int -> String / { Net }
 let talk env port =
   match env.net.connect "127.0.0.1" port with
