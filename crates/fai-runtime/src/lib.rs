@@ -2876,8 +2876,8 @@ unsafe fn string_cap(v: Value) -> usize {
 /// building a string by repeated concatenation onto a unique accumulator is
 /// amortized O(total length) rather than re-copying the whole accumulator at each
 /// step. A *shared* left operand is forked into a fresh tight buffer (a
-/// uniqueness-loss copy). Concatenation with the empty string returns the other
-/// operand without copying.
+/// uniqueness-loss copy), or prepended into a fitting unique inline right buffer.
+/// Concatenation with the empty string returns the other operand without copying.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_string_concat(a: Value, b: Value) -> Value {
     // SAFETY: `a` and `b` are boxed `String`s (guaranteed by typing). A uniquely
@@ -2912,6 +2912,18 @@ pub extern "C" fn fai_string_concat(a: Value, b: Value) -> Value {
             write_u64(pa, STRING_LEN_OFFSET, need as u64);
             fai_drop(b);
             return a;
+        }
+
+        if !is_string_slice(b) && rc_load(pb) == 1 && need <= string_cap(b) {
+            // A unique right buffer cannot overlap the left value, including a
+            // left slice (such a slice would retain this buffer). Shift its own
+            // bytes with memmove semantics, then place the prefix in the gap.
+            let bytes = pb.add(STRING_BYTES_OFFSET);
+            std::ptr::copy(bytes, bytes.add(la), lb);
+            std::ptr::copy_nonoverlapping(a_ptr, bytes, la);
+            write_u64(pb, STRING_LEN_OFFSET, need as u64);
+            fai_drop(a);
+            return b;
         }
 
         let q = if inline_unique {

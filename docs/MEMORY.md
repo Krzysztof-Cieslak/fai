@@ -2845,9 +2845,11 @@ Editor integration:
     `size` header (`string_cap = size − STRING_BYTES_OFFSET`), exactly as `Array`
     derives element capacity, so no field is added and the codegen static-literal
     emission is untouched. When the left operand is uniquely owned (`rc == 1`) it
-    appends `b`'s bytes into the spare capacity and bumps the length; when unique
-    but full it grows into a **doubled** buffer and reclaims the old memory; when
-    **shared** it forks a fresh **tight** buffer (a counted uniqueness-loss copy).
+    appends `b`'s bytes into the spare capacity and bumps the length. Otherwise, a
+    fitting unique inline right buffer can absorb the prefix with an overlap-safe
+    byte shift. If neither buffer fits, a unique left grows into a **doubled**
+    buffer; a shared left forks a fresh **tight** buffer (a counted uniqueness-loss
+    copy). Right-buffer reuse preserves shared operands and borrowing slice bases.
     Concatenating the empty string returns the other operand without copying. Leaf
     constructors (`make_string`, `Int.toString`, …) allocate tight: only the
     unique-but-full grow path over-allocates, so a one-shot `a ++ b` wastes nothing

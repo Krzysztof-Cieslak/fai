@@ -389,6 +389,10 @@ Growing a `HashDict` or `HashSet` reuses its existing entry cells in the new
 bucket array. Rehashing allocates no replacement entry for an unchanged key/value;
 shared snapshots keep their contents through ordinary reference counting.
 
+String concatenation prefers appending into a fitting unique left buffer. When
+that cannot fit, a unique inline right buffer with enough capacity can absorb the
+prefix in place. Shared operands and borrowing slices retain their contents.
+
 ```fai
 module Hello
 

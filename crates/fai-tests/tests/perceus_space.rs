@@ -62,6 +62,11 @@ let largeArrays n = largeLoop n 0
 let sumDown n = if n <= 0 then 0 else n + sumDown (n - 1)
 public additionLoop : Int -> Int
 let additionLoop n = sumDown n
+let stringPrefixLoop n acc =
+  if n <= 0 then acc else
+    stringPrefixLoop (n - 1) (acc + String.length ("abcde" ++ Int.toString (n % 10)))
+public stringPrefixes : Int -> Int
+let stringPrefixes n = stringPrefixLoop n 0
 public main : Runtime -> Unit
 let main r = ()
 "#;
@@ -209,4 +214,14 @@ fn addition_tail_accumulator_uses_no_heap_storage() {
     assert_eq!(short, long);
     assert_eq!(long.peak_bytes, 0);
     assert_eq!(long.allocations, 0);
+}
+
+#[test]
+fn repeated_string_prefixes_keep_peak_storage_constant() {
+    let mut harness = Harness::new();
+    let short = harness.measure("stringPrefixes", 8, 8 * 6);
+    let long = harness.measure("stringPrefixes", 4096, 4096 * 6);
+    assert_eq!((long.peak_bytes, long.peak_objects), (short.peak_bytes, short.peak_objects));
+    assert_eq!(long.peak_objects, 1, "concatenation reuses the freshly rendered digit");
+    assert_eq!(long.allocations, 4096);
 }
