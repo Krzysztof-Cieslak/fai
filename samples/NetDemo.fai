@@ -1,5 +1,6 @@
 module NetDemo
 
+// Ports are validated in 0..65535. Zero chooses an ephemeral listener/bind port.
 // TCP networking through the `Net` capability, threaded in from `main`. A program
 // that uses `Net` runs on the scheduler (like `Concurrency`): each operation parks
 // its task on the I/O reactor while it would block, so a server can handle many

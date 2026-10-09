@@ -456,6 +456,10 @@ can be zero when the output buffer is full. Callers drain `takeOutgoing` and ret
 only the unaccepted suffix. `Http` does this with bounded 16 KiB pieces, flushing
 between writes so large HTTPS payloads keep bounded TLS buffering.
 
+TCP and UDP port arguments must be in `0..65535`; invalid signed or full-width
+Ints return `Err` before network activity. Port zero still requests an ephemeral
+port for listen/bind operations.
+
 `Tls.feedIncoming` returns the consumed ciphertext count; on partial or zero
 progress, drain plaintext and retry only the remaining suffix. An empty input
 records transport EOF. `Tls.readPlaintext` returns `Result (Option Bytes) String`:
