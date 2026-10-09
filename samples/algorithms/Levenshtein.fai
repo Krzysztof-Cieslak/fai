@@ -1,7 +1,7 @@
 module Levenshtein
 
-// The edit distance between two integer sequences via the classic two-row dynamic
-// program, with each row an `Array Int` built left to right with O(1) neighbour
+// The edit distance between two integer sequences via a single-row dynamic
+// program, updating one `Array Int` left to right with O(1) neighbour
 // access. (Integer sequences stand in for strings; the standard library has no
 // character indexing.) Matched against Rust's `Vec`-row DP. Used by the
 // Rust-vs-Fai runtime benchmark.
@@ -16,21 +16,22 @@ let min3 a b c =
   let m = if a < b then a else b
   if m < c then m else c
 
-// Build the new DP row for left element `ai` (1-based row index `idx`): `new[0]`
-// is `idx`, then each cell is the min of its left, up, and diagonal neighbours.
-// `old` is the previous row (length m+1) and `bs` the right sequence (length m).
+// Advance the row for left element `ai` (1-based row index `idx`). Save the
+// previous diagonal before overwriting each cell; its new left neighbour is
+// already in the row. A unique row updates in place throughout the computation.
 fillRow : Int -> Int -> Array Int -> Array Int -> Array Int
 let fillRow ai idx bs old =
-  fillFrom ai bs old 1 (Array.push idx (Array.withCapacity (Array.length old)))
+  let diagonal = Array.unsafeGet 0 old
+  fillFrom ai bs 1 diagonal (Array.unsafeSet 0 idx old)
 
-let fillFrom ai bs old j new =
-  if j >= Array.length old then
-    new
+let fillFrom ai bs j diagonal row =
+  if j >= Array.length row then
+    row
   else
+    let up = Array.unsafeGet j row
     let cost = if ai = Array.unsafeGet (j - 1) bs then 0 else 1
-    let here =
-      min3 (Array.unsafeGet (j - 1) new + 1) (Array.unsafeGet j old + 1) (Array.unsafeGet (j - 1) old + cost)
-    fillFrom ai bs old (j + 1) (Array.push here new)
+    let here = min3 (Array.unsafeGet (j - 1) row + 1) (up + 1) (diagonal + cost)
+    fillFrom ai bs (j + 1) up (Array.unsafeSet j here row)
 
 // Fold over the left sequence, advancing one DP row per element.
 runRows : Int -> Array Int -> Array Int -> Array Int -> Array Int
@@ -48,6 +49,7 @@ let run n =
   let final = runRows 1 a b (Array.range 0 (Array.length b + 1))
   Array.unsafeGet (Array.length final - 1) final
 example: run 3 = 2
+example: run 0 = 0
 
 public main : Runtime -> Unit / { Console }
 let main runtime = runtime.console.writeLine (Int.toString (run 150))

@@ -350,7 +350,7 @@ pub fn float_matrix_multiply(n: i64) -> f64 {
 }
 
 /// The edit distance between two length-`n` integer sequences (`i%7` and
-/// `(i*3)%7`) by the two-row dynamic program the Fai version mirrors.
+/// `(i*3)%7`) by the single-row dynamic program the Fai version mirrors.
 #[must_use]
 pub fn levenshtein(n: i64) -> i64 {
     let a: Vec<i64> = (0..n).map(|i| i % 7).collect();

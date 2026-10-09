@@ -281,7 +281,7 @@ let float_matrix_multiply n =
     rows;
   !acc
 
-(* The edit distance between two length-`n` integer sequences by a two-row DP. *)
+(* The edit distance between two length-`n` integer sequences by a single-row DP. *)
 let levenshtein n =
   let a = Array.init n (fun i -> i mod 7) in
   let b = Array.init n (fun i -> i * 3 mod 7) in
