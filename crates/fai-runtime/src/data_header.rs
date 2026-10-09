@@ -81,6 +81,46 @@ impl DataLayout {
     }
 }
 
+/// Immutable shape metadata read once for a complete structural operation.
+pub(super) struct DataShape {
+    /// Logical constructor tag.
+    pub(super) tag: u64,
+    /// Initialized field count.
+    pub(super) fields: usize,
+    /// Raw Float slots; every other field is a uniform value.
+    pub(super) scalars: u64,
+    /// Byte offset of the first field.
+    pub(super) offset: usize,
+}
+
+impl DataShape {
+    /// # Safety
+    /// `p` is a live initialized data cell, retained throughout the operation.
+    #[inline]
+    pub(super) unsafe fn read(p: *const u8) -> Self {
+        // SAFETY: both layouts describe this live cell's immutable shape. Compact
+        // metadata shares the RC word, so take one atomic snapshot of that word.
+        unsafe {
+            let word = header_word(p);
+            if word & COMPACT_DATA != 0 {
+                Self {
+                    tag: (word >> COMPACT_TAG_SHIFT) & 2047,
+                    fields: ((word >> COMPACT_FIELDS_SHIFT) & 15) as usize,
+                    scalars: (word >> COMPACT_SCALARS_SHIFT) & 255,
+                    offset: COMPACT_FIELDS_OFFSET,
+                }
+            } else {
+                Self {
+                    tag: read_u64(p, DATA_TAG_OFFSET),
+                    fields: (read_u64(p, SIZE_OFFSET) as usize - DATA_FIELDS_OFFSET) / 8,
+                    scalars: desc_scalar_bitmap(obj_descriptor(p)),
+                    offset: DATA_FIELDS_OFFSET,
+                }
+            }
+        }
+    }
+}
+
 /// Reads immutable metadata through the same atomic word as a shared count.
 ///
 /// # Safety
@@ -445,5 +485,35 @@ mod tests {
     #[test]
     fn shared_count_overflow_is_reported_before_metadata_can_change() {
         assert_overflow("shared");
+    }
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #![proptest_config(ProptestConfig { cases: 128, ..ProptestConfig::default() })]
+            #[test]
+            fn structural_operations_ignore_raw_or_boxed_field_layout(bits in prop::collection::vec(any::<u64>(), 1..21), tag in 0i64..4096) {
+                let _guard = lock();
+                let baseline = (live_count(), live_bytes());
+                let raw: Vec<_> = bits.iter().map(|bits| *bits as i64).collect();
+                let boxed: Vec<_> = raw.iter().map(|bits| fai_box_float(*bits)).collect();
+                let uniform = data(tag, &boxed);
+                let descriptor = intern_data_descriptor((1 << raw.len()) - 1);
+                // SAFETY: every initialized field contains raw Float bits, matching
+                // the immutable descriptor's scalar bitmap and the field count.
+                let scalar = unsafe {
+                    fai_make_data_scalar(descriptor, tag, raw.len() as i64, raw.as_ptr())
+                };
+                prop_assert!(values_equal(uniform, scalar));
+                prop_assert_eq!(values_compare(uniform, scalar), std::cmp::Ordering::Equal);
+                prop_assert_eq!(values_compare(scalar, uniform), std::cmp::Ordering::Equal);
+                prop_assert_eq!(values_hash(uniform), values_hash(scalar));
+                fai_drop(uniform);
+                fai_drop(scalar);
+                prop_assert_eq!((live_count(), live_bytes()), baseline);
+            }
+        }
     }
 }
