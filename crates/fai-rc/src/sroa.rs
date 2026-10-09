@@ -174,6 +174,15 @@ impl Sroa<'_> {
     fn rewrite_op(&mut self, e: CExpr, binds: &mut Vec<Bind>) -> CExpr {
         let CExpr { kind, ty } = e;
         match kind {
+            K::If { cond, then, els } => {
+                // A-normal form also binds conditional values (including the
+                // branches of &&/||). Their projections need the same component
+                // rewriting as a conditional in tail position.
+                let cond = Box::new(self.rewrite_atom(*cond, binds));
+                let then = Box::new(self.scoped(*then, None));
+                let els = Box::new(self.scoped(*els, None));
+                CExpr::new(K::If { cond, then, els }, ty)
+            }
             K::DataField { base, index, scalar, niche } => {
                 if let (K::Local(v), FieldIndex::Const(i)) = (&base.kind, index)
                     && let Some(cs) = self.comps.get(v)

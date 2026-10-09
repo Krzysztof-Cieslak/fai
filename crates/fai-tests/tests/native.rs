@@ -8,6 +8,26 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use indoc::{formatdoc, indoc};
 
+#[test]
+fn wide_float_return_crosses_the_native_first_class_wrapper() {
+    let library = "module Wide\npublic type V = { x : Float, y : Float, z : Float }\npublic shift : V -> V\nlet shift v = { x = v.x + 1.0, y = v.y + 2.0, z = v.z + 3.0 }\n";
+    let main = "module Main\nlet apply n f x = if n = 0 then f x else apply (n - 1) f x\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let v = apply 1 Wide.shift { x = 1.0, y = 2.0, z = 3.0 }\n  r.console.writeLine (Int.toString (Float.toInt (v.x + v.y + v.z)))\n";
+    assert_eq!(
+        build_and_run_files(&[("Wide.fai", library), ("Main.fai", main)]),
+        ("12\n".into(), Some(0))
+    );
+}
+
+#[test]
+fn eight_float_native_return_accepts_spilled_arguments() {
+    let library = "module Wide\npublic type V = { a : Float, b : Float, c : Float, d : Float, e : Float, f : Float, g : Float, h : Float }\npublic add : V -> V -> V\nlet add x y = { a = x.a + y.a, b = x.b + y.b, c = x.c + y.c, d = x.d + y.d, e = x.e + y.e, f = x.f + y.f, g = x.g + y.g, h = x.h + y.h }\n";
+    let main = "module Main\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let a = { a = 1.0, b = 2.0, c = 3.0, d = 4.0, e = 5.0, f = 6.0, g = 7.0, h = 8.0 }\n  let b = Wide.add a a\n  let c = Wide.add b a\n  r.console.writeLine (Int.toString (Float.toInt (c.a + c.b + c.c + c.d + c.e + c.f + c.g + c.h)))\n";
+    assert_eq!(
+        build_and_run_files(&[("Wide.fai", library), ("Main.fai", main)]),
+        ("108\n".into(), Some(0))
+    );
+}
+
 /// Builds `src` (as `Main.fai`) into a native binary and runs it, returning its
 /// `(stdout, exit_code)`.
 fn build_and_run(src: &str) -> (String, Option<i32>) {

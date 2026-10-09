@@ -218,6 +218,21 @@ fn bundle_survives_the_json_transport_hop() {
 }
 
 #[test]
+fn wide_float_return_survives_the_json_transport_hop() {
+    let library = "module Wide\npublic type V = { x : Float, y : Float, z : Float }\npublic shift : V -> V\nlet shift v = { x = v.x + 1.0, y = v.y + 2.0, z = v.z + 3.0 }\n";
+    let main = "module Main\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let v = Wide.shift { x = 1.0, y = 2.0, z = 3.0 }\n  r.console.writeLine (Int.toString (Float.toInt (v.x + v.y + v.z)))\n";
+    let dir = workspace(&[("Main.fai", main), ("Wide.fai", library)]);
+    let session = Session::open(dir).unwrap();
+    let bundle = build_run_bundle(session.db(), entry(&session, "Main.fai")).bundle.unwrap();
+    let json = serde_json::to_vec(&bundle).unwrap();
+    let decoded: fai_driver::WireBundle = serde_json::from_slice(&json).unwrap();
+    let _guard = RUN_LOCK.lock().unwrap();
+    fai_runtime::capture_start();
+    assert_eq!(jit_run_bundle(&decoded), 0);
+    assert_eq!(fai_runtime::capture_take(), "12\n");
+}
+
+#[test]
 fn owned_map_slots_survive_the_json_transport_hop() {
     let source = indoc! {r#"
         module Main

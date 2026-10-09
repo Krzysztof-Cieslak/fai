@@ -70,6 +70,107 @@ fn same_allocs_when_register_returned(ffa: &str, scalar: &str, expect: &str, ret
     }
 }
 
+const WIDE: &str = r#"module Wide
+public type V2 = { a : Float, b : Float }
+public echo2 : V2 -> V2
+let echo2 v = v
+public type V3 = { x : Float, y : Float, z : Float }
+public shift3 : V3 -> V3
+let shift3 v = { x = v.x + 1.0, y = v.y + 2.0, z = v.z + 3.0 }
+public echo3 : V3 -> V3
+let echo3 v = v
+public sum3 : V3 -> Float
+let sum3 v = v.x + v.y + v.z
+public create3 : Int -> V3
+let create3 n = if n > 0 then create3 (n - 1) else { x = 1.0, y = 2.0, z = 3.0 }
+public type V8 = { a : Float, b : Float, c : Float, d : Float, e : Float, f : Float, g : Float, h : Float }
+public add8 : V8 -> V8 -> V8
+let add8 x y = { a = x.a + y.a, b = x.b + y.b, c = x.c + y.c, d = x.d + y.d, e = x.e + y.e, f = x.f + y.f, g = x.g + y.g, h = x.h + y.h }
+public sum8 : V8 -> Float
+let sum8 x = x.a + x.b + x.c + x.d + x.e + x.f + x.g + x.h
+"#;
+
+#[track_caller]
+fn module_allocs(library: &str, main: &str, expected: &str) -> i64 {
+    let _guard = lock();
+    let mut db = FaiDatabase::new();
+    fai_types::std_lib::load_std(&mut db);
+    db.add_source("Wide.fai".into(), library.into());
+    let id = db.add_source("M.fai".into(), main.into());
+    rt::capture_start();
+    rt::reset_allocations();
+    let outcome = jit_run_program(&db, db.source_file(id).unwrap());
+    let allocations = rt::allocations();
+    assert_eq!(outcome.exit_code, 0, "{:?}", outcome.diagnostics);
+    assert_eq!(rt::capture_take().trim(), expected);
+    allocations
+}
+
+#[test]
+fn three_float_results_cross_a_module_without_a_cell() {
+    let main = "module M\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (Float.toInt (Wide.sum3 (Wide.shift3 { x = 1.0, y = 2.0, z = 3.0 }))))\n";
+    let scalar = "module M\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (Float.toInt (2.0 + 4.0 + 6.0)))\n";
+    let wide = module_allocs(WIDE, main, "12");
+    let baseline = module_allocs(WIDE, scalar, "12");
+    if cfg!(any(target_arch = "x86_64", target_arch = "aarch64")) {
+        assert_eq!(wide, baseline, "a direct three-component result needs no heap cell");
+    }
+}
+
+#[test]
+fn eight_float_results_support_spilled_arguments() {
+    let main = "module M\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let a = { a = 1.0, b = 2.0, c = 3.0, d = 4.0, e = 5.0, f = 6.0, g = 7.0, h = 8.0 }\n  let b = Wide.add8 a a\n  let c = Wide.add8 b a\n  r.console.writeLine (Int.toString (Float.toInt (Wide.sum8 c)))\n";
+    let scalar = "module M\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (Float.toInt 108.0))\n";
+    let wide = module_allocs(WIDE, main, "108");
+    let baseline = module_allocs(WIDE, scalar, "108");
+    if cfg!(any(target_arch = "x86_64", target_arch = "aarch64")) {
+        assert_eq!(wide, baseline, "wide results remain in registers across repeated calls");
+    }
+}
+
+#[test]
+fn wide_return_first_class_wrapper_keeps_the_uniform_boundary() {
+    let main = "module M\nlet apply n f x = if n = 0 then f x else apply (n - 1) f x\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let v = apply 1 Wide.shift3 { x = 1.0, y = 2.0, z = 3.0 }\n  r.console.writeLine (Int.toString (Float.toInt (Wide.sum3 v)))\n";
+    module_allocs(WIDE, main, "12");
+}
+
+#[test]
+fn scalar_only_factory_keeps_its_previous_return_budget() {
+    let mut db = FaiDatabase::new();
+    fai_types::std_lib::load_std(&mut db);
+    let id = db.add_source("Wide.fai".into(), WIDE.into());
+    let file = db.source_file(id).unwrap();
+    let name = fai_syntax::Symbol::intern("create3");
+    if fai_core::ir::max_spread_return() < 3 {
+        assert!(fai_core::abi::abi(&db, file, name).spread_return().is_none());
+        assert!(fai_core::pretty_def(&fai_rc::rc(&db, file, name)).contains("(join "));
+    }
+}
+
+#[test]
+fn wide_results_preserve_signed_zero_and_nan_payloads() {
+    let main = "module M\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let v = Wide.echo3 { x = -0.0, y = Float.fromBits 0x7ff8000000001234, z = Float.fromBits 0xfff8000000005678 }\n  let ok = Float.toBits v.x = 0x8000000000000000 && Float.toBits v.y = 0x7ff8000000001234 && Float.toBits v.z = 0xfff8000000005678\n  r.console.writeLine (if ok then \"yes\" else \"no\")\n";
+    module_allocs(WIDE, main, "yes");
+}
+
+#[test]
+fn conditional_values_rewrite_two_component_projections() {
+    let main = "module M\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let v = Wide.echo2 { a = 1.0, b = 2.0 }\n  let ok = v.a = 1.0 && v.b = 2.0\n  r.console.writeLine (if ok then \"yes\" else \"no\")\n";
+    module_allocs(WIDE, main, "yes");
+}
+
+#[test]
+fn opaque_wide_return_uses_the_physical_layout_without_exposing_it() {
+    let library = "module Wide\npublic opaque type V = { x : Float, y : Float, z : Float }\npublic make : Float -> Float -> Float -> V\nlet make x y z = { x = x, y = y, z = z }\npublic shift : V -> V\nlet shift v = { x = v.x + 1.0, y = v.y + 2.0, z = v.z + 3.0 }\npublic sum : V -> Float\nlet sum v = v.x + v.y + v.z\n";
+    let main = "module M\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (Float.toInt (Wide.sum (Wide.shift (Wide.make 1.0 2.0 3.0)))))\n";
+    let baseline = "module M\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (Float.toInt (Wide.sum (Wide.make 2.0 4.0 6.0))))\n";
+    let wide = module_allocs(library, main, "12");
+    let scalar = module_allocs(library, baseline, "12");
+    if cfg!(any(target_arch = "x86_64", target_arch = "aarch64")) {
+        assert_eq!(wide, scalar, "the abstract shift result adds no box");
+    }
+}
+
 const VEC2: &str = "module M\n\
     public type Vec2 = { x : Float, y : Float }\n\
     public add2 : Vec2 -> Vec2 -> Vec2\n\

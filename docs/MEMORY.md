@@ -3555,7 +3555,7 @@ Editor integration:
   it fits the target's float return-register budget** — a wider result is returned
   as the boxed scalar-slot cell instead, because a multi-value return must fit
   entirely in registers (unlike arguments, returns cannot spill). The cap is the
-  host's float return-register count — **AArch64 eight, x86-64 System V two,
+  host's default float return-register count — **AArch64 eight, x86-64 System V two,
   Windows x64 one** — a compile-time constant, since the compiler only ever targets
   the host (the JIT and the AOT object path both build for the host triple, which
   the object cache key already includes). So `Vec2`/`Mat2` vector-matrix algebra,
@@ -3563,6 +3563,13 @@ Editor integration:
   pipelines compute allocation-free, where D113 only unboxed a *scalar* `Float` and
   #114 (the in-cell slot layout) only stopped per-field boxing of a *heap-resident*
   aggregate.
+  - **Private wide returns.** An x86-64 direct entry that already takes a spread
+    aggregate parameter may return up to eight Float components through
+    Cranelift's private `Tail` convention. The choice is signature-derived;
+    scalar-only and uniform entries keep the default budget, preserving existing
+    tail-loop eligibility. Native and first-class boundaries retain their C ABI
+    wrappers. This removes the result box from three-component vector helpers
+    without monomorphizing generic code or exposing a representation change.
   - **Type-directed, not escape analysis.** The representation is the exact analog
     of the scalar-`Float` rule (D113): an FFA is carried as its components and
     **materialized into the in-cell `f64`-slot layout on demand** wherever it
@@ -3603,6 +3610,9 @@ Editor integration:
     **borrowed anchor** that carries no runtime value (reference counting must not
     duplicate or drop it); its components are bound directly from the incoming
     registers, recorded in `LoweredDef::entry_spread_params`.
+    Conditional values bound by a `let`, including nested short-circuit Boolean
+    expressions, rewrite component projections in each branch too; no branch may
+    retain a reference to an aggregate anchor whose cell was eliminated.
   - **Code generation.** Multi-value entry/return signatures (each parameter group
     keyed on the runtime arity, a spread expanded to its `f64` registers); the
     body's tail returns its components directly (an `if` returns from each branch,

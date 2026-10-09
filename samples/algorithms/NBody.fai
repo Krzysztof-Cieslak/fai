@@ -4,7 +4,8 @@ module NBody
 // steps: each step accumulates the pairwise inverse-square forces (with a `sqrt`
 // for the distance), updates velocities, then positions. The bodies live in an
 // `Array` for O(1) indexed access (matching the Rust `Vec` baseline), and each is
-// a record with boxed `Float` fields. Used by the Rust-vs-Fai runtime benchmark.
+// a record with raw `Float` slots. Fixed-shape acceleration vectors can cross
+// direct helper calls in registers. Used by the Rust-vs-Fai runtime benchmark.
 type Body = { mass : Float, vx : Float, vy : Float, vz : Float, x : Float, y : Float, z : Float }
 
 type Accel = { ax : Float, ay : Float, az : Float }
