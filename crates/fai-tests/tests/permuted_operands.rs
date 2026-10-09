@@ -4,15 +4,16 @@ use fai_db::{Db, FaiDatabase};
 use fai_syntax::Symbol;
 
 #[test]
-fn indexing_loop_releases_its_owner_only_at_exit() {
+fn indexing_loop_borrows_its_invariant_owner() {
     let mut db = FaiDatabase::new();
     fai_types::std_lib::load_std(&mut db);
     let id = db.add_source("M.fai".into(), "module M\npublic total : Int -> Float -> Array Float -> Float\nlet total i acc xs = if i >= Array.length xs then acc else total (i + 1) (acc + Array.unsafeGet i xs) xs\n".into());
     let result = fai_rc::rc(&db, db.source_file(id).unwrap(), Symbol::intern("total"));
     let owner = result.entry().params[2].index();
     let text = fai_core::pretty_def(&result);
+    assert!(result.entry_param_borrowed(2), "{text}");
     assert!(!text.contains(&format!("dup %{owner}")), "{text}");
-    assert_eq!(text.matches(&format!("drop %{owner}")).count(), 1, "{text}");
+    assert!(!text.contains(&format!("drop %{owner}")), "{text}");
 }
 
 #[test]
