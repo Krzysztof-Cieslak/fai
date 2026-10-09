@@ -23,6 +23,9 @@ let arrays n = arrayLoop n (Array.init 16 (fun i -> { x = i, y = i }))
 let listLoop n xs = if n <= 0 then List.length xs else listLoop (n - 1) (List.map (fun x -> x + 1) xs)
 public lists : Int -> Int
 let lists n = listLoop n (List.range 0 32)
+let prefixLoop n xs = if n <= 0 then List.length xs else prefixLoop (n - 1) (List.append (List.reverse (List.take 7 xs)) (List.drop 7 xs))
+public prefixes : Int -> Int
+let prefixes n = prefixLoop n (List.range 0 32)
 type Slot = | Full Int
 let readLoop n i xs acc =
   if n <= 0 then acc else
@@ -116,6 +119,11 @@ fn repeated_owned_array_maps_keep_constant_storage() {
 #[test]
 fn repeated_unique_list_maps_keep_constant_storage() {
     bounded_reuse("lists", |_| 32);
+}
+
+#[test]
+fn repeated_prefix_reversals_keep_constant_storage() {
+    bounded_reuse("prefixes", |_| 32);
 }
 
 #[test]

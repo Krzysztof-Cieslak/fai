@@ -3109,6 +3109,12 @@ Editor integration:
     callback completes before the fold begins, so no totality assumption or
     producer/consumer reordering is needed. Shared/escaping flat lists keep their
     construction. The loop consumes chunk spines through ordinary Perceus rules.
+  - **Prefix reversal.** The standard `append (reverse (take n xs)) (drop n xs)`
+    idiom becomes one ownership-aware traversal when the repeated count/list are
+    identical already-evaluated operands. The runtime reverses unique tail edges
+    in place, copies shared cells, and fills the first reversed cell's empty tail
+    with the untouched suffix. All elements and aliases are preserved; negative
+    counts leave the list unchanged and oversized counts reverse the whole list.
   - **Owned same-type maps.** A direct `Array.map` with unchanged element type
     owns its materialized source buffer, copying it once when shared. Internal
     unique/take/put operations move each element into the callback and restore its

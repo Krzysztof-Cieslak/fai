@@ -643,6 +643,9 @@ pub enum Prim {
     /// Borrow a nonescaping data slot while its source array remains live.
     /// Compiler-internal; the result is never transferred or released as owned.
     ArrayPeek,
+    /// Reverse the first count elements and retain the suffix, consuming a list.
+    /// Internal fusion of take/reverse/append/drop; preserves every element.
+    ListReversePrefix,
     /// `Array` element update by index (in place when unique; out-of-bounds aborts).
     ArraySet,
     /// Own a unique array buffer, copying shared inputs. Compiler-internal.
@@ -819,6 +822,7 @@ impl Prim {
             Prim::ArrayLength => "fai_array_length",
             Prim::ArrayGet => "fai_array_get",
             Prim::ArrayPeek => "fai_array_peek",
+            Prim::ListReversePrefix => "fai_list_reverse_prefix",
             Prim::ArraySet => "fai_array_set",
             Prim::ArrayUnique => "fai_array_unique",
             Prim::ArrayTake => "fai_array_take",

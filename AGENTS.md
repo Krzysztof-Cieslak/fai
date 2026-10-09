@@ -444,6 +444,10 @@ list spine. A single-use concatenation binding gets the same treatment.
 `concatMap` still materializes all producer results before the fold starts, so
 producer effects/traps precede every consumer callback. Shared flat lists remain
 ordinary materialized values.
+The standard `append (reverse (take n xs)) (drop n xs)` prefix-reversal idiom
+lowers to one ownership-aware pass when the repeated operands are the same
+already-evaluated values. It reuses unique cons cells, copies shared prefixes and
+retains the untouched suffix, with constant auxiliary storage.
 
 A direct same-element-type `Array.map` over a materialized source owns one
 buffer, copying it once if shared. Each slot moves into its callback and is
