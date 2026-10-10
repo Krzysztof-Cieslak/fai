@@ -1013,6 +1013,9 @@ fn build_fn<M: Module>(
             int_locals: FxHashSet::default(),
             raw_int_values: FxHashSet::default(),
             bool_predicates: FxHashMap::default(),
+            tag_sources: FxHashMap::default(),
+            tag_tests: FxHashMap::default(),
+            known_tags: FxHashMap::default(),
             niche_locals: FxHashMap::default(),
             niche_values: FxHashMap::default(),
             runtime: FxHashMap::default(),
@@ -1481,6 +1484,11 @@ struct Translator<'a, M: Module> {
     /// Tagged Bool results with a dominating raw predicate. Representation stays
     /// uniform at value boundaries; a direct branch can reuse the original test.
     bool_predicates: FxHashMap<Value, Value>,
+    /// SSA tag temporaries and the data local they inspect.
+    tag_sources: FxHashMap<LocalId, LocalId>,
+    tag_tests: FxHashMap<LocalId, (LocalId, u32)>,
+    /// Facts valid only in the currently emitted branch.
+    known_tags: FxHashMap<LocalId, u32>,
     /// Locals that hold a niche `Option` (wrapper-free): the base of a niche-
     /// annotated `DataTag`/`DataField`, which must stay niche for the identity
     /// projection to be correct. Built by [`Translator::collect_niche_locals`]. A
@@ -3265,6 +3273,18 @@ impl<M: Module> Translator<'_, M> {
     /// tag is `(v & 1) ^ 1` (0 for `None`, 1 for `Some`) — rather than a header read.
     fn data_tag(&mut self, base: &CExpr, niche: Option<NicheKind>, result_ty: &Ty) -> Value {
         let v = self.data_base(base);
+        if niche.is_none()
+            && let ExprKind::Local(local) = base.kind
+            && self.niche_local(local).is_none()
+            && let Some(tag) = self.known_tags.get(&local).copied()
+        {
+            let raw = self.builder.ins().iconst(types::I64, i64::from(tag));
+            return if matches!(result_ty, Ty::Con(Con::Int)) {
+                self.mark_raw(raw)
+            } else {
+                self.tag_int(raw)
+            };
+        }
         if let Some(k) = niche {
             // The tag is 0 for `None`, 1 for `Some`. Scheme A: `None` is the
             // immediate `1` (low bit set), `Some` a boxed pointer (clear), so the tag
@@ -3897,6 +3917,19 @@ impl<M: Module> Translator<'_, M> {
     fn bce_transfer(&mut self, local: LocalId, value: &CExpr) {
         // Peel any reference-count wrappers the rc pass inserted around the value.
         let inner = fai_core::bounds::peel_rc(value);
+        if let ExprKind::DataTag { base, niche: None } = &inner.kind
+            && let ExprKind::Local(root) = base.kind
+            && self.niche_local(root).is_none()
+        {
+            self.tag_sources.insert(local, root);
+        } else if let ExprKind::Local(source) = inner.kind
+            && let Some(root) = self.tag_sources.get(&source).copied()
+        {
+            self.tag_sources.insert(local, root);
+        }
+        if let Some(test) = self.tag_test(inner) {
+            self.tag_tests.insert(local, test);
+        }
         if let ExprKind::App { func, args, .. } = &inner.kind
             && let ExprKind::Global(d) = &func.kind
         {
@@ -3907,6 +3940,39 @@ impl<M: Module> Translator<'_, M> {
             }
         }
         self.bounds.transfer_let(local, value);
+    }
+
+    fn tag_test(&self, e: &CExpr) -> Option<(LocalId, u32)> {
+        match &e.kind {
+            ExprKind::Local(local) => self.tag_tests.get(local).copied(),
+            ExprKind::Prim { op: Prim::Eq, args } => {
+                let [left, right] = args.as_slice() else { return None };
+                let (ExprKind::Local(tag), ExprKind::Lit(Lit::Int(value))) =
+                    (&left.kind, &right.kind)
+                else {
+                    return None;
+                };
+                Some((*self.tag_sources.get(tag)?, u32::try_from(*value).ok()?))
+            }
+            _ => None,
+        }
+    }
+
+    fn refine_tag(&mut self, cond: &CExpr, yes: bool) {
+        if let Some((root, tag)) = self.tag_test(cond) {
+            if yes {
+                self.known_tags.insert(root, tag);
+            } else if tag <= 1
+                && self.local_data_shape(root).is_some_and(|shape| {
+                    matches!(
+                        (shape.boxed_tag, shape.immediate_tag),
+                        (Some(0), Some(1)) | (Some(1), Some(0))
+                    )
+                })
+            {
+                self.known_tags.insert(root, 1 - tag);
+            }
+        }
     }
 
     /// Compiles an `Array` length/get/set/push whose operand is a statically
@@ -6442,15 +6508,20 @@ impl<M: Module> Translator<'_, M> {
                 let else_b = self.builder.create_block();
                 self.builder.ins().brif(is_true, then_b, &[], else_b, &[]);
                 let saved_bounds = self.bounds.clone();
+                let saved_tags = self.known_tags.clone();
                 self.builder.switch_to_block(then_b);
                 self.builder.seal_block(then_b);
                 self.bounds.refine(cond, true);
+                self.refine_tag(cond, true);
                 self.spread_return_body(then, n);
                 self.builder.switch_to_block(else_b);
                 self.builder.seal_block(else_b);
                 self.bounds = saved_bounds;
+                self.known_tags = saved_tags.clone();
                 self.bounds.refine(cond, false);
+                self.refine_tag(cond, false);
                 self.spread_return_body(els, n);
+                self.known_tags = saved_tags;
             }
             ExprKind::Let { local, value, body } => {
                 let v = self.expr(value);
@@ -6912,7 +6983,9 @@ impl<M: Module> Translator<'_, M> {
         // the pre-branch facts afterward (neither branch's added facts survive the
         // merge).
         let saved_bounds = self.bounds.clone();
+        let saved_tags = self.known_tags.clone();
         self.bounds.refine(cond, true);
+        self.refine_tag(cond, true);
         let tv = self.expr(then);
         let merge_b = self.builder.create_block();
         let merge_ty = self.builder.func.dfg.value_type(tv);
@@ -6932,7 +7005,9 @@ impl<M: Module> Translator<'_, M> {
         self.builder.switch_to_block(else_b);
         self.builder.seal_block(else_b);
         self.bounds = saved_bounds.clone();
+        self.known_tags = saved_tags.clone();
         self.bounds.refine(cond, false);
+        self.refine_tag(cond, false);
         let ev = self.expr(els);
         // Reconcile the else value to the merge's representation: to the then
         // branch's niche scheme (converting a standard value), or to standard if the
@@ -6951,6 +7026,7 @@ impl<M: Module> Translator<'_, M> {
         self.builder.seal_block(merge_b);
         // Past the merge only the pre-branch facts hold.
         self.bounds = saved_bounds;
+        self.known_tags = saved_tags;
         let result = self.builder.block_params(merge_b)[0];
         if merge_raw {
             self.mark_raw(result);
@@ -7036,6 +7112,7 @@ impl<M: Module> Translator<'_, M> {
     }
 
     fn join_plain(&mut self, params: &[LocalId], body: &CExpr, _result_ty: &Ty) -> Value {
+        let saved_tags = std::mem::take(&mut self.known_tags);
         let header = self.builder.create_block();
         let exit = self.builder.create_block();
 
@@ -7109,6 +7186,7 @@ impl<M: Module> Translator<'_, M> {
         if let Some(k) = exit_niche {
             self.mark_niche(result, k);
         }
+        self.known_tags = saved_tags;
         result
     }
 
@@ -7222,15 +7300,20 @@ impl<M: Module> Translator<'_, M> {
                 let else_b = self.builder.create_block();
                 self.builder.ins().brif(is_true, then_b, &[], else_b, &[]);
                 let saved_bounds = self.bounds.clone();
+                let saved_tags = self.known_tags.clone();
                 self.builder.switch_to_block(then_b);
                 self.builder.seal_block(then_b);
                 self.bounds.refine(cond, true);
+                self.refine_tag(cond, true);
                 self.expr_tail(then);
                 self.builder.switch_to_block(else_b);
                 self.builder.seal_block(else_b);
                 self.bounds = saved_bounds;
+                self.known_tags = saved_tags.clone();
                 self.bounds.refine(cond, false);
+                self.refine_tag(cond, false);
                 self.expr_tail(els);
+                self.known_tags = saved_tags;
             }
             ExprKind::Let { local, value, body } => {
                 if self.version_float_map(*local, value, body) {
