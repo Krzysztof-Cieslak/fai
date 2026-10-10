@@ -15,6 +15,20 @@ use indoc::indoc;
 static RUN_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
+fn materialized_list_concatenation_preserves_worker_producers() {
+    let dir = workspace(&[("Main.fai", include_str!("fixtures/ListConcat.fai"))]);
+    let session = Session::open(dir).unwrap();
+    let result = build_run_bundle(session.db(), entry(&session, "Main.fai"));
+    let bundle = result.bundle.unwrap_or_else(|| panic!("{:?}", result.diagnostics));
+    let rebuilt = fai_driver::bundle_from_slice(&serde_json::to_vec(&bundle).unwrap()).unwrap();
+    let _guard = RUN_LOCK.lock().unwrap();
+    fai_runtime::capture_start();
+    let exit = jit_run_bundle(&rebuilt);
+    let output = fai_runtime::capture_take();
+    assert_eq!((exit, output.as_str()), (0, "produce 1\nproduce 2\nproduce 3\n12\n6\nok\n"));
+}
+
+#[test]
 fn demanded_recursive_results_preserve_the_worker_boundary() {
     let dir = workspace(&[("Main.fai", include_str!("fixtures/DemandedResults.fai"))]);
     let session = Session::open(dir).unwrap();

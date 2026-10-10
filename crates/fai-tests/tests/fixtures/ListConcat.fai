@@ -1,0 +1,14 @@
+module Main
+
+produce : Console -> Int -> List Int / { Console }
+let produce console value =
+  let _ = console.writeLine ("produce " ++ Int.toString value)
+  [value, value]
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let flat = List.concatMap (produce runtime.console) [1, 2, 3]
+  let emptyEdges = List.concat [[], [1], [], [2, 3], []]
+  let _ = runtime.console.writeLine (Int.toString (List.sum flat))
+  let _ = runtime.console.writeLine (Int.toString (List.length flat))
+  runtime.console.writeLine (if emptyEdges = [1, 2, 3] then "ok" else "wrong")

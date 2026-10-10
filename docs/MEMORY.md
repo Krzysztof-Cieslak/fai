@@ -3348,6 +3348,11 @@ Editor integration:
     Scalar replacement keeps the states in registers. Generated functions expose
     their explicit ABI to ownership lowering as well as native emission. Effects,
     traps, resources and cross-element dependencies remain conservative barriers.
+  - **Materialized concatenation.** `List.concat` traverses chunks directly in
+    one constructor-tail loop, without first reversing the outer list. Unique
+    prefix cells are reused, shared prefixes are copied, and the final chunk is
+    transferred intact. `concatMap` still evaluates every producer before this
+    flattening starts; its materialized results and their order are preserved.
   - **Staged concatenation folds.** A fold can walk a materialized list of chunks
     instead of copying `List.concat`'s flattened spine, including a single-use
     concatenation binding. `concatMap` retains a strict map stage: every producer

@@ -517,6 +517,9 @@ contract inputs are independent of the module's ordinary call sites.
 
 A fold over `List.concat` can walk the existing chunks without copying a flat
 list spine. A single-use concatenation binding gets the same treatment.
+Materialized `List.concat` walks chunks directly in one constant-stack loop,
+reusing unique prefix cells and transferring the final chunk intact. Shared
+prefixes are copied. `concatMap` still evaluates every producer before flattening.
 Small directly consumed literal Lists can also be folded without their spine,
 including results of bounded non-recursive same-file producers. Callback and
 initial-accumulator evaluation precede every strict element initializer; fold

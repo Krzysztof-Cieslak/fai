@@ -34,6 +34,11 @@ public chunkSum : List (List Int) -> Int
 let chunkSum chunks = List.foldl (fun acc x -> acc + x) 0 (List.concat chunks)
 example: chunkSum [[1, 2], [], [3]] = 6
 
+/// Materialize chunks in order, including empty chunks at either end.
+public flattenChunks : List (List 'a) -> List 'a
+let flattenChunks chunks = List.concat chunks
+example: flattenChunks [[], [1, 2], [], [3], []] = [1, 2, 3]
+
 /// Reverse a prefix while preserving the remaining elements.
 public reverseFirst : Int -> List 'a -> List 'a
 let reverseFirst n xs = List.append (List.reverse (List.take n xs)) (List.drop n xs)

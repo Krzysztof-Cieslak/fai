@@ -1197,6 +1197,11 @@ sortBy     : ('a -> 'a -> Int / 'e) -> List 'a -> List 'a / 'e   // stable
 sort       : List 'a -> List 'a                       // ascending, structural
 ```
 
+`List.concat` materializes chunks in order with constant native stack space. It
+reuses unique prefix cells and retains the final chunk's spine; shared inputs
+remain immutable. `List.concatMap` evaluates every producer before flattening,
+so a later consumer cannot skip producer effects or traps.
+
 ### Array — contiguous, growable `Array 'a` (O(1) index; literals `[| ... |]`)
 
 List and array combinators remain strict. The compiler can fuse directly nested

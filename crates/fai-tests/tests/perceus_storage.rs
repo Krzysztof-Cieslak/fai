@@ -65,6 +65,12 @@ let resultLoops n total =
     resultLoops (n - 1) (total + value)
 public resultLoop : Int -> Int
 let resultLoop n = resultLoops n 0
+let concatLoops n chunks total =
+  if n <= 0 then total else
+    let flat = List.concat chunks
+    concatLoops (n - 1) chunks (total + List.sum flat + List.length flat)
+public concatLoop : Int -> Int
+let concatLoop n = concatLoops n [List.range 0 16, [], List.range 16 32] 0
 let churn n total =
   if n <= 0 then total else
     let size = if n % 3 = 0 then 8 else if n % 3 = 1 then 128 else 4096
@@ -169,6 +175,11 @@ fn demanded_recursive_results_keep_storage_bounded() {
     let short = observe("resultLoop", 12, 78);
     let long = observe("resultLoop", 12_000, 72_006_000);
     assert_eq!(short, long);
+}
+
+#[test]
+fn concatenating_shared_fixed_chunks_keeps_storage_bounded() {
+    bounded("concatLoop", |n| n * 528);
 }
 
 #[test]
