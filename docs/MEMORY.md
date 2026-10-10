@@ -2625,6 +2625,10 @@ Editor integration:
     pure Int expressions are coalesced first, and ordinary ownership insertion
     balances the peer's references. Branch-only uses, closures and row-offset
     references remain conservative; the explicit marker survives worker transport.
+    Representation-preserving alias coalescing also covers generic values and
+    array/string/byte buffers after borrow signatures are fixed. Distinct generic
+    variable identities share the uniform representation, while concrete scalar,
+    niche and conflicting type observations keep their conversion bindings.
     Structural hash results remain raw across native fast/fallback merges. Runtime
     hashing guarantees a nonnegative 62-bit immediate, so its result is untagged
     directly rather than checked for a possible heap box. Uniform result positions

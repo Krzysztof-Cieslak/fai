@@ -537,6 +537,9 @@ the loop; scalar field conversions retain their normal owned boundaries.
 Representation-preserving data aliases are coalesced before ownership insertion,
 after borrow signatures are fixed. The surviving local retains its type metadata;
 generic/scalar or niche conversion bindings remain explicit.
+Same-representation generic and buffer aliases are coalesced as well. Different
+generic variable names still denote uniform slots; scalar or niche conversions
+and conflicting concrete type observations retain their explicit boundaries.
 Repeated Int values crossing uniform slots in a small straight-line region can
 share one boxed peer while arithmetic retains the raw scalar. Pure duplicate Int
 expressions are coalesced first; ownership insertion balances the shared peer.
