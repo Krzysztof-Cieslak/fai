@@ -3752,12 +3752,14 @@ Editor integration:
     so no N-value merge is needed); spread call arguments are marshalled to
     registers; the first-class wrapper bridges `apply_n` ⇄ the spread entry. A
     `spread-aggregate` `CODEGEN_CONFIG` token retires stale cached objects.
-  - **Deferred (accepted ceilings).** *Loop-carried* float-aggregate state is left
-    boxed: a spread-ABI entry is **not** flattened into a tail loop (it recurses via
-    direct calls), so a loop *carrying* a `Vec2` accumulator does not yet recycle —
-    but a loop whose aggregates are *intermediate* (built and consumed within the
-    body, the common case) is unaffected, since it carries plain scalars and
-    flattens normally. Structural `=`/`compare`/`hash` on an FFA **reassembles**
+  - **Loop-carried components.** A register entry that returns a spread aggregate
+    can loop an exactly returned self-call by simultaneously rebinding the scalar
+    parameters and aggregate component locals. The public/direct/first-class ABI
+    is unchanged. Post-call work, caller-owned conversion temporaries and
+    stack-backed captures retain ordinary calls; non-tail recursion does too.
+    These loops preserve argument/effect order and avoid both recursive frames
+    and aggregate cells. Broader boxed-result and nested-aggregate loop shapes
+    remain deferred. Structural `=`/`compare`/`hash` on an FFA **reassembles**
     then calls the runtime (an inline component-wise compare is a follow-up).
     Nested FFAs (a record of records, e.g. a `Body` of two `Vec2`s) are not
     flattened. Per-#16, these are representation ceilings, not correctness gaps.

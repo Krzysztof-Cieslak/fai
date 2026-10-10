@@ -206,8 +206,8 @@ pub fn rc_lowered(db: &dyn Db, lowered: &LoweredDef, self_sig: &BorrowSig) -> Lo
             }
         }
         // Flatten self-tail-recursion in the entry function into a loop. Deferred
-        // for a spread-ABI entry (loop-carried float-aggregate state is future
-        // work): it recurses via direct calls instead. A no-op unless tail-recursive.
+        // for a spread-ABI entry: native lowering can loop an exactly returned
+        // spread self-call through its component locals instead.
         if i == 0 && !entry_has_spread {
             body = trmc::flatten(body, &f.params, lowered.def, &is_pure_total, &mut next);
         }

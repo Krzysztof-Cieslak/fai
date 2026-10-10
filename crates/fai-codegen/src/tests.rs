@@ -2387,6 +2387,49 @@ fn projected_niche_option_int_preserves_its_parent() {
 }
 
 #[test]
+fn spread_self_tail_state_uses_a_loop_without_a_self_call() {
+    let source = "module M\ntype State = { value : Float }\nlet loop n state = if n <= 0 then state else loop (n - 1) { value = state.value + 1.0 }\n";
+    let ir = function_ir(source, "loop");
+    assert_eq!(call_count(&ir[0]), 0, "{}", ir[0]);
+}
+
+#[test]
+fn spread_self_loop_rebinds_all_components_simultaneously() {
+    let source = "module M\ntype State = { value : Float }\nlet loop n left right = if n <= 0 then left else loop (n - 1) right left\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (Float.toInt (loop 10001 { value = 1.0 } { value = 2.0 }).value))\n";
+    assert_eq!(run(source), (0, "2\n".into()));
+}
+
+#[test]
+fn spread_self_loop_preserves_untouched_float_bits() {
+    let source = "module M\ntype State = { value : Float }\nlet loop n state = if n <= 0 then state else loop (n - 1) state\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let bits = -2251799813685203\n  let first = loop 0 { value = Float.fromBits bits }\n  let last = loop 10001 first\n  r.console.writeLine (if Float.toBits last.value = bits then \"yes\" else \"no\")\n";
+    assert_eq!(run(source), (0, "yes\n".into()));
+}
+
+#[test]
+fn spread_self_loop_keeps_non_tail_calls_and_their_results() {
+    let source = "module M\ntype State = { value : Float }\nlet loop n state =\n  if n <= 0 then state else if n % 2 = 0 then\n    let prior = loop (n - 1) state\n    { value = prior.value + 2.0 }\n  else loop (n - 1) { value = state.value + 1.0 }\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (Float.toInt (loop 6 { value = 0.0 }).value))\n";
+    assert_eq!(run(source), (0, "9\n".into()));
+}
+
+#[test]
+fn spread_self_loop_preserves_argument_effect_order() {
+    let source = "module M\ntype State = { value : Float }\nlet tick n =\n  let _ = stdConsole.writeLine (Int.toString n)\n  n\nlet loop n state = if n <= 0 then state else loop (tick (n - 1)) { value = state.value + 1.0 }\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (Float.toInt (loop 3 { value = 0.0 }).value))\n";
+    assert_eq!(run(source), (0, "2\n1\n0\n3\n".into()));
+}
+
+#[test]
+fn spread_self_loop_transfers_fresh_array_arguments() {
+    let source = "module M\ntype State = { value : Float }\nlet loop n xs state = if n <= 0 then { value = state.value + Array.unsafeGet 0 xs } else loop (n - 1) (Array.singleton 1.0) { value = state.value + 1.0 }\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (Float.toInt (loop 1000 (Array.singleton 0.0) { value = 0.0 }).value))\n";
+    assert_eq!(run(source), (0, "1001\n".into()));
+}
+
+#[test]
+fn spread_result_keeps_post_call_effects() {
+    let source = "module M\ntype State = { value : Float }\nlet loop n state =\n  if n <= 0 then state else\n    let prior = loop (n - 1) { value = state.value + 1.0 }\n    let _ = stdConsole.writeLine (Int.toString n)\n    prior\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (Float.toInt (loop 3 { value = 0.0 }).value))\n";
+    assert_eq!(run(source), (0, "1\n2\n3\n3\n".into()));
+}
+
+#[test]
 fn generic_equality_on_an_enum_takes_the_immediate_path() {
     // Every constructor is nullary, so every value is an immediate: the guard's
     // fast arm always runs.

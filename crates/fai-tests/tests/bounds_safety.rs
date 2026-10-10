@@ -7,6 +7,7 @@ const SUB: &str = include_str!("fixtures/bounds/WrappingSub.fai");
 const CROSS_CALL: &str = include_str!("fixtures/bounds/CrossCall.fai");
 const FUSED_CALL: &str = include_str!("fixtures/bounds/FusedCaller.fai");
 const FUSED_FUNCTION: &str = include_str!("fixtures/bounds/FusedFunction.fai");
+const SPREAD_LOOP: &str = include_str!("fixtures/bounds/SpreadLoop.fai");
 
 #[track_caller]
 fn assert_bounds_trap(case: &str, shadow: bool) {
@@ -98,6 +99,11 @@ fn generated_callers_keep_checks_after_worker_transport() {
 }
 
 #[test]
+fn spread_self_loops_keep_checks_for_later_iterations() {
+    assert_bounds_trap("spread-loop", true);
+}
+
+#[test]
 fn bounds_worker() {
     let Ok(case) = std::env::var("FAI_BOUNDS_CASE") else { return };
     let source = match case.as_str() {
@@ -106,6 +112,7 @@ fn bounds_worker() {
         "cross-call" => CROSS_CALL,
         "fused-call" | "fused-wire" => FUSED_CALL,
         "fused-function" => FUSED_FUNCTION,
+        "spread-loop" => SPREAD_LOOP,
         _ => panic!("unknown bounds case"),
     };
     let mut db = FaiDatabase::new();
@@ -121,7 +128,7 @@ fn bounds_worker() {
         return;
     }
     let outcome = fai_driver::jit_run_program(&db, file);
-    assert_eq!(outcome.exit_code, 0);
+    assert_eq!(outcome.exit_code, 0, "{outcome:?}");
 }
 
 #[test]

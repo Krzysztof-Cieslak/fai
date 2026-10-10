@@ -95,6 +95,10 @@ let fieldLoop key xs i n acc =
     fieldLoop key xs i (n - 1) (if stored = key then acc + 1 else acc)
 public fieldReads : Int -> Int
 let fieldReads n = fieldLoop "key" (Array.singleton (Entry "key")) 0 n 0
+type ScalarState = { value : Float }
+let spreadLoop n state = if n <= 0 then state else spreadLoop (n - 1) { value = state.value + 1.0 }
+public spreadStates : Int -> Int
+let spreadStates n = Float.toInt (spreadLoop n { value = 0.0 }).value
 public main : Runtime -> Unit
 let main r = ()
 "#;
@@ -282,4 +286,14 @@ fn invariant_callback_evidence_uses_no_heap_storage() {
 #[test]
 fn repeated_borrowed_field_reads_keep_constant_storage() {
     bounded_reuse("fieldReads", |n| n);
+}
+
+#[test]
+fn spread_self_loop_state_needs_no_heap_storage() {
+    let mut harness = Harness::new();
+    let short = harness.measure("spreadStates", 8, 8);
+    let long = harness.measure("spreadStates", 1000000, 1000000);
+    assert_eq!(short, long);
+    assert_eq!(long.allocations, 0);
+    assert_eq!(long.peak_bytes, 0);
 }
