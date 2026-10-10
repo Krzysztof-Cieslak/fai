@@ -4986,6 +4986,10 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   uses terminal cells and deterministic weighted fill. Virtual sources expose
   count/index access and report visible ranges; selection uses stable data keys.
   New focus reveals off-screen descendants, while manual scrolling remains free.
+  MVU init receives the initial viewport. The runner serializes messages and owns
+  every command/subscription task. Keyed generations reject stale results; task
+  slots include cancelled-but-unfinished work. A bounded batch mailbox supplies
+  backpressure, and terminal restoration precedes structured shutdown joining.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

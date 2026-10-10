@@ -1,0 +1,213 @@
+module RuntimeChecks
+
+public type Runtime = { clock : Clock, concurrency : Concurrency, console : Console }
+
+let runtime = { clock = stdClock, concurrency = stdConcurrency, console = stdConsole }
+
+type Msg =
+  | Add
+  | Stop
+  | Old
+  | New
+
+write : Concurrency -> Channel Bytes -> Bytes -> Result Unit String / { Concurrency }
+let write c output bytes =
+  let sent = c.send output bytes
+  Ok ()
+
+close : Concurrency -> Channel TerminalHost.Event -> Unit -> Result Unit String / { Concurrency }
+let close c input unit =
+  let closed = c.close input
+  Ok ()
+
+backend : Concurrency -> Channel TerminalHost.Event -> Channel Bytes -> Tui.Backend { Concurrency }
+let backend c input output = {
+  close = close c input,
+  poll = fun _ -> Ok (c.recv input),
+  size = fun _ -> Ok (40, 8),
+  write = write c output
+}
+
+let view context model = Ui.column [] [
+  Ui.text [] (Int.toString model),
+  Ui.button (Ui.id "add") [] { label = "Add", onPress = Add }
+]
+
+let update message model =
+  match message with
+  | Add -> (model + 1, TuiCmd.none)
+  | Stop -> (model, TuiCmd.quit)
+  | Old -> (999, TuiCmd.quit)
+  | New -> (42, TuiCmd.quit)
+
+keyboard : Runtime -> Bool / { Clock, Concurrency }
+let keyboard r =
+  let input = r.concurrency.channel 4
+  let output = r.concurrency.channel 16
+  let enter =
+    r.concurrency.send input (TerminalHost.Key { code = "Enter", modifiers = 0, repeat = false })
+  let quit =
+    r.concurrency.send input (TerminalHost.Key { code = "c", modifiers = 2, repeat = false })
+  let app = Tui.program (fun _ -> (0, TuiCmd.none)) update view
+  let result =
+    Tui.runWith r { Tui.defaults with maxFps = None } (backend r.concurrency input output) app
+  result = Ok 1
+
+obsolete : Concurrency -> Channel Unit -> Unit -> Msg / { Concurrency }
+let obsolete c gate unit =
+  let read = c.recv gate
+  Old
+
+latest : Runtime -> Bool / { Clock, Concurrency }
+let latest r =
+  let input = r.concurrency.channel 1
+  let output = r.concurrency.channel 16
+  let gate = r.concurrency.channel 1
+  let initial =
+    TuiCmd.combine (TuiCmd.latest "search" (obsolete r.concurrency gate)) (TuiCmd.latest "search" (fun _ ->
+      New))
+  let app = Tui.program (fun _ -> (0, initial)) update view
+  let result =
+    Tui.runWith r { Tui.defaults with
+      maxFps = None,
+      tasks = { active = 1, pending = 8 }
+    } (backend r.concurrency input output) app
+  result = Ok 42
+
+subscription : Runtime -> Bool / { Clock, Concurrency }
+let subscription r =
+  let input = r.concurrency.channel 1
+  let output = r.concurrency.channel 16
+  let app = Tui.program (fun _ -> (0, TuiCmd.none)) update view
+  let app = { app with
+    subscriptions = fun _ ->
+      TuiSub.stream "events" "one" (Stream.fromList [Add, Add, Stop]) (fun _ -> Old)
+  }
+  let result =
+    Tui.runWith r { Tui.defaults with maxFps = None } (backend r.concurrency input output) app
+  result = Ok 2
+
+exercise : Runtime -> Tui.Options -> Tui.Program Int Msg { Clock, Concurrency } -> Result Int Tui.Error / { Clock, Concurrency }
+let exercise r options app =
+  let input = r.concurrency.channel 1
+  let output = r.concurrency.channel 128
+  Tui.runWith r options (backend r.concurrency input output) app
+
+queuedStale : Runtime -> Bool / { Clock, Concurrency }
+let queuedStale r =
+  let initial =
+    TuiCmd.combine (TuiCmd.latest "key" (fun _ -> Old)) (TuiCmd.latest "key" (fun _ -> New))
+  exercise r { Tui.defaults with
+    maxFps = None
+  } (Tui.program (fun _ -> (0, initial)) update view) = Ok 42
+
+let quitOnFirst message model = (model + 1, TuiCmd.quit)
+
+backpressure : Runtime -> Bool / { Clock, Concurrency }
+let backpressure r =
+  let app = Tui.program (fun _ -> (0, TuiCmd.none)) quitOnFirst view
+  let app = { app with
+    subscriptions = fun _ ->
+      TuiSub.stream "flood" "one" (Stream.map (fun _ -> Add) (Stream.range 0 10000)) (fun _ -> Old)
+  }
+  exercise r { Tui.defaults with mailboxCapacity = 1, maxFps = None } app = Ok 1
+
+completedOnce : Runtime -> Bool / { Clock, Concurrency }
+let completedOnce r =
+  let app = Tui.program (fun _ -> (0, TuiCmd.none)) update view
+  let app = { app with
+    subscriptions = fun model ->
+      TuiSub.combine (TuiSub.stream "once" "one" (Stream.fromList [
+        Add
+      ]) (fun _ ->
+        Old)) (if model = 0 then TuiSub.none else TuiSub.every "finish" 30 (fun _ -> Stop))
+  }
+  exercise r { Tui.defaults with maxFps = None } app = Ok 1
+
+waitStream : Concurrency -> Channel Unit -> Unit -> Stream Msg { Concurrency } / { Concurrency }
+let waitStream c gate unit =
+  let received = c.recv gate
+  Stream.empty
+
+let removeUpdate message model =
+  if message = Add then (model + 1, TuiCmd.perform (fun _ -> Stop)) else (model, TuiCmd.quit)
+
+removedSubscription : Runtime -> Bool / { Clock, Concurrency }
+let removedSubscription r =
+  let gate = r.concurrency.channel 1
+  let app = Tui.program (fun _ -> (0, TuiCmd.none)) removeUpdate view
+  let app = { app with
+    subscriptions = fun model ->
+      if model = 0 then
+        TuiSub.stream "source" "one" (Stream.cons Add (Stream.defer (waitStream r.concurrency gate))) (fun _ ->
+          Old)
+      else
+        TuiSub.none
+  }
+  exercise r { Tui.defaults with maxFps = None, tasks = { active = 1, pending = 2 } } app = Ok 1
+
+writeFailure : Runtime -> Bool / { Clock, Concurrency }
+let writeFailure r =
+  let input = r.concurrency.channel 1
+  let output = r.concurrency.channel 1
+  let backend = { backend r.concurrency input output with
+    close = fun _ -> Err "close failed",
+    write = fun _ -> Err "write failed"
+  }
+  let app = Tui.program (fun _ -> (0, TuiCmd.none)) update view
+  Tui.runWith r Tui.defaults backend app = Err {
+    cleanup = Some "close failed",
+    message = "write failed"
+  }
+
+protectedJob : Concurrency -> Channel Unit -> Channel Unit -> Unit -> Msg / { Concurrency }
+let protectedJob concurrency entered release unit =
+  let signalled = concurrency.send entered ()
+  let released = concurrency.recv release
+  Old
+
+closingBackend : Concurrency -> Channel Unit -> Channel Unit -> Tui.Backend { Concurrency }
+let closingBackend concurrency entered release = {
+  close = closeRelease concurrency release,
+  poll = closePoll concurrency entered,
+  size = fun _ -> Ok (40, 8),
+  write = fun _ -> Ok ()
+}
+
+closePoll : Concurrency -> Channel Unit -> Int -> Result (Option TerminalHost.Event) String / { Concurrency }
+let closePoll concurrency entered timeout =
+  let ready = concurrency.recv entered
+  Ok (Some (TerminalHost.Key { code = "c", modifiers = 2, repeat = false }))
+
+closeRelease : Concurrency -> Channel Unit -> Unit -> Result Unit String / { Concurrency }
+let closeRelease concurrency release unit =
+  let released = concurrency.send release ()
+  Ok ()
+
+cleanupOrder : Runtime -> Bool / { Clock, Concurrency }
+let cleanupOrder r =
+  let entered = r.concurrency.channel 1
+  let release = r.concurrency.channel 1
+  let initial =
+    TuiCmd.perform (fun _ ->
+      Wire.cleanup r.concurrency (protectedJob r.concurrency entered release))
+  let app = Tui.program (fun _ -> (0, initial)) update view
+  Tui.runWith r Tui.defaults (closingBackend r.concurrency entered release) app = Ok 0
+
+public main : Runtime -> Unit / { Clock, Concurrency, Console }
+let main r =
+  let a = keyboard r
+  let logged = r.console.writeLine (if a then "keyboard ok" else "keyboard failed")
+  let b = latest r
+  let logged = r.console.writeLine (if b then "latest ok" else "latest failed")
+  let c = subscription r
+  let d = queuedStale r
+  let e = backpressure r
+  let f = completedOnce r
+  let g = removedSubscription r
+  let h = writeFailure r
+  let i = cleanupOrder r
+  r.console.writeLine (if a && b && c && d && e && f && g && h && i then
+    "TUI runtime checks passed"
+  else
+    "TUI runtime checks failed")

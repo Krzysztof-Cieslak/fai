@@ -1,0 +1,8 @@
+module TuiEvent
+
+public type Event 'msg =
+  | Input TerminalHost.Event
+  | InputFailed String
+  | Message Int 'msg
+  | Completed Int
+  | Refresh

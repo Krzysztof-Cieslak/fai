@@ -1,0 +1,404 @@
+module Tui
+
+public type Program 'model 'msg 'e = {
+  init : TuiLayout.Context -> 'model * TuiCmd.Cmd 'msg 'e,
+  onEvent : TerminalHost.Event -> Option 'msg,
+  subscriptions : 'model -> TuiSub.Sub 'msg 'e,
+  update : 'msg -> 'model -> 'model * TuiCmd.Cmd 'msg 'e,
+  view : TuiLayout.Context -> 'model -> Ui.Element 'msg
+}
+
+public type Backend 'e = {
+  close : Unit -> Result Unit String / 'e,
+  poll : Int -> Result (Option TerminalHost.Event) String / 'e,
+  size : Unit -> Result (Int * Int) String / 'e,
+  write : Bytes -> Result Unit String / 'e
+}
+
+public type Error = { cleanup : Option String, message : String }
+
+public type Options = {
+  clipboard : Bool,
+  input : TuiInput.Options,
+  inputPollMs : Int,
+  layout : TuiLayout.Context,
+  mailboxCapacity : Int,
+  maxClipboardBytes : Int,
+  maxFeedback : Int,
+  maxFps : Option Int,
+  mouse : Bool,
+  tasks : TuiTasks.Limits
+}
+
+public defaults : Options
+let defaults = {
+  clipboard = true,
+  input = TuiInput.defaults,
+  inputPollMs = 25,
+  layout = TuiLayout.context 0 0,
+  mailboxCapacity = 256,
+  maxClipboardBytes = 1048576,
+  maxFeedback = 32,
+  maxFps = Some 60,
+  mouse = true,
+  tasks = { active = 32, pending = 1024 }
+}
+
+public program : (TuiLayout.Context -> 'model * TuiCmd.Cmd 'msg 'e) -> ('msg -> 'model -> 'model * TuiCmd.Cmd 'msg 'e) -> (TuiLayout.Context -> 'model -> Ui.Element 'msg) -> Program 'model 'msg 'e
+let program init update view = {
+  init = init,
+  onEvent = fun _ -> None,
+  subscriptions = fun _ -> TuiSub.none,
+  update = update,
+  view = view
+}
+
+type Context 'model 'msg 'e = {
+  backend : Backend 'e,
+  inbox : TuiMailbox.Inbox (TuiEvent.Event 'msg),
+  nursery : Nursery,
+  options : Options,
+  program : Program 'model 'msg 'e,
+  services : TuiTasks.Services
+}
+
+type State 'model 'msg 'e = {
+  active : Bool,
+  dirty : Bool,
+  error : Option String,
+  frame : TuiLayout.Frame 'msg,
+  interaction : TuiState.State,
+  lastPaint : Int,
+  layout : TuiLayout.Context,
+  model : 'model,
+  paintTimer : Option (Task Unit),
+  painted : Option TuiScreen.Screen,
+  tasks : TuiTasks.State 'msg 'e
+}
+
+public validate : Options -> Result Unit Error
+let validate options =
+  let fpsValid =
+    match options.maxFps with
+    | None -> true
+    | Some fps -> fps > 0
+  if options.tasks.active < 1 || options.tasks.pending < 1 || options.mailboxCapacity < 1 || options.mailboxCapacity > 1048576 || options.inputPollMs < 1 || options.maxFeedback < 1 || options.layout.maxCells < 0 || options.layout.maxDepth < 1 || options.layout.maxDepth > 128 || options.layout.maxNodes < 1 || options.input.historyLimit < 0 || options.input.wheelLines < 1 || options.maxClipboardBytes < 0 || not fpsValid then
+    Err { cleanup = None, message = "invalid TUI limits or durations" }
+  else
+    Ok ()
+
+let failed message state = { state with active = false, error = Some message }
+
+let taskResult result state =
+  match result with
+  | Ok tasks -> { state with tasks = tasks }
+  | Err message -> failed message state
+
+commands : Context 'model 'msg 'e -> List (TuiCmd.Operation 'msg 'e) -> State 'model 'msg 'e -> State 'model 'msg 'e / { Clock, Concurrency | 'e }
+let commands context operations state =
+  if not state.active then
+    state
+  else
+    match operations with
+    | [] -> state
+    | operation :: rest ->
+      let state =
+        match operation with
+        | TuiCmd.Quit -> { state with active = false }
+        | TuiCmd.Focus id -> { state with
+          dirty = true,
+          interaction = TuiState.focus (Some id) state.interaction
+        }
+        | TuiCmd.ScrollTo id offset -> { state with
+          dirty = true,
+          interaction = TuiState.scrollTo id offset state.interaction
+        }
+        | TuiCmd.Select id anchor caret -> { state with
+          dirty = true,
+          interaction = TuiState.select id anchor caret state.interaction
+        }
+        | TuiCmd.Cancel key -> { state with
+          tasks = TuiTasks.cancel context.services key state.tasks
+        }
+        | TuiCmd.Perform key work ->
+          taskResult (TuiTasks.command context.services context.nursery context.inbox context.options.tasks key work state.tasks) state
+      commands context rest state
+
+subscriptions : Context 'model 'msg 'e -> State 'model 'msg 'e -> State 'model 'msg 'e / { Clock, Concurrency | 'e }
+let subscriptions context state =
+  if not state.active then
+    state
+  else
+    taskResult (TuiTasks.reconcile context.services context.nursery context.inbox context.options.tasks (context.program.subscriptions state.model) state.tasks) state
+
+update : Context 'model 'msg 'e -> 'msg -> State 'model 'msg 'e -> State 'model 'msg 'e / { Clock, Concurrency | 'e }
+let update context message state =
+  if not state.active then
+    state
+  else
+    let (model, command) = context.program.update message state.model
+    subscriptions context (commands context (TuiCmd.operations command) { state with
+      dirty = true,
+      model = model
+    })
+
+updates : Context 'model 'msg 'e -> List 'msg -> State 'model 'msg 'e -> State 'model 'msg 'e / { Clock, Concurrency | 'e }
+let updates context messages state =
+  match messages with
+  | [] -> state
+  | message :: rest -> updates context rest (update context message state)
+
+settle : Context 'model 'msg 'e -> Int -> State 'model 'msg 'e -> State 'model 'msg 'e / { Clock, Concurrency | 'e }
+let settle context fuel state =
+  if not state.active then
+    state
+  else if fuel = 0 then
+    failed "UI visible-range feedback did not settle" state
+  else
+    match TuiLayout.render state.layout state.interaction (context.program.view state.layout state.model) with
+    | Err message -> failed message state
+    | Ok frame ->
+      let state = { state with frame = frame, interaction = frame.state }
+      if List.isEmpty frame.messages then
+        state
+      else
+        settle context (fuel - 1) (updates context frame.messages state)
+
+clipboard : Context 'model 'msg 'e -> List TuiInput.Action -> State 'model 'msg 'e -> State 'model 'msg 'e / 'e
+let clipboard context actions state =
+  match actions with
+  | [] -> state
+  | TuiInput.Copy text :: rest ->
+    let bytes = Bytes.fromString text
+    let result =
+      if context.options.clipboard && Bytes.length bytes <= context.options.maxClipboardBytes then
+        context.backend.write (Bytes.fromString ("\u{1b}]52;c;" ++ Http.base64Encode bytes ++ "\u{7}"))
+      else
+        Ok ()
+    match result with
+    | Err message -> failed message state
+    | Ok _ -> clipboard context rest state
+
+terminal : Context 'model 'msg 'e -> TerminalHost.Event -> State 'model 'msg 'e -> State 'model 'msg 'e / { Clock, Concurrency | 'e }
+let terminal context event state =
+  let state =
+    match event with
+    | TerminalHost.Resize width height -> { state with
+      dirty = true,
+      layout = { state.layout with height = height, width = width }
+    }
+    | _ -> state
+  let state = settle context context.options.maxFeedback state
+  let outcome = TuiInput.step { context.options.input with
+    ambiguousWide = state.layout.ambiguousWide
+  } event { state.frame with state = state.interaction }
+  let state = clipboard context outcome.actions { state with
+    dirty = true,
+    interaction = outcome.state
+  }
+  let state = updates context outcome.messages state
+  if outcome.handled then
+    state
+  else
+    match context.program.onEvent event with
+    | Some message -> update context message state
+    | None ->
+      match event with
+      | TerminalHost.Key key ->
+        if Int.and key.modifiers 2 <> 0 && String.toLower key.code = "c" then
+          { state with active = false }
+        else
+          state
+      | _ -> state
+
+event : Context 'model 'msg 'e -> TuiEvent.Event 'msg -> State 'model 'msg 'e -> State 'model 'msg 'e / { Clock, Concurrency | 'e }
+let event context event state =
+  if not state.active then
+    state
+  else
+    match event with
+    | TuiEvent.Input input -> terminal context input state
+    | TuiEvent.InputFailed message -> failed message state
+    | TuiEvent.Message id message ->
+      if TuiTasks.accepts id state.tasks then update context message state else state
+    | TuiEvent.Completed id -> { state with
+      tasks = TuiTasks.complete context.services context.nursery context.inbox context.options.tasks id state.tasks
+    }
+    | TuiEvent.Refresh -> { state with paintTimer = None }
+
+events : Context 'model 'msg 'e -> List (TuiEvent.Event 'msg) -> State 'model 'msg 'e -> State 'model 'msg 'e / { Clock, Concurrency | 'e }
+let events context batch state =
+  match batch with
+  | [] -> state
+  | next :: rest -> events context rest (event context next state)
+
+paintTimer : Context 'model 'msg 'e -> Int -> Unit -> Unit / { Clock, Concurrency }
+let paintTimer context duration unit =
+  let waited = context.services.clock.sleep duration
+  let sent = TuiMailbox.send context.inbox TuiEvent.Refresh
+  ()
+
+paint : Context 'model 'msg 'e -> State 'model 'msg 'e -> State 'model 'msg 'e / { Clock, Concurrency | 'e }
+let paint context state =
+  if not state.active || not state.dirty then
+    state
+  else
+    let now = context.services.clock.now ()
+    let interval =
+      match context.options.maxFps with
+      | None -> 0
+      | Some fps -> max 1 (1000 / fps)
+    let remaining = if state.painted = None then 0 else interval - max 0 (now - state.lastPaint)
+    if remaining > 0 then
+      match state.paintTimer with
+      | Some _ -> state
+      | None -> { state with
+        paintTimer = Some (context.services.concurrency.spawn context.nursery (paintTimer context remaining))
+      }
+    else
+      let state = settle context context.options.maxFeedback state
+      if not state.active then
+        state
+      else
+        match context.backend.write (TuiScreen.diff state.painted state.frame.screen) with
+        | Err message -> failed message state
+        | Ok _ -> { state with dirty = false, lastPaint = now, painted = Some state.frame.screen }
+
+let max a b = if a > b then a else b
+
+loop : Context 'model 'msg 'e -> State 'model 'msg 'e -> State 'model 'msg 'e / { Clock, Concurrency | 'e }
+let loop context state =
+  let state = paint context state
+  if not state.active then
+    state
+  else
+    match TuiMailbox.receive context.inbox with
+    | None -> failed "TUI event loop cancelled" state
+    | Some batch -> loop context (events context batch state)
+
+inputLoop : Context 'model 'msg 'e -> Unit -> Unit / { Concurrency | 'e }
+let inputLoop context unit =
+  let probe = context.services.concurrency.channel 1
+  let seeded = context.services.concurrency.send probe ()
+  readInput context probe
+
+readInput : Context 'model 'msg 'e -> Channel Unit -> Unit / { Concurrency | 'e }
+let readInput context probe =
+  match context.services.concurrency.recv probe with
+  | None -> ()
+  | Some _ ->
+    let restored = context.services.concurrency.send probe ()
+    pollInput context probe
+
+pollInput : Context 'model 'msg 'e -> Channel Unit -> Unit / { Concurrency | 'e }
+let pollInput context probe =
+  match context.backend.poll context.options.inputPollMs with
+  | Err message ->
+    let sent = TuiMailbox.send context.inbox (TuiEvent.InputFailed message)
+    ()
+  | Ok None -> readInput context probe
+  | Ok (Some event) ->
+    if TuiMailbox.send context.inbox (TuiEvent.Input event) then readInput context probe else ()
+
+finish : Context 'model 'msg 'e -> Task Unit -> State 'model 'msg 'e -> Unit -> Result 'model Error / { Concurrency | 'e }
+let finish context input state unit =
+  let closed = TuiMailbox.close context.inbox
+  let stopped = context.services.concurrency.cancel input
+  let stoppedTimer =
+    match state.paintTimer with
+    | None -> ()
+    | Some task -> context.services.concurrency.cancel task
+  let stoppedJobs = TuiTasks.close context.services state.tasks
+  let restored = context.backend.close ()
+  match (state.error, restored) with
+  | (None, Ok _) -> Ok state.model
+  | (None, Err message) -> Err { cleanup = None, message = message }
+  | (Some message, Ok _) -> Err { cleanup = None, message = message }
+  | (Some message, Err cleanup) -> Err { cleanup = Some cleanup, message = message }
+
+scoped : TuiTasks.Services -> Options -> Backend 'e -> Program 'model 'msg 'e -> Nursery -> Result 'model Error / { Clock, Concurrency | 'e }
+let scoped services options backend program nursery =
+  match backend.size () with
+  | Err message ->
+    let closed = Wire.cleanup services.concurrency backend.close
+    Err {
+      cleanup = match closed with
+      | Ok _ -> None
+      | Err error -> Some error,
+      message = message
+    }
+  | Ok (width, height) ->
+    let layout = { options.layout with height = height, width = width }
+    let (model, command) = program.init layout
+    match TuiLayout.render layout TuiState.empty (Ui.text [] "") with
+    | Err message ->
+      let closed = Wire.cleanup services.concurrency backend.close
+      Err {
+        cleanup = match closed with
+        | Ok _ -> None
+        | Err error -> Some error,
+        message = message
+      }
+    | Ok frame ->
+      let inbox = TuiMailbox.create services.concurrency options.mailboxCapacity
+      let context = {
+        backend = backend,
+        inbox = inbox,
+        nursery = nursery,
+        options = options,
+        program = program,
+        services = services
+      }
+      let state = {
+        active = true,
+        dirty = true,
+        error = None,
+        frame = frame,
+        interaction = TuiState.empty,
+        lastPaint = 0,
+        layout = layout,
+        model = model,
+        paintTimer = None,
+        painted = None,
+        tasks = TuiTasks.empty
+      }
+      let input = services.concurrency.spawn nursery (inputLoop context)
+      let state = subscriptions context (commands context (TuiCmd.operations command) state)
+      let state = loop context state
+      Wire.cleanup services.concurrency (finish context input state)
+
+/// Run on an owned backend, also useful for deterministic scripted integration
+/// tests. The backend is closed before structured task joining begins.
+public runWith : { clock : Clock, concurrency : Concurrency | 'r } -> Options -> Backend 'e -> Program 'model 'msg 'e -> Result 'model Error / { Clock, Concurrency | 'e }
+let runWith runtime options backend program =
+  match validate options with
+  | Err error ->
+    let closed = Wire.cleanup runtime.concurrency backend.close
+    Err { error with
+      cleanup = match closed with
+      | Ok _ -> None
+      | Err message -> Some message
+    }
+  | Ok _ ->
+    runtime.concurrency.scope (scoped {
+      clock = runtime.clock,
+      concurrency = runtime.concurrency
+    } options backend program)
+
+/// Run a full-screen application with explicit terminal, clock and concurrency
+/// capabilities. The model and messages keep application-specific effects typed.
+public run : { clock : Clock, concurrency : Concurrency, terminal : TerminalHost.Terminal | 'r } -> Options -> Program 'model 'msg { TerminalHost.Terminal | 'e } -> Result 'model Error / { Clock, Concurrency, TerminalHost.Terminal | 'e }
+let run runtime options program =
+  match validate options with
+  | Err error -> Err error
+  | Ok _ ->
+    match runtime.terminal.open options.mouse with
+    | Err message -> Err { cleanup = None, message = message }
+    | Ok session ->
+      let backend = {
+        close = fun _ -> runtime.terminal.close session,
+        poll = runtime.terminal.poll session,
+        size = fun _ -> runtime.terminal.size session,
+        write = runtime.terminal.write session
+      }
+      runWith runtime options backend program

@@ -1,0 +1,71 @@
+module TuiMailbox
+
+type Queue 'a = { count : Int, reversed : List 'a }
+
+public opaque type Inbox 'a =
+  | Inbox Concurrency (Channel (Queue 'a)) (Channel Unit) (Channel Unit)
+
+/// A bounded FIFO with atomic batch draining. Producers backpressure on slots;
+/// the UI consumer never needs a polling or lossy channel receive operation.
+public create : Concurrency -> Int -> Inbox 'a / { Concurrency }
+let create concurrency capacity =
+  let capacity = if capacity < 1 then 1 else capacity
+  let gate = concurrency.channel 1
+  let ready = concurrency.channel 1
+  let slots = concurrency.channel capacity
+  let seeded = concurrency.send gate { count = 0, reversed = [] }
+  let filled = List.map (fun _ -> concurrency.send slots ()) (List.range 0 capacity)
+  Inbox concurrency gate ready slots
+
+enqueue : Inbox 'a -> 'a -> Unit -> Bool / { Concurrency }
+let enqueue inbox value unit =
+  match inbox with
+  | Inbox concurrency gate ready slots ->
+    match concurrency.recv gate with
+    | None -> false
+    | Some queue ->
+      let restored = concurrency.send gate {
+        count = queue.count + 1,
+        reversed = value :: queue.reversed
+      }
+      let notified = if queue.count = 0 then concurrency.send ready () else ()
+      true
+
+/// False means the inbox or requesting task has closed; the payload is released.
+public send : Inbox 'a -> 'a -> Bool / { Concurrency }
+let send inbox value =
+  match inbox with
+  | Inbox concurrency gate ready slots ->
+    match concurrency.recv slots with
+    | None -> false
+    | Some _ -> Wire.cleanup concurrency (enqueue inbox value)
+
+drain : Inbox 'a -> Unit -> Option (List 'a) / { Concurrency }
+let drain inbox unit =
+  match inbox with
+  | Inbox concurrency gate ready slots ->
+    match concurrency.recv gate with
+    | None -> None
+    | Some queue ->
+      let restored = concurrency.send gate { count = 0, reversed = [] }
+      let released = List.map (fun _ -> concurrency.send slots ()) (List.range 0 queue.count)
+      Some (List.reverse queue.reversed)
+
+public receive : Inbox 'a -> Option (List 'a) / { Concurrency }
+let receive inbox =
+  match inbox with
+  | Inbox concurrency gate ready slots ->
+    match concurrency.recv ready with
+    | None -> None
+    | Some _ -> Wire.cleanup concurrency (drain inbox)
+
+/// Closing gates before draining wakes producers and releases queued payloads.
+public close : Inbox 'a -> Unit / { Concurrency }
+let close inbox =
+  match inbox with
+  | Inbox concurrency gate ready slots ->
+    let closedSlots = concurrency.close slots
+    let closedReady = concurrency.close ready
+    let closedGate = concurrency.close gate
+    let discarded = concurrency.recv gate
+    ()
