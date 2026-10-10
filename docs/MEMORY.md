@@ -1530,6 +1530,10 @@ program output are unchanged, guarded by the full type/golden suite):
     Concrete Float array loads and owned-map transfers use typed `f64` loads,
     avoiding integer-register detours while preserving every stored bit pattern.
     Generic reads retain their layout check and uniform boxing boundary.
+    Existing borrowed array parameters provide read-only evidence for length
+    loads: the caller already retains their owner throughout the call, and an
+    owned alias must copy before growing. This does not extend a lifetime.
+    Consumed or changing array parameters retain ordinary memory dependencies.
     Typed Int field and array loads place the boxed full-width fallback out of the ordinary
     immediate scan, keeping the hot loop contiguous without changing stored values.
   - **IR.** A generic loop (`Join`/`Recur`) plus, for a constructor-wrapped

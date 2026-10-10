@@ -165,6 +165,19 @@ fn constructor_domain_keeps_comment_edit_cutoff() {
 }
 
 #[test]
+fn borrowed_array_length_edits_match_clean_native_objects() {
+    let borrowed = "module M\nlet size values = Array.length values\n";
+    let owned = "module M\nlet size values = Array.length (Array.push 1 values)\n";
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", borrowed)], &[("M.fai", owned)], &[("M.fai", borrowed)]],
+        |db, files| {
+            (*object_code(db, db.source_file(files[0]).unwrap(), Symbol::intern("size"), false))
+                .clone()
+        },
+    );
+}
+
+#[test]
 fn unrelated_body_edits_preserve_data_layout_cutoff() {
     let mut db = fai_db::FaiDatabase::new();
     fai_types::std_lib::load_std(&mut db);

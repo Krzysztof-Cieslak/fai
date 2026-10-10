@@ -1052,6 +1052,7 @@ fn build_fn<M: Module>(
             frame_dependent: false,
             unique_array_versioned: false,
             unique_array_locals: FxHashSet::default(),
+            borrowed_array_params: FxHashSet::default(),
             loop_ctx: None,
             result_slot: None,
             bounds: Bounds::new(),
@@ -1197,6 +1198,16 @@ fn build_fn<M: Module>(
             let value = tr.use_var(local);
             let code = tr.callback_entry(value, arity);
             tr.invariant_callback = Some((local, arity, code));
+        }
+
+        if is_entry && lowered.reuse_entry.is_none() && !tr.concurrent {
+            for (index, &param) in core_fn.params.iter().enumerate() {
+                if lowered.entry_param_borrowed(index)
+                    && tr.var_ty(param).and_then(array_elem).is_some()
+                {
+                    tr.borrowed_array_params.insert(param);
+                }
+            }
         }
 
         let retained_root = if is_entry
@@ -1564,6 +1575,10 @@ struct Translator<'a, M: Module> {
     unique_array_versioned: bool,
     /// Array aliases proven to preserve the entry guard's unique ownership.
     unique_array_locals: FxHashSet<LocalId>,
+    /// Arrays whose existing borrowed ABI retains a caller owner for this call.
+    /// A consuming alias must acquire a reference, so updates cannot change the
+    /// borrowed array's length. This evidence never extends a value's lifetime.
+    borrowed_array_params: FxHashSet<LocalId>,
     /// The enclosing tail-call loop, while translating a `Join` body: where
     /// `Recur` jumps back and where the loop's result exits.
     loop_ctx: Option<LoopCtx>,
@@ -4337,8 +4352,19 @@ impl<M: Module> Translator<'_, M> {
     fn array_length_inline(&mut self, args: &[CExpr]) -> Value {
         let base = self.expr(&args[0]);
         let off = i32::try_from(rt::ARRAY_LEN_OFFSET).expect("array length offset");
-        let len = self.builder.ins().load(types::I64, MemFlags::trusted(), base, off);
+        let flags = self.array_length_flags(&args[0]);
+        let len = self.builder.ins().load(types::I64, flags, base, off);
         self.mark_raw(len)
+    }
+
+    fn array_length_flags(&self, array: &CExpr) -> MemFlags {
+        let flags = MemFlags::trusted();
+        if matches!(array.kind, ExprKind::Local(local) if self.borrowed_array_params.contains(&local))
+        {
+            flags.with_readonly()
+        } else {
+            flags
+        }
     }
 
     /// Reads the index operand as a raw `i64` without consuming it (matching the
@@ -4448,13 +4474,15 @@ impl<M: Module> Translator<'_, M> {
         }
 
         let len_off = i32::try_from(rt::ARRAY_LEN_OFFSET).expect("array length offset");
-        let len = self.builder.ins().load(types::I64, MemFlags::trusted(), base, len_off);
+        let flags = self.array_length_flags(&args[0]);
+        let len = self.builder.ins().load(types::I64, flags, base, len_off);
         // An unsigned compare, so a negative index (a huge unsigned value) is out of
         // bounds, matching the runtime's `usize` cast.
         let in_bounds = self.builder.ins().icmp(IntCC::UnsignedLessThan, raw_idx, len);
 
         let fast_b = self.builder.create_block();
         let oob_b = self.builder.create_block();
+        self.builder.set_cold_block(oob_b);
         self.builder.ins().brif(in_bounds, fast_b, &[], oob_b, &[]);
 
         // Out of bounds: the located abort (never returns). When `proven` (only in shadow
