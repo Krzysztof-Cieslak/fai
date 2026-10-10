@@ -2,3 +2,6 @@ module Boxed
 
 public pair : Int -> (Int * Int)
 let pair x = (x + 1, x + 1)
+
+public copyField : { z : Int | _ } -> (Int * Int)
+let copyField record = (record.z, record.z)

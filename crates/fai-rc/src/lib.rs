@@ -233,6 +233,7 @@ pub fn rc_lowered(db: &dyn Db, lowered: &LoweredDef, self_sig: &BorrowSig) -> Lo
         borrow_slots::remove_discarded_projections(&mut body);
         let shapes = data_shapes::collect(db, &body);
         borrow_slots::borrow_fields(db, &mut body, &shapes);
+        shared_boxes::retain_fields(db, &mut body);
         data_shapes.push(shapes);
         fns.push(CoreFn { params: f.params.clone(), captures: f.captures.clone(), body });
     }

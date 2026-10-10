@@ -6,7 +6,7 @@ use fai_syntax::Symbol;
 use std::sync::Mutex;
 
 static LOCK: Mutex<()> = Mutex::new(());
-const SOURCE: &str = "module Main\npublic pair : Int -> (Int * Int)\nlet pair x = (x + 1, x + 1)\npublic choose : Bool -> Int -> (Int * Int)\nlet choose yes x = if yes then (x + 1, x + 1) else (0, 0)\npublic captured : Int -> Int\nlet captured x =\n  let first = x + 1\n  let second = x + 1\n  let read _ = second\n  first + read ()\npublic main : Runtime -> Unit\nlet main _ = ()\n";
+const SOURCE: &str = "module Main\npublic pair : Int -> (Int * Int)\nlet pair x = (x + 1, x + 1)\npublic choose : Bool -> Int -> (Int * Int)\nlet choose yes x = if yes then (x + 1, x + 1) else (0, 0)\npublic captured : Int -> Int\nlet captured x =\n  let first = x + 1\n  let second = x + 1\n  let read _ = second\n  first + read ()\npublic makeInput : Int -> (Int * String)\nlet makeInput value = (value, \"label\")\npublic forward : (Int * String) -> (Int * String)\nlet forward pair =\n  let (value, label) = pair\n  (value, label)\npublic makeSome : Int -> Option Int\nlet makeSome value = Some value\npublic forwardSome : Option Int -> (Int * Int)\nlet forwardSome value = match value with | None -> (0, 0) | Some number -> (number, number)\npublic main : Runtime -> Unit\nlet main _ = ()\n";
 
 fn program() -> fai_driver::CompiledProgram {
     let mut db = FaiDatabase::new();
@@ -58,9 +58,85 @@ fn captured_arithmetic_values_keep_valid_bindings() {
     rt::fai_drop(result);
 }
 
+#[test]
+fn forwarding_a_tuple_field_keeps_its_original_integer_box() {
+    let _guard = LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut program = program();
+    let baseline = rt::live_count();
+    let input = rt::apply(
+        program.function(Symbol::intern("makeInput")).unwrap(),
+        &[rt::make_int(i64::MAX)],
+    );
+    let integer = rt::fai_data_field(input, 0);
+    let retained = rt::fai_dup(input);
+    rt::reset_allocations();
+    let result = rt::apply(program.function(Symbol::intern("forward")).unwrap(), &[input]);
+    assert_eq!(rt::allocations(), 1, "only the shared tuple shell is copied");
+    let output = rt::fai_data_field(result, 0);
+    assert_eq!(integer, output);
+    assert_eq!(rt::read_int(output), i64::MAX);
+    rt::fai_drop(output);
+    rt::fai_drop(integer);
+    rt::fai_drop(retained);
+    rt::fai_drop(result);
+    assert_eq!(rt::live_count(), baseline);
+}
+
+#[test]
+fn forwarding_a_niche_payload_keeps_its_original_integer_box() {
+    let _guard = LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut program = program();
+    let baseline = rt::live_count();
+    let input =
+        rt::apply(program.function(Symbol::intern("makeSome")).unwrap(), &[rt::make_int(i64::MIN)]);
+    let integer = rt::fai_data_field(input, 0);
+    rt::reset_allocations();
+    let result = rt::apply(program.function(Symbol::intern("forwardSome")).unwrap(), &[input]);
+    assert_eq!(rt::allocations(), 1, "only the tuple shell is constructed");
+    let output = rt::fai_data_field(result, 0);
+    assert_eq!(integer, output);
+    assert_eq!(rt::read_int(output), i64::MIN);
+    rt::fai_drop(output);
+    rt::fai_drop(integer);
+    rt::fai_drop(result);
+    assert_eq!(rt::live_count(), baseline);
+}
+
 mod proptests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn forwarded_fields_preserve_unique_and_shared_values() {
+        let _guard = LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut program = program();
+        let make = program.function(Symbol::intern("makeInput")).unwrap();
+        let forward = program.function(Symbol::intern("forward")).unwrap();
+        let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
+            cases: 128,
+            ..ProptestConfig::default()
+        });
+        runner
+            .run(&(any::<i64>(), any::<bool>()), |(value, shared)| {
+                let baseline = rt::live_count();
+                let input = rt::apply(rt::fai_dup(make), &[rt::make_int(value)]);
+                let original = rt::fai_data_field(input, 0);
+                let retained = shared.then(|| rt::fai_dup(input));
+                let output = rt::apply(rt::fai_dup(forward), &[input]);
+                let actual = rt::fai_data_field(output, 0);
+                prop_assert_eq!(actual, original);
+                prop_assert_eq!(rt::read_int(actual), value);
+                rt::fai_drop(actual);
+                rt::fai_drop(original);
+                rt::fai_drop(output);
+                if let Some(retained) = retained {
+                    rt::fai_drop(retained);
+                }
+                prop_assert_eq!(rt::live_count(), baseline);
+                Ok(())
+            })
+            .unwrap();
+    }
 
     #[test]
     fn every_integer_value_keeps_its_two_wrapping_results() {

@@ -76,6 +76,7 @@ fn uniform_positions(db: &dyn Db, e: &CExpr) -> Vec<usize> {
         K::Prim { op: Prim::ArrayPush | Prim::ArrayRepeat, args } => {
             (args.len() > 1).then_some(1).into_iter().collect()
         }
+        K::Prim { op: Prim::IntBox, args } => (!args.is_empty()).then_some(0).into_iter().collect(),
         K::Prim { op: Prim::ArraySet | Prim::ArrayPut | Prim::RecordUpdate, args } => {
             (args.len() > 2).then_some(2).into_iter().collect()
         }
@@ -178,6 +179,35 @@ pub(crate) fn rewrite(db: &dyn Db, body: CExpr, next: &mut usize) -> CExpr {
     substitute(db, &mut candidate, &peers);
     bind(&mut candidate, &peers);
     candidate
+}
+
+/// Keeps an Int field uniform when every use in a straight-line body is uniform.
+/// This runs after ownership insertion, preserving the original release order.
+pub(crate) fn retain_fields(db: &dyn Db, body: &mut CExpr) {
+    fn mentions(e: &CExpr, local: LocalId) -> usize {
+        let mut count = usize::from(matches!(e.kind, K::Local(id) if id == local));
+        crate::reuse_sig::e_children(e, &mut |child| count += mentions(child, local));
+        count
+    }
+    fn visit(db: &dyn Db, e: &mut CExpr) {
+        crate::borrow_slots::children(e, &mut |child| visit(db, child));
+        if let K::Let { local, value, body } = &mut e.kind
+            && value.ty == Ty::int()
+            && matches!(value.kind, K::DataField { scalar: false, .. })
+            && linear(body)
+        {
+            let count = mentions(body, *local);
+            if count > 0 && uses(db, body, *local) == count {
+                let projection =
+                    std::mem::replace(value, Box::new(CExpr::new(K::Error, Ty::int())));
+                **value =
+                    CExpr::new(K::Prim { op: Prim::IntBox, args: vec![*projection] }, Ty::int());
+            }
+        }
+    }
+    if fai_core::helper_inline::node_count(body) <= 512 {
+        visit(db, body);
+    }
 }
 
 #[cfg(test)]
