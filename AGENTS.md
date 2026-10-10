@@ -637,6 +637,9 @@ and full-width modular arithmetic; varying steps or invariants keep ordinary cod
 Testing a raw Int remainder by a positive power of two for zero can inspect the
 original dividend's low bits directly. Negative dividends obey the same test;
 other remainder observations retain signed truncation and zero divisors still trap.
+Small total raw-Int value alternatives can compile to a native conditional move.
+The condition is evaluated once; calls, effects, possible traps, data projections,
+unknown representations and larger alternatives retain ordinary branches.
 
 Opaque aliases retain their nominal type in cross-file value, constructor, and
 interface-method signatures, including through transparent re-exports. Names

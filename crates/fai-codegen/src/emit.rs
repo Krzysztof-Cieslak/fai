@@ -7371,6 +7371,25 @@ impl<M: Module> Translator<'_, M> {
         let cv = self.expr(cond);
         let is_true = self.truth_value(cv);
 
+        let mut budget = 12;
+        if crate::scalar_select::integer_arm(then, &|local| self.is_int_local(local), &mut budget)
+            && crate::scalar_select::integer_arm(
+                els,
+                &|local| self.is_int_local(local),
+                &mut budget,
+            )
+        {
+            let saved_bounds = self.bounds.clone();
+            let saved_tags = self.known_tags.clone();
+            let left = self.expr(then);
+            let right = self.expr(els);
+            self.bounds = saved_bounds;
+            self.known_tags = saved_tags;
+            debug_assert!(self.is_raw_int(left) && self.is_raw_int(right));
+            let selected = self.builder.ins().select(is_true, left, right);
+            return self.mark_raw(selected);
+        }
+
         let then_b = self.builder.create_block();
         let else_b = self.builder.create_block();
         self.builder.ins().brif(is_true, then_b, &[], else_b, &[]);

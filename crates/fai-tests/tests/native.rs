@@ -781,6 +781,14 @@ fn descending_fixed_points_keep_counter_and_effect_boundaries() {
 }
 
 #[test]
+fn scalar_selects_keep_native_traps_effects_and_generic_values() {
+    assert_eq!(
+        build_and_run(include_str!("fixtures/SmallIntegerSelects.fai")),
+        ("chosen\nyes\n".into(), Some(0))
+    );
+}
+
+#[test]
 fn unique_constructor_tags_run_natively() {
     assert_eq!(build_and_run(include_str!("fixtures/UniqueTags.fai")), ("39\n".into(), Some(0)));
 }

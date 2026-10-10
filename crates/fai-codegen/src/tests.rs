@@ -657,7 +657,7 @@ fn assert_branch_uses_comparison(source: &str, name: &str, comparison: &str) {
 #[test]
 fn direct_comparison_branches_on_its_raw_predicate() {
     assert_branch_uses_comparison(
-        "module M\npublic choose : Int -> Int\nlet choose x = if x < 0 then 1 else 2\n",
+        "module M\npublic choose : Int -> Float\nlet choose x = if x < 0 then 1.0 else 2.0\n",
         "choose",
         "icmp slt",
     );
@@ -666,7 +666,7 @@ fn direct_comparison_branches_on_its_raw_predicate() {
 #[test]
 fn let_aliased_comparison_retains_its_raw_predicate() {
     assert_branch_uses_comparison(
-        "module M\npublic choose : Int -> Int\nlet choose x =\n  let b = x < 0\n  let alias = b\n  if alias then 1 else 2\n",
+        "module M\npublic choose : Int -> Float\nlet choose x =\n  let b = x < 0\n  let alias = b\n  if alias then 1.0 else 2.0\n",
         "choose",
         "icmp slt",
     );
@@ -2540,6 +2540,23 @@ fn power_two_divisibility_tests_the_original_dividend_bits() {
     assert!(
         ir.lines().any(|line| line.contains("band_imm") && line.trim_end().ends_with(", 7")),
         "{ir}"
+    );
+}
+
+#[test]
+fn small_total_integer_branches_emit_a_select() {
+    let ir = entry_ir(
+        "module M\npublic step : Int -> Int\nlet step value = if value % 2 = 0 then value / 2 else 3 * value + 1\n",
+        "step",
+    );
+    assert!(ir.contains("select "), "{ir}");
+    assert!(!ir.contains("brif "), "total integer alternatives should not branch:\n{ir}");
+    let comparison =
+        ir.lines().find(|line| line.contains("icmp_imm eq")).expect("divisibility predicate");
+    let predicate = comparison.split('=').next().unwrap().trim();
+    assert!(
+        ir.contains(&format!("select {predicate},")),
+        "select must use the raw predicate:\n{ir}"
     );
 }
 

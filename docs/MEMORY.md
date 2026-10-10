@@ -3716,6 +3716,10 @@ Editor integration:
     their original counter; a shortcut still executes the original terminal
     branch at the exact bound. Effects and counter-dependent transitions remain
     barriers, and signed-zero cycles are not treated as fixed points.
+    Small raw-Int value alternatives may use a native select when both arms are
+    proven total and allocation-free. The condition is evaluated once, and the
+    combined work is bounded. Calls, data projections, potential traps, unknown
+    representations and larger bodies keep ordinary conditional evaluation.
     Native Float ordering against a literal uses signed bit order for a
     nonnegative constant and reversed unsigned order for a negative constant.
     This preserves totalOrder, including NaN signs/payloads and signed zeros.
