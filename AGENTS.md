@@ -408,6 +408,8 @@ Shared, empty, sliced, captured or uncertain inputs retain ordinary appends.
 then copy into one final buffer without an intermediate growable string.
 Character-indexed string slicing validates ASCII prefixes in wide byte chunks;
 non-ASCII prefixes retain Unicode-scalar indexing and all indices stay clamped.
+String slicing releases owned full-width index/count boxes after decoding them,
+including negative and oversized arguments that are clamped to the string.
 
 ```fai
 module Hello

@@ -3041,6 +3041,8 @@ Editor integration:
     Character-indexed slicing resolves an ASCII prefix by its byte count after a
     wide-byte ASCII check. Non-ASCII prefixes keep the Unicode-scalar walk; negative
     and oversized indices remain clamped without narrowing a full-width Int.
+    The consumed substring/take/drop index operands are released after decoding,
+    including boxed full-width counts and shared start/length boxes.
     Concatenating the empty string returns the other operand without copying. Leaf
     constructors (`make_string`, `Int.toString`, …) allocate tight: only the
     unique-but-full grow path over-allocates, so a one-shot `a ++ b` wastes nothing

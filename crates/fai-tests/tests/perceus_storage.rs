@@ -45,6 +45,12 @@ let stringLoops n total =
     stringLoops (n - 1) (total + String.length text)
 public stringLoop : Int -> Int
 let stringLoop n = stringLoops n 0
+let indexLoops n original total =
+  if n <= 0 then total else
+    let prefix = String.take 9223372036854775807 original
+    indexLoops (n - 1) original (total + String.length prefix)
+public indexLoop : Int -> Int
+let indexLoop n = indexLoops n (Int.toString 123) 0
 let churn n total =
   if n <= 0 then total else
     let size = if n % 3 = 0 then 8 else if n % 3 = 1 then 128 else 4096
@@ -131,6 +137,11 @@ fn reserved_boxed_builders_keep_initialized_storage_bounded() {
 #[test]
 fn literal_string_loops_keep_fixed_state_storage_bounded() {
     bounded("stringLoop", |n| n * 17);
+}
+
+#[test]
+fn repeated_full_width_string_indices_keep_storage_bounded() {
+    bounded("indexLoop", |n| n * 3);
 }
 
 #[test]
