@@ -748,7 +748,12 @@ tag extraction and constant field offsets; unknown/open shapes decode at runtime
 When a type has a single boxed constructor, that branch's tag is known without
 reading a header. A single immediate alternative as well makes the complete tag
 a calculation on the value's immediate bit, independent of constructor order.
-Native match branches reuse established tag equalities. Rejecting one alternative
+A match requiring constructor-header decoding observes its root tag once,
+preserving the scrutinee's type. Cached shape evidence distinguishes a wholly
+boxed constructor domain from one with immediate alternatives, removing
+unnecessary immediate tests. The tag
+local is scalar and does not retain its owner. Native match branches reuse
+established tag equalities. Rejecting one alternative
 identifies the other only when type evidence proves exactly one immediate and
 one boxed constructor; facts stay local to the branch and current loop iteration.
 Constructor equality predicates can test the original SSA value's immediate bit

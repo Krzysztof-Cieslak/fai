@@ -3381,6 +3381,20 @@ impl<M: Module> Translator<'_, M> {
         }
         if let ExprKind::Local(local) = base.kind
             && let Some(shape) = self.local_data_shape(local)
+            && shape.always_boxed
+        {
+            let raw = match shape.boxed_tag {
+                Some(tag) => self.builder.ins().iconst(types::I64, i64::from(tag)),
+                None => self.boxed_data_tag(v),
+            };
+            return if matches!(result_ty, Ty::Con(Con::Int)) {
+                self.mark_raw(raw)
+            } else {
+                self.tag_int(raw)
+            };
+        }
+        if let ExprKind::Local(local) = base.kind
+            && let Some(shape) = self.local_data_shape(local)
             && let Some(boxed) = shape.boxed_tag
         {
             let bit = self.builder.ins().band_imm(v, 1);
