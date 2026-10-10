@@ -671,6 +671,10 @@ a calculation on the value's immediate bit, independent of constructor order.
 Native match branches reuse established tag equalities. Rejecting one alternative
 identifies the other only when type evidence proves exactly one immediate and
 one boxed constructor; facts stay local to the branch and current loop iteration.
+Generic `Option 'a` values can also use the wrapper-free sentinel encoding:
+their payload is standardized at the type-variable boundary, so it cannot collide
+with the internal None sentinel. Concrete Float and nested-Option inspections
+retain their standard layout, and first-class/data-slot boundaries still convert.
 An array data slot used only for tag/field inspection can be borrowed while its
 source array remains live. The bounded ownership proof keeps escaping slots and
 uncertain lifetimes owned. A statically uniform projected field can likewise be

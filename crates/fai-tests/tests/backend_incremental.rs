@@ -409,3 +409,18 @@ fn fixed_point_counter_dependence_edits_match_clean_native_objects() {
         },
     );
 }
+
+#[test]
+fn generic_option_scheme_edits_update_callers_incrementally() {
+    let generic = "module A\npublic forward : Option 'a -> Option 'a\nlet forward x = x\n";
+    let concrete = "module A\npublic forward : Option String -> Option String\nlet forward x = x\n";
+    let caller =
+        "module B\npublic forward : Option String -> Option String\nlet forward x = A.forward x\n";
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("A.fai", generic), ("B.fai", caller)], &[("A.fai", concrete), ("B.fai", caller)]],
+        |db, files| {
+            (*object_code(db, db.source_file(files[1]).unwrap(), Symbol::intern("forward"), false))
+                .clone()
+        },
+    );
+}
