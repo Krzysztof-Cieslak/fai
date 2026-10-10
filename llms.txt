@@ -1724,6 +1724,15 @@ tuple3 : Arbitrary 'a -> Arbitrary 'b -> Arbitrary 'c -> Arbitrary ('a * 'b * 'c
 
 ### Optional web framework
 
+Including `packages/sse/src` supplies the shared `Sse` codec. `Sse.events limits
+byteStream` yields records with `data`, `eventType`, and `lastEventId`; `Sse.updates`
+also yields `Checkpoint` and `Retry` observations. `Sse.decoder`/`next` give typed,
+located errors and stop at one observation per step. `Sse.event data`, `comment`,
+`retry`, and `checkpoint` construct outbound frames; `withType`/`withId` validate
+metadata, and `encode`/`encodeStream` serialize it. The codec handles UTF-8/BOM and
+LF/CRLF/CR, and discards incomplete events at EOF. All byte limits are configurable.
+Run `fai test -C packages sse`.
+
 Including `packages/http-client/src` and `packages/json/src` supplies `HttpClient`.
 `withClient runtime (config baseUrl) callback` opens a scoped pool. Pure `get`,
 `post`, `request method target`, `header`, `query`, `jsonBody encoder value`,

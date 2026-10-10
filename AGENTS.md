@@ -932,6 +932,13 @@ the consumer's effects and retaining the overall deadline. It applies status
 expectations before invoking the consumer, runs the consumer once, and releases
 the response before returning. Streaming bypasses the buffered-body limit.
 
+The optional `packages/sse` library supplies the shared `Sse` event-stream codec.
+It implements UTF-8 replacement decoding, all SSE line endings, ordered event/
+checkpoint/retry observations, and validated outbound frames. Its incremental
+decoder stops at one observation, preserving consumption order within a chunk;
+partial events are discarded at EOF. Line/event byte limits are configurable.
+Run its native contracts with `fai test -C packages sse`.
+
 ## 6. Compiler pipeline
 
 ```
