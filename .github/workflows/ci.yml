@@ -87,6 +87,8 @@ jobs:
       - name: Source library tests
         run: |
           cargo build --locked -p fai-cli
+          python -m unittest discover -s scripts/tests -v
+          python scripts/tests/smoke_compiler.py --fai target/debug/fai
           python packages/json/test/run.py --fai target/debug/fai
           python packages/web/test/run.py --fai target/debug/fai
 
@@ -228,6 +230,8 @@ jobs:
       - name: Source library tests
         run: |
           cargo build --locked -p fai-cli
+          python -m unittest discover -s scripts/tests -v
+          python scripts/tests/smoke_compiler.py --fai target/debug/fai
           python packages/json/test/run.py --fai target/debug/fai
           python packages/web/test/run.py --fai target/debug/fai
 

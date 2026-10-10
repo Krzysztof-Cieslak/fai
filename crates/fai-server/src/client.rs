@@ -340,12 +340,16 @@ impl Client {
         let params = InitParams {
             protocol_version: PROTOCOL_VERSION,
             compiler_version: VERSION.to_owned(),
+            compiler_build_id: fai_driver::TOOL_BUILD_ID.to_owned(),
             workspace_root: root.as_str().to_owned(),
         };
         match self.request(&Request::Initialize(params))? {
             Response::Initialized(result)
-                if result.protocol_version == PROTOCOL_VERSION
-                    && result.compiler_version == VERSION =>
+                if crate::protocol::compatible(
+                    result.protocol_version,
+                    &result.compiler_version,
+                    &result.compiler_build_id,
+                ) =>
             {
                 Ok(HandshakeOutcome::Ready)
             }

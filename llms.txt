@@ -1764,6 +1764,14 @@ See `packages/web/README.md`.
 
 ## 14. The command-line workflow
 
+`fai build-info` prints JSON describing the compiler's source digest, complete
+tool build identity, backend identity, target, profile and bundled native
+libraries. Different builds of the same version use distinct workspace daemons.
+For source-package work in the compiler repository, `python3 scripts/compiler.py
+ensure` selects a cached optimized compiler without rebuilding Rust on cache hits;
+see `docs/DEVELOPMENT.md`. A copied compiler supports JIT and AOT without its
+original Cargo directories; AOT still requires the system linker/SDK.
+
 The `fai` binary is a thin client to a per-workspace daemon that keeps the
 incremental database warm, so repeated commands are near-instant.
 

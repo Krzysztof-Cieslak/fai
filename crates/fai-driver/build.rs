@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 mod build_identity;
+mod tool_identity;
 
 fn main() {
     let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
@@ -32,6 +33,7 @@ fn main() {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let build_id = compiler_build_id(&Path::new(&manifest).join("../.."));
     println!("cargo:rustc-env=FAI_COMPILER_BUILD_ID={build_id}");
+    tool_metadata(&Path::new(&manifest).join("../.."));
 
     // A private target directory for the nested build, so its lock is independent
     // of the outer `cargo`'s lock on the shared target dir (a nested build into the
@@ -107,9 +109,18 @@ fn main() {
     // `rustc-link-search=native=` directories the dependency build scripts emitted
     // (recorded in cargo's per-crate `output` files) so the driver can pass them.
     let lib_dirs = collect_native_link_dirs(&nested_target);
-    let lib_dirs_joined = std::env::join_paths(&lib_dirs)
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let libraries = tool_identity::native_libraries(&native_libs, &lib_dirs);
+    let mut embedded = String::from("const RUNTIME_LIBRARIES: &[(&str, &[u8])] = &[\n");
+    for (name, path) in libraries {
+        println!("cargo:rerun-if-changed={}", path.display());
+        embedded.push_str(&format!(
+            "({name:?}, include_bytes!({:?})),\n",
+            path.to_str().expect("UTF-8 native library path")
+        ));
+    }
+    embedded.push_str("];\n");
+    std::fs::write(Path::new(&out_dir).join("runtime_libraries.rs"), embedded)
+        .expect("write embedded native libraries");
 
     // Re-run when any runtime source, its manifest, or the lockfile changes (a
     // dependency bump or a new module must rebuild the archive).
@@ -121,7 +132,105 @@ fn main() {
     println!("cargo:rerun-if-env-changed=CARGO_CFG_DEBUG_ASSERTIONS");
     println!("cargo:rustc-env=FAI_RUNTIME_ARCHIVE={}", archive.display());
     println!("cargo:rustc-env=FAI_RUNTIME_NATIVE_LIBS={native_libs}");
-    println!("cargo:rustc-env=FAI_RUNTIME_LIB_DIRS={lib_dirs_joined}");
+}
+
+/// The executable identity includes tooling outside the backend cache firewall.
+fn tool_metadata(root: &Path) {
+    let root = root.canonicalize().expect("workspace root");
+    let files: Vec<_> = tool_identity::inputs(&root)
+        .into_iter()
+        .map(|path| {
+            println!("cargo:rerun-if-changed={}", path.display());
+            let name =
+                path.strip_prefix(&root).expect("tool source").to_string_lossy().replace('\\', "/");
+            (name, std::fs::read(path).expect("tool source content"))
+        })
+        .collect();
+    let settings: Vec<_> = std::env::vars()
+        .filter(|(name, _)| {
+            name.starts_with("CARGO_CFG_")
+                || name.starts_with("CARGO_FEATURE_")
+                || name.starts_with("CARGO_PROFILE_")
+                || name.starts_with("CARGO_TARGET_")
+                || ["CC_", "CFLAGS_", "CXX_", "CXXFLAGS_", "AR_"]
+                    .iter()
+                    .any(|prefix| name.starts_with(prefix))
+                || matches!(
+                    name.as_str(),
+                    "CARGO_ENCODED_RUSTFLAGS"
+                        | "OPT_LEVEL"
+                        | "PROFILE"
+                        | "DEBUG"
+                        | "TARGET"
+                        | "HOST"
+                        | "FAI_BUILD_PROFILE"
+                        | "RUSTFLAGS"
+                        | "RUSTUP_TOOLCHAIN"
+                        | "RUSTC"
+                        | "RUSTC_WRAPPER"
+                        | "RUSTC_WORKSPACE_WRAPPER"
+                        | "RUSTC_BOOTSTRAP"
+                        | "CC"
+                        | "CFLAGS"
+                        | "CXX"
+                        | "CXXFLAGS"
+                        | "AR"
+                        | "LDFLAGS"
+                        | "SDKROOT"
+                        | "DEVELOPER_DIR"
+                        | "MACOSX_DEPLOYMENT_TARGET"
+                        | "CARGO_BUILD_TARGET"
+                        | "CARGO_BUILD_RUSTFLAGS"
+                )
+        })
+        .collect();
+    for (name, _) in &settings {
+        println!("cargo:rerun-if-env-changed={name}");
+    }
+    for name in [
+        "RUSTFLAGS",
+        "RUSTUP_TOOLCHAIN",
+        "RUSTC",
+        "RUSTC_WRAPPER",
+        "RUSTC_WORKSPACE_WRAPPER",
+        "RUSTC_BOOTSTRAP",
+        "CC",
+        "CFLAGS",
+        "CXX",
+        "CXXFLAGS",
+        "AR",
+        "LDFLAGS",
+        "SDKROOT",
+        "DEVELOPER_DIR",
+        "MACOSX_DEPLOYMENT_TARGET",
+        "CARGO_BUILD_TARGET",
+        "CARGO_BUILD_RUSTFLAGS",
+    ] {
+        println!("cargo:rerun-if-env-changed={name}");
+    }
+    for target in [std::env::var("TARGET").unwrap(), std::env::var("HOST").unwrap()] {
+        for prefix in ["CC", "CFLAGS", "CXX", "CXXFLAGS", "AR"] {
+            println!("cargo:rerun-if-env-changed={prefix}_{target}");
+            println!("cargo:rerun-if-env-changed={prefix}_{}", target.replace('-', "_"));
+        }
+    }
+    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    let output = Command::new(rustc).arg("-vV").output().expect("rustc version");
+    assert!(output.status.success(), "rustc -vV failed");
+    let version = String::from_utf8_lossy(&output.stdout);
+    println!("cargo:rustc-env=FAI_TOOL_SOURCE_ID={}", tool_identity::source_id(&files));
+    println!(
+        "cargo:rustc-env=FAI_TOOL_BUILD_ID={}",
+        build_identity::fingerprint(&files, &settings, &version)
+    );
+    println!("cargo:rustc-env=FAI_TOOL_TARGET={}", std::env::var("TARGET").unwrap());
+    println!(
+        "cargo:rustc-env=FAI_TOOL_PROFILE={}",
+        std::env::var("FAI_BUILD_PROFILE").or_else(|_| std::env::var("PROFILE")).unwrap()
+    );
+    println!("cargo:rustc-env=FAI_TOOL_RUSTC={}", version.lines().next().unwrap_or("unknown"));
+    println!("cargo:rerun-if-env-changed=FAI_BUILD_PROFILE");
+    println!("cargo:rerun-if-env-changed=FAI_TOOL_INPUT_ID");
 }
 
 /// Fingerprints production compiler inputs. Relative names and contents keep

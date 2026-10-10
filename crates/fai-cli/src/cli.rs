@@ -86,6 +86,8 @@ impl std::fmt::Display for ColorChoice {
 /// Top-level subcommands.
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Print compiler identity and build provenance as JSON.
+    BuildInfo,
     /// Compile to a native executable (AOT).
     Build(BuildArgs),
     /// Build and run via the JIT.

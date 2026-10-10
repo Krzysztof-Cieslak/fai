@@ -64,6 +64,8 @@ rustls-pemfile = "2"
 rcgen = "0.13"
 # Content hashing for the on-disk artifact cache and file-state sync.
 blake3 = "1"
+# Portable compiler-bundle source fingerprints (also computed by Python tooling).
+sha2 = "0.10"
 # String interning for identifiers (the non-salsa `Symbol`).
 lasso = { version = "0.7", features = ["multi-threaded"] }
 # UTF-8 paths (clean JSON, no lossy conversion). `serde1` for wire params.
@@ -148,3 +150,9 @@ unsafe_code = "deny"
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
+
+# A fast compiler for source-package development, retaining runtime leak guards.
+[profile.package-dev]
+inherits = "release"
+debug-assertions = true
+overflow-checks = true

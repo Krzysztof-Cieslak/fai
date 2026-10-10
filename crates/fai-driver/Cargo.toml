@@ -53,9 +53,12 @@ windows-sys = { workspace = true, features = [
 [dev-dependencies]
 indoc.workspace = true
 proptest.workspace = true
+sha2.workspace = true
 
 [build-dependencies]
 blake3.workspace = true
+sha2.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true
