@@ -1,0 +1,365 @@
+module Ui
+
+/// Stable hierarchical widget identity. Derive repeated-item IDs from data keys.
+public opaque type Id =
+  | Id (List String)
+
+public id : String -> Id
+let id name = Id [name]
+
+public childId : Id -> String -> Id
+let childId parent name =
+  match parent with
+  | Id parts -> Id (List.append parts [name])
+
+public idString : Id -> String
+let idString value =
+  match value with
+  | Id parts ->
+    String.join "" (List.map (fun part -> Int.toString (String.length part) ++ ":" ++ part) parts)
+
+public type Container =
+  | Container
+
+public type Text =
+  | TextWidget
+
+public type Button =
+  | ButtonWidget
+
+public type Input =
+  | InputWidget
+
+public type Choice =
+  | ChoiceWidget
+
+public type Browser =
+  | BrowserWidget
+
+public type Length =
+  | Content
+  | Cells Int
+  | Fill Int
+
+public type Props = {
+  border : Bool,
+  disabled : Bool,
+  gap : Int,
+  height : Length,
+  maxHeight : Int,
+  maxLength : Int,
+  maxWidth : Int,
+  minHeight : Int,
+  minWidth : Int,
+  multiline : Bool,
+  padding : Int,
+  password : Bool,
+  placeholder : String,
+  style : TuiStyle.Style,
+  width : Length
+}
+
+type Property =
+  | Width Length
+  | Height Length
+  | Padding Int
+  | Gap Int
+  | Border Bool
+  | Style TuiStyle.Style
+  | Disabled Bool
+  | Multiline Bool
+  | Password Bool
+  | Placeholder String
+  | MaxLength Int
+  | MinWidth Int
+  | MinHeight Int
+  | MaxWidth Int
+  | MaxHeight Int
+
+/// Typed attributes keep widget-specific options out of unrelated constructors.
+public opaque type Attribute 'widget =
+  | Attribute Property
+
+public content : Length
+let content = Content
+
+public fill : Length
+let fill = Fill 1
+
+public cells : Int -> Length
+let cells n = Cells (if n < 0 then 0 else n)
+
+public portion : Int -> Length
+let portion n = Fill (if n < 1 then 1 else n)
+
+/// Set horizontal sizing: intrinsic content, a fixed cell count, or weighted fill.
+public width : Length -> Attribute 'widget
+let width value = Attribute (Width value)
+
+/// Set vertical sizing: intrinsic content, a fixed cell count, or weighted fill.
+public height : Length -> Attribute 'widget
+let height value = Attribute (Height value)
+
+/// Equal inner padding, inside any border. Negative values become zero.
+public padding : Int -> Attribute 'widget
+let padding value = Attribute (Padding value)
+
+/// Space between row/column children; valid only on containers.
+public gap : Int -> Attribute Container
+let gap value = Attribute (Gap value)
+
+/// Draw an ASCII cell border around the element's content and padding.
+public border : Attribute 'widget
+let border = Attribute (Border true)
+
+/// Set the element's text and background style.
+public style : TuiStyle.Style -> Attribute 'widget
+let style value = Attribute (Style value)
+
+/// Disable interaction for this element and all its descendants.
+public disabled : Bool -> Attribute 'widget
+let disabled value = Attribute (Disabled value)
+
+/// Permit newline insertion and vertical editing in an input.
+public multiline : Bool -> Attribute Input
+let multiline value = Attribute (Multiline value)
+
+/// Mask one grapheme per asterisk and prevent copying text or retaining history.
+public password : Bool -> Attribute Input
+let password value = Attribute (Password value)
+
+/// Display muted text while an input is empty.
+public placeholder : String -> Attribute Input
+let placeholder value = Attribute (Placeholder value)
+
+/// Limit inserted text by grapheme count, preserving complete pasted clusters.
+public maxLength : Int -> Attribute Input
+let maxLength value = Attribute (MaxLength value)
+
+public minWidth : Int -> Attribute 'widget
+let minWidth value = Attribute (MinWidth value)
+
+public minHeight : Int -> Attribute 'widget
+let minHeight value = Attribute (MinHeight value)
+
+public maxWidth : Int -> Attribute 'widget
+let maxWidth value = Attribute (MaxWidth value)
+
+public maxHeight : Int -> Attribute 'widget
+let maxHeight value = Attribute (MaxHeight value)
+
+let nonnegative value = if value < 0 then 0 else value
+
+apply : Props -> Attribute 'widget -> Props
+let apply props attribute =
+  match attribute with
+  | Attribute property ->
+    match property with
+    | Width value -> { props with width = value }
+    | Height value -> { props with height = value }
+    | Padding value -> { props with padding = nonnegative value }
+    | Gap value -> { props with gap = nonnegative value }
+    | Border value -> { props with border = value }
+    | Style value -> { props with style = value }
+    | Disabled value -> { props with disabled = value }
+    | Multiline value -> { props with multiline = value }
+    | Password value -> { props with password = value }
+    | Placeholder value -> { props with placeholder = value }
+    | MaxLength value -> { props with maxLength = nonnegative value }
+    | MinWidth value -> { props with minWidth = nonnegative value }
+    | MinHeight value -> { props with minHeight = nonnegative value }
+    | MaxWidth value -> { props with maxWidth = nonnegative value }
+    | MaxHeight value -> { props with maxHeight = nonnegative value }
+
+let properties attributes =
+  List.foldl apply {
+    border = false,
+    disabled = false,
+    gap = 0,
+    height = Content,
+    maxHeight = 2147483647,
+    maxLength = 65536,
+    maxWidth = 2147483647,
+    minHeight = 0,
+    minWidth = 0,
+    multiline = false,
+    padding = 0,
+    password = false,
+    placeholder = "",
+    style = TuiStyle.normal,
+    width = Content
+  } attributes
+
+public type InputConfig 'msg = {
+  label : String,
+  onBlur : Option 'msg,
+  onChange : String -> 'msg,
+  onSubmit : Option 'msg,
+  value : String
+}
+
+public type Item = { cells : Array String, key : String }
+
+/// A pure indexed view of application-owned data. Missing rows can be loading.
+public type Source = { count : Int, get : Int -> Option Item }
+
+public type Range = { count : Int, start : Int }
+
+public type BrowserConfig 'msg = {
+  columns : Array String,
+  onRange : Option (Range -> 'msg),
+  onSelect : String -> 'msg,
+  selected : Option String,
+  source : Source
+}
+
+public type Span = { style : TuiStyle.Style, text : String }
+
+public type TextSource = { count : Int, get : Int -> Option (List Span) }
+
+public type TranscriptConfig = { follow : Bool, source : TextSource }
+
+public type Body 'msg =
+  | TextBody String
+  | RichBody (Array (List Span))
+  | RowBody (List (Element 'msg))
+  | ColumnBody (List (Element 'msg))
+  | OverlayBody (Element 'msg) (Element 'msg)
+  | ScrollBody (Element 'msg)
+  | ButtonBody String 'msg
+  | InputBody (InputConfig 'msg)
+  | CheckBody String Bool (Bool -> 'msg)
+  | BrowserBody (BrowserConfig 'msg)
+  | TranscriptBody TranscriptConfig
+
+public type Description 'msg = { body : Body 'msg, id : Option Id, props : Props }
+
+public opaque type Element 'msg =
+  | Element (Description 'msg)
+
+make : Option Id -> List (Attribute 'widget) -> Body 'msg -> Element 'msg
+let make identifier attributes body = Element {
+  body = body,
+  id = identifier,
+  props = properties attributes
+}
+
+/// Read-only description used by custom renderers and the headless engine.
+public describe : Element 'msg -> Description 'msg
+let describe element =
+  match element with
+  | Element description -> description
+
+public text : List (Attribute Text) -> String -> Element 'msg
+let text attributes value = make None attributes (TextBody value)
+
+public richText : List (Attribute Text) -> Array (List Span) -> Element 'msg
+let richText attributes lines = make None attributes (RichBody lines)
+
+/// Stack children vertically in declaration order.
+public column : List (Attribute Container) -> List (Element 'msg) -> Element 'msg
+let column attributes children = make None attributes (ColumnBody children)
+
+/// Arrange children horizontally, distributing weighted fill deterministically.
+public row : List (Attribute Container) -> List (Element 'msg) -> Element 'msg
+let row attributes children = make None attributes (RowBody children)
+
+/// Modal overlay: only the foreground participates in keyboard focus.
+public modal : List (Attribute Container) -> Element 'msg -> Element 'msg -> Element 'msg
+let modal attributes background foreground =
+  make None attributes (OverlayBody background foreground)
+
+/// A clipped vertical viewport. New focus reveals a descendant automatically.
+public scroll : Id -> List (Attribute Container) -> Element 'msg -> Element 'msg
+let scroll identifier attributes child = make (Some identifier) attributes (ScrollBody child)
+
+/// Activate by Enter, Space, or primary mouse click.
+public button : Id -> List (Attribute Button) -> { label : String, onPress : 'msg } -> Element 'msg
+let button identifier attributes config =
+  make (Some identifier) attributes (ButtonBody config.label config.onPress)
+
+/// Controlled text input. The model owns text; the framework owns caret and selection.
+public input : Id -> List (Attribute Input) -> { label : String, onChange : String -> 'msg, value : String } -> Element 'msg
+let input identifier attributes config =
+  make (Some identifier) attributes (InputBody {
+    label = config.label,
+    onBlur = None,
+    onChange = config.onChange,
+    onSubmit = None,
+    value = config.value
+  })
+
+/// A multiline composer. Enter submits, Shift+Enter inserts a line; Ctrl+P/N
+/// navigate submitted history. The ordinary multiline input keeps Enter as text.
+public editor : Id -> List (Attribute Input) -> InputConfig 'msg -> Element 'msg
+let editor identifier attributes config =
+  make (Some identifier) (List.append [multiline true] attributes) (InputBody config)
+
+/// An input with explicit submit and blur messages, suitable for form components.
+public inputWith : Id -> List (Attribute Input) -> InputConfig 'msg -> Element 'msg
+let inputWith identifier attributes config = make (Some identifier) attributes (InputBody config)
+
+public checkbox : Id -> List (Attribute Choice) -> { checked : Bool, label : String, onChange : Bool -> 'msg } -> Element 'msg
+let checkbox identifier attributes config =
+  make (Some identifier) attributes (CheckBody config.label config.checked config.onChange)
+
+/// A virtualized table. Only visible rows are requested; headers use equal widths.
+public table : Id -> List (Attribute Browser) -> BrowserConfig 'msg -> Element 'msg
+let table identifier attributes config = make (Some identifier) attributes (BrowserBody config)
+
+public list : Id -> List (Attribute Browser) -> { onRange : Option (Range -> 'msg), onSelect : String -> 'msg, selected : Option String, source : Source } -> Element 'msg
+let list identifier attributes config = table identifier attributes {
+  columns = Array.empty,
+  onRange = config.onRange,
+  onSelect = config.onSelect,
+  selected = config.selected,
+  source = config.source
+}
+
+public source : Array Item -> Source
+let source items = { count = Array.length items, get = fun index -> Array.get index items }
+
+/// A virtualized rich-text viewport. User scrolling suspends tail following;
+/// End resumes it. Only visible lines are requested from the source.
+public transcript : Id -> List (Attribute Browser) -> TranscriptConfig -> Element 'msg
+let transcript identifier attributes config =
+  make (Some identifier) attributes (TranscriptBody config)
+
+/// Controlled expansion for tool output, details and nested sections.
+public disclosure : Id -> List (Attribute Container) -> { expanded : Bool, label : String, onToggle : Bool -> 'msg } -> Element 'msg -> Element 'msg
+let disclosure identifier attributes config child =
+  column attributes (button identifier [] {
+    label = (if config.expanded then "▼ " else "▶ ") ++ config.label,
+    onPress = config.onToggle (not config.expanded)
+  } :: if config.expanded then [child] else [])
+
+/// Lift a component's messages into its parent's message type.
+public map : ('a -> 'b) -> Element 'a -> Element 'b
+let map f element =
+  let description = describe element
+  let body =
+    match description.body with
+    | TextBody value -> TextBody value
+    | RichBody lines -> RichBody lines
+    | TranscriptBody config -> TranscriptBody config
+    | RowBody children -> RowBody (List.map (map f) children)
+    | ColumnBody children -> ColumnBody (List.map (map f) children)
+    | OverlayBody background foreground -> OverlayBody (map f background) (map f foreground)
+    | ScrollBody child -> ScrollBody (map f child)
+    | ButtonBody label message -> ButtonBody label (f message)
+    | InputBody config -> InputBody {
+      label = config.label,
+      onBlur = Option.map f config.onBlur,
+      onChange = config.onChange >> f,
+      onSubmit = Option.map f config.onSubmit,
+      value = config.value
+    }
+    | CheckBody label checked onChange -> CheckBody label checked (onChange >> f)
+    | BrowserBody config -> BrowserBody {
+      columns = config.columns,
+      onRange = Option.map (fun callback -> callback >> f) config.onRange,
+      onSelect = config.onSelect >> f,
+      selected = config.selected,
+      source = config.source
+    }
+  Element { body = body, id = description.id, props = description.props }
