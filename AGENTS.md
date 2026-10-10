@@ -740,6 +740,9 @@ Uniform descendants of a borrowed parameter may remain borrowed until an actual
 consuming use acquires its own reference. Known borrowing call arguments retain
 those loans only while their owner survives the complete call. Wrapper-free
 Option construction does not count as reusable-cell reconstruction.
+Concrete Float array reads, including owned-map slot transfers, load directly
+into floating-point registers. Generic reads still inspect the buffer's layout
+and re-box at their uniform boundary; every Float bit pattern is preserved.
 Typed Int field and array loads keep their full-width boxed fallback out of the
 immediate scan's hot path while supporting the same complete 64-bit value range.
 Typed locals carry conservative constructor-tag, field-count and scalar-slot

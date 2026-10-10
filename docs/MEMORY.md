@@ -1527,6 +1527,9 @@ program output are unchanged, guarded by the full type/golden suite):
     that are read and rebuilt stay owned to preserve in-place update opportunities.
     Structural comparisons and hashes borrow type-variable operands too; borrow
     inference follows the primitive's actual consuming-or-borrowing convention.
+    Concrete Float array loads and owned-map transfers use typed `f64` loads,
+    avoiding integer-register detours while preserving every stored bit pattern.
+    Generic reads retain their layout check and uniform boxing boundary.
     Typed Int field and array loads place the boxed full-width fallback out of the ordinary
     immediate scan, keeping the hot loop contiguous without changing stored values.
   - **IR.** A generic loop (`Join`/`Recur`) plus, for a constructor-wrapped

@@ -4636,9 +4636,8 @@ fn array_int_get_inlines_a_bounds_checked_slot_load() {
 #[test]
 fn array_float_get_inlines_a_raw_f64_slot_load_with_no_box_deref() {
     // `Array.unsafeGet` on an `Array Float` inlines the bounds check and reads the
-    // slot word *as* the `f64` bits (a bit-reinterpret) — the element is stored
-    // unboxed, so there is no pointer-to-box dereference. The function returns in an
-    // `f64` register.
+    // slot directly into an `f64` register. The element is stored unboxed, so
+    // there is no pointer-to-box dereference or integer-register detour.
     let src = indoc! {r#"
         module M
 
@@ -4647,7 +4646,8 @@ fn array_float_get_inlines_a_raw_f64_slot_load_with_no_box_deref() {
     "#};
     let ir = entry_ir(src, "g");
     assert!(ir.contains(" ult "), "inline unsigned bounds check:\n{ir}");
-    assert!(ir.contains("bitcast"), "the raw slot word is reinterpreted as f64:\n{ir}");
+    assert!(ir.contains("load.f64"), "the raw slot loads directly as f64:\n{ir}");
+    assert!(!ir.contains("bitcast"), "the load needs no representation conversion:\n{ir}");
     // Only the length and element slot are loaded. The caller retains the array,
     // and the slot word is the Float value rather than a pointer to a box.
     assert_eq!(load_count(&ir), 2, "one slot load, no box deref:\n{ir}");
