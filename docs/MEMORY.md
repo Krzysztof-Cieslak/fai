@@ -4963,6 +4963,10 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   cryptographic, TLS, networking and cancellation-cleanup primitives. TLS is
   verified by default; SCRAM server proofs and optional required channel binding
   are checked. Connection and operation deadlines are configurable and optional.
+  Extended queries use server-described parameter types. Named portals bound row
+  batches and pin an internal transaction outside explicit transactions. Session
+  generations and transaction IDs invalidate escaped aliases. Cancellation
+  targets the original peer and discards the connection; no SQL is replayed.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

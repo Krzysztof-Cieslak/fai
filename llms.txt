@@ -1772,6 +1772,12 @@ The optional `postgres` source package depends on `sql` and `json`. Its Fai
 protocol modules implement PostgreSQL v3 framing, verified TLS, SCRAM-SHA-256
 and channel binding, and checked common scalar conversions. Pure contracts run
 directly with `fai test -C packages postgres`.
+Use `Postgres.withConnection runtime options callback` with an explicit `entropy =
+Crypto.systemEntropy` capability plus `net`, `tls`, `clock`, and `concurrency`.
+Callbacks receive a `Sql.Session`; use `Sql.statement` with `$1` parameters and
+explicit SQL casts, `SqlDecode.query`, `Sql.withRows`, and `Sql.transaction`.
+Named portals bound row batches. Parent aliases cannot join an active child
+transaction. Cancellation discards the physical connection; SQL is not replayed.
 `packages/sqlite` implements sessions with `Sqlite.withMemory env work` and
 `withConnection env options path work`, where env supplies `sqlite : SqliteHost.Sqlite`.
 `Sqlite.defaults` uses writable connections, a configurable 5000 ms busy timeout
