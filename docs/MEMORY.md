@@ -4844,6 +4844,12 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   A supervised operation distinguishes its deadline from caller cancellation;
   both join the worker and release its response scope. Pure preparation and
   decoding use the same rules as live requests and are tested with Fai contracts.
+  Redirect and retry decisions are pure and made before exposing a response to
+  application code. They replay prepared bytes, release discarded responses, and
+  retain one total deadline. Redirects strip default/sensitive headers on an
+  origin change; retries are opt-in for GET/HEAD status responses, never inferred
+  from transport-message text. Valid Retry-After delays take precedence over the
+  backoff cap. Final response metadata records total attempts and the final URL.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

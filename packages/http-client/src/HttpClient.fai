@@ -33,9 +33,13 @@ public type Error =
 public type Config = {
   baseUrl : String,
   extraRoots : Option Bytes,
+  followRedirects : Bool,
   headers : Headers,
   maxBodyBytes : Int,
   maxErrorBytes : Int,
+  maxRedirects : Int,
+  retry : HttpClientPolicy.RetryPolicy,
+  sensitiveHeaders : List String,
   timeoutMs : Option Int
 }
 
@@ -44,10 +48,30 @@ public config : String -> Config
 let config baseUrl = {
   baseUrl = baseUrl,
   extraRoots = None,
+  followRedirects = true,
   headers = Headers.empty,
   maxBodyBytes = 16777216,
   maxErrorBytes = 8192,
+  maxRedirects = 10,
+  retry = HttpClientPolicy.noRetry,
+  sensitiveHeaders = ["Authorization", "Cookie", "Proxy-Authorization"],
   timeoutMs = Some 30000
+}
+
+/// The opt-in default retry policy: two additional attempts on transient statuses.
+public retryTransient : HttpClientPolicy.RetryPolicy
+let retryTransient = HttpClientPolicy.retryTransient
+
+let headerName pair =
+  let (name, value) = pair
+  name
+
+policySettings : Config -> HttpClientPolicy.Settings
+let policySettings cfg = {
+  followRedirects = cfg.followRedirects,
+  maxRedirects = cfg.maxRedirects,
+  retry = cfg.retry,
+  sensitiveHeaders = List.append cfg.sensitiveHeaders (List.map headerName (Headers.toList cfg.headers))
 }
 
 type Expectation =
@@ -256,7 +280,7 @@ let validateConfig cfg =
     match Url.parse cfg.baseUrl with
     | Ok url ->
       if validUrl url then
-        Ok ()
+        Result.mapError InvalidConfiguration (HttpClientPolicy.validate (policySettings cfg))
       else
         Err (InvalidConfiguration "base URL must be an absolute http(s) URL without userinfo")
     | Err message -> Err (InvalidConfiguration message)
@@ -472,24 +496,49 @@ deadline : Capabilities -> Option Int -> (Unit -> Result 'a Error / 'e) -> Resul
 let deadline env timeout work =
   env.concurrency.scope (deadlineScope env.concurrency env.clock timeout work)
 
-exchangeBuffered : Config -> Capabilities -> Http.Client -> Request 'a -> Prepared -> Result (Response 'a) Error / { Concurrency, Net, Tls }
-let exchangeBuffered cfg env pool req wire =
-  let request = {
-    body = Http.bytesBody wire.body,
-    headers = wire.headers,
-    method = wire.method,
-    url = wire.url
-  }
-  match Http.withResponseOn env pool request (fun response ->
-    bufferResponse cfg req {
-      attempts = 1,
-      headers = response.headers,
-      reason = response.reason,
-      status = response.status,
-      url = wire.url
-    } response.body) with
+type Exchange 'a =
+  | Finished 'a
+  | Again Prepared Int Int Int
+
+wireRequest : Prepared -> Http.Request 'e
+let wireRequest wire = {
+  body = Http.bytesBody wire.body,
+  headers = wire.headers,
+  method = wire.method,
+  url = wire.url
+}
+
+chooseResponse : Config -> Capabilities -> Prepared -> Int -> Int -> Int -> (Response (Stream Bytes { Concurrency, Net, Tls }) -> Result 'a Error / 'e) -> Http.Response { Concurrency, Net, Tls } -> Result (Exchange 'a) Error / { Clock | 'e }
+let chooseResponse cfg env wire retries redirects attempts consume response =
+  let now = Int.floorDiv (env.clock.now ()) 1000
+  match HttpClientPolicy.decide (policySettings cfg) wire response.status response.headers retries redirects now with
+  | HttpClientPolicy.InvalidRedirect message -> Err (InvalidRequest message)
+  | HttpClientPolicy.RedirectLimit limit -> Err (RedirectLimit limit)
+  | HttpClientPolicy.Follow next -> Ok (Again next retries (redirects + 1) 0)
+  | HttpClientPolicy.RetryAfter delay -> Ok (Again wire (retries + 1) redirects delay)
+  | HttpClientPolicy.Return ->
+    Result.map Finished (consume {
+      body = response.body,
+      head = {
+        attempts = attempts,
+        headers = response.headers,
+        reason = response.reason,
+        status = response.status,
+        url = wire.url
+      }
+    })
+
+// Every next exchange starts after the previous response scope has ended.
+// The consumer sees only the final response and is never retried.
+exchange : Config -> Capabilities -> Http.Client -> Prepared -> Int -> Int -> Int -> (Response (Stream Bytes { Concurrency, Net, Tls }) -> Result 'a Error / 'e) -> Result 'a Error / { Clock, Concurrency, Net, Tls | 'e }
+let exchange cfg env pool wire retries redirects attempts consume =
+  match Http.withResponseOn env pool (wireRequest wire) (chooseResponse cfg env wire retries redirects attempts consume) with
   | Err message -> Err (Transport message)
-  | Ok result -> result
+  | Ok (Err error) -> Err error
+  | Ok (Ok (Finished result)) -> Ok result
+  | Ok (Ok (Again next retries redirects delay)) ->
+    let slept = if delay > 0 then env.clock.sleep delay else ()
+    exchange cfg env pool next retries redirects (attempts + 1) consume
 
 /// Execute and buffer a typed response. One deadline covers the full exchange.
 public send : Client -> Request 'a -> Result (Response 'a) Error / { Clock, Concurrency, Net, Tls }
@@ -498,7 +547,8 @@ let send client req =
   | MkClient cfg env pool ->
     match prepare cfg req with
     | Err error -> Err error
-    | Ok wire -> deadline env cfg.timeoutMs (fun _ -> exchangeBuffered cfg env pool req wire)
+    | Ok wire ->
+      deadline env cfg.timeoutMs (fun _ -> exchange cfg env pool wire 0 0 1 (decodeStream cfg req))
 
 /// Render a structured failure for a console or log.
 public errorToString : Error -> String

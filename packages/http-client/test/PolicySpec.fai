@@ -1,0 +1,87 @@
+module PolicySpec
+
+let settings = {
+  followRedirects = true,
+  maxRedirects = 10,
+  retry = HttpClientPolicy.noRetry,
+  sensitiveHeaders = ["Authorization", "Cookie", "X-Api-Key"]
+}
+
+let retries = { settings with retry = HttpClientPolicy.retryTransient }
+
+let headers = Headers.fromList [
+  ("Authorization", "secret"),
+  ("Cookie", "id=1"),
+  ("X-Api-Key", "key"),
+  ("Content-Type", "text/plain")
+]
+
+let decision policy method status fields retried redirected =
+  match Url.parse "https://api.test/v1/users" with
+  | Err message -> HttpClientPolicy.InvalidRedirect message
+  | Ok url ->
+    HttpClientPolicy.decide policy {
+      body = Bytes.fromString "payload",
+      headers = headers,
+      method = method,
+      url = url
+    } status (Headers.fromList fields) retried redirected 0
+example: HttpClientPolicy.validate settings = Ok ()
+example: HttpClientPolicy.validate { settings with
+  maxRedirects = (-1)
+} = Err "redirect limit must be nonnegative"
+example: decision settings Http.GET 503 [] 0 0 = HttpClientPolicy.Return
+example: decision retries Http.GET 503 [] 0 0 = HttpClientPolicy.RetryAfter 100
+example: decision retries Http.HEAD 429 [] 1 0 = HttpClientPolicy.RetryAfter 200
+example: decision retries Http.GET 503 [] 2 0 = HttpClientPolicy.Return
+example: decision retries Http.POST 503 [] 0 0 = HttpClientPolicy.Return
+example: decision retries Http.GET 200 [] 0 0 = HttpClientPolicy.Return
+example: decision retries Http.GET 503 [("Retry-After", "3")] 0 0 = HttpClientPolicy.RetryAfter 3000
+example: decision retries Http.GET 503 [
+  ("Retry-After", "bad")
+] 0 0 = HttpClientPolicy.RetryAfter 100
+example: decision settings Http.GET 302 [] 0 0 = HttpClientPolicy.Return
+example: decision settings Http.GET 302 [
+  ("Location", "/next")
+] 0 10 = HttpClientPolicy.RedirectLimit 10
+example: decision { settings with
+  followRedirects = false
+} Http.GET 302 [("Location", "/next")] 0 0 = HttpClientPolicy.Return
+example: decision settings Http.GET 302 [
+  ("Location", "/a"),
+  ("Location", "/b")
+] 0 0 = HttpClientPolicy.InvalidRedirect "multiple Location headers"
+example: decision settings Http.GET 302 [
+  ("Location", "http://api.test/")
+] 0 0 = HttpClientPolicy.InvalidRedirect "redirect would downgrade HTTPS"
+
+let followed method status target =
+  match decision settings method status [("Location", target)] 0 0 with
+  | HttpClientPolicy.Follow request ->
+    Some (request.method, Url.toString request.url, request.body, Headers.get "Authorization" request.headers, Headers.get "Content-Type" request.headers)
+  | _ -> None
+example: followed Http.POST 302 "/next" = Some (Http.GET, "https://api.test/next", Bytes.empty, Some "secret", None)
+example: followed Http.HEAD 303 "/next" = Some (Http.HEAD, "https://api.test/next", Bytes.fromString "payload", Some "secret", Some "text/plain")
+example: followed Http.PUT 301 "../next" = Some (Http.PUT, "https://api.test/next", Bytes.fromString "payload", Some "secret", Some "text/plain")
+example: followed Http.POST 307 "/next" = Some (Http.POST, "https://api.test/next", Bytes.fromString "payload", Some "secret", Some "text/plain")
+example: followed Http.GET 308 "https://other.test/next" = Some (Http.GET, "https://other.test/next", Bytes.fromString "payload", None, Some "text/plain")
+
+let noCredentials =
+  match decision settings Http.GET 302 [("Location", "https://other.test/")] 0 0 with
+  | HttpClientPolicy.Follow request ->
+    Headers.get "Cookie" request.headers = None && Headers.get "X-Api-Key" request.headers = None
+  | _ -> false
+example: noCredentials
+example: HttpClientPolicy.retryAfter 0 "3" = Some 3000
+example: HttpClientPolicy.retryAfter 0 " 0 " = Some 0
+example: HttpClientPolicy.retryAfter 0 "-1" = None
+example: HttpClientPolicy.retryAfter 0 "+1" = None
+example: HttpClientPolicy.retryAfter 0 "" = None
+example: HttpClientPolicy.retryAfter 0 "1.5" = None
+example: HttpClientPolicy.retryAfter 0 "99999999999999999999999999" = Some 9223372036854775807
+example: HttpClientPolicy.retryAfter 0 "9223372036854775" = Some 9223372036854775000
+example: HttpClientPolicy.retryAfter 0 "Thu, 01 Jan 1970 00:00:03 GMT" = Some 3000
+example: HttpClientPolicy.retryAfter 10 "Thu, 01 Jan 1970 00:00:03 GMT" = Some 0
+example: HttpClientPolicy.retryAfter 0 "Fri, 01 Jan 1970 00:00:03 GMT" = None
+example: HttpClientPolicy.retryAfter 0 "Thu, 01 Jan 1970 00:00:03 UTC" = None
+forall n: HttpClientPolicy.retryAfter 0 (Int.toString (Int.and n 1048575)) = Some (Int.and n 1048575 * 1000)
