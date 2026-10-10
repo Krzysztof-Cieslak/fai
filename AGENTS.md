@@ -598,6 +598,10 @@ interoperate through the same structural and ownership operations.
 Iterative destruction scans and recycles compact data through one inline path,
 decoding its shape once. Child order and extended/resource finalization paths
 remain the same.
+Dead arrays release their elements in bounded suffix batches, keeping the
+remaining prefix as an internal continuation. The destruction worklist therefore
+depends on nesting depth rather than array width; shared arrays retain their
+contents until the last owner releases them, and raw Float arrays remain leaves.
 Structural equality, ordering and hashing likewise share one shape snapshot per
 data operand when walking its fields, including mixed raw/boxed Float layouts.
 Generic local drops test the uniform immediate tag before calling the runtime,

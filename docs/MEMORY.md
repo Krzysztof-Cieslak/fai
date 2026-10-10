@@ -821,6 +821,12 @@ Reuse & in-place update:
     path: decode the shape, enqueue boxed children in their existing order, and
     return the cell to its exact pool class. Extended cells and native resources
     keep their established finalization paths; live-byte counters stay balanced.
+    A dead array is drained in bounded suffix batches. Its inaccessible remaining
+    prefix becomes an internal worklist continuation until the final batch, so
+    auxiliary destruction storage scales with nesting depth rather than array
+    width. Reverse element-release order is preserved; raw Float arrays remain
+    leaves and live shared arrays are never shortened. Variable-size release
+    dispatch stays outside the inlined compact-data drain path.
     The same retained-root proof covers data searches with scalar or niche-scalar
     results when the reachable type contains no resources or functions. A bounded
     type walk records this conservative fact alongside data-shape metadata, keeping
