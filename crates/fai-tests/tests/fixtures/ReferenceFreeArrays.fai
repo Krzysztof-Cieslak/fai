@@ -1,0 +1,41 @@
+module Main
+
+public bools : Int -> Int
+let bools n =
+  let values = Array.repeat n false
+  let changed = Array.unsafeSet 0 true values
+  if Array.unsafeGet 0 changed then Array.length changed else 0
+
+public floats : Int -> Int
+let floats n =
+  let values = Array.repeat n (Float.fromBits 0x7ff0000000001234)
+  if Float.toBits (Array.unsafeGet 0 values) = 0x7ff0000000001234 then Array.length values else 0
+
+public integers : Int -> Int
+let integers n =
+  let values = Array.repeat n 9223372036854775807
+  if Array.unsafeGet 0 values = 9223372036854775807 then Array.length values else 0
+
+public shared : Int -> Int
+let shared n =
+  let original = Array.repeat n false
+  let changed = Array.unsafeSet 0 true original
+  if not (Array.unsafeGet 0 original) && Array.unsafeGet 0 changed then
+    Array.length original + Array.length changed
+  else
+    0
+
+public characters : Int -> Int
+let characters n =
+  let values = Array.repeat n 'λ'
+  if Array.unsafeGet 0 values = 'λ' then Array.length values else 0
+
+public units : Int -> Int
+let units n =
+  let values = Array.repeat n ()
+  Array.length values
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let total = bools 32 + floats 32 + integers 32 + shared 32 + characters 32 + units 32
+  runtime.console.writeLine (if total = 224 then "ok" else "wrong")

@@ -26,6 +26,12 @@ let buffers n total =
     buffers (n - 1) (total + Array.unsafeGet 4095 buffer)
 public bufferLoop : Int -> Int
 let bufferLoop n = buffers n 0
+let boolBuffers n total =
+  if n <= 0 then total else
+    let buffer = Array.repeat 4096 false
+    boolBuffers (n - 1) (total + (if Array.unsafeGet 4095 buffer then 0 else 1))
+public boolBufferLoop : Int -> Int
+let boolBufferLoop n = boolBuffers n 0
 let churn n total =
   if n <= 0 then total else
     let size = if n % 3 = 0 then 8 else if n % 3 = 1 then 128 else 4096
@@ -97,6 +103,11 @@ fn shared_array_copies_have_bounded_slab_retention() {
 #[test]
 fn large_buffers_release_their_mapping_each_iteration() {
     bounded("bufferLoop", |n| n * (n + 1) / 2);
+}
+
+#[test]
+fn reference_free_buffers_release_their_mapping_each_iteration() {
+    bounded("boolBufferLoop", |n| n);
 }
 
 #[test]

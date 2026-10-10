@@ -1534,6 +1534,11 @@ program output are unchanged, guarded by the full type/golden suite):
     loads: the caller already retains their owner throughout the call, and an
     owned alias must copy before growing. This does not extend a lifetime.
     Consumed or changing array parameters retain ordinary memory dependencies.
+    Concrete Bool, Char, Unit and raw-Float arrays are reference-free leaves at
+    a typed release site. Their final buffer is freed without a slot scan; the
+    wire projection preserves this element class. Int arrays still scan because
+    full-width elements can own boxes. Unknown and nested arrays retain ordinary
+    child release, and all paths retain the same final-owner and mapping policy.
     Typed Int field and array loads place the boxed full-width fallback out of the ordinary
     immediate scan, keeping the hot loop contiguous without changing stored values.
   - **IR.** A generic loop (`Join`/`Recur`) plus, for a constructor-wrapped

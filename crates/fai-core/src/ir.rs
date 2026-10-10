@@ -34,6 +34,16 @@ pub fn scalar_field_mask<'a>(field_types: impl IntoIterator<Item = &'a Ty>) -> u
     mask
 }
 
+/// Whether an array's slots provably contain no reference-counted values.
+/// Concrete Floats use raw slots; Unit, Bool and Char are immediate. Int is
+/// excluded because full-width values can own boxes, as can unknown elements.
+#[must_use]
+pub fn reference_free_array(ty: &Ty) -> bool {
+    matches!(ty, Ty::App(head, element)
+        if matches!(head.as_ref(), Ty::Con(Con::Array))
+            && matches!(element.as_ref(), Ty::Unit | Ty::Con(Con::Bool | Con::Char | Con::Float)))
+}
+
 /// The largest field count a fixed-shape float aggregate may have and still be
 /// kept in registers / passed component-wise. A wider aggregate stays a boxed cell
 /// (the spilled cost outweighs the saving past a handful of fields). This bounds

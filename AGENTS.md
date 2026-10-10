@@ -746,6 +746,10 @@ and re-box at their uniform boundary; every Float bit pattern is preserved.
 Lengths of already-borrowed array parameters carry read-only memory evidence,
 allowing invariant loads to move out of loops without retaining an extra owner.
 Growing or otherwise consumed arrays keep ordinary memory dependencies.
+Known `Array Bool`, `Array Char`, `Array Unit` and raw `Array Float` values
+release their final buffer without scanning element slots. Their element class
+survives the worker wire form. Int arrays, unknown elements and nested arrays
+retain child release; shared buffers still wait for their final owner.
 Typed Int field and array loads keep their full-width boxed fallback out of the
 immediate scan's hot path while supporting the same complete 64-bit value range.
 Typed locals carry conservative constructor-tag, field-count and scalar-slot

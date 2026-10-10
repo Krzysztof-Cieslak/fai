@@ -14,6 +14,22 @@ use indoc::indoc;
 /// Serializes the in-process JIT runs (the runtime's output sink is global).
 static RUN_LOCK: Mutex<()> = Mutex::new(());
 
+#[test]
+fn reference_free_array_classes_survive_the_worker_boundary() {
+    let source = include_str!("fixtures/ReferenceFreeArrays.fai");
+    let dir = workspace(&[("Main.fai", source)]);
+    let session = Session::open(dir).unwrap();
+    let bundle = build_run_bundle(session.db(), entry(&session, "Main.fai")).bundle.unwrap();
+    let encoded = serde_json::to_string(&bundle).unwrap();
+    assert!(encoded.contains("LeafArray"));
+    let rebuilt = fai_driver::bundle_from_slice(encoded.as_bytes()).unwrap();
+    let _guard = RUN_LOCK.lock().unwrap();
+    fai_runtime::capture_start();
+    let exit = jit_run_bundle(&rebuilt);
+    let output = fai_runtime::capture_take();
+    assert_eq!((exit, output.as_str()), (0, "ok\n"));
+}
+
 fn workspace(files: &[(&str, &str)]) -> Utf8PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let dir = Utf8PathBuf::from_path_buf(std::env::temp_dir()).unwrap().join(format!(

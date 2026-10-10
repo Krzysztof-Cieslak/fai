@@ -178,6 +178,20 @@ fn borrowed_array_length_edits_match_clean_native_objects() {
 }
 
 #[test]
+fn array_element_release_class_edits_match_clean_native_objects() {
+    let leaf =
+        "module M\nlet size n =\n  let values = Array.repeat n false\n  Array.length values\n";
+    let counted = leaf.replace("false", "9223372036854775807");
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", leaf)], &[("M.fai", &counted)], &[("M.fai", leaf)]],
+        |db, files| {
+            (*object_code(db, db.source_file(files[0]).unwrap(), Symbol::intern("size"), false))
+                .clone()
+        },
+    );
+}
+
+#[test]
 fn unrelated_body_edits_preserve_data_layout_cutoff() {
     let mut db = fai_db::FaiDatabase::new();
     fai_types::std_lib::load_std(&mut db);
