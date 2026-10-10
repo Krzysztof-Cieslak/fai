@@ -14,7 +14,7 @@ packages/web/
   examples/Main.fai  # a runnable server
   examples/JsonWebExample.fai  # typed JSON request/response server
   test/WebSpec.fai   # behavioural contracts
-  test/run.py        # package-local contracts and JIT/AOT HTTP checks
+  test/WebJsonSpec.fai  # JSON request/response contracts
 ```
 
 ## Using it today
@@ -202,18 +202,21 @@ turning an `HttpHandler` into the request→response function the server expects
 socket, and `Web.outcomeResponse` reads back the response an outcome produced, so
 handlers are testable with ordinary `example` contracts. See `test/WebSpec.fai`.
 
-The package carries its own tests, runnable against an existing compiler:
+The package carries ordinary Fai contracts, runnable directly with an existing compiler:
 
 ```sh
 fai test -C packages web
-python3 packages/web/test/run.py --fai /path/to/fai
+fai test -C packages web/test/WebJsonSpec.fai
 ```
 
-The runner checks formatting, types and contracts, effect forwarding, and real
-loopback HTTP requests through JIT and AOT executables. Library edits do not
-require rebuilding the compiler. Keep `web` and `json` beside each other when
-moving them to another source workspace.
-The native HTTP checks cover one-, two-, and four-worker scheduler pools.
+Repeated calls reuse the warm daemon. Library edits do not require rebuilding
+the compiler. Keep `web` and `json` beside each other when moving them to another
+source workspace. `ci.json` declares the dependency for repository CI selection;
+the Fai test runner does not require it.
+
+The effectful `.fai` programs in `test/` also serve as compiler execution fixtures.
+Compiler CI runs their transport, header, and shutdown checks through JIT and AOT,
+including one-, two-, and four-worker scheduler pools.
 
 ## Status
 

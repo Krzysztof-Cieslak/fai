@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the self-contained JSON package against an existing Fai compiler."""
+"""Compiler JIT/AOT and differential checks using the JSON package as a fixture."""
 
 import argparse
 from decimal import Decimal
@@ -23,7 +23,7 @@ def main():
     compiler = str(candidate.resolve()) if candidate.exists() else shutil.which(args.fai)
     if compiler is None:
         parser.error("fai was not found; pass --fai /path/to/fai")
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[2] / "packages" / "json"
 
     def fai(*arguments, **kwargs):
         return subprocess.run(
@@ -31,9 +31,6 @@ def main():
             check=True, text=True, encoding="utf-8", timeout=600, **kwargs,
         )
 
-    fai("fmt", "--check")
-    fai("check", "--no-examples")
-    fai("test", "--seed", "42", "--count", "128")
     example = fai("run", "examples/JsonExample.fai", capture_output=True)
     assert json.loads(example.stdout) == {
         "message": "Hello, JSON!", "large": 123456789012345678901234567890,
@@ -107,7 +104,7 @@ def main():
 
         for source, actual in zip(documents, run("json", documents)):
             assert exact(source) == exact(actual), (source, actual)
-    print("JSON package: contracts, JIT, AOT, and seeded conformance checks passed")
+    print("JSON compiler fixtures: JIT, AOT, and seeded conformance checks passed")
 
 
 if __name__ == "__main__":

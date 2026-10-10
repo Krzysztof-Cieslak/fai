@@ -4757,10 +4757,9 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   decouple document nesting from native stack depth; a configurable limit defaults
   to 256. Rendering preserves member order and numeric spellings and normalizes
   string escapes. The library is pure and uses public Fai primitives.
-  Its tests travel with the package: Fai contracts plus a runner accepting an
-  existing compiler executable. Seeded differential checks drive a Fai-built
-  native executable through stdin, avoiding compile-time embedding of library
-  sources in the Rust test suite.
+  Its Fai contracts travel with the package and run directly with `fai test`.
+  Compiler-only differential checks drive a Fai-built native executable through
+  stdin, avoiding compile-time embedding of library sources in the Rust test suite.
   Typed codecs are explicit, composable Fai values. `JsonDecode` validates unique
   object names once at its entry boundary, including unused subtrees, and reports
   structured field/index paths. Missing fields and null are separate combinators;
@@ -4775,8 +4774,8 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   and forwards body/handler effects. Transport and encoding failures remain
   framework `Fail` values. The lower-level reader exposes structured errors for
   applications with a different response policy. The packages share a source
-  workspace and each owns its executable test runner; compiler integration tests
-  read their sources at runtime rather than embedding them in Rust artifacts.
+  workspace and each owns its Fai contracts; compiler integration fixtures load
+  their sources at runtime rather than embedding them in Rust artifacts.
 
 - **D150 Portable compiler bundles and executable identity.** Source packages use
   a cached `package-dev` compiler: optimized with assertions and runtime leak
@@ -4790,6 +4789,10 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   dependency libraries are embedded with the runtime and extracted at link time;
   a relocated executable needs only the platform linker/SDK. Bundles are installed
   atomically under a process lock and verified by identity and checksum.
+  Local package development activates the cached compiler on PATH once and uses
+  native `fai check`/`test`/`fmt` commands with a stable workspace root. The daemon
+  remains warm; there is no extra test wrapper. Per-package `ci.json` files carry
+  the repository CI dependency graph, independently of the Fai contract runner.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

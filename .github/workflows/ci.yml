@@ -84,13 +84,29 @@ jobs:
       - name: Optimized task migration regression
         run: cargo test --locked --release -p fai-runtime --lib migrated_task_reads_the_resuming_threads_context
 
-      - name: Source library tests
-        run: |
-          cargo build --locked -p fai-cli
-          python -m unittest discover -s scripts/tests -v
-          python scripts/tests/smoke_compiler.py --fai target/debug/fai
-          python packages/json/test/run.py --fai target/debug/fai
-          python packages/web/test/run.py --fai target/debug/fai
+      - name: Build compiler for source tests
+        run: cargo build --locked -p fai-cli
+
+      - name: Tooling tests
+        run: python -m unittest discover -s scripts/tests -v
+
+      - name: Package formatting
+        run: target/debug/fai fmt --check -C packages
+
+      - name: Package type checking
+        run: target/debug/fai check --no-examples -C packages
+
+      - name: Package contracts
+        run: target/debug/fai test -C packages --seed 42 --count 128
+
+      - name: Relocated compiler smoke test
+        run: python scripts/tests/smoke_compiler.py --fai target/debug/fai
+
+      - name: JSON compiler fixtures
+        run: python scripts/tests/json_toolchain.py --fai target/debug/fai
+
+      - name: HTTP compiler fixtures
+        run: python scripts/tests/web_toolchain.py --fai target/debug/fai
 
       - name: Verify the unit/proptest lanes partition the suite
         # A name-based guard: the two profiles must together select every
@@ -227,13 +243,29 @@ jobs:
       - name: Optimized task migration regression
         run: cargo test --locked --release -p fai-runtime --lib migrated_task_reads_the_resuming_threads_context
 
-      - name: Source library tests
-        run: |
-          cargo build --locked -p fai-cli
-          python -m unittest discover -s scripts/tests -v
-          python scripts/tests/smoke_compiler.py --fai target/debug/fai
-          python packages/json/test/run.py --fai target/debug/fai
-          python packages/web/test/run.py --fai target/debug/fai
+      - name: Build compiler for source tests
+        run: cargo build --locked -p fai-cli
+
+      - name: Tooling tests
+        run: python -m unittest discover -s scripts/tests -v
+
+      - name: Package formatting
+        run: target/debug/fai fmt --check -C packages
+
+      - name: Package type checking
+        run: target/debug/fai check --no-examples -C packages
+
+      - name: Package contracts
+        run: target/debug/fai test -C packages --seed 42 --count 128
+
+      - name: Relocated compiler smoke test
+        run: python scripts/tests/smoke_compiler.py --fai target/debug/fai
+
+      - name: JSON compiler fixtures
+        run: python scripts/tests/json_toolchain.py --fai target/debug/fai
+
+      - name: HTTP compiler fixtures
+        run: python scripts/tests/web_toolchain.py --fai target/debug/fai
 
       - name: Test summary
         if: always()

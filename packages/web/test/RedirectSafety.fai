@@ -1,0 +1,29 @@
+module RedirectSafety
+
+app : Web.HttpHandler 'e
+let app = Web.redirect (Url.decodeComponent "/safe%0D%0AX-Injected:%20yes")
+
+fetch : Runtime -> Int -> String / { Net }
+let fetch runtime port =
+  match runtime.net.connect "127.0.0.1" port with
+  | Err e -> e
+  | Ok connection ->
+    match runtime.net.send connection (Bytes.fromString "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n") with
+    | Err e -> e
+    | Ok sent ->
+      match runtime.net.recv connection 4096 with
+      | Err e -> e
+      | Ok bytes -> if Bytes.isEmpty bytes then "rejected" else "wrote bytes"
+
+serveThenFetch : Runtime -> Listener -> Nursery -> Unit / { Concurrency, Console, Net, Tls }
+let serveThenFetch runtime listener nursery =
+  let server = runtime.concurrency.spawn nursery (fun _ -> Web.serveListener runtime listener app)
+  let result = fetch runtime (runtime.net.localPort listener)
+  let stopped = runtime.concurrency.cancel server
+  runtime.console.writeLine result
+
+public main : Runtime -> Unit / { Concurrency, Console, Net, Tls }
+let main runtime =
+  match runtime.net.listen 0 with
+  | Err e -> runtime.console.writeLine e
+  | Ok listener -> runtime.concurrency.scope (serveThenFetch runtime listener)

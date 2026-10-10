@@ -1757,7 +1757,7 @@ Content-Type becomes 415; syntax/schema/duplicate-key errors become 400.
 allowing custom responses. JSON and concrete application `+json` media types are
 accepted with case-insensitive names and optional parameters; bytes must be UTF-8.
 Run examples with `fai run -C packages web/examples/JsonWebExample.fai` and the
-self-contained suite with `python3 packages/web/test/run.py --fai /path/to/fai`.
+self-contained suite with `fai test -C packages web`.
 See `packages/web/README.md`.
 
 ---
@@ -1771,6 +1771,10 @@ For source-package work in the compiler repository, `python3 scripts/compiler.py
 ensure` selects a cached optimized compiler without rebuilding Rust on cache hits;
 see `docs/DEVELOPMENT.md`. A copied compiler supports JIT and AOT without its
 original Cargo directories; AOT still requires the system linker/SDK.
+After activating that compiler on PATH, use `fai check`, `fai test`, and `fai fmt`
+directly. For repository packages, keep `-C packages` stable and select `json`,
+`web`, or a package-local test file; omit `--no-daemon` for warm feedback. Python
+is used for compiler setup and CI infrastructure, not as the package test runner.
 
 The `fai` binary is a thin client to a per-workspace daemon that keeps the
 incremental database warm, so repeated commands are near-instant.
