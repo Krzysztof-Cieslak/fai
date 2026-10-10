@@ -1029,6 +1029,8 @@ struct LoopGen {
     iter_locals: Vec<LocalId>,
     /// The accumulator parameter, for an accumulating sink.
     acc_local: Option<LocalId>,
+    /// A fresh Array output has capacity for every possible source element.
+    reserved_output: bool,
     /// The loop's result type.
     result_ty: Ty,
 }
@@ -1043,6 +1045,7 @@ impl LoopGen {
             extern_local: FxHashMap::default(),
             iter_locals: Vec::new(),
             acc_local: None,
+            reserved_output: false,
             result_ty,
         }
     }
@@ -1168,6 +1171,18 @@ impl Fuser<'_> {
         }
 
         let mut g = LoopGen::new(loop_def, result_ty.clone());
+
+        // These source counts bound every output prefix, including filters. The
+        // accumulator is freshly allocated below and never exposed to a callback.
+        // List ranges use endpoint comparisons rather than wrapping counts, so
+        // their capacity hint alone cannot justify an unchecked append.
+        g.reserved_output = matches!(
+            &source,
+            Source::Range { seq: SeqKind::Array, .. }
+                | Source::Init { .. }
+                | Source::Repeat { .. }
+                | Source::ArrayValue { .. }
+        );
 
         // The source: invariant inputs, iteration state, the done test, the current
         // element (with its binds), the advance, and a capacity hint for a builder.
@@ -1716,7 +1731,11 @@ impl Fuser<'_> {
                 let acc = acc_local.expect("array builder has an acc");
                 let pushed = CExpr::new(
                     K::Prim {
-                        op: Prim::ArrayPush,
+                        op: if g.reserved_output {
+                            Prim::ArrayPushReserved
+                        } else {
+                            Prim::ArrayPush
+                        },
                         args: vec![local(acc, g.result_ty.clone()), built],
                     },
                     g.result_ty.clone(),
@@ -2483,6 +2502,23 @@ mod tests {
             "total",
         );
         assert!(body.contains("arrayRepeat"), "{body}");
+    }
+
+    #[test]
+    fn a_counted_array_builder_uses_its_private_reservation() {
+        let mut db = FaiDatabase::new();
+        fai_types::std_lib::load_std(&mut db);
+        let id = db.add_source("M.fai".into(), "module M\nlet build n = Array.range 0 n\n".into());
+        let lowered = fuse_def(&db, db.source_file(id).unwrap(), Symbol::intern("build"));
+        let body = pretty_def(&lowered.loops[0].lowered);
+        assert!(body.contains("arrayPushReserved"), "{body}");
+    }
+
+    #[test]
+    fn ordinary_array_push_has_no_reservation_evidence() {
+        let body = fused("module M\nlet append value xs = Array.push value xs\n", "append");
+        assert!(!body.contains("arrayPushReserved"), "{body}");
+        assert_eq!(crate::ir::Prim::from_builtin("arrayPushReserved"), None);
     }
 
     #[test]

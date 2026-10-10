@@ -4184,6 +4184,7 @@ impl<M: Module> Translator<'_, M> {
             Prim::ArrayTake => Some(self.array_take_inline(args, result_ty)),
             Prim::ArrayPut => Some(self.array_put_inline(args)),
             Prim::ArrayPush => Some(self.array_push_inline(args)),
+            Prim::ArrayPushReserved => Some(self.array_push_reserved_inline(args)),
             _ => None,
         }
     }
@@ -4804,6 +4805,56 @@ impl<M: Module> Translator<'_, M> {
 
         self.builder.switch_to_block(cont_b);
         self.builder.seal_block(cont_b);
+    }
+
+    /// Appends within a private builder's reserved capacity. The producer bound
+    /// covers every possible output, and callbacks cannot access this fresh
+    /// accumulator. Only the initialized prefix is owned, including after calls.
+    fn array_push_reserved_inline(&mut self, args: &[CExpr]) -> Value {
+        let concrete_float = matches!(args[1].ty, Ty::Con(Con::Float));
+        let generic = elem_may_be_float(&args[1].ty);
+        let base = self.expr(&args[0]);
+        let value = if concrete_float {
+            let value = self.expr(&args[1]);
+            self.float_field_bits(value)
+        } else {
+            self.expr_boxed(&args[1])
+        };
+        let len_off = rt::ARRAY_LEN_OFFSET as i32;
+        let len = self.builder.ins().load(types::I64, MemFlags::trusted(), base, len_off);
+        if cfg!(debug_assertions) || self.bce_shadow {
+            let rc = self.builder.ins().load(
+                types::I64,
+                MemFlags::trusted(),
+                base,
+                rt::RC_OFFSET as i32,
+            );
+            let size = self.builder.ins().load(
+                types::I64,
+                MemFlags::trusted(),
+                base,
+                rt::SIZE_OFFSET as i32,
+            );
+            let bytes = self.builder.ins().iadd_imm(size, -(rt::ARRAY_ELEMS_OFFSET as i64));
+            let capacity = self.builder.ins().ushr_imm(bytes, 3);
+            let unique = self.builder.ins().icmp_imm(IntCC::Equal, rc, 1);
+            let fits = self.builder.ins().icmp(IntCC::UnsignedLessThan, len, capacity);
+            let valid = self.builder.ins().band(unique, fits);
+            let store = self.builder.create_block();
+            let invalid = self.builder.create_block();
+            self.builder.set_cold_block(invalid);
+            self.builder.ins().brif(valid, store, &[], invalid, &[]);
+            self.builder.switch_to_block(invalid);
+            self.builder.seal_block(invalid);
+            self.runtime_fault("fai_bce_unsound_panic", &[], false);
+            self.builder.switch_to_block(store);
+            self.builder.seal_block(store);
+        }
+        let (address, offset) = self.array_elem_addr(base, len);
+        self.array_push_store(base, address, offset, value, concrete_float, generic);
+        let next = self.builder.ins().iadd_imm(len, 1);
+        self.builder.ins().store(MemFlags::trusted(), next, base, len_off);
+        base
     }
 
     /// `Array.push`. The array and value are consumed; capacity is derived from the
@@ -8442,7 +8493,9 @@ fn is_generic_array(ty: &Ty) -> bool {
 fn body_uses_array_alloc(e: &CExpr) -> bool {
     match &e.kind {
         ExprKind::Prim { op, args, .. } => {
-            matches!(op, Prim::ArrayWithCapacity | Prim::ArrayPush)
+            // Reserved pushes cannot grow, but can still stamp a Float layout.
+            // Keep descriptor-cache eligibility conservative for these builders.
+            matches!(op, Prim::ArrayWithCapacity | Prim::ArrayPush | Prim::ArrayPushReserved)
                 || args.iter().any(body_uses_array_alloc)
         }
         ExprKind::Lit(_)

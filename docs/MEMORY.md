@@ -1539,6 +1539,12 @@ program output are unchanged, guarded by the full type/golden suite):
     wire projection preserves this element class. Int arrays still scan because
     full-width elements can own boxes. Unknown and nested arrays retain ordinary
     child release, and all paths retain the same final-owner and mapping policy.
+    Counted Array builders carry an internal reserved-append operation. Their
+    output starts empty in a fresh pre-sized buffer, is never supplied to a
+    callback, and contains at most one output per input. Completed stores advance
+    the initialized prefix in order. Debug/shadow builds check the capacity and
+    uniqueness proof; concurrent execution uses the ordinary runtime push.
+    List capacity hints alone do not establish this proof.
     Typed Int field and array loads place the boxed full-width fallback out of the ordinary
     immediate scan, keeping the hot loop contiguous without changing stored values.
   - **IR.** A generic loop (`Join`/`Recur`) plus, for a constructor-wrapped

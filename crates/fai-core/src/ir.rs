@@ -730,6 +730,10 @@ pub enum Prim {
     ArrayPut,
     /// `Array` append (in place when unique with spare capacity, else grows/copies).
     ArrayPush,
+    /// Append to a compiler-private, uniquely owned buffer with proven spare
+    /// capacity. The initialized prefix grows by one. Compiler-generated only;
+    /// the ordinary push is the conservative runtime fallback.
+    ArrayPushReserved,
     /// `arraySplit`: split a `String` on a separator into an `Array String`.
     ArraySplit,
     /// `arrayJoin`: join an `Array String` with a separator into a `String`.
@@ -919,7 +923,7 @@ impl Prim {
             Prim::ArrayUnique => "fai_array_unique",
             Prim::ArrayTake => "fai_array_take",
             Prim::ArrayPut => "fai_array_put",
-            Prim::ArrayPush => "fai_array_push",
+            Prim::ArrayPush | Prim::ArrayPushReserved => "fai_array_push",
             Prim::ArraySplit => "fai_array_split",
             Prim::ArrayJoin => "fai_array_join",
             Prim::BytesLength => "fai_bytes_length",

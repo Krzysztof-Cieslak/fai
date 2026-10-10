@@ -99,6 +99,7 @@ fn prim_name(op: Prim) -> &'static str {
         Prim::ArrayTake => "arrayTake",
         Prim::ArrayPut => "arrayPut",
         Prim::ArrayPush => "arrayPush",
+        Prim::ArrayPushReserved => "arrayPushReserved",
         Prim::ArraySplit => "arraySplit",
         Prim::ArrayJoin => "arrayJoin",
         Prim::BytesLength => "bytesLength",

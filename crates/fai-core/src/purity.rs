@@ -153,6 +153,7 @@ pub fn op_unsafe_to_reorder(op: Prim, args: &[CExpr]) -> bool {
         | Prim::ArrayTake
         | Prim::ArrayPut
         | Prim::ArrayPush
+        | Prim::ArrayPushReserved
         | Prim::BytesGet
         | Prim::CharFromCode
         | Prim::BytesToString => true,

@@ -81,6 +81,42 @@ fn standalone_init_calls_in_increasing_index_order() {
 }
 
 #[test]
+fn reserved_builder_preserves_full_width_range_elements() {
+    check(
+        "let values = Array.range 9223372036854775805 9223372036854775807\nr.console.writeLine (if Array.toList values = [9223372036854775805, 9223372036854775806] then \"yes\" else \"no\")",
+        "yes",
+        false,
+    );
+}
+
+#[test]
+fn reserved_filter_keeps_only_its_initialized_prefix() {
+    check(
+        "let values = Array.filter (fun n -> n % 2 = 0) (Array.range 0 99)\nr.console.writeLine (Int.toString (Array.length values) ++ \" \" ++ Int.toString (Array.unsafeGet 49 values))",
+        "50 98",
+        false,
+    );
+}
+
+#[test]
+fn an_empty_reserved_filter_releases_no_uninitialized_slots() {
+    check(
+        "let values = Array.filter (fun n -> false) (Array.init 64 Int.toString)\nr.console.writeLine (Int.toString (Array.length values))",
+        "0",
+        false,
+    );
+}
+
+#[test]
+fn minimum_count_skips_reserved_builder_callbacks() {
+    check(
+        "let values = Array.init (-9223372036854775808) (fun i -> emit r i)\nr.console.writeLine (Int.toString (Array.length values))",
+        "0",
+        true,
+    );
+}
+
+#[test]
 fn empty_init_evaluates_operands_without_calling_the_callback() {
     check(
         "let xs = Array.init (emit r 0) (unary r)\nr.console.writeLine (Int.toString (Array.length xs))",

@@ -750,6 +750,10 @@ Known `Array Bool`, `Array Char`, `Array Unit` and raw `Array Float` values
 release their final buffer without scanning element slots. Their element class
 survives the worker wire form. Int arrays, unknown elements and nested arrays
 retain child release; shared buffers still wait for their final owner.
+Counted Array producers and fresh Array map/filter outputs can append directly
+within their proven reservation. The output buffer stays private to the builder;
+each completed element extends its initialized prefix. Debug/shadow execution
+checks capacity and uniqueness, and concurrent execution keeps the runtime path.
 Typed Int field and array loads keep their full-width boxed fallback out of the
 immediate scan's hot path while supporting the same complete 64-bit value range.
 Typed locals carry conservative constructor-tag, field-count and scalar-slot

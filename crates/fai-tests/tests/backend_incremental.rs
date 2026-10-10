@@ -192,6 +192,23 @@ fn array_element_release_class_edits_match_clean_native_objects() {
 }
 
 #[test]
+fn reserved_builder_edits_match_clean_generated_functions() {
+    let counted = "module M\nlet build n = Array.range 0 n\n";
+    let uncounted = "module M\nlet build n = Array.fromList (List.range 0 n)\n";
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", counted)], &[("M.fai", uncounted)], &[("M.fai", counted)]],
+        |db, files| {
+            let file = db.source_file(files[0]).unwrap();
+            let name = Symbol::intern("build");
+            (
+                (*fai_core::fuse_def(db, file, name)).clone(),
+                (*object_code(db, file, name, false)).clone(),
+            )
+        },
+    );
+}
+
+#[test]
 fn unrelated_body_edits_preserve_data_layout_cutoff() {
     let mut db = fai_db::FaiDatabase::new();
     fai_types::std_lib::load_std(&mut db);

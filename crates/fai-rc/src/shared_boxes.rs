@@ -73,7 +73,7 @@ fn uniform_positions(db: &dyn Db, e: &CExpr) -> Vec<usize> {
                 })
                 .collect()
         }
-        K::Prim { op: Prim::ArrayPush | Prim::ArrayRepeat, args } => {
+        K::Prim { op: Prim::ArrayPush | Prim::ArrayPushReserved | Prim::ArrayRepeat, args } => {
             (args.len() > 1).then_some(1).into_iter().collect()
         }
         K::Prim { op: Prim::IntBox, args } => (!args.is_empty()).then_some(0).into_iter().collect(),
