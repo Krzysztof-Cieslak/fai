@@ -2,6 +2,7 @@
 """Exercise native TUI input, resize, submission and restoration on a real Unix PTY."""
 
 import argparse
+import errno
 import fcntl
 import os
 from pathlib import Path
@@ -37,6 +38,15 @@ def supervise(command):
     print("TUI terminal modes restored", flush=True)
 
 
+def read_pty(fd):
+    try:
+        return os.read(fd, 65536)
+    except OSError as error:
+        if error.errno != errno.EIO:
+            raise
+        return b""  # A revoked/hung-up PTY is EOF on macOS and Linux.
+
+
 def exercise(command, title, keys, finish=None, expected=None, timeout=180):
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
@@ -50,7 +60,7 @@ def exercise(command, title, keys, finish=None, expected=None, timeout=180):
     try:
         while process.poll() is None and time.monotonic() < deadline:
             if select.select([master], [], [], 0.05)[0]:
-                output.extend(os.read(master, 65536))
+                output.extend(read_pty(master))
             if len(output) > 8 * 1024 * 1024:
                 raise AssertionError("TUI produced unbounded output")
             plain = CSI.sub(b"", output)
@@ -68,7 +78,7 @@ def exercise(command, title, keys, finish=None, expected=None, timeout=180):
                                   "input sent" if entered is not None else "waiting for first frame",
                                   CSI.sub(b"", output[-8192:]).decode("utf-8", errors="replace")))
         while select.select([master], [], [], 0)[0]:
-            chunk = os.read(master, 65536)
+            chunk = read_pty(master)
             if not chunk:
                 break
             output.extend(chunk)
