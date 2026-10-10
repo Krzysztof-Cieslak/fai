@@ -690,6 +690,10 @@ Structural comparisons and hashes also borrow polymorphic operands. Borrow
 inference follows these readers and permits unchanged inspect-only self-tail
 parameters to remain borrowed; changing or newly constructed arguments stay
 owned so loop lowering retains constant stack. Read-and-rebuilt arrays stay owned.
+Uniform descendants of a borrowed parameter may remain borrowed until an actual
+consuming use acquires its own reference. Known borrowing call arguments retain
+those loans only while their owner survives the complete call. Wrapper-free
+Option construction does not count as reusable-cell reconstruction.
 Typed Int-array loads keep their full-width boxed fallback out of the immediate
 scan's hot path while supporting the same complete 64-bit value range.
 Typed locals carry conservative constructor-tag, field-count and scalar-slot

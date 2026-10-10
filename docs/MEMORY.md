@@ -2646,6 +2646,13 @@ Editor integration:
     slots are cleared before the ordinary owner release, preserving each child
     reference. Shared and borrowed owners, concurrent execution, scalar conversions
     and uncertain layouts retain ordinary projections; repeated reads are excluded.
+    Uniform descendants of borrowed parameters may remain loans until a consuming
+    use acquires a reference. The caller retains the original owner throughout the
+    call; scalar/niche conversions and uncertain physical layouts stay owned.
+    Known borrowing call arguments preserve field loans only if no argument
+    consumes their owner. Wrapper-free Option construction does not require a
+    reusable cell. The ownership verifier tracks extra references acquired from
+    a loan separately from the lifetime supplied by its original owner.
   - **Calling convention — register ABI only.** `Int` parameters and results are
     untagged only on the **register (direct-call) ABI**, where a direct caller
     receives them raw and skips the round-trip. Uniform (row-polymorphic / nullary)

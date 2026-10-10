@@ -5436,10 +5436,10 @@ fn trmc_find_is_a_plain_loop() {
 }
 
 #[test]
-fn no_trmc_non_tail_sum() {
-    // `x + sum r` is not in tail position (the recursion feeds `+`), so the
-    // function is left as ordinary recursion.
-    no_trmc(
+fn trmc_non_tail_sum_uses_borrowed_tails_and_an_addition_accumulator() {
+    // Borrowed tails need no post-call release, exposing exact wrapping addition
+    // to the scalar accumulator rewrite.
+    trmc_plain(
         indoc! {r#"
             module M
 

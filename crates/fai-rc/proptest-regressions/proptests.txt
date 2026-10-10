@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 2c5db55f1bcb313619f78420a572efac01db4285ba6579c29cfed2d16b4351fe # shrinks to a = Lit(0), b = Lit(0), c = Lit(0), twice = true
+cc 5387b6d6a06b7dbf0e58d1635be544240642010a88648d855c5c9a9abbf1ba99 # shrinks to (src, n) = ("module M\n\nlet f0 xs =\n  match xs with\n  | [] -> 0\n  | x :: r -> x + f1 r\n\nlet f1 xs =\n  match xs with\n  | [] -> 0\n  | _ :: _ -> 0\n", 2)

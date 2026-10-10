@@ -386,9 +386,10 @@ impl Analyzer<'_> {
                     self.inspect(a);
                 }
             }
-            K::MakeData { args, .. } => {
-                // A non-nullary construction means a matched cell can be reused.
-                if !args.is_empty() {
+            K::MakeData { args, niche, .. } => {
+                // A real non-nullary construction can reuse a matched cell;
+                // wrapper-free Option construction only forwards its payload.
+                if !args.is_empty() && niche.is_none() {
                     self.reconstructs = true;
                 }
                 for a in args {
