@@ -28,7 +28,10 @@ optimized configurations are:
 
 The October 2026 development comparison used Rust 1.96.0 and OCaml 4.14.1 without
 Flambda. Adding `-O3` to that particular OCaml build produced identical workload
-object bytes; it does not answer how a newer or Flambda-enabled compiler performs.
+object bytes. The current benchmark workflow pins **OCaml 5.5.1 with upstream
+Flambda**, compiling all OCaml peers with **`-O3`**. Results from the old compiler
+remain a separate peer version; changing the peer is not a Fai speedup or
+regression.
 
 Optimization freedom must be symmetric. Reference implementations contain no
 per-element `black_box`/`Sys.opaque_identity` barriers. Whole-call input/output
@@ -97,6 +100,32 @@ publishes an informational report. It never fails on timings — only when a ben
 crashes or (for the Fai-vs-Rust algorithm benches) computes a wrong result.
 
 ## Running the benches
+
+### Pinned OCaml peer
+
+The manual benchmark workflow uses `ocaml/setup-ocaml` with the exact packages
+`ocaml-variants.5.5.1+options,ocaml-option-flambda`. It checks the version and
+Flambda setting of the switch's exact executable, exports that path as
+`FAI_BENCH_OCAMLOPT` for the benchmark harness, and uploads `ocaml-config.txt`, the
+compile command, OCaml environment settings, and `rustc-version.txt` with the results. The
+workflow remains manual-only and disabled by default.
+
+For the same compiler locally:
+
+```sh
+opam switch create fai-bench-5.5.1 ocaml-variants.5.5.1+options ocaml-option-flambda
+opam exec --switch=fai-bench-5.5.1 -- cargo bench -p fai-tests --bench algorithms_aot
+```
+
+The Rust benchmark helpers use `FAI_BENCH_OCAMLOPT` when set, otherwise `ocamlopt`
+from `PATH`. An absent default compiler skips optional OCaml comparisons; an
+invalid explicit selection or a broken compiler fails the run. All builds use
+`-O3` and retain `compiler-info.txt` beside the temporary executable, including
+the compiler's `-config` output, `OCAMLPARAM` and `OCAMLRUNPARAM`. The optimized
+modern compiler still needs the same source, input, measurement-scope and
+representativeness checks described above.
+
+### Benchmark commands
 
 ```sh
 cargo bench --workspace --benches            # everything
