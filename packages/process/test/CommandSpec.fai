@@ -1,0 +1,46 @@
+module CommandSpec
+
+example: (Process.describe (Process.command "git" [
+  "status"
+] |> Process.argument "--short")).launch.arguments = ["status", "--short"]
+example: (Process.describe (Process.command "x" [] |> Process.clearEnvironment)).launch.inherit = false
+example: (Process.describe (Process.command "x" [] |> Process.workingDirectory "a b")).launch.directory = "a b"
+example: (Process.describe (Process.command "x" [] |> Process.stdinText "hé😀")).input = Bytes.fromString "hé😀"
+example: (Process.describe (Process.command "x" [] |> Process.setEnvironment "A" "one" |> Process.unsetEnvironment "A")).launch.edits = [
+  { name = "A", value = Some "one" },
+  { name = "A", value = None }
+]
+example: Process.validate Process.defaults (Process.command "" []) |> Result.isErr
+example: Process.validate Process.defaults (Process.command "x" ["a\u{0}b"]) |> Result.isErr
+example: Process.validate Process.defaults (Process.command "x" ["", "a b", "a\"b", "hé😀"]) = Ok ()
+example: Process.validate { Process.defaults with
+  chunkBytes = 0
+} (Process.command "x" []) |> Result.isErr
+example: Process.validate { Process.defaults with
+  maxCaptureBytes = -1
+} (Process.command "x" []) |> Result.isErr
+example: Process.validate { Process.defaults with
+  timeoutMs = Some 0
+} (Process.command "x" []) |> Result.isErr
+example: Process.validate Process.defaults (Process.command "x" [] |> Process.setEnvironment "a=b" "value") |> Result.isErr
+example: Process.succeeded (ProcessHost.Exited 0)
+example: not (Process.succeeded (ProcessHost.Exited 37))
+example: not (Process.succeeded (ProcessHost.Signaled 15 false))
+example: Process.stdoutText { Process.emptyOutput with
+  stdout = Bytes.fromList [255]
+} |> Result.isErr
+example: Process.expectSuccess { Process.emptyOutput with
+  exits = [Some (ProcessHost.Exited 0)]
+} |> Result.isOk
+example: Process.expectSuccess { Process.emptyOutput with
+  exits = [Some (ProcessHost.Exited 0), Some (ProcessHost.Exited 1)]
+} |> Result.isErr
+
+scripted : Process.Runner { }
+let scripted = {
+  run = fun options command -> Ok { Process.emptyOutput with
+    stdout = (Process.describe command).input
+  }
+}
+example: (scripted.run Process.defaults (Process.command "unused" [] |> Process.stdinText "fake") |> Result.map Process.stdoutText) = Ok (Ok "fake")
+forall text: (Process.describe (Process.command "x" [] |> Process.stdinText text)).input = Bytes.fromString text
