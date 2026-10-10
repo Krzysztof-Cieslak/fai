@@ -1,0 +1,63 @@
+module TuiState
+
+/// Interaction state is data, so headless tests can inspect and replay it.
+public type Widget = {
+  anchor : Int,
+  caret : Int,
+  draft : String,
+  follow : Bool,
+  history : List String,
+  historyIndex : Int,
+  lastValue : String,
+  range : Option Ui.Range,
+  scroll : Int
+}
+
+public type State = {
+  focus : Option Ui.Id,
+  focusHistory : List Ui.Id,
+  revealed : Option Ui.Id,
+  widgets : Dict String Widget
+}
+
+public empty : State
+let empty = { focus = None, focusHistory = [], revealed = None, widgets = Dict.empty }
+
+public fresh : Widget
+let fresh = {
+  anchor = 0,
+  caret = 0,
+  draft = "",
+  follow = true,
+  history = [],
+  historyIndex = -1,
+  lastValue = "",
+  range = None,
+  scroll = 0
+}
+
+public get : Ui.Id -> State -> Widget
+let get id state = Dict.getOr fresh (Ui.idString id) state.widgets
+
+public put : Ui.Id -> Widget -> State -> State
+let put id widget state = { state with widgets = Dict.insert (Ui.idString id) widget state.widgets }
+
+public focus : Option Ui.Id -> State -> State
+let focus id state = { state with focus = id, revealed = None }
+
+public scrollTo : Ui.Id -> Int -> State -> State
+let scrollTo id offset state =
+  put id { get id state with follow = false, scroll = if offset < 0 then 0 else offset } state
+
+public select : Ui.Id -> Int -> Int -> State -> State
+let select id anchor caret state = put id { get id state with anchor = anchor, caret = caret } state
+
+/// Keep only mounted widgets. Application field values are independent of this map.
+public retain : List Ui.Id -> State -> State
+let retain ids state =
+  let widgets =
+    List.foldl (fun kept id ->
+      match Dict.get (Ui.idString id) state.widgets with
+      | None -> kept
+      | Some value -> Dict.insert (Ui.idString id) value kept) Dict.empty ids
+  { state with widgets = widgets }

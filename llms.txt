@@ -1096,6 +1096,11 @@ forall xs: mirror (mirror xs) = xs
 The optional `packages/tui` source package provides `TuiText` grapheme editing and
 safe display text, `TuiStyle` colors/styles, and `TuiScreen` checked cell grids and
 incremental ANSI output. Run its pure contracts directly with `fai test -C packages tui`.
+`Ui.column`/`row` take attribute lists and child lists; widgets such as `input`,
+`button`, `checkbox`, `table`, `list`, `scroll`, `modal` and `transcript` compose
+into `Ui.Element Msg`. Interactive widgets take a stable `Ui.id`/`Ui.childId`.
+Use `Ui.map` for child message types. `TuiLayout.render` and `TuiInput.step` are
+pure; application values are controlled while `TuiState` owns focus/caret/scroll.
 
 `TerminalHost.Terminal` supplies `open : Bool -> Result Session String` (mouse
 capture flag), `close`, `size`, raw `write`, and `poll` with a millisecond timeout.

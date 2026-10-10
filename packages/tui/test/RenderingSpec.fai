@@ -1,0 +1,53 @@
+module RenderingSpec
+
+let screen = TuiScreen.create 100 4 2
+example: Result.isErr (TuiScreen.create 10 4 3)
+example: Result.isErr (TuiScreen.create 100 (-1) 2)
+example: Result.isErr (TuiScreen.create 100 9223372036854775807 2)
+example: Result.map TuiScreen.lines screen = Ok [| "    ", "    " |]
+
+let wide =
+  Result.map (fun screen ->
+    TuiScreen.put false (TuiScreen.bounds screen) 1 0 TuiStyle.normal "界" screen) screen
+example: Result.map TuiScreen.lines wide = Ok [| " 界 ", "    " |]
+
+let overwritten =
+  Result.map (fun screen ->
+    TuiScreen.put false (TuiScreen.bounds screen) 2 0 TuiStyle.normal "x" screen) wide
+example: Result.map TuiScreen.lines overwritten = Ok [| "  x ", "    " |]
+example: Result.map (fun screen ->
+  TuiScreen.lines (TuiScreen.put false (TuiScreen.bounds screen) 3 0 TuiStyle.normal "界" screen)) screen = Ok [|
+  "    ",
+  "    "
+|]
+example: Result.map (fun screen ->
+  Bytes.toString (TuiScreen.diff (Some screen) screen)) screen = Ok (Some "\u{1b}[?25l\u{1b}[0m\u{1b}[?25l")
+
+let tree = Ui.column [
+  Ui.gap 1
+] [Ui.text [] "hello", Ui.button (Ui.id "go") [] { label = "Go", onPress = 7 }]
+
+let frame = TuiLayout.render (TuiLayout.context 10 4) TuiState.empty tree
+example: Result.map (fun frame -> frame.state.focus) frame = Ok (Some (Ui.id "go"))
+example: Result.map (fun frame ->
+  TuiScreen.lines frame.screen) frame = Ok [|
+  "hello     ",
+  "          ",
+  "[ Go ]    ",
+  "          "
+|]
+example: Result.map (fun frame ->
+  (TuiInput.step TuiInput.defaults (TerminalHost.Key {
+    code = "Enter",
+    modifiers = 0,
+    repeat = false
+  }) frame).messages) frame = Ok [7]
+example: Result.isErr (TuiLayout.render (TuiLayout.context 10 4) TuiState.empty (Ui.column [] [
+  Ui.button (Ui.id "same") [] { label = "A", onPress = 1 },
+  Ui.button (Ui.id "same") [] { label = "B", onPress = 2 }
+]))
+example: (Ui.describe (Ui.text [Ui.padding 1, Ui.padding 3] "x")).props.padding = 3
+example: Ui.childId (Ui.id "a") "b:c" <> Ui.childId (Ui.id "a:b") "c"
+forall text: String.contains (TuiText.sanitize text) "\u{1b}" = false
+forall text: String.joinArray "" (TextCells.graphemes text) = text
+forall text: TuiText.slice 0 (TuiText.length text) text = text
