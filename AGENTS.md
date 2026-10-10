@@ -633,6 +633,9 @@ interoperate through the same structural and ownership operations.
 Iterative destruction scans and recycles compact data through one inline path,
 decoding its shape once. Child order and extended/resource finalization paths
 remain the same.
+Small compact cells with at most one boxed child release as a direct iterative
+chain. General worklist storage is created only when a branching or extended
+shape needs it; shared children stop the chain without changing their contents.
 Dead arrays release their elements in bounded suffix batches, keeping the
 remaining prefix as an internal continuation. The destruction worklist therefore
 depends on nesting depth rather than array width; shared arrays retain their

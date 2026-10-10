@@ -851,6 +851,11 @@ Reuse & in-place update:
     bypass general kind/field traversal only after validating both the header
     shape and immediate tags. Boxed fields, scalar slots and other shapes retain
     general traversal, including mixed compact/extended representations.
+    Destruction follows small compact cells with at most one boxed child through
+    a direct loop, without initializing a general worklist for each chain. The
+    parent is recycled before decrementing its sole child, preserving ordinary
+    release order. Shared children stop the chain; branching/extended shapes
+    enter the existing worklist, whose storage stays outside the small frame.
     Bounded scalar-only tail traversals of one primitive list can borrow the
     root from their caller rather than acquire a transient scan owner. The
     borrow signature exposes that choice; explicit borrowed tail projections

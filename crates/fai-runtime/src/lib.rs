@@ -1422,11 +1422,69 @@ unsafe fn release_dead(p: *mut u8) {
     // SAFETY: `p` is a dead live object; its descriptor and fields are in bounds,
     // and `free_obj` matches the original allocation.
     unsafe {
+        let Some(p) = release_linear(p) else { return };
+        release_branching(p);
+    }
+}
+
+/// Keeps worklist storage out of the small linear-release frame.
+///
+/// # Safety
+/// `p` is a live allocation with a zero reference count.
+#[inline(never)]
+unsafe fn release_branching(p: *mut u8) {
+    // SAFETY: children are collected before the dead parent is recycled.
+    unsafe {
         let mut work = DropWork::new();
         if !release_compact(p, &mut work) {
             release_other(p, &mut work);
         }
         drain(&mut work);
+    }
+}
+
+/// Frees a compact chain, returning its first branching or descriptor-based cell.
+///
+/// # Safety
+/// `p` is a live allocation whose reference count has reached zero.
+#[inline]
+unsafe fn release_linear(mut p: *mut u8) -> Option<*mut u8> {
+    // SAFETY: each iteration owns a dead cell. Its sole child is loaded before
+    // recycling the parent, and is followed only after its final reference drops.
+    unsafe {
+        loop {
+            let header = header_word(p);
+            if header & COMPACT_DATA == 0 {
+                break;
+            }
+            let count = ((header >> COMPACT_FIELDS_SHIFT) & 15) as usize;
+            if count > 2 {
+                break;
+            }
+            let scalars = (header >> COMPACT_SCALARS_SHIFT) & 255;
+            let mut child = None;
+            let mut branching = false;
+            for index in 0..count {
+                if scalars & (1 << index) == 0 {
+                    let value = read_i64(p, COMPACT_FIELDS_OFFSET + index * 8);
+                    if is_boxed(value) && child.replace(value).is_some() {
+                        branching = true;
+                    }
+                }
+            }
+            if branching {
+                break;
+            }
+            let size = COMPACT_FIELDS_OFFSET + count * 8;
+            pool_push(size / SIZE_STEP, p);
+            note_free(size);
+            let child = child?;
+            p = as_obj(child);
+            if !rc_dec_is_dead(p) {
+                return None;
+            }
+        }
+        Some(p)
     }
 }
 
@@ -1691,7 +1749,10 @@ fn drain(work: &mut DropWork) {
         let q = as_obj(w);
         // SAFETY: `q` is a live object pointer.
         unsafe {
-            if rc_dec_is_dead(q) && !release_compact(q, work) {
+            if rc_dec_is_dead(q)
+                && let Some(q) = release_linear(q)
+                && !release_compact(q, work)
+            {
                 release_other(q, work);
             }
         }
@@ -5062,6 +5123,8 @@ mod drop_work_tests;
 mod hash_tests;
 #[cfg(test)]
 mod intrinsic_closure_tests;
+#[cfg(test)]
+mod linear_drop_tests;
 #[cfg(test)]
 mod pair_ops_tests;
 #[cfg(test)]
