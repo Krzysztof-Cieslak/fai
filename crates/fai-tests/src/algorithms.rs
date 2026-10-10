@@ -611,26 +611,63 @@ pub fn expr_eval(n: i64) -> i64 {
     result
 }
 
-/// The number of nodes reachable from `0` in the deterministic `n`-node graph
-/// whose node `i` points to `(i+1)%n`, `(2i+1)%n`, and `(3i+2)%n`.
+fn graph_adjacency(n: i64) -> HashMap<i64, Vec<i64>> {
+    (0..n).map(|i| (i, vec![(i + 1) % n, (2 * i + 1) % n, (3 * i + 2) % n])).collect()
+}
+
+/// Builds the deterministic `n`-node adjacency dictionary, then counts nodes
+/// reachable from `0` using dictionary lookups, like the Fai workload.
 #[must_use]
 pub fn graph_bfs(n: i64) -> i64 {
-    let neighbors = |i: i64| [(i + 1) % n, (2 * i + 1) % n, (3 * i + 2) % n];
+    let graph = graph_adjacency(n);
+    graph_reachable(&graph)
+}
+
+fn graph_reachable(graph: &HashMap<i64, Vec<i64>>) -> i64 {
     let mut visited: HashSet<i64> = HashSet::new();
     visited.insert(0);
     let mut frontier = vec![0i64];
     while !frontier.is_empty() {
         let mut next = Vec::new();
         for node in frontier {
-            for nb in neighbors(node) {
-                if visited.insert(nb) {
-                    next.push(nb);
+            if let Some(neighbors) = graph.get(&node) {
+                for &nb in neighbors {
+                    if visited.insert(nb) {
+                        next.push(nb);
+                    }
                 }
             }
         }
         frontier = next;
     }
     visited.len() as i64
+}
+
+#[cfg(test)]
+mod graph_tests {
+    use super::*;
+
+    #[test]
+    fn adjacency_materializes_every_node_and_ordered_edge() {
+        let mut entries: Vec<_> = graph_adjacency(4).into_iter().collect();
+        entries.sort_by_key(|(node, _)| *node);
+        assert_eq!(
+            entries,
+            vec![(0, vec![1, 1, 2]), (1, vec![2, 3, 1]), (2, vec![3, 1, 0]), (3, vec![0, 3, 3]),]
+        );
+    }
+
+    #[test]
+    fn traversal_uses_the_stored_edges() {
+        let graph = HashMap::from([(0, vec![7]), (7, vec![]), (10, vec![11])]);
+        assert_eq!(graph_reachable(&graph), 2);
+    }
+
+    #[test]
+    fn empty_adjacency_keeps_the_initial_frontier_node() {
+        assert!(graph_adjacency(0).is_empty());
+        assert_eq!(graph_bfs(0), 1);
+    }
 }
 
 /// The number of ways to make amount `n` from the coins `[1,2,5,10,25,50]`, modulo
