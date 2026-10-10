@@ -12,6 +12,7 @@ import select
 import signal
 import struct
 import subprocess
+import sys
 import termios
 import time
 
@@ -26,11 +27,21 @@ def child_terminal():
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 
 
+def supervise(command):
+    # Keep the session leader alive until terminal state is inspected. macOS
+    # revokes the slave when its controlling session leader exits.
+    original = termios.tcgetattr(0)
+    result = subprocess.run(command, check=False)
+    assert result.returncode == 0, (command, result.returncode)
+    assert termios.tcgetattr(0) == original, "terminal modes were not restored"
+    print("TUI terminal modes restored", flush=True)
+
+
 def exercise(command, title, keys, finish=None, expected=None, timeout=180):
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
-    original = termios.tcgetattr(slave)
-    process = subprocess.Popen(command, cwd=ROOT, stdin=slave, stdout=slave,
+    supervised = [sys.executable, str(Path(__file__).resolve()), "--supervise", *command]
+    process = subprocess.Popen(supervised, cwd=ROOT, stdin=slave, stdout=slave,
                                stderr=slave, preexec_fn=child_terminal)
     output = bytearray()
     entered = None
@@ -63,7 +74,7 @@ def exercise(command, title, keys, finish=None, expected=None, timeout=180):
             output.extend(chunk)
         assert process.returncode == 0, (process.returncode, output[-2000:])
         assert entered is not None, output[-2000:]
-        assert termios.tcgetattr(slave) == original, "terminal modes were not restored"
+        assert b"TUI terminal modes restored" in output, "missing restoration acknowledgement"
         assert b"\x1b[?1049h" in output and b"\x1b[?1049l" in output
         assert b"\x1b[?25h" in output, "cursor was not restored"
         if expected:
@@ -91,4 +102,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:2] == ["--supervise"]:
+        supervise(sys.argv[2:])
+    else:
+        main()
