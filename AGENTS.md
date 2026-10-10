@@ -578,6 +578,10 @@ A capture-free two-argument `fun a b -> a - b` over Int uses a canonical immorta
 closure. An invariant callback loop can recognize it once and inline subtraction
 without argument spills or an indirect call, retaining full-width wrapping and
 the ordinary uniform closure ABI elsewhere.
+Float comparisons against literal constants use equivalent signed or reversed
+unsigned bit comparisons, preserving total order for NaNs and signed zeros.
+Multiplication by the literal `2.0` uses one exact doubling addition; its operand
+is evaluated once, with the same overflow, subnormal and NaN behavior.
 
 Opaque aliases retain their nominal type in cross-file value, constructor, and
 interface-method signatures, including through transparent re-exports. Names

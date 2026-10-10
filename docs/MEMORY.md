@@ -3603,6 +3603,11 @@ Editor integration:
     instead of an indirect call and argument spill. Full-width operands retain
     the ordinary consuming subtraction fallback; reversed, capturing and
     effectful functions keep their normal entries.
+    Native Float ordering against a literal uses signed bit order for a
+    nonnegative constant and reversed unsigned order for a negative constant.
+    This preserves totalOrder, including NaN signs/payloads and signed zeros.
+    Literal multiplication by 2.0 is exact doubling by addition, with a single
+    evaluation of the operand and identical IEEE-754 exceptional values.
 
 - **D133 Unboxed `Array Float` (raw inline `f64` slots, self-tagged, no
   monomorphization).** An `Array Float` used to store each element as a pointer to a
