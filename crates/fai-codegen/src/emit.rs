@@ -2699,6 +2699,9 @@ impl<M: Module> Translator<'_, M> {
             }
             ExprKind::If { cond, then, els } => self.conditional(cond, then, els),
             ExprKind::Let { local, value, body } => {
+                if let Some(next) = self.fold_callback_comparison(*local, value, body) {
+                    return self.expr(next);
+                }
                 let v = self.expr(value);
                 self.define_var(*local, v);
                 self.bce_transfer(*local, value);
@@ -6446,6 +6449,129 @@ impl<M: Module> Translator<'_, M> {
         self.builder.block_params(done)[0]
     }
 
+    /// A bare consuming comparison of a call result is its last use in the RC
+    /// tree. Keep the predicate, rather than materializing a comparator Int.
+    fn fold_callback_comparison<'b>(
+        &mut self,
+        result: LocalId,
+        value: &CExpr,
+        body: &'b CExpr,
+    ) -> Option<&'b CExpr> {
+        let (callback, arity, code) = self.invariant_callback?;
+        if arity != 2 {
+            return None;
+        }
+        let ExprKind::Let { local, value: comparison, body: next } = &body.kind else {
+            return None;
+        };
+        let ExprKind::Prim { op: Prim::IntLe, args: comparison_args } = &comparison.kind else {
+            return None;
+        };
+        if !matches!(comparison_args.as_slice(), [CExpr { kind: ExprKind::Local(left), .. }, CExpr { kind: ExprKind::Lit(Lit::Int(0)), .. }] if *left == result)
+        {
+            return None;
+        }
+        let mut call = value;
+        while let ExprKind::Dup { body, .. } = &call.kind {
+            call = body;
+        }
+        let ExprKind::App { func, args, reuse, .. } = &call.kind else { return None };
+        if args.len() != 2
+            || !reuse.is_empty()
+            || !matches!(func.kind, ExprKind::Local(id) if id == callback)
+        {
+            return None;
+        }
+        let [CExpr { kind: ExprKind::Local(left), .. }, CExpr { kind: ExprKind::Local(right), .. }] =
+            args.as_slice()
+        else {
+            return None;
+        };
+        if self.niche_local(*left).is_some() || self.niche_local(*right).is_some() {
+            return None;
+        }
+        let mut duplicates = Vec::new();
+        let mut prefix = value;
+        while let ExprKind::Dup { local, body } = &prefix.kind {
+            if *local != callback && local != left && local != right {
+                return None;
+            }
+            duplicates.push(*local);
+            prefix = body;
+        }
+        let callee = self.expr(func);
+        let a = self.expr_boxed(&args[0]);
+        let b = self.expr_boxed(&args[1]);
+        let canonical = self.builder.ins().icmp_imm(IntCC::Equal, code, CALLBACK_INT_SUB);
+        let specialized = self.builder.create_block();
+        let ordinary = self.builder.create_block();
+        let done = self.builder.create_block();
+        self.builder.append_block_param(done, types::I8);
+        self.builder.ins().brif(canonical, specialized, &[], ordinary, &[]);
+        self.builder.switch_to_block(specialized);
+        self.builder.seal_block(specialized);
+        let tag = self.builder.ins().band(a, b);
+        let immediate = self.builder.ins().band_imm(tag, 1);
+        let small = self.builder.create_block();
+        let wide = self.builder.create_block();
+        self.builder.ins().brif(immediate, small, &[], wide, &[]);
+        self.builder.switch_to_block(small);
+        self.builder.seal_block(small);
+        // The difference of two signed 63-bit payloads fits signed 64 bits.
+        let predicate = self.builder.ins().icmp(IntCC::SignedLessThanOrEqual, a, b);
+        self.builder.ins().jump(done, &[predicate.into()]);
+        self.builder.switch_to_block(wide);
+        self.builder.seal_block(wide);
+        for local in &duplicates {
+            if *local != callback {
+                self.dup_local(*local);
+            }
+        }
+        let raw_a = self.as_raw_int(a);
+        let raw_b = self.as_raw_int(b);
+        let difference = self.builder.ins().isub(raw_a, raw_b);
+        let predicate = self.builder.ins().icmp_imm(IntCC::SignedLessThanOrEqual, difference, 0);
+        self.builder.ins().jump(done, &[predicate.into()]);
+        self.builder.switch_to_block(ordinary);
+        self.builder.seal_block(ordinary);
+        for local in duplicates {
+            self.dup_local(local);
+        }
+        let spill = self.spill(&[a, b]);
+        let direct = self.builder.create_block();
+        let runtime = self.builder.create_block();
+        let returned = self.builder.create_block();
+        self.builder.append_block_param(returned, types::I64);
+        self.builder.ins().brif(code, direct, &[], runtime, &[]);
+        self.builder.switch_to_block(direct);
+        self.builder.seal_block(direct);
+        let env = self.builder.ins().iadd_imm(callee, rt::CLOSURE_ENV_OFFSET as i64);
+        let signature = code_signature(self.module);
+        let signature = self.builder.import_signature(signature);
+        let call = self.builder.ins().call_indirect(signature, code, &[env, spill]);
+        let boxed = self.builder.inst_results(call)[0];
+        self.builder.ins().jump(returned, &[boxed.into()]);
+        self.builder.switch_to_block(runtime);
+        self.builder.seal_block(runtime);
+        let count = self.builder.ins().iconst(types::I64, 2);
+        let apply = self.runtime("fai_apply_n", 3, true);
+        let call = self.builder.ins().call(apply, &[callee, count, spill]);
+        let boxed = self.builder.inst_results(call)[0];
+        self.builder.ins().jump(returned, &[boxed.into()]);
+        self.builder.switch_to_block(returned);
+        self.builder.seal_block(returned);
+        let boxed = self.builder.block_params(returned)[0];
+        let raw = self.as_raw_int(boxed);
+        let predicate = self.builder.ins().icmp_imm(IntCC::SignedLessThanOrEqual, raw, 0);
+        self.builder.ins().jump(done, &[predicate.into()]);
+        self.builder.switch_to_block(done);
+        self.builder.seal_block(done);
+        let predicate = self.builder.block_params(done)[0];
+        let result = self.tag_bool(predicate);
+        self.define_var(*local, result);
+        Some(next)
+    }
+
     /// Direct-calls the lifted function a closure local is bound to: its environment
     /// is the closure cell's env region (borrowed during the call), its arguments are
     /// boxed into the uniform slot array, and the closure is dropped afterward — the
@@ -6679,6 +6805,10 @@ impl<M: Module> Translator<'_, M> {
                 self.known_tags = saved_tags;
             }
             ExprKind::Let { local, value, body } => {
+                if let Some(next) = self.fold_callback_comparison(*local, value, body) {
+                    self.spread_return_body(next, n);
+                    return;
+                }
                 let v = self.expr(value);
                 self.define_var(*local, v);
                 self.bce_transfer(*local, value);
@@ -7471,6 +7601,10 @@ impl<M: Module> Translator<'_, M> {
                 self.known_tags = saved_tags;
             }
             ExprKind::Let { local, value, body } => {
+                if let Some(next) = self.fold_callback_comparison(*local, value, body) {
+                    self.expr_tail(next);
+                    return;
+                }
                 if self.version_float_map(*local, value, body) {
                     return;
                 }

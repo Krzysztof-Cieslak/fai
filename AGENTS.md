@@ -604,6 +604,10 @@ A capture-free two-argument `fun a b -> a - b` over Int uses a canonical immorta
 closure. An invariant callback loop can recognize it once and inline subtraction
 without argument spills or an indirect call, retaining full-width wrapping and
 the ordinary uniform closure ABI elsewhere.
+A single-use `<= 0` test of that canonical subtraction can compare immediate
+operands directly, avoiding a temporary comparator result and redundant count
+checks. Full-width integers preserve wrapping subtraction; other callbacks keep
+their ordinary call, effects and owned-result conversion.
 Float comparisons against literal constants use equivalent signed or reversed
 unsigned bit comparisons, preserving total order for NaNs and signed zeros.
 Multiplication by the literal `2.0` uses one exact doubling addition; its operand

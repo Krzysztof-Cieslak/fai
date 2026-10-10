@@ -708,6 +708,14 @@ fn borrowed_lookup_results_outlive_their_source_dictionary() {
 }
 
 #[test]
+fn canonical_comparator_predicates_preserve_native_wrapping() {
+    assert_eq!(
+        build_and_run(include_str!("fixtures/CanonicalComparator.fai")),
+        ("yes\n".into(), Some(0))
+    );
+}
+
+#[test]
 fn unique_constructor_tags_run_natively() {
     assert_eq!(build_and_run(include_str!("fixtures/UniqueTags.fai")), ("39\n".into(), Some(0)));
 }
