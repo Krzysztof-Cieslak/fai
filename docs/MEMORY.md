@@ -3440,7 +3440,9 @@ Editor integration:
     live count and a power-of-two `Array` of slots (`HD Int (Array (Slot 'k 'v))`),
     with a private `Slot = Empty | Full …`. Linear probing; backward-shift deletion
     (so the slot type stays two-state — no tombstones touching the hot paths).
-    Index is `hash & (cap-1)`; grow (double, rehash) past load 3/4; the empty
+    Index is `hash & (cap-1)`; grow and rehash past load 3/4; `HashDict` grows its
+    bucket count fourfold to reduce rehash work, trading more spare capacity for
+    fewer scans, while `HashSet` retains twofold growth. The empty
     container holds a zero-length array and allocates on first insert. Entry
     cells are reused during rehash: the new bucket array takes a reference to each
     existing `Full` cell rather than reconstructing its identical fields. The

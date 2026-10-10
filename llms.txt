@@ -1295,6 +1295,8 @@ foldr       : ('a -> 'acc -> 'acc) -> 'acc -> Set 'a -> 'acc
 
 Table growth reuses existing entry cells in the new bucket array, and retained
 dictionaries keep their original contents. `HashSet` uses the same rehash policy.
+`HashDict` grows fourfold at 75% load, trading spare capacity for fewer rehashes;
+`HashSet` uses twofold growth. These capacity choices do not change value semantics.
 
 Prefer over `Dict` when iteration order does not matter. Iteration order is
 unspecified (but deterministic).

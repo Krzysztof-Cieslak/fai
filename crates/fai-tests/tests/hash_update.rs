@@ -82,7 +82,7 @@ fn missing_key_at_load_threshold_grows_once() {
     let mut h = Harness::new();
     let table = h.table(&[0, 1, 2, 3, 4, 5]);
     let updated = h.call("bump", &[rt::make_int(6), table]);
-    assert_eq!(h.number("capacity", &[rt::fai_dup(updated)]), 16);
+    assert_eq!(h.number("capacity", &[rt::fai_dup(updated)]), 32);
     assert_eq!(h.number("get", &[rt::make_int(6), rt::fai_dup(updated)]), 1);
     assert_eq!(h.number("size", &[rt::fai_dup(updated)]), 7);
     rt::fai_drop(updated);
@@ -97,6 +97,36 @@ fn fallback_is_used_on_a_miss_and_existing_value_on_a_hit() {
     let table = h.call("defaulted", &[rt::make_int(999), rt::make_int(1), table]);
     assert_eq!(h.number("get", &[rt::make_int(1), rt::fai_dup(table)]), 21);
     rt::fai_drop(table);
+}
+
+#[test]
+fn the_second_growth_preserves_a_shared_snapshot() {
+    let mut h = Harness::new();
+    let baseline = rt::live_count();
+    let original = h.table(&(0..24).collect::<Vec<_>>());
+    assert_eq!(h.number("capacity", &[rt::fai_dup(original)]), 32);
+    let grown = h.call("insert", &[rt::make_int(24), rt::make_int(99), rt::fai_dup(original)]);
+    assert_eq!(h.number("capacity", &[rt::fai_dup(grown)]), 128);
+    assert_eq!(h.number("capacity", &[rt::fai_dup(original)]), 32);
+    h.verify(original, &(0..24).map(|key| (key, 10)).collect());
+    let mut expected: BTreeMap<_, _> = (0..24).map(|key| (key, 10)).collect();
+    expected.insert(24, 99);
+    h.verify(grown, &expected);
+    assert_eq!(h.number("size", &[rt::fai_dup(original)]), 24);
+    rt::fai_drop(grown);
+    rt::fai_drop(original);
+    assert_eq!(rt::live_count(), baseline);
+}
+
+#[test]
+fn update_growth_keeps_the_saved_hash_at_the_second_threshold() {
+    let mut h = Harness::new();
+    let table = h.table(&(0..24).collect::<Vec<_>>());
+    let updated = h.call("bump", &[rt::make_int(i64::MIN), table]);
+    assert_eq!(h.number("capacity", &[rt::fai_dup(updated)]), 128);
+    assert_eq!(h.number("get", &[rt::make_int(i64::MIN), rt::fai_dup(updated)]), 1);
+    assert_eq!(h.number("size", &[rt::fai_dup(updated)]), 25);
+    rt::fai_drop(updated);
 }
 
 #[test]

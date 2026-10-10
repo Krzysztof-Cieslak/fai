@@ -393,6 +393,8 @@ tables and values, and recycles a unique table wrapper at the final update.
 Growing a `HashDict` or `HashSet` reuses its existing entry cells in the new
 bucket array. Rehashing allocates no replacement entry for an unchanged key/value;
 shared snapshots keep their contents through ordinary reference counting.
+`HashDict` grows its bucket count fourfold at the 75% load threshold, reducing
+rehash work at the cost of additional spare capacity. `HashSet` grows twofold.
 
 String concatenation prefers appending into a fitting unique left buffer. When
 that cannot fit, a unique inline right buffer with enough capacity can absorb the
