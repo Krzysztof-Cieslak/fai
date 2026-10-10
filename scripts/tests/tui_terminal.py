@@ -53,7 +53,9 @@ def exercise(command, title, keys, finish=None, expected=None, timeout=180):
                 os.write(master, finish)
                 sent_finish = True
         if process.poll() is None:
-            raise AssertionError("TUI did not exit before the test deadline")
+            raise AssertionError(("TUI did not exit before the test deadline", command,
+                                  "input sent" if entered is not None else "waiting for first frame",
+                                  CSI.sub(b"", output[-8192:]).decode("utf-8", errors="replace")))
         while select.select([master], [], [], 0)[0]:
             chunk = os.read(master, 65536)
             if not chunk:
