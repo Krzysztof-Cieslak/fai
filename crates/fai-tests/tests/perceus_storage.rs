@@ -51,6 +51,12 @@ let indexLoops n original total =
     indexLoops (n - 1) original (total + String.length prefix)
 public indexLoop : Int -> Int
 let indexLoop n = indexLoops n (Int.toString 123) 0
+let sliceLoops n base total =
+  if n <= 0 then total else
+    let view = String.take 64 base
+    sliceLoops (n - 1) base (total + String.length view)
+public asciiSliceLoop : Int -> Int
+let asciiSliceLoop n = sliceLoops n (append 64 (Int.toString 0)) 0
 let churn n total =
   if n <= 0 then total else
     let size = if n % 3 = 0 then 8 else if n % 3 = 1 then 128 else 4096
@@ -142,6 +148,11 @@ fn literal_string_loops_keep_fixed_state_storage_bounded() {
 #[test]
 fn repeated_full_width_string_indices_keep_storage_bounded() {
     bounded("indexLoop", |n| n * 3);
+}
+
+#[test]
+fn ascii_slice_evidence_keeps_fixed_state_storage_bounded() {
+    bounded("asciiSliceLoop", |n| n * 64);
 }
 
 #[test]

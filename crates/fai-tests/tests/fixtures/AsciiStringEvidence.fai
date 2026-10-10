@@ -1,0 +1,20 @@
+module Main
+
+let build n text = if n <= 0 then text else build (n - 1) (text ++ "a")
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let text = Int.toString 123 ++ "λ"
+  let base = build 128 (Int.toString 0)
+  let view = String.take 64 base
+  let changed = base ++ "λ"
+  let joined = String.joinArray "" [| "abc", "λ" |]
+  let unicode = String.length text = 4 && String.take 3 text = "123" && String.drop 3 text = "λ"
+  let views = String.length view = 64 && String.length changed = 130
+  let literals = String.length "é😀" = 2 && String.substring 1 1 "é😀" = "😀"
+  let limits =
+    String.take 9223372036854775807 "abc" = "abc" && String.drop (-9223372036854775808) "abc" = "abc"
+  runtime.console.writeLine (if unicode && views && literals && limits && String.length joined = 4 then
+    "ok"
+  else
+    "wrong")

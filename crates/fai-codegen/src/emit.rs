@@ -3695,7 +3695,8 @@ impl<M: Module> Translator<'_, M> {
         let mut desc = DataDescription::new();
         desc.define(data.into_boxed_slice());
         desc.set_align(8); // a String value is a tagged pointer; keep the low bits clear.
-        let desc_gv = declare_descriptor_in_data(self.module, &mut desc, "FAI_STRING_DESC");
+        let descriptor = if bytes.is_ascii() { "FAI_ASCII_STRING_DESC" } else { "FAI_STRING_DESC" };
+        let desc_gv = declare_descriptor_in_data(self.module, &mut desc, descriptor);
         desc.write_data_addr(rt::DESC_OFFSET as u32, desc_gv, 0);
         self.module.define_data(data_id, &desc).expect("define string");
 
@@ -3850,8 +3851,7 @@ impl<M: Module> Translator<'_, M> {
                 left,
                 rt::DESC_OFFSET as i32,
             );
-            let string_desc = self.runtime_data_addr("FAI_STRING_DESC");
-            let inline = self.builder.ins().icmp(IntCC::Equal, desc, string_desc);
+            let inline = self.inline_string_descriptor(desc);
             Some(self.builder.ins().band(unique, inline))
         };
         let len = self.builder.ins().load(
@@ -3905,6 +3905,10 @@ impl<M: Module> Translator<'_, M> {
             }
         }
         self.store_field(left, rt::STRING_LEN_OFFSET, need);
+        if !bytes.is_ascii() {
+            let descriptor = self.runtime_data_addr("FAI_STRING_DESC");
+            self.store_field(left, rt::DESC_OFFSET, descriptor);
+        }
         self.builder.ins().jump(done, &[left.into()]);
 
         self.builder.switch_to_block(slow_b);
@@ -3915,6 +3919,14 @@ impl<M: Module> Translator<'_, M> {
         self.builder.switch_to_block(done);
         self.builder.seal_block(done);
         Some(self.builder.block_params(done)[0])
+    }
+
+    fn inline_string_descriptor(&mut self, descriptor: Value) -> Value {
+        let ordinary = self.runtime_data_addr("FAI_STRING_DESC");
+        let ascii = self.runtime_data_addr("FAI_ASCII_STRING_DESC");
+        let is_ordinary = self.builder.ins().icmp(IntCC::Equal, descriptor, ordinary);
+        let is_ascii = self.builder.ins().icmp(IntCC::Equal, descriptor, ascii);
+        self.builder.ins().bor(is_ordinary, is_ascii)
     }
 
     /// A saturated foreign (native) call.
@@ -7662,9 +7674,8 @@ impl<M: Module> Translator<'_, M> {
                 string,
                 rt::STRING_LEN_OFFSET as i32,
             );
-            let inline_descriptor = self.runtime_data_addr("FAI_STRING_DESC");
             let unique = self.builder.ins().icmp_imm(IntCC::Equal, count, 1);
-            let inline = self.builder.ins().icmp(IntCC::Equal, descriptor, inline_descriptor);
+            let inline = self.inline_string_descriptor(descriptor);
             let nonempty = self.builder.ins().icmp_imm(IntCC::NotEqual, length, 0);
             let eligible = self.builder.ins().band(unique, inline);
             let eligible = self.builder.ins().band(eligible, nonempty);
