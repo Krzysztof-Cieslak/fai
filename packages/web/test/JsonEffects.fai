@@ -1,0 +1,28 @@
+module JsonEffects
+
+source : Console -> Unit -> Stream Bytes { Console } / { Console }
+let source console unit =
+  let printed = console.writeLine "read"
+  Http.stringBody "42"
+
+handler : Console -> Int -> Web.HttpHandler { Console }
+let handler console value ctx =
+  let printed = console.writeLine "handled"
+  Web.jsonWith JsonEncode.int value ctx
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  match Web.mockContext Http.POST "/" with
+  | Err e -> runtime.console.writeLine e
+  | Ok ctx ->
+    let request = ctx.request
+    let ctx = { ctx with
+      request = { request with
+        body = Stream.defer (source runtime.console),
+        headers = Headers.set "Content-Type" "application/json" Headers.empty
+      }
+    }
+    let outcome = Web.bindJson JsonDecode.int (handler runtime.console) ctx
+    match Web.outcomeResponse outcome with
+    | None -> runtime.console.writeLine "failed"
+    | Some response -> runtime.console.writeLine (Int.toString response.status)

@@ -4761,6 +4761,15 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   functions so non-finite Floats cannot silently become null; object builders
   reject duplicate fields and dictionary encoding sorts keys. User records and
   unions choose their own wire formats through combinators and ordinary functions.
+  The web package consumes these source modules directly: JSON responders retain
+  accumulated headers, replace the content type and clear stale length metadata.
+  Typed request binding reads once, accepts JSON and concrete application `+json`
+  media types, returns 415 for unsupported types and 400 for syntax/schema errors,
+  and forwards body/handler effects. Transport and encoding failures remain
+  framework `Fail` values. The lower-level reader exposes structured errors for
+  applications with a different response policy. The packages share a source
+  workspace and each owns its executable test runner; compiler integration tests
+  read their sources at runtime rather than embedding them in Rust artifacts.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

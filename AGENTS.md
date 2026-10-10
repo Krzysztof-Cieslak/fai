@@ -859,6 +859,13 @@ and recursive decoders. Its entry points reject duplicate names throughout the
 tree before decoding, including unknown fields. `JsonEncode` composes ordinary
 `'a -> Result Json.Value Error` functions, locates failures, rejects duplicate
 object builder fields and non-finite Floats, and sorts dictionary keys.
+The web package depends on this source library. `Web.json`/`jsonWith` and
+`respondJson`/`respondJsonWith` render raw/typed JSON responses; `readJson` and
+`bindJson` decode request bodies while forwarding effects. The binding helper
+maps unsupported Content-Type to 415 and syntax/schema errors to 400; transport
+and encoding errors become `Fail`. JSON responders retain middleware headers.
+Use the shared `packages/` root; `packages/web/test/run.py` runs its self-contained
+contracts, effect-forwarding checks, and JIT/AOT loopback examples.
 
 ## 6. Compiler pipeline
 

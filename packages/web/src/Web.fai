@@ -118,6 +118,64 @@ let query name ctx = assoc name (Url.queryPairs ctx.request.url)
 public header : String -> HttpContext 'e -> Option String
 let header name ctx = Headers.get name ctx.request.headers
 
+/// Request JSON failures distinguish media type, body transport, and JSON
+/// syntax/schema errors so applications can choose their own response policy.
+public type JsonBodyError =
+  | UnsupportedJsonMediaType (Option String)
+  | JsonBodyReadError String
+  | InvalidJson JsonDecode.ReadError
+
+let mediaTokenByte b =
+  (b >= 97 && b <= 122) || (b >= 48 && b <= 57) || b = 33 || b = 35 || b = 36 || b = 37 || b = 38 || b = 39 || b = 43 || b = 45 || b = 46 || b = 94 || b = 95 || b = 96 || b = 124 || b = 126
+
+let mediaToken bytes i =
+  if i = Bytes.length bytes then
+    true
+  else
+    mediaTokenByte (Bytes.unsafeGet i bytes) && mediaToken bytes (i + 1)
+
+let jsonMediaType raw =
+  let media =
+    String.toLower (String.trim (Option.withDefault "" (List.head (String.split ";" raw))))
+  let length = String.length media
+  media = "application/json" || (length > 17 && String.take 12 media = "application/" && String.drop (length - 5) media = "+json" && mediaToken (Bytes.fromString media) 12)
+
+/// Render a request JSON error for display; syntax/schema errors retain their
+/// original byte locations or field/index paths in the structured value.
+public jsonBodyErrorToString : JsonBodyError -> String
+let jsonBodyErrorToString error =
+  match error with
+  | UnsupportedJsonMediaType _ -> "expected application/json or application/*+json"
+  | JsonBodyReadError message -> message
+  | InvalidJson error -> JsonDecode.readErrorToString error
+
+/// Read the request body once and decode JSON. Content-Type must be
+/// application/json or a concrete application subtype ending in +json; matching
+/// is case-insensitive and parameters are allowed. Body bytes must be UTF-8.
+public readJson : JsonDecode.Decoder 'a -> HttpContext 'e -> Result 'a JsonBodyError / 'e
+let readJson decoder ctx =
+  let media = header "Content-Type" ctx
+  if not (Option.withDefault false (Option.map jsonMediaType media)) then
+    Err (UnsupportedJsonMediaType media)
+  else
+    match Http.bodyBytes ctx.request.body with
+    | Err message -> Err (JsonBodyReadError message)
+    | Ok bytes ->
+      Result.mapError (fun error -> InvalidJson error) (JsonDecode.fromBytes decoder bytes)
+
+/// Decode a request and invoke a typed handler. Unsupported media types become
+/// 415, invalid JSON/schema becomes 400, and a body transport failure becomes
+/// Fail. The request body's effects and the handler's effects are forwarded.
+public bindJson : JsonDecode.Decoder 'a -> ('a -> HttpHandler 'e) -> HttpHandler 'e
+let bindJson decoder handler ctx =
+  match readJson decoder ctx with
+  | Ok value -> handler value ctx
+  | Err error ->
+    match error with
+    | UnsupportedJsonMediaType _ -> respond 415 (jsonBodyErrorToString error) ctx
+    | InvalidJson _ -> badRequest (jsonBodyErrorToString error) ctx
+    | JsonBodyReadError message -> Fail message
+
 // --- Responses -------------------------------------------------------------
 /// The standard reason phrase for an HTTP status code (e.g. `404 -> "Not Found"`),
 /// falling back to `"Status"` for codes without a well-known phrase.
@@ -191,6 +249,28 @@ let respond status body ctx = finishResponse (textResponse status body) ctx
 /// Respond `200 OK` with a plain-text body.
 public text : String -> HttpHandler 'e
 let text body ctx = respond 200 body ctx
+
+/// Respond with a JSON value and an explicit status, retaining middleware
+/// headers and replacing the body's Content-Type and stale Content-Length.
+public respondJson : Int -> Json.Value -> HttpHandler 'e
+let respondJson status value ctx =
+  finishResponse (typedResponse status "application/json" (Json.toString value)) ctx
+
+/// Respond 200 OK with a JSON value.
+public json : Json.Value -> HttpHandler 'e
+let json value ctx = respondJson 200 value ctx
+
+/// Encode an application value and respond with an explicit status. An encoding
+/// error becomes Fail before a response body is produced.
+public respondJsonWith : Int -> JsonEncode.Encoder 'a -> 'a -> HttpHandler 'e
+let respondJsonWith status encoder value ctx =
+  match encoder value with
+  | Err error -> Fail (JsonEncode.errorToString error)
+  | Ok json -> respondJson status json ctx
+
+/// Encode an application value and respond 200 OK.
+public jsonWith : JsonEncode.Encoder 'a -> 'a -> HttpHandler 'e
+let jsonWith encoder value ctx = respondJsonWith 200 encoder value ctx
 
 /// Respond `200 OK` with an `text/html` body.
 public html : String -> HttpHandler 'e

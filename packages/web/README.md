@@ -12,18 +12,22 @@ packages/web/
   src/Web.fai        # the handler core: combinators, responses, request access, serve
   src/Router.fai     # the route tree: route / subRoute / verb groupers / router
   examples/Main.fai  # a runnable server
+  examples/JsonWebExample.fai  # typed JSON request/response server
   test/WebSpec.fai   # behavioural contracts
+  test/run.py        # package-local contracts and JIT/AOT HTTP checks
 ```
 
 ## Using it today
 
-There is no package manager yet, so a consuming app and this library must live
+This library depends on the sibling `packages/json` source library. There is no
+package manager yet, so a consuming app and both libraries must live
 under one workspace root (every `.fai` file beneath the root is compiled, and
 modules find each other by their `module` header — there are no imports). Point
 `fai` at that root:
 
 ```sh
-fai run -C packages/web examples/Main.fai
+fai run -C packages web/examples/Main.fai
+fai run -C packages web/examples/JsonWebExample.fai
 ```
 
 ## The handler model
@@ -80,6 +84,47 @@ Web.chain [
   Web.text "ok"
 ]
 ```
+
+### JSON
+
+`json value` responds 200 with a `Json.Value`; `jsonWith encoder value` uses a
+`JsonEncode.Encoder` for an application type. `respondJson status value` and
+`respondJsonWith status encoder value` accept an explicit status. They set
+`Content-Type: application/json`, preserve middleware headers, and remove stale
+Content-Length. Encoding failures become `Fail` before producing a response.
+
+```fai
+type User = { id : Int, name : String }
+
+let userDecoder = JsonDecode.map2
+  (fun id name -> { id = id, name = name })
+  (JsonDecode.field "id" JsonDecode.int)
+  (JsonDecode.field "name" JsonDecode.string)
+
+encodeUser : JsonEncode.Encoder User
+let encodeUser user = JsonEncode.object [
+  ("id", JsonEncode.int user.id),
+  ("name", JsonEncode.string user.name)
+]
+
+let createUser = Web.bindJson userDecoder (Web.respondJsonWith 201 encodeUser)
+```
+
+`readJson decoder context` drains the body once and returns
+`Result 'a Web.JsonBodyError`, forwarding the body's effect row. It accepts
+`application/json` and concrete `application/...+json` media types,
+case-insensitively, with parameters; bytes must be UTF-8. Missing/unsupported
+Content-Type is rejected before reading the body.
+
+`bindJson decoder handler` reads and decodes once, then invokes `handler value`
+with the context. Invalid JSON, duplicate keys, or schema errors become **400**;
+unsupported media types become **415**. Body transport failures become `Fail`.
+The body and handler effects propagate through the resulting `HttpHandler`.
+
+For custom error handling, use `readJson` directly. `JsonBodyError` distinguishes
+`UnsupportedJsonMediaType (Option String)`, `JsonBodyReadError String`, and
+`InvalidJson JsonDecode.ReadError`. `jsonBodyErrorToString` renders them while
+their structured byte locations and field/index paths remain available.
 
 ### Reading the request
 
@@ -157,10 +202,21 @@ turning an `HttpHandler` into the request→response function the server expects
 socket, and `Web.outcomeResponse` reads back the response an outcome produced, so
 handlers are testable with ordinary `example` contracts. See `test/WebSpec.fai`.
 
+The package carries its own tests, runnable against an existing compiler:
+
+```sh
+fai test -C packages web
+python3 packages/web/test/run.py --fai /path/to/fai
+```
+
+The runner checks formatting, types and contracts, effect forwarding, and real
+loopback HTTP requests through JIT and AOT executables. Library edits do not
+require rebuilding the compiler. Keep `web` and `json` beside each other when
+moving them to another source workspace.
+
 ## Status
 
 Implemented: the handler core, the router, response/request helpers, and the
-serve adapters (HTTP and HTTPS). Not yet built: JSON support (a `Json` module is
-the natural next addition, wiring up a `Web.json` responder), typed path-segment
+serve adapters (HTTP and HTTPS), and typed JSON requests/responses. Not yet built: typed path-segment
 combinators, and `chunked`/streaming response helpers beyond what `Http`
 provides directly.

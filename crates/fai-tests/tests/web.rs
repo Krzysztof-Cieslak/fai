@@ -1,7 +1,7 @@
 //! Integration coverage for the `packages/web` micro web framework (a library
 //! built on the networking stack, not part of the embedded standard library). It
-//! is compiled exactly as user code: a `Session` rooted at the package directory
-//! loads every `.fai` file under it alongside the embedded std. The framework's
+//! is compiled exactly as user code: a `Session` rooted at `packages/` loads the
+//! framework and its source dependencies alongside the embedded std. The framework's
 //! own behaviour is covered in-language by its `example` contracts (run here); the
 //! end-to-end server is exercised by `examples/Main.fai` under `fai run`.
 
@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use camino::Utf8PathBuf;
-use fai_db::{Db, Diag, FaiDatabase};
+use fai_db::{Db, Diag, FaiDatabase, SourceFile};
 use fai_diagnostics::Severity;
 use fai_driver::{Session, TestConfig, test};
 use fai_span::SourceId;
@@ -22,14 +22,41 @@ fn lock() -> MutexGuard<'static, ()> {
     RUN_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn package_dir() -> Utf8PathBuf {
-    let path: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/web");
-    let path = path.canonicalize().expect("packages/web exists");
+fn packages_dir() -> Utf8PathBuf {
+    let path: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages");
+    let path = path.canonicalize().expect("packages exists");
     Utf8PathBuf::from_path_buf(path).expect("utf8 path")
 }
 
 fn session() -> Session {
-    Session::open(package_dir()).expect("open packages/web workspace")
+    Session::open(packages_dir()).expect("open source-package workspace")
+}
+
+fn web_files(session: &Session) -> Vec<SourceFile> {
+    session
+        .user_files()
+        .into_iter()
+        .filter(|file| file.path(session.db()).starts_with("web"))
+        .collect()
+}
+
+/// Load source packages at runtime so library edits need no Rust recompilation.
+fn load_framework(db: &mut FaiDatabase) {
+    for package in ["json", "web"] {
+        let mut files: Vec<_> = std::fs::read_dir(packages_dir().join(package).join("src"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "fai"))
+            .collect();
+        files.sort();
+        for file in files {
+            let name = file.file_name().unwrap().to_str().unwrap();
+            db.add_source(
+                format!("{package}/{name}").into(),
+                std::fs::read_to_string(&file).unwrap(),
+            );
+        }
+    }
 }
 
 /// Every framework, example, and spec file is canonically formatted (so the
@@ -38,7 +65,7 @@ fn session() -> Session {
 fn web_package_is_canonically_formatted() {
     let session = session();
     let db = session.db();
-    let files = session.user_files();
+    let files = web_files(&session);
     assert!(!files.is_empty(), "expected .fai files under packages/web");
     for file in files {
         let path = file.path(db);
@@ -56,7 +83,7 @@ fn web_package_is_canonically_formatted() {
 fn web_package_typechecks_clean() {
     let session = session();
     let db = session.db();
-    let files = session.user_files();
+    let files = web_files(&session);
     assert!(!files.is_empty(), "expected .fai files under packages/web");
     for file in files {
         let path = file.path(db);
@@ -83,7 +110,7 @@ fn web_package_contracts_pass() {
     let _g = lock();
     let session = session();
     let db = session.db();
-    let files = session.user_files();
+    let files = web_files(&session);
     let outcome = test(db, &files, None, TestConfig::default());
     for d in &outcome.diagnostics {
         if d.code.as_str().starts_with("FAI6") {
@@ -104,8 +131,7 @@ fn middleware_headers_reach_the_wire_through_a_router() {
     let _guard = lock();
     let mut db = FaiDatabase::new();
     fai_types::std_lib::load_std(&mut db);
-    db.add_source("Web.fai".into(), include_str!("../../../packages/web/src/Web.fai").into());
-    db.add_source("Router.fai".into(), include_str!("../../../packages/web/src/Router.fai").into());
+    load_framework(&mut db);
     let source = r#"module Main
 app : Web.HttpHandler 'e
 let app = Web.chain [
@@ -149,7 +175,7 @@ fn decoded_redirect_input_cannot_write_injected_headers() {
     let _guard = lock();
     let mut db = FaiDatabase::new();
     fai_types::std_lib::load_std(&mut db);
-    db.add_source("Web.fai".into(), include_str!("../../../packages/web/src/Web.fai").into());
+    load_framework(&mut db);
     let source = r#"module Main
 app : Web.HttpHandler 'e
 let app = Web.redirect (Url.decodeComponent "/safe%0D%0AX-Injected:%20yes")

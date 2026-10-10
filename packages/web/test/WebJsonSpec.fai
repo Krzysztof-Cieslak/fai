@@ -1,0 +1,96 @@
+module WebJsonSpec
+
+run : Web.HttpHandler 'e -> Option String -> Stream Bytes 'e -> Web.Outcome 'e / 'e
+let run handler media body =
+  match Web.mockContext Http.POST "/" with
+  | Err e -> Web.Fail e
+  | Ok ctx ->
+    let headers =
+      match media with
+      | None -> Headers.empty
+      | Some value -> Headers.set "Content-Type" value Headers.empty
+    let request = ctx.request
+    handler { ctx with request = { request with body = body, headers = headers } }
+
+let status outcome =
+  match Web.outcomeResponse outcome with
+  | None -> 0
+  | Some response -> response.status
+
+body : Web.Outcome 'e -> Result String String / 'e
+let body outcome =
+  match Web.outcomeResponse outcome with
+  | None -> Err "no response"
+  | Some response -> Http.bodyText response.body
+
+let headers outcome =
+  match Web.outcomeResponse outcome with
+  | None -> Headers.empty
+  | Some response -> response.headers
+
+let failed message outcome =
+  match outcome with
+  | Web.Fail actual -> actual = message
+  | _ -> false
+
+increment : Web.HttpHandler 'e
+let increment =
+  Web.bindJson (JsonDecode.field "n" JsonDecode.int) (fun n -> Web.jsonWith JsonEncode.int (n + 1))
+
+let jsonBody text = Http.stringBody text
+
+let media = Some "application/json"
+example: status (run increment media (jsonBody "{\"n\":1}")) = 200
+example: body (run increment media (jsonBody "{\"n\":1}")) = Ok "2"
+example: status (run increment media (jsonBody "{\"n\":false}")) = 400
+example: status (run increment media (jsonBody "{\"n\":1,\"n\":2}")) = 400
+example: status (run increment media (jsonBody "{")) = 400
+example: status (run increment media (Http.bytesBody (Bytes.fromList [255]))) = 400
+example: status (run increment None (jsonBody "{\"n\":1}")) = 415
+example: status (run increment (Some "text/plain") (jsonBody "{\"n\":1}")) = 415
+example: status (run increment (Some "application/jsonp") (jsonBody "{\"n\":1}")) = 415
+example: status (run increment (Some "application/+json") (jsonBody "{\"n\":1}")) = 415
+example: status (run increment (Some "application/*+json") (jsonBody "{\"n\":1}")) = 415
+example: status (run increment (Some "application/a b+json") (jsonBody "{\"n\":1}")) = 415
+example: status (run increment (Some "application/vnd.example+json") (jsonBody "{\"n\":1}")) = 200
+example: status (run increment (Some "Application/JSON; charset=utf-8") (jsonBody "{\"n\":1}")) = 200
+example: status (run increment None (Stream.failed "must not read")) = 415
+example: failed "broken body" (run increment media (Stream.failed "broken body"))
+example: body (run (Web.json (Json.String "é😀\n")) None Http.emptyBody) = Ok "\"é😀\\n\""
+example: status (run (Web.respondJson 201 Json.Null) None Http.emptyBody) = 201
+example: status (run (Web.respondJsonWith 201 JsonEncode.int 3) None Http.emptyBody) = 201
+example: failed "$: non-finite Float is not a JSON number" (run (Web.jsonWith JsonEncode.float (Float.fromBits 0x7ff0000000000000)) None Http.emptyBody)
+
+let marked = Web.chain [
+  Web.setHeader "X-Test" "kept",
+  Web.addHeader "Set-Cookie" "a=1",
+  Web.addHeader "Set-Cookie" "b=2",
+  Web.setHeader "Content-Length" "999",
+  Web.setHeader "Content-Type" "old",
+  Web.json Json.Null
+]
+example: Headers.get "Content-Type" (headers (run marked None Http.emptyBody)) = Some "application/json"
+example: Headers.get "Content-Length" (headers (run marked None Http.emptyBody)) = None
+example: Headers.get "X-Test" (headers (run marked None Http.emptyBody)) = Some "kept"
+example: Headers.getAll "Set-Cookie" (headers (run marked None Http.emptyBody)) = ["a=1", "b=2"]
+
+read : JsonDecode.Decoder 'a -> Option String -> Stream Bytes 'e -> Result 'a Web.JsonBodyError / 'e
+let read decoder media body =
+  match Web.mockContext Http.POST "/" with
+  | Err e -> Err (Web.JsonBodyReadError e)
+  | Ok ctx ->
+    let headers =
+      match media with
+      | None -> Headers.empty
+      | Some value -> Headers.set "Content-Type" value Headers.empty
+    let request = ctx.request
+    Web.readJson decoder { ctx with request = { request with body = body, headers = headers } }
+example: read JsonDecode.int media (jsonBody "1") = Ok 1
+example: read JsonDecode.int None (jsonBody "1") = Err (Web.UnsupportedJsonMediaType None)
+example: read JsonDecode.int media (Stream.failed "broken") = Err (Web.JsonBodyReadError "broken")
+example: read JsonDecode.int media (jsonBody "?") = Err (Web.InvalidJson (JsonDecode.Syntax {
+  column = 1,
+  line = 1,
+  message = "expected JSON value",
+  offset = 0
+}))

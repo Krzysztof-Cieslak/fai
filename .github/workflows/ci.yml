@@ -85,6 +85,7 @@ jobs:
         run: |
           cargo build --locked -p fai-cli
           python packages/json/test/run.py --fai target/debug/fai
+          python packages/web/test/run.py --fai target/debug/fai
 
       - name: Verify the unit/proptest lanes partition the suite
         # A name-based guard: the two profiles must together select every
@@ -222,6 +223,7 @@ jobs:
         run: |
           cargo build --locked -p fai-cli
           python packages/json/test/run.py --fai target/debug/fai
+          python packages/web/test/run.py --fai target/debug/fai
 
       - name: Test summary
         if: always()
