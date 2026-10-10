@@ -28,6 +28,12 @@ public type Error =
   | InvalidJson ResponseHead JsonDecode.ReadError
   | InvalidText ResponseHead
   | ConsumerFailure String
+  | EventCodec Sse.Error
+  | EventMediaType ResponseHead (Option String)
+  | EventStatus ResponseHead
+  | EventConnectTimeout
+  | EventIdleTimeout
+  | EventReconnectLimit Int
 
 /// Immutable client configuration. Size limits are bytes; timeouts are milliseconds.
 public type Config = {
@@ -586,6 +592,193 @@ let withResponse client consume req =
       deadline env cfg.timeoutMs (fun _ ->
         exchange cfg env pool wire 0 0 1 (streamResponse cfg req consume))
 
+/// SSE-specific timeouts and buffering limits. None disables a timeout.
+public type EventOptions = SseOptions.Events
+
+public eventOptions : EventOptions
+let eventOptions = SseOptions.events
+
+/// Return StopEvents to finish a scoped event reader successfully.
+public type EventDecision =
+  | ContinueEvents
+  | StopEvents
+
+/// Progress is committed one protocol observation at a time, including ID-only
+/// blocks and retry hints. received counts dispatched events across connections.
+public type EventState = { lastEventId : String, received : Int, retryDelayMs : Option Int }
+
+public type EventEnd =
+  | EventEof
+  | EventStopped
+  | EventNoContent
+
+public type EventResult = { reason : EventEnd, state : EventState }
+
+type EventOutcome =
+  | EventEnded EventEnd
+  | EventLost Error
+  | EventRejected Error
+
+type EventAttempt = { outcome : EventOutcome, state : EventState, url : Option Url }
+
+let emptyEventState = { lastEventId = "", received = 0, retryDelayMs = None }
+
+eventProgress : EventState -> Sse.Update -> EventState
+let eventProgress state update =
+  match update with
+  | Sse.Checkpoint id -> { state with lastEventId = id }
+  | Sse.Retry delay -> { state with retryDelayMs = Some delay }
+  | Sse.Dispatch event -> { state with
+    lastEventId = event.lastEventId,
+    received = state.received + 1
+  }
+
+eventAttempt : ResponseHead -> EventState -> EventOutcome -> EventAttempt
+let eventAttempt head state outcome = { outcome = outcome, state = state, url = Some head.url }
+
+cancellationPoint : Concurrency -> Bool / { Concurrency }
+let cancellationPoint c =
+  let gate = c.channel 1
+  let sent = c.send gate ()
+  let alive = c.recv gate
+  let closed = c.close gate
+  alive <> None
+
+readEvents : Capabilities -> EventOptions -> (Sse.Event -> Result EventDecision Error / 'e) -> ResponseHead -> Sse.Decoder -> Bytes -> Int -> Stream Bytes { Concurrency, Net, Tls } -> EventState -> EventAttempt / { Clock, Concurrency, Net, Tls | 'e }
+let readEvents env options consume head decoder bytes index source state =
+  match Sse.next decoder bytes index with
+  | Err error -> eventAttempt head state (EventRejected (EventCodec error))
+  | Ok progress ->
+    match progress.update with
+    | Some update ->
+      let updated = eventProgress state update
+      match update with
+      | Sse.Dispatch event ->
+        if not (cancellationPoint env.concurrency) then
+          eventAttempt head state (EventRejected Cancelled)
+        else
+          match consume event with
+          | Err error -> eventAttempt head updated (EventRejected error)
+          | Ok StopEvents -> eventAttempt head updated (EventEnded EventStopped)
+          | Ok ContinueEvents ->
+            readEvents env options consume head progress.decoder bytes progress.nextIndex source updated
+      | _ ->
+        readEvents env options consume head progress.decoder bytes progress.nextIndex source updated
+    | None ->
+      let read =
+        deadline env options.readIdleTimeoutMs (fun _ ->
+          Result.mapError (BodyRead head) (Stream.uncons source))
+      match read with
+      | Err DeadlineExceeded -> eventAttempt head state (EventLost EventIdleTimeout)
+      | Err Cancelled -> eventAttempt head state (EventRejected Cancelled)
+      | Err error -> eventAttempt head state (EventLost error)
+      | Ok None -> eventAttempt head state (EventEnded EventEof)
+      | Ok (Some (chunk, rest)) ->
+        readEvents env options consume head progress.decoder chunk 0 rest state
+
+let eventMedia headers =
+  match Headers.getAll "Content-Type" headers with
+  | media :: [] ->
+    String.toLower (String.trim (Option.withDefault "" (List.head (String.split ";" media)))) = "text/event-stream"
+  | _ -> false
+
+cancelTimer : Concurrency -> Option (Task Unit) -> Unit / { Concurrency }
+let cancelTimer c timer =
+  match timer with
+  | None -> ()
+  | Some task -> c.cancel task
+
+consumeEventResponse : Capabilities -> EventOptions -> Prepared -> EventState -> Option (Task Unit) -> (ResponseHead -> Result Unit Error / 'e) -> (Sse.Event -> Result EventDecision Error / 'e) -> Response (Stream Bytes { Concurrency, Net, Tls }) -> Result EventAttempt Error / { Clock, Concurrency, Net, Tls | 'e }
+let consumeEventResponse env options wire previous timer connected consume response =
+  let stoppedTimer = cancelTimer env.concurrency timer
+  let state =
+    if sameOrigin wire.url response.head.url then previous else { previous with lastEventId = "" }
+  if response.head.status = 204 then
+    Ok (eventAttempt response.head state (EventEnded EventNoContent))
+  else if response.head.status <> 200 then
+    Ok (eventAttempt response.head state (EventRejected (EventStatus response.head)))
+  else if not (eventMedia response.head.headers) then
+    Ok (eventAttempt response.head state (EventRejected (EventMediaType response.head (Headers.get "Content-Type" response.head.headers))))
+  else
+    match connected response.head with
+    | Err error -> Ok (eventAttempt response.head state (EventRejected error))
+    | Ok _ ->
+      match Sse.decoder options.limits with
+      | Err error -> Ok (eventAttempt response.head state (EventRejected (EventCodec error)))
+      | Ok decoder ->
+        Ok (readEvents env options consume response.head decoder Bytes.empty 0 response.body state)
+
+runEventConnection : Config -> Capabilities -> Http.Client -> EventOptions -> Prepared -> EventState -> Option (Task Unit) -> (ResponseHead -> Result Unit Error / 'e) -> (Sse.Event -> Result EventDecision Error / 'e) -> Channel EventAttempt -> Unit / { Clock, Concurrency, Net, Tls | 'e }
+let runEventConnection cfg env pool options wire state timer connected consume output =
+  let response =
+    exchange cfg env pool wire 0 0 1 (consumeEventResponse env options wire state timer connected consume)
+  let attempt =
+    match response with
+    | Ok attempt -> attempt
+    | Err (Transport message) -> {
+      outcome = EventLost (Transport message),
+      state = state,
+      url = None
+    }
+    | Err error -> { outcome = EventRejected error, state = state, url = None }
+  env.concurrency.send output attempt
+
+eventConnectTimer : Capabilities -> Int -> EventState -> Channel EventAttempt -> Unit / { Clock, Concurrency }
+let eventConnectTimer env timeout state output =
+  let slept = env.clock.sleep timeout
+  env.concurrency.send output { outcome = EventLost EventConnectTimeout, state = state, url = None }
+
+eventConnectionScope : Config -> Capabilities -> Http.Client -> EventOptions -> Prepared -> EventState -> (ResponseHead -> Result Unit Error / 'e) -> (Sse.Event -> Result EventDecision Error / 'e) -> Nursery -> EventAttempt / { Clock, Concurrency, Net, Tls | 'e }
+let eventConnectionScope cfg env pool options wire state connected consume nursery =
+  let output = env.concurrency.channel 1
+  let timer =
+    match options.connectTimeoutMs with
+    | None -> None
+    | Some timeout ->
+      Some (env.concurrency.spawn nursery (fun _ -> eventConnectTimer env timeout state output))
+  let worker =
+    env.concurrency.spawn nursery (fun _ ->
+      runEventConnection cfg env pool options wire state timer connected consume output)
+  let received = env.concurrency.recv output
+  let stoppedWorker = env.concurrency.cancel worker
+  let stoppedTimer = cancelTimer env.concurrency timer
+  let closed = env.concurrency.close output
+  Option.withDefault { outcome = EventRejected Cancelled, state = state, url = None } received
+
+eventConnection : Config -> Capabilities -> Http.Client -> EventOptions -> Prepared -> EventState -> (ResponseHead -> Result Unit Error / 'e) -> (Sse.Event -> Result EventDecision Error / 'e) -> EventAttempt / { Clock, Concurrency, Net, Tls | 'e }
+let eventConnection cfg env pool options wire state connected consume =
+  env.concurrency.scope (eventConnectionScope cfg env pool options wire state connected consume)
+
+let eventResult attempt =
+  match attempt.outcome with
+  | EventEnded reason -> Ok { reason = reason, state = attempt.state }
+  | EventLost error -> Err error
+  | EventRejected error -> Err error
+
+eventConfig : Config -> Config
+let eventConfig cfg = { cfg with
+  retry = HttpClientPolicy.noRetry,
+  sensitiveHeaders = "Last-Event-ID" :: cfg.sensitiveHeaders
+}
+
+/// Read one SSE response (including POST-based APIs). Events are delivered in
+/// order until EOF, 204, consumer stop, or error. SSE-specific timeouts replace
+/// the client's overall timeout for this operation; callback time is not read idle.
+public withEvents : Client -> EventOptions -> (Sse.Event -> Result EventDecision Error / 'e) -> Request Bytes -> Result EventResult Error / { Clock, Concurrency, Net, Tls | 'e }
+let withEvents client options consume request =
+  match SseOptions.validateEvents options with
+  | Err message -> Err (InvalidConfiguration message)
+  | Ok _ ->
+    match client with
+    | MkClient original env pool ->
+      let cfg = eventConfig original
+      match prepare cfg (header "Accept" "text/event-stream" request) with
+      | Err error -> Err error
+      | Ok wire ->
+        deadline env options.subscriptionTimeoutMs (fun _ ->
+          eventResult (eventConnection cfg env pool options wire emptyEventState (fun _ ->
+            Ok ()) consume))
+
 /// Render a structured failure for a console or log.
 public errorToString : Error -> String
 let errorToString error =
@@ -604,3 +797,9 @@ let errorToString error =
   | InvalidJson head error -> "invalid response JSON: " ++ JsonDecode.readErrorToString error
   | InvalidText head -> "response body is not valid UTF-8"
   | ConsumerFailure message -> "response consumer: " ++ message
+  | EventCodec error -> "SSE: " ++ Sse.errorToString error
+  | EventMediaType head media -> "expected text/event-stream"
+  | EventStatus head -> "unexpected SSE status " ++ Int.toString head.status
+  | EventConnectTimeout -> "SSE connection timeout"
+  | EventIdleTimeout -> "SSE read idle timeout"
+  | EventReconnectLimit count -> "SSE reconnect limit reached: " ++ Int.toString count

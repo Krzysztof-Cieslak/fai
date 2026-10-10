@@ -1744,6 +1744,12 @@ Middleware headers survive, stale body metadata is removed, and the response is
 chunked `text/event-stream`. Source/timer tasks stop and join with the response.
 `Web.lastEventId context` exposes a client's resume header; replay is application
 logic. The terminal `Web.Produce` outcome carries a scoped body producer.
+`HttpClient.withEvents client options consume request` reads one SSE response,
+including POST, with a sequential `Sse.Event -> Result EventDecision Error`
+consumer (`ContinueEvents` or `StopEvents`). `HttpClient.eventOptions` defaults to
+30,000 ms connection and 60,000 ms read-idle timeouts and no overall timeout.
+All durations accept configuration (`None` disables them). The result includes
+the final reason and committed ID/retry/event-count state; 204 stops successfully.
 
 Including `packages/http-client/src` and `packages/json/src` supplies `HttpClient`.
 `withClient runtime (config baseUrl) callback` opens a scoped pool. Pure `get`,

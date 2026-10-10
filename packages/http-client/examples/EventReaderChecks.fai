@@ -1,0 +1,101 @@
+module EventReaderChecks
+
+type Case = {
+  body : String,
+  media : String,
+  method : Http.Method,
+  options : HttpClient.EventOptions,
+  slowConsumer : Bool,
+  slowHead : Bool,
+  status : Int,
+  stop : Bool
+}
+
+let basic = {
+  body = "retry: 7\nid: x\ndata:a\n\ndata:b\n\ndata:partial",
+  media = "text/event-stream",
+  method = Http.GET,
+  options = HttpClient.eventOptions,
+  slowConsumer = false,
+  slowHead = false,
+  status = 200,
+  stop = false
+}
+
+handle : Runtime -> Case -> Http.Request 'e -> Result (Http.Response { Clock }) String / { Clock }
+let handle r case request =
+  let wait = if case.slowHead then r.clock.sleep 10000 else ()
+  Ok (Http.chunkedResponse case.status (Headers.fromList [
+    ("Content-Type", case.media)
+  ]) (Http.stringBody case.body))
+
+consume : Runtime -> Channel Int -> Case -> Sse.Event -> Result HttpClient.EventDecision HttpClient.Error / { Clock, Concurrency }
+let consume r count case event =
+  let n = Option.withDefault 0 (r.concurrency.recv count)
+  let counted = r.concurrency.send count (n + 1)
+  let wait = if case.slowConsumer then r.clock.sleep 200 else ()
+  Ok (if case.stop then HttpClient.StopEvents else HttpClient.ContinueEvents)
+
+session : Runtime -> Case -> Listener -> Nursery -> (Result HttpClient.EventResult HttpClient.Error * Int) / { Clock, Concurrency, Net, Tls }
+let session r case listener nursery =
+  let server = r.concurrency.spawn nursery (fun _ -> Http.serveListener r listener (handle r case))
+  let count = r.concurrency.channel 1
+  let seeded = r.concurrency.send count 0
+  let cfg =
+    HttpClient.config ("http://127.0.0.1:" ++ Int.toString (r.net.localPort listener) ++ "/")
+  let result =
+    HttpClient.withClient r { cfg with
+      timeoutMs = Some 1
+    } (fun client ->
+      HttpClient.withEvents client case.options (consume r count case) (HttpClient.request case.method ""))
+  let n = Option.withDefault (-1) (r.concurrency.recv count)
+  let stopped = r.concurrency.cancel server
+  (result, n)
+
+run : Runtime -> Case -> (Result HttpClient.EventResult HttpClient.Error * Int) / { Clock, Concurrency, Net, Tls }
+let run r case =
+  match r.net.listen 0 with
+  | Err error -> (Err (HttpClient.Transport error), -1)
+  | Ok listener -> r.concurrency.scope (session r case listener)
+
+public main : Runtime -> Unit / { Clock, Concurrency, Console, Net, Tls }
+let main r =
+  let (normal, count) = run r { basic with method = Http.POST }
+  let complete =
+    normal = Ok {
+      reason = HttpClient.EventEof,
+      state = { lastEventId = "x", received = 2, retryDelayMs = Some 7 }
+    } && count = 2
+  let (stopped, stopCount) = run r { basic with
+    body = "data:a\n\nxxxxxxxxxxxxxxxx",
+    options = { basic.options with limits = { maxEventBytes = 10, maxLineBytes = 6 } },
+    stop = true
+  }
+  let stoppedEarly =
+    (match stopped with
+    | Ok result -> result.reason = HttpClient.EventStopped
+    | _ -> false) && stopCount = 1
+  let (empty, emptyCount) = run r { basic with status = 204 }
+  let noContent =
+    (match empty with
+    | Ok result -> result.reason = HttpClient.EventNoContent
+    | _ -> false) && emptyCount = 0
+  let (badMedia, badCount) = run r { basic with media = "text/plain" }
+  let mediaRejected =
+    (match badMedia with
+    | Err (HttpClient.EventMediaType _ _) -> true
+    | _ -> false) && badCount = 0
+  let (slow, slowCount) = run r { basic with
+    options = { basic.options with readIdleTimeoutMs = Some 100 },
+    slowConsumer = true
+  }
+  let slowAllowed = Result.isOk slow && slowCount = 2
+  let (timeout, timeoutCount) = run r { basic with
+    options = { basic.options with connectTimeoutMs = Some 50 },
+    slowHead = true
+  }
+  let connectedDeadline = timeout = Err HttpClient.EventConnectTimeout && timeoutCount = 0
+  r.console.writeLine (if complete && stoppedEarly && noContent && mediaRejected && slowAllowed && connectedDeadline then
+    "event reader checks passed"
+  else
+    "event reader checks failed")

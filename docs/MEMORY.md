@@ -4889,6 +4889,10 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   event; recent writes suppress idle comments. Both tasks are cancelled and joined
   when sending ends. All enabled heartbeat intervals are explicit milliseconds,
   validated before production; automatic heartbeats are disabled by default.
+  The single-connection HTTP event reader supports arbitrary request methods and
+  delivers one observation at a time. Its connection, read-idle and overall
+  deadlines are optional, validated configuration; application callback time is
+  outside read-idle timing. EOF, 204 and explicit stop return committed progress.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

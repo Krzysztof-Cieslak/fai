@@ -173,6 +173,39 @@ deadline expiration inside callbacks and retry delays, and status rejection befo
 callback invocation. `DownloadCheck` streams a loopback response to the supplied
 file and verifies its complete UTF-8 contents, covering FileSystem effect forwarding.
 
+## Reading server-sent events
+
+`HttpClient.withEvents client options consume request` reads one SSE connection,
+including POST requests. `consume` receives a `Sse.Event` and returns
+`Ok ContinueEvents`, `Ok StopEvents`, or a structured client error. Events are
+delivered sequentially; a slow callback applies backpressure and does not count
+as network-read idle time. Callback errors stop the operation.
+
+```fai
+HttpClient.post "chat"
+|> HttpClient.jsonBody encoder input
+|> HttpClient.withEvents client HttpClient.eventOptions onEvent
+```
+
+`EventOptions` (also `SseOptions.Events`) has configurable `connectTimeoutMs`,
+`readIdleTimeoutMs`, `subscriptionTimeoutMs`, and codec `limits`. Defaults are
+30,000 ms to establish the final response, 60,000 ms waiting for each body read,
+and no overall duration limit. Every timeout accepts `None` to disable it; an
+enabled value must be positive. These settings replace the ordinary client's
+overall timeout for this operation, without changing that client.
+
+The reader sets Accept, requires status 200 with text/event-stream, and accepts
+204 as a successful `EventNoContent` stop. Its result reports `EventEof` or
+`EventStopped` otherwise, with the last committed ID, latest retry hint and event
+count. An incomplete event at EOF is discarded. Parsing stops at each protocol
+observation, so stopping after one event cannot commit a later ID from the same
+network chunk. Protocol limits, media/status errors, connect/read-idle deadlines,
+caller cancellation and consumer errors remain distinguishable.
+
+```sh
+fai run -C packages http-client/examples/EventReaderChecks.fai
+```
+
 ## Native contracts
 
 ```sh

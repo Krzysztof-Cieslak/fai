@@ -1,0 +1,45 @@
+module SseOptionsSpec
+
+example: SseOptions.validateEvents SseOptions.events = Ok ()
+example: SseOptions.validateSubscription SseOptions.subscription = Ok ()
+example: SseOptions.validateEvents { SseOptions.events with
+  connectTimeoutMs = None,
+  readIdleTimeoutMs = None,
+  subscriptionTimeoutMs = None
+} = Ok ()
+example: Result.isErr (SseOptions.validateEvents { SseOptions.events with
+  connectTimeoutMs = Some 0
+})
+example: Result.isErr (SseOptions.validateEvents { SseOptions.events with
+  readIdleTimeoutMs = Some (-1)
+})
+example: Result.isErr (SseOptions.validateEvents { SseOptions.events with
+  subscriptionTimeoutMs = Some 0
+})
+example: Result.isErr (SseOptions.validateSubscription { SseOptions.subscription with
+  reconnectDelayMs = (-1)
+})
+example: Result.isErr (SseOptions.validateSubscription { SseOptions.subscription with
+  minReconnectDelayMs = (-1)
+})
+example: Result.isErr (SseOptions.validateSubscription { SseOptions.subscription with
+  maxReconnectDelayMs = Some 10,
+  minReconnectDelayMs = 20
+})
+example: Result.isErr (SseOptions.validateSubscription { SseOptions.subscription with
+  maxReconnects = Some (-1)
+})
+example: Result.isErr (SseOptions.validateSubscription { SseOptions.subscription with
+  initialLastEventId = "bad\nvalue"
+})
+example: SseOptions.validResumeId "é😀"
+example: not (SseOptions.validResumeId "a\u{0}b")
+example: SseOptions.reconnectDelay SseOptions.subscription None = 3000
+example: SseOptions.reconnectDelay { SseOptions.subscription with reconnectDelayMs = 17 } None = 17
+example: SseOptions.reconnectDelay SseOptions.subscription (Some 0) = 0
+example: SseOptions.reconnectDelay { SseOptions.subscription with
+  minReconnectDelayMs = 20
+} (Some 0) = 20
+example: SseOptions.reconnectDelay { SseOptions.subscription with
+  maxReconnectDelayMs = Some 40
+} (Some 9223372036854775807) = 40

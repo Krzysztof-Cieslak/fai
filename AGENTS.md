@@ -951,6 +951,11 @@ comments. A bounded acknowledged queue keeps one producer and one timer alive
 through the send, then cancels and joins both. Timer ticks never cancel source
 reads. `Produce` is a terminal Web outcome; `Web.lastEventId` reads the resume
 header, with replay owned by the application.
+`HttpClient.withEvents` reads a single SSE connection, including POST responses,
+and calls a sequential event consumer until EOF, 204, explicit stop, or failure.
+SSE-specific connect/read-idle/overall durations are all configurable and override
+the ordinary request timeout only for that operation. Callback time is excluded
+from read-idle time; ID-only blocks and retry hints update returned progress.
 
 ## 6. Compiler pipeline
 

@@ -1,5 +1,5 @@
 {
   "schemaVersion": 1,
   "name": "http-client",
-  "dependencies": ["json"]
+  "dependencies": ["json", "sse"]
 }
