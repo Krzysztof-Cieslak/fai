@@ -1,0 +1,34 @@
+module TailStrings
+
+let ascii n text = if n <= 0 then text else ascii (n - 1) (text ++ "a")
+
+let unicode n text = if n <= 0 then text else unicode (n - 1) (text ++ "aéλ😀")
+
+let lengths n text total =
+  if n <= 0 then total else lengths (n - 1) text (total + String.length text)
+
+let views text =
+  let half = String.length text / 2
+  let prefixes = Array.init 200 (fun i -> String.take (half + i % 3) text)
+  Array.foldl (fun total prefix -> total + String.length prefix) 0 prefixes
+
+public buildAscii : Int -> Int
+let buildAscii n = String.length (ascii n "")
+
+public buildUnicode : Int -> Int
+let buildUnicode n = String.length (unicode n "")
+
+public lengthAscii : Int -> Int
+let lengthAscii n = lengths 200 (ascii n "") 0
+
+public lengthUnicode : Int -> Int
+let lengthUnicode n = lengths 200 (unicode n "") 0
+
+public viewsAscii : Int -> Int
+let viewsAscii n = views (ascii n "")
+
+public viewsUnicode : Int -> Int
+let viewsUnicode n = views (unicode n "")
+
+public main : Runtime -> Unit
+let main runtime = ()

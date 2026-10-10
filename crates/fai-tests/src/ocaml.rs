@@ -47,7 +47,11 @@ pub fn tree_baseline() -> Option<&'static Utf8PathBuf> {
 /// A persistent native worker with one statically selected registered workload.
 #[must_use]
 pub fn worker_baseline(algorithm: &crate::algorithms::Algorithm) -> Option<Utf8PathBuf> {
-    let definitions = SOURCE.split_once("\nlet () =").expect("OCaml baseline entry").0;
+    let definitions = if crate::tail_components::by_module(algorithm.module).is_some() {
+        include_str!("../ocaml/tail_components.ml")
+    } else {
+        SOURCE.split_once("\nlet () =").expect("OCaml baseline entry").0
+    };
     let worker = include_str!("../ocaml/worker.ml").replace("HARNESS_MODULE", algorithm.module);
     build(&format!("worker-{}", algorithm.module), &format!("{definitions}\n{worker}"))
 }
