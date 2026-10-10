@@ -1,0 +1,78 @@
+module ProcessHost
+
+/// A supervised child or pipeline. Closing expires every session alias.
+public opaque type Session =
+  | ProcessSession Int
+
+/// Ordered environment edits; None removes a name.
+public type EnvironmentEdit = { name : String, value : Option String }
+
+/// Native launch description. Empty directory inherits the execution directory.
+public type Command = {
+  arguments : List String,
+  directory : String,
+  edits : List EnvironmentEdit,
+  executable : String,
+  inherit : Bool
+}
+
+/// All durations are milliseconds. Buffer/chunk sizes are positive and at most
+/// 1 GiB; poll is 1..1000, grace is nonnegative, optional deadlines are positive.
+public type Options = {
+  bufferBytes : Int,
+  chunkBytes : Int,
+  drainTimeoutMs : Option Int,
+  graceMs : Int,
+  pollMs : Int,
+  timeoutMs : Option Int
+}
+
+/// Full native exit code, or a Unix signal and its core-dump flag.
+public type Exit =
+  | Exited Int
+  | Signaled Int Bool
+
+/// kind: 1 invalid, 2 spawn, 3 read/wait, 4 write, 5 cancelled, 6 deadline,
+/// 7 drain deadline, 8 closed, 9 concurrent write, 10 cleanup. Stages are zero-based.
+public type Error = { code : Int, kind : Int, message : String, stage : Int }
+
+public type Chunk = { bytes : Bytes, stage : Int, stderr : Bool }
+
+public type Report = { cleanup : List Error, exits : List (Option Exit), failure : Option Error }
+
+/// Native process authority. Output is bounded and ordered per pipe. A scope owns
+/// its process groups/Jobs; its final release stops and reaps its direct children.
+public interface Process =
+  close : Session -> Report / { Process }
+  endInput : Session -> Result Unit Error / { Process }
+  next : Session -> Result (Option Chunk) Error / { Process }
+  start : List Command -> Options -> Result Session Error / { Process }
+  status : Session -> List (Option Exit) / { Process }
+  stop : Session -> Unit / { Process }
+  write : Session -> Bytes -> Result Int Error / { Process }
+
+foreign "fai_process_start" startRaw : List Command -> Options -> Result Session Error / { Process }
+
+foreign "fai_process_next" nextRaw : Session -> Result (Option Chunk) Error / { Process }
+
+foreign "fai_process_write" writeRaw : Session -> Bytes -> Result Int Error / { Process }
+
+foreign "fai_process_end_input" endInputRaw : Session -> Result Unit Error / { Process }
+
+foreign "fai_process_stop" stopRaw : Session -> Unit / { Process }
+
+foreign "fai_process_status" statusRaw : Session -> List (Option Exit) / { Process }
+
+foreign "fai_process_close" closeRaw : Session -> Report / { Process }
+
+/// Add this capability explicitly to the application's runtime record.
+public native : Process
+let native = { Process with
+  close = closeRaw,
+  endInput = endInputRaw,
+  next = nextRaw,
+  start = startRaw,
+  status = statusRaw,
+  stop = stopRaw,
+  write = writeRaw
+}

@@ -746,6 +746,16 @@ capabilities any function transitively reaches.
 
 ### Defining your own capability
 
+`ProcessHost.Process` is the native subprocess capability. Add
+`process = ProcessHost.native` to a custom runtime record. `start` takes a nonempty
+list of command descriptions and explicit buffer/deadline options; adjacent
+commands are connected by native pipes. `next` returns tagged byte chunks, `write`
+returns the completed prefix count, and `endInput` closes stdin. `stop` requests
+shutdown; `close` joins it and returns stage exit statuses plus primary/cleanup
+errors. Reads and writes through closed aliases fail. Output is binary, and a
+nonzero child exit code is a result rather than a launch failure. Its effect is
+`ProcessHost.Process`; external programs retain their operating-system authority.
+
 The standard host capabilities are ordinary library code, not compiler built-ins —
 you can add your own. A capability is just an **interface whose methods carry an
 effect** plus an **instance** that implements them. There are two ways to back it.
@@ -1112,6 +1122,15 @@ and keyed, revisioned streams. Use `combine` to union differing command effects.
 value and focus commands. `Form.view` or individual `Form.field`s create the UI.
 `TuiMarkdown.append` incrementally updates a document; feed its indexed `source`
 to `Ui.transcript`, and reflow via `resize` when the viewport changes.
+
+`ProcessHost.Process` supplies `start : List Command -> Options -> Result Session
+Error`, `next : Session -> Result (Option Chunk) Error`, `write : Session -> Bytes
+-> Result Int Error`, `endInput`, `status`, `stop`, and `close`. Every operation
+carries `{ ProcessHost.Process }`. Commands configure executable/argv, directory,
+environment inheritance and edits. Options configure bounded buffering, chunk
+size, grace, polling, overall deadline and post-exit drain deadline. Chunks identify
+their zero-based stage and stdout/stderr source. Close returns all stage statuses
+and primary/cleanup failures; only status snapshots remain readable after close.
 
 `TerminalHost.Terminal` supplies `open : Bool -> Result Session String` (mouse
 capture flag), `close`, `size`, raw `write`, and `poll` with a timeout in

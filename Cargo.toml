@@ -52,7 +52,7 @@ crossbeam-deque = "0.8"
 # Cross-platform non-blocking I/O readiness (epoll/kqueue/IOCP): the runtime's
 # network reactor (TCP/UDP). Pure Rust, no C toolchain. `os-poll` + the `net`
 # sources are all we need.
-mio = { version = "1", features = ["os-poll", "net"] }
+mio = { version = "1", features = ["os-poll", "os-ext", "net"] }
 # TLS for the `Tls` capability (HTTPS). A sans-I/O engine driven by Fai over the
 # existing `Net` transport; the `ring` crypto provider keeps it a Rust dependency
 # (no aws-lc-rs/cmake). `webpki-roots` is the bundled trust store; `rustls-pemfile`

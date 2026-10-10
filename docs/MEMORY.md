@@ -41,6 +41,14 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Native process execution is an explicit `ProcessHost.Process` capability.
+  Command construction is pure; execution owns scoped process groups/Jobs and
+  bounded byte pipes. Native supervisors multiplex cancellable I/O independently
+  of the general blocking pool. Exit codes remain data, distinct from launch/I/O
+  failures, and exit observation is distinct from output EOF. Monotonic operation
+  and post-exit drain deadlines are configurable. A process effect accounts for
+  external execution; child programs do not inherit Fai's static effect rules.
+
 Initial design decisions (summarized in the locked table in `AGENTS.md` §3):
 
 - **D1 Backend:** Cranelift native codegen (over interpreter / bytecode VM / LLVM

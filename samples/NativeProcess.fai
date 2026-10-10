@@ -1,0 +1,23 @@
+module NativeProcess
+
+// Native process authority is explicit, like terminal and database authority.
+public type AppRuntime = { console : Console, process : ProcessHost.Process }
+
+let runtime = { console = stdConsole, process = ProcessHost.native }
+
+public main : AppRuntime -> Unit / { Console, ProcessHost.Process }
+let main app =
+  let options = {
+    bufferBytes = 1048576,
+    chunkBytes = 65536,
+    drainTimeoutMs = Some 5000,
+    graceMs = 1000,
+    pollMs = 10,
+    timeoutMs = None
+  }
+  // An empty pipeline is a located application error, before any process starts.
+  match app.process.start [] options with
+  | Err error -> app.console.writeLine error.message
+  | Ok session ->
+    let report = app.process.close session
+    app.console.writeLine "closed"

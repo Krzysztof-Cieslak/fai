@@ -26,6 +26,10 @@ path = "junit.xml"
 filter = "package(fai-runtime) & test(terminal::tests::)"
 slow-timeout = { period = "10s", terminate-after = 3 }
 
+[[profile.default.overrides]]
+filter = "package(fai-runtime) & test(process::)"
+slow-timeout = { period = "10s", terminate-after = 3 }
+
 # Fast PR-feedback lane: everything except the property tests.
 [profile.unit]
 fail-fast = false
