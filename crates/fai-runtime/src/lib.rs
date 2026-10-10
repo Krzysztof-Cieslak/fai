@@ -268,6 +268,8 @@ pub const KIND_FILE: u64 = 16;
 pub const KIND_TLS: u64 = 17;
 /// A SQLite session or cursor owning a native reference-counted resource.
 pub const KIND_SQLITE: u64 = 18;
+/// An explicitly owned terminal session.
+pub const KIND_TERMINAL: u64 = 19;
 
 /// Byte offset of the raw `Arc` pointer inside a task, channel, or nursery handle
 /// cell.
@@ -355,6 +357,9 @@ pub static FAI_TLS_DESC: Descriptor = descriptor(KIND_TLS, "Tls");
 /// Descriptor for SQLite session and cursor handles.
 #[unsafe(no_mangle)]
 pub static FAI_SQLITE_DESC: Descriptor = descriptor(KIND_SQLITE, "Sqlite");
+/// Descriptor for scoped terminal ownership.
+#[unsafe(no_mangle)]
+pub static FAI_TERMINAL_DESC: Descriptor = descriptor(KIND_TERMINAL, "Terminal");
 
 /// Descriptor for boxed (overflowed) `Int` objects (leaf).
 #[unsafe(no_mangle)]
@@ -1340,6 +1345,7 @@ unsafe fn free_obj(p: *mut u8) {
                 KIND_FILE => io::drop_file_handle(read_i64(p, HANDLE_PTR_OFFSET)),
                 KIND_TLS => tls::drop_tls_handle(read_i64(p, HANDLE_PTR_OFFSET)),
                 KIND_SQLITE => sqlite::drop_handle(read_i64(p, HANDLE_PTR_OFFSET)),
+                KIND_TERMINAL => terminal::drop_handle(read_i64(p, HANDLE_PTR_OFFSET)),
                 _ => {}
             }
             read_u64(p, SIZE_OFFSET) as usize
@@ -4042,7 +4048,14 @@ fn guard_comparable(a: Value, b: Value) {
 fn is_resource_kind(kind: u64) -> bool {
     matches!(
         kind,
-        KIND_TASK | KIND_CHANNEL | KIND_NURSERY | KIND_NET | KIND_FILE | KIND_TLS | KIND_SQLITE
+        KIND_TASK
+            | KIND_CHANNEL
+            | KIND_NURSERY
+            | KIND_NET
+            | KIND_FILE
+            | KIND_TLS
+            | KIND_SQLITE
+            | KIND_TERMINAL
     )
 }
 
@@ -5130,7 +5143,12 @@ mod reactor;
 mod io;
 
 mod crypto;
+mod terminal;
 pub use scheduler::fai_cleanup;
+pub use terminal::{
+    fai_terminal_close, fai_terminal_open, fai_terminal_poll, fai_terminal_size,
+    fai_terminal_write, fai_text_graphemes, fai_text_width,
+};
 /// The TLS engine (sans-I/O rustls) backing the `Tls` capability.
 mod tls;
 pub use crypto::{

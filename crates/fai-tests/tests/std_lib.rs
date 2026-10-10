@@ -82,6 +82,7 @@ fn every_public_std_function_has_an_example() {
             "Tls",
             "Sqlite",
             "Entropy",
+            "Terminal",
             "Runtime",
         ];
 

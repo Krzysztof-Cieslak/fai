@@ -751,6 +751,10 @@ pub enum Prim {
     CryptoEqual,
     /// PostgreSQL SCRAM password normalization with its specified fallback.
     CryptoScramPassword,
+    /// Unicode extended grapheme segmentation.
+    TextGraphemes,
+    /// Terminal display width, with explicit ambiguous-width policy.
+    TextWidth,
 }
 
 /// Whether values of `ty` are boxed, reference-counted heap values, so lending
@@ -916,6 +920,8 @@ impl Prim {
             Prim::CryptoPbkdf2Sha256 => "fai_crypto_pbkdf2_sha256",
             Prim::CryptoEqual => "fai_crypto_equal",
             Prim::CryptoScramPassword => "fai_crypto_scram_password",
+            Prim::TextGraphemes => "fai_text_graphemes",
+            Prim::TextWidth => "fai_text_width",
             Prim::BytesSlice => "fai_bytes_slice",
             Prim::BytesFromList => "fai_bytes_from_list",
             Prim::BytesToList => "fai_bytes_to_list",
@@ -959,6 +965,7 @@ impl Prim {
             | Prim::BytesToString
             | Prim::BytesIsUtf8
             | Prim::CryptoSha256
+            | Prim::TextGraphemes
             | Prim::CryptoScramPassword => 1,
             Prim::RecordUpdate
             | Prim::ArraySet
@@ -1024,6 +1031,8 @@ impl Prim {
             "cryptoPbkdf2Sha256" => Prim::CryptoPbkdf2Sha256,
             "cryptoEqual" => Prim::CryptoEqual,
             "cryptoScramPassword" => Prim::CryptoScramPassword,
+            "textGraphemes" => Prim::TextGraphemes,
+            "textWidth" => Prim::TextWidth,
             "bytesSlice" => Prim::BytesSlice,
             "bytesFromList" => Prim::BytesFromList,
             "bytesToList" => Prim::BytesToList,

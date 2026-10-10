@@ -1,0 +1,15 @@
+module Terminal
+
+public type Runtime = { console : Console, terminal : TerminalHost.Terminal }
+
+let runtime = { console = stdConsole, terminal = TerminalHost.native }
+
+public main : Runtime -> Unit / { Console, TerminalHost.Terminal }
+let main env =
+  match env.terminal.open false with
+  | Err error -> env.console.writeLine error
+  | Ok session ->
+    let displayed =
+      env.terminal.write session (Bytes.fromString "\u{1b}[2J\u{1b}[HHello, terminal!")
+    let restored = env.terminal.close session
+    ()
