@@ -3258,6 +3258,16 @@ Editor integration:
     under the ordinary helper budget, exposing element updates to reuse analysis;
     other known direct globals remain direct calls. The loop retains scalar
     accumulator types and the library's capacity/count/wraparound rules.
+  - **Repeated independent numeric maps.** A counted tail loop carrying one
+    array solely through a small, capture-free, total numeric callback can run
+    its iterations per element instead. The non-wrapping unit-step counter and
+    invariant bound preserve the exact number of transitions. Float states up to
+    four components run in pairs to retain independent instruction streams; an
+    odd element uses the single-state worker. The original no-iteration branch
+    returns its input, and ordinary array ownership copies a shared input once.
+    Scalar replacement keeps the states in registers. Generated functions expose
+    their explicit ABI to ownership lowering as well as native emission. Effects,
+    traps, resources and cross-element dependencies remain conservative barriers.
   - **Staged concatenation folds.** A fold can walk a materialized list of chunks
     instead of copying `List.concat`'s flattened spine, including a single-use
     concatenation binding. `concatMap` retains a strict map stage: every producer

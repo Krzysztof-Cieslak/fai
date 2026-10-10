@@ -454,3 +454,20 @@ fn scalar_specialization_edits_match_clean_generated_functions() {
         },
     );
 }
+
+#[test]
+fn repeated_map_callback_edits_match_clean_synthesized_workers() {
+    let source = "module M\nlet step x = x * 0.5\nlet loop i n xs = if i >= n then xs else loop (i + 1) n (Array.map step xs)\n";
+    let edited = source.replace("x * 0.5", "x * 0.25");
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", source)], &[("M.fai", &edited)]],
+        |db, files| {
+            let file = db.source_file(files[0]).unwrap();
+            let name = Symbol::intern("loop");
+            (
+                (*fai_core::fuse_def(db, file, name)).clone(),
+                (*object_code(db, file, name, false)).clone(),
+            )
+        },
+    );
+}

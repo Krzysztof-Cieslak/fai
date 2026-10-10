@@ -20,8 +20,19 @@ use crate::niche::niche_scheme;
 /// `name`'s native calling-convention shape (see [`FnAbi`]). Tracked so its
 /// memoization boundary keeps a dependent's recompute independent of unrelated
 /// edits (a callee body edit that does not change its signature does not ripple).
+/// A synthesized function gets its explicit ABI from its owning transformation,
+/// so ownership lowering and native emission agree on spread arguments/results.
 #[salsa::tracked]
 pub fn abi(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<FnAbi> {
+    if let Some((owner, _)) =
+        name.as_str().strip_prefix("fuse#").and_then(|rest| rest.rsplit_once('#'))
+    {
+        return crate::fuse_def(db, file, Symbol::intern(owner))
+            .loops
+            .iter()
+            .find(|function| function.lowered.def.name == name)
+            .map_or_else(|| Arc::new(FnAbi::default()), |function| Arc::new(function.abi.clone()));
+    }
     let def = DefId::new(file.source(db), name);
     let Some(scheme) = crate::representation::definition_scheme(db, def) else {
         return Arc::new(FnAbi::default());

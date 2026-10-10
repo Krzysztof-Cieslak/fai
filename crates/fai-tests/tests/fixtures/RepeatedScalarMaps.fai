@@ -1,0 +1,35 @@
+module Main
+
+let step x = x * 0.5 + 0.25
+
+public floats : Int -> Int -> Array Float -> Array Float
+let floats i n xs =
+  if i >= n then xs else floats (i + 1) n (Array.map step xs)
+
+let intStep x = x * 3 + 1
+
+public ints : Int -> Int -> Array Int -> Array Int
+let ints i n xs =
+  if i >= n then xs else ints (i + 1) n (Array.map intStep xs)
+
+public type Vec2 = { x : Float, y : Float }
+
+public recordOne : Float -> Float -> Vec2
+let recordOne x y = { x = x, y = y }
+
+recordStep : Vec2 -> Vec2
+let recordStep value = { x = value.x * 0.5 + 0.25, y = value.y + 1.0 }
+
+public records : Int -> Int -> Array Vec2 -> Array Vec2
+let records i n xs =
+  if i >= n then xs else records (i + 1) n (Array.map recordStep xs)
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let original = Array.repeat 3 { x = 1.0, y = 2.0 }
+  let changed = records 0 2 original
+  let first = Array.unsafeGet 0 changed
+  let last = Array.unsafeGet 2 changed
+  let retained = Array.unsafeGet 0 original
+  let ok = first = { x = 0.625, y = 4.0 } && last = first && retained = { x = 1.0, y = 2.0 }
+  runtime.console.writeLine (if ok then "yes" else "no")
