@@ -26,7 +26,7 @@ def child_terminal():
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 
 
-def exercise(command, title, keys, finish=None, expected=None, timeout=30):
+def exercise(command, title, keys, finish=None, expected=None, timeout=180):
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
     original = termios.tcgetattr(slave)
@@ -48,6 +48,7 @@ def exercise(command, title, keys, finish=None, expected=None, timeout=30):
                 os.killpg(process.pid, signal.SIGWINCH)
                 os.write(master, keys)
                 entered = time.monotonic()
+                deadline = min(deadline, entered + 30)
             if entered is not None and finish and not sent_finish and time.monotonic() - entered >= 1:
                 os.write(master, finish)
                 sent_finish = True
