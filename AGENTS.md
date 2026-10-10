@@ -1034,6 +1034,12 @@ glyph ownership, and frame differences preserve terminal style and cursor state.
 grapheme editing and virtualized lists/tables/transcripts. Domain values stay in
 the application model; `TuiState` retains mounted interaction state. Key mapping
 is configurable by widget kind, and visible-range messages support paged sources.
+`Tui.run` owns the full-screen MVU lifecycle. Pure init/update/view functions use
+effect-carrying commands and keyed/revisioned subscriptions. A bounded batched
+mailbox supplies backpressure; replaced work cannot deliver stale messages, and
+cancelled jobs keep their concurrency slot until completion. Shutdown restores
+the terminal before joining cooperative background work. Runtime-reported faults
+also restore an active native terminal before process termination.
 
 ## 6. Compiler pipeline
 

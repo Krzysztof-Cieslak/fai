@@ -22,6 +22,17 @@ struct Session {
     reader: Mutex<()>,
 }
 
+static ACTIVE: OnceLock<Mutex<Weak<Session>>> = OnceLock::new();
+
+/// Restore an owned terminal before a located runtime failure terminates the process.
+pub(crate) fn restore_on_fault() {
+    let owner =
+        ACTIVE.get().and_then(|active| active.try_lock().ok().and_then(|owner| owner.upgrade()));
+    if let Some(owner) = owner {
+        let _ = owner.close();
+    }
+}
+
 impl Session {
     fn close(&self) -> Result<(), String> {
         let _output = self.output.lock().unwrap_or_else(|e| e.into_inner());
@@ -56,7 +67,6 @@ impl Drop for Session {
 }
 
 fn open(mouse: bool) -> Result<Arc<Session>, String> {
-    static ACTIVE: OnceLock<Mutex<Weak<Session>>> = OnceLock::new();
     let mut active = ACTIVE.get_or_init(Mutex::default).lock().unwrap_or_else(|e| e.into_inner());
     if let Some(previous) = active.upgrade()
         && (!previous.closed.load(Ordering::Acquire) || previous.reader.try_lock().is_err())
@@ -346,6 +356,9 @@ mod tests {
         }
         let session = open(false).unwrap();
         assert!(terminal::is_raw_mode_enabled().unwrap());
+        if case == "fault" {
+            crate::fai_panic("terminal fault test");
+        }
         assert!(open(false).is_err(), "a second owner must not disturb the first");
         if case == "close" {
             session.close().unwrap();
@@ -399,6 +412,8 @@ mod tests {
         // touch shared Rust state. stdin is already the cloned slave terminal.
         unsafe {
             command.pre_exec(|| {
+                let core_limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+                libc::setrlimit(libc::RLIMIT_CORE, &core_limit);
                 if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
                     return Err(std::io::Error::last_os_error());
                 }
@@ -423,7 +438,7 @@ mod tests {
         let mut output = Vec::new();
         let _ = master.read_to_end(&mut output);
         let output = String::from_utf8_lossy(&output);
-        assert!(result.is_some_and(|status| status.success()), "{output}");
+        assert!(result.is_some_and(|status| status.success() == (case != "fault")), "{output}");
         assert!(output.contains("\u{1b}[?1049h") && output.contains("\u{1b}[?1049l"), "{output}");
         assert_eq!(
             (after.c_iflag, after.c_oflag, after.c_cflag, after.c_lflag, after.c_cc),
@@ -441,6 +456,12 @@ mod tests {
     #[cfg(unix)]
     fn final_drop_restores_terminal() {
         assert_pty_restored("drop");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn runtime_failure_restores_terminal_before_abort() {
+        assert_pty_restored("fault");
     }
     #[test]
     fn key_mapping_retains_unicode_and_control_modifiers() {

@@ -1,0 +1,47 @@
+module TuiSub
+
+public type Source 'msg 'e =
+  | Every Int (Int -> 'msg)
+  | Stream (Stream 'msg 'e) (String -> 'msg)
+
+public type Subscription 'msg 'e = { key : String, revision : String, source : Source 'msg 'e }
+
+public opaque type Sub 'msg 'e =
+  | Sub (List (Subscription 'msg 'e))
+
+public none : Sub 'msg 'e
+let none = Sub []
+
+/// Timer intervals are explicit. Nonpositive intervals are rejected by the runner.
+public every : String -> Int -> (Int -> 'msg) -> Sub 'msg 'e
+let every key interval message = Sub [
+  { key = key, revision = Int.toString interval, source = Every interval message }
+]
+
+/// A stable key/revision keeps the existing stream. Change revision when captured
+/// source inputs change. End-of-stream stays completed until its revision changes.
+public stream : String -> String -> Stream 'msg 'e -> (String -> 'msg) -> Sub 'msg 'e
+let stream key revision values onError = Sub [
+  { key = key, revision = revision, source = Stream values onError }
+]
+
+public subscriptions : Sub 'msg 'e -> List (Subscription 'msg 'e)
+let subscriptions sub =
+  match sub with
+  | Sub subscriptions -> subscriptions
+
+public batch : List (Sub 'msg 'e) -> Sub 'msg 'e
+let batch values = Sub (List.concat (List.map subscriptions values))
+
+public combine : Sub 'msg 'e -> Sub 'msg 'e -> Sub 'msg 'e
+let combine first second = batch [first, second]
+
+public map : ('a -> 'b) -> Sub 'a 'e -> Sub 'b 'e
+let map f sub =
+  Sub (List.map (fun subscription -> {
+    key = subscription.key,
+    revision = subscription.revision,
+    source = match subscription.source with
+    | Every interval message -> Every interval (message >> f)
+    | Stream values onError -> Stream (Stream.map f values) (onError >> f)
+  }) (subscriptions sub))

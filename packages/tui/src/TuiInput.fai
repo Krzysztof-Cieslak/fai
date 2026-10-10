@@ -135,7 +135,9 @@ let inputKey options hit config key state =
     let text =
       TuiText.slice (min widget.anchor widget.caret) (max widget.anchor widget.caret) config.value
     let outcome = if lower = "x" then edit hit config "" state else handled state []
-    { outcome with actions = [Copy text] }
+    { outcome with actions = [Copy text], state = { outcome.state with clipboard = text } }
+  else if control && lower = "v" then
+    if state.clipboard = "" then handled state [] else edit hit config state.clipboard state
   else if control && (lower = "p" || lower = "n") && config.onSubmit <> None then
     history options hit config (lower = "p") state
   else if key.code = "Left" then

@@ -1,0 +1,202 @@
+module TuiTasks
+
+public type Services = { clock : Clock, concurrency : Concurrency }
+
+public type Limits = { active : Int, pending : Int }
+
+public type Job = { key : Option String, live : Bool, subscription : Bool, task : Task Unit }
+
+public type Work 'msg 'e =
+  | Command (Option String) (Unit -> 'msg / 'e)
+  | Subscription (TuiSub.Subscription 'msg 'e)
+
+public type Pending 'msg 'e = { id : Int, work : Work 'msg 'e }
+
+public type Seen = { id : Int, revision : String }
+
+public type State 'msg 'e = {
+  jobs : Dict Int Job,
+  next : Int,
+  pending : List (Pending 'msg 'e),
+  seen : Dict String Seen
+}
+
+public empty : State 'msg 'e
+let empty = { jobs = Dict.empty, next = 1, pending = [], seen = Dict.empty }
+
+let key work =
+  match work with
+  | Command key _ -> (false, key)
+  | Subscription sub -> (true, Some sub.key)
+
+public accepts : Int -> State 'msg 'e -> Bool
+let accepts id state =
+  match Dict.get id state.jobs with
+  | None -> false
+  | Some job -> job.live
+
+stream : Services -> TuiMailbox.Inbox (TuiEvent.Event 'msg) -> Int -> Stream 'msg 'e -> (String -> 'msg) -> Unit / { Concurrency | 'e }
+let stream env inbox id values onError =
+  match Stream.uncons values with
+  | Err error ->
+    let sent = TuiMailbox.send inbox (TuiEvent.Message id (onError error))
+    ()
+  | Ok None -> ()
+  | Ok (Some (value, rest)) ->
+    if TuiMailbox.send inbox (TuiEvent.Message id value) then
+      stream env inbox id rest onError
+    else
+      ()
+
+timer : Services -> TuiMailbox.Inbox (TuiEvent.Event 'msg) -> Int -> Int -> (Int -> 'msg) -> Unit / { Clock, Concurrency }
+let timer env inbox id interval message =
+  let slept = env.clock.sleep interval
+  if TuiMailbox.send inbox (TuiEvent.Message id (message (env.clock.now ()))) then
+    timer env inbox id interval message
+  else
+    ()
+
+worker : Services -> TuiMailbox.Inbox (TuiEvent.Event 'msg) -> Pending 'msg 'e -> Unit -> Unit / { Clock, Concurrency | 'e }
+let worker env inbox pending unit =
+  let performed =
+    match pending.work with
+    | Command _ work ->
+      let sent = TuiMailbox.send inbox (TuiEvent.Message pending.id (work ()))
+      ()
+    | Subscription sub ->
+      match sub.source with
+      | TuiSub.Every interval message -> timer env inbox pending.id interval message
+      | TuiSub.Stream values onError -> stream env inbox pending.id values onError
+  let completed =
+    Wire.cleanup env.concurrency (fun _ -> TuiMailbox.send inbox (TuiEvent.Completed pending.id))
+  ()
+
+public start : Services -> Nursery -> TuiMailbox.Inbox (TuiEvent.Event 'msg) -> Limits -> State 'msg 'e -> State 'msg 'e / { Clock, Concurrency | 'e }
+let start env nursery inbox limits state =
+  if Dict.size state.jobs >= limits.active then
+    state
+  else
+    match state.pending with
+    | [] -> state
+    | pending :: rest ->
+      let task = env.concurrency.spawn nursery (worker env inbox pending)
+      let (subscription, key) = key pending.work
+      let job = { key = key, live = true, subscription = subscription, task = task }
+      start env nursery inbox limits { state with
+        jobs = Dict.insert pending.id job state.jobs,
+        pending = rest
+      }
+
+cancelId : Services -> Int -> State 'msg 'e -> State 'msg 'e / { Concurrency }
+let cancelId env id state =
+  let jobs =
+    match Dict.get id state.jobs with
+    | None -> state.jobs
+    | Some job ->
+      let cancelled = env.concurrency.cancel job.task
+      Dict.insert id { job with live = false } state.jobs
+  { state with jobs = jobs, pending = List.filter (fun work -> work.id <> id) state.pending }
+
+let commandMatches name pair =
+  let (_, job) = pair
+  not job.subscription && job.key = Some name
+
+cancelPair : Services -> State 'msg 'e -> (Int * Job) -> State 'msg 'e / { Concurrency }
+let cancelPair env state pair =
+  let (id, _) = pair
+  cancelId env id state
+
+public cancel : Services -> String -> State 'msg 'e -> State 'msg 'e / { Concurrency }
+let cancel env name state =
+  let ids = List.filter (commandMatches name) (Dict.toList state.jobs)
+  let state = List.foldl (cancelPair env) state ids
+  { state with
+    pending = List.filter (fun pending -> key pending.work <> (false, Some name)) state.pending
+  }
+
+enqueue : Work 'msg 'e -> Limits -> State 'msg 'e -> Result (Int * State 'msg 'e) String
+let enqueue work limits state =
+  if List.length state.pending >= limits.pending || state.next = 9223372036854775807 then
+    Err "UI task queue limit exceeded"
+  else
+    let id = state.next
+    Ok (id, { state with
+      next = id + 1,
+      pending = List.append state.pending [{ id = id, work = work }]
+    })
+
+public command : Services -> Nursery -> TuiMailbox.Inbox (TuiEvent.Event 'msg) -> Limits -> Option String -> (Unit -> 'msg / 'e) -> State 'msg 'e -> Result (State 'msg 'e) String / { Clock, Concurrency | 'e }
+let command env nursery inbox limits key work state =
+  let state =
+    match key with
+    | None -> state
+    | Some key -> cancel env key state
+  match enqueue (Command key work) limits state with
+  | Err error -> Err error
+  | Ok (_, state) -> Ok (start env nursery inbox limits state)
+
+public complete : Services -> Nursery -> TuiMailbox.Inbox (TuiEvent.Event 'msg) -> Limits -> Int -> State 'msg 'e -> State 'msg 'e / { Clock, Concurrency | 'e }
+let complete env nursery inbox limits id state = start env nursery inbox limits { state with
+  jobs = Dict.remove id state.jobs
+}
+
+addSubscriptions : Services -> Nursery -> TuiMailbox.Inbox (TuiEvent.Event 'msg) -> Limits -> Set String -> List (TuiSub.Subscription 'msg 'e) -> State 'msg 'e -> Result (State 'msg 'e) String / { Clock, Concurrency | 'e }
+let addSubscriptions env nursery inbox limits keys subscriptions state =
+  match subscriptions with
+  | [] -> Ok (start env nursery inbox limits state)
+  | sub :: rest ->
+    if Set.member sub.key keys then
+      Err ("duplicate subscription key: " ++ sub.key)
+    else
+      let valid =
+        match sub.source with
+        | TuiSub.Every interval _ -> interval > 0
+        | _ -> true
+      if not valid then
+        Err "subscription interval must be positive"
+      else
+        let keys = Set.insert sub.key keys
+        match Dict.get sub.key state.seen with
+        | Some seen ->
+          if seen.revision = sub.revision then
+            addSubscriptions env nursery inbox limits keys rest state
+          else
+            let state = cancelId env seen.id state
+            addSubscriptions env nursery inbox limits (Set.remove sub.key keys) subscriptions { state with
+              seen = Dict.remove sub.key state.seen
+            }
+        | None ->
+          match enqueue (Subscription sub) limits state with
+          | Err error -> Err error
+          | Ok (id, state) ->
+            let state = start env nursery inbox limits state
+            addSubscriptions env nursery inbox limits keys rest { state with
+              seen = Dict.insert sub.key { id = id, revision = sub.revision } state.seen
+            }
+
+public reconcile : Services -> Nursery -> TuiMailbox.Inbox (TuiEvent.Event 'msg) -> Limits -> TuiSub.Sub 'msg 'e -> State 'msg 'e -> Result (State 'msg 'e) String / { Clock, Concurrency | 'e }
+let reconcile env nursery inbox limits subscriptions state =
+  let desired = TuiSub.subscriptions subscriptions
+  let removed = List.filter (missing desired) (Dict.toList state.seen)
+  let state = List.foldl (removeSeen env) state removed
+  addSubscriptions env nursery inbox limits Set.empty desired state
+
+let missing desired pair =
+  let (name, _) = pair
+  not (List.any (fun sub -> sub.key = name) desired)
+
+removeSeen : Services -> State 'msg 'e -> (String * Seen) -> State 'msg 'e / { Concurrency }
+let removeSeen env state pair =
+  let (name, seen) = pair
+  let cancelled = cancelId env seen.id state
+  { cancelled with seen = Dict.remove name cancelled.seen }
+
+cancelJob : Services -> (Int * Job) -> Unit / { Concurrency }
+let cancelJob env pair =
+  let (_, job) = pair
+  env.concurrency.cancel job.task
+
+public close : Services -> State 'msg 'e -> Unit / { Concurrency }
+let close env state =
+  let cancelled = List.map (cancelJob env) (Dict.toList state.jobs)
+  ()
