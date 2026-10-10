@@ -2609,6 +2609,11 @@ Editor integration:
     raw integer entering a uniform merge is tagged/boxed. Runtime-returned
     integers may remain uniform until a consumer requires a raw value, avoiding
     an unnecessary unbox/rebox when they flow straight into another uniform slot.
+    A bounded straight-line region can share one explicit boxed peer across
+    repeated uniform uses of the same Int while keeping arithmetic raw. Duplicate
+    pure Int expressions are coalesced first, and ordinary ownership insertion
+    balances the peer's references. Branch-only uses, closures and row-offset
+    references remain conservative; the explicit marker survives worker transport.
   - **Calling convention — register ABI only.** `Int` parameters and results are
     untagged only on the **register (direct-call) ABI**, where a direct caller
     receives them raw and skips the round-trip. Uniform (row-polymorphic / nullary)

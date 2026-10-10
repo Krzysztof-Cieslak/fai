@@ -3612,6 +3612,12 @@ impl<M: Module> Translator<'_, M> {
     }
 
     fn prim(&mut self, op: Prim, args: &[CExpr], result_ty: &Ty) -> Value {
+        if op == Prim::IntBox
+            && let [arg] = args
+        {
+            let value = self.expr(arg);
+            return self.ensure_boxed(value);
+        }
         if op == Prim::DataPeek
             && let [base, index] = args
             && let Some(index) = match index.kind {
@@ -7782,6 +7788,12 @@ fn collect_int_observations(
         }
         ExprKind::Let { local, value, body } => {
             note(*local, &value.ty, int_seen, other_seen);
+            if matches!(
+                fai_core::bounds::peel_rc(value).kind,
+                ExprKind::Prim { op: Prim::IntBox, .. }
+            ) {
+                other_seen.insert(local.index());
+            }
             collect_int_observations(value, int_seen, other_seen);
             collect_int_observations(body, int_seen, other_seen);
         }

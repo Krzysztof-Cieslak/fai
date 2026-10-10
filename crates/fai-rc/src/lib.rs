@@ -68,6 +68,7 @@ mod mutual;
 mod purity;
 mod reuse_candidates;
 mod reuse_sig;
+mod shared_boxes;
 mod sroa;
 mod trmc;
 mod verify;
@@ -202,6 +203,7 @@ pub fn rc_lowered(db: &dyn Db, lowered: &LoweredDef, self_sig: &BorrowSig) -> Lo
         if i == 0 {
             entry_spread_params = spread_params;
         }
+        let body = shared_boxes::rewrite(db, body, &mut next);
         let used = fv_owned(&body, &borrowed);
         let mut cx = Rc { captures: &borrowed, next, call_borrows: &arg_borrows };
         let body = cx.owned(body, &Locals::default());

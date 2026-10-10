@@ -540,6 +540,8 @@ pub enum Lit {
 pub enum Prim {
     /// `+`
     IntAdd,
+    /// Compiler-internal uniform representation of an Int retained across slots.
+    IntBox,
     /// `-`
     IntSub,
     /// `*`
@@ -789,6 +791,7 @@ impl Prim {
     pub fn runtime_symbol(self) -> &'static str {
         match self {
             Prim::IntAdd => "fai_int_add",
+            Prim::IntBox => "fai_box_int",
             Prim::IntSub => "fai_int_sub",
             Prim::IntMul => "fai_int_mul",
             Prim::IntDiv => "fai_int_div",
@@ -871,6 +874,7 @@ impl Prim {
     pub fn arity(self) -> usize {
         match self {
             Prim::IntToString
+            | Prim::IntBox
             | Prim::FloatNeg
             | Prim::FloatToString
             | Prim::IntToFloat

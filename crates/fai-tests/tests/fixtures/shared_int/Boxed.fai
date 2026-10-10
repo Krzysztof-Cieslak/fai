@@ -1,0 +1,4 @@
+module Boxed
+
+public pair : Int -> (Int * Int)
+let pair x = (x + 1, x + 1)
