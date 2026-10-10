@@ -1,0 +1,19 @@
+module Download
+
+download : Runtime -> String -> String -> Result Unit HttpClient.Error / { Clock, Concurrency, FileSystem, Net, Tls }
+let download runtime url path =
+  let cfg = HttpClient.config url
+  HttpClient.withClient runtime { cfg with
+    timeoutMs = Some 300000
+  } (fun client ->
+    HttpClient.get "" |> HttpClient.expectBytes |> HttpClient.withResponse client (fun response ->
+      Result.mapError HttpClient.ConsumerFailure (Stream.toFile runtime path response.body)))
+
+public main : Runtime -> Unit / { Clock, Concurrency, Console, Env, FileSystem, Net, Tls }
+let main runtime =
+  match runtime.env.args () with
+  | url :: path :: [] ->
+    match download runtime url path with
+    | Ok _ -> runtime.console.writeLine "downloaded"
+    | Err error -> runtime.console.writeError (HttpClient.errorToString error ++ "\n")
+  | _ -> runtime.console.writeError "usage: Download URL FILE\n"

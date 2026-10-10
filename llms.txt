@@ -1738,6 +1738,12 @@ Set `retry = HttpClient.retryTransient` for bounded GET/HEAD status retries;
 Retry-After and all attempts share the overall deadline. Redirects replay prepared
 bytes with status-specific method rules and strip origin-scoped credentials.
 `HttpClientPolicy.decide` exposes pure policy decisions for scripted contracts.
+For streaming, use `request |> HttpClient.withResponse client consume`; `consume`
+receives a response whose body is `Stream Bytes { Concurrency, Net, Tls }` and
+returns `Result 'a HttpClient.Error`. Its effects are forwarded and its execution
+shares the overall deadline. Use `expectBytes` to require 2xx before the callback.
+Consume once within the callback; early return closes an unfinished response.
+The buffered-body limit does not constrain a streamed download.
 
 Including `packages/cli/src` supplies the pure `Args` argument parser. Build a
 typed `Args.Parser 'a` with `flag`, `count`, `option`, `requiredOption`,

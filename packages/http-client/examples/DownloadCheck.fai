@@ -1,0 +1,35 @@
+module DownloadCheck
+
+let content = String.join "" (Array.toList (Array.repeat 20000 "hé\n"))
+
+let handler request = Ok (Http.textResponse 200 content)
+
+save : Runtime -> String -> HttpClient.Response (Stream Bytes { Concurrency, Net, Tls }) -> Result Unit HttpClient.Error / { Concurrency, FileSystem, Net, Tls }
+let save r path response =
+  Result.mapError HttpClient.ConsumerFailure (Stream.toFile r path response.body)
+
+session : Runtime -> String -> Listener -> Nursery -> Unit / { Clock, Concurrency, Console, FileSystem, Net, Tls }
+let session r path listener nursery =
+  let server = r.concurrency.spawn nursery (fun _ -> Http.serveListener r listener handler)
+  let cfg =
+    HttpClient.config ("http://127.0.0.1:" ++ Int.toString (r.net.localPort listener) ++ "/")
+  let result =
+    HttpClient.withClient r { cfg with
+      maxBodyBytes = 1
+    } (fun client ->
+      HttpClient.get "" |> HttpClient.expectBytes |> HttpClient.withResponse client (save r path))
+  let stopped = r.concurrency.cancel server
+  let bytes = r.fs.readFile path
+  r.console.writeLine (if result = Ok () && bytes = Ok content then
+    "download check passed"
+  else
+    "download check failed")
+
+public main : Runtime -> Unit / { Clock, Concurrency, Console, Env, FileSystem, Net, Tls }
+let main r =
+  match r.env.args () with
+  | path :: [] ->
+    match r.net.listen 0 with
+    | Err error -> r.console.writeLine error
+    | Ok listener -> r.concurrency.scope (session r path listener)
+  | _ -> r.console.writeError "usage: DownloadCheck OUTPUT_FILE\n"

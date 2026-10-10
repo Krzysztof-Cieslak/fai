@@ -103,3 +103,26 @@ example: Result.isErr (decode cfg read 200 (Headers.fromList [
 example: Result.isErr (decode cfg read 200 (Headers.fromList [
   ("Content-Type", "application/a/b+json")
 ]) "{\"name\":\"Ada\"}")
+
+let failIfRead unit = Stream.cons (Bytes.fromList [1 / 0]) Stream.empty
+
+let mediaBeforeBody =
+  match response 200 Headers.empty "" with
+  | Err _ -> false
+  | Ok r ->
+    match HttpClient.decodeStream cfg read { body = Stream.defer failIfRead, head = r.head } with
+    | Err (HttpClient.UnsupportedJsonMediaType head media) -> media = None
+    | _ -> false
+example: mediaBeforeBody
+
+let invalidConfigBeforeBody =
+  match response 200 Headers.empty "" with
+  | Err _ -> false
+  | Ok r ->
+    match HttpClient.decodeStream { cfg with
+      maxBodyBytes = (-1)
+    } raw { body = Stream.defer failIfRead, head = r.head } with
+    | Err (HttpClient.InvalidConfiguration _) -> true
+    | _ -> false
+example: invalidConfigBeforeBody
+forall pieces: value (streamResponse (HttpClient.expectText raw) 16777216 pieces) = Ok (String.join "" pieces)
