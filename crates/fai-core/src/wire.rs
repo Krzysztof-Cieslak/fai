@@ -1363,6 +1363,7 @@ mod tests {
         let shape: crate::ir::DataShape =
             serde_json::from_str(r#"{"max_tag":1,"max_fields":2,"scalars":0}"#).unwrap();
         assert!(!shape.resource_free);
+        assert_eq!((shape.boxed_tag, shape.immediate_tag), (None, None));
     }
 
     #[test]
@@ -1377,13 +1378,24 @@ mod tests {
         let original = fingerprint(&lowered);
         lowered.data_shapes = vec![vec![(
             lowered.entry().params[0],
-            crate::ir::DataShape { max_tag: 2, max_fields: 3, scalars: 0, resource_free: true },
+            crate::ir::DataShape {
+                max_tag: 2,
+                max_fields: 3,
+                scalars: 0,
+                resource_free: true,
+                boxed_tag: Some(2),
+                immediate_tag: Some(1),
+            },
         )]];
         assert_ne!(original, fingerprint(&lowered));
         let resource_free = fingerprint(&lowered);
         lowered.data_shapes[0][0].1.resource_free = false;
         assert_ne!(resource_free, fingerprint(&lowered));
         lowered.data_shapes[0][0].1.resource_free = true;
+        let with_tag = fingerprint(&lowered);
+        lowered.data_shapes[0][0].1.boxed_tag = None;
+        assert_ne!(with_tag, fingerprint(&lowered));
+        lowered.data_shapes[0][0].1.boxed_tag = Some(2);
         let wire = def_to_wire(
             &lowered,
             &|_| "M".into(),

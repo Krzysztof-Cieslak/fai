@@ -618,6 +618,9 @@ scan's hot path while supporting the same complete 64-bit value range.
 Typed locals carry conservative constructor-tag, field-count and scalar-slot
 bounds through the native cache and run bundles. Proven compact data uses direct
 tag extraction and constant field offsets; unknown/open shapes decode at runtime.
+When a type has a single boxed constructor, that branch's tag is known without
+reading a header. A single immediate alternative as well makes the complete tag
+a calculation on the value's immediate bit, independent of constructor order.
 An array data slot used only for tag/field inspection can be borrowed while its
 source array remains live. The bounded ownership proof keeps escaping slots and
 uncertain lifetimes owned; projected child values retain their own references.

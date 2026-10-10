@@ -2336,6 +2336,45 @@ fn discarded_generic_tuple_field_accepts_a_raw_float_slot() {
 }
 
 #[test]
+fn unique_immediate_and_boxed_tags_need_no_header_read() {
+    let source = "module M\ntype T = | Empty | Full Int\nlet kind value = match value with | Empty -> false | Full _ -> true\n";
+    let ir = function_ir(source, "kind");
+    assert!(!ir[0].contains("load"), "{}", ir[0]);
+}
+
+#[test]
+fn reversed_unique_tags_need_no_header_read() {
+    let source = "module M\ntype T = | Full Int | Empty\nlet kind value = match value with | Full _ -> false | Empty -> true\n";
+    let ir = function_ir(source, "kind");
+    assert!(!ir[0].contains("load"), "{}", ir[0]);
+}
+
+#[test]
+fn multiple_boxed_tags_keep_dynamic_header_reads() {
+    let source = "module M\ntype T = | Empty | First Int | Second Bool\nlet kind value = match value with | Empty -> 0 | First _ -> 1 | Second _ -> 2\n";
+    let ir = function_ir(source, "kind");
+    assert!(ir[0].contains("load"), "{}", ir[0]);
+}
+
+#[test]
+fn unique_boxed_tag_preserves_multiple_immediate_tags() {
+    let source = "module M\ntype T = | First | Full Int | Last\nlet kind value = match value with | First -> 3 | Full _ -> 5 | Last -> 7\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (List.sum (List.map kind [First, Full 99, Last])))\n";
+    assert_eq!(run(source), (0, "15\n".into()));
+}
+
+#[test]
+fn unique_tags_preserve_reversed_order_with_generic_payloads() {
+    let source = "module M\ntype T 'a = | Full 'a | Empty\nlet kind value = match value with | Full _ -> 11 | Empty -> 17\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (List.sum (List.map kind [Full 1.5, Empty])))\n";
+    assert_eq!(run(source), (0, "28\n".into()));
+}
+
+#[test]
+fn unique_tags_do_not_depend_on_compact_headers() {
+    let source = "module M\ntype T = | Empty | Wide Float Float Float Float Float Float Float Float Float\nlet kind value = match value with | Empty -> 4 | Wide _ _ _ _ _ _ _ _ _ -> 9\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (kind (Wide 1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0 9.0) + kind Empty))\n";
+    assert_eq!(run(source), (0, "13\n".into()));
+}
+
+#[test]
 fn generic_equality_on_an_enum_takes_the_immediate_path() {
     // Every constructor is nullary, so every value is an immediate: the guard's
     // fast arm always runs.

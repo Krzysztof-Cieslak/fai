@@ -1,0 +1,13 @@
+module Main
+
+type Cell 'a = | Full 'a | Empty
+
+let code cell =
+  match cell with
+  | Full _ -> 11
+  | Empty -> 17
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let cells = [Full 1.5, Empty, Full (-0.0)]
+  runtime.console.writeLine (Int.toString (List.sum (List.map code cells)))

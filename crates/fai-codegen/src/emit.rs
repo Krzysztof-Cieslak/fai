@@ -33,7 +33,8 @@ use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use fai_core::NicheKind;
 use fai_core::bounds::{BoundSig, Bounds, ResultSig};
 use fai_core::ir::{
-    CExpr, ClosureAlloc, CoreFn, ExprKind, FieldIndex, FnAbi, FnId, Lit, LoweredDef, Prim, Repr,
+    CExpr, ClosureAlloc, CoreFn, DataShape, ExprKind, FieldIndex, FnAbi, FnId, Lit, LoweredDef,
+    Prim, Repr,
 };
 use fai_resolve::{DefId, LocalId};
 use fai_runtime as rt;
@@ -2031,10 +2032,7 @@ impl<M: Module> Translator<'_, M> {
         // boundary sites convert it back to standard before a uniform slot.
         if let Some(k) = self.niche_local(local) {
             self.mark_niche(v, k);
-        } else if let Some(shapes) = self.lowered.data_shapes.get(self.fn_index)
-            && let Ok(index) = shapes.binary_search_by_key(&local.index(), |(id, _)| id.index())
-        {
-            let shape = shapes[index].1;
+        } else if let Some(shape) = self.local_data_shape(local) {
             if rt::compact_data_metadata(shape.max_tag, shape.max_fields as usize, shape.scalars)
                 .is_some()
             {
@@ -2045,6 +2043,12 @@ impl<M: Module> Translator<'_, M> {
             }
         }
         v
+    }
+
+    fn local_data_shape(&self, local: LocalId) -> Option<DataShape> {
+        let shapes = self.lowered.data_shapes.get(self.fn_index)?;
+        let index = shapes.binary_search_by_key(&local.index(), |(id, _)| id.index()).ok()?;
+        Some(shapes[index].1)
     }
 
     /// `local`'s known static type, if recorded (see the `var_tys` pre-pass).
@@ -3211,6 +3215,26 @@ impl<M: Module> Translator<'_, M> {
         if self.is_list_value(base) {
             let lowbit = self.builder.ins().band_imm(v, 1);
             let raw = self.builder.ins().bxor_imm(lowbit, 1);
+            return if matches!(result_ty, Ty::Con(Con::Int)) {
+                self.mark_raw(raw)
+            } else {
+                self.tag_int(raw)
+            };
+        }
+        if let ExprKind::Local(local) = base.kind
+            && let Some(shape) = self.local_data_shape(local)
+            && let Some(boxed) = shape.boxed_tag
+        {
+            let bit = self.builder.ins().band_imm(v, 1);
+            let raw = if let Some(immediate) = shape.immediate_tag {
+                let delta = i64::from(immediate) - i64::from(boxed);
+                let selected = self.builder.ins().imul_imm(bit, delta);
+                self.builder.ins().iadd_imm(selected, i64::from(boxed))
+            } else {
+                let tag = self.builder.ins().iconst(types::I64, i64::from(boxed));
+                let immediate = self.untag(v);
+                self.builder.ins().select(bit, immediate, tag)
+            };
             return if matches!(result_ty, Ty::Con(Con::Int)) {
                 self.mark_raw(raw)
             } else {

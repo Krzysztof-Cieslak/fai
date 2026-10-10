@@ -392,8 +392,7 @@ pub struct LoweredDef {
     pub data_shapes: Vec<Vec<(LocalId, DataShape)>>,
 }
 
-/// Bounds that hold for every boxed data value carried by one local. Nullary
-/// constructors remain immediate; these bounds describe only allocated cells.
+/// Bounds on the allocated data shapes and constructor alternatives of one local.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct DataShape {
     /// Largest nonnullary constructor tag (zero for records and tuples).
@@ -406,6 +405,13 @@ pub struct DataShape {
     /// Unknown, opaque and generic payloads conservatively leave this false.
     #[serde(default)]
     pub resource_free: bool,
+    /// The constructor tag shared by every boxed alternative, when unique.
+    #[serde(default)]
+    pub boxed_tag: Option<u32>,
+    /// The constructor tag shared by every immediate alternative, when unique.
+    /// None also covers a type with no immediate alternatives.
+    #[serde(default)]
+    pub immediate_tag: Option<u32>,
 }
 
 impl LoweredDef {
