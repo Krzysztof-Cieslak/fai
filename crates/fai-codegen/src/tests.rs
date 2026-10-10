@@ -2363,6 +2363,18 @@ fn unique_boxed_tag_preserves_multiple_immediate_tags() {
 }
 
 #[test]
+fn constructor_branch_facts_do_not_leak_past_a_merge() {
+    let source = "module M\ntype T = | Empty | Full Int\nlet score flag cell =\n  let first = if flag then (match cell with | Empty -> 10 | Full n -> n) else 20\n  let second = match cell with | Empty -> 1 | Full n -> n + 2\n  first + second\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (score true Empty + score false (Full 7) + score false Empty))\n";
+    assert_eq!(run(source), (0, "61\n".into()));
+}
+
+#[test]
+fn constructor_branch_facts_are_specific_to_the_scrutinee() {
+    let source = "module M\ntype T = | Empty | Full Int\nlet score left right = match left with | Empty -> (match right with | Empty -> 1 | Full n -> n) | Full n -> (match right with | Empty -> n + 1 | Full m -> n + m)\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (score Empty (Full 4) + score (Full 4) Empty + score (Full 4) (Full 7)))\n";
+    assert_eq!(run(source), (0, "20\n".into()));
+}
+
+#[test]
 fn unique_tags_preserve_reversed_order_with_generic_payloads() {
     let source = "module M\ntype T 'a = | Full 'a | Empty\nlet kind value = match value with | Full _ -> 11 | Empty -> 17\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (List.sum (List.map kind [Full 1.5, Empty])))\n";
     assert_eq!(run(source), (0, "28\n".into()));

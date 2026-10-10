@@ -668,6 +668,9 @@ tag extraction and constant field offsets; unknown/open shapes decode at runtime
 When a type has a single boxed constructor, that branch's tag is known without
 reading a header. A single immediate alternative as well makes the complete tag
 a calculation on the value's immediate bit, independent of constructor order.
+Native match branches reuse established tag equalities. Rejecting one alternative
+identifies the other only when type evidence proves exactly one immediate and
+one boxed constructor; facts stay local to the branch and current loop iteration.
 An array data slot used only for tag/field inspection can be borrowed while its
 source array remains live. The bounded ownership proof keeps escaping slots and
 uncertain lifetimes owned. A statically uniform projected field can likewise be

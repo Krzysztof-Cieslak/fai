@@ -873,6 +873,11 @@ Reuse & in-place update:
     has one alternative. Multiple immediate variants still decode their own tags;
     multiple boxed variants retain header reads. Missing wire evidence defaults
     to unknown and the facts participate in native fingerprints.
+    Branch-local tag equalities eliminate repeated constructor decisions. A
+    rejected alternative implies its opposite only for a type proven to have
+    exactly one immediate and one boxed constructor. Boxed tag bounds alone do
+    not constrain additional immediate alternatives. Facts are restored at
+    control-flow joins and cleared when entering a new loop.
     A projected uniform field used only by borrowing readers can itself be
     borrowed. The bounded proof follows borrowed array slots and fields to their
     ultimate owner and requires that owner to survive the field's last use and
