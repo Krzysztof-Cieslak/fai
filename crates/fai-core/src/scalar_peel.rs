@@ -1,4 +1,4 @@
-//! One bounded expansion of non-tail self-calls with a scalar-only native ABI.
+//! Bounded expansion of non-tail self-calls with a scalar-only native ABI.
 
 use std::sync::Arc;
 
@@ -36,6 +36,14 @@ pub(crate) fn peel(db: &dyn Db, source: Arc<LoweredDef>) -> Arc<LoweredDef> {
         has_tail_call: false,
     };
     peeler.walk(&mut result.fns[0].body, true);
+    // Smaller branching definitions can spend the remaining shared copy budget
+    // on extra layers. Each traversal leaves newly inserted bodies unvisited.
+    if size <= 32 && peeler.expansions >= 2 && !peeler.has_tail_call {
+        peeler.walk(&mut result.fns[0].body, true);
+        if size <= 24 && peeler.remaining >= peeler.cost {
+            peeler.walk(&mut result.fns[0].body, true);
+        }
+    }
     // Mixed tail/non-tail recursion already has a compact native loop. Copying
     // that loop's branches into its recursive argument increases register and
     // code pressure; leave those functions to ordinary tail-call lowering.
@@ -93,8 +101,8 @@ impl Peeler<'_> {
             self.remaining -= self.cost;
             self.changed = true;
             self.expansions += 1;
-            // Inserted bodies are not visited again, bounding both code growth
-            // and compiler work independently of recursive execution depth.
+            // Inserted bodies are not revisited within this traversal. The
+            // shared budget and bounded traversal count cap work and code growth.
             *e =
                 build_inline(self.template, args.clone(), args.len(), e.ty.clone(), &mut self.next);
         }
@@ -117,14 +125,15 @@ mod tests {
     }
 
     #[test]
-    fn small_branching_scalar_recursion_is_peeled_once() {
+    fn small_branching_scalar_recursion_uses_the_shared_copy_budget() {
         let (before, after) =
             compare("module M\nlet f n = if n <= 1 then n else f (n - 1) + f (n - 2)\n");
         assert!(!Arc::ptr_eq(&before, &after));
         assert!(node_count(&after.entry().body) <= node_count(&before.entry().body) + 208);
+        assert!(node_count(&after.entry().body) > node_count(&before.entry().body) * 4);
         assert!(
             crate::pretty_def(&after).contains("@f"),
-            "residual calls are not recursively expanded"
+            "residual calls remain after bounded expansion"
         );
     }
 
@@ -150,5 +159,19 @@ mod tests {
             format!("module M\nlet f n = if n <= 0 then 0 else f (n - 1) + {expression}\n");
         let (before, after) = compare(&source);
         assert!(Arc::ptr_eq(&before, &after));
+    }
+
+    #[test]
+    fn linear_integer_recursion_keeps_accumulator_lowering_eligible() {
+        let (before, after) = compare("module M\nlet f n = if n <= 0 then 0 else 1 + f (n - 1)\n");
+        assert!(Arc::ptr_eq(&before, &after));
+    }
+
+    #[test]
+    fn argument_bindings_remain_bounded_with_four_parameters() {
+        let (before, after) = compare(
+            "module M\nlet f n a b c = if n <= 0 then a + b + c else f (n - 1) a b c + f (n - 1) c b a\n",
+        );
+        assert!(node_count(&after.entry().body) <= node_count(&before.entry().body) + 224);
     }
 }

@@ -444,10 +444,11 @@ ABI, including raw Float bits and the callee's argument-borrowing convention.
 An owned self-call result immediately combined with an evaluated `Int` by `+`
 can use an internal loop accumulator. Wrapping integer addition makes this exact;
 argument and effect order stay intact, and Float sums do not use this rewrite.
-Small scalar-ABI recursive definitions can peel one bounded level of non-tail
-self-calls before ownership insertion. Mixed tail/non-tail functions retain
-their loop lowering; the expansion keeps argument and effect order and does not
-change data ownership or generic code sharing.
+Small scalar-ABI recursive definitions can peel bounded levels of non-tail
+self-calls before ownership insertion. Tiny branching definitions may use up to
+three layers within the same shared copy budget. Mixed tail/non-tail functions
+retain their loop lowering; the expansion keeps argument and effect order and
+does not change data ownership or generic code sharing.
 Small private same-file integer functions can specialize a literal leading
 control parameter when recursive calls preserve it or decrease it by a constant.
 At most eight variants are generated; exact constant folding exposes ordinary

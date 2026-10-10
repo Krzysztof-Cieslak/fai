@@ -34,6 +34,14 @@ fn peeled_scalar_recursion_preserves_effect_order() {
 }
 
 #[test]
+fn deeper_scalar_peeling_preserves_both_full_width_branches() {
+    assert_eq!(
+        build_and_run(include_str!("fixtures/ScalarPeelingDepth.fai")),
+        ("yes\n".into(), Some(0))
+    );
+}
+
+#[test]
 fn wide_float_return_crosses_the_native_first_class_wrapper() {
     let library = "module Wide\npublic type V = { x : Float, y : Float, z : Float }\npublic shift : V -> V\nlet shift v = { x = v.x + 1.0, y = v.y + 2.0, z = v.z + 3.0 }\n";
     let main = "module Main\nlet apply n f x = if n = 0 then f x else apply (n - 1) f x\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let v = apply 1 Wide.shift { x = 1.0, y = 2.0, z = 3.0 }\n  r.console.writeLine (Int.toString (Float.toInt (v.x + v.y + v.z)))\n";
