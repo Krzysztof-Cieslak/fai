@@ -1716,6 +1716,20 @@ tuple3 : Arbitrary 'a -> Arbitrary 'b -> Arbitrary 'c -> Arbitrary ('a * 'b * 'c
 
 ### Optional web framework
 
+Including `packages/json/src` in a workspace supplies `Json` and `JsonNumber`.
+`Json.parse text` / `Json.parseBytes bytes` return `Result Json.Value Json.ParseError`;
+errors have a zero-based byte `offset`, one-based `line`/Unicode-scalar `column`,
+and `message`. Use `Json.errorToString` for display. `Json.Value` cases are
+`Json.Null`, `Json.Boolean b`, `Json.Number n`, `Json.String s`, `Json.Array values`
+and `Json.Object members` (both collections are Arrays; members are String/value
+pairs). Objects preserve order and duplicates. `Json.toString` is compact;
+`Json.toPrettyString` uses two-space indentation. Both preserve exact number
+spellings. `JsonNumber.fromInt` creates an exact number; `fromString` validates
+arbitrary JSON decimal text; `toInt` rejects fractional/out-of-range values and
+`toFloat` rounds to finite binary64, ties to even. `fromFloat` rejects NaN/infinity.
+Parse nesting defaults to 256; `Json.parseWith { maxDepth = n } text` changes it.
+See `packages/json/README.md` for the full source-library contract.
+
 Including `packages/web/src` in a workspace supplies `Web` handlers and `Router`.
 Terminal responders preserve unrelated middleware headers. `Web.setHeader`
 replaces a header case-insensitively; `Web.addHeader` appends a distinct field

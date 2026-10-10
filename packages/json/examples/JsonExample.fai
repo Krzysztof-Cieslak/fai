@@ -1,0 +1,8 @@
+module JsonExample
+
+// Exact numbers and duplicate members survive a parse/render round trip.
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  match Json.parse "{\"message\":\"Hello, JSON!\",\"large\":123456789012345678901234567890}" with
+  | Err error -> runtime.console.writeLine (Json.errorToString error)
+  | Ok value -> runtime.console.writeLine (Json.toPrettyString value)

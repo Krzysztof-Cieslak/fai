@@ -4738,5 +4738,22 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     names its local data under a distinct `{base}__reuse` prefix (AOT was already fine
     — separate objects, local symbols).
 
+- **D149 Native JSON library.** `packages/json` is an ordinary Fai source library.
+  Its tree preserves object order, duplicate members and validated number text;
+  precision is narrowed only at an explicit typed conversion. This avoids losing
+  large identifiers or decimal data on parse/render round trips. `JsonNumber`
+  converts exactly integral decimals to checked signed 64-bit integers and rounds
+  decimals to binary64 by exact midpoint comparison (nearest, ties to even).
+  Overflow and non-finite Float encoding return errors. Parsing validates UTF-8,
+  escapes and complete JSON syntax, rejects lone surrogate escapes, and reports
+  byte offsets plus Unicode-scalar display positions. Explicit container frames
+  decouple document nesting from native stack depth; a configurable limit defaults
+  to 256. Rendering preserves member order and numeric spellings and normalizes
+  string escapes. The library is pure and uses public Fai primitives.
+  Its tests travel with the package: Fai contracts plus a runner accepting an
+  existing compiler executable. Seeded differential checks drive a Fai-built
+  native executable through stdin, avoiding compile-time embedding of library
+  sources in the Rust test suite.
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

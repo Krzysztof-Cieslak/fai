@@ -1,0 +1,53 @@
+module NumberSpec
+
+let integer text =
+  match JsonNumber.fromString text with
+  | Err e -> Err e.message
+  | Ok number -> JsonNumber.toInt number
+example: integer "-9223372036854775808" = Ok (-9223372036854775808)
+example: integer "9223372036854775807" = Ok 9223372036854775807
+example: integer "9223372036854775808" = Err "number is outside Int range"
+example: integer "-9223372036854775809" = Err "number is outside Int range"
+example: integer "123000.000e-3" = Ok 123
+example: integer "1.00000000000000001" = Err "number is not an integer"
+example: integer "-0e999999999999999999999" = Ok 0
+example: integer "1e999999999999999999999" = Err "number is outside Int range"
+example: integer "1e-999999999999999999999" = Err "number is not an integer"
+example: Result.isErr (JsonNumber.fromString " 1")
+example: Result.isErr (JsonNumber.fromString "1 ")
+example: Result.isErr (JsonNumber.fromString "-01")
+
+let floatBits text =
+  match JsonNumber.fromString text with
+  | Err e -> Err e.message
+  | Ok number -> Result.map Float.toBits (JsonNumber.toFloat number)
+example: floatBits "0.1" = Ok 0x3fb999999999999a
+example: floatBits "1.00000000000000011102230246251565404236316680908203125" = Ok 0x3ff0000000000000
+example: floatBits "1.00000000000000011102230246251565404236316680908203125000000001" = Ok 0x3ff0000000000001
+example: floatBits "1.00000000000000033306690738754696212708950042724609375" = Ok 0x3ff0000000000002
+example: floatBits "4.9406564584124654e-324" = Ok 1
+example: floatBits "2.4703282292062327e-324" = Ok 0
+example: floatBits "2.4703282292062328e-324" = Ok 1
+example: floatBits "2.2250738585072014e-308" = Ok 0x0010000000000000
+example: floatBits "1.7976931348623157e308" = Ok 0x7fefffffffffffff
+example: floatBits "1.7976931348623158e308" = Ok 0x7fefffffffffffff
+example: floatBits "1.7976931348623159e308" = Err "number is outside finite Float range"
+example: floatBits "-1e-999999" = Ok 0x8000000000000000
+example: floatBits "-0" = Ok 0x8000000000000000
+example: floatBits "1e999999" = Err "number is outside finite Float range"
+example: Result.isErr (JsonNumber.fromFloat (Float.fromBits 0x7ff8000000000000))
+example: Result.isErr (JsonNumber.fromFloat (Float.fromBits 0x7ff0000000000000))
+example: Result.isErr (JsonNumber.fromFloat (Float.fromBits 0xfff0000000000000))
+
+// Mix the size-bounded generator's integers across the whole 64-bit domain.
+let mix bits =
+  let a = Int.xor bits (Int.shiftRightLogical bits 30) * 0xbf58476d1ce4e5b9
+  let b = Int.xor a (Int.shiftRightLogical a 27) * 0x94d049bb133111eb
+  Int.xor b (Int.shiftRightLogical b 31)
+
+let floatRoundTrip bits =
+  let bits = mix bits
+  match JsonNumber.fromFloat (Float.fromBits bits) with
+  | Err _ -> Int.and bits 0x7ff0000000000000 = 0x7ff0000000000000
+  | Ok number -> Result.map Float.toBits (JsonNumber.toFloat number) = Ok bits
+forall bits: floatRoundTrip bits

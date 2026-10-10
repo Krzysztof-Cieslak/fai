@@ -1,0 +1,343 @@
+module Json
+
+/// A JSON value. Object members retain their order and duplicate names. Number
+/// equality compares exact spellings, so 1 and 1.0 are distinct tree values.
+public type Value =
+  | Null
+  | Boolean Bool
+  | Number JsonNumber.Number
+  | String String
+  | Array (Array Value)
+  | Object (Array (String * Value))
+
+/// A parse failure. Offsets count bytes from zero; line and column count from
+/// one, with Unicode-scalar columns and LF line endings.
+public type ParseError = { column : Int, line : Int, message : String, offset : Int }
+
+/// Maximum open array/object nesting; zero permits scalar documents only.
+public type ParseOptions = { maxDepth : Int }
+
+/// The default nesting limit is 256 containers.
+public defaultOptions : ParseOptions
+let defaultOptions = { maxDepth = 256 }
+
+let at bytes i = if i < Bytes.length bytes then Bytes.unsafeGet i bytes else (-1)
+
+let whitespace b = b = 32 || b = 9 || b = 10 || b = 13
+
+let skip bytes i = if whitespace (at bytes i) then skip bytes (i + 1) else i
+
+let continuation b = b >= 128 && b <= 191
+
+// Return the first invalid sequence's starting byte. Validating once lets string
+// scans copy unescaped runs without decoding every Unicode scalar repeatedly.
+let invalidUtf8 bytes i =
+  let a = at bytes i
+  let b = at bytes (i + 1)
+  let c = at bytes (i + 2)
+  let d = at bytes (i + 3)
+  if i = Bytes.length bytes then
+    None
+  else if a <= 127 then
+    invalidUtf8 bytes (i + 1)
+  else if a >= 194 && a <= 223 && continuation b then
+    invalidUtf8 bytes (i + 2)
+  else if ((a = 224 && b >= 160 && b <= 191) || (a >= 225 && a <= 236 && continuation b) || (a = 237 && b >= 128 && b <= 159) || (a >= 238 && a <= 239 && continuation b)) && continuation c then
+    invalidUtf8 bytes (i + 3)
+  else if ((a = 240 && b >= 144 && b <= 191) || (a >= 241 && a <= 243 && continuation b) || (a = 244 && b >= 128 && b <= 143)) && continuation c && continuation d then
+    invalidUtf8 bytes (i + 4)
+  else
+    Some i
+
+let locate bytes finish i line column =
+  if i >= finish then
+    (line, column)
+  else
+    let b = at bytes i
+    if b = 10 then
+      locate bytes finish (i + 1) (line + 1) 1
+    else
+      locate bytes finish (i + 1) line (column + (if continuation b then 0 else 1))
+
+let failure bytes offset message =
+  let (line, column) = locate bytes offset 0 1 1
+  Err { column = column, line = line, message = message, offset = offset }
+
+let text bytes start finish =
+  Option.withDefault "" (Bytes.toString (Bytes.slice start finish bytes))
+
+let hex b =
+  if b >= 48 && b <= 57 then
+    b - 48
+  else if b >= 65 && b <= 70 then b - 55 else if b >= 97 && b <= 102 then b - 87 else (-1)
+
+let hex4 bytes i remaining value =
+  if remaining = 0 then
+    Ok (value, i)
+  else
+    let digit = hex (at bytes i)
+    if digit < 0 then
+      failure bytes i "expected hexadecimal escape digit"
+    else
+      hex4 bytes (i + 1) (remaining - 1) (value * 16 + digit)
+
+let unicodeEscape bytes start =
+  match hex4 bytes start 4 0 with
+  | Err e -> Err e
+  | Ok (code, finish) ->
+    if code >= 55296 && code <= 56319 then
+      if at bytes finish <> 92 || at bytes (finish + 1) <> 117 then
+        failure bytes finish "expected low-surrogate escape"
+      else
+        match hex4 bytes (finish + 2) 4 0 with
+        | Err e -> Err e
+        | Ok (low, end) ->
+          if low < 56320 || low > 57343 then
+            failure bytes (finish + 2) "expected low surrogate"
+          else
+            Ok (Char.toString (Option.withDefault '\u{FFFD}' (Char.fromCode (65536 + (code - 55296) * 1024 + low - 56320))), end)
+    else if code >= 56320 && code <= 57343 then
+      failure bytes start "unpaired low surrogate"
+    else
+      Ok (Char.toString (Option.withDefault '\u{FFFD}' (Char.fromCode code)), finish)
+
+let escape bytes i =
+  match at bytes i with
+  | 34 -> Ok ("\"", i + 1)
+  | 92 -> Ok ("\\", i + 1)
+  | 47 -> Ok ("/", i + 1)
+  | 98 -> Ok ("\u{8}", i + 1)
+  | 102 -> Ok ("\u{C}", i + 1)
+  | 110 -> Ok ("\n", i + 1)
+  | 114 -> Ok ("\r", i + 1)
+  | 116 -> Ok ("\t", i + 1)
+  | 117 -> unicodeEscape bytes (i + 1)
+  | _ -> failure bytes i "invalid string escape"
+
+let stringFrom bytes start i output =
+  let b = at bytes i
+  if b = 34 then
+    Ok (output ++ text bytes start i, i + 1)
+  else if b < 0 then
+    failure bytes i "unterminated string"
+  else if b < 32 then
+    failure bytes i "unescaped control character"
+  else if b = 92 then
+    match escape bytes (i + 1) with
+    | Err e -> Err e
+    | Ok (piece, finish) -> stringFrom bytes finish finish (output ++ text bytes start i ++ piece)
+  else
+    stringFrom bytes start (i + 1) output
+
+let literal bytes expected i j value =
+  if j = Bytes.length expected then
+    Ok (value, i)
+  else if at bytes i = at expected j then
+    literal bytes expected (i + 1) (j + 1) value
+  else
+    failure bytes i "invalid JSON literal"
+
+type Frame =
+  | InArray (Array Value)
+  | InObject (Array (String * Value)) String
+
+let stringValue pair =
+  let (value, finish) = pair
+  (String value, finish)
+
+type ReadState =
+  | ReadValue
+  | ReadMember (Array (String * Value))
+  | Accept Value
+
+// One self-tail loop carries both the parser state and its container stack.
+// Neither input width nor nesting consumes native recursive frames.
+readLoop : ParseOptions -> Bytes -> Int -> ReadState -> List Frame -> Int -> Result Value ParseError
+let readLoop options bytes position state frames depth =
+  let i = skip bytes position
+  match state with
+  | ReadValue ->
+    let b = at bytes i
+    if b = 91 || b = 123 then
+      if depth >= options.maxDepth then
+        failure bytes i "maximum JSON nesting exceeded"
+      else
+        let next = skip bytes (i + 1)
+        if b = 91 then
+          if at bytes next = 93 then
+            readLoop options bytes (next + 1) (Accept (Array Array.empty)) frames depth
+          else
+            readLoop options bytes next ReadValue (InArray Array.empty :: frames) (depth + 1)
+        else
+          if at bytes next = 125 then
+            readLoop options bytes (next + 1) (Accept (Object Array.empty)) frames depth
+          else
+            readLoop options bytes next (ReadMember Array.empty) frames (depth + 1)
+    else
+      let scalar =
+        if b = 34 then
+          Result.map stringValue (stringFrom bytes (i + 1) (i + 1) "")
+        else if b = 116 then
+          literal bytes (Bytes.fromString "true") i 0 (Boolean true)
+        else if b = 102 then
+          literal bytes (Bytes.fromString "false") i 0 (Boolean false)
+        else if b = 110 then
+          literal bytes (Bytes.fromString "null") i 0 Null
+        else if b = 45 || (b >= 48 && b <= 57) then
+          match JsonNumber.read bytes i with
+          | Ok (number, finish) -> Ok (Number number, finish)
+          | Err e -> failure bytes e.offset e.message
+        else
+          failure bytes i "expected JSON value"
+      match scalar with
+      | Err e -> Err e
+      | Ok (value, finish) -> readLoop options bytes finish (Accept value) frames depth
+  | ReadMember members ->
+    if at bytes i <> 34 then
+      failure bytes i "expected object member name"
+    else
+      match stringFrom bytes (i + 1) (i + 1) "" with
+      | Err e -> Err e
+      | Ok (name, finish) ->
+        let colon = skip bytes finish
+        if at bytes colon <> 58 then
+          failure bytes colon "expected colon after member name"
+        else
+          readLoop options bytes (colon + 1) ReadValue (InObject members name :: frames) depth
+  | Accept value ->
+    match frames with
+    | [] ->
+      if i = Bytes.length bytes then
+        Ok value
+      else
+        failure bytes i "unexpected text after JSON value"
+    | InArray elements :: rest ->
+      let elements = Array.push value elements
+      if at bytes i = 93 then
+        readLoop options bytes (i + 1) (Accept (Array elements)) rest (depth - 1)
+      else if at bytes i = 44 then
+        readLoop options bytes (i + 1) ReadValue (InArray elements :: rest) depth
+      else
+        failure bytes i "expected comma or closing bracket"
+    | InObject members name :: rest ->
+      let members = Array.push (name, value) members
+      if at bytes i = 125 then
+        readLoop options bytes (i + 1) (Accept (Object members)) rest (depth - 1)
+      else if at bytes i = 44 then
+        readLoop options bytes (i + 1) (ReadMember members) rest depth
+      else
+        failure bytes i "expected comma or closing brace"
+
+/// Parse a complete UTF-8 document using explicit nesting options. A negative
+/// limit is an error. A leading byte-order mark is not JSON whitespace.
+public parseBytesWith : ParseOptions -> Bytes -> Result Value ParseError
+let parseBytesWith options bytes =
+  if options.maxDepth < 0 then
+    failure bytes 0 "negative maximum JSON depth"
+  else
+    match invalidUtf8 bytes 0 with
+    | Some i -> failure bytes i "invalid UTF-8"
+    | None -> readLoop options bytes 0 ReadValue [] 0
+example: parseBytesWith { maxDepth = 0 } (Bytes.fromString "null") = Ok Null
+
+/// Parse a complete UTF-8 JSON document.
+public parseBytes : Bytes -> Result Value ParseError
+let parseBytes bytes = parseBytesWith defaultOptions bytes
+example: parseBytes (Bytes.fromString "true") = Ok (Boolean true)
+
+/// Parse a complete JSON document using explicit nesting options.
+public parseWith : ParseOptions -> String -> Result Value ParseError
+let parseWith options source = parseBytesWith options (Bytes.fromString source)
+example: Result.isErr (parseWith { maxDepth = 0 } "[]")
+
+/// Parse a complete JSON document, allowing surrounding JSON whitespace.
+public parse : String -> Result Value ParseError
+let parse source = parseBytes (Bytes.fromString source)
+example: parse " [true, null] " = Ok (Array [| Boolean true, Null |])
+
+/// Format a parse error for display. The structured fields remain available.
+public errorToString : ParseError -> String
+let errorToString error =
+  "line " ++ Int.toString error.line ++ ", column " ++ Int.toString error.column ++ ": " ++ error.message
+example: errorToString {
+  column = 1,
+  line = 1,
+  message = "expected value",
+  offset = 0
+} = "line 1, column 1: expected value"
+
+let hexDigit n = String.substring n 1 "0123456789abcdef"
+
+let escaped b =
+  if b = 34 then
+    "\\\""
+  else if b = 92 then
+    "\\\\"
+  else if b = 8 then
+    "\\b"
+  else if b = 12 then
+    "\\f"
+  else if b = 10 then
+    "\\n"
+  else if b = 13 then
+    "\\r"
+  else if b = 9 then "\\t" else "\\u00" ++ hexDigit (b / 16) ++ hexDigit (b % 16)
+
+let quoteFrom bytes start i output =
+  if i = Bytes.length bytes then
+    output ++ text bytes start i ++ "\""
+  else
+    let b = at bytes i
+    if b = 34 || b = 92 || b < 32 then
+      quoteFrom bytes (i + 1) (i + 1) (output ++ text bytes start i ++ escaped b)
+    else
+      quoteFrom bytes start (i + 1) output
+
+let quoteInto output source = quoteFrom (Bytes.fromString source) 0 0 (output ++ "\"")
+
+type WriteTask =
+  | WriteValue Value Int
+  | WriteArray (Array Value) Int Int
+  | WriteObject (Array (String * Value)) Int Int
+
+let indent depth output = if depth = 0 then output else indent (depth - 1) (output ++ "  ")
+
+let newline pretty depth output = if pretty then indent depth (output ++ "\n") else output
+
+// Each cursor retains one container, rather than copying all its children onto
+// the work stack. Auxiliary traversal storage is proportional to nesting depth.
+let write pretty tasks output =
+  match tasks with
+  | [] -> output
+  | WriteValue value depth :: rest ->
+    match value with
+    | Null -> write pretty rest (output ++ "null")
+    | Boolean b -> write pretty rest (output ++ (if b then "true" else "false"))
+    | Number n -> write pretty rest (output ++ JsonNumber.toString n)
+    | String s -> write pretty rest (quoteInto output s)
+    | Array values -> write pretty (WriteArray values 0 depth :: rest) (output ++ "[")
+    | Object members -> write pretty (WriteObject members 0 depth :: rest) (output ++ "{")
+  | WriteArray values i depth :: rest ->
+    if i = Array.length values then
+      write pretty rest ((if i = 0 then output else newline pretty depth output) ++ "]")
+    else
+      let prefix = newline pretty (depth + 1) (output ++ (if i = 0 then "" else ","))
+      write pretty (WriteValue (Array.unsafeGet i values) (depth + 1) :: WriteArray values (i + 1) depth :: rest) prefix
+  | WriteObject members i depth :: rest ->
+    if i = Array.length members then
+      write pretty rest ((if i = 0 then output else newline pretty depth output) ++ "}")
+    else
+      let (name, value) = Array.unsafeGet i members
+      let prefix = newline pretty (depth + 1) (output ++ (if i = 0 then "" else ","))
+      let prefix = quoteInto prefix name ++ (if pretty then ": " else ":")
+      write pretty (WriteValue value (depth + 1) :: WriteObject members (i + 1) depth :: rest) prefix
+
+/// Render compact JSON, preserving number spellings and object member order.
+public toString : Value -> String
+let toString value = write false [WriteValue value 0] ""
+example: toString (Object [| ("x", String "a\nb") |]) = "{\"x\":\"a\\nb\"}"
+
+/// Render JSON with two-space indentation and no trailing newline.
+public toPrettyString : Value -> String
+let toPrettyString value = write true [WriteValue value 0] ""
+example: toPrettyString (Array [| Boolean true |]) = "[\n  true\n]"
