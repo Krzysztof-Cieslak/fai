@@ -235,7 +235,15 @@ pub fn serve(root: Utf8PathBuf) -> std::io::Result<()> {
             Ok(stream) => {
                 let daemon = Arc::clone(&daemon);
                 let id = daemon.conn_seq.fetch_add(1, Ordering::Relaxed);
-                std::thread::spawn(move || handle_connection(stream, &daemon, id));
+                // Requests lower and compile on this thread before their work
+                // reaches the pool; use its compiler-sized stack budget here too.
+                if let Err(error) = std::thread::Builder::new()
+                    .name("fai-client".into())
+                    .stack_size(64 * 1024 * 1024)
+                    .spawn(move || handle_connection(stream, &daemon, id))
+                {
+                    eprintln!("could not start daemon request thread: {error}");
+                }
             }
             // A failed accept is transient; keep serving.
             Err(_) => continue,
