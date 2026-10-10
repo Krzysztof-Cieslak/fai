@@ -1,5 +1,11 @@
 # Development workflows
 
+PostgreSQL source-package integration uses the ordinary Fai CLI against a
+disposable database. See `packages/postgres/README.md` for `FAI_PG_URL`, optional
+TLS roots, and the JIT/AOT commands. `.github/actions/postgres` provisions the CI
+service and executes the Fai examples directly whenever dependency-aware
+selection includes `postgres`; pure contracts still run through `fai test`.
+
 ## Daily package development
 
 Use the compiler directly. Package tests are ordinary Fai `example` and `forall`

@@ -142,7 +142,9 @@ let drain options operation reply =
       else
         reply.events
     let reply = { reply with events = events, state = state }
-    if message.tag = 90 then
+    if List.length events > 3 then
+      Err (protocol "too many response completion messages")
+    else if message.tag = 90 then
       if Bytes.length message.body <> 1 || not (List.member (Bytes.unsafeGet 0 message.body) [
         73,
         84,
@@ -235,7 +237,12 @@ let exchange options operation state bytes =
         let valid =
           match Bytes.get 0 bytes with
           | Some 80 -> reply.events = [84, 116, 49] || reply.events = [110, 116, 49]
-          | Some 66 -> reply.events = [50] || reply.events = [67, 50] || reply.events = [73, 50]
+          | Some 66 ->
+            let next = Result.withDefault 0 (PgWire.unsigned bytes 1 4) + 1
+            if Bytes.get next bytes = Some 69 then
+              reply.events = [67, 50] || reply.events = [73, 50]
+            else
+              reply.events = [50]
           | Some 69 -> reply.events = [67] || reply.events = [115]
           | Some 67 -> reply.events = [51]
           | Some 81 -> reply.events = [67] || reply.events = [67, 67] || reply.events = [67, 84]

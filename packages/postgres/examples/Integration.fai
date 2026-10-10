@@ -1,0 +1,303 @@
+module Integration
+
+public type Runtime = Basic.Runtime
+
+let runtime = {
+  clock = stdClock,
+  concurrency = stdConcurrency,
+  console = stdConsole,
+  entropy = Crypto.systemEntropy,
+  env = stdEnv,
+  fs = stdFs,
+  net = stdNet,
+  tls = stdTls
+}
+
+let bad name = Sql.error Sql.BackendFailure "integration" name
+
+let scalar session sql = SqlDecode.query (SqlDecode.index 0 SqlDecode.int) session (Sql.text sql)
+
+let ignored result = Result.map (fun _ -> ()) result
+
+let bind next result =
+  match result with
+  | Err error -> Err error
+  | Ok value -> next value
+
+let values session =
+  match (SqlDecimal.parse "12345678901234567890.1200", SqlUuid.parse "01234567-89ab-cdef-0123-456789abcdef") with
+  | (Ok decimal, Ok uuid) ->
+    let time = LocalTime.fromNanoOfDay 123456000
+    let timestamp = LocalDateTime.of (LocalDate.fromEpochDay 0) time
+    let input = [|
+      Sql.Integer (-9223372036854775808),
+      Sql.Boolean true,
+      Sql.Decimal decimal,
+      Sql.Uuid uuid,
+      Sql.Date (Sql.Finite (LocalDate.fromEpochDay 0)),
+      Sql.Time Sql.EndOfDay,
+      Sql.Timestamp (Sql.Finite timestamp),
+      Sql.TimestampTz (Sql.Finite (Instant.fromEpochDayAndNanoOfDay 0 123456000)),
+      Sql.Blob (Bytes.fromList [0, 255, 1]),
+      Sql.Real 1.25,
+      Sql.Null
+    |]
+    let query =
+      Sql.statement "select $1::bigint,$2::boolean,$3::numeric,$4::uuid,$5::date,$6::time,$7::timestamp,$8::timestamptz,$9::bytea,$10::float8,$11::text" input
+    match Sql.query session query with
+    | Err error -> Err error
+    | Ok rows -> Ok (Array.length rows = 1 && Sql.values (Array.unsafeGet 0 rows) = input)
+  | _ -> Err (bad "constant parsing")
+
+let sumRows total row =
+  Result.map (fun value -> total + value) (SqlDecode.decode (SqlDecode.index 0 SqlDecode.int) row)
+
+let stream session =
+  let sum = Sql.withRows session (Sql.text "select generate_series(1,1000)") (Sql.fold sumRows 0)
+  let escaped =
+    Sql.withRows session (Sql.text "select generate_series(1,1000)") (fun rows -> Ok rows)
+  let stale =
+    match escaped with
+    | Err error -> Err error
+    | Ok rows -> Result.map (fun _ -> ()) (Sql.next rows)
+  let after = scalar session "select 42"
+  Ok (sum = Ok 500500 && Result.isErr stale && after = Ok [| 42 |])
+
+let insert n session =
+  Sql.execute session (Sql.statement "insert into pg_fai_items values ($1)" [| Sql.Integer n |])
+
+let reject child =
+  let inserted = insert 2 child
+  Err (bad "rollback inner")
+
+let outer parent child =
+  let blocked = insert 99 parent
+  let one = insert 1 child
+  let inner = Sql.transaction Sql.Default child reject
+  let three = insert 3 child
+  if Result.isErr blocked && Result.isOk one && Result.isErr inner && Result.isOk three then
+    Ok ()
+  else
+    Err (bad "nested transaction")
+
+let caught child =
+  let duplicate = insert 1 child
+  Ok ()
+
+let transactions session =
+  let created =
+    Sql.execute session (Sql.text "create temporary table pg_fai_items(n integer unique)")
+  let done = Sql.transaction Sql.Serializable session (outer session)
+  let rows = scalar session "select n from pg_fai_items order by n"
+  let failedCommit = Sql.transaction Sql.Default session caught
+  let raw = Sql.execute session (Sql.text "/* outer /* nested */ */ COMMIT")
+  let after = scalar session "select count(*) from pg_fai_items"
+  Ok (Result.isOk created && done = Ok () && rows = Ok [|
+    1,
+    3
+  |] && Result.isErr failedCommit && Result.isErr raw && after = Ok [| 2 |])
+
+let jsonAndSpecial session =
+  let query =
+    Sql.query session (Sql.text "select '{\"a\":1}'::jsonb, 'Infinity'::numeric, '-infinity'::date, 'infinity'::timestamptz, 'Infinity'::float8")
+  match query with
+  | Err error -> Err error
+  | Ok rows ->
+    let row = Array.unsafeGet 0 rows
+    let fields = Sql.values row
+    let json = SqlDecode.decode (SqlDecode.index 0 SqlDecode.json) row
+    let parsed =
+      match json with
+      | Err error -> false
+      | Ok text -> JsonDecode.fromString (JsonDecode.field "a" JsonDecode.int) text = Ok 1
+    Ok (parsed && Array.unsafeGet 2 fields = Sql.Date Sql.NegativeInfinity && Array.unsafeGet 3 fields = Sql.TimestampTz Sql.PositiveInfinity)
+
+let firstLease session =
+  let table = Sql.execute session (Sql.text "create temporary table pg_fai_pool(n integer)")
+  let setting = Sql.execute session (Sql.text "set application_name='dirty'")
+  scalar session "select pg_backend_pid()"
+
+let secondLease session =
+  match Sql.query session (Sql.text "select pg_backend_pid(), current_setting('application_name'), to_regclass('pg_temp.pg_fai_pool')::text") with
+  | Err error -> Err error
+  | Ok rows -> Ok (Sql.values (Array.unsafeGet 0 rows))
+
+let poolReset pool =
+  let first = Postgres.withSession pool firstLease
+  let second = Postgres.withSession pool secondLease
+  let escaped = Postgres.withSession pool (fun session -> Ok session)
+  let invalid =
+    match escaped with
+    | Err error -> Err error
+    | Ok session -> scalar session "select 1"
+  match (first, second) with
+  | (Ok first, Ok second) ->
+    Ok (Array.unsafeGet 0 second = Sql.Integer (Array.unsafeGet 0 first) && Array.unsafeGet 1 second = Sql.Text "fai" && Array.unsafeGet 2 second = Sql.Null && Result.isErr invalid)
+  | (Err error, _) -> Err error
+  | (_, Err error) -> Err error
+
+let nestedAcquire pool session =
+  let blocked = Postgres.withSession pool (fun session -> scalar session "select 1")
+  match blocked with
+  | Err (Sql.Failure info) -> Ok (info.kind = Sql.Timeout)
+  | _ -> Ok false
+
+let poolTimeout pool =
+  let blocked = Postgres.withSession pool (nestedAcquire pool)
+  let after = Postgres.withSession pool (fun session -> scalar session "select 42")
+  Ok (blocked = Ok true && after = Ok [| 42 |])
+
+cancelled : Runtime -> Postgres.Pool -> Result Bool Sql.Error / { Clock, Concurrency, Crypto.Entropy, Net, Tls }
+let cancelled r pool =
+  let timed =
+    Async.timeout r.concurrency r.clock 50 (fun _ ->
+      Postgres.withSession pool (fun session -> scalar session "select 1 from pg_sleep(10)"))
+  let after = Postgres.withSession pool (fun session -> scalar session "select 42")
+  Ok (timed = None && after = Ok [| 42 |])
+
+parallel : Runtime -> Postgres.Pool -> Result Bool Sql.Error / { Clock, Concurrency, Crypto.Entropy, Net, Tls }
+let parallel r pool =
+  let results =
+    Async.mapConcurrent r.concurrency (fun _ ->
+      Postgres.withSession pool (fun session ->
+        scalar session "select pg_backend_pid() from pg_sleep(0.02)")) (List.range 0 6)
+  Ok (List.all Result.isOk results && List.length results = 6)
+
+expiry : Runtime -> Postgres.Pool -> Result Bool Sql.Error / { Clock, Concurrency, Crypto.Entropy, Net, Tls }
+let expiry r pool =
+  let first = Postgres.withSession pool (fun session -> scalar session "select pg_backend_pid()")
+  let waited = r.clock.sleep 60
+  let second = Postgres.withSession pool (fun session -> scalar session "select pg_backend_pid()")
+  Ok (Result.isOk first && Result.isOk second && first <> second)
+
+let resultKind expected result =
+  match result with
+  | Err (Sql.Failure error) -> error.kind = expected
+  | Err (Sql.CleanupFailed primary _) -> resultKind expected (Err primary)
+  | _ -> false
+
+let operationTimeout session =
+  let timed = scalar session "select 1 from pg_sleep(10)"
+  let after = scalar session "select 42"
+  Ok (resultKind Sql.Timeout timed && resultKind Sql.Closed after)
+
+let syntaxRecovery session =
+  let failed = Sql.execute session (Sql.text "not sql")
+  let after = scalar session "select 42"
+  let unsupported = Sql.query session (Sql.text "select ARRAY[1,2]")
+  let afterType = scalar session "select 43"
+  Ok (Result.isErr failed && after = Ok [|
+    42
+  |] && resultKind Sql.Unsupported unsupported && afterType = Ok [| 43 |])
+
+let batchLimit session =
+  let result = Sql.query session (Sql.text "select repeat('x',1000)")
+  Ok (resultKind Sql.Protocol result)
+
+longLease : Runtime -> Sql.Session { Clock, Concurrency, Net, Tls } -> Result (Array Int) Sql.Error / { Clock, Concurrency, Net, Tls }
+let longLease r session =
+  let before = scalar session "select pg_backend_pid()"
+  let waited = r.clock.sleep 60
+  let after = scalar session "select pg_backend_pid()"
+  if before = after then before else Err (bad "lifetime interrupted a lease")
+
+activeExpiry : Runtime -> Postgres.Pool -> Result Bool Sql.Error / { Clock, Concurrency, Crypto.Entropy, Net, Tls }
+let activeExpiry r pool =
+  let before = Postgres.withSession pool (longLease r)
+  let after = Postgres.withSession pool (fun session -> scalar session "select pg_backend_pid()")
+  Ok (Result.isOk before && Result.isOk after && before <> after)
+
+shutdown : Runtime -> Postgres.Options -> Postgres.PoolOptions -> Result Bool Sql.Error / { Clock, Concurrency, Crypto.Entropy, Net, Tls }
+let shutdown r options poolOptions =
+  let escaped = Postgres.withPool r options poolOptions (fun pool -> Ok pool)
+  match escaped with
+  | Err error -> Err error
+  | Ok pool ->
+    Ok (resultKind Sql.Closed (Postgres.withSession pool (fun session ->
+      scalar session "select 1")))
+
+cancelWaiter : Runtime -> Postgres.Pool -> Sql.Session { Clock, Concurrency, Crypto.Entropy, Net, Tls } -> Result Bool Sql.Error / { Clock, Concurrency, Crypto.Entropy, Net, Tls }
+let cancelWaiter r pool session =
+  let timed =
+    Async.timeout r.concurrency r.clock 50 (fun _ ->
+      Postgres.withSession pool (fun session -> scalar session "select 1"))
+  let after = scalar session "select 42"
+  Ok (timed = None && after = Ok [| 42 |])
+
+waiterRecovery : Runtime -> Postgres.Pool -> Result Bool Sql.Error / { Clock, Concurrency, Crypto.Entropy, Net, Tls }
+let waiterRecovery r pool =
+  let timed = Postgres.withSession pool (cancelWaiter r pool)
+  let after = Postgres.withSession pool (fun session -> scalar session "select 42")
+  Ok (timed = Ok true && after = Ok [| 42 |])
+
+runChecks : Runtime -> Postgres.Options -> Result Bool Sql.Error / { Clock, Concurrency, Console, Crypto.Entropy, Net, Tls }
+let runChecks r options =
+  let options =
+    if options.tls = PgConfig.Disabled then
+      options
+    else
+      { options with channelBinding = PgConfig.RequireBinding }
+  let options = { options with applicationName = "fai", fetchRows = 3 }
+  let a = Postgres.withConnection r options values
+  let loggedA = r.console.writeLine (if a = Ok true then "values ok" else "values failed")
+  let b = Postgres.withConnection r options stream
+  let loggedB = r.console.writeLine (if b = Ok true then "stream ok" else "stream failed")
+  let c = Postgres.withConnection r options transactions
+  let loggedC =
+    r.console.writeLine (if c = Ok true then "transactions ok" else "transactions failed")
+  let d = Postgres.withConnection r options jsonAndSpecial
+  let single = { Postgres.poolOptions with
+    acquireTimeoutMs = Some 5000,
+    idleTimeoutMs = None,
+    maxConnections = 1,
+    maxLifetimeMs = None
+  }
+  let e = Postgres.withPool r options single poolReset
+  let loggedE = r.console.writeLine (if e = Ok true then "pool reset ok" else "pool reset failed")
+  let f =
+    Postgres.withPool r options { single with
+      acquireTimeoutMs = Some 100,
+      minConnections = 1
+    } poolTimeout
+  let loggedF =
+    r.console.writeLine (if f = Ok true then "pool timeout ok" else "pool timeout failed")
+  let g = Postgres.withPool r options single (cancelled r)
+  let loggedG = r.console.writeLine (if g = Ok true then "cancel ok" else "cancel failed")
+  let h =
+    Postgres.withPool r options { single with
+      acquireTimeoutMs = Some 10000,
+      maxConnections = 2
+    } (parallel r)
+  let i =
+    Postgres.withPool r options { single with
+      idleTimeoutMs = Some 30,
+      maintenanceIntervalMs = 10
+    } (expiry r)
+  let j = Postgres.withConnection r { options with operationTimeoutMs = Some 500 } operationTimeout
+  let k = Postgres.withConnection r options syntaxRecovery
+  let l =
+    Postgres.withConnection r { options with maxBatchBytes = 200, maxColumnBytes = 100 } batchLimit
+  let m = Postgres.withPool r options { single with maxLifetimeMs = Some 30 } (activeExpiry r)
+  let n = shutdown r options single
+  let o = Postgres.withPool r options single (waiterRecovery r)
+  let wrong =
+    Postgres.withConnection r { options with
+      password = "deliberately-wrong-password"
+    } (fun session -> scalar session "select 1")
+  let logs =
+    r.console.writeLine (if j = Ok true && k = Ok true && l = Ok true && m = Ok true && n = Ok true && o = Ok true && resultKind Sql.Authentication wrong then
+      "failure recovery ok"
+    else
+      "failure recovery failed")
+  Ok (a = Ok true && b = Ok true && c = Ok true && d = Ok true && e = Ok true && f = Ok true && g = Ok true && h = Ok true && i = Ok true && j = Ok true && k = Ok true && l = Ok true && m = Ok true && n = Ok true && o = Ok true && resultKind Sql.Authentication wrong)
+
+public main : Runtime -> Unit / { Clock, Concurrency, Console, Crypto.Entropy, Env, FileSystem, Net, Tls }
+let main r =
+  let result =
+    match Basic.configuration r with
+    | Err error -> Err error
+    | Ok options -> runChecks r options
+  match result with
+  | Ok true -> r.console.writeLine "PostgreSQL checks passed"
+  | Ok false -> r.console.writeLine "PostgreSQL checks failed"
+  | Err error -> r.console.writeLine (Sql.errorToString error)

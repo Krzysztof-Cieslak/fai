@@ -86,3 +86,51 @@ waiters, closes active connections, and joins maintenance.
 Optional durations accept `None` to disable them. Cleanup/validation/maintenance
 durations must remain positive. Connection options also contain host, port, user,
 password, database, and application name; no ambient credentials are read.
+
+## Scalar mapping
+
+| PostgreSQL | `Sql.Value` |
+| --- | --- |
+| boolean | `Boolean` |
+| smallint/integer/bigint, oid | `Integer` (checked range on binding) |
+| real/double precision | `Real` (binary results preserve IEEE special values) |
+| text/varchar/char/name | `Text` (strict UTF-8, no NUL on binding) |
+| bytea | `Blob` |
+| numeric/decimal | `Decimal` (`SqlDecimal`, exact text and scale) |
+| uuid | `Uuid` (`SqlUuid`, canonical spelling) |
+| date, time, timestamp, timestamptz | `Date`, `Time`, `Timestamp`, `TimestampTz` |
+| json/jsonb | `Json` (validated document text) |
+
+Temporal infinities and `24:00:00` are explicit SQL values. Timestamptz represents
+an instant, independent of the session time zone. Sub-microsecond input is rejected.
+Binding to `real` requires exact float32 representability; use `$1::float8::float4`
+when intentional server-side rounding is desired. Numeric never passes through
+Float. SQL casts/type modifiers can intentionally round or transform inputs.
+
+Unsupported OIDs (including arrays, ranges and custom types) require an explicit
+cast to a supported type. COPY, replication, multi-statement calls, MD5 and
+cleartext-password authentication are not supported. Trust authentication is
+accepted unless channel binding is required. Notices and asynchronous
+notifications are validated and consumed without a user callback.
+
+## Integration checks
+
+Against a disposable database configured for SCRAM authentication:
+
+```sh
+export FAI_PG_URL='postgres://user:password@localhost:5432/test?sslmode=disable'
+fai run --no-daemon -C packages postgres/examples/Integration.fai
+fai build -C packages postgres/examples/Integration.fai --out ./pg-check
+./pg-check
+fai run --no-daemon -C packages postgres/examples/WireChecks.fai
+```
+
+For TLS, omit `sslmode=disable` and set `FAI_PG_ROOT` to a PEM CA certificate.
+The TLS integration fixture requires SCRAM channel binding. `WireChecks` owns its
+own loopback scripted server and checks fragmentation, truncation, authentication
+order and incomplete query responses. No external service is needed for it.
+
+CI provisions PostgreSQL on Linux, macOS and Windows and runs these Fai programs
+directly through JIT and AOT. Linux additionally tests a private-CA TLS endpoint.
+Package-only edits use the exact cached compiler; the ordinary package contracts
+remain direct `fai test` commands.

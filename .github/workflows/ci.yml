@@ -139,6 +139,9 @@ jobs:
           python scripts/tests/smoke_compiler.py --fai '${{ steps.compiler.outputs.binary }}'
           python scripts/tests/json_toolchain.py --fai '${{ steps.compiler.outputs.binary }}'
           python scripts/tests/web_toolchain.py --fai '${{ steps.compiler.outputs.binary }}'
+      - uses: ./.github/actions/postgres
+        if: contains(fromJSON(needs.changes.outputs.packages), 'postgres')
+        timeout-minutes: 10
       - name: Package verified compiler bundle
         if: needs.changes.outputs.packages != '[]' && (needs.changes.outputs.compiler == 'true' || steps.compiler.outputs.source == 'build' || github.event_name == 'push')
         run: python scripts/compiler.py pack --offline --no-build --output "$RUNNER_TEMP/compiler.zip"
@@ -229,6 +232,9 @@ jobs:
       - name: HTTP compiler fixtures
         if: needs.changes.outputs.compiler == 'true' && needs.changes.outputs.packages != '[]'
         run: python scripts/tests/web_toolchain.py --fai '${{ steps.compiler.outputs.binary }}'
+      - uses: ./.github/actions/postgres
+        if: contains(fromJSON(needs.changes.outputs.packages), 'postgres')
+        timeout-minutes: 10
       - name: Package verified compiler bundle
         if: needs.changes.outputs.packages != '[]' && (needs.changes.outputs.compiler == 'true' || steps.compiler.outputs.source == 'build' || github.event_name == 'push')
         shell: python
