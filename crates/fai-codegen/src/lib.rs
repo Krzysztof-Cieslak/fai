@@ -12,6 +12,7 @@
 //! supplied by a namer closure (the driver builds it from module names), so this
 //! crate stays decoupled from the query database.
 
+mod affine_predicates;
 mod aot;
 mod array_loop;
 mod callback_plan;

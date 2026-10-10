@@ -129,6 +129,13 @@ let constructorLoop n total =
     | None -> constructorLoop (n - 1) total
 public constructors : Int -> Int
 let constructors n = constructorLoop n 0
+let affineScan fixed distance values =
+  match values with
+  | [] -> true
+  | x :: rest -> if x - fixed = distance then false else if fixed - x = distance then false else affineScan fixed (distance + 1) rest
+let affineLoop n values total = if n <= 0 then total else affineLoop (n - 1) values (if affineScan 1000 1 values then total + 1 else total)
+public affineScans : Int -> Int
+let affineScans n = affineLoop n (List.range 0 32) 0
 public main : Runtime -> Unit
 let main r = ()
 "#;
@@ -366,4 +373,9 @@ fn local_constructor_matches_need_no_iteration_storage() {
     assert_eq!(short, long);
     assert_eq!(long.allocations, 0);
     assert_eq!(long.peak_bytes, 0);
+}
+
+#[test]
+fn affine_scan_bounds_keep_constant_storage() {
+    bounded_reuse("affineScans", |n| n);
 }

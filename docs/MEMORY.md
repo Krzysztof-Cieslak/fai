@@ -3699,6 +3699,13 @@ Editor integration:
     constructor branches, freshening every copied binder. Generic/mismatched
     representation views, escaped cells and resource-bearing fields keep their
     ordinary allocation and ownership boundaries.
+    A native tail loop can maintain an affine equality bound instead of repeating
+    a subtraction: `(x - fixed) = counter` compares `x` with `fixed + counter`,
+    and `(fixed - x) = counter` compares with `fixed - counter`. The fixed input
+    and constant counter step must hold on every back-edge. Auxiliary values use
+    wrapping arithmetic, so the equality is exact for all signed Int values.
+    Facts are scoped to the loop, comparisons retain their order, and differing
+    steps, invariants or representations keep the original computation.
     Native Float ordering against a literal uses signed bit order for a
     nonnegative constant and reversed unsigned order for a negative constant.
     This preserves totalOrder, including NaN signs/payloads and signed zeros.

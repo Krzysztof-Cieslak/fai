@@ -515,3 +515,18 @@ fn local_constructor_branch_edits_match_clean_lowering() {
         },
     );
 }
+
+#[test]
+fn affine_counter_edits_match_clean_native_predicates() {
+    let source = "module M\nlet scan fixed distance xs = match xs with | [] -> true | x :: rest -> if x - fixed = distance then false else scan fixed (distance + 1) rest\n";
+    let changed_step = source.replace("distance + 1", "distance - 7");
+    let changed_invariant =
+        source.replace("scan fixed (distance + 1)", "scan (fixed + 1) (distance + 1)");
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", source)], &[("M.fai", &changed_step)], &[("M.fai", &changed_invariant)]],
+        |db, files| {
+            (*object_code(db, db.source_file(files[0]).unwrap(), Symbol::intern("scan"), false))
+                .clone()
+        },
+    );
+}

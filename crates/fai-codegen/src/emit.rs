@@ -1619,6 +1619,8 @@ struct Translator<'a, M: Module> {
 /// The active tail-call loop being translated.
 struct LoopCtx {
     fixed_point: Option<crate::fixed_point::Plan>,
+    /// Auxiliary wrapping counters used by equality-only affine predicates.
+    affine: Vec<(crate::affine_predicates::Predicate, Variable)>,
     /// The loop header (the `Recur` back-edge target).
     header: Block,
     /// The loop exit, taking the result as its block parameter.
@@ -5760,6 +5762,27 @@ impl<M: Module> Translator<'_, M> {
             let b = self.expr(&args[1]);
             // Raw operands: a bare `icmp eq` (raw word equality is value equality).
             if self.is_raw_int(a) && self.is_raw_int(b) {
+                if let [
+                    CExpr { kind: ExprKind::Local(left), .. },
+                    CExpr { kind: ExprKind::Local(right), .. },
+                ] = args
+                    && let Some((predicate, variable)) = self
+                        .loop_ctx
+                        .as_ref()
+                        .and_then(|ctx| {
+                            ctx.affine.iter().find(|(predicate, _)| {
+                                (*left == predicate.difference && *right == predicate.counter)
+                                    || (*right == predicate.difference
+                                        && *left == predicate.counter)
+                            })
+                        })
+                        .copied()
+                {
+                    let operand = self.use_var(predicate.operand);
+                    let bound = self.builder.use_var(variable);
+                    let equal = self.builder.ins().icmp(IntCC::Equal, operand, bound);
+                    return Some(self.tag_bool(equal));
+                }
                 if let Some(result) =
                     self.tag_bit_equal(a, &args[1]).or_else(|| self.tag_bit_equal(b, &args[0]))
                 {
@@ -7467,6 +7490,32 @@ impl<M: Module> Translator<'_, M> {
 
     fn join_plain(&mut self, params: &[LocalId], body: &CExpr, _result_ty: &Ty) -> Value {
         let saved_tags = std::mem::take(&mut self.known_tags);
+        let mut affine = Vec::new();
+        if !self.concurrent {
+            for predicate in crate::affine_predicates::plan(params, body) {
+                if ![
+                    predicate.counter,
+                    predicate.invariant,
+                    predicate.operand,
+                    predicate.difference,
+                ]
+                .iter()
+                .all(|local| self.is_int_local(*local))
+                {
+                    continue;
+                }
+                let invariant = self.use_var(predicate.invariant);
+                let counter = self.use_var(predicate.counter);
+                let value = if predicate.sum {
+                    self.builder.ins().iadd(invariant, counter)
+                } else {
+                    self.builder.ins().isub(invariant, counter)
+                };
+                let variable = self.builder.declare_var(types::I64);
+                self.builder.def_var(variable, value);
+                affine.push((predicate, variable));
+            }
+        }
         let header = self.builder.create_block();
         let exit = self.builder.create_block();
 
@@ -7477,7 +7526,7 @@ impl<M: Module> Translator<'_, M> {
         // The header stays unsealed: its `Recur` back-edge predecessors are still
         // to be emitted while translating the body.
 
-        let fixed_point = (!self.concurrent)
+        let fixed_point = (!self.concurrent && affine.is_empty())
             .then(|| crate::fixed_point::plan(params, body, &self.var_tys))
             .flatten()
             .filter(|plan| {
@@ -7487,6 +7536,7 @@ impl<M: Module> Translator<'_, M> {
             });
         let prev = self.loop_ctx.replace(LoopCtx {
             fixed_point,
+            affine,
             header,
             exit,
             params: params.to_vec(),
@@ -7750,6 +7800,13 @@ impl<M: Module> Translator<'_, M> {
         }
         for (param, val) in params.iter().zip(vals) {
             self.define_var(*param, val);
+        }
+        let affine = self.loop_ctx.as_ref().expect("recur inside a loop").affine.clone();
+        for (predicate, variable) in affine {
+            let current = self.builder.use_var(variable);
+            let step = if predicate.sum { predicate.step } else { predicate.step.wrapping_neg() };
+            let next = self.builder.ins().iadd_imm(current, step);
+            self.builder.def_var(variable, next);
         }
         self.builder.ins().jump(header, &[]);
     }
