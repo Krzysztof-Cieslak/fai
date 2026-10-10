@@ -1,0 +1,366 @@
+module Form
+
+public type Error = { field : Option String, message : String }
+
+public type Event =
+  | Edited String String
+  | Blurred String
+  | Submit
+
+public type Kind =
+  | Text
+  | Password
+  | Integer
+  | Checkbox
+  | Choice (Array (String * String))
+
+public type Field = {
+  initial : String,
+  kind : Kind,
+  label : String,
+  name : String,
+  placeholder : String
+}
+
+public opaque type Definition 'a =
+  | Definition (List Field) (Dict String String -> Result 'a (List Error))
+
+public type Validation =
+  | OnBlur
+  | OnChange
+  | OnSubmit
+
+public type State = {
+  initial : Dict String String,
+  revision : Int,
+  serverErrors : List Error,
+  submitted : Bool,
+  touched : Set String,
+  validation : Validation,
+  values : Dict String String
+}
+
+public type Update 'a 'e = { command : TuiCmd.Cmd Event 'e, state : State, value : Option 'a }
+
+let failure field message = Err [{ field = field, message = message }]
+
+let fields definition =
+  match definition with
+  | Definition fields _ -> fields
+
+let decodeRaw definition values =
+  match definition with
+  | Definition _ decode -> decode values
+
+let fieldError name result =
+  Result.mapError (fun message -> [{ field = Some name, message = message }]) result
+
+let min a b = if a < b then a else b
+
+let choiceKey pair =
+  let (key, _) = pair
+  key
+
+let choiceItem pair =
+  let (key, label) = pair
+  { cells = [| label |], key = key }
+
+/// Field metadata. Defaults are edited through ordinary record updates.
+public named : String -> String -> Field
+let named name label = { initial = "", kind = Text, label = label, name = name, placeholder = "" }
+
+public text : Field -> Definition String
+let text info =
+  Definition [
+    { info with kind = Text }
+  ] (fun values -> Ok (Dict.getOr info.initial info.name values))
+
+public password : Field -> Definition String
+let password info =
+  Definition [
+    { info with kind = Password }
+  ] (fun values -> Ok (Dict.getOr info.initial info.name values))
+
+let decimal bytes index negative limit acc =
+  if index = Bytes.length bytes then
+    Ok (if negative then acc else 0 - acc)
+  else
+    let digit = Bytes.unsafeGet index bytes - 48
+    if digit < 0 || digit > 9 || acc < (limit + digit) / 10 then
+      Err "Enter a whole number in the signed 64-bit range"
+    else
+      decimal bytes (index + 1) negative limit (acc * 10 - digit)
+
+let integer text =
+  let bytes = Bytes.fromString text
+  if Bytes.isEmpty bytes then
+    Err "Enter a whole number"
+  else
+    let first = Bytes.unsafeGet 0 bytes
+    let start = if first = 45 || first = 43 then 1 else 0
+    if start = Bytes.length bytes then
+      Err "Enter a whole number"
+    else
+      decimal bytes start (first = 45) (if first = 45 then
+        -9223372036854775808
+      else
+        -9223372036854775807) 0
+
+/// Checked integer field; partial text remains in State until it decodes.
+public int : Field -> Definition Int
+let int info =
+  Definition [
+    { info with kind = Integer }
+  ] (fun values -> fieldError info.name (integer (Dict.getOr info.initial info.name values)))
+
+public checkbox : Field -> Bool -> Definition Bool
+let checkbox info checked =
+  let info = { info with initial = if checked then "true" else "false", kind = Checkbox }
+  Definition [
+    info
+  ] (fun values ->
+    match Dict.getOr info.initial info.name values with
+    | "true" -> Ok true
+    | "false" -> Ok false
+    | _ -> failure (Some info.name) "Invalid checkbox value")
+
+public choice : Field -> Array (String * String) -> Definition String
+let choice info choices =
+  Definition [{ info with kind = Choice choices }] (decodeChoice info choices)
+
+let decodeChoice info choices values =
+  let value = Dict.getOr info.initial info.name values
+  if Array.any (fun pair -> choiceKey pair = value) choices then
+    Ok value
+  else
+    failure (Some info.name) "Choose a value"
+
+public succeed : 'a -> Definition 'a
+let succeed value = Definition [] (fun _ -> Ok value)
+
+public map : ('a -> 'b) -> Definition 'a -> Definition 'b
+let map f definition =
+  Definition (fields definition) (fun values -> Result.map f (decodeRaw definition values))
+
+let combine f a b =
+  match (a, b) with
+  | (Ok a, Ok b) -> Ok (f a b)
+  | (Err a, Err b) -> Err (List.append a b)
+  | (Err error, _) -> Err error
+  | (_, Err error) -> Err error
+
+public map2 : ('a -> 'b -> 'c) -> Definition 'a -> Definition 'b -> Definition 'c
+let map2 f first second =
+  Definition (List.append (fields first) (fields second)) (fun values ->
+    combine f (decodeRaw first values) (decodeRaw second values))
+
+public andMap : Definition 'a -> Definition ('a -> 'b) -> Definition 'b
+let andMap argument function = map2 (fun f value -> f value) function argument
+
+/// Add typed validation. Single-field errors attach to that field; composite
+/// validation errors are form-level unless validateAt supplies a field name.
+public validateAt : Option String -> ('a -> Result Unit String) -> Definition 'a -> Definition 'a
+let validateAt field validate definition =
+  Definition (fields definition) (fun values ->
+    match decodeRaw definition values with
+    | Err errors -> Err errors
+    | Ok value ->
+      (match validate value with
+      | Ok _ -> Ok value
+      | Err message -> failure field message))
+
+public validate : ('a -> Result Unit String) -> Definition 'a -> Definition 'a
+let validate validator definition =
+  let name =
+    match fields definition with
+    | [field] -> Some field.name
+    | _ -> None
+  validateAt name validator definition
+
+public required : Definition String -> Definition String
+let required definition =
+  validate (fun value ->
+    if String.trim value = "" then Err "This field is required" else Ok ()) definition
+
+/// An empty single-field draft decodes as None; populated drafts use the original
+/// decoder and validators. Composite forms remain explicitly required.
+public optional : Definition 'a -> Definition (Option 'a)
+let optional definition = Definition (fields definition) (decodeOptional definition)
+
+let decodeOptional definition values =
+  match fields definition with
+  | [field] ->
+    if String.trim (Dict.getOr field.initial field.name values) = "" then
+      Ok None
+    else
+      Result.map (fun value -> Some value) (decodeRaw definition values)
+  | _ -> failure None "optional expects one field"
+
+public range : Int -> Int -> Definition Int -> Definition Int
+let range minimum maximum definition =
+  validate (fun value ->
+    if value < minimum || value > maximum then
+      Err ("Enter a number from " ++ Int.toString minimum ++ " to " ++ Int.toString maximum)
+    else
+      Ok ()) definition
+
+let validateFields seen remaining =
+  match remaining with
+  | [] -> Ok ()
+  | field :: rest ->
+    if field.name = "" || Set.member field.name seen then
+      failure (Some field.name) "Field names must be nonempty and unique"
+    else
+      validateFields (Set.insert field.name seen) rest
+
+public validateDefinition : Definition 'a -> Result Unit (List Error)
+let validateDefinition definition = validateFields Set.empty (fields definition)
+
+public initial : Definition 'a -> State
+let initial definition =
+  let values =
+    List.foldl (fun values field ->
+      Dict.insert field.name field.initial values) Dict.empty (fields definition)
+  {
+    initial = values,
+    revision = 0,
+    serverErrors = [],
+    submitted = false,
+    touched = Set.empty,
+    validation = OnBlur,
+    values = values
+  }
+
+public dirty : State -> Bool
+let dirty state = state.values <> state.initial
+
+/// Choose when field errors become visible. Submission always reveals all errors.
+public withValidation : Validation -> State -> State
+let withValidation policy state = { state with validation = policy }
+
+public update : Event -> State -> State
+let update event state =
+  match event with
+  | Edited name value -> { state with
+    revision = state.revision + 1,
+    serverErrors = [],
+    touched = if state.validation = OnChange then Set.insert name state.touched else state.touched,
+    values = Dict.insert name value state.values
+  }
+  | Blurred name -> { state with
+    touched = if state.validation = OnSubmit then state.touched else Set.insert name state.touched
+  }
+  | Submit -> { state with submitted = true }
+
+public decode : Definition 'a -> State -> Result 'a (List Error)
+let decode definition state =
+  match validateDefinition definition with
+  | Err errors -> Err errors
+  | Ok _ ->
+    match (decodeRaw definition state.values, state.serverErrors) with
+    | (Ok value, []) -> Ok value
+    | (Ok _, errors) -> Err errors
+    | (Err errors, server) -> Err (List.append errors server)
+
+public errors : Definition 'a -> State -> List Error
+let errors definition state =
+  match decode definition state with
+  | Ok _ -> []
+  | Err errors -> errors
+
+/// Ignore asynchronous validation responses for an obsolete draft revision.
+public withErrors : Int -> List Error -> State -> State
+let withErrors revision errors state =
+  if revision = state.revision then { state with serverErrors = errors } else state
+
+public fieldId : Ui.Id -> String -> Ui.Id
+let fieldId scope name = Ui.childId scope ("field:" ++ name)
+
+public handle : Ui.Id -> Definition 'a -> Event -> State -> Update 'a 'e
+let handle scope definition event previous =
+  let state = update event previous
+  if event <> Submit then
+    { command = TuiCmd.none, state = state, value = None }
+  else
+    match decode definition state with
+    | Ok value -> { command = TuiCmd.none, state = state, value = Some value }
+    | Err errors ->
+      let first = List.find (fun error -> error.field <> None) errors
+      let command =
+        match first with
+        | Some error ->
+          (match error.field with
+          | Some name -> TuiCmd.focus (fieldId scope name)
+          | None -> TuiCmd.none)
+        | None -> TuiCmd.none
+      { command = command, state = state, value = None }
+
+renderField : Ui.Id -> State -> List Error -> Field -> Ui.Element Event
+let renderField scope state errors info =
+  let id = fieldId scope info.name
+  let value = Dict.getOr info.initial info.name state.values
+  let widget =
+    match info.kind with
+    | Checkbox -> Ui.checkbox id [] {
+      checked = value = "true",
+      label = info.label,
+      onChange = fun checked -> Edited info.name (if checked then "true" else "false")
+    }
+    | Choice choices ->
+      let items = Array.map choiceItem choices
+      Ui.column [] [
+        Ui.text [] info.label,
+        Ui.list id [
+          Ui.height (Ui.cells (min 4 (Array.length items)))
+        ] {
+          onRange = None,
+          onSelect = Edited info.name,
+          selected = Some value,
+          source = Ui.source items
+        }
+      ]
+    | _ -> Ui.inputWith id [
+      Ui.placeholder info.placeholder,
+      Ui.password (info.kind = Password)
+    ] {
+      label = info.label,
+      onBlur = Some (Blurred info.name),
+      onChange = Edited info.name,
+      onSubmit = None,
+      value = value
+    }
+  let shown =
+    List.filter (fun error ->
+      error.field = Some info.name && (state.submitted || (state.validation <> OnSubmit && Set.member info.name state.touched))) errors
+  Ui.column [] (widget :: List.map (fun error ->
+    Ui.text [Ui.style TuiStyle.defaultTheme.error] error.message) shown)
+
+/// Render one declared field for a custom layout, retaining its validation state.
+public field : Ui.Id -> String -> Definition 'a -> State -> Ui.Element Event
+let field scope name definition state =
+  match List.find (fun field -> field.name = name) (fields definition) with
+  | None -> Ui.text [Ui.style TuiStyle.defaultTheme.error] ("Unknown field: " ++ name)
+  | Some info -> renderField scope state (errors definition state) info
+
+public submitButton : Ui.Id -> String -> Ui.Element Event
+let submitButton scope label = Ui.button (Ui.childId scope "submit") [] {
+  label = label,
+  onPress = Submit
+}
+
+/// Default vertical form layout. Individual fields remain available for custom UIs.
+public view : Ui.Id -> List (Ui.Attribute Ui.Container) -> Definition 'a -> State -> Ui.Element Event
+let view scope attributes definition state =
+  let errors = errors definition state
+  let global =
+    List.filter (fun error ->
+      error.field = None && (state.submitted || (state.validation = OnChange && dirty state))) errors
+  match validateDefinition definition with
+  | Err errors ->
+    Ui.column attributes (List.map (fun error ->
+      Ui.text [Ui.style TuiStyle.defaultTheme.error] error.message) errors)
+  | Ok _ ->
+    Ui.column attributes (List.append (List.map (renderField scope state errors) (fields definition)) (List.append (List.map (fun error ->
+      Ui.text [
+        Ui.style TuiStyle.defaultTheme.error
+      ] error.message) global) [submitButton scope "Submit"]))
