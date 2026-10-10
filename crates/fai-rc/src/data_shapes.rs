@@ -67,6 +67,7 @@ fn union(a: DataShape, b: DataShape) -> DataShape {
         resource_free: a.resource_free && b.resource_free,
         boxed_tag: a.boxed_tag.filter(|tag| Some(*tag) == b.boxed_tag),
         immediate_tag: a.immediate_tag.filter(|tag| Some(*tag) == b.immediate_tag),
+        always_boxed: a.always_boxed && b.always_boxed,
     }
 }
 
@@ -80,6 +81,7 @@ fn shape(db: &dyn Db, ty: &Ty) -> Option<DataShape> {
             resource_free: false,
             boxed_tag: Some(1),
             immediate_tag: Some(0),
+            always_boxed: false,
         }),
         Ty::Tuple(fields) => structural_shape(fields.iter()),
         Ty::Record(row) if row.tail == RowEnd::Closed => {
@@ -99,6 +101,7 @@ fn shape(db: &dyn Db, ty: &Ty) -> Option<DataShape> {
                 resource_free: false,
                 boxed_tag: None,
                 immediate_tag: None,
+                always_boxed: false,
             };
             let mut boxed = Vec::new();
             let mut immediate = Vec::new();
@@ -131,6 +134,7 @@ fn shape(db: &dyn Db, ty: &Ty) -> Option<DataShape> {
                         resource_free: false,
                         boxed_tag: None,
                         immediate_tag: None,
+                        always_boxed: false,
                     },
                 );
             }
@@ -140,6 +144,7 @@ fn shape(db: &dyn Db, ty: &Ty) -> Option<DataShape> {
             if let [tag] = immediate.as_slice() {
                 result.immediate_tag = Some(*tag);
             }
+            result.always_boxed = immediate.is_empty();
             (result.max_fields > 0).then_some(result)
         }
         _ => None,
@@ -164,6 +169,7 @@ fn structural_shape<'a>(fields: impl Iterator<Item = &'a Ty>) -> Option<DataShap
         resource_free: false,
         boxed_tag: Some(0),
         immediate_tag: None,
+        always_boxed: true,
     })
 }
 
@@ -254,7 +260,8 @@ mod tests {
                 scalars: 2,
                 resource_free: false,
                 boxed_tag: None,
-                immediate_tag: Some(0)
+                immediate_tag: Some(0),
+                always_boxed: false,
             })
         );
     }
@@ -269,7 +276,8 @@ mod tests {
                 scalars: 0,
                 resource_free: false,
                 boxed_tag: Some(0),
-                immediate_tag: None
+                immediate_tag: None,
+                always_boxed: true,
             })
         );
     }
@@ -286,7 +294,8 @@ mod tests {
                 scalars: 511,
                 resource_free: false,
                 boxed_tag: None,
-                immediate_tag: None
+                immediate_tag: None,
+                always_boxed: true,
             })
         );
     }
@@ -302,7 +311,8 @@ mod tests {
                 scalars: 511,
                 resource_free: false,
                 boxed_tag: Some(0),
-                immediate_tag: None
+                immediate_tag: None,
+                always_boxed: true,
             })
         );
     }
@@ -331,6 +341,26 @@ mod tests {
         let b = nominal("module M\ntype T = | Node Int | End\n").unwrap();
         let joined = union(a, b);
         assert_eq!((joined.immediate_tag, joined.boxed_tag), (None, None));
+    }
+
+    #[test]
+    fn multiple_boxed_alternatives_exclude_immediates() {
+        let shape = nominal("module M\ntype T = | A Int | B Bool | C String\n").unwrap();
+        assert!(shape.always_boxed);
+        assert_eq!((shape.boxed_tag, shape.immediate_tag), (None, None));
+    }
+
+    #[test]
+    fn multiple_immediate_alternatives_are_not_always_boxed() {
+        let shape = nominal("module M\ntype T = | A | B Int | C\n").unwrap();
+        assert!(!shape.always_boxed);
+    }
+
+    #[test]
+    fn mixed_observations_lose_the_always_boxed_fact() {
+        let boxed = nominal("module M\ntype T = | A Int | B Bool\n").unwrap();
+        let mixed = nominal("module M\ntype T = | A | B Bool\n").unwrap();
+        assert!(!union(boxed, mixed).always_boxed);
     }
 
     fn is_resource_free(source: &str) -> bool {

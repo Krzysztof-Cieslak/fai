@@ -102,6 +102,7 @@ pub fn core(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
         fns: vec![placeholder_fn()],
         evidence: FxHashMap::default(),
         aliases: FxHashMap::default(),
+        match_tags: FxHashMap::default(),
         emit_unsupported: true,
         failed: std::cell::Cell::new(false),
     };
@@ -168,6 +169,7 @@ pub fn lower_params_body(
         fns: vec![placeholder_fn()],
         evidence: FxHashMap::default(),
         aliases: FxHashMap::default(),
+        match_tags: FxHashMap::default(),
         // The contract synthesizer runs outside a tracked query, so it must not
         // accumulate diagnostics; the explicit failure flag lets the caller
         // reject unsupported constructs without rejecting unreachable fallthroughs.
@@ -252,12 +254,20 @@ struct Lowerer<'a> {
     /// This turns `g x` into a direct call and drops the redundant binding. Keyed by
     /// the (unique) `LocalId`, so it is scope-exact and append-only.
     aliases: FxHashMap<LocalId, DefId>,
+    /// One typed tag observation per active match's root scrutinee.
+    match_tags: FxHashMap<LocalId, MatchTag>,
     /// Whether to accumulate unsupported-construct diagnostics. The per-definition
     /// `core` query does (it runs inside salsa); a caller outside a tracked query
     /// (the contract synthesizer) uses the explicit failure flag instead, so it
     /// never accumulates outside an active query.
     emit_unsupported: bool,
     failed: std::cell::Cell<bool>,
+}
+
+struct MatchTag {
+    local: LocalId,
+    niche: Option<crate::niche::NicheKind>,
+    used: bool,
 }
 
 impl Lowerer<'_> {
@@ -1113,10 +1123,23 @@ impl Lowerer<'_> {
         let sval = self.lower_expr(scrutinee);
         let sty = self.ty_of(scrutinee);
         let s = self.fresh_local();
+        let tag = self.fresh_local();
+        self.match_tags.insert(s, MatchTag { local: tag, niche: None, used: false });
         let mut chain = CExpr::new(K::Error, ty.clone());
         for arm in arms.iter().rev() {
             let body = self.lower_expr(arm.body);
             chain = self.compile_pattern(s, &sty, arm.pat, body, chain);
+        }
+        let observed = self.match_tags.remove(&s).expect("active match scrutinee");
+        if observed.used {
+            let value = CExpr::new(
+                K::DataTag { base: Box::new(CExpr::new(K::Local(s), sty)), niche: observed.niche },
+                Ty::int(),
+            );
+            chain = CExpr::new(
+                K::Let { local: tag, value: Box::new(value), body: Box::new(chain) },
+                ty.clone(),
+            );
         }
         CExpr::new(K::Let { local: s, value: Box::new(sval), body: Box::new(chain) }, ty)
     }
@@ -1332,10 +1355,17 @@ impl Lowerer<'_> {
         fail: CExpr,
     ) -> CExpr {
         let result_ty = success.ty.clone();
-        let read = CExpr::new(
-            K::DataTag { base: Box::new(CExpr::new(K::Local(value_local), Ty::Error)), niche },
-            Ty::int(),
-        );
+        let read = if let Some(observed) = self.match_tags.get_mut(&value_local) {
+            debug_assert!(!observed.used || observed.niche == niche);
+            observed.used = true;
+            observed.niche = niche;
+            CExpr::new(K::Local(observed.local), Ty::int())
+        } else {
+            CExpr::new(
+                K::DataTag { base: Box::new(CExpr::new(K::Local(value_local), Ty::Error)), niche },
+                Ty::int(),
+            )
+        };
         let tag_lit = CExpr::new(K::Lit(Lit::Int(i64::from(tag))), Ty::int());
         let cond = CExpr::new(K::Prim { op: Prim::Eq, args: vec![read, tag_lit] }, Ty::bool());
         CExpr::new(

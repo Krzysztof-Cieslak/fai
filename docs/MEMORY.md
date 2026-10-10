@@ -890,7 +890,12 @@ Reuse & in-place update:
     has one alternative. Multiple immediate variants still decode their own tags;
     multiple boxed variants retain header reads. Missing wire evidence defaults
     to unknown and the facts participate in native fingerprints.
-    Branch-local tag equalities eliminate repeated constructor decisions. A
+    Match lowering binds one typed root tag before its decision chain. The scalar
+    tag does not extend the scrutinee's ownership lifetime, and known-constructor
+    reduction propagates it before visiting unreachable field projections.
+    Cached shape metadata separately records a wholly boxed constructor domain;
+    missing older metadata remains conservative. Branch-local tag equalities
+    eliminate repeated constructor decisions. A
     rejected alternative implies its opposite only for a type proven to have
     exactly one immediate and one boxed constructor. Boxed tag bounds alone do
     not constrain additional immediate alternatives. Facts are restored at

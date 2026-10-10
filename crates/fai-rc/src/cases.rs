@@ -5526,7 +5526,7 @@ fn trmc_inc_exact_shape() {
     );
     assert_eq!(
         out,
-        "fn0(%0) = (holestart %11; (join [%0, %11] (let %4 = (tag %0); (let %5 = (= %4 0); (if %5 (drop %0; (holeclose %11 (data 0))) (let %6 = (tag %0); (let %7 = (= %6 1); (if %7 (let %1 = (field 0 %0); (let %2 = (field 1 %0); (reset %10 = %0; (let %8 = (+ %1 1); (let %12 = (holefill %11 1 (data@%10 1 %8 ())); (recur %2 %12)))))) (drop %0; (holeclose %11 <error>))))))))))\n"
+        "fn0(%0) = (holestart %10; (join [%0, %10] (let %4 = (tag %0); (let %5 = (dup %4; (= %4 0)); (if %5 (drop %0; (drop %4; (holeclose %10 (data 0)))) (let %6 = (= %4 1); (if %6 (let %1 = (field 0 %0); (let %2 = (field 1 %0); (reset %9 = %0; (let %7 = (+ %1 1); (let %11 = (holefill %10 1 (data@%9 1 %7 ())); (recur %2 %11)))))) (drop %0; (holeclose %10 <error>)))))))))\n"
     );
 }
 
@@ -5670,7 +5670,7 @@ fn trmc_rowpoly_plain_exact_shape() {
     );
     assert_eq!(
         out,
-        "fn0(%4, %0, %1) = (join [%4, %0, %1] (let %6 = (tag %1); (let %7 = (= %6 0); (if %7 (drop %1; (drop %4; %0)) (let %8 = (tag %1); (let %9 = (= %8 1); (if %9 (let %2 = (field 0 %1); (let %3 = (field 1 %1); (drop %1; (let %10 = (field 0+%4 %2); (drop %2; (let %11 = (+ %0 %10); (recur %4 %11 %3))))))) (drop %0; (drop %1; (drop %4; <error>))))))))))\n"
+        "fn0(%4, %0, %1) = (join [%4, %0, %1] (let %6 = (tag %1); (let %7 = (dup %6; (= %6 0)); (if %7 (drop %1; (drop %4; (drop %6; %0))) (let %8 = (= %6 1); (if %8 (let %2 = (field 0 %1); (let %3 = (field 1 %1); (drop %1; (let %9 = (field 0+%4 %2); (drop %2; (let %10 = (+ %0 %9); (recur %4 %10 %3))))))) (drop %0; (drop %1; (drop %4; <error>)))))))))\n"
     );
 }
 
@@ -5809,7 +5809,7 @@ fn trmc_nested_two_deep_exact_shape() {
     );
     assert_eq!(
         out,
-        "fn0(%0) = (holestart %11; (join [%0, %11] (let %4 = (tag %0); (let %5 = (= %4 0); (if %5 (drop %0; (holeclose %11 (data 0))) (let %6 = (tag %0); (let %7 = (= %6 1); (if %7 (let %1 = (field 0 %0); (let %2 = (field 1 %0); (reset %10 = %0; (let %12 = (dup %1; (data 1 %1 ())); (let %13 = (data@%10 1 %1 ()); (let %14 = (holefill %11 1 %13); (let %15 = (holefill %14 1 %12); (recur %2 %15)))))))) (drop %0; (holeclose %11 <error>))))))))))\n"
+        "fn0(%0) = (holestart %10; (join [%0, %10] (let %4 = (tag %0); (let %5 = (dup %4; (= %4 0)); (if %5 (drop %0; (drop %4; (holeclose %10 (data 0)))) (let %6 = (= %4 1); (if %6 (let %1 = (field 0 %0); (let %2 = (field 1 %0); (reset %9 = %0; (let %11 = (dup %1; (data 1 %1 ())); (let %12 = (data@%9 1 %1 ()); (let %13 = (holefill %10 1 %12); (let %14 = (holefill %13 1 %11); (recur %2 %14)))))))) (drop %0; (holeclose %10 <error>)))))))))\n"
     );
 }
 

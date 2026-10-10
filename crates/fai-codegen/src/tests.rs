@@ -2375,6 +2375,27 @@ fn multiple_boxed_tags_keep_dynamic_header_reads() {
 }
 
 #[test]
+fn boxed_constructor_dispatch_loads_one_tag_without_an_immediate_guard() {
+    let source = "module M\ntype T = | A Int | B Int | C Int | D Int\nlet kind value = match value with | A _ -> 3 | B _ -> 5 | C _ -> 7 | D _ -> 11\n";
+    let ir = entry_ir(source, "kind");
+    assert_eq!(ir.matches("atomic_load").count(), 1, "{ir}");
+    let entry = ir.split("\nblock1:").next().unwrap();
+    assert!(!has_immediate_bit_test(entry), "{ir}");
+}
+
+#[test]
+fn boxed_constructor_tags_follow_loop_rebindings() {
+    let source = "module M\ntype T = | A Int | B Int | C Int\nlet loop n value = if n <= 0 then (match value with | A x -> x | B x -> x + 10 | C x -> x + 100) else match value with | A x -> loop (n - 1) (B (x + 1)) | B x -> loop (n - 1) (C (x + 1)) | C x -> loop (n - 1) (A (x + 1))\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (loop 5 (A 0)))\n";
+    assert_eq!(run(source), (0, "105\n".into()));
+}
+
+#[test]
+fn one_tag_observation_preserves_nested_pattern_fallthrough() {
+    let source = "module M\ntype T = | A Int | B Int\nlet pick value = match value with | A 1 -> 10 | A x -> x | B x -> x + 100\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (pick (A 2) + pick (B 3)))\n";
+    assert_eq!(run(source), (0, "105\n".into()));
+}
+
+#[test]
 fn unique_boxed_tag_preserves_multiple_immediate_tags() {
     let source = "module M\ntype T = | First | Full Int | Last\nlet kind value = match value with | First -> 3 | Full _ -> 5 | Last -> 7\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (List.sum (List.map kind [First, Full 99, Last])))\n";
     assert_eq!(run(source), (0, "15\n".into()));
