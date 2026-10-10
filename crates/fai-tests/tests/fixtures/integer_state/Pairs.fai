@@ -1,0 +1,22 @@
+module Pairs
+
+public make : Int -> (Int * Array Int)
+let make value = (value, Array.repeat 3 value)
+
+public echo : (Int * Array Int) -> (Int * Array Int)
+let echo pair = pair
+
+public nested : Int -> (Int * (Int * Array Int))
+let nested value = (value + 1, make value)
+
+public callback : Int -> (Int * (Int -> Int))
+let callback value = (value, fun extra -> value + extra)
+
+public record : Int -> (Int * { x : Float, y : Float })
+let record value = (value, { x = 1.0, y = 2.0 })
+
+public optional : Int -> (Int * Option Int)
+let optional value = (value, Some value)
+
+public loop : Int -> Array Int -> (Int * Array Int)
+let loop n state = if n <= 0 then (7, state) else loop (n - 1) state

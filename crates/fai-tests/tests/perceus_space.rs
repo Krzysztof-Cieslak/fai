@@ -116,6 +116,11 @@ let unpackLoop n pair =
   if n <= 0 then String.length a + String.length b else unpackLoop (n - 1) (b, a)
 public unpackedRecords : Int -> Int
 let unpackedRecords n = unpackLoop n (Int.toString 1234, Int.toString 56)
+let pairStateLoop n xs = if n <= 0 then (7, xs) else pairStateLoop (n - 1) (Array.unsafeSet (n % 16) n xs)
+public pairStates : Int -> Int
+let pairStates n =
+  let (_, xs) = pairStateLoop n (Array.repeat 16 0)
+  Array.length xs
 public main : Runtime -> Unit
 let main r = ()
 "#;
@@ -338,4 +343,9 @@ fn repeated_scalar_maps_keep_constant_auxiliary_storage() {
 #[test]
 fn repeated_unique_field_transfers_keep_constant_storage() {
     bounded_reuse("unpackedRecords", |_| 6);
+}
+
+#[test]
+fn integer_state_pair_loops_keep_constant_storage() {
+    bounded_reuse("pairStates", |_| 16);
 }

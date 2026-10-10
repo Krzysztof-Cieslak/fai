@@ -9,3 +9,8 @@ public swap : 'a * 'b -> 'b * 'a
 let swap pair =
   let (x, y) = pair // destructuring
   (y, x)
+
+/// Keep a list together with its element count.
+public counted : List 'a -> Int * List 'a
+let counted values = (List.length values, values)
+example: counted [1, 2, 3] = (3, [1, 2, 3])

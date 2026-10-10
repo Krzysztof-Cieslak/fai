@@ -2608,7 +2608,14 @@ Editor integration:
   >63-bit overflow) only where it crosses a *uniform slot* — a data/record/tuple
   field, a closure environment, an `apply_n`/first-class argument or result, or a
   generic (type-variable) position — and untagged/unboxed when read back out, the
-  same boundary rule as D113.
+    same boundary rule as D113.
+    On x86-64 System V and AArch64, a tuple result with an Int first field and
+    uniformly represented state second field may instead return two native words.
+    The first is a raw integer; the second transfers one owned reference. Tuple
+    parameters and first-class boundaries stay boxed, with wrappers reassembling
+    the fields. Scalar numeric and unknown type-variable second fields stay boxed.
+    Split-result locals retain individual types, unused state is released, and
+    tuple-component bounds facts survive both split returns and split calls.
   - **Representation is a side-set, not the Cranelift type.** D113 distinguishes a
     boxed `Float` (an `i64` pointer) from an unboxed one by the Cranelift value
     type (`F64` vs `I64`). A raw `Int` and a tagged immediate are **both `I64`**, so

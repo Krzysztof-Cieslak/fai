@@ -484,3 +484,17 @@ fn dying_field_lifetime_edits_match_clean_native_objects() {
         },
     );
 }
+
+#[test]
+fn integer_state_return_abi_edits_match_clean_callers() {
+    let split = "module A\npublic make : Int -> (Int * Array Int)\nlet make value = (value, Array.singleton value)\n";
+    let boxed = "module A\npublic make : Int -> (Int * Int)\nlet make value = (value, value)\n";
+    let caller = "module B\npublic run : Int -> Int\nlet run value = match A.make value with | (number, _) -> number\n";
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("A.fai", split), ("B.fai", caller)], &[("A.fai", boxed), ("B.fai", caller)]],
+        |db, files| {
+            (*object_code(db, db.source_file(files[1]).unwrap(), Symbol::intern("run"), false))
+                .clone()
+        },
+    );
+}
