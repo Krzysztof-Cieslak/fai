@@ -473,6 +473,12 @@ in source order and callbacks retain their order, effects, and short-circuiting.
 This single-operation lowering keeps sources and shared results materialized;
 cross-stage deforestation still requires pure, total callbacks. Literal callbacks
 with nested lifted closures retain their first-class call path.
+A counted loop that repeatedly maps one independent numeric state can instead
+iterate each element in registers, with Float states up to four components
+processed in pairs. The callback must be small, capture-free, total and scalar;
+the counter must advance without wrapping toward an invariant bound. Effects,
+traps, resource-bearing values and cross-element dependencies keep their original
+order. Shared inputs are copied once; empty and zero-iteration inputs stay valid.
 The standard `Array.repeat` entry uses a checked bulk-fill primitive, so library
 and first-class calls avoid per-element generator and push bookkeeping.
 Nonpositive counts stay empty, values are evaluated once and shared immutably,

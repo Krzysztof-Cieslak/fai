@@ -47,6 +47,7 @@ use crate::ir::{
     CExpr, ClosureAlloc, CoreFn, ExprKind as K, FnAbi, FnId, Lit, LoweredDef, Prim, Repr,
 };
 
+mod repeated_map;
 mod reverse_prefix;
 mod scalar_specialize;
 mod staged_concat;
@@ -222,13 +223,19 @@ pub fn fuse_def(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<FuseResult> 
         flat_sources: FxHashMap::default(),
         scalar_variants: FxHashMap::default(),
     };
+    let repeated = cx.repeated_map(&base);
     let fns: Vec<CoreFn> = base
         .fns
         .iter()
-        .map(|f| CoreFn {
+        .enumerate()
+        .map(|(index, f)| CoreFn {
             params: f.params.clone(),
             captures: f.captures.clone(),
-            body: cx.rewrite(&f.body, &base.fns),
+            body: if index == 0 {
+                repeated.clone().unwrap_or_else(|| cx.rewrite(&f.body, &base.fns))
+            } else {
+                cx.rewrite(&f.body, &base.fns)
+            },
         })
         .collect();
     // Nothing fused (a chain may rewrite to an unrolled form with no loop, so the

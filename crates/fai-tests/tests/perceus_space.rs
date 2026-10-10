@@ -105,6 +105,12 @@ let canonicalCallbacks n = subLoop (fun a b -> a - b) n n
 let numericLoop n xs = if n <= 0 then xs else numericLoop (n - 1) (Array.unsafeSet (n % 16) n xs)
 public numericStates : Int -> Int
 let numericStates n = Array.length (numericLoop n (Array.repeat 16 0))
+type MapPoint = { x : Float, y : Float }
+mapStep : MapPoint -> MapPoint
+let mapStep point = { x = point.x * 0.5, y = point.y + 1.0 }
+let repeatedMap i n xs = if i >= n then xs else repeatedMap (i + 1) n (Array.map mapStep xs)
+public repeatedMaps : Int -> Int
+let repeatedMaps n = Array.length (repeatedMap 0 n (Array.repeat 5 { x = 1.0, y = 0.0 }))
 public main : Runtime -> Unit
 let main r = ()
 "#;
@@ -317,4 +323,9 @@ fn canonical_callback_keeps_zero_auxiliary_heap_storage() {
 #[test]
 fn numeric_array_update_loop_keeps_constant_unique_storage() {
     bounded_reuse("numericStates", |_| 16);
+}
+
+#[test]
+fn repeated_scalar_maps_keep_constant_auxiliary_storage() {
+    bounded_reuse("repeatedMaps", |_| 5);
 }

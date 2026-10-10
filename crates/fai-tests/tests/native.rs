@@ -683,6 +683,20 @@ fn scalar_specialization_keeps_unused_argument_traps() {
 }
 
 #[test]
+fn repeated_scalar_maps_keep_shared_and_odd_record_elements() {
+    assert_eq!(
+        build_and_run(include_str!("fixtures/RepeatedScalarMaps.fai")),
+        ("yes\n".into(), Some(0))
+    );
+}
+
+#[test]
+fn effectful_repeated_maps_keep_iteration_major_order() {
+    let source = "module Main\nlet step x =\n  let _ = stdConsole.writeLine (Int.toString x)\n  x + 1\nlet loop i n xs = if i >= n then xs else loop (i + 1) n (Array.map step xs)\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let values = loop 0 2 [| 1, 10 |]\n  r.console.writeLine (Int.toString (Array.sum values))\n";
+    assert_eq!(build_and_run(source), ("1\n10\n2\n11\n15\n".into(), Some(0)));
+}
+
+#[test]
 fn unique_constructor_tags_run_natively() {
     assert_eq!(build_and_run(include_str!("fixtures/UniqueTags.fai")), ("39\n".into(), Some(0)));
 }
