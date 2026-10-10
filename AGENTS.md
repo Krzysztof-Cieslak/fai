@@ -987,6 +987,9 @@ values, immutable row snapshots, effect-parameterized sessions, scoped cursors a
 transactions, and composable pure row decoders. Names match exactly and ambiguous
 column names fail; ordinals remain available. Operation and cleanup errors are
 both retained. SQL syntax and placeholder conventions belong to each driver.
+SQL scalars include booleans, exact decimals, UUIDs, temporal values with explicit
+infinities/end-of-day, and JSON text. SQLite maps these richer values to integers
+or text; explicit decoders retain type intent without converting decimals to Float.
 `packages/sqlite` implements this API over the embedded `SqliteHost` capability.
 Applications pass it explicitly in their runtime. SQLite sessions serialize native
 operations, offload scheduled work to the blocking pool, and observe cancellation

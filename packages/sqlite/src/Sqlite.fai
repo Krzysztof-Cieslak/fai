@@ -66,6 +66,17 @@ let toNative value =
   | Sql.Real value -> SqliteHost.RealBits (Float.toBits value)
   | Sql.Text value -> SqliteHost.Text value
   | Sql.Blob value -> SqliteHost.Blob value
+  | Sql.Boolean value -> SqliteHost.Integer (if value then 1 else 0)
+  | Sql.Decimal value -> SqliteHost.Text (SqlDecimal.toString value)
+  | Sql.Uuid value -> SqliteHost.Text (SqlUuid.toString value)
+  | Sql.Date value -> SqliteHost.Text (Sql.temporalText LocalDate.toString value)
+  | Sql.Time value -> SqliteHost.Text (Sql.timeText value)
+  | Sql.Timestamp value -> SqliteHost.Text (Sql.temporalText LocalDateTime.toString value)
+  | Sql.TimestampTz value -> SqliteHost.Text (Sql.temporalText Instant.toString value)
+  | Sql.Json value -> SqliteHost.Text value
+example: toNative (Sql.Boolean true) = SqliteHost.Integer 1
+example: toNative (Sql.Date Sql.PositiveInfinity) = SqliteHost.Text "infinity"
+example: toNative (Sql.Time Sql.EndOfDay) = SqliteHost.Text "24:00:00"
 
 let fromNative value =
   match value with

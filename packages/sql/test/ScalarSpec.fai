@@ -1,0 +1,18 @@
+module ScalarSpec
+
+example: Result.map SqlDecimal.toString (SqlDecimal.parse "12345678901234567890.123400") = Ok "12345678901234567890.123400"
+example: Result.isOk (SqlDecimal.parse "-.125e+200")
+example: Result.isErr (SqlDecimal.parse ".")
+example: Result.isErr (SqlDecimal.parse "1e")
+example: Result.isErr (SqlDecimal.parse " 1")
+example: Result.map SqlDecimal.isFinite (SqlDecimal.parse "Infinity") = Ok false
+example: Result.map SqlDecimal.isFinite (SqlDecimal.parse "NaN") = Ok false
+forall n: SqlDecimal.toString (SqlDecimal.fromInt n) = Int.toString n
+example: Result.map SqlUuid.toString (SqlUuid.parse "01234567-89AB-CDEF-0123-456789ABCDEF") = Ok "01234567-89ab-cdef-0123-456789abcdef"
+example: Result.isErr (SqlUuid.parse "0123456789abcdef0123456789abcdef")
+example: Result.isErr (SqlUuid.parse "01234567-89ab-cdef-0123-456789abcdeg")
+example: SqlDecode.decodeValue SqlDecode.bool (Sql.Boolean true) = Ok true
+example: Result.isErr (SqlDecode.decodeValue SqlDecode.decimal (Sql.Real 0.1))
+example: SqlDecode.decodeValue SqlDecode.date (Sql.Date Sql.NegativeInfinity) = Ok Sql.NegativeInfinity
+example: SqlDecode.decodeValue SqlDecode.time (Sql.Text "24:00:00") = Ok Sql.EndOfDay
+example: SqlDecode.decodeValue SqlDecode.timestampTz (Sql.TimestampTz (Sql.Finite Instant.epoch)) = Ok (Sql.Finite Instant.epoch)

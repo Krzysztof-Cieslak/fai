@@ -4944,5 +4944,11 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   SQL and attachment bypasses are rejected. Values and row data are copied at the
   native boundary; no SQLite-owned pointer escapes a step.
 
+- **D156 Rich SQL scalars.** Shared SQL values retain native booleans, exact
+  decimal text, UUIDs, dates/times and JSON text. Temporal infinities and 24:00 are
+  explicit values. SQLite adapters use integer/text storage; decoding an exact
+  decimal never silently accepts a rounded Float. PostgreSQL wire codecs own the
+  database-specific range, precision and type conversions.
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

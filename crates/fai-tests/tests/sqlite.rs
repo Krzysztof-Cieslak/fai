@@ -13,8 +13,16 @@ fn run(body: &str, effects: &str) -> String {
     let mut db = fai_db::FaiDatabase::new();
     fai_types::std_lib::load_std(&mut db);
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages");
-    for name in ["sql/src/Sql.fai", "sql/src/SqlDecode.fai", "sqlite/src/Sqlite.fai"] {
-        db.add_source(name.into(), std::fs::read_to_string(root.join(name)).unwrap());
+    for package in ["sql", "sqlite"] {
+        let mut files: Vec<_> = std::fs::read_dir(root.join(package).join("src"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "fai"))
+            .collect();
+        files.sort();
+        for path in files {
+            db.add_source(path.to_str().unwrap().into(), std::fs::read_to_string(&path).unwrap());
+        }
     }
     let source = format!(
         r#"module SqliteTest

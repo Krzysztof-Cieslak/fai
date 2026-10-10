@@ -1,5 +1,16 @@
 module Sql
 
+/// SQL temporal infinities remain explicit rather than becoming arbitrary dates.
+public type Temporal 'a =
+  | Finite 'a
+  | NegativeInfinity
+  | PositiveInfinity
+
+/// SQL time permits 24:00:00 in addition to an ordinary local time.
+public type TimeValue =
+  | TimeOfDay LocalTime
+  | EndOfDay
+
 /// The common SQL value domain. Drivers document additional native-type mappings.
 public type Value =
   | Null
@@ -7,6 +18,14 @@ public type Value =
   | Real Float
   | Text String
   | Blob Bytes
+  | Boolean Bool
+  | Decimal SqlDecimal.Decimal
+  | Uuid SqlUuid.Uuid
+  | Date (Temporal LocalDate)
+  | Time TimeValue
+  | Timestamp (Temporal LocalDateTime)
+  | TimestampTz (Temporal Instant)
+  | Json String
 
 /// SQL remains dialect-specific. Values are bound separately, never interpolated.
 public type Statement = { parameters : Array Value, text : String }
@@ -29,6 +48,9 @@ public type ErrorKind =
   | TransactionState
   | Unsupported
   | BackendFailure
+  | Timeout
+  | Protocol
+  | Authentication
 
 /// Structured operation errors, including both failures when cleanup also fails.
 public type Error =
@@ -231,3 +253,18 @@ let errorToString error =
     | Some row -> " (row " ++ Int.toString row ++ ")") ++ (match info.column with
     | None -> ""
     | Some column -> " (column " ++ Int.toString column ++ ")")
+
+/// Render an extended temporal value without narrowing its range.
+public temporalText : ('a -> String) -> Temporal 'a -> String
+let temporalText render value =
+  match value with
+  | Finite value -> render value
+  | NegativeInfinity -> "-infinity"
+  | PositiveInfinity -> "infinity"
+
+/// Render SQL time, including its end-of-day value.
+public timeText : TimeValue -> String
+let timeText value =
+  match value with
+  | TimeOfDay time -> LocalTime.toString time
+  | EndOfDay -> "24:00:00"

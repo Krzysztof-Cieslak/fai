@@ -1756,6 +1756,11 @@ failure using a pinned child session. Decoders use `field`/`index`, explicit
 `nullable`, `map`/`map2`/`andMap`, and retain row/column error locations. Duplicate
 names are ambiguous; ordinal access remains valid. `Sql.session` and
 `Sql.fromList` support pure fake drivers. Run `fai test -C packages sql`.
+SQL values also include `Boolean`, `Decimal` (`SqlDecimal.parse`), `Uuid`
+(`SqlUuid.parse`), `Date`, `Time`, `Timestamp`, `TimestampTz`, and `Json` text.
+`Sql.Finite`/`NegativeInfinity`/`PositiveInfinity` represent temporal values;
+`Sql.TimeOfDay`/`EndOfDay` represent SQL time. Use the corresponding explicit
+`SqlDecode` value decoders. SQLite stores rich scalar values as integers or text.
 `packages/sqlite` implements sessions with `Sqlite.withMemory env work` and
 `withConnection env options path work`, where env supplies `sqlite : SqliteHost.Sqlite`.
 `Sqlite.defaults` uses writable connections, a configurable 5000 ms busy timeout
