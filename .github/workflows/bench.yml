@@ -34,12 +34,23 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install OCaml
-        # The runtime/memory benches compare against an ocamlopt-compiled native
-        # baseline alongside the Rust one; without it those OCaml rows are simply
-        # skipped. The `ocaml` package provides the native `ocamlopt` compiler and
-        # its standard library — the baseline needs no opam packages.
-        run: sudo apt-get update && sudo apt-get install -y ocaml
+      - name: Install pinned OCaml with Flambda
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "ocaml-variants.5.5.1+options,ocaml-option-flambda"
+          opam-pin: false
+
+      - name: Verify and record benchmark toolchains
+        run: |
+          mkdir -p target
+          compiler="$(opam var bin)/ocamlopt"
+          test "$("$compiler" -version)" = "5.5.1"
+          test "$("$compiler" -config-var flambda)" = "true"
+          "$compiler" -config > target/ocaml-config.txt
+          printf 'FAI_BENCH_OCAMLOPT=%s\n' "$compiler" >> "$GITHUB_ENV"
+          printf '%s -O3 baseline.ml -o baseline\n' "$compiler" > target/ocaml-command.txt
+          printf 'OCAMLPARAM=%s\nOCAMLRUNPARAM=%s\n' "${OCAMLPARAM-}" "${OCAMLRUNPARAM-}" > target/ocaml-environment.txt
+          rustc -Vv > target/rustc-version.txt
 
       - name: Run benchmarks
         # `DIVAN_MAX_TIME` caps the wall time per benchmarked function. A
@@ -55,7 +66,7 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p target
-          cargo bench --workspace --benches --locked 2>&1 | tee target/bench-output.txt
+          opam exec -- cargo bench --workspace --benches --locked 2>&1 | tee target/bench-output.txt
 
       - name: Render report
         if: always()
@@ -72,4 +83,8 @@ jobs:
           path: |
             target/bench-output.txt
             target/bench-results.json
+            target/ocaml-config.txt
+            target/ocaml-command.txt
+            target/ocaml-environment.txt
+            target/rustc-version.txt
           if-no-files-found: ignore

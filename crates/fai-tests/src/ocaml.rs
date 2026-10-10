@@ -2,17 +2,20 @@
 //!
 //! The OCaml baseline (`ocaml/baseline.ml`) is a third delivered binary in the
 //! `algorithms_aot`/`algorithms_mem` benches, alongside the Fai `fai build`
-//! executable and the Rust `algo-baseline`. It is compiled once with `ocamlopt`
+//! executable and the Rust `algo-baseline`. It is compiled once with `ocamlopt -O3`
 //! into a native executable the benches spawn as `baseline <module> <n>` (the
 //! OCaml twin of `algo-baseline`), so the comparison pits a delivered, natively
 //! compiled OCaml binary against the Fai and Rust ones.
 //!
 //! The toolchain is optional: when `ocamlopt` is not on `PATH`, [`baseline`]
-//! yields `None` and the callers skip the OCaml rows, so `cargo bench` works
-//! without OCaml installed. The Benchmarks workflow installs OCaml, so the
-//! comparison is populated there. A present-but-broken toolchain (the embedded
-//! source fails to compile) is a loud panic, not a silent skip.
+//! yields `None`. `FAI_BENCH_OCAMLOPT` selects a particular compiler; an invalid
+//! explicit selection fails rather than silently skipping the comparison.
+//! The benchmark workflow pins a Flambda-enabled compiler. Each build retains
+//! its compiler configuration and flags alongside the executable.
 
+use std::ffi::OsStr;
+use std::io::ErrorKind;
+use std::path::Path;
 use std::process::Command;
 use std::sync::OnceLock;
 
@@ -40,17 +43,36 @@ pub fn tree_baseline() -> Option<&'static Utf8PathBuf> {
     BASELINE.get_or_init(|| build("tree_lookup", include_str!("../ocaml/tree_lookup.ml"))).as_ref()
 }
 
-/// Whether an `ocamlopt` native compiler is available on `PATH`.
-fn ocamlopt_available() -> bool {
-    Command::new("ocamlopt").arg("-version").output().is_ok_and(|out| out.status.success())
+/// Probes a compiler, allowing only an absent implicit default to be skipped.
+fn configuration(compiler: &OsStr, explicit: bool) -> Option<String> {
+    let output = match Command::new(compiler).arg("-config").output() {
+        Ok(output) => output,
+        Err(error) if !explicit && error.kind() == ErrorKind::NotFound => return None,
+        Err(error) => panic!("could not run selected OCaml compiler {compiler:?}: {error}"),
+    };
+    assert!(
+        output.status.success(),
+        "OCaml compiler {compiler:?} failed to report its configuration:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Some(String::from_utf8(output.stdout).expect("OCaml compiler configuration is UTF-8"))
 }
 
-/// Compiles the embedded OCaml baseline into a native executable in a scratch
-/// directory, returning its path (or `None` when `ocamlopt` is absent).
-fn build(name: &str, contents: &str) -> Option<Utf8PathBuf> {
-    if !ocamlopt_available() {
-        return None;
-    }
+/// Compiles an OCaml benchmark or validation fixture with `-O3` in a scratch
+/// directory, retaining compiler metadata beside it. Returns `None` only when
+/// the implicit `ocamlopt` is absent; an explicit `FAI_BENCH_OCAMLOPT` must work.
+#[must_use]
+pub fn build(name: &str, contents: &str) -> Option<Utf8PathBuf> {
+    let selected = std::env::var_os("FAI_BENCH_OCAMLOPT");
+    let compiler = Path::new(selected.as_deref().unwrap_or_else(|| OsStr::new("ocamlopt")));
+    // Relative paths containing a directory must survive changing to the build
+    // directory. Bare program names still resolve through PATH.
+    let compiler = if compiler.components().count() > 1 {
+        std::env::current_dir().expect("read working directory").join(compiler)
+    } else {
+        compiler.to_path_buf()
+    };
+    let config = configuration(compiler.as_os_str(), selected.is_some())?;
     let dir = Utf8PathBuf::from_path_buf(
         std::env::temp_dir().join(format!("fai-ocaml-{name}-{}", std::process::id())),
     )
@@ -58,12 +80,21 @@ fn build(name: &str, contents: &str) -> Option<Utf8PathBuf> {
     std::fs::create_dir_all(&dir).expect("create OCaml scratch dir");
     let source = dir.join("baseline.ml");
     std::fs::write(&source, contents).expect("write OCaml baseline source");
+    std::fs::write(
+        dir.join("compiler-info.txt"),
+        format!(
+            "compiler: {compiler:?}\nflags: -O3\nOCAMLPARAM: {:?}\nOCAMLRUNPARAM: {:?}\n{config}",
+            std::env::var_os("OCAMLPARAM"),
+            std::env::var_os("OCAMLRUNPARAM")
+        ),
+    )
+    .expect("write OCaml compiler configuration");
 
     // ocamlopt emits its .cmi/.cmx/.o artifacts in the working directory, so
     // compile from the scratch dir to keep them out of the workspace.
-    let output = Command::new("ocamlopt")
+    let output = Command::new(&compiler)
         .current_dir(&dir)
-        .args(["baseline.ml", "-o", "baseline"])
+        .args(["-O3", "baseline.ml", "-o", "baseline"])
         .output()
         .expect("run ocamlopt");
     assert!(
@@ -77,6 +108,21 @@ fn build(name: &str, contents: &str) -> Option<Utf8PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_absent_implicit_compiler_is_optional() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("missing-ocamlopt");
+        assert!(configuration(missing.as_os_str(), false).is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "could not run selected OCaml compiler")]
+    fn an_absent_explicit_compiler_is_an_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("missing-ocamlopt");
+        let _ = configuration(missing.as_os_str(), true);
+    }
 
     #[track_caller]
     fn validate(name: &str, assertion: &str) {
