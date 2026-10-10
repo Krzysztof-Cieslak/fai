@@ -47,6 +47,7 @@ use crate::ir::{
     CExpr, ClosureAlloc, CoreFn, ExprKind as K, FnAbi, FnId, Lit, LoweredDef, Prim, Repr,
 };
 
+mod local_constructors;
 mod repeated_map;
 mod reverse_prefix;
 mod scalar_specialize;
@@ -205,6 +206,7 @@ pub fn fusion_defs(db: &dyn Db) -> Option<Arc<FusionDefs>> {
 pub fn fuse_def(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<FuseResult> {
     let base = helper_inlined(db, file, name);
     let base = crate::scalar_peel::peel(db, base);
+    let base = if file.is_std(db) { base } else { local_constructors::reduce(db, base) };
     let no_fuse = || Arc::new(FuseResult { body: (*base).clone(), loops: Vec::new() });
     if file.is_std(db) {
         return no_fuse();

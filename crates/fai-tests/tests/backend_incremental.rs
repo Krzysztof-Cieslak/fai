@@ -498,3 +498,20 @@ fn integer_state_return_abi_edits_match_clean_callers() {
         },
     );
 }
+
+#[test]
+fn local_constructor_branch_edits_match_clean_lowering() {
+    let source = "module M\nlet choose yes = if yes then Some (1, 2) else None\npublic run : Bool -> Int\nlet run yes = match choose yes with | Some (a, b) -> a + b | None -> 0\n";
+    let edited = source.replace("Some (1, 2)", "Some (3, 4)");
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", source)], &[("M.fai", &edited)]],
+        |db, files| {
+            let file = db.source_file(files[0]).unwrap();
+            let name = Symbol::intern("run");
+            (
+                (*fai_core::fuse_def(db, file, name)).clone(),
+                (*object_code(db, file, name, false)).clone(),
+            )
+        },
+    );
+}

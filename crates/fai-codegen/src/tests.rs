@@ -3235,7 +3235,9 @@ fn record_update_copies_a_shared_record() {
             type R = {{ a : Int, n : Int }}
 
             bump : R -> R
-            let bump rec = {{ rec with n = rec.n + 1 }}
+            let bump rec =
+              if rec.n < 0 then bump {{ rec with n = 0 }}
+              else {{ rec with n = rec.n + 1 }}
 
             getN : R -> Int
             let getN rec = rec.n

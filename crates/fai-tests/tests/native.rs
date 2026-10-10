@@ -735,6 +735,21 @@ fn reuse_entry_calls_preserve_option_result_representation() {
 }
 
 #[test]
+fn local_constructor_reduction_keeps_strict_fields_and_closures() {
+    assert_eq!(
+        build_and_run(include_str!("fixtures/LocalConstructors.fai")),
+        ("first\nsecond\nyes\n".into(), Some(0))
+    );
+}
+
+#[test]
+fn an_unused_constructor_field_still_traps() {
+    let source = "module Main\nlet select divisor =\n  let pair = (1 / divisor, 3)\n  let (_, value) = pair\n  value\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (select 0))\n";
+    let (_, code) = build_and_run(source);
+    assert_ne!(code, Some(0));
+}
+
+#[test]
 fn unique_constructor_tags_run_natively() {
     assert_eq!(build_and_run(include_str!("fixtures/UniqueTags.fai")), ("39\n".into(), Some(0)));
 }
