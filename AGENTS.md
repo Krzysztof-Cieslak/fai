@@ -873,6 +873,16 @@ and encoding errors become `Fail`. JSON responders retain middleware headers.
 Use the shared `packages/` root for contract tests. The compiler's web execution
 fixtures additionally verify effect forwarding and JIT/AOT loopback examples.
 
+The optional `packages/cli` library exposes `Args`, a pure typed argv parser.
+Value readers and flag/option/positional declarations compose into application
+records, with generated help/version outcomes and structured errors carrying
+command paths and original argv positions. Checked decimal Int readers reject
+overflow. Single-valued options reject duplicates; flags are idempotent, counters
+and repeated options preserve occurrences. `--` ends option parsing, while an
+option's following value is consumed literally. Definition validation precedes
+scanning, and typed decoding follows declaration order. Test it directly with
+`fai test -C packages cli`; it depends only on the standard library.
+
 ## 6. Compiler pipeline
 
 ```

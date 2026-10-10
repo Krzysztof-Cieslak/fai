@@ -1,0 +1,41 @@
+module DefinitionSpec
+
+let invalid parser =
+  match Args.validateDefinition (Args.program (Args.described "tool" "") parser) with
+  | Err error -> error.kind = Args.InvalidDefinition && error.index = None && error.token = None
+  | Ok _ -> false
+example: invalid (Args.flag (Args.named "" ""))
+example: invalid (Args.flag (Args.named "--verbose" ""))
+example: invalid (Args.flag (Args.named "two words" ""))
+example: invalid (Args.flag (Args.named "é" ""))
+example: invalid (Args.flag (Args.short '1' (Args.named "one" "")))
+example: invalid (Args.flag (Args.short 'é' (Args.named "unicode" "")))
+example: invalid (Args.flag (Args.named "help" ""))
+example: invalid (Args.flag (Args.short 'h' (Args.named "other" "")))
+example: invalid (Args.map2 (fun a b ->
+  (a, b)) (Args.flag (Args.named "same" "")) (Args.option Args.string (Args.named "same" "")))
+example: invalid (Args.map2 (fun a b ->
+  (a, b)) (Args.flag (Args.short 'x' (Args.named "one" ""))) (Args.flag (Args.short 'x' (Args.named "two" ""))))
+example: invalid (Args.requiredOption (Args.metavar "" Args.int) (Args.named "number" ""))
+example: invalid (Args.option (Args.choice []) (Args.named "mode" ""))
+example: invalid (Args.option (Args.choice ["same", "same"]) (Args.named "mode" ""))
+example: invalid (Args.argument Args.string (Args.positional "" ""))
+example: invalid (Args.argument Args.string (Args.positional "TWO WORDS" ""))
+example: invalid (Args.argument Args.string (Args.positional "TWO\u{A0}WORDS" ""))
+example: invalid (Args.requiredOption (Args.metavar "N\u{2003}N" Args.int) (Args.named "number" ""))
+example: Args.validateDefinition (Args.program (Args.described "tool" "") (Args.argument Args.string (Args.positional "文件" "Input"))) = Ok ()
+example: invalid (Args.map2 (fun a b ->
+  (a, b)) (Args.argument Args.string (Args.positional "SAME" "")) (Args.argument Args.int (Args.positional "SAME" "")))
+example: invalid (Args.map2 (fun a b ->
+  (a, b)) (Args.optionalArgument Args.string (Args.positional "OPTIONAL" "")) (Args.argument Args.string (Args.positional "REQUIRED" "")))
+example: invalid (Args.map2 (fun a b ->
+  (a, b)) (Args.arguments Args.string (Args.positional "REST" "")) (Args.optionalArgument Args.string (Args.positional "LAST" "")))
+example: Result.isErr (Args.validateDefinition (Args.program (Args.described "" "") (Args.succeed ())))
+example: Result.isErr (Args.validateDefinition (Args.program (Args.described "bad\nname" "") (Args.succeed ())))
+
+let versioned parser = Args.program (Args.version "1.0" (Args.described "tool" "")) parser
+example: Result.isErr (Args.validateDefinition (versioned (Args.flag (Args.named "version" ""))))
+example: Result.isErr (Args.validateDefinition (versioned (Args.flag (Args.short 'V' (Args.named "verbose" "")))))
+example: Args.parse (Args.program (Args.described "tool" "") (Args.flag (Args.short 'V' (Args.named "version" "")))) [
+  "--version"
+] = Ok (Args.Parsed true)

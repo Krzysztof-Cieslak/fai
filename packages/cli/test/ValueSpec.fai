@@ -1,0 +1,46 @@
+module ValueSpec
+
+example: Args.parseValue Args.string "" = Ok ""
+example: Args.parseValue Args.string " é😀 \"quoted\" " = Ok " é😀 \"quoted\" "
+example: Args.parseValue Args.bool "true" = Ok true
+example: Args.parseValue Args.bool "false" = Ok false
+example: Args.parseValue Args.bool "True" = Err "expected true or false"
+example: Args.parseValue Args.bool "1" = Err "expected true or false"
+example: Args.parseValue Args.int "0" = Ok 0
+example: Args.parseValue Args.int "+00042" = Ok 42
+example: Args.parseValue Args.int "-00042" = Ok (-42)
+example: Args.parseValue Args.int "9223372036854775807" = Ok 9223372036854775807
+example: Args.parseValue Args.int "-9223372036854775808" = Ok (-9223372036854775808)
+example: Args.parseValue Args.int "9223372036854775808" = Err "outside the signed 64-bit Int range"
+example: Args.parseValue Args.int "-9223372036854775809" = Err "outside the signed 64-bit Int range"
+example: Args.parseValue Args.int "18446744073709551616" = Err "outside the signed 64-bit Int range"
+example: Args.parseValue Args.int "" = Err "expected a decimal Int"
+example: Args.parseValue Args.int "+" = Err "expected a decimal Int"
+example: Args.parseValue Args.int "-" = Err "expected a decimal Int"
+example: Args.parseValue Args.int " 1" = Err "expected a decimal Int"
+example: Args.parseValue Args.int "1 " = Err "expected a decimal Int"
+example: Args.parseValue Args.int "1.0" = Err "expected a decimal Int"
+example: Args.parseValue Args.int "1e2" = Err "expected a decimal Int"
+example: Args.parseValue Args.int "0x10" = Err "expected a decimal Int"
+example: Args.parseValue Args.int "１２" = Err "expected a decimal Int"
+example: Args.parseValue (Args.choice ["fast", "safe", ""]) "safe" = Ok "safe"
+example: Args.parseValue (Args.choice ["fast", "safe", ""]) "" = Ok ""
+example: Result.isErr (Args.parseValue (Args.choice ["fast", "safe"]) "FAST")
+forall value: Args.parseValue Args.int (Int.toString value) = Ok value
+
+type Port =
+  | Port Int
+
+let readPort text =
+  match Args.parseValue Args.int text with
+  | Err message -> Err message
+  | Ok value ->
+    if value >= 0 && value <= 65535 then Ok (Port value) else Err "port must be in 0..65535"
+
+let showPort port =
+  match port with
+  | Port value -> Int.toString value
+
+let port = Args.custom "PORT" readPort showPort
+example: Args.parseValue port "8080" = Ok (Port 8080)
+example: Args.parseValue port "65536" = Err "port must be in 0..65535"

@@ -1,0 +1,48 @@
+module HelpSpec
+
+let parser =
+  Args.map2 (fun verbose port ->
+    (verbose, port)) (Args.flag (Args.short 'v' (Args.named "verbose" "Verbose output"))) (Args.optionWithDefault 8080 (Args.metavar "PORT" Args.int) (Args.short 'p' (Args.named "port" "TCP port")))
+
+let app = Args.program (Args.version "tool 1.0" (Args.described "tool" "Example tool")) parser
+
+let expected =
+  "Usage: tool [OPTIONS]\n\nExample tool\n\nOptions:\n  -v, --verbose  Verbose output\n  -p, --port PORT  TCP port (default: 8080)\n  -h, --help  Show this help\n  -V, --version  Show version\n"
+example: Args.help app = Ok expected
+example: Args.parse app ["--help"] = Ok (Args.Help expected)
+example: Args.parse app ["-vh"] = Ok (Args.Help expected)
+example: Args.parse app ["--help", "--unknown"] = Ok (Args.Help expected)
+example: Args.parse app ["--port=bad", "--help"] = Ok (Args.Help expected)
+example: Args.parse app ["--version"] = Ok (Args.Version "tool 1.0")
+example: Args.parse app ["-V"] = Ok (Args.Version "tool 1.0")
+example: Result.isErr (Args.parse app ["--version=bad"])
+example: Result.isErr (Args.parse app ["--unknown", "--help"])
+
+let required =
+  Args.program (Args.described "copy" "") (Args.map2 (fun a b ->
+    (a, b)) (Args.requiredOption Args.string (Args.named "output" "Destination")) (Args.arguments (Args.choice [
+    "one",
+    "two"
+  ]) (Args.positional "FILES" "Inputs")))
+example: Args.help required = Ok "Usage: copy [OPTIONS] --output TEXT [FILES...]\n\nArguments:\n  [FILES...]  Inputs (choices: \"one\", \"two\")\n\nOptions:\n  --output TEXT  Destination (required)\n  -h, --help  Show this help\n"
+example: Result.isOk (Args.parse required ["--help"])
+
+let defaultText =
+  Args.program (Args.described "text" "") (Args.optionWithDefault "a\n\"b\\c" Args.string (Args.named "text" ""))
+example: Args.help defaultText = Ok "Usage: text [OPTIONS]\n\nOptions:\n  --text TEXT  (default: \"a\\n\\\"b\\\\c\")\n  -h, --help  Show this help\n"
+
+let explosive text = if text = "boom" then Ok (1 / 0) else Ok 0
+
+let deferred =
+  Args.program (Args.described "tool" "") (Args.requiredOption (Args.custom "N" explosive Int.toString) (Args.named "number" ""))
+example: Args.parse deferred [
+  "--number=boom",
+  "--help"
+] = Result.map (fun text -> Args.Help text) (Args.help deferred)
+example: Args.errorToString {
+  command = ["tool"],
+  index = Some 1,
+  kind = Args.InvalidValue,
+  message = "bad input",
+  token = Some "x"
+} = "tool (argument 2): bad input"

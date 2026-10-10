@@ -4801,5 +4801,17 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   and explicitly reject a failed classifier. Compiler CI retains the full Rust
   suite and execution fixtures and publishes reusable fingerprinted bundles.
 
+- **D151 Typed command-line declarations.** `packages/cli` is a pure Fai source
+  library over already-tokenized argv. An opaque typed parser pairs static
+  declaration metadata with a pure decoder; applicative composition builds
+  application records and drives deterministic help from the same definitions.
+  Schema validation precedes a single token scan, followed by typed decoding in
+  declaration order. Value-taking options consume their following word literally;
+  `--` in option position ends option parsing. Single-valued options reject
+  repetition, boolean switches are idempotent, and counters/repeated options
+  retain occurrence order. Help/version requests are explicit successful outcomes,
+  while definition/input errors carry stable categories and argv locations. The
+  library performs no I/O or process exit and has no source-package dependencies.
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.
