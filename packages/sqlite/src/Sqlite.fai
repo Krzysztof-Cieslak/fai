@@ -1,0 +1,152 @@
+module Sqlite
+
+/// How the outer transaction acquires its SQLite locks. Nested scopes use savepoints.
+public type TransactionMode =
+  | Deferred
+  | Immediate
+  | Exclusive
+
+/// Busy waits are bounded in milliseconds. Foreign keys start enabled.
+public type Options = { busyTimeoutMs : Int, readOnly : Bool, transactionMode : TransactionMode }
+
+/// A writable database, a five-second busy timeout, and deferred transactions.
+public defaults : Options
+let defaults = { busyTimeoutMs = 5000, readOnly = false, transactionMode = Deferred }
+
+/// Validate options before opening a connection.
+public validateOptions : Options -> Result Unit Sql.Error
+let validateOptions options =
+  if options.busyTimeoutMs < 0 then
+    Err (Sql.error Sql.InvalidInput "open" "busy timeout must be nonnegative")
+  else
+    Ok ()
+
+let mode option =
+  match option with
+  | Deferred -> 0
+  | Immediate -> 1
+  | Exclusive -> 2
+
+let kind operation code =
+  if code = -1 then
+    Sql.Closed
+  else if code = -2 then
+    Sql.TransactionState
+  else if code = -3 then
+    Sql.Unsupported
+  else
+    let primary = Int.and code 255
+    if primary = 19 then
+      Sql.Constraint
+    else if primary = 5 || primary = 6 then
+      Sql.Busy
+    else if primary = 9 then
+      Sql.Cancelled
+    else if primary = 23 then
+      Sql.Unsupported
+    else if primary = 20 then
+      (if operation = "next" then Sql.DecodeFailure else Sql.InvalidInput)
+    else if primary = 21 || primary = 25 then Sql.InvalidInput else Sql.BackendFailure
+
+nativeError : String -> SqliteHost.Error -> Sql.Error
+let nativeError operation error = Sql.Failure {
+  backend = Some "sqlite",
+  code = Some (Int.toString error.code),
+  column = None,
+  kind = kind operation error.code,
+  message = error.message,
+  operation = operation,
+  row = None
+}
+
+let toNative value =
+  match value with
+  | Sql.Null -> SqliteHost.Null
+  | Sql.Integer value -> SqliteHost.Integer value
+  | Sql.Real value -> SqliteHost.RealBits (Float.toBits value)
+  | Sql.Text value -> SqliteHost.Text value
+  | Sql.Blob value -> SqliteHost.Blob value
+
+let fromNative value =
+  match value with
+  | SqliteHost.Null -> Sql.Null
+  | SqliteHost.Integer value -> Sql.Integer value
+  | SqliteHost.RealBits value -> Sql.Real (Float.fromBits value)
+  | SqliteHost.Text value -> Sql.Text value
+  | SqliteHost.Blob value -> Sql.Blob value
+example: fromNative (toNative (Sql.Integer (-9223372036854775808))) = Sql.Integer (-9223372036854775808)
+example: fromNative (toNative (Sql.Text "a\u{0}é😀")) = Sql.Text "a\u{0}é😀"
+example: fromNative (toNative (Sql.Blob Bytes.empty)) = Sql.Blob Bytes.empty
+example: fromNative (toNative (Sql.Real (-0.0))) = Sql.Real (-0.0)
+example: fromNative (toNative Sql.Null) = Sql.Null
+forall value: fromNative (toNative (Sql.Integer value)) = Sql.Integer value
+forall value: fromNative (toNative (Sql.Real value)) = Sql.Real value
+forall value: fromNative (toNative (Sql.Text value)) = Sql.Text value
+forall values: fromNative (toNative (Sql.Blob (Bytes.fromList values))) = Sql.Blob (Bytes.fromList values)
+
+finish : SqliteHost.Sqlite -> SqliteHost.Cursor -> Unit -> Result Unit Sql.Error / { SqliteHost.Sqlite }
+let finish host cursor unit = Result.mapError (nativeError "close cursor") (host.finish cursor)
+
+cursorRows : SqliteHost.Sqlite -> SqliteHost.Cursor -> Array Sql.Column -> Sql.Rows { SqliteHost.Sqlite | 'e }
+let cursorRows host cursor columns =
+  Sql.rows columns (pull host cursor columns) (finish host cursor)
+
+pull : SqliteHost.Sqlite -> SqliteHost.Cursor -> Array Sql.Column -> Unit -> Result (Option (Sql.Row * Sql.Rows { SqliteHost.Sqlite | 'e })) Sql.Error / { SqliteHost.Sqlite | 'e }
+let pull host cursor columns unit =
+  match host.next cursor with
+  | Err error -> Err (nativeError "next" error)
+  | Ok None -> Ok None
+  | Ok (Some values) ->
+    Result.map (fun row ->
+      Some (row, cursorRows host cursor columns)) (Sql.row columns (Array.map fromNative values))
+
+query : SqliteHost.Sqlite -> SqliteHost.Session -> Sql.Statement -> Result (Sql.Rows { SqliteHost.Sqlite | 'e }) Sql.Error / { SqliteHost.Sqlite | 'e }
+let query host raw statement =
+  match host.query raw statement.text (Array.map toNative statement.parameters) with
+  | Err error -> Err (nativeError "query" error)
+  | Ok cursor -> Ok (cursorRows host cursor (host.columns cursor))
+
+execute : SqliteHost.Sqlite -> SqliteHost.Session -> Sql.Statement -> Result Sql.Execution Sql.Error / { SqliteHost.Sqlite }
+let execute host raw statement =
+  Result.map (fun count -> {
+    affectedRows = count
+  }) (Result.mapError (nativeError "execute") (host.execute raw statement.text (Array.map toNative statement.parameters)))
+
+commit : SqliteHost.Sqlite -> SqliteHost.Session -> Unit -> Result Unit Sql.Error / { SqliteHost.Sqlite }
+let commit host raw unit = Result.mapError (nativeError "commit") (host.commit raw)
+
+rollback : SqliteHost.Sqlite -> SqliteHost.Session -> Unit -> Result Unit Sql.Error / { SqliteHost.Sqlite }
+let rollback host raw unit = Result.mapError (nativeError "rollback") (host.rollback raw)
+
+session : SqliteHost.Sqlite -> Options -> SqliteHost.Session -> Sql.Session { SqliteHost.Sqlite | 'e }
+let session host options raw = Sql.session {
+  begin = begin host options raw,
+  commit = commit host raw,
+  execute = execute host raw,
+  query = query host raw,
+  rollback = rollback host raw
+}
+
+begin : SqliteHost.Sqlite -> Options -> SqliteHost.Session -> Sql.Isolation -> Result (Sql.Session { SqliteHost.Sqlite | 'e }) Sql.Error / { SqliteHost.Sqlite | 'e }
+let begin host options raw isolation =
+  if isolation <> Sql.Default && isolation <> Sql.Serializable then
+    Err (Sql.error Sql.Unsupported "begin" "SQLite supports Default and Serializable isolation")
+  else
+    Result.map (session host options) (Result.mapError (nativeError "begin") (host.begin raw (mode options.transactionMode)))
+
+/// Open a database for one callback. The connection closes even on failure or
+/// cancellation; retained session/cursor aliases are invalid after scope exit.
+public withConnection : { sqlite : SqliteHost.Sqlite | 'r } -> Options -> String -> (Sql.Session { SqliteHost.Sqlite | 'e } -> Result 'a Sql.Error / { SqliteHost.Sqlite | 'e }) -> Result 'a Sql.Error / { SqliteHost.Sqlite | 'e }
+let withConnection env options path work =
+  match validateOptions options with
+  | Err error -> Err error
+  | Ok _ ->
+    match env.sqlite.open path options.readOnly options.busyTimeoutMs with
+    | Err error -> Err (nativeError "open" error)
+    | Ok raw ->
+      let result = work (session env.sqlite options raw)
+      Sql.cleanup result (Result.mapError (nativeError "close") (env.sqlite.close raw))
+
+/// A private in-memory database with the same scoped lifetime as a file database.
+public withMemory : { sqlite : SqliteHost.Sqlite | 'r } -> (Sql.Session { SqliteHost.Sqlite | 'e } -> Result 'a Sql.Error / { SqliteHost.Sqlite | 'e }) -> Result 'a Sql.Error / { SqliteHost.Sqlite | 'e }
+let withMemory env work = withConnection env defaults ":memory:" work

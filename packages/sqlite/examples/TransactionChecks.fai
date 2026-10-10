@@ -1,0 +1,63 @@
+module TransactionChecks
+
+public type Runtime = {
+  clock : Clock,
+  concurrency : Concurrency,
+  console : Console,
+  sqlite : SqliteHost.Sqlite
+}
+
+let runtime = {
+  clock = stdClock,
+  concurrency = stdConcurrency,
+  console = stdConsole,
+  sqlite = SqliteHost.native
+}
+
+let insert n session =
+  Sql.execute session (Sql.statement "insert into items(value) values (?)" [| Sql.Integer n |])
+
+let read session =
+  SqlDecode.query (SqlDecode.index 0 SqlDecode.int) session (Sql.text "select value from items order by value")
+
+let rejected child =
+  let inserted = insert 2 child
+  Err (Sql.error Sql.InvalidInput "test" "rollback requested")
+
+let nested parent =
+  let inserted = insert 1 parent
+  let rolledBack = Sql.transaction Sql.Default parent rejected
+  if Result.isOk inserted && Result.isErr rolledBack then
+    Ok ()
+  else
+    Err (Sql.error Sql.InvalidInput "test" "unexpected result")
+
+work : Runtime -> Sql.Session { Clock, Concurrency, SqliteHost.Sqlite } -> Result Bool Sql.Error / { Clock, Concurrency, SqliteHost.Sqlite }
+let work env session =
+  let created = Sql.execute session (Sql.text "create table items(value integer unique)")
+  let committed = Sql.transaction Sql.Serializable session nested
+  let rows = read session
+  let total =
+    Sql.withRows session (Sql.text "with recursive n(x) as (values(1) union all select x+1 from n where x < 10000) select x from n") (Sql.fold (fun sum row ->
+      Result.map (fun value ->
+        sum + value) (SqlDecode.decode (SqlDecode.index 0 SqlDecode.int) row)) 0)
+  let interrupted =
+    Async.timeout env.concurrency env.clock 50 (fun _ ->
+      Sql.query session (Sql.text "with recursive n(x) as (values(1) union all select x+1 from n) select sum(x) from n"))
+  let recovered = read session
+  let early = Sql.withRows session (Sql.text "select value from items") (fun rows -> Ok rows)
+  let closed =
+    match early with
+    | Err _ -> false
+    | Ok rows -> Result.isErr (Sql.next rows)
+  Ok (Result.isOk created && committed = Ok () && rows = Ok [|
+    1
+  |] && total = Ok 50005000 && interrupted = None && recovered = rows && closed)
+
+public main : Runtime -> Unit / { Clock, Concurrency, Console, SqliteHost.Sqlite }
+let main env =
+  let result = Sqlite.withMemory env (work env)
+  env.console.writeLine (if result = Ok true then
+    "transaction checks passed"
+  else
+    "transaction checks failed")

@@ -266,6 +266,8 @@ pub const KIND_FILE: u64 = 16;
 /// A TLS session handle (a `Tls` value). Like [`KIND_TASK`]: its single slot holds
 /// a raw `Arc` pointer to a rustls connection, dropped when the cell dies.
 pub const KIND_TLS: u64 = 17;
+/// A SQLite session or cursor owning a native reference-counted resource.
+pub const KIND_SQLITE: u64 = 18;
 
 /// Byte offset of the raw `Arc` pointer inside a task, channel, or nursery handle
 /// cell.
@@ -349,6 +351,10 @@ pub static FAI_FILE_DESC: Descriptor = descriptor(KIND_FILE, "File");
 /// connection, released by `free_obj`).
 #[unsafe(no_mangle)]
 pub static FAI_TLS_DESC: Descriptor = descriptor(KIND_TLS, "Tls");
+
+/// Descriptor for SQLite session and cursor handles.
+#[unsafe(no_mangle)]
+pub static FAI_SQLITE_DESC: Descriptor = descriptor(KIND_SQLITE, "Sqlite");
 
 /// Descriptor for boxed (overflowed) `Int` objects (leaf).
 #[unsafe(no_mangle)]
@@ -1333,6 +1339,7 @@ unsafe fn free_obj(p: *mut u8) {
                 KIND_NET => reactor::drop_net_handle(read_i64(p, HANDLE_PTR_OFFSET)),
                 KIND_FILE => io::drop_file_handle(read_i64(p, HANDLE_PTR_OFFSET)),
                 KIND_TLS => tls::drop_tls_handle(read_i64(p, HANDLE_PTR_OFFSET)),
+                KIND_SQLITE => sqlite::drop_handle(read_i64(p, HANDLE_PTR_OFFSET)),
                 _ => {}
             }
             read_u64(p, SIZE_OFFSET) as usize
@@ -4033,7 +4040,10 @@ fn guard_comparable(a: Value, b: Value) {
 /// Native resource handles compare by the identity of their retained resource,
 /// not by the allocation address of a particular Fai wrapper.
 fn is_resource_kind(kind: u64) -> bool {
-    matches!(kind, KIND_TASK | KIND_CHANNEL | KIND_NURSERY | KIND_NET | KIND_FILE | KIND_TLS)
+    matches!(
+        kind,
+        KIND_TASK | KIND_CHANNEL | KIND_NURSERY | KIND_NET | KIND_FILE | KIND_TLS | KIND_SQLITE
+    )
 }
 
 fn resource_identity(v: Value) -> u64 {
@@ -5121,6 +5131,14 @@ mod io;
 
 /// The TLS engine (sans-I/O rustls) backing the `Tls` capability.
 mod tls;
+
+/// SQLite resource ownership and the native database capability.
+mod sqlite;
+
+pub use sqlite::{
+    fai_sqlite_begin, fai_sqlite_close, fai_sqlite_columns, fai_sqlite_commit, fai_sqlite_execute,
+    fai_sqlite_finish, fai_sqlite_next, fai_sqlite_open, fai_sqlite_query, fai_sqlite_rollback,
+};
 
 // The scheduler's C-ABI entry points (the `Concurrency` capability), re-exported at
 // the crate root so generated code and the JIT symbol registry reach them as

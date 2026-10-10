@@ -1,0 +1,34 @@
+module SqliteExample
+
+public type Runtime = { console : Console, sqlite : SqliteHost.Sqlite }
+
+let runtime = { console = stdConsole, sqlite = SqliteHost.native }
+
+let user =
+  SqlDecode.map2 (fun id name -> {
+    id = id,
+    name = name
+  }) (SqlDecode.field "id" SqlDecode.int) (SqlDecode.field "name" SqlDecode.string)
+
+let insert session =
+  Sql.execute session (Sql.statement "insert into users(id, name) values (?, ?)" [|
+    Sql.Integer 1,
+    Sql.Text "Ada"
+  |])
+
+let work session =
+  match Sql.execute session (Sql.text "create table users(id integer primary key, name text not null)") with
+  | Err error -> Err error
+  | Ok _ ->
+    match Sql.transaction Sql.Default session insert with
+    | Err error -> Err error
+    | Ok _ -> SqlDecode.query user session (Sql.text "select id, name from users order by id")
+
+public main : Runtime -> Unit / { Console, SqliteHost.Sqlite }
+let main env =
+  match Sqlite.withMemory env work with
+  | Err error -> env.console.writeLine (Sql.errorToString error)
+  | Ok users ->
+    match Array.get 0 users with
+    | None -> env.console.writeLine "no rows"
+    | Some user -> env.console.writeLine (Int.toString user.id ++ " " ++ user.name)

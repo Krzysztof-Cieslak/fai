@@ -32,7 +32,7 @@ public type ErrorKind =
 
 /// Structured operation errors, including both failures when cleanup also fails.
 public type Error =
-  | Failure { backend : Option String, code : Option Int, column : Option Int, kind : ErrorKind, message : String, operation : String, row : Option Int }
+  | Failure { backend : Option String, code : Option String, column : Option Int, kind : ErrorKind, message : String, operation : String, row : Option Int }
   | CleanupFailed Error Error
 
 /// Number of rows directly changed by a command. Generated IDs use RETURNING or

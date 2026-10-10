@@ -1,0 +1,29 @@
+module ValueChecks
+
+public type Runtime = { console : Console, sqlite : SqliteHost.Sqlite }
+
+let runtime = { console = stdConsole, sqlite = SqliteHost.native }
+
+let values = [|
+  Sql.Null,
+  Sql.Integer (-9223372036854775808),
+  Sql.Integer 9223372036854775807,
+  Sql.Real 1.25,
+  Sql.Text "a\u{0}é😀",
+  Sql.Blob (Bytes.fromList [0, 255]),
+  Sql.Text "",
+  Sql.Blob Bytes.empty
+|]
+
+let query session =
+  Sql.query session (Sql.statement "select ? as n, ? as lo, ? as hi, ? as r, ? as t, ? as b, ? as e, ? as z" values)
+
+public main : Runtime -> Unit / { Console, SqliteHost.Sqlite }
+let main env =
+  let result = Sqlite.withMemory env query
+  let valid =
+    match result with
+    | Err _ -> false
+    | Ok rows ->
+      Array.length rows = 1 && Sql.values (Array.unsafeGet 0 rows) = values && (Array.unsafeGet 1 (Sql.columns (Array.unsafeGet 0 rows))).name = "lo"
+  env.console.writeLine (if valid then "SQL value checks passed" else "SQL value checks failed")

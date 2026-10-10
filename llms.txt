@@ -982,6 +982,11 @@ forwards producer effects and joins its tasks when sending ends.
 
 ---
 
+SQLite is exposed by the standard `SqliteHost` capability module. An application
+can use a runtime record such as `{ console = stdConsole, sqlite = SqliteHost.native }`
+and declare `/ { SqliteHost.Sqlite }` where it accesses a database. The optional
+`sql`/`sqlite` source packages provide the higher-level session/decoder API.
+
 ## 11. Interfaces and instances
 
 An **interface** is a named set of method signatures. An **interface instance**
@@ -1712,6 +1717,12 @@ scoped chunk writer and returns `Result Unit String`; headers are sent first,
 successful completion ends the chunked body, and failures close the connection.
 HEAD/bodyless statuses do not run producers. Writers cannot outlive production.
 
+`SqliteHost` provides opaque native `Session`/`Cursor` handles and the `Sqlite`
+capability (`native` is the standard instance). Its methods are `open`/`close`,
+`execute`/`query`, `columns`/`next`/`finish`, and `begin`/`commit`/`rollback`.
+Use the source-package driver for normal application code. SQLite is embedded;
+scheduled operations use the blocking pool and observe task cancellation.
+
 ### Test — property testing (used by `forall`)
 
 You rarely call this directly, but a custom generator overrides synthesis for a
@@ -1745,6 +1756,15 @@ failure using a pinned child session. Decoders use `field`/`index`, explicit
 `nullable`, `map`/`map2`/`andMap`, and retain row/column error locations. Duplicate
 names are ambiguous; ordinal access remains valid. `Sql.session` and
 `Sql.fromList` support pure fake drivers. Run `fai test -C packages sql`.
+`packages/sqlite` implements sessions with `Sqlite.withMemory env work` and
+`withConnection env options path work`, where env supplies `sqlite : SqliteHost.Sqlite`.
+`Sqlite.defaults` uses writable connections, a configurable 5000 ms busy timeout
+and `Deferred` outer transactions (`Immediate`/`Exclusive` are also available).
+Each transaction receives a pinned child session; parent aliases are unavailable
+until it ends. Nested scopes use savepoints. `Default` and `Serializable` are
+supported isolation levels. Bind parameters separately using SQLite's indexed
+placeholder conventions. Use `Sql.withRows` for streaming and `SqlDecode.query`
+for typed buffering. Close/rollback/finalization still work during cancellation.
 
 Including `packages/sse/src` supplies the shared `Sse` codec. `Sse.events limits
 byteStream` yields records with `data`, `eventType`, and `lastEventId`; `Sse.updates`

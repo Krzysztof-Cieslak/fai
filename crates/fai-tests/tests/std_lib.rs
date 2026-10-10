@@ -80,6 +80,7 @@ fn every_public_std_function_has_an_example() {
             "Concurrency",
             "Net",
             "Tls",
+            "Sqlite",
             "Runtime",
         ];
 
