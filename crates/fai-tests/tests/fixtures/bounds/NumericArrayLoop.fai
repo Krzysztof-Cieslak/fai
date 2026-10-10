@@ -1,0 +1,9 @@
+module Main
+
+let fill i count values =
+  if i >= count then values else fill (i + 1) count (Array.unsafeSet i 7 values)
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let result = fill 0 3 [| 0, 0 |]
+  runtime.console.writeLine (Int.toString (Array.length result))

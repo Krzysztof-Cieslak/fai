@@ -8,6 +8,7 @@ const CROSS_CALL: &str = include_str!("fixtures/bounds/CrossCall.fai");
 const FUSED_CALL: &str = include_str!("fixtures/bounds/FusedCaller.fai");
 const FUSED_FUNCTION: &str = include_str!("fixtures/bounds/FusedFunction.fai");
 const SPREAD_LOOP: &str = include_str!("fixtures/bounds/SpreadLoop.fai");
+const NUMERIC_LOOP: &str = include_str!("fixtures/bounds/NumericArrayLoop.fai");
 
 #[track_caller]
 fn assert_bounds_trap(case: &str, shadow: bool) {
@@ -104,6 +105,11 @@ fn spread_self_loops_keep_checks_for_later_iterations() {
 }
 
 #[test]
+fn unique_numeric_array_loops_keep_update_bounds_checks() {
+    assert_bounds_trap("numeric-loop", true);
+}
+
+#[test]
 fn bounds_worker() {
     let Ok(case) = std::env::var("FAI_BOUNDS_CASE") else { return };
     let source = match case.as_str() {
@@ -113,6 +119,7 @@ fn bounds_worker() {
         "fused-call" | "fused-wire" => FUSED_CALL,
         "fused-function" => FUSED_FUNCTION,
         "spread-loop" => SPREAD_LOOP,
+        "numeric-loop" => NUMERIC_LOOP,
         _ => panic!("unknown bounds case"),
     };
     let mut db = FaiDatabase::new();

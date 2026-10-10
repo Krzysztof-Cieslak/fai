@@ -1028,6 +1028,8 @@ fn build_fn<M: Module>(
             invariant_callback: None,
             spread_loop: None,
             frame_dependent: false,
+            unique_array_versioned: false,
+            unique_array_locals: FxHashSet::default(),
             loop_ctx: None,
             result_slot: None,
             bounds: Bounds::new(),
@@ -1523,6 +1525,10 @@ struct Translator<'a, M: Module> {
     spread_loop: Option<Block>,
     /// A stack closure or PAP can keep references into the current activation.
     frame_dependent: bool,
+    /// Prevents recursively cloning a versioned numeric-array loop.
+    unique_array_versioned: bool,
+    /// Array aliases proven to preserve the entry guard's unique ownership.
+    unique_array_locals: FxHashSet<LocalId>,
     /// The enclosing tail-call loop, while translating a `Join` body: where
     /// `Recur` jumps back and where the loop's result exits.
     loop_ctx: Option<LoopCtx>,
@@ -4435,9 +4441,14 @@ impl<M: Module> Translator<'_, M> {
         };
 
         let len_off = i32::try_from(rt::ARRAY_LEN_OFFSET).expect("array length offset");
-        let rc_off = i32::try_from(rt::RC_OFFSET).expect("rc offset");
-        let rc = self.builder.ins().load(types::I64, MemFlags::trusted(), base, rc_off);
-        let unique = self.builder.ins().icmp_imm(IntCC::Equal, rc, 1);
+        let unique = if matches!(args[0].kind, ExprKind::Local(local) if self.unique_array_locals.contains(&local))
+        {
+            self.builder.ins().iconst(types::I8, 1)
+        } else {
+            let rc_off = i32::try_from(rt::RC_OFFSET).expect("rc offset");
+            let rc = self.builder.ins().load(types::I64, MemFlags::trusted(), base, rc_off);
+            self.builder.ins().icmp_imm(IntCC::Equal, rc, 1)
+        };
 
         // When the index is provably in range, the in-place fast path is gated on
         // uniqueness alone; the slow runtime path then handles only the shared-copy
@@ -6929,7 +6940,50 @@ impl<M: Module> Translator<'_, M> {
     /// `Error`, so the loop node's recorded type can be unreliable; reading the
     /// actual value's representation (as the `if`-merge does) keeps an unboxed
     /// `f64` loop result from being mistaken for a boxed word.
-    fn join(&mut self, params: &[LocalId], body: &CExpr, _result_ty: &Ty) -> Value {
+    fn join(&mut self, params: &[LocalId], body: &CExpr, result_ty: &Ty) -> Value {
+        if !self.concurrent
+            && !self.unique_array_versioned
+            && let Some(plan) = crate::array_loop::plan(params, body, &self.var_tys)
+        {
+            self.unique_array_versioned = true;
+            let array = self.use_var(plan.root);
+            let count = self.builder.ins().load(
+                types::I64,
+                MemFlags::trusted(),
+                array,
+                rt::RC_OFFSET as i32,
+            );
+            let unique = self.builder.ins().icmp_imm(IntCC::Equal, count, 1);
+            let fast = self.builder.create_block();
+            let shared = self.builder.create_block();
+            let done = self.builder.create_block();
+            self.builder.append_block_param(done, types::I64);
+            self.builder.ins().brif(unique, fast, &[], shared, &[]);
+            let bounds = self.bounds.clone();
+            let array_tags = self.array_float_tag.clone();
+            self.builder.switch_to_block(fast);
+            self.builder.seal_block(fast);
+            self.unique_array_locals = plan.aliases;
+            let value = self.join_plain(params, body, result_ty);
+            self.builder.ins().jump(done, &[value.into()]);
+            self.unique_array_locals.clear();
+            self.bounds = bounds.clone();
+            self.array_float_tag = array_tags.clone();
+            self.builder.switch_to_block(shared);
+            self.builder.seal_block(shared);
+            let value = self.join_plain(params, body, result_ty);
+            self.builder.ins().jump(done, &[value.into()]);
+            self.builder.switch_to_block(done);
+            self.builder.seal_block(done);
+            self.bounds = bounds;
+            self.array_float_tag = array_tags;
+            self.unique_array_versioned = false;
+            return self.builder.block_params(done)[0];
+        }
+        self.join_plain(params, body, result_ty)
+    }
+
+    fn join_plain(&mut self, params: &[LocalId], body: &CExpr, _result_ty: &Ty) -> Value {
         let header = self.builder.create_block();
         let exit = self.builder.create_block();
 
@@ -7352,7 +7406,7 @@ fn is_data_maybe_immediate(ty: &Ty) -> bool {
 /// read this map to specialize. `Ty::Error` is skipped, leaving the local to the
 /// runtime fallback rather than recording a useless type (e.g. a reuse `Reset`'s
 /// synthesized base carries no type).
-fn collect_local_types(e: &CExpr, out: &mut FxHashMap<usize, Ty>) {
+pub(crate) fn collect_local_types(e: &CExpr, out: &mut FxHashMap<usize, Ty>) {
     let note = |out: &mut FxHashMap<usize, Ty>, local: LocalId, ty: &Ty| {
         if !matches!(ty, Ty::Error) {
             out.insert(local.index(), ty.clone());

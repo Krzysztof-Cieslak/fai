@@ -2454,6 +2454,24 @@ fn effectful_subtraction_keeps_every_effect() {
 }
 
 #[test]
+fn numeric_array_loop_preserves_a_shared_input() {
+    let source = "module M\nlet loop i xs = if i >= Array.length xs then xs else loop (i + 1) (Array.unsafeSet i (Array.unsafeGet i xs + 1) xs)\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let original = [| 9223372036854775807, 2, 3 |]\n  let changed = loop 0 original\n  let ok = Array.toList original = [9223372036854775807, 2, 3] && Array.toList changed = [-9223372036854775808, 3, 4]\n  r.console.writeLine (if ok then \"yes\" else \"no\")\n";
+    assert_eq!(run(source), (0, "yes\n".into()));
+}
+
+#[test]
+fn numeric_array_loop_preserves_float_slots() {
+    let source = "module M\nlet loop i xs = if i >= Array.length xs then xs else loop (i + 1) (Array.unsafeSet i (Array.unsafeGet i xs + 0.25) xs)\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let changed = loop 0 [| 0.0, 1.0 |]\n  r.console.writeLine (if Array.toList changed = [0.25, 1.25] then \"yes\" else \"no\")\n";
+    assert_eq!(run(source), (0, "yes\n".into()));
+}
+
+#[test]
+fn empty_numeric_array_loop_keeps_its_input_value() {
+    let source = "module M\nlet loop i xs = if i >= Array.length xs then xs else loop (i + 1) (Array.unsafeSet i (i + 1) xs)\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (if Array.toList (loop 0 [||]) = [] then \"yes\" else \"no\")\n";
+    assert_eq!(run(source), (0, "yes\n".into()));
+}
+
+#[test]
 fn generic_equality_on_an_enum_takes_the_immediate_path() {
     // Every constructor is nullary, so every value is an immediate: the guard's
     // fast arm always runs.
