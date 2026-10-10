@@ -4778,5 +4778,18 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   workspace and each owns its executable test runner; compiler integration tests
   read their sources at runtime rather than embedding them in Rust artifacts.
 
+- **D150 Portable compiler bundles and executable identity.** Source packages use
+  a cached `package-dev` compiler: optimized with assertions and runtime leak
+  checking. A declared source manifest is hashed identically by the build script
+  and Python bootstrap, including newly added compiler files and optional Cargo
+  configuration but excluding package sources. The bundle key also includes host,
+  target and build settings. `fai build-info` exposes the complete tool identity
+  separately from the narrower native object-cache identity. Daemon protocol 4
+  requires this complete identity, and endpoints include its prefix, so two builds
+  of one package version cannot share a stale query database. Non-system native
+  dependency libraries are embedded with the runtime and extracted at link time;
+  a relocated executable needs only the platform linker/SDK. Bundles are installed
+  atomically under a process lock and verified by identity and checksum.
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

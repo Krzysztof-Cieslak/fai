@@ -96,6 +96,14 @@ fai <command> [subcommand] [arguments] [flags]
 
 ### Workspace model (v1)
 
+`fai build-info` prints JSON without opening a workspace: `schemaVersion`,
+`version`, `sourceId`, `toolBuildId`, `backendBuildId`, `target`, `profile`,
+`debugAssertions`, `rustcVersion`, and `nativeLibraries`. The whole-tool identity
+includes CLI, formatter, IDE and daemon sources; the native object cache retains
+its separate backend identity. Native dependency archives needed beyond system
+libraries are embedded and extracted alongside the runtime when linking, so a
+copied compiler needs the platform linker/SDK but not its original Cargo home.
+
 The **workspace root** is the current directory (or `--project <dir>`). Sources
 are **all `.fai` files under the root**, excluding hidden and ignored
 directories. (A `fai.toml` manifest with explicit roots/targets is still deferred
@@ -407,8 +415,9 @@ The client↔daemon link is **JSON-RPC 2.0 semantics encoded with MessagePack**.
 ### 7.1 Transport & discovery
 
 - **Transport:** unix-domain socket (POSIX); named pipe (Windows).
-- **Path:** `${XDG_RUNTIME_DIR:-$TMPDIR}/fai/<workspace-hash>-<compilerVersion>.sock`.
-  The compiler version is in the path, so different versions never collide.
+- **Path:** `${XDG_RUNTIME_DIR:-$TMPDIR}/fai/<workspace-hash>-<compilerVersion>-<build-prefix>.sock`.
+  The build prefix is the first 16 hexadecimal characters of the whole-tool
+  identity. Different builds of the same package version use separate daemons.
 - **Permissions:** `0600`, owner-only. Local only — no network.
 - **Spawn race:** startup takes an exclusive lock / atomic bind; the loser
   connects to the winner.
@@ -433,18 +442,19 @@ The first request is `initialize`:
 ```jsonc
 // → request
 { "method": "initialize",
-  "params": { "protocolVersion": 3, "compilerVersion": "0.1.0",
+  "params": { "protocolVersion": 4, "compilerVersion": "0.1.0", "compilerBuildId": "…",
               "schemaVersion": 1, "workspaceRoot": "/abs/path",
               "clientInfo": { "name": "fai-cli", "version": "0.1.0" } } }
 // ← response
 { "result": { "serverCapabilities": { "streaming": true, "query": true },
-              "compilerVersion": "0.1.0", "protocolVersion": 3, "schemaVersion": 1 } }
+              "compilerVersion": "0.1.0", "compilerBuildId": "…", "protocolVersion": 4, "schemaVersion": 1 } }
 ```
 
 Because the client and daemon are the **same binary**, a version mismatch means a
 *stale* daemon: the client sends `exit`, then respawns and re-initializes.
-Protocol 3 requires source-qualified contract events; the version gate prevents
-a new client from receiving ambiguous events from an older daemon.
+Protocol 4 additionally requires the full executable build identity in both
+directions; matching `0.1.0` version strings alone cannot reuse a stale compiler.
+Source-qualified contract events remain required.
 
 ### 7.4 Session & consistency model
 

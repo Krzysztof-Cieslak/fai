@@ -1,5 +1,6 @@
 # Rust build artifacts
 /target
+__pycache__/
 **/*.rs.bk
 
 # Fai build outputs (native binaries / object files produced by the compiler)

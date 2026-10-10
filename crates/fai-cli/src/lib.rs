@@ -77,6 +77,21 @@ fn dispatch(parsed: Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
 
     // Subcommands that always run in this process, never through the daemon.
     match &parsed.command {
+        Command::BuildInfo => {
+            return match serde_json::to_writer(&mut *out, &fai_driver::build_info()) {
+                Ok(()) => {
+                    if writeln!(out).is_ok() {
+                        EXIT_OK
+                    } else {
+                        EXIT_INTERNAL
+                    }
+                }
+                Err(error) => {
+                    let _ = writeln!(err, "cannot write build metadata: {error}");
+                    EXIT_INTERNAL
+                }
+            };
+        }
         Command::RunWorker(args) => return run_worker(&args.bundle, &args.args, err),
         Command::TestWorker(args) => return run_test_worker(&args.bundle, args.start, err),
         Command::DaemonServe => return run_daemon_serve(&parsed.global, err),
@@ -111,7 +126,10 @@ fn dispatch(parsed: Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
         // CLI's command envelopes), so it bypasses the usual command routing.
         Command::Lsp => fai_lsp::run_stdio(root),
         Command::Daemon { sub } => run_daemon_command(&root, sub, log, out, err),
-        Command::RunWorker(_) | Command::TestWorker(_) | Command::DaemonServe => {
+        Command::BuildInfo
+        | Command::RunWorker(_)
+        | Command::TestWorker(_)
+        | Command::DaemonServe => {
             unreachable!("handled above")
         }
     }
@@ -354,6 +372,7 @@ fn run_daemon_command(
                     info.command_micros_max as f64 / 1000.0
                 );
                 let _ = writeln!(out, "  peak concurrency: {}", info.max_concurrency);
+                let _ = writeln!(out, "  compiler build: {}", info.compiler_build_id);
                 EXIT_OK
             }
             Ok(None) => {
@@ -728,6 +747,17 @@ mod tests {
         let (code, out, _err) = run_capture(&["fai", "--version"]);
         assert_eq!(code, EXIT_OK);
         assert!(out.contains("fai"));
+    }
+
+    #[test]
+    fn build_info_reports_the_complete_identity_without_a_workspace() {
+        let (code, out, err) = run_capture(&["fai", "build-info", "-C", "/missing/fai/workspace"]);
+        assert_eq!(code, 0, "{err}");
+        let info: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(info["schemaVersion"], 1);
+        assert_eq!(info["toolBuildId"], fai_driver::TOOL_BUILD_ID);
+        assert_eq!(info["sourceId"].as_str().unwrap().len(), 64);
+        assert!(info["nativeLibraries"].is_array());
     }
 
     #[test]

@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "files": [
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    "scripts/compiler-inputs.json",
+    "scripts/compiler.py"
+  ],
+  "trees": ["crates", "std", ".cargo"],
+  "ignoredDirectories": ["target", "node_modules", "__pycache__", ".git"],
+  "ignoredSuffixes": [".pyc", ".snap.new", ".rs.bk"]
+}

@@ -934,6 +934,14 @@ output schemas, and the daemon (MessagePack JSON-RPC) protocol.
 
 ## 8. Rust coding conventions
 
+Source-package development can reuse an optimized assertion-enabled compiler
+bundle through `scripts/compiler.py` (see `docs/DEVELOPMENT.md`). Its exact key
+includes all declared tool sources, embedded std, dependencies, profile and host
+compatibility, but excludes `packages/`. `fai build-info` exposes source, whole-tool
+and backend identities. Daemon protocol 4 and endpoint names distinguish different
+whole-tool builds of the same version. Native import libraries are embedded and
+extracted when linking, making compiler bundles independent of Cargo build paths.
+
 - **Edition / toolchain:** Rust **edition 2024**, toolchain pinned (currently
   `1.96.0`) via `rust-toolchain.toml`; canonical Rust formatting pinned via
   `rustfmt.toml` (`use_small_heuristics = "Max"`). Lints are denied workspace-wide

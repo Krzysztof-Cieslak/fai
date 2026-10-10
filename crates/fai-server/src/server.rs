@@ -390,16 +390,23 @@ fn handle_connection(stream: Stream, daemon: &Daemon, id: u64) {
 
         let response = match request {
             Request::Initialize(params) => {
-                if params.protocol_version == PROTOCOL_VERSION && params.compiler_version == VERSION
-                {
+                if crate::protocol::compatible(
+                    params.protocol_version,
+                    &params.compiler_version,
+                    &params.compiler_build_id,
+                ) {
                     Response::Initialized(InitResult {
                         protocol_version: PROTOCOL_VERSION,
                         compiler_version: VERSION.to_owned(),
+                        compiler_build_id: fai_driver::TOOL_BUILD_ID.to_owned(),
                     })
                 } else {
                     Response::Error(format!(
-                        "version mismatch: daemon {VERSION}/{PROTOCOL_VERSION}, client {}/{}",
-                        params.compiler_version, params.protocol_version
+                        "compiler mismatch: daemon {VERSION}/{PROTOCOL_VERSION}/{}, client {}/{}/{}",
+                        fai_driver::TOOL_BUILD_ID,
+                        params.compiler_version,
+                        params.protocol_version,
+                        params.compiler_build_id
                     ))
                 }
             }
@@ -412,6 +419,7 @@ fn handle_connection(stream: Stream, daemon: &Daemon, id: u64) {
             Request::Status => Response::Status(StatusInfo {
                 pid: std::process::id(),
                 compiler_version: VERSION.to_owned(),
+                compiler_build_id: fai_driver::TOOL_BUILD_ID.to_owned(),
                 protocol_version: PROTOCOL_VERSION,
                 uptime_secs: daemon.start.elapsed().as_secs(),
                 commands_served: daemon.commands.load(Ordering::Relaxed),

@@ -61,20 +61,13 @@ const RUNTIME_ARCHIVE: &[u8] = include_bytes!(env!("FAI_RUNTIME_ARCHIVE"));
 /// (`-lpthread …` for Unix `cc`, `kernel32.lib …` for MSVC `link.exe`).
 const RUNTIME_NATIVE_LIBS: &str = env!("FAI_RUNTIME_NATIVE_LIBS");
 
-/// Extra library search directories the runtime archive needs at link time —
-/// where its dependencies' bundled import libraries live (e.g. `windows-targets`'s
-/// `windows.<ver>.lib`). Built by `build.rs` from the dependency build scripts'
-/// `rustc-link-search` directives, joined with the platform path separator (empty
-/// on hosts that need none, such as Linux and macOS).
-const RUNTIME_LIB_DIRS: &str = env!("FAI_RUNTIME_LIB_DIRS");
+// Non-system import libraries travel inside the compiler, just like the runtime
+// archive. A relocated executable never needs its original Cargo directories.
+include!(concat!(env!("OUT_DIR"), "/runtime_libraries.rs"));
 
-/// The runtime archive's extra library search directories as a list (see
-/// [`RUNTIME_LIB_DIRS`]); empty path components are skipped.
-fn runtime_lib_dirs() -> Vec<std::path::PathBuf> {
-    if RUNTIME_LIB_DIRS.is_empty() {
-        return Vec::new();
-    }
-    std::env::split_paths(RUNTIME_LIB_DIRS).filter(|p| !p.as_os_str().is_empty()).collect()
+/// Names of the non-system native libraries embedded in this compiler.
+pub(crate) fn runtime_library_names() -> Vec<&'static str> {
+    RUNTIME_LIBRARIES.iter().map(|(name, _)| *name).collect()
 }
 
 /// The required entry-point name.
@@ -1507,6 +1500,10 @@ fn link(
     let archive = dir.join(archive_name);
     std::fs::write(&archive, RUNTIME_ARCHIVE)
         .map_err(|e| format!("writing runtime archive: {e}"))?;
+    for (name, bytes) in RUNTIME_LIBRARIES {
+        std::fs::write(dir.join(name), bytes)
+            .map_err(|e| format!("writing runtime library {name}: {e}"))?;
+    }
 
     // Native executables need the platform's executable extension (`.exe` on
     // Windows, none elsewhere). Respect an extension the caller already gave.
@@ -1563,7 +1560,7 @@ fn link_unix(
         "-Wl,--gc-sections"
     });
     // Search directories for the runtime archive's bundled dependency libraries.
-    for dir in runtime_lib_dirs() {
+    if let Some(dir) = archive.parent().filter(|dir| !dir.as_os_str().is_empty()) {
         command.arg(format!("-L{}", dir.display()));
     }
     // The project's declared `-L`/`-l` native libraries.
@@ -1600,7 +1597,7 @@ fn link_msvc(
     command.arg("/NOLOGO").arg("/SUBSYSTEM:CONSOLE").arg("/OPT:REF").arg(format!("/OUT:{out}"));
     // Search directories for the runtime archive's bundled dependency libraries
     // (e.g. `windows-targets`'s `windows.<ver>.lib`).
-    for dir in runtime_lib_dirs() {
+    if let Some(dir) = archive.parent().filter(|dir| !dir.as_os_str().is_empty()) {
         command.arg(format!("/LIBPATH:{}", dir.display()));
     }
     command.args(objects).arg(archive).args(native_libs);

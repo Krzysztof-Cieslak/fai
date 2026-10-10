@@ -13,7 +13,14 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 /// The protocol version. Bumped on any incompatible wire change.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
+
+/// Both the wire schema and the complete executable must match a warm daemon.
+pub(crate) fn compatible(protocol: u32, version: &str, build: &str) -> bool {
+    protocol == PROTOCOL_VERSION
+        && version == env!("CARGO_PKG_VERSION")
+        && build == fai_driver::TOOL_BUILD_ID
+}
 
 /// Maximum stdin payload granted by one input credit.
 pub const INPUT_CHUNK_SIZE: usize = 8192;
@@ -57,6 +64,8 @@ pub struct InitParams {
     pub protocol_version: u32,
     /// The client's compiler version (must match the daemon's).
     pub compiler_version: String,
+    /// The complete compiler executable identity.
+    pub compiler_build_id: String,
     /// The absolute workspace root the client expects.
     pub workspace_root: String,
 }
@@ -68,6 +77,8 @@ pub struct InitResult {
     pub protocol_version: u32,
     /// The daemon's compiler version.
     pub compiler_version: String,
+    /// The complete compiler executable identity.
+    pub compiler_build_id: String,
 }
 
 /// A command invocation plus the client's render options and dirty-set.
@@ -204,6 +215,8 @@ pub struct StatusInfo {
     pub pid: u32,
     /// The daemon's compiler version.
     pub compiler_version: String,
+    /// The complete compiler executable identity.
+    pub compiler_build_id: String,
     /// The daemon's protocol version.
     pub protocol_version: u32,
     /// Seconds since the daemon started.
@@ -278,6 +291,7 @@ mod tests {
         round_trip(&Request::Initialize(InitParams {
             protocol_version: PROTOCOL_VERSION,
             compiler_version: "0.1.0".to_owned(),
+            compiler_build_id: "test-build".to_owned(),
             workspace_root: "/ws".to_owned(),
         }));
         round_trip(&Request::Command(CommandRequest {
@@ -359,6 +373,7 @@ mod tests {
         round_trip(&ServerMessage::Result(Response::Initialized(InitResult {
             protocol_version: PROTOCOL_VERSION,
             compiler_version: "0.1.0".to_owned(),
+            compiler_build_id: "test-build".to_owned(),
         })));
         round_trip(&ServerMessage::Result(Response::Command(Rendered {
             stdout: "ok\n".to_owned(),
@@ -368,6 +383,7 @@ mod tests {
         round_trip(&ServerMessage::Result(Response::Status(StatusInfo {
             pid: 42,
             compiler_version: "0.1.0".to_owned(),
+            compiler_build_id: "test-build".to_owned(),
             protocol_version: PROTOCOL_VERSION,
             uptime_secs: 12,
             commands_served: 7,

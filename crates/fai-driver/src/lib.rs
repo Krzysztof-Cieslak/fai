@@ -21,6 +21,10 @@ mod entry_tests;
 mod manifest;
 mod query;
 mod session;
+mod tool;
+#[cfg(test)]
+#[path = "../tool_identity.rs"]
+mod tool_identity;
 
 use std::fmt::Write as _;
 
@@ -55,6 +59,7 @@ pub use fai_core::{TestWireBundle, WireBundle};
 pub use manifest::{MANIFEST_NAME, NativeDeps, read_native_manifest};
 pub use query::{QueryRequest, QueryResult, run_query};
 pub use session::Session;
+pub use tool::{BuildInfo, TOOL_BUILD_ID, build_info};
 
 /// A command is not implemented yet.
 pub const NOT_IMPLEMENTED: DiagnosticCode = DiagnosticCode::new("FAI0001");

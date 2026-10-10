@@ -3,7 +3,7 @@
 //! named pipes on Windows) so one safe code path serves both platforms.
 //!
 //! The endpoint name embeds a hash of the workspace root and the compiler
-//! version, so different workspaces and different compiler versions never
+//! build identity, so different workspaces and different compiler builds never
 //! collide (CLI.md §7.1). On Unix the socket file is created `0600` and a stale
 //! file from a crashed daemon is reclaimed.
 
@@ -20,6 +20,10 @@ use interprocess::local_socket::{Listener, ListenerOptions, Name, Stream};
 
 /// The compiler version, stamped into the endpoint name.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+fn endpoint_stem(workspace: &str, build: &str) -> String {
+    format!("{workspace}-{VERSION}-{}", &build[..16])
+}
 
 /// Why binding the listener failed.
 #[derive(Debug)]
@@ -53,7 +57,10 @@ pub fn workspace_id(root: &Utf8Path) -> String {
 pub fn socket_path(root: &Utf8Path) -> Option<PathBuf> {
     #[cfg(unix)]
     {
-        Some(runtime_dir().join(format!("{}-{VERSION}.sock", workspace_id(root))))
+        Some(runtime_dir().join(format!(
+            "{}.sock",
+            endpoint_stem(&workspace_id(root), fai_driver::TOOL_BUILD_ID)
+        )))
     }
     #[cfg(not(unix))]
     {
@@ -71,7 +78,8 @@ fn endpoint_name(root: &Utf8Path) -> io::Result<Name<'static>> {
     }
     #[cfg(not(unix))]
     {
-        format!("fai-{}-{VERSION}.sock", workspace_id(root)).to_ns_name::<GenericNamespaced>()
+        format!("fai-{}.sock", endpoint_stem(&workspace_id(root), fai_driver::TOOL_BUILD_ID))
+            .to_ns_name::<GenericNamespaced>()
     }
 }
 
@@ -153,4 +161,31 @@ fn is_addr_in_use(error: &io::Error) -> bool {
 /// Accepts the next connection.
 pub fn accept(listener: &Listener) -> io::Result<Stream> {
     listener.accept()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn same_version_different_builds_have_different_endpoints() {
+        assert_ne!(
+            endpoint_stem("workspace", &"a".repeat(64)),
+            endpoint_stem("workspace", &"b".repeat(64))
+        );
+    }
+
+    #[test]
+    fn a_matching_version_does_not_admit_a_different_compiler_build() {
+        assert!(!crate::protocol::compatible(
+            crate::protocol::PROTOCOL_VERSION,
+            VERSION,
+            "old-build"
+        ));
+        assert!(crate::protocol::compatible(
+            crate::protocol::PROTOCOL_VERSION,
+            VERSION,
+            fai_driver::TOOL_BUILD_ID
+        ));
+    }
 }
