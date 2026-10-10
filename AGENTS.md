@@ -853,6 +853,12 @@ Source packages own their Fai contracts and executable test runners. The JSON
 suite is `python3 packages/json/test/run.py --fai /path/to/fai`: it uses an existing
 compiler for formatting, contracts, JIT/AOT and seeded conformance checks, so
 library edits do not require rebuilding the Rust compiler or its tests.
+`JsonDecode` adds pure composable typed decoders, with field/index error paths,
+checked numeric conversion, explicit missing-versus-null handling, alternatives
+and recursive decoders. Its entry points reject duplicate names throughout the
+tree before decoding, including unknown fields. `JsonEncode` composes ordinary
+`'a -> Result Json.Value Error` functions, locates failures, rejects duplicate
+object builder fields and non-finite Floats, and sorts dictionary keys.
 
 ## 6. Compiler pipeline
 

@@ -4754,6 +4754,13 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   existing compiler executable. Seeded differential checks drive a Fai-built
   native executable through stdin, avoiding compile-time embedding of library
   sources in the Rust test suite.
+  Typed codecs are explicit, composable Fai values. `JsonDecode` validates unique
+  object names once at its entry boundary, including unused subtrees, and reports
+  structured field/index paths. Missing fields and null are separate combinators;
+  unknown fields are otherwise accepted. `JsonEncode` uses ordinary fallible
+  functions so non-finite Floats cannot silently become null; object builders
+  reject duplicate fields and dictionary encoding sorts keys. User records and
+  unions choose their own wire formats through combinators and ordinary functions.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.
