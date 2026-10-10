@@ -1,0 +1,22 @@
+module Main
+
+sum : Int -> List Int -> Int
+let sum acc xs =
+  match xs with
+  | [] -> acc
+  | x :: rest -> sum (acc + x) rest
+
+find : Float -> List Float -> Bool
+let find wanted xs =
+  match xs with
+  | [] -> false
+  | x :: rest -> if x = wanted then true else find wanted rest
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let values = [9223372036854775807, 1, -9223372036854775808]
+  let first = sum 0 values
+  let again = sum 0 values
+  let floats = [0.0, -0.0, 1.25]
+  let ok = first = 0 && again = 0 && find (-0.0) floats && not (find 2.0 floats)
+  runtime.console.writeLine (if ok then "yes" else "no")

@@ -39,8 +39,13 @@ pub fn check_rc(
                 refs.insert(p, 1);
             }
         }
-        let mut ck =
-            Checker { captures: &captures, fn_index: i, arg_borrows, projections: HashMap::new() };
+        let mut ck = Checker {
+            captures: &captures,
+            fn_index: i,
+            arg_borrows,
+            projections: HashMap::new(),
+            loop_borrowed: None,
+        };
         ck.eval(&f.body, &mut refs)?;
         for (l, n) in &refs {
             if *n != 0 {
@@ -72,6 +77,7 @@ pub fn check_rc(
             fn_index: usize::MAX,
             arg_borrows,
             projections: HashMap::new(),
+            loop_borrowed: None,
         };
         ck.eval(&re.body, &mut refs)?;
         for (l, n) in &refs {
@@ -92,6 +98,8 @@ struct Checker<'a> {
     arg_borrows: &'a dyn Fn(DefId, usize) -> Vec<bool>,
     /// Borrowed slots remain valid only while their ultimate owner is live.
     projections: HashMap<LocalId, LocalId>,
+    /// Borrowing modes of the innermost loop's carried parameters.
+    loop_borrowed: Option<Vec<bool>>,
 }
 
 impl Checker<'_> {
@@ -348,12 +356,26 @@ impl Checker<'_> {
             // for a destination-passing loop, the hole). Each `Recur`/`HoleClose`
             // along a path consumes them, so loop balance falls out of the existing
             // per-path consistency check; the body is evaluated once here.
-            ExprKind::Join { body, .. } => self.eval(body, refs)?,
+            ExprKind::Join { params, body } => {
+                let saved = self.loop_borrowed.take();
+                self.loop_borrowed =
+                    Some(params.iter().map(|param| self.captures.contains(param)).collect());
+                self.eval(body, refs)?;
+                self.loop_borrowed = saved;
+            }
             // A tail back-edge consumes the new loop-carried values (the next
             // iteration's parameters). It is terminal.
             ExprKind::Recur { args } => {
-                for a in args {
-                    self.eval(a, refs)?;
+                for (index, a) in args.iter().enumerate() {
+                    if self
+                        .loop_borrowed
+                        .as_ref()
+                        .is_some_and(|borrowed| borrowed.get(index) == Some(&true))
+                    {
+                        self.borrow_atom(a, refs)?;
+                    } else {
+                        self.eval(a, refs)?;
+                    }
                 }
             }
             // The hole is a linear token: born here (like a reuse token), advanced

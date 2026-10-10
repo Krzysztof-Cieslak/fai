@@ -851,6 +851,12 @@ Reuse & in-place update:
     bypass general kind/field traversal only after validating both the header
     shape and immediate tags. Boxed fields, scalar slots and other shapes retain
     general traversal, including mixed compact/extended representations.
+    Bounded scalar-only tail traversals of one primitive list can borrow the
+    root from their caller rather than acquire a transient scan owner. The
+    borrow signature exposes that choice; explicit borrowed tail projections
+    and ordinary loop lowering keep every cursor inside the root's lifetime.
+    Escaping/rebuilt lists, callbacks and unknown or resource-bearing elements
+    retain normal ownership. Scalar head conversions stay owned.
     Ownership lowering removes a field acquire immediately paired with a discard
     while the already-evaluated parent stays live. This runs after array-slot
     borrowing, preserving any intervening parent release or operation, so unused

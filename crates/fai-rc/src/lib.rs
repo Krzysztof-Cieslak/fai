@@ -57,6 +57,7 @@ pub use verify::check_rc;
 
 mod aliases;
 mod borrow;
+mod borrow_scan;
 mod borrow_slots;
 mod bounds_sig;
 mod data_shapes;
@@ -166,7 +167,22 @@ pub fn rc_lowered(db: &dyn Db, lowered: &LoweredDef, self_sig: &BorrowSig) -> Lo
             f.body.clone()
         };
         let body = anf(raw, &mut next);
-        let body = aliases::coalesce(db, body);
+        let mut body = aliases::coalesce(db, body);
+        if i == 0
+            && let Some(plan) = borrow_scan::plan(
+                db,
+                lowered.def,
+                &CoreFn {
+                    params: f.params.clone(),
+                    captures: f.captures.clone(),
+                    body: body.clone(),
+                },
+            )
+            && borrowed.contains(&plan.root)
+        {
+            borrow_scan::rewrite(&mut body, &plan);
+            borrowed.extend(plan.cursors);
+        }
         // Scalar-replace fixed-shape float aggregates: a spread parameter becomes
         // component locals, a constructed/returned aggregate its scalar components,
         // reassembling a cell only at a boxed boundary. The entry uses the
@@ -962,7 +978,7 @@ impl Rc<'_> {
         live_value.extend(live);
 
         let mut body2 = self.owned(body, live);
-        if !fvb.contains(&local) {
+        if !fvb.contains(&local) && !self.is_capture(local) {
             body2 = drop_(local, body2);
         }
 
@@ -1018,7 +1034,10 @@ fn dropify(mut drops: Vec<LocalId>, e: CExpr) -> CExpr {
 
 /// Whether `e` is a bare borrowing projection (`DataField`/`DataTag`).
 fn is_projection(e: &CExpr) -> bool {
-    matches!(e.kind, K::DataField { .. } | K::DataTag { .. })
+    matches!(
+        e.kind,
+        K::DataField { .. } | K::DataTag { .. } | K::Prim { op: fai_core::Prim::DataPeek, .. }
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1398,6 +1417,13 @@ pub(crate) fn free_reuse_(token: LocalId, body: CExpr) -> CExpr {
 fn projection_borrows(e: &CExpr) -> Vec<LocalId> {
     let mut out = Vec::new();
     match &e.kind {
+        K::Prim { op: fai_core::Prim::DataPeek, args } => {
+            for arg in args {
+                if let K::Local(local) = arg.kind {
+                    out.push(local);
+                }
+            }
+        }
         K::DataTag { base, .. } => {
             if let K::Local(s) = base.kind {
                 out.push(s);

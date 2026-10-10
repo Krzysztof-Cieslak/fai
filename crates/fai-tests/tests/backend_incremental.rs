@@ -367,3 +367,19 @@ fn checked_access_order_edits_update_callee_facts() {
         },
     );
 }
+
+#[test]
+fn borrowed_list_scan_edits_update_the_callers_ownership() {
+    let source = "module A\npublic sum : Int -> List Int -> Int\nlet sum acc xs = match xs with | [] -> acc | x :: rest -> sum (acc + x) rest\n";
+    let changed = source
+        .replace("sum (acc + x) rest", "if x < 0 then sum acc (0 :: rest) else sum (acc + x) rest");
+    let caller = "module B\npublic run : List Int -> Int\nlet run xs = A.sum 0 xs + A.sum 0 xs\n";
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("A.fai", source), ("B.fai", caller)], &[("A.fai", &changed), ("B.fai", caller)]],
+        |db, files| {
+            let file = db.source_file(files[1]).unwrap();
+            let name = Symbol::intern("run");
+            ((*rc(db, file, name)).clone(), (*object_code(db, file, name, false)).clone())
+        },
+    );
+}

@@ -523,6 +523,9 @@ retain one root owner and borrow descendant cursors. Full scans and early exits
 release that owner once. The wire form retains primitive list-element classes and
 the conservative resource-free type fact; opaque/native handles, unknown generic
 payloads, calls, construction and escaping cursors keep ordinary ownership.
+A bounded scalar-only tail scan over a primitive-element list can borrow its
+root directly from the caller. Its tail projections remain borrowed throughout
+the loop; scalar field conversions retain their normal owned boundaries.
 Representation-preserving data aliases are coalesced before ownership insertion,
 after borrow signatures are fixed. The surviving local retains its type metadata;
 generic/scalar or niche conversion bindings remain explicit.
