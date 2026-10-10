@@ -1029,6 +1029,7 @@ fn build_fn<M: Module>(
             float_layout_versioned: false,
             unique_float_cells: FxHashSet::default(),
             borrowed_cursors: FxHashSet::default(),
+            takeable_fields: crate::take_fields::collect(&core_fn.body),
             borrowed_projections: FxHashSet::default(),
             invariant_callback: None,
             spread_loop: None,
@@ -1531,6 +1532,8 @@ struct Translator<'a, M: Module> {
     unique_float_cells: FxHashSet<Value>,
     /// Read-only descendants of one resource-free root retained across this call.
     borrowed_cursors: FxHashSet<LocalId>,
+    /// Consecutive projections whose owner is immediately dropped or reset.
+    takeable_fields: FxHashSet<(LocalId, u32)>,
     /// Projections that borrow from the retained root.
     borrowed_projections: FxHashSet<(LocalId, u32)>,
     /// A guarded immortal entry for a loop-invariant callback parameter.
@@ -3411,6 +3414,59 @@ impl<M: Module> Translator<'_, M> {
     /// field. Known uniform slots load and duplicate inline; generic and opaque
     /// slots consult the descriptor and box raw Float bits when necessary.
     fn data_field(
+        &mut self,
+        base: &CExpr,
+        index: FieldIndex,
+        scalar: bool,
+        niche: Option<NicheKind>,
+        result_ty: &Ty,
+    ) -> Value {
+        if !self.concurrent
+            && !scalar
+            && niche.is_none()
+            && !matches!(
+                result_ty,
+                Ty::Con(Con::Int | Con::Float | Con::Bool | Con::Char) | Ty::Unit
+            )
+            && let (ExprKind::Local(root), FieldIndex::Const(field)) = (&base.kind, index)
+            && self.takeable_fields.contains(&(*root, field))
+            && !self.borrowed_cursors.contains(root)
+            && !self.borrowed_projections.contains(&(*root, field))
+            && self.niche_local(*root).is_none()
+        {
+            let cell = self.data_base(base);
+            if self.known_scalar_slot(cell, index) == Some(false) {
+                let header = self.builder.ins().load(types::I64, MemFlags::trusted(), cell, 0);
+                let state = self.builder.ins().band_imm(header, rt::RC_STATE_MASK as i64);
+                let unique = self.builder.ins().icmp_imm(IntCC::Equal, state, 1);
+                let take = self.builder.create_block();
+                let copy = self.builder.create_block();
+                let done = self.builder.create_block();
+                self.builder.append_block_param(done, types::I64);
+                self.builder.ins().brif(unique, take, &[], copy, &[]);
+                self.builder.switch_to_block(take);
+                self.builder.seal_block(take);
+                // The proven continuation only extracts distinct fields before
+                // releasing this owner. Move its reference and leave Unit for
+                // the existing drop/reset, which must not release it a second time.
+                let address = self.field_slot_addr(cell, index);
+                let value = self.builder.ins().load(types::I64, MemFlags::trusted(), address, 0);
+                let empty = self.builder.ins().iconst(types::I64, 1);
+                self.builder.ins().store(MemFlags::trusted(), empty, address, 0);
+                self.builder.ins().jump(done, &[value.into()]);
+                self.builder.switch_to_block(copy);
+                self.builder.seal_block(copy);
+                let value = self.data_field_ordinary(base, index, scalar, niche, result_ty);
+                self.builder.ins().jump(done, &[value.into()]);
+                self.builder.switch_to_block(done);
+                self.builder.seal_block(done);
+                return self.builder.block_params(done)[0];
+            }
+        }
+        self.data_field_ordinary(base, index, scalar, niche, result_ty)
+    }
+
+    fn data_field_ordinary(
         &mut self,
         base: &CExpr,
         index: FieldIndex,

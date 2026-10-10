@@ -111,6 +111,11 @@ let mapStep point = { x = point.x * 0.5, y = point.y + 1.0 }
 let repeatedMap i n xs = if i >= n then xs else repeatedMap (i + 1) n (Array.map mapStep xs)
 public repeatedMaps : Int -> Int
 let repeatedMaps n = Array.length (repeatedMap 0 n (Array.repeat 5 { x = 1.0, y = 0.0 }))
+let unpackLoop n pair =
+  let (a, b) = pair
+  if n <= 0 then String.length a + String.length b else unpackLoop (n - 1) (b, a)
+public unpackedRecords : Int -> Int
+let unpackedRecords n = unpackLoop n (Int.toString 1234, Int.toString 56)
 public main : Runtime -> Unit
 let main r = ()
 "#;
@@ -328,4 +333,9 @@ fn numeric_array_update_loop_keeps_constant_unique_storage() {
 #[test]
 fn repeated_scalar_maps_keep_constant_auxiliary_storage() {
     bounded_reuse("repeatedMaps", |_| 5);
+}
+
+#[test]
+fn repeated_unique_field_transfers_keep_constant_storage() {
+    bounded_reuse("unpackedRecords", |_| 6);
 }
