@@ -1,0 +1,63 @@
+module CommandDefinitionSpec
+
+let invalid path parser =
+  match Args.parse (Args.program (Args.described "tool" "") parser) ["--help"] with
+  | Err error -> error.kind = Args.InvalidDefinition && error.command = path && error.index = None
+  | Ok _ -> false
+example: invalid ["tool"] (Args.commands [])
+example: invalid ["tool"] (Args.commands [Args.command "" "" (Args.succeed ())])
+example: invalid [
+  "tool"
+] (Args.commands [Args.command "same" "" (Args.succeed 1), Args.command "same" "" (Args.succeed 2)])
+example: invalid ["tool"] (Args.commands [Args.command "bad name" "" (Args.succeed ())])
+example: invalid ["tool"] (Args.commands [Args.command "--bad" "" (Args.succeed ())])
+example: invalid ["tool"] (Args.commands [Args.command "é" "" (Args.succeed ())])
+example: invalid [
+  "tool"
+] (Args.map2 (fun a b ->
+  (a, b)) (Args.commands [
+  Args.command "one" "" (Args.succeed 1)
+]) (Args.commands [Args.command "two" "" (Args.succeed 2)]))
+example: invalid [
+  "tool"
+] (Args.map2 (fun a b ->
+  (a, b)) (Args.argument Args.string (Args.positional "FILE" "")) (Args.commands [
+  Args.command "run" "" (Args.succeed ())
+]))
+example: invalid [
+  "tool",
+  "run"
+] (Args.map2 (fun a b ->
+  (a, b)) (Args.flag (Args.named "verbose" "")) (Args.commands [
+  Args.command "run" "" (Args.flag (Args.named "verbose" ""))
+]))
+example: invalid [
+  "tool",
+  "run"
+] (Args.map2 (fun a b ->
+  (a, b)) (Args.flag (Args.short 'x' (Args.named "one" ""))) (Args.commands [
+  Args.command "run" "" (Args.flag (Args.short 'x' (Args.named "two" "")))
+]))
+example: invalid [
+  "tool",
+  "bad"
+] (Args.commands [
+  Args.command "good" "" (Args.succeed false),
+  Args.command "bad" "" (Args.flag (Args.named "help" ""))
+])
+example: invalid [
+  "tool",
+  "outer",
+  "inner"
+] (Args.map2 (fun a b ->
+  (a, b)) (Args.flag (Args.named "global" "")) (Args.commands [
+  Args.command "outer" "" (Args.commands [
+    Args.command "inner" "" (Args.flag (Args.named "global" ""))
+  ])
+]))
+
+let versionConflict =
+  Args.program (Args.version "1.0" (Args.described "tool" "")) (Args.commands [
+    Args.command "run" "" (Args.flag (Args.named "version" ""))
+  ])
+example: Result.isErr (Args.validateDefinition versionConflict)

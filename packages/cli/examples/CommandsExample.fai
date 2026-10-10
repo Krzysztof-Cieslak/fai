@@ -1,0 +1,53 @@
+module CommandsExample
+
+type Action =
+  | Serve Int String
+  | Get String
+  | Set String String
+
+let serve =
+  Args.map2 (fun port directory ->
+    Serve port directory) (Args.optionWithDefault 8080 Args.int (Args.short 'p' (Args.named "port" "TCP port"))) (Args.argument Args.string (Args.positional "DIRECTORY" "Files to serve"))
+
+let get = Args.map Get (Args.argument Args.string (Args.positional "KEY" "Setting name"))
+
+let set =
+  Args.map2 (fun key value ->
+    Set key value) (Args.argument Args.string (Args.positional "KEY" "Setting name")) (Args.argument Args.string (Args.positional "VALUE" "New value"))
+
+let config = Args.commands [
+  Args.command "get" "Read a setting" get,
+  Args.command "set" "Write a setting" set
+]
+
+let actions = Args.commands [
+  Args.command "serve" "Serve a directory" serve,
+  Args.command "config" "Manage configuration" config
+]
+
+let parser =
+  Args.map2 (fun verbose action -> {
+    action = action,
+    verbose = verbose
+  }) (Args.flag (Args.short 'v' (Args.named "verbose" "Verbose output"))) actions
+
+let app =
+  Args.program (Args.version "tool 1.0" (Args.described "tool" "Nested typed commands")) parser
+
+let describe action =
+  match action with
+  | Serve port directory -> "serve " ++ directory ++ " on " ++ Int.toString port
+  | Get key -> "get " ++ key
+  | Set key value -> "set " ++ key ++ "=" ++ value
+
+public main : Runtime -> Unit / { Console, Env }
+let main runtime =
+  match Args.parse app (runtime.env.args ()) with
+  | Err error -> runtime.console.writeError (Args.errorToString error ++ "\n")
+  | Ok (Args.Help text) -> runtime.console.write text
+  | Ok (Args.Version text) -> runtime.console.writeLine text
+  | Ok (Args.Parsed config) ->
+    runtime.console.writeLine ((if config.verbose then
+      "verbose: "
+    else
+      "") ++ describe config.action)

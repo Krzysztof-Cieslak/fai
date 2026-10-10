@@ -1,0 +1,71 @@
+module CommandHelpSpec
+
+let serve = Args.optionWithDefault 8080 Args.int (Args.short 'p' (Args.named "port" "TCP port"))
+
+let parser =
+  Args.map2 (fun verbose port ->
+    (verbose, port)) (Args.flag (Args.short 'v' (Args.named "verbose" "Verbose output"))) (Args.commands [
+    Args.command "serve" "Serve files" serve
+  ])
+
+let app = Args.program (Args.version "tool 1.0" (Args.described "tool" "Example tool")) parser
+
+let root =
+  "Usage: tool [OPTIONS] <COMMAND>\n\nExample tool\n\nCommands:\n  serve  Serve files\n\nOptions:\n  -v, --verbose  Verbose output\n  -h, --help  Show this help\n  -V, --version  Show version\n"
+
+let child =
+  "Usage: tool serve [OPTIONS]\n\nServe files\n\nOptions:\n  -v, --verbose  Verbose output\n  -p, --port INT  TCP port (default: 8080)\n  -h, --help  Show this help\n  -V, --version  Show version\n"
+example: Args.help app = Ok root
+example: Args.helpFor app [] = Ok root
+example: Args.helpFor app ["serve"] = Ok child
+example: Args.parse app ["--help", "serve"] = Ok (Args.Help root)
+example: Args.parse app ["serve", "--help"] = Ok (Args.Help child)
+example: Args.parse app ["serve", "-vh"] = Ok (Args.Help child)
+example: Args.parse app ["serve", "--port=bad", "--help", "ignored"] = Ok (Args.Help child)
+example: Args.parse app ["serve", "--version"] = Ok (Args.Version "tool 1.0")
+example: Args.parse app ["serve", "-V"] = Ok (Args.Version "tool 1.0")
+example: Args.helpFor app [
+  "unknown"
+] = Err {
+  command = ["tool"],
+  index = None,
+  kind = Args.UnknownCommand,
+  message = "unknown command \"unknown\"",
+  token = None
+}
+
+let nested =
+  Args.program (Args.described "tool" "Root") (Args.commands [
+    Args.command "config" "Configuration" (Args.commands [
+      Args.command "get" "Read" (Args.argument Args.string (Args.positional "KEY" "Key name"))
+    ])
+  ])
+example: Args.helpFor nested [
+  "config",
+  "get"
+] = Ok "Usage: tool config get [OPTIONS] KEY\n\nRead\n\nArguments:\n  KEY  Key name\n\nOptions:\n  -h, --help  Show this help\n"
+example: Args.parse nested [
+  "config",
+  "get",
+  "--help"
+] = Result.map (fun text -> Args.Help text) (Args.helpFor nested ["config", "get"])
+
+let required =
+  Args.program (Args.described "tool" "") (Args.map2 (fun key result ->
+    (key, result)) (Args.requiredOption Args.string (Args.named "key" "API key")) (Args.commands [
+    Args.command "run" "Execute" (Args.succeed ())
+  ]))
+example: Args.helpFor required [
+  "run"
+] = Ok "Usage: tool run [OPTIONS] --key TEXT\n\nExecute\n\nOptions:\n  --key TEXT  API key (required)\n  -h, --help  Show this help\n"
+example: Result.isOk (Args.parse required ["run", "--help"])
+example: Args.helpFor nested [
+  "config",
+  "missing"
+] = Err {
+  command = ["tool", "config"],
+  index = None,
+  kind = Args.UnknownCommand,
+  message = "unknown command \"missing\"",
+  token = None
+}
