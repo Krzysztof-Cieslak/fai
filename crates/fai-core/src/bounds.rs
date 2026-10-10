@@ -341,7 +341,7 @@ impl Bounds {
                 // A fresh array starts at length 0.
                 self.set_const(Term::Len(local), 0);
             }
-            Prim::ArrayPush => {
+            Prim::ArrayPush | Prim::ArrayPushReserved => {
                 if let Some(K::Local(a)) = args.first().map(|e| &e.kind) {
                     // len(local) == len(a) + 1.
                     self.add_eq(Term::Len(local), Term::Len(*a), 1);

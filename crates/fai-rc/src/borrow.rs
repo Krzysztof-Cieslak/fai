@@ -366,6 +366,7 @@ impl Analyzer<'_> {
                     Prim::ArrayWithCapacity
                         | Prim::ArrayRepeat
                         | Prim::ArrayPush
+                        | Prim::ArrayPushReserved
                         | Prim::ArraySet
                         | Prim::ArrayPut
                         | Prim::ArrayUnique

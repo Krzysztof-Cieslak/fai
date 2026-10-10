@@ -32,6 +32,12 @@ let boolBuffers n total =
     boolBuffers (n - 1) (total + (if Array.unsafeGet 4095 buffer then 0 else 1))
 public boolBufferLoop : Int -> Int
 let boolBufferLoop n = boolBuffers n 0
+let initBuffers n total =
+  if n <= 0 then total else
+    let values = Array.init 64 (fun i -> Int.toString ((i + n) % 10))
+    initBuffers (n - 1) (total + String.length (Array.unsafeGet 63 values))
+public reservedInitLoop : Int -> Int
+let reservedInitLoop n = initBuffers n 0
 let churn n total =
   if n <= 0 then total else
     let size = if n % 3 = 0 then 8 else if n % 3 = 1 then 128 else 4096
@@ -108,6 +114,11 @@ fn large_buffers_release_their_mapping_each_iteration() {
 #[test]
 fn reference_free_buffers_release_their_mapping_each_iteration() {
     bounded("boolBufferLoop", |n| n);
+}
+
+#[test]
+fn reserved_boxed_builders_keep_initialized_storage_bounded() {
+    bounded("reservedInitLoop", |n| n);
 }
 
 #[test]

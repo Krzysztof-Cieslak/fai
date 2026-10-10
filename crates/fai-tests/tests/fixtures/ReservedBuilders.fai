@@ -1,0 +1,16 @@
+module Main
+
+public build : 'a -> Int -> Array 'a
+let build value count = Array.init count (fun _ -> value)
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let floats = build (Float.fromBits 0xfff8000000001234) 64
+  let strings = build "retained" 64
+  let original = [| 1, 2, 3 |]
+  let mapped = Array.map (fun n -> Int.toString n) original
+  let complete =
+    Array.length floats = 64 && Float.toBits (Array.unsafeGet 63 floats) = 0xfff8000000001234
+  let shared = Array.toList original = [1, 2, 3] && String.joinArray "," mapped = "1,2,3"
+  let stored = Array.unsafeGet 0 strings = "retained" && Array.unsafeGet 63 strings = "retained"
+  runtime.console.writeLine (if complete && shared && stored then "ok" else "wrong")

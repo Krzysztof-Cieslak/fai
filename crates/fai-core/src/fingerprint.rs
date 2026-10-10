@@ -332,9 +332,13 @@ fn write_expr(
     let _ = write!(out, ":{}", render_canonical(&e.ty));
 }
 
-/// A stable, semantic tag for a primitive (its runtime symbol — never reordered).
+/// A stable semantic tag. Internal operations sharing a runtime fallback still
+/// need distinct keys when their native fast paths have different preconditions.
 fn prim_tag(op: Prim) -> &'static str {
-    op.runtime_symbol()
+    match op {
+        Prim::ArrayPushReserved => "fai_array_push_reserved",
+        _ => op.runtime_symbol(),
+    }
 }
 
 #[cfg(test)]
@@ -345,6 +349,35 @@ mod tests {
 
     use super::*;
     use crate::core;
+
+    #[test]
+    fn reserved_array_push_has_a_distinct_native_cache_key() {
+        let mut db = FaiDatabase::new();
+        let id = db.add_source("M.fai".into(), "module M\nlet append xs value = xs\n".into());
+        let mut definition =
+            (*core(&db, db.source_file(id).unwrap(), Symbol::intern("append"))).clone();
+        let params = &definition.entry().params;
+        definition.fns[0].body = CExpr::new(
+            ExprKind::Prim {
+                op: Prim::ArrayPush,
+                args: vec![
+                    CExpr::new(
+                        ExprKind::Local(params[0]),
+                        fai_types::Ty::array(fai_types::Ty::int()),
+                    ),
+                    CExpr::new(ExprKind::Local(params[1]), fai_types::Ty::int()),
+                ],
+            },
+            fai_types::Ty::array(fai_types::Ty::int()),
+        );
+        let key = |definition: &LoweredDef| {
+            fingerprint_def(definition, &|_| "M.append".into(), &|_| 2, &|_| FnAbi::default())
+        };
+        let ordinary = key(&definition);
+        let ExprKind::Prim { op, .. } = &mut definition.fns[0].body.kind else { unreachable!() };
+        *op = Prim::ArrayPushReserved;
+        assert_ne!(ordinary, key(&definition));
+    }
 
     /// A namer mirroring the backend's `symbol_base`, so the fingerprint test is
     /// self-contained.
