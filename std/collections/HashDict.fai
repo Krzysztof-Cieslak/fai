@@ -29,13 +29,17 @@ type Slot 'k 'v =
   | Empty
   | Full 'k 'v
 
-// The bucket count a non-empty table starts at (a power of two; grows by
-// doubling). The empty map holds a zero-length array and allocates this on its
+// The bucket count a non-empty table starts at (a power of two). The empty map
+// holds a zero-length array and allocates this on its
 // first insert.
 initialCapacity : Int
 let initialCapacity = 8
 
-// The entry count at which the table doubles: load factor 3/4 (kept low so probe
+// Fourfold growth trades spare buckets for fewer scans and entry rehashes.
+growthFactor : Int
+let growthFactor = 4
+
+// The entry count at which the table grows: load factor 3/4 (kept low so probe
 // chains stay short). Tested as `count * 4 >= cap * 3`.
 loadNumerator : Int
 let loadNumerator = 3
@@ -181,11 +185,12 @@ let rehash old cap i newSlots newCap =
     | Full k _ ->
       rehash old cap (i + 1) (placeEntry entry newSlots newCap (indexFor newCap k)) newCap
 
-// Double the table and re-place every entry into it.
+// Grow the table and re-place every entry into it.
 grow : Array (Slot 'k 'v) -> Int -> Array (Slot 'k 'v)
-let grow slots cap = rehash slots cap 0 (Array.repeat (cap * 2) Empty) (cap * 2)
+let grow slots cap =
+  rehash slots cap 0 (Array.repeat (cap * growthFactor) Empty) (cap * growthFactor)
 
-/// Insert or replace the value for `key` (O(1) average; the table doubles when it
+/// Insert or replace the value for `key` (O(1) average; the table grows when it
 /// passes 3/4 full).
 public insert : 'k -> 'v -> HashDict 'k 'v -> HashDict 'k 'v
 let insert key value d =
@@ -196,7 +201,7 @@ let insert key value d =
       insertFrom key value (Array.repeat initialCapacity Empty) initialCapacity (indexFor initialCapacity key) 0
     else if count * loadDenominator >= cap * loadNumerator then
       let bigger = grow slots cap
-      let cap2 = cap * 2
+      let cap2 = cap * growthFactor
       insertFrom key value bigger cap2 (indexFor cap2 key) count
     else
       insertFrom key value slots cap (indexFor cap key) count
@@ -289,7 +294,7 @@ let updateOr fallback f key d =
         let value = f fallback
         if count * loadDenominator >= cap * loadNumerator then
           let bigger = grow slots cap
-          let cap2 = cap * 2
+          let cap2 = cap * growthFactor
           HD (count + 1) (place key value bigger cap2 (Int.and hash (cap2 - 1)))
         else
           HD (count + 1) (Array.unsafeSet i (Full key value) slots)

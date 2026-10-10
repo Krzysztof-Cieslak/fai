@@ -7,4 +7,10 @@ let count keys =
 example: HashDict.getOr 0 "a" (count ["a", "b", "a"]) = 2
 example: HashDict.size (count []) = 0
 example: HashDict.size (count (List.range 0 100)) = 100
+
+let growthKeepsSnapshot =
+  let original = count (List.range 0 24)
+  let grown = HashDict.insert 24 9 original
+  HashDict.size original = 24 && HashDict.size grown = 25 && HashDict.get 24 original = None
+example: growthKeepsSnapshot
 forall keys: HashDict.foldl (fun key n total -> total + n) 0 (count keys) = List.length keys
