@@ -13,6 +13,7 @@ const BIAS: usize = 32;
 pub(super) fn allocate(size: usize) -> *mut u8 {
     let mapped = reservation_size(size).unwrap_or_else(|| super::fai_allocation_size_panic());
     let base = map(mapped);
+    super::allocation_stats::acquire(super::allocation_stats::Kind::Mapped, mapped);
     // SAFETY: map allocated the requested object plus the fixed prefix.
     unsafe { base.add(BIAS) }
 }
@@ -30,6 +31,7 @@ pub(super) unsafe fn release(memory: *mut u8, size: usize) {
     // SAFETY: memory and size are the original object pointer/length returned
     // above; subtracting its prefix recovers the still-live reservation.
     unsafe { unmap(memory.sub(BIAS), size + BIAS) };
+    super::allocation_stats::release(super::allocation_stats::Kind::Mapped, size + BIAS);
 }
 
 fn failed(size: usize) -> ! {

@@ -1019,10 +1019,11 @@ pub fn pap_allocations() -> i64 {
 }
 
 /// Resets the cumulative allocation, array-copy, string-copy, string-view, and
-/// closure-allocation counters and live-memory high-water marks (tests/benchmarks).
+/// closure-allocation counters and live/allocator-storage high-water marks.
 /// Call when no other program is running. A no-op in a release build,
 /// where the counters are compiled out.
 pub fn reset_allocations() {
+    allocation_stats::reset_peak();
     #[cfg(debug_assertions)]
     {
         ALLOCATIONS.store(0, Ordering::Relaxed);
@@ -1259,6 +1260,7 @@ fn system_alloc(size: usize) -> *mut u8 {
     if p.is_null() {
         std::alloc::handle_alloc_error(layout);
     }
+    allocation_stats::acquire(allocation_stats::Kind::System, size);
     p
 }
 
@@ -1275,6 +1277,7 @@ unsafe fn system_dealloc(p: *mut u8, size: usize) {
     let layout = Layout::from_size_align(size, ALIGN).expect("valid layout");
     // SAFETY: `p`/`layout` match the original system allocation.
     unsafe { std::alloc::dealloc(p, layout) };
+    allocation_stats::release(allocation_stats::Kind::System, size);
 }
 
 /// Allocates an object of `size` bytes with `rc = 1` and `descriptor`, returning
@@ -5107,6 +5110,7 @@ fn verify_payload(p: *const u8, size: usize, byte: u8) {
 /// The M:N green-thread scheduler that runs a Fai program's concurrent tasks.
 mod scheduler;
 
+pub mod allocation_stats;
 mod data_header;
 mod large_pages;
 mod local_time;
