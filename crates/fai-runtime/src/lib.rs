@@ -3266,6 +3266,8 @@ unsafe fn make_piece(base: Value, byte_off: usize, byte_len: usize) -> Value {
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_string_substring(start: Value, len: Value, s: Value) -> Value {
     let (cstart, clen) = (unbox_int(start), unbox_int(len));
+    fai_drop(start);
+    fai_drop(len);
     // SAFETY: `s` is a boxed string-like value of valid UTF-8.
     unsafe {
         let str = string_str(s);
@@ -3285,10 +3287,11 @@ pub extern "C" fn fai_string_substring(start: Value, len: Value, s: Value) -> Va
 /// small one is copied). Operand consumed.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_string_take(n: Value, s: Value) -> Value {
-    let n = unbox_int(n);
+    let count = unbox_int(n);
+    fai_drop(n);
     // SAFETY: `s` is a boxed string-like value of valid UTF-8.
     unsafe {
-        let end = char_byte_offset(string_str(s), n);
+        let end = char_byte_offset(string_str(s), count);
         if end >= string_bytes(s).len() {
             return s; // n >= length: the whole string
         }
@@ -3302,11 +3305,12 @@ pub extern "C" fn fai_string_take(n: Value, s: Value) -> Value {
 /// view when large). Operand consumed.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_string_drop(n: Value, s: Value) -> Value {
-    let n = unbox_int(n);
+    let count = unbox_int(n);
+    fai_drop(n);
     // SAFETY: `s` is a boxed string-like value of valid UTF-8.
     unsafe {
         let total = string_bytes(s).len();
-        let start = char_byte_offset(string_str(s), n);
+        let start = char_byte_offset(string_str(s), count);
         if start == 0 {
             return s; // n <= 0: drop nothing
         }
@@ -5232,6 +5236,8 @@ mod reuse_tests;
 mod scalar_proptests;
 #[cfg(test)]
 mod shared_rc_tests;
+#[cfg(test)]
+mod string_indices;
 #[cfg(test)]
 mod string_join_tests;
 #[cfg(test)]
