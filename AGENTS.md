@@ -508,6 +508,12 @@ contract inputs are independent of the module's ordinary call sites.
 
 A fold over `List.concat` can walk the existing chunks without copying a flat
 list spine. A single-use concatenation binding gets the same treatment.
+Small directly consumed literal Lists can also be folded without their spine,
+including results of bounded non-recursive same-file producers. Callback and
+initial-accumulator evaluation precede every strict element initializer; fold
+calls then retain their original left/right order, even with effects or traps.
+Resource-bearing elements, shared sources and dynamic tails stay materialized;
+resource-bearing producer arguments retain their original call lifetime.
 `concatMap` still materializes all producer results before the fold starts, so
 producer effects/traps precede every consumer callback. Shared flat lists remain
 ordinary materialized values.

@@ -1,0 +1,38 @@
+module Main
+
+announce : Console -> String -> Int -> Int / { Console }
+let announce console message value =
+  let _ = console.writeLine message
+  value
+
+let makeStep console =
+  let _ = announce console "callback" 0
+  fun acc item ->
+    let _ = announce console ("step" ++ Int.toString item) 0
+    acc * 10 + item
+
+let denominators value = [Int.or value 1, Int.or (value + 2) 1]
+
+public compute : Int -> Int
+let compute value = List.foldl (fun acc item -> acc + 100 / item) value (denominators value)
+
+public computeRight : Int -> Int
+let computeRight value = List.foldr (fun item acc -> 100 / item - acc) value (denominators value)
+
+let repeated value = [value, value]
+
+public floatBits : Float -> Int
+let floatBits value = List.foldl (fun acc item -> Float.toBits item) 0 (repeated value)
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let left = List.foldl (makeStep runtime.console) (announce runtime.console "initial" 0) [
+    announce runtime.console "one" 1,
+    announce runtime.console "two" 2
+  ]
+  let _ = runtime.console.writeLine (Int.toString left)
+  let rightStep item acc =
+    let _ = announce runtime.console ("right" ++ Int.toString item) 0
+    acc * 10 + item
+  let right = List.foldr rightStep 0 [1, 2, 3]
+  runtime.console.writeLine (Int.toString right)
