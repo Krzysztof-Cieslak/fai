@@ -3678,6 +3678,12 @@ Editor integration:
     instead of an indirect call and argument spill. Full-width operands retain
     the ordinary consuming subtraction fallback; reversed, capturing and
     effectful functions keep their normal entries.
+    A single-use `<= 0` predicate of the canonical subtraction can compare two
+    immediate operands directly: their mathematical difference fits signed 64
+    bits. Redundant argument duplicates are omitted only on that immediate path.
+    Full-width operands still use exact wrapping subtraction and normal owned
+    argument release. Other callbacks preserve their call and result conversion;
+    a reused comparator result retains the ordinary value-producing path.
     Native Float ordering against a literal uses signed bit order for a
     nonnegative constant and reversed unsigned order for a negative constant.
     This preserves totalOrder, including NaN signs/payloads and signed zeros.

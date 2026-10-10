@@ -2526,6 +2526,12 @@ fn scalar_specialization_keeps_unused_argument_effects() {
 }
 
 #[test]
+fn noncanonical_comparator_predicates_preserve_effectful_calls() {
+    let source = "module M\nlet count cmp n acc = if n <= 0 then acc else count cmp (n - 1) (if cmp 7 9 <= 0 then acc + 1 else acc)\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let cmp a b =\n    let _ = r.console.writeLine \"compare\"\n    a - b\n  r.console.writeLine (Int.toString (count cmp 3 0))\n";
+    assert_eq!(run(source), (0, "compare\ncompare\ncompare\n3\n".into()));
+}
+
+#[test]
 fn generic_equality_on_an_enum_takes_the_immediate_path() {
     // Every constructor is nullary, so every value is an immediate: the guard's
     // fast arm always runs.
