@@ -93,12 +93,26 @@ thread_local! {
         const { Cell::new(std::ptr::null()) };
 }
 
+// Load the values inside an out-of-line call. An inlined TLS access can let LLVM
+// hoist the Cell's address out of a retry loop; after a coroutine migrates, that
+// address belongs to the previous worker. A loaded task/yielder pointer is stable
+// for the coroutine, but a pointer into a worker's TLS must not cross a suspend.
+#[inline(never)]
+fn current_task_ptr() -> *const Task {
+    CURRENT_TASK.with(Cell::get)
+}
+
+#[inline(never)]
+fn current_yielder_ptr() -> *const Yielder<(), Suspend> {
+    CURRENT_YIELDER.with(Cell::get)
+}
+
 /// Suspends the current task with `reason`. The per-worker yielder is
 /// re-established by [`run_task`] from the task on the next resume, so this does
 /// not depend on a thread-local write surviving the context switch (which a task
 /// migrating between workers would otherwise lose).
 fn suspend_current(reason: Suspend) {
-    let yielder = CURRENT_YIELDER.with(Cell::get);
+    let yielder = current_yielder_ptr();
     debug_assert!(!yielder.is_null(), "suspended outside a task");
     // SAFETY: `yielder` points at the running coroutine's yielder, valid for the
     // coroutine's whole life and stable across resumes (it lives on the coroutine
@@ -112,7 +126,7 @@ fn suspend_current(reason: Suspend) {
 /// never uses concurrency calls host operations outside any task, with no
 /// scheduler to park on.
 pub fn in_task() -> bool {
-    !CURRENT_TASK.with(Cell::get).is_null()
+    !current_task_ptr().is_null()
 }
 
 /// An opaque handle to a parked task, held by whatever it is waiting on (e.g. the
@@ -143,7 +157,7 @@ pub fn unpark(parked: Parked) {
 
 /// The currently running task (for a suspension point to re-queue itself).
 fn current_task() -> Arc<Task> {
-    let p = CURRENT_TASK.with(Cell::get);
+    let p = current_task_ptr();
     debug_assert!(!p.is_null(), "no current task");
     // SAFETY: `p` was set from an `Arc<Task>` that the worker keeps alive across the
     // resume; cloning the `Arc` takes a fresh owned reference.
@@ -156,7 +170,7 @@ fn current_task() -> Arc<Task> {
 /// The currently running task, or `None` outside any task (e.g. the root spawn from
 /// [`block_on`], which runs on the calling OS thread before any task exists).
 fn current_task_opt() -> Option<Arc<Task>> {
-    let p = CURRENT_TASK.with(Cell::get);
+    let p = current_task_ptr();
     if p.is_null() {
         return None;
     }
@@ -176,7 +190,7 @@ pub const CANCELLED_MESSAGE: &str = "operation cancelled";
 /// each park point and returns a cancellation result instead of resuming its work.
 /// False outside any task.
 pub fn is_cancelled() -> bool {
-    let p = CURRENT_TASK.with(Cell::get);
+    let p = current_task_ptr();
     // SAFETY: `p`, when non-null, is the live current `Task`.
     !p.is_null() && unsafe { (*p).cancelled.load(Ordering::Acquire) }
 }
@@ -404,7 +418,7 @@ fn make_task(
         // Publish the yielder so `run_task` can re-establish it on later resumes
         // (which may be on a different worker). `run_task` set `CURRENT_TASK` to
         // this task before this first resume.
-        let task = CURRENT_TASK.with(Cell::get);
+        let task = current_task_ptr();
         // SAFETY: `task` is the live `Task` this coroutine belongs to (set by
         // `run_task` before the resume that entered this body); it outlives the
         // resume, which holds an `Arc` to it.
@@ -1145,6 +1159,48 @@ mod tests {
     }
     fn of_imm(v: Value) -> i64 {
         v >> 1
+    }
+
+    #[test]
+    fn migrated_task_reads_the_resuming_threads_context() {
+        use std::sync::Barrier;
+        use std::sync::atomic::AtomicI64;
+
+        // In an optimized build, an inlined TLS access can retain the first
+        // thread's Cell address across suspend, even though its value changes.
+        fn body() -> Value {
+            let before = is_cancelled();
+            suspend_current(Suspend::Park);
+            let after = is_cancelled();
+            imm(i64::from(!before && after))
+        }
+
+        let result = Arc::new(AtomicI64::new(0));
+        let done = Arc::clone(&result);
+        *scheduler().active.lock().unwrap() += 1;
+        let task = make_task(
+            Box::new(body),
+            Box::new(move |value| {
+                done.store(value, Ordering::Release);
+            }),
+        );
+        let first_task = Arc::clone(&task);
+        let (ready, parked) = std::sync::mpsc::channel();
+        let finish = Arc::new(Barrier::new(2));
+        let first_finish = Arc::clone(&finish);
+        let first = std::thread::spawn(move || {
+            run_task(&first_task);
+            ready.send(()).unwrap();
+            // Keep this thread and its now-empty TLS cells alive while the task
+            // resumes elsewhere. No scheduling timing determines the migration.
+            first_finish.wait();
+        });
+        parked.recv().unwrap();
+        task.cancelled.store(true, Ordering::Release);
+        run_task(&task);
+        finish.wait();
+        first.join().unwrap();
+        assert_eq!(result.load(Ordering::Acquire), imm(1));
     }
 
     #[test]

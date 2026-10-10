@@ -4161,6 +4161,13 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   capability surface, structured (nursery) scope, the M:N scheduler, an IO reactor
   with a TCP capability, and proven crates over hand-rolled coroutine/deque code is
   recorded with the work that builds the language surface on this foundation.
+  - **Thread-local reads across migration.** Task-context and yielder accessors
+    are kept out of line and return the loaded pointer values, never TLS cell
+    addresses. Otherwise LLVM can hoist a cell address out of an optimized I/O
+    retry loop, retaining the old worker's context after a coroutine migrates.
+    Cancellation could then be missed and structured shutdown hang. A forced
+    two-thread migration test runs in both ordinary and optimized builds, and
+    native HTTP checks exercise one-, two-, and four-worker pools.
   - **Nursery retention.** A nursery tracks a live-child count and its joining
     task, rather than retaining a history of task handles and their results.
     Registration precedes scheduling; completion releases the task's private

@@ -81,6 +81,9 @@ jobs:
         # libraries just compiled for the test run).
         run: cargo test --workspace --locked --doc
 
+      - name: Optimized task migration regression
+        run: cargo test --locked --release -p fai-runtime --lib migrated_task_reads_the_resuming_threads_context
+
       - name: Source library tests
         run: |
           cargo build --locked -p fai-cli
@@ -218,6 +221,9 @@ jobs:
         # property tests excluded — those run on Linux only. See the `cross-os`
         # profile in .config/nextest.toml.
         run: cargo nextest run --workspace --locked --profile cross-os
+
+      - name: Optimized task migration regression
+        run: cargo test --locked --release -p fai-runtime --lib migrated_task_reads_the_resuming_threads_context
 
       - name: Source library tests
         run: |
