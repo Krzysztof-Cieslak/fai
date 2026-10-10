@@ -1029,6 +1029,11 @@ with an explicit East Asian ambiguous-width policy.
 The optional `packages/tui` package builds a pure grapheme-aware cell renderer on
 these primitives. Display text is sanitized, wide-cell overwrites preserve whole
 glyph ownership, and frame differences preserve terminal style and cursor state.
+`Ui` constructs typed attribute-list trees with stable hierarchical IDs. The pure
+`TuiLayout`/`TuiInput` engine handles sizing, clipping, focus, modal restoration,
+grapheme editing and virtualized lists/tables/transcripts. Domain values stay in
+the application model; `TuiState` retains mounted interaction state. Key mapping
+is configurable by widget kind, and visible-range messages support paged sources.
 
 ## 6. Compiler pipeline
 

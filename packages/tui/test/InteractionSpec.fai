@@ -1,0 +1,94 @@
+module InteractionSpec
+
+let field value = Ui.input (Ui.id "text") [] { label = "", onChange = identity, value = value }
+
+let frame value = TuiLayout.render (TuiLayout.context 8 2) TuiState.empty (field value)
+
+let key code modifiers = TerminalHost.Key { code = code, modifiers = modifiers, repeat = false }
+
+let send event frame = TuiInput.step TuiInput.defaults event frame
+example: Result.map (fun frame ->
+  (send (key "Backspace" 0) frame).messages) (frame "a\u{301}👩‍💻z") = Ok ["a\u{301}👩‍💻"]
+example: Result.map (fun frame ->
+  (TuiState.get (Ui.id "text") (send (key "Left" 0) frame).state).caret) (frame "a\u{301}👩‍💻z") = Ok 2
+example: Result.map (fun frame ->
+  (TuiState.get (Ui.id "text") (send (key "Left" 1) frame).state).anchor) (frame "abc") = Ok 3
+example: Result.map (fun frame ->
+  (send (TerminalHost.Paste "X") { frame with
+    state = TuiState.select (Ui.id "text") 0 2 frame.state
+  }).messages) (frame "a\u{301}👩‍💻z") = Ok ["Xz"]
+example: Result.map (fun frame ->
+  (send (TerminalHost.Paste "a\nb") frame).messages) (frame "") = Ok ["a b"]
+example: Result.map (fun frame ->
+  (send (key "c" 2) { frame with
+    state = TuiState.select (Ui.id "text") 0 2 frame.state
+  }).actions) (frame "abc") = Ok [TuiInput.Copy "ab"]
+
+let limited =
+  TuiLayout.render (TuiLayout.context 8 2) TuiState.empty (Ui.input (Ui.id "text") [
+    Ui.maxLength 2
+  ] { label = "", onChange = identity, value = "ab" })
+example: Result.map (fun frame -> (send (TerminalHost.Paste "more") frame).messages) limited = Ok []
+
+let secret =
+  TuiLayout.render (TuiLayout.context 8 2) TuiState.empty (Ui.input (Ui.id "text") [
+    Ui.password true
+  ] { label = "", onChange = identity, value = "secret" })
+example: Result.map (fun frame ->
+  (send (key "c" 2) { frame with
+    state = TuiState.select (Ui.id "text") 0 3 frame.state
+  }).actions) secret = Ok []
+example: Result.map (fun frame ->
+  Array.unsafeGet 0 (TuiScreen.lines frame.screen)) secret = Ok "******  "
+
+let composer =
+  TuiLayout.render (TuiLayout.context 8 3) TuiState.empty (Ui.editor (Ui.id "text") [] {
+    label = "",
+    onBlur = None,
+    onChange = identity,
+    onSubmit = Some "submit",
+    value = "abc"
+  })
+example: Result.map (fun frame -> (send (key "Enter" 0) frame).messages) composer = Ok ["submit"]
+example: Result.map (fun frame -> (send (key "Enter" 1) frame).messages) composer = Ok ["abc\n"]
+
+let first = Ui.inputWith (Ui.id "first") [] {
+  label = "",
+  onBlur = Some "blur",
+  onChange = identity,
+  onSubmit = None,
+  value = ""
+}
+
+let pair = TuiLayout.render (TuiLayout.context 10 4) TuiState.empty (Ui.column [] [first, field ""])
+example: Result.map (fun frame -> (send (key "Tab" 0) frame).messages) pair = Ok ["blur"]
+example: Result.map (fun frame ->
+  (send (key "Tab" 0) frame).state.focus) pair = Ok (Some (Ui.id "text"))
+example: Result.map (fun frame ->
+  (TuiState.get (Ui.id "text") (send (TerminalHost.Mouse {
+    button = 0,
+    column = 2,
+    kind = "Down",
+    modifiers = 0,
+    row = 0
+  }) frame).state).caret) (frame "界x") = Ok 1
+
+let background = Ui.column [] [
+  Ui.button (Ui.id "a") [] { label = "A", onPress = 1 },
+  Ui.button (Ui.id "b") [] { label = "B", onPress = 2 }
+]
+
+let modal = Ui.modal [] background (Ui.button (Ui.id "close") [] { label = "Close", onPress = 3 })
+
+let opened =
+  TuiLayout.render (TuiLayout.context 10 4) (TuiState.focus (Some (Ui.id "b")) TuiState.empty) modal
+example: Result.map (fun frame -> frame.state.focus) opened = Ok (Some (Ui.id "close"))
+example: Result.map (fun frame ->
+  Result.map (fun frame ->
+    frame.state.focus) (TuiLayout.render (TuiLayout.context 10 4) frame.state background)) opened = Ok (Ok (Some (Ui.id "b")))
+
+let disabled =
+  TuiLayout.render (TuiLayout.context 10 4) TuiState.empty (Ui.column [
+    Ui.disabled true
+  ] [Ui.button (Ui.id "button") [] { label = "disabled", onPress = 1 }])
+example: Result.map (fun frame -> frame.state.focus) disabled = Ok None

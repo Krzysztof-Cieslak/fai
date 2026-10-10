@@ -1,0 +1,75 @@
+module LayoutSpec
+
+let scrollTree =
+  Ui.scroll (Ui.id "scroll") [] (Ui.column [] [
+    Ui.text [] "a\nb\nc\nd",
+    Ui.button (Ui.id "last") [] { label = "Go", onPress = 1 }
+  ])
+
+let revealed =
+  TuiLayout.render (TuiLayout.context 10 2) (TuiState.focus (Some (Ui.id "last")) TuiState.empty) scrollTree
+example: Result.map (fun frame ->
+  (TuiState.get (Ui.id "scroll") frame.state).scroll) revealed = Ok 3
+example: Result.map (fun frame ->
+  Result.map (fun frame ->
+    (TuiState.get (Ui.id "scroll") frame.state).scroll) (TuiLayout.render (TuiLayout.context 10 2) (TuiState.scrollTo (Ui.id "scroll") 0 frame.state) scrollTree)) revealed = Ok (Ok 0)
+
+let narrow =
+  TuiLayout.render (TuiLayout.context 20 5) TuiState.empty (Ui.column [] [
+    Ui.button (Ui.id "narrow") [Ui.width (Ui.cells 3)] { label = "x", onPress = 0 }
+  ])
+example: Result.map (fun frame -> (Array.unsafeGet 0 frame.hits).rect.width) narrow = Ok 3
+
+let button name = Ui.button (Ui.id name) [Ui.width Ui.fill] { label = name, onPress = name }
+
+let row =
+  TuiLayout.render (TuiLayout.context 10 1) TuiState.empty (Ui.row [] [
+    button "a",
+    button "b",
+    button "c"
+  ])
+example: Result.map (fun frame ->
+  Array.map (fun hit -> hit.rect.width) frame.hits) row = Ok [| 3, 3, 4 |]
+
+let onlyVisible index = if index < 0 || index >= 4 then 1 / 0 else index
+
+let source = {
+  count = 1000000,
+  get = fun index -> Some {
+    cells = [| Int.toString index |],
+    key = Int.toString (onlyVisible index)
+  }
+}
+
+let browser = Ui.list (Ui.id "items") [] {
+  onRange = Some (fun range -> range.count),
+  onSelect = fun _ -> 0,
+  selected = None,
+  source = source
+}
+
+let frame = TuiLayout.render (TuiLayout.context 8 4) TuiState.empty browser
+example: Result.map (fun frame -> frame.messages) frame = Ok [4]
+example: Result.map (fun frame ->
+  TuiScreen.lines frame.screen) frame = Ok [| "0       ", "1       ", "2       ", "3       " |]
+example: Result.map (fun frame ->
+  Result.map (fun next ->
+    next.messages) (TuiLayout.render (TuiLayout.context 8 4) frame.state browser)) frame = Ok (Ok [])
+
+let textSource = {
+  count = 1000000,
+  get = fun index -> Some [{ style = TuiStyle.normal, text = Int.toString (onlyVisible index) }]
+}
+
+let transcript =
+  TuiLayout.render (TuiLayout.context 8 4) TuiState.empty (Ui.transcript (Ui.id "log") [] {
+    follow = false,
+    source = textSource
+  })
+example: Result.map (fun frame ->
+  TuiScreen.lines frame.screen) transcript = Ok [| "0       ", "1       ", "2       ", "3       " |]
+
+let deep = Ui.column [] [Ui.column [] [Ui.text [] "too deep"]]
+example: Result.isErr (TuiLayout.render { TuiLayout.context 8 4 with
+  maxDepth = 1
+} TuiState.empty deep)

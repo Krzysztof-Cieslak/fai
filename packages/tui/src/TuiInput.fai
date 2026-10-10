@@ -1,0 +1,374 @@
+module TuiInput
+
+public type WidgetKind =
+  | Input
+  | Composer
+  | Browser
+  | Button
+  | Transcript
+  | Global
+
+public type Options = {
+  ambiguousWide : Bool,
+  historyLimit : Int,
+  mapKey : WidgetKind -> TerminalHost.Key -> Option TerminalHost.Key,
+  wheelLines : Int
+}
+
+public type Action =
+  | Copy String
+
+public type Outcome 'msg = {
+  actions : List Action,
+  handled : Bool,
+  messages : List 'msg,
+  state : TuiState.State
+}
+
+public defaults : Options
+let defaults = {
+  ambiguousWide = false,
+  historyLimit = 100,
+  mapKey = fun _ key -> Some key,
+  wheelLines = 3
+}
+
+let min a b = if a < b then a else b
+
+let max a b = if a > b then a else b
+
+let clamp low high n = max low (min high n)
+
+let unchanged state = { actions = [], handled = false, messages = [], state = state }
+
+let handled state messages = { actions = [], handled = true, messages = messages, state = state }
+
+let modifier flag key = Int.and flag key.modifiers <> 0
+
+let findFocus focus hits i =
+  if i >= Array.length hits then
+    (-1)
+  else if Some (Array.unsafeGet i hits).id = focus then i else findFocus focus hits (i + 1)
+
+let tab backward frame =
+  let hits = Array.filter (fun hit -> hit.focusable) frame.hits
+  if Array.isEmpty hits then
+    handled frame.state []
+  else
+    let index = findFocus frame.state.focus hits 0
+    let next =
+      if index < 0 then
+        (if backward then Array.length hits - 1 else 0)
+      else
+        Int.floorMod (index + if backward then (-1) else 1) (Array.length hits)
+    handled (TuiState.focus (Some (Array.unsafeGet next hits).id) frame.state) []
+
+let moveCaret id shifted target state =
+  let widget = TuiState.get id state
+  let widget = { widget with anchor = if shifted then widget.anchor else target, caret = target }
+  handled (TuiState.put id widget state) []
+
+edit : TuiLayout.Hit 'msg -> Ui.InputConfig 'msg -> String -> TuiState.State -> Outcome 'msg
+let edit hit config insertion state =
+  let widget = TuiState.get hit.id state
+  let length = TuiText.length config.value
+  let first = clamp 0 length (min widget.caret widget.anchor)
+  let last = clamp first length (max widget.caret widget.anchor)
+  let insertion = TuiText.sanitize insertion
+  let insertion =
+    if hit.props.multiline then insertion else String.join " " (String.split "\n" insertion)
+  let insertion = TuiText.slice 0 (max 0 (hit.props.maxLength - length + last - first)) insertion
+  let value = TuiText.replace first last insertion config.value
+  let caret = first + TuiText.length insertion
+  let widget = { widget with anchor = caret, caret = caret, lastValue = value }
+  handled (TuiState.put hit.id widget state) (if value = config.value then
+    []
+  else
+    [config.onChange value])
+
+let lineStart text caret =
+  let prefix = TuiText.slice 0 caret text
+  let last = Option.withDefault "" (List.head (List.reverse (String.split "\n" prefix)))
+  caret - TuiText.length last
+
+let lineEnd text caret =
+  let suffix = TuiText.slice caret (TuiText.length text) text
+  caret + TuiText.length (Option.withDefault "" (List.head (String.split "\n" suffix)))
+
+let vertical down text caret =
+  let start = lineStart text caret
+  let column = caret - start
+  if down then
+    let end = lineEnd text caret
+    if end = TuiText.length text then caret else min (lineEnd text (end + 1)) (end + 1 + column)
+  else if start = 0 then caret else min (start - 1) (lineStart text (start - 1) + column)
+
+let history options hit config previous state =
+  let widget = TuiState.get hit.id state
+  let index =
+    clamp (-1) (List.length widget.history - 1) (widget.historyIndex + if previous then 1 else (-1))
+  let value =
+    if index = -1 then
+      widget.draft
+    else
+      Option.withDefault "" (List.head (List.drop index widget.history))
+  let length = TuiText.length value
+  let widget = { widget with
+    anchor = length,
+    caret = length,
+    draft = if widget.historyIndex = -1 then config.value else widget.draft,
+    historyIndex = index,
+    lastValue = value
+  }
+  handled (TuiState.put hit.id widget state) [config.onChange value]
+
+inputKey : Options -> TuiLayout.Hit 'msg -> Ui.InputConfig 'msg -> TerminalHost.Key -> TuiState.State -> Outcome 'msg
+let inputKey options hit config key state =
+  let widget = TuiState.get hit.id state
+  let length = TuiText.length config.value
+  let shifted = modifier 1 key
+  let control = modifier 2 key
+  let lower = String.toLower key.code
+  if control && lower = "a" then
+    handled (TuiState.select hit.id 0 length state) []
+  else if control && (lower = "c" || lower = "x") && widget.anchor <> widget.caret && not hit.props.password then
+    let text =
+      TuiText.slice (min widget.anchor widget.caret) (max widget.anchor widget.caret) config.value
+    let outcome = if lower = "x" then edit hit config "" state else handled state []
+    { outcome with actions = [Copy text] }
+  else if control && (lower = "p" || lower = "n") && config.onSubmit <> None then
+    history options hit config (lower = "p") state
+  else if key.code = "Left" then
+    moveCaret hit.id shifted (max 0 (widget.caret - 1)) state
+  else if key.code = "Right" then
+    moveCaret hit.id shifted (min length (widget.caret + 1)) state
+  else if key.code = "Home" then
+    moveCaret hit.id shifted (if control then 0 else lineStart config.value widget.caret) state
+  else if key.code = "End" then
+    moveCaret hit.id shifted (if control then length else lineEnd config.value widget.caret) state
+  else if (key.code = "Up" || key.code = "Down") && hit.props.multiline then
+    moveCaret hit.id shifted (vertical (key.code = "Down") config.value widget.caret) state
+  else if key.code = "Backspace" || key.code = "Delete" then
+    let state =
+      if widget.caret <> widget.anchor then
+        state
+      else
+        TuiState.select hit.id widget.caret (if key.code = "Backspace" then
+          max 0 (widget.caret - 1)
+        else
+          min length (widget.caret + 1)) state
+    edit hit config "" state
+  else if key.code = "Enter" then
+    match config.onSubmit with
+    | Some message ->
+      if shifted then
+        edit hit config "\n" state
+      else
+        let entries =
+          if hit.props.password || config.value = "" || List.head widget.history = Some config.value then
+            widget.history
+          else
+            List.take (max 0 options.historyLimit) (config.value :: widget.history)
+        handled (TuiState.put hit.id { widget with
+          draft = "",
+          history = entries,
+          historyIndex = -1
+        } state) [message]
+    | None -> if hit.props.multiline then edit hit config "\n" state else unchanged state
+  else if not control && not (modifier 4 key) && String.length key.code = 1 then
+    edit hit config key.code state
+  else
+    unchanged state
+
+browserKey : TuiLayout.Hit 'msg -> Ui.BrowserConfig 'msg -> TerminalHost.Key -> TuiState.State -> Outcome 'msg
+let browserKey hit config key state =
+  let widget = TuiState.get hit.id state
+  let count = config.source.count
+  let page = max 1 (hit.rect.height - if Array.isEmpty config.columns then 0 else 1)
+  let target =
+    if key.code = "Down" then
+      Some (widget.caret + 1)
+    else if key.code = "Up" then
+      Some (widget.caret - 1)
+    else if key.code = "PageDown" then
+      Some (widget.caret + page)
+    else if key.code = "PageUp" then
+      Some (widget.caret - page)
+    else if key.code = "Home" then Some 0 else if key.code = "End" then Some (count - 1) else None
+  match target with
+  | None -> unchanged state
+  | Some target ->
+    let target = clamp 0 (max 0 (count - 1)) target
+    let scroll = max 0 (max (target - page + 1) (min widget.scroll target))
+    let state =
+      TuiState.put hit.id { widget with anchor = target, caret = target, scroll = scroll } state
+    let messages =
+      if count <= 0 then
+        []
+      else
+        match config.source.get target with
+        | None -> []
+        | Some item -> [config.onSelect item.key]
+    handled state messages
+
+activate : Options -> TuiLayout.Hit 'msg -> TerminalHost.Key -> TuiState.State -> Outcome 'msg
+let activate options hit key state =
+  match hit.body with
+  | Ui.ButtonBody _ message ->
+    if key.code = "Enter" || key.code = " " then handled state [message] else unchanged state
+  | Ui.CheckBody _ checked onChange ->
+    if key.code = "Enter" || key.code = " " then
+      handled state [onChange (not checked)]
+    else
+      unchanged state
+  | Ui.InputBody config -> inputKey options hit config key state
+  | Ui.BrowserBody config -> browserKey hit config key state
+  | Ui.ScrollBody _ ->
+    let old = (TuiState.get hit.id state).scroll
+    let next =
+      if key.code = "Down" then
+        Some (old + 1)
+      else if key.code = "Up" then
+        Some (max 0 (old - 1))
+      else if key.code = "PageDown" then
+        Some (old + hit.rect.height)
+      else if key.code = "PageUp" then
+        Some (max 0 (old - hit.rect.height))
+      else if key.code = "Home" then Some 0 else if key.code = "End" then Some 2147483647 else None
+    (match next with
+    | None -> unchanged state
+    | Some value -> handled (TuiState.scrollTo hit.id value state) [])
+  | Ui.TranscriptBody config ->
+    let widget = TuiState.get hit.id state
+    let last = max 0 (config.source.count - hit.rect.height)
+    let offset =
+      if key.code = "Up" then
+        Some (widget.scroll - 1)
+      else if key.code = "Down" then
+        Some (widget.scroll + 1)
+      else if key.code = "PageUp" then
+        Some (widget.scroll - hit.rect.height)
+      else if key.code = "PageDown" then
+        Some (widget.scroll + hit.rect.height)
+      else if key.code = "Home" then Some 0 else if key.code = "End" then Some last else None
+    (match offset with
+    | None -> unchanged state
+    | Some offset -> handled (TuiState.put hit.id { widget with
+      follow = key.code = "End",
+      scroll = clamp 0 last offset
+    } state) [])
+  | _ -> unchanged state
+
+let click options hit mouse state =
+  let state = if hit.focusable then TuiState.focus (Some hit.id) state else state
+  match hit.body with
+  | Ui.InputBody config ->
+    let widget = TuiState.get hit.id state
+    let text =
+      if hit.props.password then TuiText.repeat (TuiText.length config.value) "*" else config.value
+    let text =
+      if hit.props.multiline then text else TuiText.slice widget.scroll (TuiText.length text) text
+    let row =
+      if hit.props.multiline then
+        max 0 (mouse.row - hit.rect.y - (if config.label = "" then 0 else 1)) + widget.scroll
+      else
+        0
+    let index =
+      TuiText.indexAt options.ambiguousWide hit.rect.width row (mouse.column - hit.rect.x) text + if hit.props.multiline then
+        0
+      else
+        widget.scroll
+    moveCaret hit.id false (clamp 0 (TuiText.length config.value) index) state
+  | Ui.BrowserBody config ->
+    let index =
+      (TuiState.get hit.id state).scroll + mouse.row - hit.rect.y - if Array.isEmpty config.columns then
+        0
+      else
+        1
+    if index < 0 || index >= config.source.count then
+      handled state []
+    else
+      let widget = TuiState.get hit.id state
+      let state = TuiState.put hit.id { widget with caret = index } state
+      let messages =
+        match config.source.get index with
+        | None -> []
+        | Some item -> [config.onSelect item.key]
+      handled state messages
+  | _ -> activate options hit { code = "Enter", modifiers = mouse.modifiers, repeat = false } state
+
+/// Dispatch one terminal event using the rendered hit map. Unhandled keys remain
+/// available to the application's global event mapping.
+stepRaw : Options -> TerminalHost.Event -> TuiLayout.Frame 'msg -> Outcome 'msg
+let stepRaw options event frame =
+  match event with
+  | TerminalHost.Key key ->
+    let global = options.mapKey Global key
+    let traversal =
+      match global with
+      | Some mapped -> mapped.code = "Tab" || mapped.code = "BackTab"
+      | None -> false
+    if traversal then
+      match global with
+      | Some mapped -> tab (mapped.code = "BackTab" || modifier 1 mapped) frame
+      | None -> unchanged frame.state
+    else
+      match Array.find (fun hit -> hit.focusable && Some hit.id = frame.state.focus) frame.hits with
+      | None -> unchanged frame.state
+      | Some hit ->
+        let kind =
+          match hit.body with
+          | Ui.InputBody config -> if config.onSubmit = None then Input else Composer
+          | Ui.BrowserBody _ -> Browser
+          | Ui.TranscriptBody _ -> Transcript
+          | _ -> Button
+        match options.mapKey kind key with
+        | None -> unchanged frame.state
+        | Some mapped -> activate options hit mapped frame.state
+  | TerminalHost.Paste text ->
+    match Array.find (fun hit -> hit.focusable && Some hit.id = frame.state.focus) frame.hits with
+    | Some hit ->
+      (match hit.body with
+      | Ui.InputBody config -> edit hit config text frame.state
+      | _ -> unchanged frame.state)
+    | None -> unchanged frame.state
+  | TerminalHost.Mouse mouse ->
+    let candidates =
+      List.reverse (Array.toList (Array.filter (fun hit ->
+        hit.enabled && TuiScreen.contains mouse.column mouse.row hit.clip) frame.hits))
+    if mouse.kind = "ScrollUp" || mouse.kind = "ScrollDown" then
+      match List.find (fun hit ->
+        match hit.body with
+        | Ui.ScrollBody _ | Ui.BrowserBody _ | Ui.TranscriptBody _ -> true
+        | _ -> false) candidates with
+      | None -> unchanged frame.state
+      | Some hit -> handled (TuiState.scrollTo hit.id ((TuiState.get hit.id frame.state).scroll + (if mouse.kind = "ScrollUp" then
+        (-1)
+      else
+        1) * max 1 options.wheelLines) frame.state) []
+    else if mouse.kind = "Down" && mouse.button = 0 then
+      match List.find (fun hit -> hit.focusable) candidates with
+      | None -> unchanged frame.state
+      | Some hit -> click options hit mouse frame.state
+    else
+      unchanged frame.state
+  | _ -> unchanged frame.state
+
+public step : Options -> TerminalHost.Event -> TuiLayout.Frame 'msg -> Outcome 'msg
+let step options event frame =
+  let outcome = stepRaw options event frame
+  if outcome.state.focus = frame.state.focus then
+    outcome
+  else
+    let previous = Array.find (fun hit -> Some hit.id = frame.state.focus) frame.hits
+    let messages =
+      match previous with
+      | Some hit ->
+        (match hit.body with
+        | Ui.InputBody config ->
+          (match config.onBlur with
+          | Some message -> [message]
+          | None -> [])
+        | _ -> [])
+      | None -> []
+    { outcome with messages = List.append messages outcome.messages }

@@ -4982,6 +4982,10 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   Display text is sanitized before cell painting. A wide glyph owns its entire
   span; overwriting a continuation clears that span before constructing the new
   cells. Differential output is derived from immutable frame snapshots.
+  Attribute lists are typed by widget kind, with last-value precedence. Layout
+  uses terminal cells and deterministic weighted fill. Virtual sources expose
+  count/index access and report visible ranges; selection uses stable data keys.
+  New focus reveals off-screen descendants, while manual scrolling remains free.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.
