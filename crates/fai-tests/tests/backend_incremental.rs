@@ -136,6 +136,35 @@ fn data_layout_changes_match_clean_native_objects() {
 }
 
 #[test]
+fn constructor_allocation_domain_edits_match_clean_native_objects() {
+    let boxed = "module M\ntype T = | A Int | B Int\nlet kind value = match value with | A _ -> 3 | B _ -> 7\n";
+    let mixed = boxed.replace("| A Int", "| A").replace("| A _", "| A");
+    let comment = format!("// same allocation domain\n{boxed}");
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", boxed)], &[("M.fai", &mixed)], &[("M.fai", &comment)]],
+        |db, files| {
+            let file = db.source_file(files[0]).unwrap();
+            let name = Symbol::intern("kind");
+            ((*rc(db, file, name)).clone(), (*object_code(db, file, name, false)).clone())
+        },
+    );
+}
+
+#[test]
+fn constructor_domain_keeps_comment_edit_cutoff() {
+    let mut db = fai_db::FaiDatabase::new();
+    fai_types::std_lib::load_std(&mut db);
+    let source = "module M\ntype T = | A Int | B Int\nlet kind value = match value with | A _ -> 3 | B _ -> 7\n";
+    let id = db.add_source("M.fai".into(), source.into());
+    let file = db.source_file(id).unwrap();
+    let name = Symbol::intern("kind");
+    let before = object_code(&db, file, name, false);
+    db.add_source("M.fai".into(), format!("// shifted source\n{source}"));
+    let after = object_code(&db, file, name, false);
+    assert!(std::sync::Arc::ptr_eq(&before, &after));
+}
+
+#[test]
 fn unrelated_body_edits_preserve_data_layout_cutoff() {
     let mut db = fai_db::FaiDatabase::new();
     fai_types::std_lib::load_std(&mut db);

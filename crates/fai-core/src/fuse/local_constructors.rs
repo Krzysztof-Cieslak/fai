@@ -147,6 +147,17 @@ fn project(mut body: CExpr, local: LocalId, tag: u32, fields: &[CExpr]) -> Optio
     match &body.kind {
         K::Local(id) if *id == local => return None,
         K::MakeClosure { captures, .. } if captures.contains(&local) => return None,
+        K::Let { local: bound, value, body: tail } => {
+            let value = project((**value).clone(), local, tag, fields)?;
+            // A shared tag observation becomes a constant after projecting a
+            // known constructor. Propagate it before visiting unreachable fields.
+            if matches!(value.kind, K::Lit(Lit::Int(_) | Lit::Bool(_))) {
+                let tail = replace_atom((**tail).clone(), *bound, &value);
+                return project(tail, local, tag, fields);
+            }
+            let tail = project((**tail).clone(), local, tag, fields)?;
+            return Some(bind(*bound, value, tail));
+        }
         K::DataTag { base, .. } if matches!(base.kind, K::Local(id) if id == local) => {
             return Some(CExpr::new(K::Lit(Lit::Int(i64::from(tag))), body.ty));
         }

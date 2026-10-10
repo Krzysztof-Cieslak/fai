@@ -79,6 +79,20 @@ fn lowers_arithmetic() {
 }
 
 #[test]
+fn a_match_observes_its_root_tag_once() {
+    let source = "module M\ntype T = | A Int | B Int | C Int\nlet kind value = match value with | A _ -> 1 | B _ -> 2 | C _ -> 3\n";
+    let lowered = lower(source, "kind");
+    assert_eq!(lowered.matches("(tag ").count(), 1, "{lowered}");
+}
+
+#[test]
+fn nested_matches_keep_separate_tag_observations() {
+    let source = "module M\ntype T = | A Int | B Int\nlet kind left right = match left with | A _ -> (match right with | A _ -> 1 | B _ -> 2) | B _ -> 3\n";
+    let lowered = lower(source, "kind");
+    assert_eq!(lowered.matches("(tag ").count(), 2, "{lowered}");
+}
+
+#[test]
 fn lowers_if_and_negation() {
     let src = indoc! {r#"
         module M
@@ -576,7 +590,7 @@ fn match_lowers_to_tag_tests_and_field_projections() {
     "#};
     assert_eq!(
         lower(src, "f"),
-        "fn0(%0) = (let %3 = %0; (if (= (tag %3) 0) (let %1 = (field 0 %3); %1) (if (= (tag %3) 1) (let %2 = (field 0 %3); %2) <error>)))\n"
+        "fn0(%0) = (let %3 = %0; (let %4 = (tag %3); (if (= %4 0) (let %1 = (field 0 %3); %1) (if (= %4 1) (let %2 = (field 0 %3); %2) <error>))))\n"
     );
     assert!(codes(src, "f").is_empty());
 }

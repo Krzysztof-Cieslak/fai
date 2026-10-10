@@ -453,6 +453,10 @@ pub struct DataShape {
     /// None also covers a type with no immediate alternatives.
     #[serde(default)]
     pub immediate_tag: Option<u32>,
+    /// Every alternative is heap allocated; no immediate constructor is possible.
+    /// Kept separate from `immediate_tag`, whose absence may mean several tags.
+    #[serde(default)]
+    pub always_boxed: bool,
 }
 
 impl LoweredDef {
