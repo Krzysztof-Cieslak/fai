@@ -55,9 +55,90 @@ public bool : Value Bool
 let bool =
   Value (fun value ->
     match value with
+    | Sql.Boolean value -> Ok value
     | Sql.Integer 0 -> Ok false
     | Sql.Integer 1 -> Ok true
     | _ -> failure "expected SQL integer 0 or 1")
+
+/// Read an exact decimal, including a validated SQLite TEXT representation.
+public decimal : Value SqlDecimal.Decimal
+let decimal =
+  Value (fun value ->
+    match value with
+    | Sql.Decimal value -> Ok value
+    | Sql.Text text ->
+      Result.mapError (Sql.error Sql.DecodeFailure "decimal") (SqlDecimal.parse text)
+    | _ -> failure "expected exact SQL decimal")
+
+/// Read a UUID or its canonical SQLite TEXT representation.
+public uuid : Value SqlUuid.Uuid
+let uuid =
+  Value (fun value ->
+    match value with
+    | Sql.Uuid value -> Ok value
+    | Sql.Text text -> Result.mapError (Sql.error Sql.DecodeFailure "uuid") (SqlUuid.parse text)
+    | _ -> failure "expected UUID")
+
+let temporal parse text =
+  if text = "infinity" then
+    Ok Sql.PositiveInfinity
+  else if text = "-infinity" then
+    Ok Sql.NegativeInfinity
+  else
+    match parse text with
+    | Some value -> Ok (Sql.Finite value)
+    | None -> failure "invalid SQL temporal value"
+
+/// Read SQL date, retaining infinities.
+public date : Value (Sql.Temporal LocalDate)
+let date =
+  Value (fun value ->
+    match value with
+    | Sql.Date date -> Ok date
+    | Sql.Text text -> temporal LocalDate.parse text
+    | _ -> failure "expected SQL date")
+
+/// Read SQL time, retaining 24:00:00.
+public time : Value Sql.TimeValue
+let time =
+  Value (fun value ->
+    match value with
+    | Sql.Time time -> Ok time
+    | Sql.Text "24:00:00" -> Ok Sql.EndOfDay
+    | Sql.Text text ->
+      (match LocalTime.parse text with
+      | Some time -> Ok (Sql.TimeOfDay time)
+      | None -> failure "invalid SQL time")
+    | _ -> failure "expected SQL time")
+
+/// Read a timestamp without a time zone, retaining infinities.
+public timestamp : Value (Sql.Temporal LocalDateTime)
+let timestamp =
+  Value (fun value ->
+    match value with
+    | Sql.Timestamp value -> Ok value
+    | Sql.Text text -> temporal LocalDateTime.parse text
+    | _ -> failure "expected SQL timestamp")
+
+/// Read a timestamp on the UTC timeline, retaining infinities.
+let parseInstant text = Option.map OffsetDateTime.toInstant (OffsetDateTime.parse text)
+
+public timestampTz : Value (Sql.Temporal Instant)
+let timestampTz =
+  Value (fun value ->
+    match value with
+    | Sql.TimestampTz value -> Ok value
+    | Sql.Text text -> temporal parseInstant text
+    | _ -> failure "expected SQL timestamp with time zone")
+
+/// Read JSON document text. Parsing/schema validation can use JsonDecode.
+public json : Value String
+let json =
+  Value (fun value ->
+    match value with
+    | Sql.Json text -> Ok text
+    | Sql.Text text -> Ok text
+    | _ -> failure "expected SQL JSON text")
 
 /// Run a cell decoder directly.
 public decodeValue : Value 'a -> Sql.Value -> Result 'a Sql.Error

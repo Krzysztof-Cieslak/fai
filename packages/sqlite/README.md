@@ -48,6 +48,9 @@ embedded NULs and distinguish empty values from NULL. Integer bindings support
 the complete signed 64-bit range. Non-finite real parameters are rejected instead
 of being silently converted to NULL. Invalid UTF-8 database text is an error;
 binary content belongs in a blob. SQLite's own affinity rules still apply.
+Booleans bind as integers 0/1. Rich SQL scalars (decimal, UUID, temporal and JSON
+values) bind as text; their explicit decoders can read that text back. Store exact
+decimals in TEXT columns when their precision must survive SQLite affinity.
 
 `Sql.execute` requires a command without returned columns. For SELECT, PRAGMA
 results, and INSERT/UPDATE/DELETE RETURNING, use `Sql.query`, `SqlDecode.query`, or

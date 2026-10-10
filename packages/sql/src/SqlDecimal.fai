@@ -1,0 +1,52 @@
+module SqlDecimal
+
+/// Exact decimal text, including the SQL numeric special values. Finite spelling
+/// and scale are retained; equality of Decimal values compares that spelling.
+public opaque type Decimal =
+  | Decimal String
+
+let digit byte = byte >= 48 && byte <= 57
+
+let at bytes i = if i < Bytes.length bytes then Bytes.unsafeGet i bytes else (-1)
+
+let digits bytes i = if digit (at bytes i) then digits bytes (i + 1) else i
+
+let sign bytes i = if at bytes i = 43 || at bytes i = 45 then i + 1 else i
+
+let finite bytes =
+  let start = sign bytes 0
+  let whole = digits bytes start
+  let fraction = if at bytes whole = 46 then digits bytes (whole + 1) else whole
+  let hasDigits = whole > start || fraction > whole + 1
+  let exponent =
+    if at bytes fraction = 101 || at bytes fraction = 69 then
+      let first = sign bytes (fraction + 1)
+      let last = digits bytes first
+      if last = first then (-1) else last
+    else
+      fraction
+  hasDigits && exponent = Bytes.length bytes
+
+/// Parse an exact finite decimal, NaN, Infinity, or -Infinity.
+public parse : String -> Result Decimal String
+let parse text =
+  if text = "NaN" || text = "Infinity" || text = "-Infinity" || finite (Bytes.fromString text) then
+    Ok (Decimal text)
+  else
+    Err "invalid SQL decimal"
+
+/// The original validated text, without conversion through Float.
+public toString : Decimal -> String
+let toString value =
+  match value with
+  | Decimal text -> text
+
+/// Whether the value is finite.
+public isFinite : Decimal -> Bool
+let isFinite value =
+  let text = toString value
+  text <> "NaN" && text <> "Infinity" && text <> "-Infinity"
+
+/// Construct a decimal from an exact integer.
+public fromInt : Int -> Decimal
+let fromInt value = Decimal (Int.toString value)

@@ -18,6 +18,10 @@ let find session id =
 ## Values and rows
 
 `Sql.Value` is `Null`, `Integer Int`, `Real Float`, `Text String`, or `Blob Bytes`.
+It also supports `Boolean`, exact `Decimal` (`SqlDecimal`), validated `Uuid`
+(`SqlUuid`), `Date`, `Time`, `Timestamp`, `TimestampTz`, and JSON document text.
+Temporal values explicitly represent positive/negative infinity; SQL time has
+an `EndOfDay` form for 24:00:00. Decimal spelling/scale never pass through Float.
 Conversions are explicit: integer and real decoders do not silently convert each
 other. `SqlDecode.bool` accepts integers 0/1; `nullable` handles NULL. A missing
 column is distinct from a present NULL. `field` uses exact column names and
