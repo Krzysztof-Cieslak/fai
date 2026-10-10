@@ -6777,6 +6777,9 @@ impl<M: Module> Translator<'_, M> {
         if abi.int_return() {
             self.mark_raw(result);
         }
+        if let Some(niche) = abi.niche_return() {
+            self.mark_niche(result, niche);
+        }
         self.as_repr_of(result, result_ty)
     }
 

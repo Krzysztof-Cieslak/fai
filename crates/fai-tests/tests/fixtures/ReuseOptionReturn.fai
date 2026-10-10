@@ -1,0 +1,19 @@
+module Main
+
+public type Pair =
+  | Pair Int Int
+
+let build n a b = if n <= 0 then Some (Pair a b) else build (n - 1) a b
+
+public update : Bool -> Pair -> Option Pair
+let update local pair =
+  match pair with
+  | Pair a b ->
+    if a = 0 then update local (Pair 1 b) else if local then Some (Pair (a + 1) b) else build 0 a b
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let result = update false (Pair 41 9)
+  let local = update true (Pair 41 9)
+  let ok = result = Some (Pair 41 9) && local = Some (Pair 42 9)
+  runtime.console.writeLine (if ok then "yes" else "no")
