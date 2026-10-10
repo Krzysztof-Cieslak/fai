@@ -424,3 +424,16 @@ fn generic_option_scheme_edits_update_callers_incrementally() {
         },
     );
 }
+
+#[test]
+fn integer_box_sharing_edits_match_clean_native_objects() {
+    let source = "module M\npublic pair : Int -> (Int * Int)\nlet pair x = (x + 1, x + 1)\n";
+    let edited = source.replace("(x + 1, x + 1)", "(x + 1, x + 2)");
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", source)], &[("M.fai", &edited)]],
+        |db, files| {
+            (*object_code(db, db.source_file(files[0]).unwrap(), Symbol::intern("pair"), false))
+                .clone()
+        },
+    );
+}

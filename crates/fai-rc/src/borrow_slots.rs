@@ -207,7 +207,8 @@ fn remove_drops(e: &mut CExpr, slot: LocalId) {
     children(e, &mut |child| remove_drops(child, slot));
 }
 
-fn children(e: &mut CExpr, f: &mut impl FnMut(&mut CExpr)) {
+/// Visits each immediate subexpression in evaluation order.
+pub(crate) fn children(e: &mut CExpr, f: &mut impl FnMut(&mut CExpr)) {
     match &mut e.kind {
         K::Prim { args, .. }
         | K::Foreign { args, .. }

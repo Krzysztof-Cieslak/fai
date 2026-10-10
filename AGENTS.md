@@ -531,6 +531,10 @@ the loop; scalar field conversions retain their normal owned boundaries.
 Representation-preserving data aliases are coalesced before ownership insertion,
 after borrow signatures are fixed. The surviving local retains its type metadata;
 generic/scalar or niche conversion bindings remain explicit.
+Repeated Int values crossing uniform slots in a small straight-line region can
+share one boxed peer while arithmetic retains the raw scalar. Pure duplicate Int
+expressions are coalesced first; ownership insertion balances the shared peer.
+Branch-only uses, closures and row-offset references keep their ordinary paths.
 After ownership insertion, a field projection immediately followed by discarding
 its result is removed while its parent stays live. Parent releases and intervening
 operations retain their original order.

@@ -35,6 +35,7 @@ pub fn pretty_def(def: &LoweredDef) -> String {
 fn prim_name(op: Prim) -> &'static str {
     match op {
         Prim::IntAdd => "+",
+        Prim::IntBox => "intBox",
         Prim::IntSub => "-",
         Prim::IntMul => "*",
         Prim::IntDiv => "/",

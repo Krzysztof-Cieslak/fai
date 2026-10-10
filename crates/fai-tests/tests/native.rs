@@ -646,6 +646,17 @@ fn exact_scalar_fixed_points_finish_at_the_proven_bound() {
 }
 
 #[test]
+fn shared_integer_box_peers_cross_native_module_boundaries() {
+    assert_eq!(
+        build_and_run_files(&[
+            ("Main.fai", include_str!("fixtures/shared_int/Main.fai")),
+            ("Boxed.fai", include_str!("fixtures/shared_int/Boxed.fai")),
+        ]),
+        ("yes\n".into(), Some(0))
+    );
+}
+
+#[test]
 fn scalar_fixed_state_does_not_skip_a_counter_dependent_trap() {
     let source = "module Main\nlet loop i n x = if i >= n then x else\n  let _ = 1 / (1 - i)\n  loop (i + 1) n (x * 0.5)\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Float.toString (loop 0 3 0.0))\n";
     let (stdout, stderr, code) = build_and_run_captured(source);

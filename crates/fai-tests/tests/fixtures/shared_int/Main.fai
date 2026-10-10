@@ -1,0 +1,6 @@
+module Main
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let (a, b) = Boxed.pair 9223372036854775806
+  runtime.console.writeLine (if a = 9223372036854775807 && b = a then "yes" else "no")

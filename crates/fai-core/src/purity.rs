@@ -156,7 +156,8 @@ pub fn op_unsafe_to_reorder(op: Prim, args: &[CExpr]) -> bool {
         | Prim::BytesGet
         | Prim::CharFromCode
         | Prim::BytesToString => true,
-        Prim::IntAdd
+        Prim::IntBox
+        | Prim::IntAdd
         | Prim::IntSub
         | Prim::IntMul
         | Prim::IntAnd
