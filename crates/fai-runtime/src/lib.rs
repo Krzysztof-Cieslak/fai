@@ -2965,7 +2965,7 @@ pub extern "C" fn fai_float_to_int(f: Value) -> Value {
 /// Renders a `Float` as a `String` (operand consumed).
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_float_to_string(f: Value) -> Value {
-    let result = make_string(format!("{:?}", unbox_float(f)).as_bytes());
+    let result = make_string_with_ascii(format!("{:?}", unbox_float(f)).as_bytes(), true);
     fai_drop(f);
     result
 }
@@ -3034,10 +3034,15 @@ pub extern "C" fn fai_is_valid_char_code(n: Value) -> Value {
 /// `len`. The allocation is rounded up to the heap alignment, so even a tight
 /// string carries a few bytes of slack that its length never reflects.
 fn alloc_string(len: usize, cap_bytes: usize) -> *mut u8 {
+    alloc_string_with_ascii(len, cap_bytes, false)
+}
+
+fn alloc_string_with_ascii(len: usize, cap_bytes: usize, ascii: bool) -> *mut u8 {
     debug_assert!(cap_bytes >= len);
     let size = checked_buffer_size(STRING_BYTES_OFFSET, cap_bytes, 1)
         .unwrap_or_else(|| fai_allocation_size_panic());
-    let p = alloc_obj(size, &FAI_STRING_DESC);
+    let descriptor = if ascii { &FAI_ASCII_STRING_DESC } else { &FAI_STRING_DESC };
+    let p = alloc_obj(size, descriptor);
     // SAFETY: `p` has room for the length field and `cap_bytes` content bytes.
     unsafe { write_u64(p, STRING_LEN_OFFSET, len as u64) };
     p
@@ -3045,12 +3050,15 @@ fn alloc_string(len: usize, cap_bytes: usize) -> *mut u8 {
 
 /// Allocates a tight `String` object from `bytes` (rc = 1).
 fn make_string(bytes: &[u8]) -> Value {
+    make_string_with_ascii(bytes, bytes.is_ascii())
+}
+
+fn make_string_with_ascii(bytes: &[u8], ascii: bool) -> Value {
+    debug_assert!(!ascii || bytes.is_ascii());
     let len = bytes.len();
-    let p = alloc_string(len, len);
+    let p = alloc_string_with_ascii(len, len, ascii);
     // SAFETY: `p` has room for `len` content bytes.
     unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), p.add(STRING_BYTES_OFFSET), len) };
-    // SAFETY: the fresh buffer contains exactly the initialized input bytes.
-    unsafe { set_string_ascii(p, bytes.is_ascii()) };
     from_obj(p)
 }
 
@@ -3160,7 +3168,9 @@ pub extern "C" fn fai_string_concat(a: Value, b: Value) -> Value {
             fai_drop(a);
             return b;
         }
-        let ascii = string_is_ascii(a) && string_is_ascii(b);
+        let a_ascii = string_is_ascii(a);
+        let b_ascii = string_is_ascii(b);
+        let ascii = a_ascii && b_ascii;
 
         // Both operands' bytes, resolved uniformly (either may be a slice view).
         let (a_ptr, b_ptr) = (string_bytes(a).as_ptr(), string_bytes(b).as_ptr());
@@ -3174,7 +3184,9 @@ pub extern "C" fn fai_string_concat(a: Value, b: Value) -> Value {
             // `a`'s bytes not re-copied.
             std::ptr::copy_nonoverlapping(b_ptr, pa.add(STRING_BYTES_OFFSET + la), lb);
             write_u64(pa, STRING_LEN_OFFSET, need as u64);
-            set_string_ascii(pa, ascii);
+            if a_ascii && !b_ascii {
+                set_string_ascii(pa, false);
+            }
             fai_drop(b);
             return a;
         }
@@ -3187,7 +3199,9 @@ pub extern "C" fn fai_string_concat(a: Value, b: Value) -> Value {
             std::ptr::copy(bytes, bytes.add(la), lb);
             std::ptr::copy_nonoverlapping(a_ptr, bytes, la);
             write_u64(pb, STRING_LEN_OFFSET, need as u64);
-            set_string_ascii(pb, ascii);
+            if b_ascii && !a_ascii {
+                set_string_ascii(pb, false);
+            }
             fai_drop(a);
             return b;
         }
@@ -3195,19 +3209,19 @@ pub extern "C" fn fai_string_concat(a: Value, b: Value) -> Value {
         let q = if inline_unique {
             // Unique inline but full: grow into a doubled buffer so further appends
             // amortize. Expected growth, not a uniqueness-loss copy — uncounted.
-            alloc_string(
+            alloc_string_with_ascii(
                 need,
                 grow_cap(string_cap(a), need, MAX_ALLOCATION_SIZE - STRING_BYTES_OFFSET),
+                ascii,
             )
         } else {
             // Shared, or a slice (which never owns extensible capacity): fork a
             // fresh tight buffer. A uniqueness-loss copy (counted).
             note_string_copy();
-            alloc_string(need, need)
+            alloc_string_with_ascii(need, need, ascii)
         };
         std::ptr::copy_nonoverlapping(a_ptr, q.add(STRING_BYTES_OFFSET), la);
         std::ptr::copy_nonoverlapping(b_ptr, q.add(STRING_BYTES_OFFSET + la), lb);
-        set_string_ascii(q, ascii);
         if inline_unique {
             // Ownership of `a`'s bytes moved into `q`; reclaim its old memory
             // directly (no child scan — an inline string is a leaf).
@@ -3386,7 +3400,7 @@ pub extern "C" fn fai_string_drop(n: Value, s: Value) -> Value {
 /// Renders an `Int` as a `String` (operand consumed).
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_int_to_string(n: Value) -> Value {
-    let result = make_string(unbox_int(n).to_string().as_bytes());
+    let result = make_string_with_ascii(unbox_int(n).to_string().as_bytes(), true);
     fai_drop(n);
     result
 }
@@ -3664,7 +3678,9 @@ unsafe fn join_string_bytes<'a>(
             output = output.add(part.len());
         }
         let bytes = std::slice::from_raw_parts(result.add(STRING_BYTES_OFFSET), len);
-        set_string_ascii(result, bytes.is_ascii());
+        if bytes.is_ascii() {
+            set_string_ascii(result, true);
+        }
     }
     from_obj(result)
 }
