@@ -1608,11 +1608,64 @@ fn link_msvc(
     for lib in &native.libs {
         command.arg(format!("{lib}.lib"));
     }
-    let status = command.status().map_err(|e| format!("invoking linker `{linker}`: {e}"))?;
+    // Per-definition objects can exceed CreateProcess's command-line limit.
+    // Keep the response file beside the archive so the staging owner also removes
+    // it on failure. UTF-16 with a BOM preserves Windows paths beyond ASCII.
+    let response = archive.with_extension("rsp");
+    let bytes = msvc_response_file(command.get_args())?;
+    std::fs::write(&response, bytes)
+        .map_err(|e| format!("writing linker response file {}: {e}", response.display()))?;
+    let mut argument = std::ffi::OsString::from("@");
+    argument.push(&response);
+    let status = std::process::Command::new(&linker)
+        .arg(argument)
+        .status()
+        .map_err(|e| format!("invoking linker `{linker}`: {e}"))?;
     if !status.success() {
         return Err(format!("linker `{linker}` exited with {status}"));
     }
     Ok(())
+}
+
+fn msvc_response_file<'a>(
+    arguments: impl IntoIterator<Item = &'a std::ffi::OsStr>,
+) -> Result<Vec<u8>, String> {
+    let mut units = vec![0xfeff];
+    for argument in arguments {
+        #[cfg(windows)]
+        let argument: Vec<u16> = {
+            use std::os::windows::ffi::OsStrExt;
+            argument.encode_wide().collect()
+        };
+        #[cfg(not(windows))]
+        let argument: Vec<u16> = argument
+            .to_str()
+            .ok_or("MSVC linker arguments must be representable as UTF-16")?
+            .encode_utf16()
+            .collect();
+        if argument.iter().any(|unit| matches!(unit, 0 | 10 | 13)) {
+            return Err("MSVC linker arguments may not contain NUL or a newline".into());
+        }
+        units.push(34);
+        let mut slashes = 0;
+        for unit in argument {
+            if unit == 92 {
+                slashes += 1;
+            } else {
+                // Windows quoting doubles backslashes before a quote, including
+                // the closing quote; literal quotes need one further backslash.
+                units.extend(std::iter::repeat_n(
+                    92,
+                    if unit == 34 { slashes * 2 + 1 } else { slashes },
+                ));
+                units.push(unit);
+                slashes = 0;
+            }
+        }
+        units.extend(std::iter::repeat_n(92, slashes * 2));
+        units.extend([34, 10]);
+    }
+    Ok(units.into_iter().flat_map(u16::to_le_bytes).collect())
 }
 
 #[cfg(test)]
@@ -1620,6 +1673,60 @@ mod link_tests {
     use wait_timeout::ChildExt;
 
     use super::*;
+
+    fn response_text(arguments: &[&str]) -> String {
+        let bytes = msvc_response_file(arguments.iter().map(std::ffi::OsStr::new)).unwrap();
+        assert_eq!(&bytes[..2], &[0xff, 0xfe]);
+        let words: Vec<_> =
+            bytes[2..].chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect();
+        String::from_utf16(&words).unwrap()
+    }
+
+    #[test]
+    fn msvc_response_preserves_unicode_paths_and_spaces() {
+        assert_eq!(
+            response_text(&["/OUT:C:\\build space\\程序😀.exe"]),
+            "\"/OUT:C:\\build space\\程序😀.exe\"\n"
+        );
+    }
+
+    #[test]
+    fn msvc_response_escapes_trailing_backslashes() {
+        assert_eq!(
+            response_text(&["/LIBPATH:C:\\build space\\"]),
+            "\"/LIBPATH:C:\\build space\\\\\"\n"
+        );
+    }
+
+    #[test]
+    fn msvc_response_escapes_embedded_quotes() {
+        assert_eq!(response_text(&["a\\\"b"]), "\"a\\\\\\\"b\"\n");
+    }
+
+    #[test]
+    fn msvc_response_keeps_argument_boundaries() {
+        assert_eq!(
+            response_text(&["", "one.obj", "/OPT:REF"]),
+            "\"\"\n\"one.obj\"\n\"/OPT:REF\"\n"
+        );
+    }
+
+    #[test]
+    fn msvc_response_rejects_line_injection() {
+        assert!(msvc_response_file([std::ffi::OsStr::new("file.obj\n/OUT:other.exe")]).is_err());
+    }
+
+    #[test]
+    #[cfg(target_env = "msvc")]
+    fn long_msvc_invocation_reaches_the_linker() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive = directory.path().join("empty.lib");
+        std::fs::write(&archive, b"invalid library").unwrap();
+        let objects = vec![directory.path().join("object with a long filename.obj"); 2048];
+        let out = Utf8Path::new("unused.exe");
+        let error = link_msvc(&objects, &archive, out, &[], &Default::default()).unwrap_err();
+        assert!(error.contains("exited with"), "the linker must launch: {error}");
+    }
 
     #[track_caller]
     fn assert_staging_cleanup(case: &str) -> tempfile::TempDir {

@@ -136,6 +136,11 @@ run` JIT-loads the shared libraries named by `libraries` (found under
 loaded, or a malformed manifest, is a clear error. The file is absent for the
 common, pure program.
 
+On Windows/MSVC, the driver passes linker inputs through a quoted UTF-16
+response file, so large programs are not limited by the process command-line
+length. The response file and generated objects share the temporary build
+directory and are removed together after linking.
+
 Compiler-generated native symbols use the versioned `fai2_` encoding and are an
 internal ABI; rebuild generated objects when updating the compiler. This replaces
 the ambiguous `fai_<module>_<member>` encoding. Explicit symbol strings in
