@@ -56,6 +56,7 @@ public type Props = {
   password : Bool,
   placeholder : String,
   style : TuiStyle.Style,
+  styleSet : Bool,
   width : Length
 }
 
@@ -160,7 +161,7 @@ let apply props attribute =
     | Padding value -> { props with padding = nonnegative value }
     | Gap value -> { props with gap = nonnegative value }
     | Border value -> { props with border = value }
-    | Style value -> { props with style = value }
+    | Style value -> { props with style = value, styleSet = true }
     | Disabled value -> { props with disabled = value }
     | Multiline value -> { props with multiline = value }
     | Password value -> { props with password = value }
@@ -187,6 +188,7 @@ let properties attributes =
     password = false,
     placeholder = "",
     style = TuiStyle.normal,
+    styleSet = false,
     width = Content
   } attributes
 

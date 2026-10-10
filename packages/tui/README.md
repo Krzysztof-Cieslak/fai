@@ -27,6 +27,8 @@ attributes include `placeholder`, `multiline`, `password` and `maxLength`.
 Later attributes replace earlier values. Borders surround padding and content
 regardless of attribute order. The root owns the viewport; child sizes honor
 intrinsic/fixed/fill constraints, with clipping when space is insufficient.
+Unstyled children inherit their container's normal style, beginning with the
+configured theme; an explicit `Ui.style` replaces that inherited style.
 
 ```fai
 Ui.column [Ui.gap 1, Ui.padding 1] [

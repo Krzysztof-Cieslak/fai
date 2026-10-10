@@ -417,7 +417,12 @@ let draw context depth clip rect active element paint =
     let active = active && not node.props.disabled
     let body = inner rect node.props
     let bodyClip = TuiScreen.intersect clip body
-    let style = if active then node.props.style else context.theme.muted
+    let style =
+      if active then
+        (if node.props.styleSet then node.props.style else context.theme.normal)
+      else
+        context.theme.muted
+    let context = { context with theme = { context.theme with normal = style } }
     let screen = TuiScreen.fill clip style paint.screen
     let screen = if node.props.border then border context clip rect style screen else screen
     let paint = { paint with screen = screen, visited = paint.visited + 1 }
@@ -483,7 +488,8 @@ let draw context depth clip rect active element paint =
     | Ui.BrowserBody config ->
       (match node.id with
       | None -> paint
-      | Some id -> drawBrowser context id bodyClip body node.props config paint)
+      | Some id ->
+        drawBrowser context id bodyClip body { node.props with style = style } config paint)
     | Ui.RowBody children ->
       drawChildren context depth bodyClip body true node.props.gap active children paint
     | Ui.ColumnBody children ->
