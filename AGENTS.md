@@ -999,6 +999,13 @@ or cursors fail. Connections and transaction ends finalize outstanding statement
 Bindings preserve NULL, full-width integers, text and blobs; row snapshots own their
 data. Busy timeouts and outer transaction modes are configurable.
 
+`Crypto` supplies audited SHA-256, HMAC, PBKDF2, constant-time comparison and
+PostgreSQL SCRAM password normalization. OS entropy is a separate explicit
+`Crypto.Entropy` capability. `Wire.peer` reports a TCP connection's actual peer;
+`Wire.serverEndPoint` supplies TLS certificate channel binding. `Wire.cleanup`
+masks sticky cancellation for bounded cleanup, restoring it afterwards and
+cancelling children that outlive the cleanup boundary.
+
 ## 6. Compiler pipeline
 
 ```

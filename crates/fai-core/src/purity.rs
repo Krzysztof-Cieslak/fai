@@ -208,6 +208,11 @@ pub fn op_unsafe_to_reorder(op: Prim, args: &[CExpr]) -> bool {
         | Prim::ArrayJoin
         | Prim::BytesLength
         | Prim::BytesConcat
+        | Prim::CryptoSha256
+        | Prim::CryptoHmacSha256
+        | Prim::CryptoPbkdf2Sha256
+        | Prim::CryptoEqual
+        | Prim::CryptoScramPassword
         | Prim::BytesSlice
         | Prim::BytesFromList
         | Prim::BytesToList

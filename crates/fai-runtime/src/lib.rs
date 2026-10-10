@@ -5129,8 +5129,16 @@ mod reactor;
 /// File-handle capabilities (progressive reading/writing over the blocking pool).
 mod io;
 
+mod crypto;
+pub use scheduler::fai_cleanup;
 /// The TLS engine (sans-I/O rustls) backing the `Tls` capability.
 mod tls;
+pub use crypto::{
+    fai_crypto_equal, fai_crypto_hmac_sha256, fai_crypto_pbkdf2_sha256, fai_crypto_random,
+    fai_crypto_scram_password, fai_crypto_sha256,
+};
+pub use reactor::fai_net_peer;
+pub use tls::fai_tls_server_endpoint;
 
 /// SQLite resource ownership and the native database capability.
 mod sqlite;

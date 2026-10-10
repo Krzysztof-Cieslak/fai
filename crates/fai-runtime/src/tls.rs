@@ -390,9 +390,54 @@ pub extern "C" fn fai_tls_close(tls: Value) -> Value {
     crate::FAI_UNIT
 }
 
+fn server_endpoint(obj: &TlsObject) -> Result<Vec<u8>, String> {
+    let state = obj.conn.lock().expect("tls lock");
+    let cert = state
+        .connection
+        .peer_certificates()
+        .and_then(|chain| chain.first())
+        .ok_or("TLS peer certificate is unavailable")?;
+    let (_, parsed) = x509_parser::parse_x509_certificate(cert.as_ref())
+        .map_err(|_| "invalid TLS peer certificate")?;
+    let oid = parsed.signature_algorithm.algorithm.to_id_string();
+    let algorithm = match oid.as_str() {
+        "1.2.840.113549.1.1.12" | "1.2.840.10045.4.3.3" => &ring::digest::SHA384,
+        "1.2.840.113549.1.1.13" | "1.2.840.10045.4.3.4" => &ring::digest::SHA512,
+        "1.2.840.113549.1.1.4"
+        | "1.2.840.113549.1.1.5"
+        | "1.2.840.113549.1.1.11"
+        | "1.2.840.10045.4.1"
+        | "1.2.840.10045.4.3.2"
+        | "1.3.101.112"
+        | "1.3.101.113" => &ring::digest::SHA256,
+        _ => return Err("unsupported certificate signature for channel binding".into()),
+    };
+    Ok(ring::digest::digest(algorithm, cert.as_ref()).as_ref().to_vec())
+}
+
+/// RFC 5929 endpoint binding, consuming one TLS handle reference.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_tls_server_endpoint(value: Value) -> Value {
+    let result = server_endpoint(&tls_of(value));
+    crate::fai_drop(value);
+    match result {
+        Ok(bytes) => ok_result(crate::make_bytes(&bytes)),
+        Err(error) => err_result(&error),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn channel_binding_uses_the_authenticated_peer_certificate() {
+        let (client, _) = connected_pair();
+        let bound = server_endpoint(&client).unwrap();
+        let state = client.conn.lock().unwrap();
+        let cert = &state.connection.peer_certificates().unwrap()[0];
+        assert_eq!(bound, ring::digest::digest(&ring::digest::SHA256, cert.as_ref()).as_ref());
+    }
 
     /// Generates an ephemeral self-signed cert+key (PEM) for `localhost`.
     fn self_signed() -> (Vec<u8>, Vec<u8>) {

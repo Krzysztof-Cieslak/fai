@@ -4950,5 +4950,12 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   decimal never silently accepts a rounded Float. PostgreSQL wire codecs own the
   database-specific range, precision and type conversions.
 
+- **D157 Protocol cryptography and cleanup.** Wire protocols stay in Fai while
+  SHA-256/HMAC/PBKDF2, constant-time comparison, secure entropy and certificate
+  channel binding use audited native primitives. Bounded cleanup may mask task
+  cancellation; the sticky flag remains set, and normal cancellation resumes at
+  the boundary. This lets resource owners restore gates and close connections
+  even when the requesting task was cancelled.
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

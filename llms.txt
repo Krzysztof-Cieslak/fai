@@ -1723,6 +1723,12 @@ capability (`native` is the standard instance). Its methods are `open`/`close`,
 Use the source-package driver for normal application code. SQLite is embedded;
 scheduled operations use the blocking pool and observe task cancellation.
 
+`Crypto.sha256`, `hmacSha256`, `pbkdf2Sha256`, `equal` and `scramPassword` are pure
+protocol primitives. `Crypto.systemEntropy : Crypto.Entropy` provides effectful
+OS random bytes. `Wire.peer net connection` reports the actual TCP peer;
+`Wire.serverEndPoint tls session` returns TLS channel binding. `Wire.cleanup
+concurrency thunk` masks sticky cancellation during bounded resource cleanup.
+
 ### Test — property testing (used by `forall`)
 
 You rarely call this directly, but a custom generator overrides synthesis for a

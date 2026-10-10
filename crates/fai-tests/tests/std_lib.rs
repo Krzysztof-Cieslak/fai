@@ -81,6 +81,7 @@ fn every_public_std_function_has_an_example() {
             "Net",
             "Tls",
             "Sqlite",
+            "Entropy",
             "Runtime",
         ];
 

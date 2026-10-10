@@ -203,6 +203,15 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_tls_write_plaintext", rt::fai_tls_write_plaintext);
     sym!("fai_tls_state", rt::fai_tls_state);
     sym!("fai_tls_close", rt::fai_tls_close);
+    sym!("fai_crypto_sha256", rt::fai_crypto_sha256);
+    sym!("fai_crypto_hmac_sha256", rt::fai_crypto_hmac_sha256);
+    sym!("fai_crypto_pbkdf2_sha256", rt::fai_crypto_pbkdf2_sha256);
+    sym!("fai_crypto_equal", rt::fai_crypto_equal);
+    sym!("fai_crypto_scram_password", rt::fai_crypto_scram_password);
+    sym!("fai_crypto_random", rt::fai_crypto_random);
+    sym!("fai_cleanup", rt::fai_cleanup);
+    sym!("fai_net_peer", rt::fai_net_peer);
+    sym!("fai_tls_server_endpoint", rt::fai_tls_server_endpoint);
     sym!("fai_sqlite_open", rt::fai_sqlite_open);
     sym!("fai_sqlite_close", rt::fai_sqlite_close);
     sym!("fai_sqlite_execute", rt::fai_sqlite_execute);

@@ -68,6 +68,10 @@ rcgen = "0.13"
 blake3 = "1"
 # Portable compiler-bundle source fingerprints (also computed by Python tooling).
 sha2 = "0.10"
+ring = "0.17"
+subtle = "2.6"
+stringprep = "0.1.5"
+x509-parser = { version = "0.18.1", default-features = false }
 # String interning for identifiers (the non-salsa `Symbol`).
 lasso = { version = "0.7", features = ["multi-threaded"] }
 # UTF-8 paths (clean JSON, no lossy conversion). `serde1` for wire params.

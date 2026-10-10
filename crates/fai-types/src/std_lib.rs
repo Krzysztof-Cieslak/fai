@@ -152,6 +152,21 @@ pub fn builtin_scheme(name: Symbol) -> Option<Scheme> {
         "bytesFromString" => Scheme::mono(Ty::arrow(Ty::Con(Con::String), Ty::Con(Con::Bytes))),
         "bytesToString" => Scheme::mono(Ty::arrow(Ty::Con(Con::Bytes), Ty::Con(Con::String))),
         "bytesIsUtf8" => Scheme::mono(Ty::arrow(Ty::Con(Con::Bytes), Ty::bool())),
+        "cryptoSha256" => Scheme::mono(Ty::arrow(Ty::Con(Con::Bytes), Ty::Con(Con::Bytes))),
+        "cryptoHmacSha256" => Scheme::mono(Ty::arrows(
+            [Ty::Con(Con::Bytes), Ty::Con(Con::Bytes)],
+            Ty::Con(Con::Bytes),
+        )),
+        "cryptoPbkdf2Sha256" => Scheme::mono(Ty::arrows(
+            [Ty::Con(Con::Bytes), Ty::Con(Con::Bytes), Ty::int()],
+            Ty::Con(Con::Bytes),
+        )),
+        "cryptoEqual" => {
+            Scheme::mono(Ty::arrows([Ty::Con(Con::Bytes), Ty::Con(Con::Bytes)], Ty::bool()))
+        }
+        "cryptoScramPassword" => {
+            Scheme::mono(Ty::arrow(Ty::Con(Con::String), Ty::Con(Con::String)))
+        }
         _ => return None,
     })
 }
