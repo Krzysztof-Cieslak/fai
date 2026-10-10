@@ -4310,9 +4310,25 @@ fn mix64(z: u64) -> u64 {
 
 /// Folds a child hash into the accumulator order-sensitively (a rotation keeps a
 /// field's position significant, matching the field-by-field structural
-/// equality), then avalanches the result.
+/// equality). The completed aggregate is avalanched once after all its fields.
 fn hash_combine(acc: u64, child: u64) -> u64 {
-    mix64(acc.rotate_left(5) ^ child)
+    (acc.rotate_left(5) ^ child).wrapping_mul(0x517c_c1b7_2722_0a95)
+}
+
+/// Numeric leaves contribute their logical word directly inside an aggregate.
+/// Other children contribute their recursively finalized structural hash.
+fn hash_field_word(value: Value) -> u64 {
+    if !is_boxed(value) {
+        return (value >> 1) as u64;
+    }
+    // SAFETY: boxed fields own live values; numeric leaves have one payload word.
+    unsafe {
+        match object_kind(as_obj(value)) {
+            KIND_INT => unbox_int(value) as u64,
+            KIND_FLOAT => read_u64(as_obj(value), FLOAT_VALUE_OFFSET),
+            _ => values_hash(value),
+        }
+    }
 }
 
 /// FNV-1a over the bytes, then avalanched, so two strings of equal content hash
@@ -4332,9 +4348,9 @@ fn hash_bytes(bytes: &[u8]) -> u64 {
 fn values_hash(v: Value) -> u64 {
     if let Some([first, second]) = immediate_pair(v) {
         let seed = mix64(2u64.rotate_left(32));
-        let first = mix64((first >> 1) as u64);
-        let second = mix64((second >> 1) as u64);
-        return hash_combine(hash_combine(seed, first), second);
+        let first = (first >> 1) as u64;
+        let second = (second >> 1) as u64;
+        return mix64(hash_combine(hash_combine(seed, first), second));
     }
     if is_function_value(v) {
         eprintln!("fai: hashing is not defined on functions");
@@ -4383,18 +4399,13 @@ fn values_hash(v: Value) -> u64 {
                     let fh = if i < 64 && scalar & (1u64 << i) != 0 {
                         // Scalar float slot: hash its raw bits (the same equality a
                         // boxed `Float` uses).
-                        mix64(f as u64)
-                    } else if !is_boxed(f) {
-                        // Immediate field: inline `values_hash`'s immediate fast path
-                        // (hash the untagged payload) so it costs no recursive call —
-                        // the common tuple/record-key case.
-                        mix64((f >> 1) as u64)
+                        f as u64
                     } else {
-                        values_hash(f)
+                        hash_field_word(f)
                     };
                     h = hash_combine(h, fh);
                 }
-                h
+                mix64(h)
             }
         }
         KIND_ARRAY => {
@@ -4407,10 +4418,10 @@ fn values_hash(v: Value) -> u64 {
                 let mut h = mix64((n as u64).rotate_left(17) ^ 0xA5A5_A5A5_A5A5_A5A5);
                 for i in 0..n {
                     let e = read_i64(as_obj(v), ARRAY_ELEMS_OFFSET + i * 8);
-                    let eh = if is_float { mix64(e as u64) } else { values_hash(e) };
+                    let eh = if is_float { e as u64 } else { hash_field_word(e) };
                     h = hash_combine(h, eh);
                 }
-                h
+                mix64(h)
             }
         }
         // The niche `None` sentinel must hash identically to a standard `None`
