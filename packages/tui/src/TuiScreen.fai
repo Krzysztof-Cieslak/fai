@@ -1,0 +1,175 @@
+module TuiScreen
+
+public type Cell = { style : TuiStyle.Style, text : String, width : Int }
+
+public type Rect = { height : Int, width : Int, x : Int, y : Int }
+
+public opaque type Screen = {
+  cells : Array Cell,
+  cursor : Option (Int * Int),
+  height : Int,
+  width : Int
+}
+
+let blank = { style = TuiStyle.normal, text = " ", width = 1 }
+
+/// Allocate a checked cell grid. maxCells is a caller-controlled resource bound.
+public create : Int -> Int -> Int -> Result Screen String
+let create maxCells width height =
+  if width < 0 || height < 0 || maxCells < 0 || (height <> 0 && width > maxCells / height) then
+    Err "terminal cell limit exceeded"
+  else
+    Ok {
+      cells = Array.repeat (width * height) blank,
+      cursor = None,
+      height = height,
+      width = width
+    }
+
+public size : Screen -> (Int * Int)
+let size screen = (screen.width, screen.height)
+
+public bounds : Screen -> Rect
+let bounds screen = { height = screen.height, width = screen.width, x = 0, y = 0 }
+
+public cell : Int -> Int -> Screen -> Option Cell
+let cell x y screen =
+  if x < 0 || y < 0 || x >= screen.width || y >= screen.height then
+    None
+  else
+    Array.get (y * screen.width + x) screen.cells
+
+public contains : Int -> Int -> Rect -> Bool
+let contains x y rect =
+  x >= rect.x && y >= rect.y && x - rect.x < rect.width && y - rect.y < rect.height
+
+public intersect : Rect -> Rect -> Rect
+let intersect a b =
+  let x = if a.x > b.x then a.x else b.x
+  let y = if a.y > b.y then a.y else b.y
+  let right = if a.x + a.width < b.x + b.width then a.x + a.width else b.x + b.width
+  let bottom = if a.y + a.height < b.y + b.height then a.y + a.height else b.y + b.height
+  {
+    height = if bottom < y then 0 else bottom - y,
+    width = if right < x then 0 else right - x,
+    x = x,
+    y = y
+  }
+
+let startOf cells index rowStart =
+  if index > rowStart && (Array.unsafeGet index cells).width = 0 then
+    startOf cells (index - 1) rowStart
+  else
+    index
+
+let erase cells index remaining =
+  if remaining <= 0 || index >= Array.length cells then
+    cells
+  else
+    erase (Array.unsafeSet index blank cells) (index + 1) (remaining - 1)
+
+let clearAt cells index rowStart =
+  let start = startOf cells index rowStart
+  erase cells start (Array.unsafeGet start cells).width
+
+let clearRange cells index finish rowStart =
+  if index >= finish then
+    cells
+  else
+    clearRange (clearAt cells index rowStart) (index + 1) finish rowStart
+
+let continuation cells index finish style =
+  if index >= finish then
+    cells
+  else
+    continuation (Array.unsafeSet index {
+      style = style,
+      text = "",
+      width = 0
+    } cells) (index + 1) finish style
+
+/// Paint one safe grapheme, preserving wide-cell ownership when overwritten.
+public put : Bool -> Rect -> Int -> Int -> TuiStyle.Style -> String -> Screen -> Screen
+let put wide clip x y style glyph screen =
+  let parts = TuiText.graphemes glyph
+  let safe = Option.withDefault " " (Array.get 0 parts)
+  let safe = if safe = "\n" || safe = "\t" then " " else safe
+  let measured = TextCells.width wide safe
+  let text = if measured = 0 then "◌" ++ safe else safe
+  let width = if measured = 0 then 1 else measured
+  if x < 0 || y < 0 || y >= screen.height || width > screen.width - x || not (contains x y clip) || width > clip.width - (x - clip.x) then
+    screen
+  else
+    let index = y * screen.width + x
+    let cells = clearRange screen.cells index (index + width) (y * screen.width)
+    let cells = Array.unsafeSet index { style = style, text = text, width = width } cells
+    { screen with cells = continuation cells (index + 1) (index + width) style }
+
+let paintParts wide clip x y style parts index screen =
+  if index >= Array.length parts || x >= clip.x + clip.width then
+    screen
+  else
+    let glyph = Array.unsafeGet index parts
+    let width = TextCells.width wide glyph
+    let width = if width < 1 then 1 else width
+    paintParts wide clip (x + width) y style parts (index + 1) (put wide clip x y style glyph screen)
+
+/// Draw one line. Wrapping is performed explicitly by the layout layer.
+public text : Bool -> Rect -> Int -> Int -> TuiStyle.Style -> String -> Screen -> Screen
+let text wide clip x y style value screen =
+  paintParts wide clip x y style (TuiText.graphemes value) 0 screen
+
+let fillRow rect style y screen =
+  if y >= rect.y + rect.height then
+    screen
+  else
+    fillRow rect style (y + 1) (text false rect rect.x y style (TuiText.repeat rect.width " ") screen)
+
+public fill : Rect -> TuiStyle.Style -> Screen -> Screen
+let fill rect style screen =
+  let rect = intersect rect (bounds screen)
+  fillRow rect style rect.y screen
+
+public cursor : Option (Int * Int) -> Screen -> Screen
+let cursor value screen = { screen with cursor = value }
+
+let move x y = "\u{1b}[" ++ Int.toString (y + 1) ++ ";" ++ Int.toString (x + 1) ++ "H"
+
+let diffCells previous screen index output =
+  if index = Array.length screen.cells then
+    String.join "" (List.reverse output)
+  else
+    let current = Array.unsafeGet index screen.cells
+    let same =
+      match previous with
+      | None -> false
+      | Some old -> cell (index % screen.width) (index / screen.width) old = Some current
+    if same || current.width = 0 then
+      diffCells previous screen (index + 1) output
+    else
+      diffCells previous screen (index + 1) ((move (index % screen.width) (index / screen.width) ++ TuiStyle.ansi current.style ++ current.text) :: output)
+
+/// Encode only changed cells. Dimension changes repaint the whole viewport.
+public diff : Option Screen -> Screen -> Bytes
+let diff previous screen =
+  let previous =
+    match previous with
+    | Some old -> if size old = size screen then previous else None
+    | None -> None
+  let changed = diffCells previous screen 0 []
+  let cursor =
+    match screen.cursor with
+    | Some (x, y) ->
+      if contains x y (bounds screen) then move x y ++ "\u{1b}[?25h" else "\u{1b}[?25l"
+    | None -> "\u{1b}[?25l"
+  Bytes.fromString ((if previous = None then
+    "\u{1b}[2J"
+  else
+    "") ++ "\u{1b}[?25l" ++ changed ++ "\u{1b}[0m" ++ cursor)
+
+/// Plain text snapshot for headless assertions; continuation cells are omitted.
+public lines : Screen -> Array String
+let lines screen =
+  Array.init screen.height (fun y ->
+    String.join "" (Array.toList (Array.init screen.width (fun x ->
+      (Array.unsafeGet (y * screen.width + x) screen.cells).text))))
