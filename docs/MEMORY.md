@@ -1441,7 +1441,7 @@ program output are unchanged, guarded by the full type/golden suite):
     Int; unsupported cleanup or result uses remain ordinary calls. Other recursive
     calls retain their order, and Float arithmetic is never reassociated. Linear
     integer recursion stays unpeeled so this accumulator lowering can see it.
-    Generated function entries use a 32-byte minimum alignment in both AOT and
+    Generated function entries use a 64-byte minimum alignment in both AOT and
     JIT images, reducing instruction-fetch sensitivity to unrelated object sizes.
   - **Row-polymorphic functions flatten too.** A function carrying leading
     offset-evidence parameters calls itself *curried* — lowering partially applies
