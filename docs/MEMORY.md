@@ -827,6 +827,11 @@ Reuse & in-place update:
     width. Reverse element-release order is preserved; raw Float arrays remain
     leaves and live shared arrays are never shortened. Variable-size release
     dispatch stays outside the inlined compact-data drain path.
+    The standard `Array.repeat` implementation fills its pre-sized buffer with a
+    direct repeated-value loop rather than calling a captured generator through
+    `Array.init`. This retains strict single evaluation, immutable sharing,
+    nonpositive-count behavior and checked allocation, including generic Float
+    self-tagging. Standard-library and first-class calls benefit too.
     Ownership lowering removes a field acquire immediately paired with a discard
     while the already-evaluated parent stays live. This runs after array-slot
     borrowing, preserving any intervening parent release or operation, so unused

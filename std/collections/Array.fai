@@ -79,10 +79,18 @@ let init n f = initFrom f n 0 (Prim.arrayWithCapacity n)
 let initFrom f n i acc = if i >= n then acc else initFrom f n (i + 1) (Prim.arrayPush acc (f i))
 example: toList (init 3 (fun i -> i * i)) = [0, 1, 4]
 
-/// An array of `n` copies of `x`.
+/// An array of `n` copies of `x`, sharing immutable values. Nonpositive counts
+/// produce an empty array; `x` is evaluated once before the call.
 public repeat : Int -> 'a -> Array 'a
-let repeat n x = init n (fun _ -> x)
+let repeat n x = repeatInto x n (Prim.arrayWithCapacity n)
 example: toList (repeat 3 0) = [0, 0, 0]
+example: toList (repeat 0 7) = []
+example: toList (repeat (-3) 7) = []
+example: toList (repeat 2 1.25) = [1.25, 1.25]
+
+repeatInto : 'a -> Int -> Array 'a -> Array 'a
+let repeatInto x remaining acc =
+  if remaining <= 0 then acc else repeatInto x (remaining - 1) (Prim.arrayPush acc x)
 
 /// The integers `[lo, lo+1, …, hi-1]`.
 /// The count is `max(0, hi - lo)`, using wrapping `Int` arithmetic.

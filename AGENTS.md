@@ -460,6 +460,10 @@ in source order and callbacks retain their order, effects, and short-circuiting.
 This single-operation lowering keeps sources and shared results materialized;
 cross-stage deforestation still requires pure, total callbacks. Literal callbacks
 with nested lifted closures retain their first-class call path.
+The standard `Array.repeat` entry also uses a direct repeated-value loop, so
+library and first-class calls avoid a captured generator call per element.
+Nonpositive counts stay empty, values are evaluated once and shared immutably,
+and the existing checked allocation and raw Float-array rules still apply.
 Bounds inference includes the generated loops in its file-local caller graph,
 including their first-class function references. A callback moved into a loop
 therefore cannot disappear from a private helper's bounds-check proof.

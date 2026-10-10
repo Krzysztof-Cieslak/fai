@@ -21,6 +21,12 @@ let keepOriginal xs =
   (Array.toList xs, Array.toList ys)
 example: keepOriginal [| 1, 2, 3 |] = ([1, 2, 3], [2, 3, 4])
 
+/// Repeat one immutable value; nonpositive counts produce an empty array.
+public copies : Int -> 'a -> Array 'a
+let copies count value = Array.repeat count value
+example: Array.toList (copies 3 "same") = ["same", "same", "same"]
+example: Array.toList (copies (-1) 42) = []
+
 /// Safe indexing returns `Option`; an out-of-range index is `None`.
 public second : Array Int -> Option Int
 let second xs = Array.get 1 xs
