@@ -3720,6 +3720,10 @@ Editor integration:
     proven total and allocation-free. The condition is evaluated once, and the
     combined work is bounded. Calls, data projections, potential traps, unknown
     representations and larger bodies keep ordinary conditional evaluation.
+    Current nonnegative bounds also allow raw power-of-two division/remainder to
+    omit signed rounding bias. A possibly wrapping expression cannot inherit its
+    operand's nonnegative bound, and unknown/negative inputs retain truncation
+    toward zero. The ordinary branch, loop and call-fact scope rules apply.
     Native Float ordering against a literal uses signed bit order for a
     nonnegative constant and reversed unsigned order for a negative constant.
     This preserves totalOrder, including NaN signs/payloads and signed zeros.

@@ -1,0 +1,22 @@
+module Main
+
+public retain : Int -> Int -> Int
+let retain n value = if n <= 0 then value else retain (n - 1) value
+
+public guarded : Int -> Int
+let guarded value = if value < 0 then retain 0 value else retain 0 (value / 8 + value % 8)
+
+public wrapping : Int -> Int
+let wrapping value = if value < 0 then retain 0 value else retain 0 ((value + 2) / 2)
+
+public signed : Int -> Int
+let signed value = value / 2
+
+public halve : Int -> Int -> Int
+let halve value count = if value <= 0 then count else halve (value / 2) (count + 1)
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let good = halve 9223372036854775807 0 = 63 && signed (-3) = -1
+  let wrap = wrapping 9223372036854775807 = -4611686018427387903
+  runtime.console.writeLine (if good && wrap && guarded (-3) = -3 then "yes" else "no")

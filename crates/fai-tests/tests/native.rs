@@ -789,6 +789,14 @@ fn scalar_selects_keep_native_traps_effects_and_generic_values() {
 }
 
 #[test]
+fn nonnegative_division_facts_do_not_survive_wrapping_arithmetic() {
+    assert_eq!(
+        build_and_run(include_str!("fixtures/NonnegativeDivision.fai")),
+        ("yes\n".into(), Some(0))
+    );
+}
+
+#[test]
 fn unique_constructor_tags_run_natively() {
     assert_eq!(build_and_run(include_str!("fixtures/UniqueTags.fai")), ("39\n".into(), Some(0)));
 }

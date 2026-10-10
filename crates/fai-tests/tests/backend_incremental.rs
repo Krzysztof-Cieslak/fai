@@ -543,3 +543,16 @@ fn descending_fixed_point_edits_match_clean_native_objects() {
         },
     );
 }
+
+#[test]
+fn nonnegative_division_guard_edits_match_clean_native_objects() {
+    let source = "module M\npublic halve : Int -> Int -> Int\nlet halve value count = if value <= 0 then count else halve (value / 2) (count + 1)\n";
+    let edited = source.replace("value <= 0", "value = 0");
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", source)], &[("M.fai", &edited)]],
+        |db, files| {
+            (*object_code(db, db.source_file(files[0]).unwrap(), Symbol::intern("halve"), false))
+                .clone()
+        },
+    );
+}
