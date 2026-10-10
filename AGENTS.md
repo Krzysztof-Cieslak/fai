@@ -743,6 +743,9 @@ Option construction does not count as reusable-cell reconstruction.
 Concrete Float array reads, including owned-map slot transfers, load directly
 into floating-point registers. Generic reads still inspect the buffer's layout
 and re-box at their uniform boundary; every Float bit pattern is preserved.
+Lengths of already-borrowed array parameters carry read-only memory evidence,
+allowing invariant loads to move out of loops without retaining an extra owner.
+Growing or otherwise consumed arrays keep ordinary memory dependencies.
 Typed Int field and array loads keep their full-width boxed fallback out of the
 immediate scan's hot path while supporting the same complete 64-bit value range.
 Typed locals carry conservative constructor-tag, field-count and scalar-slot

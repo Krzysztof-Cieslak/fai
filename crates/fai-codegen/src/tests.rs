@@ -4654,6 +4654,32 @@ fn array_float_get_inlines_a_raw_f64_slot_load_with_no_box_deref() {
 }
 
 #[test]
+fn borrowed_array_loop_lengths_have_no_memory_dependencies() {
+    let source = "module M\nlet dot i acc xs ys = if i >= Array.length xs then acc else dot (i + 1) (acc + Array.unsafeGet i xs * Array.unsafeGet i ys) xs ys\npublic total : Array Float -> Array Float -> Float\nlet total xs ys = dot 0 0.0 xs ys\n";
+    let ir = entry_ir(source, "dot");
+    assert_eq!(ir.matches("readonly").count(), 2, "{ir}");
+}
+
+#[test]
+fn growing_array_lengths_keep_their_memory_dependency() {
+    let source = "module M\nlet grow n xs = if n <= 0 then Array.length xs else grow (n - 1) (Array.push n xs)\n";
+    let ir = entry_ir(source, "grow");
+    assert!(!ir.contains("readonly"), "{ir}");
+}
+
+#[test]
+fn a_borrowed_array_stays_unchanged_when_an_owned_alias_grows() {
+    let source = "module M\nlet inspect xs ys =\n  let before = Array.length xs\n  let changed = Array.push 9 ys\n  before + Array.length xs + Array.length changed\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let xs = [| 1, 2 |]\n  r.console.writeLine (Int.toString (inspect xs xs))\n";
+    assert_eq!(run(source), (0, "7\n".into()));
+}
+
+#[test]
+fn a_rebound_array_uses_its_current_length() {
+    let source = "module M\nlet grow n xs = if n <= 0 then Array.length xs else grow (n - 1) (Array.push n xs)\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (grow 7 [| |]))\n";
+    assert_eq!(run(source), (0, "7\n".into()));
+}
+
+#[test]
 fn array_float_set_inlines_a_raw_f64_store() {
     // `Array.unsafeSet` of a `Float` into an `Array Float` inlines the unique-owner
     // fast path storing the raw `f64` bits (an `f64const` reinterpreted to an `i64`

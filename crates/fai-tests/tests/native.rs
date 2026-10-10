@@ -19,6 +19,16 @@ fn native_float_array_loads_keep_exact_bits_across_generic_calls() {
 }
 
 #[test]
+fn native_borrowed_array_lengths_survive_owned_alias_growth() {
+    let library = "module Sizes\npublic inspect : Array Int -> Array Int -> Int\nlet inspect original changed =\n  let before = Array.length original\n  let grown = Array.push 9 changed\n  before + Array.length original + Array.length grown\n";
+    let main = "module Main\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let values = [| 1, 2 |]\n  r.console.writeLine (Int.toString (Sizes.inspect values values))\n";
+    assert_eq!(
+        build_and_run_files(&[("Sizes.fai", library), ("Main.fai", main)]),
+        ("7\n".into(), Some(0))
+    );
+}
+
+#[test]
 fn peeled_scalar_recursion_preserves_full_width_integer_results() {
     let source = "module Main\nlet f n = if n <= 1 then 1 else n * f (n - 1) + f (n - 2)\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (f 30))\n";
     let mut previous = 1i64;
