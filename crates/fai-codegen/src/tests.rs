@@ -4668,6 +4668,13 @@ fn growing_array_lengths_keep_their_memory_dependency() {
 }
 
 #[test]
+fn guarded_bulk_repeat_justifies_the_first_element_read() {
+    let source = "module M\nlet first n =\n  let values = Array.repeat n 7\n  if n > 0 then Array.unsafeGet 0 values else 0\n";
+    let ir = entry_ir(source, "first");
+    assert!(!ir.contains(" ult "), "the positive count guarantees element zero:\n{ir}");
+}
+
+#[test]
 fn a_borrowed_array_stays_unchanged_when_an_owned_alias_grows() {
     let source = "module M\nlet inspect xs ys =\n  let before = Array.length xs\n  let changed = Array.push 9 ys\n  before + Array.length xs + Array.length changed\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let xs = [| 1, 2 |]\n  r.console.writeLine (Int.toString (inspect xs xs))\n";
     assert_eq!(run(source), (0, "7\n".into()));

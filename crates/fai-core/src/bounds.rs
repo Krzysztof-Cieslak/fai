@@ -341,6 +341,24 @@ impl Bounds {
                 // A fresh array starts at length 0.
                 self.set_const(Term::Len(local), 0);
             }
+            Prim::ArrayRepeat => {
+                // The bulk constructor clamps negative counts to zero. Its
+                // successful continuation always has len >= count, but equality
+                // requires a nonnegative count (including after a caller guard).
+                let length = Term::Len(local);
+                self.set_ge(length, 0);
+                match args.first().map(|arg| &arg.kind) {
+                    Some(K::Lit(Lit::Int(count))) => self.set_const(length, (*count).max(0)),
+                    Some(K::Local(count)) => {
+                        let count = Term::Int(*count);
+                        self.add_edge(count, length, 0);
+                        if self.entails_nonneg(count) {
+                            self.add_eq(length, count, 0);
+                        }
+                    }
+                    _ => {}
+                }
+            }
             Prim::ArrayPush | Prim::ArrayPushReserved => {
                 if let Some(K::Local(a)) = args.first().map(|e| &e.kind) {
                     // len(local) == len(a) + 1.
@@ -1027,6 +1045,40 @@ mod tests {
         bf.refine(&local_expr(1), false);
         // d >= 2  ==>  Zero <= d - 2.
         assert_eq!(bf.bound(Term::Zero, Term::Int(local(0))), Some(-2), "d >= 2");
+    }
+
+    #[test]
+    fn repeated_array_has_the_nonnegative_literal_length() {
+        let mut b = Bounds::new();
+        b.transfer_let(local(0), &prim(Prim::ArrayRepeat, vec![int_lit(8), int_lit(0)]));
+        assert!(b.index_in_bounds(local(0), &int_lit(7)));
+        assert!(!b.index_in_bounds(local(0), &int_lit(8)));
+    }
+
+    #[test]
+    fn repeated_array_clamps_the_minimum_integer_to_empty() {
+        let mut b = Bounds::new();
+        b.transfer_let(local(0), &prim(Prim::ArrayRepeat, vec![int_lit(i64::MIN), int_lit(0)]));
+        assert_eq!(b.bound(Term::Len(local(0)), Term::Zero), Some(0));
+        assert!(!b.index_in_bounds(local(0), &int_lit(0)));
+    }
+
+    #[test]
+    fn repeated_array_unknown_count_is_only_a_lower_bound() {
+        let mut b = Bounds::new();
+        b.transfer_let(local(0), &prim(Prim::ArrayRepeat, vec![local_expr(1), int_lit(0)]));
+        assert_eq!(b.bound(Term::Int(local(1)), Term::Len(local(0))), Some(0));
+        assert!(!b.entails_le(Term::Len(local(0)), Term::Int(local(1)), 0));
+        assert!(!b.entails_nonneg(Term::Int(local(1))));
+    }
+
+    #[test]
+    fn repeated_array_guarded_count_has_equal_length() {
+        let mut b = Bounds::new();
+        b.set_ge(Term::Int(local(1)), 1);
+        b.transfer_let(local(0), &prim(Prim::ArrayRepeat, vec![local_expr(1), int_lit(0)]));
+        assert_eq!(b.bound(Term::Len(local(0)), Term::Int(local(1))), Some(0));
+        assert!(b.index_in_bounds(local(0), &int_lit(0)));
     }
 
     #[test]

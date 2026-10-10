@@ -754,6 +754,9 @@ Counted Array producers and fresh Array map/filter outputs can append directly
 within their proven reservation. The output buffer stays private to the builder;
 each completed element extends its initialized prefix. Debug/shadow execution
 checks capacity and uniqueness, and concurrent execution keeps the runtime path.
+Bulk `Array.repeat` preserves its clamped result-length evidence: length is at
+least the requested count, and equals a proven nonnegative count. Negative
+counts remain empty and never justify an element access.
 Typed Int field and array loads keep their full-width boxed fallback out of the
 immediate scan's hot path while supporting the same complete 64-bit value range.
 Typed locals carry conservative constructor-tag, field-count and scalar-slot

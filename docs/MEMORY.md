@@ -1545,6 +1545,10 @@ program output are unchanged, guarded by the full type/golden suite):
     the initialized prefix in order. Debug/shadow builds check the capacity and
     uniqueness proof; concurrent execution uses the ordinary runtime push.
     List capacity hints alone do not establish this proof.
+    The bulk repeat primitive also contributes its clamped length to bounds
+    inference. A successful result has length at least its requested count;
+    equality requires nonnegativity. Negative counts stay empty, and wrapping
+    index arithmetic retains its own proof obligation.
     Typed Int field and array loads place the boxed full-width fallback out of the ordinary
     immediate scan, keeping the hot loop contiguous without changing stored values.
   - **IR.** A generic loop (`Join`/`Recur`) plus, for a constructor-wrapped

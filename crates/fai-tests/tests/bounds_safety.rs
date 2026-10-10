@@ -128,6 +128,16 @@ fn the_first_checked_access_keeps_its_fault() {
 }
 
 #[test]
+fn negative_repeat_counts_do_not_justify_any_index() {
+    assert_bounds_trap("negative-repeat", true);
+}
+
+#[test]
+fn wrapped_repeat_indices_keep_their_bounds_check() {
+    assert_bounds_trap("wrapped-repeat", true);
+}
+
+#[test]
 fn same_named_external_split_results_are_not_self_tail_exits() {
     assert_bounds_trap("external-split-result", true);
 }
@@ -146,6 +156,12 @@ fn bounds_worker() {
         "checked-other" => CHECKED_OTHER,
         "checked-wrapped" => CHECKED_WRAPPED,
         "first-checked" => FIRST_CHECKED,
+        "negative-repeat" => {
+            "module Main\nlet first n =\n  let values = Array.repeat n 7\n  Array.unsafeGet 0 values\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (first (-1)))\n"
+        }
+        "wrapped-repeat" => {
+            "module Main\nlet last n =\n  let values = Array.repeat n 7\n  Array.unsafeGet (n - 1) values\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (last (-9223372036854775808)))\n"
+        }
         "external-split-result" => {
             "module Main\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let (index, values) = A.choose false 0 [| 7 |]\n  r.console.writeLine (Int.toString (Array.unsafeGet index values))\n"
         }

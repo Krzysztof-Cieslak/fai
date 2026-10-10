@@ -209,6 +209,19 @@ fn reserved_builder_edits_match_clean_generated_functions() {
 }
 
 #[test]
+fn bulk_repeat_bound_edits_match_clean_native_objects() {
+    let safe = "module M\nlet first n =\n  let values = Array.repeat n 7\n  if n > 0 then Array.unsafeGet 0 values else 0\n";
+    let checked = safe.replace("n > 0", "n >= 0");
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", safe)], &[("M.fai", &checked)], &[("M.fai", safe)]],
+        |db, files| {
+            (*object_code(db, db.source_file(files[0]).unwrap(), Symbol::intern("first"), false))
+                .clone()
+        },
+    );
+}
+
+#[test]
 fn unrelated_body_edits_preserve_data_layout_cutoff() {
     let mut db = fai_db::FaiDatabase::new();
     fai_types::std_lib::load_std(&mut db);
