@@ -797,6 +797,14 @@ fn nonnegative_division_facts_do_not_survive_wrapping_arithmetic() {
 }
 
 #[test]
+fn scaled_integer_multiples_keep_effects_wrapping_and_float_semantics() {
+    assert_eq!(
+        build_and_run(include_str!("fixtures/ScaledIntegerMultiples.fai")),
+        ("once\nyes\n".into(), Some(0))
+    );
+}
+
+#[test]
 fn unique_constructor_tags_run_natively() {
     assert_eq!(build_and_run(include_str!("fixtures/UniqueTags.fai")), ("39\n".into(), Some(0)));
 }

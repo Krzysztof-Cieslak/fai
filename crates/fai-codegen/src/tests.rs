@@ -2577,6 +2577,23 @@ fn an_unknown_signed_dividend_retains_its_rounding_bias() {
 }
 
 #[test]
+fn small_odd_integer_multiples_use_scaled_add_ir() {
+    let ir =
+        entry_ir("module M\npublic triple : Int -> Int\nlet triple value = 3 * value\n", "triple");
+    assert!(ir.contains("ishl_imm") && ir.contains("iadd"), "{ir}");
+    assert!(!ir.contains("imul"), "a raw triple should expose scaled addition:\n{ir}");
+}
+
+#[test]
+fn other_integer_multipliers_keep_the_native_multiply() {
+    let ir = entry_ir(
+        "module M\npublic product : Int -> Int -> Int\nlet product a b = a * b\n",
+        "product",
+    );
+    assert!(ir.contains("imul"), "{ir}");
+}
+
+#[test]
 fn generic_equality_on_an_enum_takes_the_immediate_path() {
     // Every constructor is nullary, so every value is an immediate: the guard's
     // fast arm always runs.

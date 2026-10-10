@@ -5363,6 +5363,21 @@ impl<M: Module> Translator<'_, M> {
     fn inline_arith(&mut self, op: Prim, args: &[CExpr], fop: FitsOp) -> Value {
         let a = self.expr(&args[0]);
         let b = self.expr(&args[1]);
+        if op == Prim::IntMul && self.is_raw_int(a) && self.is_raw_int(b) {
+            let scaled = match (&args[0].kind, &args[1].kind) {
+                (ExprKind::Lit(Lit::Int(factor @ (3 | 5 | 9))), _) => Some((b, *factor)),
+                (_, ExprKind::Lit(Lit::Int(factor @ (3 | 5 | 9)))) => Some((a, *factor)),
+                _ => None,
+            };
+            if let Some((value, factor)) = scaled {
+                // These low-word identities are exact for every signed Int and
+                // expose native scaled-add addressing without repeating an operand.
+                let shift = i64::from((factor - 1).trailing_zeros());
+                let scaled = self.builder.ins().ishl_imm(value, shift);
+                let result = self.builder.ins().iadd(value, scaled);
+                return self.mark_raw(result);
+            }
+        }
         self.inline_arith_values(op, a, b, fop)
     }
 

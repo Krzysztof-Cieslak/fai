@@ -643,6 +643,9 @@ unknown representations and larger alternatives retain ordinary branches.
 For a raw Int proven nonnegative by current bounds, division or remainder by a
 positive power of two uses a direct shift or mask. Negative or unknown dividends
 retain signed truncation; possibly wrapping expressions need their own proof.
+Raw integer multiples by 3, 5 and 9 expose a shift-and-add shape for native scaled
+addition. Operands evaluate once and full-width wrapping is preserved; Float and
+uniform arithmetic keep their existing operations.
 
 Opaque aliases retain their nominal type in cross-file value, constructor, and
 interface-method signatures, including through transparent re-exports. Names
