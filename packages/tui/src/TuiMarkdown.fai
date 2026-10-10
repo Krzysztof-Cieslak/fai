@@ -1,0 +1,231 @@
+module TuiMarkdown
+
+public type Options = { ambiguousWide : Bool, theme : TuiStyle.Theme, width : Int }
+
+/// Completed lines are parsed and wrapped once. Appending a stream chunk only
+/// revisits its unfinished line; committed display rows live in a persistent map.
+public opaque type Document = {
+  chunks : List String,
+  count : Int,
+  fence : String,
+  options : Options,
+  pending : String,
+  rows : Dict Int (List Ui.Span),
+  tail : Array (List Ui.Span)
+}
+
+type Wrap = { column : Int, current : List Ui.Span, lines : Array (List Ui.Span) }
+
+let substring bytes start finish =
+  Option.withDefault "" (Bytes.toString (Bytes.slice start finish bytes))
+
+let at bytes index =
+  if index < 0 || index >= Bytes.length bytes then (-1) else Bytes.unsafeGet index bytes
+
+let matches bytes index marker =
+  let pattern = Bytes.fromString marker
+  index + Bytes.length pattern <= Bytes.length bytes && Bytes.slice index (index + Bytes.length pattern) bytes = pattern
+
+let find bytes marker index =
+  if index >= Bytes.length bytes then
+    None
+  else if matches bytes index marker then Some index else find bytes marker (index + 1)
+
+let span style text = { style = style, text = text }
+
+let plain style text output = if text = "" then output else span style text :: output
+
+inline : TuiStyle.Style -> Int -> String -> List Ui.Span
+let inline style depth text =
+  if depth > 16 then [span style text] else scan style depth (Bytes.fromString text) 0 0 []
+
+scan : TuiStyle.Style -> Int -> Bytes -> Int -> Int -> List Ui.Span -> List Ui.Span
+let scan style depth bytes start index output =
+  if index >= Bytes.length bytes then
+    List.reverse (plain style (substring bytes start index) output)
+  else
+    let byte = at bytes index
+    let marker =
+      if matches bytes index "**" then
+        "**"
+      else if byte = 96 then "`" else if byte = 42 then "*" else if byte = 95 then "_" else ""
+    if marker <> "" then
+      match find bytes marker (index + String.length marker) with
+      | None -> scan style depth bytes start (index + 1) output
+      | Some finish ->
+        let content = substring bytes (index + String.length marker) finish
+        let changed =
+          if marker = "**" then
+            { style with bold = true }
+          else if marker = "`" then { style with reverse = true } else { style with italic = true }
+        let inner =
+          if marker = "`" then [span changed content] else inline changed (depth + 1) content
+        let output =
+          List.append (List.reverse inner) (plain style (substring bytes start index) output)
+        scan style depth bytes (finish + String.length marker) (finish + String.length marker) output
+    else if byte = 91 then
+      match find bytes "](" (index + 1) with
+      | None -> scan style depth bytes start (index + 1) output
+      | Some labelEnd ->
+        match find bytes ")" (labelEnd + 2) with
+        | None -> scan style depth bytes start (index + 1) output
+        | Some finish ->
+          let label = substring bytes (index + 1) labelEnd
+          let url = substring bytes (labelEnd + 2) finish
+          let output =
+            plain { style with
+              dim = true
+            } (" (" ++ url ++ ")") (plain { style with
+              underline = true
+            } label (plain style (substring bytes start index) output))
+          scan style depth bytes (finish + 1) (finish + 1) output
+    else
+      scan style depth bytes start (index + 1) output
+
+let heading text n =
+  if n < 6 && String.substring n 1 text = "#" then
+    heading text (n + 1)
+  else if n > 0 && String.substring n 1 text = " " then n else 0
+
+classify : Options -> String -> String -> (String * List Ui.Span)
+let classify options fence text =
+  let text =
+    if String.substring (String.length text - 1) 1 text = "\r" then
+      String.take (String.length text - 1) text
+    else
+      text
+  let trimmed = String.trim text
+  let marker =
+    if String.take 3 trimmed = "```" then
+      "```"
+    else if String.take 3 trimmed = "~~~" then "~~~" else ""
+  if fence <> "" then
+    if marker = fence then
+      ("", [span options.theme.muted "──"])
+    else
+      (fence, [
+        span { options.theme.normal with foreground = options.theme.accent.foreground } text
+      ])
+  else if marker <> "" then
+    (marker, [span options.theme.muted ("── " ++ String.drop 3 trimmed)])
+  else if heading text 0 > 0 then
+    ("", inline options.theme.accent 0 (String.drop (heading text 0 + 1) text))
+  else if String.take 2 text = "> " then
+    ("", span options.theme.muted "│ " :: inline options.theme.muted 0 (String.drop 2 text))
+  else if List.member (String.take 2 text) ["- ", "* ", "+ "] then
+    ("", span options.theme.accent "• " :: inline options.theme.normal 0 (String.drop 2 text))
+  else if List.member trimmed ["---", "***", "___"] then
+    ("", [
+      span options.theme.muted (TuiText.repeat (if options.width < 0 then 0 else options.width) "─")
+    ])
+  else
+    ("", inline options.theme.normal 0 text)
+
+let addSpan style glyph current =
+  match current with
+  | first :: rest ->
+    if first.style = style then
+      { first with text = first.text ++ glyph } :: rest
+    else
+      span style glyph :: current
+  | [] -> [span style glyph]
+
+wrapGlyphs : Options -> TuiStyle.Style -> Array String -> Int -> Wrap -> Wrap
+let wrapGlyphs options style glyphs index state =
+  if index = Array.length glyphs then
+    state
+  else
+    let glyph = Array.unsafeGet index glyphs
+    let glyph = if glyph = "\t" then TuiText.repeat (4 - state.column % 4) " " else glyph
+    let size = TextCells.width options.ambiguousWide glyph
+    let (glyph, size) =
+      if size = 0 then
+        ("◌" ++ glyph, 1)
+      else if size > options.width then ("�", 1) else (glyph, size)
+    if state.column + size > options.width && state.column > 0 then
+      wrapGlyphs options style glyphs index {
+        column = 0,
+        current = [],
+        lines = Array.push (List.reverse state.current) state.lines
+      }
+    else
+      wrapGlyphs options style glyphs (index + 1) { state with
+        column = state.column + size,
+        current = addSpan style glyph state.current
+      }
+
+wrapRun : Options -> Wrap -> Ui.Span -> Wrap
+let wrapRun options state run = wrapGlyphs options run.style (TuiText.graphemes run.text) 0 state
+
+wrap : Options -> List Ui.Span -> Array (List Ui.Span)
+let wrap options spans =
+  let options = { options with width = if options.width < 1 then 1 else options.width }
+  let state = List.foldl (wrapRun options) { column = 0, current = [], lines = Array.empty } spans
+  Array.push (List.reverse state.current) state.lines
+
+public empty : Options -> Document
+let empty options = {
+  chunks = [],
+  count = 0,
+  fence = "",
+  options = options,
+  pending = "",
+  rows = Dict.empty,
+  tail = [| [] |]
+}
+
+store : Document -> String -> Document
+let store document line =
+  let (fence, spans) = classify document.options document.fence line
+  let lines = wrap document.options spans
+  let add state line = { state with
+    count = state.count + 1,
+    rows = Dict.insert state.count line state.rows
+  }
+  Array.foldl add { document with fence = fence } lines
+
+feed : Document -> List String -> Document
+let feed document lines =
+  match lines with
+  | [] -> document
+  | [pending] ->
+    let (_, spans) = classify document.options document.fence pending
+    { document with pending = pending, tail = wrap document.options spans }
+  | line :: rest -> feed (store document line) rest
+
+/// Append a stream chunk without reparsing the completed history.
+public append : String -> Document -> Document
+let append chunk document =
+  feed { document with
+    chunks = chunk :: document.chunks
+  } (String.split "\n" (document.pending ++ chunk))
+
+public fromString : Options -> String -> Document
+let fromString options text = append text (empty options)
+
+/// Reflow on viewport or theme changes. Ordinary stream appends stay incremental.
+public resize : Options -> Document -> Document
+let resize options document =
+  if options = document.options then
+    document
+  else
+    fromString options (String.join "" (List.reverse document.chunks))
+
+public count : Document -> Int
+let count document = document.count + Array.length document.tail
+
+public line : Int -> Document -> Option (List Ui.Span)
+let line index document =
+  if index < document.count then
+    Dict.get index document.rows
+  else
+    Array.get (index - document.count) document.tail
+
+public source : Document -> Ui.TextSource
+let source document = { count = count document, get = fun index -> line index document }
+
+public toText : Document -> String
+let toText document =
+  String.join "\n" (Array.toList (Array.init (count document) (fun index ->
+    String.join "" (List.map (fun span ->
+      span.text) (Option.withDefault [] (line index document))))))
