@@ -839,6 +839,11 @@ Reuse & in-place update:
     callbacks, other arrays, construction and growth are conservative barriers.
     Index checks and old-element releases remain intact. The proof and code
     duplication are bounded to small bodies.
+    Compact tag-zero pairs with two immediate fields have guarded runtime hash
+    and equality paths. They preserve the existing hash formula exactly and
+    bypass general kind/field traversal only after validating both the header
+    shape and immediate tags. Boxed fields, scalar slots and other shapes retain
+    general traversal, including mixed compact/extended representations.
     Ownership lowering removes a field acquire immediately paired with a discard
     while the already-evaluated parent stays live. This runs after array-slot
     borrowing, preserving any intervening parent release or operation, so unused

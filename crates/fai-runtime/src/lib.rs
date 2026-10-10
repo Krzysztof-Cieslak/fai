@@ -3948,7 +3948,33 @@ fn resource_identity(v: Value) -> u64 {
     unsafe { read_u64(as_obj(v), HANDLE_PTR_OFFSET) }
 }
 
+/// The common coordinate/record-key shape, with no boxed or raw scalar fields.
+#[inline]
+fn immediate_pair(value: Value) -> Option<[Value; 2]> {
+    if !is_boxed(value) {
+        return None;
+    }
+    // SAFETY: a boxed value has a live header. The exact metadata check proves
+    // that both following slots exist and contain uniform values.
+    unsafe {
+        let p = as_obj(value);
+        let header = header_word(p);
+        let expected = compact_data_metadata(0, 2, 0).expect("compact pair shape");
+        if header & !RC_STATE_MASK != expected {
+            return None;
+        }
+        let first = read_i64(p, COMPACT_FIELDS_OFFSET);
+        let second = read_i64(p, COMPACT_FIELDS_OFFSET + 8);
+        ((first & second & 1) != 0).then_some([first, second])
+    }
+}
+
 fn values_equal(a: Value, b: Value) -> bool {
+    if let Some(left) = immediate_pair(a)
+        && let Some(right) = immediate_pair(b)
+    {
+        return left[0] == right[0] && left[1] == right[1];
+    }
     guard_comparable(a, b);
     match (is_boxed(a), is_boxed(b)) {
         (false, false) => a == b,
@@ -4210,6 +4236,12 @@ fn hash_bytes(bytes: &[u8]) -> u64 {
 /// values hash equally (`a = b` ⇒ `hash a = hash b`). Undefined on functions
 /// (rejected by the type checker; this guards the residual polymorphic case).
 fn values_hash(v: Value) -> u64 {
+    if let Some([first, second]) = immediate_pair(v) {
+        let seed = mix64(2u64.rotate_left(32));
+        let first = mix64((first >> 1) as u64);
+        let second = mix64((second >> 1) as u64);
+        return hash_combine(hash_combine(seed, first), second);
+    }
     if is_function_value(v) {
         eprintln!("fai: hashing is not defined on functions");
         std::process::exit(71);
@@ -5030,6 +5062,8 @@ mod drop_work_tests;
 mod hash_tests;
 #[cfg(test)]
 mod intrinsic_closure_tests;
+#[cfg(test)]
+mod pair_ops_tests;
 #[cfg(test)]
 mod proptests;
 #[cfg(test)]
