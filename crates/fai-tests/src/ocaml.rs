@@ -18,6 +18,7 @@ use std::io::ErrorKind;
 use std::path::Path;
 use std::process::Command;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use camino::Utf8PathBuf;
 
@@ -43,6 +44,14 @@ pub fn tree_baseline() -> Option<&'static Utf8PathBuf> {
     BASELINE.get_or_init(|| build("tree_lookup", include_str!("../ocaml/tree_lookup.ml"))).as_ref()
 }
 
+/// A persistent native worker with one statically selected registered workload.
+#[must_use]
+pub fn worker_baseline(algorithm: &crate::algorithms::Algorithm) -> Option<Utf8PathBuf> {
+    let definitions = SOURCE.split_once("\nlet () =").expect("OCaml baseline entry").0;
+    let worker = include_str!("../ocaml/worker.ml").replace("HARNESS_MODULE", algorithm.module);
+    build(&format!("worker-{}", algorithm.module), &format!("{definitions}\n{worker}"))
+}
+
 /// Probes a compiler, allowing only an absent implicit default to be skipped.
 fn configuration(compiler: &OsStr, explicit: bool) -> Option<String> {
     let output = match Command::new(compiler).arg("-config").output() {
@@ -63,6 +72,7 @@ fn configuration(compiler: &OsStr, explicit: bool) -> Option<String> {
 /// the implicit `ocamlopt` is absent; an explicit `FAI_BENCH_OCAMLOPT` must work.
 #[must_use]
 pub fn build(name: &str, contents: &str) -> Option<Utf8PathBuf> {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let selected = std::env::var_os("FAI_BENCH_OCAMLOPT");
     let compiler = Path::new(selected.as_deref().unwrap_or_else(|| OsStr::new("ocamlopt")));
     // Relative paths containing a directory must survive changing to the build
@@ -73,9 +83,11 @@ pub fn build(name: &str, contents: &str) -> Option<Utf8PathBuf> {
         compiler.to_path_buf()
     };
     let config = configuration(compiler.as_os_str(), selected.is_some())?;
-    let dir = Utf8PathBuf::from_path_buf(
-        std::env::temp_dir().join(format!("fai-ocaml-{name}-{}", std::process::id())),
-    )
+    let dir = Utf8PathBuf::from_path_buf(std::env::temp_dir().join(format!(
+        "fai-ocaml-{name}-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    )))
     .expect("temp dir is UTF-8");
     std::fs::create_dir_all(&dir).expect("create OCaml scratch dir");
     let source = dir.join("baseline.ml");
@@ -122,6 +134,15 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let missing = directory.path().join("missing-ocamlopt");
         let _ = configuration(missing.as_os_str(), true);
+    }
+
+    #[test]
+    fn same_named_builds_keep_their_own_executables() {
+        let Some(first) = build("separate", "let () = print_endline \"first\"\n") else { return };
+        let second = build("separate", "let () = print_endline \"second\"\n").unwrap();
+        assert_ne!(first, second);
+        assert_eq!(Command::new(first).output().unwrap().stdout, b"first\n");
+        assert_eq!(Command::new(second).output().unwrap().stdout, b"second\n");
     }
 
     #[track_caller]
