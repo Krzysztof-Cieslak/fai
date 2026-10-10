@@ -697,6 +697,11 @@ fn effectful_repeated_maps_keep_iteration_major_order() {
 }
 
 #[test]
+fn dying_field_transfers_preserve_shared_and_scalar_slot_values() {
+    assert_eq!(build_and_run(include_str!("fixtures/DyingFields.fai")), ("yes\n".into(), Some(0)));
+}
+
+#[test]
 fn unique_constructor_tags_run_natively() {
     assert_eq!(build_and_run(include_str!("fixtures/UniqueTags.fai")), ("39\n".into(), Some(0)));
 }

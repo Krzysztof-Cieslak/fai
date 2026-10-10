@@ -2641,6 +2641,11 @@ Editor integration:
     uniform consumers can retain its word. The boxed marker acquires its reference
     before the parent release and preserves niche-payload and row-offset reads.
     Numeric consumers keep the ordinary raw-scalar projection path.
+    Consecutive distinct uniform-field projections ending at their owner's drop
+    or reset may transfer the fields when the cell is uniquely owned. The field
+    slots are cleared before the ordinary owner release, preserving each child
+    reference. Shared and borrowed owners, concurrent execution, scalar conversions
+    and uncertain layouts retain ordinary projections; repeated reads are excluded.
   - **Calling convention — register ABI only.** `Int` parameters and results are
     untagged only on the **register (direct-call) ABI**, where a direct caller
     receives them raw and skips the round-trip. Uniform (row-polymorphic / nullary)

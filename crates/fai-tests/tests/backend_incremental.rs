@@ -471,3 +471,16 @@ fn repeated_map_callback_edits_match_clean_synthesized_workers() {
         },
     );
 }
+
+#[test]
+fn dying_field_lifetime_edits_match_clean_native_objects() {
+    let source = "module M\npublic swap : (String * String) -> (String * String)\nlet swap pair = match pair with | (a, b) -> (b, a)\n";
+    let edited = source.replace("(b, a)", "if a = b then pair else (b, a)");
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", source)], &[("M.fai", &edited)]],
+        |db, files| {
+            (*object_code(db, db.source_file(files[0]).unwrap(), Symbol::intern("swap"), false))
+                .clone()
+        },
+    );
+}

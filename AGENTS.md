@@ -553,6 +553,10 @@ Branch-only uses, closures and row-offset references keep their ordinary paths.
 An Int field with only uniform consumers in a straight-line continuation can keep
 its original tagged or boxed word instead of unboxing and reboxing. It acquires a
 reference before the original parent releases; arithmetic consumers stay raw.
+Distinct consecutive uniform-field extractions immediately followed by their
+owner's release can move fields out of a unique cell. Cleared slots prevent the
+owner from releasing the transferred references. Shared, borrowed, concurrent,
+scalar-converting and uncertain projections retain ordinary ownership.
 After ownership insertion, a field projection immediately followed by discarding
 its result is removed while its parent stays live. Parent releases and intervening
 operations retain their original order.

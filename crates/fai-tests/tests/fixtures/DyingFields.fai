@@ -1,0 +1,26 @@
+module Main
+
+public swap : (String * List Int) -> (List Int * String)
+let swap pair =
+  let (text, values) = pair
+  (values, text)
+
+public mixed : (Float * String) -> String
+let mixed pair =
+  let (_, text) = pair
+  text
+
+public pick : (Option (List Int) * String) -> Option (List Int)
+let pick pair =
+  let (value, _) = pair
+  value
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let original = (Int.toString 42, List.range 0 8)
+  let moved = swap original
+  let (values, text) = moved
+  let ok = text = "42" && values = List.range 0 8 && original = ("42", values)
+  let raw = mixed (Float.fromBits 0xfff8000000002345, text)
+  let option = pick (Some values, raw)
+  runtime.console.writeLine (if ok && option = Some values && raw = "42" then "yes" else "no")
