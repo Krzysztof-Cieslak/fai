@@ -4507,7 +4507,8 @@ impl<M: Module> Translator<'_, M> {
             self.shadow_bounds_assert(base, index);
         }
         let (addr, offset) = self.array_elem_addr(base, index);
-        let word = self.builder.ins().load(types::I64, MemFlags::trusted(), addr, offset);
+        let slot_ty = if matches!(elem, Ty::Con(Con::Float)) { types::F64 } else { types::I64 };
+        let word = self.builder.ins().load(slot_ty, MemFlags::trusted(), addr, offset);
         let hole = self.builder.ins().iconst(types::I64, rt::FAI_UNIT);
         self.builder.ins().store(MemFlags::trusted(), hole, addr, offset);
         match elem {
@@ -4515,7 +4516,7 @@ impl<M: Module> Translator<'_, M> {
                 let raw = self.unbox_int_to_raw(word);
                 self.mark_raw(raw)
             }
-            Ty::Con(Con::Float) => self.i64_to_f64(word),
+            Ty::Con(Con::Float) => word,
             _ if elem_may_be_float(elem) => self.array_load_elem_generic(base, word, elem, false),
             _ => word,
         }
@@ -4576,6 +4577,9 @@ impl<M: Module> Translator<'_, M> {
     /// at runtime (re-boxing a raw `f64` slot of a float array).
     fn array_load_elem(&mut self, base: Value, raw_idx: Value, elem: &Ty) -> Value {
         let (addr, slot_off) = self.array_elem_addr(base, raw_idx);
+        if matches!(elem, Ty::Con(Con::Float)) {
+            return self.builder.ins().load(types::F64, MemFlags::trusted(), addr, slot_off);
+        }
         let word = self.builder.ins().load(types::I64, MemFlags::trusted(), addr, slot_off);
         match elem {
             Ty::Con(Con::Int) => {
@@ -4584,8 +4588,6 @@ impl<M: Module> Translator<'_, M> {
                 let raw = self.borrow_unbox_int_to_raw(word);
                 self.mark_raw(raw)
             }
-            // A concrete float array: the slot word *is* the `f64` bits.
-            Ty::Con(Con::Float) => self.i64_to_f64(word),
             _ if elem_may_be_float(elem) => self.array_load_elem_generic(base, word, elem, true),
             _ => {
                 self.dup_value(word, elem);

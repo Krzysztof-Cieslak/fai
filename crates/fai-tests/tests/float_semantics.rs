@@ -25,6 +25,10 @@ public apply : (Float -> Float -> Int) -> Float -> Float -> Int
 let apply f a b = f a b
 public applyUnary : (Float -> Float) -> Float -> Float
 let applyUnary f a = f a
+public arrayFirst : Array 'a -> 'a
+let arrayFirst values = Array.unsafeGet 0 values
+public applyArray : (Array Float -> Float) -> Array Float -> Float
+let applyArray f values = f values
 "#.into());
         let id = db.add_source("Main.fai".into(), r#"module Main
 public flags : Float -> Float -> Int
@@ -42,6 +46,13 @@ public negateFirstClass : Int -> Int
 let negateFirstClass a = Float.toBits (Generic.applyUnary negate (Float.fromBits a))
 public equalBits : Int -> Int -> Int
 let equalBits a b = if Float.fromBits a = Float.fromBits b then 1 else 0
+public first : Array Float -> Float
+let first values = Array.unsafeGet 0 values
+public arrayBits : Int -> Int
+let arrayBits bits =
+  let values = [| Float.fromBits bits |]
+  let mapped = Array.map (fun value -> value) values
+  if Float.toBits (first values) = bits && Float.toBits (Generic.arrayFirst mapped) = bits && Float.toBits (Generic.applyArray first values) = bits then 1 else 0
 public main : Runtime -> Unit
 let main runtime = ()
 "#.into());
@@ -144,11 +155,37 @@ fn negation_preserves_a_signaling_nan_payload() {
     negation(0x7ff0000000001234);
 }
 
+#[test]
+fn array_loads_preserve_negative_zero_bits() {
+    assert_eq!(Harness::new().integer_call("arrayBits", &[1u64 << 63]), 1);
+}
+
+#[test]
+fn array_loads_preserve_signaling_nan_bits() {
+    assert_eq!(Harness::new().integer_call("arrayBits", &[0x7ff0000000001234]), 1);
+}
+
+#[test]
+fn array_loads_preserve_subnormal_bits() {
+    assert_eq!(Harness::new().integer_call("arrayBits", &[1]), 1);
+}
+
 mod proptests {
     use super::*;
     use proptest::prelude::*;
     use proptest::test_runner::TestRunner;
     use std::cell::RefCell;
+
+    #[test]
+    fn every_bit_pattern_survives_array_loads_and_owned_maps() {
+        let harness = RefCell::new(Harness::new());
+        TestRunner::default()
+            .run(&any::<u64>(), |bits| {
+                prop_assert_eq!(harness.borrow_mut().integer_call("arrayBits", &[bits]), 1);
+                Ok(())
+            })
+            .unwrap();
+    }
 
     #[test]
     fn every_bit_pattern_uses_the_structural_total_order() {
