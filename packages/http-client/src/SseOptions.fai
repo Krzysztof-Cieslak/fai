@@ -1,0 +1,96 @@
+module SseOptions
+
+/// Timeouts are positive milliseconds or None; limits bound decoder buffering.
+public type Events = {
+  connectTimeoutMs : Option Int,
+  limits : Sse.Limits,
+  readIdleTimeoutMs : Option Int,
+  subscriptionTimeoutMs : Option Int
+}
+
+/// Defaults for a single event connection or a complete subscription.
+public events : Events
+let events = {
+  connectTimeoutMs = Some 30000,
+  limits = Sse.defaults,
+  readIdleTimeoutMs = Some 60000,
+  subscriptionTimeoutMs = None
+}
+
+/// Reconnection delay and bounds are milliseconds. None means no upper bound or
+/// no reconnect limit. initialLastEventId is sent on the initial GET when nonempty.
+public type Subscription = {
+  events : Events,
+  initialLastEventId : String,
+  maxReconnectDelayMs : Option Int,
+  maxReconnects : Option Int,
+  minReconnectDelayMs : Int,
+  reconnectDelayMs : Int
+}
+
+public subscription : Subscription
+let subscription = {
+  events = events,
+  initialLastEventId = "",
+  maxReconnectDelayMs = None,
+  maxReconnects = None,
+  minReconnectDelayMs = 0,
+  reconnectDelayMs = 3000
+}
+
+let validTimeout timeout =
+  match timeout with
+  | None -> true
+  | Some value -> value > 0
+
+/// Validate every event timeout and both codec limits without performing I/O.
+public validateEvents : Events -> Result Unit String
+let validateEvents options =
+  if not (validTimeout options.connectTimeoutMs && validTimeout options.readIdleTimeoutMs && validTimeout options.subscriptionTimeoutMs) then
+    Err "SSE timeouts must be positive or None"
+  else
+    match Sse.decoder options.limits with
+    | Err error -> Err (Sse.errorToString error)
+    | Ok _ -> Ok ()
+
+let idBytes bytes index =
+  if index >= Bytes.length bytes then
+    true
+  else
+    let byte = Bytes.unsafeGet index bytes
+    (byte = 9 || (byte >= 32 && byte <> 127)) && idBytes bytes (index + 1)
+
+/// HTTP resume headers cannot carry controls, CR/LF, or NUL. Unicode is retained.
+public validResumeId : String -> Bool
+let validResumeId id = idBytes (Bytes.fromString id) 0
+
+/// Validate reconnection configuration before any network or task activity.
+public validateSubscription : Subscription -> Result Unit String
+let validateSubscription options =
+  match validateEvents options.events with
+  | Err error -> Err error
+  | Ok _ ->
+    if options.reconnectDelayMs < 0 || options.minReconnectDelayMs < 0 then
+      Err "SSE reconnect delays must be nonnegative"
+    else if (match options.maxReconnectDelayMs with
+    | None -> false
+    | Some maximum -> maximum < options.minReconnectDelayMs) then
+      Err "SSE reconnect bounds must be ordered"
+    else if (match options.maxReconnects with
+    | None -> false
+    | Some limit -> limit < 0) then
+      Err "SSE reconnect limit must be nonnegative or None"
+    else if not (validResumeId options.initialLastEventId) then
+      Err "invalid SSE resume header value"
+    else
+      Ok ()
+
+/// Apply configured bounds to the current server hint or initial reconnect delay.
+public reconnectDelay : Subscription -> Option Int -> Int
+let reconnectDelay options hint =
+  let requested = Option.withDefault options.reconnectDelayMs hint
+  let floor =
+    if requested < options.minReconnectDelayMs then options.minReconnectDelayMs else requested
+  match options.maxReconnectDelayMs with
+  | None -> floor
+  | Some maximum -> if floor > maximum then maximum else floor
