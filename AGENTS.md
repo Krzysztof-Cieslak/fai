@@ -708,8 +708,8 @@ Uniform descendants of a borrowed parameter may remain borrowed until an actual
 consuming use acquires its own reference. Known borrowing call arguments retain
 those loans only while their owner survives the complete call. Wrapper-free
 Option construction does not count as reusable-cell reconstruction.
-Typed Int-array loads keep their full-width boxed fallback out of the immediate
-scan's hot path while supporting the same complete 64-bit value range.
+Typed Int field and array loads keep their full-width boxed fallback out of the
+immediate scan's hot path while supporting the same complete 64-bit value range.
 Typed locals carry conservative constructor-tag, field-count and scalar-slot
 bounds through the native cache and run bundles. Proven compact data uses direct
 tag extraction and constant field offsets; unknown/open shapes decode at runtime.
