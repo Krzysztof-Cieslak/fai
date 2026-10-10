@@ -1,0 +1,131 @@
+module JsonEncode
+
+/// A component of a path to a value that could not be encoded.
+public type PathSegment =
+  | Field String
+  | Index Int
+
+/// An encoding error, such as a non-finite Float or a duplicate object field.
+public type Error = { message : String, path : List PathSegment }
+
+/// A pure, reusable application-value encoder. User functions with this signature
+/// are encoders directly; no registration or compiler support is required.
+public type Encoder 'a = 'a -> Result Json.Value Error
+
+let prefix segment error = { error with path = segment :: error.path }
+
+/// Encode a JSON value directly, retaining its object member order and duplicates.
+public value : Encoder Json.Value
+let value input = Ok input
+
+/// Encode a string.
+public string : Encoder String
+let string input = Ok (Json.String input)
+
+/// Encode a boolean.
+public bool : Encoder Bool
+let bool input = Ok (Json.Boolean input)
+
+/// Encode a signed 64-bit integer exactly.
+public int : Encoder Int
+let int input = Ok (Json.Number (JsonNumber.fromInt input))
+
+/// Encode an already validated number without changing its spelling.
+public number : Encoder JsonNumber.Number
+let number input = Ok (Json.Number input)
+
+/// Encode a finite Float; NaNs and infinities return an error.
+public float : Encoder Float
+let float input =
+  Result.mapError (fun message -> {
+    message = message,
+    path = []
+  }) (Result.map (fun n -> Json.Number n) (JsonNumber.fromFloat input))
+
+/// Encode Unit as null.
+public null : Encoder Unit
+let null input = Ok Json.Null
+
+/// Encode None as null and Some with the supplied encoder.
+public nullable : Encoder 'a -> Encoder (Option 'a)
+let nullable encoder input =
+  match input with
+  | None -> Ok Json.Null
+  | Some x -> encoder x
+
+/// Project an application value before encoding it.
+public contramap : ('a -> 'b) -> Encoder 'b -> Encoder 'a
+let contramap project encoder input = encoder (project input)
+
+let arrayFrom encoder input i output =
+  if i = Array.length input then
+    Ok (Json.Array output)
+  else
+    match encoder (Array.unsafeGet i input) with
+    | Err error -> Err (prefix (Index i) error)
+    | Ok value -> arrayFrom encoder input (i + 1) (Array.push value output)
+
+/// Encode array elements in order, locating any error by index.
+public array : Encoder 'a -> Encoder (Array 'a)
+let array encoder input = arrayFrom encoder input 0 (Array.withCapacity (Array.length input))
+
+let listFrom encoder input i output =
+  match input with
+  | [] -> Ok (Json.Array output)
+  | head :: rest ->
+    match encoder head with
+    | Err error -> Err (prefix (Index i) error)
+    | Ok value -> listFrom encoder rest (i + 1) (Array.push value output)
+
+/// Encode a linked list as a JSON array.
+public list : Encoder 'a -> Encoder (List 'a)
+let list encoder input = listFrom encoder input 0 Array.empty
+
+let objectFrom fields seen output =
+  match fields with
+  | [] -> Ok (Json.Object output)
+  | (name, result) :: rest ->
+    if HashSet.member name seen then
+      Err { message = "duplicate object member", path = [Field name] }
+    else
+      match result with
+      | Err error -> Err (prefix (Field name) error)
+      | Ok value -> objectFrom rest (HashSet.insert name seen) (Array.push (name, value) output)
+
+/// Combine encoded object fields in order, rejecting duplicate field names.
+/// Each field result may come from a different typed encoder.
+public object : List (String * Result Json.Value Error) -> Result Json.Value Error
+let object fields = objectFrom fields HashSet.empty Array.empty
+
+/// Encode a string-keyed dictionary with fields sorted by key for stable output.
+public dict : Encoder 'a -> Encoder (HashDict String 'a)
+let dict encoder input =
+  let fields = List.sortBy compareKeys (HashDict.toList input)
+  object (List.map (encodeField encoder) fields)
+
+let compareKeys left right =
+  let (a, _) = left
+  let (b, _) = right
+  compare a b
+
+let encodeField encoder pair =
+  let (name, value) = pair
+  (name, encoder value)
+
+/// Encode an application value and render compact JSON.
+public toString : Encoder 'a -> 'a -> Result String Error
+let toString encoder input = Result.map Json.toString (encoder input)
+
+/// Encode an application value and render two-space-indented JSON.
+public toPrettyString : Encoder 'a -> 'a -> Result String Error
+let toPrettyString encoder input = Result.map Json.toPrettyString (encoder input)
+
+let pathText path output =
+  match path with
+  | [] -> output
+  | Field name :: rest -> pathText rest (output ++ "[" ++ Json.toString (Json.String name) ++ "]")
+  | Index i :: rest -> pathText rest (output ++ "[" ++ Int.toString i ++ "]")
+
+/// Render an encoding error with its field/index path.
+public errorToString : Error -> String
+let errorToString error = pathText error.path "$" ++ ": " ++ error.message

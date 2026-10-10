@@ -1,0 +1,25 @@
+module CodecExample
+
+type User = { id : Int, name : String }
+
+decoder : JsonDecode.Decoder User
+let decoder =
+  JsonDecode.map2 (fun id name -> {
+    id = id,
+    name = name
+  }) (JsonDecode.field "id" JsonDecode.int) (JsonDecode.field "name" JsonDecode.string)
+
+encoder : JsonEncode.Encoder User
+let encoder user = JsonEncode.object [
+  ("id", JsonEncode.int user.id),
+  ("name", JsonEncode.string user.name)
+]
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  match JsonDecode.fromString decoder "{\"id\":42,\"name\":\"Ada\"}" with
+  | Err error -> runtime.console.writeLine (JsonDecode.readErrorToString error)
+  | Ok user ->
+    match JsonEncode.toString encoder { user with name = user.name ++ " Lovelace" } with
+    | Err error -> runtime.console.writeLine (JsonEncode.errorToString error)
+    | Ok json -> runtime.console.writeLine json

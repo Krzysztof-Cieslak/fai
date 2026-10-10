@@ -1729,6 +1729,19 @@ arbitrary JSON decimal text; `toInt` rejects fractional/out-of-range values and
 `toFloat` rounds to finite binary64, ties to even. `fromFloat` rejects NaN/infinity.
 Parse nesting defaults to 256; `Json.parseWith { maxDepth = n } text` changes it.
 See `packages/json/README.md` for the full source-library contract.
+`JsonDecode` supplies `string`/`bool`/`int`/`float`/`number`/`value` decoders;
+compose them with `field`, `optionalField`, `nullable`, `index`, `at`, `array`,
+`list`, `dict`, `map`, `map2`, `andMap`, `andThen`, `oneOf`, and `lazy`.
+`JsonDecode.fromString decoder text` returns a `Result` with distinct `Syntax`
+and `Data` errors. `decode decoder value` works on a tree. Duplicate names are
+rejected throughout the tree, even in unknown fields; other unknown fields are
+accepted. Optional means missing, nullable means explicit null. Errors carry
+field/index paths (`JsonDecode.readErrorToString` renders either error kind).
+`JsonEncode.Encoder 'a` is `'a -> Result Json.Value JsonEncode.Error`; define a
+record encoder with `JsonEncode.object [("id", JsonEncode.int record.id), ...]`.
+Primitive, `list`, `array`, `nullable`, and `dict` encoders compose; `toString
+encoder value` returns JSON text or a located encoding error. Object builders
+reject duplicate names, dictionary keys are sorted, and non-finite Floats fail.
 
 Including `packages/web/src` in a workspace supplies `Web` handlers and `Router`.
 Terminal responders preserve unrelated middleware headers. `Web.setHeader`

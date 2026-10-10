@@ -1,0 +1,157 @@
+module CodecSpec
+
+type User = { id : Int, name : String }
+
+userDecoder : JsonDecode.Decoder User
+let userDecoder =
+  JsonDecode.map2 (fun id name -> {
+    id = id,
+    name = name
+  }) (JsonDecode.field "id" JsonDecode.int) (JsonDecode.field "name" JsonDecode.string)
+
+encodeUser : JsonEncode.Encoder User
+let encodeUser user = JsonEncode.object [
+  ("id", JsonEncode.int user.id),
+  ("name", JsonEncode.string user.name)
+]
+example: JsonDecode.fromString userDecoder "{\"name\":\"Ada\",\"id\":42,\"extra\":true}" = Ok {
+  id = 42,
+  name = "Ada"
+}
+example: JsonEncode.toString encodeUser {
+  id = 42,
+  name = "Ada"
+} = Ok "{\"id\":42,\"name\":\"Ada\"}"
+
+let userRoundTrip id name =
+  match JsonEncode.toString encodeUser { id = id, name = name } with
+  | Err _ -> false
+  | Ok document -> JsonDecode.fromString userDecoder document = Ok { id = id, name = name }
+forall id name: userRoundTrip id name
+
+let decodeError decoder text =
+  match JsonDecode.fromString decoder text with
+  | Ok _ -> "accepted"
+  | Err error -> JsonDecode.readErrorToString error
+example: decodeError userDecoder "{\"id\":42}" = "$[\"name\"]: missing required field"
+example: decodeError (JsonDecode.field "items" (JsonDecode.list userDecoder)) "{\"items\":[{\"id\":1,\"name\":false}]}" = "$[\"items\"][0][\"name\"]: expected string, got boolean"
+example: decodeError userDecoder "{\"id\":1,\"id\":2,\"name\":\"Ada\"}" = "$[\"id\"]: duplicate object member"
+example: decodeError JsonDecode.value "{\"a\":1,\"\\u0061\":2}" = "$[\"a\"]: duplicate object member"
+example: decodeError (JsonDecode.succeed 1) "{\"unknown\":{\"x\":1,\"x\":2}}" = "$[\"unknown\"][\"x\"]: duplicate object member"
+example: JsonDecode.fromString (JsonDecode.optionalField "x" JsonDecode.int) "{}" = Ok None
+example: JsonDecode.fromString (JsonDecode.optionalField "x" JsonDecode.int) "{\"x\":1}" = Ok (Some 1)
+example: Result.isErr (JsonDecode.fromString (JsonDecode.optionalField "x" JsonDecode.int) "{\"x\":null}")
+example: JsonDecode.fromString (JsonDecode.optionalField "x" (JsonDecode.nullable JsonDecode.int)) "{\"x\":null}" = Ok (Some None)
+example: JsonDecode.fromString (JsonDecode.nullable JsonDecode.string) "null" = Ok None
+example: Result.isErr (JsonDecode.fromString (JsonDecode.nullable JsonDecode.int) "false")
+example: JsonDecode.fromString (JsonDecode.index 1 JsonDecode.string) "[0,\"one\"]" = Ok "one"
+example: decodeError (JsonDecode.index (-1) JsonDecode.int) "[]" = "$[-1]: array index is out of bounds"
+example: JsonDecode.fromString (JsonDecode.at [
+  "a",
+  "b"
+] JsonDecode.bool) "{\"a\":{\"b\":true}}" = Ok true
+example: JsonDecode.fromString (JsonDecode.array JsonDecode.int) "[1,2,3]" = Ok [| 1, 2, 3 |]
+example: JsonDecode.fromString (JsonDecode.keyValuePairs JsonDecode.int) "{\"b\":2,\"a\":1}" = Ok [
+  ("b", 2),
+  ("a", 1)
+]
+example: Result.map (HashDict.get "a") (JsonDecode.fromString (JsonDecode.dict JsonDecode.int) "{\"a\":1}") = Ok (Some 1)
+example: JsonDecode.fromBytes JsonDecode.string (Bytes.fromString "\"hello\"") = Ok "hello"
+
+type Choice =
+  | Text String
+  | Count Int
+
+let choice =
+  JsonDecode.andThen (fun tag ->
+    if tag = "text" then
+      JsonDecode.map Text (JsonDecode.field "value" JsonDecode.string)
+    else if tag = "count" then
+      JsonDecode.map Count (JsonDecode.field "value" JsonDecode.int)
+    else
+      JsonDecode.fail "unknown choice tag") (JsonDecode.field "tag" JsonDecode.string)
+example: JsonDecode.fromString choice "{\"tag\":\"text\",\"value\":\"hello\"}" = Ok (Text "hello")
+example: JsonDecode.fromString choice "{\"tag\":\"count\",\"value\":12}" = Ok (Count 12)
+example: decodeError choice "{\"tag\":\"other\"}" = "$: unknown choice tag"
+example: JsonDecode.fromString (JsonDecode.oneOf [JsonDecode.int, JsonDecode.null 0]) "null" = Ok 0
+example: Result.isErr (JsonDecode.fromString (JsonDecode.oneOf [
+  JsonDecode.int,
+  JsonDecode.null 0
+]) "true")
+example: Result.isErr (JsonDecode.fromString (JsonDecode.oneOf []) "1")
+
+type Tree =
+  | Leaf Int
+  | Branch (List Tree)
+
+treeDecoder : JsonDecode.Decoder Tree
+let treeDecoder =
+  JsonDecode.lazy (fun _ -> JsonDecode.oneOf [
+    JsonDecode.map Leaf JsonDecode.int,
+    JsonDecode.map Branch (JsonDecode.list treeDecoder)
+  ])
+
+encodeTree : JsonEncode.Encoder Tree
+let encodeTree tree =
+  match tree with
+  | Leaf n -> JsonEncode.int n
+  | Branch trees -> JsonEncode.list encodeTree trees
+example: JsonDecode.fromString treeDecoder "[1,[2,3]]" = Ok (Branch [
+  Leaf 1,
+  Branch [Leaf 2, Leaf 3]
+])
+example: JsonEncode.toString encodeTree (Branch [Leaf 1, Branch [Leaf 2, Leaf 3]]) = Ok "[1,[2,3]]"
+
+let pipeline =
+  JsonDecode.succeed (fun id name -> {
+    id = id,
+    name = name
+  }) |> JsonDecode.andMap (JsonDecode.field "id" JsonDecode.int) |> JsonDecode.andMap (JsonDecode.field "name" JsonDecode.string)
+example: JsonDecode.fromString pipeline "{\"id\":7,\"name\":\"P\"}" = Ok { id = 7, name = "P" }
+
+let positive =
+  JsonDecode.andThen (fun n ->
+    if n > 0 then JsonDecode.succeed n else JsonDecode.fail "must be positive") JsonDecode.int
+example: decodeError (JsonDecode.field "n" positive) "{\"n\":0}" = "$[\"n\"]: must be positive"
+example: JsonEncode.toString (JsonEncode.array JsonEncode.int) [| 1, 2 |] = Ok "[1,2]"
+example: JsonEncode.toString (JsonEncode.nullable JsonEncode.string) None = Ok "null"
+example: JsonEncode.toString (JsonEncode.nullable JsonEncode.string) (Some "ok") = Ok "\"ok\""
+example: JsonEncode.toString (JsonEncode.dict JsonEncode.int) (HashDict.fromList [
+  ("b", 2),
+  ("a", 1)
+]) = Ok "{\"a\":1,\"b\":2}"
+example: JsonEncode.toString (JsonEncode.contramap (fun u ->
+  u.id) JsonEncode.int) { id = 7, name = "P" } = Ok "7"
+example: JsonEncode.object [
+  ("x", JsonEncode.int 1),
+  ("x", JsonEncode.int 2)
+] = Err { message = "duplicate object member", path = [JsonEncode.Field "x"] }
+example: JsonEncode.list JsonEncode.float [
+  1.0,
+  Float.fromBits 0x7ff0000000000000
+] = Err { message = "non-finite Float is not a JSON number", path = [JsonEncode.Index 1] }
+example: JsonEncode.object [
+  ("n", JsonEncode.float (Float.fromBits 0x7ff8000000000000))
+] = Err { message = "non-finite Float is not a JSON number", path = [JsonEncode.Field "n"] }
+example: JsonEncode.toPrettyString (JsonEncode.list JsonEncode.bool) [true] = Ok "[\n  true\n]"
+
+let treeRoundTrip tree =
+  match JsonEncode.toString encodeTree tree with
+  | Err _ -> false
+  | Ok text -> JsonDecode.fromString treeDecoder text = Ok tree
+forall tree: treeRoundTrip tree
+example: JsonDecode.decode (JsonDecode.fromFunction (fun _ -> Ok 7)) Json.Null = Ok 7
+example: decodeError (JsonDecode.field "x" (JsonDecode.oneOf [])) "{\"x\":true}" = "$[\"x\"]: no decoders supplied"
+example: decodeError (JsonDecode.field "x" (JsonDecode.oneOf [
+  JsonDecode.int,
+  JsonDecode.null 0
+])) "{\"x\":true}" = "no alternative matched: $[\"x\"]: expected integer, got boolean; $[\"x\"]: expected null, got boolean"
+example: JsonDecode.fromString JsonDecode.int "9223372036854775808" = Err (JsonDecode.Data (JsonDecode.Failure [] "number is outside Int range"))
+example: Result.map Float.toBits (JsonDecode.fromString JsonDecode.float "-0.0") = Ok 0x8000000000000000
+example: Result.map JsonNumber.toString (JsonDecode.fromString JsonDecode.number "1e99999") = Ok "1e99999"
+example: JsonEncode.object [
+  ("items", JsonEncode.list JsonEncode.float [1.0, Float.fromBits 0x7ff0000000000000])
+] = Err {
+  message = "non-finite Float is not a JSON number",
+  path = [JsonEncode.Field "items", JsonEncode.Index 1]
+}

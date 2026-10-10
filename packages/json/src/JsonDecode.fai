@@ -1,0 +1,322 @@
+module JsonDecode
+
+/// A component of a path from the JSON root to an invalid value.
+public type PathSegment =
+  | Field String
+  | Index Int
+
+/// A located decoding failure, or the failures of every alternative.
+public type Error =
+  | Failure (List PathSegment) String
+  | Alternatives (List Error)
+
+/// Syntax failures and application-schema failures remain distinguishable.
+public type ReadError =
+  | Syntax Json.ParseError
+  | Data Error
+
+/// A pure, reusable conversion from a JSON value to an application value.
+public opaque type Decoder 'a =
+  | MkDecoder (Json.Value -> Result 'a Error)
+
+let apply decoder value =
+  match decoder with
+  | MkDecoder run -> run value
+
+let failure message = Err (Failure [] message)
+
+let prefix segment error =
+  match error with
+  | Failure path message -> Failure (segment :: path) message
+  | Alternatives errors -> Alternatives (List.map (prefix segment) errors)
+
+let kind value =
+  match value with
+  | Json.Null -> "null"
+  | Json.Boolean _ -> "boolean"
+  | Json.Number _ -> "number"
+  | Json.String _ -> "string"
+  | Json.Array _ -> "array"
+  | Json.Object _ -> "object"
+
+let expected name value = failure ("expected " ++ name ++ ", got " ++ kind value)
+
+/// Build a custom decoder. Public entry points still validate duplicate keys.
+public fromFunction : (Json.Value -> Result 'a Error) -> Decoder 'a
+let fromFunction run = MkDecoder run
+
+/// Accept the JSON value itself.
+public value : Decoder Json.Value
+let value = MkDecoder (fun input -> Ok input)
+
+/// Accept a string.
+public string : Decoder String
+let string =
+  MkDecoder (fun input ->
+    match input with
+    | Json.String text -> Ok text
+    | other -> expected "string" other)
+
+/// Accept a boolean.
+public bool : Decoder Bool
+let bool =
+  MkDecoder (fun input ->
+    match input with
+    | Json.Boolean b -> Ok b
+    | other -> expected "boolean" other)
+
+/// Accept an exact JSON number without narrowing its precision.
+public number : Decoder JsonNumber.Number
+let number =
+  MkDecoder (fun input ->
+    match input with
+    | Json.Number n -> Ok n
+    | other -> expected "number" other)
+
+/// Accept an exactly integral number in the signed 64-bit range.
+public int : Decoder Int
+let int =
+  MkDecoder (fun input ->
+    match input with
+    | Json.Number n -> Result.mapError (fun message -> Failure [] message) (JsonNumber.toInt n)
+    | other -> expected "integer" other)
+
+/// Round a JSON number to finite binary64, ties to even.
+public float : Decoder Float
+let float =
+  MkDecoder (fun input ->
+    match input with
+    | Json.Number n -> Result.mapError (fun message -> Failure [] message) (JsonNumber.toFloat n)
+    | other -> expected "number" other)
+
+/// Accept only null and return the supplied value.
+public null : 'a -> Decoder 'a
+let null result =
+  MkDecoder (fun input ->
+    match input with
+    | Json.Null -> Ok result
+    | other -> expected "null" other)
+
+/// Null becomes None; every other value must satisfy the supplied decoder.
+public nullable : Decoder 'a -> Decoder (Option 'a)
+let nullable decoder =
+  MkDecoder (fun input ->
+    match input with
+    | Json.Null -> Ok None
+    | other -> Result.map (fun x -> Some x) (apply decoder other))
+
+/// A decoder that succeeds without inspecting the input.
+public succeed : 'a -> Decoder 'a
+let succeed result = MkDecoder (fun _ -> Ok result)
+
+/// A decoder that fails with a message at the current path.
+public fail : String -> Decoder 'a
+let fail message = MkDecoder (fun _ -> failure message)
+
+/// Transform a decoded value.
+public map : ('a -> 'b) -> Decoder 'a -> Decoder 'b
+let map transform decoder = MkDecoder (fun input -> Result.map transform (apply decoder input))
+
+/// Combine two decoders over the same input, in left-to-right error order.
+public map2 : ('a -> 'b -> 'c) -> Decoder 'a -> Decoder 'b -> Decoder 'c
+let map2 combine left right =
+  MkDecoder (fun input ->
+    match apply left input with
+    | Err e -> Err e
+    | Ok a -> Result.map (combine a) (apply right input))
+
+/// Apply another decoded argument, suitable for a pipeline of record fields.
+public andMap : Decoder 'a -> Decoder ('a -> 'b) -> Decoder 'b
+let andMap argument function = map2 (fun f x -> f x) function argument
+
+/// Select a decoder from a decoded value; the selected decoder sees the original
+/// input. This supports tagged unions and validation dependent on another field.
+public andThen : ('a -> Decoder 'b) -> Decoder 'a -> Decoder 'b
+let andThen choose decoder =
+  MkDecoder (fun input ->
+    match apply decoder input with
+    | Err e -> Err e
+    | Ok result -> apply (choose result) input)
+
+let findField name members i =
+  if i = Array.length members then
+    None
+  else
+    let (key, value) = Array.unsafeGet i members
+    if key = name then Some value else findField name members (i + 1)
+
+let requiredMember name decoder input =
+  match input with
+  | Json.Object members ->
+    match findField name members 0 with
+    | None -> Err (Failure [Field name] "missing required field")
+    | Some value -> Result.mapError (prefix (Field name)) (apply decoder value)
+  | other -> expected "object" other
+
+/// Decode a required object field. Unknown fields are accepted.
+public field : String -> Decoder 'a -> Decoder 'a
+let field name decoder = MkDecoder (requiredMember name decoder)
+
+let optionalMember name decoder input =
+  match input with
+  | Json.Object members ->
+    match findField name members 0 with
+    | None -> Ok None
+    | Some value ->
+      Result.map (fun x -> Some x) (Result.mapError (prefix (Field name)) (apply decoder value))
+  | other -> expected "object" other
+
+/// An absent field becomes None. A present field must satisfy the decoder,
+/// including when it is null. Use nullable explicitly to accept a present null.
+public optionalField : String -> Decoder 'a -> Decoder (Option 'a)
+let optionalField name decoder = MkDecoder (optionalMember name decoder)
+
+let arrayIndex position decoder input =
+  match input with
+  | Json.Array values ->
+    match Array.get position values with
+    | None -> Err (Failure [Index position] "array index is out of bounds")
+    | Some value -> Result.mapError (prefix (Index position)) (apply decoder value)
+  | other -> expected "array" other
+
+/// Decode an array element at a nonnegative index.
+public index : Int -> Decoder 'a -> Decoder 'a
+let index position decoder = MkDecoder (arrayIndex position decoder)
+
+/// Follow a sequence of object field names.
+public at : List String -> Decoder 'a -> Decoder 'a
+let at names decoder =
+  match names with
+  | [] -> decoder
+  | name :: rest -> field name (at rest decoder)
+
+let arrayFrom decoder values i output =
+  if i = Array.length values then
+    Ok output
+  else
+    match apply decoder (Array.unsafeGet i values) with
+    | Err e -> Err (prefix (Index i) e)
+    | Ok value -> arrayFrom decoder values (i + 1) (Array.push value output)
+
+/// Decode every array element in order.
+public array : Decoder 'a -> Decoder (Array 'a)
+let array decoder =
+  MkDecoder (fun input ->
+    match input with
+    | Json.Array values -> arrayFrom decoder values 0 (Array.withCapacity (Array.length values))
+    | other -> expected "array" other)
+
+/// Decode a JSON array as a linked list.
+public list : Decoder 'a -> Decoder (List 'a)
+let list decoder = map Array.toList (array decoder)
+
+let membersFrom decoder members i output =
+  if i = Array.length members then
+    Ok (List.reverse output)
+  else
+    let (name, value) = Array.unsafeGet i members
+    match apply decoder value with
+    | Err e -> Err (prefix (Field name) e)
+    | Ok decoded -> membersFrom decoder members (i + 1) ((name, decoded) :: output)
+
+/// Decode object values, preserving member order.
+public keyValuePairs : Decoder 'a -> Decoder (List (String * 'a))
+let keyValuePairs decoder =
+  MkDecoder (fun input ->
+    match input with
+    | Json.Object members -> membersFrom decoder members 0 []
+    | other -> expected "object" other)
+
+/// Decode an object as a string-keyed hash dictionary.
+public dict : Decoder 'a -> Decoder (HashDict String 'a)
+let dict decoder = map HashDict.fromList (keyValuePairs decoder)
+
+let alternatives decoders input errors =
+  match decoders with
+  | [] ->
+    match errors with
+    | [] -> failure "no decoders supplied"
+    | _ -> Err (Alternatives (List.reverse errors))
+  | decoder :: rest ->
+    match apply decoder input with
+    | Ok result -> Ok result
+    | Err error -> alternatives rest input (error :: errors)
+
+/// Try decoders in order, reporting all failures if none succeeds.
+public oneOf : List (Decoder 'a) -> Decoder 'a
+let oneOf decoders = MkDecoder (fun input -> alternatives decoders input [])
+
+/// Defer constructing a recursive decoder until it is applied.
+public lazy : (Unit -> Decoder 'a) -> Decoder 'a
+let lazy build = MkDecoder (fun input -> apply (build ()) input)
+
+type Check =
+  | CheckValue Json.Value (List PathSegment)
+  | CheckArray (Array Json.Value) Int (List PathSegment)
+  | CheckObject (Array (String * Json.Value)) Int (HashSet String) (List PathSegment)
+
+// Validate the whole tree once at the public boundary, including unknown fields.
+// Combinators apply child decoders directly, avoiding repeated whole-tree walks.
+let unique tasks =
+  match tasks with
+  | [] -> Ok ()
+  | CheckValue value path :: rest ->
+    match value with
+    | Json.Array values -> unique (CheckArray values 0 path :: rest)
+    | Json.Object members -> unique (CheckObject members 0 HashSet.empty path :: rest)
+    | _ -> unique rest
+  | CheckArray values i path :: rest ->
+    if i = Array.length values then
+      unique rest
+    else
+      unique (CheckValue (Array.unsafeGet i values) (Index i :: path) :: CheckArray values (i + 1) path :: rest)
+  | CheckObject members i seen path :: rest ->
+    if i = Array.length members then
+      unique rest
+    else
+      let (name, value) = Array.unsafeGet i members
+      if HashSet.member name seen then
+        Err (Failure (List.reverse (Field name :: path)) "duplicate object member")
+      else
+        unique (CheckValue value (Field name :: path) :: CheckObject members (i + 1) (HashSet.insert name seen) path :: rest)
+
+/// Decode a value, rejecting duplicate object members anywhere in the tree.
+public decode : Decoder 'a -> Json.Value -> Result 'a Error
+let decode decoder input =
+  match unique [CheckValue input []] with
+  | Err e -> Err e
+  | Ok _ -> apply decoder input
+
+let parsed decoder result =
+  match result with
+  | Err error -> Err (Syntax error)
+  | Ok input -> Result.mapError (fun error -> Data error) (decode decoder input)
+
+/// Parse a complete JSON document and decode it.
+public fromString : Decoder 'a -> String -> Result 'a ReadError
+let fromString decoder source = parsed decoder (Json.parse source)
+
+/// Parse a complete UTF-8 JSON document and decode it.
+public fromBytes : Decoder 'a -> Bytes -> Result 'a ReadError
+let fromBytes decoder source = parsed decoder (Json.parseBytes source)
+
+let pathText path output =
+  match path with
+  | [] -> output
+  | Field name :: rest -> pathText rest (output ++ "[" ++ Json.toString (Json.String name) ++ "]")
+  | Index i :: rest -> pathText rest (output ++ "[" ++ Int.toString i ++ "]")
+
+/// Render a structured decoding error with unambiguous JSON-escaped paths.
+public errorToString : Error -> String
+let errorToString error =
+  match error with
+  | Failure path message -> pathText path "$" ++ ": " ++ message
+  | Alternatives errors ->
+    "no alternative matched: " ++ String.join "; " (List.map errorToString errors)
+
+/// Render either a parse error or a decoding error.
+public readErrorToString : ReadError -> String
+let readErrorToString error =
+  match error with
+  | Syntax parseError -> Json.errorToString parseError
+  | Data decodeError -> errorToString decodeError
