@@ -1,0 +1,151 @@
+module AgentDemo
+
+public type Runtime = {
+  clock : Clock,
+  concurrency : Concurrency,
+  console : Console,
+  terminal : TerminalHost.Terminal
+}
+
+let runtime = {
+  clock = stdClock,
+  concurrency = stdConcurrency,
+  console = stdConsole,
+  terminal = TerminalHost.native
+}
+
+type Msg =
+  | Compose String
+  | Send
+  | Chunk String
+  | Finished
+  | Resize Int
+  | Tools Bool
+  | Stop
+
+type Model = {
+  busy : Bool,
+  document : TuiMarkdown.Document,
+  revision : Int,
+  text : String,
+  tools : Bool,
+  width : Int
+}
+
+let composer = Ui.id "composer"
+
+let markdownOptions width = {
+  ambiguousWide = false,
+  theme = TuiStyle.defaultTheme,
+  width = if width < 1 then 1 else width
+}
+
+init : TuiLayout.Context -> (Model * TuiCmd.Cmd Msg 'e)
+let init context =
+  let width = context.width - 4
+  ({
+    busy = false,
+    document = TuiMarkdown.fromString (markdownOptions width) "# Fai agent console\nType a request below. Responses stream through a keyed subscription.\n",
+    revision = 0,
+    text = "",
+    tools = false,
+    width = width
+  }, TuiCmd.focus composer)
+
+update : Msg -> Model -> (Model * TuiCmd.Cmd Msg 'e)
+let update message model =
+  match message with
+  | Compose text -> ({ model with text = text }, TuiCmd.none)
+  | Send ->
+    if String.trim model.text = "" then
+      (model, TuiCmd.none)
+    else
+      ({ model with
+        busy = true,
+        document = TuiMarkdown.append ("\n**You:** " ++ model.text ++ "\n\n") model.document,
+        revision = model.revision + 1,
+        text = ""
+      }, TuiCmd.focus composer)
+  | Chunk text -> ({ model with document = TuiMarkdown.append text model.document }, TuiCmd.none)
+  | Finished -> ({ model with busy = false }, TuiCmd.none)
+  | Resize width ->
+    ({ model with
+      document = TuiMarkdown.resize (markdownOptions (width - 4)) model.document,
+      width = width - 4
+    }, TuiCmd.none)
+  | Tools expanded -> ({ model with tools = expanded }, TuiCmd.none)
+  | Stop -> if model.busy then ({ model with busy = false }, TuiCmd.none) else (model, TuiCmd.quit)
+
+view : TuiLayout.Context -> Model -> Ui.Element Msg
+let view context model = Ui.column [
+  Ui.padding 1,
+  Ui.gap 1,
+  Ui.width Ui.fill,
+  Ui.height Ui.fill
+] [
+  Ui.transcript (Ui.id "conversation") [
+    Ui.width Ui.fill,
+    Ui.height Ui.fill,
+    Ui.border
+  ] { follow = true, source = TuiMarkdown.source model.document },
+  Ui.disclosure (Ui.id "tools") [] {
+    expanded = model.tools,
+    label = "Tool activity",
+    onToggle = Tools
+  } (Ui.text [Ui.style context.theme.muted] "This demo uses a simulated response stream."),
+  Ui.editor composer [
+    Ui.width Ui.fill,
+    Ui.height (Ui.cells 6),
+    Ui.border,
+    Ui.maxLength 4096
+  ] {
+    label = "Request",
+    onBlur = None,
+    onChange = Compose,
+    onSubmit = Some Send,
+    value = model.text
+  },
+  Ui.text [
+    Ui.style context.theme.muted
+  ] (if model.busy then
+    "Streaming · Esc: cancel"
+  else
+    "Enter: send · Shift+Enter: newline · Ctrl+P/N: history · Esc: quit")
+]
+
+delay : Clock -> Int -> Msg -> Msg / { Clock }
+let delay clock interval message =
+  let waited = clock.sleep interval
+  message
+
+subscriptions : Clock -> Int -> Model -> TuiSub.Sub Msg { Clock }
+let subscriptions clock interval model =
+  if not model.busy then
+    TuiSub.none
+  else
+    TuiSub.stream "assistant" (Int.toString model.revision) (Stream.map (delay clock interval) (Stream.fromList [
+      Chunk "**Assistant:** ",
+      Chunk "This ",
+      Chunk "response ",
+      Chunk "arrives ",
+      Chunk "incrementally.\n",
+      Chunk "- The UI stays responsive.\n",
+      Chunk "- Scroll up to pause tail following; End resumes it.\n",
+      Finished
+    ])) (fun error -> Chunk ("Error: " ++ error))
+
+let onEvent event =
+  match event with
+  | TerminalHost.Key key -> if key.code = "Escape" then Some Stop else None
+  | TerminalHost.Resize width _ -> Some (Resize width)
+  | _ -> None
+
+public main : Runtime -> Unit / { Clock, Concurrency, Console, TerminalHost.Terminal }
+let main r =
+  let app = { Tui.program init update view with
+    onEvent = onEvent,
+    subscriptions = subscriptions r.clock 50
+  }
+  match Tui.run r Tui.defaults app with
+  | Ok _ -> ()
+  | Err error -> r.console.writeLine error.message
