@@ -539,6 +539,10 @@ over-applied, and concurrent cases retain the runtime path.
 A bounded loop whose callback parameter never changes can test that entry once
 and reuse it. The proven immortal branch also skips duplicate-count work; changing
 callbacks and inconsistent application arities keep their ordinary dispatch.
+Noncapturing uniform callbacks that perform one Int addition or subtraction can
+keep their once-used inputs tagged. One combined immediate check and a checked
+tagged operation replace separate unbox/rebox steps; full-width values retain
+the ordinary wrapping runtime path.
 
 Opaque aliases retain their nominal type in cross-file value, constructor, and
 interface-method signatures, including through transparent re-exports. Names

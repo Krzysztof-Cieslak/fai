@@ -883,6 +883,28 @@ fn direct_signature<M: Module>(module: &M, abi: &FnAbi) -> cranelift_codegen::ir
     signature
 }
 
+/// A uniform leaf can keep its once-used Int parameters tagged through one op.
+fn tagged_int_leaf(function: &CoreFn) -> bool {
+    if !function.captures.is_empty() || !(1..=2).contains(&function.params.len()) {
+        return false;
+    }
+    let ExprKind::Prim { op: Prim::IntAdd | Prim::IntSub, args } = &function.body.kind else {
+        return false;
+    };
+    args.len() == 2
+        && args.iter().all(|arg| match arg.kind {
+            ExprKind::Local(local) => function.params.contains(&local) && arg.ty == Ty::int(),
+            ExprKind::Lit(Lit::Int(_)) => true,
+            _ => false,
+        })
+        && function.params.iter().all(|param| {
+            args.iter()
+                .filter(|arg| matches!(arg.kind, ExprKind::Local(local) if local == *param))
+                .count()
+                == 1
+        })
+}
+
 /// Builds one function's Cranelift IR into a fresh, **uncompiled** context. The
 /// build mutates `module` (declaring callees, runtime imports, and string data),
 /// so it is serial; the caller compiles the returned context.
@@ -984,6 +1006,11 @@ fn build_fn<M: Module>(
         tr.collect_f64_locals(&core_fn.body);
         // Decide which locals are untagged raw `Int`s (see `int_locals`).
         tr.collect_int_locals(&core_fn.body);
+        if !is_entry && tagged_int_leaf(core_fn) {
+            for param in &core_fn.params {
+                tr.int_locals.remove(&param.index());
+            }
+        }
         // Decide which locals hold a niche `Option` (scrutinees, plus everything a
         // niche value propagates to; see `niche_locals`). The entry's niche
         // parameters seed the propagation so a forwarded niche parameter is not
@@ -4956,9 +4983,10 @@ impl<M: Module> Translator<'_, M> {
     /// Inlines an arithmetic or shift primitive. With **raw untagged** operands
     /// (the common case in a normal function) it is a single bare native op
     /// ([`Self::raw_arith`]) — no guard, no fit check, no boxing. Otherwise (tagged
-    /// operands: a mutual-recursion combined function, or a conflicting-observation
-    /// local) it takes the tagged guarded path: untag, native op, then re-tag
-    /// guarded by a 63-bit fit check. `sadd_overflow(r, r)` computes `r << 1` and
+    /// operands: a uniform leaf or a conflicting-observation local) it takes a
+    /// combined immediate guard. Addition/subtraction operate directly on the
+    /// tags; other operations untag, compute, and re-tag with a 63-bit fit check.
+    /// `sadd_overflow(r, r)` computes `r << 1` and
     /// flags overflow exactly when `r` no longer fits the immediate — the precise
     /// `fai_box_int` boundary — so an out-of-range result falls back to the runtime,
     /// which boxes it.
@@ -4975,6 +5003,24 @@ impl<M: Module> Translator<'_, M> {
             anded,
             |s| s.prim_runtime_call(op, &[a, b]),
             |s, slow, merge| {
+                if matches!(fop, FitsOp::Add | FitsOp::Sub) {
+                    // Tagged x is 2*x + 1. Removing one tag before the operation
+                    // yields the tagged result directly; signed overflow is
+                    // exactly the boundary requiring the full-width fallback.
+                    let (tagged, overflow) = match fop {
+                        FitsOp::Add => {
+                            let even = s.builder.ins().iadd_imm(a, -1);
+                            s.builder.ins().sadd_overflow(even, b)
+                        }
+                        FitsOp::Sub => {
+                            let even = s.builder.ins().iadd_imm(b, -1);
+                            s.builder.ins().ssub_overflow(a, even)
+                        }
+                        _ => unreachable!(),
+                    };
+                    s.builder.ins().brif(overflow, slow, &[], merge, &[tagged.into()]);
+                    return;
+                }
                 let xa = s.untag(a);
                 let xb = s.untag(b);
                 let r = match fop {

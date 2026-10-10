@@ -2310,6 +2310,20 @@ fn invariant_float_callback_keeps_the_uniform_boundary() {
 }
 
 #[test]
+fn uniform_int_leaf_combines_its_boundary_guard() {
+    let source =
+        "module M\npublic make : Unit -> (Int -> Int -> Int)\nlet make u = fun a b -> a - b\n";
+    let functions = function_ir(source, "make");
+    let leaf = &functions[1];
+    assert!(
+        !leaf.contains("sshr_imm"),
+        "tagged subtraction needs no per-argument untagging:\n{leaf}"
+    );
+    assert!(leaf.contains("ssub_overflow"), "the immediate boundary is checked:\n{leaf}");
+    assert_eq!(call_count(leaf), 1, "only the full-width arithmetic fallback remains:\n{leaf}");
+}
+
+#[test]
 fn generic_equality_on_an_enum_takes_the_immediate_path() {
     // Every constructor is nullary, so every value is an immediate: the guard's
     // fast arm always runs.

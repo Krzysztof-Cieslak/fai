@@ -252,3 +252,16 @@ fn callback_invariance_edits_match_clean_native_objects() {
         },
     );
 }
+
+#[test]
+fn uniform_leaf_eligibility_edits_match_clean_native_objects() {
+    let source = "module M\nlet make u = fun a b -> a - b\n";
+    let edited = source.replace("a - b", "(a - b) + 1");
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", source)], &[("M.fai", &edited)]],
+        |db, files| {
+            (*object_code(db, db.source_file(files[0]).unwrap(), Symbol::intern("make"), false))
+                .clone()
+        },
+    );
+}
