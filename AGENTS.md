@@ -1026,6 +1026,9 @@ paste, mouse, focus and resize events, and restore terminal state on close/drop.
 Polling takes a caller-configured timeout and runs on the blocking pool.
 `TextCells` supplies pure Unicode grapheme segmentation and display-cell widths
 with an explicit East Asian ambiguous-width policy.
+The optional `packages/tui` package builds a pure grapheme-aware cell renderer on
+these primitives. Display text is sanitized, wide-cell overwrites preserve whole
+glyph ownership, and frame differences preserve terminal style and cursor state.
 
 ## 6. Compiler pipeline
 
