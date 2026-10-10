@@ -26,6 +26,7 @@ public copies : Int -> 'a -> Array 'a
 let copies count value = Array.repeat count value
 example: Array.toList (copies 3 "same") = ["same", "same", "same"]
 example: Array.toList (copies (-1) 42) = []
+example: Array.toList (copies 2 1.25) = [1.25, 1.25]
 
 /// Safe indexing returns `Option`; an out-of-range index is `None`.
 public second : Array Int -> Option Int

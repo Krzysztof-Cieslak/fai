@@ -51,7 +51,7 @@
 > call of indirection at a use site. A
 > contiguous, growable **`Array 'a`** (Vector-style: O(1) index, in-place update
 > when uniquely owned via Perceus, an unstable in-place three-way introsort) complements the
-> linked `List`, built on five array intrinsics with the rest pure Fai and written
+> linked `List`, built on a small set of array intrinsics with the rest pure Fai and written
 > with `[| 1, 2, 3 |]` literals. `Array.withCapacity` clamps negative capacities
 > to zero; construction and growth check the complete allocation size before
 > allocation or pool access, aborting beyond the platform's layout limit.
@@ -342,7 +342,7 @@ table **and** the decision log in `docs/MEMORY.md`).
 | Operators | **Symbolic identifiers** with **F#-style precedence** (derived from the operator's symbols; no fixity declarations); written infix, named as `(op)`. Built-in operators are **std interface methods** — `Num` (`+ - * / %`), `Eq` (`= <>`), `Ord` (`< <= > >=`) — defined in `Prelude`; **user-defined operators** resolve like names (module-local + `Prelude`). `&&`/`\|\|` stay short-circuit sugar; `::` is the built-in `List` constructor. *(Built at M5.)* |
 | Comments | `//` line, `(* ... *)` block, `///` doc |
 | Misc syntax | `[1, 2, 3]` lists, `::` cons, `List 'a`; `[\| 1, 2, 3 \|]` array literals (`Array 'a`; expression-only, no array patterns); `\|>`, `>>`, `++`; `true`/`false`; `if/then/else`; 64-bit `Int`/`Float` |
-| Sequences | Two sequence types: the linked **`List`** (head/tail recursion, pattern matching, `::`/`[…]`) and the contiguous, growable **`Array`** (`Array 'a`, O(1) index, in-place update when unique — Vector-style semantics, an array name per the ML family, contiguous + Perceus rather than Haskell's ST/freeze or Elm's RRB tree). `Array` is a built-in `Con` (global like `List`, no import); its API mirrors `List` (collection-last) with safe total `get`/`set : … -> Option` plus partial `unsafeGet`/`unsafeSet` (out-of-bounds aborts like `/`). Built on five Rust intrinsics (`Prim.array{WithCapacity,Length,Get,Set,Push}`), the rest pure Fai. A boxed element is one uniform slot word; **`Array Float` stores its elements as raw, inline `f64`s** (self-tagged at runtime, so generic construction needs no evidence) — concrete index loops read/write the raw slots with no per-element box, while a generic (type-variable element) access re-boxes at the boundary (the no-monomorphization ceiling). An unboxed `Array Int` is unnecessary (a small `Int` is already an inline immediate) |
+| Sequences | Two sequence types: the linked **`List`** (head/tail recursion, pattern matching, `::`/`[…]`) and the contiguous, growable **`Array`** (`Array 'a`, O(1) index, in-place update when unique — Vector-style semantics, an array name per the ML family, contiguous + Perceus rather than Haskell's ST/freeze or Elm's RRB tree). `Array` is a built-in `Con` (global like `List`, no import); its API mirrors `List` (collection-last) with safe total `get`/`set : … -> Option` plus partial `unsafeGet`/`unsafeSet` (out-of-bounds aborts like `/`). Built on a small set of Rust intrinsics (`Prim.array{WithCapacity,Length,Get,Set,Push,Repeat}` and private ownership helpers), the rest pure Fai. A boxed element is one uniform slot word; **`Array Float` stores its elements as raw, inline `f64`s** (self-tagged at runtime, so generic construction needs no evidence) — concrete index loops read/write the raw slots with no per-element box, while a generic (type-variable element) access re-boxes at the boundary (the no-monomorphization ceiling). An unboxed `Array Int` is unnecessary (a small `Int` is already an inline immediate) |
 | Algebraic types | Discriminated unions (`type T = \| A \| B 'a`; the leading `\|` is optional — `type T = A \| B` is the same union, and `fai fmt` adds it — but a single nullary variant still needs it, else `type T = A` is an alias); transparent type aliases (`type Id = …`, acyclic). A `public opaque type` exports the name but not the definition (see Opacity) |
 | Tuples | **Structural**; values `(a, b)`, type `'a * 'b` (`*` binds tighter than `->`) |
 | Records | **Structural with row polymorphism**; no duplicate labels (lacks constraints); `{ x = 1.0, y = 2.0 }`; dot access; `{ r with ... }` update; field punning in patterns; `type Point = { ... }` is a **transparent alias** (unless `opaque`); **closed by default** `{ x : T }`, anonymous-open `{ x : T \| _ }`, named-open `{ x : T \| 'r }` (named only to thread the tail to the result); **patterns mirror this** — `{ ... }` closed (names all fields), `{ ... \| _ }` open (ignore rest; required for row-poly scrutinees); extension/restriction (incl. binding a pattern tail) is future work (tracked as a proposal) |
@@ -461,16 +461,16 @@ a proven finite data/closure construction; the actual capability values are kept
 Custom builders, whole-runtime uses and uncertain entry shapes use the ordinary
 typed launcher.
 
-Standalone `Array.range`/`repeat`/`init` and single Array maps, folds, filters,
+Standalone `Array.range`/`init` and single Array maps, folds, filters,
 and searches lower to typed sequential loops. Their operands are evaluated once
 in source order and callbacks retain their order, effects, and short-circuiting.
 This single-operation lowering keeps sources and shared results materialized;
 cross-stage deforestation still requires pure, total callbacks. Literal callbacks
 with nested lifted closures retain their first-class call path.
-The standard `Array.repeat` entry also uses a direct repeated-value loop, so
-library and first-class calls avoid a captured generator call per element.
+The standard `Array.repeat` entry uses a checked bulk-fill primitive, so library
+and first-class calls avoid per-element generator and push bookkeeping.
 Nonpositive counts stay empty, values are evaluated once and shared immutably,
-and the existing checked allocation and raw Float-array rules still apply.
+and Float arrays retain raw slots. Repeat producers remain eligible for fusion.
 A bounded, scalar-only loop updating one numeric array can test its ownership
 once and use an in-place loop version. Shared inputs keep the ordinary
 copy-on-share path; retained aliases, other arrays, callbacks and growth prevent

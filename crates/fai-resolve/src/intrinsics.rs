@@ -53,6 +53,7 @@ pub const INTRINSICS: &[&str] = &[
     "drop",
     // Array primitives (the standard library's `Array` module wraps these).
     "arrayWithCapacity",
+    "arrayRepeat",
     "arrayUnique",
     "arrayLength",
     "arrayGet",

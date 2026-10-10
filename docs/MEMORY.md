@@ -835,10 +835,11 @@ Reuse & in-place update:
     leaves and live shared arrays are never shortened. Variable-size release
     dispatch stays outside the inlined compact-data drain path.
     The standard `Array.repeat` implementation fills its pre-sized buffer with a
-    direct repeated-value loop rather than calling a captured generator through
-    `Array.init`. This retains strict single evaluation, immutable sharing,
-    nonpositive-count behavior and checked allocation, including generic Float
-    self-tagging. Standard-library and first-class calls benefit too.
+    private bulk primitive, publishing the length once after initialization.
+    This retains strict single evaluation, immutable sharing, nonpositive-count
+    behavior and checked allocation, including raw Float slots. The primitive is
+    recognized as a repeat producer for fusion; standard-library and first-class
+    calls benefit too.
     Bounded loops with one scalar-element array, scalar companion parameters and
     only same-buffer updates can select a unique-owner version at entry. The
     in-place version omits repeated count loads; shared inputs keep the ordinary

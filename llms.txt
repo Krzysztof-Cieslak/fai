@@ -1154,8 +1154,8 @@ In-place update when uniquely owned; copy-on-share. Safe `get`/`set` return
 or growth beyond the platform's allocation-size limit abort before allocation.
 `range lo hi` uses the nonnegative part of the wrapping `Int` difference
 `hi - lo` as its count; generated elements also use wrapping addition.
-`repeat n x` evaluates `x` once and builds `max(0, n)` shared immutable copies
-directly in a pre-sized array. Updating one repeated record or a retained array
+`repeat n x` evaluates `x` once and bulk-fills `max(0, n)` shared immutable copies
+in one checked, pre-sized array. Updating one repeated record or a retained array
 preserves the other values; no per-element generator is called.
 `sort` and `sortBy` are unstable, in-place when uniquely owned. Three-way
 partitioning skips equal-value bands, and a depth-limited heapsort fallback bounds

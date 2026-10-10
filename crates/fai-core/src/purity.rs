@@ -149,6 +149,7 @@ pub fn op_unsafe_to_reorder(op: Prim, args: &[CExpr]) -> bool {
         | Prim::DataPeek
         | Prim::ArraySet
         | Prim::ArrayUnique
+        | Prim::ArrayRepeat
         | Prim::ArrayTake
         | Prim::ArrayPut
         | Prim::ArrayPush

@@ -635,6 +635,13 @@ impl Fuser<'_> {
 
     /// Recognizes the source `cur` for a chain of sequence kind `seq`.
     fn source_of(&self, seq: SeqKind, cur: &CExpr, base_fns: &[CoreFn]) -> Option<Source> {
+        if seq == SeqKind::Array
+            && let K::Prim { op: Prim::ArrayRepeat, args } = &cur.kind
+            && args.len() == 2
+            && args.iter().all(|arg| self.expr_reorderable(arg))
+        {
+            return Some(Source::Repeat { n: args[0].clone(), x: args[1].clone() });
+        }
         if let Some((pdef, pargs)) = call_target(cur)
             && let Some((pseq, comb)) = self.defs.lookup(pdef)
             && pseq == seq
@@ -2439,6 +2446,21 @@ mod tests {
             !body.contains("@map") && !body.contains("@sum") && !body.contains("@range"),
             "the combinators are fused away:\n{body}"
         );
+    }
+
+    #[test]
+    fn bulk_repeat_is_still_a_fusable_producer() {
+        let body = fused("module M\nlet total n = Array.sum (Array.repeat n 7)\n", "total");
+        assert!(body.contains("@fuse#") && !body.contains("arrayRepeat"), "{body}");
+    }
+
+    #[test]
+    fn shared_bulk_repeat_keeps_the_materialized_array() {
+        let body = fused(
+            "module M\nlet total n =\n  let values = Array.repeat n 7\n  Array.sum values + Array.length values\n",
+            "total",
+        );
+        assert!(body.contains("arrayRepeat"), "{body}");
     }
 
     #[test]

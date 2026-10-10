@@ -2180,6 +2180,39 @@ pub extern "C" fn fai_array_with_capacity(cap: Value) -> Value {
     from_obj(alloc_array(0, count))
 }
 
+/// Builds a checked repeated array, consuming the count and the repeated value.
+/// The value is evaluated once; boxed elements retain immutable shared ownership.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_array_repeat(count: Value, value: Value) -> Value {
+    let length = unbox_int(count).max(0);
+    fai_drop(count);
+    let length = usize::try_from(length).unwrap_or_else(|_| fai_allocation_size_panic());
+    let array = alloc_array(0, length);
+    // SAFETY: checked allocation reserves every slot. The private buffer is not
+    // exposed until all slots and its final length are initialized.
+    unsafe {
+        if length == 0 {
+            fai_drop(value);
+        } else if !is_boxed(value) {
+            std::slice::from_raw_parts_mut(array.add(ARRAY_ELEMS_OFFSET).cast::<Value>(), length)
+                .fill(value);
+        } else if object_kind(as_obj(value)) == KIND_FLOAT {
+            let bits = read_i64(as_obj(value), FLOAT_VALUE_OFFSET);
+            std::slice::from_raw_parts_mut(array.add(ARRAY_ELEMS_OFFSET).cast::<Value>(), length)
+                .fill(bits);
+            stamp_float_array(array);
+            fai_drop(value);
+        } else {
+            write_i64(array, ARRAY_ELEMS_OFFSET, value);
+            for index in 1..length {
+                write_i64(array, ARRAY_ELEMS_OFFSET + index * 8, fai_dup(value));
+            }
+        }
+        write_u64(array, ARRAY_LEN_OFFSET, length as u64);
+    }
+    from_obj(array)
+}
+
 /// Allocates an `Array` buffer of exactly `size` bytes (header + length slot +
 /// element slots), writing the object header (rc = 1, descriptor, size) and
 /// counting the allocation, with the length field left for the caller to set. The
@@ -5115,6 +5148,8 @@ pub use tls::{
 mod alloc_tests;
 #[cfg(test)]
 mod array_drop_tests;
+#[cfg(test)]
+mod array_repeat_tests;
 #[cfg(test)]
 mod array_tests;
 #[cfg(test)]

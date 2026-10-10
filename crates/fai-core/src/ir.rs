@@ -646,6 +646,8 @@ pub enum Prim {
     RecordUpdate,
     /// `Array.withCapacity`: a fresh empty array with room for `n` elements.
     ArrayWithCapacity,
+    /// A checked, pre-sized array containing repeated copies of one owned value.
+    ArrayRepeat,
     /// `Array` length (the live element count).
     ArrayLength,
     /// `Array` element access by index (unchecked; out-of-bounds aborts).
@@ -839,6 +841,7 @@ impl Prim {
             Prim::Not => "fai_not",
             Prim::RecordUpdate => "fai_record_update",
             Prim::ArrayWithCapacity => "fai_array_with_capacity",
+            Prim::ArrayRepeat => "fai_array_repeat",
             Prim::ArrayLength => "fai_array_length",
             Prim::ArrayGet => "fai_array_get",
             Prim::ArrayPeek => "fai_array_peek",
@@ -942,6 +945,7 @@ impl Prim {
             "compare" => Prim::Compare,
             "hash" => Prim::Hash,
             "arrayWithCapacity" => Prim::ArrayWithCapacity,
+            "arrayRepeat" => Prim::ArrayRepeat,
             "arrayUnique" => Prim::ArrayUnique,
             "arrayLength" => Prim::ArrayLength,
             "arrayGet" => Prim::ArrayGet,
