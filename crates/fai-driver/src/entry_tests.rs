@@ -1,7 +1,7 @@
 //! Validation and execution of the runtime-to-main boundary.
 
 use camino::Utf8PathBuf;
-use fai_db::{Db, FaiDatabase, SourceFile};
+use fai_db::{Db, FaiDatabase, Setter, SourceFile};
 
 fn database(source: &str) -> (FaiDatabase, SourceFile) {
     let mut db = FaiDatabase::new();
@@ -167,4 +167,92 @@ fn runtime_layout_edits_update_only_the_adapter_and_match_clean() {
     assert_ne!(before.adapter, after.adapter);
     let (clean, clean_file) = database(&after_source);
     assert_eq!(after, crate::entry::prepare(&clean, clean_file).unwrap());
+}
+
+const PROJECTED: &str = "module Main\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let _ = r.console.writeLine \"first\"\n  r.console.writeLine \"second\"\n";
+
+#[test]
+fn projected_default_binds_each_real_field_once() {
+    let (db, file) = database(PROJECTED);
+    let launch = crate::entry::prepare(&db, file).unwrap();
+    let (adapter, runtime) = crate::entry::projected_default(&db, file, &launch).unwrap();
+    let body = fai_core::pretty_def(&adapter);
+    assert_eq!(body.matches("@stdConsole").count(), 1, "{body}");
+    assert!(!body.contains("@stdClock") && !body.contains("@stdTls"), "{body}");
+    assert!(matches!(runtime.entry().body.kind, fai_core::ExprKind::Lit(fai_core::Lit::Unit)));
+    native(PROJECTED, "first\nsecond");
+}
+
+#[test]
+fn projected_default_preserves_multiple_capability_fields() {
+    let source = "module Main\npublic main : Runtime -> Unit / { Clock, Console, Env }\nlet main r =\n  let _ = r.clock.sleep 0\n  r.console.writeLine (Int.toString (List.length (r.env.args ())))\n";
+    let (db, file) = database(source);
+    let launch = crate::entry::prepare(&db, file).unwrap();
+    let (adapter, _) = crate::entry::projected_default(&db, file, &launch).unwrap();
+    let body = fai_core::pretty_def(&adapter);
+    assert!(body.find("@stdClock").unwrap() < body.find("@stdConsole").unwrap(), "{body}");
+    assert!(body.find("@stdConsole").unwrap() < body.find("@stdEnv").unwrap(), "{body}");
+    native(source, "0");
+}
+
+#[test]
+fn whole_runtime_forwarding_keeps_the_normal_launcher() {
+    let source = "module Main\nforward : Int -> Runtime -> Unit / { Console }\nlet forward n r = if n <= 0 then r.console.writeLine \"forwarded\" else forward (n - 1) r\npublic main : Runtime -> Unit / { Console }\nlet main r = forward 1 r\n";
+    let (db, file) = database(source);
+    let launch = crate::entry::prepare(&db, file).unwrap();
+    assert!(crate::entry::projected_default(&db, file, &launch).is_none());
+    native(source, "forwarded");
+}
+
+#[test]
+fn custom_runtime_keeps_the_selected_builder() {
+    let source = "module Main\nlet runtime = defaultRuntime\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine \"custom\"\n";
+    let (db, file) = database(source);
+    let launch = crate::entry::prepare(&db, file).unwrap();
+    assert!(crate::entry::projected_default(&db, file, &launch).is_none());
+    native(source, "custom");
+}
+
+#[test]
+fn an_unused_trapping_field_initializer_cannot_be_removed() {
+    let (mut db, file) = database(PROJECTED);
+    let original = crate::entry::prepare(&db, file).unwrap();
+    assert!(crate::entry::projected_default(&db, file, &original).is_some());
+    let prelude = fai_resolve::module_file(
+        &db,
+        fai_resolve::ModuleName(fai_syntax::Symbol::intern("Prelude")),
+    )
+    .unwrap();
+    let edited = prelude.text(&db).replace(
+        "let stdRandom = { Random with nextInt n = randomNextInt n }",
+        "let stdRandom =\n  let failure = 1 / 0\n  { Random with nextInt n = randomNextInt (n + failure) }",
+    );
+    prelude.set_text(&mut db).to(edited);
+    let launch = crate::entry::prepare(&db, file).unwrap();
+    assert!(crate::entry::projected_default(&db, file, &launch).is_none());
+    let directory = tempfile::tempdir().unwrap();
+    let path = Utf8PathBuf::from_path_buf(directory.path().join("program")).unwrap();
+    let result = crate::build_native(&db, file, &path);
+    assert!(result.ok, "{:?}", result.diagnostics);
+    let output = std::process::Command::new(result.artifact.unwrap()).output().unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("division by zero"));
+}
+
+#[test]
+fn projected_entry_edits_match_clean_specialization() {
+    let (mut db, file) = database(PROJECTED);
+    let launch = crate::entry::prepare(&db, file).unwrap();
+    let before = crate::entry::projected_default(&db, file, &launch);
+    let changed = PROJECTED
+        .replace("let _ = r.console.writeLine \"first\"", "let _ = r.clock.sleep 0")
+        .replace("{ Console }", "{ Clock, Console }");
+    db.add_source("Main.fai".into(), changed.clone());
+    let launch = crate::entry::prepare(&db, file).unwrap();
+    let after = crate::entry::projected_default(&db, file, &launch);
+    assert_ne!(before, after);
+    let (clean, clean_file) = database(&changed);
+    let clean_launch = crate::entry::prepare(&clean, clean_file).unwrap();
+    assert_eq!(after, crate::entry::projected_default(&clean, clean_file, &clean_launch));
 }

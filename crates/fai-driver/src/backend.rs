@@ -675,7 +675,7 @@ pub fn build_native_with_deps(
     if !has_main(db, file) {
         return BuildOutcome { artifact: None, diagnostics: vec![no_entry_point()], ok: false };
     }
-    let reachable = reachable_defs(db, file);
+    let mut reachable = reachable_defs(db, file);
     let mut diagnostics = precompile_diagnostics(db, &reachable);
     if diagnostics.iter().any(|d| d.severity == Severity::Error) {
         return BuildOutcome { artifact: None, diagnostics, ok: false };
@@ -688,6 +688,22 @@ pub fn build_native_with_deps(
         }
     };
     let concurrent = launch.concurrent;
+    let projected = crate::entry::projected_default(db, file, &launch);
+    if let Some((adapter, _)) = &projected {
+        // A field initializer may have been inlined out of the ordinary runtime
+        // builder. The projected entry references that real definition again.
+        let mut seen: FxHashSet<_> = reachable.iter().copied().collect();
+        let extra: Vec<_> =
+            reachable_from_roots(db, &adapter.referenced_globals(), &FxHashSet::default())
+                .into_iter()
+                .filter(|def| seen.insert(*def))
+                .collect();
+        diagnostics.extend(precompile_diagnostics(db, &extra));
+        if diagnostics.iter().any(|d| d.severity == Severity::Error) {
+            return BuildOutcome { artifact: None, diagnostics, ok: false };
+        }
+        reachable.extend(extra);
+    }
 
     // Flatten mutual-recursion groups: members compile to wrappers, plus one
     // combined loop per group (built here, like the `fai_main` trampoline, so the
@@ -759,16 +775,24 @@ pub fn build_native_with_deps(
         }
     }
 
-    if let Some(adapter) = &launch.adapter {
-        objects.push((
-            symbol_base(db, adapter.def),
-            object_for_def(&rc_owned(db, adapter), &namer, &arity, &abi, &borrows, &synth_bce),
-        ));
-    }
-    objects.push((
-        "fai_main".to_owned(),
-        main_object(launch.entry, launch.runtime, &namer, concurrent),
-    ));
+    let (entry, runtime) = if let Some((adapter, runtime)) = &projected {
+        for lowered in [adapter, runtime] {
+            objects.push((
+                symbol_base(db, lowered.def),
+                object_for_def(&rc_owned(db, lowered), &namer, &arity, &abi, &borrows, &synth_bce),
+            ));
+        }
+        (adapter.def, runtime.def)
+    } else {
+        if let Some(adapter) = &launch.adapter {
+            objects.push((
+                symbol_base(db, adapter.def),
+                object_for_def(&rc_owned(db, adapter), &namer, &arity, &abi, &borrows, &synth_bce),
+            ));
+        }
+        (launch.entry, launch.runtime)
+    };
+    objects.push(("fai_main".to_owned(), main_object(entry, runtime, &namer, concurrent)));
 
     match link(&objects, out, native) {
         Ok(artifact) => BuildOutcome { artifact: Some(artifact), diagnostics, ok: true },

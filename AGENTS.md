@@ -453,6 +453,11 @@ Native function entries use at least 32-byte alignment in both AOT and JIT code.
 Native executable linking removes unused code/data sections with the platform
 linker's dead-section elimination; referenced foreign symbols and native
 initialization sections remain live.
+For a small projection-only native `main`, the launcher can bind just the used
+default-runtime fields, each once and in field order. Every default field must be
+a proven finite data/closure construction; the actual capability values are kept.
+Custom builders, whole-runtime uses and uncertain entry shapes use the ordinary
+typed launcher.
 
 Standalone `Array.range`/`repeat`/`init` and single Array maps, folds, filters,
 and searches lower to typed sequential loops. Their operands are evaluated once

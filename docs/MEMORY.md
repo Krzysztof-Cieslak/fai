@@ -817,6 +817,13 @@ Reuse & in-place update:
     section GC, Apple dead stripping and MSVC reference elimination), reducing
     unused runtime text/data and startup memory. Referenced foreign functions and
     native initialization sections retain their ordinary linker reachability.
+    A bounded native entry specialization can replace constant field projections
+    from the default Runtime with the actual field initializers, bound once in
+    field order. All default initializers must be finite data/closure constructions
+    so removing unused ones skips no effects, traps or divergence. Whole-runtime
+    uses, captured entry environments, custom builders and uncertain shapes keep
+    the normal typed launch path. The synthetic entry and unit runtime are emitted
+    at final native assembly, leaving per-definition objects and their ABI intact.
     Iterative destruction handles compact data with one inlined scan-and-recycle
     path: decode the shape, enqueue boxed children in their existing order, and
     return the cell to its exact pool class. Extended cells and native resources
