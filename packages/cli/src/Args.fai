@@ -11,6 +11,8 @@ public type ErrorKind =
   | UnexpectedArgument
   | InvalidValue
   | ValidationFailed
+  | UnknownCommand
+  | MissingCommand
 
 /// `index` is zero-based in the supplied argv (which excludes the executable).
 /// `token` retains the original word, including an attached value or flag bundle.
@@ -65,7 +67,12 @@ type OptionSpec = {
 type PositionalSpec = { info : ArgumentInfo, presence : Presence, value : ValueInfo }
 
 type Schema =
-  | MkSchema (List OptionSpec) (List PositionalSpec)
+  | MkSchema (List OptionSpec) (List PositionalSpec) (List CommandSchema) Int
+
+type CommandInfo = { name : String, summary : String }
+
+type CommandSchema =
+  | MkCommandSchema CommandInfo Schema
 
 type Token = { command : List String, index : Int, source : String, text : String }
 
@@ -81,6 +88,11 @@ type Raw = {
 /// command-line tokenization happens once before typed values are decoded.
 public opaque type Parser 'a =
   | MkParser Schema (Raw -> List String -> Int -> Result 'a Error)
+
+/// A named subcommand and its typed parser. Sibling commands return the same
+/// type; use `map` to wrap their results in variants of an application union.
+public opaque type Command 'a =
+  | MkCommand CommandInfo (Parser 'a)
 
 /// An application parser together with its help/version metadata.
 public opaque type Program 'a =
@@ -292,7 +304,7 @@ let repeatedReader reader name raw path offset = readTokens reader ("--" ++ name
 let optionParser arity required fallback info value read =
   MkParser (MkSchema [
     { arity = arity, fallback = fallback, info = info, required = required, value = value }
-  ] []) read
+  ] [] [] 0) read
 
 let noValue = { choices = [], issues = [], name = "" }
 
@@ -345,7 +357,9 @@ let argumentsFrom reader name values i output =
 let argumentsReader reader name raw path offset = argumentsFrom reader name (positionalValues raw path) offset []
 
 let positionalParser presence reader info decode =
-  MkParser (MkSchema [] [{ info = info, presence = presence, value = valueInfo reader }]) decode
+  MkParser (MkSchema [] [
+    { info = info, presence = presence, value = valueInfo reader }
+  ] [] 0) decode
 
 /// A required positional argument.
 public argument : Value 'a -> ArgumentInfo -> Parser 'a
@@ -366,11 +380,19 @@ let schema parser =
 
 let optionSpecs shape =
   match shape with
-  | MkSchema options _ -> options
+  | MkSchema options _ _ _ -> options
 
 let positionalSpecs shape =
   match shape with
-  | MkSchema _ positionals -> positionals
+  | MkSchema _ positionals _ _ -> positionals
+
+let commandSpecs shape =
+  match shape with
+  | MkSchema _ _ commands _ -> commands
+
+let commandGroups shape =
+  match shape with
+  | MkSchema _ _ _ groups -> groups
 
 let decode parser raw path offset =
   match parser with
@@ -380,7 +402,7 @@ let constantReader value raw path offset = Ok value
 
 /// Succeed with a value without declaring any arguments.
 public succeed : 'a -> Parser 'a
-let succeed value = MkParser (MkSchema [] []) (constantReader value)
+let succeed value = MkParser (MkSchema [] [] [] 0) (constantReader value)
 
 let mapped transform parser raw path offset = Result.map transform (decode parser raw path offset)
 
@@ -398,7 +420,7 @@ let combined combine left right raw path offset =
 public map2 : ('a -> 'b -> 'c) -> Parser 'a -> Parser 'b -> Parser 'c
 let map2 combine left right =
   let shape =
-    MkSchema (List.append (optionSpecs (schema left)) (optionSpecs (schema right))) (List.append (positionalSpecs (schema left)) (positionalSpecs (schema right)))
+    MkSchema (List.append (optionSpecs (schema left)) (optionSpecs (schema right))) (List.append (positionalSpecs (schema left)) (positionalSpecs (schema right))) (List.append (commandSpecs (schema left)) (commandSpecs (schema right))) (commandGroups (schema left) + commandGroups (schema right))
   MkParser shape (combined combine left right)
 
 /// Apply another decoded argument to a parsed function, useful in pipelines.
@@ -416,6 +438,35 @@ let validated check parser raw path offset =
 /// Validate or refine a complete decoded value with a pure function.
 public validateWith : ('a -> Result 'b String) -> Parser 'a -> Parser 'b
 let validateWith check parser = MkParser (schema parser) (validated check parser)
+
+/// Name a subcommand. Its options are available after selecting it, while all
+/// parent options remain available before and after the command name.
+public command : String -> String -> Parser 'a -> Command 'a
+let command name summary parser = MkCommand { name = name, summary = summary } parser
+
+let commandSchema command =
+  match command with
+  | MkCommand info parser -> MkCommandSchema info (schema parser)
+
+let findCommand name commands =
+  match commands with
+  | [] -> None
+  | MkCommand info parser :: rest -> if info.name = name then Some parser else findCommand name rest
+
+commandReader : List (Command 'a) -> Raw -> List String -> Int -> Result 'a Error
+let commandReader commands raw path offset =
+  match List.drop (List.length path) raw.selected with
+  | [] -> problem MissingCommand path None None "missing required command"
+  | name :: _ ->
+    match findCommand name commands with
+    | None -> problem UnknownCommand path None None ("unknown command " ++ quote name)
+    | Some parser -> decode parser raw (key path name) 0
+
+/// Declare a required choice of subcommands. A command level may have one such
+/// group, combined with options; positional arguments belong to its children.
+public commands : List (Command 'a) -> Parser 'a
+let commands choices =
+  MkParser (MkSchema [] [] (List.map commandSchema choices) 1) (commandReader choices)
 
 let letter b = (b >= 65 && b <= 90) || (b >= 97 && b <= 122)
 
@@ -539,18 +590,70 @@ let checkPositionals path specs seen optionalSeen variadicSeen =
       | None ->
         checkPositionals path rest (HashSet.insert spec.info.name seen) (optionalSeen || spec.presence = Optional) (spec.presence = Variadic)
 
+checkCommandNames : List String -> List CommandSchema -> HashSet String -> Result Unit Error
+let checkCommandNames path commands seen =
+  match commands with
+  | [] -> Ok ()
+  | MkCommandSchema info _ :: rest ->
+    if not (validName info.name) then
+      definition path ("invalid command name " ++ quote info.name)
+    else if HashSet.member info.name seen then
+      definition path ("duplicate command " ++ info.name)
+    else
+      checkCommandNames path rest (HashSet.insert info.name seen)
+
+checkLevel : List String -> Bool -> Schema -> Tables -> Result Tables Error
+let checkLevel path versionEnabled shape inherited =
+  if commandGroups shape > 1 then
+    definition path "a command level may contain only one subcommand group"
+  else if commandGroups shape = 1 && List.isEmpty (commandSpecs shape) then
+    definition path "a subcommand group needs at least one command"
+  else if commandGroups shape > 0 && not (List.isEmpty (positionalSpecs shape)) then
+    definition path "a command level cannot combine positionals and subcommands"
+  else
+    match checkCommandNames path (commandSpecs shape) HashSet.empty with
+    | Err e -> Err e
+    | Ok _ ->
+      match checkPositionals path (positionalSpecs shape) HashSet.empty false false with
+      | Err e -> Err e
+      | Ok _ -> addOptions path versionEnabled (optionSpecs shape) inherited
+
+type DefinitionCheck =
+  | CheckLevel (List String) Schema Tables
+
+let prependCheck path tables command rest =
+  match command with
+  | MkCommandSchema info shape -> CheckLevel (key path info.name) shape tables :: rest
+
+let childChecks path tables shape rest =
+  List.foldr (prependCheck path tables) rest (commandSpecs shape)
+
+// Check every branch before argv scanning. Each sibling receives the same
+// inherited namespace, while additions on one branch cannot leak into another.
+checkTree : Bool -> List DefinitionCheck -> Result Unit Error
+let checkTree versionEnabled checks =
+  match checks with
+  | [] -> Ok ()
+  | CheckLevel path shape inherited :: rest ->
+    match checkLevel path versionEnabled shape inherited with
+    | Err e -> Err e
+    | Ok tables -> checkTree versionEnabled (childChecks path tables shape rest)
+
 checked : ProgramInfo -> Parser 'a -> Result Tables Error
 let checked info parser =
   let path = [info.name]
   if info.name = "" || String.contains info.name "\n" || String.contains info.name "\r" then
     definition path "program name must be a nonempty line"
   else
-    match checkPositionals path (positionalSpecs (schema parser)) HashSet.empty false false with
-    | Err e -> Err e
-    | Ok _ -> addOptions path (info.version <> None) (optionSpecs (schema parser)) {
+    let versionEnabled = info.version <> None
+    match checkLevel path versionEnabled (schema parser) {
       longs = HashDict.empty,
       shorts = HashDict.empty
-    }
+    } with
+    | Err e -> Err e
+    | Ok tables ->
+      Result.map (fun _ ->
+        tables) (checkTree versionEnabled (childChecks path tables (schema parser) []))
 
 /// Validate declarations without reading any command-line input.
 public validateDefinition : Program 'a -> Result Unit Error
@@ -600,33 +703,103 @@ let positionalHelp spec =
 requiredUsage : OptionSpec -> String
 let requiredUsage spec = "--" ++ spec.info.long ++ " " ++ spec.value.name
 
-helpText : ProgramInfo -> Schema -> String
-let helpText info shape =
-  let options = optionSpecs shape
+type ScanEnv = {
+  limit : Option Int,
+  path : List String,
+  shape : Schema,
+  summary : String,
+  tables : Tables,
+  version : Option String,
+  visible : List OptionSpec
+}
+
+makeEnv : List String -> String -> Option String -> Schema -> Tables -> List OptionSpec -> ScanEnv
+let makeEnv path summary version shape tables inherited =
   let positionals = positionalSpecs shape
+  let limit =
+    if List.any (fun spec -> spec.presence = Variadic) positionals then
+      None
+    else
+      Some (List.length positionals)
+  {
+    limit = limit,
+    path = path,
+    shape = shape,
+    summary = summary,
+    tables = tables,
+    version = version,
+    visible = List.append inherited (optionSpecs shape)
+  }
+
+let commandHelp command =
+  match command with
+  | MkCommandSchema info _ -> row info.name info.summary
+
+helpText : ScanEnv -> String
+let helpText env =
+  let options = env.visible
+  let positionals = positionalSpecs env.shape
+  let commands = commandSpecs env.shape
   let usage =
-    String.join " " (List.append [
-      info.name,
-      "[OPTIONS]"
-    ] (List.append (List.map requiredUsage (List.filter (fun spec ->
-      spec.required) options)) (List.map positionalUsage positionals)))
-  "Usage: " ++ usage ++ "\n" ++ (if info.summary = "" then
+    String.join " " (List.concat [
+      env.path,
+      ["[OPTIONS]"],
+      List.map requiredUsage (List.filter (fun spec -> spec.required) options),
+      List.map positionalUsage positionals,
+      if List.isEmpty commands then [] else ["<COMMAND>"]
+    ])
+  "Usage: " ++ usage ++ "\n" ++ (if env.summary = "" then
     ""
   else
-    "\n" ++ info.summary ++ "\n") ++ (if List.isEmpty positionals then
+    "\n" ++ env.summary ++ "\n") ++ (if List.isEmpty commands then
     ""
   else
-    "\nArguments:\n" ++ String.join "" (List.map positionalHelp positionals)) ++ "\nOptions:\n" ++ String.join "" (List.map optionHelp options) ++ row "-h, --help" "Show this help" ++ (if info.version = None then
+    "\nCommands:\n" ++ String.join "" (List.map commandHelp commands)) ++ (if List.isEmpty positionals then
+    ""
+  else
+    "\nArguments:\n" ++ String.join "" (List.map positionalHelp positionals)) ++ "\nOptions:\n" ++ String.join "" (List.map optionHelp options) ++ row "-h, --help" "Show this help" ++ (if env.version = None then
     ""
   else
     row "-V, --version" "Show version")
 
-/// Generate deterministic help from a validated program declaration.
-public help : Program 'a -> Result String Error
-let help app =
+let findCommandSchema name commands =
+  match commands with
+  | [] -> None
+  | MkCommandSchema info shape :: rest ->
+    if info.name = name then Some (info, shape) else findCommandSchema name rest
+
+enterCommand : ScanEnv -> CommandInfo -> Schema -> Result ScanEnv Error
+let enterCommand env info shape =
+  let path = key env.path info.name
+  Result.map (fun tables ->
+    makeEnv path info.summary env.version shape tables env.visible) (addOptions path (env.version <> None) (optionSpecs shape) env.tables)
+
+helpAt : ScanEnv -> List String -> Result String Error
+let helpAt env path =
+  match path with
+  | [] -> Ok (helpText env)
+  | name :: rest ->
+    match findCommandSchema name (commandSpecs env.shape) with
+    | None -> problem UnknownCommand env.path None None ("unknown command " ++ quote name)
+    | Some (info, shape) ->
+      match enterCommand env info shape with
+      | Err error -> Err error
+      | Ok env -> helpAt env rest
+
+/// Generate help for a command path, excluding the program name. An empty path
+/// returns root help. Every declaration is validated before selecting a command.
+public helpFor : Program 'a -> List String -> Result String Error
+let helpFor app path =
   match app with
   | MkProgram info parser ->
-    Result.map (fun _ -> helpText info (schema parser)) (checked info parser)
+    match checked info parser with
+    | Err error -> Err error
+    | Ok tables ->
+      helpAt (makeEnv [info.name] info.summary info.version (schema parser) tables []) path
+
+/// Generate deterministic help from a validated program declaration.
+public help : Program 'a -> Result String Error
+let help app = helpFor app []
 
 type ScanState =
   | Words (List String) Int Bool
@@ -634,10 +807,8 @@ type ScanState =
 
 type ScanResult =
   | Scanned Raw
-  | RequestedHelp
+  | RequestedHelp String
   | RequestedVersion
-
-type ScanEnv = { limit : Option Int, path : List String, tables : Tables, version : Option String }
 
 token : List String -> Int -> String -> Token
 let token path index text = { command = path, index = index, source = text, text = text }
@@ -716,16 +887,26 @@ let scan env state raw =
         scan env (Words rest (index + 1) false) raw
       else
         if not enabled || word = "-" || String.take 1 word <> "-" then
-          match addPositional env original raw with
-          | Err e -> Err e
-          | Ok raw -> scan env (Words rest (index + 1) enabled) raw
+          if commandGroups env.shape > 0 then
+            match findCommandSchema word (commandSpecs env.shape) with
+            | None -> atToken UnknownCommand original ("unknown command " ++ quote word)
+            | Some (info, shape) ->
+              match enterCommand env info shape with
+              | Err e -> Err e
+              | Ok child -> scan child (Words rest (index + 1) enabled) { raw with
+                selected = child.path
+              }
+          else
+            match addPositional env original raw with
+            | Err e -> Err e
+            | Ok raw -> scan env (Words rest (index + 1) enabled) raw
         else if String.take 2 word = "--" then
           let (name, attached) = splitLong word
           if name = "help" || (name = "version" && env.version <> None) then
             if attached <> None then
               atToken UnexpectedValue original ("option --" ++ name ++ " does not take a value")
             else
-              Ok (if name = "help" then RequestedHelp else RequestedVersion)
+              Ok (if name = "help" then RequestedHelp (helpText env) else RequestedVersion)
           else
             match HashDict.get name env.tables.longs with
             | None -> atToken UnknownOption original ("unknown option --" ++ name)
@@ -741,7 +922,7 @@ let scan env state raw =
     else
       let alias = Option.withDefault '\u{FFFD}' (Char.fromCode (Bytes.unsafeGet i bytes))
       if alias = 'h' || (alias = 'V' && env.version <> None) then
-        Ok (if alias = 'h' then RequestedHelp else RequestedVersion)
+        Ok (if alias = 'h' then RequestedHelp (helpText env) else RequestedVersion)
       else
         match HashDict.get alias env.tables.shorts with
         | None ->
@@ -771,22 +952,11 @@ let parse app words =
     match checked info parser with
     | Err e -> Err e
     | Ok tables ->
-      let positionals = positionalSpecs (schema parser)
-      let limit =
-        if List.any (fun spec -> spec.presence = Variadic) positionals then
-          None
-        else
-          Some (List.length positionals)
       let path = [info.name]
       let raw = { options = HashDict.empty, positionals = HashDict.empty, selected = path }
-      match scan {
-        limit = limit,
-        path = path,
-        tables = tables,
-        version = info.version
-      } (Words words 0 true) raw with
+      match scan (makeEnv path info.summary info.version (schema parser) tables []) (Words words 0 true) raw with
       | Err e -> Err e
-      | Ok RequestedHelp -> Ok (Help (helpText info (schema parser)))
+      | Ok (RequestedHelp text) -> Ok (Help text)
       | Ok RequestedVersion -> Ok (Version (Option.withDefault "" info.version))
       | Ok (Scanned raw) -> Result.map (fun value -> Parsed value) (decode parser raw path 0)
 

@@ -1733,6 +1733,14 @@ Long options accept `--port=80`/`--port 80`; short options accept `-p80`/`-p 80`
 and bundles such as `-vp80`. Following values are literal, including leading
 dashes. `--` ends option parsing; dash-prefixed positionals use that marker.
 Run contracts with `fai test -C packages cli`. See `packages/cli/README.md`.
+`Args.commands [Args.command "name" "Summary" childParser, ...]` selects a required
+typed subcommand; map child results into a shared application union. Command groups
+may be nested and composed with parent options, but not same-level positionals.
+Parent options work before or after a child name; child-only options require that
+child to be selected. Aliases cannot conflict with ancestors but may repeat in
+siblings. `--` stays in effect after selecting a child. `Args.helpFor app ["config",
+"get"]` renders scoped help with inherited options. Parsing reports missing and
+unknown commands with their command paths and original argv indices.
 
 Including `packages/json/src` in a workspace supplies `Json` and `JsonNumber`.
 `Json.parse text` / `Json.parseBytes bytes` return `Result Json.Value Json.ParseError`;

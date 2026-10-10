@@ -56,6 +56,52 @@ Required positionals precede optional ones, and a variadic positional must be
 last. Optional positionals take available words from left to right before any
 variadic tail. Options can appear between positional words.
 
+## Subcommands and inherited options
+
+`Args.command name summary parser` creates a typed command. `Args.commands`
+combines a list of commands into a required choice. Map the child results to
+variants of one application union when commands have different payloads:
+
+```fai
+type Action =
+  | Show String
+  | ListAll
+
+let action = Args.commands [
+  Args.command "show" "Show one item"
+    (Args.map Show (Args.argument Args.string (Args.positional "NAME" "Item name"))),
+  Args.command "list" "List all items" (Args.succeed ListAll)
+]
+
+let parser = Args.map2
+  (fun verbose action -> { verbose = verbose, action = action })
+  (Args.flag (Args.short 'v' (Args.named "verbose" "Verbose output")))
+  action
+```
+
+Commands can contain their own `commands` group, such as `tool config get KEY`.
+Each command-bearing level has one group and options; positional arguments belong
+to its child commands. A missing or unknown command is a structured error.
+
+Parent options remain available before and after command selection:
+`tool -v show item`, `tool show -v item`, and `tool show item -v` are equivalent.
+Child-only options become available after the child name. Long/short aliases
+cannot conflict with any ancestor, while siblings may reuse aliases with different
+value readers. All branches are validated, including commands not selected by argv.
+
+`--` disables option parsing for the remainder of the invocation, including after
+entering a child. It does not disable command selection: `tool -- show -v` selects
+`show` and passes `-v` as its positional argument. A value-taking option can consume
+a word that happens to be a command name; the word stays a value.
+
+Help follows the active command: `tool --help` shows the root, while
+`tool config get --help` shows `get`, its arguments, and all inherited options.
+`Args.helpFor app ["config", "get"]` produces the same help without parsing argv;
+`helpFor app []` is `help app`. Inherited options are listed ancestor-first, each
+level retaining declaration order. The configured version flag is available at
+every level. A command named `help` is an ordinary user-defined command, distinct
+from `--help`.
+
 ## Value readers
 
 - `string` accepts the exact string, including empty input.
@@ -111,6 +157,10 @@ uses argv order; missing/invalid typed values and validation follow declaration
 order. The error categories distinguish invalid definitions, unknown options,
 missing/unexpected values, duplicate options, missing/unexpected arguments,
 invalid values, and post-parse validation failures.
+Subcommands add `UnknownCommand` and `MissingCommand`. Errors for supplied values
+carry the command path where the token appeared, even for inherited options;
+missing values/commands carry their declaration's path. Argument indices always
+refer to the complete original argv, including command names.
 
 Help uses deterministic declaration order, two-space row separators, quoted
 string defaults, and no terminal-width or environment-dependent formatting.
@@ -120,6 +170,8 @@ string defaults, and no terminal-width or environment-dependent formatting.
 ```sh
 fai run -C packages cli/examples/ArgsExample.fai -- -vp9000 input.txt
 fai run -C packages cli/examples/ArgsExample.fai -- --help
+fai run -C packages cli/examples/CommandsExample.fai -- config set theme dark -v
+fai run -C packages cli/examples/CommandsExample.fai -- serve --help
 fai test -C packages cli
 fai test -C packages cli/test/HelpSpec.fai
 ```

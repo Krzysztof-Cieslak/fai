@@ -4812,6 +4812,14 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   retain occurrence order. Help/version requests are explicit successful outcomes,
   while definition/input errors carry stable categories and argv locations. The
   library performs no I/O or process exit and has no source-package dependencies.
+  Subcommands share the typed declaration model: one required command group per
+  level, composed with options, and child parsers mapped into application unions.
+  Parent aliases remain available after descent; conflicts along an ancestor path
+  are definition errors, while sibling aliases are independent. Metadata is checked
+  across every branch before tokenization, with an explicit validation worklist.
+  Raw occurrences retain their declaration scope for decoding and their actual
+  command/argv location for diagnostics. The option terminator persists through
+  descent, and help displays the active scope with ancestor-first inherited options.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

@@ -882,6 +882,12 @@ and repeated options preserve occurrences. `--` ends option parsing, while an
 option's following value is consumed literally. Definition validation precedes
 scanning, and typed decoding follows declaration order. Test it directly with
 `fai test -C packages cli`; it depends only on the standard library.
+`Args.command`/`commands` support nested typed subcommands. Parent options are
+inherited before and after child selection; aliases must be unique along a path
+but may repeat in siblings. Command-bearing levels have options and one command
+group, with positionals declared in children. The option terminator remains in
+effect across command selection. Help follows the active command, and `helpFor`
+renders any declared path directly; all branches are validated before scanning.
 
 ## 6. Compiler pipeline
 

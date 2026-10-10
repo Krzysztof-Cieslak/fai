@@ -1,0 +1,270 @@
+module CommandsSpec
+
+type Action =
+  | Serve Int (List String)
+  | Inspect String
+  | Set String String
+
+let serve =
+  Args.map2 (fun port files ->
+    Serve port files) (Args.optionWithDefault 8080 Args.int (Args.short 'p' (Args.named "port" "TCP port"))) (Args.arguments Args.string (Args.positional "FILES" "Inputs"))
+
+let get = Args.map Inspect (Args.argument Args.string (Args.positional "KEY" "Key"))
+
+let set =
+  Args.map2 (fun key value ->
+    Set key value) (Args.argument Args.string (Args.positional "KEY" "Key")) (Args.argument Args.string (Args.positional "VALUE" "Value"))
+
+let config = Args.commands [
+  Args.command "get" "Read a value" get,
+  Args.command "set" "Write a value" set
+]
+
+let routes = Args.commands [
+  Args.command "serve" "Serve files" serve,
+  Args.command "config" "Configuration" config
+]
+
+let parser =
+  Args.map2 (fun verbose action -> {
+    action = action,
+    verbose = verbose
+  }) (Args.flag (Args.short 'v' (Args.named "verbose" "Verbose output"))) routes
+
+let app = Args.program (Args.version "tool 1.0" (Args.described "tool" "Example tool")) parser
+
+let parsed verbose action = Ok (Args.Parsed { action = action, verbose = verbose })
+
+let error words path kind index token message =
+  Args.parse app words = Err {
+    command = path,
+    index = index,
+    kind = kind,
+    message = message,
+    token = token
+  }
+example: Args.parse app ["serve"] = parsed false (Serve 8080 [])
+example: Args.parse app ["--verbose", "serve", "--port=80", "one"] = parsed true (Serve 80 ["one"])
+example: Args.parse app ["serve", "--verbose", "one", "-p80"] = parsed true (Serve 80 ["one"])
+example: Args.parse app ["serve", "-vp80", "one"] = parsed true (Serve 80 ["one"])
+example: Args.parse app ["config", "get", "name"] = parsed false (Inspect "name")
+example: Args.parse app ["config", "-v", "get", "name"] = parsed true (Inspect "name")
+example: Args.parse app ["config", "get", "name", "--verbose"] = parsed true (Inspect "name")
+example: Args.parse app ["-v", "config", "set", "name", "é😀"] = parsed true (Set "name" "é😀")
+example: Args.parse app ["config", "set", "name", "-v", "value"] = parsed true (Set "name" "value")
+example: Args.parse app ["serve", "--", "--help", "-v"] = parsed false (Serve 8080 ["--help", "-v"])
+example: Args.parse app ["--", "serve", "--verbose"] = parsed false (Serve 8080 ["--verbose"])
+example: Args.parse app ["config", "--", "get", "--verbose"] = parsed false (Inspect "--verbose")
+example: error [] ["tool"] Args.MissingCommand None None "missing required command"
+example: error ["-v"] ["tool"] Args.MissingCommand None None "missing required command"
+example: error [
+  "config"
+] ["tool", "config"] Args.MissingCommand None None "missing required command"
+example: error [
+  "config",
+  "get"
+] ["tool", "config", "get"] Args.MissingArgument None None "missing required argument KEY"
+example: error [
+  "config",
+  "get",
+  "one",
+  "two"
+] [
+  "tool",
+  "config",
+  "get"
+] Args.UnexpectedArgument (Some 3) (Some "two") "unexpected argument \"two\""
+example: error [
+  "unknown"
+] ["tool"] Args.UnknownCommand (Some 0) (Some "unknown") "unknown command \"unknown\""
+example: error [
+  "config",
+  "unknown"
+] ["tool", "config"] Args.UnknownCommand (Some 1) (Some "unknown") "unknown command \"unknown\""
+example: error [
+  "Serve"
+] ["tool"] Args.UnknownCommand (Some 0) (Some "Serve") "unknown command \"Serve\""
+example: error [
+  "--port=80",
+  "serve"
+] ["tool"] Args.UnknownOption (Some 0) (Some "--port=80") "unknown option --port"
+example: error [
+  "serve",
+  "--missing"
+] ["tool", "serve"] Args.UnknownOption (Some 1) (Some "--missing") "unknown option --missing"
+example: error [
+  "serve",
+  "--port",
+  "bad"
+] [
+  "tool",
+  "serve"
+] Args.InvalidValue (Some 2) (Some "bad") "invalid value \"bad\" for --port: expected a decimal Int"
+example: error [
+  "--",
+  "--help"
+] ["tool"] Args.UnknownCommand (Some 1) (Some "--help") "unknown command \"--help\""
+
+let middle =
+  Args.map2 (fun format key ->
+    (format, key)) (Args.optionWithDefault "pretty" Args.string (Args.short 'f' (Args.named "format" "Format"))) (Args.commands [
+    Args.command "get" "Read" (Args.argument Args.string (Args.positional "KEY" "Key"))
+  ])
+
+let nested =
+  Args.program (Args.described "tool" "") (Args.map2 (fun verbose result ->
+    (verbose, result)) (Args.flag (Args.short 'v' (Args.named "verbose" ""))) (Args.commands [
+    Args.command "config" "" middle
+  ]))
+example: Args.parse nested [
+  "config",
+  "get",
+  "-vfraw",
+  "key"
+] = Ok (Args.Parsed (true, ("raw", "key")))
+example: Args.parse nested [
+  "config",
+  "--format=json",
+  "get",
+  "key",
+  "-v"
+] = Ok (Args.Parsed (true, ("json", "key")))
+
+let tags =
+  Args.program (Args.described "tool" "") (Args.map2 (fun tags action ->
+    (tags, action)) (Args.options Args.string (Args.named "tag" "Tag")) routes)
+example: Args.parse tags [
+  "--tag=a",
+  "config",
+  "get",
+  "--tag=b",
+  "key"
+] = Ok (Args.Parsed (["a", "b"], Inspect "key"))
+
+let labeled =
+  Args.program (Args.described "tool" "") (Args.map2 (fun label action ->
+    (label, action)) (Args.requiredOption Args.string (Args.named "label" "Label")) routes)
+example: Args.parse labeled [
+  "--label",
+  "serve",
+  "serve"
+] = Ok (Args.Parsed ("serve", Serve 8080 []))
+example: Args.parse labeled [
+  "--label=a",
+  "serve",
+  "--label=b"
+] = Err {
+  command = ["tool", "serve"],
+  index = Some 2,
+  kind = Args.DuplicateOption,
+  message = "option --label may only occur once",
+  token = Some "--label=b"
+}
+example: Args.parse labeled [
+  "serve"
+] = Err {
+  command = ["tool"],
+  index = None,
+  kind = Args.MissingArgument,
+  message = "missing required option --label",
+  token = None
+}
+
+type Choice =
+  | Integer Int
+  | Text String
+
+let siblings =
+  Args.program (Args.described "tool" "") (Args.commands [
+    Args.command "integer" "" (Args.map Integer (Args.requiredOption Args.int (Args.short 'x' (Args.named "value" "")))),
+    Args.command "text" "" (Args.map Text (Args.requiredOption Args.string (Args.short 'x' (Args.named "value" ""))))
+  ])
+example: Args.parse siblings ["integer", "-x42"] = Ok (Args.Parsed (Integer 42))
+example: Args.parse siblings ["text", "-xhello"] = Ok (Args.Parsed (Text "hello"))
+
+let helpCommand =
+  Args.program (Args.described "tool" "") (Args.commands [
+    Args.command "help" "A real command" (Args.succeed 7)
+  ])
+example: Args.parse helpCommand ["help"] = Ok (Args.Parsed 7)
+
+let nest count parser =
+  if count <= 0 then
+    parser
+  else
+    Args.commands [Args.command "sub" "Nested" (nest (count - 1) parser)]
+
+let deep = Args.program (Args.described "deep" "") (nest 50 (Args.succeed 7))
+example: Args.parse deep (Array.toList (Array.repeat 50 "sub")) = Ok (Args.Parsed 7)
+forall files: Args.parse app (List.append ["serve", "--"] files) = parsed false (Serve 8080 files)
+forall port: Args.parse app ["serve", "--port", Int.toString port] = parsed false (Serve port [])
+
+let level =
+  Args.program (Args.described "tool" "") (Args.map2 (fun level action ->
+    (level, action)) (Args.requiredOption Args.int (Args.short 'l' (Args.named "level" "Level"))) routes)
+example: Args.parse level [
+  "config",
+  "get",
+  "key",
+  "--level",
+  "bad"
+] = Err {
+  command = ["tool", "config", "get"],
+  index = Some 4,
+  kind = Args.InvalidValue,
+  message = "invalid value \"bad\" for --level: expected a decimal Int",
+  token = Some "bad"
+}
+example: Args.parse level [
+  "--level",
+  "bad",
+  "config",
+  "get",
+  "key"
+] = Err {
+  command = ["tool"],
+  index = Some 1,
+  kind = Args.InvalidValue,
+  message = "invalid value \"bad\" for --level: expected a decimal Int",
+  token = Some "bad"
+}
+example: Args.parse level [
+  "--level=1",
+  "config",
+  "get",
+  "key",
+  "-l2"
+] = Err {
+  command = ["tool", "config", "get"],
+  index = Some 4,
+  kind = Args.DuplicateOption,
+  message = "option --level may only occur once",
+  token = Some "-l2"
+}
+
+let reversed =
+  Args.program (Args.described "tool" "") (Args.map2 (fun action verbose ->
+    (action, verbose)) routes (Args.flag (Args.named "verbose" "")))
+example: Args.parse reversed ["--verbose", "serve"] = Ok (Args.Parsed (Serve 8080 [], true))
+
+let positiveReader =
+  Args.validateWith (fun value ->
+    if value > 0 then
+      Ok value
+    else
+      Err "must be positive") (Args.argument Args.int (Args.positional "N" ""))
+
+let positive =
+  Args.program (Args.described "tool" "") (Args.commands [
+    Args.command "positive" "" positiveReader
+  ])
+example: Args.parse positive [
+  "positive",
+  "0"
+] = Err {
+  command = ["tool", "positive"],
+  index = None,
+  kind = Args.ValidationFailed,
+  message = "must be positive",
+  token = None
+}
