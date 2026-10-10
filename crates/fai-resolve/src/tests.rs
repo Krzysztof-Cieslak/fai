@@ -429,6 +429,19 @@ fn array_ownership_gate_remains_standard_library_private() {
 }
 
 #[test]
+fn bulk_array_repeat_remains_standard_library_private() {
+    let source = "module M\nlet values = Prim.arrayRepeat 3 7\n";
+    let (db, files) = db_with(&[("M.fai", source)]);
+    let diagnostics = resolve_diags(&db, files[0]);
+    assert_eq!(codes(&diagnostics), ["FAI2014"]);
+    assert_eq!(primary_text(source, &diagnostics[0]), "Prim.arrayRepeat");
+    assert_eq!(
+        diagnostics[0].message,
+        "the intrinsics module `Prim` is only available inside standard-library modules"
+    );
+}
+
+#[test]
 fn prim_unknown_intrinsic_is_unbound() {
     let (db, files) = db_with_std_fixtures(&[(
         "<std>/M.fai",

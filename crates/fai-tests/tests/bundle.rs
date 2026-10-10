@@ -376,6 +376,20 @@ fn exact_scalar_fixed_points_survive_transport() {
 }
 
 #[test]
+fn bulk_repeat_survives_worker_transport() {
+    let source = "module Main\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let values = Array.repeat 3 1.25\n  let total = Array.foldl (fun acc value -> acc + value) 0.0 values\n  r.console.writeLine (Float.toString total ++ \" \" ++ Int.toString (Array.length values))\n";
+    let dir = workspace(&[("Main.fai", source)]);
+    let session = Session::open(dir).unwrap();
+    let bundle = build_run_bundle(session.db(), entry(&session, "Main.fai")).bundle.unwrap();
+    let bytes = serde_json::to_vec(&bundle).unwrap();
+    let decoded: fai_driver::WireBundle = serde_json::from_slice(&bytes).unwrap();
+    let _guard = RUN_LOCK.lock().unwrap();
+    fai_runtime::capture_start();
+    assert_eq!(jit_run_bundle(&decoded), 0);
+    assert_eq!(fai_runtime::capture_take(), "3.75 3\n");
+}
+
+#[test]
 fn jit_run_bundle_executes_a_cross_module_program() {
     let main = indoc! {r#"
         module Main

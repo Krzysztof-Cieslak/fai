@@ -364,6 +364,7 @@ impl Analyzer<'_> {
                 if matches!(
                     op,
                     Prim::ArrayWithCapacity
+                        | Prim::ArrayRepeat
                         | Prim::ArrayPush
                         | Prim::ArraySet
                         | Prim::ArrayPut

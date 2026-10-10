@@ -179,6 +179,15 @@ fn generic_repeat_keeps_boxed_values_alive() {
 }
 
 #[test]
+fn empty_repeat_still_evaluates_the_repeated_value_once() {
+    check(
+        "let xs = Array.repeat (-1) (emit r 7)\nr.console.writeLine (Int.toString (Array.length xs))",
+        "7\n0",
+        true,
+    );
+}
+
+#[test]
 fn callback_edits_match_clean_loop_generation() {
     let source = "module M\nlet run xs = Array.foldl (fun acc x -> acc + 10 / x) 0 xs\n";
     let edited = source.replace("10 / x", "20 / x");
