@@ -18,7 +18,7 @@ public type Event =
   | Mouse Mouse
   | Focus Bool
 
-/// Native terminal operations. poll's timeout is explicit; zero is nonblocking.
+/// Native terminal operations. poll's timeout is in 1..2147483647 milliseconds.
 /// Output is raw terminal bytes; UI renderers must escape untrusted display text.
 public interface Terminal =
   close : Session -> Result Unit String / { Terminal }

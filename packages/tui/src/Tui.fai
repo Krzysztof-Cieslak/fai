@@ -82,7 +82,7 @@ let validate options =
     match options.maxFps with
     | None -> true
     | Some fps -> fps > 0
-  if options.tasks.active < 1 || options.tasks.pending < 1 || options.mailboxCapacity < 1 || options.mailboxCapacity > 1048576 || options.inputPollMs < 1 || options.maxFeedback < 1 || options.layout.maxCells < 0 || options.layout.maxDepth < 1 || options.layout.maxDepth > 128 || options.layout.maxNodes < 1 || options.input.historyLimit < 0 || options.input.wheelLines < 1 || options.maxClipboardBytes < 0 || not fpsValid then
+  if options.tasks.active < 1 || options.tasks.pending < 1 || options.mailboxCapacity < 1 || options.mailboxCapacity > 1048576 || options.inputPollMs < 1 || options.inputPollMs > 2147483647 || options.maxFeedback < 1 || options.layout.maxCells < 0 || options.layout.maxDepth < 1 || options.layout.maxDepth > 128 || options.layout.maxNodes < 1 || options.input.historyLimit < 0 || options.input.wheelLines < 1 || options.maxClipboardBytes < 0 || not fpsValid then
     Err { cleanup = None, message = "invalid TUI limits or durations" }
   else
     Ok ()

@@ -117,7 +117,8 @@ structured task joining. Cancellation of application work remains cooperative.
 | `maxClipboardBytes` | 1 MiB |
 
 All durations and workload limits are configurable; structural tree depth has a
-hard maximum of 128. Clipboard actions retain a local copy for Ctrl+V and can also
+hard maximum of 128. Native input polling accepts 1..2147483647 milliseconds.
+Clipboard actions retain a local copy for Ctrl+V and can also
 emit OSC 52 to supporting terminals; `clipboard = false` disables that external
 write. System paste arrives through the terminal's normal paste/bracketed-paste
 support. Copy and cut never expose password input text.

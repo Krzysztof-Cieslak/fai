@@ -1042,7 +1042,8 @@ and scoped shutdown closes active connections and wakes waiters.
 `TerminalHost` exposes an explicit full-screen `Terminal` capability: exclusive
 scoped sessions own raw mode and the alternate screen, poll typed keyboard,
 paste, mouse, focus and resize events, and restore terminal state on close/drop.
-Polling takes a caller-configured timeout and runs on the blocking pool.
+Polling takes a caller-configured positive timeout (at most 2147483647 ms) and
+runs on the blocking pool. Unix polling preserves co-ready resize and input events.
 `TextCells` supplies pure Unicode grapheme segmentation and display-cell widths
 with an explicit East Asian ambiguous-width policy.
 The optional `packages/tui` package builds a pure grapheme-aware cell renderer on

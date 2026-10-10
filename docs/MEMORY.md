@@ -5024,6 +5024,8 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   independent errors and gate asynchronous errors by draft revision. Streaming
   Markdown retains completed lines in an indexed persistent cache; viewport
   changes reflow explicitly, and display text never carries raw terminal control.
+  Native terminal polling uses a positive platform-representable timeout and
+  level-triggered Unix readiness so a resize cannot consume a keyboard wakeup.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.
